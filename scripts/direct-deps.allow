@@ -1,0 +1,55 @@
+# Direct-dependency allowlist (CONTRACTS.md §0.9).
+# One crate name per line; the union of the [dependencies] and
+# [dev-dependencies] tables of the one package. scripts/check-deps.sh fails when
+# the package declares a direct dependency (normal, dev or build) that is not
+# listed here. Adding a line requires a one-line justification in
+# docs/ARCHITECTURE.md.
+#
+# async runtime
+tokio
+tokio-util
+futures
+bytes
+# data
+serde
+serde_json
+serde_norway
+thiserror
+anyhow
+tracing
+# http / mcp
+reqwest
+rmcp
+# cli
+clap
+# misc
+base64
+sha2
+httpdate
+rand
+regex
+globset
+ignore
+walkdir
+nix
+jiff
+# tui stack (TUI_CONTRACTS §1.1; justifications in docs/ARCHITECTURE.md §11)
+ratatui
+crossterm
+unicode-width
+unicode-segmentation
+# token accounting (TUI_CONTRACTS §1.1; justification in docs/ARCHITECTURE.md §11)
+tiktoken-rs
+# syntax highlighting (WP55; justifications in docs/ARCHITECTURE.md §11)
+syntect
+two-face
+# T3 — full parity (justifications in docs/ARCHITECTURE.md §11)
+comrak
+image
+http
+# dev (plus the self-dev-dependency `iota`, which check-deps.sh skips)
+wiremock
+tempfile
+assert_cmd
+pretty_assertions
+vt100

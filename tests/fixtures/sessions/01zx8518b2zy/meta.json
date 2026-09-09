@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "id": "01zx8518b2zy",
+  "created_at": "2026-08-31T17:47:16+08:00",
+  "updated_at": "2026-08-31T17:47:16+08:00",
+  "provider": "openai",
+  "model": "gpt-5",
+  "temperature": 0.2,
+  "base_url": "https://example.test/v1",
+  "title": "compaction fixture",
+  "message_count": 5
+}

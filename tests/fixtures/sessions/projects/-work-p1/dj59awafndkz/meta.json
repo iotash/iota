@@ -1,0 +1,13 @@
+{
+  "v": 1,
+  "id": "dj59awafndkz",
+  "created_at": "2026-08-31T17:47:19+08:00",
+  "updated_at": "2026-08-31T17:47:19+08:00",
+  "provider": "openresponses",
+  "model": "gpt-5-codex",
+  "temperature": 1,
+  "base_url": "https://example.test/v1",
+  "cwd": "/work/p1",
+  "title": "bucketed fixture",
+  "message_count": 3
+}

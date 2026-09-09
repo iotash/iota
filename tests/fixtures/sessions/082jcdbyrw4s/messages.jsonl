@@ -1,0 +1,6 @@
+{"role":"system","content":"sys"}
+{"role":"user","content":"hi","attachments":[{"filename":"a.txt","mime":"text/plain","data_ref":"sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"}]}
+{"role":"assistant","tool_calls":[{"id":"c1","name":"f","arguments":{"q":1}}],"raw":{"provider":"gemini","blob":{"parts":[{"text":"thinking...","thought":true,"thoughtSignature":"AQID"},{"functionCall":{"id":"c1","args":{"q":1},"name":"f"}}],"role":"model"}},"usage":{"in":1000,"out":200,"total":1200}}
+{"role":"tool","content":"ok","tool_call_id":"c1","tool_call_name":"f"}
+{"role":"assistant","content":"done","reasoning":"th","usage":{"in":10,"out":5}}
+{"role":"assistant","content":"cut","interrupted":true}

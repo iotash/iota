@@ -1,0 +1,310 @@
+//! Pure run resolution (cmd/root.go:46-123, 534-566): the provider name check, key/url/model/system precedence,
+//! the `-m -` stdin read, the message/model rules and the config temperature range check — everything `run`
+//! decides before it constructs a provider — plus `CliError`, the command's error type (every Display text is
+//! byte-equal to the Go message it ports).
+
+use crate::BoxError;
+use crate::provider::error::{ProviderError, UnknownProviderType};
+use crate::provider::{ProviderKind, provider_env_key};
+use crate::text::go_float;
+
+use crate::cmd::cli::Cli;
+use crate::config::{Config, ConfigError, ProviderConfig};
+
+use crate::vars::EnvSource;
+
+/// What `resolve_run` decided for one invocation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunSettings {
+    /// The provider argument as typed (alias or type).
+    pub name: String,
+    /// The resolved provider type string (`Config::get`).
+    pub raw_type: String,
+    /// The provider's config entry (default when unconfigured).
+    pub provider_cfg: ProviderConfig,
+    /// The API key (flag verbatim, even `""` > env of the RESOLVED type > config key).
+    pub api_key: String,
+    /// The base URL (flag > config; `""` = dialect default).
+    pub base_url: String,
+    /// The model (flag > config; may be `""` without `-m`).
+    pub model: String,
+    /// The system prompt (flag > `system:` > `system_file:`; `""` = none).
+    pub system: String,
+    /// `None` = `-m` not given (Go: `chatMessage == ""` → the interactive branch, taken at root.go:259's
+    /// position in `run`). `Some` is never empty (`MessageEmpty`).
+    pub message: Option<String>,
+    /// The temperature (`-t` unchecked > config range-checked > `None`).
+    pub temperature: Option<f64>,
+    /// `--agent` || `agent: true`.
+    pub agent_mode: bool,
+    /// `--max-turns` as a cap (`None` = unlimited; the flag's `<= 0`).
+    pub max_turns: Option<std::num::NonZeroU32>,
+    /// `--output-format` as typed (`None` = flag absent). Carried RAW: `run` parses it at exactly Go's
+    /// position (root.go:249-252, after tuning/MCP/delegate assembly), so `unknown output format …` keeps
+    /// Go's precedence; `Some` also drives `OutputFormatWithoutMessage` there (root.go:253).
+    pub output_format_raw: Option<String>,
+    /// `--resume=<fragment>` TRIMMED (root.go:288 `strings.TrimSpace(resumeID)`); never blank — the blank form
+    /// already died in [`Cli::reject_unsupported`](crate::cmd::Cli::reject_unsupported), and a blank value reaching
+    /// here anyway is treated as absent. `None` = the flag was not given.
+    pub resume: Option<String>,
+}
+
+/// Pure. Order (root.go:53-123): provider arg required → `check_provider_name` → key (flag verbatim, even `""` >
+/// env of RESOLVED type > config key) → url/model/system (flag > config; `system_file` error) → `ApiKeyRequired`
+/// → `-m -` reads stdin (trim; `failed to read from stdin: {e}`; `no message provided via stdin`) → `-m ""` →
+/// `MessageEmpty` → model required ONLY when message is `Some` AND `--resume` is absent (D-52: a resume
+/// supplies the model from meta, so `run` re-raises `ModelRequired` after the replay) → temperature (flag
+/// unchecked; config range).
+/// `--output-format` is NOT parsed here and `OutputFormatWithoutMessage` is NOT raised here (Go does both after
+/// tuning/MCP/delegate, root.go:249-255) — the raw flag rides `output_format_raw` and `run` does both.
+pub fn resolve_run(
+    cli: &Cli,
+    cfg: &Config,
+    env: &dyn EnvSource,
+    stdin: &mut dyn std::io::Read,
+) -> Result<RunSettings, CliError> {
+    // root.go:53-60
+    let name = cli.provider.as_deref().ok_or(CliError::ProviderRequired)?;
+    let (raw_type, provider_cfg) = cfg.get(name);
+    check_provider_name(cfg, name, &raw_type)?;
+
+    // root.go:62-87: CLI flag > env var (of the RESOLVED type) > config file.
+    let env_key = provider_env_key(&raw_type);
+    let api_key = match &cli.key {
+        Some(flag) => flag.clone(),
+        None => resolve_key_from_env_or_config(env_key, &provider_cfg, env),
+    };
+    let base_url = cli.url.clone().unwrap_or_else(|| provider_cfg.url.clone());
+    let model = cli
+        .model
+        .clone()
+        .unwrap_or_else(|| provider_cfg.model.clone());
+    let system = match &cli.system {
+        Some(flag) => flag.clone(),
+        None => provider_cfg.resolve_system()?,
+    };
+
+    // root.go:89-92
+    if api_key.is_empty() {
+        return Err(CliError::ApiKeyRequired(env_key));
+    }
+
+    // root.go:95-104 (`-m -`), then POLICY F-03 (`-m ""`).
+    let message = match cli.message.as_deref() {
+        None => None,
+        Some("-") => Some(read_stdin_message(stdin)?),
+        Some("") => return Err(CliError::MessageEmpty),
+        Some(m) => Some(m.to_owned()),
+    };
+
+    // root.go:107-109: non-interactive mode requires a model — DEFERRED when `--resume` is given, because a
+    // resumed session can supply it from its meta (root.go:323-325). `run` re-raises this exact error after
+    // the model replay, so a provider-mismatched or model-less bundle still fails with Go's text
+    // (DIVERGENCES D-52).
+    if message.is_some() && model.is_empty() && cli.resume.is_none() {
+        return Err(CliError::ModelRequired);
+    }
+
+    // root.go:114-123: the -t flag wins (unchecked); the config default is range-checked.
+    let temperature = match (cli.temperature, provider_cfg.temperature) {
+        (Some(t), _) => Some(t),
+        (None, Some(t)) if !(0.0..=2.0).contains(&t) => {
+            return Err(CliError::ConfigTemperature(t));
+        }
+        (None, t) => t,
+    };
+
+    Ok(RunSettings {
+        name: name.to_owned(),
+        raw_type,
+        api_key,
+        base_url,
+        model,
+        system,
+        message,
+        temperature,
+        agent_mode: cli.agent || provider_cfg.agent,
+        max_turns: crate::chat::turns::turn_cap(cli.max_turns),
+        output_format_raw: cli.output_format.clone(),
+        resume: cli
+            .resume
+            .as_deref()
+            .map(str::trim)
+            .filter(|f| !f.is_empty())
+            .map(str::to_owned),
+        provider_cfg,
+    })
+}
+
+/// root.go:64-69 / 492-497: the env var of the resolved type when set and non-empty, else the config `key:`
+/// (possibly `""`).
+pub(crate) fn resolve_key_from_env_or_config(
+    env_key: &str,
+    provider_cfg: &ProviderConfig,
+    env: &dyn EnvSource,
+) -> String {
+    env.var(env_key)
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| provider_cfg.key.clone())
+}
+
+/// root.go:95-104: read ALL of stdin, trim, reject an empty message.
+fn read_stdin_message(stdin: &mut dyn std::io::Read) -> Result<String, CliError> {
+    let mut data = Vec::new();
+    stdin.read_to_end(&mut data).map_err(CliError::Stdin)?;
+    let message = String::from_utf8_lossy(&data).trim().to_owned();
+    if message.is_empty() {
+        return Err(CliError::EmptyStdin);
+    }
+    Ok(message)
+}
+
+/// Accepts a configured alias OR a known type; else the multi-line unknown-provider error (aliases sorted).
+pub(crate) fn check_provider_name(
+    cfg: &Config,
+    name: &str,
+    raw_type: &str,
+) -> Result<(), CliError> {
+    if cfg.providers.contains_key(name) || ProviderKind::is_known(raw_type) {
+        return Ok(());
+    }
+    // root.go:538-546: `BTreeMap` keys are already sorted (Go sorts its map keys).
+    Err(CliError::UnknownProvider {
+        name: name.to_owned(),
+        aliases: cfg.providers.keys().cloned().collect(),
+    })
+}
+
+/// Why the command failed (cmd/root.go, cmd/delegate.go, config.go and the headless-only rules). `main` prints
+/// `Error: {e}` and exits 1, or 130 for `Interrupted`.
+#[derive(Debug, thiserror::Error)]
+pub enum CliError {
+    /// An interactive-only flag was given (DIVERGENCES D-23): `-S/--system-input` | `--no-save`. `--resume`
+    /// left this variant in phase 2 slice 1 — its valued form is supported (D-41) and its blank form has
+    /// [`ResumeNeedsId`](CliError::ResumeNeedsId).
+    #[error("flag {0} is not supported in headless mode")]
+    UnsupportedFlag(&'static str),
+    /// A blank `--resume` (bare, or `--resume=""`): what is missing headlessly is the interactive session
+    /// picker, not the flag (DIVERGENCES D-42).
+    #[error("--resume requires a session id in headless mode (--resume=<id>)")]
+    ResumeNeedsId,
+    /// A session-store failure on the `--resume` path (resolution, location, meta or log read). Every `Display`
+    /// is byte-equal to the Go line it ports (CONTRACTS S§5).
+    #[error(transparent)]
+    Session(#[from] crate::session::SessionError),
+    /// No provider argument and no `-l`.
+    #[error(
+        "provider argument is required (e.g. openai, anthropic, gemini), or use -l to list available providers"
+    )]
+    ProviderRequired,
+    /// The provider argument is neither a configured alias nor a built-in type.
+    #[error(
+        "unknown provider {name:?}: not a configured alias or a built-in type{}\n  built-in types: openai, anthropic, gemini, vertexai, openresponses, imagen, images",
+        alias_hint(.aliases)
+    )]
+    UnknownProvider {
+        /// The name as typed.
+        name: String,
+        /// The configured aliases, sorted; rendered as `"\n  configured aliases: a, b"` when non-empty.
+        aliases: Vec<String>,
+    },
+    /// No key from the flag, the environment or the config; carries the env var name of the resolved type.
+    #[error("API key is required: use -k/--key or set {0}")]
+    ApiKeyRequired(&'static str),
+    /// Same, on the `-l <provider>` path.
+    #[error("API key is required to list models: use -k/--key or set {0}")]
+    ApiKeyRequiredForList(&'static str),
+    /// `-m -` could not read stdin.
+    #[error("failed to read from stdin: {0}")]
+    Stdin(#[source] std::io::Error),
+    /// `-m -` read only whitespace.
+    #[error("no message provided via stdin")]
+    EmptyStdin,
+    /// `-m ""` (POLICY F-03).
+    #[error("--message must not be empty")]
+    MessageEmpty,
+    /// `-m` without a model from the flag or the config.
+    #[error("--model/-M is required when using --message/-m")]
+    ModelRequired,
+    /// The config `temperature:` is outside 0.0-2.0 (the `-t` flag is never checked).
+    #[error("config temperature {}: want 0.0-2.0", go_float(*.0))]
+    ConfigTemperature(f64),
+    /// The config `effort:` is not one of the five levels.
+    #[error("config effort {0:?}: want low|medium|high|xhigh|max")]
+    ConfigEffort(String),
+    /// The config `top_p:` is outside 0.0-1.0.
+    #[error("config top_p {}: want 0.0-1.0", go_float(*.0))]
+    ConfigTopP(f64),
+    /// `--output-format` without `-m` (root.go:253).
+    #[error("--output-format applies to -m runs only")]
+    OutputFormatWithoutMessage,
+    /// The working directory could not be resolved (agent mode).
+    #[error("failed to resolve working directory: {0}")]
+    Cwd(#[source] std::io::Error),
+    /// `tools.delegate` failed to build (`delegate::DelegateError` text).
+    #[error("tools.delegate: {0}")]
+    Delegate(#[source] BoxError),
+    /// `-l <provider>` could not fetch the model list.
+    #[error("failed to list models: {0}")]
+    ListModels(#[source] ProviderError),
+    /// `--mcp ""` (POLICY F-02).
+    #[error(transparent)]
+    McpFlag(#[from] crate::mcp::config::McpFlagError),
+    /// The resolved type string is not a built-in kind (provider.go:329 text).
+    #[error(transparent)]
+    UnknownType(#[from] UnknownProviderType),
+    /// Provider construction or the run's provider failure.
+    #[error(transparent)]
+    Provider(#[from] ProviderError),
+    /// A config-level failure (`system_file`, unknown `mcp_servers` name).
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+    /// The run loop failed (incl. `unknown output format …`).
+    #[error(transparent)]
+    Chat(#[from] crate::chat::ChatError),
+    /// SIGINT/SIGTERM cancelled the run (exit 130; DIVERGENCES I-03).
+    #[error("interrupted")]
+    Interrupted,
+    /// The interactive branch was reached without a terminal on stdin/stdout (root.go:400).
+    #[error("interactive mode requires a terminal; use -m/--message for piped input")]
+    NotATerminal,
+    /// `--no-save` with `--resume`: an ephemeral start and a resumed bundle are opposite intents (root.go:285).
+    #[error("--no-save cannot be combined with --resume")]
+    NoSaveWithResume,
+    /// A blank `--resume` whose picker found nothing, or that the user walked away from (root.go:314).
+    #[error("no session to resume")]
+    NoSessionToResume,
+    /// `--context-window`, a resumed bundle's meta or `context_window:` failed to parse (root.go:365-385).
+    #[error("{label}: {source}")]
+    ContextWindow {
+        /// Which of the three sources failed, as Go names it.
+        label: String,
+        /// The parse failure.
+        #[source]
+        source: crate::cmd::window::WindowSizeError,
+    },
+    /// The interactive session picker could not read the store (root.go:305).
+    #[error("failed to list sessions: {0}")]
+    ListSessions(#[source] crate::session::SessionError),
+    /// A new interactive bundle could not be created (root.go:340).
+    #[error("failed to create session: {0}")]
+    CreateSession(#[source] crate::session::SessionError),
+    /// The interactive facade failed.
+    #[error(transparent)]
+    Ui(#[from] crate::ui::facade::UiError),
+    /// A `spawn_blocking` worker could not be joined.
+    #[error("{0}")]
+    Join(String),
+    /// An I/O failure with no more specific home (runtime construction, output streams).
+    #[error("{0}")]
+    Io(#[from] std::io::Error),
+}
+
+/// The `UnknownProvider` hint: `""` without aliases, else `"\n  configured aliases: a, b"` (root.go:538-546).
+fn alias_hint(aliases: &[String]) -> String {
+    if aliases.is_empty() {
+        String::new()
+    } else {
+        format!("\n  configured aliases: {}", aliases.join(", "))
+    }
+}

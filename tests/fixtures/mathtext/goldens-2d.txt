@@ -1,0 +1,540 @@
+=== IN: \frac{a}{b}
+ok=true
+|a|  (w=1)
+|─|  (w=1)
+|b|  (w=1)
+=== IN: \frac{a+b}{c}
+ok=true
+|a + b|  (w=5)
+|─────|  (w=5)
+|  c  |  (w=5)
+=== IN: \frac{\frac{a}{b}}{c}
+ok=true
+|a|  (w=1)
+|─|  (w=1)
+|b|  (w=1)
+|─|  (w=1)
+|c|  (w=1)
+=== IN: \sqrt{x+1}
+ok=true
+|  ______|  (w=8)
+|╲╱ x + 1|  (w=8)
+=== IN: \sqrt[3]{x}
+ok=true
+|3  __|  (w=5)
+| ╲╱ x|  (w=5)
+=== IN: x_i^2
+ok=true
+| 2|  (w=2)
+|x |  (w=2)
+| i|  (w=2)
+=== IN: x^2
+ok=true
+| 2|  (w=2)
+|x |  (w=2)
+=== IN: \sum_{i=1}^{n} i
+ok=true
+|  n   |  (w=6)
+|  ∑  i|  (w=6)
+|i = 1 |  (w=6)
+=== IN: \int \frac{1}{x}
+ok=true
+|⌠1|  (w=2)
+|⎮─|  (w=2)
+|⌡x|  (w=2)
+=== IN: \begin{pmatrix} a & b \\ c & d \end{pmatrix}
+ok=true
+|⎛ a  b ⎞|  (w=8)
+|⎝ c  d ⎠|  (w=8)
+=== IN: \begin{bmatrix} 1 & 2 \\ 3 & 4 \end{bmatrix}
+ok=true
+|⎡ 1  2 ⎤|  (w=8)
+|⎣ 3  4 ⎦|  (w=8)
+=== IN: \begin{cases} x & a \\ y & b \end{cases}
+ok=true
+|⎧ x  a|  (w=6)
+|⎩ y  b|  (w=6)
+=== IN: \left( \frac{a}{b} \right)
+ok=true
+|⎛a⎞|  (w=3)
+|⎜─⎟|  (w=3)
+|⎝b⎠|  (w=3)
+=== IN: \lim_{x \to 0} f
+ok=true
+| lim  f|  (w=7)
+|x → 0  |  (w=7)
+=== IN: \text{中文}
+ok=true
+|中文|  (w=4)
+=== IN: \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}
+ok=true
+|         _________|  (w=18)
+|        ╱  2      |  (w=18)
+|- b ± ╲╱  b  - 4ac|  (w=18)
+|──────────────────|  (w=18)
+|        2a        |  (w=18)
+=== IN: \hat{f}
+ok=true
+|^|  (w=1)
+|f|  (w=1)
+=== IN: \vec{v}
+ok=true
+|→|  (w=1)
+|v|  (w=1)
+=== IN: \ddot{x}
+ok=true
+|··|  (w=2)
+|x |  (w=2)
+=== IN: \overline{ab}
+ok=true
+|──|  (w=2)
+|ab|  (w=2)
+=== IN: \mathbb{R}
+ok=true
+|ℝ|  (w=1)
+=== IN: \begin{aligned} a &= b \\ c &= d \end{aligned}
+ok=true
+|a = b|  (w=5)
+|c = d|  (w=5)
+=== IN: \{ x \}
+ok=true
+|{x}|  (w=3)
+=== IN: \hat{x}^2
+ok=true
+| 2|  (w=2)
+|^ |  (w=2)
+|x |  (w=2)
+=== IN: \bar{x}_i
+ok=true
+|─ |  (w=2)
+|x |  (w=2)
+| i|  (w=2)
+=== IN: \begin{aligned} x &= y + z \\ a &= b \end{aligned}
+ok=true
+|x = y + z|  (w=9)
+|a = b    |  (w=9)
+=== IN: \nabla \cdot \mathbf{E} = \frac{\rho}{\varepsilon_0}
+ok=true
+|        ρ |  (w=10)
+|∇ ⋅ E = ──|  (w=10)
+|        ε |  (w=10)
+|         0|  (w=10)
+=== IN: \sum_{i=1}^{n}\frac{1}{i^2}
+ok=true
+|  n  1 |  (w=7)
+|  ∑  ──|  (w=7)
+|i = 1 2|  (w=7)
+|     i |  (w=7)
+=== IN: \int_{0}^{\infty}\frac{1}{x^2}dx
+ok=true
+|∞    |  (w=5)
+|⌠    |  (w=5)
+|⎮1   |  (w=5)
+|⎮──dx|  (w=5)
+|⌡ 2  |  (w=5)
+|0x   |  (w=5)
+=== IN: \left\langle \frac{a}{b}, c \right\rangle
+ok=true
+| a   |  (w=5)
+|⟨─,c⟩|  (w=5)
+| b   |  (w=5)
+=== IN: \langle a, b \rangle
+ok=true
+|⟨a,b⟩|  (w=5)
+=== IN: \lfloor x \rfloor + \lceil y \rceil
+ok=true
+|⌊x⌋ + ⌈y⌉|  (w=9)
+=== IN: \bigcup_{i} A_i
+ok=true
+|⋃A |  (w=3)
+|i i|  (w=3)
+=== IN: \hat{f}(\xi) = \int_{-\infty}^{\infty} f(x) \, e^{-2\pi i x \xi} \, dx
+ok=true
+|^       ∞      - 2πixξ  |  (w=24)
+|f(ξ) =  ∫ f(x)e       dx|  (w=24)
+|       - ∞              |  (w=24)
+=== IN: f(x \mid \mu, \sigma^2) = \frac{1}{\sigma\sqrt{2\pi}} \exp\left(-\frac{(x - \mu)^2}{2\sigma^2}\right)
+ok=true
+|                       ⎛         2⎞|  (w=35)
+|         2      1      ⎜  (x - μ) ⎟|  (w=35)
+|f(x ∣ μ,σ ) = ──────exp⎜- ────────⎟|  (w=35)
+|                 ___   ⎜      2   ⎟|  (w=35)
+|              σ╲╱ 2π   ⎝    2σ    ⎠|  (w=35)
+=== IN: \rho \left( \frac{\partial v}{\partial t} + v \cdot \nabla v \right) = -\nabla p + \mu \nabla^2 v + f
+ok=true
+| ⎛∂v         ⎞             2     |  (w=33)
+|ρ⎜── + v ⋅ ∇v⎟ =  - ∇p + μ∇ v + f|  (w=33)
+| ⎝∂t         ⎠                   |  (w=33)
+=== IN: \begin{aligned} \nabla \cdot \mathbf{E} &= \frac{\rho}{\varepsilon_0} \\ \nabla \cdot \mathbf{B} &= 0 \end{aligned}
+ok=true
+|        ρ |  (w=10)
+|∇ ⋅ E = ──|  (w=10)
+|        ε |  (w=10)
+|         0|  (w=10)
+|∇ ⋅ B = 0 |  (w=10)
+=== IN: \lim_{h \to 0} \frac{f(x+h) - f(x)}{h} = f'(x)
+ok=true
+|      f(x + h) - f(x)        |  (w=29)
+| lim  ─────────────── = f'(x)|  (w=29)
+|h → 0        h               |  (w=29)
+=== IN: \int f(x)dx = F(b) - F(a)
+ok=true
+|∫f(x)dx = F(b) - F(a)|  (w=21)
+=== IN: A \cap B = \{ x \mid x \in A \text{ and } x \in B \}
+ok=true
+|A ∩ B = {x ∣ x ∈ A and x ∈ B}|  (w=29)
+=== IN: \mathcal{P}(S) = \{ T \mid T \subseteq S \}
+ok=true
+|𝒫(S) = {T ∣ T ⊆ S}|  (w=18)
+=== IN: \begin{vmatrix} a & b \\ c & d \end{vmatrix}
+ok=true
+|│ a  b │|  (w=8)
+|│ c  d │|  (w=8)
+=== IN: \begin{Bmatrix} a & b \\ c & d \end{Bmatrix}
+ok=true
+|⎧ a  b ⎫|  (w=8)
+|⎩ c  d ⎭|  (w=8)
+=== IN: \begin{matrix} a & b \\ c & d \end{matrix}
+ok=true
+|a  b|  (w=4)
+|c  d|  (w=4)
+=== IN: \begin{pmatrix} a & b & c \\ d & e & f \\ g & h & i \end{pmatrix}
+ok=true
+|⎛ a  b  c ⎞|  (w=11)
+|⎜ d  e  f ⎟|  (w=11)
+|⎝ g  h  i ⎠|  (w=11)
+=== IN: \begin{pmatrix} \frac{a}{b} & c \\ d & e \end{pmatrix}
+ok=true
+|⎛ a    ⎞|  (w=8)
+|⎜ ─  c ⎟|  (w=8)
+|⎜ b    ⎟|  (w=8)
+|⎝ d  e ⎠|  (w=8)
+=== IN: \begin{cases} x^2 & \text{if } x > 0 \\ 0 & \text{otherwise} \end{cases}
+ok=true
+|⎧  2           |  (w=15)
+|⎨ x   if x > 0 |  (w=15)
+|⎩ 0   otherwise|  (w=15)
+=== IN: \begin{gathered} a = b \\ c = d \end{gathered}
+ok=true
+|a = b|  (w=5)
+|c = d|  (w=5)
+=== IN: \sqrt{\frac{a}{b}}
+ok=true
+|    __|  (w=6)
+|   ╱ a|  (w=6)
+|  ╱  ─|  (w=6)
+|╲╱   b|  (w=6)
+=== IN: \sqrt[3]{\frac{x}{y}}
+ok=true
+|     __|  (w=7)
+|3   ╱ x|  (w=7)
+|   ╱  ─|  (w=7)
+| ╲╱   y|  (w=7)
+=== IN: x^{2}_{i}
+ok=true
+| 2|  (w=2)
+|x |  (w=2)
+| i|  (w=2)
+=== IN: \frac{1}{2}^2
+ok=true
+|12|  (w=2)
+|─ |  (w=2)
+|2 |  (w=2)
+=== IN: e^{i\pi} + 1 = 0
+ok=true
+| iπ        |  (w=11)
+|e   + 1 = 0|  (w=11)
+=== IN: a \bmod b
+ok=true
+|abmodb|  (w=6)
+=== IN: [a, b]
+ok=false
+|[a, b]|  (w=6)
+=== IN: \binom{n}{k}
+ok=false
+|C(n, k)|  (w=7)
+=== IN: \text{中文} + \alpha
+ok=true
+|中文 + α|  (w=8)
+=== IN: -b
+ok=true
+|- b|  (w=3)
+=== IN: a - b
+ok=true
+|a - b|  (w=5)
+=== IN: \left. x \right|_{a}^{b}
+ok=true
+|  b|  (w=3)
+|x│ |  (w=3)
+|  a|  (w=3)
+=== IN: \left\{ x \right\}
+ok=true
+|{x}|  (w=3)
+=== IN: \lim_{n \to \infty} \left(1 + \frac{1}{n}\right)^n
+ok=true
+|      ⎛    1⎞n|  (w=14)
+| lim  ⎜1 + ─⎟ |  (w=14)
+|n → ∞ ⎝    n⎠ |  (w=14)
+=== IN: \prod_{i=1}^{n} \frac{a_i}{b_i}
+ok=true
+|     a |  (w=7)
+|  n   i|  (w=7)
+|  ∏  ──|  (w=7)
+|i = 1b |  (w=7)
+|      i|  (w=7)
+=== IN: \int_0^1 \int_0^1 f \, dx \, dy
+ok=true
+|1      |  (w=7)
+|⌠1     |  (w=7)
+|⎮∫fdxdy|  (w=7)
+|⌡0     |  (w=7)
+|0      |  (w=7)
+=== IN: \mathbb{R}^n
+ok=true
+| n|  (w=2)
+|ℝ |  (w=2)
+=== IN: \ddot{x} + \dot{x}
+ok=true
+|··   ·|  (w=6)
+|x  + x|  (w=6)
+=== IN: \sqrt{2}
+ok=true
+|  __|  (w=4)
+|╲╱ 2|  (w=4)
+=== IN: \frac{\partial f}{\partial x}
+ok=true
+|∂f|  (w=2)
+|──|  (w=2)
+|∂x|  (w=2)
+=== IN: \| v \|
+ok=true
+|‖ v ‖|  (w=5)
+=== IN: \exp(x)
+ok=true
+|exp(x)|  (w=6)
+=== IN: f'(x)
+ok=true
+|f'(x)|  (w=5)
+=== IN: \iint_D f
+ok=true
+|∬f|  (w=2)
+|D |  (w=2)
+=== IN: \alpha_1^2 + \beta
+ok=true
+| 2    |  (w=6)
+|α  + β|  (w=6)
+| 1    |  (w=6)
+=== IN: (a+b)^n = \sum_{k=0}^{n} \binom{n}{k} a^{n-k} b^k
+ok=false
+|(a+b)ⁿ = ∑ₖ₌₀ⁿ C(n, k) aⁿ⁻ᵏ bᵏ|  (w=30)
+=== IN: \overbrace{x+y}
+ok=false
+|x+y|  (w=3)
+=== IN: \overbrace{\frac{a}{b} + \alpha}
+ok=false
+|a/b + α|  (w=7)
+=== IN: \frac{x+1}{y}
+ok=true
+|x + 1|  (w=5)
+|─────|  (w=5)
+|  y  |  (w=5)
+=== IN: \sum_{i=1}^{n} \frac{1}{i}
+ok=true
+|  n  1|  (w=6)
+|  ∑  ─|  (w=6)
+|i = 1i|  (w=6)
+=== IN: x^{12}
+ok=true
+| 12|  (w=3)
+|x  |  (w=3)
+=== IN: \frac12
+ok=false
+|1/2|  (w=3)
+=== IN: \frac{1}{2} + \frac{3}{4}
+ok=true
+|1   3|  (w=5)
+|─ + ─|  (w=5)
+|2   4|  (w=5)
+=== IN: \left[ \frac{a}{b} \right]
+ok=true
+|⎡a⎤|  (w=3)
+|⎢─⎥|  (w=3)
+|⎣b⎦|  (w=3)
+=== IN: \left| \frac{a}{b} \right|
+ok=true
+|│a│|  (w=3)
+|│─│|  (w=3)
+|│b│|  (w=3)
+=== IN: \left\| v \right\|
+ok=true
+|│v│|  (w=3)
+=== IN: \sqrt{x^2}
+ok=true
+|   ___|  (w=6)
+|  ╱  2|  (w=6)
+|╲╱  x |  (w=6)
+=== IN: \frac{a}{b}_c
+ok=true
+|a |  (w=2)
+|─ |  (w=2)
+|bc|  (w=2)
+=== IN: \text{a\&b}
+ok=true
+|a&b|  (w=3)
+=== IN: \operatorname{Tr}(A)
+ok=false
+|Tr(A)|  (w=5)
+=== IN: a^{b^{c}}
+ok=true
+|  c|  (w=3)
+| b |  (w=3)
+|a  |  (w=3)
+=== IN: \int_a^b
+ok=true
+|b|  (w=1)
+|∫|  (w=1)
+|a|  (w=1)
+=== IN: \sum
+ok=true
+|∑|  (w=1)
+=== IN: \sum_{n}
+ok=true
+|∑|  (w=1)
+|n|  (w=1)
+=== IN: \sum^{n}
+ok=true
+|n|  (w=1)
+|∑|  (w=1)
+=== IN: \left( a \right)
+ok=true
+|(a)|  (w=3)
+=== IN: \sqrt{}
+ok=true
+|  __|  (w=4)
+|╲╱  |  (w=4)
+=== IN: {}
+ok=true
+||  (w=0)
+=== IN: \frac{}{}
+ok=true
+|─|  (w=1)
+=== IN: \begin{pmatrix} a \\ b \\ c \end{pmatrix}
+ok=true
+|⎛ a ⎞|  (w=5)
+|⎜ b ⎟|  (w=5)
+|⎝ c ⎠|  (w=5)
+=== IN: \begin{pmatrix} a & b \\ c \end{pmatrix}
+ok=true
+|⎛ a  b ⎞|  (w=8)
+|⎝ c    ⎠|  (w=8)
+=== IN: \begin{pmatrix} a & b \\ c & d \\ \end{pmatrix}
+ok=true
+|⎛ a  b ⎞|  (w=8)
+|⎝ c  d ⎠|  (w=8)
+=== IN: x \, y
+ok=true
+|xy|  (w=2)
+=== IN: \Big( x \Big)
+ok=true
+|(x)|  (w=3)
+=== IN: \displaystyle \frac{a}{b}
+ok=true
+|a|  (w=1)
+|─|  (w=1)
+|b|  (w=1)
+=== IN: x^\alpha
+ok=true
+| α|  (w=2)
+|x |  (w=2)
+=== IN: x^\frac{a}{b}
+ok=true
+| a|  (w=2)
+| ─|  (w=2)
+| b|  (w=2)
+|x |  (w=2)
+=== IN: \mathbf{x_i}
+ok=true
+|x |  (w=2)
+| i|  (w=2)
+=== IN: \mathbb{RC}
+ok=true
+|ℝℂ|  (w=2)
+=== IN: \mathfrak{g}
+ok=true
+|𝔤|  (w=1)
+=== IN: \mathcal{L}
+ok=true
+|ℒ|  (w=1)
+=== IN: a % b
+ok=true
+|a%b|  (w=3)
+=== IN: \sin x + \cos^2 y
+ok=true
+|          2 |  (w=12)
+|sinx + cos y|  (w=12)
+=== IN: \log_2 n
+ok=true
+|log n|  (w=5)
+|   2 |  (w=5)
+=== IN: \lim\sup
+ok=true
+|lim sup|  (w=7)
+=== IN: \limsup_{n} a_n
+ok=true
+|lim sup a |  (w=10)
+|   n     n|  (w=10)
+=== IN: \tilde{a}
+ok=true
+|~|  (w=1)
+|a|  (w=1)
+=== IN: \dot{x}
+ok=true
+|·|  (w=1)
+|x|  (w=1)
+=== IN: \bar{x}
+ok=true
+|─|  (w=1)
+|x|  (w=1)
+=== IN: \widehat{ab}
+ok=true
+|^ |  (w=2)
+|ab|  (w=2)
+=== IN: \left\lfloor \frac{a}{b} \right\rfloor
+ok=true
+| a |  (w=3)
+|⌊─⌋|  (w=3)
+| b |  (w=3)
+=== IN: \left( \frac{a}{b} \right.
+ok=true
+|⎛a|  (w=2)
+|⎜─|  (w=2)
+|⎝b|  (w=2)
+=== IN: \vec{v} \cdot \vec{w}
+ok=true
+|→   →|  (w=5)
+|v ⋅ w|  (w=5)
+=== IN: 3.14 \times 2
+ok=true
+|3.14 × 2|  (w=8)
+=== IN: 1..2
+ok=true
+|1..2|  (w=4)
+=== IN: \frac{a}{b}\frac{c}{d}
+ok=true
+|ac|  (w=2)
+|──|  (w=2)
+|bd|  (w=2)
+=== IN: a_{i,j}
+ok=true
+|a   |  (w=4)
+| i,j|  (w=4)
+=== IN: x^{-1}
+ok=true
+| - 1|  (w=4)
+|x   |  (w=4)
+=== IN: x \in \mathbb{R}
+ok=true
+|x ∈ ℝ|  (w=5)
+=== IN: \quad x
+ok=true
+|x|  (w=1)

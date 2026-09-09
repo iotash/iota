@@ -1,0 +1,287 @@
+{
+  "version": 1,
+  "doc": "Session bundles written by the original Go implementation (tag go-final, module tests-go/gofix) and verified through its loader; a frozen corpus of the v1 on-disk format, not regenerable. Session ids are random: read them from here, never hardcode one.",
+  "generator": "rust/tests-go/gofix",
+  "go_version": "go1.27.0",
+  "resolution": {
+    "flat_order": [
+      "1hzywq38k22x",
+      "01zx8518b2zy",
+      "082jcdbyrw4s",
+      "01HZY8QK7C4XF3M9NB2VTA6RDE"
+    ],
+    "project_root": "/work/p1",
+    "project_order": [
+      "dj59awafndkz"
+    ],
+    "unknown_fragment": "zz",
+    "unknown_error": "no session matches \"zz\"",
+    "ambiguous_fragment": "0",
+    "ambiguous_matches": [
+      "01zx8518b2zy",
+      "082jcdbyrw4s",
+      "01HZY8QK7C4XF3M9NB2VTA6RDE"
+    ],
+    "ambiguous_error": "session id \"0\" is ambiguous: 01zx8518b2zy, 082jcdbyrw4s, 01HZY8QK7C4XF3M9NB2VTA6RDE"
+  },
+  "fixtures": [
+    {
+      "name": "go-gemini-rich",
+      "proves": "the five message shapes, the attachment store, meta tuning, unknown-key preservation, interrupted, the genai blob in a session line",
+      "id": "082jcdbyrw4s",
+      "dir": "082jcdbyrw4s",
+      "layout": "flat",
+      "unique_prefix": "08",
+      "meta": {
+        "provider": "gemini",
+        "model": "gemini-2.5-pro",
+        "temperature": 0.7,
+        "context_window": 200000,
+        "effort": "high",
+        "base_url": "https://example.test/v1",
+        "cwd": "/work/proj",
+        "title": "go-written fixture",
+        "message_count": 6,
+        "updated_at": "2026-08-31T17:47:15+08:00"
+      },
+      "unknown_meta_keys": [
+        "future_key"
+      ],
+      "expect": {
+        "log_lines": 6,
+        "log_roles": [
+          "system",
+          "user",
+          "assistant",
+          "tool",
+          "assistant",
+          "assistant"
+        ],
+        "view_roles": [
+          "system",
+          "user",
+          "assistant",
+          "tool",
+          "assistant",
+          "assistant"
+        ],
+        "view_count": 6,
+        "conv_count": 5,
+        "usage": {
+          "in": 1010,
+          "out": 205,
+          "cache_read": 0,
+          "cache_write": 0,
+          "total": 1200
+        },
+        "raw_tags": [
+          "gemini"
+        ],
+        "raw_restored": 1,
+        "attachment_records": 1,
+        "attachment_blobs": 1,
+        "compaction": null,
+        "interrupted": 1
+      }
+    },
+    {
+      "name": "go-openai-compaction",
+      "proves": "the compaction marker and its load-time weave, log-wide usage summing including compacted-away rounds and the marker itself",
+      "id": "01zx8518b2zy",
+      "dir": "01zx8518b2zy",
+      "layout": "flat",
+      "unique_prefix": "01z",
+      "meta": {
+        "provider": "openai",
+        "model": "gpt-5",
+        "temperature": 0.2,
+        "base_url": "https://example.test/v1",
+        "title": "compaction fixture",
+        "message_count": 5,
+        "updated_at": "2026-08-31T17:47:16+08:00"
+      },
+      "unknown_meta_keys": [],
+      "expect": {
+        "log_lines": 6,
+        "log_roles": [
+          "system",
+          "user",
+          "assistant",
+          "compaction",
+          "user",
+          "assistant"
+        ],
+        "view_roles": [
+          "system",
+          "assistant",
+          "user",
+          "assistant"
+        ],
+        "view_count": 4,
+        "conv_count": 4,
+        "usage": {
+          "in": 150,
+          "out": 65,
+          "cache_read": 0,
+          "cache_write": 0,
+          "total": 215
+        },
+        "raw_tags": [
+          "openai"
+        ],
+        "raw_restored": 1,
+        "attachment_records": 0,
+        "attachment_blobs": 0,
+        "compaction": {
+          "summary": "SUMMARY of the first round",
+          "compacted_through": 1
+        },
+        "interrupted": 0
+      }
+    },
+    {
+      "name": "go-anthropic-blocks",
+      "proves": "the array blob, the empty-block-list omission rule, and a raw blob tagged with a dialect this build does not know",
+      "id": "1hzywq38k22x",
+      "dir": "1hzywq38k22x",
+      "layout": "flat",
+      "unique_prefix": "1",
+      "meta": {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-5",
+        "base_url": "https://example.test",
+        "title": "anthropic blocks",
+        "message_count": 7,
+        "updated_at": "2026-08-31T17:47:18+08:00"
+      },
+      "unknown_meta_keys": [],
+      "expect": {
+        "log_lines": 7,
+        "log_roles": [
+          "system",
+          "user",
+          "assistant",
+          "user",
+          "assistant",
+          "user",
+          "assistant"
+        ],
+        "view_roles": [
+          "system",
+          "user",
+          "assistant",
+          "user",
+          "assistant",
+          "user",
+          "assistant"
+        ],
+        "view_count": 7,
+        "conv_count": 6,
+        "usage": {
+          "in": 56,
+          "out": 18,
+          "cache_read": 7,
+          "cache_write": 3,
+          "total": 0
+        },
+        "raw_tags": [
+          "anthropic",
+          "stub"
+        ],
+        "raw_restored": 1,
+        "attachment_records": 0,
+        "attachment_blobs": 0,
+        "compaction": null,
+        "interrupted": 0
+      }
+    },
+    {
+      "name": "go-project-bucket",
+      "proves": "the projects/-work-p1 bucket layout, meta.cwd, scoped resolution, and content-addressed attachment dedup",
+      "id": "dj59awafndkz",
+      "dir": "projects/-work-p1/dj59awafndkz",
+      "layout": "project",
+      "unique_prefix": "d",
+      "meta": {
+        "provider": "openresponses",
+        "model": "gpt-5-codex",
+        "temperature": 1,
+        "base_url": "https://example.test/v1",
+        "cwd": "/work/p1",
+        "title": "bucketed fixture",
+        "message_count": 3,
+        "updated_at": "2026-08-31T17:47:19+08:00"
+      },
+      "unknown_meta_keys": [],
+      "expect": {
+        "log_lines": 3,
+        "log_roles": [
+          "system",
+          "user",
+          "assistant"
+        ],
+        "view_roles": [
+          "system",
+          "user",
+          "assistant"
+        ],
+        "view_count": 3,
+        "conv_count": 2,
+        "usage": {
+          "in": 60,
+          "out": 15,
+          "cache_read": 0,
+          "cache_write": 0,
+          "total": 75
+        },
+        "raw_tags": [
+          "openresponses"
+        ],
+        "raw_restored": 1,
+        "attachment_records": 3,
+        "attachment_blobs": 2,
+        "compaction": null,
+        "interrupted": 0
+      }
+    },
+    {
+      "name": "go-legacy-ulid",
+      "proves": "zero-migration legacy compatibility: a 26-char uppercase id, a minimal meta.json, a Z timestamp and no attachments dir",
+      "id": "01HZY8QK7C4XF3M9NB2VTA6RDE",
+      "dir": "01HZY8QK7C4XF3M9NB2VTA6RDE",
+      "layout": "flat",
+      "unique_prefix": "01h",
+      "meta": {
+        "provider": "openai",
+        "model": "gpt-4o",
+        "message_count": 1,
+        "updated_at": "2024-01-02T03:04:05Z"
+      },
+      "unknown_meta_keys": [],
+      "expect": {
+        "log_lines": 1,
+        "log_roles": [
+          "user"
+        ],
+        "view_roles": [
+          "user"
+        ],
+        "view_count": 1,
+        "conv_count": 1,
+        "usage": {
+          "in": 0,
+          "out": 0,
+          "cache_read": 0,
+          "cache_write": 0,
+          "total": 0
+        },
+        "raw_tags": [],
+        "raw_restored": 0,
+        "attachment_records": 0,
+        "attachment_blobs": 0,
+        "compaction": null,
+        "interrupted": 0
+      }
+    }
+  ]
+}

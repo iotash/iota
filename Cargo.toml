@@ -1,0 +1,143 @@
+[package]
+name = "iota"
+description = "A lightweight AI chat CLI for the terminal"
+homepage = "https://iota.sh"
+readme = "README.md"
+keywords = ["cli", "chat", "llm", "mcp", "terminal"]
+categories = ["command-line-utilities"]
+publish = false
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+repository = "https://github.com/joyqi/iota"
+default-run = "iota"
+
+# ONE package: the library holds every module, `src/main.rs` is the thin binary. No workspace,
+# no per-area manifests (docs/ARCHITECTURE.md §1).
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "iota"
+path = "src/main.rs"
+
+[features]
+# The ONLY cargo feature: the shared test fakes (`src/testing/`), enabled by the
+# self-dev-dependency below so integration tests and examples see them. It never changes what
+# the shipped binary contains.
+default = []
+testing = []
+
+[dependencies]
+# async runtime
+tokio       = { version = "1.53", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "signal", "fs", "net"] }
+tokio-util  = { version = "0.7", default-features = false }
+futures     = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+bytes       = "1"
+# data
+serde        = { version = "1", features = ["derive"] }
+serde_json   = { version = "1", features = ["raw_value"] }
+serde_norway = "0.9"
+thiserror    = "2"
+anyhow       = "1"
+tracing      = { version = "0.1", default-features = false, features = ["std", "release_max_level_off"] }
+# http / mcp
+# ONE TLS backend, no choice: rustls with its default aws-lc-rs provider (`reqwest/rustls`; the
+# platform verifier comes with it). rmcp pairs it with its `reqwest` feature. Both MCP transports,
+# always.
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "http2", "system-proxy", "rustls"] }
+rmcp    = { version = "3.1", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest"] }
+# cli
+clap = { version = "4.6", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
+# misc
+base64   = "0.23"
+sha2     = { version = "0.11", default-features = false }
+httpdate = "1"
+rand     = { version = "0.9", default-features = false, features = ["std", "std_rng", "thread_rng"] }
+regex    = "1"
+globset  = "0.4"
+ignore   = "0.4"
+walkdir  = "2"
+nix      = { version = "0.31", default-features = false, features = ["signal", "process", "fs"] }
+jiff     = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
+# TUI stack — pinned exact; verified against ~/.cargo/registry (TUI_CONTRACTS §12). Only
+# `src/ui/**` may name ratatui/crossterm (ci.sh grep gate).
+# "scrolling-regions" is always on (one-binary decision, 2026-09-01): streaming inserts ride
+# DECSTBM in-region scrolls, and there is no portable fallback build any more (wart W9 is a
+# per-terminal verification item in docs/TUI-VERIFY.md, not a compile-time choice).
+ratatui   = { version = "=0.30.2", features = ["unstable-rendered-line-info", "scrolling-regions"] }
+# ratatui default features stay ON: "crossterm" (ratatui-crossterm, default pairing
+# crossterm_0_29), all-widgets, layout-cache, macros, underline-color. NEVER enable
+# crossterm_0_28 (wart W8).
+crossterm = { version = "=0.29.0" }
+unicode-width        = "=0.2.2"
+unicode-segmentation = "1.13"
+# token accounting (WP53) — bundles the o200k_base BPE ranks, so the counter is offline
+# (Go's tiktoken-go + tiktoken-go-loader offline loader twin).
+tiktoken-rs = "=0.12.0"
+# Syntax highlighting (WP55) — pure-Rust regex engine (fancy-regex):
+# no C toolchain, no `onig` build. two-face carries bat's syntax + theme dumps, which is
+# where the chroma-equivalent language coverage and the monokai/github themes come from.
+syntect  = { version = "=5.3.0", default-features = false, features = ["parsing", "dump-load", "regex-fancy", "html"] }
+two-face = { version = "=0.5.2", default-features = false, features = ["syntect-fancy"] }
+# /export HTML (T3, WP65): CommonMark + GFM in safe mode with the `SyntaxHighlighterAdapter` seam for
+# the code-fence renderer. default-features = false drops the CLI, `bon` and comrak's own
+# `syntect-onig` feature — that one would bundle syntect's default syntax/theme dumps and onig beside
+# two-face's; our adapter reuses `markdown::highlight`'s syntax set (docs/ARCHITECTURE.md §11).
+comrak = { version = "=0.54.0", default-features = false }
+# imgterm (T3, WP63): the half-block rasteriser's decoders — exactly the four formats Go registers
+# (png/jpeg/gif/webp; all pure Rust in 0.25, no rayon). Encoders are reachable only from tests
+# (LTO strips them from the binary). Only `src/imgterm.rs` may name the crate (ci.sh grep).
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+# /debug (T3, WP66): `record_response` rebuilds the response through `http::Response` →
+# `reqwest::Response` (`From<http::Response<T>>`, reqwest-0.13.4 response.rs:459). reqwest re-exports
+# `header`/`Method`/`StatusCode`/`Version`/`Url` but not the crate (lib.rs:279-282), so naming
+# `http::Response` needs the direct dependency; already in Cargo.lock (1.5.0) — no new transitive crate.
+http = "1"
+
+[dev-dependencies]
+# The crate itself with the test fakes on: integration tests and examples build against the
+# `testing` module (cargo unifies the feature into the lib for test builds only).
+iota = { path = ".", features = ["testing"] }
+# `test-util` = tokio's paused clock: `retry_round`'s linear backoff is a CONST (the Go
+# `retryBackoff` var existed so tests could compress it), so the suite compresses time
+# instead of the constant (DEVIATIONS3 [WP49]).
+tokio = { version = "1.53", default-features = false, features = ["test-util"] }
+# In-process MCP servers for the manager tests (rmcp `server` dev-feature).
+rmcp = { version = "3.1", default-features = false, features = ["server", "transport-async-rw"] }
+wiremock          = "0.6"
+tempfile          = "3"
+assert_cmd        = "2"
+pretty_assertions = "1"
+vt100             = "=0.16.2"   # byte-stream assertions of the terminal layer
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+debug = false
+
+[profile.dev.package."*"]
+opt-level = 1
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+too_many_lines = "allow"
+struct_excessive_bools = "allow"
+must_use_candidate = "allow"

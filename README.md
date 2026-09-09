@@ -1,0 +1,678 @@
+# iota
+
+A lightweight AI chat CLI for the terminal, written in Rust. Supports multiple providers, streaming responses, file attachments, and an interactive terminal UI.
+
+## Features
+
+- **Multi-provider** — OpenAI, OpenAI Responses API, Anthropic, Gemini, and Vertex AI, with custom base URL support, plus dedicated image-generation providers (`imagen`, `images`)
+- **MCP tool support** — connect external MCP tool servers (filesystem, GitHub, databases, etc.) and let AI providers use them during chat, with tool names namespaced per server (`mcp__<server>__<tool>`) so same-named tools never collide
+- **Interactive model selection** — arrow-key list at startup
+- **Slash-command completion** — a suggestion row appears when the line starts with `/` and narrows as you type; press Tab to cycle through the completions
+- **Streaming responses** — real-time token output with a busy spinner in the status line; keep typing while a reply streams (type-ahead — queued submits are sent in order); press **Esc** (cancels the innermost running scope) or **Ctrl+C** (cancels the turn) to interrupt a streaming reply — the partial reply is kept in history and marked interrupted
+- **Markdown highlighting** — inline ANSI styling for headings, bold, italic, code, tables, and code blocks in streaming output; inline LaTeX math (`$...$`, `\(...\)`) is approximated in Unicode, and display math (`$$...$$`, `\[...\]`) renders as a 2D block — stacked fractions, roots with a drawn vinculum, matrices, aligned environments, sums/integrals with limits, drawn accents (`\hat`/`\vec`/`\bar`), and math fonts (`\mathbb`/`\mathcal`); anything unsupported falls back to a readable single-line approximation, never raw LaTeX
+- **File attachments** — send images, PDFs, and text files alongside messages; `/file` opens a tabbed surface with the attached list and a directory browser
+- **Non-interactive mode** — single message in, response out, pipe-friendly
+- **Conversation history** — full context maintained within a session
+- **Session persistence** — every interactive session is auto-saved (losslessly: messages, tool calls, attachments, reasoning) to `~/.iota/sessions/`. Resume with `/session` in chat or `--resume[=<id>]` at launch (any unique id prefix works), and resuming echoes the last few exchanges back to the terminal; auto-titled by the model after the first reply; `--no-save` (or `no_save: true` per provider) starts ephemeral — nothing touches disk unless you run `/save [title]` mid-chat, which persists the whole backlog and auto-saves from then on (great for exploratory chats you might or might not keep)
+- **Context management** — live token accounting against the context window (configurable via `--context-window`, `context_window:` per provider, or the `/model` Context tab), with `/compact` LLM-summarization of older history; when the window nears full a confirmation is offered before compacting (declining snoozes the prompt until usage grows further)
+- **Model settings mid-chat** — `/model` opens a tabbed panel over the model, context window, reasoning effort, and temperature (plus a read-only view of the system prompt in effect), all persisted with the session and replayed on resume
+- **Conversation export** — `/export` renders the session to a single self-contained HTML file (inline CSS, dark mode with a toggle, syntax-highlighted code) or a plain Markdown document; saved sessions export the full on-disk log, so compaction never hides older rounds (ephemeral `--no-save` sessions export the current in-memory view)
+- **Agent mode** — opt-in via `--agent` (or `agent: true` per provider): layered `AGENTS.md` instructions and [Agent Skills](https://agentskills.io/specification) are injected as a volatile system-prompt overlay, the `agent` toolset (`load_skill`) is auto-enabled, and sessions are grouped per project
+- **Request inspector** — `/debug` opens a two-tab console: a **Verbose** toggle turns recording on/off (off by default; `/debug on` / `/debug off` do the same from the prompt), and **Messages** browses the captured API calls (newest first), each summarized by action and content (e.g. `Chat 你好…`) rather than raw method/URL — drill into any one to read its `↑ Request` and `↓ Response` bodies, pretty-printed, with `c` to copy to the clipboard. Nothing is printed to the terminal
+- **Host integration** — the terminal's native progress indicator follows the turn (busy, needs input, error), a desktop notification is sent when a reply lands or the model needs you while the window is unfocused (`notify: false` per provider turns it off), and the cmux multiplexer is driven natively when detected
+- **System prompt** — set via flag or interactive input
+- **Config file** — persistent API keys, default models, custom provider aliases, and MCP server definitions via `~/.iota.yaml`
+- **Styled terminal output** — color-coded prompts
+
+## Install
+
+### Homebrew
+
+```bash
+brew install joyqi/tap/iota
+```
+
+### Cargo
+
+```bash
+cargo install --git https://github.com/joyqi/iota
+```
+
+Requires Rust 1.98 or newer.
+
+### Build from source
+
+```bash
+git clone https://github.com/joyqi/iota.git
+cd iota
+cargo build --release
+```
+
+The binary is at `target/release/iota`. The toolchain is pinned by `rust-toolchain.toml`, which `rustup` picks up automatically; building with another toolchain needs Rust 1.98 or newer.
+
+### Platforms
+
+macOS and Linux.
+
+## Usage
+
+```bash
+iota [openai|anthropic|gemini|vertexai|openresponses|imagen|images] [flags]
+```
+
+### Flags
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--key` | `-k` | API key (or set via env var) |
+| `--url` | `-u` | Custom base URL |
+| `--model` | `-M` | Model name (skip interactive selection) |
+| `--temperature` | `-t` | Sampling temperature, 0.0-2.0 (omit to use provider default) |
+| `--message` | `-m` | Send a single message and print the response (non-interactive, use `-` to read from stdin) |
+| `--system` | `-s` | System prompt |
+| `--system-input` | `-S` | Enter system prompt interactively (interactive mode only) |
+| `--list` | `-l` | List configured providers, or models for a given provider |
+| `--mcp` | | MCP server (command string or URL, repeatable) |
+| `--resume` | | Resume a saved session (`--resume` to pick interactively, `--resume=<id>` for a specific one — note the `=`; any unique id prefix works). With `-m`, `--resume=<id>` continues that session headlessly |
+| `--no-save` | | Start ephemeral — nothing touches disk unless `/save` is run (interactive mode only) |
+| `--max-turns` | | Limit agentic tool turns for the whole run, delegated children included (`-m` only; 0 = unlimited) |
+| `--output-format` | | `-m` output: `text` (default, the reply alone) or `json` (one result object with per-round token usage) |
+| `--context-window` | | Context window size for compaction accounting (e.g. `200k`, `1m`; default 128k) |
+| `--agent` | | Enable agent mode (AGENTS.md overlay, skills, `load_skill`, project-scoped sessions) |
+| `--config` | `-c` | Path to config file (default: `~/.iota.yaml`) |
+
+Headless resume (`-m` with `--resume=<id>`) takes what you did not pass from the session bundle: the model (when the session was recorded under the same provider type), temperature, reasoning effort, context window and image settings all replay, and an explicit flag always wins. A resumed run prints `Resumed session <id> (<n> messages)` on stderr, so stdout stays the reply (or the JSON report) alone; the new turn is appended only when it succeeds.
+
+### Environment Variables
+
+| Variable | Provider |
+|----------|----------|
+| `OPENAI_API_KEY` | OpenAI / OpenResponses / Images |
+| `ANTHROPIC_API_KEY` | Anthropic |
+| `GOOGLE_API_KEY` | Gemini / Vertex AI / Imagen |
+
+### Config File
+
+iota supports YAML config files for persistent settings and custom provider aliases.
+
+#### Config Lookup Order
+
+1. `~/.iota.yaml` or `~/.iota.yml` (global)
+2. `./.iota.yaml` or `./.iota.yml` (project-local, merges over global)
+3. `-c/--config <path>` (explicit, highest priority, used alone)
+
+Same-name providers in later files override earlier ones.
+
+#### Priority
+
+For individual values: **CLI flag > env var > config file**.
+
+#### Example
+
+```yaml
+# ~/.iota.yaml
+providers:
+  openai:
+    key: sk-official
+    model: gpt-4o
+
+  deepseek:                  # custom alias
+    type: openai             # underlying provider type
+    key: ${env:DEEPSEEK_KEY} # key/url/system_file expand ${…} variables
+    url: https://api.deepseek.com/v1
+    model: deepseek-chat
+    system: "You are a helpful coding assistant"
+
+  reviewer:
+    type: openresponses
+    key: sk-xxx
+    model: gpt-5.2
+    system_file: ${appHome}/prompts/reviewer.md  # prompt from a file (inline `system` wins)
+    effort: high             # default reasoning effort: low|medium|high|xhigh|max
+    temperature: 0.7         # default sampling temperature, 0.0-2.0 (-t and /model override)
+    top_p: 0.9               # nucleus sampling, 0.0-1.0 (advanced: tune this OR temperature, not both;
+                             # reasoning models reject/ignore it — omit to use the provider default)
+    context_window: 200k     # context window for compaction accounting (--context-window overrides)
+    mcp_servers: [github]    # load only these MCP servers; [] = none; key absent = all
+    defer_mode: normal       # protocol for deferred MCP tools: normal|reference|tool-search|system-tools
+
+  claude:
+    type: anthropic
+    key: sk-ant-xxx
+    model: claude-sonnet-4-20250514
+    no_save: true            # start ephemeral (like --no-save); an explicit --resume outranks it
+    notify: false            # no desktop notification while the terminal is unfocused (default: on)
+
+# MCP tool servers
+mcp_servers:
+  filesystem:
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "${workspaceFolder}"]
+    env:
+      LOG_LEVEL: info
+
+  github:
+    url: https://mcp.example.com/sse
+    headers:
+      Authorization: "Bearer ${env:GITHUB_TOKEN}"
+    # Deferred loading: instead of advertising every schema on every request,
+    # only a search_tools entry is advertised and the model loads this
+    # server's tools on demand — the value IS the group's one-line summary
+    # shown in the manifest (that's why it's a string, not a bool). Worth it
+    # for servers with many tools; leave unset for small ones. The provider
+    # key defer_mode selects the protocol (default "normal"; see docs/design/tool-defer.md).
+    defer: "GitHub repos, issues, PRs, code search"
+```
+
+#### Variable Expansion
+
+Provider config values (`key`, `url`, `system_file`) and MCP server values (`command`, `args`, `url`, `env`, `headers`) support VS Code-style variable expansion:
+
+| Variable | Expands to |
+|----------|-----------|
+| `${workspaceFolder}` / `${cwd}` | Current working directory |
+| `${userHome}` | User home directory |
+| `${appHome}` | iota's global directory (`~/.iota`) |
+| `${pathSeparator}` / `${/}` | OS path separator (`/`) |
+| `${env:VAR}` | Value of environment variable `VAR` |
+
+Unknown variables are left untouched.
+
+With this config:
+
+```bash
+# Use the "deepseek" alias — resolves to OpenAI provider with DeepSeek's key/URL/model
+iota deepseek -m "hello"
+
+# Config key used, no need for -k
+iota openai -m "hi" -M gpt-4o
+
+# CLI flag overrides config
+iota openai -k sk-override -m "hi" -M gpt-4o
+```
+
+### Image Generation
+
+Image-capable models generate straight into the chat: with a Gemini image
+model (e.g. `gemini-3.1-flash-image`) just ask — the picture renders inline
+as ANSI half-block art (capped well below a screenful, indented like other
+blocks), and is saved INSIDE the session bundle (`<session>/images/` —
+deleted with the session; ephemeral and `-m` runs fall back to
+`~/.iota/images/`). The printed path is an OSC 8 hyperlink — clickable
+in terminals that support it (⌘-click in Ghostty/iTerm2; Terminal.app has no
+OSC 8 support). Generated images round-trip
+into the conversation, so follow-ups like "make the circle blue" edit the
+previous image in place. Sessions persist them losslessly (attachments), and
+`-m` single-shot runs print the saved path instead of rasterizing into a
+pipe.
+
+Two ways to switch generation on where it needs an explicit request-side
+opt-in: the per-provider `image: true` config key, or the `/model` surface's
+**Image** tab at runtime (shown for capable providers; persisted with the
+session). On `openresponses` it advertises the `image_generation` built-in
+tool (works with gpt-5-family models); on Google it adds
+`responseModalities: ["TEXT","IMAGE"]` for official-API models that require
+the opt-in — relays like zenmux generate without it.
+
+#### Dedicated image models — the `imagen` and `images` provider types
+
+Models that ONLY generate images — Doubao Seedream, official Imagen, and the
+other pure image models relay stations host — have no chat endpoint at all;
+they speak Google's Imagen `:predict` protocol instead. The `imagen` provider
+type carries them: **every message is a fresh generation** (your text is the
+prompt; `/file` attachments ride along as reference images for
+image-to-image), matching how stateless image tools conventionally work.
+Editing is explicit: `/edit add a robot` re-sends the last generated image as
+the reference, and consecutive `/edit`s chain naturally. To edit an *earlier*
+picture, run `/edit` with no prompt: a picker opens with the image previewed
+beside a newest-first list of everything this session generated (each row
+labeled by the prompt that made it, with the file's clickable path below);
+pick one and type your prompt. Unhappy with what came back? `/redo` rolls
+again from the same canvas and prompt, and `/redo <reworded prompt>` retries
+from that canvas with new wording — so a rejected picture never becomes the
+input to the next attempt. Images render and persist exactly like
+conversational generation, sessions keep the whole iteration history, and
+`-m` does one-shot generation.
+
+```yaml
+providers:
+  seedream:
+    type: imagen
+    key: ${env:ZENMUX_API_KEY}
+    url: https://zenmux.ai/api/vertex-ai  # omit for the official Gemini API
+    model: bytedance/doubao-seedream-5.0-pro
+    aspect_ratio: "3:2"                   # optional generation defaults,
+    image_size: "2K"                      # passed through verbatim
+    negative_prompt: "blurry, watermark"
+```
+
+The same knobs are adjustable mid-chat: `/model` grows **Aspect**, **Size**,
+and **Negative** tabs for image providers (a "default" row omits the
+parameter), persisted with the session and replayed on resume. Only the tabs
+a dialect actually has appear.
+
+`type: images` is the sibling for the OpenAI Images protocol
+(`/v1/images/generations` + multipart `/v1/images/edits`) — gpt-image
+models, DALL·E, and the relays that mirror the endpoints. Same session
+shape (`/edit`, `/file` references, one image per call); the dialect folds
+dimensions into a single **Size** knob (e.g. `image_size: "1536x1024"`)
+and has no aspect-ratio or negative-prompt parameters. DALL·E's URL-form
+responses are fetched automatically.
+
+Interactive turns ask for **progressive frames**: a refining thumbnail
+appears in the generation widget and the finished picture replaces it in
+place, exactly like conversational generation. Verified live on OpenAI and
+zenmux, which both stream; xAI ignores the flags and answers with the plain
+body — the same request serves both, so nothing is generated twice and a
+non-streaming backend simply shows the elapsed clock. `imagen` has no
+streaming form at all, so those turns show only the elapsed clock.
+
+The edit endpoint comes in two wire flavors: OpenAI's native
+`/images/edits` is multipart, while some backends (xAI) accept only a JSON
+body and reject multipart outright. Set `json_edits: true` for those, or
+flip the **JSON edits** tab on `/model` mid-chat (persisted with the
+session). Generation is unaffected either way.
+
+Parameter and editing support varies by backend: relays map the full set
+(seedream's aspect ratio, size, negative prompt, and reference-image editing
+are live-verified), while the official Gemini API hosts generate-only Imagen
+models that ignore reference images and the negative prompt — unknown
+parameters are dropped server-side, so a knob with no visible effect means
+that backend doesn't support it. A custom `url` is addressed in the vertex
+`publishers/{vendor}/models` form (the relay convention); omitting `url`
+targets the official Gemini API form. Results arrive either inline or as an
+expiring signed URL (some relay-hosted models, e.g. Kling, answer that way) —
+both land in the session the same, the link being fetched right away.
+Generation is billed per call, so failures are never auto-retried — an error
+surfaces immediately and you decide whether to spend again.
+
+These models have no tokens, no temperature, and no reasoning, so the
+corresponding machinery disappears for such sessions: `/model` shows no
+Context/Effort/Temperature tabs, the status bar drops its context meter, and
+`/compact` does not apply. `/model` still picks models — filtered to
+image-capable ones when the server provides capability metadata.
+
+### Built-in Toolsets
+
+Besides MCP servers, iota ships built-in tools grouped into named
+**toolsets** that you enable per provider in the config file. A toolset is
+enabled by listing it under that provider's `tools:` key; the value is the
+set's shared configuration, and an empty value uses its defaults. Available
+sets: `shell` (running bash commands, sandboxed), `code` (reading, searching,
+and editing project files), `agent` (skill activation; auto-enabled by agent
+mode), `ask` (interactive questions to the user; enabled by default in
+interactive sessions — disable with `ask: false`), and `delegate` (running a
+task as a child agent).
+
+```yaml
+providers:
+  claude:
+    type: anthropic
+    key: sk-ant-xxx
+    model: claude-sonnet-4-20250514
+    tools:
+      shell:                 # empty → sandboxed, network blocked
+      code:
+
+  openai:
+    key: sk-official
+    model: gpt-4o
+    tools:
+      shell:
+        network: true        # allow network inside the sandbox
+        write: [~/.cache]    # extra sandbox-writable paths
+```
+
+#### `ask` — `choose`, `confirm`
+
+Lets the model put a decision to you on an interactive selector instead of
+asking in prose — and, crucially, WITHOUT ending its turn: the answer flows
+back as a tool result and the same agentic round continues. `choose` packs
+1–4 questions into a tabbed surface (short headers as tab labels; Tab
+switches, one Enter commits all; single- or multi-select per question, and an
+"Other…" free-text answer unless the model disables it). `confirm` is a
+single yes/no. ESC declines — the model is told and proceeds on its own.
+Zero side effects, on by default interactively, absent in `-m` runs; opt out
+per provider with `tools: {ask: false}`.
+
+#### `delegate` — `delegate`
+
+Runs a task as a **child agent**: its own context, its own tool loop, and
+only its final answer comes back — no tool calls, no reasoning. A survey that
+takes twenty rounds costs this conversation one paragraph.
+
+An agent is a name for a provider entry you already have, so nothing about
+the child is configured twice — its model, tools, approval settings, system
+prompt and sampling all come from the entry it names:
+
+```yaml
+tools:
+  delegate:
+    max_turns: 30            # optional per-child cap; default unlimited
+    agents:
+      search: fast-provider
+      review:
+        provider: careful-provider
+        description: Reads a diff and reports what is wrong with it
+```
+
+`description` is the only field that is not already over there, and it is
+what the model chooses between agents on. Image settings (`image`,
+`json_edits`, `aspect_ratio`, `image_size`, `negative_prompt`) are the one
+part a child does not adopt — a delegation returns text, and an image a child
+generated would land on disk where the parent never learns of it.
+
+In `-m` runs `--max-turns` is a budget for the whole run: the parent and every
+child it delegates to draw on one pool, so the number bounds what the run can
+cost rather than what each agent can. Interactive runs have no cap — ESC
+cancels a delegation the same as anything else.
+
+`--output-format json` reports what the children cost under `delegated`,
+beside the parent's own `usage` rather than inside it: one figure says what
+this agent spent, the other what it spent by delegating.
+
+Delegations to an agent whose tools cannot change state run **concurrently**;
+anything else runs one at a time. A child's write requests surface as an
+approval prompt in your terminal, labelled with the agent that asked
+(`review › edit_file wants to modify files`), and "allow for this session"
+covers parent and children alike. What a child cost appears beside its call
+and is never added to this conversation's context. A child is never given
+`delegate` itself.
+
+#### `shell` — `bash`
+
+Lets the model run real bash command lines — pipes, redirects, `&&` chaining,
+heredocs — and returns their combined stdout/stderr. The model calls it with
+`command` (required) and an optional `cwd` (defaults to the project root).
+
+Safety model — the same one Claude Code and Codex CLI use:
+
+- **OS sandbox by default.** On macOS commands run under Seatbelt
+  (`sandbox-exec`, built into the system); on Linux under
+  [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`, if
+  installed). Inside the sandbox, file **writes are confined to the project
+  root plus temp/cache directories** (add more via `write:`), and **network
+  access is blocked** unless `network: true`.
+- **Sandboxed calls run without prompting.** Where no sandbox is available
+  (Linux without bwrap) or with `sandbox: off`, every call instead
+  asks for confirmation in the chat (allow once / allow for this session /
+  deny), and non-interactive `-m` runs reject it — set `auto_run: true` to
+  waive that.
+- Output is capped at 32 KB and 512 lines (head + tail kept, middle elided,
+  bounded even while streaming). Each call is capped at **10 minutes**; while a command runs, the status-line spinner
+  shows the elapsed time — press **ESC** (or Ctrl+C) to terminate it.
+
+Design: docs/design/shell-toolset.md
+
+#### `code` — coding tools
+
+The coding loop: `glob` and `grep` locate files (`.git`, `.gitignore` matches,
+and binaries excluded), `list_dir` explores, `read_file` returns line-numbered
+content, and `edit_file` (exact, unique string replacement) / `write_file`
+change files. Everything is confined to the **project root** (the git root of
+the working directory). Verification — builds, tests — goes through the
+`shell` set's `bash`, so enable it alongside.
+
+Safety model:
+
+- A file must be **read before it can be modified**, and a file that changed
+  on disk since it was read must be re-read first — the model can never
+  blind-overwrite your edits.
+- Every modifying call asks for confirmation in the chat (allow once / allow
+  for this session / deny). Non-interactive `-m` runs reject modifications
+  outright. Set `auto_write: true` under `tools: code:` to skip confirmations
+  and allow `-m` writes:
+
+```yaml
+    tools:
+      code:
+        auto_write: true   # optional; default asks before every write
+```
+
+  Or withhold the writers entirely with `read_only: true`, leaving `glob`,
+  `grep`, `list_dir` and `read_file`. A tool the model cannot see is never
+  attempted and never refused — useful for a reviewer, and required for a
+  `delegate` agent that should search and still run concurrently.
+  (`read_only` and `auto_write` together are rejected as contradictory.)
+
+Design: docs/design/code-toolset.md
+
+### Agent Mode
+
+Agent mode is explicitly opt-in — pass `--agent`, or set `agent: true` on a
+provider in the config file. Off means exactly the ordinary chat behavior.
+
+```yaml
+providers:
+  claude:
+    type: anthropic
+    key: sk-ant-xxx
+    agent: true
+```
+
+Everything is anchored at the **project root**: the git root of the working
+directory, or the working directory itself outside a repository.
+
+#### AGENTS.md
+
+Following the [AGENTS.md convention](https://agents.md/), every `AGENTS.md`
+from the project root down to the current directory (at most one per
+directory) is concatenated root-first — nearer files come later and override —
+capped at 32 KiB, and appended to the system prompt as a **volatile overlay**:
+composed at send time, never stored in the conversation history or the session
+file, and re-read automatically when a file changes between turns (a dim
+`AGENTS.md reloaded` notice is printed). Resuming a session elsewhere applies
+that directory's `AGENTS.md`.
+
+#### Skills
+
+Skills follow the [Agent Skills specification](https://agentskills.io/specification):
+a skill is a directory containing a `SKILL.md` with `name` and `description`
+frontmatter. Discovery directories, highest precedence first (same-name skill:
+higher wins):
+
+1. `<project root>/.agents/skills/` — project skills
+2. `~/.iota/skills/` — iota user skills
+3. `~/.agents/skills/` — cross-client user skills
+
+Discovered skills are advertised to the model as a name + description catalog
+inside the overlay; the model activates one by calling `load_skill` with the
+skill's name, reads files the skill references through the same tool's `file`
+argument, and runs bundled scripts through `bash` (enable the `shell`
+toolset for the provider if your skills need scripts). Invalid skills are
+skipped with a warning, never fatal. You can also run a skill yourself with
+`/skills <name> [instructions]` — the skill's instructions become the message
+that is sent.
+
+#### `agent` — `load_skill`
+
+Agent mode auto-enables the `agent` toolset. Its `load_skill` tool activates a
+skill by name: it returns the skill's instructions (the `SKILL.md` body) and
+directory, and the optional `file` argument reads a file bundled inside that
+directory — reads never leave the skill's directory. Output is size-capped
+with an optional `offset`/`limit` line window. The set can also be enabled
+explicitly under `tools:` like any other, agent mode or not.
+
+#### Project-Scoped Sessions
+
+Sessions started in agent mode are stored per project under
+`~/.iota/sessions/projects/<slug>/`, and `/session` and `--resume` list
+only the current project's sessions there (`--resume=<id>` with an id from
+anywhere still works). Normal-mode sessions stay in the flat global store,
+whose list also shows every project's sessions labelled with their project —
+nothing is ever invisible.
+
+### Chat Commands
+
+In interactive mode, the following commands are available. When the line starts
+with `/`, a suggestion row appears below the input and narrows as you keep typing;
+press Tab to cycle through the completions. Commands that do not apply to the
+current session (for example `/edit` on a text provider) are not offered at all,
+and an unknown `/word` is sent as a normal message.
+
+| Command | Description |
+|---------|-------------|
+| `/file [path]` | Attach a file (image, PDF, or text). With a path, attaches directly. With no path, opens a tabbed selector: "Attached" to remove attachments, "Add" to pick one from a directory browser. |
+| `/edit [prompt]` | Edit a generated image by re-sending it as this turn's reference. With a prompt it takes the newest image (consecutive `/edit`s iterate). With no prompt it opens a picker — preview on the left, every image this session generated on the right (newest first, labeled by its prompt, clickable path below) — and after you choose, type the prompt in the composer. Dedicated image providers (`type: imagen` / `images`) only. |
+| `/redo [prompt]` | Re-send the last request: same reference images, same prompt unless you supply a new one. Bare `/redo` rolls the dice again (image models vary per call); `/redo <reworded prompt>` retries from the *same* canvas, so a rejected result never becomes the next input. Dedicated image providers only. |
+| `/session` | Tabbed selector over saved sessions: "Resume" to resume one, "Delete" to multi-select and delete others. |
+| `/save [title]` | Start persisting an ephemeral session (one started with `--no-save` or `no_save: true`): the whole backlog is written at once and auto-save continues from then on. An optional title is kept as-is; otherwise the model-generated one is used. Only offered while the session is ephemeral. |
+| `/model` | Tabbed settings for the current session: "Model" picks the model, "Context" the context window, "Effort" the reasoning effort (`default`, `low`, `medium`, `high`, `xhigh`, `max` — passed to the provider verbatim, so a level the model doesn't support surfaces as an API error and you pick another), "Temperature" a slider (`default` omits the parameter), and a read-only "System" tab showing the system prompt exactly as sent. Enter applies all tabs; only changed values are announced. Image providers get their own tabs instead (see Image Generation). |
+| `/compact [hint]` | Summarize older history to free context; optional hint guides what to keep. Offered only while token accounting is live. |
+| `/export [file]` | Export the conversation (saved sessions: the full on-disk log, so compaction never hides older rounds) to a single self-contained HTML file — the default — or Markdown with a `.md`/`.markdown` extension. With no argument, a selector picks the format and the filename is generated from the session title. Never overwrites an existing file. |
+| `/status` | Show provider, model, context usage, and last-turn token counts |
+| `/tools` | Tabbed read-only view of the model's capabilities: a "Tools" tab (every built-in and MCP tool with its source) and an "MCP" tab (server status, endpoints, and tools) |
+| `/debug [on\|off]` | Request inspector. `/debug on` / `/debug off` toggle recording of API round trips (a `debug` marker appears in the status row while on); bare `/debug` opens the two-tab console — "Messages" (newest first, drill into a request/response pair) and the "Verbose" switch. Recording is off by default and MCP traffic is not recorded. |
+| `/skills [name [instructions]]` | Bare `/skills` lists discovered agent skills — name, source (project/user), description, and any invalid skills that were skipped. `/skills <name>` runs one: its instructions (plus anything you add after the name) are sent as the message. Agent mode only; every discovered skill also shows up as a completion row. |
+
+Attached files are sent with your next message, then cleared automatically.
+
+#### Supported File Types
+
+| Type | Extensions |
+|------|-----------|
+| Images | `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp` |
+| Documents | `.pdf` |
+| Text | `.txt`, `.md`, `.rs`, `.py`, `.js`, `.ts`, `.jsx`, `.tsx`, `.java`, `.c`, `.cpp`, `.h`, `.rb`, `.sh`, `.json`, `.yaml`, `.yml`, `.toml`, `.xml`, `.html`, `.css`, `.sql`, `.csv`, `.log`, `.ini`, `.cfg`, `.conf`, and more |
+
+### Examples
+
+```bash
+# Interactive model selection
+iota openai -k sk-xxx
+
+# Specify model directly
+iota openai -k sk-xxx -M gpt-4o
+
+# Use Anthropic
+iota anthropic -M claude-sonnet-4-20250514
+
+# Use Gemini
+iota gemini -M gemini-2.5-flash
+
+# Use Vertex AI (with custom endpoint)
+iota vertexai -u https://your-proxy.com/api/vertex-ai -M gemini-2.5-flash -m "Hello"
+
+# Use OpenAI Responses API
+iota openresponses -M gpt-4o -m "Hello"
+
+# With system prompt
+iota openai -M gpt-4o -s 'You are a helpful translator' -m "Translate to French: hello"
+
+# Interactive system prompt input (prompts inside the chat UI before the first message)
+iota openai -M gpt-4o -S
+
+# Non-interactive mode (requires -M)
+iota openai -M gpt-4o -m "Explain quicksort in one paragraph"
+
+# Non-interactive mode with a JSON report and a tool-turn budget
+iota openai -M gpt-4o -m "Summarise this repo" --output-format json --max-turns 5
+
+# Continue a saved session headlessly (any unique id prefix works)
+iota openai --resume=k7q -m "And the second question?"
+
+# Adjust temperature
+iota anthropic -M claude-sonnet-4-20250514 -t 0.5 -m "Write a haiku"
+
+# Custom API endpoint
+iota openai -u https://your-proxy.com/v1 -k sk-xxx
+
+# With MCP tools (ad-hoc server via CLI flag)
+iota openai -M gpt-4o --mcp "npx -y @modelcontextprotocol/server-filesystem /tmp"
+
+# Multiple MCP servers
+iota anthropic -M claude-sonnet-4-20250514 --mcp "npx -y @modelcontextprotocol/server-filesystem /tmp" --mcp "https://mcp.example.com/sse"
+
+# MCP servers from config file are loaded automatically
+iota openai -M gpt-4o
+
+# Read message from stdin (pipe-friendly)
+echo "Explain quicksort" | iota openai -M gpt-4o -m -
+cat prompt.txt | iota openai -M gpt-4o -m -
+
+# Use a provider alias from config
+iota deepseek -m "Explain quicksort"
+
+# One-shot image generation with a dedicated image provider (prints the saved path)
+iota seedream -m "A red bicycle leaning on a stone wall, golden hour"
+
+# List all configured providers and aliases
+iota -l
+
+# List available models for a provider
+iota -l openai
+iota -l deepseek
+```
+
+### File Attachment Example
+
+```
+You> /file photo.png
+  Attached: photo.png (image/png, 245760 bytes)
+You> /file report.pdf
+  Attached: report.pdf (application/pdf, 102400 bytes)
+You> /file
+  (tabbed selector — "Attached" to remove, "Add" to browse and add)
+You> Summarize the report and describe the photo
+...
+```
+
+## Project Structure
+
+One package, one module tree: the library under `src/` holds every module and `src/main.rs` is the thin binary.
+
+| Module (`src/`) | Role |
+|---|---|
+| `provider/`, `llm/` | The seven provider adapters (`openai`, `openresponses`, `anthropic`, `gemini`, `vertexai`, `imagen`, `images`) over a minimal built-in HTTP/SSE wire layer — no vendor SDKs |
+| `tool/`, `shell/`, `agents/` | The tool framework and the five built-in toolsets; process execution and the macOS/Linux sandboxes; the AGENTS.md and skills overlay |
+| `mcp/` | The MCP client manager (stdio and streamable-HTTP transports, deferred tool groups) |
+| `chat/` | The non-interactive run loop (`-m`), the tool-calling loop, delegation, and the text/JSON reports |
+| `session/` | The on-disk session bundle store (`meta.json`, append-only `messages.jsonl`, `attachments/`, `images/`) |
+| `markdown/`, `text/` | The streaming markdown-to-ANSI renderer, syntax highlighting, HTML for `/export`, display-width measurement and ANSI helpers |
+| `mathtext/` | The LaTeX math engine: inline Unicode approximation and 2D display layout |
+| `imgterm.rs` | The half-block image rasteriser |
+| `host/` | Host integration: desktop notifications, the terminal progress indicator, cmux |
+| `ui/` | The inline terminal engine (composer, status line, tabbed surfaces) — the only module that touches the terminal library |
+| `repl/` | The interactive chat loop over the `ui` facade: slash commands, turn engine, token meter, compaction |
+| `cmd/`, `config.rs`, `main.rs` | The command line, config loading and merging, wiring, and the `iota` binary |
+| `app.rs`, `vars.rs`, `paths.rs`, `sync.rs` | Host directories, `${var}` expansion and the environment seam, path and lock helpers |
+| `testing/` | Shared test fakes (cargo feature `testing`, enabled for tests only — it never changes the shipped binary) |
+
+## Dependencies
+
+| Crate | Used for |
+|---|---|
+| [tokio](https://github.com/tokio-rs/tokio) | Async runtime (HTTP streaming, child processes, signals) |
+| [reqwest](https://github.com/seanmonstar/reqwest) | HTTP client; TLS is always [rustls](https://github.com/rustls/rustls) |
+| [rmcp](https://github.com/modelcontextprotocol/rust-sdk) | Model Context Protocol client (stdio and streamable-HTTP transports) |
+| [serde](https://github.com/serde-rs/serde) / [serde_json](https://github.com/serde-rs/json) / [serde_norway](https://github.com/cafkafk/serde-yaml) | Wire formats, session files, and YAML config |
+| [clap](https://github.com/clap-rs/clap) | Command-line parsing |
+| [ratatui](https://github.com/ratatui/ratatui) + [crossterm](https://github.com/crossterm-rs/crossterm) | Inline terminal UI (composer, status line, tabbed surfaces) |
+| [syntect](https://github.com/trishume/syntect) + [two-face](https://codeberg.org/CosmicHarper/two-face) | Syntax highlighting for code blocks, diffs, and `/export` HTML |
+| [comrak](https://github.com/kivikakk/comrak) | Markdown to HTML for `/export` |
+| [tiktoken-rs](https://github.com/zurawiki/tiktoken-rs) | Offline token counting for context accounting |
+| [jiff](https://github.com/BurntSushi/jiff) | Timestamps (session metadata, request log, export and image filenames) |
+| [image](https://github.com/image-rs/image) | Decoding PNG/JPEG/GIF/WebP for inline rendering |
+| [ignore](https://github.com/BurntSushi/ripgrep/tree/master/crates/ignore) / [globset](https://github.com/BurntSushi/ripgrep/tree/master/crates/globset) / [regex](https://github.com/rust-lang/regex) | The `code` toolset's `glob` and `grep` |
+| [nix](https://github.com/nix-rust/nix) | Unix signals, process groups, and file permissions |
+
+## Documentation
+
+- `docs/ARCHITECTURE.md` — the architecture and module map
+- `docs/design/` — design documents per feature (shell and code toolsets, agent mode, sessions, export, math rendering, tool deferral, UI architecture, and more)
+- `docs/DIVERGENCES.md` — the compatibility ledger of deliberate behavioural differences
+- `docs/TUI-VERIFY.md` — the manual terminal verification gate (rendering, IME, per-terminal checks)
+
+## Development
+
+```bash
+cargo test                                   # unit + integration tests (no network, no HOME access)
+cargo clippy --all-targets -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+IOTA_TMUX=1 cargo test --test ui_tmux        # the real-terminal suite (needs tmux)
+./ci.sh                                      # everything CI runs, in order
+```
+
+## License
+
+MIT

@@ -1,0 +1,6 @@
+{"role":"system","content":"sys"}
+{"role":"user","content":"q1"}
+{"role":"assistant","content":"a1","raw":{"provider":"openai","blob":{"role":"assistant","content":"a1","reasoning_content":"because"}},"usage":{"in":100,"out":50,"total":150}}
+{"role":"compaction","content":"SUMMARY of the first round","compacted_through":1,"usage":{"in":30,"out":10,"total":40}}
+{"role":"user","content":"q2"}
+{"role":"assistant","content":"a2","usage":{"in":20,"out":5,"total":25}}

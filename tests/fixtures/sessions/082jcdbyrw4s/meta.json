@@ -1,0 +1,19 @@
+{
+  "v": 1,
+  "id": "082jcdbyrw4s",
+  "created_at": "2026-08-31T17:47:15+08:00",
+  "updated_at": "2026-08-31T17:47:15+08:00",
+  "provider": "gemini",
+  "model": "gemini-2.5-pro",
+  "temperature": 0.7,
+  "context_window": 200000,
+  "effort": "high",
+  "base_url": "https://example.test/v1",
+  "cwd": "/work/proj",
+  "title": "go-written fixture",
+  "message_count": 6,
+  "future_key": {
+    "note": "written by a future build",
+    "n": 42
+  }
+}

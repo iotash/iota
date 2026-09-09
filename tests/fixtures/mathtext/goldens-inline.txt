@@ -1,0 +1,274 @@
+=== IN: \alpha + \beta
+|α + β|
+=== IN: 5 \times 3
+|5 × 3|
+=== IN: \hbar\omega
+|ℏω|
+=== IN: x^2 + y^2
+|x² + y²|
+=== IN: E = mc^2
+|E = mc²|
+=== IN: e^{-x}
+|e⁻ˣ|
+=== IN: a^{10}
+|a¹⁰|
+=== IN: a_i
+|aᵢ|
+=== IN: x_{ij}
+|xᵢⱼ|
+=== IN: x_{10}
+|x₁₀|
+=== IN: C_B
+|C_B|
+=== IN: x_{ab}
+|x_ab|
+=== IN: \frac{a}{b}
+|a/b|
+=== IN: \frac{a+b}{c}
+|(a+b)/c|
+=== IN: \sqrt{x}
+|√x|
+=== IN: \sqrt{x+1}
+|√(x+1)|
+=== IN: \sum_{i=1}^{n} x_i
+|∑ᵢ₌₁ⁿ xᵢ|
+=== IN: \text{if } x \geq 0
+|if x ≥ 0|
+=== IN: \vec{v}
+|v|
+=== IN: \left( \frac{a}{b} \right)
+|( a/b )|
+=== IN: $x^2$
+|x²|
+=== IN: \(a + b\)
+|a + b|
+=== IN: \$5 is cheap
+|$5 is cheap|
+=== IN: \foobar x
+|foobar x|
+=== IN: $\frac{a}{b}$
+|a/b|
+=== IN: $$  a  +   b  $$
+|a + b|
+=== IN: \( x \quad y \)
+|x y|
+=== IN: plain   text   here
+|plain text here|
+=== IN: \[ \sqrt{b^2-4ac} \]
+|√(b²-4ac)|
+=== IN: $$\overbrace{x + y + z}^{n}$$
+|x + y + zⁿ|
+=== IN: $$\phantom{x} + \alpha$$
+|+ α|
+=== IN: $$\underbrace{a + b}_{\text{sum}}$$
+|a + bₛᵤₘ|
+=== IN: \[ \frac{-b \pm \sqrt{b^2-4ac}}{2a} \]
+|(-b ± √(b²-4ac))/2a|
+=== IN: $$\mathcal{P}(S) = \{ T \mid T \subseteq S \}$$
+|𝒫(S) = { T ∣ T ⊆ S }|
+=== IN: \theta^\circ
+|θ^∘|
+=== IN: C_B^A
+|C_B^A|
+=== IN: \sum_{i}^{n}
+|∑ᵢⁿ|
+=== IN: x^{ab}
+|xᵃᵇ|
+=== IN: \operatorname{Tr}(A)
+|Tr(A)|
+=== IN: \medspace x
+|medspace x|
+=== IN: \langle x \rangle
+|⟨ x ⟩|
+=== IN: a \\ b
+|a b|
+=== IN: \text{中文}
+|中文|
+=== IN: x^{10}_{2}
+|x¹⁰₂|
+=== IN: \frac{1}{2}
+|1/2|
+=== IN: \sqrt[3]{x}
+|√x|
+=== IN: \binom{n}{k}
+|C(n, k)|
+=== IN: (a+b)^n = \sum_{k=0}^{n} \binom{n}{k} a^{n-k} b^k
+|(a+b)ⁿ = ∑ₖ₌₀ⁿ C(n, k) aⁿ⁻ᵏ bᵏ|
+=== IN: \overbrace{x+y}
+|x+y|
+=== IN: \overbrace{\frac{a}{b} + \alpha}
+|a/b + α|
+=== IN: 1/\pi
+|1/π|
+=== IN: E=mc^2
+|E=mc²|
+=== IN: a_1
+|a₁|
+=== IN: x=5
+|x=5|
+=== IN: a~b
+|a b|
+=== IN: \|v\|
+||v||
+=== IN: \mathbb{R}^n
+|ℝⁿ|
+=== IN: \mathbf{E}
+|E|
+=== IN: \mathrm{d}x
+|dx|
+=== IN: \frac{\alpha}{\beta}
+|α/β|
+=== IN: x^2 \\ y
+|x² y|
+=== IN: a\nb
+|anb|
+=== IN: \left\langle x \right\rangle
+|⟨ x ⟩|
+=== IN: \frac{a}{b}^2
+|a/b²|
+=== IN: \frac{x}{2}
+|x/2|
+=== IN: \frac{2x}{3}
+|2x/3|
+=== IN: \frac{-b}{2a}
+|(-b)/2a|
+=== IN: \sqrt{2}
+|√2|
+=== IN: \sqrt{-1}
+|√(-1)|
+=== IN: x^{n+1}
+|xⁿ⁺¹|
+=== IN: x^{2n}
+|x²ⁿ|
+=== IN: x_{i+1}
+|xᵢ₊₁|
+=== IN: \lim_{x \to 0} f
+|lim_x → 0 f|
+=== IN: \int_0^1 f
+|∫₀¹ f|
+=== IN: \frac{\partial f}{\partial x}
+|(∂ f)/(∂ x)|
+=== IN: \hat{x}
+|x|
+=== IN: \ddot{x}
+|x|
+=== IN: \overline{ab}
+|ab|
+=== IN: x^{\alpha}
+|x^α|
+=== IN: x^\alpha y
+|x^αy|
+=== IN: a \, b
+|a b|
+=== IN: a\;b
+|ab|
+=== IN: a\!b
+|ab|
+=== IN: a\:b
+|ab|
+=== IN: \{a\}
+|{a}|
+=== IN: \#
+|#|
+=== IN: \%
+|%|
+=== IN: \&
+|&|
+=== IN: \_
+|_|
+=== IN: \quad
+||
+=== IN: \qquad x
+|x|
+=== IN: \big( x \big)
+|( x )|
+=== IN: \Bigl[ x \Bigr]
+|[ x ]|
+=== IN: \nonumber
+||
+=== IN: \displaystyle x
+|x|
+=== IN: \enspace
+||
+=== IN: \thinspace
+||
+=== IN: \lfloor x \rfloor
+|⌊ x ⌋|
+=== IN: \backslash
+|\|
+=== IN: \|
+|||
+=== IN: \prime
+|′|
+=== IN: f^\prime
+|f^′|
+=== IN: x^{}
+|x^|
+=== IN: x_{}
+|x_|
+=== IN: x^
+|x^|
+=== IN: \sqrt
+|√|
+=== IN: \frac{a}
+|a/|
+=== IN: \frac
+|/|
+=== IN: \text{
+||
+=== IN: {a
+|a|
+=== IN: a}
+|a|
+=== IN: \dfrac{a}{b}
+|a/b|
+=== IN: \tfrac{a}{b}
+|a/b|
+=== IN: \cfrac{a}{b}
+|a/b|
+=== IN: \dbinom{n}{k}
+|C(n, k)|
+=== IN: \mbox{hi}
+|hi|
+=== IN: \hbox{hi}
+|hi|
+=== IN: \boxed{x}
+|x|
+=== IN: \overset{a}{b}
+|ab|
+=== IN: \underset{a}{b}
+|ab|
+=== IN: \vphantom{x}y
+|y|
+=== IN: \hphantom{x}y
+|y|
+=== IN: \acute{e}
+|e|
+=== IN: \underline{x}
+|x|
+=== IN: \overrightarrow{AB}
+|AB|
+=== IN: \mathit{x}
+|x|
+=== IN: \mathsf{x}
+|x|
+=== IN: \mathtt{x}
+|x|
+=== IN: \mathnormal{x}
+|x|
+=== IN: \boldsymbol{x}
+|x|
+=== IN: \bm{x}
+|x|
+=== IN: \textnormal{x}
+|x|
+=== IN: \textsf{x}
+|x|
+=== IN: \texttt{x}
+|x|
+=== IN: \textbf{x}
+|x|
+=== IN: \textit{x}
+|x|
+=== IN: \textrm{x}
+|x|

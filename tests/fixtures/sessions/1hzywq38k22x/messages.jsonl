@@ -1,0 +1,7 @@
+{"role":"system","content":"sys"}
+{"role":"user","content":"search for iota"}
+{"role":"assistant","content":"with server blocks","raw":{"provider":"anthropic","blob":[{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{"query":"iota"}},{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[{"type":"web_search_result","url":"https://example.test/","title":"Example"}]}]},"usage":{"in":40,"out":12,"cache_read":7,"cache_write":3}}
+{"role":"user","content":"again"}
+{"role":"assistant","content":"no server blocks","usage":{"in":11,"out":4}}
+{"role":"user","content":"third"}
+{"role":"assistant","content":"tagged by an unknown dialect","raw":{"provider":"stub","blob":{"kind":"unknown-dialect","n":7}},"usage":{"in":5,"out":2}}

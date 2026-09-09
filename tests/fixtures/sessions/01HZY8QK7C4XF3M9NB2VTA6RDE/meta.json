@@ -1,0 +1,9 @@
+{
+  "v": 1,
+  "id": "01HZY8QK7C4XF3M9NB2VTA6RDE",
+  "created_at": "2024-01-02T03:04:05Z",
+  "updated_at": "2024-01-02T03:04:05Z",
+  "provider": "openai",
+  "model": "gpt-4o",
+  "message_count": 1
+}

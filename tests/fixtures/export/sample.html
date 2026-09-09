@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My Chat</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #ffffff;
+  --fg: #1f2328;
+  --muted: #6a737d;
+  --border: #d8dee4;
+  --bubble-bg: #eef4fb;
+  --bubble-border: #cfe0f4;
+  --code-bg: #f6f8fa;
+  --accent: #0969da;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+  color-scheme: dark;
+  --bg: #0d1117;
+  --fg: #e6edf3;
+  --muted: #8b949e;
+  --border: #30363d;
+  --bubble-bg: #161b22;
+  --bubble-border: #30363d;
+  --code-bg: #161b22;
+  --accent: #58a6ff;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0d1117;
+  --fg: #e6edf3;
+  --muted: #8b949e;
+  --border: #30363d;
+  --bubble-bg: #161b22;
+  --bubble-border: #30363d;
+  --code-bg: #161b22;
+  --accent: #58a6ff;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0 auto;
+  padding: 2rem 1.25rem 4rem;
+  max-width: 48rem;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.6;
+}
+header { position: relative; border-bottom: 1px solid var(--border); padding-bottom: 1rem; margin-bottom: 1rem; }
+header h1 { margin: 0 0 0.35rem; font-size: 1.5rem; padding-right: 6rem; }
+p.meta { margin: 0; color: var(--muted); font-size: 0.85rem; }
+#theme-toggle {
+  position: absolute; top: 0.25rem; right: 0;
+  padding: 0.25rem 0.6rem; font-size: 0.8rem;
+  color: var(--muted); background: transparent;
+  border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
+}
+#theme-toggle:hover { color: var(--fg); }
+section.round { border-bottom: 1px solid var(--border); padding: 1.25rem 0; }
+section.round:last-child { border-bottom: none; }
+div.bubble {
+  background: var(--bubble-bg);
+  border: 1px solid var(--bubble-border);
+  border-radius: 0.75rem;
+  padding: 0.7rem 1rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+p.attachment, p.interrupted { color: var(--muted); font-size: 0.85rem; font-style: italic; margin: 0.35rem 0; }
+details.muted { color: var(--muted); font-size: 0.9rem; margin: 0.75rem 0; }
+details.muted summary { cursor: pointer; }
+p.tool-label { margin: 0.5rem 0 0.25rem; font-size: 0.8rem; }
+a { color: var(--accent); }
+pre, code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+code { font-size: 0.9em; }
+:not(pre) > code { background: var(--code-bg); padding: 0.15em 0.35em; border-radius: 4px; }
+pre { background: var(--code-bg); padding: 0.75rem 1rem; border-radius: 8px; overflow-x: auto; }
+blockquote { margin: 0.75rem 0; padding: 0 1rem; color: var(--muted); border-left: 3px solid var(--border); }
+table { border-collapse: collapse; margin: 0.75rem 0; display: block; overflow-x: auto; }
+th, td { border: 1px solid var(--border); padding: 0.35rem 0.7rem; }
+img { max-width: 100%; }
+.chroma { color: #333333; background-color: #ffffff; }
+.chroma .comment { color: #969896; }
+.chroma .keyword.operator { color: #a71d5d; }
+.chroma .support.constant { color: #a71d5d; }
+.chroma .constant.language { color: #0086b3; }
+.chroma .keyword { color: #a71d5d; }
+.chroma .storage { color: #a71d5d; }
+.chroma .storage.type { color: #a71d5d; }
+.chroma .support.type { color: #0086b3; }
+.chroma .variable { color: #0086b3; }
+.chroma .variable.language { color: #df5000; }
+.chroma .variable.parameter.function { color: #030303; }
+.chroma .entity.name.function { color: #795da3; }
+.chroma .entity { color: #795da3; }
+.chroma .support.function { color: #0086b3; }
+.chroma .entity.name.type { color: #000000; }
+.chroma .entity.other.inherited-class { color: #000000; }
+.chroma .support.class { color: #0086b3; }
+.chroma .entity.name.exception { color: #f93232; }
+.chroma .constant.numeric { color: #0086b3; }
+.chroma .constant { color: #0086b3; }
+.chroma .constant.character { color: #183691; }
+.chroma .string { color: #183691; }
+.chroma .string .punctuation { color: #183691; }
+.chroma .string.regexp { color: #009926; }
+.chroma .string.regexp .constant.character { color: #009926; }
+.chroma .string.regexp .punctuation { color: #009926; }
+.chroma .constant.other.symbol { color: #990073; }
+.chroma .string .source { color: #333333; }
+.chroma .text .source { color: #333333; }
+.chroma .variable.other.property { color: #030303; }
+.chroma .entity.name { color: #333333; }
+.chroma .invalid { color: #0f0000; }
+.chroma .entity.name.tag { color: #63a35c; }
+.chroma .punctuation.definition.tag { color: #030303; }
+.chroma .meta.tag .string .punctuation { color: #183691; }
+.chroma .constant.character.entity { color: #000000; }
+.chroma .entity.other.attribute-name { color: #795da3; }
+.chroma .meta.tag .string.quoted { color: #183691; }
+.chroma .meta.tag .string.quoted .constant.character.entity { color: #183691; }
+.chroma .meta.selector { color: #63a35c; }
+.chroma .meta.selector .entity { color: #63a35c; }
+.chroma .meta.selector .entity .punctuation { color: #63a35c; }
+.chroma .entity.name.tag.css { color: #63a35c; }
+.chroma .entity.other.attribute-name.class { color: #63a35c; }
+.chroma .keyword.control.html.sass { color: #63a35c; }
+.chroma .entity.other.attribute-name.class { color: #795da3; }
+.chroma .constant.other.unit { color: #795da3; }
+.chroma .support.type.property-name { color: #0086b3; }
+.chroma .support.constant.property-value { color: #0086b3; }
+.chroma .keyword.other.special-method.ruby.gem { color: #0086b3; }
+.chroma .variable.other.block.ruby { color: #000000; }
+.chroma .support.function.prelude { color: #000000; }
+.chroma .variable.other.generic-type.haskell { color: #000000; }
+.chroma .constant.other.haskell { color: #445588; }
+.chroma .support.constant.haskell { color: #445588; }
+.chroma .meta.diff { color: #75715e; }
+.chroma .meta.diff.header { color: #75715e; }
+.chroma .markup.deleted { color: #770000; }
+.chroma .markup.inserted { color: #003300; }
+.chroma .markup.changed { color: #ececec; }
+@media (prefers-color-scheme: dark) {
+html:not([data-theme="light"]) .chroma { color: #dcdfe4; background-color: #282c34; }
+html:not([data-theme="light"]) .chroma .comment { color: #5c6370; }
+html:not([data-theme="light"]) .chroma .variable.parameter.function { color: #dcdfe4; }
+html:not([data-theme="light"]) .chroma .keyword { color: #c678dd; }
+html:not([data-theme="light"]) .chroma .variable { color: #e06c75; }
+html:not([data-theme="light"]) .chroma .entity.name.function { color: #61afef; }
+html:not([data-theme="light"]) .chroma .meta.require { color: #61afef; }
+html:not([data-theme="light"]) .chroma .support.function.any-method { color: #61afef; }
+html:not([data-theme="light"]) .chroma .support.class { color: #e5c07b; }
+html:not([data-theme="light"]) .chroma .entity.name.class { color: #e5c07b; }
+html:not([data-theme="light"]) .chroma .entity.name.type.class { color: #e5c07b; }
+html:not([data-theme="light"]) .chroma .entity.name { color: #e5c07b; }
+html:not([data-theme="light"]) .chroma .meta.class { color: #e5c07b; }
+html:not([data-theme="light"]) .chroma .keyword.other.special-method { color: #61afef; }
+html:not([data-theme="light"]) .chroma .storage { color: #c678dd; }
+html:not([data-theme="light"]) .chroma .meta.mapping.key .string { color: #c678dd; }
+html:not([data-theme="light"]) .chroma .support.function { color: #61afef; }
+html:not([data-theme="light"]) .chroma .string { color: #98c379; }
+html:not([data-theme="light"]) .chroma .constant.numeric { color: #e5c07b; }
+html:not([data-theme="light"]) .chroma .none { color: #e5c07b; }
+html:not([data-theme="light"]) .chroma .none { color: #e5c07b; }
+html:not([data-theme="light"]) .chroma .constant { color: #e5c07b; }
+html:not([data-theme="light"]) .chroma .entity.name.tag { color: #e06c75; }
+html:not([data-theme="light"]) .chroma .entity.other.attribute-name { color: #e5c07b; }
+html:not([data-theme="light"]) .chroma .entity.other.attribute-name.id { color: #e5c07b; }
+html:not([data-theme="light"]) .chroma .punctuation.definition.entity { color: #e5c07b; }
+html:not([data-theme="light"]) .chroma .meta.selector { color: #c678dd; }
+html:not([data-theme="light"]) .chroma .markup.heading .punctuation.definition.heading { color: #61afef; }
+html:not([data-theme="light"]) .chroma .entity.name.section { color: #61afef; }
+html:not([data-theme="light"]) .chroma .markup.heading { color: #61afef; }
+html:not([data-theme="light"]) .chroma .markup.bold { color: #c678dd; }
+html:not([data-theme="light"]) .chroma .punctuation.definition.bold { color: #c678dd; }
+html:not([data-theme="light"]) .chroma .markup.italic { color: #c678dd; }
+html:not([data-theme="light"]) .chroma .punctuation.definition.italic { color: #c678dd; }
+html:not([data-theme="light"]) .chroma .markup.raw.inline { color: #98c379; }
+html:not([data-theme="light"]) .chroma .meta.link { color: #98c379; }
+html:not([data-theme="light"]) .chroma .markup.quote { color: #98c379; }
+html:not([data-theme="light"]) .chroma .source.java .meta.class.java .meta.method.java { color: #dcdfe4; }
+html:not([data-theme="light"]) .chroma .source.java .meta.class.java .meta.class.body.java { color: #dcdfe4; }
+html:not([data-theme="light"]) .chroma .source.js .meta.function.js .variable.parameter.function.js { color: #e06c75; }
+html:not([data-theme="light"]) .chroma .source.js .variable.other.readwrite.js { color: #e06c75; }
+html:not([data-theme="light"]) .chroma .source.js .variable.other.object.js { color: #dcdfe4; }
+html:not([data-theme="light"]) .chroma .source.js .meta.function-call.method.js .variable.other.readwrite.js { color: #e06c75; }
+html:not([data-theme="light"]) .chroma .source.js .meta.block.js .variable.other.readwrite.js { color: #e06c75; }
+html:not([data-theme="light"]) .chroma .source.js .meta.block.js .variable.other.object.js { color: #dcdfe4; }
+html:not([data-theme="light"]) .chroma .source.js .meta.block.js .meta.function-call.method.js .variable.other.readwrite.js { color: #dcdfe4; }
+html:not([data-theme="light"]) .chroma .source.js .meta.function-call.method.js .variable.function.js { color: #dcdfe4; }
+html:not([data-theme="light"]) .chroma .source.js .meta.property.object.js .entity.name.function.js { color: #61afef; }
+html:not([data-theme="light"]) .chroma .source.js .support.constant.prototype.js { color: #dcdfe4; }
+html:not([data-theme="light"]) .chroma .markup.inserted { color: #98c379; }
+html:not([data-theme="light"]) .chroma .markup.deleted { color: #e06c75; }
+html:not([data-theme="light"]) .chroma .markup.changed { color: #e5c07b; }
+html:not([data-theme="light"]) .chroma .string.regexp { color: #98c379; }
+html:not([data-theme="light"]) .chroma .constant.character.escape { color: #56b6c2; }
+html:not([data-theme="light"]) .chroma .invalid.illegal { color: #dcdfe4; }
+html:not([data-theme="light"]) .chroma .invalid.broken { color: #dcdfe4; }
+html:not([data-theme="light"]) .chroma .invalid.deprecated { color: #dcdfe4; }
+html:not([data-theme="light"]) .chroma .invalid.unimplemented { color: #dcdfe4; }
+}
+html[data-theme="dark"] .chroma { color: #dcdfe4; background-color: #282c34; }
+html[data-theme="dark"] .chroma .comment { color: #5c6370; }
+html[data-theme="dark"] .chroma .variable.parameter.function { color: #dcdfe4; }
+html[data-theme="dark"] .chroma .keyword { color: #c678dd; }
+html[data-theme="dark"] .chroma .variable { color: #e06c75; }
+html[data-theme="dark"] .chroma .entity.name.function { color: #61afef; }
+html[data-theme="dark"] .chroma .meta.require { color: #61afef; }
+html[data-theme="dark"] .chroma .support.function.any-method { color: #61afef; }
+html[data-theme="dark"] .chroma .support.class { color: #e5c07b; }
+html[data-theme="dark"] .chroma .entity.name.class { color: #e5c07b; }
+html[data-theme="dark"] .chroma .entity.name.type.class { color: #e5c07b; }
+html[data-theme="dark"] .chroma .entity.name { color: #e5c07b; }
+html[data-theme="dark"] .chroma .meta.class { color: #e5c07b; }
+html[data-theme="dark"] .chroma .keyword.other.special-method { color: #61afef; }
+html[data-theme="dark"] .chroma .storage { color: #c678dd; }
+html[data-theme="dark"] .chroma .meta.mapping.key .string { color: #c678dd; }
+html[data-theme="dark"] .chroma .support.function { color: #61afef; }
+html[data-theme="dark"] .chroma .string { color: #98c379; }
+html[data-theme="dark"] .chroma .constant.numeric { color: #e5c07b; }
+html[data-theme="dark"] .chroma .none { color: #e5c07b; }
+html[data-theme="dark"] .chroma .none { color: #e5c07b; }
+html[data-theme="dark"] .chroma .constant { color: #e5c07b; }
+html[data-theme="dark"] .chroma .entity.name.tag { color: #e06c75; }
+html[data-theme="dark"] .chroma .entity.other.attribute-name { color: #e5c07b; }
+html[data-theme="dark"] .chroma .entity.other.attribute-name.id { color: #e5c07b; }
+html[data-theme="dark"] .chroma .punctuation.definition.entity { color: #e5c07b; }
+html[data-theme="dark"] .chroma .meta.selector { color: #c678dd; }
+html[data-theme="dark"] .chroma .markup.heading .punctuation.definition.heading { color: #61afef; }
+html[data-theme="dark"] .chroma .entity.name.section { color: #61afef; }
+html[data-theme="dark"] .chroma .markup.heading { color: #61afef; }
+html[data-theme="dark"] .chroma .markup.bold { color: #c678dd; }
+html[data-theme="dark"] .chroma .punctuation.definition.bold { color: #c678dd; }
+html[data-theme="dark"] .chroma .markup.italic { color: #c678dd; }
+html[data-theme="dark"] .chroma .punctuation.definition.italic { color: #c678dd; }
+html[data-theme="dark"] .chroma .markup.raw.inline { color: #98c379; }
+html[data-theme="dark"] .chroma .meta.link { color: #98c379; }
+html[data-theme="dark"] .chroma .markup.quote { color: #98c379; }
+html[data-theme="dark"] .chroma .source.java .meta.class.java .meta.method.java { color: #dcdfe4; }
+html[data-theme="dark"] .chroma .source.java .meta.class.java .meta.class.body.java { color: #dcdfe4; }
+html[data-theme="dark"] .chroma .source.js .meta.function.js .variable.parameter.function.js { color: #e06c75; }
+html[data-theme="dark"] .chroma .source.js .variable.other.readwrite.js { color: #e06c75; }
+html[data-theme="dark"] .chroma .source.js .variable.other.object.js { color: #dcdfe4; }
+html[data-theme="dark"] .chroma .source.js .meta.function-call.method.js .variable.other.readwrite.js { color: #e06c75; }
+html[data-theme="dark"] .chroma .source.js .meta.block.js .variable.other.readwrite.js { color: #e06c75; }
+html[data-theme="dark"] .chroma .source.js .meta.block.js .variable.other.object.js { color: #dcdfe4; }
+html[data-theme="dark"] .chroma .source.js .meta.block.js .meta.function-call.method.js .variable.other.readwrite.js { color: #dcdfe4; }
+html[data-theme="dark"] .chroma .source.js .meta.function-call.method.js .variable.function.js { color: #dcdfe4; }
+html[data-theme="dark"] .chroma .source.js .meta.property.object.js .entity.name.function.js { color: #61afef; }
+html[data-theme="dark"] .chroma .source.js .support.constant.prototype.js { color: #dcdfe4; }
+html[data-theme="dark"] .chroma .markup.inserted { color: #98c379; }
+html[data-theme="dark"] .chroma .markup.deleted { color: #e06c75; }
+html[data-theme="dark"] .chroma .markup.changed { color: #e5c07b; }
+html[data-theme="dark"] .chroma .string.regexp { color: #98c379; }
+html[data-theme="dark"] .chroma .constant.character.escape { color: #56b6c2; }
+html[data-theme="dark"] .chroma .invalid.illegal { color: #dcdfe4; }
+html[data-theme="dark"] .chroma .invalid.broken { color: #dcdfe4; }
+html[data-theme="dark"] .chroma .invalid.deprecated { color: #dcdfe4; }
+html[data-theme="dark"] .chroma .invalid.unimplemented { color: #dcdfe4; }
+</style>
+</head>
+<body>
+<header>
+<h1>My Chat</h1>
+<p class="meta">Session abc123 · gpt-x · 2026-07-07 09:30 · 6 messages</p>
+<button id="theme-toggle" type="button">Toggle theme</button>
+</header>
+<main>
+<details class="muted system"><summary>System prompt</summary><pre>be terse</pre></details>
+<section class="round">
+<p class="attachment">(attachment: a.txt)</p>
+<div class="bubble">read the file</div>
+<details class="muted"><summary>Reasoning</summary><pre>let me think about this</pre></details>
+<details class="muted tool"><summary>⚙ load_skill</summary>
+<pre>{
+  &#34;path&#34;: &#34;a.txt&#34;
+}</pre>
+<p class="tool-label">Result</p><pre>file contents</pre>
+</details>
+<div class="assistant">
+<p>It says <strong>x</strong>.</p>
+</div>
+</section>
+<section class="round">
+<div class="bubble">thanks</div>
+<div class="assistant">
+<p>partial…</p>
+</div>
+<p class="interrupted">(interrupted)</p>
+</section>
+</main>
+<script>
+(function () {
+  var root = document.documentElement;
+  var stored = localStorage.getItem("iota-theme");
+  if (stored) root.setAttribute("data-theme", stored);
+  document.getElementById("theme-toggle").addEventListener("click", function () {
+    var sysDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    var cur = root.getAttribute("data-theme") || (sysDark ? "dark" : "light");
+    var next = cur === "dark" ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    localStorage.setItem("iota-theme", next);
+  });
+})();
+</script>
+</body>
+</html>

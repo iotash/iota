@@ -1,0 +1,50 @@
+//! The built-in toolset table (tool/tool.go:329-341): the five set names, their factories and the config
+//! types they decode, plus `SetError`, the byte-equal Go factory refusals. Every set is always compiled in —
+//! one binary, exactly like Go.
+
+use std::{collections::BTreeMap, sync::Arc};
+
+use crate::tool::{Env, Tool};
+
+/// A raw YAML node as parsed from the config file; each set's factory decodes its own `tools.<name>` value.
+pub type RawNode = serde_norway::Value;
+/// `tools:` map — key presence enables a set; the raw value is decoded by the set's factory.
+pub type ToolsConfig = BTreeMap<String, RawNode>;
+/// Must succeed on `None`/`Null` (defaults). May return `Ok(vec![])` ("contributes no tools").
+pub(crate) type SetFactory = fn(&Env, Option<&RawNode>) -> Result<Vec<Arc<dyn Tool>>, SetError>;
+/// The five built-in set names (tool/tool.go:329-341).
+pub const SET_NAMES: [&str; 5] = ["shell", "agent", "code", "ask", "delegate"];
+
+/// The factory of a built-in set; `None` for unknown names.
+pub fn set_factory(name: &str) -> Option<SetFactory> {
+    match name {
+        "shell" => Some(super::shell::new_shell_set),
+        "agent" => Some(super::agent::new_agent_set),
+        "code" => Some(super::code::new_code_set),
+        "ask" => Some(super::ask::new_ask_set),
+        "delegate" => Some(super::delegate::new_delegate_set),
+        _ => None,
+    }
+}
+
+/// Why a toolset factory refused its configuration. Every text is byte-equal to the Go set factories.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SetError {
+    /// `tools.shell` is not a mapping (or fails to decode).
+    #[error("config must be a mapping (sandbox, network, auto_run, write): {0}")]
+    ShellConfig(String),
+    /// `tools.shell.sandbox` is neither `auto` nor `off`.
+    #[error("sandbox must be \"auto\" or \"off\", got {0:?}")]
+    BadSandbox(String),
+    /// `tools.code` is not a mapping (or fails to decode).
+    #[error("config must be a mapping (auto_write, read_only): {0}")]
+    CodeConfig(String),
+    /// `tools.code` sets both `read_only` and `auto_write`.
+    #[error(
+        "read_only and auto_write contradict each other: auto_write approves writes the set does not offer"
+    )]
+    CodeContradiction,
+    /// `tools.delegate` is configured but the delegator knows no agents.
+    #[error("no agents configured (add `agents:` mapping agent names to provider names)")]
+    NoAgents,
+}

@@ -1,0 +1,20 @@
+# Build output
+/target
+*.profraw
+
+# Editor/IDE
+.idea/
+.vscode/
+.DS_Store
+
+# Local binaries and config
+/iota
+.iota.*
+.env
+
+# Project-brain tooling (not part of the public tree)
+.claude/
+CLAUDE.md
+BRAIN.md
+AGENTS.md
+.mindmux/
