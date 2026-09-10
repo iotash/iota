@@ -268,12 +268,14 @@ mod shared_request_log {
             ),
         )
         .expect("write config");
+        // The fixture is a one-layer block, so the migration line is expected.
         let cfg = Config::load(
             Some(&cfg_path),
             &HostDirs::default(),
             &map_resolver(&[]),
-            &mut |w| panic!("unexpected config warning: {w}"),
-        );
+            &mut |_| {},
+        )
+        .expect("the config loads");
         let node = serde_norway::from_str(
             "agents:\n  fast: {provider: worker, description: a delegated child}\n",
         )

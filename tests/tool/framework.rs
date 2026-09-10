@@ -20,7 +20,6 @@ use iota::tool::set_disabled;
 use iota::tool::sets::ToolsConfig;
 use iota::tool::{
     DeferMode, DeferredGroup, Owner, Registry, SEARCH_TOOL_NAME, ToolSearcher, merge,
-    resolve_defer_mode,
 };
 use iota::tool::{DeferState, Dispatcher, Env, ToolOutput, ToolResult};
 use pretty_assertions::assert_eq;
@@ -445,28 +444,38 @@ async fn test_defer_param_corpus_match() {
     );
 }
 
-// Go: tool/defer_test.go:293
+// Go: tool/defer_test.go:293 — the config spelling and the default. (Whether a mode APPLIES to a dialect is
+// `DeferMode::supports`, and the config layer turns a mismatch into an error; see `tests/cmd/config.rs`.)
 #[test]
-fn test_resolve_defer_mode() {
-    let mut warns: Vec<String> = Vec::new();
-
-    let m = resolve_defer_mode("", ProviderKind::OpenAi, &mut |w| warns.push(w));
-    assert_eq!(m.name(), "normal", "empty mode");
-    let m = resolve_defer_mode("normal", ProviderKind::Anthropic, &mut |w| warns.push(w));
-    assert_eq!(m.name(), "normal");
-    assert!(warns.is_empty(), "valid modes must not warn: {warns:?}");
-
-    let m = resolve_defer_mode("quantum", ProviderKind::OpenAi, &mut |w| warns.push(w));
-    assert_eq!(m.name(), "normal", "unknown mode must fall back to normal");
+fn test_defer_mode_from_name() {
+    assert_eq!(DeferMode::DEFAULT.name(), "normal");
+    assert_eq!(DeferMode::from_name(""), None, "empty mode names nothing");
+    assert_eq!(DeferMode::from_name("normal"), Some(DeferMode::Normal));
     assert_eq!(
-        warns,
-        vec!["unknown defer_mode \"quantum\" (using normal)".to_owned()],
-        "unknown mode must warn loudly"
+        DeferMode::from_name("reference"),
+        Some(DeferMode::Reference)
     );
+    assert_eq!(
+        DeferMode::from_name("tool-search"),
+        Some(DeferMode::ToolSearch)
+    );
+    assert_eq!(
+        DeferMode::from_name("system-tools"),
+        Some(DeferMode::SystemTools)
+    );
+    assert_eq!(DeferMode::from_name("quantum"), None, "unknown mode");
+    for m in [
+        DeferMode::Normal,
+        DeferMode::Reference,
+        DeferMode::ToolSearch,
+        DeferMode::SystemTools,
+    ] {
+        assert_eq!(DeferMode::from_name(m.name()), Some(m), "round trip {m:?}");
+    }
 
     // The mode's wrapper is the real deferring dispatcher.
     let inner = Arc::new(FakeMcp::with_defs(&[("mcp__gh__a", "x")]));
-    let d = resolve_defer_mode("normal", ProviderKind::OpenAi, &mut |_| {}).wrap(
+    let d = DeferMode::Normal.wrap(
         inner as Arc<dyn Dispatcher>,
         vec![group("github", "s")],
         prefix_for("github", "mcp__gh__"),
@@ -495,12 +504,14 @@ async fn test_protocol_mode_wrappers() {
         ("mcp__fs__read", "Read a file"),
     ]));
     let groups = vec![group("github", "gh")];
-    let wrap = |mode: &str, kind: ProviderKind| {
-        resolve_defer_mode(mode, kind, &mut |w| panic!("unexpected warning {w}")).wrap(
-            Arc::clone(&inner) as Arc<dyn Dispatcher>,
-            groups.clone(),
-            prefix_for("github", "mcp__gh__"),
-        )
+    let wrap = |mode: &str, _kind: ProviderKind| {
+        DeferMode::from_name(mode)
+            .unwrap_or_else(|| panic!("{mode} is a mode"))
+            .wrap(
+                Arc::clone(&inner) as Arc<dyn Dispatcher>,
+                groups.clone(),
+                prefix_for("github", "mcp__gh__"),
+            )
     };
 
     let marked = wrap("reference", ProviderKind::Anthropic);
@@ -572,30 +583,27 @@ async fn test_protocol_mode_wrappers() {
     assert!(frozen.take_pending_loads().is_empty());
 }
 
-// Go: tool/defer_test.go:384
+// Go: tool/defer_test.go:384 — the dialect matrix `crate::config` validates a `defer_mode:` against.
 #[test]
 fn test_protocol_mode_supports() {
-    let mut warns: Vec<String> = Vec::new();
     for (mode, kind, want) in [
-        ("reference", ProviderKind::Anthropic, "reference"),
-        ("reference", ProviderKind::OpenAi, "normal"),
-        ("tool-search", ProviderKind::OpenResponses, "tool-search"),
-        ("tool-search", ProviderKind::Anthropic, "normal"),
-        ("system-tools", ProviderKind::OpenAi, "system-tools"),
-        ("system-tools", ProviderKind::OpenResponses, "normal"),
+        (DeferMode::Reference, ProviderKind::Anthropic, true),
+        (DeferMode::Reference, ProviderKind::OpenAi, false),
+        (DeferMode::ToolSearch, ProviderKind::OpenResponses, true),
+        (DeferMode::ToolSearch, ProviderKind::Anthropic, false),
+        (DeferMode::SystemTools, ProviderKind::OpenAi, true),
+        (DeferMode::SystemTools, ProviderKind::OpenResponses, false),
     ] {
-        let got = resolve_defer_mode(mode, kind, &mut |w| warns.push(w)).name();
-        assert_eq!(got, want, "{mode} on {kind}");
+        assert_eq!(mode.supports(kind), want, "{mode:?} on {kind}");
     }
-    assert_eq!(warns.len(), 3, "unsupported combos must warn: {warns:?}");
-    assert_eq!(
-        warns,
-        vec![
-            "defer_mode \"reference\" does not apply to provider type openai (using normal)".to_owned(),
-            "defer_mode \"tool-search\" does not apply to provider type anthropic (using normal)".to_owned(),
-            "defer_mode \"system-tools\" does not apply to provider type openresponses (using normal)".to_owned(),
-        ]
-    );
+    // `normal` is the one mode every dialect speaks.
+    for kind in [
+        ProviderKind::OpenAi,
+        ProviderKind::Anthropic,
+        ProviderKind::OpenResponses,
+    ] {
+        assert!(DeferMode::Normal.supports(kind));
+    }
     // The resolved kind decides (POLICY F-01): a Gemini/Vertex/Imagen/Images provider never carries a protocol mode.
     for kind in [
         ProviderKind::Gemini,
@@ -632,7 +640,7 @@ async fn test_defer_inspector() {
     assert!(!by_name.contains_key("mcp__fs__read"));
     assert_eq!(by_name.len(), 3);
 
-    let marked = resolve_defer_mode("reference", ProviderKind::Anthropic, &mut |_| {}).wrap(
+    let marked = DeferMode::Reference.wrap(
         inner as Arc<dyn Dispatcher>,
         vec![group("github", "gh")],
         prefix_for("github", "mcp__gh__"),

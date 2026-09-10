@@ -14,7 +14,10 @@ pub mod signals;
 pub(crate) mod tuning;
 pub mod window;
 
-pub use crate::config::{Config, ConfigError, McpServerConfig, ProviderConfig};
+pub use crate::config::{
+    AgentConfig, BadModelRef, Config, ConfigError, McpServerConfig, ModelConfig, ModelEntry,
+    ModelRef, ProviderConfig, Resolved,
+};
 pub use cli::Cli;
 pub use resolve::CliError;
 pub use resolve::{RunSettings, resolve_run};
@@ -129,7 +132,7 @@ pub async fn run(
     // root.go:45
     let cfg = Config::load(cli.config.as_deref(), &dirs, resolver.as_ref(), &mut |w| {
         io.warning(&w);
-    });
+    })?;
 
     // root.go:47-50
     if cli.list {
@@ -138,7 +141,9 @@ pub async fn run(
 
     // root.go:52-123
     let mut stdin = std::io::stdin();
-    let mut settings = resolve_run(&cli, &cfg, env.as_ref(), &mut stdin)?;
+    let mut settings = resolve_run(&cli, &cfg, env.as_ref(), &mut stdin, &mut |w| {
+        io.warning(&w);
+    })?;
 
     // root.go:125-131
     let ctx = RunContext::new(dirs, cancel, resolver);
@@ -164,6 +169,7 @@ pub async fn run(
         return interactive::run_interactive(
             interactive::Interactive {
                 cli: &cli,
+                cfg: &cfg,
                 settings,
                 kind,
                 provider,
@@ -175,7 +181,7 @@ pub async fn run(
         .await;
     };
     run_headless(
-        message, &cli, settings, kind, provider, tools, ctx, format, io,
+        message, &cli, &cfg, settings, kind, provider, tools, ctx, format, io,
     )
     .await
 }
@@ -199,7 +205,7 @@ fn open_provider(
     )?;
     tuning::apply(
         &mut *provider,
-        &settings.provider_cfg,
+        &settings.resolved,
         settings.temperature,
         &mut |w| io.warning(&w),
     )?;
@@ -220,14 +226,14 @@ fn assemble_tools(
     let dirs = &ctx.dirs;
     // root.go:187-194
     let (mcp_configs, mcp_defers) =
-        assemble::build_mcp_configs(cfg, &settings.provider_cfg, &cli.mcp, &mut |w| {
+        assemble::build_mcp_configs(cfg, &settings.resolved.agent, &cli.mcp, &mut |w| {
             io.warning(&w);
         })?;
 
     // root.go:195-199
     tuning::warn_tools_without_calling(
         provider,
-        &settings.provider_cfg,
+        &settings.resolved.agent,
         mcp_configs.len(),
         &mut |w| {
             io.warning(&w);
@@ -268,8 +274,8 @@ fn assemble_tools(
     // root.go:234-241: every agent resolves HERE so a bad provider name fails at startup rather than three tool
     // calls into a conversation.
     let mut delegator: Option<Arc<crate::chat::ChatDelegator>> = None;
-    if let Some(node) = settings.provider_cfg.tools.get("delegate")
-        && !crate::tool::set_disabled(&settings.provider_cfg.tools, "delegate")
+    if let Some(node) = settings.resolved.agent.tools.get("delegate")
+        && !crate::tool::set_disabled(&settings.resolved.agent.tools, "delegate")
     {
         let del = delegate::build_delegator(
             cfg,
@@ -300,6 +306,7 @@ fn assemble_tools(
 async fn run_headless(
     message: String,
     cli: &Cli,
+    cfg: &Config,
     settings: RunSettings,
     kind: ProviderKind,
     mut provider: Box<dyn crate::provider::Provider>,
@@ -337,6 +344,13 @@ async fn run_headless(
             let scope = settings.agent_mode.then_some(agent.root.as_path());
             let id = store.resolve_id(fragment, scope)?;
             let (writer, resumed) = store.resume(&id, kind)?;
+            // The bundle records the agent it ran under; one that has since been deleted is announced, and
+            // the run falls back to the provider and model the meta carries (Phase 1b step 9).
+            crate::session::warn_if_session_agent_is_gone(
+                &resumed.meta,
+                cfg.agents.contains_key(&resumed.meta.agent),
+                &mut |w| io.warning(&w),
+            );
             // root.go:323-325: the session supplies the model only when `-M`/`model:` did not, and only for a
             // session recorded under this provider type. An explicit `-M` does NOT rewrite `meta.model`.
             if settings.model.is_empty()
@@ -387,8 +401,8 @@ async fn run_headless(
     .await;
 
     let dispatch = assemble::build_dispatcher(
-        &settings.provider_cfg,
-        kind,
+        &settings.resolved.agent,
+        &settings.resolved.model,
         mcp_part,
         mcp_defers,
         settings.agent_mode,

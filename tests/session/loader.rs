@@ -37,7 +37,7 @@ fn records(dir: &Path) -> Vec<SessionRecord> {
 #[test]
 fn load_log_weaves_the_last_compaction() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false).unwrap();
+    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
     let id = writer.id().to_owned();
     writer
         .append_messages(&[
@@ -299,7 +299,7 @@ fn missing_log_is_an_io_error() {
 #[test]
 fn load_full_history_ignores_compaction() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false).unwrap();
+    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
     let id = writer.id().to_owned();
 
     writer
@@ -386,7 +386,7 @@ fn load_full_history_finds_a_bucketed_id() {
 #[test]
 fn load_full_history_shares_the_record_decoder() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false).unwrap();
+    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
     let id = writer.id().to_owned();
     writer.append_messages(&[Message::user("u1")]).unwrap();
     let dir = writer.dir().to_path_buf();

@@ -18,7 +18,7 @@ fn raw(json: &str) -> Raw {
 fn raw_content_dropped_on_provider_mismatch() {
     let (_home, store) = temp_store();
     let mut writer = store
-        .create(ProviderKind::OpenAi, "m1", None, "", "", false)
+        .create(ProviderKind::OpenAi, "m1", None, "", "", false, "")
         .unwrap();
     let id = writer.id().to_owned();
     writer
@@ -52,7 +52,7 @@ fn raw_content_dropped_on_provider_mismatch() {
 fn gemini_blob_does_not_restore_under_vertexai() {
     let (_home, store) = temp_store();
     let mut writer = store
-        .create(ProviderKind::Gemini, "m1", None, "", "", false)
+        .create(ProviderKind::Gemini, "m1", None, "", "", false, "")
         .unwrap();
     let id = writer.id().to_owned();
     let blob = raw(r#"{"parts":[{"text":"t"}],"role":"model"}"#);
@@ -85,7 +85,7 @@ fn gemini_blob_does_not_restore_under_vertexai() {
 fn anthropic_blocks_array_round_trip() {
     let (_home, store) = temp_store();
     let mut writer = store
-        .create(ProviderKind::Anthropic, "m1", None, "", "", false)
+        .create(ProviderKind::Anthropic, "m1", None, "", "", false, "")
         .unwrap();
     let id = writer.id().to_owned();
     let blocks = vec![
@@ -128,7 +128,7 @@ fn anthropic_blocks_array_round_trip() {
 fn openresponses_items_array_round_trip() {
     let (_home, store) = temp_store();
     let mut writer = store
-        .create(ProviderKind::OpenResponses, "m1", None, "", "", false)
+        .create(ProviderKind::OpenResponses, "m1", None, "", "", false, "")
         .unwrap();
     let id = writer.id().to_owned();
     let items = vec![raw(r#"{"type":"reasoning","id":"rs_1"}"#)];

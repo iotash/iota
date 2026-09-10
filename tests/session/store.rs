@@ -110,7 +110,7 @@ fn project_session_writer() {
     let (_home, store) = temp_store();
     let root = "/work/myproj";
 
-    let mut writer = store.create(KIND, "m1", None, "", root, true).unwrap();
+    let mut writer = store.create(KIND, "m1", None, "", root, true, "").unwrap();
     writer.append_messages(&[Message::user("hi")]).unwrap();
     let id = writer.id().to_owned();
     drop(writer);
@@ -125,7 +125,7 @@ fn project_session_writer() {
 
     // Normal mode: flat layout, cwd recorded anyway.
     let mut flat_writer = store
-        .create(KIND, "m1", None, "", "/somewhere/else", false)
+        .create(KIND, "m1", None, "", "/somewhere/else", false, "")
         .unwrap();
     flat_writer.append_messages(&[Message::user("hi")]).unwrap();
     let flat_id = flat_writer.id().to_owned();
@@ -137,7 +137,7 @@ fn project_session_writer() {
     );
 
     // `project` without a cwd stays flat too (Go: `project && cwd != ""`).
-    let no_cwd = store.create(KIND, "m1", None, "", "", true).unwrap();
+    let no_cwd = store.create(KIND, "m1", None, "", "", true, "").unwrap();
     assert_eq!(no_cwd.dir().parent(), Some(store.root()));
 }
 

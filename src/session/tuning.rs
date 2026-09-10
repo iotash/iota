@@ -5,6 +5,28 @@ use crate::provider::{Provider, ProviderKind};
 
 use crate::session::meta::SessionMeta;
 
+/// Announces an agent a resumed bundle names that the config no longer defines.
+///
+/// `meta.agent` records how the session was STARTED; a resume reassembles from the current config, so an
+/// agent that is still there needs nothing done to it. One that has been deleted since would otherwise
+/// vanish silently, and the run falls back to the provider and the model the meta carries — exactly the
+/// behaviour every session had before the key existed (decision of 2026-09-10).
+///
+/// `configured` is the caller's answer to "does `cfg.agents` still have this name?".
+pub fn warn_if_session_agent_is_gone(
+    meta: &SessionMeta,
+    configured: bool,
+    warn: &mut dyn FnMut(String),
+) {
+    if meta.agent.is_empty() || configured {
+        return;
+    }
+    warn(format!(
+        "Warning: session agent {:?} is no longer configured; using the provider and model from the session",
+        meta.agent
+    ));
+}
+
 /// What the caller already fixed from flags or config; a resumed session's stored value yields to each
 /// (root.go:317-331: explicit flags win).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

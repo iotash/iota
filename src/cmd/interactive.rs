@@ -57,6 +57,8 @@ const TITLE_STACK_POP: &str = "\x1b[23;0t";
 pub(crate) struct Interactive<'a> {
     /// The parsed command line (the interactive-only flags are read HERE, never headlessly).
     pub(crate) cli: &'a Cli,
+    /// The merged config (a resumed bundle's agent is looked up in it).
+    pub(crate) cfg: &'a crate::config::Config,
     /// The resolved run settings.
     pub(crate) settings: RunSettings,
     /// The resolved provider type.
@@ -243,6 +245,7 @@ pub(crate) async fn run_interactive(
 ) -> Result<(), CliError> {
     let Interactive {
         cli,
+        cfg,
         settings,
         kind,
         mut provider,
@@ -270,7 +273,7 @@ pub(crate) async fn run_interactive(
         return Err(CliError::NotATerminal);
     }
     // root.go:287-290: the config's `no_save:` starts ephemeral too, except an explicit `--resume` outranks it.
-    let ephemeral = cli.no_save || (settings.provider_cfg.no_save && cli.resume.is_none());
+    let ephemeral = cli.no_save || (settings.resolved.agent.no_save && cli.resume.is_none());
 
     // Raw mode owns Ctrl+C from the OSC-11 probe on (`TUI_DESIGN` §8.4 step 7).
     crate::cmd::signals::ignore_sigint();
@@ -310,6 +313,7 @@ pub(crate) async fn run_interactive(
     let opened = open_ui(&seam, picker, |_dark, picked| {
         wire_session(
             cli,
+            cfg,
             &settings,
             kind,
             &mut *provider,
@@ -344,7 +348,7 @@ pub(crate) async fn run_interactive(
     // chat/run.go:139 `host.NewPresenter(host.SystemEnv(), host.NewANSI(u), notify)`: the detected hosts
     // plus the ANSI fallback over the live facade; `notify:` defaults to on (config.go, T-14). Built inside
     // the runtime — a detected cmux host spawns its worker task.
-    let notify = settings.provider_cfg.notify.unwrap_or(true);
+    let notify = settings.resolved.agent.notify.unwrap_or(true);
     let pres = Arc::new(Presenter::new(
         &host_env(),
         Some(Box::new(AnsiHost::new(Arc::clone(&ui)))),
@@ -417,6 +421,7 @@ struct WireInput {
 #[allow(clippy::too_many_arguments)]
 fn wire_session(
     cli: &Cli,
+    cfg: &crate::config::Config,
     settings: &RunSettings,
     kind: ProviderKind,
     provider: &mut dyn Provider,
@@ -441,6 +446,13 @@ fn wire_session(
             return Err(CliError::NoSessionToResume);
         }
         let (w, resumed) = store.resume(&id, kind)?;
+        // The bundle records the agent it ran under; one that has since been deleted is announced, and the
+        // run falls back to the provider and model the meta carries (Phase 1b step 9).
+        crate::session::warn_if_session_agent_is_gone(
+            &resumed.meta,
+            cfg.agents.contains_key(&resumed.meta.agent),
+            &mut |w| io.warning(&w),
+        );
         // root.go:317-331: the session supplies the model and tuning only where no flag did; effort has no
         // flag, so the session's value always applies.
         session_window = crate::session::replay_session_settings(
@@ -493,6 +505,7 @@ fn wire_session(
                     &settings.base_url,
                     &session_cwd,
                     settings.agent_mode,
+                    &settings.resolved.agent_name,
                 )
                 .map_err(CliError::CreateSession)?,
         );
@@ -511,8 +524,17 @@ fn wire_session(
             .or(settings.temperature);
         let base_url = settings.base_url.clone();
         let project = settings.agent_mode;
+        let agent_name = settings.resolved.agent_name.clone();
         Some(Box::new(move || {
-            store.create(kind, &model, temperature, &base_url, &session_cwd, project)
+            store.create(
+                kind,
+                &model,
+                temperature,
+                &base_url,
+                &session_cwd,
+                project,
+                &agent_name,
+            )
         }))
     } else {
         None
@@ -523,8 +545,8 @@ fn wire_session(
 
     // root.go:390 + 588-592.
     let dispatch = crate::cmd::assemble::build_dispatcher(
-        &settings.provider_cfg,
-        kind,
+        &settings.resolved.agent,
+        &settings.resolved.model,
         input.mcp_part,
         input.mcp_defers,
         settings.agent_mode,
@@ -583,11 +605,11 @@ fn resolve_context_window(
         parse(v, "--context-window")?
     } else if let Some(w) = session_window.filter(|w| *w > 0) {
         w
-    } else if settings.provider_cfg.context_window.is_empty() {
+    } else if settings.resolved.model.context_window.is_empty() {
         0
     } else {
         parse(
-            &settings.provider_cfg.context_window,
+            &settings.resolved.model.context_window,
             "config context_window",
         )?
     };

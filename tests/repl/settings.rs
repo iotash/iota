@@ -193,7 +193,7 @@ impl Fixture {
     fn writer(&self) -> (SessionWriter, PathBuf) {
         let mut w = self
             .store
-            .create(ProviderKind::OpenAi, "gpt-test", None, "", "", false)
+            .create(ProviderKind::OpenAi, "gpt-test", None, "", "", false, "")
             .expect("create writer");
         w.append_messages(&[Message::user("earlier")])
             .expect("materialise");

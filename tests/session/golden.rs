@@ -70,6 +70,7 @@ fn meta_file_has_go_key_order_and_no_trailing_newline() {
             "http://127.0.0.1:1/v1",
             "/tmp/probe-cwd",
             false,
+            "",
         )
         .unwrap();
     writer
@@ -131,7 +132,15 @@ fn meta_file_has_go_key_order_and_no_trailing_newline() {
 fn jsonl_omitempty_matrix() {
     let (_home, store) = temp_store();
     let mut writer = store
-        .create(ProviderKind::Gemini, "gemini-probe", None, "", "", false)
+        .create(
+            ProviderKind::Gemini,
+            "gemini-probe",
+            None,
+            "",
+            "",
+            false,
+            "",
+        )
         .unwrap();
     let dir = writer.dir().to_path_buf();
 
@@ -221,7 +230,7 @@ fn jsonl_omitempty_matrix() {
 fn always_present_keys() {
     let (_home, store) = temp_store();
     let mut writer = store
-        .create(ProviderKind::OpenAi, "m1", None, "", "", false)
+        .create(ProviderKind::OpenAi, "m1", None, "", "", false, "")
         .unwrap();
     let dir = writer.dir().to_path_buf();
     let call = ToolCall {

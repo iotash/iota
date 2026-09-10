@@ -138,7 +138,7 @@ impl Fixture {
 
     fn writer(&self) -> SessionWriter {
         self.store
-            .create(ProviderKind::OpenAi, "gpt-test", None, "", "", false)
+            .create(ProviderKind::OpenAi, "gpt-test", None, "", "", false, "")
             .expect("create writer")
     }
 
@@ -285,7 +285,7 @@ async fn banner_offers_save_for_an_ephemeral_chat() {
         writer: None,
         store: f.store.clone(),
         new_session: Some(Box::new(move || {
-            store.create(ProviderKind::OpenAi, "gpt-test", None, "", "", false)
+            store.create(ProviderKind::OpenAi, "gpt-test", None, "", "", false, "")
         })),
         scope: None,
     };
@@ -626,7 +626,7 @@ async fn save_mints_late_and_flushes_the_backlog() {
         writer: None,
         store: f.store.clone(),
         new_session: Some(Box::new(move || {
-            store.create(ProviderKind::OpenAi, "gpt-test", None, "", "", false)
+            store.create(ProviderKind::OpenAi, "gpt-test", None, "", "", false, "")
         })),
         scope: None,
     };
@@ -778,7 +778,7 @@ fn test_delete_session_in_bucket() {
     let store = SessionStore::new(tmp.path().join("sessions"));
     let root = Path::new("/work/p1");
     let mut w = store
-        .create(ProviderKind::OpenAi, "m", None, "", "/work/p1", true)
+        .create(ProviderKind::OpenAi, "m", None, "", "/work/p1", true, "")
         .expect("create in bucket");
     w.append_messages(&[Message::user("hi")])
         .expect("materialise");
@@ -927,7 +927,7 @@ async fn persist_warns_and_retries_the_backlog() {
     std::fs::create_dir(&jail).expect("mkdir jail");
     let store = SessionStore::new(jail.join("sessions"));
     let writer = store
-        .create(ProviderKind::OpenAi, "gpt-test", None, "", "", false)
+        .create(ProviderKind::OpenAi, "gpt-test", None, "", "", false, "")
         .expect("create");
     let dir = writer.dir().to_path_buf();
     set_mode(&jail, 0o555);

@@ -1,15 +1,15 @@
-//! Pure run resolution (cmd/root.go:46-123, 534-566): the provider name check, key/url/model/system precedence,
-//! the `-m -` stdin read, the message/model rules and the config temperature range check — everything `run`
-//! decides before it constructs a provider — plus `CliError`, the command's error type (every Display text is
-//! byte-equal to the Go message it ports).
+//! Pure run resolution (cmd/root.go:46-123, 534-566): the four-level positional resolution, the
+//! key/url/model/system precedence, the `-m -` stdin read, the message/model rules and the config
+//! temperature range check — everything `run` decides before it constructs a provider — plus `CliError`, the
+//! command's error type (every Display text is byte-equal to the Go message it ports).
 
 use crate::BoxError;
 use crate::provider::error::{ProviderError, UnknownProviderType};
-use crate::provider::{ProviderKind, provider_env_key};
+use crate::provider::provider_env_key;
 use crate::text::go_float;
 
 use crate::cmd::cli::Cli;
-use crate::config::{Config, ConfigError, ProviderConfig};
+use crate::config::{Config, ConfigError, ModelRef, ProviderConfig, Resolved};
 
 use crate::vars::EnvSource;
 
@@ -18,15 +18,15 @@ use crate::vars::EnvSource;
 pub struct RunSettings {
     /// The provider argument as typed (alias or type).
     pub name: String,
-    /// The resolved provider type string (`Config::get`).
+    /// The resolved provider type string.
     pub raw_type: String,
-    /// The provider's config entry (default when unconfigured).
-    pub provider_cfg: ProviderConfig,
+    /// The three config layers this run landed on.
+    pub resolved: Resolved,
     /// The API key (flag verbatim, even `""` > env of the RESOLVED type > config key).
     pub api_key: String,
     /// The base URL (flag > config; `""` = dialect default).
     pub base_url: String,
-    /// The model (flag > config; may be `""` without `-m`).
+    /// The model (flag > the agent's default model; may be `""` without `-m`).
     pub model: String,
     /// The system prompt (flag > `system:` > `system_file:`; `""` = none).
     pub system: String,
@@ -35,7 +35,7 @@ pub struct RunSettings {
     pub message: Option<String>,
     /// The temperature (`-t` unchecked > config range-checked > `None`).
     pub temperature: Option<f64>,
-    /// `--agent` || `agent: true`.
+    /// `--agent` || the agent's `workspace: true`.
     pub agent_mode: bool,
     /// `--max-turns` as a cap (`None` = unlimited; the flag's `<= 0`).
     pub max_turns: Option<std::num::NonZeroU32>,
@@ -49,39 +49,47 @@ pub struct RunSettings {
     pub resume: Option<String>,
 }
 
-/// Pure. Order (root.go:53-123): provider arg required → `check_provider_name` → key (flag verbatim, even `""` >
-/// env of RESOLVED type > config key) → url/model/system (flag > config; `system_file` error) → `ApiKeyRequired`
+/// Pure. Order (root.go:53-123): provider arg required → the four-level positional resolution
+/// (`resolve_target`) → `-M` (which may move the run to another provider) → key (flag verbatim, even `""` >
+/// env of RESOLVED type > config key) → url/system (flag > config; `system_file` error) → `ApiKeyRequired`
 /// → `-m -` reads stdin (trim; `failed to read from stdin: {e}`; `no message provided via stdin`) → `-m ""` →
 /// `MessageEmpty` → model required ONLY when message is `Some` AND `--resume` is absent (D-52: a resume
 /// supplies the model from meta, so `run` re-raises `ModelRequired` after the replay) → temperature (flag
 /// unchecked; config range).
 /// `--output-format` is NOT parsed here and `OutputFormatWithoutMessage` is NOT raised here (Go does both after
 /// tuning/MCP/delegate, root.go:249-255) — the raw flag rides `output_format_raw` and `run` does both.
+///
+/// `-M` is applied BEFORE the key and the URL because `provider:id` names an endpoint: a model the run was
+/// not started on brings its own key variable and base URL with it.
 pub fn resolve_run(
     cli: &Cli,
     cfg: &Config,
     env: &dyn EnvSource,
     stdin: &mut dyn std::io::Read,
+    warn: &mut dyn FnMut(String),
 ) -> Result<RunSettings, CliError> {
     // root.go:53-60
     let name = cli.provider.as_deref().ok_or(CliError::ProviderRequired)?;
-    let (raw_type, provider_cfg) = cfg.get(name);
-    check_provider_name(cfg, name, &raw_type)?;
+    let mut resolved = resolve_target(cfg, name)?;
+    if let Some(flag) = &cli.model {
+        apply_model_flag(&mut resolved, cfg, flag, warn);
+    }
+    let raw_type = resolved.provider_type.clone();
 
     // root.go:62-87: CLI flag > env var (of the RESOLVED type) > config file.
     let env_key = provider_env_key(&raw_type);
     let api_key = match &cli.key {
         Some(flag) => flag.clone(),
-        None => resolve_key_from_env_or_config(env_key, &provider_cfg, env),
+        None => resolve_key_from_env_or_config(env_key, &resolved.provider, env),
     };
-    let base_url = cli.url.clone().unwrap_or_else(|| provider_cfg.url.clone());
-    let model = cli
-        .model
+    let base_url = cli
+        .url
         .clone()
-        .unwrap_or_else(|| provider_cfg.model.clone());
+        .unwrap_or_else(|| resolved.provider.url.clone());
+    let model = resolved.model.id.clone();
     let system = match &cli.system {
         Some(flag) => flag.clone(),
-        None => provider_cfg.resolve_system()?,
+        None => resolved.agent.resolve_system()?,
     };
 
     // root.go:89-92
@@ -106,7 +114,7 @@ pub fn resolve_run(
     }
 
     // root.go:114-123: the -t flag wins (unchecked); the config default is range-checked.
-    let temperature = match (cli.temperature, provider_cfg.temperature) {
+    let temperature = match (cli.temperature, resolved.temperature()) {
         (Some(t), _) => Some(t),
         (None, Some(t)) if !(0.0..=2.0).contains(&t) => {
             return Err(CliError::ConfigTemperature(t));
@@ -123,7 +131,7 @@ pub fn resolve_run(
         system,
         message,
         temperature,
-        agent_mode: cli.agent || provider_cfg.agent,
+        agent_mode: cli.agent || resolved.agent.workspace,
         max_turns: crate::chat::turns::turn_cap(cli.max_turns),
         output_format_raw: cli.output_format.clone(),
         resume: cli
@@ -132,8 +140,75 @@ pub fn resolve_run(
             .map(str::trim)
             .filter(|f| !f.is_empty())
             .map(str::to_owned),
-        provider_cfg,
+        resolved,
     })
+}
+
+/// The four-level positional resolution (`agents:` → `models:` → `providers:` → a built-in type), with the
+/// multi-line unknown-name error when the name is in none of them.
+pub(crate) fn resolve_target(cfg: &Config, name: &str) -> Result<Resolved, CliError> {
+    cfg.resolve(name).ok_or_else(|| CliError::UnknownProvider {
+        name: name.to_owned(),
+        // root.go:538-546: `BTreeMap` keys are already sorted (Go sorts its map keys).
+        aliases: cfg.configured_names(),
+    })
+}
+
+/// `-M`, in the three forms it takes:
+///
+/// - `provider:id` — an endpoint AND a model, so the run moves to that provider (only when `provider` is a
+///   name iota knows; a bare id that happens to contain a colon is left alone, which is what a relay's
+///   `vendor:model` ids need);
+/// - `provider:*` — that provider with no model chosen, i.e. start in the picker;
+/// - a bare value — a `models:` entry from the agent's own candidate set if it names one, else a raw model id
+///   on the provider the run already resolved to.
+///
+/// A model outside the agent's candidate set is a WARNING, never a refusal (decision of 2026-09-10): the set
+/// is advice about what is good here, not a whitelist. A migrated one-layer block has an implicit set of
+/// exactly one model, which was never meant as advice, so it stays silent.
+fn apply_model_flag(r: &mut Resolved, cfg: &Config, flag: &str, warn: &mut dyn FnMut(String)) {
+    if flag.is_empty() {
+        // `-M ""` is verbatim, like every other flag: no model was chosen.
+        r.model.id.clear();
+        return;
+    }
+    match flag.split_once(':') {
+        Some((provider, id)) if cfg.knows_provider(provider) && !id.is_empty() => {
+            r.move_to_provider(cfg, provider);
+            r.model.id = if id == "*" {
+                String::new()
+            } else {
+                id.to_owned()
+            };
+        }
+        _ => match cfg.models.get(flag) {
+            // A candidate by name brings its own provider and protocol with it.
+            Some(entry)
+                if r.agent
+                    .models
+                    .iter()
+                    .any(|c| matches!(c, ModelRef::Entry(n) if n == flag)) =>
+            {
+                let mut model = entry.clone();
+                model.anchor_provider(flag);
+                let provider = model.provider.clone();
+                r.model = model;
+                r.move_to_provider(cfg, &provider);
+            }
+            // Everything else is a raw model id: the entry's protocol and knobs still apply, only the id moves.
+            _ => flag.clone_into(&mut r.model.id),
+        },
+    }
+    if !r.agent.migrated
+        && !r.agent.models.is_empty()
+        && !r.model.id.is_empty()
+        && !r.covers(cfg, &r.provider_name, &r.model.id)
+    {
+        warn(format!(
+            "Warning: model {}:{} is not in agent {:?}'s models (using it anyway)",
+            r.provider_name, r.model.id, r.name
+        ));
+    }
 }
 
 /// root.go:64-69 / 492-497: the env var of the resolved type when set and non-empty, else the config `key:`
@@ -159,22 +234,6 @@ fn read_stdin_message(stdin: &mut dyn std::io::Read) -> Result<String, CliError>
     Ok(message)
 }
 
-/// Accepts a configured alias OR a known type; else the multi-line unknown-provider error (aliases sorted).
-pub(crate) fn check_provider_name(
-    cfg: &Config,
-    name: &str,
-    raw_type: &str,
-) -> Result<(), CliError> {
-    if cfg.providers.contains_key(name) || ProviderKind::is_known(raw_type) {
-        return Ok(());
-    }
-    // root.go:538-546: `BTreeMap` keys are already sorted (Go sorts its map keys).
-    Err(CliError::UnknownProvider {
-        name: name.to_owned(),
-        aliases: cfg.providers.keys().cloned().collect(),
-    })
-}
-
 /// Why the command failed (cmd/root.go, cmd/delegate.go, config.go and the headless-only rules). `main` prints
 /// `Error: {e}` and exits 1, or 130 for `Interrupted`.
 #[derive(Debug, thiserror::Error)]
@@ -197,7 +256,7 @@ pub enum CliError {
         "provider argument is required (e.g. openai, anthropic, gemini), or use -l to list available providers"
     )]
     ProviderRequired,
-    /// The provider argument is neither a configured alias nor a built-in type.
+    /// The positional name is neither a configured agent/model/provider nor a built-in type.
     #[error(
         "unknown provider {name:?}: not a configured alias or a built-in type{}\n  built-in types: openai, anthropic, gemini, vertexai, openresponses, imagen, images",
         alias_hint(.aliases)
@@ -205,7 +264,8 @@ pub enum CliError {
     UnknownProvider {
         /// The name as typed.
         name: String,
-        /// The configured aliases, sorted; rendered as `"\n  configured aliases: a, b"` when non-empty.
+        /// Every configured name (agents, models and providers), sorted and deduplicated; rendered as
+        /// `"\n  configured aliases: a, b"` when non-empty.
         aliases: Vec<String>,
     },
     /// No key from the flag, the environment or the config; carries the env var name of the resolved type.

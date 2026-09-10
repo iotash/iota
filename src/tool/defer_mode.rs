@@ -1,6 +1,10 @@
 //! Defer modes (tool/defermode.go, `defermode_protocol.go`): how hidden groups are presented to a provider —
 //! the `search_tools` wrapper (`normal`), the provider-side protocols (`reference`, `tool-search`) and the
 //! frozen system-tools mount.
+//!
+//! Which modes a provider can speak is a property of its DIALECT ([`DeferMode::supports`]), so the check
+//! belongs where the model that names the mode is written: `crate::config` refuses a mismatch when the file
+//! is loaded, and by the time a dispatcher is assembled there is nothing left to decide.
 
 use std::sync::Arc;
 
@@ -8,7 +12,6 @@ use crate::BoxFuture;
 use crate::chat::turns::RunCtx;
 use crate::provider::ProviderKind;
 use crate::provider::model::{JsonObject, ToolDef};
-use crate::text::go_quote;
 use crate::tool::{
     DeferState, DeferredToolStatus, Dispatcher, Presentation, ToolResult, ToolSearcher,
 };
@@ -86,38 +89,6 @@ impl DeferMode {
             Self::SystemTools => defer_frozen(inner, groups, prefix_of),
         }
     }
-}
-
-/// "" → Normal silently; unknown → warn `unknown defer_mode {name:?} (using normal)` → Normal; unsupported → warn
-/// `defer_mode {name:?} does not apply to provider type {kind} (using normal)` → Normal. Takes the RESOLVED kind
-/// (POLICY fix F-01).
-pub fn resolve_defer_mode(
-    name: &str,
-    kind: ProviderKind,
-    warn: &mut dyn FnMut(String),
-) -> DeferMode {
-    let name = if name.is_empty() {
-        DeferMode::DEFAULT.name()
-    } else {
-        name
-    };
-    let Some(mode) = DeferMode::from_name(name) else {
-        warn(format!(
-            "unknown defer_mode {} (using {})",
-            go_quote(name),
-            DeferMode::DEFAULT.name()
-        ));
-        return DeferMode::DEFAULT;
-    };
-    if !mode.supports(kind) {
-        warn(format!(
-            "defer_mode {} does not apply to provider type {kind} (using {})",
-            go_quote(name),
-            DeferMode::DEFAULT.name()
-        ));
-        return DeferMode::DEFAULT;
-    }
-    mode
 }
 
 /// `reference` mode: inner defs are copied with `deferred = true` under a connected prefix; calls, approval and

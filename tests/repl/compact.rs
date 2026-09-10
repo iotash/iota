@@ -137,7 +137,7 @@ impl Fixture {
 
     fn writer(&self) -> SessionWriter {
         self.store
-            .create(ProviderKind::OpenAi, "gpt-4o", None, "", "", false)
+            .create(ProviderKind::OpenAi, "gpt-4o", None, "", "", false, "")
             .expect("create writer")
     }
 

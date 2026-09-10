@@ -243,7 +243,10 @@ fn cli_output_format_without_message() {
 #[test]
 fn cli_output_format_parse_runs_after_tuning() {
     let (dir, home) = project();
-    write_config(dir.path(), "providers:\n  openai:\n    effort: turbo\n");
+    write_config(
+        dir.path(),
+        "models:\n  openai: {provider: openai, id: gpt-test, effort: turbo}\n",
+    );
     let mut cmd = iota(dir.path(), &home);
     cmd.args([
         "openai",
@@ -516,7 +519,9 @@ providers:
   pic:
     type: imagen
     key: k
-    model: imagen-4
+models:
+  pic:
+    id: imagen-4
     image: true
     effort: high
     top_p: 0.5
@@ -537,6 +542,61 @@ providers:
              Error: {}\n",
             branch_error()
         )
+    );
+}
+
+/// The soft-migration layer, end to end: a one-layer block behaves exactly as the three-layer file above —
+/// the same warnings, in the same order, with the same exit — preceded by ONE deprecation line naming what
+/// moved (`docs/MIGRATION-ROADMAP.md` Phase 1b, step 8).
+#[test]
+fn cli_one_layer_config_still_runs_and_says_so() {
+    let (dir, home) = project();
+    write_config(
+        dir.path(),
+        "
+providers:
+  pic:
+    type: imagen
+    key: k
+    model: imagen-4
+    image: true
+    effort: high
+    top_p: 0.5
+    temperature: 0.5
+",
+    );
+    let mut cmd = iota(dir.path(), &home);
+    cmd.arg("pic");
+    let o = cmd.output().expect("run");
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(
+        err(&o),
+        format!(
+            "Warning: config providers.pic: model, effort, temperature, top_p, image now belong under `models:` / `agents:` (still accepted; see README)\n\
+             Warning: `image: true` is redundant for provider type imagen (it always generates images)\n\
+             Warning: `effort` does not apply to provider type imagen (ignored)\n\
+             Warning: `top_p` does not apply to provider type imagen (ignored)\n\
+             Warning: temperature does not apply to provider type imagen (ignored)\n\
+             Error: {}\n",
+            branch_error()
+        )
+    );
+}
+
+/// A `defer_mode:` the provider's dialect cannot speak now stops the run where it is written, before any
+/// provider is built (it used to warn at dispatcher-assembly time and quietly use `normal`).
+#[test]
+fn cli_defer_mode_mismatch_fails_at_config_load() {
+    let (dir, home) = project();
+    write_config(
+        dir.path(),
+        "models:\n  m: {provider: openai, id: gpt-test, defer_mode: reference}\n",
+    );
+    let mut cmd = iota(dir.path(), &home);
+    cmd.args(["m", "-k", "sk-x", "-m", "hi"]);
+    assert_error(
+        &cmd.output().expect("run"),
+        "models.m: defer_mode \"reference\" does not apply to provider type openai (see docs/design/tool-defer.md)",
     );
 }
 

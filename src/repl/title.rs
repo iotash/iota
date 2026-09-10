@@ -409,7 +409,7 @@ mod tests {
     /// A pending bundle: `create` touches no disk, so the whole suite is in-memory.
     fn new_writer(store: &SessionStore) -> SessionWriter {
         store
-            .create(ProviderKind::OpenAi, "gpt-test", None, "", "", false)
+            .create(ProviderKind::OpenAi, "gpt-test", None, "", "", false, "")
             .expect("create session writer")
     }
 

@@ -154,7 +154,7 @@ async fn run_one(
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = SessionStore::new(tmp.path().join("sessions"));
     let writer: SessionWriter = store
-        .create(ProviderKind::Images, "gpt-image-1", None, "", "", false)
+        .create(ProviderKind::Images, "gpt-image-1", None, "", "", false, "")
         .expect("create writer");
     let images_dir = writer.images_path().to_string_lossy().into_owned();
     let ui = ScriptedUi::new(vec![input("draw"), Reply::Interrupted]);

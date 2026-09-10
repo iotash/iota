@@ -11,7 +11,8 @@ use crate::common::temp_project;
 use iota::app::HostDirs;
 use iota::cmd::Config;
 use iota::cmd::delegate::{
-    AgentRef, DelegateConfig, build_delegator, build_delegator_with_factory, child_tools,
+    DelegateAgents, DelegateConfig, LegacyAgentRef, build_delegator, build_delegator_with_factory,
+    child_tools,
 };
 use iota::testing::{map_env, map_resolver};
 use iota::tool::sets::{RawNode, ToolsConfig};
@@ -21,15 +22,15 @@ use iota::vars::EnvSource;
 fn load_config(root: &Path, body: &str) -> Config {
     let path = root.join("c.yaml");
     fs::write(&path, body).unwrap();
-    let mut warnings = Vec::new();
-    let cfg = Config::load(
+    // One-layer blocks are what most of these fixtures are, so the migration lines are expected; the
+    // three-layer fixtures assert their own silence.
+    Config::load(
         Some(&path),
         &HostDirs::default(),
         &map_resolver(&[]),
-        &mut |w| warnings.push(w),
-    );
-    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
-    cfg
+        &mut |_| {},
+    )
+    .expect("the config loads")
 }
 
 /// Go `agentsNode`: the `tools.delegate` value as a raw YAML node.
@@ -163,15 +164,18 @@ fn test_agent_ref_accepts_both_forms() {
         "agents:\n  a: worker\n  b: {provider: worker, description: d}\n  c: {description: only}\n",
     )
     .expect("decode");
-    assert_eq!(cfg.agents["a"], AgentRef::Name("worker".to_owned()));
-    assert_eq!(cfg.agents["a"].provider(), "worker");
-    assert_eq!(cfg.agents["a"].description(), "");
-    assert_eq!(cfg.agents["b"].provider(), "worker");
-    assert_eq!(cfg.agents["b"].description(), "d");
+    let DelegateAgents::Legacy(refs) = &cfg.agents else {
+        panic!("a mapping is the one-layer form: {:?}", cfg.agents);
+    };
+    assert_eq!(refs["a"], LegacyAgentRef::Name("worker".to_owned()));
+    assert_eq!(refs["a"].provider(), "worker");
+    assert_eq!(refs["a"].description(), "");
+    assert_eq!(refs["b"].provider(), "worker");
+    assert_eq!(refs["b"].description(), "d");
     // A description-only mapping decodes with an EMPTY provider (`provider` defaults) so the failure is the
     // useful one, not a YAML type error.
-    assert_eq!(cfg.agents["c"].provider(), "");
-    assert_eq!(cfg.agents["c"].description(), "only");
+    assert_eq!(refs["c"].provider(), "");
+    assert_eq!(refs["c"].description(), "only");
 
     let (dir, dirs) = temp_project(&[]);
     let config = load_config(dir.path(), "providers:\n  worker: {type: openai, key: k}\n");
@@ -188,6 +192,115 @@ fn test_agent_ref_accepts_both_forms() {
     .err()
     .expect("a description-only agent names no provider");
     assert_eq!(err.to_string(), "agent \"review\": no provider named");
+}
+
+/// The three-layer form: `agents:` is a LIST of top-level `agents:` entries, so a child finally has its own
+/// prompt, its own tools and its own description without a provider entry standing in for it.
+#[test]
+fn delegate_agents_list_references_top_level_agents() {
+    use iota::tool::Delegator as _;
+
+    let (dir, dirs) = temp_project(&[]);
+    let cfg = load_config(
+        dir.path(),
+        "
+providers:
+  oa: {type: openai, key: k}
+models:
+  fast: oa:gpt-4o-mini
+  smart: oa:gpt-5.2
+agents:
+  reviewer:
+    models: [smart]
+    system: you review
+    description: reviews code
+  scout:
+    models: [fast]
+    tools: {code: {read_only: true}}
+    description: searches but cannot write
+",
+    );
+    let node = agents_node("agents: [reviewer, scout]\nmax_turns: 4\n");
+    let (http, env) = seams();
+    let (del, factory) =
+        build_delegator_with_factory(&cfg, Some(&node), http, dir.path().to_path_buf(), dirs, env)
+            .expect("delegator");
+
+    // The description comes from the agent entry itself.
+    assert_eq!(
+        del.agent("reviewer").expect("reviewer").description,
+        "reviews code"
+    );
+    assert!(
+        del.agent("reviewer").expect("reviewer").read_only,
+        "no toolset at all is read-only"
+    );
+    assert!(del.agent("scout").expect("scout").read_only);
+
+    // The child rides the agent's model, the model's provider, and the agent's prompt and cap.
+    let child = factory("reviewer").expect("child");
+    assert_eq!(child.provider.model(), "gpt-5.2");
+    assert_eq!(child.system, "you review");
+    assert_eq!(child.max_turns.map(std::num::NonZeroU32::get), Some(4));
+
+    // The bare list form (`delegate: [reviewer]`) means the same thing said shorter.
+    let node = agents_node("[reviewer]\n");
+    let (http, env) = seams();
+    let del = build_delegator(
+        &cfg,
+        Some(&node),
+        http,
+        dir.path().to_path_buf(),
+        HostDirs::default(),
+        env,
+    )
+    .expect("delegator");
+    assert_eq!(
+        del.agent("reviewer").expect("reviewer").description,
+        "reviews code"
+    );
+    assert!(del.agent("scout").is_none(), "only what the list named");
+
+    // A name that resolves nowhere fails at startup, with the reference in the message.
+    let node = agents_node("agents: [nosuch]\n");
+    let (http, env) = seams();
+    let err = build_delegator(
+        &cfg,
+        Some(&node),
+        http,
+        dir.path().to_path_buf(),
+        HostDirs::default(),
+        env,
+    )
+    .err()
+    .expect("an unknown agent must be a startup error");
+    assert!(
+        err.to_string()
+            .starts_with("agent \"nosuch\": unknown provider \"nosuch\""),
+        "{err}"
+    );
+}
+
+/// A `workspace: true` agent gets the `skills` set in its child, exactly as `agent: true` did.
+#[test]
+fn a_workspace_agent_child_gets_the_skills_set() {
+    let (dir, dirs) = temp_project(&[]);
+    let cfg = load_config(
+        dir.path(),
+        "providers:\n  oa: {type: openai, key: k}\nagents:\n  helper:\n    models: [\"oa:gpt-4o\"]\n    workspace: true\n",
+    );
+    let node = agents_node("agents: [helper]\n");
+    let (http, env) = seams();
+    let (_del, factory) =
+        build_delegator_with_factory(&cfg, Some(&node), http, dir.path().to_path_buf(), dirs, env)
+            .expect("delegator");
+    let child = factory("helper").expect("child");
+    assert!(
+        has(child.dispatch.as_ref(), "load_skill"),
+        "workspace: true must enable the skills set: {:?}",
+        child.dispatch.tools()
+    );
+    assert!(child.agent.enabled, "the child runs in workspace mode");
 }
 
 // Go: cmd/delegate_test.go:120

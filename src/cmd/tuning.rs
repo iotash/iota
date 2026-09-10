@@ -2,6 +2,9 @@
 //! generation params, each warning byte-equal to Go, then the `tools`/`mcp_servers` warning for providers without tool
 //! calling.
 //!
+//! The values come from the resolved MODEL (an image knob or a reasoning effort is a property of the model,
+//! not of the endpoint), with the agent's overrides already folded in by [`Resolved::effort`] and friends.
+//!
 //! Warning texts (root.go):
 //! `` Warning: `image: true` is redundant for provider type {k} (it always generates images) `` ·
 //! `` Warning: `effort` does not apply to provider type {k} (ignored) `` ·
@@ -13,7 +16,7 @@
 use crate::provider::Provider;
 
 use crate::cmd::CliError;
-use crate::config::ProviderConfig;
+use crate::config::Resolved;
 
 /// Fixed order: image → effort → `top_p` → temperature → `json_edits` → gen-params. Warnings carry the `Warning: `
 /// prefix. Errors: `ConfigEffort`, `ConfigTopP`.
@@ -23,14 +26,15 @@ use crate::config::ProviderConfig;
 /// temperature was already given to `new_provider`, so this step only warns about a provider that cannot use it.
 pub(crate) fn apply(
     p: &mut dyn Provider,
-    provider_cfg: &ProviderConfig,
+    resolved: &Resolved,
     temperature: Option<f64>,
     warn: &mut dyn FnMut(String),
 ) -> Result<(), CliError> {
     let kind = p.kind();
+    let model_cfg = &resolved.model;
 
     // root.go:133-139
-    if provider_cfg.image {
+    if model_cfg.image {
         if let Some(tunable) = p.as_image_tunable() {
             tunable.set_image_output(true);
         } else if p.as_image_gen_tunable().is_some() {
@@ -41,9 +45,8 @@ pub(crate) fn apply(
     }
 
     // root.go:140-149
-    if let effort @ Some(_) = provider_cfg
-        .effort()
-        .map_err(|_| CliError::ConfigEffort(provider_cfg.effort.clone()))?
+    if let effort @ Some(_) = crate::provider::Effort::optional(resolved.effort())
+        .map_err(|_| CliError::ConfigEffort(resolved.effort().to_owned()))?
     {
         if let Some(tunable) = p.as_tunable() {
             tunable.set_effort(effort);
@@ -55,7 +58,7 @@ pub(crate) fn apply(
     }
 
     // root.go:150-159
-    if let Some(top_p) = provider_cfg.top_p {
+    if let Some(top_p) = resolved.top_p() {
         if !(0.0..=1.0).contains(&top_p) {
             return Err(CliError::ConfigTopP(top_p));
         }
@@ -76,7 +79,7 @@ pub(crate) fn apply(
     }
 
     // root.go:165-171
-    if provider_cfg.json_edits {
+    if model_cfg.json_edits {
         if let Some(tunable) = p.as_image_edit_json_tunable() {
             tunable.set_json_edits(true);
         } else {
@@ -87,7 +90,7 @@ pub(crate) fn apply(
     }
 
     // root.go:172-181
-    let gen_params = provider_cfg.image_gen_params();
+    let gen_params = model_cfg.image_gen_params();
     if !gen_params.is_empty() {
         if let Some(tunable) = p.as_image_gen_tunable() {
             tunable.set_image_gen_params(gen_params);
@@ -105,12 +108,12 @@ pub(crate) fn apply(
 /// (tools non-empty || mcp configs non-empty).
 pub(crate) fn warn_tools_without_calling(
     p: &dyn Provider,
-    provider_cfg: &ProviderConfig,
+    agent_cfg: &crate::config::AgentConfig,
     mcp_count: usize,
     warn: &mut dyn FnMut(String),
 ) {
     // root.go:196-199: explicitly configured tools that can never be called are worth one line, not a dead list.
-    if p.as_tool_provider().is_none() && (!provider_cfg.tools.is_empty() || mcp_count > 0) {
+    if p.as_tool_provider().is_none() && (!agent_cfg.tools.is_empty() || mcp_count > 0) {
         warn(format!(
             "Warning: tools/mcp_servers do not apply to provider type {} (no tool calling)",
             p.kind()
@@ -129,7 +132,7 @@ mod tests {
 
     use super::{apply, warn_tools_without_calling};
     use crate::cmd::CliError;
-    use crate::config::ProviderConfig;
+    use crate::config::{AgentConfig, ModelConfig, Resolved};
 
     /// A provider with NO optional capability at all (Go: a type that satisfies none of the tuning interfaces).
     struct PlainProvider(ProviderKind);
@@ -161,22 +164,29 @@ mod tests {
         }
     }
 
+    /// A resolution carrying just this model.
+    fn resolved(model: ModelConfig) -> Resolved {
+        Resolved {
+            model,
+            ..Resolved::default()
+        }
+    }
+
     /// Collects the warnings `apply` emitted, in order.
-    fn run(
-        provider_cfg: &ProviderConfig,
-        temperature: Option<f64>,
-    ) -> (Result<(), CliError>, Vec<String>) {
+    fn run(model: &ModelConfig, temperature: Option<f64>) -> (Result<(), CliError>, Vec<String>) {
         let mut p = PlainProvider(ProviderKind::Imagen);
         let mut warnings = Vec::new();
-        let r = apply(&mut p, provider_cfg, temperature, &mut |w| warnings.push(w));
+        let r = apply(&mut p, &resolved(model.clone()), temperature, &mut |w| {
+            warnings.push(w);
+        });
         (r, warnings)
     }
 
     #[test]
     fn config_effort_and_top_p_ranges_are_errors() {
-        let bad_effort = ProviderConfig {
+        let bad_effort = ModelConfig {
             effort: "turbo".to_owned(),
-            ..ProviderConfig::default()
+            ..ModelConfig::default()
         };
         let (r, warnings) = run(&bad_effort, None);
         assert_eq!(
@@ -185,9 +195,9 @@ mod tests {
         );
         assert!(warnings.is_empty(), "the error precedes every warning");
 
-        let bad_top_p = ProviderConfig {
+        let bad_top_p = ModelConfig {
             top_p: Some(2.0),
-            ..ProviderConfig::default()
+            ..ModelConfig::default()
         };
         let (r, _) = run(&bad_top_p, None);
         assert_eq!(
@@ -201,15 +211,15 @@ mod tests {
     /// half end-to-end against the real imagen provider.)
     #[test]
     fn warnings_follow_the_go_order() {
-        let provider_cfg = ProviderConfig {
+        let model_cfg = ModelConfig {
             image: true,
             effort: "high".to_owned(),
             top_p: Some(0.5),
             json_edits: true,
             aspect_ratio: "1:1".to_owned(),
-            ..ProviderConfig::default()
+            ..ModelConfig::default()
         };
-        let (r, warnings) = run(&provider_cfg, Some(0.7));
+        let (r, warnings) = run(&model_cfg, Some(0.7));
         assert!(r.is_ok());
         assert_eq!(
             warnings,
@@ -227,21 +237,21 @@ mod tests {
 
     #[test]
     fn tools_warning_needs_a_provider_without_tool_calling() {
-        let mut provider_cfg = ProviderConfig::default();
-        provider_cfg
+        let mut agent_cfg = AgentConfig::default();
+        agent_cfg
             .tools
             .insert("code".to_owned(), serde_norway::Value::Null);
 
         // A tool-calling provider says nothing.
         let tool_provider = FakeToolProvider::scripted(Vec::new(), "done");
         let mut warnings = Vec::new();
-        warn_tools_without_calling(&tool_provider, &provider_cfg, 0, &mut |w| warnings.push(w));
+        warn_tools_without_calling(&tool_provider, &agent_cfg, 0, &mut |w| warnings.push(w));
         assert!(warnings.is_empty());
 
         // One without tool calling warns once, whether the tools came from `tools:` or from MCP.
         let plain = PlainProvider(ProviderKind::Imagen);
         let mut warnings = Vec::new();
-        warn_tools_without_calling(&plain, &provider_cfg, 0, &mut |w| warnings.push(w));
+        warn_tools_without_calling(&plain, &agent_cfg, 0, &mut |w| warnings.push(w));
         assert_eq!(
             warnings,
             vec![
@@ -251,13 +261,13 @@ mod tests {
         );
 
         let mut warnings = Vec::new();
-        warn_tools_without_calling(&plain, &ProviderConfig::default(), 1, &mut |w| {
+        warn_tools_without_calling(&plain, &AgentConfig::default(), 1, &mut |w| {
             warnings.push(w);
         });
         assert_eq!(warnings.len(), 1, "an MCP server alone is enough");
 
         let mut warnings = Vec::new();
-        warn_tools_without_calling(&plain, &ProviderConfig::default(), 0, &mut |w| {
+        warn_tools_without_calling(&plain, &AgentConfig::default(), 0, &mut |w| {
             warnings.push(w);
         });
         assert!(warnings.is_empty(), "nothing configured, nothing to say");

@@ -89,6 +89,13 @@ pub struct SessionMeta {
     /// The generated session title; empty omits the key.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub title: String,
+    /// The `agents:` entry the session ran under; empty omits the key. Bundles written before the
+    /// three-layer config — and runs whose positional argument named a model or a provider rather than an
+    /// agent — simply lack it. It is a RECORD, not a replay instruction: a resume reassembles from the
+    /// CURRENT config (decision of 2026-09-09), and an agent that has been deleted since falls back to the
+    /// provider and model the meta carries (see `crate::session::warn_if_session_agent_is_gone`).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub agent: String,
     /// Records written to the log, system messages included, compaction markers excluded. ALWAYS emitted.
     pub message_count: i64,
     /// Keys a future Go build wrote that this build does not model — preserved verbatim across a Rust

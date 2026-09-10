@@ -4,8 +4,7 @@
 use std::sync::Arc;
 
 use crate::mcp::config::{ServerConfig, parse_mcp_flag};
-use crate::provider::ProviderKind;
-use crate::tool::{DeferredGroup, Registry, merge, resolve_defer_mode};
+use crate::tool::{DeferredGroup, Registry, merge};
 use crate::tool::{Dispatcher, Env, PrefixOf};
 
 use crate::cmd::CliError;
@@ -27,7 +26,7 @@ impl McpPart {
         }
     }
 }
-use crate::config::{Config, ProviderConfig};
+use crate::config::{AgentConfig, Config, ModelConfig};
 
 /// Uses `crate::mcp::config` only. Config servers (`BTreeMap` order = sorted by name) then `--mcp`
 /// flags in order (`parse_mcp_flag` errors abort: `McpFlagError::EmptyFlag` → `CliError::McpFlag`). Deferred
@@ -35,12 +34,12 @@ use crate::config::{Config, ProviderConfig};
 /// Blank defer → `Warning: mcp server {name}: defer needs a one-line summary of the server's tools (not deferred)`.
 pub(crate) fn build_mcp_configs(
     cfg: &Config,
-    provider_cfg: &ProviderConfig,
+    agent_cfg: &AgentConfig,
     mcp_flags: &[String],
     warn: &mut dyn FnMut(String),
 ) -> Result<(Vec<ServerConfig>, Vec<DeferredGroup>), CliError> {
-    // root.go:616-621: the provider's `mcp_servers:` selects the config-file subset; an unknown name aborts.
-    let selected = cfg.mcp_servers_for(provider_cfg)?;
+    // root.go:616-621: the agent's `mcp_servers:` selects the config-file subset; an unknown name aborts.
+    let selected = cfg.mcp_servers_for(agent_cfg)?;
     let mut configs = Vec::with_capacity(selected.len() + mcp_flags.len());
     let mut defers = Vec::new();
 
@@ -83,13 +82,13 @@ pub(crate) fn build_mcp_configs(
 }
 
 /// The MCP part arrives as a [`McpPart`] (`None` when no server is configured).
-/// `Registry::build` → `enable_set("agent")` in agent mode → `enable_set("ask")` when `env.interactor` is set
+/// `Registry::build` → `enable_set("skills")` in agent mode → `enable_set("ask")` when `env.interactor` is set
 /// (interactive runs only) → parts = [registry if non-empty] + [defer wrapper |
 /// mcp dispatcher] → merge. Warn sink receives messages WITHOUT prefix; the caller prints `⚠ {msg}`.
 /// `` defer_mode has no effect without a deferred mcp server (add `defer: "<summary>"` to one) ``.
 pub(crate) fn build_dispatcher(
-    provider_cfg: &ProviderConfig,
-    kind: ProviderKind,
+    agent_cfg: &AgentConfig,
+    model_cfg: &ModelConfig,
     mcp: Option<McpPart>,
     defers: Vec<DeferredGroup>,
     agent_mode: bool,
@@ -97,15 +96,15 @@ pub(crate) fn build_dispatcher(
     warn: &mut dyn FnMut(String),
 ) -> Arc<dyn Dispatcher> {
     // root.go:578-587. The built-ins are the first part, so they win any tool-name collision with MCP.
-    let mut registry = Registry::build(env, &provider_cfg.tools, warn);
+    let mut registry = Registry::build(env, &agent_cfg.tools, warn);
     if agent_mode {
-        // Skills are activated through the agent set's `load_skill`; a config entry may still declare it.
-        registry.enable_set(env, "agent", warn);
+        // Skills are activated through the `skills` set's `load_skill`; a config entry may still declare it.
+        registry.enable_set(env, crate::tool::sets::SKILLS_SET, warn);
     }
     // root.go:588-592: the ask set is interactive-only (it needs `env.Interact`), so a headless run never
     // enables it and the model never sees a tool it cannot use. Enabled HERE so `choose`/`confirm` keep Go's
     // advertised position among the built-ins.
-    if env.interactor.is_some() && !crate::tool::set_disabled(&provider_cfg.tools, "ask") {
+    if env.interactor.is_some() && !crate::tool::set_disabled(&agent_cfg.tools, "ask") {
         registry.enable_set(env, "ask", warn);
     }
 
@@ -119,7 +118,7 @@ pub(crate) fn build_dispatcher(
     }) = mcp
     {
         if defers.is_empty() {
-            if !provider_cfg.defer_mode.is_empty() {
+            if !model_cfg.defer_mode.is_empty() {
                 warn(
                     "defer_mode has no effect without a deferred mcp server (add `defer: \"<summary>\"` to one)"
                         .to_owned(),
@@ -128,10 +127,10 @@ pub(crate) fn build_dispatcher(
             parts.push(dispatch);
         } else {
             // Wire-name prefixes resolve lazily: segments are assigned at connect time, so the deferring
-            // wrapper re-asks per snapshot (root.go:600-609). The capability check uses the RESOLVED provider
-            // kind, not the raw `type:` field (DIVERGENCES F-01).
-            let mode = resolve_defer_mode(&provider_cfg.defer_mode, kind, warn);
-            parts.push(mode.wrap(dispatch, defers, prefix_of));
+            // wrapper re-asks per snapshot (root.go:600-609). Whether the mode APPLIES to this dialect was
+            // settled in `Config::load` (an unusable protocol is a config error, not a silent downgrade), so
+            // there is nothing left to decide here.
+            parts.push(model_cfg.defer_mode().wrap(dispatch, defers, prefix_of));
         }
     }
     merge(parts)
@@ -141,26 +140,21 @@ pub(crate) fn build_dispatcher(
 mod tests {
     use std::{collections::BTreeMap, sync::Arc};
 
-    use crate::provider::ProviderKind;
     use crate::tool::DeferredGroup;
     use crate::tool::{Dispatcher, Env, PrefixOf};
 
     use super::McpPart;
 
     use super::{build_dispatcher, build_mcp_configs};
-    use crate::config::{Config, McpServerConfig, ProviderConfig};
+    use crate::config::{AgentConfig, Config, McpServerConfig, ModelConfig};
 
     /// What `build_mcp_configs` returns.
     type Configs =
         Result<(Vec<crate::mcp::config::ServerConfig>, Vec<DeferredGroup>), crate::cmd::CliError>;
 
-    fn collect(
-        cfg: &Config,
-        provider_cfg: &ProviderConfig,
-        flags: &[String],
-    ) -> (Configs, Vec<String>) {
+    fn collect(cfg: &Config, agent_cfg: &AgentConfig, flags: &[String]) -> (Configs, Vec<String>) {
         let mut warnings = Vec::new();
-        let r = build_mcp_configs(cfg, provider_cfg, flags, &mut |w| warnings.push(w));
+        let r = build_mcp_configs(cfg, agent_cfg, flags, &mut |w| warnings.push(w));
         (r, warnings)
     }
 
@@ -193,7 +187,7 @@ mod tests {
         let cfg = config();
         let (r, warnings) = collect(
             &cfg,
-            &ProviderConfig::default(),
+            &AgentConfig::default(),
             &["srv-bin --root /tmp".to_owned(), "https://x/mcp".to_owned()],
         );
         let (configs, defers) = r.expect("configs");
@@ -225,7 +219,7 @@ mod tests {
     fn mcp_flag_empty_is_feature_independent() {
         let (r, _) = collect(
             &Config::default(),
-            &ProviderConfig::default(),
+            &AgentConfig::default(),
             &["  ".to_owned()],
         );
         assert_eq!(
@@ -236,11 +230,11 @@ mod tests {
 
     #[test]
     fn unknown_mcp_server_selection_aborts() {
-        let provider_cfg = ProviderConfig {
+        let agent_cfg = AgentConfig {
             mcp_servers: Some(vec!["nope".to_owned()]),
-            ..ProviderConfig::default()
+            ..AgentConfig::default()
         };
-        let (r, _) = collect(&config(), &provider_cfg, &[]);
+        let (r, _) = collect(&config(), &agent_cfg, &[]);
         assert_eq!(
             r.expect_err("unknown selection must fail").to_string(),
             "mcp_servers: \"nope\" is not defined under the top-level mcp_servers"
@@ -279,14 +273,14 @@ mod tests {
 
     #[test]
     fn defer_mode_without_a_deferred_server_warns_once() {
-        let provider_cfg = ProviderConfig {
+        let model_cfg = ModelConfig {
             defer_mode: "reference".to_owned(),
-            ..ProviderConfig::default()
+            ..ModelConfig::default()
         };
         let mut warnings = Vec::new();
         let d = build_dispatcher(
-            &provider_cfg,
-            ProviderKind::Anthropic,
+            &AgentConfig::default(),
+            &model_cfg,
             Some(mcp_part()),
             Vec::new(),
             false,
@@ -305,8 +299,8 @@ mod tests {
         // With no MCP part at all the warning is not raised (Go's `mgr != nil` guard, root.go:592-611).
         let mut warnings = Vec::new();
         build_dispatcher(
-            &provider_cfg,
-            ProviderKind::Anthropic,
+            &AgentConfig::default(),
+            &model_cfg,
             None,
             Vec::new(),
             false,
@@ -316,13 +310,13 @@ mod tests {
         assert!(warnings.is_empty());
     }
 
-    /// DIVERGENCES F-01: the capability check sees the RESOLVED kind, so `defer_mode: reference` on an alias whose
-    /// `type:` is anthropic is accepted (Go compared the raw `type:` field and degraded to normal).
+    /// The mode is taken as written, with no capability check and no downgrade: `Config::load` refused the
+    /// mismatch already, so a dispatcher build has nothing left to warn about.
     #[test]
-    fn defer_mode_capability_uses_the_resolved_kind() {
-        let provider_cfg = ProviderConfig {
+    fn defer_mode_wraps_without_a_second_capability_check() {
+        let model_cfg = ModelConfig {
             defer_mode: "reference".to_owned(),
-            ..ProviderConfig::default()
+            ..ModelConfig::default()
         };
         let groups = vec![DeferredGroup {
             name: "srv".to_owned(),
@@ -330,47 +324,28 @@ mod tests {
         }];
         let mut warnings = Vec::new();
         build_dispatcher(
-            &provider_cfg,
-            ProviderKind::Anthropic,
-            Some(mcp_part()),
-            groups.clone(),
-            false,
-            &Env::default(),
-            &mut |w| warnings.push(w),
-        );
-        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
-
-        // A kind that does not support the mode still degrades, naming it.
-        let mut warnings = Vec::new();
-        build_dispatcher(
-            &provider_cfg,
-            ProviderKind::OpenAi,
+            &AgentConfig::default(),
+            &model_cfg,
             Some(mcp_part()),
             groups,
             false,
             &Env::default(),
             &mut |w| warnings.push(w),
         );
-        assert_eq!(
-            warnings,
-            vec![
-                "defer_mode \"reference\" does not apply to provider type openai (using normal)"
-                    .to_owned()
-            ]
-        );
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
     }
 
     /// Unknown toolset keys are warnings, never aborts, and the ask set is never enabled headlessly.
     #[test]
     fn registry_warnings_reach_the_caution_sink() {
-        let mut provider_cfg = ProviderConfig::default();
-        provider_cfg
+        let mut agent_cfg = AgentConfig::default();
+        agent_cfg
             .tools
             .insert("nosuchset".to_owned(), serde_norway::Value::Null);
         let mut warnings = Vec::new();
         let d = build_dispatcher(
-            &provider_cfg,
-            ProviderKind::OpenAi,
+            &agent_cfg,
+            &ModelConfig::default(),
             None,
             Vec::new(),
             false,

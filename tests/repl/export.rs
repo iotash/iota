@@ -111,7 +111,7 @@ impl Fixture {
     fn writer(&self, title: &str) -> SessionWriter {
         let mut w = self
             .store
-            .create(KIND, "gpt-x", None, "", "", false)
+            .create(KIND, "gpt-x", None, "", "", false, "")
             .expect("create writer");
         w.update_meta(|m| title.clone_into(&mut m.title))
             .expect("set title");

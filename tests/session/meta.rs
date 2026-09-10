@@ -14,7 +14,7 @@ const KIND: ProviderKind = ProviderKind::OpenAi;
 #[test]
 fn session_meta_tuning_round_trip() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false).unwrap();
+    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
     let id = writer.id().to_owned();
 
     // Setters before the bundle exists are flushed by the first append.
@@ -60,7 +60,7 @@ fn session_meta_tuning_round_trip() {
 #[test]
 fn unknown_meta_keys_survive_a_rust_rewrite() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false).unwrap();
+    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
     let id = writer.id().to_owned();
     writer.append_messages(&[Message::user("hi")]).unwrap();
     let dir = writer.dir().to_path_buf();
@@ -114,6 +114,68 @@ fn unknown_meta_keys_survive_a_rust_rewrite() {
             "v",
         ]
     );
+}
+
+/// `agent:` records how a session was STARTED. It is omitted when the run named no agent — so every bundle
+/// written before the three-layer config keeps the byte shape it had — and it survives a rewrite.
+#[test]
+fn meta_records_the_agent_the_session_ran_under() {
+    let (_home, store) = temp_store();
+
+    // No agent: the key is absent from the file, exactly as it was before the key existed.
+    let mut writer = store.create(KIND, "m", None, "", "", false, "").unwrap();
+    writer
+        .append_messages(&[Message::user("hi".to_owned())])
+        .unwrap();
+    let dir = writer.dir().to_path_buf();
+    let text = std::fs::read_to_string(dir.join(META_FILE)).unwrap();
+    assert!(!text.contains("\"agent\""), "{text}");
+    assert_eq!(SessionMeta::read(&dir).unwrap().agent, "");
+
+    // Under an agent: recorded, and still there after the meta is rewritten.
+    let mut writer = store
+        .create(KIND, "m", None, "", "", false, "reviewer")
+        .unwrap();
+    writer
+        .append_messages(&[Message::user("hi".to_owned())])
+        .unwrap();
+    let dir = writer.dir().to_path_buf();
+    assert_eq!(SessionMeta::read(&dir).unwrap().agent, "reviewer");
+    writer
+        .append_messages(&[Message::user("again".to_owned())])
+        .unwrap();
+    assert_eq!(SessionMeta::read(&dir).unwrap().agent, "reviewer");
+}
+
+/// A resumed bundle whose agent has been deleted from the config says so once, and the run carries on with
+/// the provider and model the meta holds — the behaviour every session had before the key existed.
+#[test]
+fn a_deleted_session_agent_is_announced_once() {
+    let mut meta = SessionMeta {
+        agent: "reviewer".to_owned(),
+        ..SessionMeta::default()
+    };
+
+    let mut warnings = Vec::new();
+    iota::session::warn_if_session_agent_is_gone(&meta, false, &mut |w| warnings.push(w));
+    assert_eq!(
+        warnings,
+        vec![
+            "Warning: session agent \"reviewer\" is no longer configured; using the provider and model from the session"
+                .to_owned()
+        ]
+    );
+
+    // Still configured: nothing to say.
+    let mut warnings = Vec::new();
+    iota::session::warn_if_session_agent_is_gone(&meta, true, &mut |w| warnings.push(w));
+    assert!(warnings.is_empty(), "{warnings:?}");
+
+    // A bundle that names no agent is silent either way.
+    meta.agent.clear();
+    let mut warnings = Vec::new();
+    iota::session::warn_if_session_agent_is_gone(&meta, false, &mut |w| warnings.push(w));
+    assert!(warnings.is_empty(), "{warnings:?}");
 }
 
 /// The minimal legacy bundle Go can have written loads with everything else defaulted.

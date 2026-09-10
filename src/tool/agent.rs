@@ -1,5 +1,5 @@
-//! The `agent` toolset (tool/agent.go): the `load_skill` tool that activates a skill from the catalog and reads
-//! its bundled files.
+//! The `skills` toolset (tool/agent.go): the `load_skill` tool that activates a skill from the catalog and
+//! reads its bundled files. It was spelled `agent` before the three-layer config split.
 
 use std::{
     fmt::Write as _,
@@ -30,7 +30,7 @@ pub(crate) struct LoadSkill {
 }
 
 /// Ignores `node`; never fails.
-pub fn new_agent_set(env: &Env, _node: Option<&RawNode>) -> Result<Vec<Arc<dyn Tool>>, SetError> {
+pub fn new_skills_set(env: &Env, _node: Option<&RawNode>) -> Result<Vec<Arc<dyn Tool>>, SetError> {
     Ok(vec![Arc::new(LoadSkill {
         // Go's `Env.Root()` falls back to the empty string when neither the project root nor the working
         // directory resolves; discovery then finds nothing rather than failing the build.

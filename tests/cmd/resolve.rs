@@ -25,7 +25,12 @@ fn cli(args: &[&str]) -> Cli {
 }
 
 fn config(yaml: &str) -> Config {
-    serde_norway::from_str(yaml).expect("test config")
+    Config::parse(
+        yaml.as_bytes(),
+        &iota::testing::map_resolver(&[]),
+        &mut |_| {},
+    )
+    .expect("test config")
 }
 
 fn resolve(
@@ -33,7 +38,24 @@ fn resolve(
     cfg: &Config,
     env: &[(&str, &str)],
 ) -> Result<iota::cmd::RunSettings, CliError> {
-    resolve_run(&cli(args), cfg, &map_env(env), &mut std::io::empty())
+    resolve_warned(args, cfg, env).0
+}
+
+/// The same, keeping the warnings `-M` may have printed.
+fn resolve_warned(
+    args: &[&str],
+    cfg: &Config,
+    env: &[(&str, &str)],
+) -> (Result<iota::cmd::RunSettings, CliError>, Vec<String>) {
+    let mut warnings = Vec::new();
+    let r = resolve_run(
+        &cli(args),
+        cfg,
+        &map_env(env),
+        &mut std::io::empty(),
+        &mut |w| warnings.push(w),
+    );
+    (r, warnings)
 }
 
 /// A `Write` the test can read back after handing it to `Streams` as a `Box<dyn Write + Send>`.
@@ -155,7 +177,7 @@ fn resolve_precedence_key_flag_env_config() {
     assert!(!s.agent_mode);
     assert_eq!(s.max_turns, None);
     assert_eq!(s.output_format_raw, None);
-    assert_eq!(s.provider_cfg, cfg.providers["deepseek"]);
+    assert_eq!(s.resolved.provider, cfg.providers["deepseek"]);
 
     // The flag beats the environment; every other flag beats its config field.
     let s = resolve(
@@ -217,7 +239,7 @@ fn resolve_precedence_key_flag_env_config() {
     // Unconfigured built-in types read their own variable; the unknown-type fallback is the literal API_KEY.
     let s = resolve(&["gemini"], &cfg, &[("GOOGLE_API_KEY", "g")]).unwrap();
     assert_eq!((s.raw_type.as_str(), s.api_key.as_str()), ("gemini", "g"));
-    assert_eq!(s.provider_cfg, ProviderConfig::default());
+    assert_eq!(s.resolved.provider, ProviderConfig::default());
     let odd = config("providers:\n  odd:\n    type: custom\n");
     let err = resolve(&["odd"], &odd, &[("API_KEY", "")]).unwrap_err();
     assert!(matches!(err, CliError::ApiKeyRequired("API_KEY")));
@@ -262,25 +284,32 @@ fn resolve_stdin_message_trimmed_and_empty_error() {
     let env = map_env(&[("OPENAI_API_KEY", "k")]);
     let args = cli(&["openai", "-M", "gpt", "-m", "-"]);
 
-    let s = resolve_run(&args, &cfg, &env, &mut "  hello\n  world \n\n".as_bytes()).unwrap();
+    let s = resolve_run(
+        &args,
+        &cfg,
+        &env,
+        &mut "  hello\n  world \n\n".as_bytes(),
+        &mut |_| {},
+    )
+    .unwrap();
     assert_eq!(s.message.as_deref(), Some("hello\n  world"));
 
-    let err = resolve_run(&args, &cfg, &env, &mut " \n\t".as_bytes()).unwrap_err();
+    let err = resolve_run(&args, &cfg, &env, &mut " \n\t".as_bytes(), &mut |_| {}).unwrap_err();
     assert_eq!(err.to_string(), "no message provided via stdin");
     assert!(matches!(err, CliError::EmptyStdin));
 
-    let err = resolve_run(&args, &cfg, &env, &mut FailingStdin).unwrap_err();
+    let err = resolve_run(&args, &cfg, &env, &mut FailingStdin, &mut |_| {}).unwrap_err();
     assert_eq!(err.to_string(), "failed to read from stdin: boom");
     assert!(matches!(err, CliError::Stdin(_)));
 
     // Any other -m value is used as-is (not trimmed) and never touches stdin.
     let args = cli(&["openai", "-M", "gpt", "-m", "  spaced  "]);
-    let s = resolve_run(&args, &cfg, &env, &mut FailingStdin).unwrap();
+    let s = resolve_run(&args, &cfg, &env, &mut FailingStdin, &mut |_| {}).unwrap();
     assert_eq!(s.message.as_deref(), Some("  spaced  "));
 
     // The stdin read happens AFTER the key check: no key → the key error, stdin untouched.
     let args = cli(&["openai", "-M", "gpt", "-m", "-"]);
-    let err = resolve_run(&args, &cfg, &map_env(&[]), &mut FailingStdin).unwrap_err();
+    let err = resolve_run(&args, &cfg, &map_env(&[]), &mut FailingStdin, &mut |_| {}).unwrap_err();
     assert!(matches!(err, CliError::ApiKeyRequired(_)));
 }
 
@@ -746,45 +775,207 @@ fn resolve_resume_defers_model_required() {
     assert_eq!(s.resume, None);
 }
 
-/// root.go:455-467: the `-l` line for an alias (type, optional url/model) and for a same-name entry.
+/// root.go:455-467: the `-l` line for an alias (type, optional url/model) and for a same-name entry. The
+/// model comes from the same-named `models:` entry, which is where a one-layer `model:` lands.
 #[test]
 fn provider_line_formats() {
-    let provider_cfg = |url: &str, model: &str| ProviderConfig {
+    let provider_cfg = |url: &str| ProviderConfig {
         url: url.to_owned(),
-        model: model.to_owned(),
         ..ProviderConfig::default()
     };
     assert_eq!(
         provider_line(
             "deepseek",
             "openai",
-            &provider_cfg("https://api.deepseek.com/v1", "deepseek-chat")
+            &provider_cfg("https://api.deepseek.com/v1"),
+            "deepseek-chat"
         ),
         "deepseek (type: openai, url: https://api.deepseek.com/v1, model: deepseek-chat)"
     );
     assert_eq!(
-        provider_line("deepseek", "openai", &provider_cfg("", "deepseek-chat")),
+        provider_line("deepseek", "openai", &provider_cfg(""), "deepseek-chat"),
         "deepseek (type: openai, model: deepseek-chat)"
     );
     assert_eq!(
-        provider_line("deepseek", "openai", &provider_cfg("https://x", "")),
+        provider_line("deepseek", "openai", &provider_cfg("https://x"), ""),
         "deepseek (type: openai, url: https://x)"
     );
     assert_eq!(
-        provider_line("deepseek", "openai", &provider_cfg("", "")),
+        provider_line("deepseek", "openai", &provider_cfg(""), ""),
         "deepseek (type: openai)"
     );
     assert_eq!(
-        provider_line("openai", "openai", &provider_cfg("", "")),
+        provider_line("openai", "openai", &provider_cfg(""), ""),
         "openai"
     );
     assert_eq!(
         provider_line(
             "openai",
             "openai",
-            &provider_cfg("https://ignored", "gpt-4o")
+            &provider_cfg("https://ignored"),
+            "gpt-4o"
         ),
         "openai (default model: gpt-4o)",
         "a same-name entry never prints its url"
+    );
+
+    // The id the listing shows is the migrated `model:` — and only when the entry belongs to that provider.
+    let cfg = config(
+        "providers:\n  deepseek: {type: openai}\n  other: {type: openai}\nmodels:\n  deepseek: deepseek:chat-v3\n  other: deepseek:not-mine\n",
+    );
+    assert_eq!(cfg.default_model_id("deepseek"), "chat-v3");
+    assert_eq!(
+        cfg.default_model_id("other"),
+        "",
+        "an entry that points at another provider is not that provider's default"
+    );
+    assert_eq!(cfg.default_model_id("nosuch"), "");
+}
+
+// ---------------------------------------------------------------- `-M` against the candidate set
+
+/// `-M` takes a bare id, a `provider:id` pair (which MOVES the run to that provider, key and URL included)
+/// and `provider:*` (that provider, no model chosen). A candidate entry may also be named directly.
+#[test]
+fn model_flag_forms() {
+    let cfg = config(
+        "
+providers:
+  anthropic: {key: ak}
+  relay: {type: openai, key: rk, url: https://relay/v1}
+models:
+  sonnet: anthropic:claude-sonnet-4
+  gpt5: {provider: relay, id: gpt-5.2, defer_mode: system-tools}
+agents:
+  team:
+    models: [sonnet, gpt5]
+",
+    );
+
+    // No flag: the first candidate.
+    let s = resolve(&["team"], &cfg, &[]).unwrap();
+    assert_eq!(
+        (s.raw_type.as_str(), s.model.as_str()),
+        ("anthropic", "claude-sonnet-4")
+    );
+    assert_eq!(s.api_key, "ak");
+
+    // A candidate by name brings its provider, its key, its url AND its protocol with it.
+    let (s, warnings) = resolve_warned(&["team", "-M", "gpt5"], &cfg, &[]);
+    let s = s.unwrap();
+    assert_eq!(s.raw_type, "openai");
+    assert_eq!(s.model, "gpt-5.2");
+    assert_eq!(s.api_key, "rk");
+    assert_eq!(s.base_url, "https://relay/v1");
+    assert_eq!(s.resolved.model.defer_mode, "system-tools");
+    assert!(
+        warnings.is_empty(),
+        "a candidate is not a surprise: {warnings:?}"
+    );
+
+    // `provider:id` moves the run to that provider even when nothing configured that pair.
+    let (s, warnings) = resolve_warned(&["team", "-M", "relay:o3-mini"], &cfg, &[]);
+    let s = s.unwrap();
+    assert_eq!(s.raw_type, "openai");
+    assert_eq!(s.model, "o3-mini");
+    assert_eq!(s.base_url, "https://relay/v1");
+    assert_eq!(
+        warnings,
+        vec![
+            "Warning: model relay:o3-mini is not in agent \"team\"'s models (using it anyway)"
+                .to_owned()
+        ]
+    );
+
+    // `provider:*` is that provider with nothing chosen — the picker's job.
+    let s = resolve(&["team", "-M", "relay:*"], &cfg, &[]).unwrap();
+    assert_eq!((s.raw_type.as_str(), s.model.as_str()), ("openai", ""));
+
+    // A bare id stays on the provider the run resolved to.
+    let (s, warnings) = resolve_warned(&["team", "-M", "claude-opus-5"], &cfg, &[]);
+    assert_eq!(s.unwrap().raw_type, "anthropic");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+
+    // An id whose colon names nothing iota knows is left alone — relays put colons in model ids.
+    let s = resolve(&["team", "-M", "vendor:weird:id"], &cfg, &[]).unwrap();
+    assert_eq!(
+        (s.raw_type.as_str(), s.model.as_str()),
+        ("anthropic", "vendor:weird:id")
+    );
+}
+
+/// The candidate warning is advice about a declared set. A migrated one-layer block has an implicit set of
+/// one, which was never advice, so `-M` on it stays as quiet as it always was.
+#[test]
+fn model_flag_is_quiet_without_a_declared_candidate_set() {
+    let cfg =
+        config("providers:\n  deepseek:\n    type: openai\n    key: k\n    model: deepseek-chat\n");
+    let (s, warnings) = resolve_warned(&["deepseek", "-M", "anything-else"], &cfg, &[]);
+    assert_eq!(s.unwrap().model, "anything-else");
+    assert!(warnings.is_empty(), "{warnings:?}");
+
+    // A provider name with no config at all has no set either.
+    let (s, warnings) = resolve_warned(
+        &["openai", "-k", "k", "-M", "gpt-4o"],
+        &Config::default(),
+        &[],
+    );
+    assert_eq!(s.unwrap().model, "gpt-4o");
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+/// The four-level resolution as the command sees it: an agent shadows a model shadows a provider, and the
+/// agent's switches reach `RunSettings`.
+#[test]
+fn positional_resolution_reaches_run_settings() {
+    let cfg = config(
+        "
+providers:
+  openai: {key: pk}
+  anthropic: {key: ak}
+models:
+  openai: {provider: anthropic, id: from-models}
+agents:
+  openai:
+    models: [\"anthropic:from-agents\"]
+    system: agent prompt
+    workspace: true
+",
+    );
+    let s = resolve(&["openai"], &cfg, &[]).unwrap();
+    assert_eq!(
+        s.raw_type, "anthropic",
+        "the agent's model decides the endpoint"
+    );
+    assert_eq!(s.model, "from-agents");
+    assert_eq!(s.system, "agent prompt");
+    assert_eq!(s.api_key, "ak");
+    assert!(s.agent_mode, "workspace: true is --agent");
+
+    // Without the agent, the model entry wins over the provider of the same name.
+    let cfg = config(
+        "providers:\n  openai: {key: pk}\n  anthropic: {key: ak}\nmodels:\n  openai: {provider: anthropic, id: from-models}\n",
+    );
+    let s = resolve(&["openai"], &cfg, &[]).unwrap();
+    assert_eq!(
+        (s.raw_type.as_str(), s.model.as_str()),
+        ("anthropic", "from-models")
+    );
+    assert!(!s.agent_mode);
+
+    // …and without the model entry, the provider itself.
+    let cfg = config("providers:\n  openai: {key: pk}\n");
+    let s = resolve(&["openai"], &cfg, &[]).unwrap();
+    assert_eq!((s.raw_type.as_str(), s.api_key.as_str()), ("openai", "pk"));
+    assert_eq!(s.model, "");
+
+    // An unknown name lists every configured name once, sorted across the three layers.
+    let cfg = config(
+        "providers:\n  zeta: {type: openai}\nmodels:\n  mid: openai:gpt-4o\nagents:\n  alpha:\n    models: [mid]\n",
+    );
+    let err = resolve(&["opnai"], &cfg, &[]).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "unknown provider \"opnai\": not a configured alias or a built-in type\n  configured aliases: alpha, mid, zeta\n  built-in types: openai, anthropic, gemini, vertexai, openresponses, imagen, images"
     );
 }

@@ -26,7 +26,7 @@ use iota::app::HostDirs;
 use iota::chat::turns::RunCtx;
 use iota::provider::model::JsonObject;
 use iota::tool::Registry;
-use iota::tool::agent::new_agent_set;
+use iota::tool::agent::new_skills_set;
 use iota::tool::sets::ToolsConfig;
 use iota::tool::{Dispatcher, Env, ToolOutput};
 use serde_json::json;
@@ -599,7 +599,7 @@ fn skill_project(name: &str, body: &str) -> (TempDir, Env, PathBuf) {
 
 /// Go's `callLoadSkill`: runs `load_skill` through the set factory and returns its model-facing output.
 async fn call_load_skill(env: &Env, args: serde_json::Value) -> ToolOutput {
-    let tools = new_agent_set(env, None).expect("the agent set never fails");
+    let tools = new_skills_set(env, None).expect("the skills set never fails");
     assert_eq!(tools.len(), 1);
     let args: JsonObject = match args {
         serde_json::Value::Object(m) => m,
@@ -757,14 +757,14 @@ async fn test_load_skill_window() {
     assert_eq!(out.text, "[content is empty]");
 }
 
-// Go: tool/agent_test.go:137 — agent mode auto-registers the agent set; a `tools:` entry that already enabled it
+// Go: tool/agent_test.go:137 — agent mode auto-registers the `skills` set; a `tools:` entry that already enabled it
 // keeps its configured instance (no duplicates either way).
 #[tokio::test]
-async fn test_enable_agent_set() {
+async fn test_enable_skills_set() {
     let (_dir, env, _skill_dir) = skill_project("demo", "body\n");
 
     let mut reg = Registry::build(&env, &ToolsConfig::new(), &mut |w| panic!("warned: {w}"));
-    reg.enable_set(&env, "agent", &mut |w| panic!("warned: {w}"));
+    reg.enable_set(&env, "skills", &mut |w| panic!("warned: {w}"));
     let defs = reg.tools();
     assert_eq!(defs.len(), 1, "{defs:?}");
     assert_eq!(defs[0].name, "load_skill");
@@ -774,9 +774,9 @@ async fn test_enable_agent_set() {
     );
 
     // Config already enabled the set: enable_set must not duplicate it.
-    let raw: ToolsConfig = serde_norway::from_str("agent:\n").expect("yaml");
+    let raw: ToolsConfig = serde_norway::from_str("skills:\n").expect("yaml");
     let mut reg = Registry::build(&env, &raw, &mut |w| panic!("warned: {w}"));
-    reg.enable_set(&env, "agent", &mut |w| panic!("warned: {w}"));
+    reg.enable_set(&env, "skills", &mut |w| panic!("warned: {w}"));
     assert_eq!(reg.tools().len(), 1, "{:?}", reg.tools());
 
     let out = reg

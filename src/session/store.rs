@@ -158,6 +158,7 @@ impl SessionStore {
     /// `NewSessionWriter` (chat/session.go:335-361). Touches NO disk — the bundle is created lazily by
     /// the first append. `project && !cwd.is_empty()` places it in `projects/<slug(cwd)>/<id>`, otherwise
     /// it stays flat; `cwd` is recorded in meta either way (empty omits the key).
+    #[allow(clippy::too_many_arguments)] // `NewSession { .. }` is the Phase 4 cleanup for this signature.
     pub fn create(
         &self,
         kind: ProviderKind,
@@ -166,6 +167,7 @@ impl SessionStore {
         base_url: &str,
         cwd: &str,
         project: bool,
+        agent: &str,
     ) -> Result<SessionWriter, SessionError> {
         let id = self.new_id();
         let bucket = if project && !cwd.is_empty() {
@@ -184,6 +186,7 @@ impl SessionStore {
             temperature,
             base_url: base_url.to_owned(),
             cwd: cwd.to_owned(),
+            agent: agent.to_owned(),
             ..SessionMeta::default()
         };
         Ok(SessionWriter::pending(bucket.join(&id), meta, kind))

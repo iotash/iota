@@ -42,5 +42,7 @@ pub use record::{
     SessionRaw, SessionRecord, SessionToolCall, SessionUsage,
 };
 pub use store::{PROJECTS_DIR_NAME, SessionInfo, SessionStore};
-pub use tuning::{Overrides, apply_session_tuning, replay_session_settings};
+pub use tuning::{
+    Overrides, apply_session_tuning, replay_session_settings, warn_if_session_agent_is_gone,
+};
 pub use writer::SessionWriter;

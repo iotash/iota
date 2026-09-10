@@ -32,6 +32,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "http://127.0.0.1:1/v1",
         "/tmp/mkbundle-cwd",
         false,
+        "",
     )?;
     writer.update_meta(|meta| {
         "rust-created session".clone_into(&mut meta.title);

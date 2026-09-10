@@ -22,7 +22,7 @@ pub mod shell;
 pub(crate) mod yaml11;
 
 pub use defer::{DeferredGroup, SEARCH_TOOL_NAME, defer};
-pub use defer_mode::{DeferMode, resolve_defer_mode};
+pub use defer_mode::DeferMode;
 pub use merge::merge;
 pub use registry::{Registry, set_disabled};
 

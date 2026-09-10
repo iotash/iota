@@ -9,7 +9,7 @@ use crate::vars::EnvSource;
 use tokio_util::sync::CancellationToken;
 
 use crate::cmd::cli::Cli;
-use crate::cmd::resolve::{check_provider_name, resolve_key_from_env_or_config};
+use crate::cmd::resolve::{resolve_key_from_env_or_config, resolve_target};
 use crate::cmd::{CliError, io};
 use crate::config::{Config, ProviderConfig};
 
@@ -39,14 +39,19 @@ pub struct ListTarget {
 /// config (`ApiKeyRequiredForList`), url = `-u` if given > config.
 pub fn resolve_list(cli: &Cli, cfg: &Config, env: &dyn EnvSource) -> Result<ListTarget, CliError> {
     let name = cli.provider.as_deref().unwrap_or_default();
-    let (raw_type, provider_cfg) = cfg.get(name);
-    check_provider_name(cfg, name, &raw_type)?;
+    // The argument goes through the same four-level resolution the run does, so `-l <agent>` lists the models
+    // of the provider that agent's default model rides on.
+    let resolved = resolve_target(cfg, name)?;
+    let raw_type = resolved.provider_type.clone();
     let env_key = provider_env_key(&raw_type);
     let api_key = match &cli.key {
         Some(flag) => flag.clone(),
-        None => resolve_key_from_env_or_config(env_key, &provider_cfg, env),
+        None => resolve_key_from_env_or_config(env_key, &resolved.provider, env),
     };
-    let base_url = cli.url.clone().unwrap_or_else(|| provider_cfg.url.clone());
+    let base_url = cli
+        .url
+        .clone()
+        .unwrap_or_else(|| resolved.provider.url.clone());
     if api_key.is_empty() {
         return Err(CliError::ApiKeyRequiredForList(env_key));
     }
@@ -114,7 +119,7 @@ fn list_providers(cfg: &Config, env: &dyn EnvSource, io: &mut io::Streams) -> Re
         .filter_map(|name| {
             let (raw_type, provider_cfg) = cfg.get(name);
             has_api_key(&raw_type, &provider_cfg, env)
-                .then(|| provider_line(name, &raw_type, &provider_cfg))
+                .then(|| provider_line(name, &raw_type, &provider_cfg, cfg.default_model_id(name)))
         })
         .collect();
     available.sort();
@@ -134,8 +139,14 @@ fn list_providers(cfg: &Config, env: &dyn EnvSource, io: &mut io::Streams) -> Re
 }
 
 /// One `-l` line: `{name} (type: {t}[, url: {u}][, model: {m}])` when the type differs from the name, else
-/// `{name}` / `{name} (default model: {m})`.
-pub fn provider_line(name: &str, raw_type: &str, provider_cfg: &ProviderConfig) -> String {
+/// `{name}` / `{name} (default model: {m})`. `model` is the id of the same-named `models:` entry — which is
+/// exactly the `model:` a one-layer block used to write here.
+pub fn provider_line(
+    name: &str,
+    raw_type: &str,
+    provider_cfg: &ProviderConfig,
+    model: &str,
+) -> String {
     // root.go:455-467, piece by piece: ` (type: %s`, `, url: %s`, `, model: %s`, `)` / ` (default model: %s)`.
     let mut info = name.to_owned();
     if raw_type != name {
@@ -145,14 +156,14 @@ pub fn provider_line(name: &str, raw_type: &str, provider_cfg: &ProviderConfig) 
             info.push_str(", url: ");
             info.push_str(&provider_cfg.url);
         }
-        if !provider_cfg.model.is_empty() {
+        if !model.is_empty() {
             info.push_str(", model: ");
-            info.push_str(&provider_cfg.model);
+            info.push_str(model);
         }
         info.push(')');
-    } else if !provider_cfg.model.is_empty() {
+    } else if !model.is_empty() {
         info.push_str(" (default model: ");
-        info.push_str(&provider_cfg.model);
+        info.push_str(model);
         info.push(')');
     }
     info

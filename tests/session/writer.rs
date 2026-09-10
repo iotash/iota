@@ -28,7 +28,7 @@ fn call(id: &str, name: &str, args: &[(&str, serde_json::Value)]) -> ToolCall {
 #[test]
 fn session_round_trip() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false).unwrap();
+    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
     let id = writer.id().to_owned();
 
     let raw = RawContent::OpenAi(Raw::from_string(r#"{"sig":"abc"}"#.to_owned()).unwrap());
@@ -94,7 +94,7 @@ fn session_round_trip() {
 #[test]
 fn session_usage_round_trip() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false).unwrap();
+    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
     let id = writer.id().to_owned();
 
     writer
@@ -162,7 +162,7 @@ fn session_usage_round_trip() {
 #[test]
 fn interrupted_flag_round_trip() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false).unwrap();
+    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
     let id = writer.id().to_owned();
     writer
         .append_messages(&[
@@ -188,7 +188,7 @@ fn interrupted_flag_round_trip() {
 #[test]
 fn lazy_session_creation() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false).unwrap();
+    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
     let id = writer.id().to_owned();
     let dir = writer.dir().to_path_buf();
 
@@ -221,7 +221,7 @@ fn lazy_session_creation() {
 #[test]
 fn empty_batch_is_a_no_op() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false).unwrap();
+    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
     let dir = writer.dir().to_path_buf();
     writer.append_messages(&[]).unwrap();
     assert!(!writer.on_disk());
@@ -232,7 +232,7 @@ fn empty_batch_is_a_no_op() {
 #[test]
 fn attachments_are_deduplicated() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false).unwrap();
+    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
     let dir = writer.dir().to_path_buf();
     let att = |name: &str| Attachment {
         filename: name.to_owned(),
@@ -283,7 +283,7 @@ fn attachments_are_deduplicated() {
 #[test]
 fn compaction_marker_bumps_no_counter() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false).unwrap();
+    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
     let id = writer.id().to_owned();
     writer
         .append_messages(&[
@@ -327,7 +327,7 @@ fn compaction_marker_bumps_no_counter() {
 #[test]
 fn compaction_through_never_goes_negative() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false).unwrap();
+    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
     let dir = writer.dir().to_path_buf();
     writer.append_messages(&[Message::user("u1")]).unwrap();
     writer.append_compaction("SUMMARY", 10, None).unwrap();
@@ -343,7 +343,7 @@ fn compaction_through_never_goes_negative() {
 #[test]
 fn update_meta_writes_through_once_created() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false).unwrap();
+    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
     let id = writer.id().to_owned();
     writer.append_messages(&[Message::user("hi")]).unwrap();
     drop(writer);
@@ -360,7 +360,7 @@ fn update_meta_writes_through_once_created() {
 #[test]
 fn images_dir_is_created_on_demand() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false).unwrap();
+    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
     let path = writer.images_path();
     assert_eq!(path, writer.dir().join("images"));
     assert!(!path.exists(), "images_path must not touch disk");
@@ -392,7 +392,7 @@ fn test_deferred_save_backlog() {
     ];
 
     // /save: mint + append everything since watermark 0 + the custom title.
-    let mut writer = store.create(KIND, "m1", None, "", "", false).unwrap();
+    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
     let dir = writer.dir().to_path_buf();
     assert!(!writer.on_disk(), "creating a writer must not touch disk");
     writer.append_messages(&backlog).unwrap();
