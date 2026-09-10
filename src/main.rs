@@ -14,6 +14,11 @@ use tokio_util::sync::CancellationToken;
 
 fn main() {
     let cli = Cli::parse();
+    // A `run` flag given before another verb (`iota -m hi list`) — clap cannot express this itself while
+    // `-c/--config` is global, so it is checked here and reported as clap's own error (exit 2).
+    if let Err(e) = cli.check_flag_placement() {
+        e.exit();
+    }
     let dirs = HostDirs::from_env();
     let mut io = Streams::process();
     let outcome = match tokio::runtime::Builder::new_multi_thread()

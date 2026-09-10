@@ -13,14 +13,14 @@ A lightweight AI chat CLI for the terminal, written in Rust. Supports multiple p
 - **File attachments** — send images, PDFs, and text files alongside messages; `/file` opens a tabbed surface with the attached list and a directory browser
 - **Non-interactive mode** — single message in, response out, pipe-friendly
 - **Conversation history** — full context maintained within a session
-- **Session persistence** — every interactive session is auto-saved (losslessly: messages, tool calls, attachments, reasoning) to `~/.iota/sessions/`. Resume with `/session` in chat or `--resume[=<id>]` at launch (any unique id prefix works), and resuming echoes the last few exchanges back to the terminal; auto-titled by the model after the first reply; `--no-save` (or `no_save: true` per agent) starts ephemeral — nothing touches disk unless you run `/save [title]` mid-chat, which persists the whole backlog and auto-saves from then on (great for exploratory chats you might or might not keep)
-- **Context management** — live token accounting against the context window (configurable via `--context-window`, `context_window:` per model, or the `/model` Context tab), with `/compact` LLM-summarization of older history; when the window nears full a confirmation is offered before compacting (declining snoozes the prompt until usage grows further)
+- **Session persistence** — every interactive session is auto-saved (losslessly: messages, tool calls, attachments, reasoning) to `~/.iota/sessions/`. Resume with `/session` in chat or `iota resume [<id>]` at launch (any unique id prefix works), and resuming echoes the last few exchanges back to the terminal; auto-titled by the model after the first reply; `--no-save` (or `no_save: true` per agent) starts ephemeral — nothing touches disk unless you run `/save [title]` mid-chat, which persists the whole backlog and auto-saves from then on (great for exploratory chats you might or might not keep)
+- **Context management** — live token accounting against the context window (configurable via `context_window:` per model or the `/model` Context tab), with `/compact` LLM-summarization of older history; when the window nears full a confirmation is offered before compacting (declining snoozes the prompt until usage grows further)
 - **Model settings mid-chat** — `/model` opens a tabbed panel over the model, context window, reasoning effort, and temperature (plus a read-only view of the system prompt in effect), all persisted with the session and replayed on resume
 - **Conversation export** — `/export` renders the session to a single self-contained HTML file (inline CSS, dark mode with a toggle, syntax-highlighted code) or a plain Markdown document; saved sessions export the full on-disk log, so compaction never hides older rounds (ephemeral `--no-save` sessions export the current in-memory view)
-- **Agent mode** — opt-in via `--agent` (or `workspace: true` per agent): layered `AGENTS.md` instructions and [Agent Skills](https://agentskills.io/specification) are injected as a volatile system-prompt overlay, the `skills` toolset (`load_skill`) is auto-enabled, and sessions are grouped per project
+- **Agent mode** — opt-in via `workspace: true` per agent: layered `AGENTS.md` instructions and [Agent Skills](https://agentskills.io/specification) are injected as a volatile system-prompt overlay, the `skills` toolset (`load_skill`) is auto-enabled, and sessions are grouped per project
 - **Request inspector** — `/debug` opens a two-tab console: a **Verbose** toggle turns recording on/off (off by default; `/debug on` / `/debug off` do the same from the prompt), and **Messages** browses the captured API calls (newest first), each summarized by action and content (e.g. `Chat 你好…`) rather than raw method/URL — drill into any one to read its `↑ Request` and `↓ Response` bodies, pretty-printed, with `c` to copy to the clipboard. Nothing is printed to the terminal
 - **Host integration** — the terminal's native progress indicator follows the turn (busy, needs input, error), a desktop notification is sent when a reply lands or the model needs you while the window is unfocused (`notify: false` per agent turns it off), and the cmux multiplexer is driven natively when detected
-- **System prompt** — set via flag or interactive input
+- **System prompt** — per agent in the config, or `-s` for one run
 - **Config file** — three layers in `~/.iota.yaml`: `providers:` (endpoints and API keys), `models:` (configured models and their protocol), `agents:` (prompt, tools, MCP subset), plus MCP server definitions
 - **Styled terminal output** — color-coded prompts
 
@@ -54,34 +54,66 @@ The binary is at `target/release/iota`. The toolchain is pinned by `rust-toolcha
 
 macOS and Linux.
 
+### First run
+
+```bash
+iota config init          # writes ~/.iota.yaml with one provider, one model and agents.default
+export OPENAI_API_KEY=…   # or put `key:` in the file
+iota                      # runs agents.default
+```
+
+`iota config check` tells you whether the file says what you think it says,
+and `iota config path` which files a run actually reads.
+
 ## Usage
 
 ```bash
-iota [openai|anthropic|gemini|vertexai|openresponses|imagen|images] [flags]
+iota [command] [flags]
 ```
+
+| Command | What it does |
+|---------|--------------|
+| `iota` | Run the agent named `default`, interactively |
+| `iota run <agent>` | Run that `agents:` entry, interactively |
+| `iota run <agent> -m "…"` | One headless turn: message in, reply out |
+| `iota run` | The same as a bare `iota` |
+| `iota list [agents\|models\|providers\|sessions]` | What the config declares (no argument: `agents`); `iota list models <agent>` shows one agent's candidate set |
+| `iota resume [<id>]` | Resume a saved session — any unique id prefix; with no id, pick from a list |
+| `iota config [check\|path\|init]` | Validate the config, print which files it reads, or write a starter one (no argument: `check`) |
+| `iota version` | Print the version (`--version` does the same) |
+
+The positional argument is the **command**, never a name from your config, so
+`--help` is the complete map of what iota can do and a future command can
+never collide with an agent you named.
 
 ### Flags
 
+Nine flags, and every one of them describes THIS invocation. Anything that
+describes configuration — the key, the endpoint, the temperature, the context
+window, the prompt you want every time — lives in the three config layers
+instead.
+
+Only `-c/--config` is global; the rest belong to `iota run` (and `iota resume`,
+which is a run that starts from a saved session), so they go after the command.
+
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--key` | `-k` | API key (or set via env var) |
-| `--url` | `-u` | Custom base URL |
-| `--model` | `-M` | Model name (skip interactive selection) |
-| `--temperature` | `-t` | Sampling temperature, 0.0-2.0 (omit to use provider default) |
-| `--message` | `-m` | Send a single message and print the response (non-interactive, use `-` to read from stdin) |
-| `--system` | `-s` | System prompt |
-| `--system-input` | `-S` | Enter system prompt interactively (interactive mode only) |
-| `--list` | `-l` | List configured providers, or models for a given provider |
+| `--message` | `-m` | Send a single message and print the response (non-interactive; `-` reads stdin) |
+| `--model` | `-M` | Model for this run: a `models:` entry, a bare id, or `provider:id` (`provider:*` opens the picker) |
+| `--system` | `-s` | System prompt for this run (beats the agent's `system:` / `system_file:`) |
+| `--config` | `-c` | Path to config file (default: `~/.iota.yaml`, then `./.iota.yaml`). Global: valid before or after the command, so `iota -c f.yaml list` and `iota list -c f.yaml` are the same |
 | `--mcp` | | MCP server (command string or URL, repeatable) |
-| `--resume` | | Resume a saved session (`--resume` to pick interactively, `--resume=<id>` for a specific one — note the `=`; any unique id prefix works). With `-m`, `--resume=<id>` continues that session headlessly |
-| `--no-save` | | Start ephemeral — nothing touches disk unless `/save` is run (interactive mode only) |
+| `--no-save` | | Start ephemeral — nothing touches disk unless `/save` is run (interactive only) |
 | `--max-turns` | | Limit agentic tool turns for the whole run (`-m` only; 0 = unlimited) |
 | `--output-format` | | `-m` output: `text` (default, the reply alone) or `json` (one result object with per-round token usage) |
-| `--context-window` | | Context window size for compaction accounting (e.g. `200k`, `1m`; default 128k) |
-| `--agent` | | Enable agent mode (AGENTS.md overlay, skills, `load_skill`, project-scoped sessions) |
-| `--config` | `-c` | Path to config file (default: `~/.iota.yaml`) |
+| `--version` | `-V` | Print the version |
 
-Headless resume (`-m` with `--resume=<id>`) takes what you did not pass from the session bundle: the model (when the session was recorded under the same provider type), temperature, reasoning effort, context window and image settings all replay, and an explicit flag always wins. A resumed run prints `Resumed session <id> (<n> messages)` on stderr, so stdout stays the reply (or the JSON report) alone; the new turn is appended only when it succeeds.
+Headless resume (`iota resume <id> -m "…"`) takes what you did not pass from
+the session bundle: the model (when the session was recorded under the same
+provider type), temperature, reasoning effort, context window and image
+settings all replay, and an explicit `-M` still wins. A resumed run prints
+`Resumed session <id> (<n> messages)` on stderr, so stdout stays the reply (or
+the JSON report) alone; the new turn is appended only when it succeeds.
 
 ### Environment Variables
 
@@ -105,7 +137,9 @@ Same-name entries in later files override earlier ones, whole entry at a time.
 
 #### Priority
 
-For individual values: **CLI flag > env var > config file**.
+The API key is **env var > `providers.<name>.key`** — never a flag, so it stays
+out of the shell history and out of `ps`. The two per-run flags that overlap
+the config (`-M`, `-s`) win over it for that one invocation.
 
 #### The three layers
 
@@ -117,17 +151,22 @@ The config has three top-level maps, each answering one question:
 | `models:` | *which model, and what does its protocol look like?* | `provider`, `id`, `context_window`, `defer_mode`, image knobs, `effort`/`temperature`/`top_p` defaults |
 | `agents:` | *how do I use it?* | `models`, `system`/`system_file`, `tools`, `mcp_servers`, `workspace`, `no_save`, `notify`, `description`, and overrides for the three tunables |
 
-The positional argument is resolved against all three, in that order, then
-against the built-in provider types — so `iota reviewer`, `iota sonnet`,
-`iota deepseek` and `iota openai -M gpt-4o` all work, and a name defined in
-two layers is taken from the higher one.
+**A run names an agent.** `iota run <name>` resolves `agents:` and nothing
+else: the agent decides which model it drives, and the model decides which
+endpoint it talks to. A `models:` or `providers:` entry is reached through an
+agent, never named directly — one name meant four things once, and a collision
+silently changed what ran.
 
-**`agents.default` is what a bare `iota` runs.** With no positional argument
-iota falls back to the agent called `default`; a positional argument always
-wins over it, and without such an agent the invocation still asks for one.
-Only an `agents.default` you wrote counts — an entry the migration layer
-synthesised from an old one-layer `providers.default` block does not, and
-neither does a `models.default` or a `providers.default`.
+**`agents.default` is what a bare `iota` runs.** With no name iota takes the
+agent called `default`; a name always wins over it, and without such an agent
+the invocation asks for one. A `models.default` or a `providers.default` says
+which model or endpoint it is, never how to drive one, so neither is an entry
+point.
+
+**Every key is checked against its layer.** A key written in the wrong one —
+or simply misspelled — fails the load with its coordinate and the file it is
+in (`config ~/.iota.yaml: providers.deepseek.system: `system` belongs under
+`agents:``), rather than sitting there doing nothing.
 
 #### Referring to a model
 
@@ -162,7 +201,7 @@ models:                      # configured models: provider + id + protocol + def
   gpt5:
     provider: openai
     id: gpt-5.2
-    context_window: 400k     # context window for compaction accounting (--context-window overrides)
+    context_window: 400k     # context window for compaction accounting (/model's Context tab overrides)
     defer_mode: system-tools # protocol for deferred MCP tools: normal|reference|tool-search|system-tools
     effort: high             # default reasoning effort: low|medium|high|xhigh|max
     temperature: 0.7         # default sampling temperature, 0.0-2.0 (-t and /model override)
@@ -178,7 +217,7 @@ agents:                      # usage: how a model is driven
       code:
       shell:
     mcp_servers: [github]    # load only these MCP servers; [] = none; key absent = all
-    workspace: true          # project overlay + skills (what --agent switches on)
+    workspace: true          # project overlay (AGENTS.md) + skills + project-scoped sessions
 
   reviewer:
     models: [sonnet]
@@ -188,7 +227,7 @@ agents:                      # usage: how a model is driven
 
   scratch:
     models: ["openai:*"]     # a wildcard first entry starts in the model picker
-    no_save: true            # start ephemeral (like --no-save); an explicit --resume outranks it
+    no_save: true            # start ephemeral (like --no-save); an explicit `iota resume` outranks it
     notify: false            # no desktop notification while the terminal is unfocused (default: on)
 
 # MCP tool servers
@@ -219,44 +258,46 @@ With this config:
 ```bash
 # The agent named "default": its first model (gpt5 → openai/gpt-5.2), prompt, tools and MCP subset
 iota                              # …and with no argument at all, that is what runs
-iota default -m "hello"
+iota run default -m "hello"
 
-# A model entry on its own — no agent, so no tools and no system prompt
-iota sonnet -m "hello"
+# Another agent: its own models, prompt, tools and MCP subset
+iota run reviewer -m "what is wrong with this diff?"
 
-# A provider on its own: -M picks the model, config key used, no need for -k
-iota openai -m "hi" -M gpt-4o
+# -M picks another model from the candidate set (a warning if it is outside it — the set is advice)
+iota run default -M sonnet -m "hi"
 
 # -M also takes provider:id, which moves the run to that endpoint
-iota default -M "deepseek:deepseek-reasoner" -m "hi"
+iota run default -M "deepseek:deepseek-reasoner" -m "hi"
 
-# CLI flags override the config
-iota openai -k sk-override -m "hi" -M gpt-4o
+# …and provider:* starts in the model picker
+iota run default -M "deepseek:*"
 ```
 
 `-M` accepts a candidate's name, a bare model id, or `provider:id`. A model
 outside the agent's `models:` list is a warning, not a refusal — the list is
 advice about what works well here, not a whitelist.
 
-#### Migrating from the one-layer config
+#### One layer per key
 
-Earlier versions kept everything under `providers.<name>`. That still works:
-iota splits such a block into the three entries it means and prints one line
-saying what moved.
+Every key belongs to exactly one layer, and writing it in another is an
+error naming the layer that owns it. Two keys changed name when the layers
+split: a provider's `agent: true` is an agent's `workspace: true`, and the
+`agent` toolset is now called `skills`. The `delegate` toolset was removed
+outright — a child agent is a bash subprocess now (see the `shell` set).
 
 ```yaml
-# before — one layer
+# what a single-layer config used to look like — every key of it is refused today
 providers:
   deepseek:
-    type: openai
-    key: ${env:DEEPSEEK_KEY}
-    url: https://api.deepseek.com/v1
-    model: deepseek-chat
-    system: "You are terse"
-    tools: {code: {}}
-    agent: true
+    type: openai                      # ✓ the endpoint
+    key: ${env:DEEPSEEK_KEY}          # ✓
+    url: https://api.deepseek.com/v1  # ✓
+    model: deepseek-chat              # ✗ → a `models:` entry
+    system: "You are terse"           # ✗ → `agents.<name>.system`
+    tools: {code: {}}                 # ✗ → `agents.<name>.tools`
+    agent: true                       # ✗ → `agents.<name>.workspace`
 
-# after — three layers
+# the same thing, in three layers
 providers:
   deepseek: {type: openai, key: "${env:DEEPSEEK_KEY}", url: https://api.deepseek.com/v1}
 models:
@@ -268,13 +309,6 @@ agents:
     tools: {code: {}}
     workspace: true
 ```
-
-Two keys were renamed on the way: a provider's `agent: true` is an agent's
-`workspace: true`, and the `agent` toolset is now called `skills`. Both old
-spellings are accepted with a warning. The `delegate` toolset was retired: a
-`tools: {delegate: …}` key is dropped with a warning instead of failing (a
-child agent is now a bash subprocess — see the `shell` set). The compatibility
-layer will be removed after 1.0.
 
 #### Variable Expansion
 
@@ -497,7 +531,7 @@ prompt, or the end of a `-m` run — so a resumed session never inherits one; a
 job that must survive that has to detach itself (`nohup`, `setsid`).
 
 **Child agents.** iota has no delegation tool: a child agent is
-`iota <agent> -m "<task>"` run from `bash`, which is why the set is the one
+`iota run <agent> -m "<task>"` run from `bash`, which is why the set is the one
 that matters most. The child is a full run of that `agents:` entry — its own
 model, tools, MCP servers and session. Start it with `background: true` and
 its answer comes back as the notice above. For it to write without a user to
@@ -542,8 +576,8 @@ Design: docs/design/code-toolset.md
 
 ### Agent Mode
 
-Agent mode is explicitly opt-in — pass `--agent`, or set `workspace: true` on
-an agent in the config file. Off means exactly the ordinary chat behavior.
+Agent mode is explicitly opt-in — set `workspace: true` on an agent in the
+config file. Off means exactly the ordinary chat behavior.
 
 ```yaml
 agents:
@@ -589,7 +623,7 @@ that is sent.
 #### `skills` — `load_skill`
 
 Agent mode auto-enables the `skills` toolset (it was called `agent` before the
-config split). Its `load_skill` tool activates a skill by name: it returns the skill's instructions (the `SKILL.md` body) and
+config split, where the word became the name of a layer). Its `load_skill` tool activates a skill by name: it returns the skill's instructions (the `SKILL.md` body) and
 directory, and the optional `file` argument reads a file bundled inside that
 directory — reads never leave the skill's directory. Output is size-capped
 with an optional `offset`/`limit` line window. The set can also be enabled
@@ -598,8 +632,8 @@ explicitly under `tools:` like any other, agent mode or not.
 #### Project-Scoped Sessions
 
 Sessions started in agent mode are stored per project under
-`~/.iota/sessions/projects/<slug>/`, and `/session` and `--resume` list
-only the current project's sessions there (`--resume=<id>` with an id from
+`~/.iota/sessions/projects/<slug>/`, and `/session` and `iota resume` list
+only the current project's sessions there (`iota resume <id>` with an id from
 anywhere still works). Normal-mode sessions stay in the flat global store,
 whose list also shows every project's sessions labelled with their project —
 nothing is ever invisible.
@@ -639,74 +673,57 @@ Attached files are sent with your next message, then cleared automatically.
 
 ### Examples
 
+These assume a config like the one above — the agents, models and providers a
+run names live there, not on the command line.
+
 ```bash
-# Interactive model selection
-iota openai -k sk-xxx
+# The default agent, interactively
+iota
 
-# Specify model directly
-iota openai -k sk-xxx -M gpt-4o
+# A configured agent (its models, prompt, tools and MCP subset)
+iota run reviewer
 
-# Use Anthropic
-iota anthropic -M claude-sonnet-4-20250514
+# Pick the model at startup (a `provider:*` candidate, or -M)
+iota run scratch
+iota run default -M "openai:*"
 
-# Use Gemini
-iota gemini -M gemini-2.5-flash
+# Specify the model directly
+iota run default -M gpt-4o
+iota run default -M "anthropic:claude-sonnet-4-20250514"
 
-# Use Vertex AI (with custom endpoint)
-iota vertexai -u https://your-proxy.com/api/vertex-ai -M gemini-2.5-flash -m "Hello"
+# A system prompt for this run only
+iota run default -s 'You are a helpful translator' -m "Translate to French: hello"
 
-# Use OpenAI Responses API
-iota openresponses -M gpt-4o -m "Hello"
-
-# With system prompt
-iota openai -M gpt-4o -s 'You are a helpful translator' -m "Translate to French: hello"
-
-# Interactive system prompt input (prompts inside the chat UI before the first message)
-iota openai -M gpt-4o -S
-
-# Non-interactive mode (requires -M)
-iota openai -M gpt-4o -m "Explain quicksort in one paragraph"
+# Non-interactive mode
+iota run default -m "Explain quicksort in one paragraph"
 
 # Non-interactive mode with a JSON report and a tool-turn budget
-iota openai -M gpt-4o -m "Summarise this repo" --output-format json --max-turns 5
+iota run default -m "Summarise this repo" --output-format json --max-turns 5
 
 # Continue a saved session headlessly (any unique id prefix works)
-iota openai --resume=k7q -m "And the second question?"
+iota resume k7q -m "And the second question?"
 
-# Adjust temperature
-iota anthropic -M claude-sonnet-4-20250514 -t 0.5 -m "Write a haiku"
+# …or pick one from a list
+iota resume
 
-# Custom API endpoint
-iota openai -u https://your-proxy.com/v1 -k sk-xxx
-
-# With MCP tools (ad-hoc server via CLI flag)
-iota openai -M gpt-4o --mcp "npx -y @modelcontextprotocol/server-filesystem /tmp"
+# With MCP tools (ad-hoc server via CLI flag; config servers load automatically)
+iota run default --mcp "npx -y @modelcontextprotocol/server-filesystem /tmp"
 
 # Multiple MCP servers
-iota anthropic -M claude-sonnet-4-20250514 --mcp "npx -y @modelcontextprotocol/server-filesystem /tmp" --mcp "https://mcp.example.com/sse"
-
-# MCP servers from config file are loaded automatically
-iota openai -M gpt-4o
+iota run default --mcp "npx -y @modelcontextprotocol/server-filesystem /tmp" --mcp "https://mcp.example.com/sse"
 
 # Read message from stdin (pipe-friendly)
-echo "Explain quicksort" | iota openai -M gpt-4o -m -
-cat prompt.txt | iota openai -M gpt-4o -m -
-
-# Use a configured agent (its models, prompt and tools)
-iota reviewer -m "Explain quicksort"
-
-# Use a configured model on its own
-iota sonnet -m "Explain quicksort"
+echo "Explain quicksort" | iota run default -m -
+cat prompt.txt | iota run default -m -
 
 # One-shot image generation with a dedicated image provider (prints the saved path)
-iota seedream -m "A red bicycle leaning on a stone wall, golden hour"
+iota run seedream -m "A red bicycle leaning on a stone wall, golden hour"
 
-# List all configured providers
-iota -l
-
-# List available models for a provider
-iota -l openai
-iota -l deepseek
+# What is configured, and what is saved
+iota list                     # agents (the default listing)
+iota list models reviewer     # that agent's candidate set, best first
+iota list providers           # endpoints, and where each key comes from
+iota list sessions            # saved sessions, newest first
 ```
 
 ### File Attachment Example

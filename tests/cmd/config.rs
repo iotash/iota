@@ -1,5 +1,5 @@
 //! Config-model integration tests (`config/config_test.go` ported, plus the load-order and parse-error rules,
-//! the three-layer resolution and the soft-migration layer that keeps a one-layer file behaving as it did).
+//! the three-layer resolution and the key audit that refuses a key written in the wrong layer).
 //! Every test injects `HostDirs` and a map-backed `VarResolver` — nothing reads or mutates the process
 //! environment.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -10,7 +10,7 @@ use std::{
 };
 
 use crate::common::temp_project;
-use iota::cmd::{AgentConfig, Config, ConfigError, ModelRef, ProviderConfig};
+use iota::cmd::{AgentConfig, Config, ConfigError, ModelRef};
 use iota::testing::{MapResolver, map_resolver};
 use pretty_assertions::assert_eq;
 
@@ -46,14 +46,6 @@ fn load_yaml(root: &Path, name: &str, content: &str) -> Config {
     cfg
 }
 
-/// Writes a ONE-LAYER config and loads it: the migration lines are expected, so they come back for the
-/// caller to inspect instead of failing the load.
-fn load_legacy(root: &Path, name: &str, content: &str) -> (Config, Vec<String>) {
-    let path = root.join(name);
-    fs::write(&path, content).unwrap();
-    load_explicit(&path, &map_resolver(&[]))
-}
-
 /// One config document, straight from a string.
 fn parse(yaml: &str) -> Result<Config, ConfigError> {
     Config::parse(yaml.as_bytes(), &map_resolver(&[]), &mut |_| {})
@@ -68,27 +60,28 @@ fn parse_warned(yaml: &str) -> (Result<Config, ConfigError>, Vec<String>) {
     (cfg, warnings)
 }
 
-// ---------------------------------------------------------------- the one-layer form, still working
+// ---------------------------------------------------------------- the three layers
 
 // Go: config/config_test.go:12
 #[test]
 fn test_load_tools() {
     let (dir, _dirs) = temp_project(&[]);
-    let (cfg, _) = load_legacy(
+    let cfg = load_yaml(
         dir.path(),
         "config.yaml",
         "
 providers:
+  anthropic: {key: sk-ant-xxx}
+  openai: {key: sk-official}
+agents:
   claude:
-    type: anthropic
-    key: sk-ant-xxx
-    model: claude-sonnet-4
+    models: [\"anthropic:claude-sonnet-4\"]
     tools:
       shell:
         - git
         - ssh
-  openai:
-    key: sk-official
+  plain:
+    models: [\"openai:gpt-4o\"]
     tools:
       shell:
 ",
@@ -102,75 +95,75 @@ providers:
     let allow: Vec<String> = serde_norway::from_value(node.clone()).expect("decode allow");
     assert_eq!(allow, vec!["git".to_owned(), "ssh".to_owned()]);
 
-    // openai: shell present but empty (key exists → enabled, defaults).
-    let tools = &cfg.agents["openai"].tools;
+    // plain: shell present but empty (key exists → enabled, defaults).
+    let tools = &cfg.agents["plain"].tools;
     assert!(
         tools.contains_key("shell"),
-        "openai: shell key should be present even when empty"
+        "plain: shell key should be present even when empty"
     );
     assert_eq!(tools.get("shell"), Some(&serde_norway::Value::Null));
 
-    // A provider without a tools block gets no agent at all, so it has no enabled tools.
-    assert!(!cfg.agents.contains_key("missing"));
+    // The agent a run resolves to carries them.
     assert!(
-        cfg.resolve("openai")
-            .expect("openai resolves")
+        cfg.resolve_agent("plain")
+            .expect("plain resolves")
             .agent
             .tools
             .contains_key("shell")
     );
+    assert_eq!(cfg.resolve_agent("missing"), None);
 }
 
-// Go: config/config_test.go:65 — `agent:` under a provider is now `workspace:` on the agent it implies.
+// Go: config/config_test.go:65 — what Go spelled `agent:` under a provider is `workspace:` on an agent.
 #[test]
 fn test_load_agent() {
     let (dir, _dirs) = temp_project(&[]);
-    let (cfg, _) = load_legacy(
+    let cfg = load_yaml(
         dir.path(),
         "config.yaml",
         "
-providers:
-  a:
-    agent: true
-  b:
-    agent: yes
-  c:
-    agent: on
-  d:
-    agent: false
-  e:
-    key: sk-xxx
+agents:
+  a: {models: [\"openai:x\"], workspace: true}
+  b: {models: [\"openai:x\"], workspace: yes}
+  c: {models: [\"openai:x\"], workspace: on}
+  d: {models: [\"openai:x\"], workspace: false}
+  e: {models: [\"openai:x\"]}
 ",
     );
     for name in ["a", "b", "c"] {
         assert!(
             cfg.agents[name].workspace,
-            "provider {name}: workspace should be enabled"
+            "agent {name}: workspace should be enabled"
         );
     }
     for name in ["d", "e", "missing"] {
         assert!(
-            !cfg.resolve(name).is_some_and(|r| r.agent.workspace),
-            "provider {name}: workspace should be disabled"
+            !cfg.resolve_agent(name).is_some_and(|r| r.agent.workspace),
+            "agent {name}: workspace should be disabled"
         );
     }
 
     // DIVERGENCES I-01: every YAML 1.1 spelling, any case, quoted or plain, for every bool field.
-    let (cfg, _) = load_legacy(
+    let cfg = load_yaml(
         dir.path(),
         "bools.yaml",
         "
-providers:
-  f:
-    agent: On
+models:
+  m:
+    provider: openai
+    id: x
     image: \"yes\"
     json_edits: TRUE
+agents:
+  f:
+    models: [m]
+    workspace: On
     no_save: off
     notify: No
 ",
     );
     assert!(cfg.agents["f"].workspace);
-    assert!(cfg.models["f"].image && cfg.models["f"].json_edits);
+    assert!(cfg.models["m"].image && cfg.models["m"].json_edits);
     assert!(!cfg.agents["f"].no_save);
     assert_eq!(cfg.agents["f"].notify, Some(false));
 }
@@ -223,7 +216,7 @@ fn test_load_expands_provider_vars() {
     let path = dir.path().join("c.yaml");
     fs::write(
         &path,
-        "providers:\n  d:\n    type: openai\n    key: ${env:CFG_TEST_KEY}\n    url: ${env:CFG_TEST_KEY}/v1\n    system_file: ${appHome}/sys.md\n    effort: high\n",
+        "providers:\n  d:\n    type: openai\n    key: ${env:CFG_TEST_KEY}\n    url: ${env:CFG_TEST_KEY}/v1\nmodels:\n  m: {provider: d, id: x, effort: high}\nagents:\n  d: {models: [m], system_file: \"${appHome}/sys.md\"}\n",
     )
     .unwrap();
     let resolver = MapResolver {
@@ -238,7 +231,7 @@ fn test_load_expands_provider_vars() {
     assert_eq!(pc.url, "sk-expanded/v1");
     let want = dirs.home.clone().unwrap().join(".iota").join("sys.md");
     assert_eq!(PathBuf::from(&cfg.agents["d"].system_file), want);
-    assert_eq!(cfg.models["d"].effort, "high");
+    assert_eq!(cfg.models["m"].effort, "high");
 
     // The same three keys expand when they are written in their new homes.
     let path = dir.path().join("layered.yaml");
@@ -258,22 +251,19 @@ fn test_load_expands_provider_vars() {
 #[test]
 fn test_mcp_servers_for() {
     let (dir, _dirs) = temp_project(&[]);
-    let (cfg, _) = load_legacy(
+    let cfg = load_yaml(
         dir.path(),
         "c.yaml",
         "
-providers:
-  all:
-    type: openai
-    tools: {}
+agents:
   none:
-    type: openai
+    models: [\"openai:x\"]
     mcp_servers: []
   some:
-    type: openai
+    models: [\"openai:x\"]
     mcp_servers: [fs]
   typo:
-    type: openai
+    models: [\"openai:x\"]
     mcp_servers: [nope]
 mcp_servers:
   fs:
@@ -322,15 +312,14 @@ mcp_servers:
 #[test]
 fn test_temperature_field() {
     let (dir, _dirs) = temp_project(&[]);
-    let (cfg, _) = load_legacy(
+    let cfg = load_yaml(
         dir.path(),
         "c.yaml",
-        "providers:\n  tuned:\n    type: openai\n    temperature: 0.3\n  norm:\n    type: openai\n",
+        "models:\n  tuned: {provider: openai, id: x, temperature: 0.3}\n  norm: openai:x\nagents:\n  norm: {models: [norm]}\n",
     );
     assert_eq!(cfg.models["tuned"].temperature, Some(0.3));
-    assert!(!cfg.models.contains_key("norm"), "no knob, no model entry");
     assert_eq!(
-        cfg.resolve("norm").unwrap().temperature(),
+        cfg.resolve_agent("norm").unwrap().temperature(),
         None,
         "temperature must default None"
     );
@@ -340,14 +329,14 @@ fn test_temperature_field() {
 #[test]
 fn test_top_p_field() {
     let (dir, _dirs) = temp_project(&[]);
-    let (cfg, _) = load_legacy(
+    let cfg = load_yaml(
         dir.path(),
         "c.yaml",
-        "providers:\n  tuned:\n    type: openai\n    top_p: 0.9\n  norm:\n    type: openai\n",
+        "models:\n  tuned: {provider: openai, id: x, top_p: 0.9}\n  norm: openai:x\nagents:\n  norm: {models: [norm]}\n",
     );
     assert_eq!(cfg.models["tuned"].top_p, Some(0.9));
     assert_eq!(
-        cfg.resolve("norm").unwrap().top_p(),
+        cfg.resolve_agent("norm").unwrap().top_p(),
         None,
         "top_p must default None"
     );
@@ -357,10 +346,10 @@ fn test_top_p_field() {
 #[test]
 fn test_notify_field() {
     let (dir, _dirs) = temp_project(&[]);
-    let (cfg, _) = load_legacy(
+    let cfg = load_yaml(
         dir.path(),
         "c.yaml",
-        "providers:\n  quiet:\n    type: openai\n    notify: false\n  norm:\n    type: openai\n",
+        "agents:\n  quiet: {models: [\"openai:x\"], notify: false}\n  norm: {models: [\"openai:x\"]}\n",
     );
     assert_eq!(
         cfg.agents["quiet"].notify,
@@ -368,7 +357,7 @@ fn test_notify_field() {
         "notify: false not parsed"
     );
     assert_eq!(
-        cfg.resolve("norm").unwrap().agent.notify,
+        cfg.resolve_agent("norm").unwrap().agent.notify,
         None,
         "notify must default None (on)"
     );
@@ -378,14 +367,14 @@ fn test_notify_field() {
 #[test]
 fn test_no_save_field() {
     let (dir, _dirs) = temp_project(&[]);
-    let (cfg, _) = load_legacy(
+    let cfg = load_yaml(
         dir.path(),
         "c.yaml",
-        "providers:\n  eph:\n    type: openai\n    no_save: true\n  norm:\n    type: openai\n",
+        "agents:\n  eph: {models: [\"openai:x\"], no_save: true}\n  norm: {models: [\"openai:x\"]}\n",
     );
     assert!(cfg.agents["eph"].no_save, "no_save: true not parsed");
     assert!(
-        !cfg.resolve("norm").unwrap().agent.no_save,
+        !cfg.resolve_agent("norm").unwrap().agent.no_save,
         "no_save must default false"
     );
 }
@@ -399,8 +388,7 @@ fn test_defer_field() {
         "c.yaml",
         "
 providers:
-  x:
-    type: openai
+  x: {type: openai}
 mcp_servers:
   github:
     command: gh-mcp
@@ -431,14 +419,14 @@ mcp_servers:
 #[test]
 fn test_defer_mode_field() {
     let (dir, _dirs) = temp_project(&[]);
-    let (cfg, _) = load_legacy(
+    let cfg = load_yaml(
         dir.path(),
         "c.yaml",
-        "providers:\n  a:\n    type: anthropic\n    defer_mode: reference\n  b:\n    type: openai\n",
+        "models:\n  a: {provider: anthropic, id: x, defer_mode: reference}\n  b: openai:x\nagents:\n  b: {models: [b]}\n",
     );
     assert_eq!(cfg.models["a"].defer_mode, "reference");
     assert_eq!(
-        cfg.resolve("b").unwrap().model.defer_mode,
+        cfg.resolve_agent("b").unwrap().model.defer_mode,
         "",
         "defer_mode must default empty"
     );
@@ -469,220 +457,152 @@ fn test_find_config_file() {
     );
 }
 
-// ---------------------------------------------------------------- the soft-migration layer
+// ---------------------------------------------------------------- the key audit
 
-/// Every key a one-layer `providers.<name>` block could carry lands where the three-layer config keeps it,
-/// with the SAME value — and the block prints exactly one deprecation line naming what moved.
+/// A key written in the wrong layer names the layer that owns it — and the file it was written in, so the
+/// user knows which of the merged files to open.
 #[test]
-fn one_layer_block_splits_into_three_entries() {
-    let (dir, _dirs) = temp_project(&[("sys.md", "be terse\n")]);
-    let sys = dir.path().join("sys.md").to_string_lossy().into_owned();
-    let (cfg, warnings) = load_legacy(
-        dir.path(),
-        "c.yaml",
-        &format!(
-            "
-providers:
-  deepseek:
-    type: openai
-    key: sk-cfg
-    url: https://api.deepseek.com/v1
-    model: deepseek-chat
-    context_window: 200k
-    defer_mode: system-tools
-    effort: high
-    temperature: 0.3
-    top_p: 0.9
-    image: true
-    aspect_ratio: \"1:1\"
-    image_size: 1024x1024
-    negative_prompt: blurry
-    json_edits: true
-    system: inline prompt
-    system_file: {sys}
-    tools:
-      code: {{}}
-    mcp_servers: [fs]
-    agent: true
-    no_save: true
-    notify: false
-mcp_servers:
-  fs:
-    command: fs-server
-"
+fn a_key_of_another_layer_fails_the_load_naming_the_file() {
+    let (dir, _dirs) = temp_project(&[]);
+    let path = dir.path().join("c.yaml");
+    fs::write(
+        &path,
+        "providers:\n  deepseek:\n    type: openai\n    key: k\n    system: be terse\n",
+    )
+    .unwrap();
+    let (cfg, warnings) = try_load_explicit(&path, &map_resolver(&[]));
+    assert!(
+        warnings.is_empty(),
+        "a key mistake is an error, not a warning: {warnings:?}"
+    );
+    assert_eq!(
+        cfg.expect_err("a misplaced key must fail the load")
+            .to_string(),
+        format!(
+            "config {}: providers.deepseek.system: `system` belongs under `agents:` (see README, \"The three layers\")",
+            path.display()
+        )
+    );
+}
+
+/// The one-layer config iota used to accept: every key of it now reports where that key lives.
+#[test]
+fn the_one_layer_keys_report_their_new_home() {
+    for (yaml, want) in [
+        (
+            "providers:\n  p: {type: openai, model: gpt-4o}\n",
+            "providers.p.model: `model` is now a `models:` entry — write `models.<name>: <provider>:<id>` and list it in `agents.<name>.models`",
         ),
-    );
-
-    // ONE line, naming every key that moved, in the order the block reads.
-    assert_eq!(
-        warnings,
-        vec![
-            "Warning: config providers.deepseek: model, context_window, defer_mode, effort, temperature, top_p, image, aspect_ratio, image_size, negative_prompt, json_edits, system, system_file, tools, mcp_servers, agent, no_save, notify now belong under `models:` / `agents:` (still accepted; see README)"
-                .to_owned()
-        ]
-    );
-
-    // providers: the endpoint, and only the endpoint.
-    assert_eq!(
-        cfg.providers["deepseek"],
-        ProviderConfig {
-            kind: "openai".to_owned(),
-            key: "sk-cfg".to_owned(),
-            url: "https://api.deepseek.com/v1".to_owned(),
-        }
-    );
-
-    // models: the id, the model's own properties, the protocol and the tunable defaults.
-    let m = &cfg.models["deepseek"];
-    assert_eq!(m.provider, "deepseek");
-    assert_eq!(m.id, "deepseek-chat");
-    assert_eq!(m.context_window, "200k");
-    assert_eq!(m.defer_mode, "system-tools");
-    assert_eq!(m.effort, "high");
-    assert_eq!(m.temperature, Some(0.3));
-    assert_eq!(m.top_p, Some(0.9));
-    assert!(m.image && m.json_edits);
-    assert_eq!(m.aspect_ratio, "1:1");
-    assert_eq!(m.image_size, "1024x1024");
-    assert_eq!(m.negative_prompt, "blurry");
-
-    // agents: the usage.
-    let a = &cfg.agents["deepseek"];
-    assert_eq!(a.models, vec![ModelRef::Entry("deepseek".to_owned())]);
-    assert_eq!(a.system, "inline prompt");
-    assert_eq!(a.system_file, sys);
-    assert!(a.tools.contains_key("code"));
-    assert_eq!(a.mcp_servers, Some(vec!["fs".to_owned()]));
-    assert!(a.workspace && a.no_save);
-    assert_eq!(a.notify, Some(false));
-
-    // …and the name still resolves to all three at once.
-    let r = cfg.resolve("deepseek").expect("resolves");
-    assert_eq!(r.provider_type, "openai");
-    assert_eq!(r.provider_name, "deepseek");
-    assert_eq!(r.model.id, "deepseek-chat");
-    assert_eq!(r.effort(), "high");
-    assert_eq!(r.temperature(), Some(0.3));
-    assert_eq!(r.top_p(), Some(0.9));
-    assert_eq!(r.agent.system, "inline prompt");
+        (
+            "providers:\n  p: {type: openai, agent: true}\n",
+            "providers.p.agent: `agent` is now `workspace:` on an `agents:` entry",
+        ),
+        (
+            "providers:\n  p: {type: openai, effort: high}\n",
+            "providers.p.effort: `effort` belongs under `models:` (see README, \"The three layers\")",
+        ),
+        (
+            "providers:\n  p: {type: openai, tools: {code: {}}}\n",
+            "providers.p.tools: `tools` belongs under `agents:` (see README, \"The three layers\")",
+        ),
+        (
+            "providers:\n  p: {type: openai, no_save: true}\n",
+            "providers.p.no_save: `no_save` belongs under `agents:` (see README, \"The three layers\")",
+        ),
+    ] {
+        assert_eq!(
+            parse(yaml)
+                .expect_err("a retired key must fail")
+                .to_string(),
+            want
+        );
+    }
 }
 
-/// A block with only endpoint keys migrates nothing and says nothing; a block with no `model:` still opens
-/// the picker, which is spelled `<provider>:*` now.
+/// A misspelled key is an error too, wherever it is written: silently doing nothing is the failure mode the
+/// audit exists to close.
 #[test]
-fn a_plain_endpoint_block_migrates_nothing() {
-    let (dir, _dirs) = temp_project(&[]);
-    let (cfg, warnings) = load_legacy(
-        dir.path(),
-        "c.yaml",
-        "providers:\n  plain:\n    type: openai\n    key: k\n  toolsonly:\n    type: openai\n    tools: {code: {}}\n",
-    );
-    assert_eq!(
-        warnings,
-        vec![
-            "Warning: config providers.toolsonly: tools now belong under `models:` / `agents:` (still accepted; see README)"
-                .to_owned()
-        ]
-    );
-    assert!(!cfg.models.contains_key("plain"));
-    assert!(!cfg.agents.contains_key("plain"));
-    assert_eq!(
-        cfg.agents["toolsonly"].models,
-        vec![ModelRef::All {
-            provider: "toolsonly".to_owned()
-        }],
-        "no `model:` means the candidate set is whatever the provider lists"
-    );
-    assert_eq!(cfg.resolve("toolsonly").unwrap().model.id, "");
+fn an_unknown_key_is_refused_with_its_coordinate() {
+    for (yaml, want) in [
+        (
+            "providers:\n  p: {kye: k}\n",
+            "providers.p.kye: unknown key (want type, key, url)",
+        ),
+        (
+            "models:\n  m: {provider: openai, idd: x}\n",
+            "models.m.idd: unknown key (want provider, id, context_window, defer_mode, effort, temperature, top_p, image, aspect_ratio, image_size, negative_prompt, json_edits)",
+        ),
+        (
+            "agents:\n  coder: {models: [m], sytem: hi}\n",
+            "agents.coder.sytem: unknown key (want models, system, system_file, tools, mcp_servers, workspace, no_save, notify, description, effort, temperature, top_p)",
+        ),
+        (
+            "agnets:\n  coder: {}\n",
+            "agnets: unknown top-level key (want providers:, models:, agents:, mcp_servers:)",
+        ),
+    ] {
+        assert_eq!(
+            parse(yaml)
+                .expect_err("an unknown key must fail")
+                .to_string(),
+            want
+        );
+    }
 }
 
-/// The `agent` toolset is the `skills` toolset now; the old key is accepted with one line.
+/// The toolset table is closed as well: the `agent` set that became `skills` and the `delegate` set that was
+/// removed each say so where they are written.
 #[test]
-fn the_agent_toolset_is_renamed_to_skills() {
-    let (dir, _dirs) = temp_project(&[]);
-    let (cfg, warnings) = load_legacy(
-        dir.path(),
-        "c.yaml",
-        "providers:\n  p:\n    type: openai\n    tools:\n      agent:\n",
+fn a_toolset_that_does_not_exist_is_refused() {
+    for (yaml, want) in [
+        (
+            "agents:\n  a: {models: [m], tools: {agent: {}}}\n",
+            "agents.a.tools.agent: the `agent` toolset is now called `skills` (the word `agent` names a config layer)",
+        ),
+        (
+            "agents:\n  a: {models: [m], tools: {delegate: [reviewer]}}\n",
+            "agents.a.tools.delegate: the `delegate` toolset was removed — run child agents from bash instead (see README)",
+        ),
+        (
+            "agents:\n  a: {models: [m], tools: {shel: {}}}\n",
+            "agents.a.tools.shel: unknown toolset (want shell, skills, code, ask)",
+        ),
+    ] {
+        assert_eq!(
+            parse(yaml)
+                .expect_err("an unknown toolset must fail")
+                .to_string(),
+            want
+        );
+    }
+    // The four that exist all load.
+    assert!(
+        parse("agents:\n  a:\n    models: [\"openai:x\"]\n    tools: {shell: {}, skills: {}, code: {}, ask: {}}\n")
+            .is_ok()
     );
-    assert_eq!(
-        warnings,
-        vec![
-            "Warning: config providers.p: tools now belong under `models:` / `agents:` (still accepted; see README)".to_owned(),
-            "Warning: config providers.p.tools: toolset `agent` is now `skills` (still accepted; see README)".to_owned(),
-        ]
-    );
-    let tools = &cfg.agents["p"].tools;
-    assert!(tools.contains_key("skills") && !tools.contains_key("agent"));
-
-    // …and under an explicit agent too.
-    let (cfg, warnings) = parse_warned(
-        "providers:\n  p: {type: openai}\nagents:\n  coder:\n    models: [\"p:gpt-4o\"]\n    tools:\n      agent:\n",
-    );
-    assert_eq!(
-        warnings,
-        vec![
-            "Warning: config agents.coder.tools: toolset `agent` is now `skills` (still accepted; see README)"
-                .to_owned()
-        ]
-    );
-    assert!(cfg.unwrap().agents["coder"].tools.contains_key("skills"));
 }
 
-/// The retired `delegate` toolset: the key is dropped with ONE warning, and the run carries on. Every
-/// spelling it had — the list, the mapping, the one-layer `agents:` map inside it — is the same key.
+/// A later file replaces an entry WHOLE, by name and by layer.
 #[test]
-fn the_delegate_toolset_is_dropped_with_a_warning() {
-    let (dir, _dirs) = temp_project(&[]);
-    let (cfg, warnings) = load_legacy(
-        dir.path(),
-        "c.yaml",
-        "providers:\n  p:\n    type: openai\n    tools:\n      delegate: [reviewer]\n",
-    );
-    assert_eq!(
-        warnings,
-        vec![
-            "Warning: config providers.p: tools now belong under `models:` / `agents:` (still accepted; see README)".to_owned(),
-            "Warning: config providers.p.tools.delegate: the delegate toolset was removed; run child agents from bash instead (see README)".to_owned(),
-        ]
-    );
-    assert!(!cfg.agents["p"].tools.contains_key("delegate"));
-
-    // The mapping spelling, including the one-layer `agents:` map inside it, under an explicit agent.
-    let (cfg, warnings) = parse_warned(
-        "providers:\n  p: {type: openai}\nagents:\n  main:\n    models: [\"p:gpt-4o\"]\n    tools:\n      code:\n      delegate:\n        agents: {reviewer: p}\n        max_turns: 30\n",
-    );
-    assert_eq!(
-        warnings,
-        vec![
-            "Warning: config agents.main.tools.delegate: the delegate toolset was removed; run child agents from bash instead (see README)"
-                .to_owned()
-        ]
-    );
-    let tools = &cfg.expect("the config still loads").agents["main"].tools;
-    assert!(!tools.contains_key("delegate"), "the key must be dropped");
-    assert!(tools.contains_key("code"), "the other sets survive");
-}
-
-/// A later file replaces a provider WHOLE, so the entries an earlier one implied go with it.
-#[test]
-fn a_replaced_provider_drops_the_entries_it_implied() {
+fn a_later_file_replaces_whole_entries() {
     let (dir, dirs) = temp_project(&[
         (
             "home/.iota.yaml",
-            "providers:\n  shared:\n    type: openai\n    key: home\n    model: home-model\n    tools: {code: {}}\n",
+            "providers:\n  shared: {type: openai, key: home, url: https://home/v1}\n",
         ),
         (
             ".iota.yaml",
-            "providers:\n  shared:\n    type: openai\n    key: cwd\n",
+            "providers:\n  shared: {type: openai, key: cwd}\n",
         ),
     ]);
     let mut warnings = Vec::new();
     let cfg =
         Config::load(None, &dirs, &map_resolver(&[]), &mut |w| warnings.push(w)).expect("loads");
     assert_eq!(cfg.providers["shared"].key, "cwd");
-    assert!(!cfg.models.contains_key("shared"), "{:?}", cfg.models);
-    assert!(!cfg.agents.contains_key("shared"), "{:?}", cfg.agents);
+    assert_eq!(
+        cfg.providers["shared"].url, "",
+        "the cwd entry replaces the home one whole, url included"
+    );
     let _ = dir;
 }
 
@@ -770,7 +690,7 @@ agents:
     assert_eq!(cfg.models["sonnet"].provider, "anthropic");
     assert_eq!(cfg.models["sonnet"].id, "claude-sonnet-4");
 
-    let r = cfg.resolve("mixed").expect("resolves");
+    let r = cfg.resolve_agent("mixed").expect("resolves");
     assert_eq!(r.provider_name, "anthropic");
     assert_eq!(r.provider_type, "anthropic");
     assert_eq!(r.model.id, "claude-sonnet-4");
@@ -784,11 +704,10 @@ agents:
     let all = cfg.model_of(&r.agent.models[2]).unwrap();
     assert_eq!((all.provider.as_str(), all.id.as_str()), ("relay", ""));
 
-    // `gpt5` resolves on its own, without an agent.
-    let r = cfg.resolve("gpt5").expect("resolves");
-    assert_eq!(r.provider_name, "relay");
-    assert_eq!(r.provider_type, "openai");
-    assert_eq!(r.model.id, "gpt-5.2");
+    // A `models:` entry is reached THROUGH an agent, never named by a run of its own.
+    assert_eq!(cfg.resolve_agent("gpt5"), None);
+    assert_eq!(cfg.models["gpt5"].provider, "relay");
+    assert_eq!(cfg.models["gpt5"].id, "gpt-5.2");
 }
 
 /// The one mistake `provider:model` invites: a space after the colon makes YAML read a mapping. The error
@@ -918,12 +837,13 @@ fn defer_mode_must_match_the_provider_dialect() {
         "models.m: defer_mode \"reference\" does not apply to provider type openai (see docs/design/tool-defer.md)"
     );
 
-    // A one-layer block reaches the same verdict through the model it implies.
+    // The verdict is reached at LOAD, so it names no file: the cross-layer pass runs once, over the merged
+    // stack, and no single file owns the mismatch.
     let (dir, _dirs) = temp_project(&[]);
     let path = dir.path().join("c.yaml");
     fs::write(
         &path,
-        "providers:\n  a:\n    type: openai\n    defer_mode: reference\n",
+        "models:\n  a: {provider: openai, id: x, defer_mode: reference}\n",
     )
     .unwrap();
     let (cfg, _) = try_load_explicit(&path, &map_resolver(&[]));
@@ -952,12 +872,12 @@ fn an_unknown_defer_mode_warns_and_falls_back() {
     assert!(warnings.is_empty(), "{warnings:?}");
 }
 
-// ---------------------------------------------------------------- the four-level positional resolution
+// ---------------------------------------------------------------- what a run may name
 
-/// `agents:` → `models:` → `providers:` → a built-in type, first match wins, and a name defined twice is
-/// taken from the higher layer.
+/// `iota run <name>` resolves `agents:` and NOTHING else: a `models:` or `providers:` entry of the same name
+/// is not a run, and the hint lists the agents there are.
 #[test]
-fn positional_names_resolve_through_four_levels_in_order() {
+fn a_run_resolves_agents_only() {
     let cfg = parse(
         "
 providers:
@@ -976,43 +896,31 @@ agents:
     )
     .expect("loads");
 
-    // `openai` is all three: the AGENT wins.
-    let r = cfg.resolve("openai").expect("resolves");
+    // `openai` names an agent, a model AND a provider: only the agent is reachable, and it decides
+    // everything — including which endpoint the run talks to.
+    let r = cfg.resolve_agent("openai").expect("resolves");
     assert_eq!(r.agent.system, "from-agents");
     assert_eq!(r.model.id, "claude-x", "the agent's first model decides");
     assert_eq!(r.provider_name, "anthropic");
+    assert_eq!(r.agent_name, "openai");
 
-    // `sonnet` is a model only: no agent, the model's own provider.
-    let r = cfg.resolve("sonnet").expect("resolves");
-    assert_eq!(r.agent, iota::cmd::AgentConfig::default());
-    assert_eq!(
-        (r.provider_name.as_str(), r.model.id.as_str()),
-        ("anthropic", "claude-x")
-    );
-
-    // `anthropic` is a provider only: no model, no agent — the picker's job.
-    let r = cfg.resolve("anthropic").expect("resolves");
-    assert_eq!(r.provider.key, "ak");
-    assert_eq!(r.model.id, "");
-
-    // A built-in type nobody configured still resolves, with defaults.
-    let r = cfg.resolve("gemini").expect("resolves");
-    assert_eq!(r.provider_type, "gemini");
-    assert_eq!(r.provider, ProviderConfig::default());
+    // A model, a provider and a built-in type are not runs.
+    for name in ["sonnet", "anthropic", "gemini", "nosuch"] {
+        assert_eq!(cfg.resolve_agent(name), None, "{name} is not an agent");
+    }
 
     // A wildcard-first agent has no default model: the run starts in the picker.
-    let r = cfg.resolve("solo").expect("resolves");
+    let r = cfg.resolve_agent("solo").expect("resolves");
     assert_eq!(
         (r.provider_name.as_str(), r.model.id.as_str()),
         ("openai", "")
     );
     assert_eq!(r.provider.url, "https://p/v1");
 
-    assert_eq!(cfg.resolve("nosuch"), None);
     assert_eq!(
-        cfg.configured_names(),
-        vec!["anthropic", "openai", "solo", "sonnet"],
-        "the hint lists every layer's names once"
+        cfg.agent_names(),
+        vec!["openai", "solo"],
+        "the hint lists the agents, sorted"
     );
 }
 
@@ -1035,7 +943,7 @@ agents:
 ",
     )
     .expect("loads");
-    let r = cfg.resolve("hot").expect("resolves");
+    let r = cfg.resolve_agent("hot").expect("resolves");
     assert_eq!(r.temperature(), Some(1.5), "the agent wins");
     assert_eq!(r.effort(), "low", "unset keys keep the model's default");
     assert_eq!(r.top_p(), Some(0.5));
@@ -1119,7 +1027,7 @@ fn config_parse_error_drops_file_with_warning() {
         ),
         (
             ".iota.yaml",
-            "providers:\n  bad:\n    temperature: [not, a, float]\n",
+            "models:\n  bad: {provider: openai, temperature: [not, a, float]}\n",
         ),
         ("empty.yaml", ""),
     ]);
@@ -1145,26 +1053,12 @@ fn config_parse_error_drops_file_with_warning() {
         "the broken file is dropped entirely; the home tier survives"
     );
 
-    // An unknown key is not an error (non-strict decode); a type mismatch on a bool field is.
-    let (cfg, warnings) = load_explicit(
-        &{
-            let p = dir.path().join("unknown.yaml");
-            fs::write(
-                &p,
-                "providers:\n  x:\n    type: openai\n    bogus_key: 1\nnot_a_key: true\n",
-            )
-            .unwrap();
-            p
-        },
-        &resolver,
-    );
-    assert!(warnings.is_empty(), "{warnings:?}");
-    assert_eq!(cfg.get("x").0, "openai");
-
+    // A type mismatch on a bool field is a PARSE error: the file is dropped with a warning, because the
+    // parser is the only thing that knows what went wrong and the message is its own.
     let (cfg, warnings) = load_explicit(
         &{
             let p = dir.path().join("badbool.yaml");
-            fs::write(&p, "providers:\n  x:\n    agent: 1\n").unwrap();
+            fs::write(&p, "agents:\n  x: {models: [m], workspace: 1}\n").unwrap();
             p
         },
         &resolver,

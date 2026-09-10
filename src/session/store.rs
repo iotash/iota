@@ -2,7 +2,7 @@
 //!
 //! Bundles live in two layouts: flat `<root>/<id>/` (normal mode) and `<root>/projects/<slug>/<id>/`
 //! (agent mode, where `<slug>` encodes the project root). The DISPLAY views are mode-isolated; only
-//! `--resume` id resolution ever merges them.
+//! `iota resume` id resolution ever merges them.
 
 use std::path::{Path, PathBuf};
 

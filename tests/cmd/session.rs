@@ -91,6 +91,37 @@ fn iota(cwd: &Path, home: &Path) -> Command {
     cmd
 }
 
+/// Writes `<cwd>/.iota.yaml`: a gemini endpoint (its key, and the mock server's URL when one is serving)
+/// driven by `agents.default`. `model` may be `""` — then the candidate set is the `p:*` wildcard, which is
+/// how a run reaches the resume stage with no model of its own and takes the bundle's (D-52).
+///
+/// Since `-k` and `-u` were retired, a test points at its mock server the way a user points at an endpoint:
+/// in the `providers:` layer (brain page `cli-surface-agent-first`).
+fn write_config(cwd: &Path, url: &str, model: &str, workspace: bool) {
+    let url = if url.is_empty() {
+        String::new()
+    } else {
+        format!(", url: {url}")
+    };
+    let candidate = if model.is_empty() {
+        "p:*".to_owned()
+    } else {
+        format!("p:{model}")
+    };
+    let workspace = if workspace {
+        "\n    workspace: true"
+    } else {
+        ""
+    };
+    fs::write(
+        cwd.join(".iota.yaml"),
+        format!(
+            "providers:\n  p: {{type: gemini, key: x{url}}}\nagents:\n  default:\n    models: [\"{candidate}\"]{workspace}\n"
+        ),
+    )
+    .expect("write config");
+}
+
 /// Runs `cmd` off the async runtime (wiremock needs its worker threads to keep serving).
 async fn output(mut cmd: Command) -> Output {
     tokio::task::spawn_blocking(move || cmd.output().expect("run iota"))
@@ -231,17 +262,9 @@ async fn resume_go_bundle_appends_one_turn() {
         serde_json::from_slice(&fs::read(bundle.join("meta.json")).expect("read meta"))
             .expect("meta is JSON");
 
+    write_config(cwd.path(), &server.uri(), "", false);
     let mut cmd = iota(cwd.path(), home.path());
-    cmd.args([
-        "gemini",
-        "-k",
-        "x",
-        "-u",
-        &server.uri(),
-        "-m",
-        "second question",
-        &format!("--resume={prefix}"),
-    ]);
+    cmd.args(["resume", &prefix, "-m", "second question"]);
     let o = output(cmd).await;
 
     // Exit 0, stdout is the reply ALONE, and the banner is the only thing on stderr (DIVERGENCES D-44).
@@ -360,11 +383,12 @@ async fn resume_go_bundle_appends_one_turn() {
     assert_eq!(sess.meta.model, "gemini-2.5-pro");
 }
 
-/// cmd/root.go:323-333 (design §3.5): EXPLICIT flags win over the session's meta. `-M` supplies the model and
-/// does NOT rewrite `meta.model`; `-t` suppresses the meta temperature; `--context-window` suppresses the meta
-/// window. Effort has no flag, so the session's value applies either way.
+/// cmd/root.go:323-333 (design §3.5): `-M` is the ONE thing that wins over the session's meta — it supplies
+/// the model and does NOT rewrite `meta.model`. Everything else the bundle recorded replays, because the
+/// flags that used to suppress temperature and the window (`-t`, `--context-window`) are gone: a resumed run
+/// is the run it resumes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn resume_tuning_precedence_explicit_flags_win() {
+async fn resume_tuning_precedence_explicit_model_wins() {
     let server = MockServer::start().await;
     google_stub(&server, false).await;
     let cwd = TempDir::new().expect("temp cwd");
@@ -372,22 +396,15 @@ async fn resume_tuning_precedence_explicit_flags_win() {
     let f = fixture("go-gemini-rich");
     let bundle = sessions_root(home.path()).join(f["dir"].as_str().unwrap());
 
+    write_config(cwd.path(), &server.uri(), "", false);
     let mut cmd = iota(cwd.path(), home.path());
     cmd.args([
-        "gemini",
-        "-k",
-        "x",
-        "-u",
-        &server.uri(),
+        "resume",
+        f["unique_prefix"].as_str().unwrap(),
         "-M",
         "gemini-flash-latest",
-        "-t",
-        "1.5",
-        "--context-window",
-        "300k",
         "-m",
         "second question",
-        &format!("--resume={}", f["unique_prefix"].as_str().unwrap()),
     ]);
     let o = output(cmd).await;
     assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
@@ -399,7 +416,10 @@ async fn resume_tuning_precedence_explicit_flags_win() {
         "-M wins over meta.model: {}",
         reqs[0].url
     );
-    assert_eq!(body["generationConfig"]["temperature"], 1.5, "-t wins");
+    assert_eq!(
+        body["generationConfig"]["temperature"], 0.7,
+        "the session's temperature replays: no flag suppresses it any more"
+    );
     assert_eq!(
         body["generationConfig"]["thinkingConfig"]["thinkingLevel"], "HIGH",
         "effort has no flag, so the session's value still applies"
@@ -423,15 +443,9 @@ fn resume_unknown_fragment() {
     let m = manifest();
     let fragment = m["resolution"]["unknown_fragment"].as_str().unwrap();
     let expected = m["resolution"]["unknown_error"].as_str().unwrap();
+    write_config(cwd.path(), "", "", false);
     let mut cmd = iota(cwd.path(), home.path());
-    cmd.args([
-        "gemini",
-        "-k",
-        "x",
-        "-m",
-        "hi",
-        &format!("--resume={fragment}"),
-    ]);
+    cmd.args(["resume", fragment, "-m", "hi"]);
     assert_error(&cmd.output().expect("run"), expected);
 }
 
@@ -444,15 +458,9 @@ fn resume_ambiguous_fragment() {
     let m = manifest();
     let fragment = m["resolution"]["ambiguous_fragment"].as_str().unwrap();
     let expected = m["resolution"]["ambiguous_error"].as_str().unwrap();
+    write_config(cwd.path(), "", "", false);
     let mut cmd = iota(cwd.path(), home.path());
-    cmd.args([
-        "gemini",
-        "-k",
-        "x",
-        "-m",
-        "hi",
-        &format!("--resume={fragment}"),
-    ]);
+    cmd.args(["resume", fragment, "-m", "hi"]);
     assert_error(&cmd.output().expect("run"), expected);
 }
 
@@ -462,8 +470,9 @@ fn resume_missing_bundle_is_not_found() {
     let cwd = TempDir::new().expect("temp cwd");
     let home = TempDir::new().expect("temp home");
     fs::create_dir_all(sessions_root(home.path())).expect("mkdir sessions");
+    write_config(cwd.path(), "", "", false);
     let mut cmd = iota(cwd.path(), home.path());
-    cmd.args(["gemini", "-k", "x", "-m", "hi", "--resume=nosuchsession"]);
+    cmd.args(["resume", "nosuchsession", "-m", "hi"]);
     assert_error(
         &cmd.output().expect("run"),
         "no session matches \"nosuchsession\"",
@@ -479,15 +488,9 @@ fn resume_provider_mismatch_re_raises_model_required() {
     let home = home_with_fixtures();
     let f = fixture("go-openai-compaction"); // provider "openai", resumed here as gemini
     let prefix = f["unique_prefix"].as_str().unwrap();
+    write_config(cwd.path(), "", "", false);
     let mut cmd = iota(cwd.path(), home.path());
-    cmd.args([
-        "gemini",
-        "-k",
-        "x",
-        "-m",
-        "hi",
-        &format!("--resume={prefix}"),
-    ]);
+    cmd.args(["resume", prefix, "-m", "hi"]);
     assert_error(
         &cmd.output().expect("run"),
         "--model/-M is required when using --message/-m",
@@ -498,7 +501,8 @@ fn resume_provider_mismatch_re_raises_model_required() {
 
 /// chat/session.go:288-305 through the CLI: agent mode resolves against the project's OWN bucket first, so a
 /// fragment that is ambiguous across the flat root is unique inside it. The same fragment, the same corpus and
-/// the same binary — only `--agent` differs.
+/// the same binary — only the agent's `workspace: true` differs (the `--agent` flag that used to say the same
+/// thing is gone).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resume_agent_mode_prefers_the_project_bucket() {
     let server = MockServer::start().await;
@@ -524,35 +528,20 @@ async fn resume_agent_mode_prefers_the_project_bucket() {
         &[rec("system", "scoped sys"), rec("user", "scoped question")],
     );
 
-    // Without --agent the flat view is the mode's own view: the fragment is ambiguous there (and the scoped
-    // bundle is invisible to it).
+    // Without `workspace:` the flat view is the mode's own view: the fragment is ambiguous there (and the
+    // scoped bundle is invisible to it).
+    write_config(cwd.path(), &server.uri(), "", false);
     let mut cmd = iota(cwd.path(), home.path());
-    cmd.args([
-        "gemini",
-        "-k",
-        "x",
-        "-m",
-        "hi",
-        &format!("--resume={fragment}"),
-    ]);
+    cmd.args(["resume", fragment, "-m", "hi"]);
     assert_error(
         &cmd.output().expect("run"),
         m["resolution"]["ambiguous_error"].as_str().unwrap(),
     );
 
-    // With --agent the bucket answers first, unambiguously, and the turn lands in the bucketed bundle.
+    // With it, the bucket answers first, unambiguously, and the turn lands in the bucketed bundle.
+    write_config(cwd.path(), &server.uri(), "", true);
     let mut cmd = iota(cwd.path(), home.path());
-    cmd.args([
-        "gemini",
-        "-k",
-        "x",
-        "-u",
-        &server.uri(),
-        "-m",
-        "hi",
-        "--agent",
-        &format!("--resume={fragment}"),
-    ]);
+    cmd.args(["resume", fragment, "-m", "hi"]);
     let o = output(cmd).await;
     assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
     assert!(
@@ -580,18 +569,9 @@ async fn resume_agent_mode_widens_to_the_flat_root() {
     let f = fixture("go-gemini-rich");
     let id = f["id"].as_str().unwrap().to_owned();
 
+    write_config(cwd.path(), &server.uri(), "", true);
     let mut cmd = iota(cwd.path(), home.path());
-    cmd.args([
-        "gemini",
-        "-k",
-        "x",
-        "-u",
-        &server.uri(),
-        "-m",
-        "hi",
-        "--agent",
-        &format!("--resume={id}"),
-    ]);
+    cmd.args(["resume", &id, "-m", "hi"]);
     let o = output(cmd).await;
     assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
     assert!(
@@ -640,17 +620,9 @@ async fn resume_a_log_ending_in_tool_results() {
         ],
     );
 
+    write_config(cwd.path(), &server.uri(), "", false);
     let mut cmd = iota(cwd.path(), home.path());
-    cmd.args([
-        "gemini",
-        "-k",
-        "x",
-        "-u",
-        &server.uri(),
-        "-m",
-        "carry on",
-        &format!("--resume={id}"),
-    ]);
+    cmd.args(["resume", id, "-m", "carry on"]);
     let o = output(cmd).await;
     assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
     assert_eq!(err(&o), format!("Resumed session {id} (4 messages)\n"));
@@ -684,16 +656,13 @@ async fn a_failed_resumed_turn_persists_nothing() {
     let log_before = fs::read(bundle.join("messages.jsonl")).expect("log");
     let meta_before = fs::read(bundle.join("meta.json")).expect("meta");
 
+    write_config(cwd.path(), &server.uri(), "", false);
     let mut cmd = iota(cwd.path(), home.path());
     cmd.args([
-        "gemini",
-        "-k",
-        "x",
-        "-u",
-        &server.uri(),
+        "resume",
+        f["unique_prefix"].as_str().unwrap(),
         "-m",
         "second question",
-        &format!("--resume={}", f["unique_prefix"].as_str().unwrap()),
     ]);
     let o = output(cmd).await;
     assert_eq!(o.status.code(), Some(1), "stderr: {}", err(&o));
@@ -723,16 +692,13 @@ async fn resumed_image_turn_persists_the_saved_attachment() {
     let bundle = sessions_root(home.path()).join(f["dir"].as_str().unwrap());
     let log_before = fs::read(bundle.join("messages.jsonl")).expect("log");
 
+    write_config(cwd.path(), &server.uri(), "", false);
     let mut cmd = iota(cwd.path(), home.path());
     cmd.args([
-        "gemini",
-        "-k",
-        "x",
-        "-u",
-        &server.uri(),
+        "resume",
+        f["unique_prefix"].as_str().unwrap(),
         "-m",
         "draw something",
-        &format!("--resume={}", f["unique_prefix"].as_str().unwrap()),
     ]);
     let o = output(cmd).await;
     assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
@@ -803,18 +769,9 @@ async fn bare_m_run_writes_nothing_under_home() {
     let cwd = TempDir::new().expect("temp cwd");
     let home = TempDir::new().expect("temp home");
 
+    write_config(cwd.path(), &server.uri(), "gemini-2.5-pro", false);
     let mut cmd = iota(cwd.path(), home.path());
-    cmd.args([
-        "gemini",
-        "-k",
-        "x",
-        "-u",
-        &server.uri(),
-        "-M",
-        "gemini-2.5-pro",
-        "-m",
-        "hi",
-    ]);
+    cmd.args(["-m", "hi"]);
     let o = output(cmd).await;
     assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
     assert_eq!(out(&o), format!("{REPLY}\n"));

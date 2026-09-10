@@ -336,7 +336,7 @@ pub const BASH_DESC_SANDBOXED: &str = "Commands run inside an OS sandbox: file w
 /// Unsandboxed suffix.
 pub const BASH_DESC_UNSANDBOXED: &str = "Commands run WITHOUT a sandbox on this system, with the user's full permissions — be conservative.";
 /// The background-mode paragraph, appended after the sandbox suffix.
-pub const BASH_DESC_BACKGROUND: &str = "\n\nSet \"background\": true for work that outlasts a reply — a long build, a test suite, a child agent (`iota <agent> -m \"<task>\"`). The call returns at once with a job id and an output file; when the job ends you are told its exit status and shown its output, so do not poll for it (`tail` the file only if you need progress meanwhile). Up to 16 background jobs at a time, and \"timeout\" still applies. Background jobs are killed when iota exits — a job that must survive that has to detach itself (nohup/setsid).";
+pub const BASH_DESC_BACKGROUND: &str = "\n\nSet \"background\": true for work that outlasts a reply — a long build, a test suite, a child agent (`iota run <agent> -m \"<task>\"`). The call returns at once with a job id and an output file; when the job ends you are told its exit status and shown its output, so do not poll for it (`tail` the file only if you need progress meanwhile). Up to 16 background jobs at a time, and \"timeout\" still applies. Background jobs are killed when iota exits — a job that must survive that has to detach itself (nohup/setsid).";
 
 #[cfg(test)]
 mod tests {

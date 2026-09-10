@@ -58,7 +58,7 @@ pub fn parse_output_format(s: &str) -> Result<OutputFormat, ChatError> {
 /// chat/agentmode.go + injected cwd/home.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentOptions {
-    /// Whether agent mode is on (`--agent` / `agent: true`): compose the AGENTS.md + skills overlay.
+    /// Whether agent mode is on (`agents.<name>.workspace: true`): compose the AGENTS.md + skills overlay.
     pub enabled: bool,
     /// The project root the overlay chain starts from.
     pub root: PathBuf,

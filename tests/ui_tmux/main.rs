@@ -20,7 +20,7 @@
 //! test prints a `SKIP:` line and passes.
 //!
 //! **Provider.** A dependency-free SSE mock on `127.0.0.1:<ephemeral>`, reached through
-//! flags (`-u http://127.0.0.1:<port> -k test -M fake`) — no environment is mutated and
+//! config file (`providers.mock` pointed at `http://127.0.0.1:<port>`) — no environment is mutated and
 //! nothing touches the network. The reply is scripted by the user message the request
 //! carries, so a scenario picks its own transcript by typing into the composer.
 //!

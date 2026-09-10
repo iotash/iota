@@ -1,5 +1,5 @@
-//! `parse_window_size` (chat/tokens.go:20-43) — config parity only: `--context-window` and `context_window:` are
-//! parsed and have no headless effect (compaction is interactive-only).
+//! `parse_window_size` (chat/tokens.go:20-43) — the one place `models.<name>.context_window` (and a session
+//! meta's recorded window) is read. It has no headless effect: compaction is interactive-only.
 
 /// Why a window size did not parse (chat/tokens.go:23,36,40 — the three texts, verbatim).
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]

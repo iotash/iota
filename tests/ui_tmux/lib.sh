@@ -46,13 +46,29 @@ capall() { tm capture-pane -pt s -S -400 2>/dev/null; }
 type_() { tm send-keys -t s -l "$1"; }
 key() { tm send-keys -t s "$@"; }
 
-# iota_cmd <provider> <model> [extra iota args…] — the command line a pane runs. HOME is
-# redirected into the scenario's temp dir so the session store never touches the
-# developer's ~/.iota, and the provider is reached only through flags (no environment).
+# write_iota_config <provider> <model> — the pane's config file. The endpoint, the model and the
+# agent a run names all live in `$SCEN_HOME/.iota.yaml` now: `-k`, `-u` and the positional
+# provider name were retired with the agent-first surface, so a scenario points at the mock the
+# way a user points at an endpoint.
+write_iota_config() {
+    cat >"$SCEN_HOME/.iota.yaml" <<EOF
+providers:
+  mock: {type: $1, key: test, url: "http://127.0.0.1:$IOTA_PORT"}
+models:
+  m: mock:$2
+agents:
+  default: {models: [m]}
+EOF
+}
+
+# iota_cmd <provider> <model> [extra iota args…] — the command line a pane runs, with its config
+# written first. HOME is redirected into the scenario's temp dir so neither the session store nor
+# the config ever touches the developer's own.
 iota_cmd() {
     local kind="$1" model="$2"
     shift 2
-    echo "env HOME=$SCEN_HOME $IOTA_BIN $kind -k test -M $model -u http://127.0.0.1:$IOTA_PORT $*"
+    write_iota_config "$kind" "$model"
+    echo "env HOME=$SCEN_HOME $IOTA_BIN $*"
 }
 
 # _launch <cwd|""> <provider> <model> <width> <height> [extra iota args…] — a fresh private

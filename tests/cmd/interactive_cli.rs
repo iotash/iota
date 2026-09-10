@@ -5,8 +5,9 @@
 //! Nothing here reaches the network, and — the point of the file — nothing reaches a terminal either: the
 //! child's stdout is a pipe, which is exactly the shape (`echo hi | iota`) the refusal exists for.
 //!
-//! The interactive-only flags are lifted for a run without `-m` (they mean what Go means by them) and the
-//! branch at root.go:259 ends at the terminal check; a headless `-m` run keeps every headless rejection.
+//! The interactive-only surface — `--no-save` and `iota resume` with no id — is lifted for a run without
+//! `-m` (it means what Go means by it) and the branch at root.go:259 ends at the terminal check; a headless
+//! `-m` run keeps every headless rejection.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::{
@@ -55,6 +56,15 @@ fn run(mut cmd: Command) -> Output {
     child.wait_with_output().expect("run iota")
 }
 
+/// The config a run needs now that `-k` is gone: one endpoint, one model, `agents.default`.
+fn write_config(cwd: &Path) {
+    std::fs::write(
+        cwd.join(".iota.yaml"),
+        "providers:\n  p: {type: openai, key: sk-test}\nmodels:\n  m: p:gpt-4o\nagents:\n  default: {models: [m]}\n",
+    )
+    .expect("write config");
+}
+
 /// stderr as UTF-8.
 fn err(o: &Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
@@ -71,24 +81,20 @@ fn assert_error(o: &Output, message: &str) {
 #[test]
 fn test_interactive_requires_a_terminal() {
     let (dir, home) = project();
-    let mut cmd = piped(dir.path(), &home);
-    cmd.args(["openai", "-k", "sk-test"]);
-    let o = run(cmd);
+    write_config(dir.path());
+    let o = run(piped(dir.path(), &home));
     assert_error(&o, NOT_A_TERMINAL);
     assert!(o.stdout.is_empty(), "the refusal writes nothing to stdout");
 }
 
-/// The interactive LIFT (`TUI_CONTRACTS` §11): `--no-save`, blank `--resume` and `-S` mean what Go means by
+/// The interactive LIFT (`TUI_CONTRACTS` §11): `--no-save` and a bare `iota resume` mean what Go means by
 /// them, so a run without `-m` gets past `reject_unsupported` and dies at the terminal check instead of at a
 /// headless rejection (D-23 / D-42 apply to `-m` runs only).
 #[test]
 fn test_interactive_only_flags_are_lifted_without_a_message() {
     let (dir, home) = project();
-    for args in [
-        vec!["openai", "-k", "sk-test", "--no-save"],
-        vec!["openai", "-k", "sk-test", "-S"],
-        vec!["openai", "-k", "sk-test", "--resume"],
-    ] {
+    write_config(dir.path());
+    for args in [vec!["--no-save"], vec!["resume"]] {
         let mut cmd = piped(dir.path(), &home);
         cmd.args(&args);
         let o = run(cmd);
@@ -101,29 +107,15 @@ fn test_interactive_only_flags_are_lifted_without_a_message() {
 #[test]
 fn test_headless_still_rejects_the_interactive_only_flags() {
     let (dir, home) = project();
+    write_config(dir.path());
     for (args, message) in [
         (
-            vec![
-                "openai",
-                "-k",
-                "sk-test",
-                "-M",
-                "gpt-4o",
-                "-m",
-                "hi",
-                "--no-save",
-            ],
+            vec!["-m", "hi", "--no-save"],
             "flag --no-save is not supported in headless mode",
         ),
         (
-            vec!["openai", "-k", "sk-test", "-M", "gpt-4o", "-m", "hi", "-S"],
-            "flag -S/--system-input is not supported in headless mode",
-        ),
-        (
-            vec![
-                "openai", "-k", "sk-test", "-M", "gpt-4o", "-m", "hi", "--resume",
-            ],
-            "--resume requires a session id in headless mode (--resume=<id>)",
+            vec!["resume", "-m", "hi"],
+            "iota resume needs a session id with -m (the picker is interactive): try `iota list sessions`",
         ),
     ] {
         let mut cmd = piped(dir.path(), &home);
@@ -138,26 +130,35 @@ fn test_headless_still_rejects_the_interactive_only_flags() {
 #[test]
 fn test_no_save_cannot_be_combined_with_resume() {
     let (dir, home) = project();
+    write_config(dir.path());
     let mut cmd = piped(dir.path(), &home);
-    cmd.args(["openai", "-k", "sk-test", "--no-save", "--resume=abc"]);
+    cmd.args(["resume", "abc", "--no-save"]);
     let o = run(cmd);
-    assert_error(&o, "--no-save cannot be combined with --resume");
+    assert_error(&o, "--no-save cannot be combined with iota resume");
 }
 
-/// `-l` never reads the interactive-only flags in Go, and with the lift it does not here either: the listing
-/// runs and exits 0.
+/// A listing has no terminal to require: it runs and exits 0 down a pipe, and it takes no run flags at all
+/// (`--no-save` belongs to `run`, so clap refuses it here).
 #[test]
-fn test_list_ignores_the_interactive_only_flags() {
+fn test_list_runs_down_a_pipe() {
     let (dir, home) = project();
     let empty = dir.path().join("empty.yaml");
     std::fs::write(&empty, "providers: {}\n").expect("write config");
     let mut cmd = piped(dir.path(), &home);
-    cmd.args(["-l", "--no-save", "-c"]).arg(&empty);
+    cmd.args(["list", "providers", "-c"]).arg(&empty);
     let o = run(cmd);
     assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
     assert_eq!(
         String::from_utf8_lossy(&o.stdout),
-        "No providers configured. Set API keys via environment variables or ~/.iota.yaml\n"
+        "No providers configured. Run `iota config init` to write a starter config.\n"
+    );
+
+    let mut cmd = piped(dir.path(), &home);
+    cmd.args(["list", "--no-save"]);
+    assert_eq!(
+        run(cmd).status.code(),
+        Some(2),
+        "a run flag is not a listing flag"
     );
 }
 
@@ -166,23 +167,27 @@ fn test_list_ignores_the_interactive_only_flags() {
 #[test]
 fn test_pre_branch_errors_still_win_over_the_interactive_branch() {
     let (dir, home) = project();
-    // No provider argument at all (root.go:53-60).
+    // No agent at all (root.go:53-60).
     let o = run(piped(dir.path(), &home));
     assert_error(
         &o,
-        "provider argument is required (e.g. openai, anthropic, gemini), or use -l to list available providers",
+        "no agent to run: name one with `iota run <agent>` (see `iota list agents`), or add an `agents.default` entry — `iota config init` writes a starter config",
     );
-    // A provider with no key (root.go:88-92) — still before the branch.
-    let mut cmd = piped(dir.path(), &home);
-    cmd.args(["openai"]);
-    let o = run(cmd);
+    // An agent whose endpoint has no key (root.go:88-92) — still before the branch.
+    std::fs::write(
+        dir.path().join(".iota.yaml"),
+        "providers:\n  p: {type: openai}\nagents:\n  default: {models: [\"p:gpt-4o\"]}\n",
+    )
+    .expect("write config");
+    let o = run(piped(dir.path(), &home));
     assert_error(
         &o,
-        "API key is required: use -k/--key or set OPENAI_API_KEY",
+        "API key is required: set OPENAI_API_KEY or providers.p.key in your config",
     );
     // An unknown `--mcp` value (POLICY F-02), raised during MCP config assembly.
+    write_config(dir.path());
     let mut cmd = piped(dir.path(), &home);
-    cmd.args(["openai", "-k", "sk-test", "--mcp", ""]);
+    cmd.args(["--mcp", ""]);
     let o = run(cmd);
     assert_error(&o, "--mcp: empty server specification");
 }

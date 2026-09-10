@@ -6,7 +6,7 @@
 //! `TcpListener`, one thread per connection, and hand-written SSE.
 //!
 //! **No environment, no network.** It binds `127.0.0.1:0` and is reached only through the
-//! flags the scenario passes (`-u http://127.0.0.1:<port> -k test -M fake`).
+//! `providers.mock.url` the scenario writes into the pane's config (`http://127.0.0.1:<port>`).
 //!
 //! **The script is chosen by the prompt.** The scenario types a word into the composer and
 //! that word selects the transcript, so one server serves every scenario:

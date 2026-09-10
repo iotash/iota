@@ -165,7 +165,6 @@ async fn run_one(
         provider: Box::new(p),
         title_provider: None,
         system: String::new(),
-        system_interactive: false,
         imported_history: Vec::new(),
         dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
         jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),

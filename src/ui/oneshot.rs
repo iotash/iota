@@ -1,7 +1,7 @@
 //! `run_surface` — the one-shot pre-REPL surface (ui.go:398-412 RunSurface): a
 //! short-lived raw-mode + Inline terminal sized to the surface, rendering ONLY the
 //! surface (no composer chrome), quitting when the surface closes, and fully released
-//! (raw off, cursor shown, paste off, flushed) BEFORE return — the `--resume` session
+//! (raw off, cursor shown, paste off, flushed) BEFORE return — the `iota resume` session
 //! picker's terminal must be handed back before the REPL's own `Tui::start`.
 
 use std::io::{self, Write as _};

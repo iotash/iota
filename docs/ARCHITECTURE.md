@@ -1,4 +1,4 @@
-# iota-rs — BINDING architecture (headless `-m` / `-l` port)
+# iota-rs — BINDING architecture (headless `-m` / the listings)
 
 Status: **binding**. Synthesised from the winning "idiomatic" proposal with every judged graft adopted or explicitly rejected (§0). `POLICY.md` wins over this document; this document wins over the specs' mapping notes; `CONTRACTS.md` is the frozen API implementers code against; `WORK_PACKAGES.md` is the fan-out plan; `DIVERGENCES.md` and `TEST_PLAN.md` complete the set.
 
@@ -9,7 +9,7 @@ Status: **binding**. Synthesised from the winning "idiomatic" proposal with ever
 > (`DIVERGENCES.md` §C.4 X-01, brain page `subagents-via-bash`). The rows are left as the phase-1
 > record; nothing else on this page changed.
 
-**Phase 2 · slice 1 (headless session store) is folded in.** The session store (now `src/session/`) and the `--resume` stage in `cmd::run` are described in place — §1.1/§1.2 (the crate and the graph), §2 (its module map), §8.1 (the session data flow), §10 and §11. Everything else on this page is the phase-1 architecture, unchanged.
+**Phase 2 · slice 1 (headless session store) is folded in.** The session store (now `src/session/`) and the resume stage in `cmd::run_agent` are described in place — §1.1/§1.2 (the crate and the graph), §2 (its module map), §8.1 (the session data flow), §10 and §11. Everything else on this page is the phase-1 architecture, unchanged.
 
 Every user-visible string below is copied from the Go source (file:line given in CONTRACTS.md). Implementers copy, never paraphrase.
 
@@ -257,15 +257,15 @@ The tables keep the phase-1 grouping (one per former crate) with each file named
 | module | Go |
 |---|---|
 | `main.rs` | main.go (+ signal/exit-code policy) |
-| `cmd/mod.rs` | cmd/root.go:41-268 (`run`) + cmd/root.go:284-334 (the `--resume` stage on the `-m` path, D-41) |
-| `cmd/cli.rs` | cmd/root.go:22-39,418-436 (`--resume` binds `require_equals`, pflag parity) |
-| `config.rs` | config/config.go |
-| `cmd/resolve.rs` | cmd/root.go:46-123,534-566 (`ModelRequired` deferred under `--resume`, D-52) |
+| `cmd/mod.rs` | cmd/root.go:41-268 (`run_agent`) + cmd/root.go:284-334 (the resume stage on the `-m` path, D-41); the verb dispatch is `run` |
+| `cmd/cli.rs` | cmd/root.go:22-39,418-436, rebuilt as a verb set (X-10 … X-14) |
+| `config/` | config/config.go, plus `config/strict.rs` (the key audit, X-15) |
+| `cmd/resolve.rs` | cmd/root.go:46-123,534-566 (`ModelRequired` deferred for a resume, D-52) |
 | `cmd/window.rs` | chat/tokens.go:20-43 |
-| `cmd/list.rs` | cmd/root.go:439-529 |
+| `cmd/list.rs` | cmd/root.go:439-529, rebuilt as `iota list` (X-13) |
+| `cmd/config_cmd.rs` | (new) `iota config check\|path\|init` (X-16) |
 | `cmd/tuning.rs` | cmd/root.go:133-199 |
 | `cmd/assemble.rs` | cmd/root.go:574-658 |
-| `cmd/delegate.rs` | cmd/delegate.go |
 | `cmd/io.rs` | stderr warning sinks (`Warning: …`, `⚠ …`) |
 | `cmd/signals.rs` | (new) SIGINT/SIGTERM → CancellationToken |
 
@@ -350,12 +350,13 @@ Verified API (CONTRACTS §5.0 lists file:line): `ServiceExt::serve(ClientInfo, t
 
 ## 7. Config + CLI (`iota`)
 
-- clap derive `Cli` exactly as CONTRACTS §7.1. The entry model is Go's (cmd/root.go): `-l` → the listing; `-m` → one headless turn; otherwise → the interactive branch (`interactive.rs`), taken at exactly Go's headless-vs-interactive branch (root.go:259), i.e. AFTER provider-name, key, model, temperature, tuning, MCP-config, delegate and output-format checks, so every earlier byte-pinned error (`unknown provider "opnai"…`, `--output-format applies to -m runs only`) still wins; a non-TTY stdout is then refused byte-exact with Go's `interactive mode requires a terminal; use -m/--message for piped input`. `resolve_run` therefore returns `message: Option<String>`. `-S`, a blank `--resume` and `--no-save` are rejected with `flag <X> is not supported in headless mode` for `-m` runs only (`reject_unsupported`); `-l` and the interactive branch read them for real. `-m ""` → `--message must not be empty`.
-- `Config` model with `serde_norway`, `#[serde(default)]`, no `deny_unknown_fields`; bool fields through `tool::yaml11::deserialize_bool` (YAML 1.1 spellings); `tools: BTreeMap<String, serde_norway::Value>` raw; `mcp_servers: Option<Vec<String>>` (absent ≠ `[]`); `defer: Option<String>`.
-- `Config::load(explicit, &HostDirs, &dyn VarResolver, warn)` never fails; `merge_file` replaces whole entries; `${var}` expanded once at merge time on key/url/system_file.
-- `resolve_run(cli, cfg, &dyn EnvSource, stdin)` is pure and follows root.go:46-123 order exactly.
+- clap derive `Cli` is a CLOSED verb set — `run` / `list` / `resume` / `config` / `version`, with a bare `iota` meaning `run` (X-10) — plus the nine flags that describe ONE invocation (X-11). `-c/--config` is declared once on the root as a GLOBAL argument, so it is valid on either side of the verb; the other seven belong to `RunArgs`, and one of them given BEFORE another verb is refused by `Cli::check_flag_placement` (clap's `args_conflicts_with_subcommands` cannot be used for that: with it set, any root argument stops the verb from being recognised at all, which is what made a global `-c` impossible). `cmd::run` dispatches on the verb; `run` and `resume` share `run_agent`, which normalises both into an `Invocation { agent, resume, args }` so nothing downstream knows which word was typed.
+- `run_agent`'s order is Go's (cmd/root.go): `-m` → one headless turn; otherwise → the interactive branch (`interactive.rs`), taken at exactly Go's headless-vs-interactive branch (root.go:259), i.e. AFTER agent, key, model, temperature, tuning, MCP-config and output-format checks, so every earlier byte-pinned error (`unknown agent "codr"…`, `--output-format applies to -m runs only`) still wins; a non-TTY stdout is then refused byte-exact with Go's `interactive mode requires a terminal; use -m/--message for piped input`. `resolve_run` therefore returns `message: Option<String>`. `--no-save` and a bare `iota resume` are rejected for `-m` runs only (`reject_unsupported`, `CliError::ResumeIdRequired`); the interactive branch reads them for real. `-m ""` → `--message must not be empty`.
+- `Config` model with `serde_norway`, `#[serde(default)]`; bool fields through `tool::yaml11::deserialize_bool` (YAML 1.1 spellings); `tools: BTreeMap<String, serde_norway::Value>` raw; `mcp_servers: Option<Vec<String>>` (absent ≠ `[]`); `defer: Option<String>`. Unknown and misplaced keys are refused BEFORE the typed decode by `config::strict::audit`, which walks the raw `serde_norway::Value` so an error can name its coordinate (`agents.coder.tools.delegate`) — something `deny_unknown_fields` cannot (X-15). The document is therefore parsed twice: once as a `Value` for the audit, once into the typed shape, which keeps serde's line/column on a field's type error.
+- `Config::load(explicit, &HostDirs, &dyn VarResolver, warn)` fails on anything the user wrote wrong (a misplaced key, a dangling reference, an unusable `defer_mode`) and only WARNS for what says nothing about intent — an unreadable file, or one that is not YAML at all. `Config::sources` is the file list `iota config path` prints; `merge_file` replaces whole entries; `${var}` expanded once at merge time on key/url/system_file.
+- `resolve_run(inv, cfg, &dyn EnvSource, stdin)` is pure and follows root.go:46-123 order exactly, with the agent lookup (`Config::resolve_agent`) where Go had the four-namespace one.
 - `tuning::apply` = image → effort → top_p → temperature → json_edits → gen-params → tools/mcp warning.
-- `assemble::build_mcp_configs` / `build_dispatcher` mirror root.go:574-658: they use only `mcp::config` types and take the MCP part as `Option<(Arc<dyn Dispatcher>, PrefixOf)>` (`None` = no server configured); `Manager` is named only in `lib.rs::run` and `interactive.rs`. `delegate::build_delegator` validates agents in name order (the startup tool build serves validation and `read_only_registry` only) and returns a `ChildFactory` that constructs BOTH a fresh provider (key: env > config, lazily) AND a fresh dispatcher (`build_child_tools` again — its own `CodeSet` read ledger) per delegation, exactly like cmd/delegate.go:137-186; `max_turns < 0` clamps to 0; `AgentRef::Full.provider` defaults to `""` so a description-only mapping fails as `agent "x": no provider named`.
+- `assemble::build_mcp_configs` / `build_dispatcher` mirror root.go:574-658: they use only `mcp::config` types and take the MCP part as `Option<(Arc<dyn Dispatcher>, PrefixOf)>` (`None` = no server configured); `Manager` is named only in `lib.rs::run` and `interactive.rs`. (`cmd/delegate.rs` and its `ChildFactory` went with the delegate toolset, X-01.)
 
 ---
 
@@ -379,12 +380,12 @@ Signals: `main` installs `ctrl_c` + `SIGTERM` listeners that cancel the root tok
 ### 8.1 Session data flow (phase 2 slice 1)
 
 The loop stays session-blind. `iota::run` owns both ends, and the whole stage sits between Go's
-headless-vs-interactive branch (root.go:259) and the MCP connect, so `--resume` without `-m` still ends
+headless-vs-interactive branch (root.go:259) and the MCP connect, so `iota resume <id>` without `-m` still ends
 in `interactive mode is not available…`, every earlier byte-pinned error still wins, and a bad session
 id never spawns a server.
 
 ```
---resume=<id|prefix>
+iota resume <id|prefix>
    └─ SessionStore::from_dirs(&dirs)          <home>/.iota/sessions      (never reads $HOME itself)
       └─ resolve_id(fragment, scope)          scope = the project bucket in agent mode, else flat;
          │                                    only NoMatch widens to the merged view
@@ -430,9 +431,9 @@ Go-written bundle and Go re-reads it, then Go loads a bundle Rust created from s
 | mcp | `McpError` | `server config must have either command or url`, `unsupported URL scheme: {0}`, `connect failed: {0}`, `list tools: {0}`, `connection timed out after {0}`, `{0}` (call: ServiceError text, `MRTR_UNSUPPORTED`, `TASK_UNSUPPORTED`) |
 | chat | `ChatError` | the two `tool loop reached the --max-turns limit …` forms, `unknown agent {0:?}`, `interrupted`, transparent provider/child/io; `images::HOME_NOT_DEFINED` = `$HOME is not defined` |
 | session | `SessionError` | `session {0} not found`, `cannot read session {id}: {source}`, `no session matches {0:?}`, `session id {0:?} is ambiguous: {1}`, `read session log: {0}`, `$HOME is not defined`, `{0}` (Io) — every one byte-equal to its chat/session.go line |
-| iota | `CliError`, `ConfigError` | every root.go/delegate.go/config.go text (CONTRACTS §7.8); `McpFlag(#[from] McpFlagError)`; `ResumeNeedsId`; `Session(#[from] SessionError)` as `#[error(transparent)]`, so each ported Go string reaches stderr unwrapped |
+| iota | `CliError`, `ConfigError` | every root.go/config.go text (CONTRACTS §7.8) plus the surface's own: `NoAgent`, `UnknownAgent`, `ApiKeyRequired{env,provider}`, `ResumeIdRequired`, `ListTakesNoName`, `ConfigExists`, `NoHome`; `ConfigError::{Key, File}` carry a config coordinate and the file it was written in (X-15); `McpFlag(#[from] McpFlagError)`; `Session(#[from] SessionError)` as `#[error(transparent)]`, so each ported Go string reaches stderr unwrapped |
 
-`-l` deliberately double-prefixes (`failed to list models: failed to list models: <inner>`) — Go does too (provider + cmd wraps).
+The listing no longer fetches anything, so Go's double-prefixed `failed to list models: failed to list models: <inner>` has no site left (X-13); the network model list survives only in the interactive `/model` picker.
 
 ---
 

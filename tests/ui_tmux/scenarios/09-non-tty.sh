@@ -11,8 +11,8 @@
 
 WANT='Error: interactive mode requires a terminal; use -m/--message for piped input'
 
-out="$(echo hi | env HOME="$SCEN_HOME" "$IOTA_BIN" openai -k test -M fake \
-    -u "http://127.0.0.1:$IOTA_PORT" 2>"$SCEN_TMP/err.txt")"
+write_iota_config openai fake
+out="$(echo hi | env HOME="$SCEN_HOME" "$IOTA_BIN" 2>"$SCEN_TMP/err.txt")"
 code=$?
 
 check "exit status" "$code" 1
@@ -27,9 +27,8 @@ else
     ok "a refused run creates no session bundle"
 fi
 
-# The same refusal with `--resume`, which is resolved AFTER the tty check (root.go order).
-echo hi | env HOME="$SCEN_HOME" "$IOTA_BIN" openai -k test -M fake \
-    -u "http://127.0.0.1:$IOTA_PORT" --resume >/dev/null 2>"$SCEN_TMP/err2.txt"
-check "a piped blank --resume refuses the same way" "$(cat "$SCEN_TMP/err2.txt")" "$WANT"
+# The same refusal for `iota resume` with no id, which is resolved AFTER the tty check (root.go order).
+echo hi | env HOME="$SCEN_HOME" "$IOTA_BIN" resume >/dev/null 2>"$SCEN_TMP/err2.txt"
+check "a piped bare \`iota resume\` refuses the same way" "$(cat "$SCEN_TMP/err2.txt")" "$WANT"
 
 finish

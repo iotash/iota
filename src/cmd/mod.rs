@@ -1,10 +1,11 @@
-//! The command (cmd/root.go): clap `Cli`, pure run resolution, tuning warnings,
-//! MCP/dispatcher assembly, `-l`, the interactive branch, and [`run`], which `main.rs` awaits via
-//! `block_on` and maps to an exit code. The YAML config model is `crate::config`. ONE binary carries
-//! everything, exactly like the Go binary (decision of 2026-09-01; ARCHITECTURE §11).
+//! The command (cmd/root.go): the clap `Cli` verb set, pure run resolution, tuning warnings,
+//! MCP/dispatcher assembly, the listings, the config command, the interactive branch, and [`run`], which
+//! `main.rs` awaits via `block_on` and maps to an exit code. The YAML config model is `crate::config`. ONE
+//! binary carries everything, exactly like the Go binary (decision of 2026-09-01; ARCHITECTURE §11).
 
 pub(crate) mod assemble;
 pub(crate) mod cli;
+pub(crate) mod config_cmd;
 pub(crate) mod interactive;
 pub mod io;
 pub mod list;
@@ -17,9 +18,12 @@ pub use crate::config::{
     AgentConfig, BadModelRef, Config, ConfigError, DEFAULT_AGENT, McpServerConfig, ModelConfig,
     ModelEntry, ModelRef, ProviderConfig, Resolved,
 };
-pub use cli::Cli;
+pub use cli::{Cli, Command, ConfigAction, Invocation, ListWhat, Resume, RunArgs};
 pub use resolve::CliError;
 pub use resolve::{RunSettings, resolve_run};
+
+/// The version `--version` and `iota version` print.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -94,22 +98,9 @@ pub(crate) struct ToolAssembly {
 /// stderr, 1. Clap parse errors are handled by clap (`Error::exit`, code 2) before `run` is called.
 /// Awaited ONLY via `rt.block_on(run(..))` in main.rs — it borrows `io` and is never `tokio::spawn`ed.
 ///
-/// Order (cmd/root.go:46-268, kept EXACTLY so every byte-pinned error Go raises before it decides
-/// headless-vs-interactive still wins over the interactive branch's own refusals): `Cli::reject_unsupported`
-/// (`-m` runs only) → `Config::load` → `-l` → `list::run_list` → `resolve_run` → provider construction
-/// (`ProviderKind::from_str`, `new_provider`) →
-/// `tuning::apply` → `assemble::build_mcp_configs` → `tuning::warn_tools_without_calling` → cwd/root
-/// (`CliError::Cwd` in agent mode) → `Env` → output format parse
-/// (`crate::chat::parse_output_format` runs HERE, root.go:249-252, so `unknown output format …` loses to every
-/// earlier provider/tuning/MCP error exactly as in Go) → `OutputFormatWithoutMessage` when the flag
-/// was given and `message.is_none()` →
-/// the root.go:259 branch — the `None` arm IS `interactive::run_interactive` (`TUI_CONTRACTS` §11; a non-TTY
-/// stdout is refused there with Go's `interactive mode requires a terminal…`) → the `--resume` stage
-/// (root.go:284-334 on the `-m` path, DIVERGENCES D-41: resolve the fragment, load the bundle, replay its model
-/// and tuning, re-raise the deferred `ModelRequired`, print the banner) → MCP connect (`connect_mcp`) →
-/// `assemble::build_dispatcher` →
-/// `crate::chat::once` → the turn's delta appended to the resumed bundle on SUCCESS only (D-43) →
-/// `Manager::close()` always (also on error/cancel).
+/// The verb decides everything: `version` answers without reading a file, `list` and `config` read the config
+/// and stop, and `run`/`resume` are the same pipeline (`run_agent`) with and without a session to start
+/// from.
 pub async fn run(
     cli: Cli,
     dirs: HostDirs,
@@ -117,31 +108,80 @@ pub async fn run(
     cancel: CancellationToken,
     io: &mut io::Streams,
 ) -> Result<(), CliError> {
-    // The only step that precedes Go: the three interactive-only flags cannot mean anything HEADLESSLY
-    // (D-23/D-42/D-54), so a run that carries `-m` — the flag that decides Go's branch at root.go:259 — is asked
-    // first; `-l` and the interactive branch read them for real (`TUI_CONTRACTS` §11).
-    if cli.message.is_some() {
-        cli.reject_unsupported()?;
-    }
+    use std::io::Write as _;
 
     let resolver: Arc<dyn VarResolver> = Arc::new(EnvResolver {
         env: Arc::clone(&env),
         dirs: dirs.clone(),
     });
+    let (command, config) = cli.into_command();
+    match command {
+        Command::Version => {
+            writeln!(io.stdout, "iota {VERSION}")?;
+            Ok(())
+        }
+        Command::Config(cmd) => {
+            config_cmd::run_config(&cmd, config.as_deref(), &dirs, resolver.as_ref(), io)
+        }
+        Command::List(cmd) => {
+            let cfg = Config::load(config.as_deref(), &dirs, resolver.as_ref(), &mut |w| {
+                io.warning(&w);
+            })?;
+            list::run_list(&cmd, &cfg, &dirs, env.as_ref(), io)
+        }
+        Command::Run(cmd) => {
+            let inv = Invocation::of_run(cmd, config);
+            run_agent(inv, dirs, env, resolver, cancel, io).await
+        }
+        Command::Resume(cmd) => {
+            let inv = Invocation::of_resume(cmd, config);
+            run_agent(inv, dirs, env, resolver, cancel, io).await
+        }
+    }
+}
+
+/// The run pipeline, in Go's order (cmd/root.go:46-268, kept EXACTLY so every byte-pinned error Go raises
+/// before it decides headless-vs-interactive still wins over the interactive branch's own refusals):
+/// `RunArgs::reject_unsupported` (`-m` runs only) → `Config::load` → `resolve_run` → provider construction
+/// (`ProviderKind::from_str`, `new_provider`) →
+/// `tuning::apply` → `assemble::build_mcp_configs` → `tuning::warn_tools_without_calling` → cwd/root
+/// (`CliError::Cwd` in agent mode) → `Env` → output format parse
+/// (`crate::chat::parse_output_format` runs HERE, root.go:249-252, so `unknown output format …` loses to every
+/// earlier provider/tuning/MCP error exactly as in Go) → `OutputFormatWithoutMessage` when the flag
+/// was given and `message.is_none()` →
+/// the root.go:259 branch — the `None` arm IS `interactive::run_interactive` (`TUI_CONTRACTS` §11; a non-TTY
+/// stdout is refused there with Go's `interactive mode requires a terminal…`) → the resume stage
+/// (root.go:284-334 on the `-m` path, DIVERGENCES D-41: resolve the fragment, load the bundle, replay its model
+/// and tuning, re-raise the deferred `ModelRequired`, print the banner) → MCP connect (`connect_mcp`) →
+/// `assemble::build_dispatcher` →
+/// `crate::chat::once` → the turn's delta appended to the resumed bundle on SUCCESS only (D-43) →
+/// `Manager::close()` always (also on error/cancel).
+async fn run_agent(
+    inv: Invocation,
+    dirs: HostDirs,
+    env: Arc<dyn EnvSource>,
+    resolver: Arc<dyn VarResolver>,
+    cancel: CancellationToken,
+    io: &mut io::Streams,
+) -> Result<(), CliError> {
+    // The only step that precedes Go: what a headless run cannot mean (D-23/D-54) is refused before anything
+    // is read, and `-m` is the flag that decides Go's branch at root.go:259. The interactive branch reads
+    // both for real (`TUI_CONTRACTS` §11).
+    if inv.args.message.is_some() {
+        inv.args.reject_unsupported()?;
+        if inv.resume == Some(Resume::Pick) {
+            return Err(CliError::ResumeIdRequired);
+        }
+    }
 
     // root.go:45
-    let cfg = Config::load(cli.config.as_deref(), &dirs, resolver.as_ref(), &mut |w| {
+    let cfg = Config::load(inv.config.as_deref(), &dirs, resolver.as_ref(), &mut |w| {
         io.warning(&w);
     })?;
 
-    // root.go:47-50
-    if cli.list {
-        return list::run_list(&cli, &cfg, env.as_ref(), &cancel, None, io).await;
-    }
-
     // root.go:52-123
     let mut stdin = std::io::stdin();
-    let mut settings = resolve_run(&cli, &cfg, env.as_ref(), &mut stdin, &mut |w| {
+    let mut settings = resolve_run(&inv, &cfg, env.as_ref(), &mut stdin, &mut |w| {
         io.warning(&w);
     })?;
 
@@ -150,7 +190,7 @@ pub async fn run(
     // root.go:132-181
     let (kind, provider) = open_provider(&settings, &ctx, io)?;
     // root.go:187-241
-    let tools = assemble_tools(&cli, &cfg, &settings, &*provider, &ctx, io)?;
+    let tools = assemble_tools(&inv, &cfg, &settings, &*provider, &ctx, io)?;
 
     // root.go:249-255: `--output-format` describes a single `-m` run. Parsed HERE — after tuning/MCP
     // assembly — so a bad value keeps Go's precedence (a bad config `effort`/`top_p` or `mcp_servers` name wins
@@ -168,7 +208,7 @@ pub async fn run(
     let Some(message) = settings.message.take() else {
         return interactive::run_interactive(
             interactive::Interactive {
-                cli: &cli,
+                inv: &inv,
                 cfg: &cfg,
                 settings,
                 kind,
@@ -181,7 +221,7 @@ pub async fn run(
         .await;
     };
     run_headless(
-        message, &cli, &cfg, settings, kind, provider, tools, ctx, format, io,
+        message, &cfg, settings, kind, provider, tools, ctx, format, io,
     )
     .await
 }
@@ -215,7 +255,7 @@ fn open_provider(
 /// root.go:187-241 — MCP configs, the agent options and the tool environment, in Go's order (each step's
 /// byte-pinned error keeps its precedence).
 fn assemble_tools(
-    cli: &Cli,
+    inv: &Invocation,
     cfg: &Config,
     settings: &RunSettings,
     provider: &dyn crate::provider::Provider,
@@ -225,7 +265,7 @@ fn assemble_tools(
     let dirs = &ctx.dirs;
     // root.go:187-194
     let (mcp_configs, mcp_defers) =
-        assemble::build_mcp_configs(cfg, &settings.resolved.agent, &cli.mcp, &mut |w| {
+        assemble::build_mcp_configs(cfg, &settings.resolved.agent, &inv.args.mcp, &mut |w| {
             io.warning(&w);
         })?;
 
@@ -283,11 +323,10 @@ fn assemble_tools(
     })
 }
 
-/// The `-m` branch (root.go:259-268 plus the `--resume` stage D-41 moved onto it).
+/// The `-m` branch (root.go:259-268 plus the resume stage D-41 moved onto it).
 #[allow(clippy::too_many_arguments)]
 async fn run_headless(
     message: String,
-    cli: &Cli,
     cfg: &Config,
     settings: RunSettings,
     kind: ProviderKind,
@@ -314,7 +353,7 @@ async fn run_headless(
     } = ctx;
 
     // root.go:284-334, moved onto the `-m` path (DIVERGENCES D-41). It sits HERE — after the interactive
-    // branch, before the MCP connect — so `--resume=<id>` without `-m` belongs to the interactive branch (which
+    // branch, before the MCP connect — so `iota resume <id>` without `-m` belongs to the interactive branch (which
     // resumes it itself), every earlier byte-pinned error still wins, and a bad session id never spawns an MCP
     // server.
     let mut session = match &settings.resume {
@@ -345,21 +384,16 @@ async fn run_headless(
             if provider.model().is_empty() {
                 return Err(CliError::ModelRequired);
             }
-            // root.go:326-333: explicit flags win — temperature only when `-t` was absent, the window only
-            // when `--context-window` was absent (Go's `strings.TrimSpace(contextWindowFlag) != ""`); effort
-            // has no flag, so the session's value always applies. The replayed window is discarded: headless
-            // has no context budget to route it into.
+            // root.go:326-333: `-M` is the only flag left that a session must not overwrite, so temperature,
+            // effort and the window always replay — a resumed run is the run it resumes. The replayed window
+            // is discarded: headless has no context budget to route it into.
             let _window = crate::session::apply_session_tuning(
                 &resumed.meta,
                 &mut *provider,
                 kind,
                 &crate::session::Overrides {
                     model: !settings.model.is_empty(),
-                    temperature: cli.temperature.is_some(),
-                    window: cli
-                        .context_window
-                        .as_deref()
-                        .is_some_and(|w| !w.trim().is_empty()),
+                    ..crate::session::Overrides::default()
                 },
                 &mut |w| io.warning(&w),
             );

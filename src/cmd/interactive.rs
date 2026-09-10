@@ -5,15 +5,15 @@
 //! can fail, print, or claim the terminal must be finished before the event loop starts, because after
 //! `Tui::start` nothing may write to the terminal except through the facade.
 //!
-//! 1. `--no-save` vs `--resume` (root.go:284-286) — a pure argument error, so it precedes everything;
+//! 1. `--no-save` vs `iota resume` (root.go:284-286) — a pure argument error, so it precedes everything;
 //! 2. the byte-exact non-TTY refusal (root.go:397-401) — a piped run has no interactive mode to offer, and
 //!    hoisting it above every side effect keeps a doomed run from spawning servers or opening a picker;
-//! 3. the session listing a blank `--resume` needs, so an empty or unreadable store fails with nothing to
+//! 3. the session listing a bare `iota resume` needs, so an empty or unreadable store fails with nothing to
 //!    clean up and the picker's spec is ready before any terminal work;
 //! 4. the MCP background connect (root.go:270-281) — it overlaps the picker instead of blocking it, and from
 //!    here on every exit path closes the manager (Go's `defer manager.Close()`);
 //! 5. ONE OSC-11 background probe, on a blocking thread, BEFORE anything claims stdin;
-//! 6. the blank-`--resume` picker (`chat.PickSession`), also on a blocking thread, its raw mode fully released
+//! 6. the `iota resume` picker (`chat.PickSession`), also on a blocking thread, its raw mode fully released
 //!    before the session is resumed;
 //! 7. the session wiring — resume / create / ephemeral factory, the context window, the dispatcher, the second
 //!    provider instance the async title pass needs;
@@ -36,11 +36,11 @@ use crate::tool::DeferredGroup;
 use crate::tool::{Dispatcher, Env};
 use crate::ui::facade::{Panel, TabbedResult, TabbedSpec, Ui};
 
-use crate::cmd::cli::Cli;
+use crate::cmd::cli::{Invocation, Resume};
 use crate::cmd::resolve::{CliError, RunSettings};
 use crate::cmd::{RunContext, ToolAssembly};
 
-/// chat/session.go:1091 — the blank-`--resume` picker's only panel.
+/// chat/session.go:1091 — the `iota resume` picker's only panel.
 const PICK_SESSION_TITLE: &str = "Select a session to resume";
 
 /// chat/session.go:1092 — the picker shows 15 rows (`PANEL_HEIGHT` View default).
@@ -55,8 +55,8 @@ const TITLE_STACK_POP: &str = "\x1b[23;0t";
 /// Everything `run` has resolved by the time it reaches Go's headless-vs-interactive branch (root.go:259):
 /// one item per phase of `cmd::run`.
 pub(crate) struct Interactive<'a> {
-    /// The parsed command line (the interactive-only flags are read HERE, never headlessly).
-    pub(crate) cli: &'a Cli,
+    /// The invocation (the interactive-only flags are read HERE, never headlessly).
+    pub(crate) inv: &'a Invocation,
     /// The merged config (a resumed bundle's agent is looked up in it).
     pub(crate) cfg: &'a crate::config::Config,
     /// The resolved run settings.
@@ -212,7 +212,7 @@ where
     }
 }
 
-/// The blank-`--resume` picker's spec (chat/session.go:1091-1094): ONE searchable list of `session_label` rows.
+/// The `iota resume` picker's spec (chat/session.go:1091-1094): ONE searchable list of `session_label` rows.
 fn picker_spec(rows: &[SessionInfo], project: Option<&str>) -> TabbedSpec {
     TabbedSpec {
         panels: vec![
@@ -244,7 +244,7 @@ pub(crate) async fn run_interactive(
     io: &mut crate::cmd::io::Streams,
 ) -> Result<(), CliError> {
     let Interactive {
-        cli,
+        inv,
         cfg,
         settings,
         kind,
@@ -262,18 +262,18 @@ pub(crate) async fn run_interactive(
     } = tools;
     let interactor = interactor.unwrap_or_else(crate::repl::Interactor::new);
     // root.go:284-286 — a pure argument error, and Go raises it before the terminal check, so it still wins.
-    if cli.no_save && cli.resume.is_some() {
+    if inv.args.no_save && inv.resume.is_some() {
         return Err(CliError::NoSaveWithResume);
     }
     // root.go:397-401. Hoisted above everything with a SIDE EFFECT, unlike Go — which starts the MCP servers,
     // opens the raw-mode session picker and creates a bundle before noticing that the run cannot proceed. The
-    // refusal itself is byte-identical; what changes is that a piped run with a bad `--resume` id now reports
+    // refusal itself is byte-identical; what changes is that a piped run with a bad resume id now reports
     // the missing terminal rather than the missing session (DEVIATIONS3 `[WP51]`).
     if !std::io::stdout().is_terminal() {
         return Err(CliError::NotATerminal);
     }
-    // root.go:287-290: the config's `no_save:` starts ephemeral too, except an explicit `--resume` outranks it.
-    let ephemeral = cli.no_save || (settings.resolved.agent.no_save && cli.resume.is_none());
+    // root.go:287-290: the config's `no_save:` starts ephemeral too, except an explicit resume outranks it.
+    let ephemeral = inv.args.no_save || (settings.resolved.agent.no_save && inv.resume.is_none());
 
     // Raw mode owns Ctrl+C from the OSC-11 probe on (`TUI_DESIGN` §8.4 step 7).
     crate::cmd::signals::ignore_sigint();
@@ -282,8 +282,9 @@ pub(crate) async fn run_interactive(
     // an unreadable store fails with nothing to clean up, and the spec the picker will show is ready.
     let store = SessionStore::from_dirs(&ctx.dirs)?;
     let scope: Option<PathBuf> = settings.agent_mode.then(|| agent.root.clone());
-    let resume_given = cli.resume.is_some();
-    let picker_rows: Vec<SessionInfo> = if resume_given && settings.resume.is_none() {
+    let resume_given = inv.resume.is_some();
+    // `iota resume` with no id IS the picker; `iota resume <id>` resolves the fragment instead.
+    let picker_rows: Vec<SessionInfo> = if inv.resume == Some(Resume::Pick) {
         store
             .list(scope.as_deref())
             .map_err(CliError::ListSessions)?
@@ -312,7 +313,6 @@ pub(crate) async fn run_interactive(
     let seam: Arc<dyn TerminalSeam> = Arc::new(LiveTerminal);
     let opened = open_ui(&seam, picker, |_dark, picked| {
         wire_session(
-            cli,
             cfg,
             &settings,
             kind,
@@ -363,7 +363,6 @@ pub(crate) async fn run_interactive(
         title_provider: wiring.title_provider,
         // root.go:341 — trimmed once, here, exactly like Go.
         system: settings.system.trim().to_owned(),
-        system_interactive: cli.system_input,
         imported_history: wiring.history,
         dispatch: Arc::clone(&wiring.dispatch),
         jobs,
@@ -401,9 +400,9 @@ pub(crate) async fn run_interactive(
 
 /// What [`wire_session`] needs from the picker stage.
 struct WireInput {
-    /// `--resume` was given in either form.
+    /// The verb was `resume`, with or without an id.
     resume_given: bool,
-    /// `--no-save`, or the config's `no_save:` without a `--resume`.
+    /// `--no-save`, or the config's `no_save:` without a resume.
     ephemeral: bool,
     /// The id the picker committed (`None` = no picker, empty store, or cancelled).
     picked: Option<String>,
@@ -420,7 +419,6 @@ struct WireInput {
 /// window (flag > session meta > config), the dispatcher, and the second provider instance.
 #[allow(clippy::too_many_arguments)]
 fn wire_session(
-    cli: &Cli,
     cfg: &crate::config::Config,
     settings: &RunSettings,
     kind: ProviderKind,
@@ -437,7 +435,7 @@ fn wire_session(
     let mut session_window: Option<u64> = None;
 
     if input.resume_given {
-        // root.go:294-306: a blank `--resume` took the picker; a valued one resolves as a prefix.
+        // root.go:294-306: a bare `iota resume` took the picker; an id resolves as a prefix.
         let id = match &settings.resume {
             Some(fragment) => store.resolve_id(fragment, scope)?,
             None => input.picked.unwrap_or_default(),
@@ -453,19 +451,15 @@ fn wire_session(
             cfg.agents.contains_key(&resumed.meta.agent),
             &mut |w| io.warning(&w),
         );
-        // root.go:317-331: the session supplies the model and tuning only where no flag did; effort has no
-        // flag, so the session's value always applies.
+        // root.go:317-331: `-M` is the only flag a session must not overwrite; temperature, effort and the
+        // window always replay, because a resumed chat is the chat it resumes.
         session_window = crate::session::replay_session_settings(
             &resumed.meta,
             &mut *provider,
             kind,
             &crate::session::Overrides {
                 model: !settings.model.is_empty(),
-                temperature: cli.temperature.is_some(),
-                window: cli
-                    .context_window
-                    .as_deref()
-                    .is_some_and(|w| !w.trim().is_empty()),
+                ..crate::session::Overrides::default()
             },
             &mut |w| io.warning(&w),
         );
@@ -540,8 +534,8 @@ fn wire_session(
         None
     };
 
-    // root.go:365-385: flag > session meta > config > 0 (the chat default).
-    let context_window = resolve_context_window(cli, settings, provider, session_window, io)?;
+    // root.go:365-385: session meta > config > 0 (the chat default).
+    let context_window = resolve_context_window(settings, provider, session_window, io)?;
 
     // root.go:390 + 588-592.
     let dispatch = crate::cmd::assemble::build_dispatcher(
@@ -581,10 +575,11 @@ fn wire_session(
     })
 }
 
-/// root.go:365-385 — `--context-window` > the resumed bundle's meta > `context_window:` > 0 (the chat's own
-/// 128k default), plus Go's warning for a provider that cannot count tokens at all.
+/// root.go:365-385 — the resumed bundle's meta > `models.<name>.context_window` > 0 (the chat's own 128k
+/// default), plus Go's warning for a provider that cannot count tokens at all. The `--context-window` flag
+/// that used to precede both is gone: the window is a property of the model, and `/model`'s Context tab is
+/// where one run changes it.
 fn resolve_context_window(
-    cli: &Cli,
     settings: &RunSettings,
     provider: &dyn Provider,
     session_window: Option<u64>,
@@ -596,14 +591,7 @@ fn resolve_context_window(
             source,
         })
     };
-    let flag = cli
-        .context_window
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty());
-    let window = if let Some(v) = flag {
-        parse(v, "--context-window")?
-    } else if let Some(w) = session_window.filter(|w| *w > 0) {
+    let window = if let Some(w) = session_window.filter(|w| *w > 0) {
         w
     } else if settings.resolved.model.context_window.is_empty() {
         0
@@ -784,7 +772,7 @@ mod tests {
         }
     }
 
-    /// The blank-`--resume` picker is `chat.PickSession` byte for byte: ONE searchable list panel titled
+    /// The `iota resume` picker is `chat.PickSession` byte for byte: ONE searchable list panel titled
     /// "Select a session to resume", 15 rows high, whose items are the `session_label` rows of the LISTING
     /// (chat/session.go:1091-1094).
     #[test]
@@ -860,7 +848,7 @@ mod tests {
         );
     }
 
-    /// No `--resume`: nothing opens a surface, and the probe still precedes the loop.
+    /// No resume: nothing opens a surface, and the probe still precedes the loop.
     #[tokio::test]
     async fn open_ui_without_a_picker_never_opens_a_surface() {
         let log = Arc::new(Mutex::new(Vec::new()));
@@ -937,7 +925,7 @@ mod tests {
         );
         assert_eq!(
             CliError::NoSaveWithResume.to_string(),
-            "--no-save cannot be combined with --resume"
+            "--no-save cannot be combined with iota resume"
         );
         assert_eq!(
             CliError::NoSessionToResume.to_string(),

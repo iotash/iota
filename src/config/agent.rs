@@ -27,8 +27,9 @@ pub struct AgentConfig {
     /// `mcp_servers:` — which top-level servers this agent loads: `None` (key absent) = all, `Some([])` =
     /// none, names = that subset (an unknown name is [`ConfigError::UnknownMcpServer`]).
     pub mcp_servers: Option<Vec<String>>,
-    /// `workspace:` — the project overlay and the workspace tools (what `--agent` switches on; the key was
-    /// spelled `agent:` in the one-layer config).
+    /// `workspace:` — the project overlay (layered `AGENTS.md`) and the skills toolset. It is the ONLY way
+    /// in: the `--agent` flag that used to switch it on per run was a second name for a config decision
+    /// (brain page `cli-surface-agent-first`).
     #[serde(deserialize_with = "crate::tool::yaml11::deserialize_bool")]
     pub workspace: bool,
     /// `no_save:` — start ephemeral, as `--no-save` does.
@@ -47,9 +48,6 @@ pub struct AgentConfig {
     pub temperature: Option<f64>,
     /// `top_p:` — overrides the model's default.
     pub top_p: Option<f64>,
-    /// Set when the entry was synthesised from a one-layer `providers.<name>` block, never from YAML.
-    #[serde(skip)]
-    pub migrated: bool,
 }
 
 impl AgentConfig {

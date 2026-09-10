@@ -13,7 +13,7 @@
 SESSION_ID=aaaabbbbcccc
 write_session "$SESSION_ID" 32 14
 
-start 80 24 "--resume=$SESSION_ID" || finish
+start 80 24 resume "$SESSION_ID" || finish
 wait_all 'r31 body line 13' || bad "the resume echo never completed"
 settle || bad "frame never settled after the resume echo"
 

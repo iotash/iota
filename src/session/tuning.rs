@@ -31,11 +31,12 @@ pub fn warn_if_session_agent_is_gone(
 /// (root.go:317-331: explicit flags win).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Overrides {
-    /// `-M`/`model:` was given.
+    /// `-M` chose the model, so the session's must not overwrite it.
     pub model: bool,
-    /// `-t` was given.
+    /// The caller fixed a temperature. No CLI flag does since `-t` was retired, so a resumed session's own
+    /// value now always wins over the config default — which is what resuming a chat means.
     pub temperature: bool,
-    /// `--context-window` was given.
+    /// The caller fixed a context window (likewise: `--context-window` is gone).
     pub window: bool,
 }
 

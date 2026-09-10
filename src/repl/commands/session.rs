@@ -2,7 +2,7 @@
 //! (chat/run.go:717-795; chat/session.go:1046-1091).
 //!
 //! The listing is MODE-ISOLATED: agent mode lists the project bucket, normal mode the flat
-//! root, and the two never merge (only `--resume` id resolution widens). The Delete tab
+//! root, and the two never merge (only resume-id resolution widens). The Delete tab
 //! excludes the CURRENT session — deleting the bundle being written to is not a thing a
 //! picker should let happen.
 //!

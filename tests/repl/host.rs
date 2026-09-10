@@ -187,7 +187,6 @@ impl Fixture {
             provider,
             title_provider: None,
             system: String::new(),
-            system_interactive: false,
             imported_history: Vec::new(),
             dispatch,
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),

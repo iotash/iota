@@ -197,7 +197,6 @@ impl Fixture {
             }),
             title_provider: None,
             system: String::new(),
-            system_interactive: false,
             imported_history: self.history.clone(),
             dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),

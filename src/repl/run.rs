@@ -31,7 +31,7 @@ use crate::host::{Event, Kind, Presenter, State};
 use crate::llm::reqlog::RequestLog;
 use crate::markdown::CodeTheme;
 use crate::provider::Provider;
-use crate::provider::model::{AssistantBody, Attachment, Body, Message, Role};
+use crate::provider::model::{AssistantBody, Attachment, Body, Message};
 use crate::session::{SessionStore, SessionWriter};
 use crate::tool::Dispatcher;
 use crate::ui::facade::{InputKind, StatusData, Ui};
@@ -53,7 +53,6 @@ use crate::repl::meter::{ContextBudget, CtxMeter};
 use crate::repl::replay::{RESUME_ECHO_ROUNDS, echo_rounds, last_rounds};
 use crate::repl::retry::{MAX_RETRIES, is_retryable};
 use crate::repl::steer::Steerer;
-use crate::repl::styles::truncate_runes;
 use crate::repl::title::{
     SessionTitle, TITLE_TIMEOUT, WriterSlot, generate_title_text, is_read_only_viewer,
     status_model_label, window_title,
@@ -122,8 +121,6 @@ pub struct RunParams {
     pub title_provider: Option<Box<dyn crate::provider::Provider>>,
     /// The system prompt.
     pub system: String,
-    /// `-S`: prompt for the system text in-loop.
-    pub system_interactive: bool,
     /// Resumed/imported history.
     pub imported_history: Vec<crate::provider::model::Message>,
     /// The tool dispatcher.
@@ -341,7 +338,6 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         mut provider,
         title_provider,
         system,
-        system_interactive,
         imported_history,
         dispatch,
         jobs,
@@ -559,31 +555,9 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     }
 
     // ---- pre-loop interactions, INSIDE the facade (chat/run.go:349-371) ----
-    if system_interactive && !resumed {
-        repl.tr.notice("Enter a system prompt (Enter to skip):");
-        if let Ok(input) = ui.read_input(&root_cancel).await {
-            let sp = input.text.trim().to_owned();
-            if !sp.is_empty() {
-                repl.tr
-                    .notice(&format!("System prompt: {}", truncate_runes(&sp, 80)));
-                if repl
-                    .history
-                    .first()
-                    .is_some_and(|m| m.role() == Role::System)
-                {
-                    if let Some(m) = repl.history.first_mut() {
-                        m.content = sp;
-                    }
-                } else {
-                    repl.history.insert(0, Message::system(sp));
-                }
-                let history = std::mem::take(&mut repl.history);
-                repl.budget.update(&history);
-                repl.history = history;
-                repl.push_status();
-            }
-        }
-    }
+    // Go also offered to type a system prompt here, behind `-S`. That flag is gone: it described
+    // configuration one keystroke at a time, and an `agents:` entry carries a prompt permanently (brain page
+    // `cli-surface-agent-first`).
     if repl.provider.model().is_empty() {
         // v1 offered the pick at startup; ESC defers — the first message re-prompts.
         model::ensure_model(

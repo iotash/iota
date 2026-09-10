@@ -56,7 +56,7 @@ impl Tui {
 }
 
 /// One-shot pre-REPL surface (ui.go RunSurface): short-lived raw mode + Inline terminal
-/// sized to the surface, fully released before return. Caller: the `--resume` picker.
+/// sized to the surface, fully released before return. Caller: the `iota resume` picker.
 pub(crate) fn run_surface(spec: TabbedSpec, dark: bool) -> std::io::Result<TabbedResult> {
     oneshot::run_surface(spec, dark)
 }

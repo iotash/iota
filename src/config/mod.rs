@@ -9,14 +9,14 @@
 //! - `agents` — how a model is driven: the candidate set, the prompt, the tools, the MCP subset and
 //!   the session switches.
 //!
-//! A one-layer config (every key under `providers.<name>`) is still accepted: the `migrate` module splits it
-//! into the three entries it means and prints one deprecation line per block. Unknown keys are ignored everywhere and
-//! bool fields take the YAML 1.1 spellings through `crate::tool::yaml11` (DIVERGENCES I-01).
+//! Every key is checked against the layer it was written in BEFORE the document is decoded (`strict`), so a key
+//! of another layer — or one that is simply misspelled — is an error naming its coordinate, never a silently
+//! ignored line. Bool fields take the YAML 1.1 spellings through `crate::tool::yaml11` (DIVERGENCES I-01).
 
 pub mod agent;
-pub mod migrate;
 pub mod model;
 pub mod provider;
+mod strict;
 
 use std::{
     collections::BTreeMap,
@@ -32,8 +32,6 @@ use crate::vars::VarResolver;
 pub use agent::AgentConfig;
 pub use model::{BadModelRef, ModelConfig, ModelEntry, ModelRef};
 pub use provider::ProviderConfig;
-
-use migrate::LegacyProviderEntry;
 
 /// The `agents:` entry a run with no positional argument falls back to.
 pub const DEFAULT_AGENT: &str = "default";
@@ -58,12 +56,13 @@ pub struct McpServerConfig {
 }
 
 /// ONE config document, exactly as it is written on disk. [`Config`] is what a stack of these merges into,
-/// which is why the two shapes are separate types: `providers` here still accepts the one-layer form.
+/// which is why the two shapes are separate types: a document is what ONE file said, a `Config` what the whole
+/// stack means.
 #[derive(serde::Deserialize, Debug, Default)]
 #[serde(default)]
 struct ConfigFile {
-    /// `providers:` — endpoints (one-layer blocks accepted, see [`migrate`]).
-    providers: BTreeMap<String, LegacyProviderEntry>,
+    /// `providers:` — endpoints.
+    providers: BTreeMap<String, ProviderConfig>,
     /// `models:` — configured models.
     models: BTreeMap<String, ModelEntry>,
     /// `agents:` — configured usages.
@@ -149,12 +148,16 @@ impl Resolved {
 }
 
 impl Config {
-    /// `explicit` Some → that file only. Else `find_config_file(home)` then `find_config_file(cwd)`, each
-    /// merged over the previous. A read or parse failure is a WARNING that drops the file; only the
-    /// cross-layer validation at the end can fail the load.
+    /// Loads every file [`sources`](Config::sources) names, each merged over the previous, then validates the
+    /// result once.
+    ///
+    /// A missing file is silent and an UNREADABLE one is a warning that drops it, because neither says
+    /// anything about what the user meant. A file that parses but says something wrong — a key of another
+    /// layer, an unknown toolset, a reference that points nowhere — FAILS the load: it is a mistake with an
+    /// obvious fix, and a run that quietly ignored it would do the wrong thing silently.
     ///
     /// Warnings (full text, with prefix): `Warning: config {path}: {err} (ignored)` (read error other than
-    /// not-found), `Warning: config {path}: {err} (file ignored)` (parse error), plus the soft-migration lines.
+    /// not-found), `Warning: config {path}: {err} (file ignored)` (YAML syntax error).
     pub fn load(
         explicit: Option<&Path>,
         dirs: &HostDirs,
@@ -162,46 +165,49 @@ impl Config {
         warn: &mut dyn FnMut(String),
     ) -> Result<Config, ConfigError> {
         let mut cfg = Config::default();
-        if let Some(path) = explicit {
-            cfg.merge_file(path, resolver, warn);
-        } else {
-            // Global: ~/.iota.yaml / .yml, then local: ./.iota.yaml / .yml (config.go:122-134). A missing home
-            // or working directory silently skips that tier.
-            for dir in [dirs.home.as_deref(), dirs.cwd.as_deref()]
-                .into_iter()
-                .flatten()
-            {
-                if let Some(path) = Self::find_config_file(dir) {
-                    cfg.merge_file(&path, resolver, warn);
-                }
-            }
+        for path in Self::sources(explicit, dirs) {
+            cfg.merge_file(&path, resolver, warn)?;
         }
         cfg.validate(warn)?;
         Ok(cfg)
     }
 
-    /// ONE document, decoded → expanded → migrated → validated. `load` without the file discovery, and the
-    /// entry point every test that has its config as a string uses.
+    /// The files this invocation reads, in merge order: `-c <file>` alone, else the global
+    /// `~/.iota.yaml|yml` followed by the project-local `./.iota.yaml|yml` (config.go:122-134). A missing home
+    /// or working directory silently skips that tier; an explicit path is returned whether or not it exists,
+    /// which is what `iota config path` reports.
+    pub fn sources(explicit: Option<&Path>, dirs: &HostDirs) -> Vec<PathBuf> {
+        match explicit {
+            Some(path) => vec![path.to_path_buf()],
+            None => [dirs.home.as_deref(), dirs.cwd.as_deref()]
+                .into_iter()
+                .flatten()
+                .filter_map(Self::find_config_file)
+                .collect(),
+        }
+    }
+
+    /// ONE document, decoded → expanded → validated. `load` without the file discovery, and the entry point
+    /// every test that has its config as a string uses.
     pub fn parse(
         data: &[u8],
         resolver: &dyn VarResolver,
         warn: &mut dyn FnMut(String),
     ) -> Result<Config, ConfigError> {
-        let file: ConfigFile =
-            serde_norway::from_slice(data).map_err(|e| ConfigError::Parse(e.to_string()))?;
         let mut cfg = Config::default();
-        cfg.merge_document(file, resolver, warn)?;
+        cfg.merge_document(decode(data)?, resolver)?;
         cfg.validate(warn)?;
         Ok(cfg)
     }
 
-    /// Whole-entry replace by name; expands `key`/`url`/`system_file` ONCE.
+    /// One file, merged over what is already here (whole entry at a time, by name); expands `key`/`url`/
+    /// `system_file` ONCE. See [`load`](Config::load) for which failures warn and which abort.
     pub fn merge_file(
         &mut self,
         path: &Path,
         resolver: &dyn VarResolver,
         warn: &mut dyn FnMut(String),
-    ) {
+    ) -> Result<(), ConfigError> {
         let data = match std::fs::read(path) {
             Ok(data) => data,
             Err(e) => {
@@ -209,28 +215,28 @@ impl Config {
                 if e.kind() != std::io::ErrorKind::NotFound {
                     warn(format!("Warning: config {}: {e} (ignored)", path.display()));
                 }
-                return;
+                return Ok(());
             }
         };
-        // config.go:178-185: LOUD, never silent — a parse error drops the whole file, with a warning saying why.
-        let file: ConfigFile = match serde_norway::from_slice(&data) {
-            Ok(file) => file,
-            Err(e) => {
-                warn(format!(
-                    "Warning: config {}: {e} (file ignored)",
-                    path.display()
-                ));
-                return;
-            }
-        };
-        // A structural refusal inside ONE file (a `models:` shorthand that names no provider) is the same
-        // class of failure as a parse error, and Go's rule for those is: drop the file, say why, carry on.
-        if let Err(e) = self.merge_document(file, resolver, warn) {
-            warn(format!(
+        let merged = decode(&data).and_then(|file| self.merge_document(file, resolver));
+        match merged {
+            Ok(()) => {}
+            // config.go:178-185: a file that is not YAML at all is dropped with a warning saying why — there
+            // is no coordinate to report and nothing to act on but the parser's own message.
+            Err(ConfigError::Parse(e)) => warn(format!(
                 "Warning: config {}: {e} (file ignored)",
                 path.display()
-            ));
+            )),
+            // Everything else names a key or a reference the user wrote, so it fails the load with the file
+            // it was written in.
+            Err(e) => {
+                return Err(ConfigError::File {
+                    path: path.display().to_string(),
+                    source: Box::new(e),
+                });
+            }
         }
+        Ok(())
     }
 
     /// Merges one decoded document over what is already here.
@@ -238,32 +244,17 @@ impl Config {
         &mut self,
         file: ConfigFile,
         resolver: &dyn VarResolver,
-        warn: &mut dyn FnMut(String),
     ) -> Result<(), ConfigError> {
         for (name, mut entry) in file.providers {
             entry.key = expand_owned(entry.key, resolver);
             entry.url = expand_owned(entry.url, resolver);
-            entry.system_file = expand_owned(entry.system_file, resolver);
-            let mut split = entry.split(&name, warn);
-            if let Some(a) = &mut split.agent {
-                let where_ = format!("providers.{name}.tools");
-                migrate::rename_skills_set(&mut a.tools, &where_, warn);
-                migrate::drop_delegate_set(&mut a.tools, &where_, warn);
-            }
-            self.providers.insert(name.clone(), split.provider);
-            // Go replaced the WHOLE provider entry by name; the implicit entries follow it, so a later file
-            // that redefines a provider drops the model and the agent the earlier one implied.
-            replace_migrated(&mut self.models, &name, split.model);
-            replace_migrated(&mut self.agents, &name, split.agent);
+            self.providers.insert(name, entry);
         }
         for (name, entry) in file.models {
             self.models.insert(name.clone(), entry.into_config(&name)?);
         }
         for (name, mut agent_cfg) in file.agents {
             agent_cfg.system_file = expand_owned(agent_cfg.system_file, resolver);
-            let where_ = format!("agents.{name}.tools");
-            migrate::rename_skills_set(&mut agent_cfg.tools, &where_, warn);
-            migrate::drop_delegate_set(&mut agent_cfg.tools, &where_, warn);
             self.agents.insert(name, agent_cfg);
         }
         for (name, server_cfg) in file.mcp_servers {
@@ -363,47 +354,32 @@ impl Config {
         }
     }
 
-    /// The agent a run with no positional argument falls back to: [`DEFAULT_AGENT`], and only when the user
-    /// WROTE it. An entry the migration layer synthesised from a one-layer `providers.default` block is not a
-    /// declaration of intent — it is the old shape of a provider entry that happens to be called `default` —
-    /// so it never becomes the implicit default and such a config keeps failing exactly as it did.
+    /// The agent a bare `iota` runs: [`DEFAULT_AGENT`], when the config declares it.
     ///
     /// The fallback is deliberately `agents:` only: a `models.default` or a `providers.default` says which
     /// model or endpoint it is, never how to drive one, so there is one entry point and not three.
     pub fn default_agent(&self) -> Option<&str> {
         self.agents
-            .get(DEFAULT_AGENT)
-            .filter(|a| !a.migrated)
-            .map(|_| DEFAULT_AGENT)
+            .contains_key(DEFAULT_AGENT)
+            .then_some(DEFAULT_AGENT)
     }
 
-    /// The four-level positional resolution: `agents:` → `models:` → `providers:` → a built-in type. A name
-    /// defined in more than one layer is taken from the FIRST that has it, so an agent shadows a model of the
-    /// same name and a model shadows a provider. `None` = the name is nowhere.
-    pub fn resolve(&self, name: &str) -> Option<Resolved> {
-        if let Some(agent_cfg) = self.agents.get(name) {
-            let model = agent_cfg
-                .models
-                .first()
-                .and_then(|r| self.model_of(r))
-                .unwrap_or_default();
-            let mut resolved = self.finish(name, model, agent_cfg.clone());
-            name.clone_into(&mut resolved.agent_name);
-            return Some(resolved);
-        }
-        if let Some(model) = self.models.get(name) {
-            let mut model = model.clone();
-            model.anchor_provider(name);
-            return Some(self.finish(name, model, AgentConfig::default()));
-        }
-        if self.providers.contains_key(name) || ProviderKind::is_known(name) {
-            let model = ModelConfig {
-                provider: name.to_owned(),
-                ..ModelConfig::default()
-            };
-            return Some(self.finish(name, model, AgentConfig::default()));
-        }
-        None
+    /// What `iota run <name>` resolves: the `agents:` entry alone, with the model it defaults to and the
+    /// endpoint that model rides on. `None` = no such agent.
+    ///
+    /// It used to fall through to `models:`, `providers:` and finally a built-in provider type, so one name
+    /// could mean four things and a collision silently changed what ran. An agent is now the ONLY thing a run
+    /// can name (brain page `cli-surface-agent-first`); the other two layers are reached through it.
+    pub fn resolve_agent(&self, name: &str) -> Option<Resolved> {
+        let agent_cfg = self.agents.get(name)?;
+        let model = agent_cfg
+            .models
+            .first()
+            .and_then(|r| self.model_of(r))
+            .unwrap_or_default();
+        let mut resolved = self.finish(name, model, agent_cfg.clone());
+        name.clone_into(&mut resolved.agent_name);
+        Some(resolved)
     }
 
     /// The model a reference names: a `models:` entry, an inline `provider:id`, or the provider alone for a
@@ -446,27 +422,10 @@ impl Config {
         }
     }
 
-    /// The default model id shown for a provider in the `-l` listing: the `models:` entry that carries the
-    /// provider's own name (which is where a migrated one-layer `model:` lands). `""` when there is none.
-    pub fn default_model_id(&self, provider_name: &str) -> &str {
-        self.models
-            .get(provider_name)
-            .filter(|m| m.provider_or(provider_name) == provider_name)
-            .map_or("", |m| m.id.as_str())
-    }
-
-    /// Every name a positional argument may carry, sorted and deduplicated (the `unknown provider` hint).
-    pub fn configured_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self
-            .agents
-            .keys()
-            .chain(self.models.keys())
-            .chain(self.providers.keys())
-            .cloned()
-            .collect();
-        names.sort();
-        names.dedup();
-        names
+    /// Every agent a run may name, in config order (`BTreeMap` = sorted): the `unknown agent` hint and
+    /// `iota list agents`.
+    pub fn agent_names(&self) -> Vec<String> {
+        self.agents.keys().cloned().collect()
     }
 
     /// `None` → all; `Some([])` → empty; names → subset; unknown → `Err(UnknownMcpServer)`.
@@ -489,40 +448,17 @@ impl Config {
     }
 }
 
-/// Installs the implicit entry a migrated provider block produced — or, when the block had none, clears the
-/// implicit entry an earlier file left behind. An entry the user wrote explicitly is never touched.
-fn replace_migrated<T>(map: &mut BTreeMap<String, T>, name: &str, entry: Option<T>)
-where
-    T: Migrated,
-{
-    match entry {
-        Some(e) => {
-            map.insert(name.to_owned(), e);
-        }
-        None => {
-            if map.get(name).is_some_and(Migrated::is_migrated) {
-                map.remove(name);
-            }
-        }
-    }
-}
-
-/// Whether an entry was synthesised by [`migrate`] rather than written by the user.
-trait Migrated {
-    /// True for a synthesised entry.
-    fn is_migrated(&self) -> bool;
-}
-
-impl Migrated for ModelConfig {
-    fn is_migrated(&self) -> bool {
-        self.migrated
-    }
-}
-
-impl Migrated for AgentConfig {
-    fn is_migrated(&self) -> bool {
-        self.migrated
-    }
+/// ONE document, decoded: YAML syntax first ([`ConfigError::Parse`]), then the key audit, which is what makes
+/// a misplaced or misspelled key an error naming its coordinate rather than a line nothing reads.
+///
+/// The bytes are parsed twice — once as a [`serde_norway::Value`] for the audit, once into the typed shape —
+/// because only the raw form knows which ENTRY a key was written in, and only the typed decode reports a
+/// field's type error with the line it is on. Config files are small; the clarity is worth the second pass.
+fn decode(data: &[u8]) -> Result<ConfigFile, ConfigError> {
+    let doc: serde_norway::Value =
+        serde_norway::from_slice(data).map_err(|e| ConfigError::Parse(e.to_string()))?;
+    strict::audit(&doc)?;
+    serde_norway::from_slice(data).map_err(|e| ConfigError::Parse(e.to_string()))
 }
 
 /// `vars::expand` on an owned string, allocating only when a `${…}` was substituted.
@@ -536,6 +472,25 @@ fn expand_owned(s: String, resolver: &dyn VarResolver) -> String {
 /// Config-level failures that abort a run.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    /// A failure that belongs to ONE file of the stack, prefixed with the file it was written in (the
+    /// cross-layer validation at the end of the load has no single file to name and stays unwrapped).
+    #[error("config {path}: {source}")]
+    File {
+        /// The file as it was found.
+        path: String,
+        /// What is wrong inside it.
+        #[source]
+        source: Box<ConfigError>,
+    },
+    /// A key that does not belong where it was written: another layer's, retired, or unknown. `at` is the
+    /// config coordinate (`agents.coder.tools.delegate`).
+    #[error("{at}: {message}")]
+    Key {
+        /// The coordinate the key was written at.
+        at: String,
+        /// Which layer owns it, or what replaced it.
+        message: String,
+    },
     /// The document could not be decoded (only [`Config::parse`] surfaces this; `load` warns and drops the
     /// file instead).
     #[error("{0}")]

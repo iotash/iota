@@ -259,9 +259,6 @@ pub struct ModelConfig {
     /// `json_edits:` — JSON-body image edits (`images` type only).
     #[serde(deserialize_with = "crate::tool::yaml11::deserialize_bool")]
     pub json_edits: bool,
-    /// Set when the entry was synthesised from a one-layer `providers.<name>` block, never from YAML.
-    #[serde(skip)]
-    pub migrated: bool,
 }
 
 impl ModelConfig {
