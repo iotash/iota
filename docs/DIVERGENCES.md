@@ -230,12 +230,13 @@ pre-T3 divergence re-confirmed rather than changed).
 | T-62 | mech | Picker preview closure | `Panel.Preview` stays on the panel; Bubble Tea's `View()` has the panel by value | the closure is MOVED into `PanelState` when the surface opens (`SurfaceState::new(&mut [Panel])`), because the Rust render path holds the panels by shared reference and an `FnMut` needs `&mut`; `Panel::preview` reads `None` afterwards | keeps `render_surface(&SurfaceState, &[Panel], u16)` unchanged — widening it would have made `event_loop::frame_view` take `&mut self`. `has_preview` is recorded at the `tabbed()` call, before the surface opens, so the facade summary is unaffected. `picker_tests` ×6 |
 | T-63 | mech | Picker preview height | `renderPicker` reads `m.height` directly | `SurfaceState::set_term_height(&self, u16)` is published by the loop before each render; `0` means unknown, which skips the clamp exactly as Go's `m.height > 0` guard does | the same clamp `[4, max(4, h-12)]`; `preview_height_is_clamped_by_the_terminal` pins both states |
 
-### C.4 Post-parity — features the Rust binary no longer has (X-01 …)
+### C.4 Post-parity — where the Rust binary stopped following Go (X-01 …)
 
-Parity with the Go binary is the baseline, not the ceiling. Rows here record a Go feature the
-Rust binary deliberately **dropped** after the port reached parity, with the decision that killed
-it. A dropped feature's config keys stay ACCEPTED (a warning, never an error) until the
-compatibility layer goes at 1.0 — `docs/MIGRATION-ROADMAP.md`.
+Parity with the Go binary is the baseline, not the ceiling. Rows here record a deliberate
+divergence taken AFTER the port reached parity: a Go feature dropped (X-01 … X-04) or a Go law
+broken (X-05, X-06), each with the decision behind it. A dropped feature's config keys stay
+ACCEPTED (a warning, never an error) until the compatibility layer goes at 1.0 —
+`docs/MIGRATION-ROADMAP.md`.
 
 | id | area | Go behaviour | Rust behaviour | why |
 |---|---|---|---|---|
@@ -243,6 +244,8 @@ compatibility layer goes at 1.0 — `docs/MIGRATION-ROADMAP.md`.
 | X-02 | `tools.delegate` config | a bad `tools.delegate` block fails the run at startup (`tools.delegate: no agents configured …`) | the key is DROPPED with one warning — `Warning: config <where>.delegate: the delegate toolset was removed; run child agents from bash instead (see README)` — and the run carries on (`config::migrate::drop_delegate_set`) | the soft-migration rule of `src/config/migrate.rs`: a retired key warns, it does not break a config that still carries it. Every spelling is the same key (the list, the mapping, the one-layer `agents: {reviewer: openai}` map inside it) |
 | X-03 | `--output-format json` report | a `"delegated"` object (`rounds`, `usage`) beside the run's own `usage` when anything was delegated | the field does not exist — nothing delegates, and the parent no longer bills a child's tokens. A child subprocess prints its own report | X-01. `RunRecorder::report` lost the argument; `DelegationLedger` and `DelegatedReport` are gone |
 | X-04 | `--max-turns` exhausted text | `… ({turns} turns, shared by this run and everything it delegated)` | `… ({turns} turns, the whole run's budget)`, and `--max-turns`'s help line drops "delegated children included" | X-01: the clause named a thing that no longer exists. The `TurnBudget` itself stays — it is what `--max-turns` bounds |
+| X-05 | `bash` concurrency | `supports_parallel` unimplemented, so every `bash` call in a round runs one at a time | `BashTool::supports_parallel` is `true` whatever the arguments: the round's consecutive `bash` calls run in ONE batch (`chat::batch::parallel_run` unchanged — event rows, results and history stay in CALL order, and ESC cancels the batch) | a deliberate break with Go's "only calls that cannot change state batch" law, for `bash` alone. Dispatching child agents from bash is pointless when the calls serialize, and the judgement Go's rule made for the model is the model's own here — it wrote both command lines, and `&`/`wait`/`xargs -P` inside ONE call were never gated. Pinned end to end by `repl::toolloop::tests::bash_calls_share_one_parallel_batch` (two `sleep 1`s, one cancel scope, under 1.8 s) |
+| X-06 | `bash` timeout | fixed at 10 minutes (`BASH_TIMEOUT`) | `DEFAULT_BASH_TIMEOUT` is the same 600 s, and an optional `timeout` argument (integer seconds, `1…3600`) overrides it per call. Out of range — `0`, negative, past 3600, or not a number — is the argument error `timeout must be between 1 and 3600 seconds` and the command does NOT run. The timed-out line names the cap the call actually ran under | one number cannot serve both a lint (seconds) and a child agent's whole run (minutes). The ceiling is not negotiable, so a runaway still dies |
 
 ## D. Go tests intentionally not ported (interactive-only)
 

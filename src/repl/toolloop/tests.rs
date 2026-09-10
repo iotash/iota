@@ -819,6 +819,63 @@ async fn parallel_batch_keeps_one_widget_and_call_order() {
     assert_eq!(ids, ["r1", "r2", "w1"]);
 }
 
+// New (DIVERGENCES X-05): the same batching law, driven through the REAL `shell` toolset —
+// two `bash` calls in one round are ONE batch. The stub above proves the walk; this proves
+// what `BashTool::supports_parallel` actually answers, and the wall clock proves the two
+// `sleep 1`s overlapped instead of queueing.
+#[tokio::test]
+async fn bash_calls_share_one_parallel_batch() {
+    use std::time::{Duration, Instant};
+
+    // `sandbox: off` + `auto_run: true`: no gate to answer and no sandbox to depend on, so
+    // the test measures the batch and nothing else.
+    let node: crate::tool::sets::RawNode =
+        serde_norway::from_str("sandbox: off\nauto_run: true\n").expect("shell config");
+    let mut cfg = crate::tool::sets::ToolsConfig::new();
+    cfg.insert("shell".to_owned(), node);
+    let registry = crate::tool::Registry::build(&crate::tool::Env::default(), &cfg, &mut |w| {
+        panic!("the shell set complained: {w}")
+    });
+    assert!(registry.supports_parallel("bash", None), "bash must batch");
+    let dispatch: Arc<dyn Dispatcher> = Arc::new(registry);
+
+    let mut script = Vec::new();
+    script.extend(quiet(1));
+    let fx = Fx::new(dispatch, script);
+    let p = FakeStream::new(vec![
+        Round::calls(vec![
+            call("b1", "bash", serde_json::json!({"command": "sleep 1"})),
+            call("b2", "bash", serde_json::json!({"command": "sleep 1"})),
+        ]),
+        Round::text("done"),
+    ]);
+    let mut history = vec![Message::user("go")];
+    let started = Instant::now();
+    fx.turn(&p, &mut history).await.outcome.expect("turn");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_millis(1800),
+        "two `sleep 1` calls took {elapsed:?} — they were serialized"
+    );
+    // ONE cancel scope for the whole batch (a serial pair would push two).
+    assert_eq!(
+        fx.events()
+            .iter()
+            .filter(|e| matches!(e, UiEvent::ScopePush))
+            .count(),
+        1,
+        "the two calls did not share one batch"
+    );
+    // …and the results still answer their calls in CALL order.
+    let ids: Vec<&str> = history
+        .iter()
+        .filter(|m| m.role() == Role::Tool)
+        .map(Message::tool_call_id)
+        .collect();
+    assert_eq!(ids, ["b1", "b2"]);
+}
+
 // Go: chat/transcript.go:454-506 + tool/tool.go:160-198 — an expanded call is a group
 // boundary that settles into its posted DIFF artifact (T-35): the header carries the ±
 // counts and the diff rows follow. The artifact never reaches the model.

@@ -440,7 +440,9 @@ per agent with `tools: {ask: false}`.
 
 Lets the model run real bash command lines — pipes, redirects, `&&` chaining,
 heredocs — and returns their combined stdout/stderr. The model calls it with
-`command` (required) and an optional `cwd` (defaults to the project root).
+`command` (required), an optional `cwd` (defaults to the project root) and an
+optional `timeout` in seconds (default 600, maximum 3600; outside that range
+the call is refused and nothing runs).
 
 Safety model — the same one Claude Code and Codex CLI use:
 
@@ -456,8 +458,13 @@ Safety model — the same one Claude Code and Codex CLI use:
   deny), and non-interactive `-m` runs reject it — set `auto_run: true` to
   waive that.
 - Output is capped at 32 KB and 512 lines (head + tail kept, middle elided,
-  bounded even while streaming). Each call is capped at **10 minutes**; while a command runs, the status-line spinner
-  shows the elapsed time — press **ESC** (or Ctrl+C) to terminate it.
+  bounded even while streaming). Each call is capped at **10 minutes** unless
+  it asks for a different `timeout`; while a command runs, the status-line
+  spinner shows the elapsed time — press **ESC** (or Ctrl+C) to terminate it.
+- **Calls issued together run concurrently.** A round's consecutive `bash`
+  calls execute as one batch — ESC cancels the batch, and results still come
+  back in call order. (Every other toolset keeps the conservative rule: only
+  calls that cannot change state batch.)
 
 **Child agents.** iota has no delegation tool: a child agent is
 `iota <agent> -m "<task>"` run from `bash`, which is why the set is the one

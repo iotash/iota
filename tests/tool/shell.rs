@@ -168,6 +168,64 @@ async fn test_bash_call() {
     );
 }
 
+// New (DIVERGENCES X-06): the `timeout` argument end to end — it caps the run, its own line names
+// the number the call chose, and a value outside 1…3600 is refused BEFORE anything is executed.
+#[tokio::test]
+async fn bash_timeout_argument_caps_the_call() {
+    let (_dir, root, bash) = new_bash("sandbox: off\n");
+
+    let started = std::time::Instant::now();
+    let (out, is_err) = call(&bash, json!({"command": "sleep 30", "timeout": 1})).await;
+    assert!(
+        is_err && out.contains("[command timed out after 1s]"),
+        "timed-out result = ({out:?}, {is_err})"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "the call outlived its own timeout"
+    );
+
+    // Out of range: the refusal is the result and the command never ran.
+    let marker = root.join("ran.txt");
+    for bad in [json!(0), json!(-1), json!(3601), json!("30")] {
+        let cmd = format!("touch {}", marker.display());
+        let (out, is_err) = call(&bash, json!({"command": cmd, "timeout": bad})).await;
+        assert_eq!(
+            (out.as_str(), is_err),
+            ("timeout must be between 1 and 3600 seconds", true),
+            "timeout {bad} must be refused"
+        );
+        assert!(!marker.exists(), "a refused call ran the command anyway");
+    }
+
+    // An accepted one does run it.
+    let cmd = format!("touch {}", marker.display());
+    let (_, is_err) = call(&bash, json!({"command": cmd, "timeout": 30})).await;
+    assert!(!is_err && marker.exists());
+}
+
+// New (DIVERGENCES X-05): `bash` opts every call into the round's parallel batch, whatever it was asked
+// to run — the answer is not a property of the arguments.
+#[test]
+fn bash_calls_batch() {
+    let (_dir, _root, bash) = new_bash("sandbox: off\n");
+    assert!(
+        bash.supports_parallel(None),
+        "the nil-args probe must say yes"
+    );
+    for args in [
+        json!({"command": "ls"}),
+        json!({"command": "rm -rf /tmp/x"}),
+        json!({}),
+    ] {
+        let args: JsonObject = match args {
+            serde_json::Value::Object(m) => m,
+            _ => panic!("object literal expected"),
+        };
+        assert!(bash.supports_parallel(Some(&args)));
+    }
+}
+
 // Go: tool/shell_test.go:66
 #[test]
 fn test_bash_approval_matrix() {
@@ -279,7 +337,15 @@ fn test_bash_description_states_shell_state_contract() {
     );
     let unsandboxed = format!("{BASH_DESC_PREFIX}{BASH_DESC_UNSANDBOXED}");
     for desc in [&sandboxed_blocked, &sandboxed_open, &unsandboxed] {
-        for want in ["FRESH shell", "functions", "do not carry over"] {
+        for want in [
+            "FRESH shell",
+            "functions",
+            "do not carry over",
+            // The two post-parity facts the model has to know (DIVERGENCES X-05/X-06).
+            "Calls issued together run concurrently.",
+            "killed after 600 seconds",
+            "maximum 3600",
+        ] {
             assert!(desc.contains(want), "description missing {want:?}:\n{desc}");
         }
     }
@@ -304,6 +370,12 @@ fn test_bash_description_states_shell_state_contract() {
                 "cwd": {
                     "type": "string",
                     "description": "Optional working directory (defaults to the project root).",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Optional wall-clock cap in seconds (default 600, maximum 3600). The command is killed when it expires.",
+                    "minimum": 1,
+                    "maximum": 3600,
                 },
             },
             "required": ["command"],

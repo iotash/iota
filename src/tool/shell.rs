@@ -14,16 +14,24 @@ use crate::provider::model::{JsonObject, ToolDef};
 use crate::text::go_duration;
 use crate::tool::{Env, Tool, ToolOutput, ToolResult};
 use serde::Deserialize;
+use serde_json::Value;
 
-use crate::tool::args::str_arg;
+use crate::tool::args::{int_arg, str_arg};
 use crate::tool::sets::{RawNode, SetError};
 use crate::tool::yaml11;
 
 use crate::shell::exec;
 use crate::shell::exec::{Options, RunResult, Sandbox};
 
-/// Wall-clock cap of one `bash` call (`[command timed out after 10m0s]`).
-pub(crate) const BASH_TIMEOUT: Duration = Duration::from_secs(600);
+/// Wall-clock cap of one `bash` call when it names no `timeout` (`[command timed out after 10m0s]`).
+pub(crate) const DEFAULT_BASH_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Bounds of the `timeout` argument, in seconds. One number cannot serve both a lint and a child agent's
+/// whole run, so the model picks — inside a ceiling it cannot argue with (DIVERGENCES X-06).
+const TIMEOUT_RANGE: std::ops::RangeInclusive<i64> = 1..=3600;
+
+/// The refusal a `timeout` outside [`TIMEOUT_RANGE`] gets; the command does not run.
+const TIMEOUT_ERR: &str = "timeout must be between 1 and 3600 seconds";
 
 /// `tools.shell` configuration.
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -131,6 +139,9 @@ impl Tool for BashTool {
                     crate::paths::clean(&self.root.join(p))
                 }
             };
+            let Some(timeout) = timeout_arg(args) else {
+                return Ok(ToolOutput::err(TIMEOUT_ERR));
+            };
             let sandbox = self.sandboxed.then(|| Sandbox {
                 root: self.root.clone(),
                 network: self.shell_cfg.network,
@@ -149,18 +160,27 @@ impl Tool for BashTool {
                 Options {
                     command,
                     dir,
-                    timeout: Some(BASH_TIMEOUT),
+                    timeout: Some(timeout),
                     sandbox,
                 },
             )
             .await;
-            Ok(format_result(&res))
+            Ok(format_result(&res, timeout))
         })
     }
 
     /// `!sandboxed && !auto_run`.
     fn requires_approval(&self) -> bool {
         !self.sandboxed && !self.shell_cfg.auto_run
+    }
+
+    /// Always — a deliberate break with Go's "only read-only tools batch" law (DIVERGENCES X-05).
+    /// A round's consecutive `bash` calls run in ONE batch, results still in call order. The
+    /// judgement Go's rule made for the model (is this command safe beside that one?) is the
+    /// model's own here: it wrote both command lines, and `&`/`wait`/`xargs -P` inside a single
+    /// call were never gated either.
+    fn supports_parallel(&self, _args: Option<&JsonObject>) -> bool {
+        true
     }
 
     /// tool/shell.go:82-92 (the D-12 lift): the call IS the command — `"[bash git
@@ -180,8 +200,24 @@ impl Tool for BashTool {
     }
 }
 
-/// tool/shell.go:173-190: the model-facing rendering of one run, checked in this order.
-fn format_result(res: &RunResult) -> ToolOutput {
+/// The `timeout` argument as a duration: absent (or null) is [`DEFAULT_BASH_TIMEOUT`]; `None` means the
+/// call named one outside [`TIMEOUT_RANGE`] (a non-number reads as `0`, which is out of range too).
+fn timeout_arg(args: &JsonObject) -> Option<Duration> {
+    match args.get("timeout") {
+        None | Some(Value::Null) => Some(DEFAULT_BASH_TIMEOUT),
+        Some(_) => {
+            let secs = int_arg(args, "timeout");
+            if !TIMEOUT_RANGE.contains(&secs) {
+                return None;
+            }
+            u64::try_from(secs).ok().map(Duration::from_secs)
+        }
+    }
+}
+
+/// tool/shell.go:173-190: the model-facing rendering of one run, checked in this order. `timeout` is the
+/// cap the call actually ran under, so the timed-out line names the number the model chose.
+fn format_result(res: &RunResult, timeout: Duration) -> ToolOutput {
     if let Some(e) = &res.err {
         if res.output.trim().is_empty() {
             return ToolOutput::err(format!("failed to run: {e}"));
@@ -192,7 +228,7 @@ fn format_result(res: &RunResult) -> ToolOutput {
         return ToolOutput::err(format!(
             "{}\n[command timed out after {}]",
             res.output,
-            go_duration(BASH_TIMEOUT)
+            go_duration(timeout)
         ));
     }
     if res.cancelled {
@@ -235,6 +271,12 @@ fn bash_schema() -> JsonObject {
                 "type": "string",
                 "description": "Optional working directory (defaults to the project root).",
             },
+            "timeout": {
+                "type": "integer",
+                "description": "Optional wall-clock cap in seconds (default 600, maximum 3600). The command is killed when it expires.",
+                "minimum": 1,
+                "maximum": 3600,
+            },
         },
         "required": ["command"],
     }) {
@@ -244,7 +286,7 @@ fn bash_schema() -> JsonObject {
 }
 
 /// Fixed head of the `bash` description.
-pub const BASH_DESC_PREFIX: &str = "Run a bash command line on the user's machine and return its combined stdout/stderr. The full shell is available: pipes, redirects, globbing, && chaining, heredocs. The working directory defaults to the project root (override with \"cwd\"). Each call runs in a FRESH shell: environment variables, shell functions, aliases and `cd` do not carry over to the next call. Anything a later command depends on must be repeated in it — write the full path or command instead of defining a helper first. ";
+pub const BASH_DESC_PREFIX: &str = "Run a bash command line on the user's machine and return its combined stdout/stderr. The full shell is available: pipes, redirects, globbing, && chaining, heredocs. The working directory defaults to the project root (override with \"cwd\"). Each call runs in a FRESH shell: environment variables, shell functions, aliases and `cd` do not carry over to the next call. Anything a later command depends on must be repeated in it — write the full path or command instead of defining a helper first. Calls issued together run concurrently. Each call is killed after 600 seconds unless \"timeout\" says otherwise (maximum 3600). ";
 /// Sandboxed suffix; `{net}` = `network access is BLOCKED` | `network access is allowed`.
 pub const BASH_DESC_SANDBOXED: &str = "Commands run inside an OS sandbox: file writes are confined to the project root and temp/cache directories (writes elsewhere fail with permission errors), and {net}.";
 /// Unsandboxed suffix.
@@ -255,7 +297,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        BASH_TIMEOUT, RunResult, exec::ShellError, expand_home, format_result, go_duration,
+        DEFAULT_BASH_TIMEOUT, Duration, JsonObject, RunResult, exec::ShellError, expand_home,
+        format_result, go_duration, timeout_arg,
     };
 
     // New (tool-shell.md "MODEL-FACING RESULT SUFFIXES"): every branch of tool/shell.go:173-190.
@@ -265,7 +308,7 @@ mod tests {
             err: Some(ShellError::NoBash),
             ..RunResult::default()
         };
-        let out = format_result(&failed);
+        let out = format_result(&failed, DEFAULT_BASH_TIMEOUT);
         assert_eq!(
             out.text,
             "failed to run: bash is not installed on this system"
@@ -278,7 +321,7 @@ mod tests {
             ..RunResult::default()
         };
         assert_eq!(
-            format_result(&failed_with_output).text,
+            format_result(&failed_with_output, DEFAULT_BASH_TIMEOUT).text,
             "partial\n\n[failed to run: boom]"
         );
 
@@ -288,16 +331,21 @@ mod tests {
             ..RunResult::default()
         };
         assert_eq!(
-            format_result(&timed_out).text,
+            format_result(&timed_out, DEFAULT_BASH_TIMEOUT).text,
             "slow\n[command timed out after 10m0s]"
         );
-        assert_eq!(go_duration(BASH_TIMEOUT), "10m0s");
+        assert_eq!(go_duration(DEFAULT_BASH_TIMEOUT), "10m0s");
+        // The line names the cap the call actually ran under, not the default.
+        assert_eq!(
+            format_result(&timed_out, Duration::from_secs(5)).text,
+            "slow\n[command timed out after 5s]"
+        );
 
         let cancelled = RunResult {
             cancelled: true,
             ..RunResult::default()
         };
-        let out = format_result(&cancelled);
+        let out = format_result(&cancelled, DEFAULT_BASH_TIMEOUT);
         assert_eq!(out.text, "\n[command cancelled]");
         assert!(out.is_error);
 
@@ -306,14 +354,17 @@ mod tests {
             exit_code: -1,
             ..RunResult::default()
         };
-        assert_eq!(format_result(&signalled).text, "\n[exit code -1]");
+        assert_eq!(
+            format_result(&signalled, DEFAULT_BASH_TIMEOUT).text,
+            "\n[exit code -1]"
+        );
 
         let blank = RunResult {
             output: "  \n".to_owned(),
             exited: true,
             ..RunResult::default()
         };
-        let out = format_result(&blank);
+        let out = format_result(&blank, DEFAULT_BASH_TIMEOUT);
         assert_eq!(out.text, "[command produced no output]");
         assert!(!out.is_error);
 
@@ -322,9 +373,46 @@ mod tests {
             exited: true,
             ..RunResult::default()
         };
-        let out = format_result(&ok);
+        let out = format_result(&ok, DEFAULT_BASH_TIMEOUT);
         assert_eq!(out.text, "hello\n", "the trailing newline is preserved");
         assert!(!out.is_error);
+    }
+
+    // New (DIVERGENCES X-06): absent means the default, and only 1…3600 is a timeout at all.
+    #[test]
+    fn timeout_argument_bounds() {
+        let args =
+            |v: serde_json::Value| -> JsonObject { v.as_object().cloned().unwrap_or_default() };
+        assert_eq!(
+            timeout_arg(&JsonObject::new()),
+            Some(DEFAULT_BASH_TIMEOUT),
+            "an absent timeout is the default"
+        );
+        assert_eq!(
+            timeout_arg(&args(serde_json::json!({"timeout": null}))),
+            Some(DEFAULT_BASH_TIMEOUT)
+        );
+        for (secs, want) in [(1, 1), (30, 30), (3600, 3600)] {
+            assert_eq!(
+                timeout_arg(&args(serde_json::json!({"timeout": secs}))),
+                Some(Duration::from_secs(want)),
+                "timeout {secs} is inside the range"
+            );
+        }
+        for bad in [
+            serde_json::json!({"timeout": 0}),
+            serde_json::json!({"timeout": -1}),
+            serde_json::json!({"timeout": 3601}),
+            // A non-number reads as 0, which is out of range too — never silently the default.
+            serde_json::json!({"timeout": "30"}),
+            serde_json::json!({"timeout": true}),
+        ] {
+            assert_eq!(
+                timeout_arg(&args(bad.clone())),
+                None,
+                "{bad} must be refused"
+            );
+        }
     }
 
     // New: tool/shell.go:194-206 — `~` and `~/x` only, and only with a home.

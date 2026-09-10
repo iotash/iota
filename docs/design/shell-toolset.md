@@ -73,9 +73,22 @@ the set is skipped with a warning.
 
 ## Execution details
 
-10-minute hard timeout per call, earlier cancellation via ESC (the chat layer
-cancels the context; sandbox-exec execs bash in-process and bwrap uses
-`--die-with-parent`, so the tree dies with the wrapper).
+10-minute timeout per call by default, or whatever the call's optional
+`timeout` argument says inside `1…3600` seconds — outside that range the call
+is refused (`timeout must be between 1 and 3600 seconds`) and nothing runs.
+Earlier cancellation via ESC (the chat layer cancels the context; sandbox-exec
+execs bash in-process and bwrap uses `--die-with-parent`, so the tree dies
+with the wrapper). One number could not serve both a lint and a child agent's
+whole run, and 3600 is the ceiling a runaway cannot argue with
+(DIVERGENCES X-06).
+
+A round's consecutive `bash` calls run as ONE concurrent batch
+(`BashTool::supports_parallel` is unconditionally true), results and event
+rows still in call order — a deliberate break with the "only calls that cannot
+change state batch" law, for this set alone (DIVERGENCES X-05). The model
+wrote both command lines; `&`/`wait`/`xargs -P` inside a single call were
+never gated either, and a child agent dispatched with `iota <agent> -m …` is
+pointless when the calls queue.
 
 Output is capped on **both axes**, sized to the industry norms (Claude Code
 clips bash output at 30k characters; Codex CLI clips by lines and bytes):
