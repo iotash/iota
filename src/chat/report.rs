@@ -1,9 +1,7 @@
-//! The JSON run report (chat/output.go): wire structs in Go key order, the per-run `RunRecorder`, and the
-//! delegated-cost section derived from the `DelegationLedger`.
+//! The JSON run report (chat/output.go): wire structs in Go key order and the per-run `RunRecorder`.
 
 use std::time::Instant;
 
-use crate::chat::turns::DelegationLedger;
 use crate::provider::ProviderKind;
 use crate::provider::model::ToolCall;
 use crate::provider::usage::Usage;
@@ -72,15 +70,6 @@ pub struct RoundReport {
     pub usage: TokenUsage,
 }
 
-/// What everything the run delegated cost, in aggregate.
-#[derive(Serialize, Debug, Clone, Default, PartialEq, Eq)]
-pub struct DelegatedReport {
-    /// Rounds run by delegated children.
-    pub rounds: u32,
-    /// Their aggregate usage.
-    pub usage: TokenUsage,
-}
-
 /// The `--output-format json` document (chat/output.go, key order preserved).
 #[derive(Serialize, Debug, Clone, Default, PartialEq, Eq)]
 pub struct RunReport {
@@ -102,9 +91,6 @@ pub struct RunReport {
     pub duration_ms: u64,
     /// Aggregate usage of this run's own rounds.
     pub usage: TokenUsage,
-    /// Delegated cost (omitted when nothing was delegated).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub delegated: Option<DelegatedReport>,
     /// Per-round usage (omitted when empty).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub round_usage: Vec<RoundReport>,
@@ -179,7 +165,6 @@ impl RunRecorder {
 
     /// Assembles the report: `kind` "result", duration since `start`, the rounds, and `err`'s Display (or "")
     /// (output.go:173-191).
-    #[allow(clippy::too_many_arguments)] // frozen contract signature (CONTRACTS §6.5)
     pub fn report(
         &self,
         kind: ProviderKind,
@@ -187,7 +172,6 @@ impl RunRecorder {
         reply: &str,
         images: Vec<String>,
         image_errors: Vec<String>,
-        delegated: Option<DelegatedReport>,
         err: Option<&dyn std::fmt::Display>,
     ) -> RunReport {
         RunReport {
@@ -199,7 +183,6 @@ impl RunRecorder {
             rounds: self.round_count(),
             duration_ms: u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX),
             usage: self.total,
-            delegated,
             round_usage: self.rounds.clone(),
             images,
             image_errors,
@@ -212,22 +195,13 @@ pub(crate) fn tool_names(calls: &[ToolCall]) -> Vec<String> {
     calls.iter().map(|tc| tc.name.clone()).collect()
 }
 
-/// `ledger.snapshot()` mapped to the report section; `None` when nothing was delegated (turns.go:117-127).
-pub fn delegated_report(ledger: &DelegationLedger) -> Option<DelegatedReport> {
-    ledger.snapshot().map(|(rounds, usage)| DelegatedReport {
-        rounds,
-        usage: TokenUsage::from(usage),
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::chat::turns::DelegationLedger;
     use crate::provider::ProviderKind;
     use crate::provider::model::ToolCall;
     use crate::provider::usage::Usage;
 
-    use super::{RunRecorder, TokenUsage, delegated_report, tool_names, write_report};
+    use super::{RunRecorder, TokenUsage, tool_names, write_report};
 
     #[test]
     fn recorder_counts_usage_less_rounds() {
@@ -255,7 +229,6 @@ mod tests {
             "r",
             vec!["/p".to_owned()],
             vec![],
-            None,
             Some(&"bad"),
         );
         assert_eq!(rep.kind, "result");
@@ -264,7 +237,6 @@ mod tests {
         assert_eq!(rep.error, "bad");
         assert_eq!(rep.rounds, 2);
         assert_eq!(rep.images, ["/p"]);
-        assert!(rep.delegated.is_none());
     }
 
     #[test]
@@ -277,21 +249,12 @@ mod tests {
             }),
             vec!["noop".to_owned()],
         );
-        let ledger = DelegationLedger::default();
-        ledger.add(
-            2,
-            Usage {
-                input: 3,
-                ..Usage::default()
-            },
-        );
         let rep = rec.report(
             ProviderKind::OpenAi,
             "gpt",
             "<b>&",
             vec![],
             vec!["saving image failed: x".to_owned()],
-            delegated_report(&ledger),
             None,
         );
         let mut out = Vec::new();
@@ -309,7 +272,6 @@ mod tests {
             "\"rounds\"",
             "\"duration_ms\"",
             "\"usage\"",
-            "\"delegated\"",
             "\"round_usage\"",
             "\"image_errors\"",
         ]
@@ -320,8 +282,6 @@ mod tests {
         assert!(!text.contains("\"error\""));
         assert!(!text.contains("\"images\""));
         let v: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(v["delegated"]["rounds"], 2);
-        assert_eq!(v["delegated"]["usage"]["input_tokens"], 3);
         assert_eq!(v["round_usage"][0]["tools"][0], "noop");
     }
 
@@ -336,6 +296,5 @@ mod tests {
             ["b", "a", "b"]
         );
         assert!(tool_names(&[]).is_empty());
-        assert!(delegated_report(&DelegationLedger::default()).is_none());
     }
 }

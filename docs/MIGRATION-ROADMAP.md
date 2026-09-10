@@ -63,11 +63,11 @@ src/
 ├── text/        width.rs KEEP · ansi.rs（成为唯一 CSI/OSC 扫描器，markdown/ui/tests 三份并入）· fmt.rs（go_quote/go_float/go_duration → quote_debug/float_short/duration_short，字节不变）
 ├── llm/         KEEP 文件；models.rs MERGE 进 client.rs；新 stream.rs：一个泛型 `DialectStream<E>` 取代四个孪生 next()（ARCH-REVIEW F11）；响应字段 ""→Option（google.rs 五处文档/类型不符修正）
 ├── provider/    mod.rs SPLIT（kind.rs 分出 ProviderKind/Effort；测试移到 tests.rs）· core.rs（←common.rs）· usage.rs（合并 usage_conv）· images.rs（合并 image_util）· Role 枚举（20 处字面量）· 图片 provider 错误类型化
-├── tool/        mod.rs（契约）· context.rs（MOVE 自 chat/turns.rs：RunCtx/TurnBudget/DelegationLedger/ArtifactSlot——打破 tool⇄chat⇄mcp 环，13 个导入点）· approval.rs（`Approval::{Allow, Deny(String)}` 取代两处 (bool,String)）· dispatch.rs（←registry+merge；PrefixOf 返回 Option）· args.rs（读取器返回 Option，无零值默认）· display.rs（←fmt.rs）· defer/{mod,modes}.rs · builtins/{mod(←sets.rs),shell,agent,delegate,ask,code/{mod,tools,walk,udiff}}.rs
+├── tool/        mod.rs（契约）· context.rs（MOVE 自 chat/turns.rs：RunCtx/TurnBudget/ArtifactSlot——打破 tool⇄chat⇄mcp 环，13 个导入点；DelegationLedger 已退役（2026-09-10））· approval.rs（`Approval::{Allow, Deny(String)}` 取代两处 (bool,String)）· dispatch.rs（←registry+merge；PrefixOf 返回 Option）· args.rs（读取器返回 Option，无零值默认）· display.rs（←fmt.rs）· defer/{mod,modes}.rs · builtins/{mod(←sets.rs),shell,agent,ask,code/{mod,tools,walk,udiff}}.rs（delegate 已退役（2026-09-10））
 ├── shell/       exec.rs（`enum Outcome { Exited, Killed, TimedOut, SpawnFailed }`）· sandbox/{mod,darwin,linux}.rs
 ├── agents/      KEEP
 ├── mcp/         manager.rs 吸收 naming.rs+status.rs；`ServerState::{Pending, Connected{segment,tools}, Failed{error}}`；重复 wire-name 告警走 Streams::warning；clientInfo 版本来自 CARGO_PKG_VERSION
-├── engine/      RENAME chat/ → engine/（两个前端共用的回合引擎）：mod.rs run.rs batch.rs delegate.rs report.rs images.rs error.rs；turns.rs→tool/context.rs；once.rs→cli/headless.rs；execute_with_tools 8 参数→`TurnParams` 结构
+├── engine/      RENAME chat/ → engine/（两个前端共用的回合引擎）：mod.rs run.rs batch.rs report.rs images.rs error.rs（delegate.rs 已退役（2026-09-10））；turns.rs→tool/context.rs；once.rs→cli/headless.rs；execute_with_tools 8 参数→`TurnParams` 结构
 ├── session/     KEEP 全部文件；`SessionStore::create(NewSession{..})` 取代位置参数 `"", "", false`（13 处）；rawcodec.rs→raw.rs；fs.rs 收拢 0644 助手与 serde 谓词
 ├── markdown/    mod.rs（Writer over `enum Block { None, Fence, Table, List, Quote, Math }`，取代 5 组 in_* 标志/缓冲/预览句柄）· blocks/{code,table,list,quote,math}.rs（解析+渲染同处）· preview.rs（**在此定义** PreviewHandle，ui 实现）· inline.rs style.rs link.rs highlight.rs（删 PlainIndent 与单实现 trait）· sink.rs · export.rs（←html.rs）
 ├── mathtext/    成为叶子：删 MathRenderer trait + Mathtext ZST，markdown 直接调用；删 rune 索引孪生扫描器与死的公开 delimiter API；AST ""→Option；文件拆分保留但模块文档改为流水线描述
@@ -75,7 +75,7 @@ src/
 ├── host/        KEEP；background.rs 用 tokio timeout 取代手写 wait_timeout；Env 闭包包→app::env
 ├── ui/          facade.rs（唯一 pub；PanelResult 按 body 枚举、`TabbedOutcome::{Cancelled, Committed}`、label/desc/height/width/refresh/model → Option）· runtime/{handle,msgs,event_loop,term,osc,oneshot}.rs · render/{region(Preview/CallClock 具名),frame,spans,theme(←src/ui/theme.rs，见 §3 #2 的 ColorMode 归属),sink,debug}.rs · input/{editor(新：Composer 与 Field 共用的一个行编辑器),composer,keys(`impl Model { fn on_key }`),paste,suggest,state}.rs · surface/{state(PanelState{.., kind: KindState}),panels,search,field,clipboard}.rs · testutil.rs（七份 Surf 收敛）
 ├── repl/        mod.rs · state.rs（`Repl` 拆成 Conversation/SessionSlot/UiHandles，今天 28 字段）· turn/{mod,tools(←toolloop),retry,phases,steer,interrupt,approval,interact}.rs · render/{transcript(+group),sink,styles(接收颜色标志),diff,banner,replay,mcpreport}.rs · context/{meter,tokens}.rs · commands/{mod(表驱动派发，替代 run.rs:604-680 的 if 阶梯),file,session,model/{mod,settings,system},compact,export,status,tools,debug,edit/{mod,picker},save,skills}.rs · title.rs errors.rs
-├── cli/         RENAME cmd/ → cli/：mod.rs（RunContext→open_provider→assemble_tools→headless|interactive）· args.rs（←cli.rs；`#[command(version)]`）· error.rs（ArgsError/SetupError/RunError 取代 33 变体 CliError）· resolve.rs（RunSettings Option 字段）· headless.rs（←chat/once.rs）· interactive/{mod,picker,title}.rs（拆 927 行）· list.rs tuning.rs（合并 window.rs）assemble.rs delegate.rs signals.rs · io.rs（`Streams::warning` 加 "Warning: " 前缀，唯一告警出口；穿过 9 个函数的闭包删除）
+├── cli/         RENAME cmd/ → cli/：mod.rs（RunContext→open_provider→assemble_tools→headless|interactive）· args.rs（←cli.rs；`#[command(version)]`）· error.rs（ArgsError/SetupError/RunError 取代 33 变体 CliError）· resolve.rs（RunSettings Option 字段）· headless.rs（←chat/once.rs）· interactive/{mod,picker,title}.rs（拆 927 行）· list.rs tuning.rs（合并 window.rs）assemble.rs signals.rs（delegate.rs 已退役（2026-09-10）） · io.rs（`Streams::warning` 加 "Warning: " 前缀，唯一告警出口；穿过 9 个函数的闭包删除）
 └── testing/     feature `testing`，零额外依赖：mod.rs（StaticDispatcher/FakeToolProvider/MapEnv）· providers.rs（FakeProvider builder 取代 18 个手写 impl Provider）· dispatchers.rs · ui.rs（ScriptedUi + printed/surfaces/busy_labels 访问器）· repl.rs（ReplFixture 取代 21 处 RunParams 字面量）· session.rs
 ```
 
@@ -136,7 +136,7 @@ manifest：description 去掉 "cross-platform"（Windows 决策前）与 "(Rust 
 
 4. **类型**：`Option<T>` 表缺席（不再用 ""/0/-1/bool+payload）；互斥结果用枚举（shell::Outcome、mcp::ServerState、ui::PanelResult、TabbedOutcome、tool::Approval、markdown::Block）；跨模块边界的 ≥3 元组改具名结构；计数用 u64/usize。磁盘结构（session record/meta）、wire JSON、SGR/OSC 字节表、Display 文本是互操作契约，不动。
 
-5. **错误**：每模块一个 thiserror 枚举、`#[source]` 链；`Result<_, String>` 归零（20 处）；`BoxError` 只在 delegate 工厂边界；Display 文本由测试钉住，测试不再从私有助手重建期望。
+5. **错误**：每模块一个 thiserror 枚举、`#[source]` 链；`Result<_, String>` 归零（20 处）；`BoxError` 只在 delegate 工厂边界（该边界已随 delegate 退役（2026-09-10），本条作废）；Display 文本由测试钉住，测试不再从私有助手重建期望。
 
 6. **命名**：模块按职责命名，不按来源的 Go 文件；无 `go_*` 助手名。`go_*` 逐个分类：`go_quote/go_float/go_duration` 产生用户可见文本（ARCH-REVIEW §5.3 第 633/720 行视为契约）→ 只改名、字节不变；`go_base/go_ext/go_abs` → std::path + 两个边界测试，字节不变；`go_pad` → 按显示宽度补齐（修 `…` 缺陷，单独 PR）；`go_value/go_map`（`src/repl/tokens.rs:120-137`、`:144`，压缩提示词的参数渲染）→ 改名 + 可能的行为变化，**但幅度比字面看起来小得多**：`go_value` 对数组/对象**今天已经**输出 compact JSON，其 doc 自述「Composite values (arrays, objects) print as COMPACT JSON where Go would print `[1 2]` / `map[k:v]`」，是移植时的有意选择。与 Go 字节不同的只剩顶层 `map[k1:v1 k2:v2]` 外壳（`go_map`）与标量的少数写法（`null` → `<nil>`）。也就是说这里**已是半对等**，全面改 compact JSON 的风险与影响面都比原提案暗示的小，但它仍会改变模型看到的压缩摘要文本，因此仍是单独 PR + CHANGELOG 行 + 用户拍板（§6.8）。
 
@@ -292,7 +292,7 @@ fixture 与来源：`tests/fixtures/sessions/`（Go writer 写出的 5 个 bundl
 3. 配置期校验：`defer_mode` 对 dialect 的适用性在 `Config::load` 就报错，取代今天 `resolve_defer_mode` 的运行时警告（未知模式仍然警告并回退）。
 4. `cmd/resolve.rs`：位置参数四级解析（agents → models → providers → 内置类型）；`-M` 接受裸 id 与 `provider:id` 两种形式，候选集外的模型**警告后放行**。
 5. `cmd/tuning.rs` / `cmd/assemble.rs`：从 model / agent 取值，不再从 provider。
-6. `cmd/delegate.rs`：`tools.delegate: [reviewer, coder]` 引用顶层 agents，删 `AgentRef`。
+6. ~~`cmd/delegate.rs`：`tools.delegate: [reviewer, coder]` 引用顶层 agents，删 `AgentRef`。~~ **已退役（2026-09-10）**：delegate 工具集整体删除，`tools.delegate` 降级为一条告警（brain 页 `subagents-via-bash`，DIVERGENCES X-01/X-02）。
 7. 改名：`agent: true` → `workspace: true`，工具集 `agent` → `skills`。
 8. 软迁移层：`providers.X` 出现 model / agent 级键时当作隐式条目并打一行告警。
 9. `session/tuning.rs`：meta 增加可选 `agent` 键；恢复时该 agent 已从配置删除则**退回「provider + model」的今天行为**。

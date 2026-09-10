@@ -38,7 +38,8 @@ pub struct AgentConfig {
     /// (`None`) means ON, so only an explicit `notify: false` silences it.
     #[serde(deserialize_with = "crate::tool::yaml11::deserialize_opt_bool")]
     pub notify: Option<bool>,
-    /// `description:` — what this agent is FOR; shown in the `delegate` tool description.
+    /// `description:` — what this agent is FOR. Documentation of the entry: nothing in the binary reads it
+    /// since the toolset that put it in front of the model was retired.
     pub description: String,
     /// `effort:` — overrides the model's default.
     pub effort: String,

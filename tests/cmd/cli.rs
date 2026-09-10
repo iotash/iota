@@ -423,9 +423,8 @@ async fn cli_openai_json_report_against_wiremock() {
         report["round_usage"][0]["usage"]["total_tokens"],
         transcript::TOTAL_TOKENS
     );
-    // A successful run reports no error and nothing was delegated.
+    // A successful run reports no error.
     assert!(report.get("error").is_none());
-    assert!(report.get("delegated").is_none());
 }
 
 /// Text mode prints the reply and nothing else (chat.go:56-66).

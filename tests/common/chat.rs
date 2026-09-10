@@ -11,7 +11,7 @@
 //! - [`SearchingToolProvider`] — calls `search_tools` in round 1 and records the tool set each round advertises
 //!   (`searchingToolProvider`);
 //! - [`WritingProvider`] — asks for `write_file` once, then echoes the last history entry (`writingProvider`);
-//! - [`EffortProvider`] — a `Tunable` provider that records the effort it was given (for the delegator tests).
+//! - [`EffortProvider`] — a `Tunable` provider that records the effort it was given.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::{
@@ -163,7 +163,7 @@ impl Dispatcher for GrowingDispatcher {
 
 /// A dispatcher whose named tools are parallel-capable and whose calls meet at a barrier, so a test can prove
 /// they overlap. With `by_agent` set the answer comes from the call's `agent` argument instead of its name — the
-/// delegation shape, where one name covers calls that differ. Calls observe cancellation (`ToolError::Cancelled`).
+/// per-call shape, where one name covers calls that differ. Calls observe cancellation (`ToolError::Cancelled`).
 #[derive(Default)]
 pub struct ParallelDispatch {
     parallel: HashSet<String>,
@@ -432,9 +432,9 @@ impl ToolProvider for WritingProvider {
 }
 
 /// A `Tunable` provider that records the effort it was given and answers `reply` on the unary path. The shared
-/// `effort` cell lets a test observe what the delegator set on the fresh instance it built.
+/// `effort` cell lets a test observe what a caller set on the instance it built.
 pub struct EffortProvider {
-    /// The effort the delegator set (shared with the test).
+    /// The effort the caller set (shared with the test).
     pub effort: Arc<Mutex<Option<Effort>>>,
     temperature: Option<f64>,
     /// The unary reply.

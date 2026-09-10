@@ -46,15 +46,15 @@ fn test_parallel_run_boundaries() {
 // Go: chat/parallel_test.go:92
 #[test]
 fn test_parallel_run_splits_calls_to_one_tool() {
-    // The same boundaries hold when the calls share a NAME and differ only in their arguments — the delegation
+    // The same boundaries hold when the calls share a NAME and differ only in their arguments — the per-call
     // shape.
     let d = ParallelDispatch::by_agent(&[("search", true), ("implement", false)]);
-    let delegate = |id: &str, agent: &str| call_with(id, "delegate", &[("agent", agent)]);
+    let task = |id: &str, agent: &str| call_with(id, "task", &[("agent", agent)]);
     let calls = [
-        delegate("1", "search"),
-        delegate("2", "search"),
-        delegate("3", "implement"),
-        delegate("4", "search"),
+        task("1", "search"),
+        task("2", "search"),
+        task("3", "implement"),
+        task("4", "search"),
     ];
     for (from, want) in [
         (0, 2), // the two searches batch

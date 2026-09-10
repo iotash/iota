@@ -872,7 +872,7 @@ async fn showcase_expands_the_posted_diff_artifact() {
 }
 
 // Go: chat/approval.go:84-89 + transcript.go:569-591 — a `Note` artifact rides the classic
-// event row's trailing detail instead of expanding (the delegate tool's accounting).
+// event row's trailing detail instead of expanding.
 #[tokio::test]
 async fn note_artifact_rides_the_event_row() {
     let artifact = Artifact {
@@ -880,19 +880,19 @@ async fn note_artifact_rides_the_event_row() {
         title: String::new(),
         lines: vec!["3 rounds".to_owned(), "1.2k tokens".to_owned()],
     };
-    let dispatch = ArtDispatch::new("delegate", Presentation::Group, Some(artifact));
+    let dispatch = ArtDispatch::new("survey", Presentation::Group, Some(artifact));
     let mut script = Vec::new();
     script.extend(quiet(1));
     let fx = Fx::new(dispatch, script);
     let p = FakeStream::new(vec![
         Round::calls(vec![call(
             "c1",
-            "delegate",
-            serde_json::json!({"agent": "review"}),
+            "survey",
+            serde_json::json!({"topic": "review"}),
         )]),
         Round::text("done"),
     ]);
-    let mut history = vec![Message::user("delegate")];
+    let mut history = vec![Message::user("survey")];
     fx.turn(&p, &mut history).await.outcome.expect("turn");
 
     let row = fx
@@ -1221,50 +1221,6 @@ async fn advertised_tools_refresh_after_round_zero() {
     fx.turn(&p, &mut history).await.outcome.expect("turn");
     assert_eq!(lock(&p.seen_tools).len(), 2);
     assert_eq!(lock(&p.seen_tools)[1], vec!["search_tools".to_owned()]);
-}
-
-// Go: chat/run.go:172-186 + chat/approval.go:47-80 — a delegated child's gated call
-// arrives at the parent's ONE gate labelled with the agent that asked, and its answers are
-// the two model-facing refusal texts. The session-grant map is the parent's, which is the
-// whole point: the grant is "this session may edit files".
-#[tokio::test]
-async fn delegated_children_ask_the_parent_gate() {
-    let ui = ScriptedUi::new(vec![choose(2), choose(0)]);
-    let ui_dyn: Arc<dyn Ui> = Arc::clone(&ui) as Arc<dyn Ui>;
-    let tr = Arc::new(Transcript::new(Arc::clone(&ui_dyn), None));
-    let gate = Arc::new(ApprovalGate::new(
-        Arc::clone(&ui_dyn),
-        Arc::clone(&tr),
-        Arc::new(Presenter::with_hosts(Vec::new(), true)),
-    ));
-    let cancel = CancellationToken::new();
-    let approve = crate::repl::approval::delegate_approver(Arc::clone(&gate), cancel.clone());
-
-    let (allowed, why) = approve("write_file", "path:a.txt", "writer").await;
-    assert!(!allowed);
-    assert_eq!(why, "The user declined this call.");
-    let title = ui
-        .events()
-        .iter()
-        .find_map(|e| match e {
-            UiEvent::Tabbed(s) => Some(s.panels[0].title.clone()),
-            _ => None,
-        })
-        .expect("the gate asked");
-    assert_eq!(
-        title, "writer › write_file path:a.txt wants to modify files — allow?",
-        "the child's question names the agent that asked"
-    );
-
-    let (allowed, why) = approve("write_file", "path:a.txt", "writer").await;
-    assert!(allowed);
-    assert!(why.is_empty());
-
-    // A facade that closed under the child says so in the call's own result.
-    ui.close().await.expect("close");
-    let (allowed, why) = approve("write_file", "path:a.txt", "writer").await;
-    assert!(!allowed);
-    assert_eq!(why, "write_file was not executed: ui: closed");
 }
 
 // Go: chat/interact.go:28-81 — the ask seam over the tabbed surface: one tab per question,

@@ -246,7 +246,9 @@ impl Config {
             entry.system_file = expand_owned(entry.system_file, resolver);
             let mut split = entry.split(&name, warn);
             if let Some(a) = &mut split.agent {
-                migrate::rename_skills_set(&mut a.tools, &format!("providers.{name}.tools"), warn);
+                let where_ = format!("providers.{name}.tools");
+                migrate::rename_skills_set(&mut a.tools, &where_, warn);
+                migrate::drop_delegate_set(&mut a.tools, &where_, warn);
             }
             self.providers.insert(name.clone(), split.provider);
             // Go replaced the WHOLE provider entry by name; the implicit entries follow it, so a later file
@@ -259,7 +261,9 @@ impl Config {
         }
         for (name, mut agent_cfg) in file.agents {
             agent_cfg.system_file = expand_owned(agent_cfg.system_file, resolver);
-            migrate::rename_skills_set(&mut agent_cfg.tools, &format!("agents.{name}.tools"), warn);
+            let where_ = format!("agents.{name}.tools");
+            migrate::rename_skills_set(&mut agent_cfg.tools, &where_, warn);
+            migrate::drop_delegate_set(&mut agent_cfg.tools, &where_, warn);
             self.agents.insert(name, agent_cfg);
         }
         for (name, server_cfg) in file.mcp_servers {

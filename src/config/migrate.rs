@@ -17,6 +17,10 @@ use crate::tool::sets::{SKILLS_SET, ToolsConfig};
 /// different things; brain page `config-three-layers`).
 pub(crate) const OLD_SKILLS_SET: &str = "agent";
 
+/// The retired `delegate` toolset (brain page `subagents-via-bash`). A child agent is now a bash subprocess,
+/// so the key names nothing — but a config that still carries it must keep working.
+pub(crate) const RETIRED_DELEGATE_SET: &str = "delegate";
+
 /// One `providers.<name>` entry as a one-layer config writes it: the endpoint keys plus every model- and
 /// agent-level key that used to live here. A three-layer config simply leaves the latter empty.
 #[derive(serde::Deserialize, Debug, Clone, Default)]
@@ -182,6 +186,23 @@ impl LegacyProviderEntry {
             agent,
         }
     }
+}
+
+/// Drops the retired `delegate` toolset key in place, warning once and naming `where_` (the config
+/// coordinate, e.g. `agents.coder.tools`). Both of its spellings — the list `delegate: [reviewer]` and the
+/// mapping `delegate: {agents: …, max_turns: …}`, including the one-layer `agents: {reviewer: openai}` inside
+/// it — are the same key, so ONE line covers them all.
+pub(crate) fn drop_delegate_set(
+    tools: &mut ToolsConfig,
+    where_: &str,
+    warn: &mut dyn FnMut(String),
+) {
+    if tools.remove(RETIRED_DELEGATE_SET).is_none() {
+        return;
+    }
+    warn(format!(
+        "Warning: config {where_}.{RETIRED_DELEGATE_SET}: the delegate toolset was removed; run child agents from bash instead (see README)"
+    ));
 }
 
 /// Renames the `agent` toolset key to `skills` in place, warning once and naming `where_` (the config

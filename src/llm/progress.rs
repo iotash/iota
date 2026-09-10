@@ -2,7 +2,7 @@
 //! turn and scopes every provider call under the [`TURN_PROGRESS`] task-local; `Client::send_payload`
 //! reads [`current`] and, when a reporter is present, streams the request body through a
 //! [`ProgressBody`] that reports `(sent, total)` and fires `sent()` once the round-trip returns.
-//! Background calls (title, compaction, `list_models`, delegated children) run outside the scope
+//! Background calls (title, compaction, `list_models`) run outside the scope
 //! and see `None` — Go's nil reporter.
 
 use std::sync::{Arc, Mutex, PoisonError};

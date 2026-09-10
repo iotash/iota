@@ -189,7 +189,6 @@ impl Fixture {
             system_interactive: false,
             imported_history: Vec::new(),
             dispatch,
-            delegator: None,
             mcp: no_mcp(),
             session: SessionCtx {
                 writer: Some(self.writer()),

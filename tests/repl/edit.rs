@@ -199,7 +199,6 @@ impl Fixture {
             system_interactive: false,
             imported_history: self.history.clone(),
             dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
-            delegator: None,
             mcp: McpHooks {
                 servers: None,
                 events: None,

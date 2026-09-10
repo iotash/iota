@@ -1,4 +1,4 @@
-//! The built-in toolset table (tool/tool.go:329-341): the five set names, their factories and the config
+//! The built-in toolset table (tool/tool.go:329-341): the four set names, their factories and the config
 //! types they decode, plus `SetError`, the byte-equal Go factory refusals. Every set is always compiled in —
 //! one binary, exactly like Go.
 
@@ -12,8 +12,8 @@ pub type RawNode = serde_norway::Value;
 pub type ToolsConfig = BTreeMap<String, RawNode>;
 /// Must succeed on `None`/`Null` (defaults). May return `Ok(vec![])` ("contributes no tools").
 pub(crate) type SetFactory = fn(&Env, Option<&RawNode>) -> Result<Vec<Arc<dyn Tool>>, SetError>;
-/// The five built-in set names (tool/tool.go:329-341).
-pub const SET_NAMES: [&str; 5] = ["shell", SKILLS_SET, "code", "ask", "delegate"];
+/// The four built-in set names (tool/tool.go:329-341).
+pub const SET_NAMES: [&str; 4] = ["shell", SKILLS_SET, "code", "ask"];
 
 /// The skills set — `load_skill` alone. It was called `agent` until the three-layer split, where the word
 /// `agent` became the name of a config layer and could no longer also mean a toolset (brain page
@@ -27,7 +27,6 @@ pub fn set_factory(name: &str) -> Option<SetFactory> {
         SKILLS_SET => Some(super::agent::new_skills_set),
         "code" => Some(super::code::new_code_set),
         "ask" => Some(super::ask::new_ask_set),
-        "delegate" => Some(super::delegate::new_delegate_set),
         _ => None,
     }
 }
@@ -49,7 +48,4 @@ pub enum SetError {
         "read_only and auto_write contradict each other: auto_write approves writes the set does not offer"
     )]
     CodeContradiction,
-    /// `tools.delegate` is configured but the delegator knows no agents.
-    #[error("no agents configured (add `agents:` mapping agent names to provider names)")]
-    NoAgents,
 }

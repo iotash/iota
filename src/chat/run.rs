@@ -1,4 +1,4 @@
-//! One run through the model (chat/chat.go:73-127,284-379; chat/delegate.go:25-51): the unary path, the tool loop
+//! One run through the model (chat/chat.go:73-127,284-379): the unary path, the tool loop
 //! `execute_with_tools`, and the headless `QuietHost` that answers every approval request with a refusal.
 
 use std::num::NonZeroU32;
@@ -38,7 +38,7 @@ impl QuietHost {
         Self::default()
     }
 
-    /// approve None → `(false, refusal_text(&tc.name))`; else the approver's answer verbatim (delegate.go:44-51).
+    /// approve None → `(false, refusal_text(&tc.name))`; else the approver's answer verbatim.
     /// `detail` = `dispatch.header_summary(&tc.name, &tc.arguments).unwrap_or_default()` — Go's fallback
     /// sorted-key argument digest (chat.go:461-480, `toolHeaderMaxArgs`/`truncateRunes`) is NOT ported
     /// (DIVERGENCES D-12); with no built-in `header_summary` the headless detail is always "".
@@ -51,7 +51,7 @@ impl QuietHost {
     }
 }
 
-/// The model-facing text of a refused tool call (chat/delegate.go:46-48, byte-equal; `name` is the WIRE name).
+/// The model-facing text of a refused tool call (byte-equal to Go; `name` is the WIRE name).
 pub fn refusal_text(name: &str) -> String {
     format!(
         "{name} was not executed: it requires interactive approval, which is unavailable in this non-interactive run. Set the toolset's auto-approve option (tools.code.auto_write / tools.shell.auto_run) to permit it here."
@@ -68,8 +68,7 @@ pub struct RunRequest {
     /// Agent-mode overlay settings.
     pub agent: AgentOptions,
     /// Imported history (a resumed session's view). A NON-EMPTY history WINS over `system` (chat/run.go:69-74):
-    /// the resumed session keeps the system message from its own log and `-s` is ignored. `ChatDelegator`
-    /// (delegator.rs) sets `history: Vec::new()` — children never resume a session.
+    /// the resumed session keeps the system message from its own log and `-s` is ignored.
     pub history: Vec<Message>,
 }
 
@@ -239,8 +238,8 @@ pub async fn execute_with_tools(
         if cx.cancel.is_cancelled() {
             return Err(ChatError::Interrupted);
         }
-        // Two caps, and they are different things: max_turns bounds THIS loop (a delegated agent's own
-        // tools.delegate.max_turns), while the budget is the run's, shared with every child.
+        // Two caps, and they are different things: max_turns bounds THIS loop, while the budget is the
+        // whole run's.
         if let Some(cap) = max_turns
             && rounds == cap.get()
         {

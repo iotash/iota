@@ -257,7 +257,6 @@ pub(crate) async fn run_interactive(
         mcp_defers,
         tool_env,
         interactor,
-        delegator,
         agent,
     } = tools;
     let interactor = interactor.unwrap_or_else(crate::repl::Interactor::new);
@@ -366,7 +365,6 @@ pub(crate) async fn run_interactive(
         system_interactive: cli.system_input,
         imported_history: wiring.history,
         dispatch: Arc::clone(&wiring.dispatch),
-        delegator,
         mcp,
         session: SessionCtx {
             writer: wiring.writer,

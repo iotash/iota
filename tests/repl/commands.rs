@@ -151,7 +151,6 @@ impl Fixture {
             system_interactive: false,
             imported_history: Vec::new(),
             dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
-            delegator: None,
             mcp: no_mcp(),
             session,
             context_window: 0,
@@ -955,7 +954,6 @@ async fn persist_warns_and_retries_the_backlog() {
         system_interactive: false,
         imported_history: Vec::new(),
         dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
-        delegator: None,
         mcp: no_mcp(),
         session: SessionCtx {
             writer: Some(writer),

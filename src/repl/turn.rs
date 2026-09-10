@@ -74,7 +74,7 @@ pub(crate) struct TurnCtx {
     pub(crate) tr: Arc<Transcript>,
     /// The tool dispatcher (LIVE — never cached across rounds).
     pub(crate) dispatch: Arc<dyn Dispatcher>,
-    /// The conversation's ONE approval gate (shared with delegated children).
+    /// The conversation's ONE approval gate.
     pub(crate) gate: Arc<ApprovalGate>,
     /// The agent-mode overlay woven into every send.
     pub(crate) overlay: String,

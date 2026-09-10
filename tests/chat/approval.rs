@@ -56,8 +56,8 @@ async fn test_quiet_loop_refuses_when_there_is_nobody_to_ask() {
 // Go: chat/approval_test.go:68
 #[tokio::test]
 async fn test_quiet_loop_forwards_approval() {
-    // A delegated child has no user of its own but runs inside a parent that does, so its question travels up
-    // and the answer decides the call.
+    // A headless loop has no user of its own, so an injected approver is what decides a gated call: the
+    // question travels up and the answer decides it.
     let asked: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&asked);
     let mut host = QuietHost {
@@ -148,10 +148,9 @@ fn test_quiet_host_ask_approval_shapes() {
 }
 
 // Go: chat/approval_test.go:138 TestForwardedApprovalCarriesTheCallDetail — the prompt has to say
-// what the call is ABOUT. For a delegated call nothing else on screen does: the widget above
-// describes the delegation, not the operation the child is asking to perform, so a gate naming only
-// the tool asks the user to authorize "write_file" without saying which file. (Portable since T-30
-// gave the built-in code/shell sets real `header_summary` capabilities — D-12 is closed.)
+// what the call is ABOUT: a gate naming only the tool asks the user to authorize "write_file"
+// without saying which file. (Portable since T-30 gave the built-in code/shell sets real
+// `header_summary` capabilities — D-12 is closed.)
 #[tokio::test]
 async fn test_forwarded_approval_carries_the_call_detail() {
     let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));

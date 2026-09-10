@@ -1,5 +1,5 @@
 //! Run context (chat/turns.go): `RunCtx` replaces Go's context values with an explicit struct carrying the
-//! cancellation token, the run-wide `TurnBudget` and the `DelegationLedger`.
+//! cancellation token and the run-wide `TurnBudget`.
 
 use std::num::NonZeroU32;
 use std::sync::{
@@ -9,8 +9,6 @@ use std::sync::{
 
 use tokio_util::sync::CancellationToken;
 
-use crate::provider::usage::Usage;
-
 /// Replaces Go's context values; cloned into every tool call and child run. Never task-local.
 #[derive(Clone, Default)]
 pub struct RunCtx {
@@ -18,8 +16,6 @@ pub struct RunCtx {
     pub cancel: CancellationToken,
     /// The run's turn budget; `None` = unlimited.
     pub budget: Option<Arc<TurnBudget>>,
-    /// The run's delegation ledger; `None` outside a run.
-    pub ledger: Option<Arc<DelegationLedger>>,
     /// The call's display-artifact slot (tool/tool.go:160-198; the D-19 lift, T-35).
     /// `None` in headless loops and tests — every `post_artifact` is then a no-op (Go
     /// parity). The interactive walk injects a FRESH slot per call and drains it after.
@@ -27,18 +23,12 @@ pub struct RunCtx {
 }
 
 impl RunCtx {
-    /// A context with `cancel` and neither budget nor ledger.
+    /// A context with `cancel` and no budget.
     pub fn new(cancel: CancellationToken) -> Self {
         Self {
             cancel,
             ..Self::default()
         }
-    }
-
-    /// The one way a delegation derives its context: same token, same budget, same ledger.
-    #[must_use]
-    pub fn child(&self) -> RunCtx {
-        self.clone()
     }
 }
 
@@ -48,7 +38,7 @@ pub fn turn_cap(n: i64) -> Option<NonZeroU32> {
     u32::try_from(n).ok().and_then(NonZeroU32::new)
 }
 
-/// The run's `--max-turns` pool, shared by every agent in the run.
+/// The run's `--max-turns` pool.
 #[derive(Debug)]
 pub struct TurnBudget {
     remaining: AtomicU32,
@@ -107,34 +97,9 @@ impl BudgetExt for Option<Arc<TurnBudget>> {
     }
 }
 
-/// What everything this run delegated to cost, aggregated for the report.
-#[derive(Debug, Default)]
-pub struct DelegationLedger {
-    inner: Mutex<(u32, Usage)>,
-}
-
-impl DelegationLedger {
-    /// rounds == 0 → no-op.
-    pub fn add(&self, rounds: u32, usage: Usage) {
-        if rounds == 0 {
-            return;
-        }
-        let mut g = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        g.0 += rounds;
-        g.1 += usage;
-    }
-
-    /// None when rounds == 0.
-    pub fn snapshot(&self) -> Option<(u32, Usage)> {
-        let g = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        (g.0 != 0).then_some(*g)
-    }
-}
-
 /// Last-post-wins display-artifact slot (Go `artifactSlot` twin, tool/tool.go:160-198).
 /// The interactive walk injects a FRESH slot into the `RunCtx` handed to ONE call and
-/// drains it after the call returns (the delegate tool posts its note AFTER the child run
-/// returns, so it wins over any child post).
+/// drains it after the call returns.
 #[derive(Clone, Default)]
 pub struct ArtifactSlot(Arc<Mutex<Option<crate::tool::Artifact>>>);
 
@@ -159,8 +124,7 @@ mod tests {
 
     use tokio_util::sync::CancellationToken;
 
-    use super::{BudgetExt, DelegationLedger, RunCtx, TurnBudget, turn_cap};
-    use crate::provider::usage::Usage;
+    use super::{BudgetExt, RunCtx, TurnBudget, turn_cap};
 
     // Go: chat/turns_test.go:12
     #[test]
@@ -239,107 +203,27 @@ mod tests {
         );
         assert!(RunCtx::new(CancellationToken::new()).budget.is_none());
 
-        // The budget survives into the child context: same Arc, same token, same ledger.
+        // The budget survives a clone of the context: same Arc, same token.
         let b = iota::chat::turns::turn_cap(2)
             .map(TurnBudget::new)
             .expect("budget");
-        let ledger = Arc::new(DelegationLedger::default());
         let cx = RunCtx {
             cancel: CancellationToken::new(),
             budget: Some(Arc::clone(&b)),
-            ledger: Some(Arc::clone(&ledger)),
             ..RunCtx::default()
         };
-        let child = cx.child();
-        let got = child
+        let copy = cx.clone();
+        let got = copy
             .budget
             .as_ref()
             .expect("the budget did not survive the context");
         assert!(Arc::ptr_eq(got, &b));
-        assert!(Arc::ptr_eq(child.ledger.as_ref().expect("ledger"), &ledger));
         cx.cancel.cancel();
-        assert!(
-            child.cancel.is_cancelled(),
-            "the child shares the parent's token"
-        );
-        // Spending through the child spends the parent's pool.
-        assert!(child.budget.take());
+        assert!(copy.cancel.is_cancelled(), "a clone shares the run's token");
+        // Spending through the clone spends the one pool.
+        assert!(copy.budget.take());
         assert!(cx.budget.take());
         assert!(!cx.budget.take());
-    }
-
-    // Go: chat/turns_test.go:114
-    #[test]
-    fn test_delegation_ledger_aggregates() {
-        let l = DelegationLedger::default();
-        assert!(
-            l.snapshot().is_none(),
-            "a run that delegated nothing carries an empty section"
-        );
-        l.add(
-            3,
-            Usage {
-                input: 900,
-                output: 100,
-                total: 1000,
-                ..Usage::default()
-            },
-        );
-        l.add(
-            2,
-            Usage {
-                input: 400,
-                output: 50,
-                total: 450,
-                ..Usage::default()
-            },
-        );
-        let (rounds, usage) = l.snapshot().expect("want 5 rounds");
-        assert_eq!(rounds, 5);
-        assert_eq!(usage.total, 1450);
-        assert_eq!(usage.input, 1300);
-        assert_eq!(usage.output, 150);
-        // A child that never reached the provider adds nothing.
-        l.add(
-            0,
-            Usage {
-                input: 999,
-                ..Usage::default()
-            },
-        );
-        let (rounds, usage) = l.snapshot().expect("still 5 rounds");
-        assert_eq!(rounds, 5);
-        assert_eq!(usage.input, 1300);
-    }
-
-    // Go: chat/turns_test.go:140
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn test_delegation_ledger_is_exact_under_contention() {
-        let l = Arc::new(DelegationLedger::default());
-        let mut tasks = Vec::new();
-        for _ in 0..8 {
-            let l = Arc::clone(&l);
-            tasks.push(tokio::spawn(async move {
-                for _ in 0..50 {
-                    l.add(
-                        1,
-                        Usage {
-                            input: 2,
-                            total: 3,
-                            ..Usage::default()
-                        },
-                    );
-                    tokio::task::yield_now().await;
-                }
-            }));
-        }
-        for t in tasks {
-            t.await.expect("task");
-        }
-        let (rounds, usage) = l.snapshot().expect("ledger after 400 concurrent adds");
-        assert_eq!(rounds, 400);
-        assert_eq!(usage.total, 1200);
-        assert_eq!(usage.input, 800);
     }
 
     // Go: tool/tool_test.go artifactSlot laws (tool/tool.go:160-198; T-35)
@@ -360,13 +244,13 @@ mod tests {
             title: "note".to_owned(),
             lines: vec!["2 round(s)".to_owned()],
         });
-        // Last post wins (the delegate note posted AFTER the child run beats any child post).
+        // Last post wins.
         let got = slot.take().expect("the last post");
         assert_eq!(got.kind, ArtifactKind::Note);
         assert_eq!(got.title, "note");
         // take() drains: a second take sees an empty slot.
         assert!(slot.take().is_none());
-        // A clone shares the same slot (the child ctx posts into the parent's slot).
+        // A clone shares the same slot (a cloned context posts into the same slot).
         let clone = slot.clone();
         clone.post(Artifact {
             kind: ArtifactKind::Diff,

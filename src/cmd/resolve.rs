@@ -3,7 +3,6 @@
 //! temperature range check — everything `run` decides before it constructs a provider — plus `CliError`, the
 //! command's error type (every Display text is byte-equal to the Go message it ports).
 
-use crate::BoxError;
 use crate::provider::error::{ProviderError, UnknownProviderType};
 use crate::provider::provider_env_key;
 use crate::text::go_float;
@@ -40,7 +39,7 @@ pub struct RunSettings {
     /// `--max-turns` as a cap (`None` = unlimited; the flag's `<= 0`).
     pub max_turns: Option<std::num::NonZeroU32>,
     /// `--output-format` as typed (`None` = flag absent). Carried RAW: `run` parses it at exactly Go's
-    /// position (root.go:249-252, after tuning/MCP/delegate assembly), so `unknown output format …` keeps
+    /// position (root.go:249-252, after tuning/MCP assembly), so `unknown output format …` keeps
     /// Go's precedence; `Some` also drives `OutputFormatWithoutMessage` there (root.go:253).
     pub output_format_raw: Option<String>,
     /// `--resume=<fragment>` TRIMMED (root.go:288 `strings.TrimSpace(resumeID)`); never blank — the blank form
@@ -58,7 +57,7 @@ pub struct RunSettings {
 /// supplies the model from meta, so `run` re-raises `ModelRequired` after the replay) → temperature (flag
 /// unchecked; config range).
 /// `--output-format` is NOT parsed here and `OutputFormatWithoutMessage` is NOT raised here (Go does both after
-/// tuning/MCP/delegate, root.go:249-255) — the raw flag rides `output_format_raw` and `run` does both.
+/// tuning/MCP, root.go:249-255) — the raw flag rides `output_format_raw` and `run` does both.
 ///
 /// `-M` is applied BEFORE the key and the URL because `provider:id` names an endpoint: a model the run was
 /// not started on brings its own key variable and base URL with it.
@@ -240,7 +239,7 @@ fn read_stdin_message(stdin: &mut dyn std::io::Read) -> Result<String, CliError>
     Ok(message)
 }
 
-/// Why the command failed (cmd/root.go, cmd/delegate.go, config.go and the headless-only rules). `main` prints
+/// Why the command failed (cmd/root.go, config.go and the headless-only rules). `main` prints
 /// `Error: {e}` and exits 1, or 130 for `Interrupted`.
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
@@ -308,9 +307,6 @@ pub enum CliError {
     /// The working directory could not be resolved (agent mode).
     #[error("failed to resolve working directory: {0}")]
     Cwd(#[source] std::io::Error),
-    /// `tools.delegate` failed to build (`delegate::DelegateError` text).
-    #[error("tools.delegate: {0}")]
-    Delegate(#[source] BoxError),
     /// `-l <provider>` could not fetch the model list.
     #[error("failed to list models: {0}")]
     ListModels(#[source] ProviderError),

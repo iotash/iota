@@ -70,7 +70,7 @@ fn path_string(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
-/// Process-environment seam used by CLI resolution, `-l`, and the delegate `ChildFactory` (key lookup). Lives here,
+/// Process-environment seam used by CLI resolution and `-l` (key lookup). Lives here,
 /// not in the `iota` crate, so `crate::testing` fixtures and every crate's tests can build one.
 pub trait EnvSource: Send + Sync {
     /// The variable `name`, or None when unset (or empty).

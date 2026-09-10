@@ -6,6 +6,5 @@ mod common;
 
 mod agents;
 mod code;
-mod delegate_tool;
 mod framework;
 mod shell;

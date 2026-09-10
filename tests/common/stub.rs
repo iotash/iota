@@ -7,7 +7,7 @@ use iota::chat::turns::RunCtx;
 use iota::provider::model::{JsonObject, ToolDef};
 use iota::tool::{Tool, ToolOutput, ToolResult};
 
-/// A tool whose parallel answer is a property of the CALL (the delegation shape): `supports_parallel(args)` is
+/// A tool whose parallel answer is a property of the CALL: `supports_parallel(args)` is
 /// true only when `args["agent"]` is one of `parallel` (or `parallel` contains `"*"`, which also answers `None`
 /// args); `requires_approval()` is `approval`. `call` echoes `"<name>:<args json>"` and never fails.
 pub fn stub_tool(name: &str, parallel: &[&str], approval: bool) -> Arc<dyn Tool> {

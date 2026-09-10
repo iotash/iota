@@ -75,7 +75,7 @@ iota [openai|anthropic|gemini|vertexai|openresponses|imagen|images] [flags]
 | `--mcp` | | MCP server (command string or URL, repeatable) |
 | `--resume` | | Resume a saved session (`--resume` to pick interactively, `--resume=<id>` for a specific one — note the `=`; any unique id prefix works). With `-m`, `--resume=<id>` continues that session headlessly |
 | `--no-save` | | Start ephemeral — nothing touches disk unless `/save` is run (interactive mode only) |
-| `--max-turns` | | Limit agentic tool turns for the whole run, delegated children included (`-m` only; 0 = unlimited) |
+| `--max-turns` | | Limit agentic tool turns for the whole run (`-m` only; 0 = unlimited) |
 | `--output-format` | | `-m` output: `text` (default, the reply alone) or `json` (one result object with per-round token usage) |
 | `--context-window` | | Context window size for compaction accounting (e.g. `200k`, `1m`; default 128k) |
 | `--agent` | | Enable agent mode (AGENTS.md overlay, skills, `load_skill`, project-scoped sessions) |
@@ -183,7 +183,7 @@ agents:                      # usage: how a model is driven
   reviewer:
     models: [sonnet]
     system_file: ${appHome}/prompts/reviewer.md  # prompt from a file (inline `system` wins)
-    description: Reads a diff and reports what is wrong with it   # shown to `delegate`
+    description: Reads a diff and reports what is wrong with it   # documentation of the entry
     effort: high             # overrides the model's default (one level, no deeper)
 
   scratch:
@@ -271,9 +271,10 @@ agents:
 
 Two keys were renamed on the way: a provider's `agent: true` is an agent's
 `workspace: true`, and the `agent` toolset is now called `skills`. Both old
-spellings are accepted with a warning. `tools.delegate.agents` as a *mapping*
-of names to providers still works too; the new form is a list of top-level
-agents (see below). The compatibility layer will be removed after 1.0.
+spellings are accepted with a warning. The `delegate` toolset was retired: a
+`tools: {delegate: …}` key is dropped with a warning instead of failing (a
+child agent is now a bash subprocess — see the `shell` set). The compatibility
+layer will be removed after 1.0.
 
 #### Variable Expansion
 
@@ -404,9 +405,8 @@ enabled by listing it under that agent's `tools:` key; the value is the
 set's shared configuration, and an empty value uses its defaults. Available
 sets: `shell` (running bash commands, sandboxed), `code` (reading, searching,
 and editing project files), `skills` (skill activation; auto-enabled by agent
-mode), `ask` (interactive questions to the user; enabled by default in
-interactive sessions — disable with `ask: false`), and `delegate` (running a
-task as a child agent).
+mode), and `ask` (interactive questions to the user; enabled by default in
+interactive sessions — disable with `ask: false`).
 
 ```yaml
 agents:
@@ -436,57 +436,6 @@ single yes/no. ESC declines — the model is told and proceeds on its own.
 Zero side effects, on by default interactively, absent in `-m` runs; opt out
 per agent with `tools: {ask: false}`.
 
-#### `delegate` — `delegate`
-
-Runs a task as a **child agent**: its own context, its own tool loop, and
-only its final answer comes back — no tool calls, no reasoning. A survey that
-takes twenty rounds costs this conversation one paragraph.
-
-A child IS one of your top-level `agents:` entries, so nothing about it is
-configured twice — its model, tools, approval settings, system prompt and
-sampling all come from that entry, and `description` (what the model chooses
-between agents on) lives there too:
-
-```yaml
-agents:
-  search:
-    models: [fast]
-    description: Looks things up and reports back
-  review:
-    models: [careful]
-    system_file: ${appHome}/prompts/review.md
-    description: Reads a diff and reports what is wrong with it
-  main:
-    models: [careful]
-    tools:
-      delegate: [search, review]     # or: {agents: [search, review], max_turns: 30}
-```
-
-`max_turns` is an optional per-child cap; the default is unlimited. The older
-mapping form (`agents: {search: fast-provider}`, where the value named a
-provider entry and `description` was written at the reference) is still
-accepted. Image settings (`image`,
-`json_edits`, `aspect_ratio`, `image_size`, `negative_prompt`) are the one
-part a child does not adopt — a delegation returns text, and an image a child
-generated would land on disk where the parent never learns of it.
-
-In `-m` runs `--max-turns` is a budget for the whole run: the parent and every
-child it delegates to draw on one pool, so the number bounds what the run can
-cost rather than what each agent can. Interactive runs have no cap — ESC
-cancels a delegation the same as anything else.
-
-`--output-format json` reports what the children cost under `delegated`,
-beside the parent's own `usage` rather than inside it: one figure says what
-this agent spent, the other what it spent by delegating.
-
-Delegations to an agent whose tools cannot change state run **concurrently**;
-anything else runs one at a time. A child's write requests surface as an
-approval prompt in your terminal, labelled with the agent that asked
-(`review › edit_file wants to modify files`), and "allow for this session"
-covers parent and children alike. What a child cost appears beside its call
-and is never added to this conversation's context. A child is never given
-`delegate` itself.
-
 #### `shell` — `bash`
 
 Lets the model run real bash command lines — pipes, redirects, `&&` chaining,
@@ -509,6 +458,15 @@ Safety model — the same one Claude Code and Codex CLI use:
 - Output is capped at 32 KB and 512 lines (head + tail kept, middle elided,
   bounded even while streaming). Each call is capped at **10 minutes**; while a command runs, the status-line spinner
   shows the elapsed time — press **ESC** (or Ctrl+C) to terminate it.
+
+**Child agents.** iota has no delegation tool: a child agent is
+`iota <agent> -m "<task>"` run from `bash`, which is why the set is the one
+that matters most. The child is a full run of that `agents:` entry — its own
+model, tools, MCP servers and session. For it to write without a user to ask,
+set `tools.code.auto_write` / `tools.shell.auto_run` on that agent; for it to
+reach an API at all, the parent's sandbox has to allow it, since
+`network: false` (the default) blocks the child's HTTP too. How to dispatch,
+to whom, and how many at once is your prompt's business, not the binary's.
 
 Design: docs/design/shell-toolset.md
 
@@ -539,8 +497,7 @@ Safety model:
 
   Or withhold the writers entirely with `read_only: true`, leaving `glob`,
   `grep`, `list_dir` and `read_file`. A tool the model cannot see is never
-  attempted and never refused — useful for a reviewer, and required for a
-  `delegate` agent that should search and still run concurrently.
+  attempted and never refused — useful for a reviewer.
   (`read_only` and `auto_write` together are rejected as contradictory.)
 
 Design: docs/design/code-toolset.md
@@ -734,9 +691,9 @@ One package, one module tree: the library under `src/` holds every module and `s
 | Module (`src/`) | Role |
 |---|---|
 | `provider/`, `llm/` | The seven provider adapters (`openai`, `openresponses`, `anthropic`, `gemini`, `vertexai`, `imagen`, `images`) over a minimal built-in HTTP/SSE wire layer — no vendor SDKs |
-| `tool/`, `shell/`, `agents/` | The tool framework and the five built-in toolsets; process execution and the macOS/Linux sandboxes; the AGENTS.md and skills overlay |
+| `tool/`, `shell/`, `agents/` | The tool framework and the four built-in toolsets; process execution and the macOS/Linux sandboxes; the AGENTS.md and skills overlay |
 | `mcp/` | The MCP client manager (stdio and streamable-HTTP transports, deferred tool groups) |
-| `chat/` | The non-interactive run loop (`-m`), the tool-calling loop, delegation, and the text/JSON reports |
+| `chat/` | The non-interactive run loop (`-m`), the tool-calling loop, and the text/JSON reports |
 | `session/` | The on-disk session bundle store (`meta.json`, append-only `messages.jsonl`, `attachments/`, `images/`) |
 | `markdown/`, `text/` | The streaming markdown-to-ANSI renderer, syntax highlighting, HTML for `/export`, display-width measurement and ANSI helpers |
 | `mathtext/` | The LaTeX math engine: inline Unicode approximation and 2D display layout |

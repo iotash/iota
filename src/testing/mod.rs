@@ -1,30 +1,26 @@
-//! Shared test fakes (feature `testing`): a recording sink, a static dispatcher, a fake delegator, a scripted
-//! tool provider, and map-backed `VarResolver`/`EnvSource` fixtures that replace `t.Setenv`.
+//! Shared test fakes (feature `testing`): a recording sink, a static dispatcher, a scripted tool provider, and
+//! map-backed `VarResolver`/`EnvSource` fixtures that replace `t.Setenv`.
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::{
         Mutex, MutexGuard, PoisonError,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Duration,
 };
 
 use tokio_util::sync::CancellationToken;
 
+use crate::BoxFuture;
 use crate::chat::turns::RunCtx;
 use crate::provider::error::ProviderError;
 use crate::provider::model::{JsonObject, Message, ToolCall, ToolDef};
 use crate::provider::sink::StreamSink;
 use crate::provider::usage::Usage;
 use crate::provider::{ChatResult, Provider, ProviderKind, RoundResult, ToolProvider};
-use crate::tool::{
-    AgentInfo, DelegateOutcome, DelegateResult, DelegateSpec, Delegator, Dispatcher, ToolOutput,
-    ToolResult,
-};
+use crate::tool::{Dispatcher, ToolOutput, ToolResult};
 use crate::vars::{EnvSource, VarResolver};
-use crate::{BoxError, BoxFuture};
 
 mod scripted;
 pub use scripted::{PanelSummary, RecordingHost, Reply, ScriptedUi, TabbedSummary, UiEvent};
@@ -178,83 +174,6 @@ impl Dispatcher for StaticDispatcher {
 
     fn supports_parallel(&self, name: &str, _args: Option<&JsonObject>) -> bool {
         self.parallel.contains(name)
-    }
-}
-
-/// Fixed agents table + canned outcome; records the specs it ran.
-pub struct FakeDelegator {
-    /// The agents table.
-    pub agents: BTreeMap<String, AgentInfo>,
-    names: Vec<String>,
-    /// Every spec `run` received, in order.
-    pub ran: Mutex<Vec<DelegateSpec>>,
-    /// The canned outcome every `run` returns.
-    pub outcome: Mutex<Option<DelegateOutcomeSpec>>,
-}
-
-/// What `FakeDelegator::run` returns.
-#[derive(Clone, Debug, Default)]
-pub struct DelegateOutcomeSpec {
-    /// The child's reply.
-    pub reply: String,
-    /// Rounds the child "ran".
-    pub rounds: u32,
-    /// Usage the child "spent".
-    pub usage: Usage,
-    /// Error text, if the child "failed".
-    pub error: Option<String>,
-}
-
-impl FakeDelegator {
-    /// A delegator over `agents` with no canned outcome yet.
-    pub fn new(agents: BTreeMap<String, AgentInfo>) -> Self {
-        let names = agents.keys().cloned().collect();
-        Self {
-            agents,
-            names,
-            ran: Mutex::new(Vec::new()),
-            outcome: Mutex::new(None),
-        }
-    }
-
-    /// Sets the canned outcome.
-    #[must_use]
-    pub fn with_outcome(self, o: DelegateOutcomeSpec) -> Self {
-        Self {
-            outcome: Mutex::new(Some(o)),
-            ..self
-        }
-    }
-}
-
-impl Delegator for FakeDelegator {
-    fn agent_names(&self) -> &[String] {
-        &self.names
-    }
-
-    fn agent(&self, name: &str) -> Option<&AgentInfo> {
-        self.agents.get(name)
-    }
-
-    /// Records `spec`, returns the canned outcome (an empty one when none is set) and — like the real delegator
-    /// (CONTRACTS §6.7: `cx.ledger.add(rounds, usage)` ALWAYS) — books the child's cost into `cx.ledger`.
-    fn run<'a>(&'a self, cx: &'a RunCtx, spec: DelegateSpec) -> BoxFuture<'a, DelegateOutcome> {
-        Box::pin(async move {
-            lock(&self.ran).push(spec);
-            let o = lock(&self.outcome).clone().unwrap_or_default();
-            if let Some(ledger) = &cx.ledger {
-                ledger.add(o.rounds, o.usage);
-            }
-            DelegateOutcome {
-                result: DelegateResult {
-                    reply: o.reply,
-                    rounds: o.rounds,
-                    usage: o.usage,
-                    duration: Duration::ZERO,
-                },
-                error: o.error.map(BoxError::from),
-            }
-        })
     }
 }
 
@@ -503,20 +422,17 @@ pub fn map_env(vars: &[(&str, &str)]) -> MapEnv {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, sync::Arc};
-
     use tokio_util::sync::CancellationToken;
 
     use super::{
-        DelegateOutcomeSpec, FakeDelegator, FakeToolProvider, RecordingSink, SinkEvent,
-        StaticDispatcher, map_env, map_resolver,
+        FakeToolProvider, RecordingSink, SinkEvent, StaticDispatcher, map_env, map_resolver,
     };
-    use crate::chat::turns::{DelegationLedger, RunCtx};
+    use crate::chat::turns::RunCtx;
     use crate::provider::model::JsonObject;
     use crate::provider::sink::StreamSink;
     use crate::provider::usage::Usage;
-    use crate::provider::{Effort, Provider, ToolProvider};
-    use crate::tool::{AgentInfo, DelegateSpec, Delegator, Dispatcher};
+    use crate::provider::{Provider, ToolProvider};
+    use crate::tool::Dispatcher;
     use crate::vars::{EnvSource, VarResolver, expand};
 
     #[test]
@@ -564,55 +480,6 @@ mod tests {
         assert_eq!(out.text, "a:{\"k\":1}");
         assert!(!out.is_error);
         assert_eq!(super::lock(&d.calls).as_slice(), &[("a".to_owned(), args)]);
-    }
-
-    #[tokio::test]
-    async fn fake_delegator_records_and_books_the_ledger() {
-        let d = FakeDelegator::new(BTreeMap::from([(
-            "review".to_owned(),
-            AgentInfo {
-                description: "reviews".to_owned(),
-                read_only: true,
-            },
-        )]))
-        .with_outcome(DelegateOutcomeSpec {
-            reply: "ok".to_owned(),
-            rounds: 2,
-            usage: Usage {
-                input: 5,
-                total: 7,
-                ..Usage::default()
-            },
-            error: Some("no api key".to_owned()),
-        });
-        assert_eq!(d.agent_names(), ["review".to_owned()]);
-        assert!(d.agent("review").is_some_and(|a| a.read_only));
-        assert!(d.agent("x").is_none());
-        let ledger = Arc::new(DelegationLedger::default());
-        let cx = RunCtx {
-            ledger: Some(Arc::clone(&ledger)),
-            ..RunCtx::default()
-        };
-        let spec = DelegateSpec {
-            agent: "review".to_owned(),
-            task: "t".to_owned(),
-            effort: Some(Effort::Low),
-        };
-        let out = d.run(&cx, spec.clone()).await;
-        assert_eq!(out.result.reply, "ok");
-        assert_eq!(out.result.rounds, 2);
-        assert_eq!(
-            out.error.map(|e| e.to_string()),
-            Some("no api key".to_owned())
-        );
-        assert_eq!(super::lock(&d.ran).as_slice(), &[spec]);
-        assert_eq!(ledger.snapshot().map(|(r, u)| (r, u.total)), Some((2, 7)));
-
-        // No canned outcome: an empty success, nothing booked.
-        let bare = FakeDelegator::new(BTreeMap::new());
-        let out = bare.run(&RunCtx::default(), DelegateSpec::default()).await;
-        assert!(out.error.is_none());
-        assert_eq!(out.result.rounds, 0);
     }
 
     #[tokio::test]

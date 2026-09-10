@@ -39,7 +39,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::repl::ReplError;
-use crate::repl::approval::{ApprovalGate, delegate_approver};
+use crate::repl::approval::ApprovalGate;
 use crate::repl::banner::banner_lines;
 use crate::repl::commands::edit::EditOutcome;
 use crate::repl::commands::skills::SkillsOutcome;
@@ -117,8 +117,6 @@ pub struct RunParams {
     pub imported_history: Vec<crate::provider::model::Message>,
     /// The tool dispatcher.
     pub dispatch: Arc<dyn crate::tool::Dispatcher>,
-    /// The delegator, when `tools.delegate` is configured.
-    pub delegator: Option<Arc<crate::chat::ChatDelegator>>,
     /// MCP glue.
     pub mcp: McpHooks,
     /// Session wiring.
@@ -133,8 +131,7 @@ pub struct RunParams {
     pub dark_background: bool,
     /// The SIGTERM path (root cancellation).
     pub root_cancel: CancellationToken,
-    /// The `/debug` request log shared with the title provider and delegated children
-    /// (root.go:128,410; delegate.go:148).
+    /// The `/debug` request log shared with the title provider (root.go:128,410).
     pub reqlog: Arc<RequestLog>,
     /// The host presenter (run.go:139 `host.NewPresenter(host.SystemEnv(), host.NewANSI(u),
     /// notify)`).
@@ -183,8 +180,8 @@ pub(crate) struct Repl {
     pub(crate) pres: Arc<Presenter>,
     /// The ONE command table (completion list, banner and dispatch read it).
     pub(crate) table: CommandTable,
-    /// The conversation's ONE approval gate: delegated children ask through it too, so the
-    /// "allow for this session" grant is one grant for one person (chat/run.go:172-186).
+    /// The conversation's ONE approval gate: the "allow for this session" grant is one grant
+    /// for one person (chat/run.go:172-186).
     pub(crate) gate: Arc<ApprovalGate>,
     /// Where generated images are saved, resolved LAZILY: a bundle materialises on first
     /// use, and an image-less chat must not create one (chat/images.go:115).
@@ -331,7 +328,6 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         system_interactive,
         imported_history,
         dispatch,
-        delegator,
         mcp,
         session,
         context_window,
@@ -530,12 +526,6 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     };
     repl.push_status();
 
-    if let Some(d) = &delegator {
-        d.set_approver(Some(delegate_approver(
-            Arc::clone(&gate),
-            root_cancel.clone(),
-        )));
-    }
     if let Some(events) = repl.mcp.events.take() {
         tokio::spawn(report_mcp_failures(events, Arc::clone(&tr), ui.done()));
     }

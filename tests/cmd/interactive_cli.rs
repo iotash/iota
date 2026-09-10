@@ -187,24 +187,18 @@ fn test_pre_branch_errors_still_win_over_the_interactive_branch() {
     assert_error(&o, "--mcp: empty server specification");
 }
 
-/// The ONE `/debug` request log of a run (WP66; cmd/root.go:125-131,410 + cmd/delegate.go:148).
+/// The ONE `/debug` request log of a run (WP66; cmd/root.go:125-131,410).
 ///
 /// `cmd::run` builds one `RequestLog` beside the run's one `reqwest::Client`, wraps both in an
-/// `HttpTransport` and clones that into the conversation provider, the async title instance and
-/// `build_delegator` — so all three record into the same ring and `/debug` shows a child's traffic
-/// beside its parent's. The MCP manager is handed the BARE client instead: Go never records MCP
-/// traffic, and `From<reqwest::Client>` is the conversion that drops the recorder.
+/// `HttpTransport` and clones that into the conversation provider and the async title instance — so
+/// both record into the same ring. The MCP manager is handed the BARE client instead: Go never
+/// records MCP traffic, and `From<reqwest::Client>` is the conversion that drops the recorder.
 mod shared_request_log {
     use std::sync::Arc;
 
-    use iota::app::HostDirs;
-    use iota::cmd::Config;
-    use iota::cmd::delegate::build_delegator_with_factory;
     use iota::llm::reqlog::RequestLog;
     use iota::provider::model::Message;
     use iota::provider::{HttpTransport, Provider, ProviderKind, ProviderParams, new_provider};
-    use iota::testing::{map_env, map_resolver};
-    use iota::vars::EnvSource;
     use tokio_util::sync::CancellationToken;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
@@ -231,7 +225,7 @@ mod shared_request_log {
     }
 
     #[tokio::test]
-    async fn the_provider_the_title_pass_and_a_child_share_one_log() {
+    async fn the_provider_and_the_title_pass_share_one_log() {
         let server = MockServer::start().await;
         mock_chat(&server).await;
 
@@ -257,55 +251,15 @@ mod shared_request_log {
         let title = new_provider(ProviderKind::OpenAi, params(), Some(transport.clone()))
             .expect("title provider");
 
-        // A delegated child, built by the factory `build_delegator` installed (delegate.go:148).
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let cfg_path = tmp.path().join("c.yaml");
-        std::fs::write(
-            &cfg_path,
-            format!(
-                "providers:\n  worker: {{type: openai, key: k, model: m, url: {}}}\n",
-                server.uri()
-            ),
-        )
-        .expect("write config");
-        // The fixture is a one-layer block, so the migration line is expected.
-        let cfg = Config::load(
-            Some(&cfg_path),
-            &HostDirs::default(),
-            &map_resolver(&[]),
-            &mut |_| {},
-        )
-        .expect("the config loads");
-        let node = serde_norway::from_str(
-            "agents:\n  fast: {provider: worker, description: a delegated child}\n",
-        )
-        .expect("agents node");
-        let env: Arc<dyn EnvSource> = Arc::new(map_env(&[]));
-        let (_delegator, factory) = build_delegator_with_factory(
-            &cfg,
-            Some(&node),
-            transport.clone(),
-            tmp.path().to_path_buf(),
-            HostDirs::default(),
-            env,
-        )
-        .expect("delegator");
-        let child = factory("fast").expect("child");
-
         turn(main.as_ref(), "parent turn").await;
         turn(title.as_ref(), "title turn").await;
-        turn(child.provider.as_ref(), "child turn").await;
 
-        // All three landed in the SAME ring, newest first.
+        // Both landed in the SAME ring, newest first.
         let summaries: Vec<String> = reqlog.entries().iter().map(|e| e.summary.clone()).collect();
         assert_eq!(
             summaries,
-            vec![
-                "child turn".to_owned(),
-                "title turn".to_owned(),
-                "parent turn".to_owned(),
-            ],
-            "the provider, the title pass and the child record into one log"
+            vec!["title turn".to_owned(), "parent turn".to_owned()],
+            "the provider and the title pass record into one log"
         );
 
         // …and the transport clones carry the very same `Arc`, not equal copies of it.

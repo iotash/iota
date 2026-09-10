@@ -97,7 +97,6 @@ impl Fixture {
             system_interactive: false,
             imported_history: Vec::new(),
             dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
-            delegator: None,
             mcp: McpHooks {
                 servers: None,
                 events: None,

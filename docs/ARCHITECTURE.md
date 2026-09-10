@@ -2,6 +2,13 @@
 
 Status: **binding**. Synthesised from the winning "idiomatic" proposal with every judged graft adopted or explicitly rejected (§0). `POLICY.md` wins over this document; this document wins over the specs' mapping notes; `CONTRACTS.md` is the frozen API implementers code against; `WORK_PACKAGES.md` is the fan-out plan; `DIVERGENCES.md` and `TEST_PLAN.md` complete the set.
 
+> **Superseded in part (2026-09-10): the `delegate` toolset is retired.** Every row below that names
+> `tool/delegate.rs`, `chat/delegator.rs`, `cmd/delegate.rs`, `Delegator`/`AgentInfo`/`DelegateSpec`/
+> `DelegateResult`/`DelegateOutcome`/`DelegateApprover`, `Env.delegate`, `DelegationLedger` or the
+> "delegate cycle" describes code that no longer exists — a child agent is a bash subprocess now
+> (`DIVERGENCES.md` §C.4 X-01, brain page `subagents-via-bash`). The rows are left as the phase-1
+> record; nothing else on this page changed.
+
 **Phase 2 · slice 1 (headless session store) is folded in.** The session store (now `src/session/`) and the `--resume` stage in `cmd::run` are described in place — §1.1/§1.2 (the crate and the graph), §2 (its module map), §8.1 (the session data flow), §10 and §11. Everything else on this page is the phase-1 architecture, unchanged.
 
 Every user-visible string below is copied from the Go source (file:line given in CONTRACTS.md). Implementers copy, never paraphrase.

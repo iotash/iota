@@ -116,8 +116,8 @@ fn group_lines(g: &ActivityGroup) -> Vec<String> {
     }
     if g.tools == 1 && g.thinks == 0 {
         // The classic block keeps the note too: a lone call that folds away would
-        // otherwise be the one case where what a delegation cost is visible while it
-        // runs and gone once it finishes.
+        // otherwise be the one case where a call's note is visible while it runs and
+        // gone once it finishes.
         let mut head = g.first_header.clone();
         if !g.first_note.is_empty() {
             head.push_str(&dim(&format!(" · {}", g.first_note)));
@@ -252,8 +252,8 @@ impl Transcript {
     /// counters, a body row scrolling through the widget, the failure breakout, and —
     /// while it is the group's only call — the material for the classic degenerate form.
     /// In verbose mode the group settles immediately. `note` is an optional trailing
-    /// detail for the event row (`""` = none) — a delegated call's round and token count,
-    /// which the user should see and the model should not be billed for.
+    /// detail for the event row (`""` = none) — a fact about the call the user should
+    /// see and the model should not be billed for.
     pub fn finish_call(
         &self,
         header: &str,

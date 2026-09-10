@@ -103,7 +103,7 @@ pub struct Cli {
         long = "max-turns",
         default_value_t = 0,
         allow_hyphen_values = true,
-        help = "Limit agentic tool turns for the whole run, delegated children included (-m only; 0 = unlimited)"
+        help = "Limit agentic tool turns for the whole run (-m only; 0 = unlimited)"
     )]
     pub max_turns: i64,
     /// `--output-format`: `text` (default) or `json`; `-m` runs only.

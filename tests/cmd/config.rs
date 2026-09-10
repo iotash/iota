@@ -629,6 +629,41 @@ fn the_agent_toolset_is_renamed_to_skills() {
     assert!(cfg.unwrap().agents["coder"].tools.contains_key("skills"));
 }
 
+/// The retired `delegate` toolset: the key is dropped with ONE warning, and the run carries on. Every
+/// spelling it had — the list, the mapping, the one-layer `agents:` map inside it — is the same key.
+#[test]
+fn the_delegate_toolset_is_dropped_with_a_warning() {
+    let (dir, _dirs) = temp_project(&[]);
+    let (cfg, warnings) = load_legacy(
+        dir.path(),
+        "c.yaml",
+        "providers:\n  p:\n    type: openai\n    tools:\n      delegate: [reviewer]\n",
+    );
+    assert_eq!(
+        warnings,
+        vec![
+            "Warning: config providers.p: tools now belong under `models:` / `agents:` (still accepted; see README)".to_owned(),
+            "Warning: config providers.p.tools.delegate: the delegate toolset was removed; run child agents from bash instead (see README)".to_owned(),
+        ]
+    );
+    assert!(!cfg.agents["p"].tools.contains_key("delegate"));
+
+    // The mapping spelling, including the one-layer `agents:` map inside it, under an explicit agent.
+    let (cfg, warnings) = parse_warned(
+        "providers:\n  p: {type: openai}\nagents:\n  main:\n    models: [\"p:gpt-4o\"]\n    tools:\n      code:\n      delegate:\n        agents: {reviewer: p}\n        max_turns: 30\n",
+    );
+    assert_eq!(
+        warnings,
+        vec![
+            "Warning: config agents.main.tools.delegate: the delegate toolset was removed; run child agents from bash instead (see README)"
+                .to_owned()
+        ]
+    );
+    let tools = &cfg.expect("the config still loads").agents["main"].tools;
+    assert!(!tools.contains_key("delegate"), "the key must be dropped");
+    assert!(tools.contains_key("code"), "the other sets survive");
+}
+
 /// A later file replaces a provider WHOLE, so the entries an earlier one implied go with it.
 #[test]
 fn a_replaced_provider_drops_the_entries_it_implied() {

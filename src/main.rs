@@ -23,8 +23,7 @@ fn main() {
         Ok(rt) => {
             let cancel = CancellationToken::new();
             // The one environment seam of the process: `run` threads it through config expansion, key
-            // resolution, `-l` and every delegated child (`Arc` because the delegate `ChildFactory` outlives
-            // this scope).
+            // resolution and `-l` (`Arc` because it outlives this scope).
             let env: Arc<dyn EnvSource> = Arc::new(ProcessEnv);
             rt.block_on(async {
                 signals::install(cancel.clone());

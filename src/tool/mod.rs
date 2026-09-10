@@ -1,8 +1,8 @@
-//! Tool and dispatcher contracts (tool/tool.go:33-330): `ToolOutput`, `Presentation`, `DeferState`, the `Tool` and
-//! `Dispatcher` traits with their optional capabilities, the `PrefixOf` oracle, the toolset `Env` and the
-//! delegation contracts — plus, in the submodules, the tool framework (`registry`, `merge`, `defer`,
-//! `defer_mode`, `yaml11`, `args`, `sets`) and the five built-in sets (`shell`, `code`, `agent`, `delegate`,
-//! and `ask`, which contributes tools only when the `Env` carries an interactor).
+//! Tool and dispatcher contracts (tool/tool.go:33-330): `ToolOutput`, `Presentation`, `DeferState`, the `Tool`
+//! and `Dispatcher` traits with their optional capabilities, the `PrefixOf` oracle and the toolset `Env` —
+//! plus, in the submodules, the tool framework (`registry`, `merge`, `defer`, `defer_mode`, `yaml11`, `args`,
+//! `sets`) and the four built-in sets (`shell`, `code`, `agent`, and `ask`, which contributes tools only when
+//! the `Env` carries an interactor).
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -12,7 +12,6 @@ pub mod ask;
 pub mod code;
 pub mod defer;
 pub(crate) mod defer_mode;
-pub mod delegate;
 pub mod error;
 pub mod fmt;
 pub mod merge;
@@ -26,12 +25,10 @@ pub use defer_mode::DeferMode;
 pub use merge::merge;
 pub use registry::{Registry, set_disabled};
 
+use crate::BoxFuture;
 use crate::app::HostDirs;
 use crate::chat::turns::RunCtx;
-use crate::provider::Effort;
 use crate::provider::model::{JsonObject, ToolDef};
-use crate::provider::usage::Usage;
-use crate::{BoxError, BoxFuture};
 use error::ToolError;
 
 /// Model-facing result of a tool call: text plus whether it is an error the model should see.
@@ -295,7 +292,7 @@ pub struct Artifact {
 pub enum ArtifactKind {
     /// Unified-hunk diff rows (`edit_file`/`write_file` postDiff, code.go:665-675).
     Diff,
-    /// Accounting note rows (the delegate tool, delegate.go:169-180).
+    /// Accounting note rows (transcript.go's finish-call note).
     Note,
 }
 
@@ -314,8 +311,6 @@ pub struct Env {
     pub project_root: Option<PathBuf>,
     /// Process-level directories.
     pub dirs: HostDirs,
-    /// Some only when `tools.delegate` is configured.
-    pub delegate: Option<Arc<dyn Delegator>>,
     /// Some only interactively: `new_ask_set` contributes the ask tools when it is bound
     /// (headless stays empty, tool/ask.go parity). `Env` is built with `..Env::default()`
     /// literals across the workspace, so this field lands non-breaking (`TUI_CONTRACTS` §4).
@@ -419,77 +414,15 @@ mod tests {
         // Headless: no slot in the context — the post is a silent no-op (Go parity).
         let headless = RunCtx::default();
         post_artifact(&headless, a.clone());
-        // Interactive: a fresh slot injected per call receives the post; the child ctx
-        // (a clone) posts into the SAME slot.
+        // Interactive: a fresh slot injected per call receives the post; a clone of the
+        // context posts into the SAME slot.
         let slot = ArtifactSlot::default();
         let cx = RunCtx {
             artifact: Some(slot.clone()),
             ..RunCtx::default()
         };
-        post_artifact(&cx.child(), a.clone());
+        post_artifact(&cx.clone(), a.clone());
         assert_eq!(slot.take(), Some(a));
         assert!(slot.take().is_none());
     }
 }
-
-// --- delegation contracts (tool/tool.go:245-288): agent table entries, the child-run spec and result,
-// and the `Delegator` trait the delegate tool calls into (formerly `delegate.rs`).
-/// One configured agent as the delegate tool sees it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct AgentInfo {
-    /// Description shown in the tool description (may be empty).
-    pub description: String,
-    /// Whether the agent's toolset is read-only (opts its calls into parallel batches).
-    pub read_only: bool,
-}
-
-/// One delegation request.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct DelegateSpec {
-    /// Configured agent name.
-    pub agent: String,
-    /// The complete brief.
-    pub task: String,
-    /// Optional per-task reasoning-effort override.
-    pub effort: Option<Effort>,
-}
-
-/// What a child run produced and cost.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct DelegateResult {
-    /// The child's final answer.
-    pub reply: String,
-    /// API rounds the child ran.
-    pub rounds: u32,
-    /// Aggregate token usage of the child.
-    pub usage: Usage,
-    /// Wall-clock duration of the child run.
-    pub duration: std::time::Duration,
-}
-
-/// Go returns (result, err) together: a failed child still carries its accounting.
-#[derive(Debug, Default)]
-pub struct DelegateOutcome {
-    /// Accounting (and reply, when there is one).
-    pub result: DelegateResult,
-    /// The failure, if the child failed.
-    pub error: Option<BoxError>,
-}
-
-/// Runs delegated child agents.
-pub trait Delegator: Send + Sync {
-    /// Stable sorted order (schema enum + description list).
-    fn agent_names(&self) -> &[String];
-    /// The named agent, if configured.
-    fn agent(&self, name: &str) -> Option<&AgentInfo>;
-    /// Runs one delegation in a child context.
-    fn run<'a>(&'a self, cx: &'a RunCtx, spec: DelegateSpec) -> BoxFuture<'a, DelegateOutcome>;
-}
-
-/// The child-approval seam (`TUI_CONTRACTS` §4): (wire tool name, detail, asking agent) →
-/// (approved, refusal text when not executed). Installed on `crate::chat::ChatDelegator` via
-/// `set_approver` (WP49) so a child's state-changing calls route to the parent's ONE
-/// approval gate and the session-approved map is shared.
-pub(crate) type DelegateApprover = std::sync::Arc<
-    dyn for<'a> Fn(&'a str, &'a str, &'a str) -> BoxFuture<'a, (bool, String)> + Send + Sync,
->;

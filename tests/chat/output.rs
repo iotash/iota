@@ -160,7 +160,6 @@ async fn test_once_json_reports_every_round() {
     assert_eq!(rep["usage"]["cache_read_tokens"], 6);
     assert_eq!(rep["usage"]["cache_write_tokens"], 0);
     assert!(rep["duration_ms"].is_u64());
-    assert!(rep.get("delegated").is_none());
 }
 
 // Go: chat/output_test.go:158
@@ -302,7 +301,6 @@ fn test_run_report_wire_names() {
         "\"images\"",
         "\"image_errors\"",
         "\"round_usage\"",
-        "\"delegated\"",
     ] {
         assert!(
             !text.contains(key),

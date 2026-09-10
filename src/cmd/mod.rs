@@ -1,11 +1,10 @@
-//! The command (cmd/root.go, cmd/delegate.go): clap `Cli`, pure run resolution, tuning warnings,
-//! MCP/dispatcher/delegator assembly, `-l`, the interactive branch, and [`run`], which `main.rs` awaits via
+//! The command (cmd/root.go): clap `Cli`, pure run resolution, tuning warnings,
+//! MCP/dispatcher assembly, `-l`, the interactive branch, and [`run`], which `main.rs` awaits via
 //! `block_on` and maps to an exit code. The YAML config model is `crate::config`. ONE binary carries
 //! everything, exactly like the Go binary (decision of 2026-09-01; ARCHITECTURE §11).
 
 pub(crate) mod assemble;
 pub(crate) mod cli;
-pub mod delegate;
 pub(crate) mod interactive;
 pub mod io;
 pub mod list;
@@ -35,9 +34,9 @@ use crate::vars::{EnvSource, VarResolver};
 use tokio_util::sync::CancellationToken;
 
 /// The process-wide, read-only run environment both branches share (root.go:125-131): ONE HTTP client for
-/// the whole run — the provider, every delegated child and the MCP streamable-HTTP transports — and ONE
-/// `/debug` request log (root.go:128 `reqLog.HTTPClient()`) that the provider, the title instance and every
-/// delegated child record into. The MCP manager keeps the bare client: Go never records MCP traffic.
+/// the whole run — the provider and the MCP streamable-HTTP transports — and ONE `/debug` request log
+/// (root.go:128 `reqLog.HTTPClient()`) that the provider and the title instance record into. The MCP manager
+/// keeps the bare client: Go never records MCP traffic.
 #[derive(Clone)]
 pub(crate) struct RunContext {
     /// Process directories (the session store's root, the images dir).
@@ -84,8 +83,6 @@ pub(crate) struct ToolAssembly {
     /// The ask-seam bridge, created UNBOUND (the dispatcher is built long before the UI exists); `None`
     /// headlessly, so `new_ask_set` contributes no tools and the model never sees them (root.go:221-232).
     pub(crate) interactor: Option<Arc<crate::repl::Interactor>>,
-    /// The delegator, when `tools.delegate` is configured.
-    pub(crate) delegator: Option<Arc<crate::chat::ChatDelegator>>,
     /// Agent-mode options.
     pub(crate) agent: AgentOptions,
 }
@@ -99,9 +96,9 @@ pub(crate) struct ToolAssembly {
 /// (`-m` runs only) → `Config::load` → `-l` → `list::run_list` → `resolve_run` → provider construction
 /// (`ProviderKind::from_str`, `new_provider`) →
 /// `tuning::apply` → `assemble::build_mcp_configs` → `tuning::warn_tools_without_calling` → cwd/root
-/// (`CliError::Cwd` in agent mode) → `Env` → delegate seam (`CliError::Delegate`) → output format parse
+/// (`CliError::Cwd` in agent mode) → `Env` → output format parse
 /// (`crate::chat::parse_output_format` runs HERE, root.go:249-252, so `unknown output format …` loses to every
-/// earlier provider/tuning/MCP/delegate error exactly as in Go) → `OutputFormatWithoutMessage` when the flag
+/// earlier provider/tuning/MCP error exactly as in Go) → `OutputFormatWithoutMessage` when the flag
 /// was given and `message.is_none()` →
 /// the root.go:259 branch — the `None` arm IS `interactive::run_interactive` (`TUI_CONTRACTS` §11; a non-TTY
 /// stdout is refused there with Go's `interactive mode requires a terminal…`) → the `--resume` stage
@@ -150,9 +147,9 @@ pub async fn run(
     // root.go:132-181
     let (kind, provider) = open_provider(&settings, &ctx, io)?;
     // root.go:187-241
-    let tools = assemble_tools(&cli, &cfg, &settings, &*provider, &ctx, &env, io)?;
+    let tools = assemble_tools(&cli, &cfg, &settings, &*provider, &ctx, io)?;
 
-    // root.go:249-255: `--output-format` describes a single `-m` run. Parsed HERE — after tuning/MCP/delegate
+    // root.go:249-255: `--output-format` describes a single `-m` run. Parsed HERE — after tuning/MCP
     // assembly — so a bad value keeps Go's precedence (a bad config `effort`/`top_p` or `mcp_servers` name wins
     // over a bad format); "" is the text default without a parse, and a misplaced flag is an error rather than
     // a quiet fall back to text.
@@ -212,15 +209,14 @@ fn open_provider(
     Ok((kind, provider))
 }
 
-/// root.go:187-241 — MCP configs, the agent options, the tool environment and the delegate seam, in Go's
-/// order (each step's byte-pinned error keeps its precedence).
+/// root.go:187-241 — MCP configs, the agent options and the tool environment, in Go's order (each step's
+/// byte-pinned error keeps its precedence).
 fn assemble_tools(
     cli: &Cli,
     cfg: &Config,
     settings: &RunSettings,
     provider: &dyn crate::provider::Provider,
     ctx: &RunContext,
-    env: &Arc<dyn EnvSource>,
     io: &mut io::Streams,
 ) -> Result<ToolAssembly, CliError> {
     let dirs = &ctx.dirs;
@@ -271,32 +267,11 @@ fn assemble_tools(
         tool_env.interactor = Some(Arc::clone(it) as Arc<dyn crate::tool::Interactor>);
     }
 
-    // root.go:234-241: every agent resolves HERE so a bad provider name fails at startup rather than three tool
-    // calls into a conversation.
-    let mut delegator: Option<Arc<crate::chat::ChatDelegator>> = None;
-    if let Some(node) = settings.resolved.agent.tools.get("delegate")
-        && !crate::tool::set_disabled(&settings.resolved.agent.tools, "delegate")
-    {
-        let del = delegate::build_delegator(
-            cfg,
-            Some(node),
-            ctx.transport.clone(),
-            project_root.clone().unwrap_or_default(),
-            dirs.clone(),
-            Arc::clone(env),
-        )
-        .map_err(|e| CliError::Delegate(Box::new(e)))?;
-        // The interactive loop routes a delegated child's gated calls through the conversation's ONE approval
-        // gate, so it needs the concrete delegator the tool env also holds.
-        delegator = Some(Arc::clone(&del));
-        tool_env.delegate = Some(del);
-    }
     Ok(ToolAssembly {
         mcp_configs,
         mcp_defers,
         tool_env,
         interactor,
-        delegator,
         agent,
     })
 }
@@ -320,7 +295,6 @@ async fn run_headless(
         mcp_defers,
         tool_env,
         interactor: _,
-        delegator: _,
         agent,
     } = tools;
     let RunContext {

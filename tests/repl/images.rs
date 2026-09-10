@@ -167,7 +167,6 @@ async fn run_one(
         system_interactive: false,
         imported_history: Vec::new(),
         dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
-        delegator: None,
         mcp: no_mcp(),
         session: SessionCtx {
             writer: Some(writer),

@@ -1,14 +1,11 @@
 //! The approval gate (chat/approval.go): the ONE place a state-changing call is put to
-//! the user — the conversation's own tool loop and delegated children both arrive here,
-//! a child's question labelled with the agent that asked. The "allow for this session"
-//! memory is shared for the same reason: the grant is "this session may edit files", and
-//! a child running inside the session is part of it.
+//! the user. The "allow for this session" memory belongs to the conversation: the grant
+//! is "this session may edit files".
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::host::{Event, Kind, Presenter, State};
-use crate::tool::DelegateApprover;
 use crate::tool::fmt::display_tool_name;
 use crate::tool::{Artifact, ArtifactKind};
 use crate::ui::facade::{SelectSpec, Ui, UiError};
@@ -37,17 +34,14 @@ impl ApprovalGate {
     }
 
     /// Resolves one gated call (approval.go:47-80). `detail` is what the call is about
-    /// (the path it writes, the command it runs); `subject` names where the request came
-    /// from when it was not this conversation (a delegated agent) — empty for the
-    /// conversation's own calls. The error is reserved for the prompt itself failing; a
-    /// refusal is `Ok(false)`, and a turn that continues after a denial is the point of
-    /// asking.
+    /// (the path it writes, the command it runs). The error is reserved for the prompt
+    /// itself failing; a refusal is `Ok(false)`, and a turn that continues after a denial
+    /// is the point of asking.
     pub(crate) async fn ask(
         &self,
         cancel: &CancellationToken,
         name: &str,
         detail: &str,
-        subject: &str,
     ) -> Result<bool, UiError> {
         if self.granted(name) {
             return Ok(true);
@@ -55,9 +49,6 @@ impl ApprovalGate {
         let mut label = display_tool_name(name);
         if !detail.is_empty() {
             label = format!("{label} {detail}");
-        }
-        if !subject.is_empty() {
-            label = format!("{subject} › {label}");
         }
         // The turn is blocked on the user: freeze the group clock so human deliberation
         // never inflates the timings, and tell the host (approval.go:58-69).
@@ -105,28 +96,6 @@ impl ApprovalGate {
     }
 }
 
-/// The child-approval bridge (run.go:172-186): a `DelegateApprover` forwarding a
-/// delegated child's state-changing calls to the parent's ONE gate, labelled with the
-/// asking agent. Installed on `crate::chat::ChatDelegator` via `set_approver` by the run
-/// loop; gate error → `"%s was not executed: %v"`, declined → `"The user declined this
-/// call."` — the model-facing refusal texts.
-pub(crate) fn delegate_approver(
-    gate: Arc<ApprovalGate>,
-    cancel: CancellationToken,
-) -> DelegateApprover {
-    Arc::new(move |name, detail, agent| {
-        let gate = Arc::clone(&gate);
-        let cancel = cancel.clone();
-        Box::pin(async move {
-            match gate.ask(&cancel, name, detail, agent).await {
-                Err(e) => (false, format!("{name} was not executed: {e}")),
-                Ok(false) => (false, "The user declined this call.".to_owned()),
-                Ok(true) => (true, String::new()),
-            }
-        })
-    })
-}
-
 /// Renders a `Note` artifact into the event row's trailing detail: a short fact about
 /// the call meant for the user and withheld from the model (approval.go:84-89
 /// `artifactNote`). The `Diff` kind belongs to the expanded path and is ignored here —
@@ -150,7 +119,7 @@ mod tests {
     fn test_artifact_note() {
         let note = Artifact {
             kind: ArtifactKind::Note,
-            title: "delegate".to_owned(),
+            title: "note".to_owned(),
             lines: vec!["3 rounds".to_owned(), "1.2k tokens".to_owned()],
         };
         assert_eq!(artifact_note(Some(&note)), "3 rounds · 1.2k tokens");

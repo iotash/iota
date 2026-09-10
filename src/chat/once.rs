@@ -2,14 +2,14 @@
 
 use std::{io::Write, path::PathBuf, sync::Arc};
 
-use crate::chat::turns::{DelegationLedger, RunCtx, TurnBudget};
+use crate::chat::turns::{RunCtx, TurnBudget};
 use crate::provider::Provider;
 use crate::provider::model::Message;
 use crate::tool::Dispatcher;
 use tokio_util::sync::CancellationToken;
 
 use crate::chat::error::ChatError;
-use crate::chat::report::{delegated_report, write_report};
+use crate::chat::report::write_report;
 use crate::chat::run::{QuietHost, RunRequest, install_tool_searcher, run_once};
 use crate::chat::{AgentOptions, OutputFormat};
 
@@ -58,14 +58,11 @@ pub async fn once(
     opts: OnceOptions,
     out: &mut (dyn Write + Send),
 ) -> Result<OnceOutcome, ChatError> {
-    // --max-turns is the RUN's budget, not the parent loop's: it travels in the context so a delegated child
-    // draws on the same pool, and the local per-loop cap is left off so the two cannot double-count. The
-    // ledger travels the same way (chat.go:36-47).
-    let ledger = Arc::new(DelegationLedger::default());
+    // --max-turns is the RUN's budget, not the parent loop's: it travels in the context, and the local
+    // per-loop cap is left off so the two cannot double-count (chat.go:36-47).
     let cx = RunCtx {
         cancel,
         budget: opts.max_turns.map(TurnBudget::new),
-        ledger: Some(Arc::clone(&ledger)),
         ..RunCtx::default()
     };
     install_tool_searcher(provider, &dispatch);
@@ -106,7 +103,6 @@ pub async fn once(
                 reply,
                 images,
                 image_errors,
-                delegated_report(&ledger),
                 err,
             );
             write_report(out, &report)?;

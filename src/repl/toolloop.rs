@@ -215,7 +215,7 @@ async fn walk(
 
         if dispatch.requires_approval(&tc.name) {
             let detail = tool_call_detail(&*dispatch, tc);
-            let allowed = match t.cx.gate.ask(&t.cancel, &tc.name, &detail, "").await {
+            let allowed = match t.cx.gate.ask(&t.cancel, &tc.name, &detail).await {
                 Ok(a) => a,
                 // A fired cancel scope resolves the blocking call as Interrupted (WP45);
                 // a closed facade ends the loop itself.
@@ -235,8 +235,8 @@ async fn walk(
         }
 
         // Every call gets its own artifact slot — the user-facing payload (an expanded
-        // call's diff, a delegated call's accounting) kept out of the result text so it is
-        // never billed to the model. Only some calls post to one (T-35).
+        // call's diff) kept out of the result text so it is never billed to the model.
+        // Only some calls post to one (T-35).
         let slot = ArtifactSlot::default();
         let call_cancel = t.cancel.child_token();
         let cx = RunCtx {

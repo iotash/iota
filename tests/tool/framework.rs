@@ -11,8 +11,6 @@ use iota::BoxFuture;
 use iota::chat::turns::RunCtx;
 use iota::provider::ProviderKind;
 use iota::provider::model::{JsonObject, ToolDef};
-use iota::testing::FakeDelegator;
-use iota::tool::AgentInfo;
 use iota::tool::ask::new_ask_set;
 use iota::tool::defer::{CATALOG_NAMES_ONLY_AT, DESC_BUDGET, SEARCH_TOP_K, defer};
 use iota::tool::error::ToolError;
@@ -684,34 +682,34 @@ fn test_parallel_defaults_to_no() {
 #[test]
 fn test_supports_parallel_is_per_call() {
     let mut r = Registry::default();
-    r.add(stub_tool("delegate", &["search"], false));
+    r.add(stub_tool("task", &["search"], false));
     let agent = |name: &str| {
         let mut a = JsonObject::new();
         a.insert("agent".to_owned(), name.into());
         a
     };
     assert!(
-        r.supports_parallel("delegate", Some(&agent("search"))),
+        r.supports_parallel("task", Some(&agent("search"))),
         "the read-only entry must be allowed to run concurrently"
     );
     assert!(
-        !r.supports_parallel("delegate", Some(&agent("implement"))),
+        !r.supports_parallel("task", Some(&agent("implement"))),
         "the write-capable entry must stay serialized"
     );
     // An entry that is not in the table at all, and a call with no argument: unknown resolves to the safe
     // answer, never to the permissive one.
     assert!(
-        !r.supports_parallel("delegate", Some(&agent("nonesuch"))),
+        !r.supports_parallel("task", Some(&agent("nonesuch"))),
         "an unknown entry must default to serialized"
     );
     assert!(
-        !r.supports_parallel("delegate", None),
+        !r.supports_parallel("task", None),
         "a call with no entry named must default to serialized"
     );
     // The same answers through Merge.
     let merged = merge(vec![Arc::new(r) as Arc<dyn Dispatcher>]);
-    assert!(merged.supports_parallel("delegate", Some(&agent("search"))));
-    assert!(!merged.supports_parallel("delegate", Some(&agent("implement"))));
+    assert!(merged.supports_parallel("task", Some(&agent("search"))));
+    assert!(!merged.supports_parallel("task", Some(&agent("implement"))));
     assert!(!merged.supports_parallel("nope", Some(&agent("search"))));
 }
 
@@ -725,38 +723,29 @@ fn raw_tools(yaml: &str) -> ToolsConfig {
 }
 
 /// An `Env` rooted in a temp project (the shape the host builds: project root + host dirs, never the process
-/// environment) whose delegator knows one read-only agent `a`.
-fn delegate_env() -> (tempfile::TempDir, Env) {
+/// environment).
+fn project_env() -> (tempfile::TempDir, Env) {
     let (dir, dirs) = temp_project(&[("AGENTS.md", "# rules")]);
-    let mut agents = BTreeMap::new();
-    agents.insert(
-        "a".to_owned(),
-        AgentInfo {
-            description: String::new(),
-            read_only: true,
-        },
-    );
     let env = Env {
         project_root: Some(dir.path().to_path_buf()),
         dirs,
-        delegate: Some(Arc::new(FakeDelegator::new(agents))),
         ..Env::default()
     };
     (dir, env)
 }
 
-// Go: tool/ask_test.go:242 (Go's `ask`/`shell` pair is `ask`/`delegate` here — the ask set contributes no
-// tools headlessly, so the delegate set stands in as the one that does)
+// Go: tool/ask_test.go:242 — the ask set contributes no tools headlessly, so `shell` stands in as the one
+// that does.
 #[test]
 fn test_set_false_disables() {
-    let raw = raw_tools("tools:\n  ask: false\n  delegate:\n");
+    let raw = raw_tools("tools:\n  ask: false\n  shell:\n");
     assert!(set_disabled(&raw, "ask"), "ask: false must report disabled");
     assert!(
-        !set_disabled(&raw, "delegate") && !set_disabled(&raw, "code"),
+        !set_disabled(&raw, "shell") && !set_disabled(&raw, "code"),
         "present-empty and absent sets are not disabled"
     );
     let mut warns = Vec::new();
-    let (_dir, env) = delegate_env();
+    let (_dir, env) = project_env();
     let r = Registry::build(&env, &raw, &mut |w| warns.push(w));
     assert!(warns.is_empty(), "{warns:?}");
     for def in r.tools() {
@@ -766,10 +755,7 @@ fn test_set_false_disables() {
             def.name
         );
     }
-    assert_eq!(
-        tool_names(&r.tools()),
-        HashSet::from(["delegate".to_owned()])
-    );
+    assert_eq!(tool_names(&r.tools()), HashSet::from(["bash".to_owned()]));
 
     // DIVERGENCES I-01: every YAML-1.1 false spelling disables, plain or quoted, any case.
     for spelling in [
@@ -860,25 +846,22 @@ async fn test_merge() {
 }
 
 // Go: tool/shell_test.go:125 (the shell/agent halves are WP09's `test_build_registry_shell_set_enables_bash`
-// and WP11's `test_enable_agent_set`; the ask and delegate sets stand in here)
+// and WP11's `test_enable_agent_set`; the ask and shell sets stand in here)
 #[test]
 fn test_build_registry() {
     // absent key disables set
     {
-        let (_dir, env) = delegate_env();
+        let (_dir, env) = project_env();
         let r = Registry::build(&env, &raw_tools("tools:\n  ask:\n"), &mut |_| {});
         assert!(
             r.tools().is_empty(),
-            "expected no tools without a delegate key, got {:?}",
+            "expected no tools without a shell key, got {:?}",
             r.tools()
         );
-        let r = Registry::build(&env, &raw_tools("tools:\n  delegate:\n"), &mut |_| {});
-        assert_eq!(
-            tool_names(&r.tools()),
-            HashSet::from(["delegate".to_owned()])
-        );
+        let r = Registry::build(&env, &raw_tools("tools:\n  shell:\n"), &mut |_| {});
+        assert_eq!(tool_names(&r.tools()), HashSet::from(["bash".to_owned()]));
         assert_eq!(r.len(), 1);
-        assert!(r.get("delegate").is_some());
+        assert!(r.get("bash").is_some());
     }
 
     // unknown set warns and is skipped
@@ -899,31 +882,32 @@ fn test_build_registry() {
         assert_eq!(warned[0], "unknown toolset \"bogus_set\" (ignored)");
     }
 
-    // a factory error warns and is skipped (the delegate set without agents)
+    // a factory error warns and is skipped (the shell set with an unknown sandbox)
     {
-        let env = Env {
-            delegate: Some(Arc::new(FakeDelegator::new(BTreeMap::new()))),
-            ..Env::default()
-        };
         let mut warned = Vec::new();
-        let r = Registry::build(&env, &raw_tools("tools:\n  delegate:\n"), &mut |w| {
-            warned.push(w);
-        });
+        let r = Registry::build(
+            &Env::default(),
+            &raw_tools("tools:\n  shell:\n    sandbox: bogus\n"),
+            &mut |w| {
+                warned.push(w);
+            },
+        );
         assert!(r.is_empty());
         assert_eq!(
             warned,
             vec![
-                "toolset \"delegate\": no agents configured (add `agents:` mapping agent names to provider names) (ignored)".to_owned()
+                "toolset \"shell\": sandbox must be \"auto\" or \"off\", got \"bogus\" (ignored)"
+                    .to_owned()
             ]
         );
     }
 
     // enable_set: same warnings; an already-registered tool is not duplicated
     {
-        let (_dir, env) = delegate_env();
-        let mut r = Registry::build(&env, &raw_tools("tools:\n  delegate:\n"), &mut |_| {});
+        let (_dir, env) = project_env();
+        let mut r = Registry::build(&env, &raw_tools("tools:\n  shell:\n"), &mut |_| {});
         let mut warned = Vec::new();
-        r.enable_set(&env, "delegate", &mut |w| warned.push(w));
+        r.enable_set(&env, "shell", &mut |w| warned.push(w));
         assert_eq!(r.len(), 1, "enable_set duplicated a registered tool");
         r.enable_set(&env, "bogus", &mut |w| warned.push(w));
         assert_eq!(
@@ -931,10 +915,10 @@ fn test_build_registry() {
             vec!["unknown toolset \"bogus\" (ignored)".to_owned()]
         );
         let mut fresh = Registry::default();
-        fresh.enable_set(&env, "delegate", &mut |w| warned.push(w));
+        fresh.enable_set(&env, "shell", &mut |w| warned.push(w));
         assert_eq!(
             tool_names(&fresh.tools()),
-            HashSet::from(["delegate".to_owned()])
+            HashSet::from(["bash".to_owned()])
         );
         assert_eq!(warned.len(), 1);
     }

@@ -1,16 +1,13 @@
 //! The headless (non-interactive) run loop (chat/chat.go, chat/output.go, chat/parallel.go, chat/images.go,
-//! chat/delegate.go, chat/agentmode.go) and, in `turns`, the run context every loop shares (chat/turns.go).
+//! chat/agentmode.go) and, in `turns`, the run context every loop shares (chat/turns.go).
 //! The interactive loop over the same machinery is `crate::chat::repl`.
 //!
-//! `once` is the single entry point the binary calls: it builds the run context (`RunCtx` with the shared
-//! `TurnBudget` and `DelegationLedger`), runs one message through `run_once` (unary chat or the tool loop
-//! `execute_with_tools`), saves generated images, prints either the bare reply or the JSON `RunReport`, and hands
-//! back the turn's message delta for a caller that persists a session.
-//! `ChatDelegator` implements `crate::tool::Delegator` so the `delegate` toolset can spawn child runs through the
-//! same loop with a fresh provider and dispatcher per delegation.
+//! `once` is the single entry point the binary calls: it builds the run context (`RunCtx` with the run's
+//! `TurnBudget`), runs one message through `run_once` (unary chat or the tool loop `execute_with_tools`),
+//! saves generated images, prints either the bare reply or the JSON `RunReport`, and hands back the turn's
+//! message delta for a caller that persists a session.
 
 pub mod batch;
-pub(crate) mod delegator;
 pub(crate) mod error;
 pub mod images;
 pub mod once;
@@ -20,10 +17,9 @@ pub mod turns;
 
 use std::path::PathBuf;
 
-pub use delegator::{ChatDelegator, Child, ChildFactory};
 pub use error::ChatError;
 pub use once::{OnceOptions, OnceOutcome, once};
-pub use report::{DelegatedReport, RoundReport, RunRecorder, RunReport, TokenUsage, write_report};
+pub use report::{RoundReport, RunRecorder, RunReport, TokenUsage, write_report};
 pub use run::{
     LoopOutcome, QuietHost, RunOutcome, RunRequest, execute_with_tools, install_tool_searcher,
     run_once,

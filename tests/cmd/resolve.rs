@@ -354,7 +354,7 @@ fn resolve_message_absent_is_none() {
     assert_eq!(s.message.as_deref(), Some("hi"));
 
     // `--output-format` is carried RAW in every mode — even a bad value resolves: the parse belongs to `run`
-    // at root.go:249-252's position (after tuning/MCP/delegate), so `unknown output format …` keeps Go's
+    // at root.go:249-252's position (after tuning/MCP), so `unknown output format …` keeps Go's
     // precedence (tests/cli.rs pins both the text and the order), and root.go:253 belongs to `run` too.
     let s = resolve(&["openai", "--output-format", " text "], &cfg, &env).unwrap();
     assert_eq!(s.output_format_raw.as_deref(), Some(" text "));

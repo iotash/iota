@@ -1,10 +1,9 @@
-//! The chat layer's error type (chat/chat.go, chat/turns.go, chat/delegate.go). Every Display text is byte-equal
-//! to the Go message it ports.
+//! The chat layer's error type (chat/chat.go, chat/turns.go). Every Display text is byte-equal to the Go
+//! message it ports, except where a message named a feature that no longer exists (DIVERGENCES).
 
-use crate::BoxError;
 use crate::provider::error::ProviderError;
 
-/// Why a headless run (or a delegated child run) failed.
+/// Why a headless run failed.
 #[derive(Debug, thiserror::Error)]
 pub enum ChatError {
     /// The per-loop `--max-turns` cap was hit without a final response (chat.go:290).
@@ -13,9 +12,10 @@ pub enum ChatError {
         /// The local cap that was exhausted.
         turns: std::num::NonZeroU32,
     },
-    /// The run-wide `TurnBudget` was exhausted (chat.go:293-294).
+    /// The run-wide `TurnBudget` was exhausted (chat.go:293-294). Go's text named the child agents it was
+    /// shared with; they went with the retired `delegate` toolset (DIVERGENCES).
     #[error(
-        "tool loop reached the --max-turns limit without a final response ({turns} turns, shared by this run and everything it delegated)"
+        "tool loop reached the --max-turns limit without a final response ({turns} turns, the whole run's budget)"
     )]
     SharedCap {
         /// The shared cap that was exhausted.
@@ -24,12 +24,6 @@ pub enum ChatError {
     /// The provider failed; Display is the provider's own text.
     #[error(transparent)]
     Provider(#[from] ProviderError),
-    /// A delegation named an agent that is not configured (chat/delegate.go:119).
-    #[error("unknown agent {0:?}")]
-    UnknownAgent(String),
-    /// `ChildFactory` failure passthrough (`agent "x": …` texts).
-    #[error("{0}")]
-    Child(#[source] BoxError),
     /// `--output-format` was neither `text` nor `json` (chat/output.go:51).
     #[error("unknown output format {0:?} (want text or json)")]
     BadFormat(String),
@@ -56,16 +50,8 @@ mod tests {
         );
         assert_eq!(
             ChatError::SharedCap { turns: 5 }.to_string(),
-            "tool loop reached the --max-turns limit without a final response (5 turns, shared by this run and everything it delegated)"
-        );
-        assert_eq!(
-            ChatError::UnknownAgent("x".to_owned()).to_string(),
-            "unknown agent \"x\""
+            "tool loop reached the --max-turns limit without a final response (5 turns, the whole run's budget)"
         );
         assert_eq!(ChatError::Interrupted.to_string(), "interrupted");
-        assert_eq!(
-            ChatError::Child("agent \"x\": no key".into()).to_string(),
-            "agent \"x\": no key"
-        );
     }
 }

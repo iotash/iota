@@ -1,15 +1,12 @@
-//! The run-wide turn budget and the delegated section of the report (`chat/turns_test.go`, the loop-level half —
-//! the pure `TurnBudget`/`DelegationLedger` tests live in `iota-core`).
+//! The run-wide turn budget (`chat/turns_test.go`, the loop-level half — the pure `TurnBudget` tests live
+//! beside the type).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::{Arc, atomic::Ordering};
 
-use iota::chat::report::delegated_report;
-use iota::chat::turns::{DelegationLedger, RunCtx, TurnBudget};
-use iota::chat::{ChatError, QuietHost, RunRecorder, execute_with_tools};
-use iota::provider::ProviderKind;
+use iota::chat::turns::{RunCtx, TurnBudget};
+use iota::chat::{ChatError, QuietHost, execute_with_tools};
 use iota::provider::model::Message;
-use iota::provider::usage::Usage;
 use iota::testing::{FakeToolProvider, StaticDispatcher};
 use iota::tool::Dispatcher;
 
@@ -36,7 +33,7 @@ async fn spend(cx: &RunCtx) -> usize {
     );
     assert_eq!(
         err.to_string(),
-        "tool loop reached the --max-turns limit without a final response (5 turns, shared by this run and everything it delegated)"
+        "tool loop reached the --max-turns limit without a final response (5 turns, the whole run's budget)"
     );
     tp.calls.load(Ordering::SeqCst)
 }
@@ -51,74 +48,12 @@ async fn test_turn_budget_is_shared_across_loops() {
         ..RunCtx::default()
     };
     let first = spend(&cx).await;
-    let second = spend(&cx.child()).await;
+    let second = spend(&cx.clone()).await;
     assert_eq!(first, 5, "first loop must run the whole budget");
     assert_eq!(
         second, 0,
         "second loop must run 0 rounds after the pool was spent"
     );
-}
-
-// Go: chat/turns_test.go:161
-#[test]
-fn test_report_keeps_delegated_separate() {
-    // The delegated total stays out of the parent's own figures: one says what this agent spent, the other what
-    // it spent by delegating.
-    let mut rec = RunRecorder::start();
-    rec.observe(
-        Some(Usage {
-            input: 9,
-            output: 1,
-            total: 10,
-            ..Usage::default()
-        }),
-        Vec::new(),
-    );
-    let ledger = DelegationLedger::default();
-    ledger.add(
-        4,
-        Usage {
-            input: 3600,
-            output: 400,
-            total: 4000,
-            ..Usage::default()
-        },
-    );
-    let rep = rec.report(
-        ProviderKind::OpenAi,
-        "gpt-test",
-        "done",
-        Vec::new(),
-        Vec::new(),
-        delegated_report(&ledger),
-        None,
-    );
-    assert_eq!(
-        rep.usage.total_tokens, 10,
-        "own usage = the parent's own calls only"
-    );
-    assert_eq!(rep.rounds, 1, "own rounds = the parent's own rounds only");
-    let delegated = rep.delegated.expect("want the children's total");
-    assert_eq!(delegated.rounds, 4);
-    assert_eq!(delegated.usage.total_tokens, 4000);
-    assert_eq!(delegated.usage.input_tokens, 3600);
-
-    // And it is omitted entirely when nothing was delegated.
-    let bare = RunRecorder::start();
-    let rep = bare.report(
-        ProviderKind::OpenAi,
-        "gpt-test",
-        "x",
-        Vec::new(),
-        Vec::new(),
-        delegated_report(&DelegationLedger::default()),
-        None,
-    );
-    assert!(
-        rep.delegated.is_none(),
-        "a run that delegated nothing carries a delegated section"
-    );
-    assert_eq!(rep.rounds, 0);
 }
 
 // New: the budget is spent BEFORE the model call, so a round that errors still cost a turn, and the local cap is
