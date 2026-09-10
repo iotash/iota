@@ -10,7 +10,7 @@ Seeded from POLICY.md §3 (approved fixes) and §4 (approved intentional diverge
 
 | id | area | Go behaviour | Rust behaviour | reason |
 |---|---|---|---|---|
-| F-01 | defer_mode capability check | `ResolveDeferMode(pc.DeferMode, pc.Type, …)` compares the RAW `type:` field (empty when the entry has no `type:`), so `providers: anthropic: {defer_mode: reference}` degrades to normal with a double-space warning | `resolve_defer_mode(name, ProviderKind /* resolved */, warn)` | Go bug; POLICY §3 |
+| F-01 | defer_mode capability check | `ResolveDeferMode(pc.DeferMode, pc.Type, …)` compares the RAW `type:` field (empty when the entry has no `type:`), so `providers: anthropic: {defer_mode: reference}` degrades to normal with a double-space warning | the RESOLVED `ProviderKind` decides, and a mode the dialect cannot speak is refused by `Config::load` (`models.<name>: defer_mode … does not apply to provider type …`) instead of degrading to normal | Go bug; POLICY §3. Amended 2026-09-10 by the three-layer config (brain page `config-three-layers`): `defer_mode` moved to `models:`, where the provider — and therefore the dialect — is already fixed, so the check happens once, at load. |
 | F-02 | `--mcp ""` / whitespace | panics (`parts[0]` on an empty slice) | `mcp::config::McpFlagError::EmptyFlag` → `CliError::McpFlag` → `Error: --mcp: empty server specification`, exit 1 | POLICY §3 |
 | F-03 | `-m ""` | indistinguishable from no `-m`; drops into the TUI | `Error: --message must not be empty`, exit 1 | POLICY §3 |
 | F-04 | chat-completions sparse tool-call indices | iterates `0..len(map)`; a gap silently drops later calls | iterate the sorted key set (`BTreeMap<u64, _>`) | POLICY §3 |

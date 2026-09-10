@@ -13,15 +13,15 @@ A lightweight AI chat CLI for the terminal, written in Rust. Supports multiple p
 - **File attachments** — send images, PDFs, and text files alongside messages; `/file` opens a tabbed surface with the attached list and a directory browser
 - **Non-interactive mode** — single message in, response out, pipe-friendly
 - **Conversation history** — full context maintained within a session
-- **Session persistence** — every interactive session is auto-saved (losslessly: messages, tool calls, attachments, reasoning) to `~/.iota/sessions/`. Resume with `/session` in chat or `--resume[=<id>]` at launch (any unique id prefix works), and resuming echoes the last few exchanges back to the terminal; auto-titled by the model after the first reply; `--no-save` (or `no_save: true` per provider) starts ephemeral — nothing touches disk unless you run `/save [title]` mid-chat, which persists the whole backlog and auto-saves from then on (great for exploratory chats you might or might not keep)
-- **Context management** — live token accounting against the context window (configurable via `--context-window`, `context_window:` per provider, or the `/model` Context tab), with `/compact` LLM-summarization of older history; when the window nears full a confirmation is offered before compacting (declining snoozes the prompt until usage grows further)
+- **Session persistence** — every interactive session is auto-saved (losslessly: messages, tool calls, attachments, reasoning) to `~/.iota/sessions/`. Resume with `/session` in chat or `--resume[=<id>]` at launch (any unique id prefix works), and resuming echoes the last few exchanges back to the terminal; auto-titled by the model after the first reply; `--no-save` (or `no_save: true` per agent) starts ephemeral — nothing touches disk unless you run `/save [title]` mid-chat, which persists the whole backlog and auto-saves from then on (great for exploratory chats you might or might not keep)
+- **Context management** — live token accounting against the context window (configurable via `--context-window`, `context_window:` per model, or the `/model` Context tab), with `/compact` LLM-summarization of older history; when the window nears full a confirmation is offered before compacting (declining snoozes the prompt until usage grows further)
 - **Model settings mid-chat** — `/model` opens a tabbed panel over the model, context window, reasoning effort, and temperature (plus a read-only view of the system prompt in effect), all persisted with the session and replayed on resume
 - **Conversation export** — `/export` renders the session to a single self-contained HTML file (inline CSS, dark mode with a toggle, syntax-highlighted code) or a plain Markdown document; saved sessions export the full on-disk log, so compaction never hides older rounds (ephemeral `--no-save` sessions export the current in-memory view)
-- **Agent mode** — opt-in via `--agent` (or `agent: true` per provider): layered `AGENTS.md` instructions and [Agent Skills](https://agentskills.io/specification) are injected as a volatile system-prompt overlay, the `agent` toolset (`load_skill`) is auto-enabled, and sessions are grouped per project
+- **Agent mode** — opt-in via `--agent` (or `workspace: true` per agent): layered `AGENTS.md` instructions and [Agent Skills](https://agentskills.io/specification) are injected as a volatile system-prompt overlay, the `skills` toolset (`load_skill`) is auto-enabled, and sessions are grouped per project
 - **Request inspector** — `/debug` opens a two-tab console: a **Verbose** toggle turns recording on/off (off by default; `/debug on` / `/debug off` do the same from the prompt), and **Messages** browses the captured API calls (newest first), each summarized by action and content (e.g. `Chat 你好…`) rather than raw method/URL — drill into any one to read its `↑ Request` and `↓ Response` bodies, pretty-printed, with `c` to copy to the clipboard. Nothing is printed to the terminal
-- **Host integration** — the terminal's native progress indicator follows the turn (busy, needs input, error), a desktop notification is sent when a reply lands or the model needs you while the window is unfocused (`notify: false` per provider turns it off), and the cmux multiplexer is driven natively when detected
+- **Host integration** — the terminal's native progress indicator follows the turn (busy, needs input, error), a desktop notification is sent when a reply lands or the model needs you while the window is unfocused (`notify: false` per agent turns it off), and the cmux multiplexer is driven natively when detected
 - **System prompt** — set via flag or interactive input
-- **Config file** — persistent API keys, default models, custom provider aliases, and MCP server definitions via `~/.iota.yaml`
+- **Config file** — three layers in `~/.iota.yaml`: `providers:` (endpoints and API keys), `models:` (configured models and their protocol), `agents:` (prompt, tools, MCP subset), plus MCP server definitions
 - **Styled terminal output** — color-coded prompts
 
 ## Install
@@ -93,7 +93,7 @@ Headless resume (`-m` with `--resume=<id>`) takes what you did not pass from the
 
 ### Config File
 
-iota supports YAML config files for persistent settings and custom provider aliases.
+iota supports YAML config files for persistent settings, models and agents.
 
 #### Config Lookup Order
 
@@ -101,45 +101,86 @@ iota supports YAML config files for persistent settings and custom provider alia
 2. `./.iota.yaml` or `./.iota.yml` (project-local, merges over global)
 3. `-c/--config <path>` (explicit, highest priority, used alone)
 
-Same-name providers in later files override earlier ones.
+Same-name entries in later files override earlier ones, whole entry at a time.
 
 #### Priority
 
 For individual values: **CLI flag > env var > config file**.
 
+#### The three layers
+
+The config has three top-level maps, each answering one question:
+
+| Map | Answers | Keys |
+|-----|---------|------|
+| `providers:` | *how do I reach the API?* | `type`, `key`, `url` |
+| `models:` | *which model, and what does its protocol look like?* | `provider`, `id`, `context_window`, `defer_mode`, image knobs, `effort`/`temperature`/`top_p` defaults |
+| `agents:` | *how do I use it?* | `models`, `system`/`system_file`, `tools`, `mcp_servers`, `workspace`, `no_save`, `notify`, `description`, and overrides for the three tunables |
+
+The positional argument is resolved against all three, in that order, then
+against the built-in provider types — so `iota reviewer`, `iota sonnet`,
+`iota deepseek` and `iota openai -M gpt-4o` all work, and a name defined in
+two layers is taken from the higher one.
+
+#### Referring to a model
+
+Wherever a model is named — `agents.<name>.models`, a `models:` shorthand,
+`-M` — three forms are accepted:
+
+| Form | Means |
+|------|-------|
+| `sonnet` | the `models:` entry called `sonnet` |
+| `anthropic:claude-sonnet-4` | that model id, on that provider (everything after the FIRST colon is the id, so `openrouter:anthropic/claude-3.5-sonnet` works) |
+| `anthropic:*` | every model the provider lists, fetched at startup |
+
+**No space after the colon.** `- anthropic: claude-x` is a YAML *mapping*, not
+a string; iota says so rather than failing with a type error.
+
 #### Example
 
 ```yaml
 # ~/.iota.yaml
-providers:
+providers:                   # endpoints: how to connect, how to authenticate
   openai:
     key: sk-official
-    model: gpt-4o
-
-  deepseek:                  # custom alias
-    type: openai             # underlying provider type
-    key: ${env:DEEPSEEK_KEY} # key/url/system_file expand ${…} variables
+  anthropic:
+    key: ${env:ANTHROPIC_KEY}
+  deepseek:                  # a custom endpoint
+    type: openai             # the underlying provider type
+    key: ${env:DEEPSEEK_KEY} # key/url expand ${…} variables
     url: https://api.deepseek.com/v1
-    model: deepseek-chat
-    system: "You are a helpful coding assistant"
 
-  reviewer:
-    type: openresponses
-    key: sk-xxx
-    model: gpt-5.2
-    system_file: ${appHome}/prompts/reviewer.md  # prompt from a file (inline `system` wins)
+models:                      # configured models: provider + id + protocol + defaults
+  sonnet: anthropic:claude-sonnet-4-20250514    # shorthand: provider:id
+  gpt5:
+    provider: openai
+    id: gpt-5.2
+    context_window: 400k     # context window for compaction accounting (--context-window overrides)
+    defer_mode: system-tools # protocol for deferred MCP tools: normal|reference|tool-search|system-tools
     effort: high             # default reasoning effort: low|medium|high|xhigh|max
     temperature: 0.7         # default sampling temperature, 0.0-2.0 (-t and /model override)
     top_p: 0.9               # nucleus sampling, 0.0-1.0 (advanced: tune this OR temperature, not both;
                              # reasoning models reject/ignore it — omit to use the provider default)
-    context_window: 200k     # context window for compaction accounting (--context-window overrides)
-    mcp_servers: [github]    # load only these MCP servers; [] = none; key absent = all
-    defer_mode: normal       # protocol for deferred MCP tools: normal|reference|tool-search|system-tools
+  chat: deepseek:deepseek-chat
 
-  claude:
-    type: anthropic
-    key: sk-ant-xxx
-    model: claude-sonnet-4-20250514
+agents:                      # usage: how a model is driven
+  default:
+    models: [gpt5, sonnet, "deepseek:*"]   # candidate set, best first; the FIRST one is the default
+    system: "You are a helpful coding assistant"
+    tools:
+      code:
+      shell:
+    mcp_servers: [github]    # load only these MCP servers; [] = none; key absent = all
+    workspace: true          # project overlay + skills (what --agent switches on)
+
+  reviewer:
+    models: [sonnet]
+    system_file: ${appHome}/prompts/reviewer.md  # prompt from a file (inline `system` wins)
+    description: Reads a diff and reports what is wrong with it   # shown to `delegate`
+    effort: high             # overrides the model's default (one level, no deeper)
+
+  scratch:
+    models: ["openai:*"]     # a wildcard first entry starts in the model picker
     no_save: true            # start ephemeral (like --no-save); an explicit --resume outranks it
     notify: false            # no desktop notification while the terminal is unfocused (default: on)
 
@@ -159,14 +200,78 @@ mcp_servers:
     # only a search_tools entry is advertised and the model loads this
     # server's tools on demand — the value IS the group's one-line summary
     # shown in the manifest (that's why it's a string, not a bool). Worth it
-    # for servers with many tools; leave unset for small ones. The provider
-    # key defer_mode selects the protocol (default "normal"; see docs/design/tool-defer.md).
-    defer: "GitHub repos, issues, PRs, code search"
+    # for servers with many tools; leave unset for small ones. The MODEL's
+    # defer_mode selects the protocol (default "normal"; see
+    # docs/design/tool-defer.md) — and because a protocol belongs to a
+    # provider's dialect, a mode the provider cannot speak is refused when the
+    # config loads rather than quietly downgraded.
 ```
+
+With this config:
+
+```bash
+# The agent named "default": its first model (gpt5 → openai/gpt-5.2), prompt, tools and MCP subset
+iota default -m "hello"
+
+# A model entry on its own — no agent, so no tools and no system prompt
+iota sonnet -m "hello"
+
+# A provider on its own: -M picks the model, config key used, no need for -k
+iota openai -m "hi" -M gpt-4o
+
+# -M also takes provider:id, which moves the run to that endpoint
+iota default -M "deepseek:deepseek-reasoner" -m "hi"
+
+# CLI flags override the config
+iota openai -k sk-override -m "hi" -M gpt-4o
+```
+
+`-M` accepts a candidate's name, a bare model id, or `provider:id`. A model
+outside the agent's `models:` list is a warning, not a refusal — the list is
+advice about what works well here, not a whitelist.
+
+#### Migrating from the one-layer config
+
+Earlier versions kept everything under `providers.<name>`. That still works:
+iota splits such a block into the three entries it means and prints one line
+saying what moved.
+
+```yaml
+# before — one layer
+providers:
+  deepseek:
+    type: openai
+    key: ${env:DEEPSEEK_KEY}
+    url: https://api.deepseek.com/v1
+    model: deepseek-chat
+    system: "You are terse"
+    tools: {code: {}}
+    agent: true
+
+# after — three layers
+providers:
+  deepseek: {type: openai, key: "${env:DEEPSEEK_KEY}", url: https://api.deepseek.com/v1}
+models:
+  deepseek: deepseek:deepseek-chat
+agents:
+  deepseek:
+    models: [deepseek]
+    system: "You are terse"
+    tools: {code: {}}
+    workspace: true
+```
+
+Two keys were renamed on the way: a provider's `agent: true` is an agent's
+`workspace: true`, and the `agent` toolset is now called `skills`. Both old
+spellings are accepted with a warning. `tools.delegate.agents` as a *mapping*
+of names to providers still works too; the new form is a list of top-level
+agents (see below). The compatibility layer will be removed after 1.0.
 
 #### Variable Expansion
 
-Provider config values (`key`, `url`, `system_file`) and MCP server values (`command`, `args`, `url`, `env`, `headers`) support VS Code-style variable expansion:
+Provider values (`key`, `url`), an agent's `system_file` and MCP server values
+(`command`, `args`, `url`, `env`, `headers`) support VS Code-style variable
+expansion:
 
 | Variable | Expands to |
 |----------|-----------|
@@ -177,19 +282,6 @@ Provider config values (`key`, `url`, `system_file`) and MCP server values (`com
 | `${env:VAR}` | Value of environment variable `VAR` |
 
 Unknown variables are left untouched.
-
-With this config:
-
-```bash
-# Use the "deepseek" alias — resolves to OpenAI provider with DeepSeek's key/URL/model
-iota deepseek -m "hello"
-
-# Config key used, no need for -k
-iota openai -m "hi" -M gpt-4o
-
-# CLI flag overrides config
-iota openai -k sk-override -m "hi" -M gpt-4o
-```
 
 ### Image Generation
 
@@ -240,7 +332,11 @@ providers:
     type: imagen
     key: ${env:ZENMUX_API_KEY}
     url: https://zenmux.ai/api/vertex-ai  # omit for the official Gemini API
-    model: bytedance/doubao-seedream-5.0-pro
+
+models:
+  seedream:
+    provider: seedream
+    id: bytedance/doubao-seedream-5.0-pro
     aspect_ratio: "3:2"                   # optional generation defaults,
     image_size: "2K"                      # passed through verbatim
     negative_prompt: "blurry, watermark"
@@ -295,28 +391,25 @@ image-capable ones when the server provides capability metadata.
 ### Built-in Toolsets
 
 Besides MCP servers, iota ships built-in tools grouped into named
-**toolsets** that you enable per provider in the config file. A toolset is
-enabled by listing it under that provider's `tools:` key; the value is the
+**toolsets** that you enable per agent in the config file. A toolset is
+enabled by listing it under that agent's `tools:` key; the value is the
 set's shared configuration, and an empty value uses its defaults. Available
 sets: `shell` (running bash commands, sandboxed), `code` (reading, searching,
-and editing project files), `agent` (skill activation; auto-enabled by agent
+and editing project files), `skills` (skill activation; auto-enabled by agent
 mode), `ask` (interactive questions to the user; enabled by default in
 interactive sessions — disable with `ask: false`), and `delegate` (running a
 task as a child agent).
 
 ```yaml
-providers:
+agents:
   claude:
-    type: anthropic
-    key: sk-ant-xxx
-    model: claude-sonnet-4-20250514
+    models: ["anthropic:claude-sonnet-4-20250514"]
     tools:
       shell:                 # empty → sandboxed, network blocked
       code:
 
-  openai:
-    key: sk-official
-    model: gpt-4o
+  coder:
+    models: ["openai:gpt-4o"]
     tools:
       shell:
         network: true        # allow network inside the sandbox
@@ -333,7 +426,7 @@ switches, one Enter commits all; single- or multi-select per question, and an
 "Other…" free-text answer unless the model disables it). `confirm` is a
 single yes/no. ESC declines — the model is told and proceeds on its own.
 Zero side effects, on by default interactively, absent in `-m` runs; opt out
-per provider with `tools: {ask: false}`.
+per agent with `tools: {ask: false}`.
 
 #### `delegate` — `delegate`
 
@@ -341,23 +434,30 @@ Runs a task as a **child agent**: its own context, its own tool loop, and
 only its final answer comes back — no tool calls, no reasoning. A survey that
 takes twenty rounds costs this conversation one paragraph.
 
-An agent is a name for a provider entry you already have, so nothing about
-the child is configured twice — its model, tools, approval settings, system
-prompt and sampling all come from the entry it names:
+A child IS one of your top-level `agents:` entries, so nothing about it is
+configured twice — its model, tools, approval settings, system prompt and
+sampling all come from that entry, and `description` (what the model chooses
+between agents on) lives there too:
 
 ```yaml
-tools:
-  delegate:
-    max_turns: 30            # optional per-child cap; default unlimited
-    agents:
-      search: fast-provider
-      review:
-        provider: careful-provider
-        description: Reads a diff and reports what is wrong with it
+agents:
+  search:
+    models: [fast]
+    description: Looks things up and reports back
+  review:
+    models: [careful]
+    system_file: ${appHome}/prompts/review.md
+    description: Reads a diff and reports what is wrong with it
+  main:
+    models: [careful]
+    tools:
+      delegate: [search, review]     # or: {agents: [search, review], max_turns: 30}
 ```
 
-`description` is the only field that is not already over there, and it is
-what the model chooses between agents on. Image settings (`image`,
+`max_turns` is an optional per-child cap; the default is unlimited. The older
+mapping form (`agents: {search: fast-provider}`, where the value named a
+provider entry and `description` was written at the reference) is still
+accepted. Image settings (`image`,
 `json_edits`, `aspect_ratio`, `image_size`, `negative_prompt`) are the one
 part a child does not adopt — a delegation returns text, and an image a child
 generated would land on disk where the parent never learns of it.
@@ -439,15 +539,14 @@ Design: docs/design/code-toolset.md
 
 ### Agent Mode
 
-Agent mode is explicitly opt-in — pass `--agent`, or set `agent: true` on a
-provider in the config file. Off means exactly the ordinary chat behavior.
+Agent mode is explicitly opt-in — pass `--agent`, or set `workspace: true` on
+an agent in the config file. Off means exactly the ordinary chat behavior.
 
 ```yaml
-providers:
+agents:
   claude:
-    type: anthropic
-    key: sk-ant-xxx
-    agent: true
+    models: ["anthropic:claude-sonnet-4-20250514"]
+    workspace: true
 ```
 
 Everything is anchored at the **project root**: the git root of the working
@@ -479,15 +578,15 @@ Discovered skills are advertised to the model as a name + description catalog
 inside the overlay; the model activates one by calling `load_skill` with the
 skill's name, reads files the skill references through the same tool's `file`
 argument, and runs bundled scripts through `bash` (enable the `shell`
-toolset for the provider if your skills need scripts). Invalid skills are
+toolset for the agent if your skills need scripts). Invalid skills are
 skipped with a warning, never fatal. You can also run a skill yourself with
 `/skills <name> [instructions]` — the skill's instructions become the message
 that is sent.
 
-#### `agent` — `load_skill`
+#### `skills` — `load_skill`
 
-Agent mode auto-enables the `agent` toolset. Its `load_skill` tool activates a
-skill by name: it returns the skill's instructions (the `SKILL.md` body) and
+Agent mode auto-enables the `skills` toolset (it was called `agent` before the
+config split). Its `load_skill` tool activates a skill by name: it returns the skill's instructions (the `SKILL.md` body) and
 directory, and the optional `file` argument reads a file bundled inside that
 directory — reads never leave the skill's directory. Output is size-capped
 with an optional `offset`/`limit` line window. The set can also be enabled
@@ -590,13 +689,16 @@ iota openai -M gpt-4o
 echo "Explain quicksort" | iota openai -M gpt-4o -m -
 cat prompt.txt | iota openai -M gpt-4o -m -
 
-# Use a provider alias from config
-iota deepseek -m "Explain quicksort"
+# Use a configured agent (its models, prompt and tools)
+iota reviewer -m "Explain quicksort"
+
+# Use a configured model on its own
+iota sonnet -m "Explain quicksort"
 
 # One-shot image generation with a dedicated image provider (prints the saved path)
 iota seedream -m "A red bicycle leaning on a stone wall, golden hour"
 
-# List all configured providers and aliases
+# List all configured providers
 iota -l
 
 # List available models for a provider

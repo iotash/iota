@@ -73,12 +73,20 @@ would always be empty. A group whose server has not connected shows as
 
 ## defer_mode: the protocol is pluggable
 
-`defer_mode` on the PROVIDER selects which protocol realizes the deferral —
-orthogonal to which servers defer. Modes live in a registry
-(`tool/defermode.go`, one implementation + one table line per mode);
-unknown or unsupported modes warn and fall back to `normal`, and runtime
-degradation is part of every future mode's contract (model-level
-requirements cannot be judged client-side).
+`defer_mode` on the MODEL (`models.<name>.defer_mode`; it lived on the
+provider before the three-layer config of 2026-09-10) selects which protocol
+realizes the deferral — orthogonal to which servers defer. Modes live in a
+registry (`tool/defermode.go`, one implementation + one table line per mode).
+
+Which modes a provider can speak is a property of its DIALECT, and a model
+already names its provider, so the check happens where the mode is written:
+`Config::load` refuses `defer_mode` on a dialect that cannot speak it
+(`models.<name>: defer_mode "reference" does not apply to provider type
+openai`) rather than warning at assembly time and silently falling back. An
+unrecognised SPELLING is still a warning with a `normal` fallback — a typo
+should not lock a user out of a run that would otherwise work. Runtime
+degradation remains part of every future mode's contract for the
+requirements that cannot be judged client-side (model-level ones).
 
 | mode | status | protocol |
 |---|---|---|
