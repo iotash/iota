@@ -924,6 +924,145 @@ fn model_flag_is_quiet_without_a_declared_candidate_set() {
     assert!(warnings.is_empty(), "{warnings:?}");
 }
 
+// ---------------------------------------------------------------- the implicit `agents.default`
+
+/// A run with no positional argument takes `agents.default` when the config DECLARES one — the whole entry,
+/// not just its model.
+#[test]
+fn a_declared_default_agent_runs_without_a_positional_argument() {
+    let cfg = config(
+        "
+providers:
+  anthropic: {key: ak}
+  openai: {key: pk}
+models:
+  sonnet: anthropic:claude-sonnet-4
+agents:
+  default:
+    models: [sonnet]
+    system: the default prompt
+    workspace: true
+",
+    );
+
+    let s = resolve(&[], &cfg, &[]).unwrap();
+    assert_eq!(s.name, iota::cmd::DEFAULT_AGENT);
+    assert_eq!(s.raw_type, "anthropic");
+    assert_eq!(s.model, "claude-sonnet-4");
+    assert_eq!(s.system, "the default prompt");
+    assert_eq!(s.api_key, "ak");
+    assert!(s.agent_mode, "the default agent's workspace: true applies");
+    assert_eq!(s.resolved.agent_name, iota::cmd::DEFAULT_AGENT);
+
+    // Naming it explicitly means the same thing.
+    assert_eq!(resolve(&["default"], &cfg, &[]).unwrap(), s);
+
+    // The flags still apply to it.
+    let s = resolve(&["-M", "openai:gpt-4o"], &cfg, &[]).unwrap();
+    assert_eq!(
+        (s.raw_type.as_str(), s.model.as_str()),
+        ("openai", "gpt-4o")
+    );
+    assert_eq!(s.api_key, "pk");
+}
+
+/// A positional argument ALWAYS wins over the fallback — it is a fallback, not a default overlay.
+#[test]
+fn a_positional_argument_beats_the_default_agent() {
+    let cfg = config(
+        "
+providers:
+  anthropic: {key: ak}
+  openai: {key: pk}
+agents:
+  default:
+    models: [\"anthropic:claude-x\"]
+    system: the default prompt
+    workspace: true
+  other:
+    models: [\"openai:gpt-4o\"]
+    system: the other prompt
+",
+    );
+
+    let s = resolve(&["other"], &cfg, &[]).unwrap();
+    assert_eq!(s.name, "other");
+    assert_eq!(
+        (s.raw_type.as_str(), s.model.as_str()),
+        ("openai", "gpt-4o")
+    );
+    assert_eq!(s.system, "the other prompt");
+    assert!(!s.agent_mode, "nothing of the default leaks in");
+
+    // A bare provider name reaches no agent at all, exactly as it does without a default configured.
+    let s = resolve(&["openai"], &cfg, &[]).unwrap();
+    assert_eq!(s.system, "");
+    assert_eq!(s.model, "");
+    assert!(!s.agent_mode);
+}
+
+/// Without a declared `agents.default` the refusal is Go's, unchanged to the byte.
+#[test]
+fn no_default_agent_keeps_the_provider_required_text() {
+    const WANT: &str = "provider argument is required (e.g. openai, anthropic, gemini), or use -l to list available providers";
+
+    for cfg in [
+        Config::default(),
+        // A config with agents, models and providers — just not a `default` agent.
+        config(
+            "providers:\n  openai: {key: k}\nmodels:\n  default: openai:gpt-4o\nagents:\n  coder:\n    models: [default]\n",
+        ),
+    ] {
+        let err = resolve(&[], &cfg, &[]).unwrap_err();
+        assert_eq!(err.to_string(), WANT);
+        assert!(matches!(err, CliError::ProviderRequired));
+    }
+
+    // `models.default` and `providers.default` are NOT fallbacks: one entry point, and only the one that
+    // says how to drive a model.
+    let cfg = config("providers:\n  default: {type: openai, key: k}\n");
+    assert!(matches!(
+        resolve(&[], &cfg, &[]).unwrap_err(),
+        CliError::ProviderRequired
+    ));
+    assert_eq!(
+        resolve(&["default"], &cfg, &[]).unwrap().raw_type,
+        "openai",
+        "…while naming it still works"
+    );
+}
+
+/// An `agents.default` the MIGRATION synthesised from a one-layer `providers.default` block is the old shape
+/// of a provider entry, not a declaration of intent: it never becomes the implicit default, so a one-layer
+/// config keeps failing exactly as it did.
+#[test]
+fn a_migrated_default_agent_is_not_a_declared_one() {
+    let cfg = config(
+        "providers:\n  default:\n    type: openai\n    key: k\n    model: gpt-4o\n    system: from the old block\n    agent: true\n",
+    );
+    // The migration DID produce the entry…
+    assert!(cfg.agents.contains_key("default"));
+    assert_eq!(cfg.agents["default"].system, "from the old block");
+    // …and naming it works, with everything the block configured.
+    let s = resolve(&["default"], &cfg, &[]).unwrap();
+    assert_eq!(s.model, "gpt-4o");
+    assert_eq!(s.system, "from the old block");
+    assert!(s.agent_mode);
+    // …but it is not what a bare `iota` falls back to.
+    assert!(matches!(
+        resolve(&[], &cfg, &[]).unwrap_err(),
+        CliError::ProviderRequired
+    ));
+
+    // A file that DECLARES `agents.default` alongside the one-layer block does become the fallback.
+    let cfg = config(
+        "providers:\n  default:\n    type: openai\n    key: k\n    model: gpt-4o\nagents:\n  default:\n    models: [\"default:gpt-5.2\"]\n    system: declared\n",
+    );
+    let s = resolve(&[], &cfg, &[]).unwrap();
+    assert_eq!(s.model, "gpt-5.2");
+    assert_eq!(s.system, "declared");
+}
+
 /// The four-level resolution as the command sees it: an agent shadows a model shadows a provider, and the
 /// agent's switches reach `RunSettings`.
 #[test]

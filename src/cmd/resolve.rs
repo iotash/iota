@@ -49,7 +49,8 @@ pub struct RunSettings {
     pub resume: Option<String>,
 }
 
-/// Pure. Order (root.go:53-123): provider arg required → the four-level positional resolution
+/// Pure. Order (root.go:53-123): the positional name — the argument, else `agents.default` when the config
+/// declares one, else `ProviderRequired` → the four-level positional resolution
 /// (`resolve_target`) → `-M` (which may move the run to another provider) → key (flag verbatim, even `""` >
 /// env of RESOLVED type > config key) → url/system (flag > config; `system_file` error) → `ApiKeyRequired`
 /// → `-m -` reads stdin (trim; `failed to read from stdin: {e}`; `no message provided via stdin`) → `-m ""` →
@@ -68,8 +69,13 @@ pub fn resolve_run(
     stdin: &mut dyn std::io::Read,
     warn: &mut dyn FnMut(String),
 ) -> Result<RunSettings, CliError> {
-    // root.go:53-60
-    let name = cli.provider.as_deref().ok_or(CliError::ProviderRequired)?;
+    // root.go:53-60, plus the implicit `agents.default`: a run with no positional argument takes that agent
+    // when the config DECLARES one, and a positional argument always wins over it. Without a declared
+    // `agents.default` the refusal is unchanged, down to the byte.
+    let name = match cli.provider.as_deref() {
+        Some(name) => name,
+        None => cfg.default_agent().ok_or(CliError::ProviderRequired)?,
+    };
     let mut resolved = resolve_target(cfg, name)?;
     if let Some(flag) = &cli.model {
         apply_model_flag(&mut resolved, cfg, flag, warn);
@@ -251,7 +257,8 @@ pub enum CliError {
     /// is byte-equal to the Go line it ports (CONTRACTS S§5).
     #[error(transparent)]
     Session(#[from] crate::session::SessionError),
-    /// No provider argument and no `-l`.
+    /// No positional argument, no DECLARED `agents.default` to fall back to, and no `-l`. The text is Go's
+    /// and stays so: a config that never declared a default is in exactly the situation Go described.
     #[error(
         "provider argument is required (e.g. openai, anthropic, gemini), or use -l to list available providers"
     )]

@@ -35,6 +35,9 @@ pub use provider::ProviderConfig;
 
 use migrate::LegacyProviderEntry;
 
+/// The `agents:` entry a run with no positional argument falls back to.
+pub const DEFAULT_AGENT: &str = "default";
+
 /// One top-level `mcp_servers.<name>` entry (config.go `MCPServerConfig`).
 #[derive(serde::Deserialize, Debug, Clone, Default, PartialEq, Eq)]
 #[serde(default)]
@@ -354,6 +357,20 @@ impl Config {
             None => (name.to_owned(), ProviderConfig::default()),
             Some(provider_cfg) => (provider_cfg.kind_or(name).to_owned(), provider_cfg.clone()),
         }
+    }
+
+    /// The agent a run with no positional argument falls back to: [`DEFAULT_AGENT`], and only when the user
+    /// WROTE it. An entry the migration layer synthesised from a one-layer `providers.default` block is not a
+    /// declaration of intent — it is the old shape of a provider entry that happens to be called `default` —
+    /// so it never becomes the implicit default and such a config keeps failing exactly as it did.
+    ///
+    /// The fallback is deliberately `agents:` only: a `models.default` or a `providers.default` says which
+    /// model or endpoint it is, never how to drive one, so there is one entry point and not three.
+    pub fn default_agent(&self) -> Option<&str> {
+        self.agents
+            .get(DEFAULT_AGENT)
+            .filter(|a| !a.migrated)
+            .map(|_| DEFAULT_AGENT)
     }
 
     /// The four-level positional resolution: `agents:` → `models:` → `providers:` → a built-in type. A name

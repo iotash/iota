@@ -122,6 +122,13 @@ against the built-in provider types — so `iota reviewer`, `iota sonnet`,
 `iota deepseek` and `iota openai -M gpt-4o` all work, and a name defined in
 two layers is taken from the higher one.
 
+**`agents.default` is what a bare `iota` runs.** With no positional argument
+iota falls back to the agent called `default`; a positional argument always
+wins over it, and without such an agent the invocation still asks for one.
+Only an `agents.default` you wrote counts — an entry the migration layer
+synthesised from an old one-layer `providers.default` block does not, and
+neither does a `models.default` or a `providers.default`.
+
 #### Referring to a model
 
 Wherever a model is named — `agents.<name>.models`, a `models:` shorthand,
@@ -211,6 +218,7 @@ With this config:
 
 ```bash
 # The agent named "default": its first model (gpt5 → openai/gpt-5.2), prompt, tools and MCP subset
+iota                              # …and with no argument at all, that is what runs
 iota default -m "hello"
 
 # A model entry on its own — no agent, so no tools and no system prompt

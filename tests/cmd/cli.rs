@@ -92,6 +92,45 @@ fn cli_provider_required() {
     );
 }
 
+/// A DECLARED `agents.default` is what a bare `iota` runs: the invocation gets all the way to Go's
+/// interactive branch instead of the "provider argument is required" refusal.
+#[test]
+fn cli_bare_invocation_uses_the_default_agent() {
+    let (dir, home) = project();
+    write_config(
+        dir.path(),
+        "providers:\n  openai: {key: k}\nagents:\n  default:\n    models: [\"openai:gpt-4o\"]\n",
+    );
+    assert_error(
+        &iota(dir.path(), &home).output().expect("run"),
+        branch_error(),
+    );
+
+    // A one-layer `providers.default` block is the OLD shape of a provider entry, not a declared default:
+    // the migration synthesises `agents.default` from it, and a bare `iota` still refuses.
+    let (dir, home) = project();
+    write_config(
+        dir.path(),
+        "providers:\n  default:\n    type: openai\n    key: k\n    model: gpt-4o\n    tools: {code: {}}\n",
+    );
+    let o = iota(dir.path(), &home).output().expect("run");
+    assert_eq!(o.status.code(), Some(1), "stderr was: {}", err(&o));
+    assert_eq!(
+        err(&o),
+        "Warning: config providers.default: model, tools now belong under `models:` / `agents:` (still accepted; see README)\n\
+         Error: provider argument is required (e.g. openai, anthropic, gemini), or use -l to list available providers\n"
+    );
+    // …while naming it reaches the interactive branch, so nothing about the entry itself changed.
+    let mut cmd = iota(dir.path(), &home);
+    cmd.arg("default");
+    let o = cmd.output().expect("run");
+    assert!(
+        err(&o).ends_with(&format!("Error: {}\n", branch_error())),
+        "{}",
+        err(&o)
+    );
+}
+
 /// root.go:538-546 — and DIVERGENCES D-22: the name check runs BEFORE the headless/interactive branch, so an
 /// invocation without `-m` still gets this error rather than `interactive mode is not available…`.
 #[test]
