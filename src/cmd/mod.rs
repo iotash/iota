@@ -83,6 +83,9 @@ pub(crate) struct ToolAssembly {
     /// The ask-seam bridge, created UNBOUND (the dispatcher is built long before the UI exists); `None`
     /// headlessly, so `new_ask_set` contributes no tools and the model never sees them (root.go:221-232).
     pub(crate) interactor: Option<Arc<crate::repl::Interactor>>,
+    /// The run's background-job registry, also held by `tool_env` — the `bash` tool starts jobs through it,
+    /// the branch that takes it over delivers their notices and kills what is left on the way out.
+    pub(crate) jobs: Arc<crate::shell::jobs::Jobs>,
     /// Agent-mode options.
     pub(crate) agent: AgentOptions,
 }
@@ -253,10 +256,13 @@ fn assemble_tools(
         AgentOptions::default()
     };
 
-    // root.go:221-232
+    // root.go:221-232, plus the run's job registry: the `bash` tool needs it to exist before the dispatcher
+    // is built, and both branches need the same one afterwards.
+    let jobs = crate::shell::jobs::Jobs::new(&dirs.temp);
     let mut tool_env = Env {
         project_root: project_root.clone(),
         dirs: dirs.clone(),
+        jobs: Some(Arc::clone(&jobs)),
         ..Env::default()
     };
     let interactor = settings
@@ -272,6 +278,7 @@ fn assemble_tools(
         mcp_defers,
         tool_env,
         interactor,
+        jobs,
         agent,
     })
 }
@@ -295,6 +302,7 @@ async fn run_headless(
         mcp_defers,
         tool_env,
         interactor: _,
+        jobs,
         agent,
     } = tools;
     let RunContext {
@@ -402,6 +410,7 @@ async fn run_headless(
             .as_ref()
             .map(|(_, s)| s.messages.clone())
             .unwrap_or_default(),
+        jobs: Some(jobs),
     };
     let outcome = crate::chat::once(cancel, &mut *provider, dispatch, opts, &mut *io.stdout).await;
 

@@ -1,6 +1,11 @@
 //! Process execution (internal/shell/shell.go + `proc_unix.go`): one `bash -c` child in its own process group,
-//! combined stdout/stderr through one pipe into a capped buffer, cancellation and timeout by `killpg(SIGKILL)`,
-//! then the output caps.
+//! combined stdout/stderr, cancellation and timeout by `killpg(SIGKILL)`, then the output caps.
+//!
+//! The three stages are separate so a background job (`crate::shell::jobs`) can reuse the first two without
+//! the third: [`spawn`] starts the child (sandbox, working directory, `setpgid`, one destination for fd 1 and
+//! fd 2), [`Started::wait`] supervises it (deadline, cancellation, `killpg`, the bounded reap), and only the
+//! in-memory [`Capture::Memory`] destination collects output at all. [`run`] is those three in a row — the
+//! foreground `bash` call, unchanged.
 
 use std::{
     path::{Path, PathBuf},
@@ -99,17 +104,68 @@ impl RunResult {
     }
 }
 
-/// The single execution entry point. Order after the child finishes (shell.go:97-121): `timed_out` (deadline) →
-/// cancelled (token) → wait-delay expiry (exited, code) → Ok(0) → nonzero/signal (-1) → spawn error.
-pub async fn run(cancel: &CancellationToken, opts: Options) -> RunResult {
+/// Where a child's combined stdout/stderr goes.
+pub enum Capture {
+    /// A capped in-memory buffer, read back by [`Started::into_output`] — the foreground `bash` call.
+    Memory,
+    /// Appended straight to this file, UNCAPPED — a background job's log, which the reader caps when it
+    /// reads it back.
+    File(std::fs::File),
+}
+
+/// Why [`spawn`] produced no child.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SpawnFail {
+    /// The token was already done: Go never spawns under a cancelled context (its `Start` returns
+    /// `ctx.Err()` and the run reports Cancelled).
+    Cancelled,
+    /// The command could not be started.
+    Failed(ShellError),
+}
+
+/// A started child: the handle to wait on, its process-group leader, and the in-memory sink when the
+/// output is captured.
+pub struct Started {
+    child: tokio::process::Child,
+    /// The group leader — what `kill_group` signals. Public so a supervisor outside this module (the job
+    /// registry) can kill the tree without awaiting anything.
+    pub pid: Option<i32>,
+    reader: Option<tokio::task::JoinHandle<()>>,
+    buf: Option<Arc<Mutex<CappedBuffer>>>,
+}
+
+/// What supervising a started child observed. Mutually exclusive by construction: the deadline wins over
+/// cancellation, both win over the exit status.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Waited {
+    /// Exit code (-1 on signal death); meaningful only with `exited`.
+    pub exit_code: i32,
+    /// Whether the child ended on its own.
+    pub exited: bool,
+    /// Whether the deadline killed it.
+    pub timed_out: bool,
+    /// Whether the token killed it.
+    pub cancelled: bool,
+    /// A `wait` failure.
+    pub err: Option<ShellError>,
+}
+
+/// Starts `bash -c opts.command` in its own process group with fd 1 and fd 2 joined into `capture`
+/// (shell.go:69-96). The order of the refusals is Go's: no bash → sandbox → a done token → the spawn itself.
+pub fn spawn(
+    cancel: &CancellationToken,
+    opts: &Options,
+    capture: Capture,
+) -> Result<Started, SpawnFail> {
+    let fail = |e: ShellError| SpawnFail::Failed(e);
     // bash is resolved per call, like Go's exec.LookPath (shell.go:69-72).
     let Some(bash) = find_in_path("bash") else {
-        return RunResult::failed(ShellError::NoBash);
+        return Err(fail(ShellError::NoBash));
     };
     let mut cmd = if let Some(sb) = &opts.sandbox {
         match sandbox_command(&bash, &opts.command, &writable_paths(sb), sb.network) {
             Ok(c) => c,
-            Err(e) => return RunResult::failed(ShellError::Sandbox(e)),
+            Err(e) => return Err(fail(ShellError::Sandbox(e))),
         }
     } else {
         let mut c = tokio::process::Command::new(&bash);
@@ -118,10 +174,7 @@ pub async fn run(cancel: &CancellationToken, opts: Options) -> RunResult {
     };
     // Go never spawns under a done context: Start returns ctx.Err() and the run reports Cancelled.
     if cancel.is_cancelled() {
-        return RunResult {
-            cancelled: true,
-            ..RunResult::default()
-        };
+        return Err(SpawnFail::Cancelled);
     }
     if !opts.dir.as_os_str().is_empty() {
         cmd.current_dir(&opts.dir);
@@ -135,78 +188,129 @@ pub async fn run(cancel: &CancellationToken, opts: Options) -> RunResult {
     // Setpgid: cancellation kills the whole tree, not just the wrapper (proc_unix.go:21).
     cmd.process_group(0);
 
-    // ONE pipe for fd 1 and fd 2, like Go's shared cappedBuffer: interleaving is preserved in write order.
-    let (rx_fd, tx_fd) = match nix::unistd::pipe() {
-        Ok(p) => p,
-        Err(e) => return RunResult::failed(ShellError::Spawn(e.to_string())),
-    };
-    let tx_dup = match tx_fd.try_clone() {
-        Ok(f) => f,
-        Err(e) => return RunResult::failed(ShellError::Spawn(e.to_string())),
-    };
-    cmd.stdout(Stdio::from(tx_fd));
-    cmd.stderr(Stdio::from(tx_dup));
-    let rx = match tokio::net::unix::pipe::Receiver::from_owned_fd(rx_fd) {
-        Ok(r) => r,
-        Err(e) => return RunResult::failed(ShellError::Spawn(e.to_string())),
+    // ONE destination for fd 1 and fd 2, like Go's shared cappedBuffer: interleaving is preserved in write
+    // order either way.
+    let sink = match capture {
+        Capture::File(file) => {
+            let dup = file
+                .try_clone()
+                .map_err(|e| fail(ShellError::Spawn(e.to_string())))?;
+            cmd.stdout(Stdio::from(file));
+            cmd.stderr(Stdio::from(dup));
+            None
+        }
+        Capture::Memory => {
+            let (rx_fd, tx_fd) =
+                nix::unistd::pipe().map_err(|e| fail(ShellError::Spawn(e.to_string())))?;
+            let tx_dup = tx_fd
+                .try_clone()
+                .map_err(|e| fail(ShellError::Spawn(e.to_string())))?;
+            cmd.stdout(Stdio::from(tx_fd));
+            cmd.stderr(Stdio::from(tx_dup));
+            let rx = tokio::net::unix::pipe::Receiver::from_owned_fd(rx_fd)
+                .map_err(|e| fail(ShellError::Spawn(e.to_string())))?;
+            Some(rx)
+        }
     };
 
     let spawned = cmd.spawn();
     // The command still owns the parent's copies of the write end; dropping it lets the reader see EOF.
     drop(cmd);
-    let mut child = match spawned {
-        Ok(c) => c,
-        Err(e) => return RunResult::failed(ShellError::Spawn(e.to_string())),
-    };
+    let child = spawned.map_err(|e| fail(ShellError::Spawn(e.to_string())))?;
     let pid = child.id().and_then(|p| i32::try_from(p).ok());
-
-    let buf = Arc::new(Mutex::new(CappedBuffer::default()));
-    let mut reader = tokio::spawn(drain(rx, Arc::clone(&buf)));
-
-    let mut timed_out = false;
-    let mut cancelled = false;
-    let finished = tokio::select! {
-        s = child.wait() => Some(s),
-        () = cancel.cancelled() => { cancelled = true; None },
-        () = deadline(opts.timeout) => { timed_out = true; None },
-    };
-    let finished = if finished.is_some() {
-        finished
-    } else {
-        // Cancelled or timed out: SIGKILL the group, then bound the reap like Go's WaitDelay.
-        kill_group(pid);
-        let reaped = tokio::time::timeout(WAIT_DELAY, child.wait()).await.ok();
-        if reaped.is_none() {
-            let _ = child.start_kill();
+    let (reader, buf) = match sink {
+        None => (None, None),
+        Some(rx) => {
+            let buf = Arc::new(Mutex::new(CappedBuffer::default()));
+            let task = tokio::spawn(drain(rx, Arc::clone(&buf)));
+            (Some(task), Some(buf))
         }
-        reaped
     };
-    // WaitDelay: a background child holding the pipe cannot wedge the run — its later output is forfeit.
-    if tokio::time::timeout(WAIT_DELAY, &mut reader).await.is_err() {
-        reader.abort();
-    }
-    let captured = std::mem::take(&mut *lock(&buf)).into_string();
+    Ok(Started {
+        child,
+        pid,
+        reader,
+        buf,
+    })
+}
 
-    let mut res = RunResult {
-        output: truncate_output(&captured),
-        ..RunResult::default()
-    };
-    if timed_out {
-        res.timed_out = true;
-    } else if cancelled {
-        res.cancelled = true;
-    } else {
+impl Started {
+    /// Supervises the child to its end (shell.go:97-121): the deadline and the token race `wait()`, either
+    /// one `killpg`s the group and reaps it under Go's `WaitDelay`, and a capture reader is given the same
+    /// bounded window to drain — a background grandchild holding the pipe can never wedge the caller.
+    pub async fn wait(&mut self, cancel: &CancellationToken, timeout: Option<Duration>) -> Waited {
+        let mut w = Waited::default();
+        let finished = tokio::select! {
+            s = self.child.wait() => Some(s),
+            () = cancel.cancelled() => { w.cancelled = true; None },
+            () = deadline(timeout) => { w.timed_out = true; None },
+        };
+        let finished = if finished.is_some() {
+            finished
+        } else {
+            // Cancelled or timed out: SIGKILL the group, then bound the reap like Go's WaitDelay.
+            kill_group(self.pid);
+            let reaped = tokio::time::timeout(WAIT_DELAY, self.child.wait())
+                .await
+                .ok();
+            if reaped.is_none() {
+                let _ = self.child.start_kill();
+            }
+            reaped
+        };
+        if let Some(reader) = &mut self.reader
+            && tokio::time::timeout(WAIT_DELAY, &mut *reader)
+                .await
+                .is_err()
+        {
+            reader.abort();
+        }
+        if w.timed_out || w.cancelled {
+            return w;
+        }
         match finished {
             // ExitStatus::code() is None on signal death — Go's ExitError.ExitCode() reports -1 there.
             Some(Ok(st)) => {
-                res.exited = true;
-                res.exit_code = st.code().unwrap_or(-1);
+                w.exited = true;
+                w.exit_code = st.code().unwrap_or(-1);
             }
-            Some(Err(e)) => res.err = Some(ShellError::Spawn(e.to_string())),
-            None => res.exited = true,
+            Some(Err(e)) => w.err = Some(ShellError::Spawn(e.to_string())),
+            None => w.exited = true,
         }
+        w
     }
-    res
+
+    /// Everything the in-memory capture collected ([`Capture::File`] collects nothing here — the file has it).
+    pub fn into_output(self) -> String {
+        self.buf.map_or_else(String::new, |buf| {
+            std::mem::take(&mut *lock(&buf)).into_string()
+        })
+    }
+}
+
+/// The single foreground entry point: [`spawn`] with [`Capture::Memory`], [`Started::wait`], then the output
+/// caps. Order after the child finishes (shell.go:97-121): `timed_out` (deadline) → cancelled (token) →
+/// wait-delay expiry (exited, code) → Ok(0) → nonzero/signal (-1) → spawn error.
+pub async fn run(cancel: &CancellationToken, opts: Options) -> RunResult {
+    let mut started = match spawn(cancel, &opts, Capture::Memory) {
+        Ok(s) => s,
+        Err(SpawnFail::Cancelled) => {
+            return RunResult {
+                cancelled: true,
+                ..RunResult::default()
+            };
+        }
+        Err(SpawnFail::Failed(e)) => return RunResult::failed(e),
+    };
+    let w = started.wait(cancel, opts.timeout).await;
+    RunResult {
+        output: truncate_output(&started.into_output()),
+        exit_code: w.exit_code,
+        exited: w.exited,
+        timed_out: w.timed_out,
+        cancelled: w.cancelled,
+        err: w.err,
+    }
 }
 
 /// Fires after `d`, or never when the run has no deadline.
@@ -235,7 +339,7 @@ fn lock(buf: &Mutex<CappedBuffer>) -> MutexGuard<'_, CappedBuffer> {
 
 /// `kill(-pid, SIGKILL)` (proc_unix.go:22-28): the whole group dies, and an already-gone group (`ESRCH`) is
 /// success.
-fn kill_group(pid: Option<i32>) {
+pub(crate) fn kill_group(pid: Option<i32>) {
     let Some(pid) = pid else { return };
     match nix::sys::signal::killpg(
         nix::unistd::Pid::from_raw(pid),
@@ -393,6 +497,38 @@ impl CappedBuffer {
             String::from_utf8_lossy(tail)
         )
     }
+}
+
+/// Reads `path` under the SAME byte caps a captured run gets: the whole file up to [`MAX_OUTPUT_BYTES`],
+/// else its head and its tail with the omission marker between them — byte-identical to what
+/// [`truncate_output`] would produce for the same content.
+///
+/// Two seeks, never a stream: a background job that wrote gigabytes costs the reader one open and ~30 KB,
+/// so rendering its completion notice can never stall the loop that renders it.
+pub fn read_capped(path: &Path) -> std::io::Result<String> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    let mut f = std::fs::File::open(path)?;
+    let total = usize::try_from(f.metadata()?.len()).unwrap_or(usize::MAX);
+    if total <= MAX_OUTPUT_BYTES {
+        let mut all = Vec::with_capacity(total);
+        f.read_to_end(&mut all)?;
+        return Ok(String::from_utf8_lossy(&all).into_owned());
+    }
+    let mut head = vec![0u8; HEAD_BYTES];
+    f.read_exact(&mut head)?;
+    let back = i64::try_from(TAIL_BYTES).unwrap_or(i64::MAX);
+    f.seek(SeekFrom::End(-back))?;
+    let mut tail = vec![0u8; TAIL_BYTES];
+    f.read_exact(&mut tail)?;
+    let head = trim_back_to_rune_start(&head);
+    let tail = trim_front_to_rune_start(&tail);
+    let omitted = total.saturating_sub(head.len() + tail.len());
+    Ok(format!(
+        "{}\n[... {omitted} bytes omitted ...]\n{}",
+        String::from_utf8_lossy(head),
+        String::from_utf8_lossy(tail)
+    ))
 }
 
 /// Line cap then byte cap (shell.go:204-234). Line marker

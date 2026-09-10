@@ -72,7 +72,7 @@ pub(crate) struct FrameInput<'a> {
     /// Whether any cancel scope is active (renders the ESC hints).
     pub(crate) scopes_active: bool,
     /// Queued type-ahead submits, oldest first.
-    pub(crate) queue: &'a [String],
+    pub(crate) queue: &'a [&'a str],
     /// The composer's styled rows (prompt included), 1..=5.
     pub(crate) composer_rows: &'a [String],
     /// The composer cursor as (column incl. the 2-col prompt, row within the composer

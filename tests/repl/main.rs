@@ -14,6 +14,7 @@ mod file;
 mod host;
 mod images;
 mod interrupt;
+mod jobs;
 mod settings;
 mod skills;
 mod tokens;

@@ -16,12 +16,13 @@ use crate::tool::{Env, Tool, ToolOutput, ToolResult};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::tool::args::{int_arg, str_arg};
+use crate::tool::args::{bool_arg, int_arg, str_arg};
 use crate::tool::sets::{RawNode, SetError};
 use crate::tool::yaml11;
 
 use crate::shell::exec;
 use crate::shell::exec::{Options, RunResult, Sandbox};
+use crate::shell::jobs::{JobStart, Jobs};
 
 /// Wall-clock cap of one `bash` call when it names no `timeout` (`[command timed out after 10m0s]`).
 pub(crate) const DEFAULT_BASH_TIMEOUT: Duration = Duration::from_secs(600);
@@ -32,6 +33,11 @@ const TIMEOUT_RANGE: std::ops::RangeInclusive<i64> = 1..=3600;
 
 /// The refusal a `timeout` outside [`TIMEOUT_RANGE`] gets; the command does not run.
 const TIMEOUT_ERR: &str = "timeout must be between 1 and 3600 seconds";
+
+/// The refusal a `background` call gets when the run has no job registry (tests only — both entry points
+/// bind one). Running it in the FOREGROUND instead would hold the turn for as long as the model asked to be
+/// free of it, which is the opposite of what it requested.
+const NO_JOBS_ERR: &str = "background jobs are not available in this run";
 
 /// `tools.shell` configuration.
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -63,6 +69,8 @@ impl Default for ShellConfig {
 /// The `bash` tool.
 pub(crate) struct BashTool {
     shell_cfg: ShellConfig,
+    /// The run's background-job registry (`Env.jobs`); None in a test env.
+    jobs: Option<Arc<Jobs>>,
     root: PathBuf,
     /// The process working directory — the display anchor for the optional `cwd`
     /// argument in call headers (tool/shell.go:74-78), NOT the execution dir (that
@@ -85,6 +93,7 @@ pub fn new_shell_set(env: &Env, node: Option<&RawNode>) -> Result<Vec<Arc<dyn To
     let sandboxed = shell_cfg.sandbox == "auto" && exec::available();
     Ok(vec![Arc::new(BashTool {
         shell_cfg,
+        jobs: env.jobs.clone(),
         root: env.root().unwrap_or_default(),
         cwd: env
             .dirs
@@ -111,6 +120,7 @@ impl Tool for BashTool {
         } else {
             description.push_str(BASH_DESC_UNSANDBOXED);
         }
+        description.push_str(BASH_DESC_BACKGROUND);
         ToolDef {
             name: "bash".to_owned(),
             description,
@@ -155,16 +165,16 @@ impl Tool for BashTool {
                 temp_dir: self.dirs.temp.clone(),
                 cache_dir: self.dirs.cache.clone(),
             });
-            let res = exec::run(
-                &cx.cancel,
-                Options {
-                    command,
-                    dir,
-                    timeout: Some(timeout),
-                    sandbox,
-                },
-            )
-            .await;
+            let opts = Options {
+                command,
+                dir,
+                timeout: Some(timeout),
+                sandbox,
+            };
+            if bool_arg(args, "background", false) {
+                return Ok(self.start_background(&opts));
+            }
+            let res = exec::run(&cx.cancel, opts).await;
             Ok(format_result(&res, timeout))
         })
     }
@@ -186,17 +196,47 @@ impl Tool for BashTool {
     /// tool/shell.go:82-92 (the D-12 lift): the call IS the command — `"[bash git
     /// status]"`. The argument name is noise (a bash call has one thing to say), and an
     /// explicit cwd folds into the shell idiom for it (`"cd <path> && <cmd>"`) rather
-    /// than eating a separate slot.
+    /// than eating a separate slot. A background call is marked, because the row settles
+    /// while the work is still going.
     fn header_summary(&self, args: &JsonObject) -> Option<String> {
         let cmd = crate::tool::fmt::header_command(str_arg(args, "command"));
         let dir = str_arg(args, "cwd").trim();
-        if dir.is_empty() {
-            return Some(cmd);
+        let mut summary = if dir.is_empty() {
+            cmd
+        } else {
+            format!(
+                "cd {} && {cmd}",
+                crate::tool::fmt::header_path(dir, &self.cwd, &self.root)
+            )
+        };
+        if bool_arg(args, "background", false) {
+            summary.insert_str(0, "(background) ");
         }
-        Some(format!(
-            "cd {} && {cmd}",
-            crate::tool::fmt::header_path(dir, &self.cwd, &self.root)
-        ))
+        Some(summary)
+    }
+}
+
+impl BashTool {
+    /// Hands the command to the job registry and answers with the receipt the model needs to follow it: the
+    /// id the notice will carry, the pid, and the file it can `tail` meanwhile.
+    fn start_background(&self, opts: &Options) -> ToolOutput {
+        let Some(jobs) = self.jobs.as_ref() else {
+            return ToolOutput::err(NO_JOBS_ERR);
+        };
+        match jobs.spawn(opts) {
+            Err(e) => ToolOutput::err(e.to_string()),
+            Ok(JobStart {
+                id,
+                pid,
+                output_path,
+            }) => {
+                let path = output_path.display();
+                let pid = pid.map_or_else(|| "?".to_owned(), |p| p.to_string());
+                ToolOutput::ok(format!(
+                    "Started background job {id} (pid {pid}). Output: {path}\nA notice with its exit status and output arrives when it finishes; run `tail -n 50 {path}` to see progress meanwhile."
+                ))
+            }
+        }
     }
 }
 
@@ -277,6 +317,10 @@ fn bash_schema() -> JsonObject {
                 "minimum": 1,
                 "maximum": 3600,
             },
+            "background": {
+                "type": "boolean",
+                "description": "Run the command in the background and return immediately with its job id and output file (default false).",
+            },
         },
         "required": ["command"],
     }) {
@@ -291,6 +335,8 @@ pub const BASH_DESC_PREFIX: &str = "Run a bash command line on the user's machin
 pub const BASH_DESC_SANDBOXED: &str = "Commands run inside an OS sandbox: file writes are confined to the project root and temp/cache directories (writes elsewhere fail with permission errors), and {net}.";
 /// Unsandboxed suffix.
 pub const BASH_DESC_UNSANDBOXED: &str = "Commands run WITHOUT a sandbox on this system, with the user's full permissions — be conservative.";
+/// The background-mode paragraph, appended after the sandbox suffix.
+pub const BASH_DESC_BACKGROUND: &str = "\n\nSet \"background\": true for work that outlasts a reply — a long build, a test suite, a child agent (`iota <agent> -m \"<task>\"`). The call returns at once with a job id and an output file; when the job ends you are told its exit status and shown its output, so do not poll for it (`tail` the file only if you need progress meanwhile). Up to 16 background jobs at a time, and \"timeout\" still applies. Background jobs are killed when iota exits — a job that must survive that has to detach itself (nohup/setsid).";
 
 #[cfg(test)]
 mod tests {

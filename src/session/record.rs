@@ -51,6 +51,11 @@ pub struct SessionRecord {
     /// Assistant messages cut short by the user.
     #[serde(skip_serializing_if = "is_false")]
     pub interrupted: bool,
+    /// `role == "user"` only: the text is a host notice (a finished background job), not something the
+    /// user typed. Absent in every session written before background jobs existed, which reads back as
+    /// `false` — an old log still replays exactly as it did.
+    #[serde(skip_serializing_if = "is_false")]
+    pub notice: bool,
     /// The dialect's opaque replay payload, tagged with the provider type that produced it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw: Option<SessionRaw>,

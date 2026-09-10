@@ -59,9 +59,14 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
     m.composer.suggestion_index = None;
 
     // Row 5: ↑ on an EMPTY composer pops the NEWEST queued item (LIFO, one per
-    // press) — popping IS the un-queue (model.go:444-449).
-    if key.code == KeyCode::Up && !m.queue.is_empty() && m.composer.is_blank() {
-        if let Some(last) = m.queue.pop() {
+    // press) — popping IS the un-queue (model.go:444-449). Only what the USER typed
+    // pops: a host notice is not a draft to edit, and taking it out of the queue would
+    // lose it.
+    if key.code == KeyCode::Up
+        && m.composer.is_blank()
+        && let Some(i) = m.newest_typed()
+    {
+        if let Some(last) = m.take_queued_typed(i) {
             m.composer.set_value(&last);
         }
         return;

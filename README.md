@@ -440,9 +440,9 @@ per agent with `tools: {ask: false}`.
 
 Lets the model run real bash command lines — pipes, redirects, `&&` chaining,
 heredocs — and returns their combined stdout/stderr. The model calls it with
-`command` (required), an optional `cwd` (defaults to the project root) and an
+`command` (required), an optional `cwd` (defaults to the project root), an
 optional `timeout` in seconds (default 600, maximum 3600; outside that range
-the call is refused and nothing runs).
+the call is refused and nothing runs) and an optional `background` (below).
 
 Safety model — the same one Claude Code and Codex CLI use:
 
@@ -466,12 +466,43 @@ Safety model — the same one Claude Code and Codex CLI use:
   back in call order. (Every other toolset keeps the conservative rule: only
   calls that cannot change state batch.)
 
+**Background jobs.** `"background": true` starts the command and returns at
+once with a job id, its pid and an output file:
+
+```
+Started background job b1 (pid 4242). Output: /tmp/iota-jobs/931/b1.log
+A notice with its exit status and output arrives when it finishes; run
+`tail -n 50 /tmp/iota-jobs/931/b1.log` to see progress meanwhile.
+```
+
+When the job ends, its result enters the conversation on its own as a
+**notice** — the model is told, it never polls:
+
+```
+[background job b1 finished: exit 0 after 42s] make test
+<the job's output, under the same 32 KB / 512 line caps a foreground call gets>
+```
+
+If you are sitting at the prompt, the notice wakes the model for one turn (your
+half-typed draft is untouched). If a turn is already running, it lands at the
+next round boundary, like a message you typed while the model was working. In
+`-m` runs the run does not end while a job is still going: the loop waits for
+it, hands the model the notice and gives it another round — each one counted
+against `--max-turns`.
+
+Up to **16** jobs at a time (past that the call is refused), `timeout` applies
+the same way, and the approval rules are unchanged. The log file is left on
+disk. **Background jobs are killed when iota exits** — `/quit`, Ctrl+C at the
+prompt, or the end of a `-m` run — so a resumed session never inherits one; a
+job that must survive that has to detach itself (`nohup`, `setsid`).
+
 **Child agents.** iota has no delegation tool: a child agent is
 `iota <agent> -m "<task>"` run from `bash`, which is why the set is the one
 that matters most. The child is a full run of that `agents:` entry — its own
-model, tools, MCP servers and session. For it to write without a user to ask,
-set `tools.code.auto_write` / `tools.shell.auto_run` on that agent; for it to
-reach an API at all, the parent's sandbox has to allow it, since
+model, tools, MCP servers and session. Start it with `background: true` and
+its answer comes back as the notice above. For it to write without a user to
+ask, set `tools.code.auto_write` / `tools.shell.auto_run` on that agent; for it
+to reach an API at all, the parent's sandbox has to allow it, since
 `network: false` (the default) blocks the child's HTTP too. How to dispatch,
 to whom, and how many at once is your prompt's business, not the binary's.
 
@@ -698,7 +729,7 @@ One package, one module tree: the library under `src/` holds every module and `s
 | Module (`src/`) | Role |
 |---|---|
 | `provider/`, `llm/` | The seven provider adapters (`openai`, `openresponses`, `anthropic`, `gemini`, `vertexai`, `imagen`, `images`) over a minimal built-in HTTP/SSE wire layer — no vendor SDKs |
-| `tool/`, `shell/`, `agents/` | The tool framework and the four built-in toolsets; process execution and the macOS/Linux sandboxes; the AGENTS.md and skills overlay |
+| `tool/`, `shell/`, `agents/` | The tool framework and the four built-in toolsets; process execution, the macOS/Linux sandboxes and the background-job registry; the AGENTS.md and skills overlay |
 | `mcp/` | The MCP client manager (stdio and streamable-HTTP transports, deferred tool groups) |
 | `chat/` | The non-interactive run loop (`-m`), the tool-calling loop, and the text/JSON reports |
 | `session/` | The on-disk session bundle store (`meta.json`, append-only `messages.jsonl`, `attachments/`, `images/`) |

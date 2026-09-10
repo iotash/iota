@@ -123,6 +123,7 @@ impl Fixture {
             system_interactive: false,
             imported_history: Vec::new(),
             dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
+            jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
             mcp: McpHooks {
                 servers: None,
                 events: None,
@@ -147,6 +148,7 @@ fn input(s: &str) -> Reply {
     Reply::Input(Input {
         display: s.to_owned(),
         text: s.to_owned(),
+        ..Input::default()
     })
 }
 

@@ -71,7 +71,7 @@ fn view(c: &Case) -> FrameView {
         region: &c.region,
         spin: c.spin,
         scopes_active: c.scopes_active,
-        queue: &c.queue,
+        queue: &c.queue.iter().map(String::as_str).collect::<Vec<_>>(),
         composer_rows: &composer_rows,
         composer_cursor: if c.surface.is_some() {
             None

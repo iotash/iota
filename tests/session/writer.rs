@@ -184,6 +184,53 @@ fn interrupted_flag_round_trip() {
     assert!(!sess.messages[0].interrupted());
 }
 
+// New (phase C): a background-job notice is a user-role record with one extra flag. It round-trips as a
+// notice, an ordinary user message round-trips as one, and a log written before the flag existed still
+// reads back as an ordinary user message.
+#[test]
+fn notice_flag_round_trip() {
+    let (_home, store) = temp_store();
+    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
+    let id = writer.id().to_owned();
+    let dir = writer.dir().to_path_buf();
+    writer
+        .append_messages(&[
+            Message::user("run the tests"),
+            Message::notice(
+                "[background job b1 finished: exit 0 after 42s] make test\nall green\n",
+            ),
+        ])
+        .unwrap();
+    drop(writer);
+
+    // The flag rides the record, and only when it is set (omitempty both ways).
+    let log = std::fs::read_to_string(dir.join("messages.jsonl")).unwrap();
+    let lines: Vec<&str> = log.lines().collect();
+    assert!(!lines[0].contains("notice"), "{}", lines[0]);
+    assert!(lines[1].contains(r#""role":"user""#), "{}", lines[1]);
+    assert!(lines[1].contains(r#""notice":true"#), "{}", lines[1]);
+
+    let sess = store.load(&id, KIND).unwrap();
+    assert_eq!(sess.messages.len(), 2);
+    assert!(!sess.messages[0].is_notice());
+    assert!(sess.messages[1].is_notice(), "the notice flag was lost");
+    assert_eq!(sess.messages[1].role(), Role::User);
+    assert!(sess.messages[1].content.ends_with("all green\n"));
+
+    // A pre-flag log: the same line without the key is an ordinary user message.
+    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
+    let old_id = writer.id().to_owned();
+    let old_dir = writer.dir().to_path_buf();
+    writer.append_messages(&[Message::user("seed")]).unwrap();
+    drop(writer);
+    let path = old_dir.join("messages.jsonl");
+    std::fs::write(&path, "{\"role\":\"user\",\"content\":\"typed\"}\n").unwrap();
+    let old = store.load(&old_id, KIND).unwrap();
+    assert_eq!(old.messages.len(), 1);
+    assert!(!old.messages[0].is_notice());
+    assert_eq!(old.messages[0].content, "typed");
+}
+
 // Go: chat/session_test.go:368
 #[test]
 fn lazy_session_creation() {

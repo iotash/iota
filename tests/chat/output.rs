@@ -105,6 +105,7 @@ async fn run_json(
             format: OutputFormat::Json,
             images_dir: None,
             history: Vec::new(),
+            jobs: None,
         },
         &mut buf,
     )
@@ -206,6 +207,7 @@ async fn test_once_text_mode_stays_bare() {
             format: OutputFormat::Text,
             images_dir: None,
             history: Vec::new(),
+            jobs: None,
         },
         &mut buf,
     )
@@ -228,6 +230,7 @@ async fn test_once_text_mode_stays_bare() {
             format: OutputFormat::Text,
             images_dir: None,
             history: Vec::new(),
+            jobs: None,
         },
         &mut buf,
     )
@@ -255,6 +258,7 @@ async fn test_once_text_mode_stays_bare() {
             format: OutputFormat::Text,
             images_dir: None,
             history: Vec::new(),
+            jobs: None,
         },
         &mut buf,
     )
@@ -363,6 +367,7 @@ async fn cancelled_run_reports_interrupted_in_json() {
             format: OutputFormat::Text,
             images_dir: None,
             history: Vec::new(),
+            jobs: None,
         },
         &mut buf,
     )
@@ -488,6 +493,7 @@ fn save_image_names_and_modes() {
                 format: OutputFormat::Text,
                 images_dir: Some(dir.path().to_path_buf()),
                 history: Vec::new(),
+                jobs: None,
             },
             &mut buf,
         )

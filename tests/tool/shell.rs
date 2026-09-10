@@ -24,7 +24,8 @@ use iota::shell::exec::{
 use iota::tool::Registry;
 use iota::tool::sets::{RawNode, SetError, ToolsConfig};
 use iota::tool::shell::{
-    BASH_DESC_PREFIX, BASH_DESC_SANDBOXED, BASH_DESC_UNSANDBOXED, new_shell_set,
+    BASH_DESC_BACKGROUND, BASH_DESC_PREFIX, BASH_DESC_SANDBOXED, BASH_DESC_UNSANDBOXED,
+    new_shell_set,
 };
 use iota::tool::{Dispatcher, Env, Tool};
 use pretty_assertions::assert_eq;
@@ -204,6 +205,97 @@ async fn bash_timeout_argument_caps_the_call() {
     assert!(!is_err && marker.exists());
 }
 
+/// The shell set over a temp project root WITH a job registry bound (what both entry points build).
+fn new_bash_with_jobs(cfg_yaml: &str) -> (TempDir, Arc<iota::shell::jobs::Jobs>, Arc<dyn Tool>) {
+    let (dir, mut env, _root) = shell_env();
+    let jobs = iota::shell::jobs::Jobs::new(dir.path());
+    env.jobs = Some(Arc::clone(&jobs));
+    let tools = new_shell_set(&env, node(cfg_yaml).as_ref()).expect("shell set");
+    (dir, jobs, Arc::clone(&tools[0]))
+}
+
+// New (DIVERGENCES X-07): `background: true` returns a receipt instead of the output — the job id the
+// notice will carry, the pid, and the file to tail — and the turn is free while the command runs.
+#[tokio::test]
+async fn bash_background_returns_a_receipt_and_keeps_running() {
+    let (dir, jobs, bash) = new_bash_with_jobs("sandbox: off\nauto_run: true\n");
+    let marker = dir.path().join("done.txt");
+    let cmd = format!("sleep 0.2; echo finished > {}", marker.display());
+
+    let started = std::time::Instant::now();
+    let (out, is_err) = call(&bash, json!({"command": cmd, "background": true})).await;
+    assert!(!is_err, "background start failed: {out}");
+    assert!(
+        started.elapsed() < Duration::from_millis(150),
+        "the call waited for the job: {:?}",
+        started.elapsed()
+    );
+    assert!(out.starts_with("Started background job b1 (pid "), "{out}");
+    assert!(out.contains("b1.log"), "{out}");
+    assert!(out.contains("tail -n 50 "), "{out}");
+    assert_eq!(jobs.running(), 1, "the job must still be running");
+
+    // It really ran, and it lands as ONE completion.
+    let cancel = CancellationToken::new();
+    let done = jobs.wait_any(&cancel).await.expect("a completion");
+    assert_eq!(done.id, "b1");
+    assert_eq!(done.exit, Some(0));
+    assert_eq!(
+        std::fs::read_to_string(&marker).expect("marker"),
+        "finished\n"
+    );
+    assert!(jobs.wait_any(&cancel).await.is_none());
+}
+
+// The argument checks are the foreground ones, in the same order: a bad `timeout` is refused before
+// anything is started, and a run with no registry refuses rather than silently blocking the turn.
+#[tokio::test]
+async fn bash_background_keeps_the_argument_rules() {
+    let (_dir, jobs, bash) = new_bash_with_jobs("sandbox: off\nauto_run: true\n");
+    let (out, is_err) = call(
+        &bash,
+        json!({"command": "true", "background": true, "timeout": 0}),
+    )
+    .await;
+    assert_eq!(
+        (out.as_str(), is_err),
+        ("timeout must be between 1 and 3600 seconds", true)
+    );
+    assert_eq!(jobs.running(), 0, "a refused call must start nothing");
+
+    let (out, is_err) = call(&bash, json!({"command": "  ", "background": true})).await;
+    assert!(is_err && out.contains("missing required argument"), "{out}");
+
+    // Without the host seam a background call is refused, never run in the foreground — the model asked
+    // NOT to wait for it.
+    let (_dir, _root, seamless) = new_bash("sandbox: off\nauto_run: true\n");
+    let (out, is_err) = call(&seamless, json!({"command": "true", "background": true})).await;
+    assert_eq!(
+        (out.as_str(), is_err),
+        ("background jobs are not available in this run", true)
+    );
+}
+
+// The header names the mode: a row that settles while its command is still going has to say so.
+#[test]
+fn bash_background_header_is_marked() {
+    let (_dir, _jobs, bash) = new_bash_with_jobs("sandbox: off\n");
+    let args = |v: serde_json::Value| -> JsonObject {
+        match v {
+            serde_json::Value::Object(m) => m,
+            _ => panic!("object literal expected"),
+        }
+    };
+    assert_eq!(
+        bash.header_summary(&args(json!({"command": "make test", "background": true}))),
+        Some("(background) make test".to_owned())
+    );
+    assert_eq!(
+        bash.header_summary(&args(json!({"command": "make test"}))),
+        Some("make test".to_owned())
+    );
+}
+
 // New (DIVERGENCES X-05): `bash` opts every call into the round's parallel batch, whatever it was asked
 // to run — the answer is not a property of the arguments.
 #[test]
@@ -328,14 +420,14 @@ async fn test_build_registry_shell_set_enables_bash() {
 #[test]
 fn test_bash_description_states_shell_state_contract() {
     let sandboxed_blocked = format!(
-        "{BASH_DESC_PREFIX}{}",
+        "{BASH_DESC_PREFIX}{}{BASH_DESC_BACKGROUND}",
         BASH_DESC_SANDBOXED.replace("{net}", "network access is BLOCKED")
     );
     let sandboxed_open = format!(
-        "{BASH_DESC_PREFIX}{}",
+        "{BASH_DESC_PREFIX}{}{BASH_DESC_BACKGROUND}",
         BASH_DESC_SANDBOXED.replace("{net}", "network access is allowed")
     );
-    let unsandboxed = format!("{BASH_DESC_PREFIX}{BASH_DESC_UNSANDBOXED}");
+    let unsandboxed = format!("{BASH_DESC_PREFIX}{BASH_DESC_UNSANDBOXED}{BASH_DESC_BACKGROUND}");
     for desc in [&sandboxed_blocked, &sandboxed_open, &unsandboxed] {
         for want in [
             "FRESH shell",
@@ -345,13 +437,24 @@ fn test_bash_description_states_shell_state_contract() {
             "Calls issued together run concurrently.",
             "killed after 600 seconds",
             "maximum 3600",
+            // The background mode, its notice and its lifetime (phase C).
+            "\"background\": true",
+            "Up to 16 background jobs at a time",
+            "killed when iota exits",
         ] {
             assert!(desc.contains(want), "description missing {want:?}:\n{desc}");
         }
+        assert!(
+            desc.ends_with("has to detach itself (nohup/setsid)."),
+            "the background paragraph must come last:\n{desc}"
+        );
     }
-    assert!(sandboxed_blocked.ends_with("network access is BLOCKED."));
-    assert!(sandboxed_open.ends_with("network access is allowed."));
-    assert!(unsandboxed.ends_with("full permissions — be conservative."));
+    assert!(
+        sandboxed_blocked.contains("network access is BLOCKED.\n\n"),
+        "the sandbox suffix still precedes the background paragraph"
+    );
+    assert!(sandboxed_open.contains("network access is allowed.\n\n"));
+    assert!(unsandboxed.contains("full permissions — be conservative.\n\n"));
 
     // The live tool picks the suffix its sandbox state dictates, and the schema is tool/shell.go:130-143.
     let (_dir, _root, bash) = new_bash("sandbox: off\n");
@@ -376,6 +479,10 @@ fn test_bash_description_states_shell_state_contract() {
                     "description": "Optional wall-clock cap in seconds (default 600, maximum 3600). The command is killed when it expires.",
                     "minimum": 1,
                     "maximum": 3600,
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": "Run the command in the background and return immediately with its job id and output file (default false).",
                 },
             },
             "required": ["command"],

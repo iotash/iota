@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use crate::provider::model::Message;
-use crate::ui::facade::Ui;
+use crate::ui::facade::{InputKind, Ui};
 
 use crate::repl::meter::CtxMeter;
 use crate::repl::transcript::Transcript;
@@ -14,7 +14,8 @@ use crate::repl::transcript::Transcript;
 /// The steering bookkeeping of one turn (Go's `steer` + `injected` closures on `Run`'s
 /// stack): draining echoes the `❯` block — which SETTLES the running activity group, the
 /// user being a stronger boundary than content — and remembers every taken injection so
-/// a retried attempt can re-land it (the queue no longer holds it).
+/// a retried attempt can re-land it (the queue no longer holds it). A background job's
+/// completion notice arrives the same way and is echoed as a notice line instead.
 pub(crate) struct Steerer {
     ui: Arc<dyn Ui>,
     tr: Arc<Transcript>,
@@ -38,8 +39,15 @@ impl Steerer {
     pub(crate) async fn drain(&mut self, ctxm: &mut CtxMeter) -> Vec<Message> {
         let mut out = Vec::new();
         for input in self.ui.take_queued_messages().await {
-            self.tr.user(&input.display);
-            let m = Message::user(input.text);
+            // A host notice (a background job finished) rides the SAME queue and lands at the same
+            // boundary, but it is not the user speaking: one dim headline, and the message says so.
+            let m = if input.kind == InputKind::Notice {
+                self.tr.notice(&input.display);
+                Message::notice(input.text)
+            } else {
+                self.tr.user(&input.display);
+                Message::user(input.text)
+            };
             out.push(m.clone());
             self.injected.push(m.clone());
             ctxm.note(&m);

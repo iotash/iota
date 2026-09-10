@@ -31,10 +31,10 @@ use crate::host::{Event, Kind, Presenter, State};
 use crate::llm::reqlog::RequestLog;
 use crate::markdown::CodeTheme;
 use crate::provider::Provider;
-use crate::provider::model::{AssistantBody, Attachment, Message, Role};
+use crate::provider::model::{AssistantBody, Attachment, Body, Message, Role};
 use crate::session::{SessionStore, SessionWriter};
 use crate::tool::Dispatcher;
-use crate::ui::facade::{StatusData, Ui};
+use crate::ui::facade::{InputKind, StatusData, Ui};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -66,6 +66,17 @@ const RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// The `Done` ping of an image-only reply (chat/run.go:1105).
 const IMAGE_READY: &str = "Image ready";
+
+/// A finished background job as ONE input: `display` is the headline the transcript prints, `text` is the
+/// headline plus the job's output — what the model reads. The split is exactly `Input`'s own (the echo is
+/// bounded, the send is not).
+pub(crate) fn job_notice(done: &crate::shell::jobs::JobDone) -> crate::ui::facade::Input {
+    crate::ui::facade::Input {
+        display: crate::shell::jobs::notice_headline(done),
+        text: crate::shell::jobs::notice_text(done),
+        kind: crate::ui::facade::InputKind::Notice,
+    }
+}
 
 /// One MCP server's terminal connect status (what the connect reporter drains).
 pub struct McpEvent {
@@ -117,6 +128,9 @@ pub struct RunParams {
     pub imported_history: Vec<crate::provider::model::Message>,
     /// The tool dispatcher.
     pub dispatch: Arc<dyn crate::tool::Dispatcher>,
+    /// The run's background-job registry: the loop installs the delivery sink on it and kills whatever is
+    /// still running on the way out.
+    pub jobs: Arc<crate::shell::jobs::Jobs>,
     /// MCP glue.
     pub mcp: McpHooks,
     /// Session wiring.
@@ -149,6 +163,8 @@ pub(crate) struct Repl {
     pub(crate) provider: Box<dyn Provider>,
     /// The tool dispatcher (LIVE — never cached).
     pub(crate) dispatch: Arc<dyn Dispatcher>,
+    /// The run's background jobs (their notices arrive through the facade's queue, not through here).
+    pub(crate) jobs: Arc<crate::shell::jobs::Jobs>,
     /// MCP display hooks.
     pub(crate) mcp: McpHooks,
     /// The session writer, shared with the title pass (`None` while ephemeral).
@@ -328,6 +344,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         system_interactive,
         imported_history,
         dispatch,
+        jobs,
         mcp,
         session,
         context_window,
@@ -499,6 +516,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         tr: Arc::clone(&tr),
         provider,
         dispatch: Arc::clone(&dispatch),
+        jobs: Arc::clone(&jobs),
         mcp,
         writer: Arc::clone(&writer),
         store,
@@ -525,6 +543,16 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         compact_declined: 0,
     };
     repl.push_status();
+
+    // A finished job becomes the next input: the facade serves it to a parked `read_input` at once (an idle
+    // loop wakes and answers it) or queues it behind what is already typed ahead, and `Steerer::drain` takes
+    // it at the next round boundary when a turn is running. ONE delivery path, no second queue.
+    {
+        let ui_sink = Arc::clone(&ui);
+        repl.jobs.set_sink(Some(Box::new(move |done| {
+            ui_sink.enqueue(job_notice(&done));
+        })));
+    }
 
     if let Some(events) = repl.mcp.events.take() {
         tokio::spawn(report_mcp_failures(events, Arc::clone(&tr), ui.done()));
@@ -579,6 +607,10 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             repl.join_title().await;
             break Ok(());
         };
+        // A host notice (a finished background job) answers the same `read_input` a typed line does — that
+        // is what wakes an idle loop — but it is not something the user said: it skips the echo, and the
+        // dispatch chain below is inert for it anyway (its text can never be a slash command).
+        let notice = input.kind == InputKind::Notice;
         let line = input.text.trim().to_owned();
         if line.is_empty() {
             continue;
@@ -595,84 +627,93 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         // The input EXPANSIONS (`/edit`, `/redo`, `/skills <name>`) rewrite `content` and
         // fall through into the message path; the echo still shows what was typed.
         let mut content = line.clone();
-        // /file heads Go's chain (chat/run.go:390): the path form attaches immediately,
-        // the bare form opens the Attached/Add surface (WP54, T-12).
-        if let Some(arg) = match_cmd(&line, "/file") {
-            file::cmd_file(&mut repl, arg).await;
-            continue;
-        }
-        // /edit and /redo exist only on a dedicated image provider (run.go:450-516).
-        if repl.table.image_enabled()
-            && let Some(arg) = match_cmd(&line, "/edit")
-        {
-            match edit::cmd_edit(&mut repl, arg).await {
-                EditOutcome::Continue => continue,
-                EditOutcome::Send(c) => content = c,
+        // A notice never reaches the dispatch chain: it is not something the user typed, and its
+        // text (a `[background job …]` headline) could not be a command anyway.
+        if !notice {
+            // /file heads Go's chain (chat/run.go:390): the path form attaches immediately,
+            // the bare form opens the Attached/Add surface (WP54, T-12).
+            if let Some(arg) = match_cmd(&line, "/file") {
+                file::cmd_file(&mut repl, arg).await;
+                continue;
             }
-        }
-        if repl.table.image_enabled()
-            && let Some(arg) = match_cmd(&line, "/redo")
-        {
-            match edit::cmd_redo(&mut repl, arg) {
-                EditOutcome::Continue => continue,
-                EditOutcome::Send(c) => content = c,
+            // /edit and /redo exist only on a dedicated image provider (run.go:450-516).
+            if repl.table.image_enabled()
+                && let Some(arg) = match_cmd(&line, "/edit")
+            {
+                match edit::cmd_edit(&mut repl, arg).await {
+                    EditOutcome::Continue => continue,
+                    EditOutcome::Send(c) => content = c,
+                }
             }
-        }
-        if match_cmd(&line, "/model").is_some() {
-            model::cmd_model(&mut repl).await;
-            repl.push_status();
-            continue;
-        }
-        if match_cmd(&line, "/session").is_some() {
-            session::cmd_session(&mut repl).await;
-            continue;
-        }
-        // /compact sits between /session and /export in Go's chain, and exists only while
-        // the meter is live — the same gate its table row hangs off, so it can never be
-        // advertised without dispatching (chat/run.go:797-802).
-        if repl.ctxm.is_enabled()
-            && let Some(hint) = match_cmd(&line, "/compact")
-        {
-            crate::repl::commands::compact::compact_now(&mut repl, hint, true).await;
-            continue;
-        }
-        if let Some(arg) = match_cmd(&line, "/export") {
-            export::cmd_export(&mut repl, arg).await;
-            continue;
-        }
-        if repl.table.save_enabled()
-            && let Some(arg) = match_cmd(&line, "/save")
-        {
-            save::cmd_save(&mut repl, arg);
-            continue;
-        }
-        if match_cmd(&line, "/tools").is_some() {
-            tools::cmd_tools(&repl).await;
-            continue;
-        }
-        if let Some(arg) = match_cmd(&line, "/debug") {
-            debug::cmd_debug(&mut repl, arg).await;
-            continue;
-        }
-        // /skills exists only in agent mode (run.go:923-937); the same gate as its rows.
-        if repl.overlay.is_some()
-            && repl.table.agent_enabled()
-            && let Some(arg) = match_cmd(&line, "/skills")
-        {
-            match skills::cmd_skills(&mut repl, arg).await {
-                SkillsOutcome::Continue => continue,
-                SkillsOutcome::Send(c) => content = c,
+            if repl.table.image_enabled()
+                && let Some(arg) = match_cmd(&line, "/redo")
+            {
+                match edit::cmd_redo(&mut repl, arg) {
+                    EditOutcome::Continue => continue,
+                    EditOutcome::Send(c) => content = c,
+                }
             }
-        }
-        if match_cmd(&line, "/status").is_some() {
-            status::cmd_status(&mut repl).await;
-            continue;
+            if match_cmd(&line, "/model").is_some() {
+                model::cmd_model(&mut repl).await;
+                repl.push_status();
+                continue;
+            }
+            if match_cmd(&line, "/session").is_some() {
+                session::cmd_session(&mut repl).await;
+                continue;
+            }
+            // /compact sits between /session and /export in Go's chain, and exists only while
+            // the meter is live — the same gate its table row hangs off, so it can never be
+            // advertised without dispatching (chat/run.go:797-802).
+            if repl.ctxm.is_enabled()
+                && let Some(hint) = match_cmd(&line, "/compact")
+            {
+                crate::repl::commands::compact::compact_now(&mut repl, hint, true).await;
+                continue;
+            }
+            if let Some(arg) = match_cmd(&line, "/export") {
+                export::cmd_export(&mut repl, arg).await;
+                continue;
+            }
+            if repl.table.save_enabled()
+                && let Some(arg) = match_cmd(&line, "/save")
+            {
+                save::cmd_save(&mut repl, arg);
+                continue;
+            }
+            if match_cmd(&line, "/tools").is_some() {
+                tools::cmd_tools(&repl).await;
+                continue;
+            }
+            if let Some(arg) = match_cmd(&line, "/debug") {
+                debug::cmd_debug(&mut repl, arg).await;
+                continue;
+            }
+            // /skills exists only in agent mode (run.go:923-937); the same gate as its rows.
+            if repl.overlay.is_some()
+                && repl.table.agent_enabled()
+                && let Some(arg) = match_cmd(&line, "/skills")
+            {
+                match skills::cmd_skills(&mut repl, arg).await {
+                    SkillsOutcome::Continue => continue,
+                    SkillsOutcome::Send(c) => content = c,
+                }
+            }
+            if match_cmd(&line, "/status").is_some() {
+                status::cmd_status(&mut repl).await;
+                continue;
+            }
         }
 
         // ---- the message path (chat/run.go:958-998) ----
         // The ❯ echo comes FIRST, so what the user typed is on screen even if the model
-        // pick below fails.
-        repl.tr.user(&input.display);
+        // pick below fails. A notice prints its ONE headline instead — its output belongs to the model,
+        // not to the scrollback (the file is there for whoever wants all of it).
+        if notice {
+            repl.tr.notice(&input.display);
+        } else {
+            repl.tr.user(&input.display);
+        }
         if repl.provider.model().is_empty()
             && !model::ensure_model(
                 &repl.ui,
@@ -695,7 +736,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         repl.history.push(Message {
             content,
             attachments: std::mem::take(&mut repl.pending),
-            ..Message::default()
+            body: if notice { Body::Notice } else { Body::User },
         });
         let hist0 = repl.history.len();
         // Name the session NOW — before the turn, which may spend minutes in tool calls.
@@ -856,6 +897,9 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             }
         }
     };
+    // The loop is over: a background job has no one left to report to, and `background` never promised to
+    // outlive iota. `kill_all` is synchronous `killpg`, so nothing depends on a task being polled again.
+    repl.jobs.kill_all();
     // Go's `defer pres.Close()`: the hosts are cleared before the facade goes down.
     repl.pres.close().await;
     outcome

@@ -135,8 +135,8 @@ pub(crate) struct Model {
     pub(crate) status: StatusData,
     /// Window title (sanitized by the facade; emitted on change).
     pub(crate) title: String,
-    /// Type-ahead queue, oldest first.
-    pub(crate) queue: Vec<String>,
+    /// Type-ahead queue, oldest first — what the user typed AND what the host injected.
+    pub(crate) queue: Vec<Queued>,
     /// The parked `read_input` caller, if any.
     pub(crate) waiter: Option<Waiter>,
     /// The live busy phase, if any.
@@ -179,6 +179,52 @@ pub(crate) struct Model {
     /// never reports focus never pings, which is Go's behaviour — whoever is already
     /// watching needs no bell.
     pub(crate) focused: bool,
+}
+
+/// One entry of the type-ahead queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Queued {
+    /// What the user typed, paste tags UNEXPANDED (the store is consulted at drain time, so a re-submit
+    /// after an edit re-expands from it).
+    Typed(String),
+    /// A host notice, already a finished [`Input`]: it has no paste tags and its `display` is the one line
+    /// that stands for it.
+    Notice(Input),
+}
+
+impl Queued {
+    /// The finished input, expanding paste tags for a typed entry.
+    fn into_input(self, pastes: &[String]) -> Input {
+        match self {
+            Self::Typed(text) => paste::make_input(pastes, &text),
+            Self::Notice(input) => input,
+        }
+    }
+
+    /// Whether a steering drain may take this entry: a queued slash command stops the take
+    /// (model.go:290-300), and a notice — which can never be one — always passes.
+    fn is_steerable(&self) -> bool {
+        match self {
+            Self::Typed(text) => !text.starts_with('/'),
+            Self::Notice(_) => true,
+        }
+    }
+
+    /// The row the queue block shows for this entry.
+    fn row(&self) -> &str {
+        match self {
+            Self::Typed(text) => text,
+            Self::Notice(input) => &input.display,
+        }
+    }
+
+    /// The typed text, when this is the user's own (the ↑ pop and the interrupt fold-back).
+    fn typed(&self) -> Option<&str> {
+        match self {
+            Self::Typed(text) => Some(text),
+            Self::Notice(_) => None,
+        }
+    }
 }
 
 impl Model {
@@ -354,9 +400,19 @@ impl Model {
                     self.waiter = Some(Waiter { id, reply });
                 } else {
                     let head = self.queue.remove(0);
-                    let _ = reply.send(Ok(paste::make_input(&self.pastes, &head)));
+                    let _ = reply.send(Ok(head.into_input(&self.pastes)));
                     self.dirty = true;
                 }
+            }
+            UiMsg::Enqueue(input) => {
+                // Exactly `submit`'s law, minus the composer: a parked waiter is served directly,
+                // otherwise it queues behind whatever is already typed ahead.
+                if let Some(w) = self.waiter.take() {
+                    let _ = w.reply.send(Ok(input));
+                } else {
+                    self.queue.push(Queued::Notice(input));
+                }
+                self.dirty = true;
             }
             UiMsg::ReadCancel { id } => {
                 // Revoke only the SAME waiter (model.go:302-306).
@@ -368,9 +424,9 @@ impl Model {
                 // Steering drain: the contiguous non-command prefix; a slash command
                 // stops the take (model.go:290-300).
                 let mut taken = Vec::new();
-                while self.queue.first().is_some_and(|q| !q.starts_with('/')) {
+                while self.queue.first().is_some_and(Queued::is_steerable) {
                     let head = self.queue.remove(0);
-                    taken.push(paste::make_input(&self.pastes, &head));
+                    taken.push(head.into_input(&self.pastes));
                 }
                 let _ = reply.send(taken);
                 self.dirty = true;
@@ -506,7 +562,28 @@ impl Model {
         if let Some(w) = self.waiter.take() {
             let _ = w.reply.send(Ok(paste::make_input(&self.pastes, &text)));
         } else {
-            self.queue.push(text);
+            self.queue.push(Queued::Typed(text));
+        }
+    }
+
+    /// The queue as the rows the frame shows it — the ONE read the tests assert on.
+    pub(crate) fn queue_rows(&self) -> Vec<&str> {
+        self.queue.iter().map(Queued::row).collect()
+    }
+
+    /// Index of the newest TYPED queue entry, when there is one (the ↑ pop's target).
+    pub(crate) fn newest_typed(&self) -> Option<usize> {
+        self.queue.iter().rposition(|q| q.typed().is_some())
+    }
+
+    /// Removes queue entry `i` and returns its typed text (`None` when it is a notice or out of range).
+    pub(crate) fn take_queued_typed(&mut self, i: usize) -> Option<String> {
+        if i >= self.queue.len() || self.queue[i].typed().is_none() {
+            return None;
+        }
+        match self.queue.remove(i) {
+            Queued::Typed(text) => Some(text),
+            Queued::Notice(_) => None,
         }
     }
 
@@ -521,14 +598,23 @@ impl Model {
         for token in self.cancels.drain(i..) {
             token.cancel();
         }
-        if !self.queue.is_empty() {
-            let mut draft = self.queue.join("\n");
+        // Only what the USER typed folds back — an interrupt means "the situation changed", and a host
+        // notice is not the user's draft to edit. Notices stay queued so the next read still delivers them.
+        let typed: Vec<String> = self
+            .queue
+            .extract_if(.., |q| matches!(q, Queued::Typed(_)))
+            .map(|q| match q {
+                Queued::Typed(t) => t,
+                Queued::Notice(i) => i.text,
+            })
+            .collect();
+        if !typed.is_empty() {
+            let mut draft = typed.join("\n");
             let cur = self.composer.value().to_owned();
             if !cur.trim().is_empty() {
                 draft.push('\n');
                 draft.push_str(&cur);
             }
-            self.queue.clear();
             self.composer.set_value(&draft);
             let rows = self.composer.line_count().min(MAX_COMPOSER_ROWS);
             self.composer.set_height(rows);
@@ -557,6 +643,7 @@ impl Model {
             s.st.set_dark(dark);
             s.st.render(width)
         });
+        let queue_rows = self.queue_rows();
         let composer_rows = self.composer.rows(self.width);
         let cursor = match &surface {
             // The composer's real cursor is suppressed while a surface is open; an
@@ -583,7 +670,7 @@ impl Model {
             region: &self.region_snap,
             spin: self.spin,
             scopes_active: !self.cancels.is_empty(),
-            queue: &self.queue,
+            queue: &queue_rows,
             composer_rows: &composer_rows,
             composer_cursor: cursor,
             candidates: candidates.as_deref(),

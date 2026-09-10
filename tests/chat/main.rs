@@ -5,6 +5,7 @@
 mod common;
 
 mod approval;
+mod jobs;
 mod output;
 mod parallel;
 mod toolloop;

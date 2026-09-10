@@ -59,6 +59,9 @@ pub(crate) enum UiMsg {
         /// The id passed with the matching [`UiMsg::ReadReq`].
         id: u64,
     },
+    /// Host-injected input: served straight to a parked waiter, else appended to the
+    /// type-ahead queue (the composer's draft is never touched).
+    Enqueue(Input),
     /// Steering drain: pops the contiguous non-`'/'` prefix of the queue
     /// (a slash command stops the take — model.go takeQueuedMsg).
     TakeQueued {

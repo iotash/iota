@@ -31,6 +31,9 @@ pub struct OnceOptions {
     /// The resumed session's view, replayed ahead of the new user message. A NON-EMPTY history WINS over
     /// `system` (chat/run.go:69-74); empty (the default) is the stateless single-shot run.
     pub history: Vec<Message>,
+    /// The run's background-job registry. `None` (tests) means `bash` cannot start a job and the loop never
+    /// waits for one; the binary always passes it, and `once` kills whatever is left before it returns.
+    pub jobs: Option<Arc<crate::shell::jobs::Jobs>>,
 }
 
 /// What one `once` produced beyond its output: the turn's message delta, for the caller to persist.
@@ -67,6 +70,7 @@ pub async fn once(
     };
     install_tool_searcher(provider, &dispatch);
     let mut host = QuietHost::new();
+    host.jobs = opts.jobs.clone();
     let req = RunRequest {
         message: opts.message,
         system: opts.system,
@@ -87,6 +91,11 @@ pub async fn once(
         Err(_) if cx.cancel.is_cancelled() => Err(ChatError::Interrupted),
         other => other,
     };
+    // The run is over: nothing is left to deliver a notice to, and a job outliving the process it was
+    // started from is exactly what `background` does NOT promise (README).
+    if let Some(jobs) = &opts.jobs {
+        jobs.kill_all();
+    }
 
     match opts.format {
         OutputFormat::Json => {

@@ -16,14 +16,28 @@ pub enum UiError {
     Interrupted,
 }
 
+/// Where one input came from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum InputKind {
+    /// The user typed it — the default, and the only kind the composer produces.
+    #[default]
+    Typed,
+    /// The host injected it (a background job finished). It is answered like a message but never echoed as
+    /// something the user said, and the composer's draft, history and ↑ recall never see it.
+    Notice,
+}
+
 /// One submitted input. `display` = paste tags bounded (for the user block);
-/// `text` = tags fully expanded (for sending).
+/// `text` = tags fully expanded (for sending). A notice splits the two differently: `display` is its
+/// one-line headline and `text` is the headline plus the job's output.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Input {
     /// The bounded form echoed into the transcript's user block.
     pub display: String,
     /// The fully expanded form handed to the model.
     pub text: String,
+    /// Typed, or injected by the host.
+    pub kind: InputKind,
 }
 
 /// Status-row data (model.go `StatusData`). Token/ctx fields render only under WP53.
@@ -795,6 +809,11 @@ pub trait Ui: Send + Sync {
     }
 
     // ---- FIRE-AND-FORGET ----
+
+    /// Injects one input as if it had been submitted: a parked `read_input` gets it at once, otherwise it
+    /// joins the type-ahead queue and the next `read_input`/`take_queued_messages` drains it in order. The
+    /// composer's draft is untouched — this is how a finished background job wakes an idle loop.
+    fn enqueue(&self, input: Input);
 
     /// Commits rendered lines into scrollback (in order, batched).
     fn print_lines(&self, lines: Vec<String>);

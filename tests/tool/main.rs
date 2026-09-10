@@ -7,4 +7,5 @@ mod common;
 mod agents;
 mod code;
 mod framework;
+mod jobs;
 mod shell;

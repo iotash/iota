@@ -311,6 +311,10 @@ pub struct Env {
     pub project_root: Option<PathBuf>,
     /// Process-level directories.
     pub dirs: HostDirs,
+    /// The run's background-job registry, which `bash` starts `background: true` calls in. Bound by both
+    /// entry points; None only in tests, where a `background` call is refused rather than silently run in
+    /// the foreground.
+    pub jobs: Option<Arc<crate::shell::jobs::Jobs>>,
     /// Some only interactively: `new_ask_set` contributes the ask tools when it is bound
     /// (headless stays empty, tool/ask.go parity). `Env` is built with `..Env::default()`
     /// literals across the workspace, so this field lands non-breaking (`TUI_CONTRACTS` §4).

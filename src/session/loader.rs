@@ -149,7 +149,13 @@ fn attachment_path(dir: &Path, data_ref: &str) -> Option<PathBuf> {
 pub fn record_to_message(rec: &SessionRecord, dir: &Path, kind: ProviderKind) -> Option<Message> {
     let body = match rec.role.as_str() {
         "system" => Body::System,
-        "user" => Body::User,
+        "user" => {
+            if rec.notice {
+                Body::Notice
+            } else {
+                Body::User
+            }
+        }
         "assistant" => Body::Assistant(AssistantBody {
             reasoning: rec.reasoning.clone(),
             tool_calls: rec

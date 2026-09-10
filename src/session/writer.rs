@@ -243,6 +243,7 @@ fn to_record(dir: &Path, kind: ProviderKind, msg: &Message) -> Result<SessionRec
         tool_call_name: msg.tool_call_name().to_owned(),
         is_error: msg.is_error(),
         interrupted: msg.interrupted(),
+        notice: msg.is_notice(),
         usage: msg.usage().map(Into::into),
         ..SessionRecord::default()
     };

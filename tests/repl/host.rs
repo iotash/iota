@@ -110,6 +110,7 @@ fn input(s: &str) -> Reply {
     Reply::Input(Input {
         display: s.to_owned(),
         text: s.to_owned(),
+        ..Input::default()
     })
 }
 
@@ -189,6 +190,7 @@ impl Fixture {
             system_interactive: false,
             imported_history: Vec::new(),
             dispatch,
+            jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
             mcp: no_mcp(),
             session: SessionCtx {
                 writer: Some(self.writer()),

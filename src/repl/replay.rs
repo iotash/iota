@@ -156,6 +156,13 @@ pub(crate) fn echo_rounds(
     let mut tool_results: u32 = 0;
     for msg in msgs {
         match msg.role() {
+            // A host notice replays as the ONE dim line it was printed as, not as a `❯` block: the
+            // rest of its text is the job output the model read, and the log file still holds it.
+            Role::User if msg.is_notice() => {
+                flush_tools(&mut w, &mut tool_results);
+                w.write(&dim(msg.content.lines().next().unwrap_or_default()));
+                w.write("\n\n");
+            }
             Role::User => {
                 flush_tools(&mut w, &mut tool_results);
                 for row in print_user_block(&msg.content, width) {

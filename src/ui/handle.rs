@@ -284,6 +284,12 @@ impl Ui for TuiHandle {
         })
     }
 
+    fn enqueue(&self, input: Input) {
+        // Fire-and-forget like every other injection: a closed loop drops it, and the caller (a job
+        // supervisor task) must never block on the UI.
+        let _ = self.tx.send(UiMsg::Enqueue(input));
+    }
+
     fn print_lines(&self, lines: Vec<String>) {
         if lines.is_empty() {
             return; // ui.go:220-222

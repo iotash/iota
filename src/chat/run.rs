@@ -23,13 +23,17 @@ use crate::chat::report::{RunRecorder, tool_names};
 /// A test-injected approval oracle: `(approved, refusal text)` for a tool call and its header detail.
 pub(crate) type Approver = Box<dyn Fn(&ToolCall, &str) -> (bool, String) + Send + Sync>;
 
-/// The headless host: records every round and refuses every approval request (nobody is there to ask).
+/// The headless host: records every round and refuses every approval request (nobody is there to ask). It
+/// also carries the run's background-job registry, because a headless run has no idle loop for a finished
+/// job to wake — the tool loop itself is where a notice can enter and where the run waits for one.
 #[derive(Default)]
 pub struct QuietHost {
     /// Per-round accounting of this run.
     pub rec: RunRecorder,
     /// `None` headlessly (always); tests inject an `Approver`.
     pub approve: Option<Approver>,
+    /// The run's background jobs; `None` = this run has none and never waits.
+    pub jobs: Option<Arc<crate::shell::jobs::Jobs>>,
 }
 
 impl QuietHost {
@@ -215,6 +219,25 @@ pub struct LoopOutcome {
     pub raw_content: Option<RawContent>,
 }
 
+/// Appends one [`crate::provider::model::Body::Notice`] message per job that finished since the last check.
+/// A run with no registry (every test that builds a bare `QuietHost`) appends nothing.
+fn push_job_notices(host: &QuietHost, history: &mut Vec<Message>) {
+    let Some(jobs) = &host.jobs else { return };
+    for done in jobs.take_finished() {
+        history.push(Message::notice(crate::shell::jobs::notice_text(&done)));
+    }
+}
+
+/// Blocks for the next background job to finish. `None` = there is nothing to wait for (no registry, no
+/// runner) or the run was cancelled — either way the caller returns its reply instead of spending a round.
+async fn wait_for_job(host: &QuietHost, cx: &RunCtx) -> Option<crate::shell::jobs::JobDone> {
+    let jobs = host.jobs.as_ref()?;
+    if jobs.running() == 0 {
+        return jobs.take_finished().into_iter().next();
+    }
+    jobs.wait_any(&cx.cancel).await
+}
+
 /// Round order per chat.go:284-379 (see ARCHITECTURE §8): cancellation check (I-03) → local cap →
 /// `budget.take()` → live `tools()` after round 0 → `take_pending_loads()` mount → the request with
 /// `compose_send_history(history, overlay)` and a `NullSink` → `rec.observe` → termination (reasoning-only rule) →
@@ -238,6 +261,9 @@ pub async fn execute_with_tools(
         if cx.cancel.is_cancelled() {
             return Err(ChatError::Interrupted);
         }
+        // Jobs that finished while the last round ran enter here — before the request is composed, so the
+        // model sees them in the same turn it would have seen a tool result.
+        push_job_notices(host, history);
         // Two caps, and they are different things: max_turns bounds THIS loop, while the budget is the
         // whole run's.
         if let Some(cap) = max_turns
@@ -279,23 +305,45 @@ pub async fn execute_with_tools(
             usage,
         } = round;
         if tool_calls.is_empty() {
-            if content.is_empty() && !reasoning.is_empty() {
+            let outcome = if content.is_empty() && !reasoning.is_empty() {
                 // Reasoning-only response: the reasoning IS the answer (chat.go:319-322).
-                return Ok(LoopOutcome {
+                LoopOutcome {
                     content: reasoning.clone(),
                     reasoning,
                     images,
                     usage,
                     raw_content,
-                });
-            }
-            return Ok(LoopOutcome {
-                content,
-                reasoning,
-                images,
-                usage,
-                raw_content,
-            });
+                }
+            } else {
+                LoopOutcome {
+                    content,
+                    reasoning,
+                    images,
+                    usage,
+                    raw_content,
+                }
+            };
+            // The model is done, but the run is not while a background job it started is still going: a
+            // headless run has no idle loop to wake it, so this IS the wait. The reply lands in the history
+            // first (it is a real turn, and `run_once` must not append it twice), then the notice, then one
+            // more round — billed to `--max-turns` like any other (DIVERGENCES X-09).
+            let Some(done) = wait_for_job(host, cx).await else {
+                return Ok(outcome);
+            };
+            // Images this round generated are dropped, exactly as any other non-terminating round's are
+            // (D-53: `LastImages` is per call, and only the round that ends the loop is saved).
+            history.push(Message::assistant_body(
+                outcome.content,
+                AssistantBody {
+                    reasoning: outcome.reasoning,
+                    raw_content: outcome.raw_content,
+                    usage: outcome.usage,
+                    ..AssistantBody::default()
+                },
+            ));
+            history.push(Message::notice(crate::shell::jobs::notice_text(&done)));
+            rounds += 1;
+            continue;
         }
 
         // Reasoning is NOT stored on the message in the quiet loop; raw model content (Vertex thought

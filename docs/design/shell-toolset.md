@@ -82,6 +82,18 @@ with the wrapper). One number could not serve both a lint and a child agent's
 whole run, and 3600 is the ceiling a runaway cannot argue with
 (DIVERGENCES X-06).
 
+`"background": true` takes the command out of the round entirely: the same
+spawn, the same sandbox, the same `setpgid` and the same `timeout`, but fd 1
+and fd 2 go to `<temp>/iota-jobs/<pid>/<id>.log` and the call returns at once
+with the job id, the pid and that path. Sixteen jobs per run. When one ends its
+exit status and (capped) output enter the conversation as a **notice** — the
+model is told, never asked to poll — and the notice's arrival is the same input
+queue the user's own typing uses, so it can wake an idle prompt or land at the
+next round boundary of a running turn but never between a tool call and its
+result. `Jobs::kill_all` (synchronous `killpg`) runs on every exit path: iota
+supervises what it started and cannot supervise across processes, so a job that
+must outlive it has to detach itself (DIVERGENCES X-07 … X-09).
+
 A round's consecutive `bash` calls run as ONE concurrent batch
 (`BashTool::supports_parallel` is unconditionally true), results and event
 rows still in call order — a deliberate break with the "only calls that cannot

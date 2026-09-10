@@ -32,6 +32,8 @@ pub enum UiEvent {
     Print(Vec<String>),
     /// [`Ui::user_block`] with the display text.
     UserBlock(String),
+    /// [`Ui::enqueue`] with the injected input.
+    Enqueue(Input),
     /// [`Ui::start_stream`] (the turn scope push is implied).
     StreamStart,
     /// [`UiStreamSink::block_preview`] with the label.
@@ -380,6 +382,10 @@ impl Ui for ScriptedUi {
         Box::pin(std::future::ready(Ok(())))
     }
 
+    fn enqueue(&self, input: Input) {
+        self.record(UiEvent::Enqueue(input));
+    }
+
     fn print_lines(&self, lines: Vec<String>) {
         self.record(UiEvent::Print(lines));
     }
@@ -598,11 +604,13 @@ mod tests {
             Reply::Input(Input {
                 display: "hi".to_owned(),
                 text: "hi".to_owned(),
+                ..Input::default()
             }),
             Reply::Interrupted,
             Reply::Queued(vec![Input {
                 display: "q".to_owned(),
                 text: "q".to_owned(),
+                ..Input::default()
             }]),
         ]);
         assert_eq!(

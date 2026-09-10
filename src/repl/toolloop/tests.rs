@@ -1010,6 +1010,7 @@ async fn steer_echo_settles_the_group_before_the_bottom_mount() {
             Reply::Queued(vec![Input {
                 display: "also check b".to_owned(),
                 text: "also check b".to_owned(),
+                ..Input::default()
             }]),
             Reply::Queued(Vec::new()),
         ],
@@ -1070,6 +1071,66 @@ async fn steer_echo_settles_the_group_before_the_bottom_mount() {
     );
 }
 
+// New (phase C): a background job that finishes MID-TURN rides the same queue a steering message does and
+// lands at the same round boundary — but as a NOTICE: one dim line instead of the `❯` block, and a
+// `Body::Notice` message the model sees as ordinary user text.
+#[tokio::test]
+async fn a_job_notice_lands_at_the_round_boundary_as_a_notice() {
+    let dispatch = Arc::new(StaticDispatcher::new(&["read_file"]));
+    let fx = Fx::new(
+        dispatch,
+        vec![Reply::Queued(vec![Input {
+            display: "[background job b1 finished: exit 0 after 2s] make test".to_owned(),
+            text: "[background job b1 finished: exit 0 after 2s] make test\nall green\n".to_owned(),
+            kind: crate::ui::facade::InputKind::Notice,
+        }])],
+    );
+    let p = FakeStream::new(vec![
+        Round::calls(vec![call(
+            "c1",
+            "read_file",
+            serde_json::json!({"path": "a"}),
+        )]),
+        Round::text("done"),
+    ]);
+    let mut history = vec![Message::user("go")];
+    fx.turn(&p, &mut history).await.outcome.expect("turn");
+
+    // The injection is a user-role message the model reads in full, flagged as a notice.
+    let injected = history
+        .iter()
+        .find(|m| m.is_notice())
+        .expect("the notice never joined the history");
+    assert_eq!(injected.role(), Role::User);
+    assert!(
+        injected.content.ends_with("all green\n"),
+        "the model gets the whole notice: {:?}",
+        injected.content
+    );
+    // …and it reached the SECOND request, right after the round's tool results.
+    let send = p.send(1);
+    assert!(
+        send.iter().any(|m| m.content == injected.content),
+        "the notice never reached the model"
+    );
+
+    // On screen it is a dim one-liner, never a `❯` block.
+    let events = fx.events();
+    assert!(
+        !events.iter().any(|e| matches!(e, UiEvent::UserBlock(_))),
+        "a notice must not echo as something the user typed: {events:#?}"
+    );
+    let printed = plain(&events).join("\n");
+    assert!(
+        printed.contains("[background job b1 finished: exit 0 after 2s] make test"),
+        "the headline is missing from the transcript:\n{printed}"
+    );
+    assert!(
+        !printed.contains("all green"),
+        "the job's output belongs to the model, not to the scrollback:\n{printed}"
+    );
+}
+
 // New (Go could not test Run): the round-2 request is a legal conversation — every
 // assistant message that requested tools is followed IMMEDIATELY by exactly its results,
 // and a steering injection sits after them, never between a call and its answer.
@@ -1081,6 +1142,7 @@ async fn replayed_history_keeps_the_tool_result_role_shape() {
         vec![Reply::Queued(vec![Input {
             display: "and b".to_owned(),
             text: "and b".to_owned(),
+            ..Input::default()
         }])],
     );
     let p = FakeStream::new(vec![
@@ -1578,6 +1640,10 @@ impl Ui for OrderUi {
 
     fn close(&self) -> BoxFuture<'_, std::io::Result<()>> {
         self.inner.close()
+    }
+
+    fn enqueue(&self, input: Input) {
+        self.inner.enqueue(input);
     }
 
     fn print_lines(&self, lines: Vec<String>) {

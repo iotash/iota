@@ -59,6 +59,7 @@ pub(crate) fn make_input(pastes: &[String], text: &str) -> Input {
     Input {
         display: expand_paste_echo(text, pastes),
         text: expand_paste_tags(text, pastes),
+        ..Input::default()
     }
 }
 

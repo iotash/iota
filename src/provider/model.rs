@@ -110,6 +110,10 @@ pub enum Body {
     /// The user's turn — the default.
     #[default]
     User,
+    /// A host notice injected into the conversation (a background job finished). It goes on the wire as an
+    /// ordinary user message — every dialect can carry one, and no provider needs a new concept for it —
+    /// but the loop, the transcript and the session log all know it was not typed.
+    Notice,
     /// The model's turn.
     Assistant(AssistantBody),
     /// A tool result answering one call.
@@ -159,6 +163,15 @@ impl Message {
     pub fn user(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
+            ..Self::default()
+        }
+    }
+
+    /// A host notice with `content`: [`Role::User`] on the wire, never echoed as something the user typed.
+    pub fn notice(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            body: Body::Notice,
             ..Self::default()
         }
     }
@@ -296,10 +309,15 @@ impl Message {
     pub fn role(&self) -> Role {
         match self.body {
             Body::System | Body::ToolsMount(_) => Role::System,
-            Body::User => Role::User,
+            Body::User | Body::Notice => Role::User,
             Body::Assistant(_) => Role::Assistant,
             Body::Tool(_) => Role::Tool,
         }
+    }
+
+    /// Whether this user message is a host notice rather than something the user typed.
+    pub fn is_notice(&self) -> bool {
+        matches!(self.body, Body::Notice)
     }
 
     /// Whether this is a system-tools mount.

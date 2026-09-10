@@ -206,7 +206,36 @@ until a human looks at a real terminal.
       written there** (the cmux host owns the channel), and the code theme must follow a cmux
       light/dark switch between turns.
 
-## 8. Sign-off
+## 8. Background-job notices (phase C — a wake-up automation cannot stage)
+
+A finished background job enters the conversation through the facade's input queue
+(`Ui::enqueue`). The queue laws are unit-pinned (`ui::event_loop::queue_tests`) and the loop's
+two arrivals are covered at the REPL level (`tests/repl/jobs.rs`), but nothing automated shows
+what the arrival LOOKS like on a real terminal — the L4 mock provider cannot emit a tool call,
+so no tmux scenario can start a job.
+
+Set up once: an agent with `tools: {shell: {sandbox: off, auto_run: true}}`, and ask the model
+to run something slow in the background (`sleep 20; echo done`).
+
+- [ ] **8.1 Idle wake-up.** With the job running, sit at the prompt and type NOTHING. When the
+      job ends, one dim line must appear —
+      `[background job b1 finished: exit 0 after 20s] sleep 20; echo done` — followed
+      immediately by a normal turn (the model answers it). No `❯` block, no bell of its own.
+- [ ] **8.2 The draft survives.** Repeat 8.1 but leave a half-typed line in the composer while
+      the job finishes. The notice must land, the turn must run, and the draft must still be
+      there, cursor where you left it, when the turn ends.
+- [ ] **8.3 Mid-turn arrival.** Start a job, then start a long turn (a streamed answer or a
+      tool loop). The notice must appear at a ROUND boundary — after the running activity group
+      settles, never inside a call's rows — as the same dim line, and the model must react to it
+      in the same turn.
+- [ ] **8.4 Queued while typing ahead.** Start a job, then type two messages ahead without
+      waiting. When the job ends its headline must appear as a `»` queue row among them, and
+      pressing ↑ must recall YOUR newest line, stepping over it.
+- [ ] **8.5 ESC keeps the job.** Start a job, start a turn, press ESC. The turn ends, the queue
+      folds back into the composer as usual — and the job must still be running (its notice
+      arrives later). Then `/quit`: the job must be gone (`ps` for the command).
+
+## 9. Sign-off
 
 Dogfood until dry: one report → one fix → repeat, ranked as the Go migration ranked them.
 
@@ -221,8 +250,8 @@ Dogfood until dry: one report → one fix → repeat, ranked as the Go migration
 Fill one row per terminal per release. An empty cell means *not yet verified* — never
 assume a pass.
 
-| terminal | version | §1 IME | §2 scrollback | §3 flicker | §4 orphans | §5 title | §6 edges | §7 host | verdict |
-|---|---|---|---|---|---|---|---|---|---|
+| terminal | version | §1 IME | §2 scrollback | §3 flicker | §4 orphans | §5 title | §6 edges | §7 host | §8 jobs | verdict |
+|---|---|---|---|---|---|---|---|---|---|---|
 | Ghostty | | | | | | | | | |
 | Terminal.app | | | | | | | | | |
 | iTerm2 | | | | | | | | | |
