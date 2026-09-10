@@ -1,9 +1,9 @@
 [package]
 name = "iota"
-description = "A lightweight AI chat CLI for the terminal"
+description = "An agent CLI for the terminal"
 homepage = "https://iota.sh"
 readme = "README.md"
-keywords = ["cli", "chat", "llm", "mcp", "terminal"]
+keywords = ["cli", "agent", "llm", "mcp", "terminal"]
 categories = ["command-line-utilities"]
 publish = false
 version = "0.1.0"
