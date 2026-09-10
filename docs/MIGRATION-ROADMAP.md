@@ -281,6 +281,30 @@ fixture 与来源：`tests/fixtures/sessions/`（Go writer 写出的 5 个 bundl
 
 **风险**：试用会暴露未知的 TUI 保真问题（这正是目的；回退二进制与未删的 Go 树把风险兜住）；键表改动触及 `ui/keys.rs` 的路由优先级——先补测试再改。
 
+### Phase 1b — 配置三层化（2026-09-10 新增；必须在 1.0 发布前）
+
+**目标**：把 `providers` 一层里的 20 个键拆成 `providers`（端点）/ `models`（模型与协议）/ `agents`（用法）三层，并把模型选择面板改成 combo box。决策全文见 brain 页 `config-three-layers`；这是破坏性的配置变更，发布 1.0 之后再做会打到已有用户，所以排在 Phase 3 之前。
+
+**步骤**
+
+1. `config.rs` 拆成 `config/{mod,provider,model,agent}.rs`：三个 struct + 统一入口 `Config::resolve(name) -> Resolved { provider, model, agent }`。`models` 条目用 untagged enum 支持 `sonnet: anthropic:claude-x` 简写。
+2. 引用语法解析器：`split_once(':')`（左 provider、右整段 id）、`provider:*` 通配、`- a: b` 误写成 map 时的明确错误。
+3. 配置期校验：`defer_mode` 对 dialect 的适用性在 `Config::load` 就报错，取代今天 `resolve_defer_mode` 的运行时警告（未知模式仍然警告并回退）。
+4. `cmd/resolve.rs`：位置参数四级解析（agents → models → providers → 内置类型）；`-M` 接受裸 id 与 `provider:id` 两种形式，候选集外的模型**警告后放行**。
+5. `cmd/tuning.rs` / `cmd/assemble.rs`：从 model / agent 取值，不再从 provider。
+6. `cmd/delegate.rs`：`tools.delegate: [reviewer, coder]` 引用顶层 agents，删 `AgentRef`。
+7. 改名：`agent: true` → `workspace: true`，工具集 `agent` → `skills`。
+8. 软迁移层：`providers.X` 出现 model / agent 级键时当作隐式条目并打一行告警。
+9. `session/tuning.rs`：meta 增加可选 `agent` 键；恢复时该 agent 已从配置删除则**退回「provider + model」的今天行为**。
+10. combo box：`PanelBody::List` 加 combo 模式（`search` 常驻 + 搜索文本可提交），`repl/commands/model.rs` 删 `manual_panel`、`manual` 二分与打断式 `tr.error`；失败信息进 `Panel.prompt`。
+11. `-l` 三段；README 配置章节重写；`docs/design/` 加一篇配置文档。
+
+**退出门槛**：旧的一层配置经软迁移后行为逐字节不变（测试钉住）；`defer_mode` 错配在 `Config::load` 报错（测试钉住）；模型面板在「有候选 / 部分源失败 / 无候选」三种状态下各有测试；`ci.sh` 绿。
+
+**风险**：位置参数四级解析在同名时的遮蔽（规定 agents > models > providers，并在 `-l` 里标注被遮蔽的名字）；combo box 触及 surface 键梯，适用 §2.5 的 UI 触碰规则（要跑 TUI-VERIFY 的对应小节）。
+
+**工作量**：配置层 4–5 天 + combo box 1.5–2 天 = 6–7 天。
+
 ### Phase 2 — 仓库切换：退役 Go，rust/ 到根（2–3 天）
 
 **目标**：仓库就是 Rust 项目；Go 代只在 `go-final` 后面；CI 第一次在根目录、四个原生 runner 上真跑；仓库转公开；Pages 从 `site/` 部署。
