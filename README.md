@@ -1,27 +1,52 @@
 # iota
 
-A lightweight AI chat CLI for the terminal, written in Rust. Supports multiple providers, streaming responses, file attachments, and an interactive terminal UI.
+An agent CLI for the terminal, written in Rust. You configure agents — a model,
+a prompt, a set of tools — and run them: `iota run <agent>`, interactively or
+one message at a time.
 
 ## Features
 
+**The agent is what you run.** An `agents:` entry is a model, a prompt, a
+toolset and an MCP subset under one name, and naming one is the whole surface:
+`iota run <agent>`, or a bare `iota` for the agent called `default`. A model or
+a provider is reached through an agent, never run on its own.
+
+- **Config file** — three layers in `~/.iota.yaml`: `providers:` (endpoints and API keys), `models:` (configured models and their protocol), `agents:` (prompt, tools, MCP subset), plus MCP server definitions. Every key is checked against the layer it belongs to, so a misplaced or misspelled one is an error naming its coordinate rather than a line nothing reads
+- **System prompt** — per agent in the config, or `-s` for one run
+- **Agent mode** — opt-in via `workspace: true` per agent: layered `AGENTS.md` instructions and [Agent Skills](https://agentskills.io/specification) are injected as a volatile system-prompt overlay, the `skills` toolset (`load_skill`) is auto-enabled, and sessions are grouped per project
+- **Headless runs** — `-m` sends a single message and prints the response, pipe-friendly, with an optional JSON report and a tool-turn budget; child agents are exactly this, run from `bash`
+
+**Its fuel — providers and models.** Which endpoint answers and which model
+thinks are config, not command line; a run picks from the candidate set the
+agent declares.
+
 - **Multi-provider** — OpenAI, OpenAI Responses API, Anthropic, Gemini, and Vertex AI, with custom base URL support, plus dedicated image-generation providers (`imagen`, `images`)
-- **MCP tool support** — connect external MCP tool servers (filesystem, GitHub, databases, etc.) and let AI providers use them during chat, with tool names namespaced per server (`mcp__<server>__<tool>`) so same-named tools never collide
 - **Interactive model selection** — arrow-key list at startup
-- **Slash-command completion** — a suggestion row appears when the line starts with `/` and narrows as you type; press Tab to cycle through the completions
+- **Model settings mid-session** — `/model` opens a tabbed panel over the model, context window, reasoning effort, and temperature (plus a read-only view of the system prompt in effect), all persisted with the session and replayed on resume
+- **Image generation** — image-capable models generate straight into the conversation, rendered inline as ANSI half-block art and saved with the session; dedicated image models get `/edit` and `/redo` instead of a chat loop
+
+**Its hands — tools and MCP.** What an agent can actually do to your machine,
+enabled per agent and gated per call.
+
+- **Built-in toolsets** — `shell` (bash under an OS sandbox, with background jobs), `code` (glob, grep, read, edit, write, confined to the project root), `skills` (`load_skill`), and `ask` (put a decision to the user mid-turn). Writes and unsandboxed commands ask for confirmation in the conversation unless the agent waives it
+- **MCP tool support** — connect external MCP tool servers (filesystem, GitHub, databases, etc.) and let the agent call them, with tool names namespaced per server (`mcp__<server>__<tool>`) so same-named tools never collide
+
+**Its record — sessions.** Everything a run did, on disk, resumable and
+exportable.
+
+- **Session persistence** — every interactive session is auto-saved (losslessly: messages, tool calls, attachments, reasoning) to `~/.iota/sessions/`. Resume with `/session` from inside a session, or `iota resume [<id>]` at launch (any unique id prefix works), and resuming echoes the last few exchanges back to the terminal; auto-titled by the model after the first reply; `--no-save` (or `no_save: true` per agent) starts ephemeral — nothing touches disk unless you run `/save [title]`, which persists the whole backlog and auto-saves from then on
+- **Conversation history** — full context maintained within a session
+- **Context management** — live token accounting against the context window (configurable via `context_window:` per model or the `/model` Context tab), with `/compact` LLM-summarization of older history; when the window nears full a confirmation is offered before compacting (declining snoozes the prompt until usage grows further)
+- **Conversation export** — `/export` renders the session to a single self-contained HTML file (inline CSS, dark mode with a toggle, syntax-highlighted code) or a plain Markdown document; saved sessions export the full on-disk log, so compaction never hides older rounds (ephemeral `--no-save` sessions export the current in-memory view)
+
+**The terminal it runs in.**
+
 - **Streaming responses** — real-time token output with a busy spinner in the status line; keep typing while a reply streams (type-ahead — queued submits are sent in order); press **Esc** (cancels the innermost running scope) or **Ctrl+C** (cancels the turn) to interrupt a streaming reply — the partial reply is kept in history and marked interrupted
 - **Markdown highlighting** — inline ANSI styling for headings, bold, italic, code, tables, and code blocks in streaming output; inline LaTeX math (`$...$`, `\(...\)`) is approximated in Unicode, and display math (`$$...$$`, `\[...\]`) renders as a 2D block — stacked fractions, roots with a drawn vinculum, matrices, aligned environments, sums/integrals with limits, drawn accents (`\hat`/`\vec`/`\bar`), and math fonts (`\mathbb`/`\mathcal`); anything unsupported falls back to a readable single-line approximation, never raw LaTeX
+- **Slash-command completion** — a suggestion row appears when the line starts with `/` and narrows as you type; press Tab to cycle through the completions
 - **File attachments** — send images, PDFs, and text files alongside messages; `/file` opens a tabbed surface with the attached list and a directory browser
-- **Non-interactive mode** — single message in, response out, pipe-friendly
-- **Conversation history** — full context maintained within a session
-- **Session persistence** — every interactive session is auto-saved (losslessly: messages, tool calls, attachments, reasoning) to `~/.iota/sessions/`. Resume with `/session` in chat or `iota resume [<id>]` at launch (any unique id prefix works), and resuming echoes the last few exchanges back to the terminal; auto-titled by the model after the first reply; `--no-save` (or `no_save: true` per agent) starts ephemeral — nothing touches disk unless you run `/save [title]` mid-chat, which persists the whole backlog and auto-saves from then on (great for exploratory chats you might or might not keep)
-- **Context management** — live token accounting against the context window (configurable via `context_window:` per model or the `/model` Context tab), with `/compact` LLM-summarization of older history; when the window nears full a confirmation is offered before compacting (declining snoozes the prompt until usage grows further)
-- **Model settings mid-chat** — `/model` opens a tabbed panel over the model, context window, reasoning effort, and temperature (plus a read-only view of the system prompt in effect), all persisted with the session and replayed on resume
-- **Conversation export** — `/export` renders the session to a single self-contained HTML file (inline CSS, dark mode with a toggle, syntax-highlighted code) or a plain Markdown document; saved sessions export the full on-disk log, so compaction never hides older rounds (ephemeral `--no-save` sessions export the current in-memory view)
-- **Agent mode** — opt-in via `workspace: true` per agent: layered `AGENTS.md` instructions and [Agent Skills](https://agentskills.io/specification) are injected as a volatile system-prompt overlay, the `skills` toolset (`load_skill`) is auto-enabled, and sessions are grouped per project
 - **Request inspector** — `/debug` opens a two-tab console: a **Verbose** toggle turns recording on/off (off by default; `/debug on` / `/debug off` do the same from the prompt), and **Messages** browses the captured API calls (newest first), each summarized by action and content (e.g. `Chat 你好…`) rather than raw method/URL — drill into any one to read its `↑ Request` and `↓ Response` bodies, pretty-printed, with `c` to copy to the clipboard. Nothing is printed to the terminal
 - **Host integration** — the terminal's native progress indicator follows the turn (busy, needs input, error), a desktop notification is sent when a reply lands or the model needs you while the window is unfocused (`notify: false` per agent turns it off), and the cmux multiplexer is driven natively when detected
-- **System prompt** — per agent in the config, or `-s` for one run
-- **Config file** — three layers in `~/.iota.yaml`: `providers:` (endpoints and API keys), `models:` (configured models and their protocol), `agents:` (prompt, tools, MCP subset), plus MCP server definitions
 - **Styled terminal output** — color-coded prompts
 
 ## Install
@@ -328,7 +353,7 @@ Unknown variables are left untouched.
 
 ### Image Generation
 
-Image-capable models generate straight into the chat: with a Gemini image
+Image-capable models generate straight into the conversation: with a Gemini image
 model (e.g. `gemini-3.1-flash-image`) just ask — the picture renders inline
 as ANSI half-block art (capped well below a screenful, indented like other
 blocks), and is saved INSIDE the session bundle (`<session>/images/` —
@@ -385,7 +410,7 @@ models:
     negative_prompt: "blurry, watermark"
 ```
 
-The same knobs are adjustable mid-chat: `/model` grows **Aspect**, **Size**,
+The same knobs are adjustable mid-session: `/model` grows **Aspect**, **Size**,
 and **Negative** tabs for image providers (a "default" row omits the
 parameter), persisted with the session and replayed on resume. Only the tabs
 a dialect actually has appear.
@@ -409,7 +434,7 @@ streaming form at all, so those turns show only the elapsed clock.
 The edit endpoint comes in two wire flavors: OpenAI's native
 `/images/edits` is multipart, while some backends (xAI) accept only a JSON
 body and reject multipart outright. Set `json_edits: true` for those, or
-flip the **JSON edits** tab on `/model` mid-chat (persisted with the
+flip the **JSON edits** tab on `/model` mid-session (persisted with the
 session). Generation is unaffected either way.
 
 Parameter and editing support varies by backend: relays map the full set
@@ -488,7 +513,7 @@ Safety model — the same one Claude Code and Codex CLI use:
   access is blocked** unless `network: true`.
 - **Sandboxed calls run without prompting.** Where no sandbox is available
   (Linux without bwrap) or with `sandbox: off`, every call instead
-  asks for confirmation in the chat (allow once / allow for this session /
+  asks for confirmation in the conversation (allow once / allow for this session /
   deny), and non-interactive `-m` runs reject it — set `auto_run: true` to
   waive that.
 - Output is capped at 32 KB and 512 lines (head + tail kept, middle elided,
@@ -556,7 +581,7 @@ Safety model:
 - A file must be **read before it can be modified**, and a file that changed
   on disk since it was read must be re-read first — the model can never
   blind-overwrite your edits.
-- Every modifying call asks for confirmation in the chat (allow once / allow
+- Every modifying call asks for confirmation in the conversation (allow once / allow
   for this session / deny). Non-interactive `-m` runs reject modifications
   outright. Set `auto_write: true` under `tools: code:` to skip confirmations
   and allow `-m` writes:
@@ -577,7 +602,8 @@ Design: docs/design/code-toolset.md
 ### Agent Mode
 
 Agent mode is explicitly opt-in — set `workspace: true` on an agent in the
-config file. Off means exactly the ordinary chat behavior.
+config file. Off, the agent runs with just its own prompt and tools: no project
+overlay, no skills, no project-scoped sessions.
 
 ```yaml
 agents:
@@ -638,7 +664,7 @@ anywhere still works). Normal-mode sessions stay in the flat global store,
 whose list also shows every project's sessions labelled with their project —
 nothing is ever invisible.
 
-### Chat Commands
+### Slash Commands
 
 In interactive mode, the following commands are available. When the line starts
 with `/`, a suggestion row appears below the input and narrows as you keep typing;
