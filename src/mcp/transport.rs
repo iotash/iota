@@ -25,6 +25,12 @@ use crate::mcp::manager::ManagerOptions;
 /// Upper bound on one session's close (rmcp: transport close → stdin EOF → 3 s → kill).
 pub(crate) const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long a failed stdio handshake waits for the child's stderr to reach EOF before it reports
+/// without the appendix. A child whose handshake failed has almost always exited already, so this
+/// is scheduling slack, not a real wait; the bound exists for the case where a grandchild inherited
+/// the pipe and holds it open, which must not stall the error.
+pub(crate) const STDERR_DRAIN_GRACE: Duration = Duration::from_secs(2);
+
 /// `McpError::Call` text of a `tools/call` abandoned because the run was cancelled; the manager maps it to
 /// `ToolError::Cancelled` when the token is set.
 pub(crate) const CALL_INTERRUPTED: &str = "interrupted";
@@ -119,8 +125,32 @@ impl Session for RmcpSession {
     }
 }
 
-/// Captured stderr of a stdio server, drained by a task into a `stderr_cap`-capped buffer.
-pub(crate) type StderrCapture = Arc<std::sync::Mutex<Vec<u8>>>;
+/// Captured stderr of a stdio server: the `stderr_cap`-capped buffer a spawned task drains into,
+/// plus that task's handle, so a failed handshake can wait for the pipe to reach EOF before it
+/// reads. Reading the buffer without that wait is a race the child usually loses — the bytes are
+/// still in the pipe, or the task has not been scheduled yet — and the appendix `McpError::Connect`
+/// promises then appears only sometimes, which is the same as not promising it.
+pub(crate) struct StderrCapture {
+    /// What the drain task has captured so far, capped at `stderr_cap`.
+    buf: Arc<std::sync::Mutex<Vec<u8>>>,
+    /// The drain task; it completes at EOF. `None` when the child had no stderr pipe.
+    drain: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl StderrCapture {
+    /// The captured bytes, after waiting up to [`STDERR_DRAIN_GRACE`] for the drain to reach EOF.
+    /// On timeout the handle is dropped, which only detaches the task — it goes on capping the
+    /// buffer for as long as the pipe is open.
+    async fn into_bytes(mut self) -> Vec<u8> {
+        if let Some(drain) = self.drain.take() {
+            let _ = tokio::time::timeout(STDERR_DRAIN_GRACE, drain).await;
+        }
+        self.buf
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
 
 /// manager.go:337-398 — expand (`opts.resolver`) → endpoint → transport → `ClientInfo::new(
 /// ClientCapabilities::default(), opts.client_info.clone()).serve(transport)` → `peer().list_all_tools()` →
@@ -128,7 +158,8 @@ pub(crate) type StderrCapture = Arc<std::sync::Mutex<Vec<u8>>>;
 ///
 /// Transport selection: url non-empty → must start `http://` / `https://` else `UnsupportedScheme(url)`, then
 /// `http_transport`; command non-empty → `spawn_stdio`; both empty → `MissingTarget`. A handshake failure is `Connect(e)` (stdio: plus
-/// `\n  subprocess stderr:\n<trimmed>` when the capture is non-empty); a `tools/list` failure closes the session and
+/// `\n  subprocess stderr:\n<trimmed>` when the capture is non-empty, after a bounded wait for the pipe to reach
+/// EOF — [`STDERR_DRAIN_GRACE`]); a `tools/list` failure closes the session and
 /// is `ListTools(e)`. The caller wraps this in `timeout(connect_timeout, ..)` (`Elapsed` → `Timeout`).
 pub(crate) async fn connect_one(
     server_cfg: &ServerConfig,
@@ -154,7 +185,10 @@ pub(crate) async fn connect_one(
             Ok(running) => running,
             Err(e) => {
                 let mut msg = e.to_string();
-                let captured = stderr.lock().unwrap_or_else(PoisonError::into_inner);
+                // Bounded wait FIRST: the handshake can fail before the child's stderr has even
+                // been read, and an appendix that depends on which of the two wins is a diagnostic
+                // the user cannot rely on.
+                let captured = stderr.into_bytes().await;
                 if !captured.is_empty() {
                     msg.push_str("\n  subprocess stderr:\n");
                     msg.push_str(String::from_utf8_lossy(&captured).trim_end_matches('\n'));
@@ -203,7 +237,8 @@ async fn list_tools(
 
 /// stdio half of `make_transport`: `tokio::process::Command::new(cmd).args(args).envs(env)`,
 /// `TokioChildProcess::builder(cmd).stderr(Stdio::piped()).spawn()`; the returned stderr is drained by a spawned task
-/// into the `stderr_cap`-capped capture. Spawn failure → `Connect(e)`.
+/// into the `stderr_cap`-capped capture, whose handle rides along in [`StderrCapture`] so a failed handshake can wait
+/// for it. Spawn failure → `Connect(e)`.
 pub(crate) fn spawn_stdio(
     server_cfg: &ServerConfig,
     stderr_cap: usize,
@@ -218,8 +253,8 @@ pub(crate) fn spawn_stdio(
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| McpError::Connect(e.to_string()))?;
-    let capture: StderrCapture = Arc::new(std::sync::Mutex::new(Vec::new()));
-    if let Some(mut stderr) = stderr {
+    let capture: Arc<std::sync::Mutex<Vec<u8>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let drain = stderr.map(|mut stderr| {
         let sink = Arc::clone(&capture);
         tokio::spawn(async move {
             let mut buf = [0u8; 4096];
@@ -232,9 +267,15 @@ pub(crate) fn spawn_stdio(
                 let room = stderr_cap.saturating_sub(captured.len());
                 captured.extend_from_slice(&buf[..n.min(room)]);
             }
-        });
-    }
-    Ok((transport, capture))
+        })
+    });
+    Ok((
+        transport,
+        StderrCapture {
+            buf: capture,
+            drain,
+        },
+    ))
 }
 
 /// HTTP half of `make_transport`: `StreamableHttpClientTransport::with_client(http,
