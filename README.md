@@ -54,8 +54,18 @@ exportable.
 ### Homebrew
 
 ```bash
-brew install joyqi/tap/iota
+brew install iotash/tap/iota
 ```
+
+### Shell
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/iotash/iota/releases/latest/download/iota-installer.sh | sh
+```
+
+Fetches the prebuilt binary for your platform from the latest release, verifies
+its checksum and puts it in `~/.cargo/bin` (or `$CARGO_HOME/bin`), adding that
+directory to your `PATH` if it is not there already. No Rust toolchain needed.
 
 ### Cargo
 
@@ -77,7 +87,14 @@ The binary is at `target/release/iota`. The toolchain is pinned by `rust-toolcha
 
 ### Platforms
 
-macOS and Linux.
+macOS and Linux, Apple Silicon and x86-64 alike: every release carries
+`aarch64-apple-darwin`, `x86_64-apple-darwin`, `aarch64-unknown-linux-gnu` and
+`x86_64-unknown-linux-gnu` binaries.
+
+Windows is not supported, and not as an oversight we mean to fix: iota reaches
+for Unix signals, process groups and file modes on nearly every path — job
+control in `bash`, the session files, the sandbox — so the crate does not
+compile for a `*-pc-windows-*` target at all. WSL works, as ordinary Linux.
 
 ### First run
 
@@ -820,6 +837,27 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 IOTA_TMUX=1 cargo test --test ui_tmux        # the real-terminal suite (needs tmux)
 ./ci.sh                                      # everything CI runs, in order
 ```
+
+## Releases
+
+A release is cut by pushing a tag. Creating a Release by hand on the GitHub web
+page builds nothing — the tag is the trigger:
+
+```bash
+git tag -a v0.1.0 -m "v0.1.0"
+git push origin v0.1.0
+```
+
+`.github/workflows/release.yml` does the rest: it builds the four targets on
+native runners, packs each one as `iota-<target>.tar.xz` with a SHA-256, opens
+the GitHub Release, publishes `iota-installer.sh` beside the archives and
+commits `Formula/iota.rb` to
+[iotash/homebrew-tap](https://github.com/iotash/homebrew-tap) — which needs a
+`HOMEBREW_TAP_TOKEN` repository secret that can write to the tap.
+
+That workflow is generated, never hand-edited: `dist-workspace.toml` is the
+source of truth and `dist init` rewrites the YAML from it. `dist plan` prints
+what a tag would produce, without building anything.
 
 ## License
 

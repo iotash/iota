@@ -16,6 +16,11 @@ default-run = "iota"
 # ONE package: the library holds every module, `src/main.rs` is the thin binary. No workspace,
 # no per-area manifests (docs/ARCHITECTURE.md §1).
 
+# `publish = false` keeps the crate off crates.io, which also hides it from dist's package scan.
+# This says "no crates.io, but yes, release the binary" (dist-workspace.toml does the rest).
+[package.metadata.dist]
+dist = true
+
 [lib]
 path = "src/lib.rs"
 
@@ -123,6 +128,13 @@ debug = false
 
 [profile.dev.package."*"]
 opt-level = 1
+
+# The profile `dist` builds release binaries with. It inherits `release` and overrides NOTHING:
+# what a tag ships is byte-for-byte what `./ci.sh` measured against the 12 MiB budget. (dist's own
+# default weakens this to `lto = "thin"` for faster CI; a fat-LTO build twice a year is cheaper
+# than shipping a binary nobody measured.)
+[profile.dist]
+inherits = "release"
 
 [lints.rust]
 unsafe_code = "forbid"

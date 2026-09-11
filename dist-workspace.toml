@@ -1,0 +1,29 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist' — the release pipeline (docs/MIGRATION-ROADMAP.md §2.6).
+# `dist init` regenerates .github/workflows/release.yml from this file; edit here, never there.
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.33.0"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell", "homebrew"]
+# Target platforms to build apps for (Rust target-triple syntax).
+# Four native targets, one runner each — aws-lc-rs wants a C toolchain, so no cross-compiling.
+# NO WINDOWS: `nix` is an unconditional dependency (Cargo.toml), so the crate does not compile
+# for *-pc-windows-*. Adding the target here would only turn every tag into a red workflow.
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Where to host releases
+hosting = "github"
+# Whether to install an updater program
+install-updater = false
+# The Homebrew formula is written to the organisation's own tap on every tag. `chatchain.rb` in
+# the personal joyqi/homebrew-tap is a different project and stays where it is.
+tap = "iotash/homebrew-tap"
+formula = "iota"
+# Push the formula (needs the HOMEBREW_TAP_TOKEN secret on iotash/iota).
+publish-jobs = ["homebrew"]
