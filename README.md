@@ -60,7 +60,7 @@ brew install joyqi/tap/iota
 ### Cargo
 
 ```bash
-cargo install --git https://github.com/joyqi/iota
+cargo install --git https://github.com/iotash/iota
 ```
 
 Requires Rust 1.98 or newer.
@@ -68,7 +68,7 @@ Requires Rust 1.98 or newer.
 ### Build from source
 
 ```bash
-git clone https://github.com/joyqi/iota.git
+git clone https://github.com/iotash/iota.git
 cd iota
 cargo build --release
 ```

@@ -10,7 +10,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT"
-repository = "https://github.com/joyqi/iota"
+repository = "https://github.com/iotash/iota"
 default-run = "iota"
 
 # ONE package: the library holds every module, `src/main.rs` is the thin binary. No workspace,
