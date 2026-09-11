@@ -91,10 +91,14 @@ macOS and Linux, Apple Silicon and x86-64 alike: every release carries
 `aarch64-apple-darwin`, `x86_64-apple-darwin`, `aarch64-unknown-linux-gnu` and
 `x86_64-unknown-linux-gnu` binaries.
 
-Windows is not supported, and not as an oversight we mean to fix: iota reaches
-for Unix signals, process groups and file modes on nearly every path — job
-control in `bash`, the session files, the sandbox — so the crate does not
-compile for a `*-pc-windows-*` target at all. WSL works, as ordinary Linux.
+Windows builds and is tested in CI, but it is **not at parity yet**, and the
+gap is the one that matters most: there is **no `bash` tool** there. The
+`shell` toolset warns once at startup and registers nothing, because the tool
+runs POSIX shell scripts and the Windows shell backend is still being written;
+the OS sandbox is absent for the same reason. Everything else works — reading,
+writing and editing files, skills, MCP servers, the whole TUI. Releases do not
+carry a Windows binary yet either, so today it means building from source.
+Until both land, WSL gives you the complete thing, as ordinary Linux.
 
 ### First run
 

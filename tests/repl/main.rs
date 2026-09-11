@@ -14,6 +14,8 @@ mod file;
 mod host;
 mod images;
 mod interrupt;
+// Spawns real background `bash` children through `Jobs` — Unix-only, like the toolset that starts them.
+#[cfg(unix)]
 mod jobs;
 mod settings;
 mod skills;

@@ -65,7 +65,6 @@ regex    = "1"
 globset  = "0.4"
 ignore   = "0.4"
 walkdir  = "2"
-nix      = { version = "0.31", default-features = false, features = ["signal", "process", "fs"] }
 jiff     = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 # TUI stack — pinned exact; verified against ~/.cargo/registry (TUI_CONTRACTS §12). Only
 # `src/ui/**` may name ratatui/crossterm (ci.sh grep gate).
@@ -101,6 +100,28 @@ image = { version = "=0.25.10", default-features = false, features = ["png", "jp
 # `header`/`Method`/`StatusCode`/`Version`/`Url` but not the crate (lib.rs:279-282), so naming
 # `http::Response` needs the direct dependency; already in Cargo.lock (1.5.0) — no new transitive crate.
 http = "1"
+
+# Process supervision, the one thing `src/shell/exec.rs` cannot write itself: this crate forbids `unsafe`, so
+# the syscalls that own a process TREE have to come from somewhere. Both entries are that somewhere, and
+# nothing else in the tree reaches for either.
+#
+# Unix: `setpgid` at spawn, then `killpg(SIGKILL)` — `nix` is those two and the `ESRCH` they answer with.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["signal", "process", "fs"] }
+
+# Windows: a Job Object owns the child and every process it goes on to start, so `TerminateJobObject` is
+# `killpg` (Codex and Gemini CLI converged on the same primitive). `process-wrap` is watchexec's successor to
+# `command-group` and the only maintained crate that offers it behind a tokio `Command`; goose ships it.
+# `windows` appears only to name `CREATE_NO_WINDOW` for process-wrap's own `CreationFlags` wrapper — a caret
+# range, deliberately, so it resolves to the SAME copy of the crate process-wrap builds against (an `=` pin
+# here would split the two the day process-wrap moves, and `PROCESS_CREATION_FLAGS` would stop type-checking).
+# (rmcp already carries a process-wrap 9.x of its own for the stdio MCP transport, so a Windows build compiles
+# two versions of this crate. Pinning ours to 9 to unify them would tie our supervision layer to whatever an
+# unrelated dependency happens to bump to; the macOS and Linux binaries — the ones under the size budget —
+# never build ours at all.)
+[target.'cfg(windows)'.dependencies]
+process-wrap = { version = "10", default-features = false, features = ["tokio1", "job-object", "creation-flags", "tracing"] }
+windows = { version = "0.62", features = ["Win32_System_Threading"] }
 
 [dev-dependencies]
 # The crate itself with the test fakes on: integration tests and examples build against the

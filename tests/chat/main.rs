@@ -5,6 +5,8 @@
 mod common;
 
 mod approval;
+// A headless run over the REAL shell toolset: no `bash` tool on Windows, nothing to drive.
+#[cfg(unix)]
 mod jobs;
 mod output;
 mod parallel;

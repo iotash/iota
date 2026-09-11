@@ -6,6 +6,12 @@
 //! fd 2), [`Started::wait`] supervises it (deadline, cancellation, `killpg`, the bounded reap), and only the
 //! in-memory [`Capture::Memory`] destination collects output at all. [`run`] is those three in a row — the
 //! foreground `bash` call, unchanged.
+//!
+//! Two of those stages are the OS's, not ours, so they are the only things this module forks by platform
+//! (`Child`, `spawn_supervised`, `Started::kill_tree`, `kill_group`): Unix keeps `setpgid` +
+//! `killpg(SIGKILL)` verbatim, Windows gets the twin primitive — a Job Object, whose `TerminateJobObject`
+//! kills the whole tree — through `process-wrap`. Everything else (the caps, the single combined pipe, the
+//! deadline, the bounded reap) is the same code on both, because `std::io::pipe` is.
 
 use std::{
     path::{Path, PathBuf},
@@ -14,8 +20,18 @@ use std::{
     time::Duration,
 };
 
+#[cfg(unix)]
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
+
+/// The supervised child: a plain tokio child in its own process group on Unix, and on Windows one wrapped in
+/// a Job Object by `process-wrap`. Both answer `id`, `wait` and `start_kill` the same way, so only the
+/// functions named in the module doc ever have to know which is which.
+#[cfg(unix)]
+type Child = tokio::process::Child;
+/// The supervised child — see the Unix twin above.
+#[cfg(windows)]
+type Child = Box<dyn process_wrap::tokio::ChildWrapper>;
 
 /// Byte cap of the captured output.
 pub const MAX_OUTPUT_BYTES: usize = 32 * 1024;
@@ -126,9 +142,10 @@ pub enum SpawnFail {
 /// A started child: the handle to wait on, its process-group leader, and the in-memory sink when the
 /// output is captured.
 pub struct Started {
-    child: tokio::process::Child,
+    child: Child,
     /// The group leader — what `kill_group` signals. Public so a supervisor outside this module (the job
-    /// registry) can kill the tree without awaiting anything.
+    /// registry) can kill the tree without awaiting anything. On Windows it names the child but cannot reach
+    /// its tree: see `kill_group`.
     pub pid: Option<i32>,
     reader: Option<tokio::task::JoinHandle<()>>,
     buf: Option<Arc<Mutex<CappedBuffer>>>,
@@ -185,11 +202,10 @@ pub fn spawn(
     }
     cmd.stdin(Stdio::null());
     cmd.kill_on_drop(false);
-    // Setpgid: cancellation kills the whole tree, not just the wrapper (proc_unix.go:21).
-    cmd.process_group(0);
 
     // ONE destination for fd 1 and fd 2, like Go's shared cappedBuffer: interleaving is preserved in write
-    // order either way.
+    // order either way. `std::io::pipe` is the portable spelling of what `nix::unistd::pipe` gave us — the
+    // same `pipe(2)`, now with `O_CLOEXEC`, so the read end no longer leaks into the child as a stray fd.
     let sink = match capture {
         Capture::File(file) => {
             let dup = file
@@ -200,32 +216,32 @@ pub fn spawn(
             None
         }
         Capture::Memory => {
-            let (rx_fd, tx_fd) =
-                nix::unistd::pipe().map_err(|e| fail(ShellError::Spawn(e.to_string())))?;
-            let tx_dup = tx_fd
+            let (rx, tx) = std::io::pipe().map_err(|e| fail(ShellError::Spawn(e.to_string())))?;
+            let tx_dup = tx
                 .try_clone()
                 .map_err(|e| fail(ShellError::Spawn(e.to_string())))?;
-            cmd.stdout(Stdio::from(tx_fd));
+            cmd.stdout(Stdio::from(tx));
             cmd.stderr(Stdio::from(tx_dup));
-            let rx = tokio::net::unix::pipe::Receiver::from_owned_fd(rx_fd)
-                .map_err(|e| fail(ShellError::Spawn(e.to_string())))?;
             Some(rx)
         }
     };
 
-    let spawned = cmd.spawn();
-    // The command still owns the parent's copies of the write end; dropping it lets the reader see EOF.
-    drop(cmd);
-    let child = spawned.map_err(|e| fail(ShellError::Spawn(e.to_string())))?;
-    let pid = child.id().and_then(|p| i32::try_from(p).ok());
+    // The reader is armed BEFORE the child exists, as it was when the pipe end went straight to the
+    // reactor: a failure here must not leave a running child nobody reaps. It cannot hang waiting for a
+    // spawn that never happens either — `cmd` still owns the parent's copies of the write end, and
+    // dropping it (which `spawn_supervised` does, success or failure, by taking it BY VALUE) is exactly
+    // what lets this task see EOF.
     let (reader, buf) = match sink {
         None => (None, None),
         Some(rx) => {
             let buf = Arc::new(Mutex::new(CappedBuffer::default()));
-            let task = tokio::spawn(drain(rx, Arc::clone(&buf)));
+            let task = start_drain(rx, Arc::clone(&buf))
+                .map_err(|e| fail(ShellError::Spawn(e.to_string())))?;
             (Some(task), Some(buf))
         }
     };
+    let child = spawn_supervised(cmd).map_err(|e| fail(ShellError::Spawn(e.to_string())))?;
+    let pid = child.id().and_then(|p| i32::try_from(p).ok());
     Ok(Started {
         child,
         pid,
@@ -249,7 +265,7 @@ impl Started {
             finished
         } else {
             // Cancelled or timed out: SIGKILL the group, then bound the reap like Go's WaitDelay.
-            kill_group(self.pid);
+            self.kill_tree();
             let reaped = tokio::time::timeout(WAIT_DELAY, self.child.wait())
                 .await
                 .ok();
@@ -278,6 +294,18 @@ impl Started {
             None => w.exited = true,
         }
         w
+    }
+
+    /// Kills the child AND everything it started: `killpg(SIGKILL)` on Unix, `TerminateJobObject` on
+    /// Windows. Both make the same promise — no descendant survives the call — through the platform's own
+    /// tree primitive.
+    fn kill_tree(&mut self) {
+        #[cfg(unix)]
+        kill_group(self.pid);
+        #[cfg(windows)]
+        if let Err(e) = self.child.start_kill() {
+            tracing::debug!("TerminateJobObject failed: {e}");
+        }
     }
 
     /// Everything the in-memory capture collected ([`Capture::File`] collects nothing here — the file has it).
@@ -321,7 +349,69 @@ async fn deadline(d: Option<Duration>) {
     }
 }
 
+/// Starts the child in its own process group (`setpgid`, `proc_unix.go:21`), so cancellation kills the whole
+/// tree and not just the `bash` wrapper. Takes the command by value: its copies of the pipe's write end must
+/// be gone before the reader can ever see EOF.
+#[cfg(unix)]
+fn spawn_supervised(mut cmd: tokio::process::Command) -> std::io::Result<Child> {
+    cmd.process_group(0);
+    cmd.spawn()
+}
+
+/// The Windows twin of `setpgid`: the child is assigned to a Job Object, which owns every process it goes on
+/// to start, so one `TerminateJobObject` ends the tree. `CREATE_NO_WINDOW` rides along because a console
+/// child spawned by a parent that has no console otherwise flashes — and steals focus with — a console window
+/// per command (goose#6701); it goes through `process-wrap` rather than `Command::creation_flags` because the
+/// Job Object wrapper writes that same field itself and would overwrite a flag set behind its back.
+#[cfg(windows)]
+fn spawn_supervised(cmd: tokio::process::Command) -> std::io::Result<Child> {
+    use process_wrap::tokio::{CommandWrap, CreationFlags, JobObject};
+    use windows::Win32::System::Threading::CREATE_NO_WINDOW;
+
+    let mut wrap = CommandWrap::from(cmd);
+    wrap.wrap(JobObject);
+    wrap.wrap(CreationFlags(CREATE_NO_WINDOW));
+    wrap.spawn()
+}
+
+/// Puts the pipe's read end on a task that streams it into the capped buffer — one the caller can bound and
+/// abandon.
+#[cfg(unix)]
+fn start_drain(
+    rx: std::io::PipeReader,
+    buf: Arc<Mutex<CappedBuffer>>,
+) -> std::io::Result<tokio::task::JoinHandle<()>> {
+    let rx = tokio::net::unix::pipe::Receiver::from_owned_fd(std::os::fd::OwnedFd::from(rx))?;
+    Ok(tokio::spawn(drain(rx, buf)))
+}
+
+/// Windows has no reactor registration for an anonymous pipe, so the same drain is a blocking read on the
+/// blocking pool. The difference is the abandonment case: [`Started::wait`] still stops WAITING for this task
+/// after `WAIT_DELAY`, but `abort` cannot interrupt a blocking read, so the thread stays parked until the
+/// last write end closes. Bounded (one per in-flight command) and never in the caller's way.
+///
+/// The `Result` is the Unix twin's, kept so the call site is one line on both platforms; nothing here fails.
+#[cfg(windows)]
+#[allow(clippy::unnecessary_wraps)]
+fn start_drain(
+    rx: std::io::PipeReader,
+    buf: Arc<Mutex<CappedBuffer>>,
+) -> std::io::Result<tokio::task::JoinHandle<()>> {
+    Ok(tokio::task::spawn_blocking(move || {
+        use std::io::Read as _;
+        let mut rx = rx;
+        let mut chunk = vec![0u8; READ_CHUNK];
+        loop {
+            match rx.read(&mut chunk) {
+                Ok(0) | Err(_) => return,
+                Ok(n) => lock(&buf).write(&chunk[..n]),
+            }
+        }
+    }))
+}
+
 /// Streams the child's combined output into the capped buffer until EOF (or a read error).
+#[cfg(unix)]
 async fn drain(mut rx: tokio::net::unix::pipe::Receiver, buf: Arc<Mutex<CappedBuffer>>) {
     let mut chunk = vec![0u8; READ_CHUNK];
     loop {
@@ -339,6 +429,7 @@ fn lock(buf: &Mutex<CappedBuffer>) -> MutexGuard<'_, CappedBuffer> {
 
 /// `kill(-pid, SIGKILL)` (proc_unix.go:22-28): the whole group dies, and an already-gone group (`ESRCH`) is
 /// success.
+#[cfg(unix)]
 pub(crate) fn kill_group(pid: Option<i32>) {
     let Some(pid) = pid else { return };
     match nix::sys::signal::killpg(
@@ -349,6 +440,15 @@ pub(crate) fn kill_group(pid: Option<i32>) {
         Err(e) => tracing::debug!("killpg({pid}) failed: {e}"),
     }
 }
+
+/// Nothing: a Windows process tree is addressed by its Job Object handle, which only the [`Started`] that
+/// spawned it holds, so a pid alone cannot reach it. The callers that pass one are the synchronous exit paths
+/// (`crate::shell::jobs::Jobs::kill_all`), and they also cancel the job's token — which makes its supervisor
+/// call `Started::kill_tree`, the handle-carrying route that does work. Closing the remaining gap (a process
+/// dying before its supervisors run) belongs with the Windows shell backend, which is also what will first
+/// start a child here: no `bash` toolset is registered on this platform yet.
+#[cfg(windows)]
+pub(crate) fn kill_group(_pid: Option<i32>) {}
 
 /// The platform sandbox wrapper for one command.
 fn sandbox_command(

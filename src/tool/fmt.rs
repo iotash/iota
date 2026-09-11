@@ -137,6 +137,9 @@ fn truncate_runes(s: &str, max: usize) -> String {
 pub(crate) const HEADER_PATH_MAX: usize = 48;
 
 /// Display cap of a header command summary (tool/headerfmt.go:105).
+// This constant and the two functions below serve the `bash` call header alone, so they follow the shell
+// toolset into unreachability on Windows (src/tool/shell.rs).
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) const HEADER_CMD_MAX: usize = 64;
 
 /// Renders a model-supplied path for a call header (tool/headerfmt.go:22-64): relative
@@ -220,6 +223,7 @@ fn truncate_runes_front(s: &str, n: usize) -> String {
 
 /// Renders a shell command for a call header (tool/headerfmt.go:109-124): the first line
 /// only (`" …"` marks more), tabs flattened, tail-truncated to [`HEADER_CMD_MAX`] runes.
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) fn header_command(cmd: &str) -> String {
     let cmd = cmd.trim();
     if cmd.is_empty() {
@@ -238,6 +242,7 @@ pub(crate) fn header_command(cmd: &str) -> String {
 
 /// Keeps the FIRST `n` runes of `s` + `'…'` — the opposite end from
 /// `truncate_runes_front`, because a command reads left to right.
+#[cfg_attr(windows, allow(dead_code))]
 fn truncate_runes_tail(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         return s.to_owned();

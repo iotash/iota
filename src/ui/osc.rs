@@ -12,7 +12,9 @@
 //! (`cursed_renderer.go:779-800`), written verbatim so the wire is byte-identical to Go's.
 
 use std::borrow::Cow;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
+#[cfg(unix)]
+use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -90,7 +92,7 @@ pub(crate) fn detect_background() -> bool {
 
 /// The fallible body: `Err` (no tty, raw-mode failure, timeout) → the dark default.
 fn detect_dark() -> io::Result<bool> {
-    let mut tty = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
+    let mut tty = open_tty()?;
     let was_raw = crossterm::terminal::is_raw_mode_enabled()?;
     if !was_raw {
         crossterm::terminal::enable_raw_mode()?;
@@ -100,6 +102,29 @@ fn detect_dark() -> io::Result<bool> {
         let _ = crossterm::terminal::disable_raw_mode();
     }
     result
+}
+
+/// The controlling terminal, opened read+write: the query goes out on it and the reply
+/// comes back on it, which is why this is `/dev/tty` and not stdin/stdout (either may be a
+/// pipe, and a redirect must not turn the detect into a write to a file).
+#[cfg(unix)]
+fn open_tty() -> io::Result<File> {
+    OpenOptions::new().read(true).write(true).open("/dev/tty")
+}
+
+/// Windows has no `/dev/tty`, and its nearest pair — `CONIN$` / `CONOUT$` — cannot stand in
+/// here: they are two handles where this needs one duplex file, the reply only arrives once
+/// the console input mode carries VT sequences, and `conhost` answers OSC 11 with nothing at
+/// all. So the round-trip is declined outright rather than attempted and left to time out:
+/// [`detect_background`] reads this `Err` as "unknown" and takes its documented default,
+/// dark — which is also what Windows Terminal ships with. A real detect belongs with a real
+/// terminal to verify it against.
+#[cfg(windows)]
+fn open_tty() -> io::Result<File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "the OSC 11 background query needs a controlling terminal (no /dev/tty on Windows)",
+    ))
 }
 
 /// Writes `OSC 11 ; ? ST` + `DSR 6n`, reads the reply bytes off the tty (bounded by

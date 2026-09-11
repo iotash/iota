@@ -1458,6 +1458,7 @@ dependencies = [
  "jiff",
  "nix 0.31.3",
  "pretty_assertions",
+ "process-wrap 10.0.0",
  "rand 0.9.5",
  "ratatui",
  "regex",
@@ -1479,6 +1480,7 @@ dependencies = [
  "unicode-width",
  "vt100",
  "walkdir",
+ "windows",
  "wiremock",
 ]
 
@@ -2220,6 +2222,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "process-wrap"
+version = "10.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e3f4237d0e4741eb50bc5584db701f1299c85fa31ff0274dd6445e79dc42d12"
+dependencies = [
+ "futures",
+ "indexmap",
+ "nix 0.31.3",
+ "tokio",
+ "tracing",
+ "windows",
+]
+
+[[package]]
 name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2619,7 +2635,7 @@ dependencies = [
  "indexmap",
  "pastey",
  "pin-project-lite",
- "process-wrap",
+ "process-wrap 9.1.0",
  "reqwest",
  "schemars",
  "serde",

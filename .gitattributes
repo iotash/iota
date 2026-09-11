@@ -1,0 +1,7 @@
+# Byte-for-byte is this repository's unit of truth: the golden transcripts, the session bundles, the
+# exported HTML/Markdown under tests/fixtures/ and the terminal-byte assertions are all compared as
+# bytes, and `cargo fmt --check` compares sources the same way. A checkout that rewrote line endings
+# would fail the suite for a reason that has nothing to do with the code — and that is precisely what
+# a Windows runner does by default (`core.autocrlf=true` in its system gitconfig). So: no conversion,
+# on any platform, for anything.
+* -text

@@ -31,7 +31,6 @@ regex
 globset
 ignore
 walkdir
-nix
 jiff
 # tui stack (TUI_CONTRACTS §1.1; justifications in docs/ARCHITECTURE.md §11)
 ratatui
@@ -47,6 +46,10 @@ two-face
 comrak
 image
 http
+# process supervision, per platform (justifications in Cargo.toml beside the entries)
+nix
+process-wrap
+windows
 # dev (plus the self-dev-dependency `iota`, which check-deps.sh skips)
 wiremock
 tempfile

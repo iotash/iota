@@ -4,9 +4,11 @@
 
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
+#[cfg(unix)]
 use iota::chat::turns::RunCtx;
 use iota::mcp::config::ServerConfig;
 use iota::mcp::{Manager, ManagerOptions};
+#[cfg(unix)]
 use iota::provider::model::JsonObject;
 use iota::testing::map_resolver;
 use iota::tool::Dispatcher;
@@ -18,6 +20,8 @@ fn options() -> ManagerOptions {
     ManagerOptions::new(reqwest::Client::new(), Arc::new(map_resolver(&[])))
 }
 
+/// Only the `sh`-spawning tests build one of these, and those are all `cfg(unix)`.
+#[cfg(unix)]
 fn stdio(name: &str, command: &str, args: &[&str]) -> ServerConfig {
     ServerConfig {
         name: name.to_owned(),
@@ -184,6 +188,7 @@ async fn reserved_header_is_a_connect_failure() {
 
 /// A minimal MCP server in POSIX `sh`: newline-delimited JSON-RPC over stdin/stdout answering `initialize`,
 /// `tools/list` (one tool `echo`) and `tools/call` (`"pong"`), exiting on stdin EOF.
+#[cfg(unix)]
 const SH_SERVER: &str = r#"
 while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')

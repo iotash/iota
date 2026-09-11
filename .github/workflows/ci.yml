@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, ubuntu-24.04]
+        os: [macos-14, ubuntu-24.04, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -36,6 +36,14 @@ jobs:
       - name: Install tmux (macOS)
         if: runner.os == 'macOS'
         run: brew install tmux
+
+      # aws-lc-sys assembles its bignum and AES-NI routines with NASM when it builds for MSVC, and
+      # the runner image does not ship one. Installing it here is what keeps the TLS backend the SAME
+      # everywhere (rustls + aws-lc-rs, Cargo.toml) — the alternative, a ring provider on Windows
+      # only, would mean two TLS stacks to reason about for one missing assembler.
+      - name: Install NASM (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
 
       - name: Install the pinned toolchain (rust-toolchain.toml)
         run: rustup toolchain install && rustup show
@@ -53,9 +61,30 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Run ci.sh
+        if: runner.os != 'Windows'
         run: ./ci.sh
 
+      # Windows runs no `ci.sh`: that script is the Unix gate, and half of it is things this platform
+      # does not have (tmux, bubblewrap, the sandbox) or does not ship (the release size budget, which
+      # is measured once, on the platforms that are released). The checks it runs that are NOT
+      # platform-specific — the dependency allowlist, the stub scan, the layering greps — already ran
+      # twice above; running them a third time would prove nothing new. What is left is the question
+      # this job exists to answer: does the code compile, and do its tests pass, on Windows.
+      #
+      # The shell, sandbox and tmux suites skip themselves here by `#[cfg(unix)]` on the module or the
+      # test, never by failing to find a binary — see tests/tool/main.rs.
+      - name: fmt, clippy, docs and tests (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+          cargo test
+
       - name: Upload binary size
+        if: runner.os != 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: size-${{ matrix.os }}

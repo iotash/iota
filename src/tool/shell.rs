@@ -1,5 +1,11 @@
 //! The `shell` toolset (tool/shell.go): one `bash` tool running `bash -c` per call, sandboxed with Seatbelt on
 //! macOS / bwrap on Linux when available.
+//!
+//! On Windows [`new_shell_set`] builds none of it (see there), which makes everything below this line
+//! compiled-but-unreachable on that platform — hence the module-wide `dead_code` waiver, which is exactly as
+//! wide as the fact it states. It comes off when the Windows shell backend lands and the factory starts
+//! returning a tool again.
+#![cfg_attr(windows, allow(dead_code))]
 
 use std::{
     path::{Path, PathBuf},
@@ -81,7 +87,8 @@ pub(crate) struct BashTool {
 }
 
 /// Decode → `ShellConfig(err)`; sandbox "" → "auto"; not auto|off → `BadSandbox`; `sandboxed = sandbox == "auto"
-/// && exec::available()` evaluated ONCE.
+/// && exec::available()` evaluated ONCE. On Windows the config is validated the same way and then the set
+/// contributes NOTHING but a warning, until the Windows shell backend exists.
 pub fn new_shell_set(env: &Env, node: Option<&RawNode>) -> Result<Vec<Arc<dyn Tool>>, SetError> {
     let mut shell_cfg: ShellConfig = yaml11::decode_mapping(node).map_err(SetError::ShellConfig)?;
     match shell_cfg.sandbox.as_str() {
@@ -89,21 +96,33 @@ pub fn new_shell_set(env: &Env, node: Option<&RawNode>) -> Result<Vec<Arc<dyn To
         "auto" | "off" => {}
         other => return Err(SetError::BadSandbox(other.to_owned())),
     }
-    // A sandbox binary appearing or disappearing later has no effect on this run (tool/shell.go:67).
-    let sandboxed = shell_cfg.sandbox == "auto" && exec::available();
-    Ok(vec![Arc::new(BashTool {
-        shell_cfg,
-        jobs: env.jobs.clone(),
-        root: env.root().unwrap_or_default(),
-        cwd: env
-            .dirs
-            .cwd
-            .clone()
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_default(),
-        sandboxed,
-        dirs: env.dirs.clone(),
-    })])
+    // The validation above runs on EVERY platform on purpose: a typo in `tools.shell` must read the same
+    // wherever the config is written. What Windows does not get is the tool — a `bash` that answered every
+    // call with "bash is not installed on this system" would spend the model's turns discovering, one call
+    // at a time, what one warning says once (tool/registry.rs turns this Err into exactly that warning).
+    #[cfg(windows)]
+    {
+        let _ = (env, shell_cfg);
+        Err(SetError::ShellUnsupported)
+    }
+    #[cfg(not(windows))]
+    {
+        // A sandbox binary appearing or disappearing later has no effect on this run (tool/shell.go:67).
+        let sandboxed = shell_cfg.sandbox == "auto" && exec::available();
+        Ok(vec![Arc::new(BashTool {
+            shell_cfg,
+            jobs: env.jobs.clone(),
+            root: env.root().unwrap_or_default(),
+            cwd: env
+                .dirs
+                .cwd
+                .clone()
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_default(),
+            sandboxed,
+            dirs: env.dirs.clone(),
+        })])
+    }
 }
 
 impl Tool for BashTool {
