@@ -27,3 +27,8 @@ tap = "iotash/homebrew-tap"
 formula = "iota"
 # Push the formula (needs the HOMEBREW_TAP_TOKEN secret on iotash/iota).
 publish-jobs = ["homebrew"]
+# The macOS code-signature gate. This is the first dist stage whose jobs wait on every per-target
+# build, so it is where a check on the built artifacts belongs: `local-artifacts-jobs` runs beside
+# the builds, not after them, and would find nothing to inspect. A red job here stops `host`, so a
+# binary that fails `codesign -v` is never published.
+global-artifacts-jobs = ["./verify-macos-signing"]

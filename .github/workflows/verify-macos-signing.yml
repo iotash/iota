@@ -1,0 +1,84 @@
+# A dist custom job (dist-workspace.toml: global-artifacts-jobs). It runs once
+# every per-target build job has uploaded its archive, and `host` — the job that
+# decides whether to publish — refuses to run unless this one is green.
+#
+# Why it exists: a macOS binary whose ad-hoc signature no longer matches its own
+# contents is SIGKILLed at launch on recent macOS. Not a warning, not a
+# Gatekeeper prompt — an instant kill with no message the user can act on.
+# opencode shipped exactly that (their issue #18503, closed as not planned):
+# flags=0x2 (adhoc) with linker-signed missing, out of an upstream Bun
+# --compile bug. iota is not built that way — our binaries come out
+# flags=0x20002 (adhoc,linker-signed) and verify clean — but `strip = true`
+# reaches the binary after the linker has signed it, and stripping a signed
+# Mach-O invalidates the signature. That is one toolchain bump away from
+# shipping a binary nobody can start, from a runner nobody is watching. So every
+# tag verifies the artifact it is about to publish, on both macOS targets.
+#
+# ELF has no such signature, so Linux has nothing to check here.
+name: verify-macos-signing
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  verify-macos-signing:
+    name: verify macOS signatures
+    runs-on: macos-14
+    steps:
+      # Both macOS archives, whichever runners produced them. `codesign` reads
+      # Mach-O headers and executes nothing, so this arm64 runner verifies the
+      # x86_64 artifact exactly as well as its own.
+      - name: Fetch the macOS archives
+        uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-build-local-*apple-darwin
+          path: artifacts/
+          merge-multiple: true
+
+      - name: codesign every macOS binary
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          archives=(artifacts/*-apple-darwin.tar.xz)
+          if [ ${#archives[@]} -eq 0 ]; then
+            echo "::error::no *-apple-darwin.tar.xz archive reached this job — nothing was verified"
+            exit 1
+          fi
+
+          failed=0
+          for archive in "${archives[@]}"; do
+            name=$(basename "$archive" .tar.xz)
+            mkdir -p "unpacked/$name"
+            tar -xf "$archive" -C "unpacked/$name"
+            # The archive layout is dist's to decide, so go and find the binary
+            # rather than assuming how deep it sits.
+            find "unpacked/$name" -type f -name iota > "unpacked/$name.bins"
+
+            if [ ! -s "unpacked/$name.bins" ]; then
+              echo "::error::$archive contains no iota binary"
+              failed=1
+              continue
+            fi
+
+            while read -r bin; do
+              echo "::group::$name"
+              # On the record every run, pass or fail: this is the line that says
+              # *why* a binary is bad. 0x20002 is adhoc,linker-signed — a healthy
+              # build; a bare 0x2 is the shape opencode shipped.
+              codesign -dv "$bin" 2>&1 | grep -E 'Format=|flags=' || true
+              if codesign -v --verbose=2 "$bin" 2>&1; then
+                echo "OK: $bin carries a signature that matches its contents"
+              else
+                echo "::error::$bin fails codesign -v — macOS will SIGKILL it at launch"
+                failed=1
+              fi
+              echo "::endgroup::"
+            done < "unpacked/$name.bins"
+          done
+
+          exit "$failed"
