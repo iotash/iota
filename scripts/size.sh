@@ -35,9 +35,10 @@ echo "| binary | bytes | size |"
 echo "|---|---:|---:|"
 echo "| \`iota\` (release, stripped) | $rust_bytes | $(human "$rust_bytes") |"
 echo
-echo "The heavy parts are two embedded tables — tiktoken-rs' bundled \`o200k_base\` ranks (~3.6 MiB)"
-echo "and syntect + two-face's syntax/theme dumps (~1.1 MiB); the TUI itself (ratatui + crossterm +"
-echo "the ui and repl modules) is ~0.4 MiB."
+echo "The heavy parts are two embedded tables — syntect + two-face's syntax/theme dumps (~1.1 MiB)"
+echo "and tiktoken's \`o200k_base\` ranks (~0.78 MiB of zstd in the binary, ~0.87 MiB all told,"
+echo "decompressed in-process on the first count); the TUI itself (ratatui + crossterm + the ui and"
+echo "repl modules) is ~0.4 MiB."
 
 if cargo bloat --version >/dev/null 2>&1; then
     echo

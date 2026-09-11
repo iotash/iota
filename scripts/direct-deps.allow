@@ -38,7 +38,7 @@ crossterm
 unicode-width
 unicode-segmentation
 # token accounting (TUI_CONTRACTS §1.1; justification in docs/ARCHITECTURE.md §11)
-tiktoken-rs
+tiktoken
 # syntax highlighting (WP55; justifications in docs/ARCHITECTURE.md §11)
 syntect
 two-face

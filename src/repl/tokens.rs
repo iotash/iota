@@ -1,11 +1,11 @@
 //! The offline token counter and the token-accounting constants (`chat/tokens.go`).
 //!
 //! **Offline by construction.** Go paired `tiktoken-go` with `tiktoken-go-loader`'s
-//! offline loader so a token count never becomes a network call; `tiktoken-rs` bundles the
-//! same `o200k_base` rank table in the binary, which is the identical property arrived at
-//! from the other side. The encoder is built ONCE, lazily, behind a [`std::sync::OnceLock`]:
-//! a chat that never needs a figure never pays the 3.6 MB table's parse, and a chat that
-//! does pays it once.
+//! offline loader so a token count never becomes a network call; `tiktoken` embeds the same
+//! `o200k_base` rank table in the binary (zstd-compressed, decompressed in-process), which
+//! is the identical property arrived at from the other side. The encoder is built ONCE,
+//! lazily, behind a [`std::sync::OnceLock`]: a chat that never needs a figure never pays the
+//! table's decompression, and a chat that does pays it once.
 //!
 //! **The fallback is a byte count, not a character count.** Go's `len(text) / 4` counts
 //! BYTES, so [`TokenCounter::count`] does too (`str::len`). Keeping the byte semantics is
@@ -20,7 +20,7 @@
 use crate::provider::model::JsonObject;
 use crate::provider::model::Message;
 use serde_json::Value;
-use tiktoken_rs::CoreBPE;
+use tiktoken::CoreBpe;
 
 /// The assumed model context size when none is configured (`chat/tokens.go`
 /// `defaultContextWindow`).
@@ -52,13 +52,13 @@ const MESSAGE_FRAMING_TOKENS: u64 = 4;
 /// The process-wide `o200k_base` encoder, or `None` when it failed to build.
 ///
 /// `None` is Go's `enc == nil`: the counter degrades to the byte heuristic rather than
-/// failing, because a chat that cannot tokenize must still run.
-static ENCODER: std::sync::OnceLock<Option<CoreBPE>> = std::sync::OnceLock::new();
+/// failing, because a chat that cannot tokenize must still run. The crate hands out a
+/// `&'static CoreBpe` from its own lazily-built table, so what the `OnceLock` memoizes is
+/// the lookup, not the encoder.
+static ENCODER: std::sync::OnceLock<Option<&'static CoreBpe>> = std::sync::OnceLock::new();
 
-fn encoder() -> Option<&'static CoreBPE> {
-    ENCODER
-        .get_or_init(|| tiktoken_rs::o200k_base().ok())
-        .as_ref()
+fn encoder() -> Option<&'static CoreBpe> {
+    *ENCODER.get_or_init(|| tiktoken::get_encoding("o200k_base"))
 }
 
 /// The local fallback tokenizer (`o200k_base`, embedded) used for providers that do not
@@ -93,7 +93,7 @@ impl TokenCounter {
     /// empty allowed/disallowed sets reduce to the ordinary encoder.
     pub fn count(self, text: &str) -> u64 {
         match encoder() {
-            Some(bpe) => u64::try_from(bpe.encode_ordinary(text).len()).unwrap_or(u64::MAX),
+            Some(bpe) => u64::try_from(bpe.encode(text).len()).unwrap_or(u64::MAX),
             None => u64::try_from(text.len() / 4).unwrap_or(u64::MAX),
         }
     }

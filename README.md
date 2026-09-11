@@ -819,7 +819,7 @@ One package, one module tree: the library under `src/` holds every module and `s
 | [ratatui](https://github.com/ratatui/ratatui) + [crossterm](https://github.com/crossterm-rs/crossterm) | Inline terminal UI (composer, status line, tabbed surfaces) |
 | [syntect](https://github.com/trishume/syntect) + [two-face](https://codeberg.org/CosmicHarper/two-face) | Syntax highlighting for code blocks, diffs, and `/export` HTML |
 | [comrak](https://github.com/kivikakk/comrak) | Markdown to HTML for `/export` |
-| [tiktoken-rs](https://github.com/zurawiki/tiktoken-rs) | Offline token counting for context accounting |
+| [tiktoken](https://github.com/goliajp/rust-tiktoken) | Offline token counting for context accounting |
 | [jiff](https://github.com/BurntSushi/jiff) | Timestamps (session metadata, request log, export and image filenames) |
 | [image](https://github.com/image-rs/image) | Decoding PNG/JPEG/GIF/WebP for inline rendering |
 | [ignore](https://github.com/BurntSushi/ripgrep/tree/master/crates/ignore) / [globset](https://github.com/BurntSushi/ripgrep/tree/master/crates/globset) / [regex](https://github.com/rust-lang/regex) | The `code` toolset's `glob` and `grep` |
