@@ -1,0 +1,14 @@
+# Build steps spliced into the generated `build-local-artifacts` job of
+# `.github/workflows/release.yml`, named by `github-build-setup` in `dist-workspace.toml`.
+# It lives beside `workflows/` rather than inside it so GitHub does not read it as a workflow.
+#
+# `build-local-artifacts` is one matrix job across every target in `dist-workspace.toml`, so a
+# step here runs on the macOS and Linux runners too — hence the `runner.os` guard.
+#
+# This mirrors the NASM step in `ci.yml`. `aws-lc-sys` assembles its x86 code with NASM on
+# Windows and the build fails outright without it, so `release.yml` needs the step just as much
+# as `ci.yml` does. It is here and not in the generated YAML because `dist generate` rewrites
+# that file from scratch and would drop a hand-added step without a word.
+- name: Install NASM (Windows)
+  if: runner.os == 'Windows'
+  uses: ilammy/setup-nasm@v1

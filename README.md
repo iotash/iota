@@ -67,6 +67,18 @@ Fetches the prebuilt binary for your platform from the latest release, verifies
 its checksum and puts it in `~/.cargo/bin` (or `$CARGO_HOME/bin`), adding that
 directory to your `PATH` if it is not there already. No Rust toolchain needed.
 
+### PowerShell (Windows)
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/iotash/iota/releases/latest/download/iota-installer.ps1 | iex"
+```
+
+The same thing for Windows: it fetches `iota-x86_64-pc-windows-msvc.zip`, checks
+its SHA-256 and puts `iota.exe` in `%USERPROFILE%\.cargo\bin` (or
+`%CARGO_HOME%\bin`), on `PATH`. **The Windows binaries are not code-signed**, so
+SmartScreen may warn the first time you run `iota.exe`; see
+[Releases](#releases) for what you can verify instead.
+
 ### Cargo
 
 ```bash
@@ -88,9 +100,14 @@ The binary is at `target/release/iota`. The toolchain is pinned by `rust-toolcha
 ### Platforms
 
 macOS, Linux and Windows, Apple Silicon and x86-64 alike. Every release carries
-`aarch64-apple-darwin`, `x86_64-apple-darwin`, `aarch64-unknown-linux-gnu` and
-`x86_64-unknown-linux-gnu` binaries; Windows builds and is tested in CI but has
-no release binary yet, so there it means building from source for now.
+`aarch64-apple-darwin`, `x86_64-apple-darwin`, `aarch64-unknown-linux-gnu`,
+`x86_64-unknown-linux-gnu` and `x86_64-pc-windows-msvc` binaries. ARM Windows
+(`aarch64-pc-windows-msvc`) is deliberately not a release target and nothing
+tests it: `dist-workspace.toml` records why, and what would have to be true
+before it becomes one. The PowerShell installer detects that architecture and
+stops with `could not find binaries for this platform` rather than reaching for
+the x86-64 build under emulation, so on an ARM machine it means `cargo install`
+or a build from source.
 
 Two things differ on Windows, both about the `shell` toolset:
 
@@ -885,16 +902,37 @@ git tag -a v0.1.0 -m "v0.1.0"
 git push origin v0.1.0
 ```
 
-`.github/workflows/release.yml` does the rest: it builds the four targets on
-native runners, packs each one as `iota-<target>.tar.xz` with a SHA-256, opens
-the GitHub Release, publishes `iota-installer.sh` beside the archives and
-commits `Formula/iota.rb` to
+`.github/workflows/release.yml` does the rest: it builds the five targets of
+[Platforms](#platforms) on native runners, packs each one as
+`iota-<target>.tar.xz` (`.zip` on Windows) with a SHA-256, opens the GitHub
+Release, publishes `iota-installer.sh` and `iota-installer.ps1` beside the
+archives and commits `Formula/iota.rb` to
 [iotash/homebrew-tap](https://github.com/iotash/homebrew-tap) — which needs a
 `HOMEBREW_TAP_TOKEN` repository secret that can write to the tap.
 
 That workflow is generated, never hand-edited: `dist-workspace.toml` is the
-source of truth and `dist init` rewrites the YAML from it. `dist plan` prints
-what a tag would produce, without building anything.
+source of truth and `dist generate` rewrites the YAML from it. Steps that must
+run inside the build job go in `.github/build-setup.yml`, which the same config
+points at — that is where the NASM install the Windows build needs lives, since
+a step added to the generated file by hand would not survive the next
+regeneration. `dist plan` prints what a tag would produce, without building
+anything.
+
+**The macOS binaries are signed; the Windows ones are not.** macOS gets an
+ad-hoc, linker-applied signature, and the `verify-macos-signing` job blocks
+publication of any archive whose signature does not match its contents. Windows
+has no equivalent here: Authenticode needs a certificate from a paid signing
+service, which is outside what this project runs, so `iota.exe` ships unsigned.
+Expect SmartScreen to warn on first run, and expect the browser to flag the
+download. What you can check instead is the archive: every asset is published
+with a `.sha256` beside it, and `sha256.sum` lists them all.
+
+```powershell
+Get-FileHash .\iota-x86_64-pc-windows-msvc.zip -Algorithm SHA256
+```
+
+Compare that against the published `iota-x86_64-pc-windows-msvc.zip.sha256`.
+The PowerShell installer does this check for you.
 
 ## License
 

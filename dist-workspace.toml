@@ -8,13 +8,36 @@ members = ["cargo:."]
 cargo-dist-version = "0.33.0"
 # CI backends to support
 ci = "github"
-# The installers to generate for each app
-installers = ["shell", "homebrew"]
+# The installers to generate for each app. `powershell` is the Windows twin of `shell`: one
+# `irm … | iex` line that fetches the archive for the machine's architecture, checks its SHA-256
+# and drops `iota.exe` in `%CARGO_HOME%\bin`.
+# NO MSI: it wants the WiX toolchain and a generated `main.wxs` that `dist generate --check`
+# then polices, it only covers x86_64, and — nothing here signs Windows artifacts — an unsigned
+# `.msi` is treated far more harshly by SmartScreen than a script the user pasted themselves.
+# The `.ps1` already is the one-line install, so the MSI would only buy an Add/Remove entry.
+installers = ["shell", "powershell", "homebrew"]
 # Target platforms to build apps for (Rust target-triple syntax).
-# Four native targets, one runner each — aws-lc-rs wants a C toolchain, so no cross-compiling.
-# NO WINDOWS: `nix` is an unconditional dependency (Cargo.toml), so the crate does not compile
-# for *-pc-windows-*. Adding the target here would only turn every tag into a red workflow.
-targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+# Five native targets, one runner each — aws-lc-rs wants a C toolchain, so no cross-compiling.
+# Windows joined the list once `nix` moved behind `cfg(unix)`; `x86_64-pc-windows-msvc` builds on
+# `windows-2022`, which needs the NASM step from `github-build-setup` below.
+#
+# NO `aarch64-pc-windows-msvc`, for now. The crypto side is fine — AWS lists that triple as
+# build+test supported, and NASM is an x86 assembler it does not even ask for there. What is
+# missing is a runner dist will use: `KNOWN_GITHUB_RUNNERS` in dist 0.33.0 knows no ARM Windows
+# machine, so a non-x86_64 Windows target silently becomes a `messense/cargo-xwin` cross-compile
+# inside a Linux container — a toolchain this crate has never been built with, and one the
+# Windows-gated NASM step would not even fire for. Pointing it at the native
+# `windows-11-arm` runner takes a hand-written `host = …` override, and nothing in `ci.yml`
+# would catch a break: the first signal would be a red tag.
+# The user-visible cost is a hard stop, not a silent downgrade: the `.ps1` installer resolves
+# ARM64 Windows to `aarch64-pc-windows-*`, finds neither in the manifest, and exits with
+# `could not find binaries for this platform` — it never falls back to the x86-64 build under
+# emulation.
+# Re-evaluate when all three hold: (1) a tag has produced a green `x86_64-pc-windows-msvc`
+# build, so the easy Windows target is proven; (2) `ci.yml` has a `windows-11-arm` job that
+# compiles and tests the crate there; (3) dist knows that runner natively, or we have accepted
+# writing the `[dist.github-custom-runners.aarch64-pc-windows-msvc]` runner/host pair by hand.
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 # Path that installers should place binaries in
 install-path = "CARGO_HOME"
 # Where to host releases
@@ -32,3 +55,10 @@ publish-jobs = ["homebrew"]
 # the builds, not after them, and would find nothing to inspect. A red job here stops `host`, so a
 # binary that fails `codesign -v` is never published.
 global-artifacts-jobs = ["./verify-macos-signing"]
+# Steps spliced into the generated `build-local-artifacts` job, right after the checkout, so
+# `release.yml` stays a generated file nobody hand-edits. The one step in there installs NASM,
+# which `aws-lc-sys` needs to assemble its x86 code on Windows — `ci.yml` has carried the same
+# step since the Windows job was added, and a release built without it does not link.
+# The path is relative to `.github/workflows/`; the file sits one level up so GitHub does not
+# mistake it for a workflow of its own.
+github-build-setup = "../build-setup.yml"

@@ -127,6 +127,9 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
+      - name: "Install NASM (Windows)"
+        uses: "ilammy/setup-nasm@v1"
+        if: "runner.os == 'Windows'"
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest

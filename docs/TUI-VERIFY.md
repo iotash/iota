@@ -50,6 +50,11 @@ Terminals in the matrix, in the order they matter:
 | 6 | VS Code integrated terminal | xterm.js — a different implementation family entirely |
 | 7 | xterm | the reference implementation the escape sequences are written against |
 
+Sections 1–8 are that matrix. **Section 9 is Windows Terminal's own list** — a separate
+section rather than an eighth row, because what differs there is the mechanism (console input,
+no `/dev/tty`, a job object instead of a process group), not the emulator. None of it has been
+run.
+
 ---
 
 ## 1. IME / CJK composition (the reason this file exists)
@@ -235,7 +240,119 @@ to run something slow in the background (`sleep 20; echo done`).
       folds back into the composer as usual — and the job must still be running (its notice
       arrives later). Then `/quit`: the job must be gone (`ps` for the command).
 
-## 9. Sign-off
+## 9. Windows Terminal — NOT YET RUN
+
+**Status: not one item below has been executed.** There is no Windows machine here, and
+`tests/ui_tmux` needs tmux, so the entire Windows surface is unverified — both by automation
+and by hand. This section exists so that the first person with a Windows box has a list rather
+than a hunch, and so nobody mistakes "Windows compiles in CI" for "the TUI works on Windows".
+
+Since 2026-09-13 a release carries an `x86_64-pc-windows-msvc` binary, so this section joins
+the gate the first time a Windows release is announced.
+
+The terminal is **Windows Terminal** (the default console host on Windows 11 and the only one
+with a working VT implementation). `conhost.exe` — what you still get from the classic
+`cmd.exe` shortcut or from a Windows Server image — is explicitly **out of the matrix**: run
+the list there if you like, but a failure that reproduces only on `conhost` is recorded, not
+fixed.
+
+Sections §1–§8 apply to Windows Terminal too and are worth running, but this list comes first:
+it is the set where the *mechanism* differs from Unix rather than the emulator.
+
+- [ ] **9.1 It starts at all.** `iota.exe` with a configured provider reaches the composer,
+      the separators are drawn at the window width, and one turn round-trips. Anything short
+      of that makes the rest of this list moot — record where it stopped.
+- [ ] **9.2 ANSI and color.** Colors, bold and dim render as colors, bold and dim — not as
+      literal `←[0m` text. Windows Terminal enables `ENABLE_VIRTUAL_TERMINAL_PROCESSING` on
+      its own, but crossterm also falls back to a WinAPI path when it believes ANSI is
+      unavailable, and that path implements only a subset. If escape bytes appear as text,
+      record the exact bytes: that says the fallback is in play, which would affect §9.7 too.
+- [ ] **9.3 The 256-color / truecolor palette.** Run something with a diff or a syntax block.
+      Colors should match what the same output looks like on macOS, not collapse to the
+      16-color set.
+- [ ] **9.4 Cursor positioning.** The text cursor sits at the composer's insertion point at
+      rest, after an arrow-key move, and after a wrap to a second composer row — not at column
+      0, not one row below the frame. This is what §1 tests for an IME; here the question is
+      just whether the cursor lands where the app put it.
+- [ ] **9.5 Wide characters.** A line of CJK text occupies exactly two columns per glyph, the
+      right-hand separator stays flush, and a run that would straddle the last column wraps
+      whole (§6.3's check, on this terminal). Windows Terminal and the grapheme ruler must
+      agree on the width or every line after the first is off by one.
+- [ ] **9.6 Emoji, flags and VS16.** §6.4's table, here. Emoji that Windows Terminal renders
+      single-width while the ruler counts them double (or the reverse) shows up as a ragged
+      right edge; record the exact characters, not "emoji are broken".
+- [ ] **9.7 Bracketed paste — the one with a known mechanism gap.** Paste a **multi-line**
+      block into the composer. On Unix the terminal wraps it in `ESC[200~`/`ESC[201~` and
+      crossterm delivers one `Event::Paste`, so the newlines stay inside the draft. Crossterm
+      0.29 reads Windows console input through the WinAPI reader, which produces **no**
+      `Event::Paste` at all (`EnableBracketedPaste::execute_winapi` is a hard
+      `ErrorKind::Unsupported`), so the paste may instead arrive as ordinary key events —
+      and every embedded newline would then read as Enter, i.e. **send** each line as its own
+      message. Record exactly what happened: one draft, or N submitted turns. N submitted
+      turns is a **tier 1** finding.
+- [ ] **9.8 Oversized paste.** §6.5's check on this terminal: paste a file larger than the
+      screen and confirm the composer shows a placeholder rather than the whole text.
+- [ ] **9.9 Ctrl+C at idle.** At the prompt with no turn running, Ctrl+C interrupts the parked
+      waiter; a second one exits. The process must exit *cleanly* — raw mode off, cursor
+      shown, bracketed paste off — leaving a usable shell prompt, not a terminal that echoes
+      nothing.
+- [ ] **9.10 Ctrl+C mid-turn.** During a streamed answer, Ctrl+C cancels the turn and returns
+      to the composer without killing the process; the partial answer stays in history.
+- [ ] **9.11 Ctrl+D.** Identical to Ctrl+C in both states (`ui/keys.rs` treats `Char('c')` and
+      `Char('d')` as one row). On Windows there is no EOF convention behind Ctrl+D, so this is
+      purely a key binding — confirm the console host does not swallow it first.
+- [ ] **9.12 Ctrl+C reaches a running command.** Start a long `shell` call, press Ctrl+C.
+      Unix kills the process group; Windows uses a job object (`process-wrap`). Confirm the
+      child is actually gone — check Task Manager or `Get-Process` — and that no console
+      window flashed up while it ran (`CREATE_NO_WINDOW`).
+- [ ] **9.13 Resize, wider.** Start a stream, widen the window mid-stream, let it finish.
+      Count orphaned rows as §4 does. Windows Terminal reflows its buffer on resize, which
+      tmux does not do at all, so this is the first place the whole reflow class is even
+      visible — expect findings here and write down what you see rather than a verdict.
+- [ ] **9.14 Resize, narrower.** The same, narrowing. Narrowing is the direction that
+      rewraps history the app has already handed over.
+- [ ] **9.15 Resize at idle.** Both directions with no turn running: exactly one composer row
+      at the new width, separators at the new width, no orphan.
+- [ ] **9.16 Very narrow window.** Drag to roughly 40 columns. The frame must degrade, not
+      corrupt: no panic, no rows drawn past the edge.
+- [ ] **9.17 The window title.** §5, here. The tab title becomes the session title on start
+      and is **restored** on a clean exit. crossterm emits OSC 0 through its ANSI path but
+      calls `SetConsoleTitleW` through the WinAPI fallback; either is acceptable, but a tab
+      still named `iota` after `/quit` is a finding. Note which of the two you think ran —
+      §9.2 tells you.
+- [ ] **9.18 The background detect declines, quietly.** `osc.rs::open_tty` returns
+      `ErrorKind::Unsupported` on Windows (there is no `/dev/tty`, and `conhost` answers OSC
+      11 with nothing), so `detect_background` takes its documented default: **dark**. What
+      this item is checking is that declining is *silent and harmless*: no error printed at
+      startup, no 100 ms stall before the first frame, no stray `ESC]11;?` bytes echoed into
+      the buffer, and adaptive shades that look right on Windows Terminal's dark default.
+- [ ] **9.19 …and wrong on a light theme.** Switch Windows Terminal to a light profile and
+      start again. The UI will still assume dark, because nothing on Windows asks. Record how
+      bad it is — legible-but-not-pretty is a tier 3 note; unreadable text is a tier 2 finding
+      that argues for a Windows background detect via `CONIN$`/`CONOUT$` rather than a
+      per-terminal excuse.
+- [ ] **9.20 Terminal progress and notifications.** §7.1 and §7.2 on this terminal: Windows
+      Terminal implements OSC 9;4 (the taskbar progress ring) and OSC 9 (a toast). Both are
+      emitted unchanged from Unix — confirm the ring appears during a turn, turns to the
+      warning state when iota waits for you, and clears on exit.
+- [ ] **9.21 Git Bash vs PowerShell.** Run once on a machine **with** Git for Windows and once
+      **without** (or with `IOTA_SHELL` forced). The `shell` tool's description must name the
+      interpreter that actually ran, and the call header's chained `cd` must be in that
+      shell's dialect. This is X-17/X-18 in `DIVERGENCES.md` — unit-tested on macOS, never
+      once observed on Windows.
+- [ ] **9.22 Background jobs.** §8's list, here. The log path under the Windows temp
+      directory, the notice arriving at idle, and `/quit` killing the job (§8.5) all go
+      through the job-object path rather than `killpg`.
+
+### Windows results
+
+| terminal | Windows build | version | §9.1–9.6 | §9.7–9.8 paste | §9.9–9.12 keys | §9.13–9.16 resize | §9.17–9.19 title/theme | §9.20–9.22 host/shell | verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| Windows Terminal | | | | | | | | | |
+
+An empty cell means *not yet verified*. Every cell in this table is empty on purpose.
+
+## 10. Sign-off
 
 Dogfood until dry: one report → one fix → repeat, ranked as the Go migration ranked them.
 
@@ -273,4 +390,6 @@ There is no second binary to run it against: the `tui-portable` fallback was rem
 
 That covers §2's mechanism (history contiguous, every row exactly once), §4.4, §6.1, §6.2,
 §6.3 and §6.5 under tmux only. It covers **none** of §1, §3 or §5, and tmux does not
-rewrap, so it covers none of §4.1–§4.3 either.
+rewrap, so it covers none of §4.1–§4.3 either. It covers none of §9 in any sense: tmux does
+not run on Windows, and the Windows CI job builds and unit-tests the crate without ever
+opening a terminal.
