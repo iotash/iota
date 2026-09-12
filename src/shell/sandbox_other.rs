@@ -1,6 +1,6 @@
 //! Sandbox stub for platforms without a supported OS sandbox (internal/shell/`sandbox_other.go`).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// No sandbox on this platform.
 pub(crate) fn available() -> bool {
@@ -9,7 +9,7 @@ pub(crate) fn available() -> bool {
 
 /// Always fails: `sandboxing is not supported on this platform`.
 pub(crate) fn command(
-    _bash: &Path,
+    _shell: &super::interp::Interpreter,
     _script: &str,
     _writable: &[PathBuf],
     _network: bool,

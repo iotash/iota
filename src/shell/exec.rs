@@ -1,11 +1,16 @@
-//! Process execution (internal/shell/shell.go + `proc_unix.go`): one `bash -c` child in its own process group,
-//! combined stdout/stderr, cancellation and timeout by `killpg(SIGKILL)`, then the output caps.
+//! Process execution (internal/shell/shell.go + `proc_unix.go`): one interpreter child in its own process
+//! group, combined stdout/stderr, cancellation and timeout by `killpg(SIGKILL)`, then the output caps.
+//!
+//! WHICH interpreter is `crate::shell::interp`'s question, asked here once per call the way Go asked
+//! `exec.LookPath` once per call: `bash -c` on Unix, and on Windows the first of Git Bash, PowerShell and
+//! `cmd.exe` that the machine has. Everything below is the same code either way — an interpreter is a
+//! program plus the arguments that precede the script.
 //!
 //! The three stages are separate so a background job (`crate::shell::jobs`) can reuse the first two without
 //! the third: [`spawn`] starts the child (sandbox, working directory, `setpgid`, one destination for fd 1 and
 //! fd 2), [`Started::wait`] supervises it (deadline, cancellation, `killpg`, the bounded reap), and only the
 //! in-memory [`Capture::Memory`] destination collects output at all. [`run`] is those three in a row — the
-//! foreground `bash` call, unchanged.
+//! foreground call, unchanged.
 //!
 //! Two of those stages are the OS's, not ours, so they are the only things this module forks by platform
 //! (`Child`, `spawn_supervised`, `Started::kill_tree`, `kill_group`): Unix keeps `setpgid` +
@@ -69,7 +74,7 @@ pub struct Sandbox {
 /// One execution request.
 #[derive(Clone, Debug)]
 pub struct Options {
-    /// The `bash -c` script.
+    /// The script handed to the interpreter.
     pub command: String,
     /// Working directory.
     pub dir: PathBuf,
@@ -82,9 +87,9 @@ pub struct Options {
 /// Why a command could not run.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ShellError {
-    /// `bash` is not on `PATH`.
-    #[error("bash is not installed on this system")]
-    NoBash,
+    /// No interpreter could be resolved (`crate::shell::interp`).
+    #[error("{0}")]
+    NoShell(#[from] super::interp::NoShell),
     /// The sandbox wrapper could not be built.
     #[error("failed to prepare the sandbox: {0}")]
     Sandbox(String),
@@ -167,26 +172,28 @@ pub struct Waited {
     pub err: Option<ShellError>,
 }
 
-/// Starts `bash -c opts.command` in its own process group with fd 1 and fd 2 joined into `capture`
-/// (shell.go:69-96). The order of the refusals is Go's: no bash → sandbox → a done token → the spawn itself.
+/// Starts `opts.command` under the resolved interpreter, in its own process group, with fd 1 and fd 2 joined
+/// into `capture` (shell.go:69-96). The order of the refusals is Go's: no interpreter → sandbox → a done
+/// token → the spawn itself.
 pub fn spawn(
     cancel: &CancellationToken,
     opts: &Options,
     capture: Capture,
 ) -> Result<Started, SpawnFail> {
     let fail = |e: ShellError| SpawnFail::Failed(e);
-    // bash is resolved per call, like Go's exec.LookPath (shell.go:69-72).
-    let Some(bash) = find_in_path("bash") else {
-        return Err(fail(ShellError::NoBash));
+    // The interpreter is resolved per call, like Go's exec.LookPath (shell.go:69-72).
+    let shell = match super::interp::resolve() {
+        Ok(s) => s,
+        Err(e) => return Err(fail(ShellError::NoShell(e))),
     };
     let mut cmd = if let Some(sb) = &opts.sandbox {
-        match sandbox_command(&bash, &opts.command, &writable_paths(sb), sb.network) {
+        match sandbox_command(&shell, &opts.command, &writable_paths(sb), sb.network) {
             Ok(c) => c,
             Err(e) => return Err(fail(ShellError::Sandbox(e))),
         }
     } else {
-        let mut c = tokio::process::Command::new(&bash);
-        c.arg("-c").arg(&opts.command);
+        let mut c = tokio::process::Command::new(&shell.program);
+        c.args(shell.args()).arg(&opts.command);
         c
     };
     // Go never spawns under a done context: Start returns ctx.Err() and the run reports Cancelled.
@@ -195,8 +202,12 @@ pub fn spawn(
     }
     if !opts.dir.as_os_str().is_empty() {
         cmd.current_dir(&opts.dir);
-        // Go's os/exec appends PWD=<abs Dir> when Dir is set and Env is nil; Rust does not.
-        if let Ok(abs) = std::path::absolute(&opts.dir) {
+        // Go's os/exec appends PWD=<abs Dir> when Dir is set and Env is nil; Rust does not. Not on Windows:
+        // there PWD means something only to the POSIX shell that may be running, and what we would hand it
+        // is a `C:\...` path — a spelling whose separators that shell reads as escapes.
+        if !cfg!(windows)
+            && let Ok(abs) = std::path::absolute(&opts.dir)
+        {
             cmd.env("PWD", abs);
         }
     }
@@ -444,30 +455,30 @@ pub(crate) fn kill_group(pid: Option<i32>) {
 /// Nothing: a Windows process tree is addressed by its Job Object handle, which only the [`Started`] that
 /// spawned it holds, so a pid alone cannot reach it. The callers that pass one are the synchronous exit paths
 /// (`crate::shell::jobs::Jobs::kill_all`), and they also cancel the job's token — which makes its supervisor
-/// call `Started::kill_tree`, the handle-carrying route that does work. Closing the remaining gap (a process
-/// dying before its supervisors run) belongs with the Windows shell backend, which is also what will first
-/// start a child here: no `bash` toolset is registered on this platform yet.
+/// call `Started::kill_tree`, the handle-carrying route that does work. The remaining gap is one process
+/// dying before its supervisors run, which the exit paths already bound: `kill_all` cancels every token and
+/// the runtime drains the supervisors before the process leaves.
 #[cfg(windows)]
 pub(crate) fn kill_group(_pid: Option<i32>) {}
 
 /// The platform sandbox wrapper for one command.
 fn sandbox_command(
-    bash: &Path,
+    shell: &super::interp::Interpreter,
     script: &str,
     writable: &[PathBuf],
     network: bool,
 ) -> Result<tokio::process::Command, String> {
     #[cfg(target_os = "macos")]
     {
-        super::sandbox_darwin::command(bash, script, writable, network)
+        super::sandbox_darwin::command(shell, script, writable, network)
     }
     #[cfg(target_os = "linux")]
     {
-        super::sandbox_linux::command(bash, script, writable, network)
+        super::sandbox_linux::command(shell, script, writable, network)
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        super::sandbox_other::command(bash, script, writable, network)
+        super::sandbox_other::command(shell, script, writable, network)
     }
 }
 
@@ -513,8 +524,11 @@ pub fn writable_paths(sb: &Sandbox) -> Vec<PathBuf> {
 
 /// 15-line `PATH` scan (replaces `which`).
 pub(crate) fn find_in_path(name: &str) -> Option<PathBuf> {
-    if name.contains('/') {
-        let direct = PathBuf::from(name);
+    // A name with a directory in it is checked where it stands, never searched. `components()` is the
+    // platform's own answer to "does this have a directory in it", so `C:\Program Files\Git\bin\bash.exe`
+    // counts on Windows exactly as `/bin/bash` does on Unix.
+    let direct = PathBuf::from(name);
+    if direct.is_absolute() || direct.components().count() > 1 {
         return is_executable(&direct).then_some(direct);
     }
     let path = std::env::var_os("PATH")?;

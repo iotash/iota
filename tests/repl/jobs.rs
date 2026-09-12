@@ -100,6 +100,22 @@ fn printed(ui: &Arc<ScriptedUi>) -> Vec<String> {
         .collect()
 }
 
+/// Whether to skip a test whose command line is POSIX. The interpreter is `bash` on Unix and, on Windows,
+/// whatever `shell::interp`'s ladder found — under PowerShell or `cmd.exe` these scripts would not parse, so
+/// the test prints a `SKIP:` line instead (the twin of `tests/tool/shell.rs::skip_unless_posix`).
+fn skip_unless_posix(test: &str) -> bool {
+    let shell =
+        iota::shell::interp::resolve().expect("this machine has no shell interpreter at all");
+    if shell.is_posix() {
+        return false;
+    }
+    println!(
+        "SKIP: {test} — the resolved interpreter is {}, not a POSIX shell",
+        shell.program.display()
+    );
+    true
+}
+
 fn opts(command: &str) -> Options {
     Options {
         command: command.to_owned(),
@@ -228,6 +244,9 @@ async fn the_loop_installs_the_sink_that_enqueues_a_completion() {
 // New (phase C): `background` never promised to outlive iota — leaving the loop kills what is left, at once.
 #[tokio::test]
 async fn leaving_the_loop_kills_every_running_job() {
+    if skip_unless_posix("leaving_the_loop_kills_every_running_job") {
+        return;
+    }
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = SessionStore::new(tmp.path().join("sessions"));
     let jobs = Jobs::new(tmp.path());

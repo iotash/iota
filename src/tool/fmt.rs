@@ -137,9 +137,6 @@ fn truncate_runes(s: &str, max: usize) -> String {
 pub(crate) const HEADER_PATH_MAX: usize = 48;
 
 /// Display cap of a header command summary (tool/headerfmt.go:105).
-// This constant and the two functions below serve the `bash` call header alone, so they follow the shell
-// toolset into unreachability on Windows (src/tool/shell.rs).
-#[cfg_attr(windows, allow(dead_code))]
 pub(crate) const HEADER_CMD_MAX: usize = 64;
 
 /// Renders a model-supplied path for a call header (tool/headerfmt.go:22-64): relative

@@ -7,10 +7,9 @@ mod common;
 mod agents;
 mod code;
 mod framework;
-// Both drive REAL `bash` children through the shell toolset, and Windows has neither yet
-// (`src/tool/shell.rs::new_shell_set` builds no tool there) — so they are Unix-only by construction,
-// not by accident. `framework.rs` keeps the Windows half of that contract as its own test.
-#[cfg(unix)]
+// Both drive REAL children through the shell toolset, on every platform: the toolset now resolves an
+// interpreter on Windows too (`src/shell/interp.rs`). The command lines are POSIX, so the tests that run one
+// ask `shell::skip_unless_posix` first — on a Windows machine with Git Bash they all run, and on one without
+// it they print a SKIP line rather than feeding a bash script to PowerShell.
 mod jobs;
-#[cfg(unix)]
 mod shell;

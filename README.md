@@ -87,18 +87,29 @@ The binary is at `target/release/iota`. The toolchain is pinned by `rust-toolcha
 
 ### Platforms
 
-macOS and Linux, Apple Silicon and x86-64 alike: every release carries
+macOS, Linux and Windows, Apple Silicon and x86-64 alike. Every release carries
 `aarch64-apple-darwin`, `x86_64-apple-darwin`, `aarch64-unknown-linux-gnu` and
-`x86_64-unknown-linux-gnu` binaries.
+`x86_64-unknown-linux-gnu` binaries; Windows builds and is tested in CI but has
+no release binary yet, so there it means building from source for now.
 
-Windows builds and is tested in CI, but it is **not at parity yet**, and the
-gap is the one that matters most: there is **no `bash` tool** there. The
-`shell` toolset warns once at startup and registers nothing, because the tool
-runs POSIX shell scripts and the Windows shell backend is still being written;
-the OS sandbox is absent for the same reason. Everything else works — reading,
-writing and editing files, skills, MCP servers, the whole TUI. Releases do not
-carry a Windows binary yet either, so today it means building from source.
-Until both land, WSL gives you the complete thing, as ordinary Linux.
+Two things differ on Windows, both about the `shell` toolset:
+
+- **It runs the shell the machine has** — iota embeds no interpreter. The first
+  of these wins: `IOTA_SHELL`; **Git Bash** (`IOTA_GIT_BASH_PATH`, else the
+  `bin\bash.exe` of the Git installation that owns the `git.exe` on your
+  `PATH`, else the default install locations); **PowerShell** (`pwsh.exe`, then
+  `powershell.exe`); and finally **`cmd.exe`**. The `bash` tool's description
+  names the winner in its first sentence and teaches that shell's dialect, so a
+  machine with Git for Windows behaves like Unix and one without it gets
+  PowerShell instructions instead of POSIX ones.
+- **There is no OS sandbox.** Seatbelt and bubblewrap have no Windows
+  equivalent iota is willing to ship, so commands run with your full
+  permissions and every call asks for confirmation unless `auto_run: true`
+  waives it.
+
+Everything else is the same everywhere: reading, writing and editing files,
+skills, MCP servers, the whole TUI. WSL remains a fine way to get the Unix
+behaviour exactly.
 
 ### First run
 
@@ -168,6 +179,13 @@ the JSON report) alone; the new turn is appended only when it succeeds.
 | `OPENAI_API_KEY` | OpenAI / OpenResponses / Images |
 | `ANTHROPIC_API_KEY` | Anthropic |
 | `GOOGLE_API_KEY` | Gemini / Vertex AI / Imagen |
+
+Two more choose what the `shell` toolset runs:
+
+| Variable | What it does |
+|----------|--------------|
+| `IOTA_SHELL` | The interpreter for every shell call: an absolute path, or a name on `PATH`. Honoured on **every** platform, so `IOTA_SHELL=zsh` works on a Mac too. The arguments follow the name — `-c` for the POSIX family, `-NoLogo -NoProfile -NonInteractive -Command` for `pwsh`/`powershell`, `/C` for `cmd`. Naming something unrunnable fails the call rather than falling back |
+| `IOTA_GIT_BASH_PATH` | Windows only: where Git Bash's `bash.exe` is, when it is not where the `git.exe` on your `PATH` implies |
 
 ### Config File
 
@@ -545,6 +563,17 @@ Safety model — the same one Claude Code and Codex CLI use:
   calls execute as one batch — ESC cancels the batch, and results still come
   back in call order. (Every other toolset keeps the conservative rule: only
   calls that cannot change state batch.)
+
+**Which shell runs it.** `bash -c` on macOS and Linux, always. On Windows it is
+whichever of Git Bash, PowerShell and `cmd.exe` the machine has, in that order
+(see [Platforms](#platforms)); `IOTA_SHELL` overrides the choice everywhere and
+`IOTA_GIT_BASH_PATH` points at Git Bash when it is somewhere unusual.
+
+The **tool description follows the winner**, so the model writes the dialect
+that will actually be read: it is told in the first sentence which shell it is
+talking to, and the POSIX advice gives way to PowerShell's (`;` chaining,
+object pipelines, `$null`) or cmd's where one of those runs. The tool itself is
+called `bash` on every platform, and so is the config key (`tools: shell:`).
 
 **Background jobs.** `"background": true` starts the command and returns at
 once with a job id, its pid and an output file:

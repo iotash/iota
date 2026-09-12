@@ -1,5 +1,8 @@
-//! Background jobs (`shell/jobs.rs`) driven end to end: real `bash` children, the two delivery modes, the
+//! Background jobs (`shell/jobs.rs`) driven end to end: real children, the two delivery modes, the
 //! concurrency cap and the synchronous kill.
+//!
+//! Every command line here is POSIX (`true`, `sleep`, `echo … >&2`), so every test asks
+//! `shell::skip_unless_posix` first — see the note in `tests/tool/main.rs`.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -9,6 +12,8 @@ use iota::shell::exec::Options;
 use iota::shell::jobs::{JobDone, Jobs, MAX_JOBS, notice_headline, notice_text};
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
+
+use crate::shell::skip_unless_posix;
 
 /// A registry writing its logs under a fresh temp dir, plus the dir that must outlive it.
 fn registry() -> (TempDir, Arc<Jobs>) {
@@ -40,6 +45,9 @@ async fn drain(jobs: &Arc<Jobs>) -> Vec<JobDone> {
 // A job that exits on its own reports its code, its command and its output; a second one gets the next id.
 #[tokio::test]
 async fn a_finished_job_reports_its_status_and_output() {
+    if skip_unless_posix("a_finished_job_reports_its_status_and_output") {
+        return;
+    }
     let (_dir, jobs) = registry();
 
     let start = jobs.spawn(&opts("echo hello", None)).expect("spawn");
@@ -77,6 +85,9 @@ async fn a_finished_job_reports_its_status_and_output() {
 // A failing job is still a finished job: the exit code travels, and stderr is in the same log as stdout.
 #[tokio::test]
 async fn a_failing_job_carries_its_code_and_stderr() {
+    if skip_unless_posix("a_failing_job_carries_its_code_and_stderr") {
+        return;
+    }
     let (_dir, jobs) = registry();
     jobs.spawn(&opts("echo out; echo err >&2; exit 3", None))
         .expect("spawn");
@@ -91,6 +102,9 @@ async fn a_failing_job_carries_its_code_and_stderr() {
 // and the notice says so.
 #[tokio::test]
 async fn a_job_past_its_timeout_is_killed_and_says_so() {
+    if skip_unless_posix("a_job_past_its_timeout_is_killed_and_says_so") {
+        return;
+    }
     let (_dir, jobs) = registry();
     jobs.spawn(&opts("sleep 30", Some(1))).expect("spawn");
     let done = drain(&jobs).await;
@@ -107,6 +121,9 @@ async fn a_job_past_its_timeout_is_killed_and_says_so() {
 // behind even if its tasks are never polled again.
 #[tokio::test]
 async fn kill_all_stops_everything_at_once() {
+    if skip_unless_posix("kill_all_stops_everything_at_once") {
+        return;
+    }
     let (_dir, jobs) = registry();
     let a = jobs.spawn(&opts("sleep 30", None)).expect("spawn");
     let b = jobs.spawn(&opts("sleep 30", None)).expect("spawn");
@@ -131,6 +148,9 @@ async fn kill_all_stops_everything_at_once() {
 // The cap refuses rather than queues, and a finished job frees its slot.
 #[tokio::test]
 async fn the_concurrency_cap_refuses_the_seventeenth() {
+    if skip_unless_posix("the_concurrency_cap_refuses_the_seventeenth") {
+        return;
+    }
     let (_dir, jobs) = registry();
     for _ in 0..MAX_JOBS {
         jobs.spawn(&opts("sleep 30", None)).expect("under the cap");
@@ -163,6 +183,9 @@ async fn the_concurrency_cap_refuses_the_seventeenth() {
 // that finished BEFORE the sink existed.
 #[tokio::test]
 async fn a_sink_takes_delivery_including_the_backlog() {
+    if skip_unless_posix("a_sink_takes_delivery_including_the_backlog") {
+        return;
+    }
     let (_dir, jobs) = registry();
     jobs.spawn(&opts("true", None)).expect("spawn");
     // Park it first.
@@ -210,6 +233,9 @@ async fn a_sink_takes_delivery_including_the_backlog() {
 // and a cancelled run ends it too.
 #[tokio::test]
 async fn wait_any_ends_on_nothing_running_or_a_cancelled_run() {
+    if skip_unless_posix("wait_any_ends_on_nothing_running_or_a_cancelled_run") {
+        return;
+    }
     let (_dir, jobs) = registry();
     let cancel = CancellationToken::new();
     assert!(

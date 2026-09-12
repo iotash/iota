@@ -1,7 +1,10 @@
 //! The `shell` toolset (`tool/shell_test.go`) and its execution mechanism (`internal/shell/shell_test.go`).
 //!
-//! Every test drives a real `bash`. The two sandbox tests probe the platform sandbox first and print a `SKIP:`
-//! line instead of failing where it cannot run (no sandbox binary, or a nested sandbox that refuses to nest).
+//! Every test that runs a command line drives a REAL child. Most of those command lines are POSIX, so they
+//! ask [`skip_unless_posix`] first: on Unix, and on any Windows machine with Git Bash, that is always yes and
+//! the test runs; where the interpreter resolved to PowerShell or `cmd.exe` the test prints a `SKIP:` line
+//! instead of failing on a script that shell cannot parse. The two sandbox tests probe the platform sandbox
+//! the same way (no sandbox binary, or a nested sandbox that refuses to nest — and Windows has none at all).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 // The ★ WP00 fixture is included directly: `mod common;` would also pull in the MCP/stub fixtures this file
@@ -21,11 +24,12 @@ use iota::shell::exec::{
     CappedBuffer, HEAD_BYTES, MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES, Options, RunResult, Sandbox,
     TAIL_BYTES, truncate_output, writable_paths,
 };
+use iota::shell::interp::{Family, Interpreter};
 use iota::tool::Registry;
 use iota::tool::sets::{RawNode, SetError, ToolsConfig};
 use iota::tool::shell::{
-    BASH_DESC_BACKGROUND, BASH_DESC_PREFIX, BASH_DESC_SANDBOXED, BASH_DESC_UNSANDBOXED,
-    new_shell_set,
+    BASH_DESC_PREFIX, BASH_DESC_SANDBOXED, BASH_DESC_UNSANDBOXED, CMD_DESC_PREFIX,
+    PWSH_DESC_PREFIX, background_desc, desc_prefix, new_shell_set,
 };
 use iota::tool::{Dispatcher, Env, Tool};
 use pretty_assertions::assert_eq;
@@ -34,6 +38,30 @@ use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
 use crate::common::temp_project;
+
+/// What this machine resolved to: `bash` on Unix, and on Windows whatever `shell::interp`'s ladder found
+/// (Git Bash on a developer box and on CI, PowerShell or `cmd.exe` elsewhere).
+pub(crate) fn shell() -> Interpreter {
+    iota::shell::interp::resolve().expect("this machine has no shell interpreter at all")
+}
+
+/// Whether to skip a test whose command line is POSIX, printing Go's `t.Skipf` line when it is.
+pub(crate) fn skip_unless_posix(test: &str) -> bool {
+    if shell().is_posix() {
+        return false;
+    }
+    println!(
+        "SKIP: {test} — the resolved interpreter is {}, not a POSIX shell",
+        shell().program.display()
+    );
+    true
+}
+
+/// A path as the POSIX shell running the command will read it: on Windows an absolute path's backslashes
+/// are escape characters to Git Bash, and `C:/…` is the spelling it wants instead.
+pub(crate) fn shell_path(p: &Path) -> String {
+    p.display().to_string().replace('\\', "/")
+}
 
 /// The `shell:` config value as a YAML node; `""` is Go's zero `yaml.Node` (set defaults).
 fn node(yaml: &str) -> Option<RawNode> {
@@ -129,6 +157,9 @@ async fn run(opts: Options) -> RunResult {
 // Go: tool/shell_test.go:30
 #[tokio::test]
 async fn test_bash_call() {
+    if skip_unless_posix("test_bash_call") {
+        return;
+    }
     let (_dir, root, bash) = new_bash("sandbox: off\n");
 
     let (out, is_err) = call(&bash, json!({"command": "echo hello | tr a-z A-Z"})).await;
@@ -173,6 +204,9 @@ async fn test_bash_call() {
 // the number the call chose, and a value outside 1…3600 is refused BEFORE anything is executed.
 #[tokio::test]
 async fn bash_timeout_argument_caps_the_call() {
+    if skip_unless_posix("bash_timeout_argument_caps_the_call") {
+        return;
+    }
     let (_dir, root, bash) = new_bash("sandbox: off\n");
 
     let started = std::time::Instant::now();
@@ -189,7 +223,7 @@ async fn bash_timeout_argument_caps_the_call() {
     // Out of range: the refusal is the result and the command never ran.
     let marker = root.join("ran.txt");
     for bad in [json!(0), json!(-1), json!(3601), json!("30")] {
-        let cmd = format!("touch {}", marker.display());
+        let cmd = format!("touch {}", shell_path(&marker));
         let (out, is_err) = call(&bash, json!({"command": cmd, "timeout": bad})).await;
         assert_eq!(
             (out.as_str(), is_err),
@@ -200,7 +234,7 @@ async fn bash_timeout_argument_caps_the_call() {
     }
 
     // An accepted one does run it.
-    let cmd = format!("touch {}", marker.display());
+    let cmd = format!("touch {}", shell_path(&marker));
     let (_, is_err) = call(&bash, json!({"command": cmd, "timeout": 30})).await;
     assert!(!is_err && marker.exists());
 }
@@ -218,9 +252,12 @@ fn new_bash_with_jobs(cfg_yaml: &str) -> (TempDir, Arc<iota::shell::jobs::Jobs>,
 // notice will carry, the pid, and the file to tail — and the turn is free while the command runs.
 #[tokio::test]
 async fn bash_background_returns_a_receipt_and_keeps_running() {
+    if skip_unless_posix("bash_background_returns_a_receipt_and_keeps_running") {
+        return;
+    }
     let (dir, jobs, bash) = new_bash_with_jobs("sandbox: off\nauto_run: true\n");
     let marker = dir.path().join("done.txt");
-    let cmd = format!("sleep 0.2; echo finished > {}", marker.display());
+    let cmd = format!("sleep 0.2; echo finished > {}", shell_path(&marker));
 
     let started = std::time::Instant::now();
     let (out, is_err) = call(&bash, json!({"command": cmd, "background": true})).await;
@@ -419,48 +456,99 @@ async fn test_build_registry_shell_set_enables_bash() {
 // Go: tool/shell_test.go:179
 #[test]
 fn test_bash_description_states_shell_state_contract() {
-    let sandboxed_blocked = format!(
-        "{BASH_DESC_PREFIX}{}{BASH_DESC_BACKGROUND}",
-        BASH_DESC_SANDBOXED.replace("{net}", "network access is BLOCKED")
-    );
-    let sandboxed_open = format!(
-        "{BASH_DESC_PREFIX}{}{BASH_DESC_BACKGROUND}",
-        BASH_DESC_SANDBOXED.replace("{net}", "network access is allowed")
-    );
-    let unsandboxed = format!("{BASH_DESC_PREFIX}{BASH_DESC_UNSANDBOXED}{BASH_DESC_BACKGROUND}");
-    for desc in [&sandboxed_blocked, &sandboxed_open, &unsandboxed] {
-        for want in [
-            "FRESH shell",
-            "functions",
-            "do not carry over",
-            // The two post-parity facts the model has to know (DIVERGENCES X-05/X-06).
-            "Calls issued together run concurrently.",
-            "killed after 600 seconds",
-            "maximum 3600",
-            // The background mode, its notice and its lifetime (phase C).
-            "\"background\": true",
-            "Up to 16 background jobs at a time",
-            "killed when iota exits",
-        ] {
-            assert!(desc.contains(want), "description missing {want:?}:\n{desc}");
+    // The contract is the same whichever interpreter runs the calls; the DIALECT it teaches is that
+    // interpreter's own, and the first sentence names it. All three are checked on every platform — the
+    // description is the model's only source for both facts, and it must never describe a different shell
+    // from the one that will read the script.
+    for (family, head, opener, dialect, detach) in [
+        (
+            Family::Posix,
+            BASH_DESC_PREFIX,
+            "Run a bash command line",
+            "pipes, redirects, globbing, && chaining, heredocs",
+            "(nohup/setsid).",
+        ),
+        (
+            Family::PowerShell,
+            PWSH_DESC_PREFIX,
+            "Run a PowerShell command line",
+            "NOT a POSIX shell",
+            "(Start-Process).",
+        ),
+        (
+            Family::Cmd,
+            CMD_DESC_PREFIX,
+            "Run a cmd.exe command line",
+            "neither bash nor PowerShell",
+            "(start /b).",
+        ),
+    ] {
+        assert_eq!(desc_prefix(family), head, "{family:?}");
+        let background = background_desc(family);
+        let sandboxed_blocked = format!(
+            "{head}{}{background}",
+            BASH_DESC_SANDBOXED.replace("{net}", "network access is BLOCKED")
+        );
+        let sandboxed_open = format!(
+            "{head}{}{background}",
+            BASH_DESC_SANDBOXED.replace("{net}", "network access is allowed")
+        );
+        let unsandboxed = format!("{head}{BASH_DESC_UNSANDBOXED}{background}");
+        for desc in [&sandboxed_blocked, &sandboxed_open, &unsandboxed] {
+            for want in [
+                opener,
+                dialect,
+                "FRESH shell",
+                "do not carry over",
+                // The two post-parity facts the model has to know (DIVERGENCES X-05/X-06).
+                "Calls issued together run concurrently.",
+                "killed after 600 seconds",
+                "maximum 3600",
+                // The background mode, its notice and its lifetime (phase C).
+                "\"background\": true",
+                "Up to 16 background jobs at a time",
+                "killed when iota exits",
+            ] {
+                assert!(desc.contains(want), "description missing {want:?}:\n{desc}");
+            }
+            assert!(
+                desc.starts_with(opener),
+                "the interpreter must be named in the first sentence:\n{desc}"
+            );
+            assert!(
+                desc.ends_with(&format!("has to detach itself {detach}")),
+                "the background paragraph must come last, in this dialect:\n{desc}"
+            );
         }
         assert!(
-            desc.ends_with("has to detach itself (nohup/setsid)."),
-            "the background paragraph must come last:\n{desc}"
+            sandboxed_blocked.contains("network access is BLOCKED.\n\n"),
+            "the sandbox suffix still precedes the background paragraph"
         );
+        assert!(sandboxed_open.contains("network access is allowed.\n\n"));
+        assert!(unsandboxed.contains("full permissions — be conservative.\n\n"));
     }
-    assert!(
-        sandboxed_blocked.contains("network access is BLOCKED.\n\n"),
-        "the sandbox suffix still precedes the background paragraph"
-    );
-    assert!(sandboxed_open.contains("network access is allowed.\n\n"));
-    assert!(unsandboxed.contains("full permissions — be conservative.\n\n"));
 
-    // The live tool picks the suffix its sandbox state dictates, and the schema is tool/shell.go:130-143.
+    // The live tool picks the prefix ITS interpreter dictates, the suffix its sandbox state dictates, and
+    // the schema is tool/shell.go:130-143 with the one example rewritten in that same dialect.
     let (_dir, _root, bash) = new_bash("sandbox: off\n");
     let def = bash.def();
-    assert_eq!(def.description, unsandboxed);
+    let family = shell().family;
+    assert_eq!(
+        def.description,
+        format!(
+            "{}{BASH_DESC_UNSANDBOXED}{}",
+            desc_prefix(family),
+            background_desc(family)
+        )
+    );
     assert!(!def.deferred);
+    let command_desc = match family {
+        Family::Posix => "Bash command line to execute, e.g. \'go test ./... 2>&1 | tail -20\'.",
+        Family::PowerShell => {
+            "PowerShell command line to execute, e.g. \'cargo test 2>&1 | Select-Object -Last 20\'."
+        }
+        Family::Cmd => "cmd.exe command line to execute, e.g. \'cargo test 2>&1 | more\'.",
+    };
     assert_eq!(
         serde_json::Value::Object(def.input_schema.expect("schema")),
         json!({
@@ -468,7 +556,7 @@ fn test_bash_description_states_shell_state_contract() {
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "Bash command line to execute, e.g. 'go test ./... 2>&1 | tail -20'.",
+                    "description": command_desc,
                 },
                 "cwd": {
                     "type": "string",
@@ -493,6 +581,9 @@ fn test_bash_description_states_shell_state_contract() {
 // Go: internal/shell/shell_test.go:17
 #[tokio::test]
 async fn test_run_cancel_kills_the_tree() {
+    if skip_unless_posix("test_run_cancel_kills_the_tree") {
+        return;
+    }
     let cancel = CancellationToken::new();
     let token = cancel.clone();
     tokio::spawn(async move {
@@ -559,6 +650,9 @@ async fn test_run_cancel_kills_the_sandboxed_tree() {
 // Go: internal/shell/shell_test.go:52
 #[tokio::test]
 async fn test_run_background_child_does_not_wedge() {
+    if skip_unless_posix("test_run_background_child_does_not_wedge") {
+        return;
+    }
     let start = Instant::now();
     let res = run(Options {
         command: "sleep 30 & echo started".to_owned(),
@@ -582,6 +676,9 @@ async fn test_run_background_child_does_not_wedge() {
 // Go: internal/shell/shell_test.go:68
 #[tokio::test]
 async fn test_run_shell_semantics() {
+    if skip_unless_posix("test_run_shell_semantics") {
+        return;
+    }
     let dir = tempfile::tempdir().expect("tempdir");
     let dir = dir.path().to_path_buf();
 
@@ -687,7 +784,7 @@ async fn test_sandbox_isolation() {
     // Writes outside the writable roots are denied (Go probes a fresh dir under $HOME; the port uses a
     // sibling of the root, since HOME cannot be read by a test and the temp dirs ARE writable).
     let res = run(Options {
-        command: format!("echo x > {}/f.txt", outside.display()),
+        command: format!("echo x > {}/f.txt", shell_path(&outside)),
         dir: root.clone(),
         timeout: None,
         sandbox: Some(sb.clone()),
@@ -705,7 +802,7 @@ async fn test_sandbox_isolation() {
         ..sb
     };
     let res = run(Options {
-        command: format!("echo y > {}/g.txt", outside.display()),
+        command: format!("echo y > {}/g.txt", shell_path(&outside)),
         dir: root,
         timeout: None,
         sandbox: Some(opened),
@@ -833,6 +930,9 @@ fn test_capped_buffer() {
 // Go: internal/shell/shell_test.go:220
 #[tokio::test]
 async fn test_run_output_capped() {
+    if skip_unless_posix("test_run_output_capped") {
+        return;
+    }
     let dir = tempfile::tempdir().expect("tempdir");
     let res = run(Options {
         command: "seq 1 50000".to_owned(),
@@ -861,6 +961,9 @@ async fn test_run_output_capped() {
 // first reports Cancelled — the two are never both set.
 #[tokio::test]
 async fn run_deadline_and_cancel_are_exclusive() {
+    if skip_unless_posix("run_deadline_and_cancel_are_exclusive") {
+        return;
+    }
     let dir = tempfile::tempdir().expect("tempdir");
     let start = Instant::now();
     let res = run(Options {
@@ -937,9 +1040,13 @@ async fn test_bash_header_summary() {
         ("trimmed", json!({"command": "  ls -la  "}), "ls -la"),
         ("missing", json!({}), ""),
         (
-            "cwd folds into cd",
+            "cwd folds into cd, in the running interpreter's own idiom",
             json!({"command": "make release", "cwd": deploy.to_string_lossy()}),
-            "cd deploy && make release",
+            match shell().family {
+                Family::Posix => "cd deploy && make release",
+                Family::PowerShell => "cd deploy; make release",
+                Family::Cmd => "cd /d deploy && make release",
+            },
         ),
     ] {
         assert_eq!(

@@ -14,8 +14,8 @@ mod file;
 mod host;
 mod images;
 mod interrupt;
-// Spawns real background `bash` children through `Jobs` — Unix-only, like the toolset that starts them.
-#[cfg(unix)]
+// Spawns real background children through `Jobs`; its command lines are POSIX, so each test that runs one
+// asks `jobs::skip_unless_posix` first (see `tests/tool/main.rs`).
 mod jobs;
 mod settings;
 mod skills;

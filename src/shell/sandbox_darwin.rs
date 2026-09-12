@@ -18,12 +18,13 @@ pub(crate) fn available() -> bool {
     std::fs::metadata(SANDBOX_EXEC).is_ok_and(|m| m.is_file())
 }
 
-/// Builds `sandbox-exec -p <profile> -D W{i}=<path>… <bash> -c <script>`; every writable path is expanded to
-/// itself, `/private` + p for p under `/tmp`, `/var`, `/etc`, and its canonical form when different.
+/// Builds `sandbox-exec -p <profile> -D W{i}=<path>… <shell> <shell args…> <script>`; every writable path is
+/// expanded to itself, `/private` + p for p under `/tmp`, `/var`, `/etc`, and its canonical form when
+/// different.
 // The three per-OS backends share the signature `exec` dispatches on; only the Linux one can fail.
 #[allow(clippy::unnecessary_wraps)]
 pub(crate) fn command(
-    bash: &Path,
+    shell: &super::interp::Interpreter,
     script: &str,
     writable: &[PathBuf],
     network: bool,
@@ -67,7 +68,7 @@ pub(crate) fn command(
     let mut cmd = tokio::process::Command::new(SANDBOX_EXEC);
     cmd.arg("-p").arg(profile);
     cmd.args(params);
-    cmd.arg(bash).arg("-c").arg(script);
+    cmd.arg(&shell.program).args(shell.args()).arg(script);
     Ok(cmd)
 }
 
@@ -82,12 +83,14 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{command, has_path_prefix};
+    use crate::shell::interp::Interpreter;
 
     // New (tool-shell.md "SEATBELT PROFILE TEXT, exact bytes"): the profile and argv are byte-pinned.
     #[test]
     fn seatbelt_profile_and_argv() {
         let writable = vec![PathBuf::from("/no-such-iota-root"), PathBuf::from("/tmp")];
-        let cmd = command(Path::new("/bin/bash"), "echo hi", &writable, false).expect("profile");
+        let bash = Interpreter::new("/bin/bash");
+        let cmd = command(&bash, "echo hi", &writable, false).expect("profile");
         let argv: Vec<String> = std::iter::once(cmd.as_std().get_program())
             .chain(cmd.as_std().get_args())
             .map(|a| a.to_string_lossy().into_owned())
@@ -119,13 +122,7 @@ mod tests {
         );
 
         // network: true drops the (deny network*) line and nothing else.
-        let cmd = command(
-            Path::new("/bin/bash"),
-            "x",
-            &[PathBuf::from("/no-such-iota-root")],
-            true,
-        )
-        .expect("p");
+        let cmd = command(&bash, "x", &[PathBuf::from("/no-such-iota-root")], true).expect("p");
         let profile = cmd
             .as_std()
             .get_args()

@@ -1,7 +1,7 @@
 //! Linux bubblewrap wrapper (internal/shell/`sandbox_linux.go`): a read-only root with the writable roots bound
 //! back in.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Whether `bwrap` is on `PATH`.
 pub(crate) fn available() -> bool {
@@ -9,9 +9,9 @@ pub(crate) fn available() -> bool {
 }
 
 /// Builds `bwrap --ro-bind / / --dev-bind /dev /dev --proc /proc --die-with-parent [--bind p p for existing dirs]
-/// [--unshare-net iff !network] -- <bash> -c <script>`.
+/// [--unshare-net iff !network] -- <shell> <shell args…> <script>`.
 pub(crate) fn command(
-    bash: &Path,
+    shell: &super::interp::Interpreter,
     script: &str,
     writable: &[PathBuf],
     network: bool,
@@ -37,15 +37,19 @@ pub(crate) fn command(
     if !network {
         cmd.arg("--unshare-net");
     }
-    cmd.arg("--").arg(bash).arg("-c").arg(script);
+    cmd.arg("--")
+        .arg(&shell.program)
+        .args(shell.args())
+        .arg(script);
     Ok(cmd)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     use super::command;
+    use crate::shell::interp::Interpreter;
 
     // New (tool-shell.md "BWRAP ARGV"): the argv is byte-pinned, existing dirs only, `--unshare-net` last.
     #[test]
@@ -53,13 +57,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path().to_path_buf();
         let missing = root.join("nope");
-        let cmd = command(
-            Path::new("/bin/bash"),
-            "echo hi",
-            &[root.clone(), missing],
-            false,
-        )
-        .expect("argv");
+        let bash = Interpreter::new("/bin/bash");
+        let cmd = command(&bash, "echo hi", &[root.clone(), missing], false).expect("argv");
         let argv: Vec<String> = std::iter::once(cmd.as_std().get_program())
             .chain(cmd.as_std().get_args())
             .map(|a| a.to_string_lossy().into_owned())
@@ -90,7 +89,7 @@ mod tests {
         );
 
         // network: true drops --unshare-net and nothing else.
-        let cmd = command(Path::new("/bin/bash"), "x", &[PathBuf::from("/nope")], true).expect("a");
+        let cmd = command(&bash, "x", &[PathBuf::from("/nope")], true).expect("a");
         let args: Vec<String> = cmd
             .as_std()
             .get_args()

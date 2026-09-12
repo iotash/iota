@@ -5,8 +5,8 @@
 mod common;
 
 mod approval;
-// A headless run over the REAL shell toolset: no `bash` tool on Windows, nothing to drive.
-#[cfg(unix)]
+// A headless run over the REAL shell toolset. Its command lines are POSIX, so each test asks
+// `jobs::skip_unless_posix` first (see `tests/tool/main.rs`).
 mod jobs;
 mod output;
 mod parallel;

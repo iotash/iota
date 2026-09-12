@@ -32,15 +32,16 @@ pub fn set_factory(name: &str) -> Option<SetFactory> {
 }
 
 /// Why a toolset factory refused its configuration. Every text is byte-equal to the Go set factories,
-/// except [`SetError::ShellUnsupported`], which reports a platform Go never had to refuse.
+/// except [`SetError::NoShell`], which reports a machine Go never had to refuse.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SetError {
     /// `tools.shell` is not a mapping (or fails to decode).
     #[error("config must be a mapping (sandbox, network, auto_run, write): {0}")]
     ShellConfig(String),
-    /// `tools.shell` was asked for on a platform with no shell backend (Windows, for now).
-    #[error("no Windows backend yet — the bash tool runs POSIX shell scripts")]
-    ShellUnsupported,
+    /// `tools.shell` was asked for on a machine with no interpreter to run it (the
+    /// `crate::shell::interp::NoShell` text).
+    #[error("{0}")]
+    NoShell(String),
     /// `tools.shell.sandbox` is neither `auto` nor `off`.
     #[error("sandbox must be \"auto\" or \"off\", got {0:?}")]
     BadSandbox(String),

@@ -1,11 +1,13 @@
-//! The `shell` toolset (tool/shell.go): one `bash` tool running `bash -c` per call, sandboxed with Seatbelt on
-//! macOS / bwrap on Linux when available.
+//! The `shell` toolset (tool/shell.go): one `bash` tool running one command line per call, sandboxed with
+//! Seatbelt on macOS / bwrap on Linux when available.
 //!
-//! On Windows [`new_shell_set`] builds none of it (see there), which makes everything below this line
-//! compiled-but-unreachable on that platform — hence the module-wide `dead_code` waiver, which is exactly as
-//! wide as the fact it states. It comes off when the Windows shell backend lands and the factory starts
-//! returning a tool again.
-#![cfg_attr(windows, allow(dead_code))]
+//! WHAT runs the command line is `crate::shell::interp`'s answer, and on Windows it is not always a POSIX
+//! shell. The tool's DESCRIPTION moves with it, completely: the first sentence names the interpreter that
+//! will actually run (`Run a PowerShell command line…`), and the dialect it then teaches is that
+//! interpreter's own. The model is never told bash while `powershell.exe` waits for the script.
+//!
+//! The NAME is `bash` on every platform for now, and so is the config key (`tools: shell:`). Whether the name
+//! should follow the interpreter too is its own decision, and its own commit.
 
 use std::{
     path::{Path, PathBuf},
@@ -28,6 +30,7 @@ use crate::tool::yaml11;
 
 use crate::shell::exec;
 use crate::shell::exec::{Options, RunResult, Sandbox};
+use crate::shell::interp::{Family, Interpreter};
 use crate::shell::jobs::{JobStart, Jobs};
 
 /// Wall-clock cap of one `bash` call when it names no `timeout` (`[command timed out after 10m0s]`).
@@ -75,6 +78,9 @@ impl Default for ShellConfig {
 /// The `bash` tool.
 pub(crate) struct BashTool {
     shell_cfg: ShellConfig,
+    /// The interpreter its calls run under, resolved ONCE at assembly so the description cannot describe a
+    /// different shell from the one the first call finds.
+    shell: Interpreter,
     /// The run's background-job registry (`Env.jobs`); None in a test env.
     jobs: Option<Arc<Jobs>>,
     root: PathBuf,
@@ -87,8 +93,13 @@ pub(crate) struct BashTool {
 }
 
 /// Decode → `ShellConfig(err)`; sandbox "" → "auto"; not auto|off → `BadSandbox`; `sandboxed = sandbox == "auto"
-/// && exec::available()` evaluated ONCE. On Windows the config is validated the same way and then the set
-/// contributes NOTHING but a warning, until the Windows shell backend exists.
+/// && exec::available()` evaluated ONCE — and so is the interpreter (`crate::shell::interp::resolve`).
+///
+/// A machine with no interpreter at all is the one case where the set refuses: on Windows, where that means
+/// neither Git Bash nor PowerShell nor `cmd.exe` is reachable, a registered tool would spend the model's
+/// turns discovering call by call what one warning says once (the registry turns this `Err` into exactly that
+/// warning). Unix keeps its own answer verbatim: the tool is registered whatever `PATH` holds, and a missing
+/// `bash` is the per-call `bash is not installed on this system` it always was.
 pub fn new_shell_set(env: &Env, node: Option<&RawNode>) -> Result<Vec<Arc<dyn Tool>>, SetError> {
     let mut shell_cfg: ShellConfig = yaml11::decode_mapping(node).map_err(SetError::ShellConfig)?;
     match shell_cfg.sandbox.as_str() {
@@ -96,39 +107,34 @@ pub fn new_shell_set(env: &Env, node: Option<&RawNode>) -> Result<Vec<Arc<dyn To
         "auto" | "off" => {}
         other => return Err(SetError::BadSandbox(other.to_owned())),
     }
-    // The validation above runs on EVERY platform on purpose: a typo in `tools.shell` must read the same
-    // wherever the config is written. What Windows does not get is the tool — a `bash` that answered every
-    // call with "bash is not installed on this system" would spend the model's turns discovering, one call
-    // at a time, what one warning says once (tool/registry.rs turns this Err into exactly that warning).
-    #[cfg(windows)]
-    {
-        let _ = (env, shell_cfg);
-        Err(SetError::ShellUnsupported)
-    }
-    #[cfg(not(windows))]
-    {
-        // A sandbox binary appearing or disappearing later has no effect on this run (tool/shell.go:67).
-        let sandboxed = shell_cfg.sandbox == "auto" && exec::available();
-        Ok(vec![Arc::new(BashTool {
-            shell_cfg,
-            jobs: env.jobs.clone(),
-            root: env.root().unwrap_or_default(),
-            cwd: env
-                .dirs
-                .cwd
-                .clone()
-                .or_else(|| std::env::current_dir().ok())
-                .unwrap_or_default(),
-            sandboxed,
-            dirs: env.dirs.clone(),
-        })])
-    }
+    let shell = match crate::shell::interp::resolve() {
+        Ok(shell) => shell,
+        Err(e) if cfg!(windows) => return Err(SetError::NoShell(e.to_string())),
+        Err(_) => Interpreter::new("bash"),
+    };
+    // A sandbox binary appearing or disappearing later has no effect on this run (tool/shell.go:67).
+    let sandboxed = shell_cfg.sandbox == "auto" && exec::available();
+    Ok(vec![Arc::new(BashTool {
+        shell_cfg,
+        shell,
+        jobs: env.jobs.clone(),
+        root: env.root().unwrap_or_default(),
+        cwd: env
+            .dirs
+            .cwd
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_default(),
+        sandboxed,
+        dirs: env.dirs.clone(),
+    })])
 }
 
 impl Tool for BashTool {
-    /// Name `bash`, description = `BASH_DESC_PREFIX` + one suffix, schema per tool/shell.go:129-144.
+    /// Name `bash` on every platform, description the running interpreter's ([`desc_prefix`]) plus one
+    /// sandbox suffix and the background paragraph; schema per tool/shell.go:129-144.
     fn def(&self) -> ToolDef {
-        let mut description = String::from(BASH_DESC_PREFIX);
+        let mut description = String::from(desc_prefix(self.shell.family));
         if self.sandboxed {
             let net = if self.shell_cfg.network {
                 "network access is allowed"
@@ -139,11 +145,11 @@ impl Tool for BashTool {
         } else {
             description.push_str(BASH_DESC_UNSANDBOXED);
         }
-        description.push_str(BASH_DESC_BACKGROUND);
+        description.push_str(&background_desc(self.shell.family));
         ToolDef {
             name: "bash".to_owned(),
             description,
-            input_schema: Some(bash_schema()),
+            input_schema: Some(bash_schema(self.shell.family)),
             deferred: false,
         }
     }
@@ -213,19 +219,19 @@ impl Tool for BashTool {
     }
 
     /// tool/shell.go:82-92 (the D-12 lift): the call IS the command — `"[bash git
-    /// status]"`. The argument name is noise (a bash call has one thing to say), and an
-    /// explicit cwd folds into the shell idiom for it (`"cd <path> && <cmd>"`) rather
-    /// than eating a separate slot. A background call is marked, because the row settles
-    /// while the work is still going.
+    /// status]"`. The argument name is noise (a shell call has one thing to say), and an
+    /// explicit cwd folds into the running interpreter's idiom for it (`"cd <path> && <cmd>"`,
+    /// `"cd <path>; <cmd>"` under PowerShell) rather than eating a separate slot. A background
+    /// call is marked, because the row settles while the work is still going.
     fn header_summary(&self, args: &JsonObject) -> Option<String> {
         let cmd = crate::tool::fmt::header_command(str_arg(args, "command"));
         let dir = str_arg(args, "cwd").trim();
         let mut summary = if dir.is_empty() {
             cmd
         } else {
-            format!(
-                "cd {} && {cmd}",
-                crate::tool::fmt::header_path(dir, &self.cwd, &self.root)
+            self.shell.chain_cd(
+                &crate::tool::fmt::header_path(dir, &self.cwd, &self.root),
+                &cmd,
             )
         };
         if bool_arg(args, "background", false) {
@@ -249,10 +255,11 @@ impl BashTool {
                 pid,
                 output_path,
             }) => {
+                let tail = self.shell.tail_command(&output_path);
                 let path = output_path.display();
                 let pid = pid.map_or_else(|| "?".to_owned(), |p| p.to_string());
                 ToolOutput::ok(format!(
-                    "Started background job {id} (pid {pid}). Output: {path}\nA notice with its exit status and output arrives when it finishes; run `tail -n 50 {path}` to see progress meanwhile."
+                    "Started background job {id} (pid {pid}). Output: {path}\nA notice with its exit status and output arrives when it finishes; run `{tail}` to see progress meanwhile."
                 ))
             }
         }
@@ -317,14 +324,22 @@ fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
     home.join(&path[2..])
 }
 
-/// tool/shell.go:130-143, verbatim.
-fn bash_schema() -> JsonObject {
+/// tool/shell.go:130-143, verbatim but for the one field that names a dialect: the `command` example is
+/// written in the shell that will actually read it.
+fn bash_schema(family: Family) -> JsonObject {
+    let command = match family {
+        Family::Posix => "Bash command line to execute, e.g. 'go test ./... 2>&1 | tail -20'.",
+        Family::PowerShell => {
+            "PowerShell command line to execute, e.g. 'cargo test 2>&1 | Select-Object -Last 20'."
+        }
+        Family::Cmd => "cmd.exe command line to execute, e.g. 'cargo test 2>&1 | more'.",
+    };
     match serde_json::json!({
         "type": "object",
         "properties": {
             "command": {
                 "type": "string",
-                "description": "Bash command line to execute, e.g. 'go test ./... 2>&1 | tail -20'.",
+                "description": command,
             },
             "cwd": {
                 "type": "string",
@@ -348,14 +363,46 @@ fn bash_schema() -> JsonObject {
     }
 }
 
-/// Fixed head of the `bash` description.
+/// Fixed head of the description when a POSIX shell runs the calls — Git Bash included, which is why it says
+/// nothing about the platform.
 pub const BASH_DESC_PREFIX: &str = "Run a bash command line on the user's machine and return its combined stdout/stderr. The full shell is available: pipes, redirects, globbing, && chaining, heredocs. The working directory defaults to the project root (override with \"cwd\"). Each call runs in a FRESH shell: environment variables, shell functions, aliases and `cd` do not carry over to the next call. Anything a later command depends on must be repeated in it — write the full path or command instead of defining a helper first. Calls issued together run concurrently. Each call is killed after 600 seconds unless \"timeout\" says otherwise (maximum 3600). ";
+/// The same head for PowerShell. It spends its first half on the dialect because that is the half the model
+/// gets wrong by default: everything it knows about shells is POSIX, and none of it applies here.
+pub const PWSH_DESC_PREFIX: &str = "Run a PowerShell command line on the user's machine and return its combined stdout/stderr. This is PowerShell, NOT a POSIX shell, and bash habits do not carry over: separate statements with `;` (`&&` and `||` need PowerShell 7+), and remember the pipeline carries .NET objects rather than bytes — narrow output with `Select-Object -First 20`, `Select-String <pattern>` or `Where-Object`, and pipe through `Out-String` before anything that expects text. Redirection is `>`, `>>` and `2>&1`; the bit bucket is `$null`, not /dev/null. Variables are `$name` and interpolate inside double quotes only; a native program's exit code is `$LASTEXITCODE`; a multi-line literal is a here-string (`@\"…\"@`), not a heredoc. Native programs (git, cargo, node, python) run exactly as they do in any Windows console, but the POSIX tools (grep, sed, awk, ls, tail) are NOT here unless the user installed them — use the cmdlet. The working directory defaults to the project root (override with \"cwd\"). Each call runs in a FRESH shell: variables, functions, aliases and `Set-Location` do not carry over to the next call. Anything a later command depends on must be repeated in it — write the full path or command instead of defining a helper first. Calls issued together run concurrently. Each call is killed after 600 seconds unless \"timeout\" says otherwise (maximum 3600). ";
+/// The same head for `cmd.exe` — the floor, reached only when the machine has neither Git Bash nor
+/// PowerShell, so it says plainly how little is available.
+pub const CMD_DESC_PREFIX: &str = "Run a cmd.exe command line on the user's machine and return its combined stdout/stderr. This is the Windows command interpreter — neither bash nor PowerShell, and the most limited of the three; it is what is left when this machine has no PowerShell. Chain with `&`, `&&` and `||`; redirect with `>`, `>>` and `2>&1`; the bit bucket is `NUL`, not /dev/null; variables are `%NAME%`; `^` escapes `& | < > ^`. There is no globbing (each program expands its own arguments) and none of the POSIX tools (grep, sed, awk, ls, tail) unless the user installed them, so prefer running programs (git, cargo, node) directly over cmd built-ins, and prefer one program's own flags over a pipeline. The working directory defaults to the project root (override with \"cwd\"). Each call runs in a FRESH shell: environment variables and `cd` do not carry over to the next call. Anything a later command depends on must be repeated in it — write the full path or command instead of defining a helper first. Calls issued together run concurrently. Each call is killed after 600 seconds unless \"timeout\" says otherwise (maximum 3600). ";
 /// Sandboxed suffix; `{net}` = `network access is BLOCKED` | `network access is allowed`.
 pub const BASH_DESC_SANDBOXED: &str = "Commands run inside an OS sandbox: file writes are confined to the project root and temp/cache directories (writes elsewhere fail with permission errors), and {net}.";
-/// Unsandboxed suffix.
+/// Unsandboxed suffix — the only one Windows ever gets: no OS sandbox exists there, so every call runs with
+/// the user's full permissions and needs approval unless `auto_run` waived it.
 pub const BASH_DESC_UNSANDBOXED: &str = "Commands run WITHOUT a sandbox on this system, with the user's full permissions — be conservative.";
-/// The background-mode paragraph, appended after the sandbox suffix.
-pub const BASH_DESC_BACKGROUND: &str = "\n\nSet \"background\": true for work that outlasts a reply — a long build, a test suite, a child agent (`iota run <agent> -m \"<task>\"`). The call returns at once with a job id and an output file; when the job ends you are told its exit status and shown its output, so do not poll for it (`tail` the file only if you need progress meanwhile). Up to 16 background jobs at a time, and \"timeout\" still applies. Background jobs are killed when iota exits — a job that must survive that has to detach itself (nohup/setsid).";
+/// The background-mode paragraph, appended after the sandbox suffix. `{tail}` and `{detach}` are the running
+/// interpreter's spellings ([`background_desc`]) — the two places this paragraph would otherwise hand a
+/// Windows model a POSIX command.
+pub const BASH_DESC_BACKGROUND: &str = "\n\nSet \"background\": true for work that outlasts a reply — a long build, a test suite, a child agent (`iota run <agent> -m \"<task>\"`). The call returns at once with a job id and an output file; when the job ends you are told its exit status and shown its output, so do not poll for it (`{tail}` the file only if you need progress meanwhile). Up to 16 background jobs at a time, and \"timeout\" still applies. Background jobs are killed when iota exits — a job that must survive that has to detach itself ({detach}).";
+
+/// The description head of the interpreter that will run the calls.
+pub fn desc_prefix(family: Family) -> &'static str {
+    match family {
+        Family::Posix => BASH_DESC_PREFIX,
+        Family::PowerShell => PWSH_DESC_PREFIX,
+        Family::Cmd => CMD_DESC_PREFIX,
+    }
+}
+
+/// [`BASH_DESC_BACKGROUND`] with its two dialect slots filled: how this interpreter reads the tail of a log,
+/// and how a job detaches from it.
+pub fn background_desc(family: Family) -> String {
+    let (tail, detach) = match family {
+        Family::Posix => ("tail", "nohup/setsid"),
+        Family::PowerShell => ("Get-Content -Tail", "Start-Process"),
+        Family::Cmd => ("type", "start /b"),
+    };
+    BASH_DESC_BACKGROUND
+        .replace("{tail}", tail)
+        .replace("{detach}", detach)
+}
 
 #[cfg(test)]
 mod tests {
@@ -370,7 +417,7 @@ mod tests {
     #[test]
     fn result_formatting_table() {
         let failed = RunResult {
-            err: Some(ShellError::NoBash),
+            err: Some(ShellError::NoShell(crate::shell::interp::NoShell::NoBash)),
             ..RunResult::default()
         };
         let out = format_result(&failed, DEFAULT_BASH_TIMEOUT);

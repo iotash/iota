@@ -113,6 +113,22 @@ fn bash_over_jobs() -> (TempDir, Arc<Jobs>, Arc<dyn Dispatcher>) {
     (dir, jobs, Arc::new(registry))
 }
 
+/// Whether to skip a test whose command line is POSIX. The interpreter is `bash` on Unix and, on Windows,
+/// whatever `shell::interp`'s ladder found — under PowerShell or `cmd.exe` these scripts would not parse, so
+/// the test prints a `SKIP:` line instead (the twin of `tests/tool/shell.rs::skip_unless_posix`).
+fn skip_unless_posix(test: &str) -> bool {
+    let shell =
+        iota::shell::interp::resolve().expect("this machine has no shell interpreter at all");
+    if shell.is_posix() {
+        return false;
+    }
+    println!(
+        "SKIP: {test} — the resolved interpreter is {}, not a POSIX shell",
+        shell.program.display()
+    );
+    true
+}
+
 /// One `bash` call with `background: true`.
 fn background_call(id: &str, command: &str) -> ToolCall {
     let mut args = JsonObject::new();
@@ -129,6 +145,9 @@ fn background_call(id: &str, command: &str) -> ToolCall {
 // the job, injects its completion notice and gives the model another round with it.
 #[tokio::test]
 async fn a_headless_run_waits_for_its_background_job_and_reports_it() {
+    if skip_unless_posix("a_headless_run_waits_for_its_background_job_and_reports_it") {
+        return;
+    }
     let (_dir, jobs, dispatch) = bash_over_jobs();
     let p = Recorder::new(vec![
         // Round 1: start the job.
@@ -231,6 +250,9 @@ async fn a_run_with_no_jobs_ends_on_the_first_reply() {
 // having to wait for it.
 #[tokio::test]
 async fn a_job_that_lands_mid_round_enters_at_the_next_round() {
+    if skip_unless_posix("a_job_that_lands_mid_round_enters_at_the_next_round") {
+        return;
+    }
     let (_dir, jobs, dispatch) = bash_over_jobs();
     let mut noop = JsonObject::new();
     noop.insert(

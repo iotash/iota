@@ -754,18 +754,10 @@ fn test_set_false_disables() {
             def.name
         );
     }
-    // `shell:` was left ON, so it is the one set still contributing — except on Windows, where what it
-    // contributes is the warning instead (`shell_set_warns_and_registers_nothing_on_windows`).
-    #[cfg(unix)]
-    {
-        assert!(warns.is_empty(), "{warns:?}");
-        assert_eq!(tool_names(&r.tools()), HashSet::from(["bash".to_owned()]));
-    }
-    #[cfg(windows)]
-    {
-        assert_eq!(warns.len(), 1, "{warns:?}");
-        assert!(r.is_empty(), "got {:?}", r.tools());
-    }
+    // `shell:` was left ON, so it is the one set still contributing — on every platform now that the
+    // toolset resolves an interpreter on Windows too.
+    assert!(warns.is_empty(), "{warns:?}");
+    assert_eq!(tool_names(&r.tools()), HashSet::from(["bash".to_owned()]));
 
     // DIVERGENCES I-01: every YAML-1.1 false spelling disables, plain or quoted, any case.
     for spelling in [
@@ -868,15 +860,11 @@ fn test_build_registry() {
             "expected no tools without a shell key, got {:?}",
             r.tools()
         );
-        // A present `shell` key is what turns the set on — on Unix. The Windows answer to the same
-        // config is `shell_set_warns_and_registers_nothing_on_windows`, below.
-        #[cfg(unix)]
-        {
-            let r = Registry::build(&env, &raw_tools("tools:\n  shell:\n"), &mut |_| {});
-            assert_eq!(tool_names(&r.tools()), HashSet::from(["bash".to_owned()]));
-            assert_eq!(r.len(), 1);
-            assert!(r.get("bash").is_some());
-        }
+        // A present `shell` key is what turns the set on.
+        let r = Registry::build(&env, &raw_tools("tools:\n  shell:\n"), &mut |_| {});
+        assert_eq!(tool_names(&r.tools()), HashSet::from(["bash".to_owned()]));
+        assert_eq!(r.len(), 1);
+        assert!(r.get("bash").is_some());
     }
 
     // unknown set warns and is skipped
@@ -917,9 +905,7 @@ fn test_build_registry() {
         );
     }
 
-    // enable_set: same warnings; an already-registered tool is not duplicated. Unix-only because every
-    // assertion in it counts the `bash` the shell set registers.
-    #[cfg(unix)]
+    // enable_set: same warnings; an already-registered tool is not duplicated.
     {
         let (_dir, env) = project_env();
         let mut r = Registry::build(&env, &raw_tools("tools:\n  shell:\n"), &mut |_| {});
@@ -953,24 +939,37 @@ fn test_build_registry() {
     }
 }
 
-// The Windows half of `test_build_registry`: the `shell` set is the one set that builds nothing on this
-// platform, and it has to say so ONCE, at build time. A registered `bash` that answered every call with a
-// spawn failure would be the failure mode this exists to prevent.
+// The Windows half of `test_build_registry`, rewritten for the backend that landed: the set that used to
+// contribute one warning and no tool now registers the same `bash` every other platform gets. What it must
+// still do ONCE, at build time, is tell the model WHICH interpreter that tool runs — the name does not say
+// so — and that Windows has no sandbox to put the calls in.
 #[cfg(windows)]
 #[test]
-fn shell_set_warns_and_registers_nothing_on_windows() {
+fn shell_set_registers_the_resolved_interpreter_on_windows() {
+    use iota::shell::interp::Family;
+
     let (_dir, env) = project_env();
     let mut warned = Vec::new();
     let r = Registry::build(&env, &raw_tools("tools:\n  shell:\n"), &mut |w| {
         warned.push(w);
     });
-    assert!(r.is_empty(), "got {:?}", r.tools());
-    assert_eq!(
-        warned,
-        vec![
-            "toolset \"shell\": no Windows backend yet — the bash tool runs POSIX shell scripts (ignored)"
-                .to_owned()
-        ]
+    assert!(warned.is_empty(), "{warned:?}");
+    assert_eq!(tool_names(&r.tools()), HashSet::from(["bash".to_owned()]));
+
+    // Windows always has at least cmd.exe, so the ladder always ends somewhere.
+    let shell = iota::shell::interp::resolve().expect("no interpreter on a Windows machine");
+    let description = &r.tools()[0].description;
+    assert!(
+        description.starts_with(match shell.family {
+            Family::Posix => "Run a bash command line",
+            Family::PowerShell => "Run a PowerShell command line",
+            Family::Cmd => "Run a cmd.exe command line",
+        }),
+        "the description must name the interpreter that will run:\n{description}"
+    );
+    assert!(
+        description.contains("WITHOUT a sandbox"),
+        "Windows has no OS sandbox and the description has to say so:\n{description}"
     );
 }
 
