@@ -487,9 +487,9 @@ mod tests {
                 ],
                 ..user("first question")
             },
-            calls("bash"),
-            tool("bash", "output 1"),
-            tool("bash", "output 2"),
+            calls("shell"),
+            tool("shell", "output 1"),
+            tool("shell", "output 2"),
             assistant("final answer").with_reasoning("secret thinking".to_owned()),
             user("second question"),
             assistant("partial reply").with_interrupted(true),
@@ -534,7 +534,7 @@ mod tests {
             user("pick for me"),
             calls("choose"),
             tool("choose", "Auth: JWT\nLib: chi"),
-            tool("bash", "out"),
+            tool("shell", "out"),
             assistant("done"),
         ];
         let out = plain(&echo_rounds(&msgs, |n| n == "choose", 80, None));

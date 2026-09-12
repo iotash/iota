@@ -508,7 +508,7 @@ fn test_code_set_read_only_rejects_auto_write() {
     );
 }
 
-// Go: tool/parallel_test.go:15 (the `bash` half belongs to the shell set — WP09).
+// Go: tool/parallel_test.go:15 (the `shell` half belongs to the shell set — WP09).
 #[test]
 fn test_only_safe_tools_opt_into_parallel() {
     let dir = tempfile::tempdir().expect("tempdir");

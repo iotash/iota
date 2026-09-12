@@ -437,7 +437,7 @@ fn test_skills_catalog() {
     ];
     let got = skills_catalog(&skills);
     for want in [
-        SKILLS_CATALOG_INSTRUCTION, // activate via load_skill, scripts via bash
+        SKILLS_CATALOG_INSTRUCTION, // activate via load_skill, scripts via the shell tool
         "<available_skills>",
         "</available_skills>",
         "<name>alpha</name>",
@@ -453,8 +453,8 @@ fn test_skills_catalog() {
     );
     assert!(
         SKILLS_CATALOG_INSTRUCTION.contains("load_skill")
-            && SKILLS_CATALOG_INSTRUCTION.contains("bash"),
-        "instruction sentence should mention load_skill and bash"
+            && SKILLS_CATALOG_INSTRUCTION.contains("shell"),
+        "instruction sentence should mention load_skill and the shell tool"
     );
     // The whole block, byte for byte (skills.go:229-255).
     assert_eq!(

@@ -311,7 +311,7 @@ pub struct Env {
     pub project_root: Option<PathBuf>,
     /// Process-level directories.
     pub dirs: HostDirs,
-    /// The run's background-job registry, which `bash` starts `background: true` calls in. Bound by both
+    /// The run's background-job registry, which `shell` starts `background: true` calls in. Bound by both
     /// entry points; None only in tests, where a `background` call is refused rather than silently run in
     /// the foreground.
     pub jobs: Option<Arc<crate::shell::jobs::Jobs>>,

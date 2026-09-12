@@ -68,16 +68,16 @@ fn test_tool_call_header() {
     let tests = [
         (
             "single arg",
-            call("bash", serde_json::json!({"command": "git status"})),
-            "[bash command:git status]",
+            call("shell", serde_json::json!({"command": "git status"})),
+            "[shell command:git status]",
         ),
         (
             "keys sorted",
             call(
-                "bash",
+                "shell",
                 serde_json::json!({"command": "git", "cwd": "/tmp", "stdin": "hi"}),
             ),
-            "[bash command:git cwd:/tmp stdin:hi]",
+            "[shell command:git cwd:/tmp stdin:hi]",
         ),
         ("no args", call("ping", serde_json::json!({})), "[ping]"),
         (

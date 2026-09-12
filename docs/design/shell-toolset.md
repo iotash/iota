@@ -1,6 +1,6 @@
-# The shell toolset — real bash behind an OS sandbox
+# The shell toolset — a real shell behind an OS sandbox
 
-The `shell` built-in toolset holds one tool, `bash`: a real shell command
+The `shell` built-in toolset holds one tool, `shell`: a real shell command
 line (pipes, redirects, chaining, heredocs), replacing the earlier argv-only
 `run_command` and its program allow-list — with a full shell, argv
 allow-listing is meaningless, so containment moved down a layer, to the OS.
@@ -49,7 +49,7 @@ configured `write:` extras (`~` expands). Network is blocked unless
 
 ## Approval
 
-`bash` implements the same `approver`/`tool.ApprovalReporter` seam as the
+`shell` implements the same `approver`/`tool.ApprovalReporter` seam as the
 code set: a sandboxed call is pre-contained and runs **without prompting**
 (the industry default); an unsandboxed call (platform gap or `sandbox: off`)
 asks allow once / allow for this session / deny, and is rejected outright in
@@ -94,7 +94,7 @@ result. `Jobs::kill_all` (synchronous `killpg`) runs on every exit path: iota
 supervises what it started and cannot supervise across processes, so a job that
 must outlive it has to detach itself (DIVERGENCES X-07 … X-09).
 
-A round's consecutive `bash` calls run as ONE concurrent batch
+A round's consecutive `shell` calls run as ONE concurrent batch
 (`BashTool::supports_parallel` is unconditionally true), results and event
 rows still in call order — a deliberate break with the "only calls that cannot
 change state batch" law, for this set alone (DIVERGENCES X-05). The model

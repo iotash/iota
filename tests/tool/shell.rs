@@ -28,8 +28,8 @@ use iota::shell::interp::{Family, Interpreter};
 use iota::tool::Registry;
 use iota::tool::sets::{RawNode, SetError, ToolsConfig};
 use iota::tool::shell::{
-    BASH_DESC_PREFIX, BASH_DESC_SANDBOXED, BASH_DESC_UNSANDBOXED, CMD_DESC_PREFIX,
-    PWSH_DESC_PREFIX, background_desc, desc_prefix, new_shell_set,
+    BASH_DESC_PREFIX, CMD_DESC_PREFIX, PWSH_DESC_PREFIX, SHELL_DESC_SANDBOXED,
+    SHELL_DESC_UNSANDBOXED, SHELL_TOOL_NAME, background_desc, desc_prefix, new_shell_set,
 };
 use iota::tool::{Dispatcher, Env, Tool};
 use pretty_assertions::assert_eq;
@@ -94,11 +94,11 @@ fn shell_env() -> (TempDir, Env, PathBuf) {
 }
 
 /// Go's `newBash`: the shell set over a temp project root with the given `shell:` config.
-fn new_bash(cfg_yaml: &str) -> (TempDir, PathBuf, Arc<dyn Tool>) {
+fn new_shell(cfg_yaml: &str) -> (TempDir, PathBuf, Arc<dyn Tool>) {
     let (dir, env, root) = shell_env();
     let tools = new_shell_set(&env, node(cfg_yaml).as_ref()).expect("shell set");
     assert_eq!(tools.len(), 1, "shell set must build exactly one tool");
-    assert_eq!(tools[0].def().name, "bash");
+    assert_eq!(tools[0].def().name, SHELL_TOOL_NAME);
     let tool = Arc::clone(&tools[0]);
     (dir, root, tool)
 }
@@ -110,7 +110,10 @@ async fn call(tool: &Arc<dyn Tool>, args: serde_json::Value) -> (String, bool) {
         _ => panic!("object literal expected"),
     };
     let cx = RunCtx::default();
-    let out = tool.call(&cx, &args).await.expect("bash never hard-fails");
+    let out = tool
+        .call(&cx, &args)
+        .await
+        .expect("the shell tool never hard-fails");
     (out.text, out.is_error)
 }
 
@@ -156,13 +159,13 @@ async fn run(opts: Options) -> RunResult {
 
 // Go: tool/shell_test.go:30
 #[tokio::test]
-async fn test_bash_call() {
-    if skip_unless_posix("test_bash_call") {
+async fn test_shell_call() {
+    if skip_unless_posix("test_shell_call") {
         return;
     }
-    let (_dir, root, bash) = new_bash("sandbox: off\n");
+    let (_dir, root, tool) = new_shell("sandbox: off\n");
 
-    let (out, is_err) = call(&bash, json!({"command": "echo hello | tr a-z A-Z"})).await;
+    let (out, is_err) = call(&tool, json!({"command": "echo hello | tr a-z A-Z"})).await;
     assert!(
         !is_err && out.contains("HELLO"),
         "pipe failed: ({out:?}, {is_err})"
@@ -170,30 +173,30 @@ async fn test_bash_call() {
 
     // cwd defaults to the project root; a relative cwd resolves against it.
     fs::create_dir(root.join("sub")).expect("mkdir sub");
-    let (out, _) = call(&bash, json!({"command": "pwd"})).await;
+    let (out, _) = call(&tool, json!({"command": "pwd"})).await;
     let leaf = root.file_name().expect("root name").to_string_lossy();
     assert!(
         out.contains(leaf.as_ref()),
         "default cwd = {out:?}, want the project root"
     );
-    let (out, _) = call(&bash, json!({"command": "pwd", "cwd": "sub"})).await;
+    let (out, _) = call(&tool, json!({"command": "pwd", "cwd": "sub"})).await;
     assert!(
         out.trim().ends_with("/sub"),
         "relative cwd = {out:?}, want .../sub"
     );
 
     // Exit codes and empty output are reported model-facing.
-    let (out, is_err) = call(&bash, json!({"command": "exit 3"})).await;
+    let (out, is_err) = call(&tool, json!({"command": "exit 3"})).await;
     assert!(
         is_err && out.contains("[exit code 3]"),
         "exit code = ({out:?}, {is_err})"
     );
-    let (out, is_err) = call(&bash, json!({"command": "true"})).await;
+    let (out, is_err) = call(&tool, json!({"command": "true"})).await;
     assert_eq!(
         (out.as_str(), is_err),
         ("[command produced no output]", false)
     );
-    let (out, is_err) = call(&bash, json!({})).await;
+    let (out, is_err) = call(&tool, json!({})).await;
     assert!(
         is_err && out.contains("missing required argument"),
         "missing command = ({out:?}, {is_err})"
@@ -203,14 +206,14 @@ async fn test_bash_call() {
 // New (DIVERGENCES X-06): the `timeout` argument end to end — it caps the run, its own line names
 // the number the call chose, and a value outside 1…3600 is refused BEFORE anything is executed.
 #[tokio::test]
-async fn bash_timeout_argument_caps_the_call() {
-    if skip_unless_posix("bash_timeout_argument_caps_the_call") {
+async fn shell_timeout_argument_caps_the_call() {
+    if skip_unless_posix("shell_timeout_argument_caps_the_call") {
         return;
     }
-    let (_dir, root, bash) = new_bash("sandbox: off\n");
+    let (_dir, root, tool) = new_shell("sandbox: off\n");
 
     let started = std::time::Instant::now();
-    let (out, is_err) = call(&bash, json!({"command": "sleep 30", "timeout": 1})).await;
+    let (out, is_err) = call(&tool, json!({"command": "sleep 30", "timeout": 1})).await;
     assert!(
         is_err && out.contains("[command timed out after 1s]"),
         "timed-out result = ({out:?}, {is_err})"
@@ -224,7 +227,7 @@ async fn bash_timeout_argument_caps_the_call() {
     let marker = root.join("ran.txt");
     for bad in [json!(0), json!(-1), json!(3601), json!("30")] {
         let cmd = format!("touch {}", shell_path(&marker));
-        let (out, is_err) = call(&bash, json!({"command": cmd, "timeout": bad})).await;
+        let (out, is_err) = call(&tool, json!({"command": cmd, "timeout": bad})).await;
         assert_eq!(
             (out.as_str(), is_err),
             ("timeout must be between 1 and 3600 seconds", true),
@@ -235,12 +238,12 @@ async fn bash_timeout_argument_caps_the_call() {
 
     // An accepted one does run it.
     let cmd = format!("touch {}", shell_path(&marker));
-    let (_, is_err) = call(&bash, json!({"command": cmd, "timeout": 30})).await;
+    let (_, is_err) = call(&tool, json!({"command": cmd, "timeout": 30})).await;
     assert!(!is_err && marker.exists());
 }
 
 /// The shell set over a temp project root WITH a job registry bound (what both entry points build).
-fn new_bash_with_jobs(cfg_yaml: &str) -> (TempDir, Arc<iota::shell::jobs::Jobs>, Arc<dyn Tool>) {
+fn new_shell_with_jobs(cfg_yaml: &str) -> (TempDir, Arc<iota::shell::jobs::Jobs>, Arc<dyn Tool>) {
     let (dir, mut env, _root) = shell_env();
     let jobs = iota::shell::jobs::Jobs::new(dir.path());
     env.jobs = Some(Arc::clone(&jobs));
@@ -251,16 +254,16 @@ fn new_bash_with_jobs(cfg_yaml: &str) -> (TempDir, Arc<iota::shell::jobs::Jobs>,
 // New (DIVERGENCES X-07): `background: true` returns a receipt instead of the output — the job id the
 // notice will carry, the pid, and the file to tail — and the turn is free while the command runs.
 #[tokio::test]
-async fn bash_background_returns_a_receipt_and_keeps_running() {
-    if skip_unless_posix("bash_background_returns_a_receipt_and_keeps_running") {
+async fn shell_background_returns_a_receipt_and_keeps_running() {
+    if skip_unless_posix("shell_background_returns_a_receipt_and_keeps_running") {
         return;
     }
-    let (dir, jobs, bash) = new_bash_with_jobs("sandbox: off\nauto_run: true\n");
+    let (dir, jobs, tool) = new_shell_with_jobs("sandbox: off\nauto_run: true\n");
     let marker = dir.path().join("done.txt");
     let cmd = format!("sleep 0.2; echo finished > {}", shell_path(&marker));
 
     let started = std::time::Instant::now();
-    let (out, is_err) = call(&bash, json!({"command": cmd, "background": true})).await;
+    let (out, is_err) = call(&tool, json!({"command": cmd, "background": true})).await;
     assert!(!is_err, "background start failed: {out}");
     assert!(
         started.elapsed() < Duration::from_millis(150),
@@ -287,10 +290,10 @@ async fn bash_background_returns_a_receipt_and_keeps_running() {
 // The argument checks are the foreground ones, in the same order: a bad `timeout` is refused before
 // anything is started, and a run with no registry refuses rather than silently blocking the turn.
 #[tokio::test]
-async fn bash_background_keeps_the_argument_rules() {
-    let (_dir, jobs, bash) = new_bash_with_jobs("sandbox: off\nauto_run: true\n");
+async fn shell_background_keeps_the_argument_rules() {
+    let (_dir, jobs, tool) = new_shell_with_jobs("sandbox: off\nauto_run: true\n");
     let (out, is_err) = call(
-        &bash,
+        &tool,
         json!({"command": "true", "background": true, "timeout": 0}),
     )
     .await;
@@ -300,12 +303,12 @@ async fn bash_background_keeps_the_argument_rules() {
     );
     assert_eq!(jobs.running(), 0, "a refused call must start nothing");
 
-    let (out, is_err) = call(&bash, json!({"command": "  ", "background": true})).await;
+    let (out, is_err) = call(&tool, json!({"command": "  ", "background": true})).await;
     assert!(is_err && out.contains("missing required argument"), "{out}");
 
     // Without the host seam a background call is refused, never run in the foreground — the model asked
     // NOT to wait for it.
-    let (_dir, _root, seamless) = new_bash("sandbox: off\nauto_run: true\n");
+    let (_dir, _root, seamless) = new_shell("sandbox: off\nauto_run: true\n");
     let (out, is_err) = call(&seamless, json!({"command": "true", "background": true})).await;
     assert_eq!(
         (out.as_str(), is_err),
@@ -315,8 +318,8 @@ async fn bash_background_keeps_the_argument_rules() {
 
 // The header names the mode: a row that settles while its command is still going has to say so.
 #[test]
-fn bash_background_header_is_marked() {
-    let (_dir, _jobs, bash) = new_bash_with_jobs("sandbox: off\n");
+fn shell_background_header_is_marked() {
+    let (_dir, _jobs, tool) = new_shell_with_jobs("sandbox: off\n");
     let args = |v: serde_json::Value| -> JsonObject {
         match v {
             serde_json::Value::Object(m) => m,
@@ -324,22 +327,22 @@ fn bash_background_header_is_marked() {
         }
     };
     assert_eq!(
-        bash.header_summary(&args(json!({"command": "make test", "background": true}))),
+        tool.header_summary(&args(json!({"command": "make test", "background": true}))),
         Some("(background) make test".to_owned())
     );
     assert_eq!(
-        bash.header_summary(&args(json!({"command": "make test"}))),
+        tool.header_summary(&args(json!({"command": "make test"}))),
         Some("make test".to_owned())
     );
 }
 
-// New (DIVERGENCES X-05): `bash` opts every call into the round's parallel batch, whatever it was asked
-// to run — the answer is not a property of the arguments.
+// New (DIVERGENCES X-05): the `shell` tool opts every call into the round's parallel batch, whatever it was
+// asked to run — the answer is not a property of the arguments.
 #[test]
-fn bash_calls_batch() {
-    let (_dir, _root, bash) = new_bash("sandbox: off\n");
+fn shell_calls_batch() {
+    let (_dir, _root, tool) = new_shell("sandbox: off\n");
     assert!(
-        bash.supports_parallel(None),
+        tool.supports_parallel(None),
         "the nil-args probe must say yes"
     );
     for args in [
@@ -351,20 +354,20 @@ fn bash_calls_batch() {
             serde_json::Value::Object(m) => m,
             _ => panic!("object literal expected"),
         };
-        assert!(bash.supports_parallel(Some(&args)));
+        assert!(tool.supports_parallel(Some(&args)));
     }
 }
 
 // Go: tool/shell_test.go:66
 #[test]
-fn test_bash_approval_matrix() {
+fn test_shell_approval_matrix() {
     let approval = |cfg: &str| {
-        let (_dir, _root, bash) = new_bash(cfg);
-        bash.requires_approval()
+        let (_dir, _root, tool) = new_shell(cfg);
+        tool.requires_approval()
     };
     assert!(
         approval("sandbox: off\n"),
-        "unsandboxed bash should require approval"
+        "an unsandboxed shell tool should require approval"
     );
     assert!(
         !approval("sandbox: off\nauto_run: true\n"),
@@ -381,7 +384,7 @@ fn test_bash_approval_matrix() {
 // Go: tool/shell_test.go:87
 #[test]
 fn test_shell_set_config_errors() {
-    // The pre-bash allow-list shape is no longer valid: warn and skip the set.
+    // The pre-shell allow-list shape is no longer valid: warn and skip the set.
     let (_dir, env, _root) = shell_env();
     let mut warned = Vec::new();
     let r = Registry::build(
@@ -424,9 +427,9 @@ fn test_shell_set_config_errors() {
     }
 }
 
-// Go: tool/shell_test.go:133 (the "shell set enables bash" subtest of TestBuildRegistry)
+// Go: tool/shell_test.go:133 (the "shell set enables its tool" subtest of TestBuildRegistry)
 #[tokio::test]
-async fn test_build_registry_shell_set_enables_bash() {
+async fn test_build_registry_shell_set_enables_the_tool() {
     let (_dir, env, _root) = shell_env();
     let mut warned: Vec<String> = Vec::new();
     let r = Registry::build(
@@ -435,27 +438,31 @@ async fn test_build_registry_shell_set_enables_bash() {
         &mut |w| warned.push(w),
     );
     let defs = r.tools();
-    assert_eq!(defs.len(), 1, "expected bash enabled, got {defs:?}");
-    assert_eq!(defs[0].name, "bash");
+    assert_eq!(
+        defs.len(),
+        1,
+        "expected the shell tool enabled, got {defs:?}"
+    );
+    assert_eq!(defs[0].name, SHELL_TOOL_NAME);
     assert!(warned.is_empty(), "unexpected warnings: {warned:?}");
 
     let mut args = JsonObject::new();
     args.insert("command".to_owned(), json!("echo registry"));
     let out = r
-        .call_tool(&RunCtx::default(), "bash", args)
+        .call_tool(&RunCtx::default(), SHELL_TOOL_NAME, args)
         .await
-        .expect("bash via registry");
+        .expect("the shell tool via registry");
     assert!(
         !out.is_error && out.text.contains("registry"),
-        "bash via registry: {out:?}"
+        "the shell tool via registry: {out:?}"
     );
     // The registry routes the tool's approval answer (sandbox: off, no auto_run).
-    assert!(r.requires_approval("bash"));
+    assert!(r.requires_approval(SHELL_TOOL_NAME));
 }
 
 // Go: tool/shell_test.go:179
 #[test]
-fn test_bash_description_states_shell_state_contract() {
+fn test_shell_description_states_shell_state_contract() {
     // The contract is the same whichever interpreter runs the calls; the DIALECT it teaches is that
     // interpreter's own, and the first sentence names it. All three are checked on every platform — the
     // description is the model's only source for both facts, and it must never describe a different shell
@@ -487,13 +494,13 @@ fn test_bash_description_states_shell_state_contract() {
         let background = background_desc(family);
         let sandboxed_blocked = format!(
             "{head}{}{background}",
-            BASH_DESC_SANDBOXED.replace("{net}", "network access is BLOCKED")
+            SHELL_DESC_SANDBOXED.replace("{net}", "network access is BLOCKED")
         );
         let sandboxed_open = format!(
             "{head}{}{background}",
-            BASH_DESC_SANDBOXED.replace("{net}", "network access is allowed")
+            SHELL_DESC_SANDBOXED.replace("{net}", "network access is allowed")
         );
-        let unsandboxed = format!("{head}{BASH_DESC_UNSANDBOXED}{background}");
+        let unsandboxed = format!("{head}{SHELL_DESC_UNSANDBOXED}{background}");
         for desc in [&sandboxed_blocked, &sandboxed_open, &unsandboxed] {
             for want in [
                 opener,
@@ -530,13 +537,13 @@ fn test_bash_description_states_shell_state_contract() {
 
     // The live tool picks the prefix ITS interpreter dictates, the suffix its sandbox state dictates, and
     // the schema is tool/shell.go:130-143 with the one example rewritten in that same dialect.
-    let (_dir, _root, bash) = new_bash("sandbox: off\n");
-    let def = bash.def();
+    let (_dir, _root, tool) = new_shell("sandbox: off\n");
+    let def = tool.def();
     let family = shell().family;
     assert_eq!(
         def.description,
         format!(
-            "{}{BASH_DESC_UNSANDBOXED}{}",
+            "{}{SHELL_DESC_UNSANDBOXED}{}",
             desc_prefix(family),
             background_desc(family)
         )
@@ -1007,10 +1014,10 @@ async fn run_deadline_and_cancel_are_exclusive() {
 // New (DIVERGENCES D-16): a bad cwd is a spawn failure, reported as `failed to run: <io error>` with the
 // Rust text (Go says `chdir …`), and it never becomes an exit code.
 #[tokio::test]
-async fn bash_bad_cwd_reports_failed_to_run() {
-    let (_dir, _root, bash) = new_bash("sandbox: off\n");
+async fn shell_bad_cwd_reports_failed_to_run() {
+    let (_dir, _root, tool) = new_shell("sandbox: off\n");
     let (out, is_err) = call(
-        &bash,
+        &tool,
         json!({"command": "pwd", "cwd": "/nonexistent-dir-xyz-iota"}),
     )
     .await;
@@ -1019,12 +1026,12 @@ async fn bash_bad_cwd_reports_failed_to_run() {
     assert!(!out.contains("[exit code"), "{out:?}");
 }
 
-// Go: tool/codepath_test.go:124 TestBashHeaderSummary — for bash the command IS the call: no
+// Go: tool/codepath_test.go:124 TestBashHeaderSummary — for the shell tool the command IS the call: no
 // `command:` label, a width budget that fits a real pipeline, the first line only, and an explicit
 // cwd folded into the shell idiom for it.
 #[tokio::test]
-async fn test_bash_header_summary() {
-    let (_dir, root, bash) = new_bash("sandbox: off\n");
+async fn test_shell_header_summary() {
+    let (_dir, root, tool) = new_shell("sandbox: off\n");
     let deploy = root.join("deploy");
     let args = |v: serde_json::Value| -> JsonObject {
         v.as_object().cloned().expect("object literal expected")
@@ -1050,7 +1057,7 @@ async fn test_bash_header_summary() {
         ),
     ] {
         assert_eq!(
-            bash.header_summary(&args(arg)).as_deref(),
+            tool.header_summary(&args(arg)).as_deref(),
             Some(want),
             "{name}"
         );

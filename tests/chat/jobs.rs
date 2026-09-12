@@ -95,9 +95,9 @@ impl ToolProvider for Recorder {
     }
 }
 
-/// A `bash` dispatcher over a temp project with a job registry bound — the real toolset, so the test
+/// A `shell` dispatcher over a temp project with a job registry bound — the real toolset, so the test
 /// exercises the same path the binary does.
-fn bash_over_jobs() -> (TempDir, Arc<Jobs>, Arc<dyn Dispatcher>) {
+fn shell_over_jobs() -> (TempDir, Arc<Jobs>, Arc<dyn Dispatcher>) {
     let dir = tempfile::tempdir().expect("tempdir");
     let jobs = Jobs::new(dir.path());
     let env = Env {
@@ -129,14 +129,14 @@ fn skip_unless_posix(test: &str) -> bool {
     true
 }
 
-/// One `bash` call with `background: true`.
+/// One `shell` call with `background: true`.
 fn background_call(id: &str, command: &str) -> ToolCall {
     let mut args = JsonObject::new();
     args.insert("command".to_owned(), serde_json::Value::from(command));
     args.insert("background".to_owned(), serde_json::Value::from(true));
     ToolCall {
         id: id.to_owned(),
-        name: "bash".to_owned(),
+        name: "shell".to_owned(),
         arguments: args,
     }
 }
@@ -148,7 +148,7 @@ async fn a_headless_run_waits_for_its_background_job_and_reports_it() {
     if skip_unless_posix("a_headless_run_waits_for_its_background_job_and_reports_it") {
         return;
     }
-    let (_dir, jobs, dispatch) = bash_over_jobs();
+    let (_dir, jobs, dispatch) = shell_over_jobs();
     let p = Recorder::new(vec![
         // Round 1: start the job.
         RoundResult {
@@ -219,7 +219,7 @@ async fn a_headless_run_waits_for_its_background_job_and_reports_it() {
 // A run with nothing in flight ends exactly as it always did: the wait is not a new way to hang.
 #[tokio::test]
 async fn a_run_with_no_jobs_ends_on_the_first_reply() {
-    let (_dir, jobs, dispatch) = bash_over_jobs();
+    let (_dir, jobs, dispatch) = shell_over_jobs();
     let p = Recorder::new(vec![RoundResult {
         content: "done".to_owned(),
         ..RoundResult::default()
@@ -253,7 +253,7 @@ async fn a_job_that_lands_mid_round_enters_at_the_next_round() {
     if skip_unless_posix("a_job_that_lands_mid_round_enters_at_the_next_round") {
         return;
     }
-    let (_dir, jobs, dispatch) = bash_over_jobs();
+    let (_dir, jobs, dispatch) = shell_over_jobs();
     let mut noop = JsonObject::new();
     noop.insert(
         "command".to_owned(),
@@ -268,7 +268,7 @@ async fn a_job_that_lands_mid_round_enters_at_the_next_round() {
         RoundResult {
             tool_calls: vec![ToolCall {
                 id: "c2".to_owned(),
-                name: "bash".to_owned(),
+                name: "shell".to_owned(),
                 arguments: noop,
             }],
             ..RoundResult::default()

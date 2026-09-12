@@ -650,7 +650,7 @@ mod tests {
         let scope = ui.push_cancel_scope(cancel.clone());
         scope.pop();
         ui.set_title("a\x1b]0;evil\x07b\nc"); // recorded sanitized
-        ui.call_preview("[bash]");
+        ui.call_preview("[shell]");
         ui.call_detail("1.2k tokens");
         ui.call_line("✓ ran");
         ui.close_preview();
@@ -672,7 +672,7 @@ mod tests {
                 UiEvent::ScopePush,
                 UiEvent::ScopePop,
                 UiEvent::Title("a]0;evilbc".to_owned()),
-                UiEvent::CallPreview("[bash]".to_owned()),
+                UiEvent::CallPreview("[shell]".to_owned()),
                 UiEvent::CallDetail("1.2k tokens".to_owned()),
                 UiEvent::CallLine("✓ ran".to_owned()),
                 UiEvent::ClosePreview,

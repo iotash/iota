@@ -248,9 +248,9 @@ fn test_activity_group_fail_breakout() {
 
     tr.open_call("[a]");
     tr.finish_call("[a]", "fine", false, Duration::from_secs(1), "");
-    tr.open_call("[bash cmd:x]");
+    tr.open_call("[shell cmd:x]");
     tr.finish_call(
-        "[bash cmd:x]",
+        "[shell cmd:x]",
         "exit 1\ndetail",
         true,
         Duration::from_secs(1),
@@ -265,17 +265,17 @@ fn test_activity_group_fail_breakout() {
         format!("line:{}", event_line("[a]", "fine", false, "")),
         format!("call:{}", working()),
         "detail:1 tool".to_owned(),
-        "call:[bash cmd:x]".to_owned(),
+        "call:[shell cmd:x]".to_owned(),
         format!(
             "line:{}",
-            event_line("[bash cmd:x]", "exit 1\ndetail", true, "")
+            event_line("[shell cmd:x]", "exit 1\ndetail", true, "")
         ),
         format!("call:{}", working()),
         "detail:2 tools".to_owned(),
         "settle".to_owned(),
         format!(
             "print:{summary}|{}",
-            fail_line("[bash cmd:x]", "exit 1\ndetail")
+            fail_line("[shell cmd:x]", "exit 1\ndetail")
         ),
         "print:".to_owned(),
         "print:So.".to_owned(),
@@ -405,10 +405,10 @@ fn test_thinking_composing_interleave() {
     tr.user("do it");
     tr.open_thinking();
     tr.open_call("[write_file …]"); // observer fires mid-thought: queued
-    tr.open_call("[bash …]"); // label change while queued: last wins
+    tr.open_call("[shell …]"); // label change while queued: last wins
     tr.settle_thinking(Instant::now());
-    tr.open_call("[bash cmd:ls]"); // the tool walk expands the raised widget
-    tr.finish_call("[bash cmd:ls]", "ok", false, Duration::from_secs(1), "");
+    tr.open_call("[shell cmd:ls]"); // the tool walk expands the raised widget
+    tr.finish_call("[shell cmd:ls]", "ok", false, Duration::from_secs(1), "");
     let mut content = tr.content_block();
     content.push(&["Done."]);
 
@@ -418,9 +418,9 @@ fn test_thinking_composing_interleave() {
         format!("call:{}", dim("Thinking")),
         format!("line:{}", dim("◇ thought <1s")),
         "detail:".to_owned(),
-        "call:[bash …]".to_owned(), // the pending call raised at settle, same widget
-        "call:[bash cmd:ls]".to_owned(),
-        format!("line:{}", event_line("[bash cmd:ls]", "ok", false, "")),
+        "call:[shell …]".to_owned(), // the pending call raised at settle, same widget
+        "call:[shell cmd:ls]".to_owned(),
+        format!("line:{}", event_line("[shell cmd:ls]", "ok", false, "")),
         format!("call:{}", working()),
         "detail:1 tool".to_owned(),
         "settle".to_owned(),
@@ -444,9 +444,9 @@ fn test_content_composing_interleave() {
     tr.settle_thinking(Instant::now());
     let mut content = tr.open_content();
     content.push(&["intro line"]);
-    tr.open_call("[bash …]"); // observer fires; the table is still buffered
+    tr.open_call("[shell …]"); // observer fires; the table is still buffered
     content.push(&["| a | b |", "| 1 |"]); // renderer flush: same block, no re-open
-    tr.open_call("[bash cmd:pwd]"); // label refresh while deferred: last wins
+    tr.open_call("[shell cmd:pwd]"); // label refresh while deferred: last wins
     tr.close_content(); // content over → the widget raises NOW
 
     let want = [
@@ -462,7 +462,7 @@ fn test_content_composing_interleave() {
         "print:intro line".to_owned(),
         "print:| a | b ||| 1 |".to_owned(), // committed into the SAME content block
         "print:".to_owned(),
-        "call:[bash cmd:pwd]".to_owned(), // raised at closeContent: a new group
+        "call:[shell cmd:pwd]".to_owned(), // raised at closeContent: a new group
     ];
     assert_eq!(rec.joined(), want.join("\n"));
 }
@@ -477,7 +477,7 @@ fn test_mark_content_beats_observer() {
 
     tr.begin_round();
     tr.mark_content(); // stream side: first content byte
-    tr.open_call("[bash …]"); // observer, before openContent ran: must defer
+    tr.open_call("[shell …]"); // observer, before openContent ran: must defer
     let mut content = tr.open_content();
     content.push(&["the text"]);
     tr.close_content();
@@ -485,7 +485,7 @@ fn test_mark_content_beats_observer() {
     let want = [
         "print:the text", // first block: no separator
         "print:",
-        "call:[bash …]",
+        "call:[shell …]",
     ];
     assert_eq!(rec.joined(), want.join("\n"));
 }
@@ -500,9 +500,9 @@ fn test_begin_round_clears_stale_guards() {
 
     tr.mark_content(); // round 1 died after content started
     tr.begin_round(); // round 2 (retry) begins
-    tr.open_call("[bash …]");
+    tr.open_call("[shell …]");
 
-    assert_eq!(rec.joined(), "call:[bash …]");
+    assert_eq!(rec.joined(), "call:[shell …]");
 }
 
 // Go: chat/compose_test.go:384 TestCloseContentWithoutPendingCall — closeContent with no
@@ -515,9 +515,9 @@ fn test_close_content_without_pending_call() {
     let mut content = tr.open_content();
     content.push(&["reply"]);
     tr.close_content();
-    tr.open_call("[bash …]");
+    tr.open_call("[shell …]");
 
-    let want = ["print:reply", "print:", "call:[bash …]"];
+    let want = ["print:reply", "print:", "call:[shell …]"];
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
@@ -530,7 +530,7 @@ fn test_orphaned_widget_separator_reuse() {
     let tr = transcript(&rec);
 
     tr.user("x");
-    tr.open_call("[bash …]"); // separator paid, widget raised
+    tr.open_call("[shell …]"); // separator paid, widget raised
     tr.reset_turn(); // turn died; sink.done dropped the widget
     tr.notice("Interrupted.");
     tr.user("next"); // a normal turn afterwards pays its own separator again
@@ -538,7 +538,7 @@ fn test_orphaned_widget_separator_reuse() {
     let want = [
         "user:x".to_owned(),
         "print:".to_owned(),
-        "call:[bash …]".to_owned(),
+        "call:[shell …]".to_owned(),
         format!("print:{}", dim("Interrupted.")), // no extra separator
         "print:".to_owned(),
         "user:next".to_owned(),
@@ -589,19 +589,19 @@ fn test_settle_reopens_after_interleave() {
     let rec = Rec::default();
     let tr = transcript(&rec);
 
-    tr.open_call("[bash …]");
+    tr.open_call("[shell …]");
     tr.error("⚠ MCP srv failed: boom"); // async reporter mid-execution
-    tr.finish_call("[bash cmd:ls]", "ok", false, Duration::from_secs(1), "");
+    tr.finish_call("[shell cmd:ls]", "ok", false, Duration::from_secs(1), "");
     let mut content = tr.content_block();
     content.push(&["Done."]);
 
-    let mut classic_block = vec!["[bash cmd:ls]".to_owned()];
+    let mut classic_block = vec!["[shell cmd:ls]".to_owned()];
     classic_block.extend(classic("ok", false));
     let want = [
-        "call:[bash …]".to_owned(),
+        "call:[shell …]".to_owned(),
         "print:".to_owned(),
         format!("print:{}", red("⚠ MCP srv failed: boom")),
-        format!("line:{}", event_line("[bash cmd:ls]", "ok", false, "")),
+        format!("line:{}", event_line("[shell cmd:ls]", "ok", false, "")),
         format!("call:{}", working()),
         "detail:1 tool".to_owned(),
         "print:".to_owned(),

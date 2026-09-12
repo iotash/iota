@@ -365,7 +365,7 @@ mod tests {
     #[test]
     fn mcp_sourced_tools_carry_their_server_tag() {
         let d = DeferStatus::new(
-            &[("bash", "run"), ("mcp__seo__serp", "SERP lookup")],
+            &[("shell", "run"), ("mcp__seo__serp", "SERP lookup")],
             &[(
                 "mcp__seo__serp",
                 "SERP lookup",

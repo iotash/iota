@@ -290,7 +290,10 @@ fn residue_renders_blank() {
     let v = view(&Case {
         region: RegionSnapshot {
             tail: vec!["◇ ran 2 tools in 2s".to_owned()],
-            residue: vec!["✓ [bash …] · stale".to_owned(), "⎿ 2 tools · 8s".to_owned()],
+            residue: vec![
+                "✓ [shell …] · stale".to_owned(),
+                "⎿ 2 tools · 8s".to_owned(),
+            ],
             ..RegionSnapshot::default()
         },
         ..Case::default()
@@ -571,7 +574,7 @@ fn call_preview_rendering() {
     let base = Instant::now();
     let mut case = Case {
         region: RegionSnapshot {
-            label: "[bash …]".to_owned(),
+            label: "[shell …]".to_owned(),
             since: Some(base),
             ..RegionSnapshot::default()
         },
@@ -581,7 +584,7 @@ fn call_preview_rendering() {
     let rows = plain(&view(&case));
     let joined = rows.join("\n");
     assert!(
-        joined.contains("[bash …]"),
+        joined.contains("[shell …]"),
         "widget header missing:\n{joined}"
     );
     assert!(
@@ -623,7 +626,7 @@ fn call_preview_rendering() {
     let h = u16::try_from(v.rows.len()).unwrap();
     let grid = render_plain(&v.rows, 80, h);
     assert!(
-        grid.iter().any(|r| r.contains("[bash …]")),
+        grid.iter().any(|r| r.contains("[shell …]")),
         "grid header:\n{grid:#?}"
     );
 }

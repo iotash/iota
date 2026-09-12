@@ -31,7 +31,7 @@ pub struct OnceOptions {
     /// The resumed session's view, replayed ahead of the new user message. A NON-EMPTY history WINS over
     /// `system` (chat/run.go:69-74); empty (the default) is the stateless single-shot run.
     pub history: Vec<Message>,
-    /// The run's background-job registry. `None` (tests) means `bash` cannot start a job and the loop never
+    /// The run's background-job registry. `None` (tests) means `shell` cannot start a job and the loop never
     /// waits for one; the binary always passes it, and `once` kills whatever is left before it returns.
     pub jobs: Option<Arc<crate::shell::jobs::Jobs>>,
 }

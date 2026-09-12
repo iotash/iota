@@ -757,7 +757,7 @@ fn test_set_false_disables() {
     // `shell:` was left ON, so it is the one set still contributing — on every platform now that the
     // toolset resolves an interpreter on Windows too.
     assert!(warns.is_empty(), "{warns:?}");
-    assert_eq!(tool_names(&r.tools()), HashSet::from(["bash".to_owned()]));
+    assert_eq!(tool_names(&r.tools()), HashSet::from(["shell".to_owned()]));
 
     // DIVERGENCES I-01: every YAML-1.1 false spelling disables, plain or quoted, any case.
     for spelling in [
@@ -821,13 +821,17 @@ fn test_ask_set_absent_without_interactor() {
 #[tokio::test]
 async fn test_merge() {
     let mut reg = Registry::default();
-    reg.add(stub_tool("bash", &[], false));
+    reg.add(stub_tool("shell", &[], false));
     // Go passes a nil second part; hosts skip absent parts before calling `merge`.
     let merged = merge(vec![Arc::new(reg) as Arc<dyn Dispatcher>]);
-    assert_eq!(merged.tools().len(), 1, "merge should expose bash");
+    assert_eq!(
+        merged.tools().len(),
+        1,
+        "merge should expose the shell tool"
+    );
     let mut args = JsonObject::new();
     args.insert("command".to_owned(), "echo merged".into());
-    let out = call(&*merged, "bash", args).await;
+    let out = call(&*merged, "shell", args).await;
     assert!(
         !out.is_error && out.text.contains("merged"),
         "merged routing failed: {out:?}"
@@ -847,7 +851,7 @@ async fn test_merge() {
     assert!(empty.take_pending_loads().is_empty());
 }
 
-// Go: tool/shell_test.go:125 (the shell/agent halves are WP09's `test_build_registry_shell_set_enables_bash`
+// Go: tool/shell_test.go:125 (the shell/agent halves are WP09's `test_build_registry_shell_set_enables_the_tool`
 // and WP11's `test_enable_agent_set`; the ask and shell sets stand in here)
 #[test]
 fn test_build_registry() {
@@ -862,9 +866,9 @@ fn test_build_registry() {
         );
         // A present `shell` key is what turns the set on.
         let r = Registry::build(&env, &raw_tools("tools:\n  shell:\n"), &mut |_| {});
-        assert_eq!(tool_names(&r.tools()), HashSet::from(["bash".to_owned()]));
+        assert_eq!(tool_names(&r.tools()), HashSet::from(["shell".to_owned()]));
         assert_eq!(r.len(), 1);
-        assert!(r.get("bash").is_some());
+        assert!(r.get("shell").is_some());
     }
 
     // unknown set warns and is skipped
@@ -921,7 +925,7 @@ fn test_build_registry() {
         fresh.enable_set(&env, "shell", &mut |w| warned.push(w));
         assert_eq!(
             tool_names(&fresh.tools()),
-            HashSet::from(["bash".to_owned()])
+            HashSet::from(["shell".to_owned()])
         );
         assert_eq!(warned.len(), 1);
     }
@@ -940,7 +944,7 @@ fn test_build_registry() {
 }
 
 // The Windows half of `test_build_registry`, rewritten for the backend that landed: the set that used to
-// contribute one warning and no tool now registers the same `bash` every other platform gets. What it must
+// contribute one warning and no tool now registers the same `shell` tool every other platform gets. What it must
 // still do ONCE, at build time, is tell the model WHICH interpreter that tool runs — the name does not say
 // so — and that Windows has no sandbox to put the calls in.
 #[cfg(windows)]
@@ -954,7 +958,7 @@ fn shell_set_registers_the_resolved_interpreter_on_windows() {
         warned.push(w);
     });
     assert!(warned.is_empty(), "{warned:?}");
-    assert_eq!(tool_names(&r.tools()), HashSet::from(["bash".to_owned()]));
+    assert_eq!(tool_names(&r.tools()), HashSet::from(["shell".to_owned()]));
 
     // Windows always has at least cmd.exe, so the ladder always ends somewhere.
     let shell = iota::shell::interp::resolve().expect("no interpreter on a Windows machine");

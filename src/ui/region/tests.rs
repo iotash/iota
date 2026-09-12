@@ -126,10 +126,10 @@ fn region_commit_no_width_no_wrap() {
 fn region_preview_entries_collapse_to_one_row() {
     let mut r = test_region(|_, _| {});
 
-    r.open_call_preview("[bash\ncommand:a]"); // fresh open
-    assert_eq!(r.label, "[bash command:a]");
-    r.open_call_preview("[bash\r\ncommand:b]"); // ensure branch: relabel in place
-    assert_eq!(r.label, "[bash command:b]");
+    r.open_call_preview("[shell\ncommand:a]"); // fresh open
+    assert_eq!(r.label, "[shell command:a]");
+    r.open_call_preview("[shell\r\ncommand:b]"); // ensure branch: relabel in place
+    assert_eq!(r.label, "[shell command:b]");
     r.set_call_detail("1.2k\ntokens");
     assert_eq!(r.detail, "1.2k tokens");
 
@@ -210,10 +210,10 @@ fn region_two_round_tool_turn() {
     r.close_preview(); // settleThinking
     r.commit(s(&["◇ thought for <1s A"])); // marker
     r.commit(s(&[""])); // pendingCall separator
-    r.open_call_preview("[bash …]"); // composing raise
-    r.open_call_preview("[bash command:pwd]"); // relabel in place
+    r.open_call_preview("[shell …]"); // composing raise
+    r.open_call_preview("[shell command:pwd]"); // relabel in place
     r.close_preview(); // settleCall
-    r.commit(s(&["[bash command:pwd]"])); // header
+    r.commit(s(&["[shell command:pwd]"])); // header
     r.commit(s(&["  ⎿ /Users/joyqi"])); // toolLines
 
     // round 2
@@ -233,7 +233,7 @@ fn region_two_round_tool_turn() {
         "",
         "◇ thought for <1s A",
         "",
-        "[bash command:pwd]",
+        "[shell command:pwd]",
         "  ⎿ /Users/joyqi",
         "",
         "◇ thought for <1s B",
@@ -312,10 +312,10 @@ fn region_relabel_preview() {
     );
 
     r.drop_preview();
-    r.open_call_preview("[bash …]");
+    r.open_call_preview("[shell …]");
     r.relabel_preview("nope");
     assert_eq!(
-        r.label, "[bash …]",
+        r.label, "[shell …]",
         "call preview must ignore relabel_preview"
     );
 }
@@ -568,9 +568,9 @@ fn region_preview_over_preview() {
     let before = rows_residue(&last());
 
     r.close_preview();
-    r.open_preview("Calling bash");
+    r.open_preview("Calling shell");
     let snap = last();
-    assert_eq!(snap.label, "Calling bash");
+    assert_eq!(snap.label, "Calling shell");
     assert!(
         snap.preview_tail.is_empty(),
         "new preview wrong: preview_tail={:?}",
@@ -830,7 +830,7 @@ fn stream_sink_done_drops_preview_and_pops_scope() {
         flag.store(true, Ordering::Relaxed);
     });
 
-    region.lock().unwrap().open_call_preview("[bash …]");
+    region.lock().unwrap().open_call_preview("[shell …]");
     sink.done();
     let r = region.lock().unwrap();
     assert_eq!(r.label, "", "done must drop the preview");

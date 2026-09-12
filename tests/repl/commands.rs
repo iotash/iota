@@ -681,7 +681,7 @@ async fn status_renders_the_capability_rows() {
     ]);
     let session = f.session(None);
     let mut params = f.params(FakeProvider::new("gpt-4o", Ok(vec![])), session);
-    params.dispatch = Arc::new(StaticDispatcher::new(&["bash", "read_file"]));
+    params.dispatch = Arc::new(StaticDispatcher::new(&["shell", "read_file"]));
     iota::repl::run(params).await.expect("exit");
 
     let view = &surfaces(&f.ui)[0].panels[0];
@@ -705,7 +705,7 @@ async fn tools_opens_two_live_tabs() {
     ]);
     let session = f.session(None);
     let mut params = f.params(FakeProvider::new("gpt-4o", Ok(vec![])), session);
-    params.dispatch = Arc::new(StaticDispatcher::new(&["bash"]));
+    params.dispatch = Arc::new(StaticDispatcher::new(&["shell"]));
     iota::repl::run(params).await.expect("exit");
 
     let s = &surfaces(&f.ui)[0];

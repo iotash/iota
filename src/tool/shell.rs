@@ -1,4 +1,4 @@
-//! The `shell` toolset (tool/shell.go): one `bash` tool running one command line per call, sandboxed with
+//! The `shell` toolset (tool/shell.go): one `shell` tool running one command line per call, sandboxed with
 //! Seatbelt on macOS / bwrap on Linux when available.
 //!
 //! WHAT runs the command line is `crate::shell::interp`'s answer, and on Windows it is not always a POSIX
@@ -6,8 +6,13 @@
 //! will actually run (`Run a PowerShell command line…`), and the dialect it then teaches is that
 //! interpreter's own. The model is never told bash while `powershell.exe` waits for the script.
 //!
-//! The NAME is `bash` on every platform for now, and so is the config key (`tools: shell:`). Whether the name
-//! should follow the interpreter too is its own decision, and its own commit.
+//! The NAME does not move: [`SHELL_TOOL_NAME`] is `shell` on every platform and under every interpreter, as
+//! is the config key. A 378-call experiment across seven models settled it (DIVERGENCES X-20): a name and a
+//! description that disagree are resolved by the models ASYMMETRICALLY — `powershell` in either slot wins,
+//! `bash` is the unmarked default and loses — while a generic name plus a description that names the
+//! interpreter matched the best case in both directions, 98% and 100%. Hence the hard requirement this
+//! module carries: the first sentence of every prefix below names the interpreter. That is what makes the
+//! generic name safe, and the experiment never tested it without.
 
 use std::{
     path::{Path, PathBuf},
@@ -33,8 +38,11 @@ use crate::shell::exec::{Options, RunResult, Sandbox};
 use crate::shell::interp::{Family, Interpreter};
 use crate::shell::jobs::{JobStart, Jobs};
 
-/// Wall-clock cap of one `bash` call when it names no `timeout` (`[command timed out after 10m0s]`).
-pub(crate) const DEFAULT_BASH_TIMEOUT: Duration = Duration::from_secs(600);
+/// The tool's name, on every platform and under every interpreter (the config key is `shell` too).
+pub const SHELL_TOOL_NAME: &str = "shell";
+
+/// Wall-clock cap of one call when it names no `timeout` (`[command timed out after 10m0s]`).
+pub(crate) const DEFAULT_SHELL_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Bounds of the `timeout` argument, in seconds. One number cannot serve both a lint and a child agent's
 /// whole run, so the model picks — inside a ceiling it cannot argue with (DIVERGENCES X-06).
@@ -75,8 +83,8 @@ impl Default for ShellConfig {
     }
 }
 
-/// The `bash` tool.
-pub(crate) struct BashTool {
+/// The one tool of the `shell` set.
+pub(crate) struct ShellTool {
     shell_cfg: ShellConfig,
     /// The interpreter its calls run under, resolved ONCE at assembly so the description cannot describe a
     /// different shell from the one the first call finds.
@@ -114,7 +122,7 @@ pub fn new_shell_set(env: &Env, node: Option<&RawNode>) -> Result<Vec<Arc<dyn To
     };
     // A sandbox binary appearing or disappearing later has no effect on this run (tool/shell.go:67).
     let sandboxed = shell_cfg.sandbox == "auto" && exec::available();
-    Ok(vec![Arc::new(BashTool {
+    Ok(vec![Arc::new(ShellTool {
         shell_cfg,
         shell,
         jobs: env.jobs.clone(),
@@ -130,9 +138,9 @@ pub fn new_shell_set(env: &Env, node: Option<&RawNode>) -> Result<Vec<Arc<dyn To
     })])
 }
 
-impl Tool for BashTool {
-    /// Name `bash` on every platform, description the running interpreter's ([`desc_prefix`]) plus one
-    /// sandbox suffix and the background paragraph; schema per tool/shell.go:129-144.
+impl Tool for ShellTool {
+    /// Name [`SHELL_TOOL_NAME`] on every platform, description the running interpreter's ([`desc_prefix`])
+    /// plus one sandbox suffix and the background paragraph; schema per tool/shell.go:129-144.
     fn def(&self) -> ToolDef {
         let mut description = String::from(desc_prefix(self.shell.family));
         if self.sandboxed {
@@ -141,15 +149,15 @@ impl Tool for BashTool {
             } else {
                 "network access is BLOCKED"
             };
-            description.push_str(&BASH_DESC_SANDBOXED.replace("{net}", net));
+            description.push_str(&SHELL_DESC_SANDBOXED.replace("{net}", net));
         } else {
-            description.push_str(BASH_DESC_UNSANDBOXED);
+            description.push_str(SHELL_DESC_UNSANDBOXED);
         }
         description.push_str(&background_desc(self.shell.family));
         ToolDef {
-            name: "bash".to_owned(),
+            name: SHELL_TOOL_NAME.to_owned(),
             description,
-            input_schema: Some(bash_schema(self.shell.family)),
+            input_schema: Some(shell_schema(self.shell.family)),
             deferred: false,
         }
     }
@@ -218,7 +226,7 @@ impl Tool for BashTool {
         true
     }
 
-    /// tool/shell.go:82-92 (the D-12 lift): the call IS the command — `"[bash git
+    /// tool/shell.go:82-92 (the D-12 lift): the call IS the command — `"[shell git
     /// status]"`. The argument name is noise (a shell call has one thing to say), and an
     /// explicit cwd folds into the running interpreter's idiom for it (`"cd <path> && <cmd>"`,
     /// `"cd <path>; <cmd>"` under PowerShell) rather than eating a separate slot. A background
@@ -241,7 +249,7 @@ impl Tool for BashTool {
     }
 }
 
-impl BashTool {
+impl ShellTool {
     /// Hands the command to the job registry and answers with the receipt the model needs to follow it: the
     /// id the notice will carry, the pid, and the file it can `tail` meanwhile.
     fn start_background(&self, opts: &Options) -> ToolOutput {
@@ -266,11 +274,11 @@ impl BashTool {
     }
 }
 
-/// The `timeout` argument as a duration: absent (or null) is [`DEFAULT_BASH_TIMEOUT`]; `None` means the
+/// The `timeout` argument as a duration: absent (or null) is [`DEFAULT_SHELL_TIMEOUT`]; `None` means the
 /// call named one outside [`TIMEOUT_RANGE`] (a non-number reads as `0`, which is out of range too).
 fn timeout_arg(args: &JsonObject) -> Option<Duration> {
     match args.get("timeout") {
-        None | Some(Value::Null) => Some(DEFAULT_BASH_TIMEOUT),
+        None | Some(Value::Null) => Some(DEFAULT_SHELL_TIMEOUT),
         Some(_) => {
             let secs = int_arg(args, "timeout");
             if !TIMEOUT_RANGE.contains(&secs) {
@@ -326,7 +334,7 @@ fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
 
 /// tool/shell.go:130-143, verbatim but for the one field that names a dialect: the `command` example is
 /// written in the shell that will actually read it.
-fn bash_schema(family: Family) -> JsonObject {
+fn shell_schema(family: Family) -> JsonObject {
     let command = match family {
         Family::Posix => "Bash command line to execute, e.g. 'go test ./... 2>&1 | tail -20'.",
         Family::PowerShell => {
@@ -373,14 +381,14 @@ pub const PWSH_DESC_PREFIX: &str = "Run a PowerShell command line on the user's 
 /// PowerShell, so it says plainly how little is available.
 pub const CMD_DESC_PREFIX: &str = "Run a cmd.exe command line on the user's machine and return its combined stdout/stderr. This is the Windows command interpreter — neither bash nor PowerShell, and the most limited of the three; it is what is left when this machine has no PowerShell. Chain with `&`, `&&` and `||`; redirect with `>`, `>>` and `2>&1`; the bit bucket is `NUL`, not /dev/null; variables are `%NAME%`; `^` escapes `& | < > ^`. There is no globbing (each program expands its own arguments) and none of the POSIX tools (grep, sed, awk, ls, tail) unless the user installed them, so prefer running programs (git, cargo, node) directly over cmd built-ins, and prefer one program's own flags over a pipeline. The working directory defaults to the project root (override with \"cwd\"). Each call runs in a FRESH shell: environment variables and `cd` do not carry over to the next call. Anything a later command depends on must be repeated in it — write the full path or command instead of defining a helper first. Calls issued together run concurrently. Each call is killed after 600 seconds unless \"timeout\" says otherwise (maximum 3600). ";
 /// Sandboxed suffix; `{net}` = `network access is BLOCKED` | `network access is allowed`.
-pub const BASH_DESC_SANDBOXED: &str = "Commands run inside an OS sandbox: file writes are confined to the project root and temp/cache directories (writes elsewhere fail with permission errors), and {net}.";
+pub const SHELL_DESC_SANDBOXED: &str = "Commands run inside an OS sandbox: file writes are confined to the project root and temp/cache directories (writes elsewhere fail with permission errors), and {net}.";
 /// Unsandboxed suffix — the only one Windows ever gets: no OS sandbox exists there, so every call runs with
 /// the user's full permissions and needs approval unless `auto_run` waived it.
-pub const BASH_DESC_UNSANDBOXED: &str = "Commands run WITHOUT a sandbox on this system, with the user's full permissions — be conservative.";
+pub const SHELL_DESC_UNSANDBOXED: &str = "Commands run WITHOUT a sandbox on this system, with the user's full permissions — be conservative.";
 /// The background-mode paragraph, appended after the sandbox suffix. `{tail}` and `{detach}` are the running
 /// interpreter's spellings ([`background_desc`]) — the two places this paragraph would otherwise hand a
 /// Windows model a POSIX command.
-pub const BASH_DESC_BACKGROUND: &str = "\n\nSet \"background\": true for work that outlasts a reply — a long build, a test suite, a child agent (`iota run <agent> -m \"<task>\"`). The call returns at once with a job id and an output file; when the job ends you are told its exit status and shown its output, so do not poll for it (`{tail}` the file only if you need progress meanwhile). Up to 16 background jobs at a time, and \"timeout\" still applies. Background jobs are killed when iota exits — a job that must survive that has to detach itself ({detach}).";
+pub const SHELL_DESC_BACKGROUND: &str = "\n\nSet \"background\": true for work that outlasts a reply — a long build, a test suite, a child agent (`iota run <agent> -m \"<task>\"`). The call returns at once with a job id and an output file; when the job ends you are told its exit status and shown its output, so do not poll for it (`{tail}` the file only if you need progress meanwhile). Up to 16 background jobs at a time, and \"timeout\" still applies. Background jobs are killed when iota exits — a job that must survive that has to detach itself ({detach}).";
 
 /// The description head of the interpreter that will run the calls.
 pub fn desc_prefix(family: Family) -> &'static str {
@@ -391,7 +399,7 @@ pub fn desc_prefix(family: Family) -> &'static str {
     }
 }
 
-/// [`BASH_DESC_BACKGROUND`] with its two dialect slots filled: how this interpreter reads the tail of a log,
+/// [`SHELL_DESC_BACKGROUND`] with its two dialect slots filled: how this interpreter reads the tail of a log,
 /// and how a job detaches from it.
 pub fn background_desc(family: Family) -> String {
     let (tail, detach) = match family {
@@ -399,7 +407,7 @@ pub fn background_desc(family: Family) -> String {
         Family::PowerShell => ("Get-Content -Tail", "Start-Process"),
         Family::Cmd => ("type", "start /b"),
     };
-    BASH_DESC_BACKGROUND
+    SHELL_DESC_BACKGROUND
         .replace("{tail}", tail)
         .replace("{detach}", detach)
 }
@@ -409,7 +417,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        DEFAULT_BASH_TIMEOUT, Duration, JsonObject, RunResult, exec::ShellError, expand_home,
+        DEFAULT_SHELL_TIMEOUT, Duration, JsonObject, RunResult, exec::ShellError, expand_home,
         format_result, go_duration, timeout_arg,
     };
 
@@ -420,7 +428,7 @@ mod tests {
             err: Some(ShellError::NoShell(crate::shell::interp::NoShell::NoBash)),
             ..RunResult::default()
         };
-        let out = format_result(&failed, DEFAULT_BASH_TIMEOUT);
+        let out = format_result(&failed, DEFAULT_SHELL_TIMEOUT);
         assert_eq!(
             out.text,
             "failed to run: bash is not installed on this system"
@@ -433,7 +441,7 @@ mod tests {
             ..RunResult::default()
         };
         assert_eq!(
-            format_result(&failed_with_output, DEFAULT_BASH_TIMEOUT).text,
+            format_result(&failed_with_output, DEFAULT_SHELL_TIMEOUT).text,
             "partial\n\n[failed to run: boom]"
         );
 
@@ -443,10 +451,10 @@ mod tests {
             ..RunResult::default()
         };
         assert_eq!(
-            format_result(&timed_out, DEFAULT_BASH_TIMEOUT).text,
+            format_result(&timed_out, DEFAULT_SHELL_TIMEOUT).text,
             "slow\n[command timed out after 10m0s]"
         );
-        assert_eq!(go_duration(DEFAULT_BASH_TIMEOUT), "10m0s");
+        assert_eq!(go_duration(DEFAULT_SHELL_TIMEOUT), "10m0s");
         // The line names the cap the call actually ran under, not the default.
         assert_eq!(
             format_result(&timed_out, Duration::from_secs(5)).text,
@@ -457,7 +465,7 @@ mod tests {
             cancelled: true,
             ..RunResult::default()
         };
-        let out = format_result(&cancelled, DEFAULT_BASH_TIMEOUT);
+        let out = format_result(&cancelled, DEFAULT_SHELL_TIMEOUT);
         assert_eq!(out.text, "\n[command cancelled]");
         assert!(out.is_error);
 
@@ -467,7 +475,7 @@ mod tests {
             ..RunResult::default()
         };
         assert_eq!(
-            format_result(&signalled, DEFAULT_BASH_TIMEOUT).text,
+            format_result(&signalled, DEFAULT_SHELL_TIMEOUT).text,
             "\n[exit code -1]"
         );
 
@@ -476,7 +484,7 @@ mod tests {
             exited: true,
             ..RunResult::default()
         };
-        let out = format_result(&blank, DEFAULT_BASH_TIMEOUT);
+        let out = format_result(&blank, DEFAULT_SHELL_TIMEOUT);
         assert_eq!(out.text, "[command produced no output]");
         assert!(!out.is_error);
 
@@ -485,7 +493,7 @@ mod tests {
             exited: true,
             ..RunResult::default()
         };
-        let out = format_result(&ok, DEFAULT_BASH_TIMEOUT);
+        let out = format_result(&ok, DEFAULT_SHELL_TIMEOUT);
         assert_eq!(out.text, "hello\n", "the trailing newline is preserved");
         assert!(!out.is_error);
     }
@@ -497,12 +505,12 @@ mod tests {
             |v: serde_json::Value| -> JsonObject { v.as_object().cloned().unwrap_or_default() };
         assert_eq!(
             timeout_arg(&JsonObject::new()),
-            Some(DEFAULT_BASH_TIMEOUT),
+            Some(DEFAULT_SHELL_TIMEOUT),
             "an absent timeout is the default"
         );
         assert_eq!(
             timeout_arg(&args(serde_json::json!({"timeout": null}))),
-            Some(DEFAULT_BASH_TIMEOUT)
+            Some(DEFAULT_SHELL_TIMEOUT)
         );
         for (secs, want) in [(1, 1), (30, 30), (3600, 3600)] {
             assert_eq!(

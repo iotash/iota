@@ -639,7 +639,7 @@ async fn test_content_tap() {
 // a tool call announced in the same network read still defers behind the content block.
 #[tokio::test]
 async fn mark_content_fires_once_and_defers_the_widget() {
-    let fx = Fx::new(Arc::new(StaticDispatcher::new(&["bash"])), Vec::new());
+    let fx = Fx::new(Arc::new(StaticDispatcher::new(&["shell"])), Vec::new());
     let cancel = fx.root.child_token();
     let sink: Arc<dyn UiStreamSink> = Arc::from(fx.cx.ui.start_stream(cancel.clone()));
     let t = crate::repl::turn::Turn {
@@ -652,7 +652,7 @@ async fn mark_content_fires_once_and_defers_the_widget() {
 
     rs.content("text\n");
     // A widget announced while content is open is only REMEMBERED.
-    fx.tr.open_call("[bash]");
+    fx.tr.open_call("[shell]");
     assert!(
         !fx.events()
             .iter()
@@ -663,7 +663,7 @@ async fn mark_content_fires_once_and_defers_the_widget() {
     assert!(
         fx.events()
             .iter()
-            .any(|e| matches!(e, UiEvent::CallPreview(l) if l == "[bash]")),
+            .any(|e| matches!(e, UiEvent::CallPreview(l) if l == "[shell]")),
         "the deferred widget was not raised at close"
     );
 }
@@ -820,11 +820,11 @@ async fn parallel_batch_keeps_one_widget_and_call_order() {
 }
 
 // New (DIVERGENCES X-05): the same batching law, driven through the REAL `shell` toolset —
-// two `bash` calls in one round are ONE batch. The stub above proves the walk; this proves
+// two `shell` calls in one round are ONE batch. The stub above proves the walk; this proves
 // what `BashTool::supports_parallel` actually answers, and the wall clock proves the two
 // `sleep 1`s overlapped instead of queueing.
 #[tokio::test]
-async fn bash_calls_share_one_parallel_batch() {
+async fn shell_calls_share_one_parallel_batch() {
     use std::time::{Duration, Instant};
 
     // `sandbox: off` + `auto_run: true`: no gate to answer and no sandbox to depend on, so
@@ -836,7 +836,10 @@ async fn bash_calls_share_one_parallel_batch() {
     let registry = crate::tool::Registry::build(&crate::tool::Env::default(), &cfg, &mut |w| {
         panic!("the shell set complained: {w}")
     });
-    assert!(registry.supports_parallel("bash", None), "bash must batch");
+    assert!(
+        registry.supports_parallel("shell", None),
+        "the shell tool must batch"
+    );
     let dispatch: Arc<dyn Dispatcher> = Arc::new(registry);
 
     let mut script = Vec::new();
@@ -844,8 +847,8 @@ async fn bash_calls_share_one_parallel_batch() {
     let fx = Fx::new(dispatch, script);
     let p = FakeStream::new(vec![
         Round::calls(vec![
-            call("b1", "bash", serde_json::json!({"command": "sleep 1"})),
-            call("b2", "bash", serde_json::json!({"command": "sleep 1"})),
+            call("b1", "shell", serde_json::json!({"command": "sleep 1"})),
+            call("b2", "shell", serde_json::json!({"command": "sleep 1"})),
         ]),
         Round::text("done"),
     ]);

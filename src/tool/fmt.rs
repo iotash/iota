@@ -130,7 +130,7 @@ fn truncate_runes(s: &str, max: usize) -> String {
 }
 
 // ---- the header-format ladder shared by the toolsets (tool/headerfmt.go; additive to
-// the frozen §4 set — both the code set and bash render paths, and one ladder is the
+// the frozen §4 set — both the code set and shell render paths, and one ladder is the
 // point) ----
 
 /// Display cap of a header path (tool/headerfmt.go:17).
@@ -260,7 +260,7 @@ mod tests {
     // Go: chat/toolname_test.go:5 TestDisplayToolName
     #[test]
     fn test_display_tool_name() {
-        assert_eq!(display_tool_name("bash"), "bash");
+        assert_eq!(display_tool_name("shell"), "shell");
         assert_eq!(display_tool_name("mcp__srv__tool"), "srv:tool");
         assert_eq!(display_tool_name("mcp__srv__has__inner"), "srv:has__inner");
         assert_eq!(display_tool_name("mcp____tool"), "mcp____tool");

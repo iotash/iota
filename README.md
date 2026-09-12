@@ -14,7 +14,7 @@ a provider is reached through an agent, never run on its own.
 - **Config file** — three layers in `~/.iota.yaml`: `providers:` (endpoints and API keys), `models:` (configured models and their protocol), `agents:` (prompt, tools, MCP subset), plus MCP server definitions. Every key is checked against the layer it belongs to, so a misplaced or misspelled one is an error naming its coordinate rather than a line nothing reads
 - **System prompt** — per agent in the config, or `-s` for one run
 - **Agent mode** — opt-in via `workspace: true` per agent: layered `AGENTS.md` instructions and [Agent Skills](https://agentskills.io/specification) are injected as a volatile system-prompt overlay, the `skills` toolset (`load_skill`) is auto-enabled, and sessions are grouped per project
-- **Headless runs** — `-m` sends a single message and prints the response, pipe-friendly, with an optional JSON report and a tool-turn budget; child agents are exactly this, run from `bash`
+- **Headless runs** — `-m` sends a single message and prints the response, pipe-friendly, with an optional JSON report and a tool-turn budget; child agents are exactly this, run from the `shell` tool
 
 **Its fuel — providers and models.** Which endpoint answers and which model
 thinks are config, not command line; a run picks from the candidate set the
@@ -28,7 +28,7 @@ agent declares.
 **Its hands — tools and MCP.** What an agent can actually do to your machine,
 enabled per agent and gated per call.
 
-- **Built-in toolsets** — `shell` (bash under an OS sandbox, with background jobs), `code` (glob, grep, read, edit, write, confined to the project root), `skills` (`load_skill`), and `ask` (put a decision to the user mid-turn). Writes and unsandboxed commands ask for confirmation in the conversation unless the agent waives it
+- **Built-in toolsets** — `shell` (one shell command line per call, under an OS sandbox, with background jobs), `code` (glob, grep, read, edit, write, confined to the project root), `skills` (`load_skill`), and `ask` (put a decision to the user mid-turn). Writes and unsandboxed commands ask for confirmation in the conversation unless the agent waives it
 - **MCP tool support** — connect external MCP tool servers (filesystem, GitHub, databases, etc.) and let the agent call them, with tool names namespaced per server (`mcp__<server>__<tool>`) so same-named tools never collide
 
 **Its record — sessions.** Everything a run did, on disk, resumable and
@@ -98,7 +98,7 @@ Two things differ on Windows, both about the `shell` toolset:
   of these wins: `IOTA_SHELL`; **Git Bash** (`IOTA_GIT_BASH_PATH`, else the
   `bin\bash.exe` of the Git installation that owns the `git.exe` on your
   `PATH`, else the default install locations); **PowerShell** (`pwsh.exe`, then
-  `powershell.exe`); and finally **`cmd.exe`**. The `bash` tool's description
+  `powershell.exe`); and finally **`cmd.exe`**. The `shell` tool's description
   names the winner in its first sentence and teaches that shell's dialect, so a
   machine with Git for Windows behaves like Unix and one without it gets
   PowerShell instructions instead of POSIX ones.
@@ -347,7 +347,7 @@ Every key belongs to exactly one layer, and writing it in another is an
 error naming the layer that owns it. Two keys changed name when the layers
 split: a provider's `agent: true` is an agent's `workspace: true`, and the
 `agent` toolset is now called `skills`. The `delegate` toolset was removed
-outright — a child agent is a bash subprocess now (see the `shell` set).
+outright — a child agent is a shell subprocess now (see the `shell` set).
 
 ```yaml
 # what a single-layer config used to look like — every key of it is refused today
@@ -501,7 +501,7 @@ Besides MCP servers, iota ships built-in tools grouped into named
 **toolsets** that you enable per agent in the config file. A toolset is
 enabled by listing it under that agent's `tools:` key; the value is the
 set's shared configuration, and an empty value uses its defaults. Available
-sets: `shell` (running bash commands, sandboxed), `code` (reading, searching,
+sets: `shell` (running shell commands, sandboxed), `code` (reading, searching,
 and editing project files), `skills` (skill activation; auto-enabled by agent
 mode), and `ask` (interactive questions to the user; enabled by default in
 interactive sessions — disable with `ask: false`).
@@ -534,9 +534,9 @@ single yes/no. ESC declines — the model is told and proceeds on its own.
 Zero side effects, on by default interactively, absent in `-m` runs; opt out
 per agent with `tools: {ask: false}`.
 
-#### `shell` — `bash`
+#### `shell`
 
-Lets the model run real bash command lines — pipes, redirects, `&&` chaining,
+Lets the model run real shell command lines — pipes, redirects, `&&` chaining,
 heredocs — and returns their combined stdout/stderr. The model calls it with
 `command` (required), an optional `cwd` (defaults to the project root), an
 optional `timeout` in seconds (default 600, maximum 3600; outside that range
@@ -559,7 +559,7 @@ Safety model — the same one Claude Code and Codex CLI use:
   bounded even while streaming). Each call is capped at **10 minutes** unless
   it asks for a different `timeout`; while a command runs, the status-line
   spinner shows the elapsed time — press **ESC** (or Ctrl+C) to terminate it.
-- **Calls issued together run concurrently.** A round's consecutive `bash`
+- **Calls issued together run concurrently.** A round's consecutive `shell`
   calls execute as one batch — ESC cancels the batch, and results still come
   back in call order. (Every other toolset keeps the conservative rule: only
   calls that cannot change state batch.)
@@ -572,8 +572,12 @@ whichever of Git Bash, PowerShell and `cmd.exe` the machine has, in that order
 The **tool description follows the winner**, so the model writes the dialect
 that will actually be read: it is told in the first sentence which shell it is
 talking to, and the POSIX advice gives way to PowerShell's (`;` chaining,
-object pipelines, `$null`) or cmd's where one of those runs. The tool itself is
-called `bash` on every platform, and so is the config key (`tools: shell:`).
+object pipelines, `$null`) or cmd's where one of those runs.
+
+The **name does not follow it**: the tool is `shell` on every platform, under
+every interpreter, as is the config key. That first sentence is what makes the
+generic name safe, and it is not optional — see
+[the naming experiment](docs/DIVERGENCES.md) (X-20).
 
 **Background jobs.** `"background": true` starts the command and returns at
 once with a job id, its pid and an output file:
@@ -606,7 +610,7 @@ prompt, or the end of a `-m` run — so a resumed session never inherits one; a
 job that must survive that has to detach itself (`nohup`, `setsid`).
 
 **Child agents.** iota has no delegation tool: a child agent is
-`iota run <agent> -m "<task>"` run from `bash`, which is why the set is the one
+`iota run <agent> -m "<task>"` run from the `shell` tool, which is why the set is the one
 that matters most. The child is a full run of that `agents:` entry — its own
 model, tools, MCP servers and session. Start it with `background: true` and
 its answer comes back as the notice above. For it to write without a user to
@@ -624,7 +628,7 @@ and binaries excluded), `list_dir` explores, `read_file` returns line-numbered
 content, and `edit_file` (exact, unique string replacement) / `write_file`
 change files. Everything is confined to the **project root** (the git root of
 the working directory). Verification — builds, tests — goes through the
-`shell` set's `bash`, so enable it alongside.
+`shell` set, so enable it alongside.
 
 Safety model:
 
@@ -690,7 +694,7 @@ higher wins):
 Discovered skills are advertised to the model as a name + description catalog
 inside the overlay; the model activates one by calling `load_skill` with the
 skill's name, reads files the skill references through the same tool's `file`
-argument, and runs bundled scripts through `bash` (enable the `shell`
+argument, and runs bundled scripts through the `shell` tool (enable the `shell`
 toolset for the agent if your skills need scripts). Invalid skills are
 skipped with a warning, never fatal. You can also run a skill yourself with
 `/skills <name> [instructions]` — the skill's instructions become the message

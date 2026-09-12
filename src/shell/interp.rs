@@ -33,7 +33,7 @@ pub const SHELL_VAR: &str = "IOTA_SHELL";
 pub const GIT_BASH_VAR: &str = "IOTA_GIT_BASH_PATH";
 
 /// The dialect an interpreter speaks. The `shell` tool's description is written from this: a model told
-/// "bash" while `powershell.exe` is what runs would write POSIX for a shell that does not read it.
+/// bash while `powershell.exe` is what runs would write POSIX for a shell that does not read it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Family {
     /// `bash` and the rest of the POSIX family (Git Bash included): `-c <script>`.

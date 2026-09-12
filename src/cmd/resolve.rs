@@ -21,7 +21,7 @@ pub struct RunSettings {
     /// The three config layers this run landed on.
     pub resolved: Resolved,
     /// The API key: the env var of the RESOLVED provider type, else `providers.<name>.key`. Never a flag —
-    /// a key on the command line lands in the shell history and in `ps`, and iota hands the model a bash
+    /// a key on the command line lands in the shell history and in `ps`, and iota hands the model a shell
     /// tool (brain page `cli-surface-agent-first`).
     pub api_key: String,
     /// The base URL from `providers.<name>.url` (`""` = dialect default).

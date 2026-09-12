@@ -87,7 +87,7 @@ pub(crate) struct ToolAssembly {
     /// The ask-seam bridge, created UNBOUND (the dispatcher is built long before the UI exists); `None`
     /// headlessly, so `new_ask_set` contributes no tools and the model never sees them (root.go:221-232).
     pub(crate) interactor: Option<Arc<crate::repl::Interactor>>,
-    /// The run's background-job registry, also held by `tool_env` — the `bash` tool starts jobs through it,
+    /// The run's background-job registry, also held by `tool_env` — the `shell` tool starts jobs through it,
     /// the branch that takes it over delivers their notices and kills what is left on the way out.
     pub(crate) jobs: Arc<crate::shell::jobs::Jobs>,
     /// Agent-mode options.
@@ -296,7 +296,7 @@ fn assemble_tools(
         AgentOptions::default()
     };
 
-    // root.go:221-232, plus the run's job registry: the `bash` tool needs it to exist before the dispatcher
+    // root.go:221-232, plus the run's job registry: the `shell` tool needs it to exist before the dispatcher
     // is built, and both branches need the same one afterwards.
     let jobs = crate::shell::jobs::Jobs::new(&dirs.temp);
     let mut tool_env = Env {

@@ -45,7 +45,7 @@ agents:
     system: \"You are a helpful assistant.\"
     tools:
       code:                   # read/write/edit/grep over the project
-      shell:                  # bash, with a sandbox by default
+      shell:                  # shell commands, with a sandbox by default
     # workspace: true         # AGENTS.md overlay, skills, project-scoped sessions
 ";
 

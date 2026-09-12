@@ -1,4 +1,4 @@
-//! Background `bash` jobs: the run's registry of children started with `background: true`, and the
+//! Background `shell` jobs: the run's registry of children started with `background: true`, and the
 //! completion notice each one produces.
 //!
 //! A job is an ordinary [`exec::spawn`] child — same sandbox, same `setpgid`, same `killpg` deadline — with
@@ -98,7 +98,7 @@ struct State {
     sink: Option<Arc<JobSink>>,
 }
 
-/// The run's background-job registry: ONE per run, created at tool assembly and shared by the `bash` tool
+/// The run's background-job registry: ONE per run, created at tool assembly and shared by the `shell` tool
 /// (which starts jobs), the loop (which delivers notices) and the exit path (which kills what is left).
 pub struct Jobs {
     /// `<temp>/iota-jobs/<pid>` — this process's log directory.
@@ -142,7 +142,7 @@ impl Jobs {
     /// sandbox, same working directory, same `timeout` — but its output goes to a file and a detached task
     /// supervises it.
     pub fn spawn(self: &Arc<Self>, opts: &Options) -> Result<JobStart, JobError> {
-        // The slot is CLAIMED under the same lock that checks the cap, so two `bash` calls in one parallel
+        // The slot is CLAIMED under the same lock that checks the cap, so two `shell` calls in one parallel
         // batch cannot both read 15 and both start.
         let (id, cancel) = {
             let mut st = self.lock();
