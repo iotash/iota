@@ -92,12 +92,18 @@ mod tests {
 
         // network: true drops --unshare-net and nothing else.
         let cmd = command(&bash, "x", &[PathBuf::from("/nope")], true).expect("a");
-        let args: Vec<String> = cmd
+        let networked: Vec<String> = cmd
             .as_std()
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        assert!(!args.contains(&"--unshare-net".to_owned()), "{args:?}");
-        assert_eq!(&args[args.len() - 4..], ["--", "/bin/bash", "-c", "x"]);
+        assert!(
+            !networked.contains(&"--unshare-net".to_owned()),
+            "{networked:?}"
+        );
+        assert_eq!(
+            &networked[networked.len() - 4..],
+            ["--", "/bin/bash", "-c", "x"]
+        );
     }
 }
