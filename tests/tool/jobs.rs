@@ -32,6 +32,21 @@ fn opts(command: &str, timeout: Option<u64>) -> Options {
     }
 }
 
+/// Whether `pid` is still a LIVE process. Not `/proc/<pid>`, and not `kill(pid, 0)`: a killed child stays a
+/// zombie until its parent reaps it, and a zombie keeps its pid, its `/proc` entry and its answer to signal
+/// 0 — so both of those report "alive" for a process that is already dead. The process STATE is the thing
+/// being asked about, and `ps -o stat=` is the one spelling of it macOS and Linux share (empty output: gone;
+/// `Z`: dead, not yet reaped). The twin of `tests/repl/jobs.rs::alive`.
+fn alive(pid: i32) -> bool {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .expect("ps");
+    let stat = String::from_utf8_lossy(&out.stdout);
+    let stat = stat.trim();
+    !stat.is_empty() && !stat.starts_with('Z')
+}
+
 /// Waits for the registry to have nothing left running (the tests never sleep blindly).
 async fn drain(jobs: &Arc<Jobs>) -> Vec<JobDone> {
     let mut out = Vec::new();
@@ -128,14 +143,17 @@ async fn kill_all_stops_everything_at_once() {
     let a = jobs.spawn(&opts("sleep 30", None)).expect("spawn");
     let b = jobs.spawn(&opts("sleep 30", None)).expect("spawn");
     assert_eq!(jobs.running(), 2);
+    // The assertion after the kill only means something if `alive` can say "yes" as well.
+    for pid in [a.pid, b.pid].into_iter().flatten() {
+        assert!(alive(pid), "pid {pid} never started");
+    }
 
     jobs.kill_all();
-    // The children are dead now, whatever the supervisors do next.
+    // The children are dead now, whatever the supervisors do next — dead, not yet REAPED: that is the
+    // supervisor's job and it has not been polled. `alive` asks for the state, which is why this can be
+    // checked the instant `kill_all` returns (see its doc comment).
     for pid in [a.pid, b.pid].into_iter().flatten() {
-        assert!(
-            !std::path::Path::new(&format!("/proc/{pid}")).exists() || cfg!(target_os = "macos"),
-            "pid {pid} survived kill_all"
-        );
+        assert!(!alive(pid), "pid {pid} survived kill_all");
     }
     let done = drain(&jobs).await;
     assert_eq!(jobs.running(), 0);

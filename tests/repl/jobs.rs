@@ -1,7 +1,7 @@
 //! Background jobs in the INTERACTIVE loop (`repl/run.rs`) over the scripted facade: how a completion
 //! reaches the conversation, what it looks like when it does, and what happens to a job on the way out.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -252,6 +252,13 @@ async fn leaving_the_loop_kills_every_running_job() {
     let jobs = Jobs::new(tmp.path());
     let started = jobs.spawn(&opts("sleep 60")).expect("spawn");
     assert_eq!(jobs.running(), 1);
+    // Windows has no process group to kill — `exec::kill_group` is a no-op there and the registry's own
+    // bookkeeping is the whole claim — so the pid checks below are the Unix half of this test. The first
+    // one is here so the second means something: `alive` has to be able to say "yes" too.
+    let pid = if cfg!(unix) { started.pid } else { None };
+    if let Some(pid) = pid {
+        assert!(alive(pid), "pid {pid} never started");
+    }
 
     let ui = ScriptedUi::new(vec![Reply::Interrupted]);
     iota::repl::run(params(&ui, &store, None, Arc::clone(&jobs)))
@@ -259,12 +266,31 @@ async fn leaving_the_loop_kills_every_running_job() {
         .expect("clean exit");
 
     assert_eq!(jobs.running(), 0, "a job survived the loop");
-    if let Some(pid) = started.pid {
-        // Linux can be checked directly; macOS has no /proc, and the registry's own bookkeeping above is
-        // the portable claim.
-        assert!(
-            !Path::new(&format!("/proc/{pid}")).exists() || cfg!(target_os = "macos"),
-            "pid {pid} survived the loop"
-        );
+    if let Some(pid) = pid {
+        // `kill_all` is synchronous `killpg(SIGKILL)`, so the group is dead by the time the loop returns —
+        // but REAPING is the supervisor task's job, and that task may not have been polled yet. Wait for
+        // the state to settle rather than asserting on the first observation.
+        for _ in 0..100 {
+            if !alive(pid) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!alive(pid), "pid {pid} survived the loop");
     }
+}
+
+/// Whether `pid` is still a LIVE process. Not `/proc/<pid>`, and not `kill(pid, 0)`: a killed child stays a
+/// zombie until its parent reaps it, and a zombie keeps its pid, its `/proc` entry and its answer to signal
+/// 0 — so both of those report "alive" for a process that is already dead. The process STATE is the thing
+/// being asked about, and `ps -o stat=` is the one spelling of it macOS and Linux share (empty output: gone;
+/// `Z`: dead, not yet reaped).
+fn alive(pid: i32) -> bool {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .expect("ps");
+    let stat = String::from_utf8_lossy(&out.stdout);
+    let stat = stat.trim();
+    !stat.is_empty() && !stat.starts_with('Z')
 }
