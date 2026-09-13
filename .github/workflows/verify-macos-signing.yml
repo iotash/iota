@@ -7,12 +7,20 @@
 # Gatekeeper prompt — an instant kill with no message the user can act on.
 # opencode shipped exactly that (their issue #18503, closed as not planned):
 # flags=0x2 (adhoc) with linker-signed missing, out of an upstream Bun
-# --compile bug. iota is not built that way — our binaries come out
+# --compile bug. iota is not built that way — our arm64 binaries come out
 # flags=0x20002 (adhoc,linker-signed) and verify clean — but `strip = true`
 # reaches the binary after the linker has signed it, and stripping a signed
 # Mach-O invalidates the signature. That is one toolchain bump away from
 # shipping a binary nobody can start, from a runner nobody is watching. So every
 # tag verifies the artifact it is about to publish, on both macOS targets.
+#
+# The rule is not the same on both, and pretending it was cost a release:
+# arm64 macOS refuses to execute an unsigned binary, so the linker ad-hoc signs
+# every arm64 Mach-O it produces and a missing signature there is fatal. x86_64
+# has no such requirement — the linker signs nothing and the binary runs anyway
+# — so "unsigned" is the normal, healthy state of our x86_64 artifact and only a
+# signature that is PRESENT AND BROKEN is a finding. That second case is the one
+# this gate was built for; it is also the only one the two architectures share.
 #
 # ELF has no such signature, so Linux has nothing to check here.
 name: verify-macos-signing
@@ -67,15 +75,42 @@ jobs:
 
             while read -r bin; do
               echo "::group::$name"
+              # The verdict differs by architecture, so the architecture is read
+              # off the BINARY. An archive's name is a label somebody chose; this
+              # is the Mach-O header.
+              archs=$(lipo -archs "$bin" 2>/dev/null || true)
+              echo "architecture: ${archs:-unreadable}"
               # On the record every run, pass or fail: this is the line that says
-              # *why* a binary is bad. 0x20002 is adhoc,linker-signed — a healthy
-              # build; a bare 0x2 is the shape opencode shipped.
+              # *why* a binary is bad. 0x20002 is adhoc,linker-signed — what the
+              # linker leaves on an arm64 build; a bare 0x2 is the shape opencode
+              # shipped. An unsigned binary prints nothing here.
               codesign -dv "$bin" 2>&1 | grep -E 'Format=|flags=' || true
-              if codesign -v --verbose=2 "$bin" 2>&1; then
-                echo "OK: $bin carries a signature that matches its contents"
-              else
-                echo "::error::$bin fails codesign -v — macOS will SIGKILL it at launch"
+
+              if [ -z "$archs" ]; then
+                echo "::error::$bin is not a Mach-O binary lipo can read"
                 failed=1
+              elif codesign -d "$bin" >/dev/null 2>&1; then
+                # SIGNED, on either architecture: the signature has to match the
+                # contents. One that does not is worse than none — macOS
+                # validates the signature it finds and kills the process when
+                # that fails, which is precisely what opencode shipped (#18503).
+                if codesign -v --verbose=2 "$bin" 2>&1; then
+                  echo "OK: $bin is signed and the signature matches its contents"
+                else
+                  echo "::error::$bin carries a signature that does not match its contents — macOS kills a process whose signature fails to validate"
+                  failed=1
+                fi
+              elif [[ " $archs " == *" arm64"* ]]; then
+                # UNSIGNED arm64 (and arm64e, which the prefix also catches): the
+                # kernel will not start it. The linker signs every arm64 binary it
+                # produces, so a missing signature means something reached this one
+                # afterwards (`strip = true` is the candidate in this tree).
+                echo "::error::$bin is arm64 and carries no signature at all — arm64 macOS SIGKILLs an unsigned binary at launch"
+                failed=1
+              else
+                # UNSIGNED x86_64: the normal state of this artifact, and not a
+                # finding. Nothing signed it, nothing has to verify.
+                echo "NOTE: $bin is unsigned, which x86_64 macOS does not require — nothing to verify"
               fi
               echo "::endgroup::"
             done < "unpacked/$name.bins"
