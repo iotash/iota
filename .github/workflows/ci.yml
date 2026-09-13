@@ -17,6 +17,14 @@ env:
 jobs:
   ci:
     name: ci (${{ matrix.os }})
+    # A hung job holds its own logs hostage: GitHub publishes a job's log only once the run ends,
+    # and a manual force-cancel discards it — the macos-14 job of run 34766745951 sat in
+    # `Run ci.sh` for 64 minutes and its log is a 404 to this day, so two rounds of CI cost a
+    # human intervention and still said nothing about WHERE it hung. A timeout ends the job the
+    # graceful way instead, and the log is uploaded. Healthy runs on a cold cache measure ~6 min
+    # (ubuntu), ~12 min (windows) and ~9 min (macos, through the tmux suite) plus the one release
+    # build, so 45 is roughly double the longest leg's honest worst case.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:

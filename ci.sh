@@ -10,6 +10,30 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
+# Whatever ends this script — the last line, a red leg, or the job timeout in
+# `.github/workflows/ci.yml` (a cancelled step arrives as SIGINT before the SIGKILL) — the L4
+# suite's tmux servers must not outlive it. They are the one thing this tree starts that never
+# exits on its own: a scenario killed before its own EXIT trap leaves its private server running,
+# still holding the `iota` binary it was driving. The dead socket FILES leak too — tmux unlinks
+# one only when it shuts down cleanly, and this machine had 1265 of them in /tmp — so a socket
+# that answers nothing is removed rather than left to accumulate.
+#
+# The sweep is by socket, and those sockets are the suite's alone (`iota-test-<pid>-<scenario>`,
+# tests/ui_tmux/main.rs): a developer's own tmux lives on `default` and is never touched. Two
+# copies of this script sharing one machine would sweep each other's, which cargo's
+# target-directory lock already makes a thing that does not happen.
+sweep_tmux_servers() {
+  local tmux="${TMUX_BIN:-tmux}" sock
+  command -v "$tmux" >/dev/null 2>&1 || return 0
+  shopt -s nullglob
+  for sock in "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"/iota-test-*; do
+    "$tmux" -S "$sock" kill-server >/dev/null 2>&1 || true
+    rm -f "$sock"
+  done
+}
+trap sweep_tmux_servers EXIT
+trap 'sweep_tmux_servers; exit 130' INT TERM
+
 cargo fmt --check
 ./scripts/check-deps.sh                      # direct deps ⊆ scripts/direct-deps.allow (cargo metadata; no cargo-deny)
 ./scripts/check-stubs.sh                     # no `todo!()` body and no `// WPxx-STUB` header anywhere
