@@ -211,13 +211,21 @@ settle() {
 # ---------------------------------------------------------------- measurement
 
 # Normalises the two live cells (spinner frame, elapsed clock) so a shape can be compared.
+#
+# The spinner frames are an ALTERNATION, never a bracket expression: a class of multi-byte
+# characters means what it says only in a UTF-8 locale, and in the C locale `sed` reads it as
+# a set of single BYTES — every `\xe2` in the row is then a match, so `⠋` became `***` and the
+# `⎿` beside it lost its own lead byte (CI 34777246950, the macos leg: `LC_ALL=C.UTF-8` is
+# not a locale macOS has, so its tools silently fall back to C). Spelled this way the helper
+# compares the same bytes in any locale.
 norm() {
-    sed -e 's/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/*/g' \
+    sed -E \
+        -e 's/⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏/*/g' \
         -e 's/<1s/Ts/g' \
-        -e 's/[0-9][0-9]*m[0-9][0-9]*s/Ts/g' \
-        -e 's/[0-9][0-9]*\.[0-9]s/Ts/g' \
-        -e 's/[0-9][0-9]*s/Ts/g' \
-        -e 's/[0-9][0-9.]*[km]\{0,1\} tokens/N tokens/g'
+        -e 's/[0-9]+m[0-9]+s/Ts/g' \
+        -e 's/[0-9]+\.[0-9]s/Ts/g' \
+        -e 's/[0-9]+s/Ts/g' \
+        -e 's/[0-9][0-9.]*[km]? tokens/N tokens/g'
 }
 
 # 1-based row of the first line matching a fixed string in the visible pane ("" if none).
