@@ -1,9 +1,10 @@
 //! End-to-end tests of the `iota` binary: the verb set, the run order (cmd/root.go's) and main.go's exit
 //! codes.
 //!
-//! Every child process is launched with a CLEARED environment (`HOME` and a fixed `PATH` are the only variables
-//! it gets) and a temp working directory, so no test reads or mutates the test process's own environment and no
-//! developer config file can reach the run. HTTP goes to a `wiremock` server; nothing touches the network.
+//! Every child process is launched with a CLEARED environment (`common::cleared_env`: the platform's home
+//! variable, a fixed `PATH`, and on Windows the few variables the OS itself reads) and a temp working
+//! directory, so no test reads or mutates the test process's own environment and no developer config file can
+//! reach the run. HTTP goes to a `wiremock` server; nothing touches the network.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::{
@@ -12,7 +13,7 @@ use std::{
     process::{Command, Output, Stdio},
 };
 
-use crate::common::{temp_project, transcript};
+use crate::common::{cleared_env, temp_project, transcript};
 use assert_cmd::cargo::CommandCargoExt;
 use tempfile::TempDir;
 use wiremock::MockServer;
@@ -24,13 +25,11 @@ fn project() -> (TempDir, std::path::PathBuf) {
     (dir, home)
 }
 
-/// `iota …` with a cleared environment. `PATH` is a literal (never read from this process) so a `--mcp` stdio
-/// server can still find `/bin/sh`; `HOME` and the working directory are the fixture's.
+/// `iota …` with a cleared environment (`common::cleared_env`); the home and working directories are the
+/// fixture's.
 fn iota(cwd: &Path, home: &Path) -> Command {
     let mut cmd = Command::cargo_bin("iota").expect("the iota binary is built by `cargo test`");
-    cmd.env_clear()
-        .env("HOME", home)
-        .env("PATH", "/bin:/usr/bin")
+    cleared_env(&mut cmd, home)
         .current_dir(cwd)
         .stdin(Stdio::null());
     cmd

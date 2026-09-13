@@ -68,10 +68,22 @@ impl SessionStore {
 
     /// `projectSlug` (chat/session.go:169-174): the CLEANED root with every path separator replaced by
     /// `'-'`, Claude Code style — `/Users/x/proj` → `-Users-x-proj`, `/` → `-`.
+    ///
+    /// On Windows the separator is not the only character in the way. A root there opens with a DRIVE
+    /// (`C:\Users\x\proj`), and `:` — like `* ? " < > |`, and like the `\\?\` prefix `fs::canonicalize`
+    /// hands back — may not appear in a directory name at all: `create_dir_all` refuses the bucket with
+    /// `ERROR_INVALID_NAME` (123) and `resume --workspace` has no bucket to write to. Every one of them
+    /// folds into the same `'-'`, so the example above is spelled `C--Users-x-proj` (again Claude Code's
+    /// own). Unix is untouched: `:` is a legal file-name character there and the Go rule stands byte for
+    /// byte.
     pub fn project_slug(root: &Path) -> String {
-        paths::clean(root)
-            .to_string_lossy()
-            .replace(std::path::MAIN_SEPARATOR, "-")
+        let cleaned = paths::clean(root);
+        let cleaned = cleaned.to_string_lossy();
+        if cfg!(windows) {
+            cleaned.replace(['\\', '/', ':', '*', '?', '"', '<', '>', '|'], "-")
+        } else {
+            cleaned.replace(std::path::MAIN_SEPARATOR, "-")
+        }
     }
 
     /// `findSessionDir` (chat/session.go:181-196): the flat `<root>/<id>` first, then every

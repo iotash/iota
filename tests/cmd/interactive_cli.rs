@@ -1,7 +1,7 @@
 //! End-to-end tests of the interactive BRANCH (cmd/root.go:259-414; `TUI_WPS` WP51).
 //!
-//! Every child runs with a CLEARED environment (`HOME` and a fixed `PATH` only) and a temp working directory,
-//! so no developer config file reaches the run and no test reads or mutates the test process's environment.
+//! Every child runs with a CLEARED environment (`common::cleared_env`) and a temp working directory, so no
+//! developer config file reaches the run and no test reads or mutates the test process's environment.
 //! Nothing here reaches the network, and — the point of the file — nothing reaches a terminal either: the
 //! child's stdout is a pipe, which is exactly the shape (`echo hi | iota`) the refusal exists for.
 //!
@@ -16,7 +16,7 @@ use std::{
     process::{Command, Output, Stdio},
 };
 
-use crate::common::temp_project;
+use crate::common::{cleared_env, temp_project};
 use assert_cmd::cargo::CommandCargoExt;
 use tempfile::TempDir;
 
@@ -34,9 +34,7 @@ fn project() -> (TempDir, std::path::PathBuf) {
 /// `iota …` with a cleared environment and a PIPED stdin+stdout — the `echo hi | iota` shape.
 fn piped(cwd: &Path, home: &Path) -> Command {
     let mut cmd = Command::cargo_bin("iota").expect("the iota binary is built by `cargo test`");
-    cmd.env_clear()
-        .env("HOME", home)
-        .env("PATH", "/bin:/usr/bin")
+    cleared_env(&mut cmd, home)
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

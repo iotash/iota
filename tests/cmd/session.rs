@@ -6,8 +6,8 @@
 //! count is read from their `manifest.json`, so no random id is ever hardcoded here. The last two-implementation
 //! round trip (that binary reading what this one wrote) is archived in `docs/history/ROUNDTRIP-FINAL.md`.
 //!
-//! Discipline (phase-1 bar): every child runs with a CLEARED environment (`HOME` and a literal `PATH` only) in a
-//! temp working directory, HTTP goes to `wiremock`, and nothing reads or mutates this process's environment.
+//! Discipline (phase-1 bar): every child runs with a CLEARED environment (`common::cleared_env`) in a temp
+//! working directory, HTTP goes to `wiremock`, and nothing reads or mutates this process's environment.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::{
@@ -16,6 +16,7 @@ use std::{
     process::{Command, Output, Stdio},
 };
 
+use crate::common::cleared_env;
 use assert_cmd::cargo::CommandCargoExt;
 use iota::provider::ProviderKind;
 use iota::provider::model::{RawContent, Role};
@@ -73,6 +74,19 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
+/// `fs::canonicalize` minus the `\\?\` verbatim prefix Windows adds to it — the spelling a plain
+/// `current_dir()` reports back, and so the only one a run's own `project_root` can be compared with.
+/// A no-op on unix, where the prefix does not exist.
+fn strip_verbatim(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    match s.strip_prefix(r"\\?\") {
+        // `\\?\UNC\server\share` is not a drive path: dropping the prefix there would leave a RELATIVE
+        // path, so only the `\\?\C:\…` form is unwrapped.
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => p.to_path_buf(),
+    }
+}
+
 /// `<home>/.iota/sessions`.
 fn sessions_root(home: &Path) -> PathBuf {
     home.join(".iota").join("sessions")
@@ -80,12 +94,11 @@ fn sessions_root(home: &Path) -> PathBuf {
 
 // ---------------------------------------------------------------- the child process
 
-/// `iota …` with a cleared environment, a temp cwd and the fixture `HOME` (the `tests/cli.rs` discipline).
+/// `iota …` with a cleared environment (`common::cleared_env`), a temp cwd and the fixture home (the
+/// `tests/cmd/cli.rs` discipline).
 fn iota(cwd: &Path, home: &Path) -> Command {
     let mut cmd = Command::cargo_bin("iota").expect("the iota binary is built by `cargo test`");
-    cmd.env_clear()
-        .env("HOME", home)
-        .env("PATH", "/bin:/usr/bin")
+    cleared_env(&mut cmd, home)
         .current_dir(cwd)
         .stdin(Stdio::null());
     cmd
@@ -508,9 +521,15 @@ async fn resume_agent_mode_prefers_the_project_bucket() {
     let server = MockServer::start().await;
     google_stub(&server, false).await;
     let cwd = TempDir::new().expect("temp cwd");
-    // `.git` pins `project_root` to this directory, so the bucket slug is computable from here.
+    // `.git` pins `project_root` to this directory, so the bucket slug is computable from here — but
+    // only from the spelling the CHILD will see. `project_root` never canonicalises (agents/mod.rs), so
+    // the run's own root is whatever `current_dir()` reports, and a temp path is not that spelling on
+    // either platform: macOS resolves `/var` → `/private/var`, Windows hands out 8.3 components
+    // (`RUNNER~1`). So the canonical root is what the child is GIVEN as its cwd, and the same value
+    // computes the bucket — `strip_verbatim` because `fs::canonicalize` is the one call that adds a
+    // `\\?\` prefix, which `current_dir()` would not report back.
     fs::create_dir_all(cwd.path().join(".git")).expect("mkdir .git");
-    let root = fs::canonicalize(cwd.path()).expect("canonical cwd");
+    let root = strip_verbatim(&fs::canonicalize(cwd.path()).expect("canonical cwd"));
     let home = home_with_fixtures();
     let m = manifest();
     let fragment = m["resolution"]["ambiguous_fragment"].as_str().unwrap();
@@ -530,8 +549,8 @@ async fn resume_agent_mode_prefers_the_project_bucket() {
 
     // Without `workspace:` the flat view is the mode's own view: the fragment is ambiguous there (and the
     // scoped bundle is invisible to it).
-    write_config(cwd.path(), &server.uri(), "", false);
-    let mut cmd = iota(cwd.path(), home.path());
+    write_config(&root, &server.uri(), "", false);
+    let mut cmd = iota(&root, home.path());
     cmd.args(["resume", fragment, "-m", "hi"]);
     assert_error(
         &cmd.output().expect("run"),
@@ -539,8 +558,8 @@ async fn resume_agent_mode_prefers_the_project_bucket() {
     );
 
     // With it, the bucket answers first, unambiguously, and the turn lands in the bucketed bundle.
-    write_config(cwd.path(), &server.uri(), "", true);
-    let mut cmd = iota(cwd.path(), home.path());
+    write_config(&root, &server.uri(), "", true);
+    let mut cmd = iota(&root, home.path());
     cmd.args(["resume", fragment, "-m", "hi"]);
     let o = output(cmd).await;
     assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));

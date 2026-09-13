@@ -6,6 +6,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 pub mod chat;
+pub mod child;
 pub mod fake_mcp;
 pub mod project;
 pub mod session;
@@ -14,6 +15,7 @@ pub mod transcript;
 pub mod wire;
 
 pub use chat::*;
+pub use child::cleared_env;
 pub use fake_mcp::{FakeMcp, prefix_for, static_prefix};
 
 /// The checked-in 2×2 PNG (top row red, bottom row blue; 8-bit RGBA) every image test renders:

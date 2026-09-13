@@ -45,6 +45,24 @@ fn project_slug() {
     }
 }
 
+/// A Windows root opens with a drive, and the slug becomes a DIRECTORY name: every character the
+/// platform bars from one has to be gone, or `resume --workspace` cannot create its bucket at all
+/// (`ERROR_INVALID_NAME`). Windows-only because `:` is a legal file-name character on unix and the
+/// Go rule there leaves it alone.
+#[cfg(windows)]
+#[test]
+fn project_slug_is_a_legal_windows_directory_name() {
+    assert_eq!(
+        SessionStore::project_slug(Path::new(r"C:\Users\x\proj")),
+        "C--Users-x-proj"
+    );
+    let slug = SessionStore::project_slug(Path::new(r"\\?\C:\Users\x\my-app"));
+    assert!(
+        !slug.contains([':', '*', '?', '"', '<', '>', '|', '\\', '/']),
+        "{slug:?} still carries a character no Windows directory name may hold"
+    );
+}
+
 // Go: chat/session_test.go:465
 #[test]
 fn new_session_id() {
