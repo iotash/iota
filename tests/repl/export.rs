@@ -456,9 +456,10 @@ async fn a_second_export_to_the_same_path_refuses() {
 #[tokio::test]
 async fn invalid_targets_are_refused_before_any_write() {
     let f = Fixture::new();
-    let dir = f.tmp.path().to_string_lossy().into_owned();
+    // The directory exactly as the user types it — trailing separator and all.
+    let dir = format!("{}/", f.tmp.path().to_string_lossy());
     let f = f.script(vec![
-        input(&format!("/export {dir}/")),
+        input(&format!("/export {dir}")),
         input("/export .md"),
         Reply::Interrupted,
     ]);
@@ -469,7 +470,9 @@ async fn invalid_targets_are_refused_before_any_write() {
     assert_eq!(
         export_lines(&f.ui),
         [
-            format!("Error: \"{dir}/\" is a directory path; give a file name"),
+            // The refusal Go-quotes the path it was handed, so a Windows path arrives with its
+            // separators escaped — the raw spelling is not what the line carries.
+            format!("Error: {dir:?} is a directory path; give a file name"),
             "Error: \".md\" has no usable file name".to_owned(),
         ]
     );

@@ -283,10 +283,12 @@ async fn skills_named_expands_into_the_message_path() {
         .await
         .expect("clean exit");
 
-    // The expansion's byte length is what the notice reports.
+    // The expansion's byte length is what the notice reports. The location is Go-quoted, so a
+    // Windows path arrives with its separators escaped — `display()`'s raw spelling is neither
+    // what the block carries nor the length the notice counts.
     let expected = format!(
-        "<skill name=\"brain-page\" location=\"{}\">\nReferences are relative to {}.\n\nRead the page.\n</skill>\n\ndo it",
-        path.display(),
+        "<skill name=\"brain-page\" location={:?}>\nReferences are relative to {}.\n\nRead the page.\n</skill>\n\ndo it",
+        path.to_string_lossy(),
         path.parent().unwrap().display()
     );
     assert!(
