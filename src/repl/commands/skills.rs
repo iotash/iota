@@ -201,6 +201,14 @@ mod tests {
     use crate::agents::skills::{SKILL_FILE_NAME, Skill};
     use crate::text::ansi::strip_sgr;
 
+    /// An absolute fixture root: a `/tmp/proj` would be RELATIVE on Windows, and joining onto it there
+    /// spells the half-Unix `/tmp/proj\.agents\skills` no assertion can be written against. The twin of
+    /// `crate::tool::fmt::tests::FIXTURE_ROOT`.
+    #[cfg(windows)]
+    const FIXTURE_ROOT: &str = r"C:\proj";
+    #[cfg(not(windows))]
+    const FIXTURE_ROOT: &str = "/proj";
+
     /// Go: `chat/skillcmd_test.go:12` `writeSkill` — a real `SKILL.md` under `<dir>/<name>/`, and the
     /// [`Skill`] discovery would have produced for it.
     fn write_skill(dir: &Path, name: &str, body: &str) -> Skill {
@@ -220,12 +228,14 @@ mod tests {
     // and description, then the invalid-skill warnings; an empty catalog explains where it looked.
     #[test]
     fn test_skills_status_lines() {
-        let root = Path::new("/tmp/proj");
+        let root = PathBuf::from(FIXTURE_ROOT);
+        let root = root.as_path();
+        let project_skills = root.join(".agents").join("skills");
         let dirs = crate::agents::skills::skill_roots(root, None);
         let sks = [Skill {
             name: "commit-helper".to_owned(),
             description: "Write commit messages".to_owned(),
-            path: PathBuf::from("/tmp/proj/.agents/skills/commit-helper/SKILL.md"),
+            path: project_skills.join("commit-helper").join(SKILL_FILE_NAME),
         }];
         let warnings = ["bad-skill: name does not match directory".to_owned()];
         let lines = skills_status_lines(&sks, &warnings, &dirs, root, None);
@@ -248,7 +258,8 @@ mod tests {
         // Empty discovery explains where it looked.
         let empty = strip_sgr(&skills_status_lines(&[], &[], &dirs, root, None).join("\n"));
         assert!(
-            empty.contains("No skills discovered") && empty.contains(".agents/skills"),
+            empty.contains("No skills discovered")
+                && empty.contains(&project_skills.display().to_string()),
             "empty view unhelpful:\n{empty}"
         );
         // The roots it names are the ones that were searched, in precedence order — spelled the way
@@ -257,7 +268,7 @@ mod tests {
             empty,
             format!(
                 "No skills discovered. Searched:\n  {}",
-                root.join(".agents").join("skills").display()
+                project_skills.display()
             )
         );
     }
