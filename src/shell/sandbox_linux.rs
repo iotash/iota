@@ -10,6 +10,8 @@ pub(crate) fn available() -> bool {
 
 /// Builds `bwrap --ro-bind / / --dev-bind /dev /dev --proc /proc --die-with-parent [--bind p p for existing dirs]
 /// [--unshare-net iff !network] -- <shell> <shell args…> <script>`.
+// The three per-OS backends share the signature `exec` dispatches on; only the `other` stub can fail.
+#[allow(clippy::unnecessary_wraps)]
 pub(crate) fn command(
     shell: &super::interp::Interpreter,
     script: &str,

@@ -21,7 +21,7 @@ pub(crate) fn available() -> bool {
 /// Builds `sandbox-exec -p <profile> -D W{i}=<path>… <shell> <shell args…> <script>`; every writable path is
 /// expanded to itself, `/private` + p for p under `/tmp`, `/var`, `/etc`, and its canonical form when
 /// different.
-// The three per-OS backends share the signature `exec` dispatches on; only the Linux one can fail.
+// The three per-OS backends share the signature `exec` dispatches on; only the `other` stub can fail.
 #[allow(clippy::unnecessary_wraps)]
 pub(crate) fn command(
     shell: &super::interp::Interpreter,
