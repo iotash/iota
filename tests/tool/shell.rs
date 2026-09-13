@@ -46,6 +46,11 @@ pub(crate) fn shell() -> Interpreter {
 }
 
 /// Whether to skip a test whose command line is POSIX, printing Go's `t.Skipf` line when it is.
+///
+/// The question is about the INTERPRETER, never the platform: Git Bash makes `sleep 30` a runnable command
+/// line on Windows, and that is the whole of what this answers. A test that also needs the POSIX PROCESS
+/// MODEL — a process group to signal, a `ps` that can be asked about a pid — carries a second requirement
+/// this gate does not cover and has to say so itself (`jobs::kill_all_stops_everything_at_once`).
 pub(crate) fn skip_unless_posix(test: &str) -> bool {
     if shell().is_posix() {
         return false;

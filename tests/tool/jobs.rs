@@ -37,6 +37,10 @@ fn opts(command: &str, timeout: Option<u64>) -> Options {
 /// 0 — so both of those report "alive" for a process that is already dead. The process STATE is the thing
 /// being asked about, and `ps -o stat=` is the one spelling of it macOS and Linux share (empty output: gone;
 /// `Z`: dead, not yet reaped). The twin of `tests/repl/jobs.rs::alive`.
+///
+/// POSIX, and asked only where the answer means something: the `ps` a Windows box has is Git Bash's, which
+/// has no `-o` at all and enumerates MSYS processes rather than native pids, so it reports every live child
+/// as gone. Its one caller gates the question on `cfg!(unix)`.
 fn alive(pid: i32) -> bool {
     let out = std::process::Command::new("ps")
         .args(["-o", "stat=", "-p", &pid.to_string()])
@@ -45,6 +49,21 @@ fn alive(pid: i32) -> bool {
     let stat = String::from_utf8_lossy(&out.stdout);
     let stat = stat.trim();
     !stat.is_empty() && !stat.starts_with('Z')
+}
+
+/// Waits for `n` job records to be PARKED, up to eight seconds. `kill_all` drops the sink, so a supervisor
+/// that has ended leaves its `JobDone` in the registry instead of delivering it — and it ends only after its
+/// own kill path has run, which on Windows is where the tree actually dies.
+async fn parked(jobs: &Arc<Jobs>, n: usize) -> Vec<JobDone> {
+    let mut out = Vec::new();
+    for _ in 0..400 {
+        out.extend(jobs.take_finished());
+        if out.len() >= n {
+            return out;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("only {} of {n} jobs ever reported", out.len());
 }
 
 /// Waits for the registry to have nothing left running (the tests never sleep blindly).
@@ -133,7 +152,8 @@ async fn a_job_past_its_timeout_is_killed_and_says_so() {
 }
 
 // `kill_all` is synchronous: the process group is gone before it returns, so an exiting iota leaves nothing
-// behind even if its tasks are never polled again.
+// behind even if its tasks are never polled again. "Nothing behind" is spelled twice below, because the
+// platforms reach it by different routes — the pids on Unix, the parked records everywhere.
 #[tokio::test]
 async fn kill_all_stops_everything_at_once() {
     if skip_unless_posix("kill_all_stops_everything_at_once") {
@@ -143,8 +163,19 @@ async fn kill_all_stops_everything_at_once() {
     let a = jobs.spawn(&opts("sleep 30", None)).expect("spawn");
     let b = jobs.spawn(&opts("sleep 30", None)).expect("spawn");
     assert_eq!(jobs.running(), 2);
+    // Dying AT ONCE is `killpg`'s promise and Unix's alone. `exec::kill_group` is a documented no-op on
+    // Windows — a tree there is reachable only through the Job Object handle its own `Started` holds — so
+    // `kill_all` cancels the tokens and each supervisor kills its tree when it next runs, which is the
+    // parked records below, not the two assertions around the call. `alive` is POSIX for the same reason
+    // (its `ps` is Git Bash's there, and answers for no native pid), so the pids go with it. Same gate and
+    // same reason as `tests/repl/jobs.rs`, which is where the Windows shape was first written down.
+    let pids: Vec<i32> = if cfg!(unix) {
+        [a.pid, b.pid].into_iter().flatten().collect()
+    } else {
+        Vec::new()
+    };
     // The assertion after the kill only means something if `alive` can say "yes" as well.
-    for pid in [a.pid, b.pid].into_iter().flatten() {
+    for &pid in &pids {
         assert!(alive(pid), "pid {pid} never started");
     }
 
@@ -152,13 +183,15 @@ async fn kill_all_stops_everything_at_once() {
     // The children are dead now, whatever the supervisors do next — dead, not yet REAPED: that is the
     // supervisor's job and it has not been polled. `alive` asks for the state, which is why this can be
     // checked the instant `kill_all` returns (see its doc comment).
-    for pid in [a.pid, b.pid].into_iter().flatten() {
+    for &pid in &pids {
         assert!(!alive(pid), "pid {pid} survived kill_all");
     }
-    let done = drain(&jobs).await;
+    // The registry is empty the moment the call returns, on every platform: `kill_all` took the map.
     assert_eq!(jobs.running(), 0);
-    // Whatever the supervisors managed to record, nothing is left waiting.
-    for d in &done {
+    // And every supervisor runs to its end rather than sitting on a `sleep 30` — the half of the claim
+    // Windows keeps, since that end is where its Job Object is terminated. Both records are parked, never
+    // delivered: the sink went with the jobs.
+    for d in &parked(&jobs, 2).await {
         assert!(d.killed || d.exit.is_some(), "{d:?}");
     }
 }
