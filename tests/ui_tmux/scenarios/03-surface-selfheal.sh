@@ -65,16 +65,22 @@ key Enter
 wait_vis '» /model' || bad "the queued command row never rendered"
 check "the queue row carries the management hint" "$(count_vis '» /model · ↑ edit')" 1
 
-c1="$(hist_size)"
-sleep 0.6
-c2="$(hist_size)"
-if [ "$c2" -gt "$c1" ]; then
-    ok "the stream keeps flowing above the queue row ($c1 -> $c2 rows in scrollback)"
+# PROGRESS, not a clock, says the stream kept flowing: the scrollback counter is sampled
+# the moment the queue row renders and read again when the last line lands. The sample
+# used to be a fixed 0.6 s window, which measured the HOST — on the macos runner the app
+# inserted nothing inside it and the scenario called a healthy stream stalled (CI
+# 34777246950), while the same run's contiguity check saw all forty lines. `l#39` cannot
+# reach a 24-row pane without pushing rows past its top, so the comparison below is exact
+# and the only way it fails is the stall it is named for.
+queued="$(hist_size)"
+wait_all 'l#39 line' || bad "the stream did not run to completion"
+flowed="$(hist_size)"
+if [ "$flowed" -gt "$queued" ]; then
+    ok "the stream kept flowing above the queue row ($queued -> $flowed rows in scrollback)"
 else
-    bad "the stream stalled while a command sat in the queue ($c1 -> $c2)"
+    bad "the stream stalled while a command sat in the queue ($queued -> $flowed)"
 fi
 
-wait_all 'l#39 line' || bad "the stream did not run to completion"
 wait_vis '↑↓ move' || bad "the queued /model never opened after the stream"
 
 key Down
