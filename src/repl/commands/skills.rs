@@ -251,10 +251,14 @@ mod tests {
             empty.contains("No skills discovered") && empty.contains(".agents/skills"),
             "empty view unhelpful:\n{empty}"
         );
-        // The roots it names are the ones that were searched, in precedence order.
+        // The roots it names are the ones that were searched, in precedence order — spelled the way
+        // the platform spells them, since the rows render a `Path`, not a string we built.
         assert_eq!(
             empty,
-            "No skills discovered. Searched:\n  /tmp/proj/.agents/skills"
+            format!(
+                "No skills discovered. Searched:\n  {}",
+                root.join(".agents").join("skills").display()
+            )
         );
     }
 
@@ -299,7 +303,9 @@ mod tests {
         assert_eq!(name, "brain-page");
         for want in [
             "<skill name=\"brain-page\"".to_owned(),
-            sk.path.display().to_string(),
+            // The location is a Go-quoted string, so a Windows path arrives with its separators
+            // escaped — the raw `display()` spelling is not what the block carries.
+            crate::text::go_quote(&sk.path.to_string_lossy()),
             format!("References are relative to {}", sk.dir().display()),
             "Read the page, then write it back.".to_owned(),
             "</skill>".to_owned(),

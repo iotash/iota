@@ -529,20 +529,64 @@ pub(crate) fn find_in_path(name: &str) -> Option<PathBuf> {
     // counts on Windows exactly as `/bin/bash` does on Unix.
     let direct = PathBuf::from(name);
     if direct.is_absolute() || direct.components().count() > 1 {
-        return is_executable(&direct).then_some(direct);
+        return spellings(&direct).into_iter().find(|p| is_executable(p));
     }
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
-        .map(|dir| {
+        .flat_map(|dir| {
             // Go's LookPath reads an empty PATH element as the current directory.
             let dir = if dir.as_os_str().is_empty() {
                 PathBuf::from(".")
             } else {
                 dir
             };
-            dir.join(name)
+            spellings(&dir.join(name))
         })
         .find(|candidate| is_executable(candidate))
+}
+
+/// The one spelling of `p` a Unix `PATH` entry can have.
+#[cfg(not(windows))]
+fn spellings(p: &Path) -> Vec<PathBuf> {
+    vec![p.to_path_buf()]
+}
+
+/// Every spelling of `p` a Windows `PATH` entry can have (Go's `lookExtensions`,
+/// `os/exec/lp_windows.go`): the caller writes `bash`, the directory holds `bash.exe`, and `%PATHEXT%`
+/// is what bridges the two. A name that already carries an extension is tried as written FIRST — and
+/// then with the extensions anyway, so a `foo.bat.exe` still resolves.
+#[cfg(windows)]
+fn spellings(p: &Path) -> Vec<PathBuf> {
+    // The list Go falls back to when PATHEXT is unset or empty.
+    const DEFAULT_PATHEXT: &str = ".com;.exe;.bat;.cmd";
+    let pathext = std::env::var("PATHEXT").unwrap_or_default();
+    let pathext = if pathext.trim().is_empty() {
+        DEFAULT_PATHEXT.to_owned()
+    } else {
+        pathext
+    };
+    let mut out = Vec::new();
+    // `foo.bar` has an extension; `C:\dir.d\foo` does not — `Path::extension` draws that line for us.
+    if p.extension().is_some() {
+        out.push(p.to_path_buf());
+    }
+    for ext in pathext.split(';') {
+        let ext = ext.trim();
+        if ext.is_empty() {
+            continue;
+        }
+        let mut spelled = p.as_os_str().to_owned();
+        if !ext.starts_with('.') {
+            spelled.push(".");
+        }
+        spelled.push(ext.to_ascii_lowercase());
+        out.push(PathBuf::from(spelled));
+    }
+    // An extensionless PATHEXT-less name is still worth a look rather than nothing at all.
+    if out.is_empty() {
+        out.push(p.to_path_buf());
+    }
+    out
 }
 
 /// A regular file with at least one execute bit (Go's `findExecutable`).
@@ -761,9 +805,19 @@ mod tests {
 
     // New: the PATH scan finds a real binary and rejects a name that is not one.
     #[test]
-    fn find_in_path_resolves_bash() {
-        let bash = find_in_path("bash").expect("bash must exist for the shell tests");
-        assert!(bash.is_absolute() || bash.starts_with("."), "{bash:?}");
+    fn find_in_path_resolves_the_shell() {
+        // Windows asks for `cmd`, which is also the PATHEXT assertion: `PATH` carries `cmd.exe` and
+        // never `cmd`, so a scan that did not complete the extension would find nothing.
+        let name = if cfg!(windows) { "cmd" } else { "bash" };
+        let found = find_in_path(name).expect("the platform shell must exist for the shell tests");
+        assert!(found.is_absolute() || found.starts_with("."), "{found:?}");
+        if cfg!(windows) {
+            assert_eq!(
+                found.extension().map(std::ffi::OsStr::to_ascii_lowercase),
+                Some("exe".into()),
+                "PATHEXT was not applied: {found:?}"
+            );
+        }
         assert!(find_in_path("iota-definitely-not-a-binary").is_none());
         assert!(find_in_path("/definitely/not/a/binary").is_none());
     }

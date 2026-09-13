@@ -298,8 +298,14 @@ mod tests {
                 windows: self.windows,
                 getenv: &|name| self.env.get(name).map(|v| (*v).to_owned()),
                 look_path: &|name| {
+                    // The fixture spells every path with `/`, but the ladder builds some of its
+                    // candidates with `Path::join`, which on Windows spells them with `\`. Both are
+                    // the same path to the OS, so they are the same path to this fake filesystem —
+                    // and the hit that comes back is the fixture's own spelling, exactly as a real
+                    // `find_in_path` hands back what the directory actually holds.
+                    let name = name.replace('\\', "/");
                     let candidates: Vec<String> = if name.contains('/') {
-                        vec![name.to_owned()]
+                        vec![name]
                     } else {
                         self.path.iter().map(|d| format!("{d}/{name}")).collect()
                     };

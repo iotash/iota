@@ -145,7 +145,8 @@ mod tests {
             ("", String::new()),
             ("plain", "plain".to_owned()),
             ("${userHome}/x", "/home/u/x".to_owned()),
-            ("${appHome}/sys.md", "/home/u/.iota/sys.md".to_owned()),
+            // `appHome` is `home.join(".iota")` — a `join`, so the platform's separator.
+            ("${appHome}/sys.md", format!("/home/u{sep}.iota/sys.md")),
             ("${cwd}", "/wd".to_owned()),
             ("${workspaceFolder}", "/wd".to_owned()),
             ("${env:VARS_TEST_TOKEN}", "sekrit".to_owned()),

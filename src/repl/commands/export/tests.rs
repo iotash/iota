@@ -355,11 +355,20 @@ fn go_abs_folds_parent_components() {
     let cwd = std::env::current_dir().expect("cwd");
     assert_eq!(go_abs("a/../b.html"), cwd.join("b.html").to_string_lossy());
     assert_eq!(go_abs("./c.md"), cwd.join("c.md").to_string_lossy());
-    assert_eq!(go_abs("/tmp/x/../y.html"), "/tmp/y.html");
+    // A rooted path is spelled by the platform, not by this test: on Windows `/tmp/y.html` is
+    // rooted but NOT absolute, and it is `std::path::absolute` that supplies the drive letter —
+    // the same call `go_abs` makes before it folds. On Unix the two spellings are the same string.
+    let rooted = |p: &str| {
+        std::path::absolute(p)
+            .expect("absolute")
+            .to_string_lossy()
+            .into_owned()
+    };
+    assert_eq!(go_abs("/tmp/x/../y.html"), rooted("/tmp/y.html"));
     // `..` at the root is the root, exactly like `filepath.Clean`.
-    assert_eq!(go_abs("/../z.md"), "/z.md");
-    // An already-absolute path is unchanged.
-    assert_eq!(go_abs("/tmp/plain.html"), "/tmp/plain.html");
+    assert_eq!(go_abs("/../z.md"), rooted("/z.md"));
+    // A path with nothing to fold keeps every component it came with.
+    assert_eq!(go_abs("/tmp/plain.html"), rooted("/tmp/plain.html"));
 }
 
 // New (export.go:534-541): only a leading `~/` expands, and a host with no home leaves the
@@ -367,7 +376,12 @@ fn go_abs_folds_parent_components() {
 #[test]
 fn expand_home_only_touches_a_leading_tilde_slash() {
     let home = Path::new("/home/u");
-    assert_eq!(expand_home("~/notes.md", Some(home)), "/home/u/notes.md");
+    // `home.join(rest)` is what the expansion does, and what it spells with is the platform's own
+    // separator — a `~/notes.md` under `C:\Users\u` is `C:\Users\u\notes.md`.
+    assert_eq!(
+        expand_home("~/notes.md", Some(home)),
+        home.join("notes.md").to_string_lossy()
+    );
     assert_eq!(expand_home("~/notes.md", None), "~/notes.md");
     assert_eq!(expand_home("~notes.md", Some(home)), "~notes.md");
     assert_eq!(expand_home("a/~/b.md", Some(home)), "a/~/b.md");

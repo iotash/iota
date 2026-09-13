@@ -336,7 +336,7 @@ impl Env {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     use super::{DeferState, Env, Presentation, ToolOutput};
     use crate::app::HostDirs;
@@ -351,7 +351,10 @@ mod tests {
             },
             ..Env::default()
         };
-        assert_eq!(both.root().expect("root"), Path::new("/proj"));
+        // `root()` runs its answer through `std::path::absolute`, which on Windows turns a rooted
+        // `/proj` into a drive-qualified one — so the expectation is spelled by the same call.
+        let abs = |p: &str| std::path::absolute(p).expect("absolute");
+        assert_eq!(both.root().expect("root"), abs("/proj"));
         let cwd_only = Env {
             project_root: None,
             dirs: HostDirs {
@@ -360,7 +363,7 @@ mod tests {
             },
             ..Env::default()
         };
-        assert_eq!(cwd_only.root().expect("root"), Path::new("/cwd"));
+        assert_eq!(cwd_only.root().expect("root"), abs("/cwd"));
         let neither = Env::default();
         let got = neither.root().expect("process cwd");
         assert!(got.is_absolute());

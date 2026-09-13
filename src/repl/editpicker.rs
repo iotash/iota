@@ -359,7 +359,7 @@ mod tests {
         );
         assert_eq!(
             visible(&details[0]),
-            format!("{}/here.png", dir.path().display())
+            dir.path().join("here.png").display().to_string()
         );
         // No images dir (an ephemeral chat) means no details at all.
         assert_eq!(image_choice_details(&choices, None, 100, None), ["", ""]);
@@ -369,26 +369,24 @@ mod tests {
     /// columns (editpicker.go:127-142).
     #[test]
     fn shorten_path_steps_down() {
-        let home = Path::new("/home/u");
+        // `shorten_path` works on strings and abbreviates a home prefix with MAIN_SEPARATOR, so the
+        // fixtures are spelled the way the platform spells them: a `C:\Users\u` home never prefixes
+        // a `/`-spelled path.
+        let sep = std::path::MAIN_SEPARATOR;
+        let home = format!("{sep}home{sep}u");
+        let pic = format!("{home}{sep}pics{sep}a.png");
+        let deep = format!("{sep}var{sep}x{sep}aaaaaaaaaaaaaaaa.png");
+        let home = Path::new(&home);
         assert_eq!(
-            shorten_path("/home/u/pics/a.png", 40, Some(home)),
-            "~/pics/a.png"
+            shorten_path(&pic, 40, Some(home)),
+            format!("~{sep}pics{sep}a.png")
         );
-        assert_eq!(shorten_path("/home/u/pics/a.png", 10, Some(home)), "a.png");
-        assert_eq!(
-            shorten_path("/var/x/aaaaaaaaaaaaaaaa.png", 8, None),
-            "aaaaaaaa…"
-        );
+        assert_eq!(shorten_path(&pic, 10, Some(home)), "a.png");
+        assert_eq!(shorten_path(&deep, 8, None), "aaaaaaaa…");
         // A width below the floor is raised to 8, not honoured.
-        assert_eq!(
-            shorten_path("/var/x/aaaaaaaaaaaaaaaa.png", 0, None),
-            "aaaaaaaa…"
-        );
+        assert_eq!(shorten_path(&deep, 0, None), "aaaaaaaa…");
         // Without a home the path stays absolute.
-        assert_eq!(
-            shorten_path("/home/u/pics/a.png", 40, None),
-            "/home/u/pics/a.png"
-        );
+        assert_eq!(shorten_path(&pic, 40, None), pic);
     }
 
     // Go: chat/editpicker_test.go:100 TestImagePreviewerCachesDecode

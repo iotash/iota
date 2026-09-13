@@ -321,14 +321,31 @@ mod tests {
     fn set_mtime(path: &Path, secs: u64) {
         let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
         let times = std::fs::FileTimes::new().set_modified(t).set_accessed(t);
-        // A directory cannot be opened for writing on Unix; `futimens` accepts a
-        // read-only descriptor.
+        open_for_stamping(path).set_times(times).expect("set mtime");
+    }
+
+    /// A directory cannot be opened for writing on Unix; `futimens` accepts a read-only descriptor.
+    #[cfg(not(windows))]
+    fn open_for_stamping(path: &Path) -> std::fs::File {
         std::fs::File::options()
             .read(true)
             .open(path)
             .expect("open for stamping")
-            .set_times(times)
-            .expect("set mtime");
+    }
+
+    /// Windows asks for two things a read handle does not carry: `SetFileTime` needs
+    /// `FILE_WRITE_ATTRIBUTES`, and a DIRECTORY opens at all only with `FILE_FLAG_BACKUP_SEMANTICS`
+    /// — which is why `File::options().read(true)` fails here on both counts.
+    #[cfg(windows)]
+    fn open_for_stamping(path: &Path) -> std::fs::File {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        std::fs::File::options()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+            .expect("open for stamping")
     }
 
     fn write_agents(dir: &Path, body: &str) -> PathBuf {

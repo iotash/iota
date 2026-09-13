@@ -268,14 +268,37 @@ mod tests {
         assert_eq!(display_tool_name("mcp__loose"), "mcp__loose");
     }
 
+    /// An absolute fixture root: `filepath.IsAbs`'s twin wants a drive letter on Windows, and the
+    /// ladder's rungs are only reachable for a path that clears that bar.
+    #[cfg(windows)]
+    const FIXTURE_ROOT: &str = r"C:\proj";
+    #[cfg(not(windows))]
+    const FIXTURE_ROOT: &str = "/proj";
+
+    /// An absolute path in neither the project nor home.
+    #[cfg(windows)]
+    const OUTSIDE_PATH: &str = r"C:\Windows\System32\drivers\etc\hosts";
+    #[cfg(not(windows))]
+    const OUTSIDE_PATH: &str = "/etc/hosts";
+
     // Go: tool/codepath_test.go:13 TestHeaderPath — the header path ladder: each rung exists for
     // a case the one above cannot serve, because a wrong rung silently degrades every file call's
     // header into something the user cannot type back. (Rune-count ruler — the display-width
     // divergence is noted in the module docs.)
     #[test]
     fn test_header_path() {
-        let cwd = Path::new("/proj/sub");
-        let root = Path::new("/proj");
+        // The ladder's first rung is "is this path absolute?", which on Windows means a drive
+        // letter — a `/proj` fixture would be RELATIVE there and never reach the rungs under test.
+        let root = std::path::PathBuf::from(FIXTURE_ROOT);
+        let cwd = root.join("sub");
+        let (cwd, root) = (cwd.as_path(), root.as_path());
+        let abs = |parts: &[&str]| {
+            parts
+                .iter()
+                .fold(root.to_path_buf(), |p, seg| p.join(seg))
+                .to_string_lossy()
+                .into_owned()
+        };
         // relative stays verbatim
         assert_eq!(
             header_path("internal/ui/model.go", cwd, root),
@@ -284,11 +307,17 @@ mod tests {
         // relative is cleaned but not rebased
         assert_eq!(header_path("./a/../b.go", cwd, root), "b.go");
         // under cwd
-        assert_eq!(header_path("/proj/sub/a/b.go", cwd, root), "a/b.go");
+        assert_eq!(
+            header_path(&abs(&["sub", "a", "b.go"]), cwd, root),
+            "a/b.go"
+        );
         // cwd itself
-        assert_eq!(header_path("/proj/sub", cwd, root), ".");
+        assert_eq!(header_path(&abs(&["sub"]), cwd, root), ".");
         // elsewhere in the project walks up
-        assert_eq!(header_path("/proj/other/x.go", cwd, root), "../other/x.go");
+        assert_eq!(
+            header_path(&abs(&["other", "x.go"]), cwd, root),
+            "../other/x.go"
+        );
         // empty
         assert_eq!(header_path("", cwd, root), "");
 
@@ -310,9 +339,11 @@ mod tests {
     // project and home has nowhere to be relative to.
     #[test]
     fn test_header_path_falls_back_to_absolute() {
+        let root = std::path::PathBuf::from(FIXTURE_ROOT);
+        let outside = std::path::PathBuf::from(OUTSIDE_PATH);
         assert_eq!(
-            header_path("/etc/hosts", Path::new("/proj/sub"), Path::new("/proj")),
-            "/etc/hosts"
+            header_path(&outside.to_string_lossy(), &root.join("sub"), &root),
+            crate::paths::to_slash(&outside)
         );
     }
 
