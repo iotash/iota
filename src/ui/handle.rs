@@ -423,9 +423,12 @@ mod tests {
     //! The modules under test are crate-private by design (`TUI_CONTRACTS` §5), so these tests live
     //! in-file (formerly a `#[path]`-mounted `tests/facade.rs` of the terminal crate; merged 2026-09-02).
 
+    use std::future::Future;
     use std::io::{self, Write};
+    use std::pin::Pin;
     use std::sync::atomic::AtomicU16;
     use std::sync::{Arc, Mutex, mpsc};
+    use std::task::{Context, Poll, Waker};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -553,6 +556,30 @@ mod tests {
                 self.key(KeyCode::Char(c), KeyModifiers::NONE);
             }
         }
+
+        /// Returns once the loop has APPLIED every mailbox message posted before this call.
+        ///
+        /// A facade request travels on the mailbox, a key travels on the event channel, and
+        /// `run_loop` drains events BEFORE the mailbox on every iteration — so a key sent after a
+        /// request can still meet a model that has not seen the request yet. `wait_until` cannot
+        /// close that gap for a `read_input`: parking a waiter leaves no mark on the frame.
+        /// `TakeQueued` can, because it is a request with a REPLY over that same single-consumer
+        /// FIFO — when its answer lands, everything posted ahead of it has been applied. The
+        /// assert pins the one precondition: it is a barrier only while the queue is empty,
+        /// because otherwise it would also DRAIN the queue it walks past.
+        async fn barrier(&self) {
+            let drained = self.ui.take_queued_messages().await;
+            assert!(
+                drained.is_empty(),
+                "barrier drained queued input: {drained:?}"
+            );
+        }
+    }
+
+    /// One poll of `f` under a no-op waker — enough to run an async block up to its first await,
+    /// which for every facade call is AFTER it has posted its mailbox request.
+    fn poll_once<F: Future + Unpin>(f: &mut F) -> Poll<F::Output> {
+        Pin::new(f).poll(&mut Context::from_waker(Waker::noop()))
     }
 
     /// With a pending `read_input`, Enter delivers the input directly (no queueing) and
@@ -610,22 +637,31 @@ mod tests {
 
     /// With no cancel scopes, Ctrl+C surfaces `Err(Interrupted)` to the pending
     /// `read_input` — the caller's cue to exit (double-Ctrl+C-exits emerges from this).
-    // Go: internal/ui/model_test.go:182
+    /// (Go: `internal/ui/model_test.go:182`.)
+    ///
+    /// An idle Ctrl+C is the ONE input this loop drops when no waiter is parked
+    /// (`fail_waiter_interrupted` takes an `Option`), and nothing else would ever resolve the call
+    /// — so a Ctrl+C that overtakes the `ReadReq` does not fail this test, it hangs it forever.
+    /// That is not hypothetical: the 100ms sleep this once slept lost the race on a macOS runner,
+    /// libtest has no per-test timeout, and the test binary held the CI job until the 45-minute
+    /// cap ended it (run 34772709712). Hence the barrier, and hence the deadline: whatever else
+    /// this test does, it must not be able to hang.
     #[tokio::test(flavor = "multi_thread")]
     async fn test_idle_ctrl_c_interrupts() {
         let h = start_facade();
         h.wait_frame();
-        let ui = Arc::clone(&h.ui);
-        let reader = tokio::spawn(async move {
-            let cancel = CancellationToken::new();
-            ui.read_input(&cancel).await
-        });
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        let cancel = CancellationToken::new();
+        let mut read = h.ui.read_input(&cancel);
+        // `read_input` posts its `ReadReq` before its first await, so one poll is what puts the
+        // request IN the mailbox — and it cannot be ready yet, nothing has answered it.
+        assert!(poll_once(&mut read).is_pending());
+        // …and the barrier is what has the loop apply it before the key below is sent.
+        h.barrier().await;
         h.key(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        assert_eq!(
-            reader.await.unwrap().expect_err("idle interrupt"),
-            UiError::Interrupted
-        );
+        let got = tokio::time::timeout(Duration::from_secs(10), read)
+            .await
+            .expect("Ctrl+C never reached the parked waiter");
+        assert_eq!(got.expect_err("idle interrupt"), UiError::Interrupted);
         h.ui.close().await.expect("close");
     }
 
