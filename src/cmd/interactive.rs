@@ -59,6 +59,9 @@ pub(crate) struct Interactive<'a> {
     pub(crate) inv: &'a Invocation,
     /// The merged config (a resumed bundle's agent is looked up in it).
     pub(crate) cfg: &'a crate::config::Config,
+    /// The process environment, for the API keys of the endpoints `/model`'s candidate set names
+    /// besides the one this run talks to.
+    pub(crate) env: &'a dyn crate::vars::EnvSource,
     /// The resolved run settings.
     pub(crate) settings: RunSettings,
     /// The resolved provider type.
@@ -249,12 +252,17 @@ pub(crate) async fn run_interactive(
     let Interactive {
         inv,
         cfg,
+        env,
         settings,
         kind,
         mut provider,
         ctx,
         tools,
     } = s;
+    // What `/model` will offer. Built here, before anything claims the terminal: it needs the
+    // config and the environment, which the loop deliberately knows nothing about, and
+    // constructing a wildcard's endpoint is pure (the listings happen when the picker opens).
+    let catalog = crate::repl::ModelCatalog::new(cfg, &settings.resolved, env, &ctx.transport);
     let ToolAssembly {
         mcp_configs,
         mcp_defers,
@@ -378,6 +386,7 @@ pub(crate) async fn run_interactive(
         },
         params: wiring.params,
         layers: wiring.layers,
+        catalog,
         agent,
         dark_background: dark,
         root_cancel: ctx.cancel.clone(),

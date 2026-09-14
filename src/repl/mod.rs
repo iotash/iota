@@ -5,6 +5,8 @@
 
 pub(crate) mod approval;
 pub(crate) mod banner;
+/// The agent's candidate set as the `/model` picker sees it (brain page `config-three-layers`).
+pub mod catalog;
 pub(crate) mod commands;
 pub(crate) mod diff;
 pub(crate) mod editpicker;
@@ -31,6 +33,8 @@ pub(crate) mod toolloop;
 pub(crate) mod transcript;
 pub(crate) mod turn;
 pub(crate) mod uisink;
+
+pub use catalog::ModelCatalog;
 
 pub(crate) use interact::Interactor;
 pub use run::{McpEvent, McpHooks, RunParams, SessionCtx, SessionFactory, run};

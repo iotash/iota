@@ -155,11 +155,39 @@ impl Fixture {
             session,
             params: iota::session::LayeredParams::default(),
             layers: iota::cmd::ParamLayers::default(),
+            catalog: iota::repl::ModelCatalog::default(),
             agent: iota::chat::AgentOptions::default(),
             dark_background: true,
             root_cancel: CancellationToken::new(),
             reqlog: Arc::new(RequestLog::new()),
             pres: Arc::new(Presenter::with_hosts(Vec::new(), true)),
+        }
+    }
+
+    /// The same, over a real candidate set: the picker's rows then come from `agents:` rather
+    /// than from the live provider alone.
+    fn params_with_catalog(
+        &self,
+        provider: FakeProvider,
+        session: SessionCtx,
+        yaml: &str,
+    ) -> RunParams {
+        let cfg = iota::cmd::Config::parse(
+            yaml.as_bytes(),
+            &iota::testing::map_resolver(&[]),
+            &mut |w| panic!("unexpected config warning: {w}"),
+        )
+        .expect("the config loads");
+        let resolved = cfg.resolve_agent("default").expect("the agent resolves");
+        let catalog = iota::repl::ModelCatalog::new(
+            &cfg,
+            &resolved,
+            &iota::testing::map_env(&[]),
+            &iota::provider::HttpTransport::from(iota::llm::default_http_client()),
+        );
+        RunParams {
+            catalog,
+            ..self.params(provider, session)
         }
     }
 
@@ -340,7 +368,15 @@ async fn model_picks_from_the_listing() {
     );
     assert_eq!(panels[0].title, "Model");
     assert_eq!(panels[0].kind, PanelKind::List);
-    assert!(panels[0].search, "the picker is searchable");
+    assert!(
+        panels[0].combo,
+        "the picker is a combo: the input row is always there, the list completes it"
+    );
+    assert_eq!(panels[0].placeholder, "model name (e.g. gpt-4o)");
+    assert!(
+        panels[0].prompt.is_empty(),
+        "nothing failed, nothing to say"
+    );
     assert_eq!(panels[0].items, ["a-model (current)", "b-model"]);
     assert_eq!(
         panels[0].cursor, 0,
@@ -381,13 +417,17 @@ async fn model_reports_no_changes() {
     assert!(printed(&f.ui).contains(&"No changes.".to_owned()));
 }
 
-/// Go: chat/run.go:531-537 — a failed listing falls back to a manual name field, and the
-/// error names the fallback.
+/// A listing that fails does NOT take the picker away: the panel is the same combo it always is,
+/// the failure is one line in its prompt row (not a line printed over the transcript), and the
+/// text the user types commits through the `use "…" as typed` row — the row one past the last
+/// listed one (brain page `config-three-layers`).
 #[tokio::test]
-async fn model_falls_back_to_a_manual_field() {
+async fn model_keeps_the_picker_when_a_listing_fails() {
     let f = Fixture::new(vec![
         input("/model"),
         commit(PanelResult {
+            // Row 1 = one past the only row (the current model): the typed text.
+            cursor: 1,
             text: "  gpt-5-custom  ".to_owned(),
             ..PanelResult::default()
         }),
@@ -407,24 +447,117 @@ async fn model_falls_back_to_a_manual_field() {
         .expect("exit");
 
     let panels = &surfaces(&f.ui)[0].panels;
-    assert_eq!(panels[0].kind, PanelKind::Input);
-    assert_eq!(
-        panels[0].text, "old-model",
-        "the field opens on the current model"
-    );
+    assert_eq!(panels[0].kind, PanelKind::List);
+    assert!(panels[0].combo, "a failed listing is still a combo");
     assert_eq!(panels[0].placeholder, "model name (e.g. gpt-4o)");
-    assert_eq!(panels[0].input_width, 40);
+    assert_eq!(
+        panels[0].items,
+        ["old-model (current)"],
+        "the current model is the only row a failed listing can offer"
+    );
+    assert_eq!(
+        panels[0].prompt, "no such endpoint",
+        "the failure is the panel's subtitle, not a line over the transcript"
+    );
     let lines = printed(&f.ui);
     assert!(
-        lines.iter().any(|l| l
-            == "Fetching models failed: no such endpoint — enter a model name manually."),
-        "{lines:?}"
+        !lines
+            .iter()
+            .any(|l| l.contains("enter a model name manually")),
+        "the interrupting error line is gone: {lines:?}"
     );
     assert!(lines.contains(&"Model switched to gpt-5-custom".to_owned()));
     // The commit reaches session meta, not just the live provider.
     let meta = iota::session::SessionMeta::read(&dir).expect("meta written");
     assert_eq!(meta.model, "gpt-5-custom");
 }
+
+/// The candidate set IS the picker's row list: a `models:` entry and an inline `provider:id` are
+/// rows on the spot, `provider:*` on the session's own endpoint is whatever it lists, and a model
+/// reachable twice is one row. Rows on another endpoint carry it; rows on this one do not.
+#[tokio::test]
+async fn model_lists_the_agents_candidate_set() {
+    let f = Fixture::new(vec![
+        input("/model"),
+        commit(PanelResult {
+            cursor: 2,
+            ..PanelResult::default()
+        }),
+        Reply::Interrupted,
+    ]);
+    let session = f.session(Some(f.writer()));
+    let provider = FakeProvider::new(
+        "a-model",
+        Ok(vec!["a-model".to_owned(), "b-model".to_owned()]),
+    );
+    let params = f.params_with_catalog(provider, session, CANDIDATE_SET);
+    iota::repl::run(params).await.expect("exit");
+
+    let panels = &surfaces(&f.ui)[0].panels;
+    assert_eq!(
+        panels[0].items,
+        [
+            // the `models:` entry, which is also what the chat is running
+            "a-model (current)",
+            // an inline reference to ANOTHER endpoint: written as `-M` writes it
+            "relay:vendor/y",
+            // the wildcard's own listing, minus the id the entry already offered
+            "b-model",
+        ]
+    );
+    assert_eq!(
+        panels[0].cursor, 0,
+        "the cursor starts on the current model"
+    );
+    assert!(
+        printed(&f.ui).contains(&"Model switched to b-model".to_owned()),
+        "{:?}",
+        printed(&f.ui)
+    );
+}
+
+/// A row on another provider is listed but not taken: a session keeps the endpoint it started on
+/// (its history is that dialect's), so the picker says so and names the command that would start
+/// a run there, rather than half-applying a switch whose next request would go to the wrong API.
+#[tokio::test]
+async fn model_reports_a_candidate_on_another_provider() {
+    let f = Fixture::new(vec![
+        input("/model"),
+        commit(PanelResult {
+            cursor: 1,
+            ..PanelResult::default()
+        }),
+        Reply::Interrupted,
+    ]);
+    let session = f.session(Some(f.writer()));
+    let provider = FakeProvider::new("a-model", Ok(vec!["a-model".to_owned()]));
+    let params = f.params_with_catalog(provider, session, CANDIDATE_SET);
+    iota::repl::run(params).await.expect("exit");
+
+    let lines = printed(&f.ui);
+    assert!(
+        lines.iter().any(|l| l.starts_with(
+            "relay:vendor/y runs on another provider; a session keeps the endpoint it started on"
+        ) && l.contains("iota run default -M relay:vendor/y")),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.starts_with("Model switched")),
+        "nothing was switched: {lines:?}"
+    );
+}
+
+/// An agent whose candidate set spans two endpoints; only `mock` is the one the session talks to.
+const CANDIDATE_SET: &str = r#"
+providers:
+  mock: {type: openai, key: k}
+  relay: {type: openai, key: k, url: "http://127.0.0.1:9"}
+models:
+  m: mock:a-model
+agents:
+  default:
+    models: [m, "relay:vendor/y", "mock:*"]
+"#;
 
 /// Go: chat/run.go:1112-1157 — the startup pick fires when no model is configured, and its
 /// notice is `ensureModel`'s, not `/model`'s.
@@ -1009,6 +1142,7 @@ async fn persist_warns_and_retries_the_backlog() {
         },
         params: iota::session::LayeredParams::default(),
         layers: iota::cmd::ParamLayers::default(),
+        catalog: iota::repl::ModelCatalog::default(),
         agent: iota::chat::AgentOptions::default(),
         dark_background: true,
         root_cancel: CancellationToken::new(),

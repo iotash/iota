@@ -139,6 +139,8 @@ pub struct RunParams {
     pub params: crate::session::LayeredParams,
     /// The config declarations a `/model` model switch re-evaluates those four against.
     pub layers: crate::config::ParamLayers,
+    /// The agent's candidate set, as `/model` offers it (`repl::catalog`).
+    pub catalog: crate::repl::ModelCatalog,
     /// Agent-mode options.
     pub agent: crate::chat::AgentOptions,
     /// Whether the terminal's background is dark, as the ONE pre-loop OSC-11 probe answered
@@ -228,6 +230,8 @@ pub(crate) struct Repl {
     pub(crate) param_sources: crate::session::ParamSources,
     /// What a `/model` model switch re-evaluates those four against.
     pub(crate) layers: crate::config::ParamLayers,
+    /// What `/model` offers: the agent's candidate set and the listers its wildcards need.
+    pub(crate) catalog: crate::repl::ModelCatalog,
 }
 
 impl Repl {
@@ -356,6 +360,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         session,
         params,
         layers,
+        catalog,
         agent,
         dark_background,
         root_cancel,
@@ -549,6 +554,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         compact_declined: 0,
         param_sources: params.sources(),
         layers,
+        catalog,
     };
     repl.push_status();
 

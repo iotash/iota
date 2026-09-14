@@ -226,6 +226,7 @@ impl Fixture {
             },
             params: iota::session::LayeredParams::default(),
             layers: iota::cmd::ParamLayers::default(),
+            catalog: iota::repl::ModelCatalog::default(),
             agent: iota::chat::AgentOptions::default(),
             dark_background: true,
             root_cancel: CancellationToken::new(),
@@ -334,7 +335,10 @@ async fn model_opens_a_tab_per_capability() {
 
     let p = &s.panels;
     assert_eq!(p[0].kind, PanelKind::List);
-    assert!(p[0].search, "the model picker is searchable");
+    assert!(
+        p[0].combo,
+        "the model picker is a combo (permanent input row)"
+    );
     assert_eq!(p[0].items, ["a-model (current)", "b-model"]);
 
     assert_eq!(p[1].kind, PanelKind::List);

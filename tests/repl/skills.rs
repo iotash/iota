@@ -145,6 +145,7 @@ impl Fixture {
             },
             params: iota::session::LayeredParams::default(),
             layers: iota::cmd::ParamLayers::default(),
+            catalog: iota::repl::ModelCatalog::default(),
             // Agent mode ON with NO home: the user-level roots are never scanned, so the
             // fixture's catalog is exactly what was written under the project root.
             agent: iota::chat::AgentOptions {

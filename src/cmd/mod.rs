@@ -210,6 +210,7 @@ async fn run_agent(
             interactive::Interactive {
                 inv: &inv,
                 cfg: &cfg,
+                env: env.as_ref(),
                 settings,
                 kind,
                 provider,

@@ -50,14 +50,25 @@ key() { tm send-keys -t s "$@"; }
 # agent a run names all live in `$SCEN_HOME/.iota.yaml` now: `-k`, `-u` and the positional
 # provider name were retired with the agent-first surface, so a scenario points at the mock the
 # way a user points at an endpoint.
+# The wildcard beside the entry is what keeps `/model` offering the mock's own listing: the picker
+# lists the agent's CANDIDATE SET, so an agent naming one model has one row (plus the combo's input
+# row). Scenario 03 picks a second model out of that list. Keep the document free of backticks —
+# the heredoc is unquoted (it interpolates $1/$2/$IOTA_PORT), so a backtick would run a command.
+#
+# A scenario whose subject IS the config (the candidate set behind /model) pre-sets $CONFIG_BODY
+# and gets that document instead, with $IOTA_PORT expanded in it so it can point at the mock too.
 write_iota_config() {
+    if [ -n "${CONFIG_BODY:-}" ]; then
+        printf '%s\n' "$CONFIG_BODY" >"$SCEN_HOME/.iota.yaml"
+        return
+    fi
     cat >"$SCEN_HOME/.iota.yaml" <<EOF
 providers:
   mock: {type: $1, key: test, url: "http://127.0.0.1:$IOTA_PORT"}
 models:
   m: mock:$2
 agents:
-  default: {models: [m]}
+  default: {models: [m, "mock:*"]}
 EOF
 }
 

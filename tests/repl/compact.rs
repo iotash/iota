@@ -171,6 +171,7 @@ impl Fixture {
                 ..iota::session::LayeredParams::default()
             },
             layers: iota::cmd::ParamLayers::default(),
+            catalog: iota::repl::ModelCatalog::default(),
             agent: iota::chat::AgentOptions::default(),
             dark_background: true,
             root_cancel: CancellationToken::new(),
