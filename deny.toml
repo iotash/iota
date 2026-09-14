@@ -1,0 +1,87 @@
+# cargo-deny — the TRANSITIVE-graph gate (docs/ARCHITECTURE.md §11).
+#
+# The direct-dependency allowlist is `scripts/direct-deps.allow` + `scripts/check-deps.sh`, on
+# purpose: cargo-deny's `[bans] allow` reads over the whole graph and cannot say "these crates may
+# be named in Cargo.toml". This file is the rest — what that script deliberately does not do:
+# licenses, advisories, duplicate versions and sources over every crate that ends up in a binary.
+#
+# Runs as its own CI job (`.github/workflows/ci.yml`, EmbarkStudios/cargo-deny-action) and as a
+# step of `./ci.sh` when `cargo-deny` is on PATH (`brew install cargo-deny` or `cargo install
+# cargo-deny --locked`; the binary is not part of the pinned toolchain, so that step prints SKIP
+# without it, like the cross-lint legs).
+#
+# Every table is the strictest setting the graph passed on 2026-09-15; each loosening below is a
+# named exception with the reason next to it.
+
+[graph]
+# The five targets a tag builds (dist-workspace.toml): what is checked is what ships. reqwest & co.
+# carry wasm, android and haiku branches that no binary contains.
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-pc-windows-msvc",
+]
+all-features = false
+
+[advisories]
+yanked = "deny"
+ignore = [
+  # bincode 1.x is declared finished, not broken (the team stopped; 1.3.3 is complete). It comes
+  # in under syntect, which has no bincode-free release; nothing here feeds it untrusted bytes —
+  # it decodes the syntax and theme dumps two-face embeds in the binary.
+  { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 under syntect: finished upstream, no alternative release; decodes only the embedded dumps" },
+]
+
+[licenses]
+# Exactly the licenses in today's graph, nothing pre-approved: a new one fails the check and is
+# added here with its first crate. `unused-allowed-license = "deny"` keeps the list honest in the
+# other direction — an entry no crate needs any more must go.
+allow = [
+  "0BSD",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CC0-1.0",
+  "ISC",
+  "MIT",
+  "MIT-0",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "Unlicense",
+  "Zlib",
+]
+confidence-threshold = 1.0
+unused-allowed-license = "deny"
+
+[licenses.private]
+ignore = false
+
+[bans]
+# A crate compiled twice is a size and audit cost. Every pair below is transitive and waits on an
+# upstream bump; the `skip` names the OLDER one by range, so a patch release on either side does
+# not turn a known pair into a red job, and a NEW pair does.
+multiple-versions = "deny"
+multiple-versions-include-dev = true
+wildcards = "deny"
+highlight = "all"
+deny = []
+skip = [
+  { crate = "base64@<0.23", reason = "hyper-util and wiremock are on 0.22; rmcp and this crate on 0.23" },
+  { crate = "core-foundation@<0.10", reason = "system-configuration (under hyper-util) is on 0.9; rustls-platform-verifier on 0.10" },
+  { crate = "getrandom@<0.4", reason = "rand_core 0.9 and tempfile are on 0.3; uuid (under rmcp) and cc's jobserver on 0.4" },
+  { crate = "hashbrown@<0.17", reason = "kasuari (under ratatui-core) is on 0.16; indexmap on 0.17" },
+  { crate = "miniz_oxide@<0.9", reason = "png reaches 0.8 directly and 0.9 through flate2" },
+  { crate = "process-wrap@<10", reason = "rmcp's stdio transport pins 9; the Windows job object needs 10 (Cargo.toml)" },
+  { crate = "syn@<3", reason = "derive_more, strum, tracing-attributes and the icu derives are on 2; serde, clap, thiserror and tokio on 3" },
+]
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

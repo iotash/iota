@@ -106,3 +106,24 @@ jobs:
         with:
           name: size-${{ matrix.os }}
           path: target/size.md
+
+  # The transitive-graph gate: licenses, advisories, duplicate versions and sources over every
+  # crate in the five shipping targets, as deny.toml says. Its own job, not a step of the matrix:
+  # the graph is the same on every runner and the advisory database is one download, so it
+  # runs once, needs no target directory and is not waiting on a release build. `./ci.sh` runs
+  # the same check locally when cargo-deny is installed and prints SKIP when it is not; this job
+  # never skips. The direct-dependency allowlist stays with scripts/check-deps.sh inside ci.sh.
+  cargo-deny:
+    name: cargo deny
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          # The pinned toolchain (rust-toolchain.toml); the action does not read that file itself.
+          rust-version: "1.98.0"
+          # `--locked` as in ci.sh: a Cargo.lock the manifest has outgrown is a failure, not a
+          # silent re-resolution that checks a graph nobody builds.
+          arguments: --locked
+          command: check

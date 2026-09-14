@@ -4,8 +4,10 @@
 # Reads `cargo metadata --no-deps` and fails when the package declares a direct
 # dependency (normal, dev or build) whose crate name is not listed in
 # scripts/direct-deps.allow. Deliberately NOT cargo-deny: its [bans] tables
-# apply to the whole transitive graph and its binary is not part of the pinned
-# toolchain. Needs only cargo + python3 (bash 3.2 compatible).
+# apply to the whole transitive graph and cannot express "may be named in
+# Cargo.toml" (the transitive checks — licenses, advisories, duplicates,
+# sources — ARE cargo-deny's, in deny.toml at the root). Needs only cargo +
+# python3 (bash 3.2 compatible).
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

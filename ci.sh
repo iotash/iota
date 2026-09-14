@@ -45,8 +45,17 @@ trap 'sweep_tmux_servers; exit 130' INT TERM
 export IOTA_TMUX_REQUIRED=1 IOTA_SANDBOX_REQUIRED=1
 
 cargo fmt --check
-./scripts/check-deps.sh                      # direct deps ⊆ scripts/direct-deps.allow (cargo metadata; no cargo-deny)
+./scripts/check-deps.sh                      # direct deps ⊆ scripts/direct-deps.allow (cargo metadata; the one thing deny.toml cannot say)
 ./scripts/check-stubs.sh                     # no `todo!()` body and no `// WPxx-STUB` header anywhere
+# The transitive-graph gate (deny.toml): licenses, advisories, duplicate versions, sources.
+# cargo-deny is not in the pinned toolchain, so this leg prints a SKIP without it — the second
+# optional dependency of this script, beside the cross toolchains; on GitHub it is its own job
+# (ci.yml, cargo-deny-action) and never skips.
+if command -v cargo-deny >/dev/null 2>&1; then
+  cargo deny --locked check
+else
+  echo "SKIP cargo-deny: not on PATH (brew install cargo-deny, or cargo install cargo-deny --locked)"
+fi
 cargo clippy --all-targets -- -D warnings    # clippy::pedantic via [lints]
 
 # The line above only ever sees THIS host's target, so `src/shell/sandbox_linux.rs` and every
@@ -54,10 +63,10 @@ cargo clippy --all-targets -- -D warnings    # clippy::pedantic via [lints]
 # CI leg (2026-09-13: `unnecessary_wraps` in sandbox_linux.rs, never once seen on a Mac). clippy is a
 # front end and needs no linker, so the other two targets ARE lintable from here — what they need is
 # rustup's std for the target plus a cross compiler for the tree's one C dependency (aws-lc-sys,
-# under reqwest/rustls). Each leg prints a visible SKIP line when either is missing — the one
-# optional dependency of this script, the cross toolchains being a Mac developer's convenience;
-# on the CI runners everything below skips, since each one is already linting its own platform
-# natively.
+# under reqwest/rustls). Each leg prints a visible SKIP line when either is missing — the cross
+# toolchains are a Mac developer's convenience, optional like cargo-deny above and nothing else
+# here; on the CI runners everything below skips, since each one is already linting its own
+# platform natively.
 cross_lint() {
   local target=$1 cc=$2
   if ! rustup target list --installed | grep -qx "$target"; then
