@@ -19,6 +19,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use iota::BoxFuture;
+use iota::cmd::{AgentConfig, Config, ModelConfig, ParamLayers, Resolved};
 use iota::host::Presenter;
 use iota::llm::reqlog::RequestLog;
 use iota::provider::ImageGenTunable;
@@ -29,7 +30,10 @@ use iota::provider::{
     Provider, ProviderKind, Tunable,
 };
 use iota::repl::{McpHooks, RunParams, SessionCtx};
-use iota::session::{Overrides, SessionMeta, SessionStore, SessionWriter, apply_session_tuning};
+use iota::session::{
+    LayeredParams, Overrides, Param, ParamSource, SessionMeta, SessionStore, SessionWriter,
+    apply_session_tuning,
+};
 use iota::testing::{Reply, ScriptedUi, StaticDispatcher, TabbedSummary, UiEvent};
 use iota::text::ansi::strip_sgr;
 use iota::tool::Dispatcher;
@@ -220,7 +224,8 @@ impl Fixture {
                 new_session: None,
                 scope: None,
             },
-            context_window: 0,
+            params: iota::session::LayeredParams::default(),
+            layers: iota::cmd::ParamLayers::default(),
             agent: iota::chat::AgentOptions::default(),
             dark_background: true,
             root_cancel: CancellationToken::new(),
@@ -736,4 +741,227 @@ async fn model_temperature_slider_returns_to_default() {
         .await
         .expect("exit");
     assert!(printed(&f.ui).contains(&"Temperature: default".to_owned()));
+}
+
+// ---------------------------------------------------------------------------
+// the layered parameters (brain page `model-param-layering`)
+// ---------------------------------------------------------------------------
+
+/// The layering a `/model` switch evaluates against: this run's agent, and the `models:` entries the
+/// config declares for the provider `Knobs` reports (`openai`).
+fn layering(agent: AgentConfig, models: &[(&str, ModelConfig)]) -> ParamLayers {
+    let mut cfg = Config::default();
+    for (name, m) in models {
+        cfg.models.insert((*name).to_owned(), m.clone());
+    }
+    let resolved = Resolved {
+        provider_name: "openai".to_owned(),
+        agent,
+        ..Resolved::default()
+    };
+    ParamLayers::new(&cfg, &resolved)
+}
+
+/// One configured model on `openai`.
+fn declared_model(id: &str, window: &str, effort: &str) -> ModelConfig {
+    ModelConfig {
+        provider: "openai".to_owned(),
+        id: id.to_owned(),
+        context_window: window.to_owned(),
+        effort: effort.to_owned(),
+        ..ModelConfig::default()
+    }
+}
+
+/// THE contrast the rule exists for: switching to a model no declaration covers DROPS what the session
+/// inherited from the model it is leaving (the window) and KEEPS what the user typed (the effort).
+///
+/// Both knobs' tabs are committed on the row they opened on, so this is what an untouched questionnaire does
+/// when only the Model tab moved.
+#[tokio::test]
+async fn switching_models_drops_an_inherited_value_and_keeps_a_typed_one() {
+    let f = Fixture::new(vec![
+        input("/model"),
+        commit(vec![
+            // Model: row 1 = "b-model", which the config does not configure.
+            PanelResult {
+                cursor: 1,
+                ..PanelResult::default()
+            },
+            // Context: untouched — 200k is preset row 3.
+            PanelResult {
+                cursor: 3,
+                ..PanelResult::default()
+            },
+            // Effort: untouched — "max" is row 5.
+            PanelResult {
+                cursor: 5,
+                ..PanelResult::default()
+            },
+            // Temperature: untouched (unset).
+            PanelResult::default(),
+        ]),
+        Reply::Interrupted,
+    ]);
+    let (writer, dir) = f.writer();
+    let provider = Knobs {
+        effort: Some(Effort::Max),
+        ..Knobs::text("a-model")
+    };
+    let mut params = f.params(provider, writer, Vec::new());
+    params.params = LayeredParams {
+        // Inherited from `models.a`, which the chat is about to leave.
+        context_window: Param::config(200_000),
+        // Typed into `/model` at some earlier point in this chat.
+        effort: Param::user("max".to_owned()),
+        ..LayeredParams::default()
+    };
+    params.layers = layering(
+        AgentConfig::default(),
+        &[("a", declared_model("a-model", "200k", ""))],
+    );
+    iota::repl::run(params).await.expect("exit");
+
+    let lines = printed(&f.ui);
+    assert!(
+        lines.contains(&"Model switched to b-model".to_owned()),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.ends_with(" / 128k (0%)")),
+        "the inherited window falls back to the built-in default: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.starts_with("Effort:")),
+        "a hand-set effort must survive a model that declares none: {lines:?}"
+    );
+
+    let meta = SessionMeta::read(&dir).expect("meta");
+    assert_eq!(meta.model, "b-model");
+    assert_eq!(meta.context_window, 128_000);
+    assert_eq!(
+        meta.effort, "",
+        "a knob that did not move writes nothing: the effort never left the provider"
+    );
+    assert_eq!(meta.sources().context_window, ParamSource::Builtin);
+    assert_eq!(
+        meta.sources().effort,
+        ParamSource::User,
+        "and it is still the session's own, so the NEXT switch keeps it too"
+    );
+}
+
+/// The other half: the model switched TO declares a window, so the declaration outranks what the session was
+/// running under — and a knob the user moves in the SAME surface wins over the re-evaluation, because it is
+/// the intent they have just expressed (every tab commits against the value it opened on).
+#[tokio::test]
+async fn a_declaration_wins_the_switch_and_a_hand_move_wins_the_surface() {
+    let f = Fixture::new(vec![
+        input("/model"),
+        commit(vec![
+            // Model: row 1 = "b-model", configured with a 400k window and `effort: low`.
+            PanelResult {
+                cursor: 1,
+                ..PanelResult::default()
+            },
+            // Context: untouched — 64k opened as a non-preset, sorted in after 32k.
+            PanelResult {
+                cursor: 2,
+                ..PanelResult::default()
+            },
+            // Effort: MOVED to row 3 = "high".
+            PanelResult {
+                cursor: 3,
+                ..PanelResult::default()
+            },
+            PanelResult::default(),
+        ]),
+        Reply::Interrupted,
+    ]);
+    let (writer, dir) = f.writer();
+    let provider = Knobs {
+        effort: Some(Effort::Max),
+        ..Knobs::text("a-model")
+    };
+    let mut params = f.params(provider, writer, Vec::new());
+    params.params = LayeredParams {
+        context_window: Param::user(64_000),
+        effort: Param::user("max".to_owned()),
+        ..LayeredParams::default()
+    };
+    params.layers = layering(
+        AgentConfig::default(),
+        &[("b", declared_model("b-model", "400k", "low"))],
+    );
+    iota::repl::run(params).await.expect("exit");
+
+    let lines = printed(&f.ui);
+    assert!(
+        lines.iter().any(|l| l.ends_with(" / 400k (0%)")),
+        "a declared window outranks even a hand-set one: {lines:?}"
+    );
+    // The switch evaluated `low`, then the tab the user moved settled on `high`: one notice each, in that
+    // order, and the user's is what the session ends up running under.
+    let efforts: Vec<&String> = lines.iter().filter(|l| l.starts_with("Effort:")).collect();
+    assert_eq!(efforts, ["Effort: low", "Effort: high"], "{lines:?}");
+
+    let meta = SessionMeta::read(&dir).expect("meta");
+    assert_eq!(meta.context_window, 400_000);
+    assert_eq!(meta.effort, "high");
+    assert_eq!(
+        meta.sources().context_window,
+        ParamSource::Config,
+        "the window came from the model the chat switched to"
+    );
+    assert_eq!(
+        meta.sources().effort,
+        ParamSource::User,
+        "what the user just moved is the session's own from now on"
+    );
+}
+
+/// The `agents:` entry outranks the model on both sides of a switch — including the `context_window` the
+/// layer gained for this rule — so a switch cannot take a window the agent insists on away from it.
+#[tokio::test]
+async fn the_agents_entry_outranks_the_model_across_a_switch() {
+    let f = Fixture::new(vec![
+        input("/model"),
+        commit(vec![
+            PanelResult {
+                cursor: 1,
+                ..PanelResult::default()
+            },
+            // Context: untouched — 32k is preset row 1.
+            PanelResult {
+                cursor: 1,
+                ..PanelResult::default()
+            },
+            PanelResult::default(),
+            PanelResult::default(),
+        ]),
+        Reply::Interrupted,
+    ]);
+    let (writer, dir) = f.writer();
+    let mut params = f.params(Knobs::text("a-model"), writer, Vec::new());
+    params.params = LayeredParams {
+        context_window: Param::config(32_000),
+        ..LayeredParams::default()
+    };
+    params.layers = layering(
+        AgentConfig {
+            context_window: "1m".to_owned(),
+            ..AgentConfig::default()
+        },
+        &[("b", declared_model("b-model", "400k", ""))],
+    );
+    iota::repl::run(params).await.expect("exit");
+
+    assert!(
+        printed(&f.ui).iter().any(|l| l.ends_with(" / 1m (0%)")),
+        "the agent's override beats the model's own: {:?}",
+        printed(&f.ui)
+    );
+    let meta = SessionMeta::read(&dir).expect("meta");
+    assert_eq!(meta.context_window, 1_000_000);
+    assert_eq!(meta.sources().context_window, ParamSource::Config);
 }

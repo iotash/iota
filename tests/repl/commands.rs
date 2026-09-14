@@ -153,7 +153,8 @@ impl Fixture {
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
             mcp: no_mcp(),
             session,
-            context_window: 0,
+            params: iota::session::LayeredParams::default(),
+            layers: iota::cmd::ParamLayers::default(),
             agent: iota::chat::AgentOptions::default(),
             dark_background: true,
             root_cancel: CancellationToken::new(),
@@ -611,6 +612,43 @@ async fn session_delete_tab_removes_the_checked_bundles() {
 // /save
 // ---------------------------------------------------------------------------
 
+/// MOMENT 1, written down: a session that CREATES its bundle records the four layered parameters it
+/// evaluated and the source of each, so a resume finds the session as it was even if the config moved in
+/// between (brain page `model-param-layering`). A resumed bundle is not re-stamped.
+#[tokio::test]
+async fn a_new_bundle_records_what_the_session_runs_under() {
+    let f = Fixture::new(vec![input("a question"), Reply::Interrupted]);
+    let writer = f.writer();
+    let dir = writer.dir().to_path_buf();
+    let session = f.session(Some(writer));
+    let mut params = f.params(FakeProvider::new("gpt-4o", Ok(vec![])), session);
+    params.params = iota::session::LayeredParams {
+        context_window: iota::session::Param::config(400_000),
+        effort: iota::session::Param::config("high".to_owned()),
+        temperature: iota::session::Param::user(Some(0.3)),
+        ..iota::session::LayeredParams::default()
+    };
+    iota::repl::run(params).await.expect("exit");
+
+    // Every value is read back from where it actually LIVES, so a knob the dialect cannot act on is
+    // recorded as the nothing it is: this fake reports no usage and has no tuning capability at all.
+    let meta = iota::session::SessionMeta::read(&dir).expect("meta");
+    assert_eq!(
+        meta.context_window, 0,
+        "a session that cannot count tokens has no window to record"
+    );
+    assert_eq!(meta.effort, "");
+    assert_eq!(meta.temperature, None);
+    assert_eq!(
+        meta.sources().context_window,
+        iota::session::ParamSource::Config
+    );
+    assert!(
+        meta.records_params(),
+        "and the record is complete, so a resume restores it instead of evaluating"
+    );
+}
+
 /// Go: chat/run.go:821-848 — the trio: mint late, flush the WHOLE backlog in one append,
 /// and settle the user's title.
 #[tokio::test]
@@ -631,7 +669,7 @@ async fn save_mints_late_and_flushes_the_backlog() {
         scope: None,
     };
     let mut params = f.params(FakeProvider::new("gpt-4o", Ok(vec![])), session);
-    params.context_window = 200_000;
+    params.params.context_window = iota::session::Param::config(200_000);
     iota::repl::run(params).await.expect("exit");
 
     let lines = printed(&f.ui);
@@ -654,6 +692,13 @@ async fn save_mints_late_and_flushes_the_backlog() {
     let meta = iota::session::SessionMeta::read(&dir).expect("meta");
     assert_eq!(meta.title, "my chat", "an explicit /save title settles");
     assert_eq!(meta.context_window, 200_000, "the window is stamped");
+    // …and so is where each layered parameter came from, exactly as a bundle that existed from the start
+    // gets it: a `/save` bundle must resume like any other (brain page `model-param-layering`).
+    assert_eq!(
+        meta.sources().context_window,
+        iota::session::ParamSource::Config
+    );
+    assert!(meta.records_params(), "the record is complete: {meta:?}");
     // The LIVE provider settles the model, not whatever the factory was minted with —
     // Go reads the provider inside the factory (root.go:360-366), so a mid-chat `/model`
     // change must reach the meta. The factory here deliberately says "gpt-test".
@@ -962,7 +1007,8 @@ async fn persist_warns_and_retries_the_backlog() {
             new_session: None,
             scope: None,
         },
-        context_window: 0,
+        params: iota::session::LayeredParams::default(),
+        layers: iota::cmd::ParamLayers::default(),
         agent: iota::chat::AgentOptions::default(),
         dark_background: true,
         root_cancel: CancellationToken::new(),

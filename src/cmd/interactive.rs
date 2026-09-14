@@ -157,8 +157,11 @@ struct Wiring {
     new_session: Option<crate::repl::SessionFactory>,
     /// The resumed conversation, or empty.
     history: Vec<crate::provider::model::Message>,
-    /// Flag > session meta > config > 0 (root.go:365-380).
-    context_window: u64,
+    /// The four layered parameters the chat starts under, each with the source that put it there
+    /// (root.go:365-380 for the window's half; brain page `model-param-layering` for the rest).
+    params: crate::session::LayeredParams,
+    /// What a `/model` switch re-evaluates those four against.
+    layers: crate::config::ParamLayers,
     /// The live tool dispatcher.
     dispatch: Arc<dyn Dispatcher>,
     /// The SECOND provider instance the async title pass runs on (`None` for image providers).
@@ -373,7 +376,8 @@ pub(crate) async fn run_interactive(
             new_session: wiring.new_session,
             scope,
         },
-        context_window: wiring.context_window,
+        params: wiring.params,
+        layers: wiring.layers,
         agent,
         dark_background: dark,
         root_cancel: ctx.cancel.clone(),
@@ -432,7 +436,9 @@ fn wire_session(
 ) -> Result<Wiring, CliError> {
     let mut history = Vec::new();
     let mut writer: Option<SessionWriter> = None;
-    let mut session_window: Option<u64> = None;
+    // The bundle a resume replayed, kept for the layering: it is the record of what the session was running
+    // under, and a resume RESTORES those values rather than evaluating the config again.
+    let mut resumed_meta: Option<crate::session::SessionMeta> = None;
 
     if input.resume_given {
         // root.go:294-306: a bare `iota resume` took the picker; an id resolves as a prefix.
@@ -453,7 +459,7 @@ fn wire_session(
         );
         // root.go:317-331: `-M` is the only flag a session must not overwrite; temperature, effort and the
         // window always replay, because a resumed chat is the chat it resumes.
-        session_window = crate::session::replay_session_settings(
+        crate::session::replay_session_settings(
             &resumed.meta,
             &mut *provider,
             kind,
@@ -463,6 +469,7 @@ fn wire_session(
             },
             &mut |w| io.warning(&w),
         );
+        resumed_meta = Some(resumed.meta);
         history = resumed.messages;
         // root.go:333, on plain stdout with the trailing blank Go prints — the last thing written before the
         // banner the facade puts in the scrollback.
@@ -534,8 +541,9 @@ fn wire_session(
         None
     };
 
-    // root.go:365-385: session meta > config > 0 (the chat default).
-    let context_window = resolve_context_window(settings, provider, session_window, io)?;
+    // root.go:365-385, widened to all four layered parameters: a resumed bundle's own values (with the
+    // sources it recorded), else the two config layers, else the built-in defaults.
+    let params = resolve_params(settings, provider, kind, resumed_meta.as_ref(), io)?;
 
     // root.go:390 + 588-592.
     let dispatch = crate::cmd::assemble::build_dispatcher(
@@ -569,45 +577,55 @@ fn wire_session(
         writer,
         new_session,
         history,
-        context_window,
+        params,
+        layers: crate::config::ParamLayers::new(cfg, &settings.resolved),
         dispatch,
         title_provider,
     })
 }
 
-/// root.go:365-385 — the resumed bundle's meta > `models.<name>.context_window` > 0 (the chat's own 128k
-/// default), plus Go's warning for a provider that cannot count tokens at all. The `--context-window` flag
-/// that used to precede both is gone: the window is a property of the model, and `/model`'s Context tab is
-/// where one run changes it.
-fn resolve_context_window(
+/// root.go:365-385, generalised to the four layered parameters (brain page `model-param-layering`): a
+/// resumed bundle's recorded values come back as they were recorded, everything else is evaluated
+/// `agents:` → `models:` → the built-in default. Plus Go's warning for a window on a provider that cannot
+/// count tokens at all.
+///
+/// This is the ONE evaluating moment on the way in; the other is a `/model` model switch. The
+/// `--context-window` flag that used to precede the config is gone: the window is a property of the model,
+/// and `/model`'s Context tab is where one run changes it.
+///
+/// A `context_window:` that does not parse aborts the run here — at startup there is nothing yet to keep
+/// going with, and the label says which layer wrote it.
+fn resolve_params(
     settings: &RunSettings,
     provider: &dyn Provider,
-    session_window: Option<u64>,
+    kind: ProviderKind,
+    resumed: Option<&crate::session::SessionMeta>,
     io: &mut crate::cmd::io::Streams,
-) -> Result<u64, CliError> {
-    let parse = |raw: &str, label: &str| -> Result<u64, CliError> {
-        crate::cmd::window::parse_window_size(raw).map_err(|source| CliError::ContextWindow {
-            label: label.to_owned(),
-            source,
-        })
+) -> Result<crate::session::LayeredParams, CliError> {
+    let window =
+        match settings.resolved.window_decl() {
+            None => None,
+            Some(decl) => Some(crate::cmd::window::parse_window_size(decl.raw).map_err(
+                |source| CliError::ContextWindow {
+                    label: decl.label.to_owned(),
+                    source,
+                },
+            )?),
+        };
+    let declared = settings.resolved.declared(window);
+    let params = match resumed {
+        // `apply_session_tuning` replays nothing for a bundle recorded under another provider type, so for
+        // this run that bundle recorded nothing either.
+        Some(meta) => declared.resume(meta, meta.provider == kind.as_str()),
+        None => declared.evaluate(&crate::session::LayeredParams::default()),
     };
-    let window = if let Some(w) = session_window.filter(|w| *w > 0) {
-        w
-    } else if settings.resolved.model.context_window.is_empty() {
-        0
-    } else {
-        parse(
-            &settings.resolved.model.context_window,
-            "config context_window",
-        )?
-    };
-    if window > 0 && !provider.reports_usage() {
+    if params.context_window.value > 0 && !provider.reports_usage() {
         io.warning(&format!(
             "Warning: context window does not apply to provider type {} (no token accounting)",
             provider.kind().as_str()
         ));
     }
-    Ok(window)
+    Ok(params)
 }
 
 /// `crate::repl::ReplError` → the process's exit mapping. A facade failure has no `CliError` of its own, so it

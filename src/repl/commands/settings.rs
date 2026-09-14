@@ -23,6 +23,7 @@
 use std::sync::PoisonError;
 
 use crate::provider::{Effort, ImageGenParams, Provider, ProviderKind};
+use crate::session::{ParamSource, ParamSources};
 use crate::ui::facade::{Panel, TabbedResult};
 
 use crate::repl::commands::status::image_gen_label;
@@ -187,9 +188,17 @@ pub(crate) fn choice_rows(current: &str, options: &[&str]) -> Rows<String> {
 pub(crate) struct Extras {
     ctx: Option<usize>,
     windows: Vec<u64>,
+    /// The window the Context tab OPENED on. The commit compares against this rather than against the live
+    /// budget, because a model switch in the same surface may have moved the live one: an untouched tab must
+    /// stay a no-op, and a touched one must win (brain page `model-param-layering`).
+    window_open: u64,
     effort: Option<usize>,
     levels: Vec<String>,
+    /// The effort the Effort tab opened on (see [`Extras::window_open`]).
+    effort_open: String,
     temp: Option<usize>,
+    /// The temperature the Temperature tab opened on (see [`Extras::window_open`]).
+    temp_open: Option<f64>,
     image: Option<usize>,
     aspect: Option<usize>,
     aspect_values: Vec<String>,
@@ -227,6 +236,7 @@ impl Extras {
                 cursor,
             } = context_window_rows(window);
             ex.windows = windows;
+            ex.window_open = window;
             ex.ctx = Some(panels.len());
             panels.push(list_panel("Context", labels, cursor));
         }
@@ -239,7 +249,9 @@ impl Extras {
                 labels,
                 cursor,
             } = effort_rows(&current);
+            // Recorded BEFORE the rows are handed over: what the tab opened on is the commit's baseline.
             ex.levels = levels;
+            ex.effort_open = current;
             ex.effort = Some(panels.len());
             panels.push(list_panel("Effort", labels, cursor));
 
@@ -249,6 +261,7 @@ impl Extras {
                 MAX_TEMP
             };
             ex.temp = Some(panels.len());
+            ex.temp_open = temperature;
             panels.push(Panel::slider(
                 "Temperature".to_owned(),
                 0.0,
@@ -349,10 +362,16 @@ impl Extras {
 
         if let Some(i) = self.ctx
             && let Some(v) = self.windows.get(cursor_at(r, i)).copied()
-            && v != repl.budget.window()
+            && v != self.window_open
         {
             repl.budget.set_window(v);
-            update_meta(repl, |m| m.set_context_window(v));
+            by_hand(
+                repl,
+                |s| &mut s.context_window,
+                move |m| {
+                    m.set_context_window(v);
+                },
+            );
             repl.tr
                 .notice(&format!("Context window: {}", repl.budget.status()));
             changed = true;
@@ -364,13 +383,7 @@ impl Extras {
                 .get(cursor_at(r, i))
                 .cloned()
                 .unwrap_or_default();
-            let current = repl
-                .provider
-                .as_tunable()
-                .and_then(|t| t.effort())
-                .map_or("", Effort::as_str)
-                .to_owned();
-            if picked != current {
+            if picked != self.effort_open {
                 // An unparseable level cannot come from the rows this build offers; it
                 // only exists as the "current" row a newer bundle wrote, and picking that
                 // row is caught by the `picked != current` guard above.
@@ -378,7 +391,14 @@ impl Extras {
                     if let Some(t) = repl.provider.as_tunable() {
                         t.set_effort(effort);
                     }
-                    update_meta(repl, |m| picked.clone_into(&mut m.effort));
+                    let level = picked.clone();
+                    by_hand(
+                        repl,
+                        |s| &mut s.effort,
+                        move |m| {
+                            level.clone_into(&mut m.effort);
+                        },
+                    );
                     repl.tr
                         .notice(&format!("Effort: {}", effort_label(&picked)));
                     changed = true;
@@ -388,12 +408,17 @@ impl Extras {
 
         if let Some(i) = self.temp {
             let picked = r.panels.get(i).and_then(|p| p.value);
-            let current = repl.provider.as_tunable().and_then(|t| t.temperature());
-            if !float_ptr_equal(picked, current) {
+            if !float_ptr_equal(picked, self.temp_open) {
                 if let Some(t) = repl.provider.as_tunable() {
                     t.set_temperature(picked);
                 }
-                update_meta(repl, |m| m.temperature = picked);
+                by_hand(
+                    repl,
+                    |s| &mut s.temperature,
+                    move |m| {
+                        m.temperature = picked;
+                    },
+                );
                 repl.tr
                     .notice(&format!("Temperature: {}", format_temperature(picked)));
                 changed = true;
@@ -507,6 +532,24 @@ fn list_panel(title: &str, items: Vec<String>, cursor: usize) -> Panel {
 /// opened — impossible through the engine, and a silent 0 beats an index panic).
 fn cursor_at(r: &TabbedResult, i: usize) -> usize {
     r.panels.get(i).map_or(0, |p| p.cursor)
+}
+
+/// Commits one knob the user moved BY HAND: the value, and the source that says it is the session's own
+/// from now on, in ONE bundle write (brain page `model-param-layering`).
+///
+/// A hand-set value outranks nothing — the next declaration still wins — but it survives a model switch that
+/// finds no declaration at all, which a value inherited from the model being left behind must not.
+fn by_hand(
+    repl: &mut Repl,
+    which: fn(&mut ParamSources) -> &mut ParamSource,
+    value: impl FnOnce(&mut crate::session::SessionMeta),
+) {
+    *which(&mut repl.param_sources) = ParamSource::User;
+    let sources = repl.param_sources;
+    update_meta(repl, |m| {
+        value(m);
+        m.param_sources = Some(sources);
+    });
 }
 
 /// The ONE session-bundle write for the questionnaire: what `/model` changes and what a

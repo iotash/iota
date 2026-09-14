@@ -166,7 +166,11 @@ impl Fixture {
                 new_session: None,
                 scope: None,
             },
-            context_window,
+            params: iota::session::LayeredParams {
+                context_window: iota::session::Param::config(context_window),
+                ..iota::session::LayeredParams::default()
+            },
+            layers: iota::cmd::ParamLayers::default(),
             agent: iota::chat::AgentOptions::default(),
             dark_background: true,
             root_cancel: CancellationToken::new(),

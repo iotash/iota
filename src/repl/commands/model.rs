@@ -20,7 +20,6 @@ use tokio_util::sync::CancellationToken;
 use crate::repl::commands::settings::Extras;
 use crate::repl::run::Repl;
 use crate::repl::title::WriterSlot;
-use crate::repl::transcript::Transcript;
 
 /// The manual field's placeholder and width (run.go:536).
 const MODEL_PLACEHOLDER: &str = "model name (e.g. gpt-4o)";
@@ -128,20 +127,19 @@ fn commit(provider: &mut dyn Provider, writer: &WriterSlot, name: &str) {
 /// Called at startup when no model is configured — ESC defers, and the first message
 /// re-prompts — and again before any send that still has none. `false` means the user
 /// cancelled or entered nothing: the caller continues the loop WITHOUT sending.
-pub(crate) async fn ensure_model(
-    ui: &Arc<dyn Ui>,
-    tr: &Transcript,
-    provider: &mut dyn Provider,
-    writer: &WriterSlot,
-    cancel: &CancellationToken,
-) -> bool {
-    let fetched = fetch_models(ui, &*provider, cancel).await;
+///
+/// Choosing the first model IS a model switch, so the four layered parameters are evaluated
+/// against the `models:` entry the chosen id names: a run that started on a `provider:*`
+/// wildcard had no entry to read them from until now (brain page `model-param-layering`).
+pub(crate) async fn ensure_model(repl: &mut Repl, cancel: &CancellationToken) -> bool {
+    let ui = Arc::clone(&repl.ui);
+    let fetched = fetch_models(&ui, &*repl.provider, cancel).await;
     if fetched.cancelled {
         return false;
     }
     let name = if fetched.error.is_some() || fetched.models.is_empty() {
         if let Some(e) = &fetched.error {
-            tr.error(&format!("Fetching models failed: {e}"));
+            repl.tr.error(&format!("Fetching models failed: {e}"));
         }
         let spec = TabbedSpec {
             panels: vec![manual_panel("")],
@@ -165,8 +163,9 @@ pub(crate) async fn ensure_model(
     let Some(name) = name.filter(|n| !n.is_empty()) else {
         return false;
     };
-    commit(provider, writer, &name);
-    tr.notice(&format!("Using model: {name}"));
+    commit(&mut *repl.provider, &repl.writer, &name);
+    repl.tr.notice(&format!("Using model: {name}"));
+    crate::repl::params::switch_model(repl, &name);
     true
 }
 
@@ -245,6 +244,13 @@ pub(crate) async fn cmd_model(repl: &mut Repl) {
     if !chosen.is_empty() && chosen != current {
         commit(&mut *repl.provider, &repl.writer, &chosen);
         repl.tr.notice(&format!("Model switched to {chosen}"));
+        // The model decides the four layered parameters again: `agents:` → the NEW model's
+        // `models:` entry → what the session is already running under, minus whatever the
+        // model just left had declared (brain page `model-param-layering`). It runs BEFORE
+        // the tabs are read back, because a knob the user moved in this same surface is the
+        // intent they have just expressed and must win over the re-evaluation — which it
+        // does by construction: every tab commits against the value it OPENED on.
+        crate::repl::params::switch_model(repl, &chosen);
         changed = true;
     }
     changed |= extras.apply(&r, repl);

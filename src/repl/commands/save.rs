@@ -42,27 +42,18 @@ pub(crate) fn cmd_save(repl: &mut Repl, arg: &str) {
     // Go's factory takes the LIVE provider (root.go:360-366), so a mid-chat `/model` or a
     // temperature change lands in the freshly minted meta. The Rust factory is minted at
     // wiring time and cannot see the provider any more, so the live tuning is stamped
-    // HERE instead: model, temperature, window and effort.
+    // HERE instead: model, plus the four layered parameters and the source of each — this
+    // is the same stamp a session that started with a bundle got on the way in, only later
+    // (brain page `model-param-layering`).
     let model = repl.provider.model().to_owned();
-    // Effort and temperature are copied only when actually set — an absent knob must not
-    // write a value the next resume would replay.
-    let (temperature, effort) = repl
-        .provider
-        .as_tunable()
-        .map_or((None, None), |t| (t.temperature(), t.effort()));
+    let params = crate::repl::params::current(repl);
     {
         let mut slot = repl.writer.lock().unwrap_or_else(PoisonError::into_inner);
         *slot = Some(writer);
         if let Some(w) = slot.as_mut() {
             let _ = w.update_meta(|m| {
                 m.model = model;
-                m.set_context_window(window);
-                if temperature.is_some() {
-                    m.temperature = temperature;
-                }
-                if let Some(e) = effort {
-                    e.as_str().clone_into(&mut m.effort);
-                }
+                crate::repl::params::stamp(m, Some(window), &params);
             });
         }
     }

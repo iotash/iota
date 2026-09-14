@@ -14,6 +14,8 @@ pub(crate) mod interact;
 pub(crate) mod interrupt;
 pub(crate) mod mcpreport;
 pub(crate) mod meter;
+/// The layered model parameters a `/model` switch re-evaluates (brain page `model-param-layering`).
+pub(crate) mod params;
 pub(crate) mod phases;
 pub(crate) mod replay;
 pub(crate) mod retry;

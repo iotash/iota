@@ -132,8 +132,13 @@ pub struct RunParams {
     pub mcp: McpHooks,
     /// Session wiring.
     pub session: SessionCtx,
-    /// Context window; `0` → the `128_000` default.
-    pub context_window: u64,
+    /// The four layered parameters the chat starts under, each with the source that put it there: the
+    /// startup evaluation, or a resumed bundle's own record (brain page `model-param-layering`). The VALUES
+    /// of the three tunables must already be on the provider — the loop reads them back from it — and the
+    /// window is what the budget is built over (`0` → the `128_000` default).
+    pub params: crate::session::LayeredParams,
+    /// The config declarations a `/model` model switch re-evaluates those four against.
+    pub layers: crate::config::ParamLayers,
     /// Agent-mode options.
     pub agent: crate::chat::AgentOptions,
     /// Whether the terminal's background is dark, as the ONE pre-loop OSC-11 probe answered
@@ -217,6 +222,12 @@ pub(crate) struct Repl {
     /// The auto-compaction snooze watermark: the projected usage at which the user last
     /// said "Not now" (0 = never asked). Cleared by any successful compaction.
     pub(crate) compact_declined: u64,
+    /// Where each of the four layered parameters got the value the chat is running under. The values
+    /// themselves are read from the budget and the provider (`crate::repl::params`); this is the only piece
+    /// of the layering with nowhere else to live.
+    pub(crate) param_sources: crate::session::ParamSources,
+    /// What a `/model` model switch re-evaluates those four against.
+    pub(crate) layers: crate::config::ParamLayers,
 }
 
 impl Repl {
@@ -343,7 +354,8 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         jobs,
         mcp,
         session,
-        context_window,
+        params,
+        layers,
         agent,
         dark_background,
         root_cancel,
@@ -387,7 +399,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         vec![Message::system(system)]
     };
     let persisted = if resumed { history.len() } else { 0 };
-    let mut budget = ContextBudget::new(context_window);
+    let mut budget = ContextBudget::new(params.context_window.value);
     // The live meter exists only for a provider whose usage it can settle against
     // (chat/run.go:161-164); everything else keeps Go's nil meter, whose methods are all
     // no-ops — which is why every `ctxm.…` call below is unconditional (T-10).
@@ -404,17 +416,15 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         budget.update(&history);
     }
     let writer: WriterSlot = Arc::new(Mutex::new(writer));
+    // A bundle this run CREATED must be told what the chat is running under (below, once the loop state is
+    // assembled); one it RESUMED already says.
+    let mut fresh_bundle = false;
     {
         let mut slot = writer.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(w) = slot.as_mut() {
             // A resumed session's cumulative ↑/↓ figures are what its own log adds up to.
             ctxm.seed_totals(w.usage());
-            // Don't stamp a context window into the meta of a session whose provider has
-            // no token accounting at all.
-            if token_aware && !w.on_disk() {
-                let window = budget.window();
-                let _ = w.update_meta(|m| m.set_context_window(window));
-            }
+            fresh_bundle = !w.on_disk();
         }
     }
 
@@ -537,8 +547,21 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         title_provider,
         title_task: None,
         compact_declined: 0,
+        param_sources: params.sources(),
+        layers,
     };
     repl.push_status();
+
+    // What the chat is running under, and where each value came from, into a bundle this run created — so a
+    // resume finds the session as it was rather than re-deriving it from a config that may have moved since
+    // (brain page `model-param-layering`). The values are read back from the provider and the budget, so a
+    // knob the dialect cannot act on is never recorded as though it had applied; the window is left out
+    // entirely for a provider with no token accounting.
+    if fresh_bundle {
+        let running = crate::repl::params::current(&mut repl);
+        let window = token_aware.then(|| repl.budget.window());
+        crate::repl::params::stamp_bundle(&repl, window, &running);
+    }
 
     // A finished job becomes the next input: the facade serves it to a parked `read_input` at once (an idle
     // loop wakes and answers it) or queues it behind what is already typed ahead, and `Steerer::drain` takes
@@ -560,14 +583,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     // `cli-surface-agent-first`).
     if repl.provider.model().is_empty() {
         // v1 offered the pick at startup; ESC defers — the first message re-prompts.
-        model::ensure_model(
-            &repl.ui,
-            &repl.tr,
-            &mut *repl.provider,
-            &repl.writer,
-            &root_cancel,
-        )
-        .await;
+        model::ensure_model(&mut repl, &root_cancel).await;
         repl.push_status();
     }
 
@@ -688,17 +704,11 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         } else {
             repl.tr.user(&input.display);
         }
-        if repl.provider.model().is_empty()
-            && !model::ensure_model(
-                &repl.ui,
-                &repl.tr,
-                &mut *repl.provider,
-                &repl.writer,
-                &repl.cancel,
-            )
-            .await
-        {
-            continue;
+        if repl.provider.model().is_empty() {
+            let cancel = repl.cancel.clone();
+            if !model::ensure_model(&mut repl, &cancel).await {
+                continue;
+            }
         }
         let send_overlay = repl.refresh_overlay();
 
