@@ -203,7 +203,7 @@ pub(crate) async fn connect_one(
 }
 
 /// The `initialize` handshake handler: rmcp's default capabilities (no `roots.listChanged`, D-02) and the configured
-/// `clientInfo` (`iota/1.0.0`).
+/// `clientInfo` (`iota/<CARGO_PKG_VERSION>`).
 fn client_info(opts: &ManagerOptions) -> ClientInfo {
     ClientInfo::new(
         rmcp::model::ClientCapabilities::default(),

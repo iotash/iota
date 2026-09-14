@@ -35,8 +35,10 @@ pub const DEFAULT_STDERR_CAP: usize = 64 * 1024;
 /// `clientInfo.name` sent in the `initialize` handshake.
 pub(crate) const CLIENT_NAME: &str = "iota";
 
-/// `clientInfo.version` sent in the `initialize` handshake.
-pub(crate) const CLIENT_VERSION: &str = "1.0.0";
+/// `clientInfo.version` sent in the `initialize` handshake: the crate version, the same source `--version`
+/// prints (`cmd::VERSION`) — until 2026-09-15 this was a literal `"1.0.0"` that every server was told
+/// regardless of the release.
+pub(crate) const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Construction-time knobs of a `Manager`.
 #[derive(Clone)]
@@ -54,7 +56,7 @@ pub struct ManagerOptions {
 }
 
 impl ManagerOptions {
-    /// 30 s connect timeout, `iota/1.0.0` client info, 64 KiB stderr cap.
+    /// 30 s connect timeout, `iota/<CARGO_PKG_VERSION>` client info, 64 KiB stderr cap.
     pub fn new(http: reqwest::Client, resolver: Arc<dyn VarResolver>) -> Self {
         Self {
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,

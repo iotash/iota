@@ -291,6 +291,54 @@ async fn close_is_idempotent_and_clears_tools() {
     );
 }
 
+/// `SH_SERVER` with no tools, writing the `initialize` request it receives to the file named by `$1` before
+/// answering it: what the client SAID in the handshake, verbatim off the wire.
+#[cfg(unix)]
+const SH_HANDSHAKE_RECORDER: &str = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' "$line" > "$1"
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"fake","version":"1.0.0"}}}' ;;
+    *'"method":"tools/list"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[]}}' ;;
+  esac
+done
+"#;
+
+// The handshake's `clientInfo` is `iota/<CARGO_PKG_VERSION>` — the version `--version` prints (tests/cmd/cli.rs),
+// asserted off the wire rather than off the constant. Until 2026-09-15 every server was told `1.0.0`.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handshake_client_info_carries_the_crate_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let record = dir.path().join("initialize.json");
+    let m = Manager::new(
+        vec![stdio(
+            "fake",
+            "sh",
+            &["-c", SH_HANDSHAKE_RECORDER, "sh", &record.to_string_lossy()],
+        )],
+        ManagerOptions {
+            connect_timeout: Duration::from_secs(10),
+            ..options()
+        },
+    );
+    let statuses = m.connect_all(&CancellationToken::new()).await;
+    assert!(statuses[0].connected, "{:?}", statuses[0]);
+    m.close().await;
+
+    let request: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&record).unwrap()).unwrap();
+    assert_eq!(request["method"], "initialize");
+    assert_eq!(request["params"]["clientInfo"]["name"], "iota");
+    assert_eq!(
+        request["params"]["clientInfo"]["version"],
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
 // A cancelled run token resolves every pending connect as a failure instead of waiting for the deadline.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
