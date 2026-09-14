@@ -13,6 +13,7 @@ use crate::common::{body_json, mock_json, mock_sse};
 use iota::llm::LlmError;
 use iota::provider::error::{ProviderError, WireOp};
 use iota::provider::model::{Attachment, JsonObject, Message, Raw, RawContent, ToolCall, ToolDef};
+use iota::provider::openai::OpenAiProvider;
 use iota::provider::openresponses::OpenResponsesProvider;
 use iota::provider::sink::StreamSink;
 use iota::provider::{
@@ -235,6 +236,52 @@ async fn test_open_responses_golden_request() {
     assert!(
         tool.get("function").is_none(),
         "chat-completions shape leaked"
+    );
+}
+
+/// A tool whose `input_schema` is the EMPTY object — what an MCP server that declares no arguments sends —
+/// advertises with NO `parameters` on both dialects (Go's `omitempty` on a map; `"parameters":{}` is a schema
+/// with no `type`, and not every server accepts it). Until 2026-09-15 only the chat-completions path filtered
+/// it, at its call site; the predicate now sits on both wire structs, and this pins the two outputs together.
+#[tokio::test]
+async fn empty_input_schema_is_omitted_on_both_dialects() {
+    let tool = ToolDef {
+        name: "f".to_owned(),
+        description: "does f".to_owned(),
+        input_schema: Some(JsonObject::new()),
+        deferred: false,
+    };
+    let messages = vec![Message::user("hi")];
+
+    let responses = MockServer::start().await;
+    mock_sse(&responses, "POST", "/responses", RESP_COMPLETED_SSE).await;
+    round(
+        &provider(&responses, "gpt-5"),
+        &messages,
+        std::slice::from_ref(&tool),
+    )
+    .await;
+    let got = body_json(&responses.received_requests().await.unwrap()[0]);
+    assert_eq!(
+        got["tools"],
+        json!([{"type":"function","name":"f","description":"does f","strict":false}])
+    );
+
+    let chat = MockServer::start().await;
+    mock_sse(&chat, "POST", "/chat/completions", "data: [DONE]\n\n").await;
+    let p = OpenAiProvider::new("k", &chat.uri(), "gpt-4o", None, reqwest::Client::new());
+    p.stream_chat_with_tools(
+        &CancellationToken::new(),
+        &messages,
+        std::slice::from_ref(&tool),
+        &mut RecordingSink::default(),
+    )
+    .await
+    .expect("chat-completions round failed");
+    let got = body_json(&chat.received_requests().await.unwrap()[0]);
+    assert_eq!(
+        got["tools"],
+        json!([{"type":"function","function":{"name":"f","description":"does f"}}])
     );
 }
 

@@ -1,7 +1,7 @@
 //! Responses dialect (internal/llm/responses.go): request/response/event shapes, `Responses` and its stream.
 
 use crate::llm::chatcomp::OpenAiUsage;
-use crate::llm::json::{JsonObject, Raw};
+use crate::llm::json::{JsonObject, Raw, is_none_or_empty};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -132,8 +132,8 @@ pub(crate) struct RespTool {
     pub(crate) name: String,
     /// Description; always emitted.
     pub(crate) description: String,
-    /// JSON Schema; `None` omitted.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// JSON Schema; `None` and the empty map omitted (Go `omitempty`).
+    #[serde(skip_serializing_if = "is_none_or_empty")]
     pub(crate) parameters: Option<JsonObject>,
     /// Always emitted, always `false`.
     pub(crate) strict: bool,

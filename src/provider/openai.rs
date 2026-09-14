@@ -170,14 +170,15 @@ impl OpenAiProvider {
     }
 }
 
-/// A `ToolDef` as the advertised wire shape (`description`/`parameters` omitted when empty).
+/// A `ToolDef` as the advertised wire shape (`description`/`parameters` omitted when empty — the struct's own
+/// `skip_serializing_if`s, shared with the Responses shape).
 fn chat_tool(t: &ToolDef) -> ChatTool {
     ChatTool {
         r#type: "function",
         function: ChatToolFunction {
             name: t.name.clone(),
             description: t.description.clone(),
-            parameters: t.input_schema.clone().filter(|p| !p.is_empty()),
+            parameters: t.input_schema.clone(),
         },
     }
 }

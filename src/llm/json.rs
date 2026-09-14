@@ -8,6 +8,16 @@ use serde_json::value::RawValue;
 /// `map[string]any` marshal order.
 pub type JsonObject = serde_json::Map<String, serde_json::Value>;
 
+/// Go's `omitempty` on a `map[string]any`: absent when `None` AND when `Some({})`. The `skip_serializing_if`
+/// of the `parameters` field on both dialects' tool shapes: an MCP tool that declares no input arrives as an
+/// empty object, and `"parameters":{}` is a schema with no `type` — not every server that accepts an omitted
+/// field accepts that. Serde hands these predicates a reference to the field as declared, so the `Option<&T>`
+/// lint does not apply.
+#[allow(clippy::ref_option)]
+pub(crate) fn is_none_or_empty(o: &Option<JsonObject>) -> bool {
+    o.as_ref().is_none_or(JsonObject::is_empty)
+}
+
 /// A verbatim JSON payload (Go `json.RawMessage`). Wraps `Box<RawValue>` so it can be COMPARED: `RawValue` has no
 /// `PartialEq` (serde_json-1.0.151 raw.rs). Equality is byte-equality of the JSON text (`get()`), which is exactly
 /// what "replayed verbatim" means; tests compare `Message`/`RoundResult` by `==` and history-shape assertions

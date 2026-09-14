@@ -1,7 +1,7 @@
 //! Chat-completions dialect (internal/llm/chatcomp.go): request/response/chunk shapes, `ChatComp` and its stream.
 //! Request field order = Go struct order; `skip_serializing_if` reproduces every `omitempty`.
 
-use crate::llm::json::{JsonObject, Raw};
+use crate::llm::json::{JsonObject, Raw, is_none_or_empty};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -161,8 +161,8 @@ pub(crate) struct ChatToolFunction {
     /// Description; `None` omitted.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub(crate) description: String,
-    /// JSON Schema; `None` when nil/empty map.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// JSON Schema; `None` and the empty map omitted (Go `omitempty`).
+    #[serde(skip_serializing_if = "is_none_or_empty")]
     pub(crate) parameters: Option<JsonObject>,
 }
 
