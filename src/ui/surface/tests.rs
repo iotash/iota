@@ -966,6 +966,174 @@ fn scroll_percent_tracks_the_visible_list() {
     assert_eq!(scroll_percent(&short.st.slots[0].spec, short.ps(0)), None);
 }
 
+// --- the combo list (`/model`'s picker) ---------------------------------------
+
+/// A combo over three model rows, as `commands::model` builds it.
+fn combo(items: &[&str]) -> Panel {
+    list("Model", items).with_combo("model name (e.g. gpt-4o)")
+}
+
+/// The field is open from the first frame — nothing is pressed to get it — and it shows the
+/// placeholder rather than an empty row nobody would know to type into.
+#[test]
+fn combo_opens_with_its_field_live() {
+    let mut s = Surf::open(vec![combo(&["gpt-4o", "gpt-5", "o3"])]);
+    let hint = s.hint();
+    assert!(
+        hint.starts_with('❯'),
+        "the field row is the hint row: {hint:?}"
+    );
+    assert!(hint.contains("model name (e.g. gpt-4o)"), "{hint:?}");
+    assert!(hint.contains("3 options"), "{hint:?}");
+    assert!(hint.contains("Enter select"), "{hint:?}");
+    // Every row is offered and nothing is typed yet, so no `use … as typed` row.
+    let plain = s.plain();
+    assert!(plain.contains("gpt-4o"), "{plain}");
+    assert!(!plain.contains("as typed"), "{plain}");
+}
+
+/// Typing filters the list live, and `/` is a CHARACTER here (model ids contain one) rather
+/// than the search entry it is on an ordinary list.
+#[test]
+fn combo_typing_filters_and_slash_is_a_character() {
+    let mut s = Surf::open(vec![combo(&["gpt-4o", "gpt-5", "anthropic/claude"])]);
+    s.typed("gpt-");
+    let plain = s.plain();
+    assert!(
+        plain.contains("gpt-4o") && plain.contains("gpt-5"),
+        "{plain}"
+    );
+    assert!(
+        !plain.contains("anthropic/claude"),
+        "the filter narrowed: {plain}"
+    );
+    assert!(s.hint().contains("2 of 3"), "{:?}", s.hint());
+
+    let mut s = Surf::open(vec![combo(&["gpt-4o", "anthropic/claude"])]);
+    s.typed("ic/cl");
+    assert!(
+        s.plain().contains("anthropic/claude"),
+        "`/` must type, not open a search"
+    );
+}
+
+/// ↑↓ (and the Ctrl+P/N twins) move the LIST while the letters go to the field.
+#[test]
+fn combo_arrows_move_the_list() {
+    let mut s = Surf::open(vec![combo(&["a", "b", "c"])]);
+    s.tap(key(KeyCode::Down));
+    assert_eq!(s.ps(0).cursor, 1);
+    s.tap(ctrl('n'));
+    assert_eq!(s.ps(0).cursor, 2);
+    s.tap(ctrl('p'));
+    assert_eq!(s.ps(0).cursor, 1);
+    s.tap(key(KeyCode::Up));
+    assert_eq!(s.ps(0).cursor, 0);
+    // ←→ belong to the text cursor, not to paging: a model id is long enough to edit inside.
+    s.typed("ab");
+    s.tap(key(KeyCode::Left));
+    s.typed("X");
+    let r = closed(s.press(key(KeyCode::Enter)));
+    assert_eq!(r.panels[0].text, "aXb");
+}
+
+/// The typed text commits through a NAVIGABLE last row, so Enter is never ambiguous: it always
+/// means "the row under the cursor", and the row says what it will do.
+#[test]
+fn combo_commits_the_typed_text_through_its_own_row() {
+    let mut s = Surf::open(vec![combo(&["gpt-4o", "gpt-5"])]);
+    s.typed("my-own-model");
+    let plain = s.plain();
+    assert!(plain.contains(r#"use "my-own-model" as typed"#), "{plain}");
+    // Nothing matched, so the list is the typed row ALONE — showing every row again would put
+    // the cursor on an unrelated model exactly when the user is naming one that is not listed.
+    assert!(!plain.contains("gpt-4o"), "{plain}");
+    assert_eq!(s.ps(0).cursor, 2, "the cursor follows onto the typed row");
+    assert!(s.hint().contains("Enter use typed"), "{:?}", s.hint());
+
+    let r = closed(s.press(key(KeyCode::Enter)));
+    assert!(!r.cancelled);
+    assert_eq!(
+        r.panels[0].cursor, 2,
+        "one past the last row: the typed row"
+    );
+    assert_eq!(r.panels[0].text, "my-own-model");
+}
+
+/// Text that names a row exactly gets no second way to say the same thing.
+#[test]
+fn combo_offers_no_typed_row_for_an_exact_match() {
+    let mut s = Surf::open(vec![combo(&["gpt-4o", "gpt-4o-mini"])]);
+    s.typed("gpt-4o");
+    let plain = s.plain();
+    assert!(!plain.contains("as typed"), "{plain}");
+    assert!(
+        plain.contains("gpt-4o-mini"),
+        "the other match stays: {plain}"
+    );
+    // One more character and the exact match is gone again.
+    s.typed("!");
+    assert!(s.plain().contains(r#"use "gpt-4o!" as typed"#));
+}
+
+/// Committing a listed row while the field carries text: the cursor decides, and the text rides
+/// along so the caller can tell the two apart.
+#[test]
+fn combo_commits_the_highlighted_row_when_one_is_chosen() {
+    let mut s = Surf::open(vec![combo(&["gpt-4o", "gpt-5"])]);
+    s.typed("gpt");
+    assert_eq!(s.ps(0).cursor, 0);
+    s.tap(key(KeyCode::Down));
+    let r = closed(s.press(key(KeyCode::Enter)));
+    assert_eq!(
+        r.panels[0].cursor, 1,
+        "the underlying index, never the filtered one"
+    );
+    assert_eq!(r.panels[0].text, "gpt");
+}
+
+/// ESC cancels the SURFACE. There is no search to step out of first — the field is the panel —
+/// and `q` cannot cancel either, because it is a character the field takes.
+#[test]
+fn combo_esc_cancels_the_surface() {
+    let mut s = Surf::open(vec![combo(&["a"])]);
+    s.typed("q");
+    assert_eq!(s.ps(0).search.input.value(), "q");
+    let r = closed(s.press(key(KeyCode::Esc)));
+    assert!(r.cancelled);
+}
+
+/// A combo beside other tabs: Tab still switches, and what was typed is still there on the way
+/// back — a half-typed QUERY is abandoned when focus leaves, but a combo's field is the panel.
+#[test]
+fn combo_keeps_its_text_across_a_tab_switch() {
+    let mut s = Surf::open(vec![combo(&["a", "b"]), list("Context", &["128k", "200k"])]);
+    s.typed("my-model");
+    s.tap(key(KeyCode::Tab));
+    assert_eq!(s.st.focus, 1);
+    s.tap(key(KeyCode::Tab));
+    assert_eq!(s.st.focus, 0);
+    assert_eq!(s.ps(0).search.input.value(), "my-model");
+    let r = closed(s.press(key(KeyCode::Enter)));
+    assert_eq!(r.panels[0].text, "my-model");
+    assert_eq!(
+        r.panels[1].cursor, 0,
+        "the other tab commits what it opened on"
+    );
+}
+
+/// With no candidates at all the combo is simply an input: the list is empty, the typed row is
+/// the only row, and the panel still works exactly the same way.
+#[test]
+fn combo_with_no_candidates_is_an_input() {
+    let mut s = Surf::open(vec![combo(&[])]);
+    assert!(s.hint().contains("no options"), "{:?}", s.hint());
+    s.typed("gpt-4o");
+    let r = closed(s.press(key(KeyCode::Enter)));
+    assert_eq!(r.panels[0].cursor, 0);
+    assert_eq!(r.panels[0].text, "gpt-4o");
+}
+
 // --- the one-shot surface -----------------------------------------------------
 
 /// `run_surface`'s spec contract: an empty spec resolves CANCELLED without ever

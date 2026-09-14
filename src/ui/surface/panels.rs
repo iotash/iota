@@ -13,8 +13,8 @@ use super::Rendered;
 use super::field::input_field;
 use super::search::{SearchMode, highlight_line};
 use super::tabbed::{
-    PICKER_FRAME_ROWS, PICKER_GUTTER, PICKER_ROWS, PanelState, SurfaceState, clamp, panel_height,
-    picker_preview_cols, scroll_percent, search_typing_hint, surface_hint,
+    PICKER_FRAME_ROWS, PICKER_GUTTER, PICKER_ROWS, PanelState, SurfaceState, clamp, combo_hint,
+    panel_height, picker_preview_cols, scroll_percent, search_typing_hint, surface_hint,
 };
 use super::theme::{CYAN, ERR_PREFIX, FAINT, GREEN, RESET, REV_ON, input_bg};
 use crate::ui::facade::{Panel, PanelKind};
@@ -137,6 +137,16 @@ fn render_list(
         } else {
             String::new()
         };
+        if p.combo() && i == ps.items.len() {
+            // The `use "…" as typed` row: the field's own text offered as a row, so Enter on it
+            // is as unambiguous as Enter on any other (see `PanelState::typed_row`).
+            let label = format!("use {:?} as typed", ps.search_draft().trim());
+            rows.push(format!(
+                "{marker}{box_prefix}{}",
+                styled_item(&label, i == ps.cursor, w)
+            ));
+            continue;
+        }
         if p.custom() && i == p.items().len() {
             // The "Other…" row: an inline editor while editing, the saved text once
             // entered, the plain affordance otherwise (tabbed.go:502-538).
@@ -444,8 +454,23 @@ fn render_search_row(
     cursor: &mut Option<(u16, u16)>,
 ) {
     let box_w = clamp(32, 4, w.saturating_sub(24).max(4));
-    let (field, cur_col) = input_field(&ps.search.input, &mut ps.search.input_offset, box_w);
+    let (mut field, cur_col) = input_field(&ps.search.input, &mut ps.search.input_offset, box_w);
     *cursor = Some(cursor_at(1 + cur_col, rows.len()));
+    if p.combo() {
+        // A combo's field is the panel's input, so it says what to type rather than nothing at
+        // all while it is empty; `❯` marks it as one instead of as a search.
+        if ps.search.input.value().is_empty() && !p.placeholder().is_empty() {
+            field = format!(
+                "{FAINT}{}{RESET}",
+                truncate_ansi(p.placeholder(), box_w, "…")
+            );
+        }
+        rows.push(format!(
+            "{CYAN}❯{RESET}{field}{FAINT} · {}{RESET}",
+            combo_hint(p, ps)
+        ));
+        return;
+    }
     rows.push(format!(
         "{CYAN}/{RESET}{field}{FAINT} · {}{RESET}",
         search_typing_hint(p, ps)

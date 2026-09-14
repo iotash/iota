@@ -150,6 +150,11 @@ impl PanelState {
                     0
                 };
                 st.checked.extend(list.checked.iter().copied());
+                // A combo's field is not something the user opens: it is open for the life of the
+                // panel, which is the whole point (see `ListBody::combo`).
+                if list.combo {
+                    st.search.mode = SearchMode::Typing;
+                }
             }
             PanelBody::Slider(slider) => st.value = slider.value,
             PanelBody::Switch { on } => st.on = *on,
@@ -410,6 +415,11 @@ impl SurfaceState {
                 ps.input.value().trim().clone_into(&mut pr.custom);
                 pr.text = String::new();
             }
+            // A combo's field IS the panel's input, so it commits as `text` — with the cursor
+            // saying whether the user meant a row or the text itself (`PanelResult`).
+            if slot.spec.combo() {
+                ps.search.input.value().trim().clone_into(&mut pr.text);
+            }
             out.panels.push(pr);
         }
         out
@@ -424,7 +434,9 @@ impl SurfaceState {
             if ps.editing {
                 ps.editing = false;
             }
-            if ps.search.mode == SearchMode::Typing {
+            // A half-typed QUERY is abandoned on the way out — but a combo's field is the panel
+            // itself, and clearing it would throw away what the user has typed for a tab press.
+            if ps.search.mode == SearchMode::Typing && !p.combo() {
                 ps.search_clear(p);
             }
         }
@@ -586,6 +598,32 @@ pub(crate) fn base_hint(p: &Panel, ps: &PanelState) -> String {
         }
     };
     hint.to_owned()
+}
+
+/// The live feedback beside a COMBO's field: how much of the list the text keeps, whether Enter
+/// will take a row or the text as typed, and the keys. It replaces [`search_typing_hint`] for a
+/// combo, whose field is not a search the user can leave.
+pub(crate) fn combo_hint(p: &Panel, ps: &PanelState) -> String {
+    let total = ps.row_count(p);
+    let typed = ps.cursor == total && ps.typed_row(p).is_some();
+    let enter = if typed {
+        "Enter use typed"
+    } else {
+        "Enter select"
+    };
+    if ps.search_draft().trim().is_empty() {
+        if total == 0 {
+            return format!("no options · {enter} · Esc cancel");
+        }
+        return format!("{total} options · ↑↓ move · {enter} · Esc cancel");
+    }
+    let (shown, ok) = ps.filtered_count(p);
+    let lead = if ok {
+        format!("{shown} of {total}")
+    } else {
+        "no match".to_owned()
+    };
+    format!("{lead} · ↑↓ move · {enter} · Esc cancel")
 }
 
 /// The live feedback beside the query: how much the filter keeps, or how many hits a

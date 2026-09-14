@@ -88,9 +88,46 @@ fn dispatch(st: &mut SurfaceState, key: &KeyEvent) -> Option<TabbedResult> {
 
     // (2) An open query field owns the keyboard — letters must type; every keystroke
     // re-applies the query live (model.go:631-644).
+    //
+    // A COMBO's field is open for the life of the panel, so the two keys that would LEAVE a
+    // search mean something else there: Esc cancels the surface (there is no search to step out
+    // of) and Enter commits the panel. The list is still navigable underneath — ↑↓ and Ctrl+P/N
+    // reach it, ←→ stay with the text cursor, since a model id is long enough to edit inside.
     if st.slots[focus].state.search.mode == SearchMode::Typing {
         if ctrl && key.code == KeyCode::Char('c') {
             return Some(cancelled());
+        }
+        let combo = st.slots[focus].spec.combo();
+        if combo {
+            match (ctrl, key.code) {
+                (_, KeyCode::Esc) => return Some(cancelled()),
+                (_, KeyCode::Enter) => return enter_commit(st),
+                (_, KeyCode::Tab) => {
+                    st.set_focus((focus + 1) % st.slots.len());
+                    return None;
+                }
+                (false, KeyCode::Up) | (true, KeyCode::Char('p')) => {
+                    let (p, ps) = st.focused();
+                    ps.nav(p, -1);
+                    return None;
+                }
+                (false, KeyCode::Down) | (true, KeyCode::Char('n')) => {
+                    let (p, ps) = st.focused();
+                    ps.nav(p, 1);
+                    return None;
+                }
+                (false, KeyCode::PageUp) => {
+                    let (p, ps) = st.focused();
+                    ps.page(p, -1);
+                    return None;
+                }
+                (false, KeyCode::PageDown) => {
+                    let (p, ps) = st.focused();
+                    ps.page(p, 1);
+                    return None;
+                }
+                _ => {}
+            }
         }
         let (p, ps) = st.focused();
         match key.code {
@@ -371,6 +408,9 @@ fn char_key(st: &mut SurfaceState, c: char) -> Option<TabbedResult> {
 /// The Enter commit path (model.go:711-734): Browser descends on a directory (no
 /// commit) / records the chosen file; an empty "Other…" opens the editor instead;
 /// then `enter_advances` moves to the next tab; else commit-all.
+///
+/// A combo's `use "…" as typed` row needs no arm of its own: it commits like any row, and the
+/// result says which one the cursor was on (`PanelResult`).
 fn enter_commit(st: &mut SurfaceState) -> Option<TabbedResult> {
     let focus = st.focus;
     let enter_advances = st.enter_advances;

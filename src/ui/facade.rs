@@ -199,6 +199,17 @@ pub struct ListBody {
     pub custom: bool,
     /// Dim per-row detail column.
     pub details: Vec<String>,
+    /// COMBO mode (`List` only): the query field is open for the life of the panel and doubles as
+    /// an input — it filters the rows as you type, and its text is committable in its own right
+    /// through the `use "…" as typed` row the panel appends while the text matches no row exactly.
+    ///
+    /// It exists because a list is not always the whole answer: the `/model` picker's rows come
+    /// from endpoints that may not implement a listing at all, and an input that only appears once
+    /// something has FAILED is the wrong shape for a source that was never going to answer
+    /// (brain page `config-three-layers`).
+    pub combo: bool,
+    /// The combo field's placeholder, shown dim while the field is empty.
+    pub placeholder: String,
 }
 
 /// A picker's data: a row list plus its preview renderer.
@@ -397,6 +408,17 @@ impl Panel {
         self
     }
 
+    /// As a COMBO: the query field stays open and `placeholder` is what it shows while empty
+    /// (`List`; a no-op elsewhere). See [`ListBody::combo`].
+    #[must_use]
+    pub fn with_combo(mut self, placeholder: impl Into<String>) -> Self {
+        if let PanelBody::List(l) = &mut self.body {
+            l.combo = true;
+            l.placeholder = placeholder.into();
+        }
+        self
+    }
+
     /// With the dim per-row detail column (row panels; a no-op elsewhere).
     #[must_use]
     pub fn with_details(mut self, details: Vec<String>) -> Self {
@@ -489,6 +511,20 @@ impl Panel {
         matches!(&self.body, PanelBody::List(l) | PanelBody::Multi(l) if l.custom)
     }
 
+    /// Whether a `List` panel is a combo (its query field is always open).
+    pub fn combo(&self) -> bool {
+        matches!(&self.body, PanelBody::List(l) if l.combo)
+    }
+
+    /// A combo `List`'s (or an `Input`'s) placeholder; `""` elsewhere.
+    pub fn placeholder(&self) -> &str {
+        match &self.body {
+            PanelBody::List(l) => &l.placeholder,
+            PanelBody::Input(i) => &i.placeholder,
+            _ => "",
+        }
+    }
+
     /// The dim per-row detail column of a row panel; empty elsewhere.
     pub fn details(&self) -> &[String] {
         match &self.body {
@@ -567,6 +603,8 @@ pub struct TabbedSpec {
 
 /// Per-panel commit (tabbed.go:118-134). `cursor`/`checked` ALWAYS index the ORIGINAL items
 /// (search filters never renumber). With `Panel::custom`: `custom` = trimmed input, `text` = `""`.
+/// With `Panel::combo`: `text` = the field's trimmed text, and `cursor == items.len()` — one past
+/// the last row — is the `use "…" as typed` row, i.e. "commit that text, not a listed row".
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PanelResult {
     /// Committed cursor row (an index into the ORIGINAL items).

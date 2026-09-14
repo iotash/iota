@@ -112,6 +112,8 @@ pub struct PanelSummary {
     pub checked: Vec<usize>,
     /// Whether the `"Other…"` Custom row is appended.
     pub custom: bool,
+    /// Whether a `List` panel is a combo (permanent input row; see `ListBody::combo`).
+    pub combo: bool,
     /// Whether row-filter search is available.
     pub search: bool,
     /// Whether a View panel wraps long lines.
@@ -120,7 +122,7 @@ pub struct PanelSummary {
     pub has_refresh: bool,
     /// Prompt line above an Input panel.
     pub prompt: String,
-    /// Input panel placeholder.
+    /// Input panel — or combo `List` — placeholder.
     pub placeholder: String,
     /// Input panel initial text.
     pub text: String,
@@ -168,13 +170,12 @@ impl TabbedSummary {
                     cursor: p.cursor(),
                     checked: p.checked().to_vec(),
                     custom: p.custom(),
+                    combo: p.combo(),
                     search: p.search,
                     wrap: p.wrap(),
                     has_refresh: p.refresh.is_some(),
                     prompt: p.prompt.clone(),
-                    placeholder: p
-                        .as_input()
-                        .map_or_else(String::new, |i| i.placeholder.clone()),
+                    placeholder: p.placeholder().to_owned(),
                     text: p.as_input().map_or_else(String::new, |i| i.text.clone()),
                     height: p.height,
                     input_width: p.as_input().map_or(0, |i| i.width),
@@ -214,6 +215,9 @@ pub struct ScriptedUi {
     /// Shared with the guards/sinks/previews a call hands out, so their later
     /// records land in the same ordered log.
     log: Arc<Mutex<Vec<UiEvent>>>,
+    /// Every cancel scope pushed so far, so a test can do what ESC does to the live facade
+    /// ([`ScriptedUi::fire_cancel_scopes`]).
+    scopes: Mutex<Vec<CancellationToken>>,
     width: AtomicU16,
     height: AtomicU16,
     done: CancellationToken,
@@ -227,6 +231,7 @@ impl ScriptedUi {
         Arc::new(Self {
             script: Mutex::new(script.into()),
             log: Arc::new(Mutex::new(Vec::new())),
+            scopes: Mutex::new(Vec::new()),
             width: AtomicU16::new(80),
             height: AtomicU16::new(24),
             done: CancellationToken::new(),
@@ -238,6 +243,14 @@ impl ScriptedUi {
     /// Every recorded facade call, in order.
     pub fn events(&self) -> Vec<UiEvent> {
         lock(&self.log).clone()
+    }
+
+    /// Cancels every scope pushed so far — what ESC does to the live facade, and the only way a
+    /// test can interrupt an in-flight call that runs under one (a model listing).
+    pub fn fire_cancel_scopes(&self) {
+        for scope in lock(&self.scopes).iter() {
+            scope.cancel();
+        }
     }
 
     /// Sets the size the `width()`/`height()` atomics report.
@@ -411,7 +424,8 @@ impl Ui for ScriptedUi {
         self.record(UiEvent::BusyDetail(detail.to_owned()));
     }
 
-    fn push_cancel_scope(&self, _cancel: CancellationToken) -> ScopeGuard {
+    fn push_cancel_scope(&self, cancel: CancellationToken) -> ScopeGuard {
+        lock(&self.scopes).push(cancel);
         self.record(UiEvent::ScopePush);
         let log = Arc::clone(&self.log);
         ScopeGuard::new(move || lock(&log).push(UiEvent::ScopePop))

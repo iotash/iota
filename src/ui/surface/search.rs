@@ -218,13 +218,38 @@ impl PanelState {
         }
     }
 
+    /// The `use "…" as typed` row of a COMBO panel: index `row_count` — one past the last real
+    /// row — or `None` when the panel is not a combo, the field is empty, or the text already names
+    /// a row exactly (there is nothing for a second way to say the same thing).
+    ///
+    /// The comparison is against the row's PLAIN text, so a label the caller styled still counts as
+    /// an exact match.
+    pub(crate) fn typed_row(&self, p: &Panel) -> Option<usize> {
+        if !p.combo() {
+            return None;
+        }
+        let q = self.search_draft();
+        let q = q.trim();
+        if q.is_empty() {
+            return None;
+        }
+        let n = self.row_count(p);
+        (0..n).all(|i| self.row_text(p, i) != q).then_some(n)
+    }
+
     /// Recomputes the visible-row mapping. `view` is ALWAYS populated (identity when
     /// nothing is filtered), so rendering and navigation have one code path. Two rows
     /// never get filtered out: a Custom panel's `"Other…"`, and every row when the
     /// query matches nothing at all (search.go:228-263).
+    ///
+    /// A COMBO adds the third: its `use "…" as typed` row is appended to the view (never filtered,
+    /// always last), and because that row IS the answer when nothing matched, the no-match fallback
+    /// does not fire while it is there — showing the whole list again would put the cursor on an
+    /// unrelated model at the exact moment the user is typing a name that is not in it.
     pub(crate) fn rebuild_view(&mut self, p: &Panel) {
         let n = self.row_count(p);
         self.view.clear();
+        let typed = self.typed_row(p);
         let q = if p.kind() == PanelKind::View || self.search.mode == SearchMode::Off {
             String::new()
         } else {
@@ -233,6 +258,7 @@ impl PanelState {
         if q.is_empty() {
             self.search.matched = n;
             self.view.extend(0..n);
+            self.view.extend(typed);
             return;
         }
         let other_idx = if p.custom() {
@@ -252,11 +278,12 @@ impl PanelState {
             }
         }
         self.search.matched = hits;
-        if hits == 0 {
+        if hits == 0 && typed.is_none() {
             // Nothing matched: show everything rather than nothing.
             self.view.clear();
             self.view.extend(0..n);
         }
+        self.view.extend(typed);
     }
 
     /// How many rows a live filter keeps; `false` when the query matches nothing (the
@@ -324,7 +351,9 @@ impl PanelState {
                 n > panel_height(p, n)
             }
             PanelKind::List | PanelKind::Multi | PanelKind::Picker | PanelKind::Browser => {
-                if !p.search {
+                // A combo has no `/` entry: its field is already open, and `/` is a character a
+                // model id may well contain (`anthropic/claude-3.5-sonnet`).
+                if !p.search || p.combo() {
                     return false;
                 }
                 let n = self.row_count(p);
