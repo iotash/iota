@@ -250,7 +250,7 @@ broken (X-05, X-06), a capability added (X-07 … X-09, X-14, X-16, X-24, X-25, 
 rebuilt (X-10, X-15).
 
 **Compatibility ended with X-15 (2026-09-10).** A retired key used to stay ACCEPTED with a warning until
-1.0 (`docs/MIGRATION-ROADMAP.md`); it is now an error naming the layer that owns it. The reason is that
+1.0 (`docs/history/MIGRATION-ROADMAP.md`); it is now an error naming the layer that owns it. The reason is that
 there is no released binary whose configs need carrying — iota is a new program, and a config key that
 silently does nothing is worse than one that says what to write instead.
 

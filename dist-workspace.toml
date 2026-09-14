@@ -1,7 +1,7 @@
 [workspace]
 members = ["cargo:."]
 
-# Config for 'dist' — the release pipeline (docs/MIGRATION-ROADMAP.md §2.6).
+# Config for 'dist' — the release pipeline (docs/history/MIGRATION-ROADMAP.md §2.6).
 # `dist init` regenerates .github/workflows/release.yml from this file; edit here, never there.
 [dist]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
