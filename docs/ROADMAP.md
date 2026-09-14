@@ -16,15 +16,15 @@ agent-first、Windows 已支持、0.1.0 与 0.2.0 已发布。它的 67 条步�
 | 1 | `edit_file` 字节保真 | 完成 `7bec70f` | 数据损坏级，已随 0.1.0/0.2.0 发出；brain `port-regressions` R-01 |
 | 2 | 模型选择器接候选集、并发展开 `provider:*`、combo box | 完成 `20e574b`…`ced2b73` | brain `config-three-layers` 的最后一步 |
 | 3 | `NO_COLOR` / `TERM=dumb` / 非 tty 的 ColorMode | 完成 `e0ebf7e` | 管道与 CI 用户直接受影响 |
-| 4 | 告警出口与 `IOTA_LOG` | 进行中 | release 里 `tracing::warn!` 被编译掉，用户永远看不到 |
+| 4 | 告警出口与 `IOTA_LOG` | 完成 `31b9d99` | release 里 `tracing::warn!` 被编译掉，用户永远看不到 |
 | 5 | **Windows TUI 首次人工验证**（`docs/TUI-VERIFY.md` §9） | **未做，需要一台 Windows** | 已发两版 Windows 二进制，零证据；tmux 自动化结构上够不到 |
 | 6 | 删本地 44 个 chatchain 标签 | 完成 2026-09-14 | 一次 `git push --tags` 就污染组织仓库 |
-| 7 | MCP clientInfo 接 `CARGO_PKG_VERSION` | 待做 | `mcp/manager.rs` 写死 `1.0.0`，每个 MCP 服务器都收到错误版本 |
-| 8 | Responses API 空 schema 过滤 | 待做 | chat-completions 那路修了（`openai.rs:180`），`openresponses.rs:274` 没修 |
-| 9 | `IOTA_TMUX_REQUIRED` / `IOTA_SANDBOX_REQUIRED` | 待做 | 本机缺依赖时套件静默跳过并通过；2026-09-13 六轮 CI 修的问题大半由此藏起 |
-| 10 | cargo-deny | 待做 | 供应链检查，一个 `deny.toml` 加一个 CI job |
+| 7 | MCP clientInfo 接 `CARGO_PKG_VERSION` | 完成 `887de83` | `mcp/manager.rs` 写死 `1.0.0`，每个 MCP 服务器都收到错误版本 |
+| 8 | Responses API 空 schema 过滤 | 完成 `a699a60` | chat-completions 那路修了（`openai.rs:180`），`openresponses.rs:274` 没修 |
+| 9 | `IOTA_TMUX_REQUIRED` / `IOTA_SANDBOX_REQUIRED` | 完成 `f385b8c` | 本机缺依赖时套件静默跳过并通过；2026-09-13 六轮 CI 修的问题大半由此藏起 |
+| 10 | cargo-deny | 完成 `d97a95c`（拦下 rustls RUSTSEC-2026-0285，升 0.23.45） | 供应链检查，一个 `deny.toml` 加一个 CI job |
 
-7–10 合起来约半天。
+必须清单只剩第 5 条（Windows TUI 人工验证），其余九条已完成。
 
 ## 2. 该做（不阻塞 1.0）
 
