@@ -3,6 +3,22 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## Unreleased
+
+### Fixed
+
+- **`edit_file` no longer corrupts files that are not UTF-8.** It read the whole
+  file through a lossy decode and wrote the decoded result back, so one edit to
+  a source file in Latin-1, Shift-JIS or GBK replaced every byte in it that is
+  not valid UTF-8 with `U+FFFD` — across the whole file, not only the span
+  being edited — and the diff you were shown came from the same decoded buffer,
+  so it looked like nothing had happened. The search, the uniqueness check and
+  the replacement now run on the file's bytes and the original bytes are
+  written back; only the diff and the numbered snippet are still text, because
+  a terminal renders text. **This bug is in 0.1.0 and 0.2.0**: a file one of
+  those versions edited may have lost its non-ASCII content, and the loss is
+  not recoverable from the diff — check it against version control.
+
 ## 0.2.0 - 2026-09-14
 
 Four parameters — `context_window`, `effort`, `temperature` and `top_p` — were

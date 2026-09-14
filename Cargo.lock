@@ -1445,6 +1445,7 @@ dependencies = [
  "image",
  "iota",
  "jiff",
+ "memchr",
  "nix 0.31.3",
  "pretty_assertions",
  "process-wrap 10.0.0",

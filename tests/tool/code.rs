@@ -77,6 +77,32 @@ fn write_project_file(root: &Path, rel: &str, content: &str) -> PathBuf {
     path
 }
 
+/// `write_project_file` for content a `&str` cannot hold: the fixtures below are files in Latin-1,
+/// Shift-JIS and GBK, which is the whole point of them.
+fn write_project_bytes(root: &Path, rel: &str, content: &[u8]) -> PathBuf {
+    let path = root.join(rel);
+    fs::create_dir_all(path.parent().expect("parent")).expect("parents");
+    fs::write(&path, content).expect("write project file");
+    path
+}
+
+/// An `edit_file` over a byte fixture, through the read gate: write the bytes, `read_file` to stamp the
+/// ledger, then edit. Returns the edit's output and the file as it stands on disk afterwards.
+async fn edit_bytes(
+    root: &Path,
+    tools: &Tools,
+    rel: &str,
+    before: &[u8],
+    args: serde_json::Value,
+) -> (ToolOutput, Vec<u8>) {
+    let path = write_project_bytes(root, rel, before);
+    let read = call(tools, "read_file", json!({ "path": rel })).await;
+    assert!(!read.is_error, "read {rel} = {read:?}");
+    let out = call(tools, "edit_file", args).await;
+    let after = fs::read(&path).expect("read back");
+    (out, after)
+}
+
 /// `os.Chtimes(path, t, t)` for the mtime half.
 fn set_mtime(path: &Path, when: SystemTime) {
     fs::File::options()
@@ -386,6 +412,190 @@ async fn test_code_edit_file() {
         out.is_error && out.text.contains("changed on disk"),
         "stale edit = {out:?}"
     );
+}
+
+// New: `edit_file` is a BYTE operation. Until this landed it decoded the whole file with
+// `String::from_utf8_lossy` and wrote the decoded result back, so one edit anywhere in a Latin-1 file
+// turned every byte in it that is not valid UTF-8 into `EF BF BD` — outside the edited span as much as
+// inside it — and the diff, built from the same lossy buffer, showed nothing. Go never had the bug
+// (`tool/code.go:740-755`: `string(data)` holds arbitrary bytes, `strings.Count`/`Replace` count them,
+// `[]byte(updated)` hands the same bytes back), so these five tests pin a Go behaviour the port lost.
+#[tokio::test]
+async fn test_code_edit_file_preserves_latin1_bytes() {
+    let (_dir, root, tools) = code_project(&[], "");
+    // 0xE9 = é, 0xEF = ï in Latin-1; neither is a valid UTF-8 sequence on its own.
+    let before = b"// caf\xe9 counter\nlet x = 1;\n// na\xefve\n";
+    let (out, after) = edit_bytes(
+        &root,
+        &tools,
+        "latin1.rs",
+        before,
+        json!({ "path": "latin1.rs", "old_string": "let x = 1;", "new_string": "let x = 2;" }),
+    )
+    .await;
+
+    assert!(!out.is_error, "latin-1 edit = {out:?}");
+    assert_eq!(
+        after,
+        b"// caf\xe9 counter\nlet x = 2;\n// na\xefve\n".to_vec(),
+        "every byte outside the edited span must survive the write"
+    );
+}
+
+// New: not a single-byte-encoding accident — a legacy multi-byte encoding's trail bytes are ASCII
+// punctuation (Shift-JIS `ソ` = 83 5C, where 5C is `\`; `本` = 96 7B, where 7B is `{`), which is exactly
+// the shape a decode-and-rewrite mangles and a byte splice cannot.
+#[tokio::test]
+async fn test_code_edit_file_preserves_shift_jis_and_gbk_bytes() {
+    let (_dir, root, tools) = code_project(&[], "");
+
+    // Shift-JIS: 日本語 = 93 FA 96 7B 8C EA, ソ = 83 5C.
+    let before = b"// \x93\xfa\x96\x7b\x8c\xea \x83\x5c\nconst N = 1;\n";
+    let (out, after) = edit_bytes(
+        &root,
+        &tools,
+        "sjis.go",
+        before,
+        json!({ "path": "sjis.go", "old_string": "const N = 1;", "new_string": "const N = 42;" }),
+    )
+    .await;
+    assert!(!out.is_error, "shift-jis edit = {out:?}");
+    assert_eq!(
+        after,
+        b"// \x93\xfa\x96\x7b\x8c\xea \x83\x5c\nconst N = 42;\n".to_vec()
+    );
+
+    // GBK: 中文 = D6 D0 CE C4, 配置 = C5 E4 D6 C3.
+    let before = b"# \xd6\xd0\xce\xc4\xc5\xe4\xd6\xc3\nport = 80\n";
+    let (out, after) = edit_bytes(
+        &root,
+        &tools,
+        "gbk.ini",
+        before,
+        json!({ "path": "gbk.ini", "old_string": "port = 80", "new_string": "port = 8080" }),
+    )
+    .await;
+    assert!(!out.is_error, "gbk edit = {out:?}");
+    assert_eq!(
+        after,
+        b"# \xd6\xd0\xce\xc4\xc5\xe4\xd6\xc3\nport = 8080\n".to_vec()
+    );
+}
+
+// New: fidelity cuts both ways — a file that really does contain U+FFFD keeps its three bytes, and an
+// undecodable byte beside it stays undecodable. The old path collapsed the two into one another: it read
+// both as U+FFFD and wrote `EF BF BD` for each, so the file came back with a replacement character it
+// never had and no way to tell which was which.
+#[tokio::test]
+async fn test_code_edit_file_keeps_real_replacement_characters_apart() {
+    let (_dir, root, tools) = code_project(&[], "");
+    let before = ["genuine: \u{fffd}\n".as_bytes(), b"edit me\nraw: \xff\n"].concat();
+    let (out, after) = edit_bytes(
+        &root,
+        &tools,
+        "mixed.txt",
+        &before,
+        json!({ "path": "mixed.txt", "old_string": "edit me", "new_string": "edited" }),
+    )
+    .await;
+
+    assert!(!out.is_error, "mixed edit = {out:?}");
+    assert_eq!(
+        after,
+        b"genuine: \xef\xbf\xbd\nedited\nraw: \xff\n".to_vec()
+    );
+    // The sharp end of it: the old path decoded BOTH as U+FFFD and wrote `EF BF BD` for each, so this
+    // count was 2 and the lone `0xFF` was gone.
+    assert_eq!(
+        after.windows(3).filter(|w| *w == b"\xef\xbf\xbd").count(),
+        1,
+        "the file had exactly one real U+FFFD and must still have exactly one"
+    );
+}
+
+// New: the needle is a JSON string, so it may be multi-byte UTF-8 — searching bytes must find it and
+// `replace_all` must replace every occurrence, in a file whose OTHER bytes are not UTF-8 at all.
+#[tokio::test]
+async fn test_code_edit_file_multibyte_utf8_old_string() {
+    let (_dir, root, tools) = code_project(&[], "");
+    let before = [
+        "标题: 配置\n说明: 配置文件\n".as_bytes(),
+        b"legacy: \xb1\xea\xcc\xe2\n",
+    ]
+    .concat();
+    let (out, after) = edit_bytes(
+        &root,
+        &tools,
+        "mixed.yaml",
+        &before,
+        json!({
+            "path": "mixed.yaml",
+            "old_string": "配置",
+            "new_string": "設定",
+            "replace_all": true
+        }),
+    )
+    .await;
+
+    assert!(!out.is_error, "multibyte edit = {out:?}");
+    assert!(
+        out.text.contains("2 replacement(s)"),
+        "multibyte edit = {out:?}"
+    );
+    let expected = [
+        "标题: 設定\n说明: 設定文件\n".as_bytes(),
+        b"legacy: \xb1\xea\xcc\xe2\n",
+    ]
+    .concat();
+    assert_eq!(after, expected);
+}
+
+// New: the binary policy, which `edit_file` does not own and never did (Go's does not sniff either).
+// The gate is `read_file`'s NUL sniff plus the read ledger: a file it refuses is a file that was never
+// read, and an unread file cannot be edited. Past the 8000-byte sniff window the sniff says nothing, so
+// such a file IS editable — and there byte fidelity is the whole answer: NULs and undecodable bytes
+// come back exactly as they went in.
+#[tokio::test]
+async fn test_code_edit_file_binary_policy() {
+    let (_dir, root, tools) = code_project(&[], "");
+
+    // A NUL inside the sniff window: read_file refuses, so edit_file never gets a fresh read.
+    write_project_bytes(&root, "early.bin", b"\x00\x01edit me\x00");
+    let out = call(&tools, "read_file", json!({ "path": "early.bin" })).await;
+    assert!(
+        out.is_error && out.text.contains("binary"),
+        "binary read = {out:?}"
+    );
+    let out = call(
+        &tools,
+        "edit_file",
+        json!({ "path": "early.bin", "old_string": "edit me", "new_string": "edited" }),
+    )
+    .await;
+    assert!(
+        out.is_error && out.text.contains("read it with read_file"),
+        "unread binary edit = {out:?}"
+    );
+    assert_eq!(
+        fs::read(root.join("early.bin")).expect("read back"),
+        b"\x00\x01edit me\x00".to_vec(),
+        "a refused edit writes nothing"
+    );
+
+    // A NUL past it: the sniff never sees it, the edit runs, and every byte around it survives.
+    let tail = b"\nmarker\n\x00\xfe tail\n";
+    let before = [&b"x".repeat(8000)[..], tail].concat();
+    let (out, after) = edit_bytes(
+        &root,
+        &tools,
+        "late.bin",
+        &before,
+        json!({ "path": "late.bin", "old_string": "marker", "new_string": "MARKER" }),
+    )
+    .await;
+    assert!(!out.is_error, "late-NUL edit = {out:?}");
+    let expected = [&b"x".repeat(8000)[..], b"\nMARKER\n\x00\xfe tail\n"].concat();
+    assert_eq!(after, expected);
 }
 
 // Go: tool/code_test.go:258

@@ -20,6 +20,17 @@ Seeded from POLICY.md §3 (approved fixes) and §4 (approved intentional diverge
 | F-08 | delegate agent validation order | first failing agent is whichever Go's map visits first | agents validated in name order (`BTreeMap`) | POLICY §3. **Moot since X-01** — the toolset this fixed is gone |
 | F-09 | unparseable tool-call `arguments` | empty map, error ignored | same (empty map) — **no change**, listed for completeness | POLICY §3 |
 
+### A.1 Port regressions — divergences nobody chose (R-01 …)
+
+Rows here are the opposite of every other row on this page: the Rust binary drifted from Go by
+ACCIDENT, the drift reached users, and the fix is a return to Go's behaviour rather than a decision
+about it. They are recorded because a released binary behaved this way, so "iota did X to my files"
+has an answer with a version attached to it.
+
+| id | area | Go behaviour | Rust behaviour | reason |
+|---|---|---|---|---|
+| R-01 | `edit_file` and non-UTF-8 files (**fixed 2026-09-14; shipped broken in 0.1.0 and 0.2.0**) | byte-faithful for free (`tool/code.go:740-755`): a Go `string` holds arbitrary bytes, so `string(data)` → `strings.Count`/`strings.Replace` → `[]byte(updated)` counts, matches and writes back BYTES, and a file in Latin-1, Shift-JIS or GBK survives an edit untouched outside the replaced span | **was** `String::from_utf8_lossy(&data)` decoded the whole file and `updated.as_bytes()` wrote the decoded result back (`src/tool/code/tools.rs:732,753`), so every byte in the file that is not valid UTF-8 became `EF BF BD` — across the WHOLE file, not just the edited span — and the unified diff, built from the same lossy buffer, showed the user nothing. **Now** the count, the uniqueness check and the replacement all run on `&[u8]` via `memchr::memmem` and the original bytes are written back; the needle is `old_string.as_bytes()`, which a JSON string already supplies. Only the three TEXT surfaces stay lossy — the diff artifact, the numbered snippet and the line number — because a terminal renders text; both sides of the diff come from the same conversion, so an undecodable byte outside the edit cancels out instead of inventing a hunk | a port regression, not a decision. `edit_file` still has no binary gate of its own (neither does Go's): `read_file`'s NUL sniff plus the read ledger is the gate, and a file whose first NUL is past the 8000-byte sniff window is editable — now byte-faithfully. Pinned by `tests/tool/code.rs`'s five `test_code_edit_file_*` tests (Latin-1, Shift-JIS + GBK, a real `EF BF BD` beside a lone `0xFF`, a multi-byte UTF-8 `old_string`, the binary policy) and `tools.rs::splice_copies_every_other_byte_through`. Roadmap §3 #1 |
+
 ## B. Approved intentional divergences (POLICY §4)
 
 | id | area | Go behaviour | Rust behaviour | reason |

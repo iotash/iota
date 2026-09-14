@@ -62,6 +62,10 @@ sha2     = { version = "0.11", default-features = false }
 httpdate = "1"
 rand     = { version = "0.9", default-features = false, features = ["std", "std_rng", "thread_rng"] }
 regex    = "1"
+# `edit_file` searches and replaces on `&[u8]`, never on a decoded `String`: a source file in Latin-1,
+# Shift-JIS or GBK must come back off disk byte for byte. `memmem::Finder` is the substring search that
+# works on bytes (and the one `regex`, `globset` and `ignore` already build on — no new crate).
+memchr   = "2"
 globset  = "0.4"
 ignore   = "0.4"
 walkdir  = "2"

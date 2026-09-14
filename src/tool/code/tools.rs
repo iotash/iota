@@ -729,9 +729,17 @@ fn edit_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
         Ok(v) => v,
         Err(t) => return ToolOutput::err(t),
     };
-    let content = String::from_utf8_lossy(&data).into_owned();
 
-    let count = content.matches(old_string).count();
+    // Search and replace on BYTES, never on a decoded string. `String::from_utf8_lossy` used to stand here,
+    // and its result was what got written back: every byte the file held that is not valid UTF-8 — a Latin-1
+    // `é`, a Shift-JIS or GBK lead byte — came back as `EF BF BD`, ACROSS THE WHOLE FILE and not just the
+    // edited span, and the diff built from the same buffer showed none of it. `old_string`/`new_string` are
+    // JSON strings, so they are already valid UTF-8 and their bytes are all the needle we need. Go was
+    // byte-faithful for free (`string(data)` holds arbitrary bytes, `strings.Count`/`Replace` count them);
+    // this is what it costs in Rust.
+    let old_bytes = old_string.as_bytes();
+    let hits: Vec<usize> = memchr::memmem::find_iter(&data, old_bytes).collect();
+    let count = hits.len();
     if count == 0 {
         return ToolOutput::err(format!(
             "old_string not found in {display} — it must match the file content exactly, whitespace included; read the file again if unsure"
@@ -743,27 +751,45 @@ fn edit_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
         ));
     }
 
-    let updated = if replace_all {
-        content.replace(old_string, new_string)
-    } else {
-        content.replacen(old_string, new_string, 1)
-    };
+    let cut = if replace_all { &hits[..] } else { &hits[..1] };
+    let updated = splice(&data, cut, old_bytes.len(), new_string.as_bytes());
     // Truncate-and-write, not atomic — the file exists, so its mode is untouched (Go passes it to os.WriteFile,
     // where O_CREAT ignores it for an existing file).
-    if let Err(e) = write_bytes(&abs, updated.as_bytes()) {
+    if let Err(e) = write_bytes(&abs, &updated) {
         return ToolOutput::err(format!("cannot write {display}: {e}"));
     }
     cs.note_read(&abs);
-    post_diff(cx, &display, &content, &updated);
+    // The file is on disk in full; what is left is for human and model eyes, and a terminal renders TEXT.
+    // Both sides come from the same lossy conversion, so an undecodable byte outside the edit reads as the
+    // same `\u{FFFD}` in both and cancels out of the diff instead of inventing a hunk.
+    let before = String::from_utf8_lossy(&data);
+    let after = String::from_utf8_lossy(&updated);
+    post_diff(cx, &display, &before, &after);
 
     let done = if replace_all { count } else { 1 };
-    // The first replacement lands at old_string's original offset.
-    let at = content.find(old_string).unwrap_or_default();
-    let line = content[..at].matches('\n').count() + 1;
+    // The first replacement lands at old_string's original offset. Newlines survive any decoding, so the
+    // line number counted on bytes is the one the lossy snippet below numbers by.
+    let at = hits.first().copied().unwrap_or_default();
+    let line = memchr::memchr_iter(b'\n', &data[..at]).count() + 1;
     ToolOutput::ok(format!(
         "{done} replacement(s) in {display}\n\n{}",
-        edit_snippet(&updated, line)
+        edit_snippet(&after, line)
     ))
+}
+
+/// Replaces `needle_len` bytes at each of `at` (ascending, non-overlapping) with `replacement`, copying
+/// every other byte through untouched.
+fn splice(data: &[u8], at: &[usize], needle_len: usize, replacement: &[u8]) -> Vec<u8> {
+    let grown = (data.len() + at.len() * replacement.len()).saturating_sub(at.len() * needle_len);
+    let mut out = Vec::with_capacity(grown);
+    let mut cursor = 0;
+    for &start in at {
+        out.extend_from_slice(&data[cursor..start]);
+        out.extend_from_slice(replacement);
+        cursor = start + needle_len;
+    }
+    out.extend_from_slice(&data[cursor..]);
+    out
 }
 
 /// code.go:772-787: a few numbered lines around the first change.
@@ -872,7 +898,9 @@ mod tests {
     use crate::provider::model::JsonObject;
     use serde_json::json;
 
-    use super::{CODE_MAX_OUTPUT, edit_snippet, emit_grep_file, match_include, numbered_window};
+    use super::{
+        CODE_MAX_OUTPUT, edit_snippet, emit_grep_file, match_include, numbered_window, splice,
+    };
 
     fn args(v: serde_json::Value) -> JsonObject {
         match v {
@@ -925,6 +953,28 @@ mod tests {
             "     2\t2\n     3\t3\n     4\t4\n     5\t5\n     6\t6\n     7\t7\n     8\t8"
         );
         assert_eq!(edit_snippet("", 1), "");
+    }
+
+    // The byte splice `edit_file` replaces with: shorter, longer and equal replacements, and every byte
+    // outside a match copied through whatever it is.
+    #[test]
+    fn splice_copies_every_other_byte_through() {
+        let data = b"\xff a \xff a \xff";
+        let hits: Vec<usize> = memchr::memmem::find_iter(data, b"a").collect();
+        assert_eq!(hits, vec![2, 6]);
+        assert_eq!(
+            splice(data, &hits, 1, b"bb"),
+            b"\xff bb \xff bb \xff".to_vec()
+        );
+        assert_eq!(
+            splice(data, &hits[..1], 1, b"bb"),
+            b"\xff bb \xff a \xff".to_vec()
+        );
+        assert_eq!(splice(data, &hits, 1, b""), b"\xff  \xff  \xff".to_vec());
+        assert_eq!(splice(data, &[], 1, b"bb"), data.to_vec());
+        // A match at either end has no bytes on that side to copy.
+        assert_eq!(splice(b"ab", &[0], 1, b"Z"), b"Zb".to_vec());
+        assert_eq!(splice(b"ab", &[1], 1, b"Z"), b"aZ".to_vec());
     }
 
     #[test]

@@ -712,6 +712,12 @@ Safety model:
 - A file must be **read before it can be modified**, and a file that changed
   on disk since it was read must be re-read first — the model can never
   blind-overwrite your edits.
+- An `edit_file` is **byte-exact**: the search and the replacement happen on the
+  file's bytes, so everything outside the replaced span is written back exactly
+  as it was, whatever the file's encoding. A source file in Latin-1, Shift-JIS
+  or GBK comes through an edit unharmed. (What you are shown — the diff and the
+  numbered snippet — is text, so a byte the terminal cannot decode appears there
+  as `�`. The file on disk has the byte.)
 - Every modifying call asks for confirmation in the conversation (allow once / allow
   for this session / deny). Non-interactive `-m` runs reject modifications
   outright. Set `auto_write: true` under `tools: code:` to skip confirmations

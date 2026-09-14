@@ -28,6 +28,7 @@ sha2
 httpdate
 rand
 regex
+memchr
 globset
 ignore
 walkdir
