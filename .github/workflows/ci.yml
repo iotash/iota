@@ -68,8 +68,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      # ci.sh exports these two itself; they are repeated here so the workflow says it out loud:
+      # on these two runners the tmux suite and the sandbox tests MUST run, and a runner that has
+      # lost tmux or bubblewrap fails the job naming it, rather than printing SKIP and passing
+      # (tests/ui_tmux/main.rs, tests/tool/shell.rs).
       - name: Run ci.sh
         if: runner.os != 'Windows'
+        env:
+          IOTA_TMUX_REQUIRED: "1"
+          IOTA_SANDBOX_REQUIRED: "1"
         run: ./ci.sh
 
       # Windows runs no `ci.sh`: that script is the Unix gate, and half of it is things this platform
@@ -80,7 +87,9 @@ jobs:
       # this job exists to answer: does the code compile, and do its tests pass, on Windows.
       #
       # The shell, sandbox and tmux suites skip themselves here by `#[cfg(unix)]` on the module or the
-      # test, never by failing to find a binary — see tests/tool/main.rs.
+      # test, never by failing to find a binary — see tests/tool/main.rs. Neither IOTA_TMUX_REQUIRED
+      # nor IOTA_SANDBOX_REQUIRED is set: this platform has no tmux and no OS sandbox, so there is
+      # nothing for either to require.
       - name: fmt, clippy, docs and tests (Windows)
         if: runner.os == 'Windows'
         shell: bash

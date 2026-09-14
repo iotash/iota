@@ -966,8 +966,8 @@ One package, one module tree: the library under `src/` holds every module and `s
 cargo test                                   # unit + integration tests (no network, no HOME access)
 cargo clippy --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
-IOTA_TMUX=1 cargo test --test ui_tmux        # the real-terminal suite (needs tmux)
-./ci.sh                                      # everything CI runs, in order
+IOTA_TMUX=1 cargo test --test ui_tmux        # the real-terminal suite (needs tmux; skips without it)
+./ci.sh                                      # everything CI runs, in order — tmux and the OS sandbox required
 ```
 
 ## Releases

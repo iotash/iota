@@ -4,7 +4,9 @@
 //! ask [`skip_unless_posix`] first: on Unix, and on any Windows machine with Git Bash, that is always yes and
 //! the test runs; where the interpreter resolved to PowerShell or `cmd.exe` the test prints a `SKIP:` line
 //! instead of failing on a script that shell cannot parse. The two sandbox tests probe the platform sandbox
-//! the same way (no sandbox binary, or a nested sandbox that refuses to nest — and Windows has none at all).
+//! the same way (no sandbox binary, or a nested sandbox that refuses to nest — and Windows has none at all),
+//! unless `IOTA_SANDBOX_REQUIRED=1` is set, which turns that skip into a red test naming what is missing
+//! (`ci.sh` sets it: a machine without bubblewrap fails the gate instead of passing it quietly).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 // The ★ WP00 fixture is included directly: `mod common;` would also pull in the MCP/stub fixtures this file
@@ -145,7 +147,26 @@ fn sandbox_fixture() -> (TempDir, PathBuf, PathBuf, Sandbox) {
     (dir, root, outside, sb)
 }
 
-/// Runs `echo probe` inside the sandbox; false when this environment cannot nest one (Go's `t.Skipf`).
+/// Whether to skip a test that needs the OS sandbox, printing Go's `t.Skipf` line when it does: there is no
+/// sandbox on this platform, or `echo probe` inside one does not run here (a sandbox inside a sandbox, or
+/// bubblewrap without user namespaces). Under `IOTA_SANDBOX_REQUIRED` the same miss is a panic that names it.
+async fn skip_unless_sandboxed(test: &str, sb: &Sandbox, dir: &Path) -> bool {
+    let missing = if !exec::available() {
+        "no OS sandbox on this platform (sandbox-exec on macOS, bwrap on PATH on Linux)"
+    } else if !sandbox_runs(sb, dir).await {
+        "the sandbox does not run in this environment (nested, or bwrap without user namespaces)"
+    } else {
+        return false;
+    };
+    assert!(
+        std::env::var_os("IOTA_SANDBOX_REQUIRED").is_none(),
+        "{test}: IOTA_SANDBOX_REQUIRED is set and {missing}"
+    );
+    println!("SKIP: {test} — {missing}");
+    true
+}
+
+/// Runs `echo probe` inside the sandbox; false when this environment cannot nest one.
 async fn sandbox_runs(sb: &Sandbox, dir: &Path) -> bool {
     let res = run(Options {
         command: "echo probe".to_owned(),
@@ -624,13 +645,8 @@ async fn test_run_cancel_kills_the_tree() {
 // Go: internal/shell/shell_test.go:32
 #[tokio::test]
 async fn test_run_cancel_kills_the_sandboxed_tree() {
-    if !exec::available() {
-        println!("SKIP: test_run_cancel_kills_the_sandboxed_tree — no sandbox on this platform");
-        return;
-    }
     let (_dir, root, _outside, sb) = sandbox_fixture();
-    if !sandbox_runs(&sb, &root).await {
-        println!("SKIP: test_run_cancel_kills_the_sandboxed_tree — sandbox not runnable here");
+    if skip_unless_sandboxed("test_run_cancel_kills_the_sandboxed_tree", &sb, &root).await {
         return;
     }
     let cancel = CancellationToken::new();
@@ -770,13 +786,8 @@ async fn test_run_cancelled() {
 // Go: internal/shell/shell_test.go:101
 #[tokio::test]
 async fn test_sandbox_isolation() {
-    if !exec::available() {
-        println!("SKIP: test_sandbox_isolation — no OS sandbox on this platform");
-        return;
-    }
     let (_dir, root, outside, sb) = sandbox_fixture();
-    if !sandbox_runs(&sb, &root).await {
-        println!("SKIP: test_sandbox_isolation — sandbox not runnable in this environment");
+    if skip_unless_sandboxed("test_sandbox_isolation", &sb, &root).await {
         return;
     }
 

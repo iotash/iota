@@ -14,10 +14,12 @@
 //! `PASS:`/`FAIL:` line each, so a failure names itself.
 //!
 //! **ENV-GATED (single-execution rule).** The suite runs only with `IOTA_TMUX=1` set —
-//! read, never written. `cargo test` therefore never pays for tmux, and
-//! `ci.sh`'s dedicated `IOTA_TMUX=1 cargo test --test ui_tmux` leg is the one
-//! execution. Without the variable, without tmux, or without a built `iota` binary every
-//! test prints a `SKIP:` line and passes.
+//! read, never written. `cargo test` therefore never pays for tmux, and the one `cargo test`
+//! of `ci.sh` is the one execution. Without the variable, without tmux, or without a built
+//! `iota` binary every test prints a `SKIP:` line and passes — unless `IOTA_TMUX_REQUIRED=1`
+//! is set, which enables the suite AND turns every one of those skips into a red test naming
+//! what is missing. `ci.sh` sets it: a machine without tmux fails the gate instead of passing
+//! it quietly (2026-09-13: six rounds of CI for problems the local run had been skipping).
 //!
 //! **Provider.** A dependency-free SSE mock on `127.0.0.1:<ephemeral>`, reached through
 //! config file (`providers.mock` pointed at `http://127.0.0.1:<port>`) — no environment is mutated and
@@ -162,28 +164,40 @@ struct Gate {
     port: u16,
 }
 
-/// Applies the env gate and the probes. `None` means "print a SKIP and pass".
+/// Whether `IOTA_TMUX_REQUIRED` is set: the suite is enabled, and a probe that comes up empty is a
+/// failure rather than a `SKIP:` line.
+fn required() -> bool {
+    std::env::var_os("IOTA_TMUX_REQUIRED").is_some()
+}
+
+/// What happens when something the suite needs is missing: the visible `SKIP:` line — or, under
+/// `IOTA_TMUX_REQUIRED`, a panic that names it, so the test is red instead of quietly green.
+fn skip_or_fail(missing: &str) {
+    assert!(!required(), "IOTA_TMUX_REQUIRED is set and {missing}");
+    say(&format!("SKIP: {missing}"));
+}
+
+/// The env gate and the probes; `Err` names what is missing.
 ///
 /// Order matters: the env gate is first so a sandbox without tmux never pays for the
 /// binary probe, and the binary probe is last because it is the only step that can build.
-fn gate() -> Option<Gate> {
-    if std::env::var_os("IOTA_TMUX").is_none() {
-        say("SKIP: IOTA_TMUX not set");
-        return None;
+fn probe() -> Result<Gate, String> {
+    if !required() && std::env::var_os("IOTA_TMUX").is_none() {
+        return Err("IOTA_TMUX not set".to_owned());
     }
     let tmux = std::env::var("TMUX_BIN").unwrap_or_else(|_| "tmux".to_owned());
     let probe = std::process::Command::new(&tmux).arg("-V").output();
     if !probe.is_ok_and(|o| o.status.success()) {
-        say("SKIP: tmux not found");
-        return None;
+        return Err(format!(
+            "tmux not found (`{tmux} -V` did not run; install tmux or point TMUX_BIN at it)"
+        ));
     }
     if std::process::Command::new("bash")
         .arg("--version")
         .output()
         .is_err()
     {
-        say("SKIP: bash not found");
-        return None;
+        return Err("bash not found".to_owned());
     }
     let resolved = BIN.get_or_init(|| {
         let found = iota_binary();
@@ -195,14 +209,24 @@ fn gate() -> Option<Gate> {
         found
     });
     let Some(binary) = resolved.clone() else {
-        say("SKIP: iota binary not built (run `cargo build --bin iota` first)");
-        return None;
+        return Err("iota binary not built (run `cargo build --bin iota` first)".to_owned());
     };
     let Some(port) = *PORT.get_or_init(|| mock::start().ok()) else {
-        say("SKIP: mock provider could not bind 127.0.0.1");
-        return None;
+        return Err("mock provider could not bind 127.0.0.1".to_owned());
     };
-    Some(Gate { tmux, binary, port })
+    Ok(Gate { tmux, binary, port })
+}
+
+/// Applies the env gate and the probes. `None` means "a SKIP was printed, pass"; under
+/// `IOTA_TMUX_REQUIRED` a miss panics instead ([`skip_or_fail`]).
+fn gate() -> Option<Gate> {
+    match probe() {
+        Ok(gate) => Some(gate),
+        Err(missing) => {
+            skip_or_fail(&missing);
+            None
+        }
+    }
 }
 
 /// Runs one scenario script and fails the test when it reports a failure.
@@ -218,8 +242,11 @@ fn run_scenario(script: &str) {
         script.replace(['/', '.'], "-")
     ));
     let _ = std::fs::remove_dir_all(&scratch);
-    if std::fs::create_dir_all(&scratch).is_err() {
-        say("SKIP: scratch directory could not be created");
+    if let Err(e) = std::fs::create_dir_all(&scratch) {
+        skip_or_fail(&format!(
+            "scratch directory {} could not be created: {e}",
+            scratch.display()
+        ));
         return;
     }
     let dir = tests_dir();
