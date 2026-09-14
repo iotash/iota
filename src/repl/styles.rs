@@ -2,49 +2,62 @@
 //! CodeStyle=36 (tool headers), CodeBlockStyle=32, Bold=1, Underline=4, UserBlock=reverse —
 //! plus the 256-color diff shades keyed on the detected background (chat/styles.go,
 //! chat/diff.go:98-107, chat/theme.go). No styling library anywhere in the frame path.
+//!
+//! Every wrapper asks [`crate::color::enabled`] first and hands the text back UNTOUCHED when
+//! the answer is no — attributes included, because this is fatih/color's `NoColor` rule and
+//! the chat side is text that gets copied, exported and replayed (DIVERGENCES X-27).
 
 /// SGR reset.
 pub(crate) const RESET: &str = "\x1b[0m";
 
+/// `"\x1b[{params}m{s}\x1b[0m"`, or `s` verbatim when color is off.
+fn sgr(params: &str, s: &str) -> String {
+    if crate::color::enabled() {
+        format!("\x1b[{params}m{s}{RESET}")
+    } else {
+        s.to_owned()
+    }
+}
+
 /// Wraps `s` faint (SGR 2) — fatih `DimStyle` twin.
 pub(crate) fn dim(s: &str) -> String {
-    format!("\x1b[2m{s}{RESET}")
+    sgr("2", s)
 }
 
 /// Wraps `s` red (SGR 31) — fatih `ErrorStyle` twin.
 pub(crate) fn red(s: &str) -> String {
-    format!("\x1b[31m{s}{RESET}")
+    sgr("31", s)
 }
 
 /// Wraps `s` cyan (SGR 36) — fatih `CodeStyle` twin (tool-call headers).
 pub(crate) fn cyan(s: &str) -> String {
-    format!("\x1b[36m{s}{RESET}")
+    sgr("36", s)
 }
 
 /// Wraps `s` green (SGR 32) — fatih `CodeBlockStyle` twin.
 pub(crate) fn green(s: &str) -> String {
-    format!("\x1b[32m{s}{RESET}")
+    sgr("32", s)
 }
 
 /// Wraps `s` yellow (SGR 33) — fatih `YellowStyle` twin.
 pub(crate) fn yellow(s: &str) -> String {
-    format!("\x1b[33m{s}{RESET}")
+    sgr("33", s)
 }
 
 /// Wraps `s` bold (SGR 1) — fatih `BoldStyle` twin.
 pub(crate) fn bold(s: &str) -> String {
-    format!("\x1b[1m{s}{RESET}")
+    sgr("1", s)
 }
 
 /// Wraps `s` underlined (SGR 4) — fatih `UnderlineStyle` twin.
 pub(crate) fn underline(s: &str) -> String {
-    format!("\x1b[4m{s}{RESET}")
+    sgr("4", s)
 }
 
 /// Wraps `s` reverse-video (SGR 7) — fatih `UserBlockStyle` twin: fg/bg swap with no
 /// explicit color, so the terminal's own colors form the block.
 pub(crate) fn reverse(s: &str) -> String {
-    format!("\x1b[7m{s}{RESET}")
+    sgr("7", s)
 }
 
 /// The code theme the diff renderer highlights with — the `diffCodeTheme` half of Go's

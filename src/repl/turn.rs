@@ -438,7 +438,7 @@ pub(crate) fn collect_images(
         });
         let caption = format!(
             "🖼 saved: {}",
-            hyperlink(&format!("file://{path}"), &path, true)
+            hyperlink(&format!("file://{path}"), &path, crate::color::enabled())
         );
         match crate::imgterm::render(&att.data, max_cols, IMAGE_MAX_ROWS) {
             Ok(rows) => tr.image(&rows, &caption),
@@ -608,7 +608,7 @@ impl Scaffold {
             mdw: Writer::new(
                 Box::new(sink.clone()),
                 RenderOptions {
-                    color: true,
+                    color: crate::color::enabled(),
                     code_theme: self.code_theme,
                 },
             ),

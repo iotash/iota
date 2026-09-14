@@ -11,6 +11,15 @@
 //! renders, the escapes contribute nothing, and parsing never desyncs. A terminal cell
 //! cannot carry an OSC 8 wrapper, so the link itself does not survive the cell grid —
 //! recorded against T-05 in the deviations log.
+//!
+//! This boundary is also where the frame honours `NO_COLOR` (DIVERGENCES X-28): under
+//! [`crate::color::ColorMode::Off`] a parsed foreground or background never reaches the
+//! cell, while bold/faint/italic/underline/reverse do. Everything the terminal receives —
+//! the frame rows, the committed scrollback, the surfaces — passes through here, so one
+//! gate covers the whole frame side, and `ui::theme` stays what it is: the palette, not
+//! the decision to use it. Crossterm has a `NO_COLOR` gate of its own, but it fires
+//! INSIDE a `\x1b[…m` it has already opened, so every suppressed color used to arrive as
+//! a bare `\x1b[m` — a full reset — and the attributes around it were lost.
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -24,14 +33,17 @@ struct SgrState {
 }
 
 impl SgrState {
-    /// The ratatui style for a span emitted under this state.
-    fn style(self) -> Style {
+    /// The ratatui style for a span emitted under this state; with `color` off the
+    /// foreground and background stay out of it and only the modifiers reach the cell.
+    fn style(self, color: bool) -> Style {
         let mut st = Style::new();
-        if let Some(fg) = self.fg {
-            st = st.fg(fg);
-        }
-        if let Some(bg) = self.bg {
-            st = st.bg(bg);
+        if color {
+            if let Some(fg) = self.fg {
+                st = st.fg(fg);
+            }
+            if let Some(bg) = self.bg {
+                st = st.bg(bg);
+            }
         }
         st.add_modifier(self.mods)
     }
@@ -140,12 +152,19 @@ fn extended(rest: &[u16]) -> (Option<Color>, usize) {
     }
 }
 
-/// Parses one raw ANSI row into a styled ratatui [`Line`].
+/// Parses one raw ANSI row into a styled ratatui [`Line`] under the process's color
+/// decision ([`crate::color::enabled`]).
 ///
 /// Only SGR sequences change state; every other CSI is skipped, OSC sequences (BEL- or
 /// ST-terminated) are passed over zero-width, and a bare two-byte escape is dropped.
 /// The text between escapes lands in spans carrying the accumulated style.
 pub(crate) fn ansi_to_spans(s: &str) -> Line<'static> {
+    ansi_to_spans_with(s, crate::color::enabled())
+}
+
+/// [`ansi_to_spans`] with the color decision made explicit: `false` keeps every parsed
+/// foreground and background out of the cells (the `NO_COLOR` frame).
+pub(crate) fn ansi_to_spans_with(s: &str, color: bool) -> Line<'static> {
     let bytes = s.as_bytes();
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut state = SgrState::default();
@@ -168,7 +187,7 @@ pub(crate) fn ansi_to_spans(s: &str) -> Line<'static> {
                             .iter()
                             .all(|c| c.is_ascii_digit() || *c == b';')
                     {
-                        flush(&mut spans, &mut text, state);
+                        flush(&mut spans, &mut text, state, color);
                         state.apply(&s[i + 2..j]);
                     }
                     i = j + 1;
@@ -201,14 +220,65 @@ pub(crate) fn ansi_to_spans(s: &str) -> Line<'static> {
         text.push(ch);
         i += ch.len_utf8();
     }
-    flush(&mut spans, &mut text, state);
+    flush(&mut spans, &mut text, state, color);
     Line::from(spans)
 }
 
 /// Emits the pending text as one span under `state` (no-op for empty text).
-fn flush(spans: &mut Vec<Span<'static>>, text: &mut String, state: SgrState) {
+fn flush(spans: &mut Vec<Span<'static>>, text: &mut String, state: SgrState, color: bool) {
     if text.is_empty() {
         return;
     }
-    spans.push(Span::styled(std::mem::take(text), state.style()));
+    spans.push(Span::styled(std::mem::take(text), state.style(color)));
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::style::{Color, Modifier, Style};
+
+    use super::ansi_to_spans_with;
+
+    fn spans(s: &str, color: bool) -> Vec<(String, Style)> {
+        ansi_to_spans_with(s, color)
+            .spans
+            .into_iter()
+            .map(|sp| (sp.content.into_owned(), sp.style))
+            .collect()
+    }
+
+    /// The row every `NO_COLOR` frame assertion is about: a named color, a 256-color
+    /// background, a truecolor foreground and three attributes in one line.
+    const ROW: &str = "\x1b[36m❯ \x1b[0m\x1b[48;5;236mfield\x1b[0m \x1b[2;38;2;1;2;3mhint\x1b[0m \x1b[1;4;7mtab\x1b[0m";
+
+    // X-28: with color off, no cell carries a foreground or a background — and every
+    // attribute the same row carried is still there.
+    #[test]
+    fn no_color_keeps_attributes_and_drops_every_color() {
+        let got = spans(ROW, false);
+        for (text, style) in &got {
+            assert_eq!(style.fg, None, "{text:?} kept a foreground");
+            assert_eq!(style.bg, None, "{text:?} kept a background");
+        }
+        let hint = got.iter().find(|(t, _)| t == "hint").expect("hint span");
+        assert!(hint.1.add_modifier.contains(Modifier::DIM));
+        let tab = got.iter().find(|(t, _)| t == "tab").expect("tab span");
+        assert!(tab.1.add_modifier.contains(Modifier::BOLD));
+        assert!(tab.1.add_modifier.contains(Modifier::UNDERLINED));
+        assert!(tab.1.add_modifier.contains(Modifier::REVERSED));
+        // The text itself is untouched: the gate is on the style, never on the glyphs.
+        let text: String = got.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(text, "❯ field hint tab");
+    }
+
+    // The same row with color on is the control: the colors the gate removes are there.
+    #[test]
+    fn color_on_carries_every_color() {
+        let got = spans(ROW, true);
+        assert_eq!(got[0].1.fg, Some(Color::Cyan));
+        let field = got.iter().find(|(t, _)| t == "field").expect("field span");
+        assert_eq!(field.1.bg, Some(Color::Indexed(236)));
+        let hint = got.iter().find(|(t, _)| t == "hint").expect("hint span");
+        assert_eq!(hint.1.fg, Some(Color::Rgb(1, 2, 3)));
+        assert!(hint.1.add_modifier.contains(Modifier::DIM));
+    }
 }

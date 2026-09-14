@@ -7,6 +7,7 @@ pub mod agents;
 pub mod app;
 pub mod chat;
 pub mod cmd;
+pub mod color;
 pub(crate) mod config;
 pub mod host;
 pub mod imgterm;

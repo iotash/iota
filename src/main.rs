@@ -9,6 +9,7 @@ use std::{io::Write, sync::Arc};
 use clap::Parser;
 use iota::app::HostDirs;
 use iota::cmd::{Cli, CliError, io::Streams, run, signals};
+use iota::color::ColorMode;
 use iota::vars::{EnvSource, ProcessEnv};
 use tokio_util::sync::CancellationToken;
 
@@ -20,6 +21,8 @@ fn main() {
         e.exit();
     }
     let dirs = HostDirs::from_env();
+    // `NO_COLOR` / `TERM=dumb` / a piped stdout: decided once here, read by every style helper.
+    iota::color::init(ColorMode::from_process());
     let mut io = Streams::process();
     let outcome = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()

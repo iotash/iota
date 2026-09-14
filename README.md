@@ -204,6 +204,12 @@ Two more choose what the `shell` toolset runs:
 | `IOTA_SHELL` | The interpreter for every shell call: an absolute path, or a name on `PATH`. Honoured on **every** platform, so `IOTA_SHELL=zsh` works on a Mac too. The arguments follow the name — `-c` for the POSIX family, `-NoLogo -NoProfile -NonInteractive -Command` for `pwsh`/`powershell`, `/C` for `cmd`. Naming something unrunnable fails the call rather than falling back |
 | `IOTA_GIT_BASH_PATH` | Windows only: where Git Bash's `bash.exe` is, when it is not where the `git.exe` on your `PATH` implies |
 
+And one decides whether the terminal gets colors at all:
+
+| Variable | What it does |
+|----------|--------------|
+| `NO_COLOR` | Set to any non-empty value ([no-color.org](https://no-color.org)), it turns color off for the run — as does `TERM=dumb`, or a stdout that is not a terminal. The chat itself (replies, tool output, diffs) is then plain text with no escape sequence at all; the frame around it (the composer, the status row, the panels) keeps bold, faint and reverse video so it stays readable, but drops every color. Images still render in color: their pixels are the picture |
+
 ### Config File
 
 iota supports YAML config files for persistent settings, models and agents.

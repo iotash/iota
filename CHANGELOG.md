@@ -5,6 +5,17 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ## Unreleased
 
+### Added
+
+- **`NO_COLOR` is honoured — and so are `TERM=dumb` and a piped stdout.** None of
+  the three did anything before: every style was hard-wired on, so a terminal
+  that asked for no color still got bold, faint and underline, and a bare reset
+  where each color had been. Now the decision is made once at startup and the
+  chat — replies, tool output, diffs, links — is plain text with no escape
+  sequence at all, while the frame around it (composer, status row, panels)
+  keeps its bold, faint and reverse video and drops every color, so it stays
+  readable. Images still render in color; their pixels are the picture.
+
 ### Fixed
 
 - **`edit_file` no longer corrupts files that are not UTF-8.** It read the whole

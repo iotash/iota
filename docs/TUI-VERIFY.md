@@ -294,6 +294,37 @@ agents:
       `openai`: one line must say the session keeps its endpoint and name the `iota run … -M
       relay:…` that starts one there — and the model must NOT change.
 
+## 8c. `NO_COLOR` — NOT YET RUN
+
+**Status: not one item below has been executed.** Added with the color switch (MIGRATION-ROADMAP
+§3 #2; DIVERGENCES X-27, X-28). L1 pins the parser (`src/color.rs`) and the frame's byte→cell gate
+(`src/ui/spans.rs`), L3 scans a whole scripted run for escapes (`tests/nocolor/main.rs`) and L4
+reads a committed row back from a real terminal and greps the raw byte stream
+(`tests/ui_tmux/scenarios/16-nocolor.sh`). What is left for a human is legibility: whether a frame
+with no color is still a frame you can use.
+
+```sh
+NO_COLOR=1 target/release/iota          # then the same session with TERM=dumb
+```
+
+- [ ] **8c.1 The frame reads.** With `NO_COLOR=1`, the separators are faint, the `❯` prompt is
+      plain, the status row is plain, and a committed user block is still reverse video. Nothing
+      is invisible and no row is painted in a color.
+- [ ] **8c.2 The chat is bare.** Ask for a markdown reply with a heading, a list, a table and a
+      fenced code block: every row is plain text — no bold heading, no faint bullet, no syntax
+      colors — and the layout (indents, borders) is unchanged.
+- [ ] **8c.3 A diff is legible without its shading.** Run a tool that edits a file: the `+`/`-`
+      rows arrive as `NNN + code` / `NNN - code` with no background block, aligned as before.
+- [ ] **8c.4 The surfaces still show their cursor.** `/model`, `/tools`, `/session`: the cursor
+      row keeps its `▸` marker and a focused tab chip is still reverse video, so every surface
+      is navigable with no cyan anywhere.
+- [ ] **8c.5 The input field has an edge.** `/model`'s combo field and `/file`'s field have no
+      background tint now; the `❯` and the hint must still make the field's extent obvious.
+- [ ] **8c.6 Images keep their pixels.** An image reply renders its half-blocks in color — the
+      one thing `NO_COLOR` deliberately does not strip.
+- [ ] **8c.7 `TERM=dumb` behaves the same.** Repeat 8c.1–8c.3 with `TERM=dumb` instead of the
+      variable (the emulator's own TERM is what the app sees, so set it on the command line).
+
 ## 9. Windows Terminal — NOT YET RUN
 
 **Status: not one item below has been executed.** There is no Windows machine here, and
@@ -421,8 +452,8 @@ Dogfood until dry: one report → one fix → repeat, ranked as the Go migration
 Fill one row per terminal per release. An empty cell means *not yet verified* — never
 assume a pass.
 
-| terminal | version | §1 IME | §2 scrollback | §3 flicker | §4 orphans | §5 title | §6 edges | §7 host | §8 jobs | §8b combo | verdict |
-|---|---|---|---|---|---|---|---|---|---|---|---|
+| terminal | version | §1 IME | §2 scrollback | §3 flicker | §4 orphans | §5 title | §6 edges | §7 host | §8 jobs | §8b combo | §8c no color | verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | Ghostty | | | | | | | | | | |
 | Terminal.app | | | | | | | | | | |
 | iTerm2 | | | | | | | | | | |

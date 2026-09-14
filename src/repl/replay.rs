@@ -51,7 +51,11 @@ fn linked_path(img_dir: Option<&Path>, filename: &str) -> Option<String> {
         return None;
     }
     let p = p.to_string_lossy().into_owned();
-    Some(hyperlink(&format!("file://{p}"), &p, true))
+    Some(hyperlink(
+        &format!("file://{p}"),
+        &p,
+        crate::color::enabled(),
+    ))
 }
 
 /// Renders one replayed attachment (chat/replay.go:163-192 `echoImage`): the half-block rows at
@@ -270,7 +274,7 @@ fn render_markdown(content: &str, width: usize) -> String {
             width,
         }),
         crate::markdown::RenderOptions {
-            color: true,
+            color: crate::color::enabled(),
             code_theme: crate::markdown::CodeTheme::Monokai,
         },
     );

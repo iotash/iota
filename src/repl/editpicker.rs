@@ -116,7 +116,11 @@ pub(crate) fn image_choice_details(
             let shown = shorten_path(&path, width.saturating_sub(4), home);
             format!(
                 "🖼 {}",
-                crate::markdown::link::hyperlink(&format!("file://{path}"), &shown, true)
+                crate::markdown::link::hyperlink(
+                    &format!("file://{path}"),
+                    &shown,
+                    crate::color::enabled(),
+                )
             )
         })
         .collect()

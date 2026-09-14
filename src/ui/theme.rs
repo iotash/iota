@@ -13,6 +13,12 @@
 //!
 //! Chat-side TEXT colors live in `crate::repl::styles`; markdown/code rendering owns its
 //! own theme in `crate::markdown::style`. One home per layer.
+//!
+//! `NO_COLOR` is not decided here (DIVERGENCES X-28): these fragments are the palette, and
+//! whether the terminal gets the colors in it is settled once at the byte→cell boundary,
+//! `super::spans::ansi_to_spans`, which under `crate::color::ColorMode::Off` drops every
+//! foreground and background and keeps the attributes — so `FAINT` and `REV_ON` still
+//! shape the frame when `CYAN` and `RED` have gone.
 
 /// Faint/dim SGR (theme.go:22).
 pub(crate) const FAINT: &str = "\x1b[2m";

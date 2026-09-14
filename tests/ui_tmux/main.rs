@@ -49,6 +49,7 @@
 //! | `13-edit-picker.sh` | T3 §7 | — (images: widget, half-blocks, `/edit` picker, `/redo`) |
 //! | `14-osc-signals.sh` | T3 §7 | — (`pipe-pane`: mode 1004 and the OSC 9;4 progress bytes) |
 //! | `15-model-combo.sh` | Phase 1b §10 | — (`/model`: the combo's keys, filter, typed row, ESC) |
+//! | `16-nocolor.sh` | Roadmap §3 #2 | — (`NO_COLOR`: a bare chat side, a frame with attributes and no colors) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -376,4 +377,13 @@ fn tmux_osc_progress_and_focus_bytes() {
 #[test]
 fn tmux_model_combo() {
     run_scenario("15-model-combo.sh");
+}
+
+/// Roadmap §3 #2 — `NO_COLOR=1` in a real terminal (DIVERGENCES X-27, X-28): a committed
+/// markdown heading carries no SGR at all, the whole byte stream carries no foreground or
+/// background color, and the frame still stands. A control run without the variable first
+/// proves both assertions are live.
+#[test]
+fn tmux_no_color() {
+    run_scenario("16-nocolor.sh");
 }
