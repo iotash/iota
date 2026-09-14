@@ -359,7 +359,8 @@ fn the_surviving_flags_parse() {
     assert_eq!(a.max_turns, -3);
     assert_eq!(a.output_format.as_deref(), Some("json"));
     assert!(Cli::try_parse_from(["iota", "--version"]).is_err_and(|e| {
-        e.kind() == clap::error::ErrorKind::DisplayVersion && e.to_string() == "iota 0.1.0\n"
+        e.kind() == clap::error::ErrorKind::DisplayVersion
+            && e.to_string() == format!("iota {}\n", env!("CARGO_PKG_VERSION"))
     }));
 }
 

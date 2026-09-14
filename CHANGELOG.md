@@ -3,6 +3,72 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## 0.2.0 - 2026-09-14
+
+Four parameters — `context_window`, `effort`, `temperature` and `top_p` — were
+read once, when a session started, and never looked at again. They now resolve
+from layers, at every moment that can change the answer. The rule is one
+sentence: when the config speaks the config decides; when the config is silent
+your hand-set value stands.
+
+### What changes
+
+- **`/model` re-evaluates the four parameters.** Switching model used to move
+  the provider's model id and the id in the session meta, and nothing else: a
+  chat that went from a 400k model to a 128k one kept counting against 400k,
+  and an `effort` inherited from the entry it left followed it to a model that
+  had never asked for one. The switch now asks the model it arrives at what it
+  declares, applies whatever moved to the provider and the token budget, and
+  says so one notice at a time. Choosing the FIRST model does the same — a run
+  that started on a `provider:*` wildcard had no entry to read them from until
+  then.
+- **A value the chat inherited is dropped on a switch; one you set by hand is
+  kept.** Which is the same rule from the session's side. A window that came
+  from a declaration gives way to the built-in default on a model that declares
+  none, rather than silently following you to a model half its size; a window
+  you typed in `/model` survives. Adjusting a knob there is the answer for what
+  no declaration covers, not a permanent override of one — to change a value
+  for good, write it into the config.
+- **`defer_mode` is not one of the four.** The deferring wrapper is built once,
+  around the MCP dispatcher, and there is no seam to rebuild it mid-chat, so
+  switching to a model that asks for another mode prints a note that this
+  session keeps the one it started under. A `context_window:` on the model
+  being switched to that does not parse is a warning for the same reason: the
+  chat is already running, and the honest answer to a bad value is to leave
+  that key silent and say so.
+
+### What is new
+
+- **`agents.<name>.context_window`.** The same key as the model's, parsed the
+  same way, and the top layer: an agent that knows how long its conversations
+  run says so once instead of forking a `models:` entry per usage.
+- **Three tiers, two evaluating moments.** `agents:` first, then what the model
+  the chat is RUNNING declares, then — lowest — the value the session is
+  already running under. A new session and a model switch are the only two
+  moments that evaluate them.
+- **A resume is not one of them.** `iota resume` restores the bundle's own
+  values and the origin of each, so an old session continues exactly as it was
+  and a config edited in between reaches it the first time you switch models
+  inside it. Only a parameter the bundle never recorded is evaluated.
+
+### On disk
+
+- `meta.json` gains `top_p`, which now replays beside effort and temperature as
+  it could not while nothing wrote it down, and a record of where each of the
+  four values came from — a config declaration, your own hand, or the built-in
+  default. Both keys are omitted when they have nothing to say, so a bundle
+  written by 0.1.0 keeps its byte shape and still resumes; its silence is read
+  as *every value here is the user's own*, the reading that cannot lose
+  something a person chose.
+
+### Upgrading
+
+Nothing to edit: a 0.1.0 config loads unchanged and a 0.1.0 session resumes.
+The one habit worth revisiting is a knob set in `/model` and relied on to
+outlast a model switch — it now yields to a model or an agent that declares
+that parameter. If it should always hold, it belongs in `models:` or `agents:`,
+and [the config file](https://iota.sh/docs/config-file) has the table.
+
 ## 0.1.0 - 2026-09-13
 
 The first tagged release of iota as a Rust binary. It is an agent CLI: you

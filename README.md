@@ -937,8 +937,8 @@ A release is cut by pushing a tag. Creating a Release by hand on the GitHub web
 page builds nothing — the tag is the trigger:
 
 ```bash
-git tag -a v0.1.0 -m "v0.1.0"
-git push origin v0.1.0
+git tag -a v0.2.0 -m "v0.2.0"   # the tag is `v` + the `version` in Cargo.toml
+git push origin v0.2.0
 ```
 
 `.github/workflows/release.yml` does the rest: it builds the five targets of
