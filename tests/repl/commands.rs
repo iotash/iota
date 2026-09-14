@@ -903,9 +903,11 @@ async fn tools_opens_two_live_tabs() {
 // ---------------------------------------------------------------------------
 
 /// Go: chat/run.go:1159-1177 — a background connect failure lands in the scrollback once,
-/// FIRST LINE ONLY; a successful connect says nothing.
+/// FIRST LINE ONLY; a successful connect says nothing — unless its merge skipped a
+/// duplicate wire name, which is one dim notice per line (DIVERGENCES X-29; it used to be a
+/// `tracing::warn!` nobody received).
 #[tokio::test]
-async fn mcp_failures_reach_the_transcript() {
+async fn mcp_failures_and_warnings_reach_the_transcript() {
     let (tx, rx) = tokio::sync::mpsc::channel(4);
     let f = Fixture::new(vec![input(""), Reply::Interrupted]);
     let session = f.session(None);
@@ -914,12 +916,21 @@ async fn mcp_failures_reach_the_transcript() {
     tx.send(McpEvent {
         name: "docs".to_owned(),
         error: None,
+        warnings: Vec::new(),
     })
     .await
     .expect("send");
     tx.send(McpEvent {
         name: "fs".to_owned(),
         error: Some("dial tcp: refused\nstack line 2".to_owned()),
+        warnings: Vec::new(),
+    })
+    .await
+    .expect("send");
+    tx.send(McpEvent {
+        name: "gh".to_owned(),
+        error: None,
+        warnings: vec!["duplicate wire tool name mcp__gh__echo, skipping".to_owned()],
     })
     .await
     .expect("send");
@@ -940,6 +951,10 @@ async fn mcp_failures_reach_the_transcript() {
     assert!(
         !lines.iter().any(|l| l.contains("stack line 2")),
         "only the first line of the error is shown: {lines:?}"
+    );
+    assert!(
+        lines.contains(&"⚠ MCP gh: duplicate wire tool name mcp__gh__echo, skipping".to_owned()),
+        "the merge warning reaches the user: {lines:?}"
     );
 }
 

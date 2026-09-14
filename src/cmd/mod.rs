@@ -501,9 +501,10 @@ impl VarResolver for EnvResolver {
 }
 
 /// The MCP stage of `run` (root.go:216-233, headless half): `Manager::new` + `connect_all`, then one
-/// `Warning: mcp server {name}: {err}` per failed server (DIVERGENCES I-05). Returns the manager (so `run` can
-/// `close()` it on every exit path) and the [`assemble::McpPart`] `build_dispatcher` takes — `None` when no
-/// server is configured.
+/// `Warning: mcp server {name}: {err}` per failed server (DIVERGENCES I-05) and one
+/// `Warning: mcp server {name}: {warning}` per non-fatal warning a connected server merged with — a skipped
+/// duplicate wire name (X-29). Returns the manager (so `run` can `close()` it on every exit path) and the
+/// [`assemble::McpPart`] `build_dispatcher` takes — `None` when no server is configured.
 async fn connect_mcp(
     configs: Vec<ServerConfig>,
     opts: crate::mcp::ManagerOptions,
@@ -525,6 +526,9 @@ async fn connect_mcp(
                     status.name,
                     status.err.as_deref().unwrap_or_default()
                 ));
+            }
+            for warning in status.warnings() {
+                io.warning(&format!("Warning: mcp server {}: {warning}", status.name));
             }
         }
     }

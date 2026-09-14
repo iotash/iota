@@ -9,6 +9,7 @@ pub mod chat;
 pub mod cmd;
 pub mod color;
 pub(crate) mod config;
+pub mod diag;
 pub mod host;
 pub mod imgterm;
 pub mod llm;

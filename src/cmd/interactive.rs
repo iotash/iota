@@ -662,9 +662,9 @@ fn mcp_hooks(
     }
 }
 
-/// `ServerStatus` → `McpEvent` (chat/run.go:1159-1177): the loop only ever reports failures, so a connected
-/// server carries `None`. The mapping runs in its own task so the receiver handed to `RunParams` is the
-/// `McpEvent` channel the reporter expects.
+/// `ServerStatus` → `McpEvent` (chat/run.go:1159-1177): a connected server carries `None` for the error and
+/// whatever non-fatal warnings its merge produced (X-29). The mapping runs in its own task so the receiver
+/// handed to `RunParams` is the `McpEvent` channel the reporter expects.
 fn map_events(
     mut statuses: tokio::sync::mpsc::Receiver<crate::mcp::ServerStatus>,
 ) -> tokio::sync::mpsc::Receiver<McpEvent> {
@@ -672,8 +672,9 @@ fn map_events(
     tokio::spawn(async move {
         while let Some(st) = statuses.recv().await {
             let event = McpEvent {
-                name: st.name,
+                warnings: st.warnings(),
                 error: st.err.filter(|_| !st.connected),
+                name: st.name,
             };
             if tx.send(event).await.is_err() {
                 return;

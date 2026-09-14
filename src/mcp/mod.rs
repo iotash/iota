@@ -17,7 +17,7 @@ pub(crate) use status::ServerStatus;
 /// In-process MCP servers for the unit tests (rmcp `server` dev-feature). Go: `mcp/manager_test.go` `startEchoServer`.
 #[cfg(test)]
 pub(crate) mod testutil {
-    use std::sync::{Arc, Mutex, PoisonError};
+    use std::sync::Arc;
 
     use crate::BoxFuture;
     use crate::provider::model::JsonObject;
@@ -129,54 +129,5 @@ pub(crate) mod testutil {
         fn close(&self) -> BoxFuture<'_, ()> {
             Box::pin(std::future::ready(()))
         }
-    }
-
-    /// Runs `f` with a thread-local `tracing` subscriber that records every event's formatted `message` (the Go
-    /// `logf` capture of `TestManagerSkipsDuplicateWireName`).
-    pub(crate) fn capture_warnings(f: impl FnOnce()) -> Vec<String> {
-        struct Capture(Mutex<Vec<String>>);
-
-        struct MessageVisitor(String);
-
-        impl tracing::field::Visit for MessageVisitor {
-            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                if field.name() == "message" {
-                    self.0 = format!("{value:?}");
-                }
-            }
-        }
-
-        impl tracing::Subscriber for Capture {
-            fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
-                true
-            }
-
-            fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-                tracing::span::Id::from_u64(1)
-            }
-
-            fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-
-            fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {
-            }
-
-            fn event(&self, event: &tracing::Event<'_>) {
-                let mut visitor = MessageVisitor(String::new());
-                event.record(&mut visitor);
-                self.0
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .push(visitor.0);
-            }
-
-            fn enter(&self, _span: &tracing::span::Id) {}
-
-            fn exit(&self, _span: &tracing::span::Id) {}
-        }
-
-        let capture = Arc::new(Capture(Mutex::new(Vec::new())));
-        tracing::subscriber::with_default(Arc::clone(&capture), f);
-        let messages = capture.0.lock().unwrap_or_else(PoisonError::into_inner);
-        messages.clone()
     }
 }

@@ -47,7 +47,17 @@ serde_json   = { version = "1", features = ["raw_value"] }
 serde_norway = "0.9"
 thiserror    = "2"
 anyhow       = "1"
-tracing      = { version = "0.1", default-features = false, features = ["std", "release_max_level_off"] }
+# `tracing` is the DEVELOPER's channel: rmcp, hyper, process-wrap and the two `debug!`s in
+# `src/shell/exec.rs` speak it, and nobody hears it unless `IOTA_LOG=<path>` installs the file
+# subscriber (`src/diag.rs`). Anything a USER must see never travels on it — it goes through
+# `cmd::io::Streams::warning` or the transcript (DIVERGENCES X-29). Until 2026-09-15 this line
+# said `release_max_level_off`, which compiled every event out of the shipped binary: the one
+# `tracing::warn!` that WAS meant for the user (a duplicate MCP wire name) therefore never
+# reached anyone. With the switch opt-in there is no reason to strip the release build — an
+# unsubscribed event costs one relaxed atomic load at the call site — so the ceiling is now
+# `debug`: `trace` is the one level nothing here ever asks for, and dropping it keeps the
+# dependencies' per-frame chatter (h2, hyper) out of the binary.
+tracing      = { version = "0.1", default-features = false, features = ["std", "release_max_level_debug"] }
 # http / mcp
 # ONE TLS backend, no choice: rustls with its default aws-lc-rs provider (`reqwest/rustls`; the
 # platform verifier comes with it). rmcp pairs it with its `reqwest` feature. Both MCP transports,
@@ -107,6 +117,11 @@ image = { version = "=0.25.10", default-features = false, features = ["png", "jp
 # `header`/`Method`/`StatusCode`/`Version`/`Url` but not the crate (lib.rs:279-282), so naming
 # `http::Response` needs the direct dependency; already in Cargo.lock (1.5.0) — no new transitive crate.
 http = "1"
+# The `IOTA_LOG=<path>` file subscriber (`src/diag.rs`): tracing's own consumer, built with only
+# `fmt` + `std` — no `ansi` (a log file never wants SGR), no `env-filter` (the level is fixed, its
+# `regex`/`matchers` pull stays out), no `tracing-log` bridge. Brings `sharded-slab` and
+# `thread_local` (the registry's span storage); nothing else is new to Cargo.lock.
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
 
 # Process supervision, the one thing `src/shell/exec.rs` cannot write itself: this crate forbids `unsafe`, so
 # the syscalls that own a process TREE have to come from somewhere. Both entries are that somewhere, and

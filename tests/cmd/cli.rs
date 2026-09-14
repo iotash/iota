@@ -383,6 +383,69 @@ fn cli_version() {
     }
 }
 
+// ---------------------------------------------------------------- `IOTA_LOG`
+
+/// DIVERGENCES X-29: `IOTA_LOG=<path>` is the developer's tap — the file subscriber goes in before the run
+/// and every line carries a timestamp, a level and a target; the run itself is unchanged (stdout is exactly
+/// the version line, stderr empty). The pipe is proved by its own first event; the levels and the format are
+/// the roadmap's backlog.
+#[test]
+fn cli_iota_log_writes_diagnostics_to_the_file() {
+    let (dir, home) = project();
+    let log = dir.path().join("diag").join("iota.log");
+    fs::create_dir_all(log.parent().unwrap()).expect("log dir");
+    let mut cmd = iota(dir.path(), &home);
+    cmd.arg("version").env("IOTA_LOG", &log);
+    let o = cmd.output().expect("run");
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    assert_eq!(out(&o), format!("iota {}\n", env!("CARGO_PKG_VERSION")));
+    assert_eq!(err(&o), "", "the tap never speaks on stderr");
+    let logged = fs::read_to_string(&log).expect("the log file was created");
+    let first = logged.lines().next().unwrap_or_default();
+    assert!(
+        first.contains(" INFO iota::diag: iota diagnostics on version=\"")
+            && first.starts_with("20")
+            && first.contains('Z'),
+        "the first line is the subscriber's own hello, timestamped: {first:?}"
+    );
+    assert!(
+        !logged.contains('\x1b'),
+        "a log file carries no SGR: {logged:?}"
+    );
+
+    // A second run APPENDS: the file is a log, not a snapshot.
+    let mut again = iota(dir.path(), &home);
+    again.arg("version").env("IOTA_LOG", &log);
+    again.output().expect("run");
+    assert_eq!(
+        fs::read_to_string(&log).unwrap().lines().count(),
+        2,
+        "one hello per run"
+    );
+}
+
+/// A path that cannot be opened is ONE warning on stderr and nothing else changes: the run answers, exit 0.
+/// The switch is a side channel; the run never depends on it.
+#[test]
+fn cli_iota_log_unopenable_path_warns_and_runs() {
+    let (dir, home) = project();
+    let log = dir.path().join("no-such-dir").join("iota.log");
+    let mut cmd = iota(dir.path(), &home);
+    cmd.arg("version").env("IOTA_LOG", &log);
+    let o = cmd.output().expect("run");
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    assert_eq!(out(&o), format!("iota {}\n", env!("CARGO_PKG_VERSION")));
+    let stderr = err(&o);
+    assert!(
+        stderr.starts_with(&format!(
+            "Warning: IOTA_LOG: cannot log to {}: ",
+            log.display()
+        )) && stderr.lines().count() == 1,
+        "{stderr:?}"
+    );
+    assert!(!log.exists());
+}
+
 // ---------------------------------------------------------------- `iota list` / `iota config`
 
 /// The listings read the config and stop — no key, no network, exit 0.
@@ -774,5 +837,44 @@ async fn cli_mcp_failed_server_warning() {
         "{stderr}"
     );
     // The run still answered: a server that failed to connect degrades, it does not abort.
+    assert_eq!(out(&o), format!("{}\n", transcript::REPLY));
+}
+
+/// A minimal MCP server in POSIX `sh` that advertises the SAME tool twice (`tests/mcp/manager.rs`'s
+/// `SH_SERVER`, with a second `echo`): newline-delimited JSON-RPC over stdin/stdout, exiting on stdin EOF.
+#[cfg(unix)]
+const SH_SERVER_DUPLICATE_TOOL: &str = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"fake","version":"1.0.0"}}}' ;;
+    *'"method":"tools/list"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"echo","description":"first","inputSchema":{"type":"object"}},{"name":"echo","description":"second","inputSchema":{"type":"object"}}]}}' ;;
+  esac
+done
+"#;
+
+/// DIVERGENCES X-29: a server whose tool list collides on a wire name reaches the user as one `Warning:` line
+/// on stderr — from the BINARY, whatever profile it was built with. It used to be a `tracing::warn!` that no
+/// subscriber received and that the release build compiled out.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_mcp_duplicate_wire_name_warning() {
+    let server = MockServer::start().await;
+    transcript::openai_transcript(&server).await;
+    let (dir, home) = project();
+    write_agent_config(dir.path(), "openai", &server.uri(), "gpt-test");
+    let script = dir.path().join("dup-server.sh");
+    fs::write(&script, SH_SERVER_DUPLICATE_TOOL).expect("write the server script");
+    let mut cmd = iota(dir.path(), &home);
+    cmd.args(["-m", "hi", "--mcp", &format!("sh {}", script.display())]);
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    assert_eq!(
+        err(&o),
+        "Warning: mcp server sh: duplicate wire tool name mcp__sh__echo, skipping\n"
+    );
+    // The first registration won and the run went on to answer.
     assert_eq!(out(&o), format!("{}\n", transcript::REPLY));
 }

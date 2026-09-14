@@ -320,8 +320,13 @@ impl Manager {
     /// manager.go:303-335 — the test seam. `pending = false`; `Failed` → `servers[idx] = status`; `Connected` →
     /// session index = position among connected; `segment = assign_segment(name)` (`sanitize_name_segment`, then
     /// `{base}_{n}` from n = 2); for each tool: `wire = compose_wire_name(&segment, raw)`; duplicate → skipped
-    /// (`tracing::warn!`, first wins); else push + index; `servers[idx] = status` with the segment. Returns the
-    /// merged status, which is what [`connect_background`](Self::connect_background) publishes.
+    /// (first wins) and recorded in `status.duplicates` for the host to warn about; else push + index;
+    /// `servers[idx] = status` with the segment. Returns the merged status, which is what
+    /// [`connect_background`](Self::connect_background) publishes.
+    ///
+    /// The duplicate used to be a `tracing::warn!` — which no subscriber received and which `release_max_level_off`
+    /// compiled out of the shipped binary, so no user ever saw it (DIVERGENCES X-29). Warnings meant for the user
+    /// travel in the status now; `tracing` is the developer's diagnostic channel (`IOTA_LOG`).
     pub fn merge_result(&self, idx: usize, r: ServerResult) -> ServerStatus {
         let mut st = self.state.write().unwrap_or_else(PoisonError::into_inner);
         let status = match r {
@@ -344,11 +349,7 @@ impl Manager {
                     let raw = td.name;
                     let wire = compose_wire_name(&status.segment, &raw);
                     if st.tool_index.contains_key(&wire) {
-                        tracing::warn!(
-                            "Warning: MCP server {}: duplicate wire tool name {}, skipping",
-                            status.name,
-                            wire
-                        );
+                        status.duplicates.push(wire);
                         continue;
                     }
                     st.tools.push(ToolDef {
@@ -435,7 +436,7 @@ mod tests {
     use super::{Manager, ServerResult};
     use crate::mcp::config::ServerConfig;
     use crate::mcp::status::ServerStatus;
-    use crate::mcp::testutil::{EchoSession, capture_warnings, echo_server, options};
+    use crate::mcp::testutil::{EchoSession, echo_server, options};
     use crate::mcp::transport::Session;
 
     /// A manager over `n` pending stdio configs named `names[i]` (never connected; the tests drive `merge_result`).
@@ -581,35 +582,30 @@ mod tests {
         m.close().await;
     }
 
-    // Go: mcp/manager_test.go:333
+    // Go: mcp/manager_test.go:333 — the skipped duplicate travels in the status (X-29), not in a log line.
     #[test]
     fn test_manager_skips_duplicate_wire_name() {
         let m = manager(&["srv"]);
         let session: Arc<dyn Session> = Arc::new(EchoSession {
             id: "srv".to_owned(),
         });
-        let warnings = capture_warnings(|| {
-            m.merge_result(
-                0,
-                connected("srv", session, vec![echo_def("first"), echo_def("second")]),
-            );
-        });
+        let merged = m.merge_result(
+            0,
+            connected("srv", session, vec![echo_def("first"), echo_def("second")]),
+        );
 
         let defs = m.tools();
         assert_eq!(defs.len(), 1, "duplicate should be skipped: {defs:?}");
         assert_eq!(defs[0].name, "mcp__srv__echo");
         assert_eq!(defs[0].description, "first", "the first registration wins");
-        assert_eq!(warnings.len(), 1, "expected one warning, got {warnings:?}");
-        assert!(
-            warnings[0].contains("mcp__srv__echo"),
-            "warning should name the duplicate: {warnings:?}"
-        );
+        assert_eq!(merged.duplicates, vec!["mcp__srv__echo"]);
         assert_eq!(
-            warnings[0],
-            "Warning: MCP server srv: duplicate wire tool name mcp__srv__echo, skipping"
+            merged.warnings(),
+            vec!["duplicate wire tool name mcp__srv__echo, skipping"]
         );
-        // The status still counts every listed tool (Go parity).
+        // The status still counts every listed tool (Go parity), and the published snapshot is the merged one.
         let s = &m.servers()[0];
+        assert_eq!(s, &merged);
         assert_eq!(s.tool_count, 2);
         assert_eq!(s.tools, vec!["echo", "echo"]);
     }

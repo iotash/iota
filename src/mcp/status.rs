@@ -1,5 +1,6 @@
 //! Per-server status snapshot (mcp/manager.go:32-55): what `Manager::servers()` reports and what the host prints as
-//! `Warning: mcp server <name>: <err>`.
+//! `Warning: mcp server <name>: <err>` — and, per skipped duplicate, `Warning: mcp server <name>: duplicate wire
+//! tool name <wire>, skipping` (DIVERGENCES X-29).
 
 use crate::mcp::naming::{WIRE_NAME_PREFIX, compose_wire_name};
 
@@ -22,6 +23,10 @@ pub struct ServerStatus {
     pub tools: Vec<String>,
     /// Failure text (a `McpError` Display); `None` on success.
     pub err: Option<String>,
+    /// Wire names the merge SKIPPED because an earlier tool already registered them (the first registration
+    /// wins, manager.go:303-335). A server listing the same tool twice is the realistic way to get one; the host
+    /// turns each into a user-visible warning (DIVERGENCES X-29).
+    pub duplicates: Vec<String>,
 }
 
 impl ServerStatus {
@@ -41,5 +46,15 @@ impl ServerStatus {
         } else {
             String::new()
         }
+    }
+
+    /// The NON-FATAL warnings a host prints for this server, one line per skipped duplicate and without any
+    /// prefix — the connect failure is `err`, reported on its own. Both outlets print exactly these lines:
+    /// `Warning: mcp server <name>: <line>` on the headless stderr, `⚠ MCP <name>: <line>` in the transcript.
+    pub fn warnings(&self) -> Vec<String> {
+        self.duplicates
+            .iter()
+            .map(|wire| format!("duplicate wire tool name {wire}, skipping"))
+            .collect()
     }
 }

@@ -24,6 +24,8 @@ fn main() {
     // `NO_COLOR` / `TERM=dumb` / a piped stdout: decided once here, read by every style helper.
     iota::color::init(ColorMode::from_process());
     let mut io = Streams::process();
+    // `IOTA_LOG=<path>`: the developer's diagnostic tap, installed before anything can emit.
+    iota::diag::install_from_env(&ProcessEnv, &mut |w| io.warning(&w));
     let outcome = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

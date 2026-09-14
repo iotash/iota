@@ -83,6 +83,9 @@ pub struct McpEvent {
     pub name: String,
     /// The failure, when the connect failed.
     pub error: Option<String>,
+    /// Non-fatal warnings a connected server merged with (`ServerStatus::warnings`: a skipped duplicate wire
+    /// name), each relayed as one dim `⚠ MCP <name>: …` notice (DIVERGENCES X-29).
+    pub warnings: Vec<String>,
 }
 
 /// MCP display hooks handed in by the binary.

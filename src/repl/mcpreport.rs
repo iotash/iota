@@ -3,7 +3,8 @@
 //! Servers connect in the background, so a failure has no turn to belong to: it is
 //! relayed into the scrollback once, as a transcript error, by a task that selects the
 //! event channel against the facade's shutdown token. Successful connects say nothing —
-//! they show up in `/tools`.
+//! they show up in `/tools` — unless the merge had something to warn about (a skipped
+//! duplicate wire name, DIVERGENCES X-29), which lands as one dim notice per line.
 
 use std::sync::Arc;
 
@@ -25,7 +26,10 @@ pub(crate) async fn report_mcp_failures(
         tokio::select! {
             ev = events.recv() => {
                 let Some(ev) = ev else { return };
-                let Some(err) = ev.error else { continue }; // connected: nothing to report
+                for warning in &ev.warnings {
+                    tr.notice(&format!("⚠ MCP {}: {warning}", ev.name));
+                }
+                let Some(err) = ev.error else { continue }; // connected: nothing more to report
                 let first = err.split('\n').next().unwrap_or_default();
                 tr.error(&format!("⚠ MCP {} failed: {first}", ev.name));
             }

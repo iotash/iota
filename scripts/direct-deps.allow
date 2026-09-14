@@ -17,6 +17,7 @@ serde_norway
 thiserror
 anyhow
 tracing
+tracing-subscriber
 # http / mcp
 reqwest
 rmcp

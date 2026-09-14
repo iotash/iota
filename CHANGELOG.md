@@ -15,8 +15,17 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   sequence at all, while the frame around it (composer, status row, panels)
   keeps its bold, faint and reverse video and drops every color, so it stays
   readable. Images still render in color; their pixels are the picture.
+- **`IOTA_LOG=<path>` writes iota's internal diagnostics to a file** — its own
+  events at debug level, its libraries' at info, one timestamped line each. It
+  is a developer's tap: nothing you need to see depends on it.
 
 ### Fixed
+
+- **An MCP server that lists the same tool twice now says so.** The duplicate
+  was skipped silently: the warning went to a log channel nothing listened to,
+  and the release build had compiled it out entirely. It is now one
+  `Warning: mcp server <name>: duplicate wire tool name <wire>, skipping` line
+  on stderr for a `-m` run, and a `⚠ MCP <name>: …` notice in the chat.
 
 - **`edit_file` no longer corrupts files that are not UTF-8.** It read the whole
   file through a lossy decode and wrote the decoded result back, so one edit to
