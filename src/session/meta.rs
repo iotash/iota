@@ -9,6 +9,7 @@ use std::path::Path;
 use crate::provider::error::InvalidEffort;
 use crate::provider::{Effort, ImageGenParams};
 use crate::session::error::SessionError;
+use crate::session::params::ParamSources;
 
 /// `sessionSchemaVersion` (chat/session.go:34).
 pub const SESSION_SCHEMA_VERSION: i64 = 1;
@@ -58,6 +59,10 @@ pub struct SessionMeta {
     /// Recorded temperature; `None` omits the key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
+    /// Recorded `top_p`; `None` omits the key. Newer than the Go format: the knob was config-only until the
+    /// layering made it one of the four a session carries (brain page `model-param-layering`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f64>,
     /// Recorded context window; 0 omits the key.
     #[serde(skip_serializing_if = "is_zero_i64")]
     pub context_window: i64,
@@ -96,6 +101,16 @@ pub struct SessionMeta {
     /// provider and model the meta carries (see `crate::session::warn_if_session_agent_is_gone`).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub agent: String,
+    /// Where each of the four layered parameters got its value: a config declaration, the user's own hand,
+    /// or the built-in default. It is what lets a later `/model` switch tell a window this session INHERITED
+    /// from a model (drop it when the next model declares none) from one the user typed (keep it).
+    ///
+    /// `None` is a bundle written before the key existed, and the difference is not cosmetic: a bundle that
+    /// HAS the key has said everything, so a parameter it records no value for is one the session
+    /// deliberately runs without, while in one that lacks it only a value actually present was ever
+    /// recorded. [`SessionMeta::sources`] is the reading; [`ParamSources::LEGACY`] is what absence means.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub param_sources: Option<ParamSources>,
     /// Records written to the log, system messages included, compaction markers excluded. ALWAYS emitted.
     pub message_count: i64,
     /// Keys a future Go build wrote that this build does not model — preserved verbatim across a Rust
@@ -173,6 +188,47 @@ impl SessionMeta {
     /// The recorded image-generation knobs; an empty value is unset.
     pub fn image_gen_params(&self) -> ImageGenParams {
         ImageGenParams::from_raw(&self.aspect_ratio, &self.image_size, &self.negative_prompt)
+    }
+
+    /// Where each layered parameter's value came from, with a pre-layering bundle read as
+    /// [`ParamSources::LEGACY`].
+    pub fn sources(&self) -> ParamSources {
+        self.param_sources.unwrap_or(ParamSources::LEGACY)
+    }
+
+    /// Whether this bundle's record of the four layered parameters is COMPLETE — i.e. whether it was
+    /// written by a build that knows the layering, so a parameter with no value is a deliberate absence
+    /// rather than a gap for the config to fill.
+    pub fn records_params(&self) -> bool {
+        self.param_sources.is_some()
+    }
+
+    /// The recorded context window; `None` when the bundle never recorded one.
+    ///
+    /// This — and its three siblings below — is what "the bundle HAS this parameter" means for the resume
+    /// rule: a recorded value is restored with its source, a missing one is evaluated from the config. The
+    /// test is the VALUE being there, not the source tag, because the Go-era `omitempty` spellings (`0`,
+    /// `""`, absent) are all the same absence and only the value can say which parameters a pre-layering
+    /// bundle actually carried.
+    pub fn recorded_window(&self) -> Option<u64> {
+        u64::try_from(self.context_window).ok().filter(|w| *w > 0)
+    }
+
+    /// The recorded effort; `None` when the bundle never recorded one.
+    pub fn recorded_effort(&self) -> Option<&str> {
+        Some(&self.effort)
+            .filter(|e| !e.is_empty())
+            .map(String::as_str)
+    }
+
+    /// The recorded temperature; `None` when the bundle never recorded one.
+    pub fn recorded_temperature(&self) -> Option<f64> {
+        self.temperature
+    }
+
+    /// The recorded `top_p`; `None` when the bundle never recorded one.
+    pub fn recorded_top_p(&self) -> Option<f64> {
+        self.top_p
     }
 }
 

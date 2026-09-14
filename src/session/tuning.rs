@@ -61,6 +61,7 @@ pub fn replay_session_settings(
 ///
 /// - **temperature**: only when the caller did not fix one (`overrides.temperature`) and the session recorded one;
 /// - **effort**: whenever the session recorded one — Go has no effort flag, so there is no skip;
+/// - **`top_p`**: whenever the session recorded one (no flag, no skip);
 /// - **image**: `set_image_output(true)` only when `meta.image`;
 /// - **image generation**: only when `{aspect_ratio, image_size, negative_prompt}` is non-empty, so an
 ///   absent meta leaves the config defaults alone (the effort convention);
@@ -93,6 +94,13 @@ pub fn apply_session_tuning(
                 meta.effort
             )),
         }
+    }
+    // `top_p` has no flag and no `/model` tab; a bundle carries it only because the layering made it one of
+    // the four a session runs under, and a resume is where that record is handed back to the provider.
+    if let Some(top_p) = meta.top_p
+        && let Some(tunable) = provider.as_top_p_tunable()
+    {
+        tunable.set_top_p(Some(top_p));
     }
     if meta.image
         && let Some(image) = provider.as_image_tunable()

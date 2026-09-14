@@ -21,6 +21,7 @@ pub(crate) mod error;
 pub(crate) mod id;
 pub(crate) mod loader;
 pub(crate) mod meta;
+pub(crate) mod params;
 pub(crate) mod rawcodec;
 pub(crate) mod record;
 pub(crate) mod store;
@@ -36,6 +37,7 @@ pub use loader::{
 pub use meta::{
     META_FILE, META_TMP_FILE, SESSION_SCHEMA_VERSION, SessionMeta, now_rfc3339, parse_rfc3339,
 };
+pub use params::{LayeredParams, Param, ParamSource, ParamSources};
 pub use rawcodec::{blob_to_raw, raw_to_blob};
 pub use record::{
     ATTACHMENTS_DIR, DATA_REF_PREFIX, IMAGES_DIR, LOG_FILE, ROLE_COMPACTION, SessionAttachment,

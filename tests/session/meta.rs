@@ -3,7 +3,7 @@
 
 use iota::provider::ProviderKind;
 use iota::provider::model::Message;
-use iota::session::{META_FILE, META_TMP_FILE, SessionMeta};
+use iota::session::{META_FILE, META_TMP_FILE, ParamSource, ParamSources, SessionMeta};
 use pretty_assertions::assert_eq;
 
 use crate::common::temp_store;
@@ -114,6 +114,55 @@ fn unknown_meta_keys_survive_a_rust_rewrite() {
             "v",
         ]
     );
+}
+
+/// `param_sources:` and `top_p:` — the layering's half of the meta (brain page `model-param-layering`):
+/// both are omitted from a bundle that has nothing to say, both survive a rewrite, and a bundle without the
+/// sources key reads back as the user's own so a later model switch keeps its values.
+#[test]
+fn meta_records_where_each_layered_parameter_came_from() {
+    let (_home, store) = temp_store();
+    let mut writer = store.create(KIND, "m", None, "", "", false, "").unwrap();
+    let id = writer.id().to_owned();
+    writer.append_messages(&[Message::user("hi")]).unwrap();
+    let dir = writer.dir().to_path_buf();
+
+    // Nothing layered: the file keeps the byte shape every bundle written before the key had.
+    let text = std::fs::read_to_string(dir.join(META_FILE)).unwrap();
+    assert!(!text.contains("param_sources"), "{text}");
+    assert!(!text.contains("top_p"), "{text}");
+    // ...and it reads back as the conservative legacy answer, which is what that absence MEANS.
+    let legacy = SessionMeta::read(&dir).unwrap();
+    assert_eq!(legacy.param_sources, None, "the key is not there at all");
+    assert_eq!(legacy.sources(), ParamSources::LEGACY);
+    assert_eq!(legacy.sources().effort, ParamSource::User);
+    assert_eq!(legacy.top_p, None);
+
+    // A session that ran under declarations records them, and the pair round-trips through a rewrite.
+    writer
+        .update_meta(|m| {
+            m.top_p = Some(0.9);
+            m.effort = "high".to_owned();
+            m.param_sources = Some(ParamSources {
+                context_window: ParamSource::Builtin,
+                effort: ParamSource::Config,
+                temperature: ParamSource::Builtin,
+                top_p: ParamSource::Config,
+            });
+        })
+        .unwrap();
+    drop(writer);
+    let text = std::fs::read_to_string(dir.join(META_FILE)).unwrap();
+    assert!(text.contains("\"top_p\": 0.9"), "{text}");
+    assert!(text.contains("\"effort\": \"config\""), "{text}");
+
+    let (mut writer, _) = store.resume(&id, KIND).unwrap();
+    writer.append_messages(&[Message::assistant("ok")]).unwrap();
+    drop(writer);
+    let after = store.load(&id, KIND).unwrap().meta;
+    assert_eq!(after.top_p, Some(0.9));
+    assert_eq!(after.sources().effort, ParamSource::Config);
+    assert_eq!(after.sources().context_window, ParamSource::Builtin);
 }
 
 /// `agent:` records how a session was STARTED. It is omitted when the run named no agent — so every bundle
