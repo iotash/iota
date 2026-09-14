@@ -240,6 +240,60 @@ to run something slow in the background (`sleep 20; echo done`).
       folds back into the composer as usual — and the job must still be running (its notice
       arrives later). Then `/quit`: the job must be gone (`ps` for the command).
 
+## 8b. The `/model` combo box — NOT YET RUN
+
+**Status: not one item below has been executed.** Added with the combo box (MIGRATION-ROADMAP
+Phase 1b §10); L1 pins the key ladder (`src/ui/surface/tests.rs`), L3 the command
+(`tests/repl/commands.rs`) and L4 the real-terminal shape (`tests/ui_tmux/scenarios/15-model-combo.sh`).
+What is left for a human is the half a capture cannot see: where the REAL cursor sits in a
+field that shares its row with a hint, and what an IME does over it.
+
+Set up once — an agent whose candidate set mixes sources, one of which cannot answer:
+
+```yaml
+providers:
+  openai: {key: ${env:OPENAI_API_KEY}}
+  relay:  {type: openai, key: x, url: "http://127.0.0.1:9"}   # nothing listens: the failing source
+models:
+  gpt5: openai:gpt-5.2
+agents:
+  default: {models: [gpt5, "openai:*", "relay:*"]}
+```
+
+- [ ] **8b.1 The field is open from the first frame.** `/model`: the Model tab's last row is
+      `❯` + a dim `model name (e.g. gpt-4o)` placeholder + the hint (`N models · ↑↓ move · Enter
+      select · Esc cancel`). The real terminal cursor must sit in the FIELD, immediately after
+      the `❯` — not in the composer above and not on the list.
+- [ ] **8b.2 Typing filters, and `/` is a character.** Type `gpt`: the list narrows live and the
+      hint counts what it keeps (`2 of 14`). Type `/` (as in `anthropic/claude-3.5-sonnet`): it
+      must go INTO the field — no search prompt opens, nothing else claims it.
+- [ ] **8b.3 The typed row.** With text that matches no row exactly, the last row reads
+      `use "…" as typed` and is navigable. Type a name nothing matches at all: that row must be
+      the ONLY row left (not the whole list again) and the cursor must be on it, with the hint
+      reading `Enter use typed`.
+- [ ] **8b.4 Arrows move the list, ←→ move the text.** ↑↓ (and Ctrl+P/N) walk the rows while the
+      field keeps its text; ←→ (and Ctrl+A/E) move the text cursor INSIDE the field — watch the
+      real cursor, which is the only thing that shows the difference.
+- [ ] **8b.5 Enter, both ways.** Enter on a listed row switches to it; Enter on the typed row
+      switches to what you typed. Each prints exactly one `Model switched to …`, and the status
+      row follows.
+- [ ] **8b.6 ESC cancels the surface.** With text in the field, ESC must close the whole surface
+      (not just clear the field) and restore the pane exactly — no switch, no ghost rows. `q` is
+      a character here and must type.
+- [ ] **8b.7 The failing source.** With `relay:*` in the set, opening `/model` must still list
+      everything else, with `relay: …` as the panel's dim prompt row — and NOTHING printed over
+      the transcript before the surface opened.
+- [ ] **8b.8 ESC during the fetch.** Press ESC while `Fetching available models from 2
+      providers` is up: the command must abandon quietly and at once — no waiting out the dead
+      endpoint's timeout, no surface afterwards.
+- [ ] **8b.9 IME in the field.** With a CJK input method, compose into the combo field: the
+      preedit must render at the field's cursor (§1's law, in a one-line field that shares its
+      row with a hint), committing must filter the list, and the typed row must carry the
+      composed text verbatim.
+- [ ] **8b.10 A row from another provider.** Pick a `relay:…` row while the session runs on
+      `openai`: one line must say the session keeps its endpoint and name the `iota run … -M
+      relay:…` that starts one there — and the model must NOT change.
+
 ## 9. Windows Terminal — NOT YET RUN
 
 **Status: not one item below has been executed.** There is no Windows machine here, and
@@ -367,12 +421,12 @@ Dogfood until dry: one report → one fix → repeat, ranked as the Go migration
 Fill one row per terminal per release. An empty cell means *not yet verified* — never
 assume a pass.
 
-| terminal | version | §1 IME | §2 scrollback | §3 flicker | §4 orphans | §5 title | §6 edges | §7 host | §8 jobs | verdict |
-|---|---|---|---|---|---|---|---|---|---|---|
-| Ghostty | | | | | | | | | |
-| Terminal.app | | | | | | | | | |
-| iTerm2 | | | | | | | | | |
-| kitty | | | | | | | | | |
+| terminal | version | §1 IME | §2 scrollback | §3 flicker | §4 orphans | §5 title | §6 edges | §7 host | §8 jobs | §8b combo | verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Ghostty | | | | | | | | | | |
+| Terminal.app | | | | | | | | | | |
+| iTerm2 | | | | | | | | | | |
+| kitty | | | | | | | | | | |
 | Alacritty | | | | | | | | | |
 | VS Code | | | | | | | | | |
 | xterm | | | | | | | | | |

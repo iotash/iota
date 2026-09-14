@@ -48,6 +48,7 @@
 //! | `12-debug.sh` | T3 §7 | — (`/debug`: the recording switch and the two-tab inspector) |
 //! | `13-edit-picker.sh` | T3 §7 | — (images: widget, half-blocks, `/edit` picker, `/redo`) |
 //! | `14-osc-signals.sh` | T3 §7 | — (`pipe-pane`: mode 1004 and the OSC 9;4 progress bytes) |
+//! | `15-model-combo.sh` | Phase 1b §10 | — (`/model`: the combo's keys, filter, typed row, ESC) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -260,7 +261,7 @@ fn run_scenario(script: &str) {
     );
 }
 
-// ------------------------------------------------------------------ the fourteen scenarios
+// ------------------------------------------------------------------ the fifteen scenarios
 
 /// L4 #1 — startup: banner, then the frame; separators span the terminal; the composer is
 /// the one input row between them; the real cursor sits at the draft's logical column and
@@ -367,4 +368,12 @@ fn tmux_image_widget_and_edit_picker() {
 #[test]
 fn tmux_osc_progress_and_focus_bytes() {
     run_scenario("14-osc-signals.sh");
+}
+
+/// Phase 1b §10 — `/model`'s combo box in a real terminal: the candidate set of a mixed agent
+/// (a `models:` entry, one wildcard that answers and one that cannot), typing as a live filter,
+/// the `use "…" as typed` row that makes Enter unambiguous, arrow navigation and ESC.
+#[test]
+fn tmux_model_combo() {
+    run_scenario("15-model-combo.sh");
 }

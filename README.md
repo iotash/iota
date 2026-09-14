@@ -258,7 +258,7 @@ Wherever a model is named — `agents.<name>.models`, a `models:` shorthand,
 |------|-------|
 | `sonnet` | the `models:` entry called `sonnet` |
 | `anthropic:claude-sonnet-4` | that model id, on that provider (everything after the FIRST colon is the id, so `openrouter:anthropic/claude-3.5-sonnet` works) |
-| `anthropic:*` | every model the provider lists, fetched at startup |
+| `anthropic:*` | every model the provider lists, fetched when the picker opens |
 
 **No space after the colon.** `- anthropic: claude-x` is a YAML *mapping*, not
 a string; iota says so rather than failing with a type error.
@@ -358,6 +358,27 @@ iota run default -M "deepseek:*"
 `-M` accepts a candidate's name, a bare model id, or `provider:id`. A model
 outside the agent's `models:` list is a warning, not a refusal — the list is
 advice about what works well here, not a whitelist.
+
+#### The candidate set is what `/model` offers
+
+`agents.<name>.models` is also the row list of the `/model` picker. Entries and
+inline `provider:id`s are rows on the spot; every `provider:*` in the set is a
+listing request, and **several of them go out at once** — the wait is the
+slowest endpoint, not the sum of them, and ESC cancels all of them together.
+
+A source that cannot answer costs **only its own rows**: `provider: <what went
+wrong>` appears as the panel's dim subtitle and everything else is listed as if
+that source had never been asked. Nothing takes the picker away from you,
+because the picker is a combo box — its input row is open from the first frame,
+filters the list as you type, and commits what you typed through a `use "…" as
+typed` row. A provider that does not implement a model listing at all (most
+relays) is therefore an ordinary case, not a failure mode.
+
+Rows on the endpoint the session is talking to are written bare; rows from
+another provider carry it (`relay:vendor/model`). Choosing one of those is
+reported rather than applied — a session keeps the endpoint it started on,
+since the history it replays is that dialect's own — and the message names the
+`iota run <agent> -M provider:id` that starts a run there.
 
 #### One layer per key
 
@@ -789,7 +810,7 @@ and an unknown `/word` is sent as a normal message.
 | `/redo [prompt]` | Re-send the last request: same reference images, same prompt unless you supply a new one. Bare `/redo` rolls the dice again (image models vary per call); `/redo <reworded prompt>` retries from the *same* canvas, so a rejected result never becomes the next input. Dedicated image providers only. |
 | `/session` | Tabbed selector over saved sessions: "Resume" to resume one, "Delete" to multi-select and delete others. |
 | `/save [title]` | Start persisting an ephemeral session (one started with `--no-save` or `no_save: true`): the whole backlog is written at once and auto-save continues from then on. An optional title is kept as-is; otherwise the model-generated one is used. Only offered while the session is ephemeral. |
-| `/model` | Tabbed settings for the current session: "Model" picks the model, "Context" the context window, "Effort" the reasoning effort (`default`, `low`, `medium`, `high`, `xhigh`, `max` — passed to the provider verbatim, so a level the model doesn't support surfaces as an API error and you pick another), "Temperature" a slider (`default` omits the parameter), and a read-only "System" tab showing the system prompt exactly as sent. Enter applies all tabs; only changed values are announced. Image providers get their own tabs instead (see Image Generation). |
+| `/model` | Tabbed settings for the current session: "Model" picks the model (a combo box over the agent's candidate set — type to filter, or type a model name nothing lists and commit that), "Context" the context window, "Effort" the reasoning effort (`default`, `low`, `medium`, `high`, `xhigh`, `max` — passed to the provider verbatim, so a level the model doesn't support surfaces as an API error and you pick another), "Temperature" a slider (`default` omits the parameter), and a read-only "System" tab showing the system prompt exactly as sent. Enter applies all tabs; only changed values are announced. Image providers get their own tabs instead (see Image Generation). |
 | `/compact [hint]` | Summarize older history to free context; optional hint guides what to keep. Offered only while token accounting is live. |
 | `/export [file]` | Export the conversation (saved sessions: the full on-disk log, so compaction never hides older rounds) to a single self-contained HTML file — the default — or Markdown with a `.md`/`.markdown` extension. With no argument, a selector picks the format and the filename is generated from the session title. Never overwrites an existing file. |
 | `/status` | Show provider, model, context usage, and last-turn token counts |
