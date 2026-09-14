@@ -15,6 +15,7 @@
 
 pub mod agent;
 pub mod model;
+pub mod params;
 pub mod provider;
 mod strict;
 
@@ -31,6 +32,7 @@ use crate::vars::VarResolver;
 
 pub use agent::AgentConfig;
 pub use model::{BadModelRef, ModelConfig, ModelEntry, ModelRef};
+pub use params::{Declared, ParamLayers, WindowDecl};
 pub use provider::ProviderConfig;
 
 /// The `agents:` entry a run with no positional argument falls back to.
@@ -122,6 +124,19 @@ impl Resolved {
     /// The agent's override, else the model's default.
     pub fn top_p(&self) -> Option<f64> {
         self.agent.top_p.or(self.model.top_p)
+    }
+
+    /// The `context_window:` this run declares — the agent's override, else the model's own — as it was
+    /// WRITTEN; `None` when neither layer wrote one. Parsing it is the caller's (see [`WindowDecl`]).
+    pub fn window_decl(&self) -> Option<WindowDecl<'_>> {
+        Declared::window_decl(&self.agent, &self.model)
+    }
+
+    /// The four layered declarations this run resolved to, with [`window_decl`](Resolved::window_decl)
+    /// already parsed. What a new session evaluates at startup, and what the `/model` switch re-evaluates
+    /// against another model (brain page `model-param-layering`).
+    pub fn declared(&self, window: Option<u64>) -> Declared {
+        Declared::of(&self.agent, &self.model, window)
     }
 
     /// Points the run at another provider, keeping the model entry it already carries.

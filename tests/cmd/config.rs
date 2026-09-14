@@ -534,7 +534,7 @@ fn an_unknown_key_is_refused_with_its_coordinate() {
         ),
         (
             "agents:\n  coder: {models: [m], sytem: hi}\n",
-            "agents.coder.sytem: unknown key (want models, system, system_file, tools, mcp_servers, workspace, no_save, notify, description, effort, temperature, top_p)",
+            "agents.coder.sytem: unknown key (want models, system, system_file, tools, mcp_servers, workspace, no_save, notify, description, context_window, effort, temperature, top_p)",
         ),
         (
             "agnets:\n  coder: {}\n",
@@ -947,6 +947,51 @@ agents:
     assert_eq!(r.temperature(), Some(1.5), "the agent wins");
     assert_eq!(r.effort(), "low", "unset keys keep the model's default");
     assert_eq!(r.top_p(), Some(0.5));
+}
+
+/// `agents.<name>.context_window` — the fourth key the layer gained (brain page `model-param-layering`):
+/// same spelling as the model's, and the same one-level override, so an agent that knows how long its
+/// conversations run says so once instead of forking a `models:` entry per usage.
+#[test]
+fn an_agent_overrides_the_models_context_window() {
+    let cfg = parse(
+        "
+models:
+  base:
+    provider: openai
+    id: gpt-5.2
+    context_window: 128k
+agents:
+  long:
+    models: [base]
+    context_window: 400k
+  plain:
+    models: [base]
+",
+    )
+    .expect("loads");
+    assert_eq!(cfg.agents["long"].context_window, "400k");
+
+    // The agent's, when it has one...
+    let long = cfg.resolve_agent("long").expect("resolves");
+    let decl = long.window_decl().expect("a window is declared");
+    assert_eq!((decl.raw, decl.label), ("400k", "agent context_window"));
+    assert_eq!(long.declared(Some(400_000)).context_window, Some(400_000));
+
+    // ...the model's otherwise, with the label that names THAT layer in a parse error.
+    let plain = cfg.resolve_agent("plain").expect("resolves");
+    let decl = plain.window_decl().expect("a window is declared");
+    assert_eq!((decl.raw, decl.label), ("128k", "config context_window"));
+
+    // Neither: no declaration at all, which is what leaves the session's own value standing.
+    let cfg = parse("models:\n  base: openai:gpt-5.2\nagents:\n  plain: {models: [base]}\n")
+        .expect("loads");
+    assert!(
+        cfg.resolve_agent("plain")
+            .expect("resolves")
+            .window_decl()
+            .is_none()
+    );
 }
 
 // ---------------------------------------------------------------- load order and parse errors

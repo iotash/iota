@@ -1,8 +1,10 @@
 //! `agents.<name>` — the USAGE layer: which models this agent may drive, the prompt it drives them with,
 //! the tools and MCP servers it loads, and the session-shaped switches (`workspace`, `no_save`, `notify`).
 //!
-//! An agent may override the tunables a model sets as defaults (`effort`/`temperature`/`top_p`) — ONE level
-//! of inheritance, deliberately not a chain (brain page `config-three-layers`).
+//! An agent may override the four parameters a model sets as defaults (`context_window`/`effort`/
+//! `temperature`/`top_p`) — ONE level of inheritance, deliberately not a chain (brain page
+//! `config-three-layers`), and the layered evaluation that re-derives them on a `/model` switch lives in
+//! [`crate::config::params`].
 
 use serde::de::{SeqAccess, Visitor};
 
@@ -42,6 +44,12 @@ pub struct AgentConfig {
     /// `description:` — what this agent is FOR. Documentation of the entry: nothing in the binary reads it
     /// since the toolset that put it in front of the model was retired.
     pub description: String,
+    /// `context_window:` — overrides the model's own (same spelling, same
+    /// [`parse_window_size`](crate::cmd::window::parse_window_size)). The window is a property of the
+    /// MODEL, so this key is the exception the rule allows: an agent that knows it keeps a long
+    /// conversation — or one that must not — says so once instead of forking a `models:` entry per usage
+    /// (brain page `model-param-layering`).
+    pub context_window: String,
     /// `effort:` — overrides the model's default.
     pub effort: String,
     /// `temperature:` — overrides the model's default.

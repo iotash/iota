@@ -15,8 +15,8 @@ pub(crate) mod tuning;
 pub mod window;
 
 pub use crate::config::{
-    AgentConfig, BadModelRef, Config, ConfigError, DEFAULT_AGENT, McpServerConfig, ModelConfig,
-    ModelEntry, ModelRef, ProviderConfig, Resolved,
+    AgentConfig, BadModelRef, Config, ConfigError, DEFAULT_AGENT, Declared, McpServerConfig,
+    ModelConfig, ModelEntry, ModelRef, ParamLayers, ProviderConfig, Resolved, WindowDecl,
 };
 pub use cli::{Cli, Command, ConfigAction, Invocation, ListWhat, Resume, RunArgs};
 pub use resolve::CliError;

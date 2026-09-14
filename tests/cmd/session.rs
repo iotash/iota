@@ -18,10 +18,12 @@ use std::{
 
 use crate::common::cleared_env;
 use assert_cmd::cargo::CommandCargoExt;
+use iota::cmd::Declared;
 use iota::provider::ProviderKind;
 use iota::provider::model::{RawContent, Role};
 use iota::session::{
-    SESSION_SCHEMA_VERSION, SessionMeta, SessionRecord, SessionStore, SessionToolCall,
+    Param, ParamSources, SESSION_SCHEMA_VERSION, SessionMeta, SessionRecord, SessionStore,
+    SessionToolCall,
 };
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
@@ -444,6 +446,52 @@ async fn resume_tuning_precedence_explicit_model_wins() {
     assert_eq!(meta["model"], "gemini-2.5-pro");
     assert_eq!(meta["temperature"], 0.7);
     assert_eq!(meta["context_window"], 200_000);
+}
+
+/// A bundle written BEFORE the layering existed — one of the frozen Go-corpus fixtures, which carries a
+/// temperature, a window and an effort and no `param_sources` key at all — resumes with every value intact
+/// and every source read as the user's own, so a later `/model` switch onto a model that declares nothing
+/// KEEPS them instead of dropping them (brain page `model-param-layering`).
+///
+/// This is the compatibility pin: the fixture is not regenerable, so the assertion is against a real file
+/// the original implementation wrote, not against one this build could have shaped to suit itself.
+#[test]
+fn a_pre_layering_bundle_keeps_its_tuning() {
+    let f = fixture("go-gemini-rich");
+    let dir = fixtures_dir().join(f["dir"].as_str().unwrap());
+    let raw = fs::read_to_string(dir.join("meta.json")).expect("read the fixture meta");
+    assert!(
+        !raw.contains("param_sources"),
+        "the fixture must predate the key: {raw}"
+    );
+
+    let meta = SessionMeta::read(&dir).expect("decode the fixture meta");
+    assert_eq!(meta.temperature, Some(0.7));
+    assert_eq!(meta.context_window, 200_000);
+    assert_eq!(meta.effort, "high");
+    assert_eq!(meta.top_p, None, "the key did not exist yet");
+    assert_eq!(meta.param_sources, None, "the key did not exist yet");
+    assert_eq!(
+        meta.sources(),
+        ParamSources::LEGACY,
+        "an absent key is the conservative reading: every value is the user's own"
+    );
+    assert!(
+        !meta.records_params(),
+        "so its silences are gaps, not choices"
+    );
+
+    // Resume: the three recorded values come back as they are, the one it never recorded is evaluated.
+    let params = Declared::default().resume(&meta, true);
+    assert_eq!(params.context_window, Param::user(200_000));
+    assert_eq!(params.effort, Param::user("high".to_owned()));
+    assert_eq!(params.temperature, Param::user(Some(0.7)));
+
+    // ...and a model switch onto a model that declares nothing keeps all three.
+    let after = Declared::default().evaluate(&params);
+    assert_eq!(after.context_window, Param::user(200_000));
+    assert_eq!(after.effort, Param::user("high".to_owned()));
+    assert_eq!(after.temperature, Param::user(Some(0.7)));
 }
 
 // ---------------------------------------------------------------- resolution failures

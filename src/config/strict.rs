@@ -34,7 +34,7 @@ const MODEL_KEYS: [&str; 12] = [
     "json_edits",
 ];
 /// Every key an `agents.<name>` entry accepts.
-const AGENT_KEYS: [&str; 12] = [
+const AGENT_KEYS: [&str; 13] = [
     "models",
     "system",
     "system_file",
@@ -44,6 +44,7 @@ const AGENT_KEYS: [&str; 12] = [
     "no_save",
     "notify",
     "description",
+    "context_window",
     "effort",
     "temperature",
     "top_p",
@@ -145,8 +146,8 @@ fn check_key(section: &str, entry: &str, key: &str) -> Result<(), ConfigError> {
             message: (*hint).to_owned(),
         });
     }
-    // The two overlapping layers (`models:` and `agents:` share the three tunables) can never collide here:
-    // a key valid in the section it was written in already returned above.
+    // The two overlapping layers (`models:` and `agents:` share the four layered parameters) can never
+    // collide here: a key valid in the section it was written in already returned above.
     if let Some((layer, _)) = elsewhere.iter().find(|(_, keys)| keys.contains(&key)) {
         return Err(ConfigError::Key {
             at,
@@ -221,12 +222,20 @@ mod tests {
             check("agents:\n  a: {models: [x], url: https://x}\n"),
             "agents.a.url: `url` belongs under `providers:` (see README, \"The three layers\")"
         );
-        // The three tunables live in BOTH `models:` and `agents:`, so neither reports the other.
+        // The four layered parameters live in BOTH `models:` and `agents:`, so neither reports the other.
         assert_eq!(
             check("models:\n  m: {provider: p, id: i, top_p: 0.5}\n"),
             ""
         );
         assert_eq!(check("agents:\n  a: {models: [m], top_p: 0.5}\n"), "");
+        assert_eq!(
+            check("models:\n  m: {provider: p, id: i, context_window: 400k}\n"),
+            ""
+        );
+        assert_eq!(
+            check("agents:\n  a: {models: [m], context_window: 400k}\n"),
+            ""
+        );
     }
 
     #[test]
