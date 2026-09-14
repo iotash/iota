@@ -8,10 +8,11 @@
 # observation and `resize-window` for a real SIGWINCH.
 #
 # Discipline (TUI_TEST_PLAN §L4): never a fixed sleep where a poll will do —
-# `wait_vis`/`wait_all`/`wait_gone` poll for a predicate and `settle` polls for two
-# consecutive identical captures. Spinner glyphs and elapsed clocks are normalised by
-# `norm` before any shape comparison. Assertions prefer semantic invariants (a line
-# present exactly once, a constant cursor row, an intact frame) over full snapshots.
+# `wait_vis`/`wait_all`/`wait_all_more`/`wait_gone` poll for a predicate and `settle` polls
+# for three consecutive identical captures (a window wider than one spinner tick). Spinner
+# glyphs and elapsed clocks are normalised by `norm` before any shape comparison.
+# Assertions prefer semantic invariants (a line present exactly once, a constant cursor
+# row, an intact frame) over full snapshots.
 #
 # The runner (`tests/tmux.rs`) exports: TMUX_BIN, TMUX_SOCKET, IOTA_BIN, IOTA_PORT,
 # SCEN_TMP. Each scenario sources this file, calls `start`, asserts with `ok`/`bad`, and
@@ -205,13 +206,32 @@ wait_all() { _poll_until 200 _all_has "$1"; }
 # Pattern has left the visible pane.
 wait_gone() { _poll_until 120 _vis_lacks "$1"; }
 
-# Two consecutive identical visible captures = the frame has stopped moving. The spinner
-# animates while the app is busy, so a successful settle also proves the turn is over.
+# wait_all_more <fixed string> <count> — the history holds MORE than <count> copies.
+#
+# A scenario's SECOND turn over the same document cannot `wait_all` for the same marker:
+# the first turn left it in the scrollback, so that wait is over before the turn has even
+# started, and the assertions that follow read the first turn's rows back (CI 34870469581,
+# scenario 16's control run). Count the copies before the turn, then wait for one more.
+_all_count_gt() { [ "$(count_all "$1")" -gt "$2" ]; }
+wait_all_more() { _poll_until 200 _all_count_gt "$1" "$2"; }
+
+# Three consecutive identical visible captures = the frame has stopped moving. The spinner
+# animates while the app is busy (one frame per `SPINNER_TICK`, 120 ms), so a successful
+# settle also proves the turn is over — PROVIDED the captures span more than one tick. Two
+# captures 120 ms apart did not: the tick is "at least 120 ms", and on a runner where it lands
+# a few ms late both captures see the same frame and a turn in progress is called settled
+# (CI 34870469581, the macos leg). Three captures span 240 ms plus two round-trips, so a
+# spinner that holds still across them is one that has stopped, not one that is late.
 settle() {
-    local prev="__none__" cur i=0
+    local prev="__none__" cur same=0 i=0
     while [ "$i" -lt 100 ]; do
         cur="$(cap)"
-        if [ "$cur" = "$prev" ]; then return 0; fi
+        if [ "$cur" = "$prev" ]; then
+            same=$((same + 1))
+            [ "$same" -ge 2 ] && return 0
+        else
+            same=0
+        fi
         prev="$cur"
         sleep 0.12
         i=$((i + 1))

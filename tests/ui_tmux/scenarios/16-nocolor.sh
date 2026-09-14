@@ -13,6 +13,13 @@
 # parameter. A control run WITHOUT the variable follows and must show both — a "no color"
 # assertion against a binary that never painted would prove nothing.
 #
+# The control run shares the pane, and so the scrollback, with the NO_COLOR run: every
+# marker it waits for is already there once, and every row it reads back exists already
+# once, bare. So it waits for one MORE copy of the document's last line (`wait_all_more`)
+# and reads the SECOND heading row by ordinal — never `tail -1`, which handed back the
+# NO_COLOR run's bare row whenever the control document had not landed yet (CI
+# 34870469581, the macos leg: `settle` had called a turn in progress settled).
+#
 # The binary is launched from a shell pane (`start_shell`) so the environment is the
 # scenario's to set and the raw tap is attached before the first frame (see 14).
 # shellcheck source=../lib.sh
@@ -35,22 +42,22 @@ row_is_styled() { printf '%s' "$1" | LC_ALL=C grep -qaE -- "$STYLED_SGR"; }
 # `pipe_raw` would detach it); between runs the capture file is simply emptied.
 reset_raw() { : >"$RAW"; }
 
-# heading_row <first|last> — a committed `Heading` row with its SGR state: the H1 of the
+# heading_row <n> — the n-th committed `Heading` row, with its SGR state: the H1 of the
 # markdown document (the composer echoes `md`, never the word). The NO_COLOR run comes
-# first on a fresh pane and reads the first hit; the control run reads the last.
+# first on a fresh pane and reads the first; the control run reads the second, and gets
+# nothing — not the first run's row — when its own document is not there yet.
 heading_row() {
-    if [ "$1" = last ]; then
-        tm capture-pane -e -pt s -S -400 2>/dev/null | grep -F 'Heading' | tail -1
-    else
-        tm capture-pane -e -pt s -S -400 2>/dev/null | grep -F 'Heading' | head -1
-    fi
+    tm capture-pane -e -pt s -S -400 2>/dev/null | grep -F 'Heading' | sed -n "${1}p"
 }
 
-# run_turn <label> — types `md`, waits for the document to land, settles.
+# run_turn <label> — types `md`, waits for THIS turn's document to land (one more `done.`
+# than the scrollback held before it), settles.
 run_turn() {
+    local before
+    before="$(count_all 'done.')"
     type_ 'md'
     key Enter
-    wait_all 'done.' || bad "$1: the markdown document never completed"
+    wait_all_more 'done.' "$before" || bad "$1: the markdown document never completed"
     settle || bad "$1: frame never settled after the turn"
 }
 
@@ -92,7 +99,7 @@ fi
 check_raw "NO_COLOR: the frame keeps faint" "${ESC}[2m" yes
 check_raw "NO_COLOR: the frame keeps reverse video" "${ESC}[7m" yes
 # The chat side: nothing at all (X-27).
-row="$(heading_row first)"
+row="$(heading_row 1)"
 if [ -n "$row" ] && ! row_is_styled "$row"; then
     ok "NO_COLOR: the committed heading row is bare text"
 else
@@ -121,7 +128,9 @@ if raw_has_color; then
 else
     bad "control: no color SGR in a painted run — the NO_COLOR assertion would be vacuous"
 fi
-row="$(heading_row last)"
+# The document landed a second time — the row below is this run's, not the first run's.
+check "control: the heading rendered once more" "$(count_all 'Heading')" 2
+row="$(heading_row 2)"
 if [ -n "$row" ] && row_is_styled "$row"; then
     ok "control: the committed heading row is styled"
 else

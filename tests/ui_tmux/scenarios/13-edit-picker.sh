@@ -104,7 +104,8 @@ fi
 type_ '/redo'
 key Enter
 wait_all 'Redoing: a red square' || bad "the /redo echo never landed"
-wait_all '🖼 saved: ' || bad "the redo produced no picture"
+# The first picture's caption is in the scrollback already: wait for the SECOND.
+wait_all_more '🖼 saved: ' 1 || bad "the redo produced no picture"
 settle || bad "frame never settled after the redo"
 check "the redo committed a second picture" "$(count_all '🖼 saved: ')" 2
 check_frame_intact "after the redo" 80
@@ -112,7 +113,7 @@ check_frame_intact "after the redo" 80
 # ------------------------------------------------------------------ D: /edit <prompt>
 type_ '/edit make it blue'
 key Enter
-wait_all '🖼 saved: ' || bad "the edit produced no picture"
+wait_all_more '🖼 saved: ' 2 || bad "the edit produced no picture"
 settle || bad "frame never settled after the edit"
 check "the edit committed a third picture" "$(count_all '🖼 saved: ')" 3
 check_frame_intact "after the edit" 80
