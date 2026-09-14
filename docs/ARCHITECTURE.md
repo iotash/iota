@@ -91,15 +91,15 @@ all three into `chat/`) the Rust split is KEPT as modules. Visibility is Rust-id
 | `host/{mod,ansi,cmux,background}.rs` | internal/host | host integration (T3, WP67): `Presenter` per-capability fan-out, the ANSI host (OSC 9 / 9;4 through the facade), the cmux host, the background probe |
 | `mcp/{mod,config,manager,naming,status,transport,error}.rs` | mcp/ | `ServerConfig`/`parse_mcp_flag` (`config`), the rmcp manager |
 | `chat/{mod,turns,once,run,batch,report,images,delegator,error}.rs` | chat/chat.go, turns.go, output.go, parallel.go, images.go, delegate.go | the headless loop; `turns` = `RunCtx`, `TurnBudget`, `DelegationLedger`, `ArtifactSlot` |
-| `session/{mod,meta,record,rawcodec,id,store,writer,loader,tuning,error}.rs` | chat/session.go, settings.go | the on-disk bundle store (never reads the process environment — ci.sh grep) |
+| `session/{mod,meta,params,record,rawcodec,id,store,writer,loader,tuning,error}.rs` | chat/session.go, settings.go | the on-disk bundle store (never reads the process environment — ci.sh grep) |
 | `markdown/{mod,inline,table,list,quote,code,link,math,style,sink,highlight}.rs` | internal/markdown | the streaming markdown→ANSI renderer; `highlight.rs` = the `CodeHighlighter` seam AND its syntect impl |
 | `markdown/html.rs` | (goldmark + chroma in chat/export.go) | T3, WP65: comrak safe-mode GFM → HTML with the syntect `SyntaxHighlighterAdapter` over the two-face syntax set, chroma-shaped `<pre class="chroma">` |
 | `ui/facade.rs` | docs/design/ui-architecture.md | the `Ui` trait + value types + guards (what `repl` talks to) |
 | `ui/{mod,event_loop,frame,region,sink,composer,paste,keys,suggest,surface/…,handle,oneshot,term,osc,spans,theme,clipboard,debug,msgs}.rs` | internal/ui | the inline terminal engine — the ONLY module allowed to name ratatui/crossterm (ci.sh grep) |
-| `repl/{mod,run,turn,toolloop,transcript,group,uisink,interrupt,retry,steer,approval,interact,diff,errors,styles,title,banner,mcpreport,meter,tokens,replay,systemtab,commands/…}.rs` | chat/run.go and friends | the interactive loop over the facade |
+| `repl/{mod,run,turn,toolloop,transcript,group,uisink,interrupt,retry,steer,approval,interact,diff,errors,styles,title,banner,mcpreport,meter,params,tokens,replay,systemtab,commands/…}.rs` | chat/run.go and friends | the interactive loop over the facade |
 | `repl/{phases,editpicker}.rs`, `repl/commands/{export,debug,edit,skills}.rs` | chat/run.go:1184-1242, chat/editpicker.go, chat/export.go, chat/debug.go, chat/run.go:450-516, chat/agentmode.go | T3: the busy-phase controller + upload watcher (WP67), the `/edit` picker (WP64), `/export` (WP65), `/debug` (WP66), `/edit`+`/redo` (WP64), `/skills` (WP68) |
 | `cmd/{mod,cli,resolve,list,tuning,assemble,delegate,io,signals,window,interactive}.rs` | cmd/root.go, delegate.go | the command; `cmd::run` is the library entry `main.rs` awaits |
-| `config.rs` | config/ | the YAML config model + merge |
+| `config/{mod,agent,model,provider,params,strict}.rs` | config/ | the YAML config model + merge, plus the key audit and the layered parameters |
 | `testing/{mod,scripted}.rs` | (test fakes) | behind the `testing` feature only |
 
 Tests: `tests/<area>/main.rs` — TEN integration binaries (`provider`, `tool`, `mcp`, `session`, `chat`,
@@ -233,14 +233,15 @@ The tables keep the phase-1 grouping (one per former crate) with each file named
 |---|---|---|
 | `mod.rs` | — | re-exports; the bundle-layout doc |
 | `error.rs` | chat/session.go error texts | `SessionError` (`NotFound`, `CannotRead`, `NoMatch`, `Ambiguous`, `ReadLog`, `HomeNotDefined`, `Io`) |
-| `meta.rs` | chat/session.go:39-65,481-489,752-760 | `SessionMeta` in Go's struct order with the `#[serde(flatten)] extra` map (D-46), `read`/`write` (temp+rename, no trailing newline — D-45), `now_rfc3339`/`parse_rfc3339` |
+| `meta.rs` | chat/session.go:39-65,481-489,752-760 | `SessionMeta` in Go's struct order with the `#[serde(flatten)] extra` map (D-46), `read`/`write` (temp+rename, no trailing newline — D-45), `now_rfc3339`/`parse_rfc3339`, plus `top_p` and `param_sources` (X-25) |
+| `params.rs` | (new) | `ParamSource`/`ParamSources`/`Param`/`LayeredParams` — what a session runs under for the four layered parameters and where each value came from (X-24) |
 | `record.rs` | chat/session.go:67-130 | the `messages.jsonl` line DTOs with Go's exact `omitempty` matrix (`arguments` and `usage.in`/`usage.out` always emitted) |
 | `rawcodec.rs` | chat/session.go:529-538,796-804 | `raw_to_blob`/`blob_to_raw` — a pure function of `ProviderKind`, so the store never names the wire layer; the blob is never parsed (D-51a) |
 | `id.rs` | chat/session.go:211-280 | the 12-char Crockford-base32 alphabet, bias-free generation, `resolve_in` (exact → unique prefix → ambiguous) |
 | `store.rs` | chat/session.go:154-305,335-402,904-1028 | `SessionStore`, `project_slug`, `find_dir`/`dir`, `id_taken`/`new_id`, `list`/`list_all`, `resolve_id` (scope-first, only `NoMatch` widens), `create`/`resume`/`load` |
 | `loader.rs` | chat/session.go:762-901, chat/compact.go:19-28 | chunked `scan_records` with the 32 MiB cap enforced while reading (D-56), `record_to_message`, `load_log` with the compaction weave |
 | `writer.rs` | chat/session.go:307-748 | lazy `ensure_created`, `append_messages` (one fsync per batch, then one meta rewrite), `append_compaction`, `update_meta` (Go's eight `Set*` collapsed into one), `images_path`/`images_dir`, the content-addressed attachment store |
-| `tuning.rs` | chat/session.go:414-455 | `apply_session_tuning`, gated on the provider tag first; the context window is returned, not pushed through Go's `setWindow` callback |
+| `tuning.rs` | chat/session.go:414-455 | `apply_session_tuning`, gated on the provider tag first; the context window is returned, not pushed through Go's `setWindow` callback; `top_p` replays beside effort and temperature (X-25) |
 
 ### the headless loop (formerly `iota-chat`) — `src/chat/`
 | module | Go |
@@ -260,7 +261,7 @@ The tables keep the phase-1 grouping (one per former crate) with each file named
 | `main.rs` | main.go (+ signal/exit-code policy) |
 | `cmd/mod.rs` | cmd/root.go:41-268 (`run_agent`) + cmd/root.go:284-334 (the resume stage on the `-m` path, D-41); the verb dispatch is `run` |
 | `cmd/cli.rs` | cmd/root.go:22-39,418-436, rebuilt as a verb set (X-10 … X-14) |
-| `config/` | config/config.go, plus `config/strict.rs` (the key audit, X-15) |
+| `config/` | config/config.go, plus `config/strict.rs` (the key audit, X-15) and `config/params.rs` (the layered parameters, X-24) |
 | `cmd/resolve.rs` | cmd/root.go:46-123,534-566 (`ModelRequired` deferred for a resume, D-52) |
 | `cmd/window.rs` | chat/tokens.go:20-43 |
 | `cmd/list.rs` | cmd/root.go:439-529, rebuilt as `iota list` (X-13) |
@@ -356,6 +357,7 @@ Verified API (CONTRACTS §5.0 lists file:line): `ServiceExt::serve(ClientInfo, t
 - `Config` model with `serde_norway`, `#[serde(default)]`; bool fields through `tool::yaml11::deserialize_bool` (YAML 1.1 spellings); `tools: BTreeMap<String, serde_norway::Value>` raw; `mcp_servers: Option<Vec<String>>` (absent ≠ `[]`); `defer: Option<String>`. Unknown and misplaced keys are refused BEFORE the typed decode by `config::strict::audit`, which walks the raw `serde_norway::Value` so an error can name its coordinate (`agents.coder.tools.delegate`) — something `deny_unknown_fields` cannot (X-15). The document is therefore parsed twice: once as a `Value` for the audit, once into the typed shape, which keeps serde's line/column on a field's type error.
 - `Config::load(explicit, &HostDirs, &dyn VarResolver, warn)` fails on anything the user wrote wrong (a misplaced key, a dangling reference, an unusable `defer_mode`) and only WARNS for what says nothing about intent — an unreadable file, or one that is not YAML at all. `Config::sources` is the file list `iota config path` prints; `merge_file` replaces whole entries; `${var}` expanded once at merge time on key/url/system_file.
 - `resolve_run(inv, cfg, &dyn EnvSource, stdin)` is pure and follows root.go:46-123 order exactly, with the agent lookup (`Config::resolve_agent`) where Go had the four-namespace one.
+- `config/params.rs` holds the LAYERED evaluation of `context_window`/`effort`/`temperature`/`top_p` (X-24, brain page `model-param-layering`): `Declared::of` folds `agents:` over the running model's `models:` entry, `Declared::evaluate` resolves that against the session's current value — keeping one the user set and DROPPING one an earlier model's declaration supplied — and `Declared::resume` restores a bundle's own record instead of evaluating. `ParamLayers` is the table a live chat re-evaluates against (the agent, every `models:` entry by `provider:id`, and the `defer_mode` the dispatcher was assembled with). The window arrives already parsed, so `cmd::window::parse_window_size` stays the caller's: a bad value aborts a run at startup (`CliError::ContextWindow`, labelled with the layer that wrote it) and is a transcript warning mid-chat. `interactive.rs::resolve_params` is the startup/resume moment, `repl::params` the `/model` one.
 - `tuning::apply` = image → effort → top_p → temperature → json_edits → gen-params → tools/mcp warning.
 - `assemble::build_mcp_configs` / `build_dispatcher` mirror root.go:574-658: they use only `mcp::config` types and take the MCP part as `Option<(Arc<dyn Dispatcher>, PrefixOf)>` (`None` = no server configured); `Manager` is named only in `lib.rs::run` and `interactive.rs`. (`cmd/delegate.rs` and its `ChildFactory` went with the delegate toolset, X-01.)
 
