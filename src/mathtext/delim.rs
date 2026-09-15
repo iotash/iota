@@ -1,7 +1,7 @@
 //! Math delimiter scanning (internal/mathtext/delim.go): inline `$…$` / `\(…\)` spans with the
 //! currency/space/escape guards, the display fences, and the strip/clean helpers. The markdown
 //! renderer's `display_open`/`is_display_close` become re-exports of the twins here in WP62
-//! (DESIGN D16); `markdown::math::find_inline_math` (the rune-index twin) stays where it is.
+//! (DESIGN D16); `markdown::inline::find_inline_math` (the rune-index twin) stays where it is.
 //!
 //! Everything here scans BYTES exactly as Go does (`src[i]`, `src[i-1]`): every delimiter and
 //! every guard character is ASCII, so byte offsets always land on `char` boundaries.
@@ -99,7 +99,7 @@ pub fn is_display_fence(line: &str) -> bool {
 }
 
 /// Does the trimmed line OPEN a display-math block? `(body, one_line)` — body empty for the bare
-/// multi-line fence (delim.go:181 `DisplayOpen`; the twin of `markdown::math::display_open`,
+/// multi-line fence (delim.go:181 `DisplayOpen`; the twin of `markdown::blocks::math::display_open`,
 /// which becomes a re-export of this in WP62).
 ///
 /// A bare `\]`, or a lone `$$` closing an already-open block, is NOT an opener: the caller tracks
@@ -400,7 +400,7 @@ mod tests {
     }
 
     // Go: internal/mathtext/delim.go:181-209 DisplayOpen / IsDisplayClose (the twins of
-    // `markdown::math`, which re-exports these in WP62 — DESIGN D16)
+    // `markdown::blocks::math`, which re-exports these in WP62 — DESIGN D16)
     #[test]
     fn display_open_and_close() {
         assert_eq!(display_open("$$"), Some((String::new(), false)));

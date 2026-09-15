@@ -8,7 +8,6 @@
 //! `***`, `**`/`__`, `*`/`_`, plain. `styled == false` + a plain base emits plain runs
 //! verbatim, keeping top-level output byte-identical.
 
-use crate::markdown::blocks::math;
 use crate::markdown::link::hyperlink;
 use crate::markdown::style::Style;
 
@@ -146,7 +145,7 @@ pub(crate) fn render_inline(line: &str, base: Style, styled: bool, color: bool) 
         // Inline math: $...$ or \(...\), delimiters hidden, body styled like inline
         // code (cyan). The body transform is a plain call into the math engine
         // (markdown.go:572 `mathtext.ApproxInline(body)`; DESIGN D16 step 1).
-        if let Some((body, end)) = math::find_inline_math(&runes, i) {
+        if let Some((body, end)) = find_inline_math(&runes, i) {
             flush(&mut out, &mut plain, base, styled, color);
             let approx = crate::mathtext::approx_inline(&body);
             out.push_str(&base.fg(6).render(&approx, color));
@@ -387,9 +386,83 @@ pub(crate) fn is_list_line(line: &str) -> bool {
     split_list_marker(line).is_some()
 }
 
+/// findInlineMath twin (markdown.go:740-801): does an inline math span open at
+/// `runes[start]`? Returns the inner body and the rune index just past the close.
+///
+/// - `"$ … $"`: a span only when the opener is not at end of line and not immediately
+///   followed by a space (`"$ 5"`), an UNESCAPED `"$"` closes it later on this line,
+///   and the body is non-empty. A digit right after the opener IS allowed
+///   (`"$1/\pi$"`); currency is ruled out at the CLOSE — a `"$"` immediately followed
+///   by a digit is not a close (keeps `"$5 or $10"` / `"$20,000"` literal), and a
+///   `"$"` preceded by a space does not close (`"$a and $b"`).
+/// - `"\$"` never opens (the caller consumes the escape before scanning here).
+/// - `"\( … \)"` is always math.
+/// - `"$$"` at start is a display fence, rejected here.
+pub(crate) fn find_inline_math(runes: &[char], start: usize) -> Option<(String, usize)> {
+    match *runes.get(start)? {
+        '$' => {
+            if runes.get(start + 1) == Some(&'$') {
+                return None; // "$$" display fence, never inline
+            }
+            let next = *runes.get(start + 1)?; // trailing lone "$" is literal
+            if next == ' ' {
+                return None; // "$ " — spacing/currency, never a math opener
+            }
+            let mut i = start + 1;
+            while i < runes.len() {
+                match runes[i] {
+                    '\\' => {
+                        i += 2; // skip the escaped rune so "\$" cannot close the span
+                        continue;
+                    }
+                    '$' => {
+                        if runes.get(i + 1).is_some_and(char::is_ascii_digit) {
+                            i += 1; // "$10" — currency, not a close; keep scanning
+                            continue;
+                        }
+                        if runes[i - 1] == ' ' {
+                            i += 1; // space before the close: the second "$" opens a
+                            continue; // new token, it does not close the first
+                        }
+                        let inner: String = runes[start + 1..i].iter().collect();
+                        if inner.trim().is_empty() {
+                            return None; // empty body ("$ $"): not math
+                        }
+                        return Some((inner, i + 1));
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+            None // no closing "$": the "$" is literal (lone/currency)
+        }
+        '\\' => {
+            // Explicit "\( … \)" inline math.
+            if runes.get(start + 1) == Some(&'(') {
+                let mut i = start + 2;
+                while i < runes.len() {
+                    if runes[i] == '\\' {
+                        if runes.get(i + 1) == Some(&')') {
+                            let inner: String = runes[start + 2..i].iter().collect();
+                            return Some((inner, i + 2));
+                        }
+                        i += 2; // skip any other escape
+                        continue;
+                    }
+                    i += 1;
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{highlight_inline, highlight_line, is_list_line, split_list_marker};
+    use super::{
+        find_inline_math, highlight_inline, highlight_line, is_list_line, split_list_marker,
+    };
     use crate::text::ansi::strip_sgr;
 
     // Go: internal/markdown/markdown_test.go:370
@@ -440,5 +513,29 @@ mod tests {
         assert_eq!(split_list_marker("- "), Some(("- ", ""))); // empty rest is fine
         assert!(is_list_line("- item"));
         assert!(!is_list_line("- - -")); // horizontal rule wins
+    }
+
+    fn runes(s: &str) -> Vec<char> {
+        s.chars().collect()
+    }
+
+    // Go: internal/markdown/markdown.go:740-801 guard set (unit slice; the full
+    // adversarial corpus drives the public renderer in tests/math_corpus.rs)
+    #[test]
+    fn inline_guards() {
+        let r = runes("$x$");
+        assert_eq!(find_inline_math(&r, 0), Some(("x".to_owned(), 3)));
+        assert_eq!(find_inline_math(&runes("$$x$$"), 0), None); // display fence
+        assert_eq!(find_inline_math(&runes("$ 5 fee"), 0), None); // space after opener
+        assert_eq!(find_inline_math(&runes("$"), 0), None); // trailing lone $
+        assert_eq!(find_inline_math(&runes("$5 or $10"), 0), None); // digit close guard
+        assert_eq!(find_inline_math(&runes("$a and $b"), 0), None); // space-before-close
+        assert_eq!(find_inline_math(&runes("$ $"), 0), None); // space after opener
+        assert_eq!(find_inline_math(&runes("$  $ x"), 0), None); // empty body
+        let r = runes("$1/\\pi$ series");
+        assert_eq!(find_inline_math(&r, 0), Some(("1/\\pi".to_owned(), 7)));
+        let r = runes("\\(a+b\\)");
+        assert_eq!(find_inline_math(&r, 0), Some(("a+b".to_owned(), 7)));
+        assert_eq!(find_inline_math(&runes("\\(a+b"), 0), None); // unclosed paren form
     }
 }

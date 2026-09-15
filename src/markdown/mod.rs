@@ -36,10 +36,9 @@ pub use preview::PreviewHandle;
 pub use sink::Sink;
 pub use style::Style;
 
-use crate::markdown::blocks::close_view;
 use crate::markdown::blocks::code::{CodeBlock, code_label};
 use crate::markdown::blocks::list::ListBlock;
-use crate::markdown::blocks::math::{display_open, is_display_close};
+use crate::markdown::blocks::math::{MathBlock, display_open, is_display_close};
 use crate::markdown::blocks::quote::{QuoteBlock, is_quote_line};
 use crate::markdown::blocks::table::{TableBlock, is_table_line};
 use crate::markdown::inline::{highlight_line, is_block_line, is_list_line};
@@ -77,10 +76,6 @@ enum Unit {
     Block,
 }
 
-/// The uniform left margin of rendered display-math rows — the same two-space rule as
-/// code blocks, so formulas and code sit on one left rule (markdown.go mathIndent).
-const MATH_INDENT: &str = "  ";
-
 /// The buffering block the writer is inside — markdown.go's five `in*` flags and their
 /// buffers as ONE value. At most one block is open at a time (a fence, a table, a list, a
 /// quote or a display-math block) and `None` is the plain paragraph path. Each variant owns
@@ -98,46 +93,6 @@ enum Block {
     Quote(QuoteBlock),
     /// Inside a `$$` / `\[` display-math block.
     Math(MathBlock),
-}
-
-/// A display-math block: the raw source lines between the `$$` / `\[` fences (the
-/// one-line form is a `MathBlock` of one line that renders at once, no preview).
-pub(crate) struct MathBlock {
-    lines: Vec<String>,
-    view: Option<Box<dyn PreviewHandle>>,
-}
-
-impl MathBlock {
-    fn append(&mut self, line: &str) {
-        self.lines.push(line.to_owned());
-        if let Some(v) = &mut self.view {
-            v.write_raw_line(line);
-        }
-    }
-
-    /// Renders the buffered display-math block (markdown.go:1433-1455): a
-    /// whitespace-only source renders NOTHING (the paid gap credit may remain
-    /// consumed); otherwise every row is prefixed by the two-space `MATH_INDENT` and the
-    /// block rides `begin_block`/`end_block`. The body transform is the mathtext 2D layout
-    /// (markdown.go:1443 `mathtext.Render2D`; DESIGN D16 step 2), which degrades to the cleaned
-    /// linear source when the formula cannot be laid out; either way the rows print in normal
-    /// color (never dim: dim is decoration-only).
-    fn render(mut self, width: usize) -> Option<String> {
-        close_view(&mut self.view);
-        let src = self.lines.join("\n");
-        if src.trim().is_empty() {
-            return None; // an empty $$ block renders nothing (mirrors the quote)
-        }
-        let width = width.saturating_sub(MATH_INDENT.len());
-        let (block, _ok) = crate::mathtext::render_2d(&src, width);
-        let mut out = String::new();
-        for r in block.split('\n') {
-            out.push_str(MATH_INDENT);
-            out.push_str(r);
-            out.push('\n');
-        }
-        Some(out)
-    }
 }
 
 /// Streaming markdown renderer; ONE per content block.
@@ -251,16 +206,11 @@ impl Writer {
         if let Some((body, one_line)) = display_open(line) {
             self.flush_block();
             if one_line {
-                let body = MathBlock {
-                    lines: vec![body],
-                    view: None,
-                }
-                .render(self.term_width());
+                let body = MathBlock::one_line(body).render(self.term_width());
                 self.render_block(body);
             } else {
-                let view = self.open_preview("rendering math…");
-                let lines = Vec::new();
-                self.block = Block::Math(MathBlock { lines, view });
+                let view = self.open_preview(MathBlock::LABEL);
+                self.block = Block::Math(MathBlock::open(view));
             }
             return;
         }

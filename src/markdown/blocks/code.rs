@@ -8,7 +8,8 @@
 //! included) gets the uniform 2-space indent.
 
 use crate::markdown::blocks::close_view;
-use crate::markdown::{MathBlock, PreviewHandle, RenderOptions};
+use crate::markdown::blocks::math::MathBlock;
+use crate::markdown::{PreviewHandle, RenderOptions};
 
 /// The buffering code preview label (markdown.go:1372-1377) — U+2026 ellipsis.
 pub(crate) fn code_label(lang: &str) -> String {
