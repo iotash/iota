@@ -26,44 +26,12 @@ full old→new map). No workspace table, no per-area manifests, no `check-deps` 
 `[dependencies]` table; the only cargo feature is `testing` (the shared fakes in `src/testing/`, turned
 on for tests by the self-dev-dependency `iota = { path = ".", features = ["testing"] }`).
 
-Top-level module names mirror Go packages where that aids recognition; where the Rust decomposition is
-cleaner than Go's (`headless` = headless loop, `repl` = interactive loop, `session` = the store — Go lumps
-all three into `chat/`) the Rust split is KEPT as modules. Visibility is Rust-idiomatic: everything is
-`pub(crate)` unless `main.rs`, `tests/` or `examples/` genuinely use it.
+Module names are the tree's own: `headless` is the `-m` loop, `repl` the interactive one, `session` the
+store. Visibility is Rust-idiomatic: everything is `pub(crate)` unless `main.rs`, `tests/` or `examples/`
+genuinely use it.
 
-| module (`src/…`) | Go counterpart | contents |
-|---|---|---|
-| `lib.rs` | — | module list, `BoxFuture`, `BoxError` |
-| `main.rs` | main.go | parse, runtime, signals, exit codes (`anyhow` only here) |
-| `app/mod.rs` | internal/app | `HostDirs`, the well-known names/dirs; the parent of the four edge modules below |
-| `app/env.rs` | internal/vars, cmd/root.go (os.Getenv seam) | `Env` (the one process-environment seam: variables + `HostDirs`; `process()` in `main`, `fixed()` in tests), `${var}` expansion |
-| `app/paths.rs` | (filepath helpers) | `clean`, `rel`, `to_slash` |
-| `text/{mod,width,ansi}.rs` | internal/timefmt + tokfmt, internal/textwidth, internal/ui/clip.go | Go `%q`/`%v`/`Duration` formatters; THE grapheme width ruler; wrap/strip/truncate — shared by `markdown`, `ui`, `repl` |
-| `provider/{mod,model,usage,sink,error}.rs` | provider/provider.go | `Provider` + capability traits, `ProviderKind`, `Effort`, the message/tool data model, `Usage`, `StreamSink`/`ReasoningGate`, `ProviderError` & co, `new_provider` |
-| `provider/{common,think,usage_conv,image_util}.rs` | provider/base.go, thinktag.go, usage.go | `ProviderCore`/`HasCore` with the blanket `Tunable`/`TopPTunable` impls, the think-tag splitter, usage converters |
-| `provider/{openai,anthropic,google,openresponses,imagen,images}.rs` | provider/*.go | the seven `Provider` adapters |
-| `llm/{mod,client,sse,error,models,chatcomp,responses,anthropic,google,images}.rs` | internal/llm | the hand-rolled HTTP/SSE wire layer (keeps Go's name) |
-| `llm/{reqlog,progress,multipart}.rs` | chat/reqlog.go, chat/progress.go, (Go `mime/multipart`) | T3: the `/debug` request log the client records into, the per-turn upload-progress reporter + task-local, the byte-exact multipart writer twin (WP66/WP67/WP64) |
-| `tool/{mod,context,approval,fmt,error}.rs` | tool/tool.go, chat/turns.go, chat/approval.go, tool/headerfmt.go | `Tool`/`Dispatcher`/`ToolEnv`/`Delegator` seam types, `PrefixOf`, `ToolError`, the call-header formatters; `context` = the run context every tool takes (`RunCtx`, `TurnBudget`, `ArtifactSlot`) |
-| `tool/{sets,dispatch,args,yaml11}.rs`, `tool/defer/{mod,mode}.rs` | tool/tool.go, defer*.go | the set table + framework (`dispatch.rs` = the two `Dispatcher` implementations, `Registry` and the merged union) |
-| `tool/builtins/{mod,ask,agent,shell}.rs`, `tool/builtins/code/{mod,tools,walk,udiff}.rs` | tool/ask.go, agent.go, delegate.go, shell.go, code.go | the five built-in sets (`shell.rs` = the `shell` tool's POLICY layer; the tool is `shell` on every platform and under every interpreter, and its DESCRIPTION is what follows the interpreter, DIVERGENCES X-18/X-20) |
-| `shell/{mod,exec,interp,jobs}.rs`, `shell/sandbox/{mod,darwin,linux,other}.rs` | internal/shell | process execution + sandboxes (the MECHANISM layer); `interp.rs` answers WHICH interpreter runs a command — `bash -c` on Unix, and on Windows the first of Git Bash, PowerShell and `cmd.exe` the machine has (DIVERGENCES X-17), as one pure function over an injected machine |
-| `agents/{mod,skills}.rs` | internal/agents | `Overlay`, `compose_send_history`, skills |
-| `mathtext/{mod,delim,parse,symbols,macros,inline,pict,layout}.rs` | internal/mathtext | the LaTeX math engine (T3, WP61/WP62): inline Unicode approximation, 2D layout (Go `Box` → `Pict`), the delimiter scanners; a leaf over `text` — the markdown hooks call `approx_inline`/`render_2d` directly (Phase 5 PR-4 deleted the `MathRenderer` trait) |
-| `imgterm.rs` | internal/imgterm | the half-block image rasteriser (T3, WP63) — the ONLY module allowed to name the `image` crate (`tests/layering.rs`) |
-| `host/{mod,ansi,cmux,background}.rs` | internal/host | host integration (T3, WP67): `Presenter` per-capability fan-out, the ANSI host (OSC 9 / 9;4 through the facade), the cmux host, the background probe |
-| `mcp/{mod,config,manager,transport,error}.rs` | mcp/ | `ServerConfig`/`parse_mcp_flag` (`config`), the rmcp manager |
-| `headless/{mod,once,run,batch,report,images,delegator,error}.rs` | chat/chat.go, output.go, parallel.go, images.go, delegate.go | the headless loop — what separates it from `repl` is that there is no terminal (the run context it shares with the tools is `tool/context.rs`) |
-| `session/{mod,meta,params,record,rawcodec,id,store,writer,loader,tuning,error}.rs` | chat/session.go, settings.go | the on-disk bundle store (never reads the process environment — `tests/layering.rs`) |
-| `markdown/{mod,inline,link,style,sink,preview,highlight}.rs` · `markdown/blocks/{mod,code,table,list,quote,math}.rs` | internal/markdown | the streaming markdown→ANSI renderer; `blocks/` = the five buffering block types, one file each (Phase 5 PR-19); `highlight.rs` = the `CodeHighlighter` seam AND its syntect impl |
-| `markdown/html.rs` | (goldmark + chroma in chat/export.go) | T3, WP65: comrak safe-mode GFM → HTML with the syntect `SyntaxHighlighterAdapter` over the two-face syntax set, chroma-shaped `<pre class="chroma">` |
-| `ui/facade.rs` | docs/design/ui-architecture.md | the `Ui` trait + value types + guards (what `repl` talks to) |
-| `ui/{mod,testutil}.rs` · `ui/runtime/{mod,handle,msgs,event_loop,term,osc,oneshot}.rs` · `ui/render/{mod,region,frame,spans,theme,sink,debug}.rs` · `ui/input/{mod,editor,composer,keys,paste,suggest}.rs` · `ui/surface/…` | internal/ui | the inline terminal engine — the ONLY module allowed to name ratatui/crossterm (`tests/layering.rs`) |
-| `repl/{mod,run,state,liveparams,errors,title,systemtab,commands/…}.rs`, `repl/turn/{mod,tools,retry,phases,steer,interrupt,approval,interact}.rs`, `repl/render/{mod,transcript,group,uisink,styles,diff,banner,replay,mcpreport}.rs`, `repl/context/{mod,meter,tokens}.rs` | chat/run.go and friends | the interactive loop over the facade: `run.rs` is the loop, `state.rs` its state in three parts (`Conversation`, `SessionSlot`, `UiHandles`), `turn/` one turn (`TurnEngine` runs it over the `Conversation` with the turn-level retry), `render/` what it draws, `context/` the token accounting, `liveparams.rs` the chat's live half of the layered parameters |
-| `repl/turn/phases.rs`, `repl/editpicker.rs`, `repl/commands/{export,debug,edit,skills}.rs` | chat/run.go:1184-1242, chat/editpicker.go, chat/export.go, chat/debug.go, chat/run.go:450-516, chat/agentmode.go | T3: the busy-phase controller + upload watcher (WP67), the `/edit` picker (WP64), `/export` (WP65), `/debug` (WP66), `/edit`+`/redo` (WP64), `/skills` (WP68) |
-| `cmd/{mod,args,resolve,list,tuning,assemble,config_cmd,io,signals,interactive}.rs` | cmd/root.go, delegate.go | the command; `cmd::run` is the library entry `main.rs` awaits |
-| `config/{mod,agent,model,provider,params,strict}.rs` | config/ | the YAML config model + merge, plus the key audit and the layered parameters |
-| `testing/{mod,scripted}.rs` | (test fakes) | behind the `testing` feature only |
+The module tree — one row per module, what it is for and what it may name — is §2, under the layer order that
+`tests/layering.rs` pins.
 
 Tests: `tests/<area>/main.rs` — TEN integration binaries (`provider`, `tool`, `mcp`, `session`, `headless`,
 `markdown`, `mathtext`, `repl`, `ui_tmux`, `cmd`; `mathtext` was added by T3/WP61 for the Go-generated
@@ -79,11 +47,10 @@ The crate boundaries that carried a design rule are one test binary, `tests/laye
 
 - **the module graph points down.** The test scans every `crate::<module>` path in `src/` (`#[cfg(test)]`
   modules blanked, comments cut, `src/testing/` not scanned) and asserts each edge lands in a LOWER row of
-  the declared order, bottom first: `app` · `{text, vars, paths, sync, imgterm}` · `{color, diag}` · `llm` ·
-  `provider` · `{shell, agents}` · `tool` · `{mcp, session, mathtext}` · `{config, markdown, chat}` · `ui` ·
-  `host` · `repl` · `cmd`. Siblings in one row never name each other; product code never names the fakes
-  (`testing`). The upward edges the tree still carries sit in the test's `KNOWN_UPWARD` table, each with
-  the phase-5 PR that retires it — a new upward edge is red, and so is a row whose edge is gone;
+  the declared order — the `LAYERS` table quoted in §2. Siblings in one row never name each other; product
+  code never names the fakes (`testing`). An upward edge the tree still carried would sit in the test's
+  `KNOWN_UPWARD` table with the PR that retires it — a new upward edge is red, and so is a row whose edge
+  is gone; the table has been empty since phase 5;
 - only `src/ui/**` may name `ratatui`/`crossterm` — the loop (`repl`), the renderer (`markdown`) and the
   command never see a terminal crate;
 - `src/session/**` never reads the process environment (`std::env::var`) — the store takes its root from
@@ -126,125 +93,60 @@ returns the turn's message delta and `cmd` still owns the `SessionWriter`; the l
 
 ---
 
-## 2. Module map (Rust module → Go file(s) ported)
+## 2. Module tree and layering
 
-The tables keep the phase-1 grouping (one per former crate) with each file named at its post-merge home.
+One library crate, one tree. The rows of the table below follow the layer order `tests/layering.rs` pins,
+bottom first: a module may name any module in a LOWER row, none in its own row or above, and the test
+fails the build on a new upward edge (§1.2). The declaration is quoted from the test rather than restated,
+so this section cannot drift from it:
 
-### the contracts (formerly `iota-core`)
-| module | Go | contents |
+```rust
+const LAYERS: &[&[&str]] = &[
+    &["app"],
+    &["text", "sync", "imgterm"],
+    &["llm"],
+    &["provider"],
+    &["shell", "agents"],
+    &["tool"],
+    &["mcp", "session", "mathtext"],
+    &["config", "markdown", "headless"],
+    &["ui"],
+    &["host"],
+    &["repl"],
+    &["cmd"],
+];
+```
+
+`KNOWN_UPWARD`, the test's table of tolerated upward edges, is empty: the tree carries none. `testing` is
+not a layer — the fakes reach everywhere by design and product code never names them. Two placements the
+order settles that read against intuition: `config` sits ABOVE `tool` and `session` because it is the
+user's declaration in their vocabulary (`SET_NAMES`, `DeferMode`, the layered parameters), not something
+they consume; `shell` and `agents` sit BELOW `tool` because `tool/builtins/shell.rs` is the policy over
+the `shell/` mechanism and `tool/builtins/agent.rs` consumes the `agents/` overlay.
+
+| module (`src/…`) | what it is | may name |
 |---|---|---|
-| `lib.rs` | — | module list, `BoxFuture`, `BoxError` |
-| `provider/model.rs` | provider/provider.go:11-59 | `Role`, `Attachment`, `ToolDef`, `ToolCall`, `JsonObject`, `Raw` (comparable `Box<RawValue>` newtype), `RawContent`, `Message` |
-| `mcp/config.rs` | mcp/manager.go:22-30,530-549, mcp/vars.go | `ServerConfig`, `parse_mcp_flag`, `expand_server_config`, `endpoint_of`, `McpFlagError` (feature-independent) |
-| `provider/usage.rs` | provider/provider.go:61-130 | `Usage` + derived figures + `AddAssign` |
-| `provider/mod.rs` | provider/provider.go:132-331, base.go | `ProviderKind`, `Effort`, `Provider`, `ToolProvider`, capability traits, `ChatResult`, `RoundResult`, `ImageGenParams/Options`, `ToolSearcher` |
-| `provider/sink.rs` | provider.go:136-137 contract | `StreamSink`, `NullSink`, `ReasoningGate` |
-| `tool/mod.rs` | tool/tool.go:33-330 | `ToolOutput`, `ToolError`, `Presentation`, `Tool`, `Dispatcher`, `DeferredToolStatus`, `DeferState`, `ToolEnv`, `PrefixOf` |
-| `tool/mod.rs` (delegation half) | tool/tool.go:245-288 | `Delegator`, `AgentInfo`, `DelegateSpec`, `DelegateResult`, `DelegateOutcome` |
-| `tool/context.rs` | chat/turns.go | `RunCtx`, `TurnBudget`, `BudgetExt`, `ArtifactSlot` |
-| `app/env.rs` | internal/vars/vars.go, cmd/root.go (os.Getenv seam) | `Env` (`process`, `fixed`, `var`, `cwd`, `home`, `dirs`), `expand` |
-| `app/mod.rs` | internal/app/app.go (+ os.UserCacheDir/TempDir rules) | `NAME`, `DOT_DIR`, `CONFIG_BASE`, `CONFIG_EXTS`, `HostDirs`, `user_home`, `cache_dir` |
-| `app/paths.rs` | filepath.Clean/Rel semantics | `clean`, `rel`, `to_slash` (+ `within`, test-only) |
-| `text/mod.rs` | tool/agent.go:240-276, fmt %q/%v | `split_lines`, `truncate_to_char_boundary`, `go_quote`, `go_float`, `go_duration` |
-| `provider/error.rs`, `tool/error.rs` | provider.go:207-214, tool.go | `ProviderError`, `PermanentError`, `UnknownProviderType`, `InvalidEffort`; `ToolError` (`BoxError` is in `lib.rs`) |
-| `testing/{mod,scripted}.rs` (feature `testing`) | chat/*_test.go fakes | `RecordingSink`, `SinkEvent`, `StaticDispatcher`, `FakeDelegator`, `FakeToolProvider` |
-
-### the providers and the wire layer (formerly `iota-llm`)
-| module | Go |
-|---|---|
-| `provider/mod.rs` (factory half) | provider/provider.go:310-331 (`new_provider`, `ProviderParams`) |
-| `llm/mod.rs` | — (module list + `is_zero`) |
-| `llm/client.rs` | internal/llm/client.go (Client, retry loop, StatusError, default_http_client, Jitter, header-timeout seam) |
-| `llm/sse.rs` | internal/llm/sse.go |
-| `llm/error.rs` | client.go:32-47 + per-dialect texts (`LlmError`, `RespFailure`) |
-| `llm/models.rs` | internal/llm/chatcomp.go (Models) — the OpenAI-shaped `GET /models` shared by chatcomp and responses |
-| `llm/chatcomp.rs` | internal/llm/chatcomp.go (minus Models) |
-| `llm/responses.rs` | internal/llm/responses.go |
-| `llm/anthropic.rs` | internal/llm/anthropic.go |
-| `llm/google.rs` | internal/llm/google.go (generateContent + models + :predict) |
-| `llm/images.rs` | internal/llm/images.go (generations + models + consume_images; NO edits) |
-| `provider/think.rs` | provider/thinktag.go |
-| `provider/usage_conv.rs` | provider/usage.go |
-| `provider/common.rs` | provider/base.go (`ProviderCore`, `HasCore`, the blanket `Tunable`/`TopPTunable` impls), attachment data-URL helpers |
-| `provider/image_util.rs` | provider/imagen.go:117-124,226-235, images.go:169-229 (`last_user_turn`, `image_mime`, `sniff_image`, `ext_for_mime`, `fetch_image`) |
-| `provider/{openai,openresponses,anthropic,google,imagen,images}.rs` | provider/<same>.go |
-
-### the tool framework and sets (formerly `iota-tools`)
-| module | Go |
-|---|---|
-| `tool/context.rs` | chat/turns.go (`RunCtx`, `TurnBudget`, `BudgetExt`, `ArtifactSlot`) |
-| `tool/approval.rs` | chat/approval.go, chat.go:348-364 (`Approval`: the answer to a gated call) |
-| `tool/sets.rs` | tool/tool.go:329-341 (`SET_NAMES`, `set_factory`, `RawNode`, `ToolsConfig`, `SetFactory`, `SetError`) |
-| `tool/dispatch.rs` | tool/tool.go:343-528 (`Registry`, `set_disabled`) + 538-673 (`merge`, the live union) |
-| `tool/defer/mod.rs` | tool/defer.go |
-| `tool/defer/mode.rs` | tool/defermode.go + defermode_protocol.go |
-| `tool/yaml11.rs` | yaml.v3 bool leniency (new) |
-| `tool/args.rs` | tool/tool.go:679-689, tool/agent.go:174-197,253-263 (`bool_arg`, `int_arg`, `str_arg`, `read_file_limited`) |
-| `tool/builtins/ask.rs` | tool/ask.go:18-27 |
-| `tool/delegate.rs` | tool/delegate.go |
-| `tool/builtins/shell.rs` | tool/shell.go |
-| `shell/exec.rs` (+ `shell/mod.rs`) | internal/shell/shell.go + proc_unix.go |
-| `shell/sandbox/{mod,darwin,linux,other}.rs` | internal/shell/sandbox_*.go |
-| `shell/interp.rs` | — (Go had one shell; DIVERGENCES X-17) |
-| `tool/builtins/code/mod.rs` | tool/code.go:45-220 (config, `CodeSet`, jail, ledger, byte_count, looks_binary) |
-| `tool/builtins/code/walk.rs` | tool/code.go:160-198 (gitignore walk) |
-| `tool/builtins/code/tools.rs` | tool/code.go:226-878 (six tools) |
-| `agents/mod.rs` | internal/agents/agentsmd.go |
-| `agents/skills.rs` | internal/agents/skills.go |
-| `tool/builtins/agent.rs` | tool/agent.go |
-
-### the MCP manager (formerly `iota-mcp`)
-| module | Go |
-|---|---|
-| `mcp/mod.rs` | re-exports, `#[cfg(test)] mod testutil` (duplex echo server) |
-| `mcp/manager.rs` | mcp/manager.go:65-474 (+ the `merge_result` unit tests) |
-| `mcp/transport.rs` | mcp/manager.go:337-398,478-512 (connect_one, make_transport, `Session`, `RmcpSession` over `call_tool_once`) |
-| `mcp/error.rs` | manager.go error texts (`McpError`; `EmptyFlag` is `mcp/config.rs`'s) |
-
-### the session store (formerly `iota-session`, phase 2 slice 1) — `src/session/`
-| module | Go | contents |
-|---|---|---|
-| `mod.rs` | — | re-exports; the bundle-layout doc |
-| `error.rs` | chat/session.go error texts | `SessionError` (`NotFound`, `CannotRead`, `NoMatch`, `Ambiguous`, `ReadLog`, `HomeNotDefined`, `Io`) |
-| `meta.rs` | chat/session.go:39-65,481-489,752-760 | `SessionMeta` in Go's struct order with the `#[serde(flatten)] extra` map (D-46), `read`/`write` (temp+rename, no trailing newline — D-45), `now_rfc3339`/`parse_rfc3339`, plus `top_p` and `param_sources` (X-25) |
-| `params.rs` | (new) | `ParamSource`/`ParamSources`/`Param`/`LayeredParams` — what a session runs under for the four layered parameters and where each value came from (X-24) |
-| `record.rs` | chat/session.go:67-130 | the `messages.jsonl` line DTOs with Go's exact `omitempty` matrix (`arguments` and `usage.in`/`usage.out` always emitted) |
-| `rawcodec.rs` | chat/session.go:529-538,796-804 | `raw_to_blob`/`blob_to_raw` — a pure function of `ProviderKind`, so the store never names the wire layer; the blob is never parsed (D-51a) |
-| `id.rs` | chat/session.go:211-280 | the 12-char Crockford-base32 alphabet, bias-free generation, `resolve_in` (exact → unique prefix → ambiguous) |
-| `store.rs` | chat/session.go:154-305,335-402,904-1028 | `SessionStore`, `project_slug`, `find_dir`/`dir`, `id_taken`/`new_id`, `list`/`list_all`, `resolve_id` (scope-first, only `NoMatch` widens), `create`/`resume`/`load` |
-| `loader.rs` | chat/session.go:762-901, chat/compact.go:19-28 | chunked `scan_records` with the 32 MiB cap enforced while reading (D-56), `record_to_message`, `load_log` with the compaction weave |
-| `writer.rs` | chat/session.go:307-748 | lazy `ensure_created`, `append_messages` (one fsync per batch, then one meta rewrite), `append_compaction`, `update_meta` (Go's eight `Set*` collapsed into one), `images_path`/`images_dir`, the content-addressed attachment store |
-| `tuning.rs` | chat/session.go:414-455 | `apply_session_tuning`, gated on the provider tag first; the context window is returned, not pushed through Go's `setWindow` callback; `top_p` replays beside effort and temperature (X-25) |
-
-### the headless loop (formerly `iota-chat`) — `src/headless/`
-| module | Go |
-|---|---|
-| `mod.rs` | chat/output.go:29-53, chat/agentmode.go (`OutputFormat`, `parse_output_format`, `AgentOptions`) |
-| `once.rs` | chat/chat.go:35-68 (+ `OnceOptions.history` / `OnceOutcome.delta`) |
-| `run.rs` | chat/chat.go:73-127,284-379, chat/run.go:68-74,221-229,1092-1095, chat/delegate.go:25-51 (`run_once`, `execute_with_tools` over a `TurnParams`, `QuietHost`; the history watermark and the turn delta) |
-| `batch.rs` | chat/parallel.go:42-57,106-140 |
-| `report.rs` | chat/output.go:64-215 |
-| `images.rs` | chat/images.go:21-58,117-148,156-170 (`save_images_for_turn` = `collectImages`' saved subset) |
-| `delegator.rs` | chat/delegate.go:58-162 |
-| `error.rs` | chat/chat.go:266-294 (`ChatError`) |
-
-### the command (formerly `iota`) — `src/cmd/` + `src/config.rs` + `src/main.rs`
-| module | Go |
-|---|---|
-| `main.rs` | main.go (+ signal/exit-code policy) |
-| `cmd/mod.rs` | cmd/root.go:41-268 (`run_agent`) + cmd/root.go:284-334 (the resume stage on the `-m` path, D-41); the verb dispatch is `run` |
-| `cmd/args.rs` | cmd/root.go:22-39,418-436, rebuilt as a verb set (X-10 … X-14) |
-| `config/` | config/config.go, plus `config/strict.rs` (the key audit, X-15) and `config/params.rs` (the layered parameters, X-24) |
-| `cmd/resolve.rs` | cmd/root.go:46-123,534-566 (`ModelRequired` deferred for a resume, D-52) |
-| `config/window.rs` | chat/tokens.go:20-43 |
-| `cmd/list.rs` | cmd/root.go:439-529, rebuilt as `iota list` (X-13) |
-| `cmd/config_cmd.rs` | (new) `iota config check\|path\|init` (X-16) |
-| `cmd/tuning.rs` | cmd/root.go:133-199 |
-| `cmd/assemble.rs` | cmd/root.go:574-658 |
-| `cmd/io.rs` | stderr warning sinks (`Warning: …`, `⚠ …`) |
-| `cmd/signals.rs` | (new) SIGINT/SIGTERM → CancellationToken |
-
-The TUI slice's three former crates are `src/markdown/`, `src/ui/` and `src/repl/` (their module list is §1.1; the per-file Go anchors are `grep -rn '// Go: ' src/{markdown,ui,repl}`).
+| `lib.rs`, `main.rs` | the module list with `BoxFuture`/`BoxError`; the thin binary — parse, `Env::process`, the runtime, signals, exit codes (`anyhow` only here) | everything |
+| `app/{mod,env,paths,color,diag}.rs` | what the process learns ONCE at its edge and injects everywhere: program identity and `HostDirs`; the one environment seam `Env` (variables + dirs; `process()` in `main`, `fixed()` in tests) with `${var}` expansion; the lexical path helpers; the color decision (`NO_COLOR`, `TERM=dumb`, a piped stdout); the `IOTA_LOG` diagnostics tap | nothing in `src/` |
+| `text/{mod,width,ansi}.rs` | the `%q`/`%v`/`Duration` formatters whose bytes the transcripts are pinned to; THE grapheme width ruler; the escape-aware string tools (strip, wrap, clip, SGR carry) — one ruler for `markdown`, `ui` and `repl` | `app` |
+| `sync.rs` | the shared lock helpers | `app` |
+| `imgterm.rs` | the half-block image rasteriser; the ONLY module that names the `image` crate — everything else sees `imgterm::Frame` | `app` |
+| `llm/{mod,client,sse,error,models,chatcomp,responses,anthropic,google,images,reqlog,progress,multipart}.rs` | the wire layer: the HTTP/SSE client (retries, the jitter seam, the header timeout, cancellation), the SSE reader, the error taxonomy, the OpenAI-shaped model listing, one module per dialect, the `/debug` request log the client records into, the upload-progress reporter, the multipart writer | `text` and below |
+| `provider/{mod,model,usage,sink,error,common,think,usage_conv,image_util}.rs`, `provider/{openai,openresponses,anthropic,google,imagen,images}.rs` | the `Provider`/`ToolProvider` traits with the capability traits and the per-call results; the data model (`Message`, `ToolDef`, `ToolCall`, `Usage`); the stream sink and the reasoning gate; `ProviderCore` with the blanket `Tunable` impls, the think-tag splitter, the usage converters; the seven adapters over `llm` | `llm` and below |
+| `shell/{mod,exec,interp,jobs}.rs`, `shell/sandbox/{mod,darwin,linux,other}.rs` | process execution, the MECHANISM under the `shell` tool (its pins are §5): the child in its process group, the capped output pipe, the interpreter choice, the background-job registry, the Seatbelt/bwrap sandboxes | `provider` and below |
+| `agents/{mod,skills}.rs` | the AGENTS.md overlay (root discovery, the chain, `compose_send_history`) and skills discovery | `provider` and below |
+| `tool/{mod,context,approval,fmt,error,args,sets,dispatch,yaml11}.rs`, `tool/defer/{mod,mode}.rs`, `tool/builtins/{mod,shell,agent,ask}.rs`, `tool/builtins/code/{mod,tools,walk,udiff}.rs` | the tool contract (`Tool`, `Dispatcher`, `ToolEnv`, `PrefixOf`; the run context `RunCtx`/`TurnBudget`/`ArtifactSlot` in `context`; the answer to a gated call in `approval`; the call-header formatters in `fmt`), the argument readers, the set table, the two dispatchers (the registry and the live union), deferred groups and their four modes, YAML 1.1 bools — and in `builtins/` the four built-in sets: `shell` (the policy over `shell/`), `code` (the six file tools, the gitignore walk, the unified diff), `skills` (`load_skill`), `ask` (present only with an interactor) | `shell`, `agents` and below |
+| `mcp/{mod,config,manager,transport,error}.rs` | the rmcp manager: server config and the `--mcp` flag, the transports, the 30 s connect fan-out with its config-order merge, `mcp__<segment>__<tool>` naming, the live tool view, routing and close | `tool` and below |
+| `session/{mod,meta,params,record,rawcodec,id,store,writer,loader,tuning,error}.rs` | the on-disk session bundle store: meta, the `messages.jsonl` records, the raw-content blob codec, ids, the store, writer and loader, the tuning replay — it never reads the process environment (§1.2); its root is an injected `HostDirs` | `tool` and below |
+| `mathtext/{mod,delim,parse,symbols,macros,inline,pict,layout}.rs` | the LaTeX engine: the inline Unicode approximation, the 2D layout, the delimiter scanners — a leaf over `text` that the markdown hooks call directly | `text` and below |
+| `config/{mod,provider,model,agent,params,strict,window}.rs` | the YAML config model and its merge; `Config::provider` → `Endpoint` with the ONE key precedence; the key audit that refuses a misplaced key by its coordinate; the layered parameters; `parse_window_size` | `mcp`, `session`, `tool` and below |
+| `markdown/{mod,inline,link,style,sink,preview,highlight,html}.rs`, `markdown/blocks/{mod,code,table,list,quote,math}.rs` | the pure streaming markdown→ANSI renderer (`Writer` over one `Block` value, the five buffering blocks in `blocks/`), inline styling, the `Sink` seam and the `PreviewHandle` contract `ui` implements, the `CodeHighlighter` seam with its syntect impl, and `/export`'s HTML renderer | `mathtext`, `text` and below |
+| `headless/{mod,once,run,batch,report,images,error}.rs` | the `-m` loop: `once`, `run_once` and `execute_with_tools` over a `TurnParams`, the parallel batches, the JSON/text report, image saving — what separates it from `repl` is that there is no terminal | `mcp`, `session`, `tool` and below |
+| `ui/{mod,facade,testutil}.rs`, `ui/runtime/{mod,handle,msgs,event_loop,term,osc,oneshot}.rs`, `ui/render/{mod,region,frame,spans,theme,sink,debug}.rs`, `ui/input/{mod,editor,composer,keys,paste,suggest}.rs`, `ui/surface/{mod,tabbed,panels,search,field}.rs` | the inline terminal engine, the ONLY module that names `ratatui`/`crossterm`: the `Ui` facade `repl` talks to; `runtime/` the loop thread, its mailbox, the terminal writer, the OSC probes, the one-shot pre-REPL surface; `render/` the staging region, the frame, the ANSI→span parser (the `NO_COLOR` gate), the theme, the metered previews; `input/` the shared `Editor`, the composer, the key ladder, paste, completion; `surface/` the tabbed panels, the pickers, search, the one-line field | `markdown`, `text` and below |
+| `host/{mod,ansi,cmux,background}.rs` | host integration: the presenter's per-capability fan-out (progress, attention ping, exit clean-up), the ANSI host (OSC 9 / 9;4 through the facade), the cmux host, the background probe | `ui` and below |
+| `repl/{mod,run,state,liveparams,catalog,editpicker,errors,title,systemtab}.rs`, `repl/turn/{mod,tools,retry,phases,steer,interrupt,approval,interact}.rs`, `repl/render/{mod,transcript,group,uisink,styles,diff,banner,replay,mcpreport}.rs`, `repl/context/{mod,meter,tokens}.rs`, `repl/commands/…` | the interactive loop over the facade: `run.rs` the loop, `state.rs` its state as `Conversation`/`SessionSlot`/`UiHandles`, `turn/` one turn (`TurnEngine` with the turn-level retry, the tool walk, steering, interrupts, approvals), `render/` what it draws, `context/` the token accounting, `catalog.rs` the `/model` listing, `liveparams.rs` the live half of the layered parameters, `commands/` the slash commands | everything below |
+| `cmd/{mod,args,error,resolve,assemble,tuning,list,config_cmd,io,signals}.rs`, `cmd/interactive/{mod,picker,title}.rs` | the command: the clap verb set, the three-stage error taxonomy, pure run resolution, MCP/dispatcher assembly, the tuning warnings, the listings, `iota config`, `Streams` (the process's ONE stderr writer), signals, and the interactive branch with the `iota resume` picker and the title stack | everything |
+| `testing/{mod,provider,dispatch,scripted}.rs` | the shared fakes behind the `testing` feature — `FakeProvider`, the fake dispatchers, the recording sink, `ScriptedUi` — not a layer | — |
 
 ---
 
