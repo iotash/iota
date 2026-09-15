@@ -8,7 +8,6 @@
 //!
 //! Discipline (phase-1 bar): every child runs with a CLEARED environment (`common::cleared_env`) in a temp
 //! working directory, HTTP goes to `wiremock`, and nothing reads or mutates this process's environment.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::{
     fs,

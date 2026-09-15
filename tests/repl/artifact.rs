@@ -1,6 +1,5 @@
 //! The T-35 artifact producers: `edit_file`/`write_file` post their unified diff through the `RunCtx`
 //! artifact slot (`tool/code_test.go:320`).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::{collections::HashMap, fs, path::Path, sync::Arc};
 
@@ -65,11 +64,11 @@ async fn call(tools: &Tools, name: &str, args: serde_json::Value) -> ToolOutput 
         .expect("no hard error")
 }
 
-// Go: tool/code_test.go:320 TestMutationsPostDiffArtifact — edit_file and write_file post
+// Edit_file and write_file post
 // their unified diff through the artifact side channel: display-only, never part of the
 // model-facing result text.
 #[tokio::test]
-async fn test_mutations_post_diff_artifact() {
+async fn mutating_code_tools_post_their_diff_as_an_artifact() {
     let (_dir, tools) = code_project(&[("a.txt", "one\ntwo\nthree\n")]);
 
     call(&tools, "read_file", serde_json::json!({"path": "a.txt"})).await; // edit needs a fresh read

@@ -1,5 +1,4 @@
 //! Wire-name tests (mcp/manager_test.go:17-164): pure string tests over `iota::mcp::naming`.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use iota::mcp::naming::{WIRE_NAME_MAX_LEN, sanitize_name_segment, wire_tool_name};
 use pretty_assertions::assert_eq;
@@ -14,10 +13,8 @@ fn gemini_name_ok(name: &str) -> bool {
     }
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
-
-// Go: mcp/manager_test.go:17
 #[test]
-fn test_sanitize_name_segment() {
+fn a_name_segment_is_sanitized_to_the_wire_alphabet() {
     let tests = [
         ("github", "github"),
         ("chrome-devtools", "chrome_devtools"),
@@ -45,10 +42,8 @@ fn test_sanitize_name_segment() {
         );
     }
 }
-
-// Go: mcp/manager_test.go:44
 #[test]
-fn test_wire_tool_name() {
+fn a_wire_tool_name_is_the_prefixed_server_and_tool() {
     let tests = [
         ("simple", "github", "get_me", "mcp__github__get_me"),
         (
@@ -94,10 +89,8 @@ fn test_wire_tool_name() {
         );
     }
 }
-
-// Go: mcp/manager_test.go:92
 #[test]
-fn test_wire_tool_name_sanitized_tool() {
+fn a_tool_name_is_sanitized_before_it_joins_the_wire_name() {
     let hyphen = wire_tool_name("github", "add-issue-comment");
     let under = wire_tool_name("github", "add_issue_comment");
 
@@ -138,10 +131,8 @@ fn test_wire_tool_name_sanitized_tool() {
     );
     assert!(gemini_name_ok(&long), "long lossy name not clean: {long:?}");
 }
-
-// Go: mcp/manager_test.go:126
 #[test]
-fn test_wire_tool_name_delimiter_ambiguity() {
+fn a_delimiter_inside_a_name_cannot_be_mistaken_for_the_separator() {
     let split_tool = wire_tool_name("a", "b__c");
     let split_server = wire_tool_name("a__b", "c");
 
@@ -155,10 +146,8 @@ fn test_wire_tool_name_delimiter_ambiguity() {
         "delimiter-ambiguous compositions collided"
     );
 }
-
-// Go: mcp/manager_test.go:141
 #[test]
-fn test_wire_tool_name_truncation() {
+fn an_overlong_wire_name_is_truncated_at_the_limit() {
     // Two long tool names that differ only past the truncation cut must yield distinct wire names of exactly
     // WIRE_NAME_MAX_LEN chars.
     let base = "a".repeat(80);

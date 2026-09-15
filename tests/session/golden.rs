@@ -1,7 +1,6 @@
 //! Byte-level goldens against the REAL Go writer's output (design §8.1 / PROBE-RESULT.md): `meta.json`'s
 //! key order, 2-space indentation and missing trailing newline, and the whole `messages.jsonl` omitempty
 //! matrix.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use iota::provider::ProviderKind;
 use iota::provider::model::{

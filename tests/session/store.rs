@@ -1,6 +1,5 @@
 //! The sessions root: slugs, the two layouts, id minting and collision checks, the mode-isolated listing
 //! views and `--resume` fragment resolution (`chat/session_test.go`, `chat/session_project_test.go`).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::Path;
 

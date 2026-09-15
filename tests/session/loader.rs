@@ -1,6 +1,5 @@
 //! Reading a bundle back: the compaction weave, the LOSSLESS `/export` history, log-wide usage, and
 //! every tolerance `bufio.Scanner` gives Go (`chat/session.go:813-941`, `chat/session_test.go:410`).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::Path;
 

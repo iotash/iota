@@ -2,7 +2,6 @@
 //! the three-layer resolution and the key audit that refuses a key written in the wrong layer).
 //! Every test injects `HostDirs` and a map-backed `VarResolver` — nothing reads or mutates the process
 //! environment.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::{
     fs,
@@ -61,10 +60,8 @@ fn parse_warned(yaml: &str) -> (Result<Config, ConfigError>, Vec<String>) {
 }
 
 // ---------------------------------------------------------------- the three layers
-
-// Go: config/config_test.go:12
 #[test]
-fn test_load_tools() {
+fn the_tools_map_loads_with_each_sets_node() {
     let (dir, _dirs) = temp_project(&[]);
     let cfg = load_yaml(
         dir.path(),
@@ -114,9 +111,9 @@ agents:
     assert_eq!(cfg.resolve_agent("missing"), None);
 }
 
-// Go: config/config_test.go:65 — what Go spelled `agent:` under a provider is `workspace:` on an agent.
+// What Go spelled `agent:` under a provider is `workspace:` on an agent.
 #[test]
-fn test_load_agent() {
+fn an_agent_entry_loads_with_its_workspace_flag() {
     let (dir, _dirs) = temp_project(&[]);
     let cfg = load_yaml(
         dir.path(),
@@ -168,9 +165,9 @@ agents:
     assert_eq!(cfg.agents["f"].notify, Some(false));
 }
 
-// Go: config/config_test.go:100 — the prompt belongs to the agent now.
+// The prompt belongs to the agent now.
 #[test]
-fn test_resolve_system() {
+fn the_system_prompt_resolves_from_system_then_system_file() {
     let (dir, _dirs) = temp_project(&[("sys.md", "You are terse.\n")]);
     let f = dir.path().join("sys.md").to_string_lossy().into_owned();
 
@@ -208,10 +205,8 @@ fn test_resolve_system() {
 
     assert_eq!(AgentConfig::default().resolve_system().unwrap(), "");
 }
-
-// Go: config/config_test.go:120
 #[test]
-fn test_load_expands_provider_vars() {
+fn provider_fields_expand_their_variables_at_load() {
     let (dir, dirs) = temp_project(&[]);
     let path = dir.path().join("c.yaml");
     fs::write(
@@ -246,10 +241,8 @@ fn test_load_expands_provider_vars() {
     let want = dirs.home.unwrap().join(".iota").join("sys.md");
     assert_eq!(PathBuf::from(&cfg.agents["coder"].system_file), want);
 }
-
-// Go: config/config_test.go:147
 #[test]
-fn test_mcp_servers_for() {
+fn mcp_servers_for_selects_all_none_or_the_named_subset() {
     let (dir, _dirs) = temp_project(&[]);
     let cfg = load_yaml(
         dir.path(),
@@ -307,10 +300,8 @@ mcp_servers:
         "mcp_servers: \"nope\" is not defined under the top-level mcp_servers"
     );
 }
-
-// Go: config/config_test.go:195
 #[test]
-fn test_temperature_field() {
+fn the_temperature_field_parses_and_stays_optional() {
     let (dir, _dirs) = temp_project(&[]);
     let cfg = load_yaml(
         dir.path(),
@@ -324,10 +315,8 @@ fn test_temperature_field() {
         "temperature must default None"
     );
 }
-
-// Go: config/config_test.go:209
 #[test]
-fn test_top_p_field() {
+fn the_top_p_field_parses_and_stays_optional() {
     let (dir, _dirs) = temp_project(&[]);
     let cfg = load_yaml(
         dir.path(),
@@ -341,10 +330,8 @@ fn test_top_p_field() {
         "top_p must default None"
     );
 }
-
-// Go: config/config_test.go:224
 #[test]
-fn test_notify_field() {
+fn the_notify_field_defaults_on_and_parses_yaml_booleans() {
     let (dir, _dirs) = temp_project(&[]);
     let cfg = load_yaml(
         dir.path(),
@@ -362,10 +349,8 @@ fn test_notify_field() {
         "notify must default None (on)"
     );
 }
-
-// Go: config/config_test.go:238
 #[test]
-fn test_no_save_field() {
+fn the_no_save_field_parses_yaml_booleans() {
     let (dir, _dirs) = temp_project(&[]);
     let cfg = load_yaml(
         dir.path(),
@@ -378,10 +363,8 @@ fn test_no_save_field() {
         "no_save must default false"
     );
 }
-
-// Go: config/config_test.go:253
 #[test]
-fn test_defer_field() {
+fn the_defer_field_parses_the_deferred_group_list() {
     let (dir, _dirs) = temp_project(&[]);
     let cfg = load_yaml(
         dir.path(),
@@ -414,10 +397,8 @@ mcp_servers:
         "blank defer must be present-and-empty (cmd warns)"
     );
 }
-
-// Go: config/config_test.go:283
 #[test]
-fn test_defer_mode_field() {
+fn the_defer_mode_field_is_validated_against_the_dialect() {
     let (dir, _dirs) = temp_project(&[]);
     let cfg = load_yaml(
         dir.path(),
@@ -431,10 +412,8 @@ fn test_defer_mode_field() {
         "defer_mode must default empty"
     );
 }
-
-// Go: config/config_test.go:298
 #[test]
-fn test_find_config_file() {
+fn find_config_file_walks_explicit_then_home_then_cwd() {
     let (dir, _dirs) = temp_project(&[]);
     let sub = dir.path().join("lookup");
     fs::create_dir_all(&sub).unwrap();

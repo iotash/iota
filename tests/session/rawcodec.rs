@@ -1,6 +1,5 @@
 //! The dialect raw-payload round trip: the provider tag, the array-shaped variants and every drop rule
 //! (`chat/session_test.go:340`, and the session halves of the Go dialect tests).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use iota::provider::ProviderKind;
 use iota::provider::model::{Message, Raw, RawContent, ToolCall};

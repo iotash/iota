@@ -1,6 +1,5 @@
 //! The append lifecycle (`chat/session_test.go`): lazy bundle creation, the round trip through
 //! `messages.jsonl`, the counters, the attachment store and compaction markers.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use iota::provider::ProviderKind;
 use iota::provider::model::{Attachment, JsonObject, Message, Raw, RawContent, Role, ToolCall};

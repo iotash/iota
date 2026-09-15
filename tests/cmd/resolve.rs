@@ -1,7 +1,6 @@
 //! Pure resolution tests (cmd/root.go:46-123, 439-566; chat/tokens.go:20-43): the verb set, `resolve_run`,
 //! the listings and `parse_window_size`. Every environment lookup goes through a `map_env`; nothing reads or
 //! mutates the process environment or the network.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 // No `mod common;`: these tests need neither a temp project nor TLS (no `reqwest::Client` is ever built), and
 // declaring the shared fixtures unused would trip `unused_imports` in the ★ WP00-owned module.
 
@@ -113,10 +112,8 @@ fn list(args: &[&str], cfg: &Config, env: &[(&str, &str)]) -> (String, String) {
     .unwrap_or_else(|e| panic!("list {args:?}: {e}"));
     (out.text(), errs.text())
 }
-
-// Go: chat/tokens_test.go
 #[test]
-fn test_parse_window_size() {
+fn a_window_size_parses_with_k_and_m_suffixes() {
     for (input, want) in [
         ("128000", 128_000),
         (" 200k ", 200_000),

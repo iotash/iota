@@ -1,5 +1,4 @@
 //! `meta.json`: the tuning round trip, unknown-key preservation, legacy bundles and the atomic rewrite.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use iota::provider::ProviderKind;
 use iota::provider::model::Message;

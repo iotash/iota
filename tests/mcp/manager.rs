@@ -1,6 +1,5 @@
 //! Public-API tests of the manager (mcp/manager_test.go:426-454 plus the close / reserved-header cases): everything
 //! here goes through `Manager::new` → `connect_all` → `Dispatcher` → `close` and spawns only `sh`.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
@@ -41,11 +40,9 @@ fn process_exists(pid: &str) -> bool {
         .status()
         .is_ok_and(|s| s.success())
 }
-
-// Go: mcp/manager_test.go:426
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_manager_connect_timeout() {
+async fn a_server_that_never_answers_fails_at_the_connect_timeout() {
     // The subprocess records its own pid so the test can prove it was reaped, then never speaks MCP.
     let pid_file = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
         .join(format!("iota-mcp-hang-{}.pid", std::process::id()));

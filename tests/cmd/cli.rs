@@ -5,7 +5,6 @@
 //! variable, a fixed `PATH`, and on Windows the few variables the OS itself reads) and a temp working
 //! directory, so no test reads or mutates the test process's own environment and no developer config file can
 //! reach the run. HTTP goes to a `wiremock` server; nothing touches the network.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::{
     fs,

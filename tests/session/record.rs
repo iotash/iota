@@ -1,6 +1,5 @@
 //! The `messages.jsonl` line DTOs: the `arguments` null/`{}`/absent rule, the usage key set and the
 //! unknown-key tolerance a Go-written line depends on.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use iota::session::{SessionRecord, SessionToolCall, SessionUsage};
 use pretty_assertions::assert_eq;

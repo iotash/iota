@@ -8,7 +8,6 @@
 //! The interactive-only surface — `--no-save` and `iota resume` with no id — is lifted for a run without
 //! `-m` (it means what Go means by it) and the branch at root.go:259 ends at the terminal check; a headless
 //! `-m` run keeps every headless rejection.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::{
     io::Write as _,
