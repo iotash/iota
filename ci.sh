@@ -19,14 +19,23 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 # that answers nothing is removed rather than left to accumulate.
 #
 # The sweep is by socket, and those sockets are the suite's alone (`iota-test-<pid>-<scenario>`,
-# tests/ui_tmux/main.rs): a developer's own tmux lives on `default` and is never touched. Two
-# copies of this script sharing one machine would sweep each other's, which cargo's
-# target-directory lock already makes a thing that does not happen.
+# tests/ui_tmux/main.rs, or `iota-test-<pid>` from lib.sh): a developer's own tmux lives on
+# `default` and is never touched. Two copies of this script DO share one machine now — each git
+# worktree has its own target directory, so cargo's lock no longer serialises them — so a socket
+# whose owning process (the pid in its name) is still alive belongs to another run and is left
+# alone; only a socket whose owner is gone is swept (2026-09-15: a Phase 5 run swept a
+# neighbour's suite mid-scenario).
 sweep_tmux_servers() {
   local tmux="${TMUX_BIN:-tmux}" sock
   command -v "$tmux" >/dev/null 2>&1 || return 0
   shopt -s nullglob
+  local name pid
   for sock in "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"/iota-test-*; do
+    name="${sock##*/iota-test-}"
+    pid="${name%%-*}"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+      continue   # a live owner: another run's suite, not ours to end
+    fi
     "$tmux" -S "$sock" kill-server >/dev/null 2>&1 || true
     rm -f "$sock"
   done
