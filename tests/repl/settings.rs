@@ -24,8 +24,8 @@ use iota::provider::model::Message;
 use iota::provider::{Effort, ImageGenOptions, ImageGenParams, ProviderKind, Tunable};
 use iota::repl::{McpHooks, RunParams, SessionCtx};
 use iota::session::{
-    LayeredParams, Overrides, Param, ParamSource, SessionMeta, SessionStore, SessionWriter,
-    apply_session_tuning,
+    LayeredParams, NewSession, Overrides, Param, ParamSource, SessionMeta, SessionStore,
+    SessionWriter, apply_session_tuning,
 };
 use iota::testing::{FakeProvider, Reply, ScriptedUi, StaticDispatcher, TabbedSummary, UiEvent};
 use iota::text::ansi::strip_sgr;
@@ -75,7 +75,7 @@ impl Fixture {
     fn writer(&self) -> (SessionWriter, PathBuf) {
         let mut w = self
             .store
-            .create(ProviderKind::OpenAi, "gpt-test", None, "", "", false, "")
+            .create(NewSession::new(ProviderKind::OpenAi, "gpt-test"))
             .expect("create writer");
         w.append_messages(&[Message::user("earlier")])
             .expect("materialise");
@@ -182,7 +182,7 @@ fn unchanged(s: &TabbedSummary) -> Vec<PanelResult> {
 // the surface's shape
 // ---------------------------------------------------------------------------
 
-/// Go: chat/run.go:544-630 — the full questionnaire opens with a tab per capability, in
+/// The full questionnaire opens with a tab per capability, in
 /// Go's fixed order, each on the provider's current value. `enter_advances` stays FALSE:
 /// Enter on any tab commits everything (only the ask wizard advances).
 #[tokio::test]
@@ -271,7 +271,7 @@ async fn model_shows_only_the_tabs_the_provider_has() {
 // the commit
 // ---------------------------------------------------------------------------
 
-/// Go: chat/run.go:637-712 — every knob that MOVED applies to the provider, persists into
+/// Every knob that MOVED applies to the provider, persists into
 /// the bundle, and prints its own dim notice, in tab order.
 #[tokio::test]
 async fn model_commits_every_moved_knob_with_its_own_notice() {

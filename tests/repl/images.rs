@@ -14,7 +14,7 @@ use iota::llm::reqlog::RequestLog;
 use iota::provider::ProviderKind;
 use iota::provider::model::Attachment;
 use iota::repl::{McpHooks, RunParams, SessionCtx};
-use iota::session::{SessionStore, SessionWriter};
+use iota::session::{NewSession, SessionStore, SessionWriter};
 use iota::testing::{FakeProvider, Log, Reply, Round, ScriptedUi, StaticDispatcher, UiEvent};
 use iota::text::ansi::strip_sgr;
 use iota::tool::Dispatcher;
@@ -76,7 +76,7 @@ async fn run_one(p: FakeProvider) -> (Arc<ScriptedUi>, tempfile::TempDir, Log, S
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = SessionStore::new(tmp.path().join("sessions"));
     let writer: SessionWriter = store
-        .create(ProviderKind::Images, "gpt-image-1", None, "", "", false, "")
+        .create(NewSession::new(ProviderKind::Images, "gpt-image-1"))
         .expect("create writer");
     let images_dir = writer.images_path().to_string_lossy().into_owned();
     let ui = ScriptedUi::new(vec![input("draw"), Reply::Interrupted]);

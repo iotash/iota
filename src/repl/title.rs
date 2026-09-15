@@ -328,7 +328,7 @@ mod tests {
         SessionTitle, WriterSlot, first_user_text, is_read_only_viewer, sanitize_title,
         status_model_label, title_from, window_title,
     };
-    use crate::session::{SessionStore, SessionWriter};
+    use crate::session::{NewSession, SessionStore, SessionWriter};
     use pretty_assertions::assert_eq;
 
     /// A title state wired to an in-memory writer plus a recording window sink, so a test can
@@ -409,7 +409,7 @@ mod tests {
     /// A pending bundle: `create` touches no disk, so the whole suite is in-memory.
     fn new_writer(store: &SessionStore) -> SessionWriter {
         store
-            .create(ProviderKind::OpenAi, "gpt-test", None, "", "", false, "")
+            .create(NewSession::new(ProviderKind::OpenAi, "gpt-test"))
             .expect("create session writer")
     }
 
@@ -417,12 +417,12 @@ mod tests {
         vec![Message::user(text)]
     }
 
-    // Go: chat/titlestate_test.go:41 TestTitleSeedsBeforeTheReply — naming at SEND time is the
+    // Naming at SEND time is the
     // whole point: a first turn that spends minutes in tool calls must not be poorly named
     // while it works, so the placeholder comes from the user's message alone and the same call
     // releases that message for the async pass.
     #[test]
-    fn test_title_seeds_before_the_reply() {
+    fn title_seeds_before_the_reply() {
         let p = Probe::new(false);
         let seeded = p.titler.seed(&user_turn("refactor the session writer"));
         let (first_user, _) = seeded.expect("seed must release the message for the model pass");
@@ -431,10 +431,10 @@ mod tests {
         assert_eq!(p.last_window(), "refactor the session writer");
     }
 
-    // Go: chat/titlestate_test.go:57 TestTitleSeedOnlyOnce — later messages never rename a
+    // Later messages never rename a
     // session, and the model pass fires only for the seed that newly named it.
     #[test]
-    fn test_title_seed_only_once() {
+    fn title_seed_only_once() {
         let p = Probe::new(false);
         let mut history = user_turn("first question");
         p.titler.seed(&history);
@@ -447,10 +447,8 @@ mod tests {
         );
         assert_eq!(p.name(), "first question", "the FIRST message names it");
     }
-
-    // Go: chat/titlestate_test.go:74 TestTitleLandUpgradesThePlaceholder.
     #[test]
-    fn test_title_land_upgrades_the_placeholder() {
+    fn title_land_upgrades_the_placeholder() {
         let p = Probe::new(false);
         let (_, generation) = p
             .titler
@@ -461,20 +459,20 @@ mod tests {
         assert_eq!(p.last_window(), "Profiling Go allocations");
     }
 
-    // Go: chat/titlestate_test.go:88 TestTitleLandEmptyKeepsThePlaceholder — a failed pass
+    // A failed pass
     // changes nothing and there is no retry: the placeholder is a complete fallback.
     #[test]
-    fn test_title_land_empty_keeps_the_placeholder() {
+    fn title_land_empty_keeps_the_placeholder() {
         let p = Probe::new(false);
         let (_, generation) = p.titler.seed(&user_turn("a question")).expect("seeded");
         p.titler.land(generation, "");
         assert_eq!(p.name(), "a question");
     }
 
-    // Go: chat/titlestate_test.go:99 TestTitleResumedSessionUntouched — a resumed bundle
+    // A resumed bundle
     // arrives named; neither the placeholder nor a pass may take that away.
     #[test]
-    fn test_title_resumed_session_untouched() {
+    fn title_resumed_session_untouched() {
         let p = Probe::new(true);
         p.writer
             .lock()
@@ -492,11 +490,11 @@ mod tests {
         assert_eq!(p.window_writes(), 0, "the window sink must stay untouched");
     }
 
-    // Go: chat/titlestate_test.go:116 TestTitleUnseedOnRollback — a failed or discarded turn
+    // A failed or discarded turn
     // takes its user message out of the history, and the name was derived from nothing else;
     // the pass that was racing the turn must not land late either.
     #[test]
-    fn test_title_unseed_on_rollback() {
+    fn title_unseed_on_rollback() {
         let p = Probe::new(false);
         let history = user_turn("a question that errored");
         let (_, generation) = p.titler.seed(&history).expect("seeded");
@@ -519,11 +517,11 @@ mod tests {
         assert_eq!(p.name(), "What actually worked");
     }
 
-    // Go: chat/titlestate_test.go:150 TestTitleRollbackRevertsALandedTitle — on a fast pass the
+    // On a fast pass the
     // model title can arrive before the turn fails; the rollback takes it too, because the text
     // it summarized is gone either way.
     #[test]
-    fn test_title_rollback_reverts_a_landed_title() {
+    fn title_rollback_reverts_a_landed_title() {
         let p = Probe::new(false);
         let (_, generation) = p.titler.seed(&user_turn("a question")).expect("seeded");
         p.titler.land(generation, "A Model Title");
@@ -531,10 +529,10 @@ mod tests {
         assert_eq!(p.name(), "");
     }
 
-    // Go: chat/titlestate_test.go:163 TestTitleUnseedKeepsASurvivingTurn — an interrupt that
+    // An interrupt that
     // kept partial output leaves the user message in place, so the name stays.
     #[test]
-    fn test_title_unseed_keeps_a_surviving_turn() {
+    fn title_unseed_keeps_a_surviving_turn() {
         let p = Probe::new(false);
         let mut history = user_turn("a question");
         p.titler.seed(&history);
@@ -543,10 +541,10 @@ mod tests {
         assert_eq!(p.name(), "a question");
     }
 
-    // Go: chat/titlestate_test.go:177 TestTitleAdoptNameWins — an explicit /save title outranks
+    // An explicit /save title outranks
     // the model pass (one in flight is dropped on landing) and no rollback strips it.
     #[test]
-    fn test_title_adopt_name_wins() {
+    fn title_adopt_name_wins() {
         let p = Probe::new(false);
         let (_, generation) = p.titler.seed(&user_turn("a question")).expect("seeded");
         p.titler.adopt_name("my chosen name");
@@ -561,11 +559,11 @@ mod tests {
         );
     }
 
-    // Go: chat/titlestate_test.go:194 TestTitleEphemeralNamesTheWindow — a --no-save chat has no
+    // A --no-save chat has no
     // writer, but the window title is worth having; when /save mints a bundle, reapply hands it
     // the name the window already carries.
     #[test]
-    fn test_title_ephemeral_names_the_window() {
+    fn title_ephemeral_names_the_window() {
         let p = Probe::new(false);
         p.set_writer(None); // ephemeral: nothing is persisting
         let (first_user, generation) = p.titler.seed(&user_turn("a question")).expect("seeded");
@@ -580,20 +578,20 @@ mod tests {
         assert_eq!(p.name(), "A Model Title");
     }
 
-    // Go: chat/titlestate_test.go:220 TestTitleReapplyWithoutAName — /save before any message
+    // /save before any message
     // has nothing to hand over; the minted writer stays untouched for the next seed to name.
     #[test]
-    fn test_title_reapply_without_a_name() {
+    fn title_reapply_without_a_name() {
         let p = Probe::new(false);
         p.titler.reapply();
         assert_eq!(p.name(), "");
     }
 
-    // Go: chat/titlestate_test.go:230 TestTitleFollowsAWriterSwap — /session swaps the writer
+    // /session swaps the writer
     // mid-chat, so the state must read the CURRENT one: a captured handle would name the
     // session the user just left.
     #[test]
-    fn test_title_follows_a_writer_swap() {
+    fn title_follows_a_writer_swap() {
         let p = Probe::new(false);
         p.titler.seed(&user_turn("first chat"));
         let first = p.set_writer(Some(p.mint())).expect("the original writer");
@@ -604,11 +602,11 @@ mod tests {
         assert_eq!(p.name(), "", "the swapped-in session must not be renamed");
     }
 
-    // Go: chat/titlestate_test.go:247 TestTitleLandRacesTheLoop — `land` arrives from the pass
+    // `land` arrives from the pass
     // task while the loop seeds and unseeds. Go ran it under -race; the Rust twin drives the
     // same interleaving across two threads against the mutex.
     #[test]
-    fn test_title_land_races_the_loop() {
+    fn title_land_races_the_loop() {
         let p = Arc::new(Probe::new(false));
         let racer = Arc::clone(&p);
         let done = std::thread::spawn(move || {
@@ -624,10 +622,10 @@ mod tests {
         done.join().expect("racer thread");
     }
 
-    // Go: chat/title_test.go:13 TestFirstUserText — an attachment-only opener defers to the
+    // An attachment-only opener defers to the
     // next message that carries text: the name must never wait for the assistant.
     #[test]
-    fn test_first_user_text() {
+    fn an_attachment_only_opener_defers_to_the_next_text() {
         assert_eq!(first_user_text(&[]), "");
         assert_eq!(first_user_text(&user_turn("draw a cat")), "draw a cat");
         let history = vec![
@@ -645,11 +643,11 @@ mod tests {
         assert_eq!(first_user_text(&history), "hi");
     }
 
-    // Go: chat/title_test.go:34 TestTitleFrom — every title entry point funnels through it: one
+    // Every title entry point funnels through it: one
     // line, no control characters, capped on RUNE boundaries (a stored newline would break the
     // picker's row accounting and the window title).
     #[test]
-    fn test_title_from() {
+    fn every_title_entry_point_flattens_caps_and_strips_controls() {
         for (name, input, want) in [
             (
                 "multi-line prompt",
@@ -672,10 +670,10 @@ mod tests {
         assert_eq!(runes[40], '…');
     }
 
-    // Go: chat/title_test.go:57 TestSanitizeTitle — the model's answer keeps its first-line
+    // The model's answer keeps its first-line
     // semantics (an explanatory second paragraph is not part of the title) and lands flattened.
     #[test]
-    fn test_sanitize_title() {
+    fn sanitize_title_keeps_the_first_line_flattened() {
         assert_eq!(
             sanitize_title("  \"Cat portrait\"  \n\nI chose this because…"),
             "Cat portrait"
@@ -683,11 +681,11 @@ mod tests {
         assert_eq!(sanitize_title("Cat\tportrait"), "Cat portrait");
     }
 
-    // Go: chat/title_test.go:68 TestSanitizeTitleStripsThink — reasoning models behind chatcomp
+    // Reasoning models behind chatcomp
     // relays leak <think> blocks into plain content; a chain of thought must never become the
     // session title.
     #[test]
-    fn test_sanitize_title_strips_think() {
+    fn sanitize_title_strips_think() {
         for (name, input, want) in [
             (
                 "block before title",
@@ -706,29 +704,29 @@ mod tests {
         }
     }
 
-    // Go: chat/run_test.go:37 TestWindowTitleFallback — a whitespace-only title falls back to
+    // A whitespace-only title falls back to
     // the application name rather than blanking the terminal's tab.
     #[test]
-    fn test_window_title_fallback() {
+    fn window_title_fallback() {
         assert_eq!(window_title("My chat"), "My chat");
         assert_eq!(window_title(""), "iota");
         assert_eq!(window_title("   \t "), "iota");
     }
 
-    // Go: chat/run_test.go:51 TestStatusModelLabelFallsBackToType — the provider type stands in
+    // The provider type stands in
     // until a model is chosen.
     #[test]
-    fn test_status_model_label_falls_back_to_type() {
+    fn status_model_label_falls_back_to_type() {
         assert_eq!(status_model_label("gpt-4o", "openai"), "gpt-4o");
         assert_eq!(status_model_label("", "openai"), "openai");
     }
 
-    // Go: chat/debug_test.go:115 TestIsReadOnlyViewer — a read-only viewer skips the title-pass
+    // A read-only viewer skips the title-pass
     // wait (the "/debug is slow after the first chat" fix). The FULL Go set, restored by T3 when
     // /debug and /skills registered (T-31): provider-touching and mutating commands — and plain
     // messages, and the near-miss `/debugx` prefix matching must not over-match — still wait.
     #[test]
-    fn test_is_read_only_viewer() {
+    fn read_only_viewers_skip_the_title_pass_and_nothing_else_does() {
         for input in [
             "/debug",
             "/status",

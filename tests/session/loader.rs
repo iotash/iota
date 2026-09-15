@@ -8,8 +8,8 @@ use iota::provider::ProviderKind;
 use iota::provider::model::{Message, Role};
 use iota::provider::usage::Usage;
 use iota::session::{
-    ATTACHMENTS_DIR, LOG_FILE, MAX_LOG_LINE, SessionError, SessionRecord, load_full_history,
-    load_log, record_to_message, scan_records, summary_preamble,
+    ATTACHMENTS_DIR, LOG_FILE, MAX_LOG_LINE, NewSession, SessionError, SessionRecord,
+    load_full_history, load_log, record_to_message, scan_records, summary_preamble,
 };
 use pretty_assertions::assert_eq;
 
@@ -32,12 +32,11 @@ fn records(dir: &Path) -> Vec<SessionRecord> {
     out
 }
 
-// Go: chat/session_test.go:410 (adapted — `LoadFullHistory` is /export-only, so the weave half is what
-// this pins)
+// `LoadFullHistory` is /export-only, so the weave half is what this pins.
 #[test]
 fn load_log_weaves_the_last_compaction() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
+    let mut writer = store.create(NewSession::new(KIND, "m1")).unwrap();
     let id = writer.id().to_owned();
     writer
         .append_messages(&[
@@ -292,14 +291,14 @@ fn missing_log_is_an_io_error() {
     assert!(matches!(err, SessionError::Io(_)), "got {err:?}");
 }
 
-// Go: chat/session_test.go:410 TestLoadFullHistoryIgnoresCompaction — the FULL log is every
+// The FULL log is every
 // conversation record on disk, including the rounds a compaction marker hides from the
 // `load_log` view, with the marker itself skipped. (`SessionStore::load_full` is the id-taking
 // twin of Go's `LoadFullHistory`, which resolves the directory the same way.)
 #[test]
 fn load_full_history_ignores_compaction() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
+    let mut writer = store.create(NewSession::new(KIND, "m1")).unwrap();
     let id = writer.id().to_owned();
 
     writer
@@ -353,7 +352,7 @@ fn load_full_history_ignores_compaction() {
     }
 }
 
-// Go: chat/session_project_test.go:140 — `LoadFullHistory` resolves a BUCKETED id through the
+// `LoadFullHistory` resolves a BUCKETED id through the
 // same locator `load`/`resume` use, so an agent-mode session exports like any other.
 #[test]
 fn load_full_history_finds_a_bucketed_id() {
@@ -386,7 +385,7 @@ fn load_full_history_finds_a_bucketed_id() {
 #[test]
 fn load_full_history_shares_the_record_decoder() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
+    let mut writer = store.create(NewSession::new(KIND, "m1")).unwrap();
     let id = writer.id().to_owned();
     writer.append_messages(&[Message::user("u1")]).unwrap();
     let dir = writer.dir().to_path_buf();

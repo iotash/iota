@@ -5,7 +5,7 @@
 use iota::provider::ProviderKind;
 use iota::provider::model::{Attachment, JsonObject, Message, Raw, RawContent, Role, ToolCall};
 use iota::provider::usage::Usage;
-use iota::session::ATTACHMENTS_DIR;
+use iota::session::{ATTACHMENTS_DIR, NewSession};
 use pretty_assertions::assert_eq;
 
 use crate::common::{log_lines, temp_store};
@@ -23,12 +23,10 @@ fn call(id: &str, name: &str, args: &[(&str, serde_json::Value)]) -> ToolCall {
         arguments,
     }
 }
-
-// Go: chat/session_test.go:38
 #[test]
 fn session_round_trip() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
+    let mut writer = store.create(NewSession::new(KIND, "m1")).unwrap();
     let id = writer.id().to_owned();
 
     let raw = RawContent::OpenAi(Raw::from_string(r#"{"sig":"abc"}"#.to_owned()).unwrap());
@@ -89,12 +87,10 @@ fn session_round_trip() {
     assert_eq!(infos[0].id, id);
     assert_eq!(infos[0].message_count, i64::try_from(msgs.len()).unwrap());
 }
-
-// Go: chat/session_test.go:111
 #[test]
 fn session_usage_round_trip() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
+    let mut writer = store.create(NewSession::new(KIND, "m1")).unwrap();
     let id = writer.id().to_owned();
 
     writer
@@ -157,12 +153,10 @@ fn session_usage_round_trip() {
     // Records written before usage existed contribute nothing rather than breaking the load.
     assert_eq!(sess.messages[0].usage(), None);
 }
-
-// Go: chat/session_test.go:167
 #[test]
 fn interrupted_flag_round_trip() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
+    let mut writer = store.create(NewSession::new(KIND, "m1")).unwrap();
     let id = writer.id().to_owned();
     writer
         .append_messages(&[
@@ -190,7 +184,7 @@ fn interrupted_flag_round_trip() {
 #[test]
 fn notice_flag_round_trip() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
+    let mut writer = store.create(NewSession::new(KIND, "m1")).unwrap();
     let id = writer.id().to_owned();
     let dir = writer.dir().to_path_buf();
     writer
@@ -218,7 +212,7 @@ fn notice_flag_round_trip() {
     assert!(sess.messages[1].content.ends_with("all green\n"));
 
     // A pre-flag log: the same line without the key is an ordinary user message.
-    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
+    let mut writer = store.create(NewSession::new(KIND, "m1")).unwrap();
     let old_id = writer.id().to_owned();
     let old_dir = writer.dir().to_path_buf();
     writer.append_messages(&[Message::user("seed")]).unwrap();
@@ -230,12 +224,10 @@ fn notice_flag_round_trip() {
     assert!(!old.messages[0].is_notice());
     assert_eq!(old.messages[0].content, "typed");
 }
-
-// Go: chat/session_test.go:368
 #[test]
 fn lazy_session_creation() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
+    let mut writer = store.create(NewSession::new(KIND, "m1")).unwrap();
     let id = writer.id().to_owned();
     let dir = writer.dir().to_path_buf();
 
@@ -268,7 +260,7 @@ fn lazy_session_creation() {
 #[test]
 fn empty_batch_is_a_no_op() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
+    let mut writer = store.create(NewSession::new(KIND, "m1")).unwrap();
     let dir = writer.dir().to_path_buf();
     writer.append_messages(&[]).unwrap();
     assert!(!writer.on_disk());
@@ -279,7 +271,7 @@ fn empty_batch_is_a_no_op() {
 #[test]
 fn attachments_are_deduplicated() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
+    let mut writer = store.create(NewSession::new(KIND, "m1")).unwrap();
     let dir = writer.dir().to_path_buf();
     let att = |name: &str| Attachment {
         filename: name.to_owned(),
@@ -330,7 +322,7 @@ fn attachments_are_deduplicated() {
 #[test]
 fn compaction_marker_bumps_no_counter() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
+    let mut writer = store.create(NewSession::new(KIND, "m1")).unwrap();
     let id = writer.id().to_owned();
     writer
         .append_messages(&[
@@ -374,7 +366,7 @@ fn compaction_marker_bumps_no_counter() {
 #[test]
 fn compaction_through_never_goes_negative() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
+    let mut writer = store.create(NewSession::new(KIND, "m1")).unwrap();
     let dir = writer.dir().to_path_buf();
     writer.append_messages(&[Message::user("u1")]).unwrap();
     writer.append_compaction("SUMMARY", 10, None).unwrap();
@@ -390,7 +382,7 @@ fn compaction_through_never_goes_negative() {
 #[test]
 fn update_meta_writes_through_once_created() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
+    let mut writer = store.create(NewSession::new(KIND, "m1")).unwrap();
     let id = writer.id().to_owned();
     writer.append_messages(&[Message::user("hi")]).unwrap();
     drop(writer);
@@ -407,7 +399,7 @@ fn update_meta_writes_through_once_created() {
 #[test]
 fn images_dir_is_created_on_demand() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
+    let mut writer = store.create(NewSession::new(KIND, "m1")).unwrap();
     let path = writer.images_path();
     assert_eq!(path, writer.dir().join("images"));
     assert!(!path.exists(), "images_path must not touch disk");
@@ -419,7 +411,7 @@ fn images_dir_is_created_on_demand() {
     assert!(writer.on_disk(), "images_dir materialises the bundle");
 }
 
-// Go: chat/session_test.go:518 TestDeferredSaveBacklog — the store-level half of the `/save` flow
+// The store-level half of the `/save` flow
 // for an ephemeral chat: the writer is minted only when the user saves, the WHOLE accumulated
 // backlog lands in ONE append (the watermark never moved while `writer` was `None`), the title and
 // the window the command re-stamps ride along, and the session resumes losslessly.
@@ -427,7 +419,7 @@ fn images_dir_is_created_on_demand() {
 // The run-loop half — that `/save` mints late and flushes exactly this backlog — is
 // `tests/repl/commands.rs::save_mints_late_and_flushes_the_backlog`.
 #[test]
-fn test_deferred_save_backlog() {
+fn a_deferred_save_flushes_the_whole_backlog_in_one_append() {
     let (_home, store) = temp_store();
 
     // Several turns accumulate in memory with NO writer: every persist was a no-op.
@@ -439,7 +431,7 @@ fn test_deferred_save_backlog() {
     ];
 
     // /save: mint + append everything since watermark 0 + the custom title.
-    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
+    let mut writer = store.create(NewSession::new(KIND, "m1")).unwrap();
     let dir = writer.dir().to_path_buf();
     assert!(!writer.on_disk(), "creating a writer must not touch disk");
     writer.append_messages(&backlog).unwrap();

@@ -8,7 +8,7 @@ use std::time::Duration;
 use iota::provider::ProviderKind;
 use iota::provider::model::Role;
 use iota::repl::{McpHooks, RunParams, SessionCtx};
-use iota::session::{SessionStore, SessionWriter};
+use iota::session::{NewSession, SessionStore, SessionWriter};
 use iota::shell::exec::Options;
 use iota::shell::jobs::Jobs;
 use iota::testing::{FakeProvider, Reply, ScriptedUi, StaticDispatcher, UiEvent};
@@ -100,7 +100,7 @@ async fn an_idle_notice_runs_a_turn_without_the_user_echo() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = SessionStore::new(tmp.path().join("sessions"));
     let writer = store
-        .create(ProviderKind::OpenAi, "gpt-test", None, "", "", false, "")
+        .create(NewSession::new(ProviderKind::OpenAi, "gpt-test"))
         .expect("writer");
     let id = writer.id().to_owned();
     let dir = writer.dir().to_path_buf();

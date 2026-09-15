@@ -14,7 +14,7 @@ use iota::llm::reqlog::RequestLog;
 use iota::provider::model::Attachment;
 use iota::provider::{Provider, ProviderKind};
 use iota::repl::{McpHooks, RunParams, SessionCtx};
-use iota::session::{SessionStore, SessionWriter};
+use iota::session::{NewSession, SessionStore, SessionWriter};
 use iota::testing::{
     FakeProvider, Interrupt, RecordingHost, Reply, Round, ScriptedUi, StaticDispatcher, UiEvent,
 };
@@ -100,7 +100,7 @@ impl Fixture {
 
     fn writer(&self) -> SessionWriter {
         self.store
-            .create(ProviderKind::OpenAi, "gpt-test", None, "", "", false, "")
+            .create(NewSession::new(ProviderKind::OpenAi, "gpt-test"))
             .expect("create writer")
     }
 

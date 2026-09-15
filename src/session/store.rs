@@ -40,6 +40,42 @@ pub struct SessionInfo {
     pub message_count: i64,
 }
 
+/// What a new bundle records at creation: the provider and model it runs under, the endpoint, the
+/// working directory it belongs to, and the agent. `NewSession::new(kind, model)` is the bare bundle
+/// every other field defaulted — no temperature, no base URL, no cwd, flat (not project-scoped), no agent.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NewSession {
+    /// The provider type the bundle is written under.
+    pub kind: ProviderKind,
+    /// The model id recorded in meta.
+    pub model: String,
+    /// The temperature recorded in meta (`None` omits the key).
+    pub temperature: Option<f64>,
+    /// The endpoint recorded in meta (`""` omits the key).
+    pub base_url: String,
+    /// The working directory recorded in meta (`""` omits the key), and — with `project` — the bucket.
+    pub cwd: String,
+    /// Project-scoped: `cwd` is non-empty and the bundle lives in `projects/<slug(cwd)>/<id>`.
+    pub project: bool,
+    /// The `agents:` entry the run was under (`""` = none).
+    pub agent: String,
+}
+
+impl NewSession {
+    /// The bare bundle: `kind` and `model`, everything else at its default.
+    pub fn new(kind: ProviderKind, model: &str) -> Self {
+        Self {
+            kind,
+            model: model.to_owned(),
+            temperature: None,
+            base_url: String::new(),
+            cwd: String::new(),
+            project: false,
+            agent: String::new(),
+        }
+    }
+}
+
 /// The sessions root (`<home>/.iota/sessions`) as a value. Constructed from a path in tests and from
 /// [`HostDirs`] in the binary — it NEVER reads the process environment.
 #[derive(Clone, Debug)]
@@ -167,23 +203,22 @@ impl SessionStore {
         }
     }
 
-    /// `NewSessionWriter` (chat/session.go:335-361). Touches NO disk — the bundle is created lazily by
+    /// A new bundle from what [`NewSession`] records. Touches NO disk — the bundle is created lazily by
     /// the first append. `project && !cwd.is_empty()` places it in `projects/<slug(cwd)>/<id>`, otherwise
     /// it stays flat; `cwd` is recorded in meta either way (empty omits the key).
-    #[allow(clippy::too_many_arguments)] // `NewSession { .. }` is the Phase 4 cleanup for this signature.
-    pub fn create(
-        &self,
-        kind: ProviderKind,
-        model: &str,
-        temperature: Option<f64>,
-        base_url: &str,
-        cwd: &str,
-        project: bool,
-        agent: &str,
-    ) -> Result<SessionWriter, SessionError> {
+    pub fn create(&self, session: NewSession) -> Result<SessionWriter, SessionError> {
+        let NewSession {
+            kind,
+            model,
+            temperature,
+            base_url,
+            cwd,
+            project,
+            agent,
+        } = session;
         let id = self.new_id();
         let bucket = if project && !cwd.is_empty() {
-            self.bucket_of(Path::new(cwd))
+            self.bucket_of(Path::new(&cwd))
         } else {
             self.root.clone()
         };
@@ -194,11 +229,11 @@ impl SessionStore {
             created_at: now.clone(),
             updated_at: now,
             provider: kind.as_str().to_owned(),
-            model: model.to_owned(),
+            model,
             temperature,
-            base_url: base_url.to_owned(),
-            cwd: cwd.to_owned(),
-            agent: agent.to_owned(),
+            base_url,
+            cwd,
+            agent,
             ..SessionMeta::default()
         };
         Ok(SessionWriter::pending(bucket.join(&id), meta, kind))

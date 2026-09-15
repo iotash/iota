@@ -31,7 +31,7 @@ use crate::host::{AnsiHost, Env as HostEnv, Presenter};
 use crate::provider::ProviderParams;
 use crate::provider::{Provider, ProviderKind};
 use crate::repl::{McpEvent, McpHooks, RunParams, SessionCtx, session_label};
-use crate::session::{SessionInfo, SessionStore, SessionWriter};
+use crate::session::{NewSession, SessionInfo, SessionStore, SessionWriter};
 use crate::tool::DeferredGroup;
 use crate::tool::{Dispatcher, Env};
 use crate::ui::facade::{Panel, TabbedResult, TabbedSpec, Ui};
@@ -508,15 +508,14 @@ fn wire_session(
     if writer.is_none() && !input.ephemeral {
         writer = Some(
             store
-                .create(
-                    kind,
-                    provider.model(),
-                    settings.temperature,
-                    &settings.base_url,
-                    &session_cwd,
-                    settings.agent_mode,
-                    &settings.resolved.agent_name,
-                )
+                .create(NewSession {
+                    temperature: settings.temperature,
+                    base_url: settings.base_url.clone(),
+                    cwd: session_cwd.clone(),
+                    project: settings.agent_mode,
+                    agent: settings.resolved.agent_name.clone(),
+                    ..NewSession::new(kind, provider.model())
+                })
                 .map_err(CliError::CreateSession)?,
         );
     }
@@ -536,15 +535,14 @@ fn wire_session(
         let project = settings.agent_mode;
         let agent_name = settings.resolved.agent_name.clone();
         Some(Box::new(move || {
-            store.create(
-                kind,
-                &model,
+            store.create(NewSession {
                 temperature,
-                &base_url,
-                &session_cwd,
+                base_url: base_url.clone(),
+                cwd: session_cwd.clone(),
                 project,
-                &agent_name,
-            )
+                agent: agent_name.clone(),
+                ..NewSession::new(kind, &model)
+            })
         }))
     } else {
         None

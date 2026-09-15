@@ -14,7 +14,7 @@ use iota::host::Presenter;
 use iota::llm::reqlog::{RequestEntry, RequestLog, ResponseHalf};
 use iota::provider::ProviderKind;
 use iota::repl::{McpHooks, RunParams, SessionCtx};
-use iota::session::{SessionStore, SessionWriter};
+use iota::session::{NewSession, SessionStore, SessionWriter};
 use iota::testing::{FakeProvider, Reply, ScriptedUi, StaticDispatcher, TabbedSummary, UiEvent};
 use iota::text::ansi::strip_sgr;
 use iota::tool::Dispatcher;
@@ -53,7 +53,7 @@ impl Fixture {
 
     fn writer(&self) -> SessionWriter {
         self.store
-            .create(ProviderKind::OpenAi, "gpt-4o", None, "", "", false, "")
+            .create(NewSession::new(ProviderKind::OpenAi, "gpt-4o"))
             .expect("create writer")
     }
 

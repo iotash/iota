@@ -8,7 +8,7 @@ use iota::provider::model::{
     AssistantBody, Attachment, Body, JsonObject, Message, Raw, RawContent, ToolCall,
 };
 use iota::provider::usage::Usage;
-use iota::session::{META_FILE, SESSION_SCHEMA_VERSION, SessionMeta};
+use iota::session::{META_FILE, NewSession, SESSION_SCHEMA_VERSION, SessionMeta};
 use pretty_assertions::assert_eq;
 
 use crate::common::{log_lines, temp_store};
@@ -63,15 +63,12 @@ fn meta_serialises_exactly_like_go() {
 fn meta_file_has_go_key_order_and_no_trailing_newline() {
     let (_home, store) = temp_store();
     let mut writer = store
-        .create(
-            ProviderKind::OpenAi,
-            "gpt-probe",
-            Some(0.7),
-            "http://127.0.0.1:1/v1",
-            "/tmp/probe-cwd",
-            false,
-            "",
-        )
+        .create(NewSession {
+            temperature: Some(0.7),
+            base_url: "http://127.0.0.1:1/v1".to_owned(),
+            cwd: "/tmp/probe-cwd".to_owned(),
+            ..NewSession::new(ProviderKind::OpenAi, "gpt-probe")
+        })
         .unwrap();
     writer
         .update_meta(|meta| meta.title = "probe session".to_owned())
@@ -132,15 +129,7 @@ fn meta_file_has_go_key_order_and_no_trailing_newline() {
 fn jsonl_omitempty_matrix() {
     let (_home, store) = temp_store();
     let mut writer = store
-        .create(
-            ProviderKind::Gemini,
-            "gemini-probe",
-            None,
-            "",
-            "",
-            false,
-            "",
-        )
+        .create(NewSession::new(ProviderKind::Gemini, "gemini-probe"))
         .unwrap();
     let dir = writer.dir().to_path_buf();
 
@@ -230,7 +219,7 @@ fn jsonl_omitempty_matrix() {
 fn always_present_keys() {
     let (_home, store) = temp_store();
     let mut writer = store
-        .create(ProviderKind::OpenAi, "m1", None, "", "", false, "")
+        .create(NewSession::new(ProviderKind::OpenAi, "m1"))
         .unwrap();
     let dir = writer.dir().to_path_buf();
     let call = ToolCall {

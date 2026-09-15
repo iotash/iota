@@ -8,8 +8,8 @@ use iota::app::HostDirs;
 use iota::provider::ProviderKind;
 use iota::provider::model::Message;
 use iota::session::{
-    PROJECTS_DIR_NAME, SESSION_ID_ALPHABET, SESSION_ID_LENGTH, SessionError, SessionInfo,
-    SessionStore, resolve_in,
+    NewSession, PROJECTS_DIR_NAME, SESSION_ID_ALPHABET, SESSION_ID_LENGTH, SessionError,
+    SessionInfo, SessionStore, resolve_in,
 };
 use pretty_assertions::assert_eq;
 
@@ -27,8 +27,6 @@ fn info(id: &str) -> SessionInfo {
         message_count: 0,
     }
 }
-
-// Go: chat/session_project_test.go:50
 #[test]
 fn project_slug() {
     for (root, want) in [
@@ -62,8 +60,6 @@ fn project_slug_is_a_legal_windows_directory_name() {
         "{slug:?} still carries a character no Windows directory name may hold"
     );
 }
-
-// Go: chat/session_test.go:465
 #[test]
 fn new_session_id() {
     let (_home, store) = temp_store();
@@ -81,8 +77,6 @@ fn new_session_id() {
         );
     }
 }
-
-// Go: chat/session_test.go:485
 #[test]
 fn resolve_session_id() {
     let infos = [
@@ -121,14 +115,18 @@ fn resolve_session_id() {
         SessionError::NoMatch(_)
     ));
 }
-
-// Go: chat/session_project_test.go:66
 #[test]
 fn project_session_writer() {
     let (_home, store) = temp_store();
     let root = "/work/myproj";
 
-    let mut writer = store.create(KIND, "m1", None, "", root, true, "").unwrap();
+    let mut writer = store
+        .create(NewSession {
+            cwd: root.to_owned(),
+            project: true,
+            ..NewSession::new(KIND, "m1")
+        })
+        .unwrap();
     writer.append_messages(&[Message::user("hi")]).unwrap();
     let id = writer.id().to_owned();
     drop(writer);
@@ -143,7 +141,10 @@ fn project_session_writer() {
 
     // Normal mode: flat layout, cwd recorded anyway.
     let mut flat_writer = store
-        .create(KIND, "m1", None, "", "/somewhere/else", false, "")
+        .create(NewSession {
+            cwd: "/somewhere/else".to_owned(),
+            ..NewSession::new(KIND, "m1")
+        })
         .unwrap();
     flat_writer.append_messages(&[Message::user("hi")]).unwrap();
     let flat_id = flat_writer.id().to_owned();
@@ -155,11 +156,14 @@ fn project_session_writer() {
     );
 
     // `project` without a cwd stays flat too (Go: `project && cwd != ""`).
-    let no_cwd = store.create(KIND, "m1", None, "", "", true, "").unwrap();
+    let no_cwd = store
+        .create(NewSession {
+            project: true,
+            ..NewSession::new(KIND, "m1")
+        })
+        .unwrap();
     assert_eq!(no_cwd.dir().parent(), Some(store.root()));
 }
-
-// Go: chat/session_project_test.go:117
 #[test]
 fn session_locator_across_layouts() {
     let (_home, store) = temp_store();
@@ -247,8 +251,6 @@ fn ambiguity_in_the_scoped_view_is_final() {
     );
     assert!(err.contains("aaaa00000000") && err.contains("aaab00000000"));
 }
-
-// Go: chat/session_project_test.go:171
 #[test]
 fn list_sessions_scoped() {
     let (_home, store) = temp_store();
@@ -320,8 +322,6 @@ fn listing_sorts_newest_first_and_unparsable_last() {
         .collect();
     assert_eq!(ids, ["bbbb00000000", "aaaa00000000", "cccc00000000"]);
 }
-
-// Go: chat/session_project_test.go:256
 #[test]
 fn old_session_compat() {
     let (_home, store) = temp_store();
@@ -339,8 +339,6 @@ fn old_session_compat() {
     // meta without `cwd` loads with an empty cwd, not an error.
     assert_eq!(sess.meta.cwd, "");
 }
-
-// Go: chat/session_project_test.go:285
 #[test]
 fn session_id_taken() {
     let (_home, store) = temp_store();

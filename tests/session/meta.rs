@@ -3,18 +3,16 @@
 
 use iota::provider::ProviderKind;
 use iota::provider::model::Message;
-use iota::session::{META_FILE, META_TMP_FILE, ParamSource, ParamSources, SessionMeta};
+use iota::session::{META_FILE, META_TMP_FILE, NewSession, ParamSource, ParamSources, SessionMeta};
 use pretty_assertions::assert_eq;
 
 use crate::common::temp_store;
 
 const KIND: ProviderKind = ProviderKind::OpenAi;
-
-// Go: chat/session_test.go:209
 #[test]
 fn session_meta_tuning_round_trip() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
+    let mut writer = store.create(NewSession::new(KIND, "m1")).unwrap();
     let id = writer.id().to_owned();
 
     // Setters before the bundle exists are flushed by the first append.
@@ -60,7 +58,7 @@ fn session_meta_tuning_round_trip() {
 #[test]
 fn unknown_meta_keys_survive_a_rust_rewrite() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m1", None, "", "", false, "").unwrap();
+    let mut writer = store.create(NewSession::new(KIND, "m1")).unwrap();
     let id = writer.id().to_owned();
     writer.append_messages(&[Message::user("hi")]).unwrap();
     let dir = writer.dir().to_path_buf();
@@ -122,7 +120,7 @@ fn unknown_meta_keys_survive_a_rust_rewrite() {
 #[test]
 fn meta_records_where_each_layered_parameter_came_from() {
     let (_home, store) = temp_store();
-    let mut writer = store.create(KIND, "m", None, "", "", false, "").unwrap();
+    let mut writer = store.create(NewSession::new(KIND, "m")).unwrap();
     let id = writer.id().to_owned();
     writer.append_messages(&[Message::user("hi")]).unwrap();
     let dir = writer.dir().to_path_buf();
@@ -172,7 +170,7 @@ fn meta_records_the_agent_the_session_ran_under() {
     let (_home, store) = temp_store();
 
     // No agent: the key is absent from the file, exactly as it was before the key existed.
-    let mut writer = store.create(KIND, "m", None, "", "", false, "").unwrap();
+    let mut writer = store.create(NewSession::new(KIND, "m")).unwrap();
     writer
         .append_messages(&[Message::user("hi".to_owned())])
         .unwrap();
@@ -183,7 +181,10 @@ fn meta_records_the_agent_the_session_ran_under() {
 
     // Under an agent: recorded, and still there after the meta is rewritten.
     let mut writer = store
-        .create(KIND, "m", None, "", "", false, "reviewer")
+        .create(NewSession {
+            agent: "reviewer".to_owned(),
+            ..NewSession::new(KIND, "m")
+        })
         .unwrap();
     writer
         .append_messages(&[Message::user("hi".to_owned())])

@@ -14,7 +14,7 @@ use iota::provider::model::{
     AssistantBody, Attachment, Body, JsonObject, Message, Raw, RawContent, ToolCall,
 };
 use iota::provider::usage::Usage;
-use iota::session::SessionStore;
+use iota::session::{NewSession, SessionStore};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let home = std::env::args_os()
@@ -25,15 +25,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         ..HostDirs::default()
     };
     let store = SessionStore::from_dirs(&dirs)?;
-    let mut writer = store.create(
-        ProviderKind::OpenAi,
-        "gpt-probe",
-        Some(0.7),
-        "http://127.0.0.1:1/v1",
-        "/tmp/mkbundle-cwd",
-        false,
-        "",
-    )?;
+    let mut writer = store.create(NewSession {
+        temperature: Some(0.7),
+        base_url: "http://127.0.0.1:1/v1".to_owned(),
+        cwd: "/tmp/mkbundle-cwd".to_owned(),
+        ..NewSession::new(ProviderKind::OpenAi, "gpt-probe")
+    })?;
     writer.update_meta(|meta| {
         "rust-created session".clone_into(&mut meta.title);
         "high".clone_into(&mut meta.effort);

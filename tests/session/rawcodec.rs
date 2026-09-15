@@ -4,7 +4,7 @@
 
 use iota::provider::ProviderKind;
 use iota::provider::model::{Message, Raw, RawContent, ToolCall};
-use iota::session::{SessionRaw, blob_to_raw, raw_to_blob};
+use iota::session::{NewSession, SessionRaw, blob_to_raw, raw_to_blob};
 use pretty_assertions::assert_eq;
 
 use crate::common::{log_lines, temp_store};
@@ -12,13 +12,11 @@ use crate::common::{log_lines, temp_store};
 fn raw(json: &str) -> Raw {
     Raw::from_string(json.to_owned()).unwrap()
 }
-
-// Go: chat/session_test.go:340
 #[test]
 fn raw_content_dropped_on_provider_mismatch() {
     let (_home, store) = temp_store();
     let mut writer = store
-        .create(ProviderKind::OpenAi, "m1", None, "", "", false, "")
+        .create(NewSession::new(ProviderKind::OpenAi, "m1"))
         .unwrap();
     let id = writer.id().to_owned();
     writer
@@ -52,7 +50,7 @@ fn raw_content_dropped_on_provider_mismatch() {
 fn gemini_blob_does_not_restore_under_vertexai() {
     let (_home, store) = temp_store();
     let mut writer = store
-        .create(ProviderKind::Gemini, "m1", None, "", "", false, "")
+        .create(NewSession::new(ProviderKind::Gemini, "m1"))
         .unwrap();
     let id = writer.id().to_owned();
     let blob = raw(r#"{"parts":[{"text":"t"}],"role":"model"}"#);
@@ -85,7 +83,7 @@ fn gemini_blob_does_not_restore_under_vertexai() {
 fn anthropic_blocks_array_round_trip() {
     let (_home, store) = temp_store();
     let mut writer = store
-        .create(ProviderKind::Anthropic, "m1", None, "", "", false, "")
+        .create(NewSession::new(ProviderKind::Anthropic, "m1"))
         .unwrap();
     let id = writer.id().to_owned();
     let blocks = vec![
@@ -128,7 +126,7 @@ fn anthropic_blocks_array_round_trip() {
 fn openresponses_items_array_round_trip() {
     let (_home, store) = temp_store();
     let mut writer = store
-        .create(ProviderKind::OpenResponses, "m1", None, "", "", false, "")
+        .create(NewSession::new(ProviderKind::OpenResponses, "m1"))
         .unwrap();
     let id = writer.id().to_owned();
     let items = vec![raw(r#"{"type":"reasoning","id":"rs_1"}"#)];

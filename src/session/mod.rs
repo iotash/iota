@@ -41,7 +41,7 @@ pub use record::{
     ATTACHMENTS_DIR, LOG_FILE, SessionAttachment, SessionRaw, SessionRecord, SessionToolCall,
     SessionUsage,
 };
-pub use store::{PROJECTS_DIR_NAME, SessionInfo, SessionStore};
+pub use store::{NewSession, PROJECTS_DIR_NAME, SessionInfo, SessionStore};
 pub use tuning::{
     Overrides, apply_session_tuning, replay_session_settings, warn_if_session_agent_is_gone,
 };

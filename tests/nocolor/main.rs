@@ -19,7 +19,7 @@ use iota::llm::reqlog::RequestLog;
 use iota::provider::ProviderKind;
 use iota::provider::model::{JsonObject, ToolDef};
 use iota::repl::{McpHooks, RunParams, SessionCtx};
-use iota::session::SessionStore;
+use iota::session::{NewSession, SessionStore};
 use iota::testing::{FakeProvider, Reply, Round, ScriptedUi, UiEvent, tool_call};
 use iota::tool::{Artifact, ArtifactKind, Dispatcher, Presentation, ToolOutput, ToolResult};
 use iota::ui::facade::{Input, Ui};
@@ -150,7 +150,7 @@ fn params(ui: &Arc<ScriptedUi>, store: &SessionStore) -> RunParams {
         session: SessionCtx {
             writer: Some(
                 store
-                    .create(ProviderKind::OpenAi, "gpt-test", None, "", "", false, "")
+                    .create(NewSession::new(ProviderKind::OpenAi, "gpt-test"))
                     .expect("create writer"),
             ),
             store: store.clone(),
