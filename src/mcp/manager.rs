@@ -1,5 +1,7 @@
 //! The MCP manager (mcp/manager.go:65-474): 30 s connect fan-out with a deterministic config-order merge, the live
-//! namespaced tool view, call routing and close. Implements `crate::tool::Dispatcher`.
+//! namespaced tool view, call routing and close. Implements `crate::tool::Dispatcher`. With it, the two things
+//! only it produces: the wire-name composition (`mcp__<segment>__<tool>`, manager.go:82-155) and the per-server
+//! status snapshot (manager.go:32-55) that `servers()` reports and the hosts print.
 //!
 //! Lock discipline: `state` is a `std::sync::RwLock` that is never held across an `.await` — `call_tool` clones the
 //! `Session` `Arc` and drops the guard before calling; `close` takes the sessions out under the write lock and closes
@@ -15,15 +17,15 @@ use crate::BoxFuture;
 use crate::app::env::Env;
 use crate::mcp::config::{ServerConfig, endpoint_of, expand_server_config};
 use crate::provider::model::{JsonObject, ToolDef};
+use crate::text::truncate_to_char_boundary;
 use crate::tool::context::RunCtx;
 use crate::tool::error::ToolError;
 use crate::tool::{Dispatcher, PrefixOf, ToolOutput, ToolResult};
+use sha2::{Digest, Sha256};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::mcp::error::McpError;
-use crate::mcp::naming::{compose_wire_name, sanitize_name_segment};
-use crate::mcp::status::ServerStatus;
 use crate::mcp::transport::{CALL_INTERRUPTED, CLOSE_TIMEOUT, Session, connect_one};
 
 /// Default per-server connect deadline (handshake + `tools/list`).
@@ -39,6 +41,140 @@ pub(crate) const CLIENT_NAME: &str = "iota";
 /// prints (`app::VERSION`) — until 2026-09-15 this was a literal `"1.0.0"` that every server was told
 /// regardless of the release.
 pub(crate) const CLIENT_VERSION: &str = crate::app::VERSION;
+
+// ---- wire names (mcp/manager.go:82-155): `mcp__<segment>__<tool>` with sanitisation, a 64-byte cap and a
+// sha256 disambiguation suffix. Pure functions.
+
+/// Maximum length of a wire tool name.
+pub const WIRE_NAME_MAX_LEN: usize = 64;
+
+/// Prefix of every MCP wire tool name.
+pub(crate) const WIRE_NAME_PREFIX: &str = "mcp__";
+
+/// Segment used when sanitisation leaves nothing.
+pub(crate) const EMPTY_SEGMENT: &str = "srv";
+
+/// Length of the disambiguation suffix: `'_'` plus 8 lowercase hex digits (4 bytes of sha256).
+const SUFFIX_LEN: usize = 9;
+
+/// Lowercase hex alphabet of the disambiguation suffix (Go `hex.EncodeToString`).
+const HEX: [u8; 16] = *b"0123456789abcdef";
+
+/// `[A-Za-z0-9]` kept; any other char (one per Unicode scalar) → `'_'` with runs collapsed; trim `'_'`; empty →
+/// `"srv"`.
+pub fn sanitize_name_segment(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut prev_underscore = false;
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            prev_underscore = false;
+            out.push(c);
+        } else {
+            if prev_underscore {
+                continue;
+            }
+            prev_underscore = true;
+            out.push('_');
+        }
+    }
+    let trimmed = out.trim_matches('_');
+    if trimmed.is_empty() {
+        EMPTY_SEGMENT.to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+/// `base = "mcp__" + segment + "__"`; `wire = base + sanitize(tool)`; if `wire == base + tool && len <= 64` → `wire`;
+/// else `suffix = "_" + lowercase hex of sha256(base + RAW tool)[..4]`; if `len(wire) + 9 > 64` → `wire[..55]`;
+/// `wire + suffix`.
+pub(crate) fn compose_wire_name(segment: &str, tool: &str) -> String {
+    let base = format!("{WIRE_NAME_PREFIX}{segment}__");
+    let raw = format!("{base}{tool}");
+    let mut wire = format!("{base}{}", sanitize_name_segment(tool));
+    if wire == raw && wire.len() <= WIRE_NAME_MAX_LEN {
+        return wire;
+    }
+    let digest = Sha256::digest(raw.as_bytes());
+    let mut suffix = String::with_capacity(SUFFIX_LEN);
+    suffix.push('_');
+    for byte in &digest[..4] {
+        suffix.push(char::from(HEX[usize::from(byte >> 4)]));
+        suffix.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    if wire.len() + suffix.len() > WIRE_NAME_MAX_LEN {
+        // Go slices bytes; the sanitised wire is ASCII for every sanitised segment, so the boundary-safe cut is the
+        // same cut — it only differs (and avoids a panic) for an unsanitised non-ASCII segment.
+        let cut = truncate_to_char_boundary(&wire, WIRE_NAME_MAX_LEN - suffix.len()).len();
+        wire.truncate(cut);
+    }
+    wire.push_str(&suffix);
+    wire
+}
+
+/// `compose_wire_name(sanitize_name_segment(server), tool)`.
+pub fn wire_tool_name(server: &str, tool: &str) -> String {
+    compose_wire_name(&sanitize_name_segment(server), tool)
+}
+
+// ---- the per-server status (mcp/manager.go:32-55): what `Manager::servers()` reports and what the host prints
+// as `Warning: mcp server <name>: <err>` — and, per skipped duplicate, `Warning: mcp server <name>: duplicate
+// wire tool name <wire>, skipping` (DIVERGENCES X-29).
+
+/// The state of one configured MCP server, index-aligned with the manager's configs.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServerStatus {
+    /// Configured server name.
+    pub name: String,
+    /// Sanitised, de-duplicated name segment used in wire names (empty until connected).
+    pub segment: String,
+    /// `endpoint_of(expanded config)`: the URL, or the command line.
+    pub endpoint: String,
+    /// Connect still in flight (true from `Manager::new` until the result is merged).
+    pub pending: bool,
+    /// Handshake and `tools/list` succeeded.
+    pub connected: bool,
+    /// Number of tools advertised by the server.
+    pub tool_count: usize,
+    /// Raw (un-namespaced) tool names.
+    pub tools: Vec<String>,
+    /// Failure text (a `McpError` Display); `None` on success.
+    pub err: Option<String>,
+    /// Wire names the merge SKIPPED because an earlier tool already registered them (the first registration
+    /// wins, manager.go:303-335). A server listing the same tool twice is the realistic way to get one; the host
+    /// turns each into a user-visible warning (DIVERGENCES X-29).
+    pub duplicates: Vec<String>,
+}
+
+impl ServerStatus {
+    /// The wire names the raw `tools` registered under, in the same order — the
+    /// `wire name → server` oracle the Tools tab's source column reads.
+    pub fn wire_names(&self) -> Vec<String> {
+        self.tools
+            .iter()
+            .map(|raw| compose_wire_name(&self.segment, raw))
+            .collect()
+    }
+
+    /// `"mcp__<segment>__"` when connected and the segment is non-empty, else `""`.
+    pub fn wire_prefix(&self) -> String {
+        if self.connected && !self.segment.is_empty() {
+            format!("{WIRE_NAME_PREFIX}{}__", self.segment)
+        } else {
+            String::new()
+        }
+    }
+
+    /// The NON-FATAL warnings a host prints for this server, one line per skipped duplicate and without any
+    /// prefix — the connect failure is `err`, reported on its own. Both outlets print exactly these lines:
+    /// `Warning: mcp server <name>: <line>` on the headless stderr, `⚠ MCP <name>: <line>` in the transcript.
+    pub fn warnings(&self) -> Vec<String> {
+        self.duplicates
+            .iter()
+            .map(|wire| format!("duplicate wire tool name {wire}, skipping"))
+            .collect()
+    }
+}
 
 /// Construction-time knobs of a `Manager`.
 #[derive(Clone)]
@@ -435,9 +571,8 @@ mod tests {
     use pretty_assertions::assert_eq;
     use tokio_util::sync::CancellationToken;
 
-    use super::{Manager, ServerResult};
+    use super::{Manager, ServerResult, ServerStatus};
     use crate::mcp::config::ServerConfig;
-    use crate::mcp::status::ServerStatus;
     use crate::mcp::testutil::{EchoSession, echo_server, options};
     use crate::mcp::transport::Session;
 

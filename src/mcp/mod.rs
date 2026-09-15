@@ -1,18 +1,20 @@
 //! MCP manager on rmcp 3.1.4 (mcp/): stdio + streamable-HTTP transports, a 30 s connect fan-out with a
-//! deterministic config-order merge, `mcp__<segment>__<tool>` naming, the live tool view, call routing and close.
-//! `Manager` implements `crate::tool::Dispatcher` and produces `crate::tool::PrefixOf`; `config` holds
+//! deterministic config-order merge, `mcp__<segment>__<tool>` naming, the live tool view, call routing and close
+//! (all in `manager`, the status snapshot and the wire-name functions included). `Manager` implements
+//! `crate::tool::Dispatcher` and produces `crate::tool::PrefixOf`; `config` holds
 //! `ServerConfig`, `parse_mcp_flag`, `expand_server_config`, `endpoint_of` and `McpFlagError` (mcp/manager.go,
 //! mcp/vars.go), which `crate::cmd::assemble` parses without naming `Manager`.
 
 pub mod config;
 pub(crate) mod error;
 pub(crate) mod manager;
-pub mod naming;
-pub(crate) mod status;
 pub(crate) mod transport;
 
-pub use manager::{DEFAULT_CONNECT_TIMEOUT, DEFAULT_STDERR_CAP, Manager, ManagerOptions};
-pub(crate) use status::ServerStatus;
+pub(crate) use manager::ServerStatus;
+pub use manager::{
+    DEFAULT_CONNECT_TIMEOUT, DEFAULT_STDERR_CAP, Manager, ManagerOptions, WIRE_NAME_MAX_LEN,
+    sanitize_name_segment, wire_tool_name,
+};
 
 /// In-process MCP servers for the unit tests (rmcp `server` dev-feature). Go: `mcp/manager_test.go` `startEchoServer`.
 #[cfg(test)]

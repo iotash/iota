@@ -1,6 +1,6 @@
 //! Wire-name tests (mcp/manager_test.go:17-164): pure string tests over `iota::mcp::naming`.
 
-use iota::mcp::naming::{WIRE_NAME_MAX_LEN, sanitize_name_segment, wire_tool_name};
+use iota::mcp::{WIRE_NAME_MAX_LEN, sanitize_name_segment, wire_tool_name};
 use pretty_assertions::assert_eq;
 
 /// The strictest tool-name charset among the supported providers (Gemini functionDeclaration names): no hyphens,

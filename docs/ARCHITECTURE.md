@@ -89,7 +89,7 @@ all three into `chat/`) the Rust split is KEPT as modules. Visibility is Rust-id
 | `mathtext/{mod,delim,parse,symbols,macros,inline,pict,layout}.rs` | internal/mathtext | the LaTeX math engine (T3, WP61/WP62): inline Unicode approximation, 2D layout (Go `Box` → `Pict`), the delimiter scanners; a leaf over `text` — the markdown hooks call `approx_inline`/`render_2d` directly (Phase 5 PR-4 deleted the `MathRenderer` trait) |
 | `imgterm.rs` | internal/imgterm | the half-block image rasteriser (T3, WP63) — the ONLY module allowed to name the `image` crate (`tests/layering.rs`) |
 | `host/{mod,ansi,cmux,background}.rs` | internal/host | host integration (T3, WP67): `Presenter` per-capability fan-out, the ANSI host (OSC 9 / 9;4 through the facade), the cmux host, the background probe |
-| `mcp/{mod,config,manager,naming,status,transport,error}.rs` | mcp/ | `ServerConfig`/`parse_mcp_flag` (`config`), the rmcp manager |
+| `mcp/{mod,config,manager,transport,error}.rs` | mcp/ | `ServerConfig`/`parse_mcp_flag` (`config`), the rmcp manager |
 | `headless/{mod,once,run,batch,report,images,delegator,error}.rs` | chat/chat.go, output.go, parallel.go, images.go, delegate.go | the headless loop — what separates it from `repl` is that there is no terminal (the run context it shares with the tools is `tool/context.rs`) |
 | `session/{mod,meta,params,record,rawcodec,id,store,writer,loader,tuning,error}.rs` | chat/session.go, settings.go | the on-disk bundle store (never reads the process environment — `tests/layering.rs`) |
 | `markdown/{mod,inline,link,style,sink,preview,highlight}.rs` · `markdown/blocks/{mod,code,table,list,quote,math}.rs` | internal/markdown | the streaming markdown→ANSI renderer; `blocks/` = the five buffering block types, one file each (Phase 5 PR-19); `highlight.rs` = the `CodeHighlighter` seam AND its syntect impl |
@@ -234,8 +234,6 @@ The tables keep the phase-1 grouping (one per former crate) with each file named
 | module | Go |
 |---|---|
 | `mcp/mod.rs` | re-exports, `#[cfg(test)] mod testutil` (duplex echo server) |
-| `mcp/naming.rs` | mcp/manager.go:82-155 |
-| `mcp/status.rs` | mcp/manager.go:32-55 |
 | `mcp/manager.rs` | mcp/manager.go:65-474 (+ the `merge_result` unit tests) |
 | `mcp/transport.rs` | mcp/manager.go:337-398,478-512 (connect_one, make_transport, `Session`, `RmcpSession` over `call_tool_once`) |
 | `mcp/error.rs` | manager.go error texts (`McpError`; `EmptyFlag` is `mcp/config.rs`'s) |
