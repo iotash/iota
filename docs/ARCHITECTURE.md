@@ -358,22 +358,6 @@ The session slice adds one testing rule to the list above: **no test hardcodes a
 
 ---
 
-## 12. Work packages
-
-**Phase 2 · slice 1** shipped as six file-disjoint packages on top of the sixteen below: WP-S0 `message-fields` (the two `Message` fields both consumers need) and WP-S3 `go-fixtures` (the Go fixture generator and the checked-in corpus) start in parallel; WP-S1 `session-crate` and WP-S2 `chat-delta` follow WP-S0; WP-S4 `cli-resume` integrates all three; WP-S5 `docs-ci` closes the docs and CI. `crates/iota/src/lib.rs` was the one deliberately shared file — WP-S2 carried two mechanical keep-green lines there so the workspace stayed green at every DAG point, and WP-S4 rebased over them. Per-package landing status is `docs/EVALUATION.md` §9.
-
-**Phase 3 · the TUI slice** shipped as WP40–WP59, and **phase 4 · T3 (full feature parity)** as
-WP60–WP69: a scaffold package (WP60) that pre-touched every shared seam and left `// WP6x-STUB`
-headers, seven feature packages fanning out file-disjointly (`mathtext` parser+inline / layout+2D,
-`imgterm` + widget + partial frames, `/edit`+`/redo`+Picker+image edit endpoints, `/export`,
-`/debug`+`RequestLog`, `host`+progress+notify+upload progress, `/skills`+completeness) and one
-verify package (WP69: the four new tmux scenarios, `./ci.sh`, the completeness audit and these
-docs). Per-package landing status is `docs/EVALUATION.md` §13.
-
-See WORK_PACKAGES.md (16 packages). Critical path: WP00 scaffold (≈4.5k lines: workspace + manifests + every module with doc-commented contract types, serde derives and `todo!()` bodies under a standard stub-file allow header; every shared test fixture; `compose_send_history` real; ≈3 days with WP01) → seven packages fan out at once (core bodies, wire, tool framework, shell, code, mcp, chat loop, config/resolve) → four dialect packages after wire (responses needs only wire, thanks to `wire/models.rs`) → images after google → WP15 wiring + end-to-end last.
-
----
-
 ## 13. Risks and mitigations
 
 1. **rmcp lifecycle drift** (handshake version, child kill on drop, header rules) — isolated in `mcp/transport.rs`; `manager_connect_timeout` lands first as the canary; in-process duplex tests exercise the real handshake; divergences recorded.
