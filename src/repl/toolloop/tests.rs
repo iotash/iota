@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! WP49 L3 suite: the interactive turn engine driven end to end against
 //! `iota_core::testing::ScriptedUi` and a scripted streaming provider — the orderings Go
@@ -8,22 +7,22 @@
 //! so these tests live in-file (formerly a `#[path]`-mounted `tests/toolloop.rs`; merged
 //! 2026-09-02).
 
-use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use crate::BoxFuture;
 use crate::chat::turns::RunCtx;
 use crate::markdown::CodeTheme;
-use crate::provider::error::ProviderError;
 use crate::provider::model::{
     AssistantBody, Attachment, Body, Message, Raw, RawContent, Role, ToolCall,
 };
 use crate::provider::model::{JsonObject, ToolDef};
 use crate::provider::sink::StreamSink;
-use crate::provider::{ChatResult, Provider, ProviderKind, RoundResult};
-use crate::testing::{Reply, ScriptedUi, StaticDispatcher, UiEvent};
+use crate::provider::{Provider, RoundResult};
+use crate::testing::{
+    Failure, FakeProvider, Interrupt, Reply, Round, ScriptedUi, StaticDispatcher, UiEvent, lock,
+};
 use crate::tool::Dispatcher;
 use crate::tool::{
     Artifact, ArtifactKind, AskOption, AskQuestion, AskSpec, Interactor as _, Presentation,
@@ -47,167 +46,15 @@ use crate::repl::turn::{TurnCtx, TurnFailure, TurnReport, run_turn};
 // the scripted streaming provider
 // ---------------------------------------------------------------------------
 
-/// One scripted round: what the provider streams into the sink, then what it returns.
-#[derive(Default)]
-struct Round {
-    /// Reasoning deltas, emitted before `reasoning_done`.
-    reasoning: Vec<String>,
-    /// Content deltas.
-    content: Vec<String>,
-    /// Tool-argument deltas (`(name, chunk)`) — WP55 territory, dormant in T1.
-    deltas: Vec<(Option<String>, String)>,
-    /// The round result.
-    result: RoundResult,
-    /// Fires just before returning: the user pressed ESC mid-stream.
-    interrupt: Option<CancellationToken>,
-    /// Returns this stream error instead of the result.
-    fail: Option<String>,
+/// A `ToolProvider` playing `rounds` THROUGH the sink, so the render state machine sees real
+/// deltas; every call past the script gets an empty round.
+fn stream(rounds: Vec<Round>) -> FakeProvider {
+    FakeProvider::new().with_tools().rounds(rounds)
 }
 
-impl Round {
-    fn text(s: &str) -> Self {
-        Self {
-            content: vec![s.to_owned()],
-            result: RoundResult {
-                content: s.to_owned(),
-                ..RoundResult::default()
-            },
-            ..Self::default()
-        }
-    }
-
-    fn calls(calls: Vec<ToolCall>) -> Self {
-        Self {
-            result: RoundResult {
-                tool_calls: calls,
-                ..RoundResult::default()
-            },
-            ..Self::default()
-        }
-    }
-}
-
-/// A `ToolProvider` that plays scripted rounds THROUGH the sink, so the render state
-/// machine sees real deltas (`FakeToolProvider` only closes reasoning).
-struct FakeStream {
-    rounds: Mutex<VecDeque<Round>>,
-    sends: Mutex<Vec<Vec<Message>>>,
-    seen_tools: Mutex<Vec<Vec<String>>>,
-    /// `true` = no `ToolProvider` capability (the dedicated image dialects).
-    unary: bool,
-}
-
-impl FakeStream {
-    fn new(rounds: Vec<Round>) -> Self {
-        Self {
-            rounds: Mutex::new(rounds.into()),
-            sends: Mutex::new(Vec::new()),
-            seen_tools: Mutex::new(Vec::new()),
-            unary: false,
-        }
-    }
-
-    fn unary(rounds: Vec<Round>) -> Self {
-        Self {
-            unary: true,
-            ..Self::new(rounds)
-        }
-    }
-
-    fn next(&self) -> Round {
-        lock(&self.rounds).pop_front().unwrap_or_default()
-    }
-
-    /// The composed history of request `n` (0-based).
-    fn send(&self, n: usize) -> Vec<Message> {
-        lock(&self.sends).get(n).cloned().unwrap_or_default()
-    }
-
-    fn requests(&self) -> usize {
-        lock(&self.sends).len()
-    }
-}
-
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-impl Provider for FakeStream {
-    fn kind(&self) -> ProviderKind {
-        ProviderKind::OpenAi
-    }
-
-    fn model(&self) -> &'static str {
-        "gpt-test"
-    }
-
-    fn set_model(&mut self, _model: String) {}
-
-    fn list_models<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Vec<String>, ProviderError>> {
-        Box::pin(async { Ok(Vec::new()) })
-    }
-
-    fn chat<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        messages: &'a [Message],
-    ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
-        Box::pin(async move {
-            lock(&self.sends).push(messages.to_vec());
-            let r = self.next();
-            if let Some(tok) = &r.interrupt {
-                tok.cancel();
-            }
-            if let Some(msg) = r.fail {
-                return Err(ProviderError::other(msg));
-            }
-            Ok(ChatResult {
-                text: r.result.content,
-                usage: r.result.usage,
-                images: r.result.images,
-            })
-        })
-    }
-
-    fn as_tool_provider(&self) -> Option<&dyn crate::provider::ToolProvider> {
-        (!self.unary).then_some(self)
-    }
-}
-
-impl crate::provider::ToolProvider for FakeStream {
-    fn stream_chat_with_tools<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        messages: &'a [Message],
-        tools: &'a [ToolDef],
-        sink: &'a mut dyn StreamSink,
-    ) -> BoxFuture<'a, Result<RoundResult, ProviderError>> {
-        Box::pin(async move {
-            lock(&self.sends).push(messages.to_vec());
-            lock(&self.seen_tools).push(tools.iter().map(|t| t.name.clone()).collect());
-            let r = self.next();
-            for d in &r.reasoning {
-                sink.reasoning(d);
-            }
-            sink.reasoning_done();
-            for d in &r.content {
-                sink.content(d);
-            }
-            for (name, d) in &r.deltas {
-                sink.tool_delta(name.as_deref(), d);
-            }
-            if let Some(tok) = &r.interrupt {
-                tok.cancel();
-            }
-            if let Some(msg) = r.fail {
-                return Err(ProviderError::other(msg));
-            }
-            Ok(r.result)
-        })
-    }
+/// The same script without the `ToolProvider` capability — the dedicated image dialects' shape.
+fn unary(rounds: Vec<Round>) -> FakeProvider {
+    FakeProvider::new().rounds(rounds)
 }
 
 // ---------------------------------------------------------------------------
@@ -434,7 +281,7 @@ fn pos(events: &[UiEvent], pred: impl Fn(&UiEvent) -> bool) -> usize {
 #[tokio::test]
 async fn no_tools_turn_streams_markdown_through_the_tool_loop() {
     let fx = Fx::new(Arc::new(StaticDispatcher::new(&[])), Vec::new());
-    let p = FakeStream::new(vec![Round {
+    let p = stream(vec![Round {
         content: vec!["Hello ".to_owned(), "**world**\n".to_owned()],
         result: RoundResult {
             content: "Hello **world**\n".to_owned(),
@@ -448,7 +295,7 @@ async fn no_tools_turn_streams_markdown_through_the_tool_loop() {
     let out = report.outcome.expect("turn");
     assert_eq!(out.content, "Hello **world**\n");
     assert!(!report.used_tools, "an empty tool set is not a tool turn");
-    assert_eq!(p.requests(), 1);
+    assert_eq!(p.calls(), 1);
 
     let events = fx.events();
     assert!(
@@ -468,10 +315,10 @@ async fn no_tools_turn_streams_markdown_through_the_tool_loop() {
 async fn esc_mid_stream_yields_the_partials() {
     let fx = Fx::new(Arc::new(StaticDispatcher::new(&[])), Vec::new());
     let root = fx.root.clone();
-    let p = FakeStream::new(vec![Round {
+    let p = stream(vec![Round {
         content: vec!["half an ans".to_owned()],
-        interrupt: Some(root),
-        fail: Some("context canceled".to_owned()),
+        interrupt: Some(Interrupt::Token(root)),
+        fail: Some(Failure::Other("context canceled".to_owned())),
         ..Round::default()
     }]);
     let mut history = vec![Message::user("hi")];
@@ -491,12 +338,12 @@ async fn esc_mid_stream_yields_the_partials() {
     assert_eq!(plain(&fx.events()), vec!["half an ans".to_owned()]);
 }
 
-// Go: chat/run.go:1811-1817 — a response with reasoning and nothing else renders the
+// A response with reasoning and nothing else renders the
 // REASONING as the answer rather than reporting an empty turn.
 #[tokio::test]
 async fn reasoning_only_response_becomes_the_answer() {
     let fx = Fx::new(Arc::new(StaticDispatcher::new(&[])), Vec::new());
-    let p = FakeStream::new(vec![Round {
+    let p = stream(vec![Round {
         reasoning: vec!["let me ".to_owned(), "think\n".to_owned()],
         result: RoundResult {
             reasoning: "let me think\n".to_owned(),
@@ -536,7 +383,7 @@ async fn reasoning_only_response_becomes_the_answer() {
     );
 }
 
-// Go: chat/run.go:1092-1099 — a turn that ends in TEXT carries the terminating round's raw
+// A turn that ends in TEXT carries the terminating round's raw
 // blocks out, so the run loop can stamp them on the assistant message it builds. Anthropic
 // rejects a replayed thinking-mode turn whose thinking block is missing, and a turn ending in
 // text is the common case, not the tool-round one.
@@ -547,7 +394,7 @@ async fn terminating_text_round_carries_its_raw_blocks_out() {
     )
     .expect("raw");
     let fx = Fx::new(Arc::new(StaticDispatcher::new(&[])), Vec::new());
-    let p = FakeStream::new(vec![Round {
+    let p = stream(vec![Round {
         content: vec!["the answer".to_owned()],
         result: RoundResult {
             content: "the answer".to_owned(),
@@ -567,11 +414,11 @@ async fn terminating_text_round_carries_its_raw_blocks_out() {
     );
 }
 
-// Go: chat/run.go:1786-1789 — an image-only round is a valid turn, not an empty one.
+// An image-only round is a valid turn, not an empty one.
 #[tokio::test]
 async fn image_only_round_is_a_valid_turn() {
     let fx = Fx::new(Arc::new(StaticDispatcher::new(&[])), Vec::new());
-    let p = FakeStream::new(vec![Round {
+    let p = stream(vec![Round {
         result: RoundResult {
             images: vec![png()],
             ..RoundResult::default()
@@ -586,12 +433,12 @@ async fn image_only_round_is_a_valid_turn() {
     assert!(plain(&fx.events()).is_empty(), "nothing was rendered");
 }
 
-// Go: chat/uisink_test.go:? TestContentTap — every byte reaches the history buffer, the
+// Every byte reaches the history buffer, the
 // mark fires exactly once, the first tool delta CUTS the render pipe and everything after
 // it spills into its own block. Dormant in T1 (no dialect emits `tool_delta` — T-11);
 // driven here directly so WP55 flips a tested path on.
 #[tokio::test]
-async fn test_content_tap() {
+async fn the_content_tap_feeds_the_history_and_cuts_on_the_first_tool_delta() {
     let fx = Fx::new(Arc::new(StaticDispatcher::new(&["write_file"])), Vec::new());
     let cancel = fx.root.child_token();
     let sink: Arc<dyn UiStreamSink> = Arc::from(fx.cx.ui.start_stream(cancel.clone()));
@@ -672,7 +519,7 @@ async fn mark_content_fires_once_and_defers_the_widget() {
 // the tool walk
 // ---------------------------------------------------------------------------
 
-// Go: chat/run.go:1566-1587 + chat/approval.go:47-80 — the gate's three answers. Allow
+// The gate's three answers. Allow
 // once asks again for the next call; allow for this session remembers the TOOL NAME; deny
 // records the refusal as an is_error tool result and the turn continues.
 #[tokio::test]
@@ -682,7 +529,7 @@ async fn approval_allow_once_session_and_deny() {
     let mut script = vec![choose(0), choose(0)];
     script.extend(quiet(1));
     let fx = Fx::new(dispatch, script);
-    let p = FakeStream::new(vec![
+    let p = stream(vec![
         Round::calls(vec![
             call("c1", "write_file", serde_json::json!({"path": "a.txt"})),
             call("c2", "write_file", serde_json::json!({"path": "b.txt"})),
@@ -725,7 +572,7 @@ async fn approval_allow_once_session_and_deny() {
     let mut script = vec![choose(1)];
     script.extend(quiet(1));
     let fx = Fx::new(dispatch, script);
-    let p = FakeStream::new(vec![
+    let p = stream(vec![
         Round::calls(vec![
             call("c1", "write_file", serde_json::json!({"path": "a.txt"})),
             call("c2", "write_file", serde_json::json!({"path": "b.txt"})),
@@ -748,7 +595,7 @@ async fn approval_allow_once_session_and_deny() {
     let mut script = vec![choose(2)];
     script.extend(quiet(1));
     let fx = Fx::new(dispatch, script);
-    let p = FakeStream::new(vec![
+    let p = stream(vec![
         Round::calls(vec![call(
             "c1",
             "write_file",
@@ -768,7 +615,7 @@ async fn approval_allow_once_session_and_deny() {
     assert_eq!(refusal.tool_call_id(), "c1");
 }
 
-// Go: chat/parallel.go:65-99 — a run of parallel-capable calls executes as ONE batch under
+// A run of parallel-capable calls executes as ONE batch under
 // ONE widget and ONE cancel scope; event rows and results keep CALL order regardless of
 // who finished first, and the serial call after the run takes the normal path.
 #[tokio::test]
@@ -778,7 +625,7 @@ async fn parallel_batch_keeps_one_widget_and_call_order() {
     let mut script = Vec::new();
     script.extend(quiet(1));
     let fx = Fx::new(dispatch, script);
-    let p = FakeStream::new(vec![
+    let p = stream(vec![
         Round::calls(vec![
             call("r1", "read_file", serde_json::json!({"path": "a"})),
             call("r2", "read_file", serde_json::json!({"path": "b"})),
@@ -845,7 +692,7 @@ async fn shell_calls_share_one_parallel_batch() {
     let mut script = Vec::new();
     script.extend(quiet(1));
     let fx = Fx::new(dispatch, script);
-    let p = FakeStream::new(vec![
+    let p = stream(vec![
         Round::calls(vec![
             call("b1", "shell", serde_json::json!({"command": "sleep 1"})),
             call("b2", "shell", serde_json::json!({"command": "sleep 1"})),
@@ -879,7 +726,7 @@ async fn shell_calls_share_one_parallel_batch() {
     assert_eq!(ids, ["b1", "b2"]);
 }
 
-// Go: chat/transcript.go:454-506 + tool/tool.go:160-198 — an expanded call is a group
+// An expanded call is a group
 // boundary that settles into its posted DIFF artifact (T-35): the header carries the ±
 // counts and the diff rows follow. The artifact never reaches the model.
 #[tokio::test]
@@ -898,7 +745,7 @@ async fn showcase_expands_the_posted_diff_artifact() {
     let mut script = Vec::new();
     script.extend(quiet(1));
     let fx = Fx::new(dispatch, script);
-    let p = FakeStream::new(vec![
+    let p = stream(vec![
         Round::calls(vec![call(
             "c1",
             "edit_file",
@@ -931,7 +778,7 @@ async fn showcase_expands_the_posted_diff_artifact() {
     assert_eq!(result.content, "ok");
 }
 
-// Go: chat/approval.go:84-89 + transcript.go:569-591 — a `Note` artifact rides the classic
+// A `Note` artifact rides the classic
 // event row's trailing detail instead of expanding.
 #[tokio::test]
 async fn note_artifact_rides_the_event_row() {
@@ -944,7 +791,7 @@ async fn note_artifact_rides_the_event_row() {
     let mut script = Vec::new();
     script.extend(quiet(1));
     let fx = Fx::new(dispatch, script);
-    let p = FakeStream::new(vec![
+    let p = stream(vec![
         Round::calls(vec![call(
             "c1",
             "survey",
@@ -969,7 +816,7 @@ async fn note_artifact_rides_the_event_row() {
     );
 }
 
-// Go: chat/run.go:1513-1546 — an interactive tool brings its own surface: it never enters
+// An interactive tool brings its own surface: it never enters
 // the activity group, the clock freezes while the user answers, and the outcome lands as
 // its own `?` record block.
 #[tokio::test]
@@ -978,7 +825,7 @@ async fn surface_call_records_the_answer_and_pauses_the_clock() {
     let mut script = Vec::new();
     script.extend(quiet(1));
     let fx = Fx::new(dispatch, script);
-    let p = FakeStream::new(vec![
+    let p = stream(vec![
         Round::calls(vec![call("c1", "choose", serde_json::json!({}))]),
         Round::text("done"),
     ]);
@@ -1001,7 +848,7 @@ async fn surface_call_records_the_answer_and_pauses_the_clock() {
     );
 }
 
-// Go: chat/run.go:1639-1656 — the round boundary in order: the user's queued message is
+// The round boundary in order: the user's queued message is
 // ECHOED (which settles the running activity group) and appended, and only then do the
 // tool definitions loaded this round mount, at the BOTTOM (T-24) and never before round 0.
 #[tokio::test]
@@ -1018,7 +865,7 @@ async fn steer_echo_settles_the_group_before_the_bottom_mount() {
             Reply::Queued(Vec::new()),
         ],
     );
-    let p = FakeStream::new(vec![
+    let p = stream(vec![
         Round::calls(vec![call(
             "c1",
             "search_tools",
@@ -1088,7 +935,7 @@ async fn a_job_notice_lands_at_the_round_boundary_as_a_notice() {
             kind: crate::ui::facade::InputKind::Notice,
         }])],
     );
-    let p = FakeStream::new(vec![
+    let p = stream(vec![
         Round::calls(vec![call(
             "c1",
             "read_file",
@@ -1148,7 +995,7 @@ async fn replayed_history_keeps_the_tool_result_role_shape() {
             ..Input::default()
         }])],
     );
-    let p = FakeStream::new(vec![
+    let p = stream(vec![
         Round::calls(vec![
             call("c1", "read_file", serde_json::json!({"path": "a"})),
             call("c2", "read_file", serde_json::json!({"path": "b"})),
@@ -1190,7 +1037,7 @@ async fn replayed_history_keeps_the_tool_result_role_shape() {
     );
 }
 
-// Go: chat/run.go:1093,1479 + chat/images.go:117-146 (T-39) — a mid-loop round's images are
+// A mid-loop round's images are
 // saved and attached to the message they belong to, with a caption notice per save; the
 // terminating round's images travel out for the run loop's final attach.
 #[tokio::test]
@@ -1205,7 +1052,7 @@ async fn round_and_final_images_are_saved_attached_and_captioned() {
         script,
         Arc::new(move || Some(path.clone()) as Option<PathBuf>),
     );
-    let p = FakeStream::new(vec![
+    let p = stream(vec![
         Round {
             result: RoundResult {
                 tool_calls: vec![call("c1", "read_file", serde_json::json!({"path": "a"}))],
@@ -1258,14 +1105,14 @@ async fn round_and_final_images_are_saved_attached_and_captioned() {
     assert!(caption.contains(".png"), "{caption:?}");
 }
 
-// Go: chat/images.go:130 (T-39) — a save that fails says so and drops the image; the turn
+// A save that fails says so and drops the image; the turn
 // is unharmed.
 #[tokio::test]
 async fn image_save_failure_reports_and_drops_the_image() {
     let dispatch = Arc::new(StaticDispatcher::new(&[]));
     // No directory at all: `save_image` fails with Go's `$HOME is not defined`.
     let fx = Fx::with_images(dispatch, Vec::new(), Arc::new(|| None));
-    let p = FakeStream::new(vec![Round {
+    let p = stream(vec![Round {
         result: RoundResult {
             content: "done".to_owned(),
             images: vec![png()],
@@ -1310,7 +1157,7 @@ async fn image_less_turn_never_resolves_the_images_dir() {
             None
         }),
     );
-    let p = FakeStream::new(vec![
+    let p = stream(vec![
         Round::calls(vec![call(
             "c1",
             "read_file",
@@ -1335,17 +1182,17 @@ async fn advertised_tools_refresh_after_round_zero() {
     let mut script = Vec::new();
     script.extend(quiet(1));
     let fx = Fx::new(Arc::clone(&dispatch) as Arc<dyn Dispatcher>, script);
-    let p = FakeStream::new(vec![
+    let p = stream(vec![
         Round::calls(vec![call("c1", "search_tools", serde_json::json!({}))]),
         Round::text("done"),
     ]);
     let mut history = vec![Message::user("go")];
     fx.turn(&p, &mut history).await.outcome.expect("turn");
-    assert_eq!(lock(&p.seen_tools).len(), 2);
-    assert_eq!(lock(&p.seen_tools)[1], vec!["search_tools".to_owned()]);
+    assert_eq!(p.seen_tools().len(), 2);
+    assert_eq!(p.seen_tools()[1], vec!["search_tools".to_owned()]);
 }
 
-// Go: chat/interact.go:28-81 — the ask seam over the tabbed surface: one tab per question,
+// The ask seam over the tabbed surface: one tab per question,
 // the short header as the chip, the question as the panel prompt, wizard Enter, and the
 // engine's inline `"Other…"` editor. Picks and a custom answer COEXIST on a multi-select.
 #[tokio::test]
@@ -1460,7 +1307,7 @@ async fn interactor_maps_questions_onto_the_tabbed_wizard() {
 // teardown order
 // ---------------------------------------------------------------------------
 
-// Go: chat/run.go:1069-1071 — the pinned teardown: `sink.done()` (drops a leaked preview,
+// The pinned teardown: `sink.done()` (drops a leaked preview,
 // pops the turn scope) → `tr.reset_turn()` (a dropped widget's separator is reclaimed) →
 // the turn token fires. Every step is recorded with a snapshot of that token, so "cancel
 // last" is asserted rather than assumed.
@@ -1473,7 +1320,7 @@ async fn interactor_maps_questions_onto_the_tabbed_wizard() {
 #[tokio::test]
 async fn turn_teardown_is_done_then_reset_then_cancel() {
     let order = order_fixture(quiet(1));
-    let p = FakeStream::new(vec![
+    let p = stream(vec![
         Round::calls(vec![call(
             "c1",
             "read_file",
@@ -1507,15 +1354,15 @@ async fn turn_teardown_is_done_then_reset_then_cancel() {
 async fn interrupt_tears_down_before_the_turn_unwinds() {
     let order = order_fixture(quiet(1));
     let root = order.root.clone();
-    let p = FakeStream::new(vec![
+    let p = stream(vec![
         Round::calls(vec![call(
             "c1",
             "read_file",
             serde_json::json!({"path": "a"}),
         )]),
         Round {
-            interrupt: Some(root),
-            fail: Some("context canceled".to_owned()),
+            interrupt: Some(Interrupt::Token(root)),
+            fail: Some(Failure::Other("context canceled".to_owned())),
             ..Round::default()
         },
     ]);
@@ -1540,7 +1387,6 @@ fn at(log: &[(String, bool)], what: &str) -> usize {
 /// A fixture whose facade is the [`OrderUi`] recorder.
 struct OrderFx {
     ui: Arc<OrderUi>,
-    tr: Arc<Transcript>,
     cx: TurnCtx,
     root: CancellationToken,
 }
@@ -1575,7 +1421,6 @@ fn order_fixture(script: Vec<Reply>) -> OrderFx {
     };
     OrderFx {
         ui: order,
-        tr,
         cx,
         root: CancellationToken::new(),
     }
@@ -1783,7 +1628,7 @@ fn png() -> Attachment {
 #[tokio::test]
 async fn unary_provider_takes_the_stream_turn_fallback() {
     let fx = Fx::new(Arc::new(StaticDispatcher::new(&["read_file"])), Vec::new());
-    let p = FakeStream::unary(vec![Round {
+    let p = unary(vec![Round {
         result: RoundResult {
             content: "an image, described\n".to_owned(),
             ..RoundResult::default()
@@ -1804,9 +1649,9 @@ async fn unary_provider_takes_the_stream_turn_fallback() {
 async fn unary_provider_interrupt_yields_no_partials() {
     let fx = Fx::new(Arc::new(StaticDispatcher::new(&[])), Vec::new());
     let root = fx.root.clone();
-    let p = FakeStream::unary(vec![Round {
-        interrupt: Some(root),
-        fail: Some("context canceled".to_owned()),
+    let p = unary(vec![Round {
+        interrupt: Some(Interrupt::Token(root)),
+        fail: Some(Failure::Other("context canceled".to_owned())),
         ..Round::default()
     }]);
     let mut history = vec![Message::user("draw")];
@@ -1821,7 +1666,7 @@ async fn unary_provider_interrupt_yields_no_partials() {
 async fn a_closed_facade_during_approval_ends_the_loop() {
     let dispatch = Arc::new(StaticDispatcher::new(&["write_file"]).with_approval(&["write_file"]));
     let fx = Fx::new(dispatch, vec![Reply::Closed]);
-    let p = FakeStream::new(vec![Round::calls(vec![call(
+    let p = stream(vec![Round::calls(vec![call(
         "c1",
         "write_file",
         serde_json::json!({"path": "a"}),
