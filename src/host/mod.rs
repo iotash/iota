@@ -14,10 +14,11 @@ pub(crate) mod cmux;
 pub use ansi::AnsiHost;
 
 use std::path::PathBuf;
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 
 use crate::BoxFuture;
 use crate::app::env::Env;
+use crate::sync::lock;
 
 /// What the conversation is doing (host.go:22-29).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -165,7 +166,7 @@ impl Presenter {
     /// (host.go:113-124).
     pub fn set_state(&self, s: State) {
         {
-            let mut cur = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut cur = lock(&self.state);
             if *cur == s {
                 return;
             }

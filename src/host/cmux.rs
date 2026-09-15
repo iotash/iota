@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::task::JoinHandle;
@@ -18,6 +18,7 @@ use tokio::task::JoinHandle;
 use crate::BoxFuture;
 use crate::host::background;
 use crate::host::{BackgroundReporter, Closer, Host, Probe, State, StateReporter};
+use crate::sync::lock;
 
 /// The status-row key (cmux.go:38) — the program name.
 pub(crate) const CMUX_KEY: &str = crate::app::NAME;
@@ -76,12 +77,7 @@ impl CmuxHost {
 
     /// Hands the worker a batch, replacing one still waiting (cmux.go:87-99). Never blocks.
     fn post(&self, batch: Batch) {
-        if let Some(tx) = self
-            .tx
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-        {
+        if let Some(tx) = lock(&self.tx).as_ref() {
             tx.send_replace(Some(batch));
         }
     }
@@ -129,17 +125,8 @@ impl Closer for CmuxHost {
         Box::pin(async move {
             self.post(close_batch());
             // Dropping the sender closes the mailbox; the queued clear batch still arrives first.
-            drop(
-                self.tx
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .take(),
-            );
-            let worker = self
-                .worker
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take();
+            drop(lock(&self.tx).take());
+            let worker = lock(&self.worker).take();
             if let Some(h) = worker {
                 let _ = tokio::time::timeout(CMUX_CLOSE_WAIT, h).await;
             }
