@@ -1,6 +1,8 @@
 //! Deferred tool groups (tool/defer.go): MCP servers whose tools stay hidden behind a `search_tools` meta tool
 //! until searched for or called by name; the `search_tools` description, catalog and search-result texts are
-//! byte-equal to Go.
+//! byte-equal to Go. How a hidden group is presented to a provider — the four defer modes — is `mode`.
+
+pub(crate) mod mode;
 
 use std::{
     collections::HashSet,

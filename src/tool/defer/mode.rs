@@ -16,7 +16,7 @@ use crate::tool::{
     DeferState, DeferredToolStatus, Dispatcher, Presentation, ToolResult, ToolSearcher,
 };
 
-use crate::tool::defer::{DeferredGroup, PrefixOf, SEARCH_TOP_K, defer, defer_frozen, rank_tools};
+use super::{DeferredGroup, PrefixOf, SEARCH_TOP_K, defer, defer_frozen, rank_tools};
 
 /// The four defer modes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

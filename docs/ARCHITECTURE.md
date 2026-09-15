@@ -82,7 +82,7 @@ all three into `chat/`) the Rust split is KEPT as modules. Visibility is Rust-id
 | `llm/{mod,client,sse,error,models,chatcomp,responses,anthropic,google,images}.rs` | internal/llm | the hand-rolled HTTP/SSE wire layer (keeps Go's name) |
 | `llm/{reqlog,progress,multipart}.rs` | chat/reqlog.go, chat/progress.go, (Go `mime/multipart`) | T3: the `/debug` request log the client records into, the per-turn upload-progress reporter + task-local, the byte-exact multipart writer twin (WP66/WP67/WP64) |
 | `tool/{mod,context,approval,fmt,error}.rs` | tool/tool.go, chat/turns.go, chat/approval.go, tool/headerfmt.go | `Tool`/`Dispatcher`/`ToolEnv`/`Delegator` seam types, `PrefixOf`, `ToolError`, the call-header formatters; `context` = the run context every tool takes (`RunCtx`, `TurnBudget`, `ArtifactSlot`) |
-| `tool/{sets,dispatch,defer,defer_mode,args,yaml11}.rs` | tool/tool.go, defer*.go | the set table + framework (`dispatch.rs` = the two `Dispatcher` implementations, `Registry` and the merged union) |
+| `tool/{sets,dispatch,args,yaml11}.rs`, `tool/defer/{mod,mode}.rs` | tool/tool.go, defer*.go | the set table + framework (`dispatch.rs` = the two `Dispatcher` implementations, `Registry` and the merged union) |
 | `tool/{ask,agent,delegate}.rs`, `tool/shell.rs`, `tool/code/{mod,tools,walk,udiff}.rs` | tool/ask.go, agent.go, delegate.go, shell.go, code.go | the five built-in sets (`shell.rs` = the `shell` tool's POLICY layer; the tool is `shell` on every platform and under every interpreter, and its DESCRIPTION is what follows the interpreter, DIVERGENCES X-18/X-20) |
 | `shell/{mod,exec,interp,jobs}.rs`, `shell/sandbox/{mod,darwin,linux,other}.rs` | internal/shell | process execution + sandboxes (the MECHANISM layer); `interp.rs` answers WHICH interpreter runs a command — `bash -c` on Unix, and on Windows the first of Git Bash, PowerShell and `cmd.exe` the machine has (DIVERGENCES X-17), as one pure function over an injected machine |
 | `agents/{mod,skills}.rs` | internal/agents | `Overlay`, `compose_send_history`, skills |
@@ -213,8 +213,8 @@ The tables keep the phase-1 grouping (one per former crate) with each file named
 | `tool/approval.rs` | chat/approval.go, chat.go:348-364 (`Approval`: the answer to a gated call) |
 | `tool/sets.rs` | tool/tool.go:329-341 (`SET_NAMES`, `set_factory`, `RawNode`, `ToolsConfig`, `SetFactory`, `SetError`) |
 | `tool/dispatch.rs` | tool/tool.go:343-528 (`Registry`, `set_disabled`) + 538-673 (`merge`, the live union) |
-| `tool/defer.rs` | tool/defer.go |
-| `tool/defer_mode.rs` | tool/defermode.go + defermode_protocol.go |
+| `tool/defer/mod.rs` | tool/defer.go |
+| `tool/defer/mode.rs` | tool/defermode.go + defermode_protocol.go |
 | `tool/yaml11.rs` | yaml.v3 bool leniency (new) |
 | `tool/args.rs` | tool/tool.go:679-689, tool/agent.go:174-197,253-263 (`bool_arg`, `int_arg`, `str_arg`, `read_file_limited`) |
 | `tool/ask.rs` | tool/ask.go:18-27 |
