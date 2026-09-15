@@ -33,7 +33,7 @@ use crate::tool::DeferMode;
 pub use agent::AgentConfig;
 pub use model::{BadModelRef, ModelConfig, ModelEntry, ModelRef};
 pub use params::{Declared, ParamLayers, WindowDecl};
-pub use provider::ProviderConfig;
+pub use provider::{ApiKey, Endpoint, ProviderConfig};
 
 /// The `agents:` entry a run with no positional argument falls back to.
 pub const DEFAULT_AGENT: &str = "default";
@@ -141,11 +141,19 @@ impl Resolved {
 
     /// Points the run at another provider, keeping the model entry it already carries.
     pub fn move_to_provider(&mut self, cfg: &Config, name: &str) {
-        let (provider_type, provider) = cfg.get(name);
+        let endpoint = cfg.provider(name);
         name.clone_into(&mut self.provider_name);
-        self.provider_type = provider_type;
-        self.provider = provider;
+        endpoint.kind.clone_into(&mut self.provider_type);
+        self.provider = endpoint.config.clone();
         name.clone_into(&mut self.model.provider);
+    }
+
+    /// The endpoint this run talks to, in the borrowed shape [`Config::provider`] hands out.
+    pub fn endpoint(&self) -> Endpoint<'_> {
+        Endpoint {
+            kind: &self.provider_type,
+            config: &self.provider,
+        }
     }
 
     /// Whether `provider_name`/`id` is inside the agent's candidate set. A `provider:*` entry covers every id
@@ -297,7 +305,7 @@ impl Config {
                 continue;
             };
             // An unknown `type:` has its own error at construction; there is no dialect to judge against here.
-            let Ok(kind) = self.provider_type(provider_name).parse::<ProviderKind>() else {
+            let Ok(kind) = self.provider(provider_name).kind.parse::<ProviderKind>() else {
                 continue;
             };
             if !mode.supports(kind) {
@@ -343,11 +351,6 @@ impl Config {
         self.providers.contains_key(name) || ProviderKind::is_known(name)
     }
 
-    /// The TYPE string behind a provider name (`type:`, else the name itself).
-    fn provider_type<'a>(&'a self, name: &'a str) -> &'a str {
-        self.providers.get(name).map_or(name, |p| p.kind_or(name))
-    }
-
     /// `<dir>/.iota.yaml` then `<dir>/.iota.yml`; first that exists (metadata Ok).
     pub fn find_config_file(dir: &Path) -> Option<PathBuf> {
         CONFIG_EXTS
@@ -356,11 +359,23 @@ impl Config {
             .find(|p| std::fs::metadata(p).is_ok())
     }
 
-    /// Unconfigured → (name, default); configured → (kind, or name when kind is `""`; the provider's config).
-    pub fn get(&self, name: &str) -> (String, ProviderConfig) {
+    /// The endpoint a provider name reaches: the `providers:` entry and the TYPE behind it (`type:`, else the
+    /// name), or — for a name no entry declares — the built-in type of that name over a default entry.
+    pub fn provider<'a>(&'a self, name: &'a str) -> Endpoint<'a> {
+        static UNCONFIGURED: ProviderConfig = ProviderConfig {
+            kind: String::new(),
+            key: String::new(),
+            url: String::new(),
+        };
         match self.providers.get(name) {
-            None => (name.to_owned(), ProviderConfig::default()),
-            Some(provider_cfg) => (provider_cfg.kind_or(name).to_owned(), provider_cfg.clone()),
+            Some(config) => Endpoint {
+                kind: config.kind_or(name),
+                config,
+            },
+            None => Endpoint {
+                kind: name,
+                config: &UNCONFIGURED,
+            },
         }
     }
 
@@ -420,7 +435,9 @@ impl Config {
         } else {
             model.provider.clone()
         };
-        let (provider_type, provider) = self.get(&provider_name);
+        let endpoint = self.provider(&provider_name);
+        let provider_type = endpoint.kind.to_owned();
+        let provider = endpoint.config.clone();
         Resolved {
             name: name.to_owned(),
             provider_name,

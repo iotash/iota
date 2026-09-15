@@ -762,6 +762,16 @@ agents:
         list(&["list", "providers"], &cfg, &[]).0,
         "Providers:\n  anthropic  [no key: set ANTHROPIC_API_KEY]\n  deepseek (type: openai, url: https://cfg.example/v1)  [key: config]\n"
     );
+    // The source named is the one a run would use: the variable outranks `key:` when both are set.
+    assert_eq!(
+        list(
+            &["list", "providers"],
+            &cfg,
+            &[("ANTHROPIC_API_KEY", "ant"), ("OPENAI_API_KEY", "o")]
+        )
+        .0,
+        "Providers:\n  anthropic  [key: ANTHROPIC_API_KEY]\n  deepseek (type: openai, url: https://cfg.example/v1)  [key: OPENAI_API_KEY]\n"
+    );
 
     // An empty config says what to do about it rather than printing nothing.
     assert_eq!(

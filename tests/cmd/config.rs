@@ -209,7 +209,7 @@ fn provider_fields_expand_their_variables_at_load() {
     let resolver = Env::fixed(&[("CFG_TEST_KEY", "sk-expanded")]).with_dirs(dirs.clone());
 
     let (cfg, _) = load_explicit(&path, &resolver);
-    let (_, pc) = cfg.get("d");
+    let pc = cfg.provider("d").config;
     assert_eq!(pc.key, "sk-expanded");
     assert_eq!(pc.url, "sk-expanded/v1");
     let want = dirs.home.clone().unwrap().join(".iota").join("sys.md");
@@ -1002,7 +1002,7 @@ fn config_only_explicit_path_when_given() {
         cfg.providers.keys().collect::<Vec<_>>(),
         vec!["cwd_only", "home_only", "shared"]
     );
-    let (_, shared) = cfg.get("shared");
+    let shared = cfg.provider("shared").config;
     assert_eq!(shared.key, "cwd-shared");
     assert_eq!(cfg.mcp_servers["fs"].command, "cwd-fs");
     assert_eq!(cfg.mcp_servers["gh"].url, "https://home/gh");

@@ -12,12 +12,11 @@ use clap::ValueEnum as _;
 
 use crate::app::HostDirs;
 use crate::app::env::Env;
-use crate::provider::provider_env_key;
 
 use crate::cmd::cli::{ListCmd, ListWhat};
 use crate::cmd::resolve::resolve_agent;
 use crate::cmd::{CliError, io};
-use crate::config::{Config, ModelRef, ProviderConfig};
+use crate::config::{ApiKey, Config, ModelRef, ProviderConfig};
 
 /// `iota list [what] [<agent>]`. Nothing here touches the network or needs a key.
 pub fn run_list(
@@ -125,27 +124,25 @@ fn list_providers(cfg: &Config, env: &Env, io: &mut io::Streams) -> Result<(), C
     }
     writeln!(io.stdout, "Providers:")?;
     for name in cfg.providers.keys() {
-        let (raw_type, provider_cfg) = cfg.get(name);
+        let endpoint = cfg.provider(name);
         writeln!(
             io.stdout,
             "  {}  [{}]",
-            provider_line(name, &raw_type, &provider_cfg),
-            key_source(&raw_type, &provider_cfg, env)
+            provider_line(name, endpoint.kind, endpoint.config),
+            key_source(&endpoint.api_key(env))
         )?;
     }
     Ok(())
 }
 
-/// Where a provider's key comes from, as the listing says it.
-fn key_source(raw_type: &str, provider_cfg: &ProviderConfig, env: &Env) -> String {
-    if !provider_cfg.key.is_empty() {
-        return "key: config".to_owned();
-    }
-    let var = provider_env_key(raw_type);
-    if env.var(var).is_some() {
-        format!("key: {var}")
-    } else {
-        format!("no key: set {var}")
+/// Where a provider's key comes from, as the listing says it — the precedence a run applies
+/// (`Endpoint::api_key`), so `[key: OPENAI_API_KEY]` means the variable is what the run would use even when
+/// `key:` is set too.
+fn key_source(key: &ApiKey) -> String {
+    match key {
+        ApiKey::Env { var, .. } => format!("key: {var}"),
+        ApiKey::Config(_) => "key: config".to_owned(),
+        ApiKey::Missing { var } => format!("no key: set {var}"),
     }
 }
 

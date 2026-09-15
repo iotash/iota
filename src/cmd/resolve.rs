@@ -3,11 +3,10 @@
 //! decides before it constructs a provider — plus `CliError`, the command's error type.
 
 use crate::provider::error::{ProviderError, UnknownProviderType};
-use crate::provider::provider_env_key;
 use crate::text::go_float;
 
 use crate::cmd::cli::{Invocation, Resume};
-use crate::config::{Config, ConfigError, ModelConfig, ModelRef, ProviderConfig, Resolved};
+use crate::config::{ApiKey, Config, ConfigError, ModelConfig, ModelRef, Resolved};
 
 use crate::app::env::Env;
 
@@ -79,9 +78,9 @@ pub fn resolve_run(
     }
     let raw_type = resolved.provider_type.clone();
 
-    // root.go:62-87, minus the flag: the env var of the RESOLVED type, else the config `key:`.
-    let env_key = provider_env_key(&raw_type);
-    let api_key = resolve_key_from_env_or_config(env_key, &resolved.provider, env);
+    // root.go:62-87, minus the flag: the env var of the RESOLVED type, else the config `key:` — the one
+    // precedence, `Endpoint::api_key`.
+    let api_key = resolved.endpoint().api_key(env);
     let base_url = resolved.provider.url.clone();
     let model = resolved.model.id.clone();
     let system = match &inv.args.system {
@@ -90,12 +89,15 @@ pub fn resolve_run(
     };
 
     // root.go:89-92
-    if api_key.is_empty() {
-        return Err(CliError::ApiKeyRequired {
-            env: env_key,
-            provider: resolved.provider_name.clone(),
-        });
-    }
+    let api_key = match api_key {
+        ApiKey::Env { key, .. } | ApiKey::Config(key) => key,
+        ApiKey::Missing { var } => {
+            return Err(CliError::ApiKeyRequired {
+                env: var,
+                provider: resolved.provider_name.clone(),
+            });
+        }
+    };
 
     // root.go:95-104 (`-m -`), then POLICY F-03 (`-m ""`).
     let message = match inv.args.message.as_deref() {
@@ -242,16 +244,6 @@ fn model_at(r: &Resolved, cfg: &Config, provider: &str, id: &str) -> ModelConfig
             ..ModelConfig::default()
         },
     }
-}
-
-/// root.go:64-69 / 492-497: the env var of the resolved type when set and non-empty, else the config `key:`
-/// (possibly `""`).
-pub(crate) fn resolve_key_from_env_or_config(
-    env_key: &str,
-    provider_cfg: &ProviderConfig,
-    env: &Env,
-) -> String {
-    env.var(env_key).unwrap_or_else(|| provider_cfg.key.clone())
 }
 
 /// root.go:95-104: read ALL of stdin, trim, reject an empty message.

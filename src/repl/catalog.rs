@@ -362,21 +362,18 @@ fn busy_label(n: usize) -> String {
 /// One wildcard endpoint, built for listing alone: no temperature, no model, the run's own
 /// transport (so `/debug` records these calls too).
 fn build_source(cfg: &Config, name: &str, env: &Env, http: &HttpTransport) -> Source {
-    let (raw_type, provider_cfg) = cfg.get(name);
-    let kind: ProviderKind = match raw_type.parse() {
+    let endpoint = cfg.provider(name);
+    let kind: ProviderKind = match endpoint.kind.parse() {
         Ok(kind) => kind,
         Err(e) => return Source::Broken(e.to_string()),
     };
-    let api_key = crate::cmd::resolve::resolve_key_from_env_or_config(
-        crate::provider::provider_env_key(&raw_type),
-        &provider_cfg,
-        env,
-    );
+    // No key is an endpoint that lists with an empty one: its refusal is the source's note.
+    let api_key = endpoint.api_key(env);
     match new_provider(
         kind,
         ProviderParams {
-            api_key: &api_key,
-            base_url: &provider_cfg.url,
+            api_key: api_key.value().unwrap_or_default(),
+            base_url: &endpoint.config.url,
             model: "",
             temperature: None,
         },
