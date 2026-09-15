@@ -1,4 +1,5 @@
-//! Quote renderer: the renderQuote twin (markdown.go:1057-1090) — the inner lines are
+//! The quote block: its line recognizers and buffering state ([`QuoteBlock`],
+//! markdown.go:993-1006) and the renderQuote twin (markdown.go:1057-1090) — the inner lines are
 //! a mini-document rendered recursively through a CHILD `Writer` at width−2 (lists,
 //! headings, tables, code, math, and nested quotes inside a quote reuse the full
 //! pipeline), then every visual row is fronted by the cyan `│` bar with one column of
@@ -8,6 +9,7 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
+use crate::markdown::blocks::close_view;
 use crate::markdown::blocks::table::word_wrap_ansi;
 use crate::markdown::style::Style;
 use crate::markdown::{PreviewHandle, Sink};
@@ -17,6 +19,60 @@ use crate::text::ansi::ansi_width;
 /// The terminal columns the quote frame adds around its text: the left border glyph
 /// (1) plus one column of padding (markdown.go quoteBorderCols).
 pub(crate) const QUOTE_BORDER_COLS: usize = 2;
+
+/// isQuoteLine twin: the trimmed form is exactly `">"` or starts with `"> "`.
+pub(crate) fn is_quote_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed == ">" || trimmed.starts_with("> ")
+}
+
+/// stripQuoteMarker twin: removes exactly ONE leading `"> "` (or a bare `">"`).
+pub(crate) fn strip_quote_marker(line: &str) -> &str {
+    let trimmed = line.trim();
+    if trimmed == ">" {
+        return "";
+    }
+    trimmed.strip_prefix("> ").unwrap_or(trimmed)
+}
+
+/// A quote block: the inner lines with their `> ` markers stripped (markdown.go:993-1006).
+pub(crate) struct QuoteBlock {
+    body: Vec<String>,
+    view: Option<Box<dyn PreviewHandle>>,
+}
+
+impl QuoteBlock {
+    /// The live preview's label while the block buffers.
+    pub(crate) const LABEL: &'static str = "rendering quote…";
+
+    /// A block opened by its first quote line, with the preview the Writer opened for it.
+    pub(crate) fn open(line: &str, view: Option<Box<dyn PreviewHandle>>) -> Self {
+        let mut quote = Self {
+            body: Vec::new(),
+            view,
+        };
+        quote.append(line);
+        quote
+    }
+
+    pub(crate) fn append(&mut self, line: &str) {
+        self.body.push(strip_quote_marker(line).to_owned());
+        if let Some(v) = &mut self.view {
+            v.write_raw_line(line);
+        }
+    }
+
+    /// Closes the preview and renders the block, trailing newline included; an empty body
+    /// renders nothing.
+    pub(crate) fn render(mut self, width: usize, opts: RenderOptions) -> Option<String> {
+        close_view(&mut self.view);
+        if self.body.is_empty() {
+            return None;
+        }
+        let rendered = render_quote(&self.body, width, opts);
+        Some(format!("{rendered}\n"))
+    }
+}
 
 /// The no-preview child sink capturing the recursive mini-document render.
 /// `Arc<Mutex<_>>` rather than `Rc<RefCell<_>>` only because `Sink` is `Send`
@@ -92,4 +148,20 @@ pub(crate) fn render_quote(body: &[String], width: usize, opts: RenderOptions) -
         }
     }
     rows.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_quote_line, strip_quote_marker};
+
+    // Go: internal/markdown/markdown.go:993-1006 quote line shapes.
+    #[test]
+    fn quote_marker_pins() {
+        assert!(is_quote_line("> x"));
+        assert!(is_quote_line("  >"));
+        assert!(!is_quote_line(">x"));
+        assert_eq!(strip_quote_marker(">"), "");
+        assert_eq!(strip_quote_marker("> quoted"), "quoted");
+        assert_eq!(strip_quote_marker("  > q"), "q");
+    }
 }

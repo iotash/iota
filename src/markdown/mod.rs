@@ -39,6 +39,7 @@ pub use style::Style;
 use crate::markdown::blocks::close_view;
 use crate::markdown::blocks::code::{CodeBlock, code_label};
 use crate::markdown::blocks::math::{display_open, is_display_close};
+use crate::markdown::blocks::quote::{QuoteBlock, is_quote_line};
 use crate::markdown::inline::{highlight_line, is_block_line, is_list_line, split_list_marker};
 
 /// Code-highlight theme, chosen by the host's background detect.
@@ -259,30 +260,6 @@ impl ListBlock {
     }
 }
 
-/// A quote block: the inner lines with their `> ` markers stripped (markdown.go:993-1006).
-struct QuoteBlock {
-    body: Vec<String>,
-    view: Option<Box<dyn PreviewHandle>>,
-}
-
-impl QuoteBlock {
-    fn append(&mut self, line: &str) {
-        self.body.push(strip_quote_marker(line).to_owned());
-        if let Some(v) = &mut self.view {
-            v.write_raw_line(line);
-        }
-    }
-
-    fn render(mut self, width: usize, opts: RenderOptions) -> Option<String> {
-        close_view(&mut self.view);
-        if self.body.is_empty() {
-            return None;
-        }
-        let rendered = blocks::quote::render_quote(&self.body, width, opts);
-        Some(format!("{rendered}\n"))
-    }
-}
-
 /// A display-math block: the raw source lines between the `$$` / `\[` fences (the
 /// one-line form is a `MathBlock` of one line that renders at once, no preview).
 pub(crate) struct MathBlock {
@@ -482,13 +459,8 @@ impl Writer {
         }
 
         if is_quote_line(line) {
-            let view = self.open_preview("rendering quote…");
-            let mut quote = QuoteBlock {
-                body: Vec::new(),
-                view,
-            };
-            quote.append(line);
-            self.block = Block::Quote(quote);
+            let view = self.open_preview(QuoteBlock::LABEL);
+            self.block = Block::Quote(QuoteBlock::open(line, view));
             return;
         }
 
@@ -616,21 +588,6 @@ impl Writer {
     fn end_block(&mut self) {
         self.last_unit = Unit::Block;
     }
-}
-
-/// isQuoteLine twin: the trimmed form is exactly `">"` or starts with `"> "`.
-pub(crate) fn is_quote_line(line: &str) -> bool {
-    let trimmed = line.trim();
-    trimmed == ">" || trimmed.starts_with("> ")
-}
-
-/// stripQuoteMarker twin: removes exactly ONE leading `"> "` (or a bare `">"`).
-pub(crate) fn strip_quote_marker(line: &str) -> &str {
-    let trimmed = line.trim();
-    if trimmed == ">" {
-        return "";
-    }
-    trimmed.strip_prefix("> ").unwrap_or(trimmed)
 }
 
 /// indentLevel twin: every two columns are one nesting level (a tab counts as two).
@@ -776,10 +733,7 @@ pub fn new_writer_to(w: Box<dyn std::io::Write + Send>, width: usize) -> Writer 
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        indent_level, is_quote_line, is_table_separator, parse_table_cells, split_br,
-        strip_quote_marker, task_marker,
-    };
+    use super::{indent_level, is_table_separator, parse_table_cells, split_br, task_marker};
 
     // Hand-parser pins for Go's tableSepRe `^:?-+:?$` (markdown spec §regexes).
     #[test]
@@ -805,17 +759,6 @@ mod tests {
         assert_eq!(split_br("a<brx>b"), ["a<brx>b"]);
         assert_eq!(split_br("a<b>r</b>"), ["a<b>r</b>"]);
         assert_eq!(split_br("plain"), ["plain"]);
-    }
-
-    // Go: internal/markdown/markdown.go:993-1006 quote line shapes.
-    #[test]
-    fn quote_marker_pins() {
-        assert!(is_quote_line("> x"));
-        assert!(is_quote_line("  >"));
-        assert!(!is_quote_line(">x"));
-        assert_eq!(strip_quote_marker(">"), "");
-        assert_eq!(strip_quote_marker("> quoted"), "quoted");
-        assert_eq!(strip_quote_marker("  > q"), "q");
     }
 
     // Go: internal/markdown/markdown.go:853-863 (tab = two columns, cols/2).
