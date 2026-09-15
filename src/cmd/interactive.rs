@@ -38,7 +38,7 @@ use crate::tool::DeferredGroup;
 use crate::tool::{Dispatcher, ToolEnv};
 use crate::ui::facade::{Panel, TabbedResult, TabbedSpec, Ui};
 
-use crate::cmd::cli::{Invocation, Resume};
+use crate::cmd::args::{Invocation, Resume};
 use crate::cmd::resolve::{CliError, RunSettings};
 use crate::cmd::{RunContext, ToolAssembly};
 

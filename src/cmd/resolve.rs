@@ -5,7 +5,7 @@
 use crate::provider::error::{ProviderError, UnknownProviderType};
 use crate::text::go_float;
 
-use crate::cmd::cli::{Invocation, Resume};
+use crate::cmd::args::{Invocation, Resume};
 use crate::config::{ApiKey, Config, ConfigError, ModelConfig, ModelRef, Resolved};
 
 use crate::app::env::Env;

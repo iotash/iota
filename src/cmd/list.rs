@@ -13,7 +13,7 @@ use clap::ValueEnum as _;
 use crate::app::HostDirs;
 use crate::app::env::Env;
 
-use crate::cmd::cli::{ListCmd, ListWhat};
+use crate::cmd::args::{ListCmd, ListWhat};
 use crate::cmd::resolve::resolve_agent;
 use crate::cmd::{CliError, io};
 use crate::config::{ApiKey, Config, ModelRef, ProviderConfig};

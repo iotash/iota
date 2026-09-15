@@ -3,8 +3,8 @@
 //! `main.rs` awaits via `block_on` and maps to an exit code. The YAML config model is `crate::config`. ONE
 //! binary carries everything, exactly like the Go binary (decision of 2026-09-01; ARCHITECTURE §11).
 
+pub(crate) mod args;
 pub(crate) mod assemble;
-pub(crate) mod cli;
 pub(crate) mod config_cmd;
 pub(crate) mod interactive;
 pub mod io;
@@ -17,7 +17,7 @@ pub use crate::config::{
     AgentConfig, BadModelRef, Config, ConfigError, DEFAULT_AGENT, Declared, McpServerConfig,
     ModelConfig, ModelEntry, ModelRef, ParamLayers, ProviderConfig, Resolved, WindowDecl,
 };
-pub use cli::{Cli, Command, ConfigAction, Invocation, ListWhat, Resume, RunArgs};
+pub use args::{Cli, Command, ConfigAction, Invocation, ListWhat, Resume, RunArgs};
 pub use resolve::CliError;
 pub use resolve::{RunSettings, resolve_run};
 

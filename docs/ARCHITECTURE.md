@@ -98,7 +98,7 @@ all three into `chat/`) the Rust split is KEPT as modules. Visibility is Rust-id
 | `ui/{mod,testutil}.rs` · `ui/runtime/{mod,handle,msgs,event_loop,term,osc,oneshot}.rs` · `ui/render/{mod,region,frame,spans,theme,sink,debug}.rs` · `ui/input/{mod,composer,keys,paste,suggest}.rs` · `ui/surface/…` | internal/ui | the inline terminal engine — the ONLY module allowed to name ratatui/crossterm (`tests/layering.rs`) |
 | `repl/{mod,run,turn,toolloop,transcript,group,uisink,interrupt,retry,steer,approval,interact,diff,errors,styles,title,banner,mcpreport,meter,params,tokens,replay,systemtab,commands/…}.rs` | chat/run.go and friends | the interactive loop over the facade |
 | `repl/{phases,editpicker}.rs`, `repl/commands/{export,debug,edit,skills}.rs` | chat/run.go:1184-1242, chat/editpicker.go, chat/export.go, chat/debug.go, chat/run.go:450-516, chat/agentmode.go | T3: the busy-phase controller + upload watcher (WP67), the `/edit` picker (WP64), `/export` (WP65), `/debug` (WP66), `/edit`+`/redo` (WP64), `/skills` (WP68) |
-| `cmd/{mod,cli,resolve,list,tuning,assemble,delegate,io,signals,window,interactive}.rs` | cmd/root.go, delegate.go | the command; `cmd::run` is the library entry `main.rs` awaits |
+| `cmd/{mod,args,resolve,list,tuning,assemble,config_cmd,io,signals,interactive}.rs` | cmd/root.go, delegate.go | the command; `cmd::run` is the library entry `main.rs` awaits |
 | `config/{mod,agent,model,provider,params,strict}.rs` | config/ | the YAML config model + merge, plus the key audit and the layered parameters |
 | `testing/{mod,scripted}.rs` | (test fakes) | behind the `testing` feature only |
 
@@ -270,7 +270,7 @@ The tables keep the phase-1 grouping (one per former crate) with each file named
 |---|---|
 | `main.rs` | main.go (+ signal/exit-code policy) |
 | `cmd/mod.rs` | cmd/root.go:41-268 (`run_agent`) + cmd/root.go:284-334 (the resume stage on the `-m` path, D-41); the verb dispatch is `run` |
-| `cmd/cli.rs` | cmd/root.go:22-39,418-436, rebuilt as a verb set (X-10 … X-14) |
+| `cmd/args.rs` | cmd/root.go:22-39,418-436, rebuilt as a verb set (X-10 … X-14) |
 | `config/` | config/config.go, plus `config/strict.rs` (the key audit, X-15) and `config/params.rs` (the layered parameters, X-24) |
 | `cmd/resolve.rs` | cmd/root.go:46-123,534-566 (`ModelRequired` deferred for a resume, D-52) |
 | `config/window.rs` | chat/tokens.go:20-43 |

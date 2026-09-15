@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::app::env::Env;
 use crate::app::{CONFIG_BASE, CONFIG_EXTS, HostDirs};
-use crate::cmd::cli::{ConfigAction, ConfigCmd};
+use crate::cmd::args::{ConfigAction, ConfigCmd};
 use crate::cmd::{CliError, io};
 use crate::config::{Config, DEFAULT_AGENT};
 
