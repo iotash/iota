@@ -1,6 +1,6 @@
-//! Deferred tool groups (tool/defer.go): MCP servers whose tools stay hidden behind a `search_tools` meta tool
+//! Deferred tool groups: MCP servers whose tools stay hidden behind a `search_tools` meta tool
 //! until searched for or called by name; the `search_tools` description, catalog and search-result texts are
-//! byte-equal to Go. How a hidden group is presented to a provider — the four defer modes — is `mode`.
+//! model-facing text the tests pin. How a hidden group is presented to a provider — the four defer modes — is `mode`.
 
 pub(crate) mod mode;
 
@@ -71,7 +71,7 @@ pub(crate) fn defer_frozen(
     Arc::new(DeferDispatcher::new(inner, groups, prefix_of, true))
 }
 
-/// defer.go:363-400: terms = lowercase whitespace split; +2 per term in name, +1 in description, +1 in
+/// Keyword scoring: terms = lowercase whitespace split; +2 per term in name, +1 in description, +1 in
 /// `param_corpus`; score > 0; stable sort score desc, name asc.
 pub(crate) fn rank_tools(defs: &[ToolDef], query: &str) -> Vec<ToolDef> {
     let lowered = query.to_lowercase();
@@ -97,7 +97,7 @@ pub(crate) fn rank_tools(defs: &[ToolDef], query: &str) -> Vec<ToolDef> {
     hits.into_iter().map(|(def, _)| def).collect()
 }
 
-/// defer.go:331-357: property names + descriptions, recursing into `properties` and `items`; lowercased. None → "".
+/// The searchable text of a schema: property names + descriptions, recursing into `properties` and `items`; lowercased. None → "".
 pub(crate) fn param_corpus(schema: Option<&JsonObject>) -> String {
     fn walk(m: &JsonObject, out: &mut String) {
         if let Some(Value::Object(props)) = m.get("properties") {
@@ -150,7 +150,7 @@ pub(crate) fn fit_lines(lines: &[String], budget: usize) -> (Vec<String>, usize)
     (kept, 0)
 }
 
-/// One group resolved against the live tool set (defer.go:88-92).
+/// One group resolved against the live tool set.
 struct GroupView<'a> {
     group: &'a DeferredGroup,
     /// `""` = still connecting.
@@ -159,7 +159,6 @@ struct GroupView<'a> {
 }
 
 impl GroupView<'_> {
-    /// defer.go:222-227.
     fn count_label(&self) -> String {
         if self.prefix.is_empty() {
             "connecting…".to_owned()
@@ -169,7 +168,7 @@ impl GroupView<'_> {
     }
 }
 
-/// Load state guarded by the wrapper's mutex (defer.go:75-77).
+/// Load state guarded by the wrapper's mutex.
 #[derive(Default)]
 struct LoadState {
     /// Wire names searched (or implicitly called) in.
@@ -179,7 +178,7 @@ struct LoadState {
 }
 
 impl LoadState {
-    /// defer.go:142-150: records a load; in frozen mode the schema also queues for the history mount
+    /// Records a load; in frozen mode the schema also queues for the history mount
     /// (deduplicated — a re-search must not re-append).
     fn enable(&mut self, def: &ToolDef, frozen: bool) {
         if !self.enabled.insert(def.name.clone()) {
@@ -191,7 +190,7 @@ impl LoadState {
     }
 }
 
-/// The `search_tools` wrapper (defer.go:63-78).
+/// The `search_tools` wrapper.
 struct DeferDispatcher {
     inner: Arc<dyn Dispatcher>,
     groups: Vec<DeferredGroup>,
@@ -221,7 +220,7 @@ impl DeferDispatcher {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// defer.go:96-119: snapshots `inner.tools()` and buckets the deferred groups' tools; the remainder
+    /// Snapshots `inner.tools()` and buckets the deferred groups' tools; the remainder
     /// (non-deferred tools) is returned alongside.
     fn resolve(&self) -> (Vec<GroupView<'_>>, Vec<ToolDef>) {
         let mut views: Vec<GroupView<'_>> = self
@@ -249,7 +248,7 @@ impl DeferDispatcher {
         (views, rest)
     }
 
-    /// defer.go:184-220: the `search_tools` definition — a fixed template plus as many group lines as the budget
+    /// The `search_tools` definition — a fixed template plus as many group lines as the budget
     /// admits (level 0 → all lines; level 1 → prefix + "+N more"; level 2 → counts only, when even one line
     /// won't fit).
     fn search_def(views: &[GroupView<'_>]) -> ToolDef {
@@ -300,7 +299,7 @@ impl DeferDispatcher {
         }
     }
 
-    /// defer.go:283-325: the meta tool — keyword scoring over the deferred tools; the top `SEARCH_TOP_K` hits
+    /// The meta tool — keyword scoring over the deferred tools; the top `SEARCH_TOP_K` hits
     /// load; an empty query returns the full catalog instead.
     fn search(&self, args: &JsonObject) -> ToolOutput {
         let query = str_arg(args, "query");
@@ -356,7 +355,7 @@ impl DeferDispatcher {
         ToolOutput::ok(b.trim_end_matches('\n').to_owned())
     }
 
-    /// defer.go:405-432: the empty-query listing — ALWAYS every group line with its full summary, then the
+    /// The empty-query listing — ALWAYS every group line with its full summary, then the
     /// per-tool index (one-liners up to `CATALOG_NAMES_ONLY_AT` tools, names only beyond).
     fn catalog(&self, views: &[GroupView<'_>]) -> String {
         let total: usize = views.iter().map(|v| v.tools.len()).sum();
@@ -398,7 +397,7 @@ impl DeferDispatcher {
         b
     }
 
-    /// defer.go:259-274: a direct call to a hidden-but-known tool enables it in one step — the safety net for
+    /// A direct call to a hidden-but-known tool enables it in one step — the safety net for
     /// models that skip the search.
     fn implicit_load(&self, name: &str) {
         let (views, _) = self.resolve();
@@ -421,7 +420,7 @@ fn schema_object(v: Value) -> Option<JsonObject> {
 }
 
 impl Dispatcher for DeferDispatcher {
-    /// defer.go:121-138: `[search_tools] ++ rest ++ (unless frozen) every loaded deferred tool`.
+    /// `[search_tools] ++ rest ++ (unless frozen) every loaded deferred tool`.
     fn tools(&self) -> Vec<ToolDef> {
         let (views, rest) = self.resolve();
         let st = self.lock();
@@ -440,7 +439,7 @@ impl Dispatcher for DeferDispatcher {
         out
     }
 
-    /// defer.go:255-276: `search_tools` → search; anything else → implicit load, then ALWAYS forward to inner.
+    /// `search_tools` → search; anything else → implicit load, then ALWAYS forward to inner.
     fn call_tool<'a>(
         &'a self,
         cx: &'a RunCtx,
@@ -456,12 +455,12 @@ impl Dispatcher for DeferDispatcher {
         })
     }
 
-    /// Pass-through (defer.go:449-454).
+    /// Pass-through.
     fn requires_approval(&self, name: &str) -> bool {
         self.inner.requires_approval(name)
     }
 
-    /// Pass-through (defer.go:456-461).
+    /// Pass-through.
     fn presentation(&self, name: &str) -> Presentation {
         self.inner.presentation(name)
     }
@@ -470,7 +469,7 @@ impl Dispatcher for DeferDispatcher {
         Some(self)
     }
 
-    /// defer.go:164-179: every deferred tool with its load state.
+    /// Every deferred tool with its load state.
     fn deferred_tools(&self) -> Vec<DeferredToolStatus> {
         let (views, _) = self.resolve();
         let st = self.lock();
@@ -491,14 +490,14 @@ impl Dispatcher for DeferDispatcher {
             .collect()
     }
 
-    /// defer.go:155-161: drains schemas loaded since the last take (frozen mode).
+    /// Drains schemas loaded since the last take (frozen mode).
     fn take_pending_loads(&self) -> Vec<ToolDef> {
         std::mem::take(&mut self.lock().pending)
     }
 }
 
 impl Owner for DeferDispatcher {
-    /// defer.go:436-446: ownership including HIDDEN tools — Merge routes direct calls here so the implicit-load
+    /// Ownership including HIDDEN tools — Merge routes direct calls here so the implicit-load
     /// path works through the merged dispatcher.
     fn owns(&self, name: &str) -> bool {
         name == SEARCH_TOOL_NAME
@@ -515,7 +514,7 @@ mod tests {
 
     #[test]
     fn template_byte_lengths_match_go() {
-        // defer.go:193: budget = 800 - len(head) - len(foot) - 1 = 537.
+        // budget = 800 - len(head) - len(foot) - 1 = 537.
         assert_eq!(SEARCH_HEAD.len(), 71);
         assert_eq!(SEARCH_FOOT.len(), 191);
     }
