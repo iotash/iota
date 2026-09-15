@@ -1,4 +1,4 @@
-//! Argument readers shared by every built-in tool (tool/tool.go:679-689, tool/agent.go:174-197,253-263).
+//! Argument readers shared by every built-in tool.
 
 use std::{
     io::{ErrorKind, Read},
@@ -27,8 +27,7 @@ pub(crate) fn int_arg(args: &JsonObject, key: &str) -> i64 {
     n.as_f64().map_or(0, float_to_int)
 }
 
-/// Go `int(v)` on a float64: truncation toward zero (saturating at the i64 range, which Go leaves
-/// implementation-defined).
+/// A float argument as an integer: truncation toward zero, saturating at the i64 range.
 #[allow(clippy::cast_possible_truncation)]
 fn float_to_int(f: f64) -> i64 {
     f.trunc() as i64
@@ -48,7 +47,7 @@ pub(crate) fn bool_arg(args: &JsonObject, key: &str, default: bool) -> bool {
     }
 }
 
-/// tool/agent.go:174-197. Err texts embed the ABSOLUTE path: `file does not exist: {p}`, `cannot access {p}: {e}`,
+/// Err texts embed the ABSOLUTE path: `file does not exist: {p}`, `cannot access {p}: {e}`,
 /// `{p} is a directory, not a file`, `{p} is not a regular file`, `cannot open {p}: {e}`, `cannot read {p}: {e}`.
 /// Ok = (bytes ≤ max, true size).
 pub(crate) fn read_file_limited(path: &Path, max: u64) -> Result<(Vec<u8>, u64), String> {
@@ -88,7 +87,8 @@ mod tests {
         }
     }
 
-    // New: tool/tool.go:679-689 boolArg accepts every strconv.ParseBool spelling and nothing else.
+    // `bool_arg` accepts the twelve spellings `1 t T TRUE true True` / `0 f F FALSE false False` and
+    // nothing else.
     #[test]
     fn bool_arg_parse_bool_spellings() {
         for s in ["1", "t", "T", "TRUE", "true", "True"] {
@@ -114,7 +114,7 @@ mod tests {
         assert!(!bool_arg(&JsonObject::new(), "missing", false));
     }
 
-    // New: tool/agent.go:253-263 intArg reads numbers only — a numeric string is 0.
+    // `int_arg` reads numbers only — a numeric string is 0.
     #[test]
     fn int_arg_ignores_strings() {
         assert_eq!(int_arg(&args(json!({ "n": 7 })), "n"), 7);
