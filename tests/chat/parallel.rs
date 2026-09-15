@@ -8,10 +8,8 @@ use iota::chat::turns::RunCtx;
 use iota::chat::{QuietHost, execute_with_tools};
 use iota::provider::RoundResult;
 use iota::provider::model::{Message, Role};
-use iota::testing::FakeProvider;
+use iota::testing::{FakeProvider, NoCapDispatch, ParallelDispatch, tool_call, tool_call_with};
 use tokio_util::sync::CancellationToken;
-
-use crate::common::{NoCapDispatch, ParallelDispatch, call, call_with};
 
 #[test]
 fn a_parallel_run_ends_at_the_first_serial_call() {
@@ -19,12 +17,12 @@ fn a_parallel_run_ends_at_the_first_serial_call() {
     // before it from the ones after.
     let d = ParallelDispatch::by_name(&["read_file", "grep"]);
     let calls = [
-        call("1", "read_file"),
-        call("2", "grep"),
-        call("3", "edit_file"),
-        call("4", "read_file"),
-        call("5", "read_file"),
-        call("6", "read_file"),
+        tool_call("1", "read_file"),
+        tool_call("2", "grep"),
+        tool_call("3", "edit_file"),
+        tool_call("4", "read_file"),
+        tool_call("5", "read_file"),
+        tool_call("6", "read_file"),
     ];
     for (from, want) in [
         (0, 2), // the leading pair
@@ -46,7 +44,7 @@ fn a_parallel_run_splits_calls_to_one_tool_by_their_arguments() {
     // The same boundaries hold when the calls share a NAME and differ only in their arguments — the per-call
     // shape.
     let d = ParallelDispatch::by_agent(&[("search", true), ("implement", false)]);
-    let task = |id: &str, agent: &str| call_with(id, "task", &[("agent", agent)]);
+    let task = |id: &str, agent: &str| tool_call_with(id, "task", &[("agent", agent)]);
     let calls = [
         task("1", "search"),
         task("2", "search"),
@@ -70,7 +68,7 @@ fn a_parallel_run_splits_calls_to_one_tool_by_their_arguments() {
 fn a_dispatcher_without_the_capability_serializes_every_call() {
     // A dispatcher without the capability serializes everything.
     let plain = NoCapDispatch;
-    let calls = [call("1", "read_file"), call("2", "read_file")];
+    let calls = [tool_call("1", "read_file"), tool_call("2", "read_file")];
     assert_eq!(parallel_run(&plain, &calls, 0), 0);
     assert_eq!(parallel_run(&plain, &calls, 1), 1);
 }
@@ -84,7 +82,7 @@ async fn a_parallel_batch_runs_its_calls_concurrently() {
     let d = ParallelDispatch::by_name(&["read_file"]).with_barrier(N);
     let calls: Vec<_> = (0..N)
         .map(|i| {
-            call(
+            tool_call(
                 &format!("{}", char::from(b'a' + u8::try_from(i).unwrap())),
                 "read_file",
             )
@@ -109,9 +107,9 @@ async fn a_parallel_batch_answers_in_call_order() {
     // Results answer their calls in CALL order however the calls finish.
     let d = ParallelDispatch::by_name(&["read_file", "grep"]);
     let calls = [
-        call("c1", "grep"),
-        call("c2", "read_file"),
-        call("c3", "grep"),
+        tool_call("c1", "grep"),
+        tool_call("c2", "read_file"),
+        tool_call("c3", "grep"),
     ];
     let outcomes = run_batch(&RunCtx::default(), &d, &calls).await;
     assert_eq!(outcomes.len(), calls.len());
@@ -134,7 +132,7 @@ async fn a_cancelled_batch_still_answers_every_call() {
     // A cancelled batch still returns a result for every call it made: a call without a result would leave the
     // round's history unable to answer itself.
     let d = ParallelDispatch::by_name(&["read_file"]);
-    let calls = [call("a", "read_file"), call("b", "read_file")];
+    let calls = [tool_call("a", "read_file"), tool_call("b", "read_file")];
     let cancel = CancellationToken::new();
     cancel.cancel();
     let cx = RunCtx::new(cancel);
@@ -162,9 +160,9 @@ async fn the_quiet_loop_batches_parallel_calls() {
     let tp = FakeProvider::scripted(
         vec![RoundResult {
             tool_calls: vec![
-                call("1", "read_file"),
-                call("2", "read_file"),
-                call("3", "read_file"),
+                tool_call("1", "read_file"),
+                tool_call("2", "read_file"),
+                tool_call("3", "read_file"),
             ],
             ..RoundResult::default()
         }],
@@ -211,9 +209,9 @@ async fn single_parallel_call_runs_serially() {
     let tp = FakeProvider::scripted(
         vec![RoundResult {
             tool_calls: vec![
-                call("1", "read_file"),
-                call("2", "edit_file"),
-                call("3", "read_file"),
+                tool_call("1", "read_file"),
+                tool_call("2", "edit_file"),
+                tool_call("3", "read_file"),
             ],
             ..RoundResult::default()
         }],

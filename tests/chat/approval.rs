@@ -7,10 +7,8 @@ use iota::chat::run::refusal_text;
 use iota::chat::turns::RunCtx;
 use iota::chat::{QuietHost, execute_with_tools};
 use iota::provider::model::{JsonObject, Message, Role, ToolCall};
-use iota::testing::{FakeProvider, Round, lock};
+use iota::testing::{FakeProvider, GatedDispatch, Round, lock};
 use iota::tool::Dispatcher;
-
-use crate::common::GatedDispatch;
 
 /// Asks for `write_file` (with `args`) once, then answers `saw: ` + the last history entry's content — so a
 /// test can assert on what the model was actually told.
@@ -210,11 +208,11 @@ mod header_split {
     use iota::tool::fmt::tool_call_header;
     use pretty_assertions::assert_eq;
 
-    use crate::common::{GatedDispatch, call_with};
+    use iota::testing::{GatedDispatch, tool_call_with};
 
     /// `provider.ToolCall{Name: n, Arguments: {k: v}…}` — the id is irrelevant to a header.
     fn call(name: &str, args: &[(&str, &str)]) -> iota::provider::model::ToolCall {
-        call_with("c1", name, args)
+        tool_call_with("c1", name, args)
     }
 
     // The header keeps its shape after the detail was split out of it.

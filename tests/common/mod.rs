@@ -5,7 +5,6 @@
 #![allow(dead_code, unused_imports)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-pub mod chat;
 pub mod child;
 pub mod fake_mcp;
 pub mod project;
@@ -14,7 +13,6 @@ pub mod stub;
 pub mod transcript;
 pub mod wire;
 
-pub use chat::*;
 pub use child::cleared_env;
 pub use fake_mcp::{FakeMcp, prefix_for, static_prefix};
 

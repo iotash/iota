@@ -1,22 +1,24 @@
-//! Shared test fakes (feature `testing`): the one fake provider ([`FakeProvider`]), a recording sink, a
-//! static dispatcher, the scripted UI facade, and map-backed `VarResolver`/`EnvSource` fixtures that replace
-//! `t.Setenv`.
+//! Shared test fakes (feature `testing`): the one fake provider ([`FakeProvider`]), the fake dispatchers
+//! (`dispatch`), a recording sink, the scripted UI facade, and map-backed `VarResolver`/`EnvSource`
+//! fixtures that replace `t.Setenv`.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     path::PathBuf,
     sync::{Mutex, MutexGuard, PoisonError},
 };
 
-use crate::BoxFuture;
-use crate::chat::turns::RunCtx;
 use crate::provider::model::{JsonObject, ToolCall, ToolDef};
 use crate::provider::sink::StreamSink;
-use crate::tool::{Dispatcher, ToolOutput, ToolResult};
 use crate::vars::{EnvSource, VarResolver};
 
+mod dispatch;
 mod provider;
 mod scripted;
+pub use dispatch::{
+    GatedDispatch, GrowingDispatcher, HeaderDispatch, NoCapDispatch, ParallelDispatch,
+    StaticDispatcher,
+};
 pub use provider::{Call, Failure, FakeProvider, Interrupt, Log, Path, Round};
 pub use scripted::{PanelSummary, RecordingHost, Reply, ScriptedUi, TabbedSummary, UiEvent};
 
@@ -131,77 +133,6 @@ impl RecordingSink {
     }
 }
 
-/// Static tools; `call_tool` echoes `"<name>:<args json>"`, records calls, optional per-name parallel/approval flags.
-pub struct StaticDispatcher {
-    /// The advertised definitions.
-    pub defs: Vec<ToolDef>,
-    /// Every call made, in order.
-    pub calls: Mutex<Vec<(String, JsonObject)>>,
-    /// Names that report `supports_parallel`.
-    pub parallel: HashSet<String>,
-    /// Names that report `requires_approval`.
-    pub approval: HashSet<String>,
-}
-
-impl StaticDispatcher {
-    /// Tools named `names`, none parallel, none needing approval.
-    pub fn new(names: &[&str]) -> Self {
-        Self {
-            defs: names
-                .iter()
-                .map(|n| ToolDef {
-                    name: (*n).to_owned(),
-                    ..ToolDef::default()
-                })
-                .collect(),
-            calls: Mutex::new(Vec::new()),
-            parallel: HashSet::new(),
-            approval: HashSet::new(),
-        }
-    }
-
-    /// Marks `names` as parallel-capable.
-    #[must_use]
-    pub fn with_parallel(mut self, names: &[&str]) -> Self {
-        self.parallel.extend(names.iter().map(|n| (*n).to_owned()));
-        self
-    }
-
-    /// Marks `names` as needing approval.
-    #[must_use]
-    pub fn with_approval(mut self, names: &[&str]) -> Self {
-        self.approval.extend(names.iter().map(|n| (*n).to_owned()));
-        self
-    }
-}
-
-impl Dispatcher for StaticDispatcher {
-    fn tools(&self) -> Vec<ToolDef> {
-        self.defs.clone()
-    }
-
-    fn call_tool<'a>(
-        &'a self,
-        _cx: &'a RunCtx,
-        name: &'a str,
-        args: JsonObject,
-    ) -> BoxFuture<'a, ToolResult> {
-        Box::pin(async move {
-            let json = serde_json::to_string(&args).unwrap_or_default();
-            lock(&self.calls).push((name.to_owned(), args));
-            Ok(ToolOutput::ok(format!("{name}:{json}")))
-        })
-    }
-
-    fn requires_approval(&self, name: &str) -> bool {
-        self.approval.contains(name)
-    }
-
-    fn supports_parallel(&self, name: &str, _args: Option<&JsonObject>) -> bool {
-        self.parallel.contains(name)
-    }
-}
-
 /// `HashMap`-backed `VarResolver` (env vars + fixed cwd/home) — replaces `t.Setenv`.
 #[derive(Clone, Debug, Default)]
 pub struct MapResolver {
@@ -260,13 +191,8 @@ pub fn map_env(vars: &[(&str, &str)]) -> MapEnv {
 
 #[cfg(test)]
 mod tests {
-    use tokio_util::sync::CancellationToken;
-
-    use super::{RecordingSink, SinkEvent, StaticDispatcher, map_env, map_resolver};
-    use crate::chat::turns::RunCtx;
-    use crate::provider::model::JsonObject;
+    use super::{RecordingSink, SinkEvent, map_env, map_resolver};
     use crate::provider::sink::StreamSink;
-    use crate::tool::Dispatcher;
     use crate::vars::{EnvSource, VarResolver, expand};
 
     #[test]
@@ -289,31 +215,6 @@ mod tests {
         StreamSink::content(&mut never, "x");
         assert!(!never.closed_before_content());
         assert!(RecordingSink::default().closed_before_content());
-    }
-
-    #[tokio::test]
-    async fn static_dispatcher_echoes_and_records() {
-        let d = StaticDispatcher::new(&["a", "b"])
-            .with_parallel(&["a"])
-            .with_approval(&["b"]);
-        assert_eq!(
-            d.tools()
-                .iter()
-                .map(|t| t.name.as_str())
-                .collect::<Vec<_>>(),
-            ["a", "b"]
-        );
-        assert!(d.supports_parallel("a", None));
-        assert!(!d.supports_parallel("b", None));
-        assert!(d.requires_approval("b"));
-        assert!(!d.requires_approval("a"));
-        let mut args = JsonObject::new();
-        args.insert("k".to_owned(), serde_json::Value::from(1));
-        let cx = RunCtx::new(CancellationToken::new());
-        let out = d.call_tool(&cx, "a", args.clone()).await.expect("ok");
-        assert_eq!(out.text, "a:{\"k\":1}");
-        assert!(!out.is_error);
-        assert_eq!(super::lock(&d.calls).as_slice(), &[("a".to_owned(), args)]);
     }
 
     #[test]

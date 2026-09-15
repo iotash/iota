@@ -11,11 +11,11 @@ use iota::provider::model::{
     AssistantBody, Attachment, Body, Message, Raw, RawContent, Role, ToolCall,
 };
 use iota::provider::usage::Usage;
-use iota::testing::{FakeProvider, Round, StaticDispatcher, tool_call_with};
+use iota::testing::{
+    FakeProvider, GrowingDispatcher, Round, StaticDispatcher, tool_call, tool_call_with,
+};
 use iota::tool::Dispatcher;
 use pretty_assertions::assert_eq;
-
-use crate::common::{GrowingDispatcher, call};
 
 #[tokio::test]
 async fn the_tool_loop_stops_at_the_opt_in_cap() {
@@ -240,7 +240,7 @@ async fn tool_loop_final_round_images_are_saved() {
     let tp = FakeProvider::scripted(
         vec![
             RoundResult {
-                tool_calls: vec![call("c1", "noop")],
+                tool_calls: vec![tool_call("c1", "noop")],
                 images: vec![early],
                 ..RoundResult::default()
             },
@@ -346,7 +346,7 @@ fn usage(n: u64) -> Usage {
 // call of the turn.
 #[tokio::test]
 async fn imported_history_is_sent_before_the_new_user_message() {
-    let tc = call("c1", "noop");
+    let tc = tool_call("c1", "noop");
     let p = recording(
         vec![RoundResult {
             tool_calls: vec![tc.clone()],
@@ -392,7 +392,7 @@ async fn imported_history_is_sent_before_the_new_user_message() {
 // and every assistant message in it carries the usage of the round that paid for it (D-55).
 #[tokio::test]
 async fn delta_is_the_turn_only_with_usage_on_every_assistant() {
-    let tc = call("c1", "noop");
+    let tc = tool_call("c1", "noop");
     let p = recording(
         vec![RoundResult {
             tool_calls: vec![tc.clone()],

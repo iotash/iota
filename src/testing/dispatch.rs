@@ -1,68 +1,88 @@
-//! Shared fakes of the `iota-chat` test crates (WP13-owned): the dispatchers and providers the Go chat tests
-//! hand-roll (`chat/toolloop_test.go`, `chat/approval_test.go`, `chat/parallel_test.go`), on top of the workspace fakes
-//! in `iota::testing` (`StaticDispatcher`, `FakeToolProvider`).
-//!
-//! - [`GatedDispatch`] — one `write_file` tool that always needs approval and counts its executions
-//!   (`gatedDispatch`; with `header` set it also reports the call's `path` like `detailDispatch`);
-//! - [`GrowingDispatcher`] — gains `late_tool` once `search_tools` ran (`growingDispatcher`);
-//! - [`ParallelDispatch`] — parallel-capable by name or by the `agent` argument; calls meet at a `Barrier` and
-//!   record the peak overlap (`parallelDispatch`);
-//! - [`NoCapDispatch`] — no optional capability at all (`noCapDispatch`);
-#![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+//! The fake `Dispatcher`s and the fake `Tool`: every shape the loop tests need a tool side for, in one
+//! place. [`StaticDispatcher`] is the general one (named tools, echoing calls, per-name flags); the others
+//! each stand for ONE capability question — approval ([`GatedDispatch`]), a set that grows mid-turn
+//! ([`GrowingDispatcher`]), parallel batches ([`ParallelDispatch`]), no optional capability at all
+//! ([`NoCapDispatch`]), a header without tools ([`HeaderDispatch`]).
 
 use std::{
     collections::{HashMap, HashSet},
     sync::{
-        Arc, Mutex, MutexGuard, PoisonError,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
-use iota::BoxFuture;
-use iota::chat::turns::RunCtx;
-use iota::provider::error::ProviderError;
-use iota::provider::model::{JsonObject, Message, ToolCall, ToolDef};
-use iota::provider::sink::StreamSink;
-use iota::provider::{
-    ChatResult, Effort, Provider, ProviderKind, RoundResult, ToolProvider, Tunable,
-};
-use iota::tool::error::ToolError;
-use iota::tool::{Dispatcher, ToolOutput, ToolResult};
 use tokio::sync::Barrier;
-use tokio_util::sync::CancellationToken;
 
-/// Locks a fixture mutex, tolerating poisoning.
-pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
+use super::{lock, tool_def};
+use crate::BoxFuture;
+use crate::chat::turns::RunCtx;
+use crate::provider::model::{JsonObject, ToolDef};
+use crate::tool::error::ToolError;
+use crate::tool::{Dispatcher, ToolOutput, ToolResult};
+
+/// Static tools; `call_tool` echoes `"<name>:<args json>"`, records calls, optional per-name parallel/approval flags.
+pub struct StaticDispatcher {
+    /// The advertised definitions.
+    pub defs: Vec<ToolDef>,
+    /// Every call made, in order.
+    pub calls: Mutex<Vec<(String, JsonObject)>>,
+    /// Names that report `supports_parallel`.
+    pub parallel: HashSet<String>,
+    /// Names that report `requires_approval`.
+    pub approval: HashSet<String>,
 }
 
-/// A `ToolDef` with just a name.
-pub fn def(name: &str) -> ToolDef {
-    ToolDef {
-        name: name.to_owned(),
-        ..ToolDef::default()
+impl StaticDispatcher {
+    /// Tools named `names`, none parallel, none needing approval.
+    pub fn new(names: &[&str]) -> Self {
+        Self {
+            defs: names.iter().map(|n| tool_def(n)).collect(),
+            calls: Mutex::new(Vec::new()),
+            parallel: HashSet::new(),
+            approval: HashSet::new(),
+        }
+    }
+
+    /// Marks `names` as parallel-capable.
+    #[must_use]
+    pub fn with_parallel(mut self, names: &[&str]) -> Self {
+        self.parallel.extend(names.iter().map(|n| (*n).to_owned()));
+        self
+    }
+
+    /// Marks `names` as needing approval.
+    #[must_use]
+    pub fn with_approval(mut self, names: &[&str]) -> Self {
+        self.approval.extend(names.iter().map(|n| (*n).to_owned()));
+        self
     }
 }
 
-/// A `ToolCall` with empty arguments (Go `call(id, name)`).
-pub fn call(id: &str, name: &str) -> ToolCall {
-    ToolCall {
-        id: id.to_owned(),
-        name: name.to_owned(),
-        arguments: JsonObject::new(),
+impl Dispatcher for StaticDispatcher {
+    fn tools(&self) -> Vec<ToolDef> {
+        self.defs.clone()
     }
-}
 
-/// A `ToolCall` with string arguments.
-pub fn call_with(id: &str, name: &str, args: &[(&str, &str)]) -> ToolCall {
-    let mut arguments = JsonObject::new();
-    for (k, v) in args {
-        arguments.insert((*k).to_owned(), serde_json::Value::from(*v));
+    fn call_tool<'a>(
+        &'a self,
+        _cx: &'a RunCtx,
+        name: &'a str,
+        args: JsonObject,
+    ) -> BoxFuture<'a, ToolResult> {
+        Box::pin(async move {
+            let json = serde_json::to_string(&args).unwrap_or_default();
+            lock(&self.calls).push((name.to_owned(), args));
+            Ok(ToolOutput::ok(format!("{name}:{json}")))
+        })
     }
-    ToolCall {
-        id: id.to_owned(),
-        name: name.to_owned(),
-        arguments,
+
+    fn requires_approval(&self, name: &str) -> bool {
+        self.approval.contains(name)
+    }
+
+    fn supports_parallel(&self, name: &str, _args: Option<&JsonObject>) -> bool {
+        self.parallel.contains(name)
     }
 }
 
@@ -71,7 +91,7 @@ pub fn call_with(id: &str, name: &str, args: &[(&str, &str)]) -> ToolCall {
 pub struct GatedDispatch {
     /// Executions so far.
     pub ran: AtomicUsize,
-    /// When set, `header_summary` reports the call's `path` argument (Go `detailDispatch`).
+    /// When set, `header_summary` reports the call's `path` argument.
     pub header: bool,
 }
 
@@ -97,7 +117,7 @@ impl GatedDispatch {
 
 impl Dispatcher for GatedDispatch {
     fn tools(&self) -> Vec<ToolDef> {
-        vec![def("write_file")]
+        vec![tool_def("write_file")]
     }
 
     fn call_tool<'a>(
@@ -134,9 +154,9 @@ pub struct GrowingDispatcher {
 
 impl Dispatcher for GrowingDispatcher {
     fn tools(&self) -> Vec<ToolDef> {
-        let mut defs = vec![def("search_tools")];
+        let mut defs = vec![tool_def("search_tools")];
         if self.loaded.load(Ordering::SeqCst) {
-            defs.push(def("late_tool"));
+            defs.push(tool_def("late_tool"));
         }
         defs
     }
@@ -241,7 +261,8 @@ impl Dispatcher for ParallelDispatch {
     }
 }
 
-/// A dispatcher without any optional capability: everything serializes, nothing needs approval.
+/// A dispatcher without any optional capability: no tools, everything serializes, nothing needs approval,
+/// no header (the digest applies).
 #[derive(Default)]
 pub struct NoCapDispatch;
 
@@ -257,5 +278,66 @@ impl Dispatcher for NoCapDispatch {
         _args: JsonObject,
     ) -> BoxFuture<'a, ToolResult> {
         Box::pin(async { Ok(ToolOutput::ok("")) })
+    }
+}
+
+/// A dispatcher carrying the header capability and nothing else: `header_summary` answers `summary` for
+/// every call.
+pub struct HeaderDispatch {
+    /// The one summary (`Some("")` = the capability's own empty answer).
+    pub summary: Option<String>,
+}
+
+impl Dispatcher for HeaderDispatch {
+    fn tools(&self) -> Vec<ToolDef> {
+        Vec::new()
+    }
+
+    fn call_tool<'a>(
+        &'a self,
+        _cx: &'a RunCtx,
+        _name: &'a str,
+        _args: JsonObject,
+    ) -> BoxFuture<'a, ToolResult> {
+        Box::pin(async { Ok(ToolOutput::ok("")) })
+    }
+
+    fn header_summary(&self, _name: &str, _args: &JsonObject) -> Option<String> {
+        self.summary.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio_util::sync::CancellationToken;
+
+    use super::StaticDispatcher;
+    use crate::chat::turns::RunCtx;
+    use crate::provider::model::JsonObject;
+    use crate::tool::Dispatcher;
+
+    #[tokio::test]
+    async fn static_dispatcher_echoes_and_records() {
+        let d = StaticDispatcher::new(&["a", "b"])
+            .with_parallel(&["a"])
+            .with_approval(&["b"]);
+        assert_eq!(
+            d.tools()
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        assert!(d.supports_parallel("a", None));
+        assert!(!d.supports_parallel("b", None));
+        assert!(d.requires_approval("b"));
+        assert!(!d.requires_approval("a"));
+        let mut args = JsonObject::new();
+        args.insert("k".to_owned(), serde_json::Value::from(1));
+        let cx = RunCtx::new(CancellationToken::new());
+        let out = d.call_tool(&cx, "a", args.clone()).await.expect("ok");
+        assert_eq!(out.text, "a:{\"k\":1}");
+        assert!(!out.is_error);
+        assert_eq!(super::lock(&d.calls).as_slice(), &[("a".to_owned(), args)]);
     }
 }

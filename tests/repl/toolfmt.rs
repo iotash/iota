@@ -1,54 +1,9 @@
 //! `iota::tool::fmt` pins — the D-12 lift (`chat/toolcall_test.go` ports).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use iota::BoxFuture;
-use iota::chat::turns::RunCtx;
 use iota::provider::model::{JsonObject, ToolCall};
+use iota::testing::{HeaderDispatch, NoCapDispatch};
 use iota::tool::fmt::{print_tool_result_lines, tool_call_header};
-use iota::tool::{Dispatcher, ToolOutput, ToolResult};
 use pretty_assertions::assert_eq;
-
-/// A dispatcher with NO header capability (Go's nil dispatcher — the digest applies).
-struct NoCapDispatch;
-
-impl Dispatcher for NoCapDispatch {
-    fn tools(&self) -> Vec<iota::provider::model::ToolDef> {
-        Vec::new()
-    }
-
-    fn call_tool<'a>(
-        &'a self,
-        _cx: &'a RunCtx,
-        _name: &'a str,
-        _args: JsonObject,
-    ) -> BoxFuture<'a, ToolResult> {
-        Box::pin(async { Ok(ToolOutput::ok("")) })
-    }
-}
-
-/// A dispatcher carrying the header capability (Go `headerDispatch`).
-struct HeaderDispatch {
-    summary: Option<String>,
-}
-
-impl Dispatcher for HeaderDispatch {
-    fn tools(&self) -> Vec<iota::provider::model::ToolDef> {
-        Vec::new()
-    }
-
-    fn call_tool<'a>(
-        &'a self,
-        _cx: &'a RunCtx,
-        _name: &'a str,
-        _args: JsonObject,
-    ) -> BoxFuture<'a, ToolResult> {
-        Box::pin(async { Ok(ToolOutput::ok("")) })
-    }
-
-    fn header_summary(&self, _name: &str, _args: &JsonObject) -> Option<String> {
-        self.summary.clone()
-    }
-}
 
 fn call(name: &str, args: serde_json::Value) -> ToolCall {
     let arguments = match args {
@@ -62,9 +17,8 @@ fn call(name: &str, args: serde_json::Value) -> ToolCall {
     }
 }
 
-// Go: chat/toolcall_test.go:15 TestToolCallHeader
 #[test]
-fn test_tool_call_header() {
+fn the_tool_call_header_digests_sorted_args_and_truncates_long_values() {
     let tests = [
         (
             "single arg",
@@ -103,11 +57,11 @@ fn test_tool_call_header() {
     );
 }
 
-// Go: chat/toolcall_test.go:95 TestToolCallHeaderCapability — a tool that writes its own
+// A tool that writes its own
 // summary takes over the header completely: an empty one is a bare name, NOT a fallback
 // to the argument digest (which for edit_file would paste a whole file into the header).
 #[test]
-fn test_tool_call_header_capability() {
+fn a_tools_own_summary_takes_over_the_header() {
     let tc = call(
         "edit_file",
         serde_json::json!({
@@ -141,10 +95,9 @@ fn test_tool_call_header_capability() {
     );
 }
 
-// Go: chat/toolcall_test.go:41 TestPrintToolResult — the pure rows (the caller styles
-// red on error; the Go test ran under NoColor for the same unstyled shape).
+// The pure rows — the caller styles red on error.
 #[test]
-fn test_print_tool_result() {
+fn tool_result_rows_show_three_lines_then_a_tail_count() {
     let tests: [(&str, &str, &[&str]); 5] = [
         (
             "two lines shown fully",
