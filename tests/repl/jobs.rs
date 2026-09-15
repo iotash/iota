@@ -5,53 +5,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use iota::BoxFuture;
-use iota::provider::error::ProviderError;
-use iota::provider::model::{Message, Role};
-use iota::provider::{ChatResult, Provider, ProviderKind};
+use iota::provider::ProviderKind;
+use iota::provider::model::Role;
 use iota::repl::{McpHooks, RunParams, SessionCtx};
 use iota::session::{SessionStore, SessionWriter};
 use iota::shell::exec::Options;
 use iota::shell::jobs::Jobs;
-use iota::testing::{Reply, ScriptedUi, StaticDispatcher, UiEvent};
+use iota::testing::{FakeProvider, Reply, ScriptedUi, StaticDispatcher, UiEvent};
 use iota::text::ansi::strip_sgr;
 use iota::tool::Dispatcher;
 use iota::ui::facade::{Input, InputKind, Ui};
 use pretty_assertions::assert_eq;
 use tokio_util::sync::CancellationToken;
-
-/// A provider with one canned reply and no tool capability (a notice needs no tools to land).
-struct Replier;
-
-impl Provider for Replier {
-    fn kind(&self) -> ProviderKind {
-        ProviderKind::OpenAi
-    }
-
-    fn model(&self) -> &'static str {
-        "gpt-test"
-    }
-
-    fn set_model(&mut self, _model: String) {}
-
-    fn list_models<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Vec<String>, ProviderError>> {
-        Box::pin(std::future::ready(Ok(Vec::new())))
-    }
-
-    fn chat<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        _messages: &'a [Message],
-    ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
-        Box::pin(std::future::ready(Ok(ChatResult {
-            text: "noted".to_owned(),
-            ..ChatResult::default()
-        })))
-    }
-}
 
 /// The loop's parameters over a scripted facade, a temp store and `jobs`.
 fn params(
@@ -62,7 +27,8 @@ fn params(
 ) -> RunParams {
     RunParams {
         ui: Arc::clone(ui) as Arc<dyn Ui>,
-        provider: Box::new(Replier),
+        // One canned reply and no tool capability: a notice needs no tools to land.
+        provider: Box::new(FakeProvider::new().replying("noted")),
         title_provider: None,
         system: String::new(),
         imported_history: Vec::new(),
