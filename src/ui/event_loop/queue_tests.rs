@@ -6,59 +6,11 @@
 //! The modules under test are crate-private by design (`TUI_CONTRACTS` §5), so these tests live
 //! in-file (formerly a `#[path]`-mounted `tests/queue.rs` of the terminal crate; merged 2026-09-02).
 
-use std::sync::atomic::AtomicU16;
-use std::sync::{Arc, Mutex};
-
-use crate::text::ansi::strip_sgr;
-use crate::ui::event_loop::{LoopShared, Model};
 use crate::ui::facade::{Input, InputKind};
 use crate::ui::msgs::UiMsg;
-use crate::ui::region::{Emit, Region};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::ui::testutil::{ctrl_c, enter, key, plain, test_model, type_text, up};
+use crossterm::event::KeyCode;
 use tokio_util::sync::CancellationToken;
-
-/// A loop model over the test-seam region at 80×24 (Go `newTestModel`).
-fn test_model() -> Model {
-    let width = Arc::new(AtomicU16::new(80));
-    let height = Arc::new(AtomicU16::new(24));
-    let region = Arc::new(Mutex::new(Region::new(
-        Emit::Test(Box::new(|_, _| {})),
-        Arc::clone(&width),
-        Arc::clone(&height),
-    )));
-    Model::new(LoopShared {
-        width,
-        height,
-        region,
-    })
-}
-
-fn key(code: KeyCode) -> KeyEvent {
-    KeyEvent::new(code, KeyModifiers::NONE)
-}
-
-fn type_text(m: &mut Model, s: &str) {
-    for ch in s.chars() {
-        m.handle_key(key(KeyCode::Char(ch)));
-    }
-}
-
-fn enter(m: &mut Model) {
-    m.handle_key(key(KeyCode::Enter));
-}
-
-fn up(m: &mut Model) {
-    m.handle_key(key(KeyCode::Up));
-}
-
-fn ctrl_c(m: &mut Model) {
-    m.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
-}
-
-/// SGR-stripped frame rows (the Go `stripSGR(content(m))` instrument).
-fn plain(m: &mut Model) -> Vec<String> {
-    m.frame_view().rows.iter().map(|r| strip_sgr(r)).collect()
-}
 
 fn find(rows: &[String], pred: impl Fn(&str) -> bool) -> Option<usize> {
     rows.iter().position(|r| pred(r))
@@ -66,9 +18,8 @@ fn find(rows: &[String], pred: impl Fn(&str) -> bool) -> Option<usize> {
 
 /// Submits with no waiter queue (visible as `»` rows above the separator); the next
 /// read request drains the queue in order (FIFO).
-// Go: model_test.go:82
 #[test]
-fn test_queue_then_drain() {
+fn queued_messages_drain_in_order() {
     let mut m = test_model();
     type_text(&mut m, "first");
     enter(&mut m);
@@ -107,9 +58,8 @@ fn test_queue_then_drain() {
 /// ↑ on an empty composer pops the NEWEST queued item (LIFO, one per press); with
 /// text present ↑ is history navigation and the queue is untouched; the bottom queue
 /// row advertises `· ↑ edit`; a resubmit re-queues at the tail.
-// Go: model_test.go:1970
 #[test]
-fn test_queue_pop_with_up_arrow() {
+fn up_pops_the_last_queued_message_back_into_the_draft() {
     let mut m = test_model();
     type_text(&mut m, "first");
     enter(&mut m);
@@ -162,9 +112,8 @@ fn test_queue_pop_with_up_arrow() {
 
 /// The overflow row (`"+N more"`) carries the hint when newest items are hidden —
 /// never a visible row.
-// Go: model_test.go:2011
 #[test]
-fn test_queue_hint_on_overflow_row() {
+fn the_queue_overflow_row_carries_the_hint() {
     let mut m = test_model();
     for s in ["a", "b", "c", "d", "e"] {
         type_text(&mut m, s);
@@ -183,9 +132,8 @@ fn test_queue_hint_on_overflow_row() {
 
 /// Steering drain: the contiguous non-command prefix is taken; a slash command stops
 /// the take; command-headed and empty queues take nothing; queue rows re-render.
-// Go: model_test.go:1867
 #[test]
-fn test_take_queued_messages() {
+fn the_steering_take_lifts_the_queued_messages_and_leaves_commands() {
     let mut m = test_model();
     for s in ["first", "second", "/model", "third"] {
         type_text(&mut m, s);
@@ -226,9 +174,8 @@ fn test_take_queued_messages() {
 
 /// Ctrl+C with an active scope fires the TURN cancel and folds queued submits (plus
 /// the half-typed draft) into a multi-line composer draft, atomically.
-// Go: model_test.go:154
 #[test]
-fn test_interrupt_restores_queue_to_draft() {
+fn an_interrupt_folds_the_queue_back_into_the_draft() {
     let mut m = test_model();
     let turn = CancellationToken::new();
     m.apply(UiMsg::ScopePush(turn.clone()));
@@ -260,9 +207,8 @@ fn test_interrupt_restores_queue_to_draft() {
 }
 
 /// ESC fires only the TOP (tool) scope, leaving the turn scope in place.
-// Go: model_test.go:195
 #[test]
-fn test_esc_cancels_innermost_scope() {
+fn esc_cancels_the_innermost_scope_only() {
     let mut m = test_model();
     let turn = CancellationToken::new();
     let tool = CancellationToken::new();

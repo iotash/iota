@@ -19,6 +19,7 @@ use crate::ui::event_loop::{EventSource, Model};
 use crate::ui::facade::{ProgressState, StatusData};
 use crate::ui::msgs::UiMsg;
 use crate::ui::region::RegionSnapshot;
+use crate::ui::testutil::test_model;
 use crossterm::event::Event;
 use tokio_util::sync::CancellationToken;
 
@@ -288,7 +289,7 @@ fn quit_at_idle_terminates_the_loop() {
 /// cursor restore — the composer cursor cell is IDENTICAL before and after each
 /// insert, and the idle frame carries no spinner glyph. Replaces Go's
 /// `TestRegionSnapshotChangesView` cursor-bump mechanism (T-03 divergence).
-// Go: model_test.go:515 (mechanism replaced — see TUI_DIVERGENCES T-03)
+// The mechanism replaced Go's snapshot message (T-03).
 #[test]
 fn snapshot_implies_draw_and_cursor_restored() {
     let h = start_loop();
@@ -322,7 +323,6 @@ fn snapshot_implies_draw_and_cursor_restored() {
 /// W5 `RESIZE_PASS_FIRST` + the flush law: a WIDTH change schedules
 /// `region.flush_tail()` as a post-update job (tail → scrollback, the open preview
 /// SURVIVES); a height-only change flushes nothing.
-// Go: model_test.go:1125
 #[test]
 fn resize_flushes_staging_tail_loop() {
     let h = start_loop();
@@ -518,25 +518,9 @@ fn shrink_recreation_walks_down_without_ghosts() {
 // Loop-model units (no terminal)
 // ---------------------------------------------------------------------------
 
-fn test_model() -> crate::ui::event_loop::Model {
-    let width = Arc::new(AtomicU16::new(80));
-    let height = Arc::new(AtomicU16::new(24));
-    let region = Arc::new(Mutex::new(crate::ui::region::Region::new(
-        crate::ui::region::Emit::Test(Box::new(|_, _| {})),
-        Arc::clone(&width),
-        Arc::clone(&height),
-    )));
-    crate::ui::event_loop::Model::new(crate::ui::event_loop::LoopShared {
-        width,
-        height,
-        region,
-    })
-}
-
 /// The busy state machine: detail rides the phase without touching its clock, a new
 /// phase clears stale detail, detail at idle is dropped (the render half lives in
 /// `tests/frame_goldens.rs`).
-// Go: model_test.go:1010 (state-machine half)
 #[test]
 fn busy_detail_state_machine() {
     let mut m = test_model();
@@ -630,7 +614,7 @@ fn cancel_scope_stack_fire_truncates() {
 /// SPACE, so a backend handed the WHOLE buffer (ratatui's `draw_lines` path) would print
 /// `中 文 一 行` for a padded CJK row; `LoopBackend::draw` drops the covered cells so the
 /// insert path and ratatui's width-aware buffer diff agree.
-// Go: (no Go twin — a ratatui backend artefact; DEVIATIONS3 `NEEDS: [WP44] term.rs`)
+// A ratatui backend artefact with no Go twin.
 #[test]
 fn wide_runes_insert_intact() {
     let (mut t, buf, _geo) = direct_term(1, 19);
@@ -683,13 +667,13 @@ fn text(buf: &SharedBuf) -> String {
     String::from_utf8_lossy(&buf.bytes()).into_owned()
 }
 
-// Go: internal/ui/progress_test.go:13 TestProgressStates — the facade's states reach the
+// The facade's states reach the
 // wire as OSC 9;4 sequences, emitted ON CHANGE only, and `ProgressNone` clears the bar. Go
 // asserted the bubbletea `View`'s ProgressBar because its renderer owned emission; the Rust
 // loop IS the renderer, so the assertion is the byte stream itself. `\x1b[?1004h` at the
 // head proves `run_loop` (not `Term::new`) turned focus reporting on.
 #[test]
-fn test_progress_states() {
+fn progress_states_reach_the_wire_as_osc_9_4_on_change() {
     let h = start_loop();
     assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
     assert!(
@@ -733,7 +717,7 @@ fn test_progress_states() {
     h.quit_and_join(Duration::from_secs(2));
 }
 
-// Go: internal/ui/progress_test.go:44 TestNotifyFocusGating — silent while focused (whoever
+// Silent while focused (whoever
 // is watching needs no bell), one write carrying BOTH standard channels while blurred (the
 // OSC 9 notification, whose BEL only terminates the sequence, then a ringing BEL), and a
 // digest opening `"4;"` defused by a leading space so it cannot parse as a progress report.
@@ -741,7 +725,7 @@ fn test_progress_states() {
 // Driven through `Model` + a real `Term` rather than the loop thread: the gate's whole point
 // is the ORDER of a focus event against a ping, which a two-channel harness cannot pin.
 #[test]
-fn test_notify_focus_gating() {
+fn a_notification_rings_only_while_blurred() {
     let (mut t, buf, _geo) = direct_term(1, 19);
     let mut m = notify_model();
 

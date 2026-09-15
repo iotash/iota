@@ -1,11 +1,17 @@
 //! The UI suites' shared harness (`cfg(test)` only): one open surface driven exactly as the loop
-//! drives it ([`Surf`]) and the key constructors.
+//! drives it ([`Surf`]), the key constructors, and a loop [`Model`] over the test-seam region
+//! ([`test_model`]) with the model-level key helpers.
 #![allow(clippy::panic, clippy::expect_used)]
+
+use std::sync::atomic::AtomicU16;
+use std::sync::{Arc, Mutex};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::text::ansi::strip_sgr;
+use crate::ui::event_loop::{LoopShared, Model};
 use crate::ui::facade::{Panel, TabbedResult};
+use crate::ui::region::{Emit, Region};
 use crate::ui::surface::tabbed::PanelState;
 use crate::ui::surface::{SurfaceEffect, SurfaceState};
 
@@ -133,4 +139,49 @@ pub(crate) fn closed(e: SurfaceEffect) -> TabbedResult {
         SurfaceEffect::Close(r) => r,
         _ => panic!("expected the surface to close"),
     }
+}
+
+// --- the loop model -----------------------------------------------------------
+
+/// A loop model over the test-seam region at 80×24.
+pub(crate) fn test_model() -> Model {
+    let width = Arc::new(AtomicU16::new(80));
+    let height = Arc::new(AtomicU16::new(24));
+    let region = Arc::new(Mutex::new(Region::new(
+        Emit::Test(Box::new(|_, _| {})),
+        Arc::clone(&width),
+        Arc::clone(&height),
+    )));
+    Model::new(LoopShared {
+        width,
+        height,
+        region,
+    })
+}
+
+pub(crate) fn type_text(m: &mut Model, s: &str) {
+    for c in s.chars() {
+        m.handle_key(key(KeyCode::Char(c)));
+    }
+}
+
+pub(crate) fn enter(m: &mut Model) {
+    m.handle_key(key(KeyCode::Enter));
+}
+
+pub(crate) fn up(m: &mut Model) {
+    m.handle_key(key(KeyCode::Up));
+}
+
+pub(crate) fn down(m: &mut Model) {
+    m.handle_key(key(KeyCode::Down));
+}
+
+pub(crate) fn ctrl_c(m: &mut Model) {
+    m.handle_key(ctrl('c'));
+}
+
+/// SGR-stripped frame rows.
+pub(crate) fn plain(m: &mut Model) -> Vec<String> {
+    m.frame_view().rows.iter().map(|r| strip_sgr(r)).collect()
 }

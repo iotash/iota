@@ -418,60 +418,14 @@ mod tests {
     //! The modules under test are crate-private by design (`TUI_CONTRACTS` §5), so these tests live
     //! in-file (formerly a `#[path]`-mounted `tests/composer.rs` of the terminal crate; merged 2026-09-02).
 
-    use std::sync::atomic::AtomicU16;
-    use std::sync::{Arc, Mutex};
-
     use crate::text::ansi::strip_sgr;
     use crate::text::width::str_width;
     use crate::ui::composer::Composer;
-    use crate::ui::event_loop::{LoopShared, Model};
+
     use crate::ui::facade::{Panel, StatusData, Suggestion, TabbedSpec};
     use crate::ui::msgs::UiMsg;
-    use crate::ui::region::{Emit, Region};
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-    /// A loop model over the test-seam region at 80×24 (Go `newTestModel`).
-    fn test_model() -> Model {
-        let width = Arc::new(AtomicU16::new(80));
-        let height = Arc::new(AtomicU16::new(24));
-        let region = Arc::new(Mutex::new(Region::new(
-            Emit::Test(Box::new(|_, _| {})),
-            Arc::clone(&width),
-            Arc::clone(&height),
-        )));
-        Model::new(LoopShared {
-            width,
-            height,
-            region,
-        })
-    }
-
-    fn key(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
-    }
-
-    fn type_text(m: &mut Model, s: &str) {
-        for ch in s.chars() {
-            m.handle_key(key(KeyCode::Char(ch)));
-        }
-    }
-
-    fn enter(m: &mut Model) {
-        m.handle_key(key(KeyCode::Enter));
-    }
-
-    fn up(m: &mut Model) {
-        m.handle_key(key(KeyCode::Up));
-    }
-
-    fn down(m: &mut Model) {
-        m.handle_key(key(KeyCode::Down));
-    }
-
-    /// SGR-stripped frame rows (the Go `stripSGR(content(m))` instrument).
-    fn plain(m: &mut Model) -> Vec<String> {
-        m.frame_view().rows.iter().map(|r| strip_sgr(r)).collect()
-    }
+    use crate::ui::testutil::{down, enter, key, plain, test_model, type_text, up};
+    use crossterm::event::KeyCode;
 
     fn find(rows: &[String], pred: impl Fn(&str) -> bool) -> Option<usize> {
         rows.iter().position(|r| pred(r))
@@ -528,9 +482,8 @@ mod tests {
     /// completion candidates render INSIDE the composer block (above sep2); the selected
     /// candidate's description takes the status slot — through both the raw rows and the
     /// `TestBackend` cell grid.
-    // Go: model_test.go:1041
     #[test]
-    fn test_wrapped_composer_layout() {
+    fn the_wrapped_composer_layout_is_the_full_frame_golden() {
         let mut m = test_model();
         m.apply(UiMsg::Status(StatusData {
             model: "gpt-4o".to_owned(),
@@ -614,9 +567,8 @@ mod tests {
     }
 
     /// ↑ recalls newest-first including queued items; ↓ walks back to the saved draft.
-    // Go: model_test.go:646
     #[test]
-    fn test_history_navigation() {
+    fn up_and_down_walk_the_history_and_keep_the_draft() {
         let mut m = test_model();
         let (tx, mut rx) = tokio::sync::oneshot::channel();
         m.apply(UiMsg::ReadReq { id: 1, reply: tx });
@@ -640,9 +592,8 @@ mod tests {
     /// A multi-line paste collapses to a `[#N …]` tag in the composer while BOTH sides of
     /// the submitted input carry real content — Text in full, Display for the echo;
     /// single-line pastes insert verbatim.
-    // Go: model_test.go:710
     #[test]
-    fn test_paste_tags() {
+    fn a_multi_line_paste_becomes_a_tag_and_submits_its_content() {
         let mut m = test_model();
         let (tx, mut rx) = tokio::sync::oneshot::channel();
         m.apply(UiMsg::ReadReq { id: 1, reply: tx });
@@ -667,9 +618,8 @@ mod tests {
 
     /// A long paste echoes bounded — head plus a count — so one paste cannot bury the
     /// reply, while the model still receives every line.
-    // Go: model_test.go:735
     #[test]
-    fn test_paste_echo_truncates() {
+    fn a_long_paste_echo_is_truncated() {
         let content = (1..=60)
             .map(|i| format!("line{i}"))
             .collect::<Vec<_>>()
@@ -702,9 +652,8 @@ mod tests {
 
     /// ↑ recall restores the composer's own text — the TAG, not the blob — and a
     /// re-submit expands it again from the store.
-    // Go: model_test.go:768
     #[test]
-    fn test_paste_history_recall_keeps_tag() {
+    fn recalling_a_pasted_entry_keeps_its_tag() {
         let mut m = test_model();
         let (tx, mut rx) = tokio::sync::oneshot::channel();
         m.apply(UiMsg::ReadReq { id: 1, reply: tx });
@@ -754,7 +703,6 @@ mod tests {
     /// Wrap math: soft wrap at width−2 in display columns, a wide rune never split; a
     /// single logical line follows its wrapped height 1..=5; scrolled viewports snap back
     /// once the content fits; Enter collapse resets to one row.
-    // Go: (composer wrap-law units — model.go resizeComposer; spike G3 wrap vectors)
     #[test]
     fn composer_wrap_growth_scroll_and_collapse() {
         let mut c = Composer::new();
@@ -808,7 +756,6 @@ mod tests {
     /// input field, not to the composer's `[#N …]` tag store — a `/model` manual-input
     /// field or an Ask "Other…" editor must be pasteable. The composer's draft is
     /// untouched, and closing the surface leaves it exactly as it was.
-    // Go: internal/ui/model.go:1279 (tea.PasteMsg → m.surface.Paste when a surface is open)
     #[test]
     fn paste_while_a_surface_is_open_lands_in_the_field() {
         let mut m = test_model();
@@ -848,7 +795,6 @@ mod tests {
     /// frame offsets it by everything between the composer's first row and the surface —
     /// the composer's own rows, the candidates row when one renders, and the lower
     /// separator. A stale MULTI-ROW draft under the surface must not lift the IME anchor.
-    // Go: internal/ui/model.go:1060-1076 (View tracks rowsAbove for the cursor)
     #[test]
     fn surface_field_cursor_offset_follows_the_composer_block() {
         let mut m = test_model();
