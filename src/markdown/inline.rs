@@ -10,7 +10,6 @@
 
 use crate::markdown::link::hyperlink;
 use crate::markdown::math;
-use crate::markdown::math::MathRenderer;
 use crate::markdown::style::Style;
 
 /// Faint decoration style (Go mdDim): quote bars, bullets, rules, URLs.
@@ -145,12 +144,11 @@ pub(crate) fn render_inline(line: &str, base: Style, styled: bool, color: bool) 
         }
 
         // Inline math: $...$ or \(...\), delimiters hidden, body styled like inline
-        // code (cyan). `render_inline` is a free function with no `Writer` in scope, so it
-        // names the one `MathRenderer` impl directly — `Mathtext` is a ZST, no plumbing
-        // needed (markdown.go:572 `mathtext.ApproxInline(body)`; DESIGN D16 step 1).
+        // code (cyan). The body transform is a plain call into the math engine
+        // (markdown.go:572 `mathtext.ApproxInline(body)`; DESIGN D16 step 1).
         if let Some((body, end)) = math::find_inline_math(&runes, i) {
             flush(&mut out, &mut plain, base, styled, color);
-            let approx = crate::mathtext::Mathtext.approx_inline(&body);
+            let approx = crate::mathtext::approx_inline(&body);
             out.push_str(&base.fg(6).render(&approx, color));
             i = end;
             continue;

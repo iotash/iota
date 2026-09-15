@@ -4,8 +4,9 @@
 //!
 //! Module map (one file per Go file): `delim` (delim.go), `parse` (parse.go), `symbols`
 //! (symbols.go), `macros` (macros.go), `inline` (inline.go), `pict` (box.go), `layout`
-//! (layout.go); this file is render.go. `Mathtext` is the sole `MathRenderer` impl; the
-//! markdown hooks switch to it in two steps (WP61 inline, WP62 display — DESIGN D16).
+//! (layout.go); this file is render.go. The markdown hooks call [`approx_inline`] and
+//! [`render_2d`] directly (WP61 inline, WP62 display — DESIGN D16); nothing here names
+//! `markdown` back, so this module is a leaf over `text`.
 //!
 //! Two hard rules hold everywhere below: NO combining mark (U+0300..=U+036F) is ever emitted —
 //! bars, vinculums, accents and tall delimiters are DRAWN from spacing glyphs — and every width
@@ -18,8 +19,6 @@ pub(crate) mod macros;
 pub(crate) mod parse;
 pub(crate) mod pict;
 pub(crate) mod symbols;
-
-use crate::markdown::MathRenderer;
 
 /// Parser recursion cap (parse.go:26 `maxParseDepth`): deeper input is `Unsupported`.
 pub(crate) const MAX_PARSE_DEPTH: usize = 64;
@@ -97,20 +96,6 @@ pub fn strip_delimiters(body: &str) -> String {
 /// `hasCombiningMark`) — the layout must never emit one, because terminals disagree on its width.
 pub(crate) fn has_combining_mark(s: &str) -> bool {
     s.chars().any(|c| ('\u{0300}'..='\u{036F}').contains(&c))
-}
-
-/// The [`MathRenderer`] impl behind the markdown hooks (a ZST; DESIGN D1).
-pub(crate) struct Mathtext;
-
-impl MathRenderer for Mathtext {
-    fn approx_inline(&self, body: &str) -> String {
-        approx_inline(body)
-    }
-
-    fn render_2d(&self, src: &str, width: usize) -> Vec<String> {
-        let (block, _ok) = render_2d(src, width);
-        block.split('\n').map(str::to_owned).collect()
-    }
 }
 
 #[cfg(test)]

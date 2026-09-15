@@ -1,5 +1,5 @@
 //! The display-math markdown twins (`markdown_test.go`:1076-1212) at GO'S OWN goldens: the
-//! `Writer` now installs `mathtext::Mathtext`, so a `$$…$$` / `\[…\]` block renders as the 2D
+//! `Writer` calls `mathtext::render_2d`, so a `$$…$$` / `\[…\]` block renders as the 2D
 //! layout and an unlayoutable formula degrades to the cleaned linear source (DESIGN D16 step 2 —
 //! WP61 flipped the inline half, WP62 the display half). Four twins Go has and the T1 port
 //! skipped (`:1137`, `:1151`, `:1169`, `:1212`) are added here.

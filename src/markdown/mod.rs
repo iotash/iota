@@ -35,7 +35,6 @@ pub(crate) mod table;
 
 pub use highlight::{CodeHighlighter, PlainIndent, SyntectHighlighter};
 pub use link::hyperlink;
-pub(crate) use math::MathRenderer;
 pub use sink::{PreviewHandle, Sink};
 pub use style::Style;
 
@@ -116,10 +115,6 @@ pub struct Writer {
     list_view: Option<Box<dyn PreviewHandle>>,
     quote_view: Option<Box<dyn PreviewHandle>>,
     math_view: Option<Box<dyn PreviewHandle>>,
-    /// The display-math body transform (T-08/T-15, CLOSED): [`crate::mathtext::Mathtext`], the
-    /// 2D layout engine. The hook stays a trait object so a test can swap the transform without
-    /// touching the state machine.
-    math_renderer: Box<dyn MathRenderer>,
 }
 
 impl Writer {
@@ -150,9 +145,6 @@ impl Writer {
             list_view: None,
             quote_view: None,
             math_view: None,
-            // markdown.go:1443: display math renders through the mathtext engine (DESIGN D16
-            // step 2 — the inline half flipped with `render_inline` in WP61).
-            math_renderer: Box::new(crate::mathtext::Mathtext),
         }
     }
 
@@ -609,9 +601,10 @@ impl Writer {
     /// Renders the buffered display-math block (markdown.go:1433-1455): a
     /// whitespace-only source renders NOTHING (the paid gap credit may remain
     /// consumed); otherwise the block rides `begin_block`/`end_block` with every row
-    /// prefixed by the two-space `MATH_INDENT`. The body transform is the mathtext 2D layout,
-    /// which degrades to the cleaned linear source when the formula cannot be laid out; either
-    /// way the rows print in normal color (never dim: dim is decoration-only).
+    /// prefixed by the two-space `MATH_INDENT`. The body transform is the mathtext 2D layout
+    /// (markdown.go:1443 `mathtext.Render2D`; DESIGN D16 step 2), which degrades to the cleaned
+    /// linear source when the formula cannot be laid out; either way the rows print in normal
+    /// color (never dim: dim is decoration-only).
     fn flush_math(&mut self) {
         if let Some(mut v) = self.math_view.take() {
             v.close();
@@ -624,9 +617,9 @@ impl Writer {
         }
         self.begin_block();
         let width = self.term_width().saturating_sub(MATH_INDENT.len());
-        let rows = self.math_renderer.render_2d(&src, width);
+        let (block, _ok) = crate::mathtext::render_2d(&src, width);
         let mut out = String::new();
-        for r in &rows {
+        for r in block.split('\n') {
             out.push_str(MATH_INDENT);
             out.push_str(r);
             out.push('\n');

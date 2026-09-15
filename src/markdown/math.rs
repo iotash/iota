@@ -1,4 +1,4 @@
-//! Math delimiter guards + the renderer hook (`TUI_CONTRACTS` §3.5; T-08/T-15 CLOSED).
+//! Math delimiter guards (`TUI_CONTRACTS` §3.5; T-08/T-15 CLOSED).
 //!
 //! The delimiter logic is load-bearing string parsing: display fences `"$$"` / `"\["` open,
 //! `"$$"` / `"\]"` close, one-line forms need `len > 4` + a non-empty inner
@@ -8,17 +8,11 @@
 //! twin of `mathtext::find_inline` written against markdown.go:740-801, and the brain's
 //! "two implementations in lockstep" rule keeps a test on each side.
 //!
-//! Only the two BODY transforms sit behind [`MathRenderer`], whose sole impl is
-//! [`crate::mathtext::Mathtext`]: inline bodies through `approx_inline`, display blocks through
-//! `render_2d`. The T1 raw-LaTeX stand-in is gone — both hooks render for real.
-
-/// The body transforms the writer delegates to; [`crate::mathtext::Mathtext`] is the one impl.
-pub(crate) trait MathRenderer: Send {
-    /// Inline body transform (markdown.go:572 `mathtext.ApproxInline`).
-    fn approx_inline(&self, body: &str) -> String;
-    /// Display block transform (markdown.go:1443 `mathtext.Render2D`), one string per row.
-    fn render_2d(&self, src: &str, width: usize) -> Vec<String>;
-}
+//! The two BODY transforms are plain calls into `mathtext`: inline bodies through
+//! [`crate::mathtext::approx_inline`] (`inline.rs`), display blocks through
+//! [`crate::mathtext::render_2d`] (`Writer::flush_math`). The T1 raw-LaTeX stand-in is gone —
+//! both hooks render for real — and `mathtext` never names this module back (Phase 5 PR-4: the
+//! `MathRenderer` trait and its one ZST impl are deleted, so `mathtext` is a leaf).
 
 /// The display-fence recognizers, now owned by [`crate::mathtext::delim`] (DESIGN D16): Go keeps
 /// `DisplayOpen`/`IsDisplayClose` in `delim.go:181-219` and the markdown writer calls across.
