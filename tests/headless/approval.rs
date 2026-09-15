@@ -7,8 +7,8 @@ use iota::headless::run::refusal_text;
 use iota::headless::{QuietHost, TurnParams, execute_with_tools};
 use iota::provider::model::{JsonObject, Message, Role, ToolCall};
 use iota::testing::{FakeProvider, GatedDispatch, Round, lock};
-use iota::tool::Dispatcher;
 use iota::tool::context::RunCtx;
+use iota::tool::{Approval, Dispatcher};
 
 /// Asks for `write_file` (with `args`) once, then answers `saw: ` + the last history entry's content — so a
 /// test can assert on what the model was actually told.
@@ -89,7 +89,7 @@ async fn the_quiet_loop_forwards_approval_to_the_injected_approver() {
     let mut host = QuietHost {
         approve: Some(Box::new(move |tc: &ToolCall, detail: &str| {
             lock(&seen).push((tc.name.clone(), detail.to_owned()));
-            (true, String::new())
+            Approval::Allow
         })),
         ..QuietHost::new()
     };
@@ -114,7 +114,7 @@ async fn a_denied_call_does_not_end_the_run() {
     // A denial is a result the model reads, not an aborted turn: the child carries on and reports back.
     let mut host = QuietHost {
         approve: Some(Box::new(|_tc: &ToolCall, _detail: &str| {
-            (false, "The user declined this call.".to_owned())
+            Approval::Deny("The user declined this call.".to_owned())
         })),
         ..QuietHost::new()
     };
@@ -136,9 +136,10 @@ fn the_quiet_host_answers_approval_from_its_approver_or_refuses() {
         name: "edit_file".to_owned(),
         ..ToolCall::default()
     };
-    let (ok, why) = h.ask_approval(&tc, "path:x");
-    assert!(!ok);
-    assert!(why.contains("edit_file"), "nil approver = ({ok}, {why:?})");
+    let Approval::Deny(why) = h.ask_approval(&tc, "path:x") else {
+        panic!("a refusal was expected")
+    };
+    assert!(why.contains("edit_file"), "nil approver = {why:?}");
     assert_eq!(why, refusal_text("edit_file"));
     assert_eq!(
         why,
@@ -147,12 +148,13 @@ fn the_quiet_host_answers_approval_from_its_approver_or_refuses() {
 
     let h = QuietHost {
         approve: Some(Box::new(|_tc: &ToolCall, _detail: &str| {
-            (false, "prompt broke".to_owned())
+            Approval::Deny("prompt broke".to_owned())
         })),
         ..QuietHost::new()
     };
-    let (ok, why) = h.ask_approval(&tc, "path:x");
-    assert!(!ok);
+    let Approval::Deny(why) = h.ask_approval(&tc, "path:x") else {
+        panic!("a refusal was expected")
+    };
     assert_eq!(
         why, "prompt broke",
         "failed prompt must be a refusal carrying the reason"
@@ -161,14 +163,19 @@ fn the_quiet_host_answers_approval_from_its_approver_or_refuses() {
     // An approver's answer travels verbatim, detail included.
     let h = QuietHost {
         approve: Some(Box::new(|tc: &ToolCall, detail: &str| {
-            (true, format!("{}:{detail}", tc.name))
+            Approval::Deny(format!("{}:{detail}", tc.name))
         })),
         ..QuietHost::new()
     };
     assert_eq!(
         h.ask_approval(&tc, "path:x"),
-        (true, "edit_file:path:x".to_owned())
+        Approval::Deny("edit_file:path:x".to_owned())
     );
+    let h = QuietHost {
+        approve: Some(Box::new(|_tc: &ToolCall, _detail: &str| Approval::Allow)),
+        ..QuietHost::new()
+    };
+    assert_eq!(h.ask_approval(&tc, "path:x"), Approval::Allow);
 }
 
 // The forwarded prompt has to say what the call is ABOUT: a gate naming only the tool asks the user to authorize "write_file"
@@ -181,7 +188,7 @@ async fn a_forwarded_approval_carries_the_call_detail() {
     let mut host = QuietHost {
         approve: Some(Box::new(move |_tc: &ToolCall, detail: &str| {
             lock(&sink).push(detail.to_owned());
-            (false, "The user declined this call.".to_owned())
+            Approval::Deny("The user declined this call.".to_owned())
         })),
         ..QuietHost::new()
     };

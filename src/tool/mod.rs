@@ -1,12 +1,14 @@
 //! Tool and dispatcher contracts (tool/tool.go:33-330): `ToolOutput`, `Presentation`, `DeferState`, the `Tool`
 //! and `Dispatcher` traits with their optional capabilities, the `PrefixOf` oracle and the toolset `ToolEnv` —
-//! plus, in the submodules, the run context every call takes (`context`), the tool framework (`registry`,
+//! plus, in the submodules, the run context every call takes (`context`), the answer to a gated call
+//! (`approval`), the tool framework (`registry`,
 //! `merge`, `defer`, `defer_mode`, `yaml11`, `args`, `sets`) and the four built-in sets (`shell`, `code`,
 //! `agent`, and `ask`, which contributes tools only when the `ToolEnv` carries an interactor).
 
 use std::{path::PathBuf, sync::Arc};
 
 pub mod agent;
+pub mod approval;
 pub(crate) mod args;
 pub mod ask;
 pub mod code;
@@ -21,6 +23,7 @@ pub mod sets;
 pub mod shell;
 pub(crate) mod yaml11;
 
+pub use approval::Approval;
 pub use defer::{DeferredGroup, SEARCH_TOOL_NAME, defer};
 pub use defer_mode::DeferMode;
 pub use merge::merge;

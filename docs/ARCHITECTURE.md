@@ -81,7 +81,7 @@ all three into `chat/`) the Rust split is KEPT as modules. Visibility is Rust-id
 | `provider/{openai,anthropic,google,openresponses,imagen,images}.rs` | provider/*.go | the seven `Provider` adapters |
 | `llm/{mod,client,sse,error,models,chatcomp,responses,anthropic,google,images}.rs` | internal/llm | the hand-rolled HTTP/SSE wire layer (keeps Go's name) |
 | `llm/{reqlog,progress,multipart}.rs` | chat/reqlog.go, chat/progress.go, (Go `mime/multipart`) | T3: the `/debug` request log the client records into, the per-turn upload-progress reporter + task-local, the byte-exact multipart writer twin (WP66/WP67/WP64) |
-| `tool/{mod,context,fmt,error}.rs` | tool/tool.go, chat/turns.go, tool/headerfmt.go | `Tool`/`Dispatcher`/`ToolEnv`/`Delegator` seam types, `PrefixOf`, `ToolError`, the call-header formatters; `context` = the run context every tool takes (`RunCtx`, `TurnBudget`, `ArtifactSlot`) |
+| `tool/{mod,context,approval,fmt,error}.rs` | tool/tool.go, chat/turns.go, chat/approval.go, tool/headerfmt.go | `Tool`/`Dispatcher`/`ToolEnv`/`Delegator` seam types, `PrefixOf`, `ToolError`, the call-header formatters; `context` = the run context every tool takes (`RunCtx`, `TurnBudget`, `ArtifactSlot`) |
 | `tool/{sets,registry,merge,defer,defer_mode,args,yaml11}.rs` | tool/tool.go, defer*.go | the set table + framework |
 | `tool/{ask,agent,delegate}.rs`, `tool/shell.rs`, `tool/code/{mod,tools,walk,udiff}.rs` | tool/ask.go, agent.go, delegate.go, shell.go, code.go | the five built-in sets (`shell.rs` = the `shell` tool's POLICY layer; the tool is `shell` on every platform and under every interpreter, and its DESCRIPTION is what follows the interpreter, DIVERGENCES X-18/X-20) |
 | `shell/{mod,exec,interp,jobs}.rs`, `shell/sandbox/{mod,darwin,linux,other}.rs` | internal/shell | process execution + sandboxes (the MECHANISM layer); `interp.rs` answers WHICH interpreter runs a command — `bash -c` on Unix, and on Windows the first of Git Bash, PowerShell and `cmd.exe` the machine has (DIVERGENCES X-17), as one pure function over an injected machine |
@@ -210,6 +210,7 @@ The tables keep the phase-1 grouping (one per former crate) with each file named
 | module | Go |
 |---|---|
 | `tool/context.rs` | chat/turns.go (`RunCtx`, `TurnBudget`, `BudgetExt`, `ArtifactSlot`) |
+| `tool/approval.rs` | chat/approval.go, chat.go:348-364 (`Approval`: the answer to a gated call) |
 | `tool/sets.rs` | tool/tool.go:329-341 (`SET_NAMES`, `set_factory`, `RawNode`, `ToolsConfig`, `SetFactory`, `SetError`) |
 | `tool/registry.rs` | tool/tool.go:343-528 (`Registry`, `set_disabled`) |
 | `tool/merge.rs` | tool/tool.go:538-673 |

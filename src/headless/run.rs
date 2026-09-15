@@ -11,8 +11,8 @@ use crate::provider::model::{
 use crate::provider::sink::NullSink;
 use crate::provider::usage::Usage;
 use crate::provider::{Provider, RoundResult, ToolProvider};
-use crate::tool::Dispatcher;
 use crate::tool::context::{BudgetExt, RunCtx};
+use crate::tool::{Approval, Dispatcher};
 
 use crate::headless::AgentOptions;
 use crate::headless::batch::{parallel_run, run_batch};
@@ -20,8 +20,8 @@ use crate::headless::error::ChatError;
 use crate::headless::images::save_images_for_turn;
 use crate::headless::report::{RunRecorder, tool_names};
 
-/// A test-injected approval oracle: `(approved, refusal text)` for a tool call and its header detail.
-pub(crate) type Approver = Box<dyn Fn(&ToolCall, &str) -> (bool, String) + Send + Sync>;
+/// A test-injected approval oracle: the [`Approval`] for a tool call and its header detail.
+pub(crate) type Approver = Box<dyn Fn(&ToolCall, &str) -> Approval + Send + Sync>;
 
 /// The headless host: records every round and refuses every approval request (nobody is there to ask). It
 /// also carries the run's background-job registry, because a headless run has no idle loop for a finished
@@ -42,14 +42,14 @@ impl QuietHost {
         Self::default()
     }
 
-    /// approve None → `(false, refusal_text(&tc.name))`; else the approver's answer verbatim.
+    /// approve None → `Approval::Deny(refusal_text(&tc.name))`; else the approver's answer verbatim.
     /// `detail` = `dispatch.header_summary(&tc.name, &tc.arguments).unwrap_or_default()` — Go's fallback
     /// sorted-key argument digest (chat.go:461-480, `toolHeaderMaxArgs`/`truncateRunes`) is NOT ported
     /// (DIVERGENCES D-12); with no built-in `header_summary` the headless detail is always "".
     /// `test_quiet_loop_forwards_approval` pins "".
-    pub fn ask_approval(&self, tc: &ToolCall, detail: &str) -> (bool, String) {
+    pub fn ask_approval(&self, tc: &ToolCall, detail: &str) -> Approval {
         match &self.approve {
-            None => (false, refusal_text(&tc.name)),
+            None => Approval::Deny(refusal_text(&tc.name)),
             Some(approve) => approve(tc, detail),
         }
     }
@@ -397,8 +397,7 @@ pub async fn execute_with_tools(
                 let detail = dispatch
                     .header_summary(&tc.name, &tc.arguments)
                     .unwrap_or_default();
-                let (allowed, why) = host.ask_approval(tc, &detail);
-                if !allowed {
+                if let Approval::Deny(why) = host.ask_approval(tc, &detail) {
                     history.push(Message::tool_result(tc, why, true));
                     continue;
                 }
@@ -417,6 +416,7 @@ mod tests {
     use crate::provider::model::ToolCall;
 
     use super::{QuietHost, refusal_text};
+    use crate::tool::Approval;
 
     #[test]
     fn refusal_names_the_wire_name() {
@@ -424,8 +424,9 @@ mod tests {
             name: "mcp__srv__edit".to_owned(),
             ..ToolCall::default()
         };
-        let (ok, why) = QuietHost::new().ask_approval(&tc, "ignored");
-        assert!(!ok);
+        let Approval::Deny(why) = QuietHost::new().ask_approval(&tc, "ignored") else {
+            panic!("a headless host must refuse")
+        };
         assert_eq!(why, refusal_text("mcp__srv__edit"));
         assert!(
             why.starts_with("mcp__srv__edit was not executed: it requires interactive approval, ")
