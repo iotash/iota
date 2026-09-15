@@ -21,7 +21,7 @@
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex, MutexGuard},
     time::Duration,
 };
 
@@ -407,7 +407,7 @@ async fn drain(mut rx: tokio::net::unix::pipe::Receiver, buf: Arc<Mutex<CappedBu
 
 /// The capped buffer is only ever appended to, so a poisoned lock still holds usable output.
 fn lock(buf: &Mutex<CappedBuffer>) -> MutexGuard<'_, CappedBuffer> {
-    buf.lock().unwrap_or_else(PoisonError::into_inner)
+    crate::sync::lock(buf)
 }
 
 /// `kill(-pid, SIGKILL)` (proc_unix.go:22-28): the whole group dies, and an already-gone group (`ESRCH`) is
