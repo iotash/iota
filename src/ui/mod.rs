@@ -8,25 +8,21 @@ pub mod facade;
 
 pub use debug::install_region_trace;
 
-pub(crate) mod composer;
-pub(crate) mod debug;
-pub(crate) mod event_loop;
-pub(crate) mod frame;
-pub(crate) mod handle;
-pub(crate) mod keys;
-pub(crate) mod msgs;
-pub(crate) mod oneshot;
-pub(crate) mod osc;
-pub(crate) mod paste;
-pub(crate) mod region;
-pub(crate) mod sink;
-pub(crate) mod spans;
-pub(crate) mod suggest;
+pub(crate) mod input;
+pub(crate) mod render;
+pub(crate) mod runtime;
 pub(crate) mod surface;
-pub(crate) mod term;
 #[cfg(test)]
 pub(crate) mod testutil;
-pub(crate) mod theme;
+
+// Transitional aliases while the import points move (next commit): every `crate::ui::<file>`
+// path of the flat layout still resolves.
+#[allow(unused_imports)]
+pub(crate) use input::{composer, keys, paste, suggest};
+#[allow(unused_imports)]
+pub(crate) use render::{debug, frame, region, sink, spans, theme};
+#[allow(unused_imports)]
+pub(crate) use runtime::{event_loop, handle, msgs, oneshot, osc, term};
 
 use std::sync::Arc;
 
