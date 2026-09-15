@@ -11,20 +11,17 @@
 //!    materially grown.
 //! 3. **Nothing to compact is not a failure.** The typed command says so; the automatic
 //!    offer never had a reason to speak.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
-use iota::BoxFuture;
 use iota::host::Presenter;
 use iota::llm::reqlog::RequestLog;
-use iota::provider::error::ProviderError;
+use iota::provider::ProviderKind;
 use iota::provider::model::Message;
 use iota::provider::usage::Usage;
-use iota::provider::{ChatResult, Provider, ProviderKind};
 use iota::repl::{McpHooks, RunParams, SessionCtx};
 use iota::session::{SessionStore, SessionWriter};
-use iota::testing::{Reply, ScriptedUi, StaticDispatcher, UiEvent};
+use iota::testing::{FakeProvider, Reply, Round, ScriptedUi, StaticDispatcher, UiEvent};
 use iota::text::ansi::strip_sgr;
 use iota::tool::Dispatcher;
 use iota::ui::facade::{Input, PanelResult, TabbedResult, Ui};
@@ -34,88 +31,39 @@ use tokio_util::sync::CancellationToken;
 // the doubles
 // ---------------------------------------------------------------------------
 
-/// A usage-reporting unary provider that answers the SUMMARY pass and an ordinary turn
-/// differently, and keeps every prompt it was sent.
-struct Summarizer {
-    prompts: Arc<Mutex<Vec<String>>>,
-    /// `None` = the summary pass fails (the "Compaction failed" path).
-    summary: Option<String>,
-}
-
-impl Summarizer {
-    fn new() -> Self {
-        Self {
-            prompts: Arc::new(Mutex::new(Vec::new())),
-            summary: Some("THE-SUMMARY".to_owned()),
-        }
-    }
-
-    fn failing() -> Self {
-        Self {
-            prompts: Arc::new(Mutex::new(Vec::new())),
-            summary: None,
-        }
-    }
-}
-
 /// The marker the summary prompt is recognised by — its first words, which are also what
 /// makes the prompt injection-hardened.
 const SUMMARY_MARK: &str = "You are compressing a conversation";
 
-impl Provider for Summarizer {
-    fn kind(&self) -> ProviderKind {
-        ProviderKind::OpenAi
-    }
-    fn model(&self) -> &'static str {
-        "gpt-4o"
-    }
-    fn set_model(&mut self, _model: String) {}
-    fn list_models<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Vec<String>, ProviderError>> {
-        Box::pin(std::future::ready(Ok(Vec::new())))
-    }
-    fn chat<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        messages: &'a [Message],
-    ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
-        let prompt = messages
-            .last()
-            .map(|m| m.content.clone())
-            .unwrap_or_default();
-        self.prompts
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(prompt.clone());
-        let is_summary = prompt.starts_with(SUMMARY_MARK);
-        let out = match (is_summary, self.summary.as_ref()) {
-            (true, None) => Err(ProviderError::other("upstream is down")),
-            (true, Some(s)) => Ok(ChatResult {
-                text: s.clone(),
-                usage: Some(Usage {
+/// A usage-reporting unary provider that answers the SUMMARY pass and an ordinary turn
+/// differently; `summary: None` = the summary pass fails (the "Compaction failed" path). Every
+/// prompt it was sent is its log's `prompts()`.
+fn summarizer(summary: Option<&str>) -> FakeProvider {
+    let summary = summary.map(str::to_owned);
+    FakeProvider::new()
+        .with_model("gpt-4o")
+        .reporting_usage()
+        .answering(move |_, messages| {
+            let prompt = messages
+                .last()
+                .map(|m| m.content.as_str())
+                .unwrap_or_default();
+            if !prompt.starts_with(SUMMARY_MARK) {
+                return Round::reply("an answer").usage(Usage {
+                    input: 40,
+                    output: 5,
+                    ..Usage::default()
+                });
+            }
+            match &summary {
+                None => Round::failing("upstream is down"),
+                Some(s) => Round::reply(s).usage(Usage {
                     input: 900,
                     output: 60,
                     ..Usage::default()
                 }),
-                images: Vec::new(),
-            }),
-            (false, _) => Ok(ChatResult {
-                text: "an answer".to_owned(),
-                usage: Some(Usage {
-                    input: 40,
-                    output: 5,
-                    ..Usage::default()
-                }),
-                images: Vec::new(),
-            }),
-        };
-        Box::pin(std::future::ready(out))
-    }
-    fn reports_usage(&self) -> bool {
-        true
-    }
+            }
+        })
 }
 
 struct Fixture {
@@ -143,7 +91,7 @@ impl Fixture {
 
     fn params(
         &self,
-        provider: Summarizer,
+        provider: FakeProvider,
         writer: Option<SessionWriter>,
         imported: Vec<Message>,
         context_window: u64,
@@ -255,11 +203,11 @@ fn filler(n: usize) -> String {
 // the command
 // ---------------------------------------------------------------------------
 
-/// Go: `chat/run.go:796-802` + :253-280 — the typed command runs the shared flow: a busy
+/// The typed command runs the shared flow: a busy
 /// label while the summary pass runs, the rebuilt view, the persisted marker, and the
 /// reclaimed-window notice carrying `budget.status()`.
 ///
-/// Go: `chat/compact_test.go:60` `TestCompactionMarkerReload` — and reloading the bundle must
+/// And reloading the bundle must
 /// rebuild EXACTLY the view the loop is now holding. The live weave and the reload weave
 /// are the same rule (`iota::session::summary_preamble`); this is where the two are
 /// compared against each other rather than each against itself.
@@ -271,7 +219,7 @@ async fn compact_rebuilds_the_view_and_the_reload_agrees() {
     let history = conversation();
     writer.append_messages(&history).expect("append");
 
-    iota::repl::run(f.params(Summarizer::new(), Some(writer), history, 0))
+    iota::repl::run(f.params(summarizer(Some("THE-SUMMARY")), Some(writer), history, 0))
         .await
         .expect("clean exit");
 
@@ -299,7 +247,7 @@ async fn compact_rebuilds_the_view_and_the_reload_agrees() {
     assert_eq!(view[2].content, "a2");
 }
 
-/// Go: `chat/run.go:262-266` — nothing older than the last turn is not an error, and only
+/// Nothing older than the last turn is not an error, and only
 /// the user who ASKED is told. The history is left exactly as it was.
 #[tokio::test]
 async fn nothing_to_compact_is_reported_only_for_the_typed_command() {
@@ -308,8 +256,8 @@ async fn nothing_to_compact_is_reported_only_for_the_typed_command() {
     let id = writer.id().to_owned();
     let history = vec![Message::system("sys"), Message::user("u1")];
     writer.append_messages(&history).expect("append");
-    let p = Summarizer::new();
-    let prompts = Arc::clone(&p.prompts);
+    let p = summarizer(Some("THE-SUMMARY"));
+    let prompts = p.log();
 
     iota::repl::run(f.params(p, Some(writer), history, 0))
         .await
@@ -321,17 +269,14 @@ async fn nothing_to_compact_is_reported_only_for_the_typed_command() {
         printed(&f.ui)
     );
     assert!(
-        prompts
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_empty(),
+        prompts.prompts().is_empty(),
         "an empty middle must not cost an API call"
     );
     let reloaded = f.store.load(&id, ProviderKind::OpenAi).expect("load");
     assert_eq!(reloaded.messages.len(), 2, "the history was rewritten");
 }
 
-/// Go: `chat/run.go:258-261` — a failed summary pass is reported and changes nothing. The
+/// A failed summary pass is reported and changes nothing. The
 /// conversation the user was about to lose is still there.
 #[tokio::test]
 async fn a_failed_summary_pass_leaves_the_conversation_alone() {
@@ -341,7 +286,7 @@ async fn a_failed_summary_pass_leaves_the_conversation_alone() {
     let history = conversation();
     writer.append_messages(&history).expect("append");
 
-    iota::repl::run(f.params(Summarizer::failing(), Some(writer), history, 0))
+    iota::repl::run(f.params(summarizer(None), Some(writer), history, 0))
         .await
         .expect("clean exit");
 
@@ -369,17 +314,14 @@ async fn a_hint_reaches_the_summary_prompt() {
     let mut writer = f.writer();
     let history = conversation();
     writer.append_messages(&history).expect("append");
-    let p = Summarizer::new();
-    let prompts = Arc::clone(&p.prompts);
+    let p = summarizer(Some("THE-SUMMARY"));
+    let prompts = p.log();
 
     iota::repl::run(f.params(p, Some(writer), history, 0))
         .await
         .expect("clean exit");
 
-    let sent = prompts
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone();
+    let sent = prompts.prompts();
     let summary_prompt = sent
         .iter()
         .find(|s| s.starts_with(SUMMARY_MARK))
@@ -394,7 +336,7 @@ async fn a_hint_reaches_the_summary_prompt() {
 // the pre-send auto-offer
 // ---------------------------------------------------------------------------
 
-/// Go: `chat/run.go:979-989` — over the threshold the loop ASKS before sending, with the
+/// Over the threshold the loop ASKS before sending, with the
 /// projected occupancy in the question. Accepting compacts and the message still goes.
 #[tokio::test]
 async fn the_auto_offer_fires_over_the_threshold_and_compacts_when_accepted() {
@@ -411,9 +353,14 @@ async fn the_auto_offer_fires_over_the_threshold_and_compacts_when_accepted() {
     ];
     writer.append_messages(&history).expect("append");
 
-    iota::repl::run(f.params(Summarizer::new(), Some(writer), history, 2_000))
-        .await
-        .expect("clean exit");
+    iota::repl::run(f.params(
+        summarizer(Some("THE-SUMMARY")),
+        Some(writer),
+        history,
+        2_000,
+    ))
+    .await
+    .expect("clean exit");
 
     let titles = surface_titles(&f.ui);
     assert_eq!(titles.len(), 1, "exactly one question: {titles:?}");
@@ -434,7 +381,7 @@ async fn the_auto_offer_fires_over_the_threshold_and_compacts_when_accepted() {
     assert_eq!(reloaded.messages[3].content, "next question");
 }
 
-/// Go: `chat/run.go:987-988` — declining sends the message untouched and SNOOZES: the offer
+/// Declining sends the message untouched and SNOOZES: the offer
 /// does not return until usage has grown by 5% of the window. Two messages, one question.
 #[tokio::test]
 async fn declining_snoozes_the_offer_until_usage_grows() {
@@ -453,8 +400,8 @@ async fn declining_snoozes_the_offer_until_usage_grows() {
         Message::assistant("a2"),
     ];
     writer.append_messages(&history).expect("append");
-    let p = Summarizer::new();
-    let prompts = Arc::clone(&p.prompts);
+    let p = summarizer(Some("THE-SUMMARY"));
+    let prompts = p.log();
 
     iota::repl::run(f.params(p, Some(writer), history, 2_000))
         .await
@@ -465,10 +412,7 @@ async fn declining_snoozes_the_offer_until_usage_grows() {
         1,
         "the declined offer must not come straight back"
     );
-    let sent = prompts
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone();
+    let sent = prompts.prompts();
     assert!(
         !sent.iter().any(|s| s.starts_with(SUMMARY_MARK)),
         "declining must not compact anything"
@@ -482,7 +426,7 @@ async fn declining_snoozes_the_offer_until_usage_grows() {
 async fn no_offer_below_the_threshold() {
     let f = Fixture::new(vec![input("hello"), Reply::Interrupted]);
     let writer = f.writer();
-    iota::repl::run(f.params(Summarizer::new(), Some(writer), Vec::new(), 0))
+    iota::repl::run(f.params(summarizer(Some("THE-SUMMARY")), Some(writer), Vec::new(), 0))
         .await
         .expect("clean exit");
     assert!(surface_titles(&f.ui).is_empty(), "an unasked question");
@@ -493,7 +437,7 @@ async fn no_offer_below_the_threshold() {
 #[tokio::test]
 async fn compaction_works_without_a_session_writer() {
     let f = Fixture::new(vec![input("/compact"), Reply::Interrupted]);
-    iota::repl::run(f.params(Summarizer::new(), None, conversation(), 0))
+    iota::repl::run(f.params(summarizer(Some("THE-SUMMARY")), None, conversation(), 0))
         .await
         .expect("clean exit");
     let lines = printed(&f.ui);
