@@ -527,6 +527,14 @@ impl FakeProvider {
 
     // --- observation -----------------------------------------------------------
 
+    /// Records into `log` — a handle a fixture created before the provider, so it can hand out the log
+    /// without holding the provider.
+    #[must_use]
+    pub fn with_log(mut self, log: Log) -> Self {
+        self.log = log;
+        self
+    }
+
     /// A handle on the call log that outlives this value.
     pub fn log(&self) -> Log {
         self.log.clone()
@@ -974,6 +982,11 @@ mod tests {
             "the unary path advertises no tools"
         );
         assert!(!log.observed());
+
+        // A log handed in is shared: a fixture can own it before the provider exists.
+        let twin = FakeProvider::new().with_log(log.clone());
+        twin.chat(&cancel, &[]).await.expect("chat");
+        assert_eq!(log.calls(), 3);
     }
 
     #[tokio::test]

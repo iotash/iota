@@ -12,20 +12,18 @@
 //!   file, and a cancel does neither;
 //! - removal indexes the ORIGINAL rows (the engine's commit contract), so a filtered
 //!   `Attached` tab still drops the rows the user checked.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::Path;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
-use iota::BoxFuture;
 use iota::host::Presenter;
 use iota::llm::reqlog::RequestLog;
-use iota::provider::error::ProviderError;
-use iota::provider::model::{Attachment, Message};
-use iota::provider::{ChatResult, Provider, ProviderKind};
+use iota::provider::model::Attachment;
 use iota::repl::{McpHooks, RunParams, SessionCtx};
 use iota::session::SessionStore;
-use iota::testing::{Reply, ScriptedUi, StaticDispatcher, TabbedSummary, UiEvent};
+use iota::testing::{
+    FakeProvider, Log, Reply, ScriptedUi, StaticDispatcher, TabbedSummary, UiEvent,
+};
 use iota::text::ansi::strip_sgr;
 use iota::tool::Dispatcher;
 use iota::ui::facade::{Input, PanelKind, PanelResult, TabbedResult, Ui};
@@ -36,57 +34,18 @@ use tokio_util::sync::CancellationToken;
 // the doubles
 // ---------------------------------------------------------------------------
 
-/// Records the attachments of every message it is sent — the only way to prove the queue
+/// The attachments of the LAST message of every call the provider saw — the only way to prove the queue
 /// actually rode the next send.
-#[derive(Clone, Default)]
-struct Recorder(Arc<Mutex<Vec<Vec<Attachment>>>>);
-
-impl Recorder {
-    fn sent(&self) -> Vec<Vec<Attachment>> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-    }
-}
-
-struct FakeProvider {
-    seen: Recorder,
-}
-
-impl Provider for FakeProvider {
-    fn kind(&self) -> ProviderKind {
-        ProviderKind::OpenAi
-    }
-    fn model(&self) -> &'static str {
-        "gpt-test"
-    }
-    fn set_model(&mut self, _model: String) {}
-    fn list_models<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Vec<String>, ProviderError>> {
-        Box::pin(std::future::ready(Ok(Vec::new())))
-    }
-    fn chat<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        messages: &'a [Message],
-    ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
-        let atts = messages
-            .last()
-            .map(|m| m.attachments.clone())
-            .unwrap_or_default();
-        self.seen
-            .0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(atts);
-        Box::pin(std::future::ready(Ok(ChatResult {
-            text: "ok".to_owned(),
-            ..ChatResult::default()
-        })))
-    }
+fn attachments_sent(log: &Log) -> Vec<Vec<Attachment>> {
+    log.sent()
+        .iter()
+        .map(|history| {
+            history
+                .last()
+                .map(|m| m.attachments.clone())
+                .unwrap_or_default()
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +56,8 @@ struct Fixture {
     ui: Arc<ScriptedUi>,
     _tmp: tempfile::TempDir,
     store: SessionStore,
-    seen: Recorder,
+    /// The provider's call log.
+    seen: Log,
 }
 
 impl Fixture {
@@ -108,16 +68,18 @@ impl Fixture {
             ui: ScriptedUi::new(script),
             _tmp: tmp,
             store,
-            seen: Recorder::default(),
+            seen: Log::default(),
         }
     }
 
     fn params(&self) -> RunParams {
         RunParams {
             ui: Arc::clone(&self.ui) as Arc<dyn Ui>,
-            provider: Box::new(FakeProvider {
-                seen: self.seen.clone(),
-            }),
+            provider: Box::new(
+                FakeProvider::new()
+                    .replying("ok")
+                    .with_log(self.seen.clone()),
+            ),
             title_provider: None,
             system: String::new(),
             imported_history: Vec::new(),
@@ -195,8 +157,8 @@ fn fixture(dir: &Path, name: &str, body: &[u8]) -> String {
 // the path form
 // ---------------------------------------------------------------------------
 
-/// Go: chat/run.go:390-401 — `"/file <path>"` attaches immediately with the byte-exact
-/// notice, and the queue rides the NEXT user message (chat/run.go:1003).
+/// `"/file <path>"` attaches immediately with the byte-exact notice, and the queue rides the NEXT
+/// user message.
 #[tokio::test]
 async fn file_path_form_attaches_and_rides_the_next_message() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -219,7 +181,7 @@ async fn file_path_form_attaches_and_rides_the_next_message() {
         "the path form must not open a surface"
     );
 
-    let sent = f.seen.sent();
+    let sent = attachments_sent(&f.seen);
     assert_eq!(sent.len(), 1, "one turn ran");
     assert_eq!(sent[0].len(), 1, "the attachment rode the message");
     assert_eq!(sent[0][0].filename, "notes.md");
@@ -247,7 +209,7 @@ async fn file_path_form_reports_the_failure_and_queues_nothing() {
         printed(&f.ui)
     );
     assert!(
-        f.seen.sent()[0].is_empty(),
+        attachments_sent(&f.seen)[0].is_empty(),
         "a failed attach must queue nothing"
     );
 }
@@ -256,7 +218,7 @@ async fn file_path_form_reports_the_failure_and_queues_nothing() {
 // the surface
 // ---------------------------------------------------------------------------
 
-/// Go: chat/run.go:402-414 — the bare form opens `Attached` (Multi over the queue, its
+/// The bare form opens `Attached` (Multi over the queue, its
 /// rows the `attachmentLabel` form) beside `Add` (a Browser), both searchable.
 #[tokio::test]
 async fn file_surface_opens_attached_and_add() {
@@ -292,7 +254,7 @@ async fn file_surface_opens_attached_and_add() {
     assert!(!printed(&f.ui).iter().any(|l| l.starts_with("Removed ")));
 }
 
-/// Go: chat/run.go:418-433 — committing from tab 0 REMOVES the checked rows, counted in
+/// Committing from tab 0 REMOVES the checked rows, counted in
 /// the byte-exact notice. Checks index the ORIGINAL queue (the engine's commit contract),
 /// so a filtered tab still drops what the user checked.
 #[tokio::test]
@@ -327,7 +289,7 @@ async fn file_surface_removes_the_checked_attachments() {
         "{:?}",
         printed(&f.ui)
     );
-    let sent = f.seen.sent();
+    let sent = attachments_sent(&f.seen);
     let names: Vec<&str> = sent[0].iter().map(|x| x.filename.as_str()).collect();
     assert_eq!(names, ["b.md"], "the unchecked row is the survivor");
 }
@@ -349,10 +311,14 @@ async fn file_surface_removing_nothing_says_nothing() {
     iota::repl::run(f.params()).await.expect("exit");
 
     assert!(!printed(&f.ui).iter().any(|l| l.starts_with("Removed ")));
-    assert_eq!(f.seen.sent()[0].len(), 1, "the queue is untouched");
+    assert_eq!(
+        attachments_sent(&f.seen)[0].len(),
+        1,
+        "the queue is untouched"
+    );
 }
 
-/// Go: chat/run.go:434-445 — committing from tab 1 attaches the BROWSED file, with the
+/// Committing from tab 1 attaches the BROWSED file, with the
 /// same `"Attached:"` notice the path form prints (one attach path, one message).
 #[tokio::test]
 async fn file_surface_attaches_the_browsed_file() {
@@ -381,7 +347,7 @@ async fn file_surface_attaches_the_browsed_file() {
         "{:?}",
         printed(&f.ui)
     );
-    assert_eq!(f.seen.sent()[0][0].filename, "picked.txt");
+    assert_eq!(attachments_sent(&f.seen)[0][0].filename, "picked.txt");
 }
 
 /// Committing tab 1 without having chosen a file (the browser was only scrolled) attaches
@@ -416,7 +382,7 @@ async fn file_surface_browser_without_a_choice_or_with_a_bad_one() {
         lines.contains(&"Error: unsupported file type: .bin".to_owned()),
         "{lines:?}"
     );
-    assert!(f.seen.sent()[0].is_empty());
+    assert!(attachments_sent(&f.seen)[0].is_empty());
 }
 
 /// `/file` is a REGISTERED command now (T-12): it heads Go's base table, so it is both
@@ -432,5 +398,9 @@ async fn file_is_advertised_and_dispatched() {
         "Commands: /file, /session, /model, /export, /status, /tools, /debug"
     );
     // A longer name is NOT the command: "/filex" falls through as a plain message.
-    assert_eq!(f.seen.sent().len(), 1, "/filex must be sent as text");
+    assert_eq!(
+        attachments_sent(&f.seen).len(),
+        1,
+        "/filex must be sent as text"
+    );
 }
