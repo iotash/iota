@@ -29,7 +29,7 @@ impl McpPart {
 use crate::config::{AgentConfig, Config, ModelConfig};
 
 /// Uses `crate::mcp::config` only. Config servers (`BTreeMap` order = sorted by name) then `--mcp`
-/// flags in order (`parse_mcp_flag` errors abort: `McpFlagError::EmptyFlag` → `CliError::McpFlag`). Deferred
+/// flags in order (`parse_mcp_flag` errors abort: `McpFlagError::EmptyFlag` → `ArgsError::McpFlag`). Deferred
 /// groups sorted by name.
 /// Blank defer → `Warning: mcp server {name}: defer needs a one-line summary of the server's tools (not deferred)`.
 pub(crate) fn build_mcp_configs(

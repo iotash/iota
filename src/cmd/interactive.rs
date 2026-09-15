@@ -39,7 +39,8 @@ use crate::tool::{Dispatcher, ToolEnv};
 use crate::ui::facade::{Panel, TabbedResult, TabbedSpec, Ui};
 
 use crate::cmd::args::{Invocation, Resume};
-use crate::cmd::resolve::{CliError, RunSettings};
+use crate::cmd::error::{ArgsError, CliError, RunError, SetupError};
+use crate::cmd::resolve::RunSettings;
 use crate::cmd::{RunContext, ToolAssembly};
 
 /// chat/session.go:1091 — the `iota resume` picker's only panel.
@@ -204,7 +205,7 @@ where
             let surface = Arc::clone(seam);
             let result = tokio::task::spawn_blocking(move || surface.run_surface(spec, dark))
                 .await
-                .map_err(|e| CliError::Join(e.to_string()))??;
+                .map_err(|e| RunError::Join(e.to_string()))??;
             if result.cancelled {
                 None
             } else {
@@ -220,7 +221,7 @@ where
         Ok(ui) => Ok((dark, wired, ui)),
         Err(e) => {
             seam.pop_title_stack();
-            Err(CliError::Io(e))
+            Err(RunError::Io(e).into())
         }
     }
 }
@@ -281,14 +282,14 @@ pub(crate) async fn run_interactive(
     let interactor = interactor.unwrap_or_else(crate::repl::Interactor::new);
     // root.go:284-286 — a pure argument error, and Go raises it before the terminal check, so it still wins.
     if inv.args.no_save && inv.resume.is_some() {
-        return Err(CliError::NoSaveWithResume);
+        return Err(ArgsError::NoSaveWithResume.into());
     }
     // root.go:397-401. Hoisted above everything with a SIDE EFFECT, unlike Go — which starts the MCP servers,
     // opens the raw-mode session picker and creates a bundle before noticing that the run cannot proceed. The
     // refusal itself is byte-identical; what changes is that a piped run with a bad resume id now reports
     // the missing terminal rather than the missing session (DEVIATIONS3 `[WP51]`).
     if !std::io::stdout().is_terminal() {
-        return Err(CliError::NotATerminal);
+        return Err(SetupError::NotATerminal.into());
     }
     // root.go:287-290: the config's `no_save:` starts ephemeral too, except an explicit resume outranks it.
     let ephemeral = inv.args.no_save || (settings.resolved.agent.no_save && inv.resume.is_none());
@@ -305,7 +306,7 @@ pub(crate) async fn run_interactive(
     let picker_rows: Vec<SessionInfo> = if inv.resume == Some(Resume::Pick) {
         store
             .list(scope.as_deref())
-            .map_err(CliError::ListSessions)?
+            .map_err(SetupError::ListSessions)?
     } else {
         Vec::new()
     };
@@ -416,7 +417,7 @@ pub(crate) async fn run_interactive(
         Err(e) => Err(repl_error(e)),
         // The loop exits cleanly even when the terminal died under it (every waiter fails `Closed`), so the
         // draw error the loop thread stored is the only witness left — Go had none to surface.
-        Ok(()) => closed.map_err(CliError::Io),
+        Ok(()) => closed.map_err(|e| RunError::Io(e).into()),
     }
 }
 
@@ -465,7 +466,7 @@ fn wire_session(
             None => input.picked.unwrap_or_default(),
         };
         if id.is_empty() {
-            return Err(CliError::NoSessionToResume);
+            return Err(SetupError::NoSessionToResume.into());
         }
         let (w, resumed) = store.resume(&id, kind)?;
         // The bundle records the agent it ran under; one that has since been deleted is announced, and the
@@ -526,7 +527,7 @@ fn wire_session(
                     agent: settings.resolved.agent_name.clone(),
                     ..NewSession::new(kind, provider.model())
                 })
-                .map_err(CliError::CreateSession)?,
+                .map_err(SetupError::CreateSession)?,
         );
     }
     // root.go:353-363: ephemeral mode gets a DEFERRED factory instead — `/save` mints the bundle then, with
@@ -622,7 +623,7 @@ fn resolve_params(
     let window = match settings.resolved.window_decl() {
         None => None,
         Some(decl) => Some(crate::config::window::parse_window_size(decl.raw).map_err(
-            |source| CliError::ContextWindow {
+            |source| SetupError::ContextWindow {
                 label: decl.label.to_owned(),
                 source,
             },
@@ -644,13 +645,13 @@ fn resolve_params(
     Ok(params)
 }
 
-/// `crate::repl::ReplError` → the process's exit mapping. A facade failure has no `CliError` of its own, so it
+/// `crate::repl::ReplError` → the process's exit mapping. A facade failure has no variant of its own, so it
 /// travels as its text (`ui: closed` / `ui: interrupted`).
 fn repl_error(e: crate::repl::ReplError) -> CliError {
     match e {
-        crate::repl::ReplError::Session(e) => CliError::Session(e),
-        crate::repl::ReplError::Io(e) => CliError::Io(e),
-        crate::repl::ReplError::Ui(e) => CliError::Ui(e),
+        crate::repl::ReplError::Session(e) => SetupError::Session(e).into(),
+        crate::repl::ReplError::Io(e) => RunError::Io(e).into(),
+        crate::repl::ReplError::Ui(e) => RunError::Ui(e).into(),
     }
 }
 
@@ -703,8 +704,8 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::{
-        CliError, PICK_SESSION_HEIGHT, PICK_SESSION_TITLE, TerminalSeam, UiSession, open_ui,
-        picker_spec, project_hint,
+        ArgsError, CliError, PICK_SESSION_HEIGHT, PICK_SESSION_TITLE, SetupError, TerminalSeam,
+        UiSession, open_ui, picker_spec, project_hint,
     };
 
     /// A `TerminalSeam` that records the ORDER of the terminal-owning calls instead of making them.
@@ -915,10 +916,13 @@ mod tests {
         let rows = [info("aaa", "a")];
         let outcome = open_ui(&seam, Some(picker_spec(&rows, None)), |_dark, row| {
             assert_eq!(row, None, "a cancelled surface commits nothing");
-            Err::<(), _>(CliError::NoSessionToResume)
+            Err::<(), _>(SetupError::NoSessionToResume.into())
         })
         .await;
-        assert!(matches!(outcome, Err(CliError::NoSessionToResume)));
+        assert!(matches!(
+            outcome,
+            Err(CliError::Setup(SetupError::NoSessionToResume))
+        ));
         assert_eq!(
             outcome.err().map(|e| e.to_string()),
             Some("no session to resume".to_owned())
@@ -957,15 +961,15 @@ mod tests {
     #[test]
     fn refusal_texts_are_byte_exact() {
         assert_eq!(
-            CliError::NotATerminal.to_string(),
+            SetupError::NotATerminal.to_string(),
             "interactive mode requires a terminal; use -m/--message for piped input"
         );
         assert_eq!(
-            CliError::NoSaveWithResume.to_string(),
+            ArgsError::NoSaveWithResume.to_string(),
             "--no-save cannot be combined with iota resume"
         );
         assert_eq!(
-            CliError::NoSessionToResume.to_string(),
+            SetupError::NoSessionToResume.to_string(),
             "no session to resume"
         );
         assert_eq!(super::TITLE_STACK_PUSH, "\u{1b}[22;0t");

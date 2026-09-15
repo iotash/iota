@@ -6,6 +6,7 @@
 pub(crate) mod args;
 pub(crate) mod assemble;
 pub(crate) mod config_cmd;
+pub(crate) mod error;
 pub(crate) mod interactive;
 pub mod io;
 pub mod list;
@@ -18,7 +19,7 @@ pub use crate::config::{
     ModelConfig, ModelEntry, ModelRef, ParamLayers, ProviderConfig, Resolved, WindowDecl,
 };
 pub use args::{Cli, Command, ConfigAction, Invocation, ListWhat, Resume, RunArgs};
-pub use resolve::CliError;
+pub use error::{ArgsError, CliError, RunError, SetupError};
 pub use resolve::{RunSettings, resolve_run};
 
 use std::sync::Arc;
@@ -89,7 +90,7 @@ pub(crate) struct ToolAssembly {
     pub(crate) agent: AgentOptions,
 }
 
-/// Process-level outcome mapping (main.rs): Ok → 0; `Err(CliError::Interrupted)` → 130; other Err → `Error: {e}` on
+/// Process-level outcome mapping (main.rs): Ok → 0; `Err(RunError::Interrupted)` → 130; other Err → `Error: {e}` on
 /// stderr, 1. Clap parse errors are handled by clap (`Error::exit`, code 2) before `run` is called.
 /// Awaited ONLY via `rt.block_on(run(..))` in main.rs — it borrows `io` and is never `tokio::spawn`ed.
 ///
@@ -133,7 +134,7 @@ pub async fn run(
 /// `RunArgs::reject_unsupported` (`-m` runs only) → `Config::load` → `resolve_run` → provider construction
 /// (`ProviderKind::from_str`, `new_provider`) →
 /// `tuning::apply` → `assemble::build_mcp_configs` → `tuning::warn_tools_without_calling` → cwd/root
-/// (`CliError::Cwd` in agent mode) → `ToolEnv` → output format parse
+/// (`SetupError::Cwd` in agent mode) → `ToolEnv` → output format parse
 /// (`crate::headless::parse_output_format` runs HERE, root.go:249-252, so `unknown output format …` loses to every
 /// earlier provider/tuning/MCP error exactly as in Go) → `OutputFormatWithoutMessage` when the flag
 /// was given and `message.is_none()` →
@@ -156,7 +157,7 @@ async fn run_agent(
     if inv.args.message.is_some() {
         inv.args.reject_unsupported()?;
         if inv.resume == Some(Resume::Pick) {
-            return Err(CliError::ResumeIdRequired);
+            return Err(ArgsError::ResumeIdRequired.into());
         }
     }
 
@@ -187,7 +188,7 @@ async fn run_agent(
         Some(s) => crate::headless::parse_output_format(s)?,
     };
     if settings.output_format_raw.is_some() && settings.message.is_none() {
-        return Err(CliError::OutputFormatWithoutMessage);
+        return Err(ArgsError::OutputFormatWithoutMessage.into());
     }
 
     // root.go:259 — Go's headless-vs-interactive branch: no `-m` IS the interactive run (`TUI_CONTRACTS` §11).
@@ -271,7 +272,7 @@ fn assemble_tools(
     let agent = if settings.agent_mode {
         let root = project_root
             .clone()
-            .ok_or_else(|| CliError::Cwd(cwd_err()))?;
+            .ok_or_else(|| SetupError::Cwd(cwd_err()))?;
         AgentOptions {
             enabled: true,
             root,
@@ -365,7 +366,7 @@ async fn run_headless(
             }
             // root.go:107-109, deferred out of `resolve_run` and re-raised byte-identically here (D-52).
             if provider.model().is_empty() {
-                return Err(CliError::ModelRequired);
+                return Err(ArgsError::ModelRequired.into());
             }
             // root.go:326-333: `-M` is the only flag left that a session must not overwrite, so temperature,
             // effort and the window always replay — a resumed run is the run it resumes. The replayed window
@@ -445,11 +446,11 @@ async fn run_headless(
     manager.close().await;
 
     // `once` already turned every failure under a cancelled token into `ChatError::Interrupted` (CONTRACTS §6.2);
-    // it has to arrive at `main` as `CliError::Interrupted` to become exit 130 rather than a generic 1
+    // it has to arrive at `main` as `RunError::Interrupted` to become exit 130 rather than a generic 1
     // (DIVERGENCES I-03).
     outcome.map(|_| ()).map_err(|e| match e {
-        crate::headless::ChatError::Interrupted => CliError::Interrupted,
-        other => CliError::Chat(other),
+        crate::headless::ChatError::Interrupted => RunError::Interrupted.into(),
+        other => RunError::Chat(other).into(),
     })
 }
 

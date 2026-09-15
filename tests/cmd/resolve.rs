@@ -14,7 +14,10 @@ use iota::app::env::Env;
 use iota::cmd::io::Streams;
 use iota::cmd::list::{provider_line, run_list};
 use iota::cmd::window::parse_window_size;
-use iota::cmd::{Cli, CliError, Command, Config, Invocation, ProviderConfig, Resume, resolve_run};
+use iota::cmd::{
+    ArgsError, Cli, CliError, Command, Config, Invocation, ProviderConfig, Resume, SetupError,
+    resolve_run,
+};
 use pretty_assertions::assert_eq;
 
 fn cli(args: &[&str]) -> Cli {
@@ -465,7 +468,8 @@ fn resolve_precedence_key_env_then_config() {
     );
     assert!(matches!(
         err,
-        CliError::ApiKeyRequired { env: "OPENAI_API_KEY", ref provider } if provider == "p"
+        CliError::Setup(SetupError::ApiKeyRequired { env: "OPENAI_API_KEY", ref provider })
+            if provider == "p"
     ));
 
     // An unconfigured built-in type is still an endpoint an agent may name.
@@ -478,7 +482,7 @@ fn resolve_precedence_key_env_then_config() {
     let odd = config("providers:\n  odd: {type: custom}\nagents:\n  a:\n    models: [\"odd:x\"]\n");
     assert!(matches!(
         resolve(&["run", "a"], &odd, &[("API_KEY", "")]).unwrap_err(),
-        CliError::ApiKeyRequired { env: "API_KEY", .. }
+        CliError::Setup(SetupError::ApiKeyRequired { env: "API_KEY", .. })
     ));
     let s = resolve(&["run", "a"], &odd, &[("API_KEY", "generic")]).unwrap();
     assert_eq!(s.api_key, "generic");
@@ -488,7 +492,10 @@ fn resolve_precedence_key_env_then_config() {
         "agents:\n  a:\n    models: [\"openai:gpt-4o\"]\n    system_file: /nonexistent/iota-sys.md\n",
     );
     let err = resolve(&["run", "a"], &bad, &[("OPENAI_API_KEY", "k")]).unwrap_err();
-    assert!(matches!(err, CliError::Config(_)), "{err}");
+    assert!(
+        matches!(err, CliError::Setup(SetupError::Config(_))),
+        "{err}"
+    );
     assert!(
         err.to_string()
             .starts_with("system_file: open /nonexistent/iota-sys.md: "),
@@ -533,11 +540,11 @@ fn resolve_stdin_message_trimmed_and_empty_error() {
 
     let err = resolve_run(&args, &cfg, &env, &mut " \n\t".as_bytes(), &mut |_| {}).unwrap_err();
     assert_eq!(err.to_string(), "no message provided via stdin");
-    assert!(matches!(err, CliError::EmptyStdin));
+    assert!(matches!(err, CliError::Args(ArgsError::EmptyStdin)));
 
     let err = resolve_run(&args, &cfg, &env, &mut FailingStdin, &mut |_| {}).unwrap_err();
     assert_eq!(err.to_string(), "failed to read from stdin: boom");
-    assert!(matches!(err, CliError::Stdin(_)));
+    assert!(matches!(err, CliError::Args(ArgsError::Stdin(_))));
 
     // Any other -m value is used as-is (not trimmed) and never touches stdin.
     let args = inv(&["run", "a", "-m", "  spaced  "]);
@@ -548,7 +555,10 @@ fn resolve_stdin_message_trimmed_and_empty_error() {
     let args = inv(&["run", "a", "-m", "-"]);
     let err =
         resolve_run(&args, &cfg, &Env::default(), &mut FailingStdin, &mut |_| {}).unwrap_err();
-    assert!(matches!(err, CliError::ApiKeyRequired { .. }));
+    assert!(matches!(
+        err,
+        CliError::Setup(SetupError::ApiKeyRequired { .. })
+    ));
 }
 
 /// POLICY F-03: `-m ""` is an error, not an interactive run.
@@ -557,11 +567,11 @@ fn resolve_message_empty_is_error() {
     let cfg = simple();
     let err = resolve(&["run", "a", "-m", ""], &cfg, &[("OPENAI_API_KEY", "k")]).unwrap_err();
     assert_eq!(err.to_string(), "--message must not be empty");
-    assert!(matches!(err, CliError::MessageEmpty));
+    assert!(matches!(err, CliError::Args(ArgsError::MessageEmpty)));
     // …even without a model: the message rule precedes the model rule.
     let picker = config("agents:\n  a:\n    models: [\"openai:*\"]\n");
     let err = resolve(&["run", "a", "-m", ""], &picker, &[("OPENAI_API_KEY", "k")]).unwrap_err();
-    assert!(matches!(err, CliError::MessageEmpty));
+    assert!(matches!(err, CliError::Args(ArgsError::MessageEmpty)));
 }
 
 /// No `-m` → `message: None` and NO `ModelRequired` (Go: `chatMessage == ""` is the interactive branch; `run`
@@ -580,7 +590,7 @@ fn resolve_message_absent_is_none() {
         err.to_string(),
         "--model/-M is required when using --message/-m"
     );
-    assert!(matches!(err, CliError::ModelRequired));
+    assert!(matches!(err, CliError::Args(ArgsError::ModelRequired)));
 
     // The agent's own candidate satisfies the rule.
     let cfg = simple();
@@ -609,7 +619,10 @@ fn resolve_config_temperature_is_range_checked() {
     };
     let err = resolve(&["run", "a"], &tuned("3.5"), &env).unwrap_err();
     assert_eq!(err.to_string(), "config temperature 3.5: want 0.0-2.0");
-    assert!(matches!(err, CliError::ConfigTemperature(t) if t.to_bits() == 3.5_f64.to_bits()));
+    assert!(matches!(
+        err,
+        CliError::Setup(SetupError::ConfigTemperature(t)) if t.to_bits() == 3.5_f64.to_bits()
+    ));
     assert_eq!(
         resolve(&["run", "a"], &tuned("-0.5"), &env)
             .unwrap_err()
@@ -665,14 +678,17 @@ agents:
         err.to_string(),
         "unknown agent \"codr\"\n  configured agents: coder, reviewer"
     );
-    assert!(matches!(err, CliError::UnknownAgent { .. }));
+    assert!(matches!(
+        err,
+        CliError::Args(ArgsError::UnknownAgent { .. })
+    ));
 
     // A model, a provider and a built-in type are NOT runs — the four-namespace lookup is gone.
     for name in ["mid", "zeta", "openai"] {
         assert!(
             matches!(
                 resolve(&["run", name], &cfg, &[]).unwrap_err(),
-                CliError::UnknownAgent { .. }
+                CliError::Args(ArgsError::UnknownAgent { .. })
             ),
             "{name} must not be runnable"
         );
@@ -688,7 +704,7 @@ agents:
     // The agent lookup precedes the key check: no misleading "API key is required" for a typo.
     assert!(matches!(
         resolve(&["run", "codr"], &cfg, &[("OPENAI_API_KEY", "")]).unwrap_err(),
-        CliError::UnknownAgent { .. }
+        CliError::Args(ArgsError::UnknownAgent { .. })
     ));
 
     // An agent whose provider `type:` is not a built-in resolves and is rejected later, at construction
@@ -805,7 +821,7 @@ fn list_refuses_a_name_it_cannot_use() {
     );
     assert!(matches!(
         run(&["list", "models", "nosuch"]),
-        CliError::UnknownAgent { .. }
+        CliError::Args(ArgsError::UnknownAgent { .. })
     ));
 }
 
@@ -852,7 +868,7 @@ fn unsupported_flags_rejected() {
         err.to_string(),
         "flag --no-save is not supported in headless mode"
     );
-    assert!(matches!(err, CliError::UnsupportedFlag("--no-save")));
+    assert!(matches!(err, ArgsError::UnsupportedFlag("--no-save")));
     assert!(
         inv(&["run", "a", "-m", "hi"])
             .args
@@ -882,7 +898,7 @@ fn resolve_resume_defers_model_required() {
     // Without a resume the deferral does not apply.
     assert!(matches!(
         resolve(&["run", "-m", "hi"], &cfg, &env).unwrap_err(),
-        CliError::ModelRequired
+        CliError::Args(ArgsError::ModelRequired)
     ));
     // And a plain run carries no fragment.
     assert_eq!(
@@ -1065,10 +1081,10 @@ fn no_default_agent_is_refused_with_both_ways_out() {
     ] {
         let err = resolve(&[], &cfg, &[]).unwrap_err();
         assert_eq!(err.to_string(), WANT);
-        assert!(matches!(err, CliError::NoAgent));
+        assert!(matches!(err, CliError::Args(ArgsError::NoAgent)));
         assert!(matches!(
             resolve(&["run"], &cfg, &[]).unwrap_err(),
-            CliError::NoAgent
+            CliError::Args(ArgsError::NoAgent)
         ));
     }
 
@@ -1077,11 +1093,11 @@ fn no_default_agent_is_refused_with_both_ways_out() {
     let cfg = config("providers:\n  default: {type: openai, key: k}\n");
     assert!(matches!(
         resolve(&[], &cfg, &[]).unwrap_err(),
-        CliError::NoAgent
+        CliError::Args(ArgsError::NoAgent)
     ));
     assert!(matches!(
         resolve(&["run", "default"], &cfg, &[]).unwrap_err(),
-        CliError::UnknownAgent { .. }
+        CliError::Args(ArgsError::UnknownAgent { .. })
     ));
 }
 

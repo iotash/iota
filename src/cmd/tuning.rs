@@ -15,7 +15,7 @@
 
 use crate::provider::Provider;
 
-use crate::cmd::CliError;
+use crate::cmd::SetupError;
 use crate::config::Resolved;
 
 /// Fixed order: image → effort → `top_p` → temperature → `json_edits` → gen-params. Warnings carry the `Warning: `
@@ -29,7 +29,7 @@ pub(crate) fn apply(
     resolved: &Resolved,
     temperature: Option<f64>,
     warn: &mut dyn FnMut(String),
-) -> Result<(), CliError> {
+) -> Result<(), SetupError> {
     let kind = p.kind();
     let model_cfg = &resolved.model;
 
@@ -46,7 +46,7 @@ pub(crate) fn apply(
 
     // root.go:140-149
     if let effort @ Some(_) = crate::provider::Effort::optional(resolved.effort())
-        .map_err(|_| CliError::ConfigEffort(resolved.effort().to_owned()))?
+        .map_err(|_| SetupError::ConfigEffort(resolved.effort().to_owned()))?
     {
         if let Some(tunable) = p.as_tunable() {
             tunable.set_effort(effort);
@@ -60,7 +60,7 @@ pub(crate) fn apply(
     // root.go:150-159
     if let Some(top_p) = resolved.top_p() {
         if !(0.0..=1.0).contains(&top_p) {
-            return Err(CliError::ConfigTopP(top_p));
+            return Err(SetupError::ConfigTopP(top_p));
         }
         if let Some(tunable) = p.as_top_p_tunable() {
             tunable.set_top_p(Some(top_p));
@@ -127,7 +127,7 @@ mod tests {
     use crate::testing::FakeProvider;
 
     use super::{apply, warn_tools_without_calling};
-    use crate::cmd::CliError;
+    use crate::cmd::SetupError;
     use crate::config::{AgentConfig, ModelConfig, Resolved};
 
     /// A resolution carrying just this model.
@@ -139,7 +139,7 @@ mod tests {
     }
 
     /// Collects the warnings `apply` emitted, in order.
-    fn run(model: &ModelConfig, temperature: Option<f64>) -> (Result<(), CliError>, Vec<String>) {
+    fn run(model: &ModelConfig, temperature: Option<f64>) -> (Result<(), SetupError>, Vec<String>) {
         // A provider with NO optional capability at all.
         let mut p = FakeProvider::new()
             .with_kind(ProviderKind::Imagen)

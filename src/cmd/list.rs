@@ -15,7 +15,7 @@ use crate::app::env::Env;
 
 use crate::cmd::args::{ListCmd, ListWhat};
 use crate::cmd::resolve::resolve_agent;
-use crate::cmd::{CliError, io};
+use crate::cmd::{ArgsError, CliError, SetupError, io};
 use crate::config::{ApiKey, Config, ModelRef, ProviderConfig};
 
 /// `iota list [what] [<agent>]`. Nothing here touches the network or needs a key.
@@ -31,7 +31,7 @@ pub fn run_list(
         let word = what
             .to_possible_value()
             .map_or_else(String::new, |v| v.get_name().to_owned());
-        return Err(CliError::ListTakesNoName(word));
+        return Err(ArgsError::ListTakesNoName(word).into());
     }
     match what {
         ListWhat::Agents => list_agents(cfg, io),
@@ -168,7 +168,7 @@ pub fn provider_line(name: &str, raw_type: &str, provider_cfg: &ProviderConfig) 
 /// project bucket), because that is the set `iota resume <id>` can reach.
 fn list_sessions(dirs: &HostDirs, io: &mut io::Streams) -> Result<(), CliError> {
     let store = crate::session::SessionStore::from_dirs(dirs)?;
-    let sessions = store.list_all().map_err(CliError::ListSessions)?;
+    let sessions = store.list_all().map_err(SetupError::ListSessions)?;
     if sessions.is_empty() {
         writeln!(io.stdout, "No saved sessions.")?;
         return Ok(());

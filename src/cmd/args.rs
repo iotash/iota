@@ -171,7 +171,7 @@ pub enum ConfigAction {
 /// global argument.
 #[derive(clap::Args, Debug, Clone, Default)]
 pub struct RunArgs {
-    /// `-m/--message`: the single message; `-` reads stdin; `""` is `CliError::MessageEmpty` (F-03).
+    /// `-m/--message`: the single message; `-` reads stdin; `""` is `ArgsError::MessageEmpty` (F-03).
     #[arg(
         short = 'm',
         long = "message",
@@ -234,16 +234,16 @@ impl RunArgs {
         .find_map(|(given, name)| given.then_some(name))
     }
 
-    /// `--no-save` headlessly → `Err(CliError::UnsupportedFlag)`. It is the last of the interactive-only flags
+    /// `--no-save` headlessly → `Err(ArgsError::UnsupportedFlag)`. It is the last of the interactive-only flags
     /// (`-S/--system-input` is gone and the blank `--resume` became `iota resume` with no id, whose headless
-    /// refusal is [`CliError::ResumeIdRequired`](crate::cmd::CliError::ResumeIdRequired)).
+    /// refusal is [`ArgsError::ResumeIdRequired`](crate::cmd::ArgsError::ResumeIdRequired)).
     ///
     /// The function is PURE: it answers "would a headless run accept these flags?". The INTERACTIVE LIFT
     /// (`TUI_CONTRACTS` §11) lives at the ONE call site instead — [`crate::cmd::run`] asks only for a run that
     /// carries `-m`, the flag that decides Go's branch at root.go:259.
-    pub fn reject_unsupported(&self) -> Result<(), crate::cmd::resolve::CliError> {
+    pub fn reject_unsupported(&self) -> Result<(), crate::cmd::ArgsError> {
         if self.no_save {
-            return Err(crate::cmd::resolve::CliError::UnsupportedFlag("--no-save"));
+            return Err(crate::cmd::ArgsError::UnsupportedFlag("--no-save"));
         }
         Ok(())
     }

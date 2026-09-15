@@ -1,12 +1,10 @@
 //! Pure run resolution (cmd/root.go:46-123, 534-566): the agent lookup, the key/model/system precedence, the
 //! `-m -` stdin read, the message/model rules and the config temperature range check — everything `run`
-//! decides before it constructs a provider — plus `CliError`, the command's error type.
-
-use crate::provider::error::{ProviderError, UnknownProviderType};
-use crate::text::go_float;
+//! decides before it constructs a provider. The command's error type is `crate::cmd::error`.
 
 use crate::cmd::args::{Invocation, Resume};
-use crate::config::{ApiKey, Config, ConfigError, ModelConfig, ModelRef, Resolved};
+use crate::cmd::error::{ArgsError, CliError, SetupError};
+use crate::config::{ApiKey, Config, ModelConfig, ModelRef, Resolved};
 
 use crate::app::env::Env;
 
@@ -70,7 +68,7 @@ pub fn resolve_run(
     // `agents.default` when the config declares it.
     let name = match inv.agent.as_deref() {
         Some(name) => name,
-        None => cfg.default_agent().ok_or(CliError::NoAgent)?,
+        None => cfg.default_agent().ok_or(ArgsError::NoAgent)?,
     };
     let mut resolved = resolve_agent(cfg, name)?;
     if let Some(flag) = &inv.args.model {
@@ -92,10 +90,11 @@ pub fn resolve_run(
     let api_key = match api_key {
         ApiKey::Env { key, .. } | ApiKey::Config(key) => key,
         ApiKey::Missing { var } => {
-            return Err(CliError::ApiKeyRequired {
+            return Err(SetupError::ApiKeyRequired {
                 env: var,
                 provider: resolved.provider_name.clone(),
-            });
+            }
+            .into());
         }
     };
 
@@ -103,7 +102,7 @@ pub fn resolve_run(
     let message = match inv.args.message.as_deref() {
         None => None,
         Some("-") => Some(read_stdin_message(stdin)?),
-        Some("") => return Err(CliError::MessageEmpty),
+        Some("") => return Err(ArgsError::MessageEmpty.into()),
         Some(m) => Some(m.to_owned()),
     };
 
@@ -111,12 +110,14 @@ pub fn resolve_run(
     // session can supply it from its meta (root.go:323-325). `run` re-raises this exact error after the model
     // replay, so a provider-mismatched or model-less bundle still fails with Go's text (DIVERGENCES D-52).
     if message.is_some() && model.is_empty() && inv.resume.is_none() {
-        return Err(CliError::ModelRequired);
+        return Err(ArgsError::ModelRequired.into());
     }
 
     // root.go:114-123: the config default is range-checked (the `-t` flag that skipped the check is gone).
     let temperature = match resolved.temperature() {
-        Some(t) if !(0.0..=2.0).contains(&t) => return Err(CliError::ConfigTemperature(t)),
+        Some(t) if !(0.0..=2.0).contains(&t) => {
+            return Err(SetupError::ConfigTemperature(t).into());
+        }
         t => t,
     };
 
@@ -141,9 +142,9 @@ pub fn resolve_run(
 }
 
 /// The agent lookup, with the unknown-name error that lists the agents there ARE.
-pub(crate) fn resolve_agent(cfg: &Config, name: &str) -> Result<Resolved, CliError> {
+pub(crate) fn resolve_agent(cfg: &Config, name: &str) -> Result<Resolved, ArgsError> {
     cfg.resolve_agent(name)
-        .ok_or_else(|| CliError::UnknownAgent {
+        .ok_or_else(|| ArgsError::UnknownAgent {
             name: name.to_owned(),
             agents: cfg.agent_names(),
         })
@@ -247,149 +248,12 @@ fn model_at(r: &Resolved, cfg: &Config, provider: &str, id: &str) -> ModelConfig
 }
 
 /// root.go:95-104: read ALL of stdin, trim, reject an empty message.
-fn read_stdin_message(stdin: &mut dyn std::io::Read) -> Result<String, CliError> {
+fn read_stdin_message(stdin: &mut dyn std::io::Read) -> Result<String, ArgsError> {
     let mut data = Vec::new();
-    stdin.read_to_end(&mut data).map_err(CliError::Stdin)?;
+    stdin.read_to_end(&mut data).map_err(ArgsError::Stdin)?;
     let message = String::from_utf8_lossy(&data).trim().to_owned();
     if message.is_empty() {
-        return Err(CliError::EmptyStdin);
+        return Err(ArgsError::EmptyStdin);
     }
     Ok(message)
-}
-
-/// Why the command failed (cmd/root.go, config.go and the headless-only rules). `main` prints
-/// `Error: {e}` and exits 1, or 130 for `Interrupted`.
-#[derive(Debug, thiserror::Error)]
-pub enum CliError {
-    /// An interactive-only flag was given headlessly (DIVERGENCES D-23): `--no-save` is the last one.
-    #[error("flag {0} is not supported in headless mode")]
-    UnsupportedFlag(&'static str),
-    /// `iota resume -m "…"` with no id: what is missing headlessly is the picker, not the command.
-    #[error(
-        "iota resume needs a session id with -m (the picker is interactive): try `iota list sessions`"
-    )]
-    ResumeIdRequired,
-    /// A session-store failure on the resume path (resolution, location, meta or log read). Every `Display`
-    /// is byte-equal to the Go line it ports (CONTRACTS S§5).
-    #[error(transparent)]
-    Session(#[from] crate::session::SessionError),
-    /// No agent named and no `agents.default` to fall back to.
-    #[error(
-        "no agent to run: name one with `iota run <agent>` (see `iota list agents`), or add an `agents.default` entry — `iota config init` writes a starter config"
-    )]
-    NoAgent,
-    /// `iota run <name>` where `name` is not an `agents:` entry. It used to fall through to `models:`,
-    /// `providers:` and the built-in types; an agent is the only thing a run can name now.
-    #[error("unknown agent {name:?}{}", agent_hint(.agents))]
-    UnknownAgent {
-        /// The name as typed.
-        name: String,
-        /// Every configured agent, sorted (`BTreeMap` keys).
-        agents: Vec<String>,
-    },
-    /// No key in the environment and none in the config; names both places.
-    #[error("API key is required: set {env} or providers.{provider}.key in your config")]
-    ApiKeyRequired {
-        /// The env var of the resolved provider TYPE.
-        env: &'static str,
-        /// The `providers:` entry the run landed on.
-        provider: String,
-    },
-    /// `-m -` could not read stdin.
-    #[error("failed to read from stdin: {0}")]
-    Stdin(#[source] std::io::Error),
-    /// `-m -` read only whitespace.
-    #[error("no message provided via stdin")]
-    EmptyStdin,
-    /// `-m ""` (POLICY F-03).
-    #[error("--message must not be empty")]
-    MessageEmpty,
-    /// `-m` without a model from `-M` or the agent's candidate set.
-    #[error("--model/-M is required when using --message/-m")]
-    ModelRequired,
-    /// The config `temperature:` is outside 0.0-2.0 (the `-t` flag is never checked).
-    #[error("config temperature {}: want 0.0-2.0", go_float(*.0))]
-    ConfigTemperature(f64),
-    /// The config `effort:` is not one of the five levels.
-    #[error("config effort {0:?}: want low|medium|high|xhigh|max")]
-    ConfigEffort(String),
-    /// The config `top_p:` is outside 0.0-1.0.
-    #[error("config top_p {}: want 0.0-1.0", go_float(*.0))]
-    ConfigTopP(f64),
-    /// `--output-format` without `-m` (root.go:253).
-    #[error("--output-format applies to -m runs only")]
-    OutputFormatWithoutMessage,
-    /// The working directory could not be resolved (agent mode).
-    #[error("failed to resolve working directory: {0}")]
-    Cwd(#[source] std::io::Error),
-    /// `--mcp ""` (POLICY F-02).
-    #[error(transparent)]
-    McpFlag(#[from] crate::mcp::config::McpFlagError),
-    /// The resolved type string is not a built-in kind (provider.go:329 text).
-    #[error(transparent)]
-    UnknownType(#[from] UnknownProviderType),
-    /// Provider construction or the run's provider failure.
-    #[error(transparent)]
-    Provider(#[from] ProviderError),
-    /// A config-level failure (`system_file`, unknown `mcp_servers` name).
-    #[error(transparent)]
-    Config(#[from] ConfigError),
-    /// The run loop failed (incl. `unknown output format …`).
-    #[error(transparent)]
-    Chat(#[from] crate::headless::ChatError),
-    /// SIGINT/SIGTERM cancelled the run (exit 130; DIVERGENCES I-03).
-    #[error("interrupted")]
-    Interrupted,
-    /// The interactive branch was reached without a terminal on stdin/stdout (root.go:400).
-    #[error("interactive mode requires a terminal; use -m/--message for piped input")]
-    NotATerminal,
-    /// `--no-save` with a resume: an ephemeral start and a resumed bundle are opposite intents (root.go:285).
-    #[error("--no-save cannot be combined with iota resume")]
-    NoSaveWithResume,
-    /// `iota resume` whose picker found nothing, or that the user walked away from (root.go:314).
-    #[error("no session to resume")]
-    NoSessionToResume,
-    /// A resumed bundle's meta or `context_window:` failed to parse (root.go:365-385).
-    #[error("{label}: {source}")]
-    ContextWindow {
-        /// Which of the three sources failed, as Go names it.
-        label: String,
-        /// The parse failure.
-        #[source]
-        source: crate::config::window::WindowSizeError,
-    },
-    /// The interactive session picker, or `iota list sessions`, could not read the store (root.go:305).
-    #[error("failed to list sessions: {0}")]
-    ListSessions(#[source] crate::session::SessionError),
-    /// `iota list <what> <name>` where `<what>` is not `models` — only a candidate set belongs to one agent.
-    #[error("iota list {0} takes no argument (only `iota list models <agent>` does)")]
-    ListTakesNoName(String),
-    /// `iota config init` where the file already exists: a config is hand-written state, so it is never
-    /// overwritten.
-    #[error("{0} already exists (use -c <path> to write somewhere else)")]
-    ConfigExists(String),
-    /// `iota config init` with no `$HOME` to put `~/.iota.yaml` in.
-    #[error("$HOME is not defined: use -c <path> to say where the config should go")]
-    NoHome,
-    /// A new interactive bundle could not be created (root.go:340).
-    #[error("failed to create session: {0}")]
-    CreateSession(#[source] crate::session::SessionError),
-    /// The interactive facade failed.
-    #[error(transparent)]
-    Ui(#[from] crate::ui::facade::UiError),
-    /// A `spawn_blocking` worker could not be joined.
-    #[error("{0}")]
-    Join(String),
-    /// An I/O failure with no more specific home (runtime construction, output streams).
-    #[error("{0}")]
-    Io(#[from] std::io::Error),
-}
-
-/// The [`CliError::UnknownAgent`] hint: the agents there are, or the one command that creates some.
-fn agent_hint(agents: &[String]) -> String {
-    if agents.is_empty() {
-        "\n  no agents are configured — run `iota config init` to write a starter config".to_owned()
-    } else {
-        format!("\n  configured agents: {}", agents.join(", "))
-    }
 }

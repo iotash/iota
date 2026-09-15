@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 //! `iota` binary (main.go + the signal/exit-code policy): parse the CLI (clap exits 2 on argument errors),
 //! read the environment once (`Env::process`), build the multi-thread runtime, arm SIGINT/SIGTERM, run, and map the outcome — `Ok` → 0;
-//! `CliError::Interrupted` → 130 (DIVERGENCES I-03); any other error → `Error: {e}` on stderr, 1 (no usage
+//! `RunError::Interrupted` → 130 (DIVERGENCES I-03); any other error → `Error: {e}` on stderr, 1 (no usage
 //! block, DIVERGENCES I-04). Everything else lives in the library (`iota::cmd::run`).
 
 use std::io::{IsTerminal as _, Write};
@@ -9,7 +9,7 @@ use std::io::{IsTerminal as _, Write};
 use clap::Parser;
 use iota::app::color::ColorMode;
 use iota::app::env::Env;
-use iota::cmd::{Cli, CliError, io::Streams, run, signals};
+use iota::cmd::{Cli, CliError, RunError, io::Streams, run, signals};
 use tokio_util::sync::CancellationToken;
 
 fn main() {
@@ -40,11 +40,11 @@ fn main() {
                 run(cli, env, cancel, &mut io).await
             })
         }
-        Err(e) => Err(CliError::Io(e)),
+        Err(e) => Err(RunError::Io(e).into()),
     };
     let code = match outcome {
         Ok(()) => 0,
-        Err(CliError::Interrupted) => 130,
+        Err(CliError::Run(RunError::Interrupted)) => 130,
         Err(e) => {
             let _ = writeln!(io.stderr, "Error: {e}");
             1

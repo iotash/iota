@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use crate::app::env::Env;
 use crate::app::{CONFIG_BASE, CONFIG_EXTS, HostDirs};
 use crate::cmd::args::{ConfigAction, ConfigCmd};
-use crate::cmd::{CliError, io};
+use crate::cmd::{CliError, SetupError, io};
 use crate::config::{Config, DEFAULT_AGENT};
 
 /// The starter config `iota config init` writes. Every layer gets one entry and one sentence saying what it
@@ -123,7 +123,7 @@ fn init(explicit: Option<&Path>, dirs: &HostDirs, io: &mut io::Streams) -> Resul
         None => default_config_path(dirs)?,
     };
     if path.exists() {
-        return Err(CliError::ConfigExists(path.display().to_string()));
+        return Err(SetupError::ConfigExists(path.display().to_string()).into());
     }
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)?;
@@ -138,11 +138,11 @@ fn init(explicit: Option<&Path>, dirs: &HostDirs, io: &mut io::Streams) -> Resul
 }
 
 /// `~/.iota.yaml` — the global config, in the first of the two extensions.
-fn default_config_path(dirs: &HostDirs) -> Result<PathBuf, CliError> {
+fn default_config_path(dirs: &HostDirs) -> Result<PathBuf, SetupError> {
     dirs.home
         .as_ref()
         .map(|home| home.join(format!("{CONFIG_BASE}{}", CONFIG_EXTS[0])))
-        .ok_or(CliError::NoHome)
+        .ok_or(SetupError::NoHome)
 }
 
 #[cfg(test)]
