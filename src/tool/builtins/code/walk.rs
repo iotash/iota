@@ -1,4 +1,4 @@
-//! Gitignore-aware file walk (tool/code.go:160-198) on `walkdir` + the `ignore` crate's gitignore matcher
+//! Gitignore-aware file walk on `walkdir` + the `ignore` crate's gitignore matcher
 //! (real git semantics — DIVERGENCES D-17).
 
 use std::{ffi::OsStr, path::Path};
@@ -8,7 +8,7 @@ use walkdir::WalkDir;
 
 /// `root/.gitignore` via `GitignoreBuilder::new(root).add(..).build()`; None when absent/unreadable.
 ///
-/// Recompiled on every `glob`/`grep` call, as Go does, so an edit to the file applies immediately.
+/// Recompiled on every `glob`/`grep` call, so an edit to the file applies immediately.
 pub(crate) fn ignore_matcher(root: &Path) -> Option<ignore::gitignore::Gitignore> {
     let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
     if builder.add(root.join(".gitignore")).is_some() {
