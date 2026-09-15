@@ -1,5 +1,4 @@
 //! `code` toolset integration tests (`tool/code_test.go`, `tool/parallel_test.go:15-55`).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::{
     collections::{HashMap, HashSet},
@@ -112,10 +111,8 @@ fn set_mtime(path: &Path, when: SystemTime) {
         .set_modified(when)
         .expect("set mtime");
 }
-
-// Go: tool/code_test.go:58
 #[tokio::test]
-async fn test_code_path_jail() {
+async fn code_tools_refuse_paths_outside_the_project_root() {
     let (dir, root, tools) = code_project(&[("a.txt", "hello\n")], "");
     let outside = dir.path().join("outside.txt");
     fs::write(&outside, "secret").expect("write outside");
@@ -145,10 +142,8 @@ async fn test_code_path_jail() {
         "absolute-inside read failed: {out:?}"
     );
 }
-
-// Go: tool/code_test.go:82
 #[tokio::test]
-async fn test_code_glob() {
+async fn glob_lists_matching_files_relative_to_the_root() {
     let (_dir, root, tools) = code_project(
         &[
             ("pkg/old.go", "package pkg\n"),
@@ -185,10 +180,8 @@ async fn test_code_glob() {
         "no-match glob = {out:?}"
     );
 }
-
-// Go: tool/code_test.go:120
 #[tokio::test]
-async fn test_code_grep() {
+async fn grep_searches_with_context_and_respects_the_ignore_files() {
     let (_dir, root, tools) = code_project(
         &[
             (
@@ -255,10 +248,8 @@ async fn test_code_grep() {
         "bad regex = {out:?}"
     );
 }
-
-// Go: tool/code_test.go:154
 #[tokio::test]
-async fn test_code_list_dir() {
+async fn list_dir_lists_entries_with_a_directory_marker() {
     let (_dir, _root, tools) = code_project(&[("pkg/a.go", "x"), ("top.txt", "12345")], "");
 
     let out = call(&tools, "list_dir", json!({})).await;
@@ -276,10 +267,8 @@ async fn test_code_list_dir() {
         "missing dir = {out:?}"
     );
 }
-
-// Go: tool/code_test.go:169
 #[tokio::test]
-async fn test_code_read_file_window() {
+async fn read_file_returns_a_line_window() {
     let (_dir, root, tools) = code_project(&[("f.txt", "l1\nl2\nl3\nl4\nl5\n")], "");
 
     let out = call(&tools, "read_file", json!({ "path": "f.txt" })).await;
@@ -313,10 +302,8 @@ async fn test_code_read_file_window() {
         "binary read = {out:?}"
     );
 }
-
-// Go: tool/code_test.go:201
 #[tokio::test]
-async fn test_code_edit_file() {
+async fn edit_file_replaces_a_unique_occurrence_and_refuses_ambiguity() {
     let (_dir, root, tools) = code_project(&[("f.go", "aaa\nbbb\naaa\n")], "");
 
     // Read-before-edit: an unread file is rejected.
@@ -421,7 +408,7 @@ async fn test_code_edit_file() {
 // (`tool/code.go:740-755`: `string(data)` holds arbitrary bytes, `strings.Count`/`Replace` count them,
 // `[]byte(updated)` hands the same bytes back), so these five tests pin a Go behaviour the port lost.
 #[tokio::test]
-async fn test_code_edit_file_preserves_latin1_bytes() {
+async fn edit_file_preserves_latin1_bytes() {
     let (_dir, root, tools) = code_project(&[], "");
     // 0xE9 = é, 0xEF = ï in Latin-1; neither is a valid UTF-8 sequence on its own.
     let before = b"// caf\xe9 counter\nlet x = 1;\n// na\xefve\n";
@@ -446,7 +433,7 @@ async fn test_code_edit_file_preserves_latin1_bytes() {
 // punctuation (Shift-JIS `ソ` = 83 5C, where 5C is `\`; `本` = 96 7B, where 7B is `{`), which is exactly
 // the shape a decode-and-rewrite mangles and a byte splice cannot.
 #[tokio::test]
-async fn test_code_edit_file_preserves_shift_jis_and_gbk_bytes() {
+async fn edit_file_preserves_shift_jis_and_gbk_bytes() {
     let (_dir, root, tools) = code_project(&[], "");
 
     // Shift-JIS: 日本語 = 93 FA 96 7B 8C EA, ソ = 83 5C.
@@ -487,7 +474,7 @@ async fn test_code_edit_file_preserves_shift_jis_and_gbk_bytes() {
 // both as U+FFFD and wrote `EF BF BD` for each, so the file came back with a replacement character it
 // never had and no way to tell which was which.
 #[tokio::test]
-async fn test_code_edit_file_keeps_real_replacement_characters_apart() {
+async fn edit_file_keeps_real_replacement_characters_apart() {
     let (_dir, root, tools) = code_project(&[], "");
     let before = ["genuine: \u{fffd}\n".as_bytes(), b"edit me\nraw: \xff\n"].concat();
     let (out, after) = edit_bytes(
@@ -516,7 +503,7 @@ async fn test_code_edit_file_keeps_real_replacement_characters_apart() {
 // New: the needle is a JSON string, so it may be multi-byte UTF-8 — searching bytes must find it and
 // `replace_all` must replace every occurrence, in a file whose OTHER bytes are not UTF-8 at all.
 #[tokio::test]
-async fn test_code_edit_file_multibyte_utf8_old_string() {
+async fn edit_file_finds_a_multibyte_needle_in_a_non_utf8_file() {
     let (_dir, root, tools) = code_project(&[], "");
     let before = [
         "标题: 配置\n说明: 配置文件\n".as_bytes(),
@@ -556,7 +543,7 @@ async fn test_code_edit_file_multibyte_utf8_old_string() {
 // such a file IS editable — and there byte fidelity is the whole answer: NULs and undecodable bytes
 // come back exactly as they went in.
 #[tokio::test]
-async fn test_code_edit_file_binary_policy() {
+async fn edit_file_treats_a_binary_file_as_bytes() {
     let (_dir, root, tools) = code_project(&[], "");
 
     // A NUL inside the sniff window: read_file refuses, so edit_file never gets a fresh read.
@@ -597,10 +584,8 @@ async fn test_code_edit_file_binary_policy() {
     let expected = [&b"x".repeat(8000)[..], b"\nMARKER\n\x00\xfe tail\n"].concat();
     assert_eq!(after, expected);
 }
-
-// Go: tool/code_test.go:258
 #[tokio::test]
-async fn test_code_write_file() {
+async fn write_file_creates_parents_and_overwrites() {
     let (_dir, root, tools) = code_project(&[], "");
 
     // New file: no prior read needed, parents created.
@@ -644,10 +629,8 @@ async fn test_code_write_file() {
         "missing content = {out:?}"
     );
 }
-
-// Go: tool/code_test.go:291
 #[tokio::test]
-async fn test_code_approval() {
+async fn mutating_code_tools_need_approval_unless_auto_write() {
     let (_dir, root, _tools) = code_project(&[], "");
     let reg = registry(&root, "code:\n");
     for (name, want) in [
@@ -686,10 +669,8 @@ fn registry(root: &Path, yaml: &str) -> Registry {
     assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
     reg
 }
-
-// Go: tool/code_test.go:381
 #[tokio::test]
-async fn test_code_set_read_only() {
+async fn a_read_only_code_set_offers_no_mutating_tool() {
     let (_dir, root, _tools) = code_project(&[], "");
     let tools = tools_at(&root, "read_only: true\n");
 
@@ -703,10 +684,8 @@ async fn test_code_set_read_only() {
         );
     }
 }
-
-// Go: tool/code_test.go:413
 #[test]
-fn test_code_set_read_only_rejects_auto_write() {
+fn read_only_and_auto_write_contradict_each_other() {
     let dir = tempfile::tempdir().expect("tempdir");
     let cfg = node("read_only: true\nauto_write: true\n");
     let Err(err) = new_code_set(&env_at(dir.path()), cfg.as_ref()) else {
@@ -718,9 +697,9 @@ fn test_code_set_read_only_rejects_auto_write() {
     );
 }
 
-// Go: tool/parallel_test.go:15 (the `shell` half belongs to the shell set — WP09).
+// WP09).
 #[test]
-fn test_only_safe_tools_opt_into_parallel() {
+fn only_the_read_only_code_tools_opt_into_parallel() {
     let dir = tempfile::tempdir().expect("tempdir");
     let tools = tools_at(dir.path(), "");
     let want_parallel: HashSet<&str> = ["glob", "grep", "list_dir", "read_file"]
@@ -892,11 +871,11 @@ fn descriptions_and_schemas_match_go() {
     );
 }
 
-// Go: tool/codepath_test.go:84 TestFileToolHeaderSummary — the capability is what switches the
+// The capability is what switches the
 // digest off, and an absent path yields a bare name rather than a digest of the remaining
 // arguments: `edit_file`'s `new_string` must never reach a header.
 #[test]
-fn test_file_tool_header_summary() {
+fn the_file_tools_header_is_the_path_or_a_bare_name() {
     let (_dir, _root, tools) = code_project(&[], "");
     let edit = &tools["edit_file"];
 

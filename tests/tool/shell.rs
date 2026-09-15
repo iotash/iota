@@ -7,7 +7,6 @@
 //! the same way (no sandbox binary, or a nested sandbox that refuses to nest — and Windows has none at all),
 //! unless `IOTA_SANDBOX_REQUIRED=1` is set, which turns that skip into a red test naming what is missing
 //! (`ci.sh` sets it: a machine without bubblewrap fails the gate instead of passing it quietly).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 // The ★ WP00 fixture is included directly: `mod common;` would also pull in the MCP/stub fixtures this file
 // never uses, and `tests/common/mod.rs` (not ours to edit) does not allow `unused_imports`.
@@ -182,10 +181,8 @@ async fn sandbox_runs(sb: &Sandbox, dir: &Path) -> bool {
 async fn run(opts: Options) -> RunResult {
     exec::run(&CancellationToken::new(), opts).await
 }
-
-// Go: tool/shell_test.go:30
 #[tokio::test]
-async fn test_shell_call() {
+async fn the_shell_tool_runs_a_command_and_reports_its_output_and_status() {
     if skip_unless_posix("test_shell_call") {
         return;
     }
@@ -383,10 +380,8 @@ fn shell_calls_batch() {
         assert!(tool.supports_parallel(Some(&args)));
     }
 }
-
-// Go: tool/shell_test.go:66
 #[test]
-fn test_shell_approval_matrix() {
+fn shell_approval_follows_the_auto_run_and_write_matrix() {
     let approval = |cfg: &str| {
         let (_dir, _root, tool) = new_shell(cfg);
         tool.requires_approval()
@@ -406,10 +401,8 @@ fn test_shell_approval_matrix() {
         "auto approval must mirror exec::available()"
     );
 }
-
-// Go: tool/shell_test.go:87
 #[test]
-fn test_shell_set_config_errors() {
+fn a_bad_shell_config_names_its_fault() {
     // The pre-shell allow-list shape is no longer valid: warn and skip the set.
     let (_dir, env, _root) = shell_env();
     let mut warned = Vec::new();
@@ -452,10 +445,8 @@ fn test_shell_set_config_errors() {
         assert!(new_shell_set(&env, node(cfg).as_ref()).is_ok(), "{cfg:?}");
     }
 }
-
-// Go: tool/shell_test.go:133 (the "shell set enables its tool" subtest of TestBuildRegistry)
 #[tokio::test]
-async fn test_build_registry_shell_set_enables_the_tool() {
+async fn a_shell_key_enables_the_shell_tool() {
     let (_dir, env, _root) = shell_env();
     let mut warned: Vec<String> = Vec::new();
     let r = Registry::build(
@@ -485,10 +476,8 @@ async fn test_build_registry_shell_set_enables_the_tool() {
     // The registry routes the tool's approval answer (sandbox: off, no auto_run).
     assert!(r.requires_approval(SHELL_TOOL_NAME));
 }
-
-// Go: tool/shell_test.go:179
 #[test]
-fn test_shell_description_states_shell_state_contract() {
+fn the_shell_description_states_the_shell_state_contract() {
     // The contract is the same whichever interpreter runs the calls; the DIALECT it teaches is that
     // interpreter's own, and the first sentence names it. All three are checked on every platform — the
     // description is the model's only source for both facts, and it must never describe a different shell
@@ -610,10 +599,8 @@ fn test_shell_description_states_shell_state_contract() {
         })
     );
 }
-
-// Go: internal/shell/shell_test.go:17
 #[tokio::test]
-async fn test_run_cancel_kills_the_tree() {
+async fn cancelling_a_run_kills_the_whole_process_tree() {
     if skip_unless_posix("test_run_cancel_kills_the_tree") {
         return;
     }
@@ -641,10 +628,8 @@ async fn test_run_cancel_kills_the_tree() {
     );
     assert!(res.cancelled, "result = {res:?}, want Cancelled");
 }
-
-// Go: internal/shell/shell_test.go:32
 #[tokio::test]
-async fn test_run_cancel_kills_the_sandboxed_tree() {
+async fn cancelling_a_sandboxed_run_kills_the_whole_process_tree() {
     let (_dir, root, _outside, sb) = sandbox_fixture();
     if skip_unless_sandboxed("test_run_cancel_kills_the_sandboxed_tree", &sb, &root).await {
         return;
@@ -674,10 +659,8 @@ async fn test_run_cancel_kills_the_sandboxed_tree() {
     );
     assert!(res.cancelled, "result = {res:?}, want Cancelled");
 }
-
-// Go: internal/shell/shell_test.go:52
 #[tokio::test]
-async fn test_run_background_child_does_not_wedge() {
+async fn a_background_child_does_not_wedge_the_run() {
     if skip_unless_posix("test_run_background_child_does_not_wedge") {
         return;
     }
@@ -700,10 +683,8 @@ async fn test_run_background_child_does_not_wedge() {
     );
     assert_eq!(res.exit_code, 0);
 }
-
-// Go: internal/shell/shell_test.go:68
 #[tokio::test]
-async fn test_run_shell_semantics() {
+async fn the_run_keeps_shell_semantics() {
     if skip_unless_posix("test_run_shell_semantics") {
         return;
     }
@@ -760,10 +741,8 @@ async fn test_run_shell_semantics() {
     .await;
     assert_eq!(res.output, "out\nerr\nout2\n", "{res:?}");
 }
-
-// Go: internal/shell/shell_test.go:90
 #[tokio::test]
-async fn test_run_cancelled() {
+async fn a_run_cancelled_before_it_starts_reports_cancelled() {
     let dir = tempfile::tempdir().expect("tempdir");
     let cancel = CancellationToken::new();
     cancel.cancel();
@@ -782,10 +761,8 @@ async fn test_run_cancelled() {
         "pre-cancelled token should report Cancelled: {res:?}"
     );
 }
-
-// Go: internal/shell/shell_test.go:101
 #[tokio::test]
-async fn test_sandbox_isolation() {
+async fn the_sandbox_isolates_the_filesystem_and_the_network() {
     let (_dir, root, outside, sb) = sandbox_fixture();
     if skip_unless_sandboxed("test_sandbox_isolation", &sb, &root).await {
         return;
@@ -837,10 +814,8 @@ async fn test_sandbox_isolation() {
     );
     assert!(outside.join("g.txt").exists());
 }
-
-// Go: internal/shell/shell_test.go:141
 #[test]
-fn test_writable_paths() {
+fn the_writable_paths_are_the_project_and_the_temp_dirs() {
     let (dir, dirs) = temp_project(&[]);
     let root = dir.path().to_path_buf();
     let cache = dirs.cache.clone().expect("fixture cache");
@@ -878,10 +853,8 @@ fn test_writable_paths() {
     });
     assert_eq!(paths, vec![root, PathBuf::from("/tmp")]);
 }
-
-// Go: internal/shell/shell_test.go:156
 #[test]
-fn test_truncate_output() {
+fn truncate_output_keeps_head_and_tail_and_says_what_it_dropped() {
     // Byte cap: head and tail survive, the middle is elided.
     let head = "H".repeat(HEAD_BYTES);
     let tail = "T".repeat(TAIL_BYTES);
@@ -919,10 +892,8 @@ fn test_truncate_output() {
     // Small output passes through untouched.
     assert_eq!(truncate_output("short output"), "short output");
 }
-
-// Go: internal/shell/shell_test.go:191
 #[test]
-fn test_capped_buffer() {
+fn the_capped_buffer_stops_at_its_cap() {
     let mut b = CappedBuffer::default();
     b.write(b"start-");
     let chunk = "x".repeat(8 * 1024);
@@ -949,10 +920,8 @@ fn test_capped_buffer() {
     s.write(b"world");
     assert_eq!(s.into_string(), "hello world");
 }
-
-// Go: internal/shell/shell_test.go:220
 #[tokio::test]
-async fn test_run_output_capped() {
+async fn a_runs_output_is_capped() {
     if skip_unless_posix("test_run_output_capped") {
         return;
     }
@@ -1042,11 +1011,11 @@ async fn shell_bad_cwd_reports_failed_to_run() {
     assert!(!out.contains("[exit code"), "{out:?}");
 }
 
-// Go: tool/codepath_test.go:124 TestBashHeaderSummary — for the shell tool the command IS the call: no
+// For the shell tool the command IS the call: no
 // `command:` label, a width budget that fits a real pipeline, the first line only, and an explicit
 // cwd folded into the shell idiom for it.
 #[tokio::test]
-async fn test_shell_header_summary() {
+async fn the_shell_header_is_the_first_command_line_within_budget() {
     let (_dir, root, tool) = new_shell("sandbox: off\n");
     let deploy = root.join("deploy");
     let args = |v: serde_json::Value| -> JsonObject {
