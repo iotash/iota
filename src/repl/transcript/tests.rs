@@ -964,6 +964,89 @@ fn wrap_by_width_hard_wraps_by_display_width_without_splitting_wide_runes() {
     }
 }
 
+// --- the error block ---------------------------------------------------------
+
+// `error_block` renders headline + tool-result-idiom detail rows in ONE block (one separator), and
+// groups with adjacent error output like `error()`.
+#[test]
+fn an_error_block_is_one_block_that_groups_with_adjacent_errors() {
+    let rec = Rec::default();
+    let tr = Transcript::new(rec.ui(), None);
+
+    tr.user("hi");
+    tr.error_block(
+        "Rate limited (429)",
+        &["Rate limit reached".to_owned(), "second row".to_owned()],
+    );
+    tr.error_block("Provider server error (500)", &[]); // consecutive: same block
+
+    let want = [
+        "user:hi".to_owned(),
+        "print:".to_owned(), // one separator opens the error block
+        format!(
+            "print:{}",
+            [
+                red("✗ Rate limited (429)"),
+                dim("  ⎿ Rate limit reached"),
+                dim("    second row"),
+            ]
+            .join("|")
+        ),
+        format!("print:{}", red("✗ Provider server error (500)")),
+    ];
+    assert_eq!(rec.joined(), want.join("\n"));
+}
+
+// Overlong detail rows pre-wrap under the hanging indent (width 80 → wrap at 75), so region-level
+// wrapping never restarts a continuation row at column zero.
+#[test]
+fn error_block_detail_rows_pre_wrap_under_the_hanging_indent() {
+    let rec = Rec::default();
+    let tr = Transcript::new(rec.ui(), None);
+    tr.user("hi");
+    let long = "x".repeat(100);
+    tr.error_block("Rate limited (429)", std::slice::from_ref(&long));
+
+    let want = [
+        "user:hi".to_owned(),
+        "print:".to_owned(),
+        format!(
+            "print:{}",
+            [
+                red("✗ Rate limited (429)"),
+                dim(&format!("  ⎿ {}", &long[..75])),
+                dim(&format!("    {}", &long[75..])),
+            ]
+            .join("|")
+        ),
+    ];
+    assert_eq!(rec.joined(), want.join("\n"));
+}
+
+// Detail entries carrying embedded newlines are split and indented per row (blank rows dropped).
+#[test]
+fn error_block_detail_entries_split_on_embedded_newlines() {
+    let rec = Rec::default();
+    let tr = Transcript::new(rec.ui(), None);
+    tr.user("hi");
+    tr.error_block("Request failed", &["line one\nline two\n\n".to_owned()]);
+
+    let want = [
+        "user:hi".to_owned(),
+        "print:".to_owned(),
+        format!(
+            "print:{}",
+            [
+                red("✗ Request failed"),
+                dim("  ⎿ line one"),
+                dim("    line two"),
+            ]
+            .join("|")
+        ),
+    ];
+    assert_eq!(rec.joined(), want.join("\n"));
+}
+
 // --- the notify digest -------------------------------------------------------
 
 // The notify digest: markdown stripping, blank skipping, the "Response ready" fallback, and the

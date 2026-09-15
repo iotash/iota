@@ -45,8 +45,6 @@ pub use commands::session::session_label;
 #[doc(hidden)]
 pub use diff::render_diff;
 #[doc(hidden)]
-pub use errors::{ErrorReport, describe_error};
-#[doc(hidden)]
 pub use interrupt::{InterruptDecision, finalize_interrupt};
 #[doc(hidden)]
 pub use meter::{ContextBudget, CtxMeter};
@@ -54,8 +52,6 @@ pub use meter::{ContextBudget, CtxMeter};
 pub use retry::retry_round;
 #[doc(hidden)]
 pub use title::is_read_only_viewer;
-#[doc(hidden)]
-pub use transcript::Transcript;
 
 /// Why the interactive loop failed (loop errors never exit — only these do).
 #[derive(Debug, thiserror::Error)]

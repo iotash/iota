@@ -7,7 +7,6 @@ mod compact;
 mod debug;
 mod diff;
 mod edit;
-mod errors;
 mod export;
 mod file;
 mod host;

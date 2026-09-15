@@ -155,3 +155,150 @@ fn non_empty_lines(s: &str) -> Vec<String> {
         .map(str::to_owned)
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    //! `describe_error` classification (formerly `tests/repl/errors.rs`, reached through a `#[doc(hidden)]`
+    //! re-export; moved in-file 2026-09-15).
+
+    use super::{ErrorReport, describe_error};
+    use crate::chat::ChatError;
+    use crate::llm::{LlmError, StatusError};
+    use crate::provider::error::{ProviderError, WireOp};
+    use pretty_assertions::assert_eq;
+
+    fn status_err(status: u16, body: &str) -> LlmError {
+        LlmError::Status(StatusError {
+            status,
+            status_text: "Status Text".to_owned(),
+            method: "POST".to_owned(),
+            url: "https://api.example.com/v1/x".to_owned(),
+            body: body.to_owned(),
+        })
+    }
+
+    /// A wire failure as the chat layer sees it.
+    fn wire(e: LlmError) -> ChatError {
+        ChatError::Provider(ProviderError::wire(WireOp::Stream, e))
+    }
+
+    /// Byte-exact headlines/details/hints; wire errors get a status-class headline plus the envelope's
+    /// message, never the raw URL/JSON dump.
+    #[test]
+    fn describe_error_classifies_each_failure_into_headline_detail_and_hint() {
+        struct Case {
+            name: &'static str,
+            err: ChatError,
+            headline: &'static str,
+            detail: String,
+            hint: &'static str,
+        }
+        let cases = [
+            Case {
+                name: "rate limit with openai envelope",
+                err: wire(status_err(
+                    429,
+                    r#"{"message":"Rate limit reached for gpt-4o","type":"tokens","code":"rate_limit_exceeded"}"#,
+                )),
+                headline: "Rate limited (429)",
+                detail: "Rate limit reached for gpt-4o".to_owned(),
+                hint: "",
+            },
+            Case {
+                name: "auth failure hints at the key",
+                err: wire(status_err(
+                    401,
+                    r#"{"message":"Incorrect API key provided"}"#,
+                )),
+                headline: "Authentication failed (401)",
+                detail: "Incorrect API key provided".to_owned(),
+                hint: "Check the API key for this provider",
+            },
+            Case {
+                name: "context overflow reroutes to /compact",
+                err: wire(status_err(
+                    400,
+                    r#"{"message":"This model's maximum context length is 8192 tokens","code":"context_length_exceeded"}"#,
+                )),
+                headline: "Context window exceeded (400)",
+                detail: "This model's maximum context length is 8192 tokens".to_owned(),
+                hint: "Try /compact to shrink the conversation",
+            },
+            Case {
+                name: "anthropic prompt-too-long phrasing",
+                err: wire(status_err(
+                    400,
+                    r#"{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}"#,
+                )),
+                headline: "Context window exceeded (400)",
+                detail: "prompt is too long: 210000 tokens > 200000 maximum".to_owned(),
+                hint: "Try /compact to shrink the conversation",
+            },
+            Case {
+                name: "non-JSON body falls back verbatim",
+                err: wire(status_err(502, "upstream connect error")),
+                headline: "Provider server error (502)",
+                detail: "upstream connect error".to_owned(),
+                hint: "",
+            },
+            Case {
+                name: "bare string error value",
+                err: wire(status_err(400, r#""invalid request""#)),
+                headline: "Request rejected (400 Status Text)",
+                detail: "invalid request".to_owned(),
+                hint: "",
+            },
+            Case {
+                name: "nested envelope from a proxy",
+                err: wire(status_err(
+                    404,
+                    r#"{"error":{"message":"model x does not exist"}}"#,
+                )),
+                headline: "Not found (404)",
+                detail: "model x does not exist".to_owned(),
+                hint: "Check the model name (/model) and base URL",
+            },
+            Case {
+                name: "permanent failure keeps its text",
+                err: ChatError::Provider(ProviderError::permanent_msg("quota")),
+                headline: "Request failed",
+                detail: "quota".to_owned(),
+                hint: "",
+            },
+            Case {
+                name: "no SSE events",
+                err: wire(LlmError::NoEvents),
+                headline: "Provider did not stream",
+                detail: format!("stream error: {}", LlmError::NoEvents),
+                hint: "",
+            },
+            Case {
+                name: "plain error",
+                err: ChatError::Io(std::io::Error::other("tool rounds exceeded")),
+                headline: "Request failed",
+                detail: "tool rounds exceeded".to_owned(),
+                hint: "",
+            },
+        ];
+        for c in cases {
+            let r = describe_error(&c.err);
+            assert_eq!(r.headline, c.headline, "{}: headline", c.name);
+            assert_eq!(r.detail.join("\n"), c.detail, "{}: detail", c.name);
+            assert_eq!(r.hint, c.hint, "{}: hint", c.name);
+        }
+    }
+
+    /// `lines()` appends the hint after the detail rows.
+    #[test]
+    fn the_report_lines_put_the_hint_after_the_detail_rows() {
+        let mut r = ErrorReport {
+            headline: String::new(),
+            detail: vec!["a".to_owned(), "b".to_owned()],
+            hint: "h".to_owned(),
+        };
+        assert_eq!(r.lines().join("|"), "a|b|h");
+        r.hint = String::new();
+        assert_eq!(r.lines().join("|"), "a|b");
+    }
+}
