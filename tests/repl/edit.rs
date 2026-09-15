@@ -7,21 +7,18 @@
 //!
 //! The double is an image provider (`ImageGenTunable`), because that capability is what registers
 //! both commands at all (chat/run.go:54-55, completion.go:34-37).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
-use iota::BoxFuture;
 use iota::host::Presenter;
 use iota::llm::reqlog::RequestLog;
-use iota::provider::error::ProviderError;
 use iota::provider::model::{Attachment, Message, Role};
-use iota::provider::{
-    ChatResult, ImageGenOptions, ImageGenParams, ImageGenTunable, Provider, ProviderKind,
-};
+use iota::provider::{ImageGenOptions, ImageGenParams, ProviderKind};
 use iota::repl::{McpHooks, RunParams, SessionCtx};
 use iota::session::SessionStore;
-use iota::testing::{Reply, ScriptedUi, StaticDispatcher, TabbedSummary, UiEvent};
+use iota::testing::{
+    FakeProvider, Log, Reply, ScriptedUi, StaticDispatcher, TabbedSummary, UiEvent,
+};
 use iota::text::ansi::strip_sgr;
 use iota::tool::Dispatcher;
 use iota::ui::facade::{Input, PanelKind, PanelResult, TabbedResult, Ui};
@@ -36,84 +33,32 @@ const RB_2X2_PNG: &[u8] = include_bytes!("../fixtures/images/rb-2x2.png");
 // the doubles
 // ---------------------------------------------------------------------------
 
-/// Records every message it is sent, so the canvas attachment and the expanded prompt can be read
-/// off the wire rather than inferred.
-#[derive(Clone, Default)]
-struct Recorder(Arc<Mutex<Vec<Message>>>);
-
-impl Recorder {
-    fn sent(&self) -> Vec<Message> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-    }
-}
-
 /// An image provider that never returns a picture: the turn is valid (it answers text), and the
-/// picker's history comes from `imported_history` instead — no image is ever written to disk.
-struct FakeImageProvider {
-    seen: Recorder,
-    params: ImageGenParams,
+/// picker's history comes from `imported_history` instead — no image is ever written to disk. It
+/// records into `seen`, so the canvas attachment and the expanded prompt can be read off the wire
+/// rather than inferred.
+fn image_provider(seen: Log) -> FakeProvider {
+    FakeProvider::new()
+        .with_kind(ProviderKind::Images)
+        .with_model("gpt-image-1")
+        .with_image_gen(
+            ImageGenOptions {
+                aspect_ratios: Vec::new(),
+                image_sizes: vec!["auto"],
+                negative_prompt: false,
+            },
+            ImageGenParams::default(),
+        )
+        .replying("ok")
+        .with_log(seen)
 }
 
-impl Provider for FakeImageProvider {
-    fn kind(&self) -> ProviderKind {
-        ProviderKind::Images
-    }
-
-    fn model(&self) -> &'static str {
-        "gpt-image-1"
-    }
-
-    fn set_model(&mut self, _model: String) {}
-
-    fn list_models<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Vec<String>, ProviderError>> {
-        Box::pin(std::future::ready(Ok(Vec::new())))
-    }
-
-    fn chat<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        messages: &'a [Message],
-    ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
-        if let Some(m) = messages.last() {
-            self.seen
-                .0
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(m.clone());
-        }
-        Box::pin(std::future::ready(Ok(ChatResult {
-            text: "ok".to_owned(),
-            ..ChatResult::default()
-        })))
-    }
-
-    fn as_image_gen_tunable(&mut self) -> Option<&mut dyn ImageGenTunable> {
-        Some(self)
-    }
-}
-
-impl ImageGenTunable for FakeImageProvider {
-    fn set_image_gen_params(&mut self, p: ImageGenParams) {
-        self.params = p;
-    }
-
-    fn image_gen_params(&self) -> &ImageGenParams {
-        &self.params
-    }
-
-    fn image_gen_options(&self) -> ImageGenOptions {
-        ImageGenOptions {
-            aspect_ratios: Vec::new(),
-            image_sizes: vec!["auto"],
-            negative_prompt: false,
-        }
-    }
+/// The LAST message of every call — what each send actually carried.
+fn last_sent(log: &Log) -> Vec<Message> {
+    log.sent()
+        .iter()
+        .filter_map(|history| history.last().cloned())
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -169,7 +114,8 @@ struct Fixture {
     ui: Arc<ScriptedUi>,
     _tmp: tempfile::TempDir,
     store: SessionStore,
-    seen: Recorder,
+    /// The provider's call log.
+    seen: Log,
     history: Vec<Message>,
 }
 
@@ -181,7 +127,7 @@ impl Fixture {
             ui: ScriptedUi::new(script),
             _tmp: tmp,
             store,
-            seen: Recorder::default(),
+            seen: Log::default(),
             history,
         }
     }
@@ -191,10 +137,7 @@ impl Fixture {
     async fn run(&self) {
         iota::repl::run(RunParams {
             ui: Arc::clone(&self.ui) as Arc<dyn Ui>,
-            provider: Box::new(FakeImageProvider {
-                seen: self.seen.clone(),
-                params: ImageGenParams::default(),
-            }),
+            provider: Box::new(image_provider(self.seen.clone())),
             title_provider: None,
             system: String::new(),
             imported_history: self.history.clone(),
@@ -261,7 +204,7 @@ fn echoed(ui: &ScriptedUi) -> Vec<String> {
 // bare /edit — the picker
 // ---------------------------------------------------------------------------
 
-/// Go: chat/run.go:458-485 — bare `/edit` opens a single `Picker` panel with the byte-exact title
+/// Bare `/edit` opens a single `Picker` panel with the byte-exact title
 /// and prompt, the rows newest first, a preview closure and row search; committing attaches the
 /// chosen canvas to the NEXT message and prints the byte-exact notice.
 #[tokio::test]
@@ -299,7 +242,7 @@ async fn bare_edit_opens_the_picker_and_attaches_the_choice() {
     );
 
     // The canvas rides the NEXT message — the /file rhythm.
-    let sent = f.seen.sent();
+    let sent = last_sent(&f.seen);
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].content, "now make it blue");
     assert_eq!(sent[0].attachments.len(), 1);
@@ -328,10 +271,10 @@ async fn cancelled_picker_is_a_no_op() {
         "{:?}",
         printed(&f.ui)
     );
-    assert!(f.seen.sent()[0].attachments.is_empty());
+    assert!(last_sent(&f.seen)[0].attachments.is_empty());
 }
 
-/// Go: chat/run.go:462 — with nothing generated yet, bare `/edit` prints the notice and opens no
+/// With nothing generated yet, bare `/edit` prints the notice and opens no
 /// surface at all.
 #[tokio::test]
 async fn bare_edit_without_images_says_so() {
@@ -350,7 +293,7 @@ async fn bare_edit_without_images_says_so() {
 // /edit <prompt> — the fall-through send
 // ---------------------------------------------------------------------------
 
-/// Go: chat/run.go:486-492 — `/edit <prompt>` attaches the last generated images and FALLS
+/// `/edit <prompt>` attaches the last generated images and FALLS
 /// THROUGH to the message path: the provider sees the stripped prompt with the canvas, while the
 /// transcript echoes the line the user typed.
 #[tokio::test]
@@ -361,7 +304,7 @@ async fn edit_with_a_prompt_sends_the_canvas() {
     );
     f.run().await;
 
-    let sent = f.seen.sent();
+    let sent = last_sent(&f.seen);
     assert_eq!(sent.len(), 1, "the arm must send, not continue");
     assert_eq!(sent[0].content, "add a scarf", "the prompt is stripped");
     assert_eq!(sent[0].attachments.len(), 1);
@@ -380,7 +323,7 @@ async fn edit_with_a_prompt_sends_the_canvas() {
     );
 }
 
-/// Go: chat/run.go:487-490 — with no generated image the arm refuses and sends NOTHING.
+/// With no generated image the arm refuses and sends NOTHING.
 #[tokio::test]
 async fn edit_with_a_prompt_and_no_images_sends_nothing() {
     let f = Fixture::new(
@@ -397,14 +340,17 @@ async fn edit_with_a_prompt_and_no_images_sends_nothing() {
         "{:?}",
         printed(&f.ui)
     );
-    assert!(f.seen.sent().is_empty(), "nothing may reach the provider");
+    assert!(
+        last_sent(&f.seen).is_empty(),
+        "nothing may reach the provider"
+    );
 }
 
 // ---------------------------------------------------------------------------
 // /redo
 // ---------------------------------------------------------------------------
 
-/// Go: chat/run.go:499-516 — bare `/redo` re-sends the last USER turn's prompt AND its
+/// Bare `/redo` re-sends the last USER turn's prompt AND its
 /// attachments (the canvas that produced the rejected result, never the result), announcing the
 /// byte-exact `Redoing: …` line.
 #[tokio::test]
@@ -426,7 +372,7 @@ async fn redo_reuses_the_last_request() {
         "{:?}",
         printed(&f.ui)
     );
-    let sent = f.seen.sent();
+    let sent = last_sent(&f.seen);
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].content, "add a heart");
     assert_eq!(
@@ -455,13 +401,13 @@ async fn redo_with_a_prompt_rewords_from_the_same_canvas() {
 
     let want = format!("Redoing: {}…", "b".repeat(60));
     assert!(printed(&f.ui).contains(&want), "{:?}", printed(&f.ui));
-    let sent = f.seen.sent();
+    let sent = last_sent(&f.seen);
     assert_eq!(sent[0].content, long);
     assert_eq!(sent[0].attachments[0].filename, "20260725-101500-0.png");
     assert_eq!(echoed(&f.ui), vec![format!("/redo {long}")]);
 }
 
-/// Go: chat/run.go:502 — with no user turn at all, `/redo` says so and sends nothing.
+/// With no user turn at all, `/redo` says so and sends nothing.
 #[tokio::test]
 async fn redo_without_a_user_turn_says_so() {
     let f = Fixture::new(
@@ -475,10 +421,10 @@ async fn redo_without_a_user_turn_says_so() {
         "{:?}",
         printed(&f.ui)
     );
-    assert!(f.seen.sent().is_empty());
+    assert!(last_sent(&f.seen).is_empty());
 }
 
-/// Go: chat/run.go:510 — a last user turn with no text (an attachment-only message) has nothing
+/// A last user turn with no text (an attachment-only message) has nothing
 /// to redo, and the refusal names that rather than sending a blank prompt.
 #[tokio::test]
 async fn redo_with_a_blank_prompt_says_so() {
@@ -494,5 +440,5 @@ async fn redo_with_a_blank_prompt_says_so() {
         "{:?}",
         printed(&f.ui)
     );
-    assert!(f.seen.sent().is_empty());
+    assert!(last_sent(&f.seen).is_empty());
 }
