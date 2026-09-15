@@ -8,8 +8,6 @@ use iota::session::{Overrides, SessionMeta, apply_session_tuning};
 use iota::testing::FakeProvider;
 use pretty_assertions::assert_eq;
 
-use crate::common::PlainProvider;
-
 const KIND: ProviderKind = ProviderKind::OpenAi;
 
 /// A provider of `KIND` (model `m1`) implementing every optional capability `apply_session_tuning`
@@ -228,7 +226,7 @@ fn unparsable_effort_warns_once_and_keeps_the_current_setting() {
 /// A provider with no optional capability at all is left alone, and the window still comes back.
 #[test]
 fn provider_without_capabilities_still_yields_the_window() {
-    let mut provider = PlainProvider(KIND);
+    let mut provider = FakeProvider::new().with_kind(KIND).with_model("m1");
     let mut warnings = Vec::new();
     let window = apply_session_tuning(
         &tuned_meta(),

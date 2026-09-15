@@ -123,46 +123,12 @@ pub(crate) fn warn_tools_without_calling(
 
 #[cfg(test)]
 mod tests {
-    use crate::BoxFuture;
-    use crate::provider::error::ProviderError;
-    use crate::provider::model::Message;
-    use crate::provider::{ChatResult, Provider, ProviderKind};
+    use crate::provider::ProviderKind;
     use crate::testing::FakeProvider;
-    use tokio_util::sync::CancellationToken;
 
     use super::{apply, warn_tools_without_calling};
     use crate::cmd::CliError;
     use crate::config::{AgentConfig, ModelConfig, Resolved};
-
-    /// A provider with NO optional capability at all (Go: a type that satisfies none of the tuning interfaces).
-    struct PlainProvider(ProviderKind);
-
-    impl Provider for PlainProvider {
-        fn kind(&self) -> ProviderKind {
-            self.0
-        }
-
-        fn model(&self) -> &'static str {
-            "m"
-        }
-
-        fn set_model(&mut self, _model: String) {}
-
-        fn list_models<'a>(
-            &'a self,
-            _cancel: &'a CancellationToken,
-        ) -> BoxFuture<'a, Result<Vec<String>, ProviderError>> {
-            Box::pin(async { Ok(Vec::new()) })
-        }
-
-        fn chat<'a>(
-            &'a self,
-            _cancel: &'a CancellationToken,
-            _messages: &'a [Message],
-        ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
-            Box::pin(async { Ok(ChatResult::default()) })
-        }
-    }
 
     /// A resolution carrying just this model.
     fn resolved(model: ModelConfig) -> Resolved {
@@ -174,7 +140,10 @@ mod tests {
 
     /// Collects the warnings `apply` emitted, in order.
     fn run(model: &ModelConfig, temperature: Option<f64>) -> (Result<(), CliError>, Vec<String>) {
-        let mut p = PlainProvider(ProviderKind::Imagen);
+        // A provider with NO optional capability at all.
+        let mut p = FakeProvider::new()
+            .with_kind(ProviderKind::Imagen)
+            .with_model("m");
         let mut warnings = Vec::new();
         let r = apply(&mut p, &resolved(model.clone()), temperature, &mut |w| {
             warnings.push(w);
@@ -249,7 +218,9 @@ mod tests {
         assert!(warnings.is_empty());
 
         // One without tool calling warns once, whether the tools came from `tools:` or from MCP.
-        let plain = PlainProvider(ProviderKind::Imagen);
+        let plain = FakeProvider::new()
+            .with_kind(ProviderKind::Imagen)
+            .with_model("m");
         let mut warnings = Vec::new();
         warn_tools_without_calling(&plain, &agent_cfg, 0, &mut |w| warnings.push(w));
         assert_eq!(

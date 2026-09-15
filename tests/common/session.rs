@@ -1,47 +1,12 @@
-//! Shared fixtures of the session test binary: the capability-less provider of the "mismatch applies
-//! nothing" legs, plus the bundle fabricator that makes locator/scope tests deterministic.
+//! Shared fixtures of the session test binary: a temp store and the bundle fabricator that makes
+//! locator/scope tests deterministic.
 //!
 //! Nothing here reads or mutates the process environment: every store is rooted in a `tempfile::TempDir`.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
 
-use iota::BoxFuture;
-use iota::provider::error::ProviderError;
-use iota::provider::model::Message;
-use iota::provider::{CancellationToken, ChatResult, Provider, ProviderKind};
 use iota::session::{SESSION_SCHEMA_VERSION, SessionMeta, SessionStore, now_rfc3339};
-
-/// A provider with NO optional capability at all, for the "mismatch applies nothing" legs.
-#[derive(Debug)]
-pub struct PlainProvider(pub ProviderKind);
-
-impl Provider for PlainProvider {
-    fn kind(&self) -> ProviderKind {
-        self.0
-    }
-
-    fn model(&self) -> &'static str {
-        "m1"
-    }
-
-    fn set_model(&mut self, _model: String) {}
-
-    fn list_models<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Vec<String>, ProviderError>> {
-        Box::pin(async { Ok(Vec::new()) })
-    }
-
-    fn chat<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        _messages: &'a [Message],
-    ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
-        Box::pin(async { Ok(ChatResult::default()) })
-    }
-}
 
 /// A store rooted at `<temp>/.iota/sessions`, mirroring what `HostDirs` would resolve — the tests own the
 /// directory, so nothing touches `$HOME`.
