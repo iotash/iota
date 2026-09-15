@@ -292,24 +292,22 @@ pub(crate) async fn run_interactive(
         env: ctx.env.clone(),
     });
     let opened = open_ui(&seam, picker, |_dark, picked| {
-        wire_session(
+        wire_session(Wire {
             cfg,
-            &settings,
+            settings: &settings,
             kind,
-            &mut *provider,
-            &ctx,
-            &tool_env,
+            provider: &mut *provider,
+            ctx: &ctx,
+            tool_env: &tool_env,
             io,
-            &store,
-            scope.as_deref(),
-            WireInput {
-                resume_given,
-                ephemeral,
-                picked: picked.and_then(|i| picker_rows.get(i).map(|info| info.id.clone())),
-                mcp_part,
-                mcp_defers,
-            },
-        )
+            store: &store,
+            scope: scope.as_deref(),
+            resume_given,
+            ephemeral,
+            picked: picked.and_then(|i| picker_rows.get(i).map(|info| info.id.clone())),
+            mcp_part,
+            mcp_defers,
+        })
     })
     .await;
     let (dark, wiring, ui_session) = match opened {
@@ -380,8 +378,27 @@ pub(crate) async fn run_interactive(
     }
 }
 
-/// What [`wire_session`] needs from the picker stage.
-struct WireInput {
+/// Everything [`wire_session`] reads: the resolved run, borrowed for the one call between the picker and
+/// `Tui::start`, and what the picker stage decided — the twin of [`Interactive`] for that stage.
+struct Wire<'a> {
+    /// The merged config (a resumed bundle's agent is looked up in it).
+    cfg: &'a crate::config::Config,
+    /// The resolved run settings.
+    settings: &'a RunSettings,
+    /// The resolved provider type.
+    kind: ProviderKind,
+    /// The conversation provider: a resume replays the bundle's model and tuning onto it.
+    provider: &'a mut dyn Provider,
+    /// The run-wide context (the environment, the transport the title instance shares).
+    ctx: &'a RunContext,
+    /// The tool environment the dispatcher is built over.
+    tool_env: &'a ToolEnv,
+    /// The process streams: the resume announcement and the warnings.
+    io: &'a mut crate::cmd::io::Streams,
+    /// The session store.
+    store: &'a SessionStore,
+    /// The project root in agent mode (the bucket), else `None`.
+    scope: Option<&'a std::path::Path>,
     /// The verb was `resume`, with or without an id.
     resume_given: bool,
     /// `--no-save`, or the config's `no_save:` without a resume.
@@ -399,30 +416,34 @@ struct WireInput {
 /// Resume replays the bundle's model and tuning (explicit flags win, exactly as headlessly), a fresh run
 /// creates its bundle eagerly, and `--no-save` gets the DEFERRED factory `/save` mints from. Then the context
 /// window (flag > session meta > config), the dispatcher, and the second provider instance.
-#[allow(clippy::too_many_arguments)]
-fn wire_session(
-    cfg: &crate::config::Config,
-    settings: &RunSettings,
-    kind: ProviderKind,
-    provider: &mut dyn Provider,
-    ctx: &RunContext,
-    tool_env: &ToolEnv,
-    io: &mut crate::cmd::io::Streams,
-    store: &SessionStore,
-    scope: Option<&std::path::Path>,
-    input: WireInput,
-) -> Result<Wiring, CliError> {
+fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
+    let Wire {
+        cfg,
+        settings,
+        kind,
+        provider,
+        ctx,
+        tool_env,
+        io,
+        store,
+        scope,
+        resume_given,
+        ephemeral,
+        picked,
+        mcp_part,
+        mcp_defers,
+    } = wire;
     let mut history = Vec::new();
     let mut writer: Option<SessionWriter> = None;
     // The bundle a resume replayed, kept for the layering: it is the record of what the session was running
     // under, and a resume RESTORES those values rather than evaluating the config again.
     let mut resumed_meta: Option<crate::session::SessionMeta> = None;
 
-    if input.resume_given {
+    if resume_given {
         // root.go:294-306: a bare `iota resume` took the picker; an id resolves as a prefix.
         let id = match &settings.resume {
             Some(fragment) => store.resolve_id(fragment, scope)?,
-            None => input.picked.unwrap_or_default(),
+            None => picked.unwrap_or_default(),
         };
         if id.is_empty() {
             return Err(SetupError::NoSessionToResume.into());
@@ -475,7 +496,7 @@ fn wire_session(
         },
         |root| root.to_string_lossy().into_owned(),
     );
-    if writer.is_none() && !input.ephemeral {
+    if writer.is_none() && !ephemeral {
         writer = Some(
             store
                 .create(NewSession {
@@ -526,8 +547,8 @@ fn wire_session(
     let dispatch = crate::cmd::assemble::build_dispatcher(
         &settings.resolved.agent,
         &settings.resolved.model,
-        input.mcp_part,
-        input.mcp_defers,
+        mcp_part,
+        mcp_defers,
         settings.agent_mode,
         tool_env,
         &mut |m| io.caution(&m),
