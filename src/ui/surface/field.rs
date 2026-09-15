@@ -1,131 +1,75 @@
-//! The shared one-line input field — the bubbles-textinput replacement: value +
-//! byte-offset cursor moved on grapheme boundaries, the enumerated emacs edit set
-//! (`TUI_CONTRACTS` §6 row 8), and the `inputField` pan-window math + `inputCursorCols`
-//! (tabbed.go:334-405) that own ONE model of what is visible. Shared by `PanelInput`,
-//! the inline Custom editor, and the search query field.
+//! The shared one-line input field — the bubbles-textinput replacement: the shared
+//! [`Editor`] (value + byte-offset cursor moved on grapheme boundaries, the enumerated emacs
+//! edit set — `TUI_CONTRACTS` §6 row 8), and the `inputField` pan-window math +
+//! `inputCursorCols` (tabbed.go:334-405) that own ONE model of what is visible. Shared by
+//! `PanelInput`, the inline Custom editor, and the search query field.
 
 use crate::text::width::{graphemes, str_width};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::ui::input::editor::Editor;
+use crossterm::event::KeyEvent;
 
 /// A one-line text field with a real-terminal-cursor contract: no internal SGR, no
 /// prompt, no own scrolling (the pan window below owns visibility — tabbed.go:366).
 pub(crate) struct Field {
-    value: String,
-    /// Byte offset into `value`; always on a char (grapheme) boundary.
-    cursor: usize,
+    editor: Editor,
 }
 
 impl Field {
     /// An empty field, cursor at the start.
     pub(crate) fn new() -> Self {
         Self {
-            value: String::new(),
-            cursor: 0,
+            editor: Editor::new(),
         }
     }
 
     /// The typed value.
     pub(crate) fn value(&self) -> &str {
-        &self.value
+        self.editor.value()
     }
 
     /// Replaces the value; the cursor moves to the end.
     pub(crate) fn set_value(&mut self, s: &str) {
-        s.clone_into(&mut self.value);
-        self.cursor = self.value.len();
+        self.editor.set_value(s);
     }
 
     /// Clears the value.
     pub(crate) fn clear(&mut self) {
-        self.value.clear();
-        self.cursor = 0;
+        self.editor.clear();
     }
 
     /// Moves the cursor to the end (Go textinput `CursorEnd` — search.go:398 searchEdit).
     pub(crate) fn move_to_end(&mut self) {
-        self.cursor = self.value.len();
+        self.editor.move_to_end();
     }
 
     /// Places the cursor at a RUNE index (clamped) — the Go `SetCursor` twin; the
     /// surface tests drive the pan window through it.
     #[cfg(test)]
     pub(crate) fn set_cursor_runes(&mut self, idx: usize) {
-        self.cursor = self
-            .value
+        let value = self.editor.value();
+        let at = value
             .char_indices()
             .nth(idx)
-            .map_or(self.value.len(), |(b, _)| b);
+            .map_or(value.len(), |(b, _)| b);
+        self.editor.set_cursor(at);
     }
 
     /// The cursor's ABSOLUTE display column in the full value (CJK = 2 cols).
     pub(crate) fn cursor_col(&self) -> usize {
-        str_width(&self.value[..self.cursor])
+        str_width(&self.editor.value()[..self.editor.cursor()])
     }
 
     /// Inserts text at the cursor (paste path; the caller flattens newlines).
     pub(crate) fn insert_str(&mut self, s: &str) {
-        self.value.insert_str(self.cursor, s);
-        self.cursor += s.len();
+        self.editor.insert_str(s);
     }
 
-    /// One key through the enumerated emacs subset (`TUI_CONTRACTS` §6 row 8 — shared
-    /// verbatim by `PanelInput`, the Custom editor, and the search query field):
-    /// ←/→ by grapheme · Home/End · Backspace/Ctrl+H grapheme-back · Delete ·
-    /// Ctrl+A/E home/end · Ctrl+B/F char · Ctrl+K kill-to-end · Ctrl+U kill-to-start ·
-    /// Ctrl+W word-back; any other char inserts.
+    /// One key through the shared edit set (`TUI_CONTRACTS` §6 row 8 — `PanelInput`, the
+    /// Custom editor and the search query field all take exactly [`Editor::on_key`]'s
+    /// arms; a key the editor does not own is a no-op here, the surface ladder above having
+    /// already taken what it wanted).
     pub(crate) fn handle_key(&mut self, key: &KeyEvent) {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        match (ctrl, key.code) {
-            (true, KeyCode::Char('a')) | (false, KeyCode::Home) => self.cursor = 0,
-            (true, KeyCode::Char('e')) | (false, KeyCode::End) => self.cursor = self.value.len(),
-            (true, KeyCode::Char('b')) | (false, KeyCode::Left) => {
-                self.cursor = self.prev_boundary();
-            }
-            (true, KeyCode::Char('f')) | (false, KeyCode::Right) => {
-                self.cursor = self.next_boundary();
-            }
-            (true, KeyCode::Char('k')) => self.value.truncate(self.cursor),
-            (true, KeyCode::Char('u')) => {
-                self.value.drain(..self.cursor);
-                self.cursor = 0;
-            }
-            (true, KeyCode::Char('w')) => {
-                let head = self.value[..self.cursor].trim_end();
-                let cut = head.rfind(' ').map_or(0, |i| i + 1);
-                self.value.drain(cut..self.cursor);
-                self.cursor = cut;
-            }
-            (true, KeyCode::Char('h')) | (_, KeyCode::Backspace) => {
-                let p = self.prev_boundary();
-                self.value.drain(p..self.cursor);
-                self.cursor = p;
-            }
-            (false, KeyCode::Delete) => {
-                let n = self.next_boundary();
-                self.value.drain(self.cursor..n);
-            }
-            (false, KeyCode::Char(c)) => {
-                self.value.insert(self.cursor, c);
-                self.cursor += c.len_utf8();
-            }
-            _ => {}
-        }
-    }
-
-    fn prev_boundary(&self) -> usize {
-        let mut prev = 0;
-        let mut at = 0;
-        for g in graphemes(&self.value[..self.cursor]) {
-            prev = at;
-            at += g.len();
-        }
-        prev
-    }
-
-    fn next_boundary(&self) -> usize {
-        graphemes(&self.value[self.cursor..])
-            .next()
-            .map_or(self.value.len(), |g| self.cursor + g.len())
+        self.editor.on_key(key);
     }
 }
 

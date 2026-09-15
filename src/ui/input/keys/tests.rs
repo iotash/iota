@@ -1,9 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! The key tables, pinned row by row (`TUI_CONTRACTS` §6; Phase 5 PR-15's safety net): the
 //! composer precedence ladder of `keys.rs` (rows 1–7), the enumerated edit set it hands the
-//! composer (rows 8–9, `Composer::handle_edit_key`), and the same edit set as the surface's
-//! one-line `Field` implements it — the two editors PR-15 folds into one. Only add tests here;
-//! a behaviour these pin that reads wrong is a decision for that PR, not a fix on the way.
+//! composer (rows 8–9, `Composer::handle_edit_key`), and the same edit set through the
+//! surface's one-line `Field` — since PR-15 both are one `input::editor::Editor`, so the two
+//! halves below must never drift apart. A behaviour these pin that reads wrong is a decision
+//! before it is a fix.
 //!
 //! Every test drives decoded crossterm events, because that is where the tree's own key
 //! handling begins: the byte level — a lone ESC against an ESC-prefixed sequence, CSI against
@@ -813,15 +814,16 @@ fn the_field_shares_the_edit_set() {
     );
 }
 
-/// The field's Ctrl+W is its own: trailing whitespace skipped, then back to the last SPACE
-/// — a tab is not a word boundary here (the composer's Ctrl+W treats it as one). Pinned as
-/// written; PR-15 decides which rule the shared editor keeps.
+/// The field's Ctrl+W is the composer's rule (DIVERGENCES X-35, decided 2026-09-16 for the
+/// shared editor): trailing whitespace skipped, then back to the start of the previous word,
+/// any Unicode whitespace a boundary — a tab included, which the field's own rule (back to
+/// the last SPACE) used to miss, deleting the whole value.
 #[test]
-fn the_field_ctrl_w_cuts_back_to_the_last_space() {
+fn the_field_ctrl_w_is_the_composers_rule() {
     let mut f = Field::new();
     for (value, want) in [
         ("foo bar  ", "foo "),
-        ("a\tb", ""),
+        ("a\tb", "a\t"),
         ("   ", ""),
         ("单 词", "单 "),
     ] {
