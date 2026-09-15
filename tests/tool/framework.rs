@@ -1,6 +1,5 @@
 //! Tool-framework integration tests (`tool/defer_test.go`, `tool/parallel_test.go`, `tool/ask_test.go`,
 //! `tool/shell_test.go` — the Registry/Merge shape with a stub tool instead of the shell set).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::{
     collections::{BTreeMap, HashSet},
@@ -11,6 +10,7 @@ use iota::BoxFuture;
 use iota::chat::turns::RunCtx;
 use iota::provider::ProviderKind;
 use iota::provider::model::{JsonObject, ToolDef};
+use iota::testing::{FakeMcp, prefix_for, static_prefix, stub_tool};
 use iota::tool::ask::new_ask_set;
 use iota::tool::defer::{CATALOG_NAMES_ONLY_AT, DESC_BUDGET, SEARCH_TOP_K, defer};
 use iota::tool::error::ToolError;
@@ -24,7 +24,6 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 
 use crate::common::temp_project;
-use crate::common::{FakeMcp, prefix_for, static_prefix, stub_tool};
 
 /// `map[string]any{"query": q}`.
 fn query(q: &str) -> JsonObject {
@@ -51,7 +50,7 @@ fn defs(pairs: &[(&str, &str)]) -> Vec<ToolDef> {
         .collect()
 }
 
-// Go: tool/defer_test.go:35 — the shared fixture: one deferred group (`github`, connected under `mcp__gh__`)
+// The shared fixture: one deferred group (`github`, connected under `mcp__gh__`)
 // plus a non-deferred server.
 fn new_defer_fixture() -> (Arc<FakeMcp>, Arc<dyn Dispatcher>) {
     let inner = Arc::new(FakeMcp::with_defs(&[
@@ -84,9 +83,8 @@ async fn call(d: &dyn Dispatcher, name: &str, args: JsonObject) -> ToolOutput {
         .expect("no hard error")
 }
 
-// Go: tool/defer_test.go:49
 #[tokio::test]
-async fn test_defer_hides_until_searched() {
+async fn deferred_tools_stay_hidden_until_a_search_loads_them() {
     let (_, d) = new_defer_fixture();
 
     let names = tool_names(&d.tools());
@@ -121,9 +119,8 @@ async fn test_defer_hides_until_searched() {
     );
 }
 
-// Go: tool/defer_test.go:78
 #[tokio::test]
-async fn test_defer_implicit_load_on_direct_call() {
+async fn a_direct_call_to_a_hidden_tool_loads_and_runs_it() {
     let (inner, d) = new_defer_fixture();
 
     let out = call(&*d, "mcp__gh__danger", JsonObject::new()).await;
@@ -143,9 +140,8 @@ async fn test_defer_implicit_load_on_direct_call() {
     );
 }
 
-// Go: tool/defer_test.go:96
 #[tokio::test]
-async fn test_defer_owns_through_merge() {
+async fn a_merged_dispatcher_routes_hidden_tools_and_approval_to_their_owner() {
     let (_, d) = new_defer_fixture();
     let merged = merge(vec![d]);
 
@@ -164,9 +160,8 @@ async fn test_defer_owns_through_merge() {
     );
 }
 
-// Go: tool/defer_test.go:114
 #[tokio::test]
-async fn test_defer_empty_query_catalog() {
+async fn an_empty_query_lists_the_hidden_catalog() {
     let (_, d) = new_defer_fixture();
     call(&*d, SEARCH_TOOL_NAME, query("pull request")).await;
 
@@ -206,9 +201,8 @@ async fn test_defer_empty_query_catalog() {
     assert_eq!(call(&*d, SEARCH_TOOL_NAME, args).await.text, out.text);
 }
 
-// Go: tool/defer_test.go:135
 #[tokio::test]
-async fn test_defer_catalog_names_only_when_large() {
+async fn a_large_catalog_lists_names_only() {
     let pairs: Vec<(String, &str)> = (0..CATALOG_NAMES_ONLY_AT + 10)
         .map(|i| (format!("mcp__gh__tool_{i:02}"), "A described tool"))
         .collect();
@@ -240,9 +234,8 @@ async fn test_defer_catalog_names_only_when_large() {
     ));
 }
 
-// Go: tool/defer_test.go:157
 #[test]
-fn test_defer_description_budget() {
+fn the_search_tool_description_folds_overflow_into_a_more_groups_tail() {
     let inner = Arc::new(FakeMcp::with_defs(&[("mcp__gh__a", "x")]));
     let long = "very long summary ".repeat(20);
     let groups: Vec<DeferredGroup> = (0..12)
@@ -294,9 +287,8 @@ fn test_defer_description_budget() {
     );
 }
 
-// Go: tool/defer_test.go:180
 #[tokio::test]
-async fn test_defer_connecting_group() {
+async fn a_group_without_a_prefix_yet_is_shown_as_connecting() {
     let inner = Arc::new(FakeMcp::default());
     let d = defer(
         inner as Arc<dyn Dispatcher>,
@@ -324,9 +316,8 @@ async fn test_defer_connecting_group() {
     assert!(!out.is_error);
 }
 
-// Go: tool/defer_test.go:197
 #[test]
-fn test_defer_search_tools_name_collision() {
+fn an_inner_tool_named_search_tools_does_not_shadow_the_real_one() {
     let inner = Arc::new(FakeMcp::with_defs(&[
         (SEARCH_TOOL_NAME, "impostor"),
         ("mcp__fs__read", "Read a file"),
@@ -354,9 +345,8 @@ fn test_defer_search_tools_name_collision() {
     );
 }
 
-// Go: tool/defer_test.go:229
 #[tokio::test]
-async fn test_defer_search_top_k() {
+async fn a_search_loads_top_k_and_names_the_overflow() {
     let names: Vec<String> = (0..SEARCH_TOP_K + 3)
         .map(|i| format!("mcp__gh__widget_{i:02}"))
         .collect();
@@ -402,9 +392,8 @@ async fn test_defer_search_top_k() {
     }
 }
 
-// Go: tool/defer_test.go:261
 #[tokio::test]
-async fn test_defer_param_corpus_match() {
+async fn a_search_matches_parameter_names_and_descriptions() {
     let mut order = defs(&[("mcp__gh__submit_order", "Submit a customer order")]);
     order[0].input_schema = json!({
         "type": "object",
@@ -442,10 +431,10 @@ async fn test_defer_param_corpus_match() {
     );
 }
 
-// Go: tool/defer_test.go:293 — the config spelling and the default. (Whether a mode APPLIES to a dialect is
+// The config spelling and the default. (Whether a mode APPLIES to a dialect is
 // `DeferMode::supports`, and the config layer turns a mismatch into an error; see `tests/cmd/config.rs`.)
 #[test]
-fn test_defer_mode_from_name() {
+fn defer_modes_parse_from_their_config_names() {
     assert_eq!(DeferMode::DEFAULT.name(), "normal");
     assert_eq!(DeferMode::from_name(""), None, "empty mode names nothing");
     assert_eq!(DeferMode::from_name("normal"), Some(DeferMode::Normal));
@@ -494,9 +483,8 @@ fn test_defer_mode_from_name() {
     }
 }
 
-// Go: tool/defer_test.go:328
 #[tokio::test]
-async fn test_protocol_mode_wrappers() {
+async fn the_protocol_modes_wrap_the_dispatcher_differently() {
     let inner = Arc::new(FakeMcp::with_defs(&[
         ("mcp__gh__pr", "Create a pull request"),
         ("mcp__fs__read", "Read a file"),
@@ -581,9 +569,9 @@ async fn test_protocol_mode_wrappers() {
     assert!(frozen.take_pending_loads().is_empty());
 }
 
-// Go: tool/defer_test.go:384 — the dialect matrix `crate::config` validates a `defer_mode:` against.
+// The dialect matrix `crate::config` validates a `defer_mode:` against.
 #[test]
-fn test_protocol_mode_supports() {
+fn each_defer_mode_supports_its_dialects() {
     for (mode, kind, want) in [
         (DeferMode::Reference, ProviderKind::Anthropic, true),
         (DeferMode::Reference, ProviderKind::OpenAi, false),
@@ -616,9 +604,8 @@ fn test_protocol_mode_supports() {
     }
 }
 
-// Go: tool/defer_test.go:406
 #[tokio::test]
-async fn test_defer_inspector() {
+async fn the_inspector_reports_each_deferred_tools_state() {
     let (inner, d) = new_defer_fixture();
     call(&*d, SEARCH_TOOL_NAME, query("pull request")).await;
 
@@ -655,9 +642,8 @@ async fn test_defer_inspector() {
     }
 }
 
-// Go: tool/parallel_test.go:59
 #[test]
-fn test_parallel_defaults_to_no() {
+fn parallel_support_defaults_to_no() {
     // Go's nil registry is an empty one here.
     let empty = Registry::default();
     assert!(
@@ -678,9 +664,8 @@ fn test_parallel_defaults_to_no() {
     assert!(!plain.supports_parallel("x", Some(&JsonObject::new())));
 }
 
-// Go: tool/parallel_test.go:93
 #[test]
-fn test_supports_parallel_is_per_call() {
+fn parallel_support_is_decided_per_call() {
     let mut r = Registry::default();
     r.add(stub_tool("task", &["search"], false));
     let agent = |name: &str| {
@@ -734,10 +719,10 @@ fn project_env() -> (tempfile::TempDir, Env) {
     (dir, env)
 }
 
-// Go: tool/ask_test.go:242 — the ask set contributes no tools headlessly, so `shell` stands in as the one
+// The ask set contributes no tools headlessly, so `shell` stands in as the one
 // that does.
 #[test]
-fn test_set_false_disables() {
+fn a_false_set_entry_disables_the_set() {
     let raw = raw_tools("tools:\n  ask: false\n  shell:\n");
     assert!(set_disabled(&raw, "ask"), "ask: false must report disabled");
     assert!(
@@ -792,9 +777,8 @@ fn test_set_false_disables() {
     }
 }
 
-// Go: tool/ask_test.go:33
 #[test]
-fn test_ask_set_absent_without_interactor() {
+fn the_ask_set_is_absent_without_an_interactor() {
     let tools = new_ask_set(&Env::default(), None).expect("ask set never errors");
     assert!(
         tools.is_empty(),
@@ -817,9 +801,9 @@ fn test_ask_set_absent_without_interactor() {
     assert_eq!(r.len(), 0);
 }
 
-// Go: tool/shell_test.go:159 (a stub tool stands in for the shell set)
+// A stub tool stands in for the shell set.
 #[tokio::test]
-async fn test_merge() {
+async fn merge_exposes_and_routes_every_parts_tools() {
     let mut reg = Registry::default();
     reg.add(stub_tool("shell", &[], false));
     // Go passes a nil second part; hosts skip absent parts before calling `merge`.
@@ -851,10 +835,9 @@ async fn test_merge() {
     assert!(empty.take_pending_loads().is_empty());
 }
 
-// Go: tool/shell_test.go:125 (the shell/agent halves are WP09's `test_build_registry_shell_set_enables_the_tool`
-// and WP11's `test_enable_agent_set`; the ask and shell sets stand in here)
+// The ask and shell sets stand in for every set here; the shell and agent halves have their own suites.
 #[test]
-fn test_build_registry() {
+fn build_registry_enables_exactly_the_configured_sets() {
     // absent key disables set
     {
         let (_dir, env) = project_env();
@@ -943,7 +926,7 @@ fn test_build_registry() {
     }
 }
 
-// The Windows half of `test_build_registry`, rewritten for the backend that landed: the set that used to
+// The Windows half of `build_registry_enables_exactly_the_configured_sets`, rewritten for the backend that landed: the set that used to
 // contribute one warning and no tool now registers the same `shell` tool every other platform gets. What it must
 // still do ONCE, at build time, is tell the model WHICH interpreter that tool runs — the name does not say
 // so — and that Windows has no sandbox to put the calls in.
@@ -1088,11 +1071,11 @@ async fn merge_owner_three_way_and_first_capable_search() {
     assert!(none.as_owner().is_none());
 }
 
-// Go: tool/codepath_test.go:103 TestRegistryHeaderSummaryCapability — the registry reports
+// The registry reports
 // capability PRESENCE, so the chat layer can tell "no summary" (fall back to the argument digest)
 // from "empty summary" (render a bare `[name]`).
 #[test]
-fn test_registry_header_summary_capability() {
+fn the_registry_reports_header_summary_presence() {
     let (dir, _dirs) = temp_project(&[]);
     let env = Env {
         project_root: Some(dir.path().to_path_buf()),

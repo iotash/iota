@@ -2,7 +2,8 @@
 //! place. [`StaticDispatcher`] is the general one (named tools, echoing calls, per-name flags); the others
 //! each stand for ONE capability question — approval ([`GatedDispatch`]), a set that grows mid-turn
 //! ([`GrowingDispatcher`]), parallel batches ([`ParallelDispatch`]), no optional capability at all
-//! ([`NoCapDispatch`]), a header without tools ([`HeaderDispatch`]).
+//! ([`NoCapDispatch`]), a header without tools ([`HeaderDispatch`]) — plus the MCP manager's stand-in
+//! ([`FakeMcp`]) and a per-call parallel [`Tool`] ([`stub_tool`]).
 
 use std::{
     collections::{HashMap, HashSet},
@@ -19,7 +20,7 @@ use crate::BoxFuture;
 use crate::chat::turns::RunCtx;
 use crate::provider::model::{JsonObject, ToolDef};
 use crate::tool::error::ToolError;
-use crate::tool::{Dispatcher, ToolOutput, ToolResult};
+use crate::tool::{Dispatcher, PrefixOf, Presentation, Tool, ToolOutput, ToolResult};
 
 /// Static tools; `call_tool` echoes `"<name>:<args json>"`, records calls, optional per-name parallel/approval flags.
 pub struct StaticDispatcher {
@@ -304,6 +305,139 @@ impl Dispatcher for HeaderDispatch {
 
     fn header_summary(&self, _name: &str, _args: &JsonObject) -> Option<String> {
         self.summary.clone()
+    }
+}
+
+/// A stand-in for the MCP manager: a live tool list plus recorded calls, with approval/presentation capabilities
+/// to verify pass-through. `call_tool` answers `"ok:<name>"`; `requires_approval` is true only for
+/// `mcp__gh__danger`; `presentation` is always `Group`.
+#[derive(Debug, Default)]
+pub struct FakeMcp {
+    /// The advertised definitions (mutable so a test can grow the set between rounds).
+    pub tools: Mutex<Vec<ToolDef>>,
+    /// Every tool name called, in order.
+    pub called: Mutex<Vec<String>>,
+}
+
+impl FakeMcp {
+    /// A fake advertising `tools`.
+    pub fn new(tools: Vec<ToolDef>) -> Self {
+        Self {
+            tools: Mutex::new(tools),
+            called: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// `(name, description)` pairs → a fake with `input_schema: None`.
+    pub fn with_defs(defs: &[(&str, &str)]) -> Self {
+        Self::new(
+            defs.iter()
+                .map(|(name, description)| ToolDef {
+                    name: (*name).to_owned(),
+                    description: (*description).to_owned(),
+                    input_schema: None,
+                    deferred: false,
+                })
+                .collect(),
+        )
+    }
+
+    /// Snapshot of the recorded call names.
+    pub fn calls(&self) -> Vec<String> {
+        lock(&self.called).clone()
+    }
+}
+
+impl Dispatcher for FakeMcp {
+    fn tools(&self) -> Vec<ToolDef> {
+        lock(&self.tools).clone()
+    }
+
+    fn call_tool<'a>(
+        &'a self,
+        _cx: &'a RunCtx,
+        name: &'a str,
+        _args: JsonObject,
+    ) -> BoxFuture<'a, ToolResult> {
+        Box::pin(async move {
+            lock(&self.called).push(name.to_owned());
+            Ok(ToolOutput::ok(format!("ok:{name}")))
+        })
+    }
+
+    fn requires_approval(&self, name: &str) -> bool {
+        name == "mcp__gh__danger"
+    }
+
+    fn presentation(&self, _name: &str) -> Presentation {
+        Presentation::Group
+    }
+}
+
+/// A prefix oracle answering `prefix` for EVERY group name (`static_prefix("")` = nothing connected yet).
+pub fn static_prefix(prefix: &str) -> PrefixOf {
+    let prefix = prefix.to_owned();
+    Arc::new(move |_group: &str| prefix.clone())
+}
+
+/// `prefix` for the named `group`, `""` for every other group.
+pub fn prefix_for(group: &str, prefix: &str) -> PrefixOf {
+    let group = group.to_owned();
+    let prefix = prefix.to_owned();
+    Arc::new(move |g: &str| {
+        if g == group {
+            prefix.clone()
+        } else {
+            String::new()
+        }
+    })
+}
+
+/// A tool whose parallel answer is a property of the CALL: `supports_parallel(args)` is true only when
+/// `args["agent"]` is one of `parallel` (or `parallel` contains `"*"`, which also answers `None` args);
+/// `requires_approval()` is `approval`. `call` echoes `"<name>:<args json>"` and never fails.
+pub fn stub_tool(name: &str, parallel: &[&str], approval: bool) -> Arc<dyn Tool> {
+    Arc::new(StubTool {
+        name: name.to_owned(),
+        parallel: parallel.iter().map(|s| (*s).to_owned()).collect(),
+        approval,
+    })
+}
+
+struct StubTool {
+    name: String,
+    parallel: Vec<String>,
+    approval: bool,
+}
+
+impl Tool for StubTool {
+    fn def(&self) -> ToolDef {
+        ToolDef {
+            name: self.name.clone(),
+            description: format!("stub tool {}", self.name),
+            input_schema: None,
+            deferred: false,
+        }
+    }
+
+    fn call<'a>(&'a self, _cx: &'a RunCtx, args: &'a JsonObject) -> BoxFuture<'a, ToolResult> {
+        Box::pin(async move {
+            let args = serde_json::to_string(args).unwrap_or_default();
+            Ok(ToolOutput::ok(format!("{}:{}", self.name, args)))
+        })
+    }
+
+    fn requires_approval(&self) -> bool {
+        self.approval
+    }
+
+    fn supports_parallel(&self, args: Option<&JsonObject>) -> bool {
+        if self.parallel.iter().any(|p| p == "*") {
+            return true;
+        }
+        args.and_then(|a| a.get("agent"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|agent| self.parallel.iter().any(|p| p == agent))
     }
 }
 

@@ -16,8 +16,8 @@ mod dispatch;
 mod provider;
 mod scripted;
 pub use dispatch::{
-    GatedDispatch, GrowingDispatcher, HeaderDispatch, NoCapDispatch, ParallelDispatch,
-    StaticDispatcher,
+    FakeMcp, GatedDispatch, GrowingDispatcher, HeaderDispatch, NoCapDispatch, ParallelDispatch,
+    StaticDispatcher, prefix_for, static_prefix, stub_tool,
 };
 pub use provider::{Call, Failure, FakeProvider, Interrupt, Log, Path, Round};
 pub use scripted::{PanelSummary, RecordingHost, Reply, ScriptedUi, TabbedSummary, UiEvent};
