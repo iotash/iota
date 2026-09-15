@@ -47,6 +47,7 @@ export IOTA_TMUX_REQUIRED=1 IOTA_SANDBOX_REQUIRED=1
 cargo fmt --check
 ./scripts/check-deps.sh                      # direct deps ⊆ scripts/direct-deps.allow (cargo metadata; the one thing deny.toml cannot say)
 ./scripts/check-stubs.sh                     # no `todo!()` body and no `// WPxx-STUB` header anywhere
+./scripts/check-poison.sh                    # inline `PoisonError` handlings in src/ only ever fall (ratchet; Phase 5 PR-13 retires them)
 # The transitive-graph gate (deny.toml): licenses, advisories, duplicate versions, sources.
 # cargo-deny is not in the pinned toolchain, so this leg prints a SKIP without it — the second
 # optional dependency of this script, beside the cross toolchains; on GitHub it is its own job
