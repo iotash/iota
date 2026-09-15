@@ -12,7 +12,7 @@
 use crate::markdown::inline::{DIM, highlight_inline, strip_inline_markdown};
 use crate::markdown::split_br;
 use crate::markdown::style::Style;
-use crate::text::ansi::{ansi_width, sgr_carry};
+use crate::text::ansi::{ansi_width, escape_len_at, sgr_carry};
 use crate::text::width::{cluster_width, graphemes, str_width};
 
 /// Minimum rendered column width (markdown.go:1629-1643).
@@ -197,40 +197,6 @@ struct Tok {
     space: bool,
 }
 
-/// Byte length of the CSI or OSC escape at `b[i]`, or 0 — the ansi module's scanner
-/// shape, redeclared here because that seam is private to WP41's file.
-fn escape_len(b: &[u8], i: usize) -> usize {
-    if i + 1 >= b.len() || b[i] != 0x1b {
-        return 0;
-    }
-    match b[i + 1] {
-        b'[' => {
-            let mut j = i + 2;
-            while j < b.len() && !(0x40..=0x7e).contains(&b[j]) {
-                j += 1;
-            }
-            if j < b.len() {
-                j += 1; // include the final byte
-            }
-            j - i
-        }
-        b']' => {
-            let mut j = i + 2;
-            while j < b.len() {
-                if b[j] == 0x07 {
-                    return j + 1 - i;
-                }
-                if b[j] == 0x1b && b.get(j + 1) == Some(&b'\\') {
-                    return j + 2 - i;
-                }
-                j += 1;
-            }
-            b.len() - i
-        }
-        _ => 0,
-    }
-}
-
 /// Lexes a line into word and space-run tokens; escapes are zero-width and attach to
 /// the word around them.
 fn tokenize(s: &str) -> Vec<Tok> {
@@ -238,7 +204,7 @@ fn tokenize(s: &str) -> Vec<Tok> {
     let mut toks: Vec<Tok> = Vec::new();
     let mut pos = 0;
     while pos < s.len() {
-        let esc_n = escape_len(bytes, pos);
+        let esc_n = escape_len_at(bytes, pos);
         if esc_n > 0 {
             let esc = s[pos..pos + esc_n].to_owned();
             match toks.last_mut() {
@@ -253,7 +219,7 @@ fn tokenize(s: &str) -> Vec<Tok> {
             continue;
         }
         let mut end = pos;
-        while end < s.len() && escape_len(bytes, end) == 0 {
+        while end < s.len() && escape_len_at(bytes, end) == 0 {
             end += s[end..].chars().next().map_or(1, char::len_utf8);
         }
         for g in graphemes(&s[pos..end]) {

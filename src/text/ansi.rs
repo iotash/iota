@@ -1,5 +1,5 @@
 //! Escape-aware string utilities (`TUI_CONTRACTS` §3.2; internal/ui/clip.go). Pure;
-//! golden-tested; consumed by `crate::ui` and `crate::repl`.
+//! golden-tested; consumed by `crate::markdown`, `crate::ui` and `crate::repl`.
 //!
 //! Two scanner shapes are used deliberately: `csi_len_at` recognizes ONLY CSI
 //! sequences (`\x1b[` … final byte), the exact Go `ansiLen` twin driving
@@ -24,8 +24,10 @@ fn csi_len_at(b: &[u8], i: usize) -> usize {
 }
 
 /// Byte length of the CSI or OSC escape starting at `b[i]`, or 0. OSC runs to BEL
-/// (`\x07`) or ST (`\x1b\\`); an unterminated sequence extends to the end.
-fn escape_len_at(b: &[u8], i: usize) -> usize {
+/// (`\x07`) or ST (`\x1b\\`); an unterminated sequence extends to the end. THE scanner of
+/// this shape — the table renderer's cell tokenizer (`markdown::table`) uses it too
+/// (Phase 5 PR-6 retired its private copy).
+pub(crate) fn escape_len_at(b: &[u8], i: usize) -> usize {
     let n = csi_len_at(b, i);
     if n > 0 {
         return n;
