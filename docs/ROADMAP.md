@@ -39,19 +39,12 @@ agent-first、Windows 已支持、0.1.0 与 0.2.0 已发布。它的 67 条步�
 
 **测试树收敛**（原 Phase 4）：**已完成（2026-09-15，4a `91e2b4d…a5b60d3` + 4b `f6a0ecb…2790dff`）**。31 处 `impl Provider` → `src/testing/provider.rs` 的一个 `FakeProvider` builder；七份 `Surf` → `src/ui/testutil.rs`；8 条 `#[doc(hidden)]` 缝删除、缝后测试进 lib；`NewSession` 取代 47 处位置参数；lint 头 tests/ 下只剩 12 个 main.rs（unwrap-allow 文件 107 → 46）；`assert_cmd` 与 `tests/provider/progress.rs` 删除；`cargo test` 墙钟 29.5s → 13.7s。未做：session 的 24 个磁盘格式面 pub 降级（需把 71 个写盘读回测试搬进 src）；36 处真实时钟 sleep 保留（子进程 / wiremock socket / tmux 节拍 / UI 真线程，逐条理由在 `2790dff` 的提交信息）。
 
-**原生结构**（原 Phase 5）：无环、无扁平状态袋、无零值哨兵（`Result<_, String>` 20 处、内联
-`PoisonError` 121 处、`too_many_arguments` 4 处）。**方向对，但 §2.2 画的目标模块树是 9 月 8 日
-的**——里面有已退役的东西（`tool/context.rs` 装 `DelegationLedger`），没有这周加的东西
-（`config/{params,strict}.rs`、`shell/{interp,jobs}.rs`）。**先对着今天的 `src/` 重画树，再一模块一
-PR 地做。** 原 Phase 5 的纪律保留：纯 `git mv` 与代码改动分开提交；golden 不许 re-bless 除非附
-CHANGELOG 行；触碰 `src/ui/**` 的 PR 按批跑 TUI-VERIFY。
+**原生结构**（原 Phase 5）：**已完成（2026-09-16，19 个 PR，三路 agent 各自 worktree 并行，逐 PR ff/cherry-pick 进 main，远端三平台每步全绿）**。
+落地：`app/` 合并（vars/color/diag/paths，唯一 `Env` 缝，`VERSION` 归 app）；`tool/context.rs`（原 chat/turns）、`tool/{dispatch,approval,defer/,builtins/}`；`chat/` → `headless/` + `TurnParams`；`config/window.rs`、`Config::provider()`、唯一 api_key 优先级；`mcp/manager` 吸收 naming/status + `ServerState` 枚举；`shell/sandbox/` + `Outcome` 枚举；`background` 改 tokio、所有权一次查表；`cmd/{args,error,interactive/}` + `CliError` 三分；`ui/{runtime,render,input,surface}` 分组 + 共用 `Editor`（Ctrl+W 统一，X-35）；`repl/{turn,render,context,state}` 分组 + `Repl` 三分 + `TurnEngine`；`markdown::Writer` over `enum Block` + `blocks/`、`preview.rs` 定义 `PreviewHandle`（markdown → ui 边消失）、mathtext 成叶子、HTML 转义器与 `escape_len` 各一份；`tests/layering.rs` 钉住分层（ci.sh 的三条 grep 退役）；`Result<_, String>` 22 → 0；内联 `PoisonError` 121 → 4（helper 自身，`scripts/check-poison.sh` 作为回归门保留在 4）；`too_many_arguments` 4 → 0。
+与规划不同的：`tool/yaml11.rs` 留在 tool/（layering 证明 tool 消费它，搬上去成环）；mathtext 的 `""` 哨兵只在三处成立（Delim 两侧、`read_delim_symbol`、BigOp 形态），其余 String 是真内容，不 Option 化；`llm::stream` 泛型未做（规划已降为可选）。
+未做（进积压）：`shell/interp.rs` 的 `std::env::var` 与 `find_in_path` 的 PATH 读取未走 Env 缝（每次 spawn 重解析是既有行为）；session 的 24 个磁盘格式面 pub 降级（需把 71 个写盘读回测试搬进 src，见 4b 记录）。
 
-**Go 坐标注释**（原 Phase 6 的核心）：2755 处 `*.go:NNN`、833 处 `// Go:`、159 处 `WPnn`、93 处
-`CONTRACTS` 指向没人能打开的文件。**问题是真的，原方案的棘轮机器（`check-residue.sh` 基线、
-`code-tokens.py`、a/b/c 分类、`Pinned by` 校验）对一人项目过重。** 改为一次性工作：原文档自己承认
-真正承载 rationale 的只有 tool/ 里约 80 处 Go 句子——把那 80 处改写成行为句，其余在结构重构触碰时
-顺手删，不触碰的文件留着不动。`docs/ARCHITECTURE.md` 的 §0 graft ledger / §2 Go 映射表 / §12 work
-packages 三节随重构一起重写。
+**Go 坐标注释**（原 Phase 6 的核心）：**tool/ 部分已完成（2026-09-16，18 个提交，143 行 → 0；模型可见文本里的「Go regular expression」等刻意保留）**；`docs/ARCHITECTURE.md` §0 graft ledger / §12 work packages 已删，§2 改为按 `tests/layering.rs` 的分层声明写的模块树。其余目录的 `*.go:NNN` 坐标按「触碰即删」处理，不做全仓扫荡。
 
 ## 4. 明确放弃（前提已消失）
 
