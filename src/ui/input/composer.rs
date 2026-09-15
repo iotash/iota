@@ -12,6 +12,7 @@
 use crate::text::width::{graphemes, str_width};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use super::editor::Editor;
 use crate::ui::render::theme::{CYAN, RESET};
 
 /// Composer growth cap (model.go:29; duplicated from the loop to keep this module
@@ -21,10 +22,8 @@ const MAX_ROWS: usize = 5;
 /// The composer state (model.go `ta` + the history/suggest model fields — the loop
 /// model is WP44-frozen, so the WP46 state lives here).
 pub(crate) struct Composer {
-    /// The raw draft; paste tags stay collapsed in here (model.go:84-88).
-    value: String,
-    /// Byte offset of the cursor — always on a grapheme boundary.
-    cursor: usize,
+    /// The raw draft and its cursor; paste tags stay collapsed in here (model.go:84-88).
+    editor: Editor,
     /// Explicit height for multi-logical-line drafts (`fire_cancel`'s fold-back);
     /// single-line drafts derive their height from the wrap instead.
     height: usize,
@@ -78,8 +77,7 @@ impl Composer {
     /// An empty single-row composer.
     pub(crate) fn new() -> Self {
         Self {
-            value: String::new(),
-            cursor: 0,
+            editor: Editor::new(),
             height: 1,
             history: Vec::new(),
             hist_idx: 0,
@@ -91,45 +89,42 @@ impl Composer {
 
     /// The raw draft (paste tags kept — expansion happens in `paste::make_input`).
     pub(crate) fn value(&self) -> &str {
-        &self.value
+        self.editor.value()
     }
 
     /// Replaces the draft; cursor moves to the end (Go setDraft shape). Explicit
     /// height tracks the logical line count; a single line re-derives at render.
     pub(crate) fn set_value(&mut self, s: &str) {
-        s.clone_into(&mut self.value);
-        self.cursor = self.value.len();
+        self.editor.set_value(s);
         self.height = self.line_count().clamp(1, MAX_ROWS);
     }
 
     /// Moves the cursor to the end of the draft.
     pub(crate) fn move_to_end(&mut self) {
-        self.cursor = self.value.len();
+        self.editor.move_to_end();
     }
 
     /// Clears the draft back to one empty row — the Enter collapse (sheds BOTTOM
     /// rows; model.go:475-476). History, pastes and the cycle state are untouched.
     pub(crate) fn reset(&mut self) {
-        self.value.clear();
-        self.cursor = 0;
+        self.editor.clear();
         self.height = 1;
     }
 
     /// Inserts text at the cursor (paste tags and verbatim single-line pastes).
     pub(crate) fn insert_str(&mut self, s: &str) {
-        self.value.insert_str(self.cursor, s);
-        self.cursor += s.len();
+        self.editor.insert_str(s);
         self.height = self.line_count().clamp(1, MAX_ROWS);
     }
 
     /// Whether the draft is blank (whitespace only) — the ↑ queue-pop gate.
     pub(crate) fn is_blank(&self) -> bool {
-        self.value.trim().is_empty()
+        self.editor.value().trim().is_empty()
     }
 
     /// Logical (newline-separated) line count.
     pub(crate) fn line_count(&self) -> usize {
-        self.value.split('\n').count()
+        self.editor.value().split('\n').count()
     }
 
     /// Sets the explicit height (multi-logical-line drafts keep it; `fire_cancel`).
@@ -154,8 +149,8 @@ impl Composer {
         let mut row = 0usize;
         let mut curw = 0usize;
         let mut off = 0usize;
-        for g in graphemes(&self.value) {
-            if off == self.cursor {
+        for g in graphemes(self.editor.value()) {
+            if off == self.editor.cursor() {
                 return (row, curw);
             }
             if g == "\n" {
@@ -188,14 +183,16 @@ impl Composer {
     /// `effective_height` rows (short content pads with bare continuation rows).
     pub(crate) fn rows(&self, width: u16) -> Vec<String> {
         let w = content_width(width);
-        let spans = wrap_spans(&self.value, w);
+        let spans = wrap_spans(self.editor.value(), w);
         let h = self.effective_height(spans.len());
         let (cursor_row, _) = self.cursor_rowcol(w);
         let offset = Self::scroll_offset(cursor_row, h);
         (0..h)
             .map(|vi| {
                 let gi = offset + vi;
-                let text = spans.get(gi).map_or("", |&(s, e)| &self.value[s..e]);
+                let text = spans
+                    .get(gi)
+                    .map_or("", |&(s, e)| &self.editor.value()[s..e]);
                 if gi == 0 {
                     format!("{CYAN}❯ {RESET}{text}")
                 } else {
@@ -210,7 +207,7 @@ impl Composer {
     /// (spike G3: `"中文测试"` → column 10).
     pub(crate) fn cursor_pos(&self, width: u16) -> (u16, u16) {
         let w = content_width(width);
-        let total = wrap_spans(&self.value, w).len();
+        let total = wrap_spans(self.editor.value(), w).len();
         let h = self.effective_height(total);
         let (cursor_row, cursor_col) = self.cursor_rowcol(w);
         let offset = Self::scroll_offset(cursor_row, h);
@@ -236,7 +233,7 @@ impl Composer {
     /// History is ↑/↓ navigable only while the composer holds a single logical line
     /// that fits one wrapped row (model.go historyNavigable).
     pub(crate) fn history_navigable(&self, width: u16) -> bool {
-        self.line_count() <= 1 && wrap_spans(&self.value, content_width(width)).len() <= 1
+        self.line_count() <= 1 && wrap_spans(self.editor.value(), content_width(width)).len() <= 1
     }
 
     /// Whether ↓ still has somewhere to go (else the key falls to the edit set).
@@ -248,7 +245,7 @@ impl Composer {
     /// (model.go:453-462).
     pub(crate) fn history_up(&mut self) {
         if self.hist_idx == self.history.len() {
-            self.hist_draft = self.value.clone();
+            self.hist_draft = self.editor.value().to_owned();
         }
         if self.hist_idx > 0 {
             self.hist_idx -= 1;
@@ -280,83 +277,18 @@ impl Composer {
 
     // ---- the enumerated edit set (key-table rows 8–9, TUI_CONTRACTS §6) ----
 
-    /// The editing set: ←/→ by grapheme · Home/End · Backspace/Ctrl+H grapheme-back ·
-    /// Delete · Ctrl+A/E home/end · Ctrl+B/F char · Ctrl+K kill-to-end · Ctrl+U
-    /// kill-to-start · Ctrl+W word-back — line-scoped like the bubbles textarea it
-    /// replaces — plus text insert and ↑/↓ display-row movement in multi-row drafts.
+    /// The editing set is the shared [`Editor`]'s (`on_key`); what stays here is what only a
+    /// multi-row composer has — ↑/↓ as display-row cursor movement, reached only when history
+    /// navigation did not claim the arrows — and the height that follows every edit.
     pub(crate) fn handle_edit_key(&mut self, key: &KeyEvent, width: u16) {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        match (ctrl, key.code) {
-            (true, KeyCode::Char('a')) | (false, KeyCode::Home) => {
-                self.cursor = self.line_start();
+        if !self.editor.on_key(key) && !key.modifiers.contains(KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Up => self.move_cursor_row(false, width),
+                KeyCode::Down => self.move_cursor_row(true, width),
+                _ => {}
             }
-            (true, KeyCode::Char('e')) | (false, KeyCode::End) => {
-                self.cursor = self.line_end();
-            }
-            (true, KeyCode::Char('b')) | (false, KeyCode::Left) => {
-                self.cursor = self.prev_boundary();
-            }
-            (true, KeyCode::Char('f')) | (false, KeyCode::Right) => {
-                self.cursor = self.next_boundary();
-            }
-            (true, KeyCode::Char('k')) => {
-                let end = self.line_end();
-                self.value.drain(self.cursor..end);
-            }
-            (true, KeyCode::Char('u')) => {
-                let start = self.line_start();
-                self.value.drain(start..self.cursor);
-                self.cursor = start;
-            }
-            (true, KeyCode::Char('w')) => self.delete_word_back(),
-            (true, KeyCode::Char('h')) | (_, KeyCode::Backspace) => {
-                let p = self.prev_boundary();
-                self.value.drain(p..self.cursor);
-                self.cursor = p;
-            }
-            (false, KeyCode::Delete) => {
-                let n = self.next_boundary();
-                self.value.drain(self.cursor..n);
-            }
-            // Reached only when history navigation did not claim the arrows: cursor
-            // movement by display row within a multi-row draft.
-            (false, KeyCode::Up) => self.move_cursor_row(false, width),
-            (false, KeyCode::Down) => self.move_cursor_row(true, width),
-            (false, KeyCode::Char(c)) => {
-                self.value.insert(self.cursor, c);
-                self.cursor += c.len_utf8();
-            }
-            _ => {}
         }
         self.height = self.line_count().clamp(1, MAX_ROWS);
-    }
-
-    /// Byte start of the logical line under the cursor.
-    fn line_start(&self) -> usize {
-        self.value[..self.cursor].rfind('\n').map_or(0, |i| i + 1)
-    }
-
-    /// Byte end of the logical line under the cursor (exclusive of the newline).
-    fn line_end(&self) -> usize {
-        self.value[self.cursor..]
-            .find('\n')
-            .map_or(self.value.len(), |i| self.cursor + i)
-    }
-
-    /// Ctrl+W: skip whitespace back, then delete to the start of the previous word —
-    /// never crossing the line start (bubbles deleteWordLeft parity).
-    fn delete_word_back(&mut self) {
-        let ls = self.line_start();
-        let head = &self.value[ls..self.cursor];
-        let trimmed = head.trim_end_matches(char::is_whitespace);
-        let cut_rel = trimmed
-            .char_indices()
-            .rev()
-            .find(|(_, c)| c.is_whitespace())
-            .map_or(0, |(i, c)| i + c.len_utf8());
-        let cut = ls + cut_rel;
-        self.value.drain(cut..self.cursor);
-        self.cursor = cut;
     }
 
     /// Moves the cursor one display row up/down, holding the display column
@@ -364,7 +296,7 @@ impl Composer {
     /// edge.
     fn move_cursor_row(&mut self, down: bool, width: u16) {
         let w = content_width(width);
-        let spans = wrap_spans(&self.value, w);
+        let spans = wrap_spans(self.editor.value(), w);
         let (cursor_row, cursor_col) = self.cursor_rowcol(w);
         let target = if down {
             cursor_row + 1
@@ -376,7 +308,7 @@ impl Composer {
         };
         let mut walked = 0usize;
         let mut off = start;
-        for g in graphemes(&self.value[start..end]) {
+        for g in graphemes(&self.editor.value()[start..end]) {
             let gw = str_width(g).max(1);
             if walked + gw > cursor_col {
                 break;
@@ -384,25 +316,7 @@ impl Composer {
             walked += gw;
             off += g.len();
         }
-        self.cursor = off;
-    }
-
-    /// The grapheme boundary before the cursor.
-    fn prev_boundary(&self) -> usize {
-        let mut prev = 0;
-        let mut at = 0;
-        for g in graphemes(&self.value[..self.cursor]) {
-            prev = at;
-            at += g.len();
-        }
-        prev
-    }
-
-    /// The grapheme boundary after the cursor.
-    fn next_boundary(&self) -> usize {
-        graphemes(&self.value[self.cursor..])
-            .next()
-            .map_or(self.value.len(), |g| self.cursor + g.len())
+        self.editor.set_cursor(off);
     }
 }
 
