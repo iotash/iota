@@ -704,10 +704,16 @@ async fn shell_calls_share_one_parallel_batch() {
     fx.turn(&p, &mut history).await.outcome.expect("turn");
     let elapsed = started.elapsed();
 
-    assert!(
-        elapsed < Duration::from_millis(1800),
-        "two `sleep 1` calls took {elapsed:?} — they were serialized"
-    );
+    // The wall clock proves the OS ran the pair at once, which on Windows it does not reliably
+    // do: each call is a Git Bash start-up of a second or more, and two of them contend (CI saw
+    // 5.7 s for the pair, 2026-09-16). The batching itself is proved below, on every platform,
+    // by the single cancel scope; the clock is Unix's to keep.
+    if cfg!(unix) {
+        assert!(
+            elapsed < Duration::from_millis(1800),
+            "two `sleep 1` calls took {elapsed:?} — they were serialized"
+        );
+    }
     // ONE cancel scope for the whole batch (a serial pair would push two).
     assert_eq!(
         fx.events()
