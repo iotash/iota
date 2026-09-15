@@ -406,77 +406,28 @@ fn note(provider: &str, e: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{Candidate, ModelCatalog, Pick, Source, busy_label};
-    use crate::BoxFuture;
     use crate::config::{ModelConfig, ModelRef};
-    use crate::provider::error::ProviderError;
-    use crate::provider::model::Message;
-    use crate::provider::{ChatResult, Provider, ProviderKind};
-    use crate::testing::ScriptedUi;
+    use crate::testing::{FakeProvider, ScriptedUi};
     use crate::ui::facade::Ui;
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use std::time::Duration;
     use tokio_util::sync::CancellationToken;
 
-    /// A provider that answers `list_models` after a delay — the delay is what makes concurrency
-    /// observable (two 120 ms sources finish in ~120 ms concurrently, ~240 ms one after the other).
-    struct Lister {
-        models: Vec<String>,
-        delay: Duration,
-        fail: Option<&'static str>,
+    /// A provider (model `""`) answering `list_models` with `models`.
+    fn lister(models: &[&str]) -> FakeProvider {
+        FakeProvider::new().with_model("").with_models(models)
     }
 
-    impl Lister {
-        fn new(models: &[&str]) -> Self {
-            Self {
-                models: models.iter().map(|s| (*s).to_owned()).collect(),
-                delay: Duration::ZERO,
-                fail: None,
-            }
-        }
-        fn slow(models: &[&str], ms: u64) -> Self {
-            Self {
-                delay: Duration::from_millis(ms),
-                ..Self::new(models)
-            }
-        }
-        fn failing(msg: &'static str) -> Self {
-            Self {
-                fail: Some(msg),
-                ..Self::new(&[])
-            }
-        }
+    /// A lister whose listing fails with `msg`.
+    fn failing(msg: &str) -> FakeProvider {
+        FakeProvider::new().with_model("").with_models_failing(msg)
     }
 
-    impl Provider for Lister {
-        fn kind(&self) -> ProviderKind {
-            ProviderKind::OpenAi
-        }
-        fn model(&self) -> &'static str {
-            ""
-        }
-        fn set_model(&mut self, _model: String) {}
-        fn list_models<'a>(
-            &'a self,
-            _cancel: &'a CancellationToken,
-        ) -> BoxFuture<'a, Result<Vec<String>, ProviderError>> {
-            Box::pin(async move {
-                if !self.delay.is_zero() {
-                    tokio::time::sleep(self.delay).await;
-                }
-                match self.fail {
-                    Some(msg) => Err(ProviderError::other(msg)),
-                    None => Ok(self.models.clone()),
-                }
-            })
-        }
-        fn chat<'a>(
-            &'a self,
-            _cancel: &'a CancellationToken,
-            _messages: &'a [Message],
-        ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
-            Box::pin(std::future::ready(Ok(ChatResult::default())))
-        }
+    /// A lister answering after `ms` — the delay is what makes concurrency observable (two 120 ms
+    /// sources finish in ~120 ms concurrently, ~240 ms one after the other).
+    fn slow(models: &[&str], ms: u64) -> FakeProvider {
+        lister(models).with_models_after(Duration::from_millis(ms))
     }
 
     /// A catalog with hand-built sources: `new` needs a whole `Config`, and what these tests are
@@ -527,9 +478,9 @@ mod tests {
                 },
                 wildcard("relay"),
             ],
-            vec![("relay", Source::Live(Arc::new(Lister::new(&["a", "b"]))))],
+            vec![("relay", Source::Live(Arc::new(lister(&["a", "b"]))))],
         );
-        let live = Lister::new(&["never asked"]);
+        let live = lister(&["never asked"]);
         let got = cat.expand(&ui(), &live, &CancellationToken::new()).await;
         assert_eq!(
             got.rows,
@@ -566,7 +517,7 @@ mod tests {
             vec![wildcard("anthropic")],
             vec![("anthropic", Source::Session)],
         );
-        let live = Lister::new(&["claude-a", "claude-b"]);
+        let live = lister(&["claude-a", "claude-b"]);
         let got = cat.expand(&ui(), &live, &CancellationToken::new()).await;
         assert_eq!(
             got.rows
@@ -589,9 +540,9 @@ mod tests {
                 },
                 wildcard("relay"),
             ],
-            vec![("relay", Source::Live(Arc::new(Lister::new(&["a", "b"]))))],
+            vec![("relay", Source::Live(Arc::new(lister(&["a", "b"]))))],
         );
-        let live = Lister::new(&[]);
+        let live = lister(&[]);
         let got = cat.expand(&ui(), &live, &CancellationToken::new()).await;
         assert_eq!(
             got.rows.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
@@ -606,14 +557,14 @@ mod tests {
         let cat = catalog(
             vec![wildcard("relay"), wildcard("dead")],
             vec![
-                ("relay", Source::Live(Arc::new(Lister::new(&["a"])))),
+                ("relay", Source::Live(Arc::new(lister(&["a"])))),
                 (
                     "dead",
-                    Source::Live(Arc::new(Lister::failing("404 no such endpoint\ntrace: …"))),
+                    Source::Live(Arc::new(failing("404 no such endpoint\ntrace: …"))),
                 ),
             ],
         );
-        let live = Lister::new(&[]);
+        let live = lister(&[]);
         let got = cat.expand(&ui(), &live, &CancellationToken::new()).await;
         assert_eq!(got.rows.len(), 1, "the healthy source still lists");
         assert_eq!(got.rows[0].id, "a");
@@ -628,11 +579,11 @@ mod tests {
         let cat = catalog(
             vec![wildcard("relay"), wildcard("weird")],
             vec![
-                ("relay", Source::Live(Arc::new(Lister::new(&["a"])))),
+                ("relay", Source::Live(Arc::new(lister(&["a"])))),
                 ("weird", Source::Broken("unknown provider type".to_owned())),
             ],
         );
-        let live = Lister::new(&[]);
+        let live = lister(&[]);
         let got = cat.expand(&ui(), &live, &CancellationToken::new()).await;
         assert_eq!(got.rows.len(), 1);
         assert_eq!(got.notes, ["weird: unknown provider type"]);
@@ -644,12 +595,12 @@ mod tests {
         let cat = catalog(
             vec![wildcard("a"), wildcard("b"), wildcard("c")],
             vec![
-                ("a", Source::Live(Arc::new(Lister::slow(&["a1"], 150)))),
-                ("b", Source::Live(Arc::new(Lister::slow(&["b1"], 150)))),
-                ("c", Source::Live(Arc::new(Lister::slow(&["c1"], 150)))),
+                ("a", Source::Live(Arc::new(slow(&["a1"], 150)))),
+                ("b", Source::Live(Arc::new(slow(&["b1"], 150)))),
+                ("c", Source::Live(Arc::new(slow(&["c1"], 150)))),
             ],
         );
-        let live = Lister::new(&[]);
+        let live = lister(&[]);
         let t0 = std::time::Instant::now();
         let got = cat.expand(&ui(), &live, &CancellationToken::new()).await;
         let elapsed = t0.elapsed();
@@ -666,9 +617,9 @@ mod tests {
     async fn esc_during_the_fetch_abandons_the_expansion() {
         let cat = catalog(
             vec![wildcard("a")],
-            vec![("a", Source::Live(Arc::new(Lister::slow(&["a1"], 5_000))))],
+            vec![("a", Source::Live(Arc::new(slow(&["a1"], 5_000))))],
         );
-        let live = Lister::new(&[]);
+        let live = lister(&[]);
         let ui = ScriptedUi::new(Vec::new());
         let cancel = CancellationToken::new();
         let handle = Arc::clone(&ui) as Arc<dyn Ui>;
@@ -688,9 +639,9 @@ mod tests {
     async fn an_app_shutdown_is_not_a_user_cancel() {
         let cat = catalog(
             vec![wildcard("a")],
-            vec![("a", Source::Live(Arc::new(Lister::new(&["a1"]))))],
+            vec![("a", Source::Live(Arc::new(lister(&["a1"]))))],
         );
-        let live = Lister::new(&[]);
+        let live = lister(&[]);
         let cancel = CancellationToken::new();
         cancel.cancel();
         let got = cat.expand(&ui(), &live, &cancel).await;
@@ -702,7 +653,7 @@ mod tests {
     #[tokio::test]
     async fn an_empty_candidate_set_lists_the_live_provider() {
         let cat = catalog(Vec::new(), Vec::new());
-        let live = Lister::new(&["a-model", "b-model"]);
+        let live = lister(&["a-model", "b-model"]);
         let got = cat.expand(&ui(), &live, &CancellationToken::new()).await;
         assert_eq!(
             got.rows
@@ -713,7 +664,7 @@ mod tests {
         );
         assert!(got.notes.is_empty());
 
-        let dead = Lister::failing("no such endpoint");
+        let dead = failing("no such endpoint");
         let got = cat.expand(&ui(), &dead, &CancellationToken::new()).await;
         assert!(got.rows.is_empty());
         assert_eq!(got.notes, ["anthropic: no such endpoint"]);
