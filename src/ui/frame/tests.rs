@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! WP44 L2 suite — `TestBackend` frame goldens with an EMPTY composer (stacking order,
 //! exactly 2 separators, bottom-slot swap), the status-line suite (exact SGR bytes),

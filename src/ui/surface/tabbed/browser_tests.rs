@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! WP54 Browser-panel suite (internal/ui/`model_test.go:841` + `search_test.go:354`).
 //!

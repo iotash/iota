@@ -408,7 +408,6 @@ impl Composer {
 
 #[cfg(test)]
 mod tests {
-    #![allow(dead_code)]
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     //! WP46 composer suite — `TestWrappedComposerLayout`, the crown-jewel FULL frame
     //! golden (owned HERE; WP44's `frame_goldens.rs` never renders composer content), the

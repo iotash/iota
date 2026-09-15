@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! WP47 row-panel filter-search suite (internal/ui/`search_test.go` ports): the matcher
 //! (`ascii_fold`'s byte-length invariant, `match_ranges`), `highlight_line`'s SGR

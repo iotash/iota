@@ -413,7 +413,6 @@ impl Ui for TuiHandle {
 
 #[cfg(test)]
 mod tests {
-    #![allow(dead_code)]
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     //! WP45 facade-contract suite: the blocking calls' three-way-select discipline over the
     //! REAL loop thread (waiter delivery, eager revoke, idle Ctrl+C, shutdown failing

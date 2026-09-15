@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! WP54 Slider-panel suite (internal/ui/`model_test.go` ports).
 //!

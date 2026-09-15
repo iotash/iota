@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! WP46 queue-lifecycle suite: FIFO drain, ↑ pop-back (LIFO), the hint laws at the
 //! model level, the steering take, and the interrupt fold-back (`model_test.go`).

@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! WP54 View jump-search suite (internal/ui/`search_test.go:415-640`, 7 tests).
 //!

@@ -190,7 +190,6 @@ fn render_candidates(labels: &[&str], lo: usize, hi: usize, cur: usize, cycling:
 
 #[cfg(test)]
 mod tests {
-    #![allow(dead_code)]
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     //! WP46 completion suite: `match_suggestions` argument-entry laws, Tab cycling
     //! against the first-press prefix, the render-width outward window, and the

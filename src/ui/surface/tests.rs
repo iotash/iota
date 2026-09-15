@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! WP47 surface suite (internal/ui/`{model_test,tabbed_test}`.go ports): the pure
 //! `surface_key` ladder, the T1 panel kinds (List/Multi/View/Input), commit-all + the

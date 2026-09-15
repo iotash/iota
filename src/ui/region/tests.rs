@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! WP43 L1 suite: the staging-window ports (`region_test.go`, `model_test.go`'s region
 //! tests, `sink_test.go` — incl. the `TwoRoundToolTurn` GOLDEN) driven through the
@@ -19,7 +18,7 @@ use crate::ui::region::{
 use crate::ui::sink::{PreviewWriter, StreamSink, count_lines};
 
 /// A region publishing through the test seam with width/height 0 (Go `&region{emit: …}`).
-fn test_region(f: impl FnMut(Vec<String>, RegionSnapshot) + Send + 'static) -> Region {
+fn region_emitting(f: impl FnMut(Vec<String>, RegionSnapshot) + Send + 'static) -> Region {
     Region::new(
         Emit::Test(Box::new(f)),
         Arc::new(AtomicU16::new(0)),
@@ -67,10 +66,9 @@ fn rows_call(snap: &RegionSnapshot) -> usize {
 /// A committed entry with embedded newlines must expand to one tail entry per visual
 /// row: all window bookkeeping (tail height, rebalance, overflow) — and through it the
 /// frame anchor and the composer cursor — assumes one row per entry.
-// Go: region_test.go:14
 #[test]
 fn region_commit_splits_embedded_newlines() {
-    let mut r = test_region(|_, _| {});
+    let mut r = region_emitting(|_, _| {});
     r.commit(s(&["Error: 400 {\n  \"message\": \"bad\"\n}"]));
     assert_eq!(r.tail, s(&["Error: 400 {", "  \"message\": \"bad\"", "}"]));
 }
@@ -78,7 +76,6 @@ fn region_commit_splits_embedded_newlines() {
 /// Overwide entries are hard-wrapped on commit to width−1 (SGR rows keep style via
 /// `wrap_ansi`); rows that already fit — like `UserBlock`'s full-width rows — pass through
 /// untouched.
-// Go: region_test.go:29
 #[test]
 fn region_commit_wraps_to_screen_width() {
     let scroll: Arc<Mutex<Vec<String>>> = Arc::default();
@@ -109,10 +106,9 @@ fn region_commit_wraps_to_screen_width() {
 }
 
 /// Width 0 (startup before the first resize, emit-seam tests) skips wrapping.
-// Go: region_test.go:54
 #[test]
 fn region_commit_no_width_no_wrap() {
-    let mut r = test_region(|_, _| {});
+    let mut r = region_emitting(|_, _| {});
     r.commit(vec!["x".repeat(500)]);
     assert_eq!(r.tail.len(), 1, "tail rows = {}, want 1", r.tail.len());
 }
@@ -121,10 +117,9 @@ fn region_commit_no_width_no_wrap() {
 /// relabel), rolling preview lines, and the status-row detail each render — and count
 /// in the cursor offset — as exactly one frame row, so embedded line breaks collapse to
 /// spaces on entry.
-// Go: region_test.go:66
 #[test]
 fn region_preview_entries_collapse_to_one_row() {
-    let mut r = test_region(|_, _| {});
+    let mut r = region_emitting(|_, _| {});
 
     r.open_call_preview("[shell\ncommand:a]"); // fresh open
     assert_eq!(r.label, "[shell command:a]");
@@ -147,7 +142,7 @@ fn region_preview_entries_collapse_to_one_row() {
 fn region_set_call_body_replaces_the_widget_body() {
     let snaps: Arc<Mutex<Vec<RegionSnapshot>>> = Arc::default();
     let c = Arc::clone(&snaps);
-    let mut r = test_region(move |_, snap| c.lock().unwrap().push(snap));
+    let mut r = region_emitting(move |_, snap| c.lock().unwrap().push(snap));
 
     // No preview at all: dropped.
     r.set_call_body(s(&["▀▀▀"]));
@@ -196,12 +191,11 @@ fn region_set_call_body_replaces_the_widget_body() {
 /// widget → pending call raise → settle → results → next round) and pins the scrollback
 /// stream (overflow ∪ final tail): exactly one blank separator per block boundary, no
 /// widget row ever leaking into scrollback.
-// Go: region_test.go:96
 #[test]
 fn region_two_round_tool_turn() {
     let scroll: Arc<Mutex<Vec<String>>> = Arc::default();
     let c = Arc::clone(&scroll);
-    let mut r = test_region(move |over, _| c.lock().unwrap().extend(over));
+    let mut r = region_emitting(move |over, _| c.lock().unwrap().extend(over));
 
     // round 1
     r.commit(s(&["❯ user prompt"])); // user block
@@ -248,12 +242,11 @@ fn region_two_round_tool_turn() {
 /// tools): `paused_at` freezes the elapsed figure, resume shifts `since` forward by the
 /// paused span so the figure continues where it froze, and every widget teardown clears
 /// the pause state.
-// Go: region_test.go:148
 #[test]
 fn region_clock_pause() {
     let snaps: Arc<Mutex<Vec<RegionSnapshot>>> = Arc::default();
     let c = Arc::clone(&snaps);
-    let mut r = test_region(move |_, snap| c.lock().unwrap().push(snap));
+    let mut r = region_emitting(move |_, snap| c.lock().unwrap().push(snap));
 
     r.pause_clock(); // no call preview: a no-op, publishes nothing
     assert!(
@@ -290,10 +283,9 @@ fn region_clock_pause() {
 /// `relabel_preview` updates a plain preview's header in place — and ONLY that: call
 /// previews relabel through `open_call_preview`, and a closed preview must not be
 /// resurrected by a throttled counter racing the flush.
-// Go: region_test.go:191
 #[test]
 fn region_relabel_preview() {
-    let mut r = test_region(|_, _| {});
+    let mut r = region_emitting(|_, _| {});
 
     r.open_preview("rendering table…");
     r.relabel_preview("rendering table… · 12 lines");
@@ -323,12 +315,11 @@ fn region_relabel_preview() {
 /// The single-row preview closes the residue/shrink class: a SHORT block (2-row list)
 /// morphing over its 1-row preview leaves no residue, and the end-of-turn `drop_preview`
 /// finds nothing to shrink.
-// Go: region_test.go:220
 #[test]
 fn region_short_block_no_residue() {
     let snaps: Arc<Mutex<Vec<RegionSnapshot>>> = Arc::default();
     let c = Arc::clone(&snaps);
-    let mut r = test_region(move |_, snap| c.lock().unwrap().push(snap));
+    let mut r = region_emitting(move |_, snap| c.lock().unwrap().push(snap));
 
     r.commit(s(&["intro text"]));
     r.open_preview("rendering list…"); // single header row, no source lines
@@ -352,13 +343,12 @@ fn region_short_block_no_residue() {
 /// Pins the staging-window contract: preview growth STEALS tail rows (commits, never
 /// shrinks); the block's rendered lines REPLACE the preview in place; total height
 /// never exceeds `TAIL_KEEP` and never shrinks across the flush.
-// Go: model_test.go:214
 #[test]
 fn region_morph() {
     let overflows: Arc<Mutex<Vec<Vec<String>>>> = Arc::default();
     let snaps: Arc<Mutex<Vec<RegionSnapshot>>> = Arc::default();
     let (co, cs) = (Arc::clone(&overflows), Arc::clone(&snaps));
-    let mut r = test_region(move |over, snap| {
+    let mut r = region_emitting(move |over, snap| {
         if !over.is_empty() {
             co.lock().unwrap().push(over);
         }
@@ -419,12 +409,11 @@ fn region_morph() {
 /// A preview collapsing into FEWER lines than it occupied (the thinking window folding
 /// to its one-line marker) must not shrink the window — the uncovered rows stay as
 /// residue and later commits consume them top-down.
-// Go: model_test.go:281
 #[test]
 fn region_morph_residue() {
     let snaps: Arc<Mutex<Vec<RegionSnapshot>>> = Arc::default();
     let c = Arc::clone(&snaps);
-    let mut r = test_region(move |_, snap| c.lock().unwrap().push(snap));
+    let mut r = region_emitting(move |_, snap| c.lock().unwrap().push(snap));
     let last = || snaps.lock().unwrap().last().unwrap().clone();
 
     // Warm to full height, then a thinking preview takes the window over.
@@ -487,12 +476,11 @@ fn region_morph_residue() {
 /// The tool-call lifecycle widget — header + live status row — keeps its clock across
 /// relabels, and settling (deferred close + the header/result commits) never changes
 /// the window height.
-// Go: model_test.go:356
 #[test]
 fn region_call_preview() {
     let snaps: Arc<Mutex<Vec<RegionSnapshot>>> = Arc::default();
     let c = Arc::clone(&snaps);
-    let mut r = test_region(move |_, snap| c.lock().unwrap().push(snap));
+    let mut r = region_emitting(move |_, snap| c.lock().unwrap().push(snap));
     let last = || snaps.lock().unwrap().last().unwrap().clone();
 
     r.commit(s(&["p1", "p2", "p3", "p4"]));
@@ -552,12 +540,11 @@ fn region_call_preview() {
 
 /// Opening a preview over an existing one folds the old rows into residue
 /// (back-to-back streamed tool calls) — height flat.
-// Go: model_test.go:460
 #[test]
 fn region_preview_over_preview() {
     let snaps: Arc<Mutex<Vec<RegionSnapshot>>> = Arc::default();
     let c = Arc::clone(&snaps);
-    let mut r = test_region(move |_, snap| c.lock().unwrap().push(snap));
+    let mut r = region_emitting(move |_, snap| c.lock().unwrap().push(snap));
     let last = || snaps.lock().unwrap().last().unwrap().clone();
 
     r.commit(s(&["p1", "p2", "p3", "p4"]));
@@ -588,12 +575,11 @@ fn region_preview_over_preview() {
 /// it must still land in scrollback, in order. (Ordering half only: Go's joinOverflow
 /// `""`→`" "` substitution is a bubbletea insertAbove workaround, NOT ported — T-02: a
 /// blank ratatui `Line` inserts as one blank row.)
-// Go: model_test.go:614
 #[test]
 fn region_blank_line_survives_overflow() {
     let overflows: Arc<Mutex<Vec<String>>> = Arc::default();
     let c = Arc::clone(&overflows);
-    let mut r = test_region(move |over, _| c.lock().unwrap().extend(over));
+    let mut r = region_emitting(move |over, _| c.lock().unwrap().extend(over));
 
     // Fill the window, then push a blank through it alone.
     r.commit(s(&["a", "b", "c", "d"]));
@@ -609,7 +595,6 @@ fn region_blank_line_survives_overflow() {
 
 /// Pins the insert safety contract: the region must never publish a scrollback batch of
 /// ≥ screen-height lines (kept per T-06 as cheap insurance for the W2 arithmetic).
-// Go: model_test.go:1392
 #[test]
 fn chunk_overflow_below_screen_height() {
     let lines: Vec<String> = (0..100).map(|i| format!("l{i}")).collect();
@@ -649,10 +634,9 @@ fn chunk_overflow_below_screen_height() {
 /// preview stays exactly one row. (Adapted per the line-based facade `PreviewHandle`:
 /// one call per consumed source line; Go's byte-chunk `partial` flag lives in the
 /// producer now.)
-// Go: sink_test.go:12
 #[test]
 fn preview_writer_counts() {
-    let region = Arc::new(Mutex::new(test_region(|_, _| {})));
+    let region = Arc::new(Mutex::new(region_emitting(|_, _| {})));
     region.lock().unwrap().open_preview("rendering table…");
     let mut w = PreviewWriter {
         region: Arc::clone(&region),
@@ -694,10 +678,9 @@ fn preview_writer_counts() {
 /// A block that flushes before the first throttle tick never shows a counter at all —
 /// the short-block case stays visually silent (`last` starts at open time, so the first
 /// tick waits a full period).
-// Go: sink_test.go:42
 #[test]
 fn preview_writer_quiet_for_short_blocks() {
-    let region = Arc::new(Mutex::new(test_region(|_, _| {})));
+    let region = Arc::new(Mutex::new(region_emitting(|_, _| {})));
     region.lock().unwrap().open_preview("rendering list…");
     let mut w = PreviewWriter {
         region: Arc::clone(&region),
@@ -716,7 +699,6 @@ fn preview_writer_quiet_for_short_blocks() {
     );
 }
 
-// Go: sink_test.go:53
 #[test]
 fn count_lines_wording() {
     assert_eq!(count_lines(1), "1 line");
@@ -823,7 +805,7 @@ fn staging_window_has_a_floor_on_short_terminals() {
 /// a leaked/deferred preview dies with the turn.
 #[test]
 fn stream_sink_done_drops_preview_and_pops_scope() {
-    let region = Arc::new(Mutex::new(test_region(|_, _| {})));
+    let region = Arc::new(Mutex::new(region_emitting(|_, _| {})));
     let popped = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&popped);
     let sink = StreamSink::new(Arc::clone(&region), move || {
@@ -847,7 +829,7 @@ fn stream_sink_done_drops_preview_and_pops_scope() {
 /// deferred close.
 #[test]
 fn stream_sink_block_preview_meters() {
-    let region = Arc::new(Mutex::new(test_region(|_, _| {})));
+    let region = Arc::new(Mutex::new(region_emitting(|_, _| {})));
     let sink = StreamSink::new(Arc::clone(&region), || {});
 
     let mut h = sink.block_preview("rendering code…");
@@ -872,7 +854,7 @@ fn stream_sink_block_preview_meters() {
 /// NOT touch a newer preview (the closed-guard).
 #[test]
 fn preview_writer_drop_closes() {
-    let region = Arc::new(Mutex::new(test_region(|_, _| {})));
+    let region = Arc::new(Mutex::new(region_emitting(|_, _| {})));
     let sink = StreamSink::new(Arc::clone(&region), || {});
 
     // Drop without close: the preview defer-closes.
