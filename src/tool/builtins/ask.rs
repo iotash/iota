@@ -1,4 +1,4 @@
-//! The `ask` toolset (tool/ask.go): model-initiated user interaction — `choose` (1–4
+//! The `ask` toolset: model-initiated user interaction — `choose` (1–4
 //! single/multi select questions with an optional free-text answer) and `confirm` (one
 //! yes/no). Pure UX, no side effects, no approval gate.
 //!
@@ -24,14 +24,13 @@ use serde_json::{Value, json};
 use crate::tool::args::{bool_arg, str_arg};
 use crate::tool::sets::{RawNode, SetError};
 
-/// Max questions one `choose` call may ask (tool/ask.go:26 `askMaxQuestions`).
+/// Max questions one `choose` call may ask.
 const ASK_MAX_QUESTIONS: usize = 4;
 
-/// Max runes of a question header — headers are tab chips, not sentences
-/// (tool/ask.go:27 `askHeaderMax`).
+/// Max runes of a question header — headers are tab chips, not sentences.
 const ASK_HEADER_MAX: usize = 16;
 
-/// `env.interactor` None → no tools (tool/ask.go:18-27); Some → `choose` + `confirm`, in
+/// `env.interactor` None → no tools; Some → `choose` + `confirm`, in
 /// that order. Never errors.
 pub fn new_ask_set(env: &ToolEnv, _node: Option<&RawNode>) -> Result<Vec<Arc<dyn Tool>>, SetError> {
     let Some(it) = env.interactor.clone() else {
@@ -110,7 +109,7 @@ impl Tool for ChooseTool {
         }
     }
 
-    /// tool/ask.go:95-127 — a validation failure is a tool error (`is_error`), never a
+    /// A validation failure is a tool error (`is_error`), never a
     /// hard `Err`; a declined wizard is a plain answer the model handles.
     fn call<'a>(&'a self, cx: &'a RunCtx, args: &'a JsonObject) -> BoxFuture<'a, ToolResult> {
         Box::pin(async move {
@@ -156,7 +155,6 @@ impl Tool for ConfirmTool {
         }
     }
 
-    /// tool/ask.go:211-239.
     fn call<'a>(&'a self, cx: &'a RunCtx, args: &'a JsonObject) -> BoxFuture<'a, ToolResult> {
         Box::pin(async move {
             let question = str_arg(args, "question").trim();
@@ -201,17 +199,17 @@ impl Tool for ConfirmTool {
     }
 }
 
-/// What a declined wizard tells the model (tool/ask.go:105,232).
+/// What a declined wizard tells the model.
 const DECLINED: &str = "The user declined to answer.";
 
-/// tool/ask.go:38-47, byte-verbatim.
+/// The `choose` description the model reads (model-facing text: change it only by decision).
 const CHOOSE_DESC: &str = "Ask the user to pick between options on an interactive selector. Use ONLY when you are blocked on a decision that is genuinely the user's to make and the choices are enumerable; for open-ended discussion just ask in text. Each question's `header` is a TAB LABEL — keep it under ~12 characters. If a question's wording invites picking several options (\"select all that apply\"), you MUST set `multiple: true` on that question — the selector renders single-select otherwise. Unless allow_custom is false the user can always answer with their own text instead. The user may also decline to answer; proceed sensibly when that happens.";
 
-/// tool/ask.go:185-188, byte-verbatim.
+/// The `confirm` description the model reads (model-facing text: change it only by decision).
 const CONFIRM_DESC: &str = "Ask the user a single yes/no question on an interactive prompt. Use ONLY for a decision that is genuinely the user's to make (e.g. consent before something hard to reverse). The user may decline to answer.";
 
-/// `s` when it has non-space content, else `fallback` (Go's `if TrimSpace(x) == ""` guard —
-/// the ORIGINAL string is kept, not the trimmed one).
+/// `s` when it has non-space content, else `fallback` — the ORIGINAL string is kept, not the
+/// trimmed one.
 fn non_blank<'a>(s: &'a str, fallback: &'a str) -> &'a str {
     if s.trim().is_empty() { fallback } else { s }
 }
@@ -224,7 +222,7 @@ fn object_of(v: Value) -> Option<JsonObject> {
     }
 }
 
-/// Validates the model's arguments into an [`AskSpec`] (tool/ask.go:129-175). The error
+/// Validates the model's arguments into an [`AskSpec`]. The error
 /// text IS the tool result, so every message is byte-exact.
 fn parse_choose_args(args: &JsonObject) -> Result<AskSpec, String> {
     let raw = args.get("questions").and_then(Value::as_array);
@@ -282,7 +280,7 @@ fn parse_choose_args(args: &JsonObject) -> Result<AskSpec, String> {
 /// The `options` fallback for a missing/mistyped array (a borrowed empty slice).
 static EMPTY: Vec<Value> = Vec::new();
 
-/// `askHeaderMax` runes, the last replaced by `'…'` when it overflows (tool/ask.go:150-152).
+/// [`ASK_HEADER_MAX`] runes, the last replaced by `'…'` when it overflows.
 fn truncate_header(header: &str) -> String {
     let runes: Vec<char> = header.chars().collect();
     if runes.len() <= ASK_HEADER_MAX {
@@ -293,7 +291,7 @@ fn truncate_header(header: &str) -> String {
     out
 }
 
-/// The model-facing answer sheet (tool/ask.go:106-126): one `"<header>: <answers>"` row
+/// The model-facing answer sheet: one `"<header>: <answers>"` row
 /// per question. Selected options and a custom answer COEXIST on a multi-select — never
 /// let one shadow the other.
 fn format_choose(spec: &AskSpec, res: &AskResult) -> String {
@@ -331,7 +329,7 @@ mod tests {
 
     use super::{ASK_HEADER_MAX, new_ask_set, parse_choose_args};
 
-    /// Records the spec and plays back a scripted result (Go `fakeInteractor`).
+    /// Records the spec and plays back a scripted result.
     #[derive(Default)]
     struct FakeInteractor {
         spec: Mutex<AskSpec>,
@@ -377,8 +375,8 @@ mod tests {
         }
     }
 
-    // Go: tool/ask_test.go:32 TestAskSetAbsentWithoutInteractor — without an Interactor the
-    // set contributes NOTHING (the model never sees tools it cannot use, -m mode).
+    // Without an Interactor the set contributes NOTHING (the model never sees tools it cannot
+    // use, -m mode).
     #[test]
     fn test_ask_set_absent_without_interactor() {
         let tools = new_ask_set(&ToolEnv::default(), None).expect("ask set");
@@ -388,8 +386,8 @@ mod tests {
         );
     }
 
-    // Go: tool/ask_test.go:41 TestPresentationCapability (the ask half) — both ask tools
-    // present their own surface; the chat layer routes them past the activity panel.
+    // Both ask tools present their own surface; the chat layer routes them past the activity
+    // panel.
     #[test]
     fn test_ask_tools_present_a_surface() {
         let (choose, confirm) = ask_tools(&Arc::new(FakeInteractor::default()));
@@ -405,8 +403,7 @@ mod tests {
         assert!(!confirm.requires_approval());
     }
 
-    // Go: tool/ask_test.go:99 TestChooseParsesAndFormats — defaults applied on the way in,
-    // picks AND a custom answer coexisting on the way out.
+    // Defaults applied on the way in, picks AND a custom answer coexisting on the way out.
     #[tokio::test]
     async fn test_choose_parses_and_formats() {
         let it = Arc::new(FakeInteractor {
@@ -463,9 +460,8 @@ mod tests {
         );
     }
 
-    // Go: tool/ask_test.go:151 TestChooseStringBooleans — models occasionally serialize
-    // booleans as strings; a silent type mismatch must not turn a promised multi-select
-    // into a single-select.
+    // Models occasionally serialize booleans as strings; a silent type mismatch must not turn
+    // a promised multi-select into a single-select.
     #[test]
     fn test_choose_string_booleans() {
         let spec = parse_choose_args(&args(json!({"questions": [
@@ -481,8 +477,7 @@ mod tests {
         );
     }
 
-    // Go: tool/ask_test.go:171 TestChooseValidation — every rejection is a tool ERROR the
-    // model can read and retry, never a hard failure.
+    // Every rejection is a tool ERROR the model can read and retry, never a hard failure.
     #[tokio::test]
     async fn test_choose_validation() {
         let (choose, _) = ask_tools(&Arc::new(FakeInteractor::default()));
@@ -524,8 +519,7 @@ mod tests {
         }
     }
 
-    // Go: tool/ask_test.go:190 TestChooseHeaderTruncated — a too-long header is truncated
-    // to a tab-chip length, not rejected.
+    // A too-long header is truncated to a tab-chip length, not rejected.
     #[tokio::test]
     async fn test_choose_header_truncated() {
         let it = Arc::new(FakeInteractor {
@@ -552,7 +546,7 @@ mod tests {
         assert!(header.ends_with('…'), "truncated header: {header:?}");
     }
 
-    // Go: tool/ask_test.go:205 TestChooseDeclined — declining is an answer, not an error.
+    // Declining is an answer, not an error.
     #[tokio::test]
     async fn test_choose_declined() {
         let it = Arc::new(FakeInteractor {
@@ -571,7 +565,7 @@ mod tests {
         assert_eq!(out.text, "The user declined to answer.");
     }
 
-    // Go: tool/ask_test.go:218 TestConfirm — the yes/no spec shape and its answer text.
+    // The yes/no spec shape and its answer text.
     #[tokio::test]
     async fn test_confirm() {
         let it = Arc::new(FakeInteractor {
