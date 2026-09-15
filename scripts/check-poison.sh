@@ -8,7 +8,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
-baseline=14
+baseline=4
 count="$(grep -rcE 'PoisonError' src --include='*.rs' | awk -F: '{s+=$2} END{print s+0}')"
 if (( count > baseline )); then
     echo "check-poison: $count inline PoisonError handlings in src/, baseline $baseline — use the shared lock helper, do not add another" >&2

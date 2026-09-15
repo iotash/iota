@@ -14,8 +14,9 @@
 //! (formerly a `#[path]`-mounted `tests/surface.rs` of the terminal crate; merged 2026-09-02).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
+use crate::sync::lock;
 use crate::text::ansi::{ansi_width, strip_sgr};
 use crate::text::width::str_width;
 use crate::ui::facade::{
@@ -644,8 +645,7 @@ fn a_live_panel_refreshes_on_tick_and_keeps_the_cursor() {
 fn refresh_clamps_the_cursor_and_refilters() {
     let live = Arc::new(Mutex::new(rows_of(40, |i| format!("item-{i:02}"))));
     let src = Arc::clone(&live);
-    let refresh: RefreshFn =
-        Box::new(move || src.lock().unwrap_or_else(PoisonError::into_inner).clone());
+    let refresh: RefreshFn = Box::new(move || lock(&src).clone());
     let mut s = Surf::open(vec![
         Panel::list("Live".to_owned(), rows_of(40, |i| format!("item-{i:02}")))
             .with_search(true)
@@ -659,7 +659,7 @@ fn refresh_clamps_the_cursor_and_refilters() {
 
     // The list shrinks under an applied filter: the view narrows with it and the
     // cursor is pulled back onto a visible row.
-    *live.lock().unwrap_or_else(PoisonError::into_inner) = rows_of(32, |i| format!("item-{i:02}"));
+    *lock(&live) = rows_of(32, |i| format!("item-{i:02}"));
     s.st.tick();
     assert_eq!(s.ps(0).items.len(), 32);
     assert_eq!(s.ps(0).view, vec![30, 31]);

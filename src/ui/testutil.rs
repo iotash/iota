@@ -7,12 +7,13 @@
 
 use std::io::{self, Write};
 use std::sync::atomic::AtomicU16;
-use std::sync::{Arc, Mutex, PoisonError, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
+use crate::sync::lock;
 use crate::text::ansi::strip_sgr;
 use crate::ui::facade::{Panel, TabbedResult};
 use crate::ui::render::region::{Emit, Region};
@@ -202,19 +203,13 @@ pub(crate) struct SharedBuf(Arc<Mutex<Vec<u8>>>);
 
 impl SharedBuf {
     pub(crate) fn bytes(&self) -> Vec<u8> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        lock(&self.0).clone()
     }
 }
 
 impl Write for SharedBuf {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .extend_from_slice(buf);
+        lock(&self.0).extend_from_slice(buf);
         Ok(buf.len())
     }
 

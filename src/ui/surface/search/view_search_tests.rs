@@ -13,8 +13,9 @@
 //! The engine is crate-private by design (`TUI_CONTRACTS` §5), so these tests live in-file
 //! (formerly a `#[path]`-mounted `tests/view_search.rs` of the terminal crate; merged 2026-09-02).
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
+use crate::sync::lock;
 use crate::text::ansi::strip_sgr;
 use crate::ui::facade::{Panel, RefreshFn, TabbedResult};
 use crossterm::event::KeyCode;
@@ -42,13 +43,8 @@ fn open_search_view(lines: Vec<String>) -> Surf {
 /// `/tools` and `/debug` refresh twice a second under exactly this shape.
 fn live_view(title: &str, slot: &Arc<Mutex<Vec<String>>>) -> Panel {
     let body = Arc::clone(slot);
-    let refresh: RefreshFn =
-        Box::new(move || body.lock().unwrap_or_else(PoisonError::into_inner).clone());
-    Panel::view(
-        title.to_owned(),
-        slot.lock().unwrap_or_else(PoisonError::into_inner).clone(),
-    )
-    .with_refresh(refresh)
+    let refresh: RefreshFn = Box::new(move || lock(&body).clone());
+    Panel::view(title.to_owned(), lock(slot).clone()).with_refresh(refresh)
 }
 
 // --- the suite --------------------------------------------------------------
@@ -144,7 +140,7 @@ fn content_appearing_above_reanchors_the_walker_to_its_hit() {
 
     // A new matching row arrives at the top: every hit index shifts by one.
     {
-        let mut slot = live.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut slot = lock(&live);
         let mut next = vec!["line -1: needle zero".to_owned()];
         next.extend(base.iter().cloned());
         *slot = next;
