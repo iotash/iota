@@ -335,6 +335,23 @@ fn test_google_raw_content_blob_compat() {
     );
 }
 
+/// `effort: max` reaches the wire as `thinkingLevel: HIGH`: Gemini knows LOW/MEDIUM/HIGH, and the two efforts
+/// above `high` clamp to it instead of travelling as `MAX` into a 400 (DIVERGENCES X-33).
+#[tokio::test]
+async fn an_effort_above_high_is_sent_as_thinking_level_high() {
+    let server = MockServer::start().await;
+    mock_stream(&server, "data: {\"candidates\":[]}\n\n").await;
+    let mut p = gemini(&server.uri(), "gemini-3-pro", None);
+    p.as_tunable().unwrap().set_effort(Some(Effort::Max));
+    let mut sink = RecordingSink::default();
+    round(&p, &[Message::user("hi")], &[], &mut sink).await;
+
+    let reqs = server.received_requests().await.unwrap();
+    let gc = &body_json(&reqs[0])["generationConfig"];
+    assert_eq!(gc["thinkingConfig"]["thinkingLevel"], "HIGH");
+    assert_eq!(gc["thinkingConfig"]["includeThoughts"], json!(true));
+}
+
 // Go: provider/google_wire_test.go:54
 #[tokio::test]
 async fn test_google_golden_request() {

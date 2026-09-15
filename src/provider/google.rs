@@ -9,8 +9,8 @@ use crate::provider::model::{
 };
 use crate::provider::sink::{ReasoningGate, StreamSink};
 use crate::provider::{
-    ChatResult, HttpTransport, ImageTunable, Provider, ProviderKind, RoundResult, ToolProvider,
-    TopPTunable, Tunable,
+    ChatResult, Effort, HttpTransport, ImageTunable, Provider, ProviderKind, RoundResult,
+    ToolProvider, TopPTunable, Tunable,
 };
 use reqwest::header::HeaderName;
 use tokio_util::sync::CancellationToken;
@@ -254,8 +254,7 @@ impl GoogleProvider {
             top_p: self.core.top_p.map(|p| p as f32),
             thinking_config: self.core.effort.map(|e| GThinkingConfig {
                 include_thoughts: true,
-                // No level mapping or validation at this layer: "xhigh"/"max" fail server-side by design.
-                thinking_level: Some(e.as_str().to_uppercase()),
+                thinking_level: Some(thinking_level(e).to_owned()),
             }),
             response_modalities: Vec::new(),
         };
@@ -271,6 +270,19 @@ impl GoogleProvider {
             req.generation_config = Some(cfg);
         }
         req
+    }
+}
+
+/// The `thinkingLevel` an effort asks for. Gemini 3 knows `LOW`, `MEDIUM` and `HIGH` (`MINIMAL` exists on
+/// Flash alone and is never asked for), so the two levels above `high` — `xhigh`, `max` — are clamped to
+/// `HIGH` rather than sent through to a 400. Until 2026-09-15 the effort travelled uppercased as typed and
+/// the server's refusal was the design; a default agent with `effort: max` made the dialect unusable
+/// (DIVERGENCES X-33).
+fn thinking_level(effort: Effort) -> &'static str {
+    match effort {
+        Effort::Low => "LOW",
+        Effort::Medium => "MEDIUM",
+        Effort::High | Effort::XHigh | Effort::Max => "HIGH",
     }
 }
 
@@ -546,5 +558,21 @@ impl ImageTunable for GoogleProvider {
 
     fn image_output(&self) -> bool {
         self.image_output
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::thinking_level;
+    use crate::provider::Effort;
+
+    /// The five efforts onto Gemini's three levels: `xhigh` and `max` clamp to `HIGH`.
+    #[test]
+    fn every_effort_maps_onto_a_gemini_thinking_level() {
+        assert_eq!(thinking_level(Effort::Low), "LOW");
+        assert_eq!(thinking_level(Effort::Medium), "MEDIUM");
+        assert_eq!(thinking_level(Effort::High), "HIGH");
+        assert_eq!(thinking_level(Effort::XHigh), "HIGH");
+        assert_eq!(thinking_level(Effort::Max), "HIGH");
     }
 }
