@@ -1,4 +1,4 @@
-//! Defer modes (tool/defermode.go, `defermode_protocol.go`): how hidden groups are presented to a provider —
+//! Defer modes: how hidden groups are presented to a provider —
 //! the `search_tools` wrapper (`normal`), the provider-side protocols (`reference`, `tool-search`) and the
 //! frozen system-tools mount.
 //!
@@ -100,7 +100,7 @@ pub(crate) struct MarkedDispatcher {
 }
 
 impl MarkedDispatcher {
-    /// defermode_protocol.go:73-80: whether `name` sits under a CONNECTED deferred group's prefix.
+    /// Whether `name` sits under a CONNECTED deferred group's prefix.
     fn deferred_prefix(&self, name: &str) -> bool {
         self.groups.iter().any(|g| {
             let p = (self.prefix_of)(&g.name);
@@ -144,8 +144,7 @@ impl Dispatcher for MarkedDispatcher {
         self.inner.presentation(name)
     }
 
-    /// Every marked def with `DeferState::DeferredProtocol` (defermode_protocol.go:41-55: groups outer, inner
-    /// tools inner).
+    /// Every marked def with `DeferState::DeferredProtocol` (groups outer, inner tools inner).
     fn deferred_tools(&self) -> Vec<DeferredToolStatus> {
         // One live-view snapshot per invocation (like DeferDispatcher::resolve): re-querying per group would
         // rebuild — and, under the MCP manager's read lock, clone — the whole tool list G times.
