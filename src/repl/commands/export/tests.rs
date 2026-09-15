@@ -3,7 +3,7 @@ use super::{
     ExportFormat, ExportMeta, THEME_STORAGE_KEY, THEME_TOGGLE_ID, build_export_html,
     build_export_markdown, conversation_count, detect_export_format, expand_home, export_file_name,
     export_meta_line, export_page_css, export_title, go_abs, go_base, go_ext, go_json_indent,
-    html_escape, slugify, split_rounds, validate_export_target,
+    slugify, split_rounds, validate_export_target,
 };
 use crate::provider::model::{Attachment, Body, Message, ToolBody, ToolCall};
 use pretty_assertions::assert_eq;
@@ -319,17 +319,6 @@ fn go_base_and_ext_follow_filepath() {
     ] {
         assert_eq!(go_ext(input), want, "go_ext({input:?})");
     }
-}
-
-// New: the five entities `html.EscapeString` produces, in Go's spelling (the `'`/`"` forms
-// are numeric, not `&apos;`/`&quot;`).
-#[test]
-fn html_escape_uses_go_entities() {
-    assert_eq!(
-        html_escape("<a href='x' title=\"y\">&</a>"),
-        "&lt;a href=&#39;x&#39; title=&#34;y&#34;&gt;&amp;&lt;/a&gt;"
-    );
-    assert_eq!(html_escape("plain 中文"), "plain 中文");
 }
 
 // New (T-43): `json.MarshalIndent` + `SetEscapeHTML(true)` — two-space indent, sorted keys

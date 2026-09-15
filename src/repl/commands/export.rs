@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use crate::markdown::html::{code_css, markdown_to_html};
+use crate::markdown::html::{code_css, escape_html, markdown_to_html};
 use crate::provider::model::{JsonObject, Message, Role};
 use crate::repl::run::Repl;
 use crate::repl::styles::{dim, red};
@@ -463,7 +463,7 @@ pub(crate) fn build_export_html(meta: &ExportMeta, msgs: &[Message]) -> String {
     use std::fmt::Write as _;
 
     let (system, rounds) = split_rounds(msgs);
-    let title = html_escape(&export_title(meta));
+    let title = escape_html(&export_title(meta));
 
     let mut b = String::with_capacity(64 * 1024);
     b.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n");
@@ -479,7 +479,7 @@ pub(crate) fn build_export_html(meta: &ExportMeta, msgs: &[Message]) -> String {
     let _ = writeln!(
         b,
         "<p class=\"meta\">{}</p>",
-        html_escape(&export_meta_line(meta, conversation_count(msgs), true))
+        escape_html(&export_meta_line(meta, conversation_count(msgs), true))
     );
     let _ = write!(
         b,
@@ -488,7 +488,7 @@ pub(crate) fn build_export_html(meta: &ExportMeta, msgs: &[Message]) -> String {
 
     for sys in &system {
         b.push_str("<details class=\"muted system\"><summary>System prompt</summary><pre>");
-        b.push_str(&html_escape(&sys.content));
+        b.push_str(&escape_html(&sys.content));
         b.push_str("</pre></details>\n");
     }
 
@@ -499,13 +499,13 @@ pub(crate) fn build_export_html(meta: &ExportMeta, msgs: &[Message]) -> String {
                 let _ = writeln!(
                     b,
                     "<p class=\"attachment\">(attachment: {})</p>",
-                    html_escape(&att.filename)
+                    escape_html(&att.filename)
                 );
             }
             let _ = writeln!(
                 b,
                 "<div class=\"bubble\">{}</div>",
-                html_escape(&user.content)
+                escape_html(&user.content)
             );
         }
 
@@ -523,7 +523,7 @@ pub(crate) fn build_export_html(meta: &ExportMeta, msgs: &[Message]) -> String {
             }
             if !m.reasoning().is_empty() {
                 b.push_str("<details class=\"muted\"><summary>Reasoning</summary><pre>");
-                b.push_str(&html_escape(m.reasoning()));
+                b.push_str(&escape_html(m.reasoning()));
                 b.push_str("</pre></details>\n");
             }
             if !m.content.is_empty() {
@@ -535,13 +535,13 @@ pub(crate) fn build_export_html(meta: &ExportMeta, msgs: &[Message]) -> String {
                 let _ = writeln!(
                     b,
                     "<details class=\"muted tool\"><summary>⚙ {}</summary>",
-                    html_escape(&display_tool_name(&tc.name))
+                    escape_html(&display_tool_name(&tc.name))
                 );
                 if !tc.arguments.is_empty() {
                     let _ = writeln!(
                         b,
                         "<pre>{}</pre>",
-                        html_escape(&go_json_indent(&tc.arguments))
+                        escape_html(&go_json_indent(&tc.arguments))
                     );
                 }
                 if let Some(res) = results.get(tc.id.as_str()) {
@@ -549,7 +549,7 @@ pub(crate) fn build_export_html(meta: &ExportMeta, msgs: &[Message]) -> String {
                     let _ = writeln!(
                         b,
                         "<p class=\"tool-label\">{label}</p><pre>{}</pre>",
-                        html_escape(&res.content)
+                        escape_html(&res.content)
                     );
                 }
                 b.push_str("</details>\n");
@@ -561,15 +561,15 @@ pub(crate) fn build_export_html(meta: &ExportMeta, msgs: &[Message]) -> String {
                     let _ = writeln!(
                         b,
                         "<img alt=\"{}\" src=\"data:{};base64,{}\">",
-                        html_escape(&att.filename),
-                        html_escape(&att.mime_type),
+                        escape_html(&att.filename),
+                        escape_html(&att.mime_type),
                         base64::engine::general_purpose::STANDARD.encode(&att.data)
                     );
                 } else {
                     let _ = writeln!(
                         b,
                         "<p class=\"attachment\">(attachment: {})</p>",
-                        html_escape(&att.filename)
+                        escape_html(&att.filename)
                     );
                 }
             }
@@ -585,22 +585,6 @@ pub(crate) fn build_export_html(meta: &ExportMeta, msgs: &[Message]) -> String {
         "</main>\n<script>\n{EXPORT_TOGGLE_JS}\n</script>\n</body>\n</html>\n"
     );
     b
-}
-
-/// `html.EscapeString` twin: `&` `'` `<` `>` `"`, in Go's exact entity spellings.
-pub(crate) fn html_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '\'' => out.push_str("&#39;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&#34;"),
-            _ => out.push(c),
-        }
-    }
-    out
 }
 
 /// `json.MarshalIndent(v, "", "  ")` twin with `SetEscapeHTML(true)` inside string values

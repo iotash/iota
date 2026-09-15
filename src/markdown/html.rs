@@ -277,11 +277,10 @@ pub(crate) fn prefix_css_selectors(css: &str, prefix: &str) -> String {
     b
 }
 
-/// `html.EscapeString` (Go `html`): the five entities, in Go's spelling.
-///
-/// A private twin of `repl::commands::export::html_escape` — `markdown` sits below `repl`
-/// in the layering and may not reach up into it.
-fn escape_html(s: &str) -> String {
+/// `html.EscapeString` (Go `html`): the five entities, in Go's spelling (the `'`/`"` forms
+/// are numeric, not `&apos;`/`&quot;`). THE escaper — `/export`'s page builder
+/// (`repl::commands::export`) calls this one too (Phase 5 PR-6 retired its private twin).
+pub(crate) fn escape_html(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -299,10 +298,22 @@ fn escape_html(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        HTML_DARK_THEME, HTML_LIGHT_THEME, code_css, markdown_to_html, prefix_css_selectors,
-        theme_css_rules, themes,
+        HTML_DARK_THEME, HTML_LIGHT_THEME, code_css, escape_html, markdown_to_html,
+        prefix_css_selectors, theme_css_rules, themes,
     };
     use pretty_assertions::assert_eq;
+
+    // The five entities `html.EscapeString` produces, in Go's spelling (the `'`/`"` forms
+    // are numeric, not `&apos;`/`&quot;`). Moved from `repl::commands::export::tests` with
+    // the function (Phase 5 PR-6).
+    #[test]
+    fn escape_html_uses_go_entities() {
+        assert_eq!(
+            escape_html("<a href='x' title=\"y\">&</a>"),
+            "&lt;a href=&#39;x&#39; title=&#34;y&#34;&gt;&amp;&lt;/a&gt;"
+        );
+        assert_eq!(escape_html("plain 中文"), "plain 中文");
+    }
 
     // Go: chat/export.go:271-278 (`exportGoldmark`, SAFE mode) — raw HTML in model output
     // is replaced by goldmark's exact comment, inline and block alike. Reference bytes from
