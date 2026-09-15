@@ -16,7 +16,7 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use crate::agents::skills::{Skill, skill_body, skill_source_tag};
+use crate::agents::skills::{Skill, SkillError, skill_body, skill_source_tag};
 use crate::repl::render::styles::{bold, dim, red, yellow};
 use crate::repl::run::Repl;
 use crate::text::go_quote;
@@ -69,29 +69,61 @@ pub(crate) fn find_skill<'a>(sks: &'a [Skill], name: &str) -> Option<&'a Skill> 
     sks.iter().find(|sk| sk.name.to_lowercase() == want)
 }
 
-/// `(expanded text, skill name)` for `arg = "<name> [instructions]"`, or the error text
+/// Why `/skills <name>` did not expand (agentmode.go:82-111); every Display text is what
+/// `printErr("%v", err)` showed, verbatim and without an `Error: ` prefix.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ExpandError {
+    /// Bare `/skills` reached the expansion (it never should: the bare form is the view).
+    #[error("usage: /skills <name> [instructions]")]
+    Usage,
+    /// No skill of that name in the catalog.
+    #[error("no skill named {} — /skills lists what is available", go_quote(.0))]
+    Unknown(String),
+    /// The skill's `SKILL.md` could not be read (it vanished since discovery).
+    #[error("cannot read skill {}: {source}", go_quote(.name))]
+    Read {
+        /// The skill's name.
+        name: String,
+        /// The read failure.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The body no longer parses (its frontmatter changed since discovery).
+    #[error("skill {}: {source}", go_quote(.name))]
+    Body {
+        /// The skill's name.
+        name: String,
+        /// The parse failure.
+        #[source]
+        source: SkillError,
+    },
+}
+
+/// `(expanded text, skill name)` for `arg = "<name> [instructions]"`, or why not
 /// (agentmode.go:82-111).
 ///
 /// A name the catalog does not have is an error, not a message: sending the literal `/skills nope`
 /// to the model would waste a turn on a typo. A body whose frontmatter no longer parses is an error
 /// too — discovery validated the file, so reaching here means it changed since, and half a manifest
 /// is worse than nothing.
-pub(crate) fn expand_skill(sks: &[Skill], arg: &str) -> Result<(String, String), String> {
+pub(crate) fn expand_skill(sks: &[Skill], arg: &str) -> Result<(String, String), ExpandError> {
     let arg = arg.trim();
     if arg.is_empty() {
-        return Err("usage: /skills <name> [instructions]".to_owned());
+        return Err(ExpandError::Usage);
     }
     // `strings.Cut(arg, " ")`: the first space splits the name from whatever else was typed.
     let (name, extra) = arg.split_once(' ').unwrap_or((arg, ""));
     let Some(sk) = find_skill(sks, name) else {
-        return Err(format!(
-            "no skill named {} — /skills lists what is available",
-            go_quote(name)
-        ));
+        return Err(ExpandError::Unknown(name.to_owned()));
     };
-    let data = std::fs::read(&sk.path)
-        .map_err(|e| format!("cannot read skill {}: {e}", go_quote(&sk.name)))?;
-    let body = skill_body(&data).map_err(|e| format!("skill {}: {e}", go_quote(&sk.name)))?;
+    let data = std::fs::read(&sk.path).map_err(|source| ExpandError::Read {
+        name: sk.name.clone(),
+        source,
+    })?;
+    let body = skill_body(&data).map_err(|source| ExpandError::Body {
+        name: sk.name.clone(),
+        source,
+    })?;
 
     let mut out = format!(
         "<skill name={} location={}>\n",
@@ -174,8 +206,8 @@ pub(crate) async fn cmd_skills(repl: &mut Repl, arg: &str) -> SkillsOutcome {
     }
     match expand_skill(overlay.skills(), arg) {
         // `printErr("%v", err)`: the error text verbatim, no `Error: ` prefix.
-        Err(text) => {
-            repl.handles.tr.error(&text);
+        Err(e) => {
+            repl.handles.tr.error(&e.to_string());
             SkillsOutcome::Continue
         }
         Ok((expanded, name)) => {
@@ -367,12 +399,12 @@ mod tests {
         let sks = [write_skill(dir.path(), "known", "body")];
 
         assert_eq!(
-            expand_skill(&sks, "").unwrap_err(),
+            expand_skill(&sks, "").unwrap_err().to_string(),
             "usage: /skills <name> [instructions]",
             "bare /skills accepted; want a usage error"
         );
         assert_eq!(
-            expand_skill(&sks, " nope").unwrap_err(),
+            expand_skill(&sks, " nope").unwrap_err().to_string(),
             "no skill named \"nope\" — /skills lists what is available",
             "unknown skill accepted"
         );
@@ -387,7 +419,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let sk = write_skill(dir.path(), "gone", "body");
         std::fs::remove_file(&sk.path).expect("remove");
-        let err = expand_skill(std::slice::from_ref(&sk), "gone").unwrap_err();
+        let err = expand_skill(std::slice::from_ref(&sk), "gone")
+            .unwrap_err()
+            .to_string();
         assert!(
             err.starts_with("cannot read skill \"gone\": "),
             "read error text: {err}"
@@ -395,7 +429,9 @@ mod tests {
 
         std::fs::write(&sk.path, "no frontmatter here\n").expect("rewrite");
         assert_eq!(
-            expand_skill(std::slice::from_ref(&sk), "gone").unwrap_err(),
+            expand_skill(std::slice::from_ref(&sk), "gone")
+                .unwrap_err()
+                .to_string(),
             "skill \"gone\": missing YAML frontmatter (file must start with ---)"
         );
     }
