@@ -1,8 +1,8 @@
 //! Tool and dispatcher contracts (tool/tool.go:33-330): `ToolOutput`, `Presentation`, `DeferState`, the `Tool`
 //! and `Dispatcher` traits with their optional capabilities, the `PrefixOf` oracle and the toolset `ToolEnv` —
 //! plus, in the submodules, the run context every call takes (`context`), the answer to a gated call
-//! (`approval`), the tool framework (`registry`,
-//! `merge`, `defer`, `defer_mode`, `yaml11`, `args`, `sets`) and the four built-in sets (`shell`, `code`,
+//! (`approval`), the tool framework (`dispatch`,
+//! `defer`, `defer_mode`, `yaml11`, `args`, `sets`) and the four built-in sets (`shell`, `code`,
 //! `agent`, and `ask`, which contributes tools only when the `ToolEnv` carries an interactor).
 
 use std::{path::PathBuf, sync::Arc};
@@ -15,10 +15,9 @@ pub mod code;
 pub mod context;
 pub mod defer;
 pub(crate) mod defer_mode;
+pub(crate) mod dispatch;
 pub mod error;
 pub mod fmt;
-pub mod merge;
-pub(crate) mod registry;
 pub mod sets;
 pub mod shell;
 pub(crate) mod yaml11;
@@ -26,8 +25,7 @@ pub(crate) mod yaml11;
 pub use approval::Approval;
 pub use defer::{DeferredGroup, SEARCH_TOOL_NAME, defer};
 pub use defer_mode::DeferMode;
-pub use merge::merge;
-pub use registry::{Registry, set_disabled};
+pub use dispatch::{Registry, merge, set_disabled};
 
 use crate::BoxFuture;
 use crate::app::HostDirs;
