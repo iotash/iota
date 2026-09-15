@@ -187,7 +187,7 @@ pub fn spawn(
         Err(e) => return Err(fail(ShellError::NoShell(e))),
     };
     let mut cmd = if let Some(sb) = &opts.sandbox {
-        match sandbox_command(&shell, &opts.command, &writable_paths(sb), sb.network) {
+        match super::sandbox::command(&shell, &opts.command, &writable_paths(sb), sb.network) {
             Ok(c) => c,
             Err(e) => return Err(fail(ShellError::Sandbox(e))),
         }
@@ -461,41 +461,9 @@ pub(crate) fn kill_group(pid: Option<i32>) {
 #[cfg(windows)]
 pub(crate) fn kill_group(_pid: Option<i32>) {}
 
-/// The platform sandbox wrapper for one command.
-fn sandbox_command(
-    shell: &super::interp::Interpreter,
-    script: &str,
-    writable: &[PathBuf],
-    network: bool,
-) -> Result<tokio::process::Command, String> {
-    #[cfg(target_os = "macos")]
-    {
-        super::sandbox_darwin::command(shell, script, writable, network)
-    }
-    #[cfg(target_os = "linux")]
-    {
-        super::sandbox_linux::command(shell, script, writable, network)
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        super::sandbox_other::command(shell, script, writable, network)
-    }
-}
-
 /// darwin: `/usr/bin/sandbox-exec` is a regular file; linux: `bwrap` on `PATH`; else false.
 pub fn available() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        super::sandbox_darwin::available()
-    }
-    #[cfg(target_os = "linux")]
-    {
-        super::sandbox_linux::available()
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        super::sandbox_other::available()
-    }
+    super::sandbox::available()
 }
 
 /// `[root, temp_dir, "/tmp", cache_dir (create_dir_all attempted, error ignored), write…(absolute)]` — empties and

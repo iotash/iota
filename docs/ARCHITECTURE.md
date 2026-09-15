@@ -84,7 +84,7 @@ all three into `chat/`) the Rust split is KEPT as modules. Visibility is Rust-id
 | `tool/{mod,context,fmt,error}.rs` | tool/tool.go, chat/turns.go, tool/headerfmt.go | `Tool`/`Dispatcher`/`ToolEnv`/`Delegator` seam types, `PrefixOf`, `ToolError`, the call-header formatters; `context` = the run context every tool takes (`RunCtx`, `TurnBudget`, `ArtifactSlot`) |
 | `tool/{sets,registry,merge,defer,defer_mode,args,yaml11}.rs` | tool/tool.go, defer*.go | the set table + framework |
 | `tool/{ask,agent,delegate}.rs`, `tool/shell.rs`, `tool/code/{mod,tools,walk,udiff}.rs` | tool/ask.go, agent.go, delegate.go, shell.go, code.go | the five built-in sets (`shell.rs` = the `shell` tool's POLICY layer; the tool is `shell` on every platform and under every interpreter, and its DESCRIPTION is what follows the interpreter, DIVERGENCES X-18/X-20) |
-| `shell/{mod,exec,interp,sandbox_darwin,sandbox_linux,sandbox_other}.rs` | internal/shell | process execution + sandboxes (the MECHANISM layer); `interp.rs` answers WHICH interpreter runs a command — `bash -c` on Unix, and on Windows the first of Git Bash, PowerShell and `cmd.exe` the machine has (DIVERGENCES X-17), as one pure function over an injected machine |
+| `shell/{mod,exec,interp,jobs}.rs`, `shell/sandbox/{mod,darwin,linux,other}.rs` | internal/shell | process execution + sandboxes (the MECHANISM layer); `interp.rs` answers WHICH interpreter runs a command — `bash -c` on Unix, and on Windows the first of Git Bash, PowerShell and `cmd.exe` the machine has (DIVERGENCES X-17), as one pure function over an injected machine |
 | `agents/{mod,skills}.rs` | internal/agents | `Overlay`, `compose_send_history`, skills |
 | `mathtext/{mod,delim,parse,symbols,macros,inline,pict,layout}.rs` | internal/mathtext | the LaTeX math engine (T3, WP61/WP62): inline Unicode approximation, 2D layout (Go `Box` → `Pict`), the delimiter scanners; a leaf over `text` — the markdown hooks call `approx_inline`/`render_2d` directly (Phase 5 PR-4 deleted the `MathRenderer` trait) |
 | `imgterm.rs` | internal/imgterm | the half-block image rasteriser (T3, WP63) — the ONLY module allowed to name the `image` crate (`tests/layering.rs`) |
@@ -221,7 +221,7 @@ The tables keep the phase-1 grouping (one per former crate) with each file named
 | `tool/delegate.rs` | tool/delegate.go |
 | `tool/shell.rs` | tool/shell.go |
 | `shell/exec.rs` (+ `shell/mod.rs`) | internal/shell/shell.go + proc_unix.go |
-| `shell/sandbox_darwin.rs` / `sandbox_linux.rs` / `sandbox_other.rs` | internal/shell/sandbox_*.go |
+| `shell/sandbox/{mod,darwin,linux,other}.rs` | internal/shell/sandbox_*.go |
 | `shell/interp.rs` | — (Go had one shell; DIVERGENCES X-17) |
 | `tool/code/mod.rs` | tool/code.go:45-220 (config, `CodeSet`, jail, ledger, byte_count, looks_binary) |
 | `tool/code/walk.rs` | tool/code.go:160-198 (gitignore walk) |

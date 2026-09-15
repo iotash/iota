@@ -9,7 +9,7 @@ pub(crate) fn available() -> bool {
 
 /// Always fails: `sandboxing is not supported on this platform`.
 pub(crate) fn command(
-    _shell: &super::interp::Interpreter,
+    _shell: &crate::shell::interp::Interpreter,
     _script: &str,
     _writable: &[PathBuf],
     _network: bool,
