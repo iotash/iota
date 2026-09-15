@@ -81,13 +81,12 @@ cross_lint() {
 cross_lint x86_64-pc-windows-gnu   x86_64-w64-mingw32-gcc   # brew install mingw-w64
 cross_lint x86_64-unknown-linux-gnu x86_64-linux-gnu-gcc    # brew install messense/macos-cross-toolchains/x86_64-unknown-linux-gnu
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
-# Layering invariants that used to be crate boundaries (ARCHITECTURE §1.2; Go's own discipline):
-# 1. only src/ui/** may name ratatui/crossterm — the loop, the renderer and the command never see a terminal crate;
-if grep -rlE 'ratatui|crossterm' src | grep -v '^src/ui/'; then echo "only src/ui/ may name ratatui/crossterm"; exit 1; fi
-# 2. the session store never reads the process environment — it takes its root from HostDirs (injected).
-if grep -rq 'std::env::var' src/session; then echo "src/session must not read the process environment"; exit 1; fi
-# 3. only src/imgterm.rs may name the `image` crate — every other module sees `imgterm::Frame` (ARCHITECTURE §1.2, T3).
-if grep -rlE '\bimage::' src | grep -v '^src/imgterm.rs$'; then echo "only src/imgterm.rs may name the image crate"; exit 1; fi
+# The layering invariants (ARCHITECTURE §1.2) are `tests/layering.rs`, run by the `cargo test`
+# below: the module graph of src/ only points DOWN the declared layer order, the three crate-naming
+# seams that used to be greps here (ratatui/crossterm only under src/ui/, the `image` crate only in
+# src/imgterm.rs, no process environment under src/session/) hold, and stderr has one writer
+# (`Streams`, src/cmd/io.rs). A violation names the file and line; the upward edges the tree still
+# carries are a table in that file that only ever shrinks.
 # Every test binary, the tmux suite included: THE single L4 execution, enabled and made
 # mandatory by IOTA_TMUX_REQUIRED above (tests/ui_tmux/main.rs).
 cargo test

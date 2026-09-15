@@ -87,15 +87,15 @@ all three into `chat/`) the Rust split is KEPT as modules. Visibility is Rust-id
 | `shell/{mod,exec,interp,sandbox_darwin,sandbox_linux,sandbox_other}.rs` | internal/shell | process execution + sandboxes (the MECHANISM layer); `interp.rs` answers WHICH interpreter runs a command — `bash -c` on Unix, and on Windows the first of Git Bash, PowerShell and `cmd.exe` the machine has (DIVERGENCES X-17), as one pure function over an injected machine |
 | `agents/{mod,skills}.rs` | internal/agents | `Overlay`, `compose_send_history`, skills |
 | `mathtext/{mod,delim,parse,symbols,macros,inline,pict,layout}.rs` | internal/mathtext | the LaTeX math engine (T3, WP61/WP62): inline Unicode approximation, 2D layout (Go `Box` → `Pict`), the delimiter scanners; a leaf over `text` — the markdown hooks call `approx_inline`/`render_2d` directly (Phase 5 PR-4 deleted the `MathRenderer` trait) |
-| `imgterm.rs` | internal/imgterm | the half-block image rasteriser (T3, WP63) — the ONLY module allowed to name the `image` crate (ci.sh grep) |
+| `imgterm.rs` | internal/imgterm | the half-block image rasteriser (T3, WP63) — the ONLY module allowed to name the `image` crate (`tests/layering.rs`) |
 | `host/{mod,ansi,cmux,background}.rs` | internal/host | host integration (T3, WP67): `Presenter` per-capability fan-out, the ANSI host (OSC 9 / 9;4 through the facade), the cmux host, the background probe |
 | `mcp/{mod,config,manager,naming,status,transport,error}.rs` | mcp/ | `ServerConfig`/`parse_mcp_flag` (`config`), the rmcp manager |
 | `chat/{mod,once,run,batch,report,images,delegator,error}.rs` | chat/chat.go, output.go, parallel.go, images.go, delegate.go | the headless loop (the run context it shares with the tools is `tool/context.rs`) |
-| `session/{mod,meta,params,record,rawcodec,id,store,writer,loader,tuning,error}.rs` | chat/session.go, settings.go | the on-disk bundle store (never reads the process environment — ci.sh grep) |
-| `markdown/{mod,inline,table,list,quote,code,link,math,style,sink,preview,highlight}.rs` | internal/markdown | the streaming markdown→ANSI renderer; `highlight.rs` = the `CodeHighlighter` seam AND its syntect impl; `preview.rs` = the `PreviewHandle` contract the renderer consumes and `ui` implements (Phase 5 PR-5 — the edge points down, `ui` → `markdown`) |
+| `session/{mod,meta,params,record,rawcodec,id,store,writer,loader,tuning,error}.rs` | chat/session.go, settings.go | the on-disk bundle store (never reads the process environment — `tests/layering.rs`) |
+| `markdown/{mod,inline,table,list,quote,code,link,math,style,sink,preview,highlight}.rs` | internal/markdown | the streaming markdown→ANSI renderer; `highlight.rs` = the `CodeHighlighter` seam AND its syntect impl |
 | `markdown/html.rs` | (goldmark + chroma in chat/export.go) | T3, WP65: comrak safe-mode GFM → HTML with the syntect `SyntaxHighlighterAdapter` over the two-face syntax set, chroma-shaped `<pre class="chroma">` |
 | `ui/facade.rs` | docs/design/ui-architecture.md | the `Ui` trait + value types + guards (what `repl` talks to) |
-| `ui/{mod,event_loop,frame,region,sink,composer,paste,keys,suggest,surface/…,handle,oneshot,term,osc,spans,theme,clipboard,debug,msgs}.rs` | internal/ui | the inline terminal engine — the ONLY module allowed to name ratatui/crossterm (ci.sh grep) |
+| `ui/{mod,event_loop,frame,region,sink,composer,paste,keys,suggest,surface/…,handle,oneshot,term,osc,spans,theme,clipboard,debug,msgs}.rs` | internal/ui | the inline terminal engine — the ONLY module allowed to name ratatui/crossterm (`tests/layering.rs`) |
 | `repl/{mod,run,turn,toolloop,transcript,group,uisink,interrupt,retry,steer,approval,interact,diff,errors,styles,title,banner,mcpreport,meter,params,tokens,replay,systemtab,commands/…}.rs` | chat/run.go and friends | the interactive loop over the facade |
 | `repl/{phases,editpicker}.rs`, `repl/commands/{export,debug,edit,skills}.rs` | chat/run.go:1184-1242, chat/editpicker.go, chat/export.go, chat/debug.go, chat/run.go:450-516, chat/agentmode.go | T3: the busy-phase controller + upload watcher (WP67), the `/edit` picker (WP64), `/export` (WP65), `/debug` (WP66), `/edit`+`/redo` (WP64), `/skills` (WP68) |
 | `cmd/{mod,cli,resolve,list,tuning,assemble,delegate,io,signals,window,interactive}.rs` | cmd/root.go, delegate.go | the command; `cmd::run` is the library entry `main.rs` awaits |
@@ -109,14 +109,25 @@ drove crate-private internals and now lives in-file as `#[cfg(test)] mod tests` 
 They share `tests/common/` fixtures and the Go-written bundles under `tests/fixtures/`.
 `examples/mkbundle.rs` is the round-trip script's Rust-created bundle.
 
-### 1.2 Layering invariants (former crate boundaries, now greps in `ci.sh`)
+### 1.2 Layering invariants (former crate boundaries, now `tests/layering.rs`)
 
-The crate boundaries that carried a design rule became two greps, Go's own discipline:
+The crate boundaries that carried a design rule are one test binary, `tests/layering.rs` (until
+2026-09-15 three greps in `ci.sh`), Go's own discipline:
 
+- **the module graph points down.** The test scans every `crate::<module>` path in `src/` (`#[cfg(test)]`
+  modules blanked, comments cut, `src/testing/` not scanned) and asserts each edge lands in a LOWER row of
+  the declared order, bottom first: `app` · `{text, vars, paths, sync, imgterm}` · `{color, diag}` · `llm` ·
+  `provider` · `{shell, agents}` · `tool` · `{mcp, session, mathtext}` · `{config, markdown, chat}` · `ui` ·
+  `host` · `repl` · `cmd`. Siblings in one row never name each other; product code never names the fakes
+  (`testing`). The upward edges the tree still carries sit in the test's `KNOWN_UPWARD` table, each with
+  the phase-5 PR that retires it — a new upward edge is red, and so is a row whose edge is gone;
 - only `src/ui/**` may name `ratatui`/`crossterm` — the loop (`repl`), the renderer (`markdown`) and the
   command never see a terminal crate;
 - `src/session/**` never reads the process environment (`std::env::var`) — the store takes its root from
-  an injected `HostDirs`.
+  an injected `HostDirs`;
+- only `src/imgterm.rs` may name the `image` crate — every other module sees `imgterm::Frame`;
+- the process's stderr has one writer, `cmd::io::Streams` (`warning`/`caution`): no `eprintln!` and no
+  `io::stderr()` anywhere else in product code.
 
 The one-way `cmd → {chat, session}` edge is now a convention, not a manifest: `chat::run_once` still
 returns the turn's message delta and `cmd` still owns the `SessionWriter`; the loop never names the store.
@@ -445,7 +456,7 @@ The listing no longer fetches anything, so Go's double-prefixed `failed to list 
 
 TEST_PLAN.md is normative. Principles: unit tests beside code (and ONLY there for `pub(crate)` seams — `tests/` is a separate crate, so no `#[path]` mount of a source file is ever used); integration tests in `tests/<area>/main.rs`, one binary per area; `wiremock` for HTTP; SSE transcripts as `const &str` copied from the Go tests; `tempfile`; fakes from `iota::testing`; shared `tests/common/` fixtures; every ported test keeps its Go name in snake_case with a `// Go: <file>:<line>` anchor; **no process-env mutation** (everything injected), so no `serial_test`; `#[tokio::test(flavor = "multi_thread")]` for contention tests; the end-to-end tests run the built binary (`CARGO_BIN_EXE_iota`) and set env on the child process only.
 
-CI (`rust/ci.sh`, one package, one binary — since 2026-09-02/2026-09-01): `cargo fmt --check` · `scripts/check-deps.sh` (direct deps ⊆ `scripts/direct-deps.allow`, via `cargo metadata`) · `scripts/check-stubs.sh` (no `todo!()`, no stub header) · `cargo clippy --all-targets -- -D warnings` (pedantic via `[lints]`) · `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` · the two layering greps of §1.2 (only `src/ui/**` may name `ratatui`/`crossterm`; `src/session/**` never reads the process environment) · `cargo test` under `IOTA_TMUX_REQUIRED=1 IOTA_SANDBOX_REQUIRED=1` (since 2026-09-15: the single L4 tmux execution rides that one invocation, and a missing tmux / bash / mock port / bubblewrap is a red test naming it, not a `SKIP:` that passes; a plain `cargo test` without the variables still skips) · `cargo build --release` + `scripts/size.sh` writing the one size row into `target/size.md` (a CI artifact).
+CI (`rust/ci.sh`, one package, one binary — since 2026-09-02/2026-09-01): `cargo fmt --check` · `scripts/check-deps.sh` (direct deps ⊆ `scripts/direct-deps.allow`, via `cargo metadata`) · `scripts/check-stubs.sh` (no `todo!()`, no stub header) · `cargo clippy --all-targets -- -D warnings` (pedantic via `[lints]`) · `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` · `cargo test` (which runs the layering gate of §1.2, `tests/layering.rs` — three greps here until 2026-09-15) under `IOTA_TMUX_REQUIRED=1 IOTA_SANDBOX_REQUIRED=1` (since 2026-09-15: the single L4 tmux execution rides that one invocation, and a missing tmux / bash / mock port / bubblewrap is a red test naming it, not a `SKIP:` that passes; a plain `cargo test` without the variables still skips) · `cargo build --release` + `scripts/size.sh` writing the one size row into `target/size.md` (a CI artifact).
 
 The session slice adds one testing rule to the list above: **no test hardcodes a fixture session id.** The Go-written bundles under `tests/fixtures/sessions/` carry random ids, and every id, prefix, count and expected string is read from their `manifest.json` (whose `expect` block was measured by loading each bundle back through the real Go loader). Regenerating the corpus therefore never invalidates a test.
 
@@ -462,7 +473,7 @@ The session slice adds one testing rule to the list above: **no test hardcodes a
 
 - **TUI slice direct-dependency additions (phase 3, WP40; TUI_CONTRACTS §1.1/§12):**
   - `markdown` + `text::{width,ansi}` (then `iota-markdown`) — the pure streaming markdown→ANSI renderer + THE grapheme width ruler; zero terminal deps so every layer shares one ruler.
-  - `ui` (then `iota-tui`) — the ONLY ratatui/crossterm importer (ci.sh grep-gated); owns the inline frame engine and implements `ui::facade::Ui`.
+  - `ui` (then `iota-tui`) — the ONLY ratatui/crossterm importer (`tests/layering.rs`); owns the inline frame engine and implements `ui::facade::Ui`.
   - `repl` (then `iota-repl`) — the imperative interactive chat loop over the facade; keeps ratatui out of the loop and the loop out of the UI.
   - `ratatui` (=0.30.2) — spike-validated `Viewport::Inline` + `insert_before` scrollback engine; feature `unstable-rendered-line-info` for the W6 `line_count` law, `scrolling-regions` always on (wart W9 is a per-emulator verification item in `docs/TUI-VERIFY.md` §2, not a build variant).
   - `crossterm` (=0.29.0) — ratatui's default backend pairing (wart W8: ONE crossterm; never `crossterm_0_28`); raw mode, bracketed paste, events, DSR.
@@ -474,7 +485,7 @@ The session slice adds one testing rule to the list above: **no test hardcodes a
 
 - **T3 full-parity direct-dependency additions (WP60; T3_CONTRACTS §9/§11, T3_DESIGN D3/D6/D7):**
   - `comrak` (=0.54.0, `default-features = false`, WP65) — `/export`'s Markdown → HTML: CommonMark + GFM in safe mode (raw HTML → `<!-- raw HTML omitted -->`, goldmark's text) with the `SyntaxHighlighterAdapter` seam the code-fence renderer needs. Default features are off so neither the CLI, `bon`, nor comrak's own `syntect-onig` feature enters the build — the latter would bundle syntect's default syntax/theme dumps and onig beside two-face's; our adapter reuses `markdown::highlight`'s syntax set. syntect gains its `html` feature (`ClassedHTMLGenerator`) for the same reason. New transitive crates: `caseless`, `jetscii`, `typed-arena`.
-  - `image` (=0.25.10, `default-features = false`, features `png`/`jpeg`/`gif`/`webp`, WP63) — the half-block rasteriser's decoders: exactly the four formats Go's `imgterm` registers, all pure Rust, no rayon. Only `src/imgterm.rs` may name the crate (the third ci.sh layering grep); everything else sees `imgterm::Frame`. Encoders are reachable only from tests. New transitive crates: `png`, `gif`, `weezl`, `color_quant`, `zune-jpeg`, `zune-core`, `image-webp`, `moxcms`, `byteorder-lite`, `num-traits`.
+  - `image` (=0.25.10, `default-features = false`, features `png`/`jpeg`/`gif`/`webp`, WP63) — the half-block rasteriser's decoders: exactly the four formats Go's `imgterm` registers, all pure Rust, no rayon. Only `src/imgterm.rs` may name the crate (`tests/layering.rs`); everything else sees `imgterm::Frame`. Encoders are reachable only from tests. New transitive crates: `png`, `gif`, `weezl`, `color_quant`, `zune-jpeg`, `zune-core`, `image-webp`, `moxcms`, `byteorder-lite`, `num-traits`.
   - `memchr` (2, 2026-09-14) — `memmem::Finder`, the substring search that works on `&[u8]`. `edit_file` counts, checks uniqueness and replaces on the file's BYTES, never on a decoded `String`, so a source file in Latin-1, Shift-JIS or GBK comes back off disk byte for byte (DIVERGENCES R-01). Already in `Cargo.lock` (2.8.3) under `regex`, `globset` and `ignore` — no new transitive crate.
   - `http` (=1, WP66) — `/debug`'s recorded response is rebuilt through `http::Response` → `reqwest::Response` (`From<http::Response<T>>`); reqwest re-exports `header`/`Method`/`StatusCode`/`Version`/`Url` but not the crate, so naming `http::Response` needs the direct dependency. Already in `Cargo.lock` (1.5.0) — no new transitive crate.
   - `tracing-subscriber` (0.3, `default-features = false`, features `fmt` + `std`; 2026-09-15, roadmap §3 #7) — the consumer behind `IOTA_LOG=<path>` (`src/diag.rs`): a file subscriber with a `Targets` filter (this crate at DEBUG, everything else at INFO). It is tracing's own consumer and the one every tracing-emitting dependency here is written against; a hand-rolled `Subscriber` would have re-implemented span storage and field formatting for the sake of two crates. No `ansi` (a log file never wants SGR), no `env-filter` (the level is fixed; its `matchers`/`regex-automata` pull stays out), no `tracing-log`. New transitive crates: `sharded-slab`, `thread_local`.
