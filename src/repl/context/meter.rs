@@ -35,11 +35,12 @@
 //! Everything here runs on the chat-loop task. The `Mutex` around the occupancy exists to
 //! SHARE it between the budget handle and the meter, not to arbitrate contention.
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use crate::llm::reqlog::RequestLog;
 use crate::provider::model::Message;
 use crate::provider::usage::Usage;
+use crate::sync::lock;
 use crate::ui::facade::{StatusData, Ui};
 
 use crate::repl::context::tokens::{
@@ -100,10 +101,6 @@ fn threshold_of(window: u64) -> u64 {
 }
 
 type Shared = Arc<Mutex<Occupancy>>;
-
-fn lock(st: &Shared) -> MutexGuard<'_, Occupancy> {
-    st.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 /// A budget snapshot taken before a turn and restored per retry attempt (Go `budgetSnap`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -422,7 +419,7 @@ impl CtxMeter {
             return false;
         };
         {
-            let mut slot = inner.model.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut slot = lock(&inner.model);
             model.clone_into(&mut slot);
         }
         inner.publish();
@@ -434,11 +431,7 @@ impl MeterInner {
     /// Repaints the status row from the shared occupancy and the session totals.
     fn publish(&self) {
         let st = *lock(&self.st);
-        let model = self
-            .model
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
+        let model = lock(&self.model).clone();
         self.ui.set_status(StatusData {
             model,
             ctx_used: st.used(),

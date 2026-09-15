@@ -11,20 +11,13 @@
 //! may overwrite; without one the freshly minted bundle catches up with the name the
 //! window has been showing since the first send.
 
-use std::sync::PoisonError;
-
 use crate::repl::run::Repl;
 use crate::repl::title::{TITLE_CAP, title_from};
+use crate::sync::lock;
 
 /// `/save [title]`.
 pub(crate) fn cmd_save(repl: &mut Repl, arg: &str) {
-    if repl
-        .session
-        .writer
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .is_some()
-    {
+    if lock(&repl.session.writer).is_some() {
         repl.handles.tr.notice(&format!(
             "Session already saving ({}).",
             repl.session.session_id()
@@ -51,11 +44,7 @@ pub(crate) fn cmd_save(repl: &mut Repl, arg: &str) {
     let model = repl.conv.provider.model().to_owned();
     let params = crate::repl::liveparams::current(repl);
     {
-        let mut slot = repl
-            .session
-            .writer
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut slot = lock(&repl.session.writer);
         *slot = Some(writer);
         if let Some(w) = slot.as_mut() {
             let _ = w.update_meta(|m| {

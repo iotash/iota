@@ -13,6 +13,7 @@ use std::path::Path;
 use crate::headless::images::{IMAGE_INDENT_COLS, IMAGE_MAX_COLS, IMAGE_MAX_ROWS};
 use crate::markdown::hyperlink;
 use crate::provider::model::{Attachment, Message, Role};
+use crate::sync::lock;
 use crate::text::ansi::wrap_by_width;
 use crate::text::width::str_width;
 
@@ -280,11 +281,7 @@ fn render_markdown(content: &str, width: usize) -> String {
     );
     mdw.write(content.as_bytes());
     mdw.flush();
-    let mut s = std::mem::take(
-        &mut *out
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    );
+    let mut s = std::mem::take(&mut *lock(&out));
     if !s.ends_with('\n') {
         s.push('\n');
     }
@@ -299,10 +296,7 @@ struct EchoSink {
 
 impl crate::markdown::sink::Sink for EchoSink {
     fn write(&mut self, rendered: &str) {
-        self.out
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push_str(rendered);
+        lock(&self.out).push_str(rendered);
     }
 
     fn width(&self) -> usize {

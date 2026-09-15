@@ -3,9 +3,10 @@
 //! is "this session may edit files".
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use crate::host::{Event, Kind, Presenter, State};
+use crate::sync::lock;
 use crate::tool::fmt::display_tool_name;
 use crate::tool::{Artifact, ArtifactKind};
 use crate::ui::facade::{SelectSpec, Ui, UiError};
@@ -80,19 +81,13 @@ impl ApprovalGate {
             return Ok(false);
         }
         if choice.index == 1 {
-            self.approved
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(name.to_owned());
+            lock(&self.approved).insert(name.to_owned());
         }
         Ok(true)
     }
 
     fn granted(&self, name: &str) -> bool {
-        self.approved
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .contains(name)
+        lock(&self.approved).contains(name)
     }
 }
 

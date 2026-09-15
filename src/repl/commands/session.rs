@@ -12,9 +12,10 @@
 //! tuning replay → the notice → the echo → status.
 
 use std::path::Path;
-use std::sync::{Arc, PoisonError};
+use std::sync::Arc;
 
 use crate::session::SessionInfo;
+use crate::sync::lock;
 use crate::ui::facade::{Panel, TabbedSpec};
 
 use crate::repl::render::replay::{RESUME_ECHO_ROUNDS, echo_rounds, last_rounds};
@@ -176,11 +177,7 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
     // sw.Close()); the title state resolves the slot per call, so it follows.
     let usage = writer.usage();
     {
-        let mut slot = repl
-            .session
-            .writer
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut slot = lock(&repl.session.writer);
         *slot = Some(writer);
     }
     repl.handles

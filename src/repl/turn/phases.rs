@@ -4,9 +4,10 @@
 //! idempotent. It is `Clone` over an `Arc<Mutex<_>>` because the send-progress closure runs on the
 //! reqwest driver while the round's `RenderSink` owns the other clone.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use crate::llm::progress::TurnProgress;
+use crate::sync::lock;
 use crate::ui::facade::{BusyGuard, Ui};
 
 /// The label while the request is in flight (run.go:1222,1230).
@@ -38,7 +39,7 @@ impl Phases {
 
     /// Starts (or relabels) the busy phase; a repeated label is a no-op.
     pub(crate) fn set(&self, label: &str) {
-        let mut inner = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut inner = lock(&self.0);
         if inner.guard.is_some() && inner.label == label {
             return;
         }
@@ -52,7 +53,7 @@ impl Phases {
 
     /// Ends the running phase, if any.
     pub(crate) fn end(&self) {
-        let mut inner = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut inner = lock(&self.0);
         if let Some(g) = inner.guard.take() {
             g.stop();
         }
@@ -61,7 +62,7 @@ impl Phases {
 
     /// Updates the busy detail (the upload's `done / total`) without touching the phase clock.
     pub(crate) fn detail(&self, d: &str) {
-        let inner = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let inner = lock(&self.0);
         inner.ui.busy_detail(d);
     }
 }

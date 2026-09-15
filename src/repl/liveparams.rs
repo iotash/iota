@@ -8,10 +8,9 @@
 //! where each of them came from. A second copy of the values would be a second thing to keep in step with a
 //! provider every tab in `/model` can already write to.
 
-use std::sync::PoisonError;
-
 use crate::provider::Effort;
 use crate::session::{LayeredParams, Param, ParamSources, SessionMeta};
+use crate::sync::lock;
 
 use crate::repl::commands::settings::{effort_label, float_ptr_equal, format_temperature};
 use crate::repl::context::tokens::DEFAULT_CONTEXT_WINDOW;
@@ -262,13 +261,7 @@ fn commit(repl: &Repl, sources: ParamSources, value: impl FnOnce(&mut SessionMet
 
 /// The ONE session-bundle write of this module (the questionnaire's twin in `commands::settings`).
 fn update_meta(repl: &Repl, f: impl FnOnce(&mut SessionMeta)) {
-    if let Some(w) = repl
-        .session
-        .writer
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .as_mut()
-    {
+    if let Some(w) = lock(&repl.session.writer).as_mut() {
         let _ = w.update_meta(f);
     }
 }

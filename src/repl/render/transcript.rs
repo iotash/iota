@@ -13,12 +13,13 @@
 //! The activity-group half of the state machine lives in `group.rs`. Safe for concurrent
 //! use (the async MCP reporter interleaves with streaming turns) — one mutex.
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::headless::images::IMAGE_INDENT_COLS;
 use crate::repl::render::group;
 use crate::repl::render::group::ActivityGroup;
 use crate::repl::render::styles::{dim, red, truncate_runes};
+use crate::sync::lock;
 
 /// The image-generation widget's label (transcript.go:373,381).
 pub(crate) const IMAGE_WIDGET_LABEL: &str = "image";
@@ -163,7 +164,7 @@ impl Transcript {
 
     /// The transcript state under its lock (poison-tolerant).
     pub fn lock(&self) -> MutexGuard<'_, Inner> {
-        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+        lock(&self.inner)
     }
 
     /// Renders the submitted input as the `❯` block (transcript.go `user`). A mid-turn

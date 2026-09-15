@@ -18,11 +18,12 @@
 //! turn is still streaming on the first, whose per-call state is not safe for a concurrent
 //! request) and is joined before any input that could swap or mint the writer.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::provider::Provider;
 use crate::provider::model::{Message, Role};
+use crate::sync::lock;
 use tokio_util::sync::CancellationToken;
 
 use crate::repl::render::styles::truncate_runes;
@@ -173,12 +174,7 @@ impl SessionTitle {
     }
 
     fn write_title(&self, name: &str) {
-        if let Some(w) = self
-            .writer
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_mut()
-        {
+        if let Some(w) = lock(&self.writer).as_mut() {
             // A meta write failure is not worth a red block over a title: the name is on
             // the window either way and the next append rewrites meta.
             let _ = w.update_meta(|m| name.clone_into(&mut m.title));
@@ -186,7 +182,7 @@ impl SessionTitle {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, TitleState> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        lock(&self.state)
     }
 }
 
@@ -319,8 +315,9 @@ mod tests {
     //!
     //! The state machine is crate-private (its only consumer is the run loop), so these tests
     //! live in-file (formerly a `#[path]`-mounted `tests/title.rs`; merged 2026-09-02).
+    use crate::sync::lock;
 
-    use std::sync::{Arc, Mutex, PoisonError};
+    use std::sync::{Arc, Mutex};
 
     use crate::provider::ProviderKind;
     use crate::provider::model::{Attachment, Message};
@@ -352,9 +349,7 @@ mod tests {
             let titler = SessionTitle::new(
                 Arc::clone(&writer),
                 Box::new(move |s: &str| {
-                    sink.lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .push(s.to_owned());
+                    lock(&sink).push(s.to_owned());
                 }),
                 resumed,
             );
@@ -369,36 +364,23 @@ mod tests {
 
         /// The name on the CURRENT session bundle.
         fn name(&self) -> String {
-            self.writer
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
+            lock(&self.writer)
                 .as_ref()
                 .map_or_else(String::new, |w| w.meta().title.clone())
         }
 
         fn last_window(&self) -> String {
-            self.window
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .last()
-                .cloned()
-                .unwrap_or_default()
+            lock(&self.window).last().cloned().unwrap_or_default()
         }
 
         fn window_writes(&self) -> usize {
-            self.window
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .len()
+            lock(&self.window).len()
         }
 
         /// Swaps in a different bundle (`/session`) or drops the writer entirely (an ephemeral
         /// chat), returning what was there.
         fn set_writer(&self, w: Option<SessionWriter>) -> Option<SessionWriter> {
-            std::mem::replace(
-                &mut *self.writer.lock().unwrap_or_else(PoisonError::into_inner),
-                w,
-            )
+            std::mem::replace(&mut *lock(&self.writer), w)
         }
 
         fn mint(&self) -> SessionWriter {
@@ -474,9 +456,7 @@ mod tests {
     #[test]
     fn title_resumed_session_untouched() {
         let p = Probe::new(true);
-        p.writer
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        lock(&p.writer)
             .as_mut()
             .expect("writer")
             .update_meta(|m| m.title = "an earlier chat".to_owned())

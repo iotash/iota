@@ -4,9 +4,10 @@
 //! and hands the facade's `PreviewHandle` straight through to the renderer (the same trait,
 //! `crate::markdown::preview`) — plus `lineCommitter` (the SGR-reset glue rule).
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::repl::render::styles::dim;
+use crate::sync::lock;
 
 /// Opens the facade's metered one-row preview for a label (the `StreamSink::block_preview`
 /// verb, pre-bound by the turn).
@@ -61,7 +62,7 @@ impl UiMdSink {
     }
 
     fn lock(&self) -> MutexGuard<'_, MdSinkInner> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        lock(&self.0)
     }
 }
 

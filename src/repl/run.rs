@@ -23,7 +23,7 @@
 //! landed reply — and is closed on every exit path before the facade is.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use crate::agents::Overlay;
 use crate::agents::skills::Skill;
@@ -32,6 +32,7 @@ use crate::llm::reqlog::RequestLog;
 use crate::markdown::CodeTheme;
 use crate::provider::model::{AssistantBody, Body, Message};
 use crate::session::SessionWriter;
+use crate::sync::lock;
 use crate::ui::facade::{InputKind, StatusData};
 use tokio_util::sync::CancellationToken;
 
@@ -195,11 +196,7 @@ impl Repl {
     /// carries the backlog — which is also how `/save` flushes a whole ephemeral chat in
     /// one append.
     pub(crate) fn persist_turn(&mut self) {
-        let mut slot = self
-            .session
-            .writer
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut slot = lock(&self.session.writer);
         let Some(w) = slot.as_mut() else { return };
         if self.session.persisted >= self.conv.history.len() {
             return;
@@ -322,7 +319,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     // assembled); one it RESUMED already says.
     let mut fresh_bundle = false;
     {
-        let mut slot = writer.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut slot = lock(&writer);
         if let Some(w) = slot.as_mut() {
             // A resumed session's cumulative ↑/↓ figures are what its own log adds up to.
             ctxm.seed_totals(w.usage());
@@ -359,9 +356,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     // ends with its own round separator, so it is not followed by another.
     ui.print_lines(banner_lines(
         &table.names(),
-        &writer
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        &lock(&writer)
             .as_ref()
             .map_or_else(String::new, |w| w.id().to_owned()),
         new_session.is_some(),
@@ -372,11 +367,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         let msgs = last_rounds(&history, RESUME_ECHO_ROUNDS);
         if !msgs.is_empty() {
             let d = Arc::clone(&dispatch);
-            let img_dir = writer
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .as_ref()
-                .map(SessionWriter::images_path);
+            let img_dir = lock(&writer).as_ref().map(SessionWriter::images_path);
             let lines = echo_rounds(
                 msgs,
                 |n| d.presentation(n) == crate::tool::Presentation::Surface,
@@ -396,9 +387,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         resumed,
     ));
     ui.set_title(&window_title(
-        &writer
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        &lock(&writer)
             .as_ref()
             .map_or_else(String::new, |w| w.meta().title.clone()),
     ));
@@ -411,12 +400,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     ));
     let images_dir: crate::repl::turn::ImagesDir = {
         let slot = Arc::clone(&writer);
-        Arc::new(move || {
-            slot.lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .as_mut()
-                .and_then(SessionWriter::images_dir)
-        })
+        Arc::new(move || lock(&slot).as_mut().and_then(SessionWriter::images_dir))
     };
     let title_provider = title_provider.map(|p| Arc::new(tokio::sync::Mutex::new(p)));
     let mut repl = Repl {

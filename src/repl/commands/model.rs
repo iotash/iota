@@ -22,6 +22,7 @@
 use std::sync::Arc;
 
 use crate::provider::Provider;
+use crate::sync::lock;
 use crate::ui::facade::{Panel, PanelResult, TabbedSpec, Ui};
 use tokio_util::sync::CancellationToken;
 
@@ -139,11 +140,7 @@ async fn model_tab(
 /// live model and what a resumed session replays cannot drift.
 fn commit(provider: &mut dyn Provider, writer: &WriterSlot, name: &str) {
     provider.set_model(name.to_owned());
-    if let Some(w) = writer
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_mut()
-    {
+    if let Some(w) = lock(writer).as_mut() {
         let _ = w.update_meta(|m| name.clone_into(&mut m.model));
     }
 }

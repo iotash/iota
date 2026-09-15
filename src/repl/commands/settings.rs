@@ -20,10 +20,9 @@
 //! ONE `update_meta` call site, and prints its own dim notice; no delta at all prints
 //! `"No changes."`.
 
-use std::sync::PoisonError;
-
 use crate::provider::{Effort, ImageGenParams, Provider, ProviderKind};
 use crate::session::{ParamSource, ParamSources};
+use crate::sync::lock;
 use crate::ui::facade::{Panel, TabbedResult};
 
 use crate::repl::commands::status::image_gen_label;
@@ -561,13 +560,7 @@ fn by_hand(
 /// The ONE session-bundle write for the questionnaire: what `/model` changes and what a
 /// resumed session replays cannot drift, because they are the same call site.
 fn update_meta(repl: &Repl, f: impl FnOnce(&mut crate::session::SessionMeta)) {
-    if let Some(w) = repl
-        .session
-        .writer
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .as_mut()
-    {
+    if let Some(w) = lock(&repl.session.writer).as_mut() {
         let _ = w.update_meta(f);
     }
 }
