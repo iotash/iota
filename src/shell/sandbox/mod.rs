@@ -3,6 +3,14 @@
 //! elsewhere (`other`). One backend per target, with the same two entry points: `available`, and `command`,
 //! which wraps the interpreter invocation.
 
+/// Why the sandbox wrapper could not be built.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SandboxError {
+    /// The platform has no sandbox (`other`) — the only way `command` fails.
+    #[error("sandboxing is not supported on this platform")]
+    Unsupported,
+}
+
 #[cfg(target_os = "macos")]
 mod darwin;
 #[cfg(target_os = "linux")]

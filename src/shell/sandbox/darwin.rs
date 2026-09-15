@@ -28,7 +28,7 @@ pub(crate) fn command(
     script: &str,
     writable: &[PathBuf],
     network: bool,
-) -> Result<tokio::process::Command, String> {
+) -> Result<tokio::process::Command, super::SandboxError> {
     // /tmp and /var are symlinks into /private on macOS; Seatbelt matches the resolved path, so each writable
     // root contributes its /private twin and its fully-resolved form (sandbox_darwin.go:28-42).
     let mut expanded: Vec<PathBuf> = Vec::with_capacity(writable.len() * 2);

@@ -34,7 +34,7 @@ use crate::tool::sets::{RawNode, SetError};
 use crate::tool::yaml11;
 
 use crate::shell::exec;
-use crate::shell::exec::{Options, RunResult, Sandbox};
+use crate::shell::exec::{Options, Outcome, RunResult, Sandbox};
 use crate::shell::interp::{Family, Interpreter};
 use crate::shell::jobs::{JobStart, Jobs};
 
@@ -295,29 +295,25 @@ fn timeout_arg(args: &JsonObject) -> Option<Duration> {
 /// tool/shell.go:173-190: the model-facing rendering of one run, checked in this order. `timeout` is the
 /// cap the call actually ran under, so the timed-out line names the number the model chose.
 fn format_result(res: &RunResult, timeout: Duration) -> ToolOutput {
-    if let Some(e) = &res.err {
-        if res.output.trim().is_empty() {
-            return ToolOutput::err(format!("failed to run: {e}"));
+    let output = &res.output;
+    match &res.outcome {
+        Outcome::Failed(e) if output.trim().is_empty() => {
+            ToolOutput::err(format!("failed to run: {e}"))
         }
-        return ToolOutput::err(format!("{}\n[failed to run: {e}]", res.output));
-    }
-    if res.timed_out {
-        return ToolOutput::err(format!(
-            "{}\n[command timed out after {}]",
-            res.output,
+        Outcome::Failed(e) => ToolOutput::err(format!("{output}\n[failed to run: {e}]")),
+        Outcome::TimedOut => ToolOutput::err(format!(
+            "{output}\n[command timed out after {}]",
             go_duration(timeout)
-        ));
+        )),
+        Outcome::Cancelled => ToolOutput::err(format!("{output}\n[command cancelled]")),
+        Outcome::Exited(code) if *code != 0 => {
+            ToolOutput::err(format!("{output}\n[exit code {code}]"))
+        }
+        Outcome::Exited(_) if output.trim().is_empty() => {
+            ToolOutput::ok("[command produced no output]")
+        }
+        Outcome::Exited(_) => ToolOutput::ok(output.clone()),
     }
-    if res.cancelled {
-        return ToolOutput::err(format!("{}\n[command cancelled]", res.output));
-    }
-    if res.exit_code != 0 {
-        return ToolOutput::err(format!("{}\n[exit code {}]", res.output, res.exit_code));
-    }
-    if res.output.trim().is_empty() {
-        return ToolOutput::ok("[command produced no output]");
-    }
-    ToolOutput::ok(res.output.clone())
 }
 
 /// tool/shell.go:194-206: resolves a leading `~` (alone or before `/`) to the home directory; anything else,
@@ -420,16 +416,16 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        DEFAULT_SHELL_TIMEOUT, Duration, JsonObject, RunResult, exec::ShellError, expand_home,
-        format_result, go_duration, timeout_arg,
+        DEFAULT_SHELL_TIMEOUT, Duration, JsonObject, Outcome, RunResult, exec::ShellError,
+        expand_home, format_result, go_duration, timeout_arg,
     };
 
     // New (tool-shell.md "MODEL-FACING RESULT SUFFIXES"): every branch of tool/shell.go:173-190.
     #[test]
     fn result_formatting_table() {
         let failed = RunResult {
-            err: Some(ShellError::NoShell(crate::shell::interp::NoShell::NoBash)),
-            ..RunResult::default()
+            output: String::new(),
+            outcome: Outcome::Failed(ShellError::NoShell(crate::shell::interp::NoShell::NoBash)),
         };
         let out = format_result(&failed, DEFAULT_SHELL_TIMEOUT);
         assert_eq!(
@@ -440,8 +436,7 @@ mod tests {
 
         let failed_with_output = RunResult {
             output: "partial\n".to_owned(),
-            err: Some(ShellError::Spawn("boom".to_owned())),
-            ..RunResult::default()
+            outcome: Outcome::Failed(ShellError::Spawn("boom".to_owned())),
         };
         assert_eq!(
             format_result(&failed_with_output, DEFAULT_SHELL_TIMEOUT).text,
@@ -450,8 +445,7 @@ mod tests {
 
         let timed_out = RunResult {
             output: "slow".to_owned(),
-            timed_out: true,
-            ..RunResult::default()
+            outcome: Outcome::TimedOut,
         };
         assert_eq!(
             format_result(&timed_out, DEFAULT_SHELL_TIMEOUT).text,
@@ -465,17 +459,16 @@ mod tests {
         );
 
         let cancelled = RunResult {
-            cancelled: true,
-            ..RunResult::default()
+            output: String::new(),
+            outcome: Outcome::Cancelled,
         };
         let out = format_result(&cancelled, DEFAULT_SHELL_TIMEOUT);
         assert_eq!(out.text, "\n[command cancelled]");
         assert!(out.is_error);
 
         let signalled = RunResult {
-            exited: true,
-            exit_code: -1,
-            ..RunResult::default()
+            output: String::new(),
+            outcome: Outcome::Exited(-1),
         };
         assert_eq!(
             format_result(&signalled, DEFAULT_SHELL_TIMEOUT).text,
@@ -484,8 +477,7 @@ mod tests {
 
         let blank = RunResult {
             output: "  \n".to_owned(),
-            exited: true,
-            ..RunResult::default()
+            outcome: Outcome::Exited(0),
         };
         let out = format_result(&blank, DEFAULT_SHELL_TIMEOUT);
         assert_eq!(out.text, "[command produced no output]");
@@ -493,8 +485,7 @@ mod tests {
 
         let ok = RunResult {
             output: "hello\n".to_owned(),
-            exited: true,
-            ..RunResult::default()
+            outcome: Outcome::Exited(0),
         };
         let out = format_result(&ok, DEFAULT_SHELL_TIMEOUT);
         assert_eq!(out.text, "hello\n", "the trailing newline is preserved");

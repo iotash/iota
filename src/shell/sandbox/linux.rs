@@ -17,7 +17,7 @@ pub(crate) fn command(
     script: &str,
     writable: &[PathBuf],
     network: bool,
-) -> Result<tokio::process::Command, String> {
+) -> Result<tokio::process::Command, super::SandboxError> {
     let mut cmd = tokio::process::Command::new("bwrap");
     cmd.args([
         "--ro-bind",

@@ -18,7 +18,7 @@ use std::{
     time::Duration,
 };
 
-use iota::shell::exec::{self, Options};
+use iota::shell::exec::{self, Options, Outcome};
 use tokio_util::sync::CancellationToken;
 
 /// A shell of our own, which echoes the argv it was handed: its output then proves both halves of the
@@ -95,10 +95,7 @@ async fn the_override_runs_the_named_shell() {
     let fake = std::env::var("IOTA_SHELL").expect("the parent set it");
 
     let res = run("echo hi", dir.path()).await;
-    assert!(
-        res.err.is_none() && res.exited && res.exit_code == 0,
-        "{res:?}"
-    );
+    assert!(res.outcome == Outcome::Exited(0), "{res:?}");
     assert_eq!(res.output, "FAKE:-c echo hi\n", "bash ran instead: {res:?}");
 
     // The same answer the `bash` tool builds its description from.
@@ -114,14 +111,12 @@ async fn the_override_runs_the_named_shell() {
 async fn an_unrunnable_override_fails_the_run() {
     let dir = tempfile::tempdir().expect("tempdir");
     let res = run("echo hi", dir.path()).await;
-    let err = res
-        .err
-        .as_ref()
-        .expect("a bad override must fail the run")
-        .to_string();
+    let Outcome::Failed(err) = &res.outcome else {
+        panic!("a bad override must fail the run: {res:?}");
+    };
     assert_eq!(
-        err,
+        err.to_string(),
         "IOTA_SHELL is set to \"/definitely/not/a/shell\", which is not an executable on this system"
     );
-    assert!(res.output.is_empty() && !res.exited, "{res:?}");
+    assert!(res.output.is_empty(), "{res:?}");
 }

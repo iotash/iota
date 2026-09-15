@@ -274,11 +274,14 @@ async fn supervise(
     mut done: JobDone,
 ) {
     let at = Instant::now();
-    let w = started.wait(&cancel, timeout).await;
+    let outcome = started.wait(&cancel, timeout).await;
     done.elapsed = at.elapsed();
-    done.timed_out = w.timed_out;
-    done.killed = w.cancelled;
-    done.exit = w.exited.then_some(w.exit_code);
+    done.timed_out = matches!(outcome, exec::Outcome::TimedOut);
+    done.killed = matches!(outcome, exec::Outcome::Cancelled);
+    done.exit = match outcome {
+        exec::Outcome::Exited(code) => Some(code),
+        _ => None,
+    };
     let sink = {
         let mut st = jobs.lock();
         st.running.remove(&done.id);

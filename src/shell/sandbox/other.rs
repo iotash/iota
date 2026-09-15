@@ -13,6 +13,6 @@ pub(crate) fn command(
     _script: &str,
     _writable: &[PathBuf],
     _network: bool,
-) -> Result<tokio::process::Command, String> {
-    Err("sandboxing is not supported on this platform".to_owned())
+) -> Result<tokio::process::Command, super::SandboxError> {
+    Err(super::SandboxError::Unsupported)
 }

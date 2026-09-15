@@ -92,35 +92,27 @@ pub enum ShellError {
     NoShell(#[from] super::interp::NoShell),
     /// The sandbox wrapper could not be built.
     #[error("failed to prepare the sandbox: {0}")]
-    Sandbox(String),
+    Sandbox(#[from] super::sandbox::SandboxError),
     /// Spawn failed; the `io::Error` text (differs from Go's `chdir …` — DIVERGENCES D-16).
     #[error("{0}")]
     Spawn(String),
 }
 
-/// What a run produced.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+/// What a foreground run produced: the capped, combined stdout/stderr and how the child ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunResult {
     /// Combined, capped stdout/stderr.
     pub output: String,
-    /// Exit code (-1 for a signal).
-    pub exit_code: i32,
-    /// Whether the child exited on its own.
-    pub exited: bool,
-    /// Whether the deadline killed it.
-    pub timed_out: bool,
-    /// Whether cancellation killed it.
-    pub cancelled: bool,
-    /// The spawn/sandbox failure, if any.
-    pub err: Option<ShellError>,
+    /// How it ended.
+    pub outcome: Outcome,
 }
 
 impl RunResult {
-    /// A result carrying nothing but the failure (shell.go:71,84 — no output was produced).
-    fn failed(err: ShellError) -> Self {
+    /// A result carrying nothing but the outcome (shell.go:71,84 — no output was produced).
+    fn without_output(outcome: Outcome) -> Self {
         Self {
-            err: Some(err),
-            ..Self::default()
+            output: String::new(),
+            outcome,
         }
     }
 }
@@ -156,20 +148,19 @@ pub struct Started {
     buf: Option<Arc<Mutex<CappedBuffer>>>,
 }
 
-/// What supervising a started child observed. Mutually exclusive by construction: the deadline wins over
-/// cancellation, both win over the exit status.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct Waited {
-    /// Exit code (-1 on signal death); meaningful only with `exited`.
-    pub exit_code: i32,
-    /// Whether the child ended on its own.
-    pub exited: bool,
-    /// Whether the deadline killed it.
-    pub timed_out: bool,
-    /// Whether the token killed it.
-    pub cancelled: bool,
-    /// A `wait` failure.
-    pub err: Option<ShellError>,
+/// How a child ended (shell.go:97-121). One thing at a time, by construction: the deadline wins over
+/// cancellation, both win over the exit status, and a child that never started has no status at all. Until
+/// 2026-09-15 this was four bools and an `Option` (`Waited`, and the same five fields again on `RunResult`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// The child ended on its own; -1 on signal death (Go's `ExitError.ExitCode()`).
+    Exited(i32),
+    /// The deadline killed it.
+    TimedOut,
+    /// The token killed it.
+    Cancelled,
+    /// It could not be started (no interpreter, the sandbox, the spawn itself), or `wait` failed.
+    Failed(ShellError),
 }
 
 /// Starts `opts.command` under the resolved interpreter, in its own process group, with fd 1 and fd 2 joined
@@ -265,25 +256,27 @@ impl Started {
     /// Supervises the child to its end (shell.go:97-121): the deadline and the token race `wait()`, either
     /// one `killpg`s the group and reaps it under Go's `WaitDelay`, and a capture reader is given the same
     /// bounded window to drain — a background grandchild holding the pipe can never wedge the caller.
-    pub async fn wait(&mut self, cancel: &CancellationToken, timeout: Option<Duration>) -> Waited {
-        let mut w = Waited::default();
-        let finished = tokio::select! {
-            s = self.child.wait() => Some(s),
-            () = cancel.cancelled() => { w.cancelled = true; None },
-            () = deadline(timeout) => { w.timed_out = true; None },
+    pub async fn wait(&mut self, cancel: &CancellationToken, timeout: Option<Duration>) -> Outcome {
+        let waited = tokio::select! {
+            s = self.child.wait() => Ok(s),
+            () = cancel.cancelled() => Err(Outcome::Cancelled),
+            () = deadline(timeout) => Err(Outcome::TimedOut),
         };
-        let finished = if finished.is_some() {
-            finished
-        } else {
-            // Cancelled or timed out: SIGKILL the group, then bound the reap like Go's WaitDelay.
-            self.kill_tree();
-            let reaped = tokio::time::timeout(WAIT_DELAY, self.child.wait())
-                .await
-                .ok();
-            if reaped.is_none() {
-                let _ = self.child.start_kill();
+        let outcome = match waited {
+            // ExitStatus::code() is None on signal death — Go's ExitError.ExitCode() reports -1 there.
+            Ok(Ok(st)) => Outcome::Exited(st.code().unwrap_or(-1)),
+            Ok(Err(e)) => Outcome::Failed(ShellError::Spawn(e.to_string())),
+            Err(killed) => {
+                // Cancelled or timed out: SIGKILL the group, then bound the reap like Go's WaitDelay.
+                self.kill_tree();
+                if tokio::time::timeout(WAIT_DELAY, self.child.wait())
+                    .await
+                    .is_err()
+                {
+                    let _ = self.child.start_kill();
+                }
+                killed
             }
-            reaped
         };
         if let Some(reader) = &mut self.reader
             && tokio::time::timeout(WAIT_DELAY, &mut *reader)
@@ -292,19 +285,7 @@ impl Started {
         {
             reader.abort();
         }
-        if w.timed_out || w.cancelled {
-            return w;
-        }
-        match finished {
-            // ExitStatus::code() is None on signal death — Go's ExitError.ExitCode() reports -1 there.
-            Some(Ok(st)) => {
-                w.exited = true;
-                w.exit_code = st.code().unwrap_or(-1);
-            }
-            Some(Err(e)) => w.err = Some(ShellError::Spawn(e.to_string())),
-            None => w.exited = true,
-        }
-        w
+        outcome
     }
 
     /// Kills the child AND everything it started: `killpg(SIGKILL)` on Unix, `TerminateJobObject` on
@@ -333,22 +314,13 @@ impl Started {
 pub async fn run(cancel: &CancellationToken, opts: Options) -> RunResult {
     let mut started = match spawn(cancel, &opts, Capture::Memory) {
         Ok(s) => s,
-        Err(SpawnFail::Cancelled) => {
-            return RunResult {
-                cancelled: true,
-                ..RunResult::default()
-            };
-        }
-        Err(SpawnFail::Failed(e)) => return RunResult::failed(e),
+        Err(SpawnFail::Cancelled) => return RunResult::without_output(Outcome::Cancelled),
+        Err(SpawnFail::Failed(e)) => return RunResult::without_output(Outcome::Failed(e)),
     };
-    let w = started.wait(cancel, opts.timeout).await;
+    let outcome = started.wait(cancel, opts.timeout).await;
     RunResult {
         output: truncate_output(&started.into_output()),
-        exit_code: w.exit_code,
-        exited: w.exited,
-        timed_out: w.timed_out,
-        cancelled: w.cancelled,
-        err: w.err,
+        outcome,
     }
 }
 

@@ -21,8 +21,8 @@ use std::{
 use iota::provider::model::JsonObject;
 use iota::shell::exec;
 use iota::shell::exec::{
-    CappedBuffer, HEAD_BYTES, MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES, Options, RunResult, Sandbox,
-    TAIL_BYTES, truncate_output, writable_paths,
+    CappedBuffer, HEAD_BYTES, MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES, Options, Outcome, RunResult,
+    Sandbox, TAIL_BYTES, truncate_output, writable_paths,
 };
 use iota::shell::interp::{Family, Interpreter};
 use iota::tool::Registry;
@@ -174,7 +174,7 @@ async fn sandbox_runs(sb: &Sandbox, dir: &Path) -> bool {
         sandbox: Some(sb.clone()),
     })
     .await;
-    res.err.is_none() && res.exit_code == 0
+    res.outcome == Outcome::Exited(0)
 }
 
 /// `shell.Run` under a token nobody cancels.
@@ -626,7 +626,10 @@ async fn cancelling_a_run_kills_the_whole_process_tree() {
         elapsed < Duration::from_secs(10),
         "cancelled run took {elapsed:?}, want a prompt return"
     );
-    assert!(res.cancelled, "result = {res:?}, want Cancelled");
+    assert!(
+        res.outcome == Outcome::Cancelled,
+        "result = {res:?}, want Cancelled"
+    );
 }
 #[tokio::test]
 async fn cancelling_a_sandboxed_run_kills_the_whole_process_tree() {
@@ -657,7 +660,10 @@ async fn cancelling_a_sandboxed_run_kills_the_whole_process_tree() {
         elapsed < Duration::from_secs(10),
         "cancelled sandboxed run took {elapsed:?}, want a prompt return"
     );
-    assert!(res.cancelled, "result = {res:?}, want Cancelled");
+    assert!(
+        res.outcome == Outcome::Cancelled,
+        "result = {res:?}, want Cancelled"
+    );
 }
 #[tokio::test]
 async fn a_background_child_does_not_wedge_the_run() {
@@ -678,10 +684,9 @@ async fn a_background_child_does_not_wedge_the_run() {
         "run with a lingering child took {elapsed:?}, want the WaitDelay bound"
     );
     assert!(
-        res.exited && res.output.contains("started"),
-        "result = {res:?}, want Exited with the foreground output"
+        res.outcome == Outcome::Exited(0) && res.output.contains("started"),
+        "result = {res:?}, want Exited(0) with the foreground output"
     );
-    assert_eq!(res.exit_code, 0);
 }
 #[tokio::test]
 async fn the_run_keeps_shell_semantics() {
@@ -700,8 +705,7 @@ async fn the_run_keeps_shell_semantics() {
     })
     .await;
     assert!(
-        res.err.is_none()
-            && res.exit_code == 0
+        res.outcome == Outcome::Exited(0)
             && res.output.contains("HELLO")
             && res.output.contains('6'),
         "shell semantics: {res:?}"
@@ -715,10 +719,7 @@ async fn the_run_keeps_shell_semantics() {
         sandbox: None,
     })
     .await;
-    assert!(
-        res.err.is_none() && res.exited && res.exit_code == 3,
-        "exit code: {res:?}"
-    );
+    assert!(res.outcome == Outcome::Exited(3), "exit code: {res:?}");
 
     // The working directory applies (and PWD is exported to it).
     let res = run(Options {
@@ -757,7 +758,7 @@ async fn a_run_cancelled_before_it_starts_reports_cancelled() {
     )
     .await;
     assert!(
-        res.cancelled && res.output.is_empty() && !res.exited,
+        res.outcome == Outcome::Cancelled && res.output.is_empty(),
         "pre-cancelled token should report Cancelled: {res:?}"
     );
 }
@@ -777,7 +778,7 @@ async fn the_sandbox_isolates_the_filesystem_and_the_network() {
     })
     .await;
     assert!(
-        res.exit_code == 0 && res.output.contains("data"),
+        res.outcome == Outcome::Exited(0) && res.output.contains("data"),
         "in-root write failed: {res:?}"
     );
 
@@ -791,7 +792,7 @@ async fn the_sandbox_isolates_the_filesystem_and_the_network() {
     })
     .await;
     assert!(
-        res.exit_code != 0 || res.err.is_some(),
+        res.outcome != Outcome::Exited(0),
         "outside-root write should be denied: {res:?}"
     );
     assert!(!outside.join("f.txt").exists(), "the write landed anyway");
@@ -809,7 +810,7 @@ async fn the_sandbox_isolates_the_filesystem_and_the_network() {
     })
     .await;
     assert!(
-        res.exit_code == 0 && res.err.is_none(),
+        res.outcome == Outcome::Exited(0),
         "configured write root should be writable: {res:?}"
     );
     assert!(outside.join("g.txt").exists());
@@ -933,10 +934,7 @@ async fn a_runs_output_is_capped() {
         sandbox: None,
     })
     .await;
-    assert!(
-        res.err.is_none() && res.exit_code == 0,
-        "seq failed: {res:?}"
-    );
+    assert!(res.outcome == Outcome::Exited(0), "seq failed: {res:?}");
     assert!(
         res.output.len() <= MAX_OUTPUT_BYTES + 2048,
         "output {} bytes, want ≈ ≤ {MAX_OUTPUT_BYTES}",
@@ -965,10 +963,7 @@ async fn run_deadline_and_cancel_are_exclusive() {
         sandbox: None,
     })
     .await;
-    assert!(
-        res.timed_out && !res.cancelled && !res.exited && res.err.is_none(),
-        "deadline: {res:?}"
-    );
+    assert!(res.outcome == Outcome::TimedOut, "deadline: {res:?}");
     assert!(
         start.elapsed() < Duration::from_secs(10),
         "the group was killed"
@@ -991,7 +986,7 @@ async fn run_deadline_and_cancel_are_exclusive() {
     )
     .await;
     assert!(
-        res.cancelled && !res.timed_out && !res.exited,
+        res.outcome == Outcome::Cancelled,
         "cancel under a long deadline: {res:?}"
     );
 }
