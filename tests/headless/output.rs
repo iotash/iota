@@ -3,8 +3,8 @@
 
 use std::{path::Path, sync::Arc};
 
-use iota::chat::images::{HOME_NOT_DEFINED, save_image, save_images_for_turn};
-use iota::chat::{
+use iota::headless::images::{HOME_NOT_DEFINED, save_image, save_images_for_turn};
+use iota::headless::{
     AgentOptions, ChatError, OnceOptions, OnceOutcome, OutputFormat, RunReport, TokenUsage, once,
     parse_output_format, write_report,
 };

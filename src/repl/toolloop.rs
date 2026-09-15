@@ -1,8 +1,8 @@
 //! The interactive tool loop (chat/run.go:1449-1657 `toolLoop`) — the twin of the
-//! headless `crate::chat::execute_with_tools`, not a fork of it.
+//! headless `crate::headless::execute_with_tools`, not a fork of it.
 //!
 //! Go itself ships two loop functions over one helper layer, and this is the same split:
-//! the round walk reuses `crate::chat::batch::{parallel_run, BatchOutcome}`,
+//! the round walk reuses `crate::headless::batch::{parallel_run, BatchOutcome}`,
 //! `crate::tool::model_text`, the `Dispatcher` capability probes and
 //! `crate::provider::model::Message`'s constructors verbatim. What is added here is everything a
 //! terminal brings: streaming rendering through the transcript, `retry_round` per model
@@ -17,8 +17,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::chat::ChatError;
-use crate::chat::batch::{BatchOutcome, parallel_run};
+use crate::headless::ChatError;
+use crate::headless::batch::{BatchOutcome, parallel_run};
 use crate::host::{Event, Kind, State};
 use crate::provider::ToolProvider;
 use crate::provider::model::{Message, ToolCall, ToolDef};
@@ -326,7 +326,7 @@ async fn surface_call(
 /// not a member of it — a half-cancelled batch would leave calls without results), then
 /// event rows AND results in CALL order regardless of who finished first.
 ///
-/// The concurrency itself is `crate::chat::batch::run_batch`'s shape, re-spelled here for
+/// The concurrency itself is `crate::headless::batch::run_batch`'s shape, re-spelled here for
 /// ONE reason: a batch needs a per-call artifact slot (a shared one would be a race with a
 /// last-writer-wins result), and the headless helper passes one context to every call.
 /// The order law — `parallel_run` — is the shared original.

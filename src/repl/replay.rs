@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use crate::chat::images::{IMAGE_INDENT_COLS, IMAGE_MAX_COLS, IMAGE_MAX_ROWS};
+use crate::headless::images::{IMAGE_INDENT_COLS, IMAGE_MAX_COLS, IMAGE_MAX_ROWS};
 use crate::markdown::hyperlink;
 use crate::provider::model::{Attachment, Message, Role};
 use crate::text::ansi::wrap_by_width;

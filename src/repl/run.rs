@@ -142,7 +142,7 @@ pub struct RunParams {
     /// The agent's candidate set, as `/model` offers it (`repl::catalog`).
     pub catalog: crate::repl::ModelCatalog,
     /// Agent-mode options.
-    pub agent: crate::chat::AgentOptions,
+    pub agent: crate::headless::AgentOptions,
     /// Whether the terminal's background is dark, as the ONE pre-loop OSC-11 probe answered
     /// it. The detected background must reach the code theme and the diff shades, and the
     /// loop never probes the terminal itself.
@@ -215,7 +215,7 @@ pub(crate) struct Repl {
     /// The agent-mode overlay woven into every send (`None` outside agent mode).
     pub(crate) overlay: Option<Overlay>,
     /// Agent-mode options: the project root and the skills home.
-    pub(crate) agent: crate::chat::AgentOptions,
+    pub(crate) agent: crate::headless::AgentOptions,
     /// The title pass's own provider instance (the conversation's is mid-call while a turn
     /// streams); `None` for a dedicated image provider, which asked for a title would paint one.
     pub(crate) title_provider: Option<Arc<tokio::sync::Mutex<Box<dyn Provider>>>>,

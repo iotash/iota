@@ -109,7 +109,7 @@ impl Fixture {
             params: iota::session::LayeredParams::default(),
             layers: iota::cmd::ParamLayers::default(),
             catalog: iota::repl::ModelCatalog::default(),
-            agent: iota::chat::AgentOptions::default(),
+            agent: iota::headless::AgentOptions::default(),
             dark_background: true,
             root_cancel: CancellationToken::new(),
             reqlog: Arc::new(RequestLog::new()),

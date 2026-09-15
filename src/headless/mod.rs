@@ -1,6 +1,6 @@
 //! The headless (non-interactive) run loop (chat/chat.go, chat/output.go, chat/parallel.go, chat/images.go,
 //! chat/agentmode.go). The run context every loop shares (chat/turns.go) is `crate::tool::context`.
-//! The interactive loop over the same machinery is `crate::chat::repl`.
+//! The interactive loop over the same machinery is `crate::repl`.
 //!
 //! `once` is the single entry point the binary calls: it builds the run context (`RunCtx` with the run's
 //! `TurnBudget`), runs one message through `run_once` (unary chat or the tool loop `execute_with_tools`),

@@ -94,7 +94,7 @@ impl Fixture {
             catalog: iota::repl::ModelCatalog::default(),
             // Agent mode ON with NO home: the user-level roots are never scanned, so the
             // fixture's catalog is exactly what was written under the project root.
-            agent: iota::chat::AgentOptions {
+            agent: iota::headless::AgentOptions {
                 enabled: true,
                 root: self.root.clone(),
                 cwd: Some(self.root.clone()),
@@ -284,7 +284,7 @@ async fn skills_is_a_plain_message_without_agent_mode() {
     let provider = recording();
     let sent = provider.log();
     let mut params = f.params(provider);
-    params.agent = iota::chat::AgentOptions::default();
+    params.agent = iota::headless::AgentOptions::default();
     iota::repl::run(params).await.expect("clean exit");
 
     assert!(surfaces(&f.ui).is_empty(), "no viewer without agent mode");

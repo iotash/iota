@@ -64,7 +64,7 @@ full old→new map). No workspace table, no per-area manifests, no `check-deps` 
 on for tests by the self-dev-dependency `iota = { path = ".", features = ["testing"] }`).
 
 Top-level module names mirror Go packages where that aids recognition; where the Rust decomposition is
-cleaner than Go's (`chat` = headless loop, `repl` = interactive loop, `session` = the store — Go lumps
+cleaner than Go's (`headless` = headless loop, `repl` = interactive loop, `session` = the store — Go lumps
 all three into `chat/`) the Rust split is KEPT as modules. Visibility is Rust-idiomatic: everything is
 `pub(crate)` unless `main.rs`, `tests/` or `examples/` genuinely use it.
 
@@ -90,7 +90,7 @@ all three into `chat/`) the Rust split is KEPT as modules. Visibility is Rust-id
 | `imgterm.rs` | internal/imgterm | the half-block image rasteriser (T3, WP63) — the ONLY module allowed to name the `image` crate (`tests/layering.rs`) |
 | `host/{mod,ansi,cmux,background}.rs` | internal/host | host integration (T3, WP67): `Presenter` per-capability fan-out, the ANSI host (OSC 9 / 9;4 through the facade), the cmux host, the background probe |
 | `mcp/{mod,config,manager,naming,status,transport,error}.rs` | mcp/ | `ServerConfig`/`parse_mcp_flag` (`config`), the rmcp manager |
-| `chat/{mod,once,run,batch,report,images,delegator,error}.rs` | chat/chat.go, output.go, parallel.go, images.go, delegate.go | the headless loop (the run context it shares with the tools is `tool/context.rs`) |
+| `headless/{mod,once,run,batch,report,images,delegator,error}.rs` | chat/chat.go, output.go, parallel.go, images.go, delegate.go | the headless loop — what separates it from `repl` is that there is no terminal (the run context it shares with the tools is `tool/context.rs`) |
 | `session/{mod,meta,params,record,rawcodec,id,store,writer,loader,tuning,error}.rs` | chat/session.go, settings.go | the on-disk bundle store (never reads the process environment — `tests/layering.rs`) |
 | `markdown/{mod,inline,table,list,quote,code,link,math,style,sink,preview,highlight}.rs` | internal/markdown | the streaming markdown→ANSI renderer; `highlight.rs` = the `CodeHighlighter` seam AND its syntect impl |
 | `markdown/html.rs` | (goldmark + chroma in chat/export.go) | T3, WP65: comrak safe-mode GFM → HTML with the syntect `SyntaxHighlighterAdapter` over the two-face syntax set, chroma-shaped `<pre class="chroma">` |
@@ -102,7 +102,7 @@ all three into `chat/`) the Rust split is KEPT as modules. Visibility is Rust-id
 | `config/{mod,agent,model,provider,params,strict}.rs` | config/ | the YAML config model + merge, plus the key audit and the layered parameters |
 | `testing/{mod,scripted}.rs` | (test fakes) | behind the `testing` feature only |
 
-Tests: `tests/<area>/main.rs` — TEN integration binaries (`provider`, `tool`, `mcp`, `session`, `chat`,
+Tests: `tests/<area>/main.rs` — TEN integration binaries (`provider`, `tool`, `mcp`, `session`, `headless`,
 `markdown`, `mathtext`, `repl`, `ui_tmux`, `cmd`; `mathtext` was added by T3/WP61 for the Go-generated
 2D and inline goldens). The `ui` area has no integration binary because every one of its former files
 drove crate-private internals and now lives in-file as `#[cfg(test)] mod tests` under `src/ui/**`.
@@ -129,7 +129,7 @@ The crate boundaries that carried a design rule are one test binary, `tests/laye
 - the process's stderr has one writer, `cmd::io::Streams` (`warning`/`caution`): no `eprintln!` and no
   `io::stderr()` anywhere else in product code.
 
-The one-way `cmd → {chat, session}` edge is now a convention, not a manifest: `chat::run_once` still
+The one-way `cmd → {headless, session}` edge is now a convention, not a manifest: `headless::run_once` still
 returns the turn's message delta and `cmd` still owns the `SessionWriter`; the loop never names the store.
 
 ### 1.3 Why one package
@@ -255,7 +255,7 @@ The tables keep the phase-1 grouping (one per former crate) with each file named
 | `writer.rs` | chat/session.go:307-748 | lazy `ensure_created`, `append_messages` (one fsync per batch, then one meta rewrite), `append_compaction`, `update_meta` (Go's eight `Set*` collapsed into one), `images_path`/`images_dir`, the content-addressed attachment store |
 | `tuning.rs` | chat/session.go:414-455 | `apply_session_tuning`, gated on the provider tag first; the context window is returned, not pushed through Go's `setWindow` callback; `top_p` replays beside effort and temperature (X-25) |
 
-### the headless loop (formerly `iota-chat`) — `src/chat/`
+### the headless loop (formerly `iota-chat`) — `src/headless/`
 | module | Go |
 |---|---|
 | `mod.rs` | chat/output.go:29-53, chat/agentmode.go (`OutputFormat`, `parse_output_format`, `AgentOptions`) |
@@ -297,7 +297,7 @@ Exact definitions: CONTRACTS.md §2. Summary of the shape decisions:
 - `Message { role, content, reasoning, attachments, tool_calls, tool_call_id, tool_call_name, is_error, raw_content, tools }`. `interrupted` and `usage` are dropped (session-only; no dialect reads them — DIVERGENCES D-11).
 - `Usage { input, output, cache_read, cache_write, total: u64 }` with the Go formulas byte-for-byte.
 - Tool results: `ToolOutput { text, is_error }` (model-facing) vs `ToolError` (hard error rendered `Error calling tool: {e}`).
-- Run report structs live in `chat::report` with struct order = Go struct order = JSON key order; `serde_json::to_writer_pretty` + `"\n"` reproduces `SetEscapeHTML(false)` + `SetIndent("", "  ")` byte-for-byte.
+- Run report structs live in `headless::report` with struct order = Go struct order = JSON key order; `serde_json::to_writer_pretty` + `"\n"` reproduces `SetEscapeHTML(false)` + `SetIndent("", "  ")` byte-for-byte.
 
 ---
 
@@ -342,7 +342,7 @@ Byte-for-byte ports of client.go / sse.go / thinktag.go (CONTRACTS §3.2–§3.3
 - `RunCtx { cancel, budget, ledger }` cloned into every tool call and child; `RunCtx::child()`.
 - `Env { project_root: Option<PathBuf>, dirs: HostDirs, delegate: Option<Arc<dyn Delegator>> }`; `root()` = project_root else `dirs.cwd` else `current_dir()`, then `std::path::absolute`.
 - `Registry` (sorted keys, first-wins names, YAML-1.1 disable rule), `Merged` (live, owner-aware), `DeferDispatcher` (normal/system-tools), `MarkedDispatcher`/`SearchingDispatcher` (reference/tool-search), `resolve_defer_mode(name, ProviderKind, warn)` with the RESOLVED kind (POLICY fix).
-- Approval/parallel: the REFUSAL lives in `chat::QuietHost`; tools only report. Only `glob`/`grep`/`list_dir`/`read_file` (always) and `delegate` (read-only agent) opt into parallel.
+- Approval/parallel: the REFUSAL lives in `headless::QuietHost`; tools only report. Only `glob`/`grep`/`list_dir`/`read_file` (always) and `delegate` (read-only agent) opt into parallel.
 - The delegate cycle `ChatDelegator::run → run_once → execute_with_tools → dyn Dispatcher::call_tool → DelegateTool::call → dyn Delegator::run` crosses two boxed-future boundaries; no `async_recursion`.
 - Interactive-only capabilities (`presentation`, `header_summary`, `deferred_tools`) keep their trait defaults; no built-in implements `header_summary`/`presentation` (DIVERGENCES D-12), `DeferDispatcher`/`MarkedDispatcher` do implement `deferred_tools` (cheap, tested).
 
@@ -375,7 +375,7 @@ Verified API (CONTRACTS §5.0 lists file:line): `ServiceExt::serve(ClientInfo, t
 
 ---
 
-## 8. Headless run loop (`chat`)
+## 8. Headless run loop (`headless`)
 
 `once(cancel, provider: &mut dyn Provider, dispatch: Arc<dyn Dispatcher>, opts: OnceOptions, out: &mut (dyn Write + Send)) -> Result<OnceOutcome, ChatError>` (a `Send` future, awaited via `block_on` only; `OnceOutcome.delta` is the turn's message delta — phase 2 slice 1):
 1. `rec = RunRecorder::start()`, `budget = TurnBudget::new(opts.max_turns)`, `ledger = Arc::new(DelegationLedger::default())`, `cx = RunCtx { cancel, budget, ledger: Some(..) }`.

@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use crate::chat::ChatError;
+use crate::headless::ChatError;
 use crate::llm::LlmError;
 use crate::provider::error::ProviderError;
 use crate::ui::facade::BusyGuard;
@@ -102,7 +102,7 @@ mod tests {
 
     use std::sync::{Arc, Mutex};
 
-    use crate::chat::ChatError;
+    use crate::headless::ChatError;
     use crate::llm::{LlmError, StatusError};
     use crate::provider::error::{PermanentError, ProviderError, WireOp};
     use crate::ui::facade::BusyGuard;

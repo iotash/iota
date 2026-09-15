@@ -8,10 +8,10 @@ use crate::tool::Dispatcher;
 use crate::tool::context::{RunCtx, TurnBudget};
 use tokio_util::sync::CancellationToken;
 
-use crate::chat::error::ChatError;
-use crate::chat::report::write_report;
-use crate::chat::run::{QuietHost, RunRequest, install_tool_searcher, run_once};
-use crate::chat::{AgentOptions, OutputFormat};
+use crate::headless::error::ChatError;
+use crate::headless::report::write_report;
+use crate::headless::run::{QuietHost, RunRequest, install_tool_searcher, run_once};
+use crate::headless::{AgentOptions, OutputFormat};
 
 /// Everything `once` needs beyond the provider and dispatcher.
 pub struct OnceOptions {

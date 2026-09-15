@@ -78,7 +78,7 @@ impl Fixture {
             params: iota::session::LayeredParams::default(),
             layers: iota::cmd::ParamLayers::default(),
             catalog: iota::repl::ModelCatalog::default(),
-            agent: iota::chat::AgentOptions::default(),
+            agent: iota::headless::AgentOptions::default(),
             dark_background: true,
             root_cancel: CancellationToken::new(),
             reqlog: Arc::new(RequestLog::new()),
@@ -977,7 +977,7 @@ async fn overlay_refresh_notices_fire_only_on_change() {
     std::fs::write(root.join("AGENTS.md"), "RULES v1").expect("write AGENTS.md");
     let session = f.session(None);
     let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
-    params.agent = iota::chat::AgentOptions {
+    params.agent = iota::headless::AgentOptions {
         enabled: true,
         root: root.clone(),
         cwd: Some(root.clone()),
@@ -1066,7 +1066,7 @@ async fn persist_warns_and_retries_the_backlog() {
         params: iota::session::LayeredParams::default(),
         layers: iota::cmd::ParamLayers::default(),
         catalog: iota::repl::ModelCatalog::default(),
-        agent: iota::chat::AgentOptions::default(),
+        agent: iota::headless::AgentOptions::default(),
         dark_background: true,
         root_cancel: CancellationToken::new(),
         reqlog: Arc::new(RequestLog::new()),

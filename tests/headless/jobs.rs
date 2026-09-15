@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use iota::chat::{QuietHost, RunRequest, run_once};
+use iota::headless::{QuietHost, RunRequest, run_once};
 use iota::provider::RoundResult;
 use iota::provider::model::{JsonObject, Message, Role, ToolCall};
 use iota::shell::jobs::Jobs;

@@ -3,7 +3,7 @@
 
 use std::io::Write;
 
-/// The two output streams a run writes to. Boxed `Write + Send` so `run`'s future (and `crate::chat::once`, which
+/// The two output streams a run writes to. Boxed `Write + Send` so `run`'s future (and `crate::headless::once`, which
 /// takes `&mut (dyn Write + Send)`) stays `Send`.
 pub struct Streams {
     /// Standard output: the reply, the JSON report, the `-l` listing.

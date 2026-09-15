@@ -31,7 +31,7 @@ const LAYERS: &[&[&str]] = &[
     &["shell", "agents"],
     &["tool"],
     &["mcp", "session", "mathtext"],
-    &["config", "markdown", "chat"],
+    &["config", "markdown", "headless"],
     &["ui"],
     &["host"],
     &["repl"],

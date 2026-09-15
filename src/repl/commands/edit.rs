@@ -12,7 +12,7 @@
 
 use tokio_util::sync::CancellationToken;
 
-use crate::chat::images::{last_generated_images, last_user_message};
+use crate::headless::images::{last_generated_images, last_user_message};
 use crate::repl::editpicker::{
     ImagePreviewer, generated_image_choices, image_choice_details, image_choice_labels,
 };
@@ -144,10 +144,10 @@ pub(crate) fn cmd_redo(repl: &mut Repl, prompt: &str) -> EditOutcome {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     //! The two history helpers `/edit` and `/redo` are built on (`chat/edit_test.go`). They live in
-    //! `chat::images` (headless-safe, no `repl` state) and are exercised here, beside their two
+    //! `headless::images` (headless-safe, no `repl` state) and are exercised here, beside their two
     //! callers, exactly as Go tests them beside `run.go`'s arms.
 
-    use crate::chat::images::{last_generated_images, last_user_message};
+    use crate::headless::images::{last_generated_images, last_user_message};
     use crate::provider::model::{Attachment, Message, Role};
 
     fn att(name: &str, mime: &str, data: &[u8]) -> Attachment {

@@ -346,7 +346,7 @@ pub enum CliError {
     Config(#[from] ConfigError),
     /// The run loop failed (incl. `unknown output format …`).
     #[error(transparent)]
-    Chat(#[from] crate::chat::ChatError),
+    Chat(#[from] crate::headless::ChatError),
     /// SIGINT/SIGTERM cancelled the run (exit 130; DIVERGENCES I-03).
     #[error("interrupted")]
     Interrupted,

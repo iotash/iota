@@ -2,7 +2,7 @@
 //! failure keeps its type all the way up (`ProviderError::Wire`), so classification is a
 //! match on `LlmError`, not a walk of the source chain.
 
-use crate::chat::ChatError;
+use crate::headless::ChatError;
 use crate::llm::{LlmError, StatusError};
 use crate::provider::error::ProviderError;
 use serde_json::Value;
@@ -163,7 +163,7 @@ mod tests {
     //! re-export; moved in-file 2026-09-15).
 
     use super::{ErrorReport, describe_error};
-    use crate::chat::ChatError;
+    use crate::headless::ChatError;
     use crate::llm::{LlmError, StatusError};
     use crate::provider::error::{ProviderError, WireOp};
     use pretty_assertions::assert_eq;

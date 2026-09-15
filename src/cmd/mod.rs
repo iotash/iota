@@ -28,7 +28,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 use std::{path::PathBuf, sync::Arc};
 
 use crate::app::HostDirs;
-use crate::chat::{AgentOptions, OnceOptions, OutputFormat};
+use crate::headless::{AgentOptions, OnceOptions, OutputFormat};
 use crate::llm::reqlog::RequestLog;
 use crate::mcp::config::ServerConfig;
 use crate::provider::ProviderKind;
@@ -146,7 +146,7 @@ pub async fn run(
 /// (`ProviderKind::from_str`, `new_provider`) →
 /// `tuning::apply` → `assemble::build_mcp_configs` → `tuning::warn_tools_without_calling` → cwd/root
 /// (`CliError::Cwd` in agent mode) → `Env` → output format parse
-/// (`crate::chat::parse_output_format` runs HERE, root.go:249-252, so `unknown output format …` loses to every
+/// (`crate::headless::parse_output_format` runs HERE, root.go:249-252, so `unknown output format …` loses to every
 /// earlier provider/tuning/MCP error exactly as in Go) → `OutputFormatWithoutMessage` when the flag
 /// was given and `message.is_none()` →
 /// the root.go:259 branch — the `None` arm IS `interactive::run_interactive` (`TUI_CONTRACTS` §11; a non-TTY
@@ -154,7 +154,7 @@ pub async fn run(
 /// (root.go:284-334 on the `-m` path, DIVERGENCES D-41: resolve the fragment, load the bundle, replay its model
 /// and tuning, re-raise the deferred `ModelRequired`, print the banner) → MCP connect (`connect_mcp`) →
 /// `assemble::build_dispatcher` →
-/// `crate::chat::once` → the turn's delta appended to the resumed bundle on SUCCESS only (D-43) →
+/// `crate::headless::once` → the turn's delta appended to the resumed bundle on SUCCESS only (D-43) →
 /// `Manager::close()` always (also on error/cancel).
 async fn run_agent(
     inv: Invocation,
@@ -198,7 +198,7 @@ async fn run_agent(
     // a quiet fall back to text.
     let format = match settings.output_format_raw.as_deref() {
         None => OutputFormat::Text,
-        Some(s) => crate::chat::parse_output_format(s)?,
+        Some(s) => crate::headless::parse_output_format(s)?,
     };
     if settings.output_format_raw.is_some() && settings.message.is_none() {
         return Err(CliError::OutputFormatWithoutMessage);
@@ -447,7 +447,8 @@ async fn run_headless(
             .unwrap_or_default(),
         jobs: Some(jobs),
     };
-    let outcome = crate::chat::once(cancel, &mut *provider, dispatch, opts, &mut *io.stdout).await;
+    let outcome =
+        crate::headless::once(cancel, &mut *provider, dispatch, opts, &mut *io.stdout).await;
 
     // chat/run.go:221-229, once (DIVERGENCES D-43): a headless run IS exactly one turn, so a SUCCESSFUL one
     // persists its delta in a single batch — one fsync, one meta rewrite. A failed or cancelled run persists
@@ -465,7 +466,7 @@ async fn run_headless(
     // it has to arrive at `main` as `CliError::Interrupted` to become exit 130 rather than a generic 1
     // (DIVERGENCES I-03).
     outcome.map(|_| ()).map_err(|e| match e {
-        crate::chat::ChatError::Interrupted => CliError::Interrupted,
+        crate::headless::ChatError::Interrupted => CliError::Interrupted,
         other => CliError::Chat(other),
     })
 }

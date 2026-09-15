@@ -30,8 +30,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::agents::compose_send_history;
-use crate::chat::ChatError;
-use crate::chat::images::{IMAGE_INDENT_COLS, IMAGE_MAX_COLS, IMAGE_MAX_ROWS, save_image};
+use crate::headless::ChatError;
+use crate::headless::images::{IMAGE_INDENT_COLS, IMAGE_MAX_COLS, IMAGE_MAX_ROWS, save_image};
 use crate::host::{Presenter, State};
 use crate::llm::progress::{TURN_PROGRESS, TurnProgress};
 use crate::markdown::{CodeTheme, RenderOptions, Writer, hyperlink};

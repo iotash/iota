@@ -5,11 +5,11 @@
 
 pub mod agents;
 pub mod app;
-pub mod chat;
 pub mod cmd;
 pub mod color;
 pub(crate) mod config;
 pub mod diag;
+pub mod headless;
 pub mod host;
 pub mod imgterm;
 pub mod llm;

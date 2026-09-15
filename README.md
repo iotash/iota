@@ -927,7 +927,7 @@ One package, one module tree: the library under `src/` holds every module and `s
 | `provider/`, `llm/` | The seven provider adapters (`openai`, `openresponses`, `anthropic`, `gemini`, `vertexai`, `imagen`, `images`) over a minimal built-in HTTP/SSE wire layer — no vendor SDKs |
 | `tool/`, `shell/`, `agents/` | The tool framework and the four built-in toolsets; process execution, the macOS/Linux sandboxes and the background-job registry; the AGENTS.md and skills overlay |
 | `mcp/` | The MCP client manager (stdio and streamable-HTTP transports, deferred tool groups) |
-| `chat/` | The non-interactive run loop (`-m`), the tool-calling loop, and the text/JSON reports |
+| `headless/` | The non-interactive run loop (`-m`), the tool-calling loop, and the text/JSON reports |
 | `session/` | The on-disk session bundle store (`meta.json`, append-only `messages.jsonl`, `attachments/`, `images/`) |
 | `markdown/`, `text/` | The streaming markdown-to-ANSI renderer, syntax highlighting, HTML for `/export`, display-width measurement and ANSI helpers |
 | `mathtext/` | The LaTeX math engine: inline Unicode approximation and 2D display layout |

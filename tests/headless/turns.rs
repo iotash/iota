@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use iota::chat::{ChatError, QuietHost, execute_with_tools};
+use iota::headless::{ChatError, QuietHost, execute_with_tools};
 use iota::provider::model::Message;
 use iota::testing::{FakeProvider, StaticDispatcher};
 use iota::tool::Dispatcher;

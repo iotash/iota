@@ -14,11 +14,11 @@ use crate::provider::{Provider, RoundResult, ToolProvider};
 use crate::tool::Dispatcher;
 use crate::tool::context::{BudgetExt, RunCtx};
 
-use crate::chat::AgentOptions;
-use crate::chat::batch::{parallel_run, run_batch};
-use crate::chat::error::ChatError;
-use crate::chat::images::save_images_for_turn;
-use crate::chat::report::{RunRecorder, tool_names};
+use crate::headless::AgentOptions;
+use crate::headless::batch::{parallel_run, run_batch};
+use crate::headless::error::ChatError;
+use crate::headless::images::save_images_for_turn;
+use crate::headless::report::{RunRecorder, tool_names};
 
 /// A test-injected approval oracle: `(approved, refusal text)` for a tool call and its header detail.
 pub(crate) type Approver = Box<dyn Fn(&ToolCall, &str) -> (bool, String) + Send + Sync>;

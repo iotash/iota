@@ -15,7 +15,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use crate::chat::images::IMAGE_INDENT_COLS;
+use crate::headless::images::IMAGE_INDENT_COLS;
 use crate::repl::group;
 use crate::repl::group::ActivityGroup;
 use crate::repl::styles::{dim, red, truncate_runes};

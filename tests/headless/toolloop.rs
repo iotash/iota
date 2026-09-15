@@ -4,7 +4,7 @@
 
 use std::{path::Path, sync::Arc};
 
-use iota::chat::{ChatError, QuietHost, RunRequest, execute_with_tools, run_once};
+use iota::headless::{ChatError, QuietHost, RunRequest, execute_with_tools, run_once};
 use iota::provider::RoundResult;
 use iota::provider::model::{
     AssistantBody, Attachment, Body, Message, Raw, RawContent, Role, ToolCall,

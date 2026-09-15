@@ -3,8 +3,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use iota::chat::run::refusal_text;
-use iota::chat::{QuietHost, execute_with_tools};
+use iota::headless::run::refusal_text;
+use iota::headless::{QuietHost, execute_with_tools};
 use iota::provider::model::{JsonObject, Message, Role, ToolCall};
 use iota::testing::{FakeProvider, GatedDispatch, Round, lock};
 use iota::tool::Dispatcher;

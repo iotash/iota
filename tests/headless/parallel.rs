@@ -3,8 +3,8 @@
 
 use std::sync::Arc;
 
-use iota::chat::batch::{parallel_run, run_batch};
-use iota::chat::{QuietHost, execute_with_tools};
+use iota::headless::batch::{parallel_run, run_batch};
+use iota::headless::{QuietHost, execute_with_tools};
 use iota::provider::RoundResult;
 use iota::provider::model::{Message, Role};
 use iota::testing::{FakeProvider, NoCapDispatch, ParallelDispatch, tool_call, tool_call_with};
