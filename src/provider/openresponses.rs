@@ -431,13 +431,18 @@ impl OpenResponsesProvider {
         drop(gate);
         let content = split.content;
         let reasoning = think_full + &split.think;
-        if let Some(err) = stream_err
-            && content.is_empty()
-            && reasoning.is_empty()
-            && fn_calls.is_empty()
-        {
-            // Nothing was received: surface the failure. Otherwise the partial result stands.
-            return Err(ProviderError::wire(WireOp::Stream, err));
+        if let Some(err) = stream_err {
+            if content.is_empty() && reasoning.is_empty() && fn_calls.is_empty() {
+                // Nothing was received: surface the failure.
+                return Err(ProviderError::wire(WireOp::Stream, err));
+            }
+            // Otherwise the partial result stands — and the error it stands beside is worth a trace: a terminal
+            // event that failed to DECODE (X-31) leaves the usage at `None` and the run at exit 0, so this is
+            // the only place the failure is visible at all.
+            tracing::warn!(
+                error = %err,
+                "responses stream failed after content had arrived; keeping the partial round"
+            );
         }
 
         if fn_calls.is_empty() {

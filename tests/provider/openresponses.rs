@@ -423,6 +423,28 @@ data: {"type":"response.completed","response":{"status":"completed","usage":{"in
     assert!(out.raw_content.is_none());
 }
 
+/// zenmux's `response.completed` (verbatim): the usage object carries both the responses and the
+/// chat-completions names of every figure. The event must decode — a duplicate-field refusal would have
+/// left the round with `usage: None` and, content having arrived, no error either (DIVERGENCES X-31).
+#[tokio::test]
+async fn a_completed_event_whose_usage_carries_both_namings_reports_its_figures() {
+    const SSE: &str = r#"event: response.output_text.delta
+data: {"type":"response.output_text.delta","item_id":"msg_1","delta":"hi"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":650,"output_tokens":25,"total_tokens":675,"input_tokens_details":{"cached_tokens":0,"web_search":0,"audio_tokens":0,"audio_cached_tokens":0},"output_tokens_details":{"reasoning_tokens":24},"prompt_tokens":650,"completion_tokens":25,"prompt_tokens_details":{"cached_tokens":0,"audio_tokens":0,"audio_cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":24},"web_search":0,"web_search_queries":0,"tool_use":0,"trafficType":"ON_DEMAND"}}}
+"#;
+    let srv = MockServer::start().await;
+    mock_sse(&srv, "POST", "/responses", SSE).await;
+    let p = provider(&srv, "m");
+
+    let (out, _sink) = round(&p, &[Message::user("q")], &[]).await;
+    assert_eq!(out.content, "hi");
+    let usage = out.usage.expect("the terminal event's usage");
+    assert_eq!((usage.input, usage.output, usage.total), (650, 25, 675));
+    assert_eq!(usage.cache_read, 0);
+}
+
 // Go: provider/openresponses_wire_test.go:314
 #[tokio::test]
 async fn test_open_responses_terminal_events() {

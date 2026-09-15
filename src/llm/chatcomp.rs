@@ -173,23 +173,53 @@ pub(crate) struct ChatStreamOptions {
     pub(crate) include_usage: bool,
 }
 
-/// Token usage (`usage`). Chat-completions reports `prompt_tokens`/`completion_tokens`/`prompt_tokens_details`;
-/// the responses dialect reports the same figures as `input_tokens`/`output_tokens`/`input_tokens_details` — one
-/// struct decodes both.
+/// Token usage (`usage`). Chat-completions reports `prompt_tokens`/`completion_tokens`/`prompt_tokens_details`,
+/// the responses dialect the same figures as `input_tokens`/`output_tokens`/`input_tokens_details`, and a compat
+/// endpoint may carry BOTH namings in one object (zenmux — DIVERGENCES X-31). A serde `alias` refuses that as a
+/// duplicate field and loses the whole event it rides in, so the wire object is decoded name by name
+/// (`OpenAiUsageWire`) and folded here: the responses name is the figure, the chat-completions name fills in
+/// when it is absent, and a figure neither reports is 0.
 #[derive(Deserialize, Default, Clone)]
+#[serde(from = "OpenAiUsageWire")]
 pub struct OpenAiUsage {
     /// Prompt (input) tokens, cache hits INCLUDED.
-    #[serde(default, alias = "prompt_tokens")]
     pub input_tokens: u64,
     /// Completion (output) tokens, reasoning tokens included.
-    #[serde(default, alias = "completion_tokens")]
     pub output_tokens: u64,
-    /// Total tokens (compat servers often omit it).
-    #[serde(default)]
+    /// Total tokens (compat servers often omit it; `openai_usage` sums the parts then).
     pub total_tokens: u64,
     /// Cached-token details.
-    #[serde(default, alias = "prompt_tokens_details")]
     pub input_tokens_details: Option<OpenAiTokenDetails>,
+}
+
+/// The `usage` object as the wire carries it: every name of both dialects, each optional, none aliased.
+#[derive(Deserialize, Default)]
+struct OpenAiUsageWire {
+    #[serde(default)]
+    input_tokens: Option<u64>,
+    #[serde(default)]
+    prompt_tokens: Option<u64>,
+    #[serde(default)]
+    output_tokens: Option<u64>,
+    #[serde(default)]
+    completion_tokens: Option<u64>,
+    #[serde(default)]
+    total_tokens: Option<u64>,
+    #[serde(default)]
+    input_tokens_details: Option<OpenAiTokenDetails>,
+    #[serde(default)]
+    prompt_tokens_details: Option<OpenAiTokenDetails>,
+}
+
+impl From<OpenAiUsageWire> for OpenAiUsage {
+    fn from(w: OpenAiUsageWire) -> Self {
+        Self {
+            input_tokens: w.input_tokens.or(w.prompt_tokens).unwrap_or(0),
+            output_tokens: w.output_tokens.or(w.completion_tokens).unwrap_or(0),
+            total_tokens: w.total_tokens.unwrap_or(0),
+            input_tokens_details: w.input_tokens_details.or(w.prompt_tokens_details),
+        }
+    }
 }
 
 /// `prompt_tokens_details` / `input_tokens_details`.
@@ -403,6 +433,64 @@ mod tests {
             serde_json::to_string(&req).unwrap(),
             r#"{"model":"m","messages":[{"role":"user","content":""}],"temperature":0.0,"top_p":0.9,"reasoning_effort":"high","stream":true,"stream_options":{"include_usage":true}}"#
         );
+    }
+
+    /// zenmux's `response.usage`, verbatim: both namings of every figure in one object. An `alias` would have
+    /// refused it as a duplicate field; the fold reads the responses names.
+    #[test]
+    fn a_usage_object_carrying_both_namings_decodes() {
+        let u: OpenAiUsage = serde_json::from_str(
+            r#"{"input_tokens":650,"output_tokens":25,"total_tokens":675,"input_tokens_details":{"cached_tokens":0,"web_search":0,"audio_tokens":0,"audio_cached_tokens":0},"output_tokens_details":{"reasoning_tokens":24},"prompt_tokens":650,"completion_tokens":25,"prompt_tokens_details":{"cached_tokens":0,"audio_tokens":0,"audio_cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":24},"web_search":0,"web_search_queries":0,"tool_use":0,"trafficType":"ON_DEMAND"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (u.input_tokens, u.output_tokens, u.total_tokens),
+            (650, 25, 675)
+        );
+        assert_eq!(u.input_tokens_details.map(|d| d.cached_tokens), Some(0));
+
+        // Where the two namings disagree, the responses name is the figure.
+        let u: OpenAiUsage = serde_json::from_str(
+            r#"{"input_tokens":10,"prompt_tokens":99,"output_tokens":2,"completion_tokens":98,"input_tokens_details":{"cached_tokens":4},"prompt_tokens_details":{"cached_tokens":40}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (u.input_tokens, u.output_tokens, u.total_tokens),
+            (10, 2, 0)
+        );
+        assert_eq!(u.input_tokens_details.map(|d| d.cached_tokens), Some(4));
+    }
+
+    /// The chat-completions object alone: the `prompt_*` names fill every figure.
+    #[test]
+    fn a_chat_completions_usage_object_decodes() {
+        let u: OpenAiUsage = serde_json::from_str(
+            r#"{"prompt_tokens":1200,"completion_tokens":300,"total_tokens":1500,"prompt_tokens_details":{"cached_tokens":400}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (u.input_tokens, u.output_tokens, u.total_tokens),
+            (1200, 300, 1500)
+        );
+        assert_eq!(u.input_tokens_details.map(|d| d.cached_tokens), Some(400));
+    }
+
+    /// The responses object alone; a missing total stays 0 for `openai_usage` to sum, missing details are
+    /// `None`, and an empty object is all zeros.
+    #[test]
+    fn a_responses_usage_object_decodes() {
+        let u: OpenAiUsage = serde_json::from_str(
+            r#"{"input_tokens":11,"output_tokens":7,"input_tokens_details":{"cached_tokens":3}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (u.input_tokens, u.output_tokens, u.total_tokens),
+            (11, 7, 0)
+        );
+        assert_eq!(u.input_tokens_details.map(|d| d.cached_tokens), Some(3));
+        let u: OpenAiUsage = serde_json::from_str("{}").unwrap();
+        assert_eq!((u.input_tokens, u.output_tokens, u.total_tokens), (0, 0, 0));
+        assert!(u.input_tokens_details.is_none());
     }
 
     /// The tools mount carries NO content key; a recorded assistant payload rides through verbatim.
