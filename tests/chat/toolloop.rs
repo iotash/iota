@@ -11,11 +11,11 @@ use iota::provider::model::{
     AssistantBody, Attachment, Body, Message, Raw, RawContent, Role, ToolCall,
 };
 use iota::provider::usage::Usage;
-use iota::testing::{FakeProvider, Round, StaticDispatcher};
+use iota::testing::{FakeProvider, Round, StaticDispatcher, tool_call_with};
 use iota::tool::Dispatcher;
 use pretty_assertions::assert_eq;
 
-use crate::common::{GrowingDispatcher, SearchingToolProvider, call};
+use crate::common::{GrowingDispatcher, call};
 
 #[tokio::test]
 async fn the_tool_loop_stops_at_the_opt_in_cap() {
@@ -106,7 +106,15 @@ async fn the_tool_loop_is_unlimited_by_default() {
 async fn execute_with_tools_refreshes_the_tool_set_every_round() {
     // The Once loop re-queries the dispatcher every round: a tool loaded by a search_tools call must be
     // advertised in the very next request.
-    let tp = SearchingToolProvider::default();
+    // Calls `search_tools` in round 1, answers `done` from round 2 on; the log keeps each round's tool set.
+    let tp = FakeProvider::new()
+        .with_tools()
+        .round(Round::calls(vec![tool_call_with(
+            "c1",
+            "search_tools",
+            &[("query", "late")],
+        )]))
+        .replying("done");
     let dispatch: Arc<GrowingDispatcher> = Arc::new(GrowingDispatcher::default());
     let mut history = vec![Message::user("go")];
     let mut host = QuietHost::new();
@@ -123,7 +131,7 @@ async fn execute_with_tools_refreshes_the_tool_set_every_round() {
     .await
     .expect("loop failed");
     assert_eq!(outcome.content, "done");
-    let seen = tp.seen();
+    let seen = tp.seen_tools();
     assert_eq!(seen.len(), 2, "rounds = {}, want 2", seen.len());
     assert_eq!(seen[0], ["search_tools"]);
     assert!(

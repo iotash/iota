@@ -8,8 +8,6 @@
 //! - [`ParallelDispatch`] — parallel-capable by name or by the `agent` argument; calls meet at a `Barrier` and
 //!   record the peak overlap (`parallelDispatch`);
 //! - [`NoCapDispatch`] — no optional capability at all (`noCapDispatch`);
-//! - [`SearchingToolProvider`] — calls `search_tools` in round 1 and records the tool set each round advertises
-//!   (`searchingToolProvider`);
 //! - [`WritingProvider`] — asks for `write_file` once, then echoes the last history entry (`writingProvider`);
 //! - [`EffortProvider`] — a `Tunable` provider that records the effort it was given.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -261,83 +259,6 @@ impl Dispatcher for NoCapDispatch {
         _args: JsonObject,
     ) -> BoxFuture<'a, ToolResult> {
         Box::pin(async { Ok(ToolOutput::ok("")) })
-    }
-}
-
-/// Calls `search_tools` in round 1 and records the tool set each round advertises.
-#[derive(Default)]
-pub struct SearchingToolProvider {
-    rounds: AtomicUsize,
-    /// The tool names advertised on each call, in order.
-    pub per_round: Mutex<Vec<Vec<String>>>,
-}
-
-impl SearchingToolProvider {
-    /// A snapshot of the per-round tool names.
-    pub fn seen(&self) -> Vec<Vec<String>> {
-        lock(&self.per_round).clone()
-    }
-}
-
-impl Provider for SearchingToolProvider {
-    fn kind(&self) -> ProviderKind {
-        ProviderKind::OpenAi
-    }
-
-    fn model(&self) -> &'static str {
-        "gpt-test"
-    }
-
-    fn set_model(&mut self, _model: String) {}
-
-    fn list_models<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Vec<String>, ProviderError>> {
-        Box::pin(async { Ok(Vec::new()) })
-    }
-
-    fn chat<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        _messages: &'a [Message],
-    ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
-        Box::pin(async {
-            Ok(ChatResult {
-                text: "done".to_owned(),
-                ..ChatResult::default()
-            })
-        })
-    }
-
-    fn as_tool_provider(&self) -> Option<&dyn ToolProvider> {
-        Some(self)
-    }
-}
-
-impl ToolProvider for SearchingToolProvider {
-    fn stream_chat_with_tools<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        _messages: &'a [Message],
-        tools: &'a [ToolDef],
-        sink: &'a mut dyn StreamSink,
-    ) -> BoxFuture<'a, Result<RoundResult, ProviderError>> {
-        Box::pin(async move {
-            sink.reasoning_done();
-            lock(&self.per_round).push(tools.iter().map(|t| t.name.clone()).collect());
-            let round = self.rounds.fetch_add(1, Ordering::SeqCst) + 1;
-            if round == 1 {
-                return Ok(RoundResult {
-                    tool_calls: vec![call_with("c1", "search_tools", &[("query", "late")])],
-                    ..RoundResult::default()
-                });
-            }
-            Ok(RoundResult {
-                content: "done".to_owned(),
-                ..RoundResult::default()
-            })
-        })
     }
 }
 
