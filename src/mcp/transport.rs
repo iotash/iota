@@ -3,11 +3,7 @@
 //! seam the manager routes calls through, and `RmcpSession` is its production implementation over
 //! `Peer::call_tool_once` (never `call_tool`, which drives SEP-2322 MRTR rounds — DIVERGENCES D-33).
 
-use std::{
-    borrow::Cow,
-    sync::{Arc, PoisonError},
-    time::Duration,
-};
+use std::{borrow::Cow, sync::Arc, time::Duration};
 
 use crate::BoxFuture;
 use crate::mcp::config::{ServerConfig, expand_server_config};
@@ -21,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::mcp::error::{MRTR_UNSUPPORTED, McpError, TASK_UNSUPPORTED};
 use crate::mcp::manager::ManagerOptions;
+use crate::sync::lock;
 
 /// Upper bound on one session's close (rmcp: transport close → stdin EOF → 3 s → kill).
 pub(crate) const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -145,10 +142,7 @@ impl StderrCapture {
         if let Some(drain) = self.drain.take() {
             let _ = tokio::time::timeout(STDERR_DRAIN_GRACE, drain).await;
         }
-        self.buf
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        lock(&self.buf).clone()
     }
 }
 
@@ -243,8 +237,6 @@ pub(crate) fn spawn_stdio(
     server_cfg: &ServerConfig,
     stderr_cap: usize,
 ) -> Result<(rmcp::transport::TokioChildProcess, StderrCapture), McpError> {
-    use std::sync::PoisonError;
-
     use tokio::io::AsyncReadExt;
 
     let mut command = tokio::process::Command::new(&server_cfg.command);
@@ -263,7 +255,7 @@ pub(crate) fn spawn_stdio(
                     Ok(0) | Err(_) => break,
                     Ok(n) => n,
                 };
-                let mut captured = sink.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut captured = lock(&sink);
                 let room = stderr_cap.saturating_sub(captured.len());
                 captured.extend_from_slice(&buf[..n.min(room)]);
             }
