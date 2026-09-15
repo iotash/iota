@@ -41,6 +41,7 @@ use crate::markdown::blocks::code::{CodeBlock, code_label};
 use crate::markdown::blocks::list::ListBlock;
 use crate::markdown::blocks::math::{display_open, is_display_close};
 use crate::markdown::blocks::quote::{QuoteBlock, is_quote_line};
+use crate::markdown::blocks::table::{TableBlock, is_table_line};
 use crate::markdown::inline::{highlight_line, is_block_line, is_list_line};
 
 /// Code-highlight theme, chosen by the host's background detect.
@@ -97,36 +98,6 @@ enum Block {
     Quote(QuoteBlock),
     /// Inside a `$$` / `\[` display-math block.
     Math(MathBlock),
-}
-
-/// A table block: the parsed cells of each row and its separator flag
-/// (markdown.go:1291-1313).
-struct TableBlock {
-    rows: Vec<Vec<String>>,
-    seps: Vec<bool>,
-    view: Option<Box<dyn PreviewHandle>>,
-}
-
-impl TableBlock {
-    /// Buffers one table row (parsed cells + separator flag), mirroring the raw line into
-    /// the preview.
-    fn push(&mut self, line: &str) {
-        let cells = parse_table_cells(line);
-        self.seps.push(is_table_separator(&cells));
-        self.rows.push(cells);
-        if let Some(v) = &mut self.view {
-            v.write_raw_line(line);
-        }
-    }
-
-    fn render(mut self, width: usize, color: bool) -> Option<String> {
-        close_view(&mut self.view);
-        if self.rows.is_empty() {
-            return None;
-        }
-        let rendered = blocks::table::render_table(&self.rows, &self.seps, width, color);
-        Some(format!("{rendered}\n"))
-    }
 }
 
 /// A display-math block: the raw source lines between the `$$` / `\[` fences (the
@@ -299,14 +270,8 @@ impl Writer {
             if let Block::Table(table) = &mut self.block {
                 table.push(line);
             } else {
-                let view = self.open_preview("rendering table…");
-                let mut table = TableBlock {
-                    rows: Vec::new(),
-                    seps: Vec::new(),
-                    view,
-                };
-                table.push(line);
-                self.block = Block::Table(table);
+                let view = self.open_preview(TableBlock::LABEL);
+                self.block = Block::Table(TableBlock::open(line, view));
             }
             return;
         }
@@ -451,90 +416,6 @@ impl Writer {
     }
 }
 
-/// isTableLine twin: the trimmed line starts with `'|'`.
-pub(crate) fn is_table_line(line: &str) -> bool {
-    line.trim().starts_with('|')
-}
-
-/// parseTableCells twin (markdown.go:1291-1313): strip one leading and one trailing
-/// `|`, split on `|`; per cell replace `\t` with one space (three rulers disagreed on
-/// tabs), strip variation selectors (VS16/VS15 — cursor-advance ambiguity; flags and
-/// ZWJ sequences deliberately kept), trim.
-pub(crate) fn parse_table_cells(line: &str) -> Vec<String> {
-    let mut t = line.trim();
-    t = t.strip_prefix('|').unwrap_or(t);
-    t = t.strip_suffix('|').unwrap_or(t);
-    t.split('|')
-        .map(|p| {
-            strip_variation_selectors(&p.replace('\t', " "))
-                .trim()
-                .to_owned()
-        })
-        .collect()
-}
-
-/// stripVariationSelectors twin: drops U+FE0F/U+FE0E so bordered layouts stay aligned
-/// on every terminal (only the bare base rune advances consistently everywhere).
-pub(crate) fn strip_variation_selectors(s: &str) -> String {
-    if !s.contains(['\u{FE0F}', '\u{FE0E}']) {
-        return s.to_owned();
-    }
-    s.chars()
-        .filter(|r| *r != '\u{FE0F}' && *r != '\u{FE0E}')
-        .collect()
-}
-
-/// isTableSeparator twin: every cell matches `^:?-+:?$` (alignment colons parsed but
-/// IGNORED).
-pub(crate) fn is_table_separator(cells: &[String]) -> bool {
-    !cells.is_empty() && cells.iter().all(|c| sep_cell(c))
-}
-
-fn sep_cell(c: &str) -> bool {
-    let b = c.as_bytes();
-    let mut i = usize::from(b.first() == Some(&b':'));
-    let dash_start = i;
-    while i < b.len() && b[i] == b'-' {
-        i += 1;
-    }
-    if i == dash_start {
-        return false;
-    }
-    if i < b.len() && b[i] == b':' {
-        i += 1;
-    }
-    i == b.len()
-}
-
-/// splitBR twin — Go `(?i)<br\s*/?>`: splits a cell into multi-line segments.
-pub(crate) fn split_br(s: &str) -> Vec<String> {
-    let b = s.as_bytes();
-    let mut parts = Vec::new();
-    let mut seg_start = 0;
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'<' && i + 2 < b.len() && (b[i + 1] | 0x20) == b'b' && (b[i + 2] | 0x20) == b'r'
-        {
-            let mut j = i + 3;
-            while j < b.len() && matches!(b[j], b' ' | b'\t' | b'\n' | b'\x0c' | b'\r') {
-                j += 1;
-            }
-            if j < b.len() && b[j] == b'/' {
-                j += 1;
-            }
-            if j < b.len() && b[j] == b'>' {
-                parts.push(s[seg_start..i].to_owned());
-                i = j + 1;
-                seg_start = i;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    parts.push(s[seg_start..].to_owned());
-    parts
-}
-
 /// plainSink shape over `io::Write` (fixed width, no previews; write errors ignored —
 /// T-07: the Sink is infallible because facade commits are fire-and-forget).
 struct PlainSink {
@@ -569,44 +450,4 @@ pub fn new_writer_to(w: Box<dyn std::io::Write + Send>, width: usize) -> Writer 
             code_theme: CodeTheme::Monokai,
         },
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{is_table_separator, parse_table_cells, split_br};
-
-    // Hand-parser pins for Go's tableSepRe `^:?-+:?$` (markdown spec §regexes).
-    #[test]
-    fn table_separator_pins() {
-        let cells = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
-        assert!(is_table_separator(&cells(&[
-            "---", "-", ":--:", ":-", "-:"
-        ])));
-        assert!(!is_table_separator(&cells(&["---", ""])));
-        assert!(!is_table_separator(&cells(&["::"])));
-        assert!(!is_table_separator(&cells(&["x--"])));
-        assert!(!is_table_separator(&cells(&["--x"])));
-        assert!(!is_table_separator(&[]));
-    }
-
-    // Hand-parser pins for Go's brRe `(?i)<br\s*/?>`.
-    #[test]
-    fn split_br_pins() {
-        assert_eq!(split_br("a<br>b"), ["a", "b"]);
-        assert_eq!(split_br("a<BR/>b"), ["a", "b"]);
-        assert_eq!(split_br("a<br />b"), ["a", "b"]);
-        assert_eq!(split_br("a<Br\t/>b"), ["a", "b"]);
-        assert_eq!(split_br("a<brx>b"), ["a<brx>b"]);
-        assert_eq!(split_br("a<b>r</b>"), ["a<b>r</b>"]);
-        assert_eq!(split_br("plain"), ["plain"]);
-    }
-
-    // Go: internal/markdown/markdown.go:1291-1313.
-    #[test]
-    fn parse_table_cells_pins() {
-        assert_eq!(parse_table_cells("| a | b |"), ["a", "b"]);
-        assert_eq!(parse_table_cells("|a|b"), ["a", "b"]);
-        assert_eq!(parse_table_cells("| a\tb |"), ["a b"]);
-        assert_eq!(parse_table_cells("| \u{2696}\u{FE0F} c |"), ["\u{2696} c"]);
-    }
 }

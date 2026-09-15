@@ -5,10 +5,11 @@
 //! sublists under their preceding item, loose lists joined with a blank between
 //! top-level blocks, task glyphs served as recorded (`TUI_DESIGN` §7).
 
+use crate::markdown::PreviewHandle;
 use crate::markdown::blocks::close_view;
 use crate::markdown::blocks::math::display_open;
+use crate::markdown::blocks::table::is_table_line;
 use crate::markdown::inline::{DIM, highlight_inline, is_list_line, split_list_marker};
-use crate::markdown::{PreviewHandle, is_table_line};
 use crate::text::width::str_width;
 
 /// One parsed item of a buffering list block (Go listItem). Parsed by [`ListBlock`];
