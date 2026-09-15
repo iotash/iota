@@ -7,7 +7,7 @@ pub(crate) mod mode;
 use std::{
     collections::HashSet,
     fmt::Write as _,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 use crate::BoxFuture;
@@ -217,7 +217,7 @@ impl DeferDispatcher {
     }
 
     fn lock(&self) -> MutexGuard<'_, LoadState> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        crate::sync::lock(&self.state)
     }
 
     /// Snapshots `inner.tools()` and buckets the deferred groups' tools; the remainder

@@ -1,9 +1,10 @@
 //! Run context: `RunCtx`, the explicit struct carrying the cancellation token and the run-wide
 //! `TurnBudget` into every tool call and child run.
 
+use crate::sync::lock;
 use std::num::NonZeroU32;
 use std::sync::{
-    Arc, Mutex, PoisonError,
+    Arc, Mutex,
     atomic::{AtomicU32, Ordering},
 };
 
@@ -106,12 +107,12 @@ pub struct ArtifactSlot(Arc<Mutex<Option<crate::tool::Artifact>>>);
 impl ArtifactSlot {
     /// Stores `a`, replacing any earlier post (last post wins).
     pub fn post(&self, a: crate::tool::Artifact) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(a);
+        *lock(&self.0) = Some(a);
     }
 
     /// Drains the slot.
     pub fn take(&self) -> Option<crate::tool::Artifact> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).take()
+        lock(&self.0).take()
     }
 }
 

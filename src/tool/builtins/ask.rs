@@ -327,7 +327,8 @@ fn format_choose(spec: &AskSpec, res: &AskResult) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex, PoisonError};
+    use crate::sync::lock;
+    use std::sync::{Arc, Mutex};
 
     use crate::BoxFuture;
     use crate::provider::model::JsonObject;
@@ -346,17 +347,14 @@ mod tests {
 
     impl Interactor for FakeInteractor {
         fn ask<'a>(&'a self, _cx: &'a RunCtx, spec: AskSpec) -> BoxFuture<'a, AskResult> {
-            *self.spec.lock().unwrap_or_else(PoisonError::into_inner) = spec;
+            *lock(&self.spec) = spec;
             Box::pin(std::future::ready(self.res.clone()))
         }
     }
 
     impl FakeInteractor {
         fn seen(&self) -> AskSpec {
-            self.spec
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .clone()
+            lock(&self.spec).clone()
         }
     }
 

@@ -8,7 +8,7 @@ pub(crate) mod walk;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, Mutex},
     time::SystemTime,
 };
 
@@ -16,6 +16,7 @@ use crate::app::paths;
 use crate::tool::{Tool, ToolEnv, ToolOutput};
 use serde::Deserialize;
 
+use crate::sync::lock;
 use crate::tool::sets::{RawNode, SetError};
 use crate::tool::yaml11;
 
@@ -135,21 +136,13 @@ impl CodeSet {
         let Ok(mtime) = meta.modified() else {
             return;
         };
-        self.reads
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(abs.to_path_buf(), mtime);
+        lock(&self.reads).insert(abs.to_path_buf(), mtime);
     }
 
     /// `{d} has not been read in this session — read it with read_file before modifying it` / `cannot access {d}:
     /// {e}` / `{d} changed on disk after it was read — read it again before modifying it`.
     pub(crate) fn require_fresh_read(&self, abs: &Path) -> Result<(), ToolOutput> {
-        let stamp = self
-            .reads
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(abs)
-            .copied();
+        let stamp = lock(&self.reads).get(abs).copied();
         let Some(stamp) = stamp else {
             return Err(ToolOutput::err(format!(
                 "{} has not been read in this session — read it with read_file before modifying it",
