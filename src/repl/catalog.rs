@@ -27,6 +27,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::app::env::Env;
 use crate::config::{Config, ModelRef, Resolved};
+use crate::provider::error::{ProviderError, UnknownProviderType};
 use crate::provider::{HttpTransport, Provider, ProviderKind, ProviderParams, new_provider};
 use crate::ui::facade::Ui;
 
@@ -73,12 +74,25 @@ pub(crate) enum Pick {
     Elsewhere(String, String),
 }
 
+/// Why one wildcard endpoint has no listing: it could not be built, or it refused to list. The
+/// note the picker shows is the failure's own first line.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ListError {
+    /// The `type:` is not one this build knows.
+    #[error(transparent)]
+    UnknownType(UnknownProviderType),
+    /// The constructor or the listing call refused.
+    #[error(transparent)]
+    Provider(ProviderError),
+}
+
 /// One wildcard source: the endpoint to ask, or why it cannot be asked at all.
 enum Source {
     /// A constructed provider, used for `list_models` alone.
     Live(Arc<dyn Provider>),
-    /// The endpoint could not be built (an unknown `type:`); the message is the note.
-    Broken(String),
+    /// The endpoint could not be built (an unknown `type:`, a constructor refusal); the
+    /// failure is the note. Shared, because every fetch reports it again.
+    Broken(Arc<ListError>),
     /// The session's own provider: the caller passes the LIVE one in, so the picker asks the
     /// instance the chat is actually running on rather than a second copy of it.
     Session,
@@ -225,7 +239,7 @@ impl ModelCatalog {
                         })
                         .collect();
                 }
-                Some(Err(e)) => out.notes.push(note(&self.session, e)),
+                Some(Err(e)) => out.notes.push(note(&self.session, &e.to_string())),
                 None => {}
             }
             return out;
@@ -278,7 +292,7 @@ impl ModelCatalog {
                         }
                     }
                     Some(Err(e)) => {
-                        let failure = note(provider, e);
+                        let failure = note(provider, &e.to_string());
                         if !out.notes.contains(&failure) {
                             out.notes.push(failure);
                         }
@@ -301,8 +315,8 @@ impl ModelCatalog {
         ui: &Arc<dyn Ui>,
         live: &dyn Provider,
         parent: &CancellationToken,
-    ) -> (BTreeMap<String, Result<Vec<String>, String>>, bool) {
-        let mut out: BTreeMap<String, Result<Vec<String>, String>> = BTreeMap::new();
+    ) -> (BTreeMap<String, Result<Vec<String>, Arc<ListError>>>, bool) {
+        let mut out: BTreeMap<String, Result<Vec<String>, Arc<ListError>>> = BTreeMap::new();
         let mut ask: Vec<(&str, &dyn Provider)> = Vec::new();
         if self.refs.is_empty() {
             ask.push((self.session.as_str(), live));
@@ -312,7 +326,7 @@ impl ModelCatalog {
                 Source::Session => ask.push((name, live)),
                 Source::Live(p) => ask.push((name, &**p)),
                 Source::Broken(e) => {
-                    out.insert(name.clone(), Err(e.clone()));
+                    out.insert(name.clone(), Err(Arc::clone(e)));
                 }
             }
         }
@@ -333,7 +347,10 @@ impl ModelCatalog {
         let cancelled = child.is_cancelled() && !parent.is_cancelled();
         child.cancel();
         for (name, res) in answers {
-            out.insert(name.to_owned(), res.map_err(|e| e.to_string()));
+            out.insert(
+                name.to_owned(),
+                res.map_err(|e| Arc::new(ListError::Provider(e))),
+            );
         }
         (out, cancelled)
     }
@@ -365,7 +382,7 @@ fn build_source(cfg: &Config, name: &str, env: &Env, http: &HttpTransport) -> So
     let endpoint = cfg.provider(name);
     let kind: ProviderKind = match endpoint.kind.parse() {
         Ok(kind) => kind,
-        Err(e) => return Source::Broken(e.to_string()),
+        Err(e) => return Source::Broken(Arc::new(ListError::UnknownType(e))),
     };
     // No key is an endpoint that lists with an empty one: its refusal is the source's note.
     let api_key = endpoint.api_key(env);
@@ -380,7 +397,7 @@ fn build_source(cfg: &Config, name: &str, env: &Env, http: &HttpTransport) -> So
         Some(http.clone()),
     ) {
         Ok(p) => Source::Live(Arc::from(p)),
-        Err(e) => Source::Broken(e.to_string()),
+        Err(e) => Source::Broken(Arc::new(ListError::Provider(e))),
     }
 }
 
@@ -397,8 +414,9 @@ fn note(provider: &str, e: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Candidate, ModelCatalog, Pick, Source, busy_label};
+    use super::{Candidate, ListError, ModelCatalog, Pick, Source, busy_label};
     use crate::config::{ModelConfig, ModelRef};
+    use crate::provider::error::UnknownProviderType;
     use crate::testing::{FakeProvider, ScriptedUi};
     use crate::ui::facade::Ui;
     use std::collections::BTreeMap;
@@ -572,13 +590,23 @@ mod tests {
             vec![wildcard("relay"), wildcard("weird")],
             vec![
                 ("relay", Source::Live(Arc::new(lister(&["a"])))),
-                ("weird", Source::Broken("unknown provider type".to_owned())),
+                (
+                    "weird",
+                    Source::Broken(Arc::new(ListError::UnknownType(UnknownProviderType(
+                        "weird".to_owned(),
+                    )))),
+                ),
             ],
         );
         let live = lister(&[]);
         let got = cat.expand(&ui(), &live, &CancellationToken::new()).await;
         assert_eq!(got.rows.len(), 1);
-        assert_eq!(got.notes, ["weird: unknown provider type"]);
+        assert_eq!(
+            got.notes,
+            [
+                "weird: unknown provider type: weird (supported: openai, anthropic, gemini, vertexai, openresponses, imagen, images)"
+            ]
+        );
     }
 
     /// Three wildcards are asked at once: the wall clock is the SLOWEST source, not their sum.
