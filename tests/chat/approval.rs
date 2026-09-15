@@ -1,16 +1,44 @@
 //! The approval gate of the quiet loop (`chat/approval_test.go`): refusal with nobody to ask, forwarding to an
 //! injected approver, and the shape of `QuietHost::ask_approval`.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::{Arc, Mutex};
 
 use iota::chat::run::refusal_text;
 use iota::chat::turns::RunCtx;
 use iota::chat::{QuietHost, execute_with_tools};
-use iota::provider::model::{Message, Role, ToolCall};
+use iota::provider::model::{JsonObject, Message, Role, ToolCall};
+use iota::testing::{FakeProvider, Round, lock};
 use iota::tool::Dispatcher;
 
-use crate::common::{GatedDispatch, WritingProvider, lock};
+use crate::common::GatedDispatch;
+
+/// Asks for `write_file` (with `args`) once, then answers `saw: ` + the last history entry's content — so a
+/// test can assert on what the model was actually told.
+fn writing(args: JsonObject) -> FakeProvider {
+    FakeProvider::new()
+        .with_tools()
+        .answering(move |n, messages| {
+            if n == 1 {
+                return Round::calls(vec![ToolCall {
+                    id: "c1".to_owned(),
+                    name: "write_file".to_owned(),
+                    arguments: args.clone(),
+                }]);
+            }
+            let last = messages
+                .last()
+                .map(|m| m.content.as_str())
+                .unwrap_or_default();
+            Round::reply(&format!("saw: {last}"))
+        })
+}
+
+/// The `write_file` call names the file it would write.
+fn writing_path(path: &str) -> FakeProvider {
+    let mut args = JsonObject::new();
+    args.insert("path".to_owned(), serde_json::Value::from(path));
+    writing(args)
+}
 
 /// Runs the gated round trip: `write_file` requested once, then the model echoes the last history entry.
 async fn run_gated(host: &mut QuietHost) -> (String, Arc<GatedDispatch>, Vec<Message>) {
@@ -18,7 +46,7 @@ async fn run_gated(host: &mut QuietHost) -> (String, Arc<GatedDispatch>, Vec<Mes
     let mut history = vec![Message::user("go")];
     let outcome = execute_with_tools(
         &RunCtx::default(),
-        &WritingProvider::default(),
+        &writing(JsonObject::new()),
         d.clone(),
         &mut history,
         d.tools(),
@@ -31,9 +59,8 @@ async fn run_gated(host: &mut QuietHost) -> (String, Arc<GatedDispatch>, Vec<Mes
     (outcome.content, d, history)
 }
 
-// Go: chat/approval_test.go:53
 #[tokio::test]
-async fn test_quiet_loop_refuses_when_there_is_nobody_to_ask() {
+async fn the_quiet_loop_refuses_when_there_is_nobody_to_ask() {
     // With nobody to ask, the loop refuses and says how to enable the call. That is the -m contract.
     let mut host = QuietHost::new();
     let (reply, d, history) = run_gated(&mut host).await;
@@ -53,9 +80,8 @@ async fn test_quiet_loop_refuses_when_there_is_nobody_to_ask() {
     assert_eq!(host.rec.round_count(), 2);
 }
 
-// Go: chat/approval_test.go:68
 #[tokio::test]
-async fn test_quiet_loop_forwards_approval() {
+async fn the_quiet_loop_forwards_approval_to_the_injected_approver() {
     // A headless loop has no user of its own, so an injected approver is what decides a gated call: the
     // question travels up and the answer decides it.
     let asked: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
@@ -83,9 +109,8 @@ async fn test_quiet_loop_forwards_approval() {
     assert!(!history[2].is_error());
 }
 
-// Go: chat/approval_test.go:92
 #[tokio::test]
-async fn test_quiet_loop_denial_continues_the_run() {
+async fn a_denied_call_does_not_end_the_run() {
     // A denial is a result the model reads, not an aborted turn: the child carries on and reports back.
     let mut host = QuietHost {
         approve: Some(Box::new(|_tc: &ToolCall, _detail: &str| {
@@ -103,9 +128,8 @@ async fn test_quiet_loop_denial_continues_the_run() {
     assert!(history[2].is_error());
 }
 
-// Go: chat/approval_test.go:111
 #[test]
-fn test_quiet_host_ask_approval_shapes() {
+fn the_quiet_host_answers_approval_from_its_approver_or_refuses() {
     // The refusal text is the call's result either way, so a failing prompt must not be mistaken for consent.
     let h = QuietHost::new();
     let tc = ToolCall {
@@ -147,12 +171,11 @@ fn test_quiet_host_ask_approval_shapes() {
     );
 }
 
-// Go: chat/approval_test.go:138 TestForwardedApprovalCarriesTheCallDetail — the prompt has to say
-// what the call is ABOUT: a gate naming only the tool asks the user to authorize "write_file"
+// The forwarded prompt has to say what the call is ABOUT: a gate naming only the tool asks the user to authorize "write_file"
 // without saying which file. (Portable since T-30 gave the built-in code/shell sets real
 // `header_summary` capabilities — D-12 is closed.)
 #[tokio::test]
-async fn test_forwarded_approval_carries_the_call_detail() {
+async fn a_forwarded_approval_carries_the_call_detail() {
     let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&seen);
     let mut host = QuietHost {
@@ -166,7 +189,7 @@ async fn test_forwarded_approval_carries_the_call_detail() {
     let mut history = vec![Message::user("go")];
     execute_with_tools(
         &RunCtx::default(),
-        &WritingProvider::with_path("internal/ui/model.go"),
+        &writing_path("internal/ui/model.go"),
         d.clone(),
         &mut history,
         d.tools(),
@@ -194,10 +217,9 @@ mod header_split {
         call_with("c1", name, args)
     }
 
-    // Go: chat/approval_test.go:171 TestToolCallHeaderUnchangedBySplit — the header keeps its shape
-    // after the detail was split out of it.
+    // The header keeps its shape after the detail was split out of it.
     #[test]
-    fn test_tool_call_header_unchanged_by_split() {
+    fn the_tool_call_header_is_unchanged_by_the_detail_split() {
         let detail = GatedDispatch::with_header();
         let tc = call("write_file", &[("path", "a/b.go")]);
         assert_eq!(
