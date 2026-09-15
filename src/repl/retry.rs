@@ -95,7 +95,7 @@ pub(crate) fn is_retryable(err: &ChatError) -> bool {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     //! `is_retryable`'s table, and `retry_round` itself (formerly `tests/repl/turn.rs`, reached through a
-    //! `#[doc(hidden)]` re-export; moved in-file 2026-09-15). The backoff is a const, so the retry tests
+    //! hidden `pub use` re-export; moved in-file 2026-09-15). The backoff is a const, so the retry tests
     //! compress TIME instead: tokio's paused clock advances a pending `sleep` the moment the runtime goes
     //! idle. The interrupt case needs no clock at all — a cancelled token beats the timer by construction
     //! (`biased` select).

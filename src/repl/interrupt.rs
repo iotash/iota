@@ -76,7 +76,7 @@ pub fn finalize_interrupt(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     //! `finalize_interrupt` — the three-state persistence table (formerly `tests/repl/interrupt.rs`, reached
-    //! through a `#[doc(hidden)]` re-export; moved in-file 2026-09-15).
+    //! through a hidden `pub use` re-export; moved in-file 2026-09-15).
 
     use super::{InterruptDecision, finalize_interrupt};
     use crate::provider::model::{

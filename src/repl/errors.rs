@@ -159,7 +159,7 @@ fn non_empty_lines(s: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-    //! `describe_error` classification (formerly `tests/repl/errors.rs`, reached through a `#[doc(hidden)]`
+    //! `describe_error` classification (formerly `tests/repl/errors.rs`, reached through a hidden `pub use`
     //! re-export; moved in-file 2026-09-15).
 
     use super::{ErrorReport, describe_error};

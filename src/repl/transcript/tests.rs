@@ -4,7 +4,7 @@
 //! pins (`TUI_CONTRACTS` §9), rebuilt locally the way the tests rebuild them from the style API.
 //!
 //! The transcript is crate-private by design, so these tests live in-file (formerly a `tests/repl/compose.rs`
-//! reached through a `#[doc(hidden)]` re-export; moved 2026-09-15).
+//! reached through a hidden `pub use` re-export; moved 2026-09-15).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

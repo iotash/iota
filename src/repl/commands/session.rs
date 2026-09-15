@@ -228,11 +228,10 @@ mod tests {
         }
     }
 
-    // Go: chat/session_test.go TestSessionLabelFlattensStoredTitle — a label never spans
-    // rows: a legacy stored newline is flattened on read, because one row per session is
-    // what the picker's cursor arithmetic assumes.
+    // A label never spans rows: a legacy stored newline is flattened on read, because one row per
+    // session is what the picker's cursor arithmetic assumes.
     #[test]
-    fn test_session_label_flattens_stored_title() {
+    fn a_session_label_never_spans_rows() {
         assert_eq!(
             session_label(&info("first line\nsecond line"), None),
             "first line second line · gpt-4o · unknown · 4 msgs"
@@ -250,6 +249,25 @@ mod tests {
             session_label(&info("a chat"), Some("")),
             "a chat · gpt-4o · unknown · 4 msgs",
             "an empty hint adds nothing"
+        );
+    }
+
+    /// The picker's row for a bucketed listing carries the project hint (`TUI_CONTRACTS` §7: the suffix
+    /// comes from the LISTING, not from `SessionInfo`). Formerly `tests/repl/commands.rs`, through a
+    /// hidden `pub use` re-export.
+    #[test]
+    fn session_label_carries_the_bucket_hint() {
+        let info = SessionInfo {
+            id: "k7qz3xv9m2ht".to_owned(),
+            title: "a chat".to_owned(),
+            model: "gpt-4o".to_owned(),
+            provider: "openai".to_owned(),
+            updated_at: None,
+            message_count: 7,
+        };
+        assert_eq!(
+            session_label(&info, Some("my-app")),
+            "a chat · gpt-4o · unknown · 7 msgs [my-app]"
         );
     }
 

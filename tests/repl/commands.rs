@@ -14,7 +14,7 @@ use iota::host::Presenter;
 use iota::llm::reqlog::RequestLog;
 use iota::provider::ProviderKind;
 use iota::provider::model::Message;
-use iota::repl::{McpEvent, McpHooks, RunParams, SessionCtx, session_label};
+use iota::repl::{McpEvent, McpHooks, RunParams, SessionCtx};
 use iota::session::{SessionStore, SessionWriter};
 use iota::testing::{FakeProvider, Reply, ScriptedUi, StaticDispatcher, TabbedSummary, UiEvent};
 use iota::text::ansi::strip_sgr;
@@ -916,24 +916,6 @@ fn deleting_a_bucketed_session_removes_its_bundle() {
     // Path-escaping ids are refused before the locator ever runs.
     let err = store.delete("../etc").expect_err("escaping id");
     assert_eq!(err.to_string(), "invalid session id \"../etc\"");
-}
-
-/// The picker's row for a bucketed listing carries the project hint (`TUI_CONTRACTS` §7:
-/// the suffix comes from the LISTING, not from `SessionInfo`).
-#[test]
-fn session_label_carries_the_bucket_hint() {
-    let info = iota::session::SessionInfo {
-        id: "k7qz3xv9m2ht".to_owned(),
-        title: "a chat".to_owned(),
-        model: "gpt-4o".to_owned(),
-        provider: "openai".to_owned(),
-        updated_at: None,
-        message_count: 7,
-    };
-    assert_eq!(
-        session_label(&info, Some("my-app")),
-        "a chat · gpt-4o · unknown · 7 msgs [my-app]"
-    );
 }
 
 // ---------------------------------------------------------------------------

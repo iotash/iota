@@ -39,11 +39,8 @@ pub use catalog::ModelCatalog;
 pub(crate) use interact::Interactor;
 pub use run::{McpEvent, McpHooks, RunParams, SessionCtx, SessionFactory, run};
 
-// Loop-internal seams, crate-public for tests (TUI_CONTRACTS §7 "frozen for testability").
-#[doc(hidden)]
-pub use commands::session::session_label;
-#[doc(hidden)]
-pub use title::is_read_only_viewer;
+// Loop internals the command layer reads.
+pub(crate) use commands::session::session_label;
 
 /// Why the interactive loop failed (loop errors never exit — only these do).
 #[derive(Debug, thiserror::Error)]

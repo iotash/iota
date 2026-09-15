@@ -213,7 +213,7 @@ pub fn render_diff(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     //! The parser units and the `render_diff` goldens (the latter formerly `tests/repl/diff.rs`, reached
-    //! through a `#[doc(hidden)]` re-export; moved in-file 2026-09-15).
+    //! through a hidden `pub use` re-export; moved in-file 2026-09-15).
 
     use super::{diff_lang, highlight_diff_line, parse_diff_rows, render_diff};
     use crate::repl::styles::diff_code_theme;

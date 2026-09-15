@@ -13,7 +13,7 @@ pub type ToolsConfig = BTreeMap<String, RawNode>;
 /// Must succeed on `None`/`Null` (defaults). May return `Ok(vec![])` ("contributes no tools").
 pub(crate) type SetFactory = fn(&Env, Option<&RawNode>) -> Result<Vec<Arc<dyn Tool>>, SetError>;
 /// The four built-in set names (tool/tool.go:329-341).
-pub const SET_NAMES: [&str; 4] = ["shell", SKILLS_SET, "code", "ask"];
+pub(crate) const SET_NAMES: [&str; 4] = ["shell", SKILLS_SET, "code", "ask"];
 
 /// The skills set — `load_skill` alone. It was called `agent` until the three-layer split, where the word
 /// `agent` became the name of a config layer and could no longer also mean a toolset (brain page
@@ -53,4 +53,19 @@ pub enum SetError {
         "read_only and auto_write contradict each other: auto_write approves writes the set does not offer"
     )]
     CodeContradiction,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SET_NAMES, set_factory};
+
+    /// Every built-in set name resolves to its factory (the config surface is exactly these names), and an
+    /// unknown name resolves to nothing. Formerly `tests/tool/framework.rs`.
+    #[test]
+    fn every_built_in_set_has_a_factory() {
+        for name in SET_NAMES {
+            assert!(set_factory(name).is_some(), "{name} must have a factory");
+        }
+        assert!(set_factory("nope").is_none());
+    }
 }

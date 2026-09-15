@@ -960,19 +960,6 @@ fn shell_set_registers_the_resolved_interpreter_on_windows() {
     );
 }
 
-// tool/tool.go:329-341: every built-in set name resolves to its factory (the config surface is exactly the five
-// names), and an unknown name resolves to nothing.
-#[test]
-fn every_built_in_set_has_a_factory() {
-    for name in iota::tool::sets::SET_NAMES {
-        assert!(
-            iota::tool::sets::set_factory(name).is_some(),
-            "{name} must have a factory"
-        );
-    }
-    assert!(iota::tool::sets::set_factory("nope").is_none());
-}
-
 /// A part with the Owner capability that advertises `name` but disowns it (`Some(false)`), or owns a hidden
 /// `name` (`Some(true)`) — the three-way `owns` Merge routes by (tool/tool.go:572-587).
 struct Owning {

@@ -329,7 +329,7 @@ impl Manager {
     /// The duplicate used to be a `tracing::warn!` — which no subscriber received and which `release_max_level_off`
     /// compiled out of the shipped binary, so no user ever saw it (DIVERGENCES X-29). Warnings meant for the user
     /// travel in the status now; `tracing` is the developer's diagnostic channel (`IOTA_LOG`).
-    pub fn merge_result(&self, idx: usize, r: ServerResult) -> ServerStatus {
+    pub(crate) fn merge_result(&self, idx: usize, r: ServerResult) -> ServerStatus {
         let mut st = self.state.write().unwrap_or_else(PoisonError::into_inner);
         let status = match r {
             ServerResult::Failed(mut status) => {
