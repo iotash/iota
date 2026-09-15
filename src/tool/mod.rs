@@ -1,4 +1,4 @@
-//! Tool and dispatcher contracts (tool/tool.go:33-330): `ToolOutput`, `Presentation`, `DeferState`, the `Tool`
+//! Tool and dispatcher contracts: `ToolOutput`, `Presentation`, `DeferState`, the `Tool`
 //! and `Dispatcher` traits with their optional capabilities, the `PrefixOf` oracle and the toolset `ToolEnv` —
 //! plus, in the submodules, the run context every call takes (`context`), the answer to a gated call
 //! (`approval`), the tool framework (`dispatch`,
@@ -59,7 +59,7 @@ impl ToolOutput {
 /// Outcome of a tool call: a model-facing `ToolOutput`, or a hard `ToolError`.
 pub type ToolResult = Result<ToolOutput, ToolError>;
 
-/// Prefix of a hard tool failure as the model sees it (chat.go:367, parallel.go:119).
+/// Prefix of a hard tool failure as the model sees it.
 pub const TOOL_ERROR_PREFIX: &str = "Error calling tool: ";
 
 /// What the model reads back from one call: the output's text and error flag, or — when the call
@@ -138,7 +138,7 @@ pub trait Tool: Send + Sync {
     fn presentation(&self) -> Presentation {
         Presentation::Group
     }
-    /// Per-CALL answer; `None` = Go nil args (`readOnlyRegistry` probe).
+    /// Per-CALL answer; `None` is the argument-less probe (a registry asking about the tool, not a call).
     fn supports_parallel(&self, _args: Option<&JsonObject>) -> bool {
         false
     }
@@ -212,7 +212,7 @@ pub trait Dispatcher: Send + Sync {
 /// per call. Produced by `crate::mcp::Manager::prefix_of`, consumed by `crate::tool::defer`.
 pub type PrefixOf = Arc<dyn Fn(&str) -> String + Send + Sync>;
 
-// ---- the ask seam (tool/tool.go:290-326 shapes; TUI_CONTRACTS §4) ----
+// ---- the ask seam (TUI_CONTRACTS §4) ----
 
 /// One offered answer of an ask question.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -270,11 +270,11 @@ pub trait Interactor: Send + Sync {
     fn ask<'a>(&'a self, cx: &'a RunCtx, spec: AskSpec) -> BoxFuture<'a, AskResult>;
 }
 
-// ---- the artifact side channel (tool/tool.go:160-198; the D-19 lift, T-35) ----
+// ---- the artifact side channel (the D-19 lift, T-35) ----
 
 /// A call's display payload: for the USER's eyes only, never in the model-facing result
 /// text (a diff there would cost tokens). Rendered by kind — `Diff` feeds the showcase's
-/// diff renderer, `Note` feeds the classic finish-call event-row note (transcript.go).
+/// diff renderer, `Note` feeds the transcript's finish-call event-row note.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Artifact {
     /// How the payload renders.
@@ -285,24 +285,23 @@ pub struct Artifact {
     pub lines: Vec<String>,
 }
 
-/// Go used the strings `"diff"`/`"note"`; a closed enum — same two producers, typed.
+/// The two producers of an artifact, as a closed enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtifactKind {
-    /// Unified-hunk diff rows (`edit_file`/`write_file` postDiff, code.go:665-675).
+    /// Unified-hunk diff rows (`edit_file`/`write_file`'s post-edit diff).
     Diff,
-    /// Accounting note rows (transcript.go's finish-call note).
+    /// Accounting note rows (the transcript's finish-call note).
     Note,
 }
 
-/// `PostArtifact` twin: a no-op when `cx.artifact` is `None` (headless loops, tests — Go
-/// parity).
+/// A no-op when `cx.artifact` is `None` (headless loops, tests).
 pub(crate) fn post_artifact(cx: &RunCtx, a: Artifact) {
     if let Some(slot) = &cx.artifact {
         slot.post(a);
     }
 }
 
-/// Host seams a toolset factory receives (tool/tool.go:202-231).
+/// Host seams a toolset factory receives.
 #[derive(Clone, Default)]
 pub struct ToolEnv {
     /// `agents::project_root(cwd)` in every mode; None only in tests.
@@ -314,14 +313,13 @@ pub struct ToolEnv {
     /// the foreground.
     pub jobs: Option<Arc<crate::shell::jobs::Jobs>>,
     /// Some only interactively: `new_ask_set` contributes the ask tools when it is bound
-    /// (headless stays empty, tool/ask.go parity). `ToolEnv` is built with `..ToolEnv::default()`
+    /// (headless stays empty). `ToolEnv` is built with `..ToolEnv::default()`
     /// literals across the workspace, so this field lands non-breaking (`TUI_CONTRACTS` §4).
     pub interactor: Option<Arc<dyn Interactor>>,
 }
 
 impl ToolEnv {
-    /// `project_root`, else `dirs.cwd`, else `std::env::current_dir()`; then `std::path::absolute` (cleaned, like
-    /// Go's `filepath.Abs`).
+    /// `project_root`, else `dirs.cwd`, else `std::env::current_dir()`; then `std::path::absolute` (cleaned).
     pub fn root(&self) -> std::io::Result<PathBuf> {
         let root = match (&self.project_root, &self.dirs.cwd) {
             (Some(p), _) => p.clone(),
@@ -402,8 +400,7 @@ mod tests {
         );
     }
 
-    // Go: tool/ask_test.go:85 TestArtifactSideChannel — the artifact side channel (tool/tool.go:160-198):
-    // a call posts its display payload into the injected slot (last wins); without an injection
+    // The artifact side channel: a call posts its display payload into the injected slot (last wins); without an injection
     // `post_artifact` is a silent no-op (the D-19 lift, T-35).
     #[test]
     fn test_post_artifact_headless_no_op() {
@@ -416,7 +413,7 @@ mod tests {
             title: "f.txt".to_owned(),
             lines: vec!["+1".to_owned()],
         };
-        // Headless: no slot in the context — the post is a silent no-op (Go parity).
+        // Headless: no slot in the context — the post is a silent no-op.
         let headless = RunCtx::default();
         post_artifact(&headless, a.clone());
         // Interactive: a fresh slot injected per call receives the post; a clone of the
