@@ -48,11 +48,6 @@ const KNOWN_UPWARD: &[(&str, &str, &str)] = &[
         "reads `cmd::VERSION` — PR-3 moves VERSION into app/",
     ),
     (
-        "markdown/sink.rs",
-        "ui",
-        "re-exports `ui::facade::PreviewHandle` — PR-5 defines it in markdown/preview.rs",
-    ),
-    (
         "repl/params.rs",
         "cmd",
         "calls `cmd::window::parse_window_size` — PR-7 moves window.rs into config/",
