@@ -12,9 +12,9 @@ use std::{
 };
 
 use crate::BoxFuture;
-use crate::chat::turns::RunCtx;
 use crate::mcp::config::{ServerConfig, endpoint_of, expand_server_config};
 use crate::provider::model::{JsonObject, ToolDef};
+use crate::tool::context::RunCtx;
 use crate::tool::error::ToolError;
 use crate::tool::{Dispatcher, PrefixOf, ToolOutput, ToolResult};
 use crate::vars::VarResolver;
@@ -428,9 +428,9 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
 
-    use crate::chat::turns::RunCtx;
     use crate::provider::model::{JsonObject, ToolDef};
     use crate::tool::Dispatcher;
+    use crate::tool::context::RunCtx;
     use crate::tool::error::ToolError;
     use pretty_assertions::assert_eq;
     use tokio_util::sync::CancellationToken;

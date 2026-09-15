@@ -3,9 +3,9 @@
 
 use std::time::{Duration, Instant};
 
-use crate::chat::turns::RunCtx;
 use crate::provider::model::ToolCall;
 use crate::tool::Dispatcher;
+use crate::tool::context::RunCtx;
 
 /// End index of the maximal run of consecutive calls from i with `dispatch.supports_parallel(name, Some(args))`;
 /// j == i when calls\[i\] is not (parallel.go:42-48). The capability is asked per CALL, so a round mixing

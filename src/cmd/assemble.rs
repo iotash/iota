@@ -252,7 +252,7 @@ mod tests {
 
         fn call_tool<'a>(
             &'a self,
-            _cx: &'a crate::chat::turns::RunCtx,
+            _cx: &'a crate::tool::context::RunCtx,
             name: &'a str,
             _args: crate::provider::model::JsonObject,
         ) -> crate::BoxFuture<'a, crate::tool::ToolResult> {

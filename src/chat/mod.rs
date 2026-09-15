@@ -1,5 +1,5 @@
 //! The headless (non-interactive) run loop (chat/chat.go, chat/output.go, chat/parallel.go, chat/images.go,
-//! chat/agentmode.go) and, in `turns`, the run context every loop shares (chat/turns.go).
+//! chat/agentmode.go). The run context every loop shares (chat/turns.go) is `crate::tool::context`.
 //! The interactive loop over the same machinery is `crate::chat::repl`.
 //!
 //! `once` is the single entry point the binary calls: it builds the run context (`RunCtx` with the run's
@@ -13,9 +13,6 @@ pub mod images;
 pub mod once;
 pub mod report;
 pub mod run;
-// Transitional alias while the 13 import points move (next commit): the run context now lives in
-// `crate::tool::context`.
-pub use crate::tool::context as turns;
 
 use std::path::PathBuf;
 

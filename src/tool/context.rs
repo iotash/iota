@@ -194,7 +194,7 @@ mod tests {
     fn test_turn_budget_travels_by_context() {
         // A context with no budget yields None; an absent budget is not published as present.
         let cx = RunCtx {
-            budget: iota::chat::turns::turn_cap(0).map(TurnBudget::new),
+            budget: turn_cap(0).map(TurnBudget::new),
             ..RunCtx::default()
         };
         assert!(
@@ -204,9 +204,7 @@ mod tests {
         assert!(RunCtx::new(CancellationToken::new()).budget.is_none());
 
         // The budget survives a clone of the context: same Arc, same token.
-        let b = iota::chat::turns::turn_cap(2)
-            .map(TurnBudget::new)
-            .expect("budget");
+        let b = turn_cap(2).map(TurnBudget::new).expect("budget");
         let cx = RunCtx {
             cancel: CancellationToken::new(),
             budget: Some(Arc::clone(&b)),

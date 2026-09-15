@@ -3,8 +3,8 @@
 
 use std::{collections::HashMap, fs, path::Path, sync::Arc};
 
-use iota::chat::turns::{ArtifactSlot, RunCtx};
 use iota::provider::model::JsonObject;
+use iota::tool::context::{ArtifactSlot, RunCtx};
 use iota::tool::{ArtifactKind, Env, Tool, ToolOutput};
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;

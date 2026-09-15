@@ -18,7 +18,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use iota::chat::turns::RunCtx;
 use iota::provider::model::JsonObject;
 use iota::shell::exec;
 use iota::shell::exec::{
@@ -27,6 +26,7 @@ use iota::shell::exec::{
 };
 use iota::shell::interp::{Family, Interpreter};
 use iota::tool::Registry;
+use iota::tool::context::RunCtx;
 use iota::tool::sets::{RawNode, SetError, ToolsConfig};
 use iota::tool::shell::{
     BASH_DESC_PREFIX, CMD_DESC_PREFIX, PWSH_DESC_PREFIX, SHELL_DESC_SANDBOXED,

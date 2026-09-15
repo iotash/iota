@@ -4,8 +4,8 @@
 use std::{collections::HashSet, sync::Arc};
 
 use crate::BoxFuture;
-use crate::chat::turns::RunCtx;
 use crate::provider::model::{JsonObject, ToolDef};
+use crate::tool::context::RunCtx;
 use crate::tool::error::ToolError;
 use crate::tool::{DeferredToolStatus, Dispatcher, Presentation, ToolResult, ToolSearcher};
 

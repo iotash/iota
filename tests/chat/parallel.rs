@@ -4,11 +4,11 @@
 use std::sync::Arc;
 
 use iota::chat::batch::{parallel_run, run_batch};
-use iota::chat::turns::RunCtx;
 use iota::chat::{QuietHost, execute_with_tools};
 use iota::provider::RoundResult;
 use iota::provider::model::{Message, Role};
 use iota::testing::{FakeProvider, NoCapDispatch, ParallelDispatch, tool_call, tool_call_with};
+use iota::tool::context::RunCtx;
 use tokio_util::sync::CancellationToken;
 
 #[test]

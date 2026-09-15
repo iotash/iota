@@ -3,14 +3,14 @@
 
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
-#[cfg(unix)]
-use iota::chat::turns::RunCtx;
 use iota::mcp::config::ServerConfig;
 use iota::mcp::{Manager, ManagerOptions};
 #[cfg(unix)]
 use iota::provider::model::JsonObject;
 use iota::testing::map_resolver;
 use iota::tool::Dispatcher;
+#[cfg(unix)]
+use iota::tool::context::RunCtx;
 use pretty_assertions::assert_eq;
 use tokio_util::sync::CancellationToken;
 

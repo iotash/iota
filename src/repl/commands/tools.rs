@@ -211,10 +211,10 @@ pub(crate) async fn cmd_tools(repl: &Repl) {
 #[cfg(test)]
 mod tests {
     use crate::BoxFuture;
-    use crate::chat::turns::RunCtx;
     use crate::provider::model::JsonObject;
     use crate::provider::model::ToolDef;
     use crate::text::ansi::strip_sgr;
+    use crate::tool::context::RunCtx;
     use crate::tool::{ToolOutput, ToolResult};
     use pretty_assertions::assert_eq;
 

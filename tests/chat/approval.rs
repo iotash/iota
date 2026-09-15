@@ -4,11 +4,11 @@
 use std::sync::{Arc, Mutex};
 
 use iota::chat::run::refusal_text;
-use iota::chat::turns::RunCtx;
 use iota::chat::{QuietHost, execute_with_tools};
 use iota::provider::model::{JsonObject, Message, Role, ToolCall};
 use iota::testing::{FakeProvider, GatedDispatch, Round, lock};
 use iota::tool::Dispatcher;
+use iota::tool::context::RunCtx;
 
 /// Asks for `write_file` (with `args`) once, then answers `saw: ` + the last history entry's content — so a
 /// test can assert on what the model was actually told.

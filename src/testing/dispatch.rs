@@ -17,8 +17,8 @@ use tokio::sync::Barrier;
 
 use super::{lock, tool_def};
 use crate::BoxFuture;
-use crate::chat::turns::RunCtx;
 use crate::provider::model::{JsonObject, ToolDef};
+use crate::tool::context::RunCtx;
 use crate::tool::error::ToolError;
 use crate::tool::{Dispatcher, PrefixOf, Presentation, Tool, ToolOutput, ToolResult};
 
@@ -446,9 +446,9 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::StaticDispatcher;
-    use crate::chat::turns::RunCtx;
     use crate::provider::model::JsonObject;
     use crate::tool::Dispatcher;
+    use crate::tool::context::RunCtx;
 
     #[tokio::test]
     async fn static_dispatcher_echoes_and_records() {

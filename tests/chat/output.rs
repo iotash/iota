@@ -4,7 +4,6 @@
 use std::{path::Path, sync::Arc};
 
 use iota::chat::images::{HOME_NOT_DEFINED, save_image, save_images_for_turn};
-use iota::chat::turns::RunCtx;
 use iota::chat::{
     AgentOptions, ChatError, OnceOptions, OnceOutcome, OutputFormat, RunReport, TokenUsage, once,
     parse_output_format, write_report,
@@ -14,6 +13,7 @@ use iota::provider::model::Attachment;
 use iota::provider::usage::Usage;
 use iota::testing::{FakeProvider, StaticDispatcher};
 use iota::tool::Dispatcher;
+use iota::tool::context::RunCtx;
 use tokio_util::sync::CancellationToken;
 
 #[test]

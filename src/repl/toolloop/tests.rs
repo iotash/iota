@@ -12,7 +12,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::BoxFuture;
-use crate::chat::turns::RunCtx;
 use crate::markdown::CodeTheme;
 use crate::provider::model::{
     AssistantBody, Attachment, Body, Message, Raw, RawContent, Role, ToolCall,
@@ -24,6 +23,7 @@ use crate::testing::{
     Failure, FakeProvider, Interrupt, Reply, Round, ScriptedUi, StaticDispatcher, UiEvent, lock,
 };
 use crate::tool::Dispatcher;
+use crate::tool::context::RunCtx;
 use crate::tool::{
     Artifact, ArtifactKind, AskOption, AskQuestion, AskSpec, Interactor as _, Presentation,
     ToolOutput, ToolResult, post_artifact,

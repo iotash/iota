@@ -11,8 +11,8 @@ use std::{
     time::SystemTime,
 };
 
-use crate::chat::turns::RunCtx;
 use crate::provider::model::{JsonObject, ToolDef};
+use crate::tool::context::RunCtx;
 use crate::tool::error::ToolError;
 use crate::tool::{
     Artifact, ArtifactKind, Presentation, Tool, ToolOutput, ToolResult, post_artifact,

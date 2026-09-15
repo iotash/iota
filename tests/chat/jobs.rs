@@ -3,12 +3,12 @@
 
 use std::sync::Arc;
 
-use iota::chat::turns::RunCtx;
 use iota::chat::{QuietHost, RunRequest, run_once};
 use iota::provider::RoundResult;
 use iota::provider::model::{JsonObject, Message, Role, ToolCall};
 use iota::shell::jobs::Jobs;
 use iota::testing::{FakeProvider, Round};
+use iota::tool::context::RunCtx;
 use iota::tool::sets::{RawNode, ToolsConfig};
 use iota::tool::{Dispatcher, Env, Registry};
 use pretty_assertions::assert_eq;

@@ -4,7 +4,6 @@
 
 use std::{path::Path, sync::Arc};
 
-use iota::chat::turns::RunCtx;
 use iota::chat::{ChatError, QuietHost, RunRequest, execute_with_tools, run_once};
 use iota::provider::RoundResult;
 use iota::provider::model::{
@@ -15,6 +14,7 @@ use iota::testing::{
     FakeProvider, GrowingDispatcher, Round, StaticDispatcher, tool_call, tool_call_with,
 };
 use iota::tool::Dispatcher;
+use iota::tool::context::RunCtx;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]

@@ -128,7 +128,7 @@ pub fn resolve_run(
         message,
         temperature,
         agent_mode: resolved.agent.workspace,
-        max_turns: crate::chat::turns::turn_cap(inv.args.max_turns),
+        max_turns: crate::tool::context::turn_cap(inv.args.max_turns),
         output_format_raw: inv.args.output_format.clone(),
         resume: match &inv.resume {
             Some(Resume::Id(id)) => Some(id.clone()),

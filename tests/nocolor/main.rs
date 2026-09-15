@@ -12,7 +12,6 @@
 use std::sync::{Arc, Mutex};
 
 use iota::BoxFuture;
-use iota::chat::turns::RunCtx;
 use iota::color::ColorMode;
 use iota::host::Presenter;
 use iota::llm::reqlog::RequestLog;
@@ -21,6 +20,7 @@ use iota::provider::model::{JsonObject, ToolDef};
 use iota::repl::{McpHooks, RunParams, SessionCtx};
 use iota::session::{NewSession, SessionStore};
 use iota::testing::{FakeProvider, Reply, Round, ScriptedUi, UiEvent, tool_call};
+use iota::tool::context::RunCtx;
 use iota::tool::{Artifact, ArtifactKind, Dispatcher, Presentation, ToolOutput, ToolResult};
 use iota::ui::facade::{Input, Ui};
 use tokio_util::sync::CancellationToken;

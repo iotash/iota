@@ -81,7 +81,7 @@ all three into `chat/`) the Rust split is KEPT as modules. Visibility is Rust-id
 | `provider/{openai,anthropic,google,openresponses,imagen,images}.rs` | provider/*.go | the seven `Provider` adapters |
 | `llm/{mod,client,sse,error,models,chatcomp,responses,anthropic,google,images}.rs` | internal/llm | the hand-rolled HTTP/SSE wire layer (keeps Go's name) |
 | `llm/{reqlog,progress,multipart}.rs` | chat/reqlog.go, chat/progress.go, (Go `mime/multipart`) | T3: the `/debug` request log the client records into, the per-turn upload-progress reporter + task-local, the byte-exact multipart writer twin (WP66/WP67/WP64) |
-| `tool/{mod,fmt,error}.rs` | tool/tool.go, tool/headerfmt.go | `Tool`/`Dispatcher`/`Env`/`Delegator` seam types, `PrefixOf`, `ToolError`, the call-header formatters |
+| `tool/{mod,context,fmt,error}.rs` | tool/tool.go, chat/turns.go, tool/headerfmt.go | `Tool`/`Dispatcher`/`Env`/`Delegator` seam types, `PrefixOf`, `ToolError`, the call-header formatters; `context` = the run context every tool takes (`RunCtx`, `TurnBudget`, `ArtifactSlot`) |
 | `tool/{sets,registry,merge,defer,defer_mode,args,yaml11}.rs` | tool/tool.go, defer*.go | the set table + framework |
 | `tool/{ask,agent,delegate}.rs`, `tool/shell.rs`, `tool/code/{mod,tools,walk,udiff}.rs` | tool/ask.go, agent.go, delegate.go, shell.go, code.go | the five built-in sets (`shell.rs` = the `shell` tool's POLICY layer; the tool is `shell` on every platform and under every interpreter, and its DESCRIPTION is what follows the interpreter, DIVERGENCES X-18/X-20) |
 | `shell/{mod,exec,interp,sandbox_darwin,sandbox_linux,sandbox_other}.rs` | internal/shell | process execution + sandboxes (the MECHANISM layer); `interp.rs` answers WHICH interpreter runs a command — `bash -c` on Unix, and on Windows the first of Git Bash, PowerShell and `cmd.exe` the machine has (DIVERGENCES X-17), as one pure function over an injected machine |
@@ -90,7 +90,7 @@ all three into `chat/`) the Rust split is KEPT as modules. Visibility is Rust-id
 | `imgterm.rs` | internal/imgterm | the half-block image rasteriser (T3, WP63) — the ONLY module allowed to name the `image` crate (ci.sh grep) |
 | `host/{mod,ansi,cmux,background}.rs` | internal/host | host integration (T3, WP67): `Presenter` per-capability fan-out, the ANSI host (OSC 9 / 9;4 through the facade), the cmux host, the background probe |
 | `mcp/{mod,config,manager,naming,status,transport,error}.rs` | mcp/ | `ServerConfig`/`parse_mcp_flag` (`config`), the rmcp manager |
-| `chat/{mod,turns,once,run,batch,report,images,delegator,error}.rs` | chat/chat.go, turns.go, output.go, parallel.go, images.go, delegate.go | the headless loop; `turns` = `RunCtx`, `TurnBudget`, `DelegationLedger`, `ArtifactSlot` |
+| `chat/{mod,once,run,batch,report,images,delegator,error}.rs` | chat/chat.go, output.go, parallel.go, images.go, delegate.go | the headless loop (the run context it shares with the tools is `tool/context.rs`) |
 | `session/{mod,meta,params,record,rawcodec,id,store,writer,loader,tuning,error}.rs` | chat/session.go, settings.go | the on-disk bundle store (never reads the process environment — ci.sh grep) |
 | `markdown/{mod,inline,table,list,quote,code,link,math,style,sink,highlight}.rs` | internal/markdown | the streaming markdown→ANSI renderer; `highlight.rs` = the `CodeHighlighter` seam AND its syntect impl |
 | `markdown/html.rs` | (goldmark + chroma in chat/export.go) | T3, WP65: comrak safe-mode GFM → HTML with the syntect `SyntaxHighlighterAdapter` over the two-face syntax set, chroma-shaped `<pre class="chroma">` |
@@ -167,7 +167,7 @@ The tables keep the phase-1 grouping (one per former crate) with each file named
 | `provider/sink.rs` | provider.go:136-137 contract | `StreamSink`, `NullSink`, `ReasoningGate` |
 | `tool/mod.rs` | tool/tool.go:33-330 | `ToolOutput`, `ToolError`, `Presentation`, `Tool`, `Dispatcher`, `DeferredToolStatus`, `DeferState`, `Env`, `PrefixOf` |
 | `tool/mod.rs` (delegation half) | tool/tool.go:245-288 | `Delegator`, `AgentInfo`, `DelegateSpec`, `DelegateResult`, `DelegateOutcome` |
-| `chat/turns.rs` | chat/turns.go | `RunCtx`, `TurnBudget`, `BudgetExt`, `DelegationLedger` |
+| `tool/context.rs` | chat/turns.go | `RunCtx`, `TurnBudget`, `BudgetExt`, `ArtifactSlot` |
 | `vars.rs` | internal/vars/vars.go, cmd/root.go (os.Getenv seam) | `VarResolver`, `expand`, `EnvSource`, `ProcessEnv` |
 | `app.rs` | internal/app/app.go (+ os.UserCacheDir/TempDir rules) | `NAME`, `DOT_DIR`, `CONFIG_BASE`, `CONFIG_EXTS`, `HostDirs`, `user_home`, `cache_dir` |
 | `paths.rs` | filepath.Clean/Rel semantics | `clean`, `rel`, `to_slash` (+ `within`, test-only) |
@@ -198,6 +198,7 @@ The tables keep the phase-1 grouping (one per former crate) with each file named
 ### the tool framework and sets (formerly `iota-tools`)
 | module | Go |
 |---|---|
+| `tool/context.rs` | chat/turns.go (`RunCtx`, `TurnBudget`, `BudgetExt`, `ArtifactSlot`) |
 | `tool/sets.rs` | tool/tool.go:329-341 (`SET_NAMES`, `set_factory`, `RawNode`, `ToolsConfig`, `SetFactory`, `SetError`) |
 | `tool/registry.rs` | tool/tool.go:343-528 (`Registry`, `set_disabled`) |
 | `tool/merge.rs` | tool/tool.go:538-673 |

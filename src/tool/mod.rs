@@ -1,8 +1,8 @@
 //! Tool and dispatcher contracts (tool/tool.go:33-330): `ToolOutput`, `Presentation`, `DeferState`, the `Tool`
 //! and `Dispatcher` traits with their optional capabilities, the `PrefixOf` oracle and the toolset `Env` —
-//! plus, in the submodules, the tool framework (`registry`, `merge`, `defer`, `defer_mode`, `yaml11`, `args`,
-//! `sets`) and the four built-in sets (`shell`, `code`, `agent`, and `ask`, which contributes tools only when
-//! the `Env` carries an interactor).
+//! plus, in the submodules, the run context every call takes (`context`), the tool framework (`registry`,
+//! `merge`, `defer`, `defer_mode`, `yaml11`, `args`, `sets`) and the four built-in sets (`shell`, `code`,
+//! `agent`, and `ask`, which contributes tools only when the `Env` carries an interactor).
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -28,8 +28,8 @@ pub use registry::{Registry, set_disabled};
 
 use crate::BoxFuture;
 use crate::app::HostDirs;
-use crate::chat::turns::RunCtx;
 use crate::provider::model::{JsonObject, ToolDef};
+use crate::tool::context::RunCtx;
 use error::ToolError;
 
 /// Model-facing result of a tool call: text plus whether it is an error the model should see.
@@ -410,7 +410,7 @@ mod tests {
     // `post_artifact` is a silent no-op (the D-19 lift, T-35).
     #[test]
     fn test_post_artifact_headless_no_op() {
-        use crate::chat::turns::{ArtifactSlot, RunCtx};
+        use crate::tool::context::{ArtifactSlot, RunCtx};
 
         use super::{Artifact, ArtifactKind, post_artifact};
 

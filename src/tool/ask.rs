@@ -13,8 +13,8 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use crate::BoxFuture;
-use crate::chat::turns::RunCtx;
 use crate::provider::model::{JsonObject, ToolDef};
+use crate::tool::context::RunCtx;
 use crate::tool::{
     AskOption, AskQuestion, AskResult, AskSpec, Env, Interactor, Presentation, Tool, ToolOutput,
     ToolResult,
@@ -324,8 +324,8 @@ mod tests {
     use std::sync::{Arc, Mutex, PoisonError};
 
     use crate::BoxFuture;
-    use crate::chat::turns::RunCtx;
     use crate::provider::model::JsonObject;
+    use crate::tool::context::RunCtx;
     use crate::tool::{AskAnswer, AskResult, AskSpec, Env, Interactor, Presentation, Tool};
     use serde_json::json;
 

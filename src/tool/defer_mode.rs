@@ -9,9 +9,9 @@
 use std::sync::Arc;
 
 use crate::BoxFuture;
-use crate::chat::turns::RunCtx;
 use crate::provider::ProviderKind;
 use crate::provider::model::{JsonObject, ToolDef};
+use crate::tool::context::RunCtx;
 use crate::tool::{
     DeferState, DeferredToolStatus, Dispatcher, Presentation, ToolResult, ToolSearcher,
 };

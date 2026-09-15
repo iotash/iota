@@ -3,11 +3,11 @@
 
 use std::sync::Arc;
 
-use iota::chat::turns::{RunCtx, TurnBudget};
 use iota::chat::{ChatError, QuietHost, execute_with_tools};
 use iota::provider::model::Message;
 use iota::testing::{FakeProvider, StaticDispatcher};
 use iota::tool::Dispatcher;
+use iota::tool::context::{RunCtx, TurnBudget};
 
 /// One runaway loop drawing on `cx`'s pool; returns the number of model calls it got to make.
 async fn spend(cx: &RunCtx) -> usize {
@@ -42,7 +42,7 @@ async fn the_turn_budget_is_shared_across_loops() {
     // The budget belongs to the RUN. Two loops sharing one pool stop at the total between them, not at the
     // total each.
     let cx = RunCtx {
-        budget: iota::chat::turns::turn_cap(5).map(TurnBudget::new),
+        budget: iota::tool::context::turn_cap(5).map(TurnBudget::new),
         ..RunCtx::default()
     };
     let first = spend(&cx).await;
@@ -59,7 +59,7 @@ async fn the_turn_budget_is_shared_across_loops() {
 #[tokio::test]
 async fn budget_is_taken_before_the_call_and_local_cap_wins() {
     let cx = RunCtx {
-        budget: iota::chat::turns::turn_cap(3).map(TurnBudget::new),
+        budget: iota::tool::context::turn_cap(3).map(TurnBudget::new),
         ..RunCtx::default()
     };
     // Fails on call 1: the pool still lost that turn.
@@ -86,7 +86,7 @@ async fn budget_is_taken_before_the_call_and_local_cap_wins() {
 
     // A local cap of 2 with a pool of 10: the local cap fires first with its own text.
     let cx = RunCtx {
-        budget: iota::chat::turns::turn_cap(10).map(TurnBudget::new),
+        budget: iota::tool::context::turn_cap(10).map(TurnBudget::new),
         ..RunCtx::default()
     };
     let tp = FakeProvider::looping(1, 0);

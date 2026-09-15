@@ -7,9 +7,9 @@ use std::{
     sync::Arc,
 };
 
-use crate::chat::turns::RunCtx;
 use crate::provider::model::{JsonObject, ToolDef};
 use crate::text::{go_quote, split_lines, truncate_to_char_boundary};
+use crate::tool::context::RunCtx;
 use crate::tool::{Env, Tool, ToolOutput, ToolResult};
 use crate::{BoxFuture, paths};
 use serde_json::{Value, json};

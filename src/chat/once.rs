@@ -2,10 +2,10 @@
 
 use std::{io::Write, path::PathBuf, sync::Arc};
 
-use crate::chat::turns::{RunCtx, TurnBudget};
 use crate::provider::Provider;
 use crate::provider::model::Message;
 use crate::tool::Dispatcher;
+use crate::tool::context::{RunCtx, TurnBudget};
 use tokio_util::sync::CancellationToken;
 
 use crate::chat::error::ChatError;

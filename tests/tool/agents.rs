@@ -22,10 +22,10 @@ use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 
 use iota::app::HostDirs;
-use iota::chat::turns::RunCtx;
 use iota::provider::model::JsonObject;
 use iota::tool::Registry;
 use iota::tool::agent::new_skills_set;
+use iota::tool::context::RunCtx;
 use iota::tool::sets::ToolsConfig;
 use iota::tool::{Dispatcher, Env, ToolOutput};
 use serde_json::json;

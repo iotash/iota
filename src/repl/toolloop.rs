@@ -19,12 +19,12 @@ use std::time::{Duration, Instant};
 
 use crate::chat::ChatError;
 use crate::chat::batch::{BatchOutcome, parallel_run};
-use crate::chat::turns::ArtifactSlot;
-use crate::chat::turns::RunCtx;
 use crate::host::{Event, Kind, State};
 use crate::provider::ToolProvider;
 use crate::provider::model::{Message, ToolCall, ToolDef};
 use crate::tool::Presentation;
+use crate::tool::context::ArtifactSlot;
+use crate::tool::context::RunCtx;
 use crate::tool::fmt::{display_tool_name, tool_call_detail, tool_call_header};
 use crate::ui::facade::UiError;
 

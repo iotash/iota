@@ -22,9 +22,9 @@ use std::{
 
 use crate::BoxFuture;
 use crate::app::HostDirs;
-use crate::chat::turns::RunCtx;
 use crate::provider::model::{JsonObject, ToolDef};
 use crate::text::go_duration;
+use crate::tool::context::RunCtx;
 use crate::tool::{Env, Tool, ToolOutput, ToolResult};
 use serde::Deserialize;
 use serde_json::Value;

@@ -5,7 +5,6 @@ use std::num::NonZeroU32;
 use std::{path::Path, sync::Arc};
 
 use crate::agents::{Overlay, compose_send_history};
-use crate::chat::turns::{BudgetExt, RunCtx};
 use crate::provider::model::{
     AssistantBody, Attachment, Body, Message, RawContent, ToolCall, ToolDef,
 };
@@ -13,6 +12,7 @@ use crate::provider::sink::NullSink;
 use crate::provider::usage::Usage;
 use crate::provider::{Provider, RoundResult, ToolProvider};
 use crate::tool::Dispatcher;
+use crate::tool::context::{BudgetExt, RunCtx};
 
 use crate::chat::AgentOptions;
 use crate::chat::batch::{parallel_run, run_batch};
