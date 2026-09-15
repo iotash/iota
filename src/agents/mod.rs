@@ -139,10 +139,13 @@ fn stat_agents_chain(root: &Path, cwd: &Path) -> (Vec<PathBuf>, Stamps) {
 /// The skills roots and every discovered SKILL.md, with their mtimes (skills.go:175-195
 /// `probeSkills`).
 ///
-/// The roots catch additions and removals (a directory's mtime moves when an entry is
-/// created or deleted); the per-skill files catch an in-place edit that leaves every
-/// directory untouched. A skill whose file vanished is simply absent — the shrunken path
-/// list is itself the change signal.
+/// The roots' ENTRIES catch additions and removals — every entry of a root is listed, in name
+/// order, so a skill directory that appears or goes changes the path list itself; the roots'
+/// mtimes were the only signal until 2026-09-16, and Windows CI showed a freshly created
+/// subdirectory leaving the parent's mtime untouched often enough to fail
+/// `tests/repl/skills.rs` (a directory mtime is a filesystem courtesy, not a contract). The
+/// per-skill files catch an in-place edit that leaves every directory untouched. A skill whose
+/// file vanished is simply absent — the shrunken path list is itself the change signal.
 fn probe_skills(dirs: &[PathBuf], skills: &[Skill]) -> (Vec<PathBuf>, Stamps) {
     let mut paths = Vec::new();
     let mut stamps = Vec::new();
@@ -155,6 +158,16 @@ fn probe_skills(dirs: &[PathBuf], skills: &[Skill]) -> (Vec<PathBuf>, Stamps) {
         }
         paths.push(dir.clone());
         stamps.push(meta.modified().ok());
+        // The entries themselves, so an addition or removal is a change even where the root's
+        // mtime did not move. Sorted: `read_dir` order is the filesystem's, not a signal.
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+            .map(|rd| rd.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default();
+        entries.sort();
+        for entry in entries {
+            paths.push(entry);
+            stamps.push(None);
+        }
     }
     for skill in skills {
         let Ok(meta) = std::fs::metadata(&skill.path) else {
@@ -527,5 +540,21 @@ mod tests {
                 "cwd {cwd}"
             );
         }
+    }
+
+    /// A skill directory that appears under a root is a change even if the root's mtime does
+    /// not move (Windows CI, 2026-09-16): the probe lists the root's entries, not only its stamp.
+    #[test]
+    fn a_new_skill_directory_changes_the_probe_without_touching_the_root_stamp() {
+        let root = std::env::temp_dir().join(format!("iota-probe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("brain-page")).unwrap();
+        let (before, _) = super::probe_skills(std::slice::from_ref(&root), &[]);
+        std::fs::create_dir_all(root.join("code-review")).unwrap();
+        let (after, _) = super::probe_skills(std::slice::from_ref(&root), &[]);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_ne!(before, after, "the new entry must show in the path list");
+        assert!(after.contains(&root.join("code-review")));
+        assert_eq!(after.len(), before.len() + 1);
     }
 }
