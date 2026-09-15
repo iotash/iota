@@ -6,19 +6,16 @@
 //! unary [`iota::provider::Provider::chat`] path) plus the progressive-frame capability, which is
 //! what makes `run` call `chat_observed` instead. A double WITHOUT the capability proves the
 //! headless/unary path is unchanged.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
-use iota::BoxFuture;
 use iota::host::Presenter;
 use iota::llm::reqlog::RequestLog;
-use iota::provider::error::ProviderError;
-use iota::provider::model::{Attachment, Message};
-use iota::provider::{ChatResult, ImagePartialProvider, Provider, ProviderKind};
+use iota::provider::ProviderKind;
+use iota::provider::model::Attachment;
 use iota::repl::{McpHooks, RunParams, SessionCtx};
 use iota::session::{SessionStore, SessionWriter};
-use iota::testing::{Reply, ScriptedUi, StaticDispatcher, UiEvent};
+use iota::testing::{FakeProvider, Log, Reply, Round, ScriptedUi, StaticDispatcher, UiEvent};
 use iota::text::ansi::strip_sgr;
 use iota::tool::Dispatcher;
 use iota::ui::facade::{Input, Ui};
@@ -36,96 +33,22 @@ const RB_ROW: &str =
 // the doubles
 // ---------------------------------------------------------------------------
 
-/// The `images` dialect's shape: one unary `chat`, no tools, and (optionally) the
-/// progressive-frame capability that makes the run loop hand it an observer.
-struct FakeImageProvider {
-    /// Frames handed to the observer, in order, before the final result.
-    frames: Vec<Vec<u8>>,
-    /// The final generated image's bytes.
-    final_png: Vec<u8>,
-    /// Whether the double advertises `ImagePartialProvider`.
-    observed: bool,
-    /// Whether `chat_observed` (rather than plain `chat`) ran.
-    took_observed_path: Arc<Mutex<bool>>,
-}
-
-impl FakeImageProvider {
-    fn new(frames: Vec<Vec<u8>>, final_png: Vec<u8>) -> Self {
-        Self {
-            frames,
-            final_png,
-            observed: true,
-            took_observed_path: Arc::new(Mutex::new(false)),
-        }
-    }
-
-    /// A backend that ignores the streaming flags: no capability, no observer, no frames.
-    fn unary(final_png: Vec<u8>) -> Self {
-        Self {
-            observed: false,
-            ..Self::new(Vec::new(), final_png)
-        }
-    }
-
-    fn result(&self) -> ChatResult {
-        ChatResult {
-            text: String::new(),
-            images: vec![Attachment {
-                filename: "image-1.png".to_owned(),
-                mime_type: "image/png".to_owned(),
-                data: self.final_png.clone(),
-            }],
-            ..ChatResult::default()
-        }
-    }
-}
-
-impl Provider for FakeImageProvider {
-    fn kind(&self) -> ProviderKind {
-        ProviderKind::Images
-    }
-
-    fn model(&self) -> &'static str {
-        "gpt-image-1"
-    }
-
-    fn set_model(&mut self, _model: String) {}
-
-    fn list_models<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Vec<String>, ProviderError>> {
-        Box::pin(std::future::ready(Ok(Vec::new())))
-    }
-
-    fn chat<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        _messages: &'a [Message],
-    ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
-        Box::pin(std::future::ready(Ok(self.result())))
-    }
-
-    fn as_image_partial_provider(&self) -> Option<&dyn ImagePartialProvider> {
-        self.observed.then_some(self)
-    }
-}
-
-impl ImagePartialProvider for FakeImageProvider {
-    fn chat_observed<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        _messages: &'a [Message],
-        on_partial: &'a mut (dyn FnMut(&[u8]) + Send),
-    ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
-        *self
-            .took_observed_path
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = true;
-        for f in &self.frames {
-            on_partial(f);
-        }
-        Box::pin(std::future::ready(Ok(self.result())))
+/// The `images` dialect's shape: one unary `chat` answering `final_png` as `image-1.png`, no tools,
+/// and — with `frames` — the progressive-frame capability that makes the run loop hand it an
+/// observer, which then sees the frames in order before the final result.
+fn image_provider(frames: Option<Vec<Vec<u8>>>, final_png: Vec<u8>) -> FakeProvider {
+    let p = FakeProvider::new()
+        .with_kind(ProviderKind::Images)
+        .with_model("gpt-image-1")
+        .tail(Round::reply("").images(vec![Attachment {
+            filename: "image-1.png".to_owned(),
+            mime_type: "image/png".to_owned(),
+            data: final_png,
+        }]));
+    match frames {
+        Some(frames) => p.with_frames(frames),
+        // A backend that ignores the streaming flags: no capability, no observer, no frames.
+        None => p,
     }
 }
 
@@ -149,9 +72,7 @@ fn input(s: &str) -> Reply {
 }
 
 /// One scripted turn: `"draw"` then EOF, against a session bundle under `tmp`.
-async fn run_one(
-    p: FakeImageProvider,
-) -> (Arc<ScriptedUi>, tempfile::TempDir, Arc<Mutex<bool>>, String) {
+async fn run_one(p: FakeProvider) -> (Arc<ScriptedUi>, tempfile::TempDir, Log, String) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = SessionStore::new(tmp.path().join("sessions"));
     let writer: SessionWriter = store
@@ -159,7 +80,7 @@ async fn run_one(
         .expect("create writer");
     let images_dir = writer.images_path().to_string_lossy().into_owned();
     let ui = ScriptedUi::new(vec![input("draw"), Reply::Interrupted]);
-    let took = Arc::clone(&p.took_observed_path);
+    let took = p.log();
     iota::repl::run(RunParams {
         ui: Arc::clone(&ui) as Arc<dyn Ui>,
         provider: Box::new(p),
@@ -242,13 +163,13 @@ fn printed(ui: &ScriptedUi) -> Vec<String> {
 /// it into the committed picture — one separator, one `ClosePreview`, no second separator.
 #[tokio::test]
 async fn progressive_frames_raise_the_widget_and_morph_into_the_picture() {
-    let (ui, _tmp, took, dir) = run_one(FakeImageProvider::new(
-        vec![RB_2X2_PNG.to_vec(), RB_2X2_PNG.to_vec()],
+    let (ui, _tmp, took, dir) = run_one(image_provider(
+        Some(vec![RB_2X2_PNG.to_vec(), RB_2X2_PNG.to_vec()]),
         RB_2X2_PNG.to_vec(),
     ))
     .await;
     assert!(
-        *took.lock().unwrap_or_else(PoisonError::into_inner),
+        took.observed(),
         "the capability must route the turn through chat_observed"
     );
 
@@ -288,7 +209,7 @@ async fn progressive_frames_raise_the_widget_and_morph_into_the_picture() {
 /// picture block.
 #[tokio::test]
 async fn an_undecodable_final_image_falls_back_to_the_caption_notice() {
-    let (ui, _tmp, _took, _dir) = run_one(FakeImageProvider::new(Vec::new(), vec![1, 2, 3])).await;
+    let (ui, _tmp, _took, _dir) = run_one(image_provider(Some(Vec::new()), vec![1, 2, 3])).await;
     let lines = printed(&ui);
     let caption = lines
         .iter()
@@ -312,11 +233,8 @@ async fn an_undecodable_final_image_falls_back_to_the_caption_notice() {
 /// picture still commits (the `-m` shape, `T3_DESIGN` §3.2).
 #[tokio::test]
 async fn a_provider_without_the_capability_takes_the_unary_path() {
-    let (ui, _tmp, took, _dir) = run_one(FakeImageProvider::unary(RB_2X2_PNG.to_vec())).await;
-    assert!(
-        !*took.lock().unwrap_or_else(PoisonError::into_inner),
-        "no capability, no observed call"
-    );
+    let (ui, _tmp, took, _dir) = run_one(image_provider(None, RB_2X2_PNG.to_vec())).await;
+    assert!(!took.observed(), "no capability, no observed call");
     let events = after_user_block(&ui);
     assert!(
         !events
