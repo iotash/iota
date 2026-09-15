@@ -16,13 +16,11 @@ use iota::chat::turns::RunCtx;
 use iota::color::ColorMode;
 use iota::host::Presenter;
 use iota::llm::reqlog::RequestLog;
-use iota::provider::error::ProviderError;
-use iota::provider::model::{JsonObject, Message, ToolCall, ToolDef};
-use iota::provider::sink::StreamSink;
-use iota::provider::{ChatResult, Provider, ProviderKind, RoundResult, ToolProvider};
+use iota::provider::ProviderKind;
+use iota::provider::model::{JsonObject, ToolDef};
 use iota::repl::{McpHooks, RunParams, SessionCtx};
 use iota::session::SessionStore;
-use iota::testing::{Reply, ScriptedUi, UiEvent};
+use iota::testing::{FakeProvider, Reply, Round, ScriptedUi, UiEvent, tool_call};
 use iota::tool::{Artifact, ArtifactKind, Dispatcher, Presentation, ToolOutput, ToolResult};
 use iota::ui::facade::{Input, Ui};
 use tokio_util::sync::CancellationToken;
@@ -77,81 +75,15 @@ fn assert_escape_free(what: &str, lines: &[String]) {
 // ---------------------------------------------------------------------------
 
 /// A streaming tool provider: call 1 streams a sentence and asks for `edit`; call 2 streams
-/// [`DOC`]; call 3 fails — one of every block the chat side styles, in one run.
-struct Scripted {
-    calls: Mutex<u32>,
-}
-
-impl Provider for Scripted {
-    fn kind(&self) -> ProviderKind {
-        ProviderKind::OpenAi
-    }
-
-    fn model(&self) -> &'static str {
-        "gpt-test"
-    }
-
-    fn set_model(&mut self, _model: String) {}
-
-    fn list_models<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Vec<String>, ProviderError>> {
-        Box::pin(std::future::ready(Ok(Vec::new())))
-    }
-
-    fn chat<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        _messages: &'a [Message],
-    ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
-        Box::pin(std::future::ready(Ok(ChatResult::default())))
-    }
-
-    fn as_tool_provider(&self) -> Option<&dyn ToolProvider> {
-        Some(self)
-    }
-}
-
-impl ToolProvider for Scripted {
-    fn stream_chat_with_tools<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        _messages: &'a [Message],
-        _tools: &'a [ToolDef],
-        sink: &'a mut dyn StreamSink,
-    ) -> BoxFuture<'a, Result<RoundResult, ProviderError>> {
-        Box::pin(async move {
-            let call = {
-                let mut n = self.calls.lock().unwrap();
-                *n += 1;
-                *n
-            };
-            sink.reasoning_done();
-            match call {
-                1 => {
-                    sink.content("Let me edit that.\n");
-                    Ok(RoundResult {
-                        content: "Let me edit that.\n".to_owned(),
-                        tool_calls: vec![ToolCall {
-                            id: "c1".to_owned(),
-                            name: "edit".to_owned(),
-                            arguments: JsonObject::new(),
-                        }],
-                        ..RoundResult::default()
-                    })
-                }
-                2 => {
-                    sink.content(DOC);
-                    Ok(RoundResult {
-                        content: DOC.to_owned(),
-                        ..RoundResult::default()
-                    })
-                }
-                _ => Err(ProviderError::permanent_msg("the model is gone")),
-            }
-        })
-    }
+/// [`DOC`]; every later call fails — one of every block the chat side styles, in one run.
+fn scripted() -> FakeProvider {
+    let mut edit = Round::text("Let me edit that.\n");
+    edit.result.tool_calls = vec![tool_call("c1", "edit")];
+    FakeProvider::new()
+        .with_tools()
+        .round(edit)
+        .round(Round::text(DOC))
+        .tail(Round::permanent("the model is gone"))
 }
 
 /// One tool, `edit`, that posts a unified diff artifact — the row shape `render_diff` shades.
@@ -205,9 +137,7 @@ fn input(s: &str) -> Reply {
 fn params(ui: &Arc<ScriptedUi>, store: &SessionStore) -> RunParams {
     RunParams {
         ui: Arc::clone(ui) as Arc<dyn Ui>,
-        provider: Box::new(Scripted {
-            calls: Mutex::new(0),
-        }),
+        provider: Box::new(scripted()),
         title_provider: None,
         system: String::new(),
         imported_history: Vec::new(),
