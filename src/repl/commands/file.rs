@@ -74,26 +74,54 @@ fn go_ext(path: &Path) -> String {
         .map_or_else(String::new, |i| name[i..].to_lowercase())
 }
 
-/// The MIME type for `path`'s extension, or the Go refusal text (chat/file.go
+/// Why an attachment was refused (chat/file.go:59-92), in the order the checks run; every
+/// Display text is Go's, the OS text carried where Go's `%w` carried it.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum AttachError {
+    /// A `"~/"` path on a host with no home directory to expand it against.
+    #[error("cannot resolve home dir: $HOME is not defined")]
+    NoHome,
+    /// The path could not be stat'ed.
+    #[error("cannot access file: {0}")]
+    Access(#[source] std::io::Error),
+    /// The path is a directory.
+    #[error("path is a directory, not a file")]
+    IsDirectory,
+    /// The file is over the size ceiling.
+    #[error("file too large: {size} bytes (max {max})")]
+    TooLarge {
+        /// The file's size.
+        size: u64,
+        /// The ceiling.
+        max: u64,
+    },
+    /// The extension is not in the table (`""` for a file without one).
+    #[error("unsupported file type: {0}")]
+    UnsupportedType(String),
+    /// The file could not be read.
+    #[error("cannot read file: {0}")]
+    Read(#[source] std::io::Error),
+}
+
+/// The MIME type for `path`'s extension, or the Go refusal (chat/file.go
 /// `DetectMimeType`). The extension is lower-cased; a file without one gets `""`, whose
 /// message reads `"unsupported file type: "`, exactly as in Go.
-pub(crate) fn detect_mime_type(path: &Path) -> Result<&'static str, String> {
+pub(crate) fn detect_mime_type(path: &Path) -> Result<&'static str, AttachError> {
     let ext = go_ext(path);
     MIME_TYPES
         .iter()
         .find(|(k, _)| *k == ext)
         .map(|(_, v)| *v)
-        .ok_or_else(|| format!("unsupported file type: {ext}"))
+        .ok_or(AttachError::UnsupportedType(ext))
 }
 
 /// Expands a leading `"~/"` against `home` (chat/file.go `ReadAttachment`). A host with
 /// no home directory refuses rather than reading a literal `./~/…`.
-fn expand_home(path: &str, home: Option<&Path>) -> Result<PathBuf, String> {
+fn expand_home(path: &str, home: Option<&Path>) -> Result<PathBuf, AttachError> {
     let Some(rest) = path.strip_prefix("~/") else {
         return Ok(PathBuf::from(path));
     };
-    home.map(|h| h.join(rest))
-        .ok_or_else(|| "cannot resolve home dir: $HOME is not defined".to_owned())
+    home.map(|h| h.join(rest)).ok_or(AttachError::NoHome)
 }
 
 /// Reads one attachment, with `home` supplied rather than probed — the whole function is
@@ -102,20 +130,23 @@ fn expand_home(path: &str, home: Option<&Path>) -> Result<PathBuf, String> {
 /// The checks run in Go's order, because the error the user sees should name the FIRST
 /// thing that was wrong: reachable → not a directory → within the size cap → a known
 /// type → readable.
-pub(crate) fn read_attachment_in(path: &str, home: Option<&Path>) -> Result<Attachment, String> {
+pub(crate) fn read_attachment_in(
+    path: &str,
+    home: Option<&Path>,
+) -> Result<Attachment, AttachError> {
     let path = expand_home(path, home)?;
-    let info = std::fs::metadata(&path).map_err(|e| format!("cannot access file: {e}"))?;
+    let info = std::fs::metadata(&path).map_err(AttachError::Access)?;
     if info.is_dir() {
-        return Err("path is a directory, not a file".to_owned());
+        return Err(AttachError::IsDirectory);
     }
     if info.len() > MAX_FILE_SIZE {
-        return Err(format!(
-            "file too large: {} bytes (max {MAX_FILE_SIZE})",
-            info.len()
-        ));
+        return Err(AttachError::TooLarge {
+            size: info.len(),
+            max: MAX_FILE_SIZE,
+        });
     }
     let mime_type = detect_mime_type(&path)?;
-    let data = std::fs::read(&path).map_err(|e| format!("cannot read file: {e}"))?;
+    let data = std::fs::read(&path).map_err(AttachError::Read)?;
     Ok(Attachment {
         filename: path
             .file_name()
@@ -127,7 +158,7 @@ pub(crate) fn read_attachment_in(path: &str, home: Option<&Path>) -> Result<Atta
 }
 
 /// [`read_attachment_in`] against the host's real home directory.
-pub(crate) fn read_attachment(path: &str) -> Result<Attachment, String> {
+pub(crate) fn read_attachment(path: &str) -> Result<Attachment, AttachError> {
     read_attachment_in(path, crate::app::user_home().as_deref())
 }
 
@@ -274,23 +305,27 @@ mod tests {
             ("a.rs", "text/plain"),
             ("dir/deep/notes.md", "text/plain"),
         ] {
-            assert_eq!(detect_mime_type(Path::new(path)), Ok(want), "{path}");
+            assert_eq!(detect_mime_type(Path::new(path)).ok(), Some(want), "{path}");
         }
         assert_eq!(
-            detect_mime_type(Path::new("a.exe")),
-            Err("unsupported file type: .exe".to_owned())
+            detect_mime_type(Path::new("a.exe"))
+                .unwrap_err()
+                .to_string(),
+            "unsupported file type: .exe"
         );
         assert_eq!(
-            detect_mime_type(Path::new("Makefile")),
-            Err("unsupported file type: ".to_owned())
+            detect_mime_type(Path::new("Makefile"))
+                .unwrap_err()
+                .to_string(),
+            "unsupported file type: "
         );
         // Go's `filepath.Ext` treats a leading dot as the extension, so a dotfile is named
         // in the refusal — and a file literally called ".md" IS a text file.
         assert_eq!(
-            detect_mime_type(Path::new(".env")),
-            Err("unsupported file type: .env".to_owned())
+            detect_mime_type(Path::new(".env")).unwrap_err().to_string(),
+            "unsupported file type: .env"
         );
-        assert_eq!(detect_mime_type(Path::new(".md")), Ok("text/plain"));
+        assert_eq!(detect_mime_type(Path::new(".md")).ok(), Some("text/plain"));
     }
 
     /// `read_attachment`'s refusals, in Go's order (chat/file.go:59-92). Every message is
@@ -299,10 +334,14 @@ mod tests {
     fn read_attachment_refusals_are_byte_exact() {
         let dir = tempfile::tempdir().expect("tempdir");
         let missing = dir.path().join("nope.txt");
-        let err = read_attachment_in(&missing.to_string_lossy(), None).expect_err("must fail");
+        let err = read_attachment_in(&missing.to_string_lossy(), None)
+            .expect_err("must fail")
+            .to_string();
         assert!(err.starts_with("cannot access file: "), "{err}");
 
-        let err = read_attachment_in(&dir.path().to_string_lossy(), None).expect_err("must fail");
+        let err = read_attachment_in(&dir.path().to_string_lossy(), None)
+            .expect_err("must fail")
+            .to_string();
         assert_eq!(err, "path is a directory, not a file");
 
         let big = dir.path().join("big.txt");
@@ -311,7 +350,9 @@ mod tests {
             vec![b'x'; usize::try_from(MAX_FILE_SIZE).unwrap_or(0) + 1],
         )
         .expect("write");
-        let err = read_attachment_in(&big.to_string_lossy(), None).expect_err("must fail");
+        let err = read_attachment_in(&big.to_string_lossy(), None)
+            .expect_err("must fail")
+            .to_string();
         assert_eq!(
             err,
             format!("file too large: {} bytes (max 20971520)", MAX_FILE_SIZE + 1)
@@ -321,8 +362,10 @@ mod tests {
         let unknown = dir.path().join("tool.exe");
         std::fs::write(&unknown, b"MZ").expect("write");
         assert_eq!(
-            read_attachment_in(&unknown.to_string_lossy(), None),
-            Err("unsupported file type: .exe".to_owned())
+            read_attachment_in(&unknown.to_string_lossy(), None)
+                .unwrap_err()
+                .to_string(),
+            "unsupported file type: .exe"
         );
     }
 
@@ -345,8 +388,10 @@ mod tests {
 
         // No home: the expansion refuses rather than reading a literal "~/…".
         assert_eq!(
-            read_attachment_in("~/notes.md", None),
-            Err("cannot resolve home dir: $HOME is not defined".to_owned())
+            read_attachment_in("~/notes.md", None)
+                .unwrap_err()
+                .to_string(),
+            "cannot resolve home dir: $HOME is not defined"
         );
     }
 
