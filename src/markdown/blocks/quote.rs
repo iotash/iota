@@ -7,13 +7,14 @@
 //! already-fitted tables/code pass through un-rewrapped; under no-color the bar glyph
 //! is still drawn, colorless (`TUI_DESIGN` §7).
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use crate::markdown::blocks::close_view;
 use crate::markdown::blocks::table::word_wrap_ansi;
 use crate::markdown::style::Style;
 use crate::markdown::{PreviewHandle, Sink};
 use crate::markdown::{RenderOptions, Writer};
+use crate::sync::lock;
 use crate::text::ansi::ansi_width;
 
 /// The terminal columns the quote frame adds around its text: the left border glyph
@@ -84,10 +85,7 @@ struct BufSink {
 
 impl Sink for BufSink {
     fn write(&mut self, rendered: &str) {
-        self.out
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push_str(rendered);
+        lock(&self.out).push_str(rendered);
     }
 
     fn width(&self) -> usize {
@@ -124,7 +122,7 @@ pub(crate) fn render_quote(body: &[String], width: usize, opts: RenderOptions) -
     child.flush();
     drop(child);
 
-    let content = out.lock().unwrap_or_else(PoisonError::into_inner);
+    let content = lock(&out);
     let content = content.trim_end_matches('\n');
     let pin = width.saturating_sub(1).max(QUOTE_BORDER_COLS + 1);
     let text_w = pin - 1; // minus the left padding column: text wraps at width−2
