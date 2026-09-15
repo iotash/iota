@@ -7,7 +7,7 @@ use crate::BoxFuture;
 use crate::provider::model::{JsonObject, ToolDef};
 use crate::tool::context::RunCtx;
 use crate::tool::error::ToolError;
-use crate::tool::{DeferredToolStatus, Dispatcher, Presentation, ToolResult, ToolSearcher};
+use crate::tool::{DeferredToolStatus, Dispatcher, Owner, Presentation, ToolResult, ToolSearcher};
 
 /// The merged dispatcher; parts are consulted in order.
 pub(crate) struct Merged {
@@ -20,8 +20,9 @@ pub fn merge(parts: Vec<Arc<dyn Dispatcher>>) -> Arc<dyn Dispatcher> {
 }
 
 impl Merged {
-    /// The part that owns `name`: a part with an [`Owner`] answers for itself (no scan either way);
-    /// any other part is scanned through `tools()`.
+    /// The part that owns `name`: a part with an [`Owner`] answers for itself — the registry, the MCP
+    /// manager, a defer wrapper and a nested merge all have one, so the product graph never walks a
+    /// `tools()` clone here; a part without one (a test fake) is scanned through `tools()`.
     fn owner(&self, name: &str) -> Option<&Arc<dyn Dispatcher>> {
         self.parts.iter().find(|p| {
             p.as_owner().map_or_else(
@@ -32,7 +33,23 @@ impl Merged {
     }
 }
 
+impl Owner for Merged {
+    /// Whether any part owns `name` — the parts' own oracles, first match.
+    fn owns(&self, name: &str) -> bool {
+        self.owner(name).is_some()
+    }
+}
+
 impl Dispatcher for Merged {
+    /// The merged oracle — only when EVERY part has one, so that an answer never falls back to a
+    /// `tools()` scan (a merge with a scanning fake in it vouches for nothing, like before).
+    fn as_owner(&self) -> Option<&dyn Owner> {
+        self.parts
+            .iter()
+            .all(|p| p.as_owner().is_some())
+            .then_some(self as &dyn Owner)
+    }
+
     /// Re-queries every part; dedup by name, earlier part wins; part order then inner order.
     fn tools(&self) -> Vec<ToolDef> {
         let mut seen = HashSet::new();

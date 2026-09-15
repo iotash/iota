@@ -9,7 +9,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, PoisonError, RwLock},
+    sync::{Arc, RwLock},
     time::Duration,
 };
 
@@ -17,10 +17,11 @@ use crate::BoxFuture;
 use crate::app::env::Env;
 use crate::mcp::config::{ServerConfig, endpoint_of, expand_server_config};
 use crate::provider::model::{JsonObject, ToolDef};
+use crate::sync::{read, write};
 use crate::text::truncate_to_char_boundary;
 use crate::tool::context::RunCtx;
 use crate::tool::error::ToolError;
-use crate::tool::{Dispatcher, PrefixOf, ToolOutput, ToolResult};
+use crate::tool::{Dispatcher, Owner, PrefixOf, ToolOutput, ToolResult};
 use sha2::{Digest, Sha256};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -260,6 +261,9 @@ pub(crate) struct State {
     pub(crate) segments: HashSet<String>,
     /// Statuses index-aligned with the configs.
     pub(crate) servers: Vec<ServerStatus>,
+    /// Wire prefix by server name, filled at merge — the FIRST connected server of a name, as the status
+    /// scan it replaced answered (`prefix_of`).
+    pub(crate) prefix_by_name: HashMap<String, String>,
 }
 
 impl State {
@@ -428,7 +432,7 @@ impl Manager {
 
     /// `{name, endpoint}` of server `i` as seeded by `new` (state `Connecting`, no tools).
     fn seed_status(&self, i: usize) -> ServerStatus {
-        let st = self.state.read().unwrap_or_else(PoisonError::into_inner);
+        let st = read(&self.state);
         st.servers
             .get(i)
             .map(|s| ServerStatus {
@@ -448,24 +452,16 @@ impl Manager {
 
     /// Snapshot of every server's status (index-aligned with the configs).
     pub fn servers(&self) -> Vec<ServerStatus> {
-        self.state
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .servers
-            .clone()
+        read(&self.state).servers.clone()
     }
 
-    /// `crate::tool::PrefixOf` — scans `servers()` for the name and returns its `wire_prefix()`; queried lazily
-    /// per call.
+    /// `crate::tool::PrefixOf` — one lookup in the name → prefix table `merge_result` fills (`""` for a name
+    /// no connected server has); queried lazily per call. Until 2026-09-15 every call scanned `servers()`.
     pub fn prefix_of(self: &Arc<Self>) -> PrefixOf {
         let manager = Arc::clone(self);
         Arc::new(move |name: &str| {
-            let st = manager.state.read().unwrap_or_else(PoisonError::into_inner);
-            st.servers
-                .iter()
-                .find(|s| s.name == name)
-                .map(ServerStatus::wire_prefix)
-                .unwrap_or_default()
+            let st = read(&manager.state);
+            st.prefix_by_name.get(name).cloned().unwrap_or_default()
         })
     }
 
@@ -473,7 +469,7 @@ impl Manager {
     /// lock with `timeout(10 s, ..)`. Idempotent.
     pub async fn close(&self) {
         let sessions: Vec<Arc<dyn Session>> = {
-            let mut st = self.state.write().unwrap_or_else(PoisonError::into_inner);
+            let mut st = write(&self.state);
             st.tool_index.clear();
             st.tools.clear();
             st.sessions.iter_mut().filter_map(Option::take).collect()
@@ -497,7 +493,7 @@ impl Manager {
     /// compiled out of the shipped binary, so no user ever saw it (DIVERGENCES X-29). Warnings meant for the user
     /// travel in the status now; `tracing` is the developer's diagnostic channel (`IOTA_LOG`).
     pub(crate) fn merge_result(&self, idx: usize, r: ServerResult) -> ServerStatus {
-        let mut st = self.state.write().unwrap_or_else(PoisonError::into_inner);
+        let mut st = write(&self.state);
         let status = match r {
             ServerResult::Failed(status) => status,
             ServerResult::Connected {
@@ -528,6 +524,9 @@ impl Manager {
                     );
                 }
                 status.state = ServerState::Connected { segment };
+                st.prefix_by_name
+                    .entry(status.name.clone())
+                    .or_insert_with(|| status.wire_prefix());
                 status
             }
         };
@@ -538,14 +537,22 @@ impl Manager {
     }
 }
 
+impl Owner for Manager {
+    /// One `tool_index` lookup under the read lock — never a `tools()` clone. Empty after `close`, like
+    /// the index.
+    fn owns(&self, name: &str) -> bool {
+        read(&self.state).tool_index.contains_key(name)
+    }
+}
+
 impl Dispatcher for Manager {
     /// Clone of the namespaced tool list under the read lock.
     fn tools(&self) -> Vec<ToolDef> {
-        self.state
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .tools
-            .clone()
+        read(&self.state).tools.clone()
+    }
+
+    fn as_owner(&self) -> Option<&dyn Owner> {
+        Some(self)
     }
 
     /// Looks up the target, clones the `Session` `Arc`, DROPS the lock, then calls. Unknown or closed →
@@ -559,7 +566,7 @@ impl Dispatcher for Manager {
     ) -> BoxFuture<'a, ToolResult> {
         Box::pin(async move {
             let target = {
-                let st = self.state.read().unwrap_or_else(PoisonError::into_inner);
+                let st = read(&self.state);
                 st.tool_index.get(name).and_then(|t| {
                     st.sessions
                         .get(t.session)

@@ -8,7 +8,7 @@ use crate::provider::model::{JsonObject, ToolDef};
 use crate::text::go_quote;
 use crate::tool::context::RunCtx;
 use crate::tool::error::ToolError;
-use crate::tool::{Dispatcher, Presentation, Tool, ToolEnv, ToolResult};
+use crate::tool::{Dispatcher, Owner, Presentation, Tool, ToolEnv, ToolResult};
 
 use crate::tool::sets::{RawNode, ToolsConfig, set_factory};
 use crate::tool::yaml11::is_false_scalar;
@@ -89,10 +89,21 @@ impl Registry {
     }
 }
 
+impl Owner for Registry {
+    /// One index lookup — never a `tools()` walk.
+    fn owns(&self, name: &str) -> bool {
+        self.index.contains_key(name)
+    }
+}
+
 impl Dispatcher for Registry {
     /// Definitions in registration order.
     fn tools(&self) -> Vec<ToolDef> {
         self.order.iter().map(|t| t.def()).collect()
+    }
+
+    fn as_owner(&self) -> Option<&dyn Owner> {
+        Some(self)
     }
 
     /// Routes to the named tool; unknown → `ToolError::UnknownTool(name)`.

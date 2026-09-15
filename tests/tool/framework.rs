@@ -1056,10 +1056,21 @@ async fn merge_owner_three_way_and_first_capable_search() {
             .search_tools("h")
             .is_empty()
     );
-    // Without a capable part the merged view has none.
+    // Without a capable part the merged view has none — and a scanning part keeps it from vouching.
     let none = merge(vec![Arc::clone(&scanning) as Arc<dyn Dispatcher>]);
     assert!(none.as_tool_searcher().is_none());
     assert!(none.as_owner().is_none());
+    assert!(merged.as_owner().is_none());
+    // A merge whose every part vouches vouches itself: its oracle is the parts' oracles, first match.
+    let vouching = merge(vec![
+        Arc::clone(&disowning) as Arc<dyn Dispatcher>,
+        Arc::clone(&hidden) as Arc<dyn Dispatcher>,
+    ]);
+    let oracle = vouching.as_owner().expect("every part has an oracle");
+    assert!(
+        oracle.owns("ghost"),
+        "the owning part answers for the ghost"
+    );
 }
 
 // The registry reports

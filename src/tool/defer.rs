@@ -499,7 +499,11 @@ impl Owner for DeferDispatcher {
     /// defer.go:436-446: ownership including HIDDEN tools — Merge routes direct calls here so the implicit-load
     /// path works through the merged dispatcher.
     fn owns(&self, name: &str) -> bool {
-        name == SEARCH_TOOL_NAME || self.inner.tools().iter().any(|d| d.name == name)
+        name == SEARCH_TOOL_NAME
+            || self.inner.as_owner().map_or_else(
+                || self.inner.tools().iter().any(|d| d.name == name),
+                |o| o.owns(name),
+            )
     }
 }
 
