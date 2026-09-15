@@ -1,8 +1,8 @@
 //! `uiMDSink` (chat/uisink.go): the `crate::markdown::sink::Sink` implementation over the
 //! facade — batches ALL complete lines of one write into ONE commit (the anti-crawl law),
 //! materializes the transcript's latched separator before a preview opens (`preOpen`),
-//! and bridges `crate::ui::facade::PreviewHandle` → `crate::markdown::sink::PreviewHandle` —
-//! plus `lineCommitter` (the SGR-reset glue rule).
+//! and hands the facade's `PreviewHandle` straight through to the renderer (the same trait,
+//! `crate::markdown::preview`) — plus `lineCommitter` (the SGR-reset glue rule).
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 

@@ -1,10 +1,9 @@
 //! The purity seam (markdown.go:137-141): where rendered output goes, and the metered
-//! preview a buffering block opens while it streams. The preview handle is the UI
-//! facade's — the renderer only consumes it (one raw source line per call, `close` once
-//! per flush; `Send` because a `Writer` parks its open previews inside itself and the
-//! interactive renderer lives in a `StreamSink`).
+//! preview a buffering block opens while it streams. The preview handle is
+//! [`PreviewHandle`] (`markdown::preview`), this module's own contract — the renderer
+//! consumes it (one raw source line per call, `close` once per flush) and the UI implements it.
 
-pub use crate::ui::facade::PreviewHandle;
+use crate::markdown::preview::PreviewHandle;
 
 /// Where rendered output goes. `width()` is consulted LIVE per block flush (a
 /// mid-stream resize affects the NEXT block). `block_preview` returns `None` in the

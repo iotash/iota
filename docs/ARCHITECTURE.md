@@ -92,7 +92,7 @@ all three into `chat/`) the Rust split is KEPT as modules. Visibility is Rust-id
 | `mcp/{mod,config,manager,naming,status,transport,error}.rs` | mcp/ | `ServerConfig`/`parse_mcp_flag` (`config`), the rmcp manager |
 | `chat/{mod,once,run,batch,report,images,delegator,error}.rs` | chat/chat.go, output.go, parallel.go, images.go, delegate.go | the headless loop (the run context it shares with the tools is `tool/context.rs`) |
 | `session/{mod,meta,params,record,rawcodec,id,store,writer,loader,tuning,error}.rs` | chat/session.go, settings.go | the on-disk bundle store (never reads the process environment — ci.sh grep) |
-| `markdown/{mod,inline,table,list,quote,code,link,math,style,sink,highlight}.rs` | internal/markdown | the streaming markdown→ANSI renderer; `highlight.rs` = the `CodeHighlighter` seam AND its syntect impl |
+| `markdown/{mod,inline,table,list,quote,code,link,math,style,sink,preview,highlight}.rs` | internal/markdown | the streaming markdown→ANSI renderer; `highlight.rs` = the `CodeHighlighter` seam AND its syntect impl; `preview.rs` = the `PreviewHandle` contract the renderer consumes and `ui` implements (Phase 5 PR-5 — the edge points down, `ui` → `markdown`) |
 | `markdown/html.rs` | (goldmark + chroma in chat/export.go) | T3, WP65: comrak safe-mode GFM → HTML with the syntect `SyntaxHighlighterAdapter` over the two-face syntax set, chroma-shaped `<pre class="chroma">` |
 | `ui/facade.rs` | docs/design/ui-architecture.md | the `Ui` trait + value types + guards (what `repl` talks to) |
 | `ui/{mod,event_loop,frame,region,sink,composer,paste,keys,suggest,surface/…,handle,oneshot,term,osc,spans,theme,clipboard,debug,msgs}.rs` | internal/ui | the inline terminal engine — the ONLY module allowed to name ratatui/crossterm (ci.sh grep) |

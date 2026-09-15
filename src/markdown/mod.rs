@@ -28,6 +28,7 @@ pub(crate) mod inline;
 pub(crate) mod link;
 pub(crate) mod list;
 pub(crate) mod math;
+pub(crate) mod preview;
 pub(crate) mod quote;
 pub(crate) mod sink;
 pub(crate) mod style;
@@ -35,7 +36,8 @@ pub(crate) mod table;
 
 pub use highlight::{CodeHighlighter, PlainIndent, SyntectHighlighter};
 pub use link::hyperlink;
-pub use sink::{PreviewHandle, Sink};
+pub use preview::PreviewHandle;
+pub use sink::Sink;
 pub use style::Style;
 
 use crate::markdown::inline::{highlight_line, is_block_line, is_list_line, split_list_marker};

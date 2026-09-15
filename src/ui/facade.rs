@@ -721,16 +721,11 @@ impl Drop for ScopeGuard {
     }
 }
 
-/// Metered block-preview handle (sink.go `previewWriter` contract): the writer COUNTS raw
-/// source lines; one row `"label · N lines"`; 150ms throttle, FIRST tick delayed a full
-/// period; close is deferred (the row stays until the rendered block morphs it). Drop = close.
-/// The markdown renderer consumes the same trait (`crate::markdown::sink` re-exports it).
-pub trait PreviewHandle: Send {
-    /// Counts one raw source line into the metered row.
-    fn write_raw_line(&mut self, line: &str);
-    /// Deferred close: the row stays until the rendered block morphs it.
-    fn close(&mut self);
-}
+/// The metered block-preview handle is the markdown renderer's contract
+/// (`markdown::preview`, re-exported as [`crate::markdown::PreviewHandle`]); the facade re-exports
+/// it too because [`UiStreamSink::block_preview`] hands one out and `ui::sink::PreviewWriter`
+/// implements it.
+pub use crate::markdown::preview::PreviewHandle;
 
 /// Turn-scoped stream handle (ui.go `StreamSink`). `done()` drops a leaked preview and pops
 /// the turn cancel scope.

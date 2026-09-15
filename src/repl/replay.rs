@@ -309,10 +309,7 @@ impl crate::markdown::sink::Sink for EchoSink {
         self.width
     }
 
-    fn block_preview(
-        &mut self,
-        _label: &str,
-    ) -> Option<Box<dyn crate::markdown::sink::PreviewHandle>> {
+    fn block_preview(&mut self, _label: &str) -> Option<Box<dyn crate::markdown::PreviewHandle>> {
         None
     }
 }

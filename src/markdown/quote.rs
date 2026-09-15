@@ -8,9 +8,9 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::markdown::sink::{PreviewHandle, Sink};
 use crate::markdown::style::Style;
 use crate::markdown::table::word_wrap_ansi;
+use crate::markdown::{PreviewHandle, Sink};
 use crate::markdown::{RenderOptions, Writer};
 use crate::text::ansi::ansi_width;
 
