@@ -157,7 +157,7 @@ fn commit(provider: &mut dyn Provider, writer: &WriterSlot, name: &str) {
 fn report_elsewhere(repl: &Repl, catalog: &ModelCatalog, provider: &str, id: &str) {
     let agent = catalog.agent();
     let agent = if agent.is_empty() { "<agent>" } else { agent };
-    repl.tr.notice(&format!(
+    repl.handles.tr.notice(&format!(
         "{provider}:{id} runs on another provider; a session keeps the endpoint it started on \
          (its history is that dialect's). Start one there: iota run {agent} -M {provider}:{id}"
     ));
@@ -173,11 +173,11 @@ fn report_elsewhere(repl: &Repl, catalog: &ModelCatalog, provider: &str, id: &st
 /// against the `models:` entry the chosen id names: a run that started on a `provider:*`
 /// wildcard had no entry to read them from until now (brain page `model-param-layering`).
 pub(crate) async fn ensure_model(repl: &mut Repl, cancel: &CancellationToken) -> bool {
-    let ui = Arc::clone(&repl.ui);
+    let ui = Arc::clone(&repl.handles.ui);
     let tab = model_tab(
         &ui,
-        &repl.catalog,
-        &*repl.provider,
+        &repl.conv.catalog,
+        &*repl.conv.provider,
         "Select a model",
         None,
         cancel,
@@ -195,22 +195,22 @@ pub(crate) async fn ensure_model(repl: &mut Repl, cancel: &CancellationToken) ->
         Ok(r) if !r.cancelled => r
             .panels
             .first()
-            .and_then(|p| chosen(&values, &repl.catalog, p)),
+            .and_then(|p| chosen(&values, &repl.conv.catalog, p)),
         _ => None,
     };
     let Some(chosen) = chosen else { return false };
-    let name = match repl.catalog.pick(&chosen) {
+    let name = match repl.conv.catalog.pick(&chosen) {
         Pick::Here(id) => id,
         Pick::Elsewhere(provider, id) => {
-            report_elsewhere(repl, &repl.catalog, &provider, &id);
+            report_elsewhere(repl, &repl.conv.catalog, &provider, &id);
             return false;
         }
     };
     if name.is_empty() {
         return false;
     }
-    commit(&mut *repl.provider, &repl.writer, &name);
-    repl.tr.notice(&format!("Using model: {name}"));
+    commit(&mut *repl.conv.provider, &repl.session.writer, &name);
+    repl.handles.tr.notice(&format!("Using model: {name}"));
     crate::repl::liveparams::switch_model(repl, &name);
     true
 }
@@ -227,22 +227,23 @@ pub(crate) async fn ensure_model(repl: &mut Repl, cancel: &CancellationToken) ->
 /// { continue }`): commands never end the loop — a closed facade ends it at the next
 /// `read_input`, which is the ONE exit path.
 pub(crate) async fn cmd_model(repl: &mut Repl) {
-    let cancel = &repl.cancel.clone();
+    let cancel = &repl.handles.cancel.clone();
     // The read-only System tab shows the prompt AS SENT, so it needs the same overlay the
     // message path composes with (chat/run.go:624).
     let overlay = repl
+        .conv
         .overlay
         .as_ref()
         .map_or_else(String::new, crate::agents::Overlay::content);
     let current = Candidate {
-        provider: repl.catalog.session_provider().to_owned(),
-        id: repl.provider.model().to_owned(),
+        provider: repl.conv.catalog.session_provider().to_owned(),
+        id: repl.conv.provider.model().to_owned(),
     };
-    let ui = Arc::clone(&repl.ui);
+    let ui = Arc::clone(&repl.handles.ui);
     let tab = model_tab(
         &ui,
-        &repl.catalog,
-        &*repl.provider,
+        &repl.conv.catalog,
+        &*repl.conv.provider,
         "Model",
         Some(&current),
         cancel,
@@ -254,11 +255,18 @@ pub(crate) async fn cmd_model(repl: &mut Repl) {
     // The Model tab is index 0; every capability tab records its own index as it lands.
     let ModelTab { values, panel, .. } = tab;
     let mut panels = vec![panel];
-    let window = repl.budget.window();
-    let history = std::mem::take(&mut repl.history);
-    let extras = Extras::assemble(&mut *repl.provider, window, &history, &overlay, &mut panels);
-    repl.history = history;
+    let window = repl.conv.budget.window();
+    let history = std::mem::take(&mut repl.conv.history);
+    let extras = Extras::assemble(
+        &mut *repl.conv.provider,
+        window,
+        &history,
+        &overlay,
+        &mut panels,
+    );
+    repl.conv.history = history;
     let Ok(r) = repl
+        .handles
         .ui
         .tabbed(
             cancel,
@@ -277,13 +285,13 @@ pub(crate) async fn cmd_model(repl: &mut Repl) {
     let chosen = r
         .panels
         .first()
-        .and_then(|p| chosen(&values, &repl.catalog, p));
+        .and_then(|p| chosen(&values, &repl.conv.catalog, p));
     // Picking the "(not selected)" row, or leaving the field empty, is a no-op.
     let mut changed = false;
-    match chosen.as_ref().map(|c| repl.catalog.pick(c)) {
+    match chosen.as_ref().map(|c| repl.conv.catalog.pick(c)) {
         Some(Pick::Here(id)) if !id.is_empty() && id != current.id => {
-            commit(&mut *repl.provider, &repl.writer, &id);
-            repl.tr.notice(&format!("Model switched to {id}"));
+            commit(&mut *repl.conv.provider, &repl.session.writer, &id);
+            repl.handles.tr.notice(&format!("Model switched to {id}"));
             // The model decides the four layered parameters again: `agents:` → the NEW model's
             // `models:` entry → what the session is already running under, minus whatever the
             // model just left had declared (brain page `model-param-layering`). It runs BEFORE
@@ -294,13 +302,13 @@ pub(crate) async fn cmd_model(repl: &mut Repl) {
             changed = true;
         }
         Some(Pick::Elsewhere(provider, id)) => {
-            report_elsewhere(repl, &repl.catalog, &provider, &id);
+            report_elsewhere(repl, &repl.conv.catalog, &provider, &id);
         }
         Some(Pick::Here(_)) | None => {}
     }
     changed |= extras.apply(&r, repl);
     if !changed {
-        repl.tr.notice("No changes.");
+        repl.handles.tr.notice("No changes.");
     }
 }
 

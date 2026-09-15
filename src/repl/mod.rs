@@ -16,6 +16,8 @@ pub(crate) mod liveparams;
 /// What the loop draws.
 pub(crate) mod render;
 pub mod run;
+/// The loop's state in three parts: the conversation, the session slot, the UI handles.
+pub(crate) mod state;
 /// The `/model` surface's read-only System tab (WP54).
 pub(crate) mod systemtab;
 pub(crate) mod title;

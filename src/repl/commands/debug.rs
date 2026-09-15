@@ -223,7 +223,7 @@ pub(crate) fn json_indent(body: &[u8]) -> Option<String> {
 /// bare `/debug` does. The loop is Go's v1 shape: commit → apply the switch wherever focus was →
 /// drill into the highlighted row → reopen the list.
 pub(crate) async fn cmd_debug(repl: &mut Repl, arg: &str) {
-    let cancel = &repl.cancel.clone();
+    let cancel = &repl.handles.cancel.clone();
     match arg {
         "on" | "off" => {
             set_recording(repl, arg == "on");
@@ -232,7 +232,7 @@ pub(crate) async fn cmd_debug(repl: &mut Repl, arg: &str) {
         _ => {}
     }
     loop {
-        let log = Arc::clone(&repl.reqlog);
+        let log = Arc::clone(&repl.handles.reqlog);
         let rows = move || request_rows(&log.entries());
         let spec = TabbedSpec {
             refresh_every_ms: DEBUG_REFRESH_MS,
@@ -240,11 +240,11 @@ pub(crate) async fn cmd_debug(repl: &mut Repl, arg: &str) {
                 Panel::list(TAB_MESSAGES.to_owned(), rows())
                     .with_search(true)
                     .with_refresh(Box::new(rows)),
-                Panel::switch(TAB_VERBOSE.to_owned(), repl.reqlog.verbose()),
+                Panel::switch(TAB_VERBOSE.to_owned(), repl.handles.reqlog.verbose()),
             ],
             ..TabbedSpec::default()
         };
-        let Ok(result) = repl.ui.tabbed(cancel, spec).await else {
+        let Ok(result) = repl.handles.ui.tabbed(cancel, spec).await else {
             break;
         };
         if result.cancelled {
@@ -253,14 +253,14 @@ pub(crate) async fn cmd_debug(repl: &mut Repl, arg: &str) {
         // Enter commits ALL tabs: the Verbose switch applies wherever focus was (flip on the
         // switch tab, Tab back, drill in — the flip still lands).
         if let Some(p) = result.panels.get(1)
-            && p.on != repl.reqlog.verbose()
+            && p.on != repl.handles.reqlog.verbose()
         {
             set_recording(repl, p.on);
         }
         if result.focused == 1 {
             break; // nothing to drill into from the switch tab
         }
-        let entries = repl.reqlog.entries();
+        let entries = repl.handles.reqlog.entries();
         let i = result.panels.first().map_or(usize::MAX, |p| p.cursor);
         let Some(entry) = entries.get(i) else {
             break;
@@ -274,15 +274,16 @@ pub(crate) async fn cmd_debug(repl: &mut Repl, arg: &str) {
             ],
             ..TabbedSpec::default()
         };
-        let _ = repl.ui.tabbed(cancel, drill).await;
+        let _ = repl.handles.ui.tabbed(cancel, drill).await;
     }
 }
 
 /// Flips recording, prints the matching dim notice and republishes the status row's `debug`
 /// segment (run.go:866-873,891-898).
 fn set_recording(repl: &Repl, on: bool) {
-    repl.reqlog.set_verbose(on);
-    repl.tr
+    repl.handles.reqlog.set_verbose(on);
+    repl.handles
+        .tr
         .notice(if on { RECORDING_ON } else { RECORDING_OFF });
     repl.push_status();
 }

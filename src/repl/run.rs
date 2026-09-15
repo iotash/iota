@@ -2,7 +2,7 @@
 //! `TUI_DESIGN` §8.3).
 //!
 //! The loop is deliberately IMPERATIVE and deliberately outside `crate::ui`: it talks to the
-//! terminal only through the [`Ui`] facade, and everything below the facade (the frame
+//! terminal only through the [`Ui`](crate::ui::facade::Ui) facade, and everything below the facade (the frame
 //! engine, the composer, the surfaces) knows nothing about chat. Its shape is Go's, in
 //! Go's order:
 //!
@@ -30,12 +30,9 @@ use crate::agents::skills::Skill;
 use crate::host::{Event, Kind, Presenter, State};
 use crate::llm::reqlog::RequestLog;
 use crate::markdown::CodeTheme;
-use crate::provider::Provider;
-use crate::provider::model::{AssistantBody, Attachment, Body, Message};
-use crate::session::{SessionStore, SessionWriter};
-use crate::tool::Dispatcher;
-use crate::ui::facade::{InputKind, StatusData, Ui};
-use tokio::task::JoinHandle;
+use crate::provider::model::{AssistantBody, Body, Message};
+use crate::session::SessionWriter;
+use crate::ui::facade::{InputKind, StatusData};
 use tokio_util::sync::CancellationToken;
 
 use crate::repl::ReplError;
@@ -50,6 +47,7 @@ use crate::repl::render::banner::banner_lines;
 use crate::repl::render::mcpreport::report_mcp_failures;
 use crate::repl::render::replay::{RESUME_ECHO_ROUNDS, echo_rounds, last_rounds};
 use crate::repl::render::transcript::{Transcript, notify_digest};
+use crate::repl::state::{Conversation, SessionSlot, UiHandles};
 use crate::repl::title::{
     SessionTitle, TITLE_TIMEOUT, WriterSlot, generate_title_text, is_read_only_viewer,
     status_model_label, window_title,
@@ -157,81 +155,15 @@ pub struct RunParams {
 }
 
 /// The loop's mutable state — Go's `Run` stack, made addressable so the command handlers
-/// can live in their own files instead of one 900-line function.
+/// can live in their own files instead of one 900-line function — in its three parts
+/// (`crate::repl::state`).
 pub(crate) struct Repl {
-    /// The facade.
-    pub(crate) ui: Arc<dyn Ui>,
-    /// The single writer to the chat area.
-    pub(crate) tr: Arc<Transcript>,
-    /// The conversation provider.
-    pub(crate) provider: Box<dyn Provider>,
-    /// The tool dispatcher (LIVE — never cached).
-    pub(crate) dispatch: Arc<dyn Dispatcher>,
-    /// The run's background jobs (their notices arrive through the facade's queue, not through here).
-    pub(crate) jobs: Arc<crate::shell::jobs::Jobs>,
-    /// MCP display hooks.
-    pub(crate) mcp: McpHooks,
-    /// The session writer, shared with the title pass (`None` while ephemeral).
-    pub(crate) writer: WriterSlot,
-    /// The store behind `/session`.
-    pub(crate) store: SessionStore,
-    /// The agent-mode project bucket the listing is scoped to.
-    pub(crate) scope: Option<PathBuf>,
-    /// Mints the writer late (`/save`); `Some` = the chat started ephemeral.
-    pub(crate) new_session: Option<SessionFactory>,
-    /// The conversation.
-    pub(crate) history: Vec<Message>,
-    /// How much of `history` is on disk — never advanced by a failed append, so the next
-    /// successful persist retries the backlog.
-    pub(crate) persisted: usize,
-    /// Attachments riding the next user message.
-    pub(crate) pending: Vec<Attachment>,
-    /// The context window (and, from WP53, its occupancy).
-    pub(crate) budget: ContextBudget,
-    /// The token meter (inert for a provider without usage — T-10).
-    pub(crate) ctxm: CtxMeter,
-    /// The session's name across the turn lifecycle.
-    pub(crate) titler: Arc<SessionTitle>,
-    /// Root cancellation (the SIGTERM path).
-    pub(crate) cancel: CancellationToken,
-    /// The `/debug` request log (recording toggle + the inspector's rows).
-    pub(crate) reqlog: Arc<RequestLog>,
-    /// The host presenter.
-    pub(crate) pres: Arc<Presenter>,
-    /// The ONE command table (completion list, banner and dispatch read it).
-    pub(crate) table: CommandTable,
-    /// The conversation's ONE approval gate: the "allow for this session" grant is one grant
-    /// for one person (chat/run.go:172-186).
-    pub(crate) gate: Arc<ApprovalGate>,
-    /// Where generated images are saved, resolved LAZILY: a bundle materialises on first
-    /// use, and an image-less chat must not create one (chat/images.go:115).
-    pub(crate) images_dir: crate::repl::turn::ImagesDir,
-    /// A dedicated image provider bills per attempt (a relay 5xx can arrive AFTER a charged
-    /// generation), so its turns are never auto-retried.
-    pub(crate) image_provider: bool,
-    /// Whether the terminal background is dark; a host that knows better re-answers it
-    /// between turns.
-    pub(crate) dark: bool,
-    /// The agent-mode overlay woven into every send (`None` outside agent mode).
-    pub(crate) overlay: Option<Overlay>,
-    /// Agent-mode options: the project root and the skills home.
-    pub(crate) agent: crate::headless::AgentOptions,
-    /// The title pass's own provider instance (the conversation's is mid-call while a turn
-    /// streams); `None` for a dedicated image provider, which asked for a title would paint one.
-    pub(crate) title_provider: Option<Arc<tokio::sync::Mutex<Box<dyn Provider>>>>,
-    /// The in-flight title pass.
-    pub(crate) title_task: Option<JoinHandle<()>>,
-    /// The auto-compaction snooze watermark: the projected usage at which the user last
-    /// said "Not now" (0 = never asked). Cleared by any successful compaction.
-    pub(crate) compact_declined: u64,
-    /// Where each of the four layered parameters got the value the chat is running under. The values
-    /// themselves are read from the budget and the provider (`crate::repl::liveparams`); this is the only piece
-    /// of the layering with nowhere else to live.
-    pub(crate) param_sources: crate::session::ParamSources,
-    /// What a `/model` model switch re-evaluates those four against.
-    pub(crate) layers: crate::config::ParamLayers,
-    /// What `/model` offers: the agent's candidate set and the listers its wildcards need.
-    pub(crate) catalog: crate::repl::ModelCatalog,
+    /// What is being said, to which model, under which parameters.
+    pub(crate) conv: Conversation,
+    /// The bundle it is persisted into, and the name it carries.
+    pub(crate) session: SessionSlot,
+    /// The facade, the transcript, the presenter and the run's shared handles.
+    pub(crate) handles: UiHandles,
 }
 
 impl Repl {
@@ -245,13 +177,16 @@ impl Repl {
     /// nothing and says so, and the model goes out alone — the shape of every
     /// non-token-accounting provider.
     pub(crate) fn push_status(&self) {
-        let model = status_model_label(self.provider.model(), self.provider.kind().as_str());
-        if self.ctxm.publish_status(&model) {
+        let model = status_model_label(
+            self.conv.provider.model(),
+            self.conv.provider.kind().as_str(),
+        );
+        if self.conv.ctxm.publish_status(&model) {
             return;
         }
-        self.ui.set_status(StatusData {
+        self.handles.ui.set_status(StatusData {
             model,
-            debug: self.reqlog.verbose(),
+            debug: self.handles.reqlog.verbose(),
             ..StatusData::default()
         });
     }
@@ -262,48 +197,23 @@ impl Repl {
     /// carries the backlog — which is also how `/save` flushes a whole ephemeral chat in
     /// one append.
     pub(crate) fn persist_turn(&mut self) {
-        let mut slot = self.writer.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut slot = self
+            .session
+            .writer
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let Some(w) = slot.as_mut() else { return };
-        if self.persisted >= self.history.len() {
+        if self.session.persisted >= self.conv.history.len() {
             return;
         }
-        if let Err(e) = w.append_messages(&self.history[self.persisted..]) {
+        if let Err(e) = w.append_messages(&self.conv.history[self.session.persisted..]) {
             drop(slot);
-            self.tr
+            self.handles
+                .tr
                 .error(&format!("Warning: failed to save session: {e}"));
             return;
         }
-        self.persisted = self.history.len();
-    }
-
-    /// The live session id, or `""` while the chat is ephemeral.
-    pub(crate) fn session_id(&self) -> String {
-        self.with_writer(|w| w.id().to_owned())
-    }
-
-    /// The live session title, or `""`.
-    pub(crate) fn session_title(&self) -> String {
-        self.with_writer(|w| w.meta().title.clone())
-    }
-
-    /// A path of the live writer (`images_path()`), or `None` while the chat is ephemeral.
-    pub(crate) fn with_writer_path(
-        &self,
-        f: impl FnOnce(&SessionWriter) -> PathBuf,
-    ) -> Option<PathBuf> {
-        self.writer
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-            .map(f)
-    }
-
-    fn with_writer(&self, f: impl FnOnce(&SessionWriter) -> String) -> String {
-        self.writer
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-            .map_or_else(String::new, f)
+        self.session.persisted = self.conv.history.len();
     }
 }
 
@@ -512,38 +422,44 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     };
     let title_provider = title_provider.map(|p| Arc::new(tokio::sync::Mutex::new(p)));
     let mut repl = Repl {
-        ui: Arc::clone(&ui),
-        tr: Arc::clone(&tr),
-        provider,
-        dispatch: Arc::clone(&dispatch),
-        jobs: Arc::clone(&jobs),
-        mcp,
-        writer: Arc::clone(&writer),
-        store,
-        scope,
-        new_session,
-        history,
-        persisted,
-        pending: Vec::new(),
-        budget,
-        ctxm,
-        titler: Arc::clone(&titler),
-        cancel: root_cancel.clone(),
-        reqlog: Arc::clone(&reqlog),
-        pres: Arc::clone(&pres),
-        table,
-        gate: Arc::clone(&gate),
-        images_dir,
-        image_provider,
-        dark,
-        overlay,
-        agent,
-        title_provider,
-        title_task: None,
-        compact_declined: 0,
-        param_sources: params.sources(),
-        layers,
-        catalog,
+        conv: Conversation {
+            provider,
+            dispatch: Arc::clone(&dispatch),
+            history,
+            pending: Vec::new(),
+            budget,
+            ctxm,
+            param_sources: params.sources(),
+            layers,
+            catalog,
+            compact_declined: 0,
+            overlay,
+            agent,
+            image_provider,
+        },
+        session: SessionSlot {
+            writer: Arc::clone(&writer),
+            store,
+            scope,
+            new_session,
+            persisted,
+            titler: Arc::clone(&titler),
+            title_provider,
+            title_task: None,
+            images_dir,
+        },
+        handles: UiHandles {
+            ui: Arc::clone(&ui),
+            tr: Arc::clone(&tr),
+            pres: Arc::clone(&pres),
+            reqlog: Arc::clone(&reqlog),
+            table,
+            gate: Arc::clone(&gate),
+            mcp,
+            dark,
+            cancel: root_cancel.clone(),
+            jobs: Arc::clone(&jobs),
+        },
     };
     repl.push_status();
 
@@ -554,7 +470,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     // entirely for a provider with no token accounting.
     if fresh_bundle {
         let running = crate::repl::liveparams::current(&mut repl);
-        let window = token_aware.then(|| repl.budget.window());
+        let window = token_aware.then(|| repl.conv.budget.window());
         crate::repl::liveparams::stamp_bundle(&repl, window, &running);
     }
 
@@ -563,12 +479,12 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     // it at the next round boundary when a turn is running. ONE delivery path, no second queue.
     {
         let ui_sink = Arc::clone(&ui);
-        repl.jobs.set_sink(Some(Box::new(move |done| {
+        repl.handles.jobs.set_sink(Some(Box::new(move |done| {
             ui_sink.enqueue(job_notice(&done));
         })));
     }
 
-    if let Some(events) = repl.mcp.events.take() {
+    if let Some(events) = repl.handles.mcp.events.take() {
         tokio::spawn(report_mcp_failures(events, Arc::clone(&tr), ui.done()));
     }
 
@@ -576,7 +492,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     // Go also offered to type a system prompt here, behind `-S`. That flag is gone: it described
     // configuration one keystroke at a time, and an `agents:` entry carries a prompt permanently (brain page
     // `cli-surface-agent-first`).
-    if repl.provider.model().is_empty() {
+    if repl.conv.provider.model().is_empty() {
         // v1 offered the pick at startup; ESC defers — the first message re-prompts.
         model::ensure_model(&mut repl, &root_cancel).await;
         repl.push_status();
@@ -589,7 +505,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         let Ok(input) = ui.read_input(&root_cancel).await else {
             // ErrInterrupted (idle Ctrl+C / Ctrl+D), ErrClosed, or shutdown: join the
             // title pass so a landed name is written before the writer is dropped.
-            repl.join_title().await;
+            repl.session.join_title().await;
             break Ok(());
         };
         // A host notice (a finished background job) answers the same `read_input` a typed line does — that
@@ -601,11 +517,11 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             continue;
         }
         // Whatever the input is, the loop is awake for the user now (run.go:381).
-        repl.pres.set_state(State::Idle);
+        repl.handles.pres.set_state(State::Idle);
         if !is_read_only_viewer(&line) {
             // A read-only viewer neither calls the provider nor mutates the writer, so it
             // need not wait; anything else must not race a writer swap or mint.
-            repl.join_title().await;
+            repl.session.join_title().await;
         }
 
         // ---- the dispatch chain, in Go's fixed order; first match wins ----
@@ -622,7 +538,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 continue;
             }
             // /edit and /redo exist only on a dedicated image provider (run.go:450-516).
-            if repl.table.image_enabled()
+            if repl.handles.table.image_enabled()
                 && let Some(arg) = match_cmd(&line, "/edit")
             {
                 match edit::cmd_edit(&mut repl, arg).await {
@@ -630,7 +546,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                     EditOutcome::Send(c) => content = c,
                 }
             }
-            if repl.table.image_enabled()
+            if repl.handles.table.image_enabled()
                 && let Some(arg) = match_cmd(&line, "/redo")
             {
                 match edit::cmd_redo(&mut repl, arg) {
@@ -650,7 +566,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             // /compact sits between /session and /export in Go's chain, and exists only while
             // the meter is live — the same gate its table row hangs off, so it can never be
             // advertised without dispatching (chat/run.go:797-802).
-            if repl.ctxm.is_enabled()
+            if repl.conv.ctxm.is_enabled()
                 && let Some(hint) = match_cmd(&line, "/compact")
             {
                 crate::repl::commands::compact::compact_now(&mut repl, hint, true).await;
@@ -660,7 +576,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 export::cmd_export(&mut repl, arg).await;
                 continue;
             }
-            if repl.table.save_enabled()
+            if repl.handles.table.save_enabled()
                 && let Some(arg) = match_cmd(&line, "/save")
             {
                 save::cmd_save(&mut repl, arg);
@@ -675,8 +591,8 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 continue;
             }
             // /skills exists only in agent mode (run.go:923-937); the same gate as its rows.
-            if repl.overlay.is_some()
-                && repl.table.agent_enabled()
+            if repl.conv.overlay.is_some()
+                && repl.handles.table.agent_enabled()
                 && let Some(arg) = match_cmd(&line, "/skills")
             {
                 match skills::cmd_skills(&mut repl, arg).await {
@@ -695,12 +611,12 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         // pick below fails. A notice prints its ONE headline instead — its output belongs to the model,
         // not to the scrollback (the file is there for whoever wants all of it).
         if notice {
-            repl.tr.notice(&input.display);
+            repl.handles.tr.notice(&input.display);
         } else {
-            repl.tr.user(&input.display);
+            repl.handles.tr.user(&input.display);
         }
-        if repl.provider.model().is_empty() {
-            let cancel = repl.cancel.clone();
+        if repl.conv.provider.model().is_empty() {
+            let cancel = repl.handles.cancel.clone();
             if !model::ensure_model(&mut repl, &cancel).await {
                 continue;
             }
@@ -712,15 +628,15 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         // the append would summarize the very message being sent (chat/run.go:979-989).
         crate::repl::commands::compact::offer_before_send(&mut repl, &content).await;
 
-        repl.history.push(Message {
+        repl.conv.history.push(Message {
             content,
-            attachments: std::mem::take(&mut repl.pending),
+            attachments: std::mem::take(&mut repl.conv.pending),
             body: if notice { Body::Notice } else { Body::User },
         });
-        let hist0 = repl.history.len();
+        let hist0 = repl.conv.history.len();
         // Name the session NOW — before the turn, which may spend minutes in tool calls.
         repl.title_now();
-        let turn_snap = repl.budget.snap();
+        let turn_snap = repl.conv.budget.snap();
 
         // The code theme is refreshed BETWEEN turns (chat/run.go:1007 `applyCodeTheme`): a
         // host that knows the background tone re-shades the code blocks, the diff shades
@@ -728,8 +644,8 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         // (chat/theme.go `applyCodeTheme`: the hosts are asked per turn — the cmux RPC child runs
         // under its own deadline; `None` = no host knows, keep the pre-loop probe's answer.)
         if let Some(known) = pres.dark_background().await {
-            repl.dark = known;
-            repl.tr.set_dark(known);
+            repl.handles.dark = known;
+            repl.handles.tr.set_dark(known);
             ui.set_dark_background(known);
         }
         let cx = repl.turn_ctx(send_overlay);
@@ -740,23 +656,23 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         // took off the queue — the queue no longer holds them.
         let mut attempt: u32 = 0;
         let outcome = loop {
-            repl.history.truncate(hist0);
+            repl.conv.history.truncate(hist0);
             let injected = steer.injected().to_vec();
-            repl.history.extend(injected.iter().cloned());
-            repl.ctxm.reset();
-            repl.budget.restore(turn_snap);
-            if let Some(user) = repl.history.get(hist0 - 1) {
-                repl.ctxm.note(user); // the send moves the meter immediately
+            repl.conv.history.extend(injected.iter().cloned());
+            repl.conv.ctxm.reset();
+            repl.conv.budget.restore(turn_snap);
+            if let Some(user) = repl.conv.history.get(hist0 - 1) {
+                repl.conv.ctxm.note(user); // the send moves the meter immediately
             }
             for m in &injected {
-                repl.ctxm.note(m);
+                repl.conv.ctxm.note(m);
             }
             let report = run_turn(
                 &cx,
                 &root_cancel,
-                &*repl.provider,
-                &mut repl.history,
-                &mut repl.ctxm,
+                &*repl.conv.provider,
+                &mut repl.conv.history,
+                &mut repl.conv.ctxm,
                 &mut steer,
             )
             .await;
@@ -767,7 +683,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 Err(TurnFailure::Chat(c)) => c,
                 Err(TurnFailure::Ui(ui_err)) => break 'main Err(ReplError::Ui(*ui_err)),
             };
-            if repl.image_provider || attempt >= MAX_RETRIES || !is_retryable(chat_err) {
+            if repl.conv.image_provider || attempt >= MAX_RETRIES || !is_retryable(chat_err) {
                 break report;
             }
             if report.used_tools {
@@ -779,7 +695,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 // An invariant, not a live path: a plain streamed turn executes no tools.
                 // If one ever lands here, refuse loudly rather than re-run the user's
                 // tools.
-                repl.tr.notice(&format!(
+                repl.handles.tr.notice(&format!(
                     "⟳ {} — not replaying the turn: {} executed tool call(s) would run again",
                     crate::repl::errors::describe_error(chat_err).headline,
                     report.side_fx
@@ -810,7 +726,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             Err(_) if interrupted => {
                 interrupt_turn(&mut repl, hist0 - 1, &partial, &partial_reasoning);
                 // The user did the interrupting: back to idle, no ping (run.go:1070-1074).
-                repl.pres.set_state(State::Idle);
+                repl.handles.pres.set_state(State::Idle);
             }
             Err(failure) => {
                 // A `Ui` failure broke out above; classifying one costs nothing and keeps
@@ -820,17 +736,19 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                     TurnFailure::Ui(u) => crate::repl::errors::ErrorReport::request_failed(u),
                 };
                 // The host hears about the failure BEFORE the red block lands (run.go:1076-1080).
-                repl.pres.set_state(State::Error);
-                repl.pres.notify(Event {
+                repl.handles.pres.set_state(State::Error);
+                repl.handles.pres.notify(Event {
                     kind: Kind::Failed,
                     text: report.headline.clone(),
                 });
-                repl.tr.error_block(&report.headline, &report.lines());
+                repl.handles
+                    .tr
+                    .error_block(&report.headline, &report.lines());
                 // The turn rolls back WITH its user message — and the name derived from it.
-                repl.history.truncate(hist0 - 1);
-                repl.titler.unseed(&repl.history);
-                repl.ctxm.reset();
-                repl.budget.restore(turn_snap);
+                repl.conv.history.truncate(hist0 - 1);
+                repl.session.titler.unseed(&repl.conv.history);
+                repl.conv.ctxm.reset();
+                repl.conv.budget.restore(turn_snap);
                 repl.push_status();
             }
             Ok(out) => {
@@ -848,11 +766,11 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                         ..AssistantBody::default()
                     },
                 );
-                repl.ctxm.record(Some(&mut amsg));
+                repl.conv.ctxm.record(Some(&mut amsg));
                 collect_images(
-                    &repl.tr,
+                    &repl.handles.tr,
                     usize::from(ui.width()),
-                    (repl.images_dir)().as_deref(),
+                    (repl.session.images_dir)().as_deref(),
                     &out.images,
                     &mut amsg,
                 );
@@ -863,15 +781,15 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 } else {
                     notify_digest(&amsg.content)
                 };
-                repl.history.push(amsg);
+                repl.conv.history.push(amsg);
                 repl.persist_turn();
-                repl.ctxm.reset();
-                let history = std::mem::take(&mut repl.history);
-                repl.budget.update(&history);
-                repl.history = history;
+                repl.conv.ctxm.reset();
+                let history = std::mem::take(&mut repl.conv.history);
+                repl.conv.budget.update(&history);
+                repl.conv.history = history;
                 repl.push_status();
-                repl.pres.set_state(State::Idle);
-                repl.pres.notify(Event {
+                repl.handles.pres.set_state(State::Idle);
+                repl.handles.pres.notify(Event {
                     kind: Kind::Done,
                     text: digest,
                 });
@@ -880,9 +798,9 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     };
     // The loop is over: a background job has no one left to report to, and `background` never promised to
     // outlive iota. `kill_all` is synchronous `killpg`, so nothing depends on a task being polled again.
-    repl.jobs.kill_all();
+    repl.handles.jobs.kill_all();
     // Go's `defer pres.Close()`: the hosts are cleared before the facade goes down.
-    repl.pres.close().await;
+    repl.handles.pres.close().await;
     outcome
 }
 
@@ -891,15 +809,15 @@ impl Repl {
     /// the overlay this message composed.
     fn turn_ctx(&self, overlay: String) -> TurnCtx {
         TurnCtx {
-            ui: Arc::clone(&self.ui),
-            tr: Arc::clone(&self.tr),
-            dispatch: Arc::clone(&self.dispatch),
-            gate: Arc::clone(&self.gate),
+            ui: Arc::clone(&self.handles.ui),
+            tr: Arc::clone(&self.handles.tr),
+            dispatch: Arc::clone(&self.conv.dispatch),
+            gate: Arc::clone(&self.handles.gate),
             overlay,
-            images_dir: Arc::clone(&self.images_dir),
-            can_retry: !self.image_provider,
-            code_theme: code_theme_of(self.dark),
-            pres: Arc::clone(&self.pres),
+            images_dir: Arc::clone(&self.session.images_dir),
+            can_retry: !self.conv.image_provider,
+            code_theme: code_theme_of(self.handles.dark),
+            pres: Arc::clone(&self.handles.pres),
         }
     }
 
@@ -907,23 +825,27 @@ impl Repl {
     /// change (chat/run.go:965-976; the D-27 lift, T-37). Returns the overlay text to send,
     /// `""` outside agent mode.
     fn refresh_overlay(&mut self) -> String {
-        let Some(o) = self.overlay.as_mut() else {
+        let Some(o) = self.conv.overlay.as_mut() else {
             return String::new();
         };
         let (agents_changed, skills_changed) = o.refresh();
         if agents_changed {
-            self.tr
+            self.handles
+                .tr
                 .notice(&format!("AGENTS.md reloaded ({} files)", o.file_count()));
         }
         if skills_changed {
             // A changed catalog re-derives the completion table: the per-skill rows are
             // rebuilt and the table re-issued (completion.go:63-73, run.go:971).
-            self.table.set_skills(skill_entries(o.skills()));
-            self.ui.set_slash_commands(self.table.active());
-            self.tr
+            self.handles.table.set_skills(skill_entries(o.skills()));
+            self.handles
+                .ui
+                .set_slash_commands(self.handles.table.active());
+            self.handles
+                .tr
                 .notice(&format!("Skills reloaded ({} skill(s))", o.skill_count()));
             for warn in o.warnings() {
-                self.tr.notice(&format!("⚠ {warn}"));
+                self.handles.tr.notice(&format!("⚠ {warn}"));
             }
         }
         o.content()
@@ -936,16 +858,16 @@ impl Repl {
     /// the title provider (the conversation's is mid-call, and its per-call state is not
     /// safe for a concurrent request). No title provider leaves the placeholder standing.
     fn title_now(&mut self) {
-        let Some((first_user, generation)) = self.titler.seed(&self.history) else {
+        let Some((first_user, generation)) = self.session.titler.seed(&self.conv.history) else {
             return;
         };
-        let Some(tp) = self.title_provider.as_ref().map(Arc::clone) else {
+        let Some(tp) = self.session.title_provider.as_ref().map(Arc::clone) else {
             return;
         };
-        let model = self.provider.model().to_owned();
-        let titler = Arc::clone(&self.titler);
-        let cancel = self.cancel.child_token();
-        self.title_task = Some(tokio::spawn(async move {
+        let model = self.conv.provider.model().to_owned();
+        let titler = Arc::clone(&self.session.titler);
+        let cancel = self.handles.cancel.child_token();
+        self.session.title_task = Some(tokio::spawn(async move {
             let mut guard = tp.lock().await;
             guard.set_model(model);
             let name = tokio::time::timeout(
@@ -957,14 +879,6 @@ impl Repl {
             drop(guard);
             titler.land(generation, &name);
         }));
-    }
-
-    /// Waits for an in-flight title pass, so a landed name is written before anything
-    /// touches the writer.
-    async fn join_title(&mut self) {
-        if let Some(h) = self.title_task.take() {
-            let _ = h.await;
-        }
     }
 }
 
@@ -980,36 +894,37 @@ fn interrupt_turn(repl: &mut Repl, watermark: usize, partial: &str, partial_reas
         persist,
         dropped_attachments: dropped,
     } = finalize_interrupt(
-        std::mem::take(&mut repl.history),
+        std::mem::take(&mut repl.conv.history),
         watermark,
         partial,
         partial_reasoning,
     );
-    repl.history = history;
-    repl.tr.notice("Interrupted.");
+    repl.conv.history = history;
+    repl.handles.tr.notice("Interrupted.");
     if !dropped.is_empty() {
         let n = dropped.len();
         let mut kept = dropped;
-        kept.append(&mut repl.pending);
-        repl.pending = kept;
-        repl.tr
+        kept.append(&mut repl.conv.pending);
+        repl.conv.pending = kept;
+        repl.handles
+            .tr
             .notice(&format!("{n} attachment(s) kept for your next message."));
     }
     if persist {
         // A cancelled call rarely reports usage, but when it did (the figures arrived
         // before ESC) the partial message carries them like any other.
-        if let Some(last) = repl.history.last_mut()
+        if let Some(last) = repl.conv.history.last_mut()
             && last.interrupted()
         {
-            repl.ctxm.record(Some(last));
+            repl.conv.ctxm.record(Some(last));
         }
         repl.persist_turn();
     } else {
-        repl.titler.unseed(&repl.history);
+        repl.session.titler.unseed(&repl.conv.history);
     }
-    repl.ctxm.reset();
-    let history = std::mem::take(&mut repl.history);
-    repl.budget.update(&history);
-    repl.history = history;
+    repl.conv.ctxm.reset();
+    let history = std::mem::take(&mut repl.conv.history);
+    repl.conv.budget.update(&history);
+    repl.conv.history = history;
     repl.push_status();
 }

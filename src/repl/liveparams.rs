@@ -4,7 +4,7 @@
 //!
 //! The VALUES are never kept here. `context_window` lives in [`ContextBudget`](crate::repl::context::meter::ContextBudget)
 //! and the three tunables live on the provider, so this module assembles a [`LayeredParams`] on demand from
-//! those two and the one piece of state that has nowhere else to live: [`Repl::param_sources`], which says
+//! those two and the one piece of state that has nowhere else to live: [`Conversation::param_sources`](crate::repl::state::Conversation::param_sources), which says
 //! where each of them came from. A second copy of the values would be a second thing to keep in step with a
 //! provider every tab in `/model` can already write to.
 
@@ -19,9 +19,9 @@ use crate::repl::run::Repl;
 
 /// What the chat is running under right now, read from where each value actually lives.
 pub(crate) fn current(repl: &mut Repl) -> LayeredParams {
-    let sources = repl.param_sources;
-    let window = repl.budget.window();
-    let (effort, temperature) = repl.provider.as_tunable().map_or_else(
+    let sources = repl.conv.param_sources;
+    let window = repl.conv.budget.window();
+    let (effort, temperature) = repl.conv.provider.as_tunable().map_or_else(
         || (String::new(), None),
         |t| {
             (
@@ -30,7 +30,11 @@ pub(crate) fn current(repl: &mut Repl) -> LayeredParams {
             )
         },
     );
-    let top_p = repl.provider.as_top_p_tunable().and_then(|t| t.top_p());
+    let top_p = repl
+        .conv
+        .provider
+        .as_top_p_tunable()
+        .and_then(|t| t.top_p());
     LayeredParams {
         context_window: Param {
             value: window,
@@ -60,17 +64,17 @@ pub(crate) fn current(repl: &mut Repl) -> LayeredParams {
 /// A `context_window:` on the model being switched TO that does not parse is a warning here, not a failure:
 /// the chat is already running, and the honest answer to a bad value is to leave that key silent and say so.
 pub(crate) fn switch_model(repl: &mut Repl, id: &str) -> bool {
-    let declared =
-        repl.layers.declared(id, |decl| {
-            match crate::config::window::parse_window_size(decl.raw) {
-                Ok(window) => Some(window),
-                Err(e) => {
-                    repl.tr
-                        .error(&format!("Warning: {}: {e} (ignored)", decl.label));
-                    None
-                }
+    let declared = repl.conv.layers.declared(id, |decl| {
+        match crate::config::window::parse_window_size(decl.raw) {
+            Ok(window) => Some(window),
+            Err(e) => {
+                repl.handles
+                    .tr
+                    .error(&format!("Warning: {}: {e} (ignored)", decl.label));
+                None
             }
-        });
+        }
+    });
     // A declaration outside its range would be refused at startup; reached mid-chat it can only come from a
     // `models:` entry the run did not start on, so it is refused the same way and the key stays silent.
     let declared = crate::config::Declared {
@@ -97,8 +101,8 @@ pub(crate) fn switch_model(repl: &mut Repl, id: &str) -> bool {
     // The one thing a model declares that a switch canNOT hand over: the deferring wrapper was built around
     // the MCP dispatcher at startup and there is no rebuild seam, so the mode is announced instead of
     // silently ignored (brain page `config-three-layers`, 2026-09-09 — changing it means a new session).
-    if let Some((running, wanted)) = repl.layers.defer_mode_drift(id) {
-        repl.tr.notice(&format!(
+    if let Some((running, wanted)) = repl.conv.layers.defer_mode_drift(id) {
+        repl.handles.tr.notice(&format!(
             "Note: {id} asks for defer_mode {:?}; this session keeps {:?} — deferred MCP tools are mounted once, at startup.",
             wanted.name(),
             running.name(),
@@ -113,7 +117,8 @@ fn in_range(repl: &Repl, v: f64, lo: f64, hi: f64, label: &str) -> bool {
     if (lo..=hi).contains(&v) {
         return true;
     }
-    repl.tr
+    repl.handles
+        .tr
         .error(&format!("Warning: {label}: want {lo:.1}-{hi:.1} (ignored)"));
     false
 }
@@ -131,9 +136,9 @@ fn in_range(repl: &Repl, v: f64, lo: f64, hi: f64, label: &str) -> bool {
 /// switch would then keep a window it was supposed to drop.
 pub(crate) fn apply(repl: &mut Repl, next: &LayeredParams) -> bool {
     let now = current(repl);
-    let counts_tokens = repl.provider.reports_usage();
-    let tunable = repl.provider.as_tunable().is_some();
-    let nucleus = repl.provider.as_top_p_tunable().is_some();
+    let counts_tokens = repl.conv.provider.reports_usage();
+    let tunable = repl.conv.provider.as_tunable().is_some();
+    let nucleus = repl.conv.provider.as_top_p_tunable().is_some();
 
     // What the chat ends up running under: `next` for every parameter that lands, `now` for the rest.
     let mut landed = now.clone();
@@ -162,10 +167,11 @@ pub(crate) fn apply(repl: &mut Repl, next: &LayeredParams) -> bool {
     let mut changed = false;
 
     if counts_tokens && window != now.context_window.value {
-        repl.budget.set_window(window);
+        repl.conv.budget.set_window(window);
         commit(repl, sources, |m| m.set_context_window(window));
-        repl.tr
-            .notice(&format!("Context window: {}", repl.budget.status()));
+        repl.handles
+            .tr
+            .notice(&format!("Context window: {}", repl.conv.budget.status()));
         changed = true;
     }
 
@@ -173,22 +179,23 @@ pub(crate) fn apply(repl: &mut Repl, next: &LayeredParams) -> bool {
         if landed.effort.value != now.effort.value
             && let Ok(effort) = Effort::optional(&landed.effort.value)
         {
-            if let Some(t) = repl.provider.as_tunable() {
+            if let Some(t) = repl.conv.provider.as_tunable() {
                 t.set_effort(effort);
             }
             let level = landed.effort.value.clone();
             commit(repl, sources, move |m| level.clone_into(&mut m.effort));
-            repl.tr
+            repl.handles
+                .tr
                 .notice(&format!("Effort: {}", effort_label(&landed.effort.value)));
             changed = true;
         }
         if !float_ptr_equal(landed.temperature.value, now.temperature.value) {
-            if let Some(t) = repl.provider.as_tunable() {
+            if let Some(t) = repl.conv.provider.as_tunable() {
                 t.set_temperature(landed.temperature.value);
             }
             let temperature = landed.temperature.value;
             commit(repl, sources, move |m| m.temperature = temperature);
-            repl.tr.notice(&format!(
+            repl.handles.tr.notice(&format!(
                 "Temperature: {}",
                 format_temperature(landed.temperature.value)
             ));
@@ -197,12 +204,12 @@ pub(crate) fn apply(repl: &mut Repl, next: &LayeredParams) -> bool {
     }
 
     if nucleus && !float_ptr_equal(landed.top_p.value, now.top_p.value) {
-        if let Some(t) = repl.provider.as_top_p_tunable() {
+        if let Some(t) = repl.conv.provider.as_top_p_tunable() {
             t.set_top_p(landed.top_p.value);
         }
         let top_p = landed.top_p.value;
         commit(repl, sources, move |m| m.top_p = top_p);
-        repl.tr.notice(&format!(
+        repl.handles.tr.notice(&format!(
             "Top-p: {}",
             format_temperature(landed.top_p.value)
         ));
@@ -211,10 +218,10 @@ pub(crate) fn apply(repl: &mut Repl, next: &LayeredParams) -> bool {
 
     // A source can move without its value doing so — a declaration that merely CONFIRMS what the session was
     // already running under still takes ownership of it, and the next switch must know that.
-    if !changed && repl.param_sources != sources {
+    if !changed && repl.conv.param_sources != sources {
         commit(repl, sources, |_| {});
     }
-    repl.param_sources = sources;
+    repl.conv.param_sources = sources;
     changed
 }
 
@@ -256,6 +263,7 @@ fn commit(repl: &Repl, sources: ParamSources, value: impl FnOnce(&mut SessionMet
 /// The ONE session-bundle write of this module (the questionnaire's twin in `commands::settings`).
 fn update_meta(repl: &Repl, f: impl FnOnce(&mut SessionMeta)) {
     if let Some(w) = repl
+        .session
         .writer
         .lock()
         .unwrap_or_else(PoisonError::into_inner)

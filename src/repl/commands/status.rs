@@ -226,28 +226,28 @@ pub(crate) fn status_rows(items: &[StatusItem]) -> Vec<String> {
 /// `/status`: a read-only viewer, so it neither waits for the title pass nor changes
 /// anything. A facade failure is a cancel (see [`super::model::cmd_model`]).
 pub(crate) async fn cmd_status(repl: &mut Repl) {
-    let tools = repl.dispatch.tools().len();
-    let mcp = repl.mcp.servers.as_ref().map(|f| {
+    let tools = repl.conv.dispatch.tools().len();
+    let mcp = repl.handles.mcp.servers.as_ref().map(|f| {
         let servers = f();
         (
             servers.iter().filter(|s| s.connected()).count(),
             servers.len(),
         )
     });
-    let messages = repl.history.len();
-    let pending = repl.pending.len();
-    let session_id = repl.session_id();
+    let messages = repl.conv.history.len();
+    let pending = repl.conv.pending.len();
+    let session_id = repl.session.session_id();
     // Go asserts `provider.UsageReporter`; the Rust twin is the meter's own gate, which is
     // built from exactly that capability (`provider.reports_usage()`).
-    let tokens = repl.ctxm.is_enabled().then(|| TokenStatus {
-        used: repl.budget.used(),
-        window: repl.budget.window(),
-        have_usage: repl.budget.have_usage(),
-        totals: repl.ctxm.totals(),
-        last: repl.budget.last_usage(),
+    let tokens = repl.conv.ctxm.is_enabled().then(|| TokenStatus {
+        used: repl.conv.budget.used(),
+        window: repl.conv.budget.window(),
+        have_usage: repl.conv.budget.have_usage(),
+        totals: repl.conv.ctxm.totals(),
+        last: repl.conv.budget.last_usage(),
     });
     let items = status_lines(
-        &mut *repl.provider,
+        &mut *repl.conv.provider,
         messages,
         pending,
         tools,
@@ -257,9 +257,10 @@ pub(crate) async fn cmd_status(repl: &mut Repl) {
     );
     let lines = status_rows(&items);
     let _ = repl
+        .handles
         .ui
         .view(
-            &repl.cancel,
+            &repl.handles.cancel,
             ViewSpec {
                 title: "Status".to_owned(),
                 lines,

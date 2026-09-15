@@ -742,9 +742,10 @@ pub(crate) fn export_chat(
 /// The writer slot is snapshotted BEFORE the picker await, so its lock is never held across
 /// a suspension point.
 pub(crate) async fn cmd_export(repl: &mut Repl, arg: &str) {
-    let cancel = &repl.cancel.clone();
+    let cancel = &repl.handles.cancel.clone();
     let (title, id, on_disk) = {
         let slot = repl
+            .session
             .writer
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -764,7 +765,7 @@ pub(crate) async fn cmd_export(repl: &mut Repl, arg: &str) {
                 .collect(),
             cursor: 0,
         };
-        let Ok(r) = repl.ui.select(cancel, spec).await else {
+        let Ok(r) = repl.handles.ui.select(cancel, spec).await else {
             return;
         };
         if r.cancelled {
@@ -781,24 +782,24 @@ pub(crate) async fn cmd_export(repl: &mut Repl, arg: &str) {
     let meta = ExportMeta {
         title,
         session_id: id.clone(),
-        model: repl.provider.model().to_owned(),
+        model: repl.conv.provider.model().to_owned(),
         date: jiff::Zoned::now(),
     };
-    let kind = repl.provider.kind();
-    let store = &repl.store;
+    let kind = repl.conv.provider.kind();
+    let store = &repl.session.store;
     let mut w = LineCommitter::default();
     export_chat(
         &mut w,
         &arg,
         on_disk,
         || store.load_full(&id, kind),
-        &repl.history,
+        &repl.conv.history,
         &meta,
         crate::app::user_home().as_deref(),
     );
     let lines = w.flush();
     if !lines.is_empty() {
-        repl.tr.notice_lines(&lines);
+        repl.handles.tr.notice_lines(&lines);
     }
 }
 

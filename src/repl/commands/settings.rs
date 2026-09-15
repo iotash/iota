@@ -364,7 +364,7 @@ impl Extras {
             && let Some(v) = self.windows.get(cursor_at(r, i)).copied()
             && v != self.window_open
         {
-            repl.budget.set_window(v);
+            repl.conv.budget.set_window(v);
             by_hand(
                 repl,
                 |s| &mut s.context_window,
@@ -372,8 +372,9 @@ impl Extras {
                     m.set_context_window(v);
                 },
             );
-            repl.tr
-                .notice(&format!("Context window: {}", repl.budget.status()));
+            repl.handles
+                .tr
+                .notice(&format!("Context window: {}", repl.conv.budget.status()));
             changed = true;
         }
 
@@ -388,7 +389,7 @@ impl Extras {
                 // only exists as the "current" row a newer bundle wrote, and picking that
                 // row is caught by the `picked != current` guard above.
                 if let Ok(effort) = Effort::optional(&picked) {
-                    if let Some(t) = repl.provider.as_tunable() {
+                    if let Some(t) = repl.conv.provider.as_tunable() {
                         t.set_effort(effort);
                     }
                     let level = picked.clone();
@@ -399,7 +400,8 @@ impl Extras {
                             level.clone_into(&mut m.effort);
                         },
                     );
-                    repl.tr
+                    repl.handles
+                        .tr
                         .notice(&format!("Effort: {}", effort_label(&picked)));
                     changed = true;
                 }
@@ -409,7 +411,7 @@ impl Extras {
         if let Some(i) = self.temp {
             let picked = r.panels.get(i).and_then(|p| p.value);
             if !float_ptr_equal(picked, self.temp_open) {
-                if let Some(t) = repl.provider.as_tunable() {
+                if let Some(t) = repl.conv.provider.as_tunable() {
                     t.set_temperature(picked);
                 }
                 by_hand(
@@ -419,7 +421,8 @@ impl Extras {
                         m.temperature = picked;
                     },
                 );
-                repl.tr
+                repl.handles
+                    .tr
                     .notice(&format!("Temperature: {}", format_temperature(picked)));
                 changed = true;
             }
@@ -428,15 +431,16 @@ impl Extras {
         if let Some(i) = self.image {
             let on = r.panels.get(i).is_some_and(|p| p.on);
             let current = repl
+                .conv
                 .provider
                 .as_image_tunable()
                 .is_some_and(|img| img.image_output());
             if on != current {
-                if let Some(img) = repl.provider.as_image_tunable() {
+                if let Some(img) = repl.conv.provider.as_image_tunable() {
                     img.set_image_output(on);
                 }
                 update_meta(repl, |m| m.image = on);
-                repl.tr.notice(&format!(
+                repl.handles.tr.notice(&format!(
                     "Image generation: {}",
                     if on { "on" } else { "off" }
                 ));
@@ -449,15 +453,16 @@ impl Extras {
         if let Some(i) = self.json_edits {
             let on = r.panels.get(i).is_some_and(|p| p.on);
             let current = repl
+                .conv
                 .provider
                 .as_image_edit_json_tunable()
                 .is_some_and(|edits| edits.json_edits());
             if on != current {
-                if let Some(edits) = repl.provider.as_image_edit_json_tunable() {
+                if let Some(edits) = repl.conv.provider.as_image_edit_json_tunable() {
                     edits.set_json_edits(on);
                 }
                 update_meta(repl, |m| m.json_edits = on);
-                repl.tr.notice(&format!(
+                repl.handles.tr.notice(&format!(
                     "Image edits sent as: {}",
                     if on { "JSON" } else { "multipart" }
                 ));
@@ -472,6 +477,7 @@ impl Extras {
     /// (chat/run.go:686-700).
     fn apply_image_gen(&self, r: &TabbedResult, repl: &mut Repl) -> bool {
         let Some(current) = repl
+            .conv
             .provider
             .as_image_gen_tunable()
             .map(|g| g.image_gen_params().clone())
@@ -505,7 +511,7 @@ impl Extras {
             return false;
         }
         let label = image_gen_label(&next);
-        if let Some(g) = repl.provider.as_image_gen_tunable() {
+        if let Some(g) = repl.conv.provider.as_image_gen_tunable() {
             g.set_image_gen_params(next.clone());
         }
         update_meta(repl, |m| {
@@ -518,7 +524,7 @@ impl Extras {
             m.image_size = image_size.unwrap_or_default();
             m.negative_prompt = negative_prompt.unwrap_or_default();
         });
-        repl.tr.notice(&format!("Image params: {label}"));
+        repl.handles.tr.notice(&format!("Image params: {label}"));
         true
     }
 }
@@ -544,8 +550,8 @@ fn by_hand(
     which: fn(&mut ParamSources) -> &mut ParamSource,
     value: impl FnOnce(&mut crate::session::SessionMeta),
 ) {
-    *which(&mut repl.param_sources) = ParamSource::User;
-    let sources = repl.param_sources;
+    *which(&mut repl.conv.param_sources) = ParamSource::User;
+    let sources = repl.conv.param_sources;
     update_meta(repl, |m| {
         value(m);
         m.param_sources = Some(sources);
@@ -556,6 +562,7 @@ fn by_hand(
 /// resumed session replays cannot drift, because they are the same call site.
 fn update_meta(repl: &Repl, f: impl FnOnce(&mut crate::session::SessionMeta)) {
     if let Some(w) = repl
+        .session
         .writer
         .lock()
         .unwrap_or_else(PoisonError::into_inner)

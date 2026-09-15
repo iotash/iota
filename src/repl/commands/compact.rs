@@ -175,22 +175,28 @@ async fn summarize(
 /// The shared compaction flow (`chat/run.go:253-280` `compactNow`).
 ///
 /// `manual` distinguishes the typed command from the auto-offer: only the former reports
-/// that there was nothing to do. `repl.compact_declined` is the auto-offer's snooze watermark, which any
+/// that there was nothing to do. `repl.conv.compact_declined` is the auto-offer's snooze watermark, which any
 /// SUCCESSFUL compaction clears — the conversation the user declined to compact no longer
 /// exists.
 pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
-    let busy = repl.ui.busy("Compacting context…");
-    let res = compact_history(&repl.cancel, &*repl.provider, &repl.history, hint).await;
+    let busy = repl.handles.ui.busy("Compacting context…");
+    let res = compact_history(
+        &repl.handles.cancel,
+        &*repl.conv.provider,
+        &repl.conv.history,
+        hint,
+    )
+    .await;
     busy.stop();
 
     let (history, summary, retain_tail, usage) = match res {
         Err(e) => {
-            repl.tr.error(&format!("Compaction failed: {e}"));
+            repl.handles.tr.error(&format!("Compaction failed: {e}"));
             return;
         }
         Ok(Compaction::Unchanged) => {
             if manual {
-                repl.tr.notice("Nothing to compact yet.");
+                repl.handles.tr.notice("Nothing to compact yet.");
             }
             return;
         }
@@ -202,28 +208,34 @@ pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
         }) => (history, summary, retain_tail, usage),
     };
 
-    repl.history = history;
+    repl.conv.history = history;
     // The summary pass is a billed call of its own: book it (no message carries it, so the
     // marker does).
-    let booked = repl.ctxm.book_call(usage);
+    let booked = repl.conv.ctxm.book_call(usage);
     let persist = {
-        let mut slot = repl.writer.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut slot = repl
+            .session
+            .writer
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         slot.as_mut()
             .map(|w| w.append_compaction(&summary, retain_tail, booked))
     };
     if let Some(Err(e)) = persist {
-        repl.tr.error(&format!(
+        repl.handles.tr.error(&format!(
             "Warning: failed to persist compaction marker: {e}"
         ));
     }
     // The marker supersedes what it replaced: nothing re-appends, so the watermark jumps.
-    repl.persisted = repl.history.len();
-    let history = std::mem::take(&mut repl.history);
-    repl.budget.reseed(&history);
-    repl.history = history;
-    repl.compact_declined = 0;
-    repl.tr
-        .notice(&format!("Context compacted → {}", repl.budget.status()));
+    repl.session.persisted = repl.conv.history.len();
+    let history = std::mem::take(&mut repl.conv.history);
+    repl.conv.budget.reseed(&history);
+    repl.conv.history = history;
+    repl.conv.compact_declined = 0;
+    repl.handles.tr.notice(&format!(
+        "Context compacted → {}",
+        repl.conv.budget.status()
+    ));
     repl.push_status();
 }
 
@@ -235,30 +247,35 @@ pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
 /// check). Declining — or a facade error, which must never block the send — snoozes the
 /// offer at the projected usage.
 pub(crate) async fn offer_before_send(repl: &mut Repl, input: &str) {
-    if !repl.ctxm.is_enabled() {
+    if !repl.conv.ctxm.is_enabled() {
         return;
     }
-    let counter = repl.budget.counter();
+    let counter = repl.conv.budget.counter();
     let mut extra = counter.count(input);
-    for att in &repl.pending {
+    for att in &repl.conv.pending {
         extra += u64::try_from(att.data.len() / 1000).unwrap_or(0);
     }
     if !repl
+        .conv
         .budget
-        .should_offer_compact(extra, repl.compact_declined)
+        .should_offer_compact(extra, repl.conv.compact_declined)
     {
         return;
     }
-    let title = format!("Context {} — compact before sending?", repl.budget.status());
+    let title = format!(
+        "Context {} — compact before sending?",
+        repl.conv.budget.status()
+    );
     let accepted = repl
+        .handles
         .ui
-        .confirm(&repl.cancel, &title, "Compact now", "Not now")
+        .confirm(&repl.handles.cancel, &title, "Compact now", "Not now")
         .await
         .unwrap_or(false);
     if accepted {
         compact_now(repl, "", false).await;
     } else {
-        repl.compact_declined = repl.budget.used() + extra;
+        repl.conv.compact_declined = repl.conv.budget.used() + extra;
     }
 }
 

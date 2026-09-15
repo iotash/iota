@@ -189,8 +189,16 @@ fn rows_fn(
 
 /// `/tools`: two live viewer tabs; the commit — and a facade failure — are discarded.
 pub(crate) async fn cmd_tools(repl: &Repl) {
-    let tools_rows = rows_fn(repl.mcp.servers.as_ref(), &repl.dispatch, tool_status_lines);
-    let mcp_rows = rows_fn(repl.mcp.servers.as_ref(), &repl.dispatch, mcp_status_lines);
+    let tools_rows = rows_fn(
+        repl.handles.mcp.servers.as_ref(),
+        &repl.conv.dispatch,
+        tool_status_lines,
+    );
+    let mcp_rows = rows_fn(
+        repl.handles.mcp.servers.as_ref(),
+        &repl.conv.dispatch,
+        mcp_status_lines,
+    );
     let spec = TabbedSpec {
         refresh_every_ms: REFRESH_EVERY_MS,
         panels: vec![
@@ -201,7 +209,7 @@ pub(crate) async fn cmd_tools(repl: &Repl) {
         ],
         ..TabbedSpec::default()
     };
-    let _ = repl.ui.tabbed(&repl.cancel, spec).await;
+    let _ = repl.handles.ui.tabbed(&repl.handles.cancel, spec).await;
 }
 
 #[cfg(test)]

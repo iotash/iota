@@ -50,30 +50,30 @@ const REDO_ECHO_RUNES: usize = 60;
 /// the last generated images and falls through to send.
 pub(crate) async fn cmd_edit(repl: &mut Repl, prompt: &str) -> EditOutcome {
     if prompt.is_empty() {
-        let cancel = repl.cancel.clone();
+        let cancel = repl.handles.cancel.clone();
         return pick_canvas(repl, &cancel).await;
     }
-    let refs = last_generated_images(&repl.history);
+    let refs = last_generated_images(&repl.conv.history);
     if refs.is_empty() {
-        repl.tr.notice(NOTHING_TO_EDIT);
+        repl.handles.tr.notice(NOTHING_TO_EDIT);
         return EditOutcome::Continue;
     }
-    repl.pending.extend(refs);
+    repl.conv.pending.extend(refs);
     EditOutcome::Send(prompt.to_owned())
 }
 
 /// Bare `/edit`: pick the canvas from every image this session generated (preview beside the
 /// list), then return to the composer for the prompt.
 async fn pick_canvas(repl: &mut Repl, cancel: &CancellationToken) -> EditOutcome {
-    let choices = generated_image_choices(&repl.history);
+    let choices = generated_image_choices(&repl.conv.history);
     if choices.is_empty() {
-        repl.tr.notice(NOTHING_TO_EDIT);
+        repl.handles.tr.notice(NOTHING_TO_EDIT);
         return EditOutcome::Continue;
     }
     // `images_path()` never creates the directory — a chat that has not saved a picture yet must
     // not grow one just because the picker opened.
-    let img_dir = repl.with_writer_path(SessionWriter::images_path);
-    let width = usize::from(repl.ui.width());
+    let img_dir = repl.session.with_writer_path(SessionWriter::images_path);
+    let width = usize::from(repl.handles.ui.width());
     let spec = TabbedSpec {
         panels: vec![
             Panel::picker(EDIT_TITLE.to_owned(), image_choice_labels(&choices))
@@ -90,7 +90,7 @@ async fn pick_canvas(repl: &mut Repl, cancel: &CancellationToken) -> EditOutcome
         ..TabbedSpec::default()
     };
     // A facade failure is treated exactly like a cancel: commands never end the loop.
-    let Ok(r) = repl.ui.tabbed(cancel, spec).await else {
+    let Ok(r) = repl.handles.ui.tabbed(cancel, spec).await else {
         return EditOutcome::Continue;
     };
     if r.cancelled {
@@ -104,11 +104,11 @@ async fn pick_canvas(repl: &mut Repl, cancel: &CancellationToken) -> EditOutcome
     else {
         return EditOutcome::Continue;
     };
-    repl.tr.notice(&format!(
+    repl.handles.tr.notice(&format!(
         "Editing {} — type your prompt.",
         choice.att.filename
     ));
-    repl.pending.push(choice.att);
+    repl.conv.pending.push(choice.att);
     EditOutcome::Continue
 }
 
@@ -118,8 +118,8 @@ async fn pick_canvas(repl: &mut Repl, cancel: &CancellationToken) -> EditOutcome
 /// rejected result, never the result itself. A bare `/redo` re-rolls the same prompt (image
 /// models roll differently per call); a reworded one retries from the same canvas.
 pub(crate) fn cmd_redo(repl: &mut Repl, prompt: &str) -> EditOutcome {
-    let Some(last) = last_user_message(&repl.history) else {
-        repl.tr.notice(NOTHING_TO_REDO);
+    let Some(last) = last_user_message(&repl.conv.history) else {
+        repl.handles.tr.notice(NOTHING_TO_REDO);
         return EditOutcome::Continue;
     };
     let prompt = if prompt.is_empty() {
@@ -128,12 +128,12 @@ pub(crate) fn cmd_redo(repl: &mut Repl, prompt: &str) -> EditOutcome {
         prompt.to_owned()
     };
     if prompt.trim().is_empty() {
-        repl.tr.notice(NOTHING_TO_REDO_BLANK);
+        repl.handles.tr.notice(NOTHING_TO_REDO_BLANK);
         return EditOutcome::Continue;
     }
     let refs = last.attachments.clone();
-    repl.pending.extend(refs);
-    repl.tr.notice(&format!(
+    repl.conv.pending.extend(refs);
+    repl.handles.tr.notice(&format!(
         "Redoing: {}",
         truncate_runes(&flatten_line(&prompt), REDO_ECHO_RUNES)
     ));

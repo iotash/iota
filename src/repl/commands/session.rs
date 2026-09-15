@@ -85,19 +85,19 @@ pub(crate) fn project_hint(scope: Option<&Path>) -> Option<String> {
 /// `/session` — pick a session to resume, or check off sessions to delete. A facade
 /// failure is a cancel (see [`super::model::cmd_model`]).
 pub(crate) async fn cmd_session(repl: &mut Repl) {
-    let infos = match repl.store.list(repl.scope.as_deref()) {
+    let infos = match repl.session.store.list(repl.session.scope.as_deref()) {
         Ok(i) => i,
         Err(e) => {
-            repl.tr.error(&format!("Error: {e}"));
+            repl.handles.tr.error(&format!("Error: {e}"));
             return;
         }
     };
     if infos.is_empty() {
-        repl.tr.notice("No sessions yet.");
+        repl.handles.tr.notice("No sessions yet.");
         return;
     }
-    let hint = project_hint(repl.scope.as_deref());
-    let current = repl.session_id();
+    let hint = project_hint(repl.session.scope.as_deref());
+    let current = repl.session.session_id();
     let resume_rows: Vec<String> = infos
         .iter()
         .map(|s| session_label(s, hint.as_deref()))
@@ -110,9 +110,10 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
         .collect();
 
     let Ok(r) = repl
+        .handles
         .ui
         .tabbed(
-            &repl.cancel,
+            &repl.handles.cancel,
             TabbedSpec {
                 panels: vec![
                     Panel::list("Resume".to_owned(), resume_rows).with_search(true),
@@ -137,13 +138,18 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
         let mut deleted = 0;
         for i in checked {
             let Some(s) = deletable.get(i) else { continue };
-            match repl.store.delete(&s.id) {
+            match repl.session.store.delete(&s.id) {
                 Ok(()) => deleted += 1,
-                Err(e) => repl.tr.error(&format!("Failed to delete {}: {e}", s.id)),
+                Err(e) => repl
+                    .handles
+                    .tr
+                    .error(&format!("Failed to delete {}: {e}", s.id)),
             }
         }
         if deleted > 0 {
-            repl.tr.notice(&format!("Deleted {deleted} session(s)."));
+            repl.handles
+                .tr
+                .notice(&format!("Deleted {deleted} session(s)."));
         }
         return;
     }
@@ -153,14 +159,14 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
     };
     let id = info.id.clone();
     if id == current {
-        repl.tr.notice("Already in this session.");
+        repl.handles.tr.notice("Already in this session.");
         return;
     }
-    let kind = repl.provider.kind();
-    let (writer, resumed) = match repl.store.resume(&id, kind) {
+    let kind = repl.conv.provider.kind();
+    let (writer, resumed) = match repl.session.store.resume(&id, kind) {
         Ok(v) => v,
         Err(e) => {
-            repl.tr.error(&format!("Error: {e}"));
+            repl.handles.tr.error(&format!("Error: {e}"));
             return;
         }
     };
@@ -170,43 +176,51 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
     // sw.Close()); the title state resolves the slot per call, so it follows.
     let usage = writer.usage();
     {
-        let mut slot = repl.writer.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut slot = repl
+            .session
+            .writer
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         *slot = Some(writer);
     }
-    repl.ui.set_title(&window_title(&repl.session_title()));
-    repl.history = resumed.messages;
-    repl.persisted = repl.history.len();
-    repl.budget.reseed(&repl.history);
-    repl.ctxm.seed_totals(usage); // the switched-to session brings its own totals
-    repl.pending.clear();
-    repl.titler.adopt(); // the resumed bundle brings its own name
+    repl.handles
+        .ui
+        .set_title(&window_title(&repl.session.session_title()));
+    repl.conv.history = resumed.messages;
+    repl.session.persisted = repl.conv.history.len();
+    repl.conv.budget.reseed(&repl.conv.history);
+    repl.conv.ctxm.seed_totals(usage); // the switched-to session brings its own totals
+    repl.conv.pending.clear();
+    repl.session.titler.adopt(); // the resumed bundle brings its own name
     // A live switch takes the bundle's model and tuning whole: no flag is in play any more.
-    let warn_tr = Arc::clone(&repl.tr);
+    let warn_tr = Arc::clone(&repl.handles.tr);
     let window = crate::session::replay_session_settings(
         &resumed.meta,
-        &mut *repl.provider,
+        &mut *repl.conv.provider,
         kind,
         &crate::session::Overrides::default(),
         &mut |w| warn_tr.notice(&w),
     );
     if let Some(n) = window {
-        repl.budget.set_window(n);
+        repl.conv.budget.set_window(n);
     }
-    repl.tr.notice(&format!(
+    repl.handles.tr.notice(&format!(
         "Resumed session {id} ({} messages)",
-        repl.history.len()
+        repl.conv.history.len()
     ));
-    let msgs = last_rounds(&repl.history, RESUME_ECHO_ROUNDS);
+    let msgs = last_rounds(&repl.conv.history, RESUME_ECHO_ROUNDS);
     if !msgs.is_empty() {
-        let dispatch = Arc::clone(&repl.dispatch);
-        let img_dir = repl.with_writer_path(crate::session::SessionWriter::images_path);
+        let dispatch = Arc::clone(&repl.conv.dispatch);
+        let img_dir = repl
+            .session
+            .with_writer_path(crate::session::SessionWriter::images_path);
         let lines = echo_rounds(
             msgs,
             |n| dispatch.presentation(n) == crate::tool::Presentation::Surface,
-            usize::from(repl.ui.width()),
+            usize::from(repl.handles.ui.width()),
             img_dir.as_deref(),
         );
-        repl.tr.echo(&lines);
+        repl.handles.tr.echo(&lines);
     }
     repl.push_status();
 }

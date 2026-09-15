@@ -145,7 +145,7 @@ pub(crate) enum SkillsOutcome {
 /// path (run.go:965-976), and a viewer that narrated them would print them twice for one change.
 pub(crate) async fn cmd_skills(repl: &mut Repl, arg: &str) -> SkillsOutcome {
     // `/skills` is dispatched only in agent mode, where the overlay exists.
-    let Some(overlay) = repl.overlay.as_mut() else {
+    let Some(overlay) = repl.conv.overlay.as_mut() else {
         return SkillsOutcome::Continue;
     };
     let _ = overlay.refresh();
@@ -154,14 +154,15 @@ pub(crate) async fn cmd_skills(repl: &mut Repl, arg: &str) -> SkillsOutcome {
             overlay.skills(),
             overlay.warnings(),
             overlay.skill_dirs(),
-            repl.agent.root.as_path(),
-            repl.agent.home.as_deref(),
+            repl.conv.agent.root.as_path(),
+            repl.conv.agent.home.as_deref(),
         );
         // A viewer, not a picker: the result is discarded like every other `/…` view.
         let _ = repl
+            .handles
             .ui
             .view(
-                &repl.cancel,
+                &repl.handles.cancel,
                 ViewSpec {
                     title: "Skills".to_owned(),
                     lines,
@@ -174,11 +175,11 @@ pub(crate) async fn cmd_skills(repl: &mut Repl, arg: &str) -> SkillsOutcome {
     match expand_skill(overlay.skills(), arg) {
         // `printErr("%v", err)`: the error text verbatim, no `Error: ` prefix.
         Err(text) => {
-            repl.tr.error(&text);
+            repl.handles.tr.error(&text);
             SkillsOutcome::Continue
         }
         Ok((expanded, name)) => {
-            repl.tr.notice(&format!(
+            repl.handles.tr.notice(&format!(
                 "Skill {name} loaded ({}).",
                 byte_size(expanded.len())
             ));

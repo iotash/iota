@@ -6,7 +6,7 @@
 //! directory Browser) — and which tab the user committed FROM decides which action runs.
 //! That is why the surface commits from anywhere: the focused tab IS the verb.
 //!
-//! Attachments queue on [`crate::repl::run::Repl::pending`] until the next send. An interrupted
+//! Attachments queue on [`crate::repl::state::Conversation::pending`] until the next send. An interrupted
 //! turn hands them back (`run.rs`), so a cancelled message never silently drops the file
 //! the user just attached.
 
@@ -177,19 +177,19 @@ fn browse_dir() -> PathBuf {
 /// The `/file` command. `arg` is the trimmed text after the command (`""` = the bare
 /// form, which opens the surface).
 pub(crate) async fn cmd_file(repl: &mut Repl, arg: &str) {
-    let cancel = &repl.cancel.clone();
+    let cancel = &repl.handles.cancel.clone();
     if !arg.is_empty() {
         match read_attachment(arg) {
             Ok(att) => {
-                repl.tr.notice(&attached_notice(&att));
-                repl.pending.push(att);
+                repl.handles.tr.notice(&attached_notice(&att));
+                repl.conv.pending.push(att);
             }
-            Err(e) => repl.tr.error(&format!("Error: {e}")),
+            Err(e) => repl.handles.tr.error(&format!("Error: {e}")),
         }
         return;
     }
 
-    let rows: Vec<String> = repl.pending.iter().map(attachment_label).collect();
+    let rows: Vec<String> = repl.conv.pending.iter().map(attachment_label).collect();
     let spec = TabbedSpec {
         panels: vec![
             Panel::multi("Attached".to_owned(), rows).with_search(true),
@@ -199,7 +199,7 @@ pub(crate) async fn cmd_file(repl: &mut Repl, arg: &str) {
     };
     // A facade failure is treated exactly like a cancel: commands never end the loop —
     // a closed facade ends it at the next `read_input`, the ONE exit path.
-    let Ok(r) = repl.ui.tabbed(cancel, spec).await else {
+    let Ok(r) = repl.handles.ui.tabbed(cancel, spec).await else {
         return;
     };
     if r.cancelled {
@@ -216,16 +216,16 @@ pub(crate) async fn cmd_file(repl: &mut Repl, arg: &str) {
             if checked.is_empty() {
                 return;
             }
-            let before = repl.pending.len();
-            repl.pending = std::mem::take(&mut repl.pending)
+            let before = repl.conv.pending.len();
+            repl.conv.pending = std::mem::take(&mut repl.conv.pending)
                 .into_iter()
                 .enumerate()
                 .filter(|(i, _)| !checked.contains(i))
                 .map(|(_, a)| a)
                 .collect();
-            repl.tr.notice(&format!(
+            repl.handles.tr.notice(&format!(
                 "Removed {} attachment(s).",
-                before - repl.pending.len()
+                before - repl.conv.pending.len()
             ));
         }
         // The "Add" tab: the browser's chosen file.
@@ -236,10 +236,10 @@ pub(crate) async fn cmd_file(repl: &mut Repl, arg: &str) {
             }
             match read_attachment(&path) {
                 Ok(att) => {
-                    repl.tr.notice(&attached_notice(&att));
-                    repl.pending.push(att);
+                    repl.handles.tr.notice(&attached_notice(&att));
+                    repl.conv.pending.push(att);
                 }
-                Err(e) => repl.tr.error(&format!("Error: {e}")),
+                Err(e) => repl.handles.tr.error(&format!("Error: {e}")),
             }
         }
         _ => {}

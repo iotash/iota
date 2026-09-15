@@ -19,36 +19,43 @@ use crate::repl::title::{TITLE_CAP, title_from};
 /// `/save [title]`.
 pub(crate) fn cmd_save(repl: &mut Repl, arg: &str) {
     if repl
+        .session
         .writer
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .is_some()
     {
-        repl.tr
-            .notice(&format!("Session already saving ({}).", repl.session_id()));
+        repl.handles.tr.notice(&format!(
+            "Session already saving ({}).",
+            repl.session.session_id()
+        ));
         return;
     }
-    let Some(factory) = repl.new_session.as_mut() else {
+    let Some(factory) = repl.session.new_session.as_mut() else {
         return; // unreachable: the command is unregistered without a factory
     };
     let writer = match factory() {
         Ok(w) => w,
         Err(e) => {
-            repl.tr.error(&format!("Save failed: {e}"));
+            repl.handles.tr.error(&format!("Save failed: {e}"));
             return;
         }
     };
-    let window = repl.budget.window();
+    let window = repl.conv.budget.window();
     // Go's factory takes the LIVE provider (root.go:360-366), so a mid-chat `/model` or a
     // temperature change lands in the freshly minted meta. The Rust factory is minted at
     // wiring time and cannot see the provider any more, so the live tuning is stamped
     // HERE instead: model, plus the four layered parameters and the source of each — this
     // is the same stamp a session that started with a bundle got on the way in, only later
     // (brain page `model-param-layering`).
-    let model = repl.provider.model().to_owned();
+    let model = repl.conv.provider.model().to_owned();
     let params = crate::repl::liveparams::current(repl);
     {
-        let mut slot = repl.writer.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut slot = repl
+            .session
+            .writer
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         *slot = Some(writer);
         if let Some(w) = slot.as_mut() {
             let _ = w.update_meta(|m| {
@@ -64,12 +71,12 @@ pub(crate) fn cmd_save(repl: &mut Repl, arg: &str) {
     if name.is_empty() {
         // The chat was named at first send even without a writer; the freshly minted
         // bundle catches up with that name.
-        repl.titler.reapply();
+        repl.session.titler.reapply();
     } else {
-        repl.titler.adopt_name(&name);
+        repl.session.titler.adopt_name(&name);
     }
-    repl.tr.notice(&format!(
+    repl.handles.tr.notice(&format!(
         "Session saved: {} — auto-saving from now on.",
-        repl.session_id()
+        repl.session.session_id()
     ));
 }
