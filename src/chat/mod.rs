@@ -13,7 +13,9 @@ pub mod images;
 pub mod once;
 pub mod report;
 pub mod run;
-pub mod turns;
+// Transitional alias while the 13 import points move (next commit): the run context now lives in
+// `crate::tool::context`.
+pub use crate::tool::context as turns;
 
 use std::path::PathBuf;
 

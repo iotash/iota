@@ -10,6 +10,7 @@ pub mod agent;
 pub(crate) mod args;
 pub mod ask;
 pub mod code;
+pub mod context;
 pub mod defer;
 pub(crate) mod defer_mode;
 pub mod error;
