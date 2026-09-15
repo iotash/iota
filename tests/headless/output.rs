@@ -441,7 +441,10 @@ fn save_image_names_and_modes() {
     assert_eq!(saved.attachments[3].mime_type, "application/octet-stream");
 
     // No home directory: every image fails with Go's os.UserHomeDir text, and nothing is written.
-    assert_eq!(save_image(&png, None, 0).unwrap_err(), HOME_NOT_DEFINED);
+    assert_eq!(
+        save_image(&png, None, 0).unwrap_err().to_string(),
+        HOME_NOT_DEFINED
+    );
     let saved = save_images_for_turn(&[png.clone(), png], None);
     assert!(saved.paths.is_empty());
     // A failed save is reported and NOT attached (S§3): nothing to persist.

@@ -50,18 +50,19 @@ pub(crate) fn image_ext(mime: &str) -> &'static str {
 /// The error text when no home directory is known (Go: `os.UserHomeDir`, os/file.go:517; kept on every platform).
 pub const HOME_NOT_DEFINED: &str = "$HOME is not defined";
 
-/// dir None → Err("$HOME is not defined") per image (Go: `app.Home()` propagates `os.UserHomeDir`'s error verbatim,
-/// os/file.go:517 — the literal is kept on every platform); `create_dir_all(dir)` (0755 umask default); name
-/// `{jiff::Zoned::now().strftime("%Y%m%d-%H%M%S")}-{seq}.{ext}` (Go layout `20060102-150405`, local time); write
-/// 0644; returns the absolute path (images.go:21-28,48-58).
-pub fn save_image(att: &Attachment, dir: Option<&Path>, seq: usize) -> Result<PathBuf, String> {
-    let dir = dir.ok_or_else(|| HOME_NOT_DEFINED.to_owned())?;
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+/// dir None → an `io::Error` reading `$HOME is not defined` per image (Go: `app.Home()` propagates
+/// `os.UserHomeDir`'s error verbatim, os/file.go:517 — the literal is kept on every platform);
+/// `create_dir_all(dir)` (0755 umask default); name `{jiff::Zoned::now().strftime("%Y%m%d-%H%M%S")}-{seq}.{ext}`
+/// (Go layout `20060102-150405`, local time); write 0644; returns the absolute path (images.go:21-28,48-58).
+/// Every failure is the I/O error itself; the callers print its Display.
+pub fn save_image(att: &Attachment, dir: Option<&Path>, seq: usize) -> std::io::Result<PathBuf> {
+    let dir = dir.ok_or_else(|| std::io::Error::other(HOME_NOT_DEFINED))?;
+    std::fs::create_dir_all(dir)?;
     let stamp = jiff::Zoned::now().strftime("%Y%m%d-%H%M%S");
     let name = format!("{stamp}-{seq}.{}", image_ext(&att.mime_type));
     let path = dir.join(name);
-    write_0644(&path, &att.data).map_err(|e| e.to_string())?;
-    std::path::absolute(&path).map_err(|e| e.to_string())
+    write_0644(&path, &att.data)?;
+    std::path::absolute(&path)
 }
 
 /// `os.WriteFile(path, data, 0o644)`: create-or-truncate with mode 0644 (umask applied, like Go).
