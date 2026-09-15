@@ -572,10 +572,10 @@ mod tests {
         format_temperature,
     };
 
-    // Go: chat/settings_test.go:8 TestContextWindowRowsPresetCurrent — a preset current
+    // A preset current
     // window must not grow the list, and its row is the marked cursor.
     #[test]
-    fn test_context_window_rows_preset_current() {
+    fn a_preset_current_window_is_the_marked_cursor_and_grows_nothing() {
         let Rows {
             values,
             labels,
@@ -586,10 +586,10 @@ mod tests {
         assert_eq!(labels[cursor], "128k (current)");
     }
 
-    // Go: chat/settings_test.go:19 TestContextWindowRowsInsertsNonPresetSorted — a
+    // A
     // non-preset current window is inserted IN ORDER, so the list still reads as a scale.
     #[test]
-    fn test_context_window_rows_inserts_non_preset_sorted() {
+    fn a_non_preset_current_window_is_inserted_in_order() {
         let Rows {
             values,
             labels,
@@ -612,11 +612,11 @@ mod tests {
         assert!(labels.iter().all(|l| !l.contains("(current)")));
     }
 
-    // Go: chat/settings_test.go:32 TestEffortRows — the unset level maps to the "default"
+    // The unset level maps to the "default"
     // row, a known level is marked in place, and an unknown one (from a newer session) is
     // APPENDED so an untouched tab stays a no-op.
     #[test]
-    fn test_effort_rows() {
+    fn effort_rows_mark_the_level_and_append_an_unknown_one() {
         let Rows {
             values,
             labels,
@@ -648,10 +648,10 @@ mod tests {
         assert_eq!(labels[cursor], "turbo (current)");
     }
 
-    // Go: chat/settings_test.go:101 TestChoiceRows — "default" row first (omit the
+    // "default" row first (omit the
     // parameter), the options follow, an out-of-list configured value is appended.
     #[test]
-    fn test_choice_rows() {
+    fn choice_rows_lead_with_default_and_append_an_out_of_list_value() {
         let opts = ["1:1", "3:2"];
 
         let Rows {
@@ -684,10 +684,10 @@ mod tests {
         assert_eq!(labels[3], "21:9 (current)");
     }
 
-    // Go: chat/settings_test.go:80 TestFloatPtrEqual — the "did this knob move?" test the
+    // The "did this knob move?" test the
     // temperature commit reads.
     #[test]
-    fn test_float_ptr_equal() {
+    fn float_ptr_equal_is_the_did_this_knob_move_test() {
         let (a, b, c) = (0.7, 0.7, 0.8);
         assert!(float_ptr_equal(None, None));
         assert!(!float_ptr_equal(Some(a), None));
@@ -710,131 +710,20 @@ mod tests {
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp, clippy::unnecessary_literal_bound)]
+#[allow(clippy::float_cmp)]
 mod assemble_tests {
     use super::Extras;
-    use crate::BoxFuture;
-    use crate::provider::ImageGenTunable;
-    use crate::provider::error::ProviderError;
     use crate::provider::model::Message;
-    use crate::provider::{
-        ChatResult, Effort, ImageEditJsonTunable, ImageGenOptions, ImageGenParams, ImageTunable,
-        Provider, ProviderKind, Tunable,
-    };
+    use crate::provider::{Effort, ImageGenOptions, ImageGenParams, Provider, ProviderKind};
+    use crate::testing::FakeProvider;
     use crate::ui::facade::{Panel, PanelKind};
-    use tokio_util::sync::CancellationToken;
 
     /// A provider whose capabilities are switched on one at a time, so each tab can be
     /// shown to depend on exactly the probe that offers it.
-    #[derive(Default)]
-    struct Caps {
-        kind: Option<ProviderKind>,
-        usage: bool,
-        tunable: bool,
-        temperature: Option<f64>,
-        effort: Option<Effort>,
-        image: Option<bool>,
-        image_gen: Option<(ImageGenOptions, ImageGenParams)>,
-        json_edits: Option<bool>,
+    fn caps() -> FakeProvider {
+        FakeProvider::new().with_model("m")
     }
 
-    impl Provider for Caps {
-        fn kind(&self) -> ProviderKind {
-            self.kind.unwrap_or(ProviderKind::OpenAi)
-        }
-        fn model(&self) -> &str {
-            "m"
-        }
-        fn set_model(&mut self, _model: String) {}
-        fn list_models<'a>(
-            &'a self,
-            _cancel: &'a CancellationToken,
-        ) -> BoxFuture<'a, Result<Vec<String>, ProviderError>> {
-            Box::pin(std::future::ready(Ok(Vec::new())))
-        }
-        fn chat<'a>(
-            &'a self,
-            _cancel: &'a CancellationToken,
-            _messages: &'a [Message],
-        ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
-            Box::pin(std::future::ready(Ok(ChatResult::default())))
-        }
-        fn reports_usage(&self) -> bool {
-            self.usage
-        }
-        fn as_tunable(&mut self) -> Option<&mut dyn Tunable> {
-            self.tunable.then_some(self as &mut dyn Tunable)
-        }
-        fn as_image_tunable(&mut self) -> Option<&mut dyn ImageTunable> {
-            self.image
-                .is_some()
-                .then_some(self as &mut dyn ImageTunable)
-        }
-        fn as_image_gen_tunable(&mut self) -> Option<&mut dyn ImageGenTunable> {
-            self.image_gen
-                .is_some()
-                .then_some(self as &mut dyn ImageGenTunable)
-        }
-        fn as_image_edit_json_tunable(&mut self) -> Option<&mut dyn ImageEditJsonTunable> {
-            self.json_edits
-                .is_some()
-                .then_some(self as &mut dyn ImageEditJsonTunable)
-        }
-    }
-
-    impl Tunable for Caps {
-        fn set_temperature(&mut self, t: Option<f64>) {
-            self.temperature = t;
-        }
-        fn temperature(&self) -> Option<f64> {
-            self.temperature
-        }
-        fn set_effort(&mut self, e: Option<Effort>) {
-            self.effort = e;
-        }
-        fn effort(&self) -> Option<Effort> {
-            self.effort
-        }
-    }
-
-    impl ImageTunable for Caps {
-        fn set_image_output(&mut self, on: bool) {
-            self.image = Some(on);
-        }
-        fn image_output(&self) -> bool {
-            self.image.unwrap_or(false)
-        }
-    }
-
-    impl ImageGenTunable for Caps {
-        fn set_image_gen_params(&mut self, p: ImageGenParams) {
-            if let Some(slot) = self.image_gen.as_mut() {
-                slot.1 = p;
-            }
-        }
-        fn image_gen_params(&self) -> &ImageGenParams {
-            static EMPTY: std::sync::OnceLock<ImageGenParams> = std::sync::OnceLock::new();
-            self.image_gen
-                .as_ref()
-                .map_or_else(|| EMPTY.get_or_init(ImageGenParams::default), |g| &g.1)
-        }
-        fn image_gen_options(&self) -> ImageGenOptions {
-            self.image_gen
-                .as_ref()
-                .map_or_else(ImageGenOptions::default, |g| g.0.clone())
-        }
-    }
-
-    impl ImageEditJsonTunable for Caps {
-        fn set_json_edits(&mut self, on: bool) {
-            self.json_edits = Some(on);
-        }
-        fn json_edits(&self) -> bool {
-            self.json_edits.unwrap_or(false)
-        }
-    }
-
-    /// The tabs `assemble` appended, by title.
     fn tabs(p: &mut dyn Provider, history: &[Message], overlay: &str) -> (Vec<Panel>, Extras) {
         let mut panels = Vec::new();
         let ex = Extras::assemble(p, 128_000, history, overlay, &mut panels);
@@ -845,11 +734,11 @@ mod assemble_tests {
         panels.iter().map(|p| p.title.as_str()).collect()
     }
 
-    /// Go: chat/run.go:544-630 — tabs assemble by CAPABILITY: a provider that can do
+    /// Tabs assemble by CAPABILITY: a provider that can do
     /// nothing gets no tabs at all beside the Model one the caller already built.
     #[test]
     fn a_bare_provider_gets_no_capability_tabs() {
-        let (panels, _) = tabs(&mut Caps::default(), &[], "");
+        let (panels, _) = tabs(&mut caps(), &[], "");
         assert!(titles(&panels).is_empty(), "{:?}", titles(&panels));
     }
 
@@ -857,13 +746,10 @@ mod assemble_tests {
     /// the read-only System tab LAST — the order the recorded indices depend on.
     #[test]
     fn a_text_provider_gets_context_effort_temperature_and_system() {
-        let mut p = Caps {
-            usage: true,
-            tunable: true,
-            effort: Some(Effort::High),
-            temperature: Some(0.7),
-            ..Caps::default()
-        };
+        let mut p = caps()
+            .reporting_usage()
+            .with_effort(Some(Effort::High))
+            .with_temperature(Some(0.7));
         let history = [Message::system("You are terse.")];
         let (panels, _) = tabs(&mut p, &history, "");
         assert_eq!(
@@ -885,18 +771,11 @@ mod assemble_tests {
     /// setting with no observable effect (T-10).
     #[test]
     fn the_context_tab_needs_token_accounting() {
-        let (panels, ex) = tabs(&mut Caps::default(), &[], "");
+        let (panels, ex) = tabs(&mut caps(), &[], "");
         assert!(!titles(&panels).contains(&"Context"));
         assert!(ex.ctx.is_none());
 
-        let (panels, ex) = tabs(
-            &mut Caps {
-                usage: true,
-                ..Caps::default()
-            },
-            &[],
-            "",
-        );
+        let (panels, ex) = tabs(&mut caps().reporting_usage(), &[], "");
         assert_eq!(titles(&panels), ["Context"]);
         assert_eq!(ex.ctx, Some(0), "the recorded index is the commit contract");
     }
@@ -904,20 +783,13 @@ mod assemble_tests {
     /// Anthropic caps temperature at 1.0; everyone else at 2.0 (chat/run.go:566-569).
     #[test]
     fn the_temperature_ceiling_follows_the_dialect() {
-        let mut openai = Caps {
-            tunable: true,
-            ..Caps::default()
-        };
+        let mut openai = caps().tunable();
         let (panels, _) = tabs(&mut openai, &[], "");
         assert_eq!(panels[1].as_slider().map_or(0.0, |s| s.max), 2.0);
         assert_eq!(panels[1].as_slider().map_or(0.0, |s| s.min), 0.0);
         assert_eq!(panels[1].as_slider().map_or(0.0, |s| s.step), 0.1);
 
-        let mut anthropic = Caps {
-            kind: Some(ProviderKind::Anthropic),
-            tunable: true,
-            ..Caps::default()
-        };
+        let mut anthropic = caps().with_kind(ProviderKind::Anthropic).tunable();
         let (panels, _) = tabs(&mut anthropic, &[], "");
         assert_eq!(panels[1].as_slider().map_or(0.0, |s| s.max), 1.0);
     }
@@ -927,8 +799,8 @@ mod assemble_tests {
     /// system prompt would be a lie about what is sent.
     #[test]
     fn an_image_provider_gets_its_knobs_and_no_system_tab() {
-        let mut p = Caps {
-            image_gen: Some((
+        let mut p = caps()
+            .with_image_gen(
                 ImageGenOptions {
                     aspect_ratios: vec!["1:1", "3:2"],
                     image_sizes: vec!["1K", "2K"],
@@ -939,10 +811,8 @@ mod assemble_tests {
                     image_size: None,
                     negative_prompt: Some("blurry".to_owned()),
                 },
-            )),
-            json_edits: Some(true),
-            ..Caps::default()
-        };
+            )
+            .with_json_edits(true);
         let history = [Message::system("You are terse.")];
         let (panels, ex) = tabs(&mut p, &history, "");
         assert_eq!(
@@ -966,16 +836,13 @@ mod assemble_tests {
         assert!(panels[3].on());
 
         // A dialect offering only sizes (openai images) shows only that tab.
-        let mut only_sizes = Caps {
-            image_gen: Some((
-                ImageGenOptions {
-                    image_sizes: vec!["1024x1024"],
-                    ..ImageGenOptions::default()
-                },
-                ImageGenParams::default(),
-            )),
-            ..Caps::default()
-        };
+        let mut only_sizes = caps().with_image_gen(
+            ImageGenOptions {
+                image_sizes: vec!["1024x1024"],
+                ..ImageGenOptions::default()
+            },
+            ImageGenParams::default(),
+        );
         let (panels, ex) = tabs(&mut only_sizes, &[], "");
         assert_eq!(titles(&panels), ["Size"]);
         assert!(ex.aspect.is_none() && ex.negative.is_none());
@@ -984,10 +851,7 @@ mod assemble_tests {
     /// The image-output switch is its own capability, and it opens on the current state.
     #[test]
     fn the_image_switch_opens_on_the_current_state() {
-        let mut p = Caps {
-            image: Some(true),
-            ..Caps::default()
-        };
+        let mut p = caps().with_image_output(true);
         let (panels, ex) = tabs(&mut p, &[], "");
         assert_eq!(titles(&panels), ["Image"]);
         assert_eq!(ex.image, Some(0));
@@ -1004,7 +868,7 @@ mod assemble_tests {
     #[test]
     fn the_system_tab_carries_the_agent_overlay() {
         let history = [Message::system("Base prompt.")];
-        let (panels, _) = tabs(&mut Caps::default(), &history, "Project rules.");
+        let (panels, _) = tabs(&mut caps(), &history, "Project rules.");
         assert_eq!(titles(&panels), ["System"]);
         assert_eq!(
             panels[0].lines(),
@@ -1013,7 +877,7 @@ mod assemble_tests {
         );
 
         // No system prompt in effect: no tab (the surface stays as it was).
-        let (panels, _) = tabs(&mut Caps::default(), &[], "");
+        let (panels, _) = tabs(&mut caps(), &[], "");
         assert!(panels.is_empty());
     }
 }

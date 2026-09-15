@@ -13,28 +13,21 @@
 //!    `iota::session::apply_session_tuning` replays on resume — the round trip. That
 //!    function's own subtests live in `iota-session/tests/tuning.rs`; this file VERIFIES
 //!    against it rather than re-implementing the replay.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use iota::BoxFuture;
 use iota::cmd::{AgentConfig, Config, ModelConfig, ParamLayers, Resolved};
 use iota::host::Presenter;
 use iota::llm::reqlog::RequestLog;
-use iota::provider::ImageGenTunable;
-use iota::provider::error::ProviderError;
 use iota::provider::model::Message;
-use iota::provider::{
-    ChatResult, Effort, ImageEditJsonTunable, ImageGenOptions, ImageGenParams, ImageTunable,
-    Provider, ProviderKind, Tunable,
-};
+use iota::provider::{Effort, ImageGenOptions, ImageGenParams, ProviderKind, Tunable};
 use iota::repl::{McpHooks, RunParams, SessionCtx};
 use iota::session::{
     LayeredParams, Overrides, Param, ParamSource, SessionMeta, SessionStore, SessionWriter,
     apply_session_tuning,
 };
-use iota::testing::{Reply, ScriptedUi, StaticDispatcher, TabbedSummary, UiEvent};
+use iota::testing::{FakeProvider, Reply, ScriptedUi, StaticDispatcher, TabbedSummary, UiEvent};
 use iota::text::ansi::strip_sgr;
 use iota::tool::Dispatcher;
 use iota::ui::facade::{Input, PanelKind, PanelResult, TabbedResult, Ui};
@@ -45,130 +38,15 @@ use tokio_util::sync::CancellationToken;
 // the double
 // ---------------------------------------------------------------------------
 
-/// A provider whose optional capabilities are switched on per scenario, so each tab can be
-/// traced to exactly the probe that offers it.
-#[derive(Clone, Default)]
-struct Knobs {
-    kind: Option<ProviderKind>,
-    model: String,
-    models: Vec<String>,
-    usage: bool,
-    tunable: bool,
-    temperature: Option<f64>,
-    effort: Option<Effort>,
-    image: Option<bool>,
-    image_gen: Option<(ImageGenOptions, ImageGenParams)>,
-    json_edits: Option<bool>,
-}
-
-impl Knobs {
-    fn text(model: &str) -> Self {
-        Self {
-            model: model.to_owned(),
-            models: vec![model.to_owned(), "b-model".to_owned()],
-            usage: true,
-            tunable: true,
-            ..Self::default()
-        }
-    }
-}
-
-impl Provider for Knobs {
-    fn kind(&self) -> ProviderKind {
-        self.kind.unwrap_or(ProviderKind::OpenAi)
-    }
-    fn model(&self) -> &str {
-        &self.model
-    }
-    fn set_model(&mut self, model: String) {
-        self.model = model;
-    }
-    fn list_models<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Vec<String>, ProviderError>> {
-        Box::pin(std::future::ready(Ok(self.models.clone())))
-    }
-    fn chat<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        _messages: &'a [Message],
-    ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
-        Box::pin(std::future::ready(Ok(ChatResult::default())))
-    }
-    fn reports_usage(&self) -> bool {
-        self.usage
-    }
-    fn as_tunable(&mut self) -> Option<&mut dyn Tunable> {
-        self.tunable.then_some(self as &mut dyn Tunable)
-    }
-    fn as_image_tunable(&mut self) -> Option<&mut dyn ImageTunable> {
-        self.image
-            .is_some()
-            .then_some(self as &mut dyn ImageTunable)
-    }
-    fn as_image_gen_tunable(&mut self) -> Option<&mut dyn ImageGenTunable> {
-        self.image_gen
-            .is_some()
-            .then_some(self as &mut dyn ImageGenTunable)
-    }
-    fn as_image_edit_json_tunable(&mut self) -> Option<&mut dyn ImageEditJsonTunable> {
-        self.json_edits
-            .is_some()
-            .then_some(self as &mut dyn ImageEditJsonTunable)
-    }
-}
-
-impl Tunable for Knobs {
-    fn set_temperature(&mut self, t: Option<f64>) {
-        self.temperature = t;
-    }
-    fn temperature(&self) -> Option<f64> {
-        self.temperature
-    }
-    fn set_effort(&mut self, e: Option<Effort>) {
-        self.effort = e;
-    }
-    fn effort(&self) -> Option<Effort> {
-        self.effort
-    }
-}
-
-impl ImageTunable for Knobs {
-    fn set_image_output(&mut self, on: bool) {
-        self.image = Some(on);
-    }
-    fn image_output(&self) -> bool {
-        self.image.unwrap_or(false)
-    }
-}
-
-impl ImageGenTunable for Knobs {
-    fn set_image_gen_params(&mut self, p: ImageGenParams) {
-        if let Some(slot) = self.image_gen.as_mut() {
-            slot.1 = p;
-        }
-    }
-    fn image_gen_params(&self) -> &ImageGenParams {
-        static EMPTY: std::sync::OnceLock<ImageGenParams> = std::sync::OnceLock::new();
-        self.image_gen
-            .as_ref()
-            .map_or_else(|| EMPTY.get_or_init(ImageGenParams::default), |g| &g.1)
-    }
-    fn image_gen_options(&self) -> ImageGenOptions {
-        self.image_gen
-            .as_ref()
-            .map_or_else(ImageGenOptions::default, |g| g.0.clone())
-    }
-}
-
-impl ImageEditJsonTunable for Knobs {
-    fn set_json_edits(&mut self, on: bool) {
-        self.json_edits = Some(on);
-    }
-    fn json_edits(&self) -> bool {
-        self.json_edits.unwrap_or(false)
-    }
+/// The text dialect's shape: a usage-reporting `Tunable` provider whose listing offers `model`
+/// and `b-model`. Each optional capability of `FakeProvider` is switched on per scenario, so each
+/// tab can be traced to exactly the probe that offers it.
+fn text(model: &str) -> FakeProvider {
+    FakeProvider::new()
+        .with_model(model)
+        .with_models(&[model, "b-model"])
+        .reporting_usage()
+        .tunable()
 }
 
 // ---------------------------------------------------------------------------
@@ -205,7 +83,12 @@ impl Fixture {
         (w, dir)
     }
 
-    fn params(&self, provider: Knobs, writer: SessionWriter, history: Vec<Message>) -> RunParams {
+    fn params(
+        &self,
+        provider: FakeProvider,
+        writer: SessionWriter,
+        history: Vec<Message>,
+    ) -> RunParams {
         RunParams {
             ui: Arc::clone(&self.ui) as Arc<dyn Ui>,
             provider: Box::new(provider),
@@ -313,11 +196,9 @@ async fn model_opens_a_tab_per_capability() {
         Reply::Interrupted,
     ]);
     let (writer, _dir) = f.writer();
-    let provider = Knobs {
-        effort: Some(Effort::High),
-        temperature: Some(0.7),
-        ..Knobs::text("a-model")
-    };
+    let provider = text("a-model")
+        .with_effort(Some(Effort::High))
+        .with_temperature(Some(0.7));
     let history = vec![Message::system("You are terse.\nBe brief.")];
     iota::repl::run(f.params(provider, writer, history))
         .await
@@ -377,11 +258,9 @@ async fn model_shows_only_the_tabs_the_provider_has() {
         Reply::Interrupted,
     ]);
     let (writer, _dir) = f.writer();
-    let provider = Knobs {
-        model: "a-model".to_owned(),
-        models: vec!["a-model".to_owned()],
-        ..Knobs::default()
-    };
+    let provider = FakeProvider::new()
+        .with_model("a-model")
+        .with_models(&["a-model"]);
     iota::repl::run(f.params(provider, writer, Vec::new()))
         .await
         .expect("exit");
@@ -425,11 +304,9 @@ async fn model_commits_every_moved_knob_with_its_own_notice() {
         Reply::Interrupted,
     ]);
     let (writer, dir) = f.writer();
-    let provider = Knobs {
-        effort: Some(Effort::High),
-        temperature: Some(0.7),
-        ..Knobs::text("a-model")
-    };
+    let provider = text("a-model")
+        .with_effort(Some(Effort::High))
+        .with_temperature(Some(0.7));
     let history = vec![Message::system("You are terse.")];
     iota::repl::run(f.params(provider, writer, history))
         .await
@@ -485,11 +362,9 @@ async fn model_untouched_questionnaire_reports_no_changes() {
             Reply::Interrupted,
         ]);
         let (writer, _dir) = f.writer();
-        let provider = Knobs {
-            effort: Some(Effort::High),
-            temperature: Some(0.7),
-            ..Knobs::text("a-model")
-        };
+        let provider = text("a-model")
+            .with_effort(Some(Effort::High))
+            .with_temperature(Some(0.7));
         iota::repl::run(f.params(provider, writer, vec![Message::system("sys")]))
             .await
             .expect("exit");
@@ -504,11 +379,9 @@ async fn model_untouched_questionnaire_reports_no_changes() {
         Reply::Interrupted,
     ]);
     let (writer, dir) = f.writer();
-    let provider = Knobs {
-        effort: Some(Effort::High),
-        temperature: Some(0.7),
-        ..Knobs::text("a-model")
-    };
+    let provider = text("a-model")
+        .with_effort(Some(Effort::High))
+        .with_temperature(Some(0.7));
     iota::repl::run(f.params(provider, writer, vec![Message::system("sys")]))
         .await
         .expect("exit");
@@ -556,21 +429,19 @@ async fn model_commits_the_image_knobs_together() {
         Reply::Interrupted,
     ]);
     let (writer, dir) = f.writer();
-    let provider = Knobs {
-        kind: Some(ProviderKind::Imagen),
-        model: "imagen-4".to_owned(),
-        models: vec!["imagen-4".to_owned()],
-        image_gen: Some((
+    let provider = FakeProvider::new()
+        .with_kind(ProviderKind::Imagen)
+        .with_model("imagen-4")
+        .with_models(&["imagen-4"])
+        .with_image_gen(
             ImageGenOptions {
                 aspect_ratios: vec!["1:1", "3:2"],
                 image_sizes: vec!["1K", "2K"],
                 negative_prompt: true,
             },
             ImageGenParams::default(),
-        )),
-        json_edits: Some(false),
-        ..Knobs::default()
-    };
+        )
+        .with_json_edits(false);
     // A system prompt in history must NOT produce a System tab for an image provider.
     let history = vec![Message::system("You are terse.")];
     iota::repl::run(f.params(provider, writer, history))
@@ -614,12 +485,10 @@ async fn model_commits_the_image_output_switch() {
         Reply::Interrupted,
     ]);
     let (writer, dir) = f.writer();
-    let provider = Knobs {
-        model: "gemini".to_owned(),
-        models: vec!["gemini".to_owned()],
-        image: Some(false),
-        ..Knobs::default()
-    };
+    let provider = FakeProvider::new()
+        .with_model("gemini")
+        .with_models(&["gemini"])
+        .with_image_output(false);
     iota::repl::run(f.params(provider, writer, Vec::new()))
         .await
         .expect("exit");
@@ -662,7 +531,7 @@ async fn session_meta_tuning_round_trip() {
         Reply::Interrupted,
     ]);
     let (writer, dir) = f.writer();
-    iota::repl::run(f.params(Knobs::text("a-model"), writer, Vec::new()))
+    iota::repl::run(f.params(text("a-model"), writer, Vec::new()))
         .await
         .expect("exit");
 
@@ -673,7 +542,7 @@ async fn session_meta_tuning_round_trip() {
     assert_eq!(meta.temperature, Some(1.2));
 
     // Resume: a FRESH provider of the same type replays the recorded tuning.
-    let mut fresh = Knobs::text("a-model");
+    let mut fresh = text("a-model");
     let mut warnings = Vec::new();
     let window = apply_session_tuning(
         &meta,
@@ -684,8 +553,8 @@ async fn session_meta_tuning_round_trip() {
     );
     assert!(warnings.is_empty(), "{warnings:?}");
     assert_eq!(window, Some(256_000));
-    assert_eq!(fresh.effort, Some(Effort::Medium));
-    assert_eq!(fresh.temperature, Some(1.2));
+    assert_eq!(fresh.effort(), Some(Effort::Medium));
+    assert_eq!(fresh.temperature(), Some(1.2));
     // The model is replayed by the session loader, not by `apply_session_tuning`; the
     // bundle carries it, which is what the resume path reads.
     assert_eq!(meta.model, "b-model");
@@ -707,10 +576,7 @@ async fn model_effort_default_row_clears_the_parameter() {
         Reply::Interrupted,
     ]);
     let (writer, dir) = f.writer();
-    let provider = Knobs {
-        effort: Some(Effort::High),
-        ..Knobs::text("a-model")
-    };
+    let provider = text("a-model").with_effort(Some(Effort::High));
     iota::repl::run(f.params(provider, writer, Vec::new()))
         .await
         .expect("exit");
@@ -737,10 +603,7 @@ async fn model_temperature_slider_returns_to_default() {
         Reply::Interrupted,
     ]);
     let (writer, _dir) = f.writer();
-    let provider = Knobs {
-        temperature: Some(0.7),
-        ..Knobs::text("a-model")
-    };
+    let provider = text("a-model").with_temperature(Some(0.7));
     iota::repl::run(f.params(provider, writer, Vec::new()))
         .await
         .expect("exit");
@@ -752,7 +615,7 @@ async fn model_temperature_slider_returns_to_default() {
 // ---------------------------------------------------------------------------
 
 /// The layering a `/model` switch evaluates against: this run's agent, and the `models:` entries the
-/// config declares for the provider `Knobs` reports (`openai`).
+/// config declares for the provider the double reports (`openai`).
 fn layering(agent: AgentConfig, models: &[(&str, ModelConfig)]) -> ParamLayers {
     let mut cfg = Config::default();
     for (name, m) in models {
@@ -808,10 +671,7 @@ async fn switching_models_drops_an_inherited_value_and_keeps_a_typed_one() {
         Reply::Interrupted,
     ]);
     let (writer, dir) = f.writer();
-    let provider = Knobs {
-        effort: Some(Effort::Max),
-        ..Knobs::text("a-model")
-    };
+    let provider = text("a-model").with_effort(Some(Effort::Max));
     let mut params = f.params(provider, writer, Vec::new());
     params.params = LayeredParams {
         // Inherited from `models.a`, which the chat is about to leave.
@@ -883,10 +743,7 @@ async fn a_declaration_wins_the_switch_and_a_hand_move_wins_the_surface() {
         Reply::Interrupted,
     ]);
     let (writer, dir) = f.writer();
-    let provider = Knobs {
-        effort: Some(Effort::Max),
-        ..Knobs::text("a-model")
-    };
+    let provider = text("a-model").with_effort(Some(Effort::Max));
     let mut params = f.params(provider, writer, Vec::new());
     params.params = LayeredParams {
         context_window: Param::user(64_000),
@@ -946,7 +803,7 @@ async fn the_agents_entry_outranks_the_model_across_a_switch() {
         Reply::Interrupted,
     ]);
     let (writer, dir) = f.writer();
-    let mut params = f.params(Knobs::text("a-model"), writer, Vec::new());
+    let mut params = f.params(text("a-model"), writer, Vec::new());
     params.params = LayeredParams {
         context_window: Param::config(32_000),
         ..LayeredParams::default()
