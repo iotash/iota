@@ -96,3 +96,6 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
     m.composer.handle_edit_key(&key, m.width);
     m.composer.end_history_nav();
 }
+
+#[cfg(test)]
+mod tests;
