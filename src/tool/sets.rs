@@ -1,6 +1,5 @@
-//! The built-in toolset table (tool/tool.go:329-341): the four set names, their factories and the config
-//! types they decode, plus `SetError`, the byte-equal Go factory refusals. Every set is always compiled in —
-//! one binary, exactly like Go.
+//! The built-in toolset table: the four set names, their factories and the config types they decode, plus
+//! `SetError`, the factory refusals. Every set is always compiled in — one binary.
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -12,7 +11,7 @@ pub type RawNode = serde_norway::Value;
 pub type ToolsConfig = BTreeMap<String, RawNode>;
 /// Must succeed on `None`/`Null` (defaults). May return `Ok(vec![])` ("contributes no tools").
 pub(crate) type SetFactory = fn(&ToolEnv, Option<&RawNode>) -> Result<Vec<Arc<dyn Tool>>, SetError>;
-/// The four built-in set names (tool/tool.go:329-341).
+/// The four built-in set names.
 pub(crate) const SET_NAMES: [&str; 4] = ["shell", SKILLS_SET, "code", "ask"];
 
 /// The skills set — `load_skill` alone. It was called `agent` until the three-layer split, where the word
@@ -31,8 +30,8 @@ pub fn set_factory(name: &str) -> Option<SetFactory> {
     }
 }
 
-/// Why a toolset factory refused its configuration. Every text is byte-equal to the Go set factories,
-/// except [`SetError::NoShell`], which reports a machine Go never had to refuse.
+/// Why a toolset factory refused its configuration; [`SetError::NoShell`] reports a machine with no
+/// usable interpreter.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SetError {
     /// `tools.shell` is not a mapping (or fails to decode).
