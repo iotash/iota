@@ -17,7 +17,7 @@ use std::sync::{Arc, PoisonError};
 use crate::session::SessionInfo;
 use crate::ui::facade::{Panel, TabbedSpec};
 
-use crate::repl::replay::{RESUME_ECHO_ROUNDS, echo_rounds, last_rounds};
+use crate::repl::render::replay::{RESUME_ECHO_ROUNDS, echo_rounds, last_rounds};
 use crate::repl::run::Repl;
 use crate::repl::title::window_title;
 

@@ -36,10 +36,10 @@ use pretty_assertions::assert_eq;
 use tokio_util::sync::CancellationToken;
 
 use crate::host::Presenter;
-use crate::repl::approval::ApprovalGate;
-use crate::repl::meter::CtxMeter;
-use crate::repl::steer::Steerer;
-use crate::repl::transcript::Transcript;
+use crate::repl::context::meter::CtxMeter;
+use crate::repl::render::transcript::Transcript;
+use crate::repl::turn::approval::ApprovalGate;
+use crate::repl::turn::steer::Steerer;
 use crate::repl::turn::{TurnCtx, TurnFailure, TurnReport, run_turn};
 
 // ---------------------------------------------------------------------------

@@ -20,8 +20,8 @@ use crate::tool::{DeferState, DeferredToolStatus};
 use crate::ui::facade::{Panel, TabbedSpec};
 
 use crate::mcp::{ServerState, ServerStatus};
+use crate::repl::render::styles::{bold, dim, green, red, yellow};
 use crate::repl::run::Repl;
-use crate::repl::styles::{bold, dim, green, red, yellow};
 
 /// The refresh cadence of a live panel (chat/run.go:851 `RefreshEvery`).
 const REFRESH_EVERY_MS: u64 = 500;

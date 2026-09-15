@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 use crate::text::{elapsed, tokens};
 use crate::tool::{Artifact, ArtifactKind};
 
-use crate::repl::styles::{cyan, dim, red, truncate_runes};
-use crate::repl::transcript::{BlockKind, Inner, Transcript};
+use crate::repl::render::styles::{cyan, dim, red, truncate_runes};
+use crate::repl::render::transcript::{BlockKind, Inner, Transcript};
 
 /// Aggregation state for one activity group (transcript.go `activityGroup`). The group
 /// owns the lifecycle widget for its whole lifetime; a content boundary (or
@@ -323,7 +323,7 @@ impl Transcript {
                 let budget = usize::from(inner.u.height()).max(24);
                 let width = usize::from(inner.u.width());
                 let mut lines = vec![format!("{header}{}", dim(&format!("  +{adds} -{dels}")))];
-                lines.extend(crate::repl::diff::render_diff(
+                lines.extend(crate::repl::render::diff::render_diff(
                     &a.title,
                     &a.lines.join("\n"),
                     budget,

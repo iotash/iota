@@ -9,8 +9,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::repl::diff::render_diff;
-use crate::repl::transcript::{Transcript, notify_digest};
+use crate::repl::render::diff::render_diff;
+use crate::repl::render::transcript::{Transcript, notify_digest};
 use crate::testing::{ScriptedUi, UiEvent};
 use crate::tool::{Artifact, ArtifactKind};
 use pretty_assertions::assert_eq;

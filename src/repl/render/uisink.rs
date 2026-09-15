@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use crate::repl::styles::dim;
+use crate::repl::render::styles::dim;
 
 /// Opens the facade's metered one-row preview for a label (the `StreamSink::block_preview`
 /// verb, pre-bound by the turn).
@@ -147,7 +147,7 @@ mod tests {
     use crate::markdown::sink::Sink as _;
     use crate::markdown::{CodeTheme, RenderOptions, Writer};
 
-    use crate::repl::transcript::Transcript;
+    use crate::repl::render::transcript::Transcript;
     use crate::testing::{ScriptedUi, UiEvent};
     use crate::ui::facade::Ui as _;
     use tokio_util::sync::CancellationToken;

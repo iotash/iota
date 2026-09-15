@@ -20,8 +20,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::llm::reqlog::{RequestEntry, ResponseHalf};
+use crate::repl::render::styles::{cyan, dim, green, red, underline, yellow};
 use crate::repl::run::Repl;
-use crate::repl::styles::{cyan, dim, green, red, underline, yellow};
 use crate::text::go_duration;
 use crate::text::width::{str_width, truncate_cols};
 use crate::ui::facade::{Panel, TabbedSpec};

@@ -25,7 +25,7 @@ use crate::provider::Provider;
 use crate::provider::model::{Message, Role};
 use tokio_util::sync::CancellationToken;
 
-use crate::repl::styles::truncate_runes;
+use crate::repl::render::styles::truncate_runes;
 
 /// The async pass's deadline (chat/run.go:245).
 pub(crate) const TITLE_TIMEOUT: Duration = Duration::from_secs(30);

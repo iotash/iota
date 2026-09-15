@@ -42,7 +42,7 @@ use crate::provider::model::Message;
 use crate::provider::usage::Usage;
 use crate::ui::facade::{StatusData, Ui};
 
-use crate::repl::tokens::{
+use crate::repl::context::tokens::{
     COMPACT_RESERVE_TOKENS, COMPACT_SNOOZE_PERCENT, COMPACT_THRESHOLD_PERCENT,
     DEFAULT_CONTEXT_WINDOW, TokenCounter,
 };

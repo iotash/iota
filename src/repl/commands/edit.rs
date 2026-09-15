@@ -16,8 +16,8 @@ use crate::headless::images::{last_generated_images, last_user_message};
 use crate::repl::editpicker::{
     ImagePreviewer, generated_image_choices, image_choice_details, image_choice_labels,
 };
+use crate::repl::render::styles::truncate_runes;
 use crate::repl::run::Repl;
-use crate::repl::styles::truncate_runes;
 use crate::repl::title::flatten_line;
 use crate::session::SessionWriter;
 use crate::ui::facade::{Panel, TabbedSpec};

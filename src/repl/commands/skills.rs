@@ -17,8 +17,8 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::agents::skills::{Skill, skill_body, skill_source_tag};
+use crate::repl::render::styles::{bold, dim, red, yellow};
 use crate::repl::run::Repl;
-use crate::repl::styles::{bold, dim, red, yellow};
 use crate::text::go_quote;
 use crate::ui::facade::ViewSpec;
 

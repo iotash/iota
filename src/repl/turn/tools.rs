@@ -28,11 +28,11 @@ use crate::tool::context::RunCtx;
 use crate::tool::fmt::{display_tool_name, tool_call_detail, tool_call_header};
 use crate::ui::facade::UiError;
 
-use crate::repl::approval::artifact_note;
-use crate::repl::meter::CtxMeter;
-use crate::repl::retry::retry_round;
-use crate::repl::steer::Steerer;
-use crate::repl::styles::cyan;
+use crate::repl::context::meter::CtxMeter;
+use crate::repl::render::styles::cyan;
+use crate::repl::turn::approval::artifact_note;
+use crate::repl::turn::retry::retry_round;
+use crate::repl::turn::steer::Steerer;
 use crate::repl::turn::{Turn, TurnFailure, TurnOutput, TurnReport, collect_images, stream_round};
 
 /// What a refused call tells the model (chat/run.go:1570-1572).

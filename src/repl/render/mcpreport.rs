@@ -11,8 +11,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc::Receiver;
 use tokio_util::sync::CancellationToken;
 
+use crate::repl::render::transcript::Transcript;
 use crate::repl::run::McpEvent;
-use crate::repl::transcript::Transcript;
 
 /// Drains `events` into `tr` until the channel closes or `done` fires (the UI loop thread
 /// exited). Only the FIRST line of an error is shown — a stack of transport detail in the

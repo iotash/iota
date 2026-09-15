@@ -11,7 +11,7 @@ use crate::tool::context::RunCtx;
 use crate::tool::{AskAnswer, AskResult, AskSpec};
 use crate::ui::facade::{ListBody, Panel, PanelBody, TabbedSpec, Ui};
 
-use crate::repl::styles::dim;
+use crate::repl::render::styles::dim;
 
 /// The ask-wizard bridge: bound to the facade once the TUI is up; unbound asks decline.
 pub(crate) struct Interactor {

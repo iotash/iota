@@ -10,7 +10,7 @@
 use crate::markdown::CodeTheme;
 use crate::text::ansi::{ansi_width, truncate_ansi};
 
-use crate::repl::styles::{diff_code_theme, diff_shades, dim};
+use crate::repl::render::styles::{diff_code_theme, diff_shades, dim};
 
 /// One display row parsed from unified hunk lines (chat/diff.go `diffRow`): the marker
 /// kind (`'+'`, `'-'`, `' '`), the line number it carries (new-file numbering for
@@ -216,7 +216,7 @@ mod tests {
     //! through a hidden `pub use` re-export; moved in-file 2026-09-15).
 
     use super::{diff_lang, highlight_diff_line, parse_diff_rows, render_diff};
-    use crate::repl::styles::diff_code_theme;
+    use crate::repl::render::styles::diff_code_theme;
     use crate::text::ansi::{ansi_width, strip_sgr};
     use pretty_assertions::assert_eq;
 

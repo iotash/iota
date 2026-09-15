@@ -52,17 +52,17 @@ use crate::tool::Presentation;
 use crate::ui::facade::{Ui, UiError, UiStreamSink};
 use tokio_util::sync::CancellationToken;
 
-use crate::repl::approval::ApprovalGate;
-use crate::repl::group::{ThinkingMeter, composing_label};
-use crate::repl::meter::CtxMeter;
-use crate::repl::phases::watch_phases;
-use crate::repl::steer::Steerer;
-use crate::repl::toolloop::tool_loop;
-use crate::repl::transcript::{ContentCommitter, Transcript};
-use crate::repl::uisink::UiMdSink;
+use crate::repl::context::meter::CtxMeter;
+use crate::repl::render::group::{ThinkingMeter, composing_label};
+use crate::repl::render::transcript::{ContentCommitter, Transcript};
+use crate::repl::render::uisink::UiMdSink;
+use crate::repl::turn::approval::ApprovalGate;
+use crate::repl::turn::phases::watch_phases;
+use crate::repl::turn::steer::Steerer;
+use crate::repl::turn::tools::tool_loop;
 
 // The busy-phase controller moved to `phases.rs` (T3 design D9); the names stay reachable here.
-pub(crate) use crate::repl::phases::{PHASE_WAITING, Phases};
+pub(crate) use crate::repl::turn::phases::{PHASE_WAITING, Phases};
 
 /// The progressive frame's widget geometry (chat/images.go:200 `watchImagePartials`).
 pub(crate) const PARTIAL_COLS: usize = 64;

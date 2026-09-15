@@ -22,12 +22,6 @@ pub(crate) mod title;
 /// One turn: the tool loop, retries, phases, steering, interrupts and the approval gate.
 pub(crate) mod turn;
 
-// Transitional: the flat paths keep resolving until the import points move (next commit).
-pub(crate) use context::{meter, tokens};
-pub(crate) use liveparams as params;
-pub(crate) use render::{banner, diff, group, mcpreport, replay, styles, transcript, uisink};
-pub(crate) use turn::{approval, interrupt, phases, retry, steer, tools as toolloop};
-
 pub use catalog::ModelCatalog;
 
 pub use run::{McpEvent, McpHooks, RunParams, SessionCtx, SessionFactory, run};

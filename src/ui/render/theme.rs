@@ -11,7 +11,7 @@
 //! - red    — alerts ([`ERR_PREFIX`])
 //! - revOn  — strong emphasis: focused tab chips, user blocks
 //!
-//! Chat-side TEXT colors live in `crate::repl::styles`; markdown/code rendering owns its
+//! Chat-side TEXT colors live in `crate::repl::render::styles`; markdown/code rendering owns its
 //! own theme in `crate::markdown::style`. One home per layer.
 //!
 //! `NO_COLOR` is not decided here (DIVERGENCES X-28): these fragments are the palette, and

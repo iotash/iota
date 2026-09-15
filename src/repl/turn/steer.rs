@@ -8,8 +8,8 @@ use std::sync::Arc;
 use crate::provider::model::Message;
 use crate::ui::facade::{InputKind, Ui};
 
-use crate::repl::meter::CtxMeter;
-use crate::repl::transcript::Transcript;
+use crate::repl::context::meter::CtxMeter;
+use crate::repl::render::transcript::Transcript;
 
 /// The steering bookkeeping of one turn (Go's `steer` + `injected` closures on `Run`'s
 /// stack): draining echoes the `❯` block — which SETTLES the running activity group, the

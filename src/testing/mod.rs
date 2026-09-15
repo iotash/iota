@@ -81,7 +81,7 @@ pub fn every_record_shape() -> Vec<Message> {
 /// Counts `text` with the chat's own tokenizer (the o200k counter behind the meter) — for expectations
 /// about published token figures.
 pub fn count_tokens(text: &str) -> u64 {
-    crate::repl::tokens::TokenCounter::new().count(text)
+    crate::repl::context::tokens::TokenCounter::new().count(text)
 }
 
 /// A `ToolDef` with just a name.

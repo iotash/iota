@@ -8,7 +8,7 @@ use std::path::Path;
 
 use crate::imgterm;
 use crate::provider::model::{Attachment, Message, Role};
-use crate::repl::replay::file_exists;
+use crate::repl::render::replay::file_exists;
 use crate::ui::facade::PreviewFn;
 
 /// The layout a saved image's name encodes (`20260725-110419-0.png`; chat/images.go:55).
@@ -150,7 +150,7 @@ pub(crate) fn shorten_path(path: &str, width: usize, home: Option<&Path>) -> Str
     if crate::text::width::str_width(&base) <= width {
         return base;
     }
-    crate::repl::styles::truncate_runes(&base, width)
+    crate::repl::render::styles::truncate_runes(&base, width)
 }
 
 /// The preview renderer: decodes lazily, caches decoded frames per index, remembers failures

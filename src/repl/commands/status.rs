@@ -18,8 +18,8 @@ use crate::text;
 use crate::text::width::str_width;
 use crate::ui::facade::ViewSpec;
 
+use crate::repl::render::styles::{bold, truncate_runes};
 use crate::repl::run::Repl;
-use crate::repl::styles::{bold, truncate_runes};
 
 /// One labelled row: `name` is the bold left column, `value` the right one.
 pub(crate) struct StatusItem {

@@ -16,9 +16,9 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::headless::images::IMAGE_INDENT_COLS;
-use crate::repl::group;
-use crate::repl::group::ActivityGroup;
-use crate::repl::styles::{dim, red, truncate_runes};
+use crate::repl::render::group;
+use crate::repl::render::group::ActivityGroup;
+use crate::repl::render::styles::{dim, red, truncate_runes};
 
 /// The image-generation widget's label (transcript.go:373,381).
 pub(crate) const IMAGE_WIDGET_LABEL: &str = "image";

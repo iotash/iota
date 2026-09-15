@@ -12,9 +12,9 @@ use std::path::Path;
 
 use crate::markdown::html::{code_css, escape_html, markdown_to_html};
 use crate::provider::model::{JsonObject, Message, Role};
+use crate::repl::render::styles::{dim, red};
+use crate::repl::render::uisink::LineCommitter;
 use crate::repl::run::Repl;
-use crate::repl::styles::{dim, red};
-use crate::repl::uisink::LineCommitter;
 use crate::session::SessionError;
 use crate::text::go_quote;
 use crate::tool::fmt::display_tool_name;

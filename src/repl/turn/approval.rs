@@ -11,7 +11,7 @@ use crate::tool::{Artifact, ArtifactKind};
 use crate::ui::facade::{SelectSpec, Ui, UiError};
 use tokio_util::sync::CancellationToken;
 
-use crate::repl::transcript::Transcript;
+use crate::repl::render::transcript::Transcript;
 
 /// One approval gate per conversation (approval.go:26-33). Session grants are keyed by
 /// wire tool name; the transcript's clock pauses while the user deliberates.

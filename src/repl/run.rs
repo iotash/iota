@@ -39,25 +39,25 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::repl::ReplError;
-use crate::repl::approval::ApprovalGate;
-use crate::repl::banner::banner_lines;
 use crate::repl::commands::edit::EditOutcome;
 use crate::repl::commands::skills::SkillsOutcome;
 use crate::repl::commands::{
     CmdFlags, CommandTable, SkillEntry, debug, edit, export, file, match_cmd, model, save, session,
     skills, status, tools,
 };
-use crate::repl::interrupt::{InterruptDecision, finalize_interrupt};
-use crate::repl::mcpreport::report_mcp_failures;
-use crate::repl::meter::{ContextBudget, CtxMeter};
-use crate::repl::replay::{RESUME_ECHO_ROUNDS, echo_rounds, last_rounds};
-use crate::repl::retry::{MAX_RETRIES, RETRY_BACKOFF, is_retryable};
-use crate::repl::steer::Steerer;
+use crate::repl::context::meter::{ContextBudget, CtxMeter};
+use crate::repl::render::banner::banner_lines;
+use crate::repl::render::mcpreport::report_mcp_failures;
+use crate::repl::render::replay::{RESUME_ECHO_ROUNDS, echo_rounds, last_rounds};
+use crate::repl::render::transcript::{Transcript, notify_digest};
 use crate::repl::title::{
     SessionTitle, TITLE_TIMEOUT, WriterSlot, generate_title_text, is_read_only_viewer,
     status_model_label, window_title,
 };
-use crate::repl::transcript::{Transcript, notify_digest};
+use crate::repl::turn::approval::ApprovalGate;
+use crate::repl::turn::interrupt::{InterruptDecision, finalize_interrupt};
+use crate::repl::turn::retry::{MAX_RETRIES, RETRY_BACKOFF, is_retryable};
+use crate::repl::turn::steer::Steerer;
 use crate::repl::turn::{TurnCtx, TurnFailure, TurnReport, collect_images, run_turn};
 
 /// The `Done` ping of an image-only reply (chat/run.go:1105).
@@ -225,7 +225,7 @@ pub(crate) struct Repl {
     /// said "Not now" (0 = never asked). Cleared by any successful compaction.
     pub(crate) compact_declined: u64,
     /// Where each of the four layered parameters got the value the chat is running under. The values
-    /// themselves are read from the budget and the provider (`crate::repl::params`); this is the only piece
+    /// themselves are read from the budget and the provider (`crate::repl::liveparams`); this is the only piece
     /// of the layering with nowhere else to live.
     pub(crate) param_sources: crate::session::ParamSources,
     /// What a `/model` model switch re-evaluates those four against.
@@ -434,7 +434,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     }
     // The thinking meter counts with the chat's ONE tokenizer (Go handed `newTranscript`
     // the budget's own counter).
-    let estimator: Option<crate::repl::transcript::TokenEstimator> = {
+    let estimator: Option<crate::repl::render::transcript::TokenEstimator> = {
         let counter = budget.counter();
         Some(Box::new(move |s: &str| counter.count(s)))
     };
@@ -553,9 +553,9 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     // knob the dialect cannot act on is never recorded as though it had applied; the window is left out
     // entirely for a provider with no token accounting.
     if fresh_bundle {
-        let running = crate::repl::params::current(&mut repl);
+        let running = crate::repl::liveparams::current(&mut repl);
         let window = token_aware.then(|| repl.budget.window());
-        crate::repl::params::stamp_bundle(&repl, window, &running);
+        crate::repl::liveparams::stamp_bundle(&repl, window, &running);
     }
 
     // A finished job becomes the next input: the facade serves it to a parked `read_input` at once (an idle

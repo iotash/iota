@@ -2,7 +2,7 @@
 //! currently runs under, re-evaluating it when `/model` switches models, and writing the result to the
 //! provider, the budget and the bundle.
 //!
-//! The VALUES are never kept here. `context_window` lives in [`ContextBudget`](crate::repl::meter::ContextBudget)
+//! The VALUES are never kept here. `context_window` lives in [`ContextBudget`](crate::repl::context::meter::ContextBudget)
 //! and the three tunables live on the provider, so this module assembles a [`LayeredParams`] on demand from
 //! those two and the one piece of state that has nowhere else to live: [`Repl::param_sources`], which says
 //! where each of them came from. A second copy of the values would be a second thing to keep in step with a
@@ -14,8 +14,8 @@ use crate::provider::Effort;
 use crate::session::{LayeredParams, Param, ParamSources, SessionMeta};
 
 use crate::repl::commands::settings::{effort_label, float_ptr_equal, format_temperature};
+use crate::repl::context::tokens::DEFAULT_CONTEXT_WINDOW;
 use crate::repl::run::Repl;
-use crate::repl::tokens::DEFAULT_CONTEXT_WINDOW;
 
 /// What the chat is running under right now, read from where each value actually lives.
 pub(crate) fn current(repl: &mut Repl) -> LayeredParams {

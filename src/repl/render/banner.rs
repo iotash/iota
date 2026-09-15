@@ -12,7 +12,7 @@
 
 use crate::agents::Overlay;
 
-use crate::repl::styles::dim;
+use crate::repl::render::styles::dim;
 
 /// The banner's rows, in Go's order (chat/run.go:86-105).
 ///

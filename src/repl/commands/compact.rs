@@ -16,7 +16,7 @@
 //! view are built by the same rule.
 //!
 //! **The summary pass is a real API call.** It is billed, so it is booked
-//! ([`crate::repl::meter::CtxMeter::book_call`]) and its usage rides the compaction marker — a
+//! ([`crate::repl::context::meter::CtxMeter::book_call`]) and its usage rides the compaction marker — a
 //! resumed session's cumulative figures are recomputed from the log, and a call whose cost
 //! no message carries would simply vanish from them.
 //!
@@ -32,9 +32,9 @@ use crate::provider::model::{Message, Role};
 use crate::provider::usage::Usage;
 use tokio_util::sync::CancellationToken;
 
+use crate::repl::context::tokens::go_map;
+use crate::repl::render::styles::truncate_runes;
 use crate::repl::run::Repl;
-use crate::repl::styles::truncate_runes;
-use crate::repl::tokens::go_map;
 
 /// The instruction that hands the retention decision to the model and hardens against
 /// prompt injection from the conversation being summarized (`chat/compact.go`

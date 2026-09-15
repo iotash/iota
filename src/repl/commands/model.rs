@@ -153,7 +153,7 @@ fn commit(provider: &mut dyn Provider, writer: &WriterSlot, name: &str) {
 /// The history it replays is that dialect's own (signed thinking blocks, response items), the
 /// bundle records the provider type it was created under, and the dispatcher was assembled for it
 /// — so a provider move is a new run, and saying so is the same answer `/model` already gives for
-/// a `defer_mode` it cannot hand over (`repl::params::switch_model`).
+/// a `defer_mode` it cannot hand over (`repl::liveparams::switch_model`).
 fn report_elsewhere(repl: &Repl, catalog: &ModelCatalog, provider: &str, id: &str) {
     let agent = catalog.agent();
     let agent = if agent.is_empty() { "<agent>" } else { agent };
@@ -211,7 +211,7 @@ pub(crate) async fn ensure_model(repl: &mut Repl, cancel: &CancellationToken) ->
     }
     commit(&mut *repl.provider, &repl.writer, &name);
     repl.tr.notice(&format!("Using model: {name}"));
-    crate::repl::params::switch_model(repl, &name);
+    crate::repl::liveparams::switch_model(repl, &name);
     true
 }
 
@@ -290,7 +290,7 @@ pub(crate) async fn cmd_model(repl: &mut Repl) {
             // the tabs are read back, because a knob the user moved in this same surface is the
             // intent they have just expressed and must win over the re-evaluation — which it
             // does by construction: every tab commits against the value it OPENED on.
-            crate::repl::params::switch_model(repl, &id);
+            crate::repl::liveparams::switch_model(repl, &id);
             changed = true;
         }
         Some(Pick::Elsewhere(provider, id)) => {

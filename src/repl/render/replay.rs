@@ -16,9 +16,9 @@ use crate::provider::model::{Attachment, Message, Role};
 use crate::text::ansi::wrap_by_width;
 use crate::text::width::str_width;
 
-use crate::repl::group::ask_record_lines;
-use crate::repl::styles::{dim, reverse};
-use crate::repl::uisink::LineCommitter;
+use crate::repl::render::group::ask_record_lines;
+use crate::repl::render::styles::{dim, reverse};
+use crate::repl::render::uisink::LineCommitter;
 
 /// How many trailing rounds a resumed session replays (chat/replay.go:19
 /// `resumeEchoRounds`).
@@ -327,7 +327,7 @@ mod tests {
     use std::path::Path;
 
     use crate::provider::model::{AssistantBody, Attachment, Body, Message, ToolBody, ToolCall};
-    use crate::repl::replay::{echo_image, echo_rounds, last_rounds, print_user_block};
+    use crate::repl::render::replay::{echo_image, echo_rounds, last_rounds, print_user_block};
     use crate::text::ansi::strip_sgr;
     use crate::text::width::str_width;
     use pretty_assertions::assert_eq;
@@ -560,7 +560,7 @@ mod tests {
             tool("confirm", "  \n"),
         ];
         let lines = echo_rounds(&msgs, |_| true, 80, None);
-        let styled_first = crate::repl::group::ask_record_lines("boom", true)
+        let styled_first = crate::repl::render::group::ask_record_lines("boom", true)
             .first()
             .cloned()
             .expect("the shared renderer produces a row");
