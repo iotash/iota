@@ -2,7 +2,7 @@
 //! (`dispatch`), a recording sink and the scripted UI facade. (The environment fixture that replaces
 //! `t.Setenv` is `app::env::Env::fixed`, in the library proper.)
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard};
 
 use crate::provider::model::{
     AssistantBody, Attachment, Body, JsonObject, Message, Raw, RawContent, ToolCall, ToolDef,
@@ -22,7 +22,7 @@ pub use scripted::{PanelSummary, RecordingHost, Reply, ScriptedUi, TabbedSummary
 
 /// Locks a fixture mutex, tolerating poisoning (a panicking test must not hide the state from the next assertion).
 pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
+    crate::sync::lock(m)
 }
 
 /// Every record shape a real session produces, in the order a turn writes them: a system message, a user
