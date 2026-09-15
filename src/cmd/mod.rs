@@ -208,7 +208,17 @@ async fn run_agent(
         .await;
     };
     run_headless(
-        message, &cfg, settings, kind, provider, tools, ctx, format, io,
+        Headless {
+            message,
+            cfg: &cfg,
+            settings,
+            kind,
+            provider,
+            tools,
+            ctx,
+            format,
+        },
+        io,
     )
     .await
 }
@@ -310,19 +320,39 @@ fn assemble_tools(
     })
 }
 
-/// The `-m` branch (root.go:259-268 plus the resume stage D-41 moved onto it).
-#[allow(clippy::too_many_arguments)]
-async fn run_headless(
+/// Everything `run` has resolved by the time it reaches Go's headless-vs-interactive branch (root.go:259),
+/// for the `-m` side — the twin of [`interactive::Interactive`], one item per phase of `run_agent`.
+struct Headless<'a> {
+    /// The `-m` message.
     message: String,
-    cfg: &Config,
+    /// The merged config (a resumed bundle's agent is looked up in it).
+    cfg: &'a Config,
+    /// The resolved run settings.
     settings: RunSettings,
+    /// The resolved provider type.
     kind: ProviderKind,
-    mut provider: Box<dyn crate::provider::Provider>,
+    /// The conversation provider, already tuned.
+    provider: Box<dyn crate::provider::Provider>,
+    /// The tool side: MCP configs, defers, the tool environment, the jobs, the agent options.
     tools: ToolAssembly,
+    /// The run-wide context (the environment, the HTTP client, the request log, the root token).
     ctx: RunContext,
+    /// `--output-format`, parsed.
     format: OutputFormat,
-    io: &mut io::Streams,
-) -> Result<(), CliError> {
+}
+
+/// The `-m` branch (root.go:259-268 plus the resume stage D-41 moved onto it).
+async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliError> {
+    let Headless {
+        message,
+        cfg,
+        settings,
+        kind,
+        mut provider,
+        tools,
+        ctx,
+        format,
+    } = h;
     let ToolAssembly {
         mcp_configs,
         mcp_defers,
