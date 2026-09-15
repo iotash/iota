@@ -14,76 +14,16 @@
 //! (formerly a `#[path]`-mounted `tests/search.rs` of the terminal crate; merged 2026-09-02).
 
 use crate::text::ansi::strip_sgr;
-use crate::ui::facade::{Panel, PanelBody, PanelKind, TabbedResult};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::ui::facade::{Panel, PanelBody, PanelKind};
+use crossterm::event::KeyCode;
 
+use crate::ui::testutil::{Surf, ch, closed, key};
+
+use crate::ui::surface::SurfaceEffect;
 use crate::ui::surface::search::{
     SearchMode, ascii_fold, highlight_line, match_ranges, matches_query,
 };
-use crate::ui::surface::tabbed::PanelState;
-use crate::ui::surface::{SurfaceEffect, SurfaceState};
 use crate::ui::theme::{CYAN, FAINT, RESET, SEARCH_CUR, SEARCH_HIT};
-
-// --- harness ----------------------------------------------------------------
-
-/// One open surface driven exactly as the loop drives it: keys through the pure
-/// `surface_key` ladder, rows through `render_surface` at 80 columns (Go `content(m)`
-/// narrowed to the surface block — the frame around it is WP44/WP46 territory).
-struct Surf {
-    st: SurfaceState,
-}
-
-impl Surf {
-    fn open(panels: Vec<Panel>) -> Self {
-        let st = SurfaceState::new(false, panels);
-        Self { st }
-    }
-
-    fn press(&mut self, k: KeyEvent) -> SurfaceEffect {
-        self.st.key(k)
-    }
-
-    /// Presses a key that must leave the surface open.
-    fn tap(&mut self, k: KeyEvent) {
-        assert!(
-            !matches!(self.press(k), SurfaceEffect::Close(_)),
-            "key closed the surface unexpectedly"
-        );
-    }
-
-    fn typed(&mut self, s: &str) {
-        for c in s.chars() {
-            self.tap(ch(c));
-        }
-    }
-
-    fn ps(&self, i: usize) -> &PanelState {
-        &self.st.slots[i].state
-    }
-
-    fn rows(&mut self) -> Vec<String> {
-        self.st.render(80).rows
-    }
-
-    fn content(&mut self) -> String {
-        self.rows().join("\n")
-    }
-}
-
-fn key(code: KeyCode) -> KeyEvent {
-    KeyEvent::new(code, KeyModifiers::NONE)
-}
-
-fn ch(c: char) -> KeyEvent {
-    KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
-}
-
-fn closed(e: SurfaceEffect) -> TabbedResult {
-    match e {
-        SurfaceEffect::Close(r) => r,
-        _ => panic!("expected the surface to close"),
-    }
-}
 
 fn long_items(n: usize) -> Vec<String> {
     (0..n).map(|i| format!("item-{i:02}")).collect()
@@ -101,9 +41,8 @@ fn open_search_list(items: Vec<String>) -> Surf {
 /// The invariant the whole offset scheme rests on: match offsets index back into the
 /// ORIGINAL string, so folding must never change how many bytes anything takes
 /// (`to_lowercase` cannot promise it — U+0130 lowercases to two runes).
-// Go: internal/ui/search_test.go:19 TestAsciiFoldPreservesByteLength
 #[test]
-fn test_ascii_fold_preserves_byte_length() {
+fn ascii_fold_preserves_the_byte_length() {
     for s in ["Hello", "ÄÖÜ", "İstanbul", "中文 MiXeD", "ß"] {
         assert_eq!(
             ascii_fold(s).len(),
@@ -114,9 +53,8 @@ fn test_ascii_fold_preserves_byte_length() {
     assert_eq!(ascii_fold("AbC-XyZ"), "abc-xyz");
 }
 
-// Go: internal/ui/search_test.go:30 TestMatchRanges
 #[test]
-fn test_match_ranges() {
+fn match_ranges_index_the_original_string() {
     /// name, text, query, expected ranges.
     type Case = (
         &'static str,
@@ -150,9 +88,8 @@ fn test_match_ranges() {
 
 /// The basic wrap: the hit is reversed, the rest of the line is untouched, and
 /// stripping the SGR gives the original back.
-// Go: internal/ui/search_test.go:57 TestHighlightLinePlain
 #[test]
-fn test_highlight_line_plain() {
+fn highlight_line_wraps_a_plain_hit() {
     let got = highlight_line("hello world", "world", None);
     assert!(
         got.contains(&format!("{SEARCH_HIT}world")),
@@ -164,9 +101,8 @@ fn test_highlight_line_plain() {
 /// Why this cannot be a string replace: a line carrying its own SGR (a pre-styled row,
 /// a coloured body) must still be coloured AFTER the highlight closes — a bare reset
 /// would strip the rest of the line bare.
-// Go: internal/ui/search_test.go:71 TestHighlightLineKeepsOwnColor
 #[test]
-fn test_highlight_line_keeps_own_color() {
+fn highlight_line_restores_the_lines_own_colour_after_a_hit() {
     let line = format!("{CYAN}error: file not found{RESET}");
     let got = highlight_line(&line, "file", None);
     assert_eq!(strip_sgr(&got), "error: file not found");
@@ -179,9 +115,8 @@ fn test_highlight_line_keeps_own_color() {
 
 /// Offsets are computed on the plain text, so an escape sequence sitting inside a match
 /// survives whole.
-// Go: internal/ui/search_test.go:86 TestHighlightLineNeverSplitsEscapes
 #[test]
-fn test_highlight_line_never_splits_escapes() {
+fn highlight_line_never_splits_an_escape() {
     let line = format!("abc{CYAN}def");
     let got = highlight_line(&line, "cd", None);
     assert!(got.contains(CYAN), "escape mangled: {got:?}");
@@ -189,9 +124,8 @@ fn test_highlight_line_never_splits_escapes() {
 }
 
 /// The hit `n`/`p` is parked on is brighter than the others.
-// Go: internal/ui/search_test.go:99 TestHighlightLineCurrentHit
 #[test]
-fn test_highlight_line_current_hit() {
+fn highlight_line_marks_the_current_hit_differently() {
     let got = highlight_line("foo bar foo", "foo", Some(8));
     assert!(
         got.contains(SEARCH_CUR),
@@ -203,9 +137,8 @@ fn test_highlight_line_current_hit() {
     );
 }
 
-// Go: internal/ui/search_test.go:109 TestHighlightLineNoMatchReturnsInput
 #[test]
-fn test_highlight_line_no_match_returns_input() {
+fn highlight_line_returns_the_input_when_nothing_matches() {
     let line = format!("{CYAN}hello{RESET}");
     assert_eq!(highlight_line(&line, "zzz", None), line);
 }
@@ -215,9 +148,8 @@ fn test_highlight_line_no_match_returns_input() {
 /// `'/'` is inert without the opt-in, and inert on a list that already fits on screen —
 /// there is nothing to search for when every option is visible. A View ignores the flag
 /// but still needs overflow.
-// Go: internal/ui/search_test.go:137 TestSearchGatedByFlagAndOverflow
 #[test]
-fn test_search_gated_by_flag_and_overflow() {
+fn search_is_offered_only_when_flagged_and_the_list_overflows() {
     let cases: &[(&str, PanelKind, bool, usize, bool)] = &[
         ("flag off, long list", PanelKind::List, false, 40, false),
         ("flag on, short list", PanelKind::List, true, 3, false),
@@ -256,9 +188,8 @@ fn test_search_gated_by_flag_and_overflow() {
 
 /// Narrowing happens as the query is typed — before Enter, so a query that matches
 /// nothing is visible immediately.
-// Go: internal/ui/search_test.go:169 TestSearchFiltersLive
 #[test]
-fn test_search_filters_live() {
+fn search_narrows_the_list_per_keystroke() {
     let mut s = open_search_list(long_items(40));
     assert_eq!(s.ps(0).view.len(), 40, "unfiltered view");
 
@@ -277,9 +208,8 @@ fn test_search_filters_live() {
 
 /// The contract every caller depends on: `Cursor` is read back as an index into the
 /// ORIGINAL items, so filtering must not renumber it.
-// Go: internal/ui/search_test.go:191 TestSearchCursorStaysUnderlyingIndex
 #[test]
-fn test_search_cursor_stays_underlying_index() {
+fn a_filtered_commit_reports_the_original_index() {
     let mut s = open_search_list(long_items(40));
     s.tap(ch('/'));
     s.typed("item-3");
@@ -294,9 +224,8 @@ fn test_search_cursor_stays_underlying_index() {
 }
 
 /// `c` lifts the filter — the panel's own keys were never taken away.
-// Go: internal/ui/search_test.go:213 TestSearchClearRestoresList
 #[test]
-fn test_search_clear_restores_list() {
+fn clearing_the_search_restores_the_whole_list() {
     let mut s = open_search_list(long_items(40));
     s.tap(ch('/'));
     s.typed("item-1");
@@ -311,9 +240,8 @@ fn test_search_clear_restores_list() {
 
 /// ESC in the query field drops the search entirely rather than applying a half-typed
 /// query — and it does NOT close the surface.
-// Go: internal/ui/search_test.go:233 TestSearchEscapeInFieldLeavesSearch
 #[test]
-fn test_search_escape_in_field_leaves_search() {
+fn esc_in_the_query_field_leaves_the_search_not_the_surface() {
     let mut s = open_search_list(long_items(40));
     s.tap(ch('/'));
     s.typed("item-1");
@@ -329,9 +257,8 @@ fn test_search_escape_in_field_leaves_search() {
 
 /// A filter that emptied the list would leave a cursor pointing at nothing Enter could
 /// still commit, so no-match falls back to the whole list — and says so.
-// Go: internal/ui/search_test.go:253 TestSearchNoMatchShowsEverything
 #[test]
-fn test_search_no_match_shows_everything() {
+fn a_query_matching_nothing_shows_everything() {
     let mut s = open_search_list(long_items(40));
     s.tap(ch('/'));
     s.typed("zzzz");
@@ -351,9 +278,8 @@ fn test_search_no_match_shows_everything() {
 
 /// Multi checks are recorded against underlying indices, so options checked under one
 /// query are still submitted after another query hides them.
-// Go: internal/ui/search_test.go:277 TestSearchMultiChecksSurviveFiltering
 #[test]
-fn test_search_multi_checks_survive_filtering() {
+fn multi_checks_are_keyed_by_the_underlying_index_and_survive_filtering() {
     let mut s = Surf::open(vec![
         Panel::multi("Flags".to_owned(), long_items(40)).with_search(true),
     ]);
@@ -378,9 +304,8 @@ fn test_search_multi_checks_survive_filtering() {
 }
 
 /// `"Other…"` is the way to answer when no option fits, so a filter must never hide it.
-// Go: internal/ui/search_test.go:305 TestSearchKeepsCustomRowVisible
 #[test]
-fn test_search_keeps_custom_row_visible() {
+fn the_other_row_is_never_filtered_out() {
     let mut s = Surf::open(vec![
         Panel::list("Model".to_owned(), long_items(40))
             .with_search(true)
@@ -408,9 +333,8 @@ fn test_search_keeps_custom_row_visible() {
 
 /// Rows can arrive pre-coloured (a `/debug` request list), and the query must match
 /// what the user SEES, not the escape bytes carrying it.
-// Go: internal/ui/search_test.go:330 TestSearchMatchesThroughStyling
 #[test]
-fn test_search_matches_through_styling() {
+fn search_matches_through_baked_in_styling() {
     let mut items = long_items(40);
     items[7] = format!("{CYAN}item-07{RESET}{FAINT} (styled){RESET}");
     let mut s = open_search_list(items);
@@ -439,8 +363,7 @@ fn test_search_matches_through_styling() {
 /// `view` is ALWAYS populated (identity when nothing is filtered) so rendering and
 /// navigation have one code path, and `view_pos`/`set_view_pos`/`sync_cursor` translate
 /// between visible rows and the underlying index the commit reads (search.go:186-289).
-// Go: internal/ui/search.go:228-310 (rebuildView/viewPos/setViewPos/syncCursor laws —
-// pinned in Go only through the model tests above; unit-covered here)
+// The view-map laws, unit-covered here rather than only through the model tests above.
 #[test]
 fn view_map_is_identity_when_unfiltered_and_translates_when_filtered() {
     let mut s = open_search_list(long_items(40));
@@ -471,7 +394,6 @@ fn view_map_is_identity_when_unfiltered_and_translates_when_filtered() {
 /// abandoned by `set_focus`, so the field never holds the cursor from an unfocused tab.
 /// Note the ladder makes Tab unreachable while typing (row 2 feeds it to the field —
 /// Go behaves identically), which is why the abandon path is driven directly here.
-// Go: internal/ui/tabbed.go:313-331 setFocus (per-panel search survival)
 #[test]
 fn tab_switch_abandons_typing_but_keeps_an_applied_filter() {
     let panels = vec![
@@ -508,7 +430,6 @@ fn tab_switch_abandons_typing_but_keeps_an_applied_filter() {
 
 /// The query field REPLACES the hint row, so the surface's height is identical in and
 /// out of search — entering search may never bounce the frame (tabbed.go:694-701).
-// Go: internal/ui/tabbed.go:694-701 (renderSearchRow replaces the hint row)
 #[test]
 fn search_row_replaces_the_hint_row_without_changing_height() {
     let mut s = open_search_list(long_items(40));

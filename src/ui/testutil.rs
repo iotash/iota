@@ -1,0 +1,136 @@
+//! The UI suites' shared harness (`cfg(test)` only): one open surface driven exactly as the loop
+//! drives it ([`Surf`]) and the key constructors.
+#![allow(clippy::panic, clippy::expect_used)]
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use crate::text::ansi::strip_sgr;
+use crate::ui::facade::{Panel, TabbedResult};
+use crate::ui::surface::tabbed::PanelState;
+use crate::ui::surface::{SurfaceEffect, SurfaceState};
+
+// --- the surface ------------------------------------------------------------
+
+/// One open surface driven exactly as the loop drives it: keys through the pure key ladder, rows
+/// through `render` at `width` columns (80 unless opened [`Surf::sized`]) — the surface block alone,
+/// the frame around it is the loop's. `content()` RENDERS, which is what resolves a pending centre;
+/// the view-search tests lean on that, so the two must not drift apart.
+pub(crate) struct Surf {
+    /// The state under test, reachable for the assertions that read it directly.
+    pub(crate) st: SurfaceState,
+    width: u16,
+}
+
+impl Surf {
+    /// Opens `panels` at 80 columns, Enter committing everything.
+    pub(crate) fn open(panels: Vec<Panel>) -> Self {
+        Self::wizard(false, panels)
+    }
+
+    /// `enter_advances` = the ask-wizard shape.
+    pub(crate) fn wizard(enter_advances: bool, panels: Vec<Panel>) -> Self {
+        Self {
+            st: SurfaceState::new(enter_advances, panels),
+            width: 80,
+        }
+    }
+
+    /// Opens `panels` at `width × height` — the window size a picker's preview pane is laid out for.
+    pub(crate) fn sized(panels: Vec<Panel>, width: u16, height: u16) -> Self {
+        let mut st = SurfaceState::new(false, panels);
+        st.set_term_height(height);
+        Self { st, width }
+    }
+
+    pub(crate) fn press(&mut self, k: KeyEvent) -> SurfaceEffect {
+        self.st.key(k)
+    }
+
+    /// Presses a key that must leave the surface open.
+    pub(crate) fn tap(&mut self, k: KeyEvent) {
+        assert!(
+            !matches!(self.press(k), SurfaceEffect::Close(_)),
+            "key closed the surface unexpectedly"
+        );
+    }
+
+    pub(crate) fn typed(&mut self, s: &str) {
+        for c in s.chars() {
+            self.tap(ch(c));
+        }
+    }
+
+    /// The state of panel `i`.
+    pub(crate) fn ps(&self, i: usize) -> &PanelState {
+        &self.st.slots[i].state
+    }
+
+    pub(crate) fn rows(&mut self) -> Vec<String> {
+        self.st.render(self.width).rows
+    }
+
+    pub(crate) fn content(&mut self) -> String {
+        self.rows().join("\n")
+    }
+
+    pub(crate) fn plain(&mut self) -> String {
+        strip_sgr(&self.content())
+    }
+
+    /// The trailing hint row (or the query field that replaces it).
+    pub(crate) fn hint(&mut self) -> String {
+        strip_sgr(&self.rows().pop().unwrap_or_default())
+    }
+
+    /// The loop's generation-guarded refresh pass.
+    pub(crate) fn tick(&mut self) {
+        self.st.tick();
+    }
+
+    /// `/needle` + Enter: into the walker.
+    pub(crate) fn search(&mut self, q: &str) {
+        self.tap(ch('/'));
+        self.typed(q);
+        self.tap(key(KeyCode::Enter));
+    }
+
+    /// The first panel's browser entries, by name.
+    pub(crate) fn names(&self) -> Vec<String> {
+        self.ps(0).entries.iter().map(|e| e.name.clone()).collect()
+    }
+
+    /// The rendered row carrying the switch knob, stripped and right-trimmed.
+    pub(crate) fn toggle_row(&mut self) -> String {
+        self.plain()
+            .lines()
+            .find(|l| l.contains('●'))
+            .map(|l| l.trim_end().to_owned())
+            .expect("no switch row rendered")
+    }
+}
+
+pub(crate) fn key(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+/// A text key as crossterm delivers it (uppercase carries SHIFT).
+pub(crate) fn ch(c: char) -> KeyEvent {
+    let m = if c.is_ascii_uppercase() {
+        KeyModifiers::SHIFT
+    } else {
+        KeyModifiers::NONE
+    };
+    KeyEvent::new(KeyCode::Char(c), m)
+}
+
+pub(crate) fn ctrl(c: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+}
+
+/// The result a closing effect carried.
+pub(crate) fn closed(e: SurfaceEffect) -> TabbedResult {
+    match e {
+        SurfaceEffect::Close(r) => r,
+        _ => panic!("expected the surface to close"),
+    }
+}

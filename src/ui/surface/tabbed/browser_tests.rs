@@ -14,74 +14,12 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::text::ansi::strip_sgr;
-use crate::ui::facade::{Panel, TabbedResult};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::ui::facade::Panel;
+use crossterm::event::KeyCode;
+
+use crate::ui::testutil::{Surf, ch, closed, key};
 
 use crate::ui::surface::search::SearchMode;
-use crate::ui::surface::tabbed::PanelState;
-use crate::ui::surface::{SurfaceEffect, SurfaceState};
-
-// --- harness ----------------------------------------------------------------
-
-struct Surf {
-    st: SurfaceState,
-}
-
-impl Surf {
-    fn open(panels: Vec<Panel>) -> Self {
-        let st = SurfaceState::new(false, panels);
-        Self { st }
-    }
-
-    fn press(&mut self, k: KeyEvent) -> SurfaceEffect {
-        self.st.key(k)
-    }
-
-    fn tap(&mut self, k: KeyEvent) {
-        assert!(
-            !matches!(self.press(k), SurfaceEffect::Close(_)),
-            "key closed the surface unexpectedly"
-        );
-    }
-
-    fn typed(&mut self, s: &str) {
-        for c in s.chars() {
-            self.tap(ch(c));
-        }
-    }
-
-    fn ps(&self) -> &PanelState {
-        &self.st.slots[0].state
-    }
-
-    fn names(&self) -> Vec<String> {
-        self.ps().entries.iter().map(|e| e.name.clone()).collect()
-    }
-
-    fn content(&mut self) -> String {
-        self.st.render(80).rows.join("\n")
-    }
-
-    fn plain(&mut self) -> String {
-        strip_sgr(&self.content())
-    }
-}
-
-fn key(code: KeyCode) -> KeyEvent {
-    KeyEvent::new(code, KeyModifiers::NONE)
-}
-
-fn ch(c: char) -> KeyEvent {
-    KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
-}
-
-fn closed(e: SurfaceEffect) -> TabbedResult {
-    match e {
-        SurfaceEffect::Close(r) => r,
-        _ => panic!("expected the surface to close"),
-    }
-}
 
 fn browser(dir: &Path, search: bool) -> Panel {
     Panel::browser("Add".to_owned(), dir.to_path_buf()).with_search(search)
@@ -93,10 +31,10 @@ fn write(path: &Path, body: &str) {
 
 // --- descend vs commit ------------------------------------------------------
 
-// Go: internal/ui/model_test.go:841 TestBrowserDescendAndChoose — Enter on a directory
+// Enter on a directory
 // descends (no commit); Enter on a file commits with the chosen path.
 #[test]
-fn test_browser_descend_and_choose() {
+fn enter_descends_into_a_directory_and_commits_a_file() {
     let root = tempfile::tempdir().expect("tempdir");
     let sub = root.path().join("sub");
     std::fs::create_dir(&sub).expect("mkdir");
@@ -162,19 +100,19 @@ fn browser_read_error_keeps_the_directory_and_shows_the_message() {
         before,
         "a failed read must not clear the listing"
     );
-    assert!(!s.ps().error_text.is_empty(), "no error message recorded");
+    assert!(!s.ps(0).error_text.is_empty(), "no error message recorded");
     assert!(
-        s.plain().contains(&s.ps().error_text),
+        s.plain().contains(&s.ps(0).error_text),
         "error row not rendered"
     );
 }
 
 // --- search + descend -------------------------------------------------------
 
-// Go: internal/ui/search_test.go:354 TestBrowserDescendClearsFilter — the query was
+// The query was
 // aimed at the directory being left, so it must not silently hide half of the new one.
 #[test]
-fn test_browser_descend_clears_filter() {
+fn descending_clears_the_filter() {
     let root = tempfile::tempdir().expect("tempdir");
     let sub = root.path().join("alpha");
     std::fs::create_dir(&sub).expect("mkdir");
@@ -187,20 +125,24 @@ fn test_browser_descend_clears_filter() {
     s.tap(ch('/'));
     s.typed("alpha");
     s.tap(key(KeyCode::Enter)); // apply: only the subdirectory remains
-    assert_eq!(s.ps().view.len(), 1, "filter kept the wrong number of rows");
+    assert_eq!(
+        s.ps(0).view.len(),
+        1,
+        "filter kept the wrong number of rows"
+    );
 
     s.tap(key(KeyCode::Enter)); // descend into it
     assert_eq!(
-        s.ps().search.mode,
+        s.ps(0).search.mode,
         SearchMode::Off,
         "descending kept the filter"
     );
     assert_eq!(
-        s.ps().view.len(),
-        s.ps().entries.len(),
+        s.ps(0).view.len(),
+        s.ps(0).entries.len(),
         "the new directory is still filtered"
     );
-    assert_eq!(s.ps().entries.len(), 21, "../ plus the 20 inner files");
+    assert_eq!(s.ps(0).entries.len(), 21, "../ plus the 20 inner files");
 }
 
 /// `'/'` is gated on the UNFILTERED overflow and on the panel's opt-in flag, exactly as
@@ -214,7 +156,7 @@ fn browser_search_is_gated_by_the_flag_and_by_overflow() {
     let mut off = Surf::open(vec![browser(root.path(), false)]);
     off.tap(ch('/'));
     assert_eq!(
-        off.ps().search.mode,
+        off.ps(0).search.mode,
         SearchMode::Off,
         "'/' opened without the opt-in flag"
     );
@@ -224,14 +166,14 @@ fn browser_search_is_gated_by_the_flag_and_by_overflow() {
     let mut short = Surf::open(vec![browser(small.path(), true)]);
     short.tap(ch('/'));
     assert_eq!(
-        short.ps().search.mode,
+        short.ps(0).search.mode,
         SearchMode::Off,
         "'/' opened on a listing that fits"
     );
 
     let mut live = Surf::open(vec![browser(root.path(), true)]);
     live.tap(ch('/'));
-    assert_eq!(live.ps().search.mode, SearchMode::Typing);
+    assert_eq!(live.ps(0).search.mode, SearchMode::Typing);
 }
 
 /// A filtered browser still commits the UNDERLYING entry: the cursor indexes `entries`,
@@ -248,8 +190,11 @@ fn browser_commits_the_underlying_entry_under_a_filter() {
     s.tap(ch('/'));
     s.typed("target");
     s.tap(key(KeyCode::Enter));
-    assert_eq!(s.ps().view.len(), 1);
-    assert!(s.ps().cursor > 0, "the cursor must keep its original index");
+    assert_eq!(s.ps(0).view.len(), 1);
+    assert!(
+        s.ps(0).cursor > 0,
+        "the cursor must keep its original index"
+    );
 
     let r = closed(s.press(key(KeyCode::Enter)));
     assert_eq!(

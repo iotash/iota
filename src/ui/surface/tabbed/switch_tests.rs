@@ -12,67 +12,10 @@
 
 use crate::text::ansi::strip_sgr;
 use crate::text::width::str_width;
-use crate::ui::facade::{Panel, TabbedResult};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::ui::facade::Panel;
+use crossterm::event::KeyCode;
 
-use crate::ui::surface::tabbed::PanelState;
-use crate::ui::surface::{SurfaceEffect, SurfaceState};
-
-// --- harness ----------------------------------------------------------------
-
-struct Surf {
-    st: SurfaceState,
-}
-
-impl Surf {
-    fn open(panels: Vec<Panel>) -> Self {
-        let st = SurfaceState::new(false, panels);
-        Self { st }
-    }
-
-    fn press(&mut self, k: KeyEvent) -> SurfaceEffect {
-        self.st.key(k)
-    }
-
-    fn tap(&mut self, k: KeyEvent) {
-        assert!(
-            !matches!(self.press(k), SurfaceEffect::Close(_)),
-            "key closed the surface unexpectedly"
-        );
-    }
-
-    fn ps(&self) -> &PanelState {
-        &self.st.slots[0].state
-    }
-
-    fn content(&mut self) -> String {
-        self.st.render(80).rows.join("\n")
-    }
-
-    /// Go `toggleRow`: the rendered row carrying the knob, stripped and right-trimmed.
-    fn toggle_row(&mut self) -> String {
-        let c = strip_sgr(&self.content());
-        c.lines()
-            .find(|l| l.contains('●'))
-            .map(|l| l.trim_end().to_owned())
-            .expect("no switch row rendered")
-    }
-}
-
-fn key(code: KeyCode) -> KeyEvent {
-    KeyEvent::new(code, KeyModifiers::NONE)
-}
-
-fn ch(c: char) -> KeyEvent {
-    KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
-}
-
-fn closed(e: SurfaceEffect) -> TabbedResult {
-    match e {
-        SurfaceEffect::Close(r) => r,
-        _ => panic!("expected the surface to close"),
-    }
-}
+use crate::ui::testutil::{Surf, ch, closed, key};
 
 fn switch_panel() -> Panel {
     Panel::switch("Image".to_owned(), false)
@@ -80,10 +23,10 @@ fn switch_panel() -> Panel {
 
 // --- the suite --------------------------------------------------------------
 
-// Go: internal/ui/model_test.go:1679 TestTabbedSwitch — Space toggles, ←/→ set, the row
+// Space toggles, ←/→ set, the row
 // geometry survives the flip, and Enter commits `On`.
 #[test]
-fn test_tabbed_switch() {
+fn a_switch_toggles_on_space_sets_on_arrows_and_keeps_its_geometry() {
     let mut s = Surf::open(vec![switch_panel()]);
 
     let off_row = s.toggle_row();
@@ -93,7 +36,7 @@ fn test_tabbed_switch() {
     );
 
     s.tap(ch(' '));
-    assert!(s.ps().on, "Space must toggle the switch on");
+    assert!(s.ps(0).on, "Space must toggle the switch on");
     let on_row = s.toggle_row();
     assert!(
         on_row.contains("On"),
@@ -106,9 +49,9 @@ fn test_tabbed_switch() {
     );
 
     s.tap(key(KeyCode::Left));
-    assert!(!s.ps().on, "← must set the switch off");
+    assert!(!s.ps(0).on, "← must set the switch off");
     s.tap(key(KeyCode::Right));
-    assert!(s.ps().on, "→ must set the switch on");
+    assert!(s.ps(0).on, "→ must set the switch on");
 
     let r = closed(s.press(key(KeyCode::Enter)));
     assert!(
@@ -122,7 +65,7 @@ fn test_tabbed_switch() {
 #[test]
 fn switch_opens_on_the_current_value() {
     let mut s = Surf::open(vec![switch_panel().with_on(true)]);
-    assert!(s.ps().on);
+    assert!(s.ps(0).on);
     assert!(s.toggle_row().contains("On"));
     let r = closed(s.press(key(KeyCode::Enter)));
     assert!(r.panels[0].on, "an untouched Switch tab must be a no-op");
@@ -135,10 +78,10 @@ fn switch_hl_keys_set_rather_than_toggle() {
     let mut s = Surf::open(vec![switch_panel()]);
     s.tap(ch('l'));
     s.tap(ch('l'));
-    assert!(s.ps().on, "l must SET on, not toggle");
+    assert!(s.ps(0).on, "l must SET on, not toggle");
     s.tap(ch('h'));
     s.tap(ch('h'));
-    assert!(!s.ps().on, "h must SET off, not toggle");
+    assert!(!s.ps(0).on, "h must SET off, not toggle");
 }
 
 /// The per-kind hint row is byte-exact (tabbed.go:916-947; `·` = U+00B7), and the

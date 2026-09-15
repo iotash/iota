@@ -20,10 +20,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 use crate::text::ansi::{ansi_width, strip_sgr};
 use crate::text::width::str_width;
 use crate::ui::facade::{
-    ListBody, Panel, PanelBody, PanelKind, PickerBody, RefreshFn, TabbedResult, TabbedSpec,
-    ViewBody,
+    ListBody, Panel, PanelBody, PanelKind, PickerBody, RefreshFn, TabbedSpec, ViewBody,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+use crate::ui::testutil::{Surf, ch, closed, ctrl, key};
 
 use crate::ui::surface::field::{Field, input_field};
 use crate::ui::surface::tabbed::{
@@ -31,89 +32,6 @@ use crate::ui::surface::tabbed::{
 };
 use crate::ui::surface::{SurfaceEffect, SurfaceState};
 use crate::ui::theme::{CYAN, FAINT, GREEN, RESET, REV_ON, input_bg};
-
-// --- harness ----------------------------------------------------------------
-
-/// One open surface driven exactly as the loop drives it.
-struct Surf {
-    st: SurfaceState,
-}
-
-impl Surf {
-    fn open(panels: Vec<Panel>) -> Self {
-        Self::wizard(false, panels)
-    }
-
-    /// `enter_advances` = the ask-wizard shape.
-    fn wizard(enter_advances: bool, panels: Vec<Panel>) -> Self {
-        let st = SurfaceState::new(enter_advances, panels);
-        Self { st }
-    }
-
-    fn press(&mut self, k: KeyEvent) -> SurfaceEffect {
-        self.st.key(k)
-    }
-
-    /// Presses a key that must leave the surface open.
-    fn tap(&mut self, k: KeyEvent) {
-        assert!(
-            !matches!(self.press(k), SurfaceEffect::Close(_)),
-            "key closed the surface unexpectedly"
-        );
-    }
-
-    fn typed(&mut self, s: &str) {
-        for c in s.chars() {
-            self.tap(ch(c));
-        }
-    }
-
-    fn ps(&self, i: usize) -> &PanelState {
-        &self.st.slots[i].state
-    }
-
-    fn rows(&mut self) -> Vec<String> {
-        self.st.render(80).rows
-    }
-
-    fn content(&mut self) -> String {
-        self.rows().join("\n")
-    }
-
-    fn plain(&mut self) -> String {
-        strip_sgr(&self.content())
-    }
-
-    /// The trailing hint row (or the query field that replaces it).
-    fn hint(&mut self) -> String {
-        strip_sgr(&self.rows().pop().unwrap_or_default())
-    }
-}
-
-fn key(code: KeyCode) -> KeyEvent {
-    KeyEvent::new(code, KeyModifiers::NONE)
-}
-
-/// A text key as crossterm delivers it (uppercase carries SHIFT).
-fn ch(c: char) -> KeyEvent {
-    let m = if c.is_ascii_uppercase() {
-        KeyModifiers::SHIFT
-    } else {
-        KeyModifiers::NONE
-    };
-    KeyEvent::new(KeyCode::Char(c), m)
-}
-
-fn ctrl(c: char) -> KeyEvent {
-    KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
-}
-
-fn closed(e: SurfaceEffect) -> TabbedResult {
-    match e {
-        SurfaceEffect::Close(r) => r,
-        _ => panic!("expected the surface to close"),
-    }
-}
 
 fn list(title: &str, items: &[&str]) -> Panel {
     Panel::list(
@@ -139,9 +57,8 @@ fn new_test_input(value: &str, cursor: usize) -> Field {
 
 /// A value that fits leaves the window alone: no pan, cursor column == the value's
 /// display width up to the cursor.
-// Go: internal/ui/tabbed_test.go:26 TestInputFieldFits
 #[test]
-fn test_input_field_fits() {
+fn a_short_value_fits_the_input_box_unpanned() {
     const BOX_W: usize = 20;
     let f = new_test_input("short", 5);
     let mut off = 0;
@@ -156,9 +73,8 @@ fn test_input_field_fits() {
 /// The regression this file exists for: with a value longer than the box the cursor
 /// must stay INSIDE the box (the field's own scrolling would leave it at the value's
 /// absolute column — far right of the field, or past the end of the row).
-// Go: internal/ui/tabbed_test.go:48 TestInputFieldLongValueKeepsCursorInsideBox
 #[test]
-fn test_input_field_long_value_keeps_cursor_inside_box() {
+fn a_long_value_keeps_the_cursor_inside_the_box() {
     const BOX_W: usize = 10;
     let value = "abcdefghij".repeat(5); // 50 columns
     let f = new_test_input(&value, value.chars().count());
@@ -178,9 +94,8 @@ fn test_input_field_long_value_keeps_cursor_inside_box() {
 
 /// Panning is two-way: walking the cursor back to the start scrolls the window home
 /// again (the old code could only ever look right).
-// Go: internal/ui/tabbed_test.go:69 TestInputFieldPansBothWays
 #[test]
-fn test_input_field_pans_both_ways() {
+fn the_input_box_pans_both_ways() {
     const BOX_W: usize = 10;
     let value = "abcdefghij".repeat(5);
     let mut f = new_test_input(&value, value.chars().count());
@@ -206,9 +121,8 @@ fn test_input_field_pans_both_ways() {
 
 /// Wide (CJK) runes count as two columns on both sides of the arithmetic: the window
 /// start and the cursor column.
-// Go: internal/ui/tabbed_test.go:101 TestInputFieldWideRunes
 #[test]
-fn test_input_field_wide_runes() {
+fn the_input_box_pans_by_display_width_for_wide_runes() {
     const BOX_W: usize = 10;
     let value = "宽字".repeat(8); // 32 columns, 16 runes
     let f = new_test_input(&value, 16);
@@ -230,9 +144,8 @@ fn test_input_field_wide_runes() {
 
 /// The window never pans past the end: a value that shrinks (backspace) must not leave
 /// blank columns inside the box while text sits off to the left.
-// Go: internal/ui/tabbed_test.go:121 TestInputFieldNeverPansPastTheEnd
 #[test]
-fn test_input_field_never_pans_past_the_end() {
+fn the_input_box_never_pans_past_the_end() {
     const BOX_W: usize = 10;
     let mut f = new_test_input(&"x".repeat(40), 40);
     let mut off = 0;
@@ -252,9 +165,8 @@ fn test_input_field_never_pans_past_the_end() {
 // --- commit-all, the wizard, and the inline Custom editor ---------------------
 
 /// Three tabs, Tab navigation, and a single Enter commits ALL of them.
-// Go: internal/ui/model_test.go:789 TestTabbedCommitAll
 #[test]
-fn test_tabbed_commit_all() {
+fn enter_commits_every_tab_at_once() {
     let mut s = Surf::open(vec![
         list("Model", &["a", "b"]),
         Panel::multi(
@@ -283,9 +195,8 @@ fn test_tabbed_commit_all() {
 /// `enter_advances`: Enter on a non-last tab moves to the NEXT tab instead of
 /// committing — unvisited questions must not be silently submitted with defaults; only
 /// the last tab's Enter commits all.
-// Go: internal/ui/model_test.go:1558 TestTabbedEnterAdvances
 #[test]
-fn test_tabbed_enter_advances() {
+fn a_wizard_advances_on_enter_and_commits_on_the_last_tab() {
     let mut s = Surf::wizard(
         true,
         vec![
@@ -308,9 +219,8 @@ fn test_tabbed_enter_advances() {
 /// The inline Custom editor: Enter on `"Other…"` opens it IN PLACE; ESC closes just the
 /// editor (the ask survives); Enter with text proceeds — a single-select advances the
 /// wizard with the custom answer, a Multi checks the row and stays for more toggles.
-// Go: internal/ui/model_test.go:1589 TestTabbedInlineCustom
 #[test]
-fn test_tabbed_inline_custom() {
+fn the_other_row_opens_an_inline_editor_whose_text_is_the_answer() {
     let mut s = Surf::wizard(
         true,
         vec![
@@ -377,7 +287,6 @@ fn test_tabbed_inline_custom() {
 
 /// Multi + Custom Space semantics: Space on a CHECKED Other unchecks it and keeps the
 /// draft text (check-by-editing runs only from the unchecked state).
-// Go: internal/ui/model.go:761-788 (Space arm, Multi + Custom)
 #[test]
 fn multi_custom_space_unchecks_and_keeps_the_draft() {
     let mut s = Surf::open(vec![
@@ -403,9 +312,8 @@ fn multi_custom_space_unchecks_and_keeps_the_draft() {
 /// in the field, a paste flattens to one line, the value survives a Tab round trip
 /// while list keys resume on the other tab, long content scrolls inside the box, and
 /// Enter commits every tab alongside the text.
-// Go: internal/ui/model_test.go:1438 TestInputPanel
 #[test]
-fn test_input_panel() {
+fn an_input_panel_edits_and_commits_its_text() {
     let mut s = Surf::open(vec![
         Panel::input("Model".to_owned(), String::new(), "model name".to_owned())
             .with_input_width(10),
@@ -462,9 +370,8 @@ fn test_input_panel() {
 }
 
 /// Esc (and Ctrl+C) still cancel while typing.
-// Go: internal/ui/model_test.go:1500 TestInputPanelEscCancels
 #[test]
-fn test_input_panel_esc_cancels() {
+fn esc_on_an_input_panel_cancels_the_surface() {
     let panel = || Panel::input("Model".to_owned(), String::new(), String::new());
     let mut s = Surf::open(vec![panel()]);
     s.typed("abc");
@@ -478,9 +385,8 @@ fn test_input_panel_esc_cancels() {
 /// The field's colour contract: an adaptive background shade (per detected terminal
 /// tone), typed text in the DEFAULT foreground (no reverse video, no fg recolor), and
 /// the placeholder faint on the same background.
-// Go: internal/ui/model_test.go:1517 TestInputPanelColors
 #[test]
-fn test_input_panel_colors() {
+fn an_input_panel_renders_its_field_and_cursor_colours() {
     let mut s = Surf::open(vec![
         Panel::input("Model".to_owned(), String::new(), "hint".to_owned()).with_input_width(12),
     ]);
@@ -518,9 +424,8 @@ fn test_input_panel_colors() {
 // --- the View panel ----------------------------------------------------------
 
 /// A Height-5 viewer windows lines `[0,5)`; Down scrolls by one; `q` closes.
-// Go: internal/ui/model_test.go:557 TestViewerScrolls
 #[test]
-fn test_viewer_scrolls() {
+fn a_view_scrolls_by_line_and_by_page() {
     let lines = rows_of(30, |i| {
         format!("xxx{}", char::from(b'A' + u8::try_from(i % 26).unwrap()))
     });
@@ -541,9 +446,8 @@ fn test_viewer_scrolls() {
 /// `G` jumps to the bottom (offset, not cursor), `g` returns to the top, ←→ and
 /// Ctrl+B/F page, Space pages forward, `h`/`l` pan a non-wrap view — and `c` on a
 /// non-View panel must NOT cancel the surface (regression).
-// Go: internal/ui/model_test.go:903 TestViewKeysV1Parity
 #[test]
-fn test_view_keys_v1_parity() {
+fn the_view_keys_move_by_line_page_and_edge() {
     let lines = rows_of(40, |i| {
         format!("row-{i:02} with some very long tail content {i}")
     });
@@ -591,9 +495,8 @@ fn test_view_keys_v1_parity() {
 
 /// A Wrap view scrolled so only continuation rows show still renders them faint (the
 /// `/tools` MCP-tab bug: `wrap_ansi` re-opens the carried SGR on every row).
-// Go: internal/ui/model_test.go:1300 TestViewScrollKeepsWrappedStyle
 #[test]
-fn test_view_scroll_keeps_wrapped_style() {
+fn scrolling_a_view_keeps_the_wrapped_lines_style() {
     let long = format!("{FAINT}{}{RESET}", "methods word ".repeat(30));
     let mut s = Surf::open(vec![
         Panel::view("MCP".to_owned(), vec![long, "tail".to_owned()])
@@ -624,9 +527,8 @@ fn test_view_scroll_keeps_wrapped_style() {
 // --- row panels: paging, highlight, chips ------------------------------------
 
 /// ←→ page a list by its visible height.
-// Go: internal/ui/model_test.go:956 TestListPagingParity
 #[test]
-fn test_list_paging_parity() {
+fn a_list_pages_by_its_visible_height() {
     let items = rows_of(30, |i| format!("item-{i:02}"));
     let mut s = Surf::open(vec![Panel::list("l".to_owned(), items).with_height(6)]);
     let _ = s.rows(); // render once to record the page size
@@ -637,9 +539,8 @@ fn test_list_paging_parity() {
 
 /// A plain cursor row is recoloured cyan; a row carrying its own SGR keeps it (marker
 /// only); the tab-bar width is identical across focus switches.
-// Go: internal/ui/model_test.go:1164 TestCursorRowHighlight
 #[test]
-fn test_cursor_row_highlight() {
+fn the_cursor_row_is_recoloured_unless_it_carries_its_own_sgr() {
     let mut s = Surf::open(vec![
         Panel::list(
             "A".to_owned(),
@@ -683,8 +584,6 @@ fn test_cursor_row_highlight() {
 /// joins `" Title "` chips with the faint `" │ "`, the focused one reverse-video; a
 /// single-panel surface renders its title as a lone FOCUSED chip (no faint dashes);
 /// Multi rows carry faint `"[ ] "` / green `"[x] "`.
-// Go: internal/ui/model_test.go:1204 TestSliderProgressBarAndChipTitle (chip half) +
-// tabbed.go:454-499 markers
 #[test]
 fn chips_and_checkbox_glyphs_are_byte_exact() {
     let mut s = Surf::open(vec![list("Temperature", &["a"])]);
@@ -715,9 +614,8 @@ fn chips_and_checkbox_glyphs_are_byte_exact() {
 /// one is untouched. The STALE-generation half of the Go test lives in the loop
 /// (`event_loop::tick_surface_refresh` — WP44's file guards `surface.generation ==
 /// surface_gen` before ever calling here), so it is not reachable from this layer.
-// Go: internal/ui/model_test.go:873 TestSurfaceLiveRefresh
 #[test]
-fn test_surface_live_refresh() {
+fn a_live_panel_refreshes_on_tick_and_keeps_the_cursor() {
     let n = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&n);
     let refresh: RefreshFn = Box::new(move || {
@@ -743,7 +641,6 @@ fn test_surface_live_refresh() {
 
 /// A refresh that shortens the list clamps the cursor and re-filters against the new
 /// content (rows grown under an applied query are judged by it too).
-// Go: internal/ui/tabbed.go:318-341 surfTickMsg (clamp + rebuildView + syncCursor)
 #[test]
 fn refresh_clamps_the_cursor_and_refilters() {
     let live = Arc::new(Mutex::new(rows_of(40, |i| format!("item-{i:02}"))));
@@ -776,7 +673,6 @@ fn refresh_clamps_the_cursor_and_refilters() {
 /// query field own the keyboard (letters TYPE, only Ctrl+C escapes); an Input panel
 /// keeps only Ctrl+C/Tab/Esc/Enter; the Ctrl chords mirror ↑↓/←→; Tab wraps the focus
 /// and always forces a repaint (T-32); Esc/q cancel.
-// Go: internal/ui/model.go:587-876 surfaceKey (ladder rows 1-7)
 #[test]
 fn surface_key_ladder_precedence() {
     // Row 7 (the baseline): q and Esc cancel a row panel.
@@ -829,7 +725,6 @@ fn surface_key_ladder_precedence() {
 
 /// Only `Press` events route; a key repeat/release is inert. An empty spec closes
 /// immediately rather than indexing a panel that is not there.
-// Go: internal/ui/model.go:377-393 updateKey (bubbletea delivers presses only)
 #[test]
 fn surface_key_ignores_non_press_and_empty_specs() {
     let mut s = Surf::open(vec![list("A", &["x", "y"])]);
@@ -850,7 +745,6 @@ fn surface_key_ignores_non_press_and_empty_specs() {
 
 /// `panel_height`: the `height` override, else 10 (View 15), clamped to the item count,
 /// minimum 1.
-// Go: internal/ui/tabbed.go:431-446 panelHeight
 #[test]
 fn panel_height_defaults_and_clamps() {
     let l = list("A", &[]);
@@ -867,7 +761,6 @@ fn panel_height_defaults_and_clamps() {
 /// The 12 base hint rows, byte-exact (tabbed.go:916-947; `·` = U+00B7), plus the
 /// composition around them: the multi-panel `"Tab switch · "` prefix, the `" · N%"`
 /// scroll suffix, and the `" · / search"` affordance.
-// Go: internal/ui/tabbed.go:883-947 surfaceHint/baseHint (+ TUI_CONTRACTS §10)
 #[test]
 fn hint_rows_are_byte_exact() {
     let hint = |p: &Panel, f: &dyn Fn(&mut PanelState)| -> String {
@@ -949,7 +842,6 @@ fn hint_rows_are_byte_exact() {
 
 /// `scroll_percent`: row panels measure progress through what is VISIBLE, a View
 /// through its (wrapped) rows; a panel that fits shows nothing.
-// Go: internal/ui/tabbed.go:952-971 scrollPercent
 #[test]
 fn scroll_percent_tracks_the_visible_list() {
     let mut s = Surf::open(vec![Panel::list(
@@ -1139,7 +1031,6 @@ fn combo_with_no_candidates_is_an_input() {
 /// `run_surface`'s spec contract: an empty spec resolves CANCELLED without ever
 /// touching the terminal (raw mode, the Inline viewport and the key loop are the
 /// `--resume` picker's live path, proven by the L4 tmux layer — WP52).
-// Go: internal/ui/ui.go:398-412 RunSurface (default result is Cancelled)
 #[test]
 fn run_surface_empty_spec_is_cancelled_without_a_terminal() {
     let r = crate::ui::run_surface(TabbedSpec::default(), true).expect("empty spec must not fail");

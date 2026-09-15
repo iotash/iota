@@ -18,67 +18,12 @@
 //! (formerly a `#[path]`-mounted `tests/slider.rs` of the terminal crate; merged 2026-09-02).
 
 use crate::text::ansi::strip_sgr;
-use crate::ui::facade::{Panel, TabbedResult};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::ui::facade::Panel;
+use crossterm::event::KeyCode;
 
-use crate::ui::surface::tabbed::PanelState;
-use crate::ui::surface::{SurfaceEffect, SurfaceState};
+use crate::ui::testutil::{Surf, ch, closed, key};
+
 use crate::ui::theme::{RESET, REV_ON};
-
-// --- harness ----------------------------------------------------------------
-
-/// One open surface driven exactly as the loop drives it: keys through the pure
-/// `surface_key` ladder, rows through `render_surface` at 80 columns (Go `content(m)`
-/// narrowed to the surface block).
-struct Surf {
-    st: SurfaceState,
-}
-
-impl Surf {
-    fn open(panels: Vec<Panel>) -> Self {
-        let st = SurfaceState::new(false, panels);
-        Self { st }
-    }
-
-    fn press(&mut self, k: KeyEvent) -> SurfaceEffect {
-        self.st.key(k)
-    }
-
-    /// Presses a key that must leave the surface open.
-    fn tap(&mut self, k: KeyEvent) {
-        assert!(
-            !matches!(self.press(k), SurfaceEffect::Close(_)),
-            "key closed the surface unexpectedly"
-        );
-    }
-
-    fn ps(&self) -> &PanelState {
-        &self.st.slots[0].state
-    }
-
-    fn content(&mut self) -> String {
-        self.st.render(80).rows.join("\n")
-    }
-
-    fn plain(&mut self) -> String {
-        strip_sgr(&self.content())
-    }
-}
-
-fn key(code: KeyCode) -> KeyEvent {
-    KeyEvent::new(code, KeyModifiers::NONE)
-}
-
-fn ch(c: char) -> KeyEvent {
-    KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
-}
-
-fn closed(e: SurfaceEffect) -> TabbedResult {
-    match e {
-        SurfaceEffect::Close(r) => r,
-        _ => panic!("expected the surface to close"),
-    }
-}
 
 fn slider(min: f64, max: f64, step: f64) -> Panel {
     Panel::slider("T".to_owned(), min, max, step, None)
@@ -95,17 +40,17 @@ fn bar_col(plain: &str) -> Option<usize> {
 
 // --- the step machine -------------------------------------------------------
 
-// Go: internal/ui/model_test.go:823 TestSliderDefaultTransitions — below Min falls back
+// Below Min falls back
 // to default; G resets to Max.
 #[test]
-fn test_slider_default_transitions() {
+fn a_slider_falls_back_to_default_below_min_and_g_resets_to_max() {
     let mut s = Surf::open(vec![slider(0.0, 1.0, 0.5)]);
-    assert_eq!(s.ps().value, None, "a slider starts on its default");
+    assert_eq!(s.ps(0).value, None, "a slider starts on its default");
 
     s.tap(key(KeyCode::Right)); // default → Min
-    assert_eq!(s.ps().value, Some(0.0));
+    assert_eq!(s.ps(0).value, Some(0.0));
     s.tap(key(KeyCode::Left)); // Min − one step is below Min → back to default
-    assert_eq!(s.ps().value, None);
+    assert_eq!(s.ps(0).value, None);
     s.tap(ch('G')); // G jumps to Max
 
     let r = closed(s.press(key(KeyCode::Enter)));
@@ -127,32 +72,32 @@ fn slider_steps_by_index_and_clamps_at_max() {
         s.tap(key(KeyCode::Right));
     }
     // 0.1 accumulated seven times in floats is 0.7000000000000001; the index form is 0.7.
-    assert_eq!(s.ps().value, Some(0.7));
+    assert_eq!(s.ps(0).value, Some(0.7));
 
     for _ in 0..100 {
         s.tap(key(KeyCode::Right));
     }
-    assert_eq!(s.ps().value, Some(2.0), "stepping past Max must clamp");
+    assert_eq!(s.ps(0).value, Some(2.0), "stepping past Max must clamp");
 
     // 'g' is the way back to "omit the parameter"; 'h'/'l' mirror ←/→.
     s.tap(ch('g'));
-    assert_eq!(s.ps().value, None);
+    assert_eq!(s.ps(0).value, None);
     s.tap(ch('l'));
-    assert_eq!(s.ps().value, Some(0.0));
+    assert_eq!(s.ps(0).value, Some(0.0));
     s.tap(ch('h'));
-    assert_eq!(s.ps().value, None);
+    assert_eq!(s.ps(0).value, None);
 }
 
 // --- the rendered geometry --------------------------------------------------
 
-// Go: internal/ui/model_test.go:1204 TestSliderProgressBarAndChipTitle — a single-panel
+// A single-panel
 // surface titles itself with the focused CHIP (not faint dashes), the bar's origin is
 // identical in the default and value states, and the bar row is padded by blank rows.
 //
 // T-27: the bar is a plain filled bar here; the Go probe (`█▌░`) and every assertion it
 // carries port verbatim, because none of them describes the gradient.
 #[test]
-fn test_slider_progress_bar_and_chip_title() {
+fn the_slider_bar_keeps_its_origin_and_the_chip_titles_the_surface() {
     let mut s = Surf::open(vec![Panel::slider(
         "Temperature".to_owned(),
         0.0,

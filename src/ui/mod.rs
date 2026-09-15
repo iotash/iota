@@ -22,6 +22,8 @@ pub(crate) mod spans;
 pub(crate) mod suggest;
 pub(crate) mod surface;
 pub(crate) mod term;
+#[cfg(test)]
+pub(crate) mod testutil;
 pub(crate) mod theme;
 
 use std::sync::Arc;

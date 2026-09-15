@@ -13,45 +13,10 @@ use std::sync::{Arc, Mutex};
 
 use crate::text::ansi::strip_sgr;
 use crate::text::width::str_width;
-use crate::ui::facade::{Panel, TabbedResult};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::ui::facade::Panel;
+use crossterm::event::KeyCode;
 
-use crate::ui::surface::{SurfaceEffect, SurfaceState};
-
-// --- harness ----------------------------------------------------------------
-
-struct Surf {
-    st: SurfaceState,
-    width: u16,
-}
-
-impl Surf {
-    /// Opens `panels` at `width × height` — the `WindowSizeMsg` the Go test sends first.
-    fn open(panels: Vec<Panel>, width: u16, height: u16) -> Self {
-        let mut st = SurfaceState::new(false, panels);
-        st.set_term_height(height);
-        Self { st, width }
-    }
-
-    fn press(&mut self, k: KeyEvent) -> SurfaceEffect {
-        self.st.key(k)
-    }
-
-    fn content(&mut self) -> String {
-        self.st.render(self.width).rows.join("\n")
-    }
-}
-
-fn key(code: KeyCode) -> KeyEvent {
-    KeyEvent::new(code, KeyModifiers::NONE)
-}
-
-fn closed(e: SurfaceEffect) -> TabbedResult {
-    match e {
-        SurfaceEffect::Close(r) => r,
-        _ => panic!("expected the surface to close"),
-    }
-}
+use crate::ui::testutil::{Surf, closed, key};
 
 /// A counter the preview closure bumps, so "rendered again" is observable.
 #[derive(Clone, Default)]
@@ -63,9 +28,8 @@ impl Calls {
     }
 }
 
-// Go: internal/ui/model_test.go:1746 TestTabbedPicker
 #[test]
-fn test_tabbed_picker() {
+fn a_picker_renders_the_preview_beside_the_list_once_per_selection() {
     let calls = Calls::default();
     let seen = calls.clone();
     let geometry: Arc<Mutex<Vec<(usize, usize)>>> = Arc::default();
@@ -80,7 +44,7 @@ fn test_tabbed_picker() {
         geo.lock().expect("geo").push((max_cols, max_rows));
         vec![format!("\x1b[38;5;42mPREVIEW-{index}\x1b[0m")]
     }));
-    let mut s = Surf::open(vec![panel], 100, 40);
+    let mut s = Surf::sized(vec![panel], 100, 40);
 
     let view = s.content();
     assert!(
@@ -122,12 +86,11 @@ fn test_tabbed_picker() {
     assert!(!r.cancelled && r.panels[0].cursor == 1, "commit = {r:?}");
 }
 
-// Go: internal/ui/model_test.go:1807 TestTabbedPickerNarrowFallback
 #[test]
-fn test_tabbed_picker_narrow_fallback() {
+fn a_narrow_terminal_drops_the_preview_pane() {
     // A terminal too narrow for two columns drops the preview entirely rather than
     // squeezing both into an unreadable width.
-    let mut s = Surf::open(
+    let mut s = Surf::sized(
         vec![
             Panel::picker("Pick".to_owned(), vec!["only".to_owned()])
                 .with_preview(Box::new(|_, _, _| vec!["PREVIEW".to_owned()])),
@@ -146,12 +109,11 @@ fn test_tabbed_picker_narrow_fallback() {
     );
 }
 
-// Go: internal/ui/model_test.go:1825 TestTabbedPickerColumnAlignment
 #[test]
-fn test_tabbed_picker_column_alignment() {
+fn the_list_column_starts_at_the_same_screen_column_on_every_row() {
     // The list column starts at the SAME screen column on every row, including rows whose
     // preview cell is dense with SGR (ANSI-aware padding).
-    let mut s = Surf::open(
+    let mut s = Surf::sized(
         vec![
             Panel::picker(
                 "Pick".to_owned(),
@@ -204,7 +166,7 @@ fn preview_height_is_clamped_by_the_terminal() {
         vec!["x".to_owned()]
     }));
     // A 20-row terminal leaves 8 rows for the preview.
-    let _ = Surf::open(vec![p], 100, 20).content();
+    let _ = Surf::sized(vec![p], 100, 20).content();
     // …and an unknown height keeps the default 14.
     let mut p = panel();
     let sink3 = Arc::clone(&sink);
@@ -212,7 +174,7 @@ fn preview_height_is_clamped_by_the_terminal() {
         sink3.lock().expect("geo").push(rows);
         vec!["x".to_owned()]
     }));
-    let _ = Surf::open(vec![p], 100, 0).content();
+    let _ = Surf::sized(vec![p], 100, 0).content();
     assert_eq!(*geo.lock().expect("geo"), vec![8, 14]);
 }
 
@@ -221,7 +183,7 @@ fn preview_height_is_clamped_by_the_terminal() {
 #[test]
 fn picker_hint_and_search_join_the_row_panels() {
     let items: Vec<String> = (0..30).map(|i| format!("row-{i}")).collect();
-    let mut s = Surf::open(
+    let mut s = Surf::sized(
         vec![Panel::picker("Pick".to_owned(), items).with_search(true)],
         100,
         40,
@@ -253,7 +215,7 @@ fn picker_hint_and_search_join_the_row_panels() {
 /// A Picker without a preview closure degrades to a plain single-select list.
 #[test]
 fn picker_without_a_preview_is_a_plain_list() {
-    let mut s = Surf::open(
+    let mut s = Surf::sized(
         vec![Panel::picker(
             "Pick".to_owned(),
             vec!["one".to_owned(), "two".to_owned()],

@@ -18,74 +18,13 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::text::ansi::strip_sgr;
 use crate::ui::facade::{Panel, RefreshFn, TabbedResult};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::KeyCode;
 
+use crate::ui::testutil::{Surf, ch, key};
+
+use crate::ui::surface::SurfaceEffect;
 use crate::ui::surface::search::{SearchHit, SearchMode};
-use crate::ui::surface::tabbed::PanelState;
-use crate::ui::surface::{SurfaceEffect, SurfaceState};
 use crate::ui::theme::SEARCH_CUR;
-
-// --- harness ----------------------------------------------------------------
-
-/// One open surface driven exactly as the loop drives it. `content()` stands in for Go's
-/// `content(m)`: it RENDERS, which is what resolves a pending centre — every Go test in
-/// this file leans on that, so the two must not drift apart.
-struct Surf {
-    st: SurfaceState,
-}
-
-impl Surf {
-    fn open(panels: Vec<Panel>) -> Self {
-        let st = SurfaceState::new(false, panels);
-        Self { st }
-    }
-
-    fn press(&mut self, k: KeyEvent) -> SurfaceEffect {
-        self.st.key(k)
-    }
-
-    fn tap(&mut self, k: KeyEvent) {
-        assert!(
-            !matches!(self.press(k), SurfaceEffect::Close(_)),
-            "key closed the surface unexpectedly"
-        );
-    }
-
-    fn typed(&mut self, s: &str) {
-        for c in s.chars() {
-            self.tap(ch(c));
-        }
-    }
-
-    fn ps(&self) -> &PanelState {
-        &self.st.slots[0].state
-    }
-
-    /// Go's `content(m)` — renders at 80 columns and returns the surface block.
-    fn content(&mut self) -> String {
-        self.st.render(80).rows.join("\n")
-    }
-
-    /// The loop's generation-guarded refresh pass (`surfTickMsg`).
-    fn tick(&mut self) {
-        self.st.tick();
-    }
-
-    /// `/needle` + Enter: into the walker.
-    fn search(&mut self, q: &str) {
-        self.tap(ch('/'));
-        self.typed(q);
-        self.tap(key(KeyCode::Enter));
-    }
-}
-
-fn key(code: KeyCode) -> KeyEvent {
-    KeyEvent::new(code, KeyModifiers::NONE)
-}
-
-fn ch(c: char) -> KeyEvent {
-    KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
-}
 
 /// Go `viewBody(n)`: filler with a hit near the top (line 5) and one far down (line 30).
 fn view_body(n: usize) -> Vec<String> {
@@ -115,26 +54,26 @@ fn live_view(title: &str, slot: &Arc<Mutex<Vec<String>>>) -> Panel {
 
 // --- the suite --------------------------------------------------------------
 
-// Go: internal/ui/search_test.go:415 TestViewSearchCollectsAndCenters — Enter enters the
+// Enter enters the
 // walker parked on the first hit, and the landing line sits near the middle of the
 // window rather than scraping the top or bottom edge.
 #[test]
-fn test_view_search_collects_and_centers() {
+fn enter_parks_the_walker_on_the_first_hit_centred() {
     let mut s = open_search_view(view_body(60));
     s.search("needle");
 
     assert_eq!(
-        s.ps().search.mode,
+        s.ps(0).search.mode,
         SearchMode::Applied,
         "Enter did not enter the walker"
     );
-    assert_eq!(s.ps().search.hits.len(), 2, "wrong hit count");
+    assert_eq!(s.ps(0).search.hits.len(), 2, "wrong hit count");
 
     let _ = s.content(); // the render resolves the pending jump
     // The first hit sits at line 5, closer to the top than half a window, so centring
     // clamps to the top rather than scrolling past the start.
     assert_eq!(
-        s.ps().offset,
+        s.ps(0).offset,
         0,
         "a hit near the top must clamp to offset 0"
     );
@@ -142,62 +81,66 @@ fn test_view_search_collects_and_centers() {
     // The second is far enough down to actually land mid-window.
     s.tap(ch('n'));
     let _ = s.content();
-    let rows = s.ps().rows;
+    let rows = s.ps(0).rows;
     assert_eq!(
-        s.ps().offset,
+        s.ps(0).offset,
         30 - rows / 2,
         "hit line 30 not centred in {rows} rows"
     );
 }
 
-// Go: internal/ui/search_test.go:446 TestViewSearchStepWraps — n walks forward through
+// n walks forward through
 // the hits and wraps at the end; p walks back.
 #[test]
-fn test_view_search_step_wraps() {
+fn n_and_p_walk_the_hits_and_wrap() {
     let mut s = open_search_view(view_body(60));
     s.search("needle");
 
     s.tap(ch('n'));
-    assert_eq!(s.ps().search.hit_idx, 1, "after n");
+    assert_eq!(s.ps(0).search.hit_idx, 1, "after n");
     s.tap(ch('n'));
-    assert_eq!(s.ps().search.hit_idx, 0, "n past the last hit must wrap");
+    assert_eq!(s.ps(0).search.hit_idx, 0, "n past the last hit must wrap");
     s.tap(ch('p'));
-    assert_eq!(s.ps().search.hit_idx, 1, "p before the first hit must wrap");
+    assert_eq!(
+        s.ps(0).search.hit_idx,
+        1,
+        "p before the first hit must wrap"
+    );
 }
 
-// Go: internal/ui/search_test.go:473 TestViewSearchSurvivesRefresh — a live panel
+// A live panel
 // (/tools, /debug refresh twice a second) must not yank the walker back to the first hit
 // under the reader: with the walker reset every tick, n could never reach the third hit.
 #[test]
-fn test_view_search_survives_refresh() {
+fn a_refresh_leaves_the_walker_where_the_reader_is() {
     let body = Arc::new(Mutex::new(view_body(60)));
     let mut s = Surf::open(vec![live_view("Tools", &body)]);
     s.search("needle");
     s.tap(ch('n'));
     let _ = s.content();
-    let (want_idx, want_off) = (s.ps().search.hit_idx, s.ps().offset);
+    let (want_idx, want_off) = (s.ps(0).search.hit_idx, s.ps(0).offset);
 
     s.tick();
     let _ = s.content();
     assert_eq!(
-        s.ps().search.hit_idx,
+        s.ps(0).search.hit_idx,
         want_idx,
         "a refresh moved the walker"
     );
-    assert_eq!(s.ps().offset, want_off, "a refresh scrolled the body");
+    assert_eq!(s.ps(0).offset, want_off, "a refresh scrolled the body");
 }
 
-// Go: internal/ui/search_test.go:506 TestViewSearchRefreshReanchorsOnContentShift — the
+// The
 // walker is anchored to the HIT, not to its ordinal: content appearing above it
 // renumbers every index while the reader is still looking at the same match.
 #[test]
-fn test_view_search_refresh_reanchors_on_content_shift() {
+fn content_appearing_above_reanchors_the_walker_to_its_hit() {
     let base = view_body(60);
     let live = Arc::new(Mutex::new(base.clone()));
     let mut s = Surf::open(vec![live_view("Log", &live)]);
     s.search("needle");
     s.tap(ch('n'));
-    let parked: SearchHit = s.ps().current_hit().expect("the second hit, at line 30");
+    let parked: SearchHit = s.ps(0).current_hit().expect("the second hit, at line 30");
     assert_eq!(parked.line, 30);
 
     // A new matching row arrives at the top: every hit index shifts by one.
@@ -210,11 +153,11 @@ fn test_view_search_refresh_reanchors_on_content_shift() {
     s.tick();
 
     assert_eq!(
-        s.ps().search.hits.len(),
+        s.ps(0).search.hits.len(),
         3,
         "hits not re-collected after the new row"
     );
-    let got = s.ps().current_hit().expect("the walker lost its hit");
+    let got = s.ps(0).current_hit().expect("the walker lost its hit");
     assert_eq!(
         got.line,
         parked.line + 1,
@@ -222,23 +165,23 @@ fn test_view_search_refresh_reanchors_on_content_shift() {
     );
 }
 
-// Go: internal/ui/search_test.go:541 TestViewSearchEscapeLadder — from the walker, q/Esc
+// From the walker, q/Esc
 // reopens the query field (the user is refining, not leaving), Esc there drops the
 // search, and only a third Esc reaches the surface itself.
 #[test]
-fn test_view_search_escape_ladder() {
+fn the_escape_ladder_is_walker_then_field_then_off_then_close() {
     let mut s = open_search_view(view_body(60));
     s.search("needle");
 
     s.tap(key(KeyCode::Esc));
     assert_eq!(
-        s.ps().search.mode,
+        s.ps(0).search.mode,
         SearchMode::Typing,
         "ESC from the walker must reopen the field"
     );
     s.tap(key(KeyCode::Esc));
     assert_eq!(
-        s.ps().search.mode,
+        s.ps(0).search.mode,
         SearchMode::Off,
         "ESC in the field must drop the search"
     );
@@ -257,15 +200,15 @@ fn view_search_q_reopens_the_field_from_the_walker() {
     let mut s = open_search_view(view_body(60));
     s.search("needle");
     s.tap(ch('q'));
-    assert_eq!(s.ps().search.mode, SearchMode::Typing);
+    assert_eq!(s.ps(0).search.mode, SearchMode::Typing);
     // Refining is seeded with the applied query and the cursor after it.
-    assert_eq!(s.ps().search.input.value(), "needle");
+    assert_eq!(s.ps(0).search.input.value(), "needle");
 }
 
-// Go: internal/ui/search_test.go:573 TestViewSearchHighlightsInBody — the rendered panel
+// The rendered panel
 // carries the highlight, and dropping the search takes it away again.
 #[test]
-fn test_view_search_highlights_in_body() {
+fn the_highlight_lives_in_the_rendered_body_and_leaves_with_the_search() {
     let mut s = open_search_view(view_body(60));
     s.search("needle");
     assert!(
@@ -280,11 +223,11 @@ fn test_view_search_highlights_in_body() {
     );
 }
 
-// Go: internal/ui/search_test.go:594 TestViewSearchWrapCenteringUsesWrappedRows — with
+// With
 // Wrap on, offset counts WRAPPED rows while hits are recorded against logical lines: the
 // jump has to convert, or long lines send it to the wrong place.
 #[test]
-fn test_view_search_wrap_centering_uses_wrapped_rows() {
+fn centring_a_wrapped_view_counts_wrapped_rows() {
     let long = "padding ".repeat(30); // wraps to several rows at width 80
     let mut lines = vec![long; 40];
     lines[20] = "the needle is here".to_owned();
@@ -293,16 +236,16 @@ fn test_view_search_wrap_centering_uses_wrapped_rows() {
     s.search("needle");
     let _ = s.content();
 
-    let starts = s.ps().wrap_starts.clone();
+    let starts = s.ps(0).wrap_starts.clone();
     assert_eq!(starts.len(), 40, "wrap_starts must map every logical line");
     let want_row = starts[20];
     assert!(
         want_row > 20,
         "the fixture is not exercising wrapping: logical line 20 starts at row {want_row}"
     );
-    let rows = s.ps().rows;
+    let rows = s.ps(0).rows;
     assert_eq!(
-        s.ps().offset,
+        s.ps(0).offset,
         want_row - rows / 2,
         "wrapped row {want_row} not centred in {rows} rows"
     );
