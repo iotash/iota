@@ -9,15 +9,15 @@
 
 use std::sync::{Arc, PoisonError};
 
-use iota::BoxFuture;
 use iota::host::{Caps, Event, Kind, Presenter, State};
 use iota::llm::reqlog::RequestLog;
-use iota::provider::error::ProviderError;
-use iota::provider::model::{Attachment, Message};
-use iota::provider::{ChatResult, Provider, ProviderKind};
+use iota::provider::model::Attachment;
+use iota::provider::{Provider, ProviderKind};
 use iota::repl::{McpHooks, RunParams, SessionCtx};
 use iota::session::{SessionStore, SessionWriter};
-use iota::testing::{FakeProvider, RecordingHost, Reply, ScriptedUi, StaticDispatcher, UiEvent};
+use iota::testing::{
+    FakeProvider, Interrupt, RecordingHost, Reply, Round, ScriptedUi, StaticDispatcher, UiEvent,
+};
 use iota::tool::Dispatcher;
 use iota::ui::facade::{Input, PanelResult, TabbedResult, Ui};
 use pretty_assertions::assert_eq;
@@ -37,59 +37,6 @@ enum Answer {
     Fail(&'static str),
     /// The provider cancels the turn's token and fails — Go's `errInterrupted` shape.
     Interrupt,
-}
-
-/// A capability-less provider (no `ToolProvider`) answering exactly once.
-struct OneShot(Answer);
-
-impl Provider for OneShot {
-    fn kind(&self) -> ProviderKind {
-        ProviderKind::OpenAi
-    }
-
-    fn model(&self) -> &'static str {
-        "gpt-test"
-    }
-
-    fn set_model(&mut self, _model: String) {}
-
-    fn list_models<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Vec<String>, ProviderError>> {
-        Box::pin(std::future::ready(Ok(Vec::new())))
-    }
-
-    fn chat<'a>(
-        &'a self,
-        cancel: &'a CancellationToken,
-        _messages: &'a [Message],
-    ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
-        Box::pin(async move {
-            match &self.0 {
-                Answer::Text(t) => Ok(ChatResult {
-                    text: t.clone(),
-                    ..ChatResult::default()
-                }),
-                Answer::Image => Ok(ChatResult {
-                    text: String::new(),
-                    images: vec![Attachment {
-                        filename: "canvas.png".to_owned(),
-                        mime_type: "image/png".to_owned(),
-                        data: b"not-a-real-png".to_vec(),
-                    }],
-                    ..ChatResult::default()
-                }),
-                Answer::Fail(msg) => Err(ProviderError::permanent_msg(*msg)),
-                Answer::Interrupt => {
-                    // The turn's own token: cancelling it is what makes `stream_turn`
-                    // classify the failure as the user's interrupt (turn.rs:280).
-                    cancel.cancel();
-                    Err(ProviderError::other("dropped"))
-                }
-            }
-        })
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -248,8 +195,21 @@ fn busy_labels(ui: &ScriptedUi) -> Vec<String> {
         .collect()
 }
 
+/// A capability-less provider (no `ToolProvider`) giving the same answer to every call.
 fn plain(answer: Answer) -> Box<dyn Provider> {
-    Box::new(OneShot(answer))
+    let round = match answer {
+        Answer::Text(t) => Round::reply(&t),
+        Answer::Image => Round::reply("").images(vec![Attachment {
+            filename: "canvas.png".to_owned(),
+            mime_type: "image/png".to_owned(),
+            data: b"not-a-real-png".to_vec(),
+        }]),
+        Answer::Fail(msg) => Round::permanent(msg),
+        // The turn's own token: cancelling it is what makes `stream_turn` classify the failure as
+        // the user's interrupt.
+        Answer::Interrupt => Round::failing("dropped").interrupting(Interrupt::Call),
+    };
+    Box::new(FakeProvider::new().tail(round))
 }
 
 fn no_tools() -> Arc<dyn Dispatcher> {
