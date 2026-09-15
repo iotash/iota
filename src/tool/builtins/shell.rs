@@ -1,4 +1,4 @@
-//! The `shell` toolset (tool/shell.go): one `shell` tool running one command line per call, sandboxed with
+//! The `shell` toolset: one `shell` tool running one command line per call, sandboxed with
 //! Seatbelt on macOS / bwrap on Linux when available.
 //!
 //! WHAT runs the command line is `crate::shell::interp`'s answer, and on Windows it is not always a POSIX
@@ -93,7 +93,7 @@ pub(crate) struct ShellTool {
     jobs: Option<Arc<Jobs>>,
     root: PathBuf,
     /// The process working directory — the display anchor for the optional `cwd`
-    /// argument in call headers (tool/shell.go:74-78), NOT the execution dir (that
+    /// argument in call headers, NOT the execution dir (that
     /// defaults to `root`).
     cwd: PathBuf,
     sandboxed: bool,
@@ -123,7 +123,7 @@ pub fn new_shell_set(
         Err(e) if cfg!(windows) => return Err(SetError::NoShell(e.to_string())),
         Err(_) => Interpreter::new("bash"),
     };
-    // A sandbox binary appearing or disappearing later has no effect on this run (tool/shell.go:67).
+    // A sandbox binary appearing or disappearing later has no effect on this run.
     let sandboxed = shell_cfg.sandbox == "auto" && exec::available();
     Ok(vec![Arc::new(ShellTool {
         shell_cfg,
@@ -143,7 +143,7 @@ pub fn new_shell_set(
 
 impl Tool for ShellTool {
     /// Name [`SHELL_TOOL_NAME`] on every platform, description the running interpreter's ([`desc_prefix`])
-    /// plus one sandbox suffix and the background paragraph; schema per tool/shell.go:129-144.
+    /// plus one sandbox suffix and the background paragraph; the schema is [`shell_schema`]'s.
     fn def(&self) -> ToolDef {
         let mut description = String::from(desc_prefix(self.shell.family));
         if self.sandboxed {
@@ -165,7 +165,6 @@ impl Tool for ShellTool {
         }
     }
 
-    /// tool/shell.go:147-190.
     fn call<'a>(&'a self, cx: &'a RunCtx, args: &'a JsonObject) -> BoxFuture<'a, ToolResult> {
         Box::pin(async move {
             let command = str_arg(args, "command").trim().to_owned();
@@ -220,16 +219,16 @@ impl Tool for ShellTool {
         !self.sandboxed && !self.shell_cfg.auto_run
     }
 
-    /// Always — a deliberate break with Go's "only read-only tools batch" law (DIVERGENCES X-05).
-    /// A round's consecutive `bash` calls run in ONE batch, results still in call order. The
-    /// judgement Go's rule made for the model (is this command safe beside that one?) is the
+    /// Always — a deliberate break with the earlier rule that only read-only tools batch
+    /// (DIVERGENCES X-05). A round's consecutive `shell` calls run in ONE batch, results still in
+    /// call order. The judgement that rule made for the model (is this command safe beside that one?) is the
     /// model's own here: it wrote both command lines, and `&`/`wait`/`xargs -P` inside a single
     /// call were never gated either.
     fn supports_parallel(&self, _args: Option<&JsonObject>) -> bool {
         true
     }
 
-    /// tool/shell.go:82-92 (the D-12 lift): the call IS the command — `"[shell git
+    /// The D-12 lift: the call IS the command — `"[shell git
     /// status]"`. The argument name is noise (a shell call has one thing to say), and an
     /// explicit cwd folds into the running interpreter's idiom for it (`"cd <path> && <cmd>"`,
     /// `"cd <path>; <cmd>"` under PowerShell) rather than eating a separate slot. A background
@@ -292,7 +291,7 @@ fn timeout_arg(args: &JsonObject) -> Option<Duration> {
     }
 }
 
-/// tool/shell.go:173-190: the model-facing rendering of one run, checked in this order. `timeout` is the
+/// The model-facing rendering of one run, checked in this order. `timeout` is the
 /// cap the call actually ran under, so the timed-out line names the number the model chose.
 fn format_result(res: &RunResult, timeout: Duration) -> ToolOutput {
     let output = &res.output;
@@ -316,7 +315,7 @@ fn format_result(res: &RunResult, timeout: Duration) -> ToolOutput {
     }
 }
 
-/// tool/shell.go:194-206: resolves a leading `~` (alone or before `/`) to the home directory; anything else,
+/// Resolves a leading `~` (alone or before `/`) to the home directory; anything else,
 /// and a missing home, is left untouched.
 fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
     if path != "~" && !path.starts_with("~/") {
@@ -331,7 +330,8 @@ fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
     home.join(&path[2..])
 }
 
-/// tool/shell.go:130-143, verbatim but for the one field that names a dialect: the `command` example is
+/// The schema, the same under every interpreter but for the one field that names a dialect: the `command`
+/// example is
 /// written in the shell that will actually read it.
 fn shell_schema(family: Family) -> JsonObject {
     let command = match family {
@@ -420,7 +420,7 @@ mod tests {
         expand_home, format_result, go_duration, timeout_arg,
     };
 
-    // New (tool-shell.md "MODEL-FACING RESULT SUFFIXES"): every branch of tool/shell.go:173-190.
+    // Every branch of `format_result` (tool-shell.md "MODEL-FACING RESULT SUFFIXES").
     #[test]
     fn result_formatting_table() {
         let failed = RunResult {
@@ -529,7 +529,7 @@ mod tests {
         }
     }
 
-    // New: tool/shell.go:194-206 — `~` and `~/x` only, and only with a home.
+    // `expand_home`: `~` and `~/x` only, and only with a home.
     #[test]
     fn expand_home_rules() {
         let home = PathBuf::from("/home/u");
