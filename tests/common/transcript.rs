@@ -1,6 +1,5 @@
 //! The wiremock openai transcript fixture (`openai_transcript(&MockServer)`: one chat-completions stream ending in
-//! `[DONE]`, the `-m` end-to-end tests' backend). WP15 owns and fills this file; the scaffold ships it empty so
-//! `mod.rs` can pre-register it.
+//! `[DONE]`, the `-m` end-to-end tests' backend).
 //!
 //! The mounted responder answers BOTH shapes the headless run can ask for on `/chat/completions`, chosen by the
 //! request's own `"stream"` field: the tool loop streams (`stream: true` → SSE, ending in `[DONE]`), and a run
@@ -71,7 +70,9 @@ pub async fn openai_transcript(server: &MockServer) {
 }
 
 /// [`openai_transcript`] with the response head held back for `delay` — long enough for a signal to arrive while
-/// the request is in flight (`cli_sigint_exits_130_with_interrupted_json`).
+/// the request is in flight (`cli_sigint_exits_130_with_interrupted_json`, a unix-only test: the signal is
+/// SIGINT).
+#[cfg(unix)]
 pub async fn openai_transcript_delayed(server: &MockServer, delay: Duration) {
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
@@ -88,23 +89,6 @@ pub async fn openai_bad_request(server: &MockServer) {
             "{\"error\":{\"message\":\"bad model\",\"type\":\"invalid_request_error\"}}",
             "application/json",
         ))
-        .mount(server)
-        .await;
-}
-
-/// Mounts a `500` on `GET /models`, the failure `-l <provider>` reports (`x-should-retry: false` keeps it to one
-/// attempt so the test never waits for a backoff).
-pub async fn openai_models_fail(server: &MockServer) {
-    Mock::given(method("GET"))
-        .and(path("/models"))
-        .respond_with(
-            ResponseTemplate::new(500)
-                .insert_header("x-should-retry", "false")
-                .set_body_raw(
-                    "{\"error\":{\"message\":\"models are down\"}}",
-                    "application/json",
-                ),
-        )
         .mount(server)
         .await;
 }

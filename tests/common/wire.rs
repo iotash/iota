@@ -1,7 +1,6 @@
 //! Shared iota-llm test fixtures (`TEST_PLAN.md` principle 10). Created by the scaffold with real bodies and
 //! WP00-owned afterwards: later packages only `mod common;` this file (or add a NEW submodule they own) and may
 //! ADD helpers, never change the frozen ones (`sse_stream`, `mock_json`, `mock_sse`, `body_json`).
-#![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use bytes::Bytes;
 use futures::Stream;

@@ -2,7 +2,6 @@
 //! locator/scope tests deterministic.
 //!
 //! Nothing here reads or mutates the process environment: every store is rooted in a `tempfile::TempDir`.
-#![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
 

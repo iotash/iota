@@ -1,8 +1,21 @@
 //! Integration tests of the command: CLI, config, run resolution and the checked-in Go-written session bundles (cmd/, config/) — one binary per area (docs/MERGE-PLAN.md §2).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "../common/mod.rs"]
-mod common;
+// The shared fixtures this binary uses (`tests/common/`), and no others: a mounted file that
+// nothing here calls would be dead code. Mounted at the root because `#[path]` inside an inline
+// module resolves through a directory that does not exist.
+#[path = "../common/child.rs"]
+mod common_child;
+#[path = "../common/project.rs"]
+mod common_project;
+#[path = "../common/transcript.rs"]
+mod common_transcript;
+
+mod common {
+    pub(crate) use crate::common_child::cleared_env;
+    pub(crate) use crate::common_project::temp_project;
+    pub(crate) use crate::common_transcript as transcript;
+}
 
 mod cli;
 mod config;
