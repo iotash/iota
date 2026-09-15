@@ -62,10 +62,10 @@ pub(crate) enum Node {
     },
     /// `\left … \right` (or plain bracket pair) around `inner`.
     Delim {
-        /// The opening glyph (may be empty for `.`).
-        left: String,
-        /// The closing glyph (may be empty for `.`).
-        right: String,
+        /// The opening glyph; `None` for `.` (no delimiter on that side).
+        left: Option<String>,
+        /// The closing glyph; `None` for `.`.
+        right: Option<String>,
         /// The enclosed expression.
         inner: Box<Node>,
     },
@@ -73,10 +73,8 @@ pub(crate) enum Node {
     BigOp {
         /// The operator family.
         op: OpFamily,
-        /// The single-glyph form (`∑`, `∫`, …; empty for word operators).
-        glyph: &'static str,
-        /// The word form (`lim`, `max`, …; empty for glyph operators).
-        word: &'static str,
+        /// The drawn form: a single glyph (`∑`, `∫`, …) or an upright word (`lim`, `max`, …).
+        form: OpForm,
         /// The lower limit.
         lower: Option<Box<Node>>,
         /// The upper limit.
@@ -96,6 +94,16 @@ pub(crate) enum Node {
         /// The accented expression.
         base: Box<Node>,
     },
+}
+
+/// How a big operator is drawn (macros.go:34-80): exactly one of the two — until 2026-09-16 the node
+/// carried both as `&'static str` with one of them empty.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OpForm {
+    /// The single glyph (`∑`, `∫`, …).
+    Glyph(&'static str),
+    /// The upright word (`lim`, `max`, …).
+    Word(&'static str),
 }
 
 /// Big-operator family (macros.go:17-27 `bigOpKind`).
@@ -405,8 +413,7 @@ impl Parser {
             n if macros::is_big_op(n) => {
                 return Ok(Some(Node::BigOp {
                     op: macros::big_op_kind(n),
-                    glyph: macros::big_op_single_glyph(n),
-                    word: "",
+                    form: OpForm::Glyph(macros::big_op_single_glyph(n)),
                     lower: None,
                     upper: None,
                 }));
@@ -414,8 +421,7 @@ impl Parser {
             n if macros::is_word_op(n) => {
                 return Ok(Some(Node::BigOp {
                     op: OpFamily::Lim,
-                    glyph: "",
-                    word: macros::word_op_name(n),
+                    form: OpForm::Word(macros::word_op_name(n)),
                     lower: None,
                     upper: None,
                 }));
@@ -518,9 +524,10 @@ impl Parser {
         })
     }
 
-    /// The delimiter following `\left`/`\right`, normalized (parse.go:642-678). `\|`, `\vert` and
-    /// `\Vert` all collapse to a SINGLE bar — a faithful Go quirk the goldens pin.
-    fn read_delim_symbol(&mut self) -> Result<String, Unsupported> {
+    /// The delimiter following `\left`/`\right`, normalized (parse.go:642-678): `None` for `.`, the
+    /// "no delimiter on this side" marker. `\|`, `\vert` and `\Vert` all collapse to a SINGLE bar — a
+    /// faithful Go quirk the goldens pin.
+    fn read_delim_symbol(&mut self) -> Result<Option<String>, Unsupported> {
         self.skip_space();
         let Some(&c) = self.src.get(self.pos) else {
             return Err(bad("missing delimiter after \\left/\\right"));
@@ -539,11 +546,11 @@ impl Parser {
                 "rceil" => "\u{2309}",  // ⌉
                 _ => return Err(bad("unsupported delimiter")),
             };
-            return Ok(sym.to_owned());
+            return Ok(Some(sym.to_owned()));
         }
         if matches!(c, '(' | ')' | '[' | ']' | '|' | '/' | '.') {
             self.pos += 1;
-            return Ok(c.to_string());
+            return Ok((c != '.').then(|| c.to_string()));
         }
         Err(bad("unsupported delimiter"))
     }
@@ -1003,12 +1010,19 @@ mod tests {
         let Node::Delim { left, right, inner } = &n else {
             panic!("node = {n:?}, want Delim")
         };
-        assert_eq!((left.as_str(), right.as_str()), ("(", ")"));
+        assert_eq!((left.as_deref(), right.as_deref()), (Some("("), Some(")")));
         let Node::Frac { num, den } = inner.as_ref() else {
             panic!("Delim.inner = {inner:?}, want Frac")
         };
         atom_text(num, "a");
         atom_text(den, "b");
+
+        // `.` is the absent side, not a glyph.
+        let n = must_parse(r"\left. x \right|");
+        let Node::Delim { left, right, .. } = &n else {
+            panic!("node = {n:?}, want Delim")
+        };
+        assert_eq!((left.as_deref(), right.as_deref()), (None, Some("|")));
     }
 
     // Go: internal/mathtext/parse_test.go:223 TestParseText

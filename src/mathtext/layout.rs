@@ -10,7 +10,7 @@
 //! No combining mark (U+0300..=U+036F) is ever emitted: bars, vinculums, accents, tall
 //! delimiters and tall operators are DRAWN across rows from spacing glyphs.
 
-use crate::mathtext::parse::{Node, OpFamily};
+use crate::mathtext::parse::{Node, OpFamily, OpForm};
 use crate::mathtext::pict::{
     DelimKind, Pict, accent_row, blank_line, box_width, center, hconcat, hrule, left_delim,
     overline, pad, pad_left, right_delim, vstack,
@@ -67,7 +67,9 @@ pub(crate) fn layout(n: &Node) -> Pict {
         Node::Sup { base, exp } => layout_sup(base, exp),
         Node::Sub { base, sub } => layout_sub(base, sub),
         Node::SupSub { base, sup, sub } => layout_sup_sub(base, sup, sub),
-        Node::Delim { left, right, inner } => layout_delim(left, right, inner),
+        Node::Delim { left, right, inner } => {
+            layout_delim(left.as_deref(), right.as_deref(), inner)
+        }
         Node::BigOp { .. } => layout_big_op(n, 1),
         Node::Matrix { env, rows } => layout_matrix(env, rows),
         Node::Accent { kind, base } => layout_accent(*kind, base),
@@ -112,16 +114,15 @@ fn layout_seq(items: &[Node]) -> Pict {
     let mut boxes: Vec<Pict> = Vec::new();
     let mut i = 0;
     while i < items.len() {
-        if let Node::BigOp { word, .. } = &items[i] {
+        if let Node::BigOp { form, .. } = &items[i] {
             // Lay the following operand out first: it sizes the operator glyph.
             let operand = items.get(i + 1).map_or_else(Pict::empty, layout);
             let h = operand.height().max(1);
             let mut op_box = layout_big_op(&items[i], h);
             if operand.height() > 0 {
-                op_box = if word.is_empty() {
-                    hconcat(&[op_box, operand])
-                } else {
-                    hconcat(&[op_box, space_pict(), operand])
+                op_box = match form {
+                    OpForm::Glyph(_) => hconcat(&[op_box, operand]),
+                    OpForm::Word(_) => hconcat(&[op_box, space_pict(), operand]),
                 };
                 i += 1; // the operand was folded into the operator picture
             }
@@ -337,8 +338,8 @@ fn literal_delim_pict(glyph: &str, height: usize, baseline: usize) -> Pict {
 }
 
 /// `\left<L> inner \right<R>` (layout.go:428-443): the inner picture flanked by delimiters sized
-/// to its height and aligned on its baseline; a `.` side is omitted.
-fn layout_delim(left: &str, right: &str, inner: &Node) -> Pict {
+/// to its height and aligned on its baseline; a `None` side (`.`) is omitted.
+fn layout_delim(left: Option<&str>, right: Option<&str>, inner: &Node) -> Pict {
     let inner = layout(inner);
     let h = inner.height().max(1);
     let l = delim_side(left, h, inner.baseline, true);
@@ -354,11 +355,11 @@ fn layout_delim(left: &str, right: &str, inner: &Node) -> Pict {
     hconcat(&parts)
 }
 
-/// One side of a `\left…\right` pair (layout.go:448-459).
-fn delim_side(sym: &str, height: usize, baseline: usize, left: bool) -> Pict {
-    if sym.is_empty() || sym == "." {
+/// One side of a `\left…\right` pair (layout.go:448-459); `None` draws nothing.
+fn delim_side(sym: Option<&str>, height: usize, baseline: usize, left: bool) -> Pict {
+    let Some(sym) = sym else {
         return Pict::empty();
-    }
+    };
     match delim_kind_for(sym) {
         Some(kind) if left => left_delim(kind, height, baseline),
         Some(kind) => right_delim(kind, height, baseline),
@@ -384,22 +385,19 @@ fn tall_integral(height: usize) -> String {
 fn layout_big_op(n: &Node, body_height: usize) -> Pict {
     let Node::BigOp {
         op,
-        glyph,
-        word,
+        form,
         lower,
         upper,
     } = n
     else {
         return Pict::empty();
     };
-    let op_box = if word.is_empty() {
-        if *op == OpFamily::Int && body_height >= 2 {
+    let op_box = match form {
+        OpForm::Glyph(_) if *op == OpFamily::Int && body_height >= 2 => {
             Pict::new_lines(&tall_integral(body_height), body_height / 2)
-        } else {
-            Pict::new(glyph)
         }
-    } else {
-        Pict::new(word) // \lim, \max, \det, …
+        OpForm::Glyph(glyph) => Pict::new(glyph),
+        OpForm::Word(word) => Pict::new(word), // \lim, \max, \det, …
     };
 
     let lower = layout_opt(lower.as_deref());
