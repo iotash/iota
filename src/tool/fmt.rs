@@ -1,26 +1,25 @@
-//! Interactive tool-call display helpers (the D-12 lift; chat/chat.go:432-518,
-//! tool/headerfmt.go). Rune-based, no width deps — a header is truncated on rune
-//! boundaries, never display columns (recorded divergence: Go's headerfmt measured
-//! display width via uniseg; this module stays width-crate-free so the TUI-free build
-//! carries no ruler).
+//! Interactive tool-call display helpers (the D-12 lift). Rune-based, no width deps — a
+//! header is truncated on rune boundaries, never display columns (a recorded divergence:
+//! the header once measured display width; this module stays width-crate-free so the
+//! TUI-free build carries no ruler).
 
 use serde_json::Value;
 
 use crate::provider::model::ToolCall;
 use crate::tool::Dispatcher;
 
-/// Max arguments shown in a call header before the `"… +N args"` tail (chat.go:426).
+/// Max arguments shown in a call header before the `"… +N args"` tail.
 pub(crate) const TOOL_HEADER_MAX_ARGS: usize = 3;
 
-/// Max runes of one argument value in a call header (chat.go:430).
+/// Max runes of one argument value in a call header.
 pub(crate) const TOOL_HEADER_MAX_VALUE: usize = 15;
 
-/// Max result lines shown inline under a call (chat.go:483).
+/// Max result lines shown inline under a call.
 pub(crate) const TOOL_RESULT_MAX_LINES: usize = 3;
 
 /// `"[name k:v k:v]"`: keys sorted, values one-lined + 15-rune cap + `"…"`, max 3 args then
 /// `"… +N args"`; a `Some(summary)` from `header_summary` takes over completely (`Some("")` →
-/// bare `"[name]"`). chat/chat.go:432-480.
+/// bare `"[name]"`).
 pub fn tool_call_header(dispatch: &dyn Dispatcher, tc: &ToolCall) -> String {
     let name = display_tool_name(&tc.name);
     let detail = tool_call_detail(dispatch, tc);
@@ -31,7 +30,7 @@ pub fn tool_call_header(dispatch: &dyn Dispatcher, tc: &ToolCall) -> String {
     }
 }
 
-/// Approval evidence: `header_summary` else the sorted-key digest. chat.go:461-480.
+/// Approval evidence: `header_summary` else the sorted-key digest.
 ///
 /// A tool that writes its own summary takes over completely — an empty one renders as a
 /// bare `"[name]"`, never as the argument digest (`edit_file`'s `new_string` must not
@@ -56,7 +55,7 @@ pub(crate) fn tool_call_detail(dispatch: &dyn Dispatcher, tc: &ToolCall) -> Stri
     parts.join(" ")
 }
 
-/// `"mcp__srv__tool"` → `"srv:tool"`; other names verbatim (chat/toolname.go).
+/// `"mcp__srv__tool"` → `"srv:tool"`; other names verbatim.
 ///
 /// The server segment can never contain `"__"` (the MCP manager collapses underscore
 /// runs), so the first `"__"` after the prefix is always the separator; a degenerate wire
@@ -76,7 +75,7 @@ pub(crate) fn display_tool_name(name: &str) -> String {
 
 /// ≤3 lines full; >3 → 2 rows + `"    … +%d lines"`; 120-rune row cap; `"  ⎿ %s"` first /
 /// `"    %s"` rest; `"(no output)"` for blank. Returns the rows (caller styles red on
-/// error). chat/chat.go:485-518.
+/// error).
 pub fn print_tool_result_lines(text: &str, _is_error: bool) -> Vec<String> {
     let trimmed = text.trim_end_matches('\n');
     let body = if trimmed.trim().is_empty() {
@@ -107,9 +106,8 @@ pub fn print_tool_result_lines(text: &str, _is_error: bool) -> Vec<String> {
     out
 }
 
-/// Go `%v` of a JSON argument value, collapsed to one line: strings verbatim, everything
-/// else the compact JSON text (DIVERGENCES T-33 — deterministic where Go's map `%v` was
-/// order-stable only by accident).
+/// A JSON argument value collapsed to one line: strings verbatim, everything else the
+/// compact JSON text with its keys in sorted order (deterministic — DIVERGENCES T-33).
 fn value_one_line(v: &Value) -> String {
     let s = match v {
         Value::String(s) => s.clone(),
@@ -118,7 +116,7 @@ fn value_one_line(v: &Value) -> String {
     s.replace('\n', " ")
 }
 
-/// Truncates on rune boundaries + `'…'` so CJK text is never cut mid-rune (chat.go:250).
+/// Truncates on rune boundaries + `'…'` so CJK text is never cut mid-rune.
 fn truncate_runes(s: &str, max: usize) -> String {
     let mut it = s.chars();
     let head: String = it.by_ref().take(max).collect();
@@ -129,17 +127,17 @@ fn truncate_runes(s: &str, max: usize) -> String {
     }
 }
 
-// ---- the header-format ladder shared by the toolsets (tool/headerfmt.go; additive to
+// ---- the header-format ladder shared by the toolsets (additive to
 // the frozen §4 set — both the code set and shell render paths, and one ladder is the
 // point) ----
 
-/// Display cap of a header path (tool/headerfmt.go:17).
+/// Display cap of a header path.
 pub(crate) const HEADER_PATH_MAX: usize = 48;
 
-/// Display cap of a header command summary (tool/headerfmt.go:105).
+/// Display cap of a header command summary.
 pub(crate) const HEADER_CMD_MAX: usize = 64;
 
-/// Renders a model-supplied path for a call header (tool/headerfmt.go:22-64): relative
+/// Renders a model-supplied path for a call header: relative
 /// verbatim; under `cwd` → cwd-relative; elsewhere under `root` → the `"../"` form; under
 /// home → `"~/…"`; else absolute — then head-elided to [`HEADER_PATH_MAX`] runes.
 pub(crate) fn header_path(raw: &str, cwd: &std::path::Path, root: &std::path::Path) -> String {
@@ -180,7 +178,7 @@ fn header_path_full(p: &str, cwd: &std::path::Path, root: &std::path::Path) -> S
     crate::app::paths::to_slash(&abs) // 5: absolute
 }
 
-/// Whether `abs` sits inside `dir` (tool/headerfmt.go:68-75).
+/// Whether `abs` sits inside `dir`.
 fn within(dir: &std::path::Path, abs: &std::path::Path) -> bool {
     if dir.as_os_str().is_empty() {
         return false;
@@ -191,8 +189,7 @@ fn within(dir: &std::path::Path, abs: &std::path::Path) -> bool {
     })
 }
 
-/// Trims a path from the FRONT to fit `max` runes, keeping whole segments where it can
-/// (tool/headerfmt.go:77-92).
+/// Trims a path from the FRONT to fit `max` runes, keeping whole segments where it can.
 fn elide_path_head(p: &str, max: usize) -> String {
     if p.chars().count() <= max {
         return p.to_owned();
@@ -209,7 +206,7 @@ fn elide_path_head(p: &str, max: usize) -> String {
     format!("...{}", truncate_runes_front(last, max.saturating_sub(3)))
 }
 
-/// Keeps the LAST `n` runes of `s` (tool/headerfmt.go:95-107).
+/// Keeps the LAST `n` runes of `s`.
 fn truncate_runes_front(s: &str, n: usize) -> String {
     let count = s.chars().count();
     if count <= n {
@@ -218,7 +215,7 @@ fn truncate_runes_front(s: &str, n: usize) -> String {
     s.chars().skip(count - n).collect()
 }
 
-/// Renders a shell command for a call header (tool/headerfmt.go:109-124): the first line
+/// Renders a shell command for a call header: the first line
 /// only (`" …"` marks more), tabs flattened, tail-truncated to [`HEADER_CMD_MAX`] runes.
 #[cfg_attr(windows, allow(dead_code))]
 pub(crate) fn header_command(cmd: &str) -> String {
@@ -257,7 +254,6 @@ mod tests {
         print_tool_result_lines,
     };
 
-    // Go: chat/toolname_test.go:5 TestDisplayToolName
     #[test]
     fn test_display_tool_name() {
         assert_eq!(display_tool_name("shell"), "shell");
@@ -281,7 +277,7 @@ mod tests {
     #[cfg(not(windows))]
     const OUTSIDE_PATH: &str = "/etc/hosts";
 
-    // Go: tool/codepath_test.go:13 TestHeaderPath — the header path ladder: each rung exists for
+    // The header path ladder: each rung exists for
     // a case the one above cannot serve, because a wrong rung silently degrades every file call's
     // header into something the user cannot type back. (Rune-count ruler — the display-width
     // divergence is noted in the module docs.)
@@ -322,7 +318,7 @@ mod tests {
         assert_eq!(header_path("", cwd, root), "");
 
         // under home outside the project (skipped when the home directory is unknown or contains
-        // the fixture root — the same guard Go's table row carries)
+        // the fixture root)
         match std::env::home_dir() {
             Some(home) if !home.as_os_str().is_empty() && !root.starts_with(&home) => {
                 let p = home.join("elsewhere").join("y.go");
@@ -335,8 +331,7 @@ mod tests {
         }
     }
 
-    // Go: tool/codepath_test.go:49 TestHeaderPathFallsBackToAbsolute — a path outside both the
-    // project and home has nowhere to be relative to.
+    // A path outside both the project and home has nowhere to be relative to.
     #[test]
     fn test_header_path_falls_back_to_absolute() {
         let root = std::path::PathBuf::from(FIXTURE_ROOT);
@@ -347,7 +342,7 @@ mod tests {
         );
     }
 
-    // Go: tool/codepath_test.go:57 TestHeaderPathElidesFromTheFront — long paths lose their HEAD:
+    // Long paths lose their HEAD:
     // the basename identifies the file, so it is the part that must survive.
     #[test]
     fn test_header_path_elides_from_the_front() {
@@ -377,7 +372,7 @@ mod tests {
         );
     }
 
-    // Go: tool/codepath_test.go:156 TestHeaderCommandFirstLineAndWidth — a multi-line script
+    // A multi-line script
     // cannot be read on one row: keep the first line and say so, rather than flattening the whole
     // thing into a smear.
     #[test]
