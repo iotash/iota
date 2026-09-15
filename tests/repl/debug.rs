@@ -7,19 +7,15 @@
 //! command's SHAPE: which surface opens with which panels, that Enter commits ALL tabs (the
 //! Verbose switch lands wherever focus was), that the switch tab has nothing to drill into, and
 //! that the drill-down returns to the list instead of ending the command.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::Arc;
 
-use iota::BoxFuture;
 use iota::host::Presenter;
 use iota::llm::reqlog::{RequestEntry, RequestLog, ResponseHalf};
-use iota::provider::error::ProviderError;
-use iota::provider::model::Message;
-use iota::provider::{ChatResult, Provider, ProviderKind};
+use iota::provider::ProviderKind;
 use iota::repl::{McpHooks, RunParams, SessionCtx};
 use iota::session::{SessionStore, SessionWriter};
-use iota::testing::{Reply, ScriptedUi, StaticDispatcher, TabbedSummary, UiEvent};
+use iota::testing::{FakeProvider, Reply, ScriptedUi, StaticDispatcher, TabbedSummary, UiEvent};
 use iota::text::ansi::strip_sgr;
 use iota::tool::Dispatcher;
 use iota::ui::facade::{Input, PanelKind, PanelResult, StatusData, TabbedResult, Ui};
@@ -34,33 +30,6 @@ const RECORDING_OFF: &str = "Request recording OFF";
 // ---------------------------------------------------------------------------
 // the doubles
 // ---------------------------------------------------------------------------
-
-/// A provider with no capabilities at all — `/debug` never touches one, and a provider without
-/// usage reporting keeps the meter disabled so `push_status` publishes the row itself (T-10).
-struct BareProvider;
-
-impl Provider for BareProvider {
-    fn kind(&self) -> ProviderKind {
-        ProviderKind::OpenAi
-    }
-    fn model(&self) -> &'static str {
-        "gpt-4o"
-    }
-    fn set_model(&mut self, _model: String) {}
-    fn list_models<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Vec<String>, ProviderError>> {
-        Box::pin(std::future::ready(Ok(Vec::new())))
-    }
-    fn chat<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        _messages: &'a [Message],
-    ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
-        Box::pin(std::future::ready(Ok(ChatResult::default())))
-    }
-}
 
 /// A scripted facade, a temp session store and the run's `RequestLog`.
 struct Fixture {
@@ -91,7 +60,9 @@ impl Fixture {
     fn params(&self) -> RunParams {
         RunParams {
             ui: Arc::clone(&self.ui) as Arc<dyn Ui>,
-            provider: Box::new(BareProvider),
+            // No capability at all: `/debug` never touches one, and a provider without usage
+            // reporting keeps the meter disabled so `push_status` publishes the row itself.
+            provider: Box::new(FakeProvider::new().with_model("gpt-4o")),
             title_provider: None,
             system: String::new(),
             imported_history: Vec::new(),
@@ -211,7 +182,7 @@ fn statuses(ui: &ScriptedUi) -> Vec<StatusData> {
 // /debug on | off
 // ---------------------------------------------------------------------------
 
-/// Go: chat/run.go:864-874 — `on` and `off` flip recording, print their dim notice and republish
+/// `on` and `off` flip recording, print their dim notice and republish
 /// the status row, without ever opening a surface.
 #[tokio::test]
 async fn debug_on_and_off_toggle_recording_and_the_status_segment() {
@@ -249,7 +220,7 @@ async fn debug_on_and_off_toggle_recording_and_the_status_segment() {
 // the two-tab inspector
 // ---------------------------------------------------------------------------
 
-/// Go: chat/run.go:876-884 — bare `/debug` opens a searchable, self-refreshing `Messages` list
+/// Bare `/debug` opens a searchable, self-refreshing `Messages` list
 /// beside a `Verbose` switch that opens on the log's current state.
 #[tokio::test]
 async fn bare_debug_opens_the_messages_list_and_the_verbose_switch() {
@@ -301,7 +272,7 @@ async fn an_unknown_argument_opens_the_inspector() {
     );
 }
 
-/// Go: chat/run.go:888-899 — Enter commits ALL tabs, so a flipped Verbose switch applies even when
+/// Enter commits ALL tabs, so a flipped Verbose switch applies even when
 /// focus was on the list. The switch tab itself has nothing to drill into, so committing there
 /// ends the command.
 #[tokio::test]
@@ -360,7 +331,7 @@ async fn an_unchanged_switch_prints_no_notice() {
 // the drill-down
 // ---------------------------------------------------------------------------
 
-/// Go: chat/run.go:900-913 — Enter on a Messages row opens the two pretty-printed views, and the
+/// Enter on a Messages row opens the two pretty-printed views, and the
 /// loop then REOPENS the list (the v1 shape) rather than ending the command.
 #[tokio::test]
 async fn enter_drills_into_the_entry_and_reopens_the_list() {
