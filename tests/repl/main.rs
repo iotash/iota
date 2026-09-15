@@ -4,7 +4,6 @@
 mod artifact;
 mod commands;
 mod compact;
-mod compose;
 mod debug;
 mod diff;
 mod edit;

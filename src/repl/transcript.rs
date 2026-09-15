@@ -408,38 +408,4 @@ pub(crate) fn notify_digest(reply: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::notify_digest;
-
-    // Go: chat/run_test.go:15 TestNotifyDigest — markdown stripping, blank skipping, the
-    // "Response ready" fallback, and the 60-rune CJK-safe cap + '…' (61 runes total).
-    // †The notify verb itself is T-14-deferred; the digest helper is kept for WP53+.
-    #[test]
-    fn test_notify_digest() {
-        let cases = [
-            (
-                "heading stripped",
-                "## The fix\n\ndetails follow",
-                "The fix",
-            ),
-            (
-                "list and bold",
-                "- **Done**: `run.go` updated",
-                "Done: run.go updated",
-            ),
-            ("leading blanks", "\n\n\nplain answer", "plain answer"),
-            ("empty reply", "", "Response ready"),
-            ("whitespace only", "  \n\t\n", "Response ready"),
-            ("quote block", "> quoted insight", "quoted insight"),
-        ];
-        for (name, input, want) in cases {
-            assert_eq!(notify_digest(input), want, "{name}");
-        }
-
-        let long = "很长的回复".repeat(20);
-        let got = notify_digest(&long);
-        let runes: Vec<char> = got.chars().collect();
-        assert_eq!(runes.len(), 61, "long digest = {got:?}");
-        assert_eq!(runes[60], '…');
-    }
-}
+mod tests;

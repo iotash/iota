@@ -1,15 +1,18 @@
-//! The `compose_test` suite — the transcript + activity-group choreography against the
-//! `ScriptedUi`-backed recorder (`chat/compose_test.go` ports; the single highest-value
-//! block). Style bytes are the frozen SGR pins (`TUI_CONTRACTS` §9), rebuilt locally the
-//! way the Go tests rebuilt them from the style API.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+//! The transcript suite: the transcript + activity-group choreography against the `ScriptedUi`-backed
+//! recorder (the single highest-value block), plus the notify digest. Style bytes are the frozen SGR
+//! pins (`TUI_CONTRACTS` §9), rebuilt locally the way the tests rebuild them from the style API.
+//!
+//! The transcript is crate-private by design, so these tests live in-file (formerly a `tests/repl/compose.rs`
+//! reached through a `#[doc(hidden)]` re-export; moved 2026-09-15).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use iota::repl::{Transcript, render_diff};
-use iota::testing::{ScriptedUi, UiEvent};
-use iota::tool::{Artifact, ArtifactKind};
+use crate::repl::diff::render_diff;
+use crate::repl::transcript::{Transcript, notify_digest};
+use crate::testing::{ScriptedUi, UiEvent};
+use crate::tool::{Artifact, ArtifactKind};
 use pretty_assertions::assert_eq;
 
 fn dim(s: &str) -> String {
@@ -70,7 +73,7 @@ fn fail_line(header: &str, result: &str) -> String {
 /// Renders a result the way the settle path does (Go `classicResult`).
 fn classic(result: &str, is_error: bool) -> Vec<String> {
     let style: fn(&str) -> String = if is_error { red } else { dim };
-    iota::tool::fmt::print_tool_result_lines(result, is_error)
+    crate::tool::fmt::print_tool_result_lines(result, is_error)
         .iter()
         .map(|r| style(r))
         .collect()
@@ -126,11 +129,11 @@ fn transcript(rec: &Rec) -> Arc<Transcript> {
     Arc::new(Transcript::new(rec.ui(), None))
 }
 
-// Go: chat/compose_test.go:51 TestActivityGroupAggregates — thinking and consecutive
+// Thinking and consecutive
 // tool calls share ONE widget (one separator, relabels in place, event rows through the
 // body) and a content boundary settles them into a single summary line.
 #[test]
-fn test_activity_group_aggregates() {
+fn an_activity_group_aggregates_thinking_and_tool_calls_into_one_widget() {
     let rec = Rec::default();
     let est = |s: &str| u64::try_from(s.len()).unwrap() / 4;
     let tr = Arc::new(Transcript::new(rec.ui(), Some(Box::new(est))));
@@ -148,7 +151,7 @@ fn test_activity_group_aggregates() {
     let mut content = tr.content_block();
     content.push(&["Done."]);
 
-    let tokens = format!("{} tokens", iota::text::tokens(est("some reasoning text")));
+    let tokens = format!("{} tokens", crate::text::tokens(est("some reasoning text")));
     let want = [
         "user:hello".to_owned(),
         "print:".to_owned(),
@@ -174,10 +177,10 @@ fn test_activity_group_aggregates() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
-// Go: chat/compose_test.go:99 TestActivityGroupLoneToolClassic — a lone tool call with
+// A lone tool call with
 // no thinking keeps the classic block: header over the "⎿" result lines.
 #[test]
-fn test_activity_group_lone_tool_classic() {
+fn a_lone_tool_call_keeps_the_classic_block() {
     let rec = Rec::default();
     let tr = transcript(&rec);
 
@@ -213,10 +216,10 @@ fn test_activity_group_lone_tool_classic() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
-// Go: chat/compose_test.go:127 TestActivityGroupThinkingOnly — thinking with no tool
+// Thinking with no tool
 // calls settles into the classic "◇ thought for Ns" marker at the content boundary.
 #[test]
-fn test_activity_group_thinking_only() {
+fn thinking_alone_settles_into_the_thought_marker() {
     let rec = Rec::default();
     let tr = transcript(&rec);
 
@@ -238,11 +241,11 @@ fn test_activity_group_thinking_only() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
-// Go: chat/compose_test.go:152 TestActivityGroupFailBreakout — failed calls are never
+// Failed calls are never
 // swallowed by aggregation: the summary carries a red failure count and each failed call
 // breaks out as its own red row.
 #[test]
-fn test_activity_group_fail_breakout() {
+fn failed_calls_break_out_of_the_group_as_red_rows() {
     let rec = Rec::default();
     let tr = transcript(&rec);
 
@@ -283,11 +286,11 @@ fn test_activity_group_fail_breakout() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
-// Go: chat/compose_test.go:184 TestVerboseSettlesPerEvent — verbose mode (/debug on)
+// Verbose mode (/debug on)
 // settles the group after every event, reproducing the classic per-item blocks (the
 // T-18 hook survives as a closure although /debug itself is unregistered this slice).
 #[test]
-fn test_verbose_settles_per_event() {
+fn verbose_mode_settles_the_group_after_every_event() {
     let rec = Rec::default();
     let tr = transcript(&rec);
     tr.set_verbose(Some(Box::new(|| true)));
@@ -332,10 +335,10 @@ fn test_verbose_settles_per_event() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
-// Go: chat/compose_test.go:220 TestTranscriptBlankLatch — interior blanks pass through
+// Interior blanks pass through
 // once more content follows; trailing blanks are dropped.
 #[test]
-fn test_transcript_blank_latch() {
+fn the_blank_latch_passes_interior_blanks_and_drops_trailing_ones() {
     let rec = Rec::default();
     let tr = transcript(&rec);
 
@@ -359,11 +362,11 @@ fn test_transcript_blank_latch() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
-// Go: chat/compose_test.go:238 TestTranscriptGrouping — consecutive notices (and errors)
+// Consecutive notices (and errors)
 // group into one block; a different kind in between starts fresh; content re-opens after
 // an async interleave.
 #[test]
-fn test_transcript_grouping() {
+fn consecutive_notices_group_and_a_different_kind_starts_fresh() {
     let rec = Rec::default();
     let tr = transcript(&rec);
 
@@ -394,11 +397,11 @@ fn test_transcript_grouping() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
-// Go: chat/compose_test.go:270 TestThinkingComposingInterleave — the observer's openCall
+// The observer's openCall
 // must not hijack the thinking widget: the call is remembered and raised at settle, in
 // lifecycle order, into the same group (last label wins while queued).
 #[test]
-fn test_thinking_composing_interleave() {
+fn a_call_opening_during_thinking_is_raised_at_settle_in_lifecycle_order() {
     let rec = Rec::default();
     let tr = transcript(&rec);
 
@@ -431,11 +434,11 @@ fn test_thinking_composing_interleave() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
-// Go: chat/compose_test.go:311 TestContentComposingInterleave — an openCall arriving
+// An openCall arriving
 // while content is open defers until closeContent; the group settles at the content's
 // first commit and the deferred call opens the NEXT group.
 #[test]
-fn test_content_composing_interleave() {
+fn a_call_opening_during_content_defers_until_the_content_closes() {
     let rec = Rec::default();
     let tr = transcript(&rec);
 
@@ -467,11 +470,11 @@ fn test_content_composing_interleave() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
-// Go: chat/compose_test.go:346 TestMarkContentBeatsObserver — markContent runs on the
+// MarkContent runs on the
 // stream side at the FIRST content byte, so an openCall arriving before openContent
 // still defers.
 #[test]
-fn test_mark_content_beats_observer() {
+fn mark_content_at_the_first_byte_defers_a_call_that_beats_open_content() {
     let rec = Rec::default();
     let tr = transcript(&rec);
 
@@ -490,11 +493,11 @@ fn test_mark_content_beats_observer() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
-// Go: chat/compose_test.go:368 TestBeginRoundClearsStaleGuards — a round that died
+// A round that died
 // mid-stream leaks its guards; beginRound clears them so the next round's widget is not
 // silently deferred forever.
 #[test]
-fn test_begin_round_clears_stale_guards() {
+fn begin_round_clears_the_guards_a_dead_round_leaked() {
     let rec = Rec::default();
     let tr = transcript(&rec);
 
@@ -505,10 +508,10 @@ fn test_begin_round_clears_stale_guards() {
     assert_eq!(rec.joined(), "call:[shell …]");
 }
 
-// Go: chat/compose_test.go:384 TestCloseContentWithoutPendingCall — closeContent with no
+// CloseContent with no
 // deferred call is a no-op; openCall after the close raises immediately.
 #[test]
-fn test_close_content_without_pending_call() {
+fn close_content_with_no_deferred_call_is_a_no_op() {
     let rec = Rec::default();
     let tr = transcript(&rec);
 
@@ -521,11 +524,11 @@ fn test_close_content_without_pending_call() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
-// Go: chat/compose_test.go:405 TestOrphanedWidgetSeparatorReuse — a widget dropped
+// A widget dropped
 // before any event settled leaves its separator with nothing under it; the next block
 // reuses that orphan instead of stacking a second blank.
 #[test]
-fn test_orphaned_widget_separator_reuse() {
+fn the_next_block_reuses_an_orphaned_widgets_separator() {
     let rec = Rec::default();
     let tr = transcript(&rec);
 
@@ -546,11 +549,11 @@ fn test_orphaned_widget_separator_reuse() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
-// Go: chat/compose_test.go:429 TestResetTurnSettlesPartialGroup — a group with recorded
+// A group with recorded
 // events still settles when the turn dies: the partial summary is its trace (the widget
 // itself was already dropped; the summary commits as plain lines).
 #[test]
-fn test_reset_turn_settles_partial_group() {
+fn reset_turn_settles_a_group_with_recorded_events() {
     let rec = Rec::default();
     let tr = transcript(&rec);
 
@@ -581,11 +584,11 @@ fn test_reset_turn_settles_partial_group() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
-// Go: chat/compose_test.go:462 TestSettleReopensAfterInterleave — an async error
+// An async error
 // interleaving between the raise and the settle forces the summary to re-open the block
 // — it never glues to the stranger.
 #[test]
-fn test_settle_reopens_after_interleave() {
+fn a_settle_after_an_interleaved_error_reopens_its_block() {
     let rec = Rec::default();
     let tr = transcript(&rec);
 
@@ -613,11 +616,11 @@ fn test_settle_reopens_after_interleave() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
-// Go: chat/compose_test.go:864 TestUserSettlesOpenGroup — a mid-turn injected user
+// A mid-turn injected user
 // message (steering) is a stronger boundary than content: the running group settles
 // first, the ❯ block lands, and the next round's activity opens a fresh group.
 #[test]
-fn test_user_settles_open_group() {
+fn an_injected_user_message_settles_the_open_group_first() {
     let rec = Rec::default();
     let tr = transcript(&rec);
 
@@ -643,10 +646,10 @@ fn test_user_settles_open_group() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
-// Go: chat/compose_test.go:490 TestAskRecord — an interactive tool's outcome lands as
+// An interactive tool's outcome lands as
 // the "?" record block, outside any activity group.
 #[test]
-fn test_ask_record() {
+fn an_interactive_tools_outcome_is_its_own_record_block() {
     let rec = Rec::default();
     let tr = transcript(&rec);
 
@@ -664,11 +667,11 @@ fn test_ask_record() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
-// Go: chat/compose_test.go:511 TestPauseForInput — pauseForInput relabels the live
+// PauseForInput relabels the live
 // widget and freezes its clock; resume restores the group's label. Without a widget both
 // are no-ops.
 #[test]
-fn test_pause_for_input() {
+fn pause_for_input_relabels_the_widget_and_freezes_its_clock() {
     let rec = Rec::default();
     let tr = transcript(&rec);
 
@@ -689,12 +692,12 @@ fn test_pause_for_input() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
-// Go: chat/compose_test.go:536 TestTranscriptSplitsEmbeddedNewlines — a provider error
+// A provider error
 // carries its multi-line JSON body in ONE string; the transcript expands embedded
 // newlines so the blank latch works at line granularity, with trailing newlines latched
 // away.
 #[test]
-fn test_transcript_splits_embedded_newlines() {
+fn embedded_newlines_are_split_so_the_blank_latch_works_per_line() {
     let rec = Rec::default();
     let tr = transcript(&rec);
 
@@ -715,12 +718,12 @@ fn test_transcript_splits_embedded_newlines() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
-// Go: chat/compose_test.go:697 TestShowcaseSettlesGroupAndExpandsDiff — an expanded call
+// An expanded call
 // (PresentExpanded) is a group boundary: the running group settles first, the showcase
 // takes its own widget, and the result expands into the colored diff block under a
 // ±count header. Whatever follows opens a fresh group.
 #[test]
-fn test_showcase_settles_group_and_expands_diff() {
+fn a_showcase_settles_the_group_and_expands_its_diff() {
     let rec = Rec::default();
     let tr = transcript(&rec);
 
@@ -776,11 +779,11 @@ fn test_showcase_settles_group_and_expands_diff() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
-// Go: chat/compose_test.go:731 TestShowcaseDiffBudget — the diff budget follows the live
+// The diff budget follows the live
 // screen height (floored at diffMinRows=24): rows beyond it collapse into the
 // "… +N more lines" tail.
 #[test]
-fn test_showcase_diff_budget() {
+fn the_diff_budget_follows_the_screen_height() {
     let mut lines = vec!["@@ -0,0 +1,40 @@".to_owned()];
     for i in 0..40 {
         lines.push(format!("+row-{i}"));
@@ -814,11 +817,11 @@ fn test_showcase_diff_budget() {
     );
 }
 
-// Go: chat/compose_test.go:756 TestShowcaseFallsBackClassic — a showcase without an
+// A showcase without an
 // artifact (declines, errors, tools with nothing to show) falls back to the classic
 // header + result form.
 #[test]
-fn test_showcase_falls_back_classic() {
+fn a_showcase_without_an_artifact_falls_back_to_the_classic_form() {
     let rec = Rec::default();
     let tr = transcript(&rec);
     tr.open_showcase("[edit_file path:x]");
@@ -839,10 +842,10 @@ fn test_showcase_falls_back_classic() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
-// Go: chat/compose_test.go:622 TestTranscriptImageBlock — an image block is the half-block
+// An image block is the half-block
 // rows plus a dim caption in ONE block, paying one separator like every other block.
 #[test]
-fn test_transcript_image_block() {
+fn an_image_block_is_rows_plus_caption_for_one_separator() {
     let rec = Rec::default();
     let tr = transcript(&rec);
 
@@ -860,11 +863,11 @@ fn test_transcript_image_block() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
-// Go: chat/compose_test.go:644 TestImageMorphsGenerationWidget — an image-generation widget
+// An image-generation widget
 // (raised via the composing observer) morphs INTO the image block: the separator was paid at
 // the raise, so the image pays no second one.
 #[test]
-fn test_image_morphs_generation_widget() {
+fn an_image_morphs_into_its_generation_widget_paying_no_second_separator() {
     let rec = Rec::default();
     let tr = transcript(&rec);
 
@@ -883,11 +886,11 @@ fn test_image_morphs_generation_widget() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
-// Go: chat/compose_test.go:666 TestImageWidgetSettlesActivityFirst — progressive frames
+// Progressive frames
 // arriving over a group with recorded activity settle the group FIRST (frames replace the
 // widget body wholesale), and the image then morphs a fresh, dedicated widget.
 #[test]
-fn test_image_widget_settles_activity_first() {
+fn progressive_frames_settle_recorded_activity_before_morphing() {
     let rec = Rec::default();
     let tr = transcript(&rec);
 
@@ -939,11 +942,11 @@ fn image_widget_defers_behind_streaming_content() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
-// Go: chat/userblock_test.go:8 TestWrapByWidth — the PLAIN wrapper the user block and
+// The PLAIN wrapper the user block and
 // composer echo use: CJK runes are width 2, a wide rune never splits across the
 // boundary, embedded behavior is pure hard wrap.
 #[test]
-fn test_wrap_by_width() {
+fn wrap_by_width_hard_wraps_by_display_width_without_splitting_wide_runes() {
     let tests: [(&str, &str, usize, &[&str]); 6] = [
         ("empty", "", 10, &[""]),
         ("fits", "hello", 10, &["hello"]),
@@ -954,9 +957,42 @@ fn test_wrap_by_width() {
     ];
     for (name, input, width, want) in tests {
         assert_eq!(
-            iota::text::ansi::wrap_by_width(input, width),
+            crate::text::ansi::wrap_by_width(input, width),
             want,
             "{name}"
         );
     }
+}
+
+// --- the notify digest -------------------------------------------------------
+
+// The notify digest: markdown stripping, blank skipping, the "Response ready" fallback, and the
+// 60-rune CJK-safe cap + '…' (61 runes total).
+#[test]
+fn the_notify_digest_strips_markdown_and_caps_at_sixty_runes() {
+    let cases = [
+        (
+            "heading stripped",
+            "## The fix\n\ndetails follow",
+            "The fix",
+        ),
+        (
+            "list and bold",
+            "- **Done**: `run.go` updated",
+            "Done: run.go updated",
+        ),
+        ("leading blanks", "\n\n\nplain answer", "plain answer"),
+        ("empty reply", "", "Response ready"),
+        ("whitespace only", "  \n\t\n", "Response ready"),
+        ("quote block", "> quoted insight", "quoted insight"),
+    ];
+    for (name, input, want) in cases {
+        assert_eq!(notify_digest(input), want, "{name}");
+    }
+
+    let long = "很长的回复".repeat(20);
+    let got = notify_digest(&long);
+    let runes: Vec<char> = got.chars().collect();
+    assert_eq!(runes.len(), 61, "long digest = {got:?}");
+    assert_eq!(runes[60], '…');
 }
