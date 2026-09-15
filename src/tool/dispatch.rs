@@ -1,7 +1,7 @@
-//! The two `Dispatcher` implementations of the framework: the built-in tool registry (tool/tool.go:343-528 —
-//! sets are built from the `tools:` map in key order, tools are registered first-wins by name) and the live
-//! union of dispatcher parts (tool/tool.go:538-673 — tools are re-queried on every call, names dedup with the
-//! earlier part winning, and calls route to the owning part).
+//! The two `Dispatcher` implementations of the framework: the built-in tool registry (sets are built from
+//! the `tools:` map in key order, tools are registered first-wins by name) and the live union of dispatcher
+//! parts (tools are re-queried on every call, names dedup with the earlier part winning, and calls route to
+//! the owning part).
 
 use std::{
     collections::{HashMap, HashSet},
@@ -46,7 +46,7 @@ impl Registry {
         self.build_set(env, name, None, warn);
     }
 
-    /// tool/tool.go:388-402 / 412-426: resolve the factory, run it, register what it built; every failure is one
+    /// Resolve the factory, run it, register what it built; every failure is one
     /// warning and never an abort.
     fn build_set(
         &mut self,
@@ -153,7 +153,7 @@ pub fn set_disabled(raw: &ToolsConfig, name: &str) -> bool {
     raw.get(name).is_some_and(is_false_scalar)
 }
 
-// ---- the live union of parts (tool/tool.go:538-673) ----
+// ---- the live union of parts ----
 
 /// The merged dispatcher; parts are consulted in order.
 pub(crate) struct Merged {
