@@ -19,7 +19,7 @@ use iota::tool::sets::ToolsConfig;
 use iota::tool::{
     DeferMode, DeferredGroup, Owner, Registry, SEARCH_TOOL_NAME, ToolSearcher, merge,
 };
-use iota::tool::{DeferState, Dispatcher, Env, ToolOutput, ToolResult};
+use iota::tool::{DeferState, Dispatcher, ToolEnv, ToolOutput, ToolResult};
 use pretty_assertions::assert_eq;
 use serde_json::json;
 
@@ -707,14 +707,14 @@ fn raw_tools(yaml: &str) -> ToolsConfig {
     serde_norway::from_str::<Raw>(yaml).expect("yaml").tools
 }
 
-/// An `Env` rooted in a temp project (the shape the host builds: project root + host dirs, never the process
+/// An `ToolEnv` rooted in a temp project (the shape the host builds: project root + host dirs, never the process
 /// environment).
-fn project_env() -> (tempfile::TempDir, Env) {
+fn project_env() -> (tempfile::TempDir, ToolEnv) {
     let (dir, dirs) = temp_project(&[("AGENTS.md", "# rules")]);
-    let env = Env {
+    let env = ToolEnv {
         project_root: Some(dir.path().to_path_buf()),
         dirs,
-        ..Env::default()
+        ..ToolEnv::default()
     };
     (dir, env)
 }
@@ -760,7 +760,7 @@ fn a_false_set_entry_disables_the_set() {
         let raw = raw_tools(&format!("tools:\n  ask: {spelling}\n"));
         assert!(set_disabled(&raw, "ask"), "ask: {spelling} must disable");
         let mut warns = Vec::new();
-        let r = Registry::build(&Env::default(), &raw, &mut |w| warns.push(w));
+        let r = Registry::build(&ToolEnv::default(), &raw, &mut |w| warns.push(w));
         assert!(
             r.is_empty() && warns.is_empty(),
             "ask: {spelling}: {warns:?}"
@@ -779,7 +779,7 @@ fn a_false_set_entry_disables_the_set() {
 
 #[test]
 fn the_ask_set_is_absent_without_an_interactor() {
-    let tools = new_ask_set(&Env::default(), None).expect("ask set never errors");
+    let tools = new_ask_set(&ToolEnv::default(), None).expect("ask set never errors");
     assert!(
         tools.is_empty(),
         "want no tools without an Interactor, got {}",
@@ -788,15 +788,19 @@ fn the_ask_set_is_absent_without_an_interactor() {
     // Any node is accepted and ignored.
     let node = serde_norway::from_str("{x: 1}").expect("yaml");
     assert!(
-        new_ask_set(&Env::default(), Some(&node))
+        new_ask_set(&ToolEnv::default(), Some(&node))
             .expect("ok")
             .is_empty()
     );
     // Through the registry: `ask:` is accepted and contributes nothing, without a warning.
     let mut warns = Vec::new();
-    let r = Registry::build(&Env::default(), &raw_tools("tools:\n  ask:\n"), &mut |w| {
-        warns.push(w);
-    });
+    let r = Registry::build(
+        &ToolEnv::default(),
+        &raw_tools("tools:\n  ask:\n"),
+        &mut |w| {
+            warns.push(w);
+        },
+    );
     assert!(r.is_empty() && warns.is_empty(), "{warns:?}");
     assert_eq!(r.len(), 0);
 }
@@ -858,7 +862,7 @@ fn build_registry_enables_exactly_the_configured_sets() {
     {
         let mut warned = Vec::new();
         let r = Registry::build(
-            &Env::default(),
+            &ToolEnv::default(),
             &raw_tools("tools:\n  bogus_set:\n"),
             &mut |w| {
                 warned.push(w);
@@ -876,7 +880,7 @@ fn build_registry_enables_exactly_the_configured_sets() {
     {
         let mut warned = Vec::new();
         let r = Registry::build(
-            &Env::default(),
+            &ToolEnv::default(),
             &raw_tools("tools:\n  shell:\n    sandbox: bogus\n"),
             &mut |w| {
                 warned.push(w);
@@ -1064,9 +1068,9 @@ async fn merge_owner_three_way_and_first_capable_search() {
 #[test]
 fn the_registry_reports_header_summary_presence() {
     let (dir, _dirs) = temp_project(&[]);
-    let env = Env {
+    let env = ToolEnv {
         project_root: Some(dir.path().to_path_buf()),
-        ..Env::default()
+        ..ToolEnv::default()
     };
     let mut warns: Vec<String> = Vec::new();
     let r = Registry::build(&env, &raw_tools("tools:\n  code:\n"), &mut |w| {

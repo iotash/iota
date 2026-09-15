@@ -5,7 +5,7 @@ use std::{collections::HashMap, fs, path::Path, sync::Arc};
 
 use iota::provider::model::JsonObject;
 use iota::tool::context::{ArtifactSlot, RunCtx};
-use iota::tool::{ArtifactKind, Env, Tool, ToolOutput};
+use iota::tool::{ArtifactKind, Tool, ToolEnv, ToolOutput};
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 
@@ -20,9 +20,9 @@ fn code_project(files: &[(&str, &str)]) -> (TempDir, Tools) {
         write_project_file(&root, rel, contents);
     }
     let tools = iota::tool::code::new_code_set(
-        &Env {
+        &ToolEnv {
             project_root: Some(root),
-            ..Env::default()
+            ..ToolEnv::default()
         },
         None,
     )

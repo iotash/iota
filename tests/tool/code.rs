@@ -12,7 +12,7 @@ use iota::provider::model::JsonObject;
 use iota::tool::code::{CODE_MAX_OUTPUT, new_code_set};
 use iota::tool::context::RunCtx;
 use iota::tool::sets::{RawNode, ToolsConfig};
-use iota::tool::{Dispatcher, Env, Presentation, Tool, ToolOutput};
+use iota::tool::{Dispatcher, Presentation, Tool, ToolEnv, ToolOutput};
 use iota::tool::{Registry, merge};
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -43,10 +43,10 @@ fn tools_at(root: &Path, cfg: &str) -> Tools {
         .collect()
 }
 
-fn env_at(root: &Path) -> Env {
-    Env {
+fn env_at(root: &Path) -> ToolEnv {
+    ToolEnv {
         project_root: Some(root.to_path_buf()),
-        ..Env::default()
+        ..ToolEnv::default()
     }
 }
 

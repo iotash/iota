@@ -8,7 +8,7 @@ use crate::provider::model::{JsonObject, ToolDef};
 use crate::text::go_quote;
 use crate::tool::context::RunCtx;
 use crate::tool::error::ToolError;
-use crate::tool::{Dispatcher, Env, Presentation, Tool, ToolResult};
+use crate::tool::{Dispatcher, Presentation, Tool, ToolEnv, ToolResult};
 
 use crate::tool::sets::{RawNode, ToolsConfig, set_factory};
 use crate::tool::yaml11::is_false_scalar;
@@ -23,7 +23,7 @@ pub struct Registry {
 impl Registry {
     /// Keys in `BTreeMap` order; `is_false_scalar` → skipped silently; unknown → warn `unknown toolset {name:?}
     /// (ignored)`; factory error → warn `toolset {name:?}: {err} (ignored)`; never aborts. (`{name:?}` = `go_quote`.)
-    pub fn build(env: &Env, raw: &ToolsConfig, warn: &mut dyn FnMut(String)) -> Registry {
+    pub fn build(env: &ToolEnv, raw: &ToolsConfig, warn: &mut dyn FnMut(String)) -> Registry {
         let mut r = Registry::default();
         for (name, node) in raw {
             if is_false_scalar(node) {
@@ -35,7 +35,7 @@ impl Registry {
     }
 
     /// Same warnings; factory called with `None`; tools already registered by name are skipped.
-    pub fn enable_set(&mut self, env: &Env, name: &str, warn: &mut dyn FnMut(String)) {
+    pub fn enable_set(&mut self, env: &ToolEnv, name: &str, warn: &mut dyn FnMut(String)) {
         self.build_set(env, name, None, warn);
     }
 
@@ -43,7 +43,7 @@ impl Registry {
     /// warning and never an abort.
     fn build_set(
         &mut self,
-        env: &Env,
+        env: &ToolEnv,
         name: &str,
         node: Option<&RawNode>,
         warn: &mut dyn FnMut(String),

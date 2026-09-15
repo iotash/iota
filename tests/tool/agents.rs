@@ -27,7 +27,7 @@ use iota::tool::Registry;
 use iota::tool::agent::new_skills_set;
 use iota::tool::context::RunCtx;
 use iota::tool::sets::ToolsConfig;
-use iota::tool::{Dispatcher, Env, ToolOutput};
+use iota::tool::{Dispatcher, ToolEnv, ToolOutput};
 use serde_json::json;
 
 /// Go's `writeAgents`: writes `dir/AGENTS.md` (creating `dir`) and returns the file path.
@@ -555,8 +555,8 @@ fn the_overlay_composes_the_chain_then_the_catalog() {
 
 /// Go's `newSkillProject`: a project root with one installed skill, with `$HOME` injected through `HostDirs`
 /// (inside the project, so the user-level roots exist but are empty) instead of the process environment.
-/// Returns the temp dir, the `Env` the set factory receives, and the skill's directory.
-fn skill_project(name: &str, body: &str) -> (TempDir, Env, PathBuf) {
+/// Returns the temp dir, the `ToolEnv` the set factory receives, and the skill's directory.
+fn skill_project(name: &str, body: &str) -> (TempDir, ToolEnv, PathBuf) {
     let dir = TempDir::new().expect("tempdir");
     let skill_dir = dir.path().join(".agents").join("skills").join(name);
     fs::create_dir_all(&skill_dir).expect("create skill dir");
@@ -566,20 +566,20 @@ fn skill_project(name: &str, body: &str) -> (TempDir, Env, PathBuf) {
     // developer's real ~/.iota/skills never leaks in (Go's test sets HOME to a temp dir).
     let home = dir.path().join("home");
     fs::create_dir_all(&home).expect("create fixture home");
-    let env = Env {
+    let env = ToolEnv {
         project_root: Some(dir.path().to_path_buf()),
         dirs: HostDirs {
             home: Some(home),
             cwd: Some(dir.path().to_path_buf()),
             ..HostDirs::default()
         },
-        ..Env::default()
+        ..ToolEnv::default()
     };
     (dir, env, skill_dir)
 }
 
 /// Go's `callLoadSkill`: runs `load_skill` through the set factory and returns its model-facing output.
-async fn call_load_skill(env: &Env, args: serde_json::Value) -> ToolOutput {
+async fn call_load_skill(env: &ToolEnv, args: serde_json::Value) -> ToolOutput {
     let tools = new_skills_set(env, None).expect("the skills set never fails");
     assert_eq!(tools.len(), 1);
     let args: JsonObject = match args {
@@ -633,9 +633,9 @@ async fn load_skill_names_the_available_skills_for_an_unknown_one() {
 
     // No skills installed at all: say so instead of listing nothing.
     let bare = TempDir::new().expect("tempdir");
-    let empty_env = Env {
+    let empty_env = ToolEnv {
         project_root: Some(bare.path().to_path_buf()),
-        ..Env::default()
+        ..ToolEnv::default()
     };
     let out = call_load_skill(&empty_env, json!({ "skill": "demo" })).await;
     assert!(out.is_error);

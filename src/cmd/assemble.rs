@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::mcp::config::{ServerConfig, parse_mcp_flag};
 use crate::tool::{DeferredGroup, Registry, merge};
-use crate::tool::{Dispatcher, Env, PrefixOf};
+use crate::tool::{Dispatcher, PrefixOf, ToolEnv};
 
 use crate::cmd::CliError;
 
@@ -92,7 +92,7 @@ pub(crate) fn build_dispatcher(
     mcp: Option<McpPart>,
     defers: Vec<DeferredGroup>,
     agent_mode: bool,
-    env: &Env,
+    env: &ToolEnv,
     warn: &mut dyn FnMut(String),
 ) -> Arc<dyn Dispatcher> {
     // root.go:578-587. The built-ins are the first part, so they win any tool-name collision with MCP.
@@ -141,7 +141,7 @@ mod tests {
     use std::{collections::BTreeMap, sync::Arc};
 
     use crate::tool::DeferredGroup;
-    use crate::tool::{Dispatcher, Env, PrefixOf};
+    use crate::tool::{Dispatcher, PrefixOf, ToolEnv};
 
     use super::McpPart;
 
@@ -284,7 +284,7 @@ mod tests {
             Some(mcp_part()),
             Vec::new(),
             false,
-            &Env::default(),
+            &ToolEnv::default(),
             &mut |w| warnings.push(w),
         );
         assert!(d.tools().is_empty());
@@ -304,7 +304,7 @@ mod tests {
             None,
             Vec::new(),
             false,
-            &Env::default(),
+            &ToolEnv::default(),
             &mut |w| warnings.push(w),
         );
         assert!(warnings.is_empty());
@@ -329,7 +329,7 @@ mod tests {
             Some(mcp_part()),
             groups,
             false,
-            &Env::default(),
+            &ToolEnv::default(),
             &mut |w| warnings.push(w),
         );
         assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
@@ -349,7 +349,7 @@ mod tests {
             None,
             Vec::new(),
             false,
-            &Env::default(),
+            &ToolEnv::default(),
             &mut |w| warnings.push(w),
         );
         assert_eq!(

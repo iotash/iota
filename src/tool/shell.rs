@@ -25,7 +25,7 @@ use crate::app::HostDirs;
 use crate::provider::model::{JsonObject, ToolDef};
 use crate::text::go_duration;
 use crate::tool::context::RunCtx;
-use crate::tool::{Env, Tool, ToolOutput, ToolResult};
+use crate::tool::{Tool, ToolEnv, ToolOutput, ToolResult};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -89,7 +89,7 @@ pub(crate) struct ShellTool {
     /// The interpreter its calls run under, resolved ONCE at assembly so the description cannot describe a
     /// different shell from the one the first call finds.
     shell: Interpreter,
-    /// The run's background-job registry (`Env.jobs`); None in a test env.
+    /// The run's background-job registry (`ToolEnv.jobs`); None in a test env.
     jobs: Option<Arc<Jobs>>,
     root: PathBuf,
     /// The process working directory — the display anchor for the optional `cwd`
@@ -108,7 +108,10 @@ pub(crate) struct ShellTool {
 /// turns discovering call by call what one warning says once (the registry turns this `Err` into exactly that
 /// warning). Unix keeps its own answer verbatim: the tool is registered whatever `PATH` holds, and a missing
 /// `bash` is the per-call `bash is not installed on this system` it always was.
-pub fn new_shell_set(env: &Env, node: Option<&RawNode>) -> Result<Vec<Arc<dyn Tool>>, SetError> {
+pub fn new_shell_set(
+    env: &ToolEnv,
+    node: Option<&RawNode>,
+) -> Result<Vec<Arc<dyn Tool>>, SetError> {
     let mut shell_cfg: ShellConfig = yaml11::decode_mapping(node).map_err(SetError::ShellConfig)?;
     match shell_cfg.sandbox.as_str() {
         "" => "auto".clone_into(&mut shell_cfg.sandbox),

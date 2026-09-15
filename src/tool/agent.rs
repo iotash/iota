@@ -12,7 +12,7 @@ use crate::app::paths;
 use crate::provider::model::{JsonObject, ToolDef};
 use crate::text::{go_quote, split_lines, truncate_to_char_boundary};
 use crate::tool::context::RunCtx;
-use crate::tool::{Env, Tool, ToolOutput, ToolResult};
+use crate::tool::{Tool, ToolEnv, ToolOutput, ToolResult};
 use serde_json::{Value, json};
 
 use crate::agents::skills::{Skill, discover_skills, skill_body, skill_roots};
@@ -31,7 +31,10 @@ pub(crate) struct LoadSkill {
 }
 
 /// Ignores `node`; never fails.
-pub fn new_skills_set(env: &Env, _node: Option<&RawNode>) -> Result<Vec<Arc<dyn Tool>>, SetError> {
+pub fn new_skills_set(
+    env: &ToolEnv,
+    _node: Option<&RawNode>,
+) -> Result<Vec<Arc<dyn Tool>>, SetError> {
     Ok(vec![Arc::new(LoadSkill {
         // Go's `Env.Root()` falls back to the empty string when neither the project root nor the working
         // directory resolves; discovery then finds nothing rather than failing the build.

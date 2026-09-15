@@ -10,7 +10,7 @@ use iota::shell::jobs::Jobs;
 use iota::testing::{FakeProvider, Round};
 use iota::tool::context::RunCtx;
 use iota::tool::sets::{RawNode, ToolsConfig};
-use iota::tool::{Dispatcher, Env, Registry};
+use iota::tool::{Dispatcher, Registry, ToolEnv};
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 
@@ -28,10 +28,10 @@ fn recorder(rounds: Vec<RoundResult>) -> FakeProvider {
 fn shell_over_jobs() -> (TempDir, Arc<Jobs>, Arc<dyn Dispatcher>) {
     let dir = tempfile::tempdir().expect("tempdir");
     let jobs = Jobs::new(dir.path());
-    let env = Env {
+    let env = ToolEnv {
         project_root: Some(dir.path().to_path_buf()),
         jobs: Some(Arc::clone(&jobs)),
-        ..Env::default()
+        ..ToolEnv::default()
     };
     let node: RawNode =
         serde_norway::from_str("sandbox: off\nauto_run: true\n").expect("shell config");

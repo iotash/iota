@@ -106,7 +106,7 @@ pub type LookPathFn = Box<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
 
 /// The environment the detectors read (host.go:71-74): `getenv` and a `PATH` lookup, both
 /// injected by the command so this module never touches the process environment itself.
-pub struct Env {
+pub struct Probe {
     /// `os.Getenv` (`""` when unset).
     pub getenv: GetEnvFn,
     /// `exec.LookPath` (`None` when not found).
@@ -114,7 +114,7 @@ pub struct Env {
 }
 
 /// A host detector: `Some(host)` when the environment says the chat runs inside it.
-pub type Detector = fn(&Env) -> Option<Box<dyn Host>>;
+pub type Detector = fn(&Probe) -> Option<Box<dyn Host>>;
 
 /// The detectors, in priority order (host.go:84).
 pub(crate) const DETECTORS: &[Detector] = &[cmux::detect_cmux];
@@ -143,7 +143,7 @@ pub struct Presenter {
 impl Presenter {
     /// Runs the detectors, then appends `fallback` (host.go:97-108). MUST be called inside the
     /// tokio runtime: the cmux detector spawns its worker task.
-    pub fn new(env: &Env, fallback: Option<Box<dyn Host>>, notify: bool) -> Self {
+    pub fn new(env: &Probe, fallback: Option<Box<dyn Host>>, notify: bool) -> Self {
         let mut hosts: Vec<Box<dyn Host>> = DETECTORS.iter().filter_map(|d| d(env)).collect();
         if let Some(f) = fallback {
             hosts.push(f);
@@ -216,7 +216,7 @@ impl Presenter {
 
 /// The pre-loop background probe (background.go:30-37): the host probes (cmux) first, then
 /// `fallback` — the terminal's own OSC 11 answer, supplied by the command.
-pub fn detect_background(env: &Env, fallback: impl FnOnce() -> bool) -> bool {
+pub fn detect_background(env: &Probe, fallback: impl FnOnce() -> bool) -> bool {
     let query: background::CmuxQuery = std::sync::Arc::new(background::cmux_query_exec);
     background::detect_background_with(env, &query, fallback)
 }
@@ -225,7 +225,7 @@ pub fn detect_background(env: &Env, fallback: impl FnOnce() -> bool) -> bool {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-    use super::{Caps, Env, Event, Kind, Presenter, State};
+    use super::{Caps, Event, Kind, Presenter, Probe, State};
     use crate::testing::RecordingHost;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -345,7 +345,7 @@ mod tests {
     // fallback alone.
     #[test]
     fn test_new_presenter_detects_bare_env() {
-        let none = Env {
+        let none = Probe {
             getenv: Box::new(|_| String::new()),
             look_path: Box::new(|_| None),
         };
@@ -358,7 +358,7 @@ mod tests {
     // because `detect_cmux` spawns the host's worker task (T3 design §5.1 R15).
     #[tokio::test]
     async fn test_new_presenter_detects_cmux() {
-        let cmux_env = Env {
+        let cmux_env = Probe {
             getenv: Box::new(|k| {
                 if k == "CMUX_SURFACE_ID" {
                     "surface-1".to_owned()

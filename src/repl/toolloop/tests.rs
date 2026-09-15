@@ -680,7 +680,7 @@ async fn shell_calls_share_one_parallel_batch() {
         serde_norway::from_str("sandbox: off\nauto_run: true\n").expect("shell config");
     let mut cfg = crate::tool::sets::ToolsConfig::new();
     cfg.insert("shell".to_owned(), node);
-    let registry = crate::tool::Registry::build(&crate::tool::Env::default(), &cfg, &mut |w| {
+    let registry = crate::tool::Registry::build(&crate::tool::ToolEnv::default(), &cfg, &mut |w| {
         panic!("the shell set complained: {w}")
     });
     assert!(

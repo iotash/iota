@@ -1,8 +1,8 @@
 //! Tool and dispatcher contracts (tool/tool.go:33-330): `ToolOutput`, `Presentation`, `DeferState`, the `Tool`
-//! and `Dispatcher` traits with their optional capabilities, the `PrefixOf` oracle and the toolset `Env` —
+//! and `Dispatcher` traits with their optional capabilities, the `PrefixOf` oracle and the toolset `ToolEnv` —
 //! plus, in the submodules, the run context every call takes (`context`), the tool framework (`registry`,
 //! `merge`, `defer`, `defer_mode`, `yaml11`, `args`, `sets`) and the four built-in sets (`shell`, `code`,
-//! `agent`, and `ask`, which contributes tools only when the `Env` carries an interactor).
+//! `agent`, and `ask`, which contributes tools only when the `ToolEnv` carries an interactor).
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -307,7 +307,7 @@ pub(crate) fn post_artifact(cx: &RunCtx, a: Artifact) {
 
 /// Host seams a toolset factory receives (tool/tool.go:202-231).
 #[derive(Clone, Default)]
-pub struct Env {
+pub struct ToolEnv {
     /// `agents::project_root(cwd)` in every mode; None only in tests.
     pub project_root: Option<PathBuf>,
     /// Process-level directories.
@@ -317,12 +317,12 @@ pub struct Env {
     /// the foreground.
     pub jobs: Option<Arc<crate::shell::jobs::Jobs>>,
     /// Some only interactively: `new_ask_set` contributes the ask tools when it is bound
-    /// (headless stays empty, tool/ask.go parity). `Env` is built with `..Env::default()`
+    /// (headless stays empty, tool/ask.go parity). `ToolEnv` is built with `..ToolEnv::default()`
     /// literals across the workspace, so this field lands non-breaking (`TUI_CONTRACTS` §4).
     pub interactor: Option<Arc<dyn Interactor>>,
 }
 
-impl Env {
+impl ToolEnv {
     /// `project_root`, else `dirs.cwd`, else `std::env::current_dir()`; then `std::path::absolute` (cleaned, like
     /// Go's `filepath.Abs`).
     pub fn root(&self) -> std::io::Result<PathBuf> {
@@ -339,40 +339,40 @@ impl Env {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{DeferState, Env, Presentation, ToolOutput};
+    use super::{DeferState, Presentation, ToolEnv, ToolOutput};
     use crate::app::HostDirs;
 
     #[test]
     fn env_root_precedence() {
-        let both = Env {
+        let both = ToolEnv {
             project_root: Some(PathBuf::from("/proj/./x/..")),
             dirs: HostDirs {
                 cwd: Some(PathBuf::from("/cwd")),
                 ..HostDirs::default()
             },
-            ..Env::default()
+            ..ToolEnv::default()
         };
         // `root()` runs its answer through `std::path::absolute`, which on Windows turns a rooted
         // `/proj` into a drive-qualified one — so the expectation is spelled by the same call.
         let abs = |p: &str| std::path::absolute(p).expect("absolute");
         assert_eq!(both.root().expect("root"), abs("/proj"));
-        let cwd_only = Env {
+        let cwd_only = ToolEnv {
             project_root: None,
             dirs: HostDirs {
                 cwd: Some(PathBuf::from("/cwd/")),
                 ..HostDirs::default()
             },
-            ..Env::default()
+            ..ToolEnv::default()
         };
         assert_eq!(cwd_only.root().expect("root"), abs("/cwd"));
-        let neither = Env::default();
+        let neither = ToolEnv::default();
         let got = neither.root().expect("process cwd");
         assert!(got.is_absolute());
         assert_eq!(got, std::env::current_dir().expect("cwd"));
         // A relative project root is made absolute against the process cwd.
-        let relative = Env {
+        let relative = ToolEnv {
             project_root: Some(PathBuf::from("sub")),
-            ..Env::default()
+            ..ToolEnv::default()
         };
         assert_eq!(
             relative.root().expect("root"),

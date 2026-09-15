@@ -17,7 +17,7 @@ use tokio::task::JoinHandle;
 
 use crate::BoxFuture;
 use crate::host::background;
-use crate::host::{BackgroundReporter, Closer, Env, Host, State, StateReporter};
+use crate::host::{BackgroundReporter, Closer, Host, Probe, State, StateReporter};
 
 /// The status-row key (cmux.go:38) — the program name.
 pub(crate) const CMUX_KEY: &str = crate::app::NAME;
@@ -146,7 +146,7 @@ impl Closer for CmuxHost {
 
 /// `Some(CmuxHost)` when `CMUX_SURFACE_ID` is non-empty AND `cmux` is on `PATH`, in that order
 /// (cmux.go:40-58). MUST run inside the tokio runtime: the host spawns its worker task.
-pub(crate) fn detect_cmux(env: &Env) -> Option<Box<dyn Host>> {
+pub(crate) fn detect_cmux(env: &Probe) -> Option<Box<dyn Host>> {
     let sid = (env.getenv)(CMUX_ENV);
     if sid.is_empty() {
         return None;
@@ -252,7 +252,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::{Batch, CmuxHost, ExecFn, close_batch, cmux_batch, detect_cmux};
-    use crate::host::{Closer, Env, State, StateReporter};
+    use crate::host::{Closer, Probe, State, StateReporter};
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
@@ -377,7 +377,7 @@ mod tests {
         let absent = |_: &str| None;
 
         assert!(
-            detect_cmux(&Env {
+            detect_cmux(&Probe {
                 getenv: Box::new(|_| String::new()),
                 look_path: Box::new(found),
             })
@@ -385,14 +385,14 @@ mod tests {
             "detected cmux without CMUX_SURFACE_ID"
         );
         assert!(
-            detect_cmux(&Env {
+            detect_cmux(&Probe {
                 getenv: Box::new(with_var),
                 look_path: Box::new(absent),
             })
             .is_none(),
             "detected cmux without the CLI on PATH"
         );
-        let h = detect_cmux(&Env {
+        let h = detect_cmux(&Probe {
             getenv: Box::new(with_var),
             look_path: Box::new(found),
         })

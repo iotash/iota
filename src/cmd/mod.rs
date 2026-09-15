@@ -31,7 +31,7 @@ use crate::llm::reqlog::RequestLog;
 use crate::mcp::config::ServerConfig;
 use crate::provider::ProviderKind;
 use crate::provider::{HttpTransport, ProviderParams};
-use crate::tool::{DeferredGroup, Env};
+use crate::tool::{DeferredGroup, ToolEnv};
 use tokio_util::sync::CancellationToken;
 
 /// The process-wide, read-only run environment both branches share (root.go:125-131): ONE HTTP client for
@@ -80,7 +80,7 @@ pub(crate) struct ToolAssembly {
     /// Deferred MCP groups.
     pub(crate) mcp_defers: Vec<DeferredGroup>,
     /// The tool environment (its `interactor` is bound to the live facade by the interactive branch).
-    pub(crate) tool_env: Env,
+    pub(crate) tool_env: ToolEnv,
     /// The ask-seam bridge, created UNBOUND (the dispatcher is built long before the UI exists); `None`
     /// headlessly, so `new_ask_set` contributes no tools and the model never sees them (root.go:221-232).
     pub(crate) interactor: Option<Arc<crate::repl::Interactor>>,
@@ -142,7 +142,7 @@ pub async fn run(
 /// `RunArgs::reject_unsupported` (`-m` runs only) → `Config::load` → `resolve_run` → provider construction
 /// (`ProviderKind::from_str`, `new_provider`) →
 /// `tuning::apply` → `assemble::build_mcp_configs` → `tuning::warn_tools_without_calling` → cwd/root
-/// (`CliError::Cwd` in agent mode) → `Env` → output format parse
+/// (`CliError::Cwd` in agent mode) → `ToolEnv` → output format parse
 /// (`crate::headless::parse_output_format` runs HERE, root.go:249-252, so `unknown output format …` loses to every
 /// earlier provider/tuning/MCP error exactly as in Go) → `OutputFormatWithoutMessage` when the flag
 /// was given and `message.is_none()` →
@@ -297,11 +297,11 @@ fn assemble_tools(
     // root.go:221-232, plus the run's job registry: the `shell` tool needs it to exist before the dispatcher
     // is built, and both branches need the same one afterwards.
     let jobs = crate::shell::jobs::Jobs::new(&dirs.temp);
-    let mut tool_env = Env {
+    let mut tool_env = ToolEnv {
         project_root: project_root.clone(),
         dirs: dirs.clone(),
         jobs: Some(Arc::clone(&jobs)),
-        ..Env::default()
+        ..ToolEnv::default()
     };
     let interactor = settings
         .message

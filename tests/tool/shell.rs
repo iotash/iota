@@ -32,7 +32,7 @@ use iota::tool::shell::{
     BASH_DESC_PREFIX, CMD_DESC_PREFIX, PWSH_DESC_PREFIX, SHELL_DESC_SANDBOXED,
     SHELL_DESC_UNSANDBOXED, SHELL_TOOL_NAME, background_desc, desc_prefix, new_shell_set,
 };
-use iota::tool::{Dispatcher, Env, Tool};
+use iota::tool::{Dispatcher, Tool, ToolEnv};
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use tempfile::TempDir;
@@ -86,15 +86,15 @@ fn raw_tools(yaml: &str) -> ToolsConfig {
     serde_norway::from_str::<Raw>(yaml).expect("yaml").tools
 }
 
-/// An `Env` rooted in a temp project (the host shape: project root + injected host dirs, never the process
+/// An `ToolEnv` rooted in a temp project (the host shape: project root + injected host dirs, never the process
 /// environment).
-fn shell_env() -> (TempDir, Env, PathBuf) {
+fn shell_env() -> (TempDir, ToolEnv, PathBuf) {
     let (dir, dirs) = temp_project(&[]);
     let root = dir.path().to_path_buf();
-    let env = Env {
+    let env = ToolEnv {
         project_root: Some(root.clone()),
         dirs,
-        ..Env::default()
+        ..ToolEnv::default()
     };
     (dir, env, root)
 }

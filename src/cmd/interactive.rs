@@ -27,13 +27,13 @@ use std::io::{IsTerminal as _, Write as _};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::host::{AnsiHost, Env as HostEnv, Presenter};
+use crate::host::{AnsiHost, Presenter, Probe as HostProbe};
 use crate::provider::ProviderParams;
 use crate::provider::{Provider, ProviderKind};
 use crate::repl::{McpEvent, McpHooks, RunParams, SessionCtx, session_label};
 use crate::session::{NewSession, SessionInfo, SessionStore, SessionWriter};
 use crate::tool::DeferredGroup;
-use crate::tool::{Dispatcher, Env};
+use crate::tool::{Dispatcher, ToolEnv};
 use crate::ui::facade::{Panel, TabbedResult, TabbedSpec, Ui};
 
 use crate::cmd::cli::{Invocation, Resume};
@@ -105,7 +105,7 @@ impl TerminalSeam for LiveTerminal {
     fn detect_background(&self) -> bool {
         // The host probes first (a multiplexer that KNOWS its background), the terminal's own
         // OSC 11 answer as the fallback (internal/host/background.go:30-37).
-        crate::host::detect_background(&host_env(), crate::ui::detect_background)
+        crate::host::detect_background(&host_probe(), crate::ui::detect_background)
     }
 
     fn run_surface(&self, spec: TabbedSpec, dark: bool) -> std::io::Result<TabbedResult> {
@@ -129,8 +129,8 @@ impl TerminalSeam for LiveTerminal {
 /// The host detectors' view of the process environment (host.go:71-74 `SystemEnv`): `getenv` and the
 /// `PATH` lookup, built HERE so `crate::host` never reads the environment itself (G16: the 15-line PATH
 /// scan of `shell::exec` stands in for `exec.LookPath`).
-fn host_env() -> HostEnv {
-    HostEnv {
+fn host_probe() -> HostProbe {
+    HostProbe {
         getenv: Box::new(|name| std::env::var(name).unwrap_or_default()),
         look_path: Box::new(crate::shell::exec::find_in_path),
     }
@@ -361,7 +361,7 @@ pub(crate) async fn run_interactive(
     // the runtime — a detected cmux host spawns its worker task.
     let notify = settings.resolved.agent.notify.unwrap_or(true);
     let pres = Arc::new(Presenter::new(
-        &host_env(),
+        &host_probe(),
         Some(Box::new(AnsiHost::new(Arc::clone(&ui)))),
         notify,
     ));
@@ -437,7 +437,7 @@ fn wire_session(
     kind: ProviderKind,
     provider: &mut dyn Provider,
     ctx: &RunContext,
-    tool_env: &Env,
+    tool_env: &ToolEnv,
     io: &mut crate::cmd::io::Streams,
     store: &SessionStore,
     scope: Option<&std::path::Path>,

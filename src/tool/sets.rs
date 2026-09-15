@@ -4,14 +4,14 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use crate::tool::{Env, Tool};
+use crate::tool::{Tool, ToolEnv};
 
 /// A raw YAML node as parsed from the config file; each set's factory decodes its own `tools.<name>` value.
 pub type RawNode = serde_norway::Value;
 /// `tools:` map — key presence enables a set; the raw value is decoded by the set's factory.
 pub type ToolsConfig = BTreeMap<String, RawNode>;
 /// Must succeed on `None`/`Null` (defaults). May return `Ok(vec![])` ("contributes no tools").
-pub(crate) type SetFactory = fn(&Env, Option<&RawNode>) -> Result<Vec<Arc<dyn Tool>>, SetError>;
+pub(crate) type SetFactory = fn(&ToolEnv, Option<&RawNode>) -> Result<Vec<Arc<dyn Tool>>, SetError>;
 /// The four built-in set names (tool/tool.go:329-341).
 pub(crate) const SET_NAMES: [&str; 4] = ["shell", SKILLS_SET, "code", "ask"];
 

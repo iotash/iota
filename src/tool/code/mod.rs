@@ -13,7 +13,7 @@ use std::{
 };
 
 use crate::app::paths;
-use crate::tool::{Env, Tool};
+use crate::tool::{Tool, ToolEnv};
 use serde::Deserialize;
 
 use crate::tool::sets::{RawNode, SetError};
@@ -175,7 +175,7 @@ impl CodeSet {
 ///
 /// Go's `Env.Root()` swallows a failing `os.Getwd`; so does this, falling back to `.` (only reachable when the
 /// process has no working directory and no root was configured).
-pub fn new_code_set(env: &Env, node: Option<&RawNode>) -> Result<Vec<Arc<dyn Tool>>, SetError> {
+pub fn new_code_set(env: &ToolEnv, node: Option<&RawNode>) -> Result<Vec<Arc<dyn Tool>>, SetError> {
     let cfg: CodeConfig = yaml11::decode_mapping(node).map_err(SetError::CodeConfig)?;
     if cfg.read_only && cfg.auto_write {
         return Err(SetError::CodeContradiction);

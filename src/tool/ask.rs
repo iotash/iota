@@ -16,8 +16,8 @@ use crate::BoxFuture;
 use crate::provider::model::{JsonObject, ToolDef};
 use crate::tool::context::RunCtx;
 use crate::tool::{
-    AskOption, AskQuestion, AskResult, AskSpec, Env, Interactor, Presentation, Tool, ToolOutput,
-    ToolResult,
+    AskOption, AskQuestion, AskResult, AskSpec, Interactor, Presentation, Tool, ToolEnv,
+    ToolOutput, ToolResult,
 };
 use serde_json::{Value, json};
 
@@ -33,7 +33,7 @@ const ASK_HEADER_MAX: usize = 16;
 
 /// `env.interactor` None → no tools (tool/ask.go:18-27); Some → `choose` + `confirm`, in
 /// that order. Never errors.
-pub fn new_ask_set(env: &Env, _node: Option<&RawNode>) -> Result<Vec<Arc<dyn Tool>>, SetError> {
+pub fn new_ask_set(env: &ToolEnv, _node: Option<&RawNode>) -> Result<Vec<Arc<dyn Tool>>, SetError> {
     let Some(it) = env.interactor.clone() else {
         return Ok(Vec::new());
     };
@@ -326,7 +326,7 @@ mod tests {
     use crate::BoxFuture;
     use crate::provider::model::JsonObject;
     use crate::tool::context::RunCtx;
-    use crate::tool::{AskAnswer, AskResult, AskSpec, Env, Interactor, Presentation, Tool};
+    use crate::tool::{AskAnswer, AskResult, AskSpec, Interactor, Presentation, Tool, ToolEnv};
     use serde_json::json;
 
     use super::{ASK_HEADER_MAX, new_ask_set, parse_choose_args};
@@ -356,9 +356,9 @@ mod tests {
 
     fn ask_tools(it: &Arc<FakeInteractor>) -> (Arc<dyn Tool>, Arc<dyn Tool>) {
         let tools = new_ask_set(
-            &Env {
+            &ToolEnv {
                 interactor: Some(Arc::clone(it) as Arc<dyn Interactor>),
-                ..Env::default()
+                ..ToolEnv::default()
             },
             None,
         )
@@ -381,7 +381,7 @@ mod tests {
     // set contributes NOTHING (the model never sees tools it cannot use, -m mode).
     #[test]
     fn test_ask_set_absent_without_interactor() {
-        let tools = new_ask_set(&Env::default(), None).expect("ask set");
+        let tools = new_ask_set(&ToolEnv::default(), None).expect("ask set");
         assert!(
             tools.is_empty(),
             "headless runs must advertise no ask tools"
