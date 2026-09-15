@@ -613,7 +613,7 @@ mod tests {
 
     /// ESC during the listings abandons the whole command: the scope's token is cancelled from
     /// outside, and the expansion says so instead of returning half a list.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn esc_during_the_fetch_abandons_the_expansion() {
         let cat = catalog(
             vec![wildcard("a")],
