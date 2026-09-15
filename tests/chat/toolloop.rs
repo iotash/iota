@@ -2,28 +2,20 @@
 //! refresh, the reasoning-only rule and the final round's images — plus the phase-2 seeding/delta contract
 //! (`chat/run.go:68-74`, `:221-229`, `:1092-1095`): an imported history in, the turn's delta out.
 
-use std::{
-    collections::VecDeque,
-    path::Path,
-    sync::{Arc, Mutex},
-};
+use std::{path::Path, sync::Arc};
 
-use iota::BoxFuture;
 use iota::chat::turns::RunCtx;
 use iota::chat::{ChatError, QuietHost, RunRequest, execute_with_tools, run_once};
-use iota::provider::error::ProviderError;
+use iota::provider::RoundResult;
 use iota::provider::model::{
-    AssistantBody, Attachment, Body, Message, Raw, RawContent, Role, ToolCall, ToolDef,
+    AssistantBody, Attachment, Body, Message, Raw, RawContent, Role, ToolCall,
 };
-use iota::provider::sink::StreamSink;
 use iota::provider::usage::Usage;
-use iota::provider::{ChatResult, Provider, ProviderKind, RoundResult, ToolProvider};
-use iota::testing::{FakeProvider, StaticDispatcher};
+use iota::testing::{FakeProvider, Round, StaticDispatcher};
 use iota::tool::Dispatcher;
 use pretty_assertions::assert_eq;
-use tokio_util::sync::CancellationToken;
 
-use crate::common::{GrowingDispatcher, SearchingToolProvider, call, lock};
+use crate::common::{GrowingDispatcher, SearchingToolProvider, call};
 
 #[tokio::test]
 async fn the_tool_loop_stops_at_the_opt_in_cap() {
@@ -314,90 +306,13 @@ async fn tool_loop_final_round_images_are_saved() {
     );
 }
 
-/// A provider that RECORDS the history it was sent on every call and replays a script (the last round repeating).
-/// The seeding and delta assertions have to see the exact prompt, which no workspace fake exposes.
-#[derive(Default)]
-struct RecordingProvider {
-    rounds: Mutex<VecDeque<RoundResult>>,
-    sent: Mutex<Vec<Vec<Message>>>,
-    tail: RoundResult,
-}
-
-impl RecordingProvider {
-    /// `rounds` are replayed in order; `tail` answers every call after them.
-    fn new(rounds: Vec<RoundResult>, tail: RoundResult) -> Self {
-        Self {
-            rounds: Mutex::new(rounds.into()),
-            sent: Mutex::new(Vec::new()),
-            tail,
-        }
-    }
-
-    /// The histories the provider was sent, one per call, in order.
-    fn sent(&self) -> Vec<Vec<Message>> {
-        lock(&self.sent).clone()
-    }
-
-    fn next_round(&self) -> RoundResult {
-        lock(&self.rounds)
-            .pop_front()
-            .unwrap_or_else(|| self.tail.clone())
-    }
-}
-
-impl Provider for RecordingProvider {
-    fn kind(&self) -> ProviderKind {
-        ProviderKind::OpenAi
-    }
-
-    fn model(&self) -> &'static str {
-        "gpt-test"
-    }
-
-    fn set_model(&mut self, _model: String) {}
-
-    fn list_models<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Vec<String>, ProviderError>> {
-        Box::pin(async { Ok(Vec::new()) })
-    }
-
-    fn chat<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        messages: &'a [Message],
-    ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
-        Box::pin(async move {
-            lock(&self.sent).push(messages.to_vec());
-            let round = self.next_round();
-            Ok(ChatResult {
-                text: round.content,
-                usage: round.usage,
-                images: round.images,
-            })
-        })
-    }
-
-    fn as_tool_provider(&self) -> Option<&dyn ToolProvider> {
-        Some(self)
-    }
-}
-
-impl ToolProvider for RecordingProvider {
-    fn stream_chat_with_tools<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        messages: &'a [Message],
-        _tools: &'a [ToolDef],
-        sink: &'a mut dyn StreamSink,
-    ) -> BoxFuture<'a, Result<RoundResult, ProviderError>> {
-        Box::pin(async move {
-            sink.reasoning_done();
-            lock(&self.sent).push(messages.to_vec());
-            Ok(self.next_round())
-        })
-    }
+/// A tool provider that plays `rounds`, then `tail` on every later call — the seeding and delta
+/// assertions read the exact prompt off its log.
+fn recording(rounds: Vec<RoundResult>, tail: RoundResult) -> FakeProvider {
+    FakeProvider::new()
+        .with_tools()
+        .rounds(rounds.into_iter().map(Round::result))
+        .tail(Round::result(tail))
 }
 
 /// A three-message imported view, as a resumed bundle hands it over.
@@ -424,7 +339,7 @@ fn usage(n: u64) -> Usage {
 #[tokio::test]
 async fn imported_history_is_sent_before_the_new_user_message() {
     let tc = call("c1", "noop");
-    let p = RecordingProvider::new(
+    let p = recording(
         vec![RoundResult {
             tool_calls: vec![tc.clone()],
             usage: Some(usage(1)),
@@ -470,7 +385,7 @@ async fn imported_history_is_sent_before_the_new_user_message() {
 #[tokio::test]
 async fn delta_is_the_turn_only_with_usage_on_every_assistant() {
     let tc = call("c1", "noop");
-    let p = RecordingProvider::new(
+    let p = recording(
         vec![RoundResult {
             tool_calls: vec![tc.clone()],
             usage: Some(usage(1)),
@@ -521,7 +436,7 @@ async fn delta_is_the_turn_only_with_usage_on_every_assistant() {
 // being 0, it is part of the delta, so a session that starts here stores its own system prompt.
 #[tokio::test]
 async fn empty_history_keeps_the_system_prompt_first_and_in_the_delta() {
-    let p = RecordingProvider::new(
+    let p = recording(
         Vec::new(),
         RoundResult {
             content: "ok".to_owned(),
@@ -572,7 +487,7 @@ async fn empty_history_keeps_the_system_prompt_first_and_in_the_delta() {
 // from its own log and `-s` is inert.
 #[tokio::test]
 async fn imported_history_makes_the_system_prompt_inert() {
-    let p = RecordingProvider::new(
+    let p = recording(
         Vec::new(),
         RoundResult {
             content: "ok".to_owned(),
@@ -657,7 +572,7 @@ async fn final_assistant_carries_the_saved_image_subset() {
             ..RoundResult::default()
         }
     };
-    let p = RecordingProvider::new(Vec::new(), script());
+    let p = recording(Vec::new(), script());
     let dispatch: Arc<StaticDispatcher> = Arc::new(StaticDispatcher::new(&["noop"]));
     let out = run_once(
         &RunCtx::default(),
@@ -696,7 +611,7 @@ async fn final_assistant_carries_the_saved_image_subset() {
     assert_eq!(last.attachments[1].data, b"TWO");
 
     // A save that FAILS lands in image_errors and attaches nothing (images_dir None → HOME_NOT_DEFINED).
-    let p = RecordingProvider::new(Vec::new(), script());
+    let p = recording(Vec::new(), script());
     let out = run_once(
         &RunCtx::default(),
         &p,
