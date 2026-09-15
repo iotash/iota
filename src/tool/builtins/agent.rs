@@ -1,4 +1,4 @@
-//! The `skills` toolset (tool/agent.go): the `load_skill` tool that activates a skill from the catalog and
+//! The `skills` toolset: the `load_skill` tool that activates a skill from the catalog and
 //! reads its bundled files. It was spelled `agent` before the three-layer config split.
 
 use std::{
@@ -36,8 +36,8 @@ pub fn new_skills_set(
     _node: Option<&RawNode>,
 ) -> Result<Vec<Arc<dyn Tool>>, SetError> {
     Ok(vec![Arc::new(LoadSkill {
-        // Go's `Env.Root()` falls back to the empty string when neither the project root nor the working
-        // directory resolves; discovery then finds nothing rather than failing the build.
+        // When neither the project root nor the working directory resolves, the root is the empty
+        // string; discovery then finds nothing rather than failing the build.
         root: env.root().unwrap_or_default(),
         home: env.dirs.home.clone(),
     })])
@@ -47,7 +47,6 @@ pub fn new_skills_set(
 pub const LOAD_SKILL_DESCRIPTION: &str = "Load a skill by name to activate it: returns the skill's instructions and its directory (the base for its bundled files and scripts). Available skills are listed in the system prompt. Pass the optional \"file\" to read a file the skill's instructions reference, as a path relative to the skill's directory. Long content is windowed by \"offset\"/\"limit\" lines.";
 
 impl Tool for LoadSkill {
-    /// Name `load_skill`, `LOAD_SKILL_DESCRIPTION`, schema per tool/agent.go:50-72.
     fn def(&self) -> ToolDef {
         let schema = json!({
             "type": "object",
@@ -82,16 +81,14 @@ impl Tool for LoadSkill {
         }
     }
 
-    /// tool/agent.go:76-170.
     fn call<'a>(&'a self, _cx: &'a RunCtx, args: &'a JsonObject) -> BoxFuture<'a, ToolResult> {
         // Every failure is model-facing: the tool never returns a hard error, and the whole subsystem is plain
-        // synchronous std::fs work (Go ignores the context too).
+        // synchronous std::fs work.
         Box::pin(async move { Ok(self.run(args)) })
     }
 }
 
 impl LoadSkill {
-    /// tool/agent.go:75-91.
     fn run(&self, args: &JsonObject) -> ToolOutput {
         let name = str_arg(args, "skill").trim();
         if name.is_empty() {
@@ -110,7 +107,7 @@ impl LoadSkill {
     }
 
     /// Re-discovers skills on every call (a few readdirs — cheap, and always consistent with the catalog the model
-    /// just saw) and matches `name` exactly (tool/agent.go:95-112).
+    /// just saw) and matches `name` exactly.
     fn resolve(&self, name: &str) -> Result<Skill, String> {
         let (skills, _warnings) = discover_skills(&skill_roots(&self.root, self.home.as_deref()));
         if let Some(sk) = skills.iter().find(|sk| sk.name == name) {
@@ -132,7 +129,7 @@ impl LoadSkill {
     }
 
     /// The SKILL.md body prefixed with the header naming the skill and its directory — the model needs the
-    /// directory to run bundled scripts and to name files for `file` reads (tool/agent.go:117-133).
+    /// directory to run bundled scripts and to name files for `file` reads.
     fn serve_instructions(sk: &Skill, args: &JsonObject) -> ToolOutput {
         let data = match read_capped(&sk.path) {
             Ok(d) => d,
@@ -179,7 +176,7 @@ impl LoadSkill {
 }
 
 /// Reads a regular file up to `LOAD_SKILL_MAX_BYTES`, returning a model-facing error string on failure. An
-/// oversized file carries the marker as its last line, so it participates in line windowing (tool/agent.go:159-169).
+/// oversized file carries the marker as its last line, so it participates in line windowing.
 fn read_capped(path: &Path) -> Result<Vec<u8>, String> {
     let (mut data, size) = read_file_limited(path, LOAD_SKILL_MAX_BYTES)?;
     if size > LOAD_SKILL_MAX_BYTES {
@@ -193,7 +190,7 @@ fn read_capped(path: &Path) -> Result<Vec<u8>, String> {
 }
 
 /// Applies the offset/limit line window and the output cap; `what` names the content in the continuation markers.
-/// `Err` is a model-facing error (tool/agent.go:201-236).
+/// `Err` is a model-facing error.
 fn window_lines(content: &str, args: &JsonObject, what: &str) -> Result<String, String> {
     let lines = split_lines(content);
     let total = lines.len();
@@ -251,7 +248,7 @@ mod tests {
         }
     }
 
-    // New: the window's edges (tool/agent.go:201-236) — empty content, the default window, a limit past the end,
+    // The window's edges — empty content, the default window, a limit past the end,
     // a negative offset, and the two markers.
     #[test]
     fn window_lines_markers() {
