@@ -1,6 +1,6 @@
 # iota-rs — BINDING architecture (headless `-m` / the listings)
 
-Status: **binding**. Synthesised from the winning "idiomatic" proposal with every judged graft adopted or explicitly rejected (§0). `POLICY.md` wins over this document; this document wins over the specs' mapping notes; `CONTRACTS.md` is the frozen API implementers code against; `WORK_PACKAGES.md` is the fan-out plan; `DIVERGENCES.md` and `TEST_PLAN.md` complete the set.
+Status: **binding**. Synthesised from the winning "idiomatic" proposal with every judged graft adopted or explicitly rejected; the ledger of those grafts is retired (2026-09-16) and what still binds is stated in the section it binds. `POLICY.md` wins over this document; this document wins over the specs' mapping notes; `CONTRACTS.md` is the frozen API implementers code against; `WORK_PACKAGES.md` is the fan-out plan; `DIVERGENCES.md` and `TEST_PLAN.md` complete the set.
 
 > **Superseded in part (2026-09-10): the `delegate` toolset is retired.** Every row below that names
 > `tool/delegate.rs`, `chat/delegator.rs`, `cmd/delegate.rs`, `Delegator`/`AgentInfo`/`DelegateSpec`/
@@ -12,43 +12,6 @@ Status: **binding**. Synthesised from the winning "idiomatic" proposal with ever
 **Phase 2 · slice 1 (headless session store) is folded in.** The session store (now `src/session/`) and the resume stage in `cmd::run_agent` are described in place — §1.1/§1.2 (the crate and the graph), §2 (its module map), §8.1 (the session data flow), §10 and §11. Everything else on this page is the phase-1 architecture, unchanged.
 
 Every user-visible string below is copied from the Go source (file:line given in CONTRACTS.md). Implementers copy, never paraphrase.
-
----
-
-## 0. Graft ledger (winner = idiomatic proposal)
-
-| # | graft | decision | where |
-|---|---|---|---|
-| G1 | `Provider::chat`/`list_models`/`ToolProvider::stream_chat_with_tools` take `&self`; `Provider: Send + Sync`; `as_tool_provider(&self)` | **adopted** — every per-call product is returned in `ChatResult`/`RoundResult`, so there is no per-call state; deletes the borrow-juggling risk | CONTRACTS §2.4 |
-| G2 | dispatcher passed as `Arc<dyn Dispatcher>` to `once`/`run_once`/`execute_with_tools` (the `ToolSearcher` closure is `'static`) | **adopted** | CONTRACTS §6.2 |
-| G3 | `Delegator::run -> DelegateOutcome { result, error }`; ledger `add` unconditional | **adopted** | CONTRACTS §2.7 |
-| G4 | `ToolEnv { project_root: Option<PathBuf>, .. }`, `ToolEnv::root() -> io::Result<PathBuf>` | **adopted** (+ `dirs: HostDirs` field, see G5) | CONTRACTS §2.6 |
-| G5 | inject the environment (home/cwd/env vars) instead of reading it: `Config::load(.., &Env, ..)`, `skill_roots(root, home)`, `resolve_run(.., &Env, ..)`, `env::expand(s, &Env)` | **adopted and extended**: one `app::env::Env` value (the variables plus `HostDirs`: home, cwd, temp, cache) is built once in `main` (`Env::process`) and threaded everywhere; tests build `Env::fixed(..)`; **no test mutates process env**, so `serial_test`/`temp_env` are not needed at all | CONTRACTS §2.9, §2.10 |
-| G6 | Go test names in snake_case + `// Go: <file>:<line>` anchor; Go-file→Rust-module and Go-test→Rust-test tables | **adopted** | §2 table, TEST_PLAN.md |
-| G7 | shell mechanism pinned: `process_group(0)`, ONE pipe via `nix::unistd::pipe()` + `try_clone`, `tokio::net::unix::pipe::Receiver::from_owned_fd`, explicit `PWD`, `killpg(SIGKILL)` ESRCH-ignored, 3 s WaitDelay as `timeout(3s, read_to_end)`, classification order shell.go:97-121 | **adopted**, with three amendments from the Windows port: the pipe is `std::io::pipe()` — the same `pipe(2)`, portable and `O_CLOEXEC` — `process_group(0)`/`killpg` are now the UNIX half of a two-platform pair whose Windows half is a Job Object (2026-09-11), and the `bash` the child runs is one resolved interpreter, `shell::interp`'s answer, which on Windows is not always a POSIX shell and never carries an injected `PWD` (2026-09-12, DIVERGENCES X-17). Everything the row pins about Unix behaviour is unchanged | CONTRACTS §4.7 |
-| G8 | rmcp header truth: custom headers are APPENDED, `accept`/`mcp-session-id`/`last-event-id` are REJECTED (`ReservedHeaderConflict`) → per-server `connect failed: …`; `Authorization` via `custom_headers`, never `auth_header` | **adopted** (verified rmcp-3.1.4 `http_header.rs:20-43`, `common/reqwest/streamable_http_client.rs:29-38`) | §6, DIVERGENCES |
-| G9 | handler = `rmcp::model::ClientInfo` (rmcp implements `ClientHandler for ClientInfo`, `handler/client.rs:299`); no custom handler struct | **adopted** (`InitializeRequestParams` is `#[non_exhaustive]` → build with `ClientInfo::new(ClientCapabilities::default(), Implementation::new("iota", "1.0.0"))`) | §6 |
-| G10 | compiled-out toolsets/providers/transports keep the config surface stable (stub factories that warn; `SET_NAMES` always five) | **adopted** | CONTRACTS §4.0, §3.0 |
-| G11 *(retired 2026-09-01 — one binary, §11)* | opt-in `tls-ring` feature (`reqwest/rustls-no-provider` + `rustls/ring` + rmcp `reqwest-tls-no-provider`), ring provider installed in `main` and in every crate's test harness (`init_tls()`), CI aws-lc-rs leak gate (`cargo tree --prefix none \| grep`); `tracing` with `release_max_level_off`; `docs/SIZE.md` matrix; direct-dependency allowlist (`scripts/direct-deps.allow` + `check-deps.sh`, not a `deny.toml`) + one-line justification rule | **adopted as OPT-IN** (default stays `reqwest/rustls` = aws-lc-rs, exactly what POLICY's probe compiled) | §11, §14 |
-| G12 | no `serde_json/preserve_order` | **adopted** — `serde_json::Map` is BTreeMap-backed → sorted keys = Go's `map[string]any` marshal order; replay payloads are `Box<RawValue>` and byte-verbatim regardless | §1.4 |
-| G13 | `BudgetExt` for `Option<Arc<TurnBudget>>` | **adopted** | CONTRACTS §2.8 |
-| G14 | `LlmError::ImageStreamIncomplete` | **adopted** | CONTRACTS §3.3 |
-| G15 | shared fakes in `iota_core::testing` behind feature `testing` | **adopted** | CONTRACTS §2.11 |
-| G16 | drop `rand` (SplitMix64), `which`, `dirs`, `url`, `unicode-width` | **partially adopted**: `dirs`, `which`, `url`, `unicode-width`, `path-clean`, `indexmap`, `hex`, `filetime` are NOT direct deps (`$HOME` read directly = Go parity; 15-line PATH scan; `reqwest::Url` for scheme checks; header formatting not ported; lexical clean hand-rolled; `std::fs::File::set_modified` in tests). `rand` is **kept** behind the injectable `Jitter` seam (minimal features) — a hand-rolled PRNG is untested surface for ~40 KB | §11 |
-| G17 | `RunCtx::child()` | **adopted** | CONTRACTS §2.8 |
-| G18 | `jiff` with `tz-system` (+ `tzdb-zoneinfo`) so image file names use LOCAL time | **adopted** | §1.4 |
-| G19 | `is_list_fallback()` predicate on `LlmError`; `McpError::Timeout(Duration)` displayed in Go duration form (`30s`, `300ms`) | **adopted** | CONTRACTS §3.3, §5.5 |
-| G20 | land `manager_connect_timeout` first as the rmcp canary; rely on rmcp `TokioChildProcess` drop-kill / `graceful_shutdown` instead of spawning the child by hand | **adopted**; SIGTERM stage **rejected** (rmcp's ladder is stdin-close → 3 s → SIGKILL; adding a SIGTERM before `cancel()` would reorder Go's ladder rather than reproduce it) | §6, DIVERGENCES |
-| G21 | `fetch_models` prints `Fetching available models...` to stderr; tuning pass ends with the tools/mcp_servers warning | **adopted** (already in the winner's spec set; made explicit) | CONTRACTS §7.6 |
-| G22 | per-dialect wire enum shapes as implementer contract | **adopted** | CONTRACTS §3.4–§3.8 |
-| G23 | `parse_window_size` ported as a pure function (config parity) | **adopted** — `config::window` | CONTRACTS §7.4 |
-| G24 | injectable `Jitter` on the wire client | **adopted** | CONTRACTS §3.2 |
-| G25 | MCP failure warning prints the FULL error text (`Warning: mcp server <name>: <err>`) — POLICY wording, not "first line" | **adopted** | CONTRACTS §7.7 |
-| G26 | `--max-turns` stays `i64` (Go treats negatives as unlimited) | **adopted** | CONTRACTS §7.1 |
-| G27 | `Session` trait over `RunningService` with an in-memory duplex test impl | **adopted** | CONTRACTS §5.4 |
-| G28 | `Message.usage` kept as a dead field / `Provider::stream_chat` / sink `tool_delta`/`image_partial` hooks / `Artifact` channel / image edit endpoints / `Interactor` (fidelity proposal) | **rejected** — POLICY OUT list; zero headless behaviour | DIVERGENCES |
-| G29 | HTTP/1.1-only, UTC image names, 512 KiB worker stacks, `serde_json`-less `ProviderError::Wire(String)` (footprint proposal) | **rejected** — user-visible divergences or typed-error loss for no parity gain | — |
-| G30 | `async_trait` proc-macro | **replaced by hand-boxed futures** (`iota_core::BoxFuture`): the crate is not in the local registry (`~/.cargo/registry/src` has no `async-trait`), a proc-macro adds compile time, and the four object-safe traits (`Provider`, `ToolProvider`, `Tool`, `Dispatcher`, `Delegator`) need exactly one shape. Used consistently everywhere. | CONTRACTS §2.1 |
 
 ---
 
@@ -150,11 +113,11 @@ returns the turn's message delta and `cmd` still owns the `SessionWriter`; the l
 `rust/Cargo.toml` (the single `[package]`). Highlights:
 
 - edition 2024, `rust-toolchain.toml` = `1.98.0` (+ rustfmt, clippy); MSRV of every dep verified (`rmcp` 1.88, `globset`/`ignore` 1.88, `reqwest` 1.85, `clap` 1.85, `sha2` 1.85).
-- `serde_json = { features = ["raw_value"] }` — **no** `preserve_order` (G12).
+- `serde_json = { features = ["raw_value"] }` — **no** `preserve_order`: `serde_json::Map` is BTreeMap-backed, so keys serialize sorted, the order the session records and the JSON report are pinned to; replay payloads are `Box<RawValue>` and byte-verbatim regardless.
 - `reqwest = { default-features = false, features = ["json", "stream", "http2", "system-proxy", "rustls"] }` (no `multipart`: edits are OUT); ONE TLS backend, rustls with aws-lc-rs and the platform verifier — no ring alternative, no direct `rustls` dependency, no provider-installation step.
 - `rmcp = { default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest"] }` (rmcp's reqwest-with-rustls pairing) unconditionally; the dev-dependency adds `"server"` + `"transport-async-rw"` for the in-process echo server.
 - Cargo features: **none** that affect the binary. The only `[features]` entry is `testing` (the shared test fakes), enabled for tests by the self-dev-dependency. ratatui's `scrolling-regions` is on, always.
-- `jiff = { default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }` (G18).
+- `jiff = { default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }` — `tz-system` so image file names carry LOCAL time.
 - `tokio` features: `rt-multi-thread, macros, sync, time, process, io-util, signal, fs, net` (`net` = `tokio::net::unix::pipe`); the dev-dependency adds `test-util` (paused clock for the retry tests).
 - Process supervision is the one per-platform dependency pair, both in `[target.'cfg(<os>)'.dependencies]` and both reached only from `src/shell/exec.rs`: `nix = { default-features = false, features = ["signal", "process", "fs"] }` on Unix (`killpg` + `Signal` + `Errno::ESRCH`), and on Windows `process-wrap = { default-features = false, features = ["tokio1", "job-object", "creation-flags", "tracing"] }` for the Job Object that `TerminateJobObject` kills as one, plus `windows = { features = ["Win32_System_Threading"] }` for the single constant `CREATE_NO_WINDOW` its `CreationFlags` wrapper takes. `windows` is a CARET range on purpose: it must resolve to the same copy of the crate process-wrap builds against or the flag type stops unifying.
 - Release profile: `opt-level = "z"`, `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `strip = true`.
@@ -305,10 +268,10 @@ Exact definitions: CONTRACTS.md §2. Summary of the shape decisions:
 Go's `LastUsageFull()/LastRawContent()/LastImages()` become fields of `ChatResult { text, usage, images }` and `RoundResult { content, reasoning, tool_calls, usage, raw_content, images }`. The "read it NOW" hazard and `begin_call()` disappear. `UsageReporter`, `RawContentProvider`, `ImageOutputProvider` do not exist as traits; the capability-surface tests port as `as_tunable().is_none()` + `result.usage.is_none()`.
 
 ### 4.2 `&self` calls, `Send + Sync`
-`Provider` and `ToolProvider` calls take `&self` (G1). Providers hold only construction-time state (`ProviderCore`, flags, an installed `ToolSearcher`). Setters (`set_model`, `Tunable`, `set_tool_searcher`) take `&mut self` and are called before the run; children get a fresh `Box<dyn Provider>` per delegation, so nothing is ever shared mutably.
+`Provider` and `ToolProvider` calls take `&self`: every per-call product is returned in `ChatResult`/`RoundResult`, so there is no per-call state to borrow. Providers hold only construction-time state (`ProviderCore`, flags, an installed `ToolSearcher`). Setters (`set_model`, `Tunable`, `set_tool_searcher`) take `&mut self` and are called before the run; children get a fresh `Box<dyn Provider>` per delegation, so nothing is ever shared mutably.
 
 ### 4.3 Object safety without proc-macros
-`iota::BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>`. Every async trait method is `fn name<'a>(&'a self, …) -> BoxFuture<'a, R>`; implementations write `Box::pin(async move { … })`. This is the single convention for `Provider`, `ToolProvider`, `Tool`, `Dispatcher`, `Delegator` (G30). Plain `async fn`s are used everywhere else.
+`iota::BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>`. Every async trait method is `fn name<'a>(&'a self, …) -> BoxFuture<'a, R>`; implementations write `Box::pin(async move { … })`. This is the single convention for `Provider`, `ToolProvider`, `Tool` and `Dispatcher` — no `async_trait` proc-macro: the object-safe traits need exactly one shape and a hand-boxed future is it. Plain `async fn`s are used everywhere else.
 
 ### 4.4 Enums
 `ProviderKind` (seven kinds, `as_str`, `FromStr` with the exact `unknown provider type: …` error, `ALL` in Go order, `SUPPORTED_LIST`), `Effort { Low, Medium, High, XHigh, Max }` (`parse("")` → `Ok(None)`; invalid → `InvalidEffort`), `DeferMode`, `DeferState`, `OutputFormat`.
@@ -343,6 +306,7 @@ Byte-for-byte ports of client.go / sse.go / thinktag.go (CONTRACTS §3.2–§3.3
 - Approval/parallel: the REFUSAL lives in `headless::QuietHost`; tools only report. Only `glob`/`grep`/`list_dir`/`read_file` (always) and `delegate` (read-only agent) opt into parallel.
 - The delegate cycle `ChatDelegator::run → run_once → execute_with_tools → dyn Dispatcher::call_tool → DelegateTool::call → dyn Delegator::run` crosses two boxed-future boundaries; no `async_recursion`.
 - Interactive-only capabilities (`presentation`, `header_summary`, `deferred_tools`) keep their trait defaults; no built-in implements `header_summary`/`presentation` (DIVERGENCES D-12), `DeferDispatcher`/`MarkedDispatcher` do implement `deferred_tools` (cheap, tested).
+- The `shell` MECHANISM (`src/shell/`, the layer the `shell` tool is a policy over) is pinned: one interpreter child per call, in its own process group on Unix and a Job Object on Windows; ONE combined output pipe (`std::io::pipe()` — the same `pipe(2)`, portable and `O_CLOEXEC`) read under the byte cap; an explicit `PWD` on Unix and none on Windows; kill = `killpg(SIGKILL)` with ESRCH ignored / `TerminateJobObject`, then a 3 s wait for the pipe to drain (`timeout(3s, read_to_end)`); the result classified in one fixed order (timeout, signal, exit status). WHICH interpreter runs is `shell::interp`'s one pure answer over an injected machine — `bash -c` on Unix, on Windows the first of Git Bash, PowerShell and `cmd.exe` present (DIVERGENCES X-17) — and a sandbox binary appearing or disappearing later never changes a running set.
 
 ---
 
@@ -350,6 +314,7 @@ Byte-for-byte ports of client.go / sse.go / thinktag.go (CONTRACTS §3.2–§3.3
 
 Verified API (CONTRACTS §5.0 lists file:line): `ServiceExt::serve(ClientInfo, transport) -> RunningService<RoleClient, ClientInfo>` (legacy `initialize` handshake by default; rmcp also implements `server/discover` via `ClientLifecycleMode::Auto`, not selected — D-02); `peer().list_all_tools()`; **`peer().call_tool_once(CallToolRequestParams::new(raw).with_arguments(args))`** — never `call_tool`, which drives SEP-2322 MRTR rounds through a handler that cannot answer; `Complete(r)` → text/is_error, `InputRequired`/`Task` → error texts (D-33); `RunningService::cancel(mut self)` consumes the service, so the production `Session` is `RmcpSession { running: tokio::sync::Mutex<Option<RunningService>>, peer: Peer }` (calls use the cloned peer, `close` takes the service out of the mutex); `TokioChildProcess::builder(cmd).stderr(Stdio::piped()).spawn() -> (proc, Option<ChildStderr>)`, `proc.id()`; `StreamableHttpClientTransport::with_client(http, StreamableHttpClientTransportConfig::with_uri(url).custom_headers(map))`; `CallToolResult { content: Vec<ContentBlock>, is_error: Option<bool>, .. }`, `ContentBlock::as_text()`; `Tool { name: Cow<str>, description: Option<Cow<str>>, input_schema: Arc<JsonObject>, .. }`.
 
+- The client handler is rmcp's own `ClientInfo` (rmcp implements `ClientHandler` for it), built as `ClientInfo::new(ClientCapabilities::default(), Implementation::new("iota", "1.0.0"))` — `InitializeRequestParams` is `#[non_exhaustive]`, so there is no custom handler struct.
 - Connect fan-out: `JoinSet`, per-server `tokio::time::timeout(30 s, connect_one)`; results merged in CONFIG order (config-file servers sorted by name, then `--mcp` flags in order) so segment suffixes are deterministic (POLICY 3).
 - Timeout → `connection timed out after 30s` (Go duration formatting); dropping the connect future drops the `TokioChildProcess` whose `ChildWithCleanup::drop` kills the child (rmcp `child_process.rs:44-55`).
 - Headers: `custom_headers` (append; reserved names rejected → `connect failed: Header name 'accept' is reserved and conflicts with default headers`); `HeaderName`/`HeaderValue` parse failures → `connect failed: <err>`.
@@ -535,5 +500,5 @@ See WORK_PACKAGES.md (16 packages). Critical path: WP00 scaffold (≈4.5k lines:
 | Flatten rmcp `CallToolResponse::InputRequired(r)` to the same `(joined text, is_error)` as `Complete` | **rejected as stated**; `call_tool_once` IS adopted | `InputRequiredResult` (rmcp model/mrtr.rs:229-246) carries no `content`/`is_error` — only `result_type`, `input_requests`, `request_state`, `_meta` — so there is nothing to flatten; `InputRequired`/`Task` map to explicit error texts instead (D-33) |
 | Build `grep` regexes with `RegexBuilder::unicode(false)` to make `\w`/`\d`/`\s`/`\b` ASCII-only like RE2 | **rejected**; documented in D-18 | on `regex::Regex` (str-based) disabling Unicode makes any pattern that could match non-UTF-8 — `.`, negated classes — fail to COMPILE, a far larger divergence than Unicode-aware word classes |
 | Put the `install_tls_provider()` ONCE helper in `iota_core::testing` | **rejected**; per-crate `tests/common::init_tls()` instead *(moot since 2026-09-01: no ring backend, no helper)* | iota-core has no `rustls` dependency and must stay I/O-free; `install_default()` is already idempotent (returns `Err` when a provider exists), so each crate calls its own one-liner |
-| Delete `design/DESIGN.md` | **softened**: kept with a `SUPERSEDED — NOT binding` banner, its manifest block removed | it documents which alternatives were considered and rejected (ARCHITECTURE §0); the banner and the removal of every pinnable manifest line remove the confusion risk |
+| Delete `design/DESIGN.md` | **softened**: kept with a `SUPERSEDED — NOT binding` banner, its manifest block removed | it documents which alternatives were considered and rejected; the banner and the removal of every pinnable manifest line remove the confusion risk |
 | Port the sorted-key argument digest so `ask_approval`'s `detail` matches Go | **not adopted** (finding proposed pinning `header_summary(..).unwrap_or_default()`, which is what CONTRACTS now states) | headless hosts never approve, so the detail is unobservable in production; `TestForwardedApprovalCarriesTheCallDetail` stays unported (D-12) |
