@@ -1,5 +1,5 @@
-//! Run context (chat/turns.go): `RunCtx` replaces Go's context values with an explicit struct carrying the
-//! cancellation token and the run-wide `TurnBudget`.
+//! Run context: `RunCtx`, the explicit struct carrying the cancellation token and the run-wide
+//! `TurnBudget` into every tool call and child run.
 
 use std::num::NonZeroU32;
 use std::sync::{
@@ -9,16 +9,16 @@ use std::sync::{
 
 use tokio_util::sync::CancellationToken;
 
-/// Replaces Go's context values; cloned into every tool call and child run. Never task-local.
+/// Cloned into every tool call and child run; never task-local.
 #[derive(Clone, Default)]
 pub struct RunCtx {
     /// Cancellation of the whole run.
     pub cancel: CancellationToken,
     /// The run's turn budget; `None` = unlimited.
     pub budget: Option<Arc<TurnBudget>>,
-    /// The call's display-artifact slot (tool/tool.go:160-198; the D-19 lift, T-35).
-    /// `None` in headless loops and tests — every `post_artifact` is then a no-op (Go
-    /// parity). The interactive walk injects a FRESH slot per call and drains it after.
+    /// The call's display-artifact slot (the D-19 lift, T-35).
+    /// `None` in headless loops and tests — every `post_artifact` is then a no-op.
+    /// The interactive walk injects a FRESH slot per call and drains it after.
     pub artifact: Option<ArtifactSlot>,
 }
 
@@ -33,7 +33,7 @@ impl RunCtx {
 }
 
 /// `--max-turns` as the CLI carries it (`i64`, negatives allowed) folded into a cap: `None` for
-/// `n <= 0` (unlimited; Go's nil budget), and for `n > u32::MAX` too (documented as unlimited).
+/// `n <= 0` (unlimited), and for `n > u32::MAX` too (documented as unlimited).
 pub fn turn_cap(n: i64) -> Option<NonZeroU32> {
     u32::try_from(n).ok().and_then(NonZeroU32::new)
 }
@@ -79,7 +79,7 @@ impl TurnBudget {
     }
 }
 
-/// Nil-budget rule (chat/turns.go:52-63): None grants everything, cap 0.
+/// The absent-budget rule: `None` grants everything, cap 0.
 pub(crate) trait BudgetExt {
     /// Claims one round; always true without a budget.
     fn take(&self) -> bool;
@@ -97,7 +97,7 @@ impl BudgetExt for Option<Arc<TurnBudget>> {
     }
 }
 
-/// Last-post-wins display-artifact slot (Go `artifactSlot` twin, tool/tool.go:160-198).
+/// Last-post-wins display-artifact slot.
 /// The interactive walk injects a FRESH slot into the `RunCtx` handed to ONE call and
 /// drains it after the call returns.
 #[derive(Clone, Default)]
@@ -126,7 +126,6 @@ mod tests {
 
     use super::{BudgetExt, RunCtx, TurnBudget, turn_cap};
 
-    // Go: chat/turns_test.go:12
     #[test]
     fn test_turn_budget_unlimited_without_a_flag() {
         // A cap nobody chose is not invented: no --max-turns means no budget.
@@ -142,7 +141,6 @@ mod tests {
         assert_eq!(nil.cap(), 0);
     }
 
-    // Go: chat/turns_test.go:27
     #[test]
     fn test_turn_budget_spends_exactly_its_cap() {
         let b = turn_cap(3)
@@ -160,7 +158,6 @@ mod tests {
         assert!(!opt.take());
     }
 
-    // Go: chat/turns_test.go:45
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_turn_budget_is_exact_under_contention() {
         const CAP: i64 = 50;
@@ -189,7 +186,6 @@ mod tests {
         );
     }
 
-    // Go: chat/turns_test.go:96
     #[test]
     fn test_turn_budget_travels_by_context() {
         // A context with no budget yields None; an absent budget is not published as present.
@@ -224,7 +220,7 @@ mod tests {
         assert!(!cx.budget.take());
     }
 
-    // Go: tool/tool_test.go artifactSlot laws (tool/tool.go:160-198; T-35)
+    // The artifact slot's laws (T-35).
     #[test]
     fn test_artifact_slot_last_post_wins() {
         use super::ArtifactSlot;
