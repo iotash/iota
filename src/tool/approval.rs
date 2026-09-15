@@ -1,4 +1,4 @@
-//! The answer to an approval request (chat/approval.go, chat.go:348-364): a gated call either runs
+//! The answer to an approval request: a gated call either runs
 //! or is refused, and a refusal carries the text the model reads in place of a result.
 
 /// What an approval oracle answers for one gated call.
