@@ -7,7 +7,7 @@ use crate::provider::provider_env_key;
 use crate::text::go_float;
 
 use crate::cmd::cli::{Invocation, Resume};
-use crate::config::{Config, ConfigError, ModelRef, ProviderConfig, Resolved};
+use crate::config::{Config, ConfigError, ModelConfig, ModelRef, ProviderConfig, Resolved};
 
 use crate::vars::EnvSource;
 
@@ -158,6 +158,10 @@ pub(crate) fn resolve_agent(cfg: &Config, name: &str) -> Result<Resolved, CliErr
 ///
 /// A model outside the agent's candidate set is a WARNING, never a refusal (decision of 2026-09-10): the set
 /// is advice about what is good here, not a whitelist.
+///
+/// What a `provider:id` (or a raw id on the current provider) brings with it is decided by [`model_at`]: the
+/// `models:` entry serving exactly that pair, or nothing at all — never the knobs of the candidate the flag
+/// is replacing (brain page `model-param-layering`; DIVERGENCES X-32).
 fn apply_model_flag(r: &mut Resolved, cfg: &Config, flag: &str, warn: &mut dyn FnMut(String)) {
     if flag.is_empty() {
         // `-M ""` is verbatim, like every other flag: no model was chosen.
@@ -165,13 +169,13 @@ fn apply_model_flag(r: &mut Resolved, cfg: &Config, flag: &str, warn: &mut dyn F
         return;
     }
     match flag.split_once(':') {
-        Some((provider, id)) if cfg.knows_provider(provider) && !id.is_empty() => {
+        Some((provider, "*")) if cfg.knows_provider(provider) => {
             r.move_to_provider(cfg, provider);
-            r.model.id = if id == "*" {
-                String::new()
-            } else {
-                id.to_owned()
-            };
+            r.model.id.clear();
+        }
+        Some((provider, id)) if cfg.knows_provider(provider) && !id.is_empty() => {
+            r.model = model_at(r, cfg, provider, id);
+            r.move_to_provider(cfg, provider);
         }
         _ => match cfg.models.get(flag) {
             // A candidate by name brings its own provider and protocol with it.
@@ -187,8 +191,11 @@ fn apply_model_flag(r: &mut Resolved, cfg: &Config, flag: &str, warn: &mut dyn F
                 r.model = model;
                 r.move_to_provider(cfg, &provider);
             }
-            // Everything else is a raw model id: the entry's protocol and knobs still apply, only the id moves.
-            _ => flag.clone_into(&mut r.model.id),
+            // Everything else is a raw model id on the provider the run resolved to: `<provider>:id`.
+            _ => {
+                let provider = r.provider_name.clone();
+                r.model = model_at(r, cfg, &provider, flag);
+            }
         },
     }
     if !r.agent.models.is_empty()
@@ -199,6 +206,41 @@ fn apply_model_flag(r: &mut Resolved, cfg: &Config, flag: &str, warn: &mut dyn F
             "Warning: model {}:{} is not in agent {:?}'s models (using it anyway)",
             r.provider_name, r.model.id, r.name
         ));
+    }
+}
+
+/// The `ModelConfig` a `provider:id` pair stands for: the `models:` entry serving exactly that pair when one
+/// exists — a member of the agent's candidate set first, then any entry, in name order — so its own knobs
+/// travel with it; otherwise the bare pair, every other field at its default. A model the config declares
+/// nothing about gets no declaration: the knobs of whatever candidate the run resolved to first (effort,
+/// temperature, `top_p`, window, defer mode, the image parameters) stay with that candidate.
+fn model_at(r: &Resolved, cfg: &Config, provider: &str, id: &str) -> ModelConfig {
+    let serves = |name: &str, m: &ModelConfig| m.provider_or(name) == provider && m.id == id;
+    let candidate = r.agent.models.iter().find_map(|c| match c {
+        ModelRef::Entry(name) => cfg
+            .models
+            .get(name)
+            .filter(|m| serves(name, m))
+            .map(|m| (name.as_str(), m)),
+        ModelRef::Inline { .. } | ModelRef::All { .. } => None,
+    });
+    let entry = candidate.or_else(|| {
+        cfg.models
+            .iter()
+            .find(|(name, m)| serves(name, m))
+            .map(|(name, m)| (name.as_str(), m))
+    });
+    match entry {
+        Some((name, entry)) => {
+            let mut model = entry.clone();
+            model.anchor_provider(name);
+            model
+        }
+        None => ModelConfig {
+            provider: provider.to_owned(),
+            id: id.to_owned(),
+            ..ModelConfig::default()
+        },
     }
 }
 

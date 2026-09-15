@@ -908,6 +908,9 @@ fn resolve_resume_defers_model_required() {
 
 /// `-M` takes a bare id, a `provider:id` pair (which MOVES the run to that provider, key and URL included)
 /// and `provider:*` (that provider, no model chosen). A candidate entry may also be named directly.
+///
+/// What comes WITH the model is the `models:` entry serving exactly that `provider:id`, or nothing: the
+/// knobs of the candidate the flag replaces never travel (brain page `model-param-layering`).
 #[test]
 fn model_flag_forms() {
     let cfg = config(
@@ -916,21 +919,24 @@ providers:
   anthropic: {key: ak}
   relay: {type: openai, key: rk, url: https://relay/v1}
 models:
-  sonnet: anthropic:claude-sonnet-4
-  gpt5: {provider: relay, id: gpt-5.2, defer_mode: system-tools}
+  sonnet: {provider: anthropic, id: claude-sonnet-4, effort: max, temperature: 1.0, top_p: 0.95}
+  gpt5: {provider: relay, id: gpt-5.2, defer_mode: system-tools, temperature: 0.2}
+  haiku: {provider: anthropic, id: claude-haiku-4-5, effort: low}
 agents:
   team:
     models: [sonnet, gpt5]
 ",
     );
 
-    // No flag: the first candidate.
+    // No flag: the first candidate, knobs included.
     let s = resolve(&["run", "team"], &cfg, &[]).unwrap();
     assert_eq!(
         (s.raw_type.as_str(), s.model.as_str()),
         ("anthropic", "claude-sonnet-4")
     );
     assert_eq!(s.api_key, "ak");
+    assert_eq!(s.resolved.model.effort, "max");
+    assert_eq!(s.temperature, Some(1.0));
 
     // A candidate by name brings its provider, its key, its url AND its protocol with it.
     let (s, warnings) = resolve_warned(&["run", "team", "-M", "gpt5"], &cfg, &[]);
@@ -940,17 +946,24 @@ agents:
     assert_eq!(s.api_key, "rk");
     assert_eq!(s.base_url, "https://relay/v1");
     assert_eq!(s.resolved.model.defer_mode, "system-tools");
+    assert_eq!(s.temperature, Some(0.2));
     assert!(
         warnings.is_empty(),
         "a candidate is not a surprise: {warnings:?}"
     );
 
-    // `provider:id` moves the run to that provider even when nothing configured that pair.
+    // `provider:id` moves the run to that provider even when nothing configured that pair — and a pair
+    // nothing configured brings NOTHING: sonnet's effort/temperature/top_p and gpt5's defer mode stay behind.
     let (s, warnings) = resolve_warned(&["run", "team", "-M", "relay:o3-mini"], &cfg, &[]);
     let s = s.unwrap();
     assert_eq!(s.raw_type, "openai");
     assert_eq!(s.model, "o3-mini");
     assert_eq!(s.base_url, "https://relay/v1");
+    assert_eq!(s.resolved.model.defer_mode, "");
+    assert_eq!(s.resolved.model.effort, "");
+    assert_eq!(s.resolved.model.temperature, None);
+    assert_eq!(s.resolved.model.top_p, None);
+    assert_eq!(s.temperature, None);
     assert_eq!(
         warnings,
         vec![
@@ -959,14 +972,45 @@ agents:
         ]
     );
 
+    // `provider:id` naming the pair an entry serves is that entry, knobs and all — the candidate by name
+    // and the candidate by pair are the same model.
+    let (s, warnings) = resolve_warned(&["run", "team", "-M", "relay:gpt-5.2"], &cfg, &[]);
+    let s = s.unwrap();
+    assert_eq!(
+        (s.raw_type.as_str(), s.model.as_str()),
+        ("openai", "gpt-5.2")
+    );
+    assert_eq!(s.resolved.model.defer_mode, "system-tools");
+    assert_eq!(s.temperature, Some(0.2));
+    assert!(warnings.is_empty(), "{warnings:?}");
+
     // `provider:*` is that provider with nothing chosen — the picker's job.
     let s = resolve(&["run", "team", "-M", "relay:*"], &cfg, &[]).unwrap();
     assert_eq!((s.raw_type.as_str(), s.model.as_str()), ("openai", ""));
 
-    // A bare id stays on the provider the run resolved to.
+    // A bare id stays on the provider the run resolved to, as `<provider>:id` — the same rule: an id the
+    // config never mentions brings nothing, sonnet's knobs included …
     let (s, warnings) = resolve_warned(&["run", "team", "-M", "claude-opus-5"], &cfg, &[]);
-    assert_eq!(s.unwrap().raw_type, "anthropic");
+    let s = s.unwrap();
+    assert_eq!(
+        (s.raw_type.as_str(), s.model.as_str()),
+        ("anthropic", "claude-opus-5")
+    );
+    assert_eq!(s.resolved.model.effort, "");
+    assert_eq!(s.resolved.model.top_p, None);
+    assert_eq!(s.temperature, None);
     assert_eq!(warnings.len(), 1, "{warnings:?}");
+
+    // … and an id some entry serves on that provider is that entry, even from outside the candidate set.
+    let (s, warnings) = resolve_warned(&["run", "team", "-M", "claude-haiku-4-5"], &cfg, &[]);
+    let s = s.unwrap();
+    assert_eq!(
+        (s.raw_type.as_str(), s.model.as_str()),
+        ("anthropic", "claude-haiku-4-5")
+    );
+    assert_eq!(s.resolved.model.effort, "low");
+    assert_eq!(s.temperature, None);
+    assert_eq!(warnings.len(), 1, "haiku is not a candidate: {warnings:?}");
 
     // An id whose colon names nothing iota knows is left alone — relays put colons in model ids.
     let s = resolve(&["run", "team", "-M", "vendor:weird:id"], &cfg, &[]).unwrap();
