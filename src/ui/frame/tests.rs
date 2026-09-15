@@ -17,10 +17,9 @@ use crate::text::width::str_width;
 use crate::ui::facade::StatusData;
 use crate::ui::frame::{BottomZone, BusyView, FrameInput, FrameView, build_frame, status_line};
 use crate::ui::region::RegionSnapshot;
+use crate::ui::testutil::SPINNER_GLYPHS;
 use crate::ui::theme::{CYAN, FAINT, GREEN, RED, RESET, YELLOW};
 use ratatui::style::{Color, Modifier};
-
-const SPINNER_GLYPHS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
 /// One frame case; defaults = idle 80-col frame with an EMPTY composer.
 struct Case {
@@ -144,7 +143,7 @@ fn separator_indices(rows: &[String]) -> Vec<usize> {
 /// bottom-slot swap (surface > desc > status), the cursor offset math, and the
 /// idle-frame no-spinner-glyph invariant — through BOTH the raw rows and the
 /// `TestBackend` cell grid.
-// Go: model_test.go:1041 (adapted — composer content is WP46's crown jewel)
+// Composer content is the composer suite's own; the frame order around an empty one is pinned here.
 #[test]
 fn frame_order_with_empty_composer_and_slot_swap() {
     let case = Case {
@@ -255,7 +254,6 @@ fn frame_order_with_empty_composer_and_slot_swap() {
 
 /// One CONSTANT blank row separates the content side from everything input-side —
 /// directly above the queue when one shows, directly above the top separator otherwise.
-// Go: model_test.go:1906
 #[test]
 fn spacer_above_input_zone() {
     let v = view(&Case::default());
@@ -284,7 +282,6 @@ fn spacer_above_input_zone() {
 
 /// Residue rows hold their height but render BLANK — stale widget chrome next to an
 /// injected user block read as leaked tool output.
-// Go: model_test.go:1939
 #[test]
 fn residue_renders_blank() {
     let v = view(&Case {
@@ -315,7 +312,6 @@ fn residue_renders_blank() {
 
 /// Busy toggling on/off changes ZERO frame rows; the label lives on the SAME row as
 /// the model/context status (the height invariant that killed the composer bounce).
-// Go: model_test.go:975
 #[test]
 fn busy_in_status_line() {
     let status = StatusData {
@@ -371,7 +367,6 @@ fn busy_in_status_line() {
 
 /// The live sub-state renders after the label (`"label · detail"`); the state-machine
 /// halves (clock kept, phase clears detail, idle drop) live in the loop units.
-// Go: model_test.go:1010 (render half)
 #[test]
 fn busy_detail_renders_after_label() {
     let v = view(&Case {
@@ -390,7 +385,6 @@ fn busy_detail_renders_after_label() {
 }
 
 /// Fields render; a narrow width truncates to a single row.
-// Go: model_test.go:535
 #[test]
 fn status_line_renders_fields_and_truncates() {
     let s = StatusData {
@@ -415,7 +409,6 @@ fn status_line_renders_fields_and_truncates() {
 
 /// Exact SGR bytes per segment: model cyan+faint, tokens green+faint, ctx hue+faint;
 /// the em-dash placeholder keeps the model field visible.
-// Go: model_test.go:1333
 #[test]
 fn status_line_field_hues() {
     let s = StatusData {
@@ -450,7 +443,6 @@ fn status_line_field_hues() {
 
 /// The context figure warms as the window fills: green roomy, yellow past 70%, red
 /// past 90%.
-// Go: model_test.go:1359
 #[test]
 fn status_line_context_hues() {
     for (used, hue, name) in [
@@ -473,7 +465,6 @@ fn status_line_context_hues() {
 }
 
 /// A token-less provider drops both figure segments instead of rendering zeros.
-// Go: model_test.go:1379
 #[test]
 fn status_line_without_token_accounting() {
     let s = StatusData {
@@ -488,7 +479,6 @@ fn status_line_without_token_accounting() {
 }
 
 /// Without token figures the ctx segment hides too (the T1 default shape).
-// Go: model_test.go:1730
 #[test]
 fn status_line_hides_ctx_without_tokens() {
     let s = StatusData {
@@ -502,7 +492,6 @@ fn status_line_hides_ctx_without_tokens() {
 
 /// The cache share QUALIFIES the input figure (`"↑ 148k (77% cached) ↓ 22k"`) and
 /// disappears when nothing was cached.
-// Go: model_test.go:2029
 #[test]
 fn status_line_cache_share() {
     let s = StatusData {
@@ -534,7 +523,6 @@ fn status_line_cache_share() {
 
 /// The `debug` marker renders yellow+faint and SURVIVES truncation (re-appended) —
 /// a mode that rewrites the layout must not vanish on narrow terminals.
-// Go: model_test.go:2052
 #[test]
 fn status_line_debug_marker() {
     let off = StatusData {
@@ -568,7 +556,6 @@ fn status_line_debug_marker() {
 
 /// The call widget: spinner header over the live `"⎿ elapsed"` row; the cancel hint
 /// only with an active scope; the detail rides ahead of the elapsed figure.
-// Go: model_test.go:432
 #[test]
 fn call_preview_rendering() {
     let base = Instant::now();
@@ -633,7 +620,6 @@ fn call_preview_rendering() {
 
 /// The staging window renders above the separator — tail as-is, preview rolling
 /// source dim under the spinner header.
-// Go: model_test.go:494
 #[test]
 fn region_rendering() {
     let v = view(&Case {
@@ -659,7 +645,7 @@ fn region_rendering() {
 /// Queue rendering laws at the frame level: the hint rides the last fully-visible row
 /// only when nothing is hidden; the overflow row carries it otherwise; slash items
 /// re-wrap green.
-// Go: model.go:993-1020 (render laws; the model-driven suite is WP46's)
+// The render laws; the model-driven queue suite is queue_tests.rs.
 #[test]
 fn queue_rows_hint_laws() {
     let full = Case {

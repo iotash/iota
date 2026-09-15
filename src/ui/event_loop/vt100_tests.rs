@@ -19,11 +19,9 @@ use crate::ui::event_loop::Model;
 use crate::ui::facade::{ProgressState, StatusData};
 use crate::ui::msgs::UiMsg;
 use crate::ui::region::RegionSnapshot;
-use crate::ui::testutil::{ChannelEvents, SharedBuf, test_model};
+use crate::ui::testutil::{ChannelEvents, SPINNER_GLYPHS, SharedBuf, test_model};
 use crossterm::event::Event;
 use tokio_util::sync::CancellationToken;
-
-const SPINNER_GLYPHS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
 /// CSI-final byte counters (the spike's `CountWriter` idea, made assertions):
 /// DECSTBM set/reset, in-region scrolls, erase-display.

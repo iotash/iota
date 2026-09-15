@@ -1,7 +1,8 @@
 //! The UI suites' shared harness (`cfg(test)` only): one open surface driven exactly as the loop
 //! drives it ([`Surf`]), the key constructors, and a loop [`Model`] over the test-seam region
 //! ([`test_model`]) with the model-level key helpers, and the headless terminal stack's two ends —
-//! a shared byte sink ([`SharedBuf`]) and a scripted event source ([`ChannelEvents`]).
+//! a shared byte sink ([`SharedBuf`]) and a scripted event source ([`ChannelEvents`]) — plus the spinner
+//! glyphs ([`SPINNER_GLYPHS`]) that a "nothing is spinning" scan looks for.
 #![allow(clippy::panic, clippy::expect_used)]
 
 use std::io::{self, Write};
@@ -18,6 +19,9 @@ use crate::ui::facade::{Panel, TabbedResult};
 use crate::ui::region::{Emit, Region};
 use crate::ui::surface::tabbed::PanelState;
 use crate::ui::surface::{SurfaceEffect, SurfaceState};
+
+/// The spinner's ten glyphs as one string, for "no spinner on screen" scans.
+pub(crate) const SPINNER_GLYPHS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
 // --- the surface ------------------------------------------------------------
 
