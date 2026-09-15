@@ -12,10 +12,10 @@ use std::time::{Duration, Instant};
 
 use crate::ui::facade::{PreviewHandle, UiStreamSink};
 
-use crate::ui::region::{
+use crate::ui::render::region::{
     Emit, LivePublish, PREVIEW_WINDOW, Region, RegionSnapshot, TAIL_KEEP, chunk_overflow,
 };
-use crate::ui::sink::{PreviewWriter, StreamSink, count_lines};
+use crate::ui::render::sink::{PreviewWriter, StreamSink, count_lines};
 
 /// A region publishing through the test seam with width/height 0 (Go `&region{emit: …}`).
 fn region_emitting(f: impl FnMut(Vec<String>, RegionSnapshot) + Send + 'static) -> Region {
@@ -880,17 +880,17 @@ fn preview_writer_drop_closes() {
 /// atomic defaulting true, and the 236/254 input shades.
 #[test]
 fn theme_sgr_pins() {
-    assert_eq!(crate::ui::theme::FAINT, "\x1b[2m");
-    assert_eq!(crate::ui::theme::CYAN, "\x1b[36m");
-    assert_eq!(crate::ui::theme::GREEN, "\x1b[32m");
-    assert_eq!(crate::ui::theme::YELLOW, "\x1b[33m");
-    assert_eq!(crate::ui::theme::RED, "\x1b[31m");
-    assert_eq!(crate::ui::theme::REV_ON, "\x1b[7m");
-    assert_eq!(crate::ui::theme::RESET, "\x1b[0m");
-    assert_eq!(crate::ui::theme::ERR_PREFIX, "\x1b[31m⚠ \x1b[0m");
-    assert_eq!(crate::ui::theme::SEARCH_HIT, "\x1b[7m");
-    assert_eq!(crate::ui::theme::SEARCH_CUR, "\x1b[7;33m");
+    assert_eq!(crate::ui::render::theme::FAINT, "\x1b[2m");
+    assert_eq!(crate::ui::render::theme::CYAN, "\x1b[36m");
+    assert_eq!(crate::ui::render::theme::GREEN, "\x1b[32m");
+    assert_eq!(crate::ui::render::theme::YELLOW, "\x1b[33m");
+    assert_eq!(crate::ui::render::theme::RED, "\x1b[31m");
+    assert_eq!(crate::ui::render::theme::REV_ON, "\x1b[7m");
+    assert_eq!(crate::ui::render::theme::RESET, "\x1b[0m");
+    assert_eq!(crate::ui::render::theme::ERR_PREFIX, "\x1b[31m⚠ \x1b[0m");
+    assert_eq!(crate::ui::render::theme::SEARCH_HIT, "\x1b[7m");
+    assert_eq!(crate::ui::render::theme::SEARCH_CUR, "\x1b[7;33m");
 
-    assert_eq!(crate::ui::theme::input_bg(true), "\x1b[48;5;236m");
-    assert_eq!(crate::ui::theme::input_bg(false), "\x1b[48;5;254m");
+    assert_eq!(crate::ui::render::theme::input_bg(true), "\x1b[48;5;236m");
+    assert_eq!(crate::ui::render::theme::input_bg(false), "\x1b[48;5;254m");
 }

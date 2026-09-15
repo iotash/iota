@@ -12,7 +12,7 @@
 use crate::text::width::{graphemes, str_width};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::theme::{CYAN, RESET};
+use crate::ui::render::theme::{CYAN, RESET};
 
 /// Composer growth cap (model.go:29; duplicated from the loop to keep this module
 /// self-contained — the two consts are pinned equal by the WP46 tests).
@@ -419,10 +419,10 @@ mod tests {
 
     use crate::text::ansi::strip_sgr;
     use crate::text::width::str_width;
-    use crate::ui::composer::Composer;
+    use crate::ui::input::composer::Composer;
 
     use crate::ui::facade::{Panel, StatusData, Suggestion, TabbedSpec};
-    use crate::ui::msgs::UiMsg;
+    use crate::ui::runtime::msgs::UiMsg;
     use crate::ui::testutil::{down, enter, key, plain, test_model, type_text, up};
     use crossterm::event::KeyCode;
 
@@ -445,7 +445,7 @@ mod tests {
         let mut term = ratatui::Terminal::new(backend).unwrap();
         let lines: Vec<ratatui::text::Line<'static>> = rows
             .iter()
-            .map(|r| crate::ui::spans::ansi_to_spans(r))
+            .map(|r| crate::ui::render::spans::ansi_to_spans(r))
             .collect();
         term.draw(|f| {
             f.render_widget(
@@ -596,7 +596,7 @@ mod tests {
         let mut m = test_model();
         let (tx, mut rx) = tokio::sync::oneshot::channel();
         m.apply(UiMsg::ReadReq { id: 1, reply: tx });
-        crate::ui::paste::on_paste(&mut m, "line1\nline2\nline3");
+        crate::ui::input::paste::on_paste(&mut m, "line1\nline2\nline3");
         assert!(
             m.composer.value().starts_with("[#1 line1… 3 lines]"),
             "composer = {:?}, want a paste tag",
@@ -611,7 +611,7 @@ mod tests {
         );
 
         // Single-line pastes insert verbatim.
-        crate::ui::paste::on_paste(&mut m, "inline");
+        crate::ui::input::paste::on_paste(&mut m, "inline");
         assert_eq!(m.composer.value(), "inline");
     }
 
@@ -627,7 +627,7 @@ mod tests {
         let mut m = test_model();
         let (tx, mut rx) = tokio::sync::oneshot::channel();
         m.apply(UiMsg::ReadReq { id: 1, reply: tx });
-        crate::ui::paste::on_paste(&mut m, &content);
+        crate::ui::input::paste::on_paste(&mut m, &content);
         type_text(&mut m, " please review");
         enter(&mut m);
         let r = rx.try_recv().expect("waiter not served").expect("read err");
@@ -636,13 +636,13 @@ mod tests {
         let echo: Vec<&str> = r.display.split('\n').collect();
         assert_eq!(
             echo.len(),
-            crate::ui::paste::PASTE_ECHO_MAX_LINES + 1,
+            crate::ui::input::paste::PASTE_ECHO_MAX_LINES + 1,
             "echo rows = {}, want {} head rows + the count",
             echo.len(),
-            crate::ui::paste::PASTE_ECHO_MAX_LINES + 1
+            crate::ui::input::paste::PASTE_ECHO_MAX_LINES + 1
         );
         assert_eq!(
-            echo[crate::ui::paste::PASTE_ECHO_MAX_LINES],
+            echo[crate::ui::input::paste::PASTE_ECHO_MAX_LINES],
             "… +40 more lines please review",
             "last echo row mismatch"
         );
@@ -656,7 +656,7 @@ mod tests {
         let mut m = test_model();
         let (tx, mut rx) = tokio::sync::oneshot::channel();
         m.apply(UiMsg::ReadReq { id: 1, reply: tx });
-        crate::ui::paste::on_paste(&mut m, "alpha\nbeta");
+        crate::ui::input::paste::on_paste(&mut m, "alpha\nbeta");
         enter(&mut m);
         rx.try_recv().expect("waiter not served").expect("read err");
 

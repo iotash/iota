@@ -22,7 +22,7 @@ use crossterm::event::KeyCode;
 
 use crate::ui::testutil::{Surf, ch, closed, key};
 
-use crate::ui::theme::{RESET, REV_ON};
+use crate::ui::render::theme::{RESET, REV_ON};
 
 fn slider(min: f64, max: f64, step: f64) -> Panel {
     Panel::slider("T".to_owned(), min, max, step, None)

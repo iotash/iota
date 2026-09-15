@@ -185,7 +185,7 @@ mod tests {
     }
 
     // Go: internal/host/background_test.go:97 TestDetectBackgroundLatch is NOT ported: Go latched
-    // because termenv's OSC 11 query could block for seconds; `crate::ui::osc::detect_background`
+    // because termenv's OSC 11 query could block for seconds; `crate::ui::runtime::osc::detect_background`
     // has a 100 ms deadline and needs no latch (T3 spec §2.4, DIVERGENCES §D).
     #[tokio::test]
     async fn a_probe_that_does_not_know_falls_through() {

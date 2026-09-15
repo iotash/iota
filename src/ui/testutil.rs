@@ -14,9 +14,9 @@ use std::time::Duration;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
 use crate::text::ansi::strip_sgr;
-use crate::ui::event_loop::{EventSource, LoopShared, Model};
 use crate::ui::facade::{Panel, TabbedResult};
-use crate::ui::region::{Emit, Region};
+use crate::ui::render::region::{Emit, Region};
+use crate::ui::runtime::event_loop::{EventSource, LoopShared, Model};
 use crate::ui::surface::tabbed::PanelState;
 use crate::ui::surface::{SurfaceEffect, SurfaceState};
 

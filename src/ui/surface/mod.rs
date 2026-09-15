@@ -18,7 +18,7 @@ pub(crate) mod tabbed;
 
 // Sibling alias so the child modules can say `super::theme` (a habit from the crate era, when the
 // `#[path]` test mounts compiled `surface/` standalone; still the shortest path).
-pub(crate) use super::theme;
+pub(crate) use crate::ui::render::theme;
 
 use std::io::{self, Write as _};
 use std::process::{Command, Stdio};
@@ -495,7 +495,7 @@ impl SurfaceState {
 /// Routes a bracketed paste into the focused `Input` field or open Custom editor,
 /// flattened to one line and trimmed (model.go:234-241; one-line fields).
 ///
-/// Wired by [`crate::ui::oneshot::run_surface`]; the in-REPL loop's `Event::Paste` arm
+/// Wired by [`crate::ui::runtime::oneshot::run_surface`]; the in-REPL loop's `Event::Paste` arm
 /// still drops surface pastes (`NEEDS: [WP44] event_loop.rs` in DEVIATIONS3 carries the
 /// one-line call).
 impl SurfaceState {

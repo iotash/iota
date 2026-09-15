@@ -8,11 +8,3 @@ pub(crate) mod msgs;
 pub(crate) mod oneshot;
 pub(crate) mod osc;
 pub(crate) mod term;
-
-// Transitional aliases while the import points move (next commit): the files here still name
-// their former flat siblings under `ui/` as `super::<name>`.
-#[allow(unused_imports)]
-pub(crate) use crate::ui::{
-    Tui, TuiOptions, composer, facade, frame, keys, paste, region, sink, spans, suggest, surface,
-    theme,
-};

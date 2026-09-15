@@ -108,7 +108,7 @@ For each terminal:
       still reachable? Is the history contiguous — no gaps, no duplicated rows?
 - [ ] **2.3** If any line was discarded: record it as a **DEFECT** — the terminal, its
       version, and the observation — and fix it in the `ui` module's insert path
-      (`src/ui/{region,term}.rs`). There is no other build to ship there.
+      (`src/ui/{render/region,runtime/term}.rs`). There is no other build to ship there.
 
 > ✅ **The wide-rune defect is FIXED** (VERIFY pass; it was open when this file was written).
 > Layer 4 found it deterministically: every double-width grapheme in a padded USER-ECHO row
@@ -116,7 +116,7 @@ For each terminal:
 > Cause: a wide grapheme OWNS the cells to its right and a covered cell reads back as a
 > space; ratatui's buffer diff drops those cells, but a backend handed the WHOLE buffer
 > (`Terminal::insert_before`'s `draw_lines` path) prints them. `LoopBackend::draw`
-> (`src/ui/term.rs`) now drops the covered cells, the same rule ratatui's own
+> (`src/ui/runtime/term.rs`) now drops the covered cells, the same rule ratatui's own
 > diff and `TestBackend` apply. Pinned by `tests/vt100_semantics.rs::wide_runes_insert_intact`
 > (part of `cargo test`). Still worth an eyeball here: the pin is a byte
 > assertion, not a look.
@@ -191,7 +191,7 @@ because the *look* of them is what a user reports.
 
 Everything else T3 shipped is pinned by tests. These two channels are not: `cmux` has no CI
 binary, and tmux never blurs a pane, so focus-gated notification has unit pins only. Both are
-written from the ui event-loop thread (`src/ui/term.rs`), so a wrong byte here is invisible
+written from the ui event-loop thread (`src/ui/runtime/term.rs`), so a wrong byte here is invisible
 until a human looks at a real terminal.
 
 - [ ] **7.1 Terminal progress (OSC 9;4).** Start a turn: the terminal's own progress
@@ -214,7 +214,7 @@ until a human looks at a real terminal.
 ## 8. Background-job notices (phase C — a wake-up automation cannot stage)
 
 A finished background job enters the conversation through the facade's input queue
-(`Ui::enqueue`). The queue laws are unit-pinned (`ui::event_loop::queue_tests`) and the loop's
+(`Ui::enqueue`). The queue laws are unit-pinned (`ui::runtime::event_loop::queue_tests`) and the loop's
 two arrivals are covered at the REPL level (`tests/repl/jobs.rs`), but nothing automated shows
 what the arrival LOOKS like on a real terminal — the L4 mock provider cannot emit a tool call,
 so no tmux scenario can start a job.
@@ -298,7 +298,7 @@ agents:
 
 **Status: not one item below has been executed.** Added with the color switch (MIGRATION-ROADMAP
 §3 #2; DIVERGENCES X-27, X-28). L1 pins the parser (`src/app/color.rs`) and the frame's byte→cell gate
-(`src/ui/spans.rs`), L3 scans a whole scripted run for escapes (`tests/nocolor/main.rs`) and L4
+(`src/ui/render/spans.rs`), L3 scans a whole scripted run for escapes (`tests/nocolor/main.rs`) and L4
 reads a committed row back from a real terminal and greps the raw byte stream
 (`tests/ui_tmux/scenarios/16-nocolor.sh`). What is left for a human is legibility: whether a frame
 with no color is still a frame you can use.
@@ -383,7 +383,7 @@ it is the set where the *mechanism* differs from Unix rather than the emulator.
       nothing.
 - [ ] **9.10 Ctrl+C mid-turn.** During a streamed answer, Ctrl+C cancels the turn and returns
       to the composer without killing the process; the partial answer stays in history.
-- [ ] **9.11 Ctrl+D.** Identical to Ctrl+C in both states (`ui/keys.rs` treats `Char('c')` and
+- [ ] **9.11 Ctrl+D.** Identical to Ctrl+C in both states (`ui/input/keys.rs` treats `Char('c')` and
       `Char('d')` as one row). On Windows there is no EOF convention behind Ctrl+D, so this is
       purely a key binding — confirm the console host does not swallow it first.
 - [ ] **9.12 Ctrl+C reaches a running command.** Start a long `shell` call, press Ctrl+C.
@@ -469,7 +469,7 @@ where WP52 recorded 182 assertions with a WART on §6.1. That WART is gone: the 
 pin now reports `60x10: the frame and all 12 rows survived intact` (T-40 CLOSED).
 
 There is no second binary to run it against: the `tui-portable` fallback was removed on
-2026-09-01. The L2b suite (`cargo test --lib ui::event_loop::vt100_tests`, part of
+2026-09-01. The L2b suite (`cargo test --lib ui::runtime::event_loop::vt100_tests`, part of
 `cargo test --workspace`) carries the scroll-region byte proof and the wide-rune pin from
 §2.3.
 

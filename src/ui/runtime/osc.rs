@@ -22,7 +22,7 @@ use std::time::Duration;
 use crossterm::queue;
 use crossterm::terminal::SetTitle;
 
-use super::facade::ProgressState;
+use crate::ui::facade::ProgressState;
 
 /// The OSC 11 reply deadline (`TUI_CONTRACTS` §5: 100ms timeout).
 const BG_REPLY_TIMEOUT: Duration = Duration::from_millis(100);

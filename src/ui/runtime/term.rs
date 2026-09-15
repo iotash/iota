@@ -43,10 +43,10 @@ use ratatui::text::{Line, Text};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
-use super::facade::ProgressState;
-use super::frame::FrameView;
 use super::osc;
-use super::spans::ansi_to_spans;
+use crate::ui::facade::ProgressState;
+use crate::ui::render::frame::FrameView;
+use crate::ui::render::spans::ansi_to_spans;
 
 /// Synthetic terminal geometry for headless tests: the backend answers size and
 /// cursor-position queries from here instead of the real tty. Cloned handles share

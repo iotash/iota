@@ -6,7 +6,7 @@
 //! in-file (formerly a `#[path]`-mounted `tests/queue.rs` of the terminal crate; merged 2026-09-02).
 
 use crate::ui::facade::{Input, InputKind};
-use crate::ui::msgs::UiMsg;
+use crate::ui::runtime::msgs::UiMsg;
 use crate::ui::testutil::{ctrl_c, enter, key, plain, test_model, type_text, up};
 use crossterm::event::KeyCode;
 use tokio_util::sync::CancellationToken;

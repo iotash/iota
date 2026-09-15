@@ -11,9 +11,9 @@ use crate::ui::facade::{TabbedResult, TabbedSpec};
 use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event};
 use crossterm::{cursor, execute, terminal};
 
-use super::frame::FrameView;
-use super::surface::{SurfaceEffect, SurfaceState};
 use super::term::Term;
+use crate::ui::render::frame::FrameView;
+use crate::ui::surface::{SurfaceEffect, SurfaceState};
 
 /// The W10 idle-wake shape: the poll deadline is always finite.
 const ONESHOT_POLL_MAX: Duration = Duration::from_millis(50);

@@ -14,10 +14,10 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::ui::event_loop::Model;
 use crate::ui::facade::{ProgressState, StatusData};
-use crate::ui::msgs::UiMsg;
-use crate::ui::region::RegionSnapshot;
+use crate::ui::render::region::RegionSnapshot;
+use crate::ui::runtime::event_loop::Model;
+use crate::ui::runtime::msgs::UiMsg;
 use crate::ui::testutil::{ChannelEvents, SPINNER_GLYPHS, SharedBuf, test_model};
 use crossterm::event::Event;
 use tokio_util::sync::CancellationToken;
@@ -78,19 +78,19 @@ fn parse(buf: &SharedBuf) -> vt100::Parser {
     p
 }
 
-/// A headless [`crate::ui::term::Term`] over a fresh shared buffer.
+/// A headless [`crate::ui::runtime::term::Term`] over a fresh shared buffer.
 fn direct_term(
     view_height: u16,
     top: u16,
 ) -> (
-    crate::ui::term::Term<SharedBuf>,
+    crate::ui::runtime::term::Term<SharedBuf>,
     SharedBuf,
-    crate::ui::term::Geometry,
+    crate::ui::runtime::term::Geometry,
 ) {
-    let geo = crate::ui::term::Geometry::new(80, 24);
+    let geo = crate::ui::runtime::term::Geometry::new(80, 24);
     let buf = SharedBuf::default();
     let wtr = buf.clone();
-    let t = crate::ui::term::Term::new(
+    let t = crate::ui::runtime::term::Term::new(
         Box::new(move || wtr.clone()),
         view_height,
         top,
@@ -106,10 +106,10 @@ struct LoopHarness {
     tx: mpsc::Sender<UiMsg>,
     etx: mpsc::Sender<Event>,
     buf: SharedBuf,
-    geo: crate::ui::term::Geometry,
+    geo: crate::ui::runtime::term::Geometry,
     width: Arc<AtomicU16>,
     height: Arc<AtomicU16>,
-    region: Arc<Mutex<crate::ui::region::Region>>,
+    region: Arc<Mutex<crate::ui::render::region::Region>>,
     join: thread::JoinHandle<io::Result<()>>,
 }
 
@@ -117,28 +117,34 @@ fn start_loop() -> LoopHarness {
     let width = Arc::new(AtomicU16::new(80));
     let height = Arc::new(AtomicU16::new(24));
     let (tx, rx) = mpsc::channel();
-    let region = Arc::new(Mutex::new(crate::ui::region::Region::new(
-        crate::ui::region::Emit::Live {
-            tx: Box::new(crate::ui::msgs::MailboxPublish(tx.clone())),
+    let region = Arc::new(Mutex::new(crate::ui::render::region::Region::new(
+        crate::ui::render::region::Emit::Live {
+            tx: Box::new(crate::ui::runtime::msgs::MailboxPublish(tx.clone())),
         },
         Arc::clone(&width),
         Arc::clone(&height),
     )));
-    let shared = crate::ui::event_loop::LoopShared {
+    let shared = crate::ui::runtime::event_loop::LoopShared {
         width: Arc::clone(&width),
         height: Arc::clone(&height),
         region: Arc::clone(&region),
     };
-    let geo = crate::ui::term::Geometry::new(80, 24);
+    let geo = crate::ui::runtime::term::Geometry::new(80, 24);
     let buf = SharedBuf::default();
     let wtr = buf.clone();
     // start_top 19 = screen_h − the idle frame height (5 rows): the viewport starts
     // at the bottom, so the composer cursor row is constant from the first insert.
-    let t = crate::ui::term::Term::new(Box::new(move || wtr.clone()), 1, 19, Some(geo.clone()))
-        .unwrap();
+    let t = crate::ui::runtime::term::Term::new(
+        Box::new(move || wtr.clone()),
+        1,
+        19,
+        Some(geo.clone()),
+    )
+    .unwrap();
     let (etx, erx) = mpsc::channel();
     let events = ChannelEvents::new(erx);
-    let join = thread::spawn(move || crate::ui::event_loop::run_loop(&rx, events, t, shared));
+    let join =
+        thread::spawn(move || crate::ui::runtime::event_loop::run_loop(&rx, events, t, shared));
     LoopHarness {
         tx,
         etx,
@@ -408,7 +414,7 @@ fn over_screen_height_insert_characterization() {
 fn shrink_recreation_walks_down_without_ghosts() {
     let (mut t, buf, _geo) = direct_term(4, 18);
     t.ensure_height(10).unwrap();
-    let tall = crate::ui::frame::FrameView {
+    let tall = crate::ui::render::frame::FrameView {
         rows: (0..10)
             .map(|i| {
                 if i == 5 {
@@ -427,7 +433,7 @@ fn shrink_recreation_walks_down_without_ghosts() {
     );
 
     // Close: recreate smaller (W1) + clear (W3), then output self-heals the freed rows.
-    let small = crate::ui::frame::FrameView {
+    let small = crate::ui::render::frame::FrameView {
         rows: vec![
             String::new(),
             "❯ ".to_owned(),
@@ -501,13 +507,13 @@ fn idle_poll_deadline_always_finite() {
     m.dirty = false;
     assert_eq!(
         m.poll_deadline(),
-        crate::ui::event_loop::IDLE_POLL_MAX,
+        crate::ui::runtime::event_loop::IDLE_POLL_MAX,
         "fully idle must still poll finite (W10)"
     );
 
     m.apply(UiMsg::BusyOn("x".to_owned()));
     m.dirty = false;
-    assert!(m.poll_deadline() <= crate::ui::event_loop::IDLE_POLL_MAX);
+    assert!(m.poll_deadline() <= crate::ui::runtime::event_loop::IDLE_POLL_MAX);
     assert!(m.spin_ticking, "busy must start the spinner chain");
 
     m.apply(UiMsg::Region(RegionSnapshot {
@@ -516,7 +522,7 @@ fn idle_poll_deadline_always_finite() {
     }));
     m.dirty = false;
     assert!(
-        m.poll_deadline() <= crate::ui::event_loop::STREAM_POLL_CAP,
+        m.poll_deadline() <= crate::ui::runtime::event_loop::STREAM_POLL_CAP,
         "streaming must cap the poll deadline"
     );
 
@@ -589,12 +595,12 @@ fn wide_runes_insert_intact() {
 fn notify_model() -> Model {
     let width = Arc::new(AtomicU16::new(80));
     let height = Arc::new(AtomicU16::new(24));
-    let region = Arc::new(Mutex::new(crate::ui::region::Region::new(
-        crate::ui::region::Emit::Test(Box::new(|_, _| {})),
+    let region = Arc::new(Mutex::new(crate::ui::render::region::Region::new(
+        crate::ui::render::region::Emit::Test(Box::new(|_, _| {})),
         Arc::clone(&width),
         Arc::clone(&height),
     )));
-    Model::new(crate::ui::event_loop::LoopShared {
+    Model::new(crate::ui::runtime::event_loop::LoopShared {
         width,
         height,
         region,
@@ -667,9 +673,9 @@ fn a_notification_rings_only_while_blurred() {
     let (mut t, buf, _geo) = direct_term(1, 19);
     let mut m = notify_model();
 
-    let ping = |m: &mut Model, t: &mut crate::ui::term::Term<SharedBuf>, s: &str| {
+    let ping = |m: &mut Model, t: &mut crate::ui::runtime::term::Term<SharedBuf>, s: &str| {
         m.apply(UiMsg::Notify(s.to_owned()));
-        crate::ui::event_loop::drain_notify(m, t).unwrap();
+        crate::ui::runtime::event_loop::drain_notify(m, t).unwrap();
     };
 
     let before = buf.bytes().len();

@@ -11,8 +11,8 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use super::event_loop::Model;
 use super::suggest;
+use crate::ui::runtime::event_loop::Model;
 
 /// Routes one key press through the composer precedence table
 /// (model.go updateKey, `KeyEventKind::Press` only).

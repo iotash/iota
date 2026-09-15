@@ -16,9 +16,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use crate::ui::event_loop::Model;
 use crate::ui::facade::{Input, Panel, Suggestion, TabbedResult, TabbedSpec, UiError};
-use crate::ui::msgs::UiMsg;
+use crate::ui::runtime::event_loop::Model;
+use crate::ui::runtime::msgs::UiMsg;
 use crate::ui::surface::field::Field;
 use crate::ui::testutil::{ch, ctrl, down, enter, key, test_model, type_text, up};
 

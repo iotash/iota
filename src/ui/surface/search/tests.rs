@@ -18,11 +18,11 @@ use crossterm::event::KeyCode;
 
 use crate::ui::testutil::{Surf, ch, closed, key};
 
+use crate::ui::render::theme::{CYAN, FAINT, RESET, SEARCH_CUR, SEARCH_HIT};
 use crate::ui::surface::SurfaceEffect;
 use crate::ui::surface::search::{
     SearchMode, ascii_fold, highlight_line, match_ranges, matches_query,
 };
-use crate::ui::theme::{CYAN, FAINT, RESET, SEARCH_CUR, SEARCH_HIT};
 
 fn long_items(n: usize) -> Vec<String> {
     (0..n).map(|i| format!("item-{i:02}")).collect()

@@ -21,9 +21,9 @@ use crossterm::event::KeyCode;
 
 use crate::ui::testutil::{Surf, ch, key};
 
+use crate::ui::render::theme::SEARCH_CUR;
 use crate::ui::surface::SurfaceEffect;
 use crate::ui::surface::search::{SearchHit, SearchMode};
-use crate::ui::theme::SEARCH_CUR;
 
 /// Go `viewBody(n)`: filler with a hit near the top (line 5) and one far down (line 30).
 fn view_body(n: usize) -> Vec<String> {

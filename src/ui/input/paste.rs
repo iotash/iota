@@ -10,7 +10,7 @@
 
 use crate::ui::facade::Input;
 
-use super::event_loop::Model;
+use crate::ui::runtime::event_loop::Model;
 
 /// How many head rows of a pasted block the sent-message echo shows (model.go:1219).
 pub(crate) const PASTE_ECHO_MAX_LINES: usize = 20;

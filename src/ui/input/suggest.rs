@@ -14,7 +14,7 @@ use crate::text::ansi::{ansi_width, truncate_ansi};
 use crate::ui::facade::Suggestion;
 
 use super::composer::Composer;
-use super::theme::{CYAN, FAINT, RESET};
+use crate::ui::render::theme::{CYAN, FAINT, RESET};
 
 /// Separates candidates on the row (suggest.go:26).
 const SUGGEST_GAP: &str = "  ";
@@ -200,10 +200,10 @@ mod tests {
 
     use crate::text::ansi::strip_sgr;
     use crate::text::width::str_width;
-    use crate::ui::composer::Composer;
     use crate::ui::facade::Suggestion;
-    use crate::ui::suggest::{frame_slots, match_suggestions, tab_complete};
-    use crate::ui::theme::{CYAN, FAINT, RESET};
+    use crate::ui::input::composer::Composer;
+    use crate::ui::input::suggest::{frame_slots, match_suggestions, tab_complete};
+    use crate::ui::render::theme::{CYAN, FAINT, RESET};
 
     /// Builds a suggestion table from plain values (Go `cmdTable`).
     fn cmd_table(vals: &[&str]) -> Vec<Suggestion> {

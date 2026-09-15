@@ -38,16 +38,16 @@ use crossterm::event::{Event, KeyEvent};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use super::composer::Composer;
-use super::frame::{BottomZone, BusyView, FrameInput, FrameView, build_frame};
-use super::keys;
 use super::msgs::UiMsg;
 use super::osc;
-use super::paste;
-use super::region::{Region, RegionSnapshot};
-use super::suggest;
-use super::surface::{self, SurfaceEffect};
 use super::term::Term;
+use crate::ui::input::composer::Composer;
+use crate::ui::input::keys;
+use crate::ui::input::paste;
+use crate::ui::input::suggest;
+use crate::ui::render::frame::{BottomZone, BusyView, FrameInput, FrameView, build_frame};
+use crate::ui::render::region::{Region, RegionSnapshot};
+use crate::ui::surface::{self, SurfaceEffect};
 
 /// W10 `IDLE_WAKE`: the loop's poll deadline is never longer than this
 /// (`TUI_CONTRACTS` §8 — a design constant; tea.Program woke on `Send`).

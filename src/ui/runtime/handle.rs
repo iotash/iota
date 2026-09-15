@@ -40,11 +40,11 @@ use tokio_util::sync::CancellationToken;
 
 use super::event_loop::{CrosstermEvents, EventSource, LoopShared, run_loop};
 use super::msgs::{MailboxPublish, UiMsg};
-use super::region::{Emit, Region};
-use super::sink::StreamSink;
 use super::term::Term;
-use super::theme::{RESET, REV_ON};
-use super::{Tui, TuiOptions};
+use crate::ui::render::region::{Emit, Region};
+use crate::ui::render::sink::StreamSink;
+use crate::ui::render::theme::{RESET, REV_ON};
+use crate::ui::{Tui, TuiOptions};
 
 /// Restores the terminal — bracketed paste off, cursor shown, raw mode off — exactly
 /// once, on `Drop`. The loop thread holds it across `run_loop` so EVERY exit path
@@ -436,10 +436,10 @@ mod tests {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use tokio_util::sync::CancellationToken;
 
-    /// The facade under test: the REAL `crate::ui::handle::spawn` loop thread over a headless
+    /// The facade under test: the REAL `crate::ui::runtime::handle::spawn` loop thread over a headless
     /// terminal, driven through the `Arc<TuiHandle>` exactly like a consumer.
     struct FacadeHarness {
-        ui: Arc<crate::ui::handle::TuiHandle>,
+        ui: Arc<crate::ui::runtime::handle::TuiHandle>,
         etx: mpsc::Sender<Event>,
         buf: SharedBuf,
     }
@@ -447,15 +447,16 @@ mod tests {
     fn start_facade() -> FacadeHarness {
         let width = Arc::new(AtomicU16::new(80));
         let height = Arc::new(AtomicU16::new(24));
-        let geo = crate::ui::term::Geometry::new(80, 24);
+        let geo = crate::ui::runtime::term::Geometry::new(80, 24);
         let buf = SharedBuf::default();
         let wtr = buf.clone();
         // start_top 19 mirrors the WP44 loop harness: the viewport starts at the bottom.
         let t =
-            crate::ui::term::Term::new(Box::new(move || wtr.clone()), 1, 19, Some(geo)).unwrap();
+            crate::ui::runtime::term::Term::new(Box::new(move || wtr.clone()), 1, 19, Some(geo))
+                .unwrap();
         let (etx, erx) = mpsc::channel();
         let events = ChannelEvents::new(erx);
-        let ui = crate::ui::handle::spawn(t, events, width, height, None).unwrap();
+        let ui = crate::ui::runtime::handle::spawn(t, events, width, height, None).unwrap();
         FacadeHarness { ui, etx, buf }
     }
 

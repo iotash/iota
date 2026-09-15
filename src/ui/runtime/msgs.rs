@@ -18,7 +18,7 @@ use crate::ui::facade::{
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use super::region::{LivePublish, RegionSnapshot};
+use crate::ui::render::region::{LivePublish, RegionSnapshot};
 
 /// One message from the facade handle (WP45) to the `"iota-tui"` loop thread.
 pub(crate) enum UiMsg {

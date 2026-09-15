@@ -25,12 +25,12 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifi
 
 use crate::ui::testutil::{Surf, ch, closed, ctrl, key};
 
+use crate::ui::render::theme::{CYAN, FAINT, GREEN, RESET, REV_ON, input_bg};
 use crate::ui::surface::field::{Field, input_field};
 use crate::ui::surface::tabbed::{
     PanelState, base_hint, panel_height, scroll_percent, surface_hint,
 };
 use crate::ui::surface::{SurfaceEffect, SurfaceState};
-use crate::ui::theme::{CYAN, FAINT, GREEN, RESET, REV_ON, input_bg};
 
 fn list(title: &str, items: &[&str]) -> Panel {
     Panel::list(

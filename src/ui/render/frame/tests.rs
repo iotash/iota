@@ -14,10 +14,12 @@ use std::time::{Duration, Instant};
 use crate::text::ansi::strip_sgr;
 use crate::text::width::str_width;
 use crate::ui::facade::StatusData;
-use crate::ui::frame::{BottomZone, BusyView, FrameInput, FrameView, build_frame, status_line};
-use crate::ui::region::RegionSnapshot;
+use crate::ui::render::frame::{
+    BottomZone, BusyView, FrameInput, FrameView, build_frame, status_line,
+};
+use crate::ui::render::region::RegionSnapshot;
+use crate::ui::render::theme::{CYAN, FAINT, GREEN, RED, RESET, YELLOW};
 use crate::ui::testutil::SPINNER_GLYPHS;
-use crate::ui::theme::{CYAN, FAINT, GREEN, RED, RESET, YELLOW};
 use ratatui::style::{Color, Modifier};
 
 /// One frame case; defaults = idle 80-col frame with an EMPTY composer.
@@ -96,7 +98,7 @@ fn render_plain(rows: &[String], w: u16, h: u16) -> Vec<String> {
     let mut term = ratatui::Terminal::new(backend).unwrap();
     let lines: Vec<ratatui::text::Line<'static>> = rows
         .iter()
-        .map(|r| crate::ui::spans::ansi_to_spans(r))
+        .map(|r| crate::ui::render::spans::ansi_to_spans(r))
         .collect();
     term.draw(|f| {
         f.render_widget(
@@ -689,7 +691,7 @@ fn queue_rows_hint_laws() {
 // ---------------------------------------------------------------------------
 
 fn spans_of(s: &str) -> Vec<(String, ratatui::style::Style)> {
-    crate::ui::spans::ansi_to_spans(s)
+    crate::ui::render::spans::ansi_to_spans(s)
         .spans
         .into_iter()
         .map(|sp| (sp.content.into_owned(), sp.style))
