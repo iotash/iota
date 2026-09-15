@@ -424,74 +424,18 @@ mod tests {
     //! in-file (formerly a `#[path]`-mounted `tests/facade.rs` of the terminal crate; merged 2026-09-02).
 
     use std::future::Future;
-    use std::io::{self, Write};
+
     use std::pin::Pin;
     use std::sync::atomic::AtomicU16;
-    use std::sync::{Arc, Mutex, mpsc};
+    use std::sync::{Arc, mpsc};
     use std::task::{Context, Poll, Waker};
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use crate::ui::event_loop::EventSource;
     use crate::ui::facade::{SelectSpec, Ui, UiError};
+    use crate::ui::testutil::{ChannelEvents, SharedBuf};
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use tokio_util::sync::CancellationToken;
-
-    /// A cloneable byte sink shared between the terminal stack and the assertions.
-    #[derive(Clone, Default)]
-    struct SharedBuf(Arc<Mutex<Vec<u8>>>);
-
-    impl SharedBuf {
-        fn bytes(&self) -> Vec<u8> {
-            self.0.lock().unwrap().clone()
-        }
-    }
-
-    impl Write for SharedBuf {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    /// Scripted [`EventSource`] over a channel (the loop's poll deadline still elapses
-    /// for real, so the W10 timing in these tests is genuine).
-    struct ChannelEvents {
-        rx: mpsc::Receiver<Event>,
-        pending: Option<Event>,
-    }
-
-    impl EventSource for ChannelEvents {
-        fn poll(&mut self, timeout: Duration) -> io::Result<bool> {
-            if self.pending.is_some() {
-                return Ok(true);
-            }
-            match self.rx.recv_timeout(timeout) {
-                Ok(e) => {
-                    self.pending = Some(e);
-                    Ok(true)
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => Ok(false),
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    thread::sleep(timeout);
-                    Ok(false)
-                }
-            }
-        }
-
-        fn read(&mut self) -> io::Result<Event> {
-            if let Some(e) = self.pending.take() {
-                return Ok(e);
-            }
-            self.rx
-                .recv()
-                .map_err(|_| io::Error::new(io::ErrorKind::UnexpectedEof, "no scripted event"))
-        }
-    }
 
     /// The facade under test: the REAL `crate::ui::handle::spawn` loop thread over a headless
     /// terminal, driven through the `Arc<TuiHandle>` exactly like a consumer.
@@ -511,10 +455,7 @@ mod tests {
         let t =
             crate::ui::term::Term::new(Box::new(move || wtr.clone()), 1, 19, Some(geo)).unwrap();
         let (etx, erx) = mpsc::channel();
-        let events = ChannelEvents {
-            rx: erx,
-            pending: None,
-        };
+        let events = ChannelEvents::new(erx);
         let ui = crate::ui::handle::spawn(t, events, width, height, None).unwrap();
         FacadeHarness { ui, etx, buf }
     }
@@ -584,9 +525,8 @@ mod tests {
 
     /// With a pending `read_input`, Enter delivers the input directly (no queueing) and
     /// clears the waiter.
-    // Go: internal/ui/model_test.go:61
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_submit_delivers_to_waiter() {
+    async fn enter_delivers_the_input_to_the_pending_reader() {
         let h = start_facade();
         h.wait_frame();
         let ui = Arc::clone(&h.ui);
@@ -606,9 +546,8 @@ mod tests {
     /// A `read_input` whose cancel token died revokes its waiter eagerly, so a later
     /// submit queues instead of vanishing into a dead channel — the next `read_input`
     /// drains it.
-    // Go: internal/ui/model_test.go:582
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_read_cancel_revokes_waiter() {
+    async fn a_cancelled_read_revokes_its_waiter_so_the_next_submit_queues() {
         let h = start_facade();
         h.wait_frame();
         let cancel = CancellationToken::new();
@@ -637,8 +576,6 @@ mod tests {
 
     /// With no cancel scopes, Ctrl+C surfaces `Err(Interrupted)` to the pending
     /// `read_input` — the caller's cue to exit (double-Ctrl+C-exits emerges from this).
-    /// (Go: `internal/ui/model_test.go:182`.)
-    ///
     /// An idle Ctrl+C is the ONE input this loop drops when no waiter is parked
     /// (`fail_waiter_interrupted` takes an `Option`), and nothing else would ever resolve the call
     /// — so a Ctrl+C that overtakes the `ReadReq` does not fail this test, it hangs it forever.
@@ -647,7 +584,7 @@ mod tests {
     /// cap ended it (run 34772709712). Hence the barrier, and hence the deadline: whatever else
     /// this test does, it must not be able to hang.
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_idle_ctrl_c_interrupts() {
+    async fn an_idle_ctrl_c_interrupts_the_pending_reader() {
         let h = start_facade();
         h.wait_frame();
         let cancel = CancellationToken::new();
@@ -695,7 +632,6 @@ mod tests {
 
     /// The select sugar's reply path over the real loop: the surface renders BELOW the
     /// composer line, and ↓ + Enter resolve the blocked caller with the chosen index.
-    // Go: internal/ui/model_test.go:110 (TestSelectBelowComposer)
     #[tokio::test(flavor = "multi_thread")]
     async fn select_below_composer_reply_path() {
         let h = start_facade();
@@ -735,9 +671,8 @@ mod tests {
 
     /// ESC cancels the surface WITHOUT firing turn scopes: the blocked caller gets the
     /// cancelled shape and the pushed cancel token stays un-fired.
-    // Go: internal/ui/model_test.go:136
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_select_esc_cancels() {
+    async fn esc_cancels_the_surface_without_firing_the_turn_scope() {
         let h = start_facade();
         h.wait_frame();
         let token = CancellationToken::new();

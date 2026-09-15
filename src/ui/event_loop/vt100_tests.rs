@@ -9,77 +9,21 @@
 //! The W10 `IDLE_WAKE` liveness units and the W4 snapshot-implies-draw unit (the T-03
 //! replacement) live here too — they assert on the real byte stream.
 
-use std::io::{self, Write};
+use std::io::{self};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::ui::event_loop::{EventSource, Model};
+use crate::ui::event_loop::Model;
 use crate::ui::facade::{ProgressState, StatusData};
 use crate::ui::msgs::UiMsg;
 use crate::ui::region::RegionSnapshot;
-use crate::ui::testutil::test_model;
+use crate::ui::testutil::{ChannelEvents, SharedBuf, test_model};
 use crossterm::event::Event;
 use tokio_util::sync::CancellationToken;
 
 const SPINNER_GLYPHS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
-
-/// A cloneable byte sink shared between the terminal stack and the assertions.
-#[derive(Clone, Default)]
-struct SharedBuf(Arc<Mutex<Vec<u8>>>);
-
-impl SharedBuf {
-    fn bytes(&self) -> Vec<u8> {
-        self.0.lock().unwrap().clone()
-    }
-}
-
-impl Write for SharedBuf {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-/// Scripted [`EventSource`] over a channel (the loop's poll deadline still elapses
-/// for real, so W10 timing is genuine).
-struct ChannelEvents {
-    rx: mpsc::Receiver<Event>,
-    pending: Option<Event>,
-}
-
-impl EventSource for ChannelEvents {
-    fn poll(&mut self, timeout: Duration) -> io::Result<bool> {
-        if self.pending.is_some() {
-            return Ok(true);
-        }
-        match self.rx.recv_timeout(timeout) {
-            Ok(e) => {
-                self.pending = Some(e);
-                Ok(true)
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => Ok(false),
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                thread::sleep(timeout);
-                Ok(false)
-            }
-        }
-    }
-
-    fn read(&mut self) -> io::Result<Event> {
-        if let Some(e) = self.pending.take() {
-            return Ok(e);
-        }
-        self.rx
-            .recv()
-            .map_err(|_| io::Error::new(io::ErrorKind::UnexpectedEof, "no scripted event"))
-    }
-}
 
 /// CSI-final byte counters (the spike's `CountWriter` idea, made assertions):
 /// DECSTBM set/reset, in-region scrolls, erase-display.
@@ -196,10 +140,7 @@ fn start_loop() -> LoopHarness {
     let t = crate::ui::term::Term::new(Box::new(move || wtr.clone()), 1, 19, Some(geo.clone()))
         .unwrap();
     let (etx, erx) = mpsc::channel();
-    let events = ChannelEvents {
-        rx: erx,
-        pending: None,
-    };
+    let events = ChannelEvents::new(erx);
     let join = thread::spawn(move || crate::ui::event_loop::run_loop(&rx, events, t, shared));
     LoopHarness {
         tx,

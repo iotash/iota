@@ -1,15 +1,19 @@
 //! The UI suites' shared harness (`cfg(test)` only): one open surface driven exactly as the loop
 //! drives it ([`Surf`]), the key constructors, and a loop [`Model`] over the test-seam region
-//! ([`test_model`]) with the model-level key helpers.
+//! ([`test_model`]) with the model-level key helpers, and the headless terminal stack's two ends —
+//! a shared byte sink ([`SharedBuf`]) and a scripted event source ([`ChannelEvents`]).
 #![allow(clippy::panic, clippy::expect_used)]
 
+use std::io::{self, Write};
 use std::sync::atomic::AtomicU16;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
+use std::thread;
+use std::time::Duration;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
 use crate::text::ansi::strip_sgr;
-use crate::ui::event_loop::{LoopShared, Model};
+use crate::ui::event_loop::{EventSource, LoopShared, Model};
 use crate::ui::facade::{Panel, TabbedResult};
 use crate::ui::region::{Emit, Region};
 use crate::ui::surface::tabbed::PanelState;
@@ -184,4 +188,74 @@ pub(crate) fn ctrl_c(m: &mut Model) {
 /// SGR-stripped frame rows.
 pub(crate) fn plain(m: &mut Model) -> Vec<String> {
     m.frame_view().rows.iter().map(|r| strip_sgr(r)).collect()
+}
+
+// --- the headless terminal stack ---------------------------------------------
+
+/// A cloneable byte sink shared between the terminal stack and the assertions.
+#[derive(Clone, Default)]
+pub(crate) struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+impl SharedBuf {
+    pub(crate) fn bytes(&self) -> Vec<u8> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl Write for SharedBuf {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Scripted [`EventSource`] over a channel (the loop's poll deadline still elapses for real, so
+/// the idle-wake timing in these tests is genuine).
+pub(crate) struct ChannelEvents {
+    rx: mpsc::Receiver<Event>,
+    pending: Option<Event>,
+}
+
+impl ChannelEvents {
+    pub(crate) fn new(rx: mpsc::Receiver<Event>) -> Self {
+        Self { rx, pending: None }
+    }
+}
+
+impl EventSource for ChannelEvents {
+    fn poll(&mut self, timeout: Duration) -> io::Result<bool> {
+        if self.pending.is_some() {
+            return Ok(true);
+        }
+        match self.rx.recv_timeout(timeout) {
+            Ok(e) => {
+                self.pending = Some(e);
+                Ok(true)
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => Ok(false),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                thread::sleep(timeout);
+                Ok(false)
+            }
+        }
+    }
+
+    fn read(&mut self) -> io::Result<Event> {
+        if let Some(e) = self.pending.take() {
+            return Ok(e);
+        }
+        self.rx
+            .recv()
+            .map_err(|_| io::Error::new(io::ErrorKind::UnexpectedEof, "no scripted event"))
+    }
 }
