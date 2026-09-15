@@ -3,10 +3,24 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
-## Unreleased
+## 0.2.1 - 2026-09-15
+
+A fix release. Three of the fixes are about a token count that read 0, or a
+request that read 400, against endpoints that speak a dialect *almost* right.
+They were found the same way: one prompt sent through every provider in a real
+config, and the bytes on the wire read back.
 
 ### Added
 
+- **`/model` offers the agent's candidate set.** The picker used to ask the one
+  provider the run had resolved to and fork on the answer — a list when the
+  listing worked, a bare name field when it did not. It now lists what
+  `agents.<name>.models` declares: entries and `provider:id`s as written, and
+  every `provider:*` wildcard fetched in one concurrent round (the wait is the
+  slowest endpoint, not the sum; Esc drops them all). A wildcard whose listing
+  fails is one row saying so, not a surface that gives up. The list is a combo
+  box: the query field is always open, filters as you type, and its text
+  commits as typed through a `use "…" as typed` row after the last real one.
 - **`NO_COLOR` is honoured — and so are `TERM=dumb` and a piped stdout.** None of
   the three did anything before: every style was hard-wired on, so a terminal
   that asked for no color still got bold, faint and underline, and a bare reset
@@ -19,8 +33,48 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   events at debug level, its libraries' at info, one timestamped line each. It
   is a developer's tap: nothing you need to see depends on it.
 
+### Changed
+
+- **`-M provider:id` brings the `models:` entry serving that pair, or nothing
+  — never the first candidate's knobs.** `-M` used to replace the model id and
+  leave every other field of the entry the run had resolved to first in place,
+  so `iota run chat -M claude:claude-haiku-4-5-20251001` on an agent whose
+  first candidate declares `temperature` and `top_p` sent both to Claude, which
+  refuses the pair: a 400 for a flag that named a different model. The flag now
+  resolves to the entry that serves exactly that provider and id when there is
+  one — its own knobs travel with it — and to the bare pair otherwise, every
+  other field at its default; the agent's overrides apply as before. A bare
+  `-M id` is `<current provider>:id` and follows the same rule. `-M ""`,
+  `provider:*` and entry names are unchanged.
+- **`effort: xhigh` and `effort: max` reach Gemini as `thinkingLevel: HIGH`.**
+  Gemini 3 knows LOW, MEDIUM and HIGH; the value used to go up uppercased and
+  verbatim, so an agent with `effort: max` got a 400 from Vertex on every call.
+  OpenAI and Anthropic still receive the value as written.
+- **rustls is 0.23.45** (RUSTSEC-2026-0285), and `cargo deny` now gates the
+  dependency graph in CI: licenses, advisories, duplicate versions, sources.
+
 ### Fixed
 
+- **Input tokens no longer read 0 on Anthropic-compatible endpoints that report
+  them late.** The Anthropic stream carries the input count in `message_start`
+  and the output count in `message_delta`; GLM's endpoint (open.bigmodel.cn)
+  sends `message_start` with zeros and the whole figure in `message_delta`.
+  `message_delta`'s usage is now laid over `message_start`'s, so whichever
+  event carries a number wins. The official API reports the same numbers as
+  before.
+- **A usage object carrying both OpenAI namings decodes.** zenmux reports
+  `input_tokens` beside `prompt_tokens`, `output_tokens` beside
+  `completion_tokens` and both `*_tokens_details` — every figure under both
+  names. The decoder treated the pair as a duplicate field and dropped the
+  event it rode in: in a stream that is the final event, so the reply arrived
+  and the usage read 0 with no error; on a `-m` run the whole call failed with
+  `chat error: duplicate field 'input_tokens'`. The object is now read name by
+  name, the Responses name first.
+- **An MCP tool that declares no input goes out without an empty schema on the
+  Responses wire.** `"parameters":{}` — a schema with no `type` — was still
+  sent on `/responses` where chat-completions had already dropped it.
+- **The MCP handshake reports iota's real version.** `clientInfo.version` had
+  been the literal `1.0.0` since the port began.
 - **An MCP server that lists the same tool twice now says so.** The duplicate
   was skipped silently: the warning went to a log channel nothing listened to,
   and the release build had compiled it out entirely. It is now one
