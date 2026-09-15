@@ -674,7 +674,8 @@ fn map_events(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex, PoisonError};
+    use crate::sync::lock;
+    use std::sync::{Arc, Mutex};
 
     use crate::BoxFuture;
 
@@ -704,10 +705,7 @@ mod tests {
         }
 
         fn push(&self, event: impl Into<String>) {
-            self.log
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(event.into());
+            lock(&self.log).push(event.into());
         }
     }
 
@@ -732,12 +730,7 @@ mod tests {
                 .first()
                 .map_or(String::new(), |p| p.title.clone());
             self.push(format!("surface:open:{title}"));
-            let committed = self
-                .surface
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take()
-                .unwrap_or_default();
+            let committed = lock(&self.surface).take().unwrap_or_default();
             // The live seam's `RawGuard` restores the terminal on the way out of `run_surface`; the double
             // records that release at the same point, so the ordering assertion is about the real boundary.
             self.push("surface:released");
@@ -762,7 +755,7 @@ mod tests {
     }
 
     fn events(log: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
-        log.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        lock(log).clone()
     }
 
     fn commit(cursor: usize) -> TabbedResult {
@@ -786,9 +779,7 @@ mod tests {
         let rows = [info("aaa", "a"), info("bbb", "b"), info("ccc", "c")];
 
         let (dark, chosen, _ui) = open_ui(&seam, Some(picker_spec(&rows, None)), |_dark, row| {
-            log.lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push("wire".to_owned());
+            lock(&log).push("wire".to_owned());
             Ok(row.and_then(|i| rows.get(i).map(|s| s.id.clone())))
         })
         .await
