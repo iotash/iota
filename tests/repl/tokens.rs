@@ -7,20 +7,17 @@
 //! (`chat/run.go:53` `tokenAware`), and the resume path that seeds a session's cumulative
 //! figures from its own log. The arithmetic itself — thresholds, the snooze, the settled /
 //! pending split, the tiktoken goldens — is unit-tested beside its source.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::Arc;
 
-use iota::BoxFuture;
 use iota::host::Presenter;
 use iota::llm::reqlog::RequestLog;
-use iota::provider::error::ProviderError;
+use iota::provider::ProviderKind;
 use iota::provider::model::Message;
 use iota::provider::usage::Usage;
-use iota::provider::{ChatResult, Provider, ProviderKind};
 use iota::repl::{McpHooks, RunParams, SessionCtx};
 use iota::session::{SessionStore, SessionWriter};
-use iota::testing::{Reply, ScriptedUi, StaticDispatcher, UiEvent};
+use iota::testing::{FakeProvider, Reply, Round, ScriptedUi, StaticDispatcher, UiEvent};
 use iota::text::ansi::strip_sgr;
 use iota::tool::Dispatcher;
 use iota::ui::facade::{Input, StatusData, Ui};
@@ -30,110 +27,42 @@ use tokio_util::sync::CancellationToken;
 // the doubles
 // ---------------------------------------------------------------------------
 
-/// A unary provider whose every `chat` reports `usage` (or none). No `ToolProvider`
-/// capability, so a turn takes the one-shot `stream_turn` path and the whole flow is a
-/// straight line.
-struct UsageProvider {
-    usage: Option<Usage>,
-    reports: bool,
-    /// Streams reasoning deltas through the tool-loop path (the thinking meter's input).
-    thinks: bool,
+/// What every call of a reporting provider accounts: `{input, output, cache_read, total}`.
+const USAGE: Usage = Usage {
+    input: 1_200,
+    output: 300,
+    cache_read: 400,
+    cache_write: 0,
+    total: 1_500,
+};
+
+/// A unary provider whose every `chat` answers `"an answer"` and reports [`USAGE`]. No `ToolProvider`
+/// capability, so a turn takes the one-shot `stream_turn` path and the whole flow is a straight line.
+fn reporting() -> FakeProvider {
+    FakeProvider::new()
+        .with_model("gpt-4o")
+        .reporting_usage()
+        .tail(Round::reply("an answer").usage(USAGE))
 }
 
-impl UsageProvider {
-    /// Reports `{input, output, cache_read, total}` on every call.
-    fn reporting() -> Self {
-        Self {
-            usage: Some(Usage {
-                input: 1_200,
-                output: 300,
-                cache_read: 400,
-                cache_write: 0,
-                total: 1_500,
-            }),
-            reports: true,
-            thinks: false,
-        }
-    }
-
-    /// A reporting provider that STREAMS reasoning, so the thinking meter has something to
-    /// count.
-    fn thinking() -> Self {
-        Self {
-            thinks: true,
-            ..Self::reporting()
-        }
-    }
-
-    /// A provider with no token accounting at all — Go's non-`UsageReporter` (a dedicated
-    /// image provider).
-    fn token_less() -> Self {
-        Self {
-            usage: None,
-            reports: false,
-            thinks: false,
-        }
-    }
+/// A reporting provider that STREAMS reasoning through the tool-loop path, so the thinking meter
+/// has something to count: one round, [`REASONING_DELTAS`] then the answer, no tool calls.
+fn thinking() -> FakeProvider {
+    let mut round = Round::text("an answer").usage(USAGE);
+    round.reasoning = REASONING_DELTAS.iter().map(|d| (*d).to_owned()).collect();
+    round.result.reasoning = REASONING_DELTAS.concat();
+    FakeProvider::new()
+        .with_model("gpt-4o")
+        .reporting_usage()
+        .with_tools()
+        .tail(round)
 }
 
-impl Provider for UsageProvider {
-    fn kind(&self) -> ProviderKind {
-        ProviderKind::OpenAi
-    }
-    fn model(&self) -> &'static str {
-        "gpt-4o"
-    }
-    fn set_model(&mut self, _model: String) {}
-    fn list_models<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Vec<String>, ProviderError>> {
-        Box::pin(std::future::ready(Ok(Vec::new())))
-    }
-    fn chat<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        _messages: &'a [Message],
-    ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
-        Box::pin(std::future::ready(Ok(ChatResult {
-            text: "an answer".to_owned(),
-            usage: self.usage,
-            images: Vec::new(),
-        })))
-    }
-    fn reports_usage(&self) -> bool {
-        self.reports
-    }
-
-    fn as_tool_provider(&self) -> Option<&dyn iota::provider::ToolProvider> {
-        self.thinks.then_some(self)
-    }
-}
-
-/// The reasoning stream that feeds the thinking meter: one round, reasoning deltas only,
-/// no tool calls — enough for the widget to raise, count and settle.
-impl iota::provider::ToolProvider for UsageProvider {
-    fn stream_chat_with_tools<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        _messages: &'a [Message],
-        _tools: &'a [iota::provider::model::ToolDef],
-        sink: &'a mut dyn iota::provider::sink::StreamSink,
-    ) -> BoxFuture<'a, Result<iota::provider::RoundResult, ProviderError>> {
-        Box::pin(async move {
-            for d in REASONING_DELTAS {
-                sink.reasoning(d);
-            }
-            sink.reasoning_done();
-            sink.content("an answer");
-            Ok(iota::provider::RoundResult {
-                content: "an answer".to_owned(),
-                reasoning: REASONING_DELTAS.concat(),
-                usage: self.usage,
-                ..iota::provider::RoundResult::default()
-            })
-        })
-    }
+/// A provider with no token accounting at all — a dedicated image provider's shape.
+fn token_less() -> FakeProvider {
+    FakeProvider::new()
+        .with_model("gpt-4o")
+        .replying("an answer")
 }
 
 /// What the thinking provider streams before it answers.
@@ -167,7 +96,7 @@ impl Fixture {
 
     fn params(
         &self,
-        provider: UsageProvider,
+        provider: FakeProvider,
         writer: Option<SessionWriter>,
         imported: Vec<Message>,
     ) -> RunParams {
@@ -249,7 +178,7 @@ fn commands(ui: &ScriptedUi) -> Vec<String> {
 // the status row
 // ---------------------------------------------------------------------------
 
-/// Go: `chat/run.go:148-165` `pushStatus` — for a usage-reporting provider the row carries
+/// For a usage-reporting provider the row carries
 /// the whole token half: the context occupancy, the window, whether the figure was
 /// measured, and the session's cumulative ↑/↓ with the cache share that qualifies the
 /// input figure. The last row of a completed turn is the MEASURED one.
@@ -257,7 +186,7 @@ fn commands(ui: &ScriptedUi) -> Vec<String> {
 async fn status_row_carries_the_token_segments_for_a_reporting_provider() {
     let f = Fixture::new(vec![input("hello"), Reply::Interrupted]);
     let writer = f.writer();
-    iota::repl::run(f.params(UsageProvider::reporting(), Some(writer), Vec::new()))
+    iota::repl::run(f.params(reporting(), Some(writer), Vec::new()))
         .await
         .expect("clean exit");
 
@@ -292,13 +221,13 @@ async fn status_row_carries_the_token_segments_for_a_reporting_provider() {
     );
 }
 
-/// Go: `chat/status.go:100-119` — `/status` gains the whole token block for a provider
+/// `/status` gains the whole token block for a provider
 /// that accounts tokens, and stays at the token-LESS shape for one that does not (T-10).
 /// The row CONTENT is pinned beside `status_lines` itself; this asserts the wiring, i.e.
 /// that the loop's gate is the provider capability and that the live budget/meter reach it.
 #[tokio::test]
 async fn status_gains_the_token_block_for_a_reporting_provider() {
-    let with = |p: UsageProvider| async move {
+    let with = |p: FakeProvider| async move {
         let f = Fixture::new(vec![
             input("hello"),
             input("/status"),
@@ -318,7 +247,7 @@ async fn status_gains_the_token_block_for_a_reporting_provider() {
             .expect("the /status viewer")
     };
 
-    let view = &with(UsageProvider::reporting()).await.panels[0];
+    let view = &with(reporting()).await.panels[0];
     assert_eq!(view.title, "Status");
     assert_eq!(view.kind, iota::ui::facade::PanelKind::View);
     assert_eq!(
@@ -327,21 +256,21 @@ async fn status_gains_the_token_block_for_a_reporting_provider() {
          Messages, Tools, MCP, Session"
     );
 
-    let view = &with(UsageProvider::token_less()).await.panels[0];
+    let view = &with(token_less()).await.panels[0];
     assert_eq!(
         view.line_count, 6,
         "a token-less provider keeps Go's token-less shape (T-10)"
     );
 }
 
-/// Go: `chat/run.go:151` — a provider with no token accounting publishes NO token half, so
+/// A provider with no token accounting publishes NO token half, so
 /// the frame has nothing to render a context segment from (WP44's
 /// `status_line_hides_ctx_without_tokens`, driven from the loop end).
 #[tokio::test]
 async fn a_token_less_provider_publishes_no_token_half() {
     let f = Fixture::new(vec![input("hello"), Reply::Interrupted]);
     let writer = f.writer();
-    iota::repl::run(f.params(UsageProvider::token_less(), Some(writer), Vec::new()))
+    iota::repl::run(f.params(token_less(), Some(writer), Vec::new()))
         .await
         .expect("clean exit");
 
@@ -355,8 +284,7 @@ async fn a_token_less_provider_publishes_no_token_half() {
     }
 }
 
-/// Go: `chat/run.go:170` (`newTranscript(u, budget.counter)`) + `chat/transcript.go:742-766`
-/// — the thinking meter counts streamed reasoning with the chat's OWN tokenizer, and the
+/// The thinking meter counts streamed reasoning with the chat's OWN tokenizer, and the
 /// figure reaches the widget's status row as `"<tok> tokens"`.
 ///
 /// WP48 pinned the meter against an injected estimator; what is pinned HERE is that the
@@ -366,7 +294,7 @@ async fn a_token_less_provider_publishes_no_token_half() {
 async fn the_thinking_meter_counts_with_the_chats_tokenizer() {
     let f = Fixture::new(vec![input("think about it"), Reply::Interrupted]);
     let writer = f.writer();
-    iota::repl::run(f.params(UsageProvider::thinking(), Some(writer), Vec::new()))
+    iota::repl::run(f.params(thinking(), Some(writer), Vec::new()))
         .await
         .expect("clean exit");
 
@@ -402,14 +330,14 @@ async fn the_thinking_meter_counts_with_the_chats_tokenizer() {
 // the capability gate
 // ---------------------------------------------------------------------------
 
-/// Go: `chat/completion.go:14` + `chat/run.go:57` — `/compact` exists exactly for a provider
+/// `/compact` exists exactly for a provider
 /// whose usage the meter can settle against. The ONE-TABLE law holds on both sides: the
 /// banner, the completion list and the dispatch chain agree.
 #[tokio::test]
 async fn compact_is_registered_only_with_token_accounting() {
     let f = Fixture::new(vec![Reply::Interrupted]);
     let writer = f.writer();
-    iota::repl::run(f.params(UsageProvider::reporting(), Some(writer), Vec::new()))
+    iota::repl::run(f.params(reporting(), Some(writer), Vec::new()))
         .await
         .expect("clean exit");
     assert_eq!(
@@ -428,7 +356,7 @@ async fn compact_is_registered_only_with_token_accounting() {
 
     let f = Fixture::new(vec![Reply::Interrupted]);
     let writer = f.writer();
-    iota::repl::run(f.params(UsageProvider::token_less(), Some(writer), Vec::new()))
+    iota::repl::run(f.params(token_less(), Some(writer), Vec::new()))
         .await
         .expect("clean exit");
     assert_eq!(
@@ -449,7 +377,7 @@ async fn compact_is_registered_only_with_token_accounting() {
 async fn compact_falls_through_as_a_message_without_token_accounting() {
     let f = Fixture::new(vec![input("/compact"), Reply::Interrupted]);
     let writer = f.writer();
-    iota::repl::run(f.params(UsageProvider::token_less(), Some(writer), Vec::new()))
+    iota::repl::run(f.params(token_less(), Some(writer), Vec::new()))
         .await
         .expect("clean exit");
     let lines = printed(&f.ui);
@@ -467,7 +395,7 @@ async fn compact_falls_through_as_a_message_without_token_accounting() {
 // resume
 // ---------------------------------------------------------------------------
 
-/// Go: `chat/run.go:163` `ctxm.seedTotals(sw.Usage())` — a resumed session's cumulative ↑/↓
+/// A resumed session's cumulative ↑/↓
 /// figures are what its OWN log adds up to, not zero and not the previous chat's.
 #[tokio::test]
 async fn a_resumed_session_seeds_its_totals_from_its_log() {
@@ -484,7 +412,7 @@ async fn a_resumed_session_seeds_its_totals_from_its_log() {
     writer.append_messages(&history).expect("append");
     assert_eq!(writer.usage().input, 5_000);
 
-    iota::repl::run(f.params(UsageProvider::reporting(), Some(writer), history))
+    iota::repl::run(f.params(reporting(), Some(writer), history))
         .await
         .expect("clean exit");
 
@@ -501,11 +429,11 @@ async fn a_resumed_session_seeds_its_totals_from_its_log() {
 // the frozen seams, directly
 // ---------------------------------------------------------------------------
 
-/// Go: `chat/run_test.go:62` `TestContextBudgetStatus` — `"used / window (pct)"`, `≈` while
+/// `"used / window (pct)"`, `≈` while
 /// the figure is a local estimate. Driven through the exported seam so the string the
 /// `/compact` flow and the `/model` Context tab print is pinned where they read it.
 #[test]
-fn test_context_budget_status() {
+fn the_context_budget_status_reads_used_over_window_with_percent() {
     assert_eq!(
         iota::repl::ContextBudget::new(128_000).status(),
         "≈0 / 128k (0%)"
