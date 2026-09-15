@@ -6,20 +6,17 @@
 //! dispatch chain, `/model`, `/session`, `/save`, `/status`, `/tools` and the MCP failure
 //! relay are asserted from the facade's recorded event log and from what actually landed
 //! on disk. The row builders and the command table are unit-tested beside their source.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
-use iota::BoxFuture;
 use iota::host::Presenter;
 use iota::llm::reqlog::RequestLog;
-use iota::provider::error::ProviderError;
+use iota::provider::ProviderKind;
 use iota::provider::model::Message;
-use iota::provider::{ChatResult, Provider, ProviderKind};
 use iota::repl::{McpEvent, McpHooks, RunParams, SessionCtx, session_label};
 use iota::session::{SessionStore, SessionWriter};
-use iota::testing::{Reply, ScriptedUi, StaticDispatcher, TabbedSummary, UiEvent};
+use iota::testing::{FakeProvider, Reply, ScriptedUi, StaticDispatcher, TabbedSummary, UiEvent};
 use iota::text::ansi::strip_sgr;
 use iota::tool::Dispatcher;
 use iota::ui::facade::{Input, PanelKind, PanelResult, TabbedResult, Ui};
@@ -30,89 +27,14 @@ use tokio_util::sync::CancellationToken;
 // the doubles
 // ---------------------------------------------------------------------------
 
-/// A provider with a scripted model listing and a canned one-shot reply (the title pass's
-/// only need). No `ToolProvider` capability: no scenario here runs a turn.
-type ChatHook = Box<dyn Fn(usize) + Send + Sync>;
-
-struct FakeProvider {
-    model: String,
-    models: Result<Vec<String>, String>,
-    reply: String,
-    /// Every `chat` prompt, so the title pass can be asserted.
-    prompts: Arc<Mutex<Vec<String>>>,
-    /// Runs inside the Nth `chat` call — the ONLY place a test can change the world
-    /// mid-run (the loop is one straight-line task).
-    on_chat: Option<ChatHook>,
-}
-
-impl FakeProvider {
-    fn new(model: &str, models: Result<Vec<String>, String>) -> Self {
-        Self {
-            model: model.to_owned(),
-            models,
-            reply: "an answer".to_owned(),
-            prompts: Arc::new(Mutex::new(Vec::new())),
-            on_chat: None,
-        }
-    }
-
-    fn with_reply(mut self, reply: &str) -> Self {
-        reply.clone_into(&mut self.reply);
-        self
-    }
-
-    fn on_chat(mut self, f: impl Fn(usize) + Send + Sync + 'static) -> Self {
-        self.on_chat = Some(Box::new(f));
-        self
-    }
-}
-
-impl Provider for FakeProvider {
-    fn kind(&self) -> ProviderKind {
-        ProviderKind::OpenAi
-    }
-
-    fn model(&self) -> &str {
-        &self.model
-    }
-
-    fn set_model(&mut self, model: String) {
-        self.model = model;
-    }
-
-    fn list_models<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Vec<String>, ProviderError>> {
-        let out = match &self.models {
-            Ok(m) => Ok(m.clone()),
-            Err(e) => Err(ProviderError::other(e.clone())),
-        };
-        Box::pin(std::future::ready(out))
-    }
-
-    fn chat<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        messages: &'a [Message],
-    ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
-        let n = {
-            let mut p = self.prompts.lock().unwrap_or_else(PoisonError::into_inner);
-            p.push(
-                messages
-                    .last()
-                    .map(|m| m.content.clone())
-                    .unwrap_or_default(),
-            );
-            p.len()
-        };
-        if let Some(f) = &self.on_chat {
-            f(n);
-        }
-        Box::pin(std::future::ready(Ok(ChatResult {
-            text: self.reply.clone(),
-            ..ChatResult::default()
-        })))
+/// A provider with a scripted model listing and a canned one-shot reply (the title pass's only
+/// need). No `ToolProvider` capability: no scenario here runs a turn. A test that must change the
+/// world mid-run does it from `on_call` — the loop is one straight-line task.
+fn provider(model: &str, models: Result<Vec<String>, String>) -> FakeProvider {
+    let p = FakeProvider::new().with_model(model).replying("an answer");
+    match models {
+        Ok(ids) => p.with_models(&ids.iter().map(String::as_str).collect::<Vec<_>>()),
+        Err(e) => p.with_models_failing(&e),
     }
 }
 
@@ -264,7 +186,7 @@ fn surfaces(ui: &ScriptedUi) -> Vec<TabbedSummary> {
 // the banner
 // ---------------------------------------------------------------------------
 
-/// Go: chat/run.go:86-116 — the banner's rows in order, ONE blank between the environment
+/// The banner's rows in order, ONE blank between the environment
 /// and the first transcript block, and the ONE-TABLE law: the advertised commands are
 /// exactly the registered ones.
 #[tokio::test]
@@ -273,7 +195,7 @@ async fn banner_order_and_command_table() {
     let writer = f.writer();
     let id = writer.id().to_owned();
     let session = f.session(Some(writer));
-    iota::repl::run(f.params(FakeProvider::new("gpt-4o", Ok(vec![])), session))
+    iota::repl::run(f.params(provider("gpt-4o", Ok(vec![])), session))
         .await
         .expect("clean exit");
 
@@ -318,7 +240,7 @@ async fn banner_offers_save_for_an_ephemeral_chat() {
         })),
         scope: None,
     };
-    iota::repl::run(f.params(FakeProvider::new("gpt-4o", Ok(vec![])), session))
+    iota::repl::run(f.params(provider("gpt-4o", Ok(vec![])), session))
         .await
         .expect("clean exit");
 
@@ -337,7 +259,7 @@ async fn banner_offers_save_for_an_ephemeral_chat() {
 // /model
 // ---------------------------------------------------------------------------
 
-/// Go: chat/run.go:513-716 — the picker's shape, the commit notice, and the untouched-tab
+/// The picker's shape, the commit notice, and the untouched-tab
 /// no-op law (the current model is the cursor row).
 #[tokio::test]
 async fn model_picks_from_the_listing() {
@@ -351,7 +273,7 @@ async fn model_picks_from_the_listing() {
     ]);
     let writer = f.writer();
     let session = f.session(Some(writer));
-    let provider = FakeProvider::new(
+    let provider = provider(
         "a-model",
         Ok(vec!["a-model".to_owned(), "b-model".to_owned()]),
     );
@@ -410,7 +332,7 @@ async fn model_reports_no_changes() {
         Reply::Interrupted,
     ]);
     let session = f.session(Some(f.writer()));
-    let provider = FakeProvider::new("a-model", Ok(vec!["a-model".to_owned()]));
+    let provider = provider("a-model", Ok(vec!["a-model".to_owned()]));
     iota::repl::run(f.params(provider, session))
         .await
         .expect("exit");
@@ -441,7 +363,7 @@ async fn model_keeps_the_picker_when_a_listing_fails() {
         .expect("materialise");
     let dir = writer.dir().to_path_buf();
     let session = f.session(Some(writer));
-    let provider = FakeProvider::new("old-model", Err("no such endpoint".to_owned()));
+    let provider = provider("old-model", Err("no such endpoint".to_owned()));
     iota::repl::run(f.params(provider, session))
         .await
         .expect("exit");
@@ -486,7 +408,7 @@ async fn model_lists_the_agents_candidate_set() {
         Reply::Interrupted,
     ]);
     let session = f.session(Some(f.writer()));
-    let provider = FakeProvider::new(
+    let provider = provider(
         "a-model",
         Ok(vec!["a-model".to_owned(), "b-model".to_owned()]),
     );
@@ -530,7 +452,7 @@ async fn model_reports_a_candidate_on_another_provider() {
         Reply::Interrupted,
     ]);
     let session = f.session(Some(f.writer()));
-    let provider = FakeProvider::new("a-model", Ok(vec!["a-model".to_owned()]));
+    let provider = provider("a-model", Ok(vec!["a-model".to_owned()]));
     let params = f.params_with_catalog(provider, session, CANDIDATE_SET);
     iota::repl::run(params).await.expect("exit");
 
@@ -559,7 +481,7 @@ agents:
     models: [m, "relay:vendor/y", "mock:*"]
 "#;
 
-/// Go: chat/run.go:1112-1157 — the startup pick fires when no model is configured, and its
+/// The startup pick fires when no model is configured, and its
 /// notice is `ensureModel`'s, not `/model`'s.
 #[tokio::test]
 async fn startup_pick_runs_when_no_model_is_configured() {
@@ -572,7 +494,7 @@ async fn startup_pick_runs_when_no_model_is_configured() {
         Reply::Interrupted,
     ]);
     let session = f.session(Some(f.writer()));
-    let provider = FakeProvider::new("", Ok(vec!["a".to_owned(), "b".to_owned()]));
+    let provider = provider("", Ok(vec!["a".to_owned(), "b".to_owned()]));
     iota::repl::run(f.params(provider, session))
         .await
         .expect("exit");
@@ -587,7 +509,7 @@ async fn startup_pick_runs_when_no_model_is_configured() {
 // /session
 // ---------------------------------------------------------------------------
 
-/// Go: chat/run.go:717-795 — the picker's two tabs, the exact swap ordering's observable
+/// The picker's two tabs, the exact swap ordering's observable
 /// half (title → notice → echo → status) and the resumed history.
 #[tokio::test]
 async fn session_resume_swaps_and_echoes() {
@@ -623,7 +545,7 @@ async fn session_resume_swaps_and_echoes() {
         .expect("materialise the current bundle");
     let current_id = current.id().to_owned();
     let session = f.session(Some(current));
-    iota::repl::run(f.params(FakeProvider::new("gpt-4o", Ok(vec![])), session))
+    iota::repl::run(f.params(provider("gpt-4o", Ok(vec![])), session))
         .await
         .expect("exit");
 
@@ -685,7 +607,7 @@ async fn session_resume_of_the_current_session_is_a_no_op() {
         .append_messages(&[Message::user("hi")])
         .expect("materialise the bundle");
     let session = f.session(Some(current));
-    iota::repl::run(f.params(FakeProvider::new("gpt-4o", Ok(vec![])), session))
+    iota::repl::run(f.params(provider("gpt-4o", Ok(vec![])), session))
         .await
         .expect("exit");
     assert!(printed(&f.ui).contains(&"Already in this session.".to_owned()));
@@ -696,14 +618,14 @@ async fn session_resume_of_the_current_session_is_a_no_op() {
 async fn session_reports_an_empty_store() {
     let f = Fixture::new(vec![input("/session"), Reply::Interrupted]);
     let session = f.session(None);
-    iota::repl::run(f.params(FakeProvider::new("gpt-4o", Ok(vec![])), session))
+    iota::repl::run(f.params(provider("gpt-4o", Ok(vec![])), session))
         .await
         .expect("exit");
     assert!(printed(&f.ui).contains(&"No sessions yet.".to_owned()));
     assert!(surfaces(&f.ui).is_empty(), "no picker is opened");
 }
 
-/// Go: chat/run.go:748-760 — the Delete tab removes the checked bundles and reports one
+/// The Delete tab removes the checked bundles and reports one
 /// aggregate count.
 #[tokio::test]
 async fn session_delete_tab_removes_the_checked_bundles() {
@@ -733,7 +655,7 @@ async fn session_delete_tab_removes_the_checked_bundles() {
         .append_messages(&[Message::user("hi")])
         .expect("materialise");
     let session = f.session(Some(current));
-    iota::repl::run(f.params(FakeProvider::new("gpt-4o", Ok(vec![])), session))
+    iota::repl::run(f.params(provider("gpt-4o", Ok(vec![])), session))
         .await
         .expect("exit");
 
@@ -754,7 +676,7 @@ async fn a_new_bundle_records_what_the_session_runs_under() {
     let writer = f.writer();
     let dir = writer.dir().to_path_buf();
     let session = f.session(Some(writer));
-    let mut params = f.params(FakeProvider::new("gpt-4o", Ok(vec![])), session);
+    let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
     params.params = iota::session::LayeredParams {
         context_window: iota::session::Param::config(400_000),
         effort: iota::session::Param::config("high".to_owned()),
@@ -782,7 +704,7 @@ async fn a_new_bundle_records_what_the_session_runs_under() {
     );
 }
 
-/// Go: chat/run.go:821-848 — the trio: mint late, flush the WHOLE backlog in one append,
+/// The trio: mint late, flush the WHOLE backlog in one append,
 /// and settle the user's title.
 #[tokio::test]
 async fn save_mints_late_and_flushes_the_backlog() {
@@ -801,7 +723,7 @@ async fn save_mints_late_and_flushes_the_backlog() {
         })),
         scope: None,
     };
-    let mut params = f.params(FakeProvider::new("gpt-4o", Ok(vec![])), session);
+    let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
     params.params.context_window = iota::session::Param::config(200_000);
     iota::repl::run(params).await.expect("exit");
 
@@ -848,7 +770,7 @@ async fn save_mints_late_and_flushes_the_backlog() {
 // /status and /tools
 // ---------------------------------------------------------------------------
 
-/// Go: chat/status.go:42-135 — capability-gated rows, a padded bold name column, and the
+/// Capability-gated rows, a padded bold name column, and the
 /// token-less shape this tier renders (T-10).
 #[tokio::test]
 async fn status_renders_the_capability_rows() {
@@ -858,7 +780,7 @@ async fn status_renders_the_capability_rows() {
         Reply::Interrupted,
     ]);
     let session = f.session(None);
-    let mut params = f.params(FakeProvider::new("gpt-4o", Ok(vec![])), session);
+    let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
     params.dispatch = Arc::new(StaticDispatcher::new(&["shell", "read_file"]));
     iota::repl::run(params).await.expect("exit");
 
@@ -873,7 +795,7 @@ async fn status_renders_the_capability_rows() {
     );
 }
 
-/// Go: chat/run.go:849-860 — two live tabs on a 500 ms refresh, and the result discarded.
+/// Two live tabs on a 500 ms refresh, and the result discarded.
 #[tokio::test]
 async fn tools_opens_two_live_tabs() {
     let f = Fixture::new(vec![
@@ -882,7 +804,7 @@ async fn tools_opens_two_live_tabs() {
         Reply::Interrupted,
     ]);
     let session = f.session(None);
-    let mut params = f.params(FakeProvider::new("gpt-4o", Ok(vec![])), session);
+    let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
     params.dispatch = Arc::new(StaticDispatcher::new(&["shell"]));
     iota::repl::run(params).await.expect("exit");
 
@@ -902,7 +824,7 @@ async fn tools_opens_two_live_tabs() {
 // the MCP failure relay
 // ---------------------------------------------------------------------------
 
-/// Go: chat/run.go:1159-1177 — a background connect failure lands in the scrollback once,
+/// A background connect failure lands in the scrollback once,
 /// FIRST LINE ONLY; a successful connect says nothing — unless its merge skipped a
 /// duplicate wire name, which is one dim notice per line (DIVERGENCES X-29; it used to be a
 /// `tracing::warn!` nobody received).
@@ -911,7 +833,7 @@ async fn mcp_failures_and_warnings_reach_the_transcript() {
     let (tx, rx) = tokio::sync::mpsc::channel(4);
     let f = Fixture::new(vec![input(""), Reply::Interrupted]);
     let session = f.session(None);
-    let mut params = f.params(FakeProvider::new("gpt-4o", Ok(vec![])), session);
+    let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
     params.mcp.events = Some(rx);
     tx.send(McpEvent {
         name: "docs".to_owned(),
@@ -962,11 +884,11 @@ async fn mcp_failures_and_warnings_reach_the_transcript() {
 // the store seam
 // ---------------------------------------------------------------------------
 
-/// Go: `chat/session_project_test.go:233` `TestDeleteSessionInBucket` — a bucketed bundle
+/// A bucketed bundle
 /// deletes by bare id, and the `projects/` container itself can never be removed (the
 /// locator only matches real bundles).
 #[test]
-fn test_delete_session_in_bucket() {
+fn deleting_a_bucketed_session_removes_its_bundle() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = SessionStore::new(tmp.path().join("sessions"));
     let root = Path::new("/work/p1");
@@ -1018,7 +940,7 @@ fn session_label_carries_the_bucket_hint() {
 // the message path: the title pass, the overlay probe, the persist watermark
 // ---------------------------------------------------------------------------
 
-/// Go: chat/run.go:222-251 — the session is named at SEND time: the placeholder lands
+/// The session is named at SEND time: the placeholder lands
 /// synchronously and the model pass (on the SECOND provider instance) upgrades it. The
 /// loop joins the pass before it exits, so both sinks have settled by then.
 #[tokio::test]
@@ -1033,9 +955,9 @@ async fn title_pass_names_the_session_on_the_second_provider() {
         .expect("materialise");
     let dir = writer.dir().to_path_buf();
     let session = f.session(Some(writer));
-    let mut params = f.params(FakeProvider::new("gpt-4o", Ok(vec![])), session);
+    let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
     params.title_provider = Some(Box::new(
-        FakeProvider::new("gpt-4o", Ok(vec![])).with_reply("Profiling Allocations"),
+        provider("gpt-4o", Ok(vec![])).replying("Profiling Allocations"),
     ));
     iota::repl::run(params).await.expect("exit");
 
@@ -1059,7 +981,7 @@ async fn title_pass_names_the_session_on_the_second_provider() {
     assert_eq!(meta.title, "Profiling Allocations");
 }
 
-/// Go: chat/run.go:965-976 (the D-27 lift, T-37) — the overlay is re-probed before every
+/// The overlay is re-probed before every
 /// send, but the reload notices fire ONLY on a real change, and a changed skill catalog
 /// re-issues the command table.
 #[tokio::test]
@@ -1068,7 +990,7 @@ async fn overlay_refresh_notices_fire_only_on_change() {
     let root = f.store.root().parent().expect("tmp root").to_path_buf();
     std::fs::write(root.join("AGENTS.md"), "RULES v1").expect("write AGENTS.md");
     let session = f.session(None);
-    let mut params = f.params(FakeProvider::new("gpt-4o", Ok(vec![])), session);
+    let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
     params.agent = iota::chat::AgentOptions {
         enabled: true,
         root: root.clone(),
@@ -1077,7 +999,7 @@ async fn overlay_refresh_notices_fire_only_on_change() {
     };
     // The first turn rewrites the chain, so the SECOND message's probe sees a change.
     let touched = root.clone();
-    params.provider = Box::new(FakeProvider::new("gpt-4o", Ok(vec![])).on_chat(move |n| {
+    params.provider = Box::new(provider("gpt-4o", Ok(vec![])).on_call(move |n, _| {
         if n == 1 {
             std::fs::write(touched.join("AGENTS.md"), "RULES v2").expect("rewrite");
             let t = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
@@ -1111,7 +1033,7 @@ async fn overlay_refresh_notices_fire_only_on_change() {
     );
 }
 
-/// Go: chat/run.go:221-229 — a failed append warns and does NOT advance the watermark, so
+/// A failed append warns and does NOT advance the watermark, so
 /// the next successful persist carries the WHOLE backlog.
 #[tokio::test]
 async fn persist_warns_and_retries_the_backlog() {
@@ -1135,7 +1057,7 @@ async fn persist_warns_and_retries_the_backlog() {
         Reply::Interrupted,
     ]);
     let unjail = jail.clone();
-    let provider = FakeProvider::new("gpt-4o", Ok(vec![])).on_chat(move |n| {
+    let provider = provider("gpt-4o", Ok(vec![])).on_call(move |n, _| {
         if n == 2 {
             set_mode(&unjail, 0o755); // the disk comes back before the second persist
         }
