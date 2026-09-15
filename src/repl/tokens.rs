@@ -82,8 +82,9 @@ impl TokenCounter {
         Self
     }
 
-    /// Whether the real tokenizer loaded — `false` means every count is the byte
-    /// heuristic (Go's `c.enc == nil`).
+    /// Whether the real tokenizer loaded — `false` means every count is the byte heuristic. Only the
+    /// tests ask; the counter itself never branches on it.
+    #[cfg(test)]
     pub fn has_encoder(self) -> bool {
         encoder().is_some()
     }

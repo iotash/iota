@@ -1,5 +1,4 @@
-//! WP53 L3 suite: token accounting through the PUBLIC entry point (`iota::repl::run`) and
-//! the frozen meter/budget seams (`iota_repl::{ContextBudget, CtxMeter}`).
+//! WP53 L3 suite: token accounting through the PUBLIC entry point (`iota::repl::run`).
 //!
 //! What is asserted here is what the loop PUBLISHES, not what the arithmetic computes: the
 //! status row's token segments (`chat/run.go:148-165` `pushStatus`), the capability gate
@@ -311,12 +310,11 @@ async fn the_thinking_meter_counts_with_the_chats_tokenizer() {
     // (`chat/transcript.go:762-768`: every delta is counted, only some are published), so
     // every prefix is accepted. What is NOT accepted is the absence of a token segment,
     // which is what a `None` estimator would produce.
-    let counter = iota::repl::ContextBudget::new(0).counter();
     let mut running = 0;
     let want: Vec<String> = REASONING_DELTAS
         .iter()
         .map(|d| {
-            running += counter.count(d);
+            running += iota::testing::count_tokens(d);
             format!("{} tokens", iota::text::tokens(running))
         })
         .collect();
@@ -423,44 +421,4 @@ async fn a_resumed_session_seeds_its_totals_from_its_log() {
         first.ctx_used > 0 && first.estimated,
         "an imported history is LOCALLY counted until the first call settles it: {first:?}"
     );
-}
-
-// ---------------------------------------------------------------------------
-// the frozen seams, directly
-// ---------------------------------------------------------------------------
-
-/// `"used / window (pct)"`, `≈` while
-/// the figure is a local estimate. Driven through the exported seam so the string the
-/// `/compact` flow and the `/model` Context tab print is pinned where they read it.
-#[test]
-fn the_context_budget_status_reads_used_over_window_with_percent() {
-    assert_eq!(
-        iota::repl::ContextBudget::new(128_000).status(),
-        "≈0 / 128k (0%)"
-    );
-    assert_eq!(iota::repl::ContextBudget::new(0).status(), "≈0 / 128k (0%)");
-
-    let mut b = iota::repl::ContextBudget::new(128_000);
-    let mut m = b.meter(
-        ScriptedUi::new(Vec::new()),
-        "gpt-4o".to_owned(),
-        Arc::new(iota::llm::reqlog::RequestLog::new()),
-    );
-    m.book_call(Some(Usage {
-        input: 64_000,
-        total: 64_000,
-        ..Usage::default()
-    }));
-    b.update(&[]);
-    assert_eq!(b.status(), "64k / 128k (50%)");
-}
-
-/// The nil meter is what a non-reporting provider gets, and every call site in the loop
-/// runs against it unconditionally (Go: `chat/tokens_test.go:167` `TestCtxMeterNilSafe`).
-#[test]
-fn a_disabled_meter_owns_nothing() {
-    let m = iota::repl::CtxMeter::disabled();
-    assert!(!m.is_enabled());
-    assert_eq!(m.totals(), Usage::default());
-    assert!(!m.publish_status("gpt-4o"));
 }

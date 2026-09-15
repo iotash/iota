@@ -27,6 +27,12 @@ pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Counts `text` with the chat's own tokenizer (the o200k counter behind the meter) — for expectations
+/// about published token figures.
+pub fn count_tokens(text: &str) -> u64 {
+    crate::repl::tokens::TokenCounter::new().count(text)
+}
+
 /// A `ToolDef` with just a name.
 pub fn tool_def(name: &str) -> ToolDef {
     ToolDef {

@@ -240,8 +240,9 @@ impl ContextBudget {
         st.have_usage = snap.have_usage;
     }
 
-    /// The usage at which the next request should compact first (Go `budget.threshold`;
-    /// see [`threshold_of`] for the two rules).
+    /// The usage at which the next request should compact first (see [`threshold_of`] for the two rules).
+    /// Only the tests read it directly — the loop asks `should_compact`.
+    #[cfg(test)]
     pub fn threshold(&self) -> u64 {
         threshold_of(lock(&self.st).window)
     }
