@@ -1,7 +1,6 @@
 //! Wire client tests (`internal/llm/llm_test.go` plus the WP02 additions): the SSE grammar, the retry policy,
 //! cancellation, the no-events / in-band stream errors, `StatusError` shaping, the retry-delay precedence, the
 //! header timeout and the shared `GET /models` listing.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::{
     sync::{
@@ -57,10 +56,8 @@ async fn dialect_next(sse: &mut Sse) -> Result<Option<Vec<u8>>, LlmError> {
     }
     Ok(Some(evt.data))
 }
-
-// Go: internal/llm/llm_test.go:18
 #[tokio::test]
-async fn test_sse_parsing() {
+async fn sse_frames_parse_across_chunk_boundaries() {
     const RAW: &str = ": comment\n\
         event: ping\ndata: {\"a\":1}\n\n\
         data: line1\ndata:line2\n\n\
@@ -119,10 +116,8 @@ async fn test_sse_parsing() {
     assert_eq!(evt.data, b"b");
     assert!(s4.next().await.unwrap().is_none());
 }
-
-// Go: internal/llm/llm_test.go:51
 #[tokio::test]
-async fn test_retry_policy() {
+async fn the_retry_policy_retries_transient_statuses_and_honours_retry_after() {
     let cancel = CancellationToken::new();
     let body = serde_json::json!({});
 
@@ -220,10 +215,8 @@ async fn test_retry_policy() {
     assert_eq!(err.status().map(|s| s.status), Some(503));
     assert_eq!(srv4.received_requests().await.unwrap().len(), 3);
 }
-
-// Go: internal/llm/llm_test.go:108
 #[tokio::test]
-async fn test_stream_cancellation() {
+async fn cancelling_a_stream_ends_it_as_cancelled() {
     const SSE: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
 
     // Cancelling while the response head is pending aborts the request promptly.
@@ -281,10 +274,8 @@ async fn test_stream_cancellation() {
         "cancel surfaced as {res:?}, want Cancelled"
     );
 }
-
-// Go: internal/llm/llm_test.go:146
 #[tokio::test]
-async fn test_no_events_stream() {
+async fn a_stream_with_no_events_is_an_error_naming_the_shape() {
     let srv = MockServer::start().await;
     mock_json(
         &srv,
@@ -316,10 +307,8 @@ async fn test_no_events_stream() {
     );
     assert!(!sse.saw_event());
 }
-
-// Go: internal/llm/llm_test.go:169
 #[tokio::test]
-async fn test_in_band_stream_error() {
+async fn an_in_band_error_frame_ends_the_stream_with_its_message() {
     let srv = MockServer::start().await;
     mock_sse(
         &srv,

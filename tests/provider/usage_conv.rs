@@ -1,9 +1,6 @@
 //! Dialect usage converter tests (`provider/usage_test.go` `TestDialectUsageConversion`), one sub-case per dialect.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
-// Go: provider/usage_test.go:48
 #[test]
-fn test_dialect_usage_conversion() {
+fn every_dialects_usage_converts_to_the_shared_shape() {
     // chatcomp keeps cached inside input
     {
         use iota::llm::chatcomp::{OpenAiTokenDetails, OpenAiUsage};

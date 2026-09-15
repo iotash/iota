@@ -1,6 +1,5 @@
 //! Pins the user-visible `Display` texts of iota-core's error types byte-for-byte against the Go sources
 //! (provider.go:329, openai.go:64,148,154,182, tool.go:521, POLICY F-02).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::error::Error;
 

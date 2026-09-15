@@ -2,7 +2,6 @@
 //! `usage_wire_test.go`): the golden request, the stream transcript, inline think splitting, the three
 //! terminal failure events, the unary surface, image outputs and the 4-leg client-executed tool-search
 //! protocol.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::{
     Arc, Mutex,
@@ -89,10 +88,8 @@ async fn mock_sse_sequence(server: &MockServer, legs: &'static [&'static str]) {
         .mount(server)
         .await;
 }
-
-// Go: provider/openresponses_wire_test.go:32
 #[tokio::test]
-async fn test_open_responses_golden_request() {
+async fn the_responses_request_body_is_byte_exact() {
     let srv = MockServer::start().await;
     mock_sse(&srv, "POST", "/responses", RESP_COMPLETED_SSE).await;
 
@@ -286,7 +283,6 @@ async fn empty_input_schema_is_omitted_on_both_dialects() {
 }
 
 /// The recorded transcript of `TestOpenResponsesStreamTranscript`.
-// Go: provider/openresponses_wire_test.go:156
 const TRANSCRIPT: &str = r#"event: response.created
 data: {"type":"response.created","response":{"status":"in_progress"}}
 
@@ -326,10 +322,8 @@ data: {"type":"response.output_item.done","item":{"id":"fc_1","type":"function_c
 event: response.completed
 data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":11,"output_tokens":7,"total_tokens":18}}}
 "#;
-
-// Go: provider/openresponses_wire_test.go:155
 #[tokio::test]
-async fn test_open_responses_stream_transcript() {
+async fn a_responses_stream_assembles_reasoning_text_calls_and_usage() {
     let srv = MockServer::start().await;
     mock_sse(&srv, "POST", "/responses", TRANSCRIPT).await;
     let p = provider(&srv, "m");
@@ -394,10 +388,8 @@ async fn test_open_responses_stream_transcript() {
         "upstream id reuse must be preserved at record time"
     );
 }
-
-// Go: provider/openresponses_wire_test.go:266
 #[tokio::test]
-async fn test_open_responses_stream_inline_think() {
+async fn inline_think_tags_in_a_responses_stream_route_to_reasoning() {
     // Relays that don't parse reasoning leak <think> into output_text deltas, split across frames.
     const SSE: &str = r#"event: response.output_text.delta
 data: {"type":"response.output_text.delta","item_id":"msg_1","delta":"<think>pond"}
@@ -444,10 +436,8 @@ data: {"type":"response.completed","response":{"status":"completed","usage":{"in
     assert_eq!((usage.input, usage.output, usage.total), (650, 25, 675));
     assert_eq!(usage.cache_read, 0);
 }
-
-// Go: provider/openresponses_wire_test.go:314
 #[tokio::test]
-async fn test_open_responses_terminal_events() {
+async fn the_terminal_events_map_to_their_errors() {
     let cases: [(&str, &str, &[&str], &str); 3] = [
         (
             "response.failed",
@@ -517,10 +507,8 @@ async fn test_open_responses_terminal_events() {
         }
     }
 }
-
-// Go: provider/openresponses_wire_test.go:374
 #[tokio::test]
-async fn test_open_responses_chat_and_models() {
+async fn the_unary_chat_and_the_model_listing_read_their_bodies() {
     let srv = MockServer::start().await;
     mock_json(
         &srv,
@@ -563,10 +551,8 @@ async fn test_open_responses_chat_and_models() {
     assert_eq!(p.kind(), ProviderKind::OpenResponses);
     assert_eq!(p.model(), "m");
 }
-
-// Go: provider/openresponses_wire_test.go:409
 #[tokio::test]
-async fn test_open_responses_image_generation() {
+async fn an_image_generation_item_becomes_an_attachment_and_keeps_its_raw_item() {
     // base64 of [9, 8, 7].
     const SSE: &str = r#"data: {"type":"response.output_item.done","item":{"id":"ig_1","type":"image_generation_call","status":"completed","output_format":"png","result":"CQgH"}}
 
@@ -639,12 +625,12 @@ impl StreamSink for ImageSink {
     }
 }
 
-// Go: provider/openresponses_wire_test.go:461 TestOpenResponsesImagePartials — progressive
+// Progressive
 // frames: `partial_image` events reach the sink DECODED, the `generating` event raises the
 // composing widget under the name `image_generation`, and the declaration carries
 // `partial_images`.
 #[tokio::test]
-async fn test_open_responses_image_partials() {
+async fn progressive_image_frames_reach_the_sink_before_the_completed_frame() {
     // partial_image_b64 = base64([1, 2]); result = base64([3, 4, 5]).
     const SSE: &str = r#"data: {"type":"response.image_generation_call.generating"}
 
@@ -704,14 +690,12 @@ data: {"type":"response.completed","response":{"status":"completed"}}
         .expect("streaming round failed");
     assert!(sink.partials.is_empty(), "{:?}", sink.partials);
 }
-
-// Go: provider/openresponses_wire_test.go:516 TestOpenResponsesComposingObserverLearnsName —
 // the composing observer must learn the function's NAME, which in this dialect appears exactly
 // once (in `response.output_item.added`) and never on the argument deltas themselves. The
 // widget goes up on the announcement, before the first argument byte: a call that has been
 // announced is already work in progress.
 #[tokio::test]
-async fn test_open_responses_composing_observer_learns_name() {
+async fn the_composing_observer_learns_the_call_name_from_output_item_added() {
     const SSE: &str = r#"data: {"type":"response.output_text.delta","item_id":"msg_1","delta":"Writing."}
 
 data: {"type":"response.output_item.added","item":{"id":"fc_1","type":"function_call","call_id":"c1","name":"write_file","arguments":""}}
@@ -752,7 +736,6 @@ data: {"type":"response.completed","response":{"status":"completed","usage":{"in
 }
 
 /// Leg 1 ends on a `tool_search_call`; leg 2 streams the answer.
-// Go: provider/defermode_wire_test.go:71
 const TOOL_SEARCH_LEGS: [&str; 2] = [
     r#"data: {"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","summary":[]}}
 
@@ -788,10 +771,8 @@ fn recording_searcher(hits: Vec<ToolDef>) -> (ToolSearcher, Arc<Mutex<Vec<String
     });
     (searcher, seen)
 }
-
-// Go: provider/defermode_wire_test.go:69
 #[tokio::test]
-async fn test_open_responses_tool_search_loop() {
+async fn the_tool_search_leg_loads_tools_and_replays_them_mounted() {
     let srv = MockServer::start().await;
     mock_sse_sequence(&srv, &TOOL_SEARCH_LEGS).await;
 
@@ -872,10 +853,8 @@ async fn tool_search_output_with_no_hits_emits_empty_array() {
     assert!(body.contains(r#""tools":[]"#), "{body}");
     assert!(!body.contains(r#""tools":null"#), "{body}");
 }
-
-// Go: provider/usage_wire_test.go:47 (openresponses case)
 #[tokio::test]
-async fn test_unary_chat_owns_its_usage_openresponses() {
+async fn a_responses_unary_call_reports_only_its_own_usage() {
     const WITH_USAGE: &str = r#"{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":11,"output_tokens":7}}"#;
     const WITHOUT_USAGE: &str = r#"{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}]}"#;
 

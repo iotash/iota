@@ -1,7 +1,6 @@
 //! `openai` provider tests (`provider/openai_wire_test.go`, `provider/defermode_wire_test.go:137`,
 //! `provider/usage_wire_test.go`): the golden request, the streaming consumption contract, the inline
 //! `<think>` splitting, the system-tools mount and the per-call usage ownership.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -86,13 +85,11 @@ fn object_schema() -> JsonObject {
 
 /// The recorded assistant payload the golden request replays verbatim (kimi `reasoning` preserved).
 const RAW_ASSISTANT: &str = r#"{"role":"assistant","content":"prev","reasoning":"think","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]}"#;
-
-// Go: provider/openai_wire_test.go:21
 /// The exact request JSON the openai provider emits — the wire contract OpenAI-compatible servers see:
 /// message shapes, attachment parts (image data-URL / bare-b64 file / text LAST), tool definitions,
 /// verbatim raw-JSON assistant replay, stream options.
 #[tokio::test]
-async fn test_openai_golden_request() {
+async fn the_openai_request_body_is_byte_exact() {
     let server = MockServer::start().await;
     mock_sse(&server, "POST", "/chat/completions", "data: [DONE]\n\n").await;
 
@@ -186,14 +183,12 @@ async fn test_openai_golden_request() {
         }}])
     );
 }
-
-// Go: provider/openai_wire_test.go:114
 /// A recorded-style SSE transcript pins the consumption contract: reasoning deltas (both field spellings)
 /// reach the sink, which closes before the first content write; interleaved index-keyed tool-call deltas
 /// assemble in order; usage lands from the final chunk; `finish_reason=tool_calls` yields tool calls plus a
 /// verbatim-replayable raw assistant JSON.
 #[tokio::test]
-async fn test_openai_stream_transcript() {
+async fn an_openai_stream_assembles_deltas_tool_calls_and_usage() {
     const TRANSCRIPT: &str = concat!(
         "data: {\"choices\":[{\"delta\":{\"reasoning\":\"th\"}}]}\n",
         "\n",
@@ -268,13 +263,11 @@ async fn test_openai_stream_transcript() {
         })
     );
 }
-
-// Go: provider/openai_wire_test.go:179
 /// A content stream opening with `<think>` (tags split across deltas) is a leaked reasoning block: it reaches
 /// the reasoning channel, which closes before the first visible write, and the returned content and reasoning
 /// are clean. Go drives this through `StreamChat`; the port folds that into the tools variant with no tools.
 #[tokio::test]
-async fn test_openai_stream_inline_think() {
+async fn inline_think_tags_in_an_openai_stream_route_to_reasoning() {
     const TRANSCRIPT: &str = concat!(
         "data: {\"choices\":[{\"delta\":{\"content\":\"<th\"}}]}\n",
         "\n",
@@ -307,13 +300,11 @@ async fn test_openai_stream_inline_think() {
     let (_, body) = recorded(&server).await;
     assert!(body.get("tools").is_none(), "{body}");
 }
-
-// Go: provider/openai_wire_test.go:228
 /// The interleaved-thinking shape: the round ends in tool calls with the think block never closed — the whole
 /// text is reasoning, content stays empty, and the raw assistant replay keeps the verbatim unclosed tag with
 /// NO duplicate reasoning field.
 #[tokio::test]
-async fn test_openai_stream_inline_think_tool_round() {
+async fn an_unclosed_think_tag_in_a_tool_round_is_reasoning_and_replays_verbatim() {
     const TRANSCRIPT: &str = concat!(
         "data: {\"choices\":[{\"delta\":{\"content\":\"<think>need\"}}]}\n",
         "\n",
@@ -358,12 +349,10 @@ async fn test_openai_stream_inline_think_tool_round() {
         "tag-extracted think must not duplicate into the reasoning field: {raw_msg}"
     );
 }
-
-// Go: provider/defermode_wire_test.go:137
 /// The system-tools mode wire (chatcomp): a system message carrying Tools serializes as role system + tools
 /// and NO content key (the K3 constraint), keeping its place in the message order.
 #[tokio::test]
-async fn test_openai_system_tools_message_wire() {
+async fn a_system_tools_message_serializes_with_tools_and_no_content_key() {
     let server = MockServer::start().await;
     mock_sse(&server, "POST", "/chat/completions", "data: [DONE]\n\n").await;
 
@@ -395,13 +384,11 @@ async fn test_openai_system_tools_message_wire() {
         }}])
     );
 }
-
-// Go: provider/usage_wire_test.go:15 (openai case)
 /// The UNARY `chat` path owns its usage figures exactly like the streaming path: it reports what the response
 /// carried, and a response without a usage block reads as "unknown" instead of leaving the previous call's
 /// numbers standing.
 #[tokio::test]
-async fn test_unary_chat_owns_its_usage_openai() {
+async fn an_openai_unary_call_reports_only_its_own_usage() {
     const WITH_USAGE: &str = r#"{"choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":11,"completion_tokens":7}}"#;
     const WITHOUT_USAGE: &str = r#"{"choices":[{"message":{"content":"hi"}}]}"#;
 

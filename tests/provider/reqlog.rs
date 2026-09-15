@@ -4,7 +4,6 @@
 //! Go drives these through `RequestLog.HTTPClient()` (an `http.RoundTripper`); the Rust seam sits at
 //! the ONE execute point inside `llm::Client`, so every test here goes through the public client (or
 //! a provider built on it) rather than through a transport.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::{
     Arc,
@@ -40,11 +39,11 @@ fn verbose_log() -> Arc<RequestLog> {
     log
 }
 
-/// Go: `chat/reqlog_test.go:15` `TestRequestLogCaptures` — a real round-trip through the recording
+/// A real round-trip through the recording
 /// client captures the method, URL, request body and status, and the response body only as the
 /// caller reads it (the capture is a TEE, not a buffer).
 #[tokio::test]
-async fn test_request_log_captures() {
+async fn the_request_log_captures_a_real_round_trip() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/thing"))
@@ -106,11 +105,11 @@ async fn test_request_log_captures() {
     assert!(done.err.is_none());
 }
 
-/// Go: `chat/reqlog_test.go:59` `TestRequestLogRecordingOff` — with recording off (the default) the
+/// With recording off (the default) the
 /// client passes straight through and captures nothing. The rebuilt response is skipped entirely,
 /// so `url()` is still reqwest's own.
 #[tokio::test]
-async fn test_request_log_recording_off() {
+async fn with_recording_off_nothing_is_captured() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/models"))

@@ -2,7 +2,6 @@
 //! `provider/google_wire_test.go`, `provider/usage_wire_test.go` google case): the model-path table, the Vertex
 //! listing fallback, the `contents` builder, the genai `RawContent` blob compatibility, the golden request and
 //! the streaming transcript (thought parts, synthesised call ids, image outputs, usage).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::{
     Arc,
@@ -78,10 +77,8 @@ async fn round(
         .await
         .unwrap()
 }
-
-// Go: internal/llm/llm_test.go:190
 #[test]
-fn test_google_model_path() {
+fn the_google_model_path_is_built_per_dialect() {
     let vertex = endpoint(true, "v1");
     let gemini = endpoint(false, "v1beta");
     let cases: &[(&Google, &str, &str)] = &[
@@ -120,10 +117,8 @@ fn test_google_model_path() {
         assert_eq!(err.to_string(), format!("llm: invalid model name {bad:?}"));
     }
 }
-
-// Go: internal/llm/llm_test.go:228
 #[tokio::test]
-async fn test_google_vertex_models_fallback() {
+async fn vertex_lists_a_built_in_model_set_when_the_endpoint_cannot() {
     // The official publisher path 404s, or redirects to an HTML landing page (a decode error after the
     // redirect is followed); either way the Gemini-shaped listing answers.
     for official in [
@@ -182,10 +177,8 @@ async fn test_google_vertex_models_fallback() {
         "no fallback request may be issued when the official path answers"
     );
 }
-
-// Go: provider/google_test.go:22
 #[test]
-fn test_build_contents_sanitizes_raw_content() {
+fn build_contents_sanitizes_a_raw_payload_before_replay() {
     // A streamed response can trail a zero-value part; replaying it makes Vertex AI reject the request with
     // 400 "required oneof field 'data' must have one initialized field".
     let raw_json = r#"{"parts":[{"thoughtSignature":"c2ln","functionCall":{"args":{"url":"https://example.com"},"name":"get_news"}},{}],"role":"model"}"#;
@@ -216,10 +209,8 @@ fn test_build_contents_sanitizes_raw_content() {
         ))
     );
 }
-
-// Go: provider/google_test.go:56
 #[test]
-fn test_sanitize_content_all_parts_empty() {
+fn a_content_whose_parts_are_all_empty_is_dropped() {
     let all_empty = GContent {
         role: "model".to_owned(),
         parts: vec![GPart::default(), GPart::default()],
@@ -244,10 +235,8 @@ fn test_sanitize_content_all_parts_empty() {
     assert!(matches!(kept, std::borrow::Cow::Borrowed(_)));
     assert_eq!(kept.parts.len(), 2);
 }
-
-// Go: provider/google_test.go:64
 #[test]
-fn test_build_contents_tool_call_ids() {
+fn tool_call_ids_travel_only_where_the_backend_accepts_them() {
     // The Gemini Developer API accepts FunctionCall/FunctionResponse IDs; Vertex AI does not.
     let call = ToolCall {
         id: "call_1".to_owned(),
@@ -307,10 +296,8 @@ fn test_build_contents_tool_call_ids() {
     );
     assert_eq!(contents[0].role, "user");
 }
-
-// Go: provider/google_wire_test.go:21
 #[test]
-fn test_google_raw_content_blob_compat() {
+fn a_google_raw_payload_blob_stays_compatible() {
     let c: GContent = serde_json::from_str(GENAI_CONTENT_FIXTURE).unwrap();
     assert_eq!(c.parts.len(), 5, "fixture decode lost data: {c:?}");
     assert!(c.parts[0].thought);
@@ -351,10 +338,8 @@ async fn an_effort_above_high_is_sent_as_thinking_level_high() {
     assert_eq!(gc["thinkingConfig"]["thinkingLevel"], "HIGH");
     assert_eq!(gc["thinkingConfig"]["includeThoughts"], json!(true));
 }
-
-// Go: provider/google_wire_test.go:54
 #[tokio::test]
-async fn test_google_golden_request() {
+async fn the_google_request_body_is_byte_exact() {
     let server = MockServer::start().await;
     mock_stream(&server, "data: {\"candidates\":[]}\n\n").await;
 
@@ -540,10 +525,8 @@ async fn google_stream_maps_terminal_errors() {
     let out = round(&p, &[Message::user("q")], &[], &mut sink).await;
     assert_eq!(out.content, "ok");
 }
-
-// Go: provider/google_wire_test.go:125
 #[tokio::test]
-async fn test_google_stream_transcript() {
+async fn a_google_stream_assembles_text_thoughts_and_function_calls() {
     const TRANSCRIPT: &str = concat!(
         r#"data: {"candidates":[{"content":{"role":"model","parts":[{"text":"hm","thought":true,"thoughtSignature":"AQID"}]}}]}"#,
         "\n\n",
@@ -611,10 +594,8 @@ async fn test_google_stream_transcript() {
     assert!(content.parts[2].function_call.is_some());
     assert!(out.images.is_empty());
 }
-
-// Go: provider/google_wire_test.go:171
 #[tokio::test]
-async fn test_google_image_output() {
+async fn image_output_opts_into_response_modalities_and_decodes_inline_data() {
     const TRANSCRIPT: &str = concat!(
         r#"data: {"candidates":[{"content":{"role":"model","parts":[{"text":"Here you go."},{"inlineData":{"mimeType":"image/png","data":"iVBO"}}]}}]}"#,
         "\n\n",
@@ -670,10 +651,8 @@ async fn test_google_image_output() {
         out.images
     );
 }
-
-// Go: provider/usage_wire_test.go:15 (google case)
 #[tokio::test]
-async fn test_unary_chat_owns_its_usage_google() {
+async fn a_google_unary_call_reports_only_its_own_usage() {
     const WITH_USAGE: &str = r#"{"candidates":[{"content":{"parts":[{"text":"hi"}]}}],"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":7}}"#;
     const WITHOUT: &str = r#"{"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}"#;
 

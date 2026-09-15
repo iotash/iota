@@ -1,7 +1,6 @@
 //! Imagen provider tests (`provider/imagen_test.go`): the `:predict` golden request, the safety-filter and
 //! no-images `PermanentError`s, the metadata-only model filter, the capability surface and the signed-URL
 //! result fetch.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use crate::common::body_json;
 use iota::provider::error::ProviderError;
@@ -61,10 +60,8 @@ async fn chat_err(p: &ImagenProvider, messages: &[Message]) -> ProviderError {
         Ok(ok) => panic!("expected a failure, got {ok:?}"),
     }
 }
-
-// Go: provider/imagen_test.go:22
 #[tokio::test]
-async fn test_imagen_golden_request() {
+async fn the_imagen_request_body_is_byte_exact() {
     // The :predict wire for the relay (vertex-form) backend: publishers/{vendor}/models path on v1,
     // x-goog-api-key auth, the instances/parameters envelope, and the stateless-per-message reference
     // derivation — ONLY the final user message's image attachments become referenceImages.
@@ -151,13 +148,11 @@ async fn test_imagen_golden_request() {
     assert_eq!(out.images[1].data, vec![10]);
 }
 
-// Go: provider/imagen_test.go:96 — `test_imagen_official_path_form` lives in `src/imagen.rs`: the official
+// `test_imagen_official_path_form` lives in `src/imagen.rs`: the official
 // form needs `vertex = false` with a test base URL, which only the private struct literal can build (Go's
 // test is in-package for the same reason).
-
-// Go: provider/imagen_test.go:113
 #[tokio::test]
-async fn test_imagen_safety_filtered() {
+async fn a_safety_filtered_imagen_reply_is_a_permanent_error() {
     let server = MockServer::start().await;
     mock_predict(
         &server,
@@ -184,10 +179,8 @@ async fn test_imagen_safety_filtered() {
         "an empty prompt must fail BEFORE any HTTP call"
     );
 }
-
-// Go: provider/imagen_test.go:138
 #[tokio::test]
-async fn test_imagen_list_models_filter() {
+async fn imagen_lists_only_image_models() {
     // Keep by METADATA only: outputModalities containing image (relay form) or supportedGenerationMethods
     // containing predict (official form); entries with no metadata at all are kept — never name heuristics.
     let server = MockServer::start().await;
@@ -215,10 +208,8 @@ async fn test_imagen_list_models_filter() {
     let names = p.list_models(&CancellationToken::new()).await.unwrap();
     assert_eq!(names, ["bare-model", "image-model", "imagen-x"]);
 }
-
-// Go: provider/imagen_test.go:195
 #[test]
-fn test_imagen_capability_surface() {
+fn imagen_advertises_exactly_the_image_gen_capabilities() {
     // The type stays deliberately un-Tunable and token-less: the chat layer's capability gates key off these
     // assertions.
     let mut p = ImagenProvider::new("k", "", "m", reqwest::Client::new());
@@ -250,10 +241,8 @@ fn test_imagen_capability_surface() {
         "imagen must offer choice lists for the /model tabs"
     );
 }
-
-// Go: provider/imagen_test.go:217
 #[tokio::test]
-async fn test_imagen_gcs_uri_fetched() {
+async fn a_gcs_uri_result_is_fetched_into_the_attachment() {
     // Relay-hosted models answer with a signed URL instead of inline bytes (predictions[].gcsUri). It is
     // fetched immediately — the link expires — with no API key attached (the signature IS the credential),
     // and the response header decides the mime.
@@ -295,10 +284,8 @@ async fn test_imagen_gcs_uri_fetched() {
         blob.headers
     );
 }
-
-// Go: provider/imagen_test.go:248
 #[tokio::test]
-async fn test_imagen_gcs_uri_unfetchable() {
+async fn an_unfetchable_gcs_uri_is_reported_not_swallowed() {
     // A gs:// URI needs Google credentials iota never holds: fail loudly instead of reporting "no images".
     let server = MockServer::start().await;
     mock_predict(
@@ -318,10 +305,8 @@ async fn test_imagen_gcs_uri_unfetchable() {
         "a fetch failure is a plain error, not PermanentError"
     );
 }
-
-// Go: provider/imagen_test.go:262
 #[tokio::test]
-async fn test_imagen_no_images_error_is_diagnostic() {
+async fn a_reply_with_no_images_names_what_the_server_said() {
     // An empty prediction set still says how many came back — the diagnosis that exposed the gcsUri gap
     // needed /debug to make.
     let server = MockServer::start().await;

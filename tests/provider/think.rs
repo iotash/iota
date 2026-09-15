@@ -1,5 +1,4 @@
 //! `<think>` tag splitter tests (`provider/thinktag_test.go`) plus the `ReasoningGate` adapter.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use iota::provider::sink::ReasoningGate;
 use iota::provider::think::{StreamThinkSplitter, ThinkOut, ThinkTagSplitter, split_inline_think};
@@ -31,10 +30,8 @@ fn feed_splitter(deltas: &[&str]) -> (String, String) {
     sp.flush(&mut out);
     (out.content, out.think)
 }
-
-// Go: provider/thinktag_test.go:21
 #[test]
-fn test_think_tag_splitter() {
+fn the_think_tag_splitter_routes_tagged_text_to_reasoning() {
     let cases: &[(&str, &[&str], &str, &str)] = &[
         ("no tags", &["hello ", "world"], "hello world", ""),
         (
@@ -111,10 +108,8 @@ fn test_think_tag_splitter() {
         );
     }
 }
-
-// Go: provider/thinktag_test.go:54
 #[test]
-fn test_think_tag_splitter_byte_at_a_time() {
+fn the_think_tag_splitter_survives_a_byte_at_a_time_feed() {
     let input = "\n<think>deep\nthought</think>\n\nThe <think> tag explained.";
     let deltas: Vec<&str> = (0..input.len()).map(|i| &input[i..=i]).collect();
     let (content, think) = feed_splitter(&deltas);
@@ -124,10 +119,8 @@ fn test_think_tag_splitter_byte_at_a_time() {
     // Whole-string feeding resolves identically.
     assert_eq!(feed_splitter(&[input]), (content, think));
 }
-
-// Go: provider/thinktag_test.go:69
 #[test]
-fn test_split_inline_think() {
+fn split_inline_think_separates_reasoning_from_the_visible_reply() {
     let (c, th) = split_inline_think("<think>pondering</think>done");
     assert_eq!((c.as_str(), th.as_str()), ("done", "pondering"));
     let (c, th) = split_inline_think("no tags here");

@@ -1,7 +1,6 @@
 //! Images provider tests (`provider/images_test.go`): the `/images/generations` golden request, the URL-form
 //! result fetch, the metadata-only model filter, the capability surface, the mime-resolution table and the
 //! defensive SSE paths (a backend that streams unasked, and one that never completes).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use crate::common::body_json;
 use iota::provider::error::ProviderError;
@@ -48,10 +47,8 @@ async fn chat_err(p: &ImagesProvider, messages: &[Message]) -> ProviderError {
         Ok(ok) => panic!("expected a failure, got {ok:?}"),
     }
 }
-
-// Go: provider/images_test.go:17
 #[tokio::test]
-async fn test_images_golden_generate() {
+async fn the_images_generate_request_is_byte_exact() {
     // The /images/generations wire: bearer auth, n pinned to 1, size passthrough, b64 into the images.
     let server = MockServer::start().await;
     mock_generate(
@@ -95,10 +92,8 @@ async fn test_images_golden_generate() {
     assert_eq!(out.images[0].filename, "image-1.png");
     assert_eq!(out.images[0].data, vec![9]);
 }
-
-// Go: provider/images_test.go:119
 #[tokio::test]
-async fn test_images_url_fallback() {
+async fn a_url_result_is_fetched_when_no_b64_is_returned() {
     // DALL·E's default response form is a short-lived URL — fetched immediately, mime taken from the
     // response header (parameters stripped, so the extension maps still exact-match).
     let server = MockServer::start().await;
@@ -138,10 +133,8 @@ async fn test_images_url_fallback() {
         blob.headers
     );
 }
-
-// Go: provider/images_test.go:146
 #[tokio::test]
-async fn test_images_list_models_filter() {
+async fn images_lists_only_image_models() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/models"))
@@ -160,10 +153,8 @@ async fn test_images_list_models_filter() {
     let names = p.list_models(&CancellationToken::new()).await.unwrap();
     assert_eq!(names, ["bare-model", "image-model"]);
 }
-
-// Go: provider/images_test.go:169
 #[tokio::test]
-async fn test_images_capability_surface() {
+async fn images_advertises_exactly_the_image_gen_and_json_edit_capabilities() {
     let mut p = ImagesProvider::new("k", "", "m", reqwest::Client::new());
     assert!(p.as_tool_provider().is_none(), "images has no tool calling");
     assert!(p.as_tunable().is_none(), "images must not be Tunable");
@@ -204,10 +195,8 @@ async fn test_images_capability_surface() {
     assert_eq!(err.to_string(), "images: empty prompt");
     assert!(is_permanent(&err), "empty prompt must be a PermanentError");
 }
-
-// Go: provider/images_test.go:269
 #[test]
-fn test_image_mime_resolution() {
+fn the_attachment_mime_follows_the_declared_type_then_the_bytes() {
     // A declared media_type wins (parameters stripped), otherwise the bytes are sniffed — OpenAI declares
     // nothing and defaults to png, but relays answer JPEG and output_format can ask for webp, so a hardcoded
     // png would file the wrong extension.
@@ -237,10 +226,8 @@ fn test_image_mime_resolution() {
         );
     }
 }
-
-// Go: provider/images_test.go:293
 #[tokio::test]
-async fn test_images_media_type_honored() {
+async fn a_declared_media_type_is_honoured_over_sniffing() {
     // The relay shape end to end: JPEG bytes announced by media_type must reach the attachment as image/jpeg
     // with a .jpg name (OpenRouter's answer).
     let server = MockServer::start().await;
@@ -260,10 +247,8 @@ async fn test_images_media_type_honored() {
     assert_eq!(out.images[0].mime_type, "image/jpeg");
     assert_eq!(out.images[0].filename, "image-1.jpg");
 }
-
-// Go: provider/images_test.go:310 (headless half of TestImagesStreamingPartials)
 #[tokio::test]
-async fn test_images_unary_request_has_no_stream_key() {
+async fn the_unary_images_request_carries_no_stream_key() {
     // An unwatched turn (-m, a quiet round) posts the plain unary request: no `stream`, no `partial_images`.
     // The progressive-frame observer is interactive-only and is not ported (DIVERGENCES D-20).
     let server = MockServer::start().await;
@@ -289,10 +274,8 @@ async fn test_images_unary_request_has_no_stream_key() {
         serde_json::json!({"model": "gpt-image-2", "prompt": "a cat", "n": 1})
     );
 }
-
-// Go: provider/images_test.go:366
 #[tokio::test]
-async fn test_images_stream_ignored_by_backend() {
+async fn a_backend_answering_plain_json_to_a_stream_request_still_yields_the_picture() {
     // The RESPONSE Content-Type decides how the body is read, because asking again would bill a second
     // generation. A relay that answers plain JSON must work without a second request.
     let server = MockServer::start().await;
@@ -315,10 +298,8 @@ async fn test_images_stream_ignored_by_backend() {
         "a second, billed request must never be issued"
     );
 }
-
-// Go: provider/images_test.go:388
 #[tokio::test]
-async fn test_images_stream_without_completion() {
+async fn a_stream_that_never_completes_is_an_error() {
     // A stream that ends with partials but never completes is an error, not a half-rendered picture
     // presented as final. Headless never asks to stream, so this is the defensive path (DIVERGENCES D-29).
     let server = MockServer::start().await;
@@ -336,10 +317,8 @@ async fn test_images_stream_without_completion() {
         "llm: image stream ended without a completed image"
     );
 }
-
-// Go: provider/images_test.go:405
 #[tokio::test]
-async fn test_images_type_declaration_variants() {
+async fn every_type_declaration_variant_decodes() {
     // Backends spell the payload's type three ways — media_type (OpenRouter), mime_type (xAI), output_format
     // on streaming events — and some declare nothing. All must land on the same attachment mime.
     for (name, body) in [
@@ -535,10 +514,8 @@ fn edit_turn(content: &str, atts: Vec<Attachment>) -> Message {
         ..Message::default()
     }
 }
-
-// Go: provider/images_test.go:52
 #[tokio::test]
-async fn test_images_golden_edit() {
+async fn the_images_edit_request_is_byte_exact_multipart() {
     // References switch the call to multipart /images/edits: one ref uploads as `image`, several
     // as `image[]`, with per-part content types and the same form fields.
     let server = MockServer::start().await;
@@ -631,10 +608,8 @@ async fn test_images_golden_edit() {
     assert_eq!(files[1].mime.as_deref(), Some("image/jpeg"));
     assert_eq!(files[1].data, [8]);
 }
-
-// Go: provider/images_test.go:203
 #[tokio::test]
-async fn test_images_json_edits() {
+async fn json_edits_send_the_json_body_form() {
     // JSON edits: some backends (xAI) accept ONLY a JSON body on /images/edits and reject
     // multipart. The switch routes there; a single reference is the documented object form,
     // several become an array; results parse the same.
@@ -737,10 +712,8 @@ async fn observed(p: &ImagesProvider, messages: &[Message]) -> (Vec<Vec<u8>>, Ve
     let seen = frames.lock().unwrap().clone();
     (seen, out.images)
 }
-
-// Go: provider/images_test.go:310 (observer half of TestImagesStreamingPartials)
 #[tokio::test]
-async fn test_images_streaming_partials() {
+async fn progressive_frames_reach_the_observer_before_the_result() {
     // An installed observer asks the backend for progressive frames, partials reach the
     // observer, and the completed event is the result.
     let server = MockServer::start().await;
@@ -826,10 +799,8 @@ async fn observed_edit_streams_too() {
         "{text:?}"
     );
 }
-
-// Go: provider/images_test.go:366 (observer half of TestImagesStreamIgnoredByBackend)
 #[tokio::test]
-async fn test_images_stream_ignored_by_backend_observer_half() {
+async fn a_plain_json_answer_calls_the_observer_never() {
     // A backend that ignores stream:true answers with the plain JSON body — the observer simply
     // never fires; asking again "properly" would bill a second generation.
     let server = MockServer::start().await;

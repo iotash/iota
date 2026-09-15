@@ -2,7 +2,6 @@
 //! `provider/defermode_wire_test.go` and the anthropic case of `provider/usage_wire_test.go`): the golden
 //! request, index-keyed stream assembly, the in-band error event, paginated model listing, the reference
 //! defer protocol (`defer_loading` + server-block capture/replay) and unary usage ownership.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::{
     Arc,
@@ -66,10 +65,8 @@ fn block_types(body: &Value, idx: usize) -> Vec<String> {
         .map(|b| b["type"].as_str().expect("block type").to_owned())
         .collect()
 }
-
-// Go: provider/anthropic_wire_test.go:19
 #[tokio::test]
-async fn test_anthropic_golden_request() {
+async fn the_anthropic_request_body_is_byte_exact() {
     const STOP: &str = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
     let server = MockServer::start().await;
     mock_sse(&server, "POST", "/v1/messages", STOP).await;
@@ -178,10 +175,8 @@ async fn test_anthropic_golden_request() {
         })
     );
 }
-
-// Go: provider/anthropic_wire_test.go:153
 #[tokio::test]
-async fn test_anthropic_stream_transcript() {
+async fn an_anthropic_stream_assembles_text_thinking_tool_use_and_usage() {
     // Index 3's delta arrives between index 2's two fragments and the stops arrive out of index order: only
     // per-index accumulation assembles this correctly.
     const TRANSCRIPT: &str = concat!(
@@ -297,7 +292,7 @@ async fn test_anthropic_stream_transcript() {
 /// (`server_tool_use`, `service_tier`). `message_delta.usage` is the message's cumulative usage by
 /// Anthropic's definition, so what it carries IS the figure — DIVERGENCES X-30.
 #[tokio::test]
-async fn test_anthropic_stream_usage_delta_overrides_placeholder_start() {
+async fn a_message_delta_usage_is_laid_over_a_placeholder_start() {
     const TRANSCRIPT: &str = concat!(
         "event: message_start\n",
         r#"data: {"type":"message_start","message":{"usage":{"input_tokens":0,"output_tokens":0}}}"#,
@@ -339,7 +334,7 @@ async fn test_anthropic_stream_usage_delta_overrides_placeholder_start() {
 /// The overlay replaces only what the delta carries, so the start's input side and cache counts survive —
 /// the rule never wipes a real figure to 0.
 #[tokio::test]
-async fn test_anthropic_stream_usage_delta_without_input_keeps_start() {
+async fn a_message_delta_without_input_keeps_the_starts_figures() {
     const TRANSCRIPT: &str = concat!(
         "event: message_start\n",
         r#"data: {"type":"message_start","message":{"usage":{"input_tokens":11,"cache_read_input_tokens":5,"cache_creation_input_tokens":4}}}"#,
@@ -377,10 +372,8 @@ async fn test_anthropic_stream_usage_delta_without_input_keeps_start() {
         "a delta without the input side must keep the start's"
     );
 }
-
-// Go: provider/anthropic_wire_test.go:249
 #[tokio::test]
-async fn test_anthropic_stream_error_event() {
+async fn an_error_event_ends_the_stream_with_its_message() {
     // overloaded_error arrives on a 200 stream, not as HTTP 529.
     const TRANSCRIPT: &str = concat!(
         "event: message_start\n",
@@ -406,10 +399,8 @@ async fn test_anthropic_stream_error_event() {
         r#"stream error: received error while streaming: {"type":"overloaded_error","message":"Overloaded"}"#
     );
 }
-
-// Go: provider/anthropic_wire_test.go:279
 #[tokio::test]
-async fn test_anthropic_models_pagination() {
+async fn the_model_listing_follows_pagination() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/models"))
@@ -448,10 +439,8 @@ async fn test_anthropic_models_pagination() {
     // Merged across pages, then sorted byte-wise ascending.
     assert_eq!(models, ["claude-a", "claude-b", "claude-c"]);
 }
-
-// Go: provider/defermode_wire_test.go:16
 #[tokio::test]
-async fn test_anthropic_defer_loading_wire() {
+async fn deferred_tools_ride_the_wire_as_the_tool_reference_form() {
     const STOP: &str = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
     let server = MockServer::start().await;
     mock_sse(&server, "POST", "/v1/messages", STOP).await;
@@ -489,10 +478,8 @@ async fn test_anthropic_defer_loading_wire() {
         "plain must carry no defer_loading and the search tool no input_schema"
     );
 }
-
-// Go: provider/defermode_wire_test.go:176
 #[tokio::test]
-async fn test_anthropic_server_block_capture() {
+async fn server_tool_blocks_are_captured_into_the_raw_payload() {
     const TRANSCRIPT: &str = concat!(
         "event: content_block_start\n",
         r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srv_1","name":"tool_search_tool_regex","input":{}}}"#,
@@ -557,10 +544,8 @@ async fn test_anthropic_server_block_capture() {
     let back: Vec<Raw> = serde_json::from_str(&blob).expect("unmarshal");
     assert_eq!(back, blocks);
 }
-
-// Go: provider/defermode_wire_test.go:244
 #[tokio::test]
-async fn test_anthropic_server_block_replay() {
+async fn captured_server_tool_blocks_replay_verbatim() {
     const STOP: &str = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
     const SERVER_TOOL_USE: &str = r#"{"type":"server_tool_use","id":"srv_1","name":"tool_search_tool_regex","input":{"pattern":"weather"}}"#;
     const SEARCH_RESULT: &str = r#"{"type":"tool_search_tool_result","tool_use_id":"srv_1","content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"atmos_query"}]}}"#;
@@ -633,10 +618,8 @@ async fn overloaded_529_is_retried_by_the_status_rule() {
     assert_eq!(out.content, "");
     assert_eq!(hits.load(Ordering::SeqCst), 2, "529 must be retried");
 }
-
-// Go: provider/usage_wire_test.go:15 (anthropic case)
 #[tokio::test]
-async fn test_unary_chat_owns_its_usage_anthropic() {
+async fn an_anthropic_unary_call_reports_only_its_own_usage() {
     const WITH_USAGE: &str = r#"{"content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":11,"output_tokens":7}}"#;
     const WITHOUT_USAGE: &str = r#"{"content":[{"type":"text","text":"hi"}]}"#;
 
@@ -688,13 +671,13 @@ async fn test_unary_chat_owns_its_usage_anthropic() {
     assert_eq!(body["max_tokens"], json!(4096));
 }
 
-// Go: provider/defermode_wire_test.go:293 TestAnthropicThinkingBlockCaptureAndReplay — a thinking
+// A thinking
 // block is captured WITH its signature and replayed on the next request unconditionally, no
 // deferred tool required (unlike the server blocks above). Endpoints that implement thinking mode
 // reject an assistant turn whose thinking is missing ("the content[].thinking in the thinking mode
 // must be passed back to the API"), and the block must lead the content array.
 #[tokio::test]
-async fn test_anthropic_thinking_block_capture_and_replay() {
+async fn a_signed_thinking_block_is_captured_and_replayed() {
     const TRANSCRIPT: &str = concat!(
         "event: content_block_start\n",
         "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\"}}\n\n",
@@ -769,12 +752,12 @@ async fn test_anthropic_thinking_block_capture_and_replay() {
     assert_eq!(first["thinking"], "weigh it", "replay lost the body");
 }
 
-// Go: provider/defermode_wire_test.go:378 TestAnthropicThinkingBlockWithoutSignature — an endpoint
+// An endpoint
 // that implements thinking mode without sealing the block sends no `signature_delta`; the replayed
 // block then carries no `"signature"` key at all rather than an empty one, so what goes back is
 // exactly what came in.
 #[tokio::test]
-async fn test_anthropic_thinking_block_without_signature() {
+async fn a_thinking_block_without_a_signature_is_not_replayed() {
     const TRANSCRIPT: &str = concat!(
         "event: content_block_start\n",
         "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\"}}\n\n",
@@ -796,11 +779,11 @@ async fn test_anthropic_thinking_block_without_signature() {
     );
 }
 
-// Go: provider/defermode_wire_test.go:408 TestAnthropicSignatureOnlyThinkingBlockReplays — a block
+// A block
 // can arrive sealed but empty (DeepSeek's Anthropic endpoint sends `signature_delta` with no
 // `thinking_delta`). The signature alone makes it part of the turn, so it replays.
 #[tokio::test]
-async fn test_anthropic_signature_only_thinking_block_replays() {
+async fn a_signature_only_thinking_block_still_replays() {
     const TRANSCRIPT: &str = concat!(
         "event: content_block_start\n",
         "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\"}}\n\n",
@@ -822,10 +805,10 @@ async fn test_anthropic_signature_only_thinking_block_replays() {
     );
 }
 
-// Go: provider/defermode_wire_test.go:442 TestAnthropicEmptyThinkingBlockDropped — neither body nor
+// Neither body nor
 // signature means the block never carried anything; it stays out of the replay.
 #[tokio::test]
-async fn test_anthropic_empty_thinking_block_dropped() {
+async fn an_empty_thinking_block_is_dropped() {
     const TRANSCRIPT: &str = concat!(
         "event: content_block_start\n",
         "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\"}}\n\n",

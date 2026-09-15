@@ -15,7 +15,6 @@
 //! Google is deliberately absent: it is an atomic backend (`google.go:353` notifies with
 //! an EMPTY delta, which the observer discards), so the Rust dialect emits nothing and the
 //! widget rises at the tool walk instead.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use crate::common::mock_sse;
 use iota::provider::ToolProvider;
@@ -72,7 +71,7 @@ fn lookup() -> Vec<ToolDef> {
 // openai (chat completions)
 // ---------------------------------------------------------------------------
 
-// Go: provider/openai.go:255 — every non-empty `function.arguments` fragment reports with
+// Every non-empty `function.arguments` fragment reports with
 // the name accumulated so far, in wire order, across interleaved indices.
 #[tokio::test]
 async fn openai_reports_named_argument_fragments_in_order() {
@@ -134,7 +133,7 @@ async fn openai_fragment_before_the_name_is_anonymous() {
 // anthropic (messages)
 // ---------------------------------------------------------------------------
 
-// Go: provider/anthropic.go:392 — `input_json_delta` fragments report under the block's
+// `input_json_delta` fragments report under the block's
 // `content_block_start` name, interleaved across parallel tool_use blocks.
 #[tokio::test]
 async fn anthropic_reports_input_json_deltas_per_block() {
@@ -181,7 +180,7 @@ async fn anthropic_reports_input_json_deltas_per_block() {
     );
 }
 
-// Go: provider/anthropic.go:390-393 — a `server_tool_use` block's args are NOT a client
+// A `server_tool_use` block's args are NOT a client
 // tool call: no `CallTool` ever settles one, so the widget must never be raised for it.
 #[tokio::test]
 async fn anthropic_never_reports_server_tool_use() {
@@ -216,7 +215,7 @@ async fn anthropic_never_reports_server_tool_use() {
 // openresponses
 // ---------------------------------------------------------------------------
 
-// Go: provider/openresponses.go:341-354 — `output_item.added` announces the name (and
+// `output_item.added` announces the name (and
 // raises the widget on the announcement itself, with the "…" stand-in delta), then every
 // `function_call_arguments.delta` reports under that name.
 #[tokio::test]
@@ -288,7 +287,7 @@ async fn openresponses_unannounced_items_stay_anonymous() {
     assert_eq!(deltas(&p, &lookup()).await, vec![":{}".to_owned()]);
 }
 
-// Go: provider/openresponses.go:330-332 — the server-side image built-in has no argument
+// The server-side image built-in has no argument
 // stream of its own, so generation start reports through the same channel under the
 // `image_generation` name.
 #[tokio::test]
