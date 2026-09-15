@@ -5,7 +5,8 @@
 //! Background calls (title, compaction, `list_models`) run outside the scope
 //! and see `None` — Go's nil reporter.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use crate::sync::lock;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
@@ -32,29 +33,19 @@ impl TurnProgress {
 
     /// Installs (or clears) the handlers.
     pub(crate) fn set_handlers(&self, h: Option<(OnSend, OnSent)>) {
-        *self.handlers.lock().unwrap_or_else(PoisonError::into_inner) = h;
+        *lock(&self.handlers) = h;
     }
 
     /// Reports `done` of `total` request bytes sent.
     pub(crate) fn send(&self, done: u64, total: u64) {
-        if let Some((on_send, _)) = self
-            .handlers
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-        {
+        if let Some((on_send, _)) = lock(&self.handlers).as_ref() {
             on_send(done, total);
         }
     }
 
     /// Reports that the round-trip returned (fires on EVERY arm — ok, error, timeout, cancel).
     pub(crate) fn sent(&self) {
-        if let Some((_, on_sent)) = self
-            .handlers
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-        {
+        if let Some((_, on_sent)) = lock(&self.handlers).as_ref() {
             on_sent();
         }
     }

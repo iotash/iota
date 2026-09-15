@@ -11,9 +11,10 @@
 //! `T3_DESIGN` §4.4). Headers are recorded by neither language — method, URL, bodies, the status
 //! line, the error text, the timestamp and the duration are the whole entry.
 
+use crate::sync::lock;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -73,30 +74,24 @@ impl RequestEntry {
 
     /// A snapshot of the response half.
     pub fn response(&self) -> ResponseHalf {
-        self.resp
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        lock(&self.resp).clone()
     }
 
     /// Records the status line.
     pub(crate) fn set_status(&self, s: String) {
-        self.resp
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .status = s;
+        lock(&self.resp).status = s;
     }
 
     /// Records a transport failure and the duration.
     pub(crate) fn set_err(&self, e: String, d: Duration) {
-        let mut r = self.resp.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut r = lock(&self.resp);
         r.err = Some(e);
         r.duration = d;
     }
 
     /// Appends response bytes, capped at [`REQ_LOG_MAX_BODY`].
     pub(crate) fn append_body(&self, chunk: &[u8]) {
-        let mut r = self.resp.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut r = lock(&self.resp);
         let room = REQ_LOG_MAX_BODY.saturating_sub(r.resp_body.len());
         r.resp_body
             .extend_from_slice(&chunk[..chunk.len().min(room)]);
@@ -104,10 +99,7 @@ impl RequestEntry {
 
     /// Records the duration.
     pub(crate) fn set_duration(&self, d: Duration) {
-        self.resp
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .duration = d;
+        lock(&self.resp).duration = d;
     }
 }
 
@@ -120,7 +112,7 @@ impl RequestEntry {
     /// text (empty on success), `resp_body` the captured response and `duration` its round trip.
     pub fn completed(method: &str, url: &str, req_body: &[u8], response: ResponseHalf) -> Self {
         let e = Self::new(method, url, req_body);
-        *e.resp.lock().unwrap_or_else(PoisonError::into_inner) = response;
+        *lock(&e.resp) = response;
         e
     }
 }
@@ -175,17 +167,12 @@ impl RequestLog {
     /// from this snapshot sees the status, body and duration fill in as the round-trip proceeds
     /// (Go returns the same pointers).
     pub fn entries(&self) -> Vec<Arc<RequestEntry>> {
-        self.entries
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-            .cloned()
-            .collect()
+        lock(&self.entries).iter().cloned().collect()
     }
 
     /// Prepends `e`, evicting the oldest past [`REQ_LOG_MAX_ENTRIES`].
     pub fn add(&self, e: Arc<RequestEntry>) {
-        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut entries = lock(&self.entries);
         entries.push_front(e);
         entries.truncate(REQ_LOG_MAX_ENTRIES);
     }
