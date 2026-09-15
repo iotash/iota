@@ -51,7 +51,7 @@ use crate::repl::interrupt::{InterruptDecision, finalize_interrupt};
 use crate::repl::mcpreport::report_mcp_failures;
 use crate::repl::meter::{ContextBudget, CtxMeter};
 use crate::repl::replay::{RESUME_ECHO_ROUNDS, echo_rounds, last_rounds};
-use crate::repl::retry::{MAX_RETRIES, is_retryable};
+use crate::repl::retry::{MAX_RETRIES, RETRY_BACKOFF, is_retryable};
 use crate::repl::steer::Steerer;
 use crate::repl::title::{
     SessionTitle, TITLE_TIMEOUT, WriterSlot, generate_title_text, is_read_only_viewer,
@@ -59,9 +59,6 @@ use crate::repl::title::{
 };
 use crate::repl::transcript::{Transcript, notify_digest};
 use crate::repl::turn::{TurnCtx, TurnFailure, TurnReport, collect_images, run_turn};
-
-/// One unit of the turn-level backoff (chat/run.go:1417 `retryBackoff`).
-const RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// The `Done` ping of an image-only reply (chat/run.go:1105).
 const IMAGE_READY: &str = "Image ready";
