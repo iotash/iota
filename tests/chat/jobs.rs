@@ -1,98 +1,26 @@
 //! Background jobs in a HEADLESS run (`chat/run.rs`): a `-m` run has no idle loop for a finished job to
 //! wake, so the tool loop itself waits for one and injects its notice as another round.
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::Arc;
 
-use iota::BoxFuture;
 use iota::chat::turns::RunCtx;
 use iota::chat::{QuietHost, RunRequest, run_once};
-use iota::provider::model::{JsonObject, Message, Role, ToolCall, ToolDef};
-use iota::provider::sink::StreamSink;
-use iota::provider::{ChatResult, Provider, ProviderKind, RoundResult, ToolProvider};
+use iota::provider::RoundResult;
+use iota::provider::model::{JsonObject, Message, Role, ToolCall};
 use iota::shell::jobs::Jobs;
+use iota::testing::{FakeProvider, Round};
 use iota::tool::sets::{RawNode, ToolsConfig};
 use iota::tool::{Dispatcher, Env, Registry};
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
-use tokio_util::sync::CancellationToken;
 
-/// A provider that records the history of every request and replays a scripted round per call.
-struct Recorder {
-    rounds: Mutex<Vec<RoundResult>>,
-    sends: Mutex<Vec<Vec<Message>>>,
-}
-
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-impl Recorder {
-    fn new(rounds: Vec<RoundResult>) -> Self {
-        Self {
-            rounds: Mutex::new(rounds),
-            sends: Mutex::new(Vec::new()),
-        }
-    }
-
-    /// The history of request `n` (0-based).
-    fn send(&self, n: usize) -> Vec<Message> {
-        lock(&self.sends).get(n).cloned().unwrap_or_default()
-    }
-}
-
-impl Provider for Recorder {
-    fn kind(&self) -> ProviderKind {
-        ProviderKind::OpenAi
-    }
-
-    fn model(&self) -> &'static str {
-        "fake"
-    }
-
-    fn set_model(&mut self, _model: String) {}
-
-    fn list_models<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Vec<String>, iota::provider::error::ProviderError>> {
-        Box::pin(async { Ok(Vec::new()) })
-    }
-
-    fn chat<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        _messages: &'a [Message],
-    ) -> BoxFuture<'a, Result<ChatResult, iota::provider::error::ProviderError>> {
-        Box::pin(async { Ok(ChatResult::default()) })
-    }
-
-    fn as_tool_provider(&self) -> Option<&dyn ToolProvider> {
-        Some(self)
-    }
-}
-
-impl ToolProvider for Recorder {
-    fn stream_chat_with_tools<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        messages: &'a [Message],
-        _tools: &'a [ToolDef],
-        _sink: &'a mut dyn StreamSink,
-    ) -> BoxFuture<'a, Result<RoundResult, iota::provider::error::ProviderError>> {
-        lock(&self.sends).push(messages.to_vec());
-        let round = {
-            let mut rounds = lock(&self.rounds);
-            if rounds.is_empty() {
-                RoundResult {
-                    content: "nothing left to do".to_owned(),
-                    ..RoundResult::default()
-                }
-            } else {
-                rounds.remove(0)
-            }
-        };
-        Box::pin(async move { Ok(round) })
-    }
+/// A tool provider playing `rounds`, then `"nothing left to do"`, recording the history of every request.
+fn recorder(rounds: Vec<RoundResult>) -> FakeProvider {
+    FakeProvider::new()
+        .with_tools()
+        .with_model("fake")
+        .rounds(rounds.into_iter().map(Round::result))
+        .replying("nothing left to do")
 }
 
 /// A `shell` dispatcher over a temp project with a job registry bound — the real toolset, so the test
@@ -149,7 +77,7 @@ async fn a_headless_run_waits_for_its_background_job_and_reports_it() {
         return;
     }
     let (_dir, jobs, dispatch) = shell_over_jobs();
-    let p = Recorder::new(vec![
+    let p = recorder(vec![
         // Round 1: start the job.
         RoundResult {
             tool_calls: vec![background_call("c1", "sleep 0.2; echo all green")],
@@ -220,7 +148,7 @@ async fn a_headless_run_waits_for_its_background_job_and_reports_it() {
 #[tokio::test]
 async fn a_run_with_no_jobs_ends_on_the_first_reply() {
     let (_dir, jobs, dispatch) = shell_over_jobs();
-    let p = Recorder::new(vec![RoundResult {
+    let p = recorder(vec![RoundResult {
         content: "done".to_owned(),
         ..RoundResult::default()
     }]);
@@ -259,7 +187,7 @@ async fn a_job_that_lands_mid_round_enters_at_the_next_round() {
         "command".to_owned(),
         serde_json::Value::from("sleep 0.3; true"),
     );
-    let p = Recorder::new(vec![
+    let p = recorder(vec![
         RoundResult {
             tool_calls: vec![background_call("c1", "true")],
             ..RoundResult::default()
