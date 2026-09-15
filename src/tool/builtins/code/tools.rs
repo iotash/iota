@@ -356,7 +356,7 @@ fn glob_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
     let matcher = compiled.compile_matcher();
     let base = match code_base_dir(cs, args) {
         Ok(b) => b,
-        Err(t) => return ToolOutput::err(t),
+        Err(t) => return t,
     };
 
     let mut hits: Vec<(String, SystemTime)> = Vec::new();
@@ -407,7 +407,7 @@ fn grep_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
     };
     let base = match code_base_dir(cs, args) {
         Ok(b) => b,
-        Err(t) => return ToolOutput::err(t),
+        Err(t) => return t,
     };
     let include = str_arg(args, "include").trim();
     let include_matcher = if include.is_empty() {
@@ -523,7 +523,7 @@ fn emit_grep_file(buf: &mut String, rel: &str, lines: &[&str], hits: &[usize], c
 fn list_dir_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
     let base = match code_base_dir(cs, args) {
         Ok(b) => b,
-        Err(t) => return ToolOutput::err(t),
+        Err(t) => return t,
     };
     let read = match fs::read_dir(&base) {
         Ok(r) => r,
@@ -559,12 +559,12 @@ fn list_dir_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
 fn read_file_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
     let abs = match cs.resolve(str_arg(args, "path")) {
         Ok(p) => p,
-        Err(t) => return ToolOutput::err(t),
+        Err(t) => return t,
     };
     // These errors name the ABSOLUTE path, unlike every other message here.
     let (data, size) = match read_file_limited(&abs, CODE_MAX_FILE_BYTES) {
         Ok(v) => v,
-        Err(t) => return ToolOutput::err(t),
+        Err(t) => return t,
     };
     let display = cs.display(&abs);
     if looks_binary(&data) {
@@ -581,7 +581,7 @@ fn read_file_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
     let content = String::from_utf8_lossy(&data);
     let mut out = match numbered_window(&content, args, &display) {
         Ok(o) => o,
-        Err(t) => return ToolOutput::err(t),
+        Err(t) => return t,
     };
     if size > CODE_MAX_FILE_BYTES {
         let _ = write!(
@@ -597,15 +597,15 @@ fn read_file_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
 /// The numbered line window, with POLICY fix F-06: an oversized single row is cut to `CODE_MAX_OUTPUT - 4`
 /// bytes so that the row plus its `…\n` still fits the window (cut to the full cap, the row was then
 /// rejected — an empty window the model could not escape).
-fn numbered_window(content: &str, args: &JsonObject, display: &str) -> Result<String, String> {
+fn numbered_window(content: &str, args: &JsonObject, display: &str) -> Result<String, ToolOutput> {
     let lines = text::split_lines(content);
     let total = lines.len();
     let total_i = i64::try_from(total).unwrap_or(i64::MAX);
     let offset = int_arg(args, "offset").max(1);
     if offset > total_i {
-        return Err(format!(
+        return Err(ToolOutput::err(format!(
             "offset {offset} is past the end of {display} ({total} lines)"
-        ));
+        )));
     }
     let start = usize::try_from(offset).unwrap_or(1);
     let mut end = total;
@@ -685,7 +685,7 @@ fn post_diff(cx: &RunCtx, display: &str, old: &str, new: &str) {
 fn edit_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
     let abs = match cs.resolve(str_arg(args, "path")) {
         Ok(p) => p,
-        Err(t) => return ToolOutput::err(t),
+        Err(t) => return t,
     };
     let old_string = str_arg(args, "old_string");
     let new_string = str_arg(args, "new_string");
@@ -700,7 +700,7 @@ fn edit_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
         return ToolOutput::err("old_string and new_string are identical");
     }
     if let Err(t) = cs.require_fresh_read(&abs) {
-        return ToolOutput::err(t);
+        return t;
     }
     let meta = match fs::metadata(&abs) {
         Ok(m) => m,
@@ -714,7 +714,7 @@ fn edit_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
     }
     let (data, _) = match read_file_limited(&abs, CODE_MAX_FILE_BYTES) {
         Ok(v) => v,
-        Err(t) => return ToolOutput::err(t),
+        Err(t) => return t,
     };
 
     // Search and replace on BYTES, never on a decoded string. `String::from_utf8_lossy` used to stand here,
@@ -793,7 +793,7 @@ fn edit_snippet(content: &str, line: usize) -> String {
 fn write_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
     let abs = match cs.resolve(str_arg(args, "path")) {
         Ok(p) => p,
-        Err(t) => return ToolOutput::err(t),
+        Err(t) => return t,
     };
     // An empty string is a valid content; only a missing or non-string value is not.
     let Some(content) = args.get("content").and_then(Value::as_str) else {
@@ -813,7 +813,7 @@ fn write_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
             return ToolOutput::err(format!("{display} is not a regular file"));
         }
         if let Err(t) = cs.require_fresh_read(&abs) {
-            return ToolOutput::err(t);
+            return t;
         }
         created = false;
         // The previous content only feeds the display diff; a file too large to read
@@ -851,7 +851,7 @@ fn write_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
 // ---- shared helpers ----
 
 /// The optional `path` argument as a search base; empty → the root.
-fn code_base_dir(cs: &CodeSet, args: &JsonObject) -> Result<PathBuf, String> {
+fn code_base_dir(cs: &CodeSet, args: &JsonObject) -> Result<PathBuf, ToolOutput> {
     let raw = str_arg(args, "path");
     if raw.trim().is_empty() {
         return Ok(cs.root.clone());
@@ -860,7 +860,7 @@ fn code_base_dir(cs: &CodeSet, args: &JsonObject) -> Result<PathBuf, String> {
     // A stat failure and a non-directory give the same text, and it names the RAW argument.
     match fs::metadata(&abs) {
         Ok(m) if m.is_dir() => Ok(abs),
-        _ => Err(format!("not a directory: {raw}")),
+        _ => Err(ToolOutput::err(format!("not a directory: {raw}"))),
     }
 }
 
@@ -879,6 +879,7 @@ fn write_bytes(path: &Path, data: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use crate::provider::model::JsonObject;
+    use crate::tool::ToolOutput;
     use serde_json::json;
 
     use super::{
@@ -910,7 +911,9 @@ mod tests {
         );
         assert_eq!(
             numbered_window(content, &args(json!({"offset": 9})), "f.txt"),
-            Err("offset 9 is past the end of f.txt (5 lines)".to_owned())
+            Err(ToolOutput::err(
+                "offset 9 is past the end of f.txt (5 lines)"
+            ))
         );
     }
 

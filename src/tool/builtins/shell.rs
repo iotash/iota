@@ -112,7 +112,8 @@ pub fn new_shell_set(
     env: &ToolEnv,
     node: Option<&RawNode>,
 ) -> Result<Vec<Arc<dyn Tool>>, SetError> {
-    let mut shell_cfg: ShellConfig = yaml11::decode_mapping(node).map_err(SetError::ShellConfig)?;
+    let mut shell_cfg: ShellConfig =
+        yaml11::decode_mapping(node).map_err(|e| SetError::ShellConfig(e.to_string()))?;
     match shell_cfg.sandbox.as_str() {
         "" => "auto".clone_into(&mut shell_cfg.sandbox),
         "auto" | "off" => {}

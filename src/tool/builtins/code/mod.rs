@@ -13,7 +13,7 @@ use std::{
 };
 
 use crate::app::paths;
-use crate::tool::{Tool, ToolEnv};
+use crate::tool::{Tool, ToolEnv, ToolOutput};
 use serde::Deserialize;
 
 use crate::tool::sets::{RawNode, SetError};
@@ -92,10 +92,10 @@ impl CodeSet {
     /// root ({root}): {original arg}`.
     ///
     /// Lexical only: symlinks are never resolved and the target need not exist, so `write_file` can create one.
-    pub(crate) fn resolve(&self, arg: &str) -> Result<PathBuf, String> {
+    pub(crate) fn resolve(&self, arg: &str) -> Result<PathBuf, ToolOutput> {
         let trimmed = arg.trim();
         if trimmed.is_empty() {
-            return Err("missing required argument: path".to_owned());
+            return Err(ToolOutput::err("missing required argument: path"));
         }
         let mut p = PathBuf::from(trimmed);
         if !p.is_absolute() {
@@ -103,10 +103,10 @@ impl CodeSet {
         }
         let p = paths::clean(&p);
         let outside = || {
-            Err(format!(
+            Err(ToolOutput::err(format!(
                 "path is outside the project root ({}): {arg}",
                 self.root.display()
-            ))
+            )))
         };
         match paths::rel(&self.root, &p) {
             None => outside(),
@@ -143,7 +143,7 @@ impl CodeSet {
 
     /// `{d} has not been read in this session — read it with read_file before modifying it` / `cannot access {d}:
     /// {e}` / `{d} changed on disk after it was read — read it again before modifying it`.
-    pub(crate) fn require_fresh_read(&self, abs: &Path) -> Result<(), String> {
+    pub(crate) fn require_fresh_read(&self, abs: &Path) -> Result<(), ToolOutput> {
         let stamp = self
             .reads
             .lock()
@@ -151,21 +151,21 @@ impl CodeSet {
             .get(abs)
             .copied();
         let Some(stamp) = stamp else {
-            return Err(format!(
+            return Err(ToolOutput::err(format!(
                 "{} has not been read in this session — read it with read_file before modifying it",
                 self.display(abs)
-            ));
+            )));
         };
         let mtime = std::fs::metadata(abs)
             .and_then(|m| m.modified())
-            .map_err(|e| format!("cannot access {}: {e}", self.display(abs)))?;
+            .map_err(|e| ToolOutput::err(format!("cannot access {}: {e}", self.display(abs))))?;
         if mtime == stamp {
             Ok(())
         } else {
-            Err(format!(
+            Err(ToolOutput::err(format!(
                 "{} changed on disk after it was read — read it again before modifying it",
                 self.display(abs)
-            ))
+            )))
         }
     }
 }
@@ -176,7 +176,8 @@ impl CodeSet {
 /// An unreadable working directory is swallowed: the root falls back to `.` (only reachable when the
 /// process has no working directory and no root was configured).
 pub fn new_code_set(env: &ToolEnv, node: Option<&RawNode>) -> Result<Vec<Arc<dyn Tool>>, SetError> {
-    let cfg: CodeConfig = yaml11::decode_mapping(node).map_err(SetError::CodeConfig)?;
+    let cfg: CodeConfig =
+        yaml11::decode_mapping(node).map_err(|e| SetError::CodeConfig(e.to_string()))?;
     if cfg.read_only && cfg.auto_write {
         return Err(SetError::CodeContradiction);
     }
@@ -215,6 +216,7 @@ pub(crate) fn byte_count(n: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::tool::ToolOutput;
     use std::path::{Path, PathBuf};
 
     use super::{CodeSet, byte_count, looks_binary};
@@ -253,12 +255,14 @@ mod tests {
         assert_eq!(cs.resolve("."), Ok(PathBuf::from("/proj")));
         assert_eq!(
             cs.resolve("   "),
-            Err("missing required argument: path".to_owned())
+            Err(ToolOutput::err("missing required argument: path"))
         );
         for arg in ["../outside.txt", "a/../../outside.txt", "/etc/passwd", ".."] {
             assert_eq!(
                 cs.resolve(arg),
-                Err(format!("path is outside the project root (/proj): {arg}")),
+                Err(ToolOutput::err(format!(
+                    "path is outside the project root (/proj): {arg}"
+                ))),
                 "{arg}"
             );
         }

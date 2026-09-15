@@ -115,7 +115,7 @@ impl Tool for ChooseTool {
         Box::pin(async move {
             let spec = match parse_choose_args(args) {
                 Ok(s) => s,
-                Err(e) => return Ok(ToolOutput::err(e)),
+                Err(refusal) => return Ok(refusal),
             };
             let res = self.it.ask(cx, spec.clone()).await;
             Ok(ToolOutput::ok(format_choose(&spec, &res)))
@@ -224,28 +224,36 @@ fn object_of(v: Value) -> Option<JsonObject> {
 
 /// Validates the model's arguments into an [`AskSpec`]. The error
 /// text IS the tool result, so every message is byte-exact.
-fn parse_choose_args(args: &JsonObject) -> Result<AskSpec, String> {
+fn parse_choose_args(args: &JsonObject) -> Result<AskSpec, ToolOutput> {
     let raw = args.get("questions").and_then(Value::as_array);
     let raw = match raw {
         Some(v) if !v.is_empty() => v,
-        _ => return Err("choose: questions must be a non-empty array".to_owned()),
+        _ => {
+            return Err(ToolOutput::err(
+                "choose: questions must be a non-empty array",
+            ));
+        }
     };
     if raw.len() > ASK_MAX_QUESTIONS {
-        return Err(format!(
+        return Err(ToolOutput::err(format!(
             "choose: at most {ASK_MAX_QUESTIONS} questions per call"
-        ));
+        )));
     }
     let mut spec = AskSpec {
         questions: Vec::with_capacity(raw.len()),
     };
     for (i, rq) in raw.iter().enumerate() {
         let Some(m) = rq.as_object() else {
-            return Err(format!("choose: questions[{i}] must be an object"));
+            return Err(ToolOutput::err(format!(
+                "choose: questions[{i}] must be an object"
+            )));
         };
         let header = str_arg(m, "header");
         let question = str_arg(m, "question");
         if header.trim().is_empty() || question.trim().is_empty() {
-            return Err(format!("choose: questions[{i}] needs header and question"));
+            return Err(ToolOutput::err(format!(
+                "choose: questions[{i}] needs header and question"
+            )));
         }
         // A too-long header is truncated to a tab-chip length, not rejected.
         let header = truncate_header(header);
@@ -268,9 +276,9 @@ fn parse_choose_args(args: &JsonObject) -> Result<AskSpec, String> {
             });
         }
         if q.options.is_empty() {
-            return Err(format!(
+            return Err(ToolOutput::err(format!(
                 "choose: questions[{i}] needs at least one option with a label"
-            ));
+            )));
         }
         spec.questions.push(q);
     }

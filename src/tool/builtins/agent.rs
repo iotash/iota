@@ -96,7 +96,7 @@ impl LoadSkill {
         }
         let sk = match self.resolve(name) {
             Ok(sk) => sk,
-            Err(text) => return ToolOutput::err(text),
+            Err(refusal) => return refusal,
         };
         let file = str_arg(args, "file").trim();
         if file.is_empty() {
@@ -108,24 +108,24 @@ impl LoadSkill {
 
     /// Re-discovers skills on every call (a few readdirs — cheap, and always consistent with the catalog the model
     /// just saw) and matches `name` exactly.
-    fn resolve(&self, name: &str) -> Result<Skill, String> {
+    fn resolve(&self, name: &str) -> Result<Skill, ToolOutput> {
         let (skills, _warnings) = discover_skills(&skill_roots(&self.root, self.home.as_deref()));
         if let Some(sk) = skills.iter().find(|sk| sk.name == name) {
             return Ok(sk.clone());
         }
         if skills.is_empty() {
-            return Err(format!(
+            return Err(ToolOutput::err(format!(
                 "unknown skill {}: no skills are installed",
                 go_quote(name)
-            ));
+            )));
         }
         let mut names: Vec<&str> = skills.iter().map(|sk| sk.name.as_str()).collect();
         names.sort_unstable();
-        Err(format!(
+        Err(ToolOutput::err(format!(
             "unknown skill {}; available skills: {}",
             go_quote(name),
             names.join(", ")
-        ))
+        )))
     }
 
     /// The SKILL.md body prefixed with the header naming the skill and its directory — the model needs the
@@ -133,7 +133,7 @@ impl LoadSkill {
     fn serve_instructions(sk: &Skill, args: &JsonObject) -> ToolOutput {
         let data = match read_capped(&sk.path) {
             Ok(d) => d,
-            Err(text) => return ToolOutput::err(text),
+            Err(refusal) => return refusal,
         };
         let body = match skill_body(&data) {
             Ok(b) => b,
@@ -147,7 +147,7 @@ impl LoadSkill {
                 sk.name,
                 sk.dir().display()
             )),
-            Err(text) => ToolOutput::err(text),
+            Err(refusal) => refusal,
         }
     }
 
@@ -164,20 +164,20 @@ impl LoadSkill {
         let path = paths::clean(&sk.dir().join(&clean));
         let data = match read_capped(&path) {
             Ok(d) => d,
-            Err(text) => return ToolOutput::err(text),
+            Err(refusal) => return refusal,
         };
         let content = String::from_utf8_lossy(&data);
         let what = format!("{} of skill {}", clean.display(), go_quote(&sk.name));
         match window_lines(&content, args, &what) {
             Ok(out) => ToolOutput::ok(out),
-            Err(text) => ToolOutput::err(text),
+            Err(refusal) => refusal,
         }
     }
 }
 
-/// Reads a regular file up to `LOAD_SKILL_MAX_BYTES`, returning a model-facing error string on failure. An
+/// Reads a regular file up to `LOAD_SKILL_MAX_BYTES`, or the model-facing refusal. An
 /// oversized file carries the marker as its last line, so it participates in line windowing.
-fn read_capped(path: &Path) -> Result<Vec<u8>, String> {
+fn read_capped(path: &Path) -> Result<Vec<u8>, ToolOutput> {
     let (mut data, size) = read_file_limited(path, LOAD_SKILL_MAX_BYTES)?;
     if size > LOAD_SKILL_MAX_BYTES {
         let marker = format!(
@@ -191,7 +191,7 @@ fn read_capped(path: &Path) -> Result<Vec<u8>, String> {
 
 /// Applies the offset/limit line window and the output cap; `what` names the content in the continuation markers.
 /// `Err` is a model-facing error.
-fn window_lines(content: &str, args: &JsonObject, what: &str) -> Result<String, String> {
+fn window_lines(content: &str, args: &JsonObject, what: &str) -> Result<String, ToolOutput> {
     let lines = split_lines(content);
     let total = lines.len();
     if total == 0 {
@@ -204,9 +204,9 @@ fn window_lines(content: &str, args: &JsonObject, what: &str) -> Result<String, 
         start = 1;
     }
     if start > total_i {
-        return Err(format!(
+        return Err(ToolOutput::err(format!(
             "offset {start} is past the end of the {what} ({total} lines)"
-        ));
+        )));
     }
     let mut end = total;
     let limit = int_arg(args, "limit");
@@ -272,7 +272,9 @@ mod tests {
             "c\n[showing lines 3-3 of 3]"
         );
         assert_eq!(
-            window_lines("a\nb", &args(json!({"offset": 9})), "the file").expect_err("past end"),
+            window_lines("a\nb", &args(json!({"offset": 9})), "the file")
+                .expect_err("past end")
+                .text,
             "offset 9 is past the end of the the file (2 lines)"
         );
 

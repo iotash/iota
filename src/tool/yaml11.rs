@@ -56,14 +56,14 @@ pub(crate) fn deserialize_opt_bool<'de, D: serde::Deserializer<'de>>(
         .ok_or_else(|| D::Error::custom(BAD_BOOL))
 }
 
-/// None/Null → `T::default()`; else `serde_norway::from_value(v.clone())`, error rendered with Display (the text
-/// after the colon differs from yaml.v3 — DIVERGENCES D-15).
+/// None/Null → `T::default()`; else `serde_norway::from_value(v.clone())`, whose error the caller renders with
+/// Display (the text after the colon differs from yaml.v3 — DIVERGENCES D-15).
 pub(crate) fn decode_mapping<T: serde::de::DeserializeOwned + Default>(
     node: Option<&RawNode>,
-) -> Result<T, String> {
+) -> Result<T, serde_norway::Error> {
     match node {
         None | Some(RawNode::Null) => Ok(T::default()),
-        Some(v) => serde_norway::from_value(v.clone()).map_err(|e| e.to_string()),
+        Some(v) => serde_norway::from_value(v.clone()),
     }
 }
 
@@ -146,26 +146,31 @@ mod tests {
         assert_eq!(f, Flags { a: true, b: None });
         let err = decode_mapping::<Flags>(Some(&node("a: 1\n"))).expect_err("1 is not a bool");
         assert!(
-            err.contains("invalid value: expected a boolean (true/yes/on/false/no/off)"),
+            err.to_string()
+                .contains("invalid value: expected a boolean (true/yes/on/false/no/off)"),
             "{err}"
         );
         let err = decode_mapping::<Flags>(Some(&node("b: maybe\n"))).expect_err("maybe");
         assert!(
-            err.contains("invalid value: expected a boolean (true/yes/on/false/no/off)"),
+            err.to_string()
+                .contains("invalid value: expected a boolean (true/yes/on/false/no/off)"),
             "{err}"
         );
     }
 
     #[test]
     fn decode_mapping_null_is_default() {
-        assert_eq!(decode_mapping::<Flags>(None), Ok(Flags::default()));
         assert_eq!(
-            decode_mapping::<Flags>(Some(&RawNode::Null)),
-            Ok(Flags::default())
+            decode_mapping::<Flags>(None).expect("none"),
+            Flags::default()
         );
         assert_eq!(
-            decode_mapping::<Flags>(Some(&node("{}"))),
-            Ok(Flags::default())
+            decode_mapping::<Flags>(Some(&RawNode::Null)).expect("null"),
+            Flags::default()
+        );
+        assert_eq!(
+            decode_mapping::<Flags>(Some(&node("{}"))).expect("empty"),
+            Flags::default()
         );
         // A non-mapping fails with the library's text (D-15); the caller prefixes it.
         assert!(decode_mapping::<Flags>(Some(&node("[not, a, mapping]"))).is_err());
