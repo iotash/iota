@@ -1,5 +1,5 @@
-//! The tool-side error (tool.go): `ToolError`, the hard (transport-level) tool failure. Every Display
-//! text is byte-equal to Go.
+//! The tool-side error: `ToolError`, the hard (transport-level) tool failure; its Display texts are
+//! model-facing.
 
 use crate::BoxError;
 
