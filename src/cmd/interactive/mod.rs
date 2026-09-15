@@ -23,6 +23,9 @@
 //! raw mode delivers Ctrl+C as a key event and the composer's cancel ladder answers it. SIGTERM still cancels
 //! the root token, which fails every facade waiter and lets the interrupt table persist the turn.
 
+mod picker;
+mod title;
+
 use std::io::{IsTerminal as _, Write as _};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -32,28 +35,17 @@ use crate::app::env::Env;
 use crate::host::{AnsiHost, Presenter, Probe as HostProbe};
 use crate::provider::ProviderParams;
 use crate::provider::{Provider, ProviderKind};
-use crate::repl::{McpEvent, McpHooks, RunParams, SessionCtx, session_label};
+use crate::repl::{McpEvent, McpHooks, RunParams, SessionCtx};
 use crate::session::{NewSession, SessionInfo, SessionStore, SessionWriter};
 use crate::tool::DeferredGroup;
 use crate::tool::{Dispatcher, ToolEnv};
-use crate::ui::facade::{Panel, TabbedResult, TabbedSpec, Ui};
+use crate::ui::facade::{TabbedResult, TabbedSpec, Ui};
 
 use crate::cmd::args::{Invocation, Resume};
 use crate::cmd::error::{ArgsError, CliError, RunError, SetupError};
 use crate::cmd::resolve::RunSettings;
 use crate::cmd::{RunContext, ToolAssembly};
-
-/// chat/session.go:1091 — the `iota resume` picker's only panel.
-const PICK_SESSION_TITLE: &str = "Select a session to resume";
-
-/// chat/session.go:1092 — the picker shows 15 rows (`PANEL_HEIGHT` View default).
-const PICK_SESSION_HEIGHT: usize = 15;
-
-/// chat/run.go:122 — push the terminal's title stack, on plain stdout, before the event loop.
-const TITLE_STACK_PUSH: &str = "\x1b[22;0t";
-
-/// chat/run.go:123 — pop it, deferred until after the facade has released the terminal.
-const TITLE_STACK_POP: &str = "\x1b[23;0t";
+use picker::{picker_spec, project_hint};
 
 /// Everything `run` has resolved by the time it reaches Go's headless-vs-interactive branch (root.go:259):
 /// one item per phase of `cmd::run`.
@@ -124,11 +116,11 @@ impl TerminalSeam for LiveTerminal {
     }
 
     fn push_title_stack(&self) {
-        write_raw(TITLE_STACK_PUSH);
+        title::write_raw(title::TITLE_STACK_PUSH);
     }
 
     fn pop_title_stack(&self) {
-        write_raw(TITLE_STACK_POP);
+        title::write_raw(title::TITLE_STACK_POP);
     }
 
     fn start(&self, dark: bool) -> std::io::Result<Box<dyn UiSession>> {
@@ -145,13 +137,6 @@ fn host_probe(env: &Env) -> HostProbe {
         env: env.clone(),
         look_path: Box::new(crate::shell::exec::find_in_path),
     }
-}
-
-/// The title-stack OSCs go to plain stdout: they are emitted before the facade exists and after it is gone.
-fn write_raw(seq: &str) {
-    let mut out = std::io::stdout();
-    let _ = out.write_all(seq.as_bytes());
-    let _ = out.flush();
 }
 
 /// Owns the running `Tui` (dropping it is what joins the loop thread after `close()`).
@@ -224,32 +209,6 @@ where
             Err(RunError::Io(e).into())
         }
     }
-}
-
-/// The `iota resume` picker's spec (chat/session.go:1091-1094): ONE searchable list of `session_label` rows.
-fn picker_spec(rows: &[SessionInfo], project: Option<&str>) -> TabbedSpec {
-    TabbedSpec {
-        panels: vec![
-            Panel::list(
-                PICK_SESSION_TITLE.to_owned(),
-                rows.iter().map(|s| session_label(s, project)).collect(),
-            )
-            .with_search(true)
-            .with_height(PICK_SESSION_HEIGHT),
-        ],
-        ..TabbedSpec::default()
-    }
-}
-
-/// The `[project]` hint every row of a SCOPED listing shares (chat/session.go:1033-1040 `projectHint`; the
-/// bucket IS the project — DEVIATIONS3 `[WP50]`).
-fn project_hint(scope: Option<&std::path::Path>) -> Option<String> {
-    scope.map(|root| {
-        root.file_name().map_or_else(
-            || root.to_string_lossy().into_owned(),
-            |n| n.to_string_lossy().into_owned(),
-        )
-    })
 }
 
 /// The interactive branch, invoked at lib.rs's `settings.message.is_none()` arm (root.go:259).
@@ -698,15 +657,12 @@ mod tests {
 
     use crate::BoxFuture;
 
-    use crate::session::SessionInfo;
     use crate::testing::ScriptedUi;
-    use crate::ui::facade::{PanelKind, PanelResult, TabbedResult, TabbedSpec, Ui};
+    use crate::ui::facade::{PanelResult, TabbedResult, TabbedSpec, Ui};
     use pretty_assertions::assert_eq;
 
-    use super::{
-        ArgsError, CliError, PICK_SESSION_HEIGHT, PICK_SESSION_TITLE, SetupError, TerminalSeam,
-        UiSession, open_ui, picker_spec, project_hint,
-    };
+    use super::picker::{info, picker_spec};
+    use super::{ArgsError, CliError, SetupError, TerminalSeam, UiSession, open_ui};
 
     /// A `TerminalSeam` that records the ORDER of the terminal-owning calls instead of making them.
     struct FakeTerminal {
@@ -788,17 +744,6 @@ mod tests {
         log.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
-    fn info(id: &str, title: &str) -> SessionInfo {
-        SessionInfo {
-            id: id.to_owned(),
-            title: title.to_owned(),
-            model: "gpt-4o".to_owned(),
-            provider: "openai".to_owned(),
-            updated_at: None,
-            message_count: 4,
-        }
-    }
-
     fn commit(cursor: usize) -> TabbedResult {
         TabbedResult {
             cancelled: false,
@@ -808,45 +753,6 @@ mod tests {
                 ..PanelResult::default()
             }],
         }
-    }
-
-    /// The `iota resume` picker is `chat.PickSession` byte for byte: ONE searchable list panel titled
-    /// "Select a session to resume", 15 rows high, whose items are the `session_label` rows of the LISTING
-    /// (chat/session.go:1091-1094).
-    #[test]
-    fn picker_spec_matches_pick_session() {
-        let rows = [info("aaa", "first chat"), info("bbb", "")];
-        let spec = picker_spec(&rows, Some("proj"));
-        assert_eq!(spec.panels.len(), 1);
-        assert!(!spec.enter_advances);
-        assert_eq!(spec.refresh_every_ms, 0);
-        let panel = &spec.panels[0];
-        assert_eq!(panel.title, PICK_SESSION_TITLE);
-        assert_eq!(panel.title, "Select a session to resume");
-        assert_eq!(panel.kind(), PanelKind::List);
-        assert_eq!(panel.height, PICK_SESSION_HEIGHT);
-        assert!(panel.search);
-        assert_eq!(
-            panel.items(),
-            vec![
-                "first chat · gpt-4o · unknown · 4 msgs [proj]".to_owned(),
-                "(untitled) · gpt-4o · unknown · 4 msgs [proj]".to_owned(),
-            ]
-        );
-        // An unscoped listing carries no hint at all.
-        assert_eq!(
-            picker_spec(&rows, None).panels[0].items()[0],
-            "first chat · gpt-4o · unknown · 4 msgs"
-        );
-    }
-
-    #[test]
-    fn project_hint_is_the_bucket_name() {
-        assert_eq!(
-            project_hint(Some(std::path::Path::new("/work/my-app"))),
-            Some("my-app".to_owned())
-        );
-        assert_eq!(project_hint(None), None);
     }
 
     /// The ordering law of `TUI_DESIGN` §8.4: the OSC-11 probe runs first, the picker's raw mode is RELEASED,
@@ -972,7 +878,5 @@ mod tests {
             SetupError::NoSessionToResume.to_string(),
             "no session to resume"
         );
-        assert_eq!(super::TITLE_STACK_PUSH, "\u{1b}[22;0t");
-        assert_eq!(super::TITLE_STACK_POP, "\u{1b}[23;0t");
     }
 }
