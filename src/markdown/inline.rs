@@ -8,8 +8,8 @@
 //! `***`, `**`/`__`, `*`/`_`, plain. `styled == false` + a plain base emits plain runs
 //! verbatim, keeping top-level output byte-identical.
 
+use crate::markdown::blocks::math;
 use crate::markdown::link::hyperlink;
-use crate::markdown::math;
 use crate::markdown::style::Style;
 
 /// Faint decoration style (Go mdDim): quote bars, bullets, rules, URLs.

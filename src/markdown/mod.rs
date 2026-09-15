@@ -21,18 +21,14 @@
 //! opens (`gap_paid` credit) so the streaming layout equals the settled layout — the
 //! preview-pays-separator law, for all five buffering block types.
 
-pub(crate) mod code;
+pub(crate) mod blocks;
 pub mod highlight;
 pub(crate) mod html;
 pub(crate) mod inline;
 pub(crate) mod link;
-pub(crate) mod list;
-pub(crate) mod math;
 pub(crate) mod preview;
-pub(crate) mod quote;
 pub(crate) mod sink;
 pub(crate) mod style;
-pub(crate) mod table;
 
 pub use highlight::{CodeHighlighter, PlainIndent, SyntectHighlighter};
 pub use link::hyperlink;
@@ -40,6 +36,7 @@ pub use preview::PreviewHandle;
 pub use sink::Sink;
 pub use style::Style;
 
+use crate::markdown::blocks::math;
 use crate::markdown::inline::{highlight_line, is_block_line, is_list_line, split_list_marker};
 
 /// Code-highlight theme, chosen by the host's background detect.
@@ -390,8 +387,12 @@ impl Writer {
             return;
         }
         self.begin_block();
-        let rendered =
-            crate::markdown::table::render_table(&rows, &seps, self.term_width(), self.opts.color);
+        let rendered = crate::markdown::blocks::table::render_table(
+            &rows,
+            &seps,
+            self.term_width(),
+            self.opts.color,
+        );
         self.sink.write(&format!("{rendered}\n"));
         self.end_block();
     }
@@ -533,7 +534,7 @@ impl Writer {
             return;
         }
         self.begin_block();
-        let rendered = crate::markdown::list::render_list(&items, loose, self.opts.color);
+        let rendered = crate::markdown::blocks::list::render_list(&items, loose, self.opts.color);
         self.sink.write(&format!("{rendered}\n"));
         self.end_block();
     }
@@ -564,7 +565,8 @@ impl Writer {
             return;
         }
         self.begin_block();
-        let rendered = crate::markdown::quote::render_quote(&body, self.term_width(), self.opts);
+        let rendered =
+            crate::markdown::blocks::quote::render_quote(&body, self.term_width(), self.opts);
         self.sink.write(&format!("{rendered}\n"));
         self.end_block();
     }
@@ -580,7 +582,7 @@ impl Writer {
         self.code_lines.clear();
         self.begin_block();
         // render_code output already carries its trailing newline (indentCode shape).
-        let rendered = crate::markdown::code::render_code(&code, &lang, self.opts);
+        let rendered = crate::markdown::blocks::code::render_code(&code, &lang, self.opts);
         self.sink.write(&rendered);
         self.end_block();
     }
