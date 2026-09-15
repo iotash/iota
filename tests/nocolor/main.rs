@@ -28,7 +28,7 @@ use tokio_util::sync::CancellationToken;
 /// `NO_COLOR=1` on a real terminal: the variable alone decides. The first call wins for the
 /// whole process, so every test calls this first and they all agree.
 fn no_color() {
-    let env = |name: &str| (name == "NO_COLOR").then(|| "1".to_owned());
+    let env = iota::app::env::Env::fixed(&[("NO_COLOR", "1")]);
     let mode = iota::app::color::init(ColorMode::detect(&env, true));
     assert_eq!(mode, ColorMode::Off);
 }

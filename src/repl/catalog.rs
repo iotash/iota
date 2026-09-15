@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::app::env::EnvSource;
+use crate::app::env::Env;
 use crate::config::{Config, ModelRef, Resolved};
 use crate::provider::{HttpTransport, Provider, ProviderKind, ProviderParams, new_provider};
 use crate::ui::facade::Ui;
@@ -111,12 +111,7 @@ impl ModelCatalog {
     /// The catalog a run resolved to. Constructing a wildcard's endpoint is cheap (no I/O) and its
     /// failure is recorded rather than raised: a broken entry in the candidate set must not stop
     /// the picker from offering the rest.
-    pub fn new(
-        cfg: &Config,
-        resolved: &Resolved,
-        env: &dyn EnvSource,
-        http: &HttpTransport,
-    ) -> Self {
+    pub fn new(cfg: &Config, resolved: &Resolved, env: &Env, http: &HttpTransport) -> Self {
         let mut sources = BTreeMap::new();
         for name in resolved
             .agent
@@ -366,7 +361,7 @@ fn busy_label(n: usize) -> String {
 
 /// One wildcard endpoint, built for listing alone: no temperature, no model, the run's own
 /// transport (so `/debug` records these calls too).
-fn build_source(cfg: &Config, name: &str, env: &dyn EnvSource, http: &HttpTransport) -> Source {
+fn build_source(cfg: &Config, name: &str, env: &Env, http: &HttpTransport) -> Source {
     let (raw_type, provider_cfg) = cfg.get(name);
     let kind: ProviderKind = match raw_type.parse() {
         Ok(kind) => kind,

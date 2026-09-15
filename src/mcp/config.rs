@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::app::env::{VarResolver, expand};
+use crate::app::env::{Env, expand};
 
 /// One MCP server definition (config entry or `--mcp` flag).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -47,9 +47,9 @@ pub fn parse_mcp_flag(value: &str) -> Result<ServerConfig, McpFlagError> {
     })
 }
 
-/// `vars::expand` on command, url, each arg, each env VALUE, each header VALUE (never name or map keys).
-pub(crate) fn expand_server_config(server_cfg: &ServerConfig, r: &dyn VarResolver) -> ServerConfig {
-    let x = |s: &str| expand(s, r).into_owned();
+/// `expand` on command, url, each arg, each env VALUE, each header VALUE (never name or map keys).
+pub(crate) fn expand_server_config(server_cfg: &ServerConfig, env: &Env) -> ServerConfig {
+    let x = |s: &str| expand(s, env).into_owned();
     ServerConfig {
         name: server_cfg.name.clone(),
         command: x(&server_cfg.command),
@@ -94,7 +94,8 @@ mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
     use super::{McpFlagError, ServerConfig, endpoint_of, expand_server_config, parse_mcp_flag};
-    use crate::app::env::VarResolver;
+    use crate::app::HostDirs;
+    use crate::app::env::Env;
 
     // Go: mcp/manager.go:530 (ParseMCPFlag has no Go test; the cases are the spec's, plus POLICY F-02).
     #[test]
@@ -150,20 +151,12 @@ mod tests {
         );
     }
 
-    struct Fixed;
-
-    impl VarResolver for Fixed {
-        fn env_var(&self, name: &str) -> Option<String> {
-            (name == "TOKEN").then(|| "t0k".to_owned())
-        }
-
-        fn cwd(&self) -> Option<PathBuf> {
-            Some(PathBuf::from("/wd"))
-        }
-
-        fn home(&self) -> Option<PathBuf> {
-            Some(PathBuf::from("/home/u"))
-        }
+    fn fixed() -> Env {
+        Env::fixed(&[("TOKEN", "t0k")]).with_dirs(HostDirs {
+            cwd: Some(PathBuf::from("/wd")),
+            home: Some(PathBuf::from("/home/u")),
+            ..HostDirs::default()
+        })
     }
 
     #[test]
@@ -183,7 +176,7 @@ mod tests {
             ]),
             headers: BTreeMap::from([("X-${cwd}".to_owned(), "Bearer ${env:TOKEN}".to_owned())]),
         };
-        let got = expand_server_config(&server_cfg, &Fixed);
+        let got = expand_server_config(&server_cfg, &fixed());
         assert_eq!(got.name, "${cwd}-srv", "name is never expanded");
         assert_eq!(got.command, "/home/u/bin/mcp");
         assert_eq!(got.args, vec!["--root", "/wd", "${unknown}"]);

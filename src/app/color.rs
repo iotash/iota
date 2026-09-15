@@ -20,7 +20,7 @@
 
 use std::sync::OnceLock;
 
-use crate::app::env::EnvSource;
+use crate::app::env::Env;
 
 /// Whether SGR/OSC sequences may be written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,8 +44,8 @@ impl ColorMode {
     ///
     /// The same three tests, in the same order, are fatih/color's `NoColor` initialiser —
     /// what the Go chat side ran under.
-    pub fn detect(env: &dyn EnvSource, stdout_is_terminal: bool) -> Self {
-        // `EnvSource::var` already reads an empty value as unset.
+    pub fn detect(env: &Env, stdout_is_terminal: bool) -> Self {
+        // `Env::var` already reads an empty value as unset.
         if env.var("NO_COLOR").is_some() {
             return Self::Off;
         }
@@ -56,15 +56,6 @@ impl ColorMode {
             return Self::Off;
         }
         Self::On
-    }
-
-    /// [`detect`](Self::detect) over the process environment and the real stdout.
-    pub fn from_process() -> Self {
-        use std::io::IsTerminal as _;
-        Self::detect(
-            &crate::app::env::ProcessEnv,
-            std::io::stdout().is_terminal(),
-        )
     }
 
     /// `true` for [`ColorMode::On`].
@@ -98,18 +89,12 @@ pub fn enabled() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::ColorMode;
-    use crate::app::env::EnvSource;
+    use crate::app::env::Env;
 
-    /// A map-backed environment (empty values read as unset, like `ProcessEnv`).
-    fn env(vars: &[(&str, &str)]) -> impl EnvSource {
-        let map: HashMap<String, String> = vars
-            .iter()
-            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
-            .collect();
-        move |name: &str| map.get(name).filter(|v| !v.is_empty()).cloned()
+    /// A fixed environment (empty values read as unset, like the process one).
+    fn env(vars: &[(&str, &str)]) -> Env {
+        Env::fixed(vars)
     }
 
     #[test]

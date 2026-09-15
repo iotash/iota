@@ -18,7 +18,7 @@ use tracing_subscriber::{
     filter::Targets, layer::SubscriberExt as _, util::SubscriberInitExt as _,
 };
 
-use crate::app::env::EnvSource;
+use super::env::Env;
 
 /// The variable that names the log file.
 pub const ENV_VAR: &str = "IOTA_LOG";
@@ -47,7 +47,7 @@ pub fn install(path: &Path) -> io::Result<()> {
 /// [`install`] when `IOTA_LOG` names a path; a file that cannot be opened is one `warn` line and
 /// the run goes on without diagnostics — the user asked for a side channel, not for the run to
 /// depend on it.
-pub fn install_from_env(env: &dyn EnvSource, warn: &mut dyn FnMut(String)) {
+pub fn install_from_env(env: &Env, warn: &mut dyn FnMut(String)) {
     let Some(path) = env.var(ENV_VAR) else { return };
     if let Err(e) = install(Path::new(&path)) {
         warn(format!("Warning: {ENV_VAR}: cannot log to {path}: {e}"));
@@ -57,11 +57,12 @@ pub fn install_from_env(env: &dyn EnvSource, warn: &mut dyn FnMut(String)) {
 #[cfg(test)]
 mod tests {
     use super::install_from_env;
+    use crate::app::env::Env;
 
     /// An unset variable installs nothing and says nothing.
     #[test]
     fn unset_is_silent() {
-        let env = |_: &str| None;
+        let env = Env::fixed(&[]);
         let mut warnings = Vec::new();
         install_from_env(&env, &mut |w| warnings.push(w));
         assert!(warnings.is_empty(), "{warnings:?}");
@@ -75,7 +76,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("no-such-dir").join("iota.log");
         let path_str = path.to_string_lossy().into_owned();
-        let env = move |name: &str| (name == "IOTA_LOG").then(|| path_str.clone());
+        let env = Env::fixed(&[("IOTA_LOG", &path_str)]);
         let mut warnings = Vec::new();
         install_from_env(&env, &mut |w| warnings.push(w));
         assert_eq!(warnings.len(), 1, "{warnings:?}");

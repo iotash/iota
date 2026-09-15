@@ -94,17 +94,16 @@ impl Fixture {
         session: SessionCtx,
         yaml: &str,
     ) -> RunParams {
-        let cfg = iota::cmd::Config::parse(
-            yaml.as_bytes(),
-            &iota::testing::map_resolver(&[]),
-            &mut |w| panic!("unexpected config warning: {w}"),
-        )
-        .expect("the config loads");
+        let cfg =
+            iota::cmd::Config::parse(yaml.as_bytes(), &iota::app::env::Env::default(), &mut |w| {
+                panic!("unexpected config warning: {w}")
+            })
+            .expect("the config loads");
         let resolved = cfg.resolve_agent("default").expect("the agent resolves");
         let catalog = iota::repl::ModelCatalog::new(
             &cfg,
             &resolved,
-            &iota::testing::map_env(&[]),
+            &iota::app::env::Env::default(),
             &iota::provider::HttpTransport::from(iota::llm::default_http_client()),
         );
         RunParams {

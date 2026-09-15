@@ -24,8 +24,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::app::env;
-use crate::app::env::VarResolver;
+use crate::app::env::{Env, expand};
 use crate::app::{CONFIG_BASE, CONFIG_EXTS, HostDirs};
 use crate::provider::ProviderKind;
 use crate::tool::DeferMode;
@@ -175,13 +174,12 @@ impl Config {
     /// not-found), `Warning: config {path}: {err} (file ignored)` (YAML syntax error).
     pub fn load(
         explicit: Option<&Path>,
-        dirs: &HostDirs,
-        resolver: &dyn VarResolver,
+        env: &Env,
         warn: &mut dyn FnMut(String),
     ) -> Result<Config, ConfigError> {
         let mut cfg = Config::default();
-        for path in Self::sources(explicit, dirs) {
-            cfg.merge_file(&path, resolver, warn)?;
+        for path in Self::sources(explicit, &env.dirs) {
+            cfg.merge_file(&path, env, warn)?;
         }
         cfg.validate(warn)?;
         Ok(cfg)
@@ -206,11 +204,11 @@ impl Config {
     /// every test that has its config as a string uses.
     pub fn parse(
         data: &[u8],
-        resolver: &dyn VarResolver,
+        env: &Env,
         warn: &mut dyn FnMut(String),
     ) -> Result<Config, ConfigError> {
         let mut cfg = Config::default();
-        cfg.merge_document(decode(data)?, resolver)?;
+        cfg.merge_document(decode(data)?, env)?;
         cfg.validate(warn)?;
         Ok(cfg)
     }
@@ -220,7 +218,7 @@ impl Config {
     pub fn merge_file(
         &mut self,
         path: &Path,
-        resolver: &dyn VarResolver,
+        env: &Env,
         warn: &mut dyn FnMut(String),
     ) -> Result<(), ConfigError> {
         let data = match std::fs::read(path) {
@@ -233,7 +231,7 @@ impl Config {
                 return Ok(());
             }
         };
-        let merged = decode(&data).and_then(|file| self.merge_document(file, resolver));
+        let merged = decode(&data).and_then(|file| self.merge_document(file, env));
         match merged {
             Ok(()) => {}
             // config.go:178-185: a file that is not YAML at all is dropped with a warning saying why — there
@@ -255,21 +253,17 @@ impl Config {
     }
 
     /// Merges one decoded document over what is already here.
-    fn merge_document(
-        &mut self,
-        file: ConfigFile,
-        resolver: &dyn VarResolver,
-    ) -> Result<(), ConfigError> {
+    fn merge_document(&mut self, file: ConfigFile, env: &Env) -> Result<(), ConfigError> {
         for (name, mut entry) in file.providers {
-            entry.key = expand_owned(entry.key, resolver);
-            entry.url = expand_owned(entry.url, resolver);
+            entry.key = expand_owned(entry.key, env);
+            entry.url = expand_owned(entry.url, env);
             self.providers.insert(name, entry);
         }
         for (name, entry) in file.models {
             self.models.insert(name.clone(), entry.into_config(&name)?);
         }
         for (name, mut agent_cfg) in file.agents {
-            agent_cfg.system_file = expand_owned(agent_cfg.system_file, resolver);
+            agent_cfg.system_file = expand_owned(agent_cfg.system_file, env);
             self.agents.insert(name, agent_cfg);
         }
         for (name, server_cfg) in file.mcp_servers {
@@ -476,9 +470,9 @@ fn decode(data: &[u8]) -> Result<ConfigFile, ConfigError> {
     serde_norway::from_slice(data).map_err(|e| ConfigError::Parse(e.to_string()))
 }
 
-/// `env::expand` on an owned string, allocating only when a `${…}` was substituted.
-fn expand_owned(s: String, resolver: &dyn VarResolver) -> String {
-    match env::expand(&s, resolver) {
+/// `expand` on an owned string, allocating only when a `${…}` was substituted.
+fn expand_owned(s: String, env: &Env) -> String {
+    match expand(&s, env) {
         std::borrow::Cow::Borrowed(_) => s,
         std::borrow::Cow::Owned(expanded) => expanded,
     }

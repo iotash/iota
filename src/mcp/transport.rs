@@ -165,7 +165,7 @@ pub(crate) async fn connect_one(
     server_cfg: &ServerConfig,
     opts: &ManagerOptions,
 ) -> Result<(Arc<dyn Session>, Vec<ToolDef>), McpError> {
-    let server_cfg = expand_server_config(server_cfg, opts.resolver.as_ref());
+    let server_cfg = expand_server_config(server_cfg, &opts.env);
 
     if !server_cfg.url.is_empty() {
         if !(server_cfg.url.starts_with("http://") || server_cfg.url.starts_with("https://")) {

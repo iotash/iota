@@ -1,13 +1,13 @@
 //! Public-API tests of the manager (mcp/manager_test.go:426-454 plus the close / reserved-header cases): everything
 //! here goes through `Manager::new` → `connect_all` → `Dispatcher` → `close` and spawns only `sh`.
 
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, time::Duration};
 
+use iota::app::env::Env;
 use iota::mcp::config::ServerConfig;
 use iota::mcp::{Manager, ManagerOptions};
 #[cfg(unix)]
 use iota::provider::model::JsonObject;
-use iota::testing::map_resolver;
 use iota::tool::Dispatcher;
 #[cfg(unix)]
 use iota::tool::context::RunCtx;
@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 /// Options with an empty map resolver (no process environment) and the default 30 s deadline.
 fn options() -> ManagerOptions {
-    ManagerOptions::new(reqwest::Client::new(), Arc::new(map_resolver(&[])))
+    ManagerOptions::new(reqwest::Client::new(), Env::default())
 }
 
 /// Only the `sh`-spawning tests build one of these, and those are all `cfg(unix)`.

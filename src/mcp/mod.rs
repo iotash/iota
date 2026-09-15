@@ -21,7 +21,6 @@ pub(crate) mod testutil {
 
     use crate::BoxFuture;
     use crate::provider::model::JsonObject;
-    use crate::testing::map_resolver;
     use rmcp::{
         RoleClient, RoleServer, ServerHandler, ServiceExt,
         model::{
@@ -39,7 +38,7 @@ pub(crate) mod testutil {
 
     /// `ManagerOptions` for tests: a fresh `reqwest::Client` and an empty map resolver (no process environment).
     pub(crate) fn options() -> ManagerOptions {
-        ManagerOptions::new(reqwest::Client::new(), Arc::new(map_resolver(&[])))
+        ManagerOptions::new(reqwest::Client::new(), crate::app::env::Env::default())
     }
 
     /// Serves `handler` on one end of a `tokio::io::duplex` pair (its service loop detached) and runs the client

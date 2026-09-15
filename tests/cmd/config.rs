@@ -1,6 +1,6 @@
 //! Config-model integration tests (`config/config_test.go` ported, plus the load-order and parse-error rules,
 //! the three-layer resolution and the key audit that refuses a key written in the wrong layer).
-//! Every test injects `HostDirs` and a map-backed `VarResolver` — nothing reads or mutates the process
+//! Every test injects a fixed `Env` (its `HostDirs` included) — nothing reads or mutates the process
 //! environment.
 
 use std::{
@@ -9,30 +9,22 @@ use std::{
 };
 
 use crate::common::temp_project;
+use iota::app::env::Env;
 use iota::cmd::{AgentConfig, Config, ConfigError, ModelRef};
-use iota::testing::{MapResolver, map_resolver};
 use pretty_assertions::assert_eq;
 
 /// `Load(path)` from the Go tests: the explicit file alone, no home/cwd tiers, warnings collected.
-fn load_explicit(path: &Path, resolver: &MapResolver) -> (Config, Vec<String>) {
-    let (cfg, warnings) = try_load_explicit(path, resolver);
+fn load_explicit(path: &Path, env: &Env) -> (Config, Vec<String>) {
+    let (cfg, warnings) = try_load_explicit(path, env);
     (cfg.expect("the config loads"), warnings)
 }
 
 /// The same, without insisting that the load succeeded.
-fn try_load_explicit(
-    path: &Path,
-    resolver: &MapResolver,
-) -> (Result<Config, ConfigError>, Vec<String>) {
+fn try_load_explicit(path: &Path, env: &Env) -> (Result<Config, ConfigError>, Vec<String>) {
     let mut warnings = Vec::new();
-    let cfg = Config::load(
-        Some(path),
-        &iota::app::HostDirs::default(),
-        resolver,
-        &mut |w| {
-            warnings.push(w);
-        },
-    );
+    let cfg = Config::load(Some(path), env, &mut |w| {
+        warnings.push(w);
+    });
     (cfg, warnings)
 }
 
@@ -40,20 +32,20 @@ fn try_load_explicit(
 fn load_yaml(root: &Path, name: &str, content: &str) -> Config {
     let path = root.join(name);
     fs::write(&path, content).unwrap();
-    let (cfg, warnings) = load_explicit(&path, &map_resolver(&[]));
+    let (cfg, warnings) = load_explicit(&path, &Env::default());
     assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
     cfg
 }
 
 /// One config document, straight from a string.
 fn parse(yaml: &str) -> Result<Config, ConfigError> {
-    Config::parse(yaml.as_bytes(), &map_resolver(&[]), &mut |_| {})
+    Config::parse(yaml.as_bytes(), &Env::default(), &mut |_| {})
 }
 
 /// The same, keeping the warnings.
 fn parse_warned(yaml: &str) -> (Result<Config, ConfigError>, Vec<String>) {
     let mut warnings = Vec::new();
-    let cfg = Config::parse(yaml.as_bytes(), &map_resolver(&[]), &mut |w| {
+    let cfg = Config::parse(yaml.as_bytes(), &Env::default(), &mut |w| {
         warnings.push(w);
     });
     (cfg, warnings)
@@ -214,11 +206,7 @@ fn provider_fields_expand_their_variables_at_load() {
         "providers:\n  d:\n    type: openai\n    key: ${env:CFG_TEST_KEY}\n    url: ${env:CFG_TEST_KEY}/v1\nmodels:\n  m: {provider: d, id: x, effort: high}\nagents:\n  d: {models: [m], system_file: \"${appHome}/sys.md\"}\n",
     )
     .unwrap();
-    let resolver = MapResolver {
-        home: dirs.home.clone(),
-        cwd: dirs.cwd.clone(),
-        ..map_resolver(&[("CFG_TEST_KEY", "sk-expanded")])
-    };
+    let resolver = Env::fixed(&[("CFG_TEST_KEY", "sk-expanded")]).with_dirs(dirs.clone());
 
     let (cfg, _) = load_explicit(&path, &resolver);
     let (_, pc) = cfg.get("d");
@@ -449,7 +437,7 @@ fn a_key_of_another_layer_fails_the_load_naming_the_file() {
         "providers:\n  deepseek:\n    type: openai\n    key: k\n    system: be terse\n",
     )
     .unwrap();
-    let (cfg, warnings) = try_load_explicit(&path, &map_resolver(&[]));
+    let (cfg, warnings) = try_load_explicit(&path, &Env::default());
     assert!(
         warnings.is_empty(),
         "a key mistake is an error, not a warning: {warnings:?}"
@@ -575,8 +563,10 @@ fn a_later_file_replaces_whole_entries() {
         ),
     ]);
     let mut warnings = Vec::new();
-    let cfg =
-        Config::load(None, &dirs, &map_resolver(&[]), &mut |w| warnings.push(w)).expect("loads");
+    let cfg = Config::load(None, &Env::default().with_dirs(dirs), &mut |w| {
+        warnings.push(w);
+    })
+    .expect("loads");
     assert_eq!(cfg.providers["shared"].key, "cwd");
     assert_eq!(
         cfg.providers["shared"].url, "",
@@ -713,7 +703,7 @@ fn a_reference_written_as_a_yaml_mapping_explains_itself() {
         "agents:\n  x:\n    models:\n      - openai: gpt-4o\n",
     )
     .unwrap();
-    let (cfg, warnings) = load_explicit(&path, &map_resolver(&[]));
+    let (cfg, warnings) = load_explicit(&path, &Env::default());
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].ends_with(" (file ignored)"), "{warnings:?}");
     assert_eq!(cfg, Config::default());
@@ -825,7 +815,7 @@ fn defer_mode_must_match_the_provider_dialect() {
         "models:\n  a: {provider: openai, id: x, defer_mode: reference}\n",
     )
     .unwrap();
-    let (cfg, _) = try_load_explicit(&path, &map_resolver(&[]));
+    let (cfg, _) = try_load_explicit(&path, &Env::default());
     assert_eq!(
         cfg.expect_err("mismatch must fail").to_string(),
         "models.a: defer_mode \"reference\" does not apply to provider type openai (see docs/design/tool-defer.md)"
@@ -993,23 +983,20 @@ fn config_only_explicit_path_when_given() {
             "providers:\n  explicit:\n    type: gemini\n    key: ex\n",
         ),
     ]);
-    let resolver = map_resolver(&[]);
+    let env = Env::default().with_dirs(dirs);
 
     // Explicit: nothing from home or cwd.
     let mut warnings = Vec::new();
-    let cfg = Config::load(
-        Some(&dir.path().join("explicit.yaml")),
-        &dirs,
-        &resolver,
-        &mut |w| warnings.push(w),
-    )
+    let cfg = Config::load(Some(&dir.path().join("explicit.yaml")), &env, &mut |w| {
+        warnings.push(w);
+    })
     .expect("loads");
     assert!(warnings.is_empty(), "{warnings:?}");
     assert_eq!(cfg.providers.keys().collect::<Vec<_>>(), vec!["explicit"]);
     assert!(cfg.mcp_servers.is_empty());
 
     // Discovery: home (.yaml) then cwd (.yml, the .yaml fallback); cwd replaces WHOLE entries by name.
-    let cfg = Config::load(None, &dirs, &resolver, &mut |w| warnings.push(w)).expect("loads");
+    let cfg = Config::load(None, &env, &mut |w| warnings.push(w)).expect("loads");
     assert!(warnings.is_empty(), "{warnings:?}");
     assert_eq!(
         cfg.providers.keys().collect::<Vec<_>>(),
@@ -1021,18 +1008,15 @@ fn config_only_explicit_path_when_given() {
     assert_eq!(cfg.mcp_servers["gh"].url, "https://home/gh");
 
     // A missing explicit file is silent (os.IsNotExist) and yields an empty config.
-    let cfg = Config::load(
-        Some(&dir.path().join("nope.yaml")),
-        &dirs,
-        &resolver,
-        &mut |w| warnings.push(w),
-    )
+    let cfg = Config::load(Some(&dir.path().join("nope.yaml")), &env, &mut |w| {
+        warnings.push(w);
+    })
     .expect("loads");
     assert!(warnings.is_empty(), "{warnings:?}");
     assert_eq!(cfg, Config::default());
 
     // No home and no cwd: nothing is read, nothing is warned.
-    let cfg = Config::load(None, &iota::app::HostDirs::default(), &resolver, &mut |w| {
+    let cfg = Config::load(None, &Env::default(), &mut |w| {
         warnings.push(w);
     })
     .expect("loads");
@@ -1055,10 +1039,10 @@ fn config_parse_error_drops_file_with_warning() {
         ),
         ("empty.yaml", ""),
     ]);
-    let resolver = map_resolver(&[]);
+    let env = Env::default().with_dirs(dirs);
 
     let mut warnings = Vec::new();
-    let cfg = Config::load(None, &dirs, &resolver, &mut |w| warnings.push(w)).expect("loads");
+    let cfg = Config::load(None, &env, &mut |w| warnings.push(w)).expect("loads");
     let cwd_file = dir.path().join(".iota.yaml");
     assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
     assert!(
@@ -1085,14 +1069,14 @@ fn config_parse_error_drops_file_with_warning() {
             fs::write(&p, "agents:\n  x: {models: [m], workspace: 1}\n").unwrap();
             p
         },
-        &resolver,
+        &env,
     );
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].ends_with(" (file ignored)"));
     assert_eq!(cfg, Config::default());
 
     // Empty file: a valid, empty config.
-    let (cfg, warnings) = load_explicit(&dir.path().join("empty.yaml"), &resolver);
+    let (cfg, warnings) = load_explicit(&dir.path().join("empty.yaml"), &env);
     assert!(warnings.is_empty(), "{warnings:?}");
     assert_eq!(cfg, Config::default());
 }

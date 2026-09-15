@@ -10,10 +10,10 @@ use std::io::Write;
 
 use clap::ValueEnum as _;
 
-use crate::app::env::EnvSource;
+use crate::app::HostDirs;
+use crate::app::env::Env;
 use crate::provider::provider_env_key;
 
-use crate::app::HostDirs;
 use crate::cmd::cli::{ListCmd, ListWhat};
 use crate::cmd::resolve::resolve_agent;
 use crate::cmd::{CliError, io};
@@ -23,8 +23,7 @@ use crate::config::{Config, ModelRef, ProviderConfig};
 pub fn run_list(
     cmd: &ListCmd,
     cfg: &Config,
-    dirs: &HostDirs,
-    env: &dyn EnvSource,
+    env: &Env,
     io: &mut io::Streams,
 ) -> Result<(), CliError> {
     let what = cmd.what.unwrap_or(ListWhat::Agents);
@@ -42,7 +41,7 @@ pub fn run_list(
             None => list_models(cfg, io),
         },
         ListWhat::Providers => list_providers(cfg, env, io),
-        ListWhat::Sessions => list_sessions(dirs, io),
+        ListWhat::Sessions => list_sessions(&env.dirs, io),
     }
 }
 
@@ -116,7 +115,7 @@ fn list_agent_models(cfg: &Config, name: &str, io: &mut io::Streams) -> Result<(
 
 /// `iota list providers`: the endpoints, with where each one's key comes from — the question a failing run
 /// actually asks.
-fn list_providers(cfg: &Config, env: &dyn EnvSource, io: &mut io::Streams) -> Result<(), CliError> {
+fn list_providers(cfg: &Config, env: &Env, io: &mut io::Streams) -> Result<(), CliError> {
     if cfg.providers.is_empty() {
         writeln!(
             io.stdout,
@@ -138,12 +137,12 @@ fn list_providers(cfg: &Config, env: &dyn EnvSource, io: &mut io::Streams) -> Re
 }
 
 /// Where a provider's key comes from, as the listing says it.
-fn key_source(raw_type: &str, provider_cfg: &ProviderConfig, env: &dyn EnvSource) -> String {
+fn key_source(raw_type: &str, provider_cfg: &ProviderConfig, env: &Env) -> String {
     if !provider_cfg.key.is_empty() {
         return "key: config".to_owned();
     }
     let var = provider_env_key(raw_type);
-    if env.var(var).is_some_and(|v| !v.is_empty()) {
+    if env.var(var).is_some() {
         format!("key: {var}")
     } else {
         format!("no key: set {var}")

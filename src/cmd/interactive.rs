@@ -59,9 +59,6 @@ pub(crate) struct Interactive<'a> {
     pub(crate) inv: &'a Invocation,
     /// The merged config (a resumed bundle's agent is looked up in it).
     pub(crate) cfg: &'a crate::config::Config,
-    /// The process environment, for the API keys of the endpoints `/model`'s candidate set names
-    /// besides the one this run talks to.
-    pub(crate) env: &'a dyn crate::app::env::EnvSource,
     /// The resolved run settings.
     pub(crate) settings: RunSettings,
     /// The resolved provider type.
@@ -252,7 +249,6 @@ pub(crate) async fn run_interactive(
     let Interactive {
         inv,
         cfg,
-        env,
         settings,
         kind,
         mut provider,
@@ -260,9 +256,10 @@ pub(crate) async fn run_interactive(
         tools,
     } = s;
     // What `/model` will offer. Built here, before anything claims the terminal: it needs the
-    // config and the environment, which the loop deliberately knows nothing about, and
-    // constructing a wildcard's endpoint is pure (the listings happen when the picker opens).
-    let catalog = crate::repl::ModelCatalog::new(cfg, &settings.resolved, env, &ctx.transport);
+    // config and the environment (the keys of the endpoints the candidate set names besides the one
+    // this run talks to), which the loop deliberately knows nothing about, and constructing a
+    // wildcard's endpoint is pure (the listings happen when the picker opens).
+    let catalog = crate::repl::ModelCatalog::new(cfg, &settings.resolved, &ctx.env, &ctx.transport);
     let ToolAssembly {
         mcp_configs,
         mcp_defers,
@@ -291,7 +288,7 @@ pub(crate) async fn run_interactive(
 
     // root.go:292-334 (the picker half): the store is listed BEFORE anything is spawned, so an empty bucket or
     // an unreadable store fails with nothing to clean up, and the spec the picker will show is ready.
-    let store = SessionStore::from_dirs(&ctx.dirs)?;
+    let store = SessionStore::from_dirs(&ctx.env.dirs)?;
     let scope: Option<PathBuf> = settings.agent_mode.then(|| agent.root.clone());
     let resume_given = inv.resume.is_some();
     // `iota resume` with no id IS the picker; `iota resume <id>` resolves the fragment instead.
@@ -314,7 +311,7 @@ pub(crate) async fn run_interactive(
         let configured = !mcp_configs.is_empty();
         let manager = crate::mcp::Manager::new(
             mcp_configs,
-            crate::mcp::ManagerOptions::new(ctx.http.clone(), Arc::clone(&ctx.resolver)),
+            crate::mcp::ManagerOptions::new(ctx.http.clone(), ctx.env.clone()),
         );
         let events = configured.then(|| manager.connect_background(&connect_cancel));
         let part = configured.then(|| crate::cmd::assemble::McpPart::of(&manager));
@@ -497,7 +494,8 @@ fn wire_session(
     // `scope` IS the project root in agent mode (the bucket is the project).
     let session_cwd = scope.map_or_else(
         || {
-            ctx.dirs
+            ctx.env
+                .dirs
                 .cwd
                 .as_deref()
                 .map(|p| p.to_string_lossy().into_owned())

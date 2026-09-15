@@ -22,10 +22,10 @@ pub use cli::{Cli, Command, ConfigAction, Invocation, ListWhat, Resume, RunArgs}
 pub use resolve::CliError;
 pub use resolve::{RunSettings, resolve_run};
 
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
-use crate::app::env::{EnvSource, VarResolver};
-use crate::app::{HostDirs, VERSION};
+use crate::app::VERSION;
+use crate::app::env::Env;
 use crate::headless::{AgentOptions, OnceOptions, OutputFormat};
 use crate::llm::reqlog::RequestLog;
 use crate::mcp::config::ServerConfig;
@@ -40,22 +40,22 @@ use tokio_util::sync::CancellationToken;
 /// keeps the bare client: Go never records MCP traffic.
 #[derive(Clone)]
 pub(crate) struct RunContext {
-    /// Process directories (the session store's root, the images dir).
-    pub(crate) dirs: HostDirs,
+    /// The injected environment: `${…}` expansion for the MCP configs (the manager expands every server
+    /// config through it), the keys of the `/model` candidates, and the process directories (the session
+    /// store's root, the images dir).
+    pub(crate) env: Env,
     /// The bare client (the MCP transports take it so).
     pub(crate) http: reqwest::Client,
     /// The same client with the run's `/debug` recorder.
     pub(crate) transport: HttpTransport,
     /// The `/debug` request log the loop toggles and browses.
     pub(crate) reqlog: Arc<RequestLog>,
-    /// `${…}` resolver for the MCP configs — the manager expands every server config through it.
-    pub(crate) resolver: Arc<dyn VarResolver>,
     /// The run's root cancellation (the SIGTERM path).
     pub(crate) cancel: CancellationToken,
 }
 
 impl RunContext {
-    fn new(dirs: HostDirs, cancel: CancellationToken, resolver: Arc<dyn VarResolver>) -> Self {
+    fn new(env: Env, cancel: CancellationToken) -> Self {
         let http = crate::llm::default_http_client();
         let reqlog = Arc::new(RequestLog::new());
         let transport = HttpTransport {
@@ -63,11 +63,10 @@ impl RunContext {
             recorder: Some(Arc::clone(&reqlog)),
         };
         Self {
-            dirs,
+            env,
             http,
             transport,
             reqlog,
-            resolver,
             cancel,
         }
     }
@@ -100,39 +99,32 @@ pub(crate) struct ToolAssembly {
 /// from.
 pub async fn run(
     cli: Cli,
-    dirs: HostDirs,
-    env: Arc<dyn EnvSource>,
+    env: Env,
     cancel: CancellationToken,
     io: &mut io::Streams,
 ) -> Result<(), CliError> {
     use std::io::Write as _;
 
-    let resolver: Arc<dyn VarResolver> = Arc::new(EnvResolver {
-        env: Arc::clone(&env),
-        dirs: dirs.clone(),
-    });
     let (command, config) = cli.into_command();
     match command {
         Command::Version => {
             writeln!(io.stdout, "iota {VERSION}")?;
             Ok(())
         }
-        Command::Config(cmd) => {
-            config_cmd::run_config(&cmd, config.as_deref(), &dirs, resolver.as_ref(), io)
-        }
+        Command::Config(cmd) => config_cmd::run_config(&cmd, config.as_deref(), &env, io),
         Command::List(cmd) => {
-            let cfg = Config::load(config.as_deref(), &dirs, resolver.as_ref(), &mut |w| {
+            let cfg = Config::load(config.as_deref(), &env, &mut |w| {
                 io.warning(&w);
             })?;
-            list::run_list(&cmd, &cfg, &dirs, env.as_ref(), io)
+            list::run_list(&cmd, &cfg, &env, io)
         }
         Command::Run(cmd) => {
             let inv = Invocation::of_run(cmd, config);
-            run_agent(inv, dirs, env, resolver, cancel, io).await
+            run_agent(inv, env, cancel, io).await
         }
         Command::Resume(cmd) => {
             let inv = Invocation::of_resume(cmd, config);
-            run_agent(inv, dirs, env, resolver, cancel, io).await
+            run_agent(inv, env, cancel, io).await
         }
     }
 }
@@ -155,9 +147,7 @@ pub async fn run(
 /// `Manager::close()` always (also on error/cancel).
 async fn run_agent(
     inv: Invocation,
-    dirs: HostDirs,
-    env: Arc<dyn EnvSource>,
-    resolver: Arc<dyn VarResolver>,
+    env: Env,
     cancel: CancellationToken,
     io: &mut io::Streams,
 ) -> Result<(), CliError> {
@@ -172,18 +162,18 @@ async fn run_agent(
     }
 
     // root.go:45
-    let cfg = Config::load(inv.config.as_deref(), &dirs, resolver.as_ref(), &mut |w| {
+    let cfg = Config::load(inv.config.as_deref(), &env, &mut |w| {
         io.warning(&w);
     })?;
 
     // root.go:52-123
     let mut stdin = std::io::stdin();
-    let mut settings = resolve_run(&inv, &cfg, env.as_ref(), &mut stdin, &mut |w| {
+    let mut settings = resolve_run(&inv, &cfg, &env, &mut stdin, &mut |w| {
         io.warning(&w);
     })?;
 
     // root.go:125-131
-    let ctx = RunContext::new(dirs, cancel, resolver);
+    let ctx = RunContext::new(env, cancel);
     // root.go:132-181
     let (kind, provider) = open_provider(&settings, &ctx, io)?;
     // root.go:187-241
@@ -207,7 +197,6 @@ async fn run_agent(
             interactive::Interactive {
                 inv: &inv,
                 cfg: &cfg,
-                env: env.as_ref(),
                 settings,
                 kind,
                 provider,
@@ -260,7 +249,7 @@ fn assemble_tools(
     ctx: &RunContext,
     io: &mut io::Streams,
 ) -> Result<ToolAssembly, CliError> {
-    let dirs = &ctx.dirs;
+    let dirs = &ctx.env.dirs;
     // root.go:187-194
     let (mcp_configs, mcp_defers) =
         assemble::build_mcp_configs(cfg, &settings.resolved.agent, &inv.args.mcp, &mut |w| {
@@ -343,12 +332,9 @@ async fn run_headless(
         agent,
     } = tools;
     let RunContext {
-        dirs,
-        http,
-        resolver,
-        cancel,
-        ..
+        env, http, cancel, ..
     } = ctx;
+    let dirs = &env.dirs;
 
     // root.go:284-334, moved onto the `-m` path (DIVERGENCES D-41). It sits HERE — after the interactive
     // branch, before the MCP connect — so `iota resume <id>` without `-m` belongs to the interactive branch (which
@@ -357,7 +343,7 @@ async fn run_headless(
     let mut session = match &settings.resume {
         None => None,
         Some(fragment) => {
-            let store = crate::session::SessionStore::from_dirs(&dirs)?;
+            let store = crate::session::SessionStore::from_dirs(dirs)?;
             // root.go:298: agent mode tries the project's own bucket first and only widens on no match; normal
             // mode looks at the flat root (Go passes an empty `agentOpts.Root`).
             let scope = settings.agent_mode.then_some(agent.root.as_path());
@@ -408,7 +394,7 @@ async fn run_headless(
     // root.go:261-268: connect MCP synchronously (the single request needs the full tool set before it is sent).
     let (manager, mcp_part) = connect_mcp(
         mcp_configs,
-        crate::mcp::ManagerOptions::new(http, Arc::clone(&resolver)),
+        crate::mcp::ManagerOptions::new(http, env.clone()),
         &cancel,
         io,
     )
@@ -474,28 +460,6 @@ fn cwd_err() -> std::io::Error {
     std::env::current_dir()
         .err()
         .unwrap_or_else(|| std::io::Error::other("working directory is unavailable"))
-}
-
-/// Bridges the run's `EnvSource` seam to the `VarResolver` that `Config::load` and the MCP manager expand `${…}`
-/// with, so ONE injected environment answers every lookup (nothing reads the process environment behind the
-/// caller's back).
-struct EnvResolver {
-    env: Arc<dyn EnvSource>,
-    dirs: HostDirs,
-}
-
-impl VarResolver for EnvResolver {
-    fn env_var(&self, name: &str) -> Option<String> {
-        self.env.var(name)
-    }
-
-    fn cwd(&self) -> Option<PathBuf> {
-        self.dirs.cwd.clone()
-    }
-
-    fn home(&self) -> Option<PathBuf> {
-        self.dirs.home.clone()
-    }
 }
 
 /// The MCP stage of `run` (root.go:216-233, headless half): `Manager::new` + `connect_all`, then one

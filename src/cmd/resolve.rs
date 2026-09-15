@@ -9,7 +9,7 @@ use crate::text::go_float;
 use crate::cmd::cli::{Invocation, Resume};
 use crate::config::{Config, ConfigError, ModelConfig, ModelRef, ProviderConfig, Resolved};
 
-use crate::app::env::EnvSource;
+use crate::app::env::Env;
 
 /// What `resolve_run` decided for one invocation.
 #[derive(Clone, Debug, PartialEq)]
@@ -63,7 +63,7 @@ pub struct RunSettings {
 pub fn resolve_run(
     inv: &Invocation,
     cfg: &Config,
-    env: &dyn EnvSource,
+    env: &Env,
     stdin: &mut dyn std::io::Read,
     warn: &mut dyn FnMut(String),
 ) -> Result<RunSettings, CliError> {
@@ -249,11 +249,9 @@ fn model_at(r: &Resolved, cfg: &Config, provider: &str, id: &str) -> ModelConfig
 pub(crate) fn resolve_key_from_env_or_config(
     env_key: &str,
     provider_cfg: &ProviderConfig,
-    env: &dyn EnvSource,
+    env: &Env,
 ) -> String {
-    env.var(env_key)
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| provider_cfg.key.clone())
+    env.var(env_key).unwrap_or_else(|| provider_cfg.key.clone())
 }
 
 /// root.go:95-104: read ALL of stdin, trim, reject an empty message.

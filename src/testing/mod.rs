@@ -1,14 +1,9 @@
 //! Shared test fakes (feature `testing`): the one fake provider ([`FakeProvider`]), the fake dispatchers
-//! (`dispatch`), a recording sink, the scripted UI facade, and map-backed `VarResolver`/`EnvSource`
-//! fixtures that replace `t.Setenv`.
+//! (`dispatch`), a recording sink and the scripted UI facade. (The environment fixture that replaces
+//! `t.Setenv` is `app::env::Env::fixed`, in the library proper.)
 
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    sync::{Mutex, MutexGuard, PoisonError},
-};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use crate::app::env::{EnvSource, VarResolver};
 use crate::provider::model::{
     AssistantBody, Attachment, Body, JsonObject, Message, Raw, RawContent, ToolCall, ToolDef,
 };
@@ -195,66 +190,9 @@ impl RecordingSink {
     }
 }
 
-/// `HashMap`-backed `VarResolver` (env vars + fixed cwd/home) — replaces `t.Setenv`.
-#[derive(Clone, Debug, Default)]
-pub struct MapResolver {
-    /// Environment variables.
-    pub vars: HashMap<String, String>,
-    /// The working directory.
-    pub cwd: Option<PathBuf>,
-    /// The home directory.
-    pub home: Option<PathBuf>,
-}
-
-impl VarResolver for MapResolver {
-    fn env_var(&self, name: &str) -> Option<String> {
-        self.vars.get(name).cloned()
-    }
-
-    fn cwd(&self) -> Option<PathBuf> {
-        self.cwd.clone()
-    }
-
-    fn home(&self) -> Option<PathBuf> {
-        self.home.clone()
-    }
-}
-
-/// A `MapResolver` over `vars` with no cwd/home.
-pub fn map_resolver(vars: &[(&str, &str)]) -> MapResolver {
-    MapResolver {
-        vars: vars
-            .iter()
-            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
-            .collect(),
-        ..MapResolver::default()
-    }
-}
-
-/// `HashMap`-backed `EnvSource`.
-#[derive(Clone, Debug, Default)]
-pub struct MapEnv(pub HashMap<String, String>);
-
-impl EnvSource for MapEnv {
-    /// Like `ProcessEnv`, an empty value counts as unset.
-    fn var(&self, name: &str) -> Option<String> {
-        self.0.get(name).filter(|v| !v.is_empty()).cloned()
-    }
-}
-
-/// A `MapEnv` over `vars`.
-pub fn map_env(vars: &[(&str, &str)]) -> MapEnv {
-    MapEnv(
-        vars.iter()
-            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
-            .collect(),
-    )
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{RecordingSink, SinkEvent, map_env, map_resolver};
-    use crate::app::env::{EnvSource, VarResolver, expand};
+    use super::{RecordingSink, SinkEvent};
     use crate::provider::sink::StreamSink;
 
     #[test]
@@ -277,18 +215,5 @@ mod tests {
         StreamSink::content(&mut never, "x");
         assert!(!never.closed_before_content());
         assert!(RecordingSink::default().closed_before_content());
-    }
-
-    #[test]
-    fn map_fixtures() {
-        let r = map_resolver(&[("A", "1")]);
-        assert_eq!(r.env_var("A"), Some("1".to_owned()));
-        assert_eq!(r.env_var("B"), None);
-        assert!(r.cwd().is_none() && r.home().is_none());
-        assert_eq!(expand("${env:A}${cwd}", &r), "1${cwd}");
-        let e = map_env(&[("K", "v"), ("EMPTY", "")]);
-        assert_eq!(e.var("K"), Some("v".to_owned()));
-        assert_eq!(e.var("EMPTY"), None);
-        assert_eq!(e.var("MISSING"), None);
     }
 }

@@ -8,7 +8,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::app::env::VarResolver;
+use crate::app::env::Env;
 use crate::app::{CONFIG_BASE, CONFIG_EXTS, HostDirs};
 use crate::cmd::cli::{ConfigAction, ConfigCmd};
 use crate::cmd::{CliError, io};
@@ -54,27 +54,21 @@ agents:
 pub fn run_config(
     cmd: &ConfigCmd,
     explicit: Option<&Path>,
-    dirs: &HostDirs,
-    resolver: &dyn VarResolver,
+    env: &Env,
     io: &mut io::Streams,
 ) -> Result<(), CliError> {
     match cmd.action.unwrap_or(ConfigAction::Check) {
-        ConfigAction::Check => check(explicit, dirs, resolver, io),
-        ConfigAction::Path => path(explicit, dirs, io),
-        ConfigAction::Init => init(explicit, dirs, io),
+        ConfigAction::Check => check(explicit, env, io),
+        ConfigAction::Path => path(explicit, &env.dirs, io),
+        ConfigAction::Init => init(explicit, &env.dirs, io),
     }
 }
 
 /// `config check`: load exactly what a run would load — every warning on stderr, the first hard error as the
 /// run's own — then report what the three layers ended up holding.
-fn check(
-    explicit: Option<&Path>,
-    dirs: &HostDirs,
-    resolver: &dyn VarResolver,
-    io: &mut io::Streams,
-) -> Result<(), CliError> {
-    let files = Config::sources(explicit, dirs);
-    let cfg = Config::load(explicit, dirs, resolver, &mut |w| io.warning(&w))?;
+fn check(explicit: Option<&Path>, env: &Env, io: &mut io::Streams) -> Result<(), CliError> {
+    let files = Config::sources(explicit, &env.dirs);
+    let cfg = Config::load(explicit, env, &mut |w| io.warning(&w))?;
     if files.is_empty() {
         writeln!(
             io.stdout,
@@ -153,33 +147,16 @@ fn default_config_path(dirs: &HostDirs) -> Result<PathBuf, CliError> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::STARTER;
-
-    /// A resolver with nothing in it: the starter config must not depend on the environment to be valid.
-    struct NoVars;
-
-    impl crate::app::env::VarResolver for NoVars {
-        fn env_var(&self, _name: &str) -> Option<String> {
-            None
-        }
-
-        fn cwd(&self) -> Option<PathBuf> {
-            None
-        }
-
-        fn home(&self) -> Option<PathBuf> {
-            None
-        }
-    }
+    use crate::app::env::Env;
 
     /// The starter file must be a config iota itself accepts — every key checked, every reference resolved —
     /// or `iota config init` would hand a new user a file that fails on the next command.
     #[test]
     fn the_starter_config_loads() {
+        // An environment with nothing in it: the starter config must not depend on one to be valid.
         let mut warnings = Vec::new();
-        let cfg = crate::config::Config::parse(STARTER.as_bytes(), &NoVars, &mut |w| {
+        let cfg = crate::config::Config::parse(STARTER.as_bytes(), &Env::default(), &mut |w| {
             warnings.push(w);
         })
         .expect("the starter config parses and validates");

@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::BoxFuture;
-use crate::app::env::VarResolver;
+use crate::app::env::Env;
 use crate::mcp::config::{ServerConfig, endpoint_of, expand_server_config};
 use crate::provider::model::{JsonObject, ToolDef};
 use crate::tool::context::RunCtx;
@@ -51,19 +51,19 @@ pub struct ManagerOptions {
     pub client_info: rmcp::model::Implementation,
     /// Cap on the captured stderr of a stdio server.
     pub stderr_cap: usize,
-    /// `${var}` resolver applied to every config (`expand_server_config`) before connecting.
-    pub resolver: Arc<dyn VarResolver>,
+    /// The environment every config is expanded with (`expand_server_config`) before connecting.
+    pub env: Env,
 }
 
 impl ManagerOptions {
     /// 30 s connect timeout, `iota/<CARGO_PKG_VERSION>` client info, 64 KiB stderr cap.
-    pub fn new(http: reqwest::Client, resolver: Arc<dyn VarResolver>) -> Self {
+    pub fn new(http: reqwest::Client, env: Env) -> Self {
         Self {
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             http,
             client_info: rmcp::model::Implementation::new(CLIENT_NAME, CLIENT_VERSION),
             stderr_cap: DEFAULT_STDERR_CAP,
-            resolver,
+            env,
         }
     }
 }
@@ -139,7 +139,7 @@ impl Manager {
             .iter()
             .map(|cfg| ServerStatus {
                 name: cfg.name.clone(),
-                endpoint: endpoint_of(&expand_server_config(cfg, opts.resolver.as_ref())),
+                endpoint: endpoint_of(&expand_server_config(cfg, &opts.env)),
                 pending: true,
                 ..ServerStatus::default()
             })

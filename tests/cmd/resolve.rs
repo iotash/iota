@@ -1,5 +1,5 @@
 //! Pure resolution tests (cmd/root.go:46-123, 439-566; chat/tokens.go:20-43): the verb set, `resolve_run`,
-//! the listings and `parse_window_size`. Every environment lookup goes through a `map_env`; nothing reads or
+//! the listings and `parse_window_size`. Every environment lookup goes through a fixed `Env`; nothing reads or
 //! mutates the process environment or the network.
 // No `mod common;`: these tests need neither a temp project nor TLS (no `reqwest::Client` is ever built), and
 // declaring the shared fixtures unused would trip `unused_imports` in the ★ WP00-owned module.
@@ -10,11 +10,11 @@ use std::{
 };
 
 use clap::Parser;
+use iota::app::env::Env;
 use iota::cmd::io::Streams;
 use iota::cmd::list::{provider_line, run_list};
 use iota::cmd::window::parse_window_size;
 use iota::cmd::{Cli, CliError, Command, Config, Invocation, ProviderConfig, Resume, resolve_run};
-use iota::testing::map_env;
 use pretty_assertions::assert_eq;
 
 fn cli(args: &[&str]) -> Cli {
@@ -32,12 +32,7 @@ fn inv(args: &[&str]) -> Invocation {
 }
 
 fn config(yaml: &str) -> Config {
-    Config::parse(
-        yaml.as_bytes(),
-        &iota::testing::map_resolver(&[]),
-        &mut |_| {},
-    )
-    .expect("test config")
+    Config::parse(yaml.as_bytes(), &Env::default(), &mut |_| {}).expect("test config")
 }
 
 fn resolve(
@@ -58,7 +53,7 @@ fn resolve_warned(
     let r = resolve_run(
         &inv(args),
         cfg,
-        &map_env(env),
+        &Env::fixed(env),
         &mut std::io::empty(),
         &mut |w| warnings.push(w),
     );
@@ -102,14 +97,7 @@ fn list(args: &[&str], cfg: &Config, env: &[(&str, &str)]) -> (String, String) {
         panic!("{args:?} is not a listing");
     };
     let (mut io, out, errs) = streams();
-    run_list(
-        &cmd,
-        cfg,
-        &iota::app::HostDirs::default(),
-        &map_env(env),
-        &mut io,
-    )
-    .unwrap_or_else(|e| panic!("list {args:?}: {e}"));
+    run_list(&cmd, cfg, &Env::fixed(env), &mut io).unwrap_or_else(|e| panic!("list {args:?}: {e}"));
     (out.text(), errs.text())
 }
 #[test]
@@ -530,7 +518,7 @@ fn simple() -> Config {
 #[test]
 fn resolve_stdin_message_trimmed_and_empty_error() {
     let cfg = simple();
-    let env = map_env(&[("OPENAI_API_KEY", "k")]);
+    let env = Env::fixed(&[("OPENAI_API_KEY", "k")]);
     let args = inv(&["run", "a", "-m", "-"]);
 
     let s = resolve_run(
@@ -558,7 +546,8 @@ fn resolve_stdin_message_trimmed_and_empty_error() {
 
     // The stdin read happens AFTER the key check: no key → the key error, stdin untouched.
     let args = inv(&["run", "a", "-m", "-"]);
-    let err = resolve_run(&args, &cfg, &map_env(&[]), &mut FailingStdin, &mut |_| {}).unwrap_err();
+    let err =
+        resolve_run(&args, &cfg, &Env::default(), &mut FailingStdin, &mut |_| {}).unwrap_err();
     assert!(matches!(err, CliError::ApiKeyRequired { .. }));
 }
 
@@ -794,14 +783,7 @@ fn list_refuses_a_name_it_cannot_use() {
             panic!("not a listing")
         };
         let (mut io, _, _) = streams();
-        run_list(
-            &cmd,
-            &cfg,
-            &iota::app::HostDirs::default(),
-            &map_env(&[]),
-            &mut io,
-        )
-        .unwrap_err()
+        run_list(&cmd, &cfg, &Env::default(), &mut io).unwrap_err()
     };
     assert_eq!(
         run(&["list", "agents", "a"]).to_string(),
