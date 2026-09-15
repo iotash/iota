@@ -5,91 +5,37 @@
 //! that a viewer neither reaches the provider nor waits on the title pass, and above all the
 //! EXPANSION split: the echo shows the line the user typed while the provider receives the
 //! `<skill …>` block (chat/run.go:923-937,959,992).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
-use iota::BoxFuture;
 use iota::host::Presenter;
 use iota::llm::reqlog::RequestLog;
-use iota::provider::error::ProviderError;
-use iota::provider::model::Message;
-use iota::provider::{ChatResult, Provider, ProviderKind};
 use iota::repl::{McpHooks, RunParams, SessionCtx};
 use iota::session::SessionStore;
-use iota::testing::{Reply, ScriptedUi, StaticDispatcher, TabbedSummary, UiEvent};
+use iota::testing::{
+    FakeProvider, Log, Reply, ScriptedUi, StaticDispatcher, TabbedSummary, UiEvent,
+};
 use iota::text::ansi::strip_sgr;
 use iota::tool::Dispatcher;
 use iota::ui::facade::{Input, PanelKind, Ui};
 use pretty_assertions::assert_eq;
 use tokio_util::sync::CancellationToken;
 
-/// Runs inside the Nth `chat` call — the only place a test can change the world mid-run.
-type ChatHook = Box<dyn Fn(usize) + Send + Sync>;
-
-/// A provider that records the composed history of every turn, so the test can read what the
-/// message path actually sent.
-struct RecordingProvider {
-    model: String,
-    /// The `content` of every message of every `chat` call, in order.
-    sent: Arc<Mutex<Vec<Vec<String>>>>,
-    on_chat: Option<ChatHook>,
+/// A provider recording the composed history of every turn, so the test can read what the message
+/// path actually sent; a test that must change the world mid-run does it from `on_call`.
+fn recording() -> FakeProvider {
+    FakeProvider::new()
+        .with_model("gpt-4o")
+        .replying("an answer")
 }
 
-impl RecordingProvider {
-    fn new() -> Self {
-        Self {
-            model: "gpt-4o".to_owned(),
-            sent: Arc::new(Mutex::new(Vec::new())),
-            on_chat: None,
-        }
-    }
-
-    fn on_chat(mut self, f: impl Fn(usize) + Send + Sync + 'static) -> Self {
-        self.on_chat = Some(Box::new(f));
-        self
-    }
-}
-
-impl Provider for RecordingProvider {
-    fn kind(&self) -> ProviderKind {
-        ProviderKind::OpenAi
-    }
-
-    fn model(&self) -> &str {
-        &self.model
-    }
-
-    fn set_model(&mut self, model: String) {
-        self.model = model;
-    }
-
-    fn list_models<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Vec<String>, ProviderError>> {
-        Box::pin(std::future::ready(Ok(Vec::new())))
-    }
-
-    fn chat<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        messages: &'a [Message],
-    ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
-        let n = {
-            let mut s = self.sent.lock().unwrap_or_else(PoisonError::into_inner);
-            s.push(messages.iter().map(|m| m.content.clone()).collect());
-            s.len()
-        };
-        if let Some(f) = &self.on_chat {
-            f(n);
-        }
-        Box::pin(std::future::ready(Ok(ChatResult {
-            text: "an answer".to_owned(),
-            ..ChatResult::default()
-        })))
-    }
+/// The `content` of every message of every call, in order.
+fn contents(log: &Log) -> Vec<Vec<String>> {
+    log.sent()
+        .iter()
+        .map(|history| history.iter().map(|m| m.content.clone()).collect())
+        .collect()
 }
 
 /// The scenario: a scripted facade, a temp store, and a project root carrying `.agents/skills`.
@@ -124,7 +70,7 @@ impl Fixture {
         )
     }
 
-    fn params(&self, provider: RecordingProvider) -> RunParams {
+    fn params(&self, provider: FakeProvider) -> RunParams {
         RunParams {
             ui: Arc::clone(&self.ui) as Arc<dyn Ui>,
             provider: Box::new(provider),
@@ -221,7 +167,7 @@ fn echoes(ui: &ScriptedUi) -> Vec<String> {
 // bare /skills — the catalog viewer
 // ---------------------------------------------------------------------------
 
-/// Go: chat/run.go:923-929 — bare `/skills` opens the read-only `Skills` view over the discovered
+/// Bare `/skills` opens the read-only `Skills` view over the discovered
 /// catalog and sends nothing. The rows themselves are pinned beside `skills_status_lines`.
 #[tokio::test]
 async fn skills_bare_opens_the_skills_view() {
@@ -231,8 +177,8 @@ async fn skills_bare_opens_the_skills_view() {
         Reply::Interrupted, // and the loop exits
     ]);
     f.write_skill("brain-page", "Read and write brain pages", "Do the thing.");
-    let provider = RecordingProvider::new();
-    let sent = Arc::clone(&provider.sent);
+    let provider = recording();
+    let sent = provider.log();
     iota::repl::run(f.params(provider))
         .await
         .expect("clean exit");
@@ -246,7 +192,7 @@ async fn skills_bare_opens_the_skills_view() {
     assert_eq!(panel.line_count, 2);
     assert!(!panel.has_refresh, "the catalog view is not live");
     // A viewer never reaches the provider.
-    assert!(sent.lock().unwrap().is_empty());
+    assert!(contents(&sent).is_empty());
 }
 
 /// New: with nothing discovered the view says where it LOOKED — the overlay's own roots, which is
@@ -259,7 +205,7 @@ async fn skills_bare_with_an_empty_catalog_names_the_roots() {
         Reply::Interrupted,
         Reply::Interrupted,
     ]);
-    iota::repl::run(f.params(RecordingProvider::new()))
+    iota::repl::run(f.params(recording()))
         .await
         .expect("clean exit");
     let panel = surfaces(&f.ui).remove(0).panels.remove(0);
@@ -272,15 +218,15 @@ async fn skills_bare_with_an_empty_catalog_names_the_roots() {
 // /skills <name> — the input expansion
 // ---------------------------------------------------------------------------
 
-/// Go: chat/run.go:930-936,959,992 — a named skill is an input EXPANSION: the notice names it and
+/// A named skill is an input EXPANSION: the notice names it and
 /// its size, the transcript echoes what the user TYPED, and the provider receives the `<skill …>`
 /// block with the trailing instructions after it.
 #[tokio::test]
 async fn skills_named_expands_into_the_message_path() {
     let f = Fixture::new(vec![input("/skills brain-page do it"), Reply::Interrupted]);
     let path = f.write_skill("brain-page", "Read and write brain pages", "Read the page.");
-    let provider = RecordingProvider::new();
-    let sent = Arc::clone(&provider.sent);
+    let provider = recording();
+    let sent = provider.log();
     iota::repl::run(f.params(provider))
         .await
         .expect("clean exit");
@@ -301,21 +247,21 @@ async fn skills_named_expands_into_the_message_path() {
     // The echo shows the typed line — a whole SKILL.md in the ❯ block would bury the screen.
     assert_eq!(echoes(&f.ui), ["/skills brain-page do it"]);
     // The provider got the expansion, not the command.
-    let sent = sent.lock().unwrap().clone();
+    let sent = contents(&sent);
     assert_eq!(sent.len(), 1, "exactly one turn");
     assert_eq!(sent[0].last().expect("a user message"), &expected);
     // No surface: the named form never opens the viewer.
     assert!(surfaces(&f.ui).is_empty());
 }
 
-/// Go: chat/run.go:931-934 — a name the catalog does not have prints the error verbatim (no
+/// A name the catalog does not have prints the error verbatim (no
 /// `Error: ` prefix) and sends NOTHING: a typo must not spend a turn.
 #[tokio::test]
 async fn skills_unknown_name_errors_and_sends_nothing() {
     let f = Fixture::new(vec![input("/skills nope"), Reply::Interrupted]);
     f.write_skill("brain-page", "Read and write brain pages", "Read the page.");
-    let provider = RecordingProvider::new();
-    let sent = Arc::clone(&provider.sent);
+    let provider = recording();
+    let sent = provider.log();
     iota::repl::run(f.params(provider))
         .await
         .expect("clean exit");
@@ -326,10 +272,7 @@ async fn skills_unknown_name_errors_and_sends_nothing() {
         "{:?}",
         printed(&f.ui)
     );
-    assert!(
-        sent.lock().unwrap().is_empty(),
-        "an error must send nothing"
-    );
+    assert!(contents(&sent).is_empty(), "an error must send nothing");
     assert!(echoes(&f.ui).is_empty(), "an error is not a message");
 }
 
@@ -338,15 +281,15 @@ async fn skills_unknown_name_errors_and_sends_nothing() {
 #[tokio::test]
 async fn skills_is_a_plain_message_without_agent_mode() {
     let f = Fixture::new(vec![input("/skills"), Reply::Interrupted]);
-    let provider = RecordingProvider::new();
-    let sent = Arc::clone(&provider.sent);
+    let provider = recording();
+    let sent = provider.log();
     let mut params = f.params(provider);
     params.agent = iota::chat::AgentOptions::default();
     iota::repl::run(params).await.expect("clean exit");
 
     assert!(surfaces(&f.ui).is_empty(), "no viewer without agent mode");
     assert_eq!(
-        sent.lock().unwrap().last().expect("a turn ran")[0],
+        contents(&sent).last().expect("a turn ran")[0],
         "/skills",
         "the line travelled as a plain message"
     );
@@ -368,7 +311,7 @@ async fn skills_is_a_plain_message_without_agent_mode() {
 // the table follows the catalog
 // ---------------------------------------------------------------------------
 
-/// Go: chat/run.go:131-134,969-971 — the per-skill rows are installed at startup and RE-DERIVED
+/// The per-skill rows are installed at startup and RE-DERIVED
 /// whenever the catalog changes on disk, so the completion list can never advertise a skill that
 /// is gone (or hide one that just landed).
 #[tokio::test]
@@ -376,7 +319,7 @@ async fn a_catalog_change_re_issues_the_table_with_the_new_row() {
     let f = Fixture::new(vec![input("one"), input("two"), Reply::Interrupted]);
     f.write_skill("brain-page", "Read and write brain pages", "Read the page.");
     let skills_dir = f.root.join(".agents").join("skills");
-    let provider = RecordingProvider::new().on_chat(move |n| {
+    let provider = recording().on_call(move |n, _| {
         if n == 1 {
             write_skill_in(&skills_dir, "code-review", "Review the diff", "Review it.");
         }
@@ -418,7 +361,7 @@ async fn a_catalog_change_re_issues_the_table_with_the_new_row() {
 async fn per_skill_rows_are_labelled_bare_and_stay_out_of_the_banner() {
     let f = Fixture::new(vec![Reply::Interrupted]);
     f.write_skill("brain-page", "Read and write brain pages", "Read the page.");
-    iota::repl::run(f.params(RecordingProvider::new()))
+    iota::repl::run(f.params(recording()))
         .await
         .expect("clean exit");
 
