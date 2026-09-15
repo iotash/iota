@@ -18,6 +18,7 @@ pub mod model;
 pub mod params;
 pub mod provider;
 mod strict;
+pub mod window;
 
 use std::{
     collections::BTreeMap,

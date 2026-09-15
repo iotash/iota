@@ -60,16 +60,17 @@ pub(crate) fn current(repl: &mut Repl) -> LayeredParams {
 /// A `context_window:` on the model being switched TO that does not parse is a warning here, not a failure:
 /// the chat is already running, and the honest answer to a bad value is to leave that key silent and say so.
 pub(crate) fn switch_model(repl: &mut Repl, id: &str) -> bool {
-    let declared = repl.layers.declared(id, |decl| {
-        match crate::cmd::window::parse_window_size(decl.raw) {
-            Ok(window) => Some(window),
-            Err(e) => {
-                repl.tr
-                    .error(&format!("Warning: {}: {e} (ignored)", decl.label));
-                None
+    let declared =
+        repl.layers.declared(id, |decl| {
+            match crate::config::window::parse_window_size(decl.raw) {
+                Ok(window) => Some(window),
+                Err(e) => {
+                    repl.tr
+                        .error(&format!("Warning: {}: {e} (ignored)", decl.label));
+                    None
+                }
             }
-        }
-    });
+        });
     // A declaration outside its range would be refused at startup; reached mid-chat it can only come from a
     // `models:` entry the run did not start on, so it is refused the same way and the key stays silent.
     let declared = crate::config::Declared {

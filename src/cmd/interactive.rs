@@ -612,16 +612,15 @@ fn resolve_params(
     resumed: Option<&crate::session::SessionMeta>,
     io: &mut crate::cmd::io::Streams,
 ) -> Result<crate::session::LayeredParams, CliError> {
-    let window =
-        match settings.resolved.window_decl() {
-            None => None,
-            Some(decl) => Some(crate::cmd::window::parse_window_size(decl.raw).map_err(
-                |source| CliError::ContextWindow {
-                    label: decl.label.to_owned(),
-                    source,
-                },
-            )?),
-        };
+    let window = match settings.resolved.window_decl() {
+        None => None,
+        Some(decl) => Some(crate::config::window::parse_window_size(decl.raw).map_err(
+            |source| CliError::ContextWindow {
+                label: decl.label.to_owned(),
+                source,
+            },
+        )?),
+    };
     let declared = settings.resolved.declared(window);
     let params = match resumed {
         // `apply_session_tuning` replays nothing for a bundle recorded under another provider type, so for

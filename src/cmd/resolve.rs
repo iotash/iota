@@ -364,7 +364,7 @@ pub enum CliError {
         label: String,
         /// The parse failure.
         #[source]
-        source: crate::cmd::window::WindowSizeError,
+        source: crate::config::window::WindowSizeError,
     },
     /// The interactive session picker, or `iota list sessions`, could not read the store (root.go:305).
     #[error("failed to list sessions: {0}")]

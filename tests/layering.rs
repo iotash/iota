@@ -40,18 +40,11 @@ const LAYERS: &[&[&str]] = &[
 /// The upward edges the tree still carries, one row per (file, module it must not name), each with
 /// the phase-5 PR that retires it. The gate fails on a NEW upward edge and on a row here whose edge
 /// is gone — delete the row together with the edge.
-const KNOWN_UPWARD: &[(&str, &str, &str)] = &[
-    (
-        "repl/params.rs",
-        "cmd",
-        "calls `cmd::window::parse_window_size` — PR-7 moves window.rs into config/",
-    ),
-    (
-        "repl/catalog.rs",
-        "cmd",
-        "calls `cmd::resolve::resolve_key_from_env_or_config` — no PR yet (the key resolver wants a home below repl)",
-    ),
-];
+const KNOWN_UPWARD: &[(&str, &str, &str)] = &[(
+    "repl/catalog.rs",
+    "cmd",
+    "calls `cmd::resolve::resolve_key_from_env_or_config` — no PR yet (the key resolver wants a home below repl)",
+)];
 
 /// The module the fakes live in: not a layer, and product code never names it.
 const FAKES: &str = "testing";

@@ -45,7 +45,7 @@ pub struct AgentConfig {
     /// since the toolset that put it in front of the model was retired.
     pub description: String,
     /// `context_window:` — overrides the model's own (same spelling, same
-    /// [`parse_window_size`](crate::cmd::window::parse_window_size)). The window is a property of the
+    /// [`parse_window_size`](crate::config::window::parse_window_size)). The window is a property of the
     /// MODEL, so this key is the exception the rule allows: an agent that knows it keeps a long
     /// conversation — or one that must not — says so once instead of forking a `models:` entry per usage
     /// (brain page `model-param-layering`).
