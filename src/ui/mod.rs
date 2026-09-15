@@ -6,6 +6,8 @@
 
 pub mod facade;
 
+pub use debug::install_region_trace;
+
 pub(crate) mod composer;
 pub(crate) mod debug;
 pub(crate) mod event_loop;

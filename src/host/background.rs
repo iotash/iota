@@ -73,12 +73,9 @@ pub(crate) fn cmux_background(path: &Path, sid: &str, query: &CmuxQuery) -> Opti
 
 /// The cmux probe (background.go:78-88): `CMUX_SURFACE_ID` non-empty and `cmux` on `PATH`, else
 /// unknown.
-pub(crate) fn cmux_background_probe(env: &Probe, query: &CmuxQuery) -> Option<bool> {
-    let sid = (env.getenv)(CMUX_ENV);
-    if sid.is_empty() {
-        return None;
-    }
-    let path = (env.look_path)(CMUX_BIN)?;
+pub(crate) fn cmux_background_probe(probe: &Probe, query: &CmuxQuery) -> Option<bool> {
+    let sid = probe.env.var(CMUX_ENV)?;
+    let path = (probe.look_path)(CMUX_BIN)?;
     cmux_background(&path, &sid, query)
 }
 
@@ -102,11 +99,11 @@ pub(crate) fn dark_hex(s: &str) -> Option<bool> {
 
 /// The probe chain over an injected query, then `fallback` (background.go:30-37).
 pub(crate) fn detect_background_with(
-    env: &Probe,
+    probe: &Probe,
     query: &CmuxQuery,
     fallback: impl FnOnce() -> bool,
 ) -> bool {
-    cmux_background_probe(env, query).unwrap_or_else(fallback)
+    cmux_background_probe(probe, query).unwrap_or_else(fallback)
 }
 
 #[cfg(test)]
@@ -114,6 +111,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::{CmuxQuery, dark_hex, detect_background_with, parse_cmux_background};
+    use crate::app::env::Env;
     use crate::host::Probe;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
@@ -122,13 +120,7 @@ mod tests {
     /// `path`.
     fn env(sid: &'static str, path: Option<&'static str>) -> Probe {
         Probe {
-            getenv: Box::new(move |k| {
-                if k == "CMUX_SURFACE_ID" {
-                    sid.to_owned()
-                } else {
-                    String::new()
-                }
-            }),
+            env: Env::fixed(&[("CMUX_SURFACE_ID", sid)]),
             look_path: Box::new(move |_| path.map(PathBuf::from)),
         }
     }

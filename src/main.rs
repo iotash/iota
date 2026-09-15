@@ -27,6 +27,8 @@ fn main() {
     let mut io = Streams::process();
     // `IOTA_LOG=<path>`: the developer's diagnostic tap, installed before anything can emit.
     iota::app::diag::install_from_env(&env, &mut |w| io.warning(&w));
+    // `IOTA_DEBUG_REGION=<path>`: the staging window's op trace, likewise.
+    iota::ui::install_region_trace(&env);
     let outcome = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

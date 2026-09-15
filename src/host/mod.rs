@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
 
 use crate::BoxFuture;
+use crate::app::env::Env;
 
 /// What the conversation is doing (host.go:22-29).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -99,16 +100,15 @@ pub trait Closer: Send + Sync {
     fn close(&self) -> BoxFuture<'_, ()>;
 }
 
-/// `os.Getenv` as a closure (`""` when unset).
-pub type GetEnvFn = Box<dyn Fn(&str) -> String + Send + Sync>;
 /// `exec.LookPath` as a closure (`None` when not found).
 pub type LookPathFn = Box<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
 
-/// The environment the detectors read (host.go:71-74): `getenv` and a `PATH` lookup, both
-/// injected by the command so this module never touches the process environment itself.
+/// What the detectors read (host.go:71-74): the run's environment (`os.Getenv`) and a `PATH`
+/// lookup, both injected by the command so this module never touches the process environment
+/// itself.
 pub struct Probe {
-    /// `os.Getenv` (`""` when unset).
-    pub getenv: GetEnvFn,
+    /// The run's environment.
+    pub env: Env,
     /// `exec.LookPath` (`None` when not found).
     pub look_path: LookPathFn,
 }
@@ -226,6 +226,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::{Caps, Event, Kind, Presenter, Probe, State};
+    use crate::app::env::Env;
     use crate::testing::RecordingHost;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -346,7 +347,7 @@ mod tests {
     #[test]
     fn test_new_presenter_detects_bare_env() {
         let none = Probe {
-            getenv: Box::new(|_| String::new()),
+            env: Env::default(),
             look_path: Box::new(|_| None),
         };
         let p = Presenter::new(&none, Some(Box::new(host("full", FULL))), true);
@@ -359,13 +360,7 @@ mod tests {
     #[tokio::test]
     async fn test_new_presenter_detects_cmux() {
         let cmux_env = Probe {
-            getenv: Box::new(|k| {
-                if k == "CMUX_SURFACE_ID" {
-                    "surface-1".to_owned()
-                } else {
-                    String::new()
-                }
-            }),
+            env: Env::fixed(&[("CMUX_SURFACE_ID", "surface-1")]),
             look_path: Box::new(|_| Some(PathBuf::from("/usr/bin/true"))),
         };
         let p = Presenter::new(&cmux_env, Some(Box::new(host("full", FULL))), true);

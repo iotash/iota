@@ -146,12 +146,9 @@ impl Closer for CmuxHost {
 
 /// `Some(CmuxHost)` when `CMUX_SURFACE_ID` is non-empty AND `cmux` is on `PATH`, in that order
 /// (cmux.go:40-58). MUST run inside the tokio runtime: the host spawns its worker task.
-pub(crate) fn detect_cmux(env: &Probe) -> Option<Box<dyn Host>> {
-    let sid = (env.getenv)(CMUX_ENV);
-    if sid.is_empty() {
-        return None;
-    }
-    let path = (env.look_path)(CMUX_BIN)?;
+pub(crate) fn detect_cmux(probe: &Probe) -> Option<Box<dyn Host>> {
+    let sid = probe.env.var(CMUX_ENV)?;
+    let path = (probe.look_path)(CMUX_BIN)?;
     let exec_path = path.clone();
     let exec: ExecFn = Arc::new(move |argv| exec_cmux(&exec_path, argv));
     let query: background::CmuxQuery = Arc::new(background::cmux_query_exec);
@@ -252,6 +249,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::{Batch, CmuxHost, ExecFn, close_batch, cmux_batch, detect_cmux};
+    use crate::app::env::Env;
     use crate::host::{Closer, Probe, State, StateReporter};
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -366,19 +364,13 @@ mod tests {
     // var cmux injects into every pane, and its CLI on PATH.
     #[tokio::test]
     async fn test_detect_cmux() {
-        let with_var = |k: &str| {
-            if k == "CMUX_SURFACE_ID" {
-                "surface-1".to_owned()
-            } else {
-                String::new()
-            }
-        };
+        let with_var = || Env::fixed(&[("CMUX_SURFACE_ID", "surface-1")]);
         let found = |_: &str| Some(PathBuf::from("/usr/bin/true"));
         let absent = |_: &str| None;
 
         assert!(
             detect_cmux(&Probe {
-                getenv: Box::new(|_| String::new()),
+                env: Env::default(),
                 look_path: Box::new(found),
             })
             .is_none(),
@@ -386,14 +378,14 @@ mod tests {
         );
         assert!(
             detect_cmux(&Probe {
-                getenv: Box::new(with_var),
+                env: with_var(),
                 look_path: Box::new(absent),
             })
             .is_none(),
             "detected cmux without the CLI on PATH"
         );
         let h = detect_cmux(&Probe {
-            getenv: Box::new(with_var),
+            env: with_var(),
             look_path: Box::new(found),
         })
         .expect("cmux not detected");

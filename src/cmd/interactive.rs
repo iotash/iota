@@ -27,6 +27,7 @@ use std::io::{IsTerminal as _, Write as _};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::app::env::Env;
 use crate::host::{AnsiHost, Presenter, Probe as HostProbe};
 use crate::provider::ProviderParams;
 use crate::provider::{Provider, ProviderKind};
@@ -95,14 +96,16 @@ pub(crate) trait UiSession: Send {
     fn handle(&self) -> Arc<dyn Ui>;
 }
 
-/// The production seam: `iota_tui` itself.
-struct LiveTerminal;
+/// The production seam: `iota_tui` itself, over the run's environment (the host probe reads it).
+struct LiveTerminal {
+    env: Env,
+}
 
 impl TerminalSeam for LiveTerminal {
     fn detect_background(&self) -> bool {
         // The host probes first (a multiplexer that KNOWS its background), the terminal's own
         // OSC 11 answer as the fallback (internal/host/background.go:30-37).
-        crate::host::detect_background(&host_probe(), crate::ui::detect_background)
+        crate::host::detect_background(&host_probe(&self.env), crate::ui::detect_background)
     }
 
     fn run_surface(&self, spec: TabbedSpec, dark: bool) -> std::io::Result<TabbedResult> {
@@ -123,12 +126,12 @@ impl TerminalSeam for LiveTerminal {
     }
 }
 
-/// The host detectors' view of the process environment (host.go:71-74 `SystemEnv`): `getenv` and the
-/// `PATH` lookup, built HERE so `crate::host` never reads the environment itself (G16: the 15-line PATH
-/// scan of `shell::exec` stands in for `exec.LookPath`).
-fn host_probe() -> HostProbe {
+/// The host detectors' view of the machine (host.go:71-74 `SystemEnv`): the run's injected environment
+/// and the `PATH` lookup, built HERE so `crate::host` never reads the process environment itself (G16:
+/// the 15-line PATH scan of `shell::exec` stands in for `exec.LookPath`).
+fn host_probe(env: &Env) -> HostProbe {
     HostProbe {
-        getenv: Box::new(|name| std::env::var(name).unwrap_or_default()),
+        env: env.clone(),
         look_path: Box::new(crate::shell::exec::find_in_path),
     }
 }
@@ -318,7 +321,9 @@ pub(crate) async fn run_interactive(
         (manager, part, events)
     };
 
-    let seam: Arc<dyn TerminalSeam> = Arc::new(LiveTerminal);
+    let seam: Arc<dyn TerminalSeam> = Arc::new(LiveTerminal {
+        env: ctx.env.clone(),
+    });
     let opened = open_ui(&seam, picker, |_dark, picked| {
         wire_session(
             cfg,
@@ -358,7 +363,7 @@ pub(crate) async fn run_interactive(
     // the runtime — a detected cmux host spawns its worker task.
     let notify = settings.resolved.agent.notify.unwrap_or(true);
     let pres = Arc::new(Presenter::new(
-        &host_probe(),
+        &host_probe(&ctx.env),
         Some(Box::new(AnsiHost::new(Arc::clone(&ui)))),
         notify,
     ));
