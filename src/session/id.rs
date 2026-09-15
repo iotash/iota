@@ -16,7 +16,7 @@ pub const SESSION_ID_LENGTH: usize = 12;
 /// A fresh random id: [`SESSION_ID_LENGTH`] symbols drawn from [`SESSION_ID_ALPHABET`] by masking random
 /// bytes with `0x1f`. The alphabet has 32 symbols and 32 divides 256, so the mask is exactly uniform —
 /// the distribution `gonanoid.MustGenerate` produces, without a nanoid dependency.
-pub fn generate_id() -> String {
+pub(crate) fn generate_id() -> String {
     let mut buf = [0u8; SESSION_ID_LENGTH];
     rand::rng().fill_bytes(&mut buf);
     buf.iter()

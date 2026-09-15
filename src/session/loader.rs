@@ -22,9 +22,9 @@ use crate::session::record::{
 };
 
 /// Prefix of the woven compaction summary (chat/compact.go:19).
-pub const SUMMARY_PREFIX: &str = "[Earlier conversation summary]\n";
+pub(crate) const SUMMARY_PREFIX: &str = "[Earlier conversation summary]\n";
 /// Separator between the summary and the message it is prepended to (chat/compact.go:20).
-pub const SUMMARY_SEPARATOR: &str = "\n\n———\n\n";
+pub(crate) const SUMMARY_SEPARATOR: &str = "\n\n———\n\n";
 /// The scanner's maximum line length (chat/session.go:827): 32 MiB. A line that REACHES it aborts the
 /// scan with `read session log: …` (D-56).
 pub const MAX_LOG_LINE: usize = 32 * 1024 * 1024;

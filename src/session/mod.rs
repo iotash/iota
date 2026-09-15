@@ -29,19 +29,17 @@ pub(crate) mod tuning;
 pub(crate) mod writer;
 
 pub use error::SessionError;
-pub use id::{SESSION_ID_ALPHABET, SESSION_ID_LENGTH, generate_id, resolve_in};
+pub use id::{SESSION_ID_ALPHABET, SESSION_ID_LENGTH, resolve_in};
 pub use loader::{
-    LoadedLog, MAX_LOG_LINE, SUMMARY_PREFIX, SUMMARY_SEPARATOR, Session, load_full_history,
-    load_log, record_to_message, scan_records, summary_preamble,
+    LoadedLog, MAX_LOG_LINE, Session, load_full_history, load_log, record_to_message, scan_records,
+    summary_preamble,
 };
-pub use meta::{
-    META_FILE, META_TMP_FILE, SESSION_SCHEMA_VERSION, SessionMeta, now_rfc3339, parse_rfc3339,
-};
+pub use meta::{META_FILE, META_TMP_FILE, SESSION_SCHEMA_VERSION, SessionMeta, now_rfc3339};
 pub use params::{LayeredParams, Param, ParamSource, ParamSources};
 pub use rawcodec::{blob_to_raw, raw_to_blob};
 pub use record::{
-    ATTACHMENTS_DIR, DATA_REF_PREFIX, IMAGES_DIR, LOG_FILE, ROLE_COMPACTION, SessionAttachment,
-    SessionRaw, SessionRecord, SessionToolCall, SessionUsage,
+    ATTACHMENTS_DIR, LOG_FILE, SessionAttachment, SessionRaw, SessionRecord, SessionToolCall,
+    SessionUsage,
 };
 pub use store::{PROJECTS_DIR_NAME, SessionInfo, SessionStore};
 pub use tuning::{

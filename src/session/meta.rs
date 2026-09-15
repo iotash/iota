@@ -150,7 +150,7 @@ pub fn now_rfc3339() -> String {
 
 /// `time.Parse(time.RFC3339, s)`: accepts `Z` and `±hh:mm`. `None` on failure — Go's zero time, which
 /// sorts last in the listing views.
-pub fn parse_rfc3339(s: &str) -> Option<jiff::Timestamp> {
+pub(crate) fn parse_rfc3339(s: &str) -> Option<jiff::Timestamp> {
     s.parse().ok()
 }
 

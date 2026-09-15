@@ -13,11 +13,11 @@ pub const LOG_FILE: &str = "messages.jsonl";
 /// The content-addressed attachment store inside a bundle.
 pub const ATTACHMENTS_DIR: &str = "attachments";
 /// Where images generated inside a session are written.
-pub const IMAGES_DIR: &str = "images";
+pub(crate) const IMAGES_DIR: &str = "images";
 /// The pseudo-role of a compaction marker (chat/session.go:594) — not a `crate::provider::model::Role`.
-pub const ROLE_COMPACTION: &str = "compaction";
+pub(crate) const ROLE_COMPACTION: &str = "compaction";
 /// `data_ref` prefix of an attachment reference (chat/session.go:502): `sha256:<64 lowercase hex>`.
-pub const DATA_REF_PREFIX: &str = "sha256:";
+pub(crate) const DATA_REF_PREFIX: &str = "sha256:";
 
 /// One record of `messages.jsonl` (chat/session.go:67-88). Key emission order is the declaration order
 /// below, which is Go's struct order.
