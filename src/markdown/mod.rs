@@ -3,7 +3,7 @@
 //! `repl` live in `crate::markdown::text::{width, ansi}`.
 //!
 //! The streaming renderer (`TUI_CONTRACTS` §3.4; markdown.go Writer). ONE `Writer` per
-//! content block. State: byte line buffer; the open buffering block as one [`Block`] value
+//! content block. State: byte line buffer; the open buffering block as one `Block` value
 //! (fence/table/list/quote/math, at most one at a time); `gap_paid`; `last_unit` spacing state.
 //!
 //! LINE FRAMING: `write` appends bytes and extracts complete lines at each `\n` (a
