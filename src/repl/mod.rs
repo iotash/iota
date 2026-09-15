@@ -45,8 +45,6 @@ pub use commands::session::session_label;
 #[doc(hidden)]
 pub use meter::{ContextBudget, CtxMeter};
 #[doc(hidden)]
-pub use retry::retry_round;
-#[doc(hidden)]
 pub use title::is_read_only_viewer;
 
 /// Why the interactive loop failed (loop errors never exit — only these do).
