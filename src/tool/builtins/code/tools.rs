@@ -1,5 +1,6 @@
-//! The six code tools (tool/code.go:226-878): `glob`, `grep`, `list_dir`, `read_file` (parallel-safe readers) and
-//! `edit_file`, `write_file` (approval-gated writers). Descriptions and schemas are verbatim from code.go.
+//! The six code tools: `glob`, `grep`, `list_dir`, `read_file` (parallel-safe readers) and `edit_file`,
+//! `write_file` (approval-gated writers). Descriptions and schemas are model-facing text: change them only
+//! by decision.
 
 use std::{
     collections::{BTreeSet, HashSet},
@@ -58,7 +59,6 @@ async fn blocking<F: FnOnce() -> ToolOutput + Send + 'static>(f: F) -> ToolResul
 }
 
 impl Tool for Glob {
-    /// code.go:226-247.
     fn def(&self) -> ToolDef {
         ToolDef {
             name: "glob".to_owned(),
@@ -84,7 +84,6 @@ impl Tool for Glob {
         }
     }
 
-    /// code.go:249-300.
     fn call<'a>(&'a self, _cx: &'a RunCtx, args: &'a JsonObject) -> BoxFuture<'a, ToolResult> {
         let cs = Arc::clone(&self.0);
         let args = args.clone();
@@ -98,7 +97,6 @@ impl Tool for Glob {
 }
 
 impl Tool for Grep {
-    /// code.go:326-355.
     fn def(&self) -> ToolDef {
         ToolDef {
             name: "grep".to_owned(),
@@ -132,7 +130,6 @@ impl Tool for Grep {
         }
     }
 
-    /// code.go:357-428.
     fn call<'a>(&'a self, _cx: &'a RunCtx, args: &'a JsonObject) -> BoxFuture<'a, ToolResult> {
         let cs = Arc::clone(&self.0);
         let args = args.clone();
@@ -146,7 +143,6 @@ impl Tool for Grep {
 }
 
 impl Tool for ListDir {
-    /// code.go:473-488.
     fn def(&self) -> ToolDef {
         ToolDef {
             name: "list_dir".to_owned(),
@@ -166,7 +162,6 @@ impl Tool for ListDir {
         }
     }
 
-    /// code.go:490-521.
     fn call<'a>(&'a self, _cx: &'a RunCtx, args: &'a JsonObject) -> BoxFuture<'a, ToolResult> {
         let cs = Arc::clone(&self.0);
         let args = args.clone();
@@ -178,14 +173,13 @@ impl Tool for ListDir {
         true
     }
 
-    /// The path IS the call for the file tools (code.go:638-645; the D-12 lift).
+    /// The path IS the call for the file tools (the D-12 lift).
     fn header_summary(&self, args: &JsonObject) -> Option<String> {
         Some(self.0.header_arg(args))
     }
 }
 
 impl Tool for ReadFile {
-    /// code.go:525-550.
     fn def(&self) -> ToolDef {
         ToolDef {
             name: "read_file".to_owned(),
@@ -215,7 +209,7 @@ impl Tool for ReadFile {
         }
     }
 
-    /// code.go:552-621 (+ POLICY fix F-06 for an oversized single line).
+    /// Reads through the numbered window, with POLICY fix F-06 for an oversized single line.
     fn call<'a>(&'a self, _cx: &'a RunCtx, args: &'a JsonObject) -> BoxFuture<'a, ToolResult> {
         let cs = Arc::clone(&self.0);
         let args = args.clone();
@@ -227,14 +221,13 @@ impl Tool for ReadFile {
         true
     }
 
-    /// The path IS the call for the file tools (code.go:638-645; the D-12 lift).
+    /// The path IS the call for the file tools (the D-12 lift).
     fn header_summary(&self, args: &JsonObject) -> Option<String> {
         Some(self.0.header_arg(args))
     }
 }
 
 impl Tool for EditFile {
-    /// code.go:677-707.
     fn def(&self) -> ToolDef {
         ToolDef {
             name: "edit_file".to_owned(),
@@ -269,7 +262,7 @@ impl Tool for EditFile {
         }
     }
 
-    /// code.go:709-770 (+ the T-35 diff artifact, code.go:759). Never parallel, so it runs in place rather than
+    /// Posts the T-35 diff artifact. Never parallel, so it runs in place rather than
     /// copying a whole file's `new_string` onto the blocking pool.
     fn call<'a>(&'a self, cx: &'a RunCtx, args: &'a JsonObject) -> BoxFuture<'a, ToolResult> {
         Box::pin(async move { Ok(edit_file_call(&self.0, cx, args)) })
@@ -285,7 +278,7 @@ impl Tool for EditFile {
         Presentation::Expanded
     }
 
-    /// The path IS the call for the file tools (code.go:638-645; the D-12 lift) — its
+    /// The path IS the call for the file tools (the D-12 lift) — its
     /// `new_string` must never reach a header, so the empty summary stands.
     fn header_summary(&self, args: &JsonObject) -> Option<String> {
         Some(self.0.header_arg(args))
@@ -293,7 +286,6 @@ impl Tool for EditFile {
 }
 
 impl Tool for WriteFile {
-    /// code.go:798-819.
     fn def(&self) -> ToolDef {
         ToolDef {
             name: "write_file".to_owned(),
@@ -319,7 +311,7 @@ impl Tool for WriteFile {
         }
     }
 
-    /// code.go:821-878 (+ the T-35 diff artifact, code.go:870). Never parallel, so it runs in place rather than
+    /// Posts the T-35 diff artifact. Never parallel, so it runs in place rather than
     /// copying a whole file's `content` onto the blocking pool.
     fn call<'a>(&'a self, cx: &'a RunCtx, args: &'a JsonObject) -> BoxFuture<'a, ToolResult> {
         Box::pin(async move { Ok(write_file_call(&self.0, cx, args)) })
@@ -335,7 +327,7 @@ impl Tool for WriteFile {
         Presentation::Expanded
     }
 
-    /// The path IS the call for the file tools (code.go:638-645; the D-12 lift) — its
+    /// The path IS the call for the file tools (the D-12 lift) — its
     /// `content` must never reach a header, so the empty summary stands.
     fn header_summary(&self, args: &JsonObject) -> Option<String> {
         Some(self.0.header_arg(args))
@@ -344,7 +336,6 @@ impl Tool for WriteFile {
 
 // ---- glob ----
 
-/// code.go:249-299.
 fn glob_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
     let raw = str_arg(args, "pattern").trim();
     if raw.is_empty() {
@@ -384,7 +375,7 @@ fn glob_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
     if hits.is_empty() {
         return ToolOutput::ok(format!("no files match {pattern}"));
     }
-    // Stable, so equal mtimes keep the walk's lexical order (Go's sort.Slice is unstable — DIVERGENCES).
+    // Stable, so equal mtimes keep the walk's lexical order.
     hits.sort_by_key(|h| std::cmp::Reverse(h.1));
     let shown = hits.len().min(CODE_MAX_GLOB_RESULTS);
     let mut out = String::new();
@@ -404,9 +395,8 @@ fn glob_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
 
 // ---- grep ----
 
-/// code.go:357-426.
 fn grep_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
-    // The pattern is NOT trimmed here (code.go:358): leading space is part of the regex.
+    // The pattern is NOT trimmed here: leading space is part of the regex.
     let pattern = str_arg(args, "pattern");
     if pattern.is_empty() {
         return ToolOutput::err("missing required argument: pattern");
@@ -492,7 +482,7 @@ fn grep_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
     ToolOutput::ok(out)
 }
 
-/// code.go:430-437: a pattern without `/` matches the basename, otherwise the root-relative path.
+/// A pattern without `/` matches the basename, otherwise the root-relative path.
 fn match_include(matcher: &globset::GlobMatcher, pattern: &str, rel: &str) -> bool {
     let target = if pattern.contains('/') {
         rel
@@ -502,7 +492,7 @@ fn match_include(matcher: &globset::GlobMatcher, pattern: &str, rel: &str) -> bo
     matcher.is_match(target)
 }
 
-/// code.go:440-467: one file's hit and context rows, in ascending line order.
+/// One file's hit and context rows, in ascending line order.
 fn emit_grep_file(buf: &mut String, rel: &str, lines: &[&str], hits: &[usize], ctx_lines: usize) {
     let is_hit: HashSet<usize> = hits.iter().copied().collect();
     let mut show: BTreeSet<usize> = BTreeSet::new();
@@ -530,7 +520,6 @@ fn emit_grep_file(buf: &mut String, rel: &str, lines: &[&str], hits: &[usize], c
 
 // ---- list_dir ----
 
-/// code.go:490-519.
 fn list_dir_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
     let base = match code_base_dir(cs, args) {
         Ok(b) => b,
@@ -567,13 +556,12 @@ fn list_dir_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
 
 // ---- read_file ----
 
-/// code.go:552-578.
 fn read_file_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
     let abs = match cs.resolve(str_arg(args, "path")) {
         Ok(p) => p,
         Err(t) => return ToolOutput::err(t),
     };
-    // These errors name the ABSOLUTE path (agent.go:174-197), unlike every other message here.
+    // These errors name the ABSOLUTE path, unlike every other message here.
     let (data, size) = match read_file_limited(&abs, CODE_MAX_FILE_BYTES) {
         Ok(v) => v,
         Err(t) => return ToolOutput::err(t),
@@ -606,9 +594,9 @@ fn read_file_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
     ToolOutput::ok(out)
 }
 
-/// code.go:582-619 with POLICY fix F-06: an oversized single row is cut to `CODE_MAX_OUTPUT - 4` bytes so that
-/// the row plus its `…\n` still fits the window (Go cut to the full cap, and the row was then rejected — an
-/// empty window the model could not escape).
+/// The numbered line window, with POLICY fix F-06: an oversized single row is cut to `CODE_MAX_OUTPUT - 4`
+/// bytes so that the row plus its `…\n` still fits the window (cut to the full cap, the row was then
+/// rejected — an empty window the model could not escape).
 fn numbered_window(content: &str, args: &JsonObject, display: &str) -> Result<String, String> {
     let lines = text::split_lines(content);
     let total = lines.len();
@@ -661,7 +649,7 @@ fn numbered_window(content: &str, args: &JsonObject, display: &str) -> Result<St
 // ---- edit_file ----
 
 /// Computes the unified diff between old and new content and posts it as the call's
-/// display artifact (code.go:661-675; the D-19 lift, T-35). Hunks only: the `---`/`+++`
+/// display artifact (the D-19 lift, T-35). Hunks only: the `---`/`+++`
 /// file header would duplicate the title, and the display is for the user's eyes — the
 /// model-facing result text stays untouched (a full diff there costs tokens). An empty
 /// diff posts nothing; headless runs inject no slot, so the post is a no-op there.
@@ -694,7 +682,6 @@ fn post_diff(cx: &RunCtx, display: &str, old: &str, new: &str) {
     );
 }
 
-/// code.go:709-768.
 fn edit_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
     let abs = match cs.resolve(str_arg(args, "path")) {
         Ok(p) => p,
@@ -734,9 +721,7 @@ fn edit_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
     // and its result was what got written back: every byte the file held that is not valid UTF-8 — a Latin-1
     // `é`, a Shift-JIS or GBK lead byte — came back as `EF BF BD`, ACROSS THE WHOLE FILE and not just the
     // edited span, and the diff built from the same buffer showed none of it. `old_string`/`new_string` are
-    // JSON strings, so they are already valid UTF-8 and their bytes are all the needle we need. Go was
-    // byte-faithful for free (`string(data)` holds arbitrary bytes, `strings.Count`/`Replace` count them);
-    // this is what it costs in Rust.
+    // JSON strings, so they are already valid UTF-8 and their bytes are all the needle we need.
     let old_bytes = old_string.as_bytes();
     let hits: Vec<usize> = memchr::memmem::find_iter(&data, old_bytes).collect();
     let count = hits.len();
@@ -753,8 +738,7 @@ fn edit_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
 
     let cut = if replace_all { &hits[..] } else { &hits[..1] };
     let updated = splice(&data, cut, old_bytes.len(), new_string.as_bytes());
-    // Truncate-and-write, not atomic — the file exists, so its mode is untouched (Go passes it to os.WriteFile,
-    // where O_CREAT ignores it for an existing file).
+    // Truncate-and-write, not atomic — the file exists, so its mode is untouched.
     if let Err(e) = write_bytes(&abs, &updated) {
         return ToolOutput::err(format!("cannot write {display}: {e}"));
     }
@@ -792,7 +776,7 @@ fn splice(data: &[u8], at: &[usize], needle_len: usize, replacement: &[u8]) -> V
     out
 }
 
-/// code.go:772-787: a few numbered lines around the first change.
+/// A few numbered lines around the first change.
 fn edit_snippet(content: &str, line: usize) -> String {
     let lines = text::split_lines(content);
     let from = line.saturating_sub(3).max(1);
@@ -806,7 +790,6 @@ fn edit_snippet(content: &str, line: usize) -> String {
 
 // ---- write_file ----
 
-/// code.go:821-878.
 fn write_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
     let abs = match cs.resolve(str_arg(args, "path")) {
         Ok(p) => p,
@@ -834,7 +817,7 @@ fn write_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
         }
         created = false;
         // The previous content only feeds the display diff; a file too large to read
-        // whole would produce a lying diff, so it produces none (code.go:849-858).
+        // whole would produce a lying diff, so it produces none.
         if meta.len() <= CODE_MAX_FILE_BYTES {
             match read_file_limited(&abs, CODE_MAX_FILE_BYTES) {
                 Ok((data, _)) => old = String::from_utf8_lossy(&data).into_owned(),
@@ -867,7 +850,7 @@ fn write_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
 
 // ---- shared helpers ----
 
-/// code.go:306-320: the optional `path` argument as a search base; empty → the root.
+/// The optional `path` argument as a search base; empty → the root.
 fn code_base_dir(cs: &CodeSet, args: &JsonObject) -> Result<PathBuf, String> {
     let raw = str_arg(args, "path");
     if raw.trim().is_empty() {
