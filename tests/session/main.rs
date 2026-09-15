@@ -10,6 +10,7 @@ mod loader;
 mod meta;
 mod rawcodec;
 mod record;
+mod roundtrip;
 mod store;
 mod tuning;
 mod writer;

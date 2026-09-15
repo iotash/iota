@@ -1,20 +1,18 @@
 //! `cargo run --example mkbundle -- <home>` writes ONE Rust-created session bundle under
-//! `<home>/.iota/sessions/` and prints its id on stdout.
+//! `<home>/.iota/sessions/` and prints its id on stdout — the session-format smoke sample.
 //!
-//! It is the input to the cross-binary acceptance loop's "Go loads a Rust-created bundle" step: the bundle
-//! carries every shape a real session produces — a system message, a user message with an attachment, an
-//! assistant message with tool calls and a dialect raw payload, a tool result, and a final assistant with
-//! usage. Not a test, not shipped in the binary.
+//! The bundle carries every record shape a real session produces (`iota::testing::every_record_shape`,
+//! the same list `tests/session/roundtrip.rs` proves the store hands back): a system message, a user message
+//! with an attachment, an assistant message with tool calls and a dialect raw payload, a tool result, a final
+//! assistant with usage, and an interrupted partial. Point another reader at the bundle to see what the
+//! on-disk format looks like today. Not a test, not shipped in the binary.
 
 use std::{error::Error, path::PathBuf};
 
 use iota::app::HostDirs;
 use iota::provider::ProviderKind;
-use iota::provider::model::{
-    AssistantBody, Attachment, Body, JsonObject, Message, Raw, RawContent, ToolCall,
-};
-use iota::provider::usage::Usage;
 use iota::session::{NewSession, SessionStore};
+use iota::testing::every_record_shape;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let home = std::env::args_os()
@@ -36,54 +34,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "high".clone_into(&mut meta.effort);
         meta.context_window = 200_000;
     })?;
-
-    let mut arguments = JsonObject::new();
-    arguments.insert("q".to_owned(), serde_json::Value::from(1));
-    let calls = vec![ToolCall {
-        id: "c1".to_owned(),
-        name: "f".to_owned(),
-        arguments,
-    }];
-    let raw = RawContent::OpenAi(Raw::from_string(
-        r#"{"role":"assistant","content":null}"#.to_owned(),
-    )?);
-
-    writer.append_messages(&[
-        Message::system("sys"),
-        Message {
-            attachments: vec![Attachment {
-                filename: "a.txt".to_owned(),
-                mime_type: "text/plain".to_owned(),
-                data: b"hello".to_vec(),
-            }],
-            ..Message::user("hi")
-        },
-        Message::assistant_with_calls("", calls.clone(), Some(raw)).with_usage(Some(Usage {
-            input: 1000,
-            output: 200,
-            total: 1200,
-            ..Usage::default()
-        })),
-        Message::tool_result(&calls[0], "ok", false),
-        Message::assistant("done")
-            .with_reasoning("th".to_owned())
-            .with_usage(Some(Usage {
-                input: 10,
-                output: 5,
-                ..Usage::default()
-            })),
-    ])?;
-
-    // A record for every remaining shape the loader must survive: an interrupted partial.
-    writer.append_messages(&[Message {
-        content: "cut".to_owned(),
-        body: Body::Assistant(AssistantBody {
-            interrupted: true,
-            ..AssistantBody::default()
-        }),
-        ..Message::default()
-    }])?;
-
+    writer.append_messages(&every_record_shape())?;
     println!("{}", writer.id());
     Ok(())
 }

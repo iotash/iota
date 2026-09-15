@@ -8,8 +8,11 @@ use std::{
     sync::{Mutex, MutexGuard, PoisonError},
 };
 
-use crate::provider::model::{JsonObject, ToolCall, ToolDef};
+use crate::provider::model::{
+    AssistantBody, Attachment, Body, JsonObject, Message, Raw, RawContent, ToolCall, ToolDef,
+};
 use crate::provider::sink::StreamSink;
+use crate::provider::usage::Usage;
 use crate::vars::{EnvSource, VarResolver};
 
 mod dispatch;
@@ -25,6 +28,59 @@ pub use scripted::{PanelSummary, RecordingHost, Reply, ScriptedUi, TabbedSummary
 /// Locks a fixture mutex, tolerating poisoning (a panicking test must not hide the state from the next assertion).
 pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Every record shape a real session produces, in the order a turn writes them: a system message, a user
+/// message with an attachment, an assistant message with tool calls, a dialect (`openai`) raw payload and
+/// usage, that call's tool result, a final assistant with reasoning and usage, and an interrupted partial.
+/// `examples/mkbundle.rs` writes them as the session-format smoke sample; `tests/session/roundtrip.rs`
+/// proves the store hands every one of them back.
+pub fn every_record_shape() -> Vec<Message> {
+    let mut arguments = JsonObject::new();
+    arguments.insert("q".to_owned(), serde_json::Value::from(1));
+    let calls = vec![ToolCall {
+        id: "c1".to_owned(),
+        name: "f".to_owned(),
+        arguments,
+    }];
+    let raw = Raw::from_string(r#"{"role":"assistant","content":null}"#.to_owned())
+        .unwrap_or_else(|e| unreachable!("a literal object parses: {e}"));
+    vec![
+        Message::system("sys"),
+        Message {
+            attachments: vec![Attachment {
+                filename: "a.txt".to_owned(),
+                mime_type: "text/plain".to_owned(),
+                data: b"hello".to_vec(),
+            }],
+            ..Message::user("hi")
+        },
+        Message::assistant_with_calls("", calls.clone(), Some(RawContent::OpenAi(raw))).with_usage(
+            Some(Usage {
+                input: 1000,
+                output: 200,
+                total: 1200,
+                ..Usage::default()
+            }),
+        ),
+        Message::tool_result(&calls[0], "ok", false),
+        Message::assistant("done")
+            .with_reasoning("th".to_owned())
+            .with_usage(Some(Usage {
+                input: 10,
+                output: 5,
+                ..Usage::default()
+            })),
+        // The one shape only an interrupt writes: a partial the loader must survive.
+        Message {
+            content: "cut".to_owned(),
+            body: Body::Assistant(AssistantBody {
+                interrupted: true,
+                ..AssistantBody::default()
+            }),
+            ..Message::default()
+        },
+    ]
 }
 
 /// Counts `text` with the chat's own tokenizer (the o200k counter behind the meter) — for expectations
