@@ -1,4 +1,4 @@
-//! The `code` toolset (tool/code.go:45-220): configuration, the shared `CodeSet` (lexical path jail, read ledger)
+//! The `code` toolset: configuration, the shared `CodeSet` (lexical path jail, read ledger)
 //! and the size/binary helpers. The six tools live in `tools`, the gitignore-aware walk in `walk`.
 
 pub(crate) mod tools;
@@ -58,15 +58,15 @@ pub(crate) struct CodeConfig {
 pub(crate) struct CodeSet {
     root: PathBuf,
     /// The process working directory — the display anchor of the header-path ladder
-    /// (tool/code.go `cs.cwd`, captured at set construction), not an execution dir.
+    /// (captured at set construction), not an execution dir.
     cwd: PathBuf,
     auto_write: bool,
     reads: Mutex<HashMap<PathBuf, SystemTime>>,
 }
 
 impl CodeSet {
-    /// A set rooted at `root` (the header-path anchor is the process cwd, Go
-    /// `os.Getwd()` parity — a failure leaves it empty and the ladder skips its rungs).
+    /// A set rooted at `root` (the header-path anchor is the process cwd; when it cannot be
+    /// read it stays empty and the ladder skips its rungs).
     pub(crate) fn new(root: PathBuf, auto_write: bool) -> Arc<Self> {
         Arc::new(Self {
             root,
@@ -76,8 +76,8 @@ impl CodeSet {
         })
     }
 
-    /// The `"path"` argument rendered for a call header (tool/code.go:647-653
-    /// `headerArg`). A missing path (a malformed call) yields `""` — a bare
+    /// The `"path"` argument rendered for a call header. A missing path (a malformed call)
+    /// yields `""` — a bare
     /// `"[read_file]"` — rather than falling back to a digest of whatever else the model
     /// sent.
     pub(crate) fn header_arg(&self, args: &crate::provider::model::JsonObject) -> String {
@@ -88,7 +88,7 @@ impl CodeSet {
         )
     }
 
-    /// code.go:103-118 (lexical jail). Err texts: `missing required argument: path`, `path is outside the project
+    /// The lexical path jail. Err texts: `missing required argument: path`, `path is outside the project
     /// root ({root}): {original arg}`.
     ///
     /// Lexical only: symlinks are never resolved and the target need not exist, so `write_file` can create one.
@@ -173,7 +173,7 @@ impl CodeSet {
 /// Order `glob`, `grep`, `list_dir`, `read_file`, [`edit_file`, `write_file` unless `read_only`]. Errors: `CodeConfig`,
 /// `CodeContradiction`.
 ///
-/// Go's `Env.Root()` swallows a failing `os.Getwd`; so does this, falling back to `.` (only reachable when the
+/// An unreadable working directory is swallowed: the root falls back to `.` (only reachable when the
 /// process has no working directory and no root was configured).
 pub fn new_code_set(env: &ToolEnv, node: Option<&RawNode>) -> Result<Vec<Arc<dyn Tool>>, SetError> {
     let cfg: CodeConfig = yaml11::decode_mapping(node).map_err(SetError::CodeConfig)?;
