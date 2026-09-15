@@ -15,20 +15,17 @@
 //!   actually wrote (the per-run header line and, for HTML, the token-palette `<style>` block
 //!   are masked — the session id, the clock and the syntect palette are the only parts that
 //!   cannot be pinned).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use iota::BoxFuture;
 use iota::host::Presenter;
 use iota::llm::reqlog::RequestLog;
-use iota::provider::error::ProviderError;
+use iota::provider::ProviderKind;
 use iota::provider::model::{Attachment, Body, Message, ToolBody, ToolCall};
-use iota::provider::{ChatResult, Provider, ProviderKind};
 use iota::repl::{McpHooks, RunParams, SessionCtx};
 use iota::session::{SessionStore, SessionWriter};
-use iota::testing::{Reply, ScriptedUi, StaticDispatcher, TabbedSummary, UiEvent};
+use iota::testing::{FakeProvider, Reply, ScriptedUi, StaticDispatcher, TabbedSummary, UiEvent};
 use iota::text::ansi::strip_sgr;
 use iota::tool::Dispatcher;
 use iota::ui::facade::{Input, PanelKind, PanelResult, TabbedResult, Ui};
@@ -45,35 +42,6 @@ const KIND: ProviderKind = ProviderKind::OpenAi;
 // ---------------------------------------------------------------------------
 // the doubles
 // ---------------------------------------------------------------------------
-
-/// A provider that never runs a turn — `/export` only reads its model name.
-struct FakeProvider;
-
-impl Provider for FakeProvider {
-    fn kind(&self) -> ProviderKind {
-        KIND
-    }
-    fn model(&self) -> &'static str {
-        "gpt-x"
-    }
-    fn set_model(&mut self, _model: String) {}
-    fn list_models<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Vec<String>, ProviderError>> {
-        Box::pin(std::future::ready(Ok(Vec::new())))
-    }
-    fn chat<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        _messages: &'a [Message],
-    ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
-        Box::pin(std::future::ready(Ok(ChatResult {
-            text: "ok".to_owned(),
-            ..ChatResult::default()
-        })))
-    }
-}
 
 // ---------------------------------------------------------------------------
 // the fixture
@@ -121,7 +89,8 @@ impl Fixture {
     fn params(&self, writer: Option<SessionWriter>, history: Vec<Message>) -> RunParams {
         RunParams {
             ui: Arc::clone(&self.ui) as Arc<dyn Ui>,
-            provider: Box::new(FakeProvider),
+            // Never runs a turn — `/export` only reads its kind and model name.
+            provider: Box::new(FakeProvider::new().with_kind(KIND).with_model("gpt-x")),
             title_provider: None,
             system: String::new(),
             imported_history: history,
@@ -301,7 +270,7 @@ impl Drop for Cleanup {
 // the picker (chat/run.go:804-820)
 // ---------------------------------------------------------------------------
 
-/// Go: chat/run.go:806-814 — a bare `/export` asks for the format first; a CANCELLED picker
+/// A bare `/export` asks for the format first; a CANCELLED picker
 /// returns to the prompt in silence (`continue`: nothing written, nothing printed).
 #[tokio::test]
 async fn bare_export_opens_the_format_picker_and_a_cancel_is_silent() {
@@ -324,7 +293,7 @@ async fn bare_export_opens_the_format_picker_and_a_cancel_is_silent() {
     );
 }
 
-/// Go: chat/run.go:812-815 — row 1 is Markdown, and the target name is generated from the
+/// Row 1 is Markdown, and the target name is generated from the
 /// session title into the process's working directory (`filepath.Abs` of a bare name).
 #[tokio::test]
 async fn picking_markdown_writes_the_generated_name() {
@@ -362,7 +331,7 @@ async fn picking_markdown_writes_the_generated_name() {
     assert!(doc.starts_with("# Fix the Build!\n\n> Session "), "{doc}");
 }
 
-/// Go: chat/run.go:810-812 — any row but 1 is HTML, the default format.
+/// Any row but 1 is HTML, the default format.
 #[tokio::test]
 async fn picking_html_generates_an_html_name() {
     let f = Fixture::new().script(vec![input("/export"), pick(0), Reply::Interrupted]);
@@ -397,7 +366,7 @@ async fn picking_html_generates_an_html_name() {
 // the argument form (chat/export.go:548-612)
 // ---------------------------------------------------------------------------
 
-/// Go: chat/export.go:65-74 + :592-611 — a name with no extension gets `.html`, and the notice
+/// A name with no extension gets `.html`, and the notice
 /// carries the ABSOLUTE path and the conversation count (the system prompt does not count).
 #[tokio::test]
 async fn a_bare_name_becomes_html_and_the_notice_is_absolute() {
@@ -425,7 +394,7 @@ async fn a_bare_name_becomes_html_and_the_notice_is_absolute() {
     assert!(doc.ends_with("</body>\n</html>\n"));
 }
 
-/// Go: chat/export.go:592-598 — `O_EXCL`: an existing target is an error, never an overwrite.
+/// `O_EXCL`: an existing target is an error, never an overwrite.
 #[tokio::test]
 async fn a_second_export_to_the_same_path_refuses() {
     let f = Fixture::new();
@@ -454,7 +423,7 @@ async fn a_second_export_to_the_same_path_refuses() {
     );
 }
 
-/// Go: chat/export.go:50-59 — both refusals, in Go's `%q` quoting, before anything is opened.
+/// Both refusals, in `%q` quoting, before anything is opened.
 #[tokio::test]
 async fn invalid_targets_are_refused_before_any_write() {
     let f = Fixture::new();
@@ -489,7 +458,7 @@ async fn invalid_targets_are_refused_before_any_write() {
     );
 }
 
-/// Go: chat/export.go:575-578 — a chat with no conversation messages refuses, dimly.
+/// A chat with no conversation messages refuses, dimly.
 #[tokio::test]
 async fn an_empty_chat_has_nothing_to_export() {
     let f = Fixture::new();
@@ -511,7 +480,7 @@ async fn an_empty_chat_has_nothing_to_export() {
 // the source rule (chat/export.go:566-578)
 // ---------------------------------------------------------------------------
 
-/// Go: chat/export.go:567-573 — an ephemeral chat exports the IN-MEMORY history. A writer that
+/// An ephemeral chat exports the IN-MEMORY history. A writer that
 /// exists but has never been appended to is NOT on disk yet (`sw.onDisk()`,
 /// chat/session.go:477-479), so it takes the same branch.
 #[tokio::test]
@@ -543,7 +512,7 @@ async fn an_ephemeral_chat_exports_the_in_memory_history() {
     assert!(doc.starts_with("# Ephemeral\n"), "{doc}");
 }
 
-/// Go: chat/export.go:568-573 + chat/session.go:920-941 — a SAVED session exports the full
+/// A SAVED session exports the full
 /// on-disk log, so a `/compact` can never hide an archived round from the archive.
 #[tokio::test]
 async fn a_saved_session_exports_the_full_log_past_a_compaction() {
@@ -600,7 +569,7 @@ async fn a_saved_session_exports_the_full_log_past_a_compaction() {
     assert_eq!(doc.matches("---").count(), 1, "two rounds, one rule");
 }
 
-/// Go: chat/export.go:569-572 — a load failure prints `Error: <e>` and writes nothing, rather
+/// A load failure prints `Error: <e>` and writes nothing, rather
 /// than exporting an empty document.
 #[tokio::test]
 async fn a_load_failure_is_reported_and_writes_nothing() {
