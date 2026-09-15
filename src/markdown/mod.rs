@@ -3,8 +3,8 @@
 //! `repl` live in `crate::markdown::text::{width, ansi}`.
 //!
 //! The streaming renderer (`TUI_CONTRACTS` §3.4; markdown.go Writer). ONE `Writer` per
-//! content block. State: byte line buffer; five mutually exclusive buffering blocks
-//! (fence/table/list/quote/math); `gap_paid`; `last_unit` spacing state.
+//! content block. State: byte line buffer; the open buffering block as one [`Block`] value
+//! (fence/table/list/quote/math, at most one at a time); `gap_paid`; `last_unit` spacing state.
 //!
 //! LINE FRAMING: `write` appends bytes and extracts complete lines at each `\n` (a
 //! UTF-8 sequence never contains `0x0A`, so byte-splitting is safe even when chunks
@@ -36,7 +36,7 @@ pub use preview::PreviewHandle;
 pub use sink::Sink;
 pub use style::Style;
 
-use crate::markdown::blocks::math;
+use crate::markdown::blocks::math::{display_open, is_display_close};
 use crate::markdown::inline::{highlight_line, is_block_line, is_list_line, split_list_marker};
 
 /// Code-highlight theme, chosen by the host's background detect.
@@ -72,8 +72,8 @@ enum Unit {
     Block,
 }
 
-/// One parsed item of a buffering list block (Go listItem). Parsed here by the
-/// dispatch; rendered by `list::render_list` (WP42's file).
+/// One parsed item of a buffering list block (Go listItem). Parsed by [`ListBlock`];
+/// rendered by `blocks::list::render_list`.
 pub(crate) struct ListItem {
     /// Nesting depth derived from source indentation (clamped, never skips a level).
     pub(crate) level: usize,
@@ -87,33 +87,289 @@ pub(crate) struct ListItem {
 /// code blocks, so formulas and code sit on one left rule (markdown.go mathIndent).
 const MATH_INDENT: &str = "  ";
 
+/// The buffering block the writer is inside — markdown.go's five `in*` flags and their
+/// buffers as ONE value. At most one block is open at a time (a fence, a table, a list, a
+/// quote or a display-math block) and `None` is the plain paragraph path. Each variant owns
+/// its raw lines and its live preview, and renders itself once, when it closes.
+enum Block {
+    /// No block open: blanks, headings, rules and paragraph lines dispatch directly.
+    None,
+    /// Inside a fenced code block.
+    Code(CodeBlock),
+    /// Buffering table rows.
+    Table(TableBlock),
+    /// Buffering list items.
+    List(ListBlock),
+    /// Buffering quote lines.
+    Quote(QuoteBlock),
+    /// Inside a `$$` / `\[` display-math block.
+    Math(MathBlock),
+}
+
+/// Closes a block's live preview, if it opened one — always BEFORE the rendered block is
+/// written, so the preview row is released to the block that replaces it.
+fn close_view(view: &mut Option<Box<dyn PreviewHandle>>) {
+    if let Some(mut v) = view.take() {
+        v.close();
+    }
+}
+
+/// A fenced code block (markdown.go:219-249): the language tag of the opening fence and
+/// the raw lines up to the closing one.
+struct CodeBlock {
+    lang: String,
+    lines: Vec<String>,
+    view: Option<Box<dyn PreviewHandle>>,
+    /// The display-math block a fence line interrupted. Go's dispatch checks the fence
+    /// FIRST and opens the code block without closing an open `$$` block, so the formula
+    /// is open again once the fence closes — including at the end of input, where
+    /// markdown.go:379-399 renders the fence alone and leaves `inMath` set. Kept as written.
+    interrupted: Option<MathBlock>,
+}
+
+impl CodeBlock {
+    fn push(&mut self, line: &str) {
+        self.lines.push(line.to_owned());
+        if let Some(v) = &mut self.view {
+            v.write_raw_line(line);
+        }
+    }
+
+    /// Closes the preview and renders the block; `render_code` output already carries its
+    /// trailing newline (the indentCode shape).
+    fn render(mut self, opts: RenderOptions) -> String {
+        close_view(&mut self.view);
+        let code = self.lines.join("\n");
+        blocks::code::render_code(&code, &self.lang, opts)
+    }
+}
+
+/// A table block: the parsed cells of each row and its separator flag
+/// (markdown.go:1291-1313).
+struct TableBlock {
+    rows: Vec<Vec<String>>,
+    seps: Vec<bool>,
+    view: Option<Box<dyn PreviewHandle>>,
+}
+
+impl TableBlock {
+    /// Buffers one table row (parsed cells + separator flag), mirroring the raw line into
+    /// the preview.
+    fn push(&mut self, line: &str) {
+        let cells = parse_table_cells(line);
+        self.seps.push(is_table_separator(&cells));
+        self.rows.push(cells);
+        if let Some(v) = &mut self.view {
+            v.write_raw_line(line);
+        }
+    }
+
+    fn render(mut self, width: usize, color: bool) -> Option<String> {
+        close_view(&mut self.view);
+        if self.rows.is_empty() {
+            return None;
+        }
+        let rendered = blocks::table::render_table(&self.rows, &self.seps, width, color);
+        Some(format!("{rendered}\n"))
+    }
+}
+
+/// A list block (markdown.go:876-943): the parsed items, whether a blank between items
+/// made the list loose, and whether one blank is currently HELD — it ends the list if
+/// another blank follows, makes the list loose if an item or continuation follows.
+struct ListBlock {
+    items: Vec<ListItem>,
+    loose: bool,
+    blank: bool,
+    view: Option<Box<dyn PreviewHandle>>,
+}
+
+impl ListBlock {
+    /// Feeds one line; returns whether it was consumed. When it was not, the list ends:
+    /// the caller flushes it (re-emitting the held blank) and processes the line normally
+    /// (markdown.go:876-919).
+    fn consume(&mut self, line: &str) -> bool {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            if self.blank {
+                // A second blank ends the list; both blanks re-emit after it (the
+                // held one by the flush, the current one via the caller).
+                return false;
+            }
+            self.blank = true;
+            self.preview(line);
+            return true;
+        }
+        if is_list_line(line) {
+            if self.blank {
+                // The held blank separated two items: the list is loose.
+                self.blank = false;
+                self.loose = true;
+            }
+            self.append_item(line);
+            self.preview(line);
+            return true;
+        }
+        if line.starts_with(' ') || line.starts_with('\t') {
+            // An indented table under a list item is still a table (LLMs commonly
+            // nest one below a bullet): end the list and let the caller's table
+            // branch take the line — the same courtesy the fence branch extends.
+            if is_table_line(trimmed) {
+                return false;
+            }
+            // The same courtesy for display math, which LLMs nest under a numbered
+            // step at least as often ("3. the rigorous version:" then an indented
+            // "$$…$$"). Without this the fence and the formula were swallowed as
+            // continuation text and echoed raw, since the display-math branch sits
+            // after this one. Both the bare opening fence and the complete one-line
+            // form escape; the closing fence never reaches here (a display block
+            // buffers ahead of the list check once open).
+            if display_open(trimmed).is_some() {
+                return false;
+            }
+            // Indented text continues the previous item; a held blank becomes an
+            // intra-item paragraph break and makes the list loose.
+            let held = self.blank;
+            if held {
+                self.blank = false;
+                self.loose = true;
+            }
+            if let Some(it) = self.items.last_mut() {
+                if held {
+                    it.lines.push(String::new());
+                }
+                it.lines.push(trimmed.to_owned());
+            }
+            self.preview(line);
+            return true;
+        }
+        false
+    }
+
+    /// Parses a marker line into a new item (markdown.go:922-943): first item forced
+    /// level 0, later levels clamped to prev+1; ordered tokens kept AS WRITTEN; task
+    /// checkboxes become `☐`/`☑` with the marker text stripped; else `•`.
+    fn append_item(&mut self, line: &str) {
+        let (marker, rest) = split_list_marker(line).unwrap_or(("", line));
+        let bullet = marker.trim_start_matches([' ', '\t']);
+        let mut level = indent_level(&marker[..marker.len() - bullet.len()]);
+        if let Some(prev) = self.items.last() {
+            if level > prev.level + 1 {
+                level = prev.level + 1; // never skip a level
+            }
+        } else {
+            level = 0; // a block always starts at the top level
+        }
+        let mut rest = rest.to_owned();
+        let glyph = if bullet.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+            bullet.trim().to_owned() // ordered: keep the number as written
+        } else if let Some(t) = task_marker(&rest) {
+            let glyph = if t.contains(['x', 'X']) { "☑" } else { "☐" };
+            let n = t.len();
+            rest.drain(..n);
+            glyph.to_owned()
+        } else {
+            "•".to_owned()
+        };
+        self.items.push(ListItem {
+            level,
+            marker: glyph,
+            lines: vec![rest],
+        });
+    }
+
+    /// Mirrors a consumed raw line into the live block preview.
+    fn preview(&mut self, line: &str) {
+        if let Some(v) = &mut self.view {
+            v.write_raw_line(line);
+        }
+    }
+
+    fn render(mut self, color: bool) -> Option<String> {
+        close_view(&mut self.view);
+        if self.items.is_empty() {
+            return None;
+        }
+        let rendered = blocks::list::render_list(&self.items, self.loose, color);
+        Some(format!("{rendered}\n"))
+    }
+}
+
+/// A quote block: the inner lines with their `> ` markers stripped (markdown.go:993-1006).
+struct QuoteBlock {
+    body: Vec<String>,
+    view: Option<Box<dyn PreviewHandle>>,
+}
+
+impl QuoteBlock {
+    fn append(&mut self, line: &str) {
+        self.body.push(strip_quote_marker(line).to_owned());
+        if let Some(v) = &mut self.view {
+            v.write_raw_line(line);
+        }
+    }
+
+    fn render(mut self, width: usize, opts: RenderOptions) -> Option<String> {
+        close_view(&mut self.view);
+        if self.body.is_empty() {
+            return None;
+        }
+        let rendered = blocks::quote::render_quote(&self.body, width, opts);
+        Some(format!("{rendered}\n"))
+    }
+}
+
+/// A display-math block: the raw source lines between the `$$` / `\[` fences (the
+/// one-line form is a `MathBlock` of one line that renders at once, no preview).
+struct MathBlock {
+    lines: Vec<String>,
+    view: Option<Box<dyn PreviewHandle>>,
+}
+
+impl MathBlock {
+    fn append(&mut self, line: &str) {
+        self.lines.push(line.to_owned());
+        if let Some(v) = &mut self.view {
+            v.write_raw_line(line);
+        }
+    }
+
+    /// Renders the buffered display-math block (markdown.go:1433-1455): a
+    /// whitespace-only source renders NOTHING (the paid gap credit may remain
+    /// consumed); otherwise every row is prefixed by the two-space `MATH_INDENT` and the
+    /// block rides `begin_block`/`end_block`. The body transform is the mathtext 2D layout
+    /// (markdown.go:1443 `mathtext.Render2D`; DESIGN D16 step 2), which degrades to the cleaned
+    /// linear source when the formula cannot be laid out; either way the rows print in normal
+    /// color (never dim: dim is decoration-only).
+    fn render(mut self, width: usize) -> Option<String> {
+        close_view(&mut self.view);
+        let src = self.lines.join("\n");
+        if src.trim().is_empty() {
+            return None; // an empty $$ block renders nothing (mirrors the quote)
+        }
+        let width = width.saturating_sub(MATH_INDENT.len());
+        let (block, _ok) = crate::mathtext::render_2d(&src, width);
+        let mut out = String::new();
+        for r in block.split('\n') {
+            out.push_str(MATH_INDENT);
+            out.push_str(r);
+            out.push('\n');
+        }
+        Some(out)
+    }
+}
+
 /// Streaming markdown renderer; ONE per content block.
 pub struct Writer {
     sink: Box<dyn Sink>,
     opts: RenderOptions,
     buf: Vec<u8>,
-    in_fence: bool,
-    fence_lang: String,
-    code_lines: Vec<String>,
-    table_rows: Vec<Vec<String>>,
-    table_seps: Vec<bool>,
-    in_list: bool,
-    list_items: Vec<ListItem>,
-    list_loose: bool,
-    list_blank: bool,
-    in_quote: bool,
-    quote_body: Vec<String>,
-    in_math: bool,
-    math_lines: Vec<String>,
+    /// The open buffering block, if any.
+    block: Block,
     /// The buffering block's separating blank was already written when its preview
     /// opened, so `begin_block` must not write it again.
     gap_paid: bool,
     last_unit: Unit,
-    table_view: Option<Box<dyn PreviewHandle>>,
-    code_view: Option<Box<dyn PreviewHandle>>,
-    list_view: Option<Box<dyn PreviewHandle>>,
-    quote_view: Option<Box<dyn PreviewHandle>>,
-    math_view: Option<Box<dyn PreviewHandle>>,
 }
 
 impl Writer {
@@ -124,26 +380,9 @@ impl Writer {
             sink,
             opts,
             buf: Vec::new(),
-            in_fence: false,
-            fence_lang: String::new(),
-            code_lines: Vec::new(),
-            table_rows: Vec::new(),
-            table_seps: Vec::new(),
-            in_list: false,
-            list_items: Vec::new(),
-            list_loose: false,
-            list_blank: false,
-            in_quote: false,
-            quote_body: Vec::new(),
-            in_math: false,
-            math_lines: Vec::new(),
+            block: Block::None,
             gap_paid: false,
             last_unit: Unit::None,
-            table_view: None,
-            code_view: None,
-            list_view: None,
-            quote_view: None,
-            math_view: None,
         }
     }
 
@@ -157,8 +396,7 @@ impl Writer {
         }
     }
 
-    /// Final partial line through the SAME dispatch; closes any open block —
-    /// fence/math/list/quote are mutually exclusive, a surviving table closes last
+    /// Final partial line through the SAME dispatch, then the open block closes
     /// (markdown.go:379-399).
     pub fn flush(&mut self) {
         if !self.buf.is_empty() {
@@ -166,120 +404,127 @@ impl Writer {
             let line = String::from_utf8_lossy(&taken).into_owned();
             self.consume_line(&line);
         }
-        if self.in_fence {
-            self.in_fence = false;
-            self.flush_code();
-        } else if self.in_math {
-            self.flush_math();
-        } else if self.in_list {
-            self.finish_list();
-        } else if self.in_quote {
-            self.flush_quote();
-        }
-        if !self.table_rows.is_empty() {
-            self.flush_table();
-        }
+        self.flush_block();
     }
 
     /// consumeLine twin (markdown.go:219-369) — THE dispatch ordering law.
     fn consume_line(&mut self, line: &str) {
         // Fenced code block: buffer until the closing fence, then render once. A fence
-        // line inside list/quote/table context always wins (flush-first).
+        // line always wins: it closes an open fence, and otherwise flushes a pending
+        // table/list/quote first — but NOT an open display-math block, which it
+        // interrupts and which resumes after the closing fence (Go's dispatch order).
         if line.trim().starts_with("```") {
-            if self.in_fence {
-                self.in_fence = false;
-                self.flush_code();
+            if matches!(self.block, Block::Code(_)) {
+                self.flush_block(); // the closing fence
             } else {
-                if !self.table_rows.is_empty() {
-                    self.flush_table();
-                }
-                if self.in_list {
-                    self.finish_list();
-                }
-                if self.in_quote {
-                    self.flush_quote();
-                }
-                self.in_fence = true;
-                line.trim()
-                    .strip_prefix("```")
-                    .unwrap_or_default()
-                    .trim()
-                    .clone_into(&mut self.fence_lang);
-                self.code_lines.clear();
-                let label = code_label(&self.fence_lang);
-                self.code_view = self.open_preview(&label);
+                let interrupted = match std::mem::replace(&mut self.block, Block::None) {
+                    Block::Math(math) => Some(math),
+                    other => {
+                        self.block = other;
+                        self.flush_block();
+                        None
+                    }
+                };
+                self.open_code(line, interrupted);
             }
             return;
         }
-        if self.in_fence {
-            self.code_lines.push(line.to_owned());
-            if let Some(v) = &mut self.code_view {
-                v.write_raw_line(line);
-            }
+        if let Block::Code(code) = &mut self.block {
+            code.push(line);
             return;
         }
 
         // A buffering list block consumes marker lines, indented continuations, and
-        // one held blank; anything else flushes the block and falls through.
-        if self.in_list && self.list_consume(line) {
-            return;
+        // one held blank; anything else flushes the block (the held blank re-emits)
+        // and falls through.
+        if let Block::List(list) = &mut self.block {
+            if list.consume(line) {
+                return;
+            }
+            self.flush_block();
         }
 
         // A buffering quote block consumes consecutive quote lines; the first
         // non-quote line flushes it and falls through.
-        if self.in_quote {
+        if let Block::Quote(quote) = &mut self.block {
             if is_quote_line(line) {
-                self.quote_append(line);
+                quote.append(line);
                 return;
             }
-            self.flush_quote();
+            self.flush_block();
         }
 
         // A buffering display-math block consumes lines until its closing fence.
-        if self.in_math {
-            if math::is_display_close(line) {
-                self.flush_math();
-            } else {
-                self.math_append(line);
+        if let Block::Math(math) = &mut self.block {
+            if !is_display_close(line) {
+                math.append(line);
+                return;
             }
+            self.flush_block();
             return;
         }
 
         // Open a display-math block: a bare "$$"/"\[" fence starts a buffered block,
         // a complete one-line "$$…$$"/"\[…\]" renders at once. Either form first
         // flushes a pending table/list (the quote path already flushed above).
-        if let Some((body, one_line)) = math::display_open(line) {
-            if !self.table_rows.is_empty() {
-                self.flush_table();
-            }
-            if self.in_list {
-                self.finish_list();
-            }
+        if let Some((body, one_line)) = display_open(line) {
+            self.flush_block();
             if one_line {
-                self.math_lines = vec![body];
-                self.flush_math();
+                let body = MathBlock {
+                    lines: vec![body],
+                    view: None,
+                }
+                .render(self.term_width());
+                self.render_block(body);
             } else {
-                self.start_math();
+                let view = self.open_preview("rendering math…");
+                let lines = Vec::new();
+                self.block = Block::Math(MathBlock { lines, view });
             }
             return;
         }
 
+        // Only a table can still be open here; its FIRST row opens the live preview.
         if is_table_line(line) {
-            self.table_consume(line);
+            if let Block::Table(table) = &mut self.block {
+                table.push(line);
+            } else {
+                let view = self.open_preview("rendering table…");
+                let mut table = TableBlock {
+                    rows: Vec::new(),
+                    seps: Vec::new(),
+                    view,
+                };
+                table.push(line);
+                self.block = Block::Table(table);
+            }
             return;
         }
 
-        if !self.table_rows.is_empty() {
-            self.flush_table();
-        }
+        self.flush_block(); // a pending table
 
         if is_list_line(line) {
-            self.start_list(line);
+            let view = self.open_preview("rendering list…");
+            let mut list = ListBlock {
+                items: Vec::new(),
+                loose: false,
+                blank: false,
+                view,
+            };
+            list.append_item(line);
+            list.preview(line);
+            self.block = Block::List(list);
             return;
         }
 
         if is_quote_line(line) {
-            self.start_quote(line);
+            let view = self.open_preview("rendering quote…");
+            let mut quote = QuoteBlock {
+                body: Vec::new(),
+                view,
+            };
+            quote.append(line);
+            self.block = Block::Quote(quote);
             return;
         }
 
@@ -296,6 +541,63 @@ impl Writer {
         } else {
             let styled = highlight_line(line, self.opts.color);
             self.emit_text(&styled);
+        }
+    }
+
+    /// Opens a fenced code block at `fence` (its language tag is what follows the
+    /// backticks), carrying the display-math block the fence interrupted, if any.
+    fn open_code(&mut self, fence: &str, interrupted: Option<MathBlock>) {
+        let lang = fence
+            .trim()
+            .strip_prefix("```")
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        let view = self.open_preview(&code_label(&lang));
+        self.block = Block::Code(CodeBlock {
+            lang,
+            lines: Vec::new(),
+            view,
+            interrupted,
+        });
+    }
+
+    /// Closes and renders the open block, whichever it is. A list re-emits its held blank
+    /// after the render (the blank turned out to END the list, not to make it loose) —
+    /// routed through `emit_blank` so it joins the blank-run collapse. A fence leaves the
+    /// display-math block it interrupted open again (`CodeBlock::interrupted`).
+    fn flush_block(&mut self) {
+        let width = self.term_width();
+        let opts = self.opts;
+        let mut resumed = None;
+        let (body, held_blank) = match std::mem::replace(&mut self.block, Block::None) {
+            Block::None => return,
+            Block::Code(mut code) => {
+                resumed = code.interrupted.take();
+                (Some(code.render(opts)), false)
+            }
+            Block::Table(table) => (table.render(width, opts.color), false),
+            Block::List(list) => {
+                let held = list.blank;
+                (list.render(opts.color), held)
+            }
+            Block::Quote(quote) => (quote.render(width, opts), false),
+            Block::Math(math) => (math.render(width), false),
+        };
+        self.render_block(body);
+        if held_blank {
+            self.emit_blank();
+        }
+        self.block = resumed.map_or(Block::None, Block::Math);
+    }
+
+    /// Writes a rendered block between `begin_block` and `end_block`; `None` (an empty
+    /// table, quote or formula) writes nothing and leaves the paid gap credit untouched.
+    fn render_block(&mut self, body: Option<String>) {
+        if let Some(body) = body {
+            self.begin_block();
+            self.sink.write(&body);
+            self.end_block();
         }
     }
 
@@ -359,277 +661,6 @@ impl Writer {
     /// nothing is emitted here — state only.
     fn end_block(&mut self) {
         self.last_unit = Unit::Block;
-    }
-
-    // ---- table ----
-
-    /// Buffers one table row (parsed cells + separator flag), opening the live
-    /// preview on the FIRST row and mirroring each raw line.
-    fn table_consume(&mut self, line: &str) {
-        if self.table_rows.is_empty() {
-            self.table_view = self.open_preview("rendering table…");
-        }
-        let cells = parse_table_cells(line);
-        self.table_seps.push(is_table_separator(&cells));
-        self.table_rows.push(cells);
-        if let Some(v) = &mut self.table_view {
-            v.write_raw_line(line);
-        }
-    }
-
-    fn flush_table(&mut self) {
-        if let Some(mut v) = self.table_view.take() {
-            v.close();
-        }
-        let rows = std::mem::take(&mut self.table_rows);
-        let seps = std::mem::take(&mut self.table_seps);
-        if rows.is_empty() {
-            return;
-        }
-        self.begin_block();
-        let rendered = crate::markdown::blocks::table::render_table(
-            &rows,
-            &seps,
-            self.term_width(),
-            self.opts.color,
-        );
-        self.sink.write(&format!("{rendered}\n"));
-        self.end_block();
-    }
-
-    // ---- list ----
-
-    /// Opens a list block with the given marker line as its first item.
-    fn start_list(&mut self, line: &str) {
-        self.in_list = true;
-        self.list_view = self.open_preview("rendering list…");
-        self.list_append_item(line);
-        self.list_preview(line);
-    }
-
-    /// Feeds one line to the buffering list block; returns whether it was consumed.
-    /// When it was not, the block (and any held blank) has already been flushed and
-    /// the caller must process the line normally (markdown.go:876-919).
-    fn list_consume(&mut self, line: &str) -> bool {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            if self.list_blank {
-                // A second blank ends the list; both blanks re-emit after it (the
-                // held one inside finish_list, the current one via the caller).
-                self.finish_list();
-                return false;
-            }
-            self.list_blank = true;
-            self.list_preview(line);
-            return true;
-        }
-        if is_list_line(line) {
-            if self.list_blank {
-                // The held blank separated two items: the list is loose.
-                self.list_blank = false;
-                self.list_loose = true;
-            }
-            self.list_append_item(line);
-            self.list_preview(line);
-            return true;
-        }
-        if line.starts_with(' ') || line.starts_with('\t') {
-            // An indented table under a list item is still a table (LLMs commonly
-            // nest one below a bullet): flush the list and let the caller's table
-            // branch take the line — the same courtesy the fence branch extends.
-            if is_table_line(trimmed) {
-                self.finish_list();
-                return false;
-            }
-            // The same courtesy for display math, which LLMs nest under a numbered
-            // step at least as often ("3. the rigorous version:" then an indented
-            // "$$…$$"). Without this the fence and the formula were swallowed as
-            // continuation text and echoed raw, since the display-math branch sits
-            // after this one. Both the bare opening fence and the complete one-line
-            // form escape; the closing fence never reaches here (a display block
-            // buffers ahead of the list check once open).
-            if crate::mathtext::delim::display_open(trimmed).is_some() {
-                self.finish_list();
-                return false;
-            }
-            // Indented text continues the previous item; a held blank becomes an
-            // intra-item paragraph break and makes the list loose.
-            let held = self.list_blank;
-            if held {
-                self.list_blank = false;
-                self.list_loose = true;
-            }
-            if let Some(it) = self.list_items.last_mut() {
-                if held {
-                    it.lines.push(String::new());
-                }
-                it.lines.push(trimmed.to_owned());
-            }
-            self.list_preview(line);
-            return true;
-        }
-        self.finish_list();
-        false
-    }
-
-    /// Parses a marker line into a new item (markdown.go:922-943): first item forced
-    /// level 0, later levels clamped to prev+1; ordered tokens kept AS WRITTEN; task
-    /// checkboxes become `☐`/`☑` with the marker text stripped; else `•`.
-    fn list_append_item(&mut self, line: &str) {
-        let (marker, rest) = split_list_marker(line).unwrap_or(("", line));
-        let bullet = marker.trim_start_matches([' ', '\t']);
-        let mut level = indent_level(&marker[..marker.len() - bullet.len()]);
-        if let Some(prev) = self.list_items.last() {
-            if level > prev.level + 1 {
-                level = prev.level + 1; // never skip a level
-            }
-        } else {
-            level = 0; // a block always starts at the top level
-        }
-        let mut rest = rest.to_owned();
-        let glyph = if bullet.as_bytes().first().is_some_and(u8::is_ascii_digit) {
-            bullet.trim().to_owned() // ordered: keep the number as written
-        } else if let Some(t) = task_marker(&rest) {
-            let glyph = if t.contains(['x', 'X']) { "☑" } else { "☐" };
-            let n = t.len();
-            rest.drain(..n);
-            glyph.to_owned()
-        } else {
-            "•".to_owned()
-        };
-        self.list_items.push(ListItem {
-            level,
-            marker: glyph,
-            lines: vec![rest],
-        });
-    }
-
-    /// Mirrors a consumed raw line into the live block preview.
-    fn list_preview(&mut self, line: &str) {
-        if let Some(v) = &mut self.list_view {
-            v.write_raw_line(line);
-        }
-    }
-
-    /// Flushes the buffering list and re-emits a held blank after it (the blank
-    /// turned out to END the list, not to make it loose); the re-emit routes through
-    /// `emit_blank` so it participates in the blank-run collapse.
-    fn finish_list(&mut self) {
-        self.flush_list();
-        if self.list_blank {
-            self.list_blank = false;
-            self.emit_blank();
-        }
-    }
-
-    fn flush_list(&mut self) {
-        if let Some(mut v) = self.list_view.take() {
-            v.close();
-        }
-        let items = std::mem::take(&mut self.list_items);
-        let loose = self.list_loose;
-        self.list_loose = false;
-        self.in_list = false;
-        if items.is_empty() {
-            return;
-        }
-        self.begin_block();
-        let rendered = crate::markdown::blocks::list::render_list(&items, loose, self.opts.color);
-        self.sink.write(&format!("{rendered}\n"));
-        self.end_block();
-    }
-
-    // ---- quote ----
-
-    fn start_quote(&mut self, line: &str) {
-        self.in_quote = true;
-        self.quote_body.clear();
-        self.quote_view = self.open_preview("rendering quote…");
-        self.quote_append(line);
-    }
-
-    fn quote_append(&mut self, line: &str) {
-        self.quote_body.push(strip_quote_marker(line).to_owned());
-        if let Some(v) = &mut self.quote_view {
-            v.write_raw_line(line);
-        }
-    }
-
-    fn flush_quote(&mut self) {
-        if let Some(mut v) = self.quote_view.take() {
-            v.close();
-        }
-        let body = std::mem::take(&mut self.quote_body);
-        self.in_quote = false;
-        if body.is_empty() {
-            return;
-        }
-        self.begin_block();
-        let rendered =
-            crate::markdown::blocks::quote::render_quote(&body, self.term_width(), self.opts);
-        self.sink.write(&format!("{rendered}\n"));
-        self.end_block();
-    }
-
-    // ---- code ----
-
-    fn flush_code(&mut self) {
-        if let Some(mut v) = self.code_view.take() {
-            v.close();
-        }
-        let code = self.code_lines.join("\n");
-        let lang = std::mem::take(&mut self.fence_lang);
-        self.code_lines.clear();
-        self.begin_block();
-        // render_code output already carries its trailing newline (indentCode shape).
-        let rendered = crate::markdown::blocks::code::render_code(&code, &lang, self.opts);
-        self.sink.write(&rendered);
-        self.end_block();
-    }
-
-    // ---- display math ----
-
-    fn start_math(&mut self) {
-        self.in_math = true;
-        self.math_lines.clear();
-        self.math_view = self.open_preview("rendering math…");
-    }
-
-    fn math_append(&mut self, line: &str) {
-        self.math_lines.push(line.to_owned());
-        if let Some(v) = &mut self.math_view {
-            v.write_raw_line(line);
-        }
-    }
-
-    /// Renders the buffered display-math block (markdown.go:1433-1455): a
-    /// whitespace-only source renders NOTHING (the paid gap credit may remain
-    /// consumed); otherwise the block rides `begin_block`/`end_block` with every row
-    /// prefixed by the two-space `MATH_INDENT`. The body transform is the mathtext 2D layout
-    /// (markdown.go:1443 `mathtext.Render2D`; DESIGN D16 step 2), which degrades to the cleaned
-    /// linear source when the formula cannot be laid out; either way the rows print in normal
-    /// color (never dim: dim is decoration-only).
-    fn flush_math(&mut self) {
-        if let Some(mut v) = self.math_view.take() {
-            v.close();
-        }
-        let lines = std::mem::take(&mut self.math_lines);
-        self.in_math = false;
-        let src = lines.join("\n");
-        if src.trim().is_empty() {
-            return; // an empty $$ block renders nothing (mirrors flush_quote)
-        }
-        self.begin_block();
-        let width = self.term_width().saturating_sub(MATH_INDENT.len());
-        let (block, _ok) = crate::mathtext::render_2d(&src, width);
-        let mut out = String::new();
-        for r in block.split('\n') {
-            out.push_str(MATH_INDENT);
-            out.push_str(r);
-            out.push('\n');
-        }
-        self.sink.write(&out);
-        self.end_block();
     }
 }
 
