@@ -1,6 +1,5 @@
 //! Inline renderer goldens driven through the public Writer
 //! (`markdown_test.go`:429-471+ and the nesting/link/no-color suites).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use crate::harness::{render_md, render_md_opts, render_md_raw, sgr_params, visible};
 use iota::markdown::Style;
@@ -10,10 +9,10 @@ fn one_line(s: &str) -> String {
     s.trim_end_matches('\n').to_owned()
 }
 
-// Go: internal/markdown/markdown_test.go:71 — inline markers hidden while styling is
+// Inline markers hidden while styling is
 // still applied.
 #[test]
-fn test_highlight_inline_hides_markers() {
+fn inline_markers_are_hidden_while_the_styling_applies() {
     let cases = [
         ("**bold**", "bold"),
         ("__bold__", "bold"),
@@ -34,10 +33,10 @@ fn test_highlight_inline_hides_markers() {
     );
 }
 
-// Go: internal/markdown/markdown_test.go:394 — H1 bold+underline, every other level
+// H1 bold+underline, every other level
 // plain bold (the reverted-faint decision), # markers hidden throughout.
 #[test]
-fn test_heading_levels() {
+fn h1_is_bold_underlined_and_every_other_level_plain_bold() {
     let cases: [(&str, &str, &[&str], &[&str]); 4] = [
         ("# Top", "Top", &["1", "4"], &["2"]),
         ("## Second", "Second", &["1"], &["2", "4"]),
@@ -60,18 +59,18 @@ fn test_heading_levels() {
     }
 }
 
-// Go: internal/markdown/markdown_test.go:429 — exact bytes: rules dim-wrapped,
+// Exact bytes: rules dim-wrapped,
 // including interior-space forms.
 #[test]
-fn test_rule_dim() {
+fn a_horizontal_rule_is_dim_wrapped_byte_for_byte() {
     assert_eq!(render_md_raw("---"), "\x1b[2m---\x1b[0m\n");
     assert_eq!(render_md_raw("* * *"), "\x1b[2m* * *\x1b[0m\n");
 }
 
-// Go: internal/markdown/markdown_test.go:446 — the exact 16-color SGR byte pins for
+// The exact 16-color SGR byte pins for
 // simple spans; link params asserted as a set with the visible form.
 #[test]
-fn test_inline_sgr_bytes() {
+fn simple_spans_carry_the_exact_16_colour_sgr_bytes() {
     assert_eq!(render_md_raw("**b**"), "\x1b[1mb\x1b[0m\n");
     assert_eq!(render_md_raw("*i*"), "\x1b[3mi\x1b[0m\n");
     assert_eq!(render_md_raw("`c`"), "\x1b[36mc\x1b[0m\n");
@@ -84,10 +83,10 @@ fn test_inline_sgr_bytes() {
     }
 }
 
-// Go: internal/markdown/markdown_test.go:1298 — style-context composition: containers
+// Style-context composition: containers
 // recurse with attributes composed, so an inner reset can never cut the outer style.
 #[test]
-fn test_inline_nesting() {
+fn nested_spans_compose_their_attributes_so_an_inner_reset_never_cuts_the_outer() {
     let bold = Style::default().bold();
     let bold_code = bold.fg(6);
     let bold_italic = bold.italic();
@@ -128,10 +127,10 @@ fn test_inline_nesting() {
     );
 }
 
-// Go: internal/markdown/markdown_test.go:566 TestHeadingStripsInlineMarkers — a heading
+// A heading
 // whose text carries inline markers renders the words, never the markers themselves.
 #[test]
-fn test_heading_strips_inline_markers() {
+fn a_heading_renders_its_words_never_its_inline_markers() {
     let plain = visible(&render_md("## **Bold** and `code` title\n\n"));
     assert!(
         !plain.contains("**") && !plain.contains('`'),
@@ -143,10 +142,10 @@ fn test_heading_strips_inline_markers() {
     );
 }
 
-// Go: internal/markdown/markdown_test.go:1338 — heading∋code composes heading bold +
+// Heading∋code composes heading bold +
 // cyan instead of stripping.
 #[test]
-fn test_heading_inline_styled() {
+fn code_inside_a_heading_composes_bold_and_cyan() {
     let raw = render_md_raw("## Use `brew` now\n");
     assert!(
         visible(&raw).contains("Use brew now"),
@@ -160,10 +159,10 @@ fn test_heading_inline_styled() {
     );
 }
 
-// Go: internal/markdown/markdown_test.go:1357 — OSC 8 shape, zero-width for the
+// OSC 8 shape, zero-width for the
 // ruler, control bytes stripped from the URL, NoColor bare passthrough.
 #[test]
-fn test_hyperlink() {
+fn a_hyperlink_is_an_osc_8_of_zero_width_with_control_bytes_stripped() {
     let link = hyperlink("file:///tmp/a.png", "a.png", true);
     assert!(
         link.contains("\x1b]8;;file:///tmp/a.png") && link.contains("a.png"),
@@ -180,10 +179,10 @@ fn test_hyperlink() {
     assert_eq!(hyperlink("http://x", "plain", false), "plain");
 }
 
-// Go: internal/markdown/markdown_test.go:1378 — markdown links carry the OSC 8
+// Markdown links carry the OSC 8
 // wrapper around the styled text; visible text unchanged.
 #[test]
-fn test_link_hyperlinked() {
+fn a_markdown_link_wraps_its_styled_text_in_osc_8() {
     let got = render_md_raw("[docs](http://x)");
     assert!(
         got.contains("\x1b]8;;http://x"),
@@ -196,10 +195,10 @@ fn test_link_hyperlinked() {
     );
 }
 
-// Go: internal/markdown/markdown_test.go:477 — the color gate: zero escape bytes
+// The color gate: zero escape bytes
 // across the whole path while markers are still hidden/replaced (layout intact).
 #[test]
-fn test_markdown_no_color_disables_styling() {
+fn with_colour_off_no_escape_is_emitted_and_markers_stay_hidden() {
     let src = "# Title\n\n**bold**, *it*, `code` and [docs](http://x)\n\n> quoted\n\n---\n\n\
                - item one\n- item two\n\n| A | B |\n|---|---|\n| 1 | 2 |\n";
     let raw = render_md_opts(src, 80, false);

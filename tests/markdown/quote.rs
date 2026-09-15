@@ -1,17 +1,16 @@
 //! Quote suite (`markdown_test.go`:594-673,899-966,1109-1130): continuous bar, text
 //! never faint, mutual flush, no-color bar, recursive interior blocks, soft-wrap, and
 //! display math inside a blockquote (at Go's own 2D golden since WP62 flipped the display hook).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use crate::harness::{
     assert_lines, render_md, render_md_opts, render_md_raw, sgr_params, strip_ansi, trimmed_lines,
 };
 
-// Go: internal/markdown/markdown_test.go:594 — a multi-line quote renders as one
+// A multi-line quote renders as one
 // block with a continuous left bar: one │ per content row, and an empty ">" line
 // becomes a bar-only interior blank row.
 #[test]
-fn test_blockquote_continuous_bar() {
+fn a_blockquote_renders_one_continuous_bar_with_bar_only_blank_rows() {
     let out = render_md("> first line\n> second line\n>\n> last line\n");
     let lines = trimmed_lines(&out);
     assert_eq!(lines.len(), 4, "quote rows:\n{out}");
@@ -36,11 +35,11 @@ fn test_blockquote_continuous_bar() {
     }
 }
 
-// Go: internal/markdown/markdown_test.go:621 — quote text is normal foreground (no
+// Quote text is normal foreground (no
 // faint SGR 2) while inline markdown is preserved: bold keeps SGR 1, the bar carries
 // the cyan accent (36), markers stay hidden.
 #[test]
-fn test_blockquote_text_not_faint() {
+fn quote_text_keeps_the_normal_foreground_and_its_inline_styling() {
     let raw = render_md_raw("> a **bold** word and `code`\n");
     let params = sgr_params(&raw);
     assert!(
@@ -66,20 +65,20 @@ fn test_blockquote_text_not_faint() {
     );
 }
 
-// Go: internal/markdown/markdown_test.go:648 — a quote flushes on the first non-quote
+// A quote flushes on the first non-quote
 // line with exactly one blank at the block→paragraph boundary.
 #[test]
-fn test_blockquote_interrupted_by_paragraph() {
+fn a_quote_flushes_on_the_first_non_quote_line_with_one_blank() {
     assert_lines(
         &render_md("> quoted\nplain paragraph\n"),
         &["│ quoted", "", "plain paragraph"],
     );
 }
 
-// Go: internal/markdown/markdown_test.go:660 — with color off a blockquote still
+// With color off a blockquote still
 // shows the │ bar but emits zero escape bytes.
 #[test]
-fn test_blockquote_no_color_keeps_bar() {
+fn a_quote_under_no_colour_keeps_its_bar_and_emits_no_escape() {
     let raw = render_md_opts("> first\n> second\n", 80, false);
     assert!(
         !raw.contains('\x1b'),
@@ -96,10 +95,10 @@ fn test_blockquote_no_color_keeps_bar() {
     );
 }
 
-// Go: internal/markdown/markdown_test.go:901 — a single-line quote with no trailing
+// A single-line quote with no trailing
 // newline still renders the │ bar, not the raw ">".
 #[test]
-fn test_blockquote_single_line_no_trailing_newline() {
+fn a_single_line_quote_without_a_newline_still_renders_its_bar() {
     let plain = render_md("> just one line"); // note: no trailing newline
     assert!(!plain.contains('>'), "raw quote marker leaked:\n{plain:?}");
     assert!(
@@ -108,11 +107,11 @@ fn test_blockquote_single_line_no_trailing_newline() {
     );
 }
 
-// Go: internal/markdown/markdown_test.go:914 — quote interiors are mini-documents:
+// Quote interiors are mini-documents:
 // lists, headings, tables, and nested quotes render as their block forms, every row
 // still fronted by the continuous │ bar (nested quotes yield "│ │").
 #[test]
-fn test_blockquote_recursive_blocks() {
+fn quote_interiors_render_their_blocks_behind_the_bar() {
     // List inside a quote → bullets, not raw "- ".
     let list = render_md("> - one\n> - two\n\n");
     assert!(
@@ -144,10 +143,10 @@ fn test_blockquote_recursive_blocks() {
     }
 }
 
-// Go: internal/markdown/markdown_test.go:949 — an overlong quote paragraph soft-wraps
+// An overlong quote paragraph soft-wraps
 // with │ on EVERY wrapped row while the in-quote table stays intact.
 #[test]
-fn test_blockquote_long_line_wraps() {
+fn an_overlong_quote_paragraph_wraps_with_a_bar_on_every_row() {
     let long = "word ".repeat(60); // ~300 cols, exceeds the 80-col default
     let out = render_md(&format!(
         "> {long}\n>\n> | a | b |\n> |---|---|\n> | 1 | 2 |\n\n"
@@ -171,11 +170,11 @@ fn test_blockquote_long_line_wraps() {
     );
 }
 
-// Go: internal/markdown/markdown_test.go:1111 TestDisplayMathInBlockquote — a $$ block inside a
+// A $$ block inside a
 // blockquote fits inside the bar at the reduced inner width, every rendered row keeps the │, and
 // the 2D fraction (a over a drawn bar over b) survives the nesting.
 #[test]
-fn test_display_math_in_blockquote() {
+fn display_math_inside_a_quote_fits_the_bar_at_the_inner_width() {
     let out = render_md("> text\n> $$\n> \\frac{a}{b}\n> $$\n");
     let lines = trimmed_lines(&out);
     for l in &lines {

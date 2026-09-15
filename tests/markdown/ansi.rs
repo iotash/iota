@@ -1,6 +1,5 @@
 //! `wrap_ansi`/`sgr_carry`/`clip_line` goldens + CJK width-ruler vectors
 //! (internal/ui/clip.go, `internal/ui/model_test.go`, internal/textwidth, spike G3).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use iota::markdown::hyperlink;
 use iota::text::ansi::{
@@ -8,10 +7,10 @@ use iota::text::ansi::{
 };
 use iota::text::width::{graphemes, rune_width, str_width, truncate_cols};
 
-// Go: internal/ui/model_test.go:1264 — rows produced by wrapANSI are self-contained:
+// Rows produced by wrapANSI are self-contained:
 // each continuation row re-opens the SGR state its line had at the break.
 #[test]
-fn test_wrap_ansi_carries_style() {
+fn wrapped_rows_reopen_their_sgr_state() {
     let rows = wrap_ansi(
         "\x1b[2mfaint methods list that wraps across rows\x1b[0m",
         16,
@@ -47,10 +46,10 @@ fn test_wrap_ansi_carries_style() {
     }
 }
 
-// Go: internal/ui/clip.go:59-105 sgrCarry — parameter-order preservation, resets,
+// Parameter-order preservation, resets,
 // extended sequences intact, non-SGR CSI ignored.
 #[test]
-fn test_sgr_carry_goldens() {
+fn sgr_carry_keeps_parameter_order_resets_and_extended_sequences() {
     assert_eq!(sgr_carry("", "\x1b[1mx\x1b[36my"), "\x1b[1;36m");
     assert_eq!(sgr_carry("\x1b[1m", "x\x1b[0my"), "");
     assert_eq!(sgr_carry("\x1b[1m", "x\x1b[my"), "");
@@ -59,10 +58,10 @@ fn test_sgr_carry_goldens() {
     assert_eq!(sgr_carry("", "plain"), "");
 }
 
-// Go: internal/ui/clip.go:12-37 clipLine — visible cols [start, start+width), escapes
+// Visible cols [start, start+width), escapes
 // always kept, a wide rune straddling a boundary dropped.
 #[test]
-fn test_clip_line_goldens() {
+fn clip_line_keeps_escapes_and_drops_a_straddling_wide_rune() {
     assert_eq!(clip_line("abcdef", 1, 3), "bcd");
     assert_eq!(clip_line("a中b", 0, 2), "a"); // 中 straddles the right boundary
     assert_eq!(clip_line("中文", 2, 2), "文");
@@ -71,10 +70,10 @@ fn test_clip_line_goldens() {
     assert_eq!(clip_line("abc", 0, 0), "");
 }
 
-// Go: chat/userblock_test.go:9 — the PLAIN wrapper (SGR-unaware, CJK-aware, embedded
+// The PLAIN wrapper (SGR-unaware, CJK-aware, embedded
 // newlines start a row).
 #[test]
-fn test_wrap_by_width() {
+fn wrap_by_width_is_the_plain_cjk_aware_wrapper() {
     let cases: [(&str, usize, &[&str]); 6] = [
         ("", 10, &[""]),
         ("hello", 10, &["hello"]),
@@ -97,7 +96,7 @@ fn test_wrap_by_width() {
 // The ruler vectors: grapheme-cluster string widths with the VS16 rule (uniseg
 // parity; internal/textwidth/textwidth.go) and the per-rune seam (spike G3).
 #[test]
-fn test_width_ruler_vectors() {
+fn the_width_ruler_measures_grapheme_clusters_with_the_vs16_rule() {
     assert_eq!(str_width("hello"), 5);
     assert_eq!(str_width("中文测试"), 8);
     assert_eq!(str_width("• 中文条目"), 10);
@@ -118,7 +117,7 @@ fn test_width_ruler_vectors() {
 
 // truncate_cols: display-column truncation + "…", grapheme-safe, ANSI-blind.
 #[test]
-fn test_truncate_cols() {
+fn truncate_cols_cuts_on_display_columns_and_appends_the_ellipsis() {
     assert_eq!(truncate_cols("hello", 5), "hello");
     assert_eq!(truncate_cols("hello!", 5), "hell…");
     assert_eq!(truncate_cols("你好世界", 6), "你好…");
@@ -129,7 +128,7 @@ fn test_truncate_cols() {
 // truncate_ansi: escape-preserving truncation (x/ansi Truncate twin) — content cut to
 // max incl. the tail, escapes after the cut still copied.
 #[test]
-fn test_truncate_ansi() {
+fn truncate_ansi_cuts_content_and_keeps_the_escapes_after_the_cut() {
     assert_eq!(truncate_ansi("hello", 10, "…"), "hello");
     assert_eq!(truncate_ansi("hello world", 8, "…"), "hello w…");
     assert_eq!(
@@ -146,7 +145,7 @@ fn test_truncate_ansi() {
 // ansi_len / ansi_width / strip_sgr: the escape scanners — SGR counted, OSC 8
 // zero-width for every ruler, strip_sgr removes SGR ONLY.
 #[test]
-fn test_escape_scanners() {
+fn the_escape_scanners_count_sgr_and_treat_osc_8_as_zero_width() {
     assert_eq!(ansi_len("\x1b[2mx\x1b[0m"), 8);
     assert_eq!(ansi_len("plain"), 0);
     assert_eq!(ansi_width("\x1b[2m中文\x1b[0m"), 4);

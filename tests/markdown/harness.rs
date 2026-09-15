@@ -1,10 +1,6 @@
-//! The ported measuring instruments (markdown spec §Rust-mapping):
-//! `visible`/`strip_ansi`/`sgr_params`/`trimmed_lines`/`blanks_between`/
-//! `render_md_chunked`/`previewTrace` — the executable spec's instruments, ported
-//! FIRST (`markdown_test.go`:14-69,1055-1071,1469-1565). Included by the sibling test
-//! files as `crate::harness` (one module of the `markdown` test binary).
-#![allow(dead_code)]
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+//! The measuring instruments of the markdown suite: `visible` (the crate's own escape stripper),
+//! `sgr_params`, `trimmed_lines`, `blanks_between`, `render_md_chunked`, the preview trace. Included by the
+//! sibling test files as `crate::harness` (one module of the `markdown` test binary).
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -106,53 +102,11 @@ pub fn render_md_chunked(src: &str, chunk: usize) -> String {
     visible(&out.string())
 }
 
-/// Removes ALL ANSI escapes — SGR and OSC (hyperlinks) alike (Go xansi.Strip).
-pub fn strip_ansi(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = String::with_capacity(s.len());
-    let mut i = 0;
-    while i < s.len() {
-        if b[i] == 0x1b && i + 1 < b.len() {
-            match b[i + 1] {
-                b'[' => {
-                    let mut j = i + 2;
-                    while j < b.len() && !(0x40..=0x7e).contains(&b[j]) {
-                        j += 1;
-                    }
-                    i = (j + 1).min(b.len());
-                    continue;
-                }
-                b']' => {
-                    let mut j = i + 2;
-                    i = loop {
-                        if j >= b.len() {
-                            break b.len();
-                        }
-                        if b[j] == 0x07 {
-                            break j + 1;
-                        }
-                        if b[j] == 0x1b && b.get(j + 1) == Some(&b'\\') {
-                            break j + 2;
-                        }
-                        j += 1;
-                    };
-                    continue;
-                }
-                b'\\' => {
-                    i += 2;
-                    continue;
-                }
-                _ => {}
-            }
-        }
-        let n = s[i..].chars().next().map_or(1, char::len_utf8);
-        out.push_str(&s[i..i + n]);
-        i += n;
-    }
-    out
-}
+/// Strips ANSI escapes — SGR and OSC (hyperlinks) alike — leaving the text the user actually sees:
+/// the crate's own ruler companion, not a second implementation of it.
+pub use iota::text::ansi::strip_ansi;
 
-/// Strips ANSI escapes, leaving the text the user actually sees.
+/// The text the user actually sees ([`strip_ansi`]).
 pub fn visible(s: &str) -> String {
     strip_ansi(s)
 }

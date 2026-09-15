@@ -2,7 +2,6 @@
 //! literal (currency/shell/degenerate) case AND every math body is byte-verbatim from Go now that
 //! the inline hook renders through `mathtext::approx_inline` (T-08 closed for INLINE; DESIGN D16
 //! step 1 — the DISPLAY twins flip with `Writer::new` in WP62).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use crate::harness::{render_md, render_md_opts, render_md_raw};
 
@@ -10,12 +9,12 @@ fn one_line(s: &str) -> String {
     s.trim_end_matches('\n').to_owned()
 }
 
-// Go: internal/markdown/markdown_test.go:1238 TestInlineMathVsDollarAdversarial — THE
+// THE
 // disambiguation corpus: math spans vs currency/ranges/thousands/shell-vars/lone-$/trailing-$/
 // $$-fence/padded-$. The rule (opener not before a space; close neither before a digit nor after
 // a space) must give exactly one classification per line.
 #[test]
-fn test_inline_math_vs_dollar_adversarial() {
+fn every_adversarial_dollar_line_gets_exactly_one_classification() {
     let cases: [(&str, &str, &str); 35] = [
         // Real inline math — delimiters consumed, body approximated.
         (r"$x$", "x", "simple var"),
@@ -110,12 +109,12 @@ fn test_inline_math_vs_dollar_adversarial() {
     }
 }
 
-// Go: internal/markdown/markdown_test.go:972 TestInlineMathApproximation — the inline-math
+// The inline-math
 // wiring: `$…$` and `\(…\)` spans are replaced by their single-line Unicode approximation with
 // the delimiters hidden, while the guarded non-math cases ($ escaped, unpaired, currency, inside
 // a code span) stay literal.
 #[test]
-fn test_inline_math_approximation() {
+fn inline_math_is_approximated_with_its_delimiters_hidden() {
     let cases = [
         ("greek", r"$\alpha$", "α"),
         ("superscript", r"$x^2$", "x²"),
@@ -136,11 +135,11 @@ fn test_inline_math_approximation() {
     );
 }
 
-// Go: internal/markdown/markdown_test.go:1024 TestInlineMathNoColor — the NoColor coupling: a
+// The NoColor coupling: a
 // line containing inline math emits ZERO escape bytes while still approximating the formula and
 // hiding the "$" delimiters.
 #[test]
-fn test_inline_math_no_color() {
+fn inline_math_under_no_colour_emits_no_escape_and_still_approximates() {
     let raw = render_md_opts("the value $x^2$ matters", 80, false);
     assert!(
         !raw.contains('\x1b'),

@@ -47,8 +47,8 @@ fn escape_len_at(b: &[u8], i: usize) -> usize {
 }
 
 /// Removes every CSI and OSC escape (SGR and OSC 8 hyperlinks alike), leaving the text
-/// the user actually sees. Crate-internal companion of [`ansi_width`].
-pub(crate) fn strip_all(s: &str) -> String {
+/// the user actually sees — what [`ansi_width`] measures.
+pub fn strip_ansi(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = String::with_capacity(s.len());
     let mut i = 0;
@@ -86,7 +86,7 @@ pub fn ansi_len(s: &str) -> usize {
 /// `width::str_width` skipping SGR + OSC 8 sequences — the ruler
 /// for committed (already styled) lines.
 pub fn ansi_width(s: &str) -> usize {
-    str_width(&strip_all(s))
+    str_width(&strip_ansi(s))
 }
 
 /// Removes `\x1b[..m` (SGR) sequences only — digits and `;` params, `m` final, the Go

@@ -1,14 +1,11 @@
 //! Table suite (`markdown_test.go`:97-146,194-242,520-563,1002-1019,1389-1421) incl.
 //! `TestTableAlignsEmojiAndCJK` — the width gate: every rendered line of a mixed
 //! emoji/VS16/CJK/ASCII table spans the same grapheme-cluster width.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use crate::harness::{render_md, render_md_opts, render_md_raw, strip_ansi, visible};
 use iota::text::width::str_width;
-
-// Go: internal/markdown/markdown_test.go:97
 #[test]
-fn test_table_render() {
+fn a_table_renders_as_a_bordered_box() {
     let src = "| Name | Note |\n|------|------|\n| `--key` | the **secret** |\n| x | y |\n";
     let got = render_md(src);
 
@@ -33,10 +30,10 @@ fn test_table_render() {
     }
 }
 
-// Go: internal/markdown/markdown_test.go:127 — a stream ending mid-table folds the
+// A stream ending mid-table folds the
 // unterminated final row INSIDE the rendered box.
 #[test]
-fn test_table_flush_on_unterminated() {
+fn a_stream_ending_mid_table_folds_the_last_row_into_the_box() {
     let src = "| Name | Code |\n|------|------|\n| Euro | EUR |\n| Aussie | AUD |";
     let got = render_md(src);
 
@@ -57,13 +54,13 @@ fn test_table_flush_on_unterminated() {
     }
 }
 
-// Go: internal/markdown/markdown_test.go:194 — CRITICAL (the width-hazard gate):
+// CRITICAL (the width-hazard gate):
 // plain wide emoji, VS16 sequences (stripped to their base rune at the parse
 // boundary), CJK, and ASCII in one table; every line — borders and cell rows alike —
 // spans the same number of terminal columns under grapheme-cluster measurement, with
 // a ├─┼─┤ rule between every pair of adjacent rows.
 #[test]
-fn test_table_aligns_emoji_and_cjk() {
+fn table_rows_span_the_same_columns_under_grapheme_measurement() {
     let src = concat!(
         "| Icon | Name | Note |\n",
         "|------|------|------|\n",
@@ -108,11 +105,11 @@ fn test_table_aligns_emoji_and_cjk() {
     assert_eq!(rule_rows, cell_rows - 1, "rule rows:\n{got}");
 }
 
-// Go: internal/markdown/markdown_test.go:1394 — a squeezed table renders at most
+// A squeezed table renders at most
 // width−1 columns wide (the exact-width row sits on the deferred-wrap boundary) and
 // keeps its right border.
 #[test]
-fn test_table_never_exact_terminal_width() {
+fn a_squeezed_table_stays_one_column_short_of_the_terminal_width() {
     let long = "wide content ".repeat(20);
     for tw in [40usize, 41, 80] {
         let raw = render_md_opts(&format!("| Col |\n|-----|\n| {long} |\n"), tw, true);
@@ -138,18 +135,18 @@ fn test_table_never_exact_terminal_width() {
     }
 }
 
-// Go: internal/markdown/markdown_test.go:520 — a tab inside a table cell becomes a
+// A tab inside a table cell becomes a
 // space at the parse boundary; the content after it survives.
 #[test]
-fn test_table_cell_tab_preserved() {
+fn a_tab_in_a_cell_becomes_a_space_and_the_content_survives() {
     let out = render_md("| H | K |\n|---|---|\n| a\tb | x |\n\n");
     assert!(out.contains("a b"), "tabbed cell content lost:\n{out}");
 }
 
-// Go: internal/markdown/markdown_test.go:530 — a table indented under a list item
+// A table indented under a list item
 // still renders as a bordered table (the list flushes first), and the item survives.
 #[test]
-fn test_indented_table_under_list_renders() {
+fn a_table_indented_under_a_list_item_still_renders_bordered() {
     let out = render_md("- item\n  | x | y |\n  |---|---|\n  | 1 | 2 |\n\n");
     assert!(
         out.contains('┌') && out.contains('┼') && out.contains("│ 1"),
@@ -158,11 +155,11 @@ fn test_indented_table_under_list_renders() {
     assert!(out.contains("• item"), "list item lost:\n{out}");
 }
 
-// Go: internal/markdown/markdown_test.go:544 — U+FE0F is stripped from table cells
+// U+FE0F is stripped from table cells
 // (terminals disagree on a VS16 sequence's cursor advance; only the bare base rune
 // aligns everywhere).
 #[test]
-fn test_table_strips_variation_selectors() {
+fn variation_selectors_are_stripped_from_table_cells() {
     let raw = render_md_raw("| C | N |\n|---|---|\n| \u{2696}\u{FE0F} 法庭 | x |\n\n");
     assert!(
         !raw.contains('\u{FE0F}'),
@@ -172,11 +169,11 @@ fn test_table_strips_variation_selectors() {
     assert!(plain.contains("\u{2696} 法庭"), "base rune lost:\n{plain}");
 }
 
-// Go: internal/markdown/markdown_test.go:558 — flag emoji (regional-indicator pairs)
+// Flag emoji (regional-indicator pairs)
 // pass through table cells untouched: they have no lossless narrow form, so the
 // misalignment on disagreeing terminals is accepted.
 #[test]
-fn test_table_keeps_flags() {
+fn flag_emoji_pass_through_table_cells_untouched() {
     let out = render_md_raw("| C | N |\n|---|---|\n| \u{1F1EA}\u{1F1FA} 欧洲 | x |\n\n");
     assert!(
         out.contains('\u{1F1EA}') && out.contains('\u{1F1FA}'),
@@ -185,12 +182,12 @@ fn test_table_keeps_flags() {
     );
 }
 
-// Go: internal/markdown/markdown_test.go:1002 TestInlineMathInTableCell — inline math inside a
+// Inline math inside a
 // table cell renders on a SINGLE line (`ApproxInline` guarantees it) so the table stays aligned:
 // no "$" leaks, the approximated glyphs are present, and every rendered line spans the same
 // terminal width.
 #[test]
-fn test_inline_math_in_table_cell() {
+fn inline_math_in_a_cell_renders_without_leaking_dollars() {
     let out = render_md("| Sym | Val |\n|-----|-----|\n| $\\alpha$ | $x^2$ |\n| a | b |\n");
     assert!(
         !out.contains('$'),

@@ -1,25 +1,24 @@
 //! The blank/spacing suite: blank-run collapse, the one-blank-per-boundary invariant,
 //! and the preview-pays-separator law (`markdown_test.go`:677-897, 1514-1565).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use crate::harness::{
     assert_lines, assert_preview_follows_blank, blanks_between, render_md, render_md_opts,
     render_trace, visible,
 };
 
-// Go: internal/markdown/markdown_test.go:677 — runs of blanks collapse to one;
+// Runs of blanks collapse to one;
 // leading blanks are dropped; a single blank is preserved (collapse, not re-spacing).
 #[test]
-fn test_blank_run_collapse() {
+fn runs_of_blanks_collapse_to_one_and_leading_blanks_drop() {
     assert_lines(&render_md("a\n\n\n\nb\n"), &["a", "", "b"]);
     assert_lines(&render_md("\n\n\nfirst\n"), &["first"]);
     assert_lines(&render_md("a\n\nb\n"), &["a", "", "b"]);
 }
 
-// Go: internal/markdown/markdown_test.go:700 — blank lines INSIDE a code fence are
+// Blank lines INSIDE a code fence are
 // content: both survive, the collapse never reaches into a fence.
 #[test]
-fn test_blank_run_collapse_code_fence_preserved() {
+fn the_collapse_never_reaches_into_a_code_fence() {
     let out = render_md_opts("```\nx\n\n\ny\n```\n", 80, false);
     let blanks = out
         .trim_end_matches('\n')
@@ -32,20 +31,20 @@ fn test_blank_run_collapse_code_fence_preserved() {
     );
 }
 
-// Go: internal/markdown/markdown_test.go:722 — a single blank between a list block
+// A single blank between a list block
 // and a following paragraph is preserved: not doubled, not removed.
 #[test]
-fn test_blank_between_block_and_paragraph() {
+fn a_single_blank_between_a_block_and_a_paragraph_is_preserved() {
     assert_lines(
         &render_md("- one\n- two\n\nafter\n"),
         &["• one", "• two", "", "after"],
     );
 }
 
-// Go: internal/markdown/markdown_test.go:768 — a document with NO source blanks gets
+// A document with NO source blanks gets
 // exactly one blank at every block boundary: none glued, none doubled.
 #[test]
-fn test_block_adjacency_no_source_blanks() {
+fn blocks_without_source_blanks_get_exactly_one_blank_between() {
     let src =
         "A para\n- item\n- item\n## Heading\nNext para\n| a | b |\n|---|---|\n| 1 | 2 |\nTail\n";
     let out = render_md(src);
@@ -64,47 +63,47 @@ fn test_block_adjacency_no_source_blanks() {
     }
 }
 
-// Go: internal/markdown/markdown_test.go:798 — three consecutive plain lines render
+// Three consecutive plain lines render
 // adjacent: no blank inserted inside a paragraph.
 #[test]
-fn test_paragraph_integrity() {
+fn consecutive_plain_lines_render_adjacent() {
     assert_lines(
         &render_md("line one\nline two\nline three\n"),
         &["line one", "line two", "line three"],
     );
 }
 
-// Go: internal/markdown/markdown_test.go:809 — a blank run before an unterminated
+// A blank run before an unterminated
 // tail still collapses to one.
 #[test]
-fn test_blank_collapse_still_works() {
+fn a_blank_run_before_an_unterminated_tail_still_collapses() {
     assert_lines(&render_md("a\n\n\nb"), &["a", "", "b"]);
 }
 
-// Go: internal/markdown/markdown_test.go:820 — a heading between paragraphs gets
+// A heading between paragraphs gets
 // exactly one blank above and below, with no source blanks.
 #[test]
-fn test_heading_bounding() {
+fn a_heading_between_paragraphs_gets_one_blank_above_and_below() {
     assert_lines(
         &render_md("text\n## H\ntext\n"),
         &["text", "", "H", "", "text"],
     );
 }
 
-// Go: internal/markdown/markdown_test.go:833 — a horizontal rule between paragraphs
+// A horizontal rule between paragraphs
 // gets exactly one blank above and below.
 #[test]
-fn test_horizontal_rule_bounding() {
+fn a_rule_between_paragraphs_gets_one_blank_above_and_below() {
     assert_lines(
         &render_md("text\n---\ntext\n"),
         &["text", "", "---", "", "text"],
     );
 }
 
-// Go: internal/markdown/markdown_test.go:847 — a document ending in a block has NO
+// A document ending in a block has NO
 // trailing blank (the closing blank is produced lazily; there is no next unit at EOF).
 #[test]
-fn test_no_dangling_trailing_blank() {
+fn a_document_ending_in_a_block_has_no_trailing_blank() {
     let out = render_md("para\n| a | b |\n|---|---|\n| 1 | 2 |\n");
     assert!(
         !out.ends_with("\n\n"),
@@ -113,10 +112,10 @@ fn test_no_dangling_trailing_blank() {
     assert_eq!(blanks_between(&out, "para", "a"), 1);
 }
 
-// Go: internal/markdown/markdown_test.go:862 — the adjacency document under no-color:
+// The adjacency document under no-color:
 // zero escape bytes AND identical spacing.
 #[test]
-fn test_block_adjacency_no_color() {
+fn block_adjacency_under_no_colour_keeps_the_spacing_and_emits_no_escape() {
     let src =
         "A para\n- item\n- item\n## Heading\nNext para\n| a | b |\n|---|---|\n| 1 | 2 |\nTail\n";
     let raw = render_md_opts(src, 80, false);
@@ -140,11 +139,11 @@ fn test_block_adjacency_no_color() {
     }
 }
 
-// Go: internal/markdown/markdown_test.go:1514 — the preview-pays-separator law for
+// The preview-pays-separator law for
 // all FIVE buffering block types: the event trace shows …LINE,BLANK,PREVIEW… (never
 // doubled), and a source blank does not change the layout (idempotent).
 #[test]
-fn test_block_preview_pays_its_separator_on_open() {
+fn a_block_preview_pays_its_separator_when_it_opens() {
     for (name, src) in [
         ("list", "Here is a list:\n- one\n- two\n"),
         (

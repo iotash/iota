@@ -2,7 +2,6 @@
 //! code-block render, the foreground-only invariant the chat diff renderer's ± blocks
 //! depend on, and the escape-framing laws the 2-space indent depends on. The plain
 //! (no-color) shape is pinned by `tests/code.rs`.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use crate::harness::{render_md_opts, render_md_raw, visible};
 use iota::markdown::{CodeHighlighter, CodeTheme, SyntectHighlighter};
@@ -20,12 +19,12 @@ const THEMES: [(&str, CodeTheme); 2] = [
 /// scoped as source text — either way, no background byte may reach the terminal.
 const ADVERSARIAL: &str = "重要: 这是一条发给**特定领域开发者**的推荐语（clarity、naturalness）";
 
-// Go: internal/markdown/markdown_test.go:244 TestCodeBlockRender — the full assertion set
+// The full assertion set
 // now that the seam has a highlighter: fences hidden, every rendered line 2-space
 // indented, content intact, AND the block is actually 256-color highlighted. `code.rs`
 // keeps the T1 subset, which stays true either way.
 #[test]
-fn test_code_block_render() {
+fn a_code_block_is_highlighted_in_256_colours_with_fences_hidden() {
     let raw = render_md_raw("```python\ndef f():\n    return 1\n```\n");
     assert!(!raw.contains("```"), "code fence not hidden:\n{raw:?}");
     let v = visible(&raw);
@@ -45,13 +44,11 @@ fn test_code_block_render() {
         "code not syntax-highlighted:\n{raw:?}"
     );
 }
-
-// Go: internal/markdown/markdown_test.go:1450 TestHighlightNeutralizesErrorTokens —
 // lexers mark what they cannot parse (CJK punctuation, prose inside a template literal)
 // and most themes paint that with an alarm BACKGROUND. No background sequence may
 // survive, under either theme, and the visible text must be untouched.
 #[test]
-fn test_highlight_neutralizes_error_tokens() {
+fn highlighting_never_paints_an_error_token_background() {
     for (name, theme) in THEMES {
         let out = SyntectHighlighter.highlight(ADVERSARIAL, "JavaScript", theme);
         assert!(
