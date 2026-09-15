@@ -36,6 +36,8 @@ pub use preview::PreviewHandle;
 pub use sink::Sink;
 pub use style::Style;
 
+use crate::markdown::blocks::close_view;
+use crate::markdown::blocks::code::{CodeBlock, code_label};
 use crate::markdown::blocks::math::{display_open, is_display_close};
 use crate::markdown::inline::{highlight_line, is_block_line, is_list_line, split_list_marker};
 
@@ -104,44 +106,6 @@ enum Block {
     Quote(QuoteBlock),
     /// Inside a `$$` / `\[` display-math block.
     Math(MathBlock),
-}
-
-/// Closes a block's live preview, if it opened one — always BEFORE the rendered block is
-/// written, so the preview row is released to the block that replaces it.
-fn close_view(view: &mut Option<Box<dyn PreviewHandle>>) {
-    if let Some(mut v) = view.take() {
-        v.close();
-    }
-}
-
-/// A fenced code block (markdown.go:219-249): the language tag of the opening fence and
-/// the raw lines up to the closing one.
-struct CodeBlock {
-    lang: String,
-    lines: Vec<String>,
-    view: Option<Box<dyn PreviewHandle>>,
-    /// The display-math block a fence line interrupted. Go's dispatch checks the fence
-    /// FIRST and opens the code block without closing an open `$$` block, so the formula
-    /// is open again once the fence closes — including at the end of input, where
-    /// markdown.go:379-399 renders the fence alone and leaves `inMath` set. Kept as written.
-    interrupted: Option<MathBlock>,
-}
-
-impl CodeBlock {
-    fn push(&mut self, line: &str) {
-        self.lines.push(line.to_owned());
-        if let Some(v) = &mut self.view {
-            v.write_raw_line(line);
-        }
-    }
-
-    /// Closes the preview and renders the block; `render_code` output already carries its
-    /// trailing newline (the indentCode shape).
-    fn render(mut self, opts: RenderOptions) -> String {
-        close_view(&mut self.view);
-        let code = self.lines.join("\n");
-        blocks::code::render_code(&code, &self.lang, opts)
-    }
 }
 
 /// A table block: the parsed cells of each row and its separator flag
@@ -321,7 +285,7 @@ impl QuoteBlock {
 
 /// A display-math block: the raw source lines between the `$$` / `\[` fences (the
 /// one-line form is a `MathBlock` of one line that renders at once, no preview).
-struct MathBlock {
+pub(crate) struct MathBlock {
     lines: Vec<String>,
     view: Option<Box<dyn PreviewHandle>>,
 }
@@ -547,19 +511,9 @@ impl Writer {
     /// Opens a fenced code block at `fence` (its language tag is what follows the
     /// backticks), carrying the display-math block the fence interrupted, if any.
     fn open_code(&mut self, fence: &str, interrupted: Option<MathBlock>) {
-        let lang = fence
-            .trim()
-            .strip_prefix("```")
-            .unwrap_or_default()
-            .trim()
-            .to_owned();
+        let lang = CodeBlock::lang_of(fence);
         let view = self.open_preview(&code_label(&lang));
-        self.block = Block::Code(CodeBlock {
-            lang,
-            lines: Vec::new(),
-            view,
-            interrupted,
-        });
+        self.block = Block::Code(CodeBlock::new(lang, view, interrupted));
     }
 
     /// Closes and renders the open block, whichever it is. A list re-emits its held blank
@@ -573,7 +527,7 @@ impl Writer {
         let (body, held_blank) = match std::mem::replace(&mut self.block, Block::None) {
             Block::None => return,
             Block::Code(mut code) => {
-                resumed = code.interrupted.take();
+                resumed = code.take_interrupted();
                 (Some(code.render(opts)), false)
             }
             Block::Table(table) => (table.render(width, opts.color), false),
@@ -661,15 +615,6 @@ impl Writer {
     /// nothing is emitted here — state only.
     fn end_block(&mut self) {
         self.last_unit = Unit::Block;
-    }
-}
-
-/// The buffering code preview label (markdown.go:1372-1377) — U+2026 ellipsis.
-fn code_label(lang: &str) -> String {
-    if lang.is_empty() {
-        "rendering code…".to_owned()
-    } else {
-        format!("rendering code ({lang})…")
     }
 }
 

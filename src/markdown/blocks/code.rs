@@ -1,12 +1,83 @@
-//! Code-block renderer: the highlightCode twin (markdown.go:1477-1543) routed through
-//! the [`crate::markdown::highlight::CodeHighlighter`] seam (T-09). The laws: no-color mode is
+//! The fenced code block: its buffering state ([`CodeBlock`], markdown.go:219-249) and the
+//! highlightCode twin (markdown.go:1477-1543) routed through the
+//! [`crate::markdown::highlight::CodeHighlighter`] seam (T-09). The laws: no-color mode is
 //! escape-free by construction; a bare fence (no language) NEVER carries color
 //! sequences — Go's plaintext lexer would paint the whole block the style's Text
 //! color (monokai near-white, invisible on a light background) while the terminal's
 //! default foreground is readable by definition; every rendered line (blank ones
 //! included) gets the uniform 2-space indent.
 
-use crate::markdown::RenderOptions;
+use crate::markdown::blocks::close_view;
+use crate::markdown::{MathBlock, PreviewHandle, RenderOptions};
+
+/// The buffering code preview label (markdown.go:1372-1377) — U+2026 ellipsis.
+pub(crate) fn code_label(lang: &str) -> String {
+    if lang.is_empty() {
+        "rendering code…".to_owned()
+    } else {
+        format!("rendering code ({lang})…")
+    }
+}
+
+/// A fenced code block (markdown.go:219-249): the language tag of the opening fence and
+/// the raw lines up to the closing one.
+pub(crate) struct CodeBlock {
+    lang: String,
+    lines: Vec<String>,
+    view: Option<Box<dyn PreviewHandle>>,
+    /// The display-math block a fence line interrupted. Go's dispatch checks the fence
+    /// FIRST and opens the code block without closing an open `$$` block, so the formula
+    /// is open again once the fence closes — including at the end of input, where
+    /// markdown.go:379-399 renders the fence alone and leaves `inMath` set. Kept as written.
+    interrupted: Option<MathBlock>,
+}
+
+impl CodeBlock {
+    /// The language tag of an opening fence line: what follows the backticks, trimmed.
+    pub(crate) fn lang_of(fence: &str) -> String {
+        fence
+            .trim()
+            .strip_prefix("```")
+            .unwrap_or_default()
+            .trim()
+            .to_owned()
+    }
+
+    /// An empty block just opened by a fence tagged `lang`, with the preview the Writer
+    /// opened for it and the display-math block the fence interrupted, if any.
+    pub(crate) fn new(
+        lang: String,
+        view: Option<Box<dyn PreviewHandle>>,
+        interrupted: Option<MathBlock>,
+    ) -> Self {
+        Self {
+            lang,
+            lines: Vec::new(),
+            view,
+            interrupted,
+        }
+    }
+
+    pub(crate) fn push(&mut self, line: &str) {
+        self.lines.push(line.to_owned());
+        if let Some(v) = &mut self.view {
+            v.write_raw_line(line);
+        }
+    }
+
+    /// Takes back the display-math block the fence interrupted, if any.
+    pub(crate) fn take_interrupted(&mut self) -> Option<MathBlock> {
+        self.interrupted.take()
+    }
+
+    /// Closes the preview and renders the block; the output already carries its
+    /// trailing newline (the indentCode shape).
+    pub(crate) fn render(mut self, opts: RenderOptions) -> String {
+        close_view(&mut self.view);
+        let code = self.lines.join("\n");
+        render_code(&code, &self.lang, opts)
+    }
+}
 
 /// The uniform left margin of every rendered code-block line, matching the buffering
 /// preview's indent (markdown.go codeIndent) — the same two-space rule as math.
