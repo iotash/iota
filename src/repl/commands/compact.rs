@@ -25,11 +25,12 @@
 //! treat everything inside strictly as data.
 
 use std::fmt::Write as _;
-use std::sync::PoisonError;
 
 use crate::provider::Provider;
+use crate::provider::error::ProviderError;
 use crate::provider::model::{Message, Role};
 use crate::provider::usage::Usage;
+use crate::sync::lock;
 use tokio_util::sync::CancellationToken;
 
 use crate::repl::context::tokens::go_map;
@@ -71,16 +72,25 @@ pub(crate) enum Compaction {
     },
 }
 
+/// Why a compaction pass failed; its only consumer formats it into `"Compaction failed: {e}"`,
+/// exactly as Go's `%v` did, and a provider failure's text is the provider's own.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum CompactError {
+    /// The model answered with nothing to keep.
+    #[error("empty summary")]
+    EmptySummary,
+    /// The summary call failed.
+    #[error(transparent)]
+    Provider(#[from] ProviderError),
+}
+
 /// Summarizes the older portion of `history` (`chat/compact.go` `compactHistory`).
-///
-/// The error is already Display-ready: its only consumer formats it into
-/// `"Compaction failed: {e}"`, exactly as Go's `%v` did.
 pub(crate) async fn compact_history(
     cancel: &CancellationToken,
     provider: &dyn Provider,
     history: &[Message],
     hint: &str,
-) -> Result<Compaction, String> {
+) -> Result<Compaction, CompactError> {
     let sys_end = usize::from(history.first().is_some_and(|m| m.role() == Role::System));
     let retain_tail = retain_tail_count(history).min(history.len() - sys_end);
     let middle_end = history.len() - retain_tail;
@@ -91,7 +101,7 @@ pub(crate) async fn compact_history(
     let (summary, usage) = summarize(cancel, provider, &history[sys_end..middle_end], hint).await?;
     let summary = summary.trim().to_owned();
     if summary.is_empty() {
-        return Err("empty summary".to_owned());
+        return Err(CompactError::EmptySummary);
     }
 
     // Rebuild: system + (summary prepended into a COPY of the first retained message) +
@@ -121,7 +131,7 @@ async fn summarize(
     provider: &dyn Provider,
     middle: &[Message],
     hint: &str,
-) -> Result<(String, Option<Usage>), String> {
+) -> Result<(String, Option<Usage>), CompactError> {
     let mut body = String::new();
     for m in middle {
         match m.role() {
@@ -166,10 +176,8 @@ async fn summarize(
     prompt.push_str(&body);
     prompt.push_str("--- CONVERSATION END ---");
 
-    match provider.chat(cancel, &[Message::user(prompt)]).await {
-        Ok(res) => Ok((res.text, res.usage)),
-        Err(e) => Err(e.to_string()),
-    }
+    let res = provider.chat(cancel, &[Message::user(prompt)]).await?;
+    Ok((res.text, res.usage))
 }
 
 /// The shared compaction flow (`chat/run.go:253-280` `compactNow`).
@@ -213,11 +221,7 @@ pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
     // marker does).
     let booked = repl.conv.ctxm.book_call(usage);
     let persist = {
-        let mut slot = repl
-            .session
-            .writer
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut slot = lock(&repl.session.writer);
         slot.as_mut()
             .map(|w| w.append_compaction(&summary, retain_tail, booked))
     };
@@ -282,6 +286,7 @@ pub(crate) async fn offer_before_send(repl: &mut Repl, input: &str) {
 #[cfg(test)]
 mod tests {
     use crate::provider::model::{Body, Message, Role, ToolBody};
+    use crate::sync::lock;
     use crate::testing::FakeProvider;
     use tokio_util::sync::CancellationToken;
 
@@ -399,7 +404,7 @@ mod tests {
         let e = compact_history(&CancellationToken::new(), &p, &history(), "")
             .await
             .expect_err("an empty summary must fail");
-        assert_eq!(e, "empty summary");
+        assert_eq!(e.to_string(), "empty summary");
     }
 
     /// The summary prompt: the hardened instruction, the user's hint where Go puts it, and
@@ -465,12 +470,7 @@ mod tests {
 
     impl Recorder {
         fn last(&self) -> String {
-            self.0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .last()
-                .cloned()
-                .unwrap_or_default()
+            lock(&self.0).last().cloned().unwrap_or_default()
         }
     }
 
@@ -497,15 +497,12 @@ mod tests {
             'a,
             Result<crate::provider::ChatResult, crate::provider::error::ProviderError>,
         > {
-            self.0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(
-                    messages
-                        .last()
-                        .map(|m| m.content.clone())
-                        .unwrap_or_default(),
-                );
+            lock(&self.0).push(
+                messages
+                    .last()
+                    .map(|m| m.content.clone())
+                    .unwrap_or_default(),
+            );
             Box::pin(std::future::ready(Ok(crate::provider::ChatResult {
                 text: "SUMMARY".to_owned(),
                 ..crate::provider::ChatResult::default()
