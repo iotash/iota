@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use iota::headless::batch::{parallel_run, run_batch};
-use iota::headless::{QuietHost, execute_with_tools};
+use iota::headless::{QuietHost, TurnParams, execute_with_tools};
 use iota::provider::RoundResult;
 use iota::provider::model::{Message, Role};
 use iota::testing::{FakeProvider, NoCapDispatch, ParallelDispatch, tool_call, tool_call_with};
@@ -173,13 +173,15 @@ async fn the_quiet_loop_batches_parallel_calls() {
     let outcome = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         execute_with_tools(
-            &RunCtx::default(),
-            &tp,
-            d.clone(),
+            TurnParams {
+                cx: &RunCtx::default(),
+                tp: &tp,
+                dispatch: d.clone(),
+                tools: Vec::new(),
+                overlay: "",
+                max_turns: None,
+            },
             &mut history,
-            Vec::new(),
-            "",
-            None,
             &mut host,
         ),
     )
@@ -219,13 +221,15 @@ async fn single_parallel_call_runs_serially() {
     );
     let mut history = vec![Message::user("go")];
     execute_with_tools(
-        &RunCtx::default(),
-        &tp,
-        d.clone(),
+        TurnParams {
+            cx: &RunCtx::default(),
+            tp: &tp,
+            dispatch: d.clone(),
+            tools: Vec::new(),
+            overlay: "",
+            max_turns: None,
+        },
         &mut history,
-        Vec::new(),
-        "",
-        None,
         &mut QuietHost::new(),
     )
     .await

@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 
 use iota::headless::run::refusal_text;
-use iota::headless::{QuietHost, execute_with_tools};
+use iota::headless::{QuietHost, TurnParams, execute_with_tools};
 use iota::provider::model::{JsonObject, Message, Role, ToolCall};
 use iota::testing::{FakeProvider, GatedDispatch, Round, lock};
 use iota::tool::Dispatcher;
@@ -43,13 +43,15 @@ async fn run_gated(host: &mut QuietHost) -> (String, Arc<GatedDispatch>, Vec<Mes
     let d = Arc::new(GatedDispatch::new());
     let mut history = vec![Message::user("go")];
     let outcome = execute_with_tools(
-        &RunCtx::default(),
-        &writing(JsonObject::new()),
-        d.clone(),
+        TurnParams {
+            cx: &RunCtx::default(),
+            tp: &writing(JsonObject::new()),
+            dispatch: d.clone(),
+            tools: d.tools(),
+            overlay: "",
+            max_turns: None,
+        },
         &mut history,
-        d.tools(),
-        "",
-        None,
         host,
     )
     .await
@@ -186,13 +188,15 @@ async fn a_forwarded_approval_carries_the_call_detail() {
     let d = Arc::new(GatedDispatch::with_header());
     let mut history = vec![Message::user("go")];
     execute_with_tools(
-        &RunCtx::default(),
-        &writing_path("internal/ui/model.go"),
-        d.clone(),
+        TurnParams {
+            cx: &RunCtx::default(),
+            tp: &writing_path("internal/ui/model.go"),
+            dispatch: d.clone(),
+            tools: d.tools(),
+            overlay: "",
+            max_turns: None,
+        },
         &mut history,
-        d.tools(),
-        "",
-        None,
         &mut host,
     )
     .await

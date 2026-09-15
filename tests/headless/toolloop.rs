@@ -4,7 +4,7 @@
 
 use std::{path::Path, sync::Arc};
 
-use iota::headless::{ChatError, QuietHost, RunRequest, execute_with_tools, run_once};
+use iota::headless::{ChatError, QuietHost, RunRequest, TurnParams, execute_with_tools, run_once};
 use iota::provider::RoundResult;
 use iota::provider::model::{
     AssistantBody, Attachment, Body, Message, Raw, RawContent, Role, ToolCall,
@@ -28,13 +28,15 @@ async fn the_tool_loop_stops_at_the_opt_in_cap() {
     let cx = RunCtx::default();
 
     let err = execute_with_tools(
-        &cx,
-        &tp,
-        dispatch.clone(),
+        TurnParams {
+            cx: &cx,
+            tp: &tp,
+            dispatch: dispatch.clone(),
+            tools: dispatch.tools(),
+            overlay: "",
+            max_turns: std::num::NonZeroU32::new(LIMIT),
+        },
         &mut history,
-        dispatch.tools(),
-        "",
-        std::num::NonZeroU32::new(LIMIT),
         &mut host,
     )
     .await
@@ -85,13 +87,15 @@ async fn the_tool_loop_is_unlimited_by_default() {
     let mut history = vec![Message::user("go")];
     let mut host = QuietHost::new();
     let outcome = execute_with_tools(
-        &RunCtx::default(),
-        &tp,
-        dispatch.clone(),
+        TurnParams {
+            cx: &RunCtx::default(),
+            tp: &tp,
+            dispatch: dispatch.clone(),
+            tools: dispatch.tools(),
+            overlay: "",
+            max_turns: None,
+        },
         &mut history,
-        dispatch.tools(),
-        "",
-        None,
         &mut host,
     )
     .await
@@ -119,13 +123,15 @@ async fn execute_with_tools_refreshes_the_tool_set_every_round() {
     let mut history = vec![Message::user("go")];
     let mut host = QuietHost::new();
     let outcome = execute_with_tools(
-        &RunCtx::default(),
-        &tp,
-        dispatch.clone(),
+        TurnParams {
+            cx: &RunCtx::default(),
+            tp: &tp,
+            dispatch: dispatch.clone(),
+            tools: dispatch.tools(),
+            overlay: "",
+            max_turns: None,
+        },
         &mut history,
-        dispatch.tools(),
-        "",
-        None,
         &mut host,
     )
     .await
@@ -158,13 +164,15 @@ async fn reasoning_only_reply_is_the_reply() {
     let mut history = vec![Message::user("go")];
     let mut host = QuietHost::new();
     let outcome = execute_with_tools(
-        &RunCtx::default(),
-        &tp,
-        dispatch.clone(),
+        TurnParams {
+            cx: &RunCtx::default(),
+            tp: &tp,
+            dispatch: dispatch.clone(),
+            tools: dispatch.tools(),
+            overlay: "",
+            max_turns: None,
+        },
         &mut history,
-        dispatch.tools(),
-        "",
-        None,
         &mut host,
     )
     .await
@@ -184,13 +192,15 @@ async fn reasoning_only_reply_is_the_reply() {
         "unused",
     );
     let outcome = execute_with_tools(
-        &RunCtx::default(),
-        &tp,
-        dispatch.clone(),
+        TurnParams {
+            cx: &RunCtx::default(),
+            tp: &tp,
+            dispatch: dispatch.clone(),
+            tools: dispatch.tools(),
+            overlay: "",
+            max_turns: None,
+        },
         &mut history,
-        dispatch.tools(),
-        "",
-        None,
         &mut host,
     )
     .await

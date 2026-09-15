@@ -260,7 +260,7 @@ The tables keep the phase-1 grouping (one per former crate) with each file named
 |---|---|
 | `mod.rs` | chat/output.go:29-53, chat/agentmode.go (`OutputFormat`, `parse_output_format`, `AgentOptions`) |
 | `once.rs` | chat/chat.go:35-68 (+ `OnceOptions.history` / `OnceOutcome.delta`) |
-| `run.rs` | chat/chat.go:73-127,284-379, chat/run.go:68-74,221-229,1092-1095, chat/delegate.go:25-51 (`run_once`, `execute_with_tools`, `QuietHost`; the history watermark and the turn delta) |
+| `run.rs` | chat/chat.go:73-127,284-379, chat/run.go:68-74,221-229,1092-1095, chat/delegate.go:25-51 (`run_once`, `execute_with_tools` over a `TurnParams`, `QuietHost`; the history watermark and the turn delta) |
 | `batch.rs` | chat/parallel.go:42-57,106-140 |
 | `report.rs` | chat/output.go:64-215 |
 | `images.rs` | chat/images.go:21-58,117-148,156-170 (`save_images_for_turn` = `collectImages`' saved subset) |

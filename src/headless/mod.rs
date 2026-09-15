@@ -20,8 +20,8 @@ pub use error::ChatError;
 pub use once::{OnceOptions, OnceOutcome, once};
 pub use report::{RoundReport, RunRecorder, RunReport, TokenUsage, write_report};
 pub use run::{
-    LoopOutcome, QuietHost, RunOutcome, RunRequest, execute_with_tools, install_tool_searcher,
-    run_once,
+    LoopOutcome, QuietHost, RunOutcome, RunRequest, TurnParams, execute_with_tools,
+    install_tool_searcher, run_once,
 };
 
 /// `--output-format`: the bare reply (`text`) or the JSON run report (`json`).

@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use iota::headless::{ChatError, QuietHost, execute_with_tools};
+use iota::headless::{ChatError, QuietHost, TurnParams, execute_with_tools};
 use iota::provider::model::Message;
 use iota::testing::{FakeProvider, StaticDispatcher};
 use iota::tool::Dispatcher;
@@ -15,13 +15,15 @@ async fn spend(cx: &RunCtx) -> usize {
     let dispatch: Arc<StaticDispatcher> = Arc::new(StaticDispatcher::new(&["noop"]));
     let mut history = vec![Message::user("go")];
     let err = execute_with_tools(
-        cx,
-        &tp,
-        dispatch.clone(),
+        TurnParams {
+            cx,
+            tp: &tp,
+            dispatch: dispatch.clone(),
+            tools: dispatch.tools(),
+            overlay: "",
+            max_turns: None,
+        },
         &mut history,
-        dispatch.tools(),
-        "",
-        None,
         &mut QuietHost::new(),
     )
     .await
@@ -67,13 +69,15 @@ async fn budget_is_taken_before_the_call_and_local_cap_wins() {
     let dispatch: Arc<StaticDispatcher> = Arc::new(StaticDispatcher::new(&["noop"]));
     let mut history = vec![Message::user("go")];
     let err = execute_with_tools(
-        &cx,
-        &tp,
-        dispatch.clone(),
+        TurnParams {
+            cx: &cx,
+            tp: &tp,
+            dispatch: dispatch.clone(),
+            tools: dispatch.tools(),
+            overlay: "",
+            max_turns: None,
+        },
         &mut history,
-        dispatch.tools(),
-        "",
-        None,
         &mut QuietHost::new(),
     )
     .await
@@ -91,13 +95,15 @@ async fn budget_is_taken_before_the_call_and_local_cap_wins() {
     };
     let tp = FakeProvider::looping(1, 0);
     let err = execute_with_tools(
-        &cx,
-        &tp,
-        dispatch.clone(),
+        TurnParams {
+            cx: &cx,
+            tp: &tp,
+            dispatch: dispatch.clone(),
+            tools: dispatch.tools(),
+            overlay: "",
+            max_turns: std::num::NonZeroU32::new(2),
+        },
         &mut history,
-        dispatch.tools(),
-        "",
-        std::num::NonZeroU32::new(2),
         &mut QuietHost::new(),
     )
     .await

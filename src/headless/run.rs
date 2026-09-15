@@ -153,13 +153,15 @@ pub async fn run_once(
     let outcome = match provider.as_tool_provider() {
         Some(tp) if !tools.is_empty() => {
             execute_with_tools(
-                cx,
-                tp,
-                dispatch,
+                TurnParams {
+                    cx,
+                    tp,
+                    dispatch,
+                    tools,
+                    overlay: &overlay,
+                    max_turns,
+                },
                 &mut messages,
-                tools,
-                &overlay,
-                max_turns,
                 host,
             )
             .await?
@@ -238,6 +240,24 @@ async fn wait_for_job(host: &QuietHost, cx: &RunCtx) -> Option<crate::shell::job
     jobs.wait_any(&cx.cancel).await
 }
 
+/// What one quiet tool loop is given besides the history it extends and the host it reports to
+/// (chat.go:284): the run context, the provider, the dispatcher, the tool set advertised on round 0,
+/// the overlay text composed into every request, and the loop-local `--max-turns` cap.
+pub struct TurnParams<'a> {
+    /// The run's cancellation token and turn budget.
+    pub cx: &'a RunCtx,
+    /// The provider every round goes to.
+    pub tp: &'a dyn ToolProvider,
+    /// Tools, pending loads, approval and execution.
+    pub dispatch: Arc<dyn Dispatcher>,
+    /// The tool set advertised on round 0 — possibly empty; from round 1 the dispatcher is re-asked.
+    pub tools: Vec<ToolDef>,
+    /// The AGENTS.md/skills overlay composed into every request (`""` = none).
+    pub overlay: &'a str,
+    /// The loop-local cap; `None` = no cap (the run's budget in `cx` still applies).
+    pub max_turns: Option<NonZeroU32>,
+}
+
 /// Round order per chat.go:284-379 (see ARCHITECTURE §8): cancellation check (I-03) → local cap →
 /// `budget.take()` → live `tools()` after round 0 → `take_pending_loads()` mount → the request with
 /// `compose_send_history(history, overlay)` and a `NullSink` → `rec.observe` → termination (reasoning-only rule) →
@@ -245,17 +265,19 @@ async fn wait_for_job(host: &QuietHost, cx: &RunCtx) -> Option<crate::shell::job
 /// `run_batch` / serial with the approval gate). `images` and `usage` on the outcome are the terminating
 /// (no-tool-call) round's; earlier rounds' images are dropped (Go: `LastImages` is per call) and are therefore
 /// never persisted (D-53).
-#[allow(clippy::too_many_arguments)] // frozen contract signature (CONTRACTS §6.3)
 pub async fn execute_with_tools(
-    cx: &RunCtx,
-    tp: &dyn ToolProvider,
-    dispatch: Arc<dyn Dispatcher>,
+    params: TurnParams<'_>,
     history: &mut Vec<Message>,
-    mut tools: Vec<ToolDef>,
-    overlay: &str,
-    max_turns: Option<NonZeroU32>,
     host: &mut QuietHost,
 ) -> Result<LoopOutcome, ChatError> {
+    let TurnParams {
+        cx,
+        tp,
+        dispatch,
+        mut tools,
+        overlay,
+        max_turns,
+    } = params;
     let mut rounds: u32 = 0;
     loop {
         if cx.cancel.is_cancelled() {
