@@ -37,9 +37,7 @@ agent-first、Windows 已支持、0.1.0 与 0.2.0 已发布。它的 67 条步�
 
 ## 3. 重新规划后再做（目标成立，具体步骤已过时）
 
-**测试树收敛**（原 Phase 4）：29 处 `impl Provider`、105 个文件带 `#![allow(clippy::unwrap_used…)]`、
-`struct Surf` 9 份、`src/ui/testutil.rs` 不存在。目标与原 Phase 4 步骤 1–5 一致，可直接照做；
-它是结构重构的前置，应先于下一条。约 4–6 天。
+**测试树收敛**（原 Phase 4）：**已完成（2026-09-15，4a `91e2b4d…a5b60d3` + 4b `f6a0ecb…2790dff`）**。31 处 `impl Provider` → `src/testing/provider.rs` 的一个 `FakeProvider` builder；七份 `Surf` → `src/ui/testutil.rs`；8 条 `#[doc(hidden)]` 缝删除、缝后测试进 lib；`NewSession` 取代 47 处位置参数；lint 头 tests/ 下只剩 12 个 main.rs（unwrap-allow 文件 107 → 46）；`assert_cmd` 与 `tests/provider/progress.rs` 删除；`cargo test` 墙钟 29.5s → 13.7s。未做：session 的 24 个磁盘格式面 pub 降级（需把 71 个写盘读回测试搬进 src）；36 处真实时钟 sleep 保留（子进程 / wiremock socket / tmux 节拍 / UI 真线程，逐条理由在 `2790dff` 的提交信息）。
 
 **原生结构**（原 Phase 5）：无环、无扁平状态袋、无零值哨兵（`Result<_, String>` 20 处、内联
 `PoisonError` 121 处、`too_many_arguments` 4 处）。**方向对，但 §2.2 画的目标模块树是 9 月 8 日
