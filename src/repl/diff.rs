@@ -211,14 +211,20 @@ pub fn render_diff(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    //! The parser units and the `render_diff` goldens (the latter formerly `tests/repl/diff.rs`, reached
+    //! through a `#[doc(hidden)]` re-export; moved in-file 2026-09-15).
+
     use super::{diff_lang, highlight_diff_line, parse_diff_rows, render_diff};
     use crate::repl::styles::diff_code_theme;
+    use crate::text::ansi::{ansi_width, strip_sgr};
+    use pretty_assertions::assert_eq;
 
-    // Go: chat/compose_test.go:787 TestParseDiffRows — hunk headers translate into the
+    // Hunk headers translate into the
     // line-number gutter: additions and context carry new-file numbers, deletions
     // old-file numbers, and a "⋮" row marks the boundary between hunks.
     #[test]
-    fn test_parse_diff_rows() {
+    fn hunk_headers_number_the_gutter_and_a_boundary_row_marks_each_hunk() {
         let rows = parse_diff_rows(&[
             "@@ -3,2 +3,3 @@",
             " ctx",
@@ -248,10 +254,10 @@ mod tests {
         }
     }
 
-    // Go: chat/diff.go:73-93 — a fresh file's "-0,0" normalizes to 1; junk headers keep
+    // A fresh file's "-0,0" normalizes to 1; junk headers keep
     // the running counters.
     #[test]
-    fn test_parse_hunk_header_normalizes_zero() {
+    fn a_fresh_files_hunk_header_numbers_from_one() {
         let rows = parse_diff_rows(&["@@ -0,0 +1,2 @@", "+a", "+b"]);
         assert_eq!(rows[0].num, 1);
         assert_eq!(rows[1].num, 2);
@@ -259,7 +265,7 @@ mod tests {
         assert_eq!(rows[0].num, 1, "unparseable header keeps counters");
     }
 
-    // Go: chat/diff.go:110-118 `diffLexer` — the grammar token comes from the artifact
+    // The grammar token comes from the artifact
     // title's BASE name (a path prefix must not be part of it), and an empty title means
     // no highlighting at all.
     #[test]
@@ -320,5 +326,193 @@ mod tests {
             "code not verbatim: {:?}",
             rows[0]
         );
+    }
+
+    // --- the render_diff goldens ---------------------------------------------------
+
+    /// The dark-background shades (chat/diff.go:98-107; the default — WP50 flips light).
+    const BG_ADD: &str = "\x1b[48;5;22m";
+    const BG_DEL: &str = "\x1b[48;5;52m";
+    const FG_ADD: &str = "\x1b[38;5;114m";
+    const FG_DEL: &str = "\x1b[38;5;210m";
+
+    // Overwide diff rows TRUNCATE to the screen width; wrapping would wreck the column alignment diffs
+    // live by. The plain form is the explicit `color: false`.
+    #[test]
+    fn overwide_diff_rows_truncate_to_the_screen_width() {
+        let body = format!("+{}", "x".repeat(200));
+        let rows = render_diff("", &body, 24, 40, false, true);
+        assert_eq!(rows.len(), 1);
+        let w = ansi_width(&rows[0]);
+        assert!(w <= 39, "row width = {w}, must stay under the screen width");
+    }
+
+    // With color on, ± rows carry their background blocks, end SGR-self-contained, and a fresh-file
+    // "-0,0" hunk numbers from 1.
+    #[test]
+    fn coloured_diff_rows_carry_their_background_and_end_self_contained() {
+        let rows = render_diff(
+            "main.go",
+            "@@ -0,0 +1,2 @@\n+package main\n+var x = 1",
+            24,
+            100,
+            true,
+            true,
+        );
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        for (i, row) in rows.iter().enumerate() {
+            assert!(
+                row.contains(BG_ADD),
+                "row {i} missing the addition background: {row:?}"
+            );
+            assert!(
+                row.ends_with("\x1b[0m"),
+                "row {i} must end SGR-self-contained: {row:?}"
+            );
+        }
+        assert!(
+            strip_sgr(&rows[0]).contains("1 + package main"),
+            "gutter numbering wrong: {:?}",
+            strip_sgr(&rows[0])
+        );
+        assert!(
+            strip_sgr(&rows[1]).contains("2 + var x = 1"),
+            "gutter numbering wrong: {:?}",
+            strip_sgr(&rows[1])
+        );
+        // Any interior reset must re-arm the background so token styling can't cut the
+        // block short (vacuous in T1's plain rows; the WP55 highlighted upgrade rides it).
+        for row in &rows {
+            let inner = row.strip_suffix("\x1b[0m").unwrap();
+            if inner.contains("\x1b[0m") {
+                assert!(
+                    inner.contains(&format!("\x1b[0m{BG_ADD}")),
+                    "token reset not re-armed with the background: {row:?}"
+                );
+            }
+        }
+    }
+
+    // A diff row whose content a lexer cannot parse must carry ONLY the block's own background: no
+    // alien `\x1b[48;` survives.
+    #[test]
+    fn a_diff_row_carries_no_alien_background() {
+        let rows = render_diff(
+            "prompt.js",
+            "@@ -1,1 +1,1 @@\n+  重要: 这是发给**开发者**的推荐语（clarity、naturalness）",
+            24,
+            200,
+            true,
+            true,
+        );
+        let stripped = rows[0].replace(BG_ADD, "");
+        assert!(
+            !stripped.contains("\x1b[48;"),
+            "alien background survived in diff row:\n{:?}",
+            rows[0]
+        );
+    }
+
+    // The ± block covers the line-number gutter: the row starts with the block background right after
+    // the indent, and the number + marker wear the row's accent color before the code's own foregrounds
+    // take over.
+    #[test]
+    fn the_gutter_sits_inside_the_coloured_block() {
+        let rows = render_diff(
+            "main.go",
+            "@@ -1,1 +1,2 @@\n+package main\n-package old",
+            24,
+            100,
+            true,
+            true,
+        );
+        assert!(
+            rows[0].starts_with(&format!("  {BG_ADD}{FG_ADD}")),
+            "add row must open with block bg + accent fg over the gutter:\n{:?}",
+            rows[0]
+        );
+        assert!(
+            rows[1].starts_with(&format!("  {BG_DEL}{FG_DEL}")),
+            "del row must open with block bg + accent fg over the gutter:\n{:?}",
+            rows[1]
+        );
+        // The accent yields to the code's own foregrounds after the marker.
+        assert!(
+            rows[0].contains("\x1b[39m"),
+            "accent fg must reset before the code:\n{:?}",
+            rows[0]
+        );
+        assert!(
+            strip_sgr(&rows[0]).contains("1 + package main"),
+            "gutter layout changed: {:?}",
+            strip_sgr(&rows[0])
+        );
+    }
+
+    // The hunk gap row and the budget tail, byte for byte.
+    #[test]
+    fn the_hunk_gap_row_and_the_budget_tail_are_byte_exact() {
+        let body = "@@ -3,1 +3,1 @@\n-a\n+A\n@@ -20,1 +20,1 @@\n-b\n+B";
+        let rows = render_diff("", body, 24, 80, false, true);
+        // Rows: -a, +A, gap, -b, +B — the gap renders as the dim "⋮" marker row.
+        assert_eq!(rows.len(), 5, "{rows:?}");
+        assert_eq!(rows[2], format!("  \x1b[2m{} ⋮\x1b[0m", " ".repeat(2)));
+
+        let mut long = String::from("@@ -0,0 +1,10 @@");
+        for i in 0..10 {
+            use std::fmt::Write as _;
+            let _ = write!(long, "\n+row-{i}");
+        }
+        let rows = render_diff("", &long, 5, 80, false, true);
+        assert_eq!(rows.len(), 5, "{rows:?}");
+        assert_eq!(*rows.last().unwrap(), "\x1b[2m  … +6 more lines\x1b[0m");
+    }
+
+    // The differ's goldens (go-udiff's byte shape) — the rows the producer feeds into the artifact.
+    #[test]
+    fn the_unified_differ_keeps_its_goldens() {
+        use crate::tool::code::udiff::unified;
+
+        // Equal inputs → the empty string (postDiff posts nothing).
+        assert_eq!(unified("a.txt", "a.txt", "same\n", "same\n"), "");
+
+        // A one-line replacement with context, the Go header/count shape.
+        assert_eq!(
+            unified("a.txt", "a.txt", "one\ntwo\nthree\n", "one\n2\nthree\n"),
+            "--- a.txt\n+++ a.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+2\n three\n"
+        );
+
+        // A fresh file diffs against empty content: the odd GNU "-0,0" form.
+        assert_eq!(
+            unified("n.txt", "n.txt", "", "alpha\nbeta\n"),
+            "--- n.txt\n+++ n.txt\n@@ -0,0 +1,2 @@\n+alpha\n+beta\n"
+        );
+
+        // An unterminated final line carries the "\ No newline" marker.
+        assert_eq!(
+            unified("a", "a", "x\n", "x\ny"),
+            "--- a\n+++ a\n@@ -1 +1,2 @@\n x\n+y\n\\ No newline at end of file\n"
+        );
+    }
+
+    // With colour off the rows carry no escape at all — the shape `render_diff` takes when its caller
+    // (the group renderer) feeds it the process decision under `NO_COLOR`.
+    #[test]
+    fn with_colour_off_the_rows_carry_no_escape() {
+        let rows = render_diff(
+            "main.go",
+            "@@ -0,0 +1,2 @@\n+package main\n+var x = 1",
+            24,
+            100,
+            false,
+            true,
+        );
+        for row in &rows {
+            assert!(
+                !row.contains("\x1b[") && !row.contains("\x1b]"),
+                "an escape sequence with colour off: {row:?}"
+            );
+        }
+        assert_eq!(rows[0].trim(), "1 + package main");
     }
 }

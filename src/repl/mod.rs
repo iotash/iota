@@ -43,8 +43,6 @@ pub use run::{McpEvent, McpHooks, RunParams, SessionCtx, SessionFactory, run};
 #[doc(hidden)]
 pub use commands::session::session_label;
 #[doc(hidden)]
-pub use diff::render_diff;
-#[doc(hidden)]
 pub use interrupt::{InterruptDecision, finalize_interrupt};
 #[doc(hidden)]
 pub use meter::{ContextBudget, CtxMeter};

@@ -229,8 +229,9 @@ impl std::io::Write for Shared {
 }
 
 /// Gate (i) on the entry points the run above does not walk: the piped markdown writer
-/// (`new_writer_to`), `render_diff` fed the process decision the way the group renderer
-/// feeds it, and an OSC 8 hyperlink.
+/// (`new_writer_to`) and an OSC 8 hyperlink, both reading the process decision. (`render_diff` takes the
+/// decision as an argument — its colour-off shape is pinned beside it in `repl::diff`, and the run above
+/// walks the group renderer that feeds it.)
 #[test]
 fn the_standalone_renderers_are_escape_free() {
     no_color();
@@ -243,17 +244,6 @@ fn the_standalone_renderers_are_escape_free() {
     let rendered = String::from_utf8(out.lock().unwrap().clone()).unwrap();
     assert_escape_free("new_writer_to", std::slice::from_ref(&rendered));
     assert!(rendered.contains("Heading") && rendered.contains("│ 1   │ 2   │"));
-
-    let rows = iota::repl::render_diff(
-        "main.go",
-        "@@ -0,0 +1,2 @@\n+package main\n+var x = 1",
-        24,
-        100,
-        iota::color::enabled(),
-        true,
-    );
-    assert_escape_free("render_diff", &rows);
-    assert_eq!(rows[0].trim(), "1 + package main");
 
     assert_eq!(
         iota::markdown::hyperlink("https://iota.sh", "iota", iota::color::enabled()),
