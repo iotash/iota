@@ -38,8 +38,8 @@ pub(crate) const CMUX_RPC_TIMEOUT: Duration = Duration::from_secs(1);
 pub(crate) type Batch = Vec<Vec<String>>;
 /// The command runner seam (tests inject one; production runs `cmux <argv>`).
 pub(crate) type ExecFn = Arc<dyn Fn(Vec<String>) -> BoxFuture<'static, ()> + Send + Sync>;
-/// The background probe seam (`Some(dark)` when known).
-pub(crate) type BackgroundFn = Arc<dyn Fn() -> Option<bool> + Send + Sync>;
+/// The background probe seam (`Some(dark)` when known), asynchronous: the real one is an RPC child.
+pub(crate) type BackgroundFn = Arc<dyn Fn() -> BoxFuture<'static, Option<bool>> + Send + Sync>;
 
 /// The cmux host: a last-wins mailbox feeding one worker task (cmux.go:60-72).
 ///
@@ -114,8 +114,11 @@ impl StateReporter for CmuxHost {
 }
 
 impl BackgroundReporter for CmuxHost {
-    fn dark_background(&self) -> Option<bool> {
-        self.background.as_ref().and_then(|f| f())
+    fn dark_background(&self) -> BoxFuture<'_, Option<bool>> {
+        match &self.background {
+            Some(f) => f(),
+            None => Box::pin(std::future::ready(None)),
+        }
     }
 }
 
@@ -152,8 +155,10 @@ pub(crate) fn detect_cmux(probe: &Probe) -> Option<Box<dyn Host>> {
     let exec_path = path.clone();
     let exec: ExecFn = Arc::new(move |argv| exec_cmux(&exec_path, argv));
     let query: background::CmuxQuery = Arc::new(background::cmux_query_exec);
-    let background: BackgroundFn =
-        Arc::new(move || background::cmux_background(&path, &sid, &query));
+    let background: BackgroundFn = Arc::new(move || {
+        let (path, sid, query) = (path.clone(), sid.clone(), Arc::clone(&query));
+        Box::pin(async move { background::cmux_background(&path, &sid, &query).await })
+    });
     Some(Box::new(CmuxHost::with_exec(exec, Some(background))))
 }
 

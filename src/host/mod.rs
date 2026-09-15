@@ -90,8 +90,9 @@ pub trait Notifier: Send + Sync {
 
 /// Knows whether the terminal background is dark.
 pub trait BackgroundReporter: Send + Sync {
-    /// `Some(dark)` when the host knows, `None` otherwise.
-    fn dark_background(&self) -> Option<bool>;
+    /// `Some(dark)` when the host knows, `None` otherwise. Asynchronous: cmux answers through an RPC
+    /// child under a deadline.
+    fn dark_background(&self) -> BoxFuture<'_, Option<bool>>;
 }
 
 /// Cleans up on exit.
@@ -199,13 +200,15 @@ impl Presenter {
         }
     }
 
-    /// The first host that KNOWS the background tone (background.go:42-51). Synchronous and may
-    /// block up to a second on the cmux RPC — callers off the UI thread use `spawn_blocking`.
-    pub fn dark_background(&self) -> Option<bool> {
-        self.hosts
-            .iter()
-            .filter_map(|h| h.as_background())
-            .find_map(BackgroundReporter::dark_background)
+    /// The first host that KNOWS the background tone (background.go:42-51), asked in order; the
+    /// cmux probe is an RPC child under a one-second deadline.
+    pub async fn dark_background(&self) -> Option<bool> {
+        for reporter in self.hosts.iter().filter_map(|h| h.as_background()) {
+            if let Some(dark) = reporter.dark_background().await {
+                return Some(dark);
+            }
+        }
+        None
     }
 
     /// The detected hosts' names, in order.
@@ -215,10 +218,14 @@ impl Presenter {
 }
 
 /// The pre-loop background probe (background.go:30-37): the host probes (cmux) first, then
-/// `fallback` — the terminal's own OSC 11 answer, supplied by the command.
-pub fn detect_background(env: &Probe, fallback: impl FnOnce() -> bool) -> bool {
+/// `fallback` — the terminal's own OSC 11 answer, supplied by the command as a future (it is a
+/// blocking tty round-trip the command puts on a blocking thread).
+pub async fn detect_background(
+    probe: &Probe,
+    fallback: impl std::future::Future<Output = bool>,
+) -> bool {
     let query: background::CmuxQuery = std::sync::Arc::new(background::cmux_query_exec);
-    background::detect_background_with(env, &query, fallback)
+    background::detect_background_with(probe, &query, fallback).await
 }
 
 #[cfg(test)]
@@ -370,8 +377,8 @@ mod tests {
 
     // Go: internal/host/background_test.go:48 TestPresenterDarkBackground — the first host that
     // KNOWS wins; hosts without the capability, or without an answer, fall through.
-    #[test]
-    fn test_presenter_dark_background() {
+    #[tokio::test]
+    async fn test_presenter_dark_background() {
         let bg = |dark: Option<bool>| RecordingHost {
             dark,
             caps: Caps {
@@ -389,11 +396,11 @@ mod tests {
             ],
             true,
         );
-        assert_eq!(p.dark_background(), Some(true));
+        assert_eq!(p.dark_background().await, Some(true));
 
         let p = Presenter::with_hosts(vec![Box::new(host("inert", Caps::default()))], true);
         assert_eq!(
-            p.dark_background(),
+            p.dark_background().await,
             None,
             "an inert-only presenter must not know its background"
         );

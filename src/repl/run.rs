@@ -318,17 +318,6 @@ fn skill_entries(skills: &[Skill]) -> Vec<SkillEntry> {
         .collect()
 }
 
-/// Asks the hosts whether the terminal background is dark (chat/theme.go `applyCodeTheme`,
-/// per turn). `Presenter::dark_background` may block up to a second on the cmux RPC, so it
-/// runs on a blocking thread; `None` = no host knows, keep the pre-loop probe's answer.
-async fn host_dark_background(pres: &Arc<Presenter>) -> Option<bool> {
-    let pres = Arc::clone(pres);
-    tokio::task::spawn_blocking(move || pres.dark_background())
-        .await
-        .ok()
-        .flatten()
-}
-
 /// The code theme of a background tone.
 fn code_theme_of(dark: bool) -> CodeTheme {
     if dark {
@@ -736,7 +725,9 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         // The code theme is refreshed BETWEEN turns (chat/run.go:1007 `applyCodeTheme`): a
         // host that knows the background tone re-shades the code blocks, the diff shades
         // and the composer; a theme flip never lands inside a streaming block.
-        if let Some(known) = host_dark_background(&pres).await {
+        // (chat/theme.go `applyCodeTheme`: the hosts are asked per turn — the cmux RPC child runs
+        // under its own deadline; `None` = no host knows, keep the pre-loop probe's answer.)
+        if let Some(known) = pres.dark_background().await {
             repl.dark = known;
             repl.tr.set_dark(known);
             ui.set_dark_background(known);

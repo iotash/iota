@@ -27,6 +27,7 @@ use std::io::{IsTerminal as _, Write as _};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::BoxFuture;
 use crate::app::env::Env;
 use crate::host::{AnsiHost, Presenter, Probe as HostProbe};
 use crate::provider::ProviderParams;
@@ -78,8 +79,9 @@ pub(crate) struct Interactive<'a> {
 /// and every fallible pre-loop step is finished, BEFORE the event loop claims the terminal — is otherwise only
 /// provable on a real tty. With the seam it is a unit test (`open_ui_releases_the_picker_before_tui_start`).
 pub(crate) trait TerminalSeam: Send + Sync + 'static {
-    /// ONE OSC-11 round-trip; blocking, so it runs on a blocking thread.
-    fn detect_background(&self) -> bool;
+    /// The host probes (cmux, an RPC child under a deadline), then ONE OSC-11 round-trip — the
+    /// latter blocking, so the implementation puts it on a blocking thread.
+    fn detect_background(&self) -> BoxFuture<'_, bool>;
     /// The one-shot pre-REPL surface; blocking for as long as the user takes.
     fn run_surface(&self, spec: TabbedSpec, dark: bool) -> std::io::Result<TabbedResult>;
     /// Raw `\x1b[22;0t` on plain stdout.
@@ -102,10 +104,18 @@ struct LiveTerminal {
 }
 
 impl TerminalSeam for LiveTerminal {
-    fn detect_background(&self) -> bool {
-        // The host probes first (a multiplexer that KNOWS its background), the terminal's own
-        // OSC 11 answer as the fallback (internal/host/background.go:30-37).
-        crate::host::detect_background(&host_probe(&self.env), crate::ui::detect_background)
+    fn detect_background(&self) -> BoxFuture<'_, bool> {
+        Box::pin(async {
+            // The host probes first (a multiplexer that KNOWS its background), the terminal's own
+            // OSC 11 answer as the fallback (internal/host/background.go:30-37) — a blocking tty
+            // round-trip, so it runs on a blocking thread; a lost thread reads as dark.
+            let osc = async {
+                tokio::task::spawn_blocking(crate::ui::detect_background)
+                    .await
+                    .unwrap_or(true)
+            };
+            crate::host::detect_background(&host_probe(&self.env), osc).await
+        })
     }
 
     fn run_surface(&self, spec: TabbedSpec, dark: bool) -> std::io::Result<TabbedResult> {
@@ -186,10 +196,7 @@ async fn open_ui<T, F>(
 where
     F: FnOnce(bool, Option<usize>) -> Result<T, CliError>,
 {
-    let probe = Arc::clone(seam);
-    let dark = tokio::task::spawn_blocking(move || probe.detect_background())
-        .await
-        .unwrap_or(true);
+    let dark = seam.detect_background().await;
 
     let chosen = match picker {
         None => None,
@@ -688,6 +695,8 @@ fn map_events(
 mod tests {
     use std::sync::{Arc, Mutex, PoisonError};
 
+    use crate::BoxFuture;
+
     use crate::session::SessionInfo;
     use crate::testing::ScriptedUi;
     use crate::ui::facade::{PanelKind, PanelResult, TabbedResult, TabbedSpec, Ui};
@@ -734,9 +743,9 @@ mod tests {
     }
 
     impl TerminalSeam for FakeTerminal {
-        fn detect_background(&self) -> bool {
+        fn detect_background(&self) -> BoxFuture<'_, bool> {
             self.push("detect");
-            false
+            Box::pin(std::future::ready(false))
         }
 
         fn run_surface(&self, spec: TabbedSpec, _dark: bool) -> std::io::Result<TabbedResult> {

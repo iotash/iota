@@ -588,8 +588,8 @@ impl host::Notifier for RecordingHost {
 }
 
 impl host::BackgroundReporter for RecordingHost {
-    fn dark_background(&self) -> Option<bool> {
-        self.dark
+    fn dark_background(&self) -> BoxFuture<'_, Option<bool>> {
+        Box::pin(std::future::ready(self.dark))
     }
 }
 
