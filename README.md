@@ -51,29 +51,33 @@ exportable.
 
 ## Install
 
+### Shell
+
+```bash
+curl -fsSL https://iota.sh/install.sh | sh
+```
+
+`iota.sh/install.sh` is the shell installer of the latest release — the same
+`iota-installer.sh` that sits beside the archives on the GitHub release, served
+from the domain so the line stays short and never names a version. It fetches
+the prebuilt binary for your platform, verifies its checksum and puts it in
+`~/.cargo/bin` (or `$CARGO_HOME/bin`), adding that directory to your `PATH` if
+it is not there already. No Rust toolchain needed.
+
 ### Homebrew
 
 ```bash
 brew install iotash/tap/iota
 ```
 
-### Shell
-
-```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/iotash/iota/releases/latest/download/iota-installer.sh | sh
-```
-
-Fetches the prebuilt binary for your platform from the latest release, verifies
-its checksum and puts it in `~/.cargo/bin` (or `$CARGO_HOME/bin`), adding that
-directory to your `PATH` if it is not there already. No Rust toolchain needed.
-
 ### PowerShell (Windows)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/iotash/iota/releases/latest/download/iota-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://iota.sh/install.ps1 | iex"
 ```
 
-The same thing for Windows: it fetches `iota-x86_64-pc-windows-msvc.zip`, checks
+The same thing for Windows — `iota.sh/install.ps1` is the latest release's
+`iota-installer.ps1`: it fetches `iota-x86_64-pc-windows-msvc.zip`, checks
 its SHA-256 and puts `iota.exe` in `%USERPROFILE%\.cargo\bin` (or
 `%CARGO_HOME%\bin`), on `PATH`. **The Windows binaries are not code-signed**, so
 SmartScreen may warn the first time you run `iota.exe`; see
