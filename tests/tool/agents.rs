@@ -24,7 +24,7 @@ use tempfile::TempDir;
 use iota::app::HostDirs;
 use iota::provider::model::JsonObject;
 use iota::tool::Registry;
-use iota::tool::agent::new_skills_set;
+use iota::tool::builtins::agent::new_skills_set;
 use iota::tool::context::RunCtx;
 use iota::tool::sets::ToolsConfig;
 use iota::tool::{Dispatcher, ToolEnv, ToolOutput};
@@ -743,7 +743,7 @@ async fn agent_mode_registers_the_skills_set_once() {
     assert_eq!(defs[0].name, "load_skill");
     assert_eq!(
         defs[0].description,
-        iota::tool::agent::LOAD_SKILL_DESCRIPTION
+        iota::tool::builtins::agent::LOAD_SKILL_DESCRIPTION
     );
 
     // Config already enabled the set: enable_set must not duplicate it.

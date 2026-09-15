@@ -10,7 +10,7 @@ use iota::BoxFuture;
 use iota::provider::ProviderKind;
 use iota::provider::model::{JsonObject, ToolDef};
 use iota::testing::{FakeMcp, prefix_for, static_prefix, stub_tool};
-use iota::tool::ask::new_ask_set;
+use iota::tool::builtins::ask::new_ask_set;
 use iota::tool::context::RunCtx;
 use iota::tool::defer::{CATALOG_NAMES_ONLY_AT, DESC_BUDGET, SEARCH_TOP_K, defer};
 use iota::tool::error::ToolError;

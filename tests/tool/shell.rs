@@ -26,12 +26,12 @@ use iota::shell::exec::{
 };
 use iota::shell::interp::{Family, Interpreter};
 use iota::tool::Registry;
-use iota::tool::context::RunCtx;
-use iota::tool::sets::{RawNode, SetError, ToolsConfig};
-use iota::tool::shell::{
+use iota::tool::builtins::shell::{
     BASH_DESC_PREFIX, CMD_DESC_PREFIX, PWSH_DESC_PREFIX, SHELL_DESC_SANDBOXED,
     SHELL_DESC_UNSANDBOXED, SHELL_TOOL_NAME, background_desc, desc_prefix, new_shell_set,
 };
+use iota::tool::context::RunCtx;
+use iota::tool::sets::{RawNode, SetError, ToolsConfig};
 use iota::tool::{Dispatcher, Tool, ToolEnv};
 use pretty_assertions::assert_eq;
 use serde_json::json;

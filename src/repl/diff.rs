@@ -471,7 +471,7 @@ mod tests {
     // The differ's goldens (go-udiff's byte shape) — the rows the producer feeds into the artifact.
     #[test]
     fn the_unified_differ_keeps_its_goldens() {
-        use crate::tool::code::udiff::unified;
+        use crate::tool::builtins::code::udiff::unified;
 
         // Equal inputs → the empty string (postDiff posts nothing).
         assert_eq!(unified("a.txt", "a.txt", "same\n", "same\n"), "");

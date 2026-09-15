@@ -19,7 +19,7 @@ fn code_project(files: &[(&str, &str)]) -> (TempDir, Tools) {
     for (rel, contents) in files {
         write_project_file(&root, rel, contents);
     }
-    let tools = iota::tool::code::new_code_set(
+    let tools = iota::tool::builtins::code::new_code_set(
         &ToolEnv {
             project_root: Some(root),
             ..ToolEnv::default()

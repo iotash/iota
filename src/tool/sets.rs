@@ -23,10 +23,10 @@ pub const SKILLS_SET: &str = "skills";
 /// The factory of a built-in set; `None` for unknown names.
 pub fn set_factory(name: &str) -> Option<SetFactory> {
     match name {
-        "shell" => Some(super::shell::new_shell_set),
-        SKILLS_SET => Some(super::agent::new_skills_set),
-        "code" => Some(super::code::new_code_set),
-        "ask" => Some(super::ask::new_ask_set),
+        "shell" => Some(super::builtins::shell::new_shell_set),
+        SKILLS_SET => Some(super::builtins::agent::new_skills_set),
+        "code" => Some(super::builtins::code::new_code_set),
+        "ask" => Some(super::builtins::ask::new_ask_set),
         _ => None,
     }
 }

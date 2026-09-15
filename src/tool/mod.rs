@@ -2,23 +2,20 @@
 //! and `Dispatcher` traits with their optional capabilities, the `PrefixOf` oracle and the toolset `ToolEnv` —
 //! plus, in the submodules, the run context every call takes (`context`), the answer to a gated call
 //! (`approval`), the tool framework (`dispatch`,
-//! `defer` with its `mode`, `yaml11`, `args`, `sets`) and the four built-in sets (`shell`, `code`,
-//! `agent`, and `ask`, which contributes tools only when the `ToolEnv` carries an interactor).
+//! `defer` with its `mode`, `yaml11`, `args`, `sets`) and, in `builtins`, the four built-in sets (`shell`,
+//! `code`, `agent`, and `ask`, which contributes tools only when the `ToolEnv` carries an interactor).
 
 use std::{path::PathBuf, sync::Arc};
 
-pub mod agent;
 pub mod approval;
 pub(crate) mod args;
-pub mod ask;
-pub mod code;
+pub mod builtins;
 pub mod context;
 pub mod defer;
 pub(crate) mod dispatch;
 pub mod error;
 pub mod fmt;
 pub mod sets;
-pub mod shell;
 pub(crate) mod yaml11;
 
 pub use approval::Approval;
