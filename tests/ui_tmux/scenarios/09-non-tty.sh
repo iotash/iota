@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # L4 scenario 9 (TUI_TEST_PLAN §L4) — a piped run has no interactive mode.
 #
-# `crates/iota/tests/interactive_cli.rs` asserts the same refusal through `assert_cmd`;
+# `tests/cmd/interactive_cli.rs` asserts the same refusal by running the built binary;
 # what THIS scenario adds is the real pipe — stdin is genuinely not a tty, which is the
 # condition `cmd/root.go:397-401` tests and the one an in-process double cannot create.
 # The text is Go's, byte for byte, and it must arrive before any side effect: no session

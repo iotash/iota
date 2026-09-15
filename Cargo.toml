@@ -157,7 +157,6 @@ tokio = { version = "1.53", default-features = false, features = ["test-util"] }
 rmcp = { version = "3.1", default-features = false, features = ["server", "transport-async-rw"] }
 wiremock          = "0.6"
 tempfile          = "3"
-assert_cmd        = "2"
 pretty_assertions = "1"
 vt100             = "=0.16.2"   # byte-stream assertions of the terminal layer
 

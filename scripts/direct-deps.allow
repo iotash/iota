@@ -55,6 +55,5 @@ windows
 # dev (plus the self-dev-dependency `iota`, which check-deps.sh skips)
 wiremock
 tempfile
-assert_cmd
 pretty_assertions
 vt100

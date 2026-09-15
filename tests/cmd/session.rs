@@ -17,7 +17,6 @@ use std::{
 };
 
 use crate::common::cleared_env;
-use assert_cmd::cargo::CommandCargoExt;
 use iota::cmd::Declared;
 use iota::provider::ProviderKind;
 use iota::provider::model::{RawContent, Role};
@@ -99,7 +98,7 @@ fn sessions_root(home: &Path) -> PathBuf {
 /// `iota …` with a cleared environment (`common::cleared_env`), a temp cwd and the fixture home (the
 /// `tests/cmd/cli.rs` discipline).
 fn iota(cwd: &Path, home: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("iota").expect("the iota binary is built by `cargo test`");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_iota"));
     cleared_env(&mut cmd, home)
         .current_dir(cwd)
         .stdin(Stdio::null());

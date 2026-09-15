@@ -17,7 +17,6 @@ use std::{
 };
 
 use crate::common::{cleared_env, temp_project};
-use assert_cmd::cargo::CommandCargoExt;
 use tempfile::TempDir;
 
 /// cmd/root.go:400 — what the interactive branch says when stdout is not a terminal.
@@ -33,7 +32,7 @@ fn project() -> (TempDir, std::path::PathBuf) {
 
 /// `iota …` with a cleared environment and a PIPED stdin+stdout — the `echo hi | iota` shape.
 fn piped(cwd: &Path, home: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("iota").expect("the iota binary is built by `cargo test`");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_iota"));
     cleared_env(&mut cmd, home)
         .current_dir(cwd)
         .stdin(Stdio::piped())
@@ -77,7 +76,7 @@ fn assert_error(o: &Output, message: &str) {
 /// L4 scenario 9, run in-process instead of under tmux: `echo hi | iota openai -k …` refuses byte-exact and
 /// exits 1 (cmd/root.go:397-401).
 #[test]
-fn test_interactive_requires_a_terminal() {
+fn an_interactive_run_requires_a_terminal() {
     let (dir, home) = project();
     write_config(dir.path());
     let o = run(piped(dir.path(), &home));
@@ -89,7 +88,7 @@ fn test_interactive_requires_a_terminal() {
 /// them, so a run without `-m` gets past `reject_unsupported` and dies at the terminal check instead of at a
 /// headless rejection (D-23 / D-42 apply to `-m` runs only).
 #[test]
-fn test_interactive_only_flags_are_lifted_without_a_message() {
+fn the_interactive_only_flags_are_accepted_without_a_message() {
     let (dir, home) = project();
     write_config(dir.path());
     for args in [vec!["--no-save"], vec!["resume"]] {
@@ -103,7 +102,7 @@ fn test_interactive_only_flags_are_lifted_without_a_message() {
 /// D-23 / D-42 stay byte-exact for a HEADLESS run: `-m` is the flag that decides the branch (root.go:259), and
 /// the rejection is raised before anything else runs.
 #[test]
-fn test_headless_still_rejects_the_interactive_only_flags() {
+fn a_headless_run_still_rejects_the_interactive_only_flags() {
     let (dir, home) = project();
     write_config(dir.path());
     for (args, message) in [
@@ -126,7 +125,7 @@ fn test_headless_still_rejects_the_interactive_only_flags() {
 /// cmd/root.go:284-286 — an ephemeral start and a resumed bundle are opposite intents. Go raises this pure
 /// argument error before the terminal check, so it wins over the refusal too.
 #[test]
-fn test_no_save_cannot_be_combined_with_resume() {
+fn no_save_cannot_be_combined_with_resume() {
     let (dir, home) = project();
     write_config(dir.path());
     let mut cmd = piped(dir.path(), &home);
@@ -138,7 +137,7 @@ fn test_no_save_cannot_be_combined_with_resume() {
 /// A listing has no terminal to require: it runs and exits 0 down a pipe, and it takes no run flags at all
 /// (`--no-save` belongs to `run`, so clap refuses it here).
 #[test]
-fn test_list_runs_down_a_pipe() {
+fn list_runs_down_a_pipe() {
     let (dir, home) = project();
     let empty = dir.path().join("empty.yaml");
     std::fs::write(&empty, "providers: {}\n").expect("write config");
@@ -163,7 +162,7 @@ fn test_list_runs_down_a_pipe() {
 /// Every byte-pinned error Go raises BEFORE it decides headless-vs-interactive still wins over the interactive
 /// branch (root.go:46-258): the branch swap must not have reordered the startup ladder.
 #[test]
-fn test_pre_branch_errors_still_win_over_the_interactive_branch() {
+fn errors_raised_before_the_branch_still_win_over_the_interactive_branch() {
     let (dir, home) = project();
     // No agent at all (root.go:53-60).
     let o = run(piped(dir.path(), &home));

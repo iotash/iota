@@ -14,7 +14,6 @@ use std::{
 };
 
 use crate::common::{cleared_env, temp_project, transcript};
-use assert_cmd::cargo::CommandCargoExt;
 use tempfile::TempDir;
 use wiremock::MockServer;
 
@@ -28,7 +27,7 @@ fn project() -> (TempDir, std::path::PathBuf) {
 /// `iota …` with a cleared environment (`common::cleared_env`); the home and working directories are the
 /// fixture's.
 fn iota(cwd: &Path, home: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("iota").expect("the iota binary is built by `cargo test`");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_iota"));
     cleared_env(&mut cmd, home)
         .current_dir(cwd)
         .stdin(Stdio::null());
