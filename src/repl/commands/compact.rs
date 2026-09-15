@@ -265,14 +265,14 @@ pub(crate) async fn offer_before_send(repl: &mut Repl, input: &str) {
 #[cfg(test)]
 mod tests {
     use crate::provider::model::{Body, Message, Role, ToolBody};
-    use crate::testing::FakeToolProvider;
+    use crate::testing::FakeProvider;
     use tokio_util::sync::CancellationToken;
 
     use super::{Compaction, compact_history, retain_tail_count};
 
     /// Go's `stubProvider`: a one-shot `Chat` answering `"SUMMARY"`.
-    fn summarizer() -> FakeToolProvider {
-        FakeToolProvider::scripted(Vec::new(), "SUMMARY")
+    fn summarizer() -> FakeProvider {
+        FakeProvider::scripted(Vec::new(), "SUMMARY")
     }
 
     fn history() -> Vec<Message> {
@@ -285,10 +285,10 @@ mod tests {
         ]
     }
 
-    // Go: chat/compact_test.go:11 TestRetainTailCount — the last turn runs from the final
+    // The last turn runs from the final
     // user message to the end; a history with no user message at all retains all of it.
     #[test]
-    fn test_retain_tail_count() {
+    fn the_retained_tail_is_the_last_turn() {
         let h = vec![
             Message::system("sys"),
             Message::user("u1"),
@@ -318,11 +318,11 @@ mod tests {
         );
     }
 
-    // Go: chat/compact_test.go:22 TestCompactHistory — system + (last turn's first message
+    // System + (last turn's first message
     // with the summary prepended) + the rest of the last turn, and the caller's history is
     // left untouched because the retained head is a COPY.
     #[tokio::test]
-    async fn test_compact_history() {
+    async fn a_compacted_history_is_system_summary_and_the_last_turn() {
         let h = history();
         let out = compact_history(&CancellationToken::new(), &summarizer(), &h, "")
             .await
@@ -378,7 +378,7 @@ mod tests {
     /// A blank summary is a failed pass, not a compaction that removed everything.
     #[tokio::test]
     async fn an_empty_summary_is_an_error() {
-        let p = FakeToolProvider::scripted(Vec::new(), "   \n ");
+        let p = FakeProvider::scripted(Vec::new(), "   \n ");
         let e = compact_history(&CancellationToken::new(), &p, &history(), "")
             .await
             .expect_err("an empty summary must fail");

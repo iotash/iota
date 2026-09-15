@@ -1,6 +1,5 @@
 //! Parallel batches (`chat/parallel_test.go`): run boundaries, per-call capability, the batch's concurrency and
 //! call-order guarantees, and the quiet loop batching on its own.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::Arc;
 
@@ -9,14 +8,13 @@ use iota::chat::turns::RunCtx;
 use iota::chat::{QuietHost, execute_with_tools};
 use iota::provider::RoundResult;
 use iota::provider::model::{Message, Role};
-use iota::testing::FakeToolProvider;
+use iota::testing::FakeProvider;
 use tokio_util::sync::CancellationToken;
 
 use crate::common::{NoCapDispatch, ParallelDispatch, call, call_with};
 
-// Go: chat/parallel_test.go:69
 #[test]
-fn test_parallel_run_boundaries() {
+fn a_parallel_run_ends_at_the_first_serial_call() {
     // parallel_run batches only a RUN of consecutive parallel-capable calls: a serial tool separates the ones
     // before it from the ones after.
     let d = ParallelDispatch::by_name(&["read_file", "grep"]);
@@ -43,9 +41,8 @@ fn test_parallel_run_boundaries() {
     }
 }
 
-// Go: chat/parallel_test.go:92
 #[test]
-fn test_parallel_run_splits_calls_to_one_tool() {
+fn a_parallel_run_splits_calls_to_one_tool_by_their_arguments() {
     // The same boundaries hold when the calls share a NAME and differ only in their arguments — the per-call
     // shape.
     let d = ParallelDispatch::by_agent(&[("search", true), ("implement", false)]);
@@ -69,9 +66,8 @@ fn test_parallel_run_splits_calls_to_one_tool() {
     }
 }
 
-// Go: chat/parallel_test.go:208
 #[test]
-fn test_parallel_run_needs_the_capability() {
+fn a_dispatcher_without_the_capability_serializes_every_call() {
     // A dispatcher without the capability serializes everything.
     let plain = NoCapDispatch;
     let calls = [call("1", "read_file"), call("2", "read_file")];
@@ -79,9 +75,9 @@ fn test_parallel_run_needs_the_capability() {
     assert_eq!(parallel_run(&plain, &calls, 1), 1);
 }
 
-// Go: chat/parallel_test.go:114 (the runBatch core; the transcript widget is interactive-only)
+// The batch core alone; the transcript widget is interactive-only.
 #[tokio::test]
-async fn test_parallel_batch_runs_concurrently() {
+async fn a_parallel_batch_runs_its_calls_concurrently() {
     // The calls in a batch really do overlap: every call must reach the barrier before any is allowed to
     // finish; serial execution would deadlock here, which is the assertion.
     const N: usize = 4;
@@ -108,9 +104,8 @@ async fn test_parallel_batch_runs_concurrently() {
     }
 }
 
-// Go: chat/parallel_test.go:152
 #[tokio::test]
-async fn test_parallel_batch_keeps_call_order() {
+async fn a_parallel_batch_answers_in_call_order() {
     // Results answer their calls in CALL order however the calls finish.
     let d = ParallelDispatch::by_name(&["read_file", "grep"]);
     let calls = [
@@ -134,9 +129,8 @@ async fn test_parallel_batch_keeps_call_order() {
     }
 }
 
-// Go: chat/parallel_test.go:191
 #[tokio::test]
-async fn test_parallel_batch_cancelled_still_answers_every_call() {
+async fn a_cancelled_batch_still_answers_every_call() {
     // A cancelled batch still returns a result for every call it made: a call without a result would leave the
     // round's history unable to answer itself.
     let d = ParallelDispatch::by_name(&["read_file"]);
@@ -159,14 +153,13 @@ async fn test_parallel_batch_cancelled_still_answers_every_call() {
     }
 }
 
-// Go: chat/parallel_test.go:227
 #[tokio::test]
-async fn test_quiet_loop_batches_parallel_calls() {
+async fn the_quiet_loop_batches_parallel_calls() {
     // The quiet (-m) loop batches too: three parallel-capable calls run concurrently (peak >= 3) and their
     // results land in call order 1,2,3. The barrier releases only once every call has started: a serial loop
     // would never start the second and deadlock into the timeout.
     let d = Arc::new(ParallelDispatch::by_name(&["read_file"]).with_barrier(3));
-    let tp = FakeToolProvider::scripted(
+    let tp = FakeProvider::scripted(
         vec![RoundResult {
             tool_calls: vec![
                 call("1", "read_file"),
@@ -215,7 +208,7 @@ async fn test_quiet_loop_batches_parallel_calls() {
 #[tokio::test]
 async fn single_parallel_call_runs_serially() {
     let d = Arc::new(ParallelDispatch::by_name(&["read_file"]));
-    let tp = FakeToolProvider::scripted(
+    let tp = FakeProvider::scripted(
         vec![RoundResult {
             tool_calls: vec![
                 call("1", "read_file"),

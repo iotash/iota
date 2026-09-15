@@ -127,7 +127,7 @@ mod tests {
     use crate::provider::error::ProviderError;
     use crate::provider::model::Message;
     use crate::provider::{ChatResult, Provider, ProviderKind};
-    use crate::testing::FakeToolProvider;
+    use crate::testing::FakeProvider;
     use tokio_util::sync::CancellationToken;
 
     use super::{apply, warn_tools_without_calling};
@@ -243,7 +243,7 @@ mod tests {
             .insert("code".to_owned(), serde_norway::Value::Null);
 
         // A tool-calling provider says nothing.
-        let tool_provider = FakeToolProvider::scripted(Vec::new(), "done");
+        let tool_provider = FakeProvider::scripted(Vec::new(), "done");
         let mut warnings = Vec::new();
         warn_tools_without_calling(&tool_provider, &agent_cfg, 0, &mut |w| warnings.push(w));
         assert!(warnings.is_empty());

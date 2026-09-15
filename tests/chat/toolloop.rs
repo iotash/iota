@@ -1,12 +1,11 @@
 //! The quiet tool loop (`chat/toolloop_test.go`): the local cap, the no-default-cap contract, the per-round tool
 //! refresh, the reasoning-only rule and the final round's images — plus the phase-2 seeding/delta contract
 //! (`chat/run.go:68-74`, `:221-229`, `:1092-1095`): an imported history in, the turn's delta out.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::{
     collections::VecDeque,
     path::Path,
-    sync::{Arc, Mutex, atomic::Ordering},
+    sync::{Arc, Mutex},
 };
 
 use iota::BoxFuture;
@@ -19,19 +18,18 @@ use iota::provider::model::{
 use iota::provider::sink::StreamSink;
 use iota::provider::usage::Usage;
 use iota::provider::{ChatResult, Provider, ProviderKind, RoundResult, ToolProvider};
-use iota::testing::{FakeToolProvider, StaticDispatcher};
+use iota::testing::{FakeProvider, StaticDispatcher};
 use iota::tool::Dispatcher;
 use pretty_assertions::assert_eq;
 use tokio_util::sync::CancellationToken;
 
 use crate::common::{GrowingDispatcher, SearchingToolProvider, call, lock};
 
-// Go: chat/toolloop_test.go:40
 #[tokio::test]
-async fn test_tool_loop_cap() {
+async fn the_tool_loop_stops_at_the_opt_in_cap() {
     // Opt-in limit (--max-turns): the loop stops after exactly N rounds.
     const LIMIT: u32 = 7;
-    let tp = FakeToolProvider::looping(1, 0);
+    let tp = FakeProvider::looping(1, 0);
     let dispatch: Arc<StaticDispatcher> = Arc::new(StaticDispatcher::new(&["noop"]));
     let mut history = vec![Message::user("go")];
     let mut host = QuietHost::new();
@@ -57,11 +55,7 @@ async fn test_tool_loop_cap() {
         err.to_string(),
         "tool loop reached the --max-turns limit without a final response (7 turns)"
     );
-    assert_eq!(
-        tp.calls.load(Ordering::SeqCst),
-        7,
-        "model calls, want exactly the limit"
-    );
+    assert_eq!(tp.calls(), 7, "model calls, want exactly the limit");
     // Every completed round was recorded; the cap check happens before the eighth call.
     assert_eq!(host.rec.round_count(), 7);
 
@@ -90,12 +84,11 @@ async fn test_tool_loop_cap() {
     }
 }
 
-// Go: chat/toolloop_test.go:79
 #[tokio::test]
-async fn test_tool_loop_unlimited_by_default() {
+async fn the_tool_loop_is_unlimited_by_default() {
     // The no-default-cap contract: with max_turns 0 the loop runs past any historical cap and ends only when
     // the model stops calling tools.
-    let tp = FakeToolProvider::looping(1, 75);
+    let tp = FakeProvider::looping(1, 75);
     let dispatch: Arc<StaticDispatcher> = Arc::new(StaticDispatcher::new(&["noop"]));
     let mut history = vec![Message::user("go")];
     let mut host = QuietHost::new();
@@ -111,15 +104,14 @@ async fn test_tool_loop_unlimited_by_default() {
     )
     .await
     .expect("unlimited loop errored");
-    assert_eq!(tp.calls.load(Ordering::SeqCst), 76);
+    assert_eq!(tp.calls(), 76);
     assert_eq!(outcome.content, "done");
     assert_eq!(host.rec.round_count(), 76);
     assert_eq!(history.len(), 1 + 2 * 75);
 }
 
-// Go: chat/toolloop_test.go:133
 #[tokio::test]
-async fn test_execute_with_tools_refreshes_per_round() {
+async fn execute_with_tools_refreshes_the_tool_set_every_round() {
     // The Once loop re-queries the dispatcher every round: a tool loaded by a search_tools call must be
     // advertised in the very next request.
     let tp = SearchingToolProvider::default();
@@ -155,7 +147,7 @@ async fn test_execute_with_tools_refreshes_per_round() {
 // New (chat.go:318-323): a round with no tool calls, no content and some reasoning answers WITH the reasoning.
 #[tokio::test]
 async fn reasoning_only_reply_is_the_reply() {
-    let tp = FakeToolProvider::scripted(
+    let tp = FakeProvider::scripted(
         vec![RoundResult {
             reasoning: "the answer is 42".to_owned(),
             ..RoundResult::default()
@@ -183,7 +175,7 @@ async fn reasoning_only_reply_is_the_reply() {
     assert_eq!(history, vec![Message::user("go")]);
 
     // With content present the reasoning stays reasoning.
-    let tp = FakeToolProvider::scripted(
+    let tp = FakeProvider::scripted(
         vec![RoundResult {
             content: "visible".to_owned(),
             reasoning: "hidden".to_owned(),
@@ -207,7 +199,7 @@ async fn reasoning_only_reply_is_the_reply() {
     assert_eq!(outcome.reasoning, "hidden");
 
     // And run_once surfaces the reasoning-only reply as THE reply.
-    let tp = FakeToolProvider::scripted(
+    let tp = FakeProvider::scripted(
         vec![RoundResult {
             reasoning: "only thought".to_owned(),
             ..RoundResult::default()
@@ -245,7 +237,7 @@ async fn tool_loop_final_round_images_are_saved() {
         mime_type: "image/png".to_owned(),
         data: b"LAST".to_vec(),
     };
-    let tp = FakeToolProvider::scripted(
+    let tp = FakeProvider::scripted(
         vec![
             RoundResult {
                 tool_calls: vec![call("c1", "noop")],
@@ -290,7 +282,7 @@ async fn tool_loop_final_round_images_are_saved() {
     assert_eq!(host.rec.round_count(), 2);
 
     // Children pass None: nothing is saved, and every image is an error line (POLICY I-06 + HOME_NOT_DEFINED).
-    let tp = FakeToolProvider::scripted(
+    let tp = FakeProvider::scripted(
         vec![RoundResult {
             content: "done".to_owned(),
             images: vec![Attachment {
@@ -622,7 +614,7 @@ async fn imported_history_makes_the_system_prompt_inert() {
 // New (D-43): a failed round fails the run — there is no outcome, so nothing is persisted.
 #[tokio::test]
 async fn a_failed_round_yields_no_delta() {
-    let p = FakeToolProvider::reporting(5, Some(1));
+    let p = FakeProvider::reporting(5, Some(1));
     let dispatch: Arc<StaticDispatcher> = Arc::new(StaticDispatcher::new(&["noop"]));
     let err = run_once(
         &RunCtx::default(),
@@ -736,7 +728,7 @@ async fn final_assistant_carries_the_saved_image_subset() {
     );
 }
 
-// Go: chat/run.go:1092-1099 — the terminating round's raw blocks ride the final assistant message.
+// The terminating round's raw blocks ride the final assistant message.
 // A thinking block must go back on every later request that replays this turn, and a turn that ends
 // in text (no tool call) is the common case, so dropping the blocks there breaks the replay contract
 // for ordinary conversation, not just tool rounds.
@@ -746,7 +738,7 @@ async fn terminating_round_raw_content_rides_the_final_message() {
         r#"{"type":"thinking","thinking":"weigh it","signature":"SEAL"}"#.to_owned(),
     )
     .expect("raw");
-    let tp = FakeToolProvider::scripted(
+    let tp = FakeProvider::scripted(
         vec![RoundResult {
             content: "the answer".to_owned(),
             raw_content: Some(RawContent::Anthropic(vec![sealed.clone()])),

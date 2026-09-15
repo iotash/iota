@@ -6,7 +6,6 @@
 //! what is asserted is the ORDER the states and the pings actually reach a host — including the
 //! per-capability laws (`notify: false` silences pings but not states) and the two texts a turn
 //! can end with (`notify_digest(reply)` and `"Image ready"`).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::{Arc, PoisonError};
 
@@ -18,9 +17,7 @@ use iota::provider::model::{Attachment, Message};
 use iota::provider::{ChatResult, Provider, ProviderKind};
 use iota::repl::{McpHooks, RunParams, SessionCtx};
 use iota::session::{SessionStore, SessionWriter};
-use iota::testing::{
-    FakeToolProvider, RecordingHost, Reply, ScriptedUi, StaticDispatcher, UiEvent,
-};
+use iota::testing::{FakeProvider, RecordingHost, Reply, ScriptedUi, StaticDispatcher, UiEvent};
 use iota::tool::Dispatcher;
 use iota::ui::facade::{Input, PanelResult, TabbedResult, Ui};
 use pretty_assertions::assert_eq;
@@ -263,7 +260,7 @@ fn no_tools() -> Arc<dyn Dispatcher> {
 // the anchors
 // ---------------------------------------------------------------------------
 
-/// Go: chat/run.go:384,1010,1100-1107 — one successful turn walks Idle → Busy → Idle, and the
+/// One successful turn walks Idle → Busy → Idle, and the
 /// ping carries a DIGEST of the answer, never a fixed phrase. The leading `SetState(Idle)` the
 /// input dispatch re-asserts is deduplicated away (the presenter starts at Idle), so a host that
 /// pays per update (cmux spawns a process) sees exactly two.
@@ -290,7 +287,7 @@ async fn a_successful_turn_reports_busy_then_idle_with_a_digest() {
     );
 }
 
-/// Go: chat/run.go:1103-1106 — an image-only reply pings `"Image ready"`, decided AFTER
+/// An image-only reply pings `"Image ready"`, decided AFTER
 /// `collectImages` attached the pictures (an empty reply with no attachments is still a digest).
 #[tokio::test]
 async fn an_image_only_reply_pings_image_ready() {
@@ -303,7 +300,7 @@ async fn an_image_only_reply_pings_image_ready() {
     assert_eq!(f.pings(), vec![(Kind::Done, "Image ready".to_owned())]);
 }
 
-/// Go: chat/run.go:1078-1089 — a failed turn leaves the host in Error ("it stands until the user
+/// A failed turn leaves the host in Error ("it stands until the user
 /// acts") and pings the error's headline, BEFORE the red block lands.
 #[tokio::test]
 async fn a_failed_turn_reports_error_and_pings_the_headline() {
@@ -322,7 +319,7 @@ async fn a_failed_turn_reports_error_and_pings_the_headline() {
     );
 }
 
-/// Go: chat/run.go:1070-1076 — the user did the interrupting, so the host goes back to Idle and
+/// The user did the interrupting, so the host goes back to Idle and
 /// NOTHING pings: a bell for something they just did themselves is noise.
 #[tokio::test]
 async fn an_interrupted_turn_is_silent() {
@@ -339,8 +336,7 @@ async fn an_interrupted_turn_is_silent() {
     );
 }
 
-/// Go: `internal/host/host_test.go:61` `TestPresenterNotifySwitch`, end to end — config
-/// `notify: false` silences every ping while leaving the state channel untouched.
+/// End to end: config `notify: false` silences every ping while leaving the state channel untouched.
 #[tokio::test]
 async fn notify_false_silences_pings_but_not_states() {
     let f = Fixture::new(vec![input("hi"), Reply::Interrupted]);
@@ -360,7 +356,7 @@ async fn notify_false_silences_pings_but_not_states() {
     );
 }
 
-/// Go: `chat/approval.go:58-69` — the approval gate is the loop's `NeedsInput` anchor: the host
+/// The approval gate is the loop's `NeedsInput` anchor: the host
 /// hears `NeedsInput` with `"<label> wants to modify files"` before the prompt opens and `Busy`
 /// again once it resolves, either way. The full sequence a tool turn walks is
 /// `Idle → Busy → NeedsInput → Busy → Idle` with two pings.
@@ -374,13 +370,9 @@ async fn the_approval_gate_walks_needs_input_and_back() {
     ]);
     let dispatch =
         Arc::new(StaticDispatcher::new(&["noop"]).with_approval(&["noop"])) as Arc<dyn Dispatcher>;
-    iota::repl::run(f.params(
-        Box::new(FakeToolProvider::reporting(1, None)),
-        dispatch,
-        true,
-    ))
-    .await
-    .expect("clean exit");
+    iota::repl::run(f.params(Box::new(FakeProvider::reporting(1, None)), dispatch, true))
+        .await
+        .expect("clean exit");
 
     assert_eq!(
         f.states(),

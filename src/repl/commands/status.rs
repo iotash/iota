@@ -271,7 +271,7 @@ pub(crate) async fn cmd_status(repl: &mut Repl) {
 
 #[cfg(test)]
 mod tests {
-    use crate::testing::FakeToolProvider;
+    use crate::testing::FakeProvider;
     use pretty_assertions::assert_eq;
 
     use super::{StatusItem, TokenStatus, Usage, status_lines, status_rows};
@@ -287,13 +287,13 @@ mod tests {
             .map_or("", |i| i.value.as_str())
     }
 
-    // Go: chat/status.go:42-135 — rows exist by CAPABILITY, never as a row of zeros: a
+    // Rows exist by CAPABILITY, never as a row of zeros: a
     // provider with no tuning shows no Temperature row, an ephemeral chat says so, an
     // empty attachment set contributes no row at all, and a provider that accounts no
     // tokens shows the token-LESS shape (T-10).
     #[test]
     fn status_rows_are_capability_gated() {
-        let mut p = FakeToolProvider::looping(0, 1);
+        let mut p = FakeProvider::looping(0, 1);
         let items = status_lines(&mut p, 4, 0, 2, None, None, "");
         assert_eq!(
             names(&items),
@@ -333,10 +333,9 @@ mod tests {
     /// shape: Context with its percentage, the estimate/measured source, the last call's
     /// figures, and the session totals. The cache rows appear only where caching actually
     /// happened — a provider that reports none shows no row of zeros.
-    // Go: chat/status.go:100-119 (the `provider.UsageReporter` branch)
     #[test]
-    fn token_rows_render_go_shapes_and_gate_the_cache_row() {
-        let mut p = FakeToolProvider::looping(0, 1);
+    fn token_rows_render_their_shapes_and_gate_the_cache_row() {
+        let mut p = FakeProvider::looping(0, 1);
         let bare = TokenStatus {
             used: 64_000,
             window: 128_000,

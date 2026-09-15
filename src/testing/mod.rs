@@ -1,33 +1,58 @@
-//! Shared test fakes (feature `testing`): a recording sink, a static dispatcher, a scripted tool provider, and
-//! map-backed `VarResolver`/`EnvSource` fixtures that replace `t.Setenv`.
+//! Shared test fakes (feature `testing`): the one fake provider ([`FakeProvider`]), a recording sink, a
+//! static dispatcher, the scripted UI facade, and map-backed `VarResolver`/`EnvSource` fixtures that replace
+//! `t.Setenv`.
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     path::PathBuf,
-    sync::{
-        Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::{Mutex, MutexGuard, PoisonError},
 };
-
-use tokio_util::sync::CancellationToken;
 
 use crate::BoxFuture;
 use crate::chat::turns::RunCtx;
-use crate::provider::error::ProviderError;
-use crate::provider::model::{JsonObject, Message, ToolCall, ToolDef};
+use crate::provider::model::{JsonObject, ToolCall, ToolDef};
 use crate::provider::sink::StreamSink;
-use crate::provider::usage::Usage;
-use crate::provider::{ChatResult, Provider, ProviderKind, RoundResult, ToolProvider};
 use crate::tool::{Dispatcher, ToolOutput, ToolResult};
 use crate::vars::{EnvSource, VarResolver};
 
+mod provider;
 mod scripted;
+pub use provider::{Call, Failure, FakeProvider, Interrupt, Log, Path, Round};
 pub use scripted::{PanelSummary, RecordingHost, Reply, ScriptedUi, TabbedSummary, UiEvent};
 
 /// Locks a fixture mutex, tolerating poisoning (a panicking test must not hide the state from the next assertion).
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A `ToolDef` with just a name.
+pub fn tool_def(name: &str) -> ToolDef {
+    ToolDef {
+        name: name.to_owned(),
+        ..ToolDef::default()
+    }
+}
+
+/// A `ToolCall` with empty arguments.
+pub fn tool_call(id: &str, name: &str) -> ToolCall {
+    ToolCall {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        arguments: JsonObject::new(),
+    }
+}
+
+/// A `ToolCall` with string arguments.
+pub fn tool_call_with(id: &str, name: &str, args: &[(&str, &str)]) -> ToolCall {
+    let mut arguments = JsonObject::new();
+    for (k, v) in args {
+        arguments.insert((*k).to_owned(), serde_json::Value::from(*v));
+    }
+    ToolCall {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        arguments,
+    }
 }
 
 /// One sink event, in arrival order.
@@ -177,193 +202,6 @@ impl Dispatcher for StaticDispatcher {
     }
 }
 
-/// Scripted `ToolProvider`/`Provider`: per-round `RoundResult`s; after the script ends returns the final text; kind
-/// `OpenAi`, model `"gpt-test"`.
-pub struct FakeToolProvider {
-    /// Remaining scripted rounds.
-    pub rounds: Mutex<VecDeque<RoundResult>>,
-    /// The text returned once the script is exhausted.
-    pub final_text: String,
-    /// Number of `stream_chat_with_tools` calls so far.
-    pub calls: AtomicUsize,
-    /// The tool names advertised on each call.
-    pub seen_tools: Mutex<Vec<Vec<String>>>,
-    /// Fail call number `n` (1-based) with `ProviderError::other("boom")`.
-    pub fail_on: Option<usize>,
-    /// `looping(calls, 0)`: once the script is empty keep requesting this many `noop` calls per round forever (Go's
-    /// `loopingToolProvider` with `stopAfter == 0`, the runaway case `--max-turns` guards against).
-    endless: Option<u32>,
-}
-
-impl FakeToolProvider {
-    /// Requests `calls` tool calls per round until `stop_after` rounds, then the final text `"done"`; `stop_after == 0`
-    /// never stops (Go `loopingToolProvider`).
-    pub fn looping(calls: u32, stop_after: u32) -> Self {
-        let rounds = (1..=stop_after).map(|n| looping_round(n, calls)).collect();
-        Self {
-            rounds: Mutex::new(rounds),
-            final_text: "done".to_owned(),
-            calls: AtomicUsize::new(0),
-            seen_tools: Mutex::new(Vec::new()),
-            fail_on: None,
-            endless: (stop_after == 0).then_some(calls),
-        }
-    }
-
-    /// Reproduces `reportingProvider`: round n usage = `{input: 100n, output: 10n, cache_read: n, total: 110n}`,
-    /// calls tool `noop` until `stop_after`, then final text `"final answer"`; `fail_on = Some(n)` fails call n
-    /// with `ProviderError::other("boom")`.
-    pub fn reporting(stop_after: u32, fail_on: Option<u32>) -> Self {
-        let usage = |n: u32| {
-            let n = u64::from(n);
-            Some(Usage {
-                input: 100 * n,
-                output: 10 * n,
-                cache_read: n,
-                total: 110 * n,
-                ..Usage::default()
-            })
-        };
-        let mut rounds: VecDeque<RoundResult> = (1..=stop_after)
-            .map(|n| RoundResult {
-                tool_calls: vec![ToolCall {
-                    id: format!("c{n}"),
-                    name: "noop".to_owned(),
-                    arguments: JsonObject::new(),
-                }],
-                usage: usage(n),
-                ..RoundResult::default()
-            })
-            .collect();
-        // The terminating round reports usage too (Go sets `last` before checking stopAfter).
-        rounds.push_back(RoundResult {
-            content: "final answer".to_owned(),
-            usage: usage(stop_after + 1),
-            ..RoundResult::default()
-        });
-        Self {
-            rounds: Mutex::new(rounds),
-            final_text: "final answer".to_owned(),
-            calls: AtomicUsize::new(0),
-            seen_tools: Mutex::new(Vec::new()),
-            fail_on: fail_on.map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
-            endless: None,
-        }
-    }
-
-    /// Round results verbatim (e.g. a terminating round whose `images` is non-empty —
-    /// `tool_loop_final_round_images_are_saved`).
-    pub fn scripted(rounds: Vec<RoundResult>, final_text: &str) -> Self {
-        Self {
-            rounds: Mutex::new(rounds.into()),
-            final_text: final_text.to_owned(),
-            calls: AtomicUsize::new(0),
-            seen_tools: Mutex::new(Vec::new()),
-            fail_on: None,
-            endless: None,
-        }
-    }
-
-    /// Counts the call and pops the next scripted round (or synthesises the endless one).
-    fn next_round(&self, call: usize) -> Option<RoundResult> {
-        if let Some(r) = lock(&self.rounds).pop_front() {
-            return Some(r);
-        }
-        let n = u32::try_from(call).unwrap_or(u32::MAX);
-        self.endless.map(|calls| looping_round(n, calls))
-    }
-}
-
-/// Round `n` of `loopingToolProvider`: `calls` requests for `noop` with ids `call-<n>` (or `call-<n>-<i>` when a
-/// round carries several).
-fn looping_round(n: u32, calls: u32) -> RoundResult {
-    RoundResult {
-        tool_calls: (1..=calls)
-            .map(|i| ToolCall {
-                id: if calls == 1 {
-                    format!("call-{n}")
-                } else {
-                    format!("call-{n}-{i}")
-                },
-                name: "noop".to_owned(),
-                arguments: JsonObject::new(),
-            })
-            .collect(),
-        ..RoundResult::default()
-    }
-}
-
-impl Provider for FakeToolProvider {
-    fn kind(&self) -> ProviderKind {
-        ProviderKind::OpenAi
-    }
-
-    fn model(&self) -> &'static str {
-        "gpt-test"
-    }
-
-    fn set_model(&mut self, _model: String) {}
-
-    fn list_models<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<Vec<String>, ProviderError>> {
-        Box::pin(async { Ok(Vec::new()) })
-    }
-
-    /// The unary path consumes the same script: the next round's content/usage/images, or the final text.
-    fn chat<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        _messages: &'a [Message],
-    ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
-        Box::pin(async move {
-            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
-            if self.fail_on == Some(call) {
-                return Err(ProviderError::other("boom"));
-            }
-            Ok(match self.next_round(call) {
-                Some(r) => ChatResult {
-                    text: r.content,
-                    usage: r.usage,
-                    images: r.images,
-                },
-                None => ChatResult {
-                    text: self.final_text.clone(),
-                    ..ChatResult::default()
-                },
-            })
-        })
-    }
-
-    fn as_tool_provider(&self) -> Option<&dyn ToolProvider> {
-        Some(self)
-    }
-}
-
-impl ToolProvider for FakeToolProvider {
-    fn stream_chat_with_tools<'a>(
-        &'a self,
-        _cancel: &'a CancellationToken,
-        _messages: &'a [Message],
-        tools: &'a [ToolDef],
-        sink: &'a mut dyn StreamSink,
-    ) -> BoxFuture<'a, Result<RoundResult, ProviderError>> {
-        Box::pin(async move {
-            sink.reasoning_done();
-            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
-            lock(&self.seen_tools).push(tools.iter().map(|t| t.name.clone()).collect());
-            if self.fail_on == Some(call) {
-                return Err(ProviderError::other("boom"));
-            }
-            Ok(self.next_round(call).unwrap_or_else(|| RoundResult {
-                content: self.final_text.clone(),
-                ..RoundResult::default()
-            }))
-        })
-    }
-}
-
 /// `HashMap`-backed `VarResolver` (env vars + fixed cwd/home) — replaces `t.Setenv`.
 #[derive(Clone, Debug, Default)]
 pub struct MapResolver {
@@ -424,14 +262,10 @@ pub fn map_env(vars: &[(&str, &str)]) -> MapEnv {
 mod tests {
     use tokio_util::sync::CancellationToken;
 
-    use super::{
-        FakeToolProvider, RecordingSink, SinkEvent, StaticDispatcher, map_env, map_resolver,
-    };
+    use super::{RecordingSink, SinkEvent, StaticDispatcher, map_env, map_resolver};
     use crate::chat::turns::RunCtx;
     use crate::provider::model::JsonObject;
     use crate::provider::sink::StreamSink;
-    use crate::provider::usage::Usage;
-    use crate::provider::{Provider, ToolProvider};
     use crate::tool::Dispatcher;
     use crate::vars::{EnvSource, VarResolver, expand};
 
@@ -480,111 +314,6 @@ mod tests {
         assert_eq!(out.text, "a:{\"k\":1}");
         assert!(!out.is_error);
         assert_eq!(super::lock(&d.calls).as_slice(), &[("a".to_owned(), args)]);
-    }
-
-    #[tokio::test]
-    async fn fake_tool_provider_scripts() {
-        let cancel = CancellationToken::new();
-        let tools = [crate::provider::model::ToolDef {
-            name: "noop".to_owned(),
-            ..Default::default()
-        }];
-
-        // looping(1, 2): two rounds with one call each, then "done"; endless when stop_after == 0.
-        let p = FakeToolProvider::looping(1, 2);
-        let mut sink = RecordingSink::default();
-        for n in 1..=2 {
-            let r = p
-                .stream_chat_with_tools(&cancel, &[], &tools, &mut sink)
-                .await
-                .expect("round");
-            assert_eq!(r.tool_calls.len(), 1);
-            assert_eq!(r.tool_calls[0].id, format!("call-{n}"));
-            assert_eq!(r.tool_calls[0].name, "noop");
-        }
-        let r = p
-            .stream_chat_with_tools(&cancel, &[], &tools, &mut sink)
-            .await
-            .expect("final");
-        assert_eq!(r.content, "done");
-        assert!(r.tool_calls.is_empty());
-        assert_eq!(p.calls.load(std::sync::atomic::Ordering::SeqCst), 3);
-        assert_eq!(super::lock(&p.seen_tools).len(), 3);
-        assert_eq!(super::lock(&p.seen_tools)[0], vec!["noop".to_owned()]);
-        assert_eq!(sink.events, vec![SinkEvent::ReasoningDone; 3]);
-
-        let endless = FakeToolProvider::looping(3, 0);
-        for n in 1..=100 {
-            let r = endless
-                .stream_chat_with_tools(&cancel, &[], &tools, &mut sink)
-                .await
-                .expect("round");
-            assert_eq!(r.tool_calls.len(), 3);
-            assert_eq!(r.tool_calls[2].id, format!("call-{n}-3"));
-        }
-
-        // reporting(2, Some(2)): round 1 reports usage, call 2 fails, round 2 is still queued.
-        let p = FakeToolProvider::reporting(2, Some(2));
-        let r = p
-            .stream_chat_with_tools(&cancel, &[], &tools, &mut sink)
-            .await
-            .expect("round 1");
-        assert_eq!(r.tool_calls[0].id, "c1");
-        assert_eq!(
-            r.usage,
-            Some(Usage {
-                input: 100,
-                output: 10,
-                cache_read: 1,
-                total: 110,
-                ..Usage::default()
-            })
-        );
-        let err = p
-            .stream_chat_with_tools(&cancel, &[], &tools, &mut sink)
-            .await
-            .expect_err("boom");
-        assert_eq!(err.to_string(), "boom");
-        let r = p
-            .stream_chat_with_tools(&cancel, &[], &tools, &mut sink)
-            .await
-            .expect("round 2");
-        assert_eq!(r.tool_calls[0].id, "c2");
-        let r = p
-            .stream_chat_with_tools(&cancel, &[], &tools, &mut sink)
-            .await
-            .expect("final");
-        assert_eq!(r.content, "final answer");
-        assert_eq!(r.usage.map(|u| u.total), Some(330));
-        let r = p
-            .stream_chat_with_tools(&cancel, &[], &tools, &mut sink)
-            .await
-            .expect("past the script");
-        assert_eq!(r.content, "final answer");
-        assert!(r.usage.is_none());
-
-        // scripted: rounds verbatim then the final text; the unary path consumes the same script.
-        let p = FakeToolProvider::scripted(
-            vec![crate::provider::RoundResult {
-                content: "scripted".to_owned(),
-                usage: Some(Usage {
-                    input: 1,
-                    ..Usage::default()
-                }),
-                ..Default::default()
-            }],
-            "fin",
-        );
-        assert_eq!(p.kind(), crate::provider::ProviderKind::OpenAi);
-        assert_eq!(p.model(), "gpt-test");
-        assert!(p.as_tool_provider().is_some());
-        assert!(p.list_models(&cancel).await.expect("models").is_empty());
-        let c = p.chat(&cancel, &[]).await.expect("chat");
-        assert_eq!(c.text, "scripted");
-        assert_eq!(c.usage.map(|u| u.input), Some(1));
-        let c = p.chat(&cancel, &[]).await.expect("chat");
-        assert_eq!(c.text, "fin");
-        assert!(c.usage.is_none());
     }
 
     #[test]

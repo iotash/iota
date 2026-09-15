@@ -1,6 +1,5 @@
 //! The run report and the two output formats (`chat/output_test.go`), cancellation in JSON mode, and the image
 //! file naming/modes.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::{path::Path, sync::Arc};
 
@@ -13,13 +12,12 @@ use iota::chat::{
 use iota::provider::Provider;
 use iota::provider::model::Attachment;
 use iota::provider::usage::Usage;
-use iota::testing::{FakeToolProvider, StaticDispatcher};
+use iota::testing::{FakeProvider, StaticDispatcher};
 use iota::tool::Dispatcher;
 use tokio_util::sync::CancellationToken;
 
-// Go: chat/output_test.go:17
 #[test]
-fn test_parse_output_format() {
+fn an_output_format_parses_trimmed_and_rejects_unknown_names() {
     for (input, want) in [
         ("", OutputFormat::Text),
         ("text", OutputFormat::Text),
@@ -43,9 +41,8 @@ fn test_parse_output_format() {
     }
 }
 
-// Go: chat/output_test.go:46
 #[test]
-fn test_token_usage_sum_preserves_the_absent_total() {
+fn a_token_usage_sum_preserves_the_absent_total() {
     // anthropic reports cache counts BESIDE input and no total, so a summed total of zero still has to mean
     // "add the parts up yourself" rather than "this run was free".
     let mut anthropic = TokenUsage::default();
@@ -120,10 +117,9 @@ async fn run_json(
     (rep, res)
 }
 
-// Go: chat/output_test.go:117
 #[tokio::test]
-async fn test_once_json_reports_every_round() {
-    let mut p = FakeToolProvider::reporting(2, None);
+async fn once_in_json_mode_reports_every_round() {
+    let mut p = FakeProvider::reporting(2, None);
     let (rep, res) = run_json(
         &mut p,
         Arc::new(StaticDispatcher::new(&["noop"])),
@@ -163,11 +159,10 @@ async fn test_once_json_reports_every_round() {
     assert!(rep["duration_ms"].is_u64());
 }
 
-// Go: chat/output_test.go:158
 #[tokio::test]
-async fn test_once_json_reports_a_failed_run() {
+async fn once_in_json_mode_reports_a_failed_run() {
     // A failed run still reports: the rounds before the failure were billed. The error travels out too.
-    let mut p = FakeToolProvider::reporting(5, Some(3));
+    let mut p = FakeProvider::reporting(5, Some(3));
     let (rep, res) = run_json(
         &mut p,
         Arc::new(StaticDispatcher::new(&["noop"])),
@@ -189,11 +184,10 @@ async fn test_once_json_reports_a_failed_run() {
     assert_eq!(rep["round_usage"].as_array().unwrap().len(), 2);
 }
 
-// Go: chat/output_test.go:180
 #[tokio::test]
-async fn test_once_text_mode_stays_bare() {
+async fn once_in_text_mode_prints_the_bare_reply() {
     // Text mode is unchanged: the reply, alone, with no report anywhere near it.
-    let mut p = FakeToolProvider::reporting(1, None);
+    let mut p = FakeProvider::reporting(1, None);
     let mut buf: Vec<u8> = Vec::new();
     once(
         CancellationToken::new(),
@@ -216,7 +210,7 @@ async fn test_once_text_mode_stays_bare() {
     assert_eq!(String::from_utf8(buf).unwrap(), "final answer\n");
 
     // On failure text mode writes NOTHING.
-    let mut p = FakeToolProvider::reporting(5, Some(2));
+    let mut p = FakeProvider::reporting(5, Some(2));
     let mut buf: Vec<u8> = Vec::new();
     let err = once(
         CancellationToken::new(),
@@ -244,7 +238,7 @@ async fn test_once_text_mode_stays_bare() {
     );
 
     // The unary path (no tools advertised): one round, the reply alone.
-    let mut p = FakeToolProvider::reporting(0, None);
+    let mut p = FakeProvider::reporting(0, None);
     let mut buf: Vec<u8> = Vec::new();
     once(
         CancellationToken::new(),
@@ -265,12 +259,11 @@ async fn test_once_text_mode_stays_bare() {
     .await
     .expect("run failed");
     assert_eq!(String::from_utf8(buf).unwrap(), "final answer\n");
-    assert_eq!(p.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(p.calls(), 1);
 }
 
-// Go: chat/output_test.go:193
 #[test]
-fn test_run_report_wire_names() {
+fn the_run_report_keeps_its_wire_names() {
     // The wire names are the contract a consumer parses against; a rename would silently break every caller.
     let rep = RunReport {
         kind: "result",
@@ -324,7 +317,7 @@ async fn cancelled_run_reports_interrupted_in_json() {
     let cancel = CancellationToken::new();
     cancel.cancel();
     // A runaway provider: without the cancellation check the loop would never end.
-    let mut p = FakeToolProvider::looping(1, 0);
+    let mut p = FakeProvider::looping(1, 0);
     let (rep, res) = run_json(
         &mut p,
         Arc::new(StaticDispatcher::new(&["noop"])),
@@ -337,10 +330,10 @@ async fn cancelled_run_reports_interrupted_in_json() {
     assert_eq!(rep["error"], "interrupted");
     assert_eq!(rep["reply"], "");
     assert_eq!(rep["rounds"], 0);
-    assert_eq!(p.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(p.calls(), 0);
 
     // Any failure while the token is cancelled becomes `interrupted` (the provider's own error is replaced).
-    let mut p = FakeToolProvider::reporting(5, Some(2));
+    let mut p = FakeProvider::reporting(5, Some(2));
     let cx = RunCtx::new(cancel.clone());
     let _ = cx;
     let (rep, res) = run_json(
@@ -353,7 +346,7 @@ async fn cancelled_run_reports_interrupted_in_json() {
     assert_eq!(rep["error"], "interrupted");
 
     // Text mode prints nothing.
-    let mut p = FakeToolProvider::looping(1, 0);
+    let mut p = FakeProvider::looping(1, 0);
     let mut buf: Vec<u8> = Vec::new();
     let err = once(
         cancel,
@@ -473,7 +466,7 @@ fn save_image_names_and_modes() {
         .unwrap();
     let mut buf: Vec<u8> = Vec::new();
     rt.block_on(async {
-        let mut p = FakeToolProvider::scripted(
+        let mut p = FakeProvider::scripted(
             vec![iota::provider::RoundResult {
                 content: String::new(),
                 images: vec![img],

@@ -1,18 +1,17 @@
 //! The run-wide turn budget (`chat/turns_test.go`, the loop-level half — the pure `TurnBudget` tests live
 //! beside the type).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::Arc;
 
 use iota::chat::turns::{RunCtx, TurnBudget};
 use iota::chat::{ChatError, QuietHost, execute_with_tools};
 use iota::provider::model::Message;
-use iota::testing::{FakeToolProvider, StaticDispatcher};
+use iota::testing::{FakeProvider, StaticDispatcher};
 use iota::tool::Dispatcher;
 
 /// One runaway loop drawing on `cx`'s pool; returns the number of model calls it got to make.
 async fn spend(cx: &RunCtx) -> usize {
-    let tp = FakeToolProvider::looping(1, 0);
+    let tp = FakeProvider::looping(1, 0);
     let dispatch: Arc<StaticDispatcher> = Arc::new(StaticDispatcher::new(&["noop"]));
     let mut history = vec![Message::user("go")];
     let err = execute_with_tools(
@@ -35,12 +34,11 @@ async fn spend(cx: &RunCtx) -> usize {
         err.to_string(),
         "tool loop reached the --max-turns limit without a final response (5 turns, the whole run's budget)"
     );
-    tp.calls.load(Ordering::SeqCst)
+    tp.calls()
 }
 
-// Go: chat/turns_test.go:72
 #[tokio::test]
-async fn test_turn_budget_is_shared_across_loops() {
+async fn the_turn_budget_is_shared_across_loops() {
     // The budget belongs to the RUN. Two loops sharing one pool stop at the total between them, not at the
     // total each.
     let cx = RunCtx {
@@ -65,7 +63,7 @@ async fn budget_is_taken_before_the_call_and_local_cap_wins() {
         ..RunCtx::default()
     };
     // Fails on call 1: the pool still lost that turn.
-    let tp = FakeToolProvider::reporting(5, Some(1));
+    let tp = FakeProvider::reporting(5, Some(1));
     let dispatch: Arc<StaticDispatcher> = Arc::new(StaticDispatcher::new(&["noop"]));
     let mut history = vec![Message::user("go")];
     let err = execute_with_tools(
@@ -91,7 +89,7 @@ async fn budget_is_taken_before_the_call_and_local_cap_wins() {
         budget: iota::chat::turns::turn_cap(10).map(TurnBudget::new),
         ..RunCtx::default()
     };
-    let tp = FakeToolProvider::looping(1, 0);
+    let tp = FakeProvider::looping(1, 0);
     let err = execute_with_tools(
         &cx,
         &tp,
@@ -108,5 +106,5 @@ async fn budget_is_taken_before_the_call_and_local_cap_wins() {
         matches!(err, ChatError::LocalCap { turns } if turns.get() == 2),
         "{err}"
     );
-    assert_eq!(tp.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(tp.calls(), 2);
 }
