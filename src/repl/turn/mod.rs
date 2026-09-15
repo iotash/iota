@@ -52,12 +52,15 @@ use crate::tool::Presentation;
 use crate::ui::facade::{Ui, UiError, UiStreamSink};
 use tokio_util::sync::CancellationToken;
 
-use crate::repl::context::meter::CtxMeter;
+use crate::repl::context::meter::{BudgetSnap, CtxMeter};
+use crate::repl::errors::describe_error;
 use crate::repl::render::group::{ThinkingMeter, composing_label};
 use crate::repl::render::transcript::{ContentCommitter, Transcript};
 use crate::repl::render::uisink::UiMdSink;
+use crate::repl::state::Conversation;
 use crate::repl::turn::approval::ApprovalGate;
 use crate::repl::turn::phases::watch_phases;
+use crate::repl::turn::retry::{MAX_RETRIES, RETRY_BACKOFF, is_retryable};
 use crate::repl::turn::steer::Steerer;
 use crate::repl::turn::tools::tool_loop;
 
@@ -275,6 +278,100 @@ pub(crate) async fn run_turn(
     cancel.cancel();
     report.used_tools = used_tools;
     report
+}
+
+/// One turn's engine (chat/run.go:1004-1068): the handles a turn runs over, its steerer, and the
+/// turn-level retry around [`run_turn`]. It runs over the [`Conversation`] alone — the provider,
+/// the history and the meter are borrowed apart from the one `&mut` — which is what lets the
+/// loop's commands read and write the same state between turns.
+pub(crate) struct TurnEngine {
+    cx: TurnCtx,
+    steer: Steerer,
+    root_cancel: CancellationToken,
+}
+
+impl TurnEngine {
+    /// An engine for one message: the turn context the loop composed and the root cancel scope.
+    pub(crate) fn new(cx: TurnCtx, root_cancel: CancellationToken) -> Self {
+        let steer = Steerer::new(Arc::clone(&cx.ui), Arc::clone(&cx.tr));
+        Self {
+            cx,
+            steer,
+            root_cancel,
+        }
+    }
+
+    /// Runs the turn with the turn-level retry (chat/run.go:1030-1068). `hist0` is the history
+    /// length with the user message on, `snap` the budget before it. Each attempt RESETS the
+    /// turn's messages and live estimates, then re-lands the injections a previous attempt took
+    /// off the queue — the queue no longer holds them. `Err` is the one failure a turn cannot
+    /// survive: the facade closed under it, and there is nothing left to print the error on.
+    pub(crate) async fn run(
+        &mut self,
+        conv: &mut Conversation,
+        hist0: usize,
+        snap: BudgetSnap,
+    ) -> Result<TurnReport, UiError> {
+        let mut attempt: u32 = 0;
+        loop {
+            conv.history.truncate(hist0);
+            let injected = self.steer.injected().to_vec();
+            conv.history.extend(injected.iter().cloned());
+            conv.ctxm.reset();
+            conv.budget.restore(snap);
+            if let Some(user) = conv.history.get(hist0 - 1) {
+                conv.ctxm.note(user); // the send moves the meter immediately
+            }
+            for m in &injected {
+                conv.ctxm.note(m);
+            }
+            let report = run_turn(
+                &self.cx,
+                &self.root_cancel,
+                &*conv.provider,
+                &mut conv.history,
+                &mut conv.ctxm,
+                &mut self.steer,
+            )
+            .await;
+            let chat_err = match &report.outcome {
+                Ok(_) => return Ok(report),
+                Err(TurnFailure::Chat(c)) => c,
+                Err(TurnFailure::Ui(ui_err)) => return Err(*ui_err),
+            };
+            // `can_retry` is false for a dedicated image provider: every attempt bills.
+            if !self.cx.can_retry || attempt >= MAX_RETRIES || !is_retryable(chat_err) {
+                return Ok(report);
+            }
+            if report.used_tools {
+                // The tool loop already retried its own failing calls with the completed
+                // rounds — and their side effects — kept in place: its errors are final.
+                return Ok(report);
+            }
+            if report.side_fx > 0 {
+                // An invariant, not a live path: a plain streamed turn executes no tools.
+                // If one ever lands here, refuse loudly rather than re-run the user's
+                // tools.
+                self.cx.tr.notice(&format!(
+                    "⟳ {} — not replaying the turn: {} executed tool call(s) would run again",
+                    describe_error(chat_err).headline,
+                    report.side_fx
+                ));
+                return Ok(report);
+            }
+            attempt += 1;
+            let headline = describe_error(chat_err).headline;
+            let busy = self.cx.ui.busy(&format!(
+                "{headline} — retrying (attempt {attempt}/{MAX_RETRIES})"
+            ));
+            tokio::select! {
+                biased;
+                () = self.root_cancel.cancelled() => { busy.stop(); return Ok(report); }
+                () = tokio::time::sleep(RETRY_BACKOFF * attempt) => {}
+            }
+            busy.stop();
+        }
+    }
 }
 
 /// The UNARY fallback for a provider without tool support (T-36): one `Provider::chat`

@@ -54,9 +54,7 @@ use crate::repl::title::{
 };
 use crate::repl::turn::approval::ApprovalGate;
 use crate::repl::turn::interrupt::{InterruptDecision, finalize_interrupt};
-use crate::repl::turn::retry::{MAX_RETRIES, RETRY_BACKOFF, is_retryable};
-use crate::repl::turn::steer::Steerer;
-use crate::repl::turn::{TurnCtx, TurnFailure, TurnReport, collect_images, run_turn};
+use crate::repl::turn::{TurnCtx, TurnEngine, TurnFailure, TurnReport, collect_images};
 
 /// The `Done` ping of an image-only reply (chat/run.go:1105).
 const IMAGE_READY: &str = "Image ready";
@@ -648,71 +646,10 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             repl.handles.tr.set_dark(known);
             ui.set_dark_background(known);
         }
-        let cx = repl.turn_ctx(send_overlay);
-        let mut steer = Steerer::new(Arc::clone(&ui), Arc::clone(&tr));
-
-        // Turn-level retry (chat/run.go:1030-1068). Each attempt RESETS the turn's
-        // messages and live estimates, then re-lands the injections a previous attempt
-        // took off the queue — the queue no longer holds them.
-        let mut attempt: u32 = 0;
-        let outcome = loop {
-            repl.conv.history.truncate(hist0);
-            let injected = steer.injected().to_vec();
-            repl.conv.history.extend(injected.iter().cloned());
-            repl.conv.ctxm.reset();
-            repl.conv.budget.restore(turn_snap);
-            if let Some(user) = repl.conv.history.get(hist0 - 1) {
-                repl.conv.ctxm.note(user); // the send moves the meter immediately
-            }
-            for m in &injected {
-                repl.conv.ctxm.note(m);
-            }
-            let report = run_turn(
-                &cx,
-                &root_cancel,
-                &*repl.conv.provider,
-                &mut repl.conv.history,
-                &mut repl.conv.ctxm,
-                &mut steer,
-            )
-            .await;
-            // A closed facade is the ONE failure a turn cannot survive: there is nothing
-            // left to print the error on.
-            let chat_err = match &report.outcome {
-                Ok(_) => break report,
-                Err(TurnFailure::Chat(c)) => c,
-                Err(TurnFailure::Ui(ui_err)) => break 'main Err(ReplError::Ui(*ui_err)),
-            };
-            if repl.conv.image_provider || attempt >= MAX_RETRIES || !is_retryable(chat_err) {
-                break report;
-            }
-            if report.used_tools {
-                // The tool loop already retried its own failing calls with the completed
-                // rounds — and their side effects — kept in place: its errors are final.
-                break report;
-            }
-            if report.side_fx > 0 {
-                // An invariant, not a live path: a plain streamed turn executes no tools.
-                // If one ever lands here, refuse loudly rather than re-run the user's
-                // tools.
-                repl.handles.tr.notice(&format!(
-                    "⟳ {} — not replaying the turn: {} executed tool call(s) would run again",
-                    crate::repl::errors::describe_error(chat_err).headline,
-                    report.side_fx
-                ));
-                break report;
-            }
-            attempt += 1;
-            let headline = crate::repl::errors::describe_error(chat_err).headline;
-            let busy = ui.busy(&format!(
-                "{headline} — retrying (attempt {attempt}/{MAX_RETRIES})"
-            ));
-            tokio::select! {
-                biased;
-                () = root_cancel.cancelled() => { busy.stop(); break report; }
-                () = tokio::time::sleep(RETRY_BACKOFF * attempt) => {}
-            }
-            busy.stop();
+        let mut engine = TurnEngine::new(repl.turn_ctx(send_overlay), root_cancel.clone());
+        let outcome = match engine.run(&mut repl.conv, hist0, turn_snap).await {
+            Ok(report) => report,
+            Err(ui_err) => break 'main Err(ReplError::Ui(ui_err)),
         };
 
         let interrupted = outcome.is_interrupted();
