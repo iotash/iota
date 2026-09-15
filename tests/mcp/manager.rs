@@ -68,18 +68,12 @@ async fn a_server_that_never_answers_fails_at_the_connect_timeout() {
     assert_eq!(s.name, "hang");
     assert_eq!(s.endpoint, format!("sh -c {script}"));
     assert!(
-        !s.connected && !s.pending,
-        "hung server should be a resolved failure: connected={} pending={}",
-        s.connected,
-        s.pending
+        s.error().unwrap_or_default().contains("timed out"),
+        "hung server should be a resolved failure with a timeout error, got {:?}",
+        s.state
     );
-    assert!(
-        s.err.as_deref().unwrap_or_default().contains("timed out"),
-        "expected a timeout error, got {:?}",
-        s.err
-    );
-    assert_eq!(s.err.as_deref(), Some("connection timed out after 300ms"));
-    assert_eq!(s.segment, "");
+    assert_eq!(s.error(), Some("connection timed out after 300ms"));
+    assert_eq!(s.segment(), "");
     assert!(s.tools.is_empty() && s.tool_count == 0);
     assert!(
         m.tools().is_empty(),
@@ -150,33 +144,31 @@ async fn reserved_header_is_a_connect_failure() {
     let statuses = m.connect_all(&CancellationToken::new()).await;
     assert_eq!(statuses.len(), 3);
     for s in &statuses {
-        assert!(!s.connected && !s.pending, "{}: {s:?}", s.name);
-        assert_eq!(s.segment, "");
+        assert!(s.error().is_some(), "{}: {s:?}", s.name);
+        assert_eq!(s.segment(), "");
     }
     let hdr = &statuses[0];
     assert!(
-        hdr.err
-            .as_deref()
+        hdr.error()
             .unwrap_or_default()
             .starts_with("connect failed: "),
         "{:?}",
-        hdr.err
+        hdr.state
     );
     assert!(
-        hdr.err
-            .as_deref()
+        hdr.error()
             .unwrap_or_default()
             .contains("Header name 'accept' is reserved and conflicts with default headers"),
         "{:?}",
-        hdr.err
+        hdr.state
     );
     assert_eq!(hdr.endpoint, "http://127.0.0.1:9/mcp");
     assert_eq!(
-        statuses[1].err.as_deref(),
+        statuses[1].error(),
         Some("unsupported URL scheme: ftp://example.invalid/mcp")
     );
     assert_eq!(
-        statuses[2].err.as_deref(),
+        statuses[2].error(),
         Some("server config must have either command or url")
     );
     assert!(m.tools().is_empty());
@@ -219,32 +211,28 @@ async fn close_is_idempotent_and_clears_tools() {
     let statuses = m.connect_all(&CancellationToken::new()).await;
     assert_eq!(statuses.len(), 2);
     let fake = &statuses[0];
-    assert!(fake.connected && !fake.pending, "{fake:?}");
-    assert_eq!(fake.segment, "fake");
+    assert!(fake.connected(), "{fake:?}");
+    assert_eq!(fake.segment(), "fake");
     assert_eq!(fake.tools, vec!["echo"]);
     assert_eq!(fake.tool_count, 1);
-    assert_eq!(fake.err, None);
+    assert_eq!(fake.error(), None);
     assert_eq!(fake.wire_prefix(), "mcp__fake__");
     assert_eq!(m.prefix_of()("fake"), "mcp__fake__");
     let broken = &statuses[1];
-    assert!(!broken.connected && !broken.pending, "{broken:?}");
     assert!(
         broken
-            .err
-            .as_deref()
+            .error()
             .unwrap_or_default()
             .starts_with("connect failed: "),
-        "{:?}",
-        broken.err
+        "{broken:?}"
     );
     assert!(
         broken
-            .err
-            .as_deref()
+            .error()
             .unwrap_or_default()
             .ends_with("\n  subprocess stderr:\nboom"),
         "stderr appendix missing: {:?}",
-        broken.err
+        broken.state
     );
 
     let defs = m.tools();
@@ -279,8 +267,8 @@ async fn close_is_idempotent_and_clears_tools() {
         .expect_err("call after close");
     assert_eq!(err.to_string(), "unknown tool: mcp__fake__echo");
     // Statuses are untouched by close (the host may still print them).
-    assert_eq!(m.servers()[0].segment, "fake");
-    assert!(m.servers()[0].connected);
+    assert_eq!(m.servers()[0].segment(), "fake");
+    assert!(m.servers()[0].connected());
     m.close().await;
     assert!(
         start.elapsed() < Duration::from_secs(10),
@@ -323,7 +311,7 @@ async fn handshake_client_info_carries_the_crate_version() {
         },
     );
     let statuses = m.connect_all(&CancellationToken::new()).await;
-    assert!(statuses[0].connected, "{:?}", statuses[0]);
+    assert!(statuses[0].connected(), "{:?}", statuses[0]);
     m.close().await;
 
     let request: serde_json::Value =
@@ -356,10 +344,7 @@ async fn cancelled_token_aborts_connect() {
     let start = std::time::Instant::now();
     let statuses = m.connect_all(&cancel).await;
     assert!(start.elapsed() < Duration::from_secs(10));
-    assert_eq!(
-        statuses[0].err.as_deref(),
-        Some("connect failed: interrupted")
-    );
-    assert!(!statuses[0].connected && !statuses[0].pending);
+    assert_eq!(statuses[0].error(), Some("connect failed: interrupted"));
+    assert!(!statuses[0].connected());
     m.close().await;
 }

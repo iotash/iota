@@ -230,7 +230,7 @@ pub(crate) async fn cmd_status(repl: &mut Repl) {
     let mcp = repl.mcp.servers.as_ref().map(|f| {
         let servers = f();
         (
-            servers.iter().filter(|s| s.connected).count(),
+            servers.iter().filter(|s| s.connected()).count(),
             servers.len(),
         )
     });

@@ -121,25 +121,35 @@ pub fn wire_tool_name(server: &str, tool: &str) -> String {
 // as `Warning: mcp server <name>: <err>` — and, per skipped duplicate, `Warning: mcp server <name>: duplicate
 // wire tool name <wire>, skipping` (DIVERGENCES X-29).
 
-/// The state of one configured MCP server, index-aligned with the manager's configs.
+/// Where one configured server is. Until 2026-09-15 this was `pending: bool` + `connected: bool` +
+/// `err: Option<String>`, four combinations of which meant nothing (phase5-plan §1 5c).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ServerState {
+    /// Connect still in flight (from `Manager::new` until the result is merged).
+    #[default]
+    Connecting,
+    /// Handshake and `tools/list` succeeded.
+    Connected {
+        /// Sanitised, de-duplicated name segment of its wire names (`assign_segment`).
+        segment: String,
+    },
+    /// The connect failed: the `McpError` text.
+    Failed(String),
+}
+
+/// The status of one configured MCP server, index-aligned with the manager's configs.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ServerStatus {
     /// Configured server name.
     pub name: String,
-    /// Sanitised, de-duplicated name segment used in wire names (empty until connected).
-    pub segment: String,
     /// `endpoint_of(expanded config)`: the URL, or the command line.
     pub endpoint: String,
-    /// Connect still in flight (true from `Manager::new` until the result is merged).
-    pub pending: bool,
-    /// Handshake and `tools/list` succeeded.
-    pub connected: bool,
+    /// Connecting, connected or failed.
+    pub state: ServerState,
     /// Number of tools advertised by the server.
     pub tool_count: usize,
     /// Raw (un-namespaced) tool names.
     pub tools: Vec<String>,
-    /// Failure text (a `McpError` Display); `None` on success.
-    pub err: Option<String>,
     /// Wire names the merge SKIPPED because an earlier tool already registered them (the first registration
     /// wins, manager.go:303-335). A server listing the same tool twice is the realistic way to get one; the host
     /// turns each into a user-visible warning (DIVERGENCES X-29).
@@ -147,21 +157,44 @@ pub struct ServerStatus {
 }
 
 impl ServerStatus {
+    /// Handshake and `tools/list` succeeded.
+    pub fn connected(&self) -> bool {
+        matches!(self.state, ServerState::Connected { .. })
+    }
+
+    /// The failure text, when the connect failed.
+    pub fn error(&self) -> Option<&str> {
+        match &self.state {
+            ServerState::Failed(err) => Some(err),
+            _ => None,
+        }
+    }
+
+    /// The wire-name segment; `""` unless connected.
+    pub fn segment(&self) -> &str {
+        match &self.state {
+            ServerState::Connected { segment } => segment,
+            _ => "",
+        }
+    }
+
     /// The wire names the raw `tools` registered under, in the same order — the
-    /// `wire name → server` oracle the Tools tab's source column reads.
+    /// `wire name → server` oracle the Tools tab's source column reads. Empty unless connected.
     pub fn wire_names(&self) -> Vec<String> {
+        let ServerState::Connected { segment } = &self.state else {
+            return Vec::new();
+        };
         self.tools
             .iter()
-            .map(|raw| compose_wire_name(&self.segment, raw))
+            .map(|raw| compose_wire_name(segment, raw))
             .collect()
     }
 
-    /// `"mcp__<segment>__"` when connected and the segment is non-empty, else `""`.
+    /// `"mcp__<segment>__"` when connected, else `""`.
     pub fn wire_prefix(&self) -> String {
-        if self.connected && !self.segment.is_empty() {
-            format!("{WIRE_NAME_PREFIX}{}__", self.segment)
-        } else {
-            String::new()
+        match &self.state {
+            ServerState::Connected { segment } => format!("{WIRE_NAME_PREFIX}{segment}__"),
+            _ => String::new(),
         }
     }
 
@@ -254,11 +287,11 @@ pub(crate) struct ToolTarget {
 
 /// Outcome of one server's connect attempt, merged by `Manager::merge_result`.
 pub enum ServerResult {
-    /// The connect failed; `status.err` carries the `McpError` text.
+    /// The connect failed; `status.state` is the `Failed` text.
     Failed(ServerStatus),
     /// The handshake and `tools/list` succeeded.
     Connected {
-        /// Status without `segment` (assigned at merge time).
+        /// Status with its tools; the `Connected` state (and its segment) is assigned at merge time.
         status: ServerStatus,
         /// The live connection.
         session: Arc<dyn Session>,
@@ -268,7 +301,7 @@ pub enum ServerResult {
 }
 
 impl Manager {
-    /// Does NOT connect. Seeds `servers[i] = {name, endpoint: endpoint_of(expanded), pending: true}` index-aligned
+    /// Does NOT connect. Seeds `servers[i] = {name, endpoint: endpoint_of(expanded), Connecting}` index-aligned
     /// with `configs`.
     pub fn new(configs: Vec<ServerConfig>, opts: ManagerOptions) -> Arc<Manager> {
         let servers = configs
@@ -276,7 +309,6 @@ impl Manager {
             .map(|cfg| ServerStatus {
                 name: cfg.name.clone(),
                 endpoint: endpoint_of(&expand_server_config(cfg, &opts.env)),
-                pending: true,
                 ..ServerStatus::default()
             })
             .collect();
@@ -379,7 +411,6 @@ impl Manager {
         match outcome {
             Ok(Ok((session, tools))) => {
                 let mut status = self.seed_status(i);
-                status.connected = true;
                 status.tool_count = tools.len();
                 status.tools = tools.iter().map(|t| t.name.clone()).collect();
                 ServerResult::Connected {
@@ -395,7 +426,7 @@ impl Manager {
         }
     }
 
-    /// `{name, endpoint}` of server `i` as seeded by `new` (no pending / connected / err).
+    /// `{name, endpoint}` of server `i` as seeded by `new` (state `Connecting`, no tools).
     fn seed_status(&self, i: usize) -> ServerStatus {
         let st = self.state.read().unwrap_or_else(PoisonError::into_inner);
         st.servers
@@ -408,10 +439,10 @@ impl Manager {
             .unwrap_or_default()
     }
 
-    /// The seeded status of server `i` with `err` set to the error text.
+    /// The seeded status of server `i`, `Failed` with the error text.
     fn failed_status(&self, i: usize, err: &McpError) -> ServerStatus {
         let mut status = self.seed_status(i);
-        status.err = Some(err.to_string());
+        status.state = ServerState::Failed(err.to_string());
         status
     }
 
@@ -455,11 +486,11 @@ impl Manager {
         .await;
     }
 
-    /// manager.go:303-335 — the test seam. `pending = false`; `Failed` → `servers[idx] = status`; `Connected` →
-    /// session index = position among connected; `segment = assign_segment(name)` (`sanitize_name_segment`, then
-    /// `{base}_{n}` from n = 2); for each tool: `wire = compose_wire_name(&segment, raw)`; duplicate → skipped
-    /// (first wins) and recorded in `status.duplicates` for the host to warn about; else push + index;
-    /// `servers[idx] = status` with the segment. Returns the merged status, which is what
+    /// manager.go:303-335 — the test seam. `Failed` → `servers[idx] = status`; `Connected` → session index =
+    /// position among connected; `segment = assign_segment(name)` (`sanitize_name_segment`, then `{base}_{n}`
+    /// from n = 2); for each tool: `wire = compose_wire_name(&segment, raw)`; duplicate → skipped (first wins)
+    /// and recorded in `status.duplicates` for the host to warn about; else push + index; `servers[idx] =
+    /// status`, now `Connected { segment }`. Returns the merged status, which is what
     /// [`connect_background`](Self::connect_background) publishes.
     ///
     /// The duplicate used to be a `tracing::warn!` — which no subscriber received and which `release_max_level_off`
@@ -468,24 +499,18 @@ impl Manager {
     pub(crate) fn merge_result(&self, idx: usize, r: ServerResult) -> ServerStatus {
         let mut st = self.state.write().unwrap_or_else(PoisonError::into_inner);
         let status = match r {
-            ServerResult::Failed(mut status) => {
-                status.pending = false;
-                status.connected = false;
-                status
-            }
+            ServerResult::Failed(status) => status,
             ServerResult::Connected {
                 mut status,
                 session,
                 tools,
             } => {
-                status.pending = false;
-                status.connected = true;
                 let session_idx = st.sessions.len();
                 st.sessions.push(Some(session));
-                status.segment = st.assign_segment(&status.name);
+                let segment = st.assign_segment(&status.name);
                 for td in tools {
                     let raw = td.name;
-                    let wire = compose_wire_name(&status.segment, &raw);
+                    let wire = compose_wire_name(&segment, &raw);
                     if st.tool_index.contains_key(&wire) {
                         status.duplicates.push(wire);
                         continue;
@@ -502,6 +527,7 @@ impl Manager {
                         },
                     );
                 }
+                status.state = ServerState::Connected { segment };
                 status
             }
         };
@@ -571,7 +597,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use tokio_util::sync::CancellationToken;
 
-    use super::{Manager, ServerResult, ServerStatus};
+    use super::{Manager, ServerResult, ServerState, ServerStatus};
     use crate::mcp::config::ServerConfig;
     use crate::mcp::testutil::{EchoSession, echo_server, options};
     use crate::mcp::transport::Session;
@@ -593,7 +619,6 @@ mod tests {
         ServerResult::Connected {
             status: ServerStatus {
                 name: name.to_owned(),
-                connected: true,
                 tool_count: tools.len(),
                 tools: tools.iter().map(|t| t.name.clone()).collect(),
                 ..ServerStatus::default()
@@ -647,8 +672,8 @@ mod tests {
                 "server {} should list raw tool names",
                 s.name
             );
-            assert_eq!(s.segment, s.name, "server {}: assigned segment", s.name);
-            assert!(s.connected && !s.pending);
+            assert_eq!(s.segment(), s.name, "server {}: assigned segment", s.name);
+            assert!(s.connected());
         }
 
         // Each wire name reaches its own server, which sees the raw name "echo".
@@ -687,8 +712,8 @@ mod tests {
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert_eq!(names, vec!["mcp__npx__echo", "mcp__npx_2__echo"]);
         let servers = m.servers();
-        assert_eq!(servers[0].segment, "npx");
-        assert_eq!(servers[1].segment, "npx_2");
+        assert_eq!(servers[0].segment(), "npx");
+        assert_eq!(servers[1].segment(), "npx_2");
 
         for (wire, want) in [
             ("mcp__npx__echo", "first:echo"),
@@ -791,13 +816,7 @@ mod tests {
         // All servers resolved to connected with their tool registered.
         assert_eq!(m.tools().len(), N, "Tools() after all merges");
         for s in m.servers() {
-            assert!(
-                s.connected && !s.pending,
-                "server {}: Connected={} Pending={}",
-                s.name,
-                s.connected,
-                s.pending
-            );
+            assert!(s.connected(), "server {}: {:?}", s.name, s.state);
         }
         let (text, _) = call(&m, "mcp__srv0__echo")
             .await
@@ -822,7 +841,7 @@ mod tests {
         let err = call(&m, "mcp__alpha__echo").await.expect_err("after close");
         assert_eq!(err.to_string(), "unknown tool: mcp__alpha__echo");
         // The status is untouched by close; a second close is a no-op.
-        assert!(m.servers()[0].connected);
+        assert!(m.servers()[0].connected());
         m.close().await;
     }
 
@@ -845,7 +864,7 @@ mod tests {
         assert_eq!(err.to_string(), "interrupted");
     }
 
-    // `Manager::new` seeds one pending status per config with the expanded endpoint (manager.go:171-188).
+    // `Manager::new` seeds one `Connecting` status per config with the expanded endpoint (manager.go:171-188).
     #[test]
     fn new_seeds_pending_statuses_in_config_order() {
         let m = Manager::new(
@@ -871,13 +890,13 @@ mod tests {
                 ServerStatus {
                     name: "fs".to_owned(),
                     endpoint: "npx -y srv".to_owned(),
-                    pending: true,
+                    state: ServerState::Connecting,
                     ..ServerStatus::default()
                 },
                 ServerStatus {
                     name: "https://x/mcp".to_owned(),
                     endpoint: "https://x/mcp".to_owned(),
-                    pending: true,
+                    state: ServerState::Connecting,
                     ..ServerStatus::default()
                 },
             ]
@@ -893,20 +912,20 @@ mod tests {
         m.merge_result(0, connected("fs", session, vec![echo_def("")]));
         assert_eq!(prefix_of("fs"), "mcp__fs__");
         assert_eq!(prefix_of("https://x/mcp"), "");
-        // A failed merge clears pending and records the error text.
+        // A failed merge records the error text.
         m.merge_result(
             1,
             ServerResult::Failed(ServerStatus {
                 name: "https://x/mcp".to_owned(),
                 endpoint: "https://x/mcp".to_owned(),
-                err: Some("connect failed: nope".to_owned()),
+                state: ServerState::Failed("connect failed: nope".to_owned()),
                 ..ServerStatus::default()
             }),
         );
         let s = &m.servers()[1];
-        assert!(!s.pending && !s.connected);
-        assert_eq!(s.err.as_deref(), Some("connect failed: nope"));
-        assert_eq!(s.segment, "");
+        assert_eq!(s.error(), Some("connect failed: nope"));
+        assert!(!s.connected());
+        assert_eq!(s.segment(), "");
     }
 
     /// `connect_background` publishes EVERY server's resolved status and then closes the channel — the shape
@@ -918,12 +937,11 @@ mod tests {
         let mut rx = m.connect_background(&CancellationToken::new());
         let mut names = Vec::new();
         while let Some(status) = rx.recv().await {
-            assert!(!status.pending, "{} still pending", status.name);
-            assert!(!status.connected, "{} unexpectedly connected", status.name);
             assert!(
-                status.err.is_some(),
-                "{} carries no error text",
-                status.name
+                status.error().is_some(),
+                "{} did not resolve as a failure: {:?}",
+                status.name,
+                status.state
             );
             names.push(status.name);
         }
@@ -932,7 +950,7 @@ mod tests {
         // Closed, not merely drained: every connect task has dropped its sender.
         assert!(rx.recv().await.is_none());
         // The merge happened under the lock, so the snapshot agrees with what the channel published.
-        assert!(m.servers().iter().all(|s| !s.pending && !s.connected));
+        assert!(m.servers().iter().all(|s| s.error().is_some()));
     }
 
     /// No configured server: the receiver is closed from the start, so the reporter task ends immediately

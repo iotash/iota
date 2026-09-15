@@ -481,12 +481,8 @@ async fn connect_mcp(
         for status in manager.connect_all(cancel).await {
             // Go drained the events silently on the `-m` path; a server the user configured and did not get is
             // worth one line (DIVERGENCES I-05).
-            if !status.connected {
-                io.warning(&format!(
-                    "Warning: mcp server {}: {}",
-                    status.name,
-                    status.err.as_deref().unwrap_or_default()
-                ));
+            if let Some(err) = status.error() {
+                io.warning(&format!("Warning: mcp server {}: {err}", status.name));
             }
             for warning in status.warnings() {
                 io.warning(&format!("Warning: mcp server {}: {warning}", status.name));

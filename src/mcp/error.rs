@@ -1,5 +1,5 @@
 //! `McpError` — the per-server and per-call MCP failure texts (mcp/manager.go). None of these aborts a run: every
-//! variant lands in `ServerStatus.err` or in a tool result. The only aborting MCP error, `--mcp: empty server
+//! variant lands in `ServerState::Failed` or in a tool result. The only aborting MCP error, `--mcp: empty server
 //! specification`, is `crate::mcp::config::McpFlagError::EmptyFlag`.
 
 use std::time::Duration;

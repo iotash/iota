@@ -673,7 +673,7 @@ fn map_events(
         while let Some(st) = statuses.recv().await {
             let event = McpEvent {
                 warnings: st.warnings(),
-                error: st.err.filter(|_| !st.connected),
+                error: st.error().map(str::to_owned),
                 name: st.name,
             };
             if tx.send(event).await.is_err() {

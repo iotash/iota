@@ -19,7 +19,7 @@ use crate::tool::Dispatcher;
 use crate::tool::{DeferState, DeferredToolStatus};
 use crate::ui::facade::{Panel, TabbedSpec};
 
-use crate::mcp::ServerStatus;
+use crate::mcp::{ServerState, ServerStatus};
 use crate::repl::run::Repl;
 use crate::repl::styles::{bold, dim, green, red, yellow};
 
@@ -141,12 +141,10 @@ pub(crate) fn mcp_status_lines(dispatch: &dyn Dispatcher, servers: &[ServerStatu
         servers.len()
     ))];
     for srv in servers {
-        let mut status = if srv.connected {
-            green("connected")
-        } else if srv.pending {
-            dim("connecting…")
-        } else {
-            red("disconnected")
+        let mut status = match &srv.state {
+            ServerState::Connected { .. } => green("connected"),
+            ServerState::Connecting => dim("connecting…"),
+            ServerState::Failed(_) => red("disconnected"),
         };
         if let Some(&(total_g, loaded)) = defer_by.get(&srv.name)
             && total_g > 0
@@ -164,9 +162,7 @@ pub(crate) fn mcp_status_lines(dispatch: &dyn Dispatcher, servers: &[ServerStatu
                 srv.tools.join(", ")
             )));
         }
-        if !srv.connected
-            && let Some(err) = &srv.err
-        {
+        if let ServerState::Failed(err) = &srv.state {
             lines.push(red(&format!(
                 "  error: {}",
                 err.split('\n').next().unwrap_or_default()
@@ -218,7 +214,7 @@ mod tests {
     use crate::tool::{ToolOutput, ToolResult};
     use pretty_assertions::assert_eq;
 
-    use super::{DeferState, DeferredToolStatus, Dispatcher, ServerStatus};
+    use super::{DeferState, DeferredToolStatus, Dispatcher, ServerState, ServerStatus};
 
     /// Advertises `defs` and reports deferred state — the `/tools` view fixture.
     // Go: chat/toolstatus_test.go:13 deferStatusDispatcher
@@ -376,10 +372,11 @@ mod tests {
         let servers = vec![ServerStatus {
             name: "DataForSEO".to_owned(),
             endpoint: "https://seo.example/mcp".to_owned(),
-            connected: true,
+            state: ServerState::Connected {
+                segment: "seo".to_owned(),
+            },
             tool_count: 1,
             tools: vec!["serp".to_owned()],
-            segment: "seo".to_owned(),
             ..ServerStatus::default()
         }];
         let text = plain(&super::tool_status_lines(&d, &servers));
@@ -416,16 +413,17 @@ mod tests {
             ServerStatus {
                 name: "DataForSEO".to_owned(),
                 endpoint: "https://seo.example/mcp".to_owned(),
-                connected: true,
+                state: ServerState::Connected {
+                    segment: "seo".to_owned(),
+                },
                 tool_count: 2,
                 tools: vec!["serp".to_owned(), "kw".to_owned()],
-                segment: "seo".to_owned(),
                 ..ServerStatus::default()
             },
             ServerStatus {
                 name: "broken".to_owned(),
                 endpoint: "broken-cmd --stdio".to_owned(),
-                err: Some("connect: no such file\nsecond line".to_owned()),
+                state: ServerState::Failed("connect: no such file\nsecond line".to_owned()),
                 ..ServerStatus::default()
             },
         ];
