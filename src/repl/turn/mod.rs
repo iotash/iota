@@ -25,6 +25,15 @@
 //! (openai, anthropic and openresponses do). A dialect that does not (google) takes the
 //! atomic path: the call widget rises at the tool walk instead.
 
+pub(crate) mod approval;
+pub(crate) mod interact;
+pub(crate) mod interrupt;
+pub(crate) mod phases;
+pub(crate) mod retry;
+pub(crate) mod steer;
+/// The interactive tool loop — the same shape as the headless `execute_with_tools`, not a fork of it.
+pub(crate) mod tools;
+
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;

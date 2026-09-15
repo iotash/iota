@@ -3,41 +3,35 @@
 //! names a terminal crate (ci.sh grep gate: only `ui` may); reuses the provider/tool/MCP/session machinery
 //! (`TUI_DESIGN` §8.1) instead of forking the headless loop in `crate::repl::chat`.
 
-pub(crate) mod approval;
-pub(crate) mod banner;
 /// The agent's candidate set as the `/model` picker sees it (brain page `config-three-layers`).
 pub mod catalog;
 pub(crate) mod commands;
-pub(crate) mod diff;
+/// The context meter and the token counter behind it (WP53).
+pub(crate) mod context;
 pub(crate) mod editpicker;
 pub(crate) mod errors;
-pub(crate) mod group;
-pub(crate) mod interact;
-pub(crate) mod interrupt;
-pub(crate) mod mcpreport;
-pub(crate) mod meter;
-/// The layered model parameters a `/model` switch re-evaluates (brain page `model-param-layering`).
-pub(crate) mod params;
-pub(crate) mod phases;
-pub(crate) mod replay;
-pub(crate) mod retry;
+/// The layered model parameters as the chat runs them: read, re-evaluated on a `/model` switch, written
+/// back (brain page `model-param-layering`).
+pub(crate) mod liveparams;
+/// What the loop draws.
+pub(crate) mod render;
 pub mod run;
-pub(crate) mod steer;
-pub(crate) mod styles;
 /// The `/model` surface's read-only System tab (WP54).
 pub(crate) mod systemtab;
 pub(crate) mod title;
-/// The `o200k_base` token counter behind the meter (WP53).
-pub(crate) mod tokens;
-pub(crate) mod toolloop;
-pub(crate) mod transcript;
+/// One turn: the tool loop, retries, phases, steering, interrupts and the approval gate.
 pub(crate) mod turn;
-pub(crate) mod uisink;
+
+// Transitional: the flat paths keep resolving until the import points move (next commit).
+pub(crate) use context::{meter, tokens};
+pub(crate) use liveparams as params;
+pub(crate) use render::{banner, diff, group, mcpreport, replay, styles, transcript, uisink};
+pub(crate) use turn::{approval, interrupt, phases, retry, steer, tools as toolloop};
 
 pub use catalog::ModelCatalog;
 
-pub(crate) use interact::Interactor;
 pub use run::{McpEvent, McpHooks, RunParams, SessionCtx, SessionFactory, run};
+pub(crate) use turn::interact::Interactor;
 
 // Loop internals the command layer reads.
 pub(crate) use commands::session::session_label;

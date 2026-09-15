@@ -606,7 +606,7 @@ mod tests {
     /// The checked-in 2×2 fixture: top row red, bottom row blue — the rasteriser's byte golden
     /// (`T3_TEST_PLAN` §2). Kept HERE rather than in `imgterm.rs` because only that module may
     /// name the `image` crate, so this is the one place a real PNG file proves the pipeline.
-    const RB_2X2_PNG: &[u8] = include_bytes!("../../tests/fixtures/images/rb-2x2.png");
+    const RB_2X2_PNG: &[u8] = include_bytes!("../../../tests/fixtures/images/rb-2x2.png");
 
     /// GOLDEN: the checked-in PNG rasterises to the exact Go bytes (`imgterm_test.go:44`) — one
     /// line of two half-block cells, fg the top pixel, bg the bottom, reset-terminated.
