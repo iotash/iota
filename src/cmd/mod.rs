@@ -22,13 +22,10 @@ pub use cli::{Cli, Command, ConfigAction, Invocation, ListWhat, Resume, RunArgs}
 pub use resolve::CliError;
 pub use resolve::{RunSettings, resolve_run};
 
-/// The version `--version` and `iota version` print.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-
 use std::{path::PathBuf, sync::Arc};
 
-use crate::app::HostDirs;
 use crate::app::env::{EnvSource, VarResolver};
+use crate::app::{HostDirs, VERSION};
 use crate::headless::{AgentOptions, OnceOptions, OutputFormat};
 use crate::llm::reqlog::RequestLog;
 use crate::mcp::config::ServerConfig;

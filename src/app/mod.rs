@@ -18,6 +18,9 @@ pub(crate) const DOT_DIR: &str = ".iota";
 pub(crate) const CONFIG_BASE: &str = ".iota";
 /// Config file extensions in lookup order.
 pub(crate) const CONFIG_EXTS: [&str; 2] = [".yaml", ".yml"];
+/// The version `--version` and `iota version` print (and every other place that names the release: the
+/// `IOTA_LOG` hello, the MCP `clientInfo`).
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Process-level directories, resolved ONCE at the binary edge and injected everywhere (tests build them by hand).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

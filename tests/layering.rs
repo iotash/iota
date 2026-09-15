@@ -42,11 +42,6 @@ const LAYERS: &[&[&str]] = &[
 /// is gone — delete the row together with the edge.
 const KNOWN_UPWARD: &[(&str, &str, &str)] = &[
     (
-        "app/diag.rs",
-        "cmd",
-        "reads `cmd::VERSION` — PR-3 moves VERSION into app/",
-    ),
-    (
         "repl/params.rs",
         "cmd",
         "calls `cmd::window::parse_window_size` — PR-7 moves window.rs into config/",

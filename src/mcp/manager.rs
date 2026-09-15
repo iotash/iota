@@ -35,10 +35,10 @@ pub const DEFAULT_STDERR_CAP: usize = 64 * 1024;
 /// `clientInfo.name` sent in the `initialize` handshake.
 pub(crate) const CLIENT_NAME: &str = "iota";
 
-/// `clientInfo.version` sent in the `initialize` handshake: the crate version, the same source `--version`
-/// prints (`cmd::VERSION`) — until 2026-09-15 this was a literal `"1.0.0"` that every server was told
+/// `clientInfo.version` sent in the `initialize` handshake: the release, the same constant `--version`
+/// prints (`app::VERSION`) — until 2026-09-15 this was a literal `"1.0.0"` that every server was told
 /// regardless of the release.
-pub(crate) const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(crate) const CLIENT_VERSION: &str = crate::app::VERSION;
 
 /// Construction-time knobs of a `Manager`.
 #[derive(Clone)]

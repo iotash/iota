@@ -40,7 +40,7 @@ pub fn install(path: &Path) -> io::Result<()> {
         .with(layer)
         .try_init()
         .map_err(|e| io::Error::other(e.to_string()))?;
-    tracing::info!(version = crate::cmd::VERSION, "iota diagnostics on");
+    tracing::info!(version = super::VERSION, "iota diagnostics on");
     Ok(())
 }
 
