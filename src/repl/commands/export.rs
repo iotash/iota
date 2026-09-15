@@ -16,6 +16,7 @@ use crate::repl::render::styles::{dim, red};
 use crate::repl::render::uisink::LineCommitter;
 use crate::repl::run::Repl;
 use crate::session::SessionError;
+use crate::sync::lock;
 use crate::text::go_quote;
 use crate::tool::fmt::display_tool_name;
 use crate::ui::facade::SelectSpec;
@@ -203,20 +204,25 @@ pub(crate) struct ExportRound {
     pub(crate) replies: Vec<Message>,
 }
 
+/// Why an export path was refused (export.go:50-59); the Display text is Go's.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum TargetError {
+    /// A trailing separator: writing there would create a hidden `.html` INSIDE the directory.
+    #[error("{} is a directory path; give a file name", go_quote(.0))]
+    DirectoryPath(String),
+    /// A base that is empty, `.`, `..` or nothing but an extension (`.md` would be a dot-file).
+    #[error("{} has no usable file name", go_quote(.0))]
+    NoFileName(String),
+}
+
 /// export.go:50-59: a directory path or a path with no usable file name is refused.
-///
-/// A trailing separator would silently create a hidden `.html` INSIDE the directory; a base
-/// that is nothing but an extension (`.md`) would create a dot-file.
-pub(crate) fn validate_export_target(path: &str) -> Result<(), String> {
+pub(crate) fn validate_export_target(path: &str) -> Result<(), TargetError> {
     if path.ends_with(std::path::MAIN_SEPARATOR) || path.ends_with('/') {
-        return Err(format!(
-            "{} is a directory path; give a file name",
-            go_quote(path)
-        ));
+        return Err(TargetError::DirectoryPath(path.to_owned()));
     }
     let base = go_base(path);
     if base.is_empty() || base == "." || base == ".." || base == go_ext(base) {
-        return Err(format!("{} has no usable file name", go_quote(path)));
+        return Err(TargetError::NoFileName(path.to_owned()));
     }
     Ok(())
 }
@@ -744,11 +750,7 @@ pub(crate) fn export_chat(
 pub(crate) async fn cmd_export(repl: &mut Repl, arg: &str) {
     let cancel = &repl.handles.cancel.clone();
     let (title, id, on_disk) = {
-        let slot = repl
-            .session
-            .writer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let slot = lock(&repl.session.writer);
         slot.as_ref().map_or_else(
             || (String::new(), String::new(), false),
             |w| (w.meta().title.clone(), w.id().to_owned(), w.on_disk()),

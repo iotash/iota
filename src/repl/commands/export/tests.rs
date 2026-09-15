@@ -241,9 +241,11 @@ fn test_build_export_html_details() {
 #[test]
 fn test_validate_export_target() {
     for bad in ["mydir/", ".", "..", ".md", ".html", "dir/.markdown"] {
-        let err = validate_export_target(bad).expect_err(&format!(
-            "validate_export_target({bad:?}) = Ok, want an error"
-        ));
+        let err = validate_export_target(bad)
+            .expect_err(&format!(
+                "validate_export_target({bad:?}) = Ok, want an error"
+            ))
+            .to_string();
         assert!(err.contains(&format!("{bad:?}")), "{bad:?} → {err}");
     }
     for good in ["chat.html", "notes.md", "dir/chat", "a.tar.gz"] {
@@ -254,12 +256,12 @@ fn test_validate_export_target() {
         );
     }
     assert_eq!(
-        validate_export_target("mydir/"),
-        Err("\"mydir/\" is a directory path; give a file name".to_owned())
+        validate_export_target("mydir/").unwrap_err().to_string(),
+        "\"mydir/\" is a directory path; give a file name"
     );
     assert_eq!(
-        validate_export_target(".md"),
-        Err("\".md\" has no usable file name".to_owned())
+        validate_export_target(".md").unwrap_err().to_string(),
+        "\".md\" has no usable file name"
     );
 }
 
