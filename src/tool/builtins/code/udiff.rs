@@ -1,6 +1,6 @@
 //! Hand-ported unified-diff twin of go-udiff v0.4.1 (`Unified` → `Lines` → `toUnified` →
-//! `String`), feeding the `edit_file`/`write_file` display artifact (code.go:661-675; the
-//! D-19 lift, T-35). Line-level diff (Myers greedy, budget-capped with a whole-replace
+//! `String`), feeding the `edit_file`/`write_file` display artifact (the D-19 lift, T-35).
+//! Line-level diff (Myers greedy, budget-capped with a whole-replace
 //! fallback — go-udiff's lcs carries the same escape hatch), 3 context lines, hunks
 //! merged when ≤ 6 unchanged lines apart, and the exact go-udiff header/row byte shape:
 //! `@@ -l[,c] +l[,c] @@` with the count elided at 1 and the odd GNU `-0,0`/`+0,0` form
@@ -195,7 +195,7 @@ struct Hunk {
 
 /// Appends the equal lines `lines[start..end]` (indices past the end stop the walk) and
 /// returns how many were added (go-udiff `addEqualLines`; the caller saturates a
-/// would-be-negative `start` to 0, which skips the same rows Go's `i < 0` guard did).
+/// would-be-negative `start` to 0, which skips the same rows go-udiff's `i < 0` guard does).
 fn add_equal(h: &mut Hunk, lines: &[&str], start: usize, end: usize) -> usize {
     let mut delta = 0;
     for i in start..end {
