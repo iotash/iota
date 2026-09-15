@@ -33,10 +33,10 @@ fn test_dialect_usage_conversion() {
         use iota::llm::anthropic::AnthropicUsage;
         use iota::provider::usage_conv::anthropic_usage;
         let u = anthropic_usage(&AnthropicUsage {
-            input_tokens: 120,
-            output_tokens: 80,
-            cache_read_input_tokens: 9000,
-            cache_creation_input_tokens: 1000,
+            input_tokens: Some(120),
+            output_tokens: Some(80),
+            cache_read_input_tokens: Some(9000),
+            cache_creation_input_tokens: Some(1000),
         });
         assert_eq!(u.total, 0, "anthropic must not invent a total: {u:?}");
         assert_eq!(u.context_tokens(), 10200, "cache is additional context");

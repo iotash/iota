@@ -187,21 +187,45 @@ pub(crate) struct ServerTool {
     pub(crate) name: &'static str,
 }
 
-/// Token usage.
-#[derive(Deserialize, Default, Clone)]
+/// Token usage as ONE event carries it: a field the event omits is `None`, so a later event can be laid
+/// over an earlier one without a carried `0` and an absence looking alike (`overlay`). Whatever the wire
+/// puts beside these four (`server_tool_use`, `service_tier`) is ignored.
+#[derive(Deserialize, Default, Clone, Debug, PartialEq, Eq)]
 pub struct AnthropicUsage {
     /// Input tokens.
-    #[serde(default)]
-    pub input_tokens: u64,
+    pub input_tokens: Option<u64>,
     /// Output tokens.
-    #[serde(default)]
-    pub output_tokens: u64,
+    pub output_tokens: Option<u64>,
     /// Cache read tokens.
-    #[serde(default)]
-    pub cache_read_input_tokens: u64,
+    pub cache_read_input_tokens: Option<u64>,
     /// Cache creation tokens.
-    #[serde(default)]
-    pub cache_creation_input_tokens: u64,
+    pub cache_creation_input_tokens: Option<u64>,
+}
+
+impl AnthropicUsage {
+    /// Lays `later` over this usage: every field `later` carries replaces ours — a carried `0` included —
+    /// and every field it omits keeps ours.
+    ///
+    /// `message_delta.usage` is the message's CUMULATIVE usage by Anthropic's definition, so whatever it
+    /// carries is the message's figure, whatever `message_start` said. The real API repeats the input side
+    /// in both events, so the overlay changes nothing there; a compatible endpoint (GLM's
+    /// `/api/anthropic`) sends placeholder zeros at `message_start` and the real counts only at
+    /// `message_delta`, and the overlay is what reads them. There is deliberately no "non-zero wins":
+    /// a `0` the delta carries is the message's `0` (DIVERGENCES X-30).
+    pub fn overlay(&mut self, later: &Self) {
+        if let Some(n) = later.input_tokens {
+            self.input_tokens = Some(n);
+        }
+        if let Some(n) = later.output_tokens {
+            self.output_tokens = Some(n);
+        }
+        if let Some(n) = later.cache_read_input_tokens {
+            self.cache_read_input_tokens = Some(n);
+        }
+        if let Some(n) = later.cache_creation_input_tokens {
+            self.cache_creation_input_tokens = Some(n);
+        }
+    }
 }
 
 /// Unary response body.
@@ -335,9 +359,10 @@ impl StopReason {
 
 /// One stream event, classified once here so the dialect matches on shapes, never on strings.
 pub(crate) enum AnthropicEvent {
-    /// `message_start`: the input-side usage.
+    /// `message_start`: the usage as first reported.
     MessageStart {
-        /// Input tokens plus the cache counts.
+        /// Input tokens plus the cache counts — or placeholder zeros, on a compatible endpoint that
+        /// reports the real counts only at `message_delta`.
         usage: Option<AnthropicUsage>,
     },
     /// `content_block_start`: the block's class, its tool id/name when it has them, and the start
@@ -361,12 +386,14 @@ pub(crate) enum AnthropicEvent {
         /// The payload.
         delta: DeltaKind,
     },
-    /// `message_delta`: the stop reason and the cumulative output tokens.
+    /// `message_delta`: the stop reason and the message's cumulative usage.
     MessageDelta {
         /// Why the message stopped.
         stop_reason: Option<StopReason>,
-        /// Cumulative output tokens, when reported.
-        output_tokens: Option<u64>,
+        /// The cumulative usage, when reported — whichever fields the event carries: `output_tokens`
+        /// always, the input side too on the real API and on the compatible endpoints that give it only
+        /// here (`AnthropicUsage::overlay`).
+        usage: Option<AnthropicUsage>,
     },
     /// `content_block_stop`, `message_stop`, and anything unknown — nothing to act on.
     Other,
@@ -430,7 +457,7 @@ impl RawEvent {
             },
             "message_delta" => AnthropicEvent::MessageDelta {
                 stop_reason: self.delta.and_then(|d| StopReason::parse(&d.stop_reason)),
-                output_tokens: self.usage.map(|u| u.output_tokens),
+                usage: self.usage,
             },
             _ => AnthropicEvent::Other,
         }
@@ -616,6 +643,64 @@ impl AnthropicStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `message_delta.usage` is cumulative: every field it carries replaces the start's — a carried `0`
+    /// included — and every field it omits keeps the start's. The fields the wire puts beside the counts
+    /// (`server_tool_use`, `service_tier`) do not break the decode.
+    #[test]
+    fn usage_overlay_replaces_carried_fields_and_keeps_omitted_ones() {
+        // GLM's shape: placeholder zeros at message_start, the real counts at message_delta.
+        let mut usage: AnthropicUsage = serde_json::from_str(
+            r#"{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":5,"cache_creation_input_tokens":4}"#,
+        )
+        .unwrap();
+        let delta: AnthropicUsage = serde_json::from_str(
+            r#"{"input_tokens":18,"output_tokens":16,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0},"service_tier":"standard"}"#,
+        )
+        .unwrap();
+        usage.overlay(&delta);
+        assert_eq!(
+            usage,
+            AnthropicUsage {
+                input_tokens: Some(18),
+                output_tokens: Some(16),
+                cache_read_input_tokens: Some(0), // a carried 0 is a 0
+                cache_creation_input_tokens: Some(4), // omitted: the start's survives
+            }
+        );
+
+        // The real API's older shape: message_delta carries output_tokens alone, the input side stays.
+        let mut usage = AnthropicUsage {
+            input_tokens: Some(11),
+            ..AnthropicUsage::default()
+        };
+        usage.overlay(&serde_json::from_str(r#"{"output_tokens":7}"#).unwrap());
+        assert_eq!(
+            usage,
+            AnthropicUsage {
+                input_tokens: Some(11),
+                output_tokens: Some(7),
+                ..AnthropicUsage::default()
+            }
+        );
+
+        // The event carries the whole object out, not just output_tokens.
+        let event: RawEvent = serde_json::from_str(
+            r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":18,"output_tokens":16}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            event.classify(),
+            AnthropicEvent::MessageDelta {
+                stop_reason: Some(StopReason::EndTurn),
+                usage: Some(AnthropicUsage {
+                    input_tokens: Some(18),
+                    output_tokens: Some(16),
+                    ..
+                }),
+            }
+        ));
+    }
 
     /// `is_error` is emitted even when false; the untagged `Block::Raw` replays verbatim; `stream`/`defer_loading`
     /// disappear when false (anthropic.go:59-98).

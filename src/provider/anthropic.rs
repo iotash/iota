@@ -19,9 +19,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::llm::anthropic::{
     ANTHROPIC_VERSION, Anthropic, AnthropicEvent, AnthropicMsg, AnthropicRequest, AnthropicTool,
-    AnthropicToolEntry, Block, BlockKind, DeltaKind, MAX_TOKENS, OutputConfig, RespBlock,
-    SERVER_SEARCH_TOOL_NAME, SERVER_SEARCH_TOOL_TYPE, ServerTool, Source, StopReason, TextBlock,
-    ToolSchema, TypedBlock,
+    AnthropicToolEntry, AnthropicUsage, Block, BlockKind, DeltaKind, MAX_TOKENS, OutputConfig,
+    RespBlock, SERVER_SEARCH_TOOL_NAME, SERVER_SEARCH_TOOL_TYPE, ServerTool, Source, StopReason,
+    TextBlock, ToolSchema, TypedBlock,
 };
 use crate::llm::error::LlmError;
 use crate::provider::common::{HasCore, ProviderCore, credential_header, make_client};
@@ -206,9 +206,12 @@ impl AnthropicProvider {
         // interleave across open blocks (parallel tool_use). A BTreeMap assembles in ascending index order.
         let mut blocks: BTreeMap<u32, BlockAcc> = BTreeMap::new();
         let mut stop_reason: Option<StopReason> = None;
-        // Usage arrives in two events: input (plus cache counts) at message_start, the cumulative output at
-        // message_delta. Accumulate here and publish once the output figure lands.
-        let mut usage = Usage::default();
+        // Usage arrives in two events: message_start reports the input side (plus cache counts) and
+        // message_delta the message's CUMULATIVE usage — the output figure always, and the input side too
+        // on the real API and on the compatible endpoints that send placeholder zeros at message_start
+        // (GLM's `/api/anthropic`). The delta is laid over the start field by field and published once it
+        // lands (`AnthropicUsage::overlay`, DIVERGENCES X-30).
+        let mut usage = AnthropicUsage::default();
         let mut published: Option<Usage> = None;
 
         loop {
@@ -222,8 +225,8 @@ impl AnthropicProvider {
                 }
             };
             match evt {
-                AnthropicEvent::MessageStart { usage: input } => {
-                    usage = anthropic_usage(&input.unwrap_or_default());
+                AnthropicEvent::MessageStart { usage: start } => {
+                    usage = start.unwrap_or_default();
                 }
                 AnthropicEvent::BlockStart {
                     index,
@@ -277,12 +280,12 @@ impl AnthropicProvider {
                 },
                 AnthropicEvent::MessageDelta {
                     stop_reason: reason,
-                    output_tokens,
+                    usage: delta,
                 } => {
                     stop_reason = reason;
-                    if let Some(n) = output_tokens {
-                        usage.output = n; // cumulative
-                        published = Some(usage);
+                    if let Some(delta) = delta {
+                        usage.overlay(&delta); // cumulative: what it carries is the message's figure
+                        published = Some(anthropic_usage(&usage));
                     }
                 }
                 AnthropicEvent::Other => {} // content_block_stop / message_stop carry nothing

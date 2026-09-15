@@ -292,6 +292,92 @@ async fn test_anthropic_stream_transcript() {
     );
 }
 
+/// GLM's Anthropic-compatible endpoint (`…/api/anthropic/v1/messages`) sends placeholder zeros at
+/// `message_start` and the real counts only at `message_delta`, beside fields iota does not read
+/// (`server_tool_use`, `service_tier`). `message_delta.usage` is the message's cumulative usage by
+/// Anthropic's definition, so what it carries IS the figure — DIVERGENCES X-30.
+#[tokio::test]
+async fn test_anthropic_stream_usage_delta_overrides_placeholder_start() {
+    const TRANSCRIPT: &str = concat!(
+        "event: message_start\n",
+        r#"data: {"type":"message_start","message":{"usage":{"input_tokens":0,"output_tokens":0}}}"#,
+        "\n\n",
+        "event: content_block_start\n",
+        r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}"#,
+        "\n\n",
+        "event: content_block_delta\n",
+        r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#,
+        "\n\n",
+        "event: content_block_stop\n",
+        r#"data: {"type":"content_block_stop","index":0}"#,
+        "\n\n",
+        "event: message_delta\n",
+        r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":18,"output_tokens":16,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0},"service_tier":"standard"}}"#,
+        "\n\n",
+        "event: message_stop\n",
+        r#"data: {"type":"message_stop"}"#,
+        "\n\n",
+    );
+    let server = MockServer::start().await;
+    mock_sse(&server, "POST", "/v1/messages", TRANSCRIPT).await;
+
+    let p = provider(&server, "glm-5.3", None);
+    let out = round(&p, &[Message::user("q")], &[]).await.expect("round");
+    assert_eq!(out.content, "hi");
+    assert_eq!(
+        out.usage,
+        Some(Usage {
+            input: 18,
+            output: 16,
+            ..Usage::default()
+        }),
+        "the delta's input side must replace the start's placeholder zero"
+    );
+}
+
+/// The control: the real API's older shape, where `message_delta.usage` carries `output_tokens` alone.
+/// The overlay replaces only what the delta carries, so the start's input side and cache counts survive —
+/// the rule never wipes a real figure to 0.
+#[tokio::test]
+async fn test_anthropic_stream_usage_delta_without_input_keeps_start() {
+    const TRANSCRIPT: &str = concat!(
+        "event: message_start\n",
+        r#"data: {"type":"message_start","message":{"usage":{"input_tokens":11,"cache_read_input_tokens":5,"cache_creation_input_tokens":4}}}"#,
+        "\n\n",
+        "event: content_block_start\n",
+        r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}"#,
+        "\n\n",
+        "event: content_block_delta\n",
+        r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#,
+        "\n\n",
+        "event: content_block_stop\n",
+        r#"data: {"type":"content_block_stop","index":0}"#,
+        "\n\n",
+        "event: message_delta\n",
+        r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}"#,
+        "\n\n",
+        "event: message_stop\n",
+        r#"data: {"type":"message_stop"}"#,
+        "\n\n",
+    );
+    let server = MockServer::start().await;
+    mock_sse(&server, "POST", "/v1/messages", TRANSCRIPT).await;
+
+    let p = provider(&server, "m", None);
+    let out = round(&p, &[Message::user("q")], &[]).await.expect("round");
+    assert_eq!(
+        out.usage,
+        Some(Usage {
+            input: 11,
+            output: 7,
+            cache_read: 5,
+            cache_write: 4,
+            total: 0,
+        }),
+        "a delta without the input side must keep the start's"
+    );
+}
+
 // Go: provider/anthropic_wire_test.go:249
 #[tokio::test]
 async fn test_anthropic_stream_error_event() {

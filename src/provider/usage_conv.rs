@@ -25,15 +25,16 @@ pub fn openai_usage(u: &crate::llm::chatcomp::OpenAiUsage) -> Usage {
 }
 
 /// `input`, `output`, `cache_read=cache_read_input_tokens`, `cache_write=cache_creation_input_tokens`, `total` ALWAYS 0.
+/// A field the wire never reported counts as 0.
 ///
 /// Anthropic reports NO total and its `input_tokens` excludes both cache figures — they are additional context,
 /// not a subset — so `total` is deliberately left at zero for `context_tokens` to sum the parts.
 pub fn anthropic_usage(u: &crate::llm::anthropic::AnthropicUsage) -> Usage {
     Usage {
-        input: u.input_tokens,
-        output: u.output_tokens,
-        cache_read: u.cache_read_input_tokens,
-        cache_write: u.cache_creation_input_tokens,
+        input: u.input_tokens.unwrap_or(0),
+        output: u.output_tokens.unwrap_or(0),
+        cache_read: u.cache_read_input_tokens.unwrap_or(0),
+        cache_write: u.cache_creation_input_tokens.unwrap_or(0),
         total: 0,
     }
 }
