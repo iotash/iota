@@ -54,7 +54,7 @@ fn linked_path(img_dir: Option<&Path>, filename: &str) -> Option<String> {
     Some(hyperlink(
         &format!("file://{p}"),
         &p,
-        crate::color::enabled(),
+        crate::app::color::enabled(),
     ))
 }
 
@@ -274,7 +274,7 @@ fn render_markdown(content: &str, width: usize) -> String {
             width,
         }),
         crate::markdown::RenderOptions {
-            color: crate::color::enabled(),
+            color: crate::app::color::enabled(),
             code_theme: crate::markdown::CodeTheme::Monokai,
         },
     );

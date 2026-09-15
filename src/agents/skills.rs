@@ -10,7 +10,7 @@ use std::{
 };
 
 use crate::app::DOT_DIR;
-use crate::paths;
+use crate::app::paths;
 
 /// The file every skill directory must contain.
 pub const SKILL_FILE_NAME: &str = "SKILL.md";

@@ -328,7 +328,7 @@ impl Transcript {
                     &a.lines.join("\n"),
                     budget,
                     width,
-                    crate::color::enabled(),
+                    crate::app::color::enabled(),
                     inner.dark,
                 ));
                 lines

@@ -3,7 +3,7 @@
 //! `repl::styles` helpers emit **zero** escape sequences — attributes included.
 //!
 //! A binary of its own because the decision is process-wide and made once: every test here
-//! calls [`iota::color::init`] with the answer `NO_COLOR=1` gives, and every other test
+//! calls [`iota::app::color::init`] with the answer `NO_COLOR=1` gives, and every other test
 //! binary in the tree (which never decides) keeps rendering with color on — those are the
 //! control for the assertions below. The assertions scan the BYTES the facade received for
 //! `\x1b[` (and `\x1b]`, the OSC family); no flag is inspected.
@@ -12,7 +12,7 @@
 use std::sync::{Arc, Mutex};
 
 use iota::BoxFuture;
-use iota::color::ColorMode;
+use iota::app::color::ColorMode;
 use iota::host::Presenter;
 use iota::llm::reqlog::RequestLog;
 use iota::provider::ProviderKind;
@@ -29,7 +29,7 @@ use tokio_util::sync::CancellationToken;
 /// whole process, so every test calls this first and they all agree.
 fn no_color() {
     let env = |name: &str| (name == "NO_COLOR").then(|| "1".to_owned());
-    let mode = iota::color::init(ColorMode::detect(&env, true));
+    let mode = iota::app::color::init(ColorMode::detect(&env, true));
     assert_eq!(mode, ColorMode::Off);
 }
 
@@ -246,7 +246,7 @@ fn the_standalone_renderers_are_escape_free() {
     assert!(rendered.contains("Heading") && rendered.contains("│ 1   │ 2   │"));
 
     assert_eq!(
-        iota::markdown::hyperlink("https://iota.sh", "iota", iota::color::enabled()),
+        iota::markdown::hyperlink("https://iota.sh", "iota", iota::app::color::enabled()),
         "iota"
     );
 }

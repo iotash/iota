@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::vars::{VarResolver, expand};
+use crate::app::env::{VarResolver, expand};
 
 /// One MCP server definition (config entry or `--mcp` flag).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -94,7 +94,7 @@ mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
     use super::{McpFlagError, ServerConfig, endpoint_of, expand_server_config, parse_mcp_flag};
-    use crate::vars::VarResolver;
+    use crate::app::env::VarResolver;
 
     // Go: mcp/manager.go:530 (ParseMCPFlag has no Go test; the cases are the spec's, plus POLICY F-02).
     #[test]

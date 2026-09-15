@@ -13,7 +13,7 @@
 //! recorded against T-05 in the deviations log.
 //!
 //! This boundary is also where the frame honours `NO_COLOR` (DIVERGENCES X-28): under
-//! [`crate::color::ColorMode::Off`] a parsed foreground or background never reaches the
+//! [`crate::app::color::ColorMode::Off`] a parsed foreground or background never reaches the
 //! cell, while bold/faint/italic/underline/reverse do. Everything the terminal receives —
 //! the frame rows, the committed scrollback, the surfaces — passes through here, so one
 //! gate covers the whole frame side, and `ui::theme` stays what it is: the palette, not
@@ -153,13 +153,13 @@ fn extended(rest: &[u16]) -> (Option<Color>, usize) {
 }
 
 /// Parses one raw ANSI row into a styled ratatui [`Line`] under the process's color
-/// decision ([`crate::color::enabled`]).
+/// decision ([`crate::app::color::enabled`]).
 ///
 /// Only SGR sequences change state; every other CSI is skipped, OSC sequences (BEL- or
 /// ST-terminated) are passed over zero-width, and a bare two-byte escape is dropped.
 /// The text between escapes lands in spans carrying the accumulated style.
 pub(crate) fn ansi_to_spans(s: &str) -> Line<'static> {
-    ansi_to_spans_with(s, crate::color::enabled())
+    ansi_to_spans_with(s, crate::app::color::enabled())
 }
 
 /// [`ansi_to_spans`] with the color decision made explicit: `false` keeps every parsed

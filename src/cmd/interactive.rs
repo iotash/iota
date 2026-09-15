@@ -61,7 +61,7 @@ pub(crate) struct Interactive<'a> {
     pub(crate) cfg: &'a crate::config::Config,
     /// The process environment, for the API keys of the endpoints `/model`'s candidate set names
     /// besides the one this run talks to.
-    pub(crate) env: &'a dyn crate::vars::EnvSource,
+    pub(crate) env: &'a dyn crate::app::env::EnvSource,
     /// The resolved run settings.
     pub(crate) settings: RunSettings,
     /// The resolved provider type.

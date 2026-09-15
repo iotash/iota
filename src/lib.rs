@@ -6,9 +6,7 @@
 pub mod agents;
 pub mod app;
 pub mod cmd;
-pub mod color;
 pub(crate) mod config;
-pub mod diag;
 pub mod headless;
 pub mod host;
 pub mod imgterm;
@@ -16,7 +14,6 @@ pub mod llm;
 pub mod markdown;
 pub mod mathtext;
 pub mod mcp;
-pub(crate) mod paths;
 pub mod provider;
 pub mod repl;
 pub mod session;
@@ -27,7 +24,6 @@ pub mod testing;
 pub mod text;
 pub mod tool;
 pub mod ui;
-pub mod vars;
 
 /// Boxed, `Send` future used by every object-safe async trait in the crate.
 pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;

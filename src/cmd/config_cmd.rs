@@ -8,11 +8,11 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::app::env::VarResolver;
 use crate::app::{CONFIG_BASE, CONFIG_EXTS, HostDirs};
 use crate::cmd::cli::{ConfigAction, ConfigCmd};
 use crate::cmd::{CliError, io};
 use crate::config::{Config, DEFAULT_AGENT};
-use crate::vars::VarResolver;
 
 /// The starter config `iota config init` writes. Every layer gets one entry and one sentence saying what it
 /// is for; the model id is deliberately a current one rather than a placeholder, so the file runs as written
@@ -160,7 +160,7 @@ mod tests {
     /// A resolver with nothing in it: the starter config must not depend on the environment to be valid.
     struct NoVars;
 
-    impl crate::vars::VarResolver for NoVars {
+    impl crate::app::env::VarResolver for NoVars {
         fn env_var(&self, _name: &str) -> Option<String> {
             None
         }

@@ -331,7 +331,7 @@ impl Env {
             (None, Some(c)) => c.clone(),
             (None, None) => std::env::current_dir()?,
         };
-        std::path::absolute(root).map(|p| crate::paths::clean(&p))
+        std::path::absolute(root).map(|p| crate::app::paths::clean(&p))
     }
 }
 

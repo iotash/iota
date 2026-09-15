@@ -119,7 +119,7 @@ pub(crate) fn image_choice_details(
                 crate::markdown::link::hyperlink(
                     &format!("file://{path}"),
                     &shown,
-                    crate::color::enabled(),
+                    crate::app::color::enabled(),
                 )
             )
         })

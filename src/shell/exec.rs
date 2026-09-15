@@ -512,7 +512,7 @@ pub fn writable_paths(sb: &Sandbox) -> Vec<PathBuf> {
         }
         // Go's filepath.Abs = Clean(Join(wd, p)).
         if let Ok(abs) = std::path::absolute(p) {
-            paths.push(crate::paths::clean(&abs));
+            paths.push(crate::app::paths::clean(&abs));
         }
     }
     let mut seen = std::collections::HashSet::new();

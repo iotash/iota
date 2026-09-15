@@ -8,12 +8,12 @@ use std::{
     sync::{Mutex, MutexGuard, PoisonError},
 };
 
+use crate::app::env::{EnvSource, VarResolver};
 use crate::provider::model::{
     AssistantBody, Attachment, Body, JsonObject, Message, Raw, RawContent, ToolCall, ToolDef,
 };
 use crate::provider::sink::StreamSink;
 use crate::provider::usage::Usage;
-use crate::vars::{EnvSource, VarResolver};
 
 mod dispatch;
 mod provider;
@@ -254,8 +254,8 @@ pub fn map_env(vars: &[(&str, &str)]) -> MapEnv {
 #[cfg(test)]
 mod tests {
     use super::{RecordingSink, SinkEvent, map_env, map_resolver};
+    use crate::app::env::{EnvSource, VarResolver, expand};
     use crate::provider::sink::StreamSink;
-    use crate::vars::{EnvSource, VarResolver, expand};
 
     #[test]
     fn recording_sink_orders_events() {

@@ -154,13 +154,13 @@ fn header_path_full(p: &str, cwd: &std::path::Path, root: &std::path::Path) -> S
     let path = std::path::Path::new(p);
     if !path.is_absolute() {
         // 1: the model's own spelling, cleaned.
-        return crate::paths::to_slash(&crate::paths::clean(path));
+        return crate::app::paths::to_slash(&crate::app::paths::clean(path));
     }
-    let abs = crate::paths::clean(path);
+    let abs = crate::app::paths::clean(path);
     if !cwd.as_os_str().is_empty()
-        && let Some(rel) = crate::paths::rel(cwd, &abs)
+        && let Some(rel) = crate::app::paths::rel(cwd, &abs)
     {
-        let rel_s = crate::paths::to_slash(&rel);
+        let rel_s = crate::app::paths::to_slash(&rel);
         if !rel_s.starts_with("..") {
             return rel_s; // 2: under cwd
         }
@@ -170,14 +170,14 @@ fn header_path_full(p: &str, cwd: &std::path::Path, root: &std::path::Path) -> S
     }
     if let Some(home) = std::env::home_dir()
         && !home.as_os_str().is_empty()
-        && let Some(rel) = crate::paths::rel(&home, &abs)
+        && let Some(rel) = crate::app::paths::rel(&home, &abs)
     {
-        let rel_s = crate::paths::to_slash(&rel);
+        let rel_s = crate::app::paths::to_slash(&rel);
         if !rel_s.starts_with("..") {
             return format!("~/{rel_s}"); // 4: under home
         }
     }
-    crate::paths::to_slash(&abs) // 5: absolute
+    crate::app::paths::to_slash(&abs) // 5: absolute
 }
 
 /// Whether `abs` sits inside `dir` (tool/headerfmt.go:68-75).
@@ -185,8 +185,8 @@ fn within(dir: &std::path::Path, abs: &std::path::Path) -> bool {
     if dir.as_os_str().is_empty() {
         return false;
     }
-    crate::paths::rel(dir, abs).is_some_and(|rel| {
-        let s = crate::paths::to_slash(&rel);
+    crate::app::paths::rel(dir, abs).is_some_and(|rel| {
+        let s = crate::app::paths::to_slash(&rel);
         s != ".." && !s.starts_with("../")
     })
 }
@@ -343,7 +343,7 @@ mod tests {
         let outside = std::path::PathBuf::from(OUTSIDE_PATH);
         assert_eq!(
             header_path(&outside.to_string_lossy(), &root.join("sub"), &root),
-            crate::paths::to_slash(&outside)
+            crate::app::paths::to_slash(&outside)
         );
     }
 

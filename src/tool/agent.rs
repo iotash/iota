@@ -7,11 +7,12 @@ use std::{
     sync::Arc,
 };
 
+use crate::BoxFuture;
+use crate::app::paths;
 use crate::provider::model::{JsonObject, ToolDef};
 use crate::text::{go_quote, split_lines, truncate_to_char_boundary};
 use crate::tool::context::RunCtx;
 use crate::tool::{Env, Tool, ToolOutput, ToolResult};
-use crate::{BoxFuture, paths};
 use serde_json::{Value, json};
 
 use crate::agents::skills::{Skill, discover_skills, skill_body, skill_roots};

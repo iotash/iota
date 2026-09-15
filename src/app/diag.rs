@@ -18,7 +18,7 @@ use tracing_subscriber::{
     filter::Targets, layer::SubscriberExt as _, util::SubscriberInitExt as _,
 };
 
-use crate::vars::EnvSource;
+use crate::app::env::EnvSource;
 
 /// The variable that names the log file.
 pub const ENV_VAR: &str = "IOTA_LOG";

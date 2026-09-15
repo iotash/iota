@@ -179,7 +179,7 @@ impl Tool for ShellTool {
                 if p.is_absolute() {
                     p.to_path_buf()
                 } else {
-                    crate::paths::clean(&self.root.join(p))
+                    crate::app::paths::clean(&self.root.join(p))
                 }
             };
             let Some(timeout) = timeout_arg(args) else {

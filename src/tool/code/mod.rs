@@ -12,7 +12,7 @@ use std::{
     time::SystemTime,
 };
 
-use crate::paths;
+use crate::app::paths;
 use crate::tool::{Env, Tool};
 use serde::Deserialize;
 

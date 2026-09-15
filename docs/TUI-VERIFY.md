@@ -297,7 +297,7 @@ agents:
 ## 8c. `NO_COLOR` — NOT YET RUN
 
 **Status: not one item below has been executed.** Added with the color switch (MIGRATION-ROADMAP
-§3 #2; DIVERGENCES X-27, X-28). L1 pins the parser (`src/color.rs`) and the frame's byte→cell gate
+§3 #2; DIVERGENCES X-27, X-28). L1 pins the parser (`src/app/color.rs`) and the frame's byte→cell gate
 (`src/ui/spans.rs`), L3 scans a whole scripted run for escapes (`tests/nocolor/main.rs`) and L4
 reads a committed row back from a real terminal and greps the raw byte stream
 (`tests/ui_tmux/scenarios/16-nocolor.sh`). What is left for a human is legibility: whether a frame

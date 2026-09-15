@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::app::HostDirs;
-use crate::paths;
+use crate::app::paths;
 use crate::provider::ProviderKind;
 use crate::provider::model::Message;
 

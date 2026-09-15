@@ -24,8 +24,7 @@ use regex::Regex;
 /// modules of one row are independent siblings.
 const LAYERS: &[&[&str]] = &[
     &["app"],
-    &["text", "vars", "paths", "sync", "imgterm"],
-    &["color", "diag"],
+    &["text", "sync", "imgterm"],
     &["llm"],
     &["provider"],
     &["shell", "agents"],
@@ -43,7 +42,7 @@ const LAYERS: &[&[&str]] = &[
 /// is gone — delete the row together with the edge.
 const KNOWN_UPWARD: &[(&str, &str, &str)] = &[
     (
-        "diag.rs",
+        "app/diag.rs",
         "cmd",
         "reads `cmd::VERSION` — PR-3 moves VERSION into app/",
     ),

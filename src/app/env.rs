@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::app::DOT_DIR;
+use super::DOT_DIR;
 
 /// What `expand` can look up: environment variables, the working directory and the home directory.
 pub trait VarResolver: Send + Sync {

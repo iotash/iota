@@ -9,7 +9,7 @@ use crate::text::go_float;
 use crate::cmd::cli::{Invocation, Resume};
 use crate::config::{Config, ConfigError, ModelConfig, ModelRef, ProviderConfig, Resolved};
 
-use crate::vars::EnvSource;
+use crate::app::env::EnvSource;
 
 /// What `resolve_run` decided for one invocation.
 #[derive(Clone, Debug, PartialEq)]

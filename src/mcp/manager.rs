@@ -12,12 +12,12 @@ use std::{
 };
 
 use crate::BoxFuture;
+use crate::app::env::VarResolver;
 use crate::mcp::config::{ServerConfig, endpoint_of, expand_server_config};
 use crate::provider::model::{JsonObject, ToolDef};
 use crate::tool::context::RunCtx;
 use crate::tool::error::ToolError;
 use crate::tool::{Dispatcher, PrefixOf, ToolOutput, ToolResult};
-use crate::vars::VarResolver;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 

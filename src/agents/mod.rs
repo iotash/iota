@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::paths;
+use crate::app::paths;
 use crate::provider::model::{Message, Role};
 use crate::text::truncate_to_char_boundary;
 

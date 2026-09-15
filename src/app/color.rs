@@ -20,7 +20,7 @@
 
 use std::sync::OnceLock;
 
-use crate::vars::EnvSource;
+use crate::app::env::EnvSource;
 
 /// Whether SGR/OSC sequences may be written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,7 +61,10 @@ impl ColorMode {
     /// [`detect`](Self::detect) over the process environment and the real stdout.
     pub fn from_process() -> Self {
         use std::io::IsTerminal as _;
-        Self::detect(&crate::vars::ProcessEnv, std::io::stdout().is_terminal())
+        Self::detect(
+            &crate::app::env::ProcessEnv,
+            std::io::stdout().is_terminal(),
+        )
     }
 
     /// `true` for [`ColorMode::On`].
@@ -98,7 +101,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::ColorMode;
-    use crate::vars::EnvSource;
+    use crate::app::env::EnvSource;
 
     /// A map-backed environment (empty values read as unset, like `ProcessEnv`).
     fn env(vars: &[(&str, &str)]) -> impl EnvSource {

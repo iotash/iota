@@ -10,8 +10,8 @@ use std::io::Write;
 
 use clap::ValueEnum as _;
 
+use crate::app::env::EnvSource;
 use crate::provider::provider_env_key;
-use crate::vars::EnvSource;
 
 use crate::app::HostDirs;
 use crate::cmd::cli::{ListCmd, ListWhat};

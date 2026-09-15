@@ -3,7 +3,7 @@
 //! plus the 256-color diff shades keyed on the detected background (chat/styles.go,
 //! chat/diff.go:98-107, chat/theme.go). No styling library anywhere in the frame path.
 //!
-//! Every wrapper asks [`crate::color::enabled`] first and hands the text back UNTOUCHED when
+//! Every wrapper asks [`crate::app::color::enabled`] first and hands the text back UNTOUCHED when
 //! the answer is no — attributes included, because this is fatih/color's `NoColor` rule and
 //! the chat side is text that gets copied, exported and replayed (DIVERGENCES X-27).
 
@@ -12,7 +12,7 @@ pub(crate) const RESET: &str = "\x1b[0m";
 
 /// `"\x1b[{params}m{s}\x1b[0m"`, or `s` verbatim when color is off.
 fn sgr(params: &str, s: &str) -> String {
-    if crate::color::enabled() {
+    if crate::app::color::enabled() {
         format!("\x1b[{params}m{s}{RESET}")
     } else {
         s.to_owned()

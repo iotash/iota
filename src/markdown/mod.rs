@@ -389,14 +389,14 @@ impl Sink for PlainSink {
 
 /// A Writer emitting plain rendered output to `w` at a fixed layout width — the
 /// piped/test shape, no live previews. Renders with the Monokai theme and the process's
-/// color decision ([`crate::color::enabled`] — Go's `NewWriterTo` read `color.NoColor` the
+/// color decision ([`crate::app::color::enabled`] — Go's `NewWriterTo` read `color.NoColor` the
 /// same way; a test process never decides, so it renders with color ON); callers needing
 /// other options build [`Writer::new`] over their own [`Sink`].
 pub fn new_writer_to(w: Box<dyn std::io::Write + Send>, width: usize) -> Writer {
     Writer::new(
         Box::new(PlainSink { w, width }),
         RenderOptions {
-            color: crate::color::enabled(),
+            color: crate::app::color::enabled(),
             code_theme: CodeTheme::Monokai,
         },
     )

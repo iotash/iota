@@ -3,7 +3,7 @@
 
 use std::{ffi::OsStr, path::Path};
 
-use crate::paths;
+use crate::app::paths;
 use walkdir::WalkDir;
 
 /// `root/.gitignore` via `GitignoreBuilder::new(root).add(..).build()`; None when absent/unreadable.

@@ -24,11 +24,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::app::env;
+use crate::app::env::VarResolver;
 use crate::app::{CONFIG_BASE, CONFIG_EXTS, HostDirs};
 use crate::provider::ProviderKind;
 use crate::tool::DeferMode;
-use crate::vars;
-use crate::vars::VarResolver;
 
 pub use agent::AgentConfig;
 pub use model::{BadModelRef, ModelConfig, ModelEntry, ModelRef};
@@ -476,9 +476,9 @@ fn decode(data: &[u8]) -> Result<ConfigFile, ConfigError> {
     serde_norway::from_slice(data).map_err(|e| ConfigError::Parse(e.to_string()))
 }
 
-/// `vars::expand` on an owned string, allocating only when a `${…}` was substituted.
+/// `env::expand` on an owned string, allocating only when a `${…}` was substituted.
 fn expand_owned(s: String, resolver: &dyn VarResolver) -> String {
-    match vars::expand(&s, resolver) {
+    match env::expand(&s, resolver) {
         std::borrow::Cow::Borrowed(_) => s,
         std::borrow::Cow::Owned(expanded) => expanded,
     }

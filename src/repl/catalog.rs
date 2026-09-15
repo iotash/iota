@@ -25,10 +25,10 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
+use crate::app::env::EnvSource;
 use crate::config::{Config, ModelRef, Resolved};
 use crate::provider::{HttpTransport, Provider, ProviderKind, ProviderParams, new_provider};
 use crate::ui::facade::Ui;
-use crate::vars::EnvSource;
 
 /// One row of the picker: a model id and the endpoint that serves it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

@@ -28,13 +28,13 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 use std::{path::PathBuf, sync::Arc};
 
 use crate::app::HostDirs;
+use crate::app::env::{EnvSource, VarResolver};
 use crate::headless::{AgentOptions, OnceOptions, OutputFormat};
 use crate::llm::reqlog::RequestLog;
 use crate::mcp::config::ServerConfig;
 use crate::provider::ProviderKind;
 use crate::provider::{HttpTransport, ProviderParams};
 use crate::tool::{DeferredGroup, Env};
-use crate::vars::{EnvSource, VarResolver};
 use tokio_util::sync::CancellationToken;
 
 /// The process-wide, read-only run environment both branches share (root.go:125-131): ONE HTTP client for

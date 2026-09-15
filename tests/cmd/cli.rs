@@ -401,7 +401,7 @@ fn cli_iota_log_writes_diagnostics_to_the_file() {
     let logged = fs::read_to_string(&log).expect("the log file was created");
     let first = logged.lines().next().unwrap_or_default();
     assert!(
-        first.contains(" INFO iota::diag: iota diagnostics on version=\"")
+        first.contains(" INFO iota::app::diag: iota diagnostics on version=\"")
             && first.starts_with("20")
             && first.contains('Z'),
         "the first line is the subscriber's own hello, timestamped: {first:?}"
