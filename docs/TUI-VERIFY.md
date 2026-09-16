@@ -36,7 +36,7 @@ expected.
 
 ```sh
 cargo build --release                       # the one binary; the TUI is always in
-target/release/iota openai -k "$KEY" -M <model>     # or any configured provider
+target/release/iota run -M <provider>:<model>       # any provider in ~/.iota.yaml; the key comes from the config or the type's env var
 ```
 
 For the scrollback and flicker sections a scripted provider is easier than a real one; the
