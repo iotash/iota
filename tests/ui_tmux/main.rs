@@ -54,6 +54,10 @@
 //! | `16-nocolor.sh` | Roadmap §3 #2 | — (`NO_COLOR`: a bare chat side, a frame with attributes and no colors) |
 //! | `17-title-stack.sh` | TUI-VERIFY §5 | — (`pipe-pane`: the title stack push/pop, OSC 0 and `#{pane_title}`) |
 //! | `18-host-channels.sh` | TUI-VERIFY §7 | — (`pipe-pane`: the approval warning state, focus-gated OSC 9, a mid-turn quit) |
+//! | `19-background-jobs.sh` | TUI-VERIFY §8 | — (a `shell` job from the mock's tool call: wake-up, draft, round boundary, queue, ESC and exit) |
+//! | `20-block-preview.sh` | TUI-VERIFY §2 | — (a 40-line document: the metered preview rows morph, history contiguous) |
+//! | `21-emoji-table.sh` | TUI-VERIFY §6.4 | — (emoji, flags and VS16 in a table, every row measured by tmux's own ruler) |
+//! | `22-retry.sh` | TUI-VERIFY batch C | — (503 → `retrying (attempt`, the steer message lands once, Ctrl+C during the backoff leaves no red block) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -432,4 +436,37 @@ fn tmux_title_stack() {
 #[test]
 fn tmux_host_channels() {
     run_scenario("18-host-channels.sh");
+}
+
+/// TUI-VERIFY §8 — background jobs, started by the mock's `shell` tool call: an idle wake-up
+/// is one dim line and a turn, a half-typed draft survives it, a mid-turn arrival lands at the
+/// round boundary, the headline queues as a `»` row that ↑ steps over, ESC keeps the job and
+/// the exit gesture kills it.
+#[test]
+fn tmux_background_jobs() {
+    run_scenario("19-background-jobs.sh");
+}
+
+/// TUI-VERIFY §2.1/§2.2 — a 40-line streamed document with a fenced block and a table: the
+/// metered preview rows morph into the rendered blocks, every rendered row lands exactly once,
+/// no raw source row leaks, and the first line is still in the scrollback.
+#[test]
+fn tmux_block_preview_morphs() {
+    run_scenario("20-block-preview.sh");
+}
+
+/// TUI-VERIFY §6.4 — a table with emoji, flag sequences, VS16 and a skin-tone modifier: every
+/// rendered row is the same width by tmux's own ruler, no row wrapped, the variation selectors
+/// never reached the terminal.
+#[test]
+fn tmux_emoji_table_alignment() {
+    run_scenario("21-emoji-table.sh");
+}
+
+/// TUI-VERIFY batch C — the retryable error path: a 503 puts `retrying (attempt n/10)` on the
+/// status row, a message queued during the backoff lands exactly once after the recovery,
+/// Ctrl+C during a backoff interrupts without a red block, and a 400 (the control) does paint one.
+#[test]
+fn tmux_retry_path() {
+    run_scenario("22-retry.sh");
 }
