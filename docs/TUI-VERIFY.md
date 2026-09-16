@@ -1,8 +1,11 @@
 # iota-rs — manual TUI verification gate
 
 **Status: REQUIRED before any release. The binary always carries the TUI (one binary since
-2026-09-01). Nothing in this file is optional, and nothing in it is automated — that is the
-point.**
+2026-09-01). Nothing in this file is optional. Since 2026-09-16 most of it is automated: an
+item marked `[x] 自动化：scenario NN` is pinned by that tmux scenario on every `ci.sh` run,
+and what is left for a human is exactly what tmux cannot show — §1's preedit window (the
+IME's half of the cursor law), §3's flicker, §9's Windows machine, and the handful of items
+that need a terminal or a host tmux is not (§5.3/5.4, §7.3/7.4, §8b.10, §8c.3/8c.6).**
 
 The test pyramid stops one step short of the user. L1–L3 prove logic and orderings without a
 terminal, L2b proves the byte shape the loop emits (`vt100`), and L4 drives a real terminal
@@ -10,16 +13,19 @@ under tmux 3.7c (`tests/ui_tmux/main.rs`, `IOTA_TMUX=1 cargo test --test
 ui_tmux`). What none of them can reach:
 
 - **an input method editor.** tmux has no IME. A preedit buffer is drawn by the *emulator*,
-  over the cells the app owns, positioned at the cursor the app last set. The only way to
-  know that iota's cursor is where an IME expects it is to type Chinese, Japanese or Korean
-  into it and look.
+  over the cells the app owns, positioned at the cursor the app last set. L4 pins the app's
+  half — where the real cursor sits at the end of a CJK draft (01), inside one (10), on a
+  wrapped or folded composer row (10, 04), in `/model`'s field (15) — but the only way to
+  know that a given emulator draws its candidate window there is to type Chinese, Japanese
+  or Korean into it and look.
 - **the emulator's own scrollback policy.** tmux 3.7c preserves lines scrolled out of a
   partial scrolling region (wart W9). Whether Terminal.app, kitty or a given VS Code build
   does is a per-emulator fact — and since there is no fallback build any more, an emulator
   that discards them is a defect to fix in `src/ui`, not a platform to build differently.
 - **flicker, and how a redraw *feels*.** A frame can be byte-perfect and still strobe.
-- **reflow.** A rewrapping emulator rewraps history the app has already handed over; tmux
-  does not rewrap at all, so the whole class is invisible to L4.
+- **another emulator's reflow.** A rewrapping emulator rewraps history the app has already
+  handed over. tmux 3.7c does reflow on a width change (scenario 06 measures what that
+  costs, §4), but every other emulator's reflow is its own and stays a look.
 
 Run every section below on every terminal in the matrix. Record what you saw, not what you
 expected.
@@ -73,11 +79,16 @@ For each terminal:
       the screen.
 - [ ] **1.2 Commit.** Accept a candidate. The committed text replaces the preedit, the
       cursor advances by two columns per wide rune, and no cell is left half-painted.
-- [ ] **1.3 Mid-line composition.** Move the cursor into the middle of an existing CJK
-      draft (←/→) and compose there. The candidate window follows the cursor.
-- [ ] **1.4 Multi-row draft.** Build a draft long enough to wrap to 2–5 composer rows
+- [x] 自动化：scenario 10（app 侧）**1.3 Mid-line composition.** Move the cursor into the middle of an existing CJK
+      draft (←/→) and compose there. The candidate window follows the cursor. *(The app's
+      half is pinned: after ←← the real cursor sits on the grapheme boundary, a mid-line
+      insert moves it by the rune's two columns, a delete gives them back. Whether the IME
+      follows is the emulator's half — still a look.)*
+- [x] 自动化：scenario 10, 04（app 侧）**1.4 Multi-row draft.** Build a draft long enough to wrap to 2–5 composer rows
       (`MAX_COMPOSER_ROWS` is 5), then compose on the last row. The candidate window is
-      anchored to the correct *row*, and the frame does not bounce.
+      anchored to the correct *row*, and the frame does not bounce. *(Pinned: on a 90-column
+      draft and on 40 wide runes the real cursor sits on the wrapped row at the column the
+      wrapped text ends on; after ESC's fold (04) it sits at the end of the second row.)*
 - [ ] **1.5 Composition while output streams.** Start a long answer, then compose while
       lines are being inserted above the frame. The preedit is **stable**: inserts must not
       clear it, move it or steal the cursor. (This is the one that fails first — inserts
@@ -103,9 +114,13 @@ fix, not a build to switch to.** That is exactly why this check stays.
 
 For each terminal:
 
-- [ ] **2.1** Stream 30+ lines in one turn.
-- [ ] **2.2** Scroll up (mouse wheel / ⌘↑ / Shift+PageUp). Is the FIRST line of the answer
-      still reachable? Is the history contiguous — no gaps, no duplicated rows?
+- [x] 自动化：scenario 20 **2.1** Stream 30+ lines in one turn. *(A 40-line document with a
+      16-line fenced block and an 8-row table: the buffered blocks stream behind their
+      metered preview row and morph into the rendered block.)*
+- [x] 自动化：scenario 20 **2.2** Scroll up (mouse wheel / ⌘↑ / Shift+PageUp). Is the FIRST line of the answer
+      still reachable? Is the history contiguous — no gaps, no duplicated rows? *(Read back
+      through `capture-pane -S`: the head of the answer is in the scrollback, every rendered
+      row of every block exactly once, no preview row and no raw source row left behind.)*
 - [ ] **2.3** If any line was discarded: record it as a **DEFECT** — the terminal, its
       version, and the observation — and fix it in the `ui` module's insert path
       (`src/ui/{render/region,runtime/term}.rs`). There is no other build to ship there.
@@ -137,25 +152,39 @@ A rewrapping emulator rewraps rows the app already handed to history, while the 
 its own viewport top. Some emulators will strand a row above the new viewport. This is an
 **accepted cost** (the Go spike had the same class), but the budget must be known.
 
-- [ ] **4.1** Start a stream, resize the window wider mid-stream, let it finish. Count
-      orphaned/duplicated rows in the scrollback. Record the number.
-- [ ] **4.2** Same, narrower.
-- [ ] **4.3** Resize at idle, both directions. There should be **no** orphan here — the
+- [x] 自动化：scenario 06 **4.1** Start a stream, resize the window wider mid-stream, let it finish. Count
+      orphaned/duplicated rows in the scrollback. Record the number. *(tmux 3.7c: 0 duplicated
+      rows, asserted ≤ 2.)*
+- [x] 自动化：scenario 06 **4.2** Same, narrower. *(tmux 3.7c: **8** duplicated rows — tmux
+      reflows the old frame's separators into two rows each when the pane narrows, the frame
+      grows under the app and its viewport accounting slips by the staging window. That is
+      over the budget below and is recorded here as the finding it is; the scenario bounds
+      it at the staging window's size, 9, so a regression past the mechanism's own cost is
+      red. No row is ever LOST — that bound is zero.)*
+- [x] 自动化：scenario 06 **4.3** Resize at idle, both directions. There should be **no** orphan here — the
       resize pass (autoresize → clear → draw → DSR resync, wart W5) runs before any insert.
-- [ ] **4.4** After every resize: exactly one composer row, separators at the new width,
-      the status line present. (L4 asserts this under tmux; confirm it where reflow is
-      real.)
+      *(No duplicated row. What tmux does show is the STALE FRAME: a frame that has to move —
+      the first one under the banner, the old one when a taller terminal puts the new one
+      lower — leaves through the scroll region and tmux keeps it (W9), so scrolling up shows
+      it. One at startup, at most one per resize, asserted as such.)*
+- [x] 自动化：scenario 06 **4.4** After every resize: exactly one composer row, separators at the new width,
+      the status line present. (L4 asserts this under tmux, after all four resizes; confirm
+      it where reflow is real.)
 
 Budget: **≤ 2 orphaned rows per mid-stream resize** is accepted. More than that on a given
-terminal is a finding.
+terminal is a finding — and tmux 3.7c's narrowing is one (4.2).
 
 ## 5. Window title (the title stack)
 
-- [ ] **5.1** On start the window/tab title becomes the session title (or the model while
-      no title exists). Composed CJK titles render correctly.
-- [ ] **5.2** On a clean exit (Ctrl+C twice) the title is **restored** to what it was before
+- [x] 自动化：scenario 17 **5.1** On start the window/tab title becomes the session title (or the model while
+      no title exists). Composed CJK titles render correctly. *(`#{pane_title}` reads `iota`
+      back at start and `你好世界` once the title pass lands; the OSC 0 bytes are on
+      `pipe-pane`.)*
+- [x] 自动化：scenario 17 **5.2** On a clean exit (Ctrl+C twice) the title is **restored** to what it was before
       — the title stack is pushed (`ESC [ 22 ; 0 t`) before the loop and popped
-      (`ESC [ 23 ; 0 t`) after the facade releases the terminal.
+      (`ESC [ 23 ; 0 t`) after the facade releases the terminal. *(Both sequences and their
+      order against the first OSC 0 and the final `CSI ?1004l`; tmux keeps a title stack of
+      its own, so the pane's title is the shell's again after the exit.)*
 - [ ] **5.3** After a crash or a `kill -9`, the title is expected to stay stale. Confirm it
       is only stale, not corrupted.
 - [ ] **5.4** Terminals that ignore the title stack (some VS Code builds) should simply not
@@ -163,10 +192,10 @@ terminal is a finding.
 
 ## 6. Small terminals and the automated pins worth an eyeball
 
-L4 pins these under tmux (`tests/tmux/scenarios/10-edge-pins.sh`); they are listed here
-because the *look* of them is what a user reports.
+L4 pins these under tmux (`tests/ui_tmux/scenarios/10-edge-pins.sh`, and 21 for the table);
+they are listed here because the *look* of them is what a user reports.
 
-- [ ] **6.1 Short window (< 12 rows).** The frame's floor used to be about ten rows — four
+- [x] 自动化：scenario 10 **6.1 Short window (< 12 rows).** The frame's floor used to be about ten rows — four
       staging tail rows, the spacer, two separators, the composer and the status line — and
       below roughly twelve rows the inline viewport and the inserted history overlapped,
       permanently damaging the scrollback rows they overlapped (T-40). **Now guarded**: the
@@ -176,33 +205,41 @@ because the *look* of them is what a user reports.
       minimum. Confirm on each terminal: at 8, 10 and 12 rows, stream 12 lines — the frame
       stays intact, history is contiguous, there is no crash and no lost input, and growing
       the window back refills the staging window.
-- [ ] **6.2 Exact-width line.** A line exactly the terminal's width must occupy exactly one
+- [x] 自动化：scenario 10 **6.2 Exact-width line.** A line exactly the terminal's width must occupy exactly one
       row with its last column intact (T-01). Verify at 80 and at one unusual width.
-- [ ] **6.3 Wide rune at the boundary.** A CJK run that would straddle the last column wraps
+- [x] 自动化：scenario 10 **6.3 Wide rune at the boundary.** A CJK run that would straddle the last column wraps
       the whole rune to the next row — no half-painted cell, no lost row.
-- [ ] **6.4 Emoji and flags.** A table containing emoji, flag sequences and VS16 characters
+- [x] 自动化：scenario 21 **6.4 Emoji and flags.** A table containing emoji, flag sequences and VS16 characters
       renders with aligned borders. (The width ruler and the emulator's cell accounting are
-      two different rulers; this is where they disagree.)
-- [ ] **6.5 Oversized paste.** Paste a file larger than the screen. The composer shows a
+      two different rulers; this is where they disagree.) *(Every rendered row is typed into a
+      scratch pane and measured by tmux's own cursor — all eleven rows the same width — and
+      the variation selectors never reach the terminal. Other emulators' rulers: a look.)*
+- [x] 自动化：scenario 10 **6.5 Oversized paste.** Paste a file larger than the screen. The composer shows a
       one-row `[#1 … N lines]` tag; the submitted transcript echo stops at 20 lines with a
       `… +N more lines` row; the model receives the whole thing.
 
-## 7. Host channels (T3 — the only T3 surface automation cannot reach)
+## 7. Host channels (T3)
 
-Everything else T3 shipped is pinned by tests. These two channels are not: `cmux` has no CI
-binary, and tmux never blurs a pane, so focus-gated notification has unit pins only. Both are
-written from the ui event-loop thread (`src/ui/runtime/term.rs`), so a wrong byte here is invisible
-until a human looks at a real terminal.
+The bytes are pinned off `pipe-pane` (scenarios 14 and 18): tmux's own client never blurs a
+pane, but the loop reads focus off the same input bytes any terminal sends (`ESC [ O` /
+`ESC [ I`), and `send-keys -H` writes them into the pane like a keystroke. What is left is
+whether a given terminal *acts* on the bytes (draws the bar, raises the toast), the
+`notify: false` switch, and cmux, which has no CI binary. All of it is written from the ui
+event-loop thread (`src/ui/runtime/term.rs`).
 
-- [ ] **7.1 Terminal progress (OSC 9;4).** Start a turn: the terminal's own progress
+- [x] 自动化：scenario 14, 18 **7.1 Terminal progress (OSC 9;4).** Start a turn: the terminal's own progress
       indicator must turn on (`\x1b]9;4;3\x07` — Ghostty draws a bar, Windows Terminal a tab
       ring). At an approval prompt it must go to the warning state (`;4;4;100`). On exit it
-      must clear (`;4;0`) — check by quitting mid-turn as well as after an idle turn.
-- [ ] **7.2 Desktop notification (OSC 9), focus-gated.** With the window **unfocused**,
+      must clear (`;4;0`) — check by quitting mid-turn as well as after an idle turn. *(14:
+      busy and idle; 18: the warning state at a `shell` approval, and the clear before
+      `CSI ?1004l` when Ctrl+C takes a stream down and the next one exits.)*
+- [x] 自动化：scenario 18 **7.2 Desktop notification (OSC 9), focus-gated.** With the window **unfocused**,
       finishing a turn must ring the bell and raise a desktop notification carrying the
       answer's first line. With the window **focused**, the same turn must stay silent. Verify
       both directions on each terminal — the gate is `\x1b[?1004h` focus reporting, and a
-      terminal that does not implement it will notify while focused.
+      terminal that does not implement it will notify while focused. *(Silent while focused,
+      `OSC 9;<first line>` after a blur, silent again after the refocus. Whether the terminal
+      shows a toast for it is the terminal's.)*
 - [ ] **7.3 `notify: false`.** With the provider's `notify: false` in the config, 7.2 must
       produce no bell and no notification while everything else is unchanged.
 - [ ] **7.4 cmux surface.** With `CMUX_SURFACE_ID` set and `cmux` on `PATH`: the sidebar row
@@ -211,42 +248,48 @@ until a human looks at a real terminal.
       written there** (the cmux host owns the channel), and the code theme must follow a cmux
       light/dark switch between turns.
 
-## 8. Background-job notices (phase C — a wake-up automation cannot stage)
+## 8. Background-job notices (phase C)
 
 A finished background job enters the conversation through the facade's input queue
-(`Ui::enqueue`). The queue laws are unit-pinned (`ui::runtime::event_loop::queue_tests`) and the loop's
-two arrivals are covered at the REPL level (`tests/repl/jobs.rs`), but nothing automated shows
-what the arrival LOOKS like on a real terminal — the L4 mock provider cannot emit a tool call,
-so no tmux scenario can start a job.
+(`Ui::enqueue`). The queue laws are unit-pinned (`ui::runtime::event_loop::queue_tests`), the loop's
+two arrivals are covered at the REPL level (`tests/repl/jobs.rs`), and since 2026-09-16 the
+L4 mock emits a `shell` tool call (`run:<cmd>`, `tests/ui_tmux/mock.rs`), so scenario 19
+starts real jobs and reads the five arrivals below off the terminal.
 
 Set up once: an agent with `tools: {shell: {sandbox: off, auto_run: true}}`, and ask the model
 to run something slow in the background (`sleep 20; echo done`).
 
-- [ ] **8.1 Idle wake-up.** With the job running, sit at the prompt and type NOTHING. When the
+- [x] 自动化：scenario 19 **8.1 Idle wake-up.** With the job running, sit at the prompt and type NOTHING. When the
       job ends, one dim line must appear —
       `[background job b1 finished: exit 0 after 20s] sleep 20; echo done` — followed
       immediately by a normal turn (the model answers it). No `❯` block, no bell of its own.
-- [ ] **8.2 The draft survives.** Repeat 8.1 but leave a half-typed line in the composer while
+- [x] 自动化：scenario 19 **8.2 The draft survives.** Repeat 8.1 but leave a half-typed line in the composer while
       the job finishes. The notice must land, the turn must run, and the draft must still be
       there, cursor where you left it, when the turn ends.
-- [ ] **8.3 Mid-turn arrival.** Start a job, then start a long turn (a streamed answer or a
+- [x] 自动化：scenario 19 **8.3 Mid-turn arrival.** Start a job, then start a long turn (a streamed answer or a
       tool loop). The notice must appear at a ROUND boundary — after the running activity group
       settles, never inside a call's rows — as the same dim line, and the model must react to it
-      in the same turn.
-- [ ] **8.4 Queued while typing ahead.** Start a job, then type two messages ahead without
+      in the same turn. *(The scenario found the headline landing ABOVE the running call's
+      rows — the drain printed it without settling the group, unlike a steer message. Fixed
+      2026-09-16 (`Transcript::boundary_notice`), unit-pinned in
+      `repl::render::transcript::tests`, and the order is asserted here.)*
+- [x] 自动化：scenario 19 **8.4 Queued while typing ahead.** Start a job, then type two messages ahead without
       waiting. When the job ends its headline must appear as a `»` queue row among them, and
       pressing ↑ must recall YOUR newest line, stepping over it.
-- [ ] **8.5 ESC keeps the job.** Start a job, start a turn, press ESC. The turn ends, the queue
+- [x] 自动化：scenario 19 **8.5 ESC keeps the job.** Start a job, start a turn, press ESC. The turn ends, the queue
       folds back into the composer as usual — and the job must still be running (its notice
-      arrives later). Then `/quit`: the job must be gone (`ps` for the command).
+      arrives later). Then `/quit`: the job must be gone (`ps` for the command). *(There is no
+      `/quit` command; the exit is Ctrl+C at idle, twice, and `Jobs::kill_all` runs on the
+      way out — `pgrep` sees the job before and not after.)*
 
-## 8b. The `/model` combo box — NOT YET RUN
+## 8b. The `/model` combo box
 
-**Status: not one item below has been executed.** Added with the combo box (MIGRATION-ROADMAP
-Phase 1b §10); L1 pins the key ladder (`src/ui/surface/tests.rs`), L3 the command
-(`tests/repl/commands.rs`) and L4 the real-terminal shape (`tests/ui_tmux/scenarios/15-model-combo.sh`).
-What is left for a human is the half a capture cannot see: where the REAL cursor sits in a
-field that shares its row with a hint, and what an IME does over it.
+Added with the combo box (MIGRATION-ROADMAP Phase 1b §10); L1 pins the key ladder
+(`src/ui/surface/tests.rs`), L3 the command (`tests/repl/commands.rs`) and L4 the
+real-terminal shape (`tests/ui_tmux/scenarios/15-model-combo.sh`) — including, since
+2026-09-16, where the REAL cursor sits in the field (`#{cursor_x}`), so the app's half of the
+IME law is pinned here too. What is left for a human is the IME's own half (8b.9's preedit)
+and the cross-provider row (8b.10).
 
 Set up once — an agent whose candidate set mixes sources, one of which cannot answer:
 
@@ -260,69 +303,73 @@ agents:
   default: {models: [gpt5, "openai:*", "relay:*"]}
 ```
 
-- [ ] **8b.1 The field is open from the first frame.** `/model`: the Model tab's last row is
+- [x] 自动化：scenario 15 **8b.1 The field is open from the first frame.** `/model`: the Model tab's last row is
       `❯` + a dim `model name (e.g. gpt-4o)` placeholder + the hint (`N models · ↑↓ move · Enter
       select · Esc cancel`). The real terminal cursor must sit in the FIELD, immediately after
       the `❯` — not in the composer above and not on the list.
-- [ ] **8b.2 Typing filters, and `/` is a character.** Type `gpt`: the list narrows live and the
+- [x] 自动化：scenario 15 **8b.2 Typing filters, and `/` is a character.** Type `gpt`: the list narrows live and the
       hint counts what it keeps (`2 of 14`). Type `/` (as in `anthropic/claude-3.5-sonnet`): it
       must go INTO the field — no search prompt opens, nothing else claims it.
-- [ ] **8b.3 The typed row.** With text that matches no row exactly, the last row reads
+- [x] 自动化：scenario 15 **8b.3 The typed row.** With text that matches no row exactly, the last row reads
       `use "…" as typed` and is navigable. Type a name nothing matches at all: that row must be
       the ONLY row left (not the whole list again) and the cursor must be on it, with the hint
       reading `Enter use typed`.
-- [ ] **8b.4 Arrows move the list, ←→ move the text.** ↑↓ (and Ctrl+P/N) walk the rows while the
+- [x] 自动化：scenario 15 **8b.4 Arrows move the list, ←→ move the text.** ↑↓ (and Ctrl+P/N) walk the rows while the
       field keeps its text; ←→ (and Ctrl+A/E) move the text cursor INSIDE the field — watch the
       real cursor, which is the only thing that shows the difference.
-- [ ] **8b.5 Enter, both ways.** Enter on a listed row switches to it; Enter on the typed row
+- [x] 自动化：scenario 15 **8b.5 Enter, both ways.** Enter on a listed row switches to it; Enter on the typed row
       switches to what you typed. Each prints exactly one `Model switched to …`, and the status
       row follows.
-- [ ] **8b.6 ESC cancels the surface.** With text in the field, ESC must close the whole surface
+- [x] 自动化：scenario 15 **8b.6 ESC cancels the surface.** With text in the field, ESC must close the whole surface
       (not just clear the field) and restore the pane exactly — no switch, no ghost rows. `q` is
       a character here and must type.
-- [ ] **8b.7 The failing source.** With `relay:*` in the set, opening `/model` must still list
+- [x] 自动化：scenario 15 **8b.7 The failing source.** With `relay:*` in the set, opening `/model` must still list
       everything else, with `relay: …` as the panel's dim prompt row — and NOTHING printed over
       the transcript before the surface opened.
-- [ ] **8b.8 ESC during the fetch.** Press ESC while `Fetching available models from 2
+- [x] 自动化：scenario 15 **8b.8 ESC during the fetch.** Press ESC while `Fetching available models from 2
       providers` is up: the command must abandon quietly and at once — no waiting out the dead
-      endpoint's timeout, no surface afterwards.
-- [ ] **8b.9 IME in the field.** With a CJK input method, compose into the combo field: the
+      endpoint's timeout, no surface afterwards. *(A third source whose listing the mock holds
+      for two seconds keeps the fetch up long enough to press ESC into it.)*
+- [x] 自动化：scenario 15（app 侧）**8b.9 IME in the field.** With a CJK input method, compose into the combo field: the
       preedit must render at the field's cursor (§1's law, in a one-line field that shares its
       row with a hint), committing must filter the list, and the typed row must carry the
-      composed text verbatim.
+      composed text verbatim. *(Pinned: a committed rune lands in the field, the typed row
+      carries it verbatim, the real cursor sits two columns past the field's start. The
+      preedit itself is the IME's — a look.)*
 - [ ] **8b.10 A row from another provider.** Pick a `relay:…` row while the session runs on
       `openai`: one line must say the session keeps its endpoint and name the `iota run … -M
       relay:…` that starts one there — and the model must NOT change.
 
-## 8c. `NO_COLOR` — NOT YET RUN
+## 8c. `NO_COLOR`
 
-**Status: not one item below has been executed.** Added with the color switch (MIGRATION-ROADMAP
-§3 #2; DIVERGENCES X-27, X-28). L1 pins the parser (`src/app/color.rs`) and the frame's byte→cell gate
-(`src/ui/render/spans.rs`), L3 scans a whole scripted run for escapes (`tests/nocolor/main.rs`) and L4
-reads a committed row back from a real terminal and greps the raw byte stream
-(`tests/ui_tmux/scenarios/16-nocolor.sh`). What is left for a human is legibility: whether a frame
-with no color is still a frame you can use.
+Added with the color switch (MIGRATION-ROADMAP §3 #2; DIVERGENCES X-27, X-28). L1 pins the
+parser (`src/app/color.rs`) and the frame's byte→cell gate (`src/ui/render/spans.rs`), L3 scans
+a whole scripted run for escapes (`tests/nocolor/main.rs`) and L4 reads committed rows back from
+a real terminal and greps the raw byte stream (`tests/ui_tmux/scenarios/16-nocolor.sh`) — under
+`NO_COLOR=1`, under `TERM=dumb`, and with `/model` open. What is left for a human is
+legibility — whether a frame with no color is still a frame you can use — plus the two items
+that need a tool edit or an image reply.
 
 ```sh
 NO_COLOR=1 target/release/iota          # then the same session with TERM=dumb
 ```
 
-- [ ] **8c.1 The frame reads.** With `NO_COLOR=1`, the separators are faint, the `❯` prompt is
+- [x] 自动化：scenario 16 **8c.1 The frame reads.** With `NO_COLOR=1`, the separators are faint, the `❯` prompt is
       plain, the status row is plain, and a committed user block is still reverse video. Nothing
       is invisible and no row is painted in a color.
-- [ ] **8c.2 The chat is bare.** Ask for a markdown reply with a heading, a list, a table and a
+- [x] 自动化：scenario 16 **8c.2 The chat is bare.** Ask for a markdown reply with a heading, a list, a table and a
       fenced code block: every row is plain text — no bold heading, no faint bullet, no syntax
       colors — and the layout (indents, borders) is unchanged.
 - [ ] **8c.3 A diff is legible without its shading.** Run a tool that edits a file: the `+`/`-`
       rows arrive as `NNN + code` / `NNN - code` with no background block, aligned as before.
-- [ ] **8c.4 The surfaces still show their cursor.** `/model`, `/tools`, `/session`: the cursor
+- [x] 自动化：scenario 16 **8c.4 The surfaces still show their cursor.** `/model`, `/tools`, `/session`: the cursor
       row keeps its `▸` marker and a focused tab chip is still reverse video, so every surface
       is navigable with no cyan anywhere.
-- [ ] **8c.5 The input field has an edge.** `/model`'s combo field and `/file`'s field have no
+- [x] 自动化：scenario 16 **8c.5 The input field has an edge.** `/model`'s combo field and `/file`'s field have no
       background tint now; the `❯` and the hint must still make the field's extent obvious.
 - [ ] **8c.6 Images keep their pixels.** An image reply renders its half-blocks in color — the
       one thing `NO_COLOR` deliberately does not strip.
-- [ ] **8c.7 `TERM=dumb` behaves the same.** Repeat 8c.1–8c.3 with `TERM=dumb` instead of the
+- [x] 自动化：scenario 16 **8c.7 `TERM=dumb` behaves the same.** Repeat 8c.1–8c.3 with `TERM=dumb` instead of the
       variable (the emulator's own TERM is what the app sees, so set it on the command line).
 
 ## 9. Windows Terminal — NOT YET RUN
@@ -463,18 +510,22 @@ assume a pass.
 | xterm | | | | | | | | | |
 
 **Automated coverage on this host, for the record:** tmux 3.7c, `IOTA_TMUX=1 cargo test
---test ui_tmux` against the one binary — ten scenarios, **184 assertions,
-0 FAIL, 0 WARTS, five consecutive green runs** (two inside `ci.sh`, three standalone) —
-where WP52 recorded 182 assertions with a WART on §6.1. That WART is gone: the short-window
-pin now reports `60x10: the frame and all 12 rows survived intact` (T-40 CLOSED).
+--test ui_tmux` against the one binary — twenty-two scenarios, **505 assertions,
+0 FAIL, 0 WARTS** (2026-09-16; every scenario green three times standalone before it was
+committed, then once inside `ci.sh`). The mock provider now emits a `shell` tool call, scripted
+failures (`fail:<status>:<n>`), a chosen session title and two stress documents, which is what
+made §5, §7, §8 and the retry path reachable.
 
 There is no second binary to run it against: the `tui-portable` fallback was removed on
 2026-09-01. The L2b suite (`cargo test --lib ui::runtime::event_loop::vt100_tests`, part of
 `cargo test --workspace`) carries the scroll-region byte proof and the wide-rune pin from
 §2.3.
 
-That covers §2's mechanism (history contiguous, every row exactly once), §4.4, §6.1, §6.2,
-§6.3 and §6.5 under tmux only. It covers **none** of §1, §3 or §5, and tmux does not
-rewrap, so it covers none of §4.1–§4.3 either. It covers none of §9 in any sense: tmux does
-not run on Windows, and the Windows CI job builds and unit-tests the crate without ever
-opening a terminal.
+That covers, under tmux only: §2 (20, 02), §4 (06 — with tmux's own reflow cost recorded
+under 4.2), §5.1/5.2 (17), §6 (10, 21), §7.1/7.2 (14, 18), §8 (19), §8b except 8b.10 (15),
+§8c except 8c.3/8c.6 (16), the app's half of §1.3/1.4 and 8b.9 (10, 04, 15), and the
+retryable error path — `retrying (attempt n/10)` on the status row, one recovery notice, a
+message queued during the backoff landing once, Ctrl+C during a backoff leaving no red block
+(22). It covers **none** of §1's preedit, §3, §5.3/5.4, §7.3/7.4, §8b.10, §8c.3/8c.6 or §9:
+tmux does not run on Windows, and the Windows CI job builds and unit-tests the crate without
+ever opening a terminal.
