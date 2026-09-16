@@ -187,33 +187,39 @@ fn serve(mut sock: TcpStream) -> std::io::Result<()> {
     }
 }
 
-/// `fail:<status>:<n>` — the status this request must answer with, if its budget is not spent.
+/// `fail:<status>:<n>` — the status this request must answer with: that of the FIRST directive
+/// in the conversation whose budget is not yet spent, or none.
 ///
-/// The directive is looked for in EVERY message of the request, not only the last: a retried
-/// round re-issues the same conversation, and a steer message queued during the backoff lands
-/// behind the message that carries it.
+/// Every USER message of the request is read, not only the last: a retried round re-issues the
+/// same conversation, a steer message queued during the backoff lands behind the message that
+/// carries the directive, and a later turn of the same session still carries the earlier, spent
+/// one — and the model's own echo of the directive is not a directive.
 fn fail_now(body: &str) -> Option<u16> {
-    let (key, status, n) = contents(body).into_iter().find_map(|c| {
-        let at = c.find("fail:")?;
-        let mut parts = c[at + "fail:".len()..].splitn(3, ':');
-        let status: u16 = parts.next()?.parse().ok()?;
-        let digits: String = parts
-            .next()?
-            .chars()
-            .take_while(char::is_ascii_digit)
-            .collect();
-        let n: u32 = digits.parse().ok()?;
-        Some((c.clone(), status, n))
-    })?;
     let mut fails = FAILS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let seen = fails.entry(key).or_insert(0);
-    if *seen >= n {
-        return None;
+    for c in user_contents(body) {
+        let Some(at) = c.find("fail:") else { continue };
+        let mut parts = c[at + "fail:".len()..].splitn(3, ':');
+        let Some(status) = parts.next().and_then(|s| s.parse::<u16>().ok()) else {
+            continue;
+        };
+        let digits: String = parts
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        let Ok(n) = digits.parse::<u32>() else {
+            continue;
+        };
+        let seen = fails.entry(c).or_insert(0);
+        if *seen < n {
+            *seen += 1;
+            return Some(status);
+        }
     }
-    *seen += 1;
-    Some(status)
+    None
 }
 
 /// A refused request: the status with the JSON error envelope a chat-completions server sends.
@@ -493,11 +499,22 @@ fn last_content(body: &str) -> Option<String> {
 /// key only ever names a message's text (the advertised tools carry `description`s, never
 /// `content`), and only string escapes need undoing.
 fn contents(body: &str) -> Vec<String> {
-    const KEY: &str = "\"content\":\"";
+    string_values_after(body, "\"content\":\"")
+}
+
+/// The USER messages' texts only — what the scenario typed (and the job notices, which ride
+/// the same role). The dialect writes `role` before `content`, so the pair is one substring;
+/// an assistant reply that echoes a directive back must never trip it.
+fn user_contents(body: &str) -> Vec<String> {
+    string_values_after(body, "\"role\":\"user\",\"content\":\"")
+}
+
+/// Every JSON string that follows `key` in `body`, escapes undone, in order.
+fn string_values_after(body: &str, key: &str) -> Vec<String> {
     let mut found = Vec::new();
     let mut from = 0usize;
-    while let Some(at) = body[from..].find(KEY) {
-        let start = from + at + KEY.len();
+    while let Some(at) = body[from..].find(key) {
+        let start = from + at + key.len();
         found.push(unescape_until_quote(&body[start..]));
         from = start;
     }
