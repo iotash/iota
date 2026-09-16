@@ -322,6 +322,42 @@ dupes_all() { capall | grep -oE -- "$1" | sort | uniq -c | awk '$1 > 1 { print $
 # The real terminal cursor, as tmux sees it.
 cursor_xy() { tm display-message -pt s '#{cursor_x} #{cursor_y}'; }
 
+# The pane's title, as tmux keeps it (OSC 0/2 set it; CSI 22/23 t push and pop it).
+pane_title() { tm display-message -pt s '#{pane_title}'; }
+pane_title_is() { [ "$(pane_title)" = "$1" ]; }
+
+# raw_offset <fixed string> — byte offset of the FIRST occurrence in the raw capture ("" if none):
+# how a scenario proves one control sequence left the process before another.
+raw_offset() { LC_ALL=C grep -aboF -- "$1" "$RAW" 2>/dev/null | head -1 | cut -d: -f1; }
+
+# emu_width <text> — the display columns <text> occupies as THIS tmux counts them.
+#
+# `capture-pane` hands back glyphs, not cells, so a row that the app padded to its ruler's idea
+# of a width cannot be measured off the capture. The emulator's own opinion is the cursor: the
+# text is typed into a scratch session running `cat`, the tty echoes it, tmux renders the echo
+# and `#{cursor_x}` says where its ruler left the cursor. Enter then hands the line to `cat` and
+# parks the cursor back at column 0 for the next measurement. The scratch pane is 400 columns
+# wide so nothing wraps, and lives on the scenario's own private server.
+emu_width() {
+    if ! tm has-session -t meas >/dev/null 2>&1; then
+        tm new-session -d -s meas -x 400 -y 4 cat
+        _poll_until 30 tm has-session -t meas
+    fi
+    _poll_until 30 _meas_at 0
+    tm send-keys -t meas -l "$1"
+    local prev="" cur="" i=0
+    while [ "$i" -lt 30 ]; do
+        cur="$(tm display-message -pt meas '#{cursor_x}')"
+        if [ "$cur" = "$prev" ] && [ "$cur" != "0" ]; then break; fi
+        prev="$cur"
+        sleep 0.05
+        i=$((i + 1))
+    done
+    tm send-keys -t meas Enter
+    echo "$cur"
+}
+_meas_at() { [ "$(tm display-message -pt meas '#{cursor_x}')" = "$1" ]; }
+
 # Lines that have scrolled off the top into native scrollback — tmux's own counter, and
 # therefore the exact number of rows the app has inserted. Stable where `capture-pane |
 # wc -l` is not (tmux trims trailing blank rows).

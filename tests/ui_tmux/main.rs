@@ -52,6 +52,8 @@
 //! | `14-osc-signals.sh` | T3 §7 | — (`pipe-pane`: mode 1004 and the OSC 9;4 progress bytes) |
 //! | `15-model-combo.sh` | Phase 1b §10 | — (`/model`: the combo's keys, filter, typed row, ESC) |
 //! | `16-nocolor.sh` | Roadmap §3 #2 | — (`NO_COLOR`: a bare chat side, a frame with attributes and no colors) |
+//! | `17-title-stack.sh` | TUI-VERIFY §5 | — (`pipe-pane`: the title stack push/pop, OSC 0 and `#{pane_title}`) |
+//! | `18-host-channels.sh` | TUI-VERIFY §7 | — (`pipe-pane`: the approval warning state, focus-gated OSC 9, a mid-turn quit) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -289,7 +291,7 @@ fn run_scenario(script: &str) {
     );
 }
 
-// ------------------------------------------------------------------ the fifteen scenarios
+// ------------------------------------------------------------------ the scenarios
 
 /// L4 #1 — startup: banner, then the frame; separators span the terminal; the composer is
 /// the one input row between them; the real cursor sits at the draft's logical column and
@@ -413,4 +415,21 @@ fn tmux_model_combo() {
 #[test]
 fn tmux_no_color() {
     run_scenario("16-nocolor.sh");
+}
+
+/// TUI-VERIFY §5 — the window title: the stack is pushed (`CSI 22;0 t`) before the first OSC 0,
+/// tmux reads the title back, a CJK session title lands on the tab, and a clean exit pops the
+/// stack after the loop released the terminal.
+#[test]
+fn tmux_title_stack() {
+    run_scenario("17-title-stack.sh");
+}
+
+/// TUI-VERIFY §7.1/§7.2 — the host channels tmux can reach after all: an approval prompt puts
+/// the progress bar in its warning state, the OSC 9 notification is written only while the
+/// terminal reported itself unfocused (`ESC [ O` / `ESC [ I` sent as bytes), and a quit
+/// straight out of a turn clears the bar before focus reporting goes off.
+#[test]
+fn tmux_host_channels() {
+    run_scenario("18-host-channels.sh");
 }
