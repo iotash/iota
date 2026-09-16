@@ -110,6 +110,24 @@ check_once "NO_COLOR: heading rendered" 'Heading'
 check_once "NO_COLOR: list item rendered" '• one'
 check_once "NO_COLOR: table border rendered" '┌─────┬─────┐'
 check_frame_intact "NO_COLOR" 80
+# A surface is still navigable without color (§8c.4, §8c.5): the cursor row keeps its `▸`
+# marker, the combo's field keeps its `❯` edge and placeholder — and the surface painted no
+# color either.
+type_ '/model'
+key Enter
+wait_vis 'Enter select' || bad "NO_COLOR: the /model combo never opened"
+settle || bad "NO_COLOR: the combo never settled"
+check "NO_COLOR: the surface keeps its ▸ cursor marker" "$(count_vis '▸ fake (current)')" 1
+check "NO_COLOR: the combo field keeps its placeholder" "$(count_vis 'model name (e.g. gpt-4o)')" 1
+check "NO_COLOR: …behind a ❯ edge of its own (the composer's and the field's)" "$(cap | grep -c '^❯' | tr -d ' ')" 2
+if raw_has_color; then
+    bad "NO_COLOR: the surface painted a color"
+else
+    ok "NO_COLOR: the surface painted no color"
+fi
+key Escape
+wait_gone 'Enter select' || bad "NO_COLOR: the combo did not close on ESC"
+settle || bad "NO_COLOR: frame never settled after the combo"
 quit NO_COLOR
 
 # ------------------------------------------------------------------ B: the control run
@@ -137,5 +155,35 @@ else
     bad "control: the committed heading row carries no SGR: $(printf '%q' "$row")"
 fi
 quit control
+
+# ------------------------------------------------------------------ C: TERM=dumb (§8c.7)
+# The other spelling of the same switch (`app/color.rs`): the terminal's TERM says it cannot
+# interpret escapes, so the chat side is bare and the frame carries attributes and no color —
+# exactly run A, read the same way (the THIRD heading row is this run's).
+reset_raw
+type_ "env TERM=dumb $(iota_cmd openai fake)"
+key Enter
+wait_vis '❯' || {
+    bad "TERM=dumb: the binary never came up in the shell pane"
+    finish
+}
+settle || bad "TERM=dumb: startup never settled"
+run_turn TERM=dumb
+if raw_has_color; then
+    bad "TERM=dumb: a color SGR reached the terminal: $(LC_ALL=C grep -aoE -- "$COLOR_SGR" "$RAW" | head -3 | tr '\n' ' ')"
+else
+    ok "TERM=dumb: not one foreground or background color in the whole byte stream"
+fi
+check_raw "TERM=dumb: the frame keeps faint" "${ESC}[2m" yes
+check_raw "TERM=dumb: the frame keeps reverse video" "${ESC}[7m" yes
+check "TERM=dumb: the heading rendered once more" "$(count_all 'Heading')" 3
+row="$(heading_row 3)"
+if [ -n "$row" ] && ! row_is_styled "$row"; then
+    ok "TERM=dumb: the committed heading row is bare text"
+else
+    bad "TERM=dumb: the committed heading row still carries SGR: $(printf '%q' "$row")"
+fi
+check_frame_intact "TERM=dumb" 80
+quit TERM=dumb
 
 finish

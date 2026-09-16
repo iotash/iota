@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # L4 edge pins (TUI_TEST_PLAN §L4 "Edge pins"): a wide rune straddling the last column, a
-# line exactly the terminal width (T-01), a terminal shorter than the frame needs, and a
-# paste larger than a screen.
+# line exactly the terminal width (T-01), a terminal shorter than the frame needs, a
+# paste larger than a screen — and the real cursor inside a CJK draft and on a wrapped
+# composer row (docs/TUI-VERIFY.md §1.3, §1.4: the app's half of the IME anchor law).
 #
 # These are the places where the two rulers (iota's grapheme ruler and the emulator's cell
 # accounting) can disagree; a disagreement costs a row, and a lost row desyncs the frame
@@ -9,6 +10,9 @@
 # sizes its inserts from.
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
+
+cursor_is() { [ "$(cursor_xy)" = "$1" ]; }
+composer_rows_is() { [ "$(composer_block | wc -l | tr -d ' ')" -eq "$1" ]; }
 
 # rows_between <start marker> <end marker> — physical rows the payload occupied.
 rows_between() {
@@ -68,6 +72,69 @@ check_once "…and says how many it hid" '  … +30 more lines'
 check "the transcript echo really stopped there" "$(count_all '  pl20 payload')" 0
 check_once "…while the MODEL got the whole block" 'pl49 payload'
 check_frame_intact "after the oversized submit" 80
+
+# ------------------------------------------------- pin 3b: the cursor inside a CJK draft (§1.3)
+# An IME anchors its candidate window to the REAL cursor; scenario 01 pins it at the end of a
+# CJK draft. Composing mid-line is docs/TUI-VERIFY.md §1.3: after ← the cursor must sit on a
+# grapheme boundary (two columns per wide rune), an insert there moves it by the inserted
+# rune's width, a delete gives the columns back. The app's half of the law, on a real terminal.
+comp="$(composer_row)"
+type_ '中文字'
+wait_vis '❯ 中文字' || bad "the CJK draft never rendered"
+check "cursor after three wide runes" "$(cursor_xy)" "8 $((comp - 1))"
+key Left
+key Left
+_poll_until 20 cursor_is "4 $((comp - 1))" || true
+check "← twice: the cursor sits after the first rune" "$(cursor_xy)" "4 $((comp - 1))"
+type_ '插'
+wait_vis '❯ 中插文字' || bad "the mid-line insert never rendered"
+check "a mid-line insert moves the cursor by the rune's two columns" "$(cursor_xy)" "6 $((comp - 1))"
+key BSpace
+wait_vis '❯ 中文字' || bad "the mid-line delete never rendered"
+_poll_until 20 cursor_is "4 $((comp - 1))" || true
+check "…and a delete gives them back" "$(cursor_xy)" "4 $((comp - 1))"
+key C-e
+_poll_until 20 cursor_is "8 $((comp - 1))" || true
+check "Ctrl+E returns to the end of the draft" "$(cursor_xy)" "8 $((comp - 1))"
+key C-u
+wait_gone '❯ 中文字' || bad "Ctrl+U did not clear the draft"
+
+# ------------------------------------------------- pin 3c: the cursor on a wrapped composer row (§1.4)
+# A draft wider than the row wraps INSIDE the composer (up to MAX_COMPOSER_ROWS); the real
+# cursor must follow onto the wrapped row, at the column where the wrapped text ends — read off
+# the row itself, so the pin is about the cursor, not about where the wrap falls.
+comp="$(composer_row)"
+type_ "$(printf 'a%.0s' $(seq 1 90))"
+_poll_until 30 composer_rows_is 2 || bad "a 90-column draft did not wrap to two composer rows"
+settle || bad "the wrapped draft never settled"
+check "a 90-column draft is TWO composer rows" "$(composer_block | wc -l | tr -d ' ')" 2
+# The frame grows UPWARD (the status row stays on the bottom row), so the composer's first
+# row is one higher than before the wrap: read it again.
+comp="$(composer_row)"
+row2="$(composer_block | sed -n 2p)"
+check "the cursor sits at the end of the WRAPPED row" "$(cursor_xy)" "$(printf '%s' "$row2" | wc -m | tr -d ' ') $comp"
+key C-a
+_poll_until 20 cursor_is "2 $((comp - 1))" || true
+check "Ctrl+A returns to the first row's first column" "$(cursor_xy)" "2 $((comp - 1))"
+key C-e
+key C-u
+_poll_until 30 composer_rows_is 1 || bad "Ctrl+U did not clear the wrapped draft"
+
+# The same with wide runes: 40 × `中` is 80 columns, one more than the first row holds.
+comp="$(composer_row)"
+type_ "$(printf '中%.0s' $(seq 1 40))"
+_poll_until 30 composer_rows_is 2 || bad "an 80-column CJK draft did not wrap to two composer rows"
+settle || bad "the wrapped CJK draft never settled"
+comp="$(composer_row)"
+row1="$(composer_block | sed -n 1p)"
+row2="$(composer_block | sed -n 2p)"
+n1="$(printf '%s' "$row1" | grep -o '中' | wc -l | tr -d ' ')"
+n2="$(printf '%s' "$row2" | grep -o '中' | wc -l | tr -d ' ')"
+check "the first row holds 39 wide runes and wraps the 40th whole" "$n1/$n2" "39/1"
+check "the cursor sits after the wrapped rune" "$(cursor_xy)" "$((2 + 2 * n2)) $comp"
+key C-u
+_poll_until 30 composer_rows_is 1 || bad "Ctrl+U did not clear the wrapped CJK draft"
+check_frame_intact "after the wrapped drafts" 80
 
 # ------------------------------------------------- pin 4: a terminal shorter than the frame
 # CHARACTERISATION, not an aspiration. The frame's floor is about ten rows (4 staging-tail

@@ -32,6 +32,10 @@ check "fold row 1: the queued submit heads the draft" "$(count_composer '❯ que
 check "fold row 2: the half-typed draft follows it" "$(count_composer '  half')" 1
 check "the folded draft is TWO composer rows, not a submit" "$(composer_block | wc -l | tr -d ' ')" 2
 check "…and it is still ONE prompt" "$(count_composer '❯')" 1
+# The real cursor follows the fold onto the SECOND composer row, at the end of the half-typed
+# text — where an IME would anchor after a multi-row draft (docs/TUI-VERIFY.md §1.4).
+comp="$(composer_row)"
+check "the real cursor sits at the end of the folded draft's last row" "$(cursor_xy)" "6 $comp"
 
 # The turn is really cancelled: no further inserts, and the cancel hint is gone with the
 # scope that owned it.

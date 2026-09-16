@@ -85,4 +85,31 @@ else
     ls -la "$SCEN_TMP" | head -20
 fi
 
+# ------------------------------------------------------------------ C: commit HTML
+# The first option is HTML, so Enter alone commits it. The document's SHAPE is the golden's
+# business (`tests/fixtures/export/sample.html`); here it is the file's first line and the
+# answer inside it — the export a user opens in a browser is the one this pane wrote.
+type_ '/export'
+key Enter
+wait_vis 'Export format' || bad "the /export picker never opened a third time"
+key Enter
+wait_all_more 'Exported 2 messages → ' 1 || bad "the HTML export record never landed"
+settle || bad "frame never settled after the HTML export"
+check "a second commit leaves a second record line" "$(count_all 'Exported 2 messages → ')" 2
+check_frame_intact "after the HTML export" 80
+
+file="$(find "$SCEN_TMP" -mindepth 1 -maxdepth 1 -type f -name 'iota-*.html' -print -quit)"
+if [ -n "$file" ]; then
+    ok "the HTML export landed in the pane's cwd ($(basename "$file"))"
+    check "the HTML document opens with its doctype" "$(head -1 "$file")" '<!DOCTYPE html>'
+    if grep -qF 'echo: hello' "$file"; then
+        ok "the HTML document carries the turn's answer"
+    else
+        bad "the answer is missing from the HTML export"
+    fi
+else
+    bad "no iota-*.html file under $SCEN_TMP"
+    ls -la "$SCEN_TMP" | head -20
+fi
+
 finish
