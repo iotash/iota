@@ -183,6 +183,20 @@ impl Transcript {
         self.grouped(BlockKind::Notice, &dim(text));
     }
 
+    /// A notice that marks a ROUND BOUNDARY — a finished background job's headline, drained
+    /// mid-turn with the steer queue (`repl/turn/steer.rs`). Like [`Self::user`] and unlike
+    /// [`Self::notice`], it settles the running activity group first: the headline belongs
+    /// AFTER the rows of the call that was running when the job ended, never above them
+    /// (docs/TUI-VERIFY.md §8.3; L4 scenario 19 reads the order back).
+    pub fn boundary_notice(&self, text: &str) {
+        let mut inner = self.lock();
+        group::settle_group(&mut inner);
+        if inner.last != BlockKind::Notice {
+            inner.begin(BlockKind::Notice);
+        }
+        inner.push_lines(&[&dim(text)]);
+    }
+
     /// Prints a red one-liner; consecutive errors group into one block.
     pub fn error(&self, text: &str) {
         self.grouped(BlockKind::Error, &red(text));

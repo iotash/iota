@@ -216,6 +216,52 @@ fn a_lone_tool_call_keeps_the_classic_block() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
+// A background job's headline drained at a round boundary (`Steerer::drain`) lands AFTER
+// the running group's rows, exactly as a steer message's `❯` block does: the group settles
+// first. A plain `notice` would have printed the headline above the call it interrupted.
+#[test]
+fn a_boundary_notice_settles_the_running_group_first() {
+    let rec = Rec::default();
+    let tr = transcript(&rec);
+
+    tr.user("x");
+    tr.open_call("[shell sleep 3]");
+    tr.finish_call(
+        "[shell sleep 3]",
+        "[command produced no output]",
+        false,
+        Duration::from_secs(3),
+        "",
+    );
+    tr.boundary_notice("[background job b1 finished: exit 0 after 2s] sleep 2; echo done");
+    let mut content = tr.content_block();
+    content.push(&["Answer."]);
+
+    let mut classic_block = vec!["[shell sleep 3]".to_owned()];
+    classic_block.extend(classic("[command produced no output]", false));
+    let want = [
+        "user:x".to_owned(),
+        "print:".to_owned(),
+        "call:[shell sleep 3]".to_owned(),
+        format!(
+            "line:{}",
+            event_line("[shell sleep 3]", "[command produced no output]", false, "")
+        ),
+        format!("call:{}", working()),
+        "detail:1 tool".to_owned(),
+        "settle".to_owned(),
+        format!("print:{}", classic_block.join("|")),
+        "print:".to_owned(),
+        format!(
+            "print:{}",
+            dim("[background job b1 finished: exit 0 after 2s] sleep 2; echo done")
+        ),
+        "print:".to_owned(),
+        "print:Answer.".to_owned(),
+    ];
+    assert_eq!(rec.joined(), want.join("\n"));
+}
+
 // Thinking with no tool
 // calls settles into the classic "◇ thought for Ns" marker at the content boundary.
 #[test]

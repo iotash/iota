@@ -41,8 +41,10 @@ impl Steerer {
         for input in self.ui.take_queued_messages().await {
             // A host notice (a background job finished) rides the SAME queue and lands at the same
             // boundary, but it is not the user speaking: one dim headline, and the message says so.
+            // It settles the running group exactly as the `❯` block does — the headline goes
+            // under the call that was running when the job ended, not above its rows.
             let m = if input.kind == InputKind::Notice {
-                self.tr.notice(&input.display);
+                self.tr.boundary_notice(&input.display);
                 Message::notice(input.text)
             } else {
                 self.tr.user(&input.display);
