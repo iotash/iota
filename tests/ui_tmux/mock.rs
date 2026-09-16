@@ -18,7 +18,22 @@
 //! | `md`          | that markdown document, streamed in 7-byte chunks            |
 //! | `exact`       | `EXACTSTART`, a line of exactly 80 `x`, `EXACTEND`            |
 //! | `straddle`    | `WIDESTART`, `y` + 40 × `中` (81 columns), `WIDEEND`          |
+//! | `blocks`      | [`blocks_doc`]: a 40-line document with a code block, a table and a list, one line per delta |
+//! | `emoji`       | [`EMOJI`]: a table whose cells carry emoji, flag sequences and VS16 characters |
+//! | `run:<cmd>`   | ONE `shell` tool call, `{"command": <cmd>, "background": true}`, `finish_reason: tool_calls` |
+//! | `runfg:<cmd>` | the same call in the foreground (no `background` key)          |
 //! | anything else | `echo: <the message>`                                        |
+//!
+//! Two directives ride ANY message rather than selecting a script:
+//!
+//! * `fail:<status>:<n>` anywhere in the conversation — the first `n` streaming requests carrying
+//!   that message get `<status>` with a JSON error envelope, the rest stream normally. The counter
+//!   is keyed by the whole message text, so two scenarios never share one (`FAILS`).
+//! * `title:<word>` in the session-title pass (the unary request embeds the first user message):
+//!   the pass answers `<word>` alone, so a scenario can choose the window title it then reads back.
+//!
+//! A request whose LAST message is a tool result (the follow-up of a `run:` call) streams
+//! `ran: <the result's first line>` — the text turn that closes a tool round.
 //!
 //! A non-streaming request (`"stream"` absent or false — the async session-title pass)
 //! gets the unary JSON shape instead, so the title provider never sees an SSE body.
@@ -29,6 +44,7 @@
 //! | request                        | reply                                                     |
 //! |--------------------------------|-----------------------------------------------------------|
 //! | `GET  /models`                 | the three model ids `/model`'s picker lists               |
+//! | `GET  /slow/models`            | the same listing after [`SLOW_LIST`] — a fetch ESC can land in |
 //! | `POST /images/generations`     | SSE: one `image_generation.partial_image`, then `.completed` |
 //! | `POST /images/edits`           | the same (both the multipart and the JSON edit form)      |
 //! | anything else (`POST`)         | the chat-completions dialect above                        |
@@ -37,9 +53,12 @@
 //! base64-encoded here rather than pulled in as a dependency — the partial frame is held
 //! for [`PARTIAL_GAP`] so the generation widget is observable before the picture lands.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -55,12 +74,48 @@ const THINK_GAP: Duration = Duration::from_millis(50);
 /// scenario can observe the generation widget, short enough not to pad the suite.
 const PARTIAL_GAP: Duration = Duration::from_millis(600);
 
+/// How long `GET /slow/models` holds its answer: long enough for a scenario to press ESC while
+/// `Fetching available models…` is up, short enough that the abandoned fetch is over before the
+/// scenario's next step could be confused by it.
+const SLOW_LIST: Duration = Duration::from_millis(2000);
+
 /// The image both image frames carry — the checked-in 2×2 fixture the L1 imgterm tests use.
 const PNG_2X2: &[u8] = include_bytes!("../fixtures/images/rb-2x2.png");
+
+/// `fail:<status>:<n>` bookkeeping: how many times each carrying message has been refused.
+static FAILS: Mutex<BTreeMap<String, u32>> = Mutex::new(BTreeMap::new());
+
+/// Tool-call ids, unique for the life of the process (a replayed round carries the old ones).
+static CALLS: AtomicU64 = AtomicU64::new(0);
 
 /// The markdown document the `think` and `md` scripts return: one of every block the
 /// renderer treats differently, small enough to fit a 24-row pane.
 const DOC: &str = "# Heading\n\nsome *text* here\n\n- one\n- two\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```\ncode\n```\n\ndone.\n";
+
+/// The `blocks` document: 40 source lines, one per delta, [`LINE_GAP`] apart — a 16-line fenced
+/// block and an 8-row table (both buffered behind a metered preview row while they stream), a
+/// list, and a `BLOCKSEND` marker so a scenario can wait for the whole thing.
+fn blocks_doc() -> String {
+    let mut d = String::from("# Blocks\n\nBLOCKSSTART\n\n```rust\n");
+    for i in 1..=16 {
+        let _ = writeln!(d, "fn code_line_{i:02}() {{}}");
+    }
+    d.push_str("```\n\n| n | name |\n|---|------|\n");
+    for i in 1..=8 {
+        let _ = writeln!(d, "| {i:02} | row_{i:02} |");
+    }
+    d.push('\n');
+    for i in 1..=8 {
+        let _ = writeln!(d, "- item_{i:02}");
+    }
+    d.push_str("\nBLOCKSEND\n");
+    d
+}
+
+/// The `emoji` document: a table whose cells carry a plain emoji, a flag sequence (two regional
+/// indicators), a VS16 character (a text-presentation base plus U+FE0F) and a skin-tone modifier —
+/// every place the width ruler and a terminal's cell accounting can disagree, framed by markers.
+const EMOJI: &str = "EMOJISTART\n\n| id | glyph | flag | vs16 | note |\n|---|---|---|---|---|\n| 1 | 😀 | 🇯🇵 | ❤️ | smile |\n| 2 | 🚀 | 🇩🇪 | ☕️ | rocket |\n| 3 | 👍🏽 | 🇧🇷 | ✔️ | thumbs |\n| 4 | 中文 | 🇺🇸 | ⚠️ | cjk |\n\nEMOJIEND\n";
 
 /// Starts the server on an ephemeral loopback port and returns it. The listener thread is
 /// detached: it lives as long as the test process.
@@ -112,6 +167,9 @@ fn serve(mut sock: TcpStream) -> std::io::Result<()> {
     let body = String::from_utf8_lossy(&body).into_owned();
 
     if is_get {
+        if path.contains("/slow/") {
+            thread::sleep(SLOW_LIST);
+        }
         return models(&mut sock);
     }
     if path.ends_with("/images/generations") || path.ends_with("/images/edits") {
@@ -119,10 +177,61 @@ fn serve(mut sock: TcpStream) -> std::io::Result<()> {
     }
     let prompt = last_content(&body).unwrap_or_default();
     if body.contains("\"stream\":true") {
-        stream_reply(&mut sock, &prompt)
+        if let Some(status) = fail_now(&body) {
+            return status_reply(&mut sock, status);
+        }
+        let after_tool = last_role(&body).as_deref() == Some("tool");
+        stream_reply(&mut sock, &prompt, after_tool)
     } else {
         unary_reply(&mut sock, &prompt)
     }
+}
+
+/// `fail:<status>:<n>` — the status this request must answer with, if its budget is not spent.
+///
+/// The directive is looked for in EVERY message of the request, not only the last: a retried
+/// round re-issues the same conversation, and a steer message queued during the backoff lands
+/// behind the message that carries it.
+fn fail_now(body: &str) -> Option<u16> {
+    let (key, status, n) = contents(body).into_iter().find_map(|c| {
+        let at = c.find("fail:")?;
+        let mut parts = c[at + "fail:".len()..].splitn(3, ':');
+        let status: u16 = parts.next()?.parse().ok()?;
+        let digits: String = parts
+            .next()?
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        let n: u32 = digits.parse().ok()?;
+        Some((c.clone(), status, n))
+    })?;
+    let mut fails = FAILS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let seen = fails.entry(key).or_insert(0);
+    if *seen >= n {
+        return None;
+    }
+    *seen += 1;
+    Some(status)
+}
+
+/// A refused request: the status with the JSON error envelope a chat-completions server sends.
+fn status_reply(sock: &mut TcpStream, status: u16) -> std::io::Result<()> {
+    let text = match status {
+        503 => "Service Unavailable",
+        500 => "Internal Server Error",
+        429 => "Too Many Requests",
+        400 => "Bad Request",
+        _ => "Error",
+    };
+    let body = format!("{{\"error\":{{\"message\":\"scripted {status}\",\"type\":\"mock\"}}}}");
+    write!(
+        sock,
+        "HTTP/1.1 {status} {text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )?;
+    sock.flush()
 }
 
 /// `GET /models` — the three ids `/model`'s picker lists.
@@ -138,9 +247,22 @@ fn models(sock: &mut TcpStream) -> std::io::Result<()> {
 
 /// The unary chat shape (used by the async title pass, which never streams).
 fn unary_reply(sock: &mut TcpStream, prompt: &str) -> std::io::Result<()> {
+    // `title:<word>` — the session-title pass embeds the first user message in its prompt, so a
+    // scenario that typed `title:<word> …` gets exactly `<word>` as the session's name.
+    let text = prompt
+        .find("title:")
+        .map(|at| &prompt[at + "title:".len()..])
+        .map(|rest| {
+            rest.split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .filter(|w| !w.is_empty())
+        .unwrap_or_else(|| format!("echo: {prompt}"));
     let body = format!(
         "{{\"choices\":[{{\"message\":{{\"content\":{}}}}}],\"usage\":{{\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}}}}",
-        json_string(&format!("echo: {prompt}"))
+        json_string(&text)
     );
     write!(
         sock,
@@ -150,15 +272,33 @@ fn unary_reply(sock: &mut TcpStream, prompt: &str) -> std::io::Result<()> {
     sock.flush()
 }
 
-/// The streaming chat shape: chunked SSE, the transcript picked by `prompt`.
-fn stream_reply(sock: &mut TcpStream, prompt: &str) -> std::io::Result<()> {
+/// The streaming chat shape: chunked SSE, the transcript picked by `prompt` — or, when the
+/// request's last message is a tool result (`after_tool`), the text that closes the tool round.
+fn stream_reply(sock: &mut TcpStream, prompt: &str, after_tool: bool) -> std::io::Result<()> {
     write!(
         sock,
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
     )?;
     sock.flush()?;
 
-    if let Some(rest) = prompt.strip_prefix("stream") {
+    let mut finish = "stop";
+    if after_tool {
+        let first = prompt.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+        content(sock, &format!("ran: {first}"))?;
+    } else if let Some(cmd) = prompt.strip_prefix("run:") {
+        tool_call(sock, cmd.trim(), true)?;
+        finish = "tool_calls";
+    } else if let Some(cmd) = prompt.strip_prefix("runfg:") {
+        tool_call(sock, cmd.trim(), false)?;
+        finish = "tool_calls";
+    } else if prompt.starts_with("blocks") {
+        for line in blocks_doc().lines() {
+            content(sock, &format!("{line}\n"))?;
+            thread::sleep(LINE_GAP);
+        }
+    } else if prompt.starts_with("emoji") {
+        content(sock, EMOJI)?;
+    } else if let Some(rest) = prompt.strip_prefix("stream") {
         let n: usize = rest.trim().parse().unwrap_or(10);
         for i in 0..n {
             content(sock, &format!("l#{i:02} line\n"))?;
@@ -188,11 +328,38 @@ fn stream_reply(sock: &mut TcpStream, prompt: &str) -> std::io::Result<()> {
 
     chunk(
         sock,
-        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}}\n\n",
+        &format!(
+            "data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"{finish}\"}}],\"usage\":{{\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}}}}\n\n"
+        ),
     )?;
     chunk(sock, "data: [DONE]\n\n")?;
     sock.write_all(b"0\r\n\r\n")?;
     sock.flush()
+}
+
+/// One `shell` tool call as the `OpenAI` wire spells it: the first delta names the call (id, name,
+/// empty arguments), the second carries the whole argument object — two deltas rather than one
+/// because that is the shape a real server streams, and the accumulator has to join them.
+fn tool_call(sock: &mut TcpStream, cmd: &str, background: bool) -> std::io::Result<()> {
+    let id = format!("call_l4_{}", CALLS.fetch_add(1, Ordering::Relaxed) + 1);
+    chunk(
+        sock,
+        &format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"{id}\",\"type\":\"function\",\"function\":{{\"name\":\"shell\",\"arguments\":\"\"}}}}]}},\"finish_reason\":null}}]}}\n\n"
+        ),
+    )?;
+    let args = if background {
+        format!("{{\"command\":{},\"background\":true}}", json_string(cmd))
+    } else {
+        format!("{{\"command\":{}}}", json_string(cmd))
+    };
+    chunk(
+        sock,
+        &format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"function\":{{\"arguments\":{}}}}}]}},\"finish_reason\":null}}]}}\n\n",
+            json_string(&args)
+        ),
+    )
 }
 
 /// The images dialect (`llm/images.rs::consume_images`): a `text/event-stream` body whose
@@ -314,42 +481,61 @@ fn json_string(s: &str) -> String {
     out
 }
 
-/// The LAST `"content":"…"` value in a request body — the message that just arrived.
+/// The LAST `"content":"…"` value in a request body — the message that just arrived: the
+/// user's, or the tool result that closes a `run:` round (see [`last_role`]).
+fn last_content(body: &str) -> Option<String> {
+    contents(body).pop()
+}
+
+/// Every `"content":"…"` string value in a request body, in order.
 ///
 /// A hand parser rather than a serde dependency: the bodies are compact machine JSON, the
-/// tail message is always the user's (this harness advertises no tools, so no tool result
-/// can follow it), and only string escapes need undoing.
-fn last_content(body: &str) -> Option<String> {
+/// key only ever names a message's text (the advertised tools carry `description`s, never
+/// `content`), and only string escapes need undoing.
+fn contents(body: &str) -> Vec<String> {
     const KEY: &str = "\"content\":\"";
-    let mut found = None;
+    let mut found = Vec::new();
     let mut from = 0usize;
     while let Some(at) = body[from..].find(KEY) {
         let start = from + at + KEY.len();
-        let mut out = String::new();
-        let mut chars = body[start..].chars();
-        while let Some(c) = chars.next() {
-            match c {
-                '"' => break,
-                '\\' => match chars.next() {
-                    Some('n') => out.push('\n'),
-                    Some('r') => out.push('\r'),
-                    Some('t') => out.push('\t'),
-                    Some('u') => {
-                        let hex: String = chars.by_ref().take(4).collect();
-                        if let Ok(v) = u32::from_str_radix(&hex, 16)
-                            && let Some(c) = char::from_u32(v)
-                        {
-                            out.push(c);
-                        }
-                    }
-                    Some(other) => out.push(other),
-                    None => break,
-                },
-                c => out.push(c),
-            }
-        }
-        found = Some(out);
+        found.push(unescape_until_quote(&body[start..]));
         from = start;
     }
     found
+}
+
+/// The `role` of the request's LAST message — `tool` when a tool result closes the conversation,
+/// which is the only time the mock must NOT read the tail as a prompt.
+fn last_role(body: &str) -> Option<String> {
+    const KEY: &str = "\"role\":\"";
+    let at = body.rfind(KEY)?;
+    Some(unescape_until_quote(&body[at + KEY.len()..]))
+}
+
+/// A JSON string body up to its closing quote, escapes undone.
+fn unescape_until_quote(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => break,
+            '\\' => match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                Some('u') => {
+                    let hex: String = chars.by_ref().take(4).collect();
+                    if let Ok(v) = u32::from_str_radix(&hex, 16)
+                        && let Some(c) = char::from_u32(v)
+                    {
+                        out.push(c);
+                    }
+                }
+                Some(other) => out.push(other),
+                None => break,
+            },
+            c => out.push(c),
+        }
+    }
+    out
 }
