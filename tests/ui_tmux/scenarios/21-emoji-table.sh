@@ -34,9 +34,34 @@ key Enter
 wait_all 'EMOJIEND' || bad "the table never arrived"
 settle || bad "frame never settled after the turn"
 
+# --- can this emulator judge the table at all? Its ruler must give the app's answer — two
+# columns — for each glyph class the table carries. brew's tmux on the macOS runner does not
+# (CI 2026-09-16: the same bytes were 15 rows of mixed widths there and 11 rows of one width
+# under tmux 3.7c), and an emulator whose ruler differs from the app's cannot line up ANY
+# table: that is a fact about the emulator, recorded as a wart with the numbers, never a
+# failure of the renderer. The rows themselves, the stripped U+FE0F and the frame are still
+# checked on every emulator.
+ruler_ok=1
+ruler_note=""
+for g in "😀" "🇯🇵" "☕" "👍🏽"; do
+    w="$(emu_width "$g")"
+    if [ "$w" != "2" ]; then ruler_ok=0; ruler_note="$ruler_note $g=$w"; fi
+done
+if [ "$ruler_ok" -eq 1 ]; then
+    ok "tmux's ruler agrees with the app's: emoji, flag, VS16 base and skin tone are 2 columns each"
+else
+    wart "tmux's ruler disagrees with the app's on:$ruler_note — the alignment below is recorded, not enforced"
+fi
+
 # --- the shape: 4 data rows + header = 5 rendered rows, a rule between each pair, two borders
-check "the table is 11 rendered rows" "$(table_rows | wc -l | tr -d ' ')" 11
-check "…and no row wrapped (rows between the markers, blank spacers included)" "$(rows_between EMOJISTART EMOJIEND)" 13
+rows="$(table_rows | wc -l | tr -d ' ')"
+between="$(rows_between EMOJISTART EMOJIEND)"
+if [ "$ruler_ok" -eq 1 ]; then
+    check "the table is 11 rendered rows" "$rows" 11
+    check "…and no row wrapped (rows between the markers, blank spacers included)" "$between" 13
+else
+    wart "the table is $rows rendered rows and $between rows between the markers under this emulator's ruler (11 and 13 under the app's)"
+fi
 check "the header row" "$(capall | grep -cE '^│ id +│ glyph +│ flag +│ vs16 +│ note +│$' | tr -d ' ')" 1
 check_once "the emoji row" '│ smile'
 check_once "the skin-tone row" '│ thumbs'
@@ -62,6 +87,8 @@ $(table_rows)
 EOR
 if [ -n "$first" ] && [ "$mismatch" -eq 0 ]; then
     ok "all 11 rows are $first columns wide by tmux's own ruler"
+elif [ "$ruler_ok" -eq 0 ]; then
+    wart "the rows disagree on their width by tmux's ruler:$widths — its ruler is not the app's (see above)"
 else
     bad "the rows disagree on their width by tmux's ruler:$widths"
     table_rows
