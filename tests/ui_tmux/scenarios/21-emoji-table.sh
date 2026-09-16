@@ -21,8 +21,18 @@ rows_between() {
     if [ -n "$s" ] && [ -n "$e" ]; then echo $((e - s - 1)); else echo "?"; fi
 }
 
-# table_rows — every rendered row of the table, in order (borders and cells alike).
-table_rows() { capall | grep -E '^[┌├└│]'; }
+# table_rows — every rendered row of the table, in order (borders and cells alike): the rows
+# between the LAST pair of markers whose first character is a box-drawing border. Alternation,
+# not a bracket expression: under a C locale (the macOS runner) `[┌├└│]` is a set of the
+# glyphs' BYTES, and `─` and `❯` share the lead byte — the frame rows matched too (CI
+# 2026-09-16, run 35056584430).
+table_rows() {
+    local s e
+    s="$(capall | grep -nF -- EMOJISTART | tail -1 | cut -d: -f1)"
+    e="$(capall | grep -nF -- EMOJIEND | tail -1 | cut -d: -f1)"
+    [ -n "$s" ] && [ -n "$e" ] || return 0
+    capall | sed -n "${s},${e}p" | grep -E '^(┌|├|└|│)'
+}
 
 VS16="$(printf '\357\270\217')"
 
