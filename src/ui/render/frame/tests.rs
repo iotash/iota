@@ -135,7 +135,7 @@ fn find(rows: &[String], pred: impl Fn(&str) -> bool) -> Option<usize> {
 fn separator_indices(rows: &[String]) -> Vec<usize> {
     rows.iter()
         .enumerate()
-        .filter(|(_, r)| r.starts_with("───"))
+        .filter(|(_, r)| r.starts_with(&super::SEPARATOR_GLYPH.repeat(3)))
         .map(|(i, _)| i)
         .collect()
 }

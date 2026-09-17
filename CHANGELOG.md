@@ -3,6 +3,14 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## Unreleased
+
+### Changed
+
+- **The two rules around the composer are dashed.** They were solid (`─`), a wall
+  across the conversation; they are now a light triple dash (`┄`), a strip the
+  input sits in. Nothing else about the frame moves.
+
 ## 0.2.1 - 2026-09-15
 
 A fix release. Three of the fixes are about a token count that read 0, or a

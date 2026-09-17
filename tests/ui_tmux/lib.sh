@@ -273,8 +273,8 @@ count_all() { capall | grep -cF -- "$1" | tr -d ' '; }
 # resize can strand a stale separator of the old width above the live frame. The pair is
 # the only unambiguous anchor.
 
-frame_top() { cap | grep -n '^───' | tail -2 | head -1 | cut -d: -f1; }
-frame_bot() { cap | grep -n '^───' | tail -1 | cut -d: -f1; }
+frame_top() { cap | grep -n '^┄┄┄' | tail -2 | head -1 | cut -d: -f1; }
+frame_bot() { cap | grep -n '^┄┄┄' | tail -1 | cut -d: -f1; }
 
 # Everything between the separators: the composer rows plus any completion-candidates row.
 composer_block() {
@@ -311,7 +311,7 @@ bottom_zone() {
 status_model() { bottom_zone | sed 's/ · .*$//'; }
 
 # Display columns of a separator row (grep -o counts runes, not bytes).
-row_width() { cap | sed -n "${1}p" | grep -o '─' | wc -l | tr -d ' '; }
+row_width() { cap | sed -n "${1}p" | grep -o '┄' | wc -l | tr -d ' '; }
 sep_width() { row_width "$(frame_bot)"; }
 
 # Distinct matches of an extended pattern across the whole history.

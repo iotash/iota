@@ -347,7 +347,7 @@ mod tests {
     fn separator_indices(rows: &[String]) -> Vec<usize> {
         rows.iter()
             .enumerate()
-            .filter(|(_, r)| r.starts_with("───"))
+            .filter(|(_, r)| r.starts_with(&crate::ui::render::frame::SEPARATOR_GLYPH.repeat(3)))
             .map(|(i, _)| i)
             .collect()
     }

@@ -156,7 +156,7 @@ wait_all 'l#0' || wart "60x10: not one streamed row is legible"
 settle || bad "60x10: the pane never stopped moving"
 if alive; then ok "60x10: the app survives an insert taller than the frame's floor"; else bad "60x10: the app died"; fi
 legible="$(uniq_all 'l#[0-9][0-9]')"
-if [ "$(cap | grep -c '^───' | tr -d ' ')" -eq 2 ] && [ "$legible" -eq 12 ]; then
+if [ "$(cap | grep -c '^┄┄┄' | tr -d ' ')" -eq 2 ] && [ "$legible" -eq 12 ]; then
     ok "60x10: the frame and all 12 rows survived intact"
 else
     wart "60x10: frame overlapped by the inserted history, $legible/12 rows legible (frame floor ≈ 10 rows leaves no insert room) — cosmetic and recorded in docs/TUI-VERIFY.md §6"

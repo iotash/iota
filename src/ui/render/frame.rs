@@ -2,8 +2,8 @@
 //! (internal/ui/model.go:914-1193).
 //!
 //! Builds the pinned bottom frame as raw ANSI rows in the FIXED stacking order
-//! `[staging tail][residue (blank)][preview][spacer][queue] ─sep─ [composer
-//! (+candidates row)] ─sep─ [surface | suggestion-desc | status]`, tracking `rows_above`
+//! `[staging tail][residue (blank)][preview][spacer][queue] ┄sep┄ [composer
+//! (+candidates row)] ┄sep┄ [surface | suggestion-desc | status]`, tracking `rows_above`
 //! for the real-cursor offset. Every appended row is exactly one visual line (the
 //! one-entry-one-row law) or the cursor desyncs. Above the composer the frame only ever
 //! GROWS; busy is a status-row SEGMENT so toggling it never changes the frame height
@@ -16,6 +16,14 @@
 
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
+
+/// The composer's two separators are drawn with this glyph, repeated across the width: a
+/// light triple-dash (U+2504) — dashed, not solid, so the composer reads as a strip inside
+/// the conversation rather than a wall across it (2026-09-17; the Go build and this one
+/// until then drew `─`, DIVERGENCES X-36). Everything that FINDS a separator row — the
+/// composer geometry, the frame tests, the tmux suite's `frame_top`/`row_width` — keys on
+/// this one string.
+pub const SEPARATOR_GLYPH: &str = "┄";
 
 use crate::text;
 use crate::text::ansi::truncate_ansi;
@@ -185,7 +193,7 @@ pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
     // The composer sits between TWO separators; completion candidates render INSIDE
     // the block, above the lower one (model.go:1022-1046).
     let w = if fi.width < 1 { 80 } else { fi.width as usize };
-    let sep = format!("{FAINT}{}{RESET}", "─".repeat(w));
+    let sep = format!("{FAINT}{}{RESET}", SEPARATOR_GLYPH.repeat(w));
     rows.push(sep.clone());
     let rows_above = rows.len(); // frame rows above the composer = the cursor Y offset
     rows.extend(fi.composer_rows.iter().cloned());

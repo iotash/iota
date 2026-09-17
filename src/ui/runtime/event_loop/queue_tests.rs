@@ -36,7 +36,10 @@ fn queued_messages_drain_in_order() {
         rows.iter().any(|r| r.contains("» second")),
         "queue row » second missing:\n{rows:#?}"
     );
-    let sep = find(&rows, |r| r.starts_with("───")).expect("separator missing");
+    let sep = find(&rows, |r| {
+        r.starts_with(&crate::ui::render::frame::SEPARATOR_GLYPH.repeat(3))
+    })
+    .expect("separator missing");
     assert!(first < sep, "queue not above the separator:\n{rows:#?}");
 
     let (tx, mut rx) = tokio::sync::oneshot::channel();
