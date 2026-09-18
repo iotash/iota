@@ -13,6 +13,7 @@ pub mod list;
 pub(crate) mod resolve;
 pub mod signals;
 pub(crate) mod tuning;
+pub use crate::config::edit;
 pub use crate::config::window;
 pub use crate::config::{
     AgentConfig, BadModelRef, Config, ConfigError, DEFAULT_AGENT, Declared, McpServerConfig,

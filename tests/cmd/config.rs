@@ -1080,3 +1080,115 @@ fn config_parse_error_drops_file_with_warning() {
     assert!(warnings.is_empty(), "{warnings:?}");
     assert_eq!(cfg, Config::default());
 }
+
+// ---------------------------------------------------------------- the managed `mcp_servers:` block
+
+/// The block rewrite through the public seam, on a file the loader then reads back: what `iota mcp add`
+/// writes into `-c <file>` (or the scope's own file) is exactly the `mcp_servers:` section, and the rest of the
+/// document — comments, the layer order, the odd indentation — comes back byte for byte.
+#[test]
+fn the_mcp_servers_block_is_rewritten_in_place_and_nothing_else_moves() {
+    use iota::cmd::McpServerConfig;
+    use iota::cmd::edit::{read_mcp_servers, write_mcp_servers};
+
+    let (dir, _dirs) = temp_project(&[]);
+    let path = dir.path().join("explicit.yaml");
+    let before = "\
+# my config
+providers:
+  openai: {key: k}      # inline
+models:
+  gpt: openai:gpt-5
+
+mcp_servers:
+  fs:
+    command: npx
+    args: [-y, server-fs]
+
+# agents come last
+agents:
+  default:
+    models: [gpt]
+";
+    fs::write(&path, before).unwrap();
+
+    let read = read_mcp_servers(&path).expect("read");
+    assert_eq!(read.text, before);
+    assert_eq!(read.servers.keys().collect::<Vec<_>>(), ["fs"]);
+
+    let mut next = read.servers.clone();
+    next.insert(
+        "gh".to_owned(),
+        McpServerConfig {
+            url: "https://gh.example/mcp".to_owned(),
+            headers: [("Authorization".to_owned(), "Bearer ${env:GH}".to_owned())]
+                .into_iter()
+                .collect(),
+            ..McpServerConfig::default()
+        },
+    );
+    write_mcp_servers(&path, &read.text, &next).expect("write");
+
+    let after = fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        after,
+        "\
+# my config
+providers:
+  openai: {key: k}      # inline
+models:
+  gpt: openai:gpt-5
+
+mcp_servers:
+  fs:
+    command: npx
+    args:
+    - -y
+    - server-fs
+  gh:
+    url: https://gh.example/mcp
+    headers:
+      Authorization: Bearer ${env:GH}
+
+# agents come last
+agents:
+  default:
+    models: [gpt]
+"
+    );
+    // The loader reads the result as the two servers, with the other layers intact.
+    let (cfg, warnings) = load_explicit(&path, &Env::default());
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(cfg.mcp_servers, next);
+    assert_eq!(cfg.agents.len(), 1);
+    assert_eq!(cfg.models.len(), 1);
+
+    // Removing the last entry removes the block; the blank line that preceded it closes up with the one
+    // that followed, and the rest is untouched.
+    let read = read_mcp_servers(&path).expect("read");
+    write_mcp_servers(&path, &read.text, &std::collections::BTreeMap::new()).expect("write");
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "\
+# my config
+providers:
+  openai: {key: k}      # inline
+models:
+  gpt: openai:gpt-5
+
+
+# agents come last
+agents:
+  default:
+    models: [gpt]
+"
+    );
+
+    // A file that does not exist yet reads as empty and is created by the write, block alone.
+    let fresh = dir.path().join("new").join("fresh.yaml");
+    let read = read_mcp_servers(&fresh).expect("missing is empty");
+    assert_eq!(read, iota::cmd::edit::FileServers::default());
+    write_mcp_servers(&fresh, "", &next).expect("write creates the file and its directory");
+    let (cfg, _) = load_explicit(&fresh, &Env::default());
+    assert_eq!(cfg.mcp_servers, next);
+}

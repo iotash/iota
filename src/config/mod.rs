@@ -14,6 +14,7 @@
 //! ignored line. Bool fields take the YAML 1.1 spellings through `crate::tool::yaml11` (DIVERGENCES I-01).
 
 pub mod agent;
+pub mod edit;
 pub mod model;
 pub mod params;
 pub mod provider;
@@ -39,21 +40,31 @@ pub use provider::{ApiKey, Endpoint, ProviderConfig};
 pub const DEFAULT_AGENT: &str = "default";
 
 /// One top-level `mcp_servers.<name>` entry (config.go `MCPServerConfig`).
-#[derive(serde::Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+///
+/// It serialises as well as it decodes — `iota mcp add`/`remove` write the block back through
+/// [`edit::rewrite_mcp_servers`] — and every field that is at its default is left out of the written entry,
+/// so a stdio server never carries an empty `url:` and an HTTP one never an empty `args:`.
+#[derive(serde::Deserialize, serde::Serialize, Debug, Clone, Default, PartialEq, Eq)]
 #[serde(default)]
 pub struct McpServerConfig {
     /// stdio transport: the command to spawn.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub command: String,
     /// stdio transport: command arguments.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
     /// streamable-HTTP transport: the endpoint URL.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub url: String,
     /// Extra environment for the child process.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
     /// Extra HTTP headers.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
     /// `defer:` — the server's one-line tool summary; `Some` opts into deferred loading (blank = loud warning,
     /// not deferred), `None` = advertise fully.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub defer: Option<String>,
 }
 
@@ -486,6 +497,14 @@ fn decode(data: &[u8]) -> Result<ConfigFile, ConfigError> {
         serde_norway::from_slice(data).map_err(|e| ConfigError::Parse(e.to_string()))?;
     strict::audit(&doc)?;
     serde_norway::from_slice(data).map_err(|e| ConfigError::Parse(e.to_string()))
+}
+
+/// The `mcp_servers:` entries of ONE document, decoded under the same audit as a load — what
+/// [`edit::read_mcp_servers`] reads before it rewrites the block.
+pub(crate) fn decode_mcp_servers(
+    data: &[u8],
+) -> Result<BTreeMap<String, McpServerConfig>, ConfigError> {
+    decode(data).map(|file| file.mcp_servers)
 }
 
 /// `expand` on an owned string, allocating only when a `${…}` was substituted.

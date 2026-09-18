@@ -1,11 +1,12 @@
 //! What the process learns ONCE at its edge and injects everywhere: program identity and the process-level
 //! directories (internal/app/app.go plus the `os.UserCacheDir`/`os.TempDir` rules) here, the environment seams
-//! and `${var}` expansion in `env`, the color decision in `color`, the `IOTA_LOG` tap in `diag`, and the lexical
-//! path helpers in `paths`.
+//! and `${var}` expansion in `env`, the color decision in `color`, the `IOTA_LOG` tap in `diag`, the atomic file
+//! writer in `fs`, and the lexical path helpers in `paths`.
 
 pub mod color;
 pub mod diag;
 pub mod env;
+pub mod fs;
 pub(crate) mod paths;
 
 use std::path::{Path, PathBuf};
