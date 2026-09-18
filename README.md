@@ -158,6 +158,7 @@ iota [command] [flags]
 | `iota list [agents\|models\|providers\|sessions]` | What the config declares (no argument: `agents`); `iota list models <agent>` shows one agent's candidate set |
 | `iota resume [<id>]` | Resume a saved session — any unique id prefix; with no id, pick from a list |
 | `iota config [check\|path\|init]` | Validate the config, print which files it reads, or write a starter one (no argument: `check`) |
+| `iota mcp add\|list\|get\|remove\|login\|logout` | Manage the `mcp_servers:` block from the command line, and log in to a server that needs OAuth (see [MCP Servers](#mcp-servers)) |
 | `iota version` | Print the version (`--version` does the same) |
 
 The positional argument is the **command**, never a name from your config, so
@@ -214,6 +215,12 @@ And one decides whether the terminal gets colors at all:
 |----------|--------------|
 | `NO_COLOR` | Set to any non-empty value ([no-color.org](https://no-color.org)), it turns color off for the run — as does `TERM=dumb`, or a stdout that is not a terminal. The chat itself (replies, tool output, diffs) is then plain text with no escape sequence at all; the frame around it (the composer, the status row, the panels) keeps bold, faint and reverse video so it stays readable, but drops every color. Images still render in color: their pixels are the picture |
 
+And one names the browser `iota mcp login` opens:
+
+| Variable | What it does |
+|----------|--------------|
+| `BROWSER` | A command line the authorization URL is appended to (`firefox --new-window`). Unset, the platform opener runs (`open` / `xdg-open` / `start`); the URL is printed either way |
+
 And one is for whoever is debugging iota itself:
 
 | Variable | What it does |
@@ -247,6 +254,10 @@ The config has three top-level maps, each answering one question:
 | `providers:` | *how do I reach the API?* | `type`, `key`, `url` |
 | `models:` | *which model, and what does its protocol look like?* | `provider`, `id`, `context_window`, `defer_mode`, image knobs, `effort`/`temperature`/`top_p` defaults |
 | `agents:` | *how do I use it?* | `models`, `system`/`system_file`, `tools`, `mcp_servers`, `workspace`, `no_save`, `notify`, `description`, and overrides for `context_window`/`effort`/`temperature`/`top_p` |
+
+A fourth top-level map, `mcp_servers:`, declares the MCP servers an agent may
+select (`command`/`args`, or `url` with `headers` and `auth`; `env`; `defer`) —
+`iota mcp add` writes it for you (see [MCP Servers](#mcp-servers)).
 
 **A run names an agent.** `iota run <name>` resolves `agents:` and nothing
 else: the agent decides which model it drives, and the model decides which
@@ -340,6 +351,7 @@ mcp_servers:
     url: https://mcp.example.com/sse
     headers:
       Authorization: "Bearer ${env:GITHUB_TOKEN}"
+    # auth: oauth           # a server you log in to instead (`iota mcp login github`)
     # Deferred loading: instead of advertising every schema on every request,
     # only a search_tools entry is advertised and the model loads this
     # server's tools on demand — the value IS the group's one-line summary
@@ -587,6 +599,63 @@ corresponding machinery disappears for such sessions: `/model` shows no
 Context/Effort/Temperature tabs, the status bar drops its context meter, and
 `/compact` does not apply. `/model` still picks models — filtered to
 image-capable ones when the server provides capability metadata.
+
+### MCP Servers
+
+An agent's hands beyond the built-ins are MCP servers: the top-level
+`mcp_servers:` block declares them (a `command` + `args` for a stdio server,
+a `url` for a streamable-HTTP one, plus `env`, `headers`, `defer` and `auth`),
+and an agent's `mcp_servers:` list selects a subset (absent = all). Every tool
+a server advertises reaches the model as `mcp__<server>__<tool>`.
+
+`iota mcp` edits that block from the command line, so a server is one command
+away rather than a hand-written entry:
+
+```bash
+iota mcp add fs -- npx -y @modelcontextprotocol/server-filesystem /tmp   # stdio
+iota mcp add fs -e LOG_LEVEL=info --defer "file tools" -- npx -y server-fs
+iota mcp add gh --url https://mcp.example.com/mcp --header 'Authorization: Bearer ${env:GH_TOKEN}'
+iota mcp add nb --url https://namebeta.com/api/mcp --auth oauth   # then: iota mcp login nb
+iota mcp list [--scope user|project|all] [--json] [--probe]      # name, transport, file, auth
+iota mcp get nb                                                  # the entry as declared
+iota mcp remove nb [--scope user|project]
+```
+
+**Two scopes, no third file.** `--scope user` (the default) writes
+`~/.iota.yaml`, `--scope project` writes `./.iota.yaml`, and `-c <file>` makes
+that file the only scope. A project file is shared, so a header or environment
+value written there must be a `${…}` reference (`${env:GH_TOKEN}`), never the
+secret itself — `add` refuses otherwise. `list` reads both tiers the way a run
+merges them (the project entry wins a name), `--probe` connects to each server
+and reports the outcome, and `--json` is one array with a stable shape.
+
+**The block is machine-managed.** `add` and `remove` rewrite the `mcp_servers:`
+section alone and leave every other byte of the file as you wrote it —
+comments, blank lines, the order of the layers. What they do not keep is a
+comment *inside* the block: the entries are serialised afresh each time. Adding
+a name that already exists in the target file is refused; remove it first.
+
+**OAuth 2.1.** A server with `auth: oauth` (or added with `--auth oauth`)
+is one you log in to:
+
+```bash
+iota mcp login nb            # opens the browser; --no-browser prints the URL instead
+iota mcp logout nb           # forgets the tokens (revoking them when the server allows)
+```
+
+`login` discovers the authorization server (RFC 9728 → RFC 8414), registers a
+client when the server offers it (RFC 7591), and runs the PKCE authorization
+code flow: the browser opens (`$BROWSER` when set, else the platform opener;
+the URL is printed either way, for a machine without a desktop), a loopback
+listener on `127.0.0.1:<random port>/callback` collects the code — or you paste
+the redirect URL back into the terminal — and the tokens land in
+`~/.iota/mcp/auth/<name>.json` (mode 0600). A token never enters a config
+file. At run time the bearer token goes on every request and is refreshed
+when the server rejects it; a server with no usable token is reported as
+`not logged in: run iota mcp login <name>` and left out of that run while every
+other server loads. In the chat, `/mcp` shows each server's login state,
+`/mcp login <name>` runs the same flow (ESC gives up waiting) and reconnects
+the server, and `/mcp logout <name>` takes it down.
 
 ### Built-in Toolsets
 
@@ -837,6 +906,7 @@ and an unknown `/word` is sent as a normal message.
 | `/export [file]` | Export the conversation (saved sessions: the full on-disk log, so compaction never hides older rounds) to a single self-contained HTML file — the default — or Markdown with a `.md`/`.markdown` extension. With no argument, a selector picks the format and the filename is generated from the session title. Never overwrites an existing file. |
 | `/status` | Show provider, model, context usage, and last-turn token counts |
 | `/tools` | Tabbed read-only view of the model's capabilities: a "Tools" tab (every built-in and MCP tool with its source) and an "MCP" tab (server status, endpoints, and tools) |
+| `/mcp [login\|logout <name>]` | Bare `/mcp` opens the MCP panel — every server's state, endpoint, tools and, for an `auth: oauth` server, whether it is logged in. `/mcp login <name>` runs the OAuth flow (browser, loopback callback; ESC gives up) and reconnects the server; `/mcp logout <name>` forgets its tokens and takes it down. |
 | `/debug [on\|off]` | Request inspector. `/debug on` / `/debug off` toggle recording of API round trips (a `debug` marker appears in the status row while on); bare `/debug` opens the two-tab console — "Messages" (newest first, drill into a request/response pair) and the "Verbose" switch. Recording is off by default and MCP traffic is not recorded. |
 | `/skills [name [instructions]]` | Bare `/skills` lists discovered agent skills — name, source (project/user), description, and any invalid skills that were skipped. `/skills <name>` runs one: its instructions (plus anything you add after the name) are sent as the message. Agent mode only; every discovered skill also shows up as a completion row. |
 

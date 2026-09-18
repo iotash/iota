@@ -47,6 +47,9 @@ agents:
       code:                   # read/write/edit/grep over the project
       shell:                  # shell commands, with a sandbox by default
     # workspace: true         # AGENTS.md overlay, skills, project-scoped sessions
+
+# MCP servers go under a top-level `mcp_servers:` block, which `iota mcp add <name> -- <command>`
+# (or `--url <url>`) writes and `iota mcp remove <name>` edits for you.
 ";
 
 /// `iota config <action>`; the default action is `check`. `explicit` is `-c/--config`, which is global — so

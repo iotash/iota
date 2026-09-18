@@ -3,6 +3,30 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## Unreleased
+
+### Added
+
+- **`iota mcp` manages the `mcp_servers:` block.** `iota mcp add <name> -- <command>
+  [args…]` or `add <name> --url <url> [--header 'K: V']… [--auth oauth|none]`,
+  `list [--scope user|project|all] [--json] [--probe]`, `get <name>` and
+  `remove <name> [--scope]`. Two scopes and no third file: `--scope user`
+  (`~/.iota.yaml`, the default) or `--scope project` (`./.iota.yaml`, where a
+  header or environment value must be a `${…}` reference), or the `-c` file
+  alone. The block is machine-managed — every other byte of the file stays as you
+  wrote it; a comment inside the block is not kept.
+- **MCP OAuth 2.1.** A server with `auth: oauth` is one you log in to: `iota mcp
+  login <name>` discovers the authorization server, registers a client when the
+  server offers it, opens the browser (`$BROWSER`, else the platform opener; the
+  URL is printed either way, and a pasted redirect URL works without a browser)
+  and stores the tokens in `~/.iota/mcp/auth/<name>.json` (mode 0600). A run puts
+  the bearer token on every request and refreshes it when the server rejects it;
+  a server with no usable token is reported as `not logged in: run iota mcp login
+  <name>` and left out of that run alone. `iota mcp logout <name>` revokes and
+  forgets. In the chat, `/mcp` shows every server's login state, `/mcp login
+  <name>` runs the same flow and reconnects the server, `/mcp logout <name>` takes
+  it down.
+
 ## 0.3.0 - 2026-09-18
 
 The tree is native now. Nineteen refactoring steps took the port from a
