@@ -47,6 +47,21 @@ fn ok(o: &Output) -> String {
     out(o)
 }
 
+/// The project file as the CHILD names it: `<its cwd>/.iota.yaml`, where its cwd is what the OS reports for
+/// the directory it was started in. On unix that is the physical path — `getcwd` resolves symlinks, so a
+/// macOS temp dir comes back as `/private/var/…` — which is what `canonicalize` gives. On Windows
+/// `GetCurrentDirectory` returns the string the child was started with, verbatim, and `canonicalize`
+/// would instead add a `\\?\` prefix and expand an 8.3 name (`RUNNER~1` → `runneradmin`): there the path
+/// handed to the command IS the expectation.
+fn child_project_file(cwd: &Path) -> std::path::PathBuf {
+    let cwd = if cfg!(windows) {
+        cwd.to_path_buf()
+    } else {
+        cwd.canonicalize().expect("the temp dir resolves")
+    };
+    cwd.join(".iota.yaml")
+}
+
 /// Asserts the command failed with exit 1 and printed exactly `Error: {message}`.
 fn assert_error(o: &Output, message: &str) {
     assert_eq!(o.status.code(), Some(1), "stderr was: {}", err(o));
@@ -193,9 +208,7 @@ fn mcp_project_scope_and_the_two_tiers() {
     let (dir, home) = project();
     let cwd = dir.path();
     let user = home.join(".iota.yaml");
-    // The project file is named through the child's working directory, which the OS reports resolved
-    // (`/private/var/…` for a macOS temp dir).
-    let proj = cwd.canonicalize().unwrap().join(".iota.yaml");
+    let proj = child_project_file(cwd);
 
     let o = mcp(
         cwd,
