@@ -744,15 +744,18 @@ async fn mcp_login_logout_through_the_cli() {
         "mcp: no server named \"nope\"\n  configured servers: nb, plain",
     );
 
-    // Login: the child prints the URL and waits; this test is the browser.
+    // Login: the child prints the URL and waits; this test is the browser. Its stdin is a pipe this test
+    // holds OPEN and never writes to — a terminal nobody types into — so the exit below also proves the
+    // paste reader does not keep the process alive once the browser has come back.
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_iota"));
     cleared_env(&mut cmd, &home)
         .current_dir(cwd)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .args(["mcp", "login", "nb", "--no-browser"]);
     let mut child = cmd.spawn().expect("spawn iota mcp login");
+    let stdin_kept_open = child.stdin.take().expect("piped stdin");
     let stdout = child.stdout.take().expect("piped stdout");
     let (tx, rx) = tokio::sync::oneshot::channel::<Vec<String>>();
     let reader = tokio::task::spawn_blocking(move || {
@@ -795,9 +798,14 @@ async fn mcp_login_logout_through_the_cli() {
         page.contains("Logged in to nb. You can close this window."),
         "{page}"
     );
-    let status = tokio::task::spawn_blocking(move || child.wait().expect("wait"))
-        .await
-        .expect("join");
+    let status = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        tokio::task::spawn_blocking(move || child.wait().expect("wait")),
+    )
+    .await
+    .expect("the login exits on its own with stdin still open")
+    .expect("join");
+    drop(stdin_kept_open);
     let lines = reader.await.expect("reader");
     assert!(
         status.success(),

@@ -541,21 +541,21 @@ async fn run_login(
     } else {
         Browser::Open(env.clone())
     };
-    // stdin as the paste source: one line, off the runtime. At EOF (a pipe, `/dev/null`) it yields nothing
-    // and the listener alone decides.
-    let paste = Box::pin(async {
-        tokio::task::spawn_blocking(|| {
-            let mut line = String::new();
-            std::io::stdin()
-                .read_line(&mut line)
-                .ok()
-                .filter(|&n| n > 0)
-                .map(|_| line)
-        })
-        .await
-        .ok()
-        .flatten()
+    // stdin as the paste source: one line, read on a DETACHED thread. At EOF (a pipe, `/dev/null`) it yields
+    // nothing and the listener alone decides. Not `spawn_blocking`: a terminal's `read_line` cannot be
+    // cancelled, and the runtime's shutdown waits for its blocking pool — the browser would have come back
+    // and the command would still sit there until Enter. A plain thread is simply left behind at exit.
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<String>>();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let read = std::io::stdin()
+            .read_line(&mut line)
+            .ok()
+            .filter(|&n| n > 0)
+            .map(|_| line);
+        let _ = tx.send(read);
     });
+    let paste = Box::pin(async move { rx.await.ok().flatten() });
     let request = LoginRequest {
         name,
         url: &expanded.url,
