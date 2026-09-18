@@ -113,5 +113,20 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600, "a requested mode applies to the new file");
+        // The mode is the temp file's from `open` (`OpenOptions::mode`, under the umask), never a
+        // `set_permissions` after the bytes are in: no window in which the file is wider than asked. And
+        // a target that already exists with a wider mode does not keep it — the rename replaces the inode.
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        write_atomic(&secret, b"{\"n\":2}", Some(0o600)).expect("rewrite 0600");
+        let mode = std::fs::metadata(&secret)
+            .expect("meta")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "a rewrite with a requested mode does not inherit the old one"
+        );
+        assert_eq!(std::fs::read(&secret).expect("read"), b"{\"n\":2}");
     }
 }

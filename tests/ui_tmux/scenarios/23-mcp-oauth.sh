@@ -75,11 +75,11 @@ settle || bad "frame never settled after the login"
 check_once "the login is announced once" 'Logged in to nb; the token expires in'
 check_once "the reconnect is announced once" 'MCP nb: connected (1 tools)'
 if [ -f "$TOKEN_FILE" ]; then ok "the token file exists ($TOKEN_FILE)"; else bad "no token file at $TOKEN_FILE"; fi
-if [ "$(stat -f '%Lp' "$TOKEN_FILE" 2>/dev/null || stat -c '%a' "$TOKEN_FILE" 2>/dev/null)" = "600" ]; then
-    ok "the token file is mode 600"
-else
-    bad "the token file is not mode 600"
-fi
+# The mode bits off `ls -l`, which GNU and BSD print alike. (`stat` does not: BSD's `stat -f '%Lp'` is, on
+# GNU coreutils, a request for FILESYSTEM status whose unknown directive prints `?p` and exits 0 — so a
+# `stat -f … || stat -c …` chain never reached the GNU form and called a 0600 file "not mode 600" on Ubuntu.)
+mode_bits="$(ls -ld -- "$TOKEN_FILE" | cut -c2-10)"
+check "the token file is mode 600 (owner read/write, nothing else)" "$mode_bits" "rw-------"
 check_frame_intact "after the login" 100
 
 # ------------------------------------------------------------------ 23.4: the panel, logged in
