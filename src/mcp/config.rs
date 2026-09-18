@@ -5,6 +5,25 @@ use std::collections::BTreeMap;
 
 use crate::app::env::{Env, expand};
 
+/// How a streamable-HTTP server is authenticated (brain page `mcp-cli-and-oauth`): nothing beyond the static
+/// `headers:`, or OAuth 2.1 with the tokens `iota mcp login` stored. Spelled `auth: oauth` in the config.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthMode {
+    /// No login: the headers as written are all the server gets.
+    #[default]
+    None,
+    /// OAuth 2.1 (discovery → PKCE authorization code); the token store supplies the bearer token.
+    Oauth,
+}
+
+impl AuthMode {
+    /// `serde(skip_serializing_if)`: the default is left out of a written entry.
+    pub fn is_none(&self) -> bool {
+        *self == Self::None
+    }
+}
+
 /// One MCP server definition (config entry or `--mcp` flag).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ServerConfig {
@@ -20,6 +39,8 @@ pub struct ServerConfig {
     pub env: BTreeMap<String, String>,
     /// Extra HTTP headers.
     pub headers: BTreeMap<String, String>,
+    /// How an HTTP server is authenticated.
+    pub auth: AuthMode,
 }
 
 /// manager.go:530-549 + POLICY F-02: trim; empty → `Err(EmptyFlag)`; `http(s)://` prefix → `{name: value, url:
@@ -65,6 +86,7 @@ pub(crate) fn expand_server_config(server_cfg: &ServerConfig, env: &Env) -> Serv
             .iter()
             .map(|(k, v)| (k.clone(), x(v)))
             .collect(),
+        auth: server_cfg.auth,
     }
 }
 
@@ -175,8 +197,14 @@ mod tests {
                 ("PLAIN".to_owned(), "v".to_owned()),
             ]),
             headers: BTreeMap::from([("X-${cwd}".to_owned(), "Bearer ${env:TOKEN}".to_owned())]),
+            auth: super::AuthMode::Oauth,
         };
         let got = expand_server_config(&server_cfg, &fixed());
+        assert_eq!(
+            got.auth,
+            super::AuthMode::Oauth,
+            "auth rides along untouched"
+        );
         assert_eq!(got.name, "${cwd}-srv", "name is never expanded");
         assert_eq!(got.command, "/home/u/bin/mcp");
         assert_eq!(got.args, vec!["--root", "/wd", "${unknown}"]);

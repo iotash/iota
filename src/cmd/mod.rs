@@ -1,5 +1,5 @@
 //! The command (cmd/root.go): the clap `Cli` verb set, pure run resolution, tuning warnings,
-//! MCP/dispatcher assembly, the listings, the config command, the interactive branch, and [`run`], which
+//! MCP/dispatcher assembly, the listings, the config and mcp commands, the interactive branch, and [`run`], which
 //! `main.rs` awaits via `block_on` and maps to an exit code. The YAML config model is `crate::config`. ONE
 //! binary carries everything, exactly like the Go binary (decision of 2026-09-01; ARCHITECTURE §11).
 
@@ -10,6 +10,7 @@ pub(crate) mod error;
 pub(crate) mod interactive;
 pub mod io;
 pub mod list;
+pub(crate) mod mcp_cmd;
 pub(crate) mod resolve;
 pub mod signals;
 pub(crate) mod tuning;
@@ -19,7 +20,10 @@ pub use crate::config::{
     AgentConfig, BadModelRef, Config, ConfigError, DEFAULT_AGENT, Declared, McpServerConfig,
     ModelConfig, ModelEntry, ModelRef, ParamLayers, ProviderConfig, Resolved, WindowDecl,
 };
-pub use args::{Cli, Command, ConfigAction, Invocation, ListWhat, Resume, RunArgs};
+pub use args::{
+    Cli, Command, ConfigAction, Invocation, ListWhat, McpAction, McpAddCmd, McpAuthArg, McpCmd,
+    McpListCmd, McpListScope, McpScope, Resume, RunArgs,
+};
 pub use error::{ArgsError, CliError, RunError, SetupError};
 pub use resolve::{RunSettings, resolve_run};
 
@@ -113,6 +117,7 @@ pub async fn run(
             Ok(())
         }
         Command::Config(cmd) => config_cmd::run_config(&cmd, config.as_deref(), &env, io),
+        Command::Mcp(cmd) => mcp_cmd::run_mcp(&cmd, config.as_deref(), &env, &cancel, io).await,
         Command::List(cmd) => {
             let cfg = Config::load(config.as_deref(), &env, &mut |w| {
                 io.warning(&w);
@@ -487,7 +492,7 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
 
 /// `os.Getwd()`'s error (root.go:207). `HostDirs` already swallowed it, so the OS is asked again for its text; a
 /// second call that unexpectedly succeeds falls back to a generic message rather than an `unwrap`.
-fn cwd_err() -> std::io::Error {
+pub(crate) fn cwd_err() -> std::io::Error {
     std::env::current_dir()
         .err()
         .unwrap_or_else(|| std::io::Error::other("working directory is unavailable"))

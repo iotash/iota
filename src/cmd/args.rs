@@ -1,5 +1,5 @@
-//! The command line: a closed set of verbs (`run`, `list`, `resume`, `config`, `version`) plus the nine flags
-//! that describe ONE invocation.
+//! The command line: a closed set of verbs (`run`, `list`, `resume`, `config`, `mcp`, `version`) plus the nine
+//! flags that describe ONE invocation.
 //!
 //! The rule the surface follows (brain page `cli-surface-agent-first`): a flag stays on the command line only
 //! when it describes THIS call; anything that describes configuration lives in `~/.iota.yaml`'s three layers.
@@ -88,6 +88,8 @@ pub enum Command {
     Resume(ResumeCmd),
     /// Check, locate or create the config file
     Config(ConfigCmd),
+    /// Add, list, inspect or remove MCP servers
+    Mcp(McpCmd),
     /// Print the version
     Version,
 }
@@ -100,6 +102,7 @@ impl Command {
             Self::List(_) => "list",
             Self::Resume(_) => "resume",
             Self::Config(_) => "config",
+            Self::Mcp(_) => "mcp",
             Self::Version => "version",
         }
     }
@@ -163,6 +166,109 @@ pub enum ConfigAction {
     Path,
     /// Write a commented starter config.
     Init,
+}
+
+/// `iota mcp <action>` — the servers a config declares, edited from the command line (brain page
+/// `mcp-cli-and-oauth`). Every action reads or writes the `mcp_servers:` block of ONE file: the scope's
+/// (`--scope user` = `~/.iota.yaml`, the default; `--scope project` = `./.iota.yaml`), or the `-c` file alone.
+#[derive(clap::Args, Debug, Clone)]
+pub struct McpCmd {
+    /// What to do.
+    #[command(subcommand)]
+    pub action: McpAction,
+}
+
+/// The `iota mcp` actions.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum McpAction {
+    /// Add a server: `add <name> -- <command> [args…]` or `add <name> --url <url>`
+    Add(McpAddCmd),
+    /// List the configured servers: name, transport, file, auth
+    List(McpListCmd),
+    /// Show one server's entry and the file it comes from
+    Get {
+        /// The server name
+        name: String,
+    },
+    /// Remove a server from the file that declares it
+    Remove {
+        /// The server name
+        name: String,
+        /// Which file to remove it from, when both declare it
+        #[arg(long, value_name = "user|project")]
+        scope: Option<McpScope>,
+    },
+}
+
+/// `iota mcp add <name> [flags] -- <command> [args…]` / `iota mcp add <name> --url <url> [flags]`.
+#[derive(clap::Args, Debug, Clone)]
+pub struct McpAddCmd {
+    /// The server name (a plain word: letters, digits, `_`, `-`, `.`)
+    pub name: String,
+    /// Which file to write: user (~/.iota.yaml, the default) or project (./.iota.yaml)
+    #[arg(long, value_name = "user|project")]
+    pub scope: Option<McpScope>,
+    /// Environment for a command server (repeatable)
+    #[arg(short = 'e', long = "env", value_name = "NAME=value", action = clap::ArgAction::Append)]
+    pub env: Vec<String>,
+    /// Defer the server's tools behind a search; the value is the one-line summary the model sees
+    #[arg(long, value_name = "SUMMARY")]
+    pub defer: Option<String>,
+    /// The streamable-HTTP endpoint (instead of a command)
+    #[arg(long, value_name = "URL")]
+    pub url: Option<String>,
+    /// A header for a --url server, as 'Name: value' (repeatable)
+    #[arg(long = "header", value_name = "'Name: value'", action = clap::ArgAction::Append)]
+    pub headers: Vec<String>,
+    /// How a --url server is authenticated: oauth (then `iota mcp login <name>`) or none
+    #[arg(long, value_name = "oauth|none")]
+    pub auth: Option<McpAuthArg>,
+    /// The command and its arguments, after `--`
+    #[arg(last = true, value_name = "COMMAND")]
+    pub command: Vec<String>,
+}
+
+/// `iota mcp list [--scope user|project|all] [--json] [--probe]`.
+#[derive(clap::Args, Debug, Clone)]
+pub struct McpListCmd {
+    /// Which file(s) to read (default: all, the project file winning a name)
+    #[arg(long, value_name = "user|project|all")]
+    pub scope: Option<McpListScope>,
+    /// One JSON array instead of the table
+    #[arg(long)]
+    pub json: bool,
+    /// Connect to every server and report the outcome beside its row
+    #[arg(long)]
+    pub probe: bool,
+}
+
+/// The two files a writing action can target.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpScope {
+    /// `~/.iota.yaml`.
+    User,
+    /// `./.iota.yaml`.
+    Project,
+}
+
+/// What `iota mcp list` reads.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpListScope {
+    /// `~/.iota.yaml` alone.
+    User,
+    /// `./.iota.yaml` alone.
+    Project,
+    /// Both, merged the way a run merges them.
+    All,
+}
+
+/// `--auth` on `iota mcp add --url`.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpAuthArg {
+    /// OAuth 2.1: `iota mcp login <name>` afterwards.
+    Oauth,
+    /// The headers as written, nothing more (the default).
+    None,
 }
 
 /// The flags of one run. Every one of them describes THIS invocation; nothing here is configuration.

@@ -187,7 +187,7 @@ fn list_sessions(dirs: &HostDirs, io: &mut io::Streams) -> Result<(), CliError> 
 }
 
 /// The width of a name column: the longest entry, so the second column lines up.
-fn column_width<'a>(names: impl Iterator<Item = &'a String>) -> usize {
+pub(crate) fn column_width<'a>(names: impl Iterator<Item = &'a String>) -> usize {
     names
         .map(|n| crate::text::width::str_width(n))
         .max()

@@ -58,6 +58,47 @@ pub enum ArgsError {
     /// `--no-save` with a resume: an ephemeral start and a resumed bundle are opposite intents (root.go:285).
     #[error("--no-save cannot be combined with iota resume")]
     NoSaveWithResume,
+    /// `iota mcp … --scope` beside `-c`: the explicit file IS the scope.
+    #[error("--scope does not apply with -c: the file given is the only scope")]
+    McpScopeWithConfig,
+    /// `iota mcp add` with neither form (`"neither"`) or both (`"both"`).
+    #[error("{}", mcp_add_target(.0))]
+    McpAddTarget(&'static str),
+    /// A flag of the other `add` form: `--header`/`--auth` on a command server, `-e` on a `--url` one.
+    #[error("mcp add: {flag} applies to {form} servers only")]
+    McpAddFlag {
+        /// The flag as typed.
+        flag: &'static str,
+        /// The form it belongs to: `--url` or `command`.
+        form: &'static str,
+    },
+    /// A server name that is not a plain word (it is a YAML key and a wire-name segment).
+    #[error("mcp add: a server name is letters, digits, `_`, `-` and `.`: {0:?}")]
+    McpName(String),
+    /// `--url` without an `http(s)://` scheme.
+    #[error("mcp add: --url wants http:// or https://, got {0:?}")]
+    McpUrlScheme(String),
+    /// `--header` without a `Name: value` shape.
+    #[error("mcp add: --header wants 'Name: value', got {0:?}")]
+    McpBadHeader(String),
+    /// `-e` without a `NAME=value` shape.
+    #[error("mcp add: -e wants NAME=value, got {0:?}")]
+    McpBadEnv(String),
+    /// A project-scope header or env value that is not a `${…}` reference: the file is shared, the secret is
+    /// not.
+    #[error(
+        "mcp: a project-scope value must reference an environment variable (${{NAME}}), not the secret itself: {0}"
+    )]
+    McpProjectSecret(String),
+}
+
+/// The [`ArgsError::McpAddTarget`] texts.
+fn mcp_add_target(which: &str) -> &'static str {
+    if which == "both" {
+        "mcp add: give a command after `--` or --url, not both"
+    } else {
+        "mcp add: a server needs a command after `--`, or --url"
+    }
 }
 
 /// What the run could not be set up with: the config, the key, the provider, the session store, the
@@ -125,6 +166,53 @@ pub enum SetupError {
     /// A new interactive bundle could not be created (root.go:340).
     #[error("failed to create session: {0}")]
     CreateSession(#[source] crate::session::SessionError),
+    /// The `mcp_servers:` block could not be read or rewritten (`config::edit`).
+    #[error(transparent)]
+    McpEdit(#[from] crate::config::edit::EditError),
+    /// `iota mcp add` of a name the target file already declares: an entry is replaced by removing it first,
+    /// never silently.
+    #[error(
+        "mcp: a server named {name:?} already exists in {file} (remove it first, or pick another name)"
+    )]
+    McpExists {
+        /// The name as typed.
+        name: String,
+        /// The file that declares it.
+        file: String,
+    },
+    /// `iota mcp get|remove <name>` of a name no file declares.
+    #[error("mcp: no server named {name:?}{}", mcp_server_hint(.servers))]
+    McpUnknown {
+        /// The name as typed.
+        name: String,
+        /// Every declared server, sorted.
+        servers: Vec<String>,
+    },
+    /// `iota mcp remove <name> --scope <s>` where that file does not declare the name.
+    #[error("mcp: no server named {name:?} in {file}")]
+    McpNotInScope {
+        /// The name as typed.
+        name: String,
+        /// The scope's file.
+        file: String,
+    },
+    /// `iota mcp remove <name>` where both tiers declare the name.
+    #[error("mcp: {name:?} is declared in more than one file; say which with --scope:\n  {}", files.join("\n  "))]
+    McpAmbiguous {
+        /// The name as typed.
+        name: String,
+        /// The files that declare it, in merge order.
+        files: Vec<String>,
+    },
+}
+
+/// The [`SetupError::McpUnknown`] hint: the servers there are, or that there are none.
+fn mcp_server_hint(servers: &[String]) -> String {
+    if servers.is_empty() {
+        " (none are configured)".to_owned()
+    } else {
+        format!("\n  configured servers: {}", servers.join(", "))
+    }
 }
 
 /// What went wrong once the run was under way: the loop, the facade, the process.

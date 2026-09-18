@@ -28,6 +28,7 @@ use std::{
 
 use crate::app::env::{Env, expand};
 use crate::app::{CONFIG_BASE, CONFIG_EXTS, HostDirs};
+use crate::mcp::config::AuthMode;
 use crate::provider::ProviderKind;
 use crate::tool::DeferMode;
 
@@ -66,6 +67,9 @@ pub struct McpServerConfig {
     /// not deferred), `None` = advertise fully.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub defer: Option<String>,
+    /// `auth:` — `oauth` for a server `iota mcp login` signs in to; absent = the headers as written.
+    #[serde(skip_serializing_if = "AuthMode::is_none")]
+    pub auth: AuthMode,
 }
 
 /// ONE config document, exactly as it is written on disk. [`Config`] is what a stack of these merges into,
@@ -327,6 +331,16 @@ impl Config {
                 });
             }
         }
+        // OAuth is a login against an HTTP endpoint; a stdio server has no such thing, so `auth: oauth` on
+        // one is refused where it is written rather than ignored at connect time.
+        for (name, s) in &self.mcp_servers {
+            if s.auth == AuthMode::Oauth && s.url.is_empty() {
+                return Err(ConfigError::McpServer(
+                    name.clone(),
+                    "auth: oauth needs a url (a stdio server has nothing to log in to)".to_owned(),
+                ));
+            }
+        }
         for (name, a) in &self.agents {
             if a.models.is_empty() {
                 return Err(ConfigError::Agent(
@@ -553,6 +567,9 @@ pub enum ConfigError {
     /// An `agents:` entry is malformed or points nowhere.
     #[error("agents.{0}: {1}")]
     Agent(String, String),
+    /// An `mcp_servers:` entry asks for something its transport cannot do.
+    #[error("mcp_servers.{0}: {1}")]
+    McpServer(String, String),
     /// A `defer_mode:` that the dialect of its model's provider cannot speak. It used to warn at runtime and
     /// silently fall back to `normal`; a protocol the provider does not implement is a configuration
     /// mistake, so it is refused where it is written.
