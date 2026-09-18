@@ -3,13 +3,57 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
-## Unreleased
+## 0.3.0 - 2026-09-18
+
+The tree is native now. Nineteen refactoring steps took the port from a
+module-by-module translation to a Rust shape of its own — a layered module tree
+that a test pins, one editing core, typed errors instead of strings, an enum
+where a bag of flags used to be — with every step green on all three platforms
+and every user-visible text byte-identical. What you can see is below; the rest
+is in `docs/ARCHITECTURE.md`.
 
 ### Changed
 
 - **The two rules around the composer are dashed.** They were solid (`─`), a wall
   across the conversation; they are now a light triple dash (`┄`), a strip the
   input sits in. Nothing else about the frame moves.
+- **Ctrl+W in a surface field follows the composer's rule.** The `/model` combo
+  field, `/file`'s path field, the Ask "Other…" editor and the search query used
+  to cut back to the last *space* — `a<Tab>b` and Ctrl+W emptied the field. All
+  of them now edit through the one editor the composer uses: trailing whitespace
+  is skipped, then the previous word goes, any Unicode whitespace is a boundary,
+  and the line start is never crossed.
+- **`iota list providers` names the key source a run would actually use.** It said
+  `[key: config]` whenever `key:` was set, even with the type's environment
+  variable set too — and a run takes the variable first. The listing now follows
+  the one precedence: the variable when set, else `key:`, else nothing.
+
+### Fixed
+
+- **A finished background job's notice lands at a round boundary.** Drained
+  mid-turn, the `[background job … finished]` line was printed above the rows of
+  the call that was running when the job ended; it now settles that activity
+  group first and lands after it, exactly where a queued message would.
+- **A new skill directory is noticed on Windows.** The skills catalog re-derived
+  itself on the root directory's mtime alone, which NTFS does not always move in
+  time; the probe now lists the root's entries as well, so a skill that appears or
+  goes changes the list itself.
+
+### Internal
+
+- The module tree is layered and `tests/layering.rs` pins the order: `app ← text
+  ← llm ← provider ← tool ← {shell, agents, mcp} ← headless`, `config ← {tool,
+  session}`, `markdown ← text`, `ui ← markdown`, `repl ← ui`. The ledger of what
+  moved is `docs/ARCHITECTURE.md` §2; `docs/ROADMAP.md` §3 records the phase.
+- `Result<_, String>` is gone (22 places) and every lock rides one helper
+  (`sync::lock`; the inline `PoisonError` handlings went from 121 to the four that
+  are the helper itself). The `CliError` is three stages, `Repl` is three
+  structs and a `TurnEngine`, the markdown `Writer` is a state machine over an
+  `enum Block`, and `shell`, `mcp` and `tool` report outcomes as enums.
+- The real-terminal suite grew from 16 to 22 tmux scenarios (505 checks): the
+  title stack, the host channels, background jobs, block previews, an emoji table
+  and the retry path are pinned, and `docs/TUI-VERIFY.md` says which items only a
+  human at a terminal can still judge.
 
 ## 0.2.1 - 2026-09-15
 
