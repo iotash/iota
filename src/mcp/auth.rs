@@ -539,15 +539,34 @@ async fn serve_callback(
     Ok(Some(format!("http://127.0.0.1:{port}{target}")))
 }
 
-/// One HTML page, then the connection closes.
+/// One HTML page, then the connection closes. `text` is escaped: part of it can be the authorization
+/// server's own `error_description`, and a page on localhost is still a page.
 async fn respond(stream: &mut tokio::net::TcpStream, status: &str, text: &str) {
-    let body = format!("<!doctype html><title>iota</title><p>{text}</p>");
+    let body = format!(
+        "<!doctype html><title>iota</title><p>{}</p>",
+        html_escape(text)
+    );
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     let _ = stream.write_all(response.as_bytes()).await;
     let _ = stream.shutdown().await;
+}
+
+/// `&`, `<`, `>` and `"` as entities.
+fn html_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// The decoded value of `key` in a query string.
@@ -713,5 +732,9 @@ mod tests {
         assert_eq!(query_param("error", "error").as_deref(), Some(""));
         assert_eq!(percent_decode("100%"), "100%");
         assert_eq!(percent_decode("%zz"), "%zz");
+        assert_eq!(
+            super::html_escape("a <b> & \"c\""),
+            "a &lt;b&gt; &amp; &quot;c&quot;"
+        );
     }
 }
