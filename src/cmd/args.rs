@@ -88,7 +88,7 @@ pub enum Command {
     Resume(ResumeCmd),
     /// Check, locate or create the config file
     Config(ConfigCmd),
-    /// Add, list, inspect or remove MCP servers
+    /// Add, list, inspect, remove or log in to MCP servers
     Mcp(McpCmd),
     /// Print the version
     Version,
@@ -197,6 +197,19 @@ pub enum McpAction {
         /// Which file to remove it from, when both declare it
         #[arg(long, value_name = "user|project")]
         scope: Option<McpScope>,
+    },
+    /// Log in to an OAuth server: opens the browser, waits for it to come back
+    Login {
+        /// The server name (an `auth: oauth` entry)
+        name: String,
+        /// Print the URL instead of opening the browser (a paste of the redirect URL still works)
+        #[arg(long)]
+        no_browser: bool,
+    },
+    /// Forget an OAuth server's tokens (revoking them when the server allows)
+    Logout {
+        /// The server name
+        name: String,
     },
 }
 

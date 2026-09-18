@@ -63,7 +63,10 @@ tracing      = { version = "0.1", default-features = false, features = ["std", "
 # platform verifier comes with it). rmcp pairs it with its `reqwest` feature. Both MCP transports,
 # always.
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "http2", "system-proxy", "rustls"] }
-rmcp    = { version = "3.1", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest"] }
+# `auth` is rmcp's OAuth 2.1 client (discovery, dynamic registration, PKCE, the refreshing `AuthClient`
+# the streamable-HTTP transport is wrapped in) — `src/mcp/auth.rs` is the only module that names it, and
+# it brings `oauth2` 5 (no default features) + `url` into the binary, nothing else new to Cargo.lock.
+rmcp    = { version = "3.1", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest", "auth"] }
 # cli
 clap = { version = "4.6", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 # misc

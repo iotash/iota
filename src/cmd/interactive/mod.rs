@@ -641,12 +641,13 @@ fn mcp_hooks(
     manager: &Arc<crate::mcp::Manager>,
     events: Option<tokio::sync::mpsc::Receiver<crate::mcp::ServerStatus>>,
 ) -> McpHooks {
-    let manager = Arc::clone(manager);
-    let servers = Arc::new(move || manager.servers())
+    let snapshot = Arc::clone(manager);
+    let servers = Arc::new(move || snapshot.servers())
         as Arc<dyn Fn() -> Vec<crate::mcp::ServerStatus> + Send + Sync>;
     McpHooks {
         servers: Some(servers),
         events: events.map(map_events),
+        manager: Some(Arc::clone(manager)),
     }
 }
 

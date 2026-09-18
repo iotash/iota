@@ -71,6 +71,20 @@ highlight = "all"
 deny = []
 skip = [
   { crate = "base64@<0.23", reason = "hyper-util and wiremock are on 0.22; rmcp and this crate on 0.23" },
+  # rmcp's `auth` feature (the MCP OAuth 2.1 client, `src/mcp/auth.rs`) brings `oauth2` 5.0.0, whose one
+  # release pins the previous generation of the RustCrypto / rand / thiserror stacks; every pair below
+  # waits on oauth2's next release. Eleven entries, one cause.
+  { crate = "block-buffer@<0.12", reason = "sha2 0.10 under oauth2 5.0.0 is on 0.10; sha2 0.11 (this crate) on 0.12" },
+  { crate = "cpufeatures@<0.3", reason = "sha2 0.10 under oauth2 5.0.0; sha2 0.11 on 0.3" },
+  { crate = "crypto-common@<0.2", reason = "sha2 0.10 under oauth2 5.0.0; sha2 0.11 on 0.2" },
+  { crate = "digest@<0.11", reason = "sha2 0.10 under oauth2 5.0.0; sha2 0.11 on 0.11" },
+  { crate = "getrandom@<0.3", reason = "rand_core 0.6 under oauth2 5.0.0; rand_core 0.9 and tempfile on 0.3" },
+  { crate = "rand@<0.9", reason = "oauth2 5.0.0 is on 0.8; this crate on 0.9" },
+  { crate = "rand_chacha@<0.9", reason = "rand 0.8 under oauth2 5.0.0; rand 0.9 on 0.9" },
+  { crate = "rand_core@<0.9", reason = "rand 0.8 under oauth2 5.0.0; rand 0.9 on 0.9" },
+  { crate = "sha2@<0.11", reason = "oauth2 5.0.0 is on 0.10; this crate on 0.11" },
+  { crate = "thiserror@<2", reason = "oauth2 5.0.0 is on 1; this crate, rmcp and reqwest on 2" },
+  { crate = "thiserror-impl@<2", reason = "thiserror 1 under oauth2 5.0.0; thiserror 2 on 2" },
   { crate = "core-foundation@<0.10", reason = "system-configuration (under hyper-util) is on 0.9; rustls-platform-verifier on 0.10" },
   { crate = "getrandom@<0.4", reason = "rand_core 0.9 and tempfile are on 0.3; uuid (under rmcp) and cc's jobserver on 0.4" },
   { crate = "hashbrown@<0.17", reason = "kasuari (under ratatui-core) is on 0.16; indexmap on 0.17" },

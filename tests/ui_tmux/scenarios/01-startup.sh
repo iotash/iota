@@ -16,7 +16,9 @@ settle || bad "frame never settled"
 check_once "banner: chat-started line" 'Chat started. Press Ctrl+C to exit.'
 # `/compact` is registered because the fake dialect reports usage (WP53's `tokenAware`);
 # the ONE-TABLE law is what this pins — the banner lists exactly what dispatches.
-check_once "banner: command list (one-table law)" 'Commands: /file, /session, /model, /compact, /export, /status, /tools, /debug'
+# The command row outgrew 80 columns when `/mcp` joined the table, and the region hard-wraps it at
+# width−1; the rows are joined back (newlines dropped) before the one string is looked for.
+check "banner: command list (one-table law)" "$(capall | tr -d '\n' | grep -oF 'Commands: /file, /session, /model, /compact, /export, /status, /tools, /mcp, /debug' | wc -l | tr -d ' ')" 1
 if capall | grep -qE '^Session: [a-z0-9]{12}$'; then
     ok "banner: session id row"
 else

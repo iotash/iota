@@ -178,7 +178,7 @@ async fn reserved_header_is_a_connect_failure() {
 /// A minimal MCP server in POSIX `sh`: newline-delimited JSON-RPC over stdin/stdout answering `initialize`,
 /// `tools/list` (one tool `echo`) and `tools/call` (`"pong"`), exiting on stdin EOF.
 #[cfg(unix)]
-const SH_SERVER: &str = r#"
+pub(crate) const SH_SERVER: &str = r#"
 while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
   case "$line" in

@@ -34,10 +34,7 @@ fn params(
         imported_history: Vec::new(),
         dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
         jobs,
-        mcp: McpHooks {
-            servers: None,
-            events: None,
-        },
+        mcp: McpHooks::default(),
         session: SessionCtx {
             writer,
             store: store.clone(),

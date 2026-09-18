@@ -58,6 +58,7 @@
 //! | `20-block-preview.sh` | TUI-VERIFY §2 | — (a 40-line document: the metered preview rows morph, history contiguous) |
 //! | `21-emoji-table.sh` | TUI-VERIFY §6.4 | — (emoji, flags and VS16 in a table, every row measured by tmux's own ruler) |
 //! | `22-retry.sh` | TUI-VERIFY batch C | — (503 → `retrying (attempt`, the steer message lands once, Ctrl+C during the backoff leaves no red block) |
+//! | `23-mcp-oauth.sh` | brain `mcp-cli-and-oauth` | — (an `auth: oauth` server: the not-logged-in notice, the `/mcp` panel, `/mcp login` through `$BROWSER`, `/mcp logout`) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -69,8 +70,35 @@ static PORT: OnceLock<Option<u16>> = OnceLock::new();
 /// The resolved `iota` binary, built and announced once for the whole test process.
 static BIN: OnceLock<Option<PathBuf>> = OnceLock::new();
 
+/// The mock OAuth authorization server's port (scenario 23), started once for the whole test process.
+static OAUTH_PORT: OnceLock<Option<u16>> = OnceLock::new();
+
 // The mock is a module of this one binary (`tests/ui_tmux/mock.rs`), never a test target of its own.
 mod mock;
+
+// The mock OAuth server is the shared fixture (`tests/common/oauth_mock.rs`), on wiremock; it runs on its
+// own thread's runtime for the life of the process.
+#[path = "../common/oauth_mock.rs"]
+mod common_oauth;
+
+/// Starts the mock OAuth server on a thread of its own and returns its port (`None` when it could not bind).
+fn start_oauth_mock() -> Option<u16> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        else {
+            return;
+        };
+        rt.block_on(async {
+            let mock = common_oauth::start(3600).await;
+            let _ = tx.send(mock.server.address().port());
+            std::future::pending::<()>().await;
+        });
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(30)).ok()
+}
 
 /// Prints straight to the process stdout, bypassing libtest's capture.
 ///
@@ -168,6 +196,7 @@ struct Gate {
     tmux: String,
     binary: PathBuf,
     port: u16,
+    oauth_port: u16,
 }
 
 /// Whether `IOTA_TMUX_REQUIRED` is set: the suite is enabled, and a probe that comes up empty is a
@@ -220,7 +249,15 @@ fn probe() -> Result<Gate, String> {
     let Some(port) = *PORT.get_or_init(|| mock::start().ok()) else {
         return Err("mock provider could not bind 127.0.0.1".to_owned());
     };
-    Ok(Gate { tmux, binary, port })
+    let Some(oauth_port) = *OAUTH_PORT.get_or_init(start_oauth_mock) else {
+        return Err("mock OAuth server could not bind 127.0.0.1".to_owned());
+    };
+    Ok(Gate {
+        tmux,
+        binary,
+        port,
+        oauth_port,
+    })
 }
 
 /// Applies the env gate and the probes. `None` means "a SKIP was printed, pass"; under
@@ -270,6 +307,7 @@ fn run_scenario(script: &str) {
         )
         .env("IOTA_BIN", &g.binary)
         .env("IOTA_PORT", g.port.to_string())
+        .env("IOTA_OAUTH_PORT", g.oauth_port.to_string())
         .env("SCEN_TMP", &scratch)
         .env("TMUX_LIB", dir.join("lib.sh"))
         .output();
@@ -469,4 +507,12 @@ fn tmux_emoji_table_alignment() {
 #[test]
 fn tmux_retry_path() {
     run_scenario("22-retry.sh");
+}
+
+/// Brain page `mcp-cli-and-oauth` — an `auth: oauth` server in the chat: the one-line not-logged-in notice,
+/// the `/mcp` panel's login state, `/mcp login` driven through `$BROWSER` to the loopback callback (the
+/// token file lands, the server reconnects and announces its tools), and `/mcp logout` taking it down.
+#[test]
+fn tmux_mcp_oauth_round_trip() {
+    run_scenario("23-mcp-oauth.sh");
 }

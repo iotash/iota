@@ -36,8 +36,12 @@ pub(crate) async fn run_mcp(
     match &cmd.action {
         McpAction::Add(add) => run_add(add, explicit, env, io),
         McpAction::List(list) => run_list(list, explicit, env, cancel, io).await,
-        McpAction::Get { name } => run_get(name, explicit, &env.dirs, io),
+        McpAction::Get { name } => run_get(name, explicit, env, io),
         McpAction::Remove { name, scope } => run_remove(name, *scope, explicit, &env.dirs, io),
+        McpAction::Login { name, no_browser } => {
+            run_login(name, *no_browser, explicit, env, cancel, io).await
+        }
+        McpAction::Logout { name } => run_logout(name, explicit, env, io).await,
     }
 }
 
@@ -281,13 +285,24 @@ fn transport(entry: &McpServerConfig) -> &'static str {
     }
 }
 
-/// The auth column: static headers, OAuth, or nothing.
-fn auth_label(entry: &McpServerConfig) -> String {
-    match entry.auth {
-        AuthMode::Oauth => "oauth".to_owned(),
-        AuthMode::None if !entry.headers.is_empty() => "header".to_owned(),
+/// The auth column: static headers, OAuth with where its tokens stand, or nothing.
+fn auth_label(d: &Declared, env: &Env) -> String {
+    match d.entry.auth {
+        AuthMode::Oauth => format!("oauth: {}", login_state(d, env).as_str()),
+        AuthMode::None if !d.entry.headers.is_empty() => "header".to_owned(),
         AuthMode::None => "none".to_owned(),
     }
+}
+
+/// The token store of an OAuth server, over the URL as a run would expand it.
+fn token_store(d: &Declared, env: &Env) -> Option<crate::mcp::auth::TokenStore> {
+    let expanded = crate::mcp::config::expand_server_config(&server_config(&d.name, &d.entry), env);
+    crate::mcp::auth::TokenStore::for_server(&env.dirs, &d.name, &expanded.url)
+}
+
+/// Where an OAuth server's tokens stand (no home = nowhere to have stored them).
+fn login_state(d: &Declared, env: &Env) -> crate::mcp::auth::LoginState {
+    token_store(d, env).map_or(crate::mcp::auth::LoginState::NotLoggedIn, |s| s.status())
 }
 
 // ---------------------------------------------------------------- list
@@ -331,7 +346,12 @@ async fn run_list(
                     "env": d.entry.env,
                     "headers": d.entry.headers,
                     "defer": d.entry.defer,
-                    "auth": auth_label(&d.entry),
+                    "auth": match d.entry.auth {
+                        AuthMode::Oauth => "oauth",
+                        AuthMode::None if !d.entry.headers.is_empty() => "header",
+                        AuthMode::None => "none",
+                    },
+                    "login": (d.entry.auth == AuthMode::Oauth).then(|| login_state(d, env).as_str()),
                 });
                 if let Some(probes) = &probes
                     && let Some(status) = probes.get(i)
@@ -371,7 +391,7 @@ async fn run_list(
             d.name,
             transport(&d.entry),
             d.file.display(),
-            auth_label(&d.entry)
+            auth_label(d, env)
         );
         if let Some(probes) = &probes
             && let Some(status) = probes.get(i)
@@ -431,10 +451,10 @@ pub(crate) fn server_config(name: &str, entry: &McpServerConfig) -> ServerConfig
 fn run_get(
     name: &str,
     explicit: Option<&Path>,
-    dirs: &HostDirs,
+    env: &Env,
     io: &mut io::Streams,
 ) -> Result<(), CliError> {
-    let files = source_files(explicit, None, dirs);
+    let files = source_files(explicit, None, &env.dirs);
     let declared = declared_servers(&files)?;
     let Some(d) = declared.iter().find(|d| d.name == name) else {
         return Err(unknown(name, &declared).into());
@@ -466,7 +486,140 @@ fn run_get(
     if let Some(defer) = &d.entry.defer {
         writeln!(io.stdout, "  defer: {defer}")?;
     }
-    writeln!(io.stdout, "  auth: {}", auth_label(&d.entry))?;
+    match d.entry.auth {
+        AuthMode::Oauth => {
+            let state = login_state(d, env);
+            let path = token_store(d, env)
+                .map(|s| format!("; {}", s.path().display()))
+                .unwrap_or_default();
+            writeln!(io.stdout, "  auth: oauth ({}{path})", state.as_str())?;
+        }
+        AuthMode::None => writeln!(io.stdout, "  auth: {}", auth_label(d, env))?,
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------- login / logout
+
+/// The declared OAuth server `name`, with its token store.
+fn oauth_server(
+    name: &str,
+    explicit: Option<&Path>,
+    env: &Env,
+) -> Result<(Declared, crate::mcp::auth::TokenStore, ServerConfig), CliError> {
+    let files = source_files(explicit, None, &env.dirs);
+    let mut declared = declared_servers(&files)?;
+    let Some(at) = declared.iter().position(|d| d.name == name) else {
+        return Err(unknown(name, &declared).into());
+    };
+    let d = declared.remove(at);
+    if d.entry.auth != AuthMode::Oauth {
+        return Err(SetupError::McpNotOauth(name.to_owned()).into());
+    }
+    let expanded = crate::mcp::config::expand_server_config(&server_config(&d.name, &d.entry), env);
+    let store = crate::mcp::auth::TokenStore::for_server(&env.dirs, &d.name, &expanded.url)
+        .ok_or(SetupError::McpNoHomeForToken)?;
+    Ok((d, store, expanded))
+}
+
+/// `iota mcp login <name> [--no-browser]`: the flow of `mcp::auth::login`, each step on stdout as it
+/// happens (the URL must be on screen while the wait runs), a pasted redirect URL read from stdin as the
+/// fallback to the loopback callback.
+async fn run_login(
+    name: &str,
+    no_browser: bool,
+    explicit: Option<&Path>,
+    env: &Env,
+    cancel: &CancellationToken,
+    io: &mut io::Streams,
+) -> Result<(), CliError> {
+    use crate::mcp::auth::{Browser, LoginRequest, LoginStep, login, step_line};
+
+    let (_, store, expanded) = oauth_server(name, explicit, env)?;
+    let browser = if no_browser {
+        Browser::Print
+    } else {
+        Browser::Open(env.clone())
+    };
+    // stdin as the paste source: one line, off the runtime. At EOF (a pipe, `/dev/null`) it yields nothing
+    // and the listener alone decides.
+    let paste = Box::pin(async {
+        tokio::task::spawn_blocking(|| {
+            let mut line = String::new();
+            std::io::stdin()
+                .read_line(&mut line)
+                .ok()
+                .filter(|&n| n > 0)
+                .map(|_| line)
+        })
+        .await
+        .ok()
+        .flatten()
+    });
+    let request = LoginRequest {
+        name,
+        url: &expanded.url,
+        http: crate::llm::default_http_client(),
+        store,
+        browser,
+        paste: Some(paste),
+        cancel,
+    };
+    let outcome = {
+        let mut report = |step: LoginStep| {
+            let line = match &step {
+                LoginStep::Waiting { paste: true } => Some(
+                    "Waiting for the browser to come back (5m), or paste the redirect URL here:"
+                        .to_owned(),
+                ),
+                LoginStep::Waiting { paste: false } => {
+                    Some("Waiting for the browser to come back (5m)…".to_owned())
+                }
+                other => step_line(other),
+            };
+            if let Some(line) = line {
+                let _ = writeln!(io.stdout, "{line}");
+                let _ = io.stdout.flush();
+            }
+        };
+        Box::pin(login(request, &mut report)).await
+    };
+    let outcome = outcome.map_err(|source| RunError::McpLogin {
+        name: name.to_owned(),
+        source,
+    })?;
+    writeln!(
+        io.stdout,
+        "{}",
+        crate::mcp::auth::logged_in_line(name, &outcome)
+    )?;
+    Ok(())
+}
+
+/// `iota mcp logout <name>`: the tokens are forgotten (revoked when the server publishes a revocation
+/// endpoint) and the file removed.
+async fn run_logout(
+    name: &str,
+    explicit: Option<&Path>,
+    env: &Env,
+    io: &mut io::Streams,
+) -> Result<(), CliError> {
+    let (_, store, _) = oauth_server(name, explicit, env)?;
+    let had = crate::mcp::auth::logout(&crate::llm::default_http_client(), &store)
+        .await
+        .map_err(|source| RunError::McpLogout {
+            name: name.to_owned(),
+            source,
+        })?;
+    if had {
+        writeln!(
+            io.stdout,
+            "Logged out of {name} (forgot {})",
+            store.path().display()
+        )?;
+    } else {
+        writeln!(io.stdout, "Not logged in to {name} (nothing to forget)")?;
+    }
     Ok(())
 }
 

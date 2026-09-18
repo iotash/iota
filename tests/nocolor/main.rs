@@ -143,10 +143,7 @@ fn params(ui: &Arc<ScriptedUi>, store: &SessionStore) -> RunParams {
         imported_history: Vec::new(),
         dispatch: Arc::new(Editor),
         jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
-        mcp: McpHooks {
-            servers: None,
-            events: None,
-        },
+        mcp: McpHooks::default(),
         session: SessionCtx {
             writer: Some(
                 store

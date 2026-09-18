@@ -40,8 +40,8 @@ use crate::repl::ReplError;
 use crate::repl::commands::edit::EditOutcome;
 use crate::repl::commands::skills::SkillsOutcome;
 use crate::repl::commands::{
-    CmdFlags, CommandTable, SkillEntry, debug, edit, export, file, match_cmd, model, save, session,
-    skills, status, tools,
+    CmdFlags, CommandTable, SkillEntry, debug, edit, export, file, match_cmd, mcp, model, save,
+    session, skills, status, tools,
 };
 use crate::repl::context::meter::{ContextBudget, CtxMeter};
 use crate::repl::render::banner::banner_lines;
@@ -83,6 +83,7 @@ pub struct McpEvent {
 }
 
 /// MCP display hooks handed in by the binary.
+#[derive(Default)]
 pub struct McpHooks {
     /// The live server snapshot, re-read on every refresh tick. `None` = a build with no
     /// MCP at all, which renders the "No MCP servers configured." tab and every tool as a
@@ -90,6 +91,9 @@ pub struct McpHooks {
     pub servers: Option<Arc<dyn Fn() -> Vec<crate::mcp::ServerStatus> + Send + Sync>>,
     /// Terminal connect statuses (the MCP reporter task drains it).
     pub events: Option<tokio::sync::mpsc::Receiver<McpEvent>>,
+    /// The manager itself, for what `/mcp login|logout` does to a server (a reconnect changes the live tool
+    /// set, which only the manager can do). `None` = no servers in this run.
+    pub manager: Option<Arc<crate::mcp::Manager>>,
 }
 
 /// Mints the session writer on demand (/save). `Some` = the chat STARTED ephemeral.
@@ -566,6 +570,11 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             }
             if match_cmd(&line, "/tools").is_some() {
                 tools::cmd_tools(&repl).await;
+                continue;
+            }
+            // /mcp is Rust-only (the Go binary had no such command, T-23): the panel, or the OAuth round trip.
+            if let Some(arg) = match_cmd(&line, "/mcp") {
+                mcp::cmd_mcp(&mut repl, arg).await;
                 continue;
             }
             if let Some(arg) = match_cmd(&line, "/debug") {

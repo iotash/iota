@@ -57,10 +57,7 @@ fn image_provider(frames: Option<Vec<Vec<u8>>>, final_png: Vec<u8>) -> FakeProvi
 // ---------------------------------------------------------------------------
 
 fn no_mcp() -> McpHooks {
-    McpHooks {
-        servers: None,
-        events: None,
-    }
+    McpHooks::default()
 }
 
 fn input(s: &str) -> Reply {

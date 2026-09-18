@@ -5,6 +5,7 @@
 //! `ServerConfig`, `parse_mcp_flag`, `expand_server_config`, `endpoint_of` and `McpFlagError` (mcp/manager.go,
 //! mcp/vars.go), which `crate::cmd::assemble` parses without naming `Manager`.
 
+pub mod auth;
 pub mod config;
 pub(crate) mod error;
 pub(crate) mod manager;

@@ -6,7 +6,7 @@
 use std::{borrow::Cow, sync::Arc, time::Duration};
 
 use crate::BoxFuture;
-use crate::mcp::config::{ServerConfig, expand_server_config};
+use crate::mcp::config::{AuthMode, ServerConfig, expand_server_config};
 use crate::provider::model::{JsonObject, ToolDef};
 use rmcp::{
     RoleClient, ServiceExt,
@@ -165,6 +165,9 @@ pub(crate) async fn connect_one(
         if !(server_cfg.url.starts_with("http://") || server_cfg.url.starts_with("https://")) {
             return Err(McpError::UnsupportedScheme(server_cfg.url));
         }
+        if server_cfg.auth == AuthMode::Oauth {
+            return connect_oauth(&server_cfg, opts).await;
+        }
         let transport = http_transport(&server_cfg, opts.http.clone())?;
         let running = client_info(opts)
             .serve(transport)
@@ -194,6 +197,64 @@ pub(crate) async fn connect_one(
     }
 
     Err(McpError::MissingTarget)
+}
+
+/// The HTTP branch of an `auth: oauth` server: the transport's client is rmcp's `AuthClient` over the run's
+/// reqwest client and the store-backed manager (`mcp::auth::runtime_manager`), which puts the bearer token on
+/// every request and refreshes it when the server rejects it. No token in the store, or a handshake the
+/// server answers 401 after the refresh failed too, is `NotLoggedIn` — the one text that says what to do.
+async fn connect_oauth(
+    server_cfg: &ServerConfig,
+    opts: &ManagerOptions,
+) -> Result<(Arc<dyn Session>, Vec<ToolDef>), McpError> {
+    use rmcp::transport::auth::AuthClient;
+    use rmcp::transport::{
+        StreamableHttpClientTransport, streamable_http_client::StreamableHttpClientTransportConfig,
+    };
+
+    let store =
+        crate::mcp::auth::TokenStore::for_server(&opts.env.dirs, &server_cfg.name, &server_cfg.url)
+            .ok_or_else(|| McpError::NotLoggedIn(server_cfg.name.clone()))?;
+    let manager = crate::mcp::auth::runtime_manager(opts.http.clone(), store)
+        .await
+        .map_err(|e| McpError::Connect(e.to_string()))?
+        .ok_or_else(|| McpError::NotLoggedIn(server_cfg.name.clone()))?;
+    let headers = parse_headers(server_cfg)?;
+    let config = StreamableHttpClientTransportConfig::with_uri(server_cfg.url.as_str())
+        .custom_headers(headers);
+    let client = AuthClient::new(opts.http.clone(), manager);
+    let transport = StreamableHttpClientTransport::with_client(client, config);
+    let running = match client_info(opts).serve(transport).await {
+        Ok(running) => running,
+        Err(e) if is_auth_required(&e) => {
+            return Err(McpError::NotLoggedIn(server_cfg.name.clone()));
+        }
+        Err(e) => return Err(McpError::Connect(e.to_string())),
+    };
+    list_tools(running).await
+}
+
+/// Whether a handshake failure is the server refusing the token (or its absence): a 401 challenge, rmcp's
+/// own "authorization required", or a bare 401 status.
+fn is_auth_required(e: &rmcp::service::ClientInitializeError) -> bool {
+    use rmcp::transport::auth::AuthError;
+    use rmcp::transport::streamable_http_client::StreamableHttpError;
+
+    let rmcp::service::ClientInitializeError::TransportError { error, .. } = e else {
+        return false;
+    };
+    let Some(err) = error
+        .error
+        .downcast_ref::<StreamableHttpError<reqwest::Error>>()
+    else {
+        return false;
+    };
+    match err {
+        StreamableHttpError::AuthRequired(_)
+        | StreamableHttpError::Auth(AuthError::AuthorizationRequired) => true,
+        StreamableHttpError::Client(e) => e.status() == Some(reqwest::StatusCode::UNAUTHORIZED),
+        _ => false,
+    }
 }
 
 /// The `initialize` handshake handler: rmcp's default capabilities (no `roots.listChanged`, D-02) and the configured
@@ -278,23 +339,32 @@ pub(crate) fn http_transport(
     server_cfg: &ServerConfig,
     http: reqwest::Client,
 ) -> Result<rmcp::transport::StreamableHttpClientTransport<reqwest::Client>, McpError> {
-    use std::collections::HashMap;
-
-    use reqwest::header::{HeaderName, HeaderValue};
     use rmcp::transport::{
         StreamableHttpClientTransport, streamable_http_client::StreamableHttpClientTransportConfig,
     };
 
-    let mut headers = HashMap::with_capacity(server_cfg.headers.len());
+    let config = StreamableHttpClientTransportConfig::with_uri(server_cfg.url.as_str())
+        .custom_headers(parse_headers(server_cfg)?);
+    Ok(StreamableHttpClientTransport::with_client(http, config))
+}
+
+/// The config's `headers:` as typed header values; a parse failure → `Connect(e)`.
+fn parse_headers(
+    server_cfg: &ServerConfig,
+) -> Result<
+    std::collections::HashMap<reqwest::header::HeaderName, reqwest::header::HeaderValue>,
+    McpError,
+> {
+    use reqwest::header::{HeaderName, HeaderValue};
+
+    let mut headers = std::collections::HashMap::with_capacity(server_cfg.headers.len());
     for (name, value) in &server_cfg.headers {
         let name = HeaderName::from_bytes(name.as_bytes())
             .map_err(|e| McpError::Connect(e.to_string()))?;
         let value = HeaderValue::from_str(value).map_err(|e| McpError::Connect(e.to_string()))?;
         headers.insert(name, value);
     }
-    let config = StreamableHttpClientTransportConfig::with_uri(server_cfg.url.as_str())
-        .custom_headers(headers);
-    Ok(StreamableHttpClientTransport::with_client(http, config))
+    Ok(headers)
 }
 
 #[cfg(test)]

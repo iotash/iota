@@ -85,10 +85,7 @@ impl Fixture {
             imported_history: Vec::new(),
             dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
-            mcp: McpHooks {
-                servers: None,
-                events: None,
-            },
+            mcp: McpHooks::default(),
             session: SessionCtx {
                 writer: None,
                 store: self.store.clone(),
@@ -395,7 +392,7 @@ async fn file_is_advertised_and_dispatched() {
     let lines = printed(&f.ui);
     assert_eq!(
         lines[1],
-        "Commands: /file, /session, /model, /export, /status, /tools, /debug"
+        "Commands: /file, /session, /model, /export, /status, /tools, /mcp, /debug"
     );
     // A longer name is NOT the command: "/filex" falls through as a plain message.
     assert_eq!(

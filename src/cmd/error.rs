@@ -196,6 +196,14 @@ pub enum SetupError {
         /// The scope's file.
         file: String,
     },
+    /// `iota mcp login|logout <name>` on a server that is not `auth: oauth`.
+    #[error(
+        "mcp: {0:?} is not an OAuth server (add it with --auth oauth, or set `auth: oauth` on it)"
+    )]
+    McpNotOauth(String),
+    /// `iota mcp login|logout` with no home directory to keep the token file in.
+    #[error("$HOME is not defined: there is nowhere to keep the token")]
+    McpNoHomeForToken,
     /// `iota mcp remove <name>` where both tiers declare the name.
     #[error("mcp: {name:?} is declared in more than one file; say which with --scope:\n  {}", files.join("\n  "))]
     McpAmbiguous {
@@ -233,6 +241,24 @@ pub enum RunError {
     /// An I/O failure with no more specific home (runtime construction, output streams).
     #[error("{0}")]
     Io(#[from] std::io::Error),
+    /// `iota mcp login <name>` did not finish: discovery, registration, the browser round trip, the exchange.
+    #[error("mcp login {name}: {source}")]
+    McpLogin {
+        /// The server.
+        name: String,
+        /// What went wrong.
+        #[source]
+        source: crate::mcp::auth::LoginError,
+    },
+    /// `iota mcp logout <name>` could not read or remove the token file.
+    #[error("mcp logout {name}: {source}")]
+    McpLogout {
+        /// The server.
+        name: String,
+        /// The file failure.
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 /// The command's error: one of the three stages, printed as it is.

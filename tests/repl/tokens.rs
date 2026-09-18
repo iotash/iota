@@ -107,10 +107,7 @@ impl Fixture {
             imported_history: imported,
             dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
-            mcp: McpHooks {
-                servers: None,
-                events: None,
-            },
+            mcp: McpHooks::default(),
             session: SessionCtx {
                 writer,
                 store: self.store.clone(),
@@ -341,7 +338,8 @@ async fn compact_is_registered_only_with_token_accounting() {
     assert_eq!(
         commands(&f.ui),
         [
-            "/file", "/session", "/model", "/compact", "/export", "/status", "/tools", "/debug"
+            "/file", "/session", "/model", "/compact", "/export", "/status", "/tools", "/mcp",
+            "/debug"
         ],
         "/compact keeps Go's position, between /model and /export"
     );
@@ -360,7 +358,7 @@ async fn compact_is_registered_only_with_token_accounting() {
     assert_eq!(
         commands(&f.ui),
         [
-            "/file", "/session", "/model", "/export", "/status", "/tools", "/debug"
+            "/file", "/session", "/model", "/export", "/status", "/tools", "/mcp", "/debug"
         ]
     );
     assert!(

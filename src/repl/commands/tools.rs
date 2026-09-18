@@ -213,7 +213,7 @@ pub(crate) async fn cmd_tools(repl: &Repl) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use crate::BoxFuture;
     use crate::provider::model::JsonObject;
     use crate::provider::model::ToolDef;
@@ -224,15 +224,18 @@ mod tests {
 
     use super::{DeferState, DeferredToolStatus, Dispatcher, ServerState, ServerStatus};
 
-    /// Advertises `defs` and reports deferred state — the `/tools` view fixture.
+    /// Advertises `defs` and reports deferred state — the `/tools` view fixture (and `/mcp`'s).
     // Go: chat/toolstatus_test.go:13 deferStatusDispatcher
-    struct DeferStatus {
+    pub(crate) struct DeferStatus {
         defs: Vec<ToolDef>,
         status: Vec<DeferredToolStatus>,
     }
 
     impl DeferStatus {
-        fn new(defs: &[(&str, &str)], status: &[(&str, &str, &str, DeferState)]) -> Self {
+        pub(crate) fn new(
+            defs: &[(&str, &str)],
+            status: &[(&str, &str, &str, DeferState)],
+        ) -> Self {
             Self {
                 defs: defs
                     .iter()

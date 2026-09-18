@@ -6,6 +6,8 @@
 // module resolves through a directory that does not exist.
 #[path = "../common/child.rs"]
 mod common_child;
+#[path = "../common/oauth_mock.rs"]
+mod common_oauth;
 #[path = "../common/project.rs"]
 mod common_project;
 #[path = "../common/transcript.rs"]

@@ -31,6 +31,12 @@ pub(crate) async fn report_mcp_failures(
                 }
                 let Some(err) = ev.error else { continue }; // connected: nothing more to report
                 let first = err.split('\n').next().unwrap_or_default();
+                // An OAuth server with no token is not broken, it is waiting for a login — and in the
+                // chat the way in is the slash command, not the CLI the text names.
+                if first.starts_with("not logged in") {
+                    tr.error(&format!("⚠ MCP {} not logged in: /mcp login {}", ev.name, ev.name));
+                    continue;
+                }
                 tr.error(&format!("⚠ MCP {} failed: {first}", ev.name));
             }
             () = done.cancelled() => return,

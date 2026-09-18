@@ -165,10 +165,10 @@ fn mcp_add_list_get_remove_in_the_user_scope() {
         serde_json::json!([
             {"name": "fs", "transport": "stdio", "file": user.display().to_string(), "command": "npx",
              "args": ["-y", "server-fs", "/tmp"], "url": "", "env": {"LOG": "info"}, "headers": {},
-             "defer": "file tools", "auth": "none"},
+             "defer": "file tools", "auth": "none", "login": null},
             {"name": "gh", "transport": "http", "file": user.display().to_string(), "command": "",
              "args": [], "url": "https://gh.example/mcp", "env": {},
-             "headers": {"Authorization": "Bearer ${env:GH}", "X-Client": "iota"}, "defer": null, "auth": "header"}
+             "headers": {"Authorization": "Bearer ${env:GH}", "X-Client": "iota"}, "defer": null, "auth": "header", "login": null}
         ])
     );
 
@@ -562,7 +562,7 @@ fn mcp_add_oauth_and_the_agent_subset_hint() {
     assert_eq!(
         ok(&o),
         format!(
-            "MCP servers:\n  nb  http   {}  [auth: oauth]\n",
+            "MCP servers:\n  nb  http   {}  [auth: oauth: not logged in]\n",
             user.display()
         )
     );
@@ -684,3 +684,200 @@ while IFS= read -r line; do
   esac
 done
 "#;
+
+// ---------------------------------------------------------------- OAuth: login, logout, the degraded run
+
+/// `iota mcp login <name> --no-browser` against the mock authorization server: the URL is printed, a
+/// "browser" (this test) follows it to the loopback callback, the token file lands with mode 0600, `list`
+/// and `get` say "logged in", a headless run connects with the token, `logout` revokes and forgets — and a
+/// run after that degrades the ONE server with the line that names the way back in.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_login_logout_through_the_cli() {
+    use std::io::BufRead as _;
+
+    use crate::common_oauth as oauth_mock;
+
+    let mock = oauth_mock::start(3600).await;
+    let (dir, home) = project();
+    let cwd = dir.path();
+    let token_file = home.join(".iota/mcp/auth/nb.json");
+
+    // The server, declared in the user file; a plain one beside it.
+    ok(&mcp(
+        cwd,
+        &home,
+        &["add", "nb", "--url", &mock.mcp_url(), "--auth", "oauth"],
+    ));
+    let script = cwd.join("server.sh");
+    fs::write(&script, SH_SERVER).unwrap();
+    ok(&mcp(
+        cwd,
+        &home,
+        &["add", "plain", "--", "sh", script.to_str().unwrap()],
+    ));
+
+    // Not logged in: `list`, `get`, `logout` all say so; `login` refuses what is not an OAuth server.
+    let text = ok(&mcp(cwd, &home, &["list"]));
+    assert!(
+        text.contains("  nb     http   ") && text.contains("[auth: oauth: not logged in]"),
+        "{text}"
+    );
+    let text = ok(&mcp(cwd, &home, &["get", "nb"]));
+    assert!(
+        text.ends_with(&format!(
+            "  auth: oauth (not logged in; {})\n",
+            token_file.display()
+        )),
+        "{text}"
+    );
+    assert_eq!(
+        ok(&mcp(cwd, &home, &["logout", "nb"])),
+        "Not logged in to nb (nothing to forget)\n"
+    );
+    assert_error(
+        &mcp(cwd, &home, &["login", "plain"]),
+        "mcp: \"plain\" is not an OAuth server (add it with --auth oauth, or set `auth: oauth` on it)",
+    );
+    assert_error(
+        &mcp(cwd, &home, &["login", "nope"]),
+        "mcp: no server named \"nope\"\n  configured servers: nb, plain",
+    );
+
+    // Login: the child prints the URL and waits; this test is the browser.
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_iota"));
+    cleared_env(&mut cmd, &home)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .args(["mcp", "login", "nb", "--no-browser"]);
+    let mut child = cmd.spawn().expect("spawn iota mcp login");
+    let stdout = child.stdout.take().expect("piped stdout");
+    let (tx, rx) = tokio::sync::oneshot::channel::<Vec<String>>();
+    let reader = tokio::task::spawn_blocking(move || {
+        let mut lines = Vec::new();
+        let mut tx = Some(tx);
+        for line in std::io::BufReader::new(stdout).lines() {
+            let line = line.expect("read stdout");
+            lines.push(line);
+            // The URL line is indented under "Open this URL to log in:"; the wait line follows it.
+            if lines
+                .iter()
+                .any(|l| l.starts_with("Waiting for the browser"))
+                && let Some(tx) = tx.take()
+            {
+                let _ = tx.send(lines.clone());
+            }
+        }
+        lines
+    });
+    let head = rx.await.expect("the URL and the wait line");
+    assert_eq!(head[0], "Open this URL to log in:");
+    let url = head[1].trim().to_owned();
+    assert!(
+        url.starts_with(&format!("{}/authorize?", mock.base())),
+        "{url}"
+    );
+    assert_eq!(
+        head[2],
+        "Waiting for the browser to come back (5m), or paste the redirect URL here:"
+    );
+    let page = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .expect("follow the redirect")
+        .text()
+        .await
+        .expect("callback page");
+    assert!(
+        page.contains("Logged in to nb. You can close this window."),
+        "{page}"
+    );
+    let status = tokio::task::spawn_blocking(move || child.wait().expect("wait"))
+        .await
+        .expect("join");
+    let lines = reader.await.expect("reader");
+    assert!(
+        status.success(),
+        "login exit: {status:?}; stdout: {lines:?}"
+    );
+    assert_eq!(lines.len(), 4, "{lines:?}");
+    assert!(
+        lines[3].starts_with("Logged in to nb; the token expires in ")
+            && lines[3].ends_with(&format!("(saved to {})", token_file.display())),
+        "{}",
+        lines[3]
+    );
+    assert!(token_file.is_file());
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            fs::metadata(&token_file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    let text = ok(&mcp(cwd, &home, &["list"]));
+    assert!(text.contains("[auth: oauth: logged in]"), "{text}");
+    let text = ok(&mcp(cwd, &home, &["get", "nb"]));
+    assert!(
+        text.ends_with(&format!(
+            "  auth: oauth (logged in; {})\n",
+            token_file.display()
+        )),
+        "{text}"
+    );
+    let rows: serde_json::Value =
+        serde_json::from_str(&ok(&mcp(cwd, &home, &["list", "--json"]))).unwrap();
+    assert_eq!(rows[0]["auth"], "oauth");
+    assert_eq!(rows[0]["login"], "logged in");
+    assert_eq!(rows[1]["login"], serde_json::Value::Null);
+
+    // A probe connects with the token.
+    let text = ok(&mcp(cwd, &home, &["list", "--probe"]));
+    assert!(
+        text.contains("[auth: oauth: logged in]  connected (1 tools)"),
+        "{text}"
+    );
+    assert_eq!(mock.state().bearers.last(), Some(&Some("at-1".to_owned())));
+
+    // Logout: revoked, forgotten.
+    assert_eq!(
+        ok(&mcp(cwd, &home, &["logout", "nb"])),
+        format!("Logged out of nb (forgot {})\n", token_file.display())
+    );
+    assert!(!token_file.exists());
+    assert_eq!(mock.state().revoked, ["rt-1"]);
+
+    // A headless run degrades that one server and says how to get it back; the plain one serves.
+    let api = wiremock::MockServer::start().await;
+    crate::common::transcript::openai_transcript(&api).await;
+    fs::write(
+        cwd.join(".iota.yaml"),
+        format!(
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{models: [m]}}\n",
+            api.uri()
+        ),
+    )
+    .unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_iota"));
+    cleared_env(&mut cmd, &home)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .args(["-m", "hi"]);
+    let o = tokio::task::spawn_blocking(move || cmd.output().expect("run"))
+        .await
+        .expect("join");
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    assert_eq!(
+        err(&o),
+        "Warning: mcp server nb: not logged in: run iota mcp login nb\n"
+    );
+    assert_eq!(out(&o), format!("{}\n", crate::common::transcript::REPLY));
+    let text = ok(&mcp(cwd, &home, &["list", "--probe"]));
+    assert!(
+        text.contains("[auth: oauth: not logged in]  failed: not logged in: run iota mcp login nb"),
+        "{text}"
+    );
+}

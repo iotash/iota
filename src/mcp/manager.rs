@@ -15,7 +15,8 @@ use std::{
 
 use crate::BoxFuture;
 use crate::app::env::Env;
-use crate::mcp::config::{ServerConfig, endpoint_of, expand_server_config};
+use crate::mcp::auth::LoginState;
+use crate::mcp::config::{AuthMode, ServerConfig, endpoint_of, expand_server_config};
 use crate::provider::model::{JsonObject, ToolDef};
 use crate::sync::{read, write};
 use crate::text::truncate_to_char_boundary;
@@ -155,6 +156,11 @@ pub struct ServerStatus {
     /// wins, manager.go:303-335). A server listing the same tool twice is the realistic way to get one; the host
     /// turns each into a user-visible warning (DIVERGENCES X-29).
     pub duplicates: Vec<String>,
+    /// How the server is authenticated (`auth: oauth`, or nothing beyond its headers).
+    pub auth: AuthMode,
+    /// Where an OAuth server's tokens stand, read off the store when the snapshot is taken; `None` for every
+    /// other server.
+    pub login: Option<LoginState>,
 }
 
 impl ServerStatus {
@@ -261,6 +267,8 @@ pub(crate) struct State {
     pub(crate) segments: HashSet<String>,
     /// Statuses index-aligned with the configs.
     pub(crate) servers: Vec<ServerStatus>,
+    /// Config index → `sessions` index, for every server that is connected; what a reconnect detaches.
+    pub(crate) session_of: HashMap<usize, usize>,
     /// Wire prefix by server name, filled at merge — the FIRST connected server of a name, as the status
     /// scan it replaced answered (`prefix_of`).
     pub(crate) prefix_by_name: HashMap<String, String>,
@@ -313,6 +321,7 @@ impl Manager {
             .map(|cfg| ServerStatus {
                 name: cfg.name.clone(),
                 endpoint: endpoint_of(&expand_server_config(cfg, &opts.env)),
+                auth: cfg.auth,
                 ..ServerStatus::default()
             })
             .collect();
@@ -430,7 +439,7 @@ impl Manager {
         }
     }
 
-    /// `{name, endpoint}` of server `i` as seeded by `new` (state `Connecting`, no tools).
+    /// `{name, endpoint, auth}` of server `i` as seeded by `new` (state `Connecting`, no tools).
     fn seed_status(&self, i: usize) -> ServerStatus {
         let st = read(&self.state);
         st.servers
@@ -438,6 +447,7 @@ impl Manager {
             .map(|s| ServerStatus {
                 name: s.name.clone(),
                 endpoint: s.endpoint.clone(),
+                auth: s.auth,
                 ..ServerStatus::default()
             })
             .unwrap_or_default()
@@ -450,9 +460,169 @@ impl Manager {
         status
     }
 
-    /// Snapshot of every server's status (index-aligned with the configs).
+    /// Snapshot of every server's status (index-aligned with the configs). An OAuth server's `login` is read
+    /// off its token file here, so the `/mcp` panel's 500 ms refresh sees a login or logout as it happens.
     pub fn servers(&self) -> Vec<ServerStatus> {
-        read(&self.state).servers.clone()
+        let mut servers = read(&self.state).servers.clone();
+        for (status, cfg) in servers.iter_mut().zip(&self.configs) {
+            if status.auth == AuthMode::Oauth {
+                status.login = Some(
+                    self.token_store(cfg)
+                        .map_or(LoginState::NotLoggedIn, |store| store.status()),
+                );
+            }
+        }
+        servers
+    }
+
+    /// The token store of an `auth: oauth` server (`None` without a home directory).
+    fn token_store(&self, cfg: &ServerConfig) -> Option<crate::mcp::auth::TokenStore> {
+        let expanded = expand_server_config(cfg, &self.opts.env);
+        crate::mcp::auth::TokenStore::for_server(&self.opts.env.dirs, &cfg.name, &expanded.url)
+    }
+
+    /// The config index of the FIRST server called `name`.
+    fn index_of(&self, name: &str) -> Option<usize> {
+        self.configs.iter().position(|c| c.name == name)
+    }
+
+    /// The config of the server called `name`, as declared (not expanded).
+    pub fn config_of(&self, name: &str) -> Option<&ServerConfig> {
+        self.index_of(name).and_then(|i| self.configs.get(i))
+    }
+
+    /// Connects server `name` again — after a login, or a failure the user has since fixed — under the same
+    /// deadline as the first attempt: whatever it had (a session, its tools, its wire-name segment) is taken
+    /// down first, and the result is merged as any connect is. `None` = no such server.
+    pub async fn reconnect(&self, name: &str) -> Option<ServerStatus> {
+        let i = self.index_of(name)?;
+        self.detach(i).await;
+        {
+            let mut st = write(&self.state);
+            if let Some(slot) = st.servers.get_mut(i) {
+                slot.state = ServerState::Connecting;
+                slot.tools.clear();
+                slot.tool_count = 0;
+                slot.duplicates.clear();
+            }
+        }
+        let result = self.connect_indexed(i, &CancellationToken::new()).await;
+        Some(self.merge_result(i, result))
+    }
+
+    /// Takes server `i` out of the live set: its session (closed outside the lock), its tools and their index
+    /// entries, its segment and its prefix. A server that was never connected has nothing to take.
+    async fn detach(&self, i: usize) {
+        let session = {
+            let mut st = write(&self.state);
+            let Some(session_idx) = st.session_of.remove(&i) else {
+                return;
+            };
+            let session = st.sessions.get_mut(session_idx).and_then(Option::take);
+            let removed: HashSet<String> = st
+                .tool_index
+                .iter()
+                .filter(|(_, t)| t.session == session_idx)
+                .map(|(wire, _)| wire.clone())
+                .collect();
+            st.tool_index.retain(|wire, _| !removed.contains(wire));
+            st.tools.retain(|t| !removed.contains(&t.name));
+            let owned = st
+                .servers
+                .get(i)
+                .map(|status| (status.segment().to_owned(), status.name.clone()));
+            if let Some((segment, name)) = owned {
+                if !segment.is_empty() {
+                    st.segments.remove(&segment);
+                }
+                st.prefix_by_name.remove(&name);
+            }
+            session
+        };
+        if let Some(session) = session {
+            let _ = tokio::time::timeout(CLOSE_TIMEOUT, session.close()).await;
+        }
+    }
+
+    /// `iota mcp login`'s flow for server `name`, driven from a run (the REPL's `/mcp login`): the browser,
+    /// the loopback callback, the store — then [`reconnect`](Self::reconnect). `report` receives the flow's
+    /// steps (the URL to open) as lines. `Err` is the text to show; `Ok` is the reconnected status.
+    pub async fn login(
+        &self,
+        name: &str,
+        report: &mut dyn FnMut(String),
+        cancel: &CancellationToken,
+    ) -> Result<ServerStatus, String> {
+        let cfg = self
+            .config_of(name)
+            .ok_or_else(|| format!("no MCP server named {name:?} in this run"))?;
+        if cfg.auth != AuthMode::Oauth {
+            return Err(format!(
+                "{name} is not an OAuth server (set `auth: oauth` on it, or add it with --auth oauth)"
+            ));
+        }
+        let expanded = expand_server_config(cfg, &self.opts.env);
+        let store = self
+            .token_store(cfg)
+            .ok_or_else(|| "no home directory to keep the token in".to_owned())?;
+        // Boxed: the flow's future (a manager, a session, the listener) is large, and this one sits inside
+        // the REPL loop's — `clippy::large_futures` keeps that one under its cap.
+        let outcome = Box::pin(crate::mcp::auth::login(
+            crate::mcp::auth::LoginRequest {
+                name,
+                url: &expanded.url,
+                http: self.opts.http.clone(),
+                store,
+                browser: crate::mcp::auth::Browser::Open(self.opts.env.clone()),
+                paste: None,
+                cancel,
+            },
+            &mut |step| {
+                if let Some(line) = crate::mcp::auth::step_line(&step) {
+                    report(line);
+                }
+            },
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+        report(crate::mcp::auth::logged_in_line(name, &outcome));
+        self.reconnect(name)
+            .await
+            .ok_or_else(|| format!("no MCP server named {name:?} in this run"))
+    }
+
+    /// `iota mcp logout`'s flow for server `name` from a run: the tokens are forgotten (revoked when the
+    /// server allows), and the server's live session — which still holds the token — is taken down and left
+    /// in the "not logged in" state. `Ok(text)` is the line to show.
+    pub async fn logout(&self, name: &str) -> Result<String, String> {
+        let i = self
+            .index_of(name)
+            .ok_or_else(|| format!("no MCP server named {name:?} in this run"))?;
+        let cfg = &self.configs[i];
+        if cfg.auth != AuthMode::Oauth {
+            return Err(format!("{name} is not an OAuth server"));
+        }
+        let store = self
+            .token_store(cfg)
+            .ok_or_else(|| "no home directory to keep the token in".to_owned())?;
+        let had = crate::mcp::auth::logout(&self.opts.http, &store)
+            .await
+            .map_err(|e| format!("logout {name}: {e}"))?;
+        self.detach(i).await;
+        {
+            let mut st = write(&self.state);
+            if let Some(slot) = st.servers.get_mut(i) {
+                slot.state = ServerState::Failed(crate::mcp::auth::not_logged_in(name));
+                slot.tools.clear();
+                slot.tool_count = 0;
+                slot.duplicates.clear();
+            }
+        }
+        Ok(if had {
+            format!("logged out of {name} (forgot {})", store.path().display())
+        } else {
+            format!("not logged in to {name} (nothing to forget)")
+        })
     }
 
     /// `crate::tool::PrefixOf` — one lookup in the name → prefix table `merge_result` fills (`""` for a name
@@ -503,6 +673,7 @@ impl Manager {
             } => {
                 let session_idx = st.sessions.len();
                 st.sessions.push(Some(session));
+                st.session_of.insert(idx, session_idx);
                 let segment = st.assign_segment(&status.name);
                 for td in tools {
                     let raw = td.name;

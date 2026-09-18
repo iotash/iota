@@ -79,10 +79,7 @@ impl Fixture {
             imported_history: Vec::new(),
             dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
-            mcp: McpHooks {
-                servers: None,
-                events: None,
-            },
+            mcp: McpHooks::default(),
             session: SessionCtx {
                 writer: None,
                 store: self.store.clone(),

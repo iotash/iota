@@ -44,10 +44,7 @@ enum Answer {
 // ---------------------------------------------------------------------------
 
 fn no_mcp() -> McpHooks {
-    McpHooks {
-        servers: None,
-        events: None,
-    }
+    McpHooks::default()
 }
 
 fn input(s: &str) -> Reply {
