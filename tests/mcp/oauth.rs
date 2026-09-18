@@ -2,14 +2,19 @@
 //! token file → a connect that carries the bearer → a refresh once the token has aged → a refresh the server
 //! forces with a 401 → logout (revocation) → the "not logged in" degradation of that ONE server.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::time::Duration;
 
 use iota::app::env::Env;
-use iota::mcp::auth::{Browser, LoginRequest, LoginState, LoginStep, TokenStore, login, logout};
+use iota::mcp::auth::{Browser, LoginRequest, LoginStep, TokenStore, login};
+#[cfg(unix)]
+use iota::mcp::auth::{LoginState, logout};
 use iota::mcp::config::{AuthMode, ServerConfig};
 use iota::mcp::{Manager, ManagerOptions};
+#[cfg(unix)]
 use iota::provider::model::JsonObject;
+#[cfg(unix)]
 use iota::tool::Dispatcher;
+#[cfg(unix)]
 use iota::tool::context::RunCtx;
 use pretty_assertions::assert_eq;
 use tokio_util::sync::CancellationToken;
@@ -92,6 +97,7 @@ async fn login_via_redirect(mock: &oauth_mock::OauthMock, store: &TokenStore) ->
 }
 
 /// The token file, as JSON.
+#[cfg(unix)]
 fn token_json(store: &TokenStore) -> serde_json::Value {
     serde_json::from_slice(&std::fs::read(store.path()).expect("the token file")).expect("json")
 }
@@ -395,6 +401,5 @@ async fn manager_login_reconnects_and_logout_disconnects() {
         m.logout("nb").await.expect("logout again"),
         "not logged in to nb (nothing to forget)"
     );
-    let _ = BTreeMap::<String, String>::new();
     m.close().await;
 }
