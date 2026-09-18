@@ -41,6 +41,12 @@ pub struct ServerConfig {
     pub headers: BTreeMap<String, String>,
     /// How an HTTP server is authenticated.
     pub auth: AuthMode,
+    /// `auth: oauth`: a client id registered with the authorization server out of band (`""` = none: dynamic
+    /// registration, else the Client ID Metadata Document).
+    pub client_id: String,
+    /// `auth: oauth`: the secret paired with `client_id`, when the registration has one (`""` = a public
+    /// client). Written as a `${env:VAR}` reference and expanded like every other value.
+    pub client_secret: String,
 }
 
 /// manager.go:530-549 + POLICY F-02: trim; empty → `Err(EmptyFlag)`; `http(s)://` prefix → `{name: value, url:
@@ -87,6 +93,8 @@ pub(crate) fn expand_server_config(server_cfg: &ServerConfig, env: &Env) -> Serv
             .map(|(k, v)| (k.clone(), x(v)))
             .collect(),
         auth: server_cfg.auth,
+        client_id: x(&server_cfg.client_id),
+        client_secret: x(&server_cfg.client_secret),
     }
 }
 
@@ -198,12 +206,19 @@ mod tests {
             ]),
             headers: BTreeMap::from([("X-${cwd}".to_owned(), "Bearer ${env:TOKEN}".to_owned())]),
             auth: super::AuthMode::Oauth,
+            client_id: "cid".to_owned(),
+            client_secret: "${env:TOKEN}".to_owned(),
         };
         let got = expand_server_config(&server_cfg, &fixed());
         assert_eq!(
             got.auth,
             super::AuthMode::Oauth,
             "auth rides along untouched"
+        );
+        assert_eq!(got.client_id, "cid");
+        assert_eq!(
+            got.client_secret, "t0k",
+            "the secret is a reference, expanded"
         );
         assert_eq!(got.name, "${cwd}-srv", "name is never expanded");
         assert_eq!(got.command, "/home/u/bin/mcp");

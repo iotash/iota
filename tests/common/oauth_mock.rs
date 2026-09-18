@@ -18,6 +18,11 @@
 //!
 //! A token stops being accepted when it is revoked; an unknown or revoked refresh token is
 //! `invalid_grant`.
+//!
+//! [`Options`] select how the client identifies itself (dynamic registration, iota's Client ID Metadata
+//! Document, or a client registered out of band with an optional secret), whether the resource names scopes,
+//! and where the authorization server lives (`as_path`: `""`, or `/oidc` — a path-appended OIDC discovery
+//! document, the shape Logto serves).
 
 #![allow(dead_code)]
 
@@ -27,9 +32,80 @@ use base64::Engine as _;
 use sha2::{Digest as _, Sha256};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate, matchers};
 
+/// How the mock identifies its clients.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Identity {
+    /// RFC 7591 dynamic registration: `/register` hands out `cid-1`.
+    Dcr,
+    /// No registration; `client_id_metadata_document_supported: true`, and the one client id accepted is
+    /// iota's document URL.
+    Cimd,
+    /// Neither: only this client id is accepted, with its secret at the token endpoint when set.
+    Preregistered {
+        client_id: String,
+        client_secret: Option<String>,
+    },
+}
+
+/// How the mock is started.
+#[derive(Debug, Clone)]
+pub struct Options {
+    /// What its tokens claim.
+    pub expires_in: u64,
+    /// How clients identify themselves.
+    pub identity: Identity,
+    /// Whether the resource names scopes (`mcp` in its metadata and its 401 challenge).
+    pub resource_scopes: bool,
+    /// The authorization server's path under the base URL: `""` (metadata at
+    /// `/.well-known/oauth-authorization-server`) or `/oidc` (metadata at
+    /// `/oidc/.well-known/openid-configuration`, the issuer `<base>/oidc`).
+    pub as_path: &'static str,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            expires_in: 3600,
+            identity: Identity::Dcr,
+            resource_scopes: true,
+            as_path: "",
+        }
+    }
+}
+
+/// One `/authorize` request as the mock saw it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizeRequest {
+    pub client_id: String,
+    pub scope: Option<String>,
+    pub resource: Option<String>,
+    pub redirect_uri: String,
+}
+
+/// One `/token` request as the mock saw it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenRequest {
+    pub grant_type: String,
+    pub resource: Option<String>,
+    /// The client id, from the form or the basic-auth header.
+    pub client_id: Option<String>,
+    /// The secret presented (form or basic auth), when any.
+    pub client_secret: Option<String>,
+}
+
 /// What the server has seen and issued.
 #[derive(Debug, Default)]
 pub struct State {
+    /// Every `/authorize` request, in order.
+    pub authorizations: Vec<AuthorizeRequest>,
+    /// Every `/token` request, in order.
+    pub token_requests: Vec<TokenRequest>,
+    /// How clients identify themselves.
+    identity: Option<Identity>,
+    /// Whether the resource names scopes.
+    resource_scopes: bool,
+    /// The authorization server's path.
+    as_path: &'static str,
     /// Every bearer token presented to `POST /mcp`, in order.
     pub bearers: Vec<Option<String>>,
     /// Every `grant_type` presented to `/token`, in order.
@@ -74,6 +150,11 @@ impl OauthMock {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         State {
+            authorizations: st.authorizations.clone(),
+            token_requests: st.token_requests.clone(),
+            identity: st.identity.clone(),
+            resource_scopes: st.resource_scopes,
+            as_path: st.as_path,
             bearers: st.bearers.clone(),
             grants: st.grants.clone(),
             revoked: st.revoked.clone(),
@@ -105,11 +186,23 @@ impl OauthMock {
     }
 }
 
-/// Starts the mock; `expires_in` is what its tokens claim.
+/// Starts the mock with dynamic registration; `expires_in` is what its tokens claim.
 pub async fn start(expires_in: u64) -> OauthMock {
+    start_with(Options {
+        expires_in,
+        ..Options::default()
+    })
+    .await
+}
+
+/// Starts the mock as `options` say.
+pub async fn start_with(options: Options) -> OauthMock {
     let server = MockServer::start().await;
     let state = Arc::new(Mutex::new(State {
-        expires_in,
+        expires_in: options.expires_in,
+        identity: Some(options.identity),
+        resource_scopes: options.resource_scopes,
+        as_path: options.as_path,
         ..State::default()
     }));
     let base = server.uri();
@@ -123,11 +216,33 @@ pub async fn start(expires_in: u64) -> OauthMock {
         .respond_with(r(resource_metadata))
         .mount(&server)
         .await;
-    Mock::given(matchers::method("GET"))
-        .and(matchers::path("/.well-known/oauth-authorization-server"))
-        .respond_with(r(as_metadata))
-        .mount(&server)
-        .await;
+    // The authorization-server metadata: at the RFC 8414 root location, or — with `as_path` — appended to
+    // the issuer's path as OIDC discovery does (`/oidc/.well-known/openid-configuration`), where the
+    // path-INSERTED form (`/.well-known/oauth-authorization-server/oidc`) is a 404 like Logto's.
+    if options.as_path.is_empty() {
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/.well-known/oauth-authorization-server"))
+            .respond_with(r(as_metadata))
+            .mount(&server)
+            .await;
+    } else {
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path(format!(
+                "{}/.well-known/openid-configuration",
+                options.as_path
+            )))
+            .respond_with(r(as_metadata))
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path(format!(
+                "{}/.well-known/oauth-authorization-server",
+                options.as_path
+            )))
+            .respond_with(r(as_metadata))
+            .mount(&server)
+            .await;
+    }
     Mock::given(matchers::method("POST"))
         .and(matchers::path("/register"))
         .respond_with(r(register))
@@ -189,34 +304,52 @@ fn json(status: u16, body: serde_json::Value) -> ResponseTemplate {
     ResponseTemplate::new(status).set_body_json(body)
 }
 
-fn resource_metadata(_: &Request, base: &str, _: &Arc<Mutex<State>>) -> ResponseTemplate {
-    json(
-        200,
-        serde_json::json!({
-            "resource": format!("{base}/mcp"),
-            "authorization_servers": [base],
-            "scopes_supported": ["mcp"],
-            "bearer_methods_supported": ["header"],
-        }),
-    )
+fn resource_metadata(_: &Request, base: &str, state: &Arc<Mutex<State>>) -> ResponseTemplate {
+    let guard = lock(state);
+    let mut doc = serde_json::json!({
+        "resource": format!("{base}/mcp"),
+        "authorization_servers": [format!("{base}{}", guard.as_path)],
+        "bearer_methods_supported": ["header"],
+    });
+    if guard.resource_scopes {
+        doc["scopes_supported"] = serde_json::json!(["mcp"]);
+    }
+    json(200, doc)
 }
 
-fn as_metadata(_: &Request, base: &str, _: &Arc<Mutex<State>>) -> ResponseTemplate {
-    json(
-        200,
-        serde_json::json!({
-            "issuer": base,
-            "authorization_endpoint": format!("{base}/authorize"),
-            "token_endpoint": format!("{base}/token"),
-            "registration_endpoint": format!("{base}/register"),
-            "revocation_endpoint": format!("{base}/revoke"),
-            "response_types_supported": ["code"],
-            "grant_types_supported": ["authorization_code", "refresh_token"],
-            "code_challenge_methods_supported": ["S256"],
-            "token_endpoint_auth_methods_supported": ["none"],
-            "scopes_supported": ["mcp"],
-        }),
-    )
+fn as_metadata(_: &Request, base: &str, state: &Arc<Mutex<State>>) -> ResponseTemplate {
+    let guard = lock(state);
+    let mut doc = serde_json::json!({
+        "issuer": format!("{base}{}", guard.as_path),
+        "authorization_endpoint": format!("{base}/authorize"),
+        "token_endpoint": format!("{base}/token"),
+        "revocation_endpoint": format!("{base}/revoke"),
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none", "client_secret_basic", "client_secret_post"],
+        // `openid` is here so a login with nothing to ask for can be seen NOT asking for everything.
+        "scopes_supported": ["mcp", "offline_access", "openid"],
+    });
+    match guard.identity.as_ref() {
+        Some(Identity::Dcr) | None => {
+            doc["registration_endpoint"] = serde_json::json!(format!("{base}/register"));
+        }
+        Some(Identity::Cimd) => {
+            doc["client_id_metadata_document_supported"] = serde_json::json!(true);
+        }
+        Some(Identity::Preregistered { .. }) => {}
+    }
+    json(200, doc)
+}
+
+/// The client id the mock accepts.
+fn accepted_client_id(state: &State) -> String {
+    match state.identity.as_ref() {
+        Some(Identity::Dcr) | None => "cid-1".to_owned(),
+        Some(Identity::Cimd) => "https://iota.sh/oauth/client.json".to_owned(),
+        Some(Identity::Preregistered { client_id, .. }) => client_id.clone(),
+    }
 }
 
 fn register(req: &Request, _: &str, state: &Arc<Mutex<State>>) -> ResponseTemplate {
@@ -258,13 +391,20 @@ fn authorize(req: &Request, _: &str, state: &Arc<Mutex<State>>) -> ResponseTempl
         return ResponseTemplate::new(400)
             .set_body_string("missing redirect_uri/state/code_challenge");
     };
+    let mut guard = lock(state);
+    let client_id = query(req, "client_id").unwrap_or_default();
+    guard.authorizations.push(AuthorizeRequest {
+        client_id: client_id.clone(),
+        scope: query(req, "scope"),
+        resource: query(req, "resource"),
+        redirect_uri: redirect.clone(),
+    });
     if query(req, "code_challenge_method").as_deref() != Some("S256")
         || query(req, "response_type").as_deref() != Some("code")
-        || query(req, "client_id").as_deref() != Some("cid-1")
+        || client_id != accepted_client_id(&guard)
     {
         return ResponseTemplate::new(400).set_body_string("bad authorize request");
     }
-    let mut guard = lock(state);
     let code = format!("code-{}", guard.codes.len() + 1);
     guard.codes.push((code.clone(), challenge));
     let sep = if redirect.contains('?') { '&' } else { '?' };
@@ -310,12 +450,52 @@ fn s256(verifier: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
+/// `Authorization: Basic …` as `(client_id, client_secret)`.
+fn basic_auth(req: &Request) -> Option<(String, String)> {
+    let header = req.headers.get("authorization")?.to_str().ok()?;
+    let encoded = header.strip_prefix("Basic ")?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    let pair = String::from_utf8(decoded).ok()?;
+    let (id, secret) = pair.split_once(':')?;
+    Some((percent(id), percent(secret)))
+}
+
 fn token(req: &Request, _: &str, state: &Arc<Mutex<State>>) -> ResponseTemplate {
     let form = form(req);
     let field = |k: &str| form.iter().find(|(f, _)| f == k).map(|(_, v)| v.clone());
     let grant = field("grant_type").unwrap_or_default();
     let mut guard = lock(state);
     guard.grants.push(grant.clone());
+    let basic = basic_auth(req);
+    let presented_id = field("client_id").or_else(|| basic.as_ref().map(|(id, _)| id.clone()));
+    let presented_secret =
+        field("client_secret").or_else(|| basic.as_ref().map(|(_, s)| s.clone()));
+    guard.token_requests.push(TokenRequest {
+        grant_type: grant.clone(),
+        resource: field("resource"),
+        client_id: presented_id.clone(),
+        client_secret: presented_secret.clone(),
+    });
+    // The client must be the one the mock knows, with its secret when it has one.
+    if presented_id.as_deref() != Some(accepted_client_id(&guard).as_str()) {
+        return json(
+            401,
+            serde_json::json!({"error": "invalid_client", "error_description": "unknown client"}),
+        );
+    }
+    if let Some(Identity::Preregistered {
+        client_secret: Some(secret),
+        ..
+    }) = guard.identity.as_ref()
+        && presented_secret.as_deref() != Some(secret.as_str())
+    {
+        return json(
+            401,
+            serde_json::json!({"error": "invalid_client", "error_description": "bad secret"}),
+        );
+    }
     match grant.as_str() {
         "authorization_code" => {
             let (Some(code), Some(verifier)) = (field("code"), field("code_verifier")) else {
@@ -388,22 +568,30 @@ fn bearer(req: &Request) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn challenge(base: &str) -> ResponseTemplate {
+fn challenge(base: &str, state: &State) -> ResponseTemplate {
+    let scope = if state.resource_scopes {
+        ", scope=\"mcp\""
+    } else {
+        ""
+    };
     ResponseTemplate::new(401).insert_header(
         "www-authenticate",
-        format!("Bearer resource_metadata=\"{base}/.well-known/oauth-protected-resource/mcp\""),
+        format!(
+            "Bearer resource_metadata=\"{base}/.well-known/oauth-protected-resource/mcp\"{scope}"
+        ),
     )
 }
 
 fn mcp_get(req: &Request, base: &str, state: &Arc<Mutex<State>>) -> ResponseTemplate {
     let token = bearer(req);
+    let guard = lock(state);
     let ok = token
         .as_ref()
-        .is_some_and(|t| lock(state).valid_access.contains(t));
+        .is_some_and(|t| guard.valid_access.contains(t));
     if ok {
         ResponseTemplate::new(405)
     } else {
-        challenge(base)
+        challenge(base, &guard)
     }
 }
 
@@ -417,7 +605,7 @@ fn mcp_post(req: &Request, base: &str, state: &Arc<Mutex<State>>) -> ResponseTem
             .is_some_and(|t| guard.valid_access.contains(t))
     };
     if !ok {
-        return challenge(base);
+        return challenge(base, &lock(state));
     }
     let msg: serde_json::Value = req.body_json().unwrap_or_default();
     let id = msg["id"].clone();

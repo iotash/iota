@@ -616,6 +616,7 @@ iota mcp add fs -- npx -y @modelcontextprotocol/server-filesystem /tmp   # stdio
 iota mcp add fs -e LOG_LEVEL=info --defer "file tools" -- npx -y server-fs
 iota mcp add gh --url https://mcp.example.com/mcp --header 'Authorization: Bearer ${env:GH_TOKEN}'
 iota mcp add nb --url https://namebeta.com/api/mcp --auth oauth   # then: iota mcp login nb
+iota mcp add nb --url … --auth oauth --client-id <id> --client-secret-env NB_SECRET   # a client registered out of band
 iota mcp list [--scope user|project|all] [--json] [--probe]      # name, transport, file, auth
 iota mcp get nb                                                  # the entry as declared
 iota mcp remove nb [--scope user|project]
@@ -643,9 +644,15 @@ iota mcp login nb            # opens the browser; --no-browser prints the URL in
 iota mcp logout nb           # forgets the tokens (revoking them when the server allows)
 ```
 
-`login` discovers the authorization server (RFC 9728 → RFC 8414), registers a
-client when the server offers it (RFC 7591), and runs the PKCE authorization
-code flow: the browser opens (`$BROWSER` when set, else the platform opener;
+`login` discovers the authorization server (RFC 9728 → RFC 8414), identifies
+iota to it — the entry's `client_id` (a client registered out of band, its
+secret as `client_secret: ${env:VAR}`; `--client-id` on `login` overrides), else
+dynamic registration when the server offers it (RFC 7591), else iota's
+[Client ID Metadata Document](https://iota.sh/oauth/client.json) when the
+server accepts one (`client_id_metadata_document_supported`) — asks for the
+scopes the resource names (plus `offline_access` when the server lists it, so a
+refresh token comes back) with the RFC 8707 `resource`, and runs the PKCE
+authorization code flow: the browser opens (`$BROWSER` when set, else the platform opener;
 the URL is printed either way, for a machine without a desktop), a loopback
 listener on `127.0.0.1:<random port>/callback` collects the code — or you paste
 the redirect URL back into the terminal — and the tokens land in

@@ -165,10 +165,10 @@ fn mcp_add_list_get_remove_in_the_user_scope() {
         serde_json::json!([
             {"name": "fs", "transport": "stdio", "file": user.display().to_string(), "command": "npx",
              "args": ["-y", "server-fs", "/tmp"], "url": "", "env": {"LOG": "info"}, "headers": {},
-             "defer": "file tools", "auth": "none", "login": null},
+             "defer": "file tools", "client_id": "", "client_secret": "", "auth": "none", "login": null},
             {"name": "gh", "transport": "http", "file": user.display().to_string(), "command": "",
              "args": [], "url": "https://gh.example/mcp", "env": {},
-             "headers": {"Authorization": "Bearer ${env:GH}", "X-Client": "iota"}, "defer": null, "auth": "header", "login": null}
+             "headers": {"Authorization": "Bearer ${env:GH}", "X-Client": "iota"}, "defer": null, "client_id": "", "client_secret": "", "auth": "header", "login": null}
         ])
     );
 
@@ -694,8 +694,6 @@ done
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_login_logout_through_the_cli() {
-    use std::io::BufRead as _;
-
     use crate::common_oauth as oauth_mock;
 
     let mock = oauth_mock::start(3600).await;
@@ -744,79 +742,15 @@ async fn mcp_login_logout_through_the_cli() {
         "mcp: no server named \"nope\"\n  configured servers: nb, plain",
     );
 
-    // Login: the child prints the URL and waits; this test is the browser. Its stdin is a pipe this test
-    // holds OPEN and never writes to — a terminal nobody types into — so the exit below also proves the
-    // paste reader does not keep the process alive once the browser has come back.
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_iota"));
-    cleared_env(&mut cmd, &home)
-        .current_dir(cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .args(["mcp", "login", "nb", "--no-browser"]);
-    let mut child = cmd.spawn().expect("spawn iota mcp login");
-    let stdin_kept_open = child.stdin.take().expect("piped stdin");
-    let stdout = child.stdout.take().expect("piped stdout");
-    let (tx, rx) = tokio::sync::oneshot::channel::<Vec<String>>();
-    let reader = tokio::task::spawn_blocking(move || {
-        let mut lines = Vec::new();
-        let mut tx = Some(tx);
-        for line in std::io::BufReader::new(stdout).lines() {
-            let line = line.expect("read stdout");
-            lines.push(line);
-            // The URL line is indented under "Open this URL to log in:"; the wait line follows it.
-            if lines
-                .iter()
-                .any(|l| l.starts_with("Waiting for the browser"))
-                && let Some(tx) = tx.take()
-            {
-                let _ = tx.send(lines.clone());
-            }
-        }
-        lines
-    });
-    let head = rx.await.expect("the URL and the wait line");
-    assert_eq!(head[0], "Open this URL to log in:");
-    let url = head[1].trim().to_owned();
+    // Login: the child prints the URL and waits; this test is the browser.
+    let lines = cli_login(cwd, &home, &[], &["--no-browser"], &mock.base()).await;
+    assert_eq!(lines[0], "Client: cid-1 (dynamic registration)");
+    assert_eq!(lines.len(), 5, "{lines:?}");
     assert!(
-        url.starts_with(&format!("{}/authorize?", mock.base())),
-        "{url}"
-    );
-    assert_eq!(
-        head[2],
-        "Waiting for the browser to come back (5m), or paste the redirect URL here:"
-    );
-    let page = reqwest::Client::new()
-        .get(&url)
-        .send()
-        .await
-        .expect("follow the redirect")
-        .text()
-        .await
-        .expect("callback page");
-    assert!(
-        page.contains("Logged in to nb. You can close this window."),
-        "{page}"
-    );
-    let status = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        tokio::task::spawn_blocking(move || child.wait().expect("wait")),
-    )
-    .await
-    .expect("the login exits on its own with stdin still open")
-    .expect("join");
-    drop(stdin_kept_open);
-    let lines = reader.await.expect("reader");
-    assert!(
-        status.success(),
-        "login exit: {status:?}; stdout: {lines:?}"
-    );
-    assert_eq!(lines.len(), 4, "{lines:?}");
-    assert!(
-        lines[3].starts_with("Logged in to nb; the token expires in ")
-            && lines[3].ends_with(&format!("(saved to {})", token_file.display())),
+        lines[4].starts_with("Logged in to nb; the token expires in ")
+            && lines[4].ends_with(&format!("(saved to {})", token_file.display())),
         "{}",
-        lines[3]
+        lines[4]
     );
     assert!(token_file.is_file());
     {
@@ -887,5 +821,337 @@ async fn mcp_login_logout_through_the_cli() {
     assert!(
         text.contains("[auth: oauth: not logged in]  failed: not logged in: run iota mcp login nb"),
         "{text}"
+    );
+}
+
+/// `--client-id` (with `--client-secret-env`) records a client registered out of band: the id as given, the
+/// secret as the `${env:VAR}` reference and never the value; the flags belong to `--auth oauth` alone.
+#[test]
+fn mcp_add_preregistered_client() {
+    let (dir, home) = project();
+    let cwd = dir.path();
+    let user = home.join(".iota.yaml");
+    let o = mcp(
+        cwd,
+        &home,
+        &[
+            "add",
+            "nb",
+            "--url",
+            "https://nb.example/api/mcp",
+            "--auth",
+            "oauth",
+            "--client-id",
+            "pre-1",
+            "--client-secret-env",
+            "NB_SECRET",
+        ],
+    );
+    assert_eq!(
+        ok(&o),
+        format!(
+            "Added nb (http: https://nb.example/api/mcp) to {}\nNext: iota mcp login nb\n",
+            user.display()
+        )
+    );
+    assert_eq!(
+        fs::read_to_string(&user).unwrap(),
+        "mcp_servers:\n  nb:\n    url: https://nb.example/api/mcp\n    auth: oauth\n    client_id: pre-1\n    client_secret: ${env:NB_SECRET}\n"
+    );
+    let text = ok(&mcp(cwd, &home, &["get", "nb"]));
+    assert!(
+        text.contains(
+            "  client_id: pre-1\n  client_secret: ${env:NB_SECRET}\n  auth: oauth (not logged in; "
+        ),
+        "{text}"
+    );
+    let rows: serde_json::Value =
+        serde_json::from_str(&ok(&mcp(cwd, &home, &["list", "--json"]))).unwrap();
+    assert_eq!(rows[0]["client_id"], "pre-1");
+    assert_eq!(rows[0]["client_secret"], "${env:NB_SECRET}");
+    // A project-scope entry carries the reference, never the secret, so it passes the secret check.
+    let o = mcp(
+        cwd,
+        &home,
+        &[
+            "add",
+            "nb",
+            "--scope",
+            "project",
+            "--url",
+            "https://nb.example/api/mcp",
+            "--auth",
+            "oauth",
+            "--client-id",
+            "pre-1",
+            "--client-secret-env",
+            "NB_SECRET",
+        ],
+    );
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+
+    let cases: &[(&[&str], &str)] = &[
+        (
+            &["add", "x", "--url", "https://x/mcp", "--client-id", "pre-1"],
+            "mcp add: --client-id applies to --auth oauth servers only",
+        ),
+        (
+            &[
+                "add",
+                "x",
+                "--url",
+                "https://x/mcp",
+                "--auth",
+                "none",
+                "--client-secret-env",
+                "V",
+            ],
+            "mcp add: --client-id applies to --auth oauth servers only",
+        ),
+        (
+            &["add", "x", "--client-id", "pre-1", "--", "srv"],
+            "mcp add: --client-id applies to --url servers only",
+        ),
+        (
+            &[
+                "add",
+                "x",
+                "--url",
+                "https://x/mcp",
+                "--auth",
+                "oauth",
+                "--client-secret-env",
+                "NB_SECRET",
+            ],
+            "mcp add: --client-secret-env wants the NAME of an environment variable, beside --client-id; got \"NB_SECRET\"",
+        ),
+        (
+            &[
+                "add",
+                "x",
+                "--url",
+                "https://x/mcp",
+                "--auth",
+                "oauth",
+                "--client-id",
+                "pre-1",
+                "--client-secret-env",
+                "not a name",
+            ],
+            "mcp add: --client-secret-env wants the NAME of an environment variable, beside --client-id; got \"not a name\"",
+        ),
+    ];
+    for (args, want) in cases {
+        assert_error(&mcp(cwd, &home, args), want);
+    }
+
+    // The config the run loads refuses the keys where they make no sense.
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_iota"));
+    let alt = cwd.join("alt.yaml");
+    fs::write(
+        &alt,
+        "mcp_servers:\n  s: {url: \"https://x/mcp\", client_id: c}\n",
+    )
+    .unwrap();
+    cleared_env(&mut cmd, &home)
+        .current_dir(cwd)
+        .args(["config", "check", "-c"])
+        .arg(&alt);
+    // (A cross-layer rule of the load, so no file prefix — the same as the `auth: oauth` rule above.)
+    assert_error(
+        &cmd.output().expect("run"),
+        "mcp_servers.s: client_id/client_secret apply to `auth: oauth` servers only",
+    );
+    fs::write(
+        &alt,
+        "mcp_servers:\n  s: {url: \"https://x/mcp\", auth: oauth, client_secret: \"${env:V}\"}\n",
+    )
+    .unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_iota"));
+    cleared_env(&mut cmd, &home)
+        .current_dir(cwd)
+        .args(["config", "check", "-c"])
+        .arg(&alt);
+    assert_error(
+        &cmd.output().expect("run"),
+        "mcp_servers.s: client_secret needs a client_id",
+    );
+}
+
+/// Runs `iota mcp login nb <args>` with `extra_env` on top of the cleared environment and acts as the browser:
+/// the child's stdout is read until the wait line, the URL it printed is followed (through the redirect to
+/// the loopback callback), and the child's whole stdout comes back once it has exited on its own. Its stdin
+/// is a pipe held OPEN and never written to — a terminal nobody types into — so the exit also proves the
+/// paste reader does not keep the process alive once the browser has come back.
+#[cfg(unix)]
+async fn cli_login(
+    cwd: &Path,
+    home: &Path,
+    extra_env: &[(&str, &str)],
+    args: &[&str],
+    mock_base: &str,
+) -> Vec<String> {
+    use std::io::BufRead as _;
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_iota"));
+    cleared_env(&mut cmd, home)
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .args(["mcp", "login", "nb"])
+        .args(args);
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().expect("spawn iota mcp login");
+    let stdin_kept_open = child.stdin.take().expect("piped stdin");
+    let stdout = child.stdout.take().expect("piped stdout");
+    let (tx, rx) = tokio::sync::oneshot::channel::<Vec<String>>();
+    let reader = tokio::task::spawn_blocking(move || {
+        let mut lines = Vec::new();
+        let mut tx = Some(tx);
+        for line in std::io::BufReader::new(stdout).lines() {
+            let line = line.expect("read stdout");
+            lines.push(line);
+            // The URL line is indented under "Open this URL to log in:"; the wait line follows it.
+            if lines
+                .iter()
+                .any(|l| l.starts_with("Waiting for the browser"))
+                && let Some(tx) = tx.take()
+            {
+                let _ = tx.send(lines.clone());
+            }
+        }
+        lines
+    });
+    let Ok(Ok(head)) = tokio::time::timeout(std::time::Duration::from_secs(30), rx).await else {
+        let _ = child.kill();
+        let lines = reader.await.expect("reader");
+        let mut stderr = String::new();
+        if let Some(mut e) = child.stderr.take() {
+            let _ = std::io::Read::read_to_string(&mut e, &mut stderr);
+        }
+        panic!("the login never reached the wait line; stdout: {lines:?}; stderr: {stderr}");
+    };
+    let at = head
+        .iter()
+        .position(|l| l == "Open this URL to log in:")
+        .expect("the URL line");
+    let url = head[at + 1].trim().to_owned();
+    assert!(url.starts_with(&format!("{mock_base}/authorize?")), "{url}");
+    assert_eq!(
+        head[at + 2],
+        "Waiting for the browser to come back (5m), or paste the redirect URL here:"
+    );
+    let page = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .expect("follow the redirect")
+        .text()
+        .await
+        .expect("callback page");
+    assert!(
+        page.contains("Logged in to nb. You can close this window."),
+        "{page}"
+    );
+    let status = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        tokio::task::spawn_blocking(move || child.wait().expect("wait")),
+    )
+    .await
+    .expect("the login exits on its own with stdin still open")
+    .expect("join");
+    drop(stdin_kept_open);
+    let lines = reader.await.expect("reader");
+    assert!(
+        status.success(),
+        "login exit: {status:?}; stdout: {lines:?}"
+    );
+    lines
+}
+
+/// The namebeta shape through the CLI: an entry with `--client-id`/`--client-secret-env` logs in as that
+/// client with the secret read from the environment, and a run refreshes with it.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_login_as_a_preregistered_client_through_the_cli() {
+    use crate::common_oauth as oauth_mock;
+
+    let mock = oauth_mock::start_with(oauth_mock::Options {
+        identity: oauth_mock::Identity::Preregistered {
+            client_id: "pre-1".to_owned(),
+            client_secret: Some("s3cret".to_owned()),
+        },
+        as_path: "/oidc",
+        ..oauth_mock::Options::default()
+    })
+    .await;
+    let (dir, home) = project();
+    let cwd = dir.path();
+    let token_file = home.join(".iota/mcp/auth/nb.json");
+    ok(&mcp(
+        cwd,
+        &home,
+        &[
+            "add",
+            "nb",
+            "--url",
+            &mock.mcp_url(),
+            "--auth",
+            "oauth",
+            "--client-id",
+            "pre-1",
+            "--client-secret-env",
+            "NB_SECRET",
+        ],
+    ));
+
+    let lines = cli_login(
+        cwd,
+        &home,
+        &[("NB_SECRET", "s3cret")],
+        &["--no-browser"],
+        &mock.base(),
+    )
+    .await;
+    assert_eq!(lines[0], "Client: pre-1 (pre-registered)");
+    assert!(token_file.is_file());
+    let st = mock.state();
+    assert_eq!(st.token_requests[0].client_id.as_deref(), Some("pre-1"));
+    assert_eq!(
+        st.token_requests[0].client_secret.as_deref(),
+        Some("s3cret")
+    );
+    assert_eq!(
+        st.authorizations[0].scope.as_deref(),
+        Some("mcp offline_access")
+    );
+
+    // The token has aged: the probe refreshes as the same confidential client.
+    let mut file: serde_json::Value =
+        serde_json::from_slice(&fs::read(&token_file).unwrap()).unwrap();
+    file["credentials"]["token_received_at"] = serde_json::json!(1_000_000);
+    fs::write(&token_file, serde_json::to_vec_pretty(&file).unwrap()).unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_iota"));
+    cleared_env(&mut cmd, &home)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .env("NB_SECRET", "s3cret")
+        .args(["mcp", "list", "--probe"]);
+    let o = tokio::task::spawn_blocking(move || cmd.output().expect("run"))
+        .await
+        .expect("join");
+    let text = ok(&o);
+    assert!(
+        text.contains("[auth: oauth: logged in]  connected (1 tools)"),
+        "{text}"
+    );
+    let st = mock.state();
+    assert_eq!(st.grants, ["authorization_code", "refresh_token"]);
+    assert_eq!(
+        st.token_requests[1].client_secret.as_deref(),
+        Some("s3cret")
     );
 }

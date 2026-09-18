@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use iota::app::env::Env;
-use iota::mcp::auth::{Browser, LoginRequest, LoginStep, TokenStore, login};
+use iota::mcp::auth::{Browser, CLIENT_METADATA_URL, LoginRequest, LoginStep, TokenStore, login};
 #[cfg(unix)]
 use iota::mcp::auth::{LoginState, logout};
 use iota::mcp::config::{AuthMode, ServerConfig};
@@ -45,6 +45,18 @@ fn plain_server() -> ServerConfig {
 
 /// Runs the login flow with a "browser" that follows the authorization URL to the loopback callback.
 async fn login_via_redirect(mock: &oauth_mock::OauthMock, store: &TokenStore) -> Duration {
+    let (outcome, _) = login_as(mock, store, None, None).await.expect("login");
+    outcome.expires_in.expect("the mock says how long")
+}
+
+/// The flow with the client identity given (or not), through the same "browser"; the steps come back with
+/// the outcome, or the error when the flow did not reach the browser.
+async fn login_as(
+    mock: &oauth_mock::OauthMock,
+    store: &TokenStore,
+    client_id: Option<&str>,
+    client_secret: Option<&str>,
+) -> Result<(iota::mcp::auth::LoginOutcome, Vec<LoginStep>), iota::mcp::auth::LoginError> {
     let (tx, rx) = tokio::sync::oneshot::channel::<String>();
     let browser = tokio::spawn(async move {
         let url = rx.await.expect("the auth url");
@@ -68,6 +80,8 @@ async fn login_via_redirect(mock: &oauth_mock::OauthMock, store: &TokenStore) ->
             browser: Browser::Print,
             paste: None,
             cancel: &CancellationToken::new(),
+            client_id: client_id.map(str::to_owned),
+            client_secret: client_secret.map(str::to_owned),
         },
         &mut |step| {
             if let LoginStep::AuthUrl(url) = &step
@@ -78,8 +92,14 @@ async fn login_via_redirect(mock: &oauth_mock::OauthMock, store: &TokenStore) ->
             steps.push(step);
         },
     )
-    .await
-    .expect("login");
+    .await;
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            browser.abort();
+            return Err(e);
+        }
+    };
     let page = browser.await.expect("browser task");
     assert!(
         page.contains("Logged in to nb. You can close this window."),
@@ -88,12 +108,16 @@ async fn login_via_redirect(mock: &oauth_mock::OauthMock, store: &TokenStore) ->
     assert!(
         matches!(
             steps.as_slice(),
-            [LoginStep::AuthUrl(_), LoginStep::Waiting { paste: false }]
+            [
+                LoginStep::Identity { .. },
+                LoginStep::AuthUrl(_),
+                LoginStep::Waiting { paste: false }
+            ]
         ),
         "{steps:?}"
     );
     assert_eq!(outcome.path, store.path());
-    outcome.expires_in.expect("the mock says how long")
+    Ok((outcome, steps))
 }
 
 /// The token file, as JSON.
@@ -124,6 +148,24 @@ async fn login_stores_connects_refreshes_and_logs_out() {
     let st = mock.state();
     assert_eq!(st.grants, ["authorization_code"]);
     assert_eq!(st.registered.len(), 1, "one dynamic registration");
+    // RFC 8707: the resource on the authorization request and on the exchange; the scopes the resource
+    // names (its metadata, its challenge) plus `offline_access` because the server lists it.
+    assert_eq!(st.authorizations.len(), 1);
+    assert_eq!(st.authorizations[0].client_id, "cid-1");
+    assert_eq!(
+        st.authorizations[0].scope.as_deref(),
+        Some("mcp offline_access")
+    );
+    assert_eq!(
+        st.authorizations[0].resource.as_deref(),
+        Some(mock.mcp_url().as_str())
+    );
+    assert_eq!(
+        st.token_requests[0].resource.as_deref(),
+        Some(mock.mcp_url().as_str())
+    );
+    assert_eq!(st.token_requests[0].client_id.as_deref(), Some("cid-1"));
+    assert_eq!(st.token_requests[0].client_secret, None, "a public client");
     assert!(
         st.registered[0].starts_with("http://127.0.0.1:")
             && st.registered[0].ends_with("/callback"),
@@ -326,15 +368,16 @@ async fn manager_login_reconnects_and_logout_disconnects() {
         .expect("login through the browser script");
     assert!(status.connected(), "{:?}", status.state);
     assert_eq!(status.tools, ["echo"]);
+    assert_eq!(lines[0], "Client: cid-1 (dynamic registration)");
     assert!(
-        lines[0].starts_with("Open this URL to log in:\n  http://127.0.0.1:"),
-        "{}",
-        lines[0]
-    );
-    assert!(
-        lines[1].starts_with("Logged in to nb; the token expires in "),
+        lines[1].starts_with("Open this URL to log in:\n  http://127.0.0.1:"),
         "{}",
         lines[1]
+    );
+    assert!(
+        lines[2].starts_with("Logged in to nb; the token expires in "),
+        "{}",
+        lines[2]
     );
     assert_eq!(
         m.tools()
@@ -400,6 +443,165 @@ async fn manager_login_reconnects_and_logout_disconnects() {
     assert_eq!(
         m.logout("nb").await.expect("logout again"),
         "not logged in to nb (nothing to forget)"
+    );
+    m.close().await;
+}
+
+/// The authorization server registers nobody but takes a Client ID Metadata Document (Logto's shape, with
+/// its discovery document appended to the issuer's path): the login identifies itself as iota's document
+/// URL, asks for the resource's scopes plus `offline_access`, names the resource, and comes back with a
+/// refresh token; a run then connects with the token.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_metadata_document_identifies_the_client_when_nobody_registers() {
+    let mock = oauth_mock::start_with(oauth_mock::Options {
+        identity: oauth_mock::Identity::Cimd,
+        as_path: "/oidc",
+        ..oauth_mock::Options::default()
+    })
+    .await;
+    let (_dir, dirs) = temp_project(&[]);
+    let env = Env::fixed(&[]).with_dirs(dirs.clone());
+    let store = TokenStore::for_server(&dirs, "nb", &mock.mcp_url()).expect("a home");
+
+    let (_, steps) = login_as(&mock, &store, None, None)
+        .await
+        .expect("login through the metadata document");
+    assert_eq!(
+        steps[0],
+        LoginStep::Identity {
+            client_id: CLIENT_METADATA_URL.to_owned(),
+            source: "client id metadata document",
+        }
+    );
+    let st = mock.state();
+    assert!(st.registered.is_empty(), "no registration was attempted");
+    assert_eq!(st.authorizations.len(), 1);
+    assert_eq!(st.authorizations[0].client_id, CLIENT_METADATA_URL);
+    assert_eq!(
+        st.authorizations[0].scope.as_deref(),
+        Some("mcp offline_access")
+    );
+    assert_eq!(
+        st.authorizations[0].resource.as_deref(),
+        Some(mock.mcp_url().as_str())
+    );
+    assert!(
+        st.authorizations[0]
+            .redirect_uri
+            .starts_with("http://127.0.0.1:")
+            && st.authorizations[0].redirect_uri.ends_with("/callback"),
+        "{}",
+        st.authorizations[0].redirect_uri
+    );
+    assert_eq!(
+        st.token_requests[0].client_id.as_deref(),
+        Some(CLIENT_METADATA_URL)
+    );
+    assert_eq!(
+        st.token_requests[0].resource.as_deref(),
+        Some(mock.mcp_url().as_str())
+    );
+    let file: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(store.path()).expect("file")).expect("json");
+    assert_eq!(file["credentials"]["client_id"], CLIENT_METADATA_URL);
+    assert_eq!(
+        file["credentials"]["token_response"]["refresh_token"],
+        "rt-1"
+    );
+    assert_eq!(file["metadata"]["issuer"], format!("{}/oidc", mock.base()));
+
+    let m = Manager::new(
+        vec![oauth_server(&mock.mcp_url())],
+        ManagerOptions::new(reqwest::Client::new(), env),
+    );
+    let statuses = m.connect_all(&CancellationToken::new()).await;
+    assert!(statuses[0].connected(), "{:?}", statuses[0].state);
+    m.close().await;
+}
+
+/// Neither registration nor a metadata document: a client registered out of band — the config's
+/// `client_id`/`client_secret` — identifies the login, the secret authenticates the exchange and every
+/// refresh, and a resource that names no scope gets no `scope` parameter (not the server's whole list).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_preregistered_client_logs_in_with_its_secret_and_no_scope() {
+    let mock = oauth_mock::start_with(oauth_mock::Options {
+        identity: oauth_mock::Identity::Preregistered {
+            client_id: "pre-1".to_owned(),
+            client_secret: Some("s3cret".to_owned()),
+        },
+        resource_scopes: false,
+        ..oauth_mock::Options::default()
+    })
+    .await;
+    let (_dir, dirs) = temp_project(&[]);
+    let env = Env::fixed(&[("NB_SECRET", "s3cret")]).with_dirs(dirs.clone());
+    let store = TokenStore::for_server(&dirs, "nb", &mock.mcp_url()).expect("a home");
+
+    // Without an identity the flow stops before the browser, naming the ways out.
+    let err = login_as(&mock, &store, None, None)
+        .await
+        .expect_err("nothing identifies the client");
+    assert_eq!(
+        err.to_string(),
+        "the authorization server offers no dynamic client registration and does not accept a client id metadata document, and no client id is configured: register a client with the server's operator and give it to iota — `iota mcp add <name> --url <url> --auth oauth --client-id <id> [--client-secret-env VAR]`, or `iota mcp login <name> --client-id <id>` for this login"
+    );
+    assert!(mock.state().authorizations.is_empty());
+
+    let (_, steps) = login_as(&mock, &store, Some("pre-1"), Some("s3cret"))
+        .await
+        .expect("login as the pre-registered client");
+    assert_eq!(
+        steps[0],
+        LoginStep::Identity {
+            client_id: "pre-1".to_owned(),
+            source: "pre-registered",
+        }
+    );
+    let st = mock.state();
+    assert_eq!(st.authorizations.len(), 1);
+    assert_eq!(st.authorizations[0].client_id, "pre-1");
+    assert_eq!(
+        st.authorizations[0].scope, None,
+        "nothing to ask for: no scope parameter at all"
+    );
+    assert_eq!(
+        st.authorizations[0].resource.as_deref(),
+        Some(mock.mcp_url().as_str())
+    );
+    assert_eq!(st.token_requests[0].client_id.as_deref(), Some("pre-1"));
+    assert_eq!(
+        st.token_requests[0].client_secret.as_deref(),
+        Some("s3cret")
+    );
+
+    // A run with the secret in its config refreshes as the same confidential client.
+    let mut file: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(store.path()).expect("file")).expect("json");
+    file["credentials"]["token_received_at"] = serde_json::json!(1_000_000);
+    std::fs::write(
+        store.path(),
+        serde_json::to_vec_pretty(&file).expect("json"),
+    )
+    .expect("write");
+    let m = Manager::new(
+        vec![ServerConfig {
+            client_id: "pre-1".to_owned(),
+            client_secret: "${env:NB_SECRET}".to_owned(),
+            ..oauth_server(&mock.mcp_url())
+        }],
+        ManagerOptions::new(reqwest::Client::new(), env),
+    );
+    let statuses = m.connect_all(&CancellationToken::new()).await;
+    assert!(statuses[0].connected(), "{:?}", statuses[0].state);
+    let st = mock.state();
+    assert_eq!(st.grants, ["authorization_code", "refresh_token"]);
+    assert_eq!(
+        st.token_requests[1].client_secret.as_deref(),
+        Some("s3cret")
+    );
+    assert_eq!(
+        st.token_requests[1].resource.as_deref(),
+        Some(mock.mcp_url().as_str())
     );
     m.close().await;
 }

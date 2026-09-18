@@ -576,6 +576,8 @@ impl Manager {
                 browser: crate::mcp::auth::Browser::Open(self.opts.env.clone()),
                 paste: None,
                 cancel,
+                client_id: Some(expanded.client_id.clone()).filter(|s| !s.is_empty()),
+                client_secret: Some(expanded.client_secret.clone()).filter(|s| !s.is_empty()),
             },
             &mut |step| {
                 if let Some(line) = crate::mcp::auth::step_line(&step) {

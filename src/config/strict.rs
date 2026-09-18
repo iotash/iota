@@ -50,7 +50,17 @@ const AGENT_KEYS: [&str; 13] = [
     "top_p",
 ];
 /// Every key an `mcp_servers.<name>` entry accepts.
-const MCP_KEYS: [&str; 7] = ["command", "args", "url", "env", "headers", "defer", "auth"];
+const MCP_KEYS: [&str; 9] = [
+    "command",
+    "args",
+    "url",
+    "env",
+    "headers",
+    "defer",
+    "auth",
+    "client_id",
+    "client_secret",
+];
 
 /// Keys the three-layer split retired, and the sentence that tells the user what to write instead. They are
 /// checked before the "belongs under" table, so the message names the replacement rather than a layer.
@@ -262,7 +272,7 @@ mod tests {
         );
         assert_eq!(
             check("mcp_servers:\n  fs: {commadn: npx}\n"),
-            "mcp_servers.fs.commadn: unknown key (want command, args, url, env, headers, defer, auth)"
+            "mcp_servers.fs.commadn: unknown key (want command, args, url, env, headers, defer, auth, client_id, client_secret)"
         );
     }
 

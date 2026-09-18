@@ -205,6 +205,9 @@ pub enum McpAction {
         /// Print the URL instead of opening the browser (a paste of the redirect URL still works)
         #[arg(long)]
         no_browser: bool,
+        /// A client id for this login (beats the entry's `client_id`)
+        #[arg(long, value_name = "ID")]
+        client_id: Option<String>,
     },
     /// Forget an OAuth server's tokens (revoking them when the server allows)
     Logout {
@@ -236,6 +239,13 @@ pub struct McpAddCmd {
     /// How a --url server is authenticated: oauth (then `iota mcp login <name>`) or none
     #[arg(long, value_name = "oauth|none")]
     pub auth: Option<McpAuthArg>,
+    /// An OAuth client registered with the authorization server out of band (--auth oauth); absent, the
+    /// server registers one dynamically or takes iota's client id metadata document
+    #[arg(long, value_name = "ID")]
+    pub client_id: Option<String>,
+    /// The environment variable holding that client's secret; written as `${env:VAR}`, never the value
+    #[arg(long, value_name = "VAR")]
+    pub client_secret_env: Option<String>,
     /// The command and its arguments, after `--`
     #[arg(last = true, value_name = "COMMAND")]
     pub command: Vec<String>,

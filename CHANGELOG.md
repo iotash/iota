@@ -26,6 +26,14 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   forgets. In the chat, `/mcp` shows every server's login state, `/mcp login
   <name>` runs the same flow and reconnects the server, `/mcp logout <name>` takes
   it down.
+- **A login identifies iota three ways.** The entry's `client_id` (a client
+  registered out of band — `iota mcp add … --client-id <id>
+  --client-secret-env VAR`, the secret only ever a `${env:VAR}` reference; or
+  `--client-id` on `login`), else dynamic registration when the server offers it,
+  else iota's Client ID Metadata Document (`https://iota.sh/oauth/client.json`)
+  when the server accepts one — the shape of an authorization server like Logto,
+  which registers nobody. A login asks for the scopes the resource names, plus
+  `offline_access` when the server lists it, and carries the RFC 8707 `resource`.
 
 ## 0.3.0 - 2026-09-18
 

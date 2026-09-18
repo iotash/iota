@@ -8,10 +8,15 @@
 //! - `~/.iota/mcp/auth/<name>.json`, mode 0600, written atomically — one file per server, holding rmcp's
 //!   `StoredCredentials` beside the endpoint and the authorization-server metadata it was issued under, so a
 //!   run refreshes a token without a discovery round trip. A token never enters a config file.
-//! - `login`: discovery → registration (or the stored client id when the server registers nobody) → the
-//!   authorization URL → the browser (`$BROWSER`, else the platform opener; printed either way) → a loopback
-//!   listener on `127.0.0.1:<random>/callback` collects the code, a pasted redirect URL is the fallback, five
-//!   minutes is the deadline → the code is exchanged and the store written.
+//! - `login`: discovery → the client's identity, in this order: a `client_id` from the config (or
+//!   `--client-id`), else dynamic registration (RFC 7591) when the server offers it, else iota's Client ID
+//!   Metadata Document ([`CLIENT_METADATA_URL`]) when the server accepts one, else an error that names the
+//!   ways out → the authorization URL, with the scopes the RESOURCE asks for (its 401 challenge, its
+//!   protected-resource metadata; `offline_access` beside them when the authorization server lists it, so a
+//!   refresh token comes back; none at all when the resource names none) and the RFC 8707 `resource` →
+//!   the browser (`$BROWSER`, else the platform opener; printed either way) → a loopback listener on
+//!   `127.0.0.1:<random>/callback` collects the code, a pasted redirect URL is the fallback, five minutes is
+//!   the deadline → the code is exchanged and the store written.
 //! - `logout`: the file is removed; the token is revoked when the server publishes a revocation endpoint,
 //!   and a failure there is not an error — the file is gone either way.
 
@@ -24,8 +29,9 @@ use std::{
 };
 
 use rmcp::transport::auth::{
-    AuthError, AuthorizationManager, AuthorizationMetadata, AuthorizationMetadataSource,
-    AuthorizationRequest, AuthorizationSession, CredentialStore, StoredCredentials,
+    AuthError, AuthorizationCallback, AuthorizationManager, AuthorizationMetadata,
+    AuthorizationMetadataSource, CredentialStore, OAuthClientConfig, StoredCredentials,
+    WWWAuthenticateParams,
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio_util::sync::CancellationToken;
@@ -41,6 +47,15 @@ pub const LOGIN_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// The `client_name` sent with a dynamic registration.
 const CLIENT_NAME: &str = "iota";
+
+/// The Client ID Metadata Document iota publishes (draft-ietf-oauth-client-id-metadata-document, SEP-991):
+/// the client id an authorization server that registers nobody dynamically but accepts one is given. The
+/// document names the loopback redirect (`http://127.0.0.1/callback`, any port per RFC 8252 §7.3) and
+/// `token_endpoint_auth_method: none`.
+pub const CLIENT_METADATA_URL: &str = "https://iota.sh/oauth/client.json";
+
+/// The `MCP-Protocol-Version` a discovery probe of the endpoint carries.
+const PROBE_PROTOCOL_VERSION: &str = "2024-11-05";
 
 /// The path the loopback listener answers.
 const CALLBACK_PATH: &str = "/callback";
@@ -260,10 +275,12 @@ impl CredentialStore for TokenStore {
 // ---------------------------------------------------------------- the runtime manager
 
 /// The manager a run wraps its transport in: the cached metadata and the stored client id, no network until
-/// the first request. `Ok(None)` = nothing stored (the caller reports "not logged in").
+/// the first request. `client_secret` is the config's (expanded), for a pre-registered confidential client —
+/// the store never holds it. `Ok(None)` = nothing stored (the caller reports "not logged in").
 pub async fn runtime_manager(
     http: reqwest::Client,
     store: TokenStore,
+    client_secret: Option<&str>,
 ) -> Result<Option<AuthorizationManager>, AuthError> {
     let Some(file) = store
         .load()
@@ -277,6 +294,14 @@ pub async fn runtime_manager(
     manager.set_credential_store(store);
     if !manager.initialize_from_store().await? {
         return Ok(None);
+    }
+    if let Some(secret) = client_secret.filter(|s| !s.is_empty()) {
+        // `initialize_from_store` configures the client id alone; a refresh by a confidential client
+        // authenticates with its secret.
+        manager.configure_client(
+            OAuthClientConfig::new(file.credentials.client_id.clone(), file.url.as_str())
+                .with_client_secret(secret),
+        )?;
     }
     Ok(Some(manager))
 }
@@ -295,6 +320,13 @@ pub enum Browser {
 /// What `login` says as it goes; the caller prints it where its user looks.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoginStep {
+    /// How the client identified itself: the id and where it came from.
+    Identity {
+        /// The client id sent to the authorization server.
+        client_id: String,
+        /// `pre-registered`, `dynamic registration` or `client id metadata document`.
+        source: &'static str,
+    },
     /// The authorization URL, for the user to open (or to copy when the browser cannot be opened).
     AuthUrl(String),
     /// The browser could not be started: the text, so the user opens the URL by hand.
@@ -322,6 +354,11 @@ pub struct LoginRequest<'a> {
     pub paste: Option<Pin<Box<dyn Future<Output = Option<String>> + Send + 'a>>>,
     /// Cancels the wait.
     pub cancel: &'a CancellationToken,
+    /// A client id registered out of band (the config's `client_id`, or `--client-id`): used as it is,
+    /// before any registration.
+    pub client_id: Option<String>,
+    /// The secret paired with it, expanded from the config's `${env:VAR}`.
+    pub client_secret: Option<String>,
 }
 
 /// A finished login.
@@ -341,11 +378,12 @@ pub enum LoginError {
         "{0} publishes no OAuth metadata (no protected-resource or authorization-server document)"
     )]
     NoMetadata(String),
-    /// No registration endpoint and no stored client id to fall back on.
+    /// No way to identify the client: nothing configured, no registration endpoint, no metadata-document
+    /// support. The text names the ways out.
     #[error(
-        "the authorization server offers no dynamic client registration and no client id is stored"
+        "the authorization server offers no dynamic client registration and does not accept a client id metadata document, and no client id is configured: register a client with the server's operator and give it to iota — `iota mcp add <name> --url <url> --auth oauth --client-id <id> [--client-secret-env VAR]`, or `iota mcp login <name> --client-id <id>` for this login"
     )]
-    NoRegistration,
+    NoClientIdentity,
     /// The browser did not come back in time.
     #[error("no callback within {}", crate::text::go_duration(*.0))]
     Timeout(Duration),
@@ -376,9 +414,11 @@ pub async fn login(
         browser,
         paste,
         cancel,
+        client_id,
+        client_secret,
     } = req;
     let mut manager = AuthorizationManager::new(url).await?;
-    manager.with_client(http)?;
+    manager.with_client(http.clone())?;
     manager.set_credential_store(store.clone());
     let resolution = manager.resolve_metadata().await?;
     if resolution.source == AuthorizationMetadataSource::LegacyEndpointFallback {
@@ -387,26 +427,41 @@ pub async fn login(
     let metadata = resolution.metadata;
     store.set_metadata(metadata.clone());
     manager.set_metadata(metadata.clone());
+    let scopes = login_scopes(&http, url, &metadata).await;
+    let scope_refs: Vec<&str> = scopes.iter().map(String::as_str).collect();
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let port = listener.local_addr()?.port();
     let redirect_uri = format!("http://127.0.0.1:{port}{CALLBACK_PATH}");
-    let mut request = AuthorizationRequest::new(redirect_uri).with_client_name(CLIENT_NAME);
-    if metadata.registration_endpoint.is_none() {
-        // Nobody registers here: the client id a previous login stored (or the server's operator gave) is
-        // the only one there is.
-        let stored = store
-            .load()
-            .map_err(|e| AuthError::InternalError(format!("token store: {e}")))?;
-        match stored {
-            Some(file) => request = request.with_preregistered_client(file.credentials.client_id),
-            None => return Err(LoginError::NoRegistration),
+    // The client's identity, in order: what the config says, what the server registers, what it accepts.
+    // (rmcp's `AuthorizationSession` puts the metadata document before registration and chooses the scopes
+    // itself, so the steps are taken here, one manager call each.)
+    let (client_id, source) = if let Some(id) = client_id.filter(|id| !id.is_empty()) {
+        let mut config = OAuthClientConfig::new(id.clone(), redirect_uri.clone());
+        if let Some(secret) = client_secret.filter(|s| !s.is_empty()) {
+            config = config.with_client_secret(secret);
         }
-    }
-    let session = AuthorizationSession::new(manager, request)
-        .await
-        .map_err(|(_, e)| e)?;
-    let auth_url = session.get_authorization_url().to_owned();
+        manager.configure_client(config)?;
+        (id, "pre-registered")
+    } else if metadata.registration_endpoint.is_some() {
+        let registered = manager
+            .register_client(CLIENT_NAME, &redirect_uri, &scope_refs)
+            .await?;
+        (registered.client_id, "dynamic registration")
+    } else if accepts_metadata_document(&metadata) {
+        manager.configure_client(OAuthClientConfig::new(
+            CLIENT_METADATA_URL,
+            redirect_uri.clone(),
+        ))?;
+        (
+            CLIENT_METADATA_URL.to_owned(),
+            "client id metadata document",
+        )
+    } else {
+        return Err(LoginError::NoClientIdentity);
+    };
+    report(LoginStep::Identity { client_id, source });
+    let auth_url = manager.get_authorization_url(&scope_refs).await?;
     report(LoginStep::AuthUrl(auth_url.clone()));
     if let Browser::Open(env) = &browser
         && let Err(e) = open_url(env, &auth_url)
@@ -418,7 +473,14 @@ pub async fn login(
     });
 
     let callback = wait_for_callback(&listener, port, name, paste, cancel).await?;
-    session.handle_callback_url(&callback).await?;
+    let callback = AuthorizationCallback::from_redirect_url(&callback)?;
+    manager
+        .exchange_code_for_token_with_issuer(
+            &callback.code,
+            &callback.csrf_token,
+            callback.issuer.as_deref(),
+        )
+        .await?;
     let expires_in = store
         .load()
         .ok()
@@ -430,10 +492,126 @@ pub async fn login(
     })
 }
 
+/// Appends each space-separated scope of `scope` that is not there yet (order kept).
+fn push(scopes: &mut Vec<String>, scope: &str) {
+    for s in scope.split_whitespace() {
+        if !scopes.iter().any(|have| have == s) {
+            scopes.push(s.to_owned());
+        }
+    }
+}
+
+/// Whether the authorization server takes a URL as the client id (`client_id_metadata_document_supported`).
+fn accepts_metadata_document(metadata: &AuthorizationMetadata) -> bool {
+    metadata
+        .additional_fields
+        .get("client_id_metadata_document_supported")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// The scopes a login asks for: what the RESOURCE names — the `scope` of the endpoint's 401 challenge and the
+/// `scopes_supported` of its protected-resource metadata (RFC 9728) — plus `offline_access` when the
+/// authorization server lists it (RFC 8414 `scopes_supported`; an OIDC-flavoured server issues a refresh
+/// token for it). Empty when the resource names none: the request then carries no `scope` at all rather
+/// than everything the authorization server could grant.
+async fn login_scopes(
+    http: &reqwest::Client,
+    url: &str,
+    metadata: &AuthorizationMetadata,
+) -> Vec<String> {
+    let mut scopes: Vec<String> = Vec::new();
+    let Ok(base) = reqwest::Url::parse(url) else {
+        return Vec::new();
+    };
+    // The endpoint's own challenge: its `scope`, and where its metadata is.
+    let mut metadata_url = None;
+    if let Ok(response) = http
+        .get(url)
+        .header("MCP-Protocol-Version", PROBE_PROTOCOL_VERSION)
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        && response.status() == reqwest::StatusCode::UNAUTHORIZED
+    {
+        for value in response
+            .headers()
+            .get_all(reqwest::header::WWW_AUTHENTICATE)
+        {
+            let Ok(header) = value.to_str() else { continue };
+            let params = WWWAuthenticateParams::parse(header, &base);
+            if let Some(scope) = &params.scope {
+                push(&mut scopes, scope);
+            }
+            if metadata_url.is_none() {
+                metadata_url = params.resource_metadata_url;
+            }
+        }
+    }
+    // The protected-resource metadata: the challenge's pointer, else the well-known locations.
+    let mut candidates: Vec<reqwest::Url> = metadata_url.into_iter().collect();
+    let path = base.path().trim_matches('/').to_owned();
+    let well_known = if path.is_empty() {
+        vec!["/.well-known/oauth-protected-resource".to_owned()]
+    } else {
+        vec![
+            format!("/.well-known/oauth-protected-resource/{path}"),
+            format!("/{path}/.well-known/oauth-protected-resource"),
+            "/.well-known/oauth-protected-resource".to_owned(),
+        ]
+    };
+    for p in well_known {
+        let mut u = base.clone();
+        u.set_query(None);
+        u.set_fragment(None);
+        u.set_path(&p);
+        if !candidates.contains(&u) {
+            candidates.push(u);
+        }
+    }
+    for candidate in candidates {
+        let Ok(response) = http
+            .get(candidate)
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await
+        else {
+            continue;
+        };
+        if response.status() != reqwest::StatusCode::OK {
+            continue;
+        }
+        let Ok(doc) = response.json::<serde_json::Value>().await else {
+            continue;
+        };
+        if let Some(supported) = doc
+            .get("scopes_supported")
+            .and_then(serde_json::Value::as_array)
+        {
+            for s in supported.iter().filter_map(serde_json::Value::as_str) {
+                push(&mut scopes, s);
+            }
+        }
+        break;
+    }
+    if !scopes.is_empty()
+        && metadata
+            .scopes_supported
+            .as_ref()
+            .is_some_and(|s| s.iter().any(|x| x == "offline_access"))
+    {
+        push(&mut scopes, "offline_access");
+    }
+    scopes
+}
+
 /// The line a [`LoginStep`] prints, the same in the CLI and the REPL; `None` for a step that says nothing on
 /// its own (the wait is announced by the caller, which knows whether it reads a pasted URL).
 pub fn step_line(step: &LoginStep) -> Option<String> {
     match step {
+        LoginStep::Identity { client_id, source } => {
+            Some(format!("Client: {client_id} ({source})"))
+        }
         LoginStep::AuthUrl(url) => Some(format!("Open this URL to log in:\n  {url}")),
         LoginStep::BrowserFailed(e) => Some(format!("(the browser could not be started: {e})")),
         LoginStep::Waiting { .. } => None,

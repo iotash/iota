@@ -215,10 +215,14 @@ async fn connect_oauth(
     let store =
         crate::mcp::auth::TokenStore::for_server(&opts.env.dirs, &server_cfg.name, &server_cfg.url)
             .ok_or_else(|| McpError::NotLoggedIn(server_cfg.name.clone()))?;
-    let manager = crate::mcp::auth::runtime_manager(opts.http.clone(), store)
-        .await
-        .map_err(|e| McpError::Connect(e.to_string()))?
-        .ok_or_else(|| McpError::NotLoggedIn(server_cfg.name.clone()))?;
+    let manager = crate::mcp::auth::runtime_manager(
+        opts.http.clone(),
+        store,
+        Some(server_cfg.client_secret.as_str()),
+    )
+    .await
+    .map_err(|e| McpError::Connect(e.to_string()))?
+    .ok_or_else(|| McpError::NotLoggedIn(server_cfg.name.clone()))?;
     let headers = parse_headers(server_cfg)?;
     let config = StreamableHttpClientTransportConfig::with_uri(server_cfg.url.as_str())
         .custom_headers(headers);

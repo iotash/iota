@@ -38,8 +38,21 @@ pub(crate) async fn run_mcp(
         McpAction::List(list) => run_list(list, explicit, env, cancel, io).await,
         McpAction::Get { name } => run_get(name, explicit, env, io),
         McpAction::Remove { name, scope } => run_remove(name, *scope, explicit, &env.dirs, io),
-        McpAction::Login { name, no_browser } => {
-            run_login(name, *no_browser, explicit, env, cancel, io).await
+        McpAction::Login {
+            name,
+            no_browser,
+            client_id,
+        } => {
+            run_login(
+                name,
+                *no_browser,
+                client_id.clone(),
+                explicit,
+                env,
+                cancel,
+                io,
+            )
+            .await
         }
         McpAction::Logout { name } => run_logout(name, explicit, env, io).await,
     }
@@ -233,6 +246,27 @@ fn entry_of(add: &McpAddCmd) -> Result<McpServerConfig, ArgsError> {
                 Some(McpAuthArg::Oauth) => AuthMode::Oauth,
                 Some(McpAuthArg::None) | None => AuthMode::None,
             };
+            if entry.auth != AuthMode::Oauth
+                && (add.client_id.is_some() || add.client_secret_env.is_some())
+            {
+                return Err(ArgsError::McpAddFlag {
+                    flag: "--client-id",
+                    form: "--auth oauth",
+                });
+            }
+            if let Some(id) = &add.client_id {
+                entry.client_id.clone_from(id);
+            }
+            if let Some(var) = &add.client_secret_env {
+                // The variable's NAME goes into the file, as the reference a run expands; the secret itself
+                // never does.
+                let is_name =
+                    !var.is_empty() && var.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+                if add.client_id.is_none() || !is_name {
+                    return Err(ArgsError::McpClientSecretEnv(var.clone()));
+                }
+                entry.client_secret = format!("${{env:{var}}}");
+            }
         }
         (None, Some(command)) => {
             if !add.headers.is_empty() {
@@ -244,6 +278,12 @@ fn entry_of(add: &McpAddCmd) -> Result<McpServerConfig, ArgsError> {
             if add.auth.is_some() {
                 return Err(ArgsError::McpAddFlag {
                     flag: "--auth",
+                    form: "--url",
+                });
+            }
+            if add.client_id.is_some() || add.client_secret_env.is_some() {
+                return Err(ArgsError::McpAddFlag {
+                    flag: "--client-id",
                     form: "--url",
                 });
             }
@@ -346,6 +386,8 @@ async fn run_list(
                     "env": d.entry.env,
                     "headers": d.entry.headers,
                     "defer": d.entry.defer,
+                    "client_id": d.entry.client_id,
+                    "client_secret": d.entry.client_secret,
                     "auth": match d.entry.auth {
                         AuthMode::Oauth => "oauth",
                         AuthMode::None if !d.entry.headers.is_empty() => "header",
@@ -442,6 +484,8 @@ pub(crate) fn server_config(name: &str, entry: &McpServerConfig) -> ServerConfig
         env: entry.env.clone(),
         headers: entry.headers.clone(),
         auth: entry.auth,
+        client_id: entry.client_id.clone(),
+        client_secret: entry.client_secret.clone(),
     }
 }
 
@@ -486,6 +530,12 @@ fn run_get(
     if let Some(defer) = &d.entry.defer {
         writeln!(io.stdout, "  defer: {defer}")?;
     }
+    if !d.entry.client_id.is_empty() {
+        writeln!(io.stdout, "  client_id: {}", d.entry.client_id)?;
+    }
+    if !d.entry.client_secret.is_empty() {
+        writeln!(io.stdout, "  client_secret: {}", d.entry.client_secret)?;
+    }
     match d.entry.auth {
         AuthMode::Oauth => {
             let state = login_state(d, env);
@@ -528,6 +578,7 @@ fn oauth_server(
 async fn run_login(
     name: &str,
     no_browser: bool,
+    client_id: Option<String>,
     explicit: Option<&Path>,
     env: &Env,
     cancel: &CancellationToken,
@@ -536,6 +587,16 @@ async fn run_login(
     use crate::mcp::auth::{Browser, LoginRequest, LoginStep, login, step_line};
 
     let (_, store, expanded) = oauth_server(name, explicit, env)?;
+    // `--client-id` beats the entry's; the entry's secret goes with the entry's id alone.
+    let entry_secret = Some(expanded.client_secret.clone()).filter(|s| !s.is_empty());
+    let (client_id, client_secret) = match client_id {
+        Some(id) if id == expanded.client_id => (Some(id), entry_secret),
+        Some(id) => (Some(id), None),
+        None => (
+            Some(expanded.client_id.clone()).filter(|s| !s.is_empty()),
+            entry_secret,
+        ),
+    };
     let browser = if no_browser {
         Browser::Print
     } else {
@@ -564,6 +625,8 @@ async fn run_login(
         browser,
         paste: Some(paste),
         cancel,
+        client_id,
+        client_secret,
     };
     let outcome = {
         let mut report = |step: LoginStep| {

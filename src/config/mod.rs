@@ -70,6 +70,13 @@ pub struct McpServerConfig {
     /// `auth:` — `oauth` for a server `iota mcp login` signs in to; absent = the headers as written.
     #[serde(skip_serializing_if = "AuthMode::is_none")]
     pub auth: AuthMode,
+    /// `client_id:` — an OAuth client registered with the authorization server out of band; absent = dynamic
+    /// registration, else the Client ID Metadata Document.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub client_id: String,
+    /// `client_secret:` — the secret paired with `client_id`, as a `${env:VAR}` reference.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub client_secret: String,
 }
 
 /// ONE config document, exactly as it is written on disk. [`Config`] is what a stack of these merges into,
@@ -338,6 +345,19 @@ impl Config {
                 return Err(ConfigError::McpServer(
                     name.clone(),
                     "auth: oauth needs a url (a stdio server has nothing to log in to)".to_owned(),
+                ));
+            }
+            if s.auth != AuthMode::Oauth && !(s.client_id.is_empty() && s.client_secret.is_empty())
+            {
+                return Err(ConfigError::McpServer(
+                    name.clone(),
+                    "client_id/client_secret apply to `auth: oauth` servers only".to_owned(),
+                ));
+            }
+            if !s.client_secret.is_empty() && s.client_id.is_empty() {
+                return Err(ConfigError::McpServer(
+                    name.clone(),
+                    "client_secret needs a client_id".to_owned(),
                 ));
             }
         }

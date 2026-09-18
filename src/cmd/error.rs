@@ -72,6 +72,11 @@ pub enum ArgsError {
         /// The form it belongs to: `--url` or `command`.
         form: &'static str,
     },
+    /// `--client-secret-env` without `--client-id`, or a variable name that is not one.
+    #[error(
+        "mcp add: --client-secret-env wants the NAME of an environment variable, beside --client-id; got {0:?}"
+    )]
+    McpClientSecretEnv(String),
     /// A server name that is not a plain word (it is a YAML key and a wire-name segment).
     #[error("mcp add: a server name is letters, digits, `_`, `-` and `.`: {0:?}")]
     McpName(String),
