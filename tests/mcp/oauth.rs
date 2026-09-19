@@ -605,3 +605,33 @@ async fn a_preregistered_client_logs_in_with_its_secret_and_no_scope() {
     );
     m.close().await;
 }
+
+/// The server refuses at the browser: the callback's `error`, `error_description` and `error_uri` all reach the
+/// error — a refusal with nothing but a code left the user guessing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refusal_carries_the_description_and_the_uri() {
+    let mock = oauth_mock::start_with(oauth_mock::Options {
+        refusal: Some(oauth_mock::Refusal {
+            error: "access_denied".to_owned(),
+            description: Some("the user declined the consent screen".to_owned()),
+            uri: Some("https://as.example/errors/access_denied".to_owned()),
+        }),
+        ..oauth_mock::Options::default()
+    })
+    .await;
+    let (_dir, dirs) = temp_project(&[]);
+    let store = TokenStore::for_server(&dirs, "nb", &mock.mcp_url()).expect("a home");
+    let err = login_as(&mock, &store, None, None)
+        .await
+        .expect_err("the server refused");
+    assert_eq!(
+        err.to_string(),
+        "the authorization server refused: access_denied — the user declined the consent screen (https://as.example/errors/access_denied)"
+    );
+    assert!(
+        matches!(&err, iota::mcp::auth::LoginError::Refused { error, description: Some(d), uri: Some(u) }
+            if error == "access_denied" && d == "the user declined the consent screen" && u.ends_with("/access_denied")),
+        "{err:?}"
+    );
+    assert!(!store.path().exists(), "nothing is stored");
+}

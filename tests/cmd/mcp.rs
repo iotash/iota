@@ -1155,3 +1155,104 @@ async fn mcp_login_as_a_preregistered_client_through_the_cli() {
         Some("s3cret")
     );
 }
+
+/// A refusal at the browser through the CLI: exit 1 with the server's `error`, `error_description` and
+/// `error_uri` in the one line, and — with `IOTA_LOG` set — the whole callback query (the code it never
+/// carried aside) on the developer's tap.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_login_refused_says_why_and_logs_the_callback() {
+    use std::io::{BufRead as _, Read as _};
+
+    use crate::common_oauth as oauth_mock;
+
+    let mock = oauth_mock::start_with(oauth_mock::Options {
+        refusal: Some(oauth_mock::Refusal {
+            error: "access_denied".to_owned(),
+            description: Some("the user declined the consent screen".to_owned()),
+            uri: Some("https://as.example/errors/access_denied".to_owned()),
+        }),
+        ..oauth_mock::Options::default()
+    })
+    .await;
+    let (dir, home) = project();
+    let cwd = dir.path();
+    ok(&mcp(
+        cwd,
+        &home,
+        &["add", "nb", "--url", &mock.mcp_url(), "--auth", "oauth"],
+    ));
+    let log = cwd.join("iota.log");
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_iota"));
+    cleared_env(&mut cmd, &home)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("IOTA_LOG", &log)
+        .args(["mcp", "login", "nb", "--no-browser"]);
+    let mut child = cmd.spawn().expect("spawn iota mcp login");
+    let stdout = child.stdout.take().expect("piped stdout");
+    let mut stderr_pipe = child.stderr.take().expect("piped stderr");
+    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+    let reader = tokio::task::spawn_blocking(move || {
+        let mut tx = Some(tx);
+        let mut lines = Vec::new();
+        for line in std::io::BufReader::new(stdout).lines() {
+            let line = line.expect("read stdout");
+            lines.push(line);
+            if let Some(at) = lines.iter().position(|l| l == "Open this URL to log in:")
+                && lines.len() > at + 1
+                && let Some(tx) = tx.take()
+            {
+                let _ = tx.send(lines[at + 1].trim().to_owned());
+            }
+        }
+        lines
+    });
+    let url = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
+        .await
+        .expect("the URL in time")
+        .expect("the URL");
+    let page = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .expect("follow the redirect")
+        .text()
+        .await
+        .expect("callback page");
+    assert!(
+        page.contains("Login failed: access_denied — the user declined the consent screen (https://as.example/errors/access_denied)"),
+        "{page}"
+    );
+    let status = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        tokio::task::spawn_blocking(move || child.wait().expect("wait")),
+    )
+    .await
+    .expect("the login exits")
+    .expect("join");
+    let _ = reader.await.expect("reader");
+    assert_eq!(status.code(), Some(1));
+    let mut stderr = String::new();
+    stderr_pipe
+        .read_to_string(&mut stderr)
+        .expect("the child's stderr, all of it once it has exited");
+    assert_eq!(
+        stderr,
+        "Error: mcp login nb: the authorization server refused: access_denied — the user declined the consent screen (https://as.example/errors/access_denied)\n"
+    );
+    let logged = fs::read_to_string(&log).expect("the log file");
+    let refused = logged
+        .lines()
+        .find(|l| l.contains("oauth callback refused: "))
+        .expect("the callback is logged");
+    assert!(
+        refused.contains(" DEBUG iota::mcp::auth: oauth callback refused: error=access_denied&state=")
+            && refused.contains("&error_description=the+user+declined+the+consent+screen&error_uri=https%3A%2F%2Fas.example%2Ferrors%2Faccess_denied")
+            && !refused.contains("code="),
+        "{refused}"
+    );
+}

@@ -47,11 +47,21 @@ pub enum Identity {
     },
 }
 
+/// What `/authorize` answers instead of a code (RFC 6749 §4.1.2.1), when the mock is told to refuse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refusal {
+    pub error: String,
+    pub description: Option<String>,
+    pub uri: Option<String>,
+}
+
 /// How the mock is started.
 #[derive(Debug, Clone)]
 pub struct Options {
     /// What its tokens claim.
     pub expires_in: u64,
+    /// When set, `/authorize` redirects with this error instead of a code.
+    pub refusal: Option<Refusal>,
     /// How clients identify themselves.
     pub identity: Identity,
     /// Whether the resource names scopes (`mcp` in its metadata and its 401 challenge).
@@ -66,6 +76,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             expires_in: 3600,
+            refusal: None,
             identity: Identity::Dcr,
             resource_scopes: true,
             as_path: "",
@@ -102,6 +113,8 @@ pub struct State {
     pub token_requests: Vec<TokenRequest>,
     /// How clients identify themselves.
     identity: Option<Identity>,
+    /// What `/authorize` refuses with, when it refuses.
+    refusal: Option<Refusal>,
     /// Whether the resource names scopes.
     resource_scopes: bool,
     /// The authorization server's path.
@@ -153,6 +166,7 @@ impl OauthMock {
             authorizations: st.authorizations.clone(),
             token_requests: st.token_requests.clone(),
             identity: st.identity.clone(),
+            refusal: st.refusal.clone(),
             resource_scopes: st.resource_scopes,
             as_path: st.as_path,
             bearers: st.bearers.clone(),
@@ -201,6 +215,7 @@ pub async fn start_with(options: Options) -> OauthMock {
     let state = Arc::new(Mutex::new(State {
         expires_in: options.expires_in,
         identity: Some(options.identity),
+        refusal: options.refusal,
         resource_scopes: options.resource_scopes,
         as_path: options.as_path,
         ..State::default()
@@ -405,9 +420,21 @@ fn authorize(req: &Request, _: &str, state: &Arc<Mutex<State>>) -> ResponseTempl
     {
         return ResponseTemplate::new(400).set_body_string("bad authorize request");
     }
+    let sep = if redirect.contains('?') { '&' } else { '?' };
+    if let Some(refusal) = &guard.refusal {
+        let mut location = format!("{redirect}{sep}error={}&state={st}", encode(&refusal.error));
+        if let Some(d) = &refusal.description {
+            location.push_str("&error_description=");
+            location.push_str(&encode(d));
+        }
+        if let Some(u) = &refusal.uri {
+            location.push_str("&error_uri=");
+            location.push_str(&encode(u));
+        }
+        return ResponseTemplate::new(302).insert_header("location", location);
+    }
     let code = format!("code-{}", guard.codes.len() + 1);
     guard.codes.push((code.clone(), challenge));
-    let sep = if redirect.contains('?') { '&' } else { '?' };
     ResponseTemplate::new(302)
         .insert_header("location", format!("{redirect}{sep}code={code}&state={st}"))
 }
@@ -426,6 +453,24 @@ fn url_form(body: &str) -> Vec<(String, String)> {
             (percent(k), percent(v))
         })
         .collect()
+}
+
+/// `application/x-www-form-urlencoded` of one value.
+fn encode(s: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(char::from(b));
+            }
+            b' ' => out.push('+'),
+            _ => {
+                let _ = write!(out, "%{b:02X}");
+            }
+        }
+    }
+    out
 }
 
 fn percent(s: &str) -> String {

@@ -390,9 +390,17 @@ pub enum LoginError {
     /// The wait was cancelled.
     #[error("cancelled")]
     Cancelled,
-    /// The callback carried an `error` instead of a code.
-    #[error("the authorization server refused: {0}")]
-    Refused(String),
+    /// The callback carried an `error` instead of a code (RFC 6749 §4.1.2.1): the code, then the description
+    /// and the URI when the server sent them — `access_denied — <description> (<uri>)`.
+    #[error("the authorization server refused: {}", refusal_text(.error, .description.as_deref(), .uri.as_deref()))]
+    Refused {
+        /// The `error` code.
+        error: String,
+        /// `error_description`, when sent.
+        description: Option<String>,
+        /// `error_uri`, when sent.
+        uri: Option<String>,
+    },
     /// The loopback listener could not be bound or read.
     #[error("loopback listener: {0}")]
     Listener(#[from] std::io::Error),
@@ -694,19 +702,23 @@ async fn serve_callback(
         return Ok(None);
     }
     if let Some(error) = query_param(query, "error") {
-        let description = query_param(query, "error_description").unwrap_or_default();
-        let text = if description.is_empty() {
-            error
-        } else {
-            format!("{error}: {description}")
-        };
+        let description = query_param(query, "error_description").filter(|d| !d.is_empty());
+        let uri = query_param(query, "error_uri").filter(|u| !u.is_empty());
+        // The whole callback, minus the code it does not carry anyway, on the developer's tap: a refusal
+        // with no description leaves nothing else to go on (a `state` mismatch, an unexpected parameter).
+        tracing::debug!("oauth callback refused: {}", without_param(query, "code"));
+        let text = refusal_text(&error, description.as_deref(), uri.as_deref());
         respond(
             &mut stream,
             "400 Bad Request",
             &format!("Login failed: {text}"),
         )
         .await;
-        return Err(LoginError::Refused(text));
+        return Err(LoginError::Refused {
+            error,
+            description,
+            uri,
+        });
     }
     respond(
         &mut stream,
@@ -745,6 +757,30 @@ fn html_escape(text: &str) -> String {
         }
     }
     out
+}
+
+/// `<error> — <description> (<uri>)`, each part only when there is one.
+fn refusal_text(error: &str, description: Option<&str>, uri: Option<&str>) -> String {
+    let mut text = error.to_owned();
+    if let Some(description) = description {
+        text.push_str(" — ");
+        text.push_str(description);
+    }
+    if let Some(uri) = uri {
+        text.push_str(" (");
+        text.push_str(uri);
+        text.push(')');
+    }
+    text
+}
+
+/// `query` with every `key=` pair removed, otherwise verbatim (still encoded).
+fn without_param(query: &str, key: &str) -> String {
+    query
+        .split('&')
+        .filter(|pair| pair.split_once('=').map_or(*pair, |(k, _)| k) != key)
+        .collect::<Vec<_>>()
+        .join("&")
 }
 
 /// The decoded value of `key` in a query string.
@@ -914,5 +950,37 @@ mod tests {
             super::html_escape("a <b> & \"c\""),
             "a &lt;b&gt; &amp; &quot;c&quot;"
         );
+    }
+
+    #[test]
+    fn a_refusal_names_what_the_server_sent() {
+        use super::{LoginError, refusal_text, without_param};
+        assert_eq!(refusal_text("access_denied", None, None), "access_denied");
+        assert_eq!(
+            refusal_text("access_denied", Some("the user said no"), None),
+            "access_denied — the user said no"
+        );
+        assert_eq!(
+            refusal_text(
+                "invalid_scope",
+                None,
+                Some("https://as.example/errors/scope")
+            ),
+            "invalid_scope (https://as.example/errors/scope)"
+        );
+        assert_eq!(
+            LoginError::Refused {
+                error: "access_denied".to_owned(),
+                description: Some("the user said no".to_owned()),
+                uri: Some("https://as.example/errors/denied".to_owned()),
+            }
+            .to_string(),
+            "the authorization server refused: access_denied — the user said no (https://as.example/errors/denied)"
+        );
+        assert_eq!(
+            without_param("error=access_denied&code=secret&state=s&code=again", "code"),
+            "error=access_denied&state=s"
+        );
+        assert_eq!(without_param("error", "code"), "error");
     }
 }
