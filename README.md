@@ -616,7 +616,7 @@ iota mcp add fs -- npx -y @modelcontextprotocol/server-filesystem /tmp   # stdio
 iota mcp add fs -e LOG_LEVEL=info --defer "file tools" -- npx -y server-fs
 iota mcp add gh --url https://mcp.example.com/mcp --header 'Authorization: Bearer ${env:GH_TOKEN}'
 iota mcp add nb --url https://namebeta.com/api/mcp --auth oauth   # then: iota mcp login nb
-iota mcp add nb --url … --auth oauth --client-id <id> --client-secret-env NB_SECRET   # a client registered out of band
+iota mcp add nb --url … --auth oauth --client-id <id> --client-secret-env NB_SECRET [--redirect-port 17801]   # a client registered out of band
 iota mcp list [--scope user|project|all] [--json] [--probe]      # name, transport, file, auth
 iota mcp get nb                                                  # the entry as declared
 iota mcp remove nb [--scope user|project]
@@ -657,7 +657,19 @@ the URL is printed either way, for a machine without a desktop), a loopback
 listener on `127.0.0.1:<random port>/callback` collects the code — or you paste
 the redirect URL back into the terminal — and the tokens land in
 `~/.iota/mcp/auth/<name>.json` (mode 0600). A token never enters a config
-file. At run time the bearer token goes on every request and is refreshed
+file.
+
+**A pre-registered client's redirect URI must match exactly.** A client the
+server registers on the spot, or takes by its metadata document, is told
+whichever loopback port was free; a client you registered yourself was
+registered with one URI, so iota listens on a fixed port for it: `17801`, or the
+entry's `redirect_port` (`--redirect-port` on `add`). Register exactly what
+`iota mcp get <name>` shows as `redirect_uri` — `http://127.0.0.1:17801/callback`
+— and nothing else; `login` prints the same line as `Redirect:` before it opens
+the browser. (Why you would register a client at all: a Logto Cloud tenant, for
+one, still applies application access control to a metadata-document client and
+answers the consent with a bare `access_denied`; a third-party application
+registered in that tenant, added with `--client-id`, goes through.) At run time the bearer token goes on every request and is refreshed
 when the server rejects it; a server with no usable token is reported as
 `not logged in: run iota mcp login <name>` and left out of that run while every
 other server loads. In the chat, `/mcp` shows each server's login state,

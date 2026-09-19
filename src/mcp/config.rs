@@ -47,6 +47,23 @@ pub struct ServerConfig {
     /// `auth: oauth`: the secret paired with `client_id`, when the registration has one (`""` = a public
     /// client). Written as a `${env:VAR}` reference and expanded like every other value.
     pub client_secret: String,
+    /// `auth: oauth` with a `client_id`: the loopback port the redirect URI is registered with (`None` = the
+    /// default, [`DEFAULT_REDIRECT_PORT`]). A registered client's redirect URI must match exactly, so the port
+    /// is fixed; a client the server registers on the spot, or takes by its metadata document, gets a random
+    /// one.
+    pub redirect_port: Option<u16>,
+}
+
+/// The loopback port a pre-registered client's redirect URI uses when the entry names none:
+/// `http://127.0.0.1:17801/callback`.
+pub const DEFAULT_REDIRECT_PORT: u16 = 17801;
+
+/// The redirect URI of a pre-registered client's entry: `http://127.0.0.1:<port>/callback`.
+pub fn redirect_uri(redirect_port: Option<u16>) -> String {
+    format!(
+        "http://127.0.0.1:{}/callback",
+        redirect_port.unwrap_or(DEFAULT_REDIRECT_PORT)
+    )
 }
 
 /// manager.go:530-549 + POLICY F-02: trim; empty → `Err(EmptyFlag)`; `http(s)://` prefix → `{name: value, url:
@@ -95,6 +112,7 @@ pub(crate) fn expand_server_config(server_cfg: &ServerConfig, env: &Env) -> Serv
         auth: server_cfg.auth,
         client_id: x(&server_cfg.client_id),
         client_secret: x(&server_cfg.client_secret),
+        redirect_port: server_cfg.redirect_port,
     }
 }
 
@@ -208,6 +226,7 @@ mod tests {
             auth: super::AuthMode::Oauth,
             client_id: "cid".to_owned(),
             client_secret: "${env:TOKEN}".to_owned(),
+            redirect_port: Some(18000),
         };
         let got = expand_server_config(&server_cfg, &fixed());
         assert_eq!(
@@ -216,6 +235,12 @@ mod tests {
             "auth rides along untouched"
         );
         assert_eq!(got.client_id, "cid");
+        assert_eq!(got.redirect_port, Some(18000));
+        assert_eq!(super::redirect_uri(None), "http://127.0.0.1:17801/callback");
+        assert_eq!(
+            super::redirect_uri(Some(18000)),
+            "http://127.0.0.1:18000/callback"
+        );
         assert_eq!(
             got.client_secret, "t0k",
             "the secret is a reference, expanded"

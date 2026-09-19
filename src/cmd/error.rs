@@ -77,6 +77,11 @@ pub enum ArgsError {
         "mcp add: --client-secret-env wants the NAME of an environment variable, beside --client-id; got {0:?}"
     )]
     McpClientSecretEnv(String),
+    /// `--redirect-port` without `--client-id`: only a pre-registered client has a fixed redirect URI.
+    #[error(
+        "mcp add: --redirect-port goes with --client-id (a pre-registered client's redirect URI must match exactly; a registered-on-the-spot or metadata-document client gets a random port)"
+    )]
+    McpRedirectPortNeedsClientId,
     /// A server name that is not a plain word (it is a YAML key and a wire-name segment).
     #[error("mcp add: a server name is letters, digits, `_`, `-` and `.`: {0:?}")]
     McpName(String),

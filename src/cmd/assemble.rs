@@ -54,6 +54,7 @@ pub(crate) fn build_mcp_configs(
             auth: server_cfg.auth,
             client_id: server_cfg.client_id.clone(),
             client_secret: server_cfg.client_secret.clone(),
+            redirect_port: server_cfg.redirect_port,
         });
         // `defer:` opts the server into deferred loading; its VALUE is the group summary the search manifest
         // shows. A blank value defeats the point (the summary IS the retrieval corpus) — warn loudly and

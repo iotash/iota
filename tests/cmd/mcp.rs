@@ -165,10 +165,10 @@ fn mcp_add_list_get_remove_in_the_user_scope() {
         serde_json::json!([
             {"name": "fs", "transport": "stdio", "file": user.display().to_string(), "command": "npx",
              "args": ["-y", "server-fs", "/tmp"], "url": "", "env": {"LOG": "info"}, "headers": {},
-             "defer": "file tools", "client_id": "", "client_secret": "", "auth": "none", "login": null},
+             "defer": "file tools", "client_id": "", "client_secret": "", "redirect_port": null, "redirect_uri": null, "auth": "none", "login": null},
             {"name": "gh", "transport": "http", "file": user.display().to_string(), "command": "",
              "args": [], "url": "https://gh.example/mcp", "env": {},
-             "headers": {"Authorization": "Bearer ${env:GH}", "X-Client": "iota"}, "defer": null, "client_id": "", "client_secret": "", "auth": "header", "login": null}
+             "headers": {"Authorization": "Bearer ${env:GH}", "X-Client": "iota"}, "defer": null, "client_id": "", "client_secret": "", "redirect_port": null, "redirect_uri": null, "auth": "header", "login": null}
         ])
     );
 
@@ -744,13 +744,18 @@ async fn mcp_login_logout_through_the_cli() {
 
     // Login: the child prints the URL and waits; this test is the browser.
     let lines = cli_login(cwd, &home, &[], &["--no-browser"], &mock.base()).await;
-    assert_eq!(lines[0], "Client: cid-1 (dynamic registration)");
-    assert_eq!(lines.len(), 5, "{lines:?}");
     assert!(
-        lines[4].starts_with("Logged in to nb; the token expires in ")
-            && lines[4].ends_with(&format!("(saved to {})", token_file.display())),
+        lines[0].starts_with("Redirect: http://127.0.0.1:") && lines[0].ends_with("/callback"),
         "{}",
-        lines[4]
+        lines[0]
+    );
+    assert_eq!(lines[1], "Client: cid-1 (dynamic registration)");
+    assert_eq!(lines.len(), 6, "{lines:?}");
+    assert!(
+        lines[5].starts_with("Logged in to nb; the token expires in ")
+            && lines[5].ends_with(&format!("(saved to {})", token_file.display())),
+        "{}",
+        lines[5]
     );
     assert!(token_file.is_file());
     {
@@ -861,7 +866,7 @@ fn mcp_add_preregistered_client() {
     let text = ok(&mcp(cwd, &home, &["get", "nb"]));
     assert!(
         text.contains(
-            "  client_id: pre-1\n  client_secret: ${env:NB_SECRET}\n  auth: oauth (not logged in; "
+            "  client_id: pre-1\n  client_secret: ${env:NB_SECRET}\n  redirect_uri: http://127.0.0.1:17801/callback\n  auth: oauth (not logged in; "
         ),
         "{text}"
     );
@@ -869,6 +874,89 @@ fn mcp_add_preregistered_client() {
         serde_json::from_str(&ok(&mcp(cwd, &home, &["list", "--json"]))).unwrap();
     assert_eq!(rows[0]["client_id"], "pre-1");
     assert_eq!(rows[0]["client_secret"], "${env:NB_SECRET}");
+    assert_eq!(rows[0]["redirect_port"], serde_json::Value::Null);
+    assert_eq!(rows[0]["redirect_uri"], "http://127.0.0.1:17801/callback");
+    let text = ok(&mcp(cwd, &home, &["list"]));
+    assert!(
+        text.contains("[auth: oauth: not logged in]  redirect: http://127.0.0.1:17801/callback\n"),
+        "{text}"
+    );
+    // A port of its own is written and shown; `--redirect-port` goes with `--client-id`.
+    let o = mcp(
+        cwd,
+        &home,
+        &[
+            "add",
+            "nb2",
+            "--url",
+            "https://nb.example/api/mcp",
+            "--auth",
+            "oauth",
+            "--client-id",
+            "pre-2",
+            "--redirect-port",
+            "18000",
+        ],
+    );
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    assert!(
+        fs::read_to_string(&user)
+            .unwrap()
+            .ends_with("  nb2:\n    url: https://nb.example/api/mcp\n    auth: oauth\n    client_id: pre-2\n    redirect_port: 18000\n"),
+        "{}",
+        fs::read_to_string(&user).unwrap()
+    );
+    let text = ok(&mcp(cwd, &home, &["get", "nb2"]));
+    assert!(
+        text.contains("  client_id: pre-2\n  redirect_port: 18000\n  redirect_uri: http://127.0.0.1:18000/callback\n"),
+        "{text}"
+    );
+    assert_error(
+        &mcp(
+            cwd,
+            &home,
+            &[
+                "add",
+                "x",
+                "--url",
+                "https://x/mcp",
+                "--auth",
+                "oauth",
+                "--redirect-port",
+                "18000",
+            ],
+        ),
+        "mcp add: --redirect-port goes with --client-id (a pre-registered client's redirect URI must match exactly; a registered-on-the-spot or metadata-document client gets a random port)",
+    );
+    assert_error(
+        &mcp(
+            cwd,
+            &home,
+            &[
+                "add",
+                "x",
+                "--url",
+                "https://x/mcp",
+                "--redirect-port",
+                "18000",
+            ],
+        ),
+        "mcp add: --client-id applies to --auth oauth servers only",
+    );
+    fs::write(
+        alt_or_new(cwd),
+        "mcp_servers:\n  s: {url: \"https://x/mcp\", auth: oauth, redirect_port: 18000}\n",
+    )
+    .unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_iota"));
+    cleared_env(&mut cmd, &home)
+        .current_dir(cwd)
+        .args(["config", "check", "-c"])
+        .arg(alt_or_new(cwd));
+    assert_error(
+        &cmd.output().expect("run"),
+        "mcp_servers.s: redirect_port needs a client_id (only a pre-registered client has a fixed redirect URI)",
+    );
     // A project-scope entry carries the reference, never the secret, so it passes the secret check.
     let o = mcp(
         cwd,
@@ -960,7 +1048,7 @@ fn mcp_add_preregistered_client() {
     // (A cross-layer rule of the load, so no file prefix — the same as the `auth: oauth` rule above.)
     assert_error(
         &cmd.output().expect("run"),
-        "mcp_servers.s: client_id/client_secret apply to `auth: oauth` servers only",
+        "mcp_servers.s: client_id/client_secret/redirect_port apply to `auth: oauth` servers only",
     );
     fs::write(
         &alt,
@@ -1105,6 +1193,8 @@ async fn mcp_login_as_a_preregistered_client_through_the_cli() {
             "pre-1",
             "--client-secret-env",
             "NB_SECRET",
+            "--redirect-port",
+            "17811",
         ],
     ));
 
@@ -1116,7 +1206,12 @@ async fn mcp_login_as_a_preregistered_client_through_the_cli() {
         &mock.base(),
     )
     .await;
-    assert_eq!(lines[0], "Client: pre-1 (pre-registered)");
+    assert_eq!(lines[0], "Redirect: http://127.0.0.1:17811/callback");
+    assert_eq!(lines[1], "Client: pre-1 (pre-registered)");
+    assert_eq!(
+        mock.state().authorizations[0].redirect_uri,
+        "http://127.0.0.1:17811/callback"
+    );
     assert!(token_file.is_file());
     let st = mock.state();
     assert_eq!(st.token_requests[0].client_id.as_deref(), Some("pre-1"));
@@ -1145,7 +1240,9 @@ async fn mcp_login_as_a_preregistered_client_through_the_cli() {
         .expect("join");
     let text = ok(&o);
     assert!(
-        text.contains("[auth: oauth: logged in]  connected (1 tools)"),
+        text.contains(
+            "[auth: oauth: logged in]  redirect: http://127.0.0.1:17811/callback  connected (1 tools)"
+        ),
         "{text}"
     );
     let st = mock.state();
@@ -1255,4 +1352,9 @@ async fn mcp_login_refused_says_why_and_logs_the_callback() {
             && !refused.contains("code="),
         "{refused}"
     );
+}
+
+/// `<cwd>/alt.yaml`, for a `config check -c` of one document.
+fn alt_or_new(cwd: &Path) -> std::path::PathBuf {
+    cwd.join("alt.yaml")
 }

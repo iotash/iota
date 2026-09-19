@@ -16,7 +16,9 @@
 //!   refresh token comes back; none at all when the resource names none) and the RFC 8707 `resource` →
 //!   the browser (`$BROWSER`, else the platform opener; printed either way) → a loopback listener on
 //!   `127.0.0.1:<random>/callback` collects the code, a pasted redirect URL is the fallback, five minutes is
-//!   the deadline → the code is exchanged and the store written.
+//!   the deadline → the code is exchanged and the store written. A pre-registered client's redirect URI
+//!   must match what was registered, so its listener is on a FIXED port (`redirect_port`, else
+//!   `DEFAULT_REDIRECT_PORT`); the other two identities get a random one.
 //! - `logout`: the file is removed; the token is revoked when the server publishes a revocation endpoint,
 //!   and a failure there is not an error — the file is gone either way.
 
@@ -320,6 +322,8 @@ pub enum Browser {
 /// What `login` says as it goes; the caller prints it where its user looks.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoginStep {
+    /// The redirect URI the callback listener answers on — what a pre-registered client must have registered.
+    Redirect(String),
     /// How the client identified itself: the id and where it came from.
     Identity {
         /// The client id sent to the authorization server.
@@ -359,6 +363,9 @@ pub struct LoginRequest<'a> {
     pub client_id: Option<String>,
     /// The secret paired with it, expanded from the config's `${env:VAR}`.
     pub client_secret: Option<String>,
+    /// The loopback port a pre-registered client's redirect URI was registered with (`None` = the default);
+    /// ignored without a `client_id`.
+    pub redirect_port: Option<u16>,
 }
 
 /// A finished login.
@@ -391,8 +398,10 @@ pub enum LoginError {
     #[error("cancelled")]
     Cancelled,
     /// The callback carried an `error` instead of a code (RFC 6749 §4.1.2.1): the code, then the description
-    /// and the URI when the server sent them — `access_denied — <description> (<uri>)`.
-    #[error("the authorization server refused: {}", refusal_text(.error, .description.as_deref(), .uri.as_deref()))]
+    /// and the URI when the server sent them — `access_denied — <description> (<uri>)` — and, for an
+    /// `access_denied` with no description against a client id metadata document, the one thing that has been
+    /// seen to cause it.
+    #[error("the authorization server refused: {}{}", refusal_text(.error, .description.as_deref(), .uri.as_deref()), hint.map(|h| format!("; {h}")).unwrap_or_default())]
     Refused {
         /// The `error` code.
         error: String,
@@ -400,7 +409,14 @@ pub enum LoginError {
         description: Option<String>,
         /// `error_uri`, when sent.
         uri: Option<String>,
+        /// What to try, when the shape of the refusal points somewhere.
+        hint: Option<&'static str>,
     },
+    /// A pre-registered client's fixed port is taken.
+    #[error(
+        "port {0} on 127.0.0.1 is in use, and a pre-registered client's redirect URI must match exactly: free it, or register another port and give it with --redirect-port"
+    )]
+    PortInUse(u16),
     /// The loopback listener could not be bound or read.
     #[error("loopback listener: {0}")]
     Listener(#[from] std::io::Error),
@@ -424,6 +440,7 @@ pub async fn login(
         cancel,
         client_id,
         client_secret,
+        redirect_port,
     } = req;
     let mut manager = AuthorizationManager::new(url).await?;
     manager.with_client(http.clone())?;
@@ -438,13 +455,28 @@ pub async fn login(
     let scopes = login_scopes(&http, url, &metadata).await;
     let scope_refs: Vec<&str> = scopes.iter().map(String::as_str).collect();
 
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    // A pre-registered client's redirect URI was registered with a port, so its listener is on that port;
+    // the other identities tell the server the port they got.
+    let client_id = client_id.filter(|id| !id.is_empty());
+    let listener = match client_id {
+        Some(_) => {
+            let fixed = redirect_port.unwrap_or(crate::mcp::config::DEFAULT_REDIRECT_PORT);
+            tokio::net::TcpListener::bind(("127.0.0.1", fixed))
+                .await
+                .map_err(|e| match e.kind() {
+                    std::io::ErrorKind::AddrInUse => LoginError::PortInUse(fixed),
+                    _ => LoginError::Listener(e),
+                })?
+        }
+        None => tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?,
+    };
     let port = listener.local_addr()?.port();
     let redirect_uri = format!("http://127.0.0.1:{port}{CALLBACK_PATH}");
+    report(LoginStep::Redirect(redirect_uri.clone()));
     // The client's identity, in order: what the config says, what the server registers, what it accepts.
     // (rmcp's `AuthorizationSession` puts the metadata document before registration and chooses the scopes
     // itself, so the steps are taken here, one manager call each.)
-    let (client_id, source) = if let Some(id) = client_id.filter(|id| !id.is_empty()) {
+    let (client_id, source) = if let Some(id) = client_id {
         let mut config = OAuthClientConfig::new(id.clone(), redirect_uri.clone());
         if let Some(secret) = client_secret.filter(|s| !s.is_empty()) {
             config = config.with_client_secret(secret);
@@ -480,7 +512,7 @@ pub async fn login(
         paste: paste.is_some(),
     });
 
-    let callback = wait_for_callback(&listener, port, name, paste, cancel).await?;
+    let callback = wait_for_callback(&listener, port, name, source, paste, cancel).await?;
     let callback = AuthorizationCallback::from_redirect_url(&callback)?;
     manager
         .exchange_code_for_token_with_issuer(
@@ -617,6 +649,7 @@ async fn login_scopes(
 /// its own (the wait is announced by the caller, which knows whether it reads a pasted URL).
 pub fn step_line(step: &LoginStep) -> Option<String> {
     match step {
+        LoginStep::Redirect(uri) => Some(format!("Redirect: {uri}")),
         LoginStep::Identity { client_id, source } => {
             Some(format!("Client: {client_id} ({source})"))
         }
@@ -644,6 +677,7 @@ async fn wait_for_callback(
     listener: &tokio::net::TcpListener,
     port: u16,
     name: &str,
+    source: &'static str,
     paste: Option<Pin<Box<dyn Future<Output = Option<String>> + Send + '_>>>,
     cancel: &CancellationToken,
 ) -> Result<String, LoginError> {
@@ -655,7 +689,7 @@ async fn wait_for_callback(
         tokio::select! {
             accepted = listener.accept() => {
                 let (stream, _) = accepted?;
-                if let Some(url) = serve_callback(stream, port, name).await? {
+                if let Some(url) = serve_callback(stream, port, name, source).await? {
                     return Ok(url);
                 }
             }
@@ -678,6 +712,7 @@ async fn serve_callback(
     mut stream: tokio::net::TcpStream,
     port: u16,
     name: &str,
+    source: &'static str,
 ) -> Result<Option<String>, LoginError> {
     let mut buf = Vec::with_capacity(2048);
     let mut chunk = [0u8; 1024];
@@ -714,10 +749,20 @@ async fn serve_callback(
             &format!("Login failed: {text}"),
         )
         .await;
+        // Seen on a Logto Cloud tenant: consent given, then `access_denied` with no reason, because the
+        // tenant still ran application access control against a URL-shaped client id (Logto's main branch
+        // guards that path; deployments lag). The way around is a third-party application registered there.
+        let hint = (error == "access_denied"
+            && description.is_none()
+            && source == "client id metadata document")
+            .then_some(
+                "the server gave no reason; if this is a Logto tenant and the client is a client id metadata document, the tenant's Logto may still apply application access control to it — register iota as a third-party application and add it with --client-id",
+            );
         return Err(LoginError::Refused {
             error,
             description,
             uri,
+            hint,
         });
     }
     respond(
@@ -973,9 +1018,20 @@ mod tests {
                 error: "access_denied".to_owned(),
                 description: Some("the user said no".to_owned()),
                 uri: Some("https://as.example/errors/denied".to_owned()),
+                hint: None,
             }
             .to_string(),
             "the authorization server refused: access_denied — the user said no (https://as.example/errors/denied)"
+        );
+        assert_eq!(
+            LoginError::Refused {
+                error: "access_denied".to_owned(),
+                description: None,
+                uri: None,
+                hint: Some("try the other door"),
+            }
+            .to_string(),
+            "the authorization server refused: access_denied; try the other door"
         );
         assert_eq!(
             without_param("error=access_denied&code=secret&state=s&code=again", "code"),

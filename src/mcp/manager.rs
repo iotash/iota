@@ -578,6 +578,7 @@ impl Manager {
                 cancel,
                 client_id: Some(expanded.client_id.clone()).filter(|s| !s.is_empty()),
                 client_secret: Some(expanded.client_secret.clone()).filter(|s| !s.is_empty()),
+                redirect_port: expanded.redirect_port,
             },
             &mut |step| {
                 if let Some(line) = crate::mcp::auth::step_line(&step) {

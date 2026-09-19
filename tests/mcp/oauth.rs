@@ -45,7 +45,9 @@ fn plain_server() -> ServerConfig {
 
 /// Runs the login flow with a "browser" that follows the authorization URL to the loopback callback.
 async fn login_via_redirect(mock: &oauth_mock::OauthMock, store: &TokenStore) -> Duration {
-    let (outcome, _) = login_as(mock, store, None, None).await.expect("login");
+    let (outcome, _) = login_as(mock, store, None, None, None)
+        .await
+        .expect("login");
     outcome.expires_in.expect("the mock says how long")
 }
 
@@ -56,6 +58,7 @@ async fn login_as(
     store: &TokenStore,
     client_id: Option<&str>,
     client_secret: Option<&str>,
+    redirect_port: Option<u16>,
 ) -> Result<(iota::mcp::auth::LoginOutcome, Vec<LoginStep>), iota::mcp::auth::LoginError> {
     let (tx, rx) = tokio::sync::oneshot::channel::<String>();
     let browser = tokio::spawn(async move {
@@ -82,6 +85,7 @@ async fn login_as(
             cancel: &CancellationToken::new(),
             client_id: client_id.map(str::to_owned),
             client_secret: client_secret.map(str::to_owned),
+            redirect_port,
         },
         &mut |step| {
             if let LoginStep::AuthUrl(url) = &step
@@ -109,6 +113,7 @@ async fn login_as(
         matches!(
             steps.as_slice(),
             [
+                LoginStep::Redirect(_),
                 LoginStep::Identity { .. },
                 LoginStep::AuthUrl(_),
                 LoginStep::Waiting { paste: false }
@@ -368,16 +373,21 @@ async fn manager_login_reconnects_and_logout_disconnects() {
         .expect("login through the browser script");
     assert!(status.connected(), "{:?}", status.state);
     assert_eq!(status.tools, ["echo"]);
-    assert_eq!(lines[0], "Client: cid-1 (dynamic registration)");
     assert!(
-        lines[1].starts_with("Open this URL to log in:\n  http://127.0.0.1:"),
+        lines[0].starts_with("Redirect: http://127.0.0.1:") && lines[0].ends_with("/callback"),
         "{}",
-        lines[1]
+        lines[0]
     );
+    assert_eq!(lines[1], "Client: cid-1 (dynamic registration)");
     assert!(
-        lines[2].starts_with("Logged in to nb; the token expires in "),
+        lines[2].starts_with("Open this URL to log in:\n  http://127.0.0.1:"),
         "{}",
         lines[2]
+    );
+    assert!(
+        lines[3].starts_with("Logged in to nb; the token expires in "),
+        "{}",
+        lines[3]
     );
     assert_eq!(
         m.tools()
@@ -463,16 +473,25 @@ async fn a_metadata_document_identifies_the_client_when_nobody_registers() {
     let env = Env::fixed(&[]).with_dirs(dirs.clone());
     let store = TokenStore::for_server(&dirs, "nb", &mock.mcp_url()).expect("a home");
 
-    let (_, steps) = login_as(&mock, &store, None, None)
+    let (_, steps) = login_as(&mock, &store, None, None, None)
         .await
         .expect("login through the metadata document");
     assert_eq!(
-        steps[0],
+        steps[1],
         LoginStep::Identity {
             client_id: CLIENT_METADATA_URL.to_owned(),
             source: "client id metadata document",
         }
     );
+    // Not a pre-registered client: the port is whatever was free, and the server was told it.
+    let LoginStep::Redirect(redirect) = &steps[0] else {
+        panic!("{:?}", steps[0]);
+    };
+    assert!(
+        redirect.starts_with("http://127.0.0.1:") && redirect.ends_with("/callback"),
+        "{redirect}"
+    );
+    assert_eq!(&mock.state().authorizations[0].redirect_uri, redirect);
     let st = mock.state();
     assert!(st.registered.is_empty(), "no registration was attempted");
     assert_eq!(st.authorizations.len(), 1);
@@ -538,7 +557,7 @@ async fn a_preregistered_client_logs_in_with_its_secret_and_no_scope() {
     let store = TokenStore::for_server(&dirs, "nb", &mock.mcp_url()).expect("a home");
 
     // Without an identity the flow stops before the browser, naming the ways out.
-    let err = login_as(&mock, &store, None, None)
+    let err = login_as(&mock, &store, None, None, None)
         .await
         .expect_err("nothing identifies the client");
     assert_eq!(
@@ -547,11 +566,16 @@ async fn a_preregistered_client_logs_in_with_its_secret_and_no_scope() {
     );
     assert!(mock.state().authorizations.is_empty());
 
-    let (_, steps) = login_as(&mock, &store, Some("pre-1"), Some("s3cret"))
+    let (_, steps) = login_as(&mock, &store, Some("pre-1"), Some("s3cret"), None)
         .await
         .expect("login as the pre-registered client");
     assert_eq!(
         steps[0],
+        LoginStep::Redirect("http://127.0.0.1:17801/callback".to_owned()),
+        "a pre-registered client's redirect URI is the fixed default port"
+    );
+    assert_eq!(
+        steps[1],
         LoginStep::Identity {
             client_id: "pre-1".to_owned(),
             source: "pre-registered",
@@ -560,6 +584,10 @@ async fn a_preregistered_client_logs_in_with_its_secret_and_no_scope() {
     let st = mock.state();
     assert_eq!(st.authorizations.len(), 1);
     assert_eq!(st.authorizations[0].client_id, "pre-1");
+    assert_eq!(
+        st.authorizations[0].redirect_uri,
+        "http://127.0.0.1:17801/callback"
+    );
     assert_eq!(
         st.authorizations[0].scope, None,
         "nothing to ask for: no scope parameter at all"
@@ -621,7 +649,7 @@ async fn a_refusal_carries_the_description_and_the_uri() {
     .await;
     let (_dir, dirs) = temp_project(&[]);
     let store = TokenStore::for_server(&dirs, "nb", &mock.mcp_url()).expect("a home");
-    let err = login_as(&mock, &store, None, None)
+    let err = login_as(&mock, &store, None, None, None)
         .await
         .expect_err("the server refused");
     assert_eq!(
@@ -629,9 +657,95 @@ async fn a_refusal_carries_the_description_and_the_uri() {
         "the authorization server refused: access_denied — the user declined the consent screen (https://as.example/errors/access_denied)"
     );
     assert!(
-        matches!(&err, iota::mcp::auth::LoginError::Refused { error, description: Some(d), uri: Some(u) }
+        matches!(&err, iota::mcp::auth::LoginError::Refused { error, description: Some(d), uri: Some(u), hint: None }
             if error == "access_denied" && d == "the user declined the consent screen" && u.ends_with("/access_denied")),
         "{err:?}"
     );
     assert!(!store.path().exists(), "nothing is stored");
+}
+
+/// A pre-registered client's port is the entry's when it names one, and a taken port is an error that says
+/// what to do rather than a listener on some other port the server would refuse.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_preregistered_client_uses_its_own_port_or_reports_it_taken() {
+    let mock = oauth_mock::start_with(oauth_mock::Options {
+        identity: oauth_mock::Identity::Preregistered {
+            client_id: "pre-1".to_owned(),
+            client_secret: None,
+        },
+        ..oauth_mock::Options::default()
+    })
+    .await;
+    let (_dir, dirs) = temp_project(&[]);
+    let store = TokenStore::for_server(&dirs, "nb", &mock.mcp_url()).expect("a home");
+
+    let (_, steps) = login_as(&mock, &store, Some("pre-1"), None, Some(17812))
+        .await
+        .expect("login on the entry's port");
+    assert_eq!(
+        steps[0],
+        LoginStep::Redirect("http://127.0.0.1:17812/callback".to_owned())
+    );
+    assert_eq!(
+        mock.state().authorizations[0].redirect_uri,
+        "http://127.0.0.1:17812/callback"
+    );
+
+    let taken = tokio::net::TcpListener::bind(("127.0.0.1", 17813))
+        .await
+        .expect("bind the port first");
+    let err = login_as(&mock, &store, Some("pre-1"), None, Some(17813))
+        .await
+        .expect_err("the port is taken");
+    assert_eq!(
+        err.to_string(),
+        "port 17813 on 127.0.0.1 is in use, and a pre-registered client's redirect URI must match exactly: free it, or register another port and give it with --redirect-port"
+    );
+    drop(taken);
+}
+
+/// An `access_denied` with no reason, against a client id metadata document, gets the one hint there is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unexplained_access_denied_against_the_metadata_document_hints_at_logto() {
+    let mock = oauth_mock::start_with(oauth_mock::Options {
+        identity: oauth_mock::Identity::Cimd,
+        refusal: Some(oauth_mock::Refusal {
+            error: "access_denied".to_owned(),
+            description: None,
+            uri: None,
+        }),
+        ..oauth_mock::Options::default()
+    })
+    .await;
+    let (_dir, dirs) = temp_project(&[]);
+    let store = TokenStore::for_server(&dirs, "nb", &mock.mcp_url()).expect("a home");
+    let err = login_as(&mock, &store, None, None, None)
+        .await
+        .expect_err("refused");
+    assert_eq!(
+        err.to_string(),
+        "the authorization server refused: access_denied; the server gave no reason; if this is a Logto tenant and the client is a client id metadata document, the tenant's Logto may still apply application access control to it — register iota as a third-party application and add it with --client-id"
+    );
+    // The same refusal against a pre-registered client carries no such hint.
+    let mock = oauth_mock::start_with(oauth_mock::Options {
+        identity: oauth_mock::Identity::Preregistered {
+            client_id: "pre-1".to_owned(),
+            client_secret: None,
+        },
+        refusal: Some(oauth_mock::Refusal {
+            error: "access_denied".to_owned(),
+            description: None,
+            uri: None,
+        }),
+        ..oauth_mock::Options::default()
+    })
+    .await;
+    let store = TokenStore::for_server(&dirs, "nb2", &mock.mcp_url()).expect("a home");
+    let err = login_as(&mock, &store, Some("pre-1"), None, Some(17814))
+        .await
+        .expect_err("refused");
+    assert_eq!(
+        err.to_string(),
+        "the authorization server refused: access_denied"
+    );
 }

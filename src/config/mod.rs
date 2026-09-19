@@ -77,6 +77,10 @@ pub struct McpServerConfig {
     /// `client_secret:` — the secret paired with `client_id`, as a `${env:VAR}` reference.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub client_secret: String,
+    /// `redirect_port:` — the loopback port a pre-registered client's redirect URI was registered with
+    /// (absent = 17801).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redirect_port: Option<u16>,
 }
 
 /// ONE config document, exactly as it is written on disk. [`Config`] is what a stack of these merges into,
@@ -347,17 +351,28 @@ impl Config {
                     "auth: oauth needs a url (a stdio server has nothing to log in to)".to_owned(),
                 ));
             }
-            if s.auth != AuthMode::Oauth && !(s.client_id.is_empty() && s.client_secret.is_empty())
+            if s.auth != AuthMode::Oauth
+                && !(s.client_id.is_empty()
+                    && s.client_secret.is_empty()
+                    && s.redirect_port.is_none())
             {
                 return Err(ConfigError::McpServer(
                     name.clone(),
-                    "client_id/client_secret apply to `auth: oauth` servers only".to_owned(),
+                    "client_id/client_secret/redirect_port apply to `auth: oauth` servers only"
+                        .to_owned(),
                 ));
             }
             if !s.client_secret.is_empty() && s.client_id.is_empty() {
                 return Err(ConfigError::McpServer(
                     name.clone(),
                     "client_secret needs a client_id".to_owned(),
+                ));
+            }
+            if s.redirect_port.is_some() && s.client_id.is_empty() {
+                return Err(ConfigError::McpServer(
+                    name.clone(),
+                    "redirect_port needs a client_id (only a pre-registered client has a fixed redirect URI)"
+                        .to_owned(),
                 ));
             }
         }

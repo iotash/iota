@@ -34,6 +34,14 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   when the server accepts one — the shape of an authorization server like Logto,
   which registers nobody. A login asks for the scopes the resource names, plus
   `offline_access` when the server lists it, and carries the RFC 8707 `resource`.
+- **A pre-registered client listens on a fixed port.** Its redirect URI must match
+  what was registered, so `login` binds `127.0.0.1:17801` (or the entry's
+  `redirect_port`, `--redirect-port` on `add`) for it and reports a taken port
+  instead of moving; `iota mcp get`/`list` show the `redirect_uri` to register,
+  and `login` prints it as `Redirect:`. A refusal names the server's
+  `error_description` and `error_uri`, logs the whole callback under `IOTA_LOG`,
+  and — for a bare `access_denied` against the metadata document — says what a
+  Logto tenant does about it.
 
 ## 0.3.0 - 2026-09-18
 

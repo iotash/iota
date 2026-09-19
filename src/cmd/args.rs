@@ -246,6 +246,10 @@ pub struct McpAddCmd {
     /// The environment variable holding that client's secret; written as `${env:VAR}`, never the value
     #[arg(long, value_name = "VAR")]
     pub client_secret_env: Option<String>,
+    /// The loopback port the pre-registered client's redirect URI uses (default 17801): the URI registered
+    /// with the server must be exactly `http://127.0.0.1:<port>/callback`
+    #[arg(long, value_name = "PORT")]
+    pub redirect_port: Option<u16>,
     /// The command and its arguments, after `--`
     #[arg(last = true, value_name = "COMMAND")]
     pub command: Vec<String>,

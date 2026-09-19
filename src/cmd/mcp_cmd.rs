@@ -247,7 +247,9 @@ fn entry_of(add: &McpAddCmd) -> Result<McpServerConfig, ArgsError> {
                 Some(McpAuthArg::None) | None => AuthMode::None,
             };
             if entry.auth != AuthMode::Oauth
-                && (add.client_id.is_some() || add.client_secret_env.is_some())
+                && (add.client_id.is_some()
+                    || add.client_secret_env.is_some()
+                    || add.redirect_port.is_some())
             {
                 return Err(ArgsError::McpAddFlag {
                     flag: "--client-id",
@@ -267,6 +269,12 @@ fn entry_of(add: &McpAddCmd) -> Result<McpServerConfig, ArgsError> {
                 }
                 entry.client_secret = format!("${{env:{var}}}");
             }
+            if add.redirect_port.is_some() {
+                if add.client_id.is_none() {
+                    return Err(ArgsError::McpRedirectPortNeedsClientId);
+                }
+                entry.redirect_port = add.redirect_port;
+            }
         }
         (None, Some(command)) => {
             if !add.headers.is_empty() {
@@ -281,7 +289,10 @@ fn entry_of(add: &McpAddCmd) -> Result<McpServerConfig, ArgsError> {
                     form: "--url",
                 });
             }
-            if add.client_id.is_some() || add.client_secret_env.is_some() {
+            if add.client_id.is_some()
+                || add.client_secret_env.is_some()
+                || add.redirect_port.is_some()
+            {
                 return Err(ArgsError::McpAddFlag {
                     flag: "--client-id",
                     form: "--url",
@@ -388,6 +399,9 @@ async fn run_list(
                     "defer": d.entry.defer,
                     "client_id": d.entry.client_id,
                     "client_secret": d.entry.client_secret,
+                    "redirect_port": d.entry.redirect_port,
+                    "redirect_uri": (!d.entry.client_id.is_empty())
+                        .then(|| crate::mcp::config::redirect_uri(d.entry.redirect_port)),
                     "auth": match d.entry.auth {
                         AuthMode::Oauth => "oauth",
                         AuthMode::None if !d.entry.headers.is_empty() => "header",
@@ -435,6 +449,10 @@ async fn run_list(
             d.file.display(),
             auth_label(d, env)
         );
+        if !d.entry.client_id.is_empty() {
+            line.push_str("  redirect: ");
+            line.push_str(&crate::mcp::config::redirect_uri(d.entry.redirect_port));
+        }
         if let Some(probes) = &probes
             && let Some(status) = probes.get(i)
         {
@@ -486,6 +504,7 @@ pub(crate) fn server_config(name: &str, entry: &McpServerConfig) -> ServerConfig
         auth: entry.auth,
         client_id: entry.client_id.clone(),
         client_secret: entry.client_secret.clone(),
+        redirect_port: entry.redirect_port,
     }
 }
 
@@ -535,6 +554,17 @@ fn run_get(
     }
     if !d.entry.client_secret.is_empty() {
         writeln!(io.stdout, "  client_secret: {}", d.entry.client_secret)?;
+    }
+    if let Some(port) = d.entry.redirect_port {
+        writeln!(io.stdout, "  redirect_port: {port}")?;
+    }
+    if !d.entry.client_id.is_empty() {
+        // What to register with the authorization server, exactly.
+        writeln!(
+            io.stdout,
+            "  redirect_uri: {}",
+            crate::mcp::config::redirect_uri(d.entry.redirect_port)
+        )?;
     }
     match d.entry.auth {
         AuthMode::Oauth => {
@@ -627,6 +657,7 @@ async fn run_login(
         cancel,
         client_id,
         client_secret,
+        redirect_port: expanded.redirect_port,
     };
     let outcome = {
         let mut report = |step: LoginStep| {
