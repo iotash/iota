@@ -151,10 +151,15 @@ impl StderrCapture {
 /// `ToolDef { name: raw, description: unwrap_or_default, input_schema: Some((*input_schema).clone()), deferred: false }`.
 ///
 /// Transport selection: url non-empty → must start `http://` / `https://` else `UnsupportedScheme(url)`, then
-/// `http_transport`; command non-empty → `spawn_stdio`; both empty → `MissingTarget`. A handshake failure is `Connect(e)` (stdio: plus
-/// `\n  subprocess stderr:\n<trimmed>` when the capture is non-empty, after a bounded wait for the pipe to reach
-/// EOF — [`STDERR_DRAIN_GRACE`]); a `tools/list` failure closes the session and
-/// is `ListTools(e)`. The caller wraps this in `timeout(connect_timeout, ..)` (`Elapsed` → `Timeout`).
+/// by the entry's [`effective_auth`](ServerConfig::effective_auth) — `oauth`: [`connect_oauth`]; `none`:
+/// [`http_transport`] bare, every failure a `Connect`; `auto`: [`connect_oauth`] when a token file exists for
+/// the name (whatever it holds — a stale one is that path's own `NotLoggedIn`), else bare, where a 401/403 at
+/// the handshake ([`is_auth_required`]) is `NotLoggedIn(name)` — the server asked for a login nobody has done
+/// yet — and anything else `Connect`. Command non-empty → `spawn_stdio`; both empty → `MissingTarget`. A
+/// handshake failure is `Connect(e)` (stdio: plus `\n  subprocess stderr:\n<trimmed>` when the capture is
+/// non-empty, after a bounded wait for the pipe to reach EOF — [`STDERR_DRAIN_GRACE`]); a `tools/list`
+/// failure closes the session and is `ListTools(e)`. The caller wraps this in `timeout(connect_timeout, ..)`
+/// (`Elapsed` → `Timeout`).
 pub(crate) async fn connect_one(
     server_cfg: &ServerConfig,
     opts: &ManagerOptions,
@@ -165,14 +170,24 @@ pub(crate) async fn connect_one(
         if !(server_cfg.url.starts_with("http://") || server_cfg.url.starts_with("https://")) {
             return Err(McpError::UnsupportedScheme(server_cfg.url));
         }
-        if server_cfg.auth == AuthMode::Oauth {
-            return connect_oauth(&server_cfg, opts).await;
-        }
+        let discover = match server_cfg.effective_auth() {
+            AuthMode::Oauth => return connect_oauth(&server_cfg, opts).await,
+            AuthMode::Auto => {
+                if has_token_file(&server_cfg, opts) {
+                    return connect_oauth(&server_cfg, opts).await;
+                }
+                true
+            }
+            AuthMode::None => false,
+        };
         let transport = http_transport(&server_cfg, opts.http.clone())?;
-        let running = client_info(opts)
-            .serve(transport)
-            .await
-            .map_err(|e| McpError::Connect(e.to_string()))?;
+        let running = match client_info(opts).serve(transport).await {
+            Ok(running) => running,
+            Err(e) if discover && is_auth_required(&e) => {
+                return Err(McpError::NotLoggedIn(server_cfg.name.clone()));
+            }
+            Err(e) => return Err(McpError::Connect(e.to_string())),
+        };
         return list_tools(running).await;
     }
 
@@ -199,10 +214,19 @@ pub(crate) async fn connect_one(
     Err(McpError::MissingTarget)
 }
 
-/// The HTTP branch of an `auth: oauth` server: the transport's client is rmcp's `AuthClient` over the run's
-/// reqwest client and the store-backed manager (`mcp::auth::runtime_manager`), which puts the bearer token on
-/// every request and refreshes it when the server rejects it. No token in the store, or a handshake the
-/// server answers 401 after the refresh failed too, is `NotLoggedIn` — the one text that says what to do.
+/// Whether a token file exists for the server's name — what turns an `auto` entry's connect into an OAuth
+/// one. Its content is not judged here: a file with nothing usable in it is [`connect_oauth`]'s own
+/// `NotLoggedIn`, which is the right answer for it too.
+fn has_token_file(server_cfg: &ServerConfig, opts: &ManagerOptions) -> bool {
+    crate::mcp::auth::TokenStore::for_server(&opts.env.dirs, &server_cfg.name, &server_cfg.url)
+        .is_some_and(|store| store.path().is_file())
+}
+
+/// The HTTP branch of a server that logs in (`auth: oauth`, or `auto` with a token file): the transport's
+/// client is rmcp's `AuthClient` over the run's reqwest client and the store-backed manager
+/// (`mcp::auth::runtime_manager`), which puts the bearer token on every request and refreshes it when the
+/// server rejects it. No token in the store, or a handshake the server answers 401 after the refresh failed
+/// too, is `NotLoggedIn` — the one text that says what to do.
 async fn connect_oauth(
     server_cfg: &ServerConfig,
     opts: &ManagerOptions,
@@ -238,8 +262,10 @@ async fn connect_oauth(
     list_tools(running).await
 }
 
-/// Whether a handshake failure is the server refusing the token (or its absence): a 401 challenge, rmcp's
-/// own "authorization required", or a bare 401 status.
+/// Whether a handshake failure is the server asking for a login: a 401 challenge or rmcp's own "authorization
+/// required", a 403 challenge (`insufficient_scope` — a token it wants more from), or a bare 401/403 with no
+/// `WWW-Authenticate` at all — which rmcp's POST path reports as an unexpected `HTTP 401 …` / `HTTP 403 …`
+/// response (its text is the only handle) and its GET path as the reqwest status error.
 fn is_auth_required(e: &rmcp::service::ClientInitializeError) -> bool {
     use rmcp::transport::auth::AuthError;
     use rmcp::transport::streamable_http_client::StreamableHttpError;
@@ -255,8 +281,15 @@ fn is_auth_required(e: &rmcp::service::ClientInitializeError) -> bool {
     };
     match err {
         StreamableHttpError::AuthRequired(_)
+        | StreamableHttpError::InsufficientScope(_)
         | StreamableHttpError::Auth(AuthError::AuthorizationRequired) => true,
-        StreamableHttpError::Client(e) => e.status() == Some(reqwest::StatusCode::UNAUTHORIZED),
+        StreamableHttpError::Client(e) => matches!(
+            e.status(),
+            Some(reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN)
+        ),
+        StreamableHttpError::UnexpectedServerResponse(text) => {
+            text.starts_with("HTTP 401 ") || text.starts_with("HTTP 403 ")
+        }
         _ => false,
     }
 }

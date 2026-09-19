@@ -277,7 +277,7 @@ fn mcp_project_scope_and_the_two_tiers() {
     assert_eq!(
         ok(&o),
         format!(
-            "Added gh (http: https://user.example/mcp) to {}\n",
+            "Added gh (http: https://user.example/mcp) to {}\nif the server asks for a login: iota mcp login gh\n",
             user.display()
         )
     );
@@ -295,7 +295,7 @@ fn mcp_project_scope_and_the_two_tiers() {
     assert_eq!(
         ok(&o),
         format!(
-            "MCP servers:\n  gh  http   {}  [auth: none]\n",
+            "MCP servers:\n  gh  http   {}  [auth: auto]\n",
             user.display()
         )
     );
@@ -386,10 +386,12 @@ fn mcp_explicit_config_file_is_the_only_scope() {
             alt.to_str().unwrap(),
         ],
     );
+    // No `--auth`: nothing is written for it, and the hint is conditional — the server, not the entry,
+    // says whether there is a login.
     assert_eq!(
         ok(&o),
         format!(
-            "Added t (http: http://127.0.0.1:1/mcp) to {}\n",
+            "Added t (http: http://127.0.0.1:1/mcp) to {}\nif the server asks for a login: iota mcp login t\n",
             alt.display()
         )
     );
@@ -402,7 +404,7 @@ fn mcp_explicit_config_file_is_the_only_scope() {
     assert_eq!(
         ok(&o),
         format!(
-            "MCP servers:\n  s  stdio  {a}  [auth: none]\n  t  http   {a}  [auth: none]\n",
+            "MCP servers:\n  s  stdio  {a}  [auth: none]\n  t  http   {a}  [auth: auto]\n",
             a = alt.display()
         )
     );
@@ -520,8 +522,9 @@ fn mcp_add_refusals() {
     );
 }
 
-/// `--auth oauth` is recorded as `auth: oauth`, listed as such, and followed by the login hint; the agent
-/// that runs by default is told when it lists its servers explicitly and left the new one out.
+/// `--auth oauth` is recorded as `auth: oauth`, listed as such, and followed by the login hint — and so is
+/// `--auth none`, now that not writing `auth:` means "the server says"; the agent that runs by default is
+/// told when it lists its servers explicitly and left the new one out.
 #[test]
 fn mcp_add_oauth_and_the_agent_subset_hint() {
     let (dir, home) = project();
@@ -566,7 +569,8 @@ fn mcp_add_oauth_and_the_agent_subset_hint() {
             user.display()
         )
     );
-    // `--auth none` writes nothing, and a name the agent lists draws no hint.
+    // `--auth none` is written (it is not the default), draws no login hint, and a name the agent lists
+    // draws no subset hint.
     let o = mcp(
         cwd,
         &home,
@@ -587,11 +591,26 @@ fn mcp_add_oauth_and_the_agent_subset_hint() {
         )
     );
     assert!(
-        fs::read_to_string(&user)
-            .unwrap()
-            .contains("mcp_servers:\n  fs:\n    url: https://fs.example/mcp\n  nb:\n"),
+        fs::read_to_string(&user).unwrap().contains(
+            "mcp_servers:\n  fs:\n    url: https://fs.example/mcp\n    auth: none\n  nb:\n"
+        ),
         "{}",
         fs::read_to_string(&user).unwrap()
+    );
+    let o = mcp(cwd, &home, &["list"]);
+    assert_eq!(
+        ok(&o),
+        format!(
+            "MCP servers:\n  fs  http   {u}  [auth: none]\n  nb  http   {u}  [auth: oauth: not logged in]\n",
+            u = user.display()
+        )
+    );
+    assert_eq!(
+        ok(&mcp(cwd, &home, &["get", "fs"])),
+        format!(
+            "fs:\n  file: {}\n  transport: http\n  url: https://fs.example/mcp\n  auth: none\n",
+            user.display()
+        )
     );
 
     // The config the run loads refuses `auth: oauth` on a stdio server where it is written.
@@ -687,10 +706,11 @@ done
 
 // ---------------------------------------------------------------- OAuth: login, logout, the degraded run
 
-/// `iota mcp login <name> --no-browser` against the mock authorization server: the URL is printed, a
-/// "browser" (this test) follows it to the loopback callback, the token file lands with mode 0600, `list`
-/// and `get` say "logged in", a headless run connects with the token, `logout` revokes and forgets — and a
-/// run after that degrades the ONE server with the line that names the way back in.
+/// `iota mcp login <name> --no-browser` against the mock authorization server, on an entry that says
+/// nothing about `auth` (the default: the server says): the URL is printed, a "browser" (this test) follows
+/// it to the loopback callback, the token file lands with mode 0600, `list` and `get` say "logged in", a
+/// headless run connects with the token, `logout` revokes and forgets — and a run after that degrades the
+/// ONE server with the line that names the way back in, because the server's 401 asked for one.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_login_logout_through_the_cli() {
@@ -701,12 +721,8 @@ async fn mcp_login_logout_through_the_cli() {
     let cwd = dir.path();
     let token_file = home.join(".iota/mcp/auth/nb.json");
 
-    // The server, declared in the user file; a plain one beside it.
-    ok(&mcp(
-        cwd,
-        &home,
-        &["add", "nb", "--url", &mock.mcp_url(), "--auth", "oauth"],
-    ));
+    // The server, declared in the user file with no `auth:`; a plain one beside it.
+    ok(&mcp(cwd, &home, &["add", "nb", "--url", &mock.mcp_url()]));
     let script = cwd.join("server.sh");
     fs::write(&script, SH_SERVER).unwrap();
     ok(&mcp(
@@ -714,33 +730,50 @@ async fn mcp_login_logout_through_the_cli() {
         &home,
         &["add", "plain", "--", "sh", script.to_str().unwrap()],
     ));
+    assert!(
+        !fs::read_to_string(home.join(".iota.yaml"))
+            .unwrap()
+            .contains("auth:"),
+        "nothing about auth is written"
+    );
 
-    // Not logged in: `list`, `get`, `logout` all say so; `login` refuses what is not an OAuth server.
+    // Before any login an undeclared entry is just `auto` — a listing does not connect to find out more;
+    // `logout` has nothing to forget; `login` refuses what has no login: a stdio server, `auth: none`.
     let text = ok(&mcp(cwd, &home, &["list"]));
     assert!(
-        text.contains("  nb     http   ") && text.contains("[auth: oauth: not logged in]"),
+        text.contains("  nb     http   ") && text.contains("[auth: auto]\n"),
         "{text}"
     );
     let text = ok(&mcp(cwd, &home, &["get", "nb"]));
-    assert!(
-        text.ends_with(&format!(
-            "  auth: oauth (not logged in; {})\n",
-            token_file.display()
-        )),
-        "{text}"
-    );
+    assert!(text.ends_with("  auth: auto\n"), "{text}");
+    let rows: serde_json::Value =
+        serde_json::from_str(&ok(&mcp(cwd, &home, &["list", "--json"]))).unwrap();
+    assert_eq!(rows[0]["auth"], "auto");
+    assert_eq!(rows[0]["login"], serde_json::Value::Null);
     assert_eq!(
         ok(&mcp(cwd, &home, &["logout", "nb"])),
         "Not logged in to nb (nothing to forget)\n"
     );
     assert_error(
         &mcp(cwd, &home, &["login", "plain"]),
-        "mcp: \"plain\" is not an OAuth server (add it with --auth oauth, or set `auth: oauth` on it)",
+        "mcp: \"plain\" has nothing to log in to (a stdio server)",
     );
     assert_error(
         &mcp(cwd, &home, &["login", "nope"]),
         "mcp: no server named \"nope\"\n  configured servers: nb, plain",
     );
+    ok(&mcp(
+        cwd,
+        &home,
+        &["add", "off", "--url", &mock.mcp_url(), "--auth", "none"],
+    ));
+    for verb in ["login", "logout"] {
+        assert_error(
+            &mcp(cwd, &home, &[verb, "off"]),
+            "mcp: \"off\" is declared auth: none; drop that (or set auth: oauth) to log in",
+        );
+    }
+    ok(&mcp(cwd, &home, &["remove", "off"]));
 
     // Login: the child prints the URL and waits; this test is the browser.
     let lines = cli_login(cwd, &home, &[], &["--no-browser"], &mock.base()).await;
@@ -765,26 +798,28 @@ async fn mcp_login_logout_through_the_cli() {
             0o600
         );
     }
+    // With a token file the entry reads `auto: logged in` — the file is what a run goes by.
     let text = ok(&mcp(cwd, &home, &["list"]));
-    assert!(text.contains("[auth: oauth: logged in]"), "{text}");
+    assert!(text.contains("[auth: auto: logged in]"), "{text}");
     let text = ok(&mcp(cwd, &home, &["get", "nb"]));
     assert!(
         text.ends_with(&format!(
-            "  auth: oauth (logged in; {})\n",
+            "  auth: auto (logged in; {})\n",
             token_file.display()
         )),
         "{text}"
     );
     let rows: serde_json::Value =
         serde_json::from_str(&ok(&mcp(cwd, &home, &["list", "--json"]))).unwrap();
-    assert_eq!(rows[0]["auth"], "oauth");
+    assert_eq!(rows[0]["auth"], "auto");
     assert_eq!(rows[0]["login"], "logged in");
+    assert_eq!(rows[1]["auth"], "none");
     assert_eq!(rows[1]["login"], serde_json::Value::Null);
 
     // A probe connects with the token.
     let text = ok(&mcp(cwd, &home, &["list", "--probe"]));
     assert!(
-        text.contains("[auth: oauth: logged in]  connected (1 tools)"),
+        text.contains("[auth: auto: logged in]  connected (1 tools)"),
         "{text}"
     );
     assert_eq!(mock.state().bearers.last(), Some(&Some("at-1".to_owned())));
@@ -797,7 +832,8 @@ async fn mcp_login_logout_through_the_cli() {
     assert!(!token_file.exists());
     assert_eq!(mock.state().revoked, ["rt-1"]);
 
-    // A headless run degrades that one server and says how to get it back; the plain one serves.
+    // A headless run degrades that one server and says how to get it back — the bare handshake was
+    // answered 401, which is the server asking for a login, not a broken connection; the plain one serves.
     let api = wiremock::MockServer::start().await;
     crate::common::transcript::openai_transcript(&api).await;
     fs::write(
@@ -822,15 +858,23 @@ async fn mcp_login_logout_through_the_cli() {
         "Warning: mcp server nb: not logged in: run iota mcp login nb\n"
     );
     assert_eq!(out(&o), format!("{}\n", crate::common::transcript::REPLY));
+    // The probe says the same in its own words: a login is a step not taken, not a failure.
     let text = ok(&mcp(cwd, &home, &["list", "--probe"]));
     assert!(
-        text.contains("[auth: oauth: not logged in]  failed: not logged in: run iota mcp login nb"),
+        text.contains("[auth: auto]  needs login: iota mcp login nb"),
         "{text}"
+    );
+    let rows: serde_json::Value =
+        serde_json::from_str(&ok(&mcp(cwd, &home, &["list", "--probe", "--json"]))).unwrap();
+    assert_eq!(
+        rows[0]["probe"],
+        serde_json::json!({"state": "failed", "tools": [], "error": "not logged in: run iota mcp login nb"})
     );
 }
 
 /// `--client-id` (with `--client-secret-env`) records a client registered out of band: the id as given, the
-/// secret as the `${env:VAR}` reference and never the value; the flags belong to `--auth oauth` alone.
+/// secret as the `${env:VAR}` reference and never the value. The flags say "oauth" on their own — no
+/// `--auth oauth` is needed and none is written — and only `--auth none` contradicts them.
 #[test]
 fn mcp_add_preregistered_client() {
     let (dir, home) = project();
@@ -844,8 +888,6 @@ fn mcp_add_preregistered_client() {
             "nb",
             "--url",
             "https://nb.example/api/mcp",
-            "--auth",
-            "oauth",
             "--client-id",
             "pre-1",
             "--client-secret-env",
@@ -857,16 +899,17 @@ fn mcp_add_preregistered_client() {
         format!(
             "Added nb (http: https://nb.example/api/mcp) to {}\nNext: iota mcp login nb\n",
             user.display()
-        )
+        ),
+        "a client id means a login: the firm hint, not the conditional one"
     );
     assert_eq!(
         fs::read_to_string(&user).unwrap(),
-        "mcp_servers:\n  nb:\n    url: https://nb.example/api/mcp\n    auth: oauth\n    client_id: pre-1\n    client_secret: ${env:NB_SECRET}\n"
+        "mcp_servers:\n  nb:\n    url: https://nb.example/api/mcp\n    client_id: pre-1\n    client_secret: ${env:NB_SECRET}\n"
     );
     let text = ok(&mcp(cwd, &home, &["get", "nb"]));
     assert!(
-        text.contains(
-            "  client_id: pre-1\n  client_secret: ${env:NB_SECRET}\n  redirect_uri: http://127.0.0.1:17801/callback\n  auth: oauth (not logged in; "
+        text.ends_with(
+            "  client_id: pre-1\n  client_secret: ${env:NB_SECRET}\n  redirect_uri: http://127.0.0.1:17801/callback\n  auth: auto\n"
         ),
         "{text}"
     );
@@ -876,9 +919,11 @@ fn mcp_add_preregistered_client() {
     assert_eq!(rows[0]["client_secret"], "${env:NB_SECRET}");
     assert_eq!(rows[0]["redirect_port"], serde_json::Value::Null);
     assert_eq!(rows[0]["redirect_uri"], "http://127.0.0.1:17801/callback");
+    assert_eq!(rows[0]["auth"], "auto");
+    assert_eq!(rows[0]["login"], serde_json::Value::Null);
     let text = ok(&mcp(cwd, &home, &["list"]));
     assert!(
-        text.contains("[auth: oauth: not logged in]  redirect: http://127.0.0.1:17801/callback\n"),
+        text.contains("[auth: auto]  redirect: http://127.0.0.1:17801/callback\n"),
         "{text}"
     );
     // A port of its own is written and shown; `--redirect-port` goes with `--client-id`.
@@ -937,11 +982,13 @@ fn mcp_add_preregistered_client() {
                 "x",
                 "--url",
                 "https://x/mcp",
+                "--auth",
+                "none",
                 "--redirect-port",
                 "18000",
             ],
         ),
-        "mcp add: --client-id applies to --auth oauth servers only",
+        "mcp add: --client-id, --client-secret-env and --redirect-port describe an OAuth login, which --auth none rules out",
     );
     fs::write(
         alt_or_new(cwd),
@@ -980,8 +1027,17 @@ fn mcp_add_preregistered_client() {
 
     let cases: &[(&[&str], &str)] = &[
         (
-            &["add", "x", "--url", "https://x/mcp", "--client-id", "pre-1"],
-            "mcp add: --client-id applies to --auth oauth servers only",
+            &[
+                "add",
+                "x",
+                "--url",
+                "https://x/mcp",
+                "--auth",
+                "none",
+                "--client-id",
+                "pre-1",
+            ],
+            "mcp add: --client-id, --client-secret-env and --redirect-port describe an OAuth login, which --auth none rules out",
         ),
         (
             &[
@@ -994,7 +1050,7 @@ fn mcp_add_preregistered_client() {
                 "--client-secret-env",
                 "V",
             ],
-            "mcp add: --client-id applies to --auth oauth servers only",
+            "mcp add: --client-id, --client-secret-env and --redirect-port describe an OAuth login, which --auth none rules out",
         ),
         (
             &["add", "x", "--client-id", "pre-1", "--", "srv"],
@@ -1033,23 +1089,40 @@ fn mcp_add_preregistered_client() {
         assert_error(&mcp(cwd, &home, args), want);
     }
 
-    // The config the run loads refuses the keys where they make no sense.
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_iota"));
+    // The config the run loads refuses the keys where they make no sense: beside `auth: none`, or on a
+    // stdio server. (A cross-layer rule of the load, so no file prefix — the same as the `auth: oauth`
+    // rule above.) Without `auth:` they are fine: the login is the server's to ask for.
     let alt = cwd.join("alt.yaml");
+    for (body, want) in [
+        (
+            "mcp_servers:\n  s: {url: \"https://x/mcp\", auth: none, client_id: c}\n",
+            "mcp_servers.s: client_id/client_secret/redirect_port describe an OAuth login, which `auth: none` rules out",
+        ),
+        (
+            "mcp_servers:\n  s: {command: srv, client_id: c}\n",
+            "mcp_servers.s: client_id/client_secret/redirect_port describe an OAuth login, and a stdio server has nothing to log in to",
+        ),
+    ] {
+        fs::write(&alt, body).unwrap();
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_iota"));
+        cleared_env(&mut cmd, &home)
+            .current_dir(cwd)
+            .args(["config", "check", "-c"])
+            .arg(&alt);
+        assert_error(&cmd.output().expect("run"), want);
+    }
     fs::write(
         &alt,
-        "mcp_servers:\n  s: {url: \"https://x/mcp\", client_id: c}\n",
+        "providers:\n  p: {key: k}\nmcp_servers:\n  s: {url: \"https://x/mcp\", client_id: c}\n",
     )
     .unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_iota"));
     cleared_env(&mut cmd, &home)
         .current_dir(cwd)
         .args(["config", "check", "-c"])
         .arg(&alt);
-    // (A cross-layer rule of the load, so no file prefix — the same as the `auth: oauth` rule above.)
-    assert_error(
-        &cmd.output().expect("run"),
-        "mcp_servers.s: client_id/client_secret/redirect_port apply to `auth: oauth` servers only",
-    );
+    let o = cmd.output().expect("run");
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
     fs::write(
         &alt,
         "mcp_servers:\n  s: {url: \"https://x/mcp\", auth: oauth, client_secret: \"${env:V}\"}\n",

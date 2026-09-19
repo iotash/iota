@@ -5,22 +5,30 @@ use std::collections::BTreeMap;
 
 use crate::app::env::{Env, expand};
 
-/// How a streamable-HTTP server is authenticated (brain page `mcp-cli-and-oauth`): nothing beyond the static
-/// `headers:`, or OAuth 2.1 with the tokens `iota mcp login` stored. Spelled `auth: oauth` in the config.
+/// How a streamable-HTTP server is authenticated (brain page `mcp-cli-and-oauth`): the config's `auth:` key,
+/// three-state. Not written (the default) is `auto` — the server says whether it wants a login, the way
+/// Claude Code and Codex read an MCP server: a token file for the server's name makes the connect an OAuth
+/// one; without one the handshake goes out bare, and a 401/403 there is "not logged in", not a broken
+/// connection. `auth: oauth` forces the OAuth transport (no token file = not logged in, no bare attempt);
+/// `auth: none` forbids it (a 401 is a failed connect, and `iota mcp login` refuses the entry).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AuthMode {
-    /// No login: the headers as written are all the server gets.
+    /// Discovered: the token file when there is one, else the server's own 401/403 at the handshake. An
+    /// entry that writes an `Authorization` header itself is treated as [`None`](Self::None) — the
+    /// credential the user configured is the one to fix ([`ServerConfig::effective_auth`]).
     #[default]
-    None,
+    Auto,
     /// OAuth 2.1 (discovery → PKCE authorization code); the token store supplies the bearer token.
     Oauth,
+    /// No login: the headers as written are all the server gets.
+    None,
 }
 
 impl AuthMode {
     /// `serde(skip_serializing_if)`: the default is left out of a written entry.
-    pub fn is_none(&self) -> bool {
-        *self == Self::None
+    pub fn is_auto(&self) -> bool {
+        *self == Self::Auto
     }
 }
 
@@ -39,19 +47,58 @@ pub struct ServerConfig {
     pub env: BTreeMap<String, String>,
     /// Extra HTTP headers.
     pub headers: BTreeMap<String, String>,
-    /// How an HTTP server is authenticated.
+    /// How an HTTP server is authenticated: discovered (`auto`, the default), forced (`oauth`), forbidden
+    /// (`none`).
     pub auth: AuthMode,
-    /// `auth: oauth`: a client id registered with the authorization server out of band (`""` = none: dynamic
-    /// registration, else the Client ID Metadata Document).
+    /// The OAuth login's client id, registered with the authorization server out of band (`""` = none:
+    /// dynamic registration, else the Client ID Metadata Document).
     pub client_id: String,
-    /// `auth: oauth`: the secret paired with `client_id`, when the registration has one (`""` = a public
-    /// client). Written as a `${env:VAR}` reference and expanded like every other value.
+    /// The secret paired with `client_id`, when the registration has one (`""` = a public client). Written as
+    /// a `${env:VAR}` reference and expanded like every other value.
     pub client_secret: String,
-    /// `auth: oauth` with a `client_id`: the loopback port the redirect URI is registered with (`None` = the
-    /// default, [`DEFAULT_REDIRECT_PORT`]). A registered client's redirect URI must match exactly, so the port
-    /// is fixed; a client the server registers on the spot, or takes by its metadata document, gets a random
+    /// With a `client_id`: the loopback port the redirect URI is registered with (`None` = the default,
+    /// [`DEFAULT_REDIRECT_PORT`]). A registered client's redirect URI must match exactly, so the port is
+    /// fixed; a client the server registers on the spot, or takes by its metadata document, gets a random
     /// one.
     pub redirect_port: Option<u16>,
+}
+
+impl ServerConfig {
+    /// `auth` as a run applies it: `auto` on an entry whose `headers:` carry an `Authorization` header (any
+    /// case) is [`AuthMode::None`] — the user wrote a credential, and a 401 means THAT one is wrong, not that
+    /// a login is missing (Claude Code's rule). Everything else is as declared.
+    pub fn effective_auth(&self) -> AuthMode {
+        if self.auth == AuthMode::Auto && self.has_authorization_header() {
+            return AuthMode::None;
+        }
+        self.auth
+    }
+
+    /// Whether `headers:` names `Authorization` (header names are case-insensitive).
+    pub fn has_authorization_header(&self) -> bool {
+        self.headers
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case("authorization"))
+    }
+
+    /// Why `iota mcp login` / `logout` (and `/mcp login|logout`) refuse this entry, when they do — the
+    /// sentence after the name: a stdio server has no endpoint to log in to; `auth: none` forbids the login;
+    /// an `auto` entry with its own `Authorization` header would never send the token
+    /// ([`effective_auth`](Self::effective_auth)). `None` = the login is allowed (`oauth`, or `auto`).
+    pub fn login_refusal(&self) -> Option<&'static str> {
+        if self.url.is_empty() {
+            return Some("has nothing to log in to (a stdio server)");
+        }
+        match (self.auth, self.effective_auth()) {
+            (AuthMode::None, _) => {
+                Some("is declared auth: none; drop that (or set auth: oauth) to log in")
+            }
+            (_, AuthMode::None) => Some(
+                "sends its own Authorization header, which a login would not replace; drop the header (or set auth: oauth) to log in",
+            ),
+            _ => None,
+        }
+    }
 }
 
 /// The loopback port a pre-registered client's redirect URI uses when the entry names none:
@@ -234,6 +281,7 @@ mod tests {
             super::AuthMode::Oauth,
             "auth rides along untouched"
         );
+        assert_eq!(got.effective_auth(), super::AuthMode::Oauth);
         assert_eq!(got.client_id, "cid");
         assert_eq!(got.redirect_port, Some(18000));
         assert_eq!(super::redirect_uri(None), "http://127.0.0.1:17801/callback");
@@ -278,5 +326,103 @@ mod tests {
             ..ServerConfig::default()
         };
         assert_eq!(endpoint_of(&bare), "srv");
+    }
+
+    // `auth` is `auto` unless written; `auto` beside an `Authorization` header (any case) is `none`, the other
+    // two modes are as declared whatever the headers say.
+    #[test]
+    fn effective_auth_folds_an_authorization_header_into_none() {
+        use super::AuthMode;
+
+        let plain = ServerConfig {
+            url: "https://x/mcp".to_owned(),
+            ..ServerConfig::default()
+        };
+        assert_eq!(plain.auth, AuthMode::Auto, "the default is auto");
+        assert_eq!(plain.effective_auth(), AuthMode::Auto);
+        assert!(!plain.has_authorization_header());
+        let other_header = ServerConfig {
+            headers: BTreeMap::from([("X-Client".to_owned(), "iota".to_owned())]),
+            ..plain.clone()
+        };
+        assert_eq!(other_header.effective_auth(), AuthMode::Auto);
+        for name in ["Authorization", "authorization", "AUTHORIZATION"] {
+            let with_bearer = ServerConfig {
+                headers: BTreeMap::from([(name.to_owned(), "Bearer t".to_owned())]),
+                ..plain.clone()
+            };
+            assert!(with_bearer.has_authorization_header(), "{name}");
+            assert_eq!(with_bearer.effective_auth(), AuthMode::None, "{name}");
+            // Declared modes are not folded.
+            assert_eq!(
+                ServerConfig {
+                    auth: AuthMode::Oauth,
+                    ..with_bearer.clone()
+                }
+                .effective_auth(),
+                AuthMode::Oauth
+            );
+            assert_eq!(
+                ServerConfig {
+                    auth: AuthMode::None,
+                    ..with_bearer
+                }
+                .effective_auth(),
+                AuthMode::None
+            );
+        }
+        // The YAML spellings: `auto` is accepted (and is the default), and only the other two are written.
+        assert_eq!(
+            serde_norway::from_str::<AuthMode>("auto").expect("auto"),
+            AuthMode::Auto
+        );
+        assert_eq!(
+            serde_norway::from_str::<AuthMode>("oauth").expect("oauth"),
+            AuthMode::Oauth
+        );
+        assert_eq!(
+            serde_norway::from_str::<AuthMode>("none").expect("none"),
+            AuthMode::None
+        );
+        assert!(AuthMode::Auto.is_auto());
+        assert!(!AuthMode::Oauth.is_auto() && !AuthMode::None.is_auto());
+
+        // Who may log in: an HTTP entry that is not `none` — declared or by its Authorization header.
+        assert_eq!(plain.login_refusal(), None);
+        assert_eq!(
+            ServerConfig {
+                auth: AuthMode::Oauth,
+                ..plain.clone()
+            }
+            .login_refusal(),
+            None
+        );
+        assert_eq!(other_header.login_refusal(), None);
+        assert_eq!(
+            ServerConfig {
+                command: "srv".to_owned(),
+                ..ServerConfig::default()
+            }
+            .login_refusal(),
+            Some("has nothing to log in to (a stdio server)")
+        );
+        assert_eq!(
+            ServerConfig {
+                auth: AuthMode::None,
+                ..plain.clone()
+            }
+            .login_refusal(),
+            Some("is declared auth: none; drop that (or set auth: oauth) to log in")
+        );
+        assert_eq!(
+            ServerConfig {
+                headers: BTreeMap::from([("Authorization".to_owned(), "Bearer t".to_owned())]),
+                ..plain
+            }
+            .login_refusal(),
+            Some(
+                "sends its own Authorization header, which a login would not replace; drop the header (or set auth: oauth) to log in"
+            )
+        );
     }
 }

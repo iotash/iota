@@ -1,5 +1,6 @@
 //! MCP OAuth 2.1 (brain page `mcp-cli-and-oauth`): the file token store, the login and logout flows, and the
-//! runtime manager the streamable-HTTP transport is wrapped in for an `auth: oauth` server.
+//! runtime manager the streamable-HTTP transport is wrapped in for a server that logs in — `auth: oauth`, or
+//! the default `auto` once a token file exists for its name (`mcp::transport::connect_one`).
 //!
 //! The protocol is rmcp's `auth` module (discovery per RFC 9728 → RFC 8414, dynamic registration per RFC
 //! 7591, the PKCE authorization code grant, the refreshing `AuthClient`); what is iota's here is where the
@@ -380,15 +381,22 @@ pub struct LoginOutcome {
 /// Why a login did not finish.
 #[derive(Debug, thiserror::Error)]
 pub enum LoginError {
-    /// The server published neither protected-resource nor authorization-server metadata.
+    /// The server gave no sign of wanting a login: no 401 challenge at the endpoint, no protected-resource
+    /// metadata at the well-known locations, no authorization-server metadata either. (rmcp would fall back
+    /// to endpoints synthesised from the URL; a login against those is a guess, so it stops here.)
     #[error(
-        "{0} publishes no OAuth metadata (no protected-resource or authorization-server document)"
+        "{name} does not ask for a login (no 401 challenge, no protected resource metadata at {url})"
     )]
-    NoMetadata(String),
+    NoMetadata {
+        /// The server name.
+        name: String,
+        /// The endpoint, expanded.
+        url: String,
+    },
     /// No way to identify the client: nothing configured, no registration endpoint, no metadata-document
     /// support. The text names the ways out.
     #[error(
-        "the authorization server offers no dynamic client registration and does not accept a client id metadata document, and no client id is configured: register a client with the server's operator and give it to iota — `iota mcp add <name> --url <url> --auth oauth --client-id <id> [--client-secret-env VAR]`, or `iota mcp login <name> --client-id <id>` for this login"
+        "the authorization server offers no dynamic client registration and does not accept a client id metadata document, and no client id is configured: register a client with the server's operator and give it to iota — `iota mcp add <name> --url <url> --client-id <id> [--client-secret-env VAR]`, or `iota mcp login <name> --client-id <id>` for this login"
     )]
     NoClientIdentity,
     /// The browser did not come back in time.
@@ -447,7 +455,10 @@ pub async fn login(
     manager.set_credential_store(store.clone());
     let resolution = manager.resolve_metadata().await?;
     if resolution.source == AuthorizationMetadataSource::LegacyEndpointFallback {
-        return Err(LoginError::NoMetadata(url.to_owned()));
+        return Err(LoginError::NoMetadata {
+            name: name.to_owned(),
+            url: url.to_owned(),
+        });
     }
     let metadata = resolution.metadata;
     store.set_metadata(metadata.clone());

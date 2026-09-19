@@ -67,8 +67,9 @@ pub struct McpServerConfig {
     /// not deferred), `None` = advertise fully.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub defer: Option<String>,
-    /// `auth:` — `oauth` for a server `iota mcp login` signs in to; absent = the headers as written.
-    #[serde(skip_serializing_if = "AuthMode::is_none")]
+    /// `auth:` — absent = `auto` (the server says whether it wants a login: a token file, else its 401),
+    /// `oauth` forces the login, `none` forbids it.
+    #[serde(skip_serializing_if = "AuthMode::is_auto")]
     pub auth: AuthMode,
     /// `client_id:` — an OAuth client registered with the authorization server out of band; absent = dynamic
     /// registration, else the Client ID Metadata Document.
@@ -343,7 +344,8 @@ impl Config {
             }
         }
         // OAuth is a login against an HTTP endpoint; a stdio server has no such thing, so `auth: oauth` on
-        // one is refused where it is written rather than ignored at connect time.
+        // one is refused where it is written rather than ignored at connect time. The client keys describe
+        // that login, so they belong to an HTTP server the login is not forbidden on (`auth: none`).
         for (name, s) in &self.mcp_servers {
             if s.auth == AuthMode::Oauth && s.url.is_empty() {
                 return Err(ConfigError::McpServer(
@@ -351,14 +353,20 @@ impl Config {
                     "auth: oauth needs a url (a stdio server has nothing to log in to)".to_owned(),
                 ));
             }
-            if s.auth != AuthMode::Oauth
-                && !(s.client_id.is_empty()
-                    && s.client_secret.is_empty()
-                    && s.redirect_port.is_none())
-            {
+            let has_client_keys = !(s.client_id.is_empty()
+                && s.client_secret.is_empty()
+                && s.redirect_port.is_none());
+            if has_client_keys && s.url.is_empty() {
                 return Err(ConfigError::McpServer(
                     name.clone(),
-                    "client_id/client_secret/redirect_port apply to `auth: oauth` servers only"
+                    "client_id/client_secret/redirect_port describe an OAuth login, and a stdio server has nothing to log in to"
+                        .to_owned(),
+                ));
+            }
+            if has_client_keys && s.auth == AuthMode::None {
+                return Err(ConfigError::McpServer(
+                    name.clone(),
+                    "client_id/client_secret/redirect_port describe an OAuth login, which `auth: none` rules out"
                         .to_owned(),
                 ));
             }

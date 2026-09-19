@@ -23,6 +23,7 @@ use crate::cmd::list::column_width;
 use crate::cmd::{ArgsError, CliError, RunError, SetupError, io};
 use crate::config::edit::{read_mcp_servers, write_mcp_servers};
 use crate::config::{Config, DEFAULT_AGENT, McpServerConfig};
+use crate::mcp::auth::LoginState;
 use crate::mcp::config::{AuthMode, ServerConfig};
 
 /// `iota mcp <action>`. `explicit` is `-c/--config`: with it there is exactly one file and `--scope` is refused.
@@ -181,8 +182,24 @@ fn run_add(
         describe(&entry),
         file.display()
     )?;
-    if entry.auth == AuthMode::Oauth {
-        writeln!(io.stdout, "Next: iota mcp login {}", add.name)?;
+    // What comes next for an HTTP server: a login, when the entry says so (`--auth oauth`, or a client id —
+    // which only a login uses); a login IF the server turns out to want one, when nothing says (`auto`); and
+    // nothing when the entry carries its own credential or forbids the login. `add` does not connect to
+    // find out, as Claude Code's and Codex's do not.
+    let added = server_config(&add.name, &entry);
+    if !added.url.is_empty() {
+        match added.effective_auth() {
+            AuthMode::None => {}
+            AuthMode::Oauth => writeln!(io.stdout, "Next: iota mcp login {}", add.name)?,
+            AuthMode::Auto if !entry.client_id.is_empty() => {
+                writeln!(io.stdout, "Next: iota mcp login {}", add.name)?;
+            }
+            AuthMode::Auto => writeln!(
+                io.stdout,
+                "if the server asks for a login: iota mcp login {}",
+                add.name
+            )?,
+        }
     }
     // The agent that a bare `iota` runs may select its servers by name; a new one it does not list will
     // never load, which is worth one line now rather than a silent absence later. Read from the merged
@@ -242,19 +259,20 @@ fn entry_of(add: &McpAddCmd) -> Result<McpServerConfig, ArgsError> {
                     .ok_or_else(|| ArgsError::McpBadHeader(raw.clone()))?;
                 entry.headers.insert(name.to_owned(), value.to_owned());
             }
+            // Not given = not written: the server says whether it wants a login (`AuthMode::Auto`).
             entry.auth = match add.auth {
                 Some(McpAuthArg::Oauth) => AuthMode::Oauth,
-                Some(McpAuthArg::None) | None => AuthMode::None,
+                Some(McpAuthArg::None) => AuthMode::None,
+                None => AuthMode::Auto,
             };
-            if entry.auth != AuthMode::Oauth
+            // The client flags describe the OAuth login, so they say "oauth" on their own — an entry that
+            // carries them is not also marked `auth: oauth`; only `--auth none` contradicts them.
+            if entry.auth == AuthMode::None
                 && (add.client_id.is_some()
                     || add.client_secret_env.is_some()
                     || add.redirect_port.is_some())
             {
-                return Err(ArgsError::McpAddFlag {
-                    flag: "--client-id",
-                    form: "--auth oauth",
-                });
+                return Err(ArgsError::McpClientFlagsWithNone);
             }
             if let Some(id) = &add.client_id {
                 entry.client_id.clone_from(id);
@@ -336,24 +354,43 @@ fn transport(entry: &McpServerConfig) -> &'static str {
     }
 }
 
-/// The auth column: static headers, OAuth with where its tokens stand, or nothing.
-fn auth_label(d: &Declared, env: &Env) -> String {
-    match d.entry.auth {
-        AuthMode::Oauth => format!("oauth: {}", login_state(d, env).as_str()),
-        AuthMode::None if !d.entry.headers.is_empty() => "header".to_owned(),
-        AuthMode::None => "none".to_owned(),
+/// The auth column's two parts: the mode word — `oauth`, `auto`, `header` (no login: the entry's own
+/// headers, an `Authorization` among them or `auth: none` beside them), `none` (that, or a stdio server,
+/// which has no such thing) — and the login state that goes with it: always for `oauth`; for `auto` only
+/// what a token file says (a listing does not connect, so an `auto` server nobody has logged in to is just
+/// `auto`); never for the other two.
+fn auth_view(d: &Declared, env: &Env) -> (&'static str, Option<LoginState>) {
+    if d.entry.url.is_empty() {
+        return ("none", None);
+    }
+    match server_config(&d.name, &d.entry).effective_auth() {
+        AuthMode::Oauth => ("oauth", Some(login_state(d, env))),
+        AuthMode::Auto => (
+            "auto",
+            Some(login_state(d, env)).filter(|s| *s != LoginState::NotLoggedIn),
+        ),
+        AuthMode::None if !d.entry.headers.is_empty() => ("header", None),
+        AuthMode::None => ("none", None),
     }
 }
 
-/// The token store of an OAuth server, over the URL as a run would expand it.
+/// The auth column as one word: `oauth: logged in`, `auto`, `auto: expired`, `header`, `none`.
+fn auth_label(d: &Declared, env: &Env) -> String {
+    match auth_view(d, env) {
+        (mode, Some(state)) => format!("{mode}: {}", state.as_str()),
+        (mode, None) => mode.to_owned(),
+    }
+}
+
+/// The token store of a server, over the URL as a run would expand it.
 fn token_store(d: &Declared, env: &Env) -> Option<crate::mcp::auth::TokenStore> {
     let expanded = crate::mcp::config::expand_server_config(&server_config(&d.name, &d.entry), env);
     crate::mcp::auth::TokenStore::for_server(&env.dirs, &d.name, &expanded.url)
 }
 
-/// Where an OAuth server's tokens stand (no home = nowhere to have stored them).
-fn login_state(d: &Declared, env: &Env) -> crate::mcp::auth::LoginState {
-    token_store(d, env).map_or(crate::mcp::auth::LoginState::NotLoggedIn, |s| s.status())
+/// Where a server's tokens stand (no home = nowhere to have stored them).
+fn login_state(d: &Declared, env: &Env) -> LoginState {
+    token_store(d, env).map_or(LoginState::NotLoggedIn, |s| s.status())
 }
 
 // ---------------------------------------------------------------- list
@@ -387,6 +424,7 @@ async fn run_list(
             .iter()
             .enumerate()
             .map(|(i, d)| {
+                let (auth, login) = auth_view(d, env);
                 let mut row = serde_json::json!({
                     "name": d.name,
                     "transport": transport(&d.entry),
@@ -402,12 +440,8 @@ async fn run_list(
                     "redirect_port": d.entry.redirect_port,
                     "redirect_uri": (!d.entry.client_id.is_empty())
                         .then(|| crate::mcp::config::redirect_uri(d.entry.redirect_port)),
-                    "auth": match d.entry.auth {
-                        AuthMode::Oauth => "oauth",
-                        AuthMode::None if !d.entry.headers.is_empty() => "header",
-                        AuthMode::None => "none",
-                    },
-                    "login": (d.entry.auth == AuthMode::Oauth).then(|| login_state(d, env).as_str()),
+                    "auth": auth,
+                    "login": login.map(LoginState::as_str),
                 });
                 if let Some(probes) = &probes
                     && let Some(status) = probes.get(i)
@@ -484,10 +518,14 @@ async fn probe(
     statuses
 }
 
-/// `connected (N tools)` or `failed: <first line of the error>`.
+/// `connected (N tools)`, `needs login: iota mcp login <name>` (an `auto` server the handshake found wants
+/// one — not a failure, a step not taken yet), or `failed: <first line of the error>`.
 fn probe_label(status: &crate::mcp::ServerStatus) -> String {
     match status.error() {
         None => format!("connected ({} tools)", status.tool_count),
+        Some(_) if status.auth == AuthMode::Auto && status.login_required => {
+            format!("needs login: iota mcp login {}", status.name)
+        }
         Some(err) => format!("failed: {}", err.split('\n').next().unwrap_or_default()),
     }
 }
@@ -566,23 +604,23 @@ fn run_get(
             crate::mcp::config::redirect_uri(d.entry.redirect_port)
         )?;
     }
-    match d.entry.auth {
-        AuthMode::Oauth => {
-            let state = login_state(d, env);
+    match auth_view(d, env) {
+        (mode, Some(state)) => {
             let path = token_store(d, env)
                 .map(|s| format!("; {}", s.path().display()))
                 .unwrap_or_default();
-            writeln!(io.stdout, "  auth: oauth ({}{path})", state.as_str())?;
+            writeln!(io.stdout, "  auth: {mode} ({}{path})", state.as_str())?;
         }
-        AuthMode::None => writeln!(io.stdout, "  auth: {}", auth_label(d, env))?,
+        (mode, None) => writeln!(io.stdout, "  auth: {mode}")?,
     }
     Ok(())
 }
 
 // ---------------------------------------------------------------- login / logout
 
-/// The declared OAuth server `name`, with its token store.
-fn oauth_server(
+/// The declared server `name` a login applies to — an HTTP entry that is not `auth: none`, declared or by
+/// its own `Authorization` header (`ServerConfig::login_refusal`) — with its token store.
+fn login_server(
     name: &str,
     explicit: Option<&Path>,
     env: &Env,
@@ -593,10 +631,15 @@ fn oauth_server(
         return Err(unknown(name, &declared).into());
     };
     let d = declared.remove(at);
-    if d.entry.auth != AuthMode::Oauth {
-        return Err(SetupError::McpNotOauth(name.to_owned()).into());
+    let declared_cfg = server_config(&d.name, &d.entry);
+    if let Some(reason) = declared_cfg.login_refusal() {
+        return Err(SetupError::McpNoLogin {
+            name: name.to_owned(),
+            reason,
+        }
+        .into());
     }
-    let expanded = crate::mcp::config::expand_server_config(&server_config(&d.name, &d.entry), env);
+    let expanded = crate::mcp::config::expand_server_config(&declared_cfg, env);
     let store = crate::mcp::auth::TokenStore::for_server(&env.dirs, &d.name, &expanded.url)
         .ok_or(SetupError::McpNoHomeForToken)?;
     Ok((d, store, expanded))
@@ -616,7 +659,7 @@ async fn run_login(
 ) -> Result<(), CliError> {
     use crate::mcp::auth::{Browser, LoginRequest, LoginStep, login, step_line};
 
-    let (_, store, expanded) = oauth_server(name, explicit, env)?;
+    let (_, store, expanded) = login_server(name, explicit, env)?;
     // `--client-id` beats the entry's; the entry's secret goes with the entry's id alone.
     let entry_secret = Some(expanded.client_secret.clone()).filter(|s| !s.is_empty());
     let (client_id, client_secret) = match client_id {
@@ -698,7 +741,7 @@ async fn run_logout(
     env: &Env,
     io: &mut io::Streams,
 ) -> Result<(), CliError> {
-    let (_, store, _) = oauth_server(name, explicit, env)?;
+    let (_, store, _) = login_server(name, explicit, env)?;
     let had = crate::mcp::auth::logout(&crate::llm::default_http_client(), &store)
         .await
         .map_err(|source| RunError::McpLogout {

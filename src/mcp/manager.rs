@@ -156,10 +156,17 @@ pub struct ServerStatus {
     /// wins, manager.go:303-335). A server listing the same tool twice is the realistic way to get one; the host
     /// turns each into a user-visible warning (DIVERGENCES X-29).
     pub duplicates: Vec<String>,
-    /// How the server is authenticated (`auth: oauth`, or nothing beyond its headers).
+    /// How the server is authenticated, as the run applies it ([`ServerConfig::effective_auth`]): `oauth`,
+    /// `none`, or `auto` — discovered.
     pub auth: AuthMode,
-    /// Where an OAuth server's tokens stand, read off the store when the snapshot is taken; `None` for every
-    /// other server.
+    /// Whether the server itself asked for a login: an `auto` connect the handshake answered 401/403, or a
+    /// logout that took its token away. What makes an `auto` server with no token file show a login state
+    /// (`not logged in`) instead of none at all.
+    pub login_required: bool,
+    /// Where the server's tokens stand, read off the store when the snapshot is taken: always for an `oauth`
+    /// server; for an `auto` one when a token file says (`logged in`, `expired`) or the server asked
+    /// (`login_required` → `not logged in`); `None` for a `none` server and an `auto` one nobody has heard
+    /// from.
     pub login: Option<LoginState>,
 }
 
@@ -321,7 +328,7 @@ impl Manager {
             .map(|cfg| ServerStatus {
                 name: cfg.name.clone(),
                 endpoint: endpoint_of(&expand_server_config(cfg, &opts.env)),
-                auth: cfg.auth,
+                auth: cfg.effective_auth(),
                 ..ServerStatus::default()
             })
             .collect();
@@ -453,29 +460,39 @@ impl Manager {
             .unwrap_or_default()
     }
 
-    /// The seeded status of server `i`, `Failed` with the error text.
+    /// The seeded status of server `i`, `Failed` with the error text; a `NotLoggedIn` is the server asking
+    /// for a login, which the status remembers.
     fn failed_status(&self, i: usize, err: &McpError) -> ServerStatus {
         let mut status = self.seed_status(i);
         status.state = ServerState::Failed(err.to_string());
+        status.login_required = matches!(err, McpError::NotLoggedIn(_));
         status
     }
 
-    /// Snapshot of every server's status (index-aligned with the configs). An OAuth server's `login` is read
-    /// off its token file here, so the `/mcp` panel's 500 ms refresh sees a login or logout as it happens.
+    /// Snapshot of every server's status (index-aligned with the configs). A server's `login` is read off
+    /// its token file here, so the `/mcp` panel's 500 ms refresh sees a login or logout as it happens: an
+    /// `oauth` server always has one; an `auto` server has one when the file says so, or — with no usable
+    /// file — when the server asked for a login (`login_required`); a `none` server never.
     pub fn servers(&self) -> Vec<ServerStatus> {
         let mut servers = read(&self.state).servers.clone();
         for (status, cfg) in servers.iter_mut().zip(&self.configs) {
-            if status.auth == AuthMode::Oauth {
-                status.login = Some(
-                    self.token_store(cfg)
-                        .map_or(LoginState::NotLoggedIn, |store| store.status()),
-                );
-            }
+            let stored = || {
+                self.token_store(cfg)
+                    .map_or(LoginState::NotLoggedIn, |store| store.status())
+            };
+            status.login = match status.auth {
+                AuthMode::Oauth => Some(stored()),
+                AuthMode::Auto => match stored() {
+                    LoginState::NotLoggedIn if !status.login_required => None,
+                    state => Some(state),
+                },
+                AuthMode::None => None,
+            };
         }
         servers
     }
 
-    /// The token store of an `auth: oauth` server (`None` without a home directory).
+    /// The token store of a server (`None` without a home directory).
     fn token_store(&self, cfg: &ServerConfig) -> Option<crate::mcp::auth::TokenStore> {
         let expanded = expand_server_config(cfg, &self.opts.env);
         crate::mcp::auth::TokenStore::for_server(&self.opts.env.dirs, &cfg.name, &expanded.url)
@@ -556,10 +573,8 @@ impl Manager {
         let cfg = self
             .config_of(name)
             .ok_or_else(|| format!("no MCP server named {name:?} in this run"))?;
-        if cfg.auth != AuthMode::Oauth {
-            return Err(format!(
-                "{name} is not an OAuth server (set `auth: oauth` on it, or add it with --auth oauth)"
-            ));
+        if let Some(reason) = cfg.login_refusal() {
+            return Err(format!("{name} {reason}"));
         }
         let expanded = expand_server_config(cfg, &self.opts.env);
         let store = self
@@ -596,14 +611,15 @@ impl Manager {
 
     /// `iota mcp logout`'s flow for server `name` from a run: the tokens are forgotten (revoked when the
     /// server allows), and the server's live session — which still holds the token — is taken down and left
-    /// in the "not logged in" state. `Ok(text)` is the line to show.
+    /// in the "not logged in" state (an `auto` server keeps showing that state: it had a login, so it asks
+    /// for one). `Ok(text)` is the line to show.
     pub async fn logout(&self, name: &str) -> Result<String, String> {
         let i = self
             .index_of(name)
             .ok_or_else(|| format!("no MCP server named {name:?} in this run"))?;
         let cfg = &self.configs[i];
-        if cfg.auth != AuthMode::Oauth {
-            return Err(format!("{name} is not an OAuth server"));
+        if let Some(reason) = cfg.login_refusal() {
+            return Err(format!("{name} {reason}"));
         }
         let store = self
             .token_store(cfg)
@@ -616,6 +632,7 @@ impl Manager {
             let mut st = write(&self.state);
             if let Some(slot) = st.servers.get_mut(i) {
                 slot.state = ServerState::Failed(crate::mcp::auth::not_logged_in(name));
+                slot.login_required = true;
                 slot.tools.clear();
                 slot.tool_count = 0;
                 slot.duplicates.clear();

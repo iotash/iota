@@ -198,9 +198,9 @@ pub enum McpAction {
         #[arg(long, value_name = "user|project")]
         scope: Option<McpScope>,
     },
-    /// Log in to an OAuth server: opens the browser, waits for it to come back
+    /// Log in to a server that wants OAuth: opens the browser, waits for it to come back
     Login {
-        /// The server name (an `auth: oauth` entry)
+        /// The server name (a --url entry that is not `auth: none`)
         name: String,
         /// Print the URL instead of opening the browser (a paste of the redirect URL still works)
         #[arg(long)]
@@ -236,11 +236,12 @@ pub struct McpAddCmd {
     /// A header for a --url server, as 'Name: value' (repeatable)
     #[arg(long = "header", value_name = "'Name: value'", action = clap::ArgAction::Append)]
     pub headers: Vec<String>,
-    /// How a --url server is authenticated: oauth (then `iota mcp login <name>`) or none
+    /// Force or forbid the OAuth login of a --url server: oauth (then `iota mcp login <name>`) or none;
+    /// absent, the server says (a 401 at the handshake asks for the login)
     #[arg(long, value_name = "oauth|none")]
     pub auth: Option<McpAuthArg>,
-    /// An OAuth client registered with the authorization server out of band (--auth oauth); absent, the
-    /// server registers one dynamically or takes iota's client id metadata document
+    /// An OAuth client registered with the authorization server out of band; absent, the server registers
+    /// one dynamically or takes iota's client id metadata document
     #[arg(long, value_name = "ID")]
     pub client_id: Option<String>,
     /// The environment variable holding that client's secret; written as `${env:VAR}`, never the value
@@ -289,12 +290,13 @@ pub enum McpListScope {
     All,
 }
 
-/// `--auth` on `iota mcp add --url`.
+/// `--auth` on `iota mcp add --url`: the two overrides of the discovered default (`auto` is what NOT giving
+/// the flag writes — nothing).
 #[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpAuthArg {
-    /// OAuth 2.1: `iota mcp login <name>` afterwards.
+    /// OAuth 2.1, forced: `iota mcp login <name>` afterwards, no bare attempt.
     Oauth,
-    /// The headers as written, nothing more (the default).
+    /// The headers as written, nothing more: a 401 is a failed connect, never a login prompt.
     None,
 }
 

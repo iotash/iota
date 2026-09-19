@@ -1,13 +1,18 @@
 //! The OAuth 2.1 chain against the mock authorization server (`tests/common/oauth_mock.rs`): login → the
 //! token file → a connect that carries the bearer → a refresh once the token has aged → a refresh the server
-//! forces with a 401 → logout (revocation) → the "not logged in" degradation of that ONE server.
+//! forces with a 401 → logout (revocation) → the "not logged in" degradation of that ONE server — and the
+//! discovered default (`auth` not written): the server's own 401 is what asks for the login.
 
+#[cfg(unix)]
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use iota::app::env::Env;
-use iota::mcp::auth::{Browser, CLIENT_METADATA_URL, LoginRequest, LoginStep, TokenStore, login};
 #[cfg(unix)]
-use iota::mcp::auth::{LoginState, logout};
+use iota::mcp::auth::logout;
+use iota::mcp::auth::{
+    Browser, CLIENT_METADATA_URL, LoginRequest, LoginState, LoginStep, TokenStore, login,
+};
 use iota::mcp::config::{AuthMode, ServerConfig};
 use iota::mcp::{Manager, ManagerOptions};
 #[cfg(unix)]
@@ -421,12 +426,12 @@ async fn manager_login_reconnects_and_logout_disconnects() {
     );
     assert_eq!(mock.state().registered.len(), 2);
 
-    // Not an OAuth server, or not in this run: the text says so.
+    // Nothing to log in to, or not in this run: the text says so.
     assert_eq!(
         m.login("plain", &mut |_| {}, &CancellationToken::new())
             .await
             .expect_err("plain has nothing to log in to"),
-        "plain is not an OAuth server (set `auth: oauth` on it, or add it with --auth oauth)"
+        "plain has nothing to log in to (a stdio server)"
     );
     assert_eq!(
         m.login("nope", &mut |_| {}, &CancellationToken::new())
@@ -564,7 +569,7 @@ async fn a_preregistered_client_logs_in_with_its_secret_and_no_scope() {
         .expect_err("nothing identifies the client");
     assert_eq!(
         err.to_string(),
-        "the authorization server offers no dynamic client registration and does not accept a client id metadata document, and no client id is configured: register a client with the server's operator and give it to iota — `iota mcp add <name> --url <url> --auth oauth --client-id <id> [--client-secret-env VAR]`, or `iota mcp login <name> --client-id <id>` for this login"
+        "the authorization server offers no dynamic client registration and does not accept a client id metadata document, and no client id is configured: register a client with the server's operator and give it to iota — `iota mcp add <name> --url <url> --client-id <id> [--client-secret-env VAR]`, or `iota mcp login <name> --client-id <id>` for this login"
     );
     assert!(mock.state().authorizations.is_empty());
 
@@ -751,4 +756,259 @@ async fn an_unexplained_access_denied_against_the_metadata_document_hints_at_log
         err.to_string(),
         "the authorization server refused: access_denied"
     );
+}
+
+/// `auth` not written — `auto`, the default — and the server says. (a) No token: the first connect's bare
+/// handshake is answered 401, which is "not logged in" with the way in named, and the status carries the
+/// login state from then on. (c) An entry that writes its own `Authorization` header is `none`: its 401 is a
+/// failed connect, never a login prompt — the credential written is the one to fix. (d) `auth: none`
+/// likewise. (e) `Manager::login` takes the undeclared entry and refuses the other two (and a stdio server).
+/// (b) After the login the connect is the OAuth one, the bearer reaches the server, and a fresh run with the
+/// token file goes straight to it — no bare attempt first.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_undeclared_auth_is_discovered_from_the_handshake() {
+    let mock = oauth_mock::start(3600).await;
+    let (dir, dirs) = temp_project(&[]);
+    let script = dir.path().join("browser.sh");
+    std::fs::write(&script, "#!/bin/sh\ncurl -sL \"$1\" >/dev/null 2>&1 &\n").expect("write");
+    let env =
+        Env::fixed(&[("BROWSER", &format!("sh {}", script.display()))]).with_dirs(dirs.clone());
+    let opts = ManagerOptions::new(reqwest::Client::new(), env);
+    let auto = ServerConfig {
+        name: "nb".to_owned(),
+        url: mock.mcp_url(),
+        ..ServerConfig::default()
+    };
+    assert_eq!(auto.auth, AuthMode::Auto, "not written is auto");
+    let keyed = ServerConfig {
+        name: "keyed".to_owned(),
+        url: mock.mcp_url(),
+        headers: BTreeMap::from([("Authorization".to_owned(), "Bearer bad".to_owned())]),
+        ..ServerConfig::default()
+    };
+    let off = ServerConfig {
+        name: "off".to_owned(),
+        url: mock.mcp_url(),
+        auth: AuthMode::None,
+        ..ServerConfig::default()
+    };
+    let m = Manager::new(vec![auto.clone(), keyed, off, plain_server()], opts.clone());
+    let statuses = m.connect_all(&CancellationToken::new()).await;
+
+    // (a) the 401 asked for a login: the text names the way in, the status shows the state.
+    assert_eq!(
+        statuses[0].error(),
+        Some("not logged in: run iota mcp login nb")
+    );
+    assert_eq!(statuses[0].auth, AuthMode::Auto);
+    assert!(statuses[0].login_required, "the server asked");
+    assert_eq!(statuses[0].login, Some(LoginState::NotLoggedIn));
+    // (c) the entry's own bearer went out as written and was refused: a connect failure, no login state.
+    assert_eq!(
+        statuses[1].auth,
+        AuthMode::None,
+        "an Authorization header makes auto none"
+    );
+    assert!(
+        statuses[1]
+            .error()
+            .is_some_and(|e| e.starts_with("connect failed: ")),
+        "{:?}",
+        statuses[1].state
+    );
+    assert!(!statuses[1].login_required);
+    assert_eq!(statuses[1].login, None);
+    // (d) `auth: none`: the same failure shape.
+    assert!(
+        statuses[2]
+            .error()
+            .is_some_and(|e| e.starts_with("connect failed: ")),
+        "{:?}",
+        statuses[2].state
+    );
+    assert_eq!(statuses[2].login, None);
+    assert!(statuses[3].connected(), "the stdio server is untouched");
+    let st = mock.state();
+    assert!(
+        st.bearers.contains(&Some("bad".to_owned())),
+        "the written header reached the server: {:?}",
+        st.bearers
+    );
+    assert!(
+        st.bearers.contains(&None),
+        "the auto and none entries sent no bearer: {:?}",
+        st.bearers
+    );
+    assert!(
+        st.authorizations.is_empty() && st.registered.is_empty(),
+        "nothing logged in by itself"
+    );
+
+    // (e) who may log in: the undeclared entry; not `none`, not a written Authorization, not stdio.
+    for (name, want) in [
+        (
+            "off",
+            "off is declared auth: none; drop that (or set auth: oauth) to log in",
+        ),
+        (
+            "keyed",
+            "keyed sends its own Authorization header, which a login would not replace; drop the header (or set auth: oauth) to log in",
+        ),
+        ("plain", "plain has nothing to log in to (a stdio server)"),
+    ] {
+        assert_eq!(
+            m.login(name, &mut |_| {}, &CancellationToken::new())
+                .await
+                .expect_err(name),
+            want
+        );
+        assert_eq!(m.logout(name).await.expect_err(name), want);
+    }
+    let status = m
+        .login("nb", &mut |_| {}, &CancellationToken::new())
+        .await
+        .expect("login through the browser script");
+    assert!(status.connected(), "{:?}", status.state);
+    assert_eq!(status.tools, ["echo"]);
+    assert_eq!(status.auth, AuthMode::Auto);
+    assert!(
+        !status.login_required,
+        "a connected server asks for nothing"
+    );
+    assert_eq!(m.servers()[0].login, Some(LoginState::LoggedIn));
+
+    // (b) the OAuth transport: the bearer is on the call.
+    let cx = RunCtx::new(CancellationToken::new());
+    let out = m
+        .call_tool(&cx, "mcp__nb__echo", JsonObject::new())
+        .await
+        .expect("call after login");
+    assert_eq!(out.text, "pong via at-1");
+    assert_eq!(mock.state().bearers.last(), Some(&Some("at-1".to_owned())));
+
+    // A fresh run with the token file present goes to the OAuth transport at once — every request from
+    // here carries the bearer, no bare handshake is tried first.
+    let before = mock.state().bearers.len();
+    let fresh = Manager::new(vec![auto], opts);
+    let statuses = fresh.connect_all(&CancellationToken::new()).await;
+    assert!(statuses[0].connected(), "{:?}", statuses[0].state);
+    assert_eq!(statuses[0].login, Some(LoginState::LoggedIn));
+    assert!(!statuses[0].login_required);
+    let st = mock.state();
+    assert!(
+        st.bearers.len() > before && st.bearers[before..].iter().all(Option::is_some),
+        "no bare request went out: {:?}",
+        &st.bearers[before..]
+    );
+    fresh.close().await;
+
+    // Logout from the run: the file goes, and the server keeps its login state — it had a login, so it
+    // asks for one — where an auto server nobody has heard from would show none.
+    let line = m.logout("nb").await.expect("logout");
+    assert!(line.starts_with("logged out of nb (forgot "), "{line}");
+    let after = &m.servers()[0];
+    assert_eq!(after.error(), Some("not logged in: run iota mcp login nb"));
+    assert!(after.login_required);
+    assert_eq!(after.login, Some(LoginState::NotLoggedIn));
+    m.close().await;
+}
+
+/// The handshake's other refusals ask for a login too, and only the undeclared entry hears them: a bare
+/// 401 or 403 with no `WWW-Authenticate` at all (which rmcp reports as an unexpected `HTTP 401 …` response
+/// rather than a challenge) is "not logged in" for `auto` and a failed connect for `auth: none`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bare_401_or_403_asks_for_a_login_too() {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+
+    let (_dir, dirs) = temp_project(&[]);
+    let opts = ManagerOptions::new(reqwest::Client::new(), Env::fixed(&[]).with_dirs(dirs));
+    for status in [401_u16, 403] {
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/mcp"))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(&server)
+            .await;
+        let url = format!("{}/mcp", server.uri());
+        let m = Manager::new(
+            vec![
+                ServerConfig {
+                    name: "auto".to_owned(),
+                    url: url.clone(),
+                    ..ServerConfig::default()
+                },
+                ServerConfig {
+                    name: "off".to_owned(),
+                    url,
+                    auth: AuthMode::None,
+                    ..ServerConfig::default()
+                },
+            ],
+            opts.clone(),
+        );
+        let statuses = m.connect_all(&CancellationToken::new()).await;
+        assert_eq!(
+            statuses[0].error(),
+            Some("not logged in: run iota mcp login auto"),
+            "{status}"
+        );
+        assert_eq!(statuses[0].login, Some(LoginState::NotLoggedIn), "{status}");
+        assert!(
+            statuses[1]
+                .error()
+                .is_some_and(|e| e.starts_with("connect failed: ")),
+            "{status}: {:?}",
+            statuses[1].state
+        );
+        assert_eq!(statuses[1].login, None, "{status}");
+        m.close().await;
+    }
+}
+
+/// A server that neither challenges nor publishes protected-resource metadata does not ask for a login, and
+/// `login` says so instead of guessing endpoints from the URL (rmcp's legacy fallback): the one failure a
+/// login against an `auto` entry adds, and it names the server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_that_never_challenges_does_not_ask_for_a_login() {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+
+    let server = MockServer::start().await;
+    // The endpoint answers a GET the way a streamable-HTTP server without SSE does; nothing else exists.
+    Mock::given(matchers::method("GET"))
+        .and(matchers::path("/mcp"))
+        .respond_with(ResponseTemplate::new(405))
+        .mount(&server)
+        .await;
+    let url = format!("{}/mcp", server.uri());
+    let (_dir, dirs) = temp_project(&[]);
+    let store = TokenStore::for_server(&dirs, "nb", &url).expect("a home");
+    let err = login(
+        LoginRequest {
+            name: "nb",
+            url: &url,
+            http: reqwest::Client::new(),
+            store: store.clone(),
+            browser: Browser::Print,
+            paste: None,
+            cancel: &CancellationToken::new(),
+            client_id: None,
+            client_secret: None,
+            redirect_port: None,
+        },
+        &mut |_| {},
+    )
+    .await
+    .expect_err("nothing to log in to");
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "nb does not ask for a login (no 401 challenge, no protected resource metadata at {url})"
+        )
+    );
+    assert!(
+        matches!(&err, iota::mcp::auth::LoginError::NoMetadata { name, .. } if name == "nb"),
+        "{err:?}"
+    );
+    assert!(!store.path().exists(), "nothing is stored");
 }

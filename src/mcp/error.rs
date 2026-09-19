@@ -21,9 +21,11 @@ pub enum McpError {
     /// `tools/list` failed after a successful handshake (the session is closed first).
     #[error("list tools: {0}")]
     ListTools(String),
-    /// An `auth: oauth` server with no usable token: none stored, or one the server rejected and the store
-    /// could not refresh. The text carries the way back in (`iota mcp login <name>`) — the same single
-    /// server degrades, nothing else in the run is touched (brain page `mcp-graceful-degradation`).
+    /// A server that wants a login nobody has done: an `auth: oauth` server with no usable token (none
+    /// stored, or one the server rejected and the store could not refresh), or an `auto` server whose bare
+    /// handshake the server answered 401/403. The text carries the way back in (`iota mcp login <name>`) —
+    /// the same single server degrades, nothing else in the run is touched (brain page
+    /// `mcp-graceful-degradation`).
     #[error("{}", crate::mcp::auth::not_logged_in(.0))]
     NotLoggedIn(String),
     /// The per-server connect deadline elapsed; displayed in Go duration form (`30s`, `300ms`).

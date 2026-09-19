@@ -72,6 +72,12 @@ pub enum ArgsError {
         /// The form it belongs to: `--url` or `command`.
         form: &'static str,
     },
+    /// `--client-id` / `--client-secret-env` / `--redirect-port` beside `--auth none`: the flags describe an
+    /// OAuth login, and `none` forbids one. (Without `--auth` they stand on their own: the login is `auto`.)
+    #[error(
+        "mcp add: --client-id, --client-secret-env and --redirect-port describe an OAuth login, which --auth none rules out"
+    )]
+    McpClientFlagsWithNone,
     /// `--client-secret-env` without `--client-id`, or a variable name that is not one.
     #[error(
         "mcp add: --client-secret-env wants the NAME of an environment variable, beside --client-id; got {0:?}"
@@ -206,11 +212,15 @@ pub enum SetupError {
         /// The scope's file.
         file: String,
     },
-    /// `iota mcp login|logout <name>` on a server that is not `auth: oauth`.
-    #[error(
-        "mcp: {0:?} is not an OAuth server (add it with --auth oauth, or set `auth: oauth` on it)"
-    )]
-    McpNotOauth(String),
+    /// `iota mcp login|logout <name>` on a server no login applies to: a stdio server, `auth: none`, or an
+    /// entry that sends its own `Authorization` header (`ServerConfig::login_refusal` says which).
+    #[error("mcp: {name:?} {reason}")]
+    McpNoLogin {
+        /// The name as typed.
+        name: String,
+        /// The sentence after the name.
+        reason: &'static str,
+    },
     /// `iota mcp login|logout` with no home directory to keep the token file in.
     #[error("$HOME is not defined: there is nowhere to keep the token")]
     McpNoHomeForToken,

@@ -20,7 +20,10 @@ use crate::repl::run::Repl;
 /// The refresh cadence of the panel (the one `/tools` uses).
 const REFRESH_EVERY_MS: u64 = 500;
 
-/// The panel's rows: `/tools`'s MCP tab, plus one `auth:` line per OAuth server.
+/// The panel's rows: `/tools`'s MCP tab, plus one `auth: oauth (<state>)` line per server that has a login
+/// state — an `auth: oauth` server always, an `auto` one once a token file or the server's own 401 has said
+/// it logs in (`ServerStatus::login`). The word is `oauth` either way: it names what the server wants, not
+/// how the entry was written.
 pub(crate) fn mcp_panel_lines(dispatch: &dyn Dispatcher, servers: &[ServerStatus]) -> Vec<String> {
     let mut lines = mcp_status_lines(dispatch, servers);
     // The MCP tab prints its servers in order, each headed by a bold name row; the auth line goes under
@@ -190,6 +193,55 @@ mod tests {
             !without
                 .iter()
                 .any(|l| l.contains("auth:") || l.contains("/mcp login"))
+        );
+    }
+
+    /// An `auto` server the handshake found wants a login (`login_required`, `login: NotLoggedIn`) gets the
+    /// same row and the same hint as a declared OAuth server — the way in is the same; an `auto` server
+    /// nobody has heard from (`login: None`) gets neither.
+    #[test]
+    fn an_auto_server_the_server_sent_to_login_reads_like_an_oauth_one() {
+        let d = DeferStatus::new(&[], &[]);
+        let asked = ServerStatus {
+            name: "nb".to_owned(),
+            endpoint: "https://nb.example/api/mcp".to_owned(),
+            state: ServerState::Failed("not logged in: run iota mcp login nb".to_owned()),
+            auth: AuthMode::Auto,
+            login_required: true,
+            login: Some(LoginState::NotLoggedIn),
+            ..ServerStatus::default()
+        };
+        let plain: Vec<String> = mcp_panel_lines(&d, std::slice::from_ref(&asked))
+            .iter()
+            .map(|l| strip_sgr(l))
+            .collect();
+        assert_eq!(
+            plain,
+            vec![
+                "1 server(s) · 0 tool(s)",
+                "nb  [disconnected]",
+                "  endpoint: https://nb.example/api/mcp",
+                "  auth: oauth (not logged in)",
+                "  tools: (none)",
+                "  error: not logged in: run iota mcp login nb",
+                "/mcp login <name> · /mcp logout <name>",
+            ]
+        );
+        let unheard = ServerStatus {
+            state: ServerState::Connecting,
+            login_required: false,
+            login: None,
+            ..asked
+        };
+        let plain: Vec<String> = mcp_panel_lines(&d, &[unheard])
+            .iter()
+            .map(|l| strip_sgr(l))
+            .collect();
+        assert!(
+            !plain
+                .iter()
+                .any(|l| l.contains("auth:") || l.contains("/mcp login")),
+            "{plain:?}"
         );
     }
 }
