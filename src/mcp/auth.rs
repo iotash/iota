@@ -501,7 +501,7 @@ pub async fn login(
         return Err(LoginError::NoClientIdentity);
     };
     report(LoginStep::Identity { client_id, source });
-    let auth_url = manager.get_authorization_url(&scope_refs).await?;
+    let auth_url = with_consent_prompt(&manager.get_authorization_url(&scope_refs).await?);
     report(LoginStep::AuthUrl(auth_url.clone()));
     if let Browser::Open(env) = &browser
         && let Err(e) = open_url(env, &auth_url)
@@ -539,6 +539,24 @@ fn push(scopes: &mut Vec<String>, scope: &str) {
             scopes.push(s.to_owned());
         }
     }
+}
+
+/// `auth_url` with `prompt=consent` on it (OIDC Core §3.1.2.1), unless it names a prompt already.
+///
+/// Every login asks for the consent prompt, as Claude Code does: a Logto tenant answered a request without
+/// it with a bare `access_denied` right after the consent page (namebeta, 2026-09-19 — the one parameter
+/// that separated a refused login from a working one), and a server that does not know the parameter
+/// ignores it (RFC 6749 §3.1). rmcp's builder has no extra-parameter hook, so the URL it returns is edited;
+/// the state and the PKCE verifier rmcp stored are keyed by the `state` value, which the edit keeps.
+fn with_consent_prompt(auth_url: &str) -> String {
+    let Ok(mut url) = reqwest::Url::parse(auth_url) else {
+        return auth_url.to_owned();
+    };
+    if url.query_pairs().any(|(k, _)| k == "prompt") {
+        return auth_url.to_owned();
+    }
+    url.query_pairs_mut().append_pair("prompt", "consent");
+    url.into()
 }
 
 /// Whether the authorization server takes a URL as the client id (`client_id_metadata_document_supported`).
@@ -749,14 +767,14 @@ async fn serve_callback(
             &format!("Login failed: {text}"),
         )
         .await;
-        // Seen on a Logto Cloud tenant: consent given, then `access_denied` with no reason, because the
-        // tenant still ran application access control against a URL-shaped client id (Logto's main branch
-        // guards that path; deployments lag). The way around is a third-party application registered there.
+        // Seen on a Logto Cloud tenant: consent given, then `access_denied` with no reason. Once that was the
+        // missing `prompt=consent` (sent since); what is left is a tenant that takes no URL-shaped client id
+        // at all (Logto's "dynamic app" is off) — the way around is an application registered there.
         let hint = (error == "access_denied"
             && description.is_none()
             && source == "client id metadata document")
             .then_some(
-                "the server gave no reason; if this is a Logto tenant and the client is a client id metadata document, the tenant's Logto may still apply application access control to it — register iota as a third-party application and add it with --client-id",
+                "the server gave no reason; if this is a Logto tenant, it may not accept a client id metadata document (its dynamic app setting is off) — ask its operator, or register iota as a third-party application there and add it with --client-id",
             );
         return Err(LoginError::Refused {
             error,
@@ -995,6 +1013,22 @@ mod tests {
             super::html_escape("a <b> & \"c\""),
             "a &lt;b&gt; &amp; &quot;c&quot;"
         );
+    }
+
+    #[test]
+    fn the_authorization_url_asks_for_the_consent_prompt() {
+        use super::with_consent_prompt;
+        assert_eq!(
+            with_consent_prompt("https://as.example/auth?response_type=code&state=s%2Fx"),
+            "https://as.example/auth?response_type=code&state=s%2Fx&prompt=consent"
+        );
+        // A prompt the builder named is kept as it is.
+        assert_eq!(
+            with_consent_prompt("https://as.example/auth?prompt=login&state=s"),
+            "https://as.example/auth?prompt=login&state=s"
+        );
+        // Not a URL: handed back untouched rather than lost.
+        assert_eq!(with_consent_prompt("not a url"), "not a url");
     }
 
     #[test]

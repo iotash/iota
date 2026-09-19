@@ -42,6 +42,12 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   `error_description` and `error_uri`, logs the whole callback under `IOTA_LOG`,
   and — for a bare `access_denied` against the metadata document — says what a
   Logto tenant does about it.
+- **The authorization request asks for the consent prompt.** Every `login` sends
+  `prompt=consent` (OpenID Connect Core §3.1.2.1), as Claude Code does; a server
+  that does not know the parameter ignores it (RFC 6749 §3.1). A Logto tenant
+  answered a request without it with a bare `access_denied` right after the
+  consent page — the whole of why `iota mcp login` failed against namebeta while
+  Claude Code worked.
 
 ## 0.3.0 - 2026-09-18
 

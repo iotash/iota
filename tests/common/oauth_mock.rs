@@ -91,6 +91,8 @@ pub struct AuthorizeRequest {
     pub scope: Option<String>,
     pub resource: Option<String>,
     pub redirect_uri: String,
+    /// The `prompt` asked for, when any.
+    pub prompt: Option<String>,
 }
 
 /// One `/token` request as the mock saw it.
@@ -413,6 +415,7 @@ fn authorize(req: &Request, _: &str, state: &Arc<Mutex<State>>) -> ResponseTempl
         scope: query(req, "scope"),
         resource: query(req, "resource"),
         redirect_uri: redirect.clone(),
+        prompt: query(req, "prompt"),
     });
     if query(req, "code_challenge_method").as_deref() != Some("S256")
         || query(req, "response_type").as_deref() != Some("code")

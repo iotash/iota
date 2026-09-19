@@ -157,6 +157,7 @@ async fn login_stores_connects_refreshes_and_logs_out() {
     // names (its metadata, its challenge) plus `offline_access` because the server lists it.
     assert_eq!(st.authorizations.len(), 1);
     assert_eq!(st.authorizations[0].client_id, "cid-1");
+    assert_eq!(st.authorizations[0].prompt.as_deref(), Some("consent"));
     assert_eq!(
         st.authorizations[0].scope.as_deref(),
         Some("mcp offline_access")
@@ -496,6 +497,7 @@ async fn a_metadata_document_identifies_the_client_when_nobody_registers() {
     assert!(st.registered.is_empty(), "no registration was attempted");
     assert_eq!(st.authorizations.len(), 1);
     assert_eq!(st.authorizations[0].client_id, CLIENT_METADATA_URL);
+    assert_eq!(st.authorizations[0].prompt.as_deref(), Some("consent"));
     assert_eq!(
         st.authorizations[0].scope.as_deref(),
         Some("mcp offline_access")
@@ -584,6 +586,7 @@ async fn a_preregistered_client_logs_in_with_its_secret_and_no_scope() {
     let st = mock.state();
     assert_eq!(st.authorizations.len(), 1);
     assert_eq!(st.authorizations[0].client_id, "pre-1");
+    assert_eq!(st.authorizations[0].prompt.as_deref(), Some("consent"));
     assert_eq!(
         st.authorizations[0].redirect_uri,
         "http://127.0.0.1:17801/callback"
@@ -724,7 +727,7 @@ async fn an_unexplained_access_denied_against_the_metadata_document_hints_at_log
         .expect_err("refused");
     assert_eq!(
         err.to_string(),
-        "the authorization server refused: access_denied; the server gave no reason; if this is a Logto tenant and the client is a client id metadata document, the tenant's Logto may still apply application access control to it — register iota as a third-party application and add it with --client-id"
+        "the authorization server refused: access_denied; the server gave no reason; if this is a Logto tenant, it may not accept a client id metadata document (its dynamic app setting is off) — ask its operator, or register iota as a third-party application there and add it with --client-id"
     );
     // The same refusal against a pre-registered client carries no such hint.
     let mock = oauth_mock::start_with(oauth_mock::Options {
