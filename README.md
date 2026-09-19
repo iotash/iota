@@ -351,7 +351,9 @@ mcp_servers:
     url: https://mcp.example.com/sse
     headers:
       Authorization: "Bearer ${env:GITHUB_TOKEN}"
-    # auth: oauth           # a server you log in to instead (`iota mcp login github`)
+    # auth: oauth           # force the OAuth login (`iota mcp login github`); `none` forbids it.
+    #                       # Absent, the server says: a 401 at the handshake asks for the login.
+    #                       # An Authorization header of your own, as above, counts as `none`.
     # Deferred loading: instead of advertising every schema on every request,
     # only a search_tools entry is advertised and the model loads this
     # server's tools on demand — the value IS the group's one-line summary
@@ -615,8 +617,9 @@ away rather than a hand-written entry:
 iota mcp add fs -- npx -y @modelcontextprotocol/server-filesystem /tmp   # stdio
 iota mcp add fs -e LOG_LEVEL=info --defer "file tools" -- npx -y server-fs
 iota mcp add gh --url https://mcp.example.com/mcp --header 'Authorization: Bearer ${env:GH_TOKEN}'
-iota mcp add nb --url https://namebeta.com/api/mcp --auth oauth   # then: iota mcp login nb
-iota mcp add nb --url … --auth oauth --client-id <id> --client-secret-env NB_SECRET [--redirect-port 17801]   # a client registered out of band
+iota mcp add nb --url https://namebeta.com/api/mcp   # OAuth is discovered: `iota mcp login nb` once the server asks
+iota mcp add nb --url … --client-id <id> --client-secret-env NB_SECRET [--redirect-port 17801]   # a client registered out of band
+iota mcp add nb --url … --auth oauth|none            # force the login, or forbid it
 iota mcp list [--scope user|project|all] [--json] [--probe]      # name, transport, file, auth
 iota mcp get nb                                                  # the entry as declared
 iota mcp remove nb [--scope user|project]
@@ -636,16 +639,25 @@ comments, blank lines, the order of the layers. What they do not keep is a
 comment *inside* the block: the entries are serialised afresh each time. Adding
 a name that already exists in the target file is refused; remove it first.
 
-**OAuth 2.1.** A server with `auth: oauth` (or added with `--auth oauth`)
-is one you log in to:
+**OAuth 2.1.** `auth` need not be written. A run connects to an HTTP server
+bare, and a 401 at the handshake is the server asking for a login: that one
+server is reported as `not logged in: run iota mcp login <name>` and left out of
+the run while every other server loads. Once you have logged in, the token file
+for its name makes every later connect an OAuth one. `auth: oauth` (`--auth
+oauth`) forces the login — no bare attempt; `auth: none` forbids it — a 401 is
+then a failed connect, and `login` refuses the entry; and an entry that writes
+its own `Authorization` header counts as `none`, because that credential is the
+one to fix. `iota mcp list` shows `auto` for an entry that says nothing
+(`auto: logged in` once it has a token file), `oauth: …` or `none`.
 
 ```bash
 iota mcp login nb            # opens the browser; --no-browser prints the URL instead
 iota mcp logout nb           # forgets the tokens (revoking them when the server allows)
 ```
 
-`login` discovers the authorization server (RFC 9728 → RFC 8414), identifies
-iota to it — the entry's `client_id` (a client registered out of band, its
+`login` discovers the authorization server (RFC 9728 → RFC 8414; a server that
+neither challenges nor publishes protected-resource metadata "does not ask for a
+login", and `login` says so), identifies iota to it — the entry's `client_id` (a client registered out of band, its
 secret as `client_secret: ${env:VAR}`; `--client-id` on `login` overrides), else
 dynamic registration when the server offers it (RFC 7591), else iota's
 [Client ID Metadata Document](https://iota.sh/oauth/client.json) when the
@@ -925,7 +937,7 @@ and an unknown `/word` is sent as a normal message.
 | `/export [file]` | Export the conversation (saved sessions: the full on-disk log, so compaction never hides older rounds) to a single self-contained HTML file — the default — or Markdown with a `.md`/`.markdown` extension. With no argument, a selector picks the format and the filename is generated from the session title. Never overwrites an existing file. |
 | `/status` | Show provider, model, context usage, and last-turn token counts |
 | `/tools` | Tabbed read-only view of the model's capabilities: a "Tools" tab (every built-in and MCP tool with its source) and an "MCP" tab (server status, endpoints, and tools) |
-| `/mcp [login\|logout <name>]` | Bare `/mcp` opens the MCP panel — every server's state, endpoint, tools and, for an `auth: oauth` server, whether it is logged in. `/mcp login <name>` runs the OAuth flow (browser, loopback callback; ESC gives up) and reconnects the server; `/mcp logout <name>` forgets its tokens and takes it down. |
+| `/mcp [login\|logout <name>]` | Bare `/mcp` opens the MCP panel — every server's state, endpoint, tools and, for a server that logs in (`auth: oauth`, or one whose 401 asked for it), whether it is logged in. `/mcp login <name>` runs the OAuth flow (browser, loopback callback; ESC gives up) and reconnects the server; `/mcp logout <name>` forgets its tokens and takes it down. |
 | `/debug [on\|off]` | Request inspector. `/debug on` / `/debug off` toggle recording of API round trips (a `debug` marker appears in the status row while on); bare `/debug` opens the two-tab console — "Messages" (newest first, drill into a request/response pair) and the "Verbose" switch. Recording is off by default and MCP traffic is not recorded. |
 | `/skills [name [instructions]]` | Bare `/skills` lists discovered agent skills — name, source (project/user), description, and any invalid skills that were skipped. `/skills <name>` runs one: its instructions (plus anything you add after the name) are sent as the message. Agent mode only; every discovered skill also shows up as a completion row. |
 

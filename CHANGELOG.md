@@ -15,7 +15,7 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   header or environment value must be a `${…}` reference), or the `-c` file
   alone. The block is machine-managed — every other byte of the file stays as you
   wrote it; a comment inside the block is not kept.
-- **MCP OAuth 2.1.** A server with `auth: oauth` is one you log in to: `iota mcp
+- **MCP OAuth 2.1.** A server that asks for a login is one you log in to: `iota mcp
   login <name>` discovers the authorization server, registers a client when the
   server offers it, opens the browser (`$BROWSER`, else the platform opener; the
   URL is printed either way, and a pasted redirect URL works without a browser)
@@ -48,6 +48,23 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   answered a request without it with a bare `access_denied` right after the
   consent page — the whole of why `iota mcp login` failed against namebeta while
   Claude Code worked.
+- **`auth` is discovered.** An HTTP server no longer has to be declared `auth:
+  oauth` to be logged in to. Not written (the default) is `auto`: a run connects
+  bare, and a 401 at the handshake is the server asking for a login — that
+  server is reported as `not logged in: run iota mcp login <name>` and left out of
+  the run, not "connect failed"; once a token file exists for its name, every
+  later connect is an OAuth one. `auth: oauth` forces the login (no bare
+  attempt), `auth: none` forbids it (a 401 is a failed connect; `login` refuses the
+  entry), and an entry that writes its own `Authorization` header counts as
+  `none` — that credential is the one to fix, as Claude Code has it. `iota mcp
+  add --url` writes no `auth:` unless `--auth oauth|none` says so, and
+  `--client-id`/`--client-secret-env`/`--redirect-port` no longer need `--auth
+  oauth`; the line after an add is `Next: iota mcp login <name>` when the entry
+  says there is a login, `if the server asks for a login: …` when it does not
+  say. `list`/`get` show `auto` (`auto: logged in` with a token file), `--probe`
+  labels a server that asked `needs login: iota mcp login <name>`, and `login`
+  against a server that neither challenges nor publishes protected-resource
+  metadata says it "does not ask for a login".
 
 ## 0.3.0 - 2026-09-18
 

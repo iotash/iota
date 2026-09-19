@@ -2,11 +2,15 @@
 # L4 scenario 23 (brain page `mcp-cli-and-oauth`) — the OAuth round trip from inside the chat.
 #
 # The chain itself is pinned in-process (`tests/mcp/oauth.rs`) and through the CLI
-# (`tests/cmd/mcp.rs`); what was left to a human is what it LOOKS like in the REPL:
+# (`tests/cmd/mcp.rs`); what was left to a human is what it LOOKS like in the REPL. The entry
+# says nothing about `auth` (the default, `auto`): the server's own 401 at the first handshake
+# is what asks for the login, and the token file is what makes the reconnect an OAuth one.
 #
-#   23.1 the startup notice — an `auth: oauth` server with no token is ONE red line naming
-#        `/mcp login nb`, and the chat is usable (the other server, the model, the composer);
-#   23.2 the `/mcp` panel — the server reads `disconnected` with `auth: oauth (not logged in)`;
+#   23.1 the startup notice — a server whose handshake was answered 401, with no token, is ONE
+#        red line naming `/mcp login nb`, not the generic failure; the chat is usable (the
+#        other server, the model, the composer);
+#   23.2 the `/mcp` panel — the server reads `disconnected` with `auth: oauth (not logged in)`
+#        (the word names what the server wants, not how the entry was written);
 #   23.3 `/mcp login nb` — the URL lands in the transcript, `$BROWSER` (a script that follows
 #        the redirect with curl) brings the callback back, the token file appears, the server
 #        reconnects and its tool count is announced;
@@ -31,8 +35,7 @@ agents:
     models: [m, \"mock:*\"]
 mcp_servers:
   nb:
-    url: http://127.0.0.1:$IOTA_OAUTH_PORT/mcp
-    auth: oauth"
+    url: http://127.0.0.1:$IOTA_OAUTH_PORT/mcp"
 export CONFIG_BODY
 
 # The browser stand-in: follows the authorization URL through the 302 to iota's loopback
@@ -48,6 +51,8 @@ start_provider openai 100 30 || finish
 settle || bad "startup never settled"
 
 # ------------------------------------------------------------------ 23.1: the startup notice
+# Nothing declared the login: the 401 the bare handshake got is what makes this "not logged in"
+# rather than "failed: connect failed: …".
 wait_all '⚠ MCP nb not logged in: /mcp login nb' || bad "the not-logged-in notice never appeared"
 check_once "the notice is one line" '⚠ MCP nb not logged in: /mcp login nb'
 check "…and not the generic failure shape" "$(count_all 'MCP nb failed')" 0
@@ -93,6 +98,7 @@ wait_gone 'auth: oauth (logged in)' || bad "ESC did not close the panel"
 settle || bad "frame never settled after the second panel"
 
 # ------------------------------------------------------------------ 23.5: /mcp logout nb
+# The token is gone, and the row stays: the server had a login, so it asks for one.
 type_ '/mcp logout nb'
 key Enter
 wait_all 'logged out of nb (forgot' || bad "the logout never completed"
