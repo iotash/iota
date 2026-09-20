@@ -1079,3 +1079,52 @@ async fn a_server_that_never_challenges_does_not_ask_for_a_login() {
     );
     assert!(!store.path().exists(), "nothing is stored");
 }
+
+/// The probe `iota mcp add --url` makes before it decides on a login — one bare `initialize`, three
+/// answers: the mock's 401 with its challenge is `NeedsLogin` (and the mock saw a request with no bearer,
+/// nothing at `/authorize`); an endpoint that takes the bare request is `Open`; a port nobody listens on,
+/// and a path that is not an MCP endpoint, are `Unknown` with the reason in a few words.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_probe_reads_the_endpoints_answer() {
+    use iota::mcp::auth::{Challenge, Probe, probe};
+
+    let http = reqwest::Client::new();
+    let mock = oauth_mock::start(3600).await;
+    assert_eq!(
+        probe(&http, &mock.mcp_url()).await,
+        Probe::NeedsLogin(Challenge {
+            resource_metadata: Some(format!(
+                "{}/.well-known/oauth-protected-resource/mcp",
+                mock.base()
+            )),
+            scope: Some("mcp".to_owned()),
+        })
+    );
+    let seen = mock.state();
+    assert_eq!(seen.bearers, [None], "one request, no credential on it");
+    assert!(seen.authorizations.is_empty(), "a probe starts no login");
+
+    let open = oauth_mock::start_with(oauth_mock::Options {
+        open: true,
+        ..oauth_mock::Options::default()
+    })
+    .await;
+    assert_eq!(probe(&http, &open.mcp_url()).await, Probe::Open);
+    assert_eq!(open.state().bearers, [None]);
+
+    let Probe::Unknown(why) = probe(&http, "http://127.0.0.1:1/mcp").await else {
+        panic!("a closed port is not an answer")
+    };
+    assert!(
+        !why.is_empty() && !why.starts_with("error sending request"),
+        "the cause, not reqwest's wrapper: {why}"
+    );
+    assert_eq!(
+        probe(&http, &format!("{}/nowhere", mock.base())).await,
+        Probe::Unknown("HTTP 404 Not Found".to_owned())
+    );
+    assert_eq!(
+        probe(&http, "not a url").await,
+        Probe::Unknown("not a URL".to_owned())
+    );
+}

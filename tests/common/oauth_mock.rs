@@ -13,16 +13,17 @@
 //! | `GET /authorize` | records the PKCE challenge, redirects (302) to `redirect_uri?code=…&state=…` |
 //! | `POST /token` | `authorization_code` (S256 verified) → `at-1`/`rt-1`; `refresh_token` → the next pair |
 //! | `POST /revoke` | RFC 7009: records the token |
-//! | `POST /mcp` | the MCP server (initialize, tools/list with `echo`, tools/call) behind a bearer check |
-//! | `GET /mcp` | 401 with the `WWW-Authenticate` challenge (unauthenticated), 405 (authenticated) |
+//! | `POST /mcp` | the MCP server (initialize, tools/list with `echo`, tools/call) behind a bearer check — or, with `open`, in front of none |
+//! | `GET /mcp` | 401 with the `WWW-Authenticate` challenge (unauthenticated), 405 (authenticated, or `open`) |
 //!
 //! A token stops being accepted when it is revoked; an unknown or revoked refresh token is
 //! `invalid_grant`.
 //!
 //! [`Options`] select how the client identifies itself (dynamic registration, iota's Client ID Metadata
 //! Document, or a client registered out of band with an optional secret), whether the resource names scopes,
-//! and where the authorization server lives (`as_path`: `""`, or `/oidc` — a path-appended OIDC discovery
-//! document, the shape Logto serves).
+//! where the authorization server lives (`as_path`: `""`, or `/oidc` — a path-appended OIDC discovery
+//! document, the shape Logto serves), and whether the MCP endpoint wants a token at all (`open`: a server
+//! `iota mcp add` probes and finds nothing to log in to).
 
 #![allow(dead_code)]
 
@@ -74,6 +75,9 @@ pub struct Options {
     pub token_scope: &'static str,
     /// When set, `/token` answers every refresh with this error instead of a token.
     pub refresh_error: Option<&'static str>,
+    /// Whether the MCP endpoint answers a request with no bearer token too (a server with no login; what
+    /// `iota mcp add`'s probe reads as `Open`). Every OAuth endpoint is still there, unused.
+    pub open: bool,
 }
 
 impl Default for Options {
@@ -86,6 +90,7 @@ impl Default for Options {
             as_path: "",
             token_scope: "mcp",
             refresh_error: None,
+            open: false,
         }
     }
 }
@@ -133,6 +138,8 @@ pub struct State {
     token_scope: &'static str,
     /// What `/token` answers a refresh with, when it refuses them.
     refresh_error: Option<&'static str>,
+    /// Whether the MCP endpoint takes a request with no token.
+    open: bool,
     /// Every bearer token presented to `POST /mcp`, in order.
     pub bearers: Vec<Option<String>>,
     /// Every `grant_type` presented to `/token`, in order.
@@ -185,6 +192,7 @@ impl OauthMock {
             as_path: st.as_path,
             token_scope: st.token_scope,
             refresh_error: st.refresh_error,
+            open: st.open,
             bearers: st.bearers.clone(),
             grants: st.grants.clone(),
             revoked: st.revoked.clone(),
@@ -236,6 +244,7 @@ pub async fn start_with(options: Options) -> OauthMock {
         as_path: options.as_path,
         token_scope: options.token_scope,
         refresh_error: options.refresh_error,
+        open: options.open,
         ..State::default()
     }));
     let base = server.uri();
@@ -664,9 +673,10 @@ fn challenge(base: &str, state: &State) -> ResponseTemplate {
 fn mcp_get(req: &Request, base: &str, state: &Arc<Mutex<State>>) -> ResponseTemplate {
     let token = bearer(req);
     let guard = lock(state);
-    let ok = token
-        .as_ref()
-        .is_some_and(|t| guard.valid_access.contains(t));
+    let ok = guard.open
+        || token
+            .as_ref()
+            .is_some_and(|t| guard.valid_access.contains(t));
     if ok {
         ResponseTemplate::new(405)
     } else {
@@ -679,9 +689,10 @@ fn mcp_post(req: &Request, base: &str, state: &Arc<Mutex<State>>) -> ResponseTem
     let ok = {
         let mut guard = lock(state);
         guard.bearers.push(token.clone());
-        token
-            .as_ref()
-            .is_some_and(|t| guard.valid_access.contains(t))
+        guard.open
+            || token
+                .as_ref()
+                .is_some_and(|t| guard.valid_access.contains(t))
     };
     if !ok {
         return challenge(base, &lock(state));

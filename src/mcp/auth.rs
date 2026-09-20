@@ -318,6 +318,116 @@ pub async fn runtime_manager(
     Ok(Some(manager))
 }
 
+// ---------------------------------------------------------------- the probe
+
+/// How long [`probe`] gives the endpoint to answer.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// What one bare `initialize` at the endpoint said — the question `iota mcp add --url` asks once the entry
+/// is written, before it decides whether to start the login (Codex's `mcp add` asks the same one).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Probe {
+    /// 401 or 403: the server wants a credential the request did not carry. Its `WWW-Authenticate`
+    /// challenge, parsed, when it sent one.
+    NeedsLogin(Challenge),
+    /// 2xx: the server answered a request with no credential at all.
+    Open,
+    /// Nothing that says either way: not reachable, no answer in time, or another status. The text says
+    /// which, in a few words.
+    Unknown(String),
+}
+
+/// The parts of a 401/403's `WWW-Authenticate` challenge a login goes on (RFC 9728 §5.1); both empty when
+/// the server sent a bare status.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Challenge {
+    /// `resource_metadata="…"`: where the protected-resource metadata is, resolved against the endpoint.
+    pub resource_metadata: Option<String>,
+    /// `scope="…"`: what the resource asks for.
+    pub scope: Option<String>,
+}
+
+/// One `initialize` POST at `url` with no credential — the streamable-HTTP shape (JSON in, JSON or an
+/// event stream out, the protocol version in its header), ten seconds to answer. Never an error: a probe
+/// that could not be made is [`Probe::Unknown`].
+pub async fn probe(http: &reqwest::Client, url: &str) -> Probe {
+    let Ok(base) = reqwest::Url::parse(url) else {
+        return Probe::Unknown("not a URL".to_owned());
+    };
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": PROBE_PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": {"name": CLIENT_NAME, "version": env!("CARGO_PKG_VERSION")},
+        },
+    });
+    let response = http
+        .post(base.clone())
+        .header(
+            reqwest::header::ACCEPT,
+            "application/json, text/event-stream",
+        )
+        .header("MCP-Protocol-Version", PROBE_PROTOCOL_VERSION)
+        .json(&body)
+        .timeout(PROBE_TIMEOUT)
+        .send()
+        .await;
+    match response {
+        Ok(response) => {
+            let challenges: Vec<String> = response
+                .headers()
+                .get_all(reqwest::header::WWW_AUTHENTICATE)
+                .iter()
+                .filter_map(|v| v.to_str().ok().map(str::to_owned))
+                .collect();
+            classify(response.status(), &challenges, &base)
+        }
+        Err(e) => Probe::Unknown(probe_failure(&e)),
+    }
+}
+
+/// [`Probe`] of a status and the challenges beside it: 401/403 is the ask, with the first challenge that
+/// says anything; 2xx is an answer; the rest says nothing about a login.
+fn classify(status: reqwest::StatusCode, challenges: &[String], base: &reqwest::Url) -> Probe {
+    match status {
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+            let challenge = challenges
+                .iter()
+                .map(|header| {
+                    let params = WWWAuthenticateParams::parse(header, base);
+                    Challenge {
+                        resource_metadata: params.resource_metadata_url.map(String::from),
+                        scope: params.scope,
+                    }
+                })
+                .find(|c| *c != Challenge::default())
+                .unwrap_or_default();
+            Probe::NeedsLogin(challenge)
+        }
+        s if s.is_success() => Probe::Open,
+        s => Probe::Unknown(format!("HTTP {s}")),
+    }
+}
+
+/// A few words on why the request got no answer: the deadline, else the innermost cause (the OS's
+/// `Connection refused (os error 61)`, the resolver's sentence) rather than reqwest's wrapper around it.
+fn probe_failure(e: &reqwest::Error) -> String {
+    if e.is_timeout() {
+        return format!(
+            "no answer within {}",
+            crate::text::go_duration(PROBE_TIMEOUT)
+        );
+    }
+    let mut cause: &dyn std::error::Error = e;
+    while let Some(next) = cause.source() {
+        cause = next;
+    }
+    cause.to_string()
+}
+
 // ---------------------------------------------------------------- login
 
 /// How the authorization URL reaches the user.
@@ -1038,6 +1148,65 @@ mod tests {
         assert_eq!(
             super::html_escape("a <b> & \"c\""),
             "a &lt;b&gt; &amp; &quot;c&quot;"
+        );
+    }
+
+    #[test]
+    fn a_probe_is_read_off_the_status_and_the_challenge() {
+        use super::{Challenge, Probe, classify};
+        let base = reqwest::Url::parse("https://mcp.example/api/mcp").unwrap();
+        let status = |code: u16| reqwest::StatusCode::from_u16(code).unwrap();
+        // 401 with the challenge: the ask, and where the login starts from.
+        assert_eq!(
+            classify(
+                status(401),
+                &["Bearer resource_metadata=\"https://mcp.example/.well-known/oauth-protected-resource/api/mcp\", scope=\"mcp\"".to_owned()],
+                &base
+            ),
+            Probe::NeedsLogin(Challenge {
+                resource_metadata: Some(
+                    "https://mcp.example/.well-known/oauth-protected-resource/api/mcp".to_owned()
+                ),
+                scope: Some("mcp".to_owned()),
+            })
+        );
+        // A relative pointer is resolved against the endpoint; the first challenge that says anything wins.
+        assert_eq!(
+            classify(
+                status(401),
+                &[
+                    "Basic realm=\"x\"".to_owned(),
+                    "Bearer resource_metadata=\"/.well-known/oauth-protected-resource\"".to_owned()
+                ],
+                &base
+            ),
+            Probe::NeedsLogin(Challenge {
+                resource_metadata: Some(
+                    "https://mcp.example/.well-known/oauth-protected-resource".to_owned()
+                ),
+                scope: None,
+            })
+        );
+        // A bare 403 is the ask too, with nothing to go on.
+        assert_eq!(
+            classify(status(403), &[], &base),
+            Probe::NeedsLogin(Challenge::default())
+        );
+        // Any success is an open server.
+        assert_eq!(classify(status(200), &[], &base), Probe::Open);
+        assert_eq!(classify(status(202), &[], &base), Probe::Open);
+        // Everything else says nothing about a login.
+        assert_eq!(
+            classify(status(404), &[], &base),
+            Probe::Unknown("HTTP 404 Not Found".to_owned())
+        );
+        assert_eq!(
+            classify(status(500), &[], &base),
+            Probe::Unknown("HTTP 500 Internal Server Error".to_owned())
+        );
+        assert_eq!(
+            classify(status(302), &[], &base),
+            Probe::Unknown("HTTP 302 Found".to_owned())
         );
     }
 
