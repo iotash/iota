@@ -3,6 +3,22 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## Unreleased
+
+### Changed
+
+- **`add --url` logs in on the spot.** Once the entry is written, `iota mcp add
+  <name> --url <url>` probes the endpoint with one bare `initialize`: a 401
+  starts the OAuth login right there — the same steps as `iota mcp login`, with
+  `--no-browser` printing the URL instead of opening the browser — a server that
+  answers without a credential is left at `Added`, and one that could not be
+  reached keeps the `iota mcp login <name>` hint. `--auth oauth` or `--client-id`
+  skips the probe and logs in at once; `--auth none`, an entry with its own
+  `Authorization` header, and the new `--no-login` (a script, CI, a machine
+  without a desktop) write the entry and stop. A login that fails keeps the
+  entry, prints `Retry with: iota mcp login <name>` and exits non-zero. `login`
+  stays for logging in again, or for the login `--no-login` skipped (X-41).
+
 ## 0.3.1 - 2026-09-20
 
 MCP servers are managed from the command line and logged in to. `iota mcp

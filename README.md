@@ -617,7 +617,7 @@ away rather than a hand-written entry:
 iota mcp add fs -- npx -y @modelcontextprotocol/server-filesystem /tmp   # stdio
 iota mcp add fs -e LOG_LEVEL=info --defer "file tools" -- npx -y server-fs
 iota mcp add gh --url https://mcp.example.com/mcp --header 'Authorization: Bearer ${env:GH_TOKEN}'
-iota mcp add nb --url https://namebeta.com/api/mcp   # OAuth is discovered: `iota mcp login nb` once the server asks
+iota mcp add nb --url https://namebeta.com/api/mcp   # probes the endpoint; a 401 starts the login right here (--no-login: write and stop)
 iota mcp add nb --url … --client-id <id> --client-secret-env NB_SECRET [--redirect-port 17801]   # a client registered out of band
 iota mcp add nb --url … --auth oauth|none            # force the login, or forbid it
 iota mcp list [--scope user|project|all] [--json] [--probe]      # name, transport, file, auth
@@ -650,8 +650,20 @@ its own `Authorization` header counts as `none`, because that credential is the
 one to fix. `iota mcp list` shows `auto` for an entry that says nothing
 (`auto: logged in` once it has a token file), `oauth: …` or `none`.
 
+**`add --url` logs in on the spot.** Once the entry is written, `add` probes
+the endpoint with one bare `initialize`: a 401 starts the OAuth login right
+there — the same steps as `iota mcp login`, `--no-browser` printing the URL
+instead of opening the browser — a server that answers without a credential is
+left at `Added`, and one that could not be reached keeps the `iota mcp login
+<name>` hint. `--auth oauth` or `--client-id` skips the probe and logs in at
+once; `--auth none`, an entry with its own `Authorization` header, and
+`--no-login` (a script, CI, a machine without a desktop) write the entry and
+stop. A login that fails keeps the entry, prints `Retry with: iota mcp login
+<name>` and exits non-zero. `login` is for logging in again, or for the login
+`--no-login` skipped.
+
 ```bash
-iota mcp login nb            # opens the browser; --no-browser prints the URL instead
+iota mcp login nb            # logs in again, or the login `add --no-login` skipped; --no-browser prints the URL
 iota mcp logout nb           # forgets the tokens (revoking them when the server allows)
 ```
 
