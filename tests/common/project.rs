@@ -28,6 +28,7 @@ pub fn temp_project(files: &[(&str, &str)]) -> (TempDir, HostDirs) {
         cwd: Some(root),
         temp: std::env::temp_dir(),
         cache: Some(cache),
+        exe: None,
     };
     (dir, dirs)
 }

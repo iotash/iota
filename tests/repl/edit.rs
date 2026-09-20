@@ -140,6 +140,7 @@ impl Fixture {
             provider: Box::new(image_provider(self.seen.clone())),
             title_provider: None,
             system: String::new(),
+            harness: String::new(),
             imported_history: self.history.clone(),
             dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),

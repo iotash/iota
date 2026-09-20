@@ -209,8 +209,8 @@ pub(crate) struct Extras {
 
 impl Extras {
     /// Appends every tab this provider can act on to `panels`, after the Model tab
-    /// (chat/run.go:544-630). `window` is the live context budget; `history`/`overlay`
-    /// feed the read-only System tab.
+    /// (chat/run.go:544-630). `window` is the live context budget; `history`, `harness` and
+    /// `overlay` feed the read-only System tab.
     ///
     /// The capability probes run in Go's order — Context, Effort, Temperature, Image,
     /// Aspect/Size/Negative, JSON edits, System — because the recorded indices ARE the
@@ -219,6 +219,7 @@ impl Extras {
         provider: &mut dyn Provider,
         window: u64,
         history: &[crate::provider::model::Message],
+        harness: &str,
         overlay: &str,
         panels: &mut Vec<Panel>,
     ) -> Self {
@@ -347,7 +348,8 @@ impl Extras {
         // Last tab, and read-only: the knobs above keep their positions (and their
         // recorded indices) while this one just shows what the chat is running under.
         if !image_provider
-            && let Some(system) = crate::repl::systemtab::system_prompt_panel(history, overlay)
+            && let Some(system) =
+                crate::repl::systemtab::system_prompt_panel(history, harness, overlay)
         {
             panels.push(system);
         }
@@ -726,7 +728,7 @@ mod assemble_tests {
 
     fn tabs(p: &mut dyn Provider, history: &[Message], overlay: &str) -> (Vec<Panel>, Extras) {
         let mut panels = Vec::new();
-        let ex = Extras::assemble(p, 128_000, history, overlay, &mut panels);
+        let ex = Extras::assemble(p, 128_000, history, "", overlay, &mut panels);
         (panels, ex)
     }
 

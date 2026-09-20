@@ -69,6 +69,9 @@ pub struct RunRequest {
     pub message: String,
     /// The system prompt (`""` = none).
     pub system: String,
+    /// The built-in harness prompt (`""` = none: an agent without tools). Composed ahead of the system
+    /// message on every send, never persisted (`agents::harness`).
+    pub harness: String,
     /// Agent-mode overlay settings.
     pub agent: AgentOptions,
     /// Imported history (a resumed session's view). A NON-EMPTY history WINS over `system` (chat/run.go:69-74):
@@ -112,7 +115,7 @@ pub fn install_tool_searcher(provider: &mut dyn Provider, dispatch: &Arc<dyn Dis
 /// `as_tool_provider && !tools.is_empty()` → `execute_with_tools` → images = `outcome.images` (the TERMINATING
 /// round's `RoundResult.images`, chat.go:112 `saveImagesQuiet(tp)` after the loop);
 /// else `provider.chat(compose_send_history(..))` + `rec.observe(usage, vec![])` → images = `result.images`
-/// (chat.go:122).
+/// (chat.go:122). Both sends carry `req.harness` ahead of the system message.
 /// BOTH paths then run `save_images_for_turn(&images, images_dir)`; images saved only when `images_dir` is Some
 /// (children pass None — POLICY I-06).
 /// The final assistant message (Go's `amsg`, chat/run.go:1092-1095) is then pushed onto the history with the
@@ -158,6 +161,7 @@ pub async fn run_once(
                     tp,
                     dispatch,
                     tools,
+                    harness: &req.harness,
                     overlay: &overlay,
                     max_turns,
                 },
@@ -168,7 +172,7 @@ pub async fn run_once(
         }
         _ => {
             // The UNARY chat, not the streaming call (chat.go:116).
-            let send = compose_send_history(&messages, &overlay);
+            let send = compose_send_history(&messages, &req.harness, &overlay);
             let result = provider.chat(&cx.cancel, &send).await?;
             // The tool loop records each of its rounds; this path has exactly one (chat.go:121).
             host.rec.observe(result.usage, Vec::new());
@@ -242,7 +246,7 @@ async fn wait_for_job(host: &QuietHost, cx: &RunCtx) -> Option<crate::shell::job
 
 /// What one quiet tool loop is given besides the history it extends and the host it reports to
 /// (chat.go:284): the run context, the provider, the dispatcher, the tool set advertised on round 0,
-/// the overlay text composed into every request, and the loop-local `--max-turns` cap.
+/// the harness and overlay texts composed into every request, and the loop-local `--max-turns` cap.
 pub struct TurnParams<'a> {
     /// The run's cancellation token and turn budget.
     pub cx: &'a RunCtx,
@@ -252,6 +256,8 @@ pub struct TurnParams<'a> {
     pub dispatch: Arc<dyn Dispatcher>,
     /// The tool set advertised on round 0 — possibly empty; from round 1 the dispatcher is re-asked.
     pub tools: Vec<ToolDef>,
+    /// The built-in harness prompt composed ahead of the system message on every request (`""` = none).
+    pub harness: &'a str,
     /// The AGENTS.md/skills overlay composed into every request (`""` = none).
     pub overlay: &'a str,
     /// The loop-local cap; `None` = no cap (the run's budget in `cx` still applies).
@@ -275,6 +281,7 @@ pub async fn execute_with_tools(
         tp,
         dispatch,
         mut tools,
+        harness,
         overlay,
         max_turns,
     } = params;
@@ -311,7 +318,7 @@ pub async fn execute_with_tools(
         }
 
         let round = {
-            let send = compose_send_history(history, overlay);
+            let send = compose_send_history(history, harness, overlay);
             let mut sink = NullSink;
             tp.stream_chat_with_tools(&cx.cancel, &send, &tools, &mut sink)
                 .await?

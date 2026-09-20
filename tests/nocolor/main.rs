@@ -140,6 +140,7 @@ fn params(ui: &Arc<ScriptedUi>, store: &SessionStore) -> RunParams {
         provider: Box::new(scripted()),
         title_provider: None,
         system: String::new(),
+        harness: String::new(),
         imported_history: Vec::new(),
         dispatch: Arc::new(Editor),
         jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),

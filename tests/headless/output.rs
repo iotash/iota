@@ -97,6 +97,7 @@ async fn run_json(
         OnceOptions {
             message: "go".to_owned(),
             system: String::new(),
+            harness: String::new(),
             agent: AgentOptions::default(),
             max_turns: None,
             format: OutputFormat::Json,
@@ -196,6 +197,7 @@ async fn once_in_text_mode_prints_the_bare_reply() {
         OnceOptions {
             message: "go".to_owned(),
             system: String::new(),
+            harness: String::new(),
             agent: AgentOptions::default(),
             max_turns: None,
             format: OutputFormat::Text,
@@ -219,6 +221,7 @@ async fn once_in_text_mode_prints_the_bare_reply() {
         OnceOptions {
             message: "go".to_owned(),
             system: String::new(),
+            harness: String::new(),
             agent: AgentOptions::default(),
             max_turns: None,
             format: OutputFormat::Text,
@@ -247,6 +250,7 @@ async fn once_in_text_mode_prints_the_bare_reply() {
         OnceOptions {
             message: "go".to_owned(),
             system: "be brief".to_owned(),
+            harness: String::new(),
             agent: AgentOptions::default(),
             max_turns: None,
             format: OutputFormat::Text,
@@ -260,6 +264,88 @@ async fn once_in_text_mode_prints_the_bare_reply() {
     .expect("run failed");
     assert_eq!(String::from_utf8(buf).unwrap(), "final answer\n");
     assert_eq!(p.calls(), 1);
+}
+
+/// The built-in harness goes out ahead of the system message on BOTH headless paths — the unary chat and the
+/// tool loop — and is never part of the turn's delta, so a resumed session persists only the user's prompt
+/// (brain page `harness-prompt`).
+#[tokio::test]
+async fn once_sends_the_harness_ahead_of_the_system_prompt_and_persists_neither() {
+    let opts = |harness: &str| OnceOptions {
+        message: "go".to_owned(),
+        system: "be brief".to_owned(),
+        harness: harness.to_owned(),
+        agent: AgentOptions::default(),
+        max_turns: None,
+        format: OutputFormat::Text,
+        images_dir: None,
+        history: Vec::new(),
+        jobs: None,
+    };
+    let harness = "You run inside iota.\n\n<environment>\nproject root: /p\n</environment>";
+
+    // The unary path (no tools advertised).
+    let mut p = FakeProvider::reporting(0, None);
+    let mut buf: Vec<u8> = Vec::new();
+    let out = once(
+        CancellationToken::new(),
+        &mut p,
+        Arc::new(StaticDispatcher::new(&[])),
+        opts(harness),
+        &mut buf,
+    )
+    .await
+    .expect("run failed");
+    let sent = p.send(0);
+    assert_eq!(sent[0].role(), iota::provider::model::Role::System);
+    assert_eq!(
+        sent[0].content,
+        format!("{harness}\n\n<instructions>\nbe brief\n</instructions>")
+    );
+    assert_eq!(sent[1].content, "go");
+    // The delta a session would persist carries the user's prompt alone.
+    assert_eq!(out.delta[0].content, "be brief");
+    assert!(
+        out.delta
+            .iter()
+            .all(|m| !m.content.contains("<environment>")),
+        "the harness leaked into the delta: {:?}",
+        out.delta
+    );
+
+    // The tool loop (tools advertised): the same system message on every round.
+    let mut p = FakeProvider::reporting(2, None);
+    let mut buf: Vec<u8> = Vec::new();
+    once(
+        CancellationToken::new(),
+        &mut p,
+        Arc::new(StaticDispatcher::new(&["noop"])),
+        opts(harness),
+        &mut buf,
+    )
+    .await
+    .expect("run failed");
+    for (n, sent) in p.sent().iter().enumerate() {
+        assert!(
+            sent[0].content.starts_with(harness),
+            "round {n} was sent without the harness: {:?}",
+            sent[0].content
+        );
+    }
+
+    // No harness (an agent without tools): today's bytes exactly — the bare system message.
+    let mut p = FakeProvider::reporting(0, None);
+    let mut buf: Vec<u8> = Vec::new();
+    once(
+        CancellationToken::new(),
+        &mut p,
+        Arc::new(StaticDispatcher::new(&[])),
+        opts(""),
+        &mut buf,
+    )
+    .await
+    .expect("run failed");
+    assert_eq!(p.send(0)[0].content, "be brief");
 }
 
 #[test]
@@ -355,6 +441,7 @@ async fn cancelled_run_reports_interrupted_in_json() {
         OnceOptions {
             message: "go".to_owned(),
             system: String::new(),
+            harness: String::new(),
             agent: AgentOptions::default(),
             max_turns: None,
             format: OutputFormat::Text,
@@ -484,6 +571,7 @@ fn save_image_names_and_modes() {
             OnceOptions {
                 message: "draw".to_owned(),
                 system: String::new(),
+                harness: String::new(),
                 agent: AgentOptions::default(),
                 max_turns: None,
                 format: OutputFormat::Text,

@@ -19,6 +19,8 @@ pub struct OnceOptions {
     pub message: String,
     /// The system prompt (`""` = none).
     pub system: String,
+    /// The built-in harness prompt (`""` = none), sent ahead of `system` and never persisted.
+    pub harness: String,
     /// Agent-mode overlay settings.
     pub agent: AgentOptions,
     /// `--max-turns`; `None` = unlimited (no `TurnBudget`).
@@ -74,6 +76,7 @@ pub async fn once(
     let req = RunRequest {
         message: opts.message,
         system: opts.system,
+        harness: opts.harness,
         agent: opts.agent,
         history: opts.history,
     };

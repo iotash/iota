@@ -89,11 +89,24 @@ impl Fixture {
         writer: SessionWriter,
         history: Vec<Message>,
     ) -> RunParams {
+        self.params_with_harness(provider, writer, history, "")
+    }
+
+    /// [`Fixture::params`] with the built-in harness prompt the binary would have composed for an agent
+    /// with tools (`agents::harness`).
+    fn params_with_harness(
+        &self,
+        provider: FakeProvider,
+        writer: SessionWriter,
+        history: Vec<Message>,
+        harness: &str,
+    ) -> RunParams {
         RunParams {
             ui: Arc::clone(&self.ui) as Arc<dyn Ui>,
             provider: Box::new(provider),
             title_provider: None,
             system: String::new(),
+            harness: harness.to_owned(),
             imported_history: history,
             dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
@@ -262,6 +275,57 @@ async fn model_shows_only_the_tabs_the_provider_has() {
         .await
         .expect("exit");
     assert_eq!(titles(&surfaces(&f.ui)[0]), ["Model"]);
+}
+
+/// The System tab shows the prompt AS SENT, and for an agent with tools that starts with the built-in
+/// harness: its lines come first, the user's prompt follows inside `<instructions>`, and a chat that set no
+/// prompt of its own still gets the tab — the harness alone is what goes out (brain page `harness-prompt`).
+#[tokio::test]
+async fn model_system_tab_carries_the_harness() {
+    let harness = "You run inside iota.\n\n<environment>\nproject root: /p\n</environment>";
+    let f = Fixture::new(vec![
+        input("/model"),
+        Reply::Tabbed(TabbedResult {
+            cancelled: true,
+            ..TabbedResult::default()
+        }),
+        Reply::Interrupted,
+    ]);
+    let (writer, _dir) = f.writer();
+    let history = vec![Message::system("Base prompt.")];
+    iota::repl::run(f.params_with_harness(text("a-model"), writer, history, harness))
+        .await
+        .expect("exit");
+    let s = &surfaces(&f.ui)[0];
+    let system = s
+        .panels
+        .iter()
+        .find(|p| p.title == "System")
+        .expect("the System tab");
+    assert_eq!(system.kind, PanelKind::View);
+    // harness (5 lines) + blank + `<instructions>` + the prompt + `</instructions>`.
+    assert_eq!(system.line_count, 9, "{system:?}");
+
+    // No prompt of the chat's own: the tab still exists and shows the harness alone.
+    let f = Fixture::new(vec![
+        input("/model"),
+        Reply::Tabbed(TabbedResult {
+            cancelled: true,
+            ..TabbedResult::default()
+        }),
+        Reply::Interrupted,
+    ]);
+    let (writer, _dir) = f.writer();
+    iota::repl::run(f.params_with_harness(text("a-model"), writer, Vec::new(), harness))
+        .await
+        .expect("exit");
+    let s = &surfaces(&f.ui)[0];
+    let system = s
+        .panels
+        .iter()
+        .find(|p| p.title == "System")
+        .expect("the System tab exists for the harness alone");
+    assert_eq!(system.line_count, 5, "{system:?}");
 }
 
 // ---------------------------------------------------------------------------

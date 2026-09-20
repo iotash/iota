@@ -1,10 +1,15 @@
-//! MCP config + dispatcher assembly (cmd/root.go:574-658). The MCP half arrives as a [`McpPart`] — the connected
-//! manager as a dispatcher plus its wire-prefix oracle — or `None` when no server is configured.
+//! MCP config + dispatcher assembly (cmd/root.go:574-658), and the built-in harness prompt's inputs. The MCP
+//! half arrives as a [`McpPart`] — the connected manager as a dispatcher plus its wire-prefix oracle — or `None`
+//! when no server is configured.
 
+use std::path::Path;
 use std::sync::Arc;
 
+use crate::agents::harness::{self, ConfigFiles, Environment};
+use crate::app::HostDirs;
 use crate::mcp::config::{ServerConfig, parse_mcp_flag};
-use crate::tool::{DeferredGroup, Registry, merge};
+use crate::tool::sets::{ToolsConfig, set_factory};
+use crate::tool::{DeferredGroup, Registry, merge, set_disabled};
 use crate::tool::{Dispatcher, PrefixOf, ToolEnv};
 
 use crate::cmd::CliError;
@@ -27,6 +32,50 @@ impl McpPart {
     }
 }
 use crate::config::{AgentConfig, Config, ModelConfig};
+
+/// The built-in toolsets an agent's `tools:` enables: every key naming a set, minus the ones written `false`
+/// — what decides whether the harness prompt is sent at all, and whether it carries `<iota_cli>` (brain page
+/// `harness-prompt`). An unknown key is the registry's warning, not a toolset.
+pub(crate) fn enabled_toolsets(tools: &ToolsConfig) -> Vec<String> {
+    tools
+        .keys()
+        .filter(|name| set_factory(name).is_some() && !set_disabled(tools, name))
+        .cloned()
+        .collect()
+}
+
+/// The `<environment>` block's facts, read once here at the binary edge: the project root the run resolved,
+/// the platform, the interpreter the `shell` set would run (`bash`, `pwsh`, `cmd`, or `(none)`), today's
+/// date, the binary, and the config files — the two tiers, or the one `-c` named.
+pub(crate) fn harness_environment(
+    dirs: &HostDirs,
+    project_root: Option<&Path>,
+    explicit_config: Option<&Path>,
+) -> Environment {
+    let shell = crate::shell::interp::resolve().map_or_else(
+        |_| "(none)".to_owned(),
+        |i| {
+            i.program
+                .file_stem()
+                .map_or_else(|| "(none)".to_owned(), |s| s.to_string_lossy().into_owned())
+        },
+    );
+    let configs = match explicit_config {
+        Some(path) => ConfigFiles::Explicit(path.to_path_buf()),
+        None => ConfigFiles::Tiers {
+            user: dirs.home.as_deref().and_then(Config::find_config_file),
+            project: dirs.cwd.as_deref().and_then(Config::find_config_file),
+        },
+    };
+    Environment {
+        project_root: project_root.map(Path::to_path_buf).unwrap_or_default(),
+        platform: harness::platform(),
+        shell,
+        date: harness::today(),
+        exe: dirs.exe.clone(),
+        configs,
+    }
+}
 
 /// Uses `crate::mcp::config` only. Config servers (`BTreeMap` order = sorted by name) then `--mcp`
 /// flags in order (`parse_mcp_flag` errors abort: `McpFlagError::EmptyFlag` → `ArgsError::McpFlag`). Deferred
@@ -337,6 +386,56 @@ mod tests {
             &mut |w| warnings.push(w),
         );
         assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+    }
+
+    /// The harness trigger reads the `tools:` keys: a set written `false` and a key naming no set do not
+    /// count, so `tools: {ask: false}` is "no tools" and a typo does not summon the harness.
+    #[test]
+    fn enabled_toolsets_are_the_keys_that_name_a_set_and_are_not_false() {
+        let raw = |yaml: &str| -> crate::tool::sets::ToolsConfig {
+            serde_norway::from_str(yaml).expect("yaml")
+        };
+        assert!(super::enabled_toolsets(&raw("{}")).is_empty());
+        assert!(super::enabled_toolsets(&raw("ask: false")).is_empty());
+        assert!(super::enabled_toolsets(&raw("nosuchset:")).is_empty());
+        assert_eq!(
+            super::enabled_toolsets(&raw("shell:\ncode: {auto_write: true}\nask: false")),
+            ["code", "shell"]
+        );
+    }
+
+    /// The environment probe names what it could not find rather than leaving a blank, and `-c` collapses
+    /// the two tiers into the one file.
+    #[test]
+    fn harness_environment_reads_the_edge() {
+        use crate::agents::harness::ConfigFiles;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).expect("home");
+        std::fs::write(home.join(".iota.yml"), "agents: {}\n").expect("user config");
+        let dirs = crate::app::HostDirs {
+            home: Some(home.clone()),
+            cwd: Some(dir.path().to_path_buf()),
+            ..crate::app::HostDirs::default()
+        };
+        let env = super::harness_environment(&dirs, Some(dir.path()), None);
+        assert_eq!(env.project_root, dir.path());
+        assert_eq!(
+            env.configs,
+            ConfigFiles::Tiers {
+                user: Some(home.join(".iota.yml")),
+                project: None,
+            }
+        );
+        assert!(env.exe.is_none(), "no exe was injected");
+        assert_eq!(env.platform, crate::agents::harness::platform());
+        assert!(!env.shell.is_empty());
+        assert_eq!(env.date.len(), 10);
+
+        let env =
+            super::harness_environment(&dirs, None, Some(std::path::Path::new("/tmp/f.yaml")));
+        assert_eq!(env.configs, ConfigFiles::Explicit("/tmp/f.yaml".into()));
+        assert_eq!(env.project_root, std::path::PathBuf::new());
     }
 
     /// Unknown toolset keys are warnings, never aborts, and the ask set is never enabled headlessly.

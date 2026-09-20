@@ -237,6 +237,7 @@ pub(crate) async fn run_interactive(
         interactor,
         jobs,
         agent,
+        harness,
     } = tools;
     let interactor = interactor.unwrap_or_else(crate::repl::Interactor::new);
     // root.go:284-286 — a pure argument error, and Go raises it before the terminal check, so it still wins.
@@ -341,6 +342,7 @@ pub(crate) async fn run_interactive(
         title_provider: wiring.title_provider,
         // root.go:341 — trimmed once, here, exactly like Go.
         system: settings.system.trim().to_owned(),
+        harness,
         imported_history: wiring.history,
         dispatch: Arc::clone(&wiring.dispatch),
         jobs,

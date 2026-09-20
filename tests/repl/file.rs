@@ -82,6 +82,7 @@ impl Fixture {
             ),
             title_provider: None,
             system: String::new(),
+            harness: String::new(),
             imported_history: Vec::new(),
             dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),

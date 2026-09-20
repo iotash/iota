@@ -93,6 +93,7 @@ impl Fixture {
             provider: Box::new(FakeProvider::new().with_kind(KIND).with_model("gpt-x")),
             title_provider: None,
             system: String::new(),
+            harness: String::new(),
             imported_history: history,
             dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),

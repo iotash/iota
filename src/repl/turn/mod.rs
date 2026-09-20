@@ -88,6 +88,8 @@ pub(crate) struct TurnCtx {
     pub(crate) dispatch: Arc<dyn Dispatcher>,
     /// The conversation's ONE approval gate.
     pub(crate) gate: Arc<ApprovalGate>,
+    /// The built-in harness prompt ahead of every send (`""` for an agent without tools).
+    pub(crate) harness: String,
     /// The agent-mode overlay woven into every send.
     pub(crate) overlay: String,
     /// Where generated images are saved (T-39).
@@ -390,7 +392,7 @@ pub(crate) async fn stream_turn(
 ) -> TurnReport {
     t.cx.tr.begin_round();
     let phases = Phases::new(Arc::clone(&t.cx.ui));
-    let send = compose_send_history(history, &t.cx.overlay);
+    let send = compose_send_history(history, &t.cx.harness, &t.cx.overlay);
     let res = TURN_PROGRESS
         .scope(Arc::clone(&t.progress), async {
             let _watch = watch_phases(&t.progress, phases.clone());

@@ -1,7 +1,9 @@
 //! AGENTS.md overlay (internal/agents/agentsmd.go): project root discovery, the AGENTS.md chain from the root down
 //! to the working directory, the one-shot `Overlay` (chain + skills catalog), and `compose_send_history`, which
-//! the chat loop calls on every round. Skills live in `skills`.
+//! the chat loop calls on every round. Skills live in `skills`; the built-in harness prompt that the same
+//! composition puts ahead of the user's system prompt lives in `harness`.
 
+pub mod harness;
 pub mod skills;
 
 use std::{
@@ -298,22 +300,64 @@ impl Overlay {
     }
 }
 
-/// "" → `Borrowed(history)`. `history[0]` is System → Owned clone with `content += "\n\n" + overlay`; else Owned
-/// with a synthetic leading System message. `history` is never mutated (agentsmd.go `ComposeSendHistory`).
-pub fn compose_send_history<'a>(history: &'a [Message], overlay: &str) -> Cow<'a, [Message]> {
-    if overlay.is_empty() {
-        return Cow::Borrowed(history);
+/// The system message as SENT, from its three segments: the built-in `harness`, the user's system prompt
+/// (`history[0]` when it is a System message, wrapped in `<instructions>`) and the agent-mode `overlay`.
+/// `history` is never mutated; only `history[0]` — the user's prompt — is ever persisted.
+///
+/// With no harness this is Go's `ComposeSendHistory` byte for byte (agentsmd.go): "" overlay →
+/// `Borrowed(history)`; `history[0]` is System → an owned copy with `content += "\n\n" + overlay`; else an
+/// owned copy with a synthetic leading System message. A chat-only agent — no `tools:`, no harness — therefore
+/// keeps today's bytes exactly.
+///
+/// With a harness the system message is rebuilt: harness, then `<instructions>\n{system}\n</instructions>`
+/// when the user wrote one, then the overlay, each segment a blank line apart — and a history with no System
+/// message at its head gets one synthesised, so the harness reaches the wire whether or not the user set a
+/// prompt.
+pub fn compose_send_history<'a>(
+    history: &'a [Message],
+    harness: &str,
+    overlay: &str,
+) -> Cow<'a, [Message]> {
+    let has_system = history.first().is_some_and(|m| m.role() == Role::System);
+    if harness.is_empty() {
+        if overlay.is_empty() {
+            return Cow::Borrowed(history);
+        }
+        if has_system {
+            let mut out = history.to_vec();
+            if let Some(system) = out.first_mut() {
+                system.content.push_str("\n\n");
+                system.content.push_str(overlay);
+            }
+            return Cow::Owned(out);
+        }
+        let mut out = Vec::with_capacity(history.len() + 1);
+        out.push(Message::system(overlay));
+        out.extend_from_slice(history);
+        return Cow::Owned(out);
     }
-    if history.first().is_some_and(|m| m.role() == Role::System) {
+    let mut content = String::from(harness);
+    if let Some(system) = history
+        .first()
+        .filter(|m| has_system && !m.content.is_empty())
+    {
+        content.push_str("\n\n<instructions>\n");
+        content.push_str(&system.content);
+        content.push_str("\n</instructions>");
+    }
+    if !overlay.is_empty() {
+        content.push_str("\n\n");
+        content.push_str(overlay);
+    }
+    if has_system {
         let mut out = history.to_vec();
         if let Some(system) = out.first_mut() {
-            system.content.push_str("\n\n");
-            system.content.push_str(overlay);
+            system.content = content;
         }
         return Cow::Owned(out);
     }
     let mut out = Vec::with_capacity(history.len() + 1);
-    out.push(Message::system(overlay));
+    out.push(Message::system(content));
     out.extend_from_slice(history);
     Cow::Owned(out)
 }
@@ -489,7 +533,7 @@ mod tests {
         let history = vec![Message::system("sys"), Message::user("hi")];
 
         // Empty overlay: the exact same slice, no copy (agent off = today's bytes).
-        let out = compose_send_history(&history, "");
+        let out = compose_send_history(&history, "", "");
         assert!(matches!(out, Cow::Borrowed(_)), "empty overlay must borrow");
         assert!(
             std::ptr::eq(out.as_ptr(), history.as_ptr()),
@@ -498,7 +542,7 @@ mod tests {
         assert_eq!(out.len(), history.len());
 
         // Overlay appends to the existing system message on a copy.
-        let out = compose_send_history(&history, "OVERLAY");
+        let out = compose_send_history(&history, "", "OVERLAY");
         assert!(matches!(out, Cow::Owned(_)));
         assert_eq!(out[0].content, "sys\n\nOVERLAY");
         assert_eq!(out.len(), 2);
@@ -510,13 +554,60 @@ mod tests {
 
         // No user system prompt: a synthetic system message is inserted.
         let no_sys = vec![Message::user("hi")];
-        let out = compose_send_history(&no_sys, "OVERLAY");
+        let out = compose_send_history(&no_sys, "", "OVERLAY");
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].role(), Role::System);
         assert_eq!(out[0].content, "OVERLAY");
         assert_eq!(out[1].content, "hi");
         assert_eq!(no_sys.len(), 1);
         assert_eq!(no_sys[0].role(), Role::User);
+    }
+
+    /// The three segments (brain page `harness-prompt`): the harness leads, the user's prompt rides inside
+    /// `<instructions>`, the overlay closes — and a history with no System message gets one synthesised so
+    /// the harness reaches the wire. Nothing is written back into `history`.
+    #[test]
+    fn compose_send_history_puts_the_harness_first() {
+        let history = vec![Message::system("sys"), Message::user("hi")];
+
+        // Harness alone: the user's prompt is wrapped, no overlay segment.
+        let out = compose_send_history(&history, "HARNESS", "");
+        assert!(matches!(out, Cow::Owned(_)));
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].role(), Role::System);
+        assert_eq!(
+            out[0].content,
+            "HARNESS\n\n<instructions>\nsys\n</instructions>"
+        );
+        assert_eq!(out[1].content, "hi");
+        assert_eq!(
+            history[0].content, "sys",
+            "the harness leaked into the history"
+        );
+
+        // Harness + system + overlay, a blank line between each.
+        let out = compose_send_history(&history, "HARNESS", "OVERLAY");
+        assert_eq!(
+            out[0].content,
+            "HARNESS\n\n<instructions>\nsys\n</instructions>\n\nOVERLAY"
+        );
+
+        // No System message at the head: one is synthesised, the `<instructions>` segment left out.
+        let no_sys = vec![Message::user("hi")];
+        let out = compose_send_history(&no_sys, "HARNESS", "");
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].role(), Role::System);
+        assert_eq!(out[0].content, "HARNESS");
+        assert_eq!(out[1].content, "hi");
+        let out = compose_send_history(&no_sys, "HARNESS", "OVERLAY");
+        assert_eq!(out[0].content, "HARNESS\n\nOVERLAY");
+        assert_eq!(no_sys.len(), 1);
+
+        // An EMPTY user prompt (`-s ""`, the `-S` entry left blank) is no prompt: no empty block.
+        let blank = vec![Message::system(""), Message::user("hi")];
+        let out = compose_send_history(&blank, "HARNESS", "");
+        assert_eq!(out[0].content, "HARNESS");
+        assert_eq!(out.len(), 2);
     }
 
     // New: the lexical half of the chain search (agentsmd.go:59-71) — cumulative components root→cwd, and the

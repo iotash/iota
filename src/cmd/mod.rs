@@ -93,6 +93,9 @@ pub(crate) struct ToolAssembly {
     pub(crate) jobs: Arc<crate::shell::jobs::Jobs>,
     /// Agent-mode options.
     pub(crate) agent: AgentOptions,
+    /// The built-in harness prompt for this agent (`""` without `tools:`), composed once here for both
+    /// branches (`agents::harness`).
+    pub(crate) harness: String,
 }
 
 /// Process-level outcome mapping (main.rs): Ok → 0; `Err(RunError::Interrupted)` → 130; other Err → `Error: {e}` on
@@ -316,6 +319,14 @@ fn assemble_tools(
         tool_env.interactor = Some(Arc::clone(it) as Arc<dyn crate::tool::Interactor>);
     }
 
+    // The built-in harness prompt (brain page `harness-prompt`): an agent with `tools:` is told what it runs
+    // inside and where; with the `shell` set, how iota's own command line is driven from it. An agent without
+    // tools sends nothing — its bytes on the wire are exactly what they were.
+    let harness = crate::agents::harness::compose(
+        &assemble::harness_environment(dirs, project_root.as_deref(), inv.config.as_deref()),
+        &assemble::enabled_toolsets(&settings.resolved.agent.tools),
+    );
+
     Ok(ToolAssembly {
         mcp_configs,
         mcp_defers,
@@ -323,6 +334,7 @@ fn assemble_tools(
         interactor,
         jobs,
         agent,
+        harness,
     })
 }
 
@@ -366,6 +378,7 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         interactor: _,
         jobs,
         agent,
+        harness,
     } = tools;
     let RunContext {
         env, http, cancel, ..
@@ -449,6 +462,7 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
     let opts = OnceOptions {
         message,
         system: settings.system,
+        harness,
         agent,
         max_turns: settings.max_turns,
         format,

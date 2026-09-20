@@ -63,7 +63,7 @@ pub(crate) async fn tool_loop(
         // The send is composed ONCE per round: a retried attempt re-issues the SAME
         // request, so the rounds that already completed — and their side effects — stay
         // exactly where they are (chat/run.go:1418-1423).
-        let send = crate::agents::compose_send_history(history, &t.cx.overlay);
+        let send = crate::agents::compose_send_history(history, &t.cx.harness, &t.cx.overlay);
         let mut partial = String::new();
         let mut partial_reasoning = String::new();
         let round = retry_round(

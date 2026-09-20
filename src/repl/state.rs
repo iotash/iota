@@ -54,6 +54,9 @@ pub(crate) struct Conversation {
     /// The auto-compaction snooze watermark: the projected usage at which the user last
     /// said "Not now" (0 = never asked). Cleared by any successful compaction.
     pub(crate) compact_declined: u64,
+    /// The built-in harness prompt ahead of every send (`""` for an agent without tools; brain page
+    /// `harness-prompt`). Composed once at startup; never part of `history`.
+    pub(crate) harness: String,
     /// The agent-mode overlay woven into every send (`None` outside agent mode).
     pub(crate) overlay: Option<Overlay>,
     /// Agent-mode options: the project root and the skills home.

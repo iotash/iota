@@ -656,6 +656,112 @@ async fn cli_openai_text_mode_bare() {
     assert!(err(&o).is_empty(), "text mode is quiet: {}", err(&o));
 }
 
+/// The built-in harness prompt (brain page `harness-prompt`), end to end: an agent with `tools:` sends the
+/// binary's own paragraph — identity, `<environment>` with the facts of THIS run, and `<iota_cli>` when the
+/// `shell` set is on — ahead of its `system:` inside `<instructions>`; an agent with only `code:` sends no
+/// `<iota_cli>`; an agent without `tools:` sends the bare prompt it always did.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_headless_run_sends_the_harness_for_an_agent_with_tools() {
+    let server = MockServer::start().await;
+    transcript::openai_transcript(&server).await;
+    let (dir, home) = project();
+    // The config is the USER tier (`~/.iota.yaml`); the project tier does not exist, and the working
+    // directory has no `.git` above it, so it is its own project root: the environment must say all three.
+    let cwd = dir.path().join("proj");
+    fs::create_dir_all(&cwd).expect("cwd");
+    let user_config = home.join(".iota.yaml");
+    let config = |tools: &str| {
+        format!(
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{models: [m], system: be brief{tools}}}\n",
+            server.uri()
+        )
+    };
+    let system_message = |body: &[u8]| -> serde_json::Value {
+        let body: serde_json::Value = serde_json::from_slice(body).expect("a JSON body");
+        body["messages"][0].clone()
+    };
+
+    // code + shell: every block.
+    fs::write(
+        &user_config,
+        config(", tools: {code: , shell: {sandbox: off, auto_run: true}}"),
+    )
+    .expect("user config");
+    let mut cmd = iota(&cwd, &home);
+    cmd.args(["-m", "hi"]);
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    let requests = server.received_requests().await.expect("recorded");
+    let first = system_message(&requests[0].body);
+    assert_eq!(first["role"], "system");
+    let content = first["content"].as_str().expect("system text");
+    assert!(content.starts_with("You run inside iota"), "{content}");
+    assert!(content.contains("<environment>\n"), "{content}");
+    assert!(content.contains("<iota_cli>\n"), "{content}");
+    assert!(
+        content.ends_with("</iota_cli>\n\n<instructions>\nbe brief\n</instructions>"),
+        "{content}"
+    );
+    // The environment says what THIS run found — not a fixture. The root is the process's own `getcwd`:
+    // on macOS the canonical spelling of the temp path (`/private/var/…`), on Windows the path as given.
+    let root = if cfg!(windows) {
+        cwd.clone()
+    } else {
+        fs::canonicalize(&cwd).expect("canonical cwd")
+    };
+    assert!(
+        content.contains(&format!("\nproject root: {}\n", root.display())),
+        "{content}"
+    );
+    assert!(
+        content.contains(&format!("\nuser config: {}\n", user_config.display())),
+        "{content}"
+    );
+    assert!(
+        content.contains("\nproject config: (absent)\n"),
+        "{content}"
+    );
+    // The binary is canonical, minus the `\\?\` prefix Windows' `canonicalize` adds (`app::canonical`).
+    let exe = fs::canonicalize(env!("CARGO_BIN_EXE_iota")).expect("canonical exe");
+    let exe = exe.to_string_lossy();
+    let exe = exe.trim_start_matches(r"\\?\");
+    assert!(
+        content.contains(&format!("\niota binary: {exe}\n")),
+        "{content}"
+    );
+    assert!(content.contains("\nshell: "), "{content}");
+    assert!(content.contains("\ndate: 20"), "{content}");
+    server.reset().await;
+    transcript::openai_transcript(&server).await;
+
+    // code alone: the environment, not the CLI block.
+    fs::write(&user_config, config(", tools: {code: }")).expect("user config");
+    let mut cmd = iota(&cwd, &home);
+    cmd.args(["-m", "hi"]);
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    let requests = server.received_requests().await.expect("recorded");
+    let content = system_message(&requests[0].body)["content"]
+        .as_str()
+        .expect("system text")
+        .to_owned();
+    assert!(content.contains("<environment>\n"), "{content}");
+    assert!(!content.contains("<iota_cli>"), "{content}");
+    server.reset().await;
+    transcript::openai_transcript(&server).await;
+
+    // No tools: the bare prompt, today's bytes exactly.
+    fs::write(&user_config, config("")).expect("user config");
+    let mut cmd = iota(&cwd, &home);
+    cmd.args(["-m", "hi"]);
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    let requests = server.received_requests().await.expect("recorded");
+    let first = system_message(&requests[0].body);
+    assert_eq!(first["role"], "system");
+    assert_eq!(first["content"], "be brief");
+}
+
 /// A terminal 4xx is not retried and reaches the user as `Error: chat error: …` with exit 1.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cli_400_prints_error_and_exits_1() {

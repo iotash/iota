@@ -42,7 +42,9 @@ models:
 agents:
   default:
     models: [gpt]             # the candidate set, best first; -M and /model pick from it
-    system: \"You are a helpful assistant.\"
+    # Your own instructions. iota already tells the model what it runs inside and where (the
+    # built-in harness prompt: identity, environment, and its own command line when `shell` is on).
+    system: \"You are a careful coding assistant.\"
     tools:
       code:                   # read/write/edit/grep over the project
       shell:                  # shell commands, with a sandbox by default

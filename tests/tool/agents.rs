@@ -137,7 +137,7 @@ fn compose_send_history_welds_the_overlay_onto_a_copy() {
     let history = vec![Message::system("sys"), Message::user("hi")];
 
     // Empty overlay: the exact same slice, no copy (agent off = today's bytes).
-    let out = compose_send_history(&history, "");
+    let out = compose_send_history(&history, "", "");
     assert!(matches!(out, Cow::Borrowed(_)));
     assert!(
         std::ptr::eq(out.as_ptr(), history.as_ptr()),
@@ -146,7 +146,7 @@ fn compose_send_history_welds_the_overlay_onto_a_copy() {
     assert_eq!(out.len(), history.len());
 
     // Overlay appends to the existing system message on a copy.
-    let out = compose_send_history(&history, "OVERLAY");
+    let out = compose_send_history(&history, "", "OVERLAY");
     assert_eq!(out[0].content, "sys\n\nOVERLAY", "want overlay appended");
     assert_eq!(out.len(), 2);
     assert_eq!(out[1].content, "hi", "send history tail changed");
@@ -157,7 +157,7 @@ fn compose_send_history_welds_the_overlay_onto_a_copy() {
 
     // No user system prompt: a synthetic system message is inserted.
     let no_sys = vec![Message::user("hi")];
-    let out = compose_send_history(&no_sys, "OVERLAY");
+    let out = compose_send_history(&no_sys, "", "OVERLAY");
     assert_eq!(out.len(), 2);
     assert_eq!(out[0].role(), Role::System);
     assert_eq!(out[0].content, "OVERLAY");
@@ -171,7 +171,7 @@ fn compose_send_history_welds_the_overlay_onto_a_copy() {
 fn a_turn_never_writes_the_overlay_into_the_history() {
     let mut history = vec![Message::system("sys")];
     history.push(Message::user("question"));
-    let send = compose_send_history(&history, "OVERLAY");
+    let send = compose_send_history(&history, "", "OVERLAY");
     assert_eq!(send[0].content, "sys\n\nOVERLAY"); // the provider would receive this copy
     history.push(Message::assistant("answer"));
 

@@ -35,6 +35,11 @@ pub struct HostDirs {
     /// `os.UserCacheDir`: macOS `home/Library/Caches`; linux `$XDG_CACHE_HOME` if absolute else `home/.cache`; None
     /// without home.
     pub cache: Option<PathBuf>,
+    /// The running binary, `std::env::current_exe()` canonicalised; None when the OS could not say. Not a
+    /// directory, but the one other process fact resolved at this edge for the same reason: the `shell` set's
+    /// rule that iota itself runs outside the sandbox compares a command's first word against it, and the
+    /// harness prompt names it — both from here, never from a second probe.
+    pub exe: Option<PathBuf>,
 }
 
 impl HostDirs {
@@ -46,6 +51,7 @@ impl HostDirs {
             home,
             cwd: std::env::current_dir().ok(),
             temp: temp_dir(),
+            exe: std::env::current_exe().ok().and_then(|p| canonical(&p)),
         }
     }
 
@@ -58,6 +64,22 @@ impl HostDirs {
     pub fn images_dir(&self) -> Option<PathBuf> {
         self.app_home().map(|h| h.join("images"))
     }
+}
+
+/// `std::fs::canonicalize` as a comparison key that is also fit to show: symlinks resolved, and on Windows
+/// the `\\?\` verbatim prefix `canonicalize` puts on a drive path dropped again, so the result reads like a
+/// path the user would write (and two canonical paths compare by their bytes). `None` when the path does not
+/// exist or cannot be resolved.
+pub(crate) fn canonical(p: &Path) -> Option<PathBuf> {
+    let resolved = std::fs::canonicalize(p).ok()?;
+    if cfg!(windows)
+        && let Some(s) = resolved.to_str()
+        && let Some(rest) = s.strip_prefix(r"\\?\")
+        && rest.as_bytes().get(1) == Some(&b':')
+    {
+        return Some(PathBuf::from(rest));
+    }
+    Some(resolved)
 }
 
 /// `os.UserHomeDir` rule: `$HOME` (`%USERPROFILE%` on windows), None when unset or empty.
@@ -158,5 +180,10 @@ mod tests {
         assert_eq!(dirs.cache, cache_dir(dirs.home.as_deref()));
         assert_eq!(dirs.temp, super::temp_dir());
         assert!(!dirs.temp.as_os_str().is_empty());
+        // The executable is canonical: what a symlink on PATH resolves to, so a comparison against it needs
+        // no second canonicalisation of this side — and it carries no `\\?\` prefix on Windows.
+        let exe = dirs.exe.expect("the test binary knows its own path");
+        assert_eq!(Some(exe.clone()), super::canonical(&exe));
+        assert!(!exe.to_string_lossy().starts_with(r"\\?\"), "{exe:?}");
     }
 }

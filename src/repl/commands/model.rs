@@ -225,8 +225,8 @@ pub(crate) async fn ensure_model(repl: &mut Repl, cancel: &CancellationToken) ->
 /// `read_input`, which is the ONE exit path.
 pub(crate) async fn cmd_model(repl: &mut Repl) {
     let cancel = &repl.handles.cancel.clone();
-    // The read-only System tab shows the prompt AS SENT, so it needs the same overlay the
-    // message path composes with (chat/run.go:624).
+    // The read-only System tab shows the prompt AS SENT, so it needs the same harness and
+    // overlay the message path composes with (chat/run.go:624).
     let overlay = repl
         .conv
         .overlay
@@ -258,6 +258,7 @@ pub(crate) async fn cmd_model(repl: &mut Repl) {
         &mut *repl.conv.provider,
         window,
         &history,
+        &repl.conv.harness,
         &overlay,
         &mut panels,
     );

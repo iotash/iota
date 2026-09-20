@@ -2,9 +2,9 @@
 //!
 //! The text shown is the prompt AS SENT, not as configured: the `-s` flag, the config
 //! `system:`/`system_file:` keys, the interactive `-S` entry and a resumed session's
-//! stored prompt all converge on `history[0]`, while agent mode folds the AGENTS.md
-//! overlay in at send time. Composing through the SAME
-//! [`crate::agents::compose_send_history`] the turn loop uses keeps that assembly
+//! stored prompt all converge on `history[0]`, while the built-in harness (an agent with
+//! tools) and agent mode's AGENTS.md overlay are folded in at send time. Composing through
+//! the SAME [`crate::agents::compose_send_history`] the turn loop uses keeps that assembly
 //! rule in one place — **the tab cannot drift from the wire**. A second, "display-only"
 //! composition would be a second source of truth, and the one thing a read-only tab must
 //! never do is lie about what is being sent.
@@ -15,8 +15,12 @@ use crate::ui::facade::Panel;
 
 /// The System tab for this chat, or `None` when it carries no system prompt at all —
 /// the surface then stays as it was rather than showing an empty view.
-pub(crate) fn system_prompt_panel(history: &[Message], overlay: &str) -> Option<Panel> {
-    let sent = compose_send_history(history, overlay);
+pub(crate) fn system_prompt_panel(
+    history: &[Message],
+    harness: &str,
+    overlay: &str,
+) -> Option<Panel> {
+    let sent = compose_send_history(history, harness, overlay);
     let first = sent.first()?;
     if first.role() != crate::provider::model::Role::System || first.content.is_empty() {
         return None;
@@ -59,7 +63,7 @@ mod tests {
         ];
         for (name, history) in cases {
             assert!(
-                system_prompt_panel(&history, "").is_none(),
+                system_prompt_panel(&history, "", "").is_none(),
                 "{name}: panel offered with no system prompt in effect"
             );
         }
@@ -73,7 +77,7 @@ mod tests {
             Message::system("You are terse.\nAnswer in one line."),
             user("hi"),
         ];
-        let p = system_prompt_panel(&history, "").expect("panel not offered");
+        let p = system_prompt_panel(&history, "", "").expect("panel not offered");
         assert_eq!(p.title, "System");
         assert_eq!(p.kind(), PanelKind::View);
         assert!(p.wrap(), "the System tab must wrap: a prompt is prose");
@@ -107,7 +111,7 @@ mod tests {
 
         // cmd/root.go hands the resolved text to chat.Run, which seeds history[0].
         let history = vec![Message::system(resolved)];
-        let p = system_prompt_panel(&history, "").expect("config prompt produced no tab");
+        let p = system_prompt_panel(&history, "", "").expect("config prompt produced no tab");
         assert_eq!(p.lines().join("\n"), "You are a config-defined assistant.");
     }
 
@@ -117,7 +121,7 @@ mod tests {
     #[test]
     fn test_system_prompt_panel_includes_overlay() {
         let history = vec![Message::system("Base prompt.")];
-        let p = system_prompt_panel(&history, "# AGENTS.md\nProject rules.").expect("no panel");
+        let p = system_prompt_panel(&history, "", "# AGENTS.md\nProject rules.").expect("no panel");
         let body = p.lines().join("\n");
         assert!(
             body.contains("Base prompt.") && body.contains("Project rules."),
@@ -132,7 +136,31 @@ mod tests {
     // shows it.
     #[test]
     fn test_system_prompt_panel_overlay_only() {
-        let p = system_prompt_panel(&[user("hi")], "Project rules.").expect("no panel");
+        let p = system_prompt_panel(&[user("hi")], "", "Project rules.").expect("no panel");
         assert_eq!(p.lines().join("\n"), "Project rules.");
+    }
+
+    /// The built-in harness is part of what is sent, so the tab shows it — first, with the
+    /// user's prompt inside `<instructions>` after it — and shows it even for a chat that set
+    /// no prompt of its own.
+    #[test]
+    fn test_system_prompt_panel_includes_the_harness() {
+        let history = vec![Message::system("Base prompt."), user("hi")];
+        let p = system_prompt_panel(&history, "<environment>\nx\n</environment>", "")
+            .expect("no panel");
+        assert_eq!(
+            p.lines(),
+            [
+                "<environment>",
+                "x",
+                "</environment>",
+                "",
+                "<instructions>",
+                "Base prompt.",
+                "</instructions>"
+            ]
+        );
+        let p = system_prompt_panel(&[user("hi")], "HARNESS", "").expect("no panel");
+        assert_eq!(p.lines(), ["HARNESS"]);
     }
 }

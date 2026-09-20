@@ -124,6 +124,9 @@ pub struct RunParams {
     pub title_provider: Option<Box<dyn crate::provider::Provider>>,
     /// The system prompt.
     pub system: String,
+    /// The built-in harness prompt, composed by the binary for an agent with tools (`""` otherwise); it goes
+    /// ahead of `system` on every send and never into the history (`agents::harness`).
+    pub harness: String,
     /// Resumed/imported history.
     pub imported_history: Vec<crate::provider::model::Message>,
     /// The tool dispatcher.
@@ -253,6 +256,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         mut provider,
         title_provider,
         system,
+        harness,
         imported_history,
         dispatch,
         jobs,
@@ -421,6 +425,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             layers,
             catalog,
             compact_declined: 0,
+            harness,
             overlay,
             agent,
             image_provider,
@@ -733,13 +738,14 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
 
 impl Repl {
     /// The turn's context for one message (chat/run.go:1007-1012): the shared handles plus
-    /// the overlay this message composed.
+    /// the harness and the overlay this message composed.
     fn turn_ctx(&self, overlay: String) -> TurnCtx {
         TurnCtx {
             ui: Arc::clone(&self.handles.ui),
             tr: Arc::clone(&self.handles.tr),
             dispatch: Arc::clone(&self.conv.dispatch),
             gate: Arc::clone(&self.handles.gate),
+            harness: self.conv.harness.clone(),
             overlay,
             images_dir: Arc::clone(&self.session.images_dir),
             can_retry: !self.conv.image_provider,
