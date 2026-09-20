@@ -556,9 +556,12 @@ fn push(scopes: &mut Vec<String>, scope: &str) {
 ///
 /// Every login asks for the consent prompt, as Claude Code does: a Logto tenant answered a request without
 /// it with a bare `access_denied` right after the consent page (namebeta, 2026-09-19 — the one parameter
-/// that separated a refused login from a working one), and a server that does not know the parameter
-/// ignores it (RFC 6749 §3.1). rmcp's builder has no extra-parameter hook, so the URL it returns is edited;
-/// the state and the PKCE verifier rmcp stored are keyed by the `state` value, which the edit keeps.
+/// that separated a refused login from a working one). Logto's reason, as namebeta found it: a third-party
+/// client's consent page lists only the resource scopes the user's roles hold, and with none held the
+/// consent path writes an EMPTY grant and passes, while a request that did not ask for the prompt is checked
+/// against that grant and refused. A server that does not know the parameter ignores it (RFC 6749 §3.1).
+/// rmcp's builder has no extra-parameter hook, so the URL it returns is edited; the state and the PKCE
+/// verifier rmcp stored are keyed by the `state` value, which the edit keeps.
 fn with_consent_prompt(auth_url: &str) -> String {
     let Ok(mut url) = reqwest::Url::parse(auth_url) else {
         return auth_url.to_owned();
