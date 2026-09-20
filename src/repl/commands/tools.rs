@@ -2,8 +2,10 @@
 //!
 //! Two `View` tabs on a 500 ms refresh: a background MCP connect that finishes while the
 //! panel is open appears without reopening it. The result is discarded — the surface is a
-//! viewer, not a picker. Its MCP tab IS the policy's "/mcp": the Go binary has no such
-//! command (T-23).
+//! viewer, not a picker. Its MCP tab is where a server's state is read — connected with its tools,
+//! connecting, or failed with the first line of why, a server waiting for a login included
+//! (`not logged in: run iota mcp login <name>`): there is no `/mcp` (the Go binary had none, T-23,
+//! and the one the Rust binary had from 2026-09-18 to 09-20 left again, X-42).
 //!
 //! The server SNAPSHOT comes through [`crate::repl::McpHooks`] when the command layer wired
 //! one. The rendering
@@ -224,7 +226,7 @@ pub(crate) mod tests {
 
     use super::{DeferState, DeferredToolStatus, Dispatcher, ServerState, ServerStatus};
 
-    /// Advertises `defs` and reports deferred state — the `/tools` view fixture (and `/mcp`'s).
+    /// Advertises `defs` and reports deferred state — the `/tools` view fixture.
     // Go: chat/toolstatus_test.go:13 deferStatusDispatcher
     pub(crate) struct DeferStatus {
         defs: Vec<ToolDef>,

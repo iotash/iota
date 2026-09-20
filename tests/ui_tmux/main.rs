@@ -58,7 +58,7 @@
 //! | `20-block-preview.sh` | TUI-VERIFY §2 | — (a 40-line document: the metered preview rows morph, history contiguous) |
 //! | `21-emoji-table.sh` | TUI-VERIFY §6.4 | — (emoji, flags and VS16 in a table, every row measured by tmux's own ruler) |
 //! | `22-retry.sh` | TUI-VERIFY batch C | — (503 → `retrying (attempt`, the steer message lands once, Ctrl+C during the backoff leaves no red block) |
-//! | `23-mcp-oauth.sh` | brain `mcp-cli-and-oauth` | — (a server whose 401 asks for a login, `auth` undeclared: the not-logged-in notice, the `/mcp` panel, `/mcp login` through `$BROWSER`, `/mcp logout`) |
+//! | `23-mcp-oauth.sh` | brain `mcp-cli-and-oauth` | — (a server whose 401 asks for a login, `auth` undeclared: the not-logged-in notice, the MCP tab of `/tools`, `iota mcp login` through `$BROWSER` beside the chat, a restart that connects, `iota mcp logout`) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -510,10 +510,11 @@ fn tmux_retry_path() {
 }
 
 /// Brain page `mcp-cli-and-oauth` — a server that asks for a login in the chat, its `auth` undeclared (the
-/// default: the 401 at the first handshake is the ask): the one-line not-logged-in notice, the `/mcp`
-/// panel's login state, `/mcp login` driven through `$BROWSER` to the loopback callback (the token file
-/// lands, the server reconnects through the OAuth transport and announces its tools), and `/mcp logout`
-/// taking it down.
+/// default: the 401 at the first handshake is the ask): the one-line not-logged-in notice naming
+/// `iota mcp login`, the MCP tab of `/tools` reading `disconnected` with the same sentence, the CLI login
+/// run beside the chat through `$BROWSER` to the loopback callback (the token file lands, mode 600), a
+/// restarted chat connecting through the OAuth transport with the server's tool, and `iota mcp logout`
+/// forgetting the file (X-42: no `/mcp` in the chat).
 #[test]
 fn tmux_mcp_oauth_round_trip() {
     run_scenario("23-mcp-oauth.sh");

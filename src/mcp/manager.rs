@@ -470,9 +470,10 @@ impl Manager {
     }
 
     /// Snapshot of every server's status (index-aligned with the configs). A server's `login` is read off
-    /// its token file here, so the `/mcp` panel's 500 ms refresh sees a login or logout as it happens: an
-    /// `oauth` server always has one; an `auto` server has one when the file says so, or — with no usable
-    /// file — when the server asked for a login (`login_required`); a `none` server never.
+    /// its token file here, so a live view (the MCP tab of `/tools`, on its 500 ms refresh) sees a login or
+    /// logout as it happens: an `oauth` server always has one; an `auto` server has one when the file says
+    /// so, or — with no usable file — when the server asked for a login (`login_required`); a `none` server
+    /// never.
     pub fn servers(&self) -> Vec<ServerStatus> {
         let mut servers = read(&self.state).servers.clone();
         for (status, cfg) in servers.iter_mut().zip(&self.configs) {
@@ -561,7 +562,8 @@ impl Manager {
         }
     }
 
-    /// `iota mcp login`'s flow for server `name`, driven from a run (the REPL's `/mcp login`): the browser,
+    /// `iota mcp login`'s flow for server `name`, driven from inside a run — the in-session entry, kept for the
+    /// config toolset (brain page `config-tools`) now that the chat has no `/mcp login` (X-42): the browser,
     /// the loopback callback, the store — then [`reconnect`](Self::reconnect). `report` receives the flow's
     /// steps (the URL to open) as lines. `Err` is the text to show; `Ok` is the reconnected status.
     pub async fn login(

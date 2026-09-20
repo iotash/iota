@@ -1,5 +1,5 @@
 //! A mock OAuth 2.1 authorization server WITH a protected MCP endpoint, on wiremock: what `iota mcp login`,
-//! the runtime transport and the `/mcp` panel are pinned against (`tests/mcp/oauth.rs`, `tests/cmd/mcp.rs`,
+//! the runtime transport and the chat's MCP view are pinned against (`tests/mcp/oauth.rs`, `tests/cmd/mcp.rs`,
 //! the tmux scenario). One process-wide state shared by every endpoint, so a test can read back what the
 //! server saw (which bearer token, which grant, what was revoked).
 //!

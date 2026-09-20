@@ -200,7 +200,7 @@ async fn banner_order_and_command_table() {
         lines,
         vec![
             "Chat started. Press Ctrl+C to exit.".to_owned(),
-            "Commands: /file, /session, /model, /export, /status, /tools, /mcp, /debug".to_owned(),
+            "Commands: /file, /session, /model, /export, /status, /tools, /debug".to_owned(),
             format!("Session: {id}"),
             String::new(),
         ]
@@ -218,7 +218,7 @@ async fn banner_order_and_command_table() {
     assert_eq!(
         values,
         [
-            "/file", "/session", "/model", "/export", "/status", "/tools", "/mcp", "/debug"
+            "/file", "/session", "/model", "/export", "/status", "/tools", "/debug"
         ]
     );
 }
@@ -243,7 +243,7 @@ async fn banner_offers_save_for_an_ephemeral_chat() {
     let lines = printed(&f.ui);
     assert_eq!(
         lines[1],
-        "Commands: /file, /session, /model, /export, /status, /tools, /mcp, /debug, /save"
+        "Commands: /file, /session, /model, /export, /status, /tools, /debug, /save"
     );
     assert_eq!(
         lines[2],

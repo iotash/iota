@@ -14,18 +14,22 @@
 //! into the message path) — is the spec, which is why there is no generic dispatcher here:
 //! only [`match_cmd`], the matcher every arm calls.
 //!
-//! **What is registered** (completion.go:10-37, all twelve, plus the Rust-only `/mcp`): the base nine — `/file`,
+//! **What is registered** (completion.go:10-37, all twelve): the base eight — `/file`,
 //! `/session`, `/model`, `/compact` (only while token accounting is live), `/export`, `/status`,
-//! `/tools`, `/mcp`, `/debug` — then the image pair `/edit`/`/redo` (dedicated image providers), `/save`
+//! `/tools`, `/debug` — then the image pair `/edit`/`/redo` (dedicated image providers), `/save`
 //! (chats that started ephemeral) and `/skills` plus one `/skills <name>` row per discovered skill
 //! (agent mode). Inactive conditional commands are fully invisible: no completion, no dispatch.
+//!
+//! No management command joins the table: `/mcp` (with `/mcp login|logout`) was here from 2026-09-18 to
+//! 2026-09-20 and left again — the MCP tab of `/tools` shows every server's state, a login is
+//! `iota mcp login <name>` from a shell, and configuration is for the config toolset, not a slash
+//! command (DIVERGENCES X-42).
 
 pub(crate) mod compact;
 pub(crate) mod debug;
 pub(crate) mod edit;
 pub(crate) mod export;
 pub(crate) mod file;
-pub(crate) mod mcp;
 pub(crate) mod model;
 pub(crate) mod save;
 pub(crate) mod session;
@@ -75,10 +79,6 @@ const BASE: &[CmdSpec] = &[
     CmdSpec {
         value: "/tools",
         desc: "Available tools and MCP server state",
-    },
-    CmdSpec {
-        value: "/mcp",
-        desc: "MCP servers and login state; /mcp login|logout <name>",
     },
     CmdSpec {
         value: "/debug",
@@ -319,7 +319,7 @@ mod tests {
         assert_eq!(
             t.names(),
             [
-                "/file", "/session", "/model", "/compact", "/export", "/status", "/tools", "/mcp",
+                "/file", "/session", "/model", "/compact", "/export", "/status", "/tools",
                 "/debug", "/edit", "/redo", "/save", "/skills"
             ]
         );

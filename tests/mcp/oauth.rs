@@ -405,7 +405,8 @@ async fn a_rejected_refresh_is_not_logged_in() {
     m.close().await;
 }
 
-/// `Manager::login` from a run — the REPL's `/mcp login` — drives the same flow through `$BROWSER` and
+/// `Manager::login` from a run — the in-session entry the config toolset is to call (no slash command does,
+/// X-42) — drives the same flow through `$BROWSER` and
 /// reconnects the server; `Manager::logout` takes it down again.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

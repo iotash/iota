@@ -11,6 +11,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::Receiver;
 use tokio_util::sync::CancellationToken;
 
+use crate::mcp::auth::not_logged_in;
 use crate::repl::render::transcript::Transcript;
 use crate::repl::run::McpEvent;
 
@@ -31,10 +32,10 @@ pub(crate) async fn report_mcp_failures(
                 }
                 let Some(err) = ev.error else { continue }; // connected: nothing more to report
                 let first = err.split('\n').next().unwrap_or_default();
-                // An OAuth server with no token is not broken, it is waiting for a login — and in the
-                // chat the way in is the slash command, not the CLI the text names.
+                // An OAuth server with no token is not broken, it is waiting for a login: the line says so
+                // rather than `failed`, and names the way in — the CLI, the one sentence every outlet uses.
                 if first.starts_with("not logged in") {
-                    tr.error(&format!("⚠ MCP {} not logged in: /mcp login {}", ev.name, ev.name));
+                    tr.error(&format!("⚠ MCP {} {}", ev.name, not_logged_in(&ev.name)));
                     continue;
                 }
                 tr.error(&format!("⚠ MCP {} failed: {first}", ev.name));

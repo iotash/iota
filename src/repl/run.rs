@@ -40,8 +40,8 @@ use crate::repl::ReplError;
 use crate::repl::commands::edit::EditOutcome;
 use crate::repl::commands::skills::SkillsOutcome;
 use crate::repl::commands::{
-    CmdFlags, CommandTable, SkillEntry, debug, edit, export, file, match_cmd, mcp, model, save,
-    session, skills, status, tools,
+    CmdFlags, CommandTable, SkillEntry, debug, edit, export, file, match_cmd, model, save, session,
+    skills, status, tools,
 };
 use crate::repl::context::meter::{ContextBudget, CtxMeter};
 use crate::repl::render::banner::banner_lines;
@@ -91,8 +91,10 @@ pub struct McpHooks {
     pub servers: Option<Arc<dyn Fn() -> Vec<crate::mcp::ServerStatus> + Send + Sync>>,
     /// Terminal connect statuses (the MCP reporter task drains it).
     pub events: Option<tokio::sync::mpsc::Receiver<McpEvent>>,
-    /// The manager itself, for what `/mcp login|logout` does to a server (a reconnect changes the live tool
-    /// set, which only the manager can do). `None` = no servers in this run.
+    /// The manager itself: the in-session entry to `Manager::login`/`logout`/`reconnect` (a reconnect changes
+    /// the live tool set, which only the manager can do). No slash command calls it since `/mcp` left (X-42);
+    /// it is wired for the config toolset (brain page `config-tools`), which logs a server in from inside a
+    /// chat. `None` = no servers in this run.
     pub manager: Option<Arc<crate::mcp::Manager>>,
 }
 
@@ -570,11 +572,6 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             }
             if match_cmd(&line, "/tools").is_some() {
                 tools::cmd_tools(&repl).await;
-                continue;
-            }
-            // /mcp is Rust-only (the Go binary had no such command, T-23): the panel, or the OAuth round trip.
-            if let Some(arg) = match_cmd(&line, "/mcp") {
-                mcp::cmd_mcp(&mut repl, arg).await;
                 continue;
             }
             if let Some(arg) = match_cmd(&line, "/debug") {

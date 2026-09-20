@@ -392,7 +392,7 @@ async fn file_is_advertised_and_dispatched() {
     let lines = printed(&f.ui);
     assert_eq!(
         lines[1],
-        "Commands: /file, /session, /model, /export, /status, /tools, /mcp, /debug"
+        "Commands: /file, /session, /model, /export, /status, /tools, /debug"
     );
     // A longer name is NOT the command: "/filex" falls through as a plain message.
     assert_eq!(

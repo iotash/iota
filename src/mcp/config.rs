@@ -81,7 +81,7 @@ impl ServerConfig {
             .any(|name| name.eq_ignore_ascii_case("authorization"))
     }
 
-    /// Why `iota mcp login` / `logout` (and `/mcp login|logout`) refuse this entry, when they do — the
+    /// Why `iota mcp login` / `logout` (and `Manager::login`/`logout`) refuse this entry, when they do — the
     /// sentence after the name: a stdio server has no endpoint to log in to; `auth: none` forbids the login;
     /// an `auto` entry with its own `Authorization` header would never send the token
     /// ([`effective_auth`](Self::effective_auth)). `None` = the login is allowed (`oauth`, or `auto`).
