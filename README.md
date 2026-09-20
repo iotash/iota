@@ -696,9 +696,12 @@ answers the consent with a bare `access_denied`; a third-party application
 registered in that tenant, added with `--client-id`, goes through.) At run time the bearer token goes on every request and is refreshed
 when the server rejects it; a server with no usable token is reported as
 `not logged in: run iota mcp login <name>` and left out of that run while every
-other server loads. In the chat, `/mcp` shows each server's login state,
-`/mcp login <name>` runs the same flow (ESC gives up waiting) and reconnects
-the server, and `/mcp logout <name>` takes it down.
+other server loads. In the chat, the MCP tab of `/tools` shows each server's
+state — a server waiting for a login reads `not logged in: run iota mcp login
+<name>` — and the login is that command, from a shell; a chat already running
+does not pick the new token up, so start it again. There is no `/mcp` in the
+chat: what a server needs is on its `/tools` row, and configuration is headed
+for a toolset the model calls, not for slash commands.
 
 ### Built-in Toolsets
 
@@ -948,8 +951,7 @@ and an unknown `/word` is sent as a normal message.
 | `/compact [hint]` | Summarize older history to free context; optional hint guides what to keep. Offered only while token accounting is live. |
 | `/export [file]` | Export the conversation (saved sessions: the full on-disk log, so compaction never hides older rounds) to a single self-contained HTML file — the default — or Markdown with a `.md`/`.markdown` extension. With no argument, a selector picks the format and the filename is generated from the session title. Never overwrites an existing file. |
 | `/status` | Show provider, model, context usage, and last-turn token counts |
-| `/tools` | Tabbed read-only view of the model's capabilities: a "Tools" tab (every built-in and MCP tool with its source) and an "MCP" tab (server status, endpoints, and tools) |
-| `/mcp [login\|logout <name>]` | Bare `/mcp` opens the MCP panel — every server's state, endpoint, tools and, for a server that logs in (`auth: oauth`, or one whose 401 asked for it), whether it is logged in. `/mcp login <name>` runs the OAuth flow (browser, loopback callback; ESC gives up) and reconnects the server; `/mcp logout <name>` forgets its tokens and takes it down. |
+| `/tools` | Tabbed read-only view of the model's capabilities: a "Tools" tab (every built-in and MCP tool with its source) and an "MCP" tab (server status, endpoints, tools, and for a server that did not connect the first line of why — `not logged in: run iota mcp login <name>` for one waiting for a login) |
 | `/debug [on\|off]` | Request inspector. `/debug on` / `/debug off` toggle recording of API round trips (a `debug` marker appears in the status row while on); bare `/debug` opens the two-tab console — "Messages" (newest first, drill into a request/response pair) and the "Verbose" switch. Recording is off by default and MCP traffic is not recorded. |
 | `/skills [name [instructions]]` | Bare `/skills` lists discovered agent skills — name, source (project/user), description, and any invalid skills that were skipped. `/skills <name>` runs one: its instructions (plus anything you add after the name) are sent as the message. Agent mode only; every discovered skill also shows up as a completion row. |
 

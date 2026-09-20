@@ -19,6 +19,18 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   entry, prints `Retry with: iota mcp login <name>` and exits non-zero. `login`
   stays for logging in again, or for the login `--no-login` skipped (X-41).
 
+### Removed
+
+- **`/mcp` leaves the chat.** The `/mcp` panel and `/mcp login|logout <name>`
+  of 0.3.1 are gone. The MCP tab of `/tools` already shows every server's
+  state — a server waiting for a login reads `not logged in: run iota mcp
+  login <name>` — and the login is `iota mcp login <name>` from a shell (a
+  chat already running does not pick the token up; start it again). The
+  startup notice names that command now, and the 80-column banner's command
+  row fits on one line again. No management command is planned for the chat:
+  configuration is headed for a toolset the model calls on your behalf, not
+  for slash commands (X-42).
+
 ## 0.3.1 - 2026-09-20
 
 MCP servers are managed from the command line and logged in to. `iota mcp
