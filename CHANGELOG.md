@@ -3,7 +3,14 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
-## Unreleased
+## 0.3.1 - 2026-09-20
+
+MCP servers are managed from the command line and logged in to. `iota mcp
+add|list|get|remove` edits the `mcp_servers:` block of one file; a server behind
+OAuth 2.1 is one `iota mcp login <name>` signs in to — the client identified
+three ways, the consent prompt asked for, `auth` discovered from the server's
+own 401 — the shape one Logto tenant taught, a finding at a time (X-37 to X-40
+in `docs/DIVERGENCES.md`).
 
 ### Added
 
@@ -23,10 +30,10 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   the bearer token on every request and refreshes it when the server rejects it;
   a server with no usable token is reported as `not logged in: run iota mcp login
   <name>` and left out of that run alone, and a stored login the server will not
-  refresh is reported with the server's answer and the same `login` to run. `iota mcp logout <name>` revokes and
-  forgets. In the chat, `/mcp` shows every server's login state, `/mcp login
-  <name>` runs the same flow and reconnects the server, `/mcp logout <name>` takes
-  it down.
+  refresh is reported with the server's answer and the same `login` to run.
+  `iota mcp logout <name>` revokes and forgets. In the chat, `/mcp` shows every
+  server's login state, `/mcp login <name>` runs the same flow and reconnects the
+  server, `/mcp logout <name>` takes it down.
 - **A login identifies iota three ways.** The entry's `client_id` (a client
   registered out of band — `iota mcp add … --client-id <id>
   --client-secret-env VAR`, the secret only ever a `${env:VAR}` reference; or
