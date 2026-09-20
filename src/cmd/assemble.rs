@@ -439,9 +439,11 @@ mod tests {
         assert!(!env.shell.is_empty());
         assert_eq!(env.date.len(), 10);
 
-        let env =
-            super::harness_environment(&dirs, None, Some(std::path::Path::new("/tmp/f.yaml")));
-        assert_eq!(env.configs, ConfigFiles::Explicit("/tmp/f.yaml".into()));
+        // An absolute `-c` is passed through as it is. (`/tmp/f.yaml` is not absolute on Windows — no
+        // drive — so the absolute path is built from the temp dir, which is one on every platform.)
+        let absolute = dir.path().join("f.yaml");
+        let env = super::harness_environment(&dirs, None, Some(&absolute));
+        assert_eq!(env.configs, ConfigFiles::Explicit(absolute));
         // A relative `-c` is reported against the run's cwd, so the model's shell finds it from anywhere.
         let env = super::harness_environment(&dirs, None, Some(std::path::Path::new("cfg.yml")));
         assert_eq!(
