@@ -5,8 +5,35 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ## Unreleased
 
+### Added
+
+- **A built-in harness prompt.** An agent with `tools:` sends a short paragraph
+  of iota's own ahead of its `system:` — two sentences of identity and two rules
+  (a declined tool call is not retried; a command the sandbox refused is reported
+  as such, not rewritten), an `<environment>` block (project root, platform,
+  shell, date, the `iota` binary, the user and project config files or the `-c`
+  file, a missing one marked `(absent)`), and with the `shell` set an
+  `<iota_cli>` block: that `iota` itself runs outside the sandbox, its verbs
+  (`mcp add|list|get|remove|login|logout`, `config check|path|init`, `list …`,
+  `run <agent> -m`), and the three rules — MCP servers through `iota mcp`,
+  everything else by editing the config file and `iota config check`, every
+  change from the next session. Under 1.5 KB; your prompt follows inside
+  `<instructions>`, the AGENTS.md overlay after it. Composed at send time like
+  the overlay and never stored: a resumed session and an upgraded binary get the
+  current one, and `/model`'s System tab shows the prompt exactly as sent. An
+  agent without `tools:` sends nothing extra. No configuration key (X-43).
+
 ### Changed
 
+- **`iota` runs outside the shell sandbox.** A `shell` call whose first word is
+  the running binary — `iota mcp add …`, `iota mcp login <name>`, a child agent's
+  `iota run <agent> -m "<task>"` — is spawned without the sandbox, so it can write
+  the config file, open the browser and reach an API. Only that shape leaves:
+  `iota` in a pipe, a chain, a `$(…)` or a backtick stays in. Approval is as it
+  was — a sandboxed set without `auto_run` asks about such a call, the prompt and
+  the call header marked `(outside the sandbox)`; `auto_run: true` asks nothing.
+  A parent agent no longer needs `network: true` to dispatch a child: the child
+  is isolated by its own agent's configuration (X-44).
 - **`add --url` logs in on the spot.** Once the entry is written, `iota mcp add
   <name> --url <url>` probes the endpoint with one bare `initialize`: a 401
   starts the OAuth login right there — the same steps as `iota mcp login`, with

@@ -56,6 +56,14 @@ asks allow once / allow for this session / deny, and is rejected outright in
 non-interactive `-m` runs. `auto_run: true` waives approval for unsandboxed
 calls.
 
+One call leaves a sandboxed set: iota itself (`shell::selfcall`, DIVERGENCES
+X-44). A command whose first word resolves to the running binary — with POSIX
+quoting, no pipe, chain or substitution outside single quotes — is spawned
+without the sandbox, because writing the config file, opening a browser and
+reaching an API from a child agent are what the sandbox refuses. Approval is
+the unsandboxed rule for that call alone (`auto_run` waives), the header and
+the prompt read `(outside the sandbox)`, and it never rides a parallel batch.
+
 ## Config
 
 ```yaml

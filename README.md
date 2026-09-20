@@ -410,6 +410,32 @@ reported rather than applied — a session keeps the endpoint it started on,
 since the history it replays is that dialect's own — and the message names the
 `iota run <agent> -M provider:id` that starts a run there.
 
+#### The system prompt: what iota adds to yours
+
+An agent with `tools:` does not go out with your `system:` alone. iota puts a
+short **harness** paragraph of its own ahead of it — under 1.5 KB, no
+configuration key:
+
+- two sentences of identity (it runs inside iota, a coding agent in your
+  terminal) and two rules: a tool call you decline is not retried, and a
+  command the sandbox refused is reported as such rather than rewritten;
+- an `<environment>` block — the project root, the platform, the shell, the
+  date, the `iota` binary, and the user and project config files (or the `-c`
+  file), a missing one written as `(absent)`;
+- with the `shell` set, an `<iota_cli>` block: that `iota` itself runs outside
+  the sandbox, its verbs (`iota mcp add|list|get|remove|login|logout`, `iota
+  config check|path|init`, `iota list …`, `iota run <agent> -m "<task>"`), and
+  the three rules — MCP servers change through `iota mcp`, everything else by
+  editing the config file and running `iota config check`, and every change
+  applies from the next session.
+
+Your `system:` / `system_file:` / `-s` follows, inside `<instructions>`; the
+AGENTS.md overlay and the skills catalog come after that. Like the overlay, the
+harness is composed at send time and never stored — a resumed session and an
+upgraded binary both get the current one — and `/model`'s System tab shows the
+prompt exactly as sent. **An agent without `tools:` sends nothing extra**: a
+chat-only or JSON-pipeline agent's bytes are exactly its own prompt.
+
 #### One layer per key
 
 Every key belongs to exactly one layer, and writing it in another is an
@@ -763,6 +789,16 @@ Safety model — the same one Claude Code and Codex CLI use:
   asks for confirmation in the conversation (allow once / allow for this session /
   deny), and non-interactive `-m` runs reject it — set `auto_run: true` to
   waive that.
+- **`iota` itself runs outside the sandbox.** A call whose first word is the
+  running binary — `iota mcp add …`, `iota mcp login <name>`, a child agent's
+  `iota run <agent> -m "<task>"` — is spawned without the sandbox: what it does
+  (write a config file in `$HOME`, open a browser, reach an API) is exactly what
+  the sandbox refuses, and the binary is one you installed. Only that shape
+  leaves: `iota` in a pipe or a chain (`iota mcp list | head`, `… && …`, `;`, a
+  `$(…)`) stays in. **Approval is as usual**: a sandboxed set without
+  `auto_run` asks about such a call the way an unsandboxed set asks about every
+  call, the prompt and the call header marked `(outside the sandbox)`; with
+  `auto_run: true` nothing is asked.
 - Output is capped at 32 KB and 512 lines (head + tail kept, middle elided,
   bounded even while streaming). Each call is capped at **10 minutes** unless
   it asks for a different `timeout`; while a command runs, the status-line
@@ -822,10 +858,11 @@ job that must survive that has to detach itself (`nohup`, `setsid`).
 that matters most. The child is a full run of that `agents:` entry — its own
 model, tools, MCP servers and session. Start it with `background: true` and
 its answer comes back as the notice above. For it to write without a user to
-ask, set `tools.code.auto_write` / `tools.shell.auto_run` on that agent; for it
-to reach an API at all, the parent's sandbox has to allow it, since
-`network: false` (the default) blocks the child's HTTP too. How to dispatch,
-to whom, and how many at once is your prompt's business, not the binary's.
+ask, set `tools.code.auto_write` / `tools.shell.auto_run` on that agent. The
+child runs **outside the parent's sandbox** (the rule above) and is isolated by
+its own agent's configuration — its own `shell` sandbox, its own approvals — so
+the parent's `network: false` is not in its way. How to dispatch, to whom, and
+how many at once is your prompt's business, not the binary's.
 
 Design: docs/design/shell-toolset.md
 
