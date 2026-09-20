@@ -61,6 +61,13 @@ pub(crate) fn harness_environment(
         },
     );
     let configs = match explicit_config {
+        // Absolute, resolved against the run's cwd: the model reads this path from another working
+        // directory than the one `-c` was typed in, and a relative one would send it to the wrong file.
+        Some(path) if path.is_relative() => ConfigFiles::Explicit(
+            dirs.cwd
+                .as_deref()
+                .map_or_else(|| path.to_path_buf(), |cwd| cwd.join(path)),
+        ),
         Some(path) => ConfigFiles::Explicit(path.to_path_buf()),
         None => ConfigFiles::Tiers {
             user: dirs.home.as_deref().and_then(Config::find_config_file),
@@ -435,6 +442,12 @@ mod tests {
         let env =
             super::harness_environment(&dirs, None, Some(std::path::Path::new("/tmp/f.yaml")));
         assert_eq!(env.configs, ConfigFiles::Explicit("/tmp/f.yaml".into()));
+        // A relative `-c` is reported against the run's cwd, so the model's shell finds it from anywhere.
+        let env = super::harness_environment(&dirs, None, Some(std::path::Path::new("cfg.yml")));
+        assert_eq!(
+            env.configs,
+            ConfigFiles::Explicit(dirs.cwd.as_deref().expect("a cwd").join("cfg.yml"))
+        );
         assert_eq!(env.project_root, std::path::PathBuf::new());
     }
 
