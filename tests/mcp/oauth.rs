@@ -131,7 +131,6 @@ async fn login_as(
 }
 
 /// The token file, as JSON.
-#[cfg(unix)]
 fn token_json(store: &TokenStore) -> serde_json::Value {
     serde_json::from_slice(&std::fs::read(store.path()).expect("the token file")).expect("json")
 }
