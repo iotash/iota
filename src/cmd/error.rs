@@ -270,6 +270,16 @@ pub enum RunError {
         #[source]
         source: crate::mcp::auth::LoginError,
     },
+    /// The login `iota mcp add <name> --url …` started did not finish. The entry it wrote stays, so the
+    /// text says what to retry — the login alone, not the `add`.
+    #[error("mcp login {name}: {source}\n  Retry with: iota mcp login {name}")]
+    McpAddLogin {
+        /// The server.
+        name: String,
+        /// What went wrong.
+        #[source]
+        source: crate::mcp::auth::LoginError,
+    },
     /// `iota mcp logout <name>` could not read or remove the token file.
     #[error("mcp logout {name}: {source}")]
     McpLogout {

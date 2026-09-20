@@ -236,10 +236,18 @@ pub struct McpAddCmd {
     /// A header for a --url server, as 'Name: value' (repeatable)
     #[arg(long = "header", value_name = "'Name: value'", action = clap::ArgAction::Append)]
     pub headers: Vec<String>,
-    /// Force or forbid the OAuth login of a --url server: oauth (then `iota mcp login <name>`) or none;
-    /// absent, the server says (a 401 at the handshake asks for the login)
+    /// Force or forbid the OAuth login of a --url server: oauth (the login starts right away) or none;
+    /// absent, the endpoint is probed and the login starts if it asks for one (a 401)
     #[arg(long, value_name = "oauth|none")]
     pub auth: Option<McpAuthArg>,
+    /// Write the entry and stop: no probe of the endpoint, no login (a script, CI, a machine without a
+    /// browser — `iota mcp login <name>` later)
+    #[arg(long)]
+    pub no_login: bool,
+    /// For the login `add` starts: print the URL instead of opening the browser (a paste of the redirect URL
+    /// still works)
+    #[arg(long, conflicts_with = "no_login")]
+    pub no_browser: bool,
     /// An OAuth client registered with the authorization server out of band; absent, the server registers
     /// one dynamically or takes iota's client id metadata document
     #[arg(long, value_name = "ID")]
@@ -291,10 +299,10 @@ pub enum McpListScope {
 }
 
 /// `--auth` on `iota mcp add --url`: the two overrides of the discovered default (`auto` is what NOT giving
-/// the flag writes — nothing).
+/// the flag writes — nothing; `add` then probes the endpoint to see whether it asks for a login).
 #[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpAuthArg {
-    /// OAuth 2.1, forced: `iota mcp login <name>` afterwards, no bare attempt.
+    /// OAuth 2.1, forced: `add` logs in right away (no probe), a run makes no bare attempt.
     Oauth,
     /// The headers as written, nothing more: a 401 is a failed connect, never a login prompt.
     None,

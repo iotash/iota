@@ -35,7 +35,7 @@ pub(crate) async fn run_mcp(
     io: &mut io::Streams,
 ) -> Result<(), CliError> {
     match &cmd.action {
-        McpAction::Add(add) => run_add(add, explicit, env, io),
+        McpAction::Add(add) => run_add(add, explicit, env, cancel, io).await,
         McpAction::List(list) => run_list(list, explicit, env, cancel, io).await,
         McpAction::Get { name } => run_get(name, explicit, env, io),
         McpAction::Remove { name, scope } => run_remove(name, *scope, explicit, &env.dirs, io),
@@ -139,10 +139,20 @@ fn declared_servers(files: &[PathBuf]) -> Result<Vec<Declared>, CliError> {
 // ---------------------------------------------------------------- add
 
 /// `iota mcp add <name> [flags] -- <command> [args…]` / `iota mcp add <name> --url <url> [flags]`.
-fn run_add(
+///
+/// An HTTP entry is followed up on once it is written ([`FollowUp`]): the login starts right here when the
+/// entry says one is wanted (`--auth oauth`, or a client id — which only a login uses); when nothing says
+/// (`auto`) the endpoint is PROBED — one bare `initialize` (`mcp::auth::probe`), and its 401 starts the
+/// login on the spot, as Codex's `mcp add` does — where a server that answers without a credential is
+/// left at `Added` and one that could not be reached keeps the `iota mcp login` hint; and nothing happens
+/// when the entry carries its own credential or forbids the login. `--no-login` writes and stops, with
+/// the hint the entry earns. A login that does not finish leaves the entry where it is and says so
+/// (`RunError::McpAddLogin`, exit 1): the file write succeeded, the login is what to retry.
+async fn run_add(
     add: &McpAddCmd,
     explicit: Option<&Path>,
     env: &Env,
+    cancel: &CancellationToken,
     io: &mut io::Streams,
 ) -> Result<(), CliError> {
     check_name(&add.name)?;
@@ -182,29 +192,24 @@ fn run_add(
         describe(&entry),
         file.display()
     )?;
-    // What comes next for an HTTP server: a login, when the entry says so (`--auth oauth`, or a client id —
-    // which only a login uses); a login IF the server turns out to want one, when nothing says (`auto`); and
-    // nothing when the entry carries its own credential or forbids the login. `add` does not connect to
-    // find out, as Claude Code's and Codex's do not.
     let added = server_config(&add.name, &entry);
-    if !added.url.is_empty() {
-        match added.effective_auth() {
-            AuthMode::None => {}
-            AuthMode::Oauth => writeln!(io.stdout, "Next: iota mcp login {}", add.name)?,
-            AuthMode::Auto if !entry.client_id.is_empty() => {
-                writeln!(io.stdout, "Next: iota mcp login {}", add.name)?;
-            }
-            AuthMode::Auto => writeln!(
-                io.stdout,
-                "if the server asks for a login: iota mcp login {}",
-                add.name
-            )?,
-        }
+    let follow_up = follow_up(add, &added);
+    // The hint of a `--no-login`: firm when the entry says a login is wanted, conditional when the server
+    // would have said (the probe not made).
+    match follow_up {
+        FollowUp::Hint { firm: true } => writeln!(io.stdout, "Next: iota mcp login {}", add.name)?,
+        FollowUp::Hint { firm: false } => writeln!(
+            io.stdout,
+            "if the server asks for a login: iota mcp login {}",
+            add.name
+        )?,
+        FollowUp::Nothing | FollowUp::Login | FollowUp::Probe => {}
     }
     // The agent that a bare `iota` runs may select its servers by name; a new one it does not list will
     // never load, which is worth one line now rather than a silent absence later. Read from the merged
     // config a run would load — and said nothing when that config cannot be loaded, which is that run's
-    // own error to report.
+    // own error to report. Before the login, which may not finish: the line is about the file, which is
+    // written either way.
     if let Ok(cfg) = Config::load(explicit, env, &mut |_| {})
         && let Some(agent) = cfg.agents.get(DEFAULT_AGENT)
         && let Some(listed) = &agent.mcp_servers
@@ -216,7 +221,83 @@ fn run_add(
             add.name
         )?;
     }
-    Ok(())
+    match follow_up {
+        FollowUp::Nothing | FollowUp::Hint { .. } => Ok(()),
+        FollowUp::Login => add_login(add, &added, env, cancel, io).await,
+        FollowUp::Probe => {
+            use crate::mcp::auth::Probe;
+
+            let url = crate::mcp::config::expand_server_config(&added, env).url;
+            match crate::mcp::auth::probe(&crate::llm::default_http_client(), &url).await {
+                Probe::NeedsLogin(_) => {
+                    writeln!(io.stdout, "The server asks for a login; starting it…")?;
+                    io.stdout.flush()?;
+                    add_login(add, &added, env, cancel, io).await
+                }
+                Probe::Open => Ok(()),
+                Probe::Unknown(why) => {
+                    writeln!(
+                        io.stdout,
+                        "could not reach {url} ({why}); if the server asks for a login: iota mcp login {}",
+                        add.name
+                    )?;
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
+/// What `add` does about a login once the entry is written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FollowUp {
+    /// A stdio server, `--auth none`, an own `Authorization` header: nothing to log in to.
+    Nothing,
+    /// `--no-login`: the hint alone — firm when the entry says a login is wanted, conditional when only the
+    /// server could have said.
+    Hint {
+        /// `Next: …` rather than `if the server asks for a login: …`.
+        firm: bool,
+    },
+    /// The entry says a login is wanted (`--auth oauth`, a client id): no probe, straight in.
+    Login,
+    /// Nothing says: the endpoint is asked, and its answer decides.
+    Probe,
+}
+
+/// The [`FollowUp`] of `add`'s flags and the entry they wrote.
+fn follow_up(add: &McpAddCmd, added: &ServerConfig) -> FollowUp {
+    if added.url.is_empty() || added.effective_auth() == AuthMode::None {
+        return FollowUp::Nothing;
+    }
+    let wanted = added.auth == AuthMode::Oauth || !added.client_id.is_empty();
+    match (add.no_login, wanted) {
+        (true, firm) => FollowUp::Hint { firm },
+        (false, true) => FollowUp::Login,
+        (false, false) => FollowUp::Probe,
+    }
+}
+
+/// The login `add` starts, over the entry it just wrote — no second read of the files: the entry in hand
+/// is the one, whichever tier may declare the same name — reported as `add`'s own failure when it does
+/// not finish.
+async fn add_login(
+    add: &McpAddCmd,
+    added: &ServerConfig,
+    env: &Env,
+    cancel: &CancellationToken,
+    io: &mut io::Streams,
+) -> Result<(), CliError> {
+    let expanded = crate::mcp::config::expand_server_config(added, env);
+    let store = crate::mcp::auth::TokenStore::for_server(&env.dirs, &add.name, &expanded.url)
+        .ok_or(SetupError::McpNoHomeForToken)?;
+    let target = LoginTarget::of(expanded, store, None);
+    match login_to(&add.name, add.no_browser, target, env, cancel, io).await {
+        Err(CliError::Run(RunError::McpLogin { name, source })) => {
+            Err(RunError::McpAddLogin { name, source }.into())
+        }
+        other => other,
+    }
 }
 
 /// A server name is a plain YAML key and a wire-name segment: letters, digits, `_`, `-` and `.`.
@@ -315,6 +396,18 @@ fn entry_of(add: &McpAddCmd) -> Result<McpServerConfig, ArgsError> {
                     flag: "--client-id",
                     form: "--url",
                 });
+            }
+            // The two say what to do about a login, and a stdio server has none.
+            for (flag, given) in [
+                ("--no-login", add.no_login),
+                ("--no-browser", add.no_browser),
+            ] {
+                if given {
+                    return Err(ArgsError::McpAddFlag {
+                        flag,
+                        form: "--url",
+                    });
+                }
             }
             entry.command.clone_from(command);
             entry.args = add.command[1..].to_vec();
@@ -645,9 +738,7 @@ fn login_server(
     Ok((d, store, expanded))
 }
 
-/// `iota mcp login <name> [--no-browser]`: the flow of `mcp::auth::login`, each step on stdout as it
-/// happens (the URL must be on screen while the wait runs), a pasted redirect URL read from stdin as the
-/// fallback to the loopback callback.
+/// `iota mcp login <name> [--no-browser] [--client-id ID]`: the declared entry, then [`login_to`].
 async fn run_login(
     name: &str,
     no_browser: bool,
@@ -657,19 +748,74 @@ async fn run_login(
     cancel: &CancellationToken,
     io: &mut io::Streams,
 ) -> Result<(), CliError> {
+    let (_, store, expanded) = login_server(name, explicit, env)?;
+    let target = LoginTarget::of(expanded, store, client_id);
+    login_to(name, no_browser, target, env, cancel, io).await
+}
+
+/// A login's target, resolved: the endpoint as a run expands it, the client it identifies as, where the
+/// tokens go.
+struct LoginTarget {
+    /// The token file.
+    store: crate::mcp::auth::TokenStore,
+    /// The MCP endpoint, expanded.
+    url: String,
+    /// A client registered out of band, when there is one.
+    client_id: Option<String>,
+    /// Its secret, expanded from the entry's `${env:VAR}`.
+    client_secret: Option<String>,
+    /// The fixed loopback port of a pre-registered client.
+    redirect_port: Option<u16>,
+}
+
+impl LoginTarget {
+    /// Over `expanded`. `override_id` is `login --client-id`, which beats the entry's; the entry's secret
+    /// goes with the entry's id alone.
+    fn of(
+        expanded: ServerConfig,
+        store: crate::mcp::auth::TokenStore,
+        override_id: Option<String>,
+    ) -> Self {
+        let entry_secret = Some(expanded.client_secret).filter(|s| !s.is_empty());
+        let (client_id, client_secret) = match override_id {
+            Some(id) if id == expanded.client_id => (Some(id), entry_secret),
+            Some(id) => (Some(id), None),
+            None => (
+                Some(expanded.client_id).filter(|s| !s.is_empty()),
+                entry_secret,
+            ),
+        };
+        Self {
+            store,
+            url: expanded.url,
+            client_id,
+            client_secret,
+            redirect_port: expanded.redirect_port,
+        }
+    }
+}
+
+/// The flow of `mcp::auth::login` over a [`LoginTarget`] — `iota mcp login`'s, and the one `iota mcp add`
+/// starts — each step on stdout as it happens (the URL must be on screen while the wait runs), a pasted
+/// redirect URL read from stdin as the fallback to the loopback callback. A login that does not finish is
+/// `RunError::McpLogin`.
+async fn login_to(
+    name: &str,
+    no_browser: bool,
+    target: LoginTarget,
+    env: &Env,
+    cancel: &CancellationToken,
+    io: &mut io::Streams,
+) -> Result<(), CliError> {
     use crate::mcp::auth::{Browser, LoginRequest, LoginStep, login, step_line};
 
-    let (_, store, expanded) = login_server(name, explicit, env)?;
-    // `--client-id` beats the entry's; the entry's secret goes with the entry's id alone.
-    let entry_secret = Some(expanded.client_secret.clone()).filter(|s| !s.is_empty());
-    let (client_id, client_secret) = match client_id {
-        Some(id) if id == expanded.client_id => (Some(id), entry_secret),
-        Some(id) => (Some(id), None),
-        None => (
-            Some(expanded.client_id.clone()).filter(|s| !s.is_empty()),
-            entry_secret,
-        ),
-    };
+    let LoginTarget {
+        store,
+        url,
+        client_id,
+        client_secret,
+        redirect_port,
+    } = target;
     let browser = if no_browser {
         Browser::Print
     } else {
@@ -692,7 +838,7 @@ async fn run_login(
     let paste = Box::pin(async move { rx.await.ok().flatten() });
     let request = LoginRequest {
         name,
-        url: &expanded.url,
+        url: &url,
         http: crate::llm::default_http_client(),
         store,
         browser,
@@ -700,7 +846,7 @@ async fn run_login(
         cancel,
         client_id,
         client_secret,
-        redirect_port: expanded.redirect_port,
+        redirect_port,
     };
     let outcome = {
         let mut report = |step: LoginStep| {

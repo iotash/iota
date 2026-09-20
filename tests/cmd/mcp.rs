@@ -23,12 +23,20 @@ fn project() -> (TempDir, std::path::PathBuf) {
 
 /// `iota mcp …` with a cleared environment.
 fn mcp(cwd: &Path, home: &Path, args: &[&str]) -> Output {
+    mcp_with(cwd, home, &[], args)
+}
+
+/// `iota mcp …` with a cleared environment plus `extra_env` (`$BROWSER`, a secret's variable).
+fn mcp_with(cwd: &Path, home: &Path, extra_env: &[(&str, &str)], args: &[&str]) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_iota"));
     cleared_env(&mut cmd, home)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .arg("mcp")
         .args(args);
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
     cmd.output().expect("run iota")
 }
 
@@ -272,7 +280,13 @@ fn mcp_project_scope_and_the_two_tiers() {
     let o = mcp(
         cwd,
         &home,
-        &["add", "gh", "--url", "https://user.example/mcp"],
+        &[
+            "add",
+            "gh",
+            "--url",
+            "https://user.example/mcp",
+            "--no-login",
+        ],
     );
     assert_eq!(
         ok(&o),
@@ -384,10 +398,11 @@ fn mcp_explicit_config_file_is_the_only_scope() {
             "http://127.0.0.1:1/mcp",
             "-c",
             alt.to_str().unwrap(),
+            "--no-login",
         ],
     );
-    // No `--auth`: nothing is written for it, and the hint is conditional — the server, not the entry,
-    // says whether there is a login.
+    // No `--auth`: nothing is written for it, and the hint (`--no-login`: the endpoint is not asked) is
+    // conditional — the server, not the entry, says whether there is a login.
     assert_eq!(
         ok(&o),
         format!(
@@ -545,6 +560,7 @@ fn mcp_add_oauth_and_the_agent_subset_hint() {
             "https://nb.example/api/mcp",
             "--auth",
             "oauth",
+            "--no-login",
         ],
     );
     assert_eq!(
@@ -721,8 +737,13 @@ async fn mcp_login_logout_through_the_cli() {
     let cwd = dir.path();
     let token_file = home.join(".iota/mcp/auth/nb.json");
 
-    // The server, declared in the user file with no `auth:`; a plain one beside it.
-    ok(&mcp(cwd, &home, &["add", "nb", "--url", &mock.mcp_url()]));
+    // The server, declared in the user file with no `auth:` (and `--no-login`: the login under test is the
+    // command's own); a plain one beside it.
+    ok(&mcp(
+        cwd,
+        &home,
+        &["add", "nb", "--url", &mock.mcp_url(), "--no-login"],
+    ));
     let script = cwd.join("server.sh");
     fs::write(&script, SH_SERVER).unwrap();
     ok(&mcp(
@@ -776,7 +797,14 @@ async fn mcp_login_logout_through_the_cli() {
     ok(&mcp(cwd, &home, &["remove", "off"]));
 
     // Login: the child prints the URL and waits; this test is the browser.
-    let lines = cli_login(cwd, &home, &[], &["--no-browser"], &mock.base()).await;
+    let lines = cli_login(
+        cwd,
+        &home,
+        &[],
+        &["login", "nb", "--no-browser"],
+        &mock.base(),
+    )
+    .await;
     assert!(
         lines[0].starts_with("Redirect: http://127.0.0.1:") && lines[0].ends_with("/callback"),
         "{}",
@@ -892,6 +920,7 @@ fn mcp_add_preregistered_client() {
             "pre-1",
             "--client-secret-env",
             "NB_SECRET",
+            "--no-login",
         ],
     );
     assert_eq!(
@@ -941,6 +970,7 @@ fn mcp_add_preregistered_client() {
             "pre-2",
             "--redirect-port",
             "18000",
+            "--no-login",
         ],
     );
     assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
@@ -1021,6 +1051,7 @@ fn mcp_add_preregistered_client() {
             "pre-1",
             "--client-secret-env",
             "NB_SECRET",
+            "--no-login",
         ],
     );
     assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
@@ -1139,7 +1170,8 @@ fn mcp_add_preregistered_client() {
     );
 }
 
-/// Runs `iota mcp login nb <args>` with `extra_env` on top of the cleared environment and acts as the browser:
+/// Runs `iota mcp <args>` — a `login nb`, or an `add nb --url …` that starts one — with `extra_env` on top of
+/// the cleared environment and acts as the browser:
 /// the child's stdout is read until the wait line, the URL it printed is followed (through the redirect to
 /// the loopback callback), and the child's whole stdout comes back once it has exited on its own. Its stdin
 /// is a pipe held OPEN and never written to — a terminal nobody types into — so the exit also proves the
@@ -1160,7 +1192,7 @@ async fn cli_login(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .args(["mcp", "login", "nb"])
+        .arg("mcp")
         .args(args);
     for (k, v) in extra_env {
         cmd.env(k, v);
@@ -1268,6 +1300,7 @@ async fn mcp_login_as_a_preregistered_client_through_the_cli() {
             "NB_SECRET",
             "--redirect-port",
             "17811",
+            "--no-login",
         ],
     ));
 
@@ -1275,7 +1308,7 @@ async fn mcp_login_as_a_preregistered_client_through_the_cli() {
         cwd,
         &home,
         &[("NB_SECRET", "s3cret")],
-        &["--no-browser"],
+        &["login", "nb", "--no-browser"],
         &mock.base(),
     )
     .await;
@@ -1350,7 +1383,15 @@ async fn mcp_login_refused_says_why_and_logs_the_callback() {
     ok(&mcp(
         cwd,
         &home,
-        &["add", "nb", "--url", &mock.mcp_url(), "--auth", "oauth"],
+        &[
+            "add",
+            "nb",
+            "--url",
+            &mock.mcp_url(),
+            "--auth",
+            "oauth",
+            "--no-login",
+        ],
     ));
     let log = cwd.join("iota.log");
 
@@ -1430,4 +1471,299 @@ async fn mcp_login_refused_says_why_and_logs_the_callback() {
 /// `<cwd>/alt.yaml`, for a `config check -c` of one document.
 fn alt_or_new(cwd: &Path) -> std::path::PathBuf {
     cwd.join("alt.yaml")
+}
+
+/// `add --url` follows the entry up. Nothing said about `auth`, so the endpoint is probed — one bare
+/// `initialize` (the mock saw a request with no credential) — and the mock's 401 starts the login on the
+/// spot, through `$BROWSER`: the same steps as `iota mcp login`, and the token file is there when `add`
+/// returns. `--no-browser` goes through to that login (the URL is printed, this test follows it), and the
+/// line before the steps says why they are running.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_add_probes_the_endpoint_and_logs_in() {
+    use crate::common_oauth as oauth_mock;
+
+    let mock = oauth_mock::start(3600).await;
+    let (dir, home) = project();
+    let cwd = dir.path();
+    let user = home.join(".iota.yaml");
+    let token_file = home.join(".iota/mcp/auth/nb.json");
+    let script = cwd.join("browser.sh");
+    fs::write(&script, "#!/bin/sh\ncurl -sL \"$1\" >/dev/null 2>&1 &\n").unwrap();
+    let browser = format!("sh {}", script.display());
+
+    let o = mcp_with(
+        cwd,
+        &home,
+        &[("BROWSER", &browser)],
+        &["add", "nb", "--url", &mock.mcp_url()],
+    );
+    let text = ok(&o);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines[0],
+        format!("Added nb (http: {}) to {}", mock.mcp_url(), user.display())
+    );
+    assert_eq!(lines[1], "The server asks for a login; starting it…");
+    assert!(
+        lines[2].starts_with("Redirect: http://127.0.0.1:") && lines[2].ends_with("/callback"),
+        "{}",
+        lines[2]
+    );
+    assert_eq!(lines[3], "Client: cid-1 (dynamic registration)");
+    assert_eq!(lines[4], "Open this URL to log in:");
+    assert!(
+        lines[5]
+            .trim()
+            .starts_with(&format!("{}/authorize?", mock.base())),
+        "{}",
+        lines[5]
+    );
+    assert_eq!(
+        lines[6],
+        "Waiting for the browser to come back (5m), or paste the redirect URL here:"
+    );
+    assert!(
+        lines[7].starts_with("Logged in to nb; the token expires in ")
+            && lines[7].ends_with(&format!("(saved to {})", token_file.display())),
+        "{}",
+        lines[7]
+    );
+    assert_eq!(lines.len(), 8, "{text}");
+    assert!(token_file.is_file());
+    let seen = mock.state();
+    assert_eq!(
+        seen.bearers,
+        [None],
+        "the probe: one request, no credential"
+    );
+    assert_eq!(seen.authorizations.len(), 1, "one login");
+    assert!(
+        !fs::read_to_string(&user).unwrap().contains("auth:"),
+        "the entry stays `auto`: the token file is what makes the next connect an OAuth one"
+    );
+    let text = ok(&mcp(cwd, &home, &["list"]));
+    assert!(text.contains("[auth: auto: logged in]"), "{text}");
+
+    // `--no-browser` reaches the login `add` starts: the URL is printed and waited on, nothing is opened.
+    let (dir, home) = project();
+    let cwd = dir.path();
+    let lines = cli_login(
+        cwd,
+        &home,
+        &[],
+        &["add", "nb", "--url", &mock.mcp_url(), "--no-browser"],
+        &mock.base(),
+    )
+    .await;
+    assert!(
+        lines[0].starts_with("Added nb (http: ")
+            && lines[1] == "The server asks for a login; starting it…",
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .last()
+            .is_some_and(|l| l.starts_with("Logged in to nb; the token expires in ")),
+        "{lines:?}"
+    );
+    assert!(home.join(".iota/mcp/auth/nb.json").is_file());
+    assert_eq!(mock.state().authorizations.len(), 2);
+}
+
+/// The follow-ups of `add --url` that make no login: `--no-login` writes the entry and the hint it earns
+/// (conditional for `auto`, firm for `--auth oauth`) without a request of any kind; an endpoint that
+/// answers the bare request is left at `Added …`, probed once; one that could not be reached keeps the
+/// entry and the hint, exit 0; `--auth none` and an own `Authorization` header are never probed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_add_probes_or_not_without_a_login_to_make() {
+    use crate::common_oauth as oauth_mock;
+
+    let mock = oauth_mock::start(3600).await;
+    let (dir, home) = project();
+    let cwd = dir.path();
+    let user = home.join(".iota.yaml");
+    let url = mock.mcp_url();
+
+    // (b) `--no-login`: the entry, the hint, no request — the mock sees nothing at all.
+    assert_eq!(
+        ok(&mcp(
+            cwd,
+            &home,
+            &["add", "nb", "--url", &url, "--no-login"]
+        )),
+        format!(
+            "Added nb (http: {url}) to {}\nif the server asks for a login: iota mcp login nb\n",
+            user.display()
+        )
+    );
+    assert_eq!(
+        ok(&mcp(
+            cwd,
+            &home,
+            &[
+                "add",
+                "forced",
+                "--url",
+                &url,
+                "--auth",
+                "oauth",
+                "--no-login"
+            ]
+        )),
+        format!(
+            "Added forced (http: {url}) to {}\nNext: iota mcp login forced\n",
+            user.display()
+        )
+    );
+    // (e) `--auth none`, an own `Authorization` header: nothing to log in to, so nothing is asked.
+    assert_eq!(
+        ok(&mcp(
+            cwd,
+            &home,
+            &["add", "off", "--url", &url, "--auth", "none"]
+        )),
+        format!("Added off (http: {url}) to {}\n", user.display())
+    );
+    assert_eq!(
+        ok(&mcp(
+            cwd,
+            &home,
+            &[
+                "add",
+                "keyed",
+                "--url",
+                &url,
+                "--header",
+                "Authorization: Bearer ${env:KEY}",
+            ]
+        )),
+        format!("Added keyed (http: {url}) to {}\n", user.display())
+    );
+    let seen = mock.state();
+    assert!(
+        seen.bearers.is_empty(),
+        "no probe was made: {:?}",
+        seen.bearers
+    );
+    assert!(seen.authorizations.is_empty());
+    assert!(
+        !home.join(".iota/mcp/auth").exists(),
+        "no token file of any name"
+    );
+
+    // (c) A server that takes the bare request: probed once, and `Added` is all there is to say.
+    let open = oauth_mock::start_with(oauth_mock::Options {
+        open: true,
+        ..oauth_mock::Options::default()
+    })
+    .await;
+    assert_eq!(
+        ok(&mcp(cwd, &home, &["add", "free", "--url", &open.mcp_url()])),
+        format!(
+            "Added free (http: {}) to {}\n",
+            open.mcp_url(),
+            user.display()
+        )
+    );
+    let seen = open.state();
+    assert_eq!(seen.bearers, [None], "probed once, no credential");
+    assert!(seen.authorizations.is_empty(), "no login was started");
+    assert!(!home.join(".iota/mcp/auth/free.json").exists());
+
+    // (d) An endpoint nobody answers at: the entry is written, the hint stays conditional, the reason is
+    // in the line, and the command succeeds — the file write did.
+    let text = ok(&mcp(
+        cwd,
+        &home,
+        &["add", "t", "--url", "http://127.0.0.1:1/mcp"],
+    ));
+    assert!(
+        text.starts_with(&format!(
+            "Added t (http: http://127.0.0.1:1/mcp) to {}\ncould not reach http://127.0.0.1:1/mcp (",
+            user.display()
+        )),
+        "{text}"
+    );
+    assert!(
+        text.ends_with("); if the server asks for a login: iota mcp login t\n"),
+        "{text}"
+    );
+    assert!(
+        fs::read_to_string(&user)
+            .unwrap()
+            .contains("  t:\n    url: http://127.0.0.1:1/mcp\n"),
+        "{}",
+        fs::read_to_string(&user).unwrap()
+    );
+
+    // The two flags belong to the `--url` form.
+    assert_error(
+        &mcp(cwd, &home, &["add", "x", "--no-login", "--", "srv"]),
+        "mcp add: --no-login applies to --url servers only",
+    );
+    assert_error(
+        &mcp(cwd, &home, &["add", "x", "--no-browser", "--", "srv"]),
+        "mcp add: --no-browser applies to --url servers only",
+    );
+}
+
+/// (f) The login `add` started did not finish — the authorization server refused: the entry stays in the
+/// file, the error is `login`'s own with the way to retry under it, and the exit code says the command did
+/// not do all it set out to.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_add_keeps_the_entry_when_its_login_fails() {
+    use crate::common_oauth as oauth_mock;
+
+    let mock = oauth_mock::start_with(oauth_mock::Options {
+        refusal: Some(oauth_mock::Refusal {
+            error: "access_denied".to_owned(),
+            description: Some("the user declined the consent screen".to_owned()),
+            uri: None,
+        }),
+        ..oauth_mock::Options::default()
+    })
+    .await;
+    let (dir, home) = project();
+    let cwd = dir.path();
+    let user = home.join(".iota.yaml");
+    let script = cwd.join("browser.sh");
+    fs::write(&script, "#!/bin/sh\ncurl -sL \"$1\" >/dev/null 2>&1 &\n").unwrap();
+    let browser = format!("sh {}", script.display());
+
+    let o = mcp_with(
+        cwd,
+        &home,
+        &[("BROWSER", &browser)],
+        &["add", "nb", "--url", &mock.mcp_url()],
+    );
+    assert_eq!(o.status.code(), Some(1), "stdout: {}", out(&o));
+    let text = out(&o);
+    assert!(
+        text.starts_with(&format!(
+            "Added nb (http: {}) to {}\nThe server asks for a login; starting it…\nRedirect: http://127.0.0.1:",
+            mock.mcp_url(),
+            user.display()
+        )),
+        "{text}"
+    );
+    assert!(text.contains("Open this URL to log in:\n"), "{text}");
+    assert!(!text.contains("Logged in to"), "{text}");
+    assert_eq!(
+        err(&o),
+        "Error: mcp login nb: the authorization server refused: access_denied — the user declined the consent screen\n  Retry with: iota mcp login nb\n"
+    );
+    assert!(
+        fs::read_to_string(&user)
+            .unwrap()
+            .contains(&format!("  nb:\n    url: {}\n", mock.mcp_url())),
+        "the entry stays: {}",
+        fs::read_to_string(&user).unwrap()
+    );
+    assert!(!home.join(".iota/mcp/auth/nb.json").exists());
+    assert_eq!(mock.state().authorizations.len(), 1);
+    // …and the retry is the plain login, which finds the entry as written.
+    let text = ok(&mcp(cwd, &home, &["get", "nb"]));
+    assert!(text.ends_with("  auth: auto\n"), "{text}");
 }
