@@ -257,9 +257,32 @@ async fn connect_oauth(
         Err(e) if is_auth_required(&e) => {
             return Err(McpError::NotLoggedIn(server_cfg.name.clone()));
         }
-        Err(e) => return Err(McpError::Connect(e.to_string())),
+        Err(e) => {
+            return Err(McpError::Connect(match auth_failure(&e) {
+                Some(text) => format!("{text}; run iota mcp login {}", server_cfg.name),
+                None => e.to_string(),
+            }));
+        }
     };
     list_tools(running).await
+}
+
+/// The OAuth failure inside a handshake error, when that is what it is — a refresh the server would not do,
+/// an exchange it refused — as rmcp's own sentence, without the transport wrapper around it. `None` for
+/// every other failure.
+fn auth_failure(e: &rmcp::service::ClientInitializeError) -> Option<String> {
+    use rmcp::transport::streamable_http_client::StreamableHttpError;
+
+    let rmcp::service::ClientInitializeError::TransportError { error, .. } = e else {
+        return None;
+    };
+    match error
+        .error
+        .downcast_ref::<StreamableHttpError<reqwest::Error>>()?
+    {
+        StreamableHttpError::Auth(auth) => Some(auth.to_string()),
+        _ => None,
+    }
 }
 
 /// Whether a handshake failure is the server asking for a login: a 401 challenge or rmcp's own "authorization
@@ -282,7 +305,9 @@ fn is_auth_required(e: &rmcp::service::ClientInitializeError) -> bool {
     match err {
         StreamableHttpError::AuthRequired(_)
         | StreamableHttpError::InsufficientScope(_)
-        | StreamableHttpError::Auth(AuthError::AuthorizationRequired) => true,
+        | StreamableHttpError::Auth(
+            AuthError::AuthorizationRequired | AuthError::TokenRefreshRejected(_),
+        ) => true,
         StreamableHttpError::Client(e) => matches!(
             e.status(),
             Some(reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN)

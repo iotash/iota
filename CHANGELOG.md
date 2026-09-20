@@ -22,7 +22,8 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   and stores the tokens in `~/.iota/mcp/auth/<name>.json` (mode 0600). A run puts
   the bearer token on every request and refreshes it when the server rejects it;
   a server with no usable token is reported as `not logged in: run iota mcp login
-  <name>` and left out of that run alone. `iota mcp logout <name>` revokes and
+  <name>` and left out of that run alone, and a stored login the server will not
+  refresh is reported with the server's answer and the same `login` to run. `iota mcp logout <name>` revokes and
   forgets. In the chat, `/mcp` shows every server's login state, `/mcp login
   <name>` runs the same flow and reconnects the server, `/mcp logout <name>` takes
   it down.

@@ -70,6 +70,10 @@ pub struct Options {
     /// `/.well-known/oauth-authorization-server`) or `/oidc` (metadata at
     /// `/oidc/.well-known/openid-configuration`, the issuer `<base>/oidc`).
     pub as_path: &'static str,
+    /// What `/token` says it granted (`scope`): `""` is Logto's for a grant with no resource scope.
+    pub token_scope: &'static str,
+    /// When set, `/token` answers every refresh with this error instead of a token.
+    pub refresh_error: Option<&'static str>,
 }
 
 impl Default for Options {
@@ -80,6 +84,8 @@ impl Default for Options {
             identity: Identity::Dcr,
             resource_scopes: true,
             as_path: "",
+            token_scope: "mcp",
+            refresh_error: None,
         }
     }
 }
@@ -104,6 +110,8 @@ pub struct TokenRequest {
     pub client_id: Option<String>,
     /// The secret presented (form or basic auth), when any.
     pub client_secret: Option<String>,
+    /// The `scope` asked for, when any.
+    pub scope: Option<String>,
 }
 
 /// What the server has seen and issued.
@@ -121,6 +129,10 @@ pub struct State {
     resource_scopes: bool,
     /// The authorization server's path.
     as_path: &'static str,
+    /// What `/token` says it granted.
+    token_scope: &'static str,
+    /// What `/token` answers a refresh with, when it refuses them.
+    refresh_error: Option<&'static str>,
     /// Every bearer token presented to `POST /mcp`, in order.
     pub bearers: Vec<Option<String>>,
     /// Every `grant_type` presented to `/token`, in order.
@@ -171,6 +183,8 @@ impl OauthMock {
             refusal: st.refusal.clone(),
             resource_scopes: st.resource_scopes,
             as_path: st.as_path,
+            token_scope: st.token_scope,
+            refresh_error: st.refresh_error,
             bearers: st.bearers.clone(),
             grants: st.grants.clone(),
             revoked: st.revoked.clone(),
@@ -220,6 +234,8 @@ pub async fn start_with(options: Options) -> OauthMock {
         refusal: options.refusal,
         resource_scopes: options.resource_scopes,
         as_path: options.as_path,
+        token_scope: options.token_scope,
+        refresh_error: options.refresh_error,
         ..State::default()
     }));
     let base = server.uri();
@@ -525,6 +541,7 @@ fn token(req: &Request, _: &str, state: &Arc<Mutex<State>>) -> ResponseTemplate 
         resource: field("resource"),
         client_id: presented_id.clone(),
         client_secret: presented_secret.clone(),
+        scope: field("scope"),
     });
     // The client must be the one the mock knows, with its secret when it has one.
     if presented_id.as_deref() != Some(accepted_client_id(&guard).as_str()) {
@@ -573,6 +590,19 @@ fn token(req: &Request, _: &str, state: &Arc<Mutex<State>>) -> ResponseTemplate 
                     serde_json::json!({"error": "invalid_grant", "error_description": "refresh token rejected"}),
                 );
             };
+            if let Some(error) = guard.refresh_error {
+                return json(
+                    400,
+                    serde_json::json!({"error": error, "error_description": "the mock refuses refreshes"}),
+                );
+            }
+            // Logto: a scope the refresh token does not carry — an empty one included — is refused.
+            if field("scope").is_some_and(|s| s.split(' ').any(str::is_empty)) {
+                return json(
+                    400,
+                    serde_json::json!({"error": "invalid_scope", "error_description": "refresh token missing requested scope"}),
+                );
+            }
             guard.valid_refresh.remove(at);
         }
         _ => return json(400, serde_json::json!({"error": "unsupported_grant_type"})),
@@ -584,6 +614,7 @@ fn token(req: &Request, _: &str, state: &Arc<Mutex<State>>) -> ResponseTemplate 
     guard.valid_access.push(access.clone());
     guard.valid_refresh.push(refresh.clone());
     let expires_in = guard.expires_in;
+    let scope = guard.token_scope;
     json(
         200,
         serde_json::json!({
@@ -591,7 +622,7 @@ fn token(req: &Request, _: &str, state: &Arc<Mutex<State>>) -> ResponseTemplate 
             "token_type": "Bearer",
             "expires_in": expires_in,
             "refresh_token": refresh,
-            "scope": "mcp",
+            "scope": scope,
         }),
     )
 }

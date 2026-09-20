@@ -222,6 +222,15 @@ fn now_epoch_secs() -> u64 {
 /// a dependency of this one, and three methods do not justify it).
 type StoreFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, AuthError>> + Send + 'a>>;
 
+/// `credentials` with no empty scope in `granted_scopes`. A token response whose `scope` is `""` (Logto's,
+/// for a grant with no resource scope) reaches rmcp as one empty scope, which it sends back on every
+/// refresh — and Logto answers `invalid_scope: refresh token missing requested scope`. The store is the one
+/// place both the login's save and the run's load pass through.
+fn without_empty_scopes(mut credentials: StoredCredentials) -> StoredCredentials {
+    credentials.granted_scopes.retain(|s| !s.trim().is_empty());
+    credentials
+}
+
 impl CredentialStore for TokenStore {
     fn load<'life0, 'async_trait>(
         &'life0 self,
@@ -232,7 +241,7 @@ impl CredentialStore for TokenStore {
     {
         Box::pin(async move {
             TokenStore::load(self)
-                .map(|file| file.map(|f| f.credentials))
+                .map(|file| file.map(|f| without_empty_scopes(f.credentials)))
                 .map_err(|e| AuthError::InternalError(format!("token store: {e}")))
         })
     }
@@ -256,7 +265,7 @@ impl CredentialStore for TokenStore {
                 &TokenFile {
                     url: self.url.clone(),
                     metadata,
-                    credentials,
+                    credentials: without_empty_scopes(credentials),
                 },
             )
             .map_err(|e| AuthError::InternalError(format!("token store: {e}")))
@@ -585,8 +594,9 @@ fn accepts_metadata_document(metadata: &AuthorizationMetadata) -> bool {
 /// The scopes a login asks for: what the RESOURCE names — the `scope` of the endpoint's 401 challenge and the
 /// `scopes_supported` of its protected-resource metadata (RFC 9728) — plus `offline_access` when the
 /// authorization server lists it (RFC 8414 `scopes_supported`; an OIDC-flavoured server issues a refresh
-/// token for it). Empty when the resource names none: the request then carries no `scope` at all rather
-/// than everything the authorization server could grant.
+/// token for it) — with or without resource scopes, since a refresh token is wanted either way and Logto
+/// refuses a request that names no scope at all. Empty only when neither names one: the request then
+/// carries no `scope` rather than everything the authorization server could grant.
 async fn login_scopes(
     http: &reqwest::Client,
     url: &str,
@@ -666,11 +676,13 @@ async fn login_scopes(
         }
         break;
     }
-    if !scopes.is_empty()
-        && metadata
-            .scopes_supported
-            .as_ref()
-            .is_some_and(|s| s.iter().any(|x| x == "offline_access"))
+    // `offline_access` is the authorization server's business, not the resource's: a refresh token is wanted
+    // whether or not the resource names a scope — and Logto refuses a request that names none at all
+    // (namebeta, 2026-09-20, once its resource stopped naming any).
+    if metadata
+        .scopes_supported
+        .as_ref()
+        .is_some_and(|s| s.iter().any(|x| x == "offline_access"))
     {
         push(&mut scopes, "offline_access");
     }

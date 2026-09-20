@@ -311,6 +311,73 @@ async fn login_stores_connects_refreshes_and_logs_out() {
     m.close().await;
 }
 
+/// Logto's token for a grant with no resource scope says `scope: ""`; rmcp keeps that as one empty scope,
+/// puts `offline_access` beside it on a refresh, and Logto refuses the pair (`invalid_scope: refresh token
+/// missing requested scope`). The store hands rmcp no empty scope, so the refresh names no scope and goes
+/// through.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_empty_scope_in_the_token_never_comes_back_on_a_refresh() {
+    let mock = oauth_mock::start_with(oauth_mock::Options {
+        token_scope: "",
+        ..oauth_mock::Options::default()
+    })
+    .await;
+    let (_dir, dirs) = temp_project(&[]);
+    let env = Env::fixed(&[]).with_dirs(dirs.clone());
+    let store = TokenStore::for_server(&dirs, "nb", &mock.mcp_url()).expect("a home");
+    login_via_redirect(&mock, &store).await;
+    assert_eq!(
+        token_json(&store)["credentials"]["granted_scopes"],
+        serde_json::json!([]),
+        "the empty scope is not kept"
+    );
+    mock.invalidate_access("at-1");
+    let m = Manager::new(
+        vec![oauth_server(&mock.mcp_url())],
+        ManagerOptions::new(reqwest::Client::new(), env),
+    );
+    let statuses = m.connect_all(&CancellationToken::new()).await;
+    assert_eq!(statuses[0].error(), None, "connected after the refresh");
+    let st = mock.state();
+    assert_eq!(st.grants, ["authorization_code", "refresh_token"]);
+    assert_eq!(
+        st.token_requests[1].scope, None,
+        "nothing granted to repeat, so no scope at all — rmcp puts offline_access only beside another scope"
+    );
+    m.close().await;
+}
+
+/// A refresh the server refuses for a reason other than a dead refresh token (`invalid_scope` here) is
+/// not a transport dump: the status carries the server's answer and says to log in again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_refresh_says_to_log_in_again() {
+    // A token about to expire: the refresh is the run's own, before any request — the path a token the
+    // server merely rejects does not take (rmcp answers that one with "authorization required").
+    let mock = oauth_mock::start_with(oauth_mock::Options {
+        expires_in: 1,
+        refresh_error: Some("invalid_scope"),
+        ..oauth_mock::Options::default()
+    })
+    .await;
+    let (_dir, dirs) = temp_project(&[]);
+    let env = Env::fixed(&[]).with_dirs(dirs.clone());
+    let store = TokenStore::for_server(&dirs, "nb", &mock.mcp_url()).expect("a home");
+    login_via_redirect(&mock, &store).await;
+    let m = Manager::new(
+        vec![oauth_server(&mock.mcp_url())],
+        ManagerOptions::new(reqwest::Client::new(), env),
+    );
+    let statuses = m.connect_all(&CancellationToken::new()).await;
+    let error = statuses[0].error().expect("the connect failed").to_owned();
+    assert!(
+        error.starts_with("connect failed: OAuth token refresh failed: ")
+            && error.contains("invalid_scope")
+            && error.ends_with("; run iota mcp login nb"),
+        "{error}"
+    );
+    m.close().await;
+}
+
 /// A token the server will neither accept nor refresh is "not logged in" too — the run does not stall on
 /// a challenge it cannot answer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -549,7 +616,7 @@ async fn a_metadata_document_identifies_the_client_when_nobody_registers() {
 /// `client_id`/`client_secret` — identifies the login, the secret authenticates the exchange and every
 /// refresh, and a resource that names no scope gets no `scope` parameter (not the server's whole list).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_preregistered_client_logs_in_with_its_secret_and_no_scope() {
+async fn a_preregistered_client_logs_in_with_its_secret_asking_only_for_offline_access() {
     let mock = oauth_mock::start_with(oauth_mock::Options {
         identity: oauth_mock::Identity::Preregistered {
             client_id: "pre-1".to_owned(),
@@ -597,8 +664,9 @@ async fn a_preregistered_client_logs_in_with_its_secret_and_no_scope() {
         "http://127.0.0.1:17801/callback"
     );
     assert_eq!(
-        st.authorizations[0].scope, None,
-        "nothing to ask for: no scope parameter at all"
+        st.authorizations[0].scope.as_deref(),
+        Some("offline_access"),
+        "the resource names no scope; the server's offline_access is asked for all the same"
     );
     assert_eq!(
         st.authorizations[0].resource.as_deref(),
