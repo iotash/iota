@@ -400,7 +400,7 @@ pub async fn execute_with_tools(
             let tc = &tool_calls[i];
             i += 1;
             // Approval gate: with nobody to ask, refuse and say how to enable the call (chat.go:348-364).
-            if dispatch.requires_approval(&tc.name) {
+            if dispatch.requires_approval(&tc.name, Some(&tc.arguments)) {
                 let detail = dispatch
                     .header_summary(&tc.name, &tc.arguments)
                     .unwrap_or_default();

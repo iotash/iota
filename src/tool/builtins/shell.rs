@@ -6,6 +6,14 @@
 //! will actually run (`Run a PowerShell command line…`), and the dialect it then teaches is that
 //! interpreter's own. The model is never told bash while `powershell.exe` waits for the script.
 //!
+//! ONE command line leaves the sandbox: iota itself (`crate::shell::selfcall`, DIVERGENCES X-44). A call
+//! whose first word is the running binary — `iota mcp add …`, a child agent's `iota run <agent> -m …` — is
+//! spawned without the sandbox, because what it does (write a config file in `$HOME`, open a browser, reach
+//! the API) is what the sandbox exists to refuse; every other call, iota in a pipe or a chain included, stays
+//! in. Approval is not waived by the exception: a sandboxed set that does not `auto_run` asks for such a
+//! call exactly as an unsandboxed set asks for every call, its header marked `(outside the sandbox)` — and
+//! a call that must be asked about never rides a parallel batch, which has no gate.
+//!
 //! The NAME does not move: [`SHELL_TOOL_NAME`] is `shell` on every platform and under every interpreter, as
 //! is the config key. A 378-call experiment across seven models settled it (DIVERGENCES X-20): a name and a
 //! description that disagree are resolved by the models ASYMMETRICALLY — `powershell` in either slot wins,
@@ -37,6 +45,7 @@ use crate::shell::exec;
 use crate::shell::exec::{Options, Outcome, RunResult, Sandbox};
 use crate::shell::interp::{Family, Interpreter};
 use crate::shell::jobs::{JobStart, Jobs};
+use crate::shell::selfcall::is_self_invocation;
 
 /// The tool's name, on every platform and under every interpreter (the config key is `shell` too).
 pub const SHELL_TOOL_NAME: &str = "shell";
@@ -55,6 +64,10 @@ const TIMEOUT_ERR: &str = "timeout must be between 1 and 3600 seconds";
 /// bind one). Running it in the FOREGROUND instead would hold the turn for as long as the model asked to be
 /// free of it, which is the opposite of what it requested.
 const NO_JOBS_ERR: &str = "background jobs are not available in this run";
+
+/// The mark a call header and its approval prompt carry when the command is iota itself and the set is
+/// sandboxed: the one thing the user is being asked about is that this call runs where the others do not.
+pub const OUTSIDE_SANDBOX_MARK: &str = "(outside the sandbox)";
 
 /// `tools.shell` configuration.
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -98,6 +111,9 @@ pub(crate) struct ShellTool {
     cwd: PathBuf,
     sandboxed: bool,
     dirs: HostDirs,
+    /// The running binary (`HostDirs::exe`), what a command's first word is compared against to decide
+    /// the iota exception; `None` (tests, an OS that cannot say) means no call ever leaves the sandbox.
+    exe: Option<PathBuf>,
 }
 
 /// Decode → `ShellConfig(err)`; sandbox "" → "auto"; not auto|off → `BadSandbox`; `sandboxed = sandbox == "auto"
@@ -138,6 +154,7 @@ pub fn new_shell_set(
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_default(),
         sandboxed,
+        exe: env.dirs.exe.clone(),
         dirs: env.dirs.clone(),
     })])
 }
@@ -188,7 +205,9 @@ impl Tool for ShellTool {
             let Some(timeout) = timeout_arg(args) else {
                 return Ok(ToolOutput::err(TIMEOUT_ERR));
             };
-            let sandbox = self.sandboxed.then(|| Sandbox {
+            // The iota exception: the ONLY effect is `sandbox: None` — the network and write settings are
+            // the sandbox's, and there is no sandbox.
+            let sandbox = (self.sandboxed && !self.leaves_sandbox(&command)).then(|| Sandbox {
                 root: self.root.clone(),
                 network: self.shell_cfg.network,
                 write: self
@@ -215,9 +234,14 @@ impl Tool for ShellTool {
         })
     }
 
-    /// `!sandboxed && !auto_run`.
-    fn requires_approval(&self) -> bool {
-        !self.sandboxed && !self.shell_cfg.auto_run
+    /// `!auto_run` for a call that runs outside the sandbox — every call of an unsandboxed set, and a
+    /// sandboxed set's iota call (`leaves_sandbox`). The argument-less probe answers for the set: `!sandboxed
+    /// && !auto_run`, as before the exception.
+    fn requires_approval(&self, args: Option<&JsonObject>) -> bool {
+        if self.shell_cfg.auto_run {
+            return false;
+        }
+        !self.sandboxed || args.is_some_and(|a| self.leaves_sandbox(str_arg(a, "command")))
     }
 
     /// Always — a deliberate break with the earlier rule that only read-only tools batch
@@ -225,17 +249,25 @@ impl Tool for ShellTool {
     /// call order. The judgement that rule made for the model (is this command safe beside that one?) is the
     /// model's own here: it wrote both command lines, and `&`/`wait`/`xargs -P` inside a single
     /// call were never gated either.
-    fn supports_parallel(&self, _args: Option<&JsonObject>) -> bool {
-        true
+    ///
+    /// The one exception to the exception: a sandboxed set's iota call that must be asked about takes the
+    /// serial path, because the batch has no approval gate and the sandbox no longer stands in for one.
+    fn supports_parallel(&self, args: Option<&JsonObject>) -> bool {
+        !(self.sandboxed
+            && !self.shell_cfg.auto_run
+            && args.is_some_and(|a| self.leaves_sandbox(str_arg(a, "command"))))
     }
 
     /// The D-12 lift: the call IS the command — `"[shell git
     /// status]"`. The argument name is noise (a shell call has one thing to say), and an
     /// explicit cwd folds into the running interpreter's idiom for it (`"cd <path> && <cmd>"`,
     /// `"cd <path>; <cmd>"` under PowerShell) rather than eating a separate slot. A background
-    /// call is marked, because the row settles while the work is still going.
+    /// call is marked, because the row settles while the work is still going; a call leaving a
+    /// sandboxed set is marked too, because that is what its approval prompt is about — the same
+    /// summary serves the header and the prompt, so the mark is written once.
     fn header_summary(&self, args: &JsonObject) -> Option<String> {
-        let cmd = crate::tool::fmt::header_command(str_arg(args, "command"));
+        let command = str_arg(args, "command");
+        let cmd = crate::tool::fmt::header_command(command);
         let dir = str_arg(args, "cwd").trim();
         let mut summary = if dir.is_empty() {
             cmd
@@ -248,11 +280,21 @@ impl Tool for ShellTool {
         if bool_arg(args, "background", false) {
             summary.insert_str(0, "(background) ");
         }
+        if self.sandboxed && self.leaves_sandbox(command) {
+            summary.push(' ');
+            summary.push_str(OUTSIDE_SANDBOX_MARK);
+        }
         Some(summary)
     }
 }
 
 impl ShellTool {
+    /// Whether `command` is iota itself with arguments (`crate::shell::selfcall`): the one call a sandboxed
+    /// set spawns without the sandbox. Meaningless — and never asked — for an unsandboxed set.
+    fn leaves_sandbox(&self, command: &str) -> bool {
+        is_self_invocation(command, self.exe.as_deref())
+    }
+
     /// Hands the command to the job registry and answers with the receipt the model needs to follow it: the
     /// id the notice will carry, the pid, and the file it can `tail` meanwhile.
     fn start_background(&self, opts: &Options) -> ToolOutput {

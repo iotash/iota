@@ -109,7 +109,7 @@ impl Dispatcher for ArtDispatch {
         self.mode
     }
 
-    fn requires_approval(&self, _name: &str) -> bool {
+    fn requires_approval(&self, _name: &str, _args: Option<&JsonObject>) -> bool {
         self.approval
     }
 }

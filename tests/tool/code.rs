@@ -642,7 +642,7 @@ async fn mutating_code_tools_need_approval_unless_auto_write() {
         ("list_dir", false),
     ] {
         assert_eq!(
-            reg.requires_approval(name),
+            reg.requires_approval(name, None),
             want,
             "requires_approval({name})"
         );
@@ -650,15 +650,15 @@ async fn mutating_code_tools_need_approval_unless_auto_write() {
 
     let auto = registry(&root, "code:\n  auto_write: true\n");
     assert!(
-        !auto.requires_approval("write_file") && !auto.requires_approval("edit_file"),
+        !auto.requires_approval("write_file", None) && !auto.requires_approval("edit_file", None),
         "auto_write should waive approval"
     );
 
     // The capability routes through Merge, and unknown tools never require it.
     let merged = merge(vec![Arc::new(reg) as Arc<dyn Dispatcher>]);
-    assert!(merged.requires_approval("write_file"));
-    assert!(!merged.requires_approval("read_file"));
-    assert!(!merged.requires_approval("nope"));
+    assert!(merged.requires_approval("write_file", None));
+    assert!(!merged.requires_approval("read_file", None));
+    assert!(!merged.requires_approval("nope", None));
 }
 
 /// `tool.Build(Env{ProjectRoot: root}, rawTools(t, yaml), nil)` with no warnings expected.
@@ -716,7 +716,7 @@ fn only_the_read_only_code_tools_opt_into_parallel() {
         }
         // Whatever opts in must also be harmless in the ways that matter.
         assert!(
-            !tool.requires_approval(),
+            !tool.requires_approval(None),
             "{name} runs in parallel but gates on approval: two prompts, one screen"
         );
         assert_eq!(

@@ -405,8 +405,8 @@ mod tests {
         assert!(!choose.supports_parallel(None));
         assert!(!confirm.supports_parallel(None));
         // No approval gate: asking a question changes nothing.
-        assert!(!choose.requires_approval());
-        assert!(!confirm.requires_approval());
+        assert!(!choose.requires_approval(None));
+        assert!(!confirm.requires_approval(None));
     }
 
     // Defaults applied on the way in, picks AND a custom answer coexisting on the way out.

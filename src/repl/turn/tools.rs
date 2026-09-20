@@ -213,7 +213,7 @@ async fn walk(
             t.cx.tr.open_call(&header);
         }
 
-        if dispatch.requires_approval(&tc.name) {
+        if dispatch.requires_approval(&tc.name, Some(&tc.arguments)) {
             let detail = tool_call_detail(&*dispatch, tc);
             let allowed = match t.cx.gate.ask(&t.cancel, &tc.name, &detail).await {
                 Ok(a) => a,

@@ -78,7 +78,7 @@ impl Dispatcher for StaticDispatcher {
         })
     }
 
-    fn requires_approval(&self, name: &str) -> bool {
+    fn requires_approval(&self, name: &str, _args: Option<&JsonObject>) -> bool {
         self.approval.contains(name)
     }
 
@@ -133,7 +133,7 @@ impl Dispatcher for GatedDispatch {
         })
     }
 
-    fn requires_approval(&self, _name: &str) -> bool {
+    fn requires_approval(&self, _name: &str, _args: Option<&JsonObject>) -> bool {
         true
     }
 
@@ -365,7 +365,7 @@ impl Dispatcher for FakeMcp {
         })
     }
 
-    fn requires_approval(&self, name: &str) -> bool {
+    fn requires_approval(&self, name: &str, _args: Option<&JsonObject>) -> bool {
         name == "mcp__gh__danger"
     }
 
@@ -427,7 +427,7 @@ impl Tool for StubTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
+    fn requires_approval(&self, _args: Option<&JsonObject>) -> bool {
         self.approval
     }
 
@@ -464,8 +464,8 @@ mod tests {
         );
         assert!(d.supports_parallel("a", None));
         assert!(!d.supports_parallel("b", None));
-        assert!(d.requires_approval("b"));
-        assert!(!d.requires_approval("a"));
+        assert!(d.requires_approval("b", None));
+        assert!(!d.requires_approval("a", None));
         let mut args = JsonObject::new();
         args.insert("k".to_owned(), serde_json::Value::from(1));
         let cx = RunCtx::new(CancellationToken::new());

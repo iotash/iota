@@ -126,9 +126,9 @@ impl Dispatcher for Registry {
         }
     }
 
-    /// The tool's answer; unknown → false.
-    fn requires_approval(&self, name: &str) -> bool {
-        self.get(name).is_some_and(|t| t.requires_approval())
+    /// The tool's per-call answer; unknown → false.
+    fn requires_approval(&self, name: &str, args: Option<&JsonObject>) -> bool {
+        self.get(name).is_some_and(|t| t.requires_approval(args))
     }
 
     /// The tool's answer; unknown → `Group`.
@@ -224,8 +224,9 @@ impl Dispatcher for Merged {
     }
 
     /// Owner's answer or the default.
-    fn requires_approval(&self, name: &str) -> bool {
-        self.owner(name).is_some_and(|p| p.requires_approval(name))
+    fn requires_approval(&self, name: &str, args: Option<&JsonObject>) -> bool {
+        self.owner(name)
+            .is_some_and(|p| p.requires_approval(name, args))
     }
 
     /// Owner's answer or the default.

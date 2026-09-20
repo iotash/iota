@@ -384,7 +384,7 @@ fn shell_calls_batch() {
 fn shell_approval_follows_the_auto_run_and_write_matrix() {
     let approval = |cfg: &str| {
         let (_dir, _root, tool) = new_shell(cfg);
-        tool.requires_approval()
+        tool.requires_approval(None)
     };
     assert!(
         approval("sandbox: off\n"),
@@ -474,7 +474,7 @@ async fn a_shell_key_enables_the_shell_tool() {
         "the shell tool via registry: {out:?}"
     );
     // The registry routes the tool's approval answer (sandbox: off, no auto_run).
-    assert!(r.requires_approval(SHELL_TOOL_NAME));
+    assert!(r.requires_approval(SHELL_TOOL_NAME, None));
 }
 #[test]
 fn the_shell_description_states_the_shell_state_contract() {
@@ -815,6 +815,152 @@ async fn the_sandbox_isolates_the_filesystem_and_the_network() {
     );
     assert!(outside.join("g.txt").exists());
 }
+/// The iota exception (DIVERGENCES X-44), end to end through the tool: a sandboxed set spawns a call whose
+/// first word is the running binary WITHOUT the sandbox, and only that call — the same binary in a pipe stays
+/// in. The binary is a stand-in script (`HostDirs::exe` is injected, never probed here) that writes a marker
+/// where the sandbox forbids writes: the marker's existence is the proof of where the call ran.
+///
+/// Around it, the policy the exception does not change: the call still needs approval when the set does not
+/// `auto_run`, it is marked `(outside the sandbox)` in its header, and it never rides a parallel batch — the
+/// batch has no gate. With `auto_run: true` nothing is asked and it batches like any other call.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_sandbox_lets_iota_itself_out_and_nothing_else() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let (dir, root, outside, sb) = sandbox_fixture();
+    if skip_unless_sandboxed(
+        "the_sandbox_lets_iota_itself_out_and_nothing_else",
+        &sb,
+        &root,
+    )
+    .await
+    {
+        return;
+    }
+    // The stand-in binary: writes its first argument as a file, prints where it ran.
+    let bin = dir.path().join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let fake = bin.join("iota");
+    fs::write(&fake, "#!/bin/sh\necho ran > \"$1\" && echo wrote\n").expect("fake iota");
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let exe = fs::canonicalize(&fake).expect("canonical");
+    let env = ToolEnv {
+        project_root: Some(root.clone()),
+        dirs: iota::app::HostDirs {
+            home: Some(dir.path().join("home")),
+            cwd: Some(root.clone()),
+            temp: sb.temp_dir.clone(),
+            cache: sb.cache_dir.clone(),
+            exe: Some(exe.clone()),
+        },
+        ..ToolEnv::default()
+    };
+    let shell_set = |cfg: &str| {
+        let tools = new_shell_set(&env, node(cfg).as_ref()).expect("shell set");
+        Arc::clone(&tools[0])
+    };
+    let args = |v: serde_json::Value| -> JsonObject {
+        match v {
+            serde_json::Value::Object(m) => m,
+            _ => panic!("object literal expected"),
+        }
+    };
+
+    let tool = shell_set("");
+    let mark = outside.join("mark");
+    let self_call = format!("{} {}", shell_path(&exe), shell_path(&mark));
+    let piped = format!("echo hi | {} {}", shell_path(&exe), shell_path(&mark));
+    let quoted = format!(
+        "{} {} 2>&1",
+        shell_path(&exe),
+        shell_path(&outside.join("mark-quoted"))
+    );
+
+    // Policy first (no process): approval, the header mark, no batch — for the self-invocation alone.
+    assert!(
+        tool.requires_approval(Some(&args(json!({"command": self_call})))),
+        "a sandboxed set without auto_run must ask about a call that leaves the sandbox"
+    );
+    assert!(
+        !tool.requires_approval(Some(&args(json!({"command": "echo hi"})))),
+        "…and about nothing else"
+    );
+    assert!(
+        !tool.requires_approval(Some(&args(json!({"command": piped})))),
+        "iota in a pipe is an ordinary sandboxed call"
+    );
+    // The header is the (tail-truncated) command line plus the mark — the approval prompt reads the same
+    // summary, so the mark is written once.
+    let header = tool
+        .header_summary(&args(json!({"command": self_call})))
+        .expect("a header");
+    assert!(
+        header.ends_with(&format!(
+            " {}",
+            iota::tool::builtins::shell::OUTSIDE_SANDBOX_MARK
+        )),
+        "the header carries the mark the approval prompt is about: {header:?}"
+    );
+    assert!(header.starts_with(&self_call[..16]), "{header:?}");
+    let header = tool
+        .header_summary(&args(json!({"command": piped})))
+        .expect("a header");
+    assert!(
+        !header.contains(iota::tool::builtins::shell::OUTSIDE_SANDBOX_MARK),
+        "{header:?}"
+    );
+    assert!(
+        !tool.supports_parallel(Some(&args(json!({"command": self_call})))),
+        "a call that must be asked about cannot ride a batch"
+    );
+    assert!(tool.supports_parallel(Some(&args(json!({"command": piped})))));
+    assert!(tool.supports_parallel(None));
+
+    // The mechanism: the self-invocation runs OUTSIDE (the write beyond the writable roots lands)…
+    let (out, is_err) = call(&tool, json!({"command": self_call})).await;
+    assert!(
+        !is_err && out.contains("wrote"),
+        "the self-invocation should have run outside the sandbox: ({out:?}, {is_err})"
+    );
+    assert_eq!(
+        fs::read_to_string(&mark)
+            .expect("the marker the binary wrote")
+            .trim(),
+        "ran"
+    );
+    // …a redirection does not change that…
+    let (out, is_err) = call(&tool, json!({"command": quoted})).await;
+    assert!(!is_err && out.contains("wrote"), "({out:?}, {is_err})");
+    assert!(outside.join("mark-quoted").exists());
+    // …and the same binary in a pipe stays inside, where the write is refused.
+    fs::remove_file(&mark).expect("reset the marker");
+    let (out, is_err) = call(&tool, json!({"command": piped})).await;
+    assert!(
+        is_err || !out.contains("wrote"),
+        "iota in a pipe ran outside the sandbox: ({out:?}, {is_err})"
+    );
+    assert!(!mark.exists(), "the sandboxed write landed anyway");
+
+    // `auto_run: true`: nothing is asked, and the call batches — the mark stays on the header.
+    let auto = shell_set("auto_run: true\n");
+    assert!(!auto.requires_approval(Some(&args(json!({"command": self_call})))));
+    assert!(auto.supports_parallel(Some(&args(json!({"command": self_call})))));
+    assert!(
+        auto.header_summary(&args(json!({"command": self_call})))
+            .is_some_and(|h| h.ends_with(iota::tool::builtins::shell::OUTSIDE_SANDBOX_MARK))
+    );
+
+    // An unsandboxed set has nothing to leave: every call asks as before, none is marked.
+    let off = shell_set("sandbox: off\n");
+    assert!(off.requires_approval(Some(&args(json!({"command": self_call})))));
+    assert!(off.requires_approval(Some(&args(json!({"command": "echo hi"})))));
+    assert!(
+        off.header_summary(&args(json!({"command": self_call})))
+            .is_some_and(|h| !h.contains(iota::tool::builtins::shell::OUTSIDE_SANDBOX_MARK))
+    );
+}
+
 #[test]
 fn the_writable_paths_are_the_project_and_the_temp_dirs() {
     let (dir, dirs) = temp_project(&[]);

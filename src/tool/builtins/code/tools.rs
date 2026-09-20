@@ -268,8 +268,8 @@ impl Tool for EditFile {
         Box::pin(async move { Ok(edit_file_call(&self.0, cx, args)) })
     }
 
-    /// `!auto_write`.
-    fn requires_approval(&self) -> bool {
+    /// `!auto_write`, whatever the call.
+    fn requires_approval(&self, _args: Option<&JsonObject>) -> bool {
         !self.0.auto_write
     }
 
@@ -317,8 +317,8 @@ impl Tool for WriteFile {
         Box::pin(async move { Ok(write_file_call(&self.0, cx, args)) })
     }
 
-    /// `!auto_write`.
-    fn requires_approval(&self) -> bool {
+    /// `!auto_write`, whatever the call.
+    fn requires_approval(&self, _args: Option<&JsonObject>) -> bool {
         !self.0.auto_write
     }
 

@@ -456,8 +456,8 @@ impl Dispatcher for DeferDispatcher {
     }
 
     /// Pass-through.
-    fn requires_approval(&self, name: &str) -> bool {
-        self.inner.requires_approval(name)
+    fn requires_approval(&self, name: &str, args: Option<&JsonObject>) -> bool {
+        self.inner.requires_approval(name, args)
     }
 
     /// Pass-through.

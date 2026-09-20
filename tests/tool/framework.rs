@@ -151,11 +151,11 @@ async fn a_merged_dispatcher_routes_hidden_tools_and_approval_to_their_owner() {
         "merged call to hidden tool"
     );
     assert!(
-        merged.requires_approval("mcp__gh__danger"),
+        merged.requires_approval("mcp__gh__danger", None),
         "approval must route through Owner to the wrapped dispatcher"
     );
     assert!(
-        !merged.requires_approval("mcp__gh__create_pr"),
+        !merged.requires_approval("mcp__gh__create_pr", None),
         "non-approval tool misreported"
     );
 }
@@ -833,7 +833,7 @@ async fn merge_exposes_and_routes_every_parts_tools() {
     // An empty merge never panics and answers the defaults.
     let empty = merge(Vec::new());
     assert!(empty.tools().is_empty());
-    assert!(!empty.requires_approval("x"));
+    assert!(!empty.requires_approval("x", None));
     assert!(empty.as_tool_searcher().is_none());
     assert!(empty.deferred_tools().is_empty());
     assert!(empty.take_pending_loads().is_empty());
@@ -926,7 +926,7 @@ fn build_registry_enables_exactly_the_configured_sets() {
             r.supports_parallel("t", None),
             "the first registration must win"
         );
-        assert!(!r.requires_approval("t"));
+        assert!(!r.requires_approval("t", None));
     }
 }
 

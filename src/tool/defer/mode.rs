@@ -135,8 +135,8 @@ impl Dispatcher for MarkedDispatcher {
     }
 
     /// Pass-through.
-    fn requires_approval(&self, name: &str) -> bool {
-        self.inner.requires_approval(name)
+    fn requires_approval(&self, name: &str, args: Option<&JsonObject>) -> bool {
+        self.inner.requires_approval(name, args)
     }
 
     /// Pass-through.
@@ -188,8 +188,8 @@ impl Dispatcher for SearchingDispatcher {
     }
 
     /// As `MarkedDispatcher`.
-    fn requires_approval(&self, name: &str) -> bool {
-        self.0.requires_approval(name)
+    fn requires_approval(&self, name: &str, args: Option<&JsonObject>) -> bool {
+        self.0.requires_approval(name, args)
     }
 
     /// As `MarkedDispatcher`.

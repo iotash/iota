@@ -59,6 +59,7 @@
 //! | `21-emoji-table.sh` | TUI-VERIFY §6.4 | — (emoji, flags and VS16 in a table, every row measured by tmux's own ruler) |
 //! | `22-retry.sh` | TUI-VERIFY batch C | — (503 → `retrying (attempt`, the steer message lands once, Ctrl+C during the backoff leaves no red block) |
 //! | `23-mcp-oauth.sh` | brain `mcp-cli-and-oauth` | — (a server whose 401 asks for a login, `auth` undeclared: the not-logged-in notice, the MCP tab of `/tools`, `iota mcp login` through `$BROWSER` beside the chat, a restart that connects, `iota mcp logout`) |
+//! | `24-iota-outside-sandbox.sh` | brain `harness-prompt`, X-44 | — (a sandboxed `shell` set asked about `iota mcp list` from the model: the `(outside the sandbox)` mark on the prompt and the header, the allowed call's output, iota in a pipe unasked and unmarked) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -518,4 +519,14 @@ fn tmux_retry_path() {
 #[test]
 fn tmux_mcp_oauth_round_trip() {
     run_scenario("23-mcp-oauth.sh");
+}
+
+/// DIVERGENCES X-44 (brain page `harness-prompt`) — the one call a sandboxed `shell` set lets out, as the
+/// user is asked about it: `iota mcp list` from the model opens the approval prompt with `(outside the
+/// sandbox)` in its title and on the call's header, the allowed call runs and closes the round with
+/// `iota mcp list`'s own output, and the same binary in a pipe is an ordinary sandboxed call — no prompt,
+/// no mark.
+#[test]
+fn tmux_iota_outside_the_sandbox() {
+    run_scenario("24-iota-outside-sandbox.sh");
 }
