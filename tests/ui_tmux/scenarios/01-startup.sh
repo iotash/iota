@@ -28,9 +28,16 @@ else
     bad "banner: the mode row is not 'chat · session <id>'"
 fi
 # The directory row names the pane's cwd — the runner's, which is the crate root (not under the
-# pane's redirected HOME, so no `~`). Its first 40 columns: 23 + 40 never wraps at 80, however
-# deep the checkout.
-check_once "banner: the directory row" "   ${PWD:0:40}"
+# pane's redirected HOME, so no `~`). Its first 28 columns: a path longer than the 57 beside the
+# wordmark is cut in the middle, and 28 is what the head keeps, however deep the checkout.
+check_once "banner: the directory row" "   ${PWD:0:28}"
+# …and its tail is on the SAME row as the wordmark's third line: the cut, not a wrap. (Fixed
+# strings again — `.{80,}` would count bytes in the C locale.)
+if capall | grep -F '▀▀▀ ▀▀▀▀   ▀   ▀  ▀' | grep -qF -- "${PWD: -12}"; then
+    ok "banner: the directory row's tail is on the wordmark's row (no wrap)"
+else
+    bad "banner: the directory row wrapped or lost its tail"
+fi
 
 # --- the frame
 check_frame_intact "startup" 80

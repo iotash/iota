@@ -5,7 +5,7 @@ use iota::markdown::hyperlink;
 use iota::text::ansi::{
     ansi_len, ansi_width, clip_line, sgr_carry, strip_sgr, truncate_ansi, wrap_ansi, wrap_by_width,
 };
-use iota::text::width::{graphemes, rune_width, str_width, truncate_cols};
+use iota::text::width::{graphemes, rune_width, str_width, truncate_cols, truncate_middle};
 
 // Rows produced by wrapANSI are self-contained:
 // each continuation row re-opens the SGR state its line had at the break.
@@ -123,6 +123,20 @@ fn truncate_cols_cuts_on_display_columns_and_appends_the_ellipsis() {
     assert_eq!(truncate_cols("你好世界", 6), "你好…");
     assert_eq!(truncate_cols("你好", 3), "你…"); // a wide rune is never split
     assert_eq!(str_width(&truncate_cols("你好世界", 6)), 5);
+}
+
+// truncate_middle: the middle cut out, head + "…" + tail, the tail keeping the odd column;
+// grapheme-safe on both ends.
+#[test]
+fn truncate_middle_keeps_both_ends() {
+    assert_eq!(truncate_middle("hello", 5), "hello");
+    assert_eq!(truncate_middle("/Users/me/Work/iota", 10), "/Use…/iota");
+    assert_eq!(truncate_middle("/Users/me/Work/iota", 9), "/Use…iota");
+    assert_eq!(truncate_middle("你好世界再见", 9), "你好…再见"); // 4 + 1 + 4
+    assert_eq!(truncate_middle("你好世界再见", 8), "你…再见"); // head 3 fits one wide rune only
+    assert_eq!(str_width(&truncate_middle("你好世界再见", 8)), 7);
+    assert_eq!(truncate_middle("abc", 1), "…");
+    assert_eq!(truncate_middle("abc", 0), "");
 }
 
 // truncate_ansi: escape-preserving truncation (x/ansi Truncate twin) — content cut to

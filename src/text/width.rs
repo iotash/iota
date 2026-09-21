@@ -59,3 +59,41 @@ pub fn truncate_cols(s: &str, max: usize) -> String {
     out.push('…');
     out
 }
+
+/// Truncate to `max` display columns by cutting the MIDDLE out: the head and the tail are
+/// kept and joined with `"…"` (1 col), the tail getting the odd column — the shape for a
+/// path, whose two ends say the most. Grapheme-boundary safe, ANSI-blind; a string already
+/// fitting `max` passes through unchanged, and `max` 0 keeps nothing.
+pub fn truncate_middle(s: &str, max: usize) -> String {
+    if str_width(s) <= max {
+        return s.to_owned();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let head_cols = (max - 1) / 2;
+    let tail_cols = max - 1 - head_cols;
+    let mut head = String::new();
+    let mut col = 0;
+    for g in UnicodeSegmentation::graphemes(s, true) {
+        let w = cluster_width(g);
+        if col + w > head_cols {
+            break;
+        }
+        head.push_str(g);
+        col += w;
+    }
+    let mut tail: Vec<&str> = Vec::new();
+    col = 0;
+    for g in UnicodeSegmentation::graphemes(s, true).rev() {
+        let w = cluster_width(g);
+        if col + w > tail_cols {
+            break;
+        }
+        tail.push(g);
+        col += w;
+    }
+    head.push('…');
+    head.extend(tail.into_iter().rev());
+    head
+}

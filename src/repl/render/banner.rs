@@ -15,6 +15,7 @@
 use std::path::Path;
 
 use crate::agents::Overlay;
+use crate::text::width::truncate_middle;
 
 use crate::repl::render::styles::{cyan, dim};
 
@@ -24,6 +25,9 @@ const LOGO: [&str; 3] = [
     "  █  █  █   █   █▀▀█",
     " ▀▀▀ ▀▀▀▀   ▀   ▀  ▀",
 ];
+
+/// The wordmark's display columns (every glyph in it is one column wide).
+const LOGO_COLS: usize = 20;
 
 /// Between the wordmark and the facts.
 const GUTTER: &str = "   ";
@@ -51,16 +55,24 @@ pub(crate) struct BannerFacts<'a> {
 }
 
 /// The banner's three rows: the wordmark (cyan) on the left when `width` allows it, and on
-/// the right the version (dim), the mode row and the directory row.
+/// the right the version (dim), the mode row and the directory row. The directory row is
+/// cut to the columns left of `width` — the middle out, both ends kept — so it never wraps.
 ///
-/// `width` is the terminal's, as the facade reports it; `0` (unknown) is read as wide.
+/// `width` is the terminal's, as the facade reports it; `0` (unknown) is read as wide, and
+/// nothing is cut.
 pub(crate) fn banner_lines(facts: &BannerFacts<'_>, width: u16) -> Vec<String> {
+    let logo = width == 0 || width >= LOGO_MIN_WIDTH;
+    let dir_cols = match (width, logo) {
+        (0, _) => usize::MAX,
+        (w, true) => usize::from(w).saturating_sub(LOGO_COLS + GUTTER.len()),
+        (w, false) => usize::from(w),
+    };
     let right = [
         dim(concat!("v", env!("CARGO_PKG_VERSION"))),
         mode_row(facts),
-        tilde(facts.dir, facts.home),
+        truncate_middle(&tilde(facts.dir, facts.home), dir_cols),
     ];
-    if width != 0 && width < LOGO_MIN_WIDTH {
+    if !logo {
         return right.into();
     }
     LOGO.iter()
@@ -110,7 +122,7 @@ fn tilde(dir: &Path, home: Option<&Path>) -> String {
 mod tests {
     use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 
-    use super::{BannerFacts, LOGO, banner_lines};
+    use super::{BannerFacts, LOGO, LOGO_COLS, banner_lines};
     use crate::text::ansi::strip_sgr;
 
     const ID: &str = "01hq3z8a9b2c";
@@ -152,9 +164,9 @@ mod tests {
                 " ▀▀▀ ▀▀▀▀   ▀   ▀  ▀   /srv/app".to_owned(),
             ]
         );
-        // Every wordmark row is 20 columns of single-width glyphs.
+        // Every wordmark row is LOGO_COLS columns of single-width glyphs.
         for row in LOGO {
-            assert_eq!(row.chars().count(), 20, "{row:?}");
+            assert_eq!(crate::text::width::str_width(row), LOGO_COLS, "{row:?}");
         }
         // The wordmark is cyan, the version dim, the two facts below bare.
         assert!(lines[0].starts_with("\x1b[36m ▀█▀") && lines[0].contains("\x1b[2mv"));
@@ -227,6 +239,30 @@ mod tests {
         let narrow = banner_lines(&f, 40);
         assert!(!narrow.iter().any(|l| l.contains("\x1b[36m")));
         assert!(narrow[0].starts_with("\x1b[2mv"));
+    }
+
+    /// A path longer than the columns beside the wordmark is cut in the middle, both ends
+    /// kept, so the row never wraps: at 80 columns the directory gets 57. Narrow, it gets the
+    /// whole width; an unknown width cuts nothing.
+    #[test]
+    fn a_long_directory_row_is_cut_in_the_middle() {
+        let long = Path::new(
+            "/Volumes/build/agents/workspaces/2026-09/a-project-with-a-very-long-name/packages/cli",
+        );
+        let row = |w: u16| plain(&banner_lines(&facts(long, None), w))[2].clone();
+        let at_80 = row(80);
+        assert_eq!(
+            at_80,
+            " ▀▀▀ ▀▀▀▀   ▀   ▀  ▀   /Volumes/build/agents/worksp…-very-long-name/packages/cli"
+        );
+        assert_eq!(crate::text::width::str_width(&at_80), 80);
+        // Narrow: the facts alone, the directory at the terminal's width.
+        let at_40 = row(40);
+        assert_eq!(at_40, "/Volumes/build/agen…ng-name/packages/cli");
+        assert_eq!(crate::text::width::str_width(&at_40), 40);
+        // A path that fits is left whole; an unknown width cuts nothing.
+        assert!(row(200).ends_with("/packages/cli") && !row(200).contains('…'));
+        assert!(!row(0).contains('…'));
     }
 
     /// The skill-discovery warnings ride under the banner; with no overlay there are none.

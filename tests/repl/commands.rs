@@ -1017,11 +1017,13 @@ async fn overlay_refresh_notices_fire_only_on_change() {
         "exactly one notice, for the ONE turn that changed the chain"
     );
     // The banner says the chat runs in agent mode (no bundle, no factory: the mode alone), in
-    // the project root.
+    // the project root — whose tail survives whatever the row's width cut (a temp dir on
+    // macOS is longer than the 57 columns beside the wordmark).
     let lines = printed(&f.ui);
     assert!(lines[1].ends_with("█▀▀█   agent"), "{lines:?}");
+    let leaf = root.file_name().expect("leaf").to_string_lossy();
     assert!(
-        lines[2].ends_with(&format!("   {}", root.display())),
+        lines[2].ends_with(&format!("{}{leaf}", std::path::MAIN_SEPARATOR)),
         "{lines:?}"
     );
 }
