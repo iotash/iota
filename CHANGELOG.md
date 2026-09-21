@@ -3,7 +3,14 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
-## Unreleased
+## 0.3.2 - 2026-09-21
+
+The model knows where it is. Every agent with tools now sends a built-in
+harness paragraph ahead of its own prompt — who it runs inside, what the
+machine looks like, and how iota's own command line is driven — and `iota`
+itself runs outside the shell sandbox, so a child agent or an `iota mcp add`
+from the chat just works. A first run writes the starter config; `add --url`
+logs in on the spot; `/mcp` leaves the chat; the reference moves to iota.sh.
 
 ### Added
 
