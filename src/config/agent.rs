@@ -41,8 +41,8 @@ pub struct AgentConfig {
     /// (`None`) means ON, so only an explicit `notify: false` silences it.
     #[serde(deserialize_with = "crate::tool::yaml11::deserialize_opt_bool")]
     pub notify: Option<bool>,
-    /// `description:` — what this agent is FOR. Documentation of the entry: nothing in the binary reads it
-    /// since the toolset that put it in front of the model was retired.
+    /// `description:` — what this agent is FOR. Documentation of the entry, printed beside its name by
+    /// `iota list agents`; nothing puts it in front of the model since the delegate toolset was retired.
     pub description: String,
     /// `context_window:` — overrides the model's own (same spelling, same
     /// [`parse_window_size`](crate::config::window::parse_window_size)). The window is a property of the

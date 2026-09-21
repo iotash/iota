@@ -26,7 +26,7 @@ pub const SKILLS_CATALOG_CAP: usize = 32 * 1024;
 /// rejected as unterminated instead of loading a pathological file wholesale.
 pub const SKILL_DISCOVERY_CAP: usize = 32 * 1024;
 /// The catalog's leading instruction.
-pub const SKILLS_CATALOG_INSTRUCTION: &str = "To use a skill, call the load_skill tool with the skill's name and follow the instructions it returns; read files the skill references by calling load_skill again with the \"file\" argument, and run its bundled scripts with the shell tool.";
+pub const SKILLS_CATALOG_INSTRUCTION: &str = "To use a skill, call the load_skill tool with its name as the \"skill\" argument and follow the instructions it returns; read files the skill references by calling load_skill again with the \"file\" argument, and run its bundled scripts with the shell tool.";
 
 /// One discovered skill.
 #[derive(Clone, Debug, PartialEq, Eq)]

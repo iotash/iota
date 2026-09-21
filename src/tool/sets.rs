@@ -16,7 +16,7 @@ pub(crate) const SET_NAMES: [&str; 4] = ["shell", SKILLS_SET, "code", "ask"];
 
 /// The skills set — `load_skill` alone. It was called `agent` until the three-layer split, where the word
 /// `agent` became the name of a config layer and could no longer also mean a toolset (brain page
-/// `config-three-layers`). The old spelling is still accepted by `crate::config::migrate`.
+/// `config-three-layers`). The old spelling is refused by `crate::config::strict`, which names the new one.
 pub const SKILLS_SET: &str = "skills";
 
 /// The factory of a built-in set; `None` for unknown names.

@@ -68,7 +68,7 @@ impl Tool for ChooseTool {
                         "properties": {
                             "header": {
                                 "type": "string",
-                                "description": "Very short tab label (max ~12 chars), e.g. \"Auth\", \"Library\"",
+                                "description": "Very short tab label (at most 16 characters; longer is cut), e.g. \"Auth\", \"Library\"",
                             },
                             "question": {
                                 "type": "string",
@@ -76,7 +76,8 @@ impl Tool for ChooseTool {
                             },
                             "options": {
                                 "type": "array",
-                                "minItems": 2,
+                                "description": "The choices; a real choice has at least two (one yes/no question is `confirm`)",
+                                "minItems": 1,
                                 "items": {
                                     "type": "object",
                                     "properties": {

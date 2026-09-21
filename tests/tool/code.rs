@@ -774,7 +774,7 @@ fn descriptions_and_schemas_match_go() {
     let grep = def("grep");
     assert_eq!(
         grep.description,
-        "Search file contents under the project root with a Go regular expression (RE2). Output lines are \
+        "Search file contents under the project root with a regular expression (Rust regex syntax: RE2-like, no backreferences or lookaround). Output lines are \
          \"path:line: text\" (context lines use \"-\" instead of \":\"). Binary files, .git, and \
          root-.gitignore matches are skipped."
     );
@@ -783,7 +783,7 @@ fn descriptions_and_schemas_match_go() {
         json!({
             "type": "object",
             "properties": {
-                "pattern": { "type": "string", "description": "Regular expression to search for (Go/RE2 syntax)." },
+                "pattern": { "type": "string", "description": "Regular expression to search for (Rust regex syntax)." },
                 "path": { "type": "string", "description": "Optional directory to search, relative to the project root (default: the root)." },
                 "include": { "type": "string", "description": "Optional filename glob filter, e.g. \"*.go\" or \"cmd/**\"." },
                 "context": { "type": "integer", "description": "Lines of context to show around each match (0-10, default 0)." },

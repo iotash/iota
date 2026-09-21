@@ -100,7 +100,7 @@ impl Tool for Grep {
     fn def(&self) -> ToolDef {
         ToolDef {
             name: "grep".to_owned(),
-            description: "Search file contents under the project root with a Go regular expression (RE2). \
+            description: "Search file contents under the project root with a regular expression (Rust regex syntax: RE2-like, no backreferences or lookaround). \
                 Output lines are \"path:line: text\" (context lines use \"-\" instead of \":\"). Binary files, \
                 .git, and root-.gitignore matches are skipped."
                 .to_owned(),
@@ -109,7 +109,7 @@ impl Tool for Grep {
                 "properties": {
                     "pattern": {
                         "type": "string",
-                        "description": "Regular expression to search for (Go/RE2 syntax).",
+                        "description": "Regular expression to search for (Rust regex syntax).",
                     },
                     "path": {
                         "type": "string",
