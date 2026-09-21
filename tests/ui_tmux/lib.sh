@@ -75,12 +75,14 @@ EOF
 
 # iota_cmd <provider> <model> [extra iota args…] — the command line a pane runs, with its config
 # written first. HOME is redirected into the scenario's temp dir so neither the session store nor
-# the config ever touches the developer's own.
+# the config ever touches the developer's own, and HERDR_ENV is unset so a suite run from inside a
+# herdr pane (the tmux server inherits the runner's environment) never has the scenarios' iota
+# report to the developer's own pane — the herdr host is pinned by tests/host over a mock socket.
 iota_cmd() {
     local kind="$1" model="$2"
     shift 2
     write_iota_config "$kind" "$model"
-    echo "env HOME=$SCEN_HOME $IOTA_BIN $*"
+    echo "env -u HERDR_ENV HOME=$SCEN_HOME $IOTA_BIN $*"
 }
 
 # _launch <cwd|""> <provider> <model> <width> <height> [extra iota args…] — a fresh private
