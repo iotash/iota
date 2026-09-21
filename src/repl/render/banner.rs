@@ -32,8 +32,10 @@ const LOGO_COLS: usize = 20;
 /// Between the wordmark and the facts.
 const GUTTER: &str = "   ";
 
-/// Below this many columns the wordmark is dropped and the three facts stand alone.
-const LOGO_MIN_WIDTH: u16 = 48;
+/// Below this many columns the wordmark is dropped and the three facts stand alone: the
+/// wordmark (20), the gutter (3) and the longest mode row (`agent · not saved · /save keeps
+/// it`, 34) — the one row that is never cut.
+const LOGO_MIN_WIDTH: u16 = 57;
 
 /// The mode row's second segment for a chat that started without a bundle.
 const NOT_SAVED: &str = "not saved · /save keeps it";
@@ -220,21 +222,31 @@ mod tests {
         assert!(dir_row(&under, None).ends_with(&format!("   {}", under.display())));
     }
 
-    /// Under 48 columns the wordmark goes and the facts stand alone, unindented; an unknown
-    /// width (0) is read as wide.
+    /// Under 57 columns the wordmark goes and the facts stand alone, unindented; an unknown
+    /// width (0) is read as wide. At 57 the longest mode row exactly fits beside the wordmark.
     #[test]
     fn narrow_terminal_drops_the_logo() {
         let f = facts(Path::new("/srv/app"), None);
         assert_eq!(
-            plain(&banner_lines(&f, 47)),
+            plain(&banner_lines(&f, 56)),
             [
                 format!("v{}", env!("CARGO_PKG_VERSION")),
                 format!("chat · session {ID}"),
                 "/srv/app".to_owned(),
             ]
         );
-        assert!(plain(&banner_lines(&f, 48))[0].starts_with(" ▀█▀"));
+        assert!(plain(&banner_lines(&f, 57))[0].starts_with(" ▀█▀"));
         assert!(plain(&banner_lines(&f, 0))[0].starts_with(" ▀█▀"));
+        let longest = BannerFacts {
+            workspace: true,
+            session_id: None,
+            ephemeral: true,
+            ..facts(Path::new("/srv/app"), None)
+        };
+        assert_eq!(
+            crate::text::width::str_width(&plain(&banner_lines(&longest, 57))[1]),
+            57
+        );
         // The narrow rows carry no cyan: only the version is styled.
         let narrow = banner_lines(&f, 40);
         assert!(!narrow.iter().any(|l| l.contains("\x1b[36m")));

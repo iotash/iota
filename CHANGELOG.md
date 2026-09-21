@@ -15,7 +15,7 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   `Commands:`, `Session:` and `Agent mode:` rows are gone: the commands are one
   `/` away in the composer, the model is on the status row. A directory
   longer than the row is cut in the middle (`/Volumes/build/…/packages/cli`)
-  rather than wrapped; a terminal narrower than 48 columns gets the three
+  rather than wrapped; a terminal narrower than 57 columns gets the three
   facts alone; `NO_COLOR` gets them bare (X-46).
 
 ## 0.3.2 - 2026-09-21
