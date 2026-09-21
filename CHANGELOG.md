@@ -3,6 +3,20 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## Unreleased
+
+### Changed
+
+- **The banner is a logo and three facts.** A chat opens on three rows: the
+  `iota` wordmark on the left and, beside it, the version, the mode row —
+  `agent` or `chat`, then `session <id>`, `resumed <id>` or `not saved · /save
+  keeps it` — and the directory the chat runs in (the project root in agent
+  mode, else the current directory, `~` for home). The `Chat started`,
+  `Commands:`, `Session:` and `Agent mode:` rows are gone: the commands are one
+  `/` away in the composer, the model is on the status row. A terminal
+  narrower than 48 columns gets the three facts alone; `NO_COLOR` gets them
+  bare (X-46).
+
 ## 0.3.2 - 2026-09-21
 
 The model knows where it is. Every agent with tools now sends a built-in
