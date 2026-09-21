@@ -10,8 +10,9 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 - **iota reports its state to herdr.** Inside a [herdr](https://herdr.dev)
   pane — `HERDR_ENV=1`, a pane id and the socket herdr injects — iota tells
   herdr what the chat is doing, over that socket, and herdr stops guessing from
-  the screen: `working` while a turn runs, `blocked` at an approval or a
-  question, `idle` when it is your move (after a failed turn too), the session
+  the screen: `idle` from the moment the chat is up, `working` while a turn
+  runs, `blocked` at an approval or a question, `idle` again when it is your
+  move (after a failed turn too), the session
   the chat writes into (at start-up, after `/save`, after a `/session` switch),
   and a release on exit. A headless `iota run <agent> -m …` in a pane reports
   too: working from the start, idle with the reply, released on exit. Every
@@ -24,6 +25,9 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   the `<environment>` block, after the run's own: `host: herdr`, `herdr pane:
   w1:p2`, and the workspace and tab when the pane has them; `host: cmux`,
   `cmux surface: <id>` under cmux. A plain terminal adds nothing.
+- **The banner names the host.** Inside herdr or cmux the mode row ends with
+  `· in herdr` or `· in cmux` — `chat · session 01J… · in herdr`. A plain
+  terminal's row is unchanged.
 
 ### Changed
 
@@ -35,8 +39,9 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   `Commands:`, `Session:` and `Agent mode:` rows are gone: the commands are one
   `/` away in the composer, the model is on the status row. A directory
   longer than the row is cut in the middle (`/Volumes/build/…/packages/cli`)
-  rather than wrapped; a terminal narrower than 57 columns gets the three
-  facts alone; `NO_COLOR` gets them bare (X-46).
+  rather than wrapped; a terminal too narrow for the wordmark, the gutter and
+  the mode row (57 columns in a plain terminal, more when the row names a
+  host) gets the three facts alone; `NO_COLOR` gets them bare (X-46).
 
 ## 0.3.2 - 2026-09-21
 

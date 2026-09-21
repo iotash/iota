@@ -393,6 +393,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 resumed,
                 dir: &dir,
                 home: agent.home.as_deref(),
+                host: pres.detected_host(),
             },
             ui.width(),
         );
@@ -482,7 +483,10 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         },
     };
     repl.push_status();
-    // The session the chat writes into, for a host that tracks it (herdr keys its records on it).
+    // The loop is up and waiting: the hosts hear `Idle` NOW, not at the first turn — a herdr pane
+    // is listed from here — and then which session it writes into (herdr keys its records on it).
+    // Announced in that order: a host learns the chat exists before it learns what it saves.
+    repl.handles.pres.set_state(State::Idle);
     repl.report_session();
 
     // What the chat is running under, and where each value came from, into a bundle this run created — so a

@@ -111,17 +111,22 @@ async fn the_presenter_reports_over_the_socket() {
     assert!(session.params.get("state").is_none(), "{session:?}");
 }
 
-/// A repeated state is deduplicated by the presenter before it reaches the socket, and a
-/// presenter whose herdr host was never told anything still releases the pane on close.
+/// The first state always goes out — an `idle` at start-up is what lists the pane — a repeat is
+/// deduplicated by the presenter before it reaches the socket, and a presenter whose herdr host
+/// was never told anything still releases the pane on close.
 #[tokio::test]
-async fn repeated_states_are_not_resent_and_a_silent_run_still_releases() {
+async fn the_first_state_goes_out_and_a_repeat_does_not() {
     let mock = HerdrMock::start();
     let p = Presenter::new(&probe(&mock.env("w1:p2")), None, true);
-    p.set_state(State::Idle); // the initial state: a no-op
+    p.set_state(State::Idle); // the first report: sent
+    p.set_state(State::Idle); // a repeat: dropped
     p.set_state(State::Busy);
     p.set_state(State::Busy);
     p.close().await;
-    assert_eq!(mock.summaries(), ["report_agent working", "release_agent"]);
+    assert_eq!(
+        mock.summaries(),
+        ["report_agent idle", "report_agent working", "release_agent"]
+    );
 
     let p = Presenter::new(&probe(&mock.env("w1:p3")), None, true);
     p.close().await;

@@ -198,6 +198,19 @@ fn busy_labels(ui: &ScriptedUi) -> Vec<String> {
         .collect()
 }
 
+/// Every line the loop printed, bare — the banner's rows first.
+fn printed(ui: &ScriptedUi) -> Vec<String> {
+    ui.events()
+        .into_iter()
+        .filter_map(|e| match e {
+            UiEvent::Print(lines) => Some(lines),
+            _ => None,
+        })
+        .flatten()
+        .map(|l| iota::text::ansi::strip_sgr(&l))
+        .collect()
+}
+
 /// A capability-less provider (no `ToolProvider`) giving the same answer to every call.
 fn plain(answer: Answer) -> Box<dyn Provider> {
     let round = match answer {
@@ -224,9 +237,10 @@ fn no_tools() -> Arc<dyn Dispatcher> {
 // ---------------------------------------------------------------------------
 
 /// One successful turn walks Idle → Busy → Idle, and the
-/// ping carries a DIGEST of the answer, never a fixed phrase. The leading `SetState(Idle)` the
-/// input dispatch re-asserts is deduplicated away (the presenter starts at Idle), so a host that
-/// pays per update (cmux spawns a process) sees exactly two.
+/// ping carries a DIGEST of the answer, never a fixed phrase. The loop reports `Idle` once the
+/// banner is up (the host lists the chat from then on); the `Idle` the input dispatch re-asserts
+/// is deduplicated away, so a host that pays per update (cmux spawns a process) sees exactly
+/// three.
 #[tokio::test]
 async fn a_successful_turn_reports_busy_then_idle_with_a_digest() {
     let f = Fixture::new(vec![input("hi"), Reply::Interrupted]);
@@ -238,7 +252,7 @@ async fn a_successful_turn_reports_busy_then_idle_with_a_digest() {
     .await
     .expect("clean exit");
 
-    assert_eq!(f.states(), vec![State::Busy, State::Idle]);
+    assert_eq!(f.states(), vec![State::Idle, State::Busy, State::Idle]);
     assert_eq!(f.pings(), vec![(Kind::Done, "The fix landed".to_owned())]);
     // Go's `defer pres.Close()` runs before the facade goes down.
     assert_eq!(f.closed(), vec!["recorder"]);
@@ -259,7 +273,7 @@ async fn an_image_only_reply_pings_image_ready() {
         .await
         .expect("clean exit");
 
-    assert_eq!(f.states(), vec![State::Busy, State::Idle]);
+    assert_eq!(f.states(), vec![State::Idle, State::Busy, State::Idle]);
     assert_eq!(f.pings(), vec![(Kind::Done, "Image ready".to_owned())]);
 }
 
@@ -272,7 +286,7 @@ async fn a_failed_turn_reports_error_and_pings_the_headline() {
         .await
         .expect("clean exit");
 
-    assert_eq!(f.states(), vec![State::Busy, State::Error]);
+    assert_eq!(f.states(), vec![State::Idle, State::Busy, State::Error]);
     let pings = f.pings();
     assert_eq!(pings.len(), 1, "one ping per failed turn: {pings:?}");
     assert_eq!(pings[0].0, Kind::Failed);
@@ -291,7 +305,7 @@ async fn an_interrupted_turn_is_silent() {
         .await
         .expect("clean exit");
 
-    assert_eq!(f.states(), vec![State::Busy, State::Idle]);
+    assert_eq!(f.states(), vec![State::Idle, State::Busy, State::Idle]);
     assert!(
         f.events().is_empty(),
         "an interrupt pinged: {:?}",
@@ -311,7 +325,7 @@ async fn notify_false_silences_pings_but_not_states() {
     .await
     .expect("clean exit");
 
-    assert_eq!(f.states(), vec![State::Busy, State::Idle]);
+    assert_eq!(f.states(), vec![State::Idle, State::Busy, State::Idle]);
     assert!(
         f.events().is_empty(),
         "notify: false still pinged: {:?}",
@@ -339,7 +353,13 @@ async fn the_approval_gate_walks_needs_input_and_back() {
 
     assert_eq!(
         f.states(),
-        vec![State::Busy, State::NeedsInput, State::Busy, State::Idle]
+        vec![
+            State::Idle,
+            State::Busy,
+            State::NeedsInput,
+            State::Busy,
+            State::Idle
+        ]
     );
     assert_eq!(
         f.pings(),
@@ -348,6 +368,13 @@ async fn the_approval_gate_walks_needs_input_and_back() {
             (Kind::Done, "final answer".to_owned()),
         ]
     );
+    // An explicit host list is no detected host: the banner's mode row names none.
+    let banner = printed(&f.ui);
+    assert!(
+        banner[1].starts_with("  █  █  █   █   █▀▀█   chat · session "),
+        "{banner:?}"
+    );
+    assert!(!banner[1].contains(" · in "), "{banner:?}");
 }
 
 // ---------------------------------------------------------------------------
@@ -373,9 +400,10 @@ fn herdr_presenter(mock: &crate::common::HerdrMock, pane: &str) -> Arc<Presenter
 }
 
 /// The approval turn of `the_approval_gate_walks_needs_input_and_back`, heard by a herdr pane: the
-/// session is reported once the loop has its writer, the turn walks `working → blocked → working →
-/// idle` — the `blocked` without a message, herdr words its own notification — and the exit
-/// releases the pane. Every request names the pane and `iota`, and `seq` only ever grows.
+/// pane is `idle` — listed — as soon as the banner is up, THEN told the session the loop writes
+/// into; the turn walks `working → blocked → working → idle` — the `blocked` without a message,
+/// herdr words its own notification — and the exit releases the pane. Every request names the pane
+/// and `iota`, and `seq` only ever grows.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_herdr_pane_hears_the_session_the_turn_and_the_release() {
@@ -398,6 +426,7 @@ async fn a_herdr_pane_hears_the_session_the_turn_and_the_release() {
     assert_eq!(
         mock.summaries(),
         [
+            "report_agent idle".to_owned(),
             format!("report_agent_session {id}"),
             "report_agent working".to_owned(),
             "report_agent blocked".to_owned(),
@@ -408,10 +437,10 @@ async fn a_herdr_pane_hears_the_session_the_turn_and_the_release() {
     );
     let requests = mock.requests();
     assert_eq!(
-        requests[0].param("agent_session_path"),
+        requests[1].param("agent_session_path"),
         dir.to_string_lossy(),
         "{:?}",
-        requests[0]
+        requests[1]
     );
     let seqs: Vec<u64> = requests.iter().map(|r| r.seq().expect("a seq")).collect();
     assert!(
@@ -429,10 +458,17 @@ async fn a_herdr_pane_hears_the_session_the_turn_and_the_release() {
     }
     // The recording host of the fixture was replaced by the herdr presenter: nothing reached it.
     assert!(f.states().is_empty());
+    // The banner's mode row names the detected host.
+    let banner = printed(&f.ui);
+    assert_eq!(
+        banner[1],
+        format!("  █  █  █   █   █▀▀█   chat · session {id} · in herdr")
+    );
 }
 
-/// An ephemeral chat tells herdr nothing about a session — there is none — until `/save` mints the
-/// bundle: the report follows the mint, with the id and directory the factory produced.
+/// An ephemeral chat is listed `idle` at start-up but tells herdr nothing about a session — there
+/// is none — until `/save` mints the bundle: the report follows the mint, with the id and directory
+/// the factory produced.
 #[cfg(unix)]
 #[tokio::test]
 async fn save_reports_the_minted_session_to_herdr() {
@@ -466,12 +502,17 @@ async fn save_reports_the_minted_session_to_herdr() {
     assert_eq!(
         mock.summaries(),
         [
+            "report_agent idle".to_owned(),
             format!("report_agent_session {id}"),
             "release_agent".to_owned()
         ]
     );
     assert_eq!(
-        mock.requests()[0].param("agent_session_path"),
+        printed(&f.ui)[1],
+        "  █  █  █   █   █▀▀█   chat · not saved · /save keeps it · in herdr"
+    );
+    assert_eq!(
+        mock.requests()[1].param("agent_session_path"),
         dir.to_string_lossy()
     );
 }

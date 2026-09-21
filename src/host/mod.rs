@@ -2,8 +2,9 @@
 //! told what the conversation is doing — a state for its progress indicator, an attention ping when
 //! the user is needed, the session it is persisting into, a clean-up on exit — through
 //! per-capability traits a [`Host`] may or may not implement. The [`Presenter`] fans one call out
-//! to the FIRST host that has the capability (host.go:97-148), deduplicates states, and gates pings
-//! on the `notify` config key.
+//! to the FIRST host that has the capability (host.go:97-148), deduplicates repeated states — the
+//! first one always goes out, so a host learns the chat exists before its first turn — and gates
+//! pings on the `notify` config key.
 //!
 //! The one capability that is NOT first-host-only runs the other way: a host may tell the MODEL
 //! where it is. Every [`EnvironmentContributor`] adds its `key: value` facts to the harness prompt's
@@ -188,8 +189,11 @@ pub struct Caps {
 /// with a capability serves it; states are deduplicated; pings are gated by the `notify` key.
 pub struct Presenter {
     hosts: Vec<Box<dyn Host>>,
+    /// The name of the host a detector matched — the banner names it; the fallback is not one.
+    detected: Option<String>,
     notify_on: bool,
-    state: Mutex<State>,
+    /// The last state reported; `None` until the first, which is therefore never deduplicated.
+    state: Mutex<Option<State>>,
 }
 
 impl Presenter {
@@ -197,32 +201,46 @@ impl Presenter {
     /// then appends `fallback` (host.go:97-108, minus Go's "every detector" collect). MUST be called
     /// inside the tokio runtime: a detected host spawns its worker task.
     pub fn new(env: &Probe, fallback: Option<Box<dyn Host>>, notify: bool) -> Self {
-        let mut hosts: Vec<Box<dyn Host>> =
-            DETECTORS.iter().find_map(|d| d(env)).into_iter().collect();
+        let detected = DETECTORS.iter().find_map(|d| d(env));
+        let name = detected.as_ref().map(|h| h.name().to_owned());
+        let mut hosts: Vec<Box<dyn Host>> = detected.into_iter().collect();
         if let Some(f) = fallback {
             hosts.push(f);
         }
-        Self::with_hosts(hosts, notify)
-    }
-
-    /// A presenter over an explicit host list (tests; the L3 fixtures use an empty one).
-    pub fn with_hosts(hosts: Vec<Box<dyn Host>>, notify: bool) -> Self {
         Self {
-            hosts,
-            notify_on: notify,
-            state: Mutex::new(State::Idle),
+            detected: name,
+            ..Self::with_hosts(hosts, notify)
         }
     }
 
+    /// A presenter over an explicit host list (tests; the L3 fixtures use an empty one). None of
+    /// them counts as detected.
+    pub fn with_hosts(hosts: Vec<Box<dyn Host>>, notify: bool) -> Self {
+        Self {
+            hosts,
+            detected: None,
+            notify_on: notify,
+            state: Mutex::new(None),
+        }
+    }
+
+    /// The name of the host a detector matched (`herdr`, `cmux`) — what the banner's mode row
+    /// ends with. `None` in a plain terminal: the ANSI fallback is not a detected host.
+    pub fn detected_host(&self) -> Option<&str> {
+        self.detected.as_deref()
+    }
+
     /// Shows `s` on the first [`StateReporter`]; a repeated state is not re-sent
-    /// (host.go:113-124).
+    /// (host.go:113-124). Unlike Go, the presenter starts with NO state rather than `Idle`: the
+    /// loop's own `Idle`, reported once the banner is up, reaches the host — a herdr pane is
+    /// listed from that moment, not from the first turn — and only a repeat is dropped.
     pub fn set_state(&self, s: State) {
         {
             let mut cur = lock(&self.state);
-            if *cur == s {
+            if *cur == Some(s) {
                 return;
             }
-            *cur = s;
+            *cur = Some(s);
         }
         if let Some(r) = self.hosts.iter().find_map(|h| h.as_state_reporter()) {
             r.set_state(s);
@@ -366,19 +384,25 @@ mod tests {
 
     // Go: internal/host/host_test.go:45 TestPresenterDedupsStates — command dispatch re-asserts
     // Idle liberally and a host may pay per update (cmux spawns a process), so repeats are
-    // dropped; the initial state is Idle, which makes a leading `set_state(Idle)` a no-op.
+    // dropped. Unlike Go, whose presenter started AT Idle, the first report always goes out: the
+    // loop's own Idle after the banner is what lists the chat with its host (herdr) before the
+    // first turn.
     #[test]
     fn test_presenter_dedups_states() {
         let fb = host("full", FULL);
         let states = Arc::clone(&fb.states);
         let p = Presenter::with_hosts(vec![Box::new(fb)], true);
 
-        p.set_state(State::Idle); // initial state: a no-op
+        p.set_state(State::Idle); // the first report: sent
+        p.set_state(State::Idle); // a repeat: dropped
         p.set_state(State::Busy);
         p.set_state(State::Busy);
         p.set_state(State::Idle);
 
-        assert_eq!(*states.lock().unwrap(), vec![State::Busy, State::Idle]);
+        assert_eq!(
+            *states.lock().unwrap(),
+            vec![State::Idle, State::Busy, State::Idle]
+        );
     }
 
     // Go: internal/host/host_test.go:61 TestPresenterNotifySwitch — config `notify: false`
@@ -434,6 +458,11 @@ mod tests {
         };
         let p = Presenter::new(&none, Some(Box::new(host("full", FULL))), true);
         assert_eq!(p.host_names(), vec!["full"]);
+        assert_eq!(
+            p.detected_host(),
+            None,
+            "the fallback is not a detected host"
+        );
     }
 
     // Go: internal/host/host_test.go:93 TestNewPresenterDetects (cmux half) — the registry
@@ -447,6 +476,7 @@ mod tests {
         };
         let p = Presenter::new(&cmux_env, Some(Box::new(host("full", FULL))), true);
         assert_eq!(p.host_names(), vec!["cmux", "full"]);
+        assert_eq!(p.detected_host(), Some("cmux"));
         p.close().await; // flushes the worker through /usr/bin/true
     }
 
@@ -472,6 +502,7 @@ mod tests {
         };
         let p = Presenter::new(&both, Some(Box::new(host("full", FULL))), true);
         assert_eq!(p.host_names(), vec!["herdr", "full"]);
+        assert_eq!(p.detected_host(), Some("herdr"));
         assert!(
             !cmux_asked.load(std::sync::atomic::Ordering::SeqCst),
             "cmux was looked up although herdr was already detected"
