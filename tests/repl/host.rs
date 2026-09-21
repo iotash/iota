@@ -5,7 +5,8 @@
 //! against fakes and the anchors were never exercised as a sequence. Here the whole loop runs, so
 //! what is asserted is the ORDER the states and the pings actually reach a host — including the
 //! per-capability laws (`notify: false` silences pings but not states) and the two texts a turn
-//! can end with (`notify_digest(reply)` and `"Image ready"`).
+//! can end with (`notify_digest(reply)` and `"Image ready"`). The last two tests run the same
+//! loop over the REAL herdr host and a stand-in socket (`tests/common/herdr_mock.rs`).
 
 use std::sync::{Arc, PoisonError};
 
@@ -346,5 +347,131 @@ async fn the_approval_gate_walks_needs_input_and_back() {
             (Kind::NeedsInput, "noop wants to modify files".to_owned()),
             (Kind::Done, "final answer".to_owned()),
         ]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// the herdr host, over the mock socket (tests/common/herdr_mock.rs)
+// ---------------------------------------------------------------------------
+
+/// A presenter over the REAL herdr host, detected from an injected environment pointed at `mock`
+/// (no ANSI fallback: the socket is what is asserted).
+#[cfg(unix)]
+fn herdr_presenter(mock: &crate::common::HerdrMock, pane: &str) -> Arc<Presenter> {
+    let vars = mock.env(pane);
+    let borrowed: Vec<(&str, &str)> = vars.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let pres = Arc::new(Presenter::new(
+        &iota::host::Probe {
+            env: iota::app::env::Env::fixed(&borrowed),
+            look_path: Box::new(|_| None),
+        },
+        None,
+        true,
+    ));
+    assert_eq!(pres.host_names(), vec!["herdr"]);
+    pres
+}
+
+/// The approval turn of `the_approval_gate_walks_needs_input_and_back`, heard by a herdr pane: the
+/// session is reported once the loop has its writer, the turn walks `working → blocked → working →
+/// idle` — the `blocked` without a message, herdr words its own notification — and the exit
+/// releases the pane. Every request names the pane and `iota`, and `seq` only ever grows.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_herdr_pane_hears_the_session_the_turn_and_the_release() {
+    let mock = crate::common::HerdrMock::start();
+    let f = Fixture::new(vec![
+        input("write the file"),
+        commit(0),                 // the gate's "Allow once"
+        Reply::Queued(Vec::new()), // the round boundary's steering drain
+        Reply::Interrupted,
+    ]);
+    let writer = f.writer();
+    let (id, dir) = (writer.id().to_owned(), writer.dir().to_path_buf());
+    let dispatch =
+        Arc::new(StaticDispatcher::new(&["noop"]).with_approval(&["noop"])) as Arc<dyn Dispatcher>;
+    let mut params = f.params(Box::new(FakeProvider::reporting(1, None)), dispatch, true);
+    params.session.writer = Some(writer);
+    params.pres = herdr_presenter(&mock, "w1:p2");
+    iota::repl::run(params).await.expect("clean exit");
+
+    assert_eq!(
+        mock.summaries(),
+        [
+            format!("report_agent_session {id}"),
+            "report_agent working".to_owned(),
+            "report_agent blocked".to_owned(),
+            "report_agent working".to_owned(),
+            "report_agent idle".to_owned(),
+            "release_agent".to_owned(),
+        ]
+    );
+    let requests = mock.requests();
+    assert_eq!(
+        requests[0].param("agent_session_path"),
+        dir.to_string_lossy(),
+        "{:?}",
+        requests[0]
+    );
+    let seqs: Vec<u64> = requests.iter().map(|r| r.seq().expect("a seq")).collect();
+    assert!(
+        seqs.windows(2).all(|w| w[0] < w[1]),
+        "seq is not strictly increasing: {seqs:?}"
+    );
+    for r in &requests {
+        assert_eq!(r.param("pane_id"), "w1:p2", "{r:?}");
+        assert_eq!(r.param("source"), "iota", "{r:?}");
+        assert_eq!(r.param("agent"), "iota", "{r:?}");
+        assert!(
+            r.params.get("message").is_none(),
+            "a message went out: {r:?}"
+        );
+    }
+    // The recording host of the fixture was replaced by the herdr presenter: nothing reached it.
+    assert!(f.states().is_empty());
+}
+
+/// An ephemeral chat tells herdr nothing about a session — there is none — until `/save` mints the
+/// bundle: the report follows the mint, with the id and directory the factory produced.
+#[cfg(unix)]
+#[tokio::test]
+async fn save_reports_the_minted_session_to_herdr() {
+    use std::sync::Mutex;
+
+    let mock = crate::common::HerdrMock::start();
+    let f = Fixture::new(vec![input("/save"), Reply::Interrupted]);
+    let minted: Arc<Mutex<Option<(String, std::path::PathBuf)>>> = Arc::default();
+    let store = f.store.clone();
+    let sink = Arc::clone(&minted);
+    let mut params = f.params(plain(Answer::Text("unused".to_owned())), no_tools(), true);
+    params.session = SessionCtx {
+        writer: None,
+        store: f.store.clone(),
+        new_session: Some(Box::new(move || {
+            let w = store.create(NewSession::new(ProviderKind::OpenAi, "gpt-test"))?;
+            *sink.lock().unwrap_or_else(PoisonError::into_inner) =
+                Some((w.id().to_owned(), w.dir().to_path_buf()));
+            Ok(w)
+        })),
+        scope: None,
+    };
+    params.pres = herdr_presenter(&mock, "w1:p2");
+    iota::repl::run(params).await.expect("clean exit");
+
+    let (id, dir) = minted
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+        .expect("/save minted a writer");
+    assert_eq!(
+        mock.summaries(),
+        [
+            format!("report_agent_session {id}"),
+            "release_agent".to_owned()
+        ]
+    );
+    assert_eq!(
+        mock.requests()[0].param("agent_session_path"),
+        dir.to_string_lossy()
     );
 }

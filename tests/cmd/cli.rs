@@ -1076,3 +1076,59 @@ async fn cli_mcp_duplicate_wire_name_warning() {
     // The first registration won and the run went on to answer.
     assert_eq!(out(&o), format!("{}\n", transcript::REPLY));
 }
+
+/// A headless run inside a herdr pane (the `HERDR_*` variables on the child's cleared environment,
+/// pointed at the mock socket) reports `working` on the way in, `idle` once the reply is on stdout
+/// and releases the pane on exit — no session report, a stateless `-m` has none — and the
+/// `<environment>` it sends names the host, the pane, the workspace and the tab, after the run's
+/// own facts.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_headless_run_reports_to_herdr_and_names_the_pane() {
+    let mock = crate::common::HerdrMock::start();
+    let server = MockServer::start().await;
+    transcript::openai_transcript(&server).await;
+    let (dir, home) = project();
+    write_config(
+        dir.path(),
+        &format!(
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{models: [m], system: be brief, tools: {{code: }}}}\n",
+            server.uri()
+        ),
+    );
+    let mut cmd = iota(dir.path(), &home);
+    cmd.args(["-m", "hi"]).envs(mock.env("w1:p2"));
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    assert_eq!(out(&o), format!("{}\n", transcript::REPLY));
+
+    assert_eq!(
+        mock.summaries(),
+        ["report_agent working", "report_agent idle", "release_agent"]
+    );
+    let requests = mock.requests();
+    for r in &requests {
+        assert_eq!(r.param("pane_id"), "w1:p2", "{r:?}");
+        assert_eq!(r.param("source"), "iota", "{r:?}");
+    }
+    let seqs: Vec<u64> = requests.iter().map(|r| r.seq().expect("a seq")).collect();
+    assert!(
+        seqs.windows(2).all(|w| w[0] < w[1]),
+        "seq is not strictly increasing: {seqs:?}"
+    );
+
+    let sent = server.received_requests().await.expect("recorded");
+    let body: serde_json::Value = serde_json::from_slice(&sent[0].body).expect("a JSON body");
+    let content = body["messages"][0]["content"]
+        .as_str()
+        .expect("system text");
+    let host_at = content
+        .find("\nhost: herdr\nherdr pane: w1:p2\nherdr workspace: w1\nherdr tab: w1:t1\n</environment>")
+        .unwrap_or_else(|| panic!("no host lines closing the environment: {content}"));
+    // Right after the run's own facts — the config lines are the last of those.
+    let previous_line = content[..host_at].rsplit('\n').next().unwrap_or_default();
+    assert!(
+        previous_line.starts_with("project config: "),
+        "the host lines do not follow the run's facts: {content}"
+    );
+}

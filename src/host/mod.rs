@@ -11,12 +11,26 @@
 //! multiplexer's pane id reaches the model through the host layer and never as a special case in
 //! `agents::harness` (brain page `host-integration`, 2026-09-21).
 //!
-//! Hosts: the cmux multiplexer (`cmux::CmuxHost`, detected from the environment) and the plain
-//! ANSI terminal ([`ansi::AnsiHost`], the fallback the command always appends).
+//! Hosts: the herdr multiplexer (`herdr::HerdrHost`, told the pane's lifecycle over its socket), the
+//! cmux multiplexer (`cmux::CmuxHost`, driven through its CLI) — both detected from the environment —
+//! and the plain ANSI terminal ([`ansi::AnsiHost`], the fallback the command always appends).
+//!
+//! **The innermost host is exclusive** (decided 2026-09-21). Hosts nest — herdr runs inside a cmux
+//! window — and a pane inherits its environment from the process that spawned it: a herdr pane
+//! carries the `CMUX_SURFACE_ID` the herdr SERVER was born with, which may be stale or another
+//! window's, and a status row set through it would land on the wrong surface. So iota talks to the
+//! innermost host only: `DETECTORS` is ordered inner to outer (herdr before cmux), and
+//! [`Presenter::new`] keeps the FIRST detector that matches, then the ANSI fallback — never two
+//! detected hosts. A probe carrying both `HERDR_*` and `CMUX_SURFACE_ID` yields herdr alone, and
+//! cmux is not even asked. The per-capability fan-out over the remaining pair (the detected host
+//! and the terminal) is what Go had: the multiplexer takes the state (and the session), the terminal
+//! keeps the OSC 9 ping and the OSC 11 answer, both are closed, and `<environment>` gets the one
+//! host's lines — `host: <name>`, then the ids its CLI takes.
 
 pub mod ansi;
 pub(crate) mod background;
 pub(crate) mod cmux;
+pub(crate) mod herdr;
 
 pub use ansi::AnsiHost;
 
@@ -148,8 +162,10 @@ pub struct Probe {
 /// A host detector: `Some(host)` when the environment says the chat runs inside it.
 pub type Detector = fn(&Probe) -> Option<Box<dyn Host>>;
 
-/// The detectors, in priority order (host.go:84).
-pub(crate) const DETECTORS: &[Detector] = &[cmux::detect_cmux];
+/// The detectors, innermost host first (host.go:84 had one). Only the first match is kept: herdr
+/// before cmux, because a herdr pane inside a cmux window inherits a `CMUX_SURFACE_ID` that is the
+/// server's, not the pane's (the module doc).
+pub(crate) const DETECTORS: &[Detector] = &[herdr::detect_herdr, cmux::detect_cmux];
 
 /// The capability set a test host advertises (`crate::testing::RecordingHost`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -177,10 +193,12 @@ pub struct Presenter {
 }
 
 impl Presenter {
-    /// Runs the detectors, then appends `fallback` (host.go:97-108). MUST be called inside the
-    /// tokio runtime: the cmux detector spawns its worker task.
+    /// Runs the detectors until one matches — the innermost host, and no other (the module doc) —
+    /// then appends `fallback` (host.go:97-108, minus Go's "every detector" collect). MUST be called
+    /// inside the tokio runtime: a detected host spawns its worker task.
     pub fn new(env: &Probe, fallback: Option<Box<dyn Host>>, notify: bool) -> Self {
-        let mut hosts: Vec<Box<dyn Host>> = DETECTORS.iter().filter_map(|d| d(env)).collect();
+        let mut hosts: Vec<Box<dyn Host>> =
+            DETECTORS.iter().find_map(|d| d(env)).into_iter().collect();
         if let Some(f) = fallback {
             hosts.push(f);
         }
@@ -430,6 +448,42 @@ mod tests {
         let p = Presenter::new(&cmux_env, Some(Box::new(host("full", FULL))), true);
         assert_eq!(p.host_names(), vec!["cmux", "full"]);
         p.close().await; // flushes the worker through /usr/bin/true
+    }
+
+    /// The innermost host is exclusive: a probe carrying both `HERDR_*` and `CMUX_SURFACE_ID` (a
+    /// herdr pane inside a cmux window) yields herdr and the fallback alone — cmux is not detected,
+    /// its `PATH` lookup never runs, and so no `cmux` command ever does.
+    #[tokio::test]
+    async fn test_new_presenter_keeps_the_innermost_host_only() {
+        let cmux_asked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let asked = Arc::clone(&cmux_asked);
+        let both = Probe {
+            env: Env::fixed(&[
+                ("HERDR_ENV", "1"),
+                ("HERDR_PANE_ID", "w1:p2"),
+                ("HERDR_SOCKET_PATH", "/nonexistent/herdr.sock"),
+                ("HERDR_BIN_PATH", "/nonexistent/herdr"),
+                ("CMUX_SURFACE_ID", "surface-1"),
+            ]),
+            look_path: Box::new(move |_| {
+                asked.store(true, std::sync::atomic::Ordering::SeqCst);
+                Some(PathBuf::from("/usr/bin/true"))
+            }),
+        };
+        let p = Presenter::new(&both, Some(Box::new(host("full", FULL))), true);
+        assert_eq!(p.host_names(), vec!["herdr", "full"]);
+        assert!(
+            !cmux_asked.load(std::sync::atomic::Ordering::SeqCst),
+            "cmux was looked up although herdr was already detected"
+        );
+        assert_eq!(
+            p.environment(),
+            vec![
+                ("host".to_owned(), "herdr".to_owned()),
+                ("herdr pane".to_owned(), "w1:p2".to_owned()),
+            ]
+        );
+        p.close().await; // the release goes to a socket nobody listens on
     }
 
     // Go: internal/host/background_test.go:48 TestPresenterDarkBackground — the first host that

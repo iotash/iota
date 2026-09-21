@@ -6,6 +6,8 @@
 // module resolves through a directory that does not exist.
 #[path = "../common/child.rs"]
 mod common_child;
+#[path = "../common/herdr_mock.rs"]
+mod common_herdr;
 #[path = "../common/oauth_mock.rs"]
 mod common_oauth;
 #[path = "../common/project.rs"]
@@ -15,6 +17,8 @@ mod common_transcript;
 
 mod common {
     pub(crate) use crate::common_child::cleared_env;
+    #[cfg(unix)]
+    pub(crate) use crate::common_herdr::HerdrMock;
     pub(crate) use crate::common_project::temp_project;
     pub(crate) use crate::common_transcript as transcript;
 }

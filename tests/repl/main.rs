@@ -1,6 +1,17 @@
 //! Integration tests of the interactive chat loop over the scripted `Ui` facade (chat/run.go and friends) — one binary per area (docs/MERGE-PLAN.md §2).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+// The shared fixture this binary uses (`tests/common/`): the stand-in herdr the host anchors are
+// asserted against. Mounted at the root because `#[path]` inside an inline module resolves through
+// a directory that does not exist.
+#[path = "../common/herdr_mock.rs"]
+mod common_herdr;
+
+mod common {
+    #[cfg(unix)]
+    pub(crate) use crate::common_herdr::HerdrMock;
+}
+
 mod artifact;
 mod commands;
 mod compact;
