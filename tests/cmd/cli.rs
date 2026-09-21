@@ -159,21 +159,33 @@ fn cli_first_run_leaves_an_existing_config_alone() {
     std::fs::write(&path, "providers:\n  openai: {key: k}\n").expect("write");
     let mut cmd = iota(dir.path(), &home);
     cmd.args(["-c", path.to_str().expect("utf-8")]);
-    assert_error(&cmd.output().expect("run"), "no agent to run: name one with `iota run <agent>` (see `iota list agents`), or add an `agents.default` entry to your config (`iota config path` names the file)");
+    assert_error(
+        &cmd.output().expect("run"),
+        "no agent to run: name one with `iota run <agent>` (see `iota list agents`), or add an `agents.default` entry to your config (`iota config path` names the file)",
+    );
     assert!(!home.join(".iota.yaml").exists(), "-c writes nothing");
 
     // A project config alone: found, so no starter — and its lack of an agent is the refusal.
     let (dir, home) = project();
     write_config(dir.path(), "providers:\n  openai: {key: k}\n");
     let o = iota(dir.path(), &home).output().expect("run");
-    assert_error(&o, "no agent to run: name one with `iota run <agent>` (see `iota list agents`), or add an `agents.default` entry to your config (`iota config path` names the file)");
-    assert!(!home.join(".iota.yaml").exists(), "a project config is a config");
+    assert_error(
+        &o,
+        "no agent to run: name one with `iota run <agent>` (see `iota list agents`), or add an `agents.default` entry to your config (`iota config path` names the file)",
+    );
+    assert!(
+        !home.join(".iota.yaml").exists(),
+        "a project config is a config"
+    );
 
     // A user config in the `.yml` spelling: found too.
     let (dir, home) = project();
     std::fs::write(home.join(".iota.yml"), "providers:\n  openai: {key: k}\n").expect("write");
     let o = iota(dir.path(), &home).output().expect("run");
-    assert_error(&o, "no agent to run: name one with `iota run <agent>` (see `iota list agents`), or add an `agents.default` entry to your config (`iota config path` names the file)");
+    assert_error(
+        &o,
+        "no agent to run: name one with `iota run <agent>` (see `iota list agents`), or add an `agents.default` entry to your config (`iota config path` names the file)",
+    );
     assert!(!home.join(".iota.yaml").exists(), ".yml counts");
 }
 
