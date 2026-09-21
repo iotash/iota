@@ -170,6 +170,10 @@ async fn run_agent(
         }
     }
 
+    // A first run: no `-c`, no config file anywhere → the starter is written to `~/.iota.yaml` and the run
+    // goes on with it (`config_cmd::auto_init`), so `OPENAI_API_KEY=… iota` works on a fresh install.
+    config_cmd::auto_init(inv.config.as_deref(), &env.dirs, io)?;
+
     // root.go:45
     let cfg = Config::load(inv.config.as_deref(), &env, &mut |w| {
         io.warning(&w);

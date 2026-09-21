@@ -25,6 +25,14 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Changed
 
+- **A first run writes the starter config itself.** With no `-c` and no
+  `.iota.yaml` in the home or the project, `iota` (and `iota run …`) writes
+  `~/.iota.yaml` — the file `iota config init` writes — names it on stderr, and
+  goes on: `OPENAI_API_KEY=… iota` is a working first run on a fresh install,
+  and without the key the key error says what to set. Nothing is written when a
+  config exists in either spelling, when `-c` names one, or without a home.
+  The two refusals that used to send you to `config init` now say where an
+  `agents:` entry goes instead — a run without a config no longer reaches them.
 - **`iota` runs outside the shell sandbox.** A `shell` call whose first word is
   the running binary — `iota mcp add …`, `iota mcp login <name>`, a child agent's
   `iota run <agent> -m "<task>"` — is spawned without the sandbox, so it can write

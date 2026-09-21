@@ -1,9 +1,10 @@
 //! `iota config [check|path|init]` — the three questions a config file raises: does it say what I think it
 //! says, which file am I actually editing, and how do I get a first one.
 //!
-//! `init` is what makes the surface honest about the zero-config start it gave up: a run names an `agents:`
-//! entry now, so the first thing a new install needs is a file that HAS one (brain page
-//! `cli-surface-agent-first`).
+//! `init` writes the starter a new install needs — a run names an `agents:` entry, so the first thing it
+//! needs is a file that HAS one (brain page `cli-surface-agent-first`). Since 2026-09-21 a run with no config
+//! writes that same starter itself before loading ([`auto_init`], DIVERGENCES X-45); `init` remains the way to
+//! write it without running anything.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -130,16 +131,45 @@ fn init(explicit: Option<&Path>, dirs: &HostDirs, io: &mut io::Streams) -> Resul
     if path.exists() {
         return Err(SetupError::ConfigExists(path.display().to_string()).into());
     }
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&path, STARTER)?;
+    write_starter(&path)?;
     writeln!(io.stdout, "Wrote {}", path.display())?;
     writeln!(
         io.stdout,
         "Next: export OPENAI_API_KEY=... (or put `key:` in the file), then run `iota`."
     )?;
     Ok(())
+}
+
+/// The starter, written to `path` (parents created). The caller has decided the path is free.
+fn write_starter(path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, STARTER)
+}
+
+/// A first run writes the starter itself (decided 2026-09-21): with no `-c` and no config file at either
+/// tier, `~/.iota.yaml` is written and named on stderr, and the run goes on — with the key in the
+/// environment it is a run, without one the key error says what to set. `Ok(None)` = nothing was written:
+/// a file exists, `-c` names one, or there is no home to write into (the run's own error follows). The
+/// starter is what `iota config init` writes, so the two paths hand a new install the same file.
+pub(crate) fn auto_init(
+    explicit: Option<&Path>,
+    dirs: &HostDirs,
+    io: &mut io::Streams,
+) -> Result<Option<PathBuf>, CliError> {
+    if explicit.is_some() || !Config::sources(None, dirs).is_empty() {
+        return Ok(None);
+    }
+    let Ok(path) = default_config_path(dirs) else {
+        return Ok(None);
+    };
+    write_starter(&path)?;
+    io.warning(&format!(
+        "Wrote {} (a starter config: openai + gpt-5.2; edit it, or set OPENAI_API_KEY and go)",
+        path.display()
+    ));
+    Ok(Some(path))
 }
 
 /// `~/.iota.yaml` — the global config, in the first of the two extensions.

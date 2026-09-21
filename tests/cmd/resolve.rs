@@ -698,7 +698,7 @@ agents:
     let err = resolve(&["run", "coder"], &Config::default(), &[]).unwrap_err();
     assert_eq!(
         err.to_string(),
-        "unknown agent \"coder\"\n  no agents are configured — run `iota config init` to write a starter config"
+        "unknown agent \"coder\"\n  no agents are configured — add an `agents:` entry to your config (`iota config path` names the file)"
     );
 
     // The agent lookup precedes the key check: no misleading "API key is required" for a typo.
@@ -1070,7 +1070,7 @@ agents:
 /// Without an `agents.default` the refusal names the two ways forward.
 #[test]
 fn no_default_agent_is_refused_with_both_ways_out() {
-    const WANT: &str = "no agent to run: name one with `iota run <agent>` (see `iota list agents`), or add an `agents.default` entry — `iota config init` writes a starter config";
+    const WANT: &str = "no agent to run: name one with `iota run <agent>` (see `iota list agents`), or add an `agents.default` entry to your config (`iota config path` names the file)";
 
     for cfg in [
         Config::default(),

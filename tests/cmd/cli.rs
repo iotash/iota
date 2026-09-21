@@ -99,16 +99,82 @@ fn cli_message_empty() {
     assert_error(&cmd.output().expect("run"), "--message must not be empty");
 }
 
-/// root.go:53-55, as the agent-first surface says it: with nothing configured there is no `agents.default`,
-/// and the refusal names both ways forward.
+/// A first run — no `-c`, no config file at either tier — writes the starter to `~/.iota.yaml`, says so on
+/// stderr, and goes on with it: with the key in the environment it reaches the interactive branch like any
+/// configured run; without one the key error says what to set. The file is the one `iota config init`
+/// writes, and a second run finds it and writes nothing.
 #[test]
-fn cli_no_agent_to_run() {
+fn cli_first_run_writes_the_starter_and_goes_on() {
     let (dir, home) = project();
+    let starter = home.join(".iota.yaml");
+    assert!(!starter.exists());
+
+    // No key: the run gets as far as the starter's provider and stops there.
     let o = iota(dir.path(), &home).output().expect("run");
-    assert_error(
-        &o,
-        "no agent to run: name one with `iota run <agent>` (see `iota list agents`), or add an `agents.default` entry — `iota config init` writes a starter config",
+    assert_eq!(o.status.code(), Some(1), "stderr was: {}", err(&o));
+    let wrote = format!(
+        "Wrote {} (a starter config: openai + gpt-5.2; edit it, or set OPENAI_API_KEY and go)",
+        starter.display()
     );
+    assert_eq!(
+        err(&o),
+        format!(
+            "{wrote}\nError: API key is required: set OPENAI_API_KEY or providers.openai.key in your config\n"
+        )
+    );
+    let written = std::fs::read_to_string(&starter).expect("the starter");
+    assert!(written.contains("agents:\n  default:"), "{written}");
+
+    // With the key: the same first run is a run (the interactive branch refuses the pipe, as for any agent).
+    let (dir, home) = project();
+    let mut cmd = iota(dir.path(), &home);
+    cmd.env("OPENAI_API_KEY", "k");
+    let o = cmd.output().expect("run");
+    assert_eq!(o.status.code(), Some(1), "stderr was: {}", err(&o));
+    assert!(err(&o).starts_with("Wrote "), "{}", err(&o));
+    assert!(
+        err(&o).ends_with(&format!("Error: {}\n", branch_error())),
+        "{}",
+        err(&o)
+    );
+    // The second run finds the file: nothing written, nothing said about it.
+    let mut cmd = iota(dir.path(), &home);
+    cmd.env("OPENAI_API_KEY", "k");
+    let o = cmd.output().expect("run");
+    assert_eq!(err(&o), format!("Error: {}\n", branch_error()));
+    assert_eq!(
+        std::fs::read_to_string(home.join(".iota.yaml")).expect("still there"),
+        written,
+        "the starter is written once"
+    );
+}
+
+/// What a first run does NOT do: write when `-c` names a file, when a project config exists without a user
+/// one, or under a home that already has a config in the other extension.
+#[test]
+fn cli_first_run_leaves_an_existing_config_alone() {
+    // `-c`: the named file is the only scope, and a missing `agents.default` there is the plain refusal.
+    let (dir, home) = project();
+    let path = dir.path().join("only.yaml");
+    std::fs::write(&path, "providers:\n  openai: {key: k}\n").expect("write");
+    let mut cmd = iota(dir.path(), &home);
+    cmd.args(["-c", path.to_str().expect("utf-8")]);
+    assert_error(&cmd.output().expect("run"), "no agent to run: name one with `iota run <agent>` (see `iota list agents`), or add an `agents.default` entry to your config (`iota config path` names the file)");
+    assert!(!home.join(".iota.yaml").exists(), "-c writes nothing");
+
+    // A project config alone: found, so no starter — and its lack of an agent is the refusal.
+    let (dir, home) = project();
+    write_config(dir.path(), "providers:\n  openai: {key: k}\n");
+    let o = iota(dir.path(), &home).output().expect("run");
+    assert_error(&o, "no agent to run: name one with `iota run <agent>` (see `iota list agents`), or add an `agents.default` entry to your config (`iota config path` names the file)");
+    assert!(!home.join(".iota.yaml").exists(), "a project config is a config");
+
+    // A user config in the `.yml` spelling: found too.
+    let (dir, home) = project();
+    std::fs::write(home.join(".iota.yml"), "providers:\n  openai: {key: k}\n").expect("write");
+    let o = iota(dir.path(), &home).output().expect("run");
+    assert_error(&o, "no agent to run: name one with `iota run <agent>` (see `iota list agents`), or add an `agents.default` entry to your config (`iota config path` names the file)");
+    assert!(!home.join(".iota.yaml").exists(), ".yml counts");
 }
 
 /// A DECLARED `agents.default` is what a bare `iota` runs — and so is a bare `iota run`: the invocation gets
@@ -144,7 +210,7 @@ fn cli_bare_invocation_uses_the_default_agent() {
     cmd.args(["run", "default"]);
     assert_error(
         &cmd.output().expect("run"),
-        "unknown agent \"default\"\n  no agents are configured — run `iota config init` to write a starter config",
+        "unknown agent \"default\"\n  no agents are configured — add an `agents:` entry to your config (`iota config path` names the file)",
     );
 }
 
@@ -152,12 +218,28 @@ fn cli_bare_invocation_uses_the_default_agent() {
 /// `-m` still gets this error rather than `interactive mode is not available…`.
 #[test]
 fn cli_unknown_agent_text() {
+    // With no config at all the starter is written first (its one agent is `default`), and the unknown name
+    // is measured against that.
     let (dir, home) = project();
+    let mut cmd = iota(dir.path(), &home);
+    cmd.args(["run", "codr"]);
+    let o = cmd.output().expect("run");
+    assert_eq!(o.status.code(), Some(1), "stderr was: {}", err(&o));
+    assert!(
+        err(&o).starts_with("Wrote ")
+            && err(&o).ends_with("Error: unknown agent \"codr\"\n  configured agents: default\n"),
+        "{}",
+        err(&o)
+    );
+
+    // A config with no `agents:` at all: the hint says where one goes.
+    let (dir, home) = project();
+    write_config(dir.path(), "providers:\n  openai: {key: k}\n");
     let mut cmd = iota(dir.path(), &home);
     cmd.args(["run", "codr"]);
     assert_error(
         &cmd.output().expect("run"),
-        "unknown agent \"codr\"\n  no agents are configured — run `iota config init` to write a starter config",
+        "unknown agent \"codr\"\n  no agents are configured — add an `agents:` entry to your config (`iota config path` names the file)",
     );
 
     // With agents configured the hint lists them, sorted.
@@ -342,7 +424,7 @@ fn cli_config_flag_is_global() {
         cmd.args(&args);
         assert_error(
             &cmd.output().expect("run"),
-            "no agent to run: name one with `iota run <agent>` (see `iota list agents`), or add an `agents.default` entry — `iota config init` writes a starter config",
+            "no agent to run: name one with `iota run <agent>` (see `iota list agents`), or add an `agents.default` entry to your config (`iota config path` names the file)",
         );
     }
 

@@ -22,7 +22,7 @@ pub enum ArgsError {
     ResumeIdRequired,
     /// No agent named and no `agents.default` to fall back to.
     #[error(
-        "no agent to run: name one with `iota run <agent>` (see `iota list agents`), or add an `agents.default` entry — `iota config init` writes a starter config"
+        "no agent to run: name one with `iota run <agent>` (see `iota list agents`), or add an `agents.default` entry to your config (`iota config path` names the file)"
     )]
     NoAgent,
     /// `iota run <name>` where `name` is not an `agents:` entry. It used to fall through to `models:`,
@@ -329,10 +329,11 @@ via! {
     std::io::Error => Run,
 }
 
-/// The [`ArgsError::UnknownAgent`] hint: the agents there are, or the one command that creates some.
+/// The [`ArgsError::UnknownAgent`] hint: the agents there are, or where to add one. (A run with NO config
+/// file never gets here: it writes the starter first, `cmd::config_cmd::auto_init`.)
 fn agent_hint(agents: &[String]) -> String {
     if agents.is_empty() {
-        "\n  no agents are configured — run `iota config init` to write a starter config".to_owned()
+        "\n  no agents are configured — add an `agents:` entry to your config (`iota config path` names the file)".to_owned()
     } else {
         format!("\n  configured agents: {}", agents.join(", "))
     }

@@ -135,13 +135,16 @@ behaviour exactly.
 ### First run
 
 ```bash
-iota config init          # writes ~/.iota.yaml with one provider, one model and agents.default
-export OPENAI_API_KEY=…   # or put `key:` in the file
-iota                      # runs agents.default
+export OPENAI_API_KEY=…   # or put `key:` in the file afterwards
+iota                      # a first run writes ~/.iota.yaml (one provider, one model, agents.default) and runs it
 ```
 
-`iota config check` tells you whether the file says what you think it says,
-and `iota config path` which files a run actually reads.
+With no `-c` and no `.iota.yaml` in your home or the project, a run writes the
+starter config first — the file `iota config init` writes — says so on stderr,
+and goes on with it. Edit that file for your provider and model; `iota config
+check` tells you whether it says what you think it says, and `iota config path`
+which files a run actually reads. `iota config init` is still there for writing
+the starter without running anything (it refuses to overwrite a file).
 
 ## Usage
 

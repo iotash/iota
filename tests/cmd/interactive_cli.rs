@@ -163,12 +163,18 @@ fn list_runs_down_a_pipe() {
 #[test]
 fn errors_raised_before_the_branch_still_win_over_the_interactive_branch() {
     let (dir, home) = project();
-    // No agent at all (root.go:53-60).
+    // No config at all: the starter is written first, and the key error of ITS provider is what wins over the
+    // branch (root.go:53-60 had the no-agent refusal here; a first run no longer reaches it).
     let o = run(piped(dir.path(), &home));
-    assert_error(
-        &o,
-        "no agent to run: name one with `iota run <agent>` (see `iota list agents`), or add an `agents.default` entry — `iota config init` writes a starter config",
+    assert_eq!(o.status.code(), Some(1), "stderr was: {}", err(&o));
+    assert!(
+        err(&o).ends_with(
+            "Error: API key is required: set OPENAI_API_KEY or providers.openai.key in your config\n"
+        ),
+        "{}",
+        err(&o)
     );
+    std::fs::remove_file(home.join(".iota.yaml")).expect("the starter was written");
     // An agent whose endpoint has no key (root.go:88-92) — still before the branch.
     std::fs::write(
         dir.path().join(".iota.yaml"),
