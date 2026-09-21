@@ -5,6 +5,26 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ## Unreleased
 
+### Added
+
+- **iota reports its state to herdr.** Inside a [herdr](https://herdr.dev)
+  pane — `HERDR_ENV=1`, a pane id and the socket herdr injects — iota tells
+  herdr what the chat is doing, over that socket, and herdr stops guessing from
+  the screen: `working` while a turn runs, `blocked` at an approval or a
+  question, `idle` when it is your move (after a failed turn too), the session
+  the chat writes into (at start-up, after `/save`, after a `/session` switch),
+  and a release on exit. A headless `iota run <agent> -m …` in a pane reports
+  too: working from the start, idle with the reply, released on exit. Every
+  report is bounded and best-effort; nothing herdr does, or fails to do,
+  reaches the chat. The notification and the background answer stay the
+  terminal's — herdr words its own from the state, and its pane answers OSC 11
+  itself. Hosts nest, and iota talks to the innermost one only: a herdr pane
+  inside a cmux window reports to herdr and never runs `cmux` (X-47).
+- **The harness prompt names the host.** A detected host adds its facts to
+  the `<environment>` block, after the run's own: `host: herdr`, `herdr pane:
+  w1:p2`, and the workspace and tab when the pane has them; `host: cmux`,
+  `cmux surface: <id>` under cmux. A plain terminal adds nothing.
+
 ### Changed
 
 - **The banner is a logo and three facts.** A chat opens on three rows: the
