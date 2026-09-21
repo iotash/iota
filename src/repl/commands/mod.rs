@@ -1,11 +1,12 @@
 //! The slash-command table and the dispatch chain (chat/completion.go, chat/run.go's main
 //! loop; `TUI_DESIGN` §9).
 //!
-//! **The one-table law.** The composer's completion list, the startup banner and the
-//! dispatch chain all read ONE table, so a conditional command can never be advertised
-//! without existing — or exist without being advertised. Go held it in package globals
-//! rebound once at startup (and on every skill-catalog change); here it is an owned
-//! [`CommandTable`] on the run loop's stack.
+//! **The one-table law.** The composer's completion list (what `/` offers) and the dispatch
+//! chain read ONE table, so a conditional command can never be advertised without existing —
+//! or exist without being advertised. Go held it in package globals rebound once at startup
+//! (and on every skill-catalog change); here it is an owned [`CommandTable`] on the run
+//! loop's stack. The startup banner listed the table too until X-46; the completion row is
+//! where the law is pinned now (`tests/repl/commands.rs`, `file.rs`, `tokens.rs`).
 //!
 //! **Dispatch is an imperative prefix chain, not a registry.** The loop matches
 //! `input == cmd || input.starts_with(cmd + " ")` in Go's FIXED order, first match wins,
@@ -185,16 +186,6 @@ impl CommandTable {
         out
     }
 
-    /// The banner's command names (chat/completion.go:102-110 `commandNames`). Rows carrying
-    /// a `label` are per-skill entries, not commands, and are skipped.
-    pub(crate) fn names(&self) -> Vec<String> {
-        self.active()
-            .into_iter()
-            .filter(|s| s.label.is_empty())
-            .map(|s| s.value)
-            .collect()
-    }
-
     /// Whether `/save` is registered — the dispatch chain's own visibility check, read
     /// from the SAME flags the completion list is built from.
     pub(crate) fn save_enabled(&self) -> bool {
@@ -239,6 +230,17 @@ mod tests {
 
     fn has(table: &CommandTable, value: &str) -> bool {
         table.active().iter().any(|s| s.value == value)
+    }
+
+    /// The command names alone (Go's `commandNames`, chat/completion.go:102-110, which fed the
+    /// banner until X-46): rows carrying a `label` are per-skill entries, not commands.
+    fn names(table: &CommandTable) -> Vec<String> {
+        table
+            .active()
+            .into_iter()
+            .filter(|s| s.label.is_empty())
+            .map(|s| s.value)
+            .collect()
     }
 
     /// `setActiveCommands(agent, save, compact, image)` as a tuple, in Go's argument order.
@@ -317,7 +319,7 @@ mod tests {
         // Go's fixed order with every group on (completion.go:78-97).
         let t = table((true, true, true, true));
         assert_eq!(
-            t.names(),
+            names(&t),
             [
                 "/file", "/session", "/model", "/compact", "/export", "/status", "/tools",
                 "/debug", "/edit", "/redo", "/save", "/skills"
@@ -375,14 +377,14 @@ mod tests {
             "skill entry label wants the bare name"
         );
         assert_eq!(row.desc, "brain pages");
-        // The per-skill rows follow /skills and are not banner commands.
+        // The per-skill rows follow /skills and are not commands.
         let values: Vec<String> = t.active().into_iter().map(|c| c.value).collect();
         let skills_at = values.iter().position(|v| v == "/skills").expect("/skills");
         assert_eq!(
             &values[skills_at..],
             ["/skills", "/skills brain-page", "/skills code-review"]
         );
-        assert!(!t.names().iter().any(|n| n.starts_with("/skills ")));
+        assert!(!names(&t).iter().any(|n| n.starts_with("/skills ")));
 
         // Outside agent mode neither the command nor its skills exist.
         let mut t = table((false, false, true, false));

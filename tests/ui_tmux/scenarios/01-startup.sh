@@ -11,19 +11,26 @@
 start 80 24 || finish
 settle || bad "frame never settled"
 
-# --- the banner Go printed before the Program claimed the terminal (chat/run.go:86-105),
-#     here inserted above the frame by the region.
-check_once "banner: chat-started line" 'Chat started. Press Ctrl+C to exit.'
-# `/compact` is registered because the fake dialect reports usage (WP53's `tokenAware`);
-# the ONE-TABLE law is what this pins — the banner lists exactly what dispatches.
-# The row fits 80 columns again (it wrapped while `/mcp` was in the table, 2026-09-18 to 09-20): one
-# line, once.
-check_once "banner: command list (one-table law)" 'Commands: /file, /session, /model, /compact, /export, /status, /tools, /debug'
-if capall | grep -qE '^Session: [a-z0-9]{12}$'; then
-    ok "banner: session id row"
+# --- the banner (X-46): three rows, the wordmark on the left and a fact on the right of each —
+#     the version, the mode row, the directory — inserted above the frame by the region.
+#     Fixed strings throughout (`check_once` is `grep -F`): the wordmark is multi-byte, and in the
+#     C locale of the macOS runner a bracket expression over it would match single bytes.
+check_once "banner: the wordmark's first row" '▀█▀ █▀▀█ ▀▀█▀▀ █▀▀█'
+if capall | grep -F '▀█▀ █▀▀█ ▀▀█▀▀ █▀▀█' | grep -qE '   v[0-9]+\.[0-9]+\.[0-9]+$'; then
+    ok "banner: the version beside the wordmark"
 else
-    bad "banner: session id row missing"
+    bad "banner: the version row is not '<wordmark>   vX.Y.Z'"
 fi
+# The mode row: a plain agent (no `workspace:`) is a chat, persisted into a fresh bundle.
+if capall | grep -qE '   chat · session [a-z0-9]{12}$'; then
+    ok "banner: the mode row (chat, session id)"
+else
+    bad "banner: the mode row is not 'chat · session <id>'"
+fi
+# The directory row names the pane's cwd — the runner's, which is the crate root (not under the
+# pane's redirected HOME, so no `~`). Its first 40 columns: 23 + 40 never wraps at 80, however
+# deep the checkout.
+check_once "banner: the directory row" "   ${PWD:0:40}"
 
 # --- the frame
 check_frame_intact "startup" 80

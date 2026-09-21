@@ -23,10 +23,12 @@ settle || bad "startup never settled"
 # the widget's live elapsed row (`⎿ `) and half-block preview rows at the same instant.
 # Two captures could straddle the moment the finished picture morphs the widget away, so
 # the winning capture is kept in $SNAP and every assertion below reads THAT, not a fresh one.
+# The banner's wordmark is half blocks too (X-46), so a frame counts only UNDER the widget
+# header — the `⠋ image` row (`/ image/`: the model id on the status row has no leading space).
 SNAP=""
 _frame_in_widget() {
     SNAP="$(cap)"
-    printf '%s\n' "$SNAP" | awk '/⎿ /{a=1} /▀/{b=1} END{exit !(a && b)}'
+    printf '%s\n' "$SNAP" | awk '/ image/{h=1} h && /⎿ /{a=1} h && /▀/{b=1} END{exit !(a && b)}'
 }
 
 # ------------------------------------------------------------------ A: generate
@@ -39,7 +41,9 @@ if _poll_until 120 _frame_in_widget; then
     # `⠋ image` is the widget header (the model id `gpt-image-1` on the status row has no
     # leading space, so it is not a second match); the frame is the row directly under it.
     hdr="$(printf '%s\n' "$SNAP" | grep -nF ' image' | head -1 | cut -d: -f1)"
-    body="$(printf '%s\n' "$SNAP" | grep -nF '  ▀' | head -1 | cut -d: -f1)"
+    # The first half-block row below the header (the wordmark above it does not count).
+    body="$(printf '%s\n' "$SNAP" | tail -n "+$((hdr + 1))" | grep -nF '  ▀' | head -1 | cut -d: -f1)"
+    [ -n "$body" ] && body=$((body + hdr))
     check "exactly one widget carries the 'image' label" \
         "$(printf '%s\n' "$SNAP" | grep -cF ' image' | tr -d ' ')" 1
     if [ -n "$hdr" ] && [ -n "$body" ] && [ "$body" -eq "$((hdr + 1))" ]; then
@@ -56,7 +60,8 @@ wait_all '🖼 saved: ' || bad "the picture was never committed"
 settle || bad "frame never settled after the generation"
 
 check_once "the saved-image caption lands exactly once" '🖼 saved: '
-if capall | grep -qF '  ▀'; then
+# …under the user echo: the banner's wordmark above it is half blocks too.
+if capall | sed -n '/❯ a red square/,$p' | grep -qF '  ▀'; then
     ok "the picture rendered as indented half-block rows"
 else
     bad "no half-block rows in the history"

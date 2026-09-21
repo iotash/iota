@@ -384,16 +384,28 @@ async fn file_surface_browser_without_a_choice_or_with_a_bad_one() {
 }
 
 /// `/file` is a REGISTERED command now (T-12): it heads Go's base table, so it is both
-/// advertised and dispatched — the one-table law, seen from the banner.
+/// advertised and dispatched — the one-table law, seen from the completion row.
 #[tokio::test]
 async fn file_is_advertised_and_dispatched() {
     let f = Fixture::new(vec![input("/filex"), Reply::Interrupted]);
     iota::repl::run(f.params()).await.expect("exit");
 
-    let lines = printed(&f.ui);
+    let row: Vec<String> =
+        f.ui.events()
+            .into_iter()
+            .find_map(|e| match e {
+                UiEvent::Commands(c) => Some(c),
+                _ => None,
+            })
+            .expect("the loop publishes the command table")
+            .into_iter()
+            .map(|s| s.value)
+            .collect();
     assert_eq!(
-        lines[1],
-        "Commands: /file, /session, /model, /export, /status, /tools, /debug"
+        row,
+        [
+            "/file", "/session", "/model", "/export", "/status", "/tools", "/debug"
+        ]
     );
     // A longer name is NOT the command: "/filex" falls through as a plain message.
     assert_eq!(

@@ -6,9 +6,9 @@
 //! engine, the composer, the surfaces) knows nothing about chat. Its shape is Go's, in
 //! Go's order:
 //!
-//! 1. the banner — what the chat is, what it can be told, where it is saved, what agent
-//!    mode loaded — then the resume echo OR one blank line, so exactly one blank separates
-//!    the environment from the first transcript block;
+//! 1. the banner — the wordmark beside the version, the mode and the directory — then the
+//!    resume echo OR one blank line, so exactly one blank separates the environment from
+//!    the first transcript block;
 //! 2. the pre-loop interactions: the `-S` system prompt (only with no imported history)
 //!    and the startup model pick (ESC defers — the first message re-prompts);
 //! 3. `read_input` → the dispatch chain in Go's FIXED order → the message path.
@@ -44,7 +44,7 @@ use crate::repl::commands::{
     skills, status, tools,
 };
 use crate::repl::context::meter::{ContextBudget, CtxMeter};
-use crate::repl::render::banner::banner_lines;
+use crate::repl::render::banner::{BannerFacts, banner_lines, overlay_warnings};
 use crate::repl::render::mcpreport::report_mcp_failures;
 use crate::repl::render::replay::{RESUME_ECHO_ROUNDS, echo_rounds, last_rounds};
 use crate::repl::render::transcript::{Transcript, notify_digest};
@@ -364,14 +364,32 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     // ---- the banner, then EITHER the resume echo OR one blank (chat/run.go:86-116) ----
     // Exactly one blank separates the environment from the first transcript block: an echo
     // ends with its own round separator, so it is not followed by another.
-    ui.print_lines(banner_lines(
-        &table.names(),
-        &lock(&writer)
-            .as_ref()
-            .map_or_else(String::new, |w| w.id().to_owned()),
-        new_session.is_some(),
-        overlay.as_ref(),
-    ));
+    {
+        let session_id = lock(&writer).as_ref().map(|w| w.id().to_owned());
+        // The directory the chat runs in: the project root in agent mode, else the cwd.
+        let dir = if overlay.is_some() {
+            agent.root.clone()
+        } else {
+            agent
+                .cwd
+                .clone()
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_default()
+        };
+        let mut lines = banner_lines(
+            &BannerFacts {
+                workspace: overlay.is_some(),
+                session_id: session_id.as_deref(),
+                ephemeral: new_session.is_some(),
+                resumed,
+                dir: &dir,
+                home: agent.home.as_deref(),
+            },
+            ui.width(),
+        );
+        lines.extend(overlay_warnings(overlay.as_ref()));
+        ui.print_lines(lines);
+    }
     ui.print_lines(vec![String::new()]);
     if resumed {
         let msgs = last_rounds(&history, RESUME_ECHO_ROUNDS);

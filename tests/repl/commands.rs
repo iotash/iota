@@ -183,11 +183,26 @@ fn surfaces(ui: &ScriptedUi) -> Vec<TabbedSummary> {
 // the banner
 // ---------------------------------------------------------------------------
 
-/// The banner's rows in order, ONE blank between the environment
-/// and the first transcript block, and the ONE-TABLE law: the advertised commands are
-/// exactly the registered ones.
+/// The completion row the composer was handed: the values, in order.
+fn completion_row(ui: &ScriptedUi) -> Vec<String> {
+    ui.events()
+        .into_iter()
+        .find_map(|e| match e {
+            UiEvent::Commands(c) => Some(c),
+            _ => None,
+        })
+        .expect("the loop publishes the command table")
+        .into_iter()
+        .map(|s| s.value)
+        .collect()
+}
+
+/// The banner's three rows — the wordmark beside the version, the mode row and the
+/// directory — then ONE blank between the environment and the first transcript block. The
+/// ONE-TABLE law is the completion row's (X-46): what `/` offers is exactly the registered
+/// table, in dispatch order.
 #[tokio::test]
-async fn banner_order_and_command_table() {
+async fn banner_order_and_completion_row() {
     let f = Fixture::new(vec![Reply::Interrupted]);
     let writer = f.writer();
     let id = writer.id().to_owned();
@@ -196,35 +211,28 @@ async fn banner_order_and_command_table() {
         .await
         .expect("clean exit");
 
+    // No agent options: the directory row is the process cwd, and with no home nothing is
+    // shortened.
+    let cwd = std::env::current_dir().expect("cwd");
     let lines = printed(&f.ui);
     assert_eq!(
         lines,
         vec![
-            "Chat started. Press Ctrl+C to exit.".to_owned(),
-            "Commands: /file, /session, /model, /export, /status, /tools, /debug".to_owned(),
-            format!("Session: {id}"),
+            format!(" ▀█▀ █▀▀█ ▀▀█▀▀ █▀▀█   v{}", env!("CARGO_PKG_VERSION")),
+            format!("  █  █  █   █   █▀▀█   chat · session {id}"),
+            format!(" ▀▀▀ ▀▀▀▀   ▀   ▀  ▀   {}", cwd.display()),
             String::new(),
         ]
     );
-    // The completion table matches the banner exactly (one table, no drift).
-    let commands =
-        f.ui.events()
-            .into_iter()
-            .find_map(|e| match e {
-                UiEvent::Commands(c) => Some(c),
-                _ => None,
-            })
-            .expect("the loop publishes the command table");
-    let values: Vec<String> = commands.into_iter().map(|s| s.value).collect();
     assert_eq!(
-        values,
+        completion_row(&f.ui),
         [
             "/file", "/session", "/model", "/export", "/status", "/tools", "/debug"
         ]
     );
 }
 
-/// An ephemeral chat says how to keep itself, and `/save` joins the table.
+/// An ephemeral chat's mode row says how to keep it, and `/save` joins the completion row.
 #[tokio::test]
 async fn banner_offers_save_for_an_ephemeral_chat() {
     let f = Fixture::new(vec![Reply::Interrupted]);
@@ -244,11 +252,13 @@ async fn banner_offers_save_for_an_ephemeral_chat() {
     let lines = printed(&f.ui);
     assert_eq!(
         lines[1],
-        "Commands: /file, /session, /model, /export, /status, /tools, /debug, /save"
+        "  █  █  █   █   █▀▀█   chat · not saved · /save keeps it"
     );
     assert_eq!(
-        lines[2],
-        "Session: not saved — /save [title] keeps this chat"
+        completion_row(&f.ui),
+        [
+            "/file", "/session", "/model", "/export", "/status", "/tools", "/debug", "/save"
+        ]
     );
 }
 
@@ -1006,13 +1016,13 @@ async fn overlay_refresh_notices_fire_only_on_change() {
         ["AGENTS.md reloaded (1 files)"],
         "exactly one notice, for the ONE turn that changed the chain"
     );
-    // The banner reported the chain that was loaded at startup.
+    // The banner says the chat runs in agent mode (no bundle, no factory: the mode alone), in
+    // the project root.
+    let lines = printed(&f.ui);
+    assert!(lines[1].ends_with("█▀▀█   agent"), "{lines:?}");
     assert!(
-        printed(&f.ui)
-            .iter()
-            .any(|l| l.starts_with("Agent mode: AGENTS.md loaded (1 files,")),
-        "{:?}",
-        printed(&f.ui)
+        lines[2].ends_with(&format!("   {}", root.display())),
+        "{lines:?}"
     );
 }
 

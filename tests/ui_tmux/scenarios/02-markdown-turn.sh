@@ -84,7 +84,7 @@ fi
 
 # --- nothing above was eaten, and the frame is still whole.
 check "the 20 streamed lines are still intact above" "$(uniq_all 'l#[0-9][0-9]')" 20
-check_once "banner survived both turns" 'Chat started. Press Ctrl+C to exit.'
+check_once "banner survived both turns" '▀█▀ █▀▀█ ▀▀█▀▀ █▀▀█'
 check_frame_intact "after the markdown turn" 80
 
 finish

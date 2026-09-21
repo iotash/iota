@@ -54,7 +54,8 @@ pub fn parse_output_format(s: &str) -> Result<OutputFormat, ChatError> {
     }
 }
 
-/// chat/agentmode.go + injected cwd/home.
+/// chat/agentmode.go + injected cwd/home. The two directories are filled in every mode (the interactive
+/// banner names where the chat runs, `~`-shortened); the overlay reads them only under `enabled`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentOptions {
     /// Whether agent mode is on (`agents.<name>.workspace: true`): compose the AGENTS.md + skills overlay.

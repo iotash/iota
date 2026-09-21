@@ -292,9 +292,9 @@ impl Overlay {
         self.chain.files.len()
     }
 
-    /// Byte size of the assembled AGENTS.md chain ALONE (agentsmd.go:237 `ChainSize`) —
-    /// the startup banner's `"(%d files, %.1f KB)"`; [`Overlay::content`] may additionally
-    /// carry the skills catalog.
+    /// Byte size of the assembled AGENTS.md chain ALONE (agentsmd.go:237 `ChainSize`, which
+    /// Go's banner printed as `"(%d files, %.1f KB)"`; the banner stopped counting with X-46).
+    /// [`Overlay::content`] may additionally carry the skills catalog.
     pub fn chain_size(&self) -> usize {
         self.chain.content.len()
     }

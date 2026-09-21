@@ -133,7 +133,7 @@ pub(crate) struct UiHandles {
     pub(crate) pres: Arc<Presenter>,
     /// The `/debug` request log (recording toggle + the inspector's rows).
     pub(crate) reqlog: Arc<RequestLog>,
-    /// The ONE command table (completion list, banner and dispatch read it).
+    /// The ONE command table (the completion list and the dispatch chain read it).
     pub(crate) table: CommandTable,
     /// The conversation's ONE approval gate: the "allow for this session" grant is one grant
     /// for one person (chat/run.go:172-186).

@@ -353,37 +353,33 @@ async fn a_catalog_change_re_issues_the_table_with_the_new_row() {
     );
 }
 
-/// New: the per-skill rows carry the skill's description and a bare label, and the banner (which
-/// reads `names()`) never lists them — they are completions, not commands.
+/// New: the per-skill rows carry the skill's description and a bare label, which is what tells
+/// them from `/skills` itself (a command, unlabelled) — they are completions, not commands.
 #[tokio::test]
-async fn per_skill_rows_are_labelled_bare_and_stay_out_of_the_banner() {
+async fn per_skill_rows_are_labelled_bare() {
     let f = Fixture::new(vec![Reply::Interrupted]);
     f.write_skill("brain-page", "Read and write brain pages", "Read the page.");
     iota::repl::run(f.params(recording()))
         .await
         .expect("clean exit");
 
-    let row =
+    let table =
         f.ui.events()
             .into_iter()
             .find_map(|e| match e {
                 UiEvent::Commands(c) => Some(c),
                 _ => None,
             })
-            .expect("the loop publishes the command table")
-            .into_iter()
-            .find(|s| s.value == "/skills brain-page")
-            .expect("the per-skill row");
+            .expect("the loop publishes the command table");
+    let row = table
+        .iter()
+        .find(|s| s.value == "/skills brain-page")
+        .expect("the per-skill row");
     assert_eq!(row.label, "brain-page");
     assert_eq!(row.desc, "Read and write brain pages");
-
-    let banner = printed(&f.ui);
-    let commands = banner
+    let command = table
         .iter()
-        .find(|l| l.starts_with("Commands: "))
-        .expect("the banner's command row");
-    assert!(
-        commands.contains("/skills") && !commands.contains("/skills brain-page"),
-        "{commands}"
-    );
+        .find(|s| s.value == "/skills")
+        .expect("the /skills command");
+    assert!(command.label.is_empty(), "{command:?}");
 }

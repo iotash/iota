@@ -18,7 +18,8 @@ wait_all 'r31 body line 13' || bad "the resume echo never completed"
 settle || bad "frame never settled after the resume echo"
 
 check_once "the resume notice names the bundle" "Resumed session $SESSION_ID (64 messages)"
-check_once "banner still printed after the resume notice" 'Chat started. Press Ctrl+C to exit.'
+check_once "banner still printed after the resume notice" '▀█▀ █▀▀█ ▀▀█▀▀ █▀▀█'
+check_once "the mode row says the chat was resumed" "   chat · resumed $SESSION_ID"
 
 # The whole echo window, exactly once each — 42 body rows plus the three user echoes.
 check "every echoed body row is present" "$(uniq_all 'r(29|30|31) body line [0-9][0-9]')" 42

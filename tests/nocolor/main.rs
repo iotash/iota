@@ -194,9 +194,10 @@ async fn a_whole_run_reaches_the_facade_escape_free() {
     // Not vacuous: each styled surface actually rendered — the text is there, bare.
     let joined = lines.join("\n");
     for needle in [
-        "Let me edit that.",      // the streamed sentence
-        "edit",                   // the tool-call header (cyan when painted)
-        "+ fn main() { run(); }", // a diff row (256-color block when painted)
+        " ▀█▀ █▀▀█ ▀▀█▀▀ █▀▀█   v", // the banner's wordmark (cyan when painted) and version (dim)
+        "Let me edit that.",        // the streamed sentence
+        "edit",                     // the tool-call header (cyan when painted)
+        "+ fn main() { run(); }",   // a diff row (256-color block when painted)
         "- fn main() {}",
         "Heading", // H1 (bold+underline when painted)
         "some text with code and a link (https://iota.sh)", // emphasis, code, OSC 8 + faint URL

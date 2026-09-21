@@ -221,10 +221,18 @@ async fn an_undecodable_final_image_falls_back_to_the_caption_notice() {
         !caption.contains("decode image: "),
         "the `decode image: ` prefix is stripped: {caption:?}"
     );
-    assert!(
-        !lines.iter().any(|l| l.contains('▀')),
-        "nothing was drawn: {lines:?}"
-    );
+    // Nothing was drawn: no half-block row after the user block (the banner's wordmark above
+    // it is made of the same glyphs).
+    let drawn: Vec<String> = after_user_block(&ui)
+        .into_iter()
+        .filter_map(|e| match e {
+            UiEvent::Print(lines) | UiEvent::CallBody(lines) => Some(lines),
+            _ => None,
+        })
+        .flatten()
+        .filter(|l| l.contains('▀'))
+        .collect();
+    assert!(drawn.is_empty(), "nothing was drawn: {drawn:?}");
 }
 
 /// L3: a backend WITHOUT the capability keeps the unary body — no observer, no widget, and the

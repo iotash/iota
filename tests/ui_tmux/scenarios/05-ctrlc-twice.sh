@@ -11,8 +11,9 @@
 start 80 24 || finish
 settle || bad "startup never settled"
 
-# The banner advertises the exit gesture, byte for byte (chat/run.go:86).
-check_once "the banner names the exit gesture" 'Chat started. Press Ctrl+C to exit.'
+# The banner is up: its wordmark, once (the exit gesture it used to name is the composer's own —
+# Ctrl+C at idle exits, which is what the rest of this scenario proves).
+check_once "the banner is up" '▀█▀ █▀▀█ ▀▀█▀▀ █▀▀█'
 
 type_ 'stream 60'
 key Enter

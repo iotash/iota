@@ -290,7 +290,8 @@ fn assemble_tools(
     );
 
     // root.go:206-217: the project root anchors the AGENTS.md/skills overlay and the agent set's skill
-    // discovery, so it is resolved in every mode; only agent mode makes a missing cwd fatal.
+    // discovery, so it is resolved in every mode; only agent mode makes a missing cwd fatal. The cwd and
+    // the home go along in every mode too — the banner names the directory the chat runs in.
     let project_root = dirs.cwd.as_deref().map(crate::agents::project_root);
     let agent = if settings.agent_mode {
         let root = project_root
@@ -303,7 +304,11 @@ fn assemble_tools(
             home: dirs.home.clone(),
         }
     } else {
-        AgentOptions::default()
+        AgentOptions {
+            cwd: dirs.cwd.clone(),
+            home: dirs.home.clone(),
+            ..AgentOptions::default()
+        }
     };
 
     // root.go:221-232, plus the run's job registry: the `shell` tool needs it to exist before the dispatcher

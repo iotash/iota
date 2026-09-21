@@ -328,7 +328,7 @@ async fn the_thinking_meter_counts_with_the_chats_tokenizer() {
 
 /// `/compact` exists exactly for a provider
 /// whose usage the meter can settle against. The ONE-TABLE law holds on both sides: the
-/// banner, the completion list and the dispatch chain agree.
+/// completion list and the dispatch chain agree.
 #[tokio::test]
 async fn compact_is_registered_only_with_token_accounting() {
     let f = Fixture::new(vec![Reply::Interrupted]);
@@ -343,13 +343,6 @@ async fn compact_is_registered_only_with_token_accounting() {
         ],
         "/compact keeps Go's position, between /model and /export"
     );
-    assert!(
-        printed(&f.ui)
-            .iter()
-            .any(|l| l.contains("/compact") && l.starts_with("Commands: ")),
-        "the banner must advertise what the table registered"
-    );
-
     let f = Fixture::new(vec![Reply::Interrupted]);
     let writer = f.writer();
     iota::repl::run(f.params(token_less(), Some(writer), Vec::new()))
