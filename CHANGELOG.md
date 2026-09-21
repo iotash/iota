@@ -25,6 +25,11 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Changed
 
+- **The README is an introduction.** The reference — every config key, the
+  system prompt in full, every tool parameter, MCP, agent mode, slash commands —
+  lives at <https://iota.sh/docs>; the README keeps what a first look needs, and
+  the two config errors that pointed at a README section point at the site.
+  How a release is cut moved to `docs/RELEASING.md`.
 - **A first run writes the starter config itself.** With no `-c` and no
   `.iota.yaml` in the home or the project, `iota` (and `iota run …`) writes
   `~/.iota.yaml` — the file `iota config init` writes — names it on stderr, and

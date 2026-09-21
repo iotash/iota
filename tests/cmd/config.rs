@@ -446,7 +446,7 @@ fn a_key_of_another_layer_fails_the_load_naming_the_file() {
         cfg.expect_err("a misplaced key must fail the load")
             .to_string(),
         format!(
-            "config {}: providers.deepseek.system: `system` belongs under `agents:` (see README, \"The three layers\")",
+            "config {}: providers.deepseek.system: `system` belongs under `agents:` (see https://iota.sh/docs/config-file)",
             path.display()
         )
     );
@@ -466,15 +466,15 @@ fn the_one_layer_keys_report_their_new_home() {
         ),
         (
             "providers:\n  p: {type: openai, effort: high}\n",
-            "providers.p.effort: `effort` belongs under `models:` (see README, \"The three layers\")",
+            "providers.p.effort: `effort` belongs under `models:` (see https://iota.sh/docs/config-file)",
         ),
         (
             "providers:\n  p: {type: openai, tools: {code: {}}}\n",
-            "providers.p.tools: `tools` belongs under `agents:` (see README, \"The three layers\")",
+            "providers.p.tools: `tools` belongs under `agents:` (see https://iota.sh/docs/config-file)",
         ),
         (
             "providers:\n  p: {type: openai, no_save: true}\n",
-            "providers.p.no_save: `no_save` belongs under `agents:` (see README, \"The three layers\")",
+            "providers.p.no_save: `no_save` belongs under `agents:` (see https://iota.sh/docs/config-file)",
         ),
     ] {
         assert_eq!(
@@ -528,7 +528,7 @@ fn a_toolset_that_does_not_exist_is_refused() {
         ),
         (
             "agents:\n  a: {models: [m], tools: {delegate: [reviewer]}}\n",
-            "agents.a.tools.delegate: the `delegate` toolset was removed — run child agents from bash instead (see README)",
+            "agents.a.tools.delegate: the `delegate` toolset was removed — run child agents from bash instead (see https://iota.sh/docs/builtin-toolsets)",
         ),
         (
             "agents:\n  a: {models: [m], tools: {shel: {}}}\n",

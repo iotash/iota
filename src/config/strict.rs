@@ -81,7 +81,7 @@ const RETIRED_SETS: [(&str, &str); 2] = [
     ),
     (
         "delegate",
-        "the `delegate` toolset was removed — run child agents from bash instead (see README)",
+        "the `delegate` toolset was removed — run child agents from bash instead (see https://iota.sh/docs/builtin-toolsets)",
     ),
 ];
 
@@ -162,7 +162,9 @@ fn check_key(section: &str, entry: &str, key: &str) -> Result<(), ConfigError> {
     if let Some((layer, _)) = elsewhere.iter().find(|(_, keys)| keys.contains(&key)) {
         return Err(ConfigError::Key {
             at,
-            message: format!("`{key}` belongs under `{layer}:` (see README, \"The three layers\")"),
+            message: format!(
+                "`{key}` belongs under `{layer}:` (see https://iota.sh/docs/config-file)"
+            ),
         });
     }
     Err(ConfigError::Key {
@@ -223,15 +225,15 @@ mod tests {
     fn a_key_of_another_layer_names_that_layer() {
         assert_eq!(
             check("providers:\n  openai: {key: k, system: hi}\n"),
-            "providers.openai.system: `system` belongs under `agents:` (see README, \"The three layers\")"
+            "providers.openai.system: `system` belongs under `agents:` (see https://iota.sh/docs/config-file)"
         );
         assert_eq!(
             check("providers:\n  openai: {key: k, effort: high}\n"),
-            "providers.openai.effort: `effort` belongs under `models:` (see README, \"The three layers\")"
+            "providers.openai.effort: `effort` belongs under `models:` (see https://iota.sh/docs/config-file)"
         );
         assert_eq!(
             check("agents:\n  a: {models: [x], url: https://x}\n"),
-            "agents.a.url: `url` belongs under `providers:` (see README, \"The three layers\")"
+            "agents.a.url: `url` belongs under `providers:` (see https://iota.sh/docs/config-file)"
         );
         // The four layered parameters live in BOTH `models:` and `agents:`, so neither reports the other.
         assert_eq!(
@@ -289,7 +291,7 @@ mod tests {
         );
         assert_eq!(
             check("agents:\n  a: {models: [m], tools: {delegate: [r]}}\n"),
-            "agents.a.tools.delegate: the `delegate` toolset was removed — run child agents from bash instead (see README)"
+            "agents.a.tools.delegate: the `delegate` toolset was removed — run child agents from bash instead (see https://iota.sh/docs/builtin-toolsets)"
         );
     }
 }
