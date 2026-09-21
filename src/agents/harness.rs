@@ -38,6 +38,9 @@ pub struct Environment {
     pub exe: Option<PathBuf>,
     /// The config files this run reads.
     pub configs: ConfigFiles,
+    /// What the detected hosts tell the model (`host::Presenter::environment`): `(key, value)` pairs, one
+    /// line each after the run's own facts — `host: herdr`, `herdr pane: w1:p3`. Empty in a plain terminal.
+    pub host: Vec<(String, String)>,
 }
 
 /// The config files a run reads, as `iota mcp add`'s scopes see them.
@@ -139,6 +142,11 @@ fn environment_block(env: &Environment, out: &mut String) {
             );
         }
     }
+    // The hosts' facts last: a terminal multiplexer names itself and the pane the chat runs in, so the
+    // model can drive that host's own CLI (brain page `host-integration`, 2026-09-21).
+    for (key, value) in &env.host {
+        let _ = writeln!(out, "{key}: {value}");
+    }
     out.push_str("</environment>");
 }
 
@@ -161,7 +169,21 @@ mod tests {
                 user: Some(PathBuf::from("/Users/someone/.iota.yaml")),
                 project: Some(PathBuf::from("/Users/someone/Work/project/.iota.yaml")),
             },
+            host: Vec::new(),
         }
+    }
+
+    /// The four lines a herdr pane adds — the most any host contributes today.
+    fn herdr_lines() -> Vec<(String, String)> {
+        [
+            ("host", "herdr"),
+            ("herdr pane", "w12:p34"),
+            ("herdr workspace", "w12"),
+            ("herdr tab", "w12:t56"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect()
     }
 
     fn sets(names: &[&str]) -> Vec<String> {
@@ -209,7 +231,9 @@ mod tests {
         assert!(text.contains("stopped by the sandbox"), "{text}");
     }
 
-    /// The whole paragraph, environment included, stays under the ceiling the decision set.
+    /// The whole paragraph, environment included, stays under the ceiling the decision set. The lines a
+    /// host adds come on top of it — only inside a multiplexer, and bounded here: the most any host says
+    /// today (the four herdr lines) is under a tenth of the cap.
     #[test]
     fn the_harness_fits_the_cap() {
         let text = compose(&env(), &sets(&["code", "shell"]));
@@ -218,6 +242,39 @@ mod tests {
             "harness is {} bytes, cap {HARNESS_CAP}",
             text.len()
         );
+        let hosted = Environment {
+            host: herdr_lines(),
+            ..env()
+        };
+        let added = compose(&hosted, &sets(&["code", "shell"])).len() - text.len();
+        assert!(
+            added <= HARNESS_CAP / 10,
+            "the host lines add {added} bytes, more than a tenth of the cap"
+        );
+    }
+
+    /// A host's facts close the block, one `key: value` line each in the order given; no host, no line.
+    #[test]
+    fn host_lines_close_the_environment() {
+        let hosted = Environment {
+            host: herdr_lines(),
+            ..env()
+        };
+        let text = compose(&hosted, &sets(&["code"]));
+        assert!(
+            text.contains(
+                "\nproject config: /Users/someone/Work/project/.iota.yaml\nhost: herdr\nherdr pane: w12:p34\nherdr workspace: w12\nherdr tab: w12:t56\n</environment>"
+            ),
+            "{text}"
+        );
+        let text = compose(&env(), &sets(&["code"]));
+        assert!(
+            text.contains(
+                "\nproject config: /Users/someone/Work/project/.iota.yaml\n</environment>"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("host:"), "{text}");
     }
 
     /// Every environment fact is one line; a missing config file is spelled `(absent)`, and `-c` collapses

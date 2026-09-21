@@ -32,7 +32,7 @@ use std::sync::Arc;
 
 use crate::BoxFuture;
 use crate::app::env::Env;
-use crate::host::{AnsiHost, Presenter, Probe as HostProbe};
+use crate::host::{AnsiHost, Presenter};
 use crate::provider::ProviderParams;
 use crate::provider::{Provider, ProviderKind};
 use crate::repl::{McpEvent, McpHooks, RunParams, SessionCtx};
@@ -44,7 +44,7 @@ use crate::ui::facade::{TabbedResult, TabbedSpec, Ui};
 use crate::cmd::args::{Invocation, Resume};
 use crate::cmd::error::{ArgsError, CliError, RunError, SetupError};
 use crate::cmd::resolve::RunSettings;
-use crate::cmd::{RunContext, ToolAssembly};
+use crate::cmd::{RunContext, ToolAssembly, host_probe};
 use picker::{picker_spec, project_hint};
 
 /// Everything `run` has resolved by the time it reaches Go's headless-vs-interactive branch (root.go:259):
@@ -126,16 +126,6 @@ impl TerminalSeam for LiveTerminal {
     fn start(&self, dark: bool) -> std::io::Result<Box<dyn UiSession>> {
         crate::ui::Tui::start(crate::ui::TuiOptions { dark })
             .map(|tui| Box::new(LiveUi(tui)) as Box<dyn UiSession>)
-    }
-}
-
-/// The host detectors' view of the machine (host.go:71-74 `SystemEnv`): the run's injected environment
-/// and the `PATH` lookup, built HERE so `crate::host` never reads the process environment itself (G16:
-/// the 15-line PATH scan of `shell::exec` stands in for `exec.LookPath`).
-fn host_probe(env: &Env) -> HostProbe {
-    HostProbe {
-        env: env.clone(),
-        look_path: Box::new(crate::shell::exec::find_in_path),
     }
 }
 
@@ -333,6 +323,8 @@ pub(crate) async fn run_interactive(
         Some(Box::new(AnsiHost::new(Arc::clone(&ui)))),
         notify,
     ));
+    // The harness prompt, now that the hosts it names in `<environment>` are known.
+    let harness = harness.compose(&pres);
 
     let mcp = mcp_hooks(&manager, mcp_events);
 

@@ -180,6 +180,7 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
         let mut slot = lock(&repl.session.writer);
         *slot = Some(writer);
     }
+    repl.report_session();
     repl.handles
         .ui
         .set_title(&window_title(&repl.session.session_title()));

@@ -17,7 +17,9 @@ use tokio::task::JoinHandle;
 
 use crate::BoxFuture;
 use crate::host::background;
-use crate::host::{BackgroundReporter, Closer, Host, Probe, State, StateReporter};
+use crate::host::{
+    BackgroundReporter, Closer, EnvironmentContributor, Host, Probe, State, StateReporter,
+};
 use crate::sync::lock;
 
 /// The status-row key (cmux.go:38) — the program name.
@@ -48,14 +50,16 @@ pub(crate) type BackgroundFn = Arc<dyn Fn() -> BoxFuture<'static, Option<bool>> 
 /// Go's "replace a batch still waiting" rule (cmux.go:85-99), so a stale `Running` can never land
 /// after `Idle`. [`StateReporter::set_state`] never awaits.
 pub struct CmuxHost {
+    /// The surface the chat runs in (`CMUX_SURFACE_ID`) — what the model is told.
+    surface: String,
     tx: Mutex<Option<tokio::sync::watch::Sender<Option<Batch>>>>,
     worker: Mutex<Option<JoinHandle<()>>>,
     background: Option<BackgroundFn>,
 }
 
 impl CmuxHost {
-    /// A host over `exec`, spawning the worker task (must run inside the runtime).
-    pub(crate) fn with_exec(exec: ExecFn, background: Option<BackgroundFn>) -> Self {
+    /// A host over `exec` for `surface`, spawning the worker task (must run inside the runtime).
+    pub(crate) fn with_exec(surface: &str, exec: ExecFn, background: Option<BackgroundFn>) -> Self {
         let (tx, mut rx) = tokio::sync::watch::channel::<Option<Batch>>(None);
         // `changed()` reports a still-unseen value BEFORE it reports the closed sender (tokio's
         // `maybe_changed` checks the version first), so `close`'s final batch is never lost.
@@ -69,6 +73,7 @@ impl CmuxHost {
             }
         });
         Self {
+            surface: surface.to_owned(),
             tx: Mutex::new(Some(tx)),
             worker: Mutex::new(Some(worker)),
             background,
@@ -101,11 +106,25 @@ impl Host for CmuxHost {
     fn as_closer(&self) -> Option<&dyn Closer> {
         Some(self)
     }
+
+    fn as_environment(&self) -> Option<&dyn EnvironmentContributor> {
+        Some(self)
+    }
 }
 
 impl StateReporter for CmuxHost {
     fn set_state(&self, s: State) {
         self.post(cmux_batch(s));
+    }
+}
+
+impl EnvironmentContributor for CmuxHost {
+    /// `host: cmux` and the surface id — the handle `cmux` CLI calls take.
+    fn environment(&self) -> Vec<(String, String)> {
+        vec![
+            ("host".to_owned(), CMUX_NAME.to_owned()),
+            ("cmux surface".to_owned(), self.surface.clone()),
+        ]
     }
 }
 
@@ -142,11 +161,16 @@ pub(crate) fn detect_cmux(probe: &Probe) -> Option<Box<dyn Host>> {
     let exec_path = path.clone();
     let exec: ExecFn = Arc::new(move |argv| exec_cmux(&exec_path, argv));
     let query: background::CmuxQuery = Arc::new(background::cmux_query_exec);
+    let surface = sid.clone();
     let background: BackgroundFn = Arc::new(move || {
         let (path, sid, query) = (path.clone(), sid.clone(), Arc::clone(&query));
         Box::pin(async move { background::cmux_background(&path, &sid, &query).await })
     });
-    Some(Box::new(CmuxHost::with_exec(exec, Some(background))))
+    Some(Box::new(CmuxHost::with_exec(
+        &surface,
+        exec,
+        Some(background),
+    )))
 }
 
 /// The argv lists of a state (cmux.go:122-145). Icons and colours mirror what cmux's own Claude
@@ -305,7 +329,7 @@ mod tests {
                 log.lock().unwrap().push(argv);
             })
         });
-        let c = CmuxHost::with_exec(exec, None);
+        let c = CmuxHost::with_exec("surface-1", exec, None);
 
         c.set_state(State::Busy);
         let _ = entered_rx.recv().await; // the worker is inside the busy batch's first command
@@ -382,6 +406,14 @@ mod tests {
         })
         .expect("cmux not detected");
         assert_eq!(h.name(), "cmux");
+        // What the model is told: the host's name and the surface handle its CLI takes.
+        assert_eq!(
+            h.as_environment().expect("cmux contributes").environment(),
+            vec![
+                ("host".to_owned(), "cmux".to_owned()),
+                ("cmux surface".to_owned(), "surface-1".to_owned()),
+            ]
+        );
         h.as_closer().expect("cmux closes").close().await;
     }
 }

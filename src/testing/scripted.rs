@@ -11,6 +11,7 @@
 use crate::sync::lock;
 use std::{
     collections::VecDeque,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU16, AtomicUsize, Ordering},
@@ -499,8 +500,9 @@ impl Ui for ScriptedUi {
 }
 
 /// A recording [`host::Host`] implementing whichever capabilities `caps` enables (the
-/// `host_test.go` fakes): every state, event and close lands in shared logs the test reads back;
-/// `dark` is what the background capability answers.
+/// `host_test.go` fakes): every state, event, session and close lands in shared logs the test
+/// reads back; `dark` is what the background capability answers and `env` what the environment
+/// capability contributes.
 pub struct RecordingHost {
     /// The host's name.
     pub name: &'static str,
@@ -508,31 +510,44 @@ pub struct RecordingHost {
     pub states: Arc<Mutex<Vec<host::State>>>,
     /// Every `notify` call, in order.
     pub events: Arc<Mutex<Vec<host::Event>>>,
+    /// Every `report_session` call, in order.
+    pub sessions: Arc<Mutex<Vec<(String, PathBuf)>>>,
     /// The names of the hosts closed so far, in close order (shared across hosts so the
     /// reverse-order law is observable).
     pub closed: Arc<Mutex<Vec<&'static str>>>,
     /// What `dark_background` answers.
     pub dark: Option<bool>,
+    /// What `environment` contributes (nothing by default).
+    pub env: Vec<(String, String)>,
     /// Which capabilities the host advertises.
     pub caps: host::Caps,
 }
 
 impl RecordingHost {
-    /// A host with every capability, its own logs, and no background answer.
+    /// A host with every capability, its own logs, no background answer and no environment.
     pub fn new(name: &'static str) -> Self {
         Self {
             name,
             states: Arc::default(),
             events: Arc::default(),
+            sessions: Arc::default(),
             closed: Arc::default(),
             dark: None,
+            env: Vec::new(),
             caps: host::Caps {
                 state: true,
                 notify: true,
                 background: true,
                 close: true,
+                session: true,
+                environment: true,
             },
         }
+    }
+
+    /// The recorded sessions.
+    pub fn sessions(&self) -> Vec<(String, PathBuf)> {
+        lock(&self.sessions).clone()
     }
 
     /// The recorded states.
@@ -572,6 +587,30 @@ impl host::Host for RecordingHost {
 
     fn as_closer(&self) -> Option<&dyn host::Closer> {
         self.caps.close.then_some(self as &dyn host::Closer)
+    }
+
+    fn as_session_reporter(&self) -> Option<&dyn host::SessionReporter> {
+        self.caps
+            .session
+            .then_some(self as &dyn host::SessionReporter)
+    }
+
+    fn as_environment(&self) -> Option<&dyn host::EnvironmentContributor> {
+        self.caps
+            .environment
+            .then_some(self as &dyn host::EnvironmentContributor)
+    }
+}
+
+impl host::SessionReporter for RecordingHost {
+    fn report_session(&self, id: &str, path: &Path) {
+        lock(&self.sessions).push((id.to_owned(), path.to_path_buf()));
+    }
+}
+
+impl host::EnvironmentContributor for RecordingHost {
+    fn environment(&self) -> Vec<(String, String)> {
+        self.env.clone()
     }
 }
 

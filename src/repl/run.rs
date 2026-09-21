@@ -219,6 +219,15 @@ impl Repl {
         }
         self.session.persisted = self.conv.history.len();
     }
+
+    /// Tells the hosts which session the chat persists into — the live writer's id and bundle
+    /// directory. Called wherever the writer is settled: at start-up, after `/save` mints one, and
+    /// after `/session` swaps it. Nothing is said for an ephemeral chat.
+    pub(crate) fn report_session(&self) {
+        if let Some(w) = lock(&self.session.writer).as_ref() {
+            self.handles.pres.set_session(w.id(), w.dir());
+        }
+    }
 }
 
 /// The completion table's view of the discovered skills (completion.go:63-73).
@@ -473,6 +482,8 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         },
     };
     repl.push_status();
+    // The session the chat writes into, for a host that tracks it (herdr keys its records on it).
+    repl.report_session();
 
     // What the chat is running under, and where each value came from, into a bundle this run created — so a
     // resume finds the session as it was rather than re-deriving it from a config that may have moved since

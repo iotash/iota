@@ -56,6 +56,7 @@ pub(crate) fn cmd_save(repl: &mut Repl, arg: &str) {
     // The watermark stayed at 0 while the chat was ephemeral, so this lands the WHOLE
     // conversation in one append.
     repl.persist_turn();
+    repl.report_session();
     let name = title_from(arg, TITLE_CAP);
     if name.is_empty() {
         // The chat was named at first send even without a writer; the freshly minted

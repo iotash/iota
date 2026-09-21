@@ -1,8 +1,15 @@
 //! Host integration (internal/host): the terminal or terminal multiplexer the chat runs inside is
 //! told what the conversation is doing — a state for its progress indicator, an attention ping when
-//! the user is needed, a clean-up on exit — through per-capability traits a [`Host`] may or may
-//! not implement. The [`Presenter`] fans one call out to the FIRST host that has the capability
-//! (host.go:97-148), deduplicates states, and gates pings on the `notify` config key.
+//! the user is needed, the session it is persisting into, a clean-up on exit — through
+//! per-capability traits a [`Host`] may or may not implement. The [`Presenter`] fans one call out
+//! to the FIRST host that has the capability (host.go:97-148), deduplicates states, and gates pings
+//! on the `notify` config key.
+//!
+//! The one capability that is NOT first-host-only runs the other way: a host may tell the MODEL
+//! where it is. Every [`EnvironmentContributor`] adds its `key: value` facts to the harness prompt's
+//! `<environment>` block ([`Presenter::environment`] gathers them all, in detection order), so a
+//! multiplexer's pane id reaches the model through the host layer and never as a special case in
+//! `agents::harness` (brain page `host-integration`, 2026-09-21).
 //!
 //! Hosts: the cmux multiplexer (`cmux::CmuxHost`, detected from the environment) and the plain
 //! ANSI terminal ([`ansi::AnsiHost`], the fallback the command always appends).
@@ -13,7 +20,7 @@ pub(crate) mod cmux;
 
 pub use ansi::AnsiHost;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::BoxFuture;
@@ -75,6 +82,14 @@ pub trait Host: Send + Sync {
     fn as_closer(&self) -> Option<&dyn Closer> {
         None
     }
+    /// The session-identity capability.
+    fn as_session_reporter(&self) -> Option<&dyn SessionReporter> {
+        None
+    }
+    /// The `<environment>` capability.
+    fn as_environment(&self) -> Option<&dyn EnvironmentContributor> {
+        None
+    }
 }
 
 /// Shows the conversation's state.
@@ -100,6 +115,21 @@ pub trait BackgroundReporter: Send + Sync {
 pub trait Closer: Send + Sync {
     /// Clears whatever the host shows for this chat; bounded.
     fn close(&self) -> BoxFuture<'_, ()>;
+}
+
+/// Is told which session the chat persists into.
+pub trait SessionReporter: Send + Sync {
+    /// Records session `id`, whose bundle is (or will be) the directory `path`. Called when a chat
+    /// starts with a bundle, when `/save` mints one, and when `/session` switches; never for an
+    /// ephemeral chat.
+    fn report_session(&self, id: &str, path: &Path);
+}
+
+/// Tells the model where it runs: facts for the harness prompt's `<environment>` block.
+pub trait EnvironmentContributor: Send + Sync {
+    /// `(key, value)` pairs, each printed as one `key: value` line after the run's own facts. A host
+    /// names itself first (`host: cmux`), then what the model may act on (`cmux surface: <id>`).
+    fn environment(&self) -> Vec<(String, String)>;
 }
 
 /// `exec.LookPath` as a closure (`None` when not found).
@@ -132,6 +162,10 @@ pub struct Caps {
     pub background: bool,
     /// Implements [`Closer`].
     pub close: bool,
+    /// Implements [`SessionReporter`].
+    pub session: bool,
+    /// Implements [`EnvironmentContributor`].
+    pub environment: bool,
 }
 
 /// Fans the conversation's signals out to the detected hosts (host.go:90-148): the FIRST host
@@ -192,6 +226,24 @@ impl Presenter {
         }
     }
 
+    /// Tells the first [`SessionReporter`] which session the chat persists into.
+    pub fn set_session(&self, id: &str, path: &Path) {
+        if let Some(r) = self.hosts.iter().find_map(|h| h.as_session_reporter()) {
+            r.report_session(id, path);
+        }
+    }
+
+    /// What EVERY host tells the model, in host order — the one capability that is gathered rather
+    /// than served by the first host: a fact one host knows is not made false by another host also
+    /// knowing something. Empty when no host contributes.
+    pub fn environment(&self) -> Vec<(String, String)> {
+        self.hosts
+            .iter()
+            .filter_map(|h| h.as_environment())
+            .flat_map(EnvironmentContributor::environment)
+            .collect()
+    }
+
     /// Runs every [`Closer`], last host first (host.go:142-148).
     pub async fn close(&self) {
         for h in self.hosts.iter().rev() {
@@ -236,7 +288,7 @@ mod tests {
     use super::{Caps, Event, Kind, Presenter, Probe, State};
     use crate::app::env::Env;
     use crate::testing::RecordingHost;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
 
     /// A host advertising only `caps`, sharing `RecordingHost`'s logs.
@@ -252,12 +304,16 @@ mod tests {
         notify: false,
         background: false,
         close: false,
+        session: false,
+        environment: false,
     };
     const FULL: Caps = Caps {
         state: true,
         notify: true,
         background: false,
         close: false,
+        session: false,
+        environment: false,
     };
 
     // Go: internal/host/host_test.go:25 TestPresenterPerCapabilityFallback — the design's core
@@ -405,6 +461,77 @@ mod tests {
             None,
             "an inert-only presenter must not know its background"
         );
+    }
+
+    /// The environment is GATHERED, not served by the first host: two contributing hosts both land,
+    /// in host order, and a host without the capability adds nothing between them.
+    #[test]
+    fn the_environment_gathers_every_contributing_host_in_order() {
+        let pairs = |kv: &[(&str, &str)]| -> Vec<(String, String)> {
+            kv.iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect()
+        };
+        let contributing = |name: &'static str, kv: &[(&str, &str)]| RecordingHost {
+            env: pairs(kv),
+            caps: Caps {
+                environment: true,
+                ..Caps::default()
+            },
+            ..RecordingHost::new(name)
+        };
+        let p = Presenter::with_hosts(
+            vec![
+                Box::new(contributing(
+                    "first",
+                    &[("host", "first"), ("first pane", "p1")],
+                )),
+                Box::new(host("inert", Caps::default())),
+                Box::new(contributing("second", &[("host", "second")])),
+            ],
+            true,
+        );
+        assert_eq!(
+            p.environment(),
+            pairs(&[("host", "first"), ("first pane", "p1"), ("host", "second")])
+        );
+
+        let p = Presenter::with_hosts(vec![Box::new(host("inert", Caps::default()))], true);
+        assert!(p.environment().is_empty(), "an inert host contributed");
+    }
+
+    /// The session goes to the FIRST reporter, like a state; a host without the capability is
+    /// skipped, and a presenter with none swallows the call.
+    #[test]
+    fn the_session_reaches_the_first_reporter() {
+        let reporter = |name: &'static str| RecordingHost {
+            caps: Caps {
+                session: true,
+                ..Caps::default()
+            },
+            ..RecordingHost::new(name)
+        };
+        let (a, b) = (reporter("a"), reporter("b"));
+        let (a_log, b_log) = (Arc::clone(&a.sessions), Arc::clone(&b.sessions));
+        let p = Presenter::with_hosts(
+            vec![
+                Box::new(host("inert", Caps::default())),
+                Box::new(a),
+                Box::new(b),
+            ],
+            true,
+        );
+        p.set_session("s-1", Path::new("/tmp/s-1"));
+        assert_eq!(
+            *a_log.lock().unwrap(),
+            vec![("s-1".to_owned(), PathBuf::from("/tmp/s-1"))]
+        );
+        assert!(
+            b_log.lock().unwrap().is_empty(),
+            "the second host got it too"
+        );
+
+        Presenter::with_hosts(Vec::new(), true).set_session("s-2", Path::new("/tmp/s-2"));
     }
 
     /// A host list with no state reporter at all swallows the call (Go: the loop simply ends).

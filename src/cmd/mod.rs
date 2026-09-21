@@ -32,6 +32,7 @@ use std::sync::Arc;
 use crate::app::VERSION;
 use crate::app::env::Env;
 use crate::headless::{AgentOptions, OnceOptions, OutputFormat};
+use crate::host::{Presenter, State};
 use crate::llm::reqlog::RequestLog;
 use crate::mcp::config::ServerConfig;
 use crate::provider::ProviderKind;
@@ -93,9 +94,20 @@ pub(crate) struct ToolAssembly {
     pub(crate) jobs: Arc<crate::shell::jobs::Jobs>,
     /// Agent-mode options.
     pub(crate) agent: AgentOptions,
-    /// The built-in harness prompt for this agent (`""` without `tools:`), composed once here for both
-    /// branches (`agents::harness`).
-    pub(crate) harness: String,
+    /// The built-in harness prompt's inputs (`agents::harness`), read once here for both branches and
+    /// composed by each once its `Presenter` exists — the hosts add their facts to `<environment>`.
+    pub(crate) harness: assemble::HarnessInputs,
+}
+
+/// The host detectors' view of the machine (host.go:71-74 `SystemEnv`): the run's injected environment
+/// and the `PATH` lookup, built HERE so `crate::host` never reads the process environment itself (G16:
+/// the 15-line PATH scan of `shell::exec` stands in for `exec.LookPath`). Both branches build their
+/// `Presenter` from it: the interactive loop with the ANSI fallback, the `-m` run without one.
+pub(crate) fn host_probe(env: &Env) -> crate::host::Probe {
+    crate::host::Probe {
+        env: env.clone(),
+        look_path: Box::new(crate::shell::exec::find_in_path),
+    }
 }
 
 /// Process-level outcome mapping (main.rs): Ok → 0; `Err(RunError::Interrupted)` → 130; other Err → `Error: {e}` on
@@ -330,11 +342,12 @@ fn assemble_tools(
 
     // The built-in harness prompt (brain page `harness-prompt`): an agent with `tools:` is told what it runs
     // inside and where; with the `shell` set, how iota's own command line is driven from it. An agent without
-    // tools sends nothing — its bytes on the wire are exactly what they were.
-    let harness = crate::agents::harness::compose(
-        &assemble::harness_environment(dirs, project_root.as_deref(), inv.config.as_deref()),
-        &assemble::enabled_toolsets(&settings.resolved.agent.tools),
-    );
+    // tools sends nothing — its bytes on the wire are exactly what they were. Composed by the branch, once
+    // its hosts are detected: they have facts for `<environment>` too.
+    let harness = assemble::HarnessInputs {
+        env: assemble::harness_environment(dirs, project_root.as_deref(), inv.config.as_deref()),
+        toolsets: assemble::enabled_toolsets(&settings.resolved.agent.tools),
+    };
 
     Ok(ToolAssembly {
         mcp_configs,
@@ -449,6 +462,17 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         }
     };
 
+    // The host presenter of a `-m` run: the detected hosts alone — no ANSI fallback (there is no facade to
+    // write OSC through; stdout is the reply) and no pings (`notify` is a chat's knob). A multiplexer still
+    // learns that its pane is working from here to the reply, which session a resume writes into, and adds
+    // what it knows to `<environment>`. Built after the resume stage so every early return above leaves no
+    // host to clean up; from here on the run ends at `pres.close()` below, whatever `once` says.
+    let pres = Presenter::new(&host_probe(&env), None, false);
+    if let Some((writer, _)) = &session {
+        pres.set_session(writer.id(), writer.dir());
+    }
+    pres.set_state(State::Busy);
+
     // root.go:261-268: connect MCP synchronously (the single request needs the full tool set before it is sent).
     let (manager, mcp_part) = connect_mcp(
         mcp_configs,
@@ -471,7 +495,7 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
     let opts = OnceOptions {
         message,
         system: settings.system,
-        harness,
+        harness: harness.compose(&pres),
         agent,
         max_turns: settings.max_turns,
         format,
@@ -500,6 +524,11 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
     {
         io.warning(&format!("Warning: failed to save session: {e}"));
     }
+
+    // The run is over: the pane is idle for the moment the reply is on stdout, then released — the same
+    // `Idle` then `close` the chat's exit walks (Go's `defer pres.Close()`, before the servers go).
+    pres.set_state(State::Idle);
+    pres.close().await;
 
     // Go's `defer manager.Close()`: the servers are closed on every exit path, error and cancel included.
     manager.close().await;

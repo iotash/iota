@@ -87,6 +87,8 @@ impl Fixture {
                     notify: true,
                     background: false,
                     close: true,
+                    session: true,
+                    environment: false,
                 },
                 ..RecordingHost::new("recorder")
             },
@@ -110,8 +112,10 @@ impl Fixture {
                 name: self.host.name,
                 states: Arc::clone(&self.host.states),
                 events: Arc::clone(&self.host.events),
+                sessions: Arc::clone(&self.host.sessions),
                 closed: Arc::clone(&self.host.closed),
                 dark: self.host.dark,
+                env: self.host.env.clone(),
             })],
             notify,
         ))

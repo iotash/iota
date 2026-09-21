@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use crate::agents::harness::{self, ConfigFiles, Environment};
 use crate::app::HostDirs;
+use crate::host::Presenter;
 use crate::mcp::config::{ServerConfig, parse_mcp_flag};
 use crate::tool::sets::{ToolsConfig, set_factory};
 use crate::tool::{DeferredGroup, Registry, merge, set_disabled};
@@ -81,6 +82,25 @@ pub(crate) fn harness_environment(
         date: harness::today(),
         exe: dirs.exe.clone(),
         configs,
+        host: Vec::new(),
+    }
+}
+
+/// The harness prompt's two inputs, held until the hosts are known: the environment is read at assembly
+/// time, but what a host adds to it (`host: herdr`, the pane id) exists only once the branch has built its
+/// `Presenter` — which happens after the tools, so the text is composed THEN, in [`Self::compose`].
+pub(crate) struct HarnessInputs {
+    /// The run's own facts.
+    pub(crate) env: Environment,
+    /// The enabled toolsets ([`enabled_toolsets`]).
+    pub(crate) toolsets: Vec<String>,
+}
+
+impl HarnessInputs {
+    /// The harness text, the hosts' facts included: `""` for an agent without tools.
+    pub(crate) fn compose(mut self, pres: &Presenter) -> String {
+        self.env.host = pres.environment();
+        harness::compose(&self.env, &self.toolsets)
     }
 }
 
