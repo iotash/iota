@@ -3,7 +3,15 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
-## Unreleased
+## 0.4.0 - 2026-09-22
+
+iota tells its terminal what it is doing, and the config says which model a
+chat starts on. Inside a [herdr](https://herdr.dev) pane the chat is listed
+from the moment it is up — `working`, `blocked`, `idle`, released on exit —
+and the host is named in the harness prompt and on the banner. An agent now
+writes `model:` for the model it starts on and `choices:` for what `/model`
+and `-M` offer, a breaking change to the config file. The startup banner is a
+logo and three facts.
 
 ### Added
 
