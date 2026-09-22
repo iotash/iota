@@ -105,8 +105,15 @@ _launch() {
         bad "tmux session start"
         return 1
     }
-    wait_vis '❯' || {
+    # The first launch on a cold runner — a 360 MB debug binary, every scenario starting at
+    # once — has taken longer than the 12 s `wait_vis` allows (CI 35690927078, the ubuntu leg:
+    # scenario 19 was the first to start and nothing else failed). Startup gets 40 s, and a
+    # miss prints what the pane showed instead, so the next one is diagnosable.
+    _poll_until 400 _vis_has '❯' || {
         bad "startup composer never appeared"
+        echo "---- pane at the miss ----"
+        capall | tail -20
+        echo "---- end of pane ----"
         return 1
     }
     return 0
