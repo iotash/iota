@@ -274,6 +274,16 @@ async fn a_running_job_puts_jobs_in_the_table_and_the_panel_lists_it() {
         "/jobs was sent to the model"
     );
     assert!(!printed(&ui).iter().any(|l| l.contains("noted")));
+    // The status row's segment was handed the same set, oldest first.
+    let shown: Vec<Vec<String>> = ui
+        .events()
+        .into_iter()
+        .filter_map(|e| match e {
+            UiEvent::Jobs(j) => Some(j.into_iter().map(|j| j.id).collect()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(shown, vec![vec!["b1".to_owned(), "b2".to_owned()]]);
     // The loop killed both on the way out.
     assert_eq!(jobs.running(), 0);
 }

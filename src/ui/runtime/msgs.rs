@@ -34,6 +34,8 @@ pub(crate) enum UiMsg {
     Title(String),
     /// Installs the slash-command table (completion + suggestion row).
     Commands(Vec<Suggestion>),
+    /// Replaces the running background jobs (the status row's job segment, and its one-second tick).
+    Jobs(Vec<crate::shell::jobs::JobInfo>),
     /// Starts a busy phase: the label mounts on the status row, the phase clock
     /// restarts, any previous detail clears (model.go busyOnMsg).
     BusyOn(String),

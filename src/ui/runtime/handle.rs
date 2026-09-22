@@ -356,6 +356,10 @@ impl Ui for TuiHandle {
         let _ = self.tx.send(UiMsg::Commands(cmds));
     }
 
+    fn set_jobs(&self, jobs: Vec<crate::shell::jobs::JobInfo>) {
+        let _ = self.tx.send(UiMsg::Jobs(jobs));
+    }
+
     fn call_preview(&self, label: &str) {
         lock(&self.region).open_call_preview(label);
     }

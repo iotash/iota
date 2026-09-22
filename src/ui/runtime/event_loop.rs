@@ -56,6 +56,11 @@ pub(crate) const IDLE_POLL_MAX: Duration = Duration::from_millis(50);
 /// Spinner cadence (model.go:25 — 120ms tick).
 pub(crate) const SPINNER_TICK: Duration = Duration::from_millis(120);
 
+/// The status row's job clock cadence: one repaint a second while a background job runs, and none
+/// otherwise — an idle iota with no job paints nothing (the stale-frame budgets of scenarios 06 and 14
+/// stand on that).
+pub(crate) const JOB_TICK: Duration = Duration::from_secs(1);
+
 /// Poll cap while a preview is streaming (the spike's hot-loop cadence).
 pub(crate) const STREAM_POLL_CAP: Duration = Duration::from_millis(25);
 
@@ -151,6 +156,11 @@ pub(crate) struct Model {
     pub(crate) cancels: Vec<CancellationToken>,
     /// The slash-command table (completion + suggestion row — WP46).
     pub(crate) commands: Vec<Suggestion>,
+    /// The running background jobs (the status row's job segment), oldest first.
+    pub(crate) running_jobs: Vec<crate::shell::jobs::JobInfo>,
+    /// When the job clock last repainted (the [`JOB_TICK`] chain, live while `running_jobs` is not
+    /// empty).
+    pub(crate) last_job_tick: Instant,
     /// The composer (WP46's seam; provisional body).
     pub(crate) composer: Composer,
     /// Stored multi-line pastes (`[#N …]` tags — WP46).
@@ -247,6 +257,8 @@ impl Model {
             surface_gen: 0,
             cancels: Vec::new(),
             commands: Vec::new(),
+            running_jobs: Vec::new(),
+            last_job_tick: Instant::now(),
             composer: Composer::new(),
             pastes: Vec::new(),
             spin: 0,
@@ -277,6 +289,10 @@ impl Model {
         }
         if !self.region_snap.label.is_empty() {
             d = d.min(STREAM_POLL_CAP);
+        }
+        if !self.running_jobs.is_empty() {
+            let next = JOB_TICK.saturating_sub(self.last_job_tick.elapsed());
+            d = d.min(next.max(Duration::from_millis(1)));
         }
         if let Some(s) = &self.surface
             && s.refresh_every > Duration::ZERO
@@ -310,6 +326,18 @@ impl Model {
         if self.last_spin.elapsed() >= SPINNER_TICK {
             self.spin = self.spin.wrapping_add(1);
             self.last_spin = Instant::now();
+            self.dirty = true;
+        }
+    }
+
+    /// One job-clock repaint when due; nothing at all with no job running, so the chain costs an idle
+    /// loop nothing.
+    pub(crate) fn tick_jobs(&mut self) {
+        if self.running_jobs.is_empty() {
+            return;
+        }
+        if self.last_job_tick.elapsed() >= JOB_TICK {
+            self.last_job_tick = Instant::now();
             self.dirty = true;
         }
     }
@@ -352,6 +380,12 @@ impl Model {
             }
             UiMsg::Commands(c) => {
                 self.commands = c;
+                self.dirty = true;
+            }
+            UiMsg::Jobs(jobs) => {
+                // A fresh set restarts the clock chain from now, so the first tick is a full second out.
+                self.running_jobs = jobs;
+                self.last_job_tick = Instant::now();
                 self.dirty = true;
             }
             UiMsg::Progress(s) => {
@@ -678,6 +712,7 @@ impl Model {
             bottom,
             status: &self.status,
             busy: self.busy.as_ref(),
+            jobs: &self.running_jobs,
             now: Instant::now(),
         })
     }
@@ -749,6 +784,7 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
             }
         }
         m.tick_spin();
+        m.tick_jobs();
         m.tick_surface_refresh();
         // W2/W6: land the insert batches, pushing the tracked top.
         for batch in inserts.drain(..) {

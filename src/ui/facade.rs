@@ -877,6 +877,10 @@ pub trait Ui: Send + Sync {
     /// Installs the slash-command table backing completion and the suggestion row.
     fn set_slash_commands(&self, cmds: Vec<Suggestion>);
 
+    /// Replaces the running background jobs the status row's job segment shows (oldest first; empty =
+    /// no segment). The loop repaints every second while any runs, so the segment's clock ticks.
+    fn set_jobs(&self, jobs: Vec<crate::shell::jobs::JobInfo>);
+
     // widget verbs (activity groups):
 
     /// ENSURE semantics: an existing call preview relabels in place keeping clock+detail.

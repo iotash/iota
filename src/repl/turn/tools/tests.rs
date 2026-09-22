@@ -1544,6 +1544,10 @@ impl Ui for OrderUi {
         self.inner.set_slash_commands(cmds);
     }
 
+    fn set_jobs(&self, jobs: Vec<crate::shell::jobs::JobInfo>) {
+        self.inner.set_jobs(jobs);
+    }
+
     fn call_preview(&self, label: &str) {
         self.inner.call_preview(label);
     }

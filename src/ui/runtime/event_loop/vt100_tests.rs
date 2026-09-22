@@ -571,6 +571,60 @@ fn idle_poll_deadline_always_finite() {
     );
 }
 
+/// The job clock: while a background job runs the loop wakes once a second to repaint the status row's
+/// segment — and not at all otherwise, so an idle iota with no job never paints (the stale-frame budgets
+/// of scenarios 06 and 14 rest on that).
+#[test]
+fn job_clock_ticks_only_while_a_job_runs() {
+    use crate::ui::runtime::event_loop::{IDLE_POLL_MAX, JOB_TICK};
+    let mut m = test_model();
+    m.dirty = false;
+    m.tick_jobs();
+    assert!(!m.dirty, "no job, no repaint");
+    assert_eq!(m.poll_deadline(), IDLE_POLL_MAX);
+
+    let job = crate::shell::jobs::JobInfo {
+        id: "b1".to_owned(),
+        command: "sleep 30".to_owned(),
+        started: Instant::now(),
+        output_path: std::path::PathBuf::from("/tmp/b1.log"),
+    };
+    m.apply(UiMsg::Jobs(vec![job]));
+    assert!(m.dirty, "a new running set repaints at once");
+    m.dirty = false;
+    assert!(
+        m.poll_deadline() <= IDLE_POLL_MAX,
+        "the deadline stays finite and no later than the idle cap"
+    );
+    m.tick_jobs();
+    assert!(
+        !m.dirty,
+        "a fresh set is a full tick away from its first repaint"
+    );
+    // A second later the tick is due: one repaint, then the next one is a second out again.
+    m.last_job_tick = Instant::now()
+        .checked_sub(JOB_TICK)
+        .unwrap_or_else(Instant::now);
+    m.tick_jobs();
+    assert!(m.dirty, "the clock did not repaint after a second");
+    m.dirty = false;
+    m.tick_jobs();
+    assert!(!m.dirty, "the clock repainted twice in one second");
+
+    m.apply(UiMsg::Jobs(Vec::new()));
+    m.dirty = false;
+    assert_eq!(
+        m.poll_deadline(),
+        IDLE_POLL_MAX,
+        "the last job gone, the loop is idle again"
+    );
+    m.last_job_tick = Instant::now()
+        .checked_sub(JOB_TICK)
+        .unwrap_or_else(Instant::now);
+    m.tick_jobs();
+    assert!(!m.dirty, "a due tick with no job must not repaint");
+}
+
 /// The cancel-scope stack: ESC fires the innermost only; Ctrl+C fires index 0 and
 /// truncates the whole stack (the loop-side half; key routing tests are WP45/WP46's).
 #[test]

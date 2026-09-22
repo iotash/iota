@@ -11,6 +11,7 @@
 
 use std::time::{Duration, Instant};
 
+use crate::shell::jobs::JobInfo;
 use crate::text::ansi::strip_sgr;
 use crate::text::width::str_width;
 use crate::ui::facade::StatusData;
@@ -31,6 +32,7 @@ struct Case {
     queue: Vec<String>,
     status: StatusData,
     busy: Option<BusyView>,
+    jobs: Vec<JobInfo>,
     candidates: Option<String>,
     surface: Option<Vec<String>>,
     desc: Option<String>,
@@ -47,6 +49,7 @@ impl Default for Case {
             queue: Vec::new(),
             status: StatusData::default(),
             busy: None,
+            jobs: Vec::new(),
             candidates: None,
             surface: None,
             desc: None,
@@ -82,6 +85,7 @@ fn view(c: &Case) -> FrameView {
         bottom,
         status: &c.status,
         busy: c.busy.as_ref(),
+        jobs: &c.jobs,
         now: c.now,
     })
 }
@@ -366,6 +370,104 @@ fn busy_in_status_line() {
     );
 }
 
+/// A job running `ago` seconds before `now`.
+fn job(id: &str, command: &str, ago: u64, now: Instant) -> JobInfo {
+    JobInfo {
+        id: id.to_owned(),
+        command: command.to_owned(),
+        started: now.checked_sub(Duration::from_secs(ago)).unwrap_or(now),
+        output_path: std::path::PathBuf::from(format!("/tmp/{id}.log")),
+    }
+}
+
+/// The job segment closes the status row — after busy — as a SEGMENT: the frame height
+/// never moves. One job: `job b3 <command> 1m12s`, the command on one line and cut to what
+/// the row has left, dropped when fewer than four columns are; several: `3 jobs 3m01s`
+/// with the oldest's clock. No job, no segment.
+#[test]
+fn jobs_segment_in_status_line() {
+    let now = Instant::now();
+    let status = StatusData {
+        model: "gpt-4o".to_owned(),
+        ..StatusData::default()
+    };
+    let before = plain(&view(&Case {
+        status: status.clone(),
+        now,
+        ..Case::default()
+    }));
+
+    let one = Case {
+        status: status.clone(),
+        jobs: vec![job("b3", "cargo test\n   --test session resume", 72, now)],
+        now,
+        ..Case::default()
+    };
+    let rows = plain(&view(&one));
+    assert_eq!(rows.len(), before.len(), "a job changed the frame height");
+    let row = rows.last().expect("the status row");
+    assert_eq!(
+        row.as_str(),
+        "  gpt-4o · job b3 cargo test --test session resume 1m12s"
+    );
+
+    // Busy comes first; the job segment closes the row.
+    let busy = Case {
+        status: status.clone(),
+        busy: Some(BusyView {
+            label: "Waiting".to_owned(),
+            detail: String::new(),
+            since: now,
+        }),
+        jobs: one.jobs.clone(),
+        now,
+        ..Case::default()
+    };
+    let row = plain(&view(&busy)).pop().expect("the status row");
+    assert!(
+        row.ends_with(" Waiting · job b3 cargo test --test session resume 1m12s"),
+        "{row:?}"
+    );
+
+    // Narrow: the command gives way first — cut, then dropped — and the clock stays.
+    let narrow = strip_sgr(&status_line(&status, None, 0, false, &one.jobs, 36, now));
+    assert_eq!(narrow, "  gpt-4o · job b3 cargo test … 1m12s");
+    assert_eq!(str_width(&narrow), 36);
+    let narrower = strip_sgr(&status_line(&status, None, 0, false, &one.jobs, 24, now));
+    assert_eq!(narrower, "  gpt-4o · job b3 1m12s");
+    // Below even that, the row's own truncation takes over as for any segment.
+    let tiny = strip_sgr(&status_line(&status, None, 0, false, &one.jobs, 12, now));
+    assert!(str_width(&tiny) <= 12, "{tiny:?}");
+
+    // Several: a count and the OLDEST job's clock, whatever the order given.
+    let many = Case {
+        status: status.clone(),
+        jobs: vec![
+            job("b4", "sleep 5", 12, now),
+            job("b2", "make", 181, now),
+            job("b5", "true", 1, now),
+        ],
+        now,
+        ..Case::default()
+    };
+    let row = plain(&view(&many)).pop().expect("the status row");
+    assert_eq!(row, "  gpt-4o · 3 jobs 3m01s");
+
+    // The clock walks: a second later the same jobs read a second more.
+    let later = now + Duration::from_secs(1);
+    let row = strip_sgr(&status_line(&status, None, 0, false, &one.jobs, 80, later));
+    assert!(row.ends_with(" 1m13s"), "{row:?}");
+
+    // No job: no segment, and the segment's absence leaves the row exactly as before.
+    let after = plain(&view(&Case {
+        status,
+        now,
+        ..Case::default()
+    }));
+    assert_eq!(after, before);
+    assert!(!after.join("\n").contains("job "));
+}
+
 /// The live sub-state renders after the label (`"label · detail"`); the state-machine
 /// halves (clock kept, phase clears detail, idle drop) live in the loop units.
 #[test]
@@ -397,11 +499,11 @@ fn status_line_renders_fields_and_truncates() {
         out_tokens: 3_400,
         ..StatusData::default()
     };
-    let line = strip_sgr(&status_line(&s, None, 0, false, 80, Instant::now()));
+    let line = strip_sgr(&status_line(&s, None, 0, false, &[], 80, Instant::now()));
     for want in ["gpt-4o", "↑ 148k", "↓ 3.4k", "≈9% / 128k"] {
         assert!(line.contains(want), "status missing {want:?}: {line:?}");
     }
-    let narrow = strip_sgr(&status_line(&s, None, 0, false, 20, Instant::now()));
+    let narrow = strip_sgr(&status_line(&s, None, 0, false, &[], 20, Instant::now()));
     assert!(
         str_width(&narrow) <= 20,
         "narrow status overflows: {narrow:?}"
@@ -421,7 +523,7 @@ fn status_line_field_hues() {
         out_tokens: 500,
         ..StatusData::default()
     };
-    let line = status_line(&s, None, 0, false, 80, Instant::now());
+    let line = status_line(&s, None, 0, false, &[], 80, Instant::now());
     assert!(
         line.contains(&format!("{CYAN}{FAINT}gpt-4o{RESET}")),
         "model segment not cyan+faint:\n{line:?}"
@@ -435,7 +537,15 @@ fn status_line_field_hues() {
         "context segment not green+faint (or format drifted):\n{line:?}"
     );
 
-    let line = status_line(&StatusData::default(), None, 0, false, 80, Instant::now());
+    let line = status_line(
+        &StatusData::default(),
+        None,
+        0,
+        false,
+        &[],
+        80,
+        Instant::now(),
+    );
     assert!(
         strip_sgr(&line).contains('—'),
         "missing em-dash placeholder:\n{line:?}"
@@ -457,7 +567,7 @@ fn status_line_context_hues() {
             ctx_window: 128_000,
             ..StatusData::default()
         };
-        let line = status_line(&s, None, 0, false, 80, Instant::now());
+        let line = status_line(&s, None, 0, false, &[], 80, Instant::now());
         assert!(
             line.contains(&format!("{hue}{FAINT}")),
             "{name}: context segment missing its hue:\n{line:?}"
@@ -472,7 +582,7 @@ fn status_line_without_token_accounting() {
         model: "imagen-4".to_owned(),
         ..StatusData::default()
     };
-    let line = strip_sgr(&status_line(&s, None, 0, false, 80, Instant::now()));
+    let line = strip_sgr(&status_line(&s, None, 0, false, &[], 80, Instant::now()));
     assert!(
         !line.contains(['↑', '↓', '%']),
         "token-less status should carry no figures: {line:?}"
@@ -486,7 +596,7 @@ fn status_line_hides_ctx_without_tokens() {
         model: "seedream-5.0-pro".to_owned(),
         ..StatusData::default()
     };
-    let line = strip_sgr(&status_line(&s, None, 0, false, 80, Instant::now()));
+    let line = strip_sgr(&status_line(&s, None, 0, false, &[], 80, Instant::now()));
     assert!(line.contains("seedream-5.0-pro"), "model missing: {line:?}");
     assert!(!line.contains('%'), "ctx segment must hide: {line:?}");
 }
@@ -504,7 +614,7 @@ fn status_line_cache_share() {
         cache_hit_pct: 76.8,
         ..StatusData::default()
     };
-    let line = strip_sgr(&status_line(&s, None, 0, false, 120, Instant::now()));
+    let line = strip_sgr(&status_line(&s, None, 0, false, &[], 120, Instant::now()));
     assert!(
         line.contains("↑ 148k (77% cached) ↓ 22k"),
         "cache share missing or misplaced: {line:?}"
@@ -515,7 +625,7 @@ fn status_line_cache_share() {
         model: "claude".to_owned(),
         ..s
     };
-    let line = strip_sgr(&status_line(&s, None, 0, false, 120, Instant::now()));
+    let line = strip_sgr(&status_line(&s, None, 0, false, &[], 120, Instant::now()));
     assert!(
         !line.contains("cached"),
         "cache share without activity: {line:?}"
@@ -532,18 +642,26 @@ fn status_line_debug_marker() {
         ctx_window: 128_000,
         ..StatusData::default()
     };
-    let line = strip_sgr(&status_line(&off, None, 0, false, 80, Instant::now()));
+    let line = strip_sgr(&status_line(&off, None, 0, false, &[], 80, Instant::now()));
     assert!(!line.contains("debug"), "marker shown while off: {line:?}");
 
     let on = StatusData { debug: true, ..off };
-    let line = status_line(&on, None, 0, false, 80, Instant::now());
+    let line = status_line(&on, None, 0, false, &[], 80, Instant::now());
     assert!(
         line.contains(&format!("{YELLOW}{FAINT}debug{RESET}")),
         "marker missing or not yellow+faint:\n{line:?}"
     );
 
     for width in [28_u16, 24] {
-        let narrow = strip_sgr(&status_line(&on, None, 0, false, width, Instant::now()));
+        let narrow = strip_sgr(&status_line(
+            &on,
+            None,
+            0,
+            false,
+            &[],
+            width,
+            Instant::now(),
+        ));
         assert!(
             narrow.contains("debug"),
             "marker lost to truncation at {width}: {narrow:?}"

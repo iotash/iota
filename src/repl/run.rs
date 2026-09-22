@@ -519,8 +519,11 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         let ui_watch = Arc::clone(&ui);
         let table_watch = Arc::clone(&repl.handles.table);
         repl.handles.jobs.set_watch(Some(Box::new(move |running| {
+            let any = !running.is_empty();
+            // The status row's job segment follows the same set (and ticks while it is non-empty).
+            ui_watch.set_jobs(running);
             let mut table = lock(&table_watch);
-            if table.set_jobs(!running.is_empty()) {
+            if table.set_jobs(any) {
                 ui_watch.set_slash_commands(table.active());
             }
         })));

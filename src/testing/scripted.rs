@@ -58,6 +58,8 @@ pub enum UiEvent {
     Title(String),
     /// [`Ui::set_slash_commands`] with the table.
     Commands(Vec<Suggestion>),
+    /// [`Ui::set_jobs`] with the running set.
+    Jobs(Vec<crate::shell::jobs::JobInfo>),
     /// [`Ui::push_cancel_scope`].
     ScopePush,
     /// The [`ScopeGuard`] popped (explicitly or on `Drop`).
@@ -443,6 +445,10 @@ impl Ui for ScriptedUi {
 
     fn set_slash_commands(&self, cmds: Vec<Suggestion>) {
         self.record(UiEvent::Commands(cmds));
+    }
+
+    fn set_jobs(&self, jobs: Vec<crate::shell::jobs::JobInfo>) {
+        self.record(UiEvent::Jobs(jobs));
     }
 
     fn call_preview(&self, label: &str) {

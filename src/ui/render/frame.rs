@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 /// this one string.
 pub const SEPARATOR_GLYPH: &str = "┄";
 
+use crate::shell::jobs::JobInfo;
 use crate::text;
 use crate::text::ansi::truncate_ansi;
 use crate::text::width::str_width;
@@ -95,6 +96,8 @@ pub(crate) struct FrameInput<'a> {
     pub(crate) status: &'a StatusData,
     /// The live busy phase, if any.
     pub(crate) busy: Option<&'a BusyView>,
+    /// The running background jobs, oldest first (the status row's closing segment; empty = none).
+    pub(crate) jobs: &'a [JobInfo],
     /// "Now" for every elapsed figure (injected so goldens control the clock).
     pub(crate) now: Instant,
 }
@@ -212,6 +215,7 @@ pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
             fi.busy,
             fi.spin,
             fi.scopes_active,
+            fi.jobs,
             fi.width,
             fi.now,
         )),
@@ -225,13 +229,17 @@ pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
 }
 
 /// Renders the status line (model.go statusLine, 1083-1179): `"  model"` then
-/// `" · "`-joined optional segments in order — tokens, ctx, debug, busy — with
-/// per-segment hues, truncated to one row with the debug marker re-appended.
+/// `" · "`-joined optional segments in order — tokens, ctx, debug, busy, jobs — with
+/// per-segment hues, truncated to one row with the debug marker re-appended. The jobs
+/// segment closes the row while a background job runs (2026-09-22): one job by id with
+/// its command and clock, `job b3 cargo test 1m12s`, the command cut to what the row has
+/// left; several by count with the oldest's clock, `3 jobs 3m01s`.
 pub(crate) fn status_line(
     s: &StatusData,
     busy: Option<&BusyView>,
     spin: usize,
     scopes_active: bool,
+    jobs: &[JobInfo],
     width: u16,
     now: Instant,
 ) -> String {
@@ -294,6 +302,12 @@ pub(crate) fn status_line(
     if busy.is_some() {
         let _ = write!(plain, " · {frame}{tail}");
     }
+    // The job segment takes what the row has left after everything else; its command gives way first.
+    let room = (width as usize).saturating_sub(str_width(&plain) + 3);
+    let jobs_seg = jobs_segment(jobs, now, room);
+    if !jobs_seg.is_empty() {
+        let _ = write!(plain, " · {jobs_seg}");
+    }
 
     if str_width(&plain) > width as usize {
         // Truncation eats the tail, where the mode marker sits — re-append it: a
@@ -326,7 +340,38 @@ pub(crate) fn status_line(
             "{FAINT} · {RESET}{CYAN}{frame}{RESET}{FAINT}{tail}{RESET}"
         );
     }
+    if !jobs_seg.is_empty() {
+        let _ = write!(out, "{FAINT} · {jobs_seg}{RESET}");
+    }
     out
+}
+
+/// The job segment for `room` columns: `job b3 <command> 1m12s` for one job — the command on one line,
+/// cut to the columns between the id and the clock and dropped below four of them — or `3 jobs 3m01s`
+/// for several, with the oldest's clock; `""` with none.
+fn jobs_segment(jobs: &[JobInfo], now: Instant, room: usize) -> String {
+    let clock_of = |job: &JobInfo| text::clock(now.saturating_duration_since(job.started));
+    match jobs {
+        [] => String::new(),
+        [job] => {
+            let head = format!("job {}", job.id);
+            let clock = clock_of(job);
+            let command: String = job.command.split_whitespace().collect::<Vec<_>>().join(" ");
+            let cmd_room = room.saturating_sub(str_width(&head) + str_width(&clock) + 2);
+            if command.is_empty() || cmd_room < 4 {
+                format!("{head} {clock}")
+            } else {
+                format!("{head} {} {clock}", truncate_ansi(&command, cmd_room, "…"))
+            }
+        }
+        many => {
+            let oldest = many
+                .iter()
+                .min_by_key(|j| j.started)
+                .map_or_else(String::new, clock_of);
+            format!("{} jobs {oldest}", many.len())
+        }
+    }
 }
 
 /// Context-fill hue: green while there is room, yellow past 70%, red past 90% — the
