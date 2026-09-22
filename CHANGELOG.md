@@ -3,6 +3,28 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## Unreleased
+
+### Changed
+
+- **The banner is a card.** The three facts — `ι> iota` and the version, the
+  mode row, the directory — stand inside a rounded frame that hugs the widest
+  of them; the half-block wordmark is gone. The dots between the mode row's
+  segments are dim like the frame, so the facts stand out. A terminal too
+  narrow for the mode row and the frame (38 columns in a plain terminal, more
+  when the row names a host) gets the three rows bare; `NO_COLOR` keeps the
+  frame and loses the colors (X-46).
+
+### Fixed
+
+- **The banner no longer prints twice on exit.** Leaving the chat right after
+  it started — Ctrl+C or Ctrl+D at the prompt — left the banner on the screen
+  twice: once in the scrollback, once more in the frame that had shown it. The
+  exit now repaints the frame after the staged rows have gone to scrollback,
+  so what stays on the screen is the transcript once, then the prompt and the
+  status row. After a longer chat the last rows of the reply were the ones
+  doubled; those are once now too (X-49).
+
 ## 0.4.0 - 2026-09-22
 
 iota tells its terminal what it is doing, and the config says which model a
