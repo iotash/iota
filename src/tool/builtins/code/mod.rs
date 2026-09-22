@@ -260,6 +260,6 @@ mod tests {
             );
         }
         assert_eq!(cs.display(Path::new("/proj")), ".");
-        assert_eq!(cs.display(Path::new("/proj/a/b.go")), "a/b.go");
+        assert_eq!(cs.display(Path::new("/proj/a/b.rs")), "a/b.rs");
     }
 }

@@ -1107,8 +1107,8 @@ fn the_notify_digest_strips_markdown_and_caps_at_sixty_runes() {
         ),
         (
             "list and bold",
-            "- **Done**: `run.go` updated",
-            "Done: run.go updated",
+            "- **Done**: `main.rs` updated",
+            "Done: main.rs updated",
         ),
         ("leading blanks", "\n\n\nplain answer", "plain answer"),
         ("empty reply", "", "Response ready"),

@@ -296,23 +296,20 @@ mod tests {
                 .into_owned()
         };
         // relative stays verbatim
-        assert_eq!(
-            header_path("internal/ui/model.go", cwd, root),
-            "internal/ui/model.go"
-        );
+        assert_eq!(header_path("src/ui/model.rs", cwd, root), "src/ui/model.rs");
         // relative is cleaned but not rebased
-        assert_eq!(header_path("./a/../b.go", cwd, root), "b.go");
+        assert_eq!(header_path("./a/../b.rs", cwd, root), "b.rs");
         // under cwd
         assert_eq!(
-            header_path(&abs(&["sub", "a", "b.go"]), cwd, root),
-            "a/b.go"
+            header_path(&abs(&["sub", "a", "b.rs"]), cwd, root),
+            "a/b.rs"
         );
         // cwd itself
         assert_eq!(header_path(&abs(&["sub"]), cwd, root), ".");
         // elsewhere in the project walks up
         assert_eq!(
-            header_path(&abs(&["other", "x.go"]), cwd, root),
-            "../other/x.go"
+            header_path(&abs(&["other", "x.rs"]), cwd, root),
+            "../other/x.rs"
         );
         // empty
         assert_eq!(header_path("", cwd, root), "");
@@ -321,10 +318,10 @@ mod tests {
         // the fixture root)
         match std::env::home_dir() {
             Some(home) if !home.as_os_str().is_empty() && !root.starts_with(&home) => {
-                let p = home.join("elsewhere").join("y.go");
+                let p = home.join("elsewhere").join("y.rs");
                 assert_eq!(
                     header_path(&p.to_string_lossy(), cwd, root),
-                    "~/elsewhere/y.go"
+                    "~/elsewhere/y.rs"
                 );
             }
             _ => eprintln!("SKIP: home directory unavailable or contains the fixture root"),
@@ -346,18 +343,18 @@ mod tests {
     // the basename identifies the file, so it is the part that must survive.
     #[test]
     fn test_header_path_elides_from_the_front() {
-        let long = "a/very/deeply/nested/tree/of/directories/that/keeps/going/model.go";
+        let long = "a/very/deeply/nested/tree/of/directories/that/keeps/going/model.rs";
         let got = header_path(long, Path::new(""), Path::new(""));
         assert!(
             got.chars().count() <= HEADER_PATH_MAX,
             "not elided: {got:?} ({} cols)",
             got.chars().count()
         );
-        assert!(got.ends_with("model.go"), "basename lost: {got:?}");
+        assert!(got.ends_with("model.rs"), "basename lost: {got:?}");
         assert!(got.starts_with(".../"), "elision marker missing: {got:?}");
 
         // One oversized segment has no separator to cut at — the tail still wins.
-        let huge = "x".repeat(200) + ".go";
+        let huge = "x".repeat(200) + ".rs";
         let got = header_path(&huge, Path::new(""), Path::new(""));
         assert!(
             got.chars().count() <= HEADER_PATH_MAX,
@@ -367,7 +364,7 @@ mod tests {
         assert!(
             std::path::Path::new(&got)
                 .extension()
-                .is_some_and(|e| e == "go"),
+                .is_some_and(|e| e == "rs"),
             "extension lost: {got:?}"
         );
     }

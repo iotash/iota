@@ -65,17 +65,17 @@ fn a_tools_own_summary_takes_over_the_header() {
     let tc = call(
         "edit_file",
         serde_json::json!({
-            "path": "internal/ui/model.go",
+            "path": "src/ui/model.rs",
             "new_string": "code\n".repeat(500),
         }),
     );
 
     let custom = HeaderDispatch {
-        summary: Some("internal/ui/model.go".to_owned()),
+        summary: Some("src/ui/model.rs".to_owned()),
     };
     assert_eq!(
         tool_call_header(&custom, &tc),
-        "[edit_file internal/ui/model.go]"
+        "[edit_file src/ui/model.rs]"
     );
 
     let empty = HeaderDispatch {

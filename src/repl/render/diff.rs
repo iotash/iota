@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn diff_lang_uses_the_base_name() {
         assert_eq!(diff_lang(""), "");
-        assert_eq!(diff_lang("main.go"), "main.go");
+        assert_eq!(diff_lang("lib.rs"), "lib.rs");
         assert_eq!(diff_lang("src/a/b/main.rs"), "main.rs");
         assert_eq!(diff_lang("C:\\proj\\main.py"), "main.py");
         assert_eq!(diff_lang("Makefile"), "Makefile");
@@ -352,8 +352,8 @@ mod tests {
     #[test]
     fn coloured_diff_rows_carry_their_background_and_end_self_contained() {
         let rows = render_diff(
-            "main.go",
-            "@@ -0,0 +1,2 @@\n+package main\n+var x = 1",
+            "main.rs",
+            "@@ -0,0 +1,2 @@\n+fn main() {}\n+let x = 1;",
             24,
             100,
             true,
@@ -371,12 +371,12 @@ mod tests {
             );
         }
         assert!(
-            strip_sgr(&rows[0]).contains("1 + package main"),
+            strip_sgr(&rows[0]).contains("1 + fn main() {}"),
             "gutter numbering wrong: {:?}",
             strip_sgr(&rows[0])
         );
         assert!(
-            strip_sgr(&rows[1]).contains("2 + var x = 1"),
+            strip_sgr(&rows[1]).contains("2 + let x = 1;"),
             "gutter numbering wrong: {:?}",
             strip_sgr(&rows[1])
         );
@@ -419,8 +419,8 @@ mod tests {
     #[test]
     fn the_gutter_sits_inside_the_coloured_block() {
         let rows = render_diff(
-            "main.go",
-            "@@ -1,1 +1,2 @@\n+package main\n-package old",
+            "main.rs",
+            "@@ -1,1 +1,2 @@\n+fn main() {}\n-fn old() {}",
             24,
             100,
             true,
@@ -443,7 +443,7 @@ mod tests {
             rows[0]
         );
         assert!(
-            strip_sgr(&rows[0]).contains("1 + package main"),
+            strip_sgr(&rows[0]).contains("1 + fn main() {}"),
             "gutter layout changed: {:?}",
             strip_sgr(&rows[0])
         );
@@ -500,8 +500,8 @@ mod tests {
     #[test]
     fn with_colour_off_the_rows_carry_no_escape() {
         let rows = render_diff(
-            "main.go",
-            "@@ -0,0 +1,2 @@\n+package main\n+var x = 1",
+            "main.rs",
+            "@@ -0,0 +1,2 @@\n+fn main() {}\n+let x = 1;",
             24,
             100,
             false,
@@ -513,6 +513,6 @@ mod tests {
                 "an escape sequence with colour off: {row:?}"
             );
         }
-        assert_eq!(rows[0].trim(), "1 + package main");
+        assert_eq!(rows[0].trim(), "1 + fn main() {}");
     }
 }

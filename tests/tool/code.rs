@@ -146,35 +146,35 @@ async fn code_tools_refuse_paths_outside_the_project_root() {
 async fn glob_lists_matching_files_relative_to_the_root() {
     let (_dir, root, tools) = code_project(
         &[
-            ("pkg/old.go", "package pkg\n"),
-            ("pkg/new.go", "package pkg\n"),
+            ("src/old.rs", "pub fn old() {}\n"),
+            ("src/new.rs", "pub fn new() {}\n"),
             ("docs/readme.md", "hi\n"),
-            ("vendor/dep.go", "package dep\n"),
+            ("vendor/dep.rs", "pub fn dep() {}\n"),
             (".gitignore", "vendor/\n"),
         ],
         "",
     );
     let past = SystemTime::now() - Duration::from_secs(3600);
-    set_mtime(&root.join("pkg/old.go"), past);
+    set_mtime(&root.join("src/old.rs"), past);
 
     // Bare pattern matches at any depth; gitignored vendor/ is excluded; newest file first.
-    let out = call(&tools, "glob", json!({ "pattern": "*.go" })).await;
+    let out = call(&tools, "glob", json!({ "pattern": "*.rs" })).await;
     assert!(!out.is_error, "glob error: {}", out.text);
     assert!(
-        !out.text.contains("vendor/dep.go"),
+        !out.text.contains("vendor/dep.rs"),
         "gitignored file leaked into glob:\n{}",
         out.text
     );
     assert_eq!(
         out.text.split('\n').collect::<Vec<_>>(),
-        ["pkg/new.go", "pkg/old.go"]
+        ["src/new.rs", "src/old.rs"]
     );
 
     // Path-anchored pattern.
     let out = call(&tools, "glob", json!({ "pattern": "docs/*.md" })).await;
     assert_eq!(out.text, "docs/readme.md");
 
-    let out = call(&tools, "glob", json!({ "pattern": "*.rs" })).await;
+    let out = call(&tools, "glob", json!({ "pattern": "*.py" })).await;
     assert!(
         !out.is_error && out.text.contains("no files match"),
         "no-match glob = {out:?}"
@@ -185,8 +185,8 @@ async fn grep_searches_with_context_and_respects_the_ignore_files() {
     let (_dir, root, tools) = code_project(
         &[
             (
-                "main.go",
-                "package main\n\nfunc main() {\n\tprintln(\"hi\")\n}\n",
+                "main.rs",
+                "// entry\n\nfn main() {\n\tprintln!(\"hi\");\n}\n",
             ),
             ("notes.md", "the main idea\n"),
         ],
@@ -194,9 +194,9 @@ async fn grep_searches_with_context_and_respects_the_ignore_files() {
     );
     fs::write(root.join("blob.bin"), b"ma\x00in").expect("write binary");
 
-    let out = call(&tools, "grep", json!({ "pattern": "func main" })).await;
+    let out = call(&tools, "grep", json!({ "pattern": "fn main" })).await;
     assert!(
-        !out.is_error && out.text.contains("main.go:3: func main() {"),
+        !out.is_error && out.text.contains("main.rs:3: fn main() {"),
         "grep basic = {out:?}"
     );
 
@@ -208,7 +208,7 @@ async fn grep_searches_with_context_and_respects_the_ignore_files() {
     )
     .await;
     assert!(
-        !out.text.contains("main.go"),
+        !out.text.contains("main.rs"),
         "include filter failed:\n{}",
         out.text
     );
@@ -225,12 +225,12 @@ async fn grep_searches_with_context_and_respects_the_ignore_files() {
     )
     .await;
     assert!(
-        out.text.contains("main.go:3- func main() {"),
+        out.text.contains("main.rs:3- fn main() {"),
         "context lines missing:\n{}",
         out.text
     );
     assert!(
-        out.text.contains("main.go:4: \tprintln"),
+        out.text.contains("main.rs:4: \tprintln"),
         "context lines missing:\n{}",
         out.text
     );
@@ -250,11 +250,11 @@ async fn grep_searches_with_context_and_respects_the_ignore_files() {
 }
 #[tokio::test]
 async fn list_dir_lists_entries_with_a_directory_marker() {
-    let (_dir, _root, tools) = code_project(&[("pkg/a.go", "x"), ("top.txt", "12345")], "");
+    let (_dir, _root, tools) = code_project(&[("src/a.rs", "x"), ("top.txt", "12345")], "");
 
     let out = call(&tools, "list_dir", json!({})).await;
     assert!(!out.is_error, "list_dir root = {out:?}");
-    assert!(out.text.contains("pkg/"), "list_dir root:\n{}", out.text);
+    assert!(out.text.contains("src/"), "list_dir root:\n{}", out.text);
     assert!(
         out.text.contains("top.txt (5 B)"),
         "list_dir root:\n{}",
@@ -304,26 +304,26 @@ async fn read_file_returns_a_line_window() {
 }
 #[tokio::test]
 async fn edit_file_replaces_a_unique_occurrence_and_refuses_ambiguity() {
-    let (_dir, root, tools) = code_project(&[("f.go", "aaa\nbbb\naaa\n")], "");
+    let (_dir, root, tools) = code_project(&[("f.rs", "aaa\nbbb\naaa\n")], "");
 
     // Read-before-edit: an unread file is rejected.
     let out = call(
         &tools,
         "edit_file",
-        json!({ "path": "f.go", "old_string": "bbb", "new_string": "BBB" }),
+        json!({ "path": "f.rs", "old_string": "bbb", "new_string": "BBB" }),
     )
     .await;
     assert!(
         out.is_error && out.text.contains("read it with read_file"),
         "unread edit = {out:?}"
     );
-    call(&tools, "read_file", json!({ "path": "f.go" })).await;
+    call(&tools, "read_file", json!({ "path": "f.rs" })).await;
 
     // Ambiguous old_string needs replace_all or more context.
     let out = call(
         &tools,
         "edit_file",
-        json!({ "path": "f.go", "old_string": "aaa", "new_string": "AAA" }),
+        json!({ "path": "f.rs", "old_string": "aaa", "new_string": "AAA" }),
     )
     .await;
     assert!(
@@ -335,16 +335,16 @@ async fn edit_file_replaces_a_unique_occurrence_and_refuses_ambiguity() {
     let out = call(
         &tools,
         "edit_file",
-        json!({ "path": "f.go", "old_string": "bbb", "new_string": "BBB" }),
+        json!({ "path": "f.rs", "old_string": "bbb", "new_string": "BBB" }),
     )
     .await;
     assert!(!out.is_error, "edit = {out:?}");
     assert_eq!(
         out.text,
-        "1 replacement(s) in f.go\n\n     1\taaa\n     2\tBBB\n     3\taaa"
+        "1 replacement(s) in f.rs\n\n     1\taaa\n     2\tBBB\n     3\taaa"
     );
     assert_eq!(
-        fs::read_to_string(root.join("f.go")).expect("read back"),
+        fs::read_to_string(root.join("f.rs")).expect("read back"),
         "aaa\nBBB\naaa\n"
     );
 
@@ -353,7 +353,7 @@ async fn edit_file_replaces_a_unique_occurrence_and_refuses_ambiguity() {
     let out = call(
         &tools,
         "edit_file",
-        json!({ "path": "f.go", "old_string": "aaa", "new_string": "xxx", "replace_all": "true" }),
+        json!({ "path": "f.rs", "old_string": "aaa", "new_string": "xxx", "replace_all": "true" }),
     )
     .await;
     assert!(!out.is_error, "replace_all = {out:?}");
@@ -366,7 +366,7 @@ async fn edit_file_replaces_a_unique_occurrence_and_refuses_ambiguity() {
     let out = call(
         &tools,
         "edit_file",
-        json!({ "path": "f.go", "old_string": "zzz", "new_string": "y" }),
+        json!({ "path": "f.rs", "old_string": "zzz", "new_string": "y" }),
     )
     .await;
     assert!(
@@ -376,7 +376,7 @@ async fn edit_file_replaces_a_unique_occurrence_and_refuses_ambiguity() {
     let out = call(
         &tools,
         "edit_file",
-        json!({ "path": "f.go", "old_string": "xxx", "new_string": "xxx" }),
+        json!({ "path": "f.rs", "old_string": "xxx", "new_string": "xxx" }),
     )
     .await;
     assert!(
@@ -386,13 +386,13 @@ async fn edit_file_replaces_a_unique_occurrence_and_refuses_ambiguity() {
 
     // External modification after the read invalidates the ledger.
     set_mtime(
-        &root.join("f.go"),
+        &root.join("f.rs"),
         SystemTime::now() + Duration::from_secs(3600),
     );
     let out = call(
         &tools,
         "edit_file",
-        json!({ "path": "f.go", "old_string": "xxx", "new_string": "y" }),
+        json!({ "path": "f.rs", "old_string": "xxx", "new_string": "y" }),
     )
     .await;
     assert!(
@@ -441,9 +441,9 @@ async fn edit_file_preserves_shift_jis_and_gbk_bytes() {
     let (out, after) = edit_bytes(
         &root,
         &tools,
-        "sjis.go",
+        "sjis.rs",
         before,
-        json!({ "path": "sjis.go", "old_string": "const N = 1;", "new_string": "const N = 42;" }),
+        json!({ "path": "sjis.rs", "old_string": "const N = 1;", "new_string": "const N = 42;" }),
     )
     .await;
     assert!(!out.is_error, "shift-jis edit = {out:?}");
@@ -880,7 +880,7 @@ fn the_file_tools_header_is_the_path_or_a_bare_name() {
     let edit = &tools["edit_file"];
 
     let args: JsonObject = json!({
-        "path": "internal/ui/model.go",
+        "path": "src/ui/model.rs",
         "old_string": "before",
         "new_string": "code\n".repeat(500),
     })
@@ -889,7 +889,7 @@ fn the_file_tools_header_is_the_path_or_a_bare_name() {
     .expect("object");
     assert_eq!(
         edit.header_summary(&args).as_deref(),
-        Some("internal/ui/model.go"),
+        Some("src/ui/model.rs"),
         "summary wants the path alone"
     );
 
@@ -907,7 +907,7 @@ fn the_file_tools_header_is_the_path_or_a_bare_name() {
     for name in ["read_file", "list_dir", "write_file"] {
         assert_eq!(
             tools[name].header_summary(&args).as_deref(),
-            Some("internal/ui/model.go"),
+            Some("src/ui/model.rs"),
             "{name} must summarise by path"
         );
     }

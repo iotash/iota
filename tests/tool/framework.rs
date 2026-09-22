@@ -1090,15 +1090,15 @@ fn the_registry_reports_header_summary_presence() {
     assert!(warns.is_empty(), "{warns:?}");
 
     let mut path = JsonObject::new();
-    path.insert("path".to_owned(), "a.go".into());
+    path.insert("path".to_owned(), "a.rs".into());
     assert_eq!(
         r.header_summary("edit_file", &path).as_deref(),
-        Some("a.go"),
+        Some("a.rs"),
         "edit_file declares a summary"
     );
 
     let mut pattern = JsonObject::new();
-    pattern.insert("pattern".to_owned(), "*.go".into());
+    pattern.insert("pattern".to_owned(), "*.rs".into());
     assert!(
         r.header_summary("glob", &pattern).is_none(),
         "glob declares no summary; want None so the digest applies"

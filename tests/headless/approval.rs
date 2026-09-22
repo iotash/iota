@@ -198,7 +198,7 @@ async fn a_forwarded_approval_carries_the_call_detail() {
     execute_with_tools(
         TurnParams {
             cx: &RunCtx::default(),
-            tp: &writing_path("internal/ui/model.go"),
+            tp: &writing_path("src/ui/model.rs"),
             dispatch: d.clone(),
             tools: d.tools(),
             harness: "",
@@ -210,7 +210,7 @@ async fn a_forwarded_approval_carries_the_call_detail() {
     )
     .await
     .expect("loop failed");
-    assert_eq!(lock(&seen).as_slice(), ["internal/ui/model.go"]);
+    assert_eq!(lock(&seen).as_slice(), ["src/ui/model.rs"]);
     assert_eq!(d.ran(), 0);
 }
 
@@ -232,10 +232,10 @@ mod header_split {
     #[test]
     fn the_tool_call_header_is_unchanged_by_the_detail_split() {
         let detail = GatedDispatch::with_header();
-        let tc = call("write_file", &[("path", "a/b.go")]);
+        let tc = call("write_file", &[("path", "a/b.rs")]);
         assert_eq!(
             tool_call_header(&detail as &dyn Dispatcher, &tc),
-            "[write_file a/b.go]"
+            "[write_file a/b.rs]"
         );
 
         // A tool with no summary of its own falls back to the argument digest, and an empty summary
@@ -243,7 +243,7 @@ mod header_split {
         let plain = GatedDispatch::new();
         assert_eq!(
             tool_call_header(&plain as &dyn Dispatcher, &tc),
-            "[write_file path:a/b.go]"
+            "[write_file path:a/b.rs]"
         );
         assert_eq!(
             tool_call_header(&plain as &dyn Dispatcher, &call("x", &[])),

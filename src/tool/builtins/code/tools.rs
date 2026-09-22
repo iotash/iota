@@ -967,8 +967,8 @@ mod tests {
     fn grep_rows_and_include_targets() {
         let lines = ["alpha", "beta", "gamma", "delta"];
         let mut buf = String::new();
-        emit_grep_file(&mut buf, "a/b.go", &lines, &[1], 1);
-        assert_eq!(buf, "a/b.go:1- alpha\na/b.go:2: beta\na/b.go:3- gamma\n");
+        emit_grep_file(&mut buf, "a/b.rs", &lines, &[1], 1);
+        assert_eq!(buf, "a/b.rs:1- alpha\na/b.rs:2: beta\na/b.rs:3- gamma\n");
 
         // A line over 500 bytes is cut on a char boundary and suffixed with U+2026.
         let long = format!("{}é", "y".repeat(499));
@@ -978,13 +978,13 @@ mod tests {
 
         let no_slash = globset::Glob::new("*.md").expect("glob").compile_matcher();
         assert!(match_include(&no_slash, "*.md", "docs/readme.md"));
-        assert!(!match_include(&no_slash, "*.md", "docs/readme.go"));
+        assert!(!match_include(&no_slash, "*.md", "docs/readme.rs"));
         let with_slash = globset::GlobBuilder::new("cmd/**")
             .literal_separator(true)
             .build()
             .expect("glob")
             .compile_matcher();
-        assert!(match_include(&with_slash, "cmd/**", "cmd/root.go"));
-        assert!(!match_include(&with_slash, "cmd/**", "tool/root.go"));
+        assert!(match_include(&with_slash, "cmd/**", "cmd/main.rs"));
+        assert!(!match_include(&with_slash, "cmd/**", "tool/main.rs"));
     }
 }
