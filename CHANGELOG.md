@@ -31,6 +31,21 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Changed
 
+- **`agents.<name>.models` is two keys now — a breaking change.** `model:` is
+  the model a run starts on (a `models:` entry by name, or `provider:id`);
+  `choices:` is what `/model` and `-M` pick from, in the three forms the old
+  list took. Leave `model:` out to start in the picker; leave `choices:` out
+  and the picker offers every `models:` entry, in the order you declared them.
+  A `provider:*` under `model:` is refused (`agents.a.model: "openai:*" is a
+  wildcard — put it in choices: and leave model: unset to start in the picker`),
+  a `model:` outside the choices warns and runs anyway, and a config that
+  still says `models:` on an agent stops with `` agents.a.models: `models` is
+  now `choices:` (what /model and -M pick from) plus `model:` (the one the run
+  starts on) ``. Headless with neither `-M` nor `model:` now says `no model
+  chosen: set agents.<name>.model or pass -M`. `iota list agents` shows each
+  agent's model and how many choices it has; `iota list models <agent>` marks
+  the one the run starts on with `*`. The starter config writes `model: gpt`
+  (X-48).
 - **The banner is a logo and three facts.** A chat opens on three rows: the
   `iota` wordmark on the left and, beside it, the version, the mode row —
   `agent` or `chat`, then `session <id>`, `resumed <id>` or `not saved · /save

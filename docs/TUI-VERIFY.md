@@ -291,7 +291,7 @@ real-terminal shape (`tests/ui_tmux/scenarios/15-model-combo.sh`) — including,
 IME law is pinned here too. What is left for a human is the IME's own half (8b.9's preedit)
 and the cross-provider row (8b.10).
 
-Set up once — an agent whose candidate set mixes sources, one of which cannot answer:
+Set up once — an agent whose choices mix sources, one of which cannot answer:
 
 ```yaml
 providers:
@@ -300,7 +300,7 @@ providers:
 models:
   gpt5: openai:gpt-5.2
 agents:
-  default: {models: [gpt5, "openai:*", "relay:*"]}
+  default: {model: gpt5, choices: [gpt5, "openai:*", "relay:*"]}
 ```
 
 - [x] 自动化：scenario 15 **8b.1 The field is open from the first frame.** `/model`: the Model tab's last row is
