@@ -745,9 +745,10 @@ async fn read_file_oversized_line_is_cut_to_fit() {
     );
 }
 
-// New: the advertised names, descriptions and schemas are code.go's, byte for byte.
+// The advertised names, descriptions and schemas are the text the model reads: pinned byte for
+// byte, so a rewording is a deliberate edit on both sides and never drift.
 #[test]
-fn descriptions_and_schemas_match_go() {
+fn the_advertised_descriptions_and_schemas_are_pinned_byte_for_byte() {
     let dir = tempfile::tempdir().expect("tempdir");
     let tools = tools_at(dir.path(), "");
     let def = |name: &str| tools[name].def();
@@ -756,7 +757,7 @@ fn descriptions_and_schemas_match_go() {
     assert_eq!(
         glob.description,
         "Find files by name pattern under the project root. Patterns match root-relative paths and support * ? \
-         and ** (a pattern without \"/\" matches at any depth, e.g. \"*.go\"). Results are newest-first. .git \
+         and ** (a pattern without \"/\" matches at any depth, e.g. \"*.rs\"). Results are newest-first. .git \
          and root-.gitignore matches are excluded."
     );
     assert_eq!(
@@ -764,7 +765,7 @@ fn descriptions_and_schemas_match_go() {
         json!({
             "type": "object",
             "properties": {
-                "pattern": { "type": "string", "description": "Glob pattern, e.g. \"**/*.go\" or \"cmd/*.go\"." },
+                "pattern": { "type": "string", "description": "Glob pattern, e.g. \"**/*.rs\" or \"src/*.rs\"." },
                 "path": { "type": "string", "description": "Optional directory to search, relative to the project root (default: the root)." },
             },
             "required": ["pattern"],
@@ -785,7 +786,7 @@ fn descriptions_and_schemas_match_go() {
             "properties": {
                 "pattern": { "type": "string", "description": "Regular expression to search for (Rust regex syntax)." },
                 "path": { "type": "string", "description": "Optional directory to search, relative to the project root (default: the root)." },
-                "include": { "type": "string", "description": "Optional filename glob filter, e.g. \"*.go\" or \"cmd/**\"." },
+                "include": { "type": "string", "description": "Optional filename glob filter, e.g. \"*.rs\" or \"src/**\"." },
                 "context": { "type": "integer", "description": "Lines of context to show around each match (0-10, default 0)." },
             },
             "required": ["pattern"],

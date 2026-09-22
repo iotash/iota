@@ -63,7 +63,7 @@ impl Tool for Glob {
         ToolDef {
             name: "glob".to_owned(),
             description: "Find files by name pattern under the project root. Patterns match root-relative paths \
-                and support * ? and ** (a pattern without \"/\" matches at any depth, e.g. \"*.go\"). Results \
+                and support * ? and ** (a pattern without \"/\" matches at any depth, e.g. \"*.rs\"). Results \
                 are newest-first. .git and root-.gitignore matches are excluded."
                 .to_owned(),
             input_schema: schema(json!({
@@ -71,7 +71,7 @@ impl Tool for Glob {
                 "properties": {
                     "pattern": {
                         "type": "string",
-                        "description": "Glob pattern, e.g. \"**/*.go\" or \"cmd/*.go\".",
+                        "description": "Glob pattern, e.g. \"**/*.rs\" or \"src/*.rs\".",
                     },
                     "path": {
                         "type": "string",
@@ -117,7 +117,7 @@ impl Tool for Grep {
                     },
                     "include": {
                         "type": "string",
-                        "description": "Optional filename glob filter, e.g. \"*.go\" or \"cmd/**\".",
+                        "description": "Optional filename glob filter, e.g. \"*.rs\" or \"src/**\".",
                     },
                     "context": {
                         "type": "integer",
