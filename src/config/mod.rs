@@ -6,8 +6,8 @@
 //! - `providers` — the endpoint: `type`/`key`/`url`, and nothing else;
 //! - `models` — a provider reference plus the wire id, the model's own properties and the protocol
 //!   its dialect decides (`defer_mode`, the image knobs), plus tunable defaults;
-//! - `agents` — how a model is driven: the candidate set, the prompt, the tools, the MCP subset and
-//!   the session switches.
+//! - `agents` — how a model is driven: the model a run starts on (`model:`), the ones `/model` and `-M`
+//!   pick from (`choices:`), the prompt, the tools, the MCP subset and the session switches.
 //!
 //! Every key is checked against the layer it was written in BEFORE the document is decoded (`strict`), so a key
 //! of another layer — or one that is simply misspelled — is an error naming its coordinate, never a silently
@@ -92,8 +92,10 @@ pub struct McpServerConfig {
 struct ConfigFile {
     /// `providers:` — endpoints.
     providers: BTreeMap<String, ProviderConfig>,
-    /// `models:` — configured models.
-    models: BTreeMap<String, ModelEntry>,
+    /// `models:` — configured models, in the order the document declares them: an agent that writes no
+    /// `choices:` offers every entry in that order, and a `BTreeMap` would have sorted it away.
+    #[serde(deserialize_with = "ordered_models")]
+    models: Vec<(String, ModelEntry)>,
     /// `agents:` — configured usages.
     agents: BTreeMap<String, AgentConfig>,
     /// `mcp_servers:` — the servers an agent may select.
@@ -107,6 +109,11 @@ pub struct Config {
     pub providers: BTreeMap<String, ProviderConfig>,
     /// `models:` — configured models by name.
     pub models: BTreeMap<String, ModelConfig>,
+    /// The names of `models`, in declaration order across the stack (first file first, an entry keeping
+    /// the place it was first declared at even when a later file redefines it). It is what an agent
+    /// without `choices:` offers ([`choices_of`](Config::choices_of)); `models` itself stays a `BTreeMap`
+    /// because every other lookup wants name order. Maintained by `merge_document`.
+    pub model_order: Vec<String>,
     /// `agents:` — configured usages by name.
     pub agents: BTreeMap<String, AgentConfig>,
     /// `mcp_servers:` — the MCP servers an agent may select, by name.
@@ -124,9 +131,11 @@ pub struct Resolved {
     pub provider_type: String,
     /// The endpoint entry (default when the name is an unconfigured built-in type).
     pub provider: ProviderConfig,
-    /// The default model; `id` is `""` when the candidate set starts with a wildcard (the picker opens).
+    /// The model the run starts on (`agents.<name>.model`); `id` is `""` when the agent sets none — the run
+    /// then starts in the picker, on the endpoint of the agent's first choice.
     pub model: ModelConfig,
-    /// The agent driving it (default when the name reached no agent).
+    /// The agent driving it (default when the name reached no agent), with `choices` already the EFFECTIVE
+    /// set — the agent's own, or every `models:` entry when it wrote none ([`Config::choices_of`]).
     pub agent: AgentConfig,
     /// The `agents:` entry name, or `""` when the positional name reached no agent. It is what a session
     /// bundle records, so a resume can say whether the agent it ran under still exists.
@@ -183,17 +192,9 @@ impl Resolved {
         }
     }
 
-    /// Whether `provider_name`/`id` is inside the agent's candidate set. A `provider:*` entry covers every id
-    /// that provider serves, and a bare entry name covers the model it points at.
+    /// Whether `provider_name`/`id` is inside the agent's choices ([`Config::choices_cover`]).
     pub fn covers(&self, cfg: &Config, provider_name: &str, id: &str) -> bool {
-        self.agent.models.iter().any(|r| match r {
-            ModelRef::Entry(name) => cfg
-                .models
-                .get(name)
-                .is_some_and(|m| m.provider_or(name) == provider_name && m.id == id),
-            ModelRef::Inline { provider, id: want } => provider == provider_name && want == id,
-            ModelRef::All { provider } => provider == provider_name,
-        })
+        cfg.choices_cover(&self.agent.choices, provider_name, id)
     }
 }
 
@@ -296,6 +297,9 @@ impl Config {
             self.providers.insert(name, entry);
         }
         for (name, entry) in file.models {
+            if !self.model_order.contains(&name) {
+                self.model_order.push(name.clone());
+            }
             self.models.insert(name.clone(), entry.into_config(&name)?);
         }
         for (name, mut agent_cfg) in file.agents {
@@ -385,33 +389,82 @@ impl Config {
             }
         }
         for (name, a) in &self.agents {
-            if a.models.is_empty() {
-                return Err(ConfigError::Agent(
-                    name.clone(),
-                    "models: at least one model is required".to_owned(),
-                ));
+            // `model:` names ONE model. A wildcard is the set the picker opens on, and leaving `model:` unset
+            // is how a run asks for the picker — so the wildcard is refused with the spelling that does that.
+            if let Some(r) = &a.model {
+                if r.is_wildcard() {
+                    return Err(ConfigError::Key {
+                        at: format!("agents.{name}.model"),
+                        message: format!(
+                            "\"{r}\" is a wildcard — put it in choices: and leave model: unset to start in the picker"
+                        ),
+                    });
+                }
+                self.check_ref(name, "model", r)?;
             }
-            for r in &a.models {
-                match r {
-                    ModelRef::Entry(entry) if !self.models.contains_key(entry) => {
-                        return Err(ConfigError::Agent(
-                            name.clone(),
-                            format!("models: unknown model {entry:?}"),
-                        ));
-                    }
-                    ModelRef::Inline { provider, .. } | ModelRef::All { provider }
-                        if !self.knows_provider(provider) =>
-                    {
-                        return Err(ConfigError::Agent(
-                            name.clone(),
-                            format!("models: unknown provider {provider:?}"),
-                        ));
-                    }
-                    _ => {}
+            for r in &a.choices {
+                self.check_ref(name, "choices", r)?;
+            }
+            // The choices are advice about what is good here, not a whitelist (decision of 2026-09-10, the
+            // rule `-M` follows): a `model:` outside them is a warning, and the run starts on it anyway.
+            if let Some(model) = a.model.as_ref().and_then(|r| self.model_of(r)) {
+                let choices = self.choices_of(a);
+                if !choices.is_empty() && !self.choices_cover(&choices, &model.provider, &model.id)
+                {
+                    warn(format!(
+                        "Warning: config agents.{name}.model: {}:{} is not in choices (using it anyway)",
+                        model.provider, model.id
+                    ));
                 }
             }
         }
         Ok(())
+    }
+
+    /// One reference written under `agents.<name>.<key>` points at something the config knows.
+    fn check_ref(&self, agent: &str, key: &str, r: &ModelRef) -> Result<(), ConfigError> {
+        match r {
+            ModelRef::Entry(entry) if !self.models.contains_key(entry) => Err(ConfigError::Agent(
+                agent.to_owned(),
+                format!("{key}: unknown model {entry:?}"),
+            )),
+            ModelRef::Inline { provider, .. } | ModelRef::All { provider }
+                if !self.knows_provider(provider) =>
+            {
+                Err(ConfigError::Agent(
+                    agent.to_owned(),
+                    format!("{key}: unknown provider {provider:?}"),
+                ))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// What `/model` and `-M` pick from for `agent`: its `choices:` when it writes any, else every `models:`
+    /// entry in declaration order. The default is what the config DECLARES and nothing more — no implied
+    /// `provider:*`, because a wildcard is a network question and a default should cost nothing to answer.
+    pub fn choices_of(&self, agent: &AgentConfig) -> Vec<ModelRef> {
+        if !agent.choices.is_empty() {
+            return agent.choices.clone();
+        }
+        self.model_order
+            .iter()
+            .cloned()
+            .map(ModelRef::Entry)
+            .collect()
+    }
+
+    /// Whether `provider_name`/`id` is inside `choices`. A `provider:*` entry covers every id that provider
+    /// serves, and a bare entry name covers the model it points at.
+    pub fn choices_cover(&self, choices: &[ModelRef], provider_name: &str, id: &str) -> bool {
+        choices.iter().any(|r| match r {
+            ModelRef::Entry(name) => self
+                .models
+                .get(name)
+                .is_some_and(|m| m.provider_or(name) == provider_name && m.id == id),
+            ModelRef::Inline { provider, id: want } => provider == provider_name && want == id,
+            ModelRef::All { provider } => provider == provider_name,
+        })
     }
 
     /// Whether `name` is a configured provider or a built-in type.
@@ -464,13 +517,25 @@ impl Config {
     /// could mean four things and a collision silently changed what ran. An agent is now the ONLY thing a run
     /// can name (brain page `cli-surface-agent-first`); the other two layers are reached through it.
     pub fn resolve_agent(&self, name: &str) -> Option<Resolved> {
-        let agent_cfg = self.agents.get(name)?;
-        let model = agent_cfg
-            .models
-            .first()
-            .and_then(|r| self.model_of(r))
-            .unwrap_or_default();
-        let mut resolved = self.finish(name, model, agent_cfg.clone());
+        let mut agent_cfg = self.agents.get(name)?.clone();
+        agent_cfg.choices = self.choices_of(&agent_cfg);
+        let model = match &agent_cfg.model {
+            Some(r) => self.model_of(r).unwrap_or_default(),
+            // No `model:` — the run starts in the picker. A session keeps the endpoint it starts on, so the
+            // FIRST choice decides which one that is (its provider, no id, none of its knobs: the picker's
+            // pick evaluates them against the model it names), exactly as a `provider:*` at the head of the
+            // old candidate list did.
+            None => agent_cfg
+                .choices
+                .first()
+                .and_then(|r| self.model_of(r))
+                .map(|m| ModelConfig {
+                    provider: m.provider,
+                    ..ModelConfig::default()
+                })
+                .unwrap_or_default(),
+        };
+        let mut resolved = self.finish(name, model, agent_cfg);
         name.clone_into(&mut resolved.agent_name);
         Some(resolved)
     }
@@ -543,6 +608,39 @@ impl Config {
     }
 }
 
+/// The `models:` map of one document as a LIST, in the order it is written: serde's map decode into a
+/// `BTreeMap` would sort the entries by name, and an agent without `choices:` offers them as declared.
+fn ordered_models<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<(String, ModelEntry)>, D::Error> {
+    struct OrderedModels;
+
+    impl<'de> serde::de::Visitor<'de> for OrderedModels {
+        type Value = Vec<(String, ModelEntry)>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a map of model entries")
+        }
+
+        fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut out = Vec::with_capacity(map.size_hint().unwrap_or(0));
+            while let Some(entry) = map.next_entry::<String, ModelEntry>()? {
+                out.push(entry);
+            }
+            Ok(out)
+        }
+    }
+
+    d.deserialize_any(OrderedModels)
+}
+
 /// ONE document, decoded: YAML syntax first ([`ConfigError::Parse`]), then the key audit, which is what makes
 /// a misplaced or misspelled key an error naming its coordinate rather than a line nothing reads.
 ///
@@ -585,13 +683,14 @@ pub enum ConfigError {
         #[source]
         source: Box<ConfigError>,
     },
-    /// A key that does not belong where it was written: another layer's, retired, or unknown. `at` is the
-    /// config coordinate (`agents.coder.tools.delegate`).
+    /// A key that does not belong where it was written — another layer's, retired, or unknown — or one
+    /// whose value its layer cannot take (`agents.<name>.model` given a wildcard). `at` is the config
+    /// coordinate (`agents.coder.tools.delegate`).
     #[error("{at}: {message}")]
     Key {
         /// The coordinate the key was written at.
         at: String,
-        /// Which layer owns it, or what replaced it.
+        /// Which layer owns it, what replaced it, or what to write instead.
         message: String,
     },
     /// The document could not be decoded (only [`Config::parse`] surfaces this; `load` warns and drops the

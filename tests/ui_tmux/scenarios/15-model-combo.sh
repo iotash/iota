@@ -21,7 +21,8 @@ models:
   m: mock:fake
 agents:
   default:
-    models: [m, \"mock:*\", \"dead:*\"]"
+    model: m
+    choices: [m, \"mock:*\", \"dead:*\"]"
 export CONFIG_BODY
 
 cursor_is() { [ "$(cursor_xy)" = "$1" ]; }
@@ -188,7 +189,8 @@ models:
   m: mock:fake
 agents:
   default:
-    models: [m, \"mock:*\", \"dead:*\", \"slow:*\"]"
+    model: m
+    choices: [m, \"mock:*\", \"dead:*\", \"slow:*\"]"
 export CONFIG_BODY
 start_provider openai 80 30 || finish
 settle || bad "startup never settled (slow source)"

@@ -44,8 +44,10 @@ pub fn run_list(
     }
 }
 
-/// `iota list agents`: what a run may name, with the description the entry documents itself with and the size
-/// of its candidate set (the number `-M` and the picker choose from).
+/// `iota list agents`: what a run may name, with the model each one starts on (`model:` as written, or
+/// `(picker)` when the run opens the picker instead), the size of its choices (the number `-M` and the
+/// picker choose from — every `models:` entry when the agent lists none) and the description the entry
+/// documents itself with.
 fn list_agents(cfg: &Config, io: &mut io::Streams) -> Result<(), CliError> {
     if cfg.agents.is_empty() {
         writeln!(
@@ -54,14 +56,24 @@ fn list_agents(cfg: &Config, io: &mut io::Streams) -> Result<(), CliError> {
         )?;
         return Ok(());
     }
+    let starts: Vec<String> = cfg
+        .agents
+        .values()
+        .map(|a| {
+            a.model
+                .as_ref()
+                .map_or_else(|| PICKER.to_owned(), ModelRef::to_string)
+        })
+        .collect();
     let width = column_width(cfg.agents.keys());
+    let start_width = column_width(starts.iter());
     writeln!(io.stdout, "Agents:")?;
-    for (name, agent_cfg) in &cfg.agents {
-        let models = match agent_cfg.models.len() {
-            1 => "1 model".to_owned(),
-            n => format!("{n} models"),
+    for ((name, agent_cfg), start) in cfg.agents.iter().zip(&starts) {
+        let choices = match cfg.choices_of(agent_cfg).len() {
+            1 => "1 choice".to_owned(),
+            n => format!("{n} choices"),
         };
-        let mut line = format!("  {name:width$}  {models}");
+        let mut line = format!("  {name:width$}  {start:start_width$}  {choices}");
         if !agent_cfg.description.is_empty() {
             line.push_str("  ");
             line.push_str(&agent_cfg.description);
@@ -70,6 +82,9 @@ fn list_agents(cfg: &Config, io: &mut io::Streams) -> Result<(), CliError> {
     }
     Ok(())
 }
+
+/// The model column of `iota list agents` for an agent without `model:` — the run starts in the picker.
+const PICKER: &str = "(picker)";
 
 /// `iota list models`: the `models:` entries and the endpoint each one rides on.
 fn list_models(cfg: &Config, io: &mut io::Streams) -> Result<(), CliError> {
@@ -93,23 +108,51 @@ fn list_models(cfg: &Config, io: &mut io::Streams) -> Result<(), CliError> {
     Ok(())
 }
 
-/// `iota list models <agent>`: that agent's candidate set, best first — the first line is the model a run
-/// starts on, and a `provider:*` line is a whole endpoint's catalogue (resolved in the picker at startup).
+/// `iota list models <agent>`: that agent's choices in declaration order — every `models:` entry when it
+/// lists none — with `*` on the model a run starts on. The default is marked where a row names its
+/// `provider:id`; a default the choices do not name (or name only through a wildcard) is a `*` row of its
+/// own on top, and an agent without `model:` marks nothing: its run starts in the picker. A `provider:*`
+/// line is a whole endpoint's catalogue (resolved in the picker).
 fn list_agent_models(cfg: &Config, name: &str, io: &mut io::Streams) -> Result<(), CliError> {
     let resolved = resolve_agent(cfg, name)?;
+    let start = resolved.agent.model.as_ref();
+    let is_start = |r: &ModelRef| match r {
+        ModelRef::Entry(entry) => cfg.models.get(entry).is_some_and(|m| {
+            m.provider_or(entry) == resolved.provider_name && m.id == resolved.model.id
+        }),
+        ModelRef::Inline { provider, id } => {
+            *provider == resolved.provider_name && *id == resolved.model.id
+        }
+        ModelRef::All { .. } => false,
+    };
     writeln!(io.stdout, "Models for agent {name}:")?;
-    for r in &resolved.agent.models {
-        let line = match r {
-            ModelRef::Entry(entry) => match cfg.models.get(entry) {
-                Some(m) => format!("{entry} ({}:{})", m.provider_or(entry), m.id),
-                None => entry.clone(),
-            },
-            ModelRef::Inline { .. } => r.to_string(),
-            ModelRef::All { provider } => format!("{provider}:* (every model {provider} lists)"),
+    if let Some(start) = start
+        && !resolved.agent.choices.iter().any(&is_start)
+    {
+        writeln!(io.stdout, "* {}", choice_line(cfg, start))?;
+    }
+    for r in &resolved.agent.choices {
+        let mark = if start.is_some() && is_start(r) {
+            '*'
+        } else {
+            ' '
         };
-        writeln!(io.stdout, "  {line}")?;
+        writeln!(io.stdout, "{mark} {}", choice_line(cfg, r))?;
     }
     Ok(())
+}
+
+/// One row of `iota list models <agent>`: an entry with the `provider:id` it stands for, an inline pair as
+/// written, a wildcard with what it means.
+fn choice_line(cfg: &Config, r: &ModelRef) -> String {
+    match r {
+        ModelRef::Entry(entry) => match cfg.models.get(entry) {
+            Some(m) => format!("{entry} ({}:{})", m.provider_or(entry), m.id),
+            None => entry.clone(),
+        },
+        ModelRef::Inline { .. } => r.to_string(),
+        ModelRef::All { provider } => format!("{provider}:* (every model {provider} lists)"),
+    }
 }
 
 /// `iota list providers`: the endpoints, with where each one's key comes from — the question a failing run

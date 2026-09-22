@@ -285,7 +285,7 @@ providers:
     key: k
 agents:
   default:
-    models: [gpt]
+    model: gpt
     system: |
       not_a_key: this line is a block scalar
 ";

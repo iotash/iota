@@ -69,7 +69,7 @@ providers:
 models:
   m: mock:$2
 agents:
-  default: {models: [m, "mock:*"]}
+  default: {model: m, choices: [m, "mock:*"]}
 EOF
 }
 

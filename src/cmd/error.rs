@@ -43,16 +43,20 @@ pub enum ArgsError {
     /// `-m ""` (POLICY F-03).
     #[error("--message must not be empty")]
     MessageEmpty,
-    /// `-m` without a model from `-M` or the agent's candidate set.
-    #[error("--model/-M is required when using --message/-m")]
-    ModelRequired,
+    /// `-m` with no model from `-M` or `agents.<name>.model` — headless has no picker to open (X-48; it was
+    /// Go's `--model/-M is required when using --message/-m`).
+    #[error("no model chosen: set agents.{agent}.model or pass -M")]
+    ModelRequired {
+        /// The `agents:` entry the run resolved to.
+        agent: String,
+    },
     /// `--output-format` without `-m` (root.go:253).
     #[error("--output-format applies to -m runs only")]
     OutputFormatWithoutMessage,
     /// `--mcp ""` (POLICY F-02).
     #[error(transparent)]
     McpFlag(#[from] crate::mcp::config::McpFlagError),
-    /// `iota list <what> <name>` where `<what>` is not `models` — only a candidate set belongs to one agent.
+    /// `iota list <what> <name>` where `<what>` is not `models` — only the choices belong to one agent.
     #[error("iota list {0} takes no argument (only `iota list models <agent>` does)")]
     ListTakesNoName(String),
     /// `--no-save` with a resume: an ephemeral start and a resumed bundle are opposite intents (root.go:285).

@@ -1,5 +1,6 @@
-//! `agents.<name>` — the USAGE layer: which models this agent may drive, the prompt it drives them with,
-//! the tools and MCP servers it loads, and the session-shaped switches (`workspace`, `no_save`, `notify`).
+//! `agents.<name>` — the USAGE layer: the model this agent starts on and the ones it may switch to, the
+//! prompt it drives them with, the tools and MCP servers it loads, and the session-shaped switches
+//! (`workspace`, `no_save`, `notify`).
 //!
 //! An agent may override the four parameters a model sets as defaults (`context_window`/`effort`/
 //! `temperature`/`top_p`) — ONE level of inheritance, deliberately not a chain (brain page
@@ -16,10 +17,17 @@ use crate::tool::sets::ToolsConfig;
 #[derive(serde::Deserialize, Debug, Clone, Default, PartialEq)]
 #[serde(default)]
 pub struct AgentConfig {
-    /// `models:` — the candidate set, best first. The FIRST entry is the default model; when it is a
-    /// `provider:*` wildcard the run starts in the model picker instead.
+    /// `model:` — the model a run starts on: a `models:` entry by name, or an inline `provider:id`. Never a
+    /// `provider:*` wildcard ([`Config::validate`](crate::config::Config) refuses one: a wildcard is a set
+    /// to pick from, not a model). Unset = the run starts in the picker, over `choices`.
+    pub model: Option<ModelRef>,
+    /// `choices:` — what `/model` and `-M` pick from, in declaration order: entry names, inline
+    /// `provider:id`s and `provider:*` wildcards. Unset = every top-level `models:` entry, in declaration
+    /// order — what the config declares, never an implied wildcard
+    /// ([`Config::choices_of`](crate::config::Config::choices_of)); the `Resolved` a run carries has that
+    /// default applied. The set is advice, not a whitelist: a `model:` or a `-M` outside it is a warning.
     #[serde(deserialize_with = "one_or_many")]
-    pub models: Vec<ModelRef>,
+    pub choices: Vec<ModelRef>,
     /// `system:` — an inline system prompt (wins over `system_file`).
     pub system: String,
     /// `system_file:` — a file holding the system prompt (`${var}` expanded once at merge time).
@@ -77,7 +85,7 @@ impl AgentConfig {
     }
 }
 
-/// `models: sonnet` and `models: [sonnet, "openai:*"]` both decode; a single reference is the common case
+/// `choices: sonnet` and `choices: [sonnet, "openai:*"]` both decode; a single reference is the common case
 /// and writing it as a one-item list is noise.
 fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<ModelRef>, D::Error> {
     d.deserialize_any(ModelListVisitor)

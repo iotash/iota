@@ -42,7 +42,8 @@ models:
 
 agents:
   default:
-    models: [gpt]             # the candidate set, best first; -M and /model pick from it
+    model: gpt                # the model a run starts on; leave it out to start in the picker
+    # choices: [gpt]          # what /model and -M pick from; absent = every `models:` entry
     # Your own instructions. iota already tells the model what it runs inside and where (the
     # built-in harness prompt: identity, environment, and its own command line when `shell` is on).
     system: \"You are a careful coding assistant.\"
@@ -199,5 +200,21 @@ mod tests {
         assert!(cfg.default_agent().is_some(), "it declares agents.default");
         assert_eq!(cfg.providers.len(), 1);
         assert_eq!(cfg.models.len(), 1);
+        // The run starts on the one model, and — `choices:` left to its default — may pick from exactly it.
+        let resolved = cfg
+            .resolve_agent("default")
+            .expect("agents.default resolves");
+        assert_eq!(
+            resolved.agent.model,
+            Some(crate::config::ModelRef::Entry("gpt".to_owned()))
+        );
+        assert_eq!(
+            (resolved.provider_name.as_str(), resolved.model.id.as_str()),
+            ("openai", "gpt-5.2")
+        );
+        assert_eq!(
+            resolved.agent.choices,
+            vec![crate::config::ModelRef::Entry("gpt".to_owned())]
+        );
     }
 }

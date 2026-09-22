@@ -3,7 +3,7 @@
 //! names a terminal crate (ci.sh grep gate: only `ui` may); reuses the provider/tool/MCP/session machinery
 //! (`TUI_DESIGN` §8.1) instead of forking the headless loop in `crate::repl::chat`.
 
-/// The agent's candidate set as the `/model` picker sees it (brain page `config-three-layers`).
+/// The agent's choices as the `/model` picker sees them (brain page `config-three-layers`).
 pub mod catalog;
 pub(crate) mod commands;
 /// The context meter and the token counter behind it (WP53).

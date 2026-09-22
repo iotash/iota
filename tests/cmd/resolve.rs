@@ -386,10 +386,10 @@ models:
   chat: {provider: deepseek, id: cfg-model}
 agents:
   deepseek:
-    models: [chat]
+    model: chat
     system: cfg-system
   claude:
-    models: [\"anthropic:claude-x\"]
+    model: \"anthropic:claude-x\"
 ";
 
 // ---------------------------------------------------------------- key, url, system
@@ -460,7 +460,7 @@ fn resolve_precedence_key_env_then_config() {
 
     // No key anywhere: the error names BOTH places it could have come from.
     let keyless =
-        config("providers:\n  p: {type: openai}\nagents:\n  a:\n    models: [\"p:gpt-4o\"]\n");
+        config("providers:\n  p: {type: openai}\nagents:\n  a:\n    model: \"p:gpt-4o\"\n");
     let err = resolve(&["run", "a"], &keyless, &[]).unwrap_err();
     assert_eq!(
         err.to_string(),
@@ -473,13 +473,13 @@ fn resolve_precedence_key_env_then_config() {
     ));
 
     // An unconfigured built-in type is still an endpoint an agent may name.
-    let builtin = config("agents:\n  g:\n    models: [\"gemini:flash\"]\n");
+    let builtin = config("agents:\n  g:\n    model: \"gemini:flash\"\n");
     let s = resolve(&["run", "g"], &builtin, &[("GOOGLE_API_KEY", "g")]).unwrap();
     assert_eq!((s.raw_type.as_str(), s.api_key.as_str()), ("gemini", "g"));
     assert_eq!(s.resolved.provider, ProviderConfig::default());
 
     // An unknown `type:` falls back to the literal API_KEY variable.
-    let odd = config("providers:\n  odd: {type: custom}\nagents:\n  a:\n    models: [\"odd:x\"]\n");
+    let odd = config("providers:\n  odd: {type: custom}\nagents:\n  a:\n    model: \"odd:x\"\n");
     assert!(matches!(
         resolve(&["run", "a"], &odd, &[("API_KEY", "")]).unwrap_err(),
         CliError::Setup(SetupError::ApiKeyRequired { env: "API_KEY", .. })
@@ -489,7 +489,7 @@ fn resolve_precedence_key_env_then_config() {
 
     // A `system_file` that cannot be read aborts (after the agent lookup, before the key check).
     let bad = config(
-        "agents:\n  a:\n    models: [\"openai:gpt-4o\"]\n    system_file: /nonexistent/iota-sys.md\n",
+        "agents:\n  a:\n    model: \"openai:gpt-4o\"\n    system_file: /nonexistent/iota-sys.md\n",
     );
     let err = resolve(&["run", "a"], &bad, &[("OPENAI_API_KEY", "k")]).unwrap_err();
     assert!(
@@ -517,7 +517,7 @@ impl Read for FailingStdin {
 
 /// The config every stdin/message test resolves against: one agent, one model, one key.
 fn simple() -> Config {
-    config("agents:\n  a:\n    models: [\"openai:gpt-4o\"]\n")
+    config("agents:\n  a:\n    model: \"openai:gpt-4o\"\n")
 }
 
 /// root.go:95-104: only the literal `-m -` reads stdin; the text is trimmed; whitespace-only and read failures
@@ -569,7 +569,7 @@ fn resolve_message_empty_is_error() {
     assert_eq!(err.to_string(), "--message must not be empty");
     assert!(matches!(err, CliError::Args(ArgsError::MessageEmpty)));
     // …even without a model: the message rule precedes the model rule.
-    let picker = config("agents:\n  a:\n    models: [\"openai:*\"]\n");
+    let picker = config("agents:\n  a:\n    choices: [\"openai:*\"]\n");
     let err = resolve(&["run", "a", "-m", ""], &picker, &[("OPENAI_API_KEY", "k")]).unwrap_err();
     assert!(matches!(err, CliError::Args(ArgsError::MessageEmpty)));
 }
@@ -579,20 +579,28 @@ fn resolve_message_empty_is_error() {
 #[test]
 fn resolve_message_absent_is_none() {
     let env = [("OPENAI_API_KEY", "k")];
-    // A wildcard-first agent has no model until the picker runs.
-    let picker = config("agents:\n  a:\n    models: [\"openai:*\"]\n");
+    // An agent without `model:` has none until the picker runs — on the endpoint of its first choice.
+    let picker = config("agents:\n  a:\n    choices: [\"openai:*\"]\n");
     let s = resolve(&["run", "a"], &picker, &env).unwrap();
     assert_eq!(s.message, None);
     assert_eq!(s.model, "");
+    assert_eq!(s.raw_type, "openai");
 
+    // Headless there is no picker to open, so the refusal says where a model comes from (X-48).
     let err = resolve(&["run", "a", "-m", "hi"], &picker, &env).unwrap_err();
     assert_eq!(
         err.to_string(),
-        "--model/-M is required when using --message/-m"
+        "no model chosen: set agents.a.model or pass -M"
     );
-    assert!(matches!(err, CliError::Args(ArgsError::ModelRequired)));
+    assert!(matches!(
+        err,
+        CliError::Args(ArgsError::ModelRequired { ref agent }) if agent == "a"
+    ));
+    // …and `-M` is the other way: the run has a model and goes on.
+    let s = resolve(&["run", "a", "-M", "gpt-4o", "-m", "hi"], &picker, &env).unwrap();
+    assert_eq!(s.model, "gpt-4o");
 
-    // The agent's own candidate satisfies the rule.
+    // The agent's own `model:` satisfies the rule.
     let cfg = simple();
     let s = resolve(&["run", "a", "-m", "hi"], &cfg, &env).unwrap();
     assert_eq!(s.model, "gpt-4o");
@@ -614,7 +622,7 @@ fn resolve_config_temperature_is_range_checked() {
     let env = [("OPENAI_API_KEY", "k")];
     let tuned = |t: &str| {
         config(&format!(
-            "models:\n  m: {{provider: openai, id: x, temperature: {t}}}\nagents:\n  a:\n    models: [m]\n"
+            "models:\n  m: {{provider: openai, id: x, temperature: {t}}}\nagents:\n  a:\n    model: m\n"
         ))
     };
     let err = resolve(&["run", "a"], &tuned("3.5"), &env).unwrap_err();
@@ -650,7 +658,7 @@ fn resolve_config_temperature_is_range_checked() {
 
     // An agent's own override is checked the same way.
     let agent_hot =
-        config("models:\n  m: openai:x\nagents:\n  a:\n    models: [m]\n    temperature: 9\n");
+        config("models:\n  m: openai:x\nagents:\n  a:\n    model: m\n    temperature: 9\n");
     assert_eq!(
         resolve(&["run", "a"], &agent_hot, &env)
             .unwrap_err()
@@ -669,8 +677,8 @@ providers:
 models:
   mid: openai:gpt-4o
 agents:
-  reviewer: {models: [mid]}
-  coder: {models: [mid]}
+  reviewer: {model: mid}
+  coder: {model: mid}
 ",
     );
     let err = resolve(&["run", "codr"], &cfg, &[]).unwrap_err();
@@ -709,9 +717,8 @@ agents:
 
     // An agent whose provider `type:` is not a built-in resolves and is rejected later, at construction
     // (provider.go:329 text via `ProviderKind::from_str`).
-    let odd = config(
-        "providers:\n  odd: {type: custom, key: k}\nagents:\n  a:\n    models: [\"odd:x\"]\n",
-    );
+    let odd =
+        config("providers:\n  odd: {type: custom, key: k}\nagents:\n  a:\n    model: \"odd:x\"\n");
     let s = resolve(&["run", "a"], &odd, &[]).unwrap();
     assert_eq!(s.raw_type, "custom");
     let err: CliError = s
@@ -740,19 +747,23 @@ models:
   sonnet: anthropic:claude-x
 agents:
   coder:
-    models: [chat, sonnet, \"deepseek:*\"]
+    model: chat
+    choices: [chat, sonnet, \"deepseek:*\"]
     description: Writes and reviews code
   scratch:
-    models: [sonnet]
+    model: sonnet
+    choices: [sonnet]
+  picky: {}
 ",
     );
     let env = [("ANTHROPIC_API_KEY", "ant")];
 
-    // agents: the name, the size of the candidate set, and what the entry says it is for.
+    // agents: the name, the model the run starts on, the size of the choices (every entry when the agent
+    // lists none), and what the entry says it is for.
     let (out, errs) = list(&["list"], &cfg, &env);
     assert_eq!(
         out,
-        "Agents:\n  coder    3 models  Writes and reviews code\n  scratch  1 model\n"
+        "Agents:\n  coder    chat      3 choices  Writes and reviews code\n  picky    (picker)  2 choices\n  scratch  sonnet    1 choice\n"
     );
     assert_eq!(errs, "");
     assert_eq!(list(&["list", "agents"], &cfg, &env).0, out);
@@ -763,10 +774,37 @@ agents:
         "Models:\n  chat    deepseek:cfg-model\n  sonnet  anthropic:claude-x\n"
     );
 
-    // models <agent>: that agent's candidate set, best first, wildcards included.
+    // models <agent>: that agent's choices in declaration order, wildcards included, `*` on the model the
+    // run starts on — every entry, in declaration order, for an agent that lists none; nothing marked for
+    // one that starts in the picker.
     assert_eq!(
         list(&["list", "models", "coder"], &cfg, &env).0,
-        "Models for agent coder:\n  chat (deepseek:cfg-model)\n  sonnet (anthropic:claude-x)\n  deepseek:* (every model deepseek lists)\n"
+        "Models for agent coder:\n* chat (deepseek:cfg-model)\n  sonnet (anthropic:claude-x)\n  deepseek:* (every model deepseek lists)\n"
+    );
+    assert_eq!(
+        list(&["list", "models", "scratch"], &cfg, &env).0,
+        "Models for agent scratch:\n* sonnet (anthropic:claude-x)\n"
+    );
+    assert_eq!(
+        list(&["list", "models", "picky"], &cfg, &env).0,
+        "Models for agent picky:\n  chat (deepseek:cfg-model)\n  sonnet (anthropic:claude-x)\n"
+    );
+    // A `model:` the choices do not name (or name only through a wildcard) is a `*` row of its own on top.
+    let outside = config(
+        "
+providers:
+  deepseek: {type: openai, key: k}
+models:
+  chat: {provider: deepseek, id: cfg-model}
+agents:
+  a:
+    model: \"deepseek:other\"
+    choices: [chat, \"deepseek:*\"]
+",
+    );
+    assert_eq!(
+        list(&["list", "models", "a"], &outside, &env).0,
+        "Models for agent a:\n* deepseek:other\n  chat (deepseek:cfg-model)\n  deepseek:* (every model deepseek lists)\n"
     );
 
     // providers: the endpoints, each with where its key comes from — config, environment, or nowhere.
@@ -803,7 +841,7 @@ agents:
 /// The two refusals the listing owns: a name where no name belongs, and an agent that does not exist.
 #[test]
 fn list_refuses_a_name_it_cannot_use() {
-    let cfg = config("agents:\n  a: {models: [\"openai:x\"]}\n");
+    let cfg = config("agents:\n  a: {model: \"openai:x\"}\n");
     let run = |args: &[&str]| {
         let (Command::List(cmd), _) = cli(args).into_command() else {
             panic!("not a listing")
@@ -877,15 +915,15 @@ fn unsupported_flags_rejected() {
     );
 }
 
-/// DIVERGENCES D-52: `--model/-M is required when using --message/-m` is DEFERRED for a resume (a session
-/// supplies the model from its meta); `run` re-raises it byte-identically after the replay.
+/// DIVERGENCES D-52: `no model chosen: …` (Go's `--model/-M is required when using --message/-m`, reworded by
+/// X-48) is DEFERRED for a resume (a session supplies the model from its meta); `run` re-raises it
+/// byte-identically after the replay.
 #[test]
 fn resolve_resume_defers_model_required() {
-    let cfg = config("agents:\n  default:\n    models: [\"openai:*\"]\n");
+    let cfg = config("agents:\n  default:\n    choices: [\"openai:*\"]\n");
     let env = [("OPENAI_API_KEY", "sk")];
 
-    // No -M and no model in the candidate set, but a session is named: resolution succeeds and carries the
-    // fragment.
+    // No -M and no `model:`, but a session is named: resolution succeeds and carries the fragment.
     let s = resolve(&["resume", "abc", "-m", "hi"], &cfg, &env).unwrap();
     assert_eq!(s.model, "");
     assert_eq!(s.resume.as_deref(), Some("abc"));
@@ -898,7 +936,7 @@ fn resolve_resume_defers_model_required() {
     // Without a resume the deferral does not apply.
     assert!(matches!(
         resolve(&["run", "-m", "hi"], &cfg, &env).unwrap_err(),
-        CliError::Args(ArgsError::ModelRequired)
+        CliError::Args(ArgsError::ModelRequired { .. })
     ));
     // And a plain run carries no fragment.
     assert_eq!(
@@ -909,10 +947,10 @@ fn resolve_resume_defers_model_required() {
     );
 }
 
-// ---------------------------------------------------------------- `-M` against the candidate set
+// ---------------------------------------------------------------- `-M` against the choices
 
 /// `-M` takes a bare id, a `provider:id` pair (which MOVES the run to that provider, key and URL included)
-/// and `provider:*` (that provider, no model chosen). A candidate entry may also be named directly.
+/// and `provider:*` (that provider, no model chosen). A choice may also be named directly.
 ///
 /// What comes WITH the model is the `models:` entry serving exactly that `provider:id`, or nothing: the
 /// knobs of the candidate the flag replaces never travel (brain page `model-param-layering`).
@@ -929,11 +967,12 @@ models:
   haiku: {provider: anthropic, id: claude-haiku-4-5, effort: low}
 agents:
   team:
-    models: [sonnet, gpt5]
+    model: sonnet
+    choices: [sonnet, gpt5]
 ",
     );
 
-    // No flag: the first candidate, knobs included.
+    // No flag: `model:`, knobs included.
     let s = resolve(&["run", "team"], &cfg, &[]).unwrap();
     assert_eq!(
         (s.raw_type.as_str(), s.model.as_str()),
@@ -943,7 +982,7 @@ agents:
     assert_eq!(s.resolved.model.effort, "max");
     assert_eq!(s.temperature, Some(1.0));
 
-    // A candidate by name brings its provider, its key, its url AND its protocol with it.
+    // A choice by name brings its provider, its key, its url AND its protocol with it.
     let (s, warnings) = resolve_warned(&["run", "team", "-M", "gpt5"], &cfg, &[]);
     let s = s.unwrap();
     assert_eq!(s.raw_type, "openai");
@@ -954,7 +993,7 @@ agents:
     assert_eq!(s.temperature, Some(0.2));
     assert!(
         warnings.is_empty(),
-        "a candidate is not a surprise: {warnings:?}"
+        "a choice is not a surprise: {warnings:?}"
     );
 
     // `provider:id` moves the run to that provider even when nothing configured that pair — and a pair
@@ -972,7 +1011,7 @@ agents:
     assert_eq!(
         warnings,
         vec![
-            "Warning: model relay:o3-mini is not in agent \"team\"'s models (using it anyway)"
+            "Warning: model relay:o3-mini is not in agent \"team\"'s choices (using it anyway)"
                 .to_owned()
         ]
     );
@@ -1039,7 +1078,7 @@ models:
   sonnet: anthropic:claude-sonnet-4
 agents:
   default:
-    models: [sonnet]
+    model: sonnet
     system: the default prompt
     workspace: true
 ",
@@ -1076,7 +1115,7 @@ fn no_default_agent_is_refused_with_both_ways_out() {
         Config::default(),
         // A config with all three layers — just not a `default` agent.
         config(
-            "providers:\n  openai: {key: k}\nmodels:\n  default: openai:gpt-4o\nagents:\n  coder:\n    models: [default]\n",
+            "providers:\n  openai: {key: k}\nmodels:\n  default: openai:gpt-4o\nagents:\n  coder:\n    model: default\n",
         ),
     ] {
         let err = resolve(&[], &cfg, &[]).unwrap_err();
@@ -1113,7 +1152,7 @@ models:
   openai: {provider: anthropic, id: from-models}
 agents:
   openai:
-    models: [\"anthropic:from-agents\"]
+    model: \"anthropic:from-agents\"
     system: agent prompt
     workspace: true
 ",

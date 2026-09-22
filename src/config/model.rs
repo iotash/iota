@@ -14,8 +14,8 @@ use crate::provider::error::InvalidEffort;
 use crate::provider::{Effort, ImageGenParams};
 use crate::tool::DeferMode;
 
-/// How a model is named where one is referenced: in `agents.<name>.models`, in a `models:` shorthand and
-/// behind `-M`.
+/// How a model is named where one is referenced: in `agents.<name>.model` and `agents.<name>.choices`, in a
+/// `models:` shorthand and behind `-M`.
 ///
 /// The separator is `:` with the PROVIDER first, and the id is everything after the first colon — so a
 /// relay's own `vendor/model` shape survives verbatim (`openrouter:anthropic/claude-3.5-sonnet`).
@@ -192,7 +192,7 @@ impl ModelEntry {
                 Ok(ModelRef::All { .. }) => Err(ConfigError::Model(
                     name.to_owned(),
                     format!(
-                        "{s:?} is a candidate set, not a model (use it in `agents.<name>.models`)"
+                        "{s:?} is a candidate set, not a model (use it in `agents.<name>.choices`)"
                     ),
                 )),
             },

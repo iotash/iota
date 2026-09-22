@@ -216,8 +216,8 @@ pub(crate) async fn run_interactive(
         tools,
     } = s;
     // What `/model` will offer. Built here, before anything claims the terminal: it needs the
-    // config and the environment (the keys of the endpoints the candidate set names besides the one
-    // this run talks to), which the loop deliberately knows nothing about, and constructing a
+    // config and the environment (the keys of the endpoints the choices name besides the one this
+    // run talks to), which the loop deliberately knows nothing about, and constructing a
     // wildcard's endpoint is pure (the listings happen when the picker opens).
     let catalog = crate::repl::ModelCatalog::new(cfg, &settings.resolved, &ctx.env, &ctx.transport);
     let ToolAssembly {

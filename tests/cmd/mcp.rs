@@ -547,7 +547,7 @@ fn mcp_add_oauth_and_the_agent_subset_hint() {
     let user = home.join(".iota.yaml");
     fs::write(
         &user,
-        "providers:\n  p: {key: k}\nagents:\n  default:\n    models: [\"p:m\"]\n    mcp_servers: [fs]\n",
+        "providers:\n  p: {key: k}\nagents:\n  default:\n    model: \"p:m\"\n    mcp_servers: [fs]\n",
     )
     .unwrap();
     let o = mcp(
@@ -867,7 +867,7 @@ async fn mcp_login_logout_through_the_cli() {
     fs::write(
         cwd.join(".iota.yaml"),
         format!(
-            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{models: [m]}}\n",
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m}}\n",
             api.uri()
         ),
     )

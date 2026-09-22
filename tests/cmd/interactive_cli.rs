@@ -56,7 +56,7 @@ fn run(mut cmd: Command) -> Output {
 fn write_config(cwd: &Path) {
     std::fs::write(
         cwd.join(".iota.yaml"),
-        "providers:\n  p: {type: openai, key: sk-test}\nmodels:\n  m: p:gpt-4o\nagents:\n  default: {models: [m]}\n",
+        "providers:\n  p: {type: openai, key: sk-test}\nmodels:\n  m: p:gpt-4o\nagents:\n  default: {model: m}\n",
     )
     .expect("write config");
 }
@@ -178,7 +178,7 @@ fn errors_raised_before_the_branch_still_win_over_the_interactive_branch() {
     // An agent whose endpoint has no key (root.go:88-92) — still before the branch.
     std::fs::write(
         dir.path().join(".iota.yaml"),
-        "providers:\n  p: {type: openai}\nagents:\n  default: {models: [\"p:gpt-4o\"]}\n",
+        "providers:\n  p: {type: openai}\nagents:\n  default: {model: \"p:gpt-4o\"}\n",
     )
     .expect("write config");
     let o = run(piped(dir.path(), &home));

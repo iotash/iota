@@ -23,7 +23,7 @@ pub struct RunSettings {
     pub api_key: String,
     /// The base URL from `providers.<name>.url` (`""` = dialect default).
     pub base_url: String,
-    /// The model (`-M` > the agent's default model; may be `""` without `-m`).
+    /// The model (`-M` > `agents.<name>.model`; may be `""` without `-m` — the picker's job).
     pub model: String,
     /// The system prompt (`-s` > `system:` > `system_file:`; `""` = none).
     pub system: String,
@@ -49,9 +49,9 @@ pub struct RunSettings {
 /// one, else `NoAgent` → the agent lookup (`resolve_agent`) → `-M` (which may move the run to another
 /// provider) → key (env of the RESOLVED type > `providers.<name>.key`) → system (`-s` > the agent's) →
 /// `ApiKeyRequired` → `-m -` reads stdin (trim; `failed to read from stdin: {e}`; `no message provided via
-/// stdin`) → `-m ""` → `MessageEmpty` → model required ONLY when message is `Some` AND no resume is in play
-/// (D-52: a resume supplies the model from meta, so `run` re-raises `ModelRequired` after the replay) →
-/// temperature (config range).
+/// stdin`) → `-m ""` → `MessageEmpty` → a model chosen (`-M` or `agents.<name>.model`) ONLY when message is
+/// `Some` AND no resume is in play (D-52: a resume supplies the model from meta, so `run` re-raises
+/// `ModelRequired` after the replay) → temperature (config range).
 /// `--output-format` is NOT parsed here and `OutputFormatWithoutMessage` is NOT raised here (Go does both after
 /// tuning/MCP, root.go:249-255) — the raw flag rides `output_format_raw` and `run` does both.
 ///
@@ -106,11 +106,15 @@ pub fn resolve_run(
         Some(m) => Some(m.to_owned()),
     };
 
-    // root.go:107-109: non-interactive mode requires a model — DEFERRED for a resume, because a resumed
-    // session can supply it from its meta (root.go:323-325). `run` re-raises this exact error after the model
-    // replay, so a provider-mismatched or model-less bundle still fails with Go's text (DIVERGENCES D-52).
+    // root.go:107-109: non-interactive mode requires a model — headless has no picker to open when
+    // `agents.<name>.model` is unset — DEFERRED for a resume, because a resumed session can supply it from
+    // its meta (root.go:323-325). `run` re-raises this exact error after the model replay, so a
+    // provider-mismatched or model-less bundle still fails with the same text (DIVERGENCES D-52, X-48).
     if message.is_some() && model.is_empty() && inv.resume.is_none() {
-        return Err(ArgsError::ModelRequired.into());
+        return Err(ArgsError::ModelRequired {
+            agent: name.to_owned(),
+        }
+        .into());
     }
 
     // root.go:114-123: the config default is range-checked (the `-t` flag that skipped the check is gone).
@@ -156,15 +160,15 @@ pub(crate) fn resolve_agent(cfg: &Config, name: &str) -> Result<Resolved, ArgsEr
 ///   name iota knows; a bare id that happens to contain a colon is left alone, which is what a relay's
 ///   `vendor:model` ids need);
 /// - `provider:*` — that provider with no model chosen, i.e. start in the picker;
-/// - a bare value — a `models:` entry from the agent's own candidate set if it names one, else a raw model id
-///   on the provider the run already resolved to.
+/// - a bare value — a `models:` entry from the agent's own choices if it names one, else a raw model id on
+///   the provider the run already resolved to.
 ///
-/// A model outside the agent's candidate set is a WARNING, never a refusal (decision of 2026-09-10): the set
-/// is advice about what is good here, not a whitelist.
+/// A model outside the agent's choices is a WARNING, never a refusal (decision of 2026-09-10): the set is
+/// advice about what is good here, not a whitelist.
 ///
 /// What a `provider:id` (or a raw id on the current provider) brings with it is decided by [`model_at`]: the
-/// `models:` entry serving exactly that pair, or nothing at all — never the knobs of the candidate the flag
-/// is replacing (brain page `model-param-layering`; DIVERGENCES X-32).
+/// `models:` entry serving exactly that pair, or nothing at all — never the knobs of the model the flag is
+/// replacing (brain page `model-param-layering`; DIVERGENCES X-32).
 fn apply_model_flag(r: &mut Resolved, cfg: &Config, flag: &str, warn: &mut dyn FnMut(String)) {
     if flag.is_empty() {
         // `-M ""` is verbatim, like every other flag: no model was chosen.
@@ -181,10 +185,10 @@ fn apply_model_flag(r: &mut Resolved, cfg: &Config, flag: &str, warn: &mut dyn F
             r.move_to_provider(cfg, provider);
         }
         _ => match cfg.models.get(flag) {
-            // A candidate by name brings its own provider and protocol with it.
+            // A choice by name brings its own provider and protocol with it.
             Some(entry)
                 if r.agent
-                    .models
+                    .choices
                     .iter()
                     .any(|c| matches!(c, ModelRef::Entry(n) if n == flag)) =>
             {
@@ -201,25 +205,25 @@ fn apply_model_flag(r: &mut Resolved, cfg: &Config, flag: &str, warn: &mut dyn F
             }
         },
     }
-    if !r.agent.models.is_empty()
+    if !r.agent.choices.is_empty()
         && !r.model.id.is_empty()
         && !r.covers(cfg, &r.provider_name, &r.model.id)
     {
         warn(format!(
-            "Warning: model {}:{} is not in agent {:?}'s models (using it anyway)",
+            "Warning: model {}:{} is not in agent {:?}'s choices (using it anyway)",
             r.provider_name, r.model.id, r.name
         ));
     }
 }
 
 /// The `ModelConfig` a `provider:id` pair stands for: the `models:` entry serving exactly that pair when one
-/// exists — a member of the agent's candidate set first, then any entry, in name order — so its own knobs
-/// travel with it; otherwise the bare pair, every other field at its default. A model the config declares
-/// nothing about gets no declaration: the knobs of whatever candidate the run resolved to first (effort,
-/// temperature, `top_p`, window, defer mode, the image parameters) stay with that candidate.
+/// exists — one of the agent's choices first, then any entry, in name order — so its own knobs travel with
+/// it; otherwise the bare pair, every other field at its default. A model the config declares nothing about
+/// gets no declaration: the knobs of the model the run resolved to (effort, temperature, `top_p`, window,
+/// defer mode, the image parameters) stay with that model.
 fn model_at(r: &Resolved, cfg: &Config, provider: &str, id: &str) -> ModelConfig {
     let serves = |name: &str, m: &ModelConfig| m.provider_or(name) == provider && m.id == id;
-    let candidate = r.agent.models.iter().find_map(|c| match c {
+    let candidate = r.agent.choices.iter().find_map(|c| match c {
         ModelRef::Entry(name) => cfg
             .models
             .get(name)

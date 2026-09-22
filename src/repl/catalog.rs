@@ -1,7 +1,7 @@
-//! The agent's candidate set, as the `/model` picker sees it (brain page `config-three-layers`).
+//! The agent's choices, as the `/model` picker sees them (brain page `config-three-layers`).
 //!
-//! `agents.<name>.models` is a LIST of references, and the three forms cost different things to
-//! turn into rows:
+//! `agents.<name>.choices` is a LIST of references — the agent's own, or every `models:` entry when
+//! it writes none — and the three forms cost different things to turn into rows:
 //!
 //! - [`ModelRef::Entry`](crate::config::ModelRef::Entry) — a `models:` entry by name: its
 //!   `provider:id` is already written down;
@@ -98,13 +98,14 @@ enum Source {
     Session,
 }
 
-/// The agent's candidate set plus the listers its wildcards need.
+/// The agent's choices plus the listers its wildcards need.
 ///
 /// A chat holds one for its whole life: the config cannot change under a running session, so what
 /// CAN be offered is fixed at startup and only the listings are asked for again.
 #[derive(Default)]
 pub struct ModelCatalog {
-    /// `agents.<name>.models`, in declaration order — the order the picker lists them in.
+    /// `agents.<name>.choices` as the run resolved them, in declaration order — the order the picker
+    /// lists them in.
     refs: Vec<ModelRef>,
     /// `models:` entries by name, `provider:` anchored.
     entries: BTreeMap<String, crate::config::ModelConfig>,
@@ -123,13 +124,13 @@ pub struct ModelCatalog {
 
 impl ModelCatalog {
     /// The catalog a run resolved to. Constructing a wildcard's endpoint is cheap (no I/O) and its
-    /// failure is recorded rather than raised: a broken entry in the candidate set must not stop
-    /// the picker from offering the rest.
+    /// failure is recorded rather than raised: a broken entry among the choices must not stop the
+    /// picker from offering the rest.
     pub fn new(cfg: &Config, resolved: &Resolved, env: &Env, http: &HttpTransport) -> Self {
         let mut sources = BTreeMap::new();
         for name in resolved
             .agent
-            .models
+            .choices
             .iter()
             .filter(|r| r.is_wildcard())
             .filter_map(ModelRef::provider)
@@ -145,7 +146,7 @@ impl ModelCatalog {
             sources.insert(name.to_owned(), source);
         }
         Self {
-            refs: resolved.agent.models.clone(),
+            refs: resolved.agent.choices.clone(),
             entries: cfg
                 .models
                 .iter()
@@ -224,9 +225,9 @@ impl ModelCatalog {
             };
         }
         let mut out = Expansion::default();
-        // An agent that declares no candidate set is read as one implicit `<session>:*` — the
-        // endpoint the chat is already on, asked exactly the way a wildcard asks — so the picker
-        // has ONE path and a run without candidate sets keeps the list it always had.
+        // No choices at all — no `choices:` and no `models:` entry to default to — is read as one
+        // implicit `<session>:*`: the endpoint the chat is already on, asked exactly the way a
+        // wildcard asks — so the picker has ONE path and such a run keeps the list it always had.
         if self.refs.is_empty() {
             match listed.get(self.session.as_str()) {
                 Some(Ok(ids)) => {

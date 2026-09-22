@@ -64,13 +64,13 @@ providers:
   openai: {key: sk-official}
 agents:
   claude:
-    models: [\"anthropic:claude-sonnet-4\"]
+    model: \"anthropic:claude-sonnet-4\"
     tools:
       shell:
         - git
         - ssh
   plain:
-    models: [\"openai:gpt-4o\"]
+    model: \"openai:gpt-4o\"
     tools:
       shell:
 ",
@@ -112,11 +112,11 @@ fn an_agent_entry_loads_with_its_workspace_flag() {
         "config.yaml",
         "
 agents:
-  a: {models: [\"openai:x\"], workspace: true}
-  b: {models: [\"openai:x\"], workspace: yes}
-  c: {models: [\"openai:x\"], workspace: on}
-  d: {models: [\"openai:x\"], workspace: false}
-  e: {models: [\"openai:x\"]}
+  a: {model: \"openai:x\", workspace: true}
+  b: {model: \"openai:x\", workspace: yes}
+  c: {model: \"openai:x\", workspace: on}
+  d: {model: \"openai:x\", workspace: false}
+  e: {model: \"openai:x\"}
 ",
     );
     for name in ["a", "b", "c"] {
@@ -145,7 +145,7 @@ models:
     json_edits: TRUE
 agents:
   f:
-    models: [m]
+    model: m
     workspace: On
     no_save: off
     notify: No
@@ -203,7 +203,7 @@ fn provider_fields_expand_their_variables_at_load() {
     let path = dir.path().join("c.yaml");
     fs::write(
         &path,
-        "providers:\n  d:\n    type: openai\n    key: ${env:CFG_TEST_KEY}\n    url: ${env:CFG_TEST_KEY}/v1\nmodels:\n  m: {provider: d, id: x, effort: high}\nagents:\n  d: {models: [m], system_file: \"${appHome}/sys.md\"}\n",
+        "providers:\n  d:\n    type: openai\n    key: ${env:CFG_TEST_KEY}\n    url: ${env:CFG_TEST_KEY}/v1\nmodels:\n  m: {provider: d, id: x, effort: high}\nagents:\n  d: {model: m, system_file: \"${appHome}/sys.md\"}\n",
     )
     .unwrap();
     let resolver = Env::fixed(&[("CFG_TEST_KEY", "sk-expanded")]).with_dirs(dirs.clone());
@@ -220,7 +220,7 @@ fn provider_fields_expand_their_variables_at_load() {
     let path = dir.path().join("layered.yaml");
     fs::write(
         &path,
-        "providers:\n  d:\n    type: openai\n    key: ${env:CFG_TEST_KEY}\nagents:\n  coder:\n    models: [\"d:gpt-4o\"]\n    system_file: ${appHome}/sys.md\n",
+        "providers:\n  d:\n    type: openai\n    key: ${env:CFG_TEST_KEY}\nagents:\n  coder:\n    model: \"d:gpt-4o\"\n    system_file: ${appHome}/sys.md\n",
     )
     .unwrap();
     let (cfg, warnings) = load_explicit(&path, &resolver);
@@ -238,13 +238,13 @@ fn mcp_servers_for_selects_all_none_or_the_named_subset() {
         "
 agents:
   none:
-    models: [\"openai:x\"]
+    model: \"openai:x\"
     mcp_servers: []
   some:
-    models: [\"openai:x\"]
+    model: \"openai:x\"
     mcp_servers: [fs]
   typo:
-    models: [\"openai:x\"]
+    model: \"openai:x\"
     mcp_servers: [nope]
 mcp_servers:
   fs:
@@ -294,7 +294,7 @@ fn the_temperature_field_parses_and_stays_optional() {
     let cfg = load_yaml(
         dir.path(),
         "c.yaml",
-        "models:\n  tuned: {provider: openai, id: x, temperature: 0.3}\n  norm: openai:x\nagents:\n  norm: {models: [norm]}\n",
+        "models:\n  tuned: {provider: openai, id: x, temperature: 0.3}\n  norm: openai:x\nagents:\n  norm: {model: norm}\n",
     );
     assert_eq!(cfg.models["tuned"].temperature, Some(0.3));
     assert_eq!(
@@ -309,7 +309,7 @@ fn the_top_p_field_parses_and_stays_optional() {
     let cfg = load_yaml(
         dir.path(),
         "c.yaml",
-        "models:\n  tuned: {provider: openai, id: x, top_p: 0.9}\n  norm: openai:x\nagents:\n  norm: {models: [norm]}\n",
+        "models:\n  tuned: {provider: openai, id: x, top_p: 0.9}\n  norm: openai:x\nagents:\n  norm: {model: norm}\n",
     );
     assert_eq!(cfg.models["tuned"].top_p, Some(0.9));
     assert_eq!(
@@ -324,7 +324,7 @@ fn the_notify_field_defaults_on_and_parses_yaml_booleans() {
     let cfg = load_yaml(
         dir.path(),
         "c.yaml",
-        "agents:\n  quiet: {models: [\"openai:x\"], notify: false}\n  norm: {models: [\"openai:x\"]}\n",
+        "agents:\n  quiet: {model: \"openai:x\", notify: false}\n  norm: {model: \"openai:x\"}\n",
     );
     assert_eq!(
         cfg.agents["quiet"].notify,
@@ -343,7 +343,7 @@ fn the_no_save_field_parses_yaml_booleans() {
     let cfg = load_yaml(
         dir.path(),
         "c.yaml",
-        "agents:\n  eph: {models: [\"openai:x\"], no_save: true}\n  norm: {models: [\"openai:x\"]}\n",
+        "agents:\n  eph: {model: \"openai:x\", no_save: true}\n  norm: {model: \"openai:x\"}\n",
     );
     assert!(cfg.agents["eph"].no_save, "no_save: true not parsed");
     assert!(
@@ -391,7 +391,7 @@ fn the_defer_mode_field_is_validated_against_the_dialect() {
     let cfg = load_yaml(
         dir.path(),
         "c.yaml",
-        "models:\n  a: {provider: anthropic, id: x, defer_mode: reference}\n  b: openai:x\nagents:\n  b: {models: [b]}\n",
+        "models:\n  a: {provider: anthropic, id: x, defer_mode: reference}\n  b: openai:x\nagents:\n  b: {model: b}\n",
     );
     assert_eq!(cfg.models["a"].defer_mode, "reference");
     assert_eq!(
@@ -458,7 +458,7 @@ fn the_one_layer_keys_report_their_new_home() {
     for (yaml, want) in [
         (
             "providers:\n  p: {type: openai, model: gpt-4o}\n",
-            "providers.p.model: `model` is now a `models:` entry — write `models.<name>: <provider>:<id>` and list it in `agents.<name>.models`",
+            "providers.p.model: `model` is now a `models:` entry — write `models.<name>: <provider>:<id>` and name it in `agents.<name>.model` (or list it in `choices:`)",
         ),
         (
             "providers:\n  p: {type: openai, agent: true}\n",
@@ -500,8 +500,8 @@ fn an_unknown_key_is_refused_with_its_coordinate() {
             "models.m.idd: unknown key (want provider, id, context_window, defer_mode, effort, temperature, top_p, image, aspect_ratio, image_size, negative_prompt, json_edits)",
         ),
         (
-            "agents:\n  coder: {models: [m], sytem: hi}\n",
-            "agents.coder.sytem: unknown key (want models, system, system_file, tools, mcp_servers, workspace, no_save, notify, description, context_window, effort, temperature, top_p)",
+            "agents:\n  coder: {model: m, sytem: hi}\n",
+            "agents.coder.sytem: unknown key (want model, choices, system, system_file, tools, mcp_servers, workspace, no_save, notify, description, context_window, effort, temperature, top_p)",
         ),
         (
             "agnets:\n  coder: {}\n",
@@ -523,15 +523,15 @@ fn an_unknown_key_is_refused_with_its_coordinate() {
 fn a_toolset_that_does_not_exist_is_refused() {
     for (yaml, want) in [
         (
-            "agents:\n  a: {models: [m], tools: {agent: {}}}\n",
+            "agents:\n  a: {model: m, tools: {agent: {}}}\n",
             "agents.a.tools.agent: the `agent` toolset is now called `skills` (the word `agent` names a config layer)",
         ),
         (
-            "agents:\n  a: {models: [m], tools: {delegate: [reviewer]}}\n",
+            "agents:\n  a: {model: m, tools: {delegate: [reviewer]}}\n",
             "agents.a.tools.delegate: the `delegate` toolset was removed — run child agents from bash instead (see https://iota.sh/docs/builtin-toolsets)",
         ),
         (
-            "agents:\n  a: {models: [m], tools: {shel: {}}}\n",
+            "agents:\n  a: {model: m, tools: {shel: {}}}\n",
             "agents.a.tools.shel: unknown toolset (want shell, skills, code, ask)",
         ),
     ] {
@@ -544,7 +544,7 @@ fn a_toolset_that_does_not_exist_is_refused() {
     }
     // The four that exist all load.
     assert!(
-        parse("agents:\n  a:\n    models: [\"openai:x\"]\n    tools: {shell: {}, skills: {}, code: {}, ask: {}}\n")
+        parse("agents:\n  a:\n    model: \"openai:x\"\n    tools: {shell: {}, skills: {}, code: {}, ask: {}}\n")
             .is_ok()
     );
 }
@@ -651,7 +651,8 @@ models:
     id: gpt-5.2
 agents:
   mixed:
-    models: [sonnet, \"relay:anthropic/claude-3.5\", \"relay:*\"]
+    model: sonnet
+    choices: [sonnet, \"relay:anthropic/claude-3.5\", \"relay:*\"]
 ",
     )
     .expect("loads");
@@ -665,12 +666,12 @@ agents:
     assert_eq!(r.model.id, "claude-sonnet-4");
 
     // The inline form carries its own provider; the wildcard carries only the provider.
-    let inline = cfg.model_of(&r.agent.models[1]).unwrap();
+    let inline = cfg.model_of(&r.agent.choices[1]).unwrap();
     assert_eq!(
         (inline.provider.as_str(), inline.id.as_str()),
         ("relay", "anthropic/claude-3.5")
     );
-    let all = cfg.model_of(&r.agent.models[2]).unwrap();
+    let all = cfg.model_of(&r.agent.choices[2]).unwrap();
     assert_eq!((all.provider.as_str(), all.id.as_str()), ("relay", ""));
 
     // A `models:` entry is reached THROUGH an agent, never named by a run of its own.
@@ -684,7 +685,7 @@ agents:
 #[test]
 fn a_reference_written_as_a_yaml_mapping_explains_itself() {
     let err = parse(
-        "providers:\n  anthropic: {key: k}\nagents:\n  x:\n    models:\n      - anthropic: claude-sonnet-4\n",
+        "providers:\n  anthropic: {key: k}\nagents:\n  x:\n    choices:\n      - anthropic: claude-sonnet-4\n",
     )
     .expect_err("a mapping is not a reference");
     let text = err.to_string();
@@ -700,7 +701,7 @@ fn a_reference_written_as_a_yaml_mapping_explains_itself() {
     let path = dir.path().join("c.yaml");
     fs::write(
         &path,
-        "agents:\n  x:\n    models:\n      - openai: gpt-4o\n",
+        "agents:\n  x:\n    choices:\n      - openai: gpt-4o\n",
     )
     .unwrap();
     let (cfg, warnings) = load_explicit(&path, &Env::default());
@@ -723,7 +724,7 @@ fn a_models_shorthand_must_name_a_provider_and_a_model() {
         parse("providers:\n  openai: {}\nmodels:\n  any: openai:*\n")
             .expect_err("wildcard")
             .to_string(),
-        "models.any: \"openai:*\" is a candidate set, not a model (use it in `agents.<name>.models`)"
+        "models.any: \"openai:*\" is a candidate set, not a model (use it in `agents.<name>.choices`)"
     );
 }
 
@@ -737,28 +738,210 @@ fn dangling_references_are_refused_at_load() {
         "models.m: unknown provider \"nosuch\""
     );
     assert_eq!(
-        parse("agents:\n  a:\n    models: [nosuch]\n")
+        parse("agents:\n  a:\n    model: nosuch\n")
             .expect_err("unknown model")
             .to_string(),
-        "agents.a: models: unknown model \"nosuch\""
+        "agents.a: model: unknown model \"nosuch\""
     );
     assert_eq!(
-        parse("agents:\n  a:\n    models: [\"nosuch:*\"]\n")
+        parse("agents:\n  a:\n    choices: [\"nosuch:*\"]\n")
             .expect_err("unknown provider")
             .to_string(),
-        "agents.a: models: unknown provider \"nosuch\""
+        "agents.a: choices: unknown provider \"nosuch\""
     );
     assert_eq!(
-        parse("agents:\n  a:\n    system: hi\n")
-            .expect_err("no models")
+        parse("agents:\n  a:\n    model: \"nosuch:x\"\n")
+            .expect_err("unknown provider")
             .to_string(),
-        "agents.a: models: at least one model is required"
+        "agents.a: model: unknown provider \"nosuch\""
+    );
+    assert_eq!(
+        parse("agents:\n  a:\n    choices: [nosuch]\n")
+            .expect_err("unknown model")
+            .to_string(),
+        "agents.a: choices: unknown model \"nosuch\""
     );
     // A built-in type needs no `providers:` entry.
     assert!(parse("models:\n  m: anthropic:claude-x\n").is_ok());
-    // A single reference does not have to be written as a list.
-    let cfg = parse("agents:\n  a:\n    models: anthropic:claude-x\n").expect("loads");
-    assert_eq!(cfg.agents["a"].models.len(), 1);
+    // A single choice does not have to be written as a list.
+    let cfg = parse("agents:\n  a:\n    choices: anthropic:claude-x\n").expect("loads");
+    assert_eq!(cfg.agents["a"].choices.len(), 1);
+}
+
+/// `model:` names ONE model — the run starts on it. A wildcard is a set, and the way to start in the
+/// picker is to leave `model:` unset; the refusal says both.
+#[test]
+fn a_wildcard_is_refused_as_the_default_model() {
+    assert_eq!(
+        parse("agents:\n  a:\n    model: \"openai:*\"\n")
+            .expect_err("a wildcard is not a model")
+            .to_string(),
+        "agents.a.model: \"openai:*\" is a wildcard — put it in choices: and leave model: unset to start in the picker"
+    );
+    // Under `-c` the verdict is the same, and it names no file: it is the cross-layer pass's, which runs once
+    // over the merged stack (like a dangling reference), not the per-file audit's.
+    let (dir, _dirs) = temp_project(&[]);
+    let path = dir.path().join("c.yaml");
+    fs::write(&path, "agents:\n  a:\n    model: \"openai:*\"\n").unwrap();
+    let (cfg, warnings) = try_load_explicit(&path, &Env::default());
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(
+        cfg.expect_err("a wildcard is not a model").to_string(),
+        "agents.a.model: \"openai:*\" is a wildcard — put it in choices: and leave model: unset to start in the picker"
+    );
+}
+
+/// The agent's one list used to be `models:` — the first entry the default, the rest the picker's. It is
+/// two keys now, and the old spelling says which two (X-48).
+#[test]
+fn the_retired_agent_models_key_names_its_two_replacements() {
+    assert_eq!(
+        parse("models:\n  m: openai:x\nagents:\n  a:\n    models: [m]\n")
+            .expect_err("the old key is refused")
+            .to_string(),
+        "agents.a.models: `models` is now `choices:` (what /model and -M pick from) plus `model:` (the one the run starts on)"
+    );
+}
+
+/// No `model:` is a valid agent: the run starts in the picker (on the first choice's endpoint), and no
+/// `choices:` means every `models:` entry, in the order the config declares them — not name order, and
+/// not an implied wildcard.
+#[test]
+fn an_agent_without_choices_offers_every_model_entry_as_declared() {
+    let cfg = parse(
+        "
+providers:
+  relay: {type: openai, key: k}
+models:
+  zeta: openai:z
+  alpha: relay:a
+  mid: anthropic:m
+agents:
+  a: {model: mid}
+  b: {}
+  c: {model: mid, choices: [alpha]}
+",
+    )
+    .expect("loads");
+    assert_eq!(cfg.model_order, vec!["zeta", "alpha", "mid"]);
+    let all = vec![
+        ModelRef::Entry("zeta".to_owned()),
+        ModelRef::Entry("alpha".to_owned()),
+        ModelRef::Entry("mid".to_owned()),
+    ];
+
+    // As written, the agent lists nothing; as resolved, it offers everything.
+    assert!(cfg.agents["a"].choices.is_empty());
+    assert_eq!(cfg.choices_of(&cfg.agents["a"]), all);
+    let a = cfg.resolve_agent("a").expect("resolves");
+    assert_eq!(a.agent.choices, all);
+    assert_eq!(
+        (a.provider_name.as_str(), a.model.id.as_str()),
+        ("anthropic", "m")
+    );
+
+    // No `model:` either: the picker, on the first choice's endpoint, with no model and none of its knobs.
+    let b = cfg.resolve_agent("b").expect("resolves");
+    assert_eq!(b.agent.model, None);
+    assert_eq!(b.agent.choices, all);
+    assert_eq!(
+        (b.provider_name.as_str(), b.model.id.as_str()),
+        ("openai", "")
+    );
+
+    // A written list is taken as written.
+    let c = cfg.resolve_agent("c").expect("resolves");
+    assert_eq!(c.agent.choices, vec![ModelRef::Entry("alpha".to_owned())]);
+
+    // Nothing to default to: the choices stay empty (the picker then asks the session's own endpoint).
+    let bare = parse("agents:\n  a: {model: \"openai:x\"}\n").expect("loads");
+    assert!(
+        bare.resolve_agent("a")
+            .expect("resolves")
+            .agent
+            .choices
+            .is_empty()
+    );
+    assert!(
+        bare.resolve_agent("a")
+            .expect("resolves")
+            .agent
+            .model
+            .is_some()
+    );
+}
+
+/// Declaration order holds across the stack: the home file's entries first, then what the cwd file adds;
+/// an entry the cwd file REDEFINES keeps the place it was first declared at.
+#[test]
+fn model_order_is_declaration_order_across_the_merged_files() {
+    let (_dir, dirs) = temp_project(&[
+        (
+            "home/.iota.yaml",
+            "models:\n  zeta: openai:z\n  shared: openai:home\nagents:\n  a: {model: zeta}\n",
+        ),
+        (
+            ".iota.yml",
+            "models:\n  shared: anthropic:cwd\n  alpha: openai:a\n",
+        ),
+    ]);
+    let env = Env::default().with_dirs(dirs);
+    let mut warnings = Vec::new();
+    let cfg = Config::load(None, &env, &mut |w| warnings.push(w)).expect("loads");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(cfg.model_order, vec!["zeta", "shared", "alpha"]);
+    assert_eq!(
+        cfg.models["shared"].provider, "anthropic",
+        "the cwd entry wins"
+    );
+    assert_eq!(
+        cfg.resolve_agent("a").expect("resolves").agent.choices,
+        vec![
+            ModelRef::Entry("zeta".to_owned()),
+            ModelRef::Entry("shared".to_owned()),
+            ModelRef::Entry("alpha".to_owned()),
+        ]
+    );
+}
+
+/// A `model:` outside the choices is a WARNING, never a refusal (decision of 2026-09-10, the rule `-M`
+/// already follows): the choices are advice about what is good here, not a whitelist. Coverage is by the
+/// `provider:id` a reference stands for, so an entry of another name and a wildcard both count.
+#[test]
+fn a_default_model_outside_the_choices_warns_and_stands() {
+    let (cfg, warnings) = parse_warned(
+        "
+providers:
+  relay: {type: openai, key: k}
+models:
+  sonnet: anthropic:claude-x
+  same: anthropic:claude-x
+  gpt: openai:gpt-4o
+agents:
+  outside: {model: gpt, choices: [sonnet]}
+  inline: {model: \"relay:o3\"}
+  by_pair: {model: same, choices: [sonnet]}
+  by_wildcard: {model: gpt, choices: [\"openai:*\"]}
+  listed: {model: gpt, choices: [sonnet, gpt]}
+  defaulted: {model: gpt}
+",
+    );
+    let cfg = cfg.expect("a model outside the choices still loads");
+    assert_eq!(
+        warnings,
+        vec![
+            "Warning: config agents.inline.model: relay:o3 is not in choices (using it anyway)".to_owned(),
+            "Warning: config agents.outside.model: openai:gpt-4o is not in choices (using it anyway)"
+                .to_owned(),
+        ]
+    );
+    // …and the run starts on it regardless.
+    let r = cfg.resolve_agent("outside").expect("resolves");
+    assert_eq!(
+        (r.provider_name.as_str(), r.model.id.as_str()),
+        ("openai", "gpt-4o")
+    );
+    assert_eq!(r.agent.choices, vec![ModelRef::Entry("sonnet".to_owned())]);
 }
 
 // ---------------------------------------------------------------- defer_mode as a dialect statement
@@ -857,10 +1040,10 @@ models:
   sonnet: anthropic:claude-x
 agents:
   openai:
-    models: [sonnet]
+    model: sonnet
     system: from-agents
   solo:
-    models: [\"openai:*\"]
+    choices: [\"openai:*\"]
 ",
     )
     .expect("loads");
@@ -869,7 +1052,7 @@ agents:
     // everything — including which endpoint the run talks to.
     let r = cfg.resolve_agent("openai").expect("resolves");
     assert_eq!(r.agent.system, "from-agents");
-    assert_eq!(r.model.id, "claude-x", "the agent's first model decides");
+    assert_eq!(r.model.id, "claude-x", "the agent's `model:` decides");
     assert_eq!(r.provider_name, "anthropic");
     assert_eq!(r.agent_name, "openai");
 
@@ -878,7 +1061,8 @@ agents:
         assert_eq!(cfg.resolve_agent(name), None, "{name} is not an agent");
     }
 
-    // A wildcard-first agent has no default model: the run starts in the picker.
+    // An agent without `model:` has no default model: the run starts in the picker, on the endpoint of its
+    // first choice.
     let r = cfg.resolve_agent("solo").expect("resolves");
     assert_eq!(
         (r.provider_name.as_str(), r.model.id.as_str()),
@@ -907,7 +1091,7 @@ models:
     top_p: 0.5
 agents:
   hot:
-    models: [base]
+    model: base
     temperature: 1.5
 ",
     )
@@ -932,10 +1116,10 @@ models:
     context_window: 128k
 agents:
   long:
-    models: [base]
+    model: base
     context_window: 400k
   plain:
-    models: [base]
+    model: base
 ",
     )
     .expect("loads");
@@ -953,8 +1137,8 @@ agents:
     assert_eq!((decl.raw, decl.label), ("128k", "config context_window"));
 
     // Neither: no declaration at all, which is what leaves the session's own value standing.
-    let cfg = parse("models:\n  base: openai:gpt-5.2\nagents:\n  plain: {models: [base]}\n")
-        .expect("loads");
+    let cfg =
+        parse("models:\n  base: openai:gpt-5.2\nagents:\n  plain: {model: base}\n").expect("loads");
     assert!(
         cfg.resolve_agent("plain")
             .expect("resolves")
@@ -1066,7 +1250,7 @@ fn config_parse_error_drops_file_with_warning() {
     let (cfg, warnings) = load_explicit(
         &{
             let p = dir.path().join("badbool.yaml");
-            fs::write(&p, "agents:\n  x: {models: [m], workspace: 1}\n").unwrap();
+            fs::write(&p, "agents:\n  x: {model: m, workspace: 1}\n").unwrap();
             p
         },
         &env,
@@ -1108,7 +1292,7 @@ mcp_servers:
 # agents come last
 agents:
   default:
-    models: [gpt]
+    model: gpt
 ";
     fs::write(&path, before).unwrap();
 
@@ -1153,7 +1337,7 @@ mcp_servers:
 # agents come last
 agents:
   default:
-    models: [gpt]
+    model: gpt
 "
     );
     // The loader reads the result as the two servers, with the other layers intact.
@@ -1180,7 +1364,7 @@ models:
 # agents come last
 agents:
   default:
-    models: [gpt]
+    model: gpt
 "
     );
 

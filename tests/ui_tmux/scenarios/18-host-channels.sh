@@ -30,7 +30,8 @@ models:
   m: mock:fake
 agents:
   default:
-    models: [m, \"mock:*\"]
+    model: m
+    choices: [m, \"mock:*\"]
     tools: {shell: {sandbox: off}}"
 export CONFIG_BODY
 

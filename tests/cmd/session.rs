@@ -105,8 +105,9 @@ fn iota(cwd: &Path, home: &Path) -> Command {
 }
 
 /// Writes `<cwd>/.iota.yaml`: a gemini endpoint (its key, and the mock server's URL when one is serving)
-/// driven by `agents.default`. `model` may be `""` — then the candidate set is the `p:*` wildcard, which is
-/// how a run reaches the resume stage with no model of its own and takes the bundle's (D-52).
+/// driven by `agents.default`. `model` may be `""` — then the agent sets no `model:` and its choices are
+/// the `p:*` wildcard, which is how a run reaches the resume stage with no model of its own and takes the
+/// bundle's (D-52).
 ///
 /// Since `-k` and `-u` were retired, a test points at its mock server the way a user points at an endpoint:
 /// in the `providers:` layer (brain page `cli-surface-agent-first`).
@@ -116,10 +117,10 @@ fn write_config(cwd: &Path, url: &str, model: &str, workspace: bool) {
     } else {
         format!(", url: {url}")
     };
-    let candidate = if model.is_empty() {
-        "p:*".to_owned()
+    let start = if model.is_empty() {
+        "choices: [\"p:*\"]".to_owned()
     } else {
-        format!("p:{model}")
+        format!("model: \"p:{model}\"")
     };
     let workspace = if workspace {
         "\n    workspace: true"
@@ -129,7 +130,7 @@ fn write_config(cwd: &Path, url: &str, model: &str, workspace: bool) {
     fs::write(
         cwd.join(".iota.yaml"),
         format!(
-            "providers:\n  p: {{type: gemini, key: x{url}}}\nagents:\n  default:\n    models: [\"{candidate}\"]{workspace}\n"
+            "providers:\n  p: {{type: gemini, key: x{url}}}\nagents:\n  default:\n    {start}{workspace}\n"
         ),
     )
     .expect("write config");
@@ -540,7 +541,7 @@ fn resume_missing_bundle_is_not_found() {
 }
 
 /// DIVERGENCES D-52: a bundle recorded under ANOTHER provider replays neither its model nor its tuning, so the
-/// deferred `--model/-M is required …` is re-raised byte-identically — Go's text, at Go's wording.
+/// deferred `no model chosen …` is re-raised byte-identically (X-48 reworded Go's `--model/-M is required …`).
 #[test]
 fn resume_provider_mismatch_re_raises_model_required() {
     let cwd = TempDir::new().expect("temp cwd");
@@ -552,7 +553,7 @@ fn resume_provider_mismatch_re_raises_model_required() {
     cmd.args(["resume", prefix, "-m", "hi"]);
     assert_error(
         &cmd.output().expect("run"),
-        "--model/-M is required when using --message/-m",
+        "no model chosen: set agents.default.model or pass -M",
     );
 }
 

@@ -133,7 +133,7 @@ pub struct ResumeCmd {
 pub struct ListCmd {
     /// What to list (default: agents)
     pub what: Option<ListWhat>,
-    /// `list models <agent>`: the agent whose candidate set to show
+    /// `list models <agent>`: the agent whose choices to show
     pub agent: Option<String>,
 }
 
@@ -142,7 +142,7 @@ pub struct ListCmd {
 pub enum ListWhat {
     /// The `agents:` entries — what a run may name.
     Agents,
-    /// The `models:` entries, or one agent's candidate set.
+    /// The `models:` entries, or one agent's choices.
     Models,
     /// The `providers:` entries and where each one's key comes from.
     Providers,

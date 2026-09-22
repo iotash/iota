@@ -485,7 +485,8 @@ models:
   m: mock:a-model
 agents:
   default:
-    models: [m, "relay:vendor/y", "mock:*"]
+    model: m
+    choices: [m, "relay:vendor/y", "mock:*"]
 "#;
 
 /// The startup pick fires when no model is configured, and its

@@ -82,7 +82,7 @@ fn write_agent_config(cwd: &Path, kind: &str, url: &str, model: &str) {
     write_config(
         cwd,
         &format!(
-            "providers:\n  p: {{type: {kind}, key: sk-x{url}}}\nmodels:\n  m: p:{model}\nagents:\n  default: {{models: [m]}}\n"
+            "providers:\n  p: {{type: {kind}, key: sk-x{url}}}\nmodels:\n  m: p:{model}\nagents:\n  default: {{model: m}}\n"
         ),
     );
 }
@@ -196,7 +196,7 @@ fn cli_bare_invocation_uses_the_default_agent() {
     let (dir, home) = project();
     write_config(
         dir.path(),
-        "providers:\n  openai: {key: k}\nagents:\n  default:\n    models: [\"openai:gpt-4o\"]\n",
+        "providers:\n  openai: {key: k}\nagents:\n  default:\n    model: \"openai:gpt-4o\"\n",
     );
     for args in [&[][..], &["run"][..], &["run", "default"][..]] {
         let mut cmd = iota(dir.path(), &home);
@@ -257,7 +257,7 @@ fn cli_unknown_agent_text() {
     // With agents configured the hint lists them, sorted.
     write_config(
         dir.path(),
-        "providers:\n  openai: {key: k}\nagents:\n  zeta: {models: [\"openai:x\"]}\n  alpha: {models: [\"openai:x\"]}\n",
+        "providers:\n  openai: {key: k}\nagents:\n  zeta: {model: \"openai:x\"}\n  alpha: {model: \"openai:x\"}\n",
     );
     let mut cmd = iota(dir.path(), &home);
     cmd.args(["run", "codr"]);
@@ -369,7 +369,7 @@ fn cli_output_format_parse_runs_after_tuning() {
     let (dir, home) = project();
     write_config(
         dir.path(),
-        "providers:\n  p: {type: openai, key: sk-x}\nmodels:\n  m: {provider: p, id: gpt-test, effort: turbo}\nagents:\n  default: {models: [m]}\n",
+        "providers:\n  p: {type: openai, key: sk-x}\nmodels:\n  m: {provider: p, id: gpt-test, effort: turbo}\nagents:\n  default: {model: m}\n",
     );
     let mut cmd = iota(dir.path(), &home);
     cmd.args(["-m", "hi", "--output-format", "yaml"]);
@@ -415,7 +415,7 @@ fn cli_config_flag_is_global() {
     let path = dir.path().join("global.yaml");
     fs::write(
         &path,
-        "providers:\n  p: {type: openai, key: k}\nagents:\n  solo: {models: [\"p:gpt-4o\"]}\n",
+        "providers:\n  p: {type: openai, key: k}\nagents:\n  solo: {model: \"p:gpt-4o\"}\n",
     )
     .expect("write config");
 
@@ -555,7 +555,8 @@ models:
   gpt: openai:gpt-4o
 agents:
   coder:
-    models: [gpt, \"zeta:*\"]
+    model: gpt
+    choices: [gpt, \"zeta:*\"]
     description: Writes code
 ",
     )
@@ -583,12 +584,15 @@ agents:
         );
         after
     };
-    assert_eq!(run(&["list"]), "Agents:\n  coder  2 models  Writes code\n");
+    assert_eq!(
+        run(&["list"]),
+        "Agents:\n  coder  gpt  2 choices  Writes code\n"
+    );
     assert_eq!(run(&["list", "agents"]), run(&["list"]));
     assert_eq!(run(&["list", "models"]), "Models:\n  gpt  openai:gpt-4o\n");
     assert_eq!(
         run(&["list", "models", "coder"]),
-        "Models for agent coder:\n  gpt (openai:gpt-4o)\n  zeta:* (every model zeta lists)\n"
+        "Models for agent coder:\n* gpt (openai:gpt-4o)\n  zeta:* (every model zeta lists)\n"
     );
     assert_eq!(
         run(&["list", "providers"]),
@@ -690,7 +694,7 @@ fn cli_config_init_check_path() {
     let no_default = dir.path().join("nodefault.yaml");
     fs::write(
         &no_default,
-        "providers:\n  p: {type: openai, key: k}\nagents:\n  coder: {models: [\"p:x\"]}\n",
+        "providers:\n  p: {type: openai, key: k}\nagents:\n  coder: {model: \"p:x\"}\n",
     )
     .expect("write");
     let mut cmd = iota(dir.path(), &home);
@@ -766,7 +770,7 @@ async fn cli_headless_run_sends_the_harness_for_an_agent_with_tools() {
     let user_config = home.join(".iota.yaml");
     let config = |tools: &str| {
         format!(
-            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{models: [m], system: be brief{tools}}}\n",
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, system: be brief{tools}}}\n",
             server.uri()
         )
     };
@@ -951,7 +955,7 @@ models:
     temperature: 0.5
 agents:
   pic:
-    models: [pic]
+    model: pic
 ",
     );
     let mut cmd = iota(dir.path(), &home);
@@ -993,7 +997,7 @@ providers:
     assert!(
         err(&o).starts_with("Error: config ")
             && err(&o).ends_with(
-                ".iota.yaml: providers.pic.model: `model` is now a `models:` entry — write `models.<name>: <provider>:<id>` and list it in `agents.<name>.models`\n"
+                ".iota.yaml: providers.pic.model: `model` is now a `models:` entry — write `models.<name>: <provider>:<id>` and name it in `agents.<name>.model` (or list it in `choices:`)\n"
             ),
         "{}",
         err(&o)
@@ -1007,7 +1011,7 @@ fn cli_defer_mode_mismatch_fails_at_config_load() {
     let (dir, home) = project();
     write_config(
         dir.path(),
-        "providers:\n  p: {type: openai, key: sk-x}\nmodels:\n  m: {provider: p, id: gpt-test, defer_mode: reference}\nagents:\n  default: {models: [m]}\n",
+        "providers:\n  p: {type: openai, key: sk-x}\nmodels:\n  m: {provider: p, id: gpt-test, defer_mode: reference}\nagents:\n  default: {model: m}\n",
     );
     let mut cmd = iota(dir.path(), &home);
     cmd.args(["-m", "hi"]);
@@ -1092,7 +1096,7 @@ async fn cli_headless_run_reports_to_herdr_and_names_the_pane() {
     write_config(
         dir.path(),
         &format!(
-            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{models: [m], system: be brief, tools: {{code: }}}}\n",
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, system: be brief, tools: {{code: }}}}\n",
             server.uri()
         ),
     );

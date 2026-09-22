@@ -437,7 +437,10 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
             }
             // root.go:107-109, deferred out of `resolve_run` and re-raised byte-identically here (D-52).
             if provider.model().is_empty() {
-                return Err(ArgsError::ModelRequired.into());
+                return Err(ArgsError::ModelRequired {
+                    agent: settings.name.clone(),
+                }
+                .into());
             }
             // root.go:326-333: `-M` is the only flag left that a session must not overwrite, so temperature,
             // effort and the window always replay — a resumed run is the run it resumes. The replayed window

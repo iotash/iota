@@ -34,8 +34,9 @@ const MODEL_KEYS: [&str; 12] = [
     "json_edits",
 ];
 /// Every key an `agents.<name>` entry accepts.
-const AGENT_KEYS: [&str; 13] = [
-    "models",
+const AGENT_KEYS: [&str; 14] = [
+    "model",
+    "choices",
     "system",
     "system_file",
     "tools",
@@ -63,14 +64,26 @@ const MCP_KEYS: [&str; 10] = [
     "redirect_port",
 ];
 
-/// Keys the three-layer split retired, and the sentence that tells the user what to write instead. They are
-/// checked before the "belongs under" table, so the message names the replacement rather than a layer.
-const RETIRED_KEYS: [(&str, &str); 2] = [
+/// Keys a redesign retired — `(section, key, replacement)`, `section` being `""` for "any" — and the
+/// sentence that tells the user what to write instead. They are checked before the "belongs under" table,
+/// so the message names the replacement rather than a layer; a key the section still owns never gets here.
+const RETIRED_KEYS: [(&str, &str, &str); 3] = [
     (
+        "",
         "model",
-        "`model` is now a `models:` entry — write `models.<name>: <provider>:<id>` and list it in `agents.<name>.models`",
+        "`model` is now a `models:` entry — write `models.<name>: <provider>:<id>` and name it in `agents.<name>.model` (or list it in `choices:`)",
     ),
-    ("agent", "`agent` is now `workspace:` on an `agents:` entry"),
+    // 2026-09-22: the agent's one list split into the model a run starts on and the set it may switch to.
+    (
+        "agents",
+        "models",
+        "`models` is now `choices:` (what /model and -M pick from) plus `model:` (the one the run starts on)",
+    ),
+    (
+        "",
+        "agent",
+        "`agent` is now `workspace:` on an `agents:` entry",
+    ),
 ];
 
 /// Toolsets that were removed or renamed; anything else unknown gets the generic refusal.
@@ -151,7 +164,10 @@ fn check_key(section: &str, entry: &str, key: &str) -> Result<(), ConfigError> {
         return Ok(());
     }
     let at = format!("{section}.{entry}.{key}");
-    if let Some((_, hint)) = RETIRED_KEYS.iter().find(|(k, _)| *k == key) {
+    if let Some((_, _, hint)) = RETIRED_KEYS
+        .iter()
+        .find(|(s, k, _)| (s.is_empty() || *s == section) && *k == key)
+    {
         return Err(ConfigError::Key {
             at,
             message: (*hint).to_owned(),
@@ -212,7 +228,7 @@ mod tests {
     fn a_three_layer_document_passes() {
         assert_eq!(
             check(
-                "providers:\n  openai: {key: k}\nmodels:\n  gpt: openai:gpt-5\nagents:\n  default:\n    models: [gpt]\n    tools: {code: {}, shell: {}}\n"
+                "providers:\n  openai: {key: k}\nmodels:\n  gpt: openai:gpt-5\nagents:\n  default:\n    model: gpt\n    choices: [gpt]\n    tools: {code: {}, shell: {}}\n"
             ),
             ""
         );
@@ -232,7 +248,7 @@ mod tests {
             "providers.openai.effort: `effort` belongs under `models:` (see https://iota.sh/docs/config-file)"
         );
         assert_eq!(
-            check("agents:\n  a: {models: [x], url: https://x}\n"),
+            check("agents:\n  a: {model: x, url: https://x}\n"),
             "agents.a.url: `url` belongs under `providers:` (see https://iota.sh/docs/config-file)"
         );
         // The four layered parameters live in BOTH `models:` and `agents:`, so neither reports the other.
@@ -240,27 +256,39 @@ mod tests {
             check("models:\n  m: {provider: p, id: i, top_p: 0.5}\n"),
             ""
         );
-        assert_eq!(check("agents:\n  a: {models: [m], top_p: 0.5}\n"), "");
+        assert_eq!(check("agents:\n  a: {choices: [m], top_p: 0.5}\n"), "");
         assert_eq!(
             check("models:\n  m: {provider: p, id: i, context_window: 400k}\n"),
             ""
         );
         assert_eq!(
-            check("agents:\n  a: {models: [m], context_window: 400k}\n"),
+            check("agents:\n  a: {model: m, context_window: 400k}\n"),
             ""
         );
     }
 
     #[test]
     fn retired_keys_name_their_replacement() {
-        assert!(
-            check("providers:\n  openai: {key: k, model: gpt-4o}\n")
-                .starts_with("providers.openai.model: `model` is now a `models:` entry"),
+        assert_eq!(
+            check("providers:\n  openai: {key: k, model: gpt-4o}\n"),
+            "providers.openai.model: `model` is now a `models:` entry — write `models.<name>: <provider>:<id>` and name it in `agents.<name>.model` (or list it in `choices:`)"
         );
         assert_eq!(
             check("providers:\n  openai: {key: k, agent: true}\n"),
             "providers.openai.agent: `agent` is now `workspace:` on an `agents:` entry"
         );
+        // The agent's old one list, split in two on 2026-09-22.
+        assert_eq!(
+            check("agents:\n  a: {models: [m]}\n"),
+            "agents.a.models: `models` is now `choices:` (what /model and -M pick from) plus `model:` (the one the run starts on)"
+        );
+        // …and that hint is the agent layer's alone: elsewhere `models` is simply not a key.
+        assert_eq!(
+            check("providers:\n  openai: {key: k, models: [m]}\n"),
+            "providers.openai.models: unknown key (want type, key, url)"
+        );
+        // `model` IS a key of the agent layer now, so only the other layers retire it.
+        assert_eq!(check("agents:\n  a: {model: m}\n"), "");
     }
 
     #[test]
@@ -282,15 +310,15 @@ mod tests {
     #[test]
     fn toolset_names_are_checked_where_they_are_written() {
         assert_eq!(
-            check("agents:\n  a: {models: [m], tools: {nosuchset: {}}}\n"),
+            check("agents:\n  a: {model: m, tools: {nosuchset: {}}}\n"),
             "agents.a.tools.nosuchset: unknown toolset (want shell, skills, code, ask)"
         );
         assert_eq!(
-            check("agents:\n  a: {models: [m], tools: {agent: {}}}\n"),
+            check("agents:\n  a: {model: m, tools: {agent: {}}}\n"),
             "agents.a.tools.agent: the `agent` toolset is now called `skills` (the word `agent` names a config layer)"
         );
         assert_eq!(
-            check("agents:\n  a: {models: [m], tools: {delegate: [r]}}\n"),
+            check("agents:\n  a: {model: m, tools: {delegate: [r]}}\n"),
             "agents.a.tools.delegate: the `delegate` toolset was removed — run child agents from bash instead (see https://iota.sh/docs/builtin-toolsets)"
         );
     }

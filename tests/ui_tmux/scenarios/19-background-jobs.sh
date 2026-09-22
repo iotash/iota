@@ -27,7 +27,8 @@ models:
   m: mock:fake
 agents:
   default:
-    models: [m, \"mock:*\"]
+    model: m
+    choices: [m, \"mock:*\"]
     tools: {shell: {sandbox: off, auto_run: true}}"
 export CONFIG_BODY
 

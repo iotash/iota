@@ -8,7 +8,7 @@
 //! the wrong shape for that; the input is always there, and the list is completion for it
 //! (brain page `config-three-layers`).
 //!
-//! The rows are the agent's candidate set — `models:` entries, inline `provider:id`s and every
+//! The rows are the agent's choices — `models:` entries, inline `provider:id`s and every
 //! `provider:*` wildcard, the wildcards asked CONCURRENTLY (`repl::catalog`). A source that fails
 //! costs its own rows and nothing else: it contributes one line to the panel's prompt, and every
 //! other source is listed as if it had never been asked.
@@ -34,7 +34,7 @@ use crate::repl::title::WriterSlot;
 /// The combo field's placeholder (run.go:536 — it was the manual field's).
 const MODEL_PLACEHOLDER: &str = "model name (e.g. gpt-4o)";
 
-/// The Model tab's rows (chat/settings.go:104-131 `modelRows`): the candidate set, with the
+/// The Model tab's rows (chat/settings.go:104-131 `modelRows`): the choices, with the
 /// CURRENT model marked in place — or PREPENDED when the candidates do not carry it (a delisted
 /// model, a model reached with `-M` from outside the set), so submitting a tab the user never
 /// visited changes nothing. An unset model becomes the `"(not selected)"` row, and committing it
@@ -93,7 +93,7 @@ fn chosen(values: &[Candidate], catalog: &ModelCatalog, r: &PanelResult) -> Opti
     (!typed.is_empty()).then(|| catalog.parse_typed(typed))
 }
 
-/// Builds the Model tab: the candidate set expanded (one concurrent round of listings), the rows
+/// Builds the Model tab: the choices expanded (one concurrent round of listings), the rows
 /// laid out around the current model, and whatever could not answer put in the prompt row.
 async fn model_tab(
     ui: &Arc<dyn Ui>,
@@ -162,13 +162,14 @@ fn report_elsewhere(repl: &Repl, catalog: &ModelCatalog, provider: &str, id: &st
 
 /// The lazy model picker (chat/run.go:1112-1157 `ensureModel`).
 ///
-/// Called at startup when no model is configured — ESC defers, and the first message
-/// re-prompts — and again before any send that still has none. `false` means the user
-/// cancelled or entered nothing: the caller continues the loop WITHOUT sending.
+/// Called at startup when no model is configured (`agents.<name>.model` unset, or `-M provider:*`)
+/// — ESC defers, and the first message re-prompts — and again before any send that still has
+/// none. `false` means the user cancelled or entered nothing: the caller continues the loop
+/// WITHOUT sending.
 ///
 /// Choosing the first model IS a model switch, so the four layered parameters are evaluated
-/// against the `models:` entry the chosen id names: a run that started on a `provider:*`
-/// wildcard had no entry to read them from until now (brain page `model-param-layering`).
+/// against the `models:` entry the chosen id names: a run that started with no model had no
+/// entry to read them from until now (brain page `model-param-layering`).
 pub(crate) async fn ensure_model(repl: &mut Repl, cancel: &CancellationToken) -> bool {
     let ui = Arc::clone(&repl.handles.ui);
     let tab = model_tab(

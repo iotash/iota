@@ -35,7 +35,8 @@ models:
   m: mock:fake
 agents:
   default:
-    models: [m, \"mock:*\"]
+    model: m
+    choices: [m, \"mock:*\"]
 mcp_servers:
   nb:
     url: http://127.0.0.1:$IOTA_OAUTH_PORT/mcp"

@@ -49,7 +49,7 @@ pub(crate) struct Conversation {
     pub(crate) param_sources: crate::session::ParamSources,
     /// What a `/model` model switch re-evaluates those four against.
     pub(crate) layers: crate::config::ParamLayers,
-    /// What `/model` offers: the agent's candidate set and the listers its wildcards need.
+    /// What `/model` offers: the agent's choices and the listers its wildcards need.
     pub(crate) catalog: crate::repl::ModelCatalog,
     /// The auto-compaction snooze watermark: the projected usage at which the user last
     /// said "Not now" (0 = never asked). Cleared by any successful compaction.

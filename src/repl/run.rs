@@ -145,7 +145,7 @@ pub struct RunParams {
     pub params: crate::session::LayeredParams,
     /// The config declarations a `/model` model switch re-evaluates those four against.
     pub layers: crate::config::ParamLayers,
-    /// The agent's candidate set, as `/model` offers it (`repl::catalog`).
+    /// The agent's choices, as `/model` offers them (`repl::catalog`).
     pub catalog: crate::repl::ModelCatalog,
     /// Agent-mode options.
     pub agent: crate::headless::AgentOptions,
