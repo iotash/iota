@@ -207,6 +207,77 @@ async fn the_loop_installs_the_sink_that_enqueues_a_completion() {
     assert!(!input.display.contains("all green\n"));
 }
 
+// The `/jobs` row and panel exist while a job runs: the registry's watch, installed by the loop, flips the
+// table (re-issued through `set_slash_commands`, the one-table law's seam), and the command opens a View
+// panel with one row per job. A job running before the loop was up is heard at install.
+#[tokio::test]
+async fn a_running_job_puts_jobs_in_the_table_and_the_panel_lists_it() {
+    if skip_unless_posix("a_running_job_puts_jobs_in_the_table_and_the_panel_lists_it") {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = SessionStore::new(tmp.path().join("sessions"));
+    let jobs = Jobs::new(tmp.path());
+    jobs.spawn(&opts("sleep 30")).expect("spawn");
+    jobs.spawn(&opts("sleep 31")).expect("spawn");
+
+    let ui = ScriptedUi::new(vec![
+        Reply::Input(Input {
+            display: "/jobs".to_owned(),
+            text: "/jobs".to_owned(),
+            kind: InputKind::Typed,
+        }),
+        // The panel is a view: any result closes it.
+        Reply::Tabbed(iota::ui::facade::TabbedResult::default()),
+        Reply::Interrupted,
+    ]);
+    iota::repl::run(params(&ui, &store, None, Arc::clone(&jobs)))
+        .await
+        .expect("clean exit");
+
+    // The table was re-issued with the row once the watch heard the jobs — after the startup table.
+    let tables: Vec<Vec<String>> = ui
+        .events()
+        .into_iter()
+        .filter_map(|e| match e {
+            UiEvent::Commands(c) => Some(c.into_iter().map(|s| s.value).collect()),
+            _ => None,
+        })
+        .collect();
+    assert!(tables.len() >= 2, "{tables:?}");
+    assert!(!tables[0].iter().any(|v| v == "/jobs"), "{:?}", tables[0]);
+    let last = tables.last().expect("a table");
+    let at = last
+        .iter()
+        .position(|v| v == "/jobs")
+        .expect("/jobs joined the table");
+    assert_eq!(last[at - 1], "/debug", "/jobs follows /debug: {last:?}");
+
+    // The command opened the panel — not the model: no `❯` block, no answer.
+    let panels: Vec<iota::testing::TabbedSummary> = ui
+        .events()
+        .into_iter()
+        .filter_map(|e| match e {
+            UiEvent::Tabbed(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(panels.len(), 1, "the Jobs panel did not open once");
+    let panel = &panels[0].panels[0];
+    assert_eq!(panel.title, "Jobs");
+    assert_eq!(panel.kind, iota::ui::facade::PanelKind::View);
+    assert_eq!(panel.line_count, 3, "a count row and one row per job");
+    assert!(
+        !ui.events()
+            .iter()
+            .any(|e| matches!(e, UiEvent::UserBlock(s) if s == "/jobs")),
+        "/jobs was sent to the model"
+    );
+    assert!(!printed(&ui).iter().any(|l| l.contains("noted")));
+    // The loop killed both on the way out.
+    assert_eq!(jobs.running(), 0);
+}
+
 // New (phase C): `background` never promised to outlive iota — leaving the loop kills what is left, at once.
 #[tokio::test]
 async fn leaving_the_loop_kills_every_running_job() {

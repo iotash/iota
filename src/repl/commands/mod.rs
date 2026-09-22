@@ -25,12 +25,18 @@
 //! 2026-09-20 and left again — the MCP tab of `/tools` shows every server's state, a login is
 //! `iota mcp login <name>` from a shell, and configuration is for the config toolset, not a slash
 //! command (DIVERGENCES X-42).
+//!
+//! One row comes and goes at RUN time: `/jobs` exists while a background job runs and not otherwise
+//! (`CmdFlags::jobs`, set from the job registry's watch — `run.rs` — with the table re-issued each
+//! time it flips, the `/save` way). Typed with nothing running it is a message like any other
+//! unregistered `/xyz`.
 
 pub(crate) mod compact;
 pub(crate) mod debug;
 pub(crate) mod edit;
 pub(crate) mod export;
 pub(crate) mod file;
+pub(crate) mod jobs;
 pub(crate) mod model;
 pub(crate) mod save;
 pub(crate) mod session;
@@ -99,6 +105,12 @@ const SAVE: &[CmdSpec] = &[CmdSpec {
     desc: "Start persisting this ephemeral session",
 }];
 
+/// The running-jobs group (2026-09-22): one row, present while the run has a background job.
+const JOBS: &[CmdSpec] = &[CmdSpec {
+    value: "/jobs",
+    desc: "Background jobs: id, elapsed, command, output file",
+}];
+
 /// The dedicated-image-provider group (chat/completion.go:34-37).
 const IMAGE: &[CmdSpec] = &[
     CmdSpec {
@@ -122,6 +134,8 @@ pub(crate) struct CmdFlags {
     pub(crate) agent: bool,
     /// A dedicated image provider → `/edit`, `/redo` (completion.go:34-37,86-88).
     pub(crate) image: bool,
+    /// A background job is running → `/jobs`. The one flag that flips at run time.
+    pub(crate) jobs: bool,
 }
 
 /// The completion-facing view of a skill (completion.go:76 `skillEntry`).
@@ -155,16 +169,26 @@ impl CommandTable {
         self.skills = entries;
     }
 
+    /// Flips the `jobs` flag; `true` when it changed, which is when the table must be re-issued.
+    pub(crate) fn set_jobs(&mut self, running: bool) -> bool {
+        let changed = self.flags.jobs != running;
+        self.flags.jobs = running;
+        changed
+    }
+
     /// The active rows, in dispatch order — what the composer's completion list gets
-    /// (chat/completion.go:78-97 `rebuildCommands`): base (`/compact` iff `compact`) → image →
-    /// save → agent (+ the per-skill rows).
+    /// (chat/completion.go:78-97 `rebuildCommands`): base (`/compact` iff `compact`) → jobs →
+    /// image → save → agent (+ the per-skill rows).
     pub(crate) fn active(&self) -> Vec<Suggestion> {
-        let mut out: Vec<Suggestion> = Vec::with_capacity(BASE.len() + self.skills.len() + 4);
+        let mut out: Vec<Suggestion> = Vec::with_capacity(BASE.len() + self.skills.len() + 5);
         for c in BASE {
             if c.value == "/compact" && !self.flags.compact {
                 continue;
             }
             out.push(suggestion(c));
+        }
+        if self.flags.jobs {
+            out.extend(JOBS.iter().map(suggestion));
         }
         if self.flags.image {
             out.extend(IMAGE.iter().map(suggestion));
@@ -200,6 +224,11 @@ impl CommandTable {
     /// Whether `/skills` (and the per-skill rows) are registered.
     pub(crate) fn agent_enabled(&self) -> bool {
         self.flags.agent
+    }
+
+    /// Whether `/jobs` is registered — a background job is running.
+    pub(crate) fn jobs_enabled(&self) -> bool {
+        self.flags.jobs
     }
 }
 
@@ -243,13 +272,14 @@ mod tests {
             .collect()
     }
 
-    /// `setActiveCommands(agent, save, compact, image)` as a tuple, in Go's argument order.
+    /// `setActiveCommands(agent, save, compact, image)` as a tuple, in Go's argument order; no job runs.
     fn table((agent, save, compact, image): (bool, bool, bool, bool)) -> CommandTable {
         CommandTable::new(CmdFlags {
             save,
             compact,
             agent,
             image,
+            jobs: false,
         })
     }
 
@@ -335,6 +365,40 @@ mod tests {
         ] {
             assert!(has(&t, "/export") && has(&t, "/debug"));
         }
+    }
+
+    // `/jobs` is the one row that flips at run time: absent with nothing running, after `/debug` and
+    // ahead of the image, save and agent groups while a job runs, gone again when the last one ends —
+    // and `set_jobs` says whether the table needs re-issuing.
+    #[test]
+    fn jobs_row_follows_the_running_flag() {
+        let mut t = table((true, true, true, true));
+        assert!(!has(&t, "/jobs") && !t.jobs_enabled());
+        assert!(t.set_jobs(true), "the first job flips the flag");
+        assert!(!t.set_jobs(true), "a second job changes nothing");
+        assert!(has(&t, "/jobs") && t.jobs_enabled());
+        assert_eq!(
+            names(&t),
+            [
+                "/file", "/session", "/model", "/compact", "/export", "/status", "/tools",
+                "/debug", "/jobs", "/edit", "/redo", "/save", "/skills"
+            ]
+        );
+        let row = t
+            .active()
+            .into_iter()
+            .find(|s| s.value == "/jobs")
+            .expect("the jobs row");
+        assert_eq!(
+            row.desc,
+            "Background jobs: id, elapsed, command, output file"
+        );
+        assert!(row.label.is_empty(), "a command, not a per-skill row");
+        assert!(t.set_jobs(false), "the last job ending flips it back");
+        assert!(!has(&t, "/jobs"));
+        assert!(!t.set_jobs(false));
+        // The base table never carried it.
+        assert!(!BASE.iter().any(|c| c.value == "/jobs"));
     }
 
     // Go: chat/skillcmd_test.go:97 TestSkillCommandsCompletion (the table half) — each skill

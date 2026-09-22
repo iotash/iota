@@ -40,8 +40,8 @@ use crate::repl::ReplError;
 use crate::repl::commands::edit::EditOutcome;
 use crate::repl::commands::skills::SkillsOutcome;
 use crate::repl::commands::{
-    CmdFlags, CommandTable, SkillEntry, debug, edit, export, file, match_cmd, model, save, session,
-    skills, status, tools,
+    CmdFlags, CommandTable, SkillEntry, debug, edit, export, file, jobs, match_cmd, model, save,
+    session, skills, status, tools,
 };
 use crate::repl::context::meter::{ContextBudget, CtxMeter};
 use crate::repl::render::banner::{BannerFacts, banner_lines, overlay_warnings};
@@ -352,10 +352,12 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         compact: token_aware && ctxm.is_enabled(),
         agent: overlay.is_some(),
         image: image_provider,
+        jobs: false,
     });
     if let Some(o) = overlay.as_ref() {
         table.set_skills(skill_entries(o.skills()));
     }
+    let table = Arc::new(Mutex::new(table));
     // The thinking meter counts with the chat's ONE tokenizer (Go handed `newTranscript`
     // the budget's own counter).
     let estimator: Option<crate::repl::render::transcript::TokenEstimator> = {
@@ -429,7 +431,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             .as_ref()
             .map_or_else(String::new, |w| w.meta().title.clone()),
     ));
-    ui.set_slash_commands(table.active());
+    ui.set_slash_commands(lock(&table).active());
 
     let gate = Arc::new(ApprovalGate::new(
         Arc::clone(&ui),
@@ -509,6 +511,20 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             ui_sink.enqueue(job_notice(&done));
         })));
     }
+    // The running set is what `/jobs` hangs off: the watch hears every change — a call that yielded, a
+    // `background: true` start, a job gone (before its notice is delivered) — and flips the row, re-issuing
+    // the table the `/save` way when the flag actually moved. The one-table law holds because the same
+    // flag gates the dispatch arm below.
+    {
+        let ui_watch = Arc::clone(&ui);
+        let table_watch = Arc::clone(&repl.handles.table);
+        repl.handles.jobs.set_watch(Some(Box::new(move |running| {
+            let mut table = lock(&table_watch);
+            if table.set_jobs(!running.is_empty()) {
+                ui_watch.set_slash_commands(table.active());
+            }
+        })));
+    }
 
     if let Some(events) = repl.handles.mcp.events.take() {
         tokio::spawn(report_mcp_failures(events, Arc::clone(&tr), ui.done()));
@@ -564,7 +580,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 continue;
             }
             // /edit and /redo exist only on a dedicated image provider (run.go:450-516).
-            if repl.handles.table.image_enabled()
+            if lock(&repl.handles.table).image_enabled()
                 && let Some(arg) = match_cmd(&line, "/edit")
             {
                 match edit::cmd_edit(&mut repl, arg).await {
@@ -572,7 +588,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                     EditOutcome::Send(c) => content = c,
                 }
             }
-            if repl.handles.table.image_enabled()
+            if lock(&repl.handles.table).image_enabled()
                 && let Some(arg) = match_cmd(&line, "/redo")
             {
                 match edit::cmd_redo(&mut repl, arg) {
@@ -602,7 +618,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 export::cmd_export(&mut repl, arg).await;
                 continue;
             }
-            if repl.handles.table.save_enabled()
+            if lock(&repl.handles.table).save_enabled()
                 && let Some(arg) = match_cmd(&line, "/save")
             {
                 save::cmd_save(&mut repl, arg);
@@ -616,9 +632,15 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 debug::cmd_debug(&mut repl, arg).await;
                 continue;
             }
+            // /jobs exists while a background job runs — the same flag as its table row, read at the
+            // moment of typing, so a job that ended a second ago leaves the text to the model.
+            if lock(&repl.handles.table).jobs_enabled() && match_cmd(&line, "/jobs").is_some() {
+                jobs::cmd_jobs(&repl).await;
+                continue;
+            }
             // /skills exists only in agent mode (run.go:923-937); the same gate as its rows.
             if repl.conv.overlay.is_some()
-                && repl.handles.table.agent_enabled()
+                && lock(&repl.handles.table).agent_enabled()
                 && let Some(arg) = match_cmd(&line, "/skills")
             {
                 match skills::cmd_skills(&mut repl, arg).await {
@@ -803,10 +825,11 @@ impl Repl {
         if skills_changed {
             // A changed catalog re-derives the completion table: the per-skill rows are
             // rebuilt and the table re-issued (completion.go:63-73, run.go:971).
-            self.handles.table.set_skills(skill_entries(o.skills()));
-            self.handles
-                .ui
-                .set_slash_commands(self.handles.table.active());
+            {
+                let mut table = lock(&self.handles.table);
+                table.set_skills(skill_entries(o.skills()));
+                self.handles.ui.set_slash_commands(table.active());
+            }
             self.handles
                 .tr
                 .notice(&format!("Skills reloaded ({} skill(s))", o.skill_count()));

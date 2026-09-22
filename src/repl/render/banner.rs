@@ -160,7 +160,7 @@ fn mode_row(f: &BannerFacts<'_>) -> Row {
 
 /// `dir` with a leading `home` replaced by `~` — by path components, so `/home/me2` is not
 /// under `/home/me`; the separator stays the platform's.
-fn tilde(dir: &Path, home: Option<&Path>) -> String {
+pub(crate) fn tilde(dir: &Path, home: Option<&Path>) -> String {
     match home.and_then(|h| dir.strip_prefix(h).ok()) {
         Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
         Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),

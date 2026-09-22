@@ -283,6 +283,36 @@ async fn banner_offers_save_for_an_ephemeral_chat() {
     );
 }
 
+/// `/jobs` is the one row that flips at run time, and with no background job it is not in the table —
+/// so typing it is a message like any unregistered `/xyz`: no panel, a `❯` block, the model's answer.
+/// (The other half — a running job puts the row in the table and the command opens the Jobs panel — is
+/// `tests/repl/jobs.rs`, which can start a real job.)
+#[tokio::test]
+async fn jobs_is_a_plain_message_while_nothing_runs() {
+    let f = Fixture::new(vec![input("/jobs"), Reply::Interrupted]);
+    let writer = f.writer();
+    let session = f.session(Some(writer));
+    iota::repl::run(f.params(provider("gpt-4o", Ok(vec![])), session))
+        .await
+        .expect("clean exit");
+
+    assert!(
+        !completion_row(&f.ui).iter().any(|v| v == "/jobs"),
+        "/jobs advertised with nothing running"
+    );
+    assert!(
+        surfaces(&f.ui).is_empty(),
+        "a panel opened for an unregistered command"
+    );
+    assert!(
+        f.ui.events()
+            .iter()
+            .any(|e| matches!(e, UiEvent::UserBlock(s) if s == "/jobs")),
+        "the text was not sent as a message"
+    );
+    assert!(printed(&f.ui).iter().any(|l| l.contains("an answer")));
+}
+
 // ---------------------------------------------------------------------------
 // /model
 // ---------------------------------------------------------------------------

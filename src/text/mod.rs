@@ -170,6 +170,21 @@ pub(crate) fn elapsed(d: std::time::Duration) -> String {
     }
 }
 
+/// A running clock, compact and fixed in shape while it runs: `45s`, `1m12s`, `3m01s`, `1h02m05s` —
+/// the seconds (and, past an hour, the minutes) zero-padded so a figure that ticks every second
+/// keeps its width. The status row's job segment and the `/jobs` panel; `elapsed` is the settled
+/// figure with its spaces, `go_duration` the notice's.
+pub(crate) fn clock(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    if s < 60 {
+        format!("{s}s")
+    } else if s < 3600 {
+        format!("{}m{:02}s", s / 60, s % 60)
+    } else {
+        format!("{}h{:02}m{:02}s", s / 3600, s % 3600 / 60, s % 60)
+    }
+}
+
 /// Token count with k/m units and one decimal, trailing `.0` trimmed: 842→`"842"`,
 /// 1234→`"1.2k"`, 128000→`"128k"`, 1000000→`"1m"`, 1500000→`"1.5m"`. Counts below 1000
 /// stay exact. internal/tokfmt Tokens; ONE implementation for every figure.
@@ -195,7 +210,25 @@ pub fn tokens(n: u64) -> String {
 mod ui_format_tests {
     use std::time::Duration;
 
-    use super::{elapsed, tokens};
+    use super::{clock, elapsed, tokens};
+
+    // The running clock keeps its width from second to second inside each hour band.
+    #[test]
+    fn clock_is_compact_and_zero_padded() {
+        let cases: [(Duration, &str); 8] = [
+            (Duration::ZERO, "0s"),
+            (Duration::from_millis(1999), "1s"),
+            (Duration::from_secs(45), "45s"),
+            (Duration::from_secs(60), "1m00s"),
+            (Duration::from_secs(72), "1m12s"),
+            (Duration::from_secs(181), "3m01s"),
+            (Duration::from_secs(3600), "1h00m00s"),
+            (Duration::from_secs(3725), "1h02m05s"),
+        ];
+        for (d, want) in cases {
+            assert_eq!(clock(d), want, "clock({d:?})");
+        }
+    }
 
     // Go: internal/timefmt/timefmt_test.go:8
     #[test]

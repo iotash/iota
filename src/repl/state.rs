@@ -6,7 +6,7 @@
 //! (`turn::TurnEngine`).
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -133,8 +133,11 @@ pub(crate) struct UiHandles {
     pub(crate) pres: Arc<Presenter>,
     /// The `/debug` request log (recording toggle + the inspector's rows).
     pub(crate) reqlog: Arc<RequestLog>,
-    /// The ONE command table (the completion list and the dispatch chain read it).
-    pub(crate) table: CommandTable,
+    /// The ONE command table (the completion list and the dispatch chain read it). Shared with the job
+    /// registry's watch, which flips the `/jobs` row from a supervisor task; every re-issue of the table
+    /// (`ui.set_slash_commands(table.active())`) happens under this lock, so two re-issues from two tasks
+    /// cannot cross and leave the composer holding the older one.
+    pub(crate) table: Arc<Mutex<CommandTable>>,
     /// The conversation's ONE approval gate: the "allow for this session" grant is one grant
     /// for one person (chat/run.go:172-186).
     pub(crate) gate: Arc<ApprovalGate>,
