@@ -18,6 +18,7 @@ use iota::repl::{McpEvent, McpHooks, RunParams, SessionCtx};
 use iota::session::{NewSession, SessionStore, SessionWriter};
 use iota::testing::{FakeProvider, Reply, ScriptedUi, StaticDispatcher, TabbedSummary, UiEvent};
 use iota::text::ansi::strip_sgr;
+use iota::text::width::str_width;
 use iota::tool::Dispatcher;
 use iota::ui::facade::{Input, PanelKind, PanelResult, TabbedResult, Ui};
 use pretty_assertions::assert_eq;
@@ -168,6 +169,21 @@ fn printed(ui: &ScriptedUi) -> Vec<String> {
         .collect()
 }
 
+/// A row of the banner card with its frame taken off: the edges, the blank beside each, and
+/// the padding to the card's widest row.
+fn card_row(row: &str) -> String {
+    row.strip_prefix("│ ")
+        .and_then(|r| r.strip_suffix(" │"))
+        .unwrap_or_else(|| panic!("not a card row: {row:?}"))
+        .trim_end()
+        .to_owned()
+}
+
+/// The banner's mode row, bare: the card's second row.
+fn mode_row(ui: &ScriptedUi) -> String {
+    card_row(&printed(ui)[2])
+}
+
 /// The shapes of every blocking surface call, in order.
 fn surfaces(ui: &ScriptedUi) -> Vec<TabbedSummary> {
     ui.events()
@@ -197,10 +213,10 @@ fn completion_row(ui: &ScriptedUi) -> Vec<String> {
         .collect()
 }
 
-/// The banner's three rows — the wordmark beside the version, the mode row and the
-/// directory — then ONE blank between the environment and the first transcript block. The
-/// ONE-TABLE law is the completion row's (X-46): what `/` offers is exactly the registered
-/// table, in dispatch order.
+/// The banner card — the mark and the version, the mode row and the directory, in a frame
+/// that hugs the widest of them — then ONE blank between the environment and the first
+/// transcript block. The ONE-TABLE law is the completion row's (X-46): what `/` offers is
+/// exactly the registered table, in dispatch order.
 #[tokio::test]
 async fn banner_order_and_completion_row() {
     let f = Fixture::new(vec![Reply::Interrupted]);
@@ -213,14 +229,23 @@ async fn banner_order_and_completion_row() {
 
     // No agent options: the directory row is the process cwd, and with no home nothing is
     // shortened.
-    let cwd = std::env::current_dir().expect("cwd");
+    let cwd = std::env::current_dir().expect("cwd").display().to_string();
+    let rows = [
+        format!("ι> iota  v{}", env!("CARGO_PKG_VERSION")),
+        format!("chat · session {id}"),
+        cwd,
+    ];
+    let inner = rows.iter().map(|r| str_width(r)).max().expect("three rows");
+    let edge = "─".repeat(inner + 2);
     let lines = printed(&f.ui);
     assert_eq!(
         lines,
         vec![
-            format!(" ▀█▀ █▀▀█ ▀▀█▀▀ █▀▀█   v{}", env!("CARGO_PKG_VERSION")),
-            format!("  █  █  █   █   █▀▀█   chat · session {id}"),
-            format!(" ▀▀▀ ▀▀▀▀   ▀   ▀  ▀   {}", cwd.display()),
+            format!("╭{edge}╮"),
+            format!("│ {:<inner$} │", rows[0]),
+            format!("│ {:<inner$} │", rows[1]),
+            format!("│ {:<inner$} │", rows[2]),
+            format!("╰{edge}╯"),
             String::new(),
         ]
     );
@@ -249,11 +274,7 @@ async fn banner_offers_save_for_an_ephemeral_chat() {
         .await
         .expect("clean exit");
 
-    let lines = printed(&f.ui);
-    assert_eq!(
-        lines[1],
-        "  █  █  █   █   █▀▀█   chat · not saved · /save keeps it"
-    );
+    assert_eq!(mode_row(&f.ui), "chat · not saved · /save keeps it");
     assert_eq!(
         completion_row(&f.ui),
         [
@@ -1018,13 +1039,13 @@ async fn overlay_refresh_notices_fire_only_on_change() {
         "exactly one notice, for the ONE turn that changed the chain"
     );
     // The banner says the chat runs in agent mode (no bundle, no factory: the mode alone), in
-    // the project root — whose tail survives whatever the row's width cut (a temp dir on
-    // macOS is longer than the 57 columns beside the wordmark).
+    // the project root — whose tail survives whatever the row's width cut (the card gives the
+    // directory 76 columns at 80, and a temp dir on macOS can be longer).
     let lines = printed(&f.ui);
-    assert!(lines[1].ends_with("█▀▀█   agent"), "{lines:?}");
+    assert_eq!(card_row(&lines[2]), "agent", "{lines:?}");
     let leaf = root.file_name().expect("leaf").to_string_lossy();
     assert!(
-        lines[2].ends_with(&format!("{}{leaf}", std::path::MAIN_SEPARATOR)),
+        card_row(&lines[3]).ends_with(&format!("{}{leaf}", std::path::MAIN_SEPARATOR)),
         "{lines:?}"
     );
 }

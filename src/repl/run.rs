@@ -6,7 +6,7 @@
 //! engine, the composer, the surfaces) knows nothing about chat. Its shape is Go's, in
 //! Go's order:
 //!
-//! 1. the banner — the wordmark beside the version, the mode and the directory — then the
+//! 1. the banner — the card: the mark and the version, the mode and the directory — then the
 //!    resume echo OR one blank line, so exactly one blank separates the environment from
 //!    the first transcript block;
 //! 2. the pre-loop interactions: the `-S` system prompt (only with no imported history)

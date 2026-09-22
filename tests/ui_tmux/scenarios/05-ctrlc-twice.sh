@@ -11,9 +11,9 @@
 start 80 24 || finish
 settle || bad "startup never settled"
 
-# The banner is up: its wordmark, once (the exit gesture it used to name is the composer's own —
+# The banner is up: its mark, once (the exit gesture it used to name is the composer's own —
 # Ctrl+C at idle exits, which is what the rest of this scenario proves).
-check_once "the banner is up" '▀█▀ █▀▀█ ▀▀█▀▀ █▀▀█'
+check_once "the banner is up" 'ι> iota'
 
 type_ 'stream 60'
 key Enter

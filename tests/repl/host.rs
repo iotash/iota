@@ -198,7 +198,7 @@ fn busy_labels(ui: &ScriptedUi) -> Vec<String> {
         .collect()
 }
 
-/// Every line the loop printed, bare — the banner's rows first.
+/// Every line the loop printed, bare — the banner card's rows first.
 fn printed(ui: &ScriptedUi) -> Vec<String> {
     ui.events()
         .into_iter()
@@ -209,6 +209,17 @@ fn printed(ui: &ScriptedUi) -> Vec<String> {
         .flatten()
         .map(|l| iota::text::ansi::strip_sgr(&l))
         .collect()
+}
+
+/// The banner's mode row, bare: the card's second row with its frame taken off — the edges,
+/// the blank beside each, and the padding to the card's widest row.
+fn mode_row(ui: &ScriptedUi) -> String {
+    let row = &printed(ui)[2];
+    row.strip_prefix("│ ")
+        .and_then(|r| r.strip_suffix(" │"))
+        .unwrap_or_else(|| panic!("not a card row: {row:?}"))
+        .trim_end()
+        .to_owned()
 }
 
 /// A capability-less provider (no `ToolProvider`) giving the same answer to every call.
@@ -369,12 +380,9 @@ async fn the_approval_gate_walks_needs_input_and_back() {
         ]
     );
     // An explicit host list is no detected host: the banner's mode row names none.
-    let banner = printed(&f.ui);
-    assert!(
-        banner[1].starts_with("  █  █  █   █   █▀▀█   chat · session "),
-        "{banner:?}"
-    );
-    assert!(!banner[1].contains(" · in "), "{banner:?}");
+    let mode = mode_row(&f.ui);
+    assert!(mode.starts_with("chat · session "), "{mode:?}");
+    assert!(!mode.contains(" · in "), "{mode:?}");
 }
 
 // ---------------------------------------------------------------------------
@@ -459,11 +467,7 @@ async fn a_herdr_pane_hears_the_session_the_turn_and_the_release() {
     // The recording host of the fixture was replaced by the herdr presenter: nothing reached it.
     assert!(f.states().is_empty());
     // The banner's mode row names the detected host.
-    let banner = printed(&f.ui);
-    assert_eq!(
-        banner[1],
-        format!("  █  █  █   █   █▀▀█   chat · session {id} · in herdr")
-    );
+    assert_eq!(mode_row(&f.ui), format!("chat · session {id} · in herdr"));
 }
 
 /// An ephemeral chat is listed `idle` at start-up but tells herdr nothing about a session — there
@@ -508,8 +512,8 @@ async fn save_reports_the_minted_session_to_herdr() {
         ]
     );
     assert_eq!(
-        printed(&f.ui)[1],
-        "  █  █  █   █   █▀▀█   chat · not saved · /save keeps it · in herdr"
+        mode_row(&f.ui),
+        "chat · not saved · /save keeps it · in herdr"
     );
     assert_eq!(
         mock.requests()[1].param("agent_session_path"),
