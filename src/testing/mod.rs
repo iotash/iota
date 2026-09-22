@@ -28,8 +28,7 @@ pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// Every record shape a real session produces, in the order a turn writes them: a system message, a user
 /// message with an attachment, an assistant message with tool calls, a dialect (`openai`) raw payload and
 /// usage, that call's tool result, a final assistant with reasoning and usage, and an interrupted partial.
-/// `examples/mkbundle.rs` writes them as the session-format smoke sample; `tests/session/roundtrip.rs`
-/// proves the store hands every one of them back.
+/// `tests/session/roundtrip.rs` proves the store hands every one of them back.
 pub fn every_record_shape() -> Vec<Message> {
     let mut arguments = JsonObject::new();
     arguments.insert("q".to_owned(), serde_json::Value::from(1));

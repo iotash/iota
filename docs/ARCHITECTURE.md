@@ -20,7 +20,7 @@ full old→new map). No workspace table, no per-area manifests, no `check-deps` 
 on for tests by the self-dev-dependency `iota = { path = ".", features = ["testing"] }`).
 
 Module names are the tree's own: `headless` is the `-m` loop, `repl` the interactive one, `session` the
-store. Visibility is Rust-idiomatic: everything is `pub(crate)` unless `main.rs`, `tests/` or `examples/`
+store. Visibility is Rust-idiomatic: everything is `pub(crate)` unless `main.rs` or `tests/`
 genuinely use it.
 
 The module tree — one row per module, what it is for and what it may name — is §2, under the layer order that

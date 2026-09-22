@@ -30,7 +30,7 @@ path = "src/main.rs"
 
 [features]
 # The ONLY cargo feature: the shared test fakes (`src/testing/`), enabled by the
-# self-dev-dependency below so integration tests and examples see them. It never changes what
+# self-dev-dependency below so integration tests see them. It never changes what
 # the shipped binary contains.
 default = []
 testing = []
@@ -149,7 +149,7 @@ process-wrap = { version = "10", default-features = false, features = ["tokio1",
 windows = { version = "0.62", features = ["Win32_System_Threading"] }
 
 [dev-dependencies]
-# The crate itself with the test fakes on: integration tests and examples build against the
+# The crate itself with the test fakes on: integration tests build against the
 # `testing` module (cargo unifies the feature into the lib for test builds only).
 iota = { path = ".", features = ["testing"] }
 # `test-util` = tokio's paused clock: `retry_round`'s linear backoff is a CONST (the Go

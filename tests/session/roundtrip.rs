@@ -1,6 +1,5 @@
 //! The store's round trip: create → append → compact → resume → load, over every record shape a real
-//! session produces (`iota::testing::every_record_shape`, the list `examples/mkbundle.rs` writes as the
-//! format's smoke sample). What is pinned is that the bundle hands back exactly what went in — the
+//! session produces (`iota::testing::every_record_shape`). What is pinned is that the bundle hands back exactly what went in — the
 //! attachment's bytes, the raw payload under its own tag, usage, reasoning, the interrupted flag — and
 //! that a compaction marker changes the VIEW without touching the full history.
 
