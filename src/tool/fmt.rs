@@ -382,7 +382,7 @@ mod tests {
             "npm run build …"
         );
 
-        let long = "for f in $(find . -name '*.go'); do echo checking $f; gofmt -l $f; done";
+        let long = "for f in $(find . -name '*.rs'); do echo checking $f; rustfmt --check $f; done";
         let got = header_command(long);
         assert!(
             got.chars().count() <= HEADER_CMD_MAX,

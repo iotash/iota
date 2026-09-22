@@ -72,7 +72,7 @@ tools:
     # sandbox: off     # disable the sandbox (calls then need approval)
     # network: true    # allow network inside the sandbox
     # auto_run: true   # skip approval for unsandboxed calls (incl. -m)
-    # write: [~/go/pkg]  # extra sandbox-writable paths
+    # write: [~/.cargo/registry]  # extra sandbox-writable paths
 ```
 
 The pre-bash allow-list config shape (`command: [git, ssh]`) is gone with the

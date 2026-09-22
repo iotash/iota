@@ -378,7 +378,7 @@ fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
 /// written in the shell that will actually read it.
 fn shell_schema(family: Family) -> JsonObject {
     let command = match family {
-        Family::Posix => "Bash command line to execute, e.g. 'go test ./... 2>&1 | tail -20'.",
+        Family::Posix => "Bash command line to execute, e.g. 'cargo test 2>&1 | tail -20'.",
         Family::PowerShell => {
             "PowerShell command line to execute, e.g. 'cargo test 2>&1 | Select-Object -Last 20'."
         }
@@ -578,8 +578,8 @@ mod tests {
         let home = PathBuf::from("/home/u");
         assert_eq!(expand_home("~", Some(&home)), home);
         assert_eq!(
-            expand_home("~/go/pkg", Some(&home)),
-            PathBuf::from("/home/u/go/pkg")
+            expand_home("~/.cargo/registry", Some(&home)),
+            PathBuf::from("/home/u/.cargo/registry")
         );
         assert_eq!(expand_home("~alice", Some(&home)), PathBuf::from("~alice"));
         assert_eq!(expand_home("/abs", Some(&home)), PathBuf::from("/abs"));

@@ -565,7 +565,7 @@ fn the_shell_description_states_the_shell_state_contract() {
     );
     assert!(!def.deferred);
     let command_desc = match family {
-        Family::Posix => "Bash command line to execute, e.g. \'go test ./... 2>&1 | tail -20\'.",
+        Family::Posix => "Bash command line to execute, e.g. \'cargo test 2>&1 | tail -20\'.",
         Family::PowerShell => {
             "PowerShell command line to execute, e.g. \'cargo test 2>&1 | Select-Object -Last 20\'."
         }
@@ -1167,8 +1167,8 @@ async fn the_shell_header_is_the_first_command_line_within_budget() {
         ("plain", json!({"command": "git status"}), "git status"),
         (
             "a real pipeline survives the old 24-column budget",
-            json!({"command": "go test ./... 2>&1 | tail -20"}),
-            "go test ./... 2>&1 | tail -20",
+            json!({"command": "cargo test 2>&1 | tail -20"}),
+            "cargo test 2>&1 | tail -20",
         ),
         ("trimmed", json!({"command": "  ls -la  "}), "ls -la"),
         ("missing", json!({}), ""),
