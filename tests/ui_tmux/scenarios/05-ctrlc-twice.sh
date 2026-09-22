@@ -36,12 +36,21 @@ b="$(hist_size)"
 check "the cancelled stream really stopped" "$a" "$b"
 check_frame_intact "after the cancel" 80
 
-# Idle now: no scope to cancel, so the same key exits.
+# Idle now: no scope to cancel, so the same key exits. The pane is kept past the exit
+# (`remain-on-exit`) so what the exit left behind can be read back.
+tm set-option -t s remain-on-exit on
 key C-c
-if _poll_until 60 server_gone; then
+if _poll_until 60 pane_dead; then
     ok "the second Ctrl+C exits the program"
 else
     bad "the second Ctrl+C did not exit"
 fi
+
+# The exit repaints the frame once the staging window has flushed into scrollback (X-49): what
+# the window held at the exit is in the history ONCE, not once in the scrollback and once more
+# in the frame left standing. Here that is the cancelled turn's last row — the banner left the
+# window sixty streamed lines ago (scenario 01 exits with the banner still in it).
+check_once "the last committed row is in the history once after the exit" 'Interrupted.'
+check_once "…and the banner, long since in the scrollback, is there once too" 'ι> iota'
 
 finish

@@ -181,6 +181,9 @@ check_raw() {
 
 server_gone() { ! tm has-session -t s >/dev/null 2>&1; }
 alive() { tm has-session -t s >/dev/null 2>&1; }
+# The pane's command has exited and the pane was kept (`remain-on-exit on`, set by the scenario
+# before the exit gesture): what the exit left on the screen and in the history can be read back.
+pane_dead() { [ "$(tm display-message -pt s '#{pane_dead}' 2>/dev/null)" = "1" ]; }
 
 # ---------------------------------------------------------------- polling
 

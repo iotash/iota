@@ -168,7 +168,8 @@ pub(crate) struct Model {
     /// Whether the frame must be redrawn this iteration (pub(crate): the W10
     /// deadline units clear it to model a fully idle loop).
     pub(crate) dirty: bool,
-    /// Set by [`UiMsg::Quit`]; the loop exits after landing pending inserts.
+    /// Set by [`UiMsg::Quit`]; the loop exits after landing pending inserts and painting
+    /// the frame without the rows they came from (see `run_loop`).
     quit: bool,
     /// The terminal's progress indicator state (model.go:215); the dirty branch emits it
     /// on change through `term.set_progress`.
@@ -753,9 +754,13 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
         for batch in inserts.drain(..) {
             term.insert_lines(&batch)?;
         }
-        if m.quit {
-            break;
-        }
+        // The Quit round paints too. `close()` flushed the staging window into scrollback
+        // BEFORE posting Quit, so the batches above are the window's rows; the frame still
+        // standing shows them as well, and without this draw the screen keeps both — the
+        // banner twice, at the end of a short chat. The snapshot that came with the flush
+        // is empty, so the frame is shorter: `ensure_height` rebuilds the viewport in
+        // place and W3 clears what the old frame covered. (Go's renderer flushed its last
+        // `View()` on stop; the port broke off before it — DIVERGENCES X-49.)
         if m.dirty {
             if m.force_clear {
                 term.clear()?;
@@ -772,6 +777,9 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
             drain_notify(&mut m, &mut term)?;
             term.draw_frame(&view)?; // W4: same iteration as the inserts above
             m.dirty = false;
+        }
+        if m.quit {
+            break;
         }
     }
     // close() flushed the region BEFORE sending Quit, so its scrollback already

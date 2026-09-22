@@ -229,6 +229,42 @@ fn quit_at_idle_terminates_the_loop() {
     h.quit_and_join(Duration::from_secs(1));
 }
 
+/// The exit paints one last frame. `close()` flushes the staging window into scrollback and
+/// THEN posts `Quit`, on the one mailbox; the frame that still showed the window's rows has
+/// to be repainted without them — Go's renderer flushed its last `View()` on stop — or the
+/// screen keeps them twice: once in the scrollback the flush sent them to, once more in the
+/// frame left standing. In the wild: the banner, at the end of a short chat.
+#[test]
+fn quit_repaints_the_frame_without_the_flushed_window() {
+    let h = start_loop();
+    assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
+    h.region
+        .lock()
+        .unwrap()
+        .commit(vec!["banner-row".to_owned()]);
+    assert!(
+        h.wait_until(Duration::from_secs(1), |h| h
+            .contents()
+            .contains("banner-row")),
+        "the staged row never rendered:\n{}",
+        h.contents()
+    );
+    // What `close()` does: flush, then Quit.
+    h.region.lock().unwrap().flush();
+    let buf = h.buf.clone();
+    h.quit_and_join(Duration::from_secs(2));
+    let screen = parse(&buf).screen().contents();
+    assert_eq!(
+        screen.matches("banner-row").count(),
+        1,
+        "the flushed row is on the screen twice — the frame was not repainted on exit:\n{screen}"
+    );
+    // The frame itself stays: the composer row, once, under the row it used to show.
+    assert_eq!(screen.matches('❯').count(), 1, "{screen}");
+    let row_of = |needle: &str| screen.lines().position(|l| l.contains(needle));
+    assert!(row_of("banner-row") < row_of("❯"), "{screen}");
+}
+
 /// W4 `DRAW_WITH_INSERTS`: an iteration containing an insert batch ends with a draw +
 /// cursor restore — the composer cursor cell is IDENTICAL before and after each
 /// insert, and the idle frame carries no spinner glyph. Replaces Go's

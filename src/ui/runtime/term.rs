@@ -36,6 +36,7 @@ use std::sync::{Arc, Mutex};
 
 use crossterm::cursor::MoveTo;
 use crossterm::queue;
+use crossterm::terminal::{Clear, ClearType as CrosstermClear};
 use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
 use ratatui::buffer::{Cell, CellWidth};
 use ratatui::layout::{Position, Size};
@@ -438,12 +439,16 @@ impl<W: Write> Term<W> {
         Ok(())
     }
 
-    /// Parks the cursor on the frame's bottom row and opens a fresh shell line —
-    /// the loop's exit path (the spike's park sequence).
+    /// Parks the cursor on the frame's bottom row, opens a fresh shell line and clears
+    /// from there down — the loop's exit path (the spike's park sequence). The clear is
+    /// for what a frame taller than the last one may have left below it: the exit round
+    /// repaints the frame without the flushed staging window, and W3's clear covers the
+    /// old rows only when the height changed.
     pub(crate) fn park_cursor(&mut self) -> io::Result<()> {
         let bottom = self.top.saturating_add(self.view_height);
         queue!(self.ctrl, MoveTo(0, bottom.saturating_sub(1)))?;
         self.ctrl.write_all(b"\r\n")?;
+        queue!(self.ctrl, Clear(CrosstermClear::FromCursorDown))?;
         self.ctrl.flush()
     }
 }

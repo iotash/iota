@@ -710,7 +710,9 @@ mod tests {
 
     /// `close` flushes the staging tail into scrollback BEFORE quitting: the mailbox FIFO
     /// lands the flushed `Scrollback` batches ahead of `Quit`, so the loop inserts them
-    /// above the frame on its way out (the transcript is complete in real scrollback).
+    /// above the frame on its way out (the transcript is complete in real scrollback) —
+    /// and then paints the frame without them (X-49), so each line is on the final grid
+    /// ONCE, above the composer, and the window it came from is empty.
     #[tokio::test(flavor = "multi_thread")]
     async fn close_flushes_tail_ordering() {
         let h = start_facade();
@@ -725,20 +727,35 @@ mod tests {
             h.contents()
         );
         h.ui.close().await.expect("close");
-        // Characterization of the flush-then-quit shape: the flushed batches are
-        // INSERTED above the viewport on the way out while the last-painted frame
-        // (whose staging tail still showed the same rows) is left behind un-redrawn —
-        // so each line lands on the final grid twice. Without the flush, Quit would
-        // strand the rows in the frame only (one copy) and real scrollback would
-        // never receive them.
+        // The flush-then-quit shape: the window is empty (the flush took it), the flushed
+        // batches were INSERTED above the viewport on the way out, and the frame was
+        // repainted without them — so each line is on the final grid exactly once, above
+        // the composer. Through 0.4.0 the last-painted frame, whose staging tail still
+        // showed the same rows, was left behind un-redrawn and each line landed twice.
+        assert!(
+            crate::sync::lock(&h.ui.region).tail.is_empty(),
+            "close did not flush the staging window"
+        );
         let c = h.contents();
+        let composer = c
+            .lines()
+            .position(|l| l.contains('❯'))
+            .expect("the frame stays on the screen");
         for line in tail {
-            let n = c.matches(line).count();
-            assert!(
-                n >= 2,
-                "{line}: want the inserted scrollback copy above the stale frame \
-             (>= 2 occurrences), got {n}:\n{c}"
+            let rows: Vec<usize> = c
+                .lines()
+                .enumerate()
+                .filter(|(_, l)| l.contains(line))
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(
+                rows.len(),
+                1,
+                "{line}: want the scrollback copy alone (the exit frame repainted without \
+                 it), got {} occurrences:\n{c}",
+                rows.len()
             );
+            assert!(rows[0] < composer, "{line}: not above the frame:\n{c}");
         }
     }
 

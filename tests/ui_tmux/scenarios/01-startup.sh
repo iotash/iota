@@ -88,4 +88,18 @@ key BSpace
 wait_gone '❯ 中文' || bad "backspace over a wide rune failed"
 check "cursor after backspace over one wide rune" "$(cursor_xy)" "4 $((comp - 1))"
 
+# --- the exit, with the banner's tail still in the staging window (X-49): Ctrl+D at the prompt
+#     leaves. The window's rows — the card's last three and the blank under it, the window being
+#     four rows — go to scrollback and the frame is repainted without them, so each is in the
+#     history ONCE, not once in the scrollback and once more in the frame that had shown it. The
+#     pane is kept past the exit (`remain-on-exit`) so the history can be read.
+tm set-option -t s remain-on-exit on
+key C-d
+_poll_until 60 pane_dead || bad "Ctrl+D at the prompt did not exit"
+check_once "the mode row is in the history once after the exit" '│ chat · session '
+check_once "the directory row is in the history once after the exit" "│ ${PWD:0:28}"
+check_once "the frame's bottom edge is in the history once after the exit" '╰─'
+check_once "the mark row, already in the scrollback, is there once too" 'ι> iota'
+check_once "the composer row stays on the screen after the exit" '❯'
+
 finish
