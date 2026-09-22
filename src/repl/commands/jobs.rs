@@ -100,13 +100,20 @@ mod tests {
             .map(|r| strip_sgr(r))
             .collect();
         assert_eq!(rows[0], "2 jobs running");
+        // `tilde` joins with the platform separator (the banner does the same), so the expected
+        // rows are built with it: `~/.cache/…` here, `~\.cache/…` on Windows.
+        let sep = std::path::MAIN_SEPARATOR;
         assert_eq!(
             rows[1],
-            "b3      1m12s  cargo test --test session resume  ~/.cache/iota-jobs/77/b3.log"
+            format!(
+                "b3      1m12s  cargo test --test session resume  ~{sep}.cache/iota-jobs/77/b3.log"
+            )
         );
         assert_eq!(
             rows[2],
-            "b12  1h02m05s  cargo test --test session resume --features everything-under…  ~/.cache/iota-jobs/77/b12.log"
+            format!(
+                "b12  1h02m05s  cargo test --test session resume --features everything-under…  ~{sep}.cache/iota-jobs/77/b12.log"
+            )
         );
         // One job, no home: the path stays whole and the count is singular.
         let rows: Vec<String> = job_rows(&jobs[..1], now, None)
