@@ -267,11 +267,109 @@ async fn shell_timeout_argument_caps_the_call() {
 
 /// The shell set over a temp project root WITH a job registry bound (what both entry points build).
 fn new_shell_with_jobs(cfg_yaml: &str) -> (TempDir, Arc<iota::shell::jobs::Jobs>, Arc<dyn Tool>) {
+    new_shell_yielding_after(cfg_yaml, None)
+}
+
+/// The same with the foreground window injected, as the binary edge injects the `IOTA_SHELL_YIELD` hook.
+fn new_shell_yielding_after(
+    cfg_yaml: &str,
+    window: Option<Duration>,
+) -> (TempDir, Arc<iota::shell::jobs::Jobs>, Arc<dyn Tool>) {
     let (dir, mut env, _root) = shell_env();
     let jobs = iota::shell::jobs::Jobs::new(dir.path());
     env.jobs = Some(Arc::clone(&jobs));
+    env.shell_yield = window;
     let tools = new_shell_set(&env, node(cfg_yaml).as_ref()).expect("shell set");
     (dir, jobs, Arc::clone(&tools[0]))
+}
+
+// The yield: a foreground call whose command runs past the window comes back with the job it became and
+// what the command had printed by then; the notice that follows carries the rest. A call whose command exits
+// inside the window is the foreground call it always was — under a registry too.
+#[tokio::test]
+async fn shell_yields_a_long_command_to_a_background_job() {
+    if skip_unless_posix("shell_yields_a_long_command_to_a_background_job") {
+        return;
+    }
+    let (_dir, jobs, tool) = new_shell_yielding_after(
+        "sandbox: off\nauto_run: true\n",
+        Some(Duration::from_secs(1)),
+    );
+    let (out, is_err) = call(&tool, json!({"command": "echo hi"})).await;
+    assert_eq!(
+        (out.as_str(), is_err),
+        ("hi\n", false),
+        "a quick call changed shape"
+    );
+    assert_eq!(jobs.running(), 0);
+
+    let (out, is_err) = call(&tool, json!({"command": "echo early; sleep 3; echo late"})).await;
+    assert!(!is_err, "a yield is not an error: {out}");
+    assert!(
+        out.starts_with("Still running after 1s as background job b1 (pid "),
+        "{out}"
+    );
+    assert!(out.contains("). Output so far:\nearly\n"), "{out}");
+    assert!(
+        out.contains(
+            "A notice with its exit status and output arrives when it finishes; do not poll (`"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.ends_with("b1.log` only if you need progress)."),
+        "{out}"
+    );
+    assert_eq!(jobs.running(), 1, "the command is a job now");
+
+    let cancel = CancellationToken::new();
+    let done = jobs.wait_any(&cancel).await.expect("the job finishes");
+    assert_eq!(done.id, "b1");
+    assert_eq!(done.exit, Some(0));
+    assert!(done.elapsed >= Duration::from_secs(3), "{:?}", done.elapsed);
+    let notice = iota::shell::jobs::notice_text(&done);
+    assert!(
+        notice.ends_with("] echo early; sleep 3; echo late\nearly\nlate\n"),
+        "{notice}"
+    );
+    assert_eq!(jobs.running(), 0);
+
+    // A command that has nothing to say by the window says so.
+    let (out, _) = call(&tool, json!({"command": "sleep 2"})).await;
+    assert!(
+        out.starts_with("Still running after 1s as background job b2 (pid "),
+        "{out}"
+    );
+    assert!(out.contains("). No output so far.\nA notice"), "{out}");
+    jobs.kill_all();
+    let cancel = CancellationToken::new();
+    while jobs.wait_any(&cancel).await.is_some() {}
+}
+
+// At the cap a foreground call is not let go of: it runs to its end, and the first line says why it took
+// the whole time.
+#[tokio::test]
+async fn shell_waits_for_a_call_when_the_run_is_at_the_cap() {
+    if skip_unless_posix("shell_waits_for_a_call_when_the_run_is_at_the_cap") {
+        return;
+    }
+    let (_dir, jobs, tool) = new_shell_yielding_after(
+        "sandbox: off\nauto_run: true\n",
+        Some(Duration::from_millis(200)),
+    );
+    for _ in 0..iota::shell::jobs::MAX_JOBS {
+        let (out, is_err) = call(&tool, json!({"command": "sleep 30", "background": true})).await;
+        assert!(!is_err, "{out}");
+    }
+    let (out, is_err) = call(&tool, json!({"command": "sleep 1; echo done"})).await;
+    assert!(!is_err, "{out}");
+    assert_eq!(
+        out,
+        "(16 background jobs already running, so this one was waited for.)\ndone\n"
+    );
+    jobs.kill_all();
+    let cancel = CancellationToken::new();
+    while jobs.wait_any(&cancel).await.is_some() {}
 }
 
 // New (DIVERGENCES X-07): `background: true` returns a receipt instead of the output — the job id the
@@ -526,7 +624,9 @@ fn the_shell_description_states_the_shell_state_contract() {
                 "Calls issued together run concurrently.",
                 "killed after 600 seconds",
                 "maximum 3600",
-                // The background mode, its notice and its lifetime (phase C).
+                // The rule a call returns by (the yield), the background mode, its notice and its lifetime.
+                "or after 20 s",
+                "you never need to guess how long a command takes",
                 "\"background\": true",
                 "Up to 16 background jobs at a time",
                 "killed when iota exits",
@@ -592,7 +692,7 @@ fn the_shell_description_states_the_shell_state_contract() {
                 },
                 "background": {
                     "type": "boolean",
-                    "description": "Run the command in the background and return immediately with its job id and output file (default false).",
+                    "description": "Do not wait for the command at all: return at once with its job id and output file (default false). A foreground call that runs past 20 seconds becomes a background job by itself.",
                 },
             },
             "required": ["command"],

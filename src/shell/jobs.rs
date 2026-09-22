@@ -1,11 +1,19 @@
-//! Background `shell` jobs: the run's registry of children started with `background: true`, and the
-//! completion notice each one produces.
+//! Background `shell` jobs: the run's registry of children that outlive their call — started with
+//! `background: true`, or a foreground call that ran past its wait (`SHELL_YIELD`, 20 s) and let go — and
+//! the completion notice each one produces.
 //!
 //! A job is an ordinary [`exec::spawn`] child — same sandbox, same `setpgid`, same `killpg` deadline — with
 //! its combined output going to a file instead of the round's 32 KB buffer, so the model's turn ends while
-//! the work continues. When it finishes, a [`JobDone`] is DELIVERED (interactive: the installed sink pushes
-//! it at the UI, which enqueues it as the next input) or PARKED (headless: the loop drains
-//! [`Jobs::take_finished`] each round and blocks on [`Jobs::wait_any`] when it has nothing else to do).
+//! the work continues. EVERY `shell` call starts in that shape ([`Jobs::run`]): the file is opened before
+//! the child, the call waits for the exit or the window, and a command still running at the window is
+//! adopted where it stands — an id, the file renamed after it, a supervisor — while the call answers with
+//! what the file holds so far. A command that exits inside the window answers as a foreground call always
+//! has, and its file is removed. When a job finishes, a [`JobDone`] is DELIVERED (interactive: the installed
+//! sink pushes it at the UI, which enqueues it as the next input) or PARKED (headless: the loop drains
+//! [`Jobs::take_finished`] each round and blocks on [`Jobs::wait_any`] when it has nothing else to do), and
+//! the WATCH — the second interactive seam, [`Jobs::set_watch`] — hears the running set change (a job
+//! adopted or started, a job gone), which is what puts `/jobs` in the command table and the job segment on
+//! the status row, and takes them away again.
 //!
 //! Nothing here outlives the process: [`Jobs::kill_all`] is synchronous `killpg` precisely so a `/quit` or a
 //! failed headless run cannot leave a tree behind, and a resumed session therefore never sees a job it
@@ -20,7 +28,7 @@ use std::{
 
 use tokio_util::sync::CancellationToken;
 
-use crate::shell::exec::{self, Capture, Options, SpawnFail};
+use crate::shell::exec::{self, Capture, Options, Outcome, RunResult, ShellError, SpawnFail};
 use crate::text::go_duration;
 
 /// How many jobs one run may have in flight. Past it the tool refuses rather than queues: a queue the model
@@ -41,6 +49,19 @@ pub struct JobStart {
     pub output_path: PathBuf,
 }
 
+/// One job in flight, as [`Jobs::snapshot`] lists it — what `/jobs` and the status row's job segment show.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JobInfo {
+    /// The run-local job name.
+    pub id: String,
+    /// The command line it runs.
+    pub command: String,
+    /// When its child was spawned — for a yielded call, that is the CALL's start, not the yield.
+    pub started: Instant,
+    /// The log file it writes.
+    pub output_path: PathBuf,
+}
+
 /// One finished job, in the shape the notice is rendered from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JobDone {
@@ -54,10 +75,29 @@ pub struct JobDone {
     pub timed_out: bool,
     /// Whether [`Jobs::kill_all`] (or a cancelled run) killed it.
     pub killed: bool,
-    /// Wall-clock time from spawn to end.
+    /// Wall-clock time from spawn to end — for a yielded call, the wait it ran through included.
     pub elapsed: Duration,
     /// The log file, still on disk (the model can `tail` it).
     pub output_path: PathBuf,
+}
+
+/// How one `shell` call ended in the registry's hands ([`Jobs::run`]).
+#[derive(Debug)]
+pub enum CallEnd {
+    /// The command ended inside the window (or never started): the foreground result, exactly as
+    /// [`exec::run`] would have answered.
+    Ended(RunResult),
+    /// The window ran out with the command still running: it is a job now, and `output` is what it had
+    /// written by then, under the foreground caps.
+    Yielded {
+        /// The job it became.
+        start: JobStart,
+        /// Its output so far.
+        output: String,
+    },
+    /// The window ran out, but the run already had [`MAX_JOBS`] in flight, so the call was waited for to
+    /// its end instead — the result is [`CallEnd::Ended`]'s, and the tool says why it took so long.
+    Waited(RunResult),
 }
 
 /// Why a job could not be started.
@@ -77,25 +117,78 @@ pub enum JobError {
 /// Called with every [`JobDone`] the moment it lands (interactive delivery).
 pub type JobSink = Box<dyn Fn(JobDone) + Send + Sync>;
 
+/// Called with the whole running set — oldest first — whenever it changes: a job started or adopted, a
+/// job finished (BEFORE its notice is delivered, so the row that lists it is gone by the time the notice
+/// is read). Never called from under the registry's lock.
+pub type JobWatch = Box<dyn Fn(Vec<JobInfo>) + Send + Sync>;
+
+/// Why [`Jobs::start_child`] produced no child.
+enum StartFail {
+    /// The log file could not be created.
+    Output(std::io::Error),
+    /// [`exec::spawn`] refused.
+    Spawn(SpawnFail),
+}
+
 /// One running job, as the registry tracks it.
 struct Running {
     /// The group leader, for a synchronous `killpg`.
     pid: Option<i32>,
     /// Fires to make the supervisor kill and reap it.
     cancel: CancellationToken,
+    /// The command line, for the listings.
+    command: String,
+    /// When the child was spawned.
+    started: Instant,
+    /// Its log file.
+    output_path: PathBuf,
 }
 
 /// The registry's mutable half.
 #[derive(Default)]
 struct State {
-    /// Next id number (`b1` is the first).
+    /// Next job number (`b1` is the first).
     next: u32,
+    /// Next call number — the name a call's log carries until the call is a job, if it ever is.
+    calls: u32,
     /// Jobs in flight, by id.
     running: BTreeMap<String, Running>,
     /// Completed jobs nobody has taken yet — always empty while a sink is installed.
     finished: Vec<JobDone>,
     /// The interactive delivery seam.
     sink: Option<Arc<JobSink>>,
+    /// The interactive listing seam.
+    watch: Option<Arc<JobWatch>>,
+}
+
+impl State {
+    /// The running set, oldest first.
+    fn snapshot(&self) -> Vec<JobInfo> {
+        let mut jobs: Vec<JobInfo> = self
+            .running
+            .iter()
+            .map(|(id, job)| JobInfo {
+                id: id.clone(),
+                command: job.command.clone(),
+                started: job.started,
+                output_path: job.output_path.clone(),
+            })
+            .collect();
+        jobs.sort_by_key(|j| j.started);
+        jobs
+    }
+
+    /// Claims the next job id and its slot, or `None` at the cap. Under ONE lock with the check, so two
+    /// calls yielding in one parallel batch cannot both read 15 and both start.
+    fn claim(&mut self, job: Running) -> Option<String> {
+        if self.running.len() >= MAX_JOBS {
+            return None;
+        }
+        self.next += 1;
+        let id = format!("b{}", self.next);
+        self.running.insert(id.clone(), job);
+        Some(id)
+    }
 }
 
 /// The run's background-job registry: ONE per run, created at tool assembly and shared by the `shell` tool
@@ -138,28 +231,46 @@ impl Jobs {
         }
     }
 
-    /// Starts one background job. The child is [`exec::spawn`]ed exactly as a foreground call is — same
-    /// sandbox, same working directory, same `timeout` — but its output goes to a file and a detached task
-    /// supervises it.
-    pub fn spawn(self: &Arc<Self>, opts: &Options) -> Result<JobStart, JobError> {
-        // The slot is CLAIMED under the same lock that checks the cap, so two `shell` calls in one parallel
-        // batch cannot both read 15 and both start.
-        let (id, cancel) = {
+    /// Installs (or, with `None`, removes) the interactive listing seam. A watch installed while jobs are
+    /// already running hears about them at once.
+    pub fn set_watch(&self, watch: Option<JobWatch>) {
+        let (watch, running) = {
             let mut st = self.lock();
-            if st.running.len() >= MAX_JOBS {
-                return Err(JobError::TooMany);
-            }
-            st.next += 1;
-            let id = format!("b{}", st.next);
-            let cancel = CancellationToken::new();
-            st.running.insert(
-                id.clone(),
-                Running {
-                    pid: None,
-                    cancel: cancel.clone(),
-                },
-            );
-            (id, cancel)
+            st.watch = watch.map(Arc::new);
+            (st.watch.clone(), st.snapshot())
+        };
+        if let Some(watch) = watch
+            && !running.is_empty()
+        {
+            watch(running);
+        }
+    }
+
+    /// Tells the watch, if any, what is running now.
+    fn notify_watch(&self) {
+        let (watch, running) = {
+            let st = self.lock();
+            (st.watch.clone(), st.snapshot())
+        };
+        if let Some(watch) = watch {
+            watch(running);
+        }
+    }
+
+    /// Starts one background job — `background: true`, the call that is not waited on at all. The child is
+    /// [`exec::spawn`]ed exactly as a foreground call is — same sandbox, same working directory, same
+    /// `timeout` — but its output goes to a file and a detached task supervises it. The slot is claimed
+    /// BEFORE the child exists, so a refused call starts nothing.
+    pub fn spawn(self: &Arc<Self>, opts: &Options) -> Result<JobStart, JobError> {
+        let cancel = CancellationToken::new();
+        let Some(id) = self.lock().claim(Running {
+            pid: None,
+            cancel: cancel.clone(),
+            command: opts.command.clone(),
+            started: Instant::now(),
+            output_path: PathBuf::new(),
+        }) else {
+            return Err(JobError::TooMany);
         };
         let output_path = self.dir.join(format!("{id}.log"));
         let started = match self.start_child(&cancel, opts, &output_path) {
@@ -167,21 +278,139 @@ impl Jobs {
             Err(e) => {
                 // A slot claimed by a job that never started is a slot leaked forever.
                 self.lock().running.remove(&id);
-                return Err(e);
+                return Err(match e {
+                    StartFail::Output(e) => JobError::Output(e.to_string()),
+                    StartFail::Spawn(SpawnFail::Cancelled) => {
+                        JobError::Spawn("the run was cancelled".to_owned())
+                    }
+                    StartFail::Spawn(SpawnFail::Failed(e)) => JobError::Spawn(e.to_string()),
+                });
             }
         };
         let pid = started.pid;
         if let Some(job) = self.lock().running.get_mut(&id) {
             job.pid = pid;
+            job.started = started.started();
+            job.output_path.clone_from(&output_path);
         }
+        self.notify_watch();
+        self.supervise(&id, started, cancel, opts, output_path.clone());
+        Ok(JobStart {
+            id,
+            pid,
+            output_path,
+        })
+    }
+
+    /// Runs one `shell` call in job shape: the child writes to a file under this registry's directory
+    /// from the start, the call waits for the exit or for `window` to pass since the spawn — whichever
+    /// comes first — and a command still running at the window becomes a job where it stands
+    /// ([`CallEnd::Yielded`]). At the cap the call is waited for to its end instead ([`CallEnd::Waited`]).
+    /// `cancel` is the CALL's token: it kills a command still in the window, as a foreground call's always
+    /// has, and has no hold over a job the call let go of — a job has its own.
+    pub async fn run(
+        self: &Arc<Self>,
+        cancel: &CancellationToken,
+        opts: &Options,
+        window: Duration,
+    ) -> CallEnd {
+        let pending = {
+            let mut st = self.lock();
+            st.calls += 1;
+            self.dir.join(format!("call-{}.log", st.calls))
+        };
+        let mut started = match self.start_child(cancel, opts, &pending) {
+            Ok(started) => started,
+            Err(fail) => {
+                let outcome = match fail {
+                    StartFail::Output(e) => Outcome::Failed(ShellError::Spawn(format!(
+                        "failed to create the call's output file: {e}"
+                    ))),
+                    StartFail::Spawn(SpawnFail::Cancelled) => Outcome::Cancelled,
+                    StartFail::Spawn(SpawnFail::Failed(e)) => Outcome::Failed(e),
+                };
+                return CallEnd::Ended(RunResult {
+                    output: String::new(),
+                    outcome,
+                });
+            }
+        };
+        if let Some(outcome) = started
+            .wait_or_yield(cancel, opts.timeout, Some(window))
+            .await
+        {
+            return CallEnd::Ended(ended(&pending, outcome));
+        }
+        // Still running at the window: a job, if the run has room for one.
+        let own = CancellationToken::new();
+        let claimed = self.lock().claim(Running {
+            pid: started.pid,
+            cancel: own.clone(),
+            command: opts.command.clone(),
+            started: started.started(),
+            output_path: pending.clone(),
+        });
+        let Some(id) = claimed else {
+            let outcome = started.wait(cancel, opts.timeout).await;
+            return CallEnd::Waited(ended(&pending, outcome));
+        };
+        // The log takes the job's name. A rename that fails leaves the call's name on it — the file is the
+        // same either way, and the path the model is told is the one the registry lists.
+        let named = self.dir.join(format!("{id}.log"));
+        let output_path = if std::fs::rename(&pending, &named).is_ok() {
+            named
+        } else {
+            pending
+        };
+        if let Some(job) = self.lock().running.get_mut(&id) {
+            job.output_path.clone_from(&output_path);
+        }
+        let output = exec::read_capped(&output_path)
+            .map(|s| exec::truncate_output(&s))
+            .unwrap_or_default();
+        self.notify_watch();
+        let pid = started.pid;
+        self.supervise(&id, started, own, opts, output_path.clone());
+        CallEnd::Yielded {
+            start: JobStart {
+                id,
+                pid,
+                output_path,
+            },
+            output,
+        }
+    }
+
+    /// The log file and the child behind one call — everything between naming a file and owning a
+    /// process.
+    fn start_child(
+        &self,
+        cancel: &CancellationToken,
+        opts: &Options,
+        output_path: &Path,
+    ) -> Result<exec::Started, StartFail> {
+        std::fs::create_dir_all(&self.dir).map_err(StartFail::Output)?;
+        let file = std::fs::File::create(output_path).map_err(StartFail::Output)?;
+        exec::spawn(cancel, opts, Capture::File(file)).map_err(StartFail::Spawn)
+    }
+
+    /// Detaches the task that sees the job to its end.
+    fn supervise(
+        self: &Arc<Self>,
+        id: &str,
+        started: exec::Started,
+        cancel: CancellationToken,
+        opts: &Options,
+        output_path: PathBuf,
+    ) {
         let done = JobDone {
-            id: id.clone(),
+            id: id.to_owned(),
             command: opts.command.clone(),
             exit: None,
             timed_out: false,
             killed: false,
             elapsed: Duration::ZERO,
-            output_path: output_path.clone(),
+            output_path,
         };
         tokio::spawn(supervise(
             Arc::clone(self),
@@ -190,32 +419,16 @@ impl Jobs {
             opts.timeout,
             done,
         ));
-        Ok(JobStart {
-            id,
-            pid,
-            output_path,
-        })
-    }
-
-    /// The log file and the child behind one job — everything between claiming a slot and owning a process.
-    fn start_child(
-        &self,
-        cancel: &CancellationToken,
-        opts: &Options,
-        output_path: &Path,
-    ) -> Result<exec::Started, JobError> {
-        std::fs::create_dir_all(&self.dir).map_err(|e| JobError::Output(e.to_string()))?;
-        let file =
-            std::fs::File::create(output_path).map_err(|e| JobError::Output(e.to_string()))?;
-        exec::spawn(cancel, opts, Capture::File(file)).map_err(|e| match e {
-            SpawnFail::Cancelled => JobError::Spawn("the run was cancelled".to_owned()),
-            SpawnFail::Failed(e) => JobError::Spawn(e.to_string()),
-        })
     }
 
     /// How many jobs are still in flight.
     pub fn running(&self) -> usize {
         self.lock().running.len()
+    }
+
+    /// The jobs in flight, oldest first.
+    pub fn snapshot(&self) -> Vec<JobInfo> {
+        self.lock().snapshot()
     }
 
     /// Drains every job that finished since the last call (the headless delivery seam; always empty while a
@@ -247,11 +460,12 @@ impl Jobs {
         }
     }
 
-    /// Kills every job still running, synchronously — the exit path, which cannot await. The sink is
-    /// dropped with them: nobody is left to deliver a notice to.
+    /// Kills every job still running, synchronously — the exit path, which cannot await. The sink and the
+    /// watch are dropped with them: nobody is left to deliver a notice to, or a listing.
     pub fn kill_all(&self) {
         let mut st = self.lock();
         st.sink = None;
+        st.watch = None;
         for (_, job) in std::mem::take(&mut st.running) {
             job.cancel.cancel();
             exec::kill_group(job.pid);
@@ -265,6 +479,16 @@ impl Jobs {
     }
 }
 
+/// A call that ended inside its window: the file read back under the foreground caps, then removed —
+/// nothing lists it, so nothing should be left to find.
+fn ended(pending: &Path, outcome: Outcome) -> RunResult {
+    let output = exec::read_capped(pending)
+        .map(|s| exec::truncate_output(&s))
+        .unwrap_or_default();
+    let _ = std::fs::remove_file(pending);
+    RunResult { output, outcome }
+}
+
 /// Supervises one job to its end, then delivers or parks the [`JobDone`].
 async fn supervise(
     jobs: Arc<Jobs>,
@@ -273,9 +497,8 @@ async fn supervise(
     timeout: Option<Duration>,
     mut done: JobDone,
 ) {
-    let at = Instant::now();
     let outcome = started.wait(&cancel, timeout).await;
-    done.elapsed = at.elapsed();
+    done.elapsed = started.started().elapsed();
     done.timed_out = matches!(outcome, exec::Outcome::TimedOut);
     done.killed = matches!(outcome, exec::Outcome::Cancelled);
     done.exit = match outcome {
@@ -291,6 +514,9 @@ async fn supervise(
         }
         sink
     };
+    // The listing hears the job is gone BEFORE the notice is delivered, so the row that names it never
+    // outlives the line that says it finished.
+    jobs.notify_watch();
     // The waiter is woken either way: a delivered job still changes `running()`, which is what ends a
     // headless wait that has nothing left to wait for.
     jobs.done.notify_waiters();

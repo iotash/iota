@@ -330,6 +330,13 @@ fn assemble_tools(
         project_root: project_root.clone(),
         dirs: dirs.clone(),
         jobs: Some(Arc::clone(&jobs)),
+        // The one process-environment read the tool layer never makes itself: the test hook that shortens
+        // the `shell` tool's foreground window for a tmux scenario.
+        shell_yield: crate::tool::builtins::shell::yield_window(
+            ctx.env
+                .var(crate::tool::builtins::shell::SHELL_YIELD_ENV)
+                .as_deref(),
+        ),
         ..ToolEnv::default()
     };
     let interactor = settings

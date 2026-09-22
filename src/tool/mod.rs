@@ -287,13 +287,21 @@ pub struct Artifact {
     pub lines: Vec<String>,
 }
 
-/// The two producers of an artifact, as a closed enum.
+/// The producers of an artifact, as a closed enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtifactKind {
     /// Unified-hunk diff rows (`edit_file`/`write_file`'s post-edit diff).
     Diff,
     /// Accounting note rows (the transcript's finish-call note).
     Note,
+    /// A `shell` call that is a background job now: `title` is the job id, `lines` the output the command
+    /// had produced when the call came back. `yielded_after` is the window a foreground call ran through
+    /// before it let go (the transcript's `still running after 20s → background job b3` receipt); `None` is
+    /// a call the model started with `background: true`, whose receipt is its result text.
+    Job {
+        /// The foreground window the call waited through, or `None` for `background: true`.
+        yielded_after: Option<std::time::Duration>,
+    },
 }
 
 /// A no-op when `cx.artifact` is `None` (headless loops, tests).
@@ -318,6 +326,10 @@ pub struct ToolEnv {
     /// (headless stays empty). `ToolEnv` is built with `..ToolEnv::default()`
     /// literals across the workspace, so this field lands non-breaking (`TUI_CONTRACTS` §4).
     pub interactor: Option<Arc<dyn Interactor>>,
+    /// The `shell` tool's foreground window — how long a call waits before its command becomes a
+    /// background job. `None` is the tool's own [`builtins::shell::SHELL_YIELD`]; the binary edge sets it
+    /// from the `IOTA_SHELL_YIELD` test hook, and a test sets it directly.
+    pub shell_yield: Option<std::time::Duration>,
 }
 
 impl ToolEnv {

@@ -33,7 +33,7 @@ use crate::app::HostDirs;
 use crate::provider::model::{JsonObject, ToolDef};
 use crate::text::go_duration;
 use crate::tool::context::RunCtx;
-use crate::tool::{Tool, ToolEnv, ToolOutput, ToolResult};
+use crate::tool::{Artifact, ArtifactKind, Tool, ToolEnv, ToolOutput, ToolResult, post_artifact};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -44,7 +44,7 @@ use crate::tool::yaml11;
 use crate::shell::exec;
 use crate::shell::exec::{Options, Outcome, RunResult, Sandbox};
 use crate::shell::interp::{Family, Interpreter};
-use crate::shell::jobs::{JobStart, Jobs};
+use crate::shell::jobs::{CallEnd, JobStart, Jobs, MAX_JOBS};
 use crate::shell::selfcall::is_self_invocation;
 
 /// The tool's name, on every platform and under every interpreter (the config key is `shell` too).
@@ -52,6 +52,17 @@ pub const SHELL_TOOL_NAME: &str = "shell";
 
 /// Wall-clock cap of one call when it names no `timeout` (`[command timed out after 10m0s]`).
 pub(crate) const DEFAULT_SHELL_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// How long a foreground call waits for its command before the command becomes a background job and the
+/// call answers with what it has (`Still running after 20s as background job b3 …`). Codex's
+/// `exec_command` yields at 10 s; 20 s covers most builds and test runs a model asks about without making
+/// it guess which ones will not. The description below names the same figure in words.
+pub const SHELL_YIELD: Duration = Duration::from_secs(20);
+
+/// The test hook over [`SHELL_YIELD`]: `IOTA_SHELL_YIELD=<seconds>` in the process environment sets the
+/// window for one run — read once at the binary edge into `ToolEnv::shell_yield` ([`yield_window`]), so a
+/// tmux scenario waits two seconds where a user waits twenty. Nothing else reads it.
+pub const SHELL_YIELD_ENV: &str = "IOTA_SHELL_YIELD";
 
 /// Bounds of the `timeout` argument, in seconds. One number cannot serve both a lint and a child agent's
 /// whole run, so the model picks — inside a ceiling it cannot argue with (DIVERGENCES X-06).
@@ -102,8 +113,11 @@ pub(crate) struct ShellTool {
     /// The interpreter its calls run under, resolved ONCE at assembly so the description cannot describe a
     /// different shell from the one the first call finds.
     shell: Interpreter,
-    /// The run's background-job registry (`ToolEnv.jobs`); None in a test env.
+    /// The run's background-job registry (`ToolEnv.jobs`); None in a test env, where a call runs in the
+    /// foreground to its end as it did before jobs existed.
     jobs: Option<Arc<Jobs>>,
+    /// The foreground window ([`SHELL_YIELD`], or what [`SHELL_YIELD_ENV`] said).
+    yield_after: Duration,
     root: PathBuf,
     /// The process working directory — the display anchor for the optional `cwd`
     /// argument in call headers, NOT the execution dir (that
@@ -146,6 +160,7 @@ pub fn new_shell_set(
         shell_cfg,
         shell,
         jobs: env.jobs.clone(),
+        yield_after: env.shell_yield.unwrap_or(SHELL_YIELD),
         root: env.root().unwrap_or_default(),
         cwd: env
             .dirs
@@ -226,11 +241,33 @@ impl Tool for ShellTool {
                 timeout: Some(timeout),
                 sandbox,
             };
-            if bool_arg(args, "background", false) {
-                return Ok(self.start_background(&opts));
+            let background = bool_arg(args, "background", false);
+            let Some(jobs) = self.jobs.as_ref() else {
+                // No registry (tests): a background call is refused rather than run in the foreground —
+                // that would hold the turn for as long as the model asked to be free of it — and a
+                // foreground call runs to its end, as it did before jobs existed.
+                if background {
+                    return Ok(ToolOutput::err(NO_JOBS_ERR));
+                }
+                let res = exec::run(&cx.cancel, opts).await;
+                return Ok(format_result(&res, timeout));
+            };
+            if background {
+                return Ok(self.start_background(cx, jobs, &opts));
             }
-            let res = exec::run(&cx.cancel, opts).await;
-            Ok(format_result(&res, timeout))
+            Ok(match jobs.run(&cx.cancel, &opts, self.yield_after).await {
+                CallEnd::Ended(res) => format_result(&res, timeout),
+                CallEnd::Waited(res) => {
+                    let mut out = format_result(&res, timeout);
+                    out.text = format!("{}\n{}", waited_note(), out.text);
+                    out
+                }
+                CallEnd::Yielded { start, output } => {
+                    post_artifact(cx, job_artifact(&start.id, Some(self.yield_after), &output));
+                    let tail = self.shell.tail_command(&start.output_path);
+                    ToolOutput::ok(yield_receipt(self.yield_after, &start, &output, &tail))
+                }
+            })
         })
     }
 
@@ -296,11 +333,9 @@ impl ShellTool {
     }
 
     /// Hands the command to the job registry and answers with the receipt the model needs to follow it: the
-    /// id the notice will carry, the pid, and the file it can `tail` meanwhile.
-    fn start_background(&self, opts: &Options) -> ToolOutput {
-        let Some(jobs) = self.jobs.as_ref() else {
-            return ToolOutput::err(NO_JOBS_ERR);
-        };
+    /// id the notice will carry, the pid, and the file it can `tail` meanwhile. The transcript learns of
+    /// the job through the artifact slot, as it does for a yield, so its group summary counts it.
+    fn start_background(&self, cx: &RunCtx, jobs: &Arc<Jobs>, opts: &Options) -> ToolOutput {
         match jobs.spawn(opts) {
             Err(e) => ToolOutput::err(e.to_string()),
             Ok(JobStart {
@@ -308,6 +343,7 @@ impl ShellTool {
                 pid,
                 output_path,
             }) => {
+                post_artifact(cx, job_artifact(&id, None, ""));
                 let tail = self.shell.tail_command(&output_path);
                 let path = output_path.display();
                 let pid = pid.map_or_else(|| "?".to_owned(), |p| p.to_string());
@@ -317,6 +353,50 @@ impl ShellTool {
             }
         }
     }
+}
+
+/// The foreground window the [`SHELL_YIELD_ENV`] hook names, if it names one: a number of seconds, and
+/// nothing else (an absent or unparsable value is `None` — the tool's own [`SHELL_YIELD`]).
+pub fn yield_window(hook: Option<&str>) -> Option<Duration> {
+    hook.and_then(|s| s.trim().parse::<u64>().ok())
+        .map(Duration::from_secs)
+}
+
+/// The user-facing record of a call that is a job now (`ArtifactKind::Job`): the id, the window it
+/// yielded after (`None` for `background: true`), and its output so far as rows.
+fn job_artifact(id: &str, yielded_after: Option<Duration>, output: &str) -> Artifact {
+    Artifact {
+        kind: ArtifactKind::Job { yielded_after },
+        title: id.to_owned(),
+        lines: output
+            .trim_end_matches('\n')
+            .split('\n')
+            .filter(|_| !output.trim().is_empty())
+            .map(str::to_owned)
+            .collect(),
+    }
+}
+
+/// The model-facing result of a call that yielded: what became of it, what it had printed, and what
+/// not to do about it. `output` is already under the foreground caps.
+fn yield_receipt(window: Duration, start: &JobStart, output: &str, tail: &str) -> String {
+    let pid = start.pid.map_or_else(|| "?".to_owned(), |p| p.to_string());
+    let output = output.trim_end_matches('\n');
+    let so_far = if output.trim().is_empty() {
+        " No output so far.\n".to_owned()
+    } else {
+        format!(" Output so far:\n{output}\n")
+    };
+    format!(
+        "Still running after {} as background job {} (pid {pid}).{so_far}A notice with its exit status and output arrives when it finishes; do not poll (`{tail}` only if you need progress).",
+        go_duration(window),
+        start.id
+    )
+}
+
+/// The line ahead of a result the call waited for past its window because the run was at the cap.
+fn waited_note() -> String {
+    format!("({MAX_JOBS} background jobs already running, so this one was waited for.)")
 }
 
 /// The `timeout` argument as a duration: absent (or null) is [`DEFAULT_SHELL_TIMEOUT`]; `None` means the
@@ -403,7 +483,7 @@ fn shell_schema(family: Family) -> JsonObject {
             },
             "background": {
                 "type": "boolean",
-                "description": "Run the command in the background and return immediately with its job id and output file (default false).",
+                "description": "Do not wait for the command at all: return at once with its job id and output file (default false). A foreground call that runs past 20 seconds becomes a background job by itself.",
             },
         },
         "required": ["command"],
@@ -427,10 +507,12 @@ pub const SHELL_DESC_SANDBOXED: &str = "Commands run inside an OS sandbox: file 
 /// Unsandboxed suffix — the only one Windows ever gets: no OS sandbox exists there, so every call runs with
 /// the user's full permissions and needs approval unless `auto_run` waived it.
 pub const SHELL_DESC_UNSANDBOXED: &str = "Commands run WITHOUT a sandbox on this system, with the user's full permissions — be conservative.";
-/// The background-mode paragraph, appended after the sandbox suffix. `{tail}` and `{detach}` are the running
+/// The jobs paragraph, appended after the sandbox suffix: the rule a call returns by (the exit, or the
+/// [`SHELL_YIELD`] window — the model never has to guess how long a command takes), what `background`
+/// is for now that it is not the way to wait, and what a job is. `{tail}` and `{detach}` are the running
 /// interpreter's spellings ([`background_desc`]) — the two places this paragraph would otherwise hand a
 /// Windows model a POSIX command.
-pub const SHELL_DESC_BACKGROUND: &str = "\n\nSet \"background\": true for work that outlasts a reply — a long build, a test suite, a child agent (`iota run <agent> -m \"<task>\"`). The call returns at once with a job id and an output file; when the job ends you are told its exit status and shown its output, so do not poll for it (`{tail}` the file only if you need progress meanwhile). Up to 16 background jobs at a time, and \"timeout\" still applies. Background jobs are killed when iota exits — a job that must survive that has to detach itself ({detach}).";
+pub const SHELL_DESC_BACKGROUND: &str = "\n\nA call returns when the command exits, or after 20 s — a command still running then continues as a background job, and you are told its exit status and shown its output when it ends; you never need to guess how long a command takes. Set \"background\": true only for things that should not be waited on at all: servers, watchers, a child agent (`iota run <agent> -m \"<task>\"`); such a call returns at once with the job id and its output file. Do not poll for a job — the notice comes to you (`{tail}` the file only if you need progress meanwhile). Up to 16 background jobs at a time, and \"timeout\" still applies. Background jobs are killed when iota exits — a job that must survive that has to detach itself ({detach}).";
 
 /// The description head of the interpreter that will run the calls.
 pub fn desc_prefix(family: Family) -> &'static str {
@@ -459,8 +541,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        DEFAULT_SHELL_TIMEOUT, Duration, JsonObject, Outcome, RunResult, exec::ShellError,
-        expand_home, format_result, go_duration, timeout_arg,
+        ArtifactKind, DEFAULT_SHELL_TIMEOUT, Duration, JobStart, JsonObject, Outcome, RunResult,
+        SHELL_DESC_BACKGROUND, SHELL_YIELD, exec::ShellError, expand_home, format_result,
+        go_duration, job_artifact, timeout_arg, waited_note, yield_receipt, yield_window,
     };
 
     // Every branch of `format_result` (tool-shell.md "MODEL-FACING RESULT SUFFIXES").
@@ -570,6 +653,73 @@ mod tests {
                 "{bad} must be refused"
             );
         }
+    }
+
+    // The yield's receipt: the window in the tool's own words, the job, the output so far under the
+    // receipt's own heading — or the absence of one — and the rule not to poll, with the interpreter's
+    // tail command.
+    #[test]
+    fn yield_receipt_shapes() {
+        let start = JobStart {
+            id: "b3".to_owned(),
+            pid: Some(4242),
+            output_path: PathBuf::from("/tmp/iota-jobs/1/b3.log"),
+        };
+        let tail = "tail -n 50 /tmp/iota-jobs/1/b3.log";
+        assert_eq!(
+            yield_receipt(SHELL_YIELD, &start, "compiling…\nlinking\n", tail),
+            "Still running after 20s as background job b3 (pid 4242). Output so far:\ncompiling…\nlinking\nA notice with its exit status and output arrives when it finishes; do not poll (`tail -n 50 /tmp/iota-jobs/1/b3.log` only if you need progress)."
+        );
+        assert_eq!(
+            yield_receipt(Duration::from_secs(2), &start, "  \n", tail),
+            "Still running after 2s as background job b3 (pid 4242). No output so far.\nA notice with its exit status and output arrives when it finishes; do not poll (`tail -n 50 /tmp/iota-jobs/1/b3.log` only if you need progress)."
+        );
+        let no_pid = JobStart { pid: None, ..start };
+        assert!(
+            yield_receipt(SHELL_YIELD, &no_pid, "", tail).contains("job b3 (pid ?)."),
+            "an unreported pid reads as ?"
+        );
+        assert_eq!(
+            waited_note(),
+            "(16 background jobs already running, so this one was waited for.)"
+        );
+    }
+
+    // The window is twenty seconds, the description says so in words, and the hook names seconds or nothing.
+    #[test]
+    fn the_window_and_its_hook() {
+        assert_eq!(SHELL_YIELD, Duration::from_secs(20));
+        assert!(SHELL_DESC_BACKGROUND.contains("or after 20 s"));
+        assert_eq!(yield_window(None), None);
+        assert_eq!(yield_window(Some(" 3 ")), Some(Duration::from_secs(3)));
+        assert_eq!(yield_window(Some("0")), Some(Duration::ZERO));
+        assert_eq!(yield_window(Some("soon")), None, "a word is not a window");
+        assert_eq!(yield_window(Some("-1")), None);
+    }
+
+    // The transcript's record of a job: the id as the title, the output so far as rows (none for none), and
+    // the window that yielded — or `None` for a call the model backgrounded itself.
+    #[test]
+    fn job_artifact_carries_the_id_the_window_and_the_rows() {
+        let yielded = job_artifact("b3", Some(SHELL_YIELD), "one\ntwo\n");
+        assert_eq!(
+            yielded.kind,
+            ArtifactKind::Job {
+                yielded_after: Some(SHELL_YIELD)
+            }
+        );
+        assert_eq!(yielded.title, "b3");
+        assert_eq!(yielded.lines, ["one", "two"]);
+        let quiet = job_artifact("b4", Some(SHELL_YIELD), "\n");
+        assert!(quiet.lines.is_empty(), "{:?}", quiet.lines);
+        let backgrounded = job_artifact("b5", None, "");
+        assert_eq!(
+            backgrounded.kind,
+            ArtifactKind::Job {
+                yielded_after: None
+            }
+        );
+        assert!(backgrounded.lines.is_empty());
     }
 
     // `expand_home`: `~` and `~/x` only, and only with a home.

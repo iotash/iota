@@ -22,7 +22,7 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::{Arc, Mutex, MutexGuard},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[cfg(unix)]
@@ -146,6 +146,10 @@ pub struct Started {
     pub pid: Option<i32>,
     reader: Option<tokio::task::JoinHandle<()>>,
     buf: Option<Arc<Mutex<CappedBuffer>>>,
+    /// When the child was spawned. The deadline [`Started::wait`] enforces is measured from HERE, not from
+    /// the call that waits: a wait that is resumed (a foreground call the registry could not let go of)
+    /// or handed on (a job adopted after its yield) never restarts the clock.
+    spawned: Instant,
 }
 
 /// How a child ended (shell.go:97-121). One thing at a time, by construction: the deadline wins over
@@ -249,18 +253,44 @@ pub fn spawn(
         pid,
         reader,
         buf,
+        spawned: Instant::now(),
     })
 }
 
 impl Started {
+    /// When the child was spawned — what its elapsed time is measured from.
+    pub fn started(&self) -> Instant {
+        self.spawned
+    }
+
     /// Supervises the child to its end (shell.go:97-121): the deadline and the token race `wait()`, either
     /// one `killpg`s the group and reaps it under Go's `WaitDelay`, and a capture reader is given the same
     /// bounded window to drain — a background grandchild holding the pipe can never wedge the caller.
     pub async fn wait(&mut self, cancel: &CancellationToken, timeout: Option<Duration>) -> Outcome {
+        // With no window the wait can only end with the child: the `None` arm is unreachable, and the
+        // fallback merely keeps the function total.
+        self.wait_or_yield(cancel, timeout, None)
+            .await
+            .unwrap_or(Outcome::Cancelled)
+    }
+
+    /// [`Started::wait`] with a window: `Some(None)` after `window` has passed since the spawn with the
+    /// child still running — and still running it is, untouched, for whoever waits next (the job
+    /// registry). The deadline is measured from the spawn, so the window and the timeout are two marks on
+    /// ONE clock: a timeout shorter than the window fires as the timeout, never as a yield.
+    pub async fn wait_or_yield(
+        &mut self,
+        cancel: &CancellationToken,
+        timeout: Option<Duration>,
+        window: Option<Duration>,
+    ) -> Option<Outcome> {
+        let since = self.spawned.elapsed();
+        let remaining = |mark: Option<Duration>| mark.map(|m| m.saturating_sub(since));
         let waited = tokio::select! {
             s = self.child.wait() => Ok(s),
             () = cancel.cancelled() => Err(Outcome::Cancelled),
-            () = deadline(timeout) => Err(Outcome::TimedOut),
+            () = deadline(remaining(timeout)) => Err(Outcome::TimedOut),
+            () = deadline(remaining(window)) => return None,
         };
         let outcome = match waited {
             // ExitStatus::code() is None on signal death — Go's ExitError.ExitCode() reports -1 there.
@@ -285,7 +315,7 @@ impl Started {
         {
             reader.abort();
         }
-        outcome
+        Some(outcome)
     }
 
     /// Kills the child AND everything it started: `killpg(SIGKILL)` on Unix, `TerminateJobObject` on

@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use iota::shell::exec::Options;
-use iota::shell::jobs::{JobDone, Jobs, MAX_JOBS, notice_headline, notice_text};
+use iota::shell::exec::{Options, Outcome};
+use iota::shell::jobs::{CallEnd, JobDone, Jobs, MAX_JOBS, notice_headline, notice_text};
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
@@ -301,4 +301,258 @@ async fn wait_any_ends_on_nothing_running_or_a_cancelled_run() {
         "a cancelled run must stop waiting"
     );
     jobs.kill_all();
+}
+
+// ---- the call path (`Jobs::run`): every `shell` call starts in job shape and lets go at the window ----
+
+/// The ids the watch was told, one list per call, in order.
+fn watched(jobs: &Arc<Jobs>) -> Arc<Mutex<Vec<Vec<String>>>> {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    jobs.set_watch(Some(Box::new(move |running| {
+        sink.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(running.into_iter().map(|j| j.id).collect());
+    })));
+    seen
+}
+
+fn seen(log: &Arc<Mutex<Vec<Vec<String>>>>) -> Vec<Vec<String>> {
+    log.lock().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+/// The names of the log files the registry's directory holds.
+fn logs(dir: &TempDir) -> Vec<String> {
+    let jobs_dir = dir
+        .path()
+        .join(iota::shell::jobs::JOBS_DIR)
+        .join(std::process::id().to_string());
+    let Ok(entries) = std::fs::read_dir(jobs_dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+// A command that exits inside the window is a foreground call as before: the output, the exit — and no job,
+// no file, no notice.
+#[tokio::test]
+async fn a_call_that_ends_inside_the_window_is_a_foreground_call() {
+    if skip_unless_posix("a_call_that_ends_inside_the_window_is_a_foreground_call") {
+        return;
+    }
+    let (dir, jobs) = registry();
+    let watch = watched(&jobs);
+    let cancel = CancellationToken::new();
+    let CallEnd::Ended(res) = jobs
+        .run(
+            &cancel,
+            &opts("echo out; echo err >&2; exit 3", None),
+            Duration::from_secs(10),
+        )
+        .await
+    else {
+        panic!("a two-millisecond command yielded")
+    };
+    assert_eq!(res.output, "out\nerr\n");
+    assert_eq!(res.outcome, Outcome::Exited(3));
+    assert_eq!(jobs.running(), 0);
+    assert!(jobs.snapshot().is_empty());
+    assert!(
+        jobs.take_finished().is_empty(),
+        "nothing finished: nothing was a job"
+    );
+    assert!(
+        seen(&watch).is_empty(),
+        "the watch heard about a call that never was a job"
+    );
+    assert_eq!(
+        logs(&dir),
+        Vec::<String>::new(),
+        "the call's log was not removed"
+    );
+}
+
+// A command still running at the window becomes a job where it stands: the next id, the log renamed after
+// it, the output so far — and the notice, when it ends, carries the whole output and the whole time.
+#[tokio::test]
+async fn a_call_still_running_at_the_window_becomes_a_job() {
+    if skip_unless_posix("a_call_still_running_at_the_window_becomes_a_job") {
+        return;
+    }
+    let (dir, jobs) = registry();
+    let watch = watched(&jobs);
+    let cancel = CancellationToken::new();
+    let CallEnd::Yielded { start, output } = jobs
+        .run(
+            &cancel,
+            &opts("echo early; sleep 2; echo late", None),
+            Duration::from_millis(500),
+        )
+        .await
+    else {
+        panic!("a two-second command did not yield at half a second")
+    };
+    assert_eq!(start.id, "b1");
+    assert!(start.pid.is_some(), "the OS reported no pid");
+    assert!(
+        start.output_path.ends_with("b1.log"),
+        "{:?}",
+        start.output_path
+    );
+    assert_eq!(
+        output, "early\n",
+        "the output so far is what the file held at the window"
+    );
+    assert_eq!(jobs.running(), 1);
+    let listed = jobs.snapshot();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, "b1");
+    assert_eq!(listed[0].command, "echo early; sleep 2; echo late");
+    assert_eq!(listed[0].output_path, start.output_path);
+    assert!(listed[0].started.elapsed() >= Duration::from_millis(500));
+    assert_eq!(
+        logs(&dir),
+        vec!["b1.log".to_owned()],
+        "the log was not renamed"
+    );
+    assert_eq!(seen(&watch), vec![vec!["b1".to_owned()]]);
+
+    // The call's own token has no hold over the job any more.
+    cancel.cancel();
+    let done = drain(&jobs).await;
+    assert_eq!(done.len(), 1);
+    let done = &done[0];
+    assert_eq!(done.id, "b1");
+    assert_eq!(done.exit, Some(0));
+    assert!(!done.killed, "the call's token killed the job it let go of");
+    assert!(
+        done.elapsed >= Duration::from_secs(2),
+        "the elapsed time counts from the spawn, not the yield: {:?}",
+        done.elapsed
+    );
+    let text = notice_text(done);
+    assert!(
+        text.ends_with("] echo early; sleep 2; echo late\nearly\nlate\n"),
+        "{text}"
+    );
+    // The watch heard the job go BEFORE the notice was parked.
+    assert_eq!(seen(&watch), vec![vec!["b1".to_owned()], Vec::new()]);
+    assert!(jobs.snapshot().is_empty());
+}
+
+// The window and the timeout are two marks on ONE clock, measured from the spawn: a timeout inside the window
+// fires as the timeout, and the call's token still kills a command inside the window.
+#[tokio::test]
+async fn inside_the_window_the_timeout_and_the_token_still_end_the_call() {
+    if skip_unless_posix("inside_the_window_the_timeout_and_the_token_still_end_the_call") {
+        return;
+    }
+    let (_dir, jobs) = registry();
+    let cancel = CancellationToken::new();
+    let CallEnd::Ended(res) = jobs
+        .run(&cancel, &opts("sleep 30", Some(1)), Duration::from_secs(10))
+        .await
+    else {
+        panic!("a one-second timeout inside a ten-second window yielded")
+    };
+    assert_eq!(res.outcome, Outcome::TimedOut);
+    assert_eq!(jobs.running(), 0);
+
+    let cancel = CancellationToken::new();
+    let killer = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        killer.cancel();
+    });
+    let CallEnd::Ended(res) = jobs
+        .run(&cancel, &opts("sleep 30", None), Duration::from_secs(10))
+        .await
+    else {
+        panic!("a cancelled call yielded")
+    };
+    assert_eq!(res.outcome, Outcome::Cancelled);
+    assert_eq!(jobs.running(), 0, "a cancelled call left a job behind");
+}
+
+// At the cap a call does not yield: it is waited for to its end, and the result says so — without a job, an
+// id or a notice.
+#[tokio::test]
+async fn at_the_cap_a_call_is_waited_for_instead() {
+    if skip_unless_posix("at_the_cap_a_call_is_waited_for_instead") {
+        return;
+    }
+    let (_dir, jobs) = registry();
+    for _ in 0..MAX_JOBS {
+        jobs.spawn(&opts("sleep 30", None)).expect("under the cap");
+    }
+    let cancel = CancellationToken::new();
+    let CallEnd::Waited(res) = jobs
+        .run(
+            &cancel,
+            &opts("sleep 1; echo done", None),
+            Duration::from_millis(200),
+        )
+        .await
+    else {
+        panic!("a call yielded into a full run")
+    };
+    assert_eq!(res.output, "done\n");
+    assert_eq!(res.outcome, Outcome::Exited(0));
+    assert_eq!(jobs.running(), MAX_JOBS, "the waited call took a slot");
+    jobs.kill_all();
+    drain(&jobs).await;
+}
+
+// The watch is the listing's seam: it hears a `background: true` start, a yield and every finish, oldest
+// first, and a watch installed late hears what is already running.
+#[tokio::test]
+async fn the_watch_hears_the_running_set_change() {
+    if skip_unless_posix("the_watch_hears_the_running_set_change") {
+        return;
+    }
+    let (_dir, jobs) = registry();
+    let first = jobs.spawn(&opts("sleep 30", None)).expect("spawn");
+    assert_eq!(first.id, "b1");
+    let watch = watched(&jobs);
+    assert_eq!(
+        seen(&watch),
+        vec![vec!["b1".to_owned()]],
+        "a late watch was not told what runs"
+    );
+
+    let cancel = CancellationToken::new();
+    let CallEnd::Yielded { start, .. } = jobs
+        .run(&cancel, &opts("sleep 1", None), Duration::from_millis(100))
+        .await
+    else {
+        panic!("a one-second command did not yield at a tenth")
+    };
+    assert_eq!(start.id, "b2");
+    assert_eq!(
+        seen(&watch),
+        vec![
+            vec!["b1".to_owned()],
+            vec!["b1".to_owned(), "b2".to_owned()]
+        ]
+    );
+    let ids: Vec<String> = jobs.snapshot().into_iter().map(|j| j.id).collect();
+    assert_eq!(ids, ["b1", "b2"], "oldest first");
+
+    // b2 ends on its own; b1 is killed on the way out, and the dropped watch hears nothing of that.
+    let cancel = CancellationToken::new();
+    let done = jobs.wait_any(&cancel).await.expect("b2 finishes");
+    assert_eq!(done.id, "b2");
+    assert_eq!(seen(&watch).last(), Some(&vec!["b1".to_owned()]));
+    jobs.kill_all();
+    drain(&jobs).await;
+    assert_eq!(
+        seen(&watch).len(),
+        3,
+        "kill_all reported through a dropped watch"
+    );
 }
