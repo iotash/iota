@@ -145,9 +145,9 @@ fn an_activity_group_aggregates_thinking_and_tool_calls_into_one_widget() {
     tr.settle_thinking(start);
     tr.open_call("[a …]");
     tr.open_call("[a full]"); // header expansion: same widget, no separator
-    tr.finish_call("[a full]", "ok", false, Duration::from_secs(2), "");
+    tr.finish_call("[a full]", "ok", false, Duration::from_secs(2), None);
     tr.open_call("[b]");
-    tr.finish_call("[b]", "out", false, Duration::from_secs(3), "");
+    tr.finish_call("[b]", "out", false, Duration::from_secs(3), None);
     let mut content = tr.content_block();
     content.push(&["Done."]);
 
@@ -191,7 +191,7 @@ fn a_lone_tool_call_keeps_the_classic_block() {
         "line1\nline2",
         false,
         Duration::from_secs(1),
-        "",
+        None,
     );
     let mut content = tr.content_block();
     content.push(&["Answer."]);
@@ -231,7 +231,7 @@ fn a_boundary_notice_settles_the_running_group_first() {
         "[command produced no output]",
         false,
         Duration::from_secs(3),
-        "",
+        None,
     );
     tr.boundary_notice("[background job b1 finished: exit 0 after 2s] sleep 2; echo done");
     let mut content = tr.content_block();
@@ -296,14 +296,14 @@ fn failed_calls_break_out_of_the_group_as_red_rows() {
     let tr = transcript(&rec);
 
     tr.open_call("[a]");
-    tr.finish_call("[a]", "fine", false, Duration::from_secs(1), "");
+    tr.finish_call("[a]", "fine", false, Duration::from_secs(1), None);
     tr.open_call("[shell cmd:x]");
     tr.finish_call(
         "[shell cmd:x]",
         "exit 1\ndetail",
         true,
         Duration::from_secs(1),
-        "",
+        None,
     );
     let mut content = tr.content_block();
     content.push(&["So."]);
@@ -348,9 +348,9 @@ fn verbose_mode_settles_the_group_after_every_event() {
     content.push(&["The reply."]);
     tr.open_call("[a …]");
     tr.open_call("[a full]");
-    tr.finish_call("[a full]", "ok", false, Duration::from_secs(1), "");
+    tr.finish_call("[a full]", "ok", false, Duration::from_secs(1), None);
     tr.open_call("[b]");
-    tr.finish_call("[b]", "", false, Duration::from_secs(1), "");
+    tr.finish_call("[b]", "", false, Duration::from_secs(1), None);
     let mut content2 = tr.content_block();
     content2.push(&["Done."]);
 
@@ -457,7 +457,7 @@ fn a_call_opening_during_thinking_is_raised_at_settle_in_lifecycle_order() {
     tr.open_call("[shell …]"); // label change while queued: last wins
     tr.settle_thinking(Instant::now());
     tr.open_call("[shell cmd:ls]"); // the tool walk expands the raised widget
-    tr.finish_call("[shell cmd:ls]", "ok", false, Duration::from_secs(1), "");
+    tr.finish_call("[shell cmd:ls]", "ok", false, Duration::from_secs(1), None);
     let mut content = tr.content_block();
     content.push(&["Done."]);
 
@@ -605,9 +605,9 @@ fn reset_turn_settles_a_group_with_recorded_events() {
 
     tr.user("x");
     tr.open_call("[a]");
-    tr.finish_call("[a]", "ok", false, Duration::from_secs(1), "");
+    tr.finish_call("[a]", "ok", false, Duration::from_secs(1), None);
     tr.open_call("[b]");
-    tr.finish_call("[b]", "ok", false, Duration::from_secs(1), "");
+    tr.finish_call("[b]", "ok", false, Duration::from_secs(1), None);
     tr.reset_turn(); // interrupted before any content boundary
     tr.notice("Interrupted.");
 
@@ -640,7 +640,7 @@ fn a_settle_after_an_interleaved_error_reopens_its_block() {
 
     tr.open_call("[shell …]");
     tr.error("⚠ MCP srv failed: boom"); // async reporter mid-execution
-    tr.finish_call("[shell cmd:ls]", "ok", false, Duration::from_secs(1), "");
+    tr.finish_call("[shell cmd:ls]", "ok", false, Duration::from_secs(1), None);
     let mut content = tr.content_block();
     content.push(&["Done."]);
 
@@ -671,7 +671,7 @@ fn an_injected_user_message_settles_the_open_group_first() {
     let tr = transcript(&rec);
 
     tr.open_call("[a]");
-    tr.finish_call("[a]", "ok", false, Duration::from_secs(1), "");
+    tr.finish_call("[a]", "ok", false, Duration::from_secs(1), None);
     tr.user("also check the tests"); // steering injection at the round boundary
     tr.open_call("[b]");
 
@@ -780,7 +780,7 @@ fn a_showcase_settles_the_group_and_expands_its_diff() {
         "ok",
         false,
         Duration::from_secs(1),
-        "",
+        None,
     );
     let art = Artifact {
         kind: ArtifactKind::Diff,
@@ -942,7 +942,7 @@ fn progressive_frames_settle_recorded_activity_before_morphing() {
 
     tr.user("draw with tools");
     tr.open_call("[a]");
-    tr.finish_call("[a]", "ok", false, Duration::from_secs(1), "");
+    tr.finish_call("[a]", "ok", false, Duration::from_secs(1), None);
     tr.image_widget(); // the first partial frame arrives
     tr.image(&["ROW".to_owned()], "🖼 saved: /p.png");
 
@@ -1124,4 +1124,301 @@ fn the_notify_digest_strips_markdown_and_caps_at_sixty_runes() {
     let runes: Vec<char> = got.chars().collect();
     assert_eq!(runes.len(), 61, "long digest = {got:?}");
     assert_eq!(runes[60], '…');
+}
+
+// ---- a call that is a background job now (`ArtifactKind::Job`) ----
+
+/// The artifact a yielded `shell` call posts: the job it became, the window, its output so far.
+fn yielded(id: &str, after_secs: u64, output: &[&str]) -> Artifact {
+    Artifact {
+        kind: ArtifactKind::Job {
+            yielded_after: Some(Duration::from_secs(after_secs)),
+        },
+        title: id.to_owned(),
+        lines: output.iter().map(|s| (*s).to_owned()).collect(),
+    }
+}
+
+/// The artifact a `background: true` call posts: the job, no window, no rows.
+fn backgrounded(id: &str) -> Artifact {
+    Artifact {
+        kind: ArtifactKind::Job {
+            yielded_after: None,
+        },
+        title: id.to_owned(),
+        lines: Vec::new(),
+    }
+}
+
+/// What the model was told by a yielded call — never what the user sees.
+const YIELD_TEXT: &str = "Still running after 20s as background job b3 (pid 4242). Output so far:\ncompiling…\nA notice with its exit status and output arrives when it finishes; do not poll (`tail -n 50 /tmp/b3.log` only if you need progress).";
+
+// Go: chat/approval.go:84-89 — note lines join with " · "; diffs, jobs and empties render nothing (moved
+// here from `repl::turn::approval` with the note's reader, 2026-09-22).
+#[test]
+fn test_artifact_note() {
+    use crate::repl::render::group::artifact_note;
+    let note = Artifact {
+        kind: ArtifactKind::Note,
+        title: "note".to_owned(),
+        lines: vec!["3 rounds".to_owned(), "1.2k tokens".to_owned()],
+    };
+    assert_eq!(artifact_note(Some(&note)), "3 rounds · 1.2k tokens");
+    let diff = Artifact {
+        kind: ArtifactKind::Diff,
+        title: "a.txt".to_owned(),
+        lines: vec!["+x".to_owned()],
+    };
+    assert_eq!(artifact_note(Some(&diff)), "");
+    let empty = Artifact {
+        kind: ArtifactKind::Note,
+        title: String::new(),
+        lines: Vec::new(),
+    };
+    assert_eq!(artifact_note(Some(&empty)), "");
+    assert_eq!(artifact_note(None), "");
+    assert_eq!(artifact_note(Some(&yielded("b3", 20, &["x"]))), "");
+}
+
+// A lone call that yielded keeps the classic block, with the receipt where the result's first row would
+// be — `⎿ still running after 20s → background job b3` — and the output it had so far under it, dim and
+// folded like any result. The receipt written for the model never reaches the screen.
+#[test]
+fn a_lone_yielded_call_shows_its_receipt_over_the_output_so_far() {
+    let rec = Rec::default();
+    let tr = transcript(&rec);
+    tr.user("test it");
+    tr.open_call("[shell cargo test --test session resume]");
+    let art = yielded("b3", 20, &["compiling…", "one", "two", "three", "four"]);
+    tr.finish_call(
+        "[shell cargo test --test session resume]",
+        YIELD_TEXT,
+        false,
+        Duration::from_secs(20),
+        Some(&art),
+    );
+    let mut content = tr.content_block();
+    content.push(&["Started."]);
+
+    let receipt = "still running after 20s → background job b3";
+    let block = [
+        "[shell cargo test --test session resume]".to_owned(),
+        dim(&format!("  ⎿ {receipt}")),
+        dim("    compiling…"),
+        dim("    one"),
+        dim("    … +3 lines"),
+    ];
+    let want = [
+        "user:test it".to_owned(),
+        "print:".to_owned(),
+        "call:[shell cargo test --test session resume]".to_owned(),
+        // The event row's snippet is the receipt too, not the first line of the model's text.
+        format!(
+            "line:{}",
+            event_line(
+                "[shell cargo test --test session resume]",
+                receipt,
+                false,
+                ""
+            )
+        ),
+        format!("call:{}", working()),
+        "detail:1 tool".to_owned(),
+        "settle".to_owned(),
+        format!("print:{}", block.join("|")),
+        "print:".to_owned(),
+        "print:Started.".to_owned(),
+    ];
+    assert_eq!(rec.joined(), want.join("\n"));
+    assert!(
+        !rec.joined().contains("pid 4242"),
+        "the model's receipt leaked"
+    );
+
+    // No output yet: the receipt row stands alone.
+    let rec = Rec::default();
+    let tr = transcript(&rec);
+    tr.open_call("[shell sleep 60]");
+    tr.finish_call(
+        "[shell sleep 60]",
+        "Still running after 20s as background job b4 (pid 1). No output so far.\nA notice…",
+        false,
+        Duration::from_secs(20),
+        Some(&yielded("b4", 20, &[])),
+    );
+    tr.reset_turn();
+    let block = [
+        "[shell sleep 60]".to_owned(),
+        dim("  ⎿ still running after 20s → background job b4"),
+    ];
+    assert!(
+        rec.joined()
+            .ends_with(&format!("print:{}", block.join("|"))),
+        "{}",
+        rec.joined()
+    );
+}
+
+// A `background: true` start keeps its own receipt (the result text IS the receipt) — the job artifact
+// counts it in the summary, nothing else.
+#[test]
+fn a_backgrounded_call_keeps_the_classic_result_block() {
+    let rec = Rec::default();
+    let tr = transcript(&rec);
+    tr.open_call("[shell (background) make test]");
+    let receipt = "Started background job b1 (pid 7). Output: /tmp/b1.log\nA notice…";
+    tr.finish_call(
+        "[shell (background) make test]",
+        receipt,
+        false,
+        Duration::from_millis(3),
+        Some(&backgrounded("b1")),
+    );
+    tr.reset_turn();
+    let mut block = vec!["[shell (background) make test]".to_owned()];
+    block.extend(classic(receipt, false));
+    assert!(
+        rec.joined()
+            .ends_with(&format!("print:{}", block.join("|"))),
+        "{}",
+        rec.joined()
+    );
+}
+
+// The group summary names the jobs its calls started: one by id, more by count — after the clock, which
+// counts a yielded call up to its yield only, and before the red failure count. A `background: true`
+// start is a job too.
+#[test]
+fn the_group_summary_counts_the_jobs_its_calls_started() {
+    // One job: `· job b3 running`.
+    let rec = Rec::default();
+    let tr = transcript(&rec);
+    tr.open_call("[a]");
+    tr.finish_call("[a]", "ok", false, Duration::from_millis(400), None);
+    tr.open_call("[b]");
+    tr.finish_call("[b]", "ok", false, Duration::from_millis(400), None);
+    tr.open_call("[shell cargo test]");
+    tr.finish_call(
+        "[shell cargo test]",
+        YIELD_TEXT,
+        false,
+        Duration::from_secs(20),
+        Some(&yielded("b3", 20, &["compiling…"])),
+    );
+    tr.reset_turn();
+    assert!(
+        rec.joined().ends_with(&format!(
+            "print:{}",
+            dim("◇ ran 3 tools in 20s · job b3 running")
+        )),
+        "{}",
+        rec.joined()
+    );
+
+    // Three jobs, one of them backgrounded: `· 3 jobs running`; a failure still breaks out after it.
+    let rec = Rec::default();
+    let tr = transcript(&rec);
+    for (i, id) in ["b1", "b2"].iter().enumerate() {
+        let header = format!("[shell job {i}]");
+        tr.open_call(&header);
+        tr.finish_call(
+            &header,
+            YIELD_TEXT,
+            false,
+            Duration::from_secs(8),
+            Some(&yielded(id, 8, &[])),
+        );
+    }
+    tr.open_call("[shell (background) serve]");
+    tr.finish_call(
+        "[shell (background) serve]",
+        "Started background job b3 (pid 9). Output: /tmp/b3.log",
+        false,
+        Duration::from_secs(1),
+        Some(&backgrounded("b3")),
+    );
+    tr.open_call("[shell false]");
+    tr.finish_call(
+        "[shell false]",
+        "\n[exit code 1]",
+        true,
+        Duration::from_secs(1),
+        None,
+    );
+    tr.open_call("[read_file x]");
+    tr.finish_call("[read_file x]", "ok", false, Duration::from_secs(2), None);
+    tr.reset_turn();
+    let summary = format!(
+        "{}{}",
+        dim("◇ ran 5 tools in 20s · 3 jobs running"),
+        red(" · 1 failed")
+    );
+    let tail = format!(
+        "print:{summary}|{}",
+        fail_line("[shell false]", "\n[exit code 1]")
+    );
+    assert!(rec.joined().ends_with(&tail), "{}", rec.joined());
+
+    // With thinking ahead of the calls, the thought clock leads as always.
+    let rec = Rec::default();
+    let tr = transcript(&rec);
+    tr.open_thinking();
+    tr.settle_thinking(Instant::now());
+    tr.open_call("[a]");
+    tr.finish_call("[a]", "ok", false, Duration::ZERO, None);
+    tr.open_call("[b]");
+    tr.finish_call("[b]", "ok", false, Duration::ZERO, None);
+    tr.open_call("[shell cargo test]");
+    tr.finish_call(
+        "[shell cargo test]",
+        YIELD_TEXT,
+        false,
+        Duration::from_secs(20),
+        Some(&yielded("b3", 20, &[])),
+    );
+    tr.reset_turn();
+    assert!(
+        rec.joined().ends_with(&format!(
+            "print:{}",
+            dim("◇ thought for <1s · ran 3 tools in 20s · job b3 running")
+        )),
+        "{}",
+        rec.joined()
+    );
+}
+
+// Verbose mode settles after every event, so a yielded call among others still lands as its own classic
+// block with the receipt row — never as a summary segment.
+#[test]
+fn verbose_mode_gives_a_yielded_call_its_classic_receipt_block() {
+    let rec = Rec::default();
+    let tr = transcript(&rec);
+    tr.set_verbose(Some(Box::new(|| true)));
+    tr.open_call("[a]");
+    tr.finish_call("[a]", "ok", false, Duration::from_secs(1), None);
+    tr.open_call("[shell cargo test]");
+    tr.finish_call(
+        "[shell cargo test]",
+        YIELD_TEXT,
+        false,
+        Duration::from_secs(20),
+        Some(&yielded("b3", 20, &["compiling…"])),
+    );
+    let mut a_block = vec!["[a]".to_owned()];
+    a_block.extend(classic("ok", false));
+    let yield_block = [
+        "[shell cargo test]".to_owned(),
+        dim("  ⎿ still running after 20s → background job b3"),
+        dim("    compiling…"),
+    ];
+    let want = [
+        "call:[a]".to_owned(),
+        "settle".to_owned(),
+        format!("print:{}", a_block.join("|")),
+        "print:".to_owned(),
+        "call:[shell cargo test]".to_owned(),
+        "settle".to_owned(),
+        format!("print:{}", yield_block.join("|")),
+    ];
+    assert_eq!(rec.joined(), want.join("\n"));
 }

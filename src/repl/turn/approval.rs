@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 use crate::host::{Event, Kind, Presenter, State};
 use crate::sync::lock;
 use crate::tool::fmt::display_tool_name;
-use crate::tool::{Artifact, ArtifactKind};
 use crate::ui::facade::{SelectSpec, Ui, UiError};
 use tokio_util::sync::CancellationToken;
 
@@ -88,48 +87,5 @@ impl ApprovalGate {
 
     fn granted(&self, name: &str) -> bool {
         lock(&self.approved).contains(name)
-    }
-}
-
-/// Renders a `Note` artifact into the event row's trailing detail: a short fact about
-/// the call meant for the user and withheld from the model (approval.go:84-89
-/// `artifactNote`). The `Diff` kind belongs to the expanded path and is ignored here —
-/// one side channel, read differently by the two renderers.
-pub(crate) fn artifact_note(art: Option<&Artifact>) -> String {
-    match art {
-        Some(a) if a.kind == ArtifactKind::Note && !a.lines.is_empty() => a.lines.join(" · "),
-        _ => String::new(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::tool::{Artifact, ArtifactKind};
-
-    use super::artifact_note;
-
-    // Go: chat/approval.go:84-89 — note lines join with " · "; diffs and empties render
-    // nothing.
-    #[test]
-    fn test_artifact_note() {
-        let note = Artifact {
-            kind: ArtifactKind::Note,
-            title: "note".to_owned(),
-            lines: vec!["3 rounds".to_owned(), "1.2k tokens".to_owned()],
-        };
-        assert_eq!(artifact_note(Some(&note)), "3 rounds · 1.2k tokens");
-        let diff = Artifact {
-            kind: ArtifactKind::Diff,
-            title: "a.txt".to_owned(),
-            lines: vec!["+x".to_owned()],
-        };
-        assert_eq!(artifact_note(Some(&diff)), "");
-        let empty = Artifact {
-            kind: ArtifactKind::Note,
-            title: String::new(),
-            lines: Vec::new(),
-        };
-        assert_eq!(artifact_note(Some(&empty)), "");
-        assert_eq!(artifact_note(None), "");
     }
 }

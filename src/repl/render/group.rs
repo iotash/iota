@@ -14,6 +14,7 @@ use crate::tool::{Artifact, ArtifactKind};
 
 use crate::repl::render::styles::{cyan, dim, red, truncate_runes};
 use crate::repl::render::transcript::{BlockKind, Inner, Transcript};
+use crate::text::go_duration;
 
 /// Aggregation state for one activity group (transcript.go `activityGroup`). The group
 /// owns the lifecycle widget for its whole lifetime; a content boundary (or
@@ -49,8 +50,13 @@ pub struct ActivityGroup {
     pub first_err: bool,
     /// The lone call's user-only trailing detail.
     pub first_note: String,
+    /// The lone call's job, when it became one (`ArtifactKind::Job`): the classic block's receipt row.
+    pub first_job: Option<Artifact>,
     /// Red breakout rows appended under the summary.
     pub fail_lines: Vec<String>,
+    /// The jobs the group's calls started — yielded or `background: true` — by id, for the summary's
+    /// `job b3 running` / `3 jobs running` segment.
+    pub jobs: Vec<String>,
 }
 
 impl ActivityGroup {
@@ -108,8 +114,13 @@ pub(crate) fn raise_pending(inner: &mut Inner) {
 /// The group's settled form (transcript.go `groupLinesLocked`):
 ///
 /// - thinking only        → `"◇ thought for 15s"` (the classic marker)
-/// - a lone unthought call → the classic header + result lines
-/// - anything else        → one summary line + red breakout rows per failure
+/// - a lone unthought call → the classic header + result lines (a yielded call: its receipt row over
+///   the output it had so far)
+/// - anything else        → one summary line — with the jobs its calls started, `job b3 running` or
+///   `3 jobs running` — + red breakout rows per failure
+///
+/// The summary's clock counts a yielded call up to its yield only, and the line never changes once it
+/// is down: the job's notice lands later as a line of its own.
 fn group_lines(g: &ActivityGroup) -> Vec<String> {
     if g.tools == 0 {
         return vec![dim(&format!("◇ thought for {}", elapsed(g.think_dur)))];
@@ -123,26 +134,84 @@ fn group_lines(g: &ActivityGroup) -> Vec<String> {
             head.push_str(&dim(&format!(" · {}", g.first_note)));
         }
         let mut lines = vec![head];
-        lines.extend(classic_result(&g.first_result, g.first_err));
+        lines.extend(classic_rows(
+            &g.first_result,
+            g.first_err,
+            g.first_job.as_ref(),
+        ));
         return lines;
     }
-    let ran = format!(
+    let mut summary = format!(
         "ran {} {} in {}",
         g.tools,
         plural_tools(g.tools),
         elapsed(g.tools_dur)
     );
-    let mut line = if g.thinks > 0 {
-        dim(&format!("◇ thought for {} · {ran}", elapsed(g.think_dur)))
-    } else {
-        dim(&format!("◇ {ran}"))
+    if g.thinks > 0 {
+        summary = format!("thought for {} · {summary}", elapsed(g.think_dur));
+    }
+    let jobs = match g.jobs.as_slice() {
+        [] => String::new(),
+        [id] => format!(" · job {id} running"),
+        many => format!(" · {} jobs running", many.len()),
     };
+    summary.push_str(&jobs);
+    let mut line = dim(&format!("◇ {summary}"));
     if g.fails > 0 {
         line.push_str(&red(&format!(" · {} failed", g.fails)));
     }
     let mut lines = vec![line];
     lines.extend(g.fail_lines.iter().cloned());
     lines
+}
+
+/// The classic block's rows under the header: a yielded call's receipt row (`⎿ still running after 20s
+/// → background job b3`) over the output it had so far, folded like any result and dim; every other
+/// call's result rows.
+fn classic_rows(result: &str, is_error: bool, job: Option<&Artifact>) -> Vec<String> {
+    let Some(receipt) = yield_receipt(job) else {
+        return classic_result(result, is_error);
+    };
+    let mut rows = vec![dim(&format!("  ⎿ {receipt}"))];
+    let Some(art) = job else { return rows };
+    if !art.lines.is_empty() {
+        rows.extend(
+            crate::tool::fmt::continuation_rows(&art.lines.join("\n"))
+                .iter()
+                .map(|row| dim(row)),
+        );
+    }
+    rows
+}
+
+/// The one line that says a call is a job now — `still running after 20s → background job b3` —
+/// for a `Job` artifact that yielded; `None` for anything else, a `background: true` start included
+/// (its result text IS its receipt).
+pub(crate) fn yield_receipt(art: Option<&Artifact>) -> Option<String> {
+    match art {
+        Some(Artifact {
+            kind: ArtifactKind::Job {
+                yielded_after: Some(after),
+            },
+            title,
+            ..
+        }) => Some(format!(
+            "still running after {} → background job {title}",
+            go_duration(*after)
+        )),
+        _ => None,
+    }
+}
+
+/// Renders a `Note` artifact into the event row's trailing detail: a short fact about
+/// the call meant for the user and withheld from the model (approval.go:84-89
+/// `artifactNote`). The `Diff` kind belongs to the expanded path and the `Job` kind to the
+/// group's own rows — one side channel, read differently by the renderers.
+pub(crate) fn artifact_note(art: Option<&Artifact>) -> String {
+    match art {
+        Some(a) if a.kind == ArtifactKind::Note && !a.lines.is_empty() => a.lines.join(" · "),
+        _ => String::new(),
+    }
 }
 
 /// A result rendered the way the settle path shows it: the unstyled
@@ -251,17 +320,21 @@ impl Transcript {
     /// Records a completed tool call into the group (transcript.go `finishCall`):
     /// counters, a body row scrolling through the widget, the failure breakout, and —
     /// while it is the group's only call — the material for the classic degenerate form.
-    /// In verbose mode the group settles immediately. `note` is an optional trailing
-    /// detail for the event row (`""` = none) — a fact about the call the user should
-    /// see and the model should not be billed for.
+    /// In verbose mode the group settles immediately. `art` is what the call posted for
+    /// the user's eyes — a `Note` becomes the event row's trailing detail, a `Job` the
+    /// receipt of a call that is a background job now (the row's snippet, the classic
+    /// block's `⎿` line, the summary's `job b3 running`) — and the model is never billed
+    /// for it.
     pub fn finish_call(
         &self,
         header: &str,
         result: &str,
         is_error: bool,
         dur: Duration,
-        note: &str,
+        art: Option<&Artifact>,
     ) {
+        let note = artifact_note(art);
+        let job = art.filter(|a| matches!(a.kind, ArtifactKind::Job { .. }));
         let mut inner = self.lock();
         if !inner.grp.up {
             // Defensive: a finish without a raise (never in practice).
@@ -274,6 +347,10 @@ impl Transcript {
             result.clone_into(&mut inner.grp.first_result);
             inner.grp.first_err = is_error;
             note.clone_into(&mut inner.grp.first_note);
+            inner.grp.first_job = job.cloned();
+        }
+        if let Some(job) = job {
+            inner.grp.jobs.push(job.title.clone());
         }
         if is_error {
             inner.grp.fails += 1;
@@ -284,9 +361,16 @@ impl Transcript {
             settle_group(&mut inner);
             return;
         }
-        inner
-            .u
-            .call_line(&event_line(header, result, is_error, note));
+        // A yielded call's row says what became of it, not the first line of a receipt written for
+        // the model.
+        let snippet = yield_receipt(job);
+        let row = event_line(
+            header,
+            snippet.as_deref().unwrap_or(result),
+            is_error,
+            &note,
+        );
+        inner.u.call_line(&row);
         ensure_widget(&mut inner, &dim("Working…"));
         call_detail(&mut inner);
     }

@@ -30,7 +30,7 @@ use crate::ui::facade::UiError;
 
 use crate::repl::context::meter::CtxMeter;
 use crate::repl::render::styles::cyan;
-use crate::repl::turn::approval::artifact_note;
+
 use crate::repl::turn::retry::retry_round;
 use crate::repl::turn::steer::Steerer;
 use crate::repl::turn::{Turn, TurnFailure, TurnOutput, TurnReport, collect_images, stream_round};
@@ -227,7 +227,7 @@ async fn walk(
                     t.cx.tr.settle_showcase(&header, None, DECLINED, true);
                 } else {
                     t.cx.tr
-                        .finish_call(&header, DECLINED, true, Duration::ZERO, "");
+                        .finish_call(&header, DECLINED, true, Duration::ZERO, None);
                 }
                 history.push(Message::tool_result(tc, DECLINED, true));
                 continue;
@@ -263,7 +263,7 @@ async fn walk(
                 .settle_showcase(&header, art.as_ref(), &text, is_error);
         } else {
             t.cx.tr
-                .finish_call(&header, &text, is_error, dur, &artifact_note(art.as_ref()));
+                .finish_call(&header, &text, is_error, dur, art.as_ref());
         }
         let result = Message::tool_result(tc, text, is_error);
         // A tool result consumes context the moment it lands — a big file read should move
@@ -365,7 +365,7 @@ async fn run_parallel_batch(t: &Turn<'_>, calls: &[ToolCall]) -> Vec<Message> {
                     is_error,
                     duration: started.elapsed(),
                 },
-                artifact_note(slot.take().as_ref()),
+                slot.take(),
             )
         }
     }))
@@ -374,9 +374,9 @@ async fn run_parallel_batch(t: &Turn<'_>, calls: &[ToolCall]) -> Vec<Message> {
     batch_cancel.cancel();
 
     let mut msgs = Vec::with_capacity(calls.len());
-    for ((tc, header), (o, note)) in calls.iter().zip(&headers).zip(&outcomes) {
+    for ((tc, header), (o, art)) in calls.iter().zip(&headers).zip(&outcomes) {
         t.cx.tr
-            .finish_call(header, &o.text, o.is_error, o.duration, note);
+            .finish_call(header, &o.text, o.is_error, o.duration, art.as_ref());
         msgs.push(Message::tool_result(tc, o.text.clone(), o.is_error));
     }
     msgs

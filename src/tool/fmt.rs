@@ -77,6 +77,17 @@ pub(crate) fn display_tool_name(name: &str) -> String {
 /// `"    %s"` rest; `"(no output)"` for blank. Returns the rows (caller styles red on
 /// error).
 pub fn print_tool_result_lines(text: &str, _is_error: bool) -> Vec<String> {
+    result_rows(text, "  ⎿ ")
+}
+
+/// The same fold with every row a continuation (`"    %s"`): the rows under a receipt that already
+/// took the `⎿` — a yielded call's output so far, beneath its `still running` line.
+pub fn continuation_rows(text: &str) -> Vec<String> {
+    result_rows(text, "    ")
+}
+
+/// The fold behind both: `first` leads the first row, four blanks the rest.
+fn result_rows(text: &str, first: &str) -> Vec<String> {
     let trimmed = text.trim_end_matches('\n');
     let body = if trimmed.trim().is_empty() {
         "(no output)"
@@ -95,7 +106,7 @@ pub fn print_tool_result_lines(text: &str, _is_error: bool) -> Vec<String> {
     for (i, ln) in show.iter().enumerate() {
         let ln = truncate_runes(ln, 120);
         if i == 0 {
-            out.push(format!("  ⎿ {ln}"));
+            out.push(format!("{first}{ln}"));
         } else {
             out.push(format!("    {ln}"));
         }
