@@ -29,7 +29,6 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 use crate::shell::exec::{self, Capture, Options, Outcome, RunResult, ShellError, SpawnFail};
-use crate::text::go_duration;
 
 /// How many jobs one run may have in flight. Past it the tool refuses rather than queues: a queue the model
 /// cannot see would make `background` a lie.
@@ -528,12 +527,12 @@ async fn supervise(
 /// The notice's first line: what happened, in a fixed shape the model can pattern-match.
 pub fn notice_headline(done: &JobDone) -> String {
     let status = if done.timed_out {
-        format!("timed out after {}", go_duration(done.elapsed))
+        format!("timed out after {}", crate::text::elapsed(done.elapsed))
     } else if done.killed {
         "killed".to_owned()
     } else {
         match done.exit {
-            Some(code) => format!("exit {code} after {}", go_duration(done.elapsed)),
+            Some(code) => format!("exit {code} after {}", crate::text::elapsed(done.elapsed)),
             None => "killed".to_owned(),
         }
     };
@@ -596,7 +595,7 @@ mod tests {
         };
         assert_eq!(
             notice_headline(&slow),
-            "[background job b1 finished: timed out after 10m0s] make test"
+            "[background job b1 finished: timed out after 10m 0s] make test"
         );
         let killed = JobDone {
             exit: None,
@@ -615,6 +614,24 @@ mod tests {
         assert_eq!(
             notice_headline(&gone),
             "[background job b1 finished: killed] make test"
+        );
+    }
+
+    /// The notice's duration is the UI's compact style, not Go's nanosecond string: a job that
+    /// ran 6.009 s says `6s`, one that ran 72 s says `1m 12s` (the group summary and the status
+    /// row say the same).
+    #[test]
+    fn notice_headline_rounds_like_every_other_timer() {
+        let mut done = done();
+        done.elapsed = Duration::from_millis(6_009);
+        assert_eq!(
+            notice_headline(&done),
+            "[background job b1 finished: exit 0 after 6s] make test"
+        );
+        done.elapsed = Duration::from_secs(72);
+        assert_eq!(
+            notice_headline(&done),
+            "[background job b1 finished: exit 0 after 1m 12s] make test"
         );
     }
 
