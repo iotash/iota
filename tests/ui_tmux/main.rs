@@ -60,6 +60,7 @@
 //! | `22-retry.sh` | TUI-VERIFY batch C | — (503 → `retrying (attempt`, the steer message lands once, Ctrl+C during the backoff leaves no red block) |
 //! | `23-mcp-oauth.sh` | brain `mcp-cli-and-oauth` | — (a server whose 401 asks for a login, `auth` undeclared: the not-logged-in notice, the MCP tab of `/tools`, `iota mcp login` through `$BROWSER` beside the chat, a restart that connects, `iota mcp logout`) |
 //! | `24-iota-outside-sandbox.sh` | brain `harness-prompt`, X-44 | — (a sandboxed `shell` set asked about `iota mcp list` from the model: the `(outside the sandbox)` mark on the prompt and the header, the allowed call's output, iota in a pipe unasked and unmarked) |
+//! | `25-shell-yield.sh` | TUI-VERIFY §8.6–8.8, X-50 | — (a foreground `shell` call past its window: the receipt row, `/jobs` in the completion row and its viewer, the status row's job clock walking, all gone after the notice) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -529,4 +530,14 @@ fn tmux_mcp_oauth_round_trip() {
 #[test]
 fn tmux_iota_outside_the_sandbox() {
     run_scenario("24-iota-outside-sandbox.sh");
+}
+
+/// TUI-VERIFY §8.6–8.8 (DIVERGENCES X-50) — a foreground `shell` call that runs past its window (two
+/// seconds here, through `IOTA_SHELL_YIELD`) lets go: the classic block's `⎿ still running after 2s →
+/// background job b1` receipt, the model's reply carrying the text it was told, `/j` completing to `/jobs`
+/// and the Jobs viewer's row, the status row's `job b1 <command> Ns` segment with its seconds walking — and
+/// after the notice, no row, no segment, `/j` completing to nothing.
+#[test]
+fn tmux_shell_yield() {
+    run_scenario("25-shell-yield.sh");
 }

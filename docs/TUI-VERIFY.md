@@ -282,6 +282,34 @@ to run something slow in the background (`sleep 20; echo done`).
       `/quit` command; the exit is Ctrl+C at idle, twice, and `Jobs::kill_all` runs on the
       way out — `pgrep` sees the job before and not after.)*
 
+Since 2026-09-22 a foreground `shell` call lets go of its command after 20 s (DIVERGENCES
+X-50): the command runs on as a background job, and the three items below are what the chat
+shows for one. Scenario 25 drives them with the window shortened to two seconds
+(`IOTA_SHELL_YIELD=2`, a test hook read once at the binary edge); by hand, ask the model to
+run something that takes longer than twenty seconds in the foreground (`sleep 40; echo done`)
+and do not tell it to background it.
+
+- [x] 自动化：scenario 25 **8.6 The yield.** After 20 s the call's rows settle as the classic block with a
+      receipt where the result's first row would be — `⎿ still running after 20s → background
+      job b1` — and the output the command had printed by then under it, dim. The model's reply
+      follows at once (it was told `Still running after 20s as background job b1 (pid …)`), so
+      the turn never waited for the command. A group of several calls says `◇ ran 3 tools in
+      20s · job b1 running` instead, and that line never changes: the notice lands later
+      (8.1–8.3). *(Pinned: the receipt row once under the header, the reply's first line, no
+      notice yet.)*
+- [x] 自动化：scenario 25 **8.7 `/jobs`.** While the job runs, `/j` completes to `jobs` on the candidates row
+      and `/jobs` opens a viewer with a count and one row per job — `b1  12s  sleep 40; echo done
+      <log path>` — a snapshot, not a live view; ESC closes it. Once the notice has landed the
+      command is gone: `/j` completes to nothing and `/jobs` typed anyway goes to the model as
+      text (the one-table law, `tests/repl/{commands,jobs}.rs`).
+- [x] 自动化：scenario 25 **8.8 The status row's job segment.** While the job runs the status row ends in
+      `· job b1 sleep 40; echo done 12s`, the seconds walking once a second — with the composer
+      idle, no spinner anywhere — and the command giving way first when the terminal is narrow
+      (`· job b1 12s`). Two jobs read `· 2 jobs 1m03s`, the oldest's clock. After the notice the
+      segment is gone and the row is exactly what it was. *(Pinned: two captures 1.2 s apart
+      differ; the segment absent after the notice. The idle-with-no-job budgets of 06 and 14 are
+      untouched — the tick runs only while the set is non-empty.)*
+
 ## 8b. The `/model` combo box
 
 Added with the combo box (MIGRATION-ROADMAP Phase 1b §10); L1 pins the key ladder

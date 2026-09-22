@@ -5,8 +5,29 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ## Unreleased
 
+### Added
+
+- **`/jobs`.** While a background job runs, `/jobs` is a command: it opens a
+  viewer with one row per job — the id, how long it has run, the command, its
+  output file. The row leaves the completion list with the last job, so the
+  command exists exactly when there is something to show (X-50).
+- **The status row shows the running jobs.** One job reads `· job b3 cargo test
+  1m12s` at the end of the row, the seconds walking; several read `· 3 jobs
+  3m01s`, the oldest's clock. The segment is gone once the last job's notice has
+  landed, and an iota with no job repaints nothing (X-50).
+
 ### Changed
 
+- **A `shell` call lets go after 20 seconds.** A command still running then
+  carries on as a background job, and the call answers with what it printed so
+  far — `Still running after 20s as background job b3 …` — so the model never
+  has to guess in advance which commands will take long; the notice with the
+  exit status and the output arrives when the job ends, as it always did for
+  `background: true`. That switch is for what should not be waited on at all —
+  a server, a watcher, a child agent. In the chat, a lone call shows `⎿ still
+  running after 20s → background job b3` over the output so far, and a group of
+  calls says `· job b3 running`. With 16 jobs already running the call is
+  waited for as before and says so (X-50).
 - **The banner is a card.** The three facts — `ι> iota` and the version, the
   mode row, the directory — stand inside a rounded frame that hugs the widest
   of them; the half-block wordmark is gone. The dots between the mode row's
