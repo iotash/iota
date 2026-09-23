@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::sync::lock;
 use crate::text::ansi::strip_sgr;
-use crate::ui::facade::{Panel, RefreshFn, TabbedResult};
+use crate::ui::facade::{Panel, TabbedResult};
 use crossterm::event::KeyCode;
 
 use crate::ui::testutil::{Surf, ch, key};
@@ -43,7 +43,7 @@ fn open_search_view(lines: Vec<String>) -> Surf {
 /// `/tools` and `/debug` refresh twice a second under exactly this shape.
 fn live_view(title: &str, slot: &Arc<Mutex<Vec<String>>>) -> Panel {
     let body = Arc::clone(slot);
-    let refresh: RefreshFn = Box::new(move || lock(&body).clone());
+    let refresh = move || lock(&body).clone();
     Panel::view(title.to_owned(), lock(slot).clone()).with_refresh(refresh)
 }
 

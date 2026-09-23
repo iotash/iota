@@ -95,8 +95,32 @@ pub enum PanelKind {
     View,
 }
 
-/// Live-refresh closure; runs on the UI loop thread at tick time.
-pub(crate) type RefreshFn = Box<dyn FnMut() -> Vec<String> + Send>;
+/// Live-refresh closure; runs on the UI loop thread at tick time. Built by [`Panel::with_refresh`] from
+/// any closure whose result converts into a [`Refreshed`] — plain rows included.
+pub(crate) type RefreshFn = Box<dyn FnMut() -> Refreshed + Send>;
+
+/// What one live refresh hands the surface: the panel's rows again, and — for a row panel whose rows
+/// come and go — one KEY per row, a stable identity (a job's id, say) the cursor and the checks follow
+/// across the refresh instead of the row's index. With no keys the cursor keeps its index, clamped to
+/// the new length, as a viewer's does. The prompt line above the body can move with the rows too.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Refreshed {
+    /// The rows (may carry raw SGR).
+    pub rows: Vec<String>,
+    /// One key per row, or empty for an index-keyed refresh.
+    pub keys: Vec<String>,
+    /// A new prompt line, or `None` to leave it.
+    pub prompt: Option<String>,
+}
+
+impl From<Vec<String>> for Refreshed {
+    fn from(rows: Vec<String>) -> Self {
+        Self {
+            rows,
+            ..Self::default()
+        }
+    }
+}
 
 /// Preview closure of a `Picker` panel (tabbed.go:35-41 `Panel.Preview`): `(index, max_cols,
 /// max_rows) -> rows`; runs on the UI loop thread when the selection or the pane geometry changes.
@@ -132,6 +156,9 @@ pub struct Panel {
     pub height: usize,
     /// Live refresh of the rows; runs on the UI loop thread at tick time.
     pub refresh: Option<RefreshFn>,
+    /// One key per row of a row panel, the identity a keyed [`Refreshed`] carries on with; empty when the
+    /// refresh (if any) goes by index.
+    pub keys: Vec<String>,
     /// The kind and its data.
     pub body: PanelBody,
 }
@@ -372,10 +399,22 @@ impl Panel {
         self
     }
 
-    /// With a live refresh of the rows.
+    /// With a live refresh of the rows: a closure returning the rows, or a [`Refreshed`] when the cursor
+    /// and the checks should follow a key rather than an index.
     #[must_use]
-    pub fn with_refresh(mut self, refresh: RefreshFn) -> Self {
-        self.refresh = Some(refresh);
+    pub fn with_refresh<R: Into<Refreshed>>(
+        mut self,
+        mut refresh: impl FnMut() -> R + Send + 'static,
+    ) -> Self {
+        self.refresh = Some(Box::new(move || refresh().into()));
+        self
+    }
+
+    /// With one key per row (see [`Refreshed::keys`]): what the first keyed refresh maps the opening
+    /// cursor and checks from.
+    #[must_use]
+    pub fn with_keys(mut self, keys: Vec<String>) -> Self {
+        self.keys = keys;
         self
     }
 

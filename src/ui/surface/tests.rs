@@ -20,7 +20,7 @@ use crate::sync::lock;
 use crate::text::ansi::{ansi_width, strip_sgr};
 use crate::text::width::str_width;
 use crate::ui::facade::{
-    ListBody, Panel, PanelBody, PanelKind, PickerBody, RefreshFn, TabbedSpec, ViewBody,
+    ListBody, Panel, PanelBody, PanelKind, PickerBody, Refreshed, TabbedSpec, ViewBody,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
@@ -618,10 +618,10 @@ fn chips_and_checkbox_glyphs_are_byte_exact() {
 fn a_live_panel_refreshes_on_tick_and_keeps_the_cursor() {
     let n = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&n);
-    let refresh: RefreshFn = Box::new(move || {
+    let refresh = move || {
         let k = counter.fetch_add(1, Ordering::Relaxed) + 1;
         vec![format!("tick {k}")]
-    });
+    };
     let mut s = Surf::open(vec![
         Panel::view("Live".to_owned(), Vec::new()).with_refresh(refresh),
         Panel::view("Static".to_owned(), vec!["frozen".to_owned()]),
@@ -645,7 +645,7 @@ fn a_live_panel_refreshes_on_tick_and_keeps_the_cursor() {
 fn refresh_clamps_the_cursor_and_refilters() {
     let live = Arc::new(Mutex::new(rows_of(40, |i| format!("item-{i:02}"))));
     let src = Arc::clone(&live);
-    let refresh: RefreshFn = Box::new(move || lock(&src).clone());
+    let refresh = move || lock(&src).clone();
     let mut s = Surf::open(vec![
         Panel::list("Live".to_owned(), rows_of(40, |i| format!("item-{i:02}")))
             .with_search(true)
@@ -664,6 +664,76 @@ fn refresh_clamps_the_cursor_and_refilters() {
     assert_eq!(s.ps(0).items.len(), 32);
     assert_eq!(s.ps(0).view, vec![30, 31]);
     assert!(s.ps(0).view.contains(&s.ps(0).cursor));
+}
+
+/// A KEYED refresh (`Refreshed::keys`): the cursor follows its row's key when rows come and go
+/// above it, each check follows its key's row, a key that is gone drops its check and leaves the
+/// cursor at its index (clamped), and the prompt moves when the refresh brings one. `/jobs`: the
+/// rows are jobs, and the job under the cursor stays the job under the cursor.
+#[test]
+fn a_keyed_refresh_keeps_the_cursor_and_the_checks_on_their_keys() {
+    let live: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(vec!["b1", "b2", "b3", "b4"]));
+    let src = Arc::clone(&live);
+    let refresh = move || {
+        let ids = lock(&src).clone();
+        Refreshed {
+            rows: ids.iter().map(|id| format!("{id}  running")).collect(),
+            keys: ids.iter().map(|id| (*id).to_owned()).collect(),
+            prompt: Some(format!("{} jobs", ids.len())),
+        }
+    };
+    let opening = refresh();
+    let mut s = Surf::open(vec![
+        Panel::multi("Kill".to_owned(), opening.rows)
+            .with_keys(opening.keys)
+            .with_prompt("4 jobs")
+            .with_refresh(refresh),
+    ]);
+    // Cursor on b3, b2 and b3 checked.
+    s.tap(key(KeyCode::Down));
+    s.tap(ch(' '));
+    s.tap(key(KeyCode::Down));
+    s.tap(ch(' '));
+    assert_eq!(s.ps(0).cursor, 2);
+    assert_eq!(s.ps(0).checked.iter().copied().collect::<Vec<_>>(), [1, 2]);
+
+    // b1 finishes: everything shifts up one, and the cursor and the checks shift with their jobs.
+    *lock(&live) = vec!["b2", "b3", "b4"];
+    s.st.tick();
+    assert_eq!(s.ps(0).cursor, 1, "the cursor stayed on b3");
+    assert_eq!(s.ps(0).checked.iter().copied().collect::<Vec<_>>(), [0, 1]);
+    assert_eq!(s.ps(0).keys, ["b2", "b3", "b4"]);
+    assert_eq!(
+        s.st.slots[0].spec.prompt, "3 jobs",
+        "the prompt moved with the rows"
+    );
+
+    // A new job lands at the end: nothing under the cursor moves.
+    *lock(&live) = vec!["b2", "b3", "b4", "b5"];
+    s.st.tick();
+    assert_eq!(s.ps(0).cursor, 1);
+    assert_eq!(s.ps(0).checked.iter().copied().collect::<Vec<_>>(), [0, 1]);
+
+    // b3 — the cursor's row, checked — finishes: its check is gone, b2's stays, and the cursor is
+    // where it was (now b4).
+    *lock(&live) = vec!["b2", "b4", "b5"];
+    s.st.tick();
+    assert_eq!(s.ps(0).cursor, 1);
+    assert_eq!(s.ps(0).checked.iter().copied().collect::<Vec<_>>(), [0]);
+    assert_eq!(s.ps(0).items[1], "b4  running");
+
+    // Everything but b2 finishes with the cursor past the end: clamped to the last row.
+    *lock(&live) = vec!["b2"];
+    s.st.tick();
+    assert_eq!(s.ps(0).cursor, 0);
+    assert_eq!(s.ps(0).checked.iter().copied().collect::<Vec<_>>(), [0]);
+    // …and none at all: no cursor to speak of, no checks, and the commit is empty.
+    *lock(&live) = Vec::new();
+    s.st.tick();
+    assert_eq!(s.ps(0).cursor, 0);
+    assert!(s.ps(0).checked.is_empty());
+    let r = closed(s.press(key(KeyCode::Enter)));
+    assert!(r.panels[0].checked.is_empty());
 }
 
 // --- the surface_key ladder ---------------------------------------------------

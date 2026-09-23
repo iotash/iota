@@ -41,6 +41,10 @@ pub(crate) struct PanelState {
     /// Live copy of `Panel::items`/`Panel::lines` (the refresh target; Custom panels
     /// carry the appended `"Other…"` row).
     pub(crate) items: Vec<String>,
+    /// One key per row of `items` when the panel's rows carry an identity (`Panel::keys`, then each
+    /// keyed refresh); empty when a refresh goes by index. What the cursor and the checks are mapped
+    /// through when the rows change under them.
+    pub(crate) keys: Vec<String>,
     /// Browser: current directory.
     pub(crate) dir: PathBuf,
     /// Browser: current entries.
@@ -101,6 +105,7 @@ impl PanelState {
             on: false,
             offset: 0,
             items: Vec::new(),
+            keys: Vec::new(),
             dir: PathBuf::new(),
             entries: Vec::new(),
             chosen: String::new(),
@@ -169,7 +174,35 @@ impl PanelState {
                 st.set_dir(p, &dir);
             }
         }
+        st.keys.clone_from(&p.keys);
         st
+    }
+
+    /// Takes one refresh's rows (`Refreshed`): on a keyed panel — one that opened with keys, or is
+    /// handed some now — the cursor moves to the row its key now sits on and each check to its key's
+    /// new row, a key that is gone dropping its check and leaving the cursor at its index; elsewhere
+    /// the rows are simply replaced. The cursor is clamped to the new length either way, and a check
+    /// past it is gone.
+    pub(crate) fn take_refreshed(&mut self, rows: Vec<String>, keys: Vec<String>) {
+        if !keys.is_empty() || !self.keys.is_empty() {
+            let at = |key: &String| keys.iter().position(|k| k == key);
+            if let Some(now) = self.keys.get(self.cursor).and_then(at) {
+                self.cursor = now;
+            }
+            self.checked = self
+                .checked
+                .iter()
+                .filter_map(|&i| self.keys.get(i))
+                .filter_map(at)
+                .collect();
+            self.keys = keys;
+        }
+        self.items = rows;
+        if self.cursor >= self.items.len() {
+            self.cursor = self.items.len().saturating_sub(1);
+        }
+        let len = self.items.len();
+        self.checked.retain(|&i| i < len);
     }
 
     /// Loads a browser panel's directory: `"../"` + dirs + files, name-sorted,

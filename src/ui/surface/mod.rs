@@ -464,7 +464,9 @@ impl SurfaceState {
 
 /// One live-refresh pass (tabbed.go:318-341 surfTickMsg, generation-guarded by the
 /// LOOP before it calls here): every panel with a `refresh` closure re-reads its
-/// rows, the cursor clamps, the view re-filters against the new content, and a View
+/// rows, the cursor clamps — or follows its row's KEY when the refresh carries keys
+/// (`Refreshed`), the checks with it — the prompt moves when the refresh brings one,
+/// the view re-filters against the new content, and a View
 /// with an applied query re-collects its hits ANCHORED ON THE HIT — content growing
 /// above shifts indices but not the match being read.
 impl SurfaceState {
@@ -472,13 +474,13 @@ impl SurfaceState {
     pub(crate) fn tick(&mut self) {
         for slot in &mut self.slots {
             let (p, ps) = (&mut slot.spec, &mut slot.state);
-            let items = match p.refresh.as_mut() {
+            let refreshed = match p.refresh.as_mut() {
                 Some(refresh) => refresh(),
                 None => continue,
             };
-            ps.items = items;
-            if ps.cursor >= ps.items.len() {
-                ps.cursor = ps.items.len().saturating_sub(1);
+            ps.take_refreshed(refreshed.rows, refreshed.keys);
+            if let Some(prompt) = refreshed.prompt {
+                p.prompt = prompt;
             }
             // Re-filter against the new content: rows grown under an applied query must
             // be judged by it too.
