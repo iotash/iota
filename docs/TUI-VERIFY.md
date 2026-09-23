@@ -298,24 +298,37 @@ and do not tell it to background it.
       (8.1–8.3). *(Pinned: the receipt row once under the header, the reply's first line, no
       notice yet.)*
 - [x] 自动化：scenario 25 **8.7 `/jobs`.** While the job runs, `/j` completes to `jobs` on the candidates row
-      and `/jobs` opens a single-select list — `1 job running` above it, one row per job, `b1  12s
-      sleep 40; echo done`, the command as the `[shell …]` header showed it and no log path — a
-      snapshot, not a live view. Enter on a row opens the job's page, `job b1`: `command:` in full
-      (a script line by line under the first), `running:  12s (started 14:02:11)`, `pid:`,
-      `output:` with the log path, `── last 20 lines ──` and the log's tail (`(no output yet)` for
-      none). ESC on the page returns to the list, re-read; ESC on the list closes it. Once the
-      notice has landed the command is gone: `/j` completes to nothing and `/jobs` typed anyway
-      goes to the model as text (the one-table law, `tests/repl/{commands,jobs}.rs`). *(Pinned:
-      the row without a path; the page's `command:`, `running:`, `pid:` and `output:` rows and its
-      empty tail; ESC back to the list; ESC closing it.)*
+      and `/jobs` opens two tabs, `Jobs` and `Kill`. `Jobs` is a single-select list — `1 job running`
+      above it, one row per job, `b1  12s  sleep 40; echo done`, the command as the `[shell …]` header
+      showed it and no log path — and it is LIVE: the clock on the row walks once a second, a job that
+      ends leaves the list, one that starts joins it, the count above follows, and the cursor stays on
+      the job it was on (not the row number) while a search filter is kept. Enter on a row opens the
+      job's page, `job b1`: `command:` in full (a script line by line under the first),
+      `running:  12s (started 14:02:11)`, `pid:`, `output:` with the log path, `── last 20 lines ──`
+      and the log's tail (`(no output yet)` for none) — live too, the clock and the tail re-read each
+      second; should the job end while the page is up, the clock line becomes
+      `finished: exit 0 after 1m 12s` (or `finished: killed`, `finished: timed out after …`) and the
+      rest stays. ESC on the page returns to the tabs, re-read; ESC on the tabs closes them. `Kill`
+      (Tab) is the same rows with a checkbox each: Space checks, Enter kills the checked and closes the
+      surface, and each killed job's notice `[background job b2 finished: killed] …` is the whole
+      report — nothing else is printed. No key on the page kills (letters on the list are the
+      filter). Once the last notice has landed the command is gone: `/j` completes to nothing and
+      `/jobs` typed anyway goes to the model as text (the one-table law,
+      `tests/repl/{commands,jobs}.rs`). *(Pinned: the row without a path; the page's `command:`,
+      `running:`, `pid:` and `output:` rows and its empty tail; ESC back to the list; ESC closing it;
+      with a second job, the row's clock differing between two captures 1.2 s apart, the Kill tab's
+      checkboxes, Space checking one row, Enter closing the surface, the `killed` notice landing once
+      and running a turn, the list reopened with one row fewer. The cursor following the job and the
+      page's `finished:` line are pinned in `ui::surface::tests` and `repl::commands::jobs::tests`.)*
 - [x] 自动化：scenario 25 **8.8 The status row's job segment.** While the job runs the status row ends in
       `· job b1 sleep 40; echo done 12s`, the command in the `[shell …]` header's cyan between the
       faint id and clock, the seconds walking once a second — with the composer idle, no spinner
       anywhere — and the command giving way first when the terminal is narrow (`· job b1 12s`).
-      Two jobs read `· 2 jobs 1m03s`, the oldest's clock. After the notice the
-      segment is gone and the row is exactly what it was. *(Pinned: two captures 1.2 s apart
-      differ; the segment absent after the notice. The idle-with-no-job budgets of 06 and 14 are
-      untouched — the tick runs only while the set is non-empty.)*
+      Two jobs read `· 2 jobs 1m03s`, the oldest's clock, and one job again once the other is
+      killed from the Kill tab. After the notice the segment is gone and the row is exactly what it
+      was. *(Pinned: two captures 1.2 s apart differ; `· 2 jobs` with the second job started and
+      `job b1` again after it is killed; the segment absent after the notice. The idle-with-no-job
+      budgets of 06 and 14 are untouched — the tick runs only while the set is non-empty.)*
 
 ## 8b. The `/model` combo box
 

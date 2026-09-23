@@ -19,9 +19,27 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   header and the seconds walking; several read `· 3 jobs 3m01s`, the oldest's
   clock. The segment is gone once the last job's notice has landed, and an iota
   with no job repaints nothing (X-50).
+- **`/jobs` is live.** The list and the page re-read the jobs once a second:
+  the clocks walk, a job that ends leaves the list and one that starts joins
+  it, the cursor stays on the job it was on, and a page open on a job that
+  ends says so where the clock was — `finished: exit 0 after 1m 12s`,
+  `finished: killed`, `finished: timed out after …` — with the rest of the page
+  as it was (X-50).
+- **A Kill tab in `/jobs`.** Tab to `Kill`, Space to check jobs, Enter to kill
+  them: the surface closes and each job's notice, `[background job b3
+  finished: killed] …`, says what happened, as it does for any job that ends.
+  There is no kill key on a job's page — letters on the list are its search
+  (X-50).
 
 ### Changed
 
+- **A `shell` command has no deadline unless the call sets one.** A call without
+  `timeout` runs until the command exits — or iota exits, which kills every
+  job — instead of being killed after 600 seconds; a call with `timeout` is
+  killed after that many seconds, any number, where 3600 used to be the
+  ceiling. Once a long command runs on as a background job rather than holding
+  the turn, a default could only cut off a server, a watcher or a child agent
+  at an arbitrary minute (X-06).
 - **A command is cut the same way wherever it is named.** The finished-job
   notice, the `/jobs` row and the status row's job segment show a command as
   the call's `[shell …]` header did: the first line, ` …` when there are more,
