@@ -310,21 +310,6 @@ pub(crate) fn status_line(
         let _ = write!(plain, " · {}", seg.plain);
     }
 
-    if str_width(&plain) > width as usize {
-        // Truncation eats the tail, where the mode marker sits — re-append it: a
-        // narrow terminal is exactly where a silently changed layout is hardest to
-        // explain (model.go:1153-1163).
-        let mut line = truncate_ansi(&plain, (width as usize).max(4), "…");
-        if !dbg.is_empty() {
-            let marker = format!(" · {dbg}");
-            let room = (width as usize).saturating_sub(str_width(&marker));
-            if room > 4 {
-                line = truncate_ansi(&plain, room, "…") + &marker;
-            }
-        }
-        return format!("{FAINT}{line}{RESET}");
-    }
-
     let mut out = format!("  {CYAN}{FAINT}{model}{RESET}");
     if !tokens.is_empty() {
         let _ = write!(out, "{FAINT} · {RESET}{GREEN}{FAINT}{tokens}{RESET}");
@@ -343,6 +328,25 @@ pub(crate) fn status_line(
     }
     if let Some(seg) = &jobs_seg {
         let _ = write!(out, "{FAINT} · {}{RESET}", seg.styled);
+    }
+
+    if str_width(&plain) > width as usize {
+        // A row wider than the terminal is CUT, hues and all — `truncate_ansi` walks the
+        // styled row by display width and keeps every escape, the closing reset included.
+        // Go (model.go:1153-1163) and the port until 2026-09-23 fell back to the plain row
+        // under one faint here, which is why a chat's status row lost its colours once the
+        // token figures had grown a few digits on a narrow pane. Truncation eats the tail,
+        // where the mode marker sits — re-append it, styled: a narrow terminal is exactly
+        // where a silently changed layout is hardest to explain.
+        let mut line = truncate_ansi(&out, (width as usize).max(4), "…");
+        if !dbg.is_empty() {
+            let marker = format!("{FAINT} · {RESET}{YELLOW}{FAINT}{dbg}{RESET}");
+            let room = (width as usize).saturating_sub(str_width(" · ") + str_width(dbg));
+            if room > 4 {
+                line = truncate_ansi(&out, room, "…") + &marker;
+            }
+        }
+        return line;
     }
     out
 }

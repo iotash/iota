@@ -66,6 +66,10 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Fixed
 
+- **The status row keeps its colours when it is cut.** A row wider than the
+  terminal — the token figures grown a few digits, a long model name, a job
+  segment — used to fall back to one faint plain line; it is now cut with its
+  hues and its closing reset intact (X-51).
 - **The banner no longer prints twice on exit.** Leaving the chat right after
   it started — Ctrl+C or Ctrl+D at the prompt — left the banner on the screen
   twice: once in the scrollback, once more in the frame that had shown it. The

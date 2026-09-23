@@ -548,6 +548,42 @@ fn status_line_renders_fields_and_truncates() {
     );
 }
 
+/// A row cut to a narrow width keeps its hues: the model stays cyan and whatever survives of
+/// the tokens stays green. The port's fallback to one faint plain row is what made a chat's
+/// status row lose its colours after a few turns on a narrow pane (2026-09-23).
+#[test]
+fn status_line_keeps_its_hues_when_cut() {
+    let s = StatusData {
+        model: "claude-sonnet-4-5-20250929".to_owned(),
+        ctx_used: 12_000,
+        ctx_window: 200_000,
+        estimated: false,
+        in_tokens: 148_000,
+        out_tokens: 3_400,
+        ..StatusData::default()
+    };
+    let wide = status_line(&s, None, 0, false, &[], 120, Instant::now());
+    let cut = status_line(&s, None, 0, false, &[], 40, Instant::now());
+    assert_ne!(wide, cut, "40 columns must cut this row");
+    assert!(
+        str_width(&strip_sgr(&cut)) <= 40,
+        "cut status overflows: {:?}",
+        strip_sgr(&cut)
+    );
+    assert!(
+        cut.contains(&format!("{CYAN}{FAINT}claude-sonnet-4-5-20250929")),
+        "the model lost its cyan when the row was cut:\n{cut:?}"
+    );
+    assert!(
+        cut.contains(GREEN),
+        "the tokens lost their green when the row was cut:\n{cut:?}"
+    );
+    assert!(
+        cut.ends_with(RESET),
+        "the cut row must still close its styles:\n{cut:?}"
+    );
+}
+
 /// Exact SGR bytes per segment: model cyan+faint, tokens green+faint, ctx hue+faint;
 /// the em-dash placeholder keeps the model field visible.
 #[test]
