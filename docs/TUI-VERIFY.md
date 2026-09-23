@@ -298,14 +298,21 @@ and do not tell it to background it.
       (8.1–8.3). *(Pinned: the receipt row once under the header, the reply's first line, no
       notice yet.)*
 - [x] 自动化：scenario 25 **8.7 `/jobs`.** While the job runs, `/j` completes to `jobs` on the candidates row
-      and `/jobs` opens a viewer with a count and one row per job — `b1  12s  sleep 40; echo done
-      <log path>` — a snapshot, not a live view; ESC closes it. Once the notice has landed the
-      command is gone: `/j` completes to nothing and `/jobs` typed anyway goes to the model as
-      text (the one-table law, `tests/repl/{commands,jobs}.rs`).
+      and `/jobs` opens a single-select list — `1 job running` above it, one row per job, `b1  12s
+      sleep 40; echo done`, the command as the `[shell …]` header showed it and no log path — a
+      snapshot, not a live view. Enter on a row opens the job's page, `job b1`: `command:` in full
+      (a script line by line under the first), `running:  12s (started 14:02:11)`, `pid:`,
+      `output:` with the log path, `── last 20 lines ──` and the log's tail (`(no output yet)` for
+      none). ESC on the page returns to the list, re-read; ESC on the list closes it. Once the
+      notice has landed the command is gone: `/j` completes to nothing and `/jobs` typed anyway
+      goes to the model as text (the one-table law, `tests/repl/{commands,jobs}.rs`). *(Pinned:
+      the row without a path; the page's `command:`, `running:`, `pid:` and `output:` rows and its
+      empty tail; ESC back to the list; ESC closing it.)*
 - [x] 自动化：scenario 25 **8.8 The status row's job segment.** While the job runs the status row ends in
-      `· job b1 sleep 40; echo done 12s`, the seconds walking once a second — with the composer
-      idle, no spinner anywhere — and the command giving way first when the terminal is narrow
-      (`· job b1 12s`). Two jobs read `· 2 jobs 1m03s`, the oldest's clock. After the notice the
+      `· job b1 sleep 40; echo done 12s`, the command in the `[shell …]` header's cyan between the
+      faint id and clock, the seconds walking once a second — with the composer idle, no spinner
+      anywhere — and the command giving way first when the terminal is narrow (`· job b1 12s`).
+      Two jobs read `· 2 jobs 1m03s`, the oldest's clock. After the notice the
       segment is gone and the row is exactly what it was. *(Pinned: two captures 1.2 s apart
       differ; the segment absent after the notice. The idle-with-no-job budgets of 06 and 14 are
       untouched — the tick runs only while the set is non-empty.)*

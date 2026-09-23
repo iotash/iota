@@ -8,16 +8,26 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 ### Added
 
 - **`/jobs`.** While a background job runs, `/jobs` is a command: it opens a
-  viewer with one row per job — the id, how long it has run, the command, its
-  output file. The row leaves the completion list with the last job, so the
-  command exists exactly when there is something to show (X-50).
+  list with one row per job — the id, how long it has run, the command — and
+  Enter on a row opens the job's page: the command in full, the clock with the
+  time it started, the pid, the output file, and the file's last twenty lines.
+  Esc on the page goes back to the list, Esc on the list closes it. The row
+  leaves the completion list with the last job, so the command exists exactly
+  when there is something to show (X-50).
 - **The status row shows the running jobs.** One job reads `· job b3 cargo test
-  1m12s` at the end of the row, the seconds walking; several read `· 3 jobs
-  3m01s`, the oldest's clock. The segment is gone once the last job's notice has
-  landed, and an iota with no job repaints nothing (X-50).
+  1m12s` at the end of the row, the command in the same cyan as the call's
+  header and the seconds walking; several read `· 3 jobs 3m01s`, the oldest's
+  clock. The segment is gone once the last job's notice has landed, and an iota
+  with no job repaints nothing (X-50).
 
 ### Changed
 
+- **A command is cut the same way wherever it is named.** The finished-job
+  notice, the `/jobs` row and the status row's job segment show a command as
+  the call's `[shell …]` header did: the first line, ` …` when there are more,
+  no more than 64 characters. The notice used to paste the whole command, a
+  multi-line script included. The full text is on the job's page in `/jobs`
+  (X-50).
 - **A `shell` call lets go after 20 seconds.** A command still running then
   carries on as a background job, and the call answers with what it printed so
   far — `Still running after 20s as background job b3 …` — so the model never
