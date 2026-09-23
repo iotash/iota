@@ -524,7 +524,10 @@ async fn supervise(
     }
 }
 
-/// The notice's first line: what happened, in a fixed shape the model can pattern-match.
+/// The notice's first line: what happened, in a fixed shape the model can pattern-match. The command is
+/// the label the call's `[shell …]` header showed — `text::header_command`: one line, tail-cut at 64
+/// runes — so what the user reads at the end is what they read at the start; the full text is the
+/// `/jobs` detail page's.
 pub fn notice_headline(done: &JobDone) -> String {
     let status = if done.timed_out {
         format!("timed out after {}", crate::text::elapsed(done.elapsed))
@@ -538,7 +541,8 @@ pub fn notice_headline(done: &JobDone) -> String {
     };
     format!(
         "[background job {} finished: {status}] {}",
-        done.id, done.command
+        done.id,
+        crate::text::header_command(&done.command)
     )
 }
 
@@ -632,6 +636,40 @@ mod tests {
         assert_eq!(
             notice_headline(&done),
             "[background job b1 finished: exit 0 after 1m 12s] make test"
+        );
+    }
+
+    /// The headline's command is the header's label, not the command: a multi-line script is its
+    /// first line and ` …`, a long line is cut at 64 runes — the user reads at the end what the
+    /// `[shell …]` row showed at the start, and the full text is on the `/jobs` detail page.
+    #[test]
+    fn notice_headline_cuts_the_command_like_the_header() {
+        let script = JobDone {
+            command: "npm run build\nnpm test\nnpm publish".to_owned(),
+            ..done()
+        };
+        assert_eq!(
+            notice_headline(&script),
+            "[background job b1 finished: exit 0 after 42s] npm run build …"
+        );
+        let long = JobDone {
+            command: "x".repeat(100),
+            ..done()
+        };
+        let head = notice_headline(&long);
+        assert_eq!(
+            head,
+            format!(
+                "[background job b1 finished: exit 0 after 42s] {}…",
+                "x".repeat(63)
+            )
+        );
+        assert_eq!(
+            head,
+            format!(
+                "[background job b1 finished: exit 0 after 42s] {}",
+                crate::text::header_command(&long.command)
+            )
         );
     }
 

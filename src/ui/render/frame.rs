@@ -346,9 +346,10 @@ pub(crate) fn status_line(
     out
 }
 
-/// The job segment for `room` columns: `job b3 <command> 1m12s` for one job — the command on one line,
-/// cut to the columns between the id and the clock and dropped below four of them — or `3 jobs 3m01s`
-/// for several, with the oldest's clock; `""` with none.
+/// The job segment for `room` columns: `job b3 <command> 1m12s` for one job — the command as the
+/// `[shell …]` header showed it ([`crate::text::header_command`]: one line, 64 runes), then cut to
+/// the columns between the id and the clock and dropped below four of them — or `3 jobs 3m01s` for
+/// several, with the oldest's clock; `""` with none.
 fn jobs_segment(jobs: &[JobInfo], now: Instant, room: usize) -> String {
     let clock_of = |job: &JobInfo| text::clock(now.saturating_duration_since(job.started));
     match jobs {
@@ -356,7 +357,7 @@ fn jobs_segment(jobs: &[JobInfo], now: Instant, room: usize) -> String {
         [job] => {
             let head = format!("job {}", job.id);
             let clock = clock_of(job);
-            let command: String = job.command.split_whitespace().collect::<Vec<_>>().join(" ");
+            let command = crate::text::header_command(&job.command);
             let cmd_room = room.saturating_sub(str_width(&head) + str_width(&clock) + 2);
             if command.is_empty() || cmd_room < 4 {
                 format!("{head} {clock}")

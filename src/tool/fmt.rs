@@ -145,8 +145,10 @@ fn truncate_runes(s: &str, max: usize) -> String {
 /// Display cap of a header path.
 pub(crate) const HEADER_PATH_MAX: usize = 48;
 
-/// Display cap of a header command summary.
-pub(crate) const HEADER_CMD_MAX: usize = 64;
+/// The header's command rule — [`crate::text::header_command`], 64 runes of the first line, the one
+/// rule for a command shown as a label (the header, the finished-job notice, the `/jobs` row, the
+/// status row's job segment); it lives in `text` because `shell::jobs` sits below this module.
+pub(crate) use crate::text::header_command;
 
 /// Renders a model-supplied path for a call header: relative
 /// verbatim; under `cwd` → cwd-relative; elsewhere under `root` → the `"../"` form; under
@@ -226,43 +228,12 @@ fn truncate_runes_front(s: &str, n: usize) -> String {
     s.chars().skip(count - n).collect()
 }
 
-/// Renders a shell command for a call header: the first line
-/// only (`" …"` marks more), tabs flattened, tail-truncated to [`HEADER_CMD_MAX`] runes.
-#[cfg_attr(windows, allow(dead_code))]
-pub(crate) fn header_command(cmd: &str) -> String {
-    let cmd = cmd.trim();
-    if cmd.is_empty() {
-        return String::new();
-    }
-    let (line, more) = match cmd.split_once('\n') {
-        Some((first, _)) => (first, true),
-        None => (cmd, false),
-    };
-    let mut line = line.trim().replace('\t', " ");
-    if more {
-        line += " …";
-    }
-    truncate_runes_tail(&line, HEADER_CMD_MAX)
-}
-
-/// Keeps the FIRST `n` runes of `s` + `'…'` — the opposite end from
-/// `truncate_runes_front`, because a command reads left to right.
-#[cfg_attr(windows, allow(dead_code))]
-fn truncate_runes_tail(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        return s.to_owned();
-    }
-    let head: String = s.chars().take(n.saturating_sub(1)).collect();
-    head + "…"
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
     use super::{
-        HEADER_CMD_MAX, HEADER_PATH_MAX, display_tool_name, header_command, header_path,
-        print_tool_result_lines,
+        HEADER_PATH_MAX, display_tool_name, header_command, header_path, print_tool_result_lines,
     };
 
     #[test]
@@ -385,6 +356,7 @@ mod tests {
     // thing into a smear.
     #[test]
     fn test_header_command_first_line_and_width() {
+        use crate::text::HEADER_CMD_MAX;
         assert_eq!(
             header_command("npm run build\nnpm test\nnpm publish"),
             "npm run build …"

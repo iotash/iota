@@ -185,6 +185,41 @@ pub(crate) fn clock(d: std::time::Duration) -> String {
     }
 }
 
+/// Display cap of a command shown as a label, in runes.
+pub(crate) const HEADER_CMD_MAX: usize = 64;
+
+/// Renders a shell command as a LABEL: the first line only (`" …"` marks more), tabs flattened,
+/// tail-truncated to [`HEADER_CMD_MAX`] runes. The ONE rule for a command named anywhere it is
+/// not the point (2026-09-23): the call's `[shell …]` header, the finished-job notice, the `/jobs`
+/// row and the status row's job segment all cut with it, so the user reads the same text at the
+/// start and the end of a command; the full text is the `/jobs` detail page's alone. Rune-based,
+/// never display columns — a header once measured width (D-12), and this stays ruler-free so the
+/// TUI-free build carries none.
+pub(crate) fn header_command(cmd: &str) -> String {
+    let cmd = cmd.trim();
+    if cmd.is_empty() {
+        return String::new();
+    }
+    let (line, more) = match cmd.split_once('\n') {
+        Some((first, _)) => (first, true),
+        None => (cmd, false),
+    };
+    let mut line = line.trim().replace('\t', " ");
+    if more {
+        line += " …";
+    }
+    truncate_runes_tail(&line, HEADER_CMD_MAX)
+}
+
+/// Keeps the FIRST `n` runes of `s` + `'…'` — the head, because a command reads left to right.
+fn truncate_runes_tail(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        return s.to_owned();
+    }
+    let head: String = s.chars().take(n.saturating_sub(1)).collect();
+    head + "…"
+}
+
 /// Token count with k/m units and one decimal, trailing `.0` trimmed: 842→`"842"`,
 /// 1234→`"1.2k"`, 128000→`"128k"`, 1000000→`"1m"`, 1500000→`"1.5m"`. Counts below 1000
 /// stay exact. internal/tokfmt Tokens; ONE implementation for every figure.

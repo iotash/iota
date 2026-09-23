@@ -381,9 +381,10 @@ fn job(id: &str, command: &str, ago: u64, now: Instant) -> JobInfo {
 }
 
 /// The job segment closes the status row — after busy — as a SEGMENT: the frame height
-/// never moves. One job: `job b3 <command> 1m12s`, the command on one line and cut to what
-/// the row has left, dropped when fewer than four columns are; several: `3 jobs 3m01s`
-/// with the oldest's clock. No job, no segment.
+/// never moves. One job: `job b3 <command> 1m12s`, the command as the `[shell …]` header
+/// showed it (one line, 64 runes — `header_command`) and cut to what the row has left,
+/// dropped when fewer than four columns are; several: `3 jobs 3m01s` with the oldest's
+/// clock. No job, no segment.
 #[test]
 fn jobs_segment_in_status_line() {
     let now = Instant::now();
@@ -399,7 +400,7 @@ fn jobs_segment_in_status_line() {
 
     let one = Case {
         status: status.clone(),
-        jobs: vec![job("b3", "cargo test\n   --test session resume", 72, now)],
+        jobs: vec![job("b3", "cargo test --test session resume", 72, now)],
         now,
         ..Case::default()
     };
@@ -428,6 +429,15 @@ fn jobs_segment_in_status_line() {
         row.ends_with(" Waiting · job b3 cargo test --test session resume 1m12s"),
         "{row:?}"
     );
+
+    // The command is the header's label: a script is its first line and ` …`, a long line is cut
+    // at 64 runes before the row's own width has a say — the same text as the `[shell …]` row.
+    let script = [job("b3", "cargo test\n   --test session resume", 72, now)];
+    let row = strip_sgr(&status_line(&status, None, 0, false, &script, 80, now));
+    assert_eq!(row, "  gpt-4o · job b3 cargo test … 1m12s");
+    let long = [job("b3", &"x".repeat(100), 72, now)];
+    let row = strip_sgr(&status_line(&status, None, 0, false, &long, 120, now));
+    assert_eq!(row, format!("  gpt-4o · job b3 {}… 1m12s", "x".repeat(63)));
 
     // Narrow: the command gives way first — cut, then dropped — and the clock stays.
     let narrow = strip_sgr(&status_line(&status, None, 0, false, &one.jobs, 36, now));
