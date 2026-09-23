@@ -12,7 +12,9 @@
 #                         `ran: Still running after 2s as background job b1 (pid …` — the text it was
 #                         told; the call never held the turn for the whole command;
 #   8.7 /jobs           — while the job runs, `/j` completes to `/jobs`, and the command opens the Jobs
-#                         viewer with one row per job; after the notice the row is gone and `/j`
+#                         list with one row per job; Enter opens the job's page (the command in full,
+#                         the clock and its start, the pid, the log path, the log's last lines), Esc
+#                         returns to the list, Esc closes it; after the notice the row is gone and `/j`
 #                         completes to nothing;
 #   8.8 the status row  — while the job runs the row ends in `job b1 <command> Ns`, and the seconds walk
 #                         between two captures; after the notice the segment is gone.
@@ -36,7 +38,8 @@ agents:
     tools: {shell: {sandbox: off, auto_run: true}}"
 export CONFIG_BODY
 
-CMD='sleep 12; echo l4yield'
+# Fifteen seconds: the page is opened and closed while the job still runs, with room on a slow runner.
+CMD='sleep 15; echo l4yield'
 RECEIPT='still running after 2s → background job b1'
 
 # The job segment's clock, off the status row ("" if the segment is absent).
@@ -80,16 +83,27 @@ key C-u
 wait_gone '❯ /j' || bad "Ctrl+U did not clear the composer"
 type_ '/jobs'
 key Enter
-wait_vis '1 job running' || bad "the Jobs viewer never opened"
-check "the viewer lists the job" "$(cap | grep -cE "b1 +[0-9]+s +$CMD")" 1
-# The log path is long enough to wrap in the viewer (a wrapped view, so nothing is cut), so the
-# assertion is on the directory that fits one row.
-wait_vis 'iota-jobs/' || { bad "the viewer never showed the job's log"; echo "---- viewer ----"; cap; echo "---- end ----"; }
+wait_vis '1 job running' || bad "the Jobs list never opened"
+check "the list has the job's row" "$(cap | grep -cE "b1 +[0-9]+s +$CMD")" 1
+check "the row carries no log path" "$(cap | grep -c 'iota-jobs/')" 0
+# Enter: the page — the command in full, the clock counted back to a wall-clock start, the pid, the
+# log (its directory fits one row; the path may wrap, the page wraps), the tail (nothing yet).
+key Enter
+wait_vis "command:  $CMD" || { bad "Enter did not open the job's page"; echo "---- pane ----"; cap; echo "---- end ----"; }
+check "the page has the clock and its start" "$(cap | grep -cE 'running:  [0-9]+s \(started [0-9]{2}:[0-9]{2}:[0-9]{2}\)')" 1
+check "the page has the pid" "$(cap | grep -cE 'pid:      [0-9]+')" 1
+check "the page names the log" "$(cap | grep -cE 'output:   .*iota-jobs/')" 1
+check "the page has the tail's rule" "$(cap | grep -cF 'last 20 lines')" 1
+check "…and no output yet" "$(cap | grep -cF '(no output yet)')" 1
 key Escape
-wait_gone '1 job running' || bad "ESC did not close the viewer"
-settle || bad "frame never settled after the viewer"
-check "/jobs opened a viewer, not a turn" "$(count_all '❯ /jobs')" 0
-check_frame_intact "after the viewer" 100
+wait_vis '1 job running' || bad "ESC did not return to the list"
+wait_gone "command:  $CMD" || bad "the page is still up beside the list"
+check "the list is back with the job's row" "$(cap | grep -cE "b1 +[0-9]+s +$CMD")" 1
+key Escape
+wait_gone '1 job running' || bad "ESC did not close the list"
+settle || bad "frame never settled after the list"
+check "/jobs opened a list, not a turn" "$(count_all '❯ /jobs')" 0
+check_frame_intact "after the list" 100
 
 # ------------------------------------------------------------------ the notice, and the two go away
 wait_all '[background job b1 finished: exit 0 after' || bad "the job's notice never arrived"

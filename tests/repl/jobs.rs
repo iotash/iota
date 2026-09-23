@@ -208,8 +208,9 @@ async fn the_loop_installs_the_sink_that_enqueues_a_completion() {
 }
 
 // The `/jobs` row and panel exist while a job runs: the registry's watch, installed by the loop, flips the
-// table (re-issued through `set_slash_commands`, the one-table law's seam), and the command opens a View
-// panel with one row per job. A job running before the loop was up is heard at install.
+// table (re-issued through `set_slash_commands`, the one-table law's seam), and the command opens a
+// single-select list with one row per job; Enter opens the row's detail page, Esc there returns to the
+// list, Esc on the list closes it. A job running before the loop was up is heard at install.
 #[tokio::test]
 async fn a_running_job_puts_jobs_in_the_table_and_the_panel_lists_it() {
     if skip_unless_posix("a_running_job_puts_jobs_in_the_table_and_the_panel_lists_it") {
@@ -221,14 +222,24 @@ async fn a_running_job_puts_jobs_in_the_table_and_the_panel_lists_it() {
     jobs.spawn(&opts("sleep 30")).expect("spawn");
     jobs.spawn(&opts("sleep 31")).expect("spawn");
 
+    let closed = || {
+        Reply::Tabbed(iota::ui::facade::TabbedResult {
+            cancelled: true,
+            ..iota::ui::facade::TabbedResult::default()
+        })
+    };
     let ui = ScriptedUi::new(vec![
         Reply::Input(Input {
             display: "/jobs".to_owned(),
             text: "/jobs".to_owned(),
             kind: InputKind::Typed,
         }),
-        // The panel is a view: any result closes it.
+        // The list: Enter on the first row (the default result — cursor 0, not cancelled).
         Reply::Tabbed(iota::ui::facade::TabbedResult::default()),
+        // The page: Esc goes back to the list.
+        closed(),
+        // The list again: Esc closes it.
+        closed(),
         Reply::Interrupted,
     ]);
     iota::repl::run(params(&ui, &store, None, Arc::clone(&jobs)))
@@ -253,7 +264,8 @@ async fn a_running_job_puts_jobs_in_the_table_and_the_panel_lists_it() {
         .expect("/jobs joined the table");
     assert_eq!(last[at - 1], "/debug", "/jobs follows /debug: {last:?}");
 
-    // The command opened the panel — not the model: no `❯` block, no answer.
+    // The command opened the list, then the first job's page, then the list again — not the model: no
+    // `❯` block, no answer.
     let panels: Vec<iota::testing::TabbedSummary> = ui
         .events()
         .into_iter()
@@ -262,11 +274,40 @@ async fn a_running_job_puts_jobs_in_the_table_and_the_panel_lists_it() {
             _ => None,
         })
         .collect();
-    assert_eq!(panels.len(), 1, "the Jobs panel did not open once");
-    let panel = &panels[0].panels[0];
-    assert_eq!(panel.title, "Jobs");
-    assert_eq!(panel.kind, iota::ui::facade::PanelKind::View);
-    assert_eq!(panel.line_count, 3, "a count row and one row per job");
+    assert_eq!(panels.len(), 3, "list, page, list: {panels:?}");
+    for list in [&panels[0], &panels[2]] {
+        let panel = &list.panels[0];
+        assert_eq!(panel.title, "Jobs");
+        assert_eq!(panel.kind, iota::ui::facade::PanelKind::List);
+        assert_eq!(panel.prompt, "2 jobs running");
+        assert!(panel.search, "the list searches past the fold");
+        let rows: Vec<String> = panel
+            .items
+            .iter()
+            .map(|r| iota::text::ansi::strip_sgr(r))
+            .collect();
+        assert_eq!(rows.len(), 2, "one row per job, no count row: {rows:?}");
+        assert!(
+            rows[0].starts_with("b1  ") && rows[0].ends_with("  sleep 30"),
+            "{rows:?}"
+        );
+        assert!(
+            rows[1].starts_with("b2  ") && rows[1].ends_with("  sleep 31"),
+            "{rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|r| r.contains(".log")),
+            "the log path is the page's: {rows:?}"
+        );
+    }
+    let page = &panels[1].panels[0];
+    assert_eq!(page.title, "job b1");
+    assert_eq!(page.kind, iota::ui::facade::PanelKind::View);
+    assert!(page.wrap, "the page wraps: nothing on it is cut");
+    assert_eq!(
+        page.line_count, 6,
+        "command, running, pid, output, the rule, (no output yet)"
+    );
     assert!(
         !ui.events()
             .iter()

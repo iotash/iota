@@ -586,6 +586,7 @@ fn job_clock_ticks_only_while_a_job_runs() {
     let job = crate::shell::jobs::JobInfo {
         id: "b1".to_owned(),
         command: "sleep 30".to_owned(),
+        pid: None,
         started: Instant::now(),
         output_path: std::path::PathBuf::from("/tmp/b1.log"),
     };

@@ -60,7 +60,7 @@
 //! | `22-retry.sh` | TUI-VERIFY batch C | — (503 → `retrying (attempt`, the steer message lands once, Ctrl+C during the backoff leaves no red block) |
 //! | `23-mcp-oauth.sh` | brain `mcp-cli-and-oauth` | — (a server whose 401 asks for a login, `auth` undeclared: the not-logged-in notice, the MCP tab of `/tools`, `iota mcp login` through `$BROWSER` beside the chat, a restart that connects, `iota mcp logout`) |
 //! | `24-iota-outside-sandbox.sh` | brain `harness-prompt`, X-44 | — (a sandboxed `shell` set asked about `iota mcp list` from the model: the `(outside the sandbox)` mark on the prompt and the header, the allowed call's output, iota in a pipe unasked and unmarked) |
-//! | `25-shell-yield.sh` | TUI-VERIFY §8.6–8.8, X-50 | — (a foreground `shell` call past its window: the receipt row, `/jobs` in the completion row and its viewer, the status row's job clock walking, all gone after the notice) |
+//! | `25-shell-yield.sh` | TUI-VERIFY §8.6–8.8, X-50 | — (a foreground `shell` call past its window: the receipt row, `/jobs` in the completion row, its list and the page a row opens, the status row's job clock walking, all gone after the notice) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};

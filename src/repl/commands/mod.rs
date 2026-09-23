@@ -108,7 +108,7 @@ const SAVE: &[CmdSpec] = &[CmdSpec {
 /// The running-jobs group (2026-09-22): one row, present while the run has a background job.
 const JOBS: &[CmdSpec] = &[CmdSpec {
     value: "/jobs",
-    desc: "Background jobs: id, elapsed, command, output file",
+    desc: "Background jobs: pick one for its command, clock and output",
 }];
 
 /// The dedicated-image-provider group (chat/completion.go:34-37).
@@ -391,7 +391,7 @@ mod tests {
             .expect("the jobs row");
         assert_eq!(
             row.desc,
-            "Background jobs: id, elapsed, command, output file"
+            "Background jobs: pick one for its command, clock and output"
         );
         assert!(row.label.is_empty(), "a command, not a per-skill row");
         assert!(t.set_jobs(false), "the last job ending flips it back");

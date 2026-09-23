@@ -375,6 +375,7 @@ fn job(id: &str, command: &str, ago: u64, now: Instant) -> JobInfo {
     JobInfo {
         id: id.to_owned(),
         command: command.to_owned(),
+        pid: None,
         started: now.checked_sub(Duration::from_secs(ago)).unwrap_or(now),
         output_path: std::path::PathBuf::from(format!("/tmp/{id}.log")),
     }

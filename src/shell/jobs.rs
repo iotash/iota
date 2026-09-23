@@ -55,6 +55,8 @@ pub struct JobInfo {
     pub id: String,
     /// The command line it runs.
     pub command: String,
+    /// The process-group leader, when the OS reported one.
+    pub pid: Option<i32>,
     /// When its child was spawned — for a yielded call, that is the CALL's start, not the yield.
     pub started: Instant,
     /// The log file it writes.
@@ -169,6 +171,7 @@ impl State {
             .map(|(id, job)| JobInfo {
                 id: id.clone(),
                 command: job.command.clone(),
+                pid: job.pid,
                 started: job.started,
                 output_path: job.output_path.clone(),
             })
