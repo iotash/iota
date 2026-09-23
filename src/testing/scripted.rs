@@ -209,12 +209,18 @@ pub enum Reply {
     Tabbed(TabbedResult),
     /// `take_queued_messages` resolves with these inputs.
     Queued(Vec<Input>),
+    /// `read_input` resolves with the next input handed to [`Ui::enqueue`] — a finished job's notice —
+    /// waiting for it (up to eight seconds) as the live facade's idle prompt does: the one reply that
+    /// lets a test sit through a job's end.
+    Enqueued,
 }
 
 /// The scripted facade double: blocking calls return ready futures popping the script;
 /// fire-and-forget calls log a [`UiEvent`].
 pub struct ScriptedUi {
     script: Mutex<VecDeque<Reply>>,
+    /// What [`Ui::enqueue`] brought, not yet served by a [`Reply::Enqueued`].
+    queue: Mutex<VecDeque<Input>>,
     /// Shared with the guards/sinks/previews a call hands out, so their later
     /// records land in the same ordered log.
     log: Arc<Mutex<Vec<UiEvent>>>,
@@ -233,6 +239,7 @@ impl ScriptedUi {
     pub fn new(script: Vec<Reply>) -> Arc<Self> {
         Arc::new(Self {
             script: Mutex::new(script.into()),
+            queue: Mutex::new(VecDeque::new()),
             log: Arc::new(Mutex::new(Vec::new())),
             scopes: Mutex::new(Vec::new()),
             width: AtomicU16::new(80),
@@ -347,6 +354,17 @@ impl Ui for ScriptedUi {
                 Reply::Input(i) => Ok(i),
                 Reply::Interrupted => Err(UiError::Interrupted),
                 Reply::Closed => Err(UiError::Closed),
+                Reply::Enqueued => {
+                    return Box::pin(async move {
+                        for _ in 0..800 {
+                            if let Some(i) = lock(&self.queue).pop_front() {
+                                return Ok(i);
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        }
+                        panic!("ScriptedUi: nothing was enqueued within eight seconds")
+                    });
+                }
                 Reply::Tabbed(_) | Reply::Queued(_) => {
                     panic!("ScriptedUi: read_input got a non-input reply")
                 }
@@ -368,7 +386,7 @@ impl Ui for ScriptedUi {
                 Reply::Tabbed(t) => Ok(t),
                 Reply::Interrupted => Err(UiError::Interrupted),
                 Reply::Closed => Err(UiError::Closed),
-                Reply::Input(_) | Reply::Queued(_) => {
+                Reply::Input(_) | Reply::Queued(_) | Reply::Enqueued => {
                     panic!("ScriptedUi: tabbed got a non-tabbed reply")
                 }
             }
@@ -384,7 +402,7 @@ impl Ui for ScriptedUi {
             match self.pop("take_queued_messages") {
                 Reply::Queued(v) => v,
                 Reply::Closed => Vec::new(), // Go returns nil once the Program died
-                Reply::Input(_) | Reply::Interrupted | Reply::Tabbed(_) => {
+                Reply::Input(_) | Reply::Interrupted | Reply::Tabbed(_) | Reply::Enqueued => {
                     panic!("ScriptedUi: take_queued_messages got a non-queue reply")
                 }
             }
@@ -399,6 +417,7 @@ impl Ui for ScriptedUi {
     }
 
     fn enqueue(&self, input: Input) {
+        lock(&self.queue).push_back(input.clone());
         self.record(UiEvent::Enqueue(input));
     }
 

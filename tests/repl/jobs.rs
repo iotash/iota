@@ -208,9 +208,11 @@ async fn the_loop_installs_the_sink_that_enqueues_a_completion() {
 }
 
 // The `/jobs` row and panel exist while a job runs: the registry's watch, installed by the loop, flips the
-// table (re-issued through `set_slash_commands`, the one-table law's seam), and the command opens a
-// single-select list with one row per job; Enter opens the row's detail page, Esc there returns to the
-// list, Esc on the list closes it. A job running before the loop was up is heard at install.
+// table (re-issued through `set_slash_commands`, the one-table law's seam), and the command opens two
+// live tabs — `Jobs`, a single-select list with one row per job, and `Kill`, the same rows with
+// checkboxes — refreshed once a second; Enter on `Jobs` opens the row's detail page (live too), Esc there
+// returns to the tabs, Esc on the tabs closes them. A job running before the loop was up is heard at
+// install.
 #[tokio::test]
 async fn a_running_job_puts_jobs_in_the_table_and_the_panel_lists_it() {
     if skip_unless_posix("a_running_job_puts_jobs_in_the_table_and_the_panel_lists_it") {
@@ -274,36 +276,46 @@ async fn a_running_job_puts_jobs_in_the_table_and_the_panel_lists_it() {
             _ => None,
         })
         .collect();
-    assert_eq!(panels.len(), 3, "list, page, list: {panels:?}");
-    for list in [&panels[0], &panels[2]] {
-        let panel = &list.panels[0];
-        assert_eq!(panel.title, "Jobs");
-        assert_eq!(panel.kind, iota::ui::facade::PanelKind::List);
-        assert_eq!(panel.prompt, "2 jobs running");
-        assert!(panel.search, "the list searches past the fold");
-        let rows: Vec<String> = panel
-            .items
-            .iter()
-            .map(|r| iota::text::ansi::strip_sgr(r))
-            .collect();
-        assert_eq!(rows.len(), 2, "one row per job, no count row: {rows:?}");
-        assert!(
-            rows[0].starts_with("b1  ") && rows[0].ends_with("  sleep 30"),
-            "{rows:?}"
-        );
-        assert!(
-            rows[1].starts_with("b2  ") && rows[1].ends_with("  sleep 31"),
-            "{rows:?}"
-        );
-        assert!(
-            !rows.iter().any(|r| r.contains(".log")),
-            "the log path is the page's: {rows:?}"
-        );
+    assert_eq!(panels.len(), 3, "tabs, page, tabs: {panels:?}");
+    for tabs in [&panels[0], &panels[2]] {
+        assert_eq!(tabs.refresh_every_ms, 1000, "the tabs tick once a second");
+        assert_eq!(tabs.panels.len(), 2, "Jobs and Kill: {tabs:?}");
+        assert_eq!(tabs.panels[0].kind, iota::ui::facade::PanelKind::List);
+        assert_eq!(tabs.panels[1].kind, iota::ui::facade::PanelKind::Multi);
+        for (panel, title) in tabs.panels.iter().zip(["Jobs", "Kill"]) {
+            assert_eq!(panel.title, title);
+            assert_eq!(panel.prompt, "2 jobs running");
+            assert!(panel.search, "the list searches past the fold");
+            assert!(panel.has_refresh, "{title} is live");
+            let rows: Vec<String> = panel
+                .items
+                .iter()
+                .map(|r| iota::text::ansi::strip_sgr(r))
+                .collect();
+            assert_eq!(rows.len(), 2, "one row per job, no count row: {rows:?}");
+            assert!(
+                rows[0].starts_with("b1  ") && rows[0].ends_with("  sleep 30"),
+                "{rows:?}"
+            );
+            assert!(
+                rows[1].starts_with("b2  ") && rows[1].ends_with("  sleep 31"),
+                "{rows:?}"
+            );
+            assert!(
+                !rows.iter().any(|r| r.contains(".log")),
+                "the log path is the page's: {rows:?}"
+            );
+        }
     }
+    assert_eq!(
+        panels[1].refresh_every_ms, 1000,
+        "the page ticks once a second"
+    );
     let page = &panels[1].panels[0];
     assert_eq!(page.title, "job b1");
     assert_eq!(page.kind, iota::ui::facade::PanelKind::View);
     assert!(page.wrap, "the page wraps: nothing on it is cut");
+    assert!(page.has_refresh, "the page is live");
     assert_eq!(
         page.line_count, 6,
         "command, running, pid, output, the rule, (no output yet)"
@@ -327,6 +339,95 @@ async fn a_running_job_puts_jobs_in_the_table_and_the_panel_lists_it() {
     assert_eq!(shown, vec![vec!["b1".to_owned(), "b2".to_owned()]]);
     // The loop killed both on the way out.
     assert_eq!(jobs.running(), 0);
+}
+
+// The Kill tab: Enter with rows checked kills those jobs and only those, the surface closes without a line
+// of its own, and each killed job's notice arrives as any job's does — `finished: killed` — and runs a
+// turn; the other job runs on until the loop's exit takes it.
+#[tokio::test]
+async fn the_kill_tab_ends_the_checked_job_and_its_notice_lands() {
+    if skip_unless_posix("the_kill_tab_ends_the_checked_job_and_its_notice_lands") {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = SessionStore::new(tmp.path().join("sessions"));
+    let jobs = Jobs::new(tmp.path());
+    jobs.spawn(&opts("sleep 30")).expect("spawn");
+    jobs.spawn(&opts("sleep 31")).expect("spawn");
+
+    let ui = ScriptedUi::new(vec![
+        Reply::Input(Input {
+            display: "/jobs".to_owned(),
+            text: "/jobs".to_owned(),
+            kind: InputKind::Typed,
+        }),
+        // Tab to Kill, Space on b1, Enter.
+        Reply::Tabbed(iota::ui::facade::TabbedResult {
+            cancelled: false,
+            focused: 1,
+            panels: vec![
+                iota::ui::facade::PanelResult::default(),
+                iota::ui::facade::PanelResult {
+                    checked: vec![0],
+                    ..iota::ui::facade::PanelResult::default()
+                },
+            ],
+        }),
+        // The notice, when it comes, is the next input: a turn runs on it.
+        Reply::Enqueued,
+        Reply::Interrupted,
+    ]);
+    iota::repl::run(params(&ui, &store, None, Arc::clone(&jobs)))
+        .await
+        .expect("clean exit");
+
+    let lines = printed(&ui);
+    let notice = "[background job b1 finished: killed] sleep 30";
+    assert!(
+        lines.iter().any(|l| l.contains(notice)),
+        "the killed job's notice never landed:\n{lines:#?}"
+    );
+    assert!(lines.iter().any(|l| l.contains("noted")), "{lines:#?}");
+    assert_eq!(
+        lines.iter().filter(|l| l.contains("b1")).count(),
+        1,
+        "the notice is the whole report — the command prints nothing of its own:\n{lines:#?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("b2")),
+        "b2 was not killed by the tab:\n{lines:#?}"
+    );
+    // One notice was enqueued before the loop left — b1's; b2 went with the exit, and the exit's kill
+    // delivers nothing.
+    let enqueued: Vec<Input> = ui
+        .events()
+        .into_iter()
+        .filter_map(|e| match e {
+            UiEvent::Enqueue(i) => Some(i),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(enqueued.len(), 1, "{enqueued:?}");
+    assert_eq!(enqueued[0].display, notice);
+    // The registry's record: b1 killed, and the status row was told the set shrank to b2.
+    let b1 = jobs.ended("b1").expect("b1's end is remembered");
+    assert!(b1.killed && b1.exit.is_none(), "{b1:?}");
+    let shown: Vec<Vec<String>> = ui
+        .events()
+        .into_iter()
+        .filter_map(|e| match e {
+            UiEvent::Jobs(j) => Some(j.into_iter().map(|j| j.id).collect()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        vec![
+            vec!["b1".to_owned(), "b2".to_owned()],
+            vec!["b2".to_owned()]
+        ]
+    );
+    assert_eq!(jobs.running(), 0, "the loop killed the rest on the way out");
 }
 
 // New (phase C): `background` never promised to outlive iota — leaving the loop kills what is left, at once.
