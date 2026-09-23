@@ -233,7 +233,8 @@ pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
 /// per-segment hues, truncated to one row with the debug marker re-appended. The jobs
 /// segment closes the row while a background job runs (2026-09-22): one job by id with
 /// its command and clock, `job b3 cargo test 1m12s`, the command cut to what the row has
-/// left; several by count with the oldest's clock, `3 jobs 3m01s`.
+/// left and in the `[shell …]` header's cyan; several by count with the oldest's clock,
+/// `3 jobs 3m01s`.
 pub(crate) fn status_line(
     s: &StatusData,
     busy: Option<&BusyView>,
@@ -305,8 +306,8 @@ pub(crate) fn status_line(
     // The job segment takes what the row has left after everything else; its command gives way first.
     let room = (width as usize).saturating_sub(str_width(&plain) + 3);
     let jobs_seg = jobs_segment(jobs, now, room);
-    if !jobs_seg.is_empty() {
-        let _ = write!(plain, " · {jobs_seg}");
+    if let Some(seg) = &jobs_seg {
+        let _ = write!(plain, " · {}", seg.plain);
     }
 
     if str_width(&plain) > width as usize {
@@ -340,29 +341,48 @@ pub(crate) fn status_line(
             "{FAINT} · {RESET}{CYAN}{frame}{RESET}{FAINT}{tail}{RESET}"
         );
     }
-    if !jobs_seg.is_empty() {
-        let _ = write!(out, "{FAINT} · {jobs_seg}{RESET}");
+    if let Some(seg) = &jobs_seg {
+        let _ = write!(out, "{FAINT} · {}{RESET}", seg.styled);
     }
     out
 }
 
+/// The status row's job segment in its two forms: the text, for the row's width, and the same text
+/// with the command in the `[shell …]` header's cyan, for the row.
+struct JobSegment {
+    /// `job b3 cargo test 1m12s` / `3 jobs 3m01s`, no escapes.
+    plain: String,
+    /// The same with the command between `CYAN` and a return to the row's faint; equal to `plain`
+    /// when there is no command (several jobs, or no room for it).
+    styled: String,
+}
+
 /// The job segment for `room` columns: `job b3 <command> 1m12s` for one job — the command as the
 /// `[shell …]` header showed it ([`crate::text::header_command`]: one line, 64 runes), then cut to
-/// the columns between the id and the clock and dropped below four of them — or `3 jobs 3m01s` for
-/// several, with the oldest's clock; `""` with none.
-fn jobs_segment(jobs: &[JobInfo], now: Instant, room: usize) -> String {
+/// the columns between the id and the clock and dropped below four of them, and in the header's
+/// cyan (2026-09-23) where the id and the clock keep the row's faint — or `3 jobs 3m01s` for
+/// several, with the oldest's clock; `None` with none.
+fn jobs_segment(jobs: &[JobInfo], now: Instant, room: usize) -> Option<JobSegment> {
     let clock_of = |job: &JobInfo| text::clock(now.saturating_duration_since(job.started));
     match jobs {
-        [] => String::new(),
+        [] => None,
         [job] => {
             let head = format!("job {}", job.id);
             let clock = clock_of(job);
             let command = crate::text::header_command(&job.command);
             let cmd_room = room.saturating_sub(str_width(&head) + str_width(&clock) + 2);
             if command.is_empty() || cmd_room < 4 {
-                format!("{head} {clock}")
+                let plain = format!("{head} {clock}");
+                Some(JobSegment {
+                    styled: plain.clone(),
+                    plain,
+                })
             } else {
-                format!("{head} {} {clock}", truncate_ansi(&command, cmd_room, "…"))
+                let command = truncate_ansi(&command, cmd_room, "…");
+                Some(JobSegment {
+                    plain: format!("{head} {command} {clock}"),
+                    styled: format!("{head} {RESET}{CYAN}{command}{RESET}{FAINT} {clock}"),
+                })
             }
         }
         many => {
@@ -370,7 +390,11 @@ fn jobs_segment(jobs: &[JobInfo], now: Instant, room: usize) -> String {
                 .iter()
                 .min_by_key(|j| j.started)
                 .map_or_else(String::new, clock_of);
-            format!("{} jobs {oldest}", many.len())
+            let plain = format!("{} jobs {oldest}", many.len());
+            Some(JobSegment {
+                styled: plain.clone(),
+                plain,
+            })
         }
     }
 }

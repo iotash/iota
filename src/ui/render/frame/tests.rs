@@ -411,6 +411,16 @@ fn jobs_segment_in_status_line() {
         row.as_str(),
         "  gpt-4o · job b3 cargo test --test session resume 1m12s"
     );
+    // The command wears the `[shell …]` header's cyan — not the row's faint — between the id and
+    // the clock, which keep the row's own style; the text under the escapes is the row above.
+    let raw = status_line(&status, None, 0, false, &one.jobs, 80, now);
+    assert_eq!(strip_sgr(&raw), *row);
+    assert!(
+        raw.ends_with(&format!(
+            "{FAINT} · job b3 {RESET}{CYAN}cargo test --test session resume{RESET}{FAINT} 1m12s{RESET}"
+        )),
+        "{raw:?}"
+    );
 
     // Busy comes first; the job segment closes the row.
     let busy = Case {
@@ -439,12 +449,24 @@ fn jobs_segment_in_status_line() {
     let row = strip_sgr(&status_line(&status, None, 0, false, &long, 120, now));
     assert_eq!(row, format!("  gpt-4o · job b3 {}… 1m12s", "x".repeat(63)));
 
-    // Narrow: the command gives way first — cut, then dropped — and the clock stays.
-    let narrow = strip_sgr(&status_line(&status, None, 0, false, &one.jobs, 36, now));
+    // Narrow: the command gives way first — cut, then dropped — and the clock stays. The cut's
+    // `…` is the command's, so it is cyan too; a segment without a command carries no cyan.
+    let raw = status_line(&status, None, 0, false, &one.jobs, 36, now);
+    let narrow = strip_sgr(&raw);
     assert_eq!(narrow, "  gpt-4o · job b3 cargo test … 1m12s");
     assert_eq!(str_width(&narrow), 36);
-    let narrower = strip_sgr(&status_line(&status, None, 0, false, &one.jobs, 24, now));
+    assert!(
+        raw.contains(&format!("{RESET}{CYAN}cargo test …{RESET}{FAINT} 1m12s")),
+        "{raw:?}"
+    );
+    let raw = status_line(&status, None, 0, false, &one.jobs, 24, now);
+    let narrower = strip_sgr(&raw);
     assert_eq!(narrower, "  gpt-4o · job b3 1m12s");
+    assert!(
+        !raw.contains(&format!("{CYAN}1m12s"))
+            && raw.ends_with(&format!("{FAINT} · job b3 1m12s{RESET}")),
+        "{raw:?}"
+    );
     // Below even that, the row's own truncation takes over as for any segment.
     let tiny = strip_sgr(&status_line(&status, None, 0, false, &one.jobs, 12, now));
     assert!(str_width(&tiny) <= 12, "{tiny:?}");
@@ -462,6 +484,11 @@ fn jobs_segment_in_status_line() {
     };
     let row = plain(&view(&many)).pop().expect("the status row");
     assert_eq!(row, "  gpt-4o · 3 jobs 3m01s");
+    let raw = status_line(&status, None, 0, false, &many.jobs, 80, now);
+    assert!(
+        raw.ends_with(&format!("{FAINT} · 3 jobs 3m01s{RESET}")),
+        "a count names no command, so nothing is cyan: {raw:?}"
+    );
 
     // The clock walks: a second later the same jobs read a second more.
     let later = now + Duration::from_secs(1);
