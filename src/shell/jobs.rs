@@ -17,10 +17,14 @@
 //!
 //! Nothing here outlives the process: [`Jobs::kill_all`] is synchronous `killpg` precisely so a `/quit` or a
 //! failed headless run cannot leave a tree behind, and a resumed session therefore never sees a job it
-//! started last time (documented in the README).
+//! started last time (documented in the README). One job is killed the same way, by the user, from the
+//! `/jobs` Kill tab ([`Jobs::kill`]) — and that one keeps its supervisor, so it ends as any job does, with
+//! its notice (`finished: killed`) and its row gone from the listing. A job's end is REMEMBERED for a while
+//! ([`Jobs::ended`], the last [`ENDED_KEEP`]): the `/jobs` page a job finishes under turns its clock line
+//! into the verdict rather than going blank.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
     time::{Duration, Instant},
@@ -36,6 +40,10 @@ pub const MAX_JOBS: usize = 16;
 
 /// The directory under `dirs.temp` that holds every run's job logs.
 pub const JOBS_DIR: &str = "iota-jobs";
+
+/// How many finished jobs the registry keeps the record of ([`Jobs::ended`]): enough for every job a
+/// `/jobs` page could have been opened on to still be answered for after a burst of endings.
+pub const ENDED_KEEP: usize = 64;
 
 /// What [`Jobs::spawn`] hands back to the tool.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,7 +82,7 @@ pub struct JobDone {
     pub exit: Option<i32>,
     /// Whether its `timeout` expired.
     pub timed_out: bool,
-    /// Whether [`Jobs::kill_all`] (or a cancelled run) killed it.
+    /// Whether [`Jobs::kill`], [`Jobs::kill_all`] (or a cancelled run) killed it.
     pub killed: bool,
     /// Wall-clock time from spawn to end — for a yielded call, the wait it ran through included.
     pub elapsed: Duration,
@@ -156,6 +164,9 @@ struct State {
     running: BTreeMap<String, Running>,
     /// Completed jobs nobody has taken yet — always empty while a sink is installed.
     finished: Vec<JobDone>,
+    /// The last [`ENDED_KEEP`] jobs to end, oldest first — the record a page open on a job reads its
+    /// verdict from once the job is gone from `running`.
+    ended: VecDeque<JobDone>,
     /// The interactive delivery seam.
     sink: Option<Arc<JobSink>>,
     /// The interactive listing seam.
@@ -462,6 +473,25 @@ impl Jobs {
         }
     }
 
+    /// Kills ONE job, synchronously — the `/jobs` Kill tab. The same `killpg` as [`Jobs::kill_all`], but
+    /// the job keeps its place and its supervisor: that task sees the child die, records the end as
+    /// `killed`, takes the job out of the running set (the watch hears it) and delivers the notice
+    /// (`[background job b3 finished: killed] …`) exactly as it would for any other end. An id that is
+    /// not running is nothing to do.
+    pub fn kill(&self, id: &str) {
+        let st = self.lock();
+        if let Some(job) = st.running.get(id) {
+            job.cancel.cancel();
+            exec::kill_group(job.pid);
+        }
+    }
+
+    /// How a job that is no longer running ended, while the registry remembers it ([`ENDED_KEEP`] ends
+    /// back); `None` for a job still running, never started, or ended too long ago.
+    pub fn ended(&self, id: &str) -> Option<JobDone> {
+        self.lock().ended.iter().rev().find(|d| d.id == id).cloned()
+    }
+
     /// Kills every job still running, synchronously — the exit path, which cannot await. The sink and the
     /// watch are dropped with them: nobody is left to deliver a notice to, or a listing.
     pub fn kill_all(&self) {
@@ -502,14 +532,22 @@ async fn supervise(
     let outcome = started.wait(&cancel, timeout).await;
     done.elapsed = started.started().elapsed();
     done.timed_out = matches!(outcome, exec::Outcome::TimedOut);
-    done.killed = matches!(outcome, exec::Outcome::Cancelled);
+    // Killed is the TOKEN's verdict, not the wait's: `kill` and `kill_all` cancel the token and `killpg`
+    // the group in one breath, so the child's death can reach the wait before the token does — as a
+    // signal exit, `-1` — and a job the user killed must not read `exit -1`.
+    done.killed =
+        matches!(outcome, exec::Outcome::Cancelled) || (cancel.is_cancelled() && !done.timed_out);
     done.exit = match outcome {
-        exec::Outcome::Exited(code) => Some(code),
+        exec::Outcome::Exited(code) if !done.killed => Some(code),
         _ => None,
     };
     let sink = {
         let mut st = jobs.lock();
         st.running.remove(&done.id);
+        st.ended.push_back(done.clone());
+        while st.ended.len() > ENDED_KEEP {
+            st.ended.pop_front();
+        }
         let sink = st.sink.clone();
         if sink.is_none() {
             st.finished.push(done.clone());
@@ -527,12 +565,11 @@ async fn supervise(
     }
 }
 
-/// The notice's first line: what happened, in a fixed shape the model can pattern-match. The command is
-/// the label the call's `[shell …]` header showed — `text::header_command`: one line, tail-cut at 64
-/// runes — so what the user reads at the end is what they read at the start; the full text is the
-/// `/jobs` detail page's.
-pub fn notice_headline(done: &JobDone) -> String {
-    let status = if done.timed_out {
+/// How a job ended, in the fixed shape the notice and the `/jobs` page share: `exit 0 after 1m 12s`,
+/// `timed out after 10m 0s`, `killed` — a child that ended without a status of its own reads as killed
+/// too, never as `exit ?`.
+pub fn job_status(done: &JobDone) -> String {
+    if done.timed_out {
         format!("timed out after {}", crate::text::elapsed(done.elapsed))
     } else if done.killed {
         "killed".to_owned()
@@ -541,10 +578,18 @@ pub fn notice_headline(done: &JobDone) -> String {
             Some(code) => format!("exit {code} after {}", crate::text::elapsed(done.elapsed)),
             None => "killed".to_owned(),
         }
-    };
+    }
+}
+
+/// The notice's first line: what happened ([`job_status`]), in a fixed shape the model can
+/// pattern-match. The command is the label the call's `[shell …]` header showed — `text::header_command`:
+/// one line, tail-cut at 64 runes — so what the user reads at the end is what they read at the start;
+/// the full text is the `/jobs` detail page's.
+pub fn notice_headline(done: &JobDone) -> String {
     format!(
-        "[background job {} finished: {status}] {}",
+        "[background job {} finished: {}] {}",
         done.id,
+        job_status(done),
         crate::text::header_command(&done.command)
     )
 }
@@ -565,7 +610,7 @@ pub fn notice_text(done: &JobDone) -> String {
 mod tests {
     use std::time::Duration;
 
-    use super::{JobDone, notice_headline, notice_text};
+    use super::{JobDone, job_status, notice_headline, notice_text};
 
     fn done() -> JobDone {
         JobDone {
@@ -622,6 +667,11 @@ mod tests {
             notice_headline(&gone),
             "[background job b1 finished: killed] make test"
         );
+        // The verdict alone is what the `/jobs` page prints after `finished:`.
+        assert_eq!(job_status(&done()), "exit 0 after 42s");
+        assert_eq!(job_status(&slow), "timed out after 10m 0s");
+        assert_eq!(job_status(&killed), "killed");
+        assert_eq!(job_status(&gone), "killed");
     }
 
     /// The notice's duration is the UI's compact style, not Go's nanosecond string: a job that

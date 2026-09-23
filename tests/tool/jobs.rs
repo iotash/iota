@@ -190,9 +190,10 @@ async fn kill_all_stops_everything_at_once() {
     assert_eq!(jobs.running(), 0);
     // And every supervisor runs to its end rather than sitting on a `sleep 30` — the half of the claim
     // Windows keeps, since that end is where its Job Object is terminated. Both records are parked, never
-    // delivered: the sink went with the jobs.
+    // delivered: the sink went with the jobs. Both say `killed`: the token's verdict, even when the
+    // child's death reached the wait before the token did.
     for d in &parked(&jobs, 2).await {
-        assert!(d.killed || d.exit.is_some(), "{d:?}");
+        assert!(d.killed && d.exit.is_none(), "{d:?}");
     }
 }
 
@@ -278,6 +279,73 @@ async fn a_sink_takes_delivery_including_the_backlog() {
             .as_slice(),
         ["b1".to_owned(), "b2".to_owned()]
     );
+}
+
+// `kill` — the `/jobs` Kill tab — ends ONE job the way `kill_all` ends them all, but through the job's own
+// supervisor: the child dies at once, the record says `killed`, the sink gets the notice and the watch hears
+// the set shrink, while the other job runs on. The end is remembered (`ended`); an unknown id is nothing.
+#[tokio::test]
+async fn kill_ends_one_job_through_its_own_supervisor() {
+    if skip_unless_posix("kill_ends_one_job_through_its_own_supervisor") {
+        return;
+    }
+    let (_dir, jobs) = registry();
+    let log = watched(&jobs);
+    let delivered: Arc<Mutex<Vec<JobDone>>> = Arc::default();
+    let sink = Arc::clone(&delivered);
+    jobs.set_sink(Some(Box::new(move |done: JobDone| {
+        sink.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(done);
+    })));
+    let a = jobs.spawn(&opts("sleep 30", None)).expect("spawn");
+    let _b = jobs.spawn(&opts("sleep 30", None)).expect("spawn");
+    assert_eq!(jobs.running(), 2);
+    assert_eq!(jobs.ended("b1"), None, "a running job has no end yet");
+
+    jobs.kill("nope");
+    assert_eq!(jobs.running(), 2, "an unknown id kills nothing");
+
+    jobs.kill("b1");
+    // Dead the moment the call returns (`killpg`, Unix); reaped and recorded by the supervisor, which
+    // is what the sink and the watch wait for below.
+    if cfg!(unix)
+        && let Some(pid) = a.pid
+    {
+        assert!(!alive(pid), "pid {pid} survived kill");
+    }
+    for _ in 0..400 {
+        if !delivered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let done = delivered
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    assert_eq!(done.len(), 1, "one notice, for the killed job: {done:?}");
+    assert_eq!(done[0].id, "b1");
+    assert!(done[0].killed && !done[0].timed_out && done[0].exit.is_none());
+    assert_eq!(
+        notice_headline(&done[0]),
+        "[background job b1 finished: killed] sleep 30"
+    );
+    assert_eq!(jobs.running(), 1, "the other job runs on");
+    assert_eq!(
+        seen(&log).last(),
+        Some(&vec!["b2".to_owned()]),
+        "the watch heard b1 go"
+    );
+    // The end is remembered — the page open on b1 reads its verdict here — and b2's is not there to read.
+    assert_eq!(jobs.ended("b1"), Some(done[0].clone()));
+    assert_eq!(jobs.ended("b2"), None);
+
+    jobs.kill_all();
 }
 
 // `wait_any` is the headless wait: it returns None rather than hanging when there is nothing to wait for,
