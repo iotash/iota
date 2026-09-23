@@ -81,14 +81,16 @@ the set is skipped with a warning.
 
 ## Execution details
 
-10-minute timeout per call by default, or whatever the call's optional
-`timeout` argument says inside `1…3600` seconds — outside that range the call
-is refused (`timeout must be between 1 and 3600 seconds`) and nothing runs.
-Earlier cancellation via ESC (the chat layer cancels the context; sandbox-exec
-execs bash in-process and bwrap uses `--die-with-parent`, so the tree dies
-with the wrapper). One number could not serve both a lint and a child agent's
-whole run, and 3600 is the ceiling a runaway cannot argue with
-(DIVERGENCES X-06).
+No deadline unless the call's optional `timeout` argument sets one: the
+command runs until it exits (or iota exits, which kills every job), and with a
+`timeout` it is killed after that many seconds — any positive integer; `0`,
+negative or not a number is refused (`timeout must be a positive number of
+seconds`) and nothing runs. Earlier cancellation via ESC (the chat layer
+cancels the context; sandbox-exec execs bash in-process and bwrap uses
+`--die-with-parent`, so the tree dies with the wrapper). A default could only
+kill a server, a watcher or a child agent at an arbitrary minute once a long
+command is a job rather than a held turn, so there is none (DIVERGENCES X-06,
+2026-09-23; the 600 s default and the 3600 ceiling of 2026-09-05 are gone).
 
 `"background": true` takes the command out of the round entirely: the same
 spawn, the same sandbox, the same `setpgid` and the same `timeout`, but fd 1

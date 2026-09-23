@@ -226,8 +226,10 @@ async fn the_shell_tool_runs_a_command_and_reports_its_output_and_status() {
     );
 }
 
-// New (DIVERGENCES X-06): the `timeout` argument end to end — it caps the run, its own line names
-// the number the call chose, and a value outside 1…3600 is refused BEFORE anything is executed.
+// DIVERGENCES X-06 (2026-09-23): the `timeout` argument end to end — it caps the run, its own line names
+// the number the call chose, any positive number is accepted (no ceiling), and anything else is refused
+// BEFORE anything is executed. Without one there is no deadline: `Options.timeout` is `None`, pinned in
+// `tool::builtins::shell::tests`, and every other test in this file runs its command that way.
 #[tokio::test]
 async fn shell_timeout_argument_caps_the_call() {
     if skip_unless_posix("shell_timeout_argument_caps_the_call") {
@@ -246,23 +248,26 @@ async fn shell_timeout_argument_caps_the_call() {
         "the call outlived its own timeout"
     );
 
-    // Out of range: the refusal is the result and the command never ran.
+    // Not a positive number: the refusal is the result and the command never ran.
     let marker = root.join("ran.txt");
-    for bad in [json!(0), json!(-1), json!(3601), json!("30")] {
+    for bad in [json!(0), json!(-1), json!("30")] {
         let cmd = format!("touch {}", shell_path(&marker));
         let (out, is_err) = call(&tool, json!({"command": cmd, "timeout": bad})).await;
         assert_eq!(
             (out.as_str(), is_err),
-            ("timeout must be between 1 and 3600 seconds", true),
+            ("timeout must be a positive number of seconds", true),
             "timeout {bad} must be refused"
         );
         assert!(!marker.exists(), "a refused call ran the command anyway");
     }
 
-    // An accepted one does run it.
-    let cmd = format!("touch {}", shell_path(&marker));
-    let (_, is_err) = call(&tool, json!({"command": cmd, "timeout": 30})).await;
-    assert!(!is_err && marker.exists());
+    // An accepted one does run it — and there is no ceiling: an hour and a second is a deadline too.
+    for ok in [30, 3601] {
+        let cmd = format!("touch {}", shell_path(&marker));
+        let (_, is_err) = call(&tool, json!({"command": cmd, "timeout": ok})).await;
+        assert!(!is_err && marker.exists(), "timeout {ok} must be accepted");
+        std::fs::remove_file(&marker).expect("remove");
+    }
 }
 
 /// The shell set over a temp project root WITH a job registry bound (what both entry points build).
@@ -420,7 +425,7 @@ async fn shell_background_keeps_the_argument_rules() {
     .await;
     assert_eq!(
         (out.as_str(), is_err),
-        ("timeout must be between 1 and 3600 seconds", true)
+        ("timeout must be a positive number of seconds", true)
     );
     assert_eq!(jobs.running(), 0, "a refused call must start nothing");
 
@@ -620,10 +625,10 @@ fn the_shell_description_states_the_shell_state_contract() {
                 dialect,
                 "FRESH shell",
                 "do not carry over",
-                // The two post-parity facts the model has to know (DIVERGENCES X-05/X-06).
+                // The two post-parity facts the model has to know (DIVERGENCES X-05/X-06): calls batch,
+                // and a deadline is the model's to set — there is none otherwise.
                 "Calls issued together run concurrently.",
-                "killed after 600 seconds",
-                "maximum 3600",
+                "\"timeout\": kill the command after N seconds; leave it out and the command runs until it exits (or iota exits).",
                 // The rule a call returns by (the yield), the background mode, its notice and its lifetime.
                 "or after 20 s",
                 "you never need to guess how long a command takes",
@@ -686,9 +691,8 @@ fn the_shell_description_states_the_shell_state_contract() {
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Optional wall-clock cap in seconds (default 600, maximum 3600). The command is killed when it expires.",
+                    "description": "Kill the command after this many seconds. Leave it out and the command runs until it exits (or iota exits).",
                     "minimum": 1,
-                    "maximum": 3600,
                 },
                 "background": {
                     "type": "boolean",

@@ -50,9 +50,6 @@ use crate::shell::selfcall::is_self_invocation;
 /// The tool's name, on every platform and under every interpreter (the config key is `shell` too).
 pub const SHELL_TOOL_NAME: &str = "shell";
 
-/// Wall-clock cap of one call when it names no `timeout` (`[command timed out after 10m0s]`).
-pub(crate) const DEFAULT_SHELL_TIMEOUT: Duration = Duration::from_secs(600);
-
 /// How long a foreground call waits for its command before the command becomes a background job and the
 /// call answers with what it has (`Still running after 20s as background job b3 …`). Codex's
 /// `exec_command` yields at 10 s; 20 s covers most builds and test runs a model asks about without making
@@ -64,12 +61,11 @@ pub const SHELL_YIELD: Duration = Duration::from_secs(20);
 /// tmux scenario waits two seconds where a user waits twenty. Nothing else reads it.
 pub const SHELL_YIELD_ENV: &str = "IOTA_SHELL_YIELD";
 
-/// Bounds of the `timeout` argument, in seconds. One number cannot serve both a lint and a child agent's
-/// whole run, so the model picks — inside a ceiling it cannot argue with (DIVERGENCES X-06).
-const TIMEOUT_RANGE: std::ops::RangeInclusive<i64> = 1..=3600;
-
-/// The refusal a `timeout` outside [`TIMEOUT_RANGE`] gets; the command does not run.
-const TIMEOUT_ERR: &str = "timeout must be between 1 and 3600 seconds";
+/// The refusal a `timeout` that is not a positive number of seconds gets; the command does not run. There
+/// is no cap and no default (decided 2026-09-23, DIVERGENCES X-06): a call without one runs until the
+/// command exits — or iota does, since a job never outlives it — and a call with one is killed at the
+/// number the model chose, whatever it is.
+const TIMEOUT_ERR: &str = "timeout must be a positive number of seconds";
 
 /// The refusal a `background` call gets when the run has no job registry (tests only — both entry points
 /// bind one). Running it in the FOREGROUND instead would hold the turn for as long as the model asked to be
@@ -217,8 +213,9 @@ impl Tool for ShellTool {
                     crate::app::paths::clean(&self.root.join(p))
                 }
             };
-            let Some(timeout) = timeout_arg(args) else {
-                return Ok(ToolOutput::err(TIMEOUT_ERR));
+            let timeout = match timeout_arg(args) {
+                Ok(timeout) => timeout,
+                Err(e) => return Ok(ToolOutput::err(e)),
             };
             // The iota exception: the ONLY effect is `sandbox: None` — the network and write settings are
             // the sandbox's, and there is no sandbox.
@@ -238,7 +235,7 @@ impl Tool for ShellTool {
             let opts = Options {
                 command,
                 dir,
-                timeout: Some(timeout),
+                timeout,
                 sandbox,
             };
             let background = bool_arg(args, "background", false);
@@ -399,34 +396,37 @@ fn waited_note() -> String {
     format!("({MAX_JOBS} background jobs already running, so this one was waited for.)")
 }
 
-/// The `timeout` argument as a duration: absent (or null) is [`DEFAULT_SHELL_TIMEOUT`]; `None` means the
-/// call named one outside [`TIMEOUT_RANGE`] (a non-number reads as `0`, which is out of range too).
-fn timeout_arg(args: &JsonObject) -> Option<Duration> {
+/// The `timeout` argument as a deadline: absent (or null) is none — the command runs until it exits;
+/// a positive number is that many seconds; anything else (`0`, negative, a non-number, which reads as
+/// `0`) is the refusal [`TIMEOUT_ERR`].
+fn timeout_arg(args: &JsonObject) -> Result<Option<Duration>, &'static str> {
     match args.get("timeout") {
-        None | Some(Value::Null) => Some(DEFAULT_SHELL_TIMEOUT),
+        None | Some(Value::Null) => Ok(None),
         Some(_) => {
             let secs = int_arg(args, "timeout");
-            if !TIMEOUT_RANGE.contains(&secs) {
-                return None;
-            }
-            u64::try_from(secs).ok().map(Duration::from_secs)
+            u64::try_from(secs)
+                .ok()
+                .filter(|s| *s > 0)
+                .map(|s| Some(Duration::from_secs(s)))
+                .ok_or(TIMEOUT_ERR)
         }
     }
 }
 
-/// The model-facing rendering of one run, checked in this order. `timeout` is the
-/// cap the call actually ran under, so the timed-out line names the number the model chose.
-fn format_result(res: &RunResult, timeout: Duration) -> ToolOutput {
+/// The model-facing rendering of one run, checked in this order. `timeout` is the deadline the call
+/// actually ran under, so the timed-out line names the number the model chose (a timeout with no
+/// deadline cannot happen; the line then simply names none).
+fn format_result(res: &RunResult, timeout: Option<Duration>) -> ToolOutput {
     let output = &res.output;
     match &res.outcome {
         Outcome::Failed(e) if output.trim().is_empty() => {
             ToolOutput::err(format!("failed to run: {e}"))
         }
         Outcome::Failed(e) => ToolOutput::err(format!("{output}\n[failed to run: {e}]")),
-        Outcome::TimedOut => ToolOutput::err(format!(
-            "{output}\n[command timed out after {}]",
-            go_duration(timeout)
-        )),
+        Outcome::TimedOut => ToolOutput::err(match timeout {
+            Some(t) => format!("{output}\n[command timed out after {}]", go_duration(t)),
+            None => format!("{output}\n[command timed out]"),
+        }),
         Outcome::Cancelled => ToolOutput::err(format!("{output}\n[command cancelled]")),
         Outcome::Exited(code) if *code != 0 => {
             ToolOutput::err(format!("{output}\n[exit code {code}]"))
@@ -477,9 +477,8 @@ fn shell_schema(family: Family) -> JsonObject {
             },
             "timeout": {
                 "type": "integer",
-                "description": "Optional wall-clock cap in seconds (default 600, maximum 3600). The command is killed when it expires.",
+                "description": "Kill the command after this many seconds. Leave it out and the command runs until it exits (or iota exits).",
                 "minimum": 1,
-                "maximum": 3600,
             },
             "background": {
                 "type": "boolean",
@@ -495,13 +494,13 @@ fn shell_schema(family: Family) -> JsonObject {
 
 /// Fixed head of the description when a POSIX shell runs the calls — Git Bash included, which is why it says
 /// nothing about the platform.
-pub const BASH_DESC_PREFIX: &str = "Run a bash command line on the user's machine and return its combined stdout/stderr. The full shell is available: pipes, redirects, globbing, && chaining, heredocs. The working directory defaults to the project root (override with \"cwd\"). Each call runs in a FRESH shell: environment variables, shell functions, aliases and `cd` do not carry over to the next call. Anything a later command depends on must be repeated in it — write the full path or command instead of defining a helper first. Calls issued together run concurrently. Each call is killed after 600 seconds unless \"timeout\" says otherwise (maximum 3600). ";
+pub const BASH_DESC_PREFIX: &str = "Run a bash command line on the user's machine and return its combined stdout/stderr. The full shell is available: pipes, redirects, globbing, && chaining, heredocs. The working directory defaults to the project root (override with \"cwd\"). Each call runs in a FRESH shell: environment variables, shell functions, aliases and `cd` do not carry over to the next call. Anything a later command depends on must be repeated in it — write the full path or command instead of defining a helper first. Calls issued together run concurrently. \"timeout\": kill the command after N seconds; leave it out and the command runs until it exits (or iota exits). ";
 /// The same head for PowerShell. It spends its first half on the dialect because that is the half the model
 /// gets wrong by default: everything it knows about shells is POSIX, and none of it applies here.
-pub const PWSH_DESC_PREFIX: &str = "Run a PowerShell command line on the user's machine and return its combined stdout/stderr. This is PowerShell, NOT a POSIX shell, and bash habits do not carry over: separate statements with `;` (`&&` and `||` need PowerShell 7+), and remember the pipeline carries .NET objects rather than bytes — narrow output with `Select-Object -First 20`, `Select-String <pattern>` or `Where-Object`, and pipe through `Out-String` before anything that expects text. Redirection is `>`, `>>` and `2>&1`; the bit bucket is `$null`, not /dev/null. Variables are `$name` and interpolate inside double quotes only; a native program's exit code is `$LASTEXITCODE`; a multi-line literal is a here-string (`@\"…\"@`), not a heredoc. Native programs (git, cargo, node, python) run exactly as they do in any Windows console, but the POSIX tools (grep, sed, awk, ls, tail) are NOT here unless the user installed them — use the cmdlet. The working directory defaults to the project root (override with \"cwd\"). Each call runs in a FRESH shell: variables, functions, aliases and `Set-Location` do not carry over to the next call. Anything a later command depends on must be repeated in it — write the full path or command instead of defining a helper first. Calls issued together run concurrently. Each call is killed after 600 seconds unless \"timeout\" says otherwise (maximum 3600). ";
+pub const PWSH_DESC_PREFIX: &str = "Run a PowerShell command line on the user's machine and return its combined stdout/stderr. This is PowerShell, NOT a POSIX shell, and bash habits do not carry over: separate statements with `;` (`&&` and `||` need PowerShell 7+), and remember the pipeline carries .NET objects rather than bytes — narrow output with `Select-Object -First 20`, `Select-String <pattern>` or `Where-Object`, and pipe through `Out-String` before anything that expects text. Redirection is `>`, `>>` and `2>&1`; the bit bucket is `$null`, not /dev/null. Variables are `$name` and interpolate inside double quotes only; a native program's exit code is `$LASTEXITCODE`; a multi-line literal is a here-string (`@\"…\"@`), not a heredoc. Native programs (git, cargo, node, python) run exactly as they do in any Windows console, but the POSIX tools (grep, sed, awk, ls, tail) are NOT here unless the user installed them — use the cmdlet. The working directory defaults to the project root (override with \"cwd\"). Each call runs in a FRESH shell: variables, functions, aliases and `Set-Location` do not carry over to the next call. Anything a later command depends on must be repeated in it — write the full path or command instead of defining a helper first. Calls issued together run concurrently. \"timeout\": kill the command after N seconds; leave it out and the command runs until it exits (or iota exits). ";
 /// The same head for `cmd.exe` — the floor, reached only when the machine has neither Git Bash nor
 /// PowerShell, so it says plainly how little is available.
-pub const CMD_DESC_PREFIX: &str = "Run a cmd.exe command line on the user's machine and return its combined stdout/stderr. This is the Windows command interpreter — neither bash nor PowerShell, and the most limited of the three; it is what is left when this machine has no PowerShell. Chain with `&`, `&&` and `||`; redirect with `>`, `>>` and `2>&1`; the bit bucket is `NUL`, not /dev/null; variables are `%NAME%`; `^` escapes `& | < > ^`. There is no globbing (each program expands its own arguments) and none of the POSIX tools (grep, sed, awk, ls, tail) unless the user installed them, so prefer running programs (git, cargo, node) directly over cmd built-ins, and prefer one program's own flags over a pipeline. The working directory defaults to the project root (override with \"cwd\"). Each call runs in a FRESH shell: environment variables and `cd` do not carry over to the next call. Anything a later command depends on must be repeated in it — write the full path or command instead of defining a helper first. Calls issued together run concurrently. Each call is killed after 600 seconds unless \"timeout\" says otherwise (maximum 3600). ";
+pub const CMD_DESC_PREFIX: &str = "Run a cmd.exe command line on the user's machine and return its combined stdout/stderr. This is the Windows command interpreter — neither bash nor PowerShell, and the most limited of the three; it is what is left when this machine has no PowerShell. Chain with `&`, `&&` and `||`; redirect with `>`, `>>` and `2>&1`; the bit bucket is `NUL`, not /dev/null; variables are `%NAME%`; `^` escapes `& | < > ^`. There is no globbing (each program expands its own arguments) and none of the POSIX tools (grep, sed, awk, ls, tail) unless the user installed them, so prefer running programs (git, cargo, node) directly over cmd built-ins, and prefer one program's own flags over a pipeline. The working directory defaults to the project root (override with \"cwd\"). Each call runs in a FRESH shell: environment variables and `cd` do not carry over to the next call. Anything a later command depends on must be repeated in it — write the full path or command instead of defining a helper first. Calls issued together run concurrently. \"timeout\": kill the command after N seconds; leave it out and the command runs until it exits (or iota exits). ";
 /// Sandboxed suffix; `{net}` = `network access is BLOCKED` | `network access is allowed`.
 pub const SHELL_DESC_SANDBOXED: &str = "Commands run inside an OS sandbox: file writes are confined to the project root and temp/cache directories (writes elsewhere fail with permission errors), and {net}.";
 /// Unsandboxed suffix — the only one Windows ever gets: no OS sandbox exists there, so every call runs with
@@ -541,10 +540,13 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        ArtifactKind, DEFAULT_SHELL_TIMEOUT, Duration, JobStart, JsonObject, Outcome, RunResult,
-        SHELL_DESC_BACKGROUND, SHELL_YIELD, exec::ShellError, expand_home, format_result,
-        go_duration, job_artifact, timeout_arg, waited_note, yield_receipt, yield_window,
+        ArtifactKind, Duration, JobStart, JsonObject, Outcome, RunResult, SHELL_DESC_BACKGROUND,
+        SHELL_YIELD, TIMEOUT_ERR, exec::ShellError, expand_home, format_result, go_duration,
+        job_artifact, timeout_arg, waited_note, yield_receipt, yield_window,
     };
+
+    /// A deadline for the rows of the formatting table: ten minutes, the default there used to be.
+    const TEN_MINUTES: Option<Duration> = Some(Duration::from_secs(600));
 
     // Every branch of `format_result` (tool-shell.md "MODEL-FACING RESULT SUFFIXES").
     #[test]
@@ -553,7 +555,7 @@ mod tests {
             output: String::new(),
             outcome: Outcome::Failed(ShellError::NoShell(crate::shell::interp::NoShell::NoBash)),
         };
-        let out = format_result(&failed, DEFAULT_SHELL_TIMEOUT);
+        let out = format_result(&failed, TEN_MINUTES);
         assert_eq!(
             out.text,
             "failed to run: bash is not installed on this system"
@@ -565,7 +567,7 @@ mod tests {
             outcome: Outcome::Failed(ShellError::Spawn("boom".to_owned())),
         };
         assert_eq!(
-            format_result(&failed_with_output, DEFAULT_SHELL_TIMEOUT).text,
+            format_result(&failed_with_output, TEN_MINUTES).text,
             "partial\n\n[failed to run: boom]"
         );
 
@@ -574,21 +576,26 @@ mod tests {
             outcome: Outcome::TimedOut,
         };
         assert_eq!(
-            format_result(&timed_out, DEFAULT_SHELL_TIMEOUT).text,
+            format_result(&timed_out, TEN_MINUTES).text,
             "slow\n[command timed out after 10m0s]"
         );
-        assert_eq!(go_duration(DEFAULT_SHELL_TIMEOUT), "10m0s");
-        // The line names the cap the call actually ran under, not the default.
+        assert_eq!(go_duration(Duration::from_secs(600)), "10m0s");
+        // The line names the deadline the call actually ran under.
         assert_eq!(
-            format_result(&timed_out, Duration::from_secs(5)).text,
+            format_result(&timed_out, Some(Duration::from_secs(5))).text,
             "slow\n[command timed out after 5s]"
+        );
+        // A timeout with no deadline cannot happen; the shape is total anyway.
+        assert_eq!(
+            format_result(&timed_out, None).text,
+            "slow\n[command timed out]"
         );
 
         let cancelled = RunResult {
             output: String::new(),
             outcome: Outcome::Cancelled,
         };
-        let out = format_result(&cancelled, DEFAULT_SHELL_TIMEOUT);
+        let out = format_result(&cancelled, TEN_MINUTES);
         assert_eq!(out.text, "\n[command cancelled]");
         assert!(out.is_error);
 
@@ -597,7 +604,7 @@ mod tests {
             outcome: Outcome::Exited(-1),
         };
         assert_eq!(
-            format_result(&signalled, DEFAULT_SHELL_TIMEOUT).text,
+            format_result(&signalled, TEN_MINUTES).text,
             "\n[exit code -1]"
         );
 
@@ -605,7 +612,7 @@ mod tests {
             output: "  \n".to_owned(),
             outcome: Outcome::Exited(0),
         };
-        let out = format_result(&blank, DEFAULT_SHELL_TIMEOUT);
+        let out = format_result(&blank, TEN_MINUTES);
         assert_eq!(out.text, "[command produced no output]");
         assert!(!out.is_error);
 
@@ -613,46 +620,47 @@ mod tests {
             output: "hello\n".to_owned(),
             outcome: Outcome::Exited(0),
         };
-        let out = format_result(&ok, DEFAULT_SHELL_TIMEOUT);
+        let out = format_result(&ok, TEN_MINUTES);
         assert_eq!(out.text, "hello\n", "the trailing newline is preserved");
         assert!(!out.is_error);
     }
 
-    // New (DIVERGENCES X-06): absent means the default, and only 1…3600 is a timeout at all.
+    // DIVERGENCES X-06 (2026-09-23): absent means NO deadline — the command runs until it exits — and any
+    // positive number of seconds is one; there is no ceiling any more, and nothing else is a timeout.
     #[test]
-    fn timeout_argument_bounds() {
+    fn timeout_argument_is_optional_and_uncapped() {
         let args =
             |v: serde_json::Value| -> JsonObject { v.as_object().cloned().unwrap_or_default() };
         assert_eq!(
             timeout_arg(&JsonObject::new()),
-            Some(DEFAULT_SHELL_TIMEOUT),
-            "an absent timeout is the default"
+            Ok(None),
+            "an absent timeout is no deadline"
         );
         assert_eq!(
             timeout_arg(&args(serde_json::json!({"timeout": null}))),
-            Some(DEFAULT_SHELL_TIMEOUT)
+            Ok(None)
         );
-        for (secs, want) in [(1, 1), (30, 30), (3600, 3600)] {
+        for secs in [1, 30, 3600, 3601, 86_400] {
             assert_eq!(
                 timeout_arg(&args(serde_json::json!({"timeout": secs}))),
-                Some(Duration::from_secs(want)),
-                "timeout {secs} is inside the range"
+                Ok(Some(Duration::from_secs(secs))),
+                "timeout {secs} is a deadline"
             );
         }
         for bad in [
             serde_json::json!({"timeout": 0}),
             serde_json::json!({"timeout": -1}),
-            serde_json::json!({"timeout": 3601}),
-            // A non-number reads as 0, which is out of range too — never silently the default.
+            // A non-number reads as 0, which is refused too — never silently no deadline.
             serde_json::json!({"timeout": "30"}),
             serde_json::json!({"timeout": true}),
         ] {
             assert_eq!(
                 timeout_arg(&args(bad.clone())),
-                None,
+                Err(TIMEOUT_ERR),
                 "{bad} must be refused"
             );
         }
+        assert_eq!(TIMEOUT_ERR, "timeout must be a positive number of seconds");
     }
 
     // The yield's receipt: the window in the tool's own words, the job, the output so far under the
