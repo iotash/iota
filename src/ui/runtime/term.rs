@@ -29,7 +29,11 @@
 //!   laid out at the terminal's FULL width at rest and a column (or a few) short while a
 //!   drag lasts (`Model::frame_width`, the burst layout — the owner's, X-52): only a drag's
 //!   first step rewraps the frame's full-width rows, and that growth is ours to claim,
-//!   never to predict for transcript rows. A band row is filled by the next
+//!   never to predict for transcript rows. Nothing is erased on a stale picture: a pass
+//!   takes the size the terminal has NOW (a fast drag's event can be one size behind), and
+//!   a recreation checks with a cursor query that the frame's bottom row is where it placed
+//!   it before its W3 erase — tmux, grown again mid-drag, pulls history rows back, and an
+//!   erase from a top computed on the older size wiped a committed row (P0, 2026-09-24). A band row is filled by the next
 //!   output in place, the frame not moving ([`Term::insert_lines`]). An emulator that does
 //!   not reflow never has a row above the cursor claimed (DIVERGENCES X-52).
 //! - **W3**: a recreated `Terminal` starts with empty buffers while the screen still
@@ -79,6 +83,9 @@ pub(crate) struct Geometry {
     /// Test seam: the cursor query fails (a terminal that never answers the DSR — crossterm
     /// gives up after ~2 s with an error).
     dsr_fails: Arc<std::sync::atomic::AtomicBool>,
+    /// Test seam: the rows the screen REALLY has when the reported size lags it (tmux applies
+    /// the next resize before the tty size or the event says so); the cursor moves within it.
+    real_rows: Arc<Mutex<Option<u16>>>,
 }
 
 /// Rides over lock poisoning: geometry is plain display state and every access
@@ -105,7 +112,21 @@ impl Geometry {
             size: Arc::new(Mutex::new(Size { width, height })),
             cursor: Arc::new(Mutex::new(Position::ORIGIN)),
             dsr_fails: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            real_rows: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// The screen really has `rows` rows while the reported size stays what it was.
+    #[cfg(test)]
+    pub(crate) fn set_real_rows(&self, rows: u16) {
+        store(&self.real_rows, Some(rows));
+    }
+
+    /// The last row the cursor can reach: the real screen's, or the reported one's.
+    fn last_row(&self) -> u16 {
+        ride(&self.real_rows)
+            .unwrap_or_else(|| self.size().height)
+            .saturating_sub(1)
     }
 
     /// Makes every cursor query fail from now on (or answer again).
@@ -200,6 +221,12 @@ impl<W: Write> Backend for LoopBackend<W> {
     }
 
     fn append_lines(&mut self, n: u16) -> io::Result<()> {
+        if let Some(g) = &self.geo {
+            // The synthetic cursor moves like a terminal's: down, clamped to the last row.
+            let pos = g.cursor();
+            let last = g.last_row();
+            g.set_cursor(Position::new(pos.x, pos.y.saturating_add(n).min(last)));
+        }
         self.inner.append_lines(n)
     }
 
@@ -437,11 +464,18 @@ impl<W: Write> Term<W> {
         droppable: u16,
         height: impl FnOnce(u16) -> u16,
     ) -> io::Result<u16> {
+        // The size the terminal has NOW: in a fast drag the event's size can already be stale
+        // (the next resize applied, its event not yet read), and every row this pass computes
+        // must match the screen the cursor query is answered from.
+        let size = self
+            .real_size()
+            .filter(|s| s.width > 0 && s.height > 0)
+            .unwrap_or(size);
         let old = self.size;
         let flush = self.top.saturating_add(self.view_height) >= old.height;
         let drawn = self.drawn.take();
-        let last = size.height.saturating_sub(1);
-        let mut start = self.top.min(last);
+        let mut size = size;
+        let mut start = self.top.min(size.height.saturating_sub(1));
         let mut dropped = 0;
         // A DSR that fails (crossterm's ~2 s timeout, a terminal that never answers) is not
         // a reason to unwind the loop: without the cursor the tracked top is the anchor, as
@@ -451,7 +485,13 @@ impl<W: Write> Term<W> {
             None => None,
         };
         if let (Some(d), Some(pos)) = (&drawn, cursor) {
-            let cur = pos.y.min(last);
+            // The cursor is the one current fact: a cursor below the last row of the size just
+            // read means the terminal grew again in between — it has at least that many rows.
+            // (Clamping the cursor to the stale size put the anchor on transcript rows.)
+            if pos.y >= size.height {
+                size.height = pos.y.saturating_add(1);
+            }
+            let cur = pos.y;
             if size.width < old.width {
                 self.learn_reflow(d, old, size, cur, flush);
             }
@@ -517,6 +557,50 @@ impl<W: Write> Term<W> {
     /// the acknowledged size (`with_options` scrolls history up when the frame does not
     /// fit below `at`), the W2 pin, and the W3 clear from the new top down.
     fn recreate(&mut self, new_h: u16, at: u16) -> io::Result<()> {
+        // A FRESH observation before the W3 erase (P0, 2026-09-24). `with_options` places the
+        // frame by counting the newlines that scroll past the bottom of the screen it BELIEVES
+        // in — and in a fast drag neither the resize event nor the tty's own size is current
+        // (tmux applies the next resize, pulling history rows back on a grow, before either
+        // says so): fewer newlines scroll than counted, the computed top lands above the
+        // frame, and the erase from there wiped a committed row. The one current fact is the
+        // cursor: the newlines leave it on the frame's REAL bottom row. If it is not where the
+        // computation expects, the screen has at least (exactly, when it is shorter) that many
+        // rows; re-anchor the frame on the observed rows and check again — only then erase.
+        // A cursor query that fails keeps the computed top.
+        let mut at = at;
+        for _ in 0..3 {
+            self.construct(new_h, at)?;
+            let area = self.terminal.get_frame().area();
+            let expected = area.bottom().saturating_sub(1);
+            let Ok(cur) = self.cursor_position() else {
+                break;
+            };
+            if cur.y == expected {
+                break;
+            }
+            let rows = if cur.y < expected {
+                cur.y.saturating_add(1)
+            } else {
+                self.size.height.max(cur.y.saturating_add(1))
+            };
+            self.size.height = rows;
+            at = cur.y.saturating_sub(area.height.saturating_sub(1));
+        }
+        let area = self.terminal.get_frame().area();
+        self.view_height = new_h;
+        self.top = area.y.min(self.size.height.saturating_sub(new_h)); // W2
+        self.pad = self.pad.min(self.top);
+        self.terminal.clear()?; // W3
+        // Everything from the top down is erased: every line empty, and no cursor row known
+        // — a resize before the next draw keeps the tracked top.
+        self.drawn = None;
+        self.line_len.clear();
+        Ok(())
+    }
+
+    /// `MoveTo(0, at)` and a fresh `Inline(new_h)` terminal over the acknowledged size —
+    /// `with_options` scrolls history up when the frame does not fit below `at`. No erase.
+    fn construct(&mut self, new_h: u16, at: u16) -> io::Result<()> {
         anchor(&mut self.ctrl, self.geo.as_ref(), at)?;
         let backend = LoopBackend {
             inner: CrosstermBackend::new((self.make_writer)()),
@@ -531,15 +615,17 @@ impl<W: Write> Term<W> {
                 viewport: Viewport::Inline(new_h),
             },
         )?;
-        self.view_height = new_h;
-        self.top = at.min(self.size.height.saturating_sub(new_h)); // W2
-        self.pad = self.pad.min(self.top);
-        self.terminal.clear()?; // W3
-        // Everything from the top down is erased: every line empty, and no cursor row known
-        // — a resize before the next draw keeps the tracked top.
-        self.drawn = None;
-        self.line_len.clear();
         Ok(())
+    }
+
+    /// The terminal's size NOW — the synthetic one under [`Geometry`], the tty's live.
+    fn real_size(&self) -> Option<Size> {
+        match &self.geo {
+            Some(g) => Some(g.size()),
+            None => crossterm::terminal::size()
+                .ok()
+                .map(|(width, height)| Size { width, height }),
+        }
     }
 
     /// The physical cursor: one DSR live, the synthetic answer under [`Geometry`].
@@ -1013,6 +1099,81 @@ mod tests {
             60,
             "acknowledged by `Term::resize`"
         );
+    }
+
+    /// The verifier's P0 (2026-09-24), at the seam: in a fast drag tmux has already grown the
+    /// screen to 28 rows — pulling a history row back, so the frame and the cursor moved down
+    /// one — while both the event and the tty still say 27. A recreation computed on 27 rows
+    /// counts one newline-scroll too many and puts the top a row above the frame; it must see
+    /// the cursor land a row lower than it expected and re-anchor before the W3 erase, which
+    /// used to wipe the committed row above the frame.
+    #[test]
+    fn a_resize_on_a_stale_size_never_erases_above_the_frame() {
+        let (mut t, buf, geo) = term(120, 27, 9, 18);
+        let tall = FrameView {
+            rows: (0..9).map(|i| format!("row-{i}")).collect(),
+            cursor: Some((2, 6)),
+        };
+        t.draw_frame(&tall).unwrap();
+        // tmux: 27 → 28, one history row pulled back; the reports lag.
+        geo.set_real_rows(28);
+        geo.shift_cursor(1);
+        let mark = buf.bytes().len();
+        t.resize(
+            ratatui::layout::Size {
+                width: 120,
+                height: 27,
+            },
+            0,
+            |_| 9,
+        )
+        .unwrap();
+        let after = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
+        assert_eq!(t.top, 19, "the frame is where the terminal put it");
+        for row in 1..=19 {
+            assert!(
+                !after.contains(&format!("\u{1b}[{row};1H\u{1b}[J")),
+                "an erase from row {row}, above the frame (row 20): {after:?}"
+            );
+        }
+    }
+
+    /// The cursor answers from a screen that grew AGAIN after the size was read (reported 26,
+    /// the cursor on row 27): the cursor wins — the screen has at least 28 rows — and the
+    /// anchor is the cursor's frame top, never a top computed from a cursor clamped to the
+    /// stale size (which put the anchor two rows up, on the transcript, and erased them).
+    #[test]
+    fn a_cursor_beyond_the_reported_size_wins_over_it() {
+        let (mut t, buf, geo) = term(120, 26, 9, 17);
+        let tall = FrameView {
+            rows: (0..9).map(|i| format!("row-{i}")).collect(),
+            cursor: Some((2, 6)),
+        };
+        t.draw_frame(&tall).unwrap();
+        geo.set_real_rows(30);
+        geo.shift_cursor(4); // tmux grew twice, pulling history rows back: the frame moved down 4
+        let mark = buf.bytes().len();
+        t.resize(
+            ratatui::layout::Size {
+                width: 120,
+                height: 26,
+            },
+            0,
+            |_| 9,
+        )
+        .unwrap();
+        let after = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
+        assert!(
+            t.top >= 21,
+            "the anchor is the cursor's frame top (21), got {}",
+            t.top
+        );
+        for row in 1..=21 {
+            assert!(
+                !after.contains(&format!("\u{1b}[{row};1H\u{1b}[J")),
+                "an erase from row {row}, above the frame (row 22): {after:?}"
+            );
+        }
     }
 
     /// A terminal that never answers the cursor query (crossterm times out with an error) must

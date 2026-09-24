@@ -68,6 +68,15 @@ pub(crate) const IDLE_POLL_MAX: Duration = Duration::from_millis(50);
 /// the moment anyone acts.
 pub(crate) const DRAG_SETTLE: Duration = Duration::from_millis(2000);
 
+/// How long the terminal must have been quiet — no further resize — before the loop applies
+/// the last one (P0, 2026-09-24). While a pane or a window is being dragged, tmux applies each
+/// new size (pulling history rows back on a grow) independently of what the loop writes;
+/// a pass that queried the cursor and then wrote its erases while the next resize landed
+/// wiped a committed row. Acting only on a still terminal, and writing nothing — no insert,
+/// no draw — until then, closes that window. Shorter than a hand's pause between drag
+/// steps, longer than a burst of `SIGWINCH`es.
+pub(crate) const RESIZE_QUIET: Duration = Duration::from_millis(50);
+
 /// The most columns the frame gives up while a drag lasts. The margin is twice the widest
 /// step seen (2 at least): a fast drag narrows the terminal again before the frame drawn for
 /// the last step has landed, and a frame only one step short would still rewrap. A single
@@ -164,6 +173,11 @@ pub(crate) struct Model {
     /// seen in it (1 at least, [`DRAG_MARGIN_MAX`] at most) — a terminal that sends a step of
     /// two or three columns would still rewrap a frame only one column short.
     pub(crate) drag_margin: u16,
+    /// The last resize recorded and not yet applied (W5: applied once the terminal has been
+    /// quiet for `RESIZE_QUIET`).
+    pub(crate) pending_resize: Option<(u16, u16)>,
+    /// When the last resize event arrived.
+    pub(crate) resize_seen: Instant,
     /// Terminal height (mirrors the shared atomic; 0 = unknown → 24 fallback).
     pub(crate) height: u16,
     /// The handle-shared state.
@@ -280,6 +294,8 @@ impl Model {
             height,
             drag_until: None,
             drag_margin: 0,
+            pending_resize: None,
+            resize_seen: Instant::now(),
             shared,
             status: StatusData::default(),
             title: String::new(),
@@ -336,6 +352,10 @@ impl Model {
         }
         if let Some(t) = self.drag_until {
             let next = t.saturating_duration_since(Instant::now());
+            d = d.min(next.max(Duration::from_millis(1)));
+        }
+        if self.pending_resize.is_some() {
+            let next = RESIZE_QUIET.saturating_sub(self.resize_seen.elapsed());
             d = d.min(next.max(Duration::from_millis(1)));
         }
         d
@@ -532,60 +552,15 @@ impl Model {
     }
 
     /// Handles one crossterm event; resize takes the dedicated W5 pass.
-    fn handle_event<W: Write>(&mut self, ev: Event, term: &mut Term<W>) -> io::Result<()> {
+    fn handle_event(&mut self, ev: Event) {
         match ev {
             Event::Resize(w, h) => {
-                // W5 RESIZE_PASS_FIRST: geometry sync + re-anchor + draw BEFORE any job
-                // touches stale geometry (model.go:175-195 + spike #5). `Term::resize`
-                // reads the anchor with one DSR before it writes a byte; ratatui's own
-                // resize (row 0 + `ESC[2J` on a narrowing) never runs.
-                // A resize opens (or extends) a drag: lay out a column short — as many as the
-                // widest narrowing step seen in it — until it settles.
-                let step = self.width.saturating_sub(w);
-                self.drag_margin = self
-                    .drag_margin
-                    .max(step.saturating_mul(2))
-                    .clamp(2, DRAG_MARGIN_MAX);
-                self.width = w;
-                self.height = h;
+                // A resize is only RECORDED here; `apply_resize` runs once the terminal has
+                // been quiet for `RESIZE_QUIET` (the loop writes nothing meanwhile). The
+                // drag it opens or extends is extended at once, so it cannot settle under it.
+                self.pending_resize = Some((w, h));
+                self.resize_seen = Instant::now();
                 self.drag_until = Some(Instant::now() + DRAG_SETTLE);
-                self.shared
-                    .width
-                    .store(self.frame_width(), Ordering::Relaxed);
-                if h > 0 {
-                    self.shared.height.store(h, Ordering::Relaxed);
-                }
-                if w > 0 && h > 0 {
-                    let mut view = self.frame_view();
-                    let size = ratatui::layout::Size {
-                        width: w,
-                        height: h,
-                    };
-                    let staged = u16::try_from(self.region_snap.tail.len()).unwrap_or(u16::MAX);
-                    let rows = view.rows.len();
-                    let dropped = term.resize(size, staged, |k| {
-                        self.frame_height(rows.saturating_sub(usize::from(k)))
-                    })?;
-                    if dropped > 0 {
-                        // The emulator pushed the frame's first staged rows into the
-                        // history: they are committed as they stand, never drawn again.
-                        let k = usize::from(dropped);
-                        let shown: Vec<String> = view.rows.drain(..k).collect();
-                        view.cursor = view.cursor.map(|(x, y)| (x, y.saturating_sub(dropped)));
-                        self.region_snap
-                            .tail
-                            .drain(..k.min(self.region_snap.tail.len()));
-                        self.jobs.push(Job::Shown(shown));
-                    }
-                    term.draw_frame(&view)?;
-                }
-                // Leave the frame dirty: the job below changes what it shows.
-                self.dirty = true;
-                // The staged window stays IN the re-anchored frame (a flush would commit
-                // it a second time under the reflow's ghost): rewrap it for a new width,
-                // re-apply the cap for a new height — or nothing would until the next
-                // line of output.
-                self.jobs.push(Job::Retrim);
             }
             Event::Key(k) => {
                 self.end_drag();
@@ -603,7 +578,6 @@ impl Model {
             Event::FocusLost => self.focused = false,
             Event::Mouse(_) => {}
         }
-        Ok(())
     }
 
     /// Routes one key through the composer precedence table (keys.rs — WP46's seam).
@@ -730,6 +704,70 @@ impl Model {
         if let Some(w) = self.waiter.take() {
             let _ = w.reply.send(Err(UiError::Interrupted));
         }
+    }
+
+    /// The W5 pass for the last recorded resize, once the terminal has been quiet for
+    /// `RESIZE_QUIET`: geometry sync + re-anchor + draw BEFORE any job touches stale geometry
+    /// (model.go:175-195 + spike #5). `Term::resize` reads the size and the cursor NOW and
+    /// checks the cursor again before it erases; ratatui's own resize (row 0 + `ESC[2J` on a
+    /// narrowing) never runs. A resize opens (or extends) a drag: lay out a column short — as
+    /// many as twice the widest narrowing step seen in it — until it settles.
+    pub(crate) fn apply_resize<W: Write>(&mut self, term: &mut Term<W>) -> io::Result<()> {
+        let Some((w, h)) = self.pending_resize.take() else {
+            return Ok(());
+        };
+        // W5 RESIZE_PASS_FIRST: geometry sync + re-anchor + draw BEFORE any job
+        // touches stale geometry (model.go:175-195 + spike #5). `Term::resize`
+        // reads the anchor with one DSR before it writes a byte; ratatui's own
+        // resize (row 0 + `ESC[2J` on a narrowing) never runs.
+        // A resize opens (or extends) a drag: lay out a column short — as many as the
+        // widest narrowing step seen in it — until it settles.
+        let step = self.width.saturating_sub(w);
+        self.drag_margin = self
+            .drag_margin
+            .max(step.saturating_mul(2))
+            .clamp(2, DRAG_MARGIN_MAX);
+        self.width = w;
+        self.height = h;
+        self.drag_until = Some(Instant::now() + DRAG_SETTLE);
+        self.shared
+            .width
+            .store(self.frame_width(), Ordering::Relaxed);
+        if h > 0 {
+            self.shared.height.store(h, Ordering::Relaxed);
+        }
+        if w > 0 && h > 0 {
+            let mut view = self.frame_view();
+            let size = ratatui::layout::Size {
+                width: w,
+                height: h,
+            };
+            let staged = u16::try_from(self.region_snap.tail.len()).unwrap_or(u16::MAX);
+            let rows = view.rows.len();
+            let dropped = term.resize(size, staged, |k| {
+                self.frame_height(rows.saturating_sub(usize::from(k)))
+            })?;
+            if dropped > 0 {
+                // The emulator pushed the frame's first staged rows into the
+                // history: they are committed as they stand, never drawn again.
+                let k = usize::from(dropped);
+                let shown: Vec<String> = view.rows.drain(..k).collect();
+                view.cursor = view.cursor.map(|(x, y)| (x, y.saturating_sub(dropped)));
+                self.region_snap
+                    .tail
+                    .drain(..k.min(self.region_snap.tail.len()));
+                self.jobs.push(Job::Shown(shown));
+            }
+            term.draw_frame(&view)?;
+        }
+        // Leave the frame dirty: the job below changes what it shows.
+        self.dirty = true;
+        // The staged window stays IN the re-anchored frame (a flush would commit
+        // it a second time under the reflow's ghost): rewrap it for a new width,
+        // re-apply the cap for a new height — or nothing would until the next
+        // line of output.
+        self.jobs.push(Job::Retrim);
+        Ok(())
     }
 
     /// The width the frame is laid out at — and, through the shared atomic, every row the
@@ -874,7 +912,7 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
                 if let Some(prev) = pending.take()
                     && !(matches!(prev, Event::Resize(..)) && matches!(ev, Event::Resize(..)))
                 {
-                    m.handle_event(prev, &mut term)?;
+                    m.handle_event(prev);
                 }
                 pending = Some(ev);
                 if !events.poll(Duration::ZERO)? {
@@ -882,7 +920,7 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
                 }
             }
             if let Some(ev) = pending {
-                m.handle_event(ev, &mut term)?;
+                m.handle_event(ev);
             }
         }
         // Drain the mailbox: scrollback batches collect IN ORDER; the rest mutates
@@ -901,6 +939,12 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
                 Err(_) => break, // empty (or the handle side is gone)
             }
         }
+        // A recorded resize is applied once the terminal is quiet; until then nothing below
+        // writes a byte (the geometry may be moving under it).
+        if m.pending_resize.is_some() && (m.resize_seen.elapsed() >= RESIZE_QUIET || m.quit) {
+            m.apply_resize(&mut term)?;
+        }
+        let resizing = m.pending_resize.is_some();
         // Post-update jobs (tea.Cmd): region lock + mailbox sends — never re-entrant.
         for job in std::mem::take(&mut m.jobs) {
             match job {
@@ -908,15 +952,17 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
                 Job::Shown(rows) => lock(&m.shared.region).already_shown(&rows),
             }
         }
-        if m.settle_drag() {
+        if !resizing && m.settle_drag() {
             term.close_band()?;
         }
         m.tick_spin();
         m.tick_jobs();
         m.tick_surface_refresh();
         // W2/W6: land the insert batches, pushing the tracked top.
-        for batch in inserts.drain(..) {
-            term.insert_lines(&batch)?;
+        if !resizing {
+            for batch in inserts.drain(..) {
+                term.insert_lines(&batch)?;
+            }
         }
         // The Quit round paints too. `close()` flushed the staging window into scrollback
         // BEFORE posting Quit, so the batches above are the window's rows; the frame still
@@ -925,7 +971,7 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
         // is empty, so the frame is shorter: `ensure_height` rebuilds the viewport in
         // place and W3 clears what the old frame covered. (Go's renderer flushed its last
         // `View()` on stop; the port broke off before it — DIVERGENCES X-49.)
-        if m.dirty {
+        if m.dirty && !resizing {
             if m.force_clear {
                 term.clear()?;
                 m.force_clear = false;

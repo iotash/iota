@@ -202,6 +202,18 @@ its own viewport top. Some emulators will strand a row above the new viewport. T
       runs; the build before: 1 row), inside the budget. OVER BUDGET, known: a drag with
       `/model` open splits 4–6 separator rows into the history (verifier: 6; the frozen
       build: 4, 3 of 3 runs) — scenario 26 H caps it at 6 by that name.
+      P0 (2026-09-25, fixed): tmux lost committed rows on a HEIGHT drag down and back up (it
+      pulls history rows back on a grow while the loop is still writing the previous pass).
+      A resize is now applied only after `RESIZE_QUIET` (50 ms) with no further one, nothing is
+      written meanwhile, the cursor wins over any size read (a cursor below it raises it), and
+      a recreation checks the cursor before its erase (tmux, before → after: window 30→20→30
+      6/8 → 0/8, split up/down 8/8 → 0/8, 60-event oscillation 4/8 → 0/20) — scenario 06's
+      height-drag block (both `scroll-on-clear` settings) and `vt100_tests`' height-drag and
+      oscillation units pin it. Over budget, known, not fixed (the verifier's adversarial run):
+      herdr/Ghostty keep a height drag's band as blank history rows (≈ 10 for up-10/down-10;
+      48 for a 60-event oscillation in Ghostty); a first resize that also shrinks drastically
+      duplicates 3–4 rows; width→⅓ leaves +10 blank rows; a 60-event width+height jitter
+      duplicates 1–4 rows; drags paced 2.1 s apart are separate drags (2 blank rows each).
       Not verifiable here: a DSR that times out mid-resize (crossterm's ~2 s) — the fail-safe
       (the tracked top stays the anchor, the loop does not unwind) is pinned headless
       (`term::tests::a_resize_whose_dsr_fails_*`); a real terminal that drops the query is

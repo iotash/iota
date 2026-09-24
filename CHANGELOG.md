@@ -72,6 +72,12 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Fixed
 
+- **Dragging a window's or a tmux pane's height down and back no longer loses
+  a line.** In tmux, growing the height again within the same drag pulls rows
+  back out of the scrollback; iota could erase the conversation's last line
+  above the prompt while it caught up. The resize now reads the terminal's
+  size at that moment and confirms where the prompt is before it erases
+  anything (X-52).
 - **Resizing the window no longer throws the prompt to the top or erases
   text.** Making the window narrower moved the prompt and its separators to
   the top of the screen and wiped everything that was on screen above them;

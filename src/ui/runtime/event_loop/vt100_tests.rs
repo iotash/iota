@@ -801,7 +801,7 @@ fn a_notification_rings_only_while_blurred() {
         text(&buf)
     );
 
-    m.handle_event(Event::FocusLost, &mut t).unwrap();
+    m.handle_event(Event::FocusLost);
     ping(&mut m, &mut t, "approval needed");
     let got = String::from_utf8_lossy(&buf.bytes()[before..]).into_owned();
     assert!(
@@ -817,7 +817,7 @@ fn a_notification_rings_only_while_blurred() {
         "collision-prone ping = {got:?}, want a leading space defusing 9;4"
     );
 
-    m.handle_event(Event::FocusGained, &mut t).unwrap();
+    m.handle_event(Event::FocusGained);
     let mark = buf.bytes().len();
     ping(&mut m, &mut t, "done");
     assert_eq!(
@@ -975,6 +975,7 @@ impl ReflowEmu {
         // tmux resizes the rows FIRST: a shrink eats the rows below the cursor, then
         // takes the rest from the top into the history.
         let mut screen = screen.to_vec();
+        let orig_row = i32::from(cur_row);
         let mut cur_row = usize::from(cur_row);
         let needed = rows.saturating_sub(usize::from(h));
         let eat = needed.min(rows - 1 - cur_row);
@@ -982,6 +983,12 @@ impl ReflowEmu {
         let push = needed - eat;
         self.history.extend(screen.drain(..push));
         cur_row -= push;
+        // A row GROW pulls lines back out of the history onto the top of the screen (tmux:
+        // `screen_resize_y`), moving everything — the cursor included — down.
+        let pull = usize::from(h).saturating_sub(rows).min(self.history.len());
+        let back = self.history.split_off(self.history.len() - pull);
+        screen.splice(0..0, back);
+        cur_row += pull;
         let wide = usize::from(w);
         let mut lines: Vec<String> = Vec::new();
         let mut cursor_line = 0;
@@ -1008,7 +1015,7 @@ impl ReflowEmu {
         }
         p.process(format!("\u{1b}[{};{}H", new_row + 1, cur_col + 1).as_bytes());
         self.p = p;
-        i32::try_from(new_row).unwrap() - i32::try_from(cur_row + push).unwrap()
+        i32::try_from(new_row).unwrap() - orig_row
     }
 
     /// The rows in the history so far (what was pushed off the top), after feeding.
@@ -1905,4 +1912,78 @@ fn a_key_ends_the_drag() {
         "a key did not end the drag"
     );
     lh.quit_and_join(Duration::from_secs(2));
+}
+
+/// Every `line-NN` of the idle loop's twelve is reachable exactly once.
+fn assert_no_line_lost_or_doubled(tag: &str, all: &[String]) {
+    for i in 0..12 {
+        let line = format!("line-{i:02}");
+        let n = all.iter().filter(|r| r.contains(line.as_str())).count();
+        assert_eq!(
+            n,
+            1,
+            "{tag}: {line} reachable {n} times:\n{}",
+            all.join("\n")
+        );
+    }
+}
+
+/// The verifier's P0 (2026-09-24): a HEIGHT drag down and back up in tmux lost a committed
+/// row. tmux pulls history rows back when the height grows, and in a fast drag the terminal
+/// is already at the NEXT size when the loop handles a resize event — here the emulator has
+/// shrunk to 20 and grown back to 21 (pulling a row back) before the loop reads the stale
+/// "20" event. The pass must take the size the terminal has now, and verify where the frame
+/// really is before it erases anything; the old pass erased the row above the frame.
+#[test]
+fn a_height_drag_down_and_back_loses_no_row() {
+    let lh = idle_loop();
+    let mut emu = ReflowEmu::new();
+    for h in [22, 20] {
+        let moved = emu.resize(&lh.buf.bytes(), 80, h);
+        lh.geo.shift_cursor(moved);
+        drag_step(&lh, 80, h);
+    }
+    // The race: the emulator goes 20 → 21 (a row pulled back), and only THEN does the loop
+    // read an event — a stale one still saying 20.
+    let moved = emu.resize(&lh.buf.bytes(), 80, 21);
+    lh.geo.shift_cursor(moved);
+    lh.geo.set_size(80, 21);
+    lh.etx.send(Event::Resize(80, 20)).unwrap();
+    thread::sleep(Duration::from_millis(150));
+    for h in [21, 23, 24] {
+        let moved = emu.resize(&lh.buf.bytes(), 80, h);
+        lh.geo.shift_cursor(moved);
+        drag_step(&lh, 80, h);
+    }
+    thread::sleep(crate::ui::runtime::event_loop::DRAG_SETTLE + Duration::from_millis(200));
+    let (all, _) = emu.finish(&lh.buf.bytes());
+    lh.quit_and_join(Duration::from_secs(2));
+    assert_no_line_lost_or_doubled("height 24→20→(21)→24", &all);
+}
+
+/// An oscillating height (29/28/27/26/30 in the verifier's run), every step a grow or a
+/// shrink with history pulled back on the grows, stale events included: nothing is lost.
+#[test]
+fn an_oscillating_height_loses_no_row() {
+    let lh = idle_loop();
+    let mut emu = ReflowEmu::new();
+    let mut prev = 24;
+    for (i, h) in [23, 22, 21, 20, 24, 23, 22, 21, 24, 22, 20, 24]
+        .into_iter()
+        .enumerate()
+    {
+        let moved = emu.resize(&lh.buf.bytes(), 80, h);
+        lh.geo.shift_cursor(moved);
+        lh.geo.set_size(80, h);
+        // Every third event arrives late: the loop reads the size before this one.
+        let seen = if i % 3 == 2 { prev } else { h };
+        lh.etx.send(Event::Resize(80, seen)).unwrap();
+        thread::sleep(Duration::from_millis(120));
+        prev = h;
+    }
+    lh.etx.send(Event::Resize(80, prev)).unwrap();
+    thread::sleep(crate::ui::runtime::event_loop::DRAG_SETTLE + Duration::from_millis(300));
+    let (all, _) = emu.finish(&lh.buf.bytes());
+    lh.quit_and_join(Duration::from_secs(2));
+    assert_no_line_lost_or_doubled("oscillating height", &all);
 }

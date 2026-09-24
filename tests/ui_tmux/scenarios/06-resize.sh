@@ -181,6 +181,19 @@ settle || bad "frame never settled after the fast drag's release"
 drag_block "paced 10-step drag (1 s apart)" paced 69x20 68x20 67x20 66x20 65x20 64x20 63x20 62x20 61x20 60x20
 tm resize-window -t s -x 70 -y 20
 settle || bad "frame never settled after the paced drag's release"
+# A HEIGHT drag down and back up within one drag (100 ms apart), both `scroll-on-clear` settings:
+# the verifier's P0 — tmux pulls history rows back on a grow, the loop handled a stale size and
+# erased the committed row above the frame. Loss is the one hard failure (X-52's budget).
+for soc in off on; do
+    tm set-option -w -t s scroll-on-clear "$soc"
+    for h in 19 18 17 16 15 14 15 16 17 18 19 20; do tm resize-window -t s -x 70 -y "$h"; sleep 0.1; done
+    settle || bad "frame never settled after the height drag (scroll-on-clear $soc)"
+    check_frame_intact "after a height drag down and back (scroll-on-clear $soc)" 70
+    check "no streamed row is lost across a height drag down and back (scroll-on-clear $soc)" "$(absent_rows)" 0
+    check "no streamed row is duplicated across a height drag down and back (scroll-on-clear $soc)" \
+        "$(dup_rows 1)" 0
+done
+tm set-option -w -t s scroll-on-clear off
 stale="$(stale_frames)"
 
 # ------------------------------------------------------------------ mid-stream shrink (§4.2)
