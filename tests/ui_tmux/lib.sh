@@ -325,6 +325,7 @@ status_model() { bottom_zone | sed 's/ · .*$//'; }
 # Display columns of a separator row (grep -o counts runes, not bytes).
 row_width() { cap | sed -n "${1}p" | grep -o '┄' | wc -l | tr -d ' '; }
 sep_width() { row_width "$(frame_bot)"; }
+_sep_is() { [ "$(sep_width)" = "$1" ]; }
 
 # Distinct matches of an extended pattern across the whole history.
 uniq_all() { capall | grep -oE -- "$1" | sort -u | wc -l | tr -d ' '; }
@@ -398,20 +399,21 @@ check() {
 # check_once <description> <fixed string> — present in history exactly once.
 check_once() { check "$1" "$(count_all "$2")" 1; }
 
-# The standard frame invariant: a separator pair at the frame's width (the terminal's − 1), exactly one
+# The standard frame invariant: a separator pair at the terminal's width, exactly one
 # composer row between them, and an occupied bottom zone.
 check_frame_intact() {
     local label="$1" width="$2" t b
+    # A resize opens a drag: the frame is a few columns short until DRAG_SETTLE (2 s) passes
+    # with no further resize, then repainted at full width (W5's burst layout, X-52).
+    _poll_until 40 _sep_is "$width" || true
     t="$(frame_top)"
     b="$(frame_bot)"
     if [ -z "$t" ] || [ -z "$b" ] || [ "$b" -le "$t" ]; then
         bad "$label: the frame's separator pair is missing (top=$t bottom=$b)"
         return
     fi
-    # One column short of the terminal: the frame never writes the last column, so a
-    # one-column narrowing rewraps none of its rows (`Model::frame_width`, X-52).
-    check "$label: top separator spans the frame (terminal − 1)" "$(row_width "$t")" "$((width - 1))"
-    check "$label: bottom separator spans the frame (terminal − 1)" "$(row_width "$b")" "$((width - 1))"
+    check "$label: top separator spans the terminal" "$(row_width "$t")" "$width"
+    check "$label: bottom separator spans the terminal" "$(row_width "$b")" "$width"
     check "$label: exactly one composer row between them" "$(count_composer '❯')" 1
     if [ -n "$(bottom_zone)" ]; then
         ok "$label: the bottom zone is occupied (row $((b + 1)))"

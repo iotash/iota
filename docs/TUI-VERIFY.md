@@ -163,29 +163,49 @@ its own viewport top. Some emulators will strand a row above the new viewport. T
 - [x] 自动化：scenarios 06 + 26 **4.3** Resize at idle — a narrowing, a diagonal shrink, a
       settled 25-step drag, a fast 8-step drag (SIGWINCHes 60 ms apart), and on fresh panes a
       2× and a 3× narrowing with the banner still staged, a narrowing right after 20 ms-a-line
-      output, one with `/model` open and one while a foreground tool call runs. Asserted
-      exactly: zero rows lost, zero duplicated, zero separator rows added, zero BLANK rows
-      added to the history, zero stale frames, and the composer on the pane's third-last
-      row (flush with the bottom). The resize pass (wart W5, `term.rs`) reads the cursor with
-      one DSR before writing a byte, clears only rows the old frame provably owned, and
-      scrolls or inserts nothing; ratatui's own inline resize never runs. The frame is one
-      column short of the terminal, so a one-column step rewraps none of it.
+      output, one with `/model` open, one while a foreground tool call runs, and one under
+      tmux's default `scroll-on-clear on`. Asserted exactly: zero rows lost, zero duplicated,
+      zero separator rows added, zero stale frames, and the composer on the pane's
+      third-last row (flush with the bottom). The resize pass (wart W5, `term.rs`) reads the
+      cursor with one DSR before writing a byte, clears only rows the old frame provably
+      owned (its own full-width rows' growth included), and scrolls or inserts nothing;
+      ratatui's own inline resize never runs; a frame re-anchored on row 0 is never erased
+      from the home position.
       *(History: until X-52 (2026-09-23) this said "no orphan here" and passed under tmux only
       because tmux's `scroll-on-clear` files a cleared screen into the history: ratatui
       answered every narrowing with viewport y = 0 and `ESC[2J`, so the composer went to the
-      top and the rows on screen were erased in Ghostty and herdr. Both scenarios run with
-      `scroll-on-clear off` now; on the pre-fix binary scenario 06 reports 10 rows lost and
-      the composer on row 7 of 20. X-52's first round anchored on the cursor alone (a settled
-      drag walked the composer to the top); its second closed the resize band with a region
-      scroll-down, which put two blank rows per drag step into the history. Now, tmux 3.7c,
-      24 rows, 30 settled one-column steps from 100 columns and the next turn: composer on
-      row 22 throughout, 2 separator rows in the whole history, nothing lost.
-      Accepted residuals, each measured and bounded: the session's first narrowing that is
-      also a row shrink cannot see whether the emulator reflows (tmux eats the rows below
-      the cursor first) and may leave the frame's first staged row behind once — scenario
-      26 bounds it at 1 (80×24→60×18 after fast output); and a user block committed at a
-      wider width rewraps its reversed padding into one extra row when a drag narrows below
-      that width — 1 per such row, once (the 30-step drag above: 1).)*
+      top and the rows on screen were erased in Ghostty and herdr. The scenarios run with
+      `scroll-on-clear off`; on the pre-fix binary scenario 06 reports 10 rows lost and the
+      composer on row 7 of 20. A one-column-short frame (X-52, withdrawn 2026-09-24 with
+      X-53's box) avoided the separators' rewrap on one-column steps; at full width every
+      step rewraps them.
+      **The budget (the owner's rule, 2026-09-24 — the resize protocol is FROZEN):** a LOST
+      row is the one hard failure, its bound is zero; per drag, at most 2 blank or duplicated
+      rows. The residuals listed below are BY DESIGN — native scrollback won over
+      zero-residuals (no alt-screen) — and a report inside this budget is closed as such, not
+      a new round. Over-budget items are named as such below.
+      The owner's burst layout (2026-09-24): full width at rest, the frame a few columns
+      short while a drag lasts — it ends 2 s after the last resize or at once on a key, a
+      paste, a turn starting or a surface opening, closes its band and repaints at full
+      width. (A 750 ms window was falsified: drags paced 0.8–1 s apart became one drag a
+      step and left a 12–20-row hole inside the next turn.) Measured, tmux 3.7c and herdr
+      0.9.1, a 60-line transcript: fast (30 ms), paced (1 s) and mixed drags of 10–30 steps —
+      no hole between the transcript and the frame, the next turn directly under the previous
+      one with no hole inside it, full width after the drag, composer flush, nothing lost; a
+      stream starting as the drag ends leaves no band (scenario 26 G).
+      Accepted residuals (X-52), each measured and bounded: (1) a drag's first step leaves
+      ≤ 2 blank rows per drag, at the top of the screen once it ends (paced +0, fast/mixed
+      +2); (2) a full-width user block already in the history rewraps its padding when the
+      terminal narrows, ⌈W/W'⌉ − 1 rows per block row (1-column step and 2×: 1, ⅓ width: 2);
+      (3) the session's first narrowing with a row shrink: 1 duplicate once; (4) a drag
+      mid-turn duplicates the 2 rows staged when it starts (tmux, the frozen build: 6 of 6
+      runs; the build before: 1 row), inside the budget. OVER BUDGET, known: a drag with
+      `/model` open splits 4–6 separator rows into the history (verifier: 6; the frozen
+      build: 4, 3 of 3 runs) — scenario 26 H caps it at 6 by that name.
+      Not verifiable here: a DSR that times out mid-resize (crossterm's ~2 s) — the fail-safe
+      (the tracked top stays the anchor, the loop does not unwind) is pinned headless
+      (`term::tests::a_resize_whose_dsr_fails_*`); a real terminal that drops the query is
+      the manual check.)*
       Real emulators: drag a corner in Ghostty, iTerm2, kitty, herdr. No row may be missing
       from the scrollback, and there is exactly one separator pair at the end.
 - [x] 自动化：scenario 06 **4.4** After every resize: exactly one composer row, separators at the new width,

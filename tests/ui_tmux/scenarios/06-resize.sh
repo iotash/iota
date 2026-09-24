@@ -77,7 +77,7 @@ start 80 24 || finish
 # Unmask a lost row (see the header): a clear must not be filed into the history.
 tm set-option -w -t s scroll-on-clear off
 settle || bad "startup never settled"
-check "separators start at the initial width" "$(sep_width)" 79
+check "separators start at the initial width" "$(sep_width)" 80
 # The startup leaves one: the frame the banner was inserted above (W9).
 check_budget "stale frames in the scrollback at startup (W9)" "$(stale_frames)" 1
 stale="$(stale_frames)"
@@ -144,7 +144,11 @@ drag_block() {
     stale0="$(stale_frames)"
     for step in "$@"; do
         tm resize-window -t s -x "${step%x*}" -y "${step#*x}"
-        if [ "$each" = 1 ]; then settle || bad "$label: frame never settled at $step"; else sleep 0.06; fi
+        case "$each" in
+            1) settle || bad "$label: frame never settled at $step" ;;
+            paced) sleep 1 ;;
+            *) sleep 0.06 ;;
+        esac
         last="$step"
     done
     settle || bad "frame never settled after the $label"
@@ -153,7 +157,11 @@ drag_block() {
     check "no streamed row is lost across the $label" "$(absent_rows)" 0
     check "no streamed row is duplicated across the $label" "$(($(dup_rows 1) - dups0))" 0
     check "separator rows the $label added to the history" "$(($(extra_seps) - seps0))" 0
-    check "blank rows the $label added to the history" "$(($(hist_blanks) - blanks0))" 0
+    # Under W5's burst layout only a drag's FIRST step rewraps the frame (it was full width);
+    # that band is closed when the drag ends and may reach the history later — X-52's accepted
+    # residual, at most 2 rows per DRAG, never per step.
+    check_budget "blank rows the $label added to the history (X-52: ≤ 2 per drag)" \
+        "$(($(hist_blanks) - blanks0))" 2
     check "stale frames the $label pushed out (W9)" "$(($(stale_frames) - stale0))" 0
     check_pinned "after the $label" "${last#*x}"
 }
@@ -167,6 +175,12 @@ settle || bad "frame never settled after the drag's release"
 drag_block "fast 8-step drag" 0 68x20 66x20 64x19 63x19 62x19 61x18 60x18 59x18
 tm resize-window -t s -x 70 -y 20
 settle || bad "frame never settled after the fast drag's release"
+# A PACED drag, one step a second (a hand that pauses, a keyboard resize): the verifier's round-2
+# repro — steps further apart than the old 750 ms window were separate drags, each rewrapping the
+# restored full-width separators into two more blank rows.
+drag_block "paced 10-step drag (1 s apart)" paced 69x20 68x20 67x20 66x20 65x20 64x20 63x20 62x20 61x20 60x20
+tm resize-window -t s -x 70 -y 20
+settle || bad "frame never settled after the paced drag's release"
 stale="$(stale_frames)"
 
 # ------------------------------------------------------------------ mid-stream shrink (§4.2)

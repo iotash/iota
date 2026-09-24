@@ -170,8 +170,7 @@ pub(crate) fn echo_rounds(
             }
             Role::User => {
                 flush_tools(&mut w, &mut tool_results);
-                // One column short, like the live block (`handle.rs` user_block, X-52).
-                for row in print_user_block(&msg.content, width.saturating_sub(1)) {
+                for row in print_user_block(&msg.content, width) {
                     w.write(&row);
                     w.write("\n");
                 }

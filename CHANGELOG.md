@@ -33,10 +33,6 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Changed
 
-- **The prompt's frame and your own messages stop one column short of the
-  right edge.** A line that fills the last column is one the terminal
-  rewraps on any narrowing; kept a column short, a window dragged narrower a
-  column at a time leaves nothing behind (X-52).
 - **A running background job keeps the host at working.** While a job runs and
   the chat is otherwise idle, herdr shows the pane `working`, the terminal's
   progress indicator stays on and cmux reads `Running`, until the job's notice
@@ -84,7 +80,12 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   the resize itself: the prompt stays at the bottom through any drag, the
   transcript above it is intact, and no line, separator or blank row is left
   behind — also with a picker such as `/model` open, while a tool runs, and
-  when a maximized window is restored to half its width. The staged last
+  when a maximized window is restored to half its width. While you drag the
+  window's edge, the prompt's lines stop a few columns short of the right edge
+  (twice the widest step of the drag, at most 8) so the drag does not break
+  them; two seconds after the last resize — or at once when you type — they
+  span the full width again. A drag can still leave up to two blank or
+  repeated lines in the scrollback, never a lost one (X-52). The staged last
   lines of a reply stay where they are, rewrapped for the new width, instead
   of being printed again. A row that ends in a wide character — CJK, an
   emoji — is measured to that character's right edge, so deleting one at the

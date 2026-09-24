@@ -26,9 +26,12 @@
 //!   frame flush with the bottom kept flush on the new floor, the rows between left as a
 //!   blank band the next output fills ([`Term::pad`]); and staged rows the emulator itself
 //!   pushed into the history handed back to be committed where they stand. The frame is
-//!   laid out a column short of the terminal (`Model::frame_width`), so a one-column
-//!   narrowing rewraps none of it. An emulator that does not reflow never has a row above
-//!   the cursor claimed (DIVERGENCES X-52).
+//!   laid out at the terminal's FULL width at rest and a column (or a few) short while a
+//!   drag lasts (`Model::frame_width`, the burst layout — the owner's, X-52): only a drag's
+//!   first step rewraps the frame's full-width rows, and that growth is ours to claim,
+//!   never to predict for transcript rows. A band row is filled by the next
+//!   output in place, the frame not moving ([`Term::insert_lines`]). An emulator that does
+//!   not reflow never has a row above the cursor claimed (DIVERGENCES X-52).
 //! - **W3**: a recreated `Terminal` starts with empty buffers while the screen still
 //!   shows the old frame; `Terminal::clear()` right after recreation (Inline clears
 //!   viewport-top→screen-end, wiping shrink-freed rows — below-frame is dead space)
@@ -73,6 +76,9 @@ use crate::ui::render::spans::ansi_to_spans;
 pub(crate) struct Geometry {
     size: Arc<Mutex<Size>>,
     cursor: Arc<Mutex<Position>>,
+    /// Test seam: the cursor query fails (a terminal that never answers the DSR — crossterm
+    /// gives up after ~2 s with an error).
+    dsr_fails: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Rides over lock poisoning: geometry is plain display state and every access
@@ -98,7 +104,26 @@ impl Geometry {
         Self {
             size: Arc::new(Mutex::new(Size { width, height })),
             cursor: Arc::new(Mutex::new(Position::ORIGIN)),
+            dsr_fails: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    /// Makes every cursor query fail from now on (or answer again).
+    #[cfg(test)]
+    pub(crate) fn set_dsr_fails(&self, fails: bool) {
+        self.dsr_fails
+            .store(fails, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The synthetic DSR: the cursor, or the error a terminal that never answers yields.
+    fn query_cursor(&self) -> io::Result<Position> {
+        if self.dsr_fails.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the terminal did not answer the cursor position query",
+            ));
+        }
+        Ok(self.cursor())
     }
 
     /// Changes the reported terminal size (pair with a scripted `Event::Resize`).
@@ -141,6 +166,9 @@ pub(crate) struct LoopBackend<W: Write> {
     /// The acknowledged terminal size (W5): what [`Term`] last took from a resize event,
     /// never a live query — ratatui's autoresize must not see a change iota has not handled.
     size: Size,
+    /// Where the last `set_cursor_position` put the cursor, until a draw moves it (the
+    /// home-position erase below needs to know).
+    at: Option<Position>,
 }
 
 impl<W: Write> Backend for LoopBackend<W> {
@@ -157,6 +185,7 @@ impl<W: Write> Backend for LoopBackend<W> {
         // unfiltered backend then prints `中 文 一 行` for a padded CJK row. Drop the
         // covered cells here — the same rule ratatui's own diff and `TestBackend` apply —
         // so the backend emits the same bytes for the same buffer on every path.
+        self.at = None;
         let mut covered: Option<(u16, u16)> = None; // (row, first column past the grapheme)
         self.inner.draw(content.filter(move |(x, y, cell)| {
             if let Some((row, end)) = covered
@@ -183,14 +212,22 @@ impl<W: Write> Backend for LoopBackend<W> {
     }
 
     fn get_cursor_position(&mut self) -> io::Result<Position> {
-        match &self.geo {
-            Some(g) => Ok(g.cursor()),
+        let answer = match &self.geo {
+            Some(g) => g.query_cursor(),
             None => self.inner.get_cursor_position(),
+        };
+        // ratatui asks inside `with_options` and `clear` (a recreation), each right after we
+        // placed the cursor ourselves. A terminal that does not answer (crossterm times out
+        // after ~2 s) must not unwind the loop: the position we set is the answer it would give.
+        match (answer, self.at) {
+            (Err(_), Some(at)) => Ok(at),
+            (answer, _) => answer,
         }
     }
 
     fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
         let pos = position.into();
+        self.at = Some(pos);
         if let Some(g) = &self.geo {
             g.set_cursor(pos); // the synthetic DSR mirrors what the terminal would say
         }
@@ -202,6 +239,17 @@ impl<W: Write> Backend for LoopBackend<W> {
     }
 
     fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
+        // An erase-below FROM THE HOME POSITION is a clear screen to tmux, which (with its
+        // default `scroll-on-clear`) files the whole screen into the history first — a
+        // frame re-anchored on row 0 (a narrowing that grew the box past the top) left its
+        // old copy and the banner above it there. Erasing row 0 by itself and then from row
+        // 1 down is the same erase, and not that one.
+        if matches!(clear_type, ClearType::AfterCursor) && self.at == Some(Position::ORIGIN) {
+            self.inner.clear_region(ClearType::CurrentLine)?;
+            self.inner.set_cursor_position(Position::new(0, 1))?;
+            self.inner.clear_region(ClearType::AfterCursor)?;
+            return self.inner.set_cursor_position(Position::ORIGIN);
+        }
         self.inner.clear_region(clear_type)
     }
 
@@ -304,6 +352,7 @@ impl<W: Write> Term<W> {
             inner: CrosstermBackend::new(make_writer()),
             geo: geo.clone(),
             size,
+            at: None,
         };
         let terminal = Terminal::with_options(
             backend,
@@ -394,8 +443,15 @@ impl<W: Write> Term<W> {
         let last = size.height.saturating_sub(1);
         let mut start = self.top.min(last);
         let mut dropped = 0;
-        if let Some(d) = &drawn {
-            let cur = self.cursor_position()?.y.min(last);
+        // A DSR that fails (crossterm's ~2 s timeout, a terminal that never answers) is not
+        // a reason to unwind the loop: without the cursor the tracked top is the anchor, as
+        // for a resize that finds nothing drawn — nothing learned, nothing claimed.
+        let cursor = match &drawn {
+            Some(_) => self.cursor_position().ok(),
+            None => None,
+        };
+        if let (Some(d), Some(pos)) = (&drawn, cursor) {
+            let cur = pos.y.min(last);
             if size.width < old.width {
                 self.learn_reflow(d, old, size, cur, flush);
             }
@@ -412,11 +468,7 @@ impl<W: Write> Term<W> {
         let new_h = height(dropped);
         let floor = size.height.saturating_sub(new_h);
         if flush && floor > start {
-            queue!(
-                self.ctrl,
-                MoveTo(0, start),
-                Clear(CrosstermClear::FromCursorDown)
-            )?;
+            erase_down(&mut self.ctrl, start)?;
             self.ctrl.flush()?;
             self.pad = self.pad.saturating_add(floor - start);
             self.recreate(new_h, floor)?;
@@ -470,6 +522,8 @@ impl<W: Write> Term<W> {
             inner: CrosstermBackend::new((self.make_writer)()),
             geo: self.geo.clone(),
             size: self.size,
+            // `anchor` just put the cursor here (through the control writer).
+            at: Some(Position::new(0, at)),
         };
         self.terminal = Terminal::with_options(
             backend,
@@ -491,7 +545,7 @@ impl<W: Write> Term<W> {
     /// The physical cursor: one DSR live, the synthetic answer under [`Geometry`].
     fn cursor_position(&self) -> io::Result<Position> {
         if let Some(g) = &self.geo {
-            return Ok(g.cursor());
+            return g.query_cursor();
         }
         let (x, y) = crossterm::cursor::position()?;
         Ok(Position::new(x, y))
@@ -500,40 +554,80 @@ impl<W: Write> Term<W> {
     /// Commits pre-wrapped rows into native scrollback via `insert_before`, sized by
     /// W6 `LINE_COUNT_SELF_CONSISTENCY`, then updates the tracked top (W2:
     /// push-down-then-pin — ratatui's own internal algorithm). Returns the row count.
+    /// Closes the band a resize left above the frame (W5 step 3) when the drag is over: the
+    /// region above the frame scrolls down over it, so the transcript sits on the frame again
+    /// and the band's rows go to the top of the screen — never a hole the next output starts
+    /// in. Once per drag, never inside a resize pass (a scroll during the drag would leave
+    /// blank rows at the top for the drag's next reflow to push into the history). The
+    /// cursor ends at home; the caller redraws.
+    pub(crate) fn close_band(&mut self) -> io::Result<()> {
+        let pad = std::mem::take(&mut self.pad).min(self.top);
+        if pad == 0 {
+            return Ok(());
+        }
+        write!(self.ctrl, "\x1b[1;{}r\x1b[{pad}T\x1b[r", self.top)?;
+        self.ctrl.flush()?;
+        self.drawn = None;
+        Ok(())
+    }
+
     pub(crate) fn insert_lines(&mut self, rows: &[String]) -> io::Result<u16> {
         if rows.is_empty() {
             return Ok(0);
         }
-        if self.pad > 0 {
-            // Fill the band a resize left above the frame first: move the frame up over
-            // it, and the insert below walks it back down (`insert_before` scrolls the
-            // frame into the rows under it) instead of scrolling rows into the history.
-            let pad = std::mem::take(&mut self.pad).min(self.top);
-            self.recreate(self.view_height, self.top - pad)?;
-        }
         let size = self.size;
         let width = size.width.max(1);
         let lines: Vec<Line<'static>> = rows.iter().map(|r| ansi_to_spans(r)).collect();
-        let para = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
-        let count = para.line_count(width);
         // W6: the region pre-wraps to ≤ width−1 and splits embedded newlines, so the
         // measured height must equal the entry count — one entry, one row.
         debug_assert_eq!(
-            count,
+            Paragraph::new(Text::from(lines.clone()))
+                .wrap(Wrap { trim: false })
+                .line_count(width),
             rows.len(),
             "W6 LINE_COUNT_SELF_CONSISTENCY: an insert entry wrapped or split"
         );
-        let n = u16::try_from(count).unwrap_or(u16::MAX);
-        self.terminal.insert_before(n, |buf| {
-            let area = buf.area;
-            para.render(area, buf);
-        })?;
-        self.top = self
-            .top
-            .saturating_add(n)
-            .min(size.height.saturating_sub(self.view_height));
+        let total = u16::try_from(rows.len()).unwrap_or(u16::MAX);
+        let mut lines = lines;
+        // The band a resize left above the frame (W5) takes the first rows: they are written
+        // straight into it, right under the transcript, and the frame does not move — only
+        // what the band cannot hold is inserted (and scrolls anything).
+        let pad = self.pad.min(self.top);
+        if pad > 0 {
+            let k = pad.min(total);
+            let rest = lines.split_off(usize::from(k));
+            let area = ratatui::layout::Rect::new(0, self.top - pad, width, k);
+            let mut buf = ratatui::buffer::Buffer::empty(area);
+            Paragraph::new(Text::from(lines)).render(area, &mut buf);
+            let backend = self.terminal.backend_mut();
+            backend.draw(
+                buf.content
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, c)| !is_blank(c))
+                    .map(|(i, c)| {
+                        let i = u16::try_from(i).unwrap_or(u16::MAX);
+                        (area.x + i % width, area.y + i / width, c)
+                    }),
+            )?;
+            Backend::flush(backend)?;
+            self.pad = pad - k;
+            lines = rest;
+        }
+        if !lines.is_empty() {
+            let n = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+            let para = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
+            self.terminal.insert_before(n, |buf| {
+                let area = buf.area;
+                para.render(area, buf);
+            })?;
+            self.top = self
+                .top
+                .saturating_add(n)
+                .min(size.height.saturating_sub(self.view_height));
+        }
         self.drawn = None; // the insert left the cursor above the frame
-        Ok(n)
+        Ok(total)
     }
 
     /// Full clear from the viewport top to screen end + back-buffer reset (the W3
@@ -814,6 +908,24 @@ fn is_blank(c: &Cell) -> bool {
     c.symbol() == " " && c.bg == ratatui::style::Color::Reset && c.modifier.is_empty()
 }
 
+/// Erases from the start of `row` to the end of the screen — on row 0 as an erase of the row
+/// and one from row 1 down, never an erase-below from the home position, which tmux takes
+/// for a clear screen and files into the history (see [`LoopBackend`]'s `clear_region`).
+fn erase_down<W: Write>(ctrl: &mut W, row: u16) -> io::Result<()> {
+    if row == 0 {
+        queue!(
+            ctrl,
+            MoveTo(0, 0),
+            Clear(CrosstermClear::CurrentLine),
+            MoveTo(0, 1),
+            Clear(CrosstermClear::FromCursorDown)
+        )?;
+    } else {
+        queue!(ctrl, MoveTo(0, row), Clear(CrosstermClear::FromCursorDown))?;
+    }
+    ctrl.flush()
+}
+
 /// Moves the physical cursor to `(0, top)` ahead of an inline (re)construction —
 /// `with_options` anchors the viewport at the cursor row. Mirrors the move into the
 /// synthetic geometry so a headless recreation anchors identically.
@@ -834,6 +946,100 @@ mod tests {
     use ratatui::widgets::Widget;
 
     use super::visible_widths;
+
+    use super::{Geometry, Term};
+    use crate::ui::render::frame::FrameView;
+    use crate::ui::testutil::SharedBuf;
+
+    fn term(w: u16, h: u16, view_h: u16, top: u16) -> (Term<SharedBuf>, SharedBuf, Geometry) {
+        let geo = Geometry::new(w, h);
+        let buf = SharedBuf::default();
+        let wtr = buf.clone();
+        let t = Term::new(
+            Box::new(move || wtr.clone()),
+            view_h,
+            top,
+            Some(geo.clone()),
+        )
+        .unwrap();
+        (t, buf, geo)
+    }
+
+    fn frame() -> FrameView {
+        FrameView {
+            rows: vec![
+                "┄".repeat(60),
+                "❯ ".to_owned(),
+                "┄".repeat(60),
+                "status".to_owned(),
+            ],
+            cursor: Some((2, 1)),
+        }
+    }
+
+    /// The acknowledged-size CANARY (W5): the backend keeps answering the size iota last took
+    /// from a resize event, whatever the terminal reports, until `Term::resize` acknowledges
+    /// the new one. If a ratatui upgrade or a refactor broke this seam, `Terminal::draw`'s own
+    /// autoresize would run ratatui's inline resize again (row 0 + `ESC[2J` on a narrowing).
+    #[test]
+    fn the_backend_answers_the_acknowledged_size_until_iota_acknowledges_a_new_one() {
+        let (mut t, buf, geo) = term(80, 24, 4, 20);
+        t.draw_frame(&frame()).unwrap();
+        geo.set_size(60, 24);
+        assert_eq!(
+            t.terminal.size().unwrap().width,
+            80,
+            "the backend must not read the tty"
+        );
+        let mark = buf.bytes().len();
+        t.draw_frame(&frame()).unwrap(); // `draw` autoresizes — against the acknowledged size
+        let drawn = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
+        assert!(
+            !drawn.contains("\u{1b}[2J"),
+            "ratatui's inline resize ran: {drawn:?}"
+        );
+        assert_eq!(t.terminal.size().unwrap().width, 80);
+        t.resize(
+            ratatui::layout::Size {
+                width: 60,
+                height: 24,
+            },
+            0,
+            |_| 4,
+        )
+        .unwrap();
+        assert_eq!(
+            t.terminal.size().unwrap().width,
+            60,
+            "acknowledged by `Term::resize`"
+        );
+    }
+
+    /// A terminal that never answers the cursor query (crossterm times out with an error) must
+    /// not take the loop down on a resize: the tracked top stays the anchor, the recreation's
+    /// own queries fall back to where the cursor was put, and the frame is drawn.
+    #[test]
+    fn a_resize_whose_dsr_fails_keeps_the_tracked_top_and_does_not_unwind() {
+        let (mut t, _buf, geo) = term(80, 24, 4, 20);
+        t.draw_frame(&frame()).unwrap();
+        geo.set_dsr_fails(true);
+        geo.set_size(70, 24);
+        t.resize(
+            ratatui::layout::Size {
+                width: 70,
+                height: 24,
+            },
+            0,
+            |_| 4,
+        )
+        .expect("a failed DSR must not unwind the resize");
+        assert_eq!(t.top, 20, "the tracked top is the anchor");
+        t.draw_frame(&frame()).expect("the frame draws after it");
+        assert!(
+            t.ensure_height(5).is_ok(),
+            "a later recreation survives it too"
+        );
+    }
 
     fn widths_of(rows: &[&str]) -> Vec<u16> {
         let area = Rect::new(0, 0, 20, u16::try_from(rows.len()).unwrap_or(u16::MAX));

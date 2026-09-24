@@ -120,9 +120,7 @@ key C-e
 key C-u
 _poll_until 30 composer_rows_is 1 || bad "Ctrl+U did not clear the wrapped draft"
 
-# The same with wide runes: 40 × `中` is 80 columns. The frame is laid out a column short of the
-# terminal (X-52), so the first row holds the gutter + 38 runes (78 of 79 columns): the 39th
-# would end on the 80th, and moves to the next row whole with the 40th.
+# The same with wide runes: 40 × `中` is 80 columns, one more than the first row holds.
 comp="$(composer_row)"
 type_ "$(printf '中%.0s' $(seq 1 40))"
 _poll_until 30 composer_rows_is 2 || bad "an 80-column CJK draft did not wrap to two composer rows"
@@ -132,7 +130,7 @@ row1="$(composer_block | sed -n 1p)"
 row2="$(composer_block | sed -n 2p)"
 n1="$(printf '%s' "$row1" | grep -o '中' | wc -l | tr -d ' ')"
 n2="$(printf '%s' "$row2" | grep -o '中' | wc -l | tr -d ' ')"
-check "the first row holds 38 wide runes and wraps the 39th whole" "$n1/$n2" "38/2"
+check "the first row holds 39 wide runes and wraps the 40th whole" "$n1/$n2" "39/1"
 check "the cursor sits after the wrapped rune" "$(cursor_xy)" "$((2 + 2 * n2)) $comp"
 key C-u
 _poll_until 30 composer_rows_is 1 || bad "Ctrl+U did not clear the wrapped CJK draft"

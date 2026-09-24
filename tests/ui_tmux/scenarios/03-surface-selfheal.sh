@@ -43,7 +43,7 @@ check "panel title row (the capability tab bar)" "$(cap | sed -n "$((panel - 1))
 check "panel offers every model the provider listed" "$(count_vis '  gemini-pro')" 1
 check "the footer is the last frame row" "$foot" "$((panel + 3))"
 check "composer still the one input row" "$(count_composer '❯')" 1
-check "the panel did not disturb the separator pair" "$(sep_width)" 79
+check "the panel did not disturb the separator pair" "$(sep_width)" 80
 
 key Escape
 wait_gone '↑↓ move' || bad "the panel did not close on ESC"

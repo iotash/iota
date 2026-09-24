@@ -9,7 +9,13 @@
 #      full-width pane halved) — with the startup banner still staged in the frame;
 #   B. an idle narrowing right after FAST output (20 ms a line);
 #   C. a narrowing with a surface open (`/model`), then closed;
-#   D. a narrowing while a foreground tool call runs (the user's own `❯ runfg:…` row).
+#   D. a narrowing while a foreground tool call runs (the user's own `❯ runfg:…` row);
+#   E. tmux's DEFAULT `scroll-on-clear on`: a narrowing right after startup can re-anchor the frame
+#      on row 0 — an erase-below from the home position would make tmux file the old frame and
+#      the banner into the history;
+#   F. X-52's accepted residual: the session's first narrowing with a surface's input cursor on
+#      the frame's last row and nothing below it to rewrap — nothing shows iota that the emulator
+#      reflows, so the old top separator's piece may stay behind once.
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
 
@@ -108,5 +114,74 @@ tm resize-window -t s -x 70 -y 24
 wait_all 'ran: ' || bad "the tool round never closed"
 after_resize "a tool call running, 80→70" 70
 check "a tool call running, 80→70: the user's own row" "$(count_all '❯ runfg:')" 1
+
+# ------------------------------------------------------------------ E: scroll-on-clear on
+fresh 60 16
+tm set-option -w -t s scroll-on-clear on
+type_ '帮我看看这个 resize 的问题'
+settle || bad "the CJK draft never settled"
+tm resize-window -t s -x 44 -y 16
+after_resize "scroll-on-clear on, a CJK draft, 60x16→44x16 at startup" 44
+check "scroll-on-clear on: the draft is in the box once" "$(count_all '帮我看看这个 resize 的问题')" 1
+
+# ------------------------------------------------------------------ F: the unlearned surface case
+fresh 100 24
+type_ 'stream 30'
+key Enter
+wait_all 'l#29 line' || bad "the stream never finished"
+settle || bad "the stream never settled"
+type_ '/model'
+key Enter
+wait_vis '↑↓ move' || bad "the /model panel never opened"
+settle || bad "the panel never settled"
+tm resize-window -t s -x 84 -y 24
+settle || bad "the panel never settled after the narrowing"
+key Escape
+wait_gone '↑↓ move' || bad "the /model panel never closed"
+settle || bad "frame never settled"
+check "surface cursor on the last row, first narrowing: no row appears twice" "$(dup_lines)" 0
+check_budget "surface cursor on the last row, first narrowing: separator rows (X-52 residual: 1 piece, once)" \
+    "$(seps_all)" 3
+
+# ------------------------------------------------------------------ G: a stream right at the drag's end
+# The verifier's round-2 finding: a stream that starts exactly as a drag ends left the drag's band
+# as blank rows in the history. The turn starting ends the drag and closes its band first.
+fresh 100 24
+type_ 'stream 30'
+key Enter
+wait_all 'l#29 line' || bad "the stream never finished"
+settle || bad "the stream never settled"
+for w in 99 98 97 96 95; do tm resize-window -t s -x "$w" -y 24; sleep 0.03; done
+type_ 'stream 20'
+key Enter
+wait_all 'l#19 line' || bad "the second stream never finished"
+settle || bad "the second stream never settled"
+check_frame_intact "a stream right at the drag's end" 95
+check "a stream right at the drag's end: the next turn follows the last one (1 blank row)" \
+    "$(capall | awk 'index($0,"l#29 line"){f=NR} index($0,"❯ stream 20")&&f{print NR-f-1; exit}')" 1
+check "a stream right at the drag's end: no hole inside the new turn" \
+    "$(capall | awk 'index($0,"❯ stream 20"){f=1} f&&index($0,"l#00 line"){g=1} g&&/^ *$/{b++} g&&index($0,"l#19 line"){print b+0; exit}')" 0
+
+# ------------------------------------------------------------------ H: a drag with /model open
+# OVER BUDGET, known (X-52, the frozen protocol): the surface's input cursor sits on the frame's
+# last row, the drag's first step cannot show the reflow, and the split separator pieces reach
+# the history — the verifier measured 6 separator rows, the frozen build 4. Capped at 6 by name.
+fresh 100 40
+type_ 'stream 30'
+key Enter
+wait_all 'l#29 line' || bad "the stream never finished"
+settle || bad "the stream never settled"
+type_ '/model'
+key Enter
+wait_vis '↑↓ move' || bad "the /model panel never opened"
+settle || bad "the panel never settled"
+for w in 99 98 97 96 95 94 93 92 91 90; do tm resize-window -t s -x "$w" -y 40; sleep 0.05; done
+settle || bad "the panel never settled after the drag"
+key Escape
+wait_gone '↑↓ move' || bad "the /model panel never closed"
+settle || bad "frame never settled"
+check "a drag with /model open: no row appears twice" "$(dup_lines)" 0
+check_budget "a drag with /model open: separator rows in the history (X-52 OVER BUDGET, known: ≤ 6)" \
+    "$(seps_all)" 6
 
 finish

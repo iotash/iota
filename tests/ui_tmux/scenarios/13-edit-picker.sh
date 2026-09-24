@@ -93,7 +93,7 @@ else
     bad "no selection marker in the picker"
     cap | sed -n "$chip,\$p"
 fi
-check "the picker did not disturb the separator pair" "$(sep_width)" 79
+check "the picker did not disturb the separator pair" "$(sep_width)" 80
 
 key Escape
 wait_gone 'Edit an image' || bad "the picker did not close on ESC"

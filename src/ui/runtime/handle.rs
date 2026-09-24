@@ -298,13 +298,8 @@ impl Ui for TuiHandle {
     }
 
     fn user_block(&self, display: &str) {
-        // Reversed rows with the "❯ " gutter (ui.go:224-243), one column short of the
-        // terminal like the frame (`Model::frame_width`): a row that fills the last column
-        // is a line an emulator rewraps on any narrowing — here into a stray reversed cell
-        // and a row pushed into the history per step of a drag (X-52).
-        let w = usize::from(self.width.load(Ordering::Relaxed))
-            .saturating_sub(1)
-            .max(8);
+        // Full-width reversed rows with the "❯ " gutter (ui.go:224-243).
+        let w = usize::from(self.width.load(Ordering::Relaxed)).max(8);
         let gutter = 2;
         let styled: Vec<String> = wrap_by_width(display, w - gutter)
             .into_iter()

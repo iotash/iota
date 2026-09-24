@@ -60,7 +60,7 @@ pub(crate) fn run_surface(spec: TabbedSpec, dark: bool) -> io::Result<TabbedResu
     let (_, start_row) = cursor::position()?;
     let (width, height) = terminal::size()?;
     st.set_term_height(height);
-    let rows = st.render(width.saturating_sub(1).max(1)).rows;
+    let rows = st.render(width).rows;
     let h = u16::try_from(rows.len()).unwrap_or(u16::MAX).max(1);
     let mut term: Term<io::Stdout> = Term::new(Box::new(io::stdout), h, start_row, None)?;
 
@@ -111,8 +111,7 @@ pub(crate) fn run_surface(spec: TabbedSpec, dark: bool) -> io::Result<TabbedResu
         if dirty {
             let size = resized.unwrap_or_else(|| term.size());
             st.set_term_height(size.height);
-            // One column short of the terminal, like the loop's frame (`Model::frame_width`).
-            let rendered = st.render(size.width.saturating_sub(1).max(1));
+            let rendered = st.render(size.width);
             let view_height = u16::try_from(rendered.rows.len())
                 .unwrap_or(u16::MAX)
                 .clamp(1, size.height.max(1));

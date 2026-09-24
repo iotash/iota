@@ -328,8 +328,10 @@ fn resize_keeps_the_staging_tail_in_the_frame_loop() {
     h.geo.set_size(70, 24);
     h.etx.send(Event::Resize(70, 24)).unwrap();
     assert!(
-        h.wait_until(Duration::from_secs(1), |h| h.width.load(Ordering::Relaxed)
-            == 70),
+        h.wait_until(Duration::from_secs(1), |h| {
+            let got = h.width.load(Ordering::Relaxed);
+            got <= 70 && got + crate::ui::runtime::event_loop::DRAG_MARGIN_MAX >= 70
+        }),
         "width never stored"
     );
     thread::sleep(Duration::from_millis(150));
@@ -898,6 +900,10 @@ fn reachable(p: &mut vt100::Parser) -> Vec<String> {
     all
 }
 
+/// An erase-below from the home position: tmux (`scroll-on-clear`, its default) takes it
+/// for a clear screen and files the whole screen into the history first.
+const HOME_ERASE: &str = "\u{1b}[1;1H\u{1b}[J";
+
 /// How many scroll-downs (`CSI n T`) `bytes` carries: a resize must scroll nothing — the
 /// region scroll-down that closed the resize band put blank rows at the top of the
 /// screen, and the next reflow pushed them into the history.
@@ -1042,12 +1048,29 @@ fn idle_loop() -> LoopHarness {
 
 /// Sends one resize and waits for its pass and the retrim job's round to land.
 fn resize_and_settle(lh: &LoopHarness, w: u16, h: u16) {
+    resize_step(lh, w, h);
+    // Past DRAG_SETTLE: an isolated resize, the full width back.
+    thread::sleep(crate::ui::runtime::event_loop::DRAG_SETTLE + Duration::from_millis(150));
+}
+
+/// One step of a DRAG: the resize lands and its pass runs, and the next step comes well
+/// inside `DRAG_SETTLE`, so the burst layout (a column short) holds between steps.
+fn drag_step(lh: &LoopHarness, w: u16, h: u16) {
+    resize_step(lh, w, h);
+    thread::sleep(Duration::from_millis(60));
+}
+
+/// Sends one resize and waits for its pass: the shared width carries the frame's width
+/// (the terminal's, or a column short while the burst lasts).
+fn resize_step(lh: &LoopHarness, w: u16, h: u16) {
     lh.geo.set_size(w, h);
     lh.etx.send(Event::Resize(w, h)).unwrap();
     assert!(lh.wait_until(Duration::from_secs(1), |lh| {
-        lh.width.load(Ordering::Relaxed) == w && lh.height.load(Ordering::Relaxed) == h
+        let got = lh.width.load(Ordering::Relaxed);
+        let short = crate::ui::runtime::event_loop::DRAG_MARGIN_MAX;
+        got <= w && got + short >= w && lh.height.load(Ordering::Relaxed) == h
     }));
-    thread::sleep(Duration::from_millis(200));
+    thread::sleep(Duration::from_millis(40));
 }
 
 /// ONE scripted resize to `w`×`h` of the idle loop, with `emulate` standing in for the
@@ -1080,10 +1103,13 @@ fn assert_resize_clean(tag: &str, all: &[String], screen: &[String], after: &str
         !after.contains("\u{1b}[2J"),
         "{tag}: ESC[2J after the resize — ratatui's inline resize ran:\n{after:?}"
     );
-    assert_eq!(
-        scroll_downs(after),
-        0,
-        "{tag}: a resize inserted rows (a scroll-down):\n{after:?}"
+    assert!(
+        scroll_downs(after) <= 1,
+        "{tag}: a resize inserted rows (a scroll-down) — only the band close at the end of a drag may:\n{after:?}"
+    );
+    assert!(
+        !after.contains(HOME_ERASE),
+        "{tag}: an erase-below from the home position — tmux files the screen into the history:\n{after:?}"
     );
     for i in 0..12 {
         let line = format!("line-{i:02}");
@@ -1148,29 +1174,62 @@ fn idle_height_shrink_keeps_the_frame_down_and_every_row() {
     assert_resize_clean("height 24→20", &all, &screen, &after);
 }
 
-/// The verifier's round-2/3 repro, in the reflow model: a SETTLED 30-step drag, one column
-/// per step. The frame is laid out a column short of the terminal, so a one-column step
-/// rewraps nothing: the composer stays flush, no separator row and no BLANK row reaches the
-/// history (round 2 put two per step there), nothing is scrolled.
+/// The verifier's round-2/3 repro, in the reflow model: a 30-step drag, one column per step,
+/// under W5's BURST layout (the owner's decision, 2026-09-24): full width at rest, a column
+/// short while the drag lasts. Only the first step rewraps the full-width separators (a
+/// two-row band, filled by the next output); every later step rewraps nothing. No fragment
+/// and no blank row reaches the history, the composer stays flush, and when the drag
+/// settles the separators are full width again — a repaint, no reflow.
 #[test]
 fn settled_drag_in_a_reflowing_emulator_stays_flush_and_clean() {
     let lh = idle_loop();
     let mut emu = ReflowEmu::new();
-    let blanks = |h: &[String]| h.iter().filter(|r| r.trim().is_empty()).count();
-    let before = blanks(&emu.history(&lh.buf.bytes()));
     let mark = lh.buf.bytes().len();
     for w in (50..80).rev() {
         let moved = emu.resize(&lh.buf.bytes(), w, 24);
         lh.geo.shift_cursor(moved);
-        resize_and_settle(&lh, w, 24);
+        drag_step(&lh, w, 24);
     }
+    // The drag settles: the full width comes back with a repaint, nothing reflows.
+    thread::sleep(crate::ui::runtime::event_loop::DRAG_SETTLE + Duration::from_millis(150));
+    assert_eq!(
+        lh.width.load(Ordering::Relaxed),
+        50,
+        "the full width is restored"
+    );
     let bytes = lh.buf.bytes();
     let after = String::from_utf8_lossy(&bytes[mark..]).into_owned();
-    let added = blanks(&emu.history(&bytes)) - before;
+    let history = emu.history(&bytes);
     let (all, screen) = emu.finish(&bytes);
     lh.quit_and_join(Duration::from_secs(2));
-    assert_eq!(added, 0, "blank rows the drag pushed into the history");
+    let last_line = history.iter().rposition(|r| r.contains("line-"));
+    let first_line = history.iter().position(|r| r.contains("line-"));
+    if let (Some(a), Some(b)) = (first_line, last_line) {
+        let interleaved = history[a..=b]
+            .iter()
+            .filter(|r| r.trim().is_empty())
+            .count();
+        assert_eq!(
+            interleaved,
+            0,
+            "a blank row entered the history before the transcript had left the screen:\n{}",
+            history.join("\n")
+        );
+    }
+    let band = last_line.map_or(0, |b| {
+        history[b + 1..]
+            .iter()
+            .filter(|r| r.trim().is_empty())
+            .count()
+    });
+    assert_eq!(band, 0, "blank rows of a resize band reached the history");
     assert_resize_clean("30-step drag 80→50", &all, &screen, &after);
+    let sep = screen.iter().rev().find(|r| r.contains('┄')).unwrap();
+    assert_eq!(
+        sep.chars().filter(|&c| c == '┄').count(),
+        50,
+        "the separators are full width again"
+    );
 }
 
 /// A drastic narrowing — a maximized window restored, a full-width pane halved: the old
@@ -1538,6 +1597,10 @@ fn a_3x_narrowing_at_startup_commits_the_rows_the_emulator_archived() {
         0,
         "a resize scrolls nothing:\n{after:?}"
     );
+    assert!(
+        !after.contains(HOME_ERASE),
+        "the frame re-anchored on row 0 must not be erased from the home position:\n{after:?}"
+    );
     for b in &banner {
         let key = b.split_whitespace().nth(1).unwrap();
         let n = all.iter().filter(|r| r.contains(key)).count();
@@ -1695,5 +1758,151 @@ fn a_wide_grapheme_after_a_paste_tag_stays_whole() {
     let (row, mark) = composer_after(&lh, &[key(KeyCode::Backspace)], &format!("❯ {tag}中"));
     assert_eq!(row, format!("❯ {tag}中"), "Backspace removes 文 only");
     assert_erases_on_boundaries(&lh, mark, &row);
+    lh.quit_and_join(Duration::from_secs(2));
+}
+
+/// After a drag, the next output follows the previous content directly: the first step's
+/// band (the full-width separators rewrapped before the burst layout could take over) is
+/// written into from its top, right under the transcript, and the frame stays flush — the
+/// output never starts above a hole.
+#[test]
+fn the_next_output_follows_the_transcript_after_a_drag() {
+    let lh = idle_loop();
+    let mut emu = ReflowEmu::new();
+    for w in (75..80).rev() {
+        let moved = emu.resize(&lh.buf.bytes(), w, 24);
+        lh.geo.shift_cursor(moved);
+        drag_step(&lh, w, 24);
+    }
+    thread::sleep(crate::ui::runtime::event_loop::DRAG_SETTLE + Duration::from_millis(150));
+    lh.region
+        .lock()
+        .unwrap()
+        .commit((0..6).map(|i| format!("next-{i}")).collect());
+    assert!(lh.wait_until(Duration::from_secs(1), |h| h.contents().contains("next-5")));
+    thread::sleep(Duration::from_millis(150));
+    let (all, screen) = emu.finish(&lh.buf.bytes());
+    lh.quit_and_join(Duration::from_secs(2));
+    let dump = all.join("\n");
+    let last_old = all.iter().rposition(|r| r.contains("line-11")).unwrap();
+    let first_new = all.iter().position(|r| r.contains("next-0")).unwrap();
+    assert_eq!(
+        first_new,
+        last_old + 1,
+        "the next output follows line-11 directly:\n{dump}"
+    );
+    let composer = screen.iter().position(|r| r.contains('❯')).unwrap();
+    assert_eq!(composer, screen.len() - 3, "the frame stays flush:\n{dump}");
+}
+
+/// A drag whose terminal sends TWO-column steps: the burst layout gives up as many columns
+/// as the widest step seen (up to `DRAG_MARGIN_MAX`), so after the first step no step rewraps
+/// the frame either — no blank row of a band reaches the history.
+#[test]
+fn a_drag_of_two_column_steps_leaves_no_band() {
+    let lh = idle_loop();
+    let mut emu = ReflowEmu::new();
+    for w in (60..=78).rev().step_by(2) {
+        let moved = emu.resize(&lh.buf.bytes(), w, 24);
+        lh.geo.shift_cursor(moved);
+        drag_step(&lh, w, 24);
+    }
+    thread::sleep(crate::ui::runtime::event_loop::DRAG_SETTLE + Duration::from_millis(150));
+    let bytes = lh.buf.bytes();
+    let history = emu.history(&bytes);
+    let (all, screen) = emu.finish(&bytes);
+    lh.quit_and_join(Duration::from_secs(2));
+    let last_line = history.iter().rposition(|r| r.contains("line-"));
+    let band = last_line.map_or(0, |b| {
+        history[b + 1..]
+            .iter()
+            .filter(|r| r.trim().is_empty())
+            .count()
+    });
+    assert_eq!(band, 0, "blank rows of a resize band reached the history");
+    assert_resize_clean("10 two-column steps 80→60", &all, &screen, "");
+}
+
+/// The drag's settle deadline is part of the loop's poll deadline, so the full width comes
+/// back promptly without a busy loop; and it comes back only once the burst is over.
+#[test]
+fn the_drag_settle_deadline_bounds_the_poll_and_restores_the_width() {
+    let mut m = crate::ui::testutil::test_model();
+    m.width = 80;
+    m.dirty = false;
+    m.drag_until = Some(Instant::now() + Duration::from_millis(30));
+    m.drag_margin = 2;
+    assert!(m.poll_deadline() <= Duration::from_millis(30));
+    assert_eq!(
+        m.frame_width(),
+        78,
+        "two columns short while the drag lasts"
+    );
+    m.settle_drag();
+    assert_eq!(m.frame_width(), 78, "not before the deadline");
+    thread::sleep(Duration::from_millis(40));
+    m.settle_drag();
+    assert_eq!(m.frame_width(), 80, "the full width is back");
+    assert_eq!(m.shared.width.load(Ordering::Relaxed), 80);
+    assert!(m.dirty, "a repaint is due");
+}
+
+/// The verifier's round-2 repro of the burst layout: a PACED drag, one step a second (a hand
+/// that pauses, a keyboard resize). The steps stay inside one burst (`DRAG_SETTLE` is two
+/// seconds), so only the first rewraps the full-width rows; and when the drag is over its band
+/// is closed — the transcript sits on the frame again, no hole is left for the next output.
+#[test]
+fn a_paced_drag_stays_one_burst_and_leaves_no_hole() {
+    let lh = idle_loop();
+    let mut emu = ReflowEmu::new();
+    for w in (75..80).rev() {
+        let moved = emu.resize(&lh.buf.bytes(), w, 24);
+        lh.geo.shift_cursor(moved);
+        resize_step(&lh, w, 24);
+        thread::sleep(Duration::from_millis(1000));
+    }
+    thread::sleep(crate::ui::runtime::event_loop::DRAG_SETTLE + Duration::from_millis(200));
+    let bytes = lh.buf.bytes();
+    let history = emu.history(&bytes);
+    let (_, screen) = emu.finish(&bytes);
+    lh.quit_and_join(Duration::from_secs(2));
+    let dump = screen.join("\n");
+    let last_line = history.iter().rposition(|r| r.contains("line-"));
+    let band = last_line.map_or(0, |b| {
+        history[b + 1..]
+            .iter()
+            .filter(|r| r.trim().is_empty())
+            .count()
+    });
+    assert_eq!(band, 0, "blank rows of a resize band reached the history");
+    let a = screen.iter().position(|r| r.contains("line-07")).unwrap();
+    let b = screen.iter().position(|r| r.contains("line-08")).unwrap();
+    assert_eq!(
+        b,
+        a + 1,
+        "no hole between the transcript and the frame:\n{dump}"
+    );
+}
+
+/// An interaction ends a drag at once: a key pressed a moment after a resize brings the full
+/// width back without waiting for `DRAG_SETTLE`.
+#[test]
+fn a_key_ends_the_drag() {
+    let lh = idle_loop();
+    resize_step(&lh, 76, 24);
+    assert!(
+        lh.width.load(Ordering::Relaxed) < 76,
+        "the drag narrows the frame"
+    );
+    lh.etx
+        .send(key(crossterm::event::KeyCode::Char('x')))
+        .unwrap();
+    assert!(
+        lh.wait_until(Duration::from_millis(500), |h| h
+            .width
+            .load(Ordering::Relaxed)
+            == 76),
+        "a key did not end the drag"
+    );
     lh.quit_and_join(Duration::from_secs(2));
 }

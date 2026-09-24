@@ -58,6 +58,23 @@ use crate::ui::surface::{self, SurfaceEffect};
 /// (`TUI_CONTRACTS` §8 — a design constant; tea.Program woke on `Send`).
 pub(crate) const IDLE_POLL_MAX: Duration = Duration::from_millis(50);
 
+/// How long after the last `Event::Resize` a drag is over (W5's burst layout), unless an
+/// interaction ends it first ([`Model::end_drag`]: a key, a paste, a turn starting, a surface
+/// opening). A drag is not only a smooth mouse sweep: a hand pauses, a keyboard resize repeats
+/// every half second or so, a pane is nudged a step at a time. A pause mistaken for the end
+/// restores the full width, and the next step rewraps the separators into two more blank rows
+/// — measured: 250 and 750 ms windows let a drag paced at 0.8–1 s grow a 20-row hole. Two
+/// seconds covers that pacing with room; the interaction exits make the length invisible
+/// the moment anyone acts.
+pub(crate) const DRAG_SETTLE: Duration = Duration::from_millis(2000);
+
+/// The most columns the frame gives up while a drag lasts. The margin is twice the widest
+/// step seen (2 at least): a fast drag narrows the terminal again before the frame drawn for
+/// the last step has landed, and a frame only one step short would still rewrap. A single
+/// large jump (a maximized window restored) is one event with no next step to guard against,
+/// so its size must not narrow the frame for the burst beyond this.
+pub(crate) const DRAG_MARGIN_MAX: u16 = 8;
+
 /// Spinner cadence (model.go:25 — 120ms tick).
 pub(crate) const SPINNER_TICK: Duration = Duration::from_millis(120);
 
@@ -137,8 +154,16 @@ enum Job {
 
 /// The loop model (Go `model`): every field mutates on this thread only.
 pub(crate) struct Model {
-    /// Terminal width (mirrors the shared atomic).
+    /// Terminal width (the true one; the shared atomic carries [`Model::frame_width`]).
     pub(crate) width: u16,
+    /// While a resize burst (a drag) is in progress: when it counts as over (W5). The frame
+    /// and every row committed meanwhile are laid out a column short, so the next step of
+    /// the drag rewraps none of them.
+    pub(crate) drag_until: Option<Instant>,
+    /// How many columns short the frame is while the drag lasts: the widest narrowing step
+    /// seen in it (1 at least, [`DRAG_MARGIN_MAX`] at most) — a terminal that sends a step of
+    /// two or three columns would still rewrap a frame only one column short.
+    pub(crate) drag_margin: u16,
     /// Terminal height (mirrors the shared atomic; 0 = unknown → 24 fallback).
     pub(crate) height: u16,
     /// The handle-shared state.
@@ -253,6 +278,8 @@ impl Model {
         Self {
             width: if width > 0 { width } else { 80 },
             height,
+            drag_until: None,
+            drag_margin: 0,
             shared,
             status: StatusData::default(),
             title: String::new(),
@@ -305,6 +332,10 @@ impl Model {
             && s.refresh_every > Duration::ZERO
         {
             let next = s.refresh_every.saturating_sub(s.last_refresh.elapsed());
+            d = d.min(next.max(Duration::from_millis(1)));
+        }
+        if let Some(t) = self.drag_until {
+            let next = t.saturating_duration_since(Instant::now());
             d = d.min(next.max(Duration::from_millis(1)));
         }
         d
@@ -408,6 +439,7 @@ impl Model {
                 self.dirty = true;
             }
             UiMsg::BusyOn(label) => {
+                self.end_drag(); // a turn starting ends a drag
                 self.busy = Some(BusyView {
                     label,
                     detail: String::new(),
@@ -474,6 +506,7 @@ impl Model {
                 self.dirty = true;
             }
             UiMsg::TabbedOpen { spec, reply } => {
+                self.end_drag(); // a surface opening ends a drag
                 self.surface_gen += 1;
                 let TabbedSpec {
                     panels,
@@ -506,9 +539,19 @@ impl Model {
                 // touches stale geometry (model.go:175-195 + spike #5). `Term::resize`
                 // reads the anchor with one DSR before it writes a byte; ratatui's own
                 // resize (row 0 + `ESC[2J` on a narrowing) never runs.
+                // A resize opens (or extends) a drag: lay out a column short — as many as the
+                // widest narrowing step seen in it — until it settles.
+                let step = self.width.saturating_sub(w);
+                self.drag_margin = self
+                    .drag_margin
+                    .max(step.saturating_mul(2))
+                    .clamp(2, DRAG_MARGIN_MAX);
                 self.width = w;
                 self.height = h;
-                self.shared.width.store(w, Ordering::Relaxed);
+                self.drag_until = Some(Instant::now() + DRAG_SETTLE);
+                self.shared
+                    .width
+                    .store(self.frame_width(), Ordering::Relaxed);
                 if h > 0 {
                     self.shared.height.store(h, Ordering::Relaxed);
                 }
@@ -545,10 +588,12 @@ impl Model {
                 self.jobs.push(Job::Retrim);
             }
             Event::Key(k) => {
+                self.end_drag();
                 self.handle_key(k);
                 self.dirty = true;
             }
             Event::Paste(data) => {
+                self.end_drag();
                 self.route_paste(&data);
                 self.dirty = true;
             }
@@ -687,14 +732,44 @@ impl Model {
         }
     }
 
-    /// The width the frame is laid out at: one column short of the terminal's. A row that
-    /// fills the last column is a line an emulator rewraps on ANY narrowing — a 1-column
-    /// step of a dragged corner would split both separators and the status row, and those
-    /// extra rows have to land somewhere (W5: blank rows pushed into the history per step).
-    /// Kept a column short, the frame survives a narrowing by a column untouched, as the
-    /// region's staged rows (wrapped to width−1) and markdown's tables already do.
+    /// The width the frame is laid out at — and, through the shared atomic, every row the
+    /// app commits (staged rows, the user block, markdown): the terminal's full width at
+    /// rest, a column or a few short while a drag is in progress (W5's burst layout, X-52). A row
+    /// that fills the last column rewraps on ANY narrowing — our separators would grow by a
+    /// row each per step of a drag, and that growth is a blank band between the transcript
+    /// and the frame; one column short, the next step rewraps nothing. When the burst
+    /// settles ([`Model::settle_drag`]) the full width comes back with a plain repaint.
     pub(crate) fn frame_width(&self) -> u16 {
-        self.width.saturating_sub(1).max(1)
+        let w = self.width.max(1);
+        if self.drag_until.is_some() {
+            w.saturating_sub(self.drag_margin.max(1)).max(1)
+        } else {
+            w
+        }
+    }
+
+    /// Ends a drag whose settle deadline has passed (or that an interaction ended): the full
+    /// width returns — the shared atomic, then a repaint of the frame (no resize, so nothing
+    /// reflows). Returns whether it ended now, so the loop closes the drag's band first.
+    pub(crate) fn settle_drag(&mut self) -> bool {
+        if self.drag_until.is_some_and(|t| Instant::now() >= t) {
+            self.drag_until = None;
+            self.drag_margin = 0;
+            self.shared
+                .width
+                .store(self.frame_width(), Ordering::Relaxed);
+            self.dirty = true;
+            return true;
+        }
+        false
+    }
+
+    /// An interaction — a key, a paste, a turn starting, a surface opening — ends a drag at
+    /// once: what it writes is laid out at the full width, after the band is closed.
+    pub(crate) fn end_drag(&mut self) {
+        if self.drag_until.is_some() {
+            self.drag_until = Some(Instant::now());
+        }
     }
 
     /// The inline viewport height for a frame of `rows` rows, capped at the screen height.
@@ -790,12 +865,24 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
         // W10: the deadline is ALWAYS finite.
         let deadline = m.poll_deadline();
         if events.poll(deadline)? {
+            // A run of resizes in one batch is one step of the drag: only the last size is
+            // laid out (the terminal is already there), so a fast drag re-anchors once per
+            // batch instead of chasing sizes it has left behind.
+            let mut pending: Option<Event> = None;
             loop {
                 let ev = events.read()?;
-                m.handle_event(ev, &mut term)?;
+                if let Some(prev) = pending.take()
+                    && !(matches!(prev, Event::Resize(..)) && matches!(ev, Event::Resize(..)))
+                {
+                    m.handle_event(prev, &mut term)?;
+                }
+                pending = Some(ev);
                 if !events.poll(Duration::ZERO)? {
                     break;
                 }
+            }
+            if let Some(ev) = pending {
+                m.handle_event(ev, &mut term)?;
             }
         }
         // Drain the mailbox: scrollback batches collect IN ORDER; the rest mutates
@@ -820,6 +907,9 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
                 Job::Retrim => lock(&m.shared.region).retrim(),
                 Job::Shown(rows) => lock(&m.shared.region).already_shown(&rows),
             }
+        }
+        if m.settle_drag() {
+            term.close_band()?;
         }
         m.tick_spin();
         m.tick_jobs();
