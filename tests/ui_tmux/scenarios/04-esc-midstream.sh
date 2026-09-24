@@ -48,7 +48,7 @@ check "no partial reply was committed" "$(count_all 'echo:')" 0
 
 # The frame survived: two separators, the (now two-row) composer between them, status
 # below.
-check "separators still span the terminal" "$(sep_width)" 80
+check "separators still span the terminal" "$(sep_width)" 79
 check "status line is back in the bottom zone" "$(status_model)" "  fake"
 
 # And the folded draft is a real draft: submitting it sends both lines.

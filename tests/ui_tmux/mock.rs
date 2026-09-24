@@ -13,7 +13,7 @@
 //!
 //! | user message  | reply                                                        |
 //! |---------------|--------------------------------------------------------------|
-//! | `stream N`    | `N` lines `l#00 line` … , 60 ms apart (the interruptible one) |
+//! | `stream N [MS]` | `N` lines `l#00 line` … , 60 ms (or `MS`) apart (the interruptible one) |
 //! | `think`       | ~1.5 s of reasoning deltas, then a small markdown document   |
 //! | `md`          | that markdown document, streamed in 7-byte chunks            |
 //! | `exact`       | `EXACTSTART`, a line of exactly 80 `x`, `EXACTEND`            |
@@ -305,10 +305,15 @@ fn stream_reply(sock: &mut TcpStream, prompt: &str, after_tool: bool) -> std::io
     } else if prompt.starts_with("emoji") {
         content(sock, EMOJI)?;
     } else if let Some(rest) = prompt.strip_prefix("stream") {
-        let n: usize = rest.trim().parse().unwrap_or(10);
+        let mut args = rest.split_whitespace();
+        let n: usize = args.next().and_then(|a| a.parse().ok()).unwrap_or(10);
+        let gap = args
+            .next()
+            .and_then(|a| a.parse().ok())
+            .map_or(LINE_GAP, Duration::from_millis);
         for i in 0..n {
             content(sock, &format!("l#{i:02} line\n"))?;
-            thread::sleep(LINE_GAP);
+            thread::sleep(gap);
         }
     } else if prompt.starts_with("think") {
         for i in 0..30 {

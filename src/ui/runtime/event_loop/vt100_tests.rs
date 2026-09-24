@@ -114,6 +114,13 @@ struct LoopHarness {
 }
 
 fn start_loop() -> LoopHarness {
+    // start_top 19 = screen_h − the idle frame height (5 rows): the viewport starts
+    // at the bottom, so the composer cursor row is constant from the first insert.
+    start_loop_at(19)
+}
+
+/// [`start_loop`] with the viewport starting on row `start_top`.
+fn start_loop_at(start_top: u16) -> LoopHarness {
     let width = Arc::new(AtomicU16::new(80));
     let height = Arc::new(AtomicU16::new(24));
     let (tx, rx) = mpsc::channel();
@@ -132,12 +139,10 @@ fn start_loop() -> LoopHarness {
     let geo = crate::ui::runtime::term::Geometry::new(80, 24);
     let buf = SharedBuf::default();
     let wtr = buf.clone();
-    // start_top 19 = screen_h − the idle frame height (5 rows): the viewport starts
-    // at the bottom, so the composer cursor row is constant from the first insert.
     let t = crate::ui::runtime::term::Term::new(
         Box::new(move || wtr.clone()),
         1,
-        19,
+        start_top,
         Some(geo.clone()),
     )
     .unwrap();
@@ -300,11 +305,12 @@ fn snapshot_implies_draw_and_cursor_restored() {
     h.quit_and_join(Duration::from_secs(2));
 }
 
-/// W5 `RESIZE_PASS_FIRST` + the flush law: a WIDTH change schedules
-/// `region.flush_tail()` as a post-update job (tail → scrollback, the open preview
-/// SURVIVES); a height-only change flushes nothing.
+/// W5 `RESIZE_PASS_FIRST` + the retrim law: a resize keeps the staging window IN the
+/// re-anchored frame — no flush on a WIDTH change (it only committed the rows a second
+/// time under the reflow's ghost), the open preview SURVIVES — and `region.retrim()`
+/// runs as the post-update job for either dimension.
 #[test]
-fn resize_flushes_staging_tail_loop() {
+fn resize_keeps_the_staging_tail_in_the_frame_loop() {
     let h = start_loop();
     assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
     {
@@ -318,21 +324,26 @@ fn resize_flushes_staging_tail_loop() {
         h.contents()
     );
 
-    // WIDTH change → the post-update job flushes the tail; the preview survives.
+    // WIDTH change → the tail stays staged and on screen; the preview survives.
     h.geo.set_size(70, 24);
     h.etx.send(Event::Resize(70, 24)).unwrap();
     assert!(
-        h.wait_until(Duration::from_secs(1), |h| {
-            h.width.load(Ordering::Relaxed) == 70 && h.region.lock().unwrap().tail.is_empty()
-        }),
-        "width change did not flush the staging tail"
+        h.wait_until(Duration::from_secs(1), |h| h.width.load(Ordering::Relaxed)
+            == 70),
+        "width never stored"
+    );
+    thread::sleep(Duration::from_millis(150));
+    assert_eq!(
+        h.region.lock().unwrap().tail,
+        vec!["tail-a".to_owned(), "tail-b".to_owned()],
+        "a width change must not flush the staging tail"
     );
     assert!(
         !h.region.lock().unwrap().label.is_empty(),
-        "the open preview must survive the flush"
+        "the open preview must survive the resize"
     );
 
-    // HEIGHT-only change → no flush.
+    // HEIGHT-only change → the same: nothing flushed.
     h.region.lock().unwrap().commit(vec!["tail-c".to_owned()]);
     h.geo.set_size(70, 20);
     h.etx.send(Event::Resize(70, 20)).unwrap();
@@ -344,8 +355,18 @@ fn resize_flushes_staging_tail_loop() {
     thread::sleep(Duration::from_millis(150));
     assert_eq!(
         h.region.lock().unwrap().tail,
-        vec!["tail-c".to_owned()],
-        "height-only change must not flush the tail"
+        vec![
+            "tail-a".to_owned(),
+            "tail-b".to_owned(),
+            "tail-c".to_owned()
+        ],
+        "a height-only change within the cap must not flush the tail"
+    );
+    let screen = h.contents();
+    assert_eq!(
+        screen.matches("tail-a").count(),
+        1,
+        "the staged row must be on screen exactly once:\n{screen}"
     );
     h.quit_and_join(Duration::from_secs(2));
 }
@@ -855,4 +876,824 @@ fn a_term_that_never_enabled_focus_reporting_writes_no_disable() {
     let out = text(&buf);
     assert!(!out.contains("[?1004"), "unexpected focus mode: {out:?}");
     assert!(!out.contains("]9;4"), "unexpected progress bytes: {out:?}");
+}
+
+// ---------------------------------------------------------------------------
+// W5 resize: iota re-anchors; ratatui's resize (row 0 + ESC[2J) never runs
+// ---------------------------------------------------------------------------
+
+/// Every row a user can reach in `p`: the history (oldest first), then the screen.
+fn reachable(p: &mut vt100::Parser) -> Vec<String> {
+    let cols = p.screen().size().1;
+    let screen: Vec<String> = p.screen().rows(0, cols).collect();
+    p.screen_mut().set_scrollback(usize::MAX);
+    let depth = p.screen().scrollback();
+    let mut all = Vec::with_capacity(depth + screen.len());
+    for off in (1..=depth).rev() {
+        p.screen_mut().set_scrollback(off);
+        all.push(p.screen().rows(0, cols).next().unwrap_or_default());
+    }
+    p.screen_mut().set_scrollback(0);
+    all.extend(screen);
+    all
+}
+
+/// How many scroll-downs (`CSI n T`) `bytes` carries: a resize must scroll nothing — the
+/// region scroll-down that closed the resize band put blank rows at the top of the
+/// screen, and the next reflow pushed them into the history.
+fn scroll_downs(bytes: &str) -> usize {
+    bytes
+        .split("\u{1b}[")
+        .skip(1)
+        .filter(|seq| {
+            let digits = seq.chars().take_while(char::is_ascii_digit).count();
+            digits > 0 && seq[digits..].starts_with('T')
+        })
+        .count()
+}
+
+/// Replays `bytes` through an emulator that is resized by `emulate` at byte `mark` —
+/// the point the scripted `Event::Resize` was sent — and returns every row the user can
+/// reach afterwards and the screen alone. vt100 neither reflows nor archives an
+/// `ESC[2J`, so a row that ratatui's narrowing path wiped stays wiped here: exactly the
+/// emulators that lost it live (Ghostty, herdr).
+fn replay_resized(
+    bytes: &[u8],
+    mark: usize,
+    emulate: impl FnOnce(&mut vt100::Parser),
+) -> (Vec<String>, Vec<String>) {
+    let mut p = vt100::Parser::new(24, 80, 5000);
+    p.process(&bytes[..mark]);
+    emulate(&mut p);
+    p.process(&bytes[mark..]);
+    let cols = p.screen().size().1;
+    let screen: Vec<String> = p.screen().rows(0, cols).collect();
+    (reachable(&mut p), screen)
+}
+
+/// A REFLOWING emulator, modelled the way tmux 3.7c does it: a row shrink first eats the
+/// rows below the cursor and then moves the top rows into the history; then every screen
+/// row is a hard line that rewraps at the new width, the rows stay anchored to the
+/// bottom (what grows pushes the top rows into the history), and the cursor moves with
+/// its cell. vt100 underneath does the rest; `history` keeps what the model pushed out
+/// plus vt100's own scrolled-off rows from each incarnation.
+struct ReflowEmu {
+    p: vt100::Parser,
+    history: Vec<String>,
+    fed: usize,
+}
+
+impl ReflowEmu {
+    fn new() -> Self {
+        Self {
+            p: vt100::Parser::new(24, 80, 5000),
+            history: Vec::new(),
+            fed: 0,
+        }
+    }
+
+    fn feed(&mut self, bytes: &[u8]) {
+        self.p.process(&bytes[self.fed..]);
+        self.fed = bytes.len();
+    }
+
+    /// Feeds what the app wrote so far, then resizes to `w`×`h` with a reflow; returns
+    /// how many rows the cursor moved (for `Geometry::shift_cursor`).
+    fn resize(&mut self, bytes: &[u8], w: u16, h: u16) -> i32 {
+        self.feed(bytes);
+        let all = reachable(&mut self.p);
+        let rows = usize::from(self.p.screen().size().0);
+        let (cur_row, cur_col) = self.p.screen().cursor_position();
+        let (old_history, screen) = all.split_at(all.len() - rows);
+        self.history.extend_from_slice(old_history);
+        // tmux resizes the rows FIRST: a shrink eats the rows below the cursor, then
+        // takes the rest from the top into the history.
+        let mut screen = screen.to_vec();
+        let mut cur_row = usize::from(cur_row);
+        let needed = rows.saturating_sub(usize::from(h));
+        let eat = needed.min(rows - 1 - cur_row);
+        screen.truncate(rows - eat);
+        let push = needed - eat;
+        self.history.extend(screen.drain(..push));
+        cur_row -= push;
+        let wide = usize::from(w);
+        let mut lines: Vec<String> = Vec::new();
+        let mut cursor_line = 0;
+        for (i, row) in screen.iter().enumerate() {
+            let chars: Vec<char> = row.chars().collect();
+            let pieces = chars.len().div_ceil(wide).max(1);
+            if i == cur_row {
+                cursor_line = lines.len() + (usize::from(cur_col) / wide).min(pieces - 1);
+            }
+            if chars.is_empty() {
+                lines.push(String::new());
+            } else {
+                lines.extend(chars.chunks(wide).map(|c| c.iter().collect::<String>()));
+            }
+        }
+        let height = usize::from(h);
+        let pushed = lines.len().saturating_sub(height);
+        self.history.extend(lines.drain(..pushed));
+        lines.resize(height, String::new());
+        let new_row = cursor_line - pushed;
+        let mut p = vt100::Parser::new(h, w, 5000);
+        for (i, line) in lines.iter().enumerate() {
+            p.process(format!("\u{1b}[{};1H{line}", i + 1).as_bytes());
+        }
+        p.process(format!("\u{1b}[{};{}H", new_row + 1, cur_col + 1).as_bytes());
+        self.p = p;
+        i32::try_from(new_row).unwrap() - i32::try_from(cur_row + push).unwrap()
+    }
+
+    /// The rows in the history so far (what was pushed off the top), after feeding.
+    fn history(&mut self, bytes: &[u8]) -> Vec<String> {
+        self.feed(bytes);
+        let rows = usize::from(self.p.screen().size().0);
+        let mut all = self.history.clone();
+        let own = reachable(&mut self.p);
+        all.extend(own[..own.len() - rows].iter().cloned());
+        all
+    }
+
+    /// Feeds the rest; returns every reachable row and the screen.
+    fn finish(&mut self, bytes: &[u8]) -> (Vec<String>, Vec<String>) {
+        self.feed(bytes);
+        let cols = self.p.screen().size().1;
+        let screen: Vec<String> = self.p.screen().rows(0, cols).collect();
+        let mut all = self.history.clone();
+        all.extend(reachable(&mut self.p));
+        (all, screen)
+    }
+}
+
+/// The loop with twelve committed lines at idle: four staged in the 9-row frame (four
+/// staged rows, spacer, two separators, composer, status), eight above it.
+fn idle_loop() -> LoopHarness {
+    let lh = start_loop();
+    assert!(lh.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
+    lh.region
+        .lock()
+        .unwrap()
+        .commit((0..12).map(|i| format!("line-{i:02}")).collect());
+    assert!(lh.wait_until(Duration::from_secs(2), |h| h.contents().contains("line-11")));
+    thread::sleep(Duration::from_millis(150)); // settle: the loop is idle from here
+    lh
+}
+
+/// Sends one resize and waits for its pass and the retrim job's round to land.
+fn resize_and_settle(lh: &LoopHarness, w: u16, h: u16) {
+    lh.geo.set_size(w, h);
+    lh.etx.send(Event::Resize(w, h)).unwrap();
+    assert!(lh.wait_until(Duration::from_secs(1), |lh| {
+        lh.width.load(Ordering::Relaxed) == w && lh.height.load(Ordering::Relaxed) == h
+    }));
+    thread::sleep(Duration::from_millis(200));
+}
+
+/// ONE scripted resize to `w`×`h` of the idle loop, with `emulate` standing in for the
+/// emulator's own resize and `cursor_shift` for where it moved the cursor. Returns the
+/// reachable rows, the screen, and the bytes the loop wrote after the event.
+fn idle_resize(
+    w: u16,
+    h: u16,
+    cursor_shift: i32,
+    emulate: impl FnOnce(&mut vt100::Parser),
+) -> (Vec<String>, Vec<String>, String) {
+    let lh = idle_loop();
+    let mark = lh.buf.bytes().len();
+    lh.geo.shift_cursor(cursor_shift);
+    resize_and_settle(&lh, w, h);
+    let bytes = lh.buf.bytes();
+    let after = String::from_utf8_lossy(&bytes[mark..]).into_owned();
+    let (all, screen) = replay_resized(&bytes, mark, emulate);
+    lh.quit_and_join(Duration::from_secs(2));
+    (all, screen, after)
+}
+
+/// The resize invariants every direction must keep: ratatui's full clear never ran,
+/// every committed line is reachable EXACTLY once (none lost, none duplicated), there is
+/// one separator pair in the whole history, and the frame is still flush with the
+/// bottom: the composer on the screen's third-last row (composer, separator, status).
+fn assert_resize_clean(tag: &str, all: &[String], screen: &[String], after: &str) {
+    let dump = screen.join("\n");
+    assert!(
+        !after.contains("\u{1b}[2J"),
+        "{tag}: ESC[2J after the resize — ratatui's inline resize ran:\n{after:?}"
+    );
+    assert_eq!(
+        scroll_downs(after),
+        0,
+        "{tag}: a resize inserted rows (a scroll-down):\n{after:?}"
+    );
+    for i in 0..12 {
+        let line = format!("line-{i:02}");
+        let n = all.iter().filter(|r| r.contains(line.as_str())).count();
+        assert_eq!(
+            n,
+            1,
+            "{tag}: {line} reachable {n} times:\n{}",
+            all.join("\n")
+        );
+    }
+    let seps = all.iter().filter(|r| r.contains('┄')).count();
+    assert_eq!(
+        seps,
+        2,
+        "{tag}: {seps} separator rows reachable:\n{}",
+        all.join("\n")
+    );
+    let composers: Vec<usize> = screen
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.contains('❯'))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        composers,
+        vec![screen.len() - 3],
+        "{tag}: the composer left the bottom:\n{dump}"
+    );
+}
+
+/// The owner's repro (2026-09-23): an idle WIDTH shrink. ratatui's inline resize re-anchored
+/// the frame at row 0 behind an `ESC[2J` — composer at the top, every transcript row
+/// still on screen erased. iota now owns the resize: same rows, same place. (vt100 does
+/// not reflow: this is the xterm-without-reflow half; the reflow half is below.)
+#[test]
+fn idle_width_shrink_keeps_the_frame_down_and_every_row() {
+    let (all, screen, after) = idle_resize(60, 24, 0, |p| p.screen_mut().set_size(24, 60));
+    assert_resize_clean("width 80→60", &all, &screen, &after);
+}
+
+/// The control: a width GROW never took ratatui's clear path and must still hold.
+#[test]
+fn idle_width_grow_keeps_the_frame_down_and_every_row() {
+    let (all, screen, after) = idle_resize(100, 24, 0, |p| p.screen_mut().set_size(24, 100));
+    assert_resize_clean("width 80→100", &all, &screen, &after);
+}
+
+/// A HEIGHT shrink as xterm-family emulators do it with the cursor near the bottom: the
+/// top `d` rows go to history and everything, the cursor included, moves up `d`. The
+/// synthetic DSR is moved with it (`shift_cursor`) — without that, it would answer a row
+/// the smaller screen no longer has. Emulators that instead drop blank rows below the
+/// frame keep the cursor put; that variant is the tmux layer's (scenario 06).
+#[test]
+fn idle_height_shrink_keeps_the_frame_down_and_every_row() {
+    let (all, screen, after) = idle_resize(80, 20, -4, |p| {
+        // Push the top 4 rows into history (a full-screen scroll), then drop the
+        // now-blank bottom 4 rows.
+        p.process(format!("\u{1b}[24;1H{}", "\n".repeat(4)).as_bytes());
+        p.screen_mut().set_size(20, 80);
+    });
+    assert_resize_clean("height 24→20", &all, &screen, &after);
+}
+
+/// The verifier's round-2/3 repro, in the reflow model: a SETTLED 30-step drag, one column
+/// per step. The frame is laid out a column short of the terminal, so a one-column step
+/// rewraps nothing: the composer stays flush, no separator row and no BLANK row reaches the
+/// history (round 2 put two per step there), nothing is scrolled.
+#[test]
+fn settled_drag_in_a_reflowing_emulator_stays_flush_and_clean() {
+    let lh = idle_loop();
+    let mut emu = ReflowEmu::new();
+    let blanks = |h: &[String]| h.iter().filter(|r| r.trim().is_empty()).count();
+    let before = blanks(&emu.history(&lh.buf.bytes()));
+    let mark = lh.buf.bytes().len();
+    for w in (50..80).rev() {
+        let moved = emu.resize(&lh.buf.bytes(), w, 24);
+        lh.geo.shift_cursor(moved);
+        resize_and_settle(&lh, w, 24);
+    }
+    let bytes = lh.buf.bytes();
+    let after = String::from_utf8_lossy(&bytes[mark..]).into_owned();
+    let added = blanks(&emu.history(&bytes)) - before;
+    let (all, screen) = emu.finish(&bytes);
+    lh.quit_and_join(Duration::from_secs(2));
+    assert_eq!(added, 0, "blank rows the drag pushed into the history");
+    assert_resize_clean("30-step drag 80→50", &all, &screen, &after);
+}
+
+/// A drastic narrowing — a maximized window restored, a full-width pane halved: the old
+/// width is 2× and 3× the new one, every staged row and both separators split into
+/// several pieces. The first resize of the session proves the reflow itself (the rows
+/// below the cursor multiplied), so the whole overhang is claimed at once.
+#[test]
+fn a_2x_and_a_3x_narrowing_in_a_reflowing_emulator_stay_clean() {
+    for (w, tag) in [(40, "2× 80→40"), (26, "3× 80→26")] {
+        let lh = idle_loop();
+        let mut emu = ReflowEmu::new();
+        let mark = lh.buf.bytes().len();
+        let moved = emu.resize(&lh.buf.bytes(), w, 24);
+        lh.geo.shift_cursor(moved);
+        resize_and_settle(&lh, w, 24);
+        let bytes = lh.buf.bytes();
+        let after = String::from_utf8_lossy(&bytes[mark..]).into_owned();
+        let (all, screen) = emu.finish(&bytes);
+        lh.quit_and_join(Duration::from_secs(2));
+        assert_resize_clean(tag, &all, &screen, &after);
+    }
+}
+
+/// One large narrowing in the reflow model — every staged row and both separators
+/// rewrap — lands as cleanly as the drag's single steps.
+#[test]
+fn one_large_narrowing_in_a_reflowing_emulator_stays_clean() {
+    let lh = idle_loop();
+    let mut emu = ReflowEmu::new();
+    let moved = emu.resize(&lh.buf.bytes(), 30, 24);
+    lh.geo.shift_cursor(moved);
+    resize_and_settle(&lh, 30, 24);
+    let bytes = lh.buf.bytes();
+    let after = String::from_utf8_lossy(&bytes).into_owned();
+    let (all, screen) = emu.finish(&bytes);
+    lh.quit_and_join(Duration::from_secs(2));
+    assert_resize_clean("width 80→30", &all, &screen, &after);
+}
+
+/// The anchor law in isolation, for a frame that is NOT flush with the bottom: the
+/// cursor moved `k` rows, and the recreated frame lands at `cursor − its frame row`
+/// with nothing above that row cleared.
+#[test]
+fn resize_anchors_at_the_cursor_row_minus_its_frame_row() {
+    let (mut t, buf, geo) = direct_term(5, 10);
+    let frame = crate::ui::render::frame::FrameView {
+        rows: vec![
+            String::new(),
+            "SEP".to_owned(),
+            "❯ ".to_owned(),
+            "SEP".to_owned(),
+            "status".to_owned(),
+        ],
+        cursor: Some((2, 2)),
+    };
+    t.draw_frame(&frame).unwrap();
+    assert_eq!(geo.cursor(), ratatui::layout::Position::new(2, 12));
+    let mark = buf.bytes().len();
+    geo.shift_cursor(-3);
+    geo.set_size(60, 24);
+    t.resize(
+        ratatui::layout::Size {
+            width: 60,
+            height: 24,
+        },
+        0,
+        |_| 5,
+    )
+    .unwrap();
+    assert_eq!(
+        t.top, 7,
+        "anchor must be cursor (9) − the composer's frame row (2)"
+    );
+    t.draw_frame(&frame).unwrap();
+    let after = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
+    assert!(
+        !after.contains("\u{1b}[2J"),
+        "full clear on resize:\n{after:?}"
+    );
+    assert!(
+        after.starts_with("\u{1b}[8;1H"),
+        "the first byte after the event must be the re-anchor MoveTo(0, 7):\n{after:?}"
+    );
+}
+
+/// A flush frame stays flush through a reflow: rows below the cursor multiplied (the
+/// cursor went up 3 on an unchanged height), so the new top is the floor `S' − h`; the
+/// band from the cursor estimate down is cleared and left blank ABOVE the frame — nothing
+/// is scrolled or inserted — and the next output fills it before anything scrolls.
+#[test]
+fn a_flush_frame_resizes_onto_the_floor_and_the_band_takes_the_next_output() {
+    let (mut t, buf, geo) = direct_term(5, 19);
+    let frame = crate::ui::render::frame::FrameView {
+        rows: vec![
+            String::new(),
+            "SEP".to_owned(),
+            "❯ ".to_owned(),
+            "SEP".to_owned(),
+            "status".to_owned(),
+        ],
+        cursor: Some((2, 2)),
+    };
+    t.draw_frame(&frame).unwrap();
+    let mark = buf.bytes().len();
+    geo.shift_cursor(-3);
+    geo.set_size(60, 24);
+    t.resize(
+        ratatui::layout::Size {
+            width: 60,
+            height: 24,
+        },
+        0,
+        |_| 5,
+    )
+    .unwrap();
+    assert_eq!(t.top, 19, "a flush frame lands on the floor (24 − 5)");
+    let after = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
+    assert!(
+        after.starts_with("\u{1b}[17;1H\u{1b}[J\u{1b}[20;1H"),
+        "clear from the cursor estimate (16), then re-anchor on the floor:\n{after:?}"
+    );
+    assert_eq!(
+        scroll_downs(&after),
+        0,
+        "a resize scrolls nothing:\n{after:?}"
+    );
+    t.draw_frame(&frame).unwrap();
+    // Three rows of output fill the three-row band: the frame stays flush.
+    t.insert_lines(&["a".to_owned(), "b".to_owned(), "c".to_owned()])
+        .unwrap();
+    t.draw_frame(&frame).unwrap();
+    assert_eq!(
+        t.top, 19,
+        "the band took the output; the frame is flush again"
+    );
+    let screen = parse(&buf).screen().contents();
+    let rows: Vec<&str> = screen.lines().collect();
+    assert_eq!(
+        &rows[16..19],
+        &["a", "b", "c"],
+        "output landed in the band:\n{screen}"
+    );
+}
+
+/// A surface hides the cursor, and the anchor must still be known: a hidden-cursor draw
+/// parks the physical cursor on the frame's top-left — no frame row above it can rewrap —
+/// so a resize while a picker or `/jobs` is open re-anchors exactly like one under the
+/// composer (it used to keep a stale top until the surface closed).
+#[test]
+fn resize_with_a_hidden_cursor_anchors_on_the_frames_first_row() {
+    let (mut t, _buf, geo) = direct_term(6, 18);
+    let surface = crate::ui::render::frame::FrameView {
+        rows: (0..6).map(|i| format!("panel-{i}")).collect(),
+        cursor: None,
+    };
+    t.draw_frame(&surface).unwrap();
+    assert_eq!(
+        geo.cursor(),
+        ratatui::layout::Position::new(0, 18),
+        "a hidden-cursor draw must leave the cursor on the frame's top-left"
+    );
+    geo.shift_cursor(-2);
+    geo.set_size(80, 22);
+    t.resize(
+        ratatui::layout::Size {
+            width: 80,
+            height: 22,
+        },
+        0,
+        |_| 6,
+    )
+    .unwrap();
+    assert_eq!(t.top, 16, "anchor must be the cursor (16) itself");
+}
+
+/// The verifier's `/model` repro, in the reflow model: a resize while a surface is open
+/// (cursor hidden, the frame taller than the idle one, its rows wide) used to leave half
+/// the old frame — a separator and an empty `❯` — in the middle of the conversation.
+#[test]
+fn resize_with_a_surface_open_leaves_no_half_frame() {
+    let (mut t, buf, geo) = direct_term(1, 23);
+    let history: Vec<String> = (0..6).map(|i| format!("hist-{i}")).collect();
+    t.insert_lines(&history).unwrap();
+    let view = |w: usize| crate::ui::render::frame::FrameView {
+        rows: [String::new(), "┄".repeat(w), "❯ ".to_owned(), "┄".repeat(w)]
+            .into_iter()
+            .chain((0..4).map(|i| format!("model-{i} {}", "·".repeat(w - 12))))
+            .collect(),
+        cursor: None,
+    };
+    t.ensure_height(8).unwrap();
+    t.draw_frame(&view(80)).unwrap();
+    let mut emu = ReflowEmu::new();
+    let moved = emu.resize(&buf.bytes(), 60, 24);
+    geo.shift_cursor(moved);
+    geo.set_size(60, 24);
+    t.resize(
+        ratatui::layout::Size {
+            width: 60,
+            height: 24,
+        },
+        0,
+        |_| 8,
+    )
+    .unwrap();
+    t.draw_frame(&view(60)).unwrap();
+    let (all, screen) = emu.finish(&buf.bytes());
+    let dump = all.join("\n");
+    assert_eq!(all.iter().filter(|r| r.contains('❯')).count(), 1, "{dump}");
+    assert_eq!(all.iter().filter(|r| r.contains('┄')).count(), 2, "{dump}");
+    for h in &history {
+        let n = all.iter().filter(|r| r.contains(h.as_str())).count();
+        assert_eq!(n, 1, "{h} reachable {n} times:\n{dump}");
+    }
+    assert!(
+        screen[23].contains("model-3"),
+        "the frame left the bottom:\n{dump}"
+    );
+}
+
+/// W6 across a narrowing: a staged row wrapped for 80 columns stays staged, rewrapped for
+/// 60 by the resize's retrim; output that later pushes it out inserts one row per entry
+/// (a debug build used to panic the loop thread on this insert).
+#[test]
+fn width_shrink_rewraps_a_wide_staged_row() {
+    let h = start_loop();
+    assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
+    let wide = format!("wide-{}", "x".repeat(70));
+    h.region.lock().unwrap().commit(vec![wide]);
+    assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains("wide-")));
+    resize_and_settle(&h, 60, 24);
+    let tail = h.region.lock().unwrap().tail.clone();
+    assert_eq!(
+        tail.len(),
+        2,
+        "the wide row must be rewrapped in place: {tail:?}"
+    );
+    assert!(
+        tail.iter().all(|r| crate::text::ansi::ansi_width(r) < 60),
+        "{tail:?}"
+    );
+    h.region
+        .lock()
+        .unwrap()
+        .commit((0..6).map(|i| format!("after-{i}")).collect());
+    assert!(h.wait_until(Duration::from_secs(1), |h| h.contents().contains("after-5")));
+    assert!(!h.join.is_finished(), "the loop thread died on the insert");
+    h.quit_and_join(Duration::from_secs(2));
+}
+
+/// Whether the emulator reflows is learned, never assumed: tmux eats the rows below the
+/// cursor on a row shrink BEFORE it rewraps, so a narrowing that also shortens the pane
+/// hides the evidence. The first such resize claims no overhang — at most the frame's top
+/// row stays behind as a duplicate, nothing is lost — and once a width-only narrowing has
+/// shown the reflow, the same diagonal resize is exact.
+#[test]
+fn a_diagonal_narrowing_is_exact_once_the_reflow_is_learned() {
+    // Unlearned: the evidence is eaten.
+    let lh = idle_loop();
+    let mut emu = ReflowEmu::new();
+    let moved = emu.resize(&lh.buf.bytes(), 70, 20);
+    lh.geo.shift_cursor(moved);
+    resize_and_settle(&lh, 70, 20);
+    let bytes = lh.buf.bytes();
+    let (all, _) = emu.finish(&bytes);
+    lh.quit_and_join(Duration::from_secs(2));
+    for i in 0..12 {
+        let line = format!("line-{i:02}");
+        let n = all.iter().filter(|r| r.contains(line.as_str())).count();
+        assert!(n >= 1, "{line} lost:\n{}", all.join("\n"));
+        assert!(n <= 2, "{line} reachable {n} times:\n{}", all.join("\n"));
+    }
+    let dups = (0..12)
+        .filter(|i| {
+            let line = format!("line-{i:02}");
+            all.iter().filter(|r| r.contains(line.as_str())).count() > 1
+        })
+        .count();
+    assert!(
+        dups <= 1,
+        "{dups} rows duplicated before the reflow was learned"
+    );
+
+    // Learned by one width-only step first: the diagonal resize is exact.
+    let lh = idle_loop();
+    let mut emu = ReflowEmu::new();
+    let moved = emu.resize(&lh.buf.bytes(), 76, 24);
+    lh.geo.shift_cursor(moved);
+    resize_and_settle(&lh, 76, 24);
+    let moved = emu.resize(&lh.buf.bytes(), 60, 20);
+    lh.geo.shift_cursor(moved);
+    resize_and_settle(&lh, 60, 20);
+    let bytes = lh.buf.bytes();
+    let after = String::from_utf8_lossy(&bytes).into_owned();
+    let (all, screen) = emu.finish(&bytes);
+    lh.quit_and_join(Duration::from_secs(2));
+    assert_resize_clean("learned, then 76×24→60×20", &all, &screen, &after);
+}
+
+/// A row that shrank since the last draw is erased WHOLE and written again: ratatui writes
+/// spaces into the cells that went blank, and an emulator counts written cells as line
+/// length even after an `EL` (tmux does) — the row would rewrap on a narrowing as if it
+/// still held its old content, and W5's growth bound would fall short by it.
+#[test]
+fn a_row_that_got_shorter_is_erased_whole_and_rewritten() {
+    let (mut t, buf, _geo) = direct_term(3, 21);
+    let frame = |row: String| crate::ui::render::frame::FrameView {
+        rows: vec![row, "❯ ".to_owned(), "status".to_owned()],
+        cursor: Some((2, 1)),
+    };
+    t.draw_frame(&frame("┄".repeat(79))).unwrap();
+    let mark = buf.bytes().len();
+    t.draw_frame(&frame("short".to_owned())).unwrap();
+    let after = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
+    assert!(
+        after.contains("\u{1b}[22;1H\u{1b}[2K\u{1b}[22;1Hshort"),
+        "the shortened row must be erased whole and rewritten:\n{after:?}"
+    );
+    assert!(
+        after.ends_with("\u{1b}[23;3H"),
+        "the cursor goes back to the composer:\n{after:?}"
+    );
+    let mark = buf.bytes().len();
+    t.draw_frame(&frame("short".to_owned())).unwrap();
+    let again = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
+    assert!(
+        !again.contains("\u{1b}[2K"),
+        "an unchanged row is not erased again:\n{again:?}"
+    );
+    let screen = parse(&buf).screen().contents();
+    assert!(screen.lines().any(|l| l == "short"), "{screen}");
+}
+
+/// The verifier's banner repro, in the reflow model: right after startup the frame sits
+/// near the top with the banner still staged in it, and a 3× narrowing grows the frame so
+/// much that the emulator pushes its first rows — the staged banner rows — off the top into
+/// the history. Those rows are committed where they stand (dropped from the frame and the
+/// window), never drawn a second time.
+#[test]
+fn a_3x_narrowing_at_startup_commits_the_rows_the_emulator_archived() {
+    let lh = start_loop_at(0);
+    assert!(lh.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
+    let banner: Vec<String> = (0..3)
+        .map(|i| format!("│ banner-{i} {}│", "·".repeat(20)))
+        .collect();
+    lh.region.lock().unwrap().commit(banner.clone());
+    assert!(lh.wait_until(Duration::from_secs(2), |h| {
+        h.contents().contains("banner-2")
+    }));
+    thread::sleep(Duration::from_millis(150));
+    let mut emu = ReflowEmu::new();
+    let mark = lh.buf.bytes().len();
+    let moved = emu.resize(&lh.buf.bytes(), 27, 24);
+    lh.geo.shift_cursor(moved);
+    // One width-only narrowing of a frame near the top proves the reflow: the cursor moved.
+    resize_and_settle(&lh, 27, 24);
+    let bytes = lh.buf.bytes();
+    let after = String::from_utf8_lossy(&bytes[mark..]).into_owned();
+    let (all, _) = emu.finish(&bytes);
+    let staged = lh.region.lock().unwrap().tail.clone();
+    lh.quit_and_join(Duration::from_secs(2));
+    let dump = all.join("\n");
+    assert_eq!(
+        scroll_downs(&after),
+        0,
+        "a resize scrolls nothing:\n{after:?}"
+    );
+    for b in &banner {
+        let key = b.split_whitespace().nth(1).unwrap();
+        let n = all.iter().filter(|r| r.contains(key)).count();
+        assert_eq!(n, 1, "{key} reachable {n} times:\n{dump}");
+    }
+    assert_eq!(all.iter().filter(|r| r.contains('┄')).count(), 2, "{dump}");
+    assert!(
+        staged.len() < 3,
+        "the archived rows must leave the window: {staged:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Wide graphemes at a row's end: a row's width is its last grapheme's RIGHT edge
+// ---------------------------------------------------------------------------
+
+/// Sends `keys` to the loop one by one and returns the composer row (the screen row that
+/// starts with `❯`) once it reads `want`, or the last one seen.
+fn composer_after(lh: &LoopHarness, keys: &[Event], want: &str) -> (String, usize) {
+    let mark = lh.buf.bytes().len();
+    for k in keys {
+        lh.etx.send(k.clone()).unwrap();
+        thread::sleep(Duration::from_millis(40));
+    }
+    let row = |h: &LoopHarness| {
+        let p = parse(&h.buf);
+        let cols = p.screen().size().1;
+        p.screen()
+            .rows(0, cols)
+            .find(|r| r.starts_with('❯'))
+            .unwrap_or_default()
+            .trim_end()
+            .to_owned()
+    };
+    lh.wait_until(Duration::from_secs(1), |h| row(h) == want);
+    (row(lh), mark)
+}
+
+fn key(code: crossterm::event::KeyCode) -> Event {
+    Event::Key(crossterm::event::KeyEvent::new(
+        code,
+        crossterm::event::KeyModifiers::NONE,
+    ))
+}
+
+fn typed(s: &str) -> Vec<Event> {
+    s.chars()
+        .map(|c| key(crossterm::event::KeyCode::Char(c)))
+        .collect()
+}
+
+/// Every erase-in-line / erase-line the loop emitted after `mark` lands on a grapheme
+/// boundary of the composer row: never on the right half of a wide glyph (an erase that
+/// starts there wipes the WHOLE glyph in a vt100-family emulator, and ratatui, which still
+/// holds it, never draws it again).
+fn assert_erases_on_boundaries(lh: &LoopHarness, mark: usize, row: &str) {
+    let bytes = lh.buf.bytes();
+    let after = String::from_utf8_lossy(&bytes[mark..]).into_owned();
+    let mut right_halves = Vec::new();
+    let mut col = 0usize;
+    for g in unicode_segmentation::UnicodeSegmentation::graphemes(row, true) {
+        let w = crate::text::width::str_width(g);
+        if w == 2 {
+            right_halves.push(col + 2); // 1-based column of the right half
+        }
+        col += w.max(1);
+    }
+    for seq in after.split("\u{1b}[").skip(1) {
+        // `ROW;COLH` immediately followed by `ESC[K`.
+        if let Some((pos, rest)) = seq.split_once('H')
+            && rest.is_empty()
+            && let Some((_, c)) = pos.split_once(';')
+            && let Ok(c) = c.parse::<usize>()
+        {
+            let next = after
+                .split(&format!("\u{1b}[{pos}H"))
+                .nth(1)
+                .unwrap_or_default();
+            if next.starts_with("\u{1b}[K") {
+                assert!(
+                    !right_halves.contains(&c),
+                    "an EL starts on the right half of a wide glyph (column {c}) of {row:?}:\n{after:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn backspace_after_a_wide_grapheme_keeps_the_row_whole() {
+    let lh = start_loop();
+    assert!(lh.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
+    let (row, _) = composer_after(&lh, &typed("中文测试"), "❯ 中文测试");
+    assert_eq!(row, "❯ 中文测试");
+    let bs = key(crossterm::event::KeyCode::Backspace);
+    let (row, mark) = composer_after(&lh, std::slice::from_ref(&bs), "❯ 中文测");
+    assert_eq!(row, "❯ 中文测", "one Backspace must remove exactly 试");
+    assert_erases_on_boundaries(&lh, mark, &row);
+    let (row, _) = composer_after(&lh, &[bs.clone(), bs], "❯ 中");
+    assert_eq!(row, "❯ 中");
+    lh.quit_and_join(Duration::from_secs(2));
+}
+
+#[test]
+fn deleting_inside_a_wide_row_keeps_the_rest_whole() {
+    use crossterm::event::KeyCode;
+    let lh = start_loop();
+    assert!(lh.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
+    composer_after(&lh, &typed("中文测试"), "❯ 中文测试");
+    let (row, _) = composer_after(
+        &lh,
+        &[
+            key(KeyCode::Left),
+            key(KeyCode::Left),
+            key(KeyCode::Backspace),
+        ],
+        "❯ 中测试",
+    );
+    assert_eq!(row, "❯ 中测试", "← ← Backspace removes 文 only");
+    let (row, _) = composer_after(&lh, &[key(KeyCode::Home), key(KeyCode::Delete)], "❯ 测试");
+    assert_eq!(row, "❯ 测试", "Home Delete removes 中 only");
+    lh.quit_and_join(Duration::from_secs(2));
+}
+
+/// A wide emoji at the row's end. (vt100 does not join a skin-tone modifier onto its base —
+/// it would show `👍🏽` as `👍` — so the modifier case is the unit test's,
+/// `term::tests::a_row_ending_in_a_wide_grapheme_is_as_wide_as_its_right_edge`.)
+#[test]
+fn backspace_after_a_wide_emoji_keeps_it_whole() {
+    use crossterm::event::KeyCode;
+    let lh = start_loop();
+    assert!(lh.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
+    let (row, _) = composer_after(&lh, &typed("a👍x"), "❯ a👍x");
+    assert_eq!(row, "❯ a👍x");
+    let (row, mark) = composer_after(&lh, &[key(KeyCode::Backspace)], "❯ a👍");
+    assert_eq!(row, "❯ a👍", "Backspace removes x only");
+    assert_erases_on_boundaries(&lh, mark, &row);
+    lh.quit_and_join(Duration::from_secs(2));
+}
+
+/// A multi-line paste becomes a `[#N …]` tag, which ends in an ASCII `]` — a row ends in a
+/// wide grapheme only when one follows the tag; deleting after it must keep that grapheme
+/// whole.
+#[test]
+fn a_wide_grapheme_after_a_paste_tag_stays_whole() {
+    use crossterm::event::KeyCode;
+    let lh = start_loop();
+    assert!(lh.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
+    lh.etx
+        .send(Event::Paste("文字\n第二行".to_owned()))
+        .unwrap();
+    assert!(lh.wait_until(Duration::from_secs(1), |h| h.contents().contains("[#1")));
+    let tag = "[#1 文字… 2 lines]";
+    composer_after(&lh, &typed("中文"), &format!("❯ {tag}中文"));
+    let (row, mark) = composer_after(&lh, &[key(KeyCode::Backspace)], &format!("❯ {tag}中"));
+    assert_eq!(row, format!("❯ {tag}中"), "Backspace removes 文 only");
+    assert_erases_on_boundaries(&lh, mark, &row);
+    lh.quit_and_join(Duration::from_secs(2));
 }

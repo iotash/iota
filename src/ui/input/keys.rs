@@ -74,12 +74,12 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
 
     // Row 6: ↑/↓ walk the input history while the composer holds a single wrapped
     // row (multi-row drafts keep the arrows for cursor movement — the edit set).
-    if key.code == KeyCode::Up && m.composer.history_navigable(m.width) {
+    if key.code == KeyCode::Up && m.composer.history_navigable(m.frame_width()) {
         m.composer.history_up();
         return;
     }
     if key.code == KeyCode::Down
-        && m.composer.history_navigable(m.width)
+        && m.composer.history_navigable(m.frame_width())
         && m.composer.history_can_forward()
     {
         m.composer.history_down();
@@ -93,7 +93,7 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
     }
 
     // Rows 8–9: the editing set + text insert; any edit ends history navigation.
-    m.composer.handle_edit_key(&key, m.width);
+    m.composer.handle_edit_key(&key, m.frame_width());
     m.composer.end_history_nav();
 }
 

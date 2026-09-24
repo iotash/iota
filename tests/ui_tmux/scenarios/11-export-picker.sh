@@ -39,7 +39,7 @@ fi
 check "the picker's title chip" "$(cap | sed -n "$((first - 1))p")" " Export format"
 check "both formats are offered" "$(count_vis 'Markdown')" 1
 check "the footer carries the move hint" "$(count_vis '↑↓ move')" 1
-check "the picker did not disturb the separator pair" "$(sep_width)" 80
+check "the picker did not disturb the separator pair" "$(sep_width)" 79
 
 key Escape
 wait_gone '↑↓ move' || bad "the picker did not close on ESC"

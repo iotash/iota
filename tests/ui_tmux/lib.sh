@@ -398,7 +398,7 @@ check() {
 # check_once <description> <fixed string> — present in history exactly once.
 check_once() { check "$1" "$(count_all "$2")" 1; }
 
-# The standard frame invariant: a separator pair at the terminal's width, exactly one
+# The standard frame invariant: a separator pair at the frame's width (the terminal's − 1), exactly one
 # composer row between them, and an occupied bottom zone.
 check_frame_intact() {
     local label="$1" width="$2" t b
@@ -408,8 +408,10 @@ check_frame_intact() {
         bad "$label: the frame's separator pair is missing (top=$t bottom=$b)"
         return
     fi
-    check "$label: top separator spans the terminal" "$(row_width "$t")" "$width"
-    check "$label: bottom separator spans the terminal" "$(row_width "$b")" "$width"
+    # One column short of the terminal: the frame never writes the last column, so a
+    # one-column narrowing rewraps none of its rows (`Model::frame_width`, X-52).
+    check "$label: top separator spans the frame (terminal − 1)" "$(row_width "$t")" "$((width - 1))"
+    check "$label: bottom separator spans the frame (terminal − 1)" "$(row_width "$b")" "$((width - 1))"
     check "$label: exactly one composer row between them" "$(count_composer '❯')" 1
     if [ -n "$(bottom_zone)" ]; then
         ok "$label: the bottom zone is occupied (row $((b + 1)))"

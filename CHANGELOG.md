@@ -33,6 +33,10 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Changed
 
+- **The prompt's frame and your own messages stop one column short of the
+  right edge.** A line that fills the last column is one the terminal
+  rewraps on any narrowing; kept a column short, a window dragged narrower a
+  column at a time leaves nothing behind (X-52).
 - **A `shell` command has no deadline unless the call sets one.** A call without
   `timeout` runs until the command exits — or iota exits, which kills every
   job — instead of being killed after 600 seconds; a call with `timeout` is
@@ -66,6 +70,21 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Fixed
 
+- **Resizing the window no longer throws the prompt to the top or erases
+  text.** Making the window narrower moved the prompt and its separators to
+  the top of the screen and wiped everything that was on screen above them;
+  in a terminal that keeps cleared screens (tmux) each step of a drag left
+  another copy of the separators in the scrollback instead. iota now handles
+  the resize itself: the prompt stays at the bottom through any drag, the
+  transcript above it is intact, and no line, separator or blank row is left
+  behind — also with a picker such as `/model` open, while a tool runs, and
+  when a maximized window is restored to half its width. The staged last
+  lines of a reply stay where they are, rewrapped for the new width, instead
+  of being printed again. A row that ends in a wide character — CJK, an
+  emoji — is measured to that character's right edge, so deleting one at the
+  end of the prompt never erases half of the one before it (X-52).
+- **Narrowing the window with a wide line still staged no longer stops the
+  interface** in a debug build; the line is rewrapped for the new width.
 - **The status row keeps its colours when it is cut.** A row wider than the
   terminal — the token figures grown a few digits, a long model name, a job
   segment — used to fall back to one faint plain line; it is now cut with its

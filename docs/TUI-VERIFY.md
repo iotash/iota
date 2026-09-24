@@ -155,18 +155,39 @@ its own viewport top. Some emulators will strand a row above the new viewport. T
 - [x] 自动化：scenario 06 **4.1** Start a stream, resize the window wider mid-stream, let it finish. Count
       orphaned/duplicated rows in the scrollback. Record the number. *(tmux 3.7c: 0 duplicated
       rows, asserted ≤ 2.)*
-- [x] 自动化：scenario 06 **4.2** Same, narrower. *(tmux 3.7c: **8** duplicated rows — tmux
-      reflows the old frame's separators into two rows each when the pane narrows, the frame
-      grows under the app and its viewport accounting slips by the staging window. That is
-      over the budget below and is recorded here as the finding it is; the scenario bounds
-      it at the staging window's size, 9, so a regression past the mechanism's own cost is
-      red. No row is ever LOST — that bound is zero.)*
-- [x] 自动化：scenario 06 **4.3** Resize at idle, both directions. There should be **no** orphan here — the
-      resize pass (autoresize → clear → draw → DSR resync, wart W5) runs before any insert.
-      *(No duplicated row. What tmux does show is the STALE FRAME: a frame that has to move —
-      the first one under the banner, the old one when a taller terminal puts the new one
-      lower — leaves through the scroll region and tmux keeps it (W9), so scrolling up shows
-      it. One at startup, at most one per resize, asserted as such.)*
+- [x] 自动化：scenario 06 **4.2** Same, narrower. *(tmux 3.7c: **0** duplicated rows since
+      X-52 — 8 before it. tmux rewraps what grows past the new width, and what grew above the
+      cursor used to land twice; the resize pass claims it now. Asserted against §4's budget
+      of 2: a resize that falls between an insert and its draw has no known anchor row. No
+      row is ever LOST — that bound is zero.)*
+- [x] 自动化：scenarios 06 + 26 **4.3** Resize at idle — a narrowing, a diagonal shrink, a
+      settled 25-step drag, a fast 8-step drag (SIGWINCHes 60 ms apart), and on fresh panes a
+      2× and a 3× narrowing with the banner still staged, a narrowing right after 20 ms-a-line
+      output, one with `/model` open and one while a foreground tool call runs. Asserted
+      exactly: zero rows lost, zero duplicated, zero separator rows added, zero BLANK rows
+      added to the history, zero stale frames, and the composer on the pane's third-last
+      row (flush with the bottom). The resize pass (wart W5, `term.rs`) reads the cursor with
+      one DSR before writing a byte, clears only rows the old frame provably owned, and
+      scrolls or inserts nothing; ratatui's own inline resize never runs. The frame is one
+      column short of the terminal, so a one-column step rewraps none of it.
+      *(History: until X-52 (2026-09-23) this said "no orphan here" and passed under tmux only
+      because tmux's `scroll-on-clear` files a cleared screen into the history: ratatui
+      answered every narrowing with viewport y = 0 and `ESC[2J`, so the composer went to the
+      top and the rows on screen were erased in Ghostty and herdr. Both scenarios run with
+      `scroll-on-clear off` now; on the pre-fix binary scenario 06 reports 10 rows lost and
+      the composer on row 7 of 20. X-52's first round anchored on the cursor alone (a settled
+      drag walked the composer to the top); its second closed the resize band with a region
+      scroll-down, which put two blank rows per drag step into the history. Now, tmux 3.7c,
+      24 rows, 30 settled one-column steps from 100 columns and the next turn: composer on
+      row 22 throughout, 2 separator rows in the whole history, nothing lost.
+      Accepted residuals, each measured and bounded: the session's first narrowing that is
+      also a row shrink cannot see whether the emulator reflows (tmux eats the rows below
+      the cursor first) and may leave the frame's first staged row behind once — scenario
+      26 bounds it at 1 (80×24→60×18 after fast output); and a user block committed at a
+      wider width rewraps its reversed padding into one extra row when a drag narrows below
+      that width — 1 per such row, once (the 30-step drag above: 1).)*
+      Real emulators: drag a corner in Ghostty, iTerm2, kitty, herdr. No row may be missing
+      from the scrollback, and there is exactly one separator pair at the end.
 - [x] 自动化：scenario 06 **4.4** After every resize: exactly one composer row, separators at the new width,
       the status line present. (L4 asserts this under tmux, after all four resizes; confirm
       it where reflow is real.)

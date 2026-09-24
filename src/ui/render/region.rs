@@ -196,16 +196,45 @@ impl Region {
         over
     }
 
-    /// Re-applies [`Region::tail_keep`] after a terminal HEIGHT change and publishes
-    /// whatever the new cap pushes out. A width change goes through
-    /// [`Region::flush_tail`] instead (reflow ghosts); a height change only needs the
-    /// window re-trimmed, and until the next line of output nothing else would do it.
+    /// Re-fits the window after a terminal resize: staged rows wider than the NEW width
+    /// are rewrapped in place (they render inside the frame, where the cell grid would
+    /// clip them), and [`Region::tail_keep`] is re-applied — the cap moves with the
+    /// height (T-40) and a rewrap may overfill it. Whatever that pushes out is published,
+    /// and so is a rewrapped window. Nothing is dropped: every staged row either stays
+    /// staged or overflows into the scrollback, exactly as new output would move it.
+    ///
+    /// This replaced flushing the tail on a width change. That flush existed because the
+    /// frame's reflowed top rows ghosted above it; the resize pass now re-anchors the
+    /// frame and redraws the window inside it (`term.rs` W5), and a flush on top of that
+    /// only committed the same rows a second time below the ghost.
     pub(crate) fn retrim(&mut self) {
+        let tail = std::mem::take(&mut self.tail);
+        let before = tail.len();
+        self.tail = self.fit_width(tail);
+        let rewrapped = self.tail.len() != before;
         let over = self.rebalance();
-        if over.is_empty() {
+        if over.is_empty() && !rewrapped {
             return;
         }
         self.publish(over);
+    }
+
+    /// Takes staged rows the terminal has already put in its history (a resize pushed the
+    /// frame's first rows off the screen): each still at the head of the window leaves it
+    /// WITHOUT being published — inserting it would show it twice. A row that is no longer
+    /// at the head (it overflowed since) is left to its own publish.
+    pub(crate) fn already_shown(&mut self, rows: &[String]) {
+        let mut taken = 0;
+        for row in rows {
+            if self.tail.first() != Some(row) {
+                break;
+            }
+            self.tail.remove(0);
+            taken += 1;
+        }
+        if taken > 0 {
+            self.publish(Vec::new());
+        }
     }
 
     /// Deep-copied display snapshot (region.go:93-103).
@@ -221,6 +250,24 @@ impl Region {
         }
     }
 
+    /// Hard-wraps entries wider than the CURRENT screen to width−1 (see [`Region::commit`]);
+    /// rows that fit pass through untouched, and width ≤ 1 (startup, tests) skips it.
+    fn fit_width(&self, lines: Vec<String>) -> Vec<String> {
+        let w = self.screen_width();
+        if w <= 1 || lines.iter().all(|ln| ansi_width(ln) <= w) {
+            return lines;
+        }
+        let mut wrapped = Vec::with_capacity(lines.len() + 4);
+        for ln in lines {
+            if ansi_width(&ln) <= w {
+                wrapped.push(ln);
+            } else {
+                wrapped.extend(wrap_ansi(&ln, w - 1));
+            }
+        }
+        wrapped
+    }
+
     /// Emits the overflow and the fresh snapshot (region.go:115-128). The live path
     /// CHUNKS the overflow below the screen height — a single scrollback insert taller
     /// than the region is the unclamped-scroll hazard class (kept per T-06); the
@@ -228,6 +275,10 @@ impl Region {
     /// this whole call, preserving the Go publish-ordering law. `sanitizeOverflow` is
     /// NOT ported (T-01) and blank rows pass through as-is (T-02).
     fn publish(&mut self, over: Vec<String>) {
+        // Staged rows were wrapped at the width they were COMMITTED at; a narrowing since
+        // (the resize pass flushes the tail) must not hand the insert a row that wraps
+        // again — W6's one-entry-one-row law (term.rs) holds at the width it lands at.
+        let over = self.fit_width(over);
         if !over.is_empty() {
             debug_region(|| format!("  overflow {over:?}"));
         }
@@ -272,19 +323,7 @@ impl Region {
         if lines.is_empty() {
             return;
         }
-        let mut lines = split_rows(lines);
-        let w = self.screen_width();
-        if w > 1 {
-            let mut wrapped = Vec::with_capacity(lines.len());
-            for ln in lines {
-                if ansi_width(&ln) <= w {
-                    wrapped.push(ln);
-                } else {
-                    wrapped.extend(wrap_ansi(&ln, w - 1));
-                }
-            }
-            lines = wrapped;
-        }
+        let lines = self.fit_width(split_rows(lines));
         debug_region(|| {
             format!(
                 "commit {lines:?} label={:?} open={} residue={}",
@@ -479,11 +518,9 @@ impl Region {
         self.publish(Vec::new());
     }
 
-    /// Commits the staged tail into scrollback while KEEPING an open preview. Called on
-    /// terminal WIDTH change (and before every tabbed open): reflow ghosts duplicate the
-    /// frame's TOP rows once per resize event, and flushing first shrinks the ghost
-    /// surface to the separator; the tail refills from subsequent output
-    /// (region.go:472-481).
+    /// Commits the staged tail into scrollback while KEEPING an open preview. Called before
+    /// every tabbed open; the tail refills from subsequent output (region.go:472-481 —
+    /// Go also called it on a width change, which [`Region::retrim`] now covers).
     pub(crate) fn flush_tail(&mut self) {
         if self.tail.is_empty() {
             return;

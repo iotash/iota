@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use crate::ui::facade::{TabbedResult, TabbedSpec};
 use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event};
 use crossterm::{cursor, execute, terminal};
+use ratatui::layout::Size;
 
 use super::term::Term;
 use crate::ui::render::frame::FrameView;
@@ -59,13 +60,15 @@ pub(crate) fn run_surface(spec: TabbedSpec, dark: bool) -> io::Result<TabbedResu
     let (_, start_row) = cursor::position()?;
     let (width, height) = terminal::size()?;
     st.set_term_height(height);
-    let rows = st.render(width).rows;
+    let rows = st.render(width.saturating_sub(1).max(1)).rows;
     let h = u16::try_from(rows.len()).unwrap_or(u16::MAX).max(1);
     let mut term: Term<io::Stdout> = Term::new(Box::new(io::stdout), h, start_row, None)?;
 
     let refresh = Duration::from_millis(refresh_every_ms);
     let mut last_refresh = Instant::now();
     let mut dirty = true;
+    // A resize is taken at the next draw (W5): `Term::resize` re-anchors the frame.
+    let mut resized: Option<Size> = None;
     loop {
         let mut deadline = if dirty {
             Duration::ZERO
@@ -93,10 +96,8 @@ pub(crate) fn run_surface(spec: TabbedSpec, dark: bool) -> io::Result<TabbedResu
                     st.paste(&data);
                     dirty = true;
                 }
-                Event::Resize(..) => {
-                    term.autoresize()?;
-                    term.clear()?;
-                    term.mark_top_dirty();
+                Event::Resize(width, height) if width > 0 && height > 0 => {
+                    resized = Some(Size { width, height });
                     dirty = true;
                 }
                 _ => {}
@@ -108,13 +109,21 @@ pub(crate) fn run_surface(spec: TabbedSpec, dark: bool) -> io::Result<TabbedResu
             dirty = true;
         }
         if dirty {
-            let size = term.size()?;
+            let size = resized.unwrap_or_else(|| term.size());
             st.set_term_height(size.height);
-            let rendered = st.render(size.width);
+            // One column short of the terminal, like the loop's frame (`Model::frame_width`).
+            let rendered = st.render(size.width.saturating_sub(1).max(1));
             let view_height = u16::try_from(rendered.rows.len())
                 .unwrap_or(u16::MAX)
                 .clamp(1, size.height.max(1));
-            term.ensure_height(view_height)?;
+            match resized.take() {
+                Some(size) => {
+                    term.resize(size, 0, |_| view_height)?;
+                }
+                None => {
+                    term.ensure_height(view_height)?;
+                }
+            }
             // One-shot mode renders only the surface, so the cursor target is the
             // surface-block coordinate itself (no composer offset).
             let view = FrameView {

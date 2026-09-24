@@ -15,10 +15,15 @@
 //!   thread. (This replaces Go's cursor-bump/`viewEquals` defeat — T-03; the idle
 //!   frame still carries no spinner glyph.)
 //! - **W5** `RESIZE_PASS_FIRST`: on `Event::Resize` — store the atomics →
-//!   `autoresize()` → `clear()` → draw → DSR resync of the tracked top; only THEN does
-//!   a WIDTH change schedule `region.flush_tail()` as a post-update job (never
-//!   re-entrant — it takes the region lock and sends into this mailbox). Height-only
-//!   changes flush nothing; reflow orphans are accepted; storm mode stays dead.
+//!   `Term::resize` (one DSR anchor read BEFORE any byte, a frame that was flush with
+//!   the bottom kept flush, the W1 recreation + the W3 clear of rows the old frame
+//!   provably owned; nothing scrolled or inserted) → draw, minus any staged rows the
+//!   emulator itself pushed into the history (committed where they stand,
+//!   `Job::Shown`); only THEN does `region.retrim()` run as a post-update job (never
+//!   re-entrant — it takes the region lock and sends into this mailbox): the staged
+//!   window stays in the frame, rewrapped for the new width. ratatui's autoresize never
+//!   runs (`term.rs` W5): its narrowing path would re-anchor at row 0 behind an
+//!   `ESC[2J`. A LOST row is never accepted; storm mode stays dead.
 //!
 //! All model state lives on this thread (zero locks inside the engine); the facade
 //! reaches in only via [`UiMsg`]. The composer/keys/paste/suggest/surface modules are
@@ -122,10 +127,12 @@ pub(crate) struct SurfaceOpen {
 /// Deferred side effects that must run OUTSIDE the message/event handlers
 /// (Go `tea.Cmd`): they take the region lock and send into this same mailbox.
 enum Job {
-    /// `region.flush_tail()` — the W5 width-change (and pre-open) mitigation.
-    FlushTail,
-    /// `region.retrim()` — the T-40 frame floor re-applied after a HEIGHT change.
+    /// `region.retrim()` after a resize: staged rows rewrapped at the new width and the
+    /// T-40 cap re-applied at the new height.
     Retrim,
+    /// `region.already_shown(rows)`: a resize found these staged rows pushed into the
+    /// history by the emulator itself — committed where they stand.
+    Shown(Vec<String>),
 }
 
 /// The loop model (Go `model`): every field mutates on this thread only.
@@ -495,33 +502,47 @@ impl Model {
     fn handle_event<W: Write>(&mut self, ev: Event, term: &mut Term<W>) -> io::Result<()> {
         match ev {
             Event::Resize(w, h) => {
-                // W5 RESIZE_PASS_FIRST: geometry sync + clear + draw + DSR resync
-                // BEFORE any job touches stale geometry (model.go:175-195 + spike #5).
-                let width_changed = w != self.width;
+                // W5 RESIZE_PASS_FIRST: geometry sync + re-anchor + draw BEFORE any job
+                // touches stale geometry (model.go:175-195 + spike #5). `Term::resize`
+                // reads the anchor with one DSR before it writes a byte; ratatui's own
+                // resize (row 0 + `ESC[2J` on a narrowing) never runs.
                 self.width = w;
                 self.height = h;
                 self.shared.width.store(w, Ordering::Relaxed);
                 if h > 0 {
                     self.shared.height.store(h, Ordering::Relaxed);
                 }
-                term.autoresize()?;
-                term.clear()?;
-                term.mark_top_dirty();
-                let view = self.frame_view();
-                term.draw_frame(&view)?;
-                // Leave the frame dirty: the next iteration re-ensures the viewport
-                // height against the resynced top.
-                self.dirty = true;
-                if width_changed {
-                    // A WIDTH change reflows the screen and ghosts the frame's top
-                    // rows; flush the staged tail (content!) into scrollback first.
-                    // Height-only changes don't reflow and must not flush.
-                    self.jobs.push(Job::FlushTail);
-                } else {
-                    // A HEIGHT change moves the frame's floor (T-40): re-apply the
-                    // staging cap now, or nothing would until the next line of output.
-                    self.jobs.push(Job::Retrim);
+                if w > 0 && h > 0 {
+                    let mut view = self.frame_view();
+                    let size = ratatui::layout::Size {
+                        width: w,
+                        height: h,
+                    };
+                    let staged = u16::try_from(self.region_snap.tail.len()).unwrap_or(u16::MAX);
+                    let rows = view.rows.len();
+                    let dropped = term.resize(size, staged, |k| {
+                        self.frame_height(rows.saturating_sub(usize::from(k)))
+                    })?;
+                    if dropped > 0 {
+                        // The emulator pushed the frame's first staged rows into the
+                        // history: they are committed as they stand, never drawn again.
+                        let k = usize::from(dropped);
+                        let shown: Vec<String> = view.rows.drain(..k).collect();
+                        view.cursor = view.cursor.map(|(x, y)| (x, y.saturating_sub(dropped)));
+                        self.region_snap
+                            .tail
+                            .drain(..k.min(self.region_snap.tail.len()));
+                        self.jobs.push(Job::Shown(shown));
+                    }
+                    term.draw_frame(&view)?;
                 }
+                // Leave the frame dirty: the job below changes what it shows.
+                self.dirty = true;
+                // The staged window stays IN the re-anchored frame (a flush would commit
+                // it a second time under the reflow's ghost): rewrap it for a new width,
+                // re-apply the cap for a new height — or nothing would until the next
+                // line of output.
+                self.jobs.push(Job::Retrim);
             }
             Event::Key(k) => {
                 self.handle_key(k);
@@ -666,12 +687,29 @@ impl Model {
         }
     }
 
+    /// The width the frame is laid out at: one column short of the terminal's. A row that
+    /// fills the last column is a line an emulator rewraps on ANY narrowing — a 1-column
+    /// step of a dragged corner would split both separators and the status row, and those
+    /// extra rows have to land somewhere (W5: blank rows pushed into the history per step).
+    /// Kept a column short, the frame survives a narrowing by a column untouched, as the
+    /// region's staged rows (wrapped to width−1) and markdown's tables already do.
+    pub(crate) fn frame_width(&self) -> u16 {
+        self.width.saturating_sub(1).max(1)
+    }
+
+    /// The inline viewport height for a frame of `rows` rows, capped at the screen height.
+    fn frame_height(&self, rows: usize) -> u16 {
+        let cap = if self.height > 0 { self.height } else { 24 };
+        u16::try_from(rows).unwrap_or(u16::MAX).clamp(1, cap.max(1))
+    }
+
     /// Assembles the frame from the model state (the WP46/WP47 slots come through
     /// their seams as plain data).
     pub(crate) fn frame_view(&mut self) -> FrameView {
         let dark = self.dark;
-        let (candidates, desc) = suggest::frame_slots(&self.composer, &self.commands, self.width);
-        let (width, height) = (self.width, self.height);
+        let fw = self.frame_width();
+        let (candidates, desc) = suggest::frame_slots(&self.composer, &self.commands, fw);
+        let (width, height) = (fw, self.height);
         let surface = self.surface.as_mut().map(|s| {
             // The Picker's inline preview is clamped against the terminal height.
             s.st.set_term_height(height);
@@ -679,7 +717,7 @@ impl Model {
             s.st.render(width)
         });
         let queue_rows = self.queue_rows();
-        let composer_rows = self.composer.rows(self.width);
+        let composer_rows = self.composer.rows(fw);
         let cursor = match &surface {
             // The composer's real cursor is suppressed while a surface is open; an
             // input field may export its own, in surface-block coordinates. The frame
@@ -693,7 +731,7 @@ impl Model {
                     u16::try_from(below).unwrap_or(u16::MAX).saturating_add(y),
                 )
             }),
-            None => Some(self.composer.cursor_pos(self.width)),
+            None => Some(self.composer.cursor_pos(fw)),
         };
         let bottom = match (&surface, &desc) {
             (Some(rendered), _) => BottomZone::Surface(&rendered.rows),
@@ -701,7 +739,7 @@ impl Model {
             (None, None) => BottomZone::Status,
         };
         build_frame(&FrameInput {
-            width: self.width,
+            width: fw,
             region: &self.region_snap,
             spin: self.spin,
             scopes_active: !self.cancels.is_empty(),
@@ -779,8 +817,8 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
         // Post-update jobs (tea.Cmd): region lock + mailbox sends — never re-entrant.
         for job in std::mem::take(&mut m.jobs) {
             match job {
-                Job::FlushTail => lock(&m.shared.region).flush_tail(),
                 Job::Retrim => lock(&m.shared.region).retrim(),
+                Job::Shown(rows) => lock(&m.shared.region).already_shown(&rows),
             }
         }
         m.tick_spin();
@@ -803,11 +841,7 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
                 m.force_clear = false;
             }
             let view = m.frame_view();
-            let cap = if m.height > 0 { m.height } else { 24 };
-            let view_height = u16::try_from(view.rows.len())
-                .unwrap_or(u16::MAX)
-                .clamp(1, cap.max(1));
-            term.ensure_height(view_height)?; // W1 + W3, coalesced to one per iteration
+            term.ensure_height(m.frame_height(view.rows.len()))?; // W1 + W3, coalesced to one per iteration
             term.set_title(&m.title)?;
             term.set_progress(m.progress)?; // emit-on-change, like the title
             drain_notify(&mut m, &mut term)?;
