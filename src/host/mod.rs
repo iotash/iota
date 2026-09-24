@@ -27,6 +27,16 @@
 //! and the terminal) is what Go had: the multiplexer takes the state (and the session), the terminal
 //! keeps the OSC 9 ping and the OSC 11 answer, both are closed, and `<environment>` gets the one
 //! host's lines — `host: <name>`, then the ids its CLI takes.
+//!
+//! **A running background job keeps the host at Busy** (decided 2026-09-24). What a host is shown
+//! is the turn's state with one rewrite: while the turn is `Idle` and at least one shell job runs
+//! (`Presenter::set_jobs`), the host sees `Busy`. A job's result still comes back as a turn of its
+//! own — the notice wakes the loop — so the conversation is not done until the job is; herdr's
+//! `agent prompt --wait` therefore waits for it too. That is also why a job that leaves the running
+//! set still counts until its notice is taken (`Presenter::notice_taken`): the registry drops the
+//! job BEFORE it delivers the notice, and the gap between the two must not flash `Idle`. `Busy`, `NeedsInput` and `Error` pass through
+//! untouched: a chat blocked on an approval is blocked whatever runs behind it. The rewrite lives
+//! here, so every host gets it and no REPL call site of `set_state` changes.
 
 pub mod ansi;
 pub(crate) mod background;
@@ -192,8 +202,32 @@ pub struct Presenter {
     /// The name of the host a detector matched — the banner names it; the fallback is not one.
     detected: Option<String>,
     notify_on: bool,
+    /// The inputs and the last state reported (see [`Shown`]).
+    state: Mutex<Shown>,
+}
+
+/// What the presenter's state output is computed from, and what it last sent.
+#[derive(Default)]
+struct Shown {
+    /// The turn's state (`set_state`'s argument); `None` before the first.
+    requested: Option<State>,
+    /// How many shell jobs are running (`set_jobs`).
+    jobs: usize,
+    /// Jobs that left the running set whose notice the loop has not taken yet (`notice_taken`).
+    owed: usize,
     /// The last state reported; `None` until the first, which is therefore never deduplicated.
-    state: Mutex<Option<State>>,
+    sent: Option<State>,
+}
+
+impl Shown {
+    /// The state a host sees: the turn's, except that an idle turn with jobs running is `Busy`
+    /// (the module doc).
+    fn effective(&self) -> Option<State> {
+        match self.requested {
+            Some(State::Idle) if self.jobs + self.owed > 0 => Some(State::Busy),
+            r => r,
+        }
+    }
 }
 
 impl Presenter {
@@ -220,7 +254,7 @@ impl Presenter {
             hosts,
             detected: None,
             notify_on: notify,
-            state: Mutex::new(None),
+            state: Mutex::new(Shown::default()),
         }
     }
 
@@ -233,15 +267,44 @@ impl Presenter {
     /// Shows `s` on the first [`StateReporter`]; a repeated state is not re-sent
     /// (host.go:113-124). Unlike Go, the presenter starts with NO state rather than `Idle`: the
     /// loop's own `Idle`, reported once the banner is up, reaches the host — a herdr pane is
-    /// listed from that moment, not from the first turn — and only a repeat is dropped.
+    /// listed from that moment, not from the first turn — and only a repeat is dropped. An idle
+    /// turn with jobs running is shown as `Busy` (the module doc).
     pub fn set_state(&self, s: State) {
-        {
-            let mut cur = lock(&self.state);
-            if *cur == Some(s) {
+        self.update(|shown| shown.requested = Some(s));
+    }
+
+    /// Records how many shell jobs are running: an idle chat with one is shown as `Busy`.
+    /// Deduplicated like [`Self::set_state`]; before the first `set_state` it only records. A
+    /// drop in the count is jobs that ended, each owing the chat a notice: they keep it `Busy`
+    /// until [`Self::notice_taken`] — the interactive loop delivers one for every job that ends.
+    pub fn set_jobs(&self, n: usize) {
+        self.update(|shown| {
+            shown.owed += shown.jobs.saturating_sub(n);
+            shown.jobs = n;
+        });
+    }
+
+    /// The loop took a job's notice into a turn: it no longer holds the chat busy by itself. Sends
+    /// nothing — the turn it joined reports its own state, which is what settles the host.
+    pub fn notice_taken(&self) {
+        let mut shown = lock(&self.state);
+        shown.owed = shown.owed.saturating_sub(1);
+    }
+
+    /// Applies `change` to the inputs and sends the effective state if it moved.
+    fn update(&self, change: impl FnOnce(&mut Shown)) {
+        let s = {
+            let mut shown = lock(&self.state);
+            change(&mut shown);
+            let Some(s) = shown.effective() else {
+                return;
+            };
+            if shown.sent == Some(s) {
                 return;
             }
-            *cur = Some(s);
-        }
+            shown.sent = Some(s);
+            s
+        };
         if let Some(r) = self.hosts.iter().find_map(|h| h.as_state_reporter()) {
             r.set_state(s);
         }
@@ -617,6 +680,91 @@ mod tests {
         );
 
         Presenter::with_hosts(Vec::new(), true).set_session("s-2", Path::new("/tmp/s-2"));
+    }
+
+    /// A presenter recording states on one host, and the log.
+    fn recording() -> (Presenter, Arc<Mutex<Vec<State>>>) {
+        let fb = host("full", FULL);
+        let states = Arc::clone(&fb.states);
+        (Presenter::with_hosts(vec![Box::new(fb)], true), states)
+    }
+
+    /// An idle chat with a job running is shown as Busy; the jobs ending keep it Busy until their
+    /// notices are taken, and the turn those notices run is what shows Idle again.
+    #[test]
+    fn an_idle_chat_with_a_job_running_is_busy() {
+        let (p, states) = recording();
+        p.set_state(State::Idle);
+        p.set_jobs(1);
+        p.set_jobs(2); // still busy: no repeat
+        p.set_jobs(0); // both ended; their notices are on the way
+        p.set_state(State::Idle); // the loop wakes for the first notice
+        p.notice_taken();
+        p.set_state(State::Busy); // its turn
+        p.notice_taken(); // the second, drained mid-turn
+        p.set_state(State::Idle);
+        assert_eq!(
+            *states.lock().unwrap(),
+            vec![State::Idle, State::Busy, State::Idle]
+        );
+    }
+
+    /// A notice taken while a notice is still owed keeps the chat Busy; a notice nobody counted
+    /// (a job that ended before the loop watched) takes nothing below zero.
+    #[test]
+    fn notices_are_counted_one_by_one() {
+        let (p, states) = recording();
+        p.notice_taken(); // nothing owed: stays at zero
+        p.set_state(State::Idle);
+        p.set_jobs(2);
+        p.set_jobs(0);
+        p.notice_taken();
+        p.set_state(State::Idle);
+        p.notice_taken();
+        p.set_state(State::Idle);
+        assert_eq!(
+            *states.lock().unwrap(),
+            vec![State::Idle, State::Busy, State::Idle]
+        );
+    }
+
+    /// `NeedsInput` and `Error` are not rewritten by a running job, and leaving them for `Idle` with the
+    /// job still running shows Busy.
+    #[test]
+    fn needs_input_and_error_pass_through_while_a_job_runs() {
+        let (p, states) = recording();
+        p.set_jobs(1);
+        p.set_state(State::NeedsInput);
+        p.set_state(State::Error);
+        p.set_state(State::Idle);
+        assert_eq!(
+            *states.lock().unwrap(),
+            vec![State::NeedsInput, State::Error, State::Busy]
+        );
+    }
+
+    /// Jobs coming and going inside a turn send nothing: the turn is Busy either way.
+    #[test]
+    fn jobs_during_a_turn_send_no_repeats() {
+        let (p, states) = recording();
+        p.set_state(State::Busy);
+        p.set_jobs(1);
+        p.set_jobs(0);
+        p.notice_taken();
+        p.set_jobs(3);
+        assert_eq!(*states.lock().unwrap(), vec![State::Busy]);
+    }
+
+    /// Jobs recorded before the first state only record; the first Idle then goes out as Busy,
+    /// once.
+    #[test]
+    fn jobs_before_the_first_state_make_the_first_idle_busy() {
+        let (p, states) = recording();
+        p.set_jobs(2);
+        assert!(states.lock().unwrap().is_empty(), "sent before any state");
+        p.set_state(State::Idle);
+        p.set_state(State::Idle);
+        assert_eq!(*states.lock().unwrap(), vec![State::Busy]);
     }
 
     /// A host list with no state reporter at all swallows the call (Go: the loop simply ends).

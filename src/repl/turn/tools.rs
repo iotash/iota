@@ -144,7 +144,12 @@ pub(crate) async fn tool_loop(
         // Round boundary: anything the user typed while the round ran joins the
         // conversation NOW, so the next request carries it. `drain` already echoed the ❯
         // block (which settled the activity group) and booked the meter.
-        history.extend(steer.drain(ctxm).await);
+        let drained = steer.drain(ctxm).await;
+        // A job's notice taken mid-turn no longer holds the host busy on its own (`host` module doc).
+        for _ in drained.iter().filter(|m| m.is_notice()) {
+            t.cx.pres.notice_taken();
+        }
+        history.extend(drained);
 
         // Frozen-mount defer (system-tools): schemas loaded this round ride into history
         // as a system message carrying tools — APPENDED at the bottom, never inserted, so

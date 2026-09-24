@@ -140,6 +140,35 @@ async fn the_first_state_goes_out_and_a_repeat_does_not() {
     );
 }
 
+/// A background job started while the chat is idle puts the pane at `working`; the job ending
+/// alone does not bring back `idle` — its notice is still owed — and the notice's turn does; a job
+/// that starts and ends inside a turn sends nothing of its own.
+#[tokio::test]
+async fn a_running_job_keeps_the_pane_working() {
+    let mock = HerdrMock::start();
+    let p = Presenter::new(&probe(&mock.env("w1:p2")), None, true);
+    p.set_state(State::Idle);
+    p.set_jobs(1); // a job starts while the chat is idle
+    p.set_jobs(0); // it ends; the notice is on the way
+    p.set_state(State::Idle); // the loop wakes for it
+    p.notice_taken();
+    p.set_state(State::Busy); // the notice's turn
+    p.set_jobs(1);
+    p.set_jobs(0);
+    p.notice_taken(); // drained at a round boundary
+    p.set_state(State::Idle);
+    p.close().await;
+    assert_eq!(
+        mock.summaries(),
+        [
+            "report_agent idle",
+            "report_agent working",
+            "report_agent idle",
+            "release_agent"
+        ]
+    );
+}
+
 /// (e) A socket path nobody listens on: the host is still detected (the variables say herdr), every
 /// request fails at connect, and the run completes at once — no panic, no wait. The bound is well
 /// under the per-request timeout times the requests made, so a stall would show.

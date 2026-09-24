@@ -69,7 +69,7 @@ fn printed(ui: &Arc<ScriptedUi>) -> Vec<String> {
 /// Whether to skip a test whose command line is POSIX. The interpreter is `bash` on Unix and, on Windows,
 /// whatever `shell::interp`'s ladder found — under PowerShell or `cmd.exe` these scripts would not parse, so
 /// the test prints a `SKIP:` line instead (the twin of `tests/tool/shell.rs::skip_unless_posix`).
-fn skip_unless_posix(test: &str) -> bool {
+pub(crate) fn skip_unless_posix(test: &str) -> bool {
     let shell =
         iota::shell::interp::resolve().expect("this machine has no shell interpreter at all");
     if shell.is_posix() {

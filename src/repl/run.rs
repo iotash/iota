@@ -518,8 +518,11 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     {
         let ui_watch = Arc::clone(&ui);
         let table_watch = Arc::clone(&repl.handles.table);
+        let pres_watch = Arc::clone(&repl.handles.pres);
         repl.handles.jobs.set_watch(Some(Box::new(move |running| {
             let any = !running.is_empty();
+            // An idle chat with a job running is Busy to the host (`host` module doc).
+            pres_watch.set_jobs(running.len());
             // The status row's job segment follows the same set (and ticks while it is non-empty).
             ui_watch.set_jobs(running);
             let mut table = lock(&table_watch);
@@ -563,6 +566,10 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         }
         // Whatever the input is, the loop is awake for the user now (run.go:381).
         repl.handles.pres.set_state(State::Idle);
+        if notice {
+            // The notice's turn holds the host from here (`host` module doc).
+            repl.handles.pres.notice_taken();
+        }
         if !is_read_only_viewer(&line) {
             // A read-only viewer neither calls the provider nor mutates the writer, so it
             // need not wait; anything else must not race a writer swap or mint.

@@ -385,6 +385,48 @@ async fn the_approval_gate_walks_needs_input_and_back() {
     assert!(!mode.contains(" · in "), "{mode:?}");
 }
 
+/// A call that yielded leaves a job running while the loop sits idle: the host hears `Idle` once —
+/// the banner — then `Busy` for as long as the job runs, and NOT `Idle` again when the job ends and
+/// its notice is on the way; the turn the notice runs is what ends in `Idle`. (The yield is driven
+/// through the registry before the loop starts, the way `tests/repl/jobs.rs` drives its jobs.)
+#[tokio::test]
+async fn a_yielded_job_keeps_the_host_busy_until_its_notice_turn_ends() {
+    if crate::jobs::skip_unless_posix(
+        "a_yielded_job_keeps_the_host_busy_until_its_notice_turn_ends",
+    ) {
+        return;
+    }
+    let f = Fixture::new(vec![
+        // The job's notice, when it comes, wakes the loop and runs a turn.
+        Reply::Enqueued,
+        Reply::Interrupted,
+    ]);
+    let temp = tempfile::tempdir().expect("tempdir");
+    let jobs = iota::shell::jobs::Jobs::new(temp.path());
+    let yielded = jobs
+        .run(
+            &CancellationToken::new(),
+            &iota::shell::exec::Options {
+                command: "sleep 0.5".to_owned(),
+                dir: std::path::PathBuf::new(),
+                timeout: None,
+                sandbox: None,
+            },
+            std::time::Duration::from_millis(50),
+        )
+        .await;
+    assert!(
+        matches!(yielded, iota::shell::jobs::CallEnd::Yielded { .. }),
+        "the call did not yield"
+    );
+    let mut params = f.params(plain(Answer::Text("noted".to_owned())), no_tools(), true);
+    params.jobs = jobs;
+    iota::repl::run(params).await.expect("clean exit");
+
+    assert_eq!(f.states(), vec![State::Idle, State::Busy, State::Idle]);
+    assert_eq!(f.pings(), vec![(Kind::Done, "noted".to_owned())]);
+}
+
 // ---------------------------------------------------------------------------
 // the herdr host, over the mock socket (tests/common/herdr_mock.rs)
 // ---------------------------------------------------------------------------
