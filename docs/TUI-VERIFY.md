@@ -350,6 +350,14 @@ and do not tell it to background it.
       was. *(Pinned: two captures 1.2 s apart differ; `· 2 jobs` with the second job started and
       `job b1` again after it is killed; the segment absent after the notice. The idle-with-no-job
       budgets of 06 and 14 are untouched — the tick runs only while the set is non-empty.)*
+- [x] 自动化：scenario 25 **8.9 A running job keeps the host busy.** Back at the prompt after the yield,
+      with the job still running, the terminal's progress indicator stays on (OSC 9;4 state 3; a
+      herdr pane stays `working`, a cmux row `Running`), through the Kill tab's notice turn while
+      another job runs, and it clears (`;4;0`) only once the last job's notice turn has ended — no
+      clear in between, not even in the gap between the job ending and its notice landing
+      (DIVERGENCES X-47). *(Pinned off `pipe-pane`: the last state 3 after the yield and after the
+      kill, no `;4;0` until then, 0 after the last notice turn. The herdr side over a mock socket
+      in `tests/host/herdr.rs` and `tests/repl/host.rs`.)*
 
 ## 8b. The `/model` combo box
 

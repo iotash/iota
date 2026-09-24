@@ -61,7 +61,7 @@
 //! | `23-mcp-oauth.sh` | brain `mcp-cli-and-oauth` | — (a server whose 401 asks for a login, `auth` undeclared: the not-logged-in notice, the MCP tab of `/tools`, `iota mcp login` through `$BROWSER` beside the chat, a restart that connects, `iota mcp logout`) |
 //! | `24-iota-outside-sandbox.sh` | brain `harness-prompt`, X-44 | — (a sandboxed `shell` set asked about `iota mcp list` from the model: the `(outside the sandbox)` mark on the prompt and the header, the allowed call's output, iota in a pipe unasked and unmarked) |
 //! | `26-resize-residuals.sh` | TUI-VERIFY §4.3, X-52 | — (fresh panes: a 2× and a 3× narrowing with the banner staged, an idle narrowing after 20 ms-a-line output, a narrowing with `/model` open, one while a foreground tool call runs — no row twice, no separator added) |
-//! | `25-shell-yield.sh` | TUI-VERIFY §8.6–8.8, X-50 | — (a foreground `shell` call past its window: the receipt row, `/jobs` in the completion row, its list and the page a row opens, the list's clock walking with a second job started, the Kill tab ending that job with its `killed` notice, the status row's job clock walking, all gone after the notice) |
+//! | `25-shell-yield.sh` | TUI-VERIFY §8.6–8.9, X-47, X-50 | — (a foreground `shell` call past its window: the receipt row, `/jobs` in the completion row, its list and the page a row opens, the list's clock walking with a second job started, the Kill tab ending that job with its `killed` notice, the status row's job clock walking, all gone after the notice; the OSC 9;4 state held busy while a job runs and cleared after the last notice turn) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};

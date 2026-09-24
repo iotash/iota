@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# L4 scenario 25 (docs/TUI-VERIFY.md §8.6–8.8, DIVERGENCES X-50) — a foreground `shell` call that runs
+# L4 scenario 25 (docs/TUI-VERIFY.md §8.6–8.9, DIVERGENCES X-47, X-50) — a foreground `shell` call that runs
 # past its window lets go, and what the chat shows while the job it became is running.
 #
 # The yield itself is pinned in-process (`tests/tool/{jobs,shell}.rs`); what was left to a human is the
@@ -21,7 +21,12 @@
 #                         a turn, and the list reopened has one row fewer; after the first job's notice
 #                         the row is gone and `/j` completes to nothing;
 #   8.8 the status row  — while the job runs the row ends in `job b1 <command> Ns`, and the seconds walk
-#                         between two captures; after the notice the segment is gone.
+#                         between two captures; after the notice the segment is gone;
+#   8.9 the host state  — back at the prompt with the job running, the terminal's progress indicator
+#                         (OSC 9;4, tapped with `pipe-pane` as scenario 14 does) is still busy — 3 —
+#                         and nothing clears it until the last job's notice turn ends, when it is 0.
+#                         The tap starts after startup: an idle start emits no OSC 9;4 at all
+#                         (scenario 14), so every state in it is this scenario's.
 #
 # The agent runs `shell` with the sandbox off and `auto_run: true`, so no approval prompt sits between
 # the call and the yield.
@@ -56,9 +61,13 @@ job_clock() { bottom_zone | grep -oE 'job b1 .* [0-9]+s$' | grep -oE '[0-9]+s$';
 row_clock() { cap | grep -oE "$1 +[0-9]+s  " | head -1 | grep -oE '[0-9]+s'; }
 # The candidates row shows a command without the slash already typed: `⎿ jobs`.
 has_jobs_candidate() { [ "$(count_composer '⎿ jobs')" -gt 0 ]; }
+# The last OSC 9;4 state the pane was sent ("" if none yet).
+last_progress() { LC_ALL=C grep -aoE '\]9;4;[0-9]' "$RAW" 2>/dev/null | tail -1 | cut -c6; }
+progress_is_idle() { [ "$(last_progress)" = 0 ]; }
 
 start_provider openai 100 24 || finish
 settle || bad "startup never settled"
+pipe_raw
 
 # ------------------------------------------------------------------ 8.6: the yield
 type_ "runfg:$CMD"
@@ -72,6 +81,10 @@ check "the receipt row is under the header" "$(count_all "⎿ $RECEIPT")" 1
 check "the model's receipt is the reply's first line" "$(count_all 'ran: Still running after 2s as background job b1 (pid')" 1
 check "…and no notice yet: the job is still running" "$(count_all '[background job b1 finished')" 0
 check_frame_intact "after the yield" 100
+
+# ------------------------------------------------------------------ 8.9: the host state, while it runs
+check "back at the prompt, the running job keeps the progress indicator busy (OSC 9;4;3)" "$(last_progress)" 3
+check_raw "…and it was never cleared (no OSC 9;4;0)" ']9;4;0' no
 
 # ------------------------------------------------------------------ 8.8: the status row, while it runs
 first="$(job_clock)"
@@ -163,6 +176,8 @@ wait_gone '1 job running' || bad "ESC did not close the reopened list"
 settle || bad "frame never settled after the reopened list"
 check "no /jobs went to the model, and the kill printed nothing of its own" "$(count_all '❯ /jobs')" 0
 check_frame_intact "after the kill" 100
+check "the killed job's notice turn ended with b1 still running: still busy (OSC 9;4;3)" "$(last_progress)" 3
+check_raw "…and never cleared on the way (no OSC 9;4;0)" ']9;4;0' no
 
 # ------------------------------------------------------------------ the notice, and the two go away
 wait_all '[background job b1 finished: exit 0 after' || bad "the job's notice never arrived"
@@ -171,6 +186,8 @@ settle || bad "frame never settled after the notice"
 check "the notice landed once" "$(capall | grep -c '^\[background job b1 finished: exit 0 after' | tr -d ' ')" 1
 check "the job's output reached the model, not the scrollback" "$(capall | grep -c '^l4yield$' | tr -d ' ')" 1
 check "the status row's segment is gone" "$(bottom_zone | grep -cF 'job b1')" 0
+_poll_until 60 progress_is_idle || bad "the last job's notice turn never cleared the progress indicator: $(last_progress)"
+check "the last notice turn over, the progress indicator is cleared (OSC 9;4;0)" "$(last_progress)" 0
 type_ '/j'
 settle || bad "frame never settled after /j"
 check "/j completes to nothing once the job is gone" "$(count_composer '⎿ jobs')" 0

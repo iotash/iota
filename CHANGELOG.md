@@ -37,6 +37,12 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   right edge.** A line that fills the last column is one the terminal
   rewraps on any narrowing; kept a column short, a window dragged narrower a
   column at a time leaves nothing behind (X-52).
+- **A running background job keeps the host at working.** While a job runs and
+  the chat is otherwise idle, herdr shows the pane `working`, the terminal's
+  progress indicator stays on and cmux reads `Running`, until the job's notice
+  has had its turn: the job's result still comes back as a reply, so the chat
+  is not done before it — `herdr agent prompt --wait` now waits for the job
+  too. An approval prompt or a failed turn shows as before (X-47).
 - **A `shell` command has no deadline unless the call sets one.** A call without
   `timeout` runs until the command exits — or iota exits, which kills every
   job — instead of being killed after 600 seconds; a call with `timeout` is
