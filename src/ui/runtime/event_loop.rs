@@ -15,15 +15,15 @@
 //!   thread. (This replaces Go's cursor-bump/`viewEquals` defeat — T-03; the idle
 //!   frame still carries no spinner glyph.)
 //! - **W5** `RESIZE_PASS_FIRST`: on `Event::Resize` — store the atomics →
-//!   `Term::resize` (one DSR anchor read BEFORE any byte, a frame that was flush with
-//!   the bottom kept flush, the W1 recreation + the W3 clear of rows the old frame
-//!   provably owned; nothing scrolled or inserted) → draw, minus any staged rows the
+//!   `Term::resize` (one DSR read BEFORE any byte, the erase counted up from the cursor
+//!   over rows the old frame provably owned, a frame that was flush with the bottom kept
+//!   flush; nothing scrolled or inserted) → draw, minus any staged rows the
 //!   emulator itself pushed into the history (committed where they stand,
 //!   `Job::Shown`); only THEN does `region.retrim()` run as a post-update job (never
 //!   re-entrant — it takes the region lock and sends into this mailbox): the staged
-//!   window stays in the frame, rewrapped for the new width. ratatui's autoresize never
-//!   runs (`term.rs` W5): its narrowing path would re-anchor at row 0 behind an
-//!   `ESC[2J`. A LOST row is never accepted; storm mode stays dead.
+//!   window stays in the frame, rewrapped for the new width. The inline terminal is iota's
+//!   own (`inline_term.rs`): nothing but this pass reads the size, and no byte it writes
+//!   names an absolute row. A LOST row is never accepted; storm mode stays dead.
 //!
 //! All model state lives on this thread (zero locks inside the engine); the facade
 //! reaches in only via [`UiMsg`]. The composer/keys/paste/suggest/surface modules are
@@ -709,8 +709,7 @@ impl Model {
     /// The W5 pass for the last recorded resize, once the terminal has been quiet for
     /// `RESIZE_QUIET`: geometry sync + re-anchor + draw BEFORE any job touches stale geometry
     /// (model.go:175-195 + spike #5). `Term::resize` reads the size and the cursor NOW and
-    /// checks the cursor again before it erases; ratatui's own resize (row 0 + `ESC[2J` on a
-    /// narrowing) never runs. A resize opens (or extends) a drag: lay out a column short — as
+    /// erases counting up from the cursor, never from a row number. A resize opens (or extends) a drag: lay out a column short — as
     /// many as twice the widest narrowing step seen in it — until it settles.
     pub(crate) fn apply_resize<W: Write>(&mut self, term: &mut Term<W>) -> io::Result<()> {
         let Some((w, h)) = self.pending_resize.take() else {
@@ -718,8 +717,7 @@ impl Model {
         };
         // W5 RESIZE_PASS_FIRST: geometry sync + re-anchor + draw BEFORE any job
         // touches stale geometry (model.go:175-195 + spike #5). `Term::resize`
-        // reads the anchor with one DSR before it writes a byte; ratatui's own
-        // resize (row 0 + `ESC[2J` on a narrowing) never runs.
+        // reads the floor with one DSR before it writes a byte.
         // A resize opens (or extends) a drag: lay out a column short — as many as the
         // widest narrowing step seen in it — until it settles.
         let step = self.width.saturating_sub(w);
@@ -958,7 +956,7 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
         m.tick_spin();
         m.tick_jobs();
         m.tick_surface_refresh();
-        // W2/W6: land the insert batches, pushing the tracked top.
+        // W6: land the insert batches right above the frame.
         if !resizing {
             for batch in inserts.drain(..) {
                 term.insert_lines(&batch)?;
@@ -968,8 +966,8 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
         // BEFORE posting Quit, so the batches above are the window's rows; the frame still
         // standing shows them as well, and without this draw the screen keeps both — the
         // banner twice, at the end of a short chat. The snapshot that came with the flush
-        // is empty, so the frame is shorter: `ensure_height` rebuilds the viewport in
-        // place and W3 clears what the old frame covered. (Go's renderer flushed its last
+        // is empty, so the frame is shorter: `ensure_height` erases the rows it gives up
+        // and the draw rewrites what changed. (Go's renderer flushed its last
         // `View()` on stop; the port broke off before it — DIVERGENCES X-49.)
         if m.dirty && !resizing {
             if m.force_clear {
@@ -977,7 +975,7 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
                 m.force_clear = false;
             }
             let view = m.frame_view();
-            term.ensure_height(m.frame_height(view.rows.len()))?; // W1 + W3, coalesced to one per iteration
+            term.ensure_height(m.frame_height(view.rows.len()))?; // a field write; the draw repaints what changed
             term.set_title(&m.title)?;
             term.set_progress(m.progress)?; // emit-on-change, like the title
             drain_notify(&mut m, &mut term)?;

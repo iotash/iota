@@ -4,6 +4,7 @@
 
 pub(crate) mod event_loop;
 pub(crate) mod handle;
+pub(crate) mod inline_term;
 pub(crate) mod msgs;
 pub(crate) mod oneshot;
 pub(crate) mod osc;

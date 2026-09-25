@@ -1,10 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! WP44 L2b — terminal semantics via vt100 (`TUI_TEST_PLAN` §L2b) plus the loop units.
 //!
-//! Drives the REAL loop writer stack (`Terminal<CrosstermBackend<W>>` over a shared
+//! Drives the REAL loop writer stack (`Term` over iota's own `InlineTerminal`, a shared
 //! byte buffer, geometry answered synthetically) and feeds the emitted bytes to a
-//! `vt100::Parser`, and proves the scroll-region byte shape (no per-insert full clears —
-//! the no-flicker mechanism) of the one shipped build.
+//! `vt100::Parser`, and proves the insert byte shape (`IL` from the cursor, no scroll
+//! region, no per-insert erase — the no-flicker mechanism) of the one shipped build.
 //! The W10 `IDLE_WAKE` liveness units and the W4 snapshot-implies-draw unit (the T-03
 //! replacement) live here too — they assert on the real byte stream.
 
@@ -23,7 +23,7 @@ use crossterm::event::Event;
 use tokio_util::sync::CancellationToken;
 
 /// CSI-final byte counters (the spike's `CountWriter` idea, made assertions):
-/// DECSTBM set/reset, in-region scrolls, erase-display.
+/// DECSTBM set/reset, scrolls, erase-display, insert-line, absolute moves.
 #[derive(Default, Debug)]
 struct EscCounts {
     sr_set: usize,
@@ -31,6 +31,8 @@ struct EscCounts {
     up: usize,
     down: usize,
     ed: usize,
+    il: usize,
+    cup: usize,
 }
 
 fn scan(bytes: &[u8]) -> EscCounts {
@@ -62,6 +64,8 @@ fn scan(bytes: &[u8]) -> EscCounts {
                         b'S' => c.up += 1,
                         b'T' => c.down += 1,
                         b'J' => c.ed += 1,
+                        b'L' => c.il += 1,
+                        b'H' => c.cup += 1,
                         _ => {}
                     }
                     st = 0;
@@ -75,6 +79,23 @@ fn scan(bytes: &[u8]) -> EscCounts {
 fn parse(buf: &SharedBuf) -> vt100::Parser {
     let mut p = vt100::Parser::new(24, 80, 500);
     p.process(&buf.bytes());
+    p
+}
+
+/// [`parse`], with the emulator moving the cursor `shift` rows (negative = up) at byte
+/// `mark` — the move a reflow makes and `Geometry::shift_cursor` tells the synthetic DSR:
+/// a resize carries the cursor with its cell, and every byte after it is counted from there.
+fn parse_shifted(buf: &SharedBuf, mark: usize, shift: i32) -> vt100::Parser {
+    let bytes = buf.bytes();
+    let mut p = vt100::Parser::new(24, 80, 500);
+    p.process(&bytes[..mark]);
+    let n = shift.unsigned_abs();
+    if shift < 0 {
+        p.process(format!("\u{1b}[{n}A").as_bytes());
+    } else if shift > 0 {
+        p.process(format!("\u{1b}[{n}B").as_bytes());
+    }
+    p.process(&bytes[mark..]);
     p
 }
 
@@ -373,13 +394,16 @@ fn resize_keeps_the_staging_tail_in_the_frame_loop() {
     h.quit_and_join(Duration::from_secs(2));
 }
 
-/// Streaming inserts ride DECSTBM + in-region scrolls, and NO per-insert full clear
-/// appears — erase-display comes only from the deliberate height-change clears (W3). The
-/// spike's G1 byte proof, in-process.
+/// Streaming inserts ride `IL` counted from the cursor (the frame moves down under the new
+/// rows; the screen scrolls with `LF`, into the native history), NO scroll region is ever
+/// set, and NO per-insert erase appears — erase-display comes only from the frame's height
+/// changes, and those erase only the rows below the rows the frame keeps. After the one
+/// anchor at startup no byte names an absolute row (`inline-resize-owned`, B).
 #[test]
-fn scroll_region_bytes_present_no_per_insert_ed() {
+fn inserts_ride_insert_line_with_no_region_and_no_per_insert_ed() {
     let h = start_loop();
     assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
+    let mark = h.buf.bytes().len();
     for i in 0..8 {
         h.tx.send(UiMsg::Scrollback(vec![format!("line-{i:02}")]))
             .unwrap();
@@ -389,15 +413,26 @@ fn scroll_region_bytes_present_no_per_insert_ed() {
         "inserts never landed:\n{}",
         h.contents()
     );
-    let counts = scan(&h.buf.bytes());
+    let bytes = h.buf.bytes();
+    let all = scan(&bytes);
+    let counts = scan(&bytes[mark..]);
     h.quit_and_join(Duration::from_secs(2));
     assert!(
-        counts.sr_set >= 4,
-        "scroll-region traffic missing (feature inert?): {counts:?}"
+        counts.il >= 4,
+        "insert-line traffic missing: {counts:?} for 8 inserts"
+    );
+    assert_eq!(
+        (all.sr_set, all.sr_reset),
+        (0, 0),
+        "a scroll region was set: {all:?}"
     );
     assert!(
-        counts.ed <= 4,
-        "per-insert full clears leaked (flicker mechanism): {counts:?} for 8 inserts"
+        counts.ed <= 1,
+        "per-insert erases leaked (flicker mechanism): {counts:?} for 8 inserts"
+    );
+    assert_eq!(
+        all.cup, 1,
+        "an absolute move past the startup anchor: {all:?}"
     );
 }
 
@@ -431,10 +466,7 @@ fn over_screen_height_insert_characterization() {
     let (mut t, buf, _geo) = direct_term(4, 20);
     let rows: Vec<String> = (0..30).map(|i| format!("tall-{i:02}")).collect();
     t.insert_lines(&rows).unwrap();
-    assert_eq!(
-        t.top, 20,
-        "frame anchor must stay pinned at the bottom (W2)"
-    );
+    assert_eq!(t.top(), 20, "the frame stays pinned at the bottom");
 
     let p = parse(&buf);
     let visible = p.screen().contents();
@@ -452,23 +484,86 @@ fn over_screen_height_insert_characterization() {
         "visible insert order broken: {seq:?}"
     );
 
-    // Scrollback reach is the wart-W9 story. The scrolling-regions path scrolls the
-    // partial region 0..top, and a strict-DEC emulator — this vt100 crate — DISCARDS rows
-    // scrolled out of a partial region instead of filing them in scrollback. tmux 3.7c
-    // preserves them (spike G1); per-terminal hand verification is the release gate
-    // (`docs/TUI-VERIFY.md` §2), and there is no fallback build — a discarding emulator
-    // is a bug to fix. The visible window still holds the contiguous tail of the
-    // oversized insert.
-    for i in 10..30 {
+    // Scrollback reach used to be the wart-W9 story: the scrolling-regions path scrolled the
+    // partial region 0..top, and a strict-DEC emulator — this vt100 crate — DISCARDED the
+    // rows scrolled out of it. Inserts scroll the WHOLE screen now (`LF` from the cursor), the
+    // way a shell does, so every row reaches the history — in order, exactly once.
+    let mut p = parse(&buf);
+    let all = reachable(&mut p);
+    let got: Vec<usize> = all
+        .iter()
+        .filter_map(|l| {
+            l.strip_prefix("tall-")
+                .and_then(|n| n.trim_end().parse().ok())
+        })
+        .collect();
+    assert_eq!(
+        got,
+        (0..30).collect::<Vec<_>>(),
+        "every row reachable once, in order:\n{}",
+        all.join("\n")
+    );
+}
+
+/// A height change is a field write and a repaint of what changed (`inline-resize-owned`,
+/// B): no recreation, no clear. A surface opening below the composer (the frame grows by two
+/// rows at the bottom of the screen) and closing again erases only the rows below the rows
+/// the frame keeps — never one it keeps — and rewrites none of them: the separator, the
+/// composer and the status row are not written at all, so nothing on screen blinks. Under
+/// W1+W3 each change erased the frame from its first row and repainted every cell.
+#[test]
+fn a_height_change_clears_nothing_it_keeps_and_rewrites_nothing_unchanged() {
+    let (mut t, buf, _geo) = direct_term(4, 20);
+    let rows = |extra: &[&str]| crate::ui::render::frame::FrameView {
+        rows: ["SEP-top", "❯ draft", "SEP-bottom", "status"]
+            .iter()
+            .chain(extra)
+            .map(|r| (*r).to_owned())
+            .collect(),
+        cursor: Some((7, 1)),
+    };
+    t.draw_frame(&rows(&[])).unwrap();
+    let kept = ["SEP-top", "draft", "SEP-bottom", "status"];
+    for (h, extra) in [(6, &["pick-1", "pick-2"][..]), (4, &[][..])] {
+        let mark = buf.bytes().len();
+        assert!(t.ensure_height(h).unwrap(), "the height changed to {h}");
+        t.draw_frame(&rows(extra)).unwrap();
+        let bytes = buf.bytes();
+        let after = String::from_utf8_lossy(&bytes[mark..]).into_owned();
         assert!(
-            visible.contains(&format!("tall-{i:02}")),
-            "visible tail row tall-{i:02} missing:\n{visible}"
+            !after.contains("\u{1b}[2J"),
+            "a clear screen at h={h}:\n{after:?}"
+        );
+        assert_eq!(
+            scan(&bytes[mark..]).ed,
+            1,
+            "one erase, of the rows below the kept ones:\n{after:?}"
+        );
+        for k in kept {
+            assert!(
+                !after.contains(k),
+                "the unchanged row {k:?} was written again at h={h}:\n{after:?}"
+            );
+        }
+        let screen = parse(&buf).screen().contents();
+        let lines: Vec<&str> = screen.lines().collect();
+        // The taller frame scrolled the screen by two rows; the shorter one keeps its first
+        // row (the next output walks it back down).
+        let top = 18;
+        assert_eq!(
+            lines.get(top..top + 4).map(<[&str]>::to_vec),
+            Some(vec!["SEP-top", "❯ draft", "SEP-bottom", "status"]),
+            "the kept rows at h={h}:\n{screen}"
+        );
+        assert!(
+            extra.iter().all(|e| screen.contains(e)) && (h > 4 || !screen.contains("pick-")),
+            "the rows below at h={h}:\n{screen}"
         );
     }
 }
 
-/// The spike's G2 shrink law, in-process: recreation to a smaller inline height +
-/// clear leaves ZERO ghost rows, and subsequent inserts walk the frame back down.
+/// The spike's G2 shrink law, in-process: a smaller frame erases the rows it gives up —
+/// ZERO ghost rows — and subsequent inserts walk the frame back down.
 #[test]
 fn shrink_recreation_walks_down_without_ghosts() {
     let (mut t, buf, _geo) = direct_term(4, 18);
@@ -491,7 +586,7 @@ fn shrink_recreation_walks_down_without_ghosts() {
         "tall frame never painted"
     );
 
-    // Close: recreate smaller (W1) + clear (W3), then output self-heals the freed rows.
+    // Close: the frame gets shorter (the rows it gives up erased), then output walks it down.
     let small = crate::ui::render::frame::FrameView {
         rows: vec![
             String::new(),
@@ -670,8 +765,8 @@ fn cancel_scope_stack_fire_truncates() {
 
 /// Wide graphemes survive an insert. A wide grapheme's continuation cell reads back as a
 /// SPACE, so a backend handed the WHOLE buffer (ratatui's `draw_lines` path) would print
-/// `中 文 一 行` for a padded CJK row; `LoopBackend::draw` drops the covered cells so the
-/// insert path and ratatui's width-aware buffer diff agree.
+/// `中 文 一 行` for a padded CJK row; every write goes through ratatui's width-aware buffer
+/// diff (against a blank buffer for an insert), which drops the covered cells.
 // A ratatui backend artefact with no Go twin.
 #[test]
 fn wide_runes_insert_intact() {
@@ -900,9 +995,44 @@ fn reachable(p: &mut vt100::Parser) -> Vec<String> {
     all
 }
 
-/// An erase-below from the home position: tmux (`scroll-on-clear`, its default) takes it
-/// for a clear screen and files the whole screen into the history first.
-const HOME_ERASE: &str = "\u{1b}[1;1H\u{1b}[J";
+thread_local! {
+    /// Erase-belows the emulator executed with its cursor on the home position — counted by
+    /// [`process_counting`] over every replay in this thread, read by the resize asserts.
+    static HOME_ERASES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Feeds `bytes` into `p`, counting each erase-below (`CSI J`, `CSI 0J`) the emulator
+/// executes on the HOME position: tmux (`scroll-on-clear`, its default) takes that for a clear
+/// screen and files the whole screen into the history first. Counted in the emulator, not in
+/// the bytes — iota's erases are counted from the cursor, so no byte says where they land.
+fn process_counting(p: &mut vt100::Parser, bytes: &[u8]) {
+    let mut rest = bytes;
+    loop {
+        let hit = [b"\x1b[J".as_slice(), b"\x1b[0J".as_slice()]
+            .iter()
+            .filter_map(|pat| {
+                rest.windows(pat.len())
+                    .position(|w| w == *pat)
+                    .map(|i| (i, pat.len()))
+            })
+            .min();
+        let Some((i, len)) = hit else {
+            p.process(rest);
+            return;
+        };
+        p.process(&rest[..i]);
+        if p.screen().cursor_position() == (0, 0) {
+            HOME_ERASES.with(|c| c.set(c.get() + 1));
+        }
+        p.process(&rest[i..i + len]);
+        rest = &rest[i + len..];
+    }
+}
+
+/// How many home-position erase-belows the replays in this thread have executed (and reset).
+fn home_erases() -> usize {
+    HOME_ERASES.with(std::cell::Cell::take)
+}
 
 /// How many scroll-downs (`CSI n T`) `bytes` carries: a resize must scroll nothing — the
 /// region scroll-down that closed the resize band put blank rows at the top of the
@@ -931,7 +1061,7 @@ fn replay_resized(
     let mut p = vt100::Parser::new(24, 80, 5000);
     p.process(&bytes[..mark]);
     emulate(&mut p);
-    p.process(&bytes[mark..]);
+    process_counting(&mut p, &bytes[mark..]);
     let cols = p.screen().size().1;
     let screen: Vec<String> = p.screen().rows(0, cols).collect();
     (reachable(&mut p), screen)
@@ -959,7 +1089,7 @@ impl ReflowEmu {
     }
 
     fn feed(&mut self, bytes: &[u8]) {
-        self.p.process(&bytes[self.fed..]);
+        process_counting(&mut self.p, &bytes[self.fed..]);
         self.fed = bytes.len();
     }
 
@@ -1114,8 +1244,9 @@ fn assert_resize_clean(tag: &str, all: &[String], screen: &[String], after: &str
         scroll_downs(after) <= 1,
         "{tag}: a resize inserted rows (a scroll-down) — only the band close at the end of a drag may:\n{after:?}"
     );
-    assert!(
-        !after.contains(HOME_ERASE),
+    assert_eq!(
+        home_erases(),
+        0,
         "{tag}: an erase-below from the home position — tmux files the screen into the history:\n{after:?}"
     );
     for i in 0..12 {
@@ -1174,9 +1305,11 @@ fn idle_width_grow_keeps_the_frame_down_and_every_row() {
 fn idle_height_shrink_keeps_the_frame_down_and_every_row() {
     let (all, screen, after) = idle_resize(80, 20, -4, |p| {
         // Push the top 4 rows into history (a full-screen scroll), then drop the
-        // now-blank bottom 4 rows.
+        // now-blank bottom 4 rows; the cursor moves up with its cell.
+        let (r, c) = p.screen().cursor_position();
         p.process(format!("\u{1b}[24;1H{}", "\n".repeat(4)).as_bytes());
         p.screen_mut().set_size(20, 80);
+        p.process(format!("\u{1b}[{};{}H", r - 4 + 1, c + 1).as_bytes());
     });
     assert_resize_clean("height 24→20", &all, &screen, &after);
 }
@@ -1307,7 +1440,8 @@ fn resize_anchors_at_the_cursor_row_minus_its_frame_row() {
     )
     .unwrap();
     assert_eq!(
-        t.top, 7,
+        t.top(),
+        7,
         "anchor must be cursor (9) − the composer's frame row (2)"
     );
     t.draw_frame(&frame).unwrap();
@@ -1316,9 +1450,18 @@ fn resize_anchors_at_the_cursor_row_minus_its_frame_row() {
         !after.contains("\u{1b}[2J"),
         "full clear on resize:\n{after:?}"
     );
+    // Counted from the cursor, not from a row number: up the composer's frame row (2) and
+    // erase from there (EL 2 on the row, then an erase-below from its second column).
     assert!(
-        after.starts_with("\u{1b}[8;1H"),
-        "the first byte after the event must be the re-anchor MoveTo(0, 7):\n{after:?}"
+        after.starts_with("\u{1b}[2A\r\u{1b}[2K\u{1b}[C\u{1b}[J"),
+        "the first bytes after the event must climb the frame's 2 rows and erase:\n{after:?}"
+    );
+    let screen = parse_shifted(&buf, mark, -3).screen().contents();
+    let rows: Vec<&str> = screen.lines().collect();
+    assert_eq!(
+        rows.get(9).copied(),
+        Some("❯"),
+        "the composer on row 9:\n{screen}"
     );
 }
 
@@ -1352,11 +1495,11 @@ fn a_flush_frame_resizes_onto_the_floor_and_the_band_takes_the_next_output() {
         |_| 5,
     )
     .unwrap();
-    assert_eq!(t.top, 19, "a flush frame lands on the floor (24 − 5)");
+    assert_eq!(t.top(), 19, "a flush frame lands on the floor (24 − 5)");
     let after = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
     assert!(
-        after.starts_with("\u{1b}[17;1H\u{1b}[J\u{1b}[20;1H"),
-        "clear from the cursor estimate (16), then re-anchor on the floor:\n{after:?}"
+        after.starts_with("\u{1b}[2A\r\u{1b}[2K\u{1b}[C\u{1b}[J\r\n\n\n"),
+        "clear from the cursor estimate (16, two rows up), then down 3 onto the floor:\n{after:?}"
     );
     assert_eq!(
         scroll_downs(&after),
@@ -1369,10 +1512,11 @@ fn a_flush_frame_resizes_onto_the_floor_and_the_band_takes_the_next_output() {
         .unwrap();
     t.draw_frame(&frame).unwrap();
     assert_eq!(
-        t.top, 19,
+        t.top(),
+        19,
         "the band took the output; the frame is flush again"
     );
-    let screen = parse(&buf).screen().contents();
+    let screen = parse_shifted(&buf, mark, -3).screen().contents();
     let rows: Vec<&str> = screen.lines().collect();
     assert_eq!(
         &rows[16..19],
@@ -1409,7 +1553,7 @@ fn resize_with_a_hidden_cursor_anchors_on_the_frames_first_row() {
         |_| 6,
     )
     .unwrap();
-    assert_eq!(t.top, 16, "anchor must be the cursor (16) itself");
+    assert_eq!(t.top(), 16, "anchor must be the cursor (16) itself");
 }
 
 /// The verifier's `/model` repro, in the reflow model: a resize while a surface is open
@@ -1552,11 +1696,12 @@ fn a_row_that_got_shorter_is_erased_whole_and_rewritten() {
     t.draw_frame(&frame("short".to_owned())).unwrap();
     let after = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
     assert!(
-        after.contains("\u{1b}[22;1H\u{1b}[2K\u{1b}[22;1Hshort"),
+        after.contains("\r\u{1b}[2Kshort"),
         "the shortened row must be erased whole and rewritten:\n{after:?}"
     );
-    assert!(
-        after.ends_with("\u{1b}[23;3H"),
+    assert_eq!(
+        parse(&buf).screen().cursor_position(),
+        (22, 2),
         "the cursor goes back to the composer:\n{after:?}"
     );
     let mark = buf.bytes().len();
@@ -1604,8 +1749,9 @@ fn a_3x_narrowing_at_startup_commits_the_rows_the_emulator_archived() {
         0,
         "a resize scrolls nothing:\n{after:?}"
     );
-    assert!(
-        !after.contains(HOME_ERASE),
+    assert_eq!(
+        home_erases(),
+        0,
         "the frame re-anchored on row 0 must not be erased from the home position:\n{after:?}"
     );
     for b in &banner {

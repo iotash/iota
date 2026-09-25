@@ -1,54 +1,44 @@
-//! Terminal ownership — warts W1 `RECREATE_ON_HEIGHT_CHANGE`, W2 `SELF_TRACKED_TOP`,
-//! W3 `CLEAR_AFTER_RECREATE`, W5 `RESIZE_PASS_FIRST`, W6 `LINE_COUNT_SELF_CONSISTENCY`,
-//! W9 `PORTABLE_FALLBACK` (`TUI_DESIGN` §4).
+//! Terminal ownership — warts W5 `RESIZE_PASS_FIRST`, W6 `LINE_COUNT_SELF_CONSISTENCY`
+//! (`TUI_DESIGN` §4) over the inline terminal iota owns ([`InlineTerminal`]).
 //!
-//! - **W1**: `Viewport::Inline(h)` is frozen at `Terminal` construction, so any
-//!   frame-height change recreates the `Terminal` — `MoveTo(0, top)`, drop, a fresh
-//!   `Terminal::with_options(.., Inline(new_h))` (it re-anchors at the cursor row,
-//!   scrolling history up when a grow does not fit). Recreation is cheap (a writer
-//!   handle); the loop coalesces it to one per iteration.
-//! - **W2**: `CompletedFrame.area` lies (`y` is always 0), so the viewport top is
-//!   self-tracked: recreation pins `top = min(top, screen_h − new_h)` and every insert
-//!   pushes `top = min(top + rows, screen_h − view_height)`. A resize re-derives it
-//!   from the one DSR of W5.
-//! - **W5**: ratatui's own inline resize is never allowed to run. On a width SHRINK it
-//!   pins the viewport to row 0 and sends `ESC[2J` (ratatui-core 0.1.2
-//!   `terminal/resize.rs:42-44`): the composer jumps to the top and every transcript row
-//!   still on screen is erased. `Terminal::draw` autoresizes by itself, so not calling
-//!   `autoresize` is not enough — [`LoopBackend::size`] answers the ACKNOWLEDGED size,
-//!   which only [`Term::resize`] changes, and ratatui's `last_known_area` therefore only
-//!   moves when this module recreates the `Terminal`. [`Term::resize`] re-anchors the frame
-//!   clearing only rows the old frame provably owned, and scrolls or inserts nothing: ONE
-//!   DSR before writing a byte (every draw leaves the cursor on a known frame row, and a
-//!   resize carries it with its cell); the rows a reflow grew above the cursor once the
-//!   emulator has shown that it reflows (a lower bound of our own rows' growth —
-//!   [`Term::rewrite_rows`] keeps each row's line exactly as long as what it shows); a
-//!   frame flush with the bottom kept flush on the new floor, the rows between left as a
-//!   blank band the next output fills ([`Term::pad`]); and staged rows the emulator itself
-//!   pushed into the history handed back to be committed where they stand. The frame is
-//!   laid out at the terminal's FULL width at rest and a column (or a few) short while a
-//!   drag lasts (`Model::frame_width`, the burst layout — the owner's, X-52): only a drag's
-//!   first step rewraps the frame's full-width rows, and that growth is ours to claim,
-//!   never to predict for transcript rows. Nothing is erased on a stale picture: a pass
-//!   takes the size the terminal has NOW (a fast drag's event can be one size behind), and
-//!   a recreation checks with a cursor query that the frame's bottom row is where it placed
-//!   it before its W3 erase — tmux, grown again mid-drag, pulls history rows back, and an
-//!   erase from a top computed on the older size wiped a committed row (P0, 2026-09-24). A band row is filled by the next
-//!   output in place, the frame not moving ([`Term::insert_lines`]). An emulator that does
-//!   not reflow never has a row above the cursor claimed (DIVERGENCES X-52).
-//! - **W3**: a recreated `Terminal` starts with empty buffers while the screen still
-//!   shows the old frame; `Terminal::clear()` right after recreation (Inline clears
-//!   viewport-top→screen-end, wiping shrink-freed rows — below-frame is dead space)
-//!   resets the back buffer so the next draw repaints every cell.
+//! W1 `RECREATE_ON_HEIGHT_CHANGE`, W2 `SELF_TRACKED_TOP`, W3 `CLEAR_AFTER_RECREATE`, the
+//! acknowledged size and W9's scrolling regions are gone (2026-09-25, `inline-resize-owned`
+//! option B, DIVERGENCES X-54): each existed only because ratatui's `Terminal` froze the
+//! inline viewport at construction and addressed the screen absolutely. The viewport is a
+//! field now, a height change is a field write and a repaint of what changed, and every byte
+//! is written from the cursor ([`InlineTerminal`]'s module docs), which the emulator carries
+//! with its cell through any resize.
+//!
+//! - **W5**: [`Term::resize`] re-anchors the frame clearing only rows the old frame provably
+//!   owned, and scrolls or inserts nothing: ONE DSR before writing a byte — for the
+//!   bookkeeping of the floor, never for where the erase lands; the erase goes up from the
+//!   cursor by the frame's own rows above it (every draw leaves the cursor on a known frame
+//!   row, and a resize carries it with its cell) plus the rows a reflow grew above them once
+//!   the emulator has shown that it reflows (a lower bound of our own rows' growth —
+//!   [`Term::rewrite_rows`] keeps each row's line exactly as long as what it shows); a frame
+//!   flush with the bottom kept flush on the new floor, the rows between left as a blank band
+//!   the next output fills ([`Term::pad`]); and staged rows the emulator itself pushed into
+//!   the history handed back to be committed where they stand. The frame is laid out at the
+//!   terminal's FULL width at rest and a column (or a few) short while a drag lasts
+//!   (`Model::frame_width`, the burst layout — the owner's, X-52): only a drag's first step
+//!   rewraps the frame's full-width rows, and that growth is ours to claim, never to predict
+//!   for transcript rows. The size a pass takes is the one the terminal has NOW, and the
+//!   cursor wins over any size read: a cursor below the last row read means the screen grew
+//!   again in between. A band row is filled by the next output in place, the frame not moving
+//!   ([`Term::insert_lines`]). An emulator that does not reflow never has a row above the
+//!   cursor claimed (DIVERGENCES X-52).
+//! - **Why no row is lost** (the verifier's three repros, 2026-09-25): an erase starts at a row
+//!   counted UP from the cursor, so a resize the emulator applies between iota's check and its
+//!   write — tmux pulling history rows back on a grow — moves the rows the erase lands on
+//!   together with the cursor (the check→execute window names no row); writes made before
+//!   iota has read a resize (a stream inserting and drawing under a new size) are cursor-
+//!   relative too, so the cursor stays on the frame row the bookkeeping says (no stale
+//!   anchor); and a DSR that fails costs the floor, not the anchor (no fallback row).
 //! - **W6**: `insert_before` height comes from `Paragraph::line_count(width)` of the
 //!   SAME `Paragraph` rendered into the buffer (feature `unstable-rendered-line-info`).
 //!   The region pre-wraps every entry to ≤ width−1 and guarantees one-entry-one-row, so
 //!   `line_count == rows.len()` — asserted as a debug invariant, never a second source
 //!   of truth. This self-consistency is what kills Go's `sanitizeOverflow` (T-01).
-//! - **W9**: ratatui's `scrolling-regions` is always on (one binary; `Cargo.toml`), so
-//!   `insert_before` scrolls the partial region 0..top with DECSTBM. An emulator that
-//!   discards region-scrolled lines is a bug to fix, not a build to switch to
-//!   (`docs/TUI-VERIFY.md` §2).
 //!
 //! [`Geometry`] is the headless seam: the L2b/vt100 layer injects synthetic
 //! size/cursor answers so the REAL writer stack runs without a tty; live construction
@@ -57,16 +47,12 @@
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 
-use crossterm::cursor::MoveTo;
-use crossterm::queue;
-use crossterm::terminal::{Clear, ClearType as CrosstermClear};
-use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
 use ratatui::buffer::{Cell, CellWidth};
 use ratatui::layout::{Position, Size};
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
-use ratatui::{Terminal, TerminalOptions, Viewport};
 
+use super::inline_term::{InlineTerminal, is_blank};
 use super::osc;
 use crate::ui::facade::ProgressState;
 use crate::ui::render::frame::FrameView;
@@ -137,7 +123,7 @@ impl Geometry {
     }
 
     /// The synthetic DSR: the cursor, or the error a terminal that never answers yields.
-    fn query_cursor(&self) -> io::Result<Position> {
+    pub(super) fn query_cursor(&self) -> io::Result<Position> {
         if self.dsr_fails.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
@@ -176,169 +162,44 @@ impl Geometry {
     fn set_cursor(&self, pos: Position) {
         store(&self.cursor, pos);
     }
-}
 
-/// The loop's backend: a [`CrosstermBackend`] whose geometry queries can be answered
-/// synthetically ([`Geometry`]) so the byte-emitting stack runs headless. All drawing
-/// and scrolling delegates to the inner backend — the emitted bytes are the real ones.
-pub(crate) struct LoopBackend<W: Write> {
-    inner: CrosstermBackend<W>,
-    geo: Option<Geometry>,
-    /// The acknowledged terminal size (W5): what [`Term`] last took from a resize event,
-    /// never a live query — ratatui's autoresize must not see a change iota has not handled.
-    size: Size,
-    /// Where the last `set_cursor_position` put the cursor, until a draw moves it (the
-    /// home-position erase below needs to know).
-    at: Option<Position>,
-}
-
-impl<W: Write> Backend for LoopBackend<W> {
-    type Error = io::Error;
-
-    fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
-    where
-        I: Iterator<Item = (u16, u16, &'a Cell)>,
-    {
-        // W9 corollary: a wide grapheme OWNS the cells to its right, and a covered cell
-        // reads back as a space. Ratatui's buffer diff (the normal draw path and the
-        // scrolling-regions insert) drops those cells, but `Terminal::insert_before` can
-        // still hand the WHOLE buffer to the backend (its `draw_lines` path), and an
-        // unfiltered backend then prints `中 文 一 行` for a padded CJK row. Drop the
-        // covered cells here — the same rule ratatui's own diff and `TestBackend` apply —
-        // so the backend emits the same bytes for the same buffer on every path.
-        self.at = None;
-        let mut covered: Option<(u16, u16)> = None; // (row, first column past the grapheme)
-        self.inner.draw(content.filter(move |(x, y, cell)| {
-            if let Some((row, end)) = covered
-                && row == *y
-                && *x < end
-            {
-                return false;
-            }
-            covered = Some((*y, x.saturating_add(cell.cell_width().max(1))));
-            true
-        }))
+    /// The cursor is put on `pos` (an absolute move).
+    pub(super) fn put_cursor(&self, pos: Position) {
+        self.set_cursor(pos);
     }
 
-    fn append_lines(&mut self, n: u16) -> io::Result<()> {
-        if let Some(g) = &self.geo {
-            // The synthetic cursor moves like a terminal's: down, clamped to the last row.
-            let pos = g.cursor();
-            let last = g.last_row();
-            g.set_cursor(Position::new(pos.x, pos.y.saturating_add(n).min(last)));
-        }
-        self.inner.append_lines(n)
+    /// The cursor moves to column `x` of its row.
+    pub(super) fn set_col(&self, x: u16) {
+        let pos = self.cursor();
+        self.set_cursor(Position::new(x, pos.y));
     }
 
-    fn hide_cursor(&mut self) -> io::Result<()> {
-        self.inner.hide_cursor()
+    /// `CUU n`: up, stopping on the top row.
+    pub(super) fn up(&self, n: u16) {
+        let pos = self.cursor();
+        self.set_cursor(Position::new(pos.x, pos.y.saturating_sub(n)));
     }
 
-    fn show_cursor(&mut self) -> io::Result<()> {
-        self.inner.show_cursor()
-    }
-
-    fn get_cursor_position(&mut self) -> io::Result<Position> {
-        let answer = match &self.geo {
-            Some(g) => g.query_cursor(),
-            None => self.inner.get_cursor_position(),
-        };
-        // ratatui asks inside `with_options` and `clear` (a recreation), each right after we
-        // placed the cursor ourselves. A terminal that does not answer (crossterm times out
-        // after ~2 s) must not unwind the loop: the position we set is the answer it would give.
-        match (answer, self.at) {
-            (Err(_), Some(at)) => Ok(at),
-            (answer, _) => answer,
-        }
-    }
-
-    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
-        let pos = position.into();
-        self.at = Some(pos);
-        if let Some(g) = &self.geo {
-            g.set_cursor(pos); // the synthetic DSR mirrors what the terminal would say
-        }
-        self.inner.set_cursor_position(pos)
-    }
-
-    fn clear(&mut self) -> io::Result<()> {
-        self.inner.clear()
-    }
-
-    fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
-        // An erase-below FROM THE HOME POSITION is a clear screen to tmux, which (with its
-        // default `scroll-on-clear`) files the whole screen into the history first — a
-        // frame re-anchored on row 0 (a narrowing that grew the box past the top) left its
-        // old copy and the banner above it there. Erasing row 0 by itself and then from row
-        // 1 down is the same erase, and not that one.
-        if matches!(clear_type, ClearType::AfterCursor) && self.at == Some(Position::ORIGIN) {
-            self.inner.clear_region(ClearType::CurrentLine)?;
-            self.inner.set_cursor_position(Position::new(0, 1))?;
-            self.inner.clear_region(ClearType::AfterCursor)?;
-            return self.inner.set_cursor_position(Position::ORIGIN);
-        }
-        self.inner.clear_region(clear_type)
-    }
-
-    fn size(&self) -> io::Result<Size> {
-        Ok(self.size)
-    }
-
-    fn window_size(&mut self) -> io::Result<WindowSize> {
-        match &self.geo {
-            Some(g) => Ok(WindowSize {
-                columns_rows: g.size(),
-                pixels: Size::default(),
-            }),
-            None => self.inner.window_size(),
-        }
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Backend::flush(&mut self.inner)
-    }
-
-    fn scroll_region_up(
-        &mut self,
-        region: std::ops::Range<u16>,
-        line_count: u16,
-    ) -> io::Result<()> {
-        self.inner.scroll_region_up(region, line_count)
-    }
-
-    fn scroll_region_down(
-        &mut self,
-        region: std::ops::Range<u16>,
-        line_count: u16,
-    ) -> io::Result<()> {
-        self.inner.scroll_region_down(region, line_count)
+    /// `n` × `LF`: down, the screen scrolling under a cursor that stays on the last row.
+    pub(super) fn lf(&self, n: u16) {
+        let pos = self.cursor();
+        let last = self.last_row();
+        self.set_cursor(Position::new(pos.x, pos.y.saturating_add(n).min(last)));
     }
 }
 
-/// Produces a fresh writer for each `Terminal` incarnation (W1 recreation) plus the
-/// out-of-band control writer. For the live build this is `|| io::stdout()` (handles
-/// share the one stream); tests hand out clones of a shared byte buffer.
+/// Produces the writers: one for the inline terminal, one out-of-band control writer. For
+/// the live build this is `|| io::stdout()` (handles share the one stream); tests hand out
+/// clones of a shared byte buffer.
 pub(crate) type MakeWriter<W> = Box<dyn FnMut() -> W + Send>;
 
-/// Owns the inline `Terminal` and every wart the spike proved: recreation on height
-/// change (W1+W3), the self-tracked viewport top (W2), the resize it re-anchors with
-/// one DSR (W5), and `line_count`-sized inserts (W6).
+/// Owns the inline terminal and the frame's life on it: the resize it re-anchors with one
+/// DSR (W5), the band a resize leaves, and `line_count`-sized inserts (W6).
 pub(crate) struct Term<W: Write> {
-    terminal: Terminal<LoopBackend<W>>,
-    make_writer: MakeWriter<W>,
-    /// Out-of-band control writer (same underlying stream): `MoveTo` ahead of a
-    /// recreation, title OSC, the final cursor park.
+    t: InlineTerminal<W>,
+    /// Out-of-band control writer (same underlying stream): title OSC, progress, pings.
     ctrl: W,
     geo: Option<Geometry>,
-    /// The acknowledged terminal size every backend incarnation answers (W5).
-    size: Size,
-    /// The self-tracked viewport top row (W2).
-    pub(crate) top: u16,
-    /// The current inline viewport height.
-    pub(crate) view_height: u16,
-    /// What the last draw left on screen (W5's anchor); `None` until a draw has placed
-    /// the cursor, and again after anything that moves it elsewhere.
-    drawn: Option<Drawn>,
     /// Blank rows directly above the frame that a resize left there (W5 step 3): ours to
     /// fill with the next output, so a band never has to scroll into the history.
     pad: u16,
@@ -346,7 +207,7 @@ pub(crate) struct Term<W: Write> {
     /// resize that shows it ([`Term::learn_reflow`]); `None` counts as "no".
     reflows: Option<bool>,
     /// An upper bound of each frame row's line length in the emulator (relative to the
-    /// top; missing = 0). The W3 clear empties every line; a draw can only lengthen one to
+    /// top; missing = 0). An erase empties every line; a draw can only lengthen one to
     /// what it showed or shows; [`Term::rewrite_rows`] brings one back to what it shows.
     /// Inserts move the frame's rows as a block, so the bound survives them.
     line_len: Vec<u16>,
@@ -367,97 +228,97 @@ impl<W: Write> Term<W> {
         start_top: u16,
         geo: Option<Geometry>,
     ) -> io::Result<Self> {
-        let mut ctrl = make_writer();
+        let ctrl = make_writer();
         let size = if let Some(g) = &geo {
             g.size()
         } else {
             let (width, height) = crossterm::terminal::size()?;
             Size { width, height }
         };
-        anchor(&mut ctrl, geo.as_ref(), start_top)?;
-        let backend = LoopBackend {
-            inner: CrosstermBackend::new(make_writer()),
-            geo: geo.clone(),
-            size,
-            at: None,
-        };
-        let terminal = Terminal::with_options(
-            backend,
-            TerminalOptions {
-                viewport: Viewport::Inline(height),
-            },
-        )?;
-        let top = start_top.min(size.height.saturating_sub(height));
+        let t = InlineTerminal::new(make_writer(), geo.clone(), size, height, start_top)?;
         Ok(Self {
-            terminal,
-            make_writer,
+            t,
             ctrl,
             geo,
-            size,
-            top,
-            view_height: height,
-            drawn: None,
-            line_len: Vec::new(),
-            reflows: None,
             pad: 0,
+            reflows: None,
+            line_len: Vec::new(),
             last_title: None,
             last_progress: None,
             focus_on: false,
         })
     }
 
-    /// W1 `RECREATE_ON_HEIGHT_CHANGE` + W3 `CLEAR_AFTER_RECREATE`: recreates the
-    /// `Terminal` at `new_h` anchored at the tracked top. Returns whether a recreation
-    /// happened (the loop coalesces to one per iteration by calling this once).
+    /// The frame's first row (bookkeeping, absolute).
+    pub(crate) fn top(&self) -> u16 {
+        self.t.viewport().y
+    }
+
+    /// The frame's height.
+    pub(crate) fn view_height(&self) -> u16 {
+        self.t.viewport().height
+    }
+
+    /// A frame-height change: a field write and a repaint of what changed (no recreation,
+    /// no clear). A taller frame grows into the blank band a resize left above it (W5)
+    /// before it takes rows below it — scrolling the transcript into the history where the
+    /// screen ends. Returns whether the height changed.
     pub(crate) fn ensure_height(&mut self, new_h: u16) -> io::Result<bool> {
-        if new_h == self.view_height {
+        let h = self.view_height();
+        if new_h == h {
             return Ok(false);
         }
-        // A taller frame grows into the blank band a resize left above it (W5) before it
-        // scrolls anything into the history.
-        let grow = new_h.saturating_sub(self.view_height).min(self.pad);
-        self.pad -= grow;
-        self.recreate(new_h, self.top - grow)?;
+        let grow = new_h.saturating_sub(h).min(self.pad).min(self.top());
+        if grow > 0 {
+            self.pad -= grow;
+            self.t.grow_up(grow);
+            let mut len = vec![0; usize::from(grow)];
+            len.append(&mut self.line_len);
+            self.line_len = len;
+        }
+        self.t.set_height(new_h)?;
+        self.line_len.resize(usize::from(self.view_height()), 0);
         Ok(true)
     }
 
-    /// W5 `RESIZE_PASS_FIRST`: takes the new `size` as the acknowledged one and
-    /// re-anchors the frame (now `new_h` rows) where the emulator left it. Every row this
-    /// clears is one the old frame provably owned; a transcript row is never touched, and
-    /// nothing is inserted or scrolled.
+    /// W5 `RESIZE_PASS_FIRST`: takes the new `size` and re-anchors the frame (now `new_h`
+    /// rows) where the emulator left it. Every row this clears is one the old frame provably
+    /// owned; a transcript row is never touched, and nothing is inserted or scrolled.
     ///
-    /// 1. **The cursor estimate.** The ONE DSR comes before any byte is written. The last
-    ///    draw left the cursor on frame row `c` — the composer's, or the frame's top-left
-    ///    while a surface hides it — and a resize carries it with its cell, so the `c`
-    ///    rows above it and everything below it are the old frame's: `start = cursor − c`.
-    ///    Without a known row (nothing drawn since the last recreation or insert)
-    ///    `start` is the tracked top.
-    /// 2. **The overhang.** What a reflow grew ABOVE the cursor lies above `start`: the
-    ///    top separator's second piece, a staged row that wrapped. It is ours only on an
-    ///    emulator that reflows, so it is claimed only once the emulator has SHOWN that
-    ///    it does ([`Term::learn_reflow`]) and then by a lower bound of our own rows'
-    ///    growth ([`Drawn::growth_above`]). Unknown or not reflowing, nothing above
-    ///    `start` is touched; short of the truth, a row is duplicated, never lost. (A
+    /// 1. **The anchor.** The last write left the cursor on frame row `c` — the composer's,
+    ///    or the frame's top-left while a surface hides it — and a resize carries it with its
+    ///    cell, so the `c` rows above it and everything below it are the old frame's. The
+    ///    erase starts `c` rows UP from the cursor (`CUU`, which can only stop short, at the
+    ///    top of the screen): no row number enters it.
+    /// 2. **The overhang.** What a reflow grew ABOVE the cursor lies above that row: the top
+    ///    separator's second piece, a staged row that wrapped. It is ours only on an emulator
+    ///    that reflows, so it is claimed only once the emulator has SHOWN that it does
+    ///    ([`Term::learn_reflow`]) and then by a lower bound of our own rows' growth
+    ///    ([`Drawn::growth_above`]). Unknown or not reflowing, nothing above the frame's
+    ///    first row is touched; short of the truth, a row is duplicated, never lost. (A
     ///    hidden cursor sits on the frame's first row: nothing of the frame is above it.)
-    /// 3. **The floor.** A frame that was flush with the bottom stays flush:
-    ///    `top = S' − new_h`. An emulator keeps its last row on the bottom through a
-    ///    reflow — the cursor estimate alone lags whatever grew BELOW the cursor — and a
-    ///    row grow pulls history in above it or adds blank rows below it. The rows between
-    ///    `start` and the floor are old-frame rows: they are cleared and left as a blank
-    ///    BAND between the transcript and the frame ([`Term::pad`]), which the next output
-    ///    fills before anything scrolls. (Scrolling it away instead put blank rows at the
-    ///    top of the screen, and the next reflow pushed them into the history — two per
-    ///    step of a drag.) tmux eats the rows below the cursor on a row shrink: the cursor
-    ///    then lands on the bottom row, the floor lies above `start`, and step 4 applies.
-    /// 4. Otherwise the frame is recreated at `start`: `with_options` scrolls the
-    ///    transcript into the history when the frame does not fit below it.
-    /// 5. **Rows the emulator already archived.** A frame near the top that grows in a
+    /// 3. **The floor.** The ONE DSR, before any byte is written, says where that row is:
+    ///    `start = cursor − above`. A frame that was flush with the bottom stays flush:
+    ///    `top = S' − new_h`. An emulator keeps its last row on the bottom through a reflow
+    ///    — the cursor estimate alone lags whatever grew BELOW the cursor — and a row grow
+    ///    pulls history in above it or adds blank rows below it. The rows between `start`
+    ///    and the floor are old-frame rows: they are erased and left as a blank BAND between
+    ///    the transcript and the frame ([`Term::pad`]), which the next output fills before
+    ///    anything scrolls. The move there is `LF`s from `start` — a DSR that is stale by
+    ///    then only makes the band a row taller or shorter. tmux eats the rows below the
+    ///    cursor on a row shrink: the cursor then lands on the bottom row, the floor lies
+    ///    above `start`, and the frame stays at `start`, its rows made by `LF`. Without an
+    ///    answer (a terminal that does not answer the DSR), there is no floor: the frame is
+    ///    laid out where it was.
+    /// 4. **Rows the emulator already archived.** A frame near the top that grows in a
     ///    reflow — a drastic narrowing right after startup — has its first rows pushed
     ///    off the screen into the history. Whole rows counted by the same lower bound
     ///    ([`Drawn::rows_pushed`]), up to `droppable` (the staged rows the frame opens
     ///    with), are returned: the caller drops them from the frame and the staging window,
     ///    since drawing them again would show them twice. `height(dropped)` is the frame
     ///    height without them.
+    /// 5. **The recheck.** A second DSR once the frame is laid out: the bookkeeping follows
+    ///    the cursor (the frame's first row) — it only ever moves the model, never a byte.
     pub(crate) fn resize(
         &mut self,
         size: Size,
@@ -465,56 +326,63 @@ impl<W: Write> Term<W> {
         height: impl FnOnce(u16) -> u16,
     ) -> io::Result<u16> {
         // The size the terminal has NOW: in a fast drag the event's size can already be stale
-        // (the next resize applied, its event not yet read), and every row this pass computes
-        // must match the screen the cursor query is answered from.
-        let size = self
+        // (the next resize applied, its event not yet read).
+        let mut size = self
             .real_size()
             .filter(|s| s.width > 0 && s.height > 0)
             .unwrap_or(size);
-        let old = self.size;
-        let flush = self.top.saturating_add(self.view_height) >= old.height;
-        let drawn = self.drawn.take();
-        let mut size = size;
-        let mut start = self.top.min(size.height.saturating_sub(1));
+        let old = self.t.size();
+        let view = self.t.viewport();
+        let flush = view.bottom() >= old.height;
+        let at = self.t.frame_cursor();
+        let d = Drawn {
+            top: view.y,
+            widths: visible_widths(self.t.shown(), view),
+            cursor_row: at.y,
+            cursor_x: at.x,
+        };
+        let mut above = d.cursor_row;
+        let mut start = None;
         let mut dropped = 0;
         // A DSR that fails (crossterm's ~2 s timeout, a terminal that never answers) is not
-        // a reason to unwind the loop: without the cursor the tracked top is the anchor, as
-        // for a resize that finds nothing drawn — nothing learned, nothing claimed.
-        let cursor = match &drawn {
-            Some(_) => self.cursor_position().ok(),
-            None => None,
-        };
-        if let (Some(d), Some(pos)) = (&drawn, cursor) {
+        // a reason to unwind the loop: the anchor is the cursor either way.
+        if let Ok(pos) = self.cursor_position() {
             // The cursor is the one current fact: a cursor below the last row of the size just
             // read means the terminal grew again in between — it has at least that many rows.
-            // (Clamping the cursor to the stale size put the anchor on transcript rows.)
             if pos.y >= size.height {
                 size.height = pos.y.saturating_add(1);
             }
-            let cur = pos.y;
             if size.width < old.width {
-                self.learn_reflow(d, old, size, cur, flush);
+                self.learn_reflow(&d, old, size, pos.y, flush);
             }
             let cols = (size.width < old.width && self.reflows == Some(true)).then_some(size.width);
-            let above = d
+            above = d
                 .cursor_row
                 .saturating_add(cols.map_or(0, |c| d.growth_above(c)));
-            start = cur.saturating_sub(above);
+            start = Some(pos.y.saturating_sub(above));
             dropped = d
-                .rows_pushed(above.saturating_sub(cur), cols)
+                .rows_pushed(above.saturating_sub(pos.y), cols)
                 .min(droppable);
         }
-        self.size = size;
-        let new_h = height(dropped);
-        let floor = size.height.saturating_sub(new_h);
-        if flush && floor > start {
-            erase_down(&mut self.ctrl, start)?;
-            self.ctrl.flush()?;
-            self.pad = self.pad.saturating_add(floor - start);
-            self.recreate(new_h, floor)?;
-        } else {
-            self.recreate(new_h, start)?;
+        self.t.set_size(size);
+        let new_h = height(dropped).clamp(1, size.height.max(1));
+        self.t.up_from_cursor(above)?;
+        if let Some(s) = start {
+            self.t.resync(s);
         }
+        self.t.erase_here_down()?;
+        self.line_len.clear();
+        let here = self.t.cursor().y;
+        let floor = size.height.saturating_sub(new_h);
+        if flush && start.is_some() && floor > here {
+            self.t.down(floor - here)?;
+            self.pad = self.pad.saturating_add(floor - here);
+        }
+        self.t.place(new_h)?;
+        if let Ok(pos) = self.cursor_position() {
+            self.t.resync(pos.y);
+        }
+        self.pad = self.pad.min(self.top());
         Ok(dropped)
     }
 
@@ -539,7 +407,7 @@ impl<W: Write> Term<W> {
         }
         let rows_below = new.height.saturating_sub(1).saturating_sub(cur);
         let plain_below = self
-            .view_height
+            .view_height()
             .saturating_sub(1)
             .saturating_sub(d.cursor_row);
         if flush && new.height <= old.height && rows_below > plain_below {
@@ -551,71 +419,6 @@ impl<W: Write> Term<W> {
                 self.reflows = Some(false);
             }
         }
-    }
-
-    /// The W1 recreation proper: `MoveTo(0, at)`, a fresh `Inline(new_h)` terminal over
-    /// the acknowledged size (`with_options` scrolls history up when the frame does not
-    /// fit below `at`), the W2 pin, and the W3 clear from the new top down.
-    fn recreate(&mut self, new_h: u16, at: u16) -> io::Result<()> {
-        // A FRESH observation before the W3 erase (P0, 2026-09-24). `with_options` places the
-        // frame by counting the newlines that scroll past the bottom of the screen it BELIEVES
-        // in — and in a fast drag neither the resize event nor the tty's own size is current
-        // (tmux applies the next resize, pulling history rows back on a grow, before either
-        // says so): fewer newlines scroll than counted, the computed top lands above the
-        // frame, and the erase from there wiped a committed row. The one current fact is the
-        // cursor: the newlines leave it on the frame's REAL bottom row. If it is not where the
-        // computation expects, the screen has at least (exactly, when it is shorter) that many
-        // rows; re-anchor the frame on the observed rows and check again — only then erase.
-        // A cursor query that fails keeps the computed top.
-        let mut at = at;
-        for _ in 0..3 {
-            self.construct(new_h, at)?;
-            let area = self.terminal.get_frame().area();
-            let expected = area.bottom().saturating_sub(1);
-            let Ok(cur) = self.cursor_position() else {
-                break;
-            };
-            if cur.y == expected {
-                break;
-            }
-            let rows = if cur.y < expected {
-                cur.y.saturating_add(1)
-            } else {
-                self.size.height.max(cur.y.saturating_add(1))
-            };
-            self.size.height = rows;
-            at = cur.y.saturating_sub(area.height.saturating_sub(1));
-        }
-        let area = self.terminal.get_frame().area();
-        self.view_height = new_h;
-        self.top = area.y.min(self.size.height.saturating_sub(new_h)); // W2
-        self.pad = self.pad.min(self.top);
-        self.terminal.clear()?; // W3
-        // Everything from the top down is erased: every line empty, and no cursor row known
-        // — a resize before the next draw keeps the tracked top.
-        self.drawn = None;
-        self.line_len.clear();
-        Ok(())
-    }
-
-    /// `MoveTo(0, at)` and a fresh `Inline(new_h)` terminal over the acknowledged size —
-    /// `with_options` scrolls history up when the frame does not fit below `at`. No erase.
-    fn construct(&mut self, new_h: u16, at: u16) -> io::Result<()> {
-        anchor(&mut self.ctrl, self.geo.as_ref(), at)?;
-        let backend = LoopBackend {
-            inner: CrosstermBackend::new((self.make_writer)()),
-            geo: self.geo.clone(),
-            size: self.size,
-            // `anchor` just put the cursor here (through the control writer).
-            at: Some(Position::new(0, at)),
-        };
-        self.terminal = Terminal::with_options(
-            backend,
-            TerminalOptions {
-                viewport: Viewport::Inline(new_h),
-            },
-        )?;
-        Ok(())
     }
 
     /// The terminal's size NOW — the synthetic one under [`Geometry`], the tty's live.
@@ -637,32 +440,24 @@ impl<W: Write> Term<W> {
         Ok(Position::new(x, y))
     }
 
-    /// Commits pre-wrapped rows into native scrollback via `insert_before`, sized by
-    /// W6 `LINE_COUNT_SELF_CONSISTENCY`, then updates the tracked top (W2:
-    /// push-down-then-pin — ratatui's own internal algorithm). Returns the row count.
     /// Closes the band a resize left above the frame (W5 step 3) when the drag is over: the
-    /// region above the frame scrolls down over it, so the transcript sits on the frame again
-    /// and the band's rows go to the top of the screen — never a hole the next output starts
-    /// in. Once per drag, never inside a resize pass (a scroll during the drag would leave
-    /// blank rows at the top for the drag's next reflow to push into the history). The
-    /// cursor ends at home; the caller redraws.
+    /// band's rows are deleted and the screen scrolled back down over them, so the transcript
+    /// sits on the frame again, the frame where it was, and the band's rows go to the top of
+    /// the screen — never a hole the next output starts in. Once per drag, never inside a
+    /// resize pass (a scroll during the drag would leave blank rows at the top for the drag's
+    /// next reflow to push into the history).
     pub(crate) fn close_band(&mut self) -> io::Result<()> {
-        let pad = std::mem::take(&mut self.pad).min(self.top);
-        if pad == 0 {
-            return Ok(());
-        }
-        write!(self.ctrl, "\x1b[1;{}r\x1b[{pad}T\x1b[r", self.top)?;
-        self.ctrl.flush()?;
-        self.drawn = None;
-        Ok(())
+        let pad = std::mem::take(&mut self.pad).min(self.top());
+        self.t.close_band(pad)
     }
 
+    /// Commits pre-wrapped rows into native scrollback right above the frame, sized by W6
+    /// `LINE_COUNT_SELF_CONSISTENCY`. Returns the row count.
     pub(crate) fn insert_lines(&mut self, rows: &[String]) -> io::Result<u16> {
         if rows.is_empty() {
             return Ok(0);
         }
-        let size = self.size;
-        let width = size.width.max(1);
+        let width = self.t.size().width.max(1);
         let lines: Vec<Line<'static>> = rows.iter().map(|r| ansi_to_spans(r)).collect();
         // W6: the region pre-wraps to ≤ width−1 and splits embedded newlines, so the
         // measured height must equal the entry count — one entry, one row.
@@ -678,74 +473,58 @@ impl<W: Write> Term<W> {
         // The band a resize left above the frame (W5) takes the first rows: they are written
         // straight into it, right under the transcript, and the frame does not move — only
         // what the band cannot hold is inserted (and scrolls anything).
-        let pad = self.pad.min(self.top);
+        let pad = self.pad.min(self.top());
         if pad > 0 {
             let k = pad.min(total);
             let rest = lines.split_off(usize::from(k));
-            let area = ratatui::layout::Rect::new(0, self.top - pad, width, k);
-            let mut buf = ratatui::buffer::Buffer::empty(area);
-            Paragraph::new(Text::from(lines)).render(area, &mut buf);
-            let backend = self.terminal.backend_mut();
-            backend.draw(
-                buf.content
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, c)| !is_blank(c))
-                    .map(|(i, c)| {
-                        let i = u16::try_from(i).unwrap_or(u16::MAX);
-                        (area.x + i % width, area.y + i / width, c)
-                    }),
-            )?;
-            Backend::flush(backend)?;
+            let para = Paragraph::new(Text::from(lines));
+            self.t.fill_above(pad, k, |buf| {
+                let area = buf.area;
+                para.render(area, buf);
+            })?;
             self.pad = pad - k;
             lines = rest;
         }
         if !lines.is_empty() {
             let n = u16::try_from(lines.len()).unwrap_or(u16::MAX);
             let para = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
-            self.terminal.insert_before(n, |buf| {
+            self.t.insert_before(n, |buf| {
                 let area = buf.area;
                 para.render(area, buf);
             })?;
-            self.top = self
-                .top
-                .saturating_add(n)
-                .min(size.height.saturating_sub(self.view_height));
         }
-        self.drawn = None; // the insert left the cursor above the frame
         Ok(total)
     }
 
-    /// Full clear from the viewport top to screen end + back-buffer reset (the W3
-    /// primitive; also the T-32 `tea.ClearScreen` twin for surface Tab switches).
+    /// Erases every frame row and forgets what they showed — the T-32 `tea.ClearScreen`
+    /// twin for surface Tab switches: the next draw writes every cell.
     pub(crate) fn clear(&mut self) -> io::Result<()> {
         self.line_len.clear();
-        self.terminal.clear()
+        self.t.clear()
     }
 
-    /// The acknowledged terminal size (W5) — what the frame is laid out against.
+    /// The size the frame is laid out against (what the last resize pass took).
     pub(crate) fn size(&self) -> Size {
-        self.size
+        self.t.size()
     }
 
     /// W4 `DRAW_WITH_INSERTS` end step: renders the frame rows top-down into the
     /// inline viewport and places the REAL cursor (`None` = hidden, surface open). Either
     /// way the physical cursor ends on a known frame row — the cursor's, or the frame's
-    /// last row while it is hidden — which is what W5's resize anchor reads back.
+    /// first row while it is hidden — which is what W5's resize anchor counts from.
     pub(crate) fn draw_frame(&mut self, view: &FrameView) -> io::Result<()> {
         let lines: Vec<Line<'static>> = view.rows.iter().map(|r| ansi_to_spans(r)).collect();
         let cursor = view.cursor;
         let line_len = std::mem::take(&mut self.line_len);
+        let area = self.t.viewport();
         let mut placed = None;
-        self.terminal.draw(|f| {
-            let area = f.area();
-            f.render_widget(Paragraph::new(Text::from(lines)), area);
-            let buf = f.buffer_mut();
+        self.t.draw(|buf| {
+            Paragraph::new(Text::from(lines)).render(area, buf);
             let widths = visible_widths(buf, area);
-            // A row whose line may run past what it now shows: ratatui's diff writes a
-            // SPACE into each cell that went blank, and an emulator counts written cells as
-            // line length — even after an `EL` (tmux does). Its cells go along to be
-            // written again over an erased line.
+            // A row whose line may run past what it now shows: the diff writes a SPACE into
+            // each cell that went blank, and an emulator counts written cells as line length
+            // — even after an `EL` (tmux does). Its cells go along to be written again over
+            // an erased line.
             let redraw: Vec<(u16, Vec<Cell>)> = widths
                 .iter()
                 .enumerate()
@@ -759,20 +538,15 @@ impl<W: Write> Term<W> {
                 })
                 .collect();
             let bottom = area.bottom().saturating_sub(1);
-            let pos = match cursor {
-                Some((x, y)) => {
-                    let pos = Position::new(
-                        x.min(area.width.saturating_sub(1)),
-                        area.y.saturating_add(y).min(bottom),
-                    );
-                    f.set_cursor_position(pos);
-                    pos
-                }
-                None => Position::new(0, area.y),
-            };
-            placed = Some((pos, area.y, widths, redraw));
+            let pos = cursor.map(|(x, y)| {
+                Position::new(
+                    x.min(area.width.saturating_sub(1)),
+                    area.y.saturating_add(y).min(bottom),
+                )
+            });
+            placed = Some((pos, widths, redraw));
         })?;
-        let Some((pos, top, widths, redraw)) = placed else {
+        let Some((pos, widths, redraw)) = placed else {
             return Ok(());
         };
         // What the diff may have written: nothing past the longer of the old line and the
@@ -782,23 +556,10 @@ impl<W: Write> Term<W> {
             .enumerate()
             .map(|(i, &w)| w.max(line_len.get(i).copied().unwrap_or(0)))
             .collect();
-        let rewrote = !redraw.is_empty();
-        if rewrote {
-            self.rewrite_rows(&redraw, &widths, top)?;
-        }
-        if cursor.is_none() || rewrote {
-            // Hidden: park it on the frame's top-left, where the next resize can find it
-            // with no frame row above it to rewrap. Cursor-invisible, so the move costs
-            // nothing on screen. (Visible, after a rewrite: back where the draw put it.)
-            self.terminal.set_cursor_position(pos)?;
-        }
-        self.drawn = Some(Drawn {
-            top,
-            widths,
-            cursor_row: pos.y.saturating_sub(top),
-            cursor_x: pos.x,
-        });
-        Ok(())
+        self.rewrite_rows(&redraw, &widths, area.y)?;
+        // Hidden: parked on the frame's top-left, where the next resize finds no frame row
+        // above it to rewrap. Cursor-invisible, so the move costs nothing on screen.
+        self.t.place_cursor(pos)
     }
 
     /// Keeps each frame row's line in the emulator exactly as long as what it shows, which
@@ -811,23 +572,14 @@ impl<W: Write> Term<W> {
         widths: &[u16],
         top: u16,
     ) -> io::Result<()> {
-        let backend = self.terminal.backend_mut();
         for (y, cells) in rows {
-            backend.set_cursor_position(Position::new(0, *y))?;
-            backend.clear_region(ClearType::CurrentLine)?;
-            backend.draw(
-                cells
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, c)| !is_blank(c))
-                    .map(|(x, c)| (u16::try_from(x).unwrap_or(u16::MAX), *y, c)),
-            )?;
+            self.t.rewrite_row(*y, cells)?;
             let i = usize::from(y.saturating_sub(top));
             if let (Some(len), Some(&w)) = (self.line_len.get_mut(i), widths.get(i)) {
                 *len = w;
             }
         }
-        Backend::flush(backend)
+        Ok(())
     }
 
     /// Emits the window title OSC — on change only (the facade already sanitized it).
@@ -880,15 +632,9 @@ impl<W: Write> Term<W> {
 
     /// Parks the cursor on the frame's bottom row, opens a fresh shell line and clears
     /// from there down — the loop's exit path (the spike's park sequence). The clear is
-    /// for what a frame taller than the last one may have left below it: the exit round
-    /// repaints the frame without the flushed staging window, and W3's clear covers the
-    /// old rows only when the height changed.
+    /// for what a frame taller than the last one may have left below it.
     pub(crate) fn park_cursor(&mut self) -> io::Result<()> {
-        let bottom = self.top.saturating_add(self.view_height);
-        queue!(self.ctrl, MoveTo(0, bottom.saturating_sub(1)))?;
-        self.ctrl.write_all(b"\r\n")?;
-        queue!(self.ctrl, Clear(CrosstermClear::FromCursorDown))?;
-        self.ctrl.flush()
+        self.t.park()
     }
 }
 
@@ -989,45 +735,12 @@ impl Drawn {
     }
 }
 
-/// A cell that shows nothing: a space with no background and no modifier.
-fn is_blank(c: &Cell) -> bool {
-    c.symbol() == " " && c.bg == ratatui::style::Color::Reset && c.modifier.is_empty()
-}
-
-/// Erases from the start of `row` to the end of the screen — on row 0 as an erase of the row
-/// and one from row 1 down, never an erase-below from the home position, which tmux takes
-/// for a clear screen and files into the history (see [`LoopBackend`]'s `clear_region`).
-fn erase_down<W: Write>(ctrl: &mut W, row: u16) -> io::Result<()> {
-    if row == 0 {
-        queue!(
-            ctrl,
-            MoveTo(0, 0),
-            Clear(CrosstermClear::CurrentLine),
-            MoveTo(0, 1),
-            Clear(CrosstermClear::FromCursorDown)
-        )?;
-    } else {
-        queue!(ctrl, MoveTo(0, row), Clear(CrosstermClear::FromCursorDown))?;
-    }
-    ctrl.flush()
-}
-
-/// Moves the physical cursor to `(0, top)` ahead of an inline (re)construction —
-/// `with_options` anchors the viewport at the cursor row. Mirrors the move into the
-/// synthetic geometry so a headless recreation anchors identically.
-fn anchor<W: Write>(ctrl: &mut W, geo: Option<&Geometry>, top: u16) -> io::Result<()> {
-    queue!(ctrl, MoveTo(0, top))?;
-    ctrl.flush()?;
-    if let Some(g) = geo {
-        g.set_cursor(Position::new(0, top));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use ratatui::buffer::Buffer;
-    use ratatui::layout::Rect;
+    use ratatui::layout::{Rect, Size};
     use ratatui::text::Line;
     use ratatui::widgets::Widget;
 
@@ -1063,142 +776,194 @@ mod tests {
         }
     }
 
-    /// The acknowledged-size CANARY (W5): the backend keeps answering the size iota last took
-    /// from a resize event, whatever the terminal reports, until `Term::resize` acknowledges
-    /// the new one. If a ratatui upgrade or a refactor broke this seam, `Terminal::draw`'s own
-    /// autoresize would run ratatui's inline resize again (row 0 + `ESC[2J` on a narrowing).
+    fn tall() -> FrameView {
+        FrameView {
+            rows: (0..9).map(|i| format!("row-{i}")).collect(),
+            cursor: Some((2, 6)),
+        }
+    }
+
+    /// Every row a user can reach: the history (oldest first), then the screen.
+    fn reachable(p: &mut vt100::Parser) -> Vec<String> {
+        let cols = p.screen().size().1;
+        let screen: Vec<String> = p.screen().rows(0, cols).collect();
+        p.screen_mut().set_scrollback(usize::MAX);
+        let depth = p.screen().scrollback();
+        let mut all = Vec::with_capacity(depth + screen.len());
+        for off in (1..=depth).rev() {
+            p.screen_mut().set_scrollback(off);
+            all.push(p.screen().rows(0, cols).next().unwrap_or_default());
+        }
+        p.screen_mut().set_scrollback(0);
+        all.extend(screen);
+        all
+    }
+
+    /// Replays `bytes` through a `rows`×`cols` emulator that, at byte `mark`, grows by
+    /// `pulled` rows the way tmux does: history rows come back onto the top of the screen
+    /// (here: `PULLED-k` rows) and everything — the cursor with it — moves down.
+    fn replay_pulled(bytes: &[u8], mark: usize, rows: u16, cols: u16, pulled: u16) -> Vec<String> {
+        let mut p = vt100::Parser::new(rows, cols, 1000);
+        p.process(&bytes[..mark]);
+        let (r, c) = p.screen().cursor_position();
+        p.screen_mut().set_size(rows + pulled, cols);
+        let mut seq = format!("\u{1b}[1;1H\u{1b}[{pulled}L");
+        for k in 0..pulled {
+            let _ = write!(seq, "\u{1b}[{};1HPULLED-{k}", k + 1);
+        }
+        let _ = write!(seq, "\u{1b}[{};{}H", r + pulled + 1, c + 1);
+        p.process(seq.as_bytes());
+        p.process(&bytes[mark..]);
+        reachable(&mut p)
+    }
+
+    /// A term with 18 transcript rows `t-00..t-17` above a 9-row frame flush with the bottom
+    /// of a 27-row screen.
+    fn with_transcript() -> (Term<SharedBuf>, SharedBuf, Geometry) {
+        let (mut t, buf, geo) = term(120, 27, 9, 18);
+        let rows: Vec<String> = (0..18).map(|i| format!("t-{i:02}")).collect();
+        t.insert_lines(&rows).unwrap();
+        t.draw_frame(&tall()).unwrap();
+        (t, buf, geo)
+    }
+
+    fn assert_all_once(all: &[String], names: &[String]) {
+        for name in names {
+            let n = all.iter().filter(|r| r.trim_end() == name).count();
+            assert_eq!(n, 1, "{name} reachable {n} times:\n{}", all.join("\n"));
+        }
+    }
+
+    fn transcript(extra: &[&str], pulled: u16) -> Vec<String> {
+        let mut names: Vec<String> = (0..18).map(|i| format!("t-{i:02}")).collect();
+        names.extend(extra.iter().map(|s| (*s).to_owned()));
+        names.extend((0..pulled).map(|k| format!("PULLED-{k}")));
+        names
+    }
+
+    /// The acknowledged size is gone (it existed so ratatui's autoresize would not run its
+    /// inline resize): nothing but the resize pass reads the size, so a draw after the tty
+    /// changed still lays out against the size the last pass took — and never clears.
     #[test]
-    fn the_backend_answers_the_acknowledged_size_until_iota_acknowledges_a_new_one() {
+    fn a_draw_lays_out_against_the_size_the_resize_pass_took() {
         let (mut t, buf, geo) = term(80, 24, 4, 20);
         t.draw_frame(&frame()).unwrap();
         geo.set_size(60, 24);
-        assert_eq!(
-            t.terminal.size().unwrap().width,
-            80,
-            "the backend must not read the tty"
-        );
         let mark = buf.bytes().len();
-        t.draw_frame(&frame()).unwrap(); // `draw` autoresizes — against the acknowledged size
+        t.draw_frame(&frame()).unwrap();
         let drawn = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
-        assert!(
-            !drawn.contains("\u{1b}[2J"),
-            "ratatui's inline resize ran: {drawn:?}"
-        );
-        assert_eq!(t.terminal.size().unwrap().width, 80);
-        t.resize(
-            ratatui::layout::Size {
-                width: 60,
-                height: 24,
-            },
-            0,
-            |_| 4,
-        )
-        .unwrap();
-        assert_eq!(
-            t.terminal.size().unwrap().width,
-            60,
-            "acknowledged by `Term::resize`"
-        );
+        assert!(!drawn.contains("\u{1b}[2J"), "a clear on a draw: {drawn:?}");
+        assert!(!drawn.contains("\u{1b}[J"), "an erase on a draw: {drawn:?}");
+        assert_eq!(t.size().width, 80);
+        t.resize(Size::new(60, 24), 0, |_| 4).unwrap();
+        assert_eq!(t.size().width, 60, "taken by `Term::resize`");
     }
 
     /// The verifier's P0 (2026-09-24), at the seam: in a fast drag tmux has already grown the
     /// screen to 28 rows — pulling a history row back, so the frame and the cursor moved down
-    /// one — while both the event and the tty still say 27. A recreation computed on 27 rows
-    /// counts one newline-scroll too many and puts the top a row above the frame; it must see
-    /// the cursor land a row lower than it expected and re-anchor before the W3 erase, which
-    /// used to wipe the committed row above the frame.
+    /// one — while both the event and the tty still say 27. The erase is counted up from the
+    /// cursor, so the pulled row and every transcript row survive, and the bookkeeping
+    /// follows the cursor.
     #[test]
     fn a_resize_on_a_stale_size_never_erases_above_the_frame() {
-        let (mut t, buf, geo) = term(120, 27, 9, 18);
-        let tall = FrameView {
-            rows: (0..9).map(|i| format!("row-{i}")).collect(),
-            cursor: Some((2, 6)),
-        };
-        t.draw_frame(&tall).unwrap();
-        // tmux: 27 → 28, one history row pulled back; the reports lag.
+        let (mut t, buf, geo) = with_transcript();
+        let mark = buf.bytes().len();
         geo.set_real_rows(28);
         geo.shift_cursor(1);
-        let mark = buf.bytes().len();
-        t.resize(
-            ratatui::layout::Size {
-                width: 120,
-                height: 27,
-            },
-            0,
-            |_| 9,
-        )
-        .unwrap();
-        let after = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
-        assert_eq!(t.top, 19, "the frame is where the terminal put it");
-        for row in 1..=19 {
-            assert!(
-                !after.contains(&format!("\u{1b}[{row};1H\u{1b}[J")),
-                "an erase from row {row}, above the frame (row 20): {after:?}"
-            );
-        }
+        t.resize(Size::new(120, 27), 0, |_| 9).unwrap();
+        t.draw_frame(&tall()).unwrap();
+        assert_eq!(t.top(), 19, "the frame is where the terminal put it");
+        let all = replay_pulled(&buf.bytes(), mark, 27, 120, 1);
+        assert_all_once(&all, &transcript(&[], 1));
     }
 
     /// The cursor answers from a screen that grew AGAIN after the size was read (reported 26,
     /// the cursor on row 27): the cursor wins — the screen has at least 28 rows — and the
-    /// anchor is the cursor's frame top, never a top computed from a cursor clamped to the
-    /// stale size (which put the anchor two rows up, on the transcript, and erased them).
+    /// anchor is the cursor's frame top.
     #[test]
     fn a_cursor_beyond_the_reported_size_wins_over_it() {
-        let (mut t, buf, geo) = term(120, 26, 9, 17);
-        let tall = FrameView {
-            rows: (0..9).map(|i| format!("row-{i}")).collect(),
-            cursor: Some((2, 6)),
-        };
-        t.draw_frame(&tall).unwrap();
-        geo.set_real_rows(30);
-        geo.shift_cursor(4); // tmux grew twice, pulling history rows back: the frame moved down 4
+        let (mut t, buf, geo) = with_transcript();
         let mark = buf.bytes().len();
-        t.resize(
-            ratatui::layout::Size {
-                width: 120,
-                height: 26,
-            },
-            0,
-            |_| 9,
-        )
-        .unwrap();
-        let after = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
-        assert!(
-            t.top >= 21,
-            "the anchor is the cursor's frame top (21), got {}",
-            t.top
-        );
-        for row in 1..=21 {
-            assert!(
-                !after.contains(&format!("\u{1b}[{row};1H\u{1b}[J")),
-                "an erase from row {row}, above the frame (row 22): {after:?}"
-            );
-        }
+        geo.set_real_rows(31);
+        geo.shift_cursor(4); // tmux grew twice, pulling history rows back: the frame moved down 4
+        t.resize(Size::new(120, 27), 0, |_| 9).unwrap();
+        t.draw_frame(&tall()).unwrap();
+        assert_eq!(t.top(), 22, "the anchor is the cursor's frame top");
+        let all = replay_pulled(&buf.bytes(), mark, 27, 120, 4);
+        assert_all_once(&all, &transcript(&[], 4));
+    }
+
+    /// Loss (c) of the 2026-09-25 re-verification — the check→execute window: the DSR answers
+    /// from the screen as it was, and tmux applies the next grow (pulling history rows back)
+    /// before the pass's bytes arrive. The erase is counted from the cursor, which moved with
+    /// the frame: nothing above it is touched, whatever the DSR said.
+    #[test]
+    fn a_grow_between_the_dsr_and_the_erase_loses_no_row() {
+        let (mut t, buf, _geo) = with_transcript();
+        let mark = buf.bytes().len();
+        // The DSR (geo) still answers the old row; the emulator pulls 3 rows at `mark`.
+        t.resize(Size::new(120, 27), 0, |_| 9).unwrap();
+        t.draw_frame(&tall()).unwrap();
+        let all = replay_pulled(&buf.bytes(), mark, 27, 120, 3);
+        assert_all_once(&all, &transcript(&[], 3));
+    }
+
+    /// Loss (a) of the 2026-09-25 re-verification — streaming through a height drag: tmux has
+    /// grown the screen (history rows pulled back, the frame and the cursor down) and the loop,
+    /// which has not read the resize yet, inserts a row and draws. Cursor-relative, the insert
+    /// lands right above the frame and the draw on it, so the cursor stays on the frame row the
+    /// bookkeeping says, and the pass that follows erases the frame only.
+    #[test]
+    fn writes_before_the_resize_is_read_keep_the_anchor() {
+        let (mut t, buf, geo) = with_transcript();
+        let mark = buf.bytes().len();
+        geo.set_real_rows(29);
+        geo.shift_cursor(2);
+        t.insert_lines(&["new-0".to_owned(), "new-1".to_owned()])
+            .unwrap();
+        t.draw_frame(&tall()).unwrap();
+        geo.set_size(120, 29);
+        t.resize(Size::new(120, 29), 0, |_| 9).unwrap();
+        t.draw_frame(&tall()).unwrap();
+        let all = replay_pulled(&buf.bytes(), mark, 27, 120, 2);
+        assert_all_once(&all, &transcript(&["new-0", "new-1"], 2));
+        let rows: Vec<&String> = all.iter().filter(|r| r.starts_with("row-")).collect();
+        assert_eq!(rows.len(), 9, "one frame on screen:\n{}", all.join("\n"));
+    }
+
+    /// Loss (b) of the 2026-09-25 re-verification — a terminal that does not answer the DSR,
+    /// through a grow that pulled history rows back: the old fallback anchor (the recorded
+    /// top) was a row above the frame by then and its erase took a committed row. There is
+    /// no fallback anchor now — the erase is counted from the cursor.
+    #[test]
+    fn a_resize_whose_dsr_fails_loses_no_row_on_a_grow() {
+        let (mut t, buf, geo) = with_transcript();
+        let mark = buf.bytes().len();
+        geo.set_dsr_fails(true);
+        geo.set_size(120, 28);
+        geo.shift_cursor(1);
+        t.resize(Size::new(120, 28), 0, |_| 9).unwrap();
+        t.draw_frame(&tall()).unwrap();
+        let all = replay_pulled(&buf.bytes(), mark, 27, 120, 1);
+        assert_all_once(&all, &transcript(&[], 1));
     }
 
     /// A terminal that never answers the cursor query (crossterm times out with an error) must
-    /// not take the loop down on a resize: the tracked top stays the anchor, the recreation's
-    /// own queries fall back to where the cursor was put, and the frame is drawn.
+    /// not take the loop down on a resize: the tracked top stays the anchor and the frame is
+    /// drawn.
     #[test]
     fn a_resize_whose_dsr_fails_keeps_the_tracked_top_and_does_not_unwind() {
         let (mut t, _buf, geo) = term(80, 24, 4, 20);
         t.draw_frame(&frame()).unwrap();
         geo.set_dsr_fails(true);
         geo.set_size(70, 24);
-        t.resize(
-            ratatui::layout::Size {
-                width: 70,
-                height: 24,
-            },
-            0,
-            |_| 4,
-        )
-        .expect("a failed DSR must not unwind the resize");
-        assert_eq!(t.top, 20, "the tracked top is the anchor");
+        t.resize(Size::new(70, 24), 0, |_| 4)
+            .expect("a failed DSR must not unwind the resize");
+        assert_eq!(t.top(), 20, "the tracked top is the anchor");
         t.draw_frame(&frame()).expect("the frame draws after it");
         assert!(
             t.ensure_height(5).is_ok(),
-            "a later recreation survives it too"
+            "a later height change survives it too"
         );
     }
 
