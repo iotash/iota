@@ -72,6 +72,15 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Fixed
 
+- **No line is lost while a reply streams through a resize.** Dragging a tmux
+  window's or pane's height while a reply was streaming lost a few of its lines
+  every time; so did a height drag in a terminal that never answers iota's
+  cursor query, and, rarely, one in tmux under load. iota now draws the whole
+  prompt area counting from the cursor rather than from row numbers, so rows the
+  terminal moves in the middle of a resize move with it (X-54).
+- **Opening or closing a picker no longer blinks the prompt.** A change in the
+  prompt area's height used to erase it and draw it again; now only the rows
+  that change are written (X-54).
 - **Dragging a window's or a tmux pane's height down and back no longer loses
   a line.** In tmux, growing the height again within the same drag pulls rows
   back out of the scrollback; iota could erase the conversation's last line

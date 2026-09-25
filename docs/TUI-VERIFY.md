@@ -103,14 +103,13 @@ For each terminal:
       be **unreachable by construction**: the status row always sits below the composer, so
       the cursor is never on the bottom row. Confirm it — resize to a short window and try.
 
-## 2. Partial-region scrollback — LOAD-BEARING (wart W9)
+## 2. Inserted history reaches the scrollback (was wart W9)
 
-The build scrolls a *partial* region (`DECSTBM` + `CSI S`) to make room for inserted history
-without repainting the screen. Whether the lines that scroll out of that region reach the
-emulator's scrollback is emulator-specific and **not negotiable at runtime** — and, since
-2026-09-01, not at build time either: the `tui-portable` fallback (whole-screen scrolling via
-newlines) was removed with the rest of the feature model. **A failing emulator is a bug to
-fix, not a build to switch to.** That is exactly why this check stays.
+Since 2026-09-25 (DIVERGENCES X-54) an insert scrolls the WHOLE screen from the cursor (`LF`)
+and opens the gap with `IL` right above the frame — no partial scroll region (`DECSTBM`) any
+more, so the emulator-specific question of whether rows scrolled out of a partial region reach
+the scrollback is gone: every emulator files a full-screen scroll into its history. The check
+stays because the history's contiguity is still the promise.
 
 For each terminal:
 
@@ -130,9 +129,8 @@ For each terminal:
 > inserted as the rune plus a spurious space, so `❯ 中文一行` rendered `❯ 中 文 一 行`.
 > Cause: a wide grapheme OWNS the cells to its right and a covered cell reads back as a
 > space; ratatui's buffer diff drops those cells, but a backend handed the WHOLE buffer
-> (`Terminal::insert_before`'s `draw_lines` path) prints them. `LoopBackend::draw`
-> (`src/ui/runtime/term.rs`) now drops the covered cells, the same rule ratatui's own
-> diff and `TestBackend` apply. Pinned by `tests/vt100_semantics.rs::wide_runes_insert_intact`
+> (`Terminal::insert_before`'s `draw_lines` path) prints them. Every write now goes
+> through ratatui's own diff (`src/ui/runtime/inline_term.rs`, X-54), which drops them. Pinned by `tests/vt100_semantics.rs::wide_runes_insert_intact`
 > (part of `cargo test`). Still worth an eyeball here: the pin is a byte
 > assertion, not a look.
 
@@ -143,8 +141,11 @@ There is no synchronized-output mode in this build. A 100-line stream is the str
 - [ ] **3.1** Stream ~100 lines. Watch the *frame*, not the text: does the composer row, the
       separator pair or the status line visibly blink, tear or jump?
 - [ ] **3.2** Open and close `/model` a few times mid-stream. A surface open changes the
-      frame height, which recreates the inline viewport and clears (warts W1/W3) — one full
-      repaint per height change is expected; a *sustained* flicker is not.
+      frame height; since X-54 that is a field write: the rows the frame keeps are not
+      erased and not written again (only the rows below them are erased), so the separator,
+      the composer and the status row must NOT blink at all — any flash of them is a defect.
+      (Under W1/W3 each change erased the frame and repainted every cell.) Inserts during a
+      stream move the frame with `LF` + `IL`: watch for the frame jumping a row and back.
 
 ## 4. Resize reflow — count the orphans
 
