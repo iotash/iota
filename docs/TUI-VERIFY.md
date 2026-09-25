@@ -214,10 +214,20 @@ its own viewport top. Some emulators will strand a row above the new viewport. T
       48 for a 60-event oscillation in Ghostty); a first resize that also shrinks drastically
       duplicates 3–4 rows; width→⅓ leaves +10 blank rows; a 60-event width+height jitter
       duplicates 1–4 rows; drags paced 2.1 s apart are separate drags (2 blank rows each).
-      Not verifiable here: a DSR that times out mid-resize (crossterm's ~2 s) — the fail-safe
-      (the tracked top stays the anchor, the loop does not unwind) is pinned headless
-      (`term::tests::a_resize_whose_dsr_fails_*`); a real terminal that drops the query is
-      the manual check.)*
+      LOSS NOT CLOSED (the verifier's re-verification of 4da669a, 2026-09-25; stopgap the same
+      day). Fixed: (1c) a DSR that fails — the tracked top was the anchor of an erase — now
+      erases nothing above the cursor and takes the frame onto the floor through rows it
+      cleared (tmux, `stream 60 20`, queries swallowed by a proxy, height 30→20→30: 3/3 runs
+      lost 2 rows → 0/3); the scroll-on-clear race — every erase and move of a resize pass is
+      now relative to the cursor, and the recreation checks the frame's first row again
+      after its erase (headless: `vt100_tests::a_grow_*`). OPEN: (1b) a height drag while a
+      stream runs still loses 2–4 rows every run (tmux 120x30, `stream 40 60`, bottom edge
+      up 5 / down 5 at 100 ms: 6/6 → 6/6). The rows are not erased by the resize pass: an
+      insert already written to the pty (a DECSTBM scroll + an absolute move) is parsed by
+      tmux AFTER it grows and pulls a history row back, and writes over the row that moved
+      onto its target — before iota can know of the resize. Only writes relative to the
+      cursor survive that; the self-owned inline terminal is the fix, the stopgap cannot be.
+      A DSR outage in a real terminal remains the manual check.)*
       Real emulators: drag a corner in Ghostty, iTerm2, kitty, herdr. No row may be missing
       from the scrollback, and there is exactly one separator pair at the end.
 - [x] 自动化：scenario 06 **4.4** After every resize: exactly one composer row, separators at the new width,

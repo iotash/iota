@@ -1174,8 +1174,10 @@ fn idle_width_grow_keeps_the_frame_down_and_every_row() {
 fn idle_height_shrink_keeps_the_frame_down_and_every_row() {
     let (all, screen, after) = idle_resize(80, 20, -4, |p| {
         // Push the top 4 rows into history (a full-screen scroll), then drop the
-        // now-blank bottom 4 rows.
+        // now-blank bottom 4 rows; the cursor goes with its cell, 4 rows up.
+        let (row, col) = p.screen().cursor_position();
         p.process(format!("\u{1b}[24;1H{}", "\n".repeat(4)).as_bytes());
+        p.process(format!("\u{1b}[{};{}H", row - 3, col + 1).as_bytes());
         p.screen_mut().set_size(20, 80);
     });
     assert_resize_clean("height 24→20", &all, &screen, &after);
@@ -1317,8 +1319,9 @@ fn resize_anchors_at_the_cursor_row_minus_its_frame_row() {
         "full clear on resize:\n{after:?}"
     );
     assert!(
-        after.starts_with("\u{1b}[8;1H"),
-        "the first byte after the event must be the re-anchor MoveTo(0, 7):\n{after:?}"
+        after.starts_with("\u{1b}[2A\r"),
+        "the first bytes after the event must re-anchor RELATIVE to the cursor — two rows \
+         up, to its frame's first row:\n{after:?}"
     );
 }
 
@@ -1355,8 +1358,9 @@ fn a_flush_frame_resizes_onto_the_floor_and_the_band_takes_the_next_output() {
     assert_eq!(t.top, 19, "a flush frame lands on the floor (24 − 5)");
     let after = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
     assert!(
-        after.starts_with("\u{1b}[17;1H\u{1b}[J\u{1b}[20;1H"),
-        "clear from the cursor estimate (16), then re-anchor on the floor:\n{after:?}"
+        after.starts_with("\u{1b}[2A\r\u{1b}[J\u{1b}[3B\r"),
+        "clear from the cursor estimate (16) and go down onto the floor, both relative to the \
+         cursor (18):\n{after:?}"
     );
     assert_eq!(
         scroll_downs(&after),
@@ -1986,4 +1990,161 @@ fn an_oscillating_height_loses_no_row() {
     let (all, _) = emu.finish(&lh.buf.bytes());
     lh.quit_and_join(Duration::from_secs(2));
     assert_no_line_lost_or_doubled("oscillating height", &all);
+}
+
+// --- The stopgap (2026-09-25): no erase trusts a position the emulator may have moved ---
+
+/// A 9-row frame flush on 80×24 under `lines` committed rows `t-NN` (≥ 15), the composer cursor on
+/// frame row 6 (or hidden, parked on the frame's first row), every byte also fed to a tmux
+/// model.
+fn raced_term(
+    lines: usize,
+    cursor: Option<(u16, u16)>,
+) -> (
+    crate::ui::runtime::term::Term<SharedBuf>,
+    SharedBuf,
+    crate::ui::runtime::term::Geometry,
+    Arc<Mutex<ReflowEmu>>,
+    crate::ui::render::frame::FrameView,
+) {
+    // The transcript as plain output ahead of the frame (vt100 files no region-scrolled row
+    // into its history), its last row right above the frame's top.
+    let buf = SharedBuf::default();
+    let mut prelude = String::new();
+    for i in 0..lines {
+        std::fmt::Write::write_fmt(&mut prelude, format_args!("t-{i:02}\r\n")).unwrap();
+    }
+    prelude.push_str(&"\n".repeat(8));
+    io::Write::write_all(&mut buf.clone(), prelude.as_bytes()).unwrap();
+    let geo = crate::ui::runtime::term::Geometry::new(80, 24);
+    let wtr = buf.clone();
+    let mut t = crate::ui::runtime::term::Term::new(
+        Box::new(move || wtr.clone()),
+        9,
+        15,
+        Some(geo.clone()),
+    )
+    .unwrap();
+    let frame = crate::ui::render::frame::FrameView {
+        // The status row runs 70 columns: a narrowing to 60 wraps it BELOW the cursor.
+        rows: (0..9)
+            .map(|i| match i {
+                8 => format!("f-8 {}", "x".repeat(66)),
+                _ => format!("f-{i}"),
+            })
+            .collect(),
+        cursor,
+    };
+    t.draw_frame(&frame).unwrap();
+    (t, buf, geo, Arc::new(Mutex::new(ReflowEmu::new())), frame)
+}
+
+/// The model resizes to `h` rows NOW — the bytes written so far on its screen — and the
+/// synthetic tty follows: the cursor moved with its cell, the size is the new one.
+fn emu_resize(
+    emu: &Mutex<ReflowEmu>,
+    buf: &SharedBuf,
+    geo: &crate::ui::runtime::term::Geometry,
+    (w, h): (u16, u16),
+) {
+    let moved = emu.lock().unwrap().resize(&buf.bytes(), w, h);
+    geo.shift_cursor(moved);
+    geo.set_size(w, h);
+}
+
+/// Arms the tmux model to resize to `h` rows right after the `nth` cursor query is answered.
+fn resize_after_query(
+    nth: usize,
+    size: (u16, u16),
+    emu: &Arc<Mutex<ReflowEmu>>,
+    buf: &SharedBuf,
+    geo: &crate::ui::runtime::term::Geometry,
+) {
+    let (emu, buf, g) = (Arc::clone(emu), buf.clone(), geo.clone());
+    geo.after_query(nth, move || emu_resize(&emu, &buf, &g, size));
+}
+
+/// One resize pass on `h` rows as the loop runs it, and the draw after it.
+fn pass(
+    t: &mut crate::ui::runtime::term::Term<SharedBuf>,
+    frame: &crate::ui::render::frame::FrameView,
+    (width, height): (u16, u16),
+) {
+    t.resize(ratatui::layout::Size { width, height }, 0, |_| 9)
+        .unwrap();
+    t.draw_frame(frame).unwrap();
+}
+
+/// Every `t-NN` of `lines` is still reachable (a duplicate is the budget's; a loss is not).
+fn assert_no_committed_row_lost(tag: &str, lines: usize, all: &[String]) {
+    for i in 0..lines {
+        let line = format!("t-{i:02}");
+        assert!(
+            all.iter().any(|r| r.trim_end() == line),
+            "{tag}: {line} lost:\n{}",
+            all.join("\n")
+        );
+    }
+}
+
+/// The scroll-on-clear race (the verifier's ~2/85): tmux grows the screen — pulling history
+/// rows back, the frame and the cursor moving down with them — right after the recreation's
+/// check found the frame where it placed it, and before its W3 erase. An erase from the
+/// frame's top as an ABSOLUTE row then wiped the rows pulled onto it.
+#[test]
+fn a_grow_after_the_recreations_check_erases_no_committed_row() {
+    for cursor in [Some((2, 6)), None] {
+        let (mut t, buf, geo, emu, frame) = raced_term(40, cursor);
+        emu.lock().unwrap().feed(&buf.bytes());
+        // Queries: the pass's, `with_options`'s, the recreation's check.
+        resize_after_query(2, (80, 26), &emu, &buf, &geo);
+        pass(&mut t, &frame, (80, 24));
+        pass(&mut t, &frame, (80, 26));
+        let (all, _) = emu.lock().unwrap().finish(&buf.bytes());
+        assert_no_committed_row_lost(&format!("race, cursor {cursor:?}"), 40, &all);
+    }
+}
+
+/// 1b (the verifier's streaming height drag, 6/6): the pass's own erase — the band a flush
+/// frame leaves when it goes down onto the floor — ran on the row the cursor query named,
+/// and tmux grew in between: the committed rows pulled onto that row were erased. Every
+/// cursor query a pass makes is raced here, with the frame going down onto the floor (the
+/// status row wrapped below the cursor, which moved up a row).
+#[test]
+fn a_grow_between_the_cursor_query_and_the_band_erase_loses_no_row() {
+    for nth in 0..3 {
+        for cursor in [Some((2, 6)), None] {
+            let (mut t, buf, geo, emu, frame) = raced_term(40, cursor);
+            emu.lock().unwrap().feed(&buf.bytes());
+            emu_resize(&emu, &buf, &geo, (60, 24));
+            resize_after_query(nth, (60, 27), &emu, &buf, &geo);
+            pass(&mut t, &frame, (60, 24));
+            pass(&mut t, &frame, (60, 27));
+            let (all, _) = emu.lock().unwrap().finish(&buf.bytes());
+            assert_no_committed_row_lost(&format!("query {nth}, cursor {cursor:?}"), 40, &all);
+        }
+    }
+}
+
+/// 1c (the verifier's DSR proxy, 2/2): with the cursor query failing, a height round trip in
+/// tmux must lose no row — without the cursor nothing ABOVE it is erased.
+#[test]
+fn a_height_round_trip_without_a_cursor_answer_loses_no_row() {
+    for cursor in [Some((2, 6)), None] {
+        for lines in [19, 40] {
+            let (mut t, buf, geo, emu, frame) = raced_term(lines, cursor);
+            emu.lock().unwrap().feed(&buf.bytes());
+            geo.set_dsr_fails(true);
+            for h in [27, 24, 20, 24, 29, 24] {
+                emu_resize(&emu, &buf, &geo, (80, h));
+                pass(&mut t, &frame, (80, h));
+            }
+            let (all, _) = emu.lock().unwrap().finish(&buf.bytes());
+            assert_no_committed_row_lost(
+                &format!("dsr fails, {lines} lines, cursor {cursor:?}"),
+                lines,
+                &all,
+            );
+        }
+    }
 }
