@@ -374,6 +374,13 @@ impl<W: Write> InlineTerminal<W> {
         self.commit()
     }
 
+    /// Bookkeeping from a DSR: the cursor is REALLY on `y`. The frame is not touched — for
+    /// a cursor the caller has just moved off its frame row (the resize pass, before it lays
+    /// the frame out again). No byte is written.
+    pub(crate) fn resync_cursor(&mut self, y: u16) {
+        self.cursor.y = y;
+    }
+
     /// Bookkeeping from a DSR: the cursor is REALLY on `y` — the model follows (the frame
     /// with it). No byte is written.
     pub(crate) fn resync(&mut self, y: u16) {

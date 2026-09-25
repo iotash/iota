@@ -368,7 +368,7 @@ impl<W: Write> Term<W> {
         let new_h = height(dropped).clamp(1, size.height.max(1));
         self.t.up_from_cursor(above)?;
         if let Some(s) = start {
-            self.t.resync(s);
+            self.t.resync_cursor(s);
         }
         self.t.erase_here_down()?;
         self.line_len.clear();
@@ -839,6 +839,30 @@ mod tests {
         names.extend(extra.iter().map(|s| (*s).to_owned()));
         names.extend((0..pulled).map(|k| format!("PULLED-{k}")));
         names
+    }
+
+    /// tmux on a diagonal shrink eats the rows below the cursor first: the cursor lands on
+    /// the bottom row, the frame's first row lies below the floor, and the frame is laid out
+    /// from it, its last rows made by `LF`. The bookkeeping must come out with the size the
+    /// terminal has — a model a row taller left every later pass thinking the frame was not
+    /// flush, and the frame two rows off the bottom for the rest of the session (L4 06).
+    #[test]
+    fn a_shrink_that_ate_the_rows_below_the_cursor_keeps_the_size_and_the_floor() {
+        let (mut t, _buf, geo) = term(90, 30, 9, 21);
+        t.draw_frame(&tall()).unwrap();
+        geo.set_size(70, 20);
+        geo.put_cursor(ratatui::layout::Position::new(2, 19)); // row 27 → the bottom row
+        t.resize(Size::new(70, 20), 0, |_| 9).unwrap();
+        assert_eq!(
+            t.size(),
+            Size::new(70, 20),
+            "the model is the terminal's size"
+        );
+        assert_eq!(t.top(), 11, "flush with the bottom");
+        t.draw_frame(&tall()).unwrap();
+        geo.set_size(69, 20);
+        t.resize(Size::new(69, 20), 0, |_| 9).unwrap();
+        assert_eq!(t.top(), 11, "and still flush after the next pass");
     }
 
     /// The acknowledged size is gone (it existed so ratatui's autoresize would not run its
