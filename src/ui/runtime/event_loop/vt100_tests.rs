@@ -2432,6 +2432,49 @@ fn a_grow_between_the_cursor_query_and_the_band_erase_loses_no_row() {
     }
 }
 
+/// A cursor answer that arrives after crossterm's 2 s timeout is not lost: it waits in the
+/// event queue and the NEXT query takes it at once — from then on every answer is one query late
+/// (the load-only suspicion of 2026-09-27: a late reply taken as the next query's answer). Both
+/// of a pass's queries are then stale; neither may cost a row. The erase and the layout count
+/// from the cursor, so a stale answer can only misplace the bookkeeping (the floor, the tracked
+/// top) — replayed here through a narrowing drag and a height round trip, with output inserted
+/// between the passes, a surface's hidden cursor included.
+#[test]
+fn answers_one_query_late_lose_no_row() {
+    for cursor in [Some((2, 6)), None] {
+        let (mut t, buf, geo, emu, frame) = raced_term(40, cursor);
+        emu.lock().unwrap().feed(&buf.bytes());
+        geo.set_answers_lagged();
+        let mut n = 0;
+        for size in [
+            (78, 24),
+            (76, 24),
+            (74, 24),
+            (74, 21),
+            (74, 18),
+            (74, 26),
+            (74, 24),
+        ] {
+            emu_resize(&emu, &buf, &geo, size);
+            pass(&mut t, &frame, size);
+            let rows: Vec<String> = (n..n + 2).map(|i| format!("n-{i:02}")).collect();
+            n += 2;
+            t.insert_lines(&rows).unwrap();
+            t.draw_frame(&frame).unwrap();
+        }
+        let (all, _) = emu.lock().unwrap().finish(&buf.bytes());
+        assert_no_committed_row_lost(&format!("late answers, cursor {cursor:?}"), 40, &all);
+        for i in 0..n {
+            let row = format!("n-{i:02}");
+            assert!(
+                all.iter().any(|r| r.trim_end() == row),
+                "late answers, cursor {cursor:?}: {row} lost:\n{}",
+                all.join("\n")
+            );
+        }
+    }
+}
+
 /// 1c (the verifier's DSR proxy, 2/2): with the cursor query failing, a height round trip in
 /// tmux must lose no row — without the cursor nothing ABOVE it is erased.
 #[test]

@@ -65,6 +65,13 @@ pub(crate) struct Geometry {
     /// Test seam: the cursor query fails (a terminal that never answers the DSR — crossterm
     /// gives up after ~2 s with an error).
     dsr_fails: Arc<std::sync::atomic::AtomicBool>,
+    /// Test seam: every answer is ONE query late — what crossterm does after a query has timed
+    /// out: the late reply waits in its event queue and the next query takes it at once
+    /// (`cursor/sys/unix.rs` `read_position_raw` polls the queue first). The first query of
+    /// the lag fails (it timed out); each later one answers where the cursor was at the query
+    /// before it. `None` = answers are current.
+    #[cfg(test)]
+    lagged: Arc<Mutex<Option<Lag>>>,
     /// Test seam: the rows the screen REALLY has when the reported size lags it (an emulator applies
     /// the next resize before the tty size or the event says so); the cursor moves within it.
     real_rows: Arc<Mutex<Option<u16>>>,
@@ -73,6 +80,14 @@ pub(crate) struct Geometry {
     /// the query whose index (from 0) it is armed with.
     #[cfg(test)]
     after_query: Arc<Mutex<AfterQuery>>,
+}
+
+/// The lagged-answer seam's state: the query that timed out, then the answer held for the next.
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum Lag {
+    TimedOut,
+    Late(Position),
 }
 
 #[cfg(test)]
@@ -102,6 +117,7 @@ impl Geometry {
             size: Arc::new(Mutex::new(Size { width, height })),
             cursor: Arc::new(Mutex::new(Position::ORIGIN)),
             dsr_fails: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            lagged: Arc::new(Mutex::new(None)),
             real_rows: Arc::new(Mutex::new(None)),
             after_query: Arc::new(Mutex::new((0, None))),
         }
@@ -128,6 +144,12 @@ impl Geometry {
             .saturating_sub(1)
     }
 
+    /// Makes every cursor answer one query late from now on (see `lagged`).
+    #[cfg(test)]
+    pub(crate) fn set_answers_lagged(&self) {
+        *crate::sync::lock(&self.lagged) = Some(Lag::TimedOut);
+    }
+
     /// Makes every cursor query fail from now on (or answer again).
     #[cfg(test)]
     pub(crate) fn set_dsr_fails(&self, fails: bool) {
@@ -144,6 +166,23 @@ impl Geometry {
             ));
         }
         let answer = self.cursor();
+        #[cfg(test)]
+        let answer = {
+            let mut lag = crate::sync::lock(&self.lagged);
+            match lag.replace(Lag::Late(answer)) {
+                None => {
+                    *lag = None;
+                    answer
+                }
+                Some(Lag::Late(late)) => late,
+                Some(Lag::TimedOut) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "the terminal did not answer in time (its reply will come late)",
+                    ));
+                }
+            }
+        };
         #[cfg(test)]
         {
             let hook = {

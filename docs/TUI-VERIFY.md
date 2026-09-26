@@ -254,9 +254,20 @@ terminal is a finding — and tmux 3.7c's narrowing is one (4.2).
       turn had already printed and measured a screen frozen mid-drag, and a row laid out for
       the wider terminal before that late pass was inserted after it — a debug build panicked
       on W6 (the panic text overwrote a separator: "top=15 bottom=15"), a release build cut
-      the row's tail. **Open:** once in ~120 loaded runs on tmux 3.4 the frame was drawn over
-      the new turn's last two rows (`l#18`, `l#19`); not reproduced in 150 further runs with
-      the byte stream recorded, so undiagnosed.
+      the row's tail. **Open, not reproduced:** once in ~120 loaded runs on tmux 3.4 (ten CPU
+      burners, no byte recording) the frame was drawn over the new turn's last two rows (`l#18`,
+      `l#19`). Investigated 2026-09-27. The suspected mechanism — crossterm keeps a cursor reply
+      that arrives after its 2 s timeout in its event queue and hands it to the NEXT query, so
+      every later answer is one query late — is real in crossterm (`cursor/sys/unix.rs`) and
+      cannot cost a row here: a pass's answers feed only the bookkeeping (the floor, the
+      tracked top); the erase and the layout count from the cursor. Evidence: a proxy that
+      delays every reply by 300/1900/2100/2500/5000 ms (5 runs each on tmux 3.7c and 3.4, a
+      width drag, a height round trip and a turn started at the drag's end): 50 of 50 clean;
+      `vt100_tests::answers_one_query_late_lose_no_row` (every answer one query late) passes,
+      and fails — `t-27` lost — the moment the erase is anchored on the answer instead; and
+      the block itself, byte-recorded under the same load: 0 of 200 on 3.4, 0 of 100 on 3.7c.
+      What else could have drawn it — a tmux 3.4 grid defect under load, or an iota sequence
+      no recorded run has produced — is unknown; no fix was made without a reproduction.
 
 ## 5. Window title (the title stack)
 
