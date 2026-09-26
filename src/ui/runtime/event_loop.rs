@@ -17,9 +17,8 @@
 //! - **W5** `RESIZE_PASS_FIRST`: on `Event::Resize` — store the atomics →
 //!   `Term::resize` (one DSR read BEFORE any byte, the erase counted up from the cursor
 //!   over rows the old frame provably owned, a frame that was flush with the bottom kept
-//!   flush; nothing scrolled or inserted) → draw, minus any staged rows the
-//!   emulator itself pushed into the history (committed where they stand,
-//!   `Job::Shown`); only THEN does `region.retrim()` run as a post-update job (never
+//!   flush; nothing scrolled or inserted) → draw; only THEN does `region.retrim()` run
+//!   as a post-update job (never
 //!   re-entrant — it takes the region lock and sends into this mailbox): the staged
 //!   window stays in the frame, rewrapped for the new width. The inline terminal is iota's
 //!   own (`inline_term.rs`): nothing but this pass reads the size, and no byte it writes
@@ -156,9 +155,6 @@ enum Job {
     /// `region.retrim()` after a resize: staged rows rewrapped at the new width and the
     /// T-40 cap re-applied at the new height.
     Retrim,
-    /// `region.already_shown(rows)`: a resize found these staged rows pushed into the
-    /// history by the emulator itself — committed where they stand.
-    Shown(Vec<String>),
 }
 
 /// The loop model (Go `model`): every field mutates on this thread only.
@@ -735,27 +731,12 @@ impl Model {
             self.shared.height.store(h, Ordering::Relaxed);
         }
         if w > 0 && h > 0 {
-            let mut view = self.frame_view();
+            let view = self.frame_view();
             let size = ratatui::layout::Size {
                 width: w,
                 height: h,
             };
-            let staged = u16::try_from(self.region_snap.tail.len()).unwrap_or(u16::MAX);
-            let rows = view.rows.len();
-            let dropped = term.resize(size, staged, |k| {
-                self.frame_height(rows.saturating_sub(usize::from(k)))
-            })?;
-            if dropped > 0 {
-                // The emulator pushed the frame's first staged rows into the
-                // history: they are committed as they stand, never drawn again.
-                let k = usize::from(dropped);
-                let shown: Vec<String> = view.rows.drain(..k).collect();
-                view.cursor = view.cursor.map(|(x, y)| (x, y.saturating_sub(dropped)));
-                self.region_snap
-                    .tail
-                    .drain(..k.min(self.region_snap.tail.len()));
-                self.jobs.push(Job::Shown(shown));
-            }
+            term.resize(size, self.frame_height(view.rows.len()))?;
             term.draw_frame(&view)?;
         }
         // Leave the frame dirty: the job below changes what it shows.
@@ -947,7 +928,6 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
         for job in std::mem::take(&mut m.jobs) {
             match job {
                 Job::Retrim => lock(&m.shared.region).retrim(),
-                Job::Shown(rows) => lock(&m.shared.region).already_shown(&rows),
             }
         }
         // One iteration's screen writes — the band close, the inserts, the height change, the

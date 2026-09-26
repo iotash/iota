@@ -117,7 +117,7 @@ pub(crate) fn run_surface(spec: TabbedSpec, dark: bool) -> io::Result<TabbedResu
                 .clamp(1, size.height.max(1));
             match resized.take() {
                 Some(size) => {
-                    term.resize(size, 0, |_| view_height)?;
+                    term.resize(size, view_height)?;
                 }
                 None => {
                     term.ensure_height(view_height)?;

@@ -219,24 +219,6 @@ impl Region {
         self.publish(over);
     }
 
-    /// Takes staged rows the terminal has already put in its history (a resize pushed the
-    /// frame's first rows off the screen): each still at the head of the window leaves it
-    /// WITHOUT being published — inserting it would show it twice. A row that is no longer
-    /// at the head (it overflowed since) is left to its own publish.
-    pub(crate) fn already_shown(&mut self, rows: &[String]) {
-        let mut taken = 0;
-        for row in rows {
-            if self.tail.first() != Some(row) {
-                break;
-            }
-            self.tail.remove(0);
-            taken += 1;
-        }
-        if taken > 0 {
-            self.publish(Vec::new());
-        }
-    }
-
     /// Deep-copied display snapshot (region.go:93-103).
     pub(crate) fn snapshot(&self) -> RegionSnapshot {
         RegionSnapshot {

@@ -162,20 +162,22 @@ its own viewport top. Some emulators will strand a row above the new viewport. T
 - [x] 自动化：scenario 06 **4.1** Start a stream, resize the window wider mid-stream, let it finish. Count
       orphaned/duplicated rows in the scrollback. Record the number. *(tmux 3.7c: 0 duplicated
       rows, asserted ≤ 2.)*
-- [x] 自动化：scenario 06 **4.2** Same, narrower. *(tmux 3.7c: **0** duplicated rows since
-      X-52 — 8 before it. tmux rewraps what grows past the new width, and what grew above the
-      cursor used to land twice; the resize pass claims it now. Asserted against §4's budget
-      of 2: a resize that falls between an insert and its draw has no known anchor row. No
-      row is ever LOST — that bound is zero.)*
+- [x] 自动化：scenario 06 **4.2** Same, narrower. *(tmux 3.7c: **3** duplicated rows since
+      B3 (2026-09-26) — 0 while the resize pass claimed the reflow's overhang (X-52), 8 before
+      X-52. What grew above the cursor stays behind as a duplicate: the pass no longer infers
+      whether or how an emulator reflowed. Asserted ≤ 3. No row is ever LOST — that bound is
+      zero.)*
 - [x] 自动化：scenarios 06 + 26 **4.3** Resize at idle — a narrowing, a diagonal shrink, a
       settled 25-step drag, a fast 8-step drag (SIGWINCHes 60 ms apart), and on fresh panes a
       2× and a 3× narrowing with the banner still staged, a narrowing right after 20 ms-a-line
       output, one with `/model` open, one while a foreground tool call runs, and one under
-      tmux's default `scroll-on-clear on`. Asserted exactly: zero rows lost, zero duplicated,
-      zero separator rows added, zero stale frames, and the composer on the pane's
-      third-last row (flush with the bottom). The resize pass (wart W5, `term.rs`) reads the
-      cursor with one DSR before writing a byte, clears only rows the old frame provably
-      owned (its own full-width rows' growth included), and scrolls or inserts nothing;
+      tmux's default `scroll-on-clear on`. Asserted: zero rows lost, zero stale frames, the
+      composer on the pane's third-last row (flush with the bottom), and the rows left twice
+      within each block's MEASURED cap (B3, 2026-09-26: 1–3 duplicated rows, ≤ 4 separator
+      rows with `/model` open — scenario 26's numbers, a larger one is a regression). The
+      resize pass (wart W5, `term.rs`) reads the cursor with one DSR before writing a byte,
+      clears only rows the old frame provably owned (the frame's rows from the cursor's row
+      up, never what a reflow grew above them), and scrolls or inserts nothing;
       ratatui's own inline resize never runs; a frame re-anchored on row 0 is never erased
       from the home position.
       *(History: until X-52 (2026-09-23) this said "no orphan here" and passed under tmux only

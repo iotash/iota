@@ -162,11 +162,6 @@ impl<W: Write> InlineTerminal<W> {
         self.viewport
     }
 
-    /// What the frame's rows show on screen.
-    pub(crate) fn shown(&self) -> &Buffer {
-        &self.shown
-    }
-
     /// The cursor within the frame: its column and its row counted from the frame's top.
     pub(crate) fn frame_cursor(&self) -> Position {
         Position::new(self.cursor.x, self.cursor.y.saturating_sub(self.viewport.y))
@@ -203,27 +198,6 @@ impl<W: Write> InlineTerminal<W> {
             queue!(self.pending, Hide)?;
             self.goto(Position::new(0, self.viewport.y))?;
         }
-        self.commit()
-    }
-
-    /// Writes one frame row again over an erased line (`EL 2`, the erase that resets a tmux
-    /// line's length): what it shows does not change. The cursor stays on that row — the
-    /// caller places it next.
-    pub(crate) fn rewrite_row(&mut self, y: u16, cells: &[Cell]) -> io::Result<()> {
-        self.goto(Position::new(0, y))?;
-        self.pending.extend_from_slice(b"\x1b[2K");
-        let mut covered = 0u16;
-        for (x, c) in (0u16..).zip(cells) {
-            if covered > 0 {
-                covered -= 1;
-                continue;
-            }
-            covered = c.cell_width().max(1) - 1;
-            if !is_blank(c) {
-                self.put(x, y, c)?;
-            }
-        }
-        self.pen_reset()?;
         self.commit()
     }
 
@@ -686,8 +660,3 @@ impl<W: Write> InlineTerminal<W> {
 pub(crate) const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
 /// See [`SYNC_BEGIN`].
 pub(crate) const SYNC_END: &[u8] = b"\x1b[?2026l";
-
-/// A cell that shows nothing: a space with no background and no modifier.
-pub(crate) fn is_blank(c: &Cell) -> bool {
-    c.symbol() == " " && c.bg == Color::Reset && c.modifier.is_empty()
-}

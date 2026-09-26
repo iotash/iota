@@ -33,6 +33,11 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Changed
 
+- **After you make the window narrower, the last few lines of a streaming
+  reply can appear twice** (2 or 3 lines in tmux, herdr and Ghostty; up to 4
+  when the width drops by half or more). iota no longer guesses how your
+  terminal rewrapped those lines, so it never erases one it cannot prove is its
+  own. No line is lost (X-52).
 - **A running background job keeps the host at working.** While a job runs and
   the chat is otherwise idle, herdr shows the pane `working`, the terminal's
   progress indicator stays on and cmux reads `Running`, until the job's notice

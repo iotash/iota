@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # L4 scenario 26 (docs/TUI-VERIFY.md §4.3, DIVERGENCES X-52) — the resize cases scenario 06's one
 # long session cannot isolate. Each block starts a FRESH pane, so every non-blank row the pane ever
-# shows is unique: after the resize, no row may appear twice anywhere in the history, no separator
-# row may be added, and every streamed line must still be there. `scroll-on-clear` is off, so a
-# clear loses rows here exactly as it does in Ghostty and herdr.
+# shows is unique: after the resize, every streamed line must still be there (the hard rule), and
+# the rows left twice — a duplicated row, a separator row beyond the pair — stay within the
+# block's MEASURED budget. Since B3 (2026-09-26, X-52 residual (1)) nothing a reflow grew above
+# the cursor is claimed, so the frame's first rows that far up stay behind as duplicates; each
+# cap below is the number measured on tmux 3.7c when B3 landed, and a larger one is a regression.
+# `scroll-on-clear` is off, so a clear loses rows here exactly as it does in Ghostty and herdr.
 #
 #   A. a drastic narrowing — the old width 2× and 3× the new (a maximized window restored, a
 #      full-width pane halved) — with the startup banner still staged in the frame;
@@ -45,14 +48,15 @@ fresh() {
     tm set-option -w -t s scroll-on-clear off
     settle || bad "startup never settled"
 }
-# after_resize <label> <width> — the exact invariants every block ends with.
+# after_resize <label> <width> <duplicated rows> <separator rows> — the invariants every block
+# ends with; the last two are the block's measured budget (B3's residual).
 after_resize() {
     settle || bad "$1: frame never settled"
     check_frame_intact "$1" "$2"
     if alive; then ok "$1: the app survived"; else bad "$1: the app died"; fi
-    check "$1: no row appears twice in the history" "$(dup_lines)" 0
+    check_budget "$1: rows that appear twice in the history (B3)" "$(dup_lines)" "$3"
     capall | sed 's/ *$//' | grep -v '^$' | grep -v '^┄' | LC_ALL=C sort | LC_ALL=C uniq -d | sed 's/^/    DUP: /'
-    check "$1: separator rows in the whole history" "$(seps_all)" 2
+    check_budget "$1: separator rows in the whole history (B3)" "$(seps_all)" "$4"
 }
 
 # ------------------------------------------------------------------ A: 2× and 3× narrowings
@@ -60,15 +64,13 @@ for to in 100 67; do
     fresh 201 30
     tm resize-window -t s -x "$to" -y 30
 
-    after_resize "201→$to at startup" "$to"
+    after_resize "201→$to at startup" "$to" 3 2
 done
 
 # ------------------------------------------------------------------ B: fast output, then idle
-# 70x24 is a width-only narrowing: exact. 60x18 is the session's first resize AND diagonal —
-# the ACCEPTED RESIDUAL of X-52: tmux eats the rows below the cursor before it rewraps, so this
-# resize cannot tell that tmux reflows, claims no overhang, and the frame's first staged row
-# stays behind once. Bounded at that one row here (a second would be a regression); the same
-# resize after any width-only narrowing is exact (scenario 06, vt100_tests).
+# 70x24 is a width-only narrowing, 60x18 a diagonal one (tmux eats the rows below the cursor
+# before it rewraps): since B3 neither claims what grew above the cursor, and the frame's first
+# rows that far up stay behind — measured 2 for both.
 for to in 70x24 60x18; do
     fresh 80 24
     type_ 'stream 60 20'
@@ -78,11 +80,11 @@ for to in 70x24 60x18; do
     check "fast output, before any resize: no row appears twice" "$(dup_lines)" 0
     tm resize-window -t s -x "${to%x*}" -y "${to#*x}"
     if [ "$to" = 70x24 ]; then
-        after_resize "fast output, then 80x24→$to" "${to%x*}"
+        after_resize "fast output, then 80x24→$to" "${to%x*}" 2 2
     else
         settle || bad "fast output → $to: frame never settled"
         check_frame_intact "fast output, then 80x24→$to" "${to%x*}"
-        check_budget "fast output → $to (first resize, diagonal: the accepted residual)" "$(dup_lines)" 1
+        check_budget "fast output → $to (a diagonal narrowing, B3)" "$(dup_lines)" 2
         check "fast output → $to: separator rows in the whole history" "$(seps_all)" 2
     fi
     check "fast output → $to: every streamed line is there" "$(uniq_all 'l#[0-9][0-9] line')" 60
@@ -102,8 +104,8 @@ tm resize-window -t s -x 68 -y 24
 settle || bad "the panel never settled after the narrowing"
 key Escape
 wait_gone '↑↓ move' || bad "the /model panel never closed"
-after_resize "/model open, 80→68" 68
-check "/model open, 80→68: empty composer rows in the history" "$(capall | grep -c '^❯ *$')" 1
+after_resize "/model open, 80→68" 68 1 4
+check_budget "/model open, 80→68: empty composer rows in the history (B3)" "$(capall | grep -c '^❯ *$')" 2
 
 # ------------------------------------------------------------------ D: a tool call running
 fresh 80 24
@@ -112,8 +114,8 @@ key Enter
 wait_vis 'sleep 1.5' || bad "the tool call never started"
 tm resize-window -t s -x 70 -y 24
 wait_all 'ran: ' || bad "the tool round never closed"
-after_resize "a tool call running, 80→70" 70
-check "a tool call running, 80→70: the user's own row" "$(count_all '❯ runfg:')" 1
+after_resize "a tool call running, 80→70" 70 1 2
+check_budget "a tool call running, 80→70: the user's own row (B3: its piece above the cursor)" "$(count_all '❯ runfg:')" 2
 
 # ------------------------------------------------------------------ E: scroll-on-clear on
 fresh 60 16
@@ -121,7 +123,7 @@ tm set-option -w -t s scroll-on-clear on
 type_ '帮我看看这个 resize 的问题'
 settle || bad "the CJK draft never settled"
 tm resize-window -t s -x 44 -y 16
-after_resize "scroll-on-clear on, a CJK draft, 60x16→44x16 at startup" 44
+after_resize "scroll-on-clear on, a CJK draft, 60x16→44x16 at startup" 44 1 2
 check "scroll-on-clear on: the draft is in the box once" "$(count_all '帮我看看这个 resize 的问题')" 1
 
 # ------------------------------------------------------------------ F: the unlearned surface case
@@ -139,9 +141,9 @@ settle || bad "the panel never settled after the narrowing"
 key Escape
 wait_gone '↑↓ move' || bad "the /model panel never closed"
 settle || bad "frame never settled"
-check "surface cursor on the last row, first narrowing: no row appears twice" "$(dup_lines)" 0
-check_budget "surface cursor on the last row, first narrowing: separator rows (X-52 residual: 1 piece, once)" \
-    "$(seps_all)" 3
+check_budget "surface cursor on the last row, first narrowing: rows that appear twice (B3)" "$(dup_lines)" 1
+check_budget "surface cursor on the last row, first narrowing: separator rows (B3)" \
+    "$(seps_all)" 4
 
 # ------------------------------------------------------------------ G: a stream right at the drag's end
 # The verifier's round-2 finding: a stream that starts exactly as a drag ends left the drag's band
@@ -180,7 +182,7 @@ settle || bad "the panel never settled after the drag"
 key Escape
 wait_gone '↑↓ move' || bad "the /model panel never closed"
 settle || bad "frame never settled"
-check "a drag with /model open: no row appears twice" "$(dup_lines)" 0
+check_budget "a drag with /model open: rows that appear twice (B3)" "$(dup_lines)" 1
 check_budget "a drag with /model open: separator rows in the history (X-52 OVER BUDGET, known: ≤ 6)" \
     "$(seps_all)" 6
 

@@ -122,7 +122,8 @@ idle_shrink() {
     check "status line survived the $label" "$(status_model)" "  fake"
     if alive; then ok "the app survived an idle SIGWINCH ($label)"; else bad "the app died on the $label"; fi
     check "no streamed row is lost across the $label" "$(absent_rows)" 0
-    check "no streamed row is duplicated across the $label (§4.3: zero at idle)" "$(($(dup_rows 1) - dups))" 0
+    # B3 (2026-09-26): what the narrowing grew above the cursor is not claimed — measured: 1 row.
+    check_budget "streamed rows duplicated by the $label (B3)" "$(($(dup_rows 1) - dups))" 1
     check "separator rows the $label added to the history" "$(extra_seps)" 0
     check_pinned "after the $label" "$h"
     check "stale frames pushed out by the $label (W9)" "$(($(stale_frames) - stale))" 0
@@ -186,12 +187,13 @@ settle || bad "frame never settled after the paced drag's release"
 # erased the committed row above the frame. Loss is the one hard failure (X-52's budget).
 for soc in off on; do
     tm set-option -w -t s scroll-on-clear "$soc"
+    dups="$(dup_rows 1)"
     for h in 19 18 17 16 15 14 15 16 17 18 19 20; do tm resize-window -t s -x 70 -y "$h"; sleep 0.1; done
     settle || bad "frame never settled after the height drag (scroll-on-clear $soc)"
     check_frame_intact "after a height drag down and back (scroll-on-clear $soc)" 70
     check "no streamed row is lost across a height drag down and back (scroll-on-clear $soc)" "$(absent_rows)" 0
     check "no streamed row is duplicated across a height drag down and back (scroll-on-clear $soc)" \
-        "$(dup_rows 1)" 0
+        "$(($(dup_rows 1) - dups))" 0
 done
 tm set-option -w -t s scroll-on-clear off
 stale="$(stale_frames)"
@@ -212,8 +214,9 @@ check_pinned "after the mid-stream shrink" 18
 check "status line is intact after the shrink" "$(status_model)" "  fake"
 # Two streams of the same 40 lines are in the history now: none may be missing a copy.
 check "no streamed row is lost across the mid-stream shrink (every line at least twice)" "$(lost_rows 2)" 0
-# §4's budget (measured: 0 — the resize pass claims the reflow's overhang).
-check_budget "duplicated rows after the mid-stream shrink (§4 budget)" "$(dup_rows 2)" 2
+# §4's budget since B3 (2026-09-26): the reflow's overhang above the cursor is not claimed —
+# measured 3 (it was 0 while the pass claimed it).
+check_budget "duplicated rows after the mid-stream shrink (§4 budget, B3)" "$(dup_rows 2)" 3
 check_budget "stale frames pushed out by the mid-stream shrink (W9)" "$(($(stale_frames) - stale))" 1
 
 # ------------------------------------------------------------------ still usable
