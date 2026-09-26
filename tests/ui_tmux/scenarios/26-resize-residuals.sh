@@ -153,20 +153,33 @@ check_budget "surface cursor on the last row, first narrowing: separator rows (B
 # ------------------------------------------------------------------ G: a stream right at the drag's end
 # The verifier's round-2 finding: a stream that starts exactly as a drag ends left the drag's band
 # as blank rows in the history. The turn starting ends the drag and closes its band first.
+# Asserted on the OUTCOME: the second turn has finished (its `l#19` is the SECOND one in the
+# history — the first stream printed one too, and waiting for "a" `l#19` waited for nothing; that
+# is why this block measured a turn still in flight on the slow CI runners, 2026-09), and the
+# drag has ended (the frame back at the full width).
 fresh 100 24
 type_ 'stream 30'
 key Enter
 wait_all 'l#29 line' || bad "the stream never finished"
 settle || bad "the stream never settled"
 for w in 99 98 97 96 95; do tm resize-window -t s -x "$w" -y 24; sleep 0.03; done
+before="$(count_all 'l#19 line')"
 type_ 'stream 20'
 key Enter
-wait_all 'l#19 line' || bad "the second stream never finished"
+wait_all_more 'l#19 line' "$before" || bad "the second stream never finished"
 settle || bad "the second stream never settled"
 check_frame_intact "a stream right at the drag's end" 95
-check "a stream right at the drag's end: the next turn follows the last one (1 blank row)" \
-    "$(capall | awk 'index($0,"l#29 line"){f=NR} index($0,"❯ stream 20")&&f{print NR-f-1; exit}')" 1
-check "a stream right at the drag's end: no hole inside the new turn" \
+# One blank row between turns at rest. When the drag's last resize pass lands AFTER the turn's first
+# key (a slow runner: the pass waits RESIZE_QUIET for the burst to end), its band keeps a blank row
+# between the turns — X-52 residual (1), a drag's blank rows. Measured under load (ten CPU burners,
+# 2026-09-27): 2 in 7 of 130 runs on tmux 3.7c and 2 of 80 on tmux 3.4, 1 otherwise; never more.
+gap="$(capall | awk 'index($0,"l#29 line"){f=NR} index($0,"❯ stream 20")&&f{print NR-f-1; exit}')"
+if [ -z "$gap" ]; then
+    check_measured "a stream right at the drag's end: the next turn follows the last one" "" 1
+else
+    check_budget "a stream right at the drag's end: blank rows before the next turn (1 at rest, +1 band row, X-52 (1))" "$gap" 2
+fi
+check_measured "a stream right at the drag's end: no hole inside the new turn" \
     "$(capall | awk 'index($0,"❯ stream 20"){f=1} f&&index($0,"l#00 line"){g=1} g&&/^ *$/{b++} g&&index($0,"l#19 line"){print b+0; exit}')" 0
 
 # ------------------------------------------------------------------ H: a drag with /model open

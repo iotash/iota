@@ -30,6 +30,9 @@ PASS=0
 FAIL=0
 WARTS=0
 SCEN_HOME="$SCEN_TMP/home"
+# Which tmux produced this run: the numbers in scenarios 06/26 were measured per version
+# (TUI-VERIFY §4.5), and a red CI leg must say which one it ran.
+echo "tmux: $("$TMUX_BIN" -V 2>&1) ($TMUX_BIN)"
 mkdir -p "$SCEN_HOME"
 
 # ---------------------------------------------------------------- tmux plumbing
@@ -399,17 +402,39 @@ check() {
 # check_once <description> <fixed string> — present in history exactly once.
 check_once() { check "$1" "$(count_all "$2")" 1; }
 
+# The visible pane, numbered — printed under a failed measurement so a red run shows WHAT
+# the helpers could not read instead of an empty value.
+dump_pane() {
+    echo "    ---- pane (visible, numbered) ----"
+    cap | nl -ba | sed 's/^/    /'
+    echo "    ---- end of pane ----"
+}
+
+# check_measured <label> <value> <expected> — `check`, but a value the helpers could not
+# measure (an empty string: a marker row not found) fails as such, with the pane.
+check_measured() {
+    if [ -z "$2" ]; then
+        bad "$1: NOT MEASURED — a marker row the measurement needs is not in the pane"
+        dump_pane
+        return
+    fi
+    check "$1" "$2" "$3"
+}
+
 # The standard frame invariant: a separator pair at the terminal's width, exactly one
 # composer row between them, and an occupied bottom zone.
 check_frame_intact() {
     local label="$1" width="$2" t b
     # A resize opens a drag: the frame is a few columns short until DRAG_SETTLE (2 s) passes
-    # with no further resize, then repainted at full width (W5's burst layout, X-52).
-    _poll_until 40 _sep_is "$width" || true
+    # with no further resize, then repainted at full width (W5's burst layout, X-52). A resize
+    # pass that lands after a key re-opens the drag, so wait DRAG_SETTLE twice plus a slow
+    # runner's slack (6 s) for the outcome, not a mid-flight geometry.
+    _poll_until 60 _sep_is "$width" || true
     t="$(frame_top)"
     b="$(frame_bot)"
     if [ -z "$t" ] || [ -z "$b" ] || [ "$b" -le "$t" ]; then
         bad "$label: the frame's separator pair is missing (top=$t bottom=$b)"
+        dump_pane
         return
     fi
     check "$label: top separator spans the terminal" "$(row_width "$t")" "$width"

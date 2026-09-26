@@ -243,6 +243,20 @@ its own viewport top. Some emulators will strand a row above the new viewport. T
 
 Budget: **≤ 2 orphaned rows per mid-stream resize** is accepted. More than that on a given
 terminal is a finding — and tmux 3.7c's narrowing is one (4.2).
+- [x] 自动化：scenarios 06 + 26 **4.5** The numbers are per tmux version — each scenario
+      prints the tmux it ran on (`lib.sh`). Audited 2026-09-27 against tmux 3.7c (brew) and
+      3.4 (Ubuntu 24.04's, built from source): all 31 bounded numbers in scenarios 06 and 26
+      measured the SAME on both, idle (duplicates 0–3, separator rows 2–5, blank rows 0–1).
+      One is timing-sensitive, not version-sensitive: 26 G's blank rows before the next turn
+      are 1 at rest and 2 when the drag's last resize pass lands after the turn's first key
+      (ten CPU burners: 7 of 130 runs on 3.7c, 2 of 80 on 3.4) — bounded at 2 by that name.
+      The CI failures of 2026-09 were not a tmux difference: 26 G waited for a `l#19` the first
+      turn had already printed and measured a screen frozen mid-drag, and a row laid out for
+      the wider terminal before that late pass was inserted after it — a debug build panicked
+      on W6 (the panic text overwrote a separator: "top=15 bottom=15"), a release build cut
+      the row's tail. **Open:** once in ~120 loaded runs on tmux 3.4 the frame was drawn over
+      the new turn's last two rows (`l#18`, `l#19`); not reproduced in 150 further runs with
+      the byte stream recorded, so undiagnosed.
 
 ## 5. Window title (the title stack)
 

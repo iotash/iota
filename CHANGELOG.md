@@ -77,6 +77,9 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Fixed
 
+- **A line of output is no longer cut short when it arrives during a resize.**
+  A line laid out for the wider window just before the window was made
+  narrower lost its end when it was printed; it now wraps like any other line.
 - **Large screen updates appear all at once.** When iota draws a lot at once —
   opening a picker, a big block of output — terminals that support synchronized
   output (Ghostty, kitty, WezTerm, Alacritty, iTerm2, Windows Terminal, herdr,

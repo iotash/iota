@@ -31,10 +31,11 @@
 //!   relative too, so the cursor stays on the frame row the bookkeeping says (no stale
 //!   anchor); and a DSR that fails costs the floor, not the anchor (no fallback row).
 //! - **W6**: `insert_before` height comes from `Paragraph::line_count(width)` of the
-//!   SAME `Paragraph` rendered into the buffer (feature `unstable-rendered-line-info`).
-//!   The region pre-wraps every entry to ≤ width−1 and guarantees one-entry-one-row, so
-//!   `line_count == rows.len()` — asserted as a debug invariant, never a second source
-//!   of truth. This self-consistency is what kills Go's `sanitizeOverflow` (T-01).
+//!   SAME `Paragraph` rendered into the buffer (feature `unstable-rendered-line-info`), at
+//!   the width the terminal has now — never a second source of truth. The region pre-wraps
+//!   every entry to ≤ width−1, so that is one row an entry; a row laid out for a wider
+//!   terminal just before a narrowing takes its wrapped rows, nothing cut. This
+//!   self-consistency is what kills Go's `sanitizeOverflow` (T-01).
 //!
 //! [`Geometry`] is the headless seam: the L2b/vt100 layer injects synthetic
 //! size/cursor answers so the REAL writer stack runs without a tty; live construction
@@ -411,15 +412,25 @@ impl<W: Write> Term<W> {
         }
         let width = self.t.size().width.max(1);
         let lines: Vec<Line<'static>> = rows.iter().map(|r| ansi_to_spans(r)).collect();
-        // W6: the region pre-wraps to ≤ width−1 and splits embedded newlines, so the
-        // measured height must equal the entry count — one entry, one row.
-        debug_assert_eq!(
-            Paragraph::new(Text::from(lines.clone()))
-                .wrap(Wrap { trim: false })
-                .line_count(width),
-            rows.len(),
-            "W6 LINE_COUNT_SELF_CONSISTENCY: an insert entry wrapped or split"
-        );
+        // W6: the height is what the SAME paragraph measures at the terminal's width NOW. The
+        // region pre-wraps to ≤ width−1, so that is one row an entry — except for rows laid out
+        // for a wider terminal just before a narrowing: the drag's last resize pass waits for
+        // the burst to end (`RESIZE_QUIET`), and a row committed meanwhile (the user's block
+        // on Enter, a streamed line) is still the old width when it is inserted. Measured, it
+        // takes its wrapped rows and nothing is cut; assumed one row, its tail was dropped (and
+        // a debug build panicked here — CI, 2026-09).
+        let measured = Paragraph::new(Text::from(lines.clone()))
+            .wrap(Wrap { trim: false })
+            .line_count(width);
+        if measured != rows.len() {
+            let n = u16::try_from(measured).unwrap_or(u16::MAX);
+            let para = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
+            self.t.insert_before(n, |buf| {
+                let area = buf.area;
+                para.render(area, buf);
+            })?;
+            return Ok(n);
+        }
         let total = u16::try_from(rows.len()).unwrap_or(u16::MAX);
         let mut lines = lines;
         // The band a resize left above the frame (W5) takes the first rows: they are written
@@ -684,6 +695,31 @@ mod tests {
         geo.set_size(69, 20);
         t.resize(Size::new(69, 20), 9).unwrap();
         assert_eq!(t.top(), 11, "and still flush after the next pass");
+    }
+
+    /// A row laid out for a wider terminal — committed while the drag's last resize pass was
+    /// still waiting for the burst to end — is inserted after the pass took the narrower
+    /// size: it takes its wrapped rows, every character reaches the screen, nothing panics
+    /// (a debug build asserted one row an entry and panicked; a release build cut the tail).
+    #[test]
+    fn a_row_wider_than_the_terminal_now_inserts_as_its_wrapped_rows() {
+        let (mut t, buf, geo) = term(100, 24, 4, 20);
+        t.draw_frame(&frame()).unwrap();
+        geo.set_size(95, 24);
+        t.resize(Size::new(95, 24), 4).unwrap();
+        t.draw_frame(&frame()).unwrap();
+        let wide = format!("{}END", "w".repeat(96));
+        let n = t.insert_lines(&[wide.clone(), "next".to_owned()]).unwrap();
+        assert_eq!(n, 3, "99 columns at 95 wrap into 2 rows, plus one");
+        t.draw_frame(&frame()).unwrap();
+        let mut p = vt100::Parser::new(24, 95, 100);
+        p.process(&buf.bytes());
+        let all = reachable(&mut p).join("");
+        assert!(
+            all.contains("wEND"),
+            "the wrapped tail reached the screen:\n{all}"
+        );
+        assert!(all.contains("next"), "{all}");
     }
 
     /// The acknowledged size is gone (it existed so ratatui's autoresize would not run its
