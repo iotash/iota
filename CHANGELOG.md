@@ -87,6 +87,12 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   above the prompt while it caught up. The resize now reads the terminal's
   size at that moment and confirms where the prompt is before it erases
   anything (X-52).
+- **A terminal that doesn't answer iota's cursor query no longer loses a line
+  on a resize.** Over a slow ssh link, or in a terminal that ignores the query,
+  changing the window's height could erase the conversation's last line; iota
+  now erases nothing above the prompt. Resizing in tmux also no longer erases a
+  line that tmux moves back onto the screen in the middle of a resize (X-52,
+  X-54).
 - **Resizing the window no longer throws the prompt to the top or erases
   text.** Making the window narrower moved the prompt and its separators to
   the top of the screen and wiped everything that was on screen above them;

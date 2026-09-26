@@ -72,7 +72,15 @@ pub(crate) struct Geometry {
     /// Test seam: the rows the screen REALLY has when the reported size lags it (tmux applies
     /// the next resize before the tty size or the event says so); the cursor moves within it.
     real_rows: Arc<Mutex<Option<u16>>>,
+    /// Test seam: what the emulator does right AFTER it answers a cursor query — a tmux
+    /// resize landing between the answer and the next byte the pass writes. Fires once, on
+    /// the query whose index (from 0) it is armed with.
+    #[cfg(test)]
+    after_query: Arc<Mutex<AfterQuery>>,
 }
+
+#[cfg(test)]
+type AfterQuery = (usize, Option<(usize, Box<dyn FnOnce() + Send>)>);
 
 /// Rides over lock poisoning: geometry is plain display state and every access
 /// re-establishes nothing — a panicked test thread must not poison the loop.
@@ -99,7 +107,16 @@ impl Geometry {
             cursor: Arc::new(Mutex::new(Position::ORIGIN)),
             dsr_fails: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             real_rows: Arc::new(Mutex::new(None)),
+            after_query: Arc::new(Mutex::new((0, None))),
         }
+    }
+
+    /// Runs `f` right after the `nth` cursor query from now (0 = the next one) is answered.
+    #[cfg(test)]
+    pub(crate) fn after_query(&self, nth: usize, f: impl FnOnce() + Send + 'static) {
+        let mut g = crate::sync::lock(&self.after_query);
+        let seen = g.0;
+        g.1 = Some((seen + nth, Box::new(f)));
     }
 
     /// The screen really has `rows` rows while the reported size stays what it was.
@@ -130,7 +147,26 @@ impl Geometry {
                 "the terminal did not answer the cursor position query",
             ));
         }
-        Ok(self.cursor())
+        let answer = self.cursor();
+        #[cfg(test)]
+        {
+            let hook = {
+                let mut g = crate::sync::lock(&self.after_query);
+                let n = g.0;
+                g.0 += 1;
+                match g.1.take() {
+                    Some((at, f)) if at == n => Some(f),
+                    other => {
+                        g.1 = other;
+                        None
+                    }
+                }
+            };
+            if let Some(f) = hook {
+                f();
+            }
+        }
+        Ok(answer)
     }
 
     /// Changes the reported terminal size (pair with a scripted `Event::Resize`).

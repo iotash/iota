@@ -215,10 +215,17 @@ its own viewport top. Some emulators will strand a row above the new viewport. T
       48 for a 60-event oscillation in Ghostty); a first resize that also shrinks drastically
       duplicates 3–4 rows; width→⅓ leaves +10 blank rows; a 60-event width+height jitter
       duplicates 1–4 rows; drags paced 2.1 s apart are separate drags (2 blank rows each).
-      Not verifiable here: a DSR that times out mid-resize (crossterm's ~2 s) — the fail-safe
-      (the tracked top stays the anchor, the loop does not unwind) is pinned headless
-      (`term::tests::a_resize_whose_dsr_fails_*`); a real terminal that drops the query is
-      the manual check.)*
+      LOSS CLOSED (the verifier's re-verification of 4da669a, 2026-09-25; a stopgap on the
+      resize pass the same day, then the owned inline terminal, X-54). All three losses were
+      an absolute row gone stale between iota's check and its write: (1b) a height drag while
+      a stream runs — an insert already in the pty (a DECSTBM scroll + an absolute move) parsed
+      by tmux after a grow pulled a history row back (tmux 120x30, `stream 40 60`, bottom edge
+      up 5 / down 5 at 100 ms: 6/6 runs lost 2–4 rows → 0/6); (1c) a DSR that fails — the
+      tracked top the anchor of an erase (a proxy swallowing the queries, height 30→20→30:
+      4/4 → 0/4); the scroll-on-clear race — a grow between a cursor answer and the erase
+      (headless: `vt100_tests::a_grow_*`, `term::tests::a_grow_between_the_dsr_and_the_erase_*`).
+      Every byte is now counted from the cursor, which the emulator moves with its cell. A
+      DSR outage in a real terminal remains the manual check.)*
       Real emulators: drag a corner in Ghostty, iTerm2, kitty, herdr. No row may be missing
       from the scrollback, and there is exactly one separator pair at the end.
 - [x] 自动化：scenario 06 **4.4** After every resize: exactly one composer row, separators at the new width,
