@@ -123,7 +123,12 @@ tm set-option -w -t s scroll-on-clear on
 type_ '帮我看看这个 resize 的问题'
 settle || bad "the CJK draft never settled"
 tm resize-window -t s -x 44 -y 16
-after_resize "scroll-on-clear on, a CJK draft, 60x16→44x16 at startup" 44 1 2
+# B3 at startup: the banner is still staged in the frame, and what the narrowing grew above the
+# cursor leaves the frame's first rows behind — the banner's last two rows when its box is
+# narrow (a short checkout path), one identical right-border piece when the path fills 60
+# columns. Measured 2026-09-26 over scroll-on-clear on/off, with and without the draft: 2 at
+# most, never a lost row.
+after_resize "scroll-on-clear on, a CJK draft, 60x16→44x16 at startup (B3: the banner's last rows)" 44 2 2
 check "scroll-on-clear on: the draft is in the box once" "$(count_all '帮我看看这个 resize 的问题')" 1
 
 # ------------------------------------------------------------------ F: the unlearned surface case
