@@ -931,10 +931,10 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
             }
         }
         // One iteration's screen writes — the band close, the inserts, the height change, the
-        // title and progress, the frame — go out as ONE synchronized update (DEC 2026, X-55):
-        // no emulator that knows the mode shows the frame between an erase and its redraw, nor
-        // an insert's frame a row up between its `LF`s and its `IL`. No cursor query happens
-        // in here (the resize pass above makes its own, outside any block).
+        // title and progress, the frame — go out as ONE write, a DEC 2026 synchronized update
+        // when it is larger than a transport's read block (X-55): a split write is never shown
+        // half-drawn by an emulator that knows the mode. No cursor query happens in here (the
+        // resize pass above makes its own, outside any batch).
         if !resizing {
             term.begin_batch();
         }

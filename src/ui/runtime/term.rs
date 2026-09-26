@@ -269,12 +269,7 @@ impl<W: Write> Term<W> {
             let (width, height) = crossterm::terminal::size()?;
             Size { width, height }
         };
-        let mut t = InlineTerminal::new(make_writer(), geo.clone(), size, height, start_top)?;
-        // `IOTA_SYNC_OUTPUT=off` turns DEC 2026 off (X-55): the one switch. Read here, at the
-        // terminal's edge, and nowhere decided from a terminal's name or version.
-        if geo.is_none() && std::env::var("IOTA_SYNC_OUTPUT").is_ok_and(|v| v == "off") {
-            t.set_sync(false);
-        }
+        let t = InlineTerminal::new(make_writer(), geo.clone(), size, height, start_top)?;
         Ok(Self {
             t,
             ctrl,
@@ -378,7 +373,8 @@ impl<W: Write> Term<W> {
     }
 
     /// Opens a batch: what the terminal writes until [`Term::end_batch`] is one
-    /// synchronized update (the loop wraps one iteration's writes).
+    /// write — a synchronized update if it is larger than `SYNC_MIN` (the loop gathers one
+    /// iteration's writes).
     pub(crate) fn begin_batch(&mut self) {
         self.t.begin_batch();
     }
@@ -402,7 +398,7 @@ impl<W: Write> Term<W> {
     /// Commits pre-wrapped rows into native scrollback right above the frame, sized by W6
     /// `LINE_COUNT_SELF_CONSISTENCY`. Returns the row count.
     pub(crate) fn insert_lines(&mut self, rows: &[String]) -> io::Result<u16> {
-        // The band write and the insert are one synchronized update.
+        // The band write and the insert are one write.
         self.t.begin_batch();
         let n = self.insert_rows(rows);
         self.t.end_batch()?;
@@ -468,7 +464,7 @@ impl<W: Write> Term<W> {
     /// way the physical cursor ends on a known frame row — the cursor's, or the frame's
     /// first row while it is hidden — which is what W5's resize anchor counts from.
     pub(crate) fn draw_frame(&mut self, view: &FrameView) -> io::Result<()> {
-        // The diff and the cursor are one synchronized update.
+        // The diff and the cursor are one write.
         self.t.begin_batch();
         let drawn = self.paint(view);
         self.t.end_batch()?;

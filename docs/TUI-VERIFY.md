@@ -136,12 +136,13 @@ For each terminal:
 
 ## 3. Flicker (Ghostty and Terminal.app are mandatory)
 
-Every write goes out as a DEC 2026 synchronized update (X-55): one per operation, one per
-loop iteration (the inserts, the height change and the frame together), none around a cursor
-query. Terminals that know the mode (Ghostty, kitty, WezTerm, Alacritty, iTerm2, foot,
-Windows Terminal, herdr, tmux ≥ 3.7 in a pane) must show no intermediate state at all;
-Terminal.app and VTE/GNOME Terminal ignore it and may show one frame of one. A 100-line
-stream is the stress case. `IOTA_SYNC_OUTPUT=off` turns the mode off (the one switch).
+A write of at most 1 KiB (`SYNC_MIN`) arrives in a single read, so it has no intermediate state
+to show: it goes out bare. A larger write — a panel opening, a big insert, the frame after a
+resize — is one DEC 2026 synchronized update (X-55; one loop iteration is one write, none
+around a cursor query), and in a terminal that knows the mode (Ghostty, kitty, WezTerm,
+Alacritty, iTerm2, foot, Windows Terminal, herdr, tmux ≥ 3.7 in a pane) it must not flicker;
+Terminal.app and VTE/GNOME Terminal ignore the mode and may show one frame of it. A 100-line
+stream is the stress case. There is no switch.
 
 - [ ] **3.1** Stream ~100 lines. Watch the *frame*, not the text: does the composer row, the
       separator pair or the status line visibly blink, tear or jump?
@@ -149,9 +150,9 @@ stream is the stress case. `IOTA_SYNC_OUTPUT=off` turns the mode off (the one sw
       frame height; since X-54 that is a field write: the rows the frame keeps are not
       erased and not written again (only the rows below them are erased), so the separator,
       the composer and the status row must NOT blink at all — any flash of them is a defect.
-      (Under W1/W3 each change erased the frame and repainted every cell.) In a 2026 terminal
-      nothing may flicker — not the frame, not an insert's frame a row up between its `LF`s
-      and its `IL`; Terminal.app/VTE may show one frame of it.
+      (Under W1/W3 each change erased the frame and repainted every cell.) A panel opening
+      larger than 1 KiB must not flicker in a 2026 terminal; a smaller one is one read.
+      Terminal.app/VTE may show one frame of a large one.
 
 ## 4. Resize reflow — count the orphans
 

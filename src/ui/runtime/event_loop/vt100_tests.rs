@@ -527,56 +527,116 @@ fn sync_pairs(bytes: &[u8]) -> (usize, bool) {
     (pairs, !nested && !open)
 }
 
-/// Every `Term` operation that writes the screen is ONE synchronized update — exactly one
-/// begin/end pair around all its bytes — and a batch of them is one pair too, the title and
-/// progress OSCs inside it; outside a batch an OSC is written bare (it changes nothing on
-/// screen). vt100 does not know mode 2026 and ignores it: every replay in this file runs
-/// through the same bytes.
+/// DEC 2026 by SIZE (X-55): a write the transport cannot split — at most `SYNC_MIN` bytes, one
+/// pty read — goes out bare: a keystroke's composer redraw, a one-line insert, a height change,
+/// a clear, a whole small batch, an OSC. A write larger than that goes out as exactly ONE
+/// synchronized update around all its bytes: a 12-line insert of wide rows, a `/model`-sized
+/// frame opening (the height change and the draw in one batch). The criterion is the size of
+/// what one `write_all` carries, never the terminal; vt100 ignores the mode, so every replay
+/// in this file runs through the same bytes.
 #[test]
-fn each_operation_and_each_batch_is_one_synchronized_update() {
+fn a_write_is_one_synchronized_update_exactly_when_the_transport_would_split_it() {
+    use crate::ui::runtime::inline_term::SYNC_MIN;
     let (mut t, buf, _geo) = direct_term(4, 20);
-    let view = |n: usize| crate::ui::render::frame::FrameView {
-        rows: (0..n).map(|i| format!("row-{i}")).collect(),
-        cursor: Some((2, 1)),
+    let view = |rows: Vec<String>, cursor: (u16, u16)| crate::ui::render::frame::FrameView {
+        rows,
+        cursor: Some(cursor),
     };
-    let one = |t: &mut crate::ui::runtime::term::Term<SharedBuf>,
-               op: &dyn Fn(&mut crate::ui::runtime::term::Term<SharedBuf>)| {
+    let composer = |draft: &str| {
+        view(
+            vec![
+                "┄".repeat(80),
+                format!("❯ {draft}"),
+                "┄".repeat(80),
+                "status".to_owned(),
+            ],
+            (2 + u16::try_from(draft.len()).unwrap(), 1),
+        )
+    };
+    // One write, its size, its pairs; the rule: wrapped exactly when longer than SYNC_MIN.
+    let write = |t: &mut crate::ui::runtime::term::Term<SharedBuf>,
+                 op: &dyn Fn(&mut crate::ui::runtime::term::Term<SharedBuf>)|
+     -> (usize, usize) {
         let mark = buf.bytes().len();
         op(t);
         let bytes = buf.bytes()[mark..].to_vec();
         let text = String::from_utf8_lossy(&bytes).into_owned();
-        assert_eq!(sync_pairs(&bytes), (1, true), "{text:?}");
-        assert!(
-            text.starts_with("\u{1b}[?2026h") && text.ends_with("\u{1b}[?2026l"),
-            "{text:?}"
-        );
+        let (pairs, balanced) = sync_pairs(&bytes);
+        assert!(balanced, "{text:?}");
+        let body = bytes.len() - pairs * 16;
+        if body > SYNC_MIN {
+            assert_eq!(pairs, 1, "a {body}-byte write must be one block: {text:?}");
+            assert!(
+                text.starts_with("\u{1b}[?2026h") && text.ends_with("\u{1b}[?2026l"),
+                "the block holds the whole write: {text:?}"
+            );
+        } else {
+            assert_eq!(pairs, 0, "a {body}-byte write goes out bare: {text:?}");
+        }
+        (body, pairs)
     };
-    one(&mut t, &|t| t.draw_frame(&view(4)).unwrap());
-    one(&mut t, &|t| {
-        t.insert_lines(&["a".to_owned(), "b".to_owned()]).unwrap();
+    t.draw_frame(&composer("")).unwrap();
+    // Small: a keystroke, a one-line insert, a height change, a clear, a small batch, an OSC.
+    let (n, pairs) = write(&mut t, &|t| t.draw_frame(&composer("h")).unwrap());
+    assert!(
+        pairs == 0 && n < 64,
+        "a keystroke echo is a few bytes, bare: {n} B"
+    );
+    let (_, pairs) = write(&mut t, &|t| {
+        t.insert_lines(&["one line of output".to_owned()]).unwrap();
     });
-    one(&mut t, &|t| {
+    assert_eq!(pairs, 0, "a one-line insert is bare");
+    write(&mut t, &|t| {
         t.ensure_height(6).unwrap();
     });
-    one(&mut t, &|t| t.clear().unwrap());
-    one(&mut t, &|t| {
+    write(&mut t, &|t| t.clear().unwrap());
+    let (_, pairs) = write(&mut t, &|t| {
         t.begin_batch();
-        t.insert_lines(&["c".to_owned()]).unwrap();
         t.ensure_height(4).unwrap();
-        t.set_title("sync").unwrap();
+        t.set_title("small").unwrap();
         t.set_progress(ProgressState::Busy).unwrap();
-        t.draw_frame(&view(4)).unwrap();
+        t.draw_frame(&composer("hi")).unwrap();
         t.end_batch().unwrap();
     });
-    let mark = buf.bytes().len();
-    t.set_title("bare").unwrap();
-    assert_eq!(
-        sync_pairs(&buf.bytes()[mark..]),
-        (0, true),
-        "an OSC alone is not wrapped"
+    assert_eq!(pairs, 0, "a small batch is bare, the OSCs in it");
+    let (_, pairs) = write(&mut t, &|t| t.set_title("bare").unwrap());
+    assert_eq!(pairs, 0, "an OSC alone is bare");
+    // Large: a 12-line insert of wide rows; a /model-sized frame opening in one batch.
+    let wide: Vec<String> = (0..12)
+        .map(|i| {
+            format!(
+                "{i:02} \u{1b}[31m{}\u{1b}[0m \u{1b}[32m{}\u{1b}[0m \u{1b}[1m{}\u{1b}[0m",
+                "x".repeat(24),
+                "y".repeat(24),
+                "z".repeat(24)
+            )
+        })
+        .collect();
+    let (n, pairs) = write(&mut t, &|t| {
+        t.insert_lines(&wide).unwrap();
+    });
+    assert!(
+        pairs == 1 && n > SYNC_MIN,
+        "a 12-line insert is one block: {n} B"
+    );
+    let panel: Vec<String> = (0..16)
+        .map(|i| format!("  model-{i:02} {}", "·".repeat(60)))
+        .collect();
+    let (n, pairs) = write(&mut t, &|t| {
+        t.begin_batch();
+        t.ensure_height(16).unwrap();
+        t.draw_frame(&view(panel.clone(), (2, 1))).unwrap();
+        t.end_batch().unwrap();
+    });
+    assert!(
+        pairs == 1 && n > SYNC_MIN,
+        "a panel opening is one block: {n} B"
     );
     let screen = parse(&buf).screen().contents();
-    assert!(screen.contains("row-3") && screen.contains('c'), "{screen}");
+    assert!(
+        screen.contains("model-15") && screen.contains("11 xxx"),
+        "{screen}"
+    );
 }
 
 /// No cursor query is ever made inside a synchronized update: `WezTerm` holds its answer and
@@ -1592,7 +1652,7 @@ fn resize_anchors_at_the_cursor_row_minus_its_frame_row() {
     // Counted from the cursor, not from a row number: up the composer's frame row (2) and
     // erase from there (EL 2 on the row, then an erase-below from its second column).
     assert!(
-        after.starts_with("\u{1b}[?2026h\u{1b}[2A\r\u{1b}[2K\u{1b}[C\u{1b}[J"),
+        after.starts_with("\u{1b}[2A\r\u{1b}[2K\u{1b}[C\u{1b}[J"),
         "the first bytes after the event must climb the frame's 2 rows and erase:\n{after:?}"
     );
     let screen = parse_shifted(&buf, mark, -3).screen().contents();
@@ -1636,7 +1696,7 @@ fn a_flush_frame_resizes_onto_the_floor_and_the_band_takes_the_next_output() {
     assert_eq!(t.top(), 19, "a flush frame lands on the floor (24 − 5)");
     let after = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
     assert!(
-        after.starts_with("\u{1b}[?2026h\u{1b}[2A\r\u{1b}[2K\u{1b}[C\u{1b}[J\r\n\n\n"),
+        after.starts_with("\u{1b}[2A\r\u{1b}[2K\u{1b}[C\u{1b}[J\r\n\n\n"),
         "clear from the cursor estimate (16, two rows up), then down 3 onto the floor:\n{after:?}"
     );
     assert_eq!(

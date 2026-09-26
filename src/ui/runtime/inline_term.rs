@@ -104,10 +104,9 @@ pub(crate) struct InlineTerminal<W: Write> {
     /// a frame row — the composer's, or the frame's first while a surface hides it.
     cursor: Position,
     pen: Pen,
-    /// Whether commits are wrapped in DEC 2026 ([`InlineTerminal::set_sync`]).
-    sync: bool,
     /// Open batches ([`InlineTerminal::begin_batch`]): while any is open, an operation's
-    /// bytes wait in `pending` and the batch goes out as one synchronized update.
+    /// bytes wait in `pending` and the batch goes out as one write (one synchronized update if
+    /// it is larger than [`SYNC_MIN`]).
     batch: u32,
 }
 
@@ -134,7 +133,6 @@ impl<W: Write> InlineTerminal<W> {
             cursor: Position::new(0, at),
             pen: Pen::RESET,
             batch: 0,
-            sync: true,
         };
         queue!(t.pending, MoveTo(0, at))?;
         if let Some(g) = &t.geo {
@@ -327,7 +325,7 @@ impl<W: Write> InlineTerminal<W> {
     /// 1. `dsr` — the one cursor query before any byte — says where the cursor is: the
     ///    frame's first row is `above` rows up from it. A cursor below the size just taken
     ///    means the screen grew again in between: the size (and the floor with it) follows.
-    /// 2. One synchronized update: `CUU above` to that row (it can only stop short, at the
+    /// 2. One write (a batch): `CUU above` to that row (it can only stop short, at the
     ///    top of the screen — into the frame, never above it), erase from there down; when
     ///    `floor` is given (the frame was flush) and lies below that row, `LF` down onto it —
     ///    the rows between are a blank band the caller owns; then a `height`-row frame is
@@ -611,16 +609,11 @@ impl<W: Write> InlineTerminal<W> {
         }
     }
 
-    /// Turns the synchronized updates off (or on): the one switch, never decided from a
-    /// terminal's name or version (X-55).
-    pub(crate) fn set_sync(&mut self, on: bool) {
-        self.sync = on;
-    }
-
     /// Opens a batch: every operation until the matching [`InlineTerminal::end_batch`] goes
-    /// out as ONE synchronized update. Batches nest. A cursor query must never be made inside
-    /// one — `WezTerm` and Alacritty hold the input (the answer, or the query itself) until the
-    /// block ends.
+    /// out as ONE write, and whether it is a synchronized update is decided once, on the whole
+    /// of it. Batches nest. A cursor query must never be made inside one — the batch may become
+    /// a block, and `WezTerm` and Alacritty hold the input (the answer, or the query itself)
+    /// until a block ends.
     pub(crate) fn begin_batch(&mut self) {
         self.batch += 1;
     }
@@ -648,17 +641,20 @@ impl<W: Write> InlineTerminal<W> {
         self.out.flush()
     }
 
-    /// Hands the operation's bytes to the terminal in one write, as one DEC 2026 synchronized
-    /// update (`ESC[?2026h … ESC[?2026l`): an emulator that knows the mode shows the screen
-    /// before the block or after it, never in between — an insert's `LF`s before its `IL`
-    /// (the frame a row up for a moment), a height change's erase before its redraw. Sent
-    /// blind, like crossterm's `BeginSynchronizedUpdate`: an emulator that does not know the
-    /// mode ignores it. Inside a batch the bytes wait for its end.
+    /// Hands the operation's bytes — or a whole batch's, at its outermost end — to the
+    /// terminal in one write. A write longer than [`SYNC_MIN`] goes out as one DEC 2026
+    /// synchronized update (`ESC[?2026h … ESC[?2026l`): the transport splits it, and an
+    /// emulator that knows the mode shows the screen before the block or after it, never a
+    /// half-drawn panel in between. A shorter write arrives in one read and goes out bare —
+    /// there is no in-between to hide, and a terminal that repaints a whole pane per block
+    /// (tmux 3.7) pays nothing for typing or streaming. Sent blind, like crossterm's
+    /// `BeginSynchronizedUpdate`; the criterion is the size, never the terminal. Inside a batch
+    /// the bytes wait for its end.
     fn commit(&mut self) -> io::Result<()> {
         if self.batch > 0 {
             return Ok(());
         }
-        if !self.pending.is_empty() && !self.sync {
+        if !self.pending.is_empty() && self.pending.len() <= SYNC_MIN {
             self.out.write_all(&self.pending)?;
             self.pending.clear();
         }
@@ -672,6 +668,12 @@ impl<W: Write> InlineTerminal<W> {
         self.out.flush()
     }
 }
+
+/// The longest write that goes out without a synchronized update: the smallest read block a
+/// transport splits a write into — the macOS pty's (1024 B, measured; Linux reads 4096, a TCP
+/// segment carries ~1448), so a write this size or smaller reaches the terminal whole. A
+/// property of the transport, not a terminal, and not a knob (X-55).
+pub(crate) const SYNC_MIN: usize = 1024;
 
 /// DEC private mode 2026, synchronized output: begin and end of one update.
 pub(crate) const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
