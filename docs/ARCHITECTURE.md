@@ -350,6 +350,67 @@ The session slice adds one testing rule to the list above: **no test hardcodes a
 
 ---
 
+## 12. The terminal layer's contract — read this first
+
+The shape of `src/ui/runtime/` in one page; the detail lives where each bullet points. Brain entry
+point: `tui-terminal-contract`.
+
+**The design.** An inline viewport — the frame: staged rows, separators, composer, status, a surface —
+pinned under the terminal's NATIVE scrollback; no alternate screen. Output is inserted above the frame
+and scrolls into the terminal's own history (search, copy, scroll all native). This is the load-bearing
+choice (brain `ui-bubbletea-v2`, the Go original's; DIVERGENCES X-52). Its price is reflow physics the
+app cannot observe: a resize may leave rows blank or twice, never lost. If "zero residuals" ever
+outranks native scrollback, the answer is an alt-screen pager and the design changes wholesale
+(the 2026-09-24 UI evaluation's §4.2 falsifier) — not another round of heuristics.
+
+**The terminal is iota's own** (`inline_term.rs`, X-54). ratatui contributes `Buffer`, `Buffer::diff`
+and the widgets; its `Terminal` is not used. The ONE invariant: after the startup anchor (the row a
+DSR just reported) no byte names a row number — every move is `CUU`, `LF`, `CR`+`CUF`, or `IL`/`DL`/`SD`
+on the frame's own rows, counted from the cursor, which the emulator carries with its cell through any
+resize. `CUU` can only stop short (into the frame), `LF` moves exactly one content row even where it
+scrolls. That closed the loss class: a stream writing under a size iota had not read yet (tmux,
+height drag: 6/6 runs lost rows → 0/6), a terminal that never answers the DSR (4/4 → 0/4), and a grow
+between the cursor answer and the erase (a low-probability race; pinned by deterministic replays that
+fail on the absolute-addressing build). The absolute top and size are bookkeeping only.
+
+**The cursor rules.** The cursor wins over any size read (a cursor below the last row read means the
+screen grew). A DSR never sits inside an open batch or a synchronized block (WezTerm and Alacritty
+hold input inside one; `debug_assert`). A resize pass is `Term::resize` computing `above` (the
+frame's rows over the cursor, never more), the floor and the height, and `InlineTerminal::relayout`
+writing: DSR → one batch (climb, erase, `LF` onto the floor, lay the frame out) → recheck DSR.
+
+**DEC 2026** (X-55). A write longer than `SYNC_MIN` (1024 B, the macOS pty read block, measured;
+Linux reads 4096 — not measured here) is one synchronized update; a smaller one reaches the terminal
+in one read and goes out bare. The criterion is the transport, never a terminal name or version, and
+there is NO user switch. Measured cost, tmux 3.7c (which repaints the whole pane at the end of any
+block): one pane repaint per large write; typing and streaming are bare (11 keystrokes 22 840 → 13 B,
+`stream 100 20` 82 884 → 8 581 B to the outer terminal). tmux 3.8-rc2 repaints the whole pane only for
+blocks that scroll (the third evaluation, `/tmp/ui-eval-3.md` §2.1; not re-measured here).
+
+**The resize protocol — FROZEN** (X-52, TUI-VERIFY §4.3). Burst layout: full width at rest, the frame
+a few columns short while a drag lasts; the drag ends `DRAG_SETTLE` (2 s) after the last resize or at
+once on a key, a paste, a turn or a surface; the margin is twice the widest step, 2..=`DRAG_MARGIN_MAX`
+(8). A flush frame stays on the floor `S − h`; the rows between are a blank band the next output fills,
+closed (`DL`+`SD`) when the drag ends. `RESIZE_QUIET` (50 ms) merges a burst of events into one pass.
+**Budget:** a LOST row is the one hard failure (bound 0); per drag ≤ 2 blank or duplicated rows; a
+report inside the budget is closed as by design. Measured residuals are X-52's list — note that since
+B3 (the overhang inference deleted) a one-column drag leaves 3 staged rows twice in tmux 3.7c (2 in
+herdr and Ghostty) and a ≥ 2× narrowing 3–4: above the frozen ≤ 2, recorded but not yet reconciled
+with it.
+
+**Where the detail lives.** X-36 (the `┄` separators), X-52 (resize, budget, residuals), X-53 (the
+closed box, withdrawn), X-54 (the owned terminal), X-55 (2026); TUI-VERIFY §2 (scrollback), §3
+(flicker), §4 (reflow residuals); `event_loop/vt100_tests.rs` (L2b: the real byte stack replayed
+through vt100; `TmuxReflowEmu` models tmux 3.7c only — herdr/Ghostty have no model) and the tmux L4
+scenarios 06 and 26 (caps named per block).
+
+**Don't.** No per-terminal tables, name checks or version gates. Don't tune `DRAG_SETTLE`,
+`DRAG_MARGIN_MAX` or `RESIZE_QUIET`. Don't turn the two physical special cases — `erase_below` (no
+erase-below from the home position: tmux `scroll-on-clear` archives the screen) and the cursor-wins
+rule — into a "terminal quirks" framework. Don't re-add the deleted inference chain (`learn_reflow`,
+`growth_above`, `line_len`/`rewrite_rows`, the archived-row recovery): it trades a duplicate for a
+guess that erases transcript rows on a terminal that does not reflow.
+
 ## 13. Risks and mitigations
 
 1. **rmcp lifecycle drift** (handshake version, child kill on drop, header rules) — isolated in `mcp/transport.rs`; `manager_connect_timeout` lands first as the canary; in-process duplex tests exercise the real handshake; divergences recorded.
