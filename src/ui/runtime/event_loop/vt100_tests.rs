@@ -1184,19 +1184,24 @@ fn replay_resized(
     (reachable(&mut p), screen)
 }
 
-/// A REFLOWING emulator, modelled the way tmux 3.7c does it: a row shrink first eats the
+/// A REFLOWING emulator — tmux 3.7c, and ONLY tmux (hence the name) — a row shrink first eats the
 /// rows below the cursor and then moves the top rows into the history; then every screen
 /// row is a hard line that rewraps at the new width, the rows stay anchored to the
 /// bottom (what grows pushes the top rows into the history), and the cursor moves with
 /// its cell. vt100 underneath does the rest; `history` keeps what the model pushed out
 /// plus vt100's own scrolled-off rows from each incarnation.
-struct ReflowEmu {
+///
+/// It is the only reflow model here. herdr and Ghostty behave differently in ways it does not
+/// capture — they do not pull history rows back on a grow, and a height drag's band stays as
+/// blank rows in their history (X-52's over-budget list) — so that class is found on the real
+/// terminals only; a second model is added when a bug needs one, not before.
+struct TmuxReflowEmu {
     p: vt100::Parser,
     history: Vec<String>,
     fed: usize,
 }
 
-impl ReflowEmu {
+impl TmuxReflowEmu {
     fn new() -> Self {
         Self {
             p: vt100::Parser::new(24, 80, 5000),
@@ -1458,7 +1463,7 @@ fn idle_height_shrink_keeps_the_frame_down_and_every_row() {
 #[test]
 fn settled_drag_in_a_reflowing_emulator_stays_flush_and_clean() {
     let lh = idle_loop();
-    let mut emu = ReflowEmu::new();
+    let mut emu = TmuxReflowEmu::new();
     let mark = lh.buf.bytes().len();
     for w in (50..80).rev() {
         let moved = emu.resize(&lh.buf.bytes(), w, 24);
@@ -1515,7 +1520,7 @@ fn settled_drag_in_a_reflowing_emulator_stays_flush_and_clean() {
 fn a_2x_and_a_3x_narrowing_in_a_reflowing_emulator_stay_clean() {
     for (w, tag, budget) in [(40, "2× 80→40", BUDGET_2X), (26, "3× 80→26", BUDGET_3X)] {
         let lh = idle_loop();
-        let mut emu = ReflowEmu::new();
+        let mut emu = TmuxReflowEmu::new();
         let mark = lh.buf.bytes().len();
         let moved = emu.resize(&lh.buf.bytes(), w, 24);
         lh.geo.shift_cursor(moved);
@@ -1533,7 +1538,7 @@ fn a_2x_and_a_3x_narrowing_in_a_reflowing_emulator_stay_clean() {
 #[test]
 fn one_large_narrowing_in_a_reflowing_emulator_stays_clean() {
     let lh = idle_loop();
-    let mut emu = ReflowEmu::new();
+    let mut emu = TmuxReflowEmu::new();
     let moved = emu.resize(&lh.buf.bytes(), 30, 24);
     lh.geo.shift_cursor(moved);
     resize_and_settle(&lh, 30, 24);
@@ -1705,7 +1710,7 @@ fn resize_with_a_surface_open_leaves_no_half_frame() {
     };
     t.ensure_height(8).unwrap();
     t.draw_frame(&view(80)).unwrap();
-    let mut emu = ReflowEmu::new();
+    let mut emu = TmuxReflowEmu::new();
     let moved = emu.resize(&buf.bytes(), 60, 24);
     geo.shift_cursor(moved);
     geo.set_size(60, 24);
@@ -1769,7 +1774,7 @@ fn width_shrink_rewraps_a_wide_staged_row() {
 #[test]
 fn a_diagonal_narrowing_loses_nothing_and_stays_within_the_budget() {
     let lh = idle_loop();
-    let mut emu = ReflowEmu::new();
+    let mut emu = TmuxReflowEmu::new();
     let moved = emu.resize(&lh.buf.bytes(), 70, 20);
     lh.geo.shift_cursor(moved);
     resize_and_settle(&lh, 70, 20);
@@ -1780,7 +1785,7 @@ fn a_diagonal_narrowing_loses_nothing_and_stays_within_the_budget() {
     assert_resize_clean("80×24→70×20", &all, &screen, &after, BUDGET_DIAGONAL);
 
     let lh = idle_loop();
-    let mut emu = ReflowEmu::new();
+    let mut emu = TmuxReflowEmu::new();
     let moved = emu.resize(&lh.buf.bytes(), 76, 24);
     lh.geo.shift_cursor(moved);
     resize_and_settle(&lh, 76, 24);
@@ -1818,7 +1823,7 @@ fn a_3x_narrowing_at_startup_loses_nothing_and_stays_within_the_budget() {
         h.contents().contains("banner-2")
     }));
     thread::sleep(Duration::from_millis(150));
-    let mut emu = ReflowEmu::new();
+    let mut emu = TmuxReflowEmu::new();
     let mark = lh.buf.bytes().len();
     let moved = emu.resize(&lh.buf.bytes(), 27, 24);
     lh.geo.shift_cursor(moved);
@@ -2012,7 +2017,7 @@ fn a_wide_grapheme_after_a_paste_tag_stays_whole() {
 #[test]
 fn the_next_output_follows_the_transcript_after_a_drag() {
     let lh = idle_loop();
-    let mut emu = ReflowEmu::new();
+    let mut emu = TmuxReflowEmu::new();
     for w in (75..80).rev() {
         let moved = emu.resize(&lh.buf.bytes(), w, 24);
         lh.geo.shift_cursor(moved);
@@ -2045,7 +2050,7 @@ fn the_next_output_follows_the_transcript_after_a_drag() {
 #[test]
 fn a_drag_of_two_column_steps_leaves_no_band() {
     let lh = idle_loop();
-    let mut emu = ReflowEmu::new();
+    let mut emu = TmuxReflowEmu::new();
     for w in (60..=78).rev().step_by(2) {
         let moved = emu.resize(&lh.buf.bytes(), w, 24);
         lh.geo.shift_cursor(moved);
@@ -2098,7 +2103,7 @@ fn the_drag_settle_deadline_bounds_the_poll_and_restores_the_width() {
 #[test]
 fn a_paced_drag_stays_one_burst_and_leaves_no_hole() {
     let lh = idle_loop();
-    let mut emu = ReflowEmu::new();
+    let mut emu = TmuxReflowEmu::new();
     for w in (75..80).rev() {
         let moved = emu.resize(&lh.buf.bytes(), w, 24);
         lh.geo.shift_cursor(moved);
@@ -2174,7 +2179,7 @@ fn assert_no_line_lost_or_doubled(tag: &str, all: &[String]) {
 #[test]
 fn a_height_drag_down_and_back_loses_no_row() {
     let lh = idle_loop();
-    let mut emu = ReflowEmu::new();
+    let mut emu = TmuxReflowEmu::new();
     for h in [22, 20] {
         let moved = emu.resize(&lh.buf.bytes(), 80, h);
         lh.geo.shift_cursor(moved);
@@ -2203,7 +2208,7 @@ fn a_height_drag_down_and_back_loses_no_row() {
 #[test]
 fn an_oscillating_height_loses_no_row() {
     let lh = idle_loop();
-    let mut emu = ReflowEmu::new();
+    let mut emu = TmuxReflowEmu::new();
     let mut prev = 24;
     for (i, h) in [23, 22, 21, 20, 24, 23, 22, 21, 24, 22, 20, 24]
         .into_iter()
@@ -2239,7 +2244,7 @@ fn raced_term(
     crate::ui::runtime::term::Term<SharedBuf>,
     SharedBuf,
     crate::ui::runtime::term::Geometry,
-    Arc<Mutex<ReflowEmu>>,
+    Arc<Mutex<TmuxReflowEmu>>,
     crate::ui::render::frame::FrameView,
 ) {
     // The transcript as plain output ahead of the frame (vt100 files no region-scrolled row
@@ -2271,13 +2276,19 @@ fn raced_term(
         cursor,
     };
     t.draw_frame(&frame).unwrap();
-    (t, buf, geo, Arc::new(Mutex::new(ReflowEmu::new())), frame)
+    (
+        t,
+        buf,
+        geo,
+        Arc::new(Mutex::new(TmuxReflowEmu::new())),
+        frame,
+    )
 }
 
 /// The model resizes to `h` rows NOW — the bytes written so far on its screen — and the
 /// synthetic tty follows: the cursor moved with its cell, the size is the new one.
 fn emu_resize(
-    emu: &Mutex<ReflowEmu>,
+    emu: &Mutex<TmuxReflowEmu>,
     buf: &SharedBuf,
     geo: &crate::ui::runtime::term::Geometry,
     (w, h): (u16, u16),
@@ -2291,7 +2302,7 @@ fn emu_resize(
 fn resize_after_query(
     nth: usize,
     size: (u16, u16),
-    emu: &Arc<Mutex<ReflowEmu>>,
+    emu: &Arc<Mutex<TmuxReflowEmu>>,
     buf: &SharedBuf,
     geo: &crate::ui::runtime::term::Geometry,
 ) {

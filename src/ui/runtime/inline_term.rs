@@ -167,11 +167,6 @@ impl<W: Write> InlineTerminal<W> {
         Position::new(self.cursor.x, self.cursor.y.saturating_sub(self.viewport.y))
     }
 
-    /// The cursor, in absolute rows (bookkeeping).
-    pub(crate) fn cursor(&self) -> Position {
-        self.cursor
-    }
-
     /// Renders the next frame into a fresh buffer and writes what differs from what the
     /// screen shows. The cursor ends wherever the last cell left it — the caller places it.
     pub(crate) fn draw(&mut self, render: impl FnOnce(&mut Buffer)) -> io::Result<()> {
@@ -326,45 +321,67 @@ impl<W: Write> InlineTerminal<W> {
         self.commit()
     }
 
-    /// Moves the cursor `rows` up from where it is, to the first row of what the caller
-    /// erases next: never more than the frame's own rows above the cursor (plus, for a
-    /// resize, the rows its reflow provably grew above them).
-    pub(crate) fn up_from_cursor(&mut self, rows: u16) -> io::Result<()> {
-        self.up(rows)?;
-        self.commit()
-    }
-
-    /// Erases from the cursor's row to the end of the screen; what the frame showed is gone.
-    pub(crate) fn erase_here_down(&mut self) -> io::Result<()> {
+    /// A resize pass's whole write sequence (`Term::resize` decides `above`, `floor` and
+    /// `height`; this is the mechanism, and the one place a pass moves the cursor):
+    ///
+    /// 1. `dsr` — the one cursor query before any byte — says where the cursor is: the
+    ///    frame's first row is `above` rows up from it. A cursor below the size just taken
+    ///    means the screen grew again in between: the size (and the floor with it) follows.
+    /// 2. One synchronized update: `CUU above` to that row (it can only stop short, at the
+    ///    top of the screen — into the frame, never above it), erase from there down; when
+    ///    `floor` is given (the frame was flush) and lies below that row, `LF` down onto it —
+    ///    the rows between are a blank band the caller owns; then a `height`-row frame is
+    ///    laid out from there (`LF` makes the rows where the screen ends).
+    /// 3. `dsr` again, outside the block: the bookkeeping follows the cursor, now on the
+    ///    frame's first row. No byte depends on either answer.
+    ///
+    /// Returns the band's rows. Without a cursor answer there is no floor: the frame is laid
+    /// out where it was, counted from the cursor all the same.
+    pub(crate) fn relayout(
+        &mut self,
+        above: u16,
+        floor: Option<u16>,
+        height: u16,
+        mut dsr: impl FnMut() -> io::Result<Position>,
+    ) -> io::Result<u16> {
+        debug_assert!(
+            !self.batching(),
+            "a cursor query inside a synchronized update"
+        );
+        let mut floor = floor;
+        let start = dsr().ok().map(|pos| {
+            if pos.y >= self.size.height {
+                let grew = pos.y + 1 - self.size.height;
+                self.size.height = pos.y + 1;
+                floor = floor.map(|f| f.saturating_add(grew));
+            }
+            pos.y.saturating_sub(above)
+        });
+        self.begin_batch();
+        self.up(above)?;
+        if let Some(s) = start {
+            self.cursor.y = s;
+        }
         self.erase_below()?;
         self.shown = Buffer::empty(self.viewport);
-        self.commit()
-    }
-
-    /// Moves the cursor down `rows` rows (`LF`) — onto rows a resize has just erased.
-    pub(crate) fn down(&mut self, rows: u16) -> io::Result<()> {
-        self.lf(rows);
-        self.commit()
-    }
-
-    /// Lays a `height`-row frame out from the cursor's row down (scrolling the screen where
-    /// it ends there): the frame shows nothing yet.
-    pub(crate) fn place(&mut self, height: u16) -> io::Result<()> {
+        let here = self.cursor.y;
+        let band = match (floor, start) {
+            (Some(f), Some(_)) if f > here => f - here,
+            _ => 0,
+        };
+        self.lf(band);
         self.cr();
         self.reserve(height);
-        self.commit()
-    }
-
-    /// Bookkeeping from a DSR: the cursor is REALLY on `y`. The frame is not touched — for
-    /// a cursor the caller has just moved off its frame row (the resize pass, before it lays
-    /// the frame out again). No byte is written.
-    pub(crate) fn resync_cursor(&mut self, y: u16) {
-        self.cursor.y = y;
+        self.end_batch()?;
+        if let Ok(pos) = dsr() {
+            self.resync(pos.y);
+        }
+        Ok(band)
     }
 
     /// Bookkeeping from a DSR: the cursor is REALLY on `y` — the model follows (the frame
     /// with it). No byte is written.
-    pub(crate) fn resync(&mut self, y: u16) {
+    fn resync(&mut self, y: u16) {
         let rel = self.cursor.y.saturating_sub(self.viewport.y);
         self.cursor.y = y;
         self.viewport.y = y.saturating_sub(rel);

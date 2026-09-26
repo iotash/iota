@@ -68,11 +68,11 @@ pub(crate) const IDLE_POLL_MAX: Duration = Duration::from_millis(50);
 pub(crate) const DRAG_SETTLE: Duration = Duration::from_millis(2000);
 
 /// How long the terminal must have been quiet — no further resize — before the loop applies
-/// the last one (P0, 2026-09-24). While a pane or a window is being dragged, tmux applies each
-/// new size (pulling history rows back on a grow) independently of what the loop writes;
-/// a pass that queried the cursor and then wrote its erases while the next resize landed
-/// wiped a committed row. Acting only on a still terminal, and writing nothing — no insert,
-/// no draw — until then, closes that window. Shorter than a hand's pause between drag
+/// the last one, writing nothing (no insert, no draw) until then. It MERGES passes: a burst of
+/// `SIGWINCH`es is one erase and one redraw, not one per event. (Introduced for the P0 of
+/// 2026-09-24 as the thing that closed the window between a pass's cursor query and its
+/// erases; since every byte is counted from the cursor (X-54) that window names no row, so it
+/// no longer carries correctness — only the merge.) Shorter than a hand's pause between drag
 /// steps, longer than a burst of `SIGWINCH`es.
 pub(crate) const RESIZE_QUIET: Duration = Duration::from_millis(50);
 

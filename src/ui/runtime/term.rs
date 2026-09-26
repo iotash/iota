@@ -219,6 +219,17 @@ impl Geometry {
     }
 }
 
+/// The physical cursor: one DSR live, the synthetic answer under [`Geometry`]. Never
+/// inside a synchronized update (`InlineTerminal::relayout` checks): `WezTerm` and Alacritty
+/// hold the input until it ends.
+fn cursor_position(geo: Option<&Geometry>) -> io::Result<Position> {
+    if let Some(g) = geo {
+        return g.query_cursor();
+    }
+    let (x, y) = crossterm::cursor::position()?;
+    Ok(Position::new(x, y))
+}
+
 /// Produces the writers: one for the inline terminal, one out-of-band control writer. For
 /// the live build this is `|| io::stdout()` (handles share the one stream); tests hand out
 /// clones of a shared byte buffer.
@@ -336,45 +347,22 @@ impl<W: Write> Term<W> {
     pub(crate) fn resize(&mut self, size: Size, new_h: u16) -> io::Result<()> {
         // The size the terminal has NOW: in a fast drag the event's size can already be stale
         // (the next resize applied, its event not yet read).
-        let mut size = self
+        let size = self
             .real_size()
             .filter(|s| s.width > 0 && s.height > 0)
             .unwrap_or(size);
         let old = self.t.size();
         let flush = self.t.viewport().bottom() >= old.height;
         let above = self.t.frame_cursor().y;
-        let mut start = None;
-        // A DSR that fails (crossterm's ~2 s timeout, a terminal that never answers) is not
-        // a reason to unwind the loop: the anchor is the cursor either way.
-        if let Ok(pos) = self.cursor_position() {
-            // The cursor is the one current fact: a cursor below the last row of the size just
-            // read means the terminal grew again in between — it has at least that many rows.
-            if pos.y >= size.height {
-                size.height = pos.y.saturating_add(1);
-            }
-            start = Some(pos.y.saturating_sub(above));
-        }
         self.t.set_size(size);
         let new_h = new_h.clamp(1, size.height.max(1));
-        // One synchronized update from the erase to the laid-out frame; the DSRs sit outside
-        // it, before and after.
-        self.t.begin_batch();
-        self.t.up_from_cursor(above)?;
-        if let Some(s) = start {
-            self.t.resync_cursor(s);
-        }
-        self.t.erase_here_down()?;
-        let here = self.t.cursor().y;
-        let floor = size.height.saturating_sub(new_h);
-        if flush && start.is_some() && floor > here {
-            self.t.down(floor - here)?;
-            self.pad = self.pad.saturating_add(floor - here);
-        }
-        self.t.place(new_h)?;
-        self.t.end_batch()?;
-        if let Ok(pos) = self.cursor_position() {
-            self.t.resync(pos.y);
-        }
+        let floor = flush.then(|| size.height.saturating_sub(new_h));
+        // The DSRs are the terminal's own (a free function: they must not borrow `self`).
+        let geo = self.geo.clone();
+        let band = self
+            .t
+            .relayout(above, floor, new_h, || cursor_position(geo.as_ref()))?;
+        self.pad = self.pad.saturating_add(band);
         self.pad = self.pad.min(self.top());
         Ok(())
     }
@@ -398,20 +386,6 @@ impl<W: Write> Term<W> {
     /// Closes the batch [`Term::begin_batch`] opened and writes it.
     pub(crate) fn end_batch(&mut self) -> io::Result<()> {
         self.t.end_batch()
-    }
-
-    /// The physical cursor: one DSR live, the synthetic answer under [`Geometry`]. Never
-    /// inside a synchronized update: `WezTerm` and Alacritty hold the input until it ends.
-    fn cursor_position(&self) -> io::Result<Position> {
-        debug_assert!(
-            !self.t.batching(),
-            "a cursor query inside a synchronized update"
-        );
-        if let Some(g) = &self.geo {
-            return g.query_cursor();
-        }
-        let (x, y) = crossterm::cursor::position()?;
-        Ok(Position::new(x, y))
     }
 
     /// Closes the band a resize left above the frame (W5 step 3) when the drag is over: the
