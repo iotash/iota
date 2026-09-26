@@ -136,7 +136,12 @@ For each terminal:
 
 ## 3. Flicker (Ghostty and Terminal.app are mandatory)
 
-There is no synchronized-output mode in this build. A 100-line stream is the stress case.
+Every write goes out as a DEC 2026 synchronized update (X-55): one per operation, one per
+loop iteration (the inserts, the height change and the frame together), none around a cursor
+query. Terminals that know the mode (Ghostty, kitty, WezTerm, Alacritty, iTerm2, foot,
+Windows Terminal, herdr, tmux ≥ 3.7 in a pane) must show no intermediate state at all;
+Terminal.app and VTE/GNOME Terminal ignore it and may show one frame of one. A 100-line
+stream is the stress case. `IOTA_SYNC_OUTPUT=off` turns the mode off (the one switch).
 
 - [ ] **3.1** Stream ~100 lines. Watch the *frame*, not the text: does the composer row, the
       separator pair or the status line visibly blink, tear or jump?
@@ -144,8 +149,9 @@ There is no synchronized-output mode in this build. A 100-line stream is the str
       frame height; since X-54 that is a field write: the rows the frame keeps are not
       erased and not written again (only the rows below them are erased), so the separator,
       the composer and the status row must NOT blink at all — any flash of them is a defect.
-      (Under W1/W3 each change erased the frame and repainted every cell.) Inserts during a
-      stream move the frame with `LF` + `IL`: watch for the frame jumping a row and back.
+      (Under W1/W3 each change erased the frame and repainted every cell.) In a 2026 terminal
+      nothing may flicker — not the frame, not an insert's frame a row up between its `LF`s
+      and its `IL`; Terminal.app/VTE may show one frame of it.
 
 ## 4. Resize reflow — count the orphans
 

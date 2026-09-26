@@ -104,6 +104,11 @@ pub(crate) struct InlineTerminal<W: Write> {
     /// a frame row — the composer's, or the frame's first while a surface hides it.
     cursor: Position,
     pen: Pen,
+    /// Whether commits are wrapped in DEC 2026 ([`InlineTerminal::set_sync`]).
+    sync: bool,
+    /// Open batches ([`InlineTerminal::begin_batch`]): while any is open, an operation's
+    /// bytes wait in `pending` and the batch goes out as one synchronized update.
+    batch: u32,
 }
 
 impl<W: Write> InlineTerminal<W> {
@@ -128,6 +133,8 @@ impl<W: Write> InlineTerminal<W> {
             shown: Buffer::empty(viewport),
             cursor: Position::new(0, at),
             pen: Pen::RESET,
+            batch: 0,
+            sync: true,
         };
         queue!(t.pending, MoveTo(0, at))?;
         if let Some(g) = &t.geo {
@@ -613,15 +620,72 @@ impl<W: Write> InlineTerminal<W> {
         }
     }
 
-    /// Hands the operation's bytes to the terminal in one write.
+    /// Turns the synchronized updates off (or on): the one switch, never decided from a
+    /// terminal's name or version (X-55).
+    pub(crate) fn set_sync(&mut self, on: bool) {
+        self.sync = on;
+    }
+
+    /// Opens a batch: every operation until the matching [`InlineTerminal::end_batch`] goes
+    /// out as ONE synchronized update. Batches nest. A cursor query must never be made inside
+    /// one — `WezTerm` and Alacritty hold the input (the answer, or the query itself) until the
+    /// block ends.
+    pub(crate) fn begin_batch(&mut self) {
+        self.batch += 1;
+    }
+
+    /// Closes a batch; the outermost one writes everything it gathered.
+    pub(crate) fn end_batch(&mut self) -> io::Result<()> {
+        self.batch = self.batch.saturating_sub(1);
+        self.commit()
+    }
+
+    /// Whether a batch is open (a cursor query now would sit inside a synchronized update).
+    pub(crate) fn batching(&self) -> bool {
+        self.batch > 0
+    }
+
+    /// Writes bytes that move no cursor (an OSC: the title, the progress bar, a ping) in
+    /// the order of the operations around them — inside the open batch, if there is one.
+    /// Outside a batch they go straight out: nothing on screen changes, nothing to sync.
+    pub(crate) fn write_raw(&mut self, bytes: &[u8]) -> io::Result<()> {
+        if self.batch > 0 {
+            self.pending.extend_from_slice(bytes);
+            return Ok(());
+        }
+        self.out.write_all(bytes)?;
+        self.out.flush()
+    }
+
+    /// Hands the operation's bytes to the terminal in one write, as one DEC 2026 synchronized
+    /// update (`ESC[?2026h … ESC[?2026l`): an emulator that knows the mode shows the screen
+    /// before the block or after it, never in between — an insert's `LF`s before its `IL`
+    /// (the frame a row up for a moment), a height change's erase before its redraw. Sent
+    /// blind, like crossterm's `BeginSynchronizedUpdate`: an emulator that does not know the
+    /// mode ignores it. Inside a batch the bytes wait for its end.
     fn commit(&mut self) -> io::Result<()> {
-        if !self.pending.is_empty() {
+        if self.batch > 0 {
+            return Ok(());
+        }
+        if !self.pending.is_empty() && !self.sync {
             self.out.write_all(&self.pending)?;
             self.pending.clear();
+        }
+        if !self.pending.is_empty() {
+            let mut block = Vec::with_capacity(self.pending.len() + 16);
+            block.extend_from_slice(SYNC_BEGIN);
+            block.append(&mut self.pending);
+            block.extend_from_slice(SYNC_END);
+            self.out.write_all(&block)?;
         }
         self.out.flush()
     }
 }
+
+/// DEC private mode 2026, synchronized output: begin and end of one update.
+pub(crate) const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
+/// See [`SYNC_BEGIN`].
+pub(crate) const SYNC_END: &[u8] = b"\x1b[?2026l";
 
 /// A cell that shows nothing: a space with no background and no modifier.
 pub(crate) fn is_blank(c: &Cell) -> bool {

@@ -271,7 +271,12 @@ impl<W: Write> Term<W> {
             let (width, height) = crossterm::terminal::size()?;
             Size { width, height }
         };
-        let t = InlineTerminal::new(make_writer(), geo.clone(), size, height, start_top)?;
+        let mut t = InlineTerminal::new(make_writer(), geo.clone(), size, height, start_top)?;
+        // `IOTA_SYNC_OUTPUT=off` turns DEC 2026 off (X-55): the one switch. Read here, at the
+        // terminal's edge, and nowhere decided from a terminal's name or version.
+        if geo.is_none() && std::env::var("IOTA_SYNC_OUTPUT").is_ok_and(|v| v == "off") {
+            t.set_sync(false);
+        }
         Ok(Self {
             t,
             ctrl,
@@ -402,6 +407,9 @@ impl<W: Write> Term<W> {
         }
         self.t.set_size(size);
         let new_h = height(dropped).clamp(1, size.height.max(1));
+        // One synchronized update from the erase to the laid-out frame; the DSRs sit outside
+        // it, before and after.
+        self.t.begin_batch();
         self.t.up_from_cursor(above)?;
         if let Some(s) = start {
             self.t.resync_cursor(s);
@@ -415,6 +423,7 @@ impl<W: Write> Term<W> {
             self.pad = self.pad.saturating_add(floor - here);
         }
         self.t.place(new_h)?;
+        self.t.end_batch()?;
         if let Ok(pos) = self.cursor_position() {
             self.t.resync(pos.y);
         }
@@ -467,8 +476,24 @@ impl<W: Write> Term<W> {
         }
     }
 
-    /// The physical cursor: one DSR live, the synthetic answer under [`Geometry`].
+    /// Opens a batch: what the terminal writes until [`Term::end_batch`] is one
+    /// synchronized update (the loop wraps one iteration's writes).
+    pub(crate) fn begin_batch(&mut self) {
+        self.t.begin_batch();
+    }
+
+    /// Closes the batch [`Term::begin_batch`] opened and writes it.
+    pub(crate) fn end_batch(&mut self) -> io::Result<()> {
+        self.t.end_batch()
+    }
+
+    /// The physical cursor: one DSR live, the synthetic answer under [`Geometry`]. Never
+    /// inside a synchronized update: `WezTerm` and Alacritty hold the input until it ends.
     fn cursor_position(&self) -> io::Result<Position> {
+        debug_assert!(
+            !self.t.batching(),
+            "a cursor query inside a synchronized update"
+        );
         if let Some(g) = &self.geo {
             return g.query_cursor();
         }
@@ -490,6 +515,14 @@ impl<W: Write> Term<W> {
     /// Commits pre-wrapped rows into native scrollback right above the frame, sized by W6
     /// `LINE_COUNT_SELF_CONSISTENCY`. Returns the row count.
     pub(crate) fn insert_lines(&mut self, rows: &[String]) -> io::Result<u16> {
+        // The band write and the insert are one synchronized update.
+        self.t.begin_batch();
+        let n = self.insert_rows(rows);
+        self.t.end_batch()?;
+        n
+    }
+
+    fn insert_rows(&mut self, rows: &[String]) -> io::Result<u16> {
         if rows.is_empty() {
             return Ok(0);
         }
@@ -549,6 +582,14 @@ impl<W: Write> Term<W> {
     /// way the physical cursor ends on a known frame row — the cursor's, or the frame's
     /// first row while it is hidden — which is what W5's resize anchor counts from.
     pub(crate) fn draw_frame(&mut self, view: &FrameView) -> io::Result<()> {
+        // The diff, the row rewrites and the cursor are one synchronized update.
+        self.t.begin_batch();
+        let drawn = self.paint(view);
+        self.t.end_batch()?;
+        drawn
+    }
+
+    fn paint(&mut self, view: &FrameView) -> io::Result<()> {
         let lines: Vec<Line<'static>> = view.rows.iter().map(|r| ansi_to_spans(r)).collect();
         let cursor = view.cursor;
         let line_len = std::mem::take(&mut self.line_len);
@@ -626,8 +667,9 @@ impl<W: Write> Term<W> {
         {
             return Ok(());
         }
-        osc::emit_title(&mut self.ctrl, title)?;
-        self.ctrl.flush()?;
+        let mut seq = Vec::new();
+        osc::emit_title(&mut seq, title)?;
+        self.t.write_raw(&seq)?;
         self.last_title = Some(title.to_owned());
         Ok(())
     }
@@ -641,8 +683,7 @@ impl<W: Write> Term<W> {
         {
             return Ok(());
         }
-        self.ctrl.write_all(osc::progress_seq(s).as_bytes())?;
-        self.ctrl.flush()?;
+        self.t.write_raw(osc::progress_seq(s).as_bytes())?;
         self.last_progress = Some(s);
         Ok(())
     }
@@ -651,8 +692,7 @@ impl<W: Write> Term<W> {
     /// WHETHER to ping (the loop gates on focus) and has already sanitized and defused the
     /// text; both sequences are cursor-neutral, so this is safe between draws.
     pub(crate) fn notify(&mut self, text: &str) -> io::Result<()> {
-        self.ctrl.write_all(osc::notify_seq(text).as_bytes())?;
-        self.ctrl.flush()
+        self.t.write_raw(osc::notify_seq(text).as_bytes())
     }
 
     /// Turns terminal focus reporting on (mode 1004) so the loop learns when the window

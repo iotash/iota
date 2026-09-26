@@ -505,6 +505,124 @@ fn over_screen_height_insert_characterization() {
     );
 }
 
+/// DEC 2026 (X-55): the pairs of `ESC[?2026h` / `ESC[?2026l` in `bytes`, and whether every
+/// begin is closed before the next one opens.
+fn sync_pairs(bytes: &[u8]) -> (usize, bool) {
+    let s = String::from_utf8_lossy(bytes);
+    let (mut open, mut pairs, mut nested) = (false, 0, false);
+    for (i, _) in s.match_indices("\u{1b}[?2026") {
+        match s[i + 7..].chars().next() {
+            Some('h') => {
+                nested |= open;
+                open = true;
+            }
+            Some('l') => {
+                nested |= !open;
+                open = false;
+                pairs += 1;
+            }
+            _ => {}
+        }
+    }
+    (pairs, !nested && !open)
+}
+
+/// Every `Term` operation that writes the screen is ONE synchronized update — exactly one
+/// begin/end pair around all its bytes — and a batch of them is one pair too, the title and
+/// progress OSCs inside it; outside a batch an OSC is written bare (it changes nothing on
+/// screen). vt100 does not know mode 2026 and ignores it: every replay in this file runs
+/// through the same bytes.
+#[test]
+fn each_operation_and_each_batch_is_one_synchronized_update() {
+    let (mut t, buf, _geo) = direct_term(4, 20);
+    let view = |n: usize| crate::ui::render::frame::FrameView {
+        rows: (0..n).map(|i| format!("row-{i}")).collect(),
+        cursor: Some((2, 1)),
+    };
+    let one = |t: &mut crate::ui::runtime::term::Term<SharedBuf>,
+               op: &dyn Fn(&mut crate::ui::runtime::term::Term<SharedBuf>)| {
+        let mark = buf.bytes().len();
+        op(t);
+        let bytes = buf.bytes()[mark..].to_vec();
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        assert_eq!(sync_pairs(&bytes), (1, true), "{text:?}");
+        assert!(
+            text.starts_with("\u{1b}[?2026h") && text.ends_with("\u{1b}[?2026l"),
+            "{text:?}"
+        );
+    };
+    one(&mut t, &|t| t.draw_frame(&view(4)).unwrap());
+    one(&mut t, &|t| {
+        t.insert_lines(&["a".to_owned(), "b".to_owned()]).unwrap();
+    });
+    one(&mut t, &|t| {
+        t.ensure_height(6).unwrap();
+    });
+    one(&mut t, &|t| t.clear().unwrap());
+    one(&mut t, &|t| {
+        t.begin_batch();
+        t.insert_lines(&["c".to_owned()]).unwrap();
+        t.ensure_height(4).unwrap();
+        t.set_title("sync").unwrap();
+        t.set_progress(ProgressState::Busy).unwrap();
+        t.draw_frame(&view(4)).unwrap();
+        t.end_batch().unwrap();
+    });
+    let mark = buf.bytes().len();
+    t.set_title("bare").unwrap();
+    assert_eq!(
+        sync_pairs(&buf.bytes()[mark..]),
+        (0, true),
+        "an OSC alone is not wrapped"
+    );
+    let screen = parse(&buf).screen().contents();
+    assert!(screen.contains("row-3") && screen.contains('c'), "{screen}");
+}
+
+/// No cursor query is ever made inside a synchronized update: `WezTerm` holds its answer and
+/// Alacritty the query itself until the block ends (or a timeout), so a resize pass would
+/// stall or read a stale cursor. Every query of a pass is checked where it is answered.
+#[test]
+fn no_cursor_query_sits_inside_a_synchronized_update() {
+    fn arm(
+        geo: &crate::ui::runtime::term::Geometry,
+        buf: &SharedBuf,
+        seen: &Arc<Mutex<Vec<bool>>>,
+    ) {
+        let (g, b, s) = (geo.clone(), buf.clone(), Arc::clone(seen));
+        geo.after_query(0, move || {
+            s.lock().unwrap().push(sync_pairs(&b.bytes()).1);
+            arm(&g, &b, &s);
+        });
+    }
+    let (mut t, buf, geo) = direct_term(5, 19);
+    t.draw_frame(&crate::ui::render::frame::FrameView {
+        rows: (0..5).map(|i| format!("row-{i}")).collect(),
+        cursor: Some((2, 2)),
+    })
+    .unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    arm(&geo, &buf, &seen);
+    for (w, h) in [(60, 24), (60, 20), (80, 24)] {
+        geo.set_size(w, h);
+        t.resize(
+            ratatui::layout::Size {
+                width: w,
+                height: h,
+            },
+            0,
+            |_| 5,
+        )
+        .unwrap();
+    }
+    let seen = seen.lock().unwrap().clone();
+    assert!(seen.len() >= 6, "two queries a pass: {seen:?}");
+    assert!(
+        seen.iter().all(|closed| *closed),
+        "a query inside a block: {seen:?}"
+    );
+}
+
 /// A height change is a field write and a repaint of what changed (`inline-resize-owned`,
 /// B): no recreation, no clear. A surface opening below the composer (the frame grows by two
 /// rows at the bottom of the screen) and closing again erases only the rows below the rows
@@ -1453,7 +1571,7 @@ fn resize_anchors_at_the_cursor_row_minus_its_frame_row() {
     // Counted from the cursor, not from a row number: up the composer's frame row (2) and
     // erase from there (EL 2 on the row, then an erase-below from its second column).
     assert!(
-        after.starts_with("\u{1b}[2A\r\u{1b}[2K\u{1b}[C\u{1b}[J"),
+        after.starts_with("\u{1b}[?2026h\u{1b}[2A\r\u{1b}[2K\u{1b}[C\u{1b}[J"),
         "the first bytes after the event must climb the frame's 2 rows and erase:\n{after:?}"
     );
     let screen = parse_shifted(&buf, mark, -3).screen().contents();
@@ -1498,7 +1616,7 @@ fn a_flush_frame_resizes_onto_the_floor_and_the_band_takes_the_next_output() {
     assert_eq!(t.top(), 19, "a flush frame lands on the floor (24 − 5)");
     let after = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
     assert!(
-        after.starts_with("\u{1b}[2A\r\u{1b}[2K\u{1b}[C\u{1b}[J\r\n\n\n"),
+        after.starts_with("\u{1b}[?2026h\u{1b}[2A\r\u{1b}[2K\u{1b}[C\u{1b}[J\r\n\n\n"),
         "clear from the cursor estimate (16, two rows up), then down 3 onto the floor:\n{after:?}"
     );
     assert_eq!(

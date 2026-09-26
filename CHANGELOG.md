@@ -72,6 +72,11 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Fixed
 
+- **Less flicker while a reply streams and when a picker opens or closes.** In
+  terminals that support synchronized output (Ghostty, kitty, WezTerm,
+  Alacritty, iTerm2, Windows Terminal, herdr, tmux 3.7 and newer), iota's screen
+  updates now appear all at once instead of line by line. Set
+  `IOTA_SYNC_OUTPUT=off` to turn this off (X-55).
 - **No line is lost while a reply streams through a resize.** Dragging a tmux
   window's or pane's height while a reply was streaming lost a few of its lines
   every time; so did a height drag in a terminal that never answers iota's

@@ -950,6 +950,14 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
                 Job::Shown(rows) => lock(&m.shared.region).already_shown(&rows),
             }
         }
+        // One iteration's screen writes — the band close, the inserts, the height change, the
+        // title and progress, the frame — go out as ONE synchronized update (DEC 2026, X-55):
+        // no emulator that knows the mode shows the frame between an erase and its redraw, nor
+        // an insert's frame a row up between its `LF`s and its `IL`. No cursor query happens
+        // in here (the resize pass above makes its own, outside any block).
+        if !resizing {
+            term.begin_batch();
+        }
         if !resizing && m.settle_drag() {
             term.close_band()?;
         }
@@ -962,13 +970,6 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
                 term.insert_lines(&batch)?;
             }
         }
-        // The Quit round paints too. `close()` flushed the staging window into scrollback
-        // BEFORE posting Quit, so the batches above are the window's rows; the frame still
-        // standing shows them as well, and without this draw the screen keeps both — the
-        // banner twice, at the end of a short chat. The snapshot that came with the flush
-        // is empty, so the frame is shorter: `ensure_height` erases the rows it gives up
-        // and the draw rewrites what changed. (Go's renderer flushed its last
-        // `View()` on stop; the port broke off before it — DIVERGENCES X-49.)
         if m.dirty && !resizing {
             if m.force_clear {
                 term.clear()?;
@@ -981,6 +982,9 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
             drain_notify(&mut m, &mut term)?;
             term.draw_frame(&view)?; // W4: same iteration as the inserts above
             m.dirty = false;
+        }
+        if !resizing {
+            term.end_batch()?;
         }
         if m.quit {
             break;
