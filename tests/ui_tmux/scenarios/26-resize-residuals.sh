@@ -85,6 +85,9 @@ for to in 70x24 60x18; do
         settle || bad "fast output → $to: frame never settled"
         check_frame_intact "fast output, then 80x24→$to" "${to%x*}"
         check_budget "fast output → $to (a diagonal narrowing, B3)" "$(dup_lines)" 2
+        # Which rows, as after_resize prints them: a red run (3 > 2, once, under load,
+        # 2026-09-27) said only how many.
+        capall | sed 's/ *$//' | grep -v '^$' | grep -v '^┄' | LC_ALL=C sort | LC_ALL=C uniq -d | sed 's/^/    DUP: /'
         check "fast output → $to: separator rows in the whole history" "$(seps_all)" 2
     fi
     check "fast output → $to: every streamed line is there" "$(uniq_all 'l#[0-9][0-9] line')" 60
