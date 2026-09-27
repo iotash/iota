@@ -25,21 +25,68 @@ pub(crate) fn is_table_line(line: &str) -> bool {
     line.trim().starts_with('|')
 }
 
-/// parseTableCells twin (markdown.go:1291-1313): strip one leading and one trailing
-/// `|`, split on `|`; per cell replace `\t` with one space (three rulers disagreed on
-/// tabs), strip variation selectors (VS16/VS15 — cursor-advance ambiguity; flags and
-/// ZWJ sequences deliberately kept), trim.
+/// parseTableCells twin (markdown.go:1291-1313) plus GFM's escaped pipe (GFM 0.29 §4.10,
+/// which Go lacked — DIVERGENCES X-56): strip one leading and one unescaped trailing `|`,
+/// split on every `|` NOT preceded by a backslash, drop the backslash of each `\|` whose
+/// backslash is not itself escaped ([`unescape_pipes`]); per cell replace `\t` with one space
+/// (three rulers disagreed on tabs), strip variation selectors (VS16/VS15 — cursor-advance
+/// ambiguity; flags and ZWJ sequences deliberately kept), trim.
+///
+/// The split is lexical, as in cmark-gfm (`table_cell = (escaped_char|[^|])+`, longest
+/// match) and so in comrak, `/export`'s parser: `\\|` does NOT separate cells either — the
+/// cell keeps `\\|`, which the inline pass shows as `\|`. A cell that must END in a
+/// backslash writes `\\ |`. The pipe is unescaped here, before the inline pass, so `\|`
+/// is a literal `|` inside a code span in a cell too.
 pub(crate) fn parse_table_cells(line: &str) -> Vec<String> {
     let mut t = line.trim();
     t = t.strip_prefix('|').unwrap_or(t);
-    t = t.strip_suffix('|').unwrap_or(t);
-    t.split('|')
+    if let Some(rest) = t.strip_suffix('|')
+        && !rest.ends_with('\\')
+    {
+        t = rest;
+    }
+    split_unescaped_pipes(t)
+        .into_iter()
         .map(|p| {
-            strip_variation_selectors(&p.replace('\t', " "))
+            strip_variation_selectors(&unescape_pipes(p).replace('\t', " "))
                 .trim()
                 .to_owned()
         })
         .collect()
+}
+
+/// Splits on every `|` that does not directly follow a backslash.
+fn split_unescaped_pipes(t: &str) -> Vec<&str> {
+    let b = t.as_bytes();
+    let mut cells = Vec::new();
+    let mut start = 0;
+    for i in 0..b.len() {
+        if b[i] == b'|' && (i == 0 || b[i - 1] != b'\\') {
+            cells.push(&t[start..i]);
+            start = i + 1;
+        }
+    }
+    cells.push(&t[start..]);
+    cells
+}
+
+/// comrak's `unescape_pipes` (cmark-gfm's twin): scanning backslash PAIRS left to right,
+/// `\|` loses its backslash; the `\\` of `\\|` is a pair, so that pipe keeps both.
+fn unescape_pipes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut last_was_backslash = false;
+    for c in s.chars() {
+        if last_was_backslash {
+            if c == '|' {
+                out.pop();
+            }
+            last_was_backslash = false;
+        } else if c == '\\' {
+            last_was_backslash = true;
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// stripVariationSelectors twin: drops U+FE0F/U+FE0E so bordered layouts stay aligned
@@ -552,5 +599,24 @@ mod tests {
         assert_eq!(parse_table_cells("|a|b"), ["a", "b"]);
         assert_eq!(parse_table_cells("| a\tb |"), ["a b"]);
         assert_eq!(parse_table_cells("| \u{2696}\u{FE0F} c |"), ["\u{2696} c"]);
+    }
+
+    // GFM 0.29 §4.10 (example 200) and comrak/cmark-gfm's lexical split: a `|` right after a
+    // backslash never separates cells; the backslash of an unescaped `\|` is dropped, the
+    // pair `\\` is left for the inline pass. Go split every `|` (DIVERGENCES X-56).
+    #[test]
+    fn parse_table_cells_escaped_pipes() {
+        assert_eq!(parse_table_cells(r"| x \| y | z |"), ["x | y", "z"]);
+        assert_eq!(parse_table_cells(r"| `x \| y` | z |"), ["`x | y`", "z"]);
+        assert_eq!(parse_table_cells(r"| x \\| y | z |"), [r"x \\| y", "z"]);
+        assert_eq!(parse_table_cells(r"| x \\\| y | z |"), [r"x \\| y", "z"]);
+        assert_eq!(parse_table_cells(r"| x \\ | z |"), [r"x \\", "z"]); // ends in a backslash
+        assert_eq!(parse_table_cells(r"| x \| | z |"), ["x |", "z"]);
+        assert_eq!(parse_table_cells(r"| x | z \|"), ["x", "z |"]); // escaped last pipe
+        assert_eq!(parse_table_cells(r"| a \| h | b |"), ["a | h", "b"]);
+        assert_eq!(parse_table_cells(r"\a | b"), [r"\a", "b"]); // other escapes untouched
+        // A delimiter row with an escaped pipe is no delimiter row.
+        assert!(is_table_separator(&parse_table_cells("|---|---|")));
+        assert!(!is_table_separator(&parse_table_cells(r"|---|--\|")));
     }
 }

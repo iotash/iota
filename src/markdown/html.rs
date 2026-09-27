@@ -367,6 +367,34 @@ mod tests {
         );
     }
 
+    // The escape matrix of the terminal renderer (`tests/markdown/{table,inline}.rs`, X-56)
+    // holds in `/export` too: comrak is cmark-gfm's port, so the escaped pipe splits
+    // nothing (not after `\\` either) and CommonMark §2.4 applies.
+    #[test]
+    fn backslash_escapes_match_the_terminal_renderer() {
+        let cell = |row: &str| {
+            let out = markdown_to_html(&format!("| a | b |\n|---|---|\n{row}\n"));
+            let body = &out[out.find("<tbody>").expect("a table")..];
+            body.split("<td>")
+                .skip(1)
+                .map(|c| c[..c.find("</td>").expect("closed")].to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(cell(r"| x \| y | z |"), ["x | y", "z"]);
+        assert_eq!(cell(r"| `x \| y` | z |"), ["<code>x | y</code>", "z"]);
+        assert_eq!(cell(r"| x \\| y | z |"), [r"x \| y", "z"]);
+        assert_eq!(cell(r"| x \\ | z |"), [r"x \", "z"]);
+        assert_eq!(cell(r"| x | z \|"), ["x", "z |"]);
+        assert_eq!(
+            markdown_to_html(r"\*a\* \`b\` \[c\] \\ \a `\*` *d\*e*"),
+            "<p>*a* `b` [c] \\ \\a <code>\\*</code> <em>d*e</em></p>\n"
+        );
+        assert_eq!(
+            markdown_to_html(r"[l\]x](http://a\_b)"),
+            "<p><a href=\"http://a_b\">l]x</a></p>\n"
+        );
+    }
+
     // Go: chat/export_test.go:144 — a resolvable fence gets chroma's wrapper
     // (`<pre class="chroma"><code>`, no attributes on the code tag) and token spans.
     #[test]

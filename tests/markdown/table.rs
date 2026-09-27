@@ -208,3 +208,54 @@ fn inline_math_in_a_cell_renders_without_leaking_dollars() {
         );
     }
 }
+
+/// The cells of every content row of the first rendered box, trimmed.
+fn box_rows(rendered: &str) -> Vec<Vec<String>> {
+    rendered
+        .lines()
+        .filter(|l| l.starts_with('│'))
+        .map(|l| {
+            l.trim_matches('│')
+                .split('│')
+                .map(|c| c.trim().to_owned())
+                .collect()
+        })
+        .collect()
+}
+
+// GFM 0.29 §4.10: `\|` is a literal pipe in a cell — in a code span in a cell too, in the
+// header row too — and the split is lexical like cmark-gfm's (`/export`'s comrak), so
+// `\\|` does not separate either. Go split every `|` (DIVERGENCES X-56).
+#[test]
+fn an_escaped_pipe_stays_inside_its_cell() {
+    let t = |header: &str, row: &str| format!("{header}\n|---|---|\n{row}\n");
+    let cases: [(&str, &str, [&str; 2], [&str; 2]); 7] = [
+        ("| a | b |", r"| x \| y | z |", ["a", "b"], ["x | y", "z"]),
+        ("| a | b |", r"| `x \| y` | z |", ["a", "b"], ["x | y", "z"]),
+        (
+            "| a | b |",
+            r"| x \\| y | z |",
+            ["a", "b"],
+            [r"x \| y", "z"],
+        ),
+        ("| a | b |", r"| x \\ | z |", ["a", "b"], [r"x \", "z"]),
+        ("| a | b |", r"| x \| | z |", ["a", "b"], ["x |", "z"]),
+        ("| a | b |", r"| x | z \|", ["a", "b"], ["x", "z |"]),
+        (r"| a \| h | b |", "| x | z |", ["a | h", "b"], ["x", "z"]),
+    ];
+    for (header, row, want_h, want_r) in cases {
+        let src = t(header, row);
+        let got = render_md(&src);
+        assert_eq!(box_rows(&got), [want_h, want_r], "{src:?}:\n{got}");
+    }
+    // The code span in a cell is still a code span (cyan), holding the pipe.
+    let raw = render_md_raw("| a | b |\n|---|---|\n| `x \\| y` | z |\n");
+    assert!(raw.contains("\x1b[36mx | y"), "{raw:?}");
+}
+
+// Every inline escape reaches a cell, the header's plain path included.
+#[test]
+fn backslash_escapes_resolve_in_header_and_body_cells() {
+    let got = render_md("| \\*h\\* | \\`b\\` |\n|---|---|\n| \\*x\\* | a\\\\b |\n");
+    assert_eq!(box_rows(&got), [["*h*", "`b`"], ["*x*", r"a\b"]], "{got}");
+}

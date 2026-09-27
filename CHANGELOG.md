@@ -77,6 +77,11 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Fixed
 
+- **`\|` keeps a pipe inside a table cell.** A `|` written as `\|` no longer
+  splits the cell — in a code span in the cell and in the header row too — the
+  same way GitHub and `/export` read it. And backslash escapes work everywhere
+  else: `\*not italic\*`, `` \`not code\` ``, `\[not a link\]`, `\\` show the
+  character instead of a stray backslash and an unwanted style (X-56).
 - **A line of output is no longer cut short when it arrives during a resize.**
   A line laid out for the wider window just before the window was made
   narrower lost its end when it was printed; it now wraps like any other line.

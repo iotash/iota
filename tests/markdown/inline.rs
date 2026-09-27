@@ -227,3 +227,47 @@ fn with_colour_off_no_escape_is_emitted_and_markers_stay_hidden() {
         );
     }
 }
+
+// CommonMark 0.31 §2.4 backslash escapes (Go had only `\$` — DIVERGENCES X-56). Each row:
+// the source, what is visible. The same rows are what comrak (`/export`) makes of them.
+#[test]
+fn backslash_escapes_follow_commonmark() {
+    let cases = [
+        (r"\*not em\*", "*not em*"),
+        (r"\_x\_", "_x_"),
+        (r"\`not code\`", "`not code`"),
+        (r"\[a\](b)", "[a](b)"),
+        (r"a \\ b", r"a \ b"),
+        (r"\!\#\%\&\~\|", "!#%&~|"),
+        (r"\# not a heading", "# not a heading"),
+        (r"\- not a bullet", "- not a bullet"),
+        (r"1\. not ordered", "1. not ordered"),
+        // Not ASCII punctuation: the backslash stays.
+        (r"\a \é \1", r"\a \é \1"),
+        // No escapes in a code span or an autolink.
+        (r"`a \* b`", r"a \* b"),
+        (r"<http://a\_b>", r"<http://a\_b>"),
+        // A doubled backslash does not escape what follows it.
+        (r"\\*em*", r"\em"),
+        (r"\\$x$", r"\x"),
+        // An escaped delimiter neither opens nor closes.
+        (r"*a\*b*", "a*b"),
+        (r"**a\*b**", "a*b"),
+        (r"__a\_b__", "a_b"),
+        // A link's text and destination are unescaped.
+        (r"[l\]x](http://a\_b)", "l]x (http://a_b)"),
+        // Math keeps its own rules: `\$` is a dollar, `\(…\)` stays math.
+        (r"\$5 and \$6", "$5 and $6"),
+        (r"\(x\)", "x"),
+        // Deliberate: a backslash at the end of a line stays visible (X-56).
+        ("line\\\nnext", "line\\\nnext"),
+    ];
+    for (input, want) in cases {
+        assert_eq!(one_line(&render_md(input)), want, "visible of {input:?}");
+    }
+    // Styling: an escaped star is not emphasis, a star after an escaped backslash is.
+    assert!(!render_md_raw(r"\*x\*").contains("\x1b[3m"));
+    assert!(render_md_raw(r"\\*x*").contains("\x1b[3m"));
+    // An escaped backtick opens no code span (no cyan).
+    assert!(!render_md_raw(r"\`x\`").contains("\x1b[36m"));
+}

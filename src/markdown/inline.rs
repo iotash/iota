@@ -4,8 +4,16 @@
 //! COMPOSED onto `base`, and every atomic segment renders self-contained with the full
 //! composed style — nesting escape sequences instead would let an inner reset cut the
 //! outer style mid-line. Leaves stay literal: a code span's content is never re-parsed,
-//! and precedence is scan order — link, code, `\$`, `$$` atomic skip, inline math,
-//! `***`, `**`/`__`, `*`/`_`, plain. `styled == false` + a plain base emits plain runs
+//! and precedence is scan order — link, code, autolink, `\$`, `$$` atomic skip, inline
+//! math, backslash escape, `***`, `**`/`__`, `*`/`_`, plain.
+//!
+//! Backslash escapes follow `CommonMark` 0.31 §2.4 (Go had only `\$` — DIVERGENCES X-56):
+//! `\` + ASCII punctuation is that character, literal (it opens and closes nothing: the
+//! close finders step over escaped pairs); `\` + anything else is a literal backslash.
+//! None apply inside a code span, an autolink or a math span; a link's text and
+//! destination are unescaped. Deliberate deviations: `\(`…`\)` stays inline math, and a
+//! backslash at the end of a line stays visible (the terminal breaks every source line
+//! already, and the renderer cannot see whether the paragraph goes on). `styled == false` + a plain base emits plain runs
 //! verbatim, keeping top-level output byte-identical.
 
 use crate::markdown::link::hyperlink;
@@ -94,14 +102,14 @@ pub(crate) fn render_inline(line: &str, base: Style, styled: bool, color: bool) 
     while i < runes.len() {
         // Link: [text](url) → styled text, brackets hidden, URL dimmed.
         if runes[i] == '['
-            && let Some(text_end) = find_close(&runes, i + 1, ']')
+            && let Some(text_end) = find_close_unescaped(&runes, i + 1, ']')
             && text_end > i + 1
             && text_end + 1 < runes.len()
             && runes[text_end + 1] == '('
-            && let Some(url_end) = find_close(&runes, text_end + 2, ')')
+            && let Some(url_end) = find_close_unescaped(&runes, text_end + 2, ')')
         {
             let text: String = runes[i + 1..text_end].iter().collect();
-            let url: String = runes[text_end + 2..url_end].iter().collect();
+            let url = unescape(&runes[text_end + 2..url_end]);
             flush(&mut out, &mut plain, base, styled, color);
             out.push_str(&hyperlink(
                 &url,
@@ -122,6 +130,13 @@ pub(crate) fn render_inline(line: &str, base: Style, styled: bool, color: bool) 
             flush(&mut out, &mut plain, base, styled, color);
             out.push_str(&base.fg(6).render(&content, color));
             i = end + 1;
+            continue;
+        }
+
+        // Autolink: <scheme:…> is emitted verbatim — no escape or emphasis inside it.
+        if let Some(end) = find_autolink(&runes, i) {
+            plain.extend(&runes[i..end]);
+            i = end;
             continue;
         }
 
@@ -150,6 +165,14 @@ pub(crate) fn render_inline(line: &str, base: Style, styled: bool, color: bool) 
             let approx = crate::mathtext::approx_inline(&body);
             out.push_str(&base.fg(6).render(&approx, color));
             i = end;
+            continue;
+        }
+
+        // Backslash escape: "\*" is a literal "*" (after the math branch, so "\(" still
+        // opens math); a backslash before anything else falls through as plain.
+        if let Some(c) = escaped_at(&runes, i) {
+            plain.push(c);
+            i += 2;
             continue;
         }
 
@@ -196,7 +219,7 @@ pub(crate) fn render_inline(line: &str, base: Style, styled: bool, color: bool) 
             && i + 1 < runes.len()
             && runes[i + 1] != '*'
             && runes[i + 1] != ' '
-            && let Some(end) = find_close(&runes, i + 1, '*')
+            && let Some(end) = find_close_unescaped(&runes, i + 1, '*')
             && end > i + 1
         {
             let inner: String = runes[i + 1..end].iter().collect();
@@ -210,7 +233,7 @@ pub(crate) fn render_inline(line: &str, base: Style, styled: bool, color: bool) 
             && runes[i + 1] != '_'
             && runes[i + 1] != ' '
             && (i == 0 || runes[i - 1].is_whitespace())
-            && let Some(end) = find_close(&runes, i + 1, '_')
+            && let Some(end) = find_close_unescaped(&runes, i + 1, '_')
             && end > i + 1
         {
             let inner: String = runes[i + 1..end].iter().collect();
@@ -229,8 +252,9 @@ pub(crate) fn render_inline(line: &str, base: Style, styled: bool, color: bool) 
 }
 
 /// stripInlineMarkdown twin (markdown.go:639-691): removes `` ` ``, `**`, `__`, `*`,
-/// `_` pairs (same close-finding rules as the renderer, no styling) — used for table
-/// header cells and cell width measurement.
+/// `_` pairs and resolves backslash escapes (same close-finding rules as the renderer, no
+/// styling; autolinks and math spans kept verbatim) — used for table header cells and
+/// cell width measurement.
 pub(crate) fn strip_inline_markdown(line: &str) -> String {
     let runes: Vec<char> = line.chars().collect();
     let mut out = String::new();
@@ -242,6 +266,21 @@ pub(crate) fn strip_inline_markdown(line: &str) -> String {
         {
             out.extend(&runes[i + 1..end]);
             i = end + 1;
+            continue;
+        }
+        if let Some(end) = find_autolink(&runes, i) {
+            out.extend(&runes[i..end]);
+            i = end;
+            continue;
+        }
+        if let Some((_, end)) = find_inline_math(&runes, i) {
+            out.extend(&runes[i..end]); // a math span keeps its body verbatim
+            i = end;
+            continue;
+        }
+        if let Some(c) = escaped_at(&runes, i) {
+            out.push(c);
+            i += 2;
             continue;
         }
         if runes[i] == '*'
@@ -264,7 +303,7 @@ pub(crate) fn strip_inline_markdown(line: &str) -> String {
             && i + 1 < runes.len()
             && runes[i + 1] != '*'
             && runes[i + 1] != ' '
-            && let Some(end) = find_close(&runes, i + 1, '*')
+            && let Some(end) = find_close_unescaped(&runes, i + 1, '*')
             && end > i + 1
         {
             out.extend(&runes[i + 1..end]);
@@ -276,7 +315,7 @@ pub(crate) fn strip_inline_markdown(line: &str) -> String {
             && runes[i + 1] != '_'
             && runes[i + 1] != ' '
             && (i == 0 || runes[i - 1].is_whitespace())
-            && let Some(end) = find_close(&runes, i + 1, '_')
+            && let Some(end) = find_close_unescaped(&runes, i + 1, '_')
             && end > i + 1
         {
             out.extend(&runes[i + 1..end]);
@@ -294,15 +333,107 @@ fn find_close(runes: &[char], start: usize, delim: char) -> Option<usize> {
     (start..runes.len()).find(|&i| runes[i] == delim)
 }
 
-/// First doubled `delim` at or after `start` (Go findDoubleClose).
-fn find_double_close(runes: &[char], start: usize, delim: char) -> Option<usize> {
-    (start..runes.len().saturating_sub(1)).find(|&i| runes[i] == delim && runes[i + 1] == delim)
+/// [`find_close`] stepping over backslash escapes: an escaped `delim` never closes.
+/// (Code spans keep the plain [`find_close`] — a backslash is literal inside one.)
+fn find_close_unescaped(runes: &[char], start: usize, delim: char) -> Option<usize> {
+    let mut i = start;
+    while i < runes.len() {
+        if escaped_at(runes, i).is_some() {
+            i += 2;
+            continue;
+        }
+        if runes[i] == delim {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
 }
 
-/// First `***` run at or after `start` (Go findTripleClose).
+/// First unescaped doubled `delim` at or after `start` (Go findDoubleClose + escapes).
+fn find_double_close(runes: &[char], start: usize, delim: char) -> Option<usize> {
+    let mut i = start;
+    while i + 1 < runes.len() {
+        if escaped_at(runes, i).is_some() {
+            i += 2;
+            continue;
+        }
+        if runes[i] == delim && runes[i + 1] == delim {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// First unescaped `***` run at or after `start` (Go findTripleClose + escapes).
 fn find_triple_close(runes: &[char], start: usize) -> Option<usize> {
-    (start..runes.len().saturating_sub(2))
-        .find(|&i| runes[i] == '*' && runes[i + 1] == '*' && runes[i + 2] == '*')
+    let mut i = start;
+    while i + 2 < runes.len() {
+        if escaped_at(runes, i).is_some() {
+            i += 2;
+            continue;
+        }
+        if runes[i] == '*' && runes[i + 1] == '*' && runes[i + 2] == '*' {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// `CommonMark` §2.4: a backslash at `i` followed by ASCII punctuation escapes it — returns
+/// that character. Anything else (a letter, a non-ASCII character, end of line) is not an
+/// escape and the backslash is literal.
+fn escaped_at(runes: &[char], i: usize) -> Option<char> {
+    if runes[i] != '\\' {
+        return None;
+    }
+    runes.get(i + 1).copied().filter(char::is_ascii_punctuation)
+}
+
+/// `runes` with every backslash escape resolved (a link destination).
+fn unescape(runes: &[char]) -> String {
+    let mut out = String::with_capacity(runes.len());
+    let mut i = 0;
+    while i < runes.len() {
+        if let Some(c) = escaped_at(runes, i) {
+            out.push(c);
+            i += 2;
+        } else {
+            out.push(runes[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// A `CommonMark` URI autolink (§6.5) opening at `start`: `<`, a scheme (a letter, then 1–31
+/// letters, digits, `+`, `.`, `-`), `:`, then no space, `<` or `>` up to the closing `>`.
+/// Returns the index just past the `>`.
+fn find_autolink(runes: &[char], start: usize) -> Option<usize> {
+    if runes[start] != '<' || !runes.get(start + 1)?.is_ascii_alphabetic() {
+        return None;
+    }
+    let mut i = start + 2;
+    while i < runes.len()
+        && (runes[i].is_ascii_alphanumeric() || matches!(runes[i], '+' | '.' | '-'))
+    {
+        i += 1;
+    }
+    if !(3..=33).contains(&(i - start)) || runes.get(i) != Some(&':') {
+        return None;
+    }
+    i += 1;
+    while i < runes.len() {
+        match runes[i] {
+            '>' => return Some(i + 1),
+            '<' => return None,
+            c if c.is_whitespace() || c.is_control() => return None,
+            _ => i += 1,
+        }
+    }
+    None
 }
 
 /// splitListMarker twin — the hand parser for Go's `^(\s*(?:[-*+]|\d+[.)]) )` regex:
