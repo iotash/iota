@@ -17,9 +17,11 @@
 #     WIDTH SHRINK is where it can happen: tmux reflows rows wider than the new pane (lib.sh's
 #     "tmux does not rewrap" predates 2.6's grid_reflow), and the old frame's separators wrap
 #     into two rows each — what grew above the cursor would land twice if the resize pass did
-#     not claim it (W5's overhang; up to 8 rows before X-52, 3 after its first round, 0 now).
-#     Zero at idle; mid-stream a resize can fall between an insert and its draw, where the
-#     anchor row is unknown, so it keeps §4's budget of 2.
+#     not claim it (W5's overhang; up to 8 rows before X-52, 3 after its first round, 0 while
+#     the pass claimed it). Since B3 (2026-09-26) nothing grown above the cursor is claimed:
+#     the frame's top staged row stays behind once per narrowing that rewraps it — 1 for each
+#     idle narrowing and for a drag that starts from a full-width repaint, 2 mid-stream
+#     (X-52 residual (1)). Counted in COPIES, each block against the copies before it.
 #   * STALE FRAMES in the scrollback (a separator pair, a composer row and a status row above
 #     the live frame). A frame that has to move — the first one, when the banner is inserted
 #     above it; the old one, when a taller terminal puts the new one lower — goes out through
@@ -41,16 +43,21 @@
 # The DRAG blocks are what a user's window corner produces: consecutive SIGWINCHes a step
 # apart, settled or fast. Every narrowing step rewraps both full-width separators; a frame
 # that was flush with the bottom must stay flush (W5's floor invariant), and the old top
-# separator's extra piece must not stay behind. Asserted exactly: zero rows lost or
-# duplicated, zero separator rows added, zero stale frames, the composer on the pane's
-# third-last row.
+# separator's extra piece must not stay behind. Asserted exactly: zero rows lost, zero
+# separator rows added, zero stale frames, the composer on the pane's third-last row; the
+# duplicated rows within each drag's measured number (`drag_block`).
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
 
 # Stale frames in the scrollback: status rows beyond the live one.
 stale_frames() { echo $(($(count_all '  fake · ') - 1)); }
-# Duplicated streamed rows (lines present more than <copies> times, <copies> = streams so far).
-dup_rows() { capall | grep -oE 'l#[0-9][0-9] line' | sort | uniq -c | awk -v n="$1" '$1 > n' | wc -l | tr -d ' '; }
+# Duplicated streamed rows: the COPIES beyond <copies> (= streams so far), summed over the lines.
+# A line already duplicated counts again for every further copy — counting the distinct lines
+# with a duplicate (the old definition) let three blocks add a copy each of one line unseen
+# (2026-09-27: `l#36` ×5 by the height drag, every block's "0 duplicated" green).
+dup_rows() { capall | grep -oE 'l#[0-9][0-9] line' | sort | uniq -c | awk -v n="$1" '$1 > n { d += $1 - n } END { print d + 0 }'; }
+# The duplicated lines with their counts (`l#36×3`) — printed under a failed duplicate check.
+dup_list() { capall | grep -oE 'l#[0-9][0-9] line' | sort | uniq -c | awk -v n="$1" '$1 > n { printf "%s×%s ", $2, $1 }'; }
 # Lost streamed rows (lines present fewer than <copies> times).
 lost_rows() { capall | grep -oE 'l#[0-9][0-9] line' | sort | uniq -c | awk -v n="$1" '$1 < n' | wc -l | tr -d ' '; }
 # Lines missing from the history altogether.
@@ -150,12 +157,17 @@ idle_shrink "idle narrowing" 90 30
 idle_shrink "idle shrink" 70 20
 
 # ------------------------------------------------------------------ idle drags (§4.3)
-# drag_block <label> <settle each step: 1|0> <step…> — SIGWINCHes one after another, like a
-# dragged corner, then the exact invariants: nothing lost or duplicated, not one separator
-# row added to the history, no stale frame, the composer flush with the bottom.
+# drag_block <label> <settle each step: 1|0|paced> <duplicated rows> <step…> — SIGWINCHes one
+# after another, like a dragged corner, then the invariants: nothing lost, not one separator row
+# added to the history, no stale frame, the composer flush with the bottom — and the rows left
+# twice within the block's MEASURED number (X-52 residual (1), B3): the drag's first step
+# rewraps the staged rows whose lines the last full-width repaint drew to the old width, and
+# since B3 nothing a reflow grows above the cursor is claimed, so the frame's top staged row
+# (`l#36`) stays behind once. A drag that starts inside another's burst (the frame still a
+# margin short, its lines no wider than the new terminal) rewraps nothing: 0.
 drag_block() {
-    local label="$1" each="$2" step last seps0 stale0 dups0 blanks0
-    shift 2
+    local label="$1" each="$2" dups="$3" step last seps0 stale0 dups0 blanks0
+    shift 3
     seps0="$(extra_seps)"
     blanks0="$(hist_blanks)"
     dups0="$(dup_rows 1)"
@@ -173,7 +185,9 @@ drag_block() {
     check_frame_intact "after the $label" "${last%x*}"
     if alive; then ok "the app survived the $label"; else bad "the app died during the $label"; fi
     check_no_loss "no streamed row is lost across the $label" 1
-    check "no streamed row is duplicated across the $label" "$(($(dup_rows 1) - dups0))" 0
+    check_budget "streamed rows the $label duplicated (X-52 (1), B3: measured $dups)" \
+        "$(($(dup_rows 1) - dups0))" "$dups"
+    [ "$(($(dup_rows 1) - dups0))" -le "$dups" ] || echo "    DUPLICATED: $(dup_list 1)"
     check "separator rows the $label added to the history" "$(($(extra_seps) - seps0))" 0
     # Under W5's burst layout only a drag's FIRST step rewraps the frame (it was full width);
     # that band is closed when the drag ends and may reach the history later — X-52's accepted
@@ -185,18 +199,23 @@ drag_block() {
 }
 # The verifier's round-2 repro: 25 settled one-column steps (the frame used to climb a row
 # per step, reach the top at ~16, and pile separators into the history from there).
-drag_block "settled 25-step drag" 1 69x20 68x20 67x20 66x20 65x20 64x20 63x20 62x20 61x20 60x20 \
+# Measured 1 (15 of 15 runs: tmux 3.7c, 3.7c under six CPU burners, 3.4): it starts from the
+# idle shrink's full-width repaint.
+drag_block "settled 25-step drag" 1 1 69x20 68x20 67x20 66x20 65x20 64x20 63x20 62x20 61x20 60x20 \
     59x20 58x20 57x20 56x20 55x20 54x20 53x20 52x20 51x20 50x20 49x20 48x20 47x20 46x20 45x20
 tm resize-window -t s -x 70 -y 20
 settle || bad "frame never settled after the drag's release"
 # A fast corner: eight SIGWINCHes 60 ms apart, narrowing and shortening at once.
-drag_block "fast 8-step drag" 0 68x20 66x20 64x19 63x19 62x19 61x18 60x18 59x18
+# Measured 1 (15 of 15, as above): 2 while it lasts — its passes lag the steps — and the band
+# the drag's end closes takes one of them.
+drag_block "fast 8-step drag" 0 1 68x20 66x20 64x19 63x19 62x19 61x18 60x18 59x18
 tm resize-window -t s -x 70 -y 20
 settle || bad "frame never settled after the fast drag's release"
 # A PACED drag, one step a second (a hand that pauses, a keyboard resize): the verifier's round-2
 # repro — steps further apart than the old 750 ms window were separate drags, each rewrapping the
 # restored full-width separators into two more blank rows.
-drag_block "paced 10-step drag (1 s apart)" paced 69x20 68x20 67x20 66x20 65x20 64x20 63x20 62x20 61x20 60x20
+# Measured 0 (15 of 15): it starts 0.4 s after the release, inside the release's burst.
+drag_block "paced 10-step drag (1 s apart)" paced 0 69x20 68x20 67x20 66x20 65x20 64x20 63x20 62x20 61x20 60x20
 tm resize-window -t s -x 70 -y 20
 settle || bad "frame never settled after the paced drag's release"
 # A HEIGHT drag down and back up within one drag (100 ms apart), both `scroll-on-clear` settings:
@@ -243,6 +262,9 @@ stale="$(stale_frames)"
 
 # ------------------------------------------------------------------ mid-stream shrink (§4.2)
 before="$(count_all 'l#39 line')"
+# The copies the earlier blocks left count once more after the second stream (a line at k
+# copies is at k+1): the shrink is measured against them, not charged for them.
+dups="$(dup_rows 1)"
 type_ 'stream 40'
 key Enter
 wait_all_more 'l#05 line' "$(count_all 'l#05 line')" || bad "the second stream never started"
@@ -258,8 +280,10 @@ check "status line is intact after the shrink" "$(status_model)" "  fake"
 # Two streams of the same 40 lines are in the history now: none may be missing a copy.
 check_no_loss "no streamed row is lost across the mid-stream shrink (every line at least twice)" 2
 # §4's budget since B3 (2026-09-26): the reflow's overhang above the cursor is not claimed —
-# measured 3 (it was 0 while the pass claimed it).
-check_budget "duplicated rows after the mid-stream shrink (§4 budget, B3)" "$(dup_rows 2)" 3
+# measured 2 in 15 of 15 runs (tmux 3.7c, under load, 3.4), counted as copies against the
+# copies before the stream. (The "3" measured when B3 landed counted distinct lines, and one
+# of them was the `l#36` the earlier blocks had already duplicated.)
+check_budget "duplicated rows after the mid-stream shrink (§4 budget, B3)" "$(($(dup_rows 2) - dups))" 2
 check_budget "stale frames pushed out by the mid-stream shrink (W9)" "$(($(stale_frames) - stale))" 1
 
 # ------------------------------------------------------------------ still usable

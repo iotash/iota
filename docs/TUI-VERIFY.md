@@ -163,11 +163,12 @@ its own viewport top. Some emulators will strand a row above the new viewport. T
 - [x] 自动化：scenario 06 **4.1** Start a stream, resize the window wider mid-stream, let it finish. Count
       orphaned/duplicated rows in the scrollback. Record the number. *(tmux 3.7c: 0 duplicated
       rows, asserted ≤ 2.)*
-- [x] 自动化：scenario 06 **4.2** Same, narrower. *(tmux 3.7c: **3** duplicated rows since
-      B3 (2026-09-26) — 0 while the resize pass claimed the reflow's overhang (X-52), 8 before
-      X-52. What grew above the cursor stays behind as a duplicate: the pass no longer infers
-      whether or how an emulator reflowed. Asserted ≤ 3. No row is ever LOST — that bound is
-      zero.)*
+- [x] 自动化：scenario 06 **4.2** Same, narrower. *(tmux 3.7c and 3.4: **2** duplicated rows
+      since B3 (2026-09-26) — 0 while the resize pass claimed the reflow's overhang (X-52), 8
+      before X-52. What grew above the cursor stays behind as a duplicate: the pass no longer
+      infers whether or how an emulator reflowed. Asserted ≤ 2 (15 of 15 runs, 2026-09-27; the
+      3 measured when B3 landed counted distinct lines and included one the earlier blocks had
+      duplicated — see 4.5). No row is ever LOST — that bound is zero.)*
 - [x] 自动化：scenarios 06 + 26 **4.3** Resize at idle — a narrowing, a diagonal shrink, a
       settled 25-step drag, a fast 8-step drag (SIGWINCHes 60 ms apart), and on fresh panes a
       2× and a 3× narrowing with the banner still staged, a narrowing right after 20 ms-a-line
@@ -175,7 +176,9 @@ its own viewport top. Some emulators will strand a row above the new viewport. T
       tmux's default `scroll-on-clear on`. Asserted: zero rows lost, zero stale frames, the
       composer on the pane's third-last row (flush with the bottom), and the rows left twice
       within each block's MEASURED cap (B3, 2026-09-26: 1–3 duplicated rows, ≤ 4 separator
-      rows with `/model` open — scenario 26's numbers, a larger one is a regression). The
+      rows with `/model` open — scenario 26's numbers, a larger one is a regression; scenario
+      06: 1 for each idle narrowing, 1 for the settled and the fast drag, 0 for the paced drag,
+      which starts inside the release's burst — X-52 residual (1)). The
       resize pass (wart W5, `term.rs`) reads the cursor with one DSR before writing a byte,
       clears only rows the old frame provably owned (the frame's rows from the cursor's row
       up, never what a reflow grew above them), and scrolls or inserts nothing;
@@ -268,6 +271,25 @@ terminal is a finding — and tmux 3.7c's narrowing is one (4.2).
       the block itself, byte-recorded under the same load: 0 of 200 on 3.4, 0 of 100 on 3.7c.
       What else could have drawn it — a tmux 3.4 grid defect under load, or an iota sequence
       no recorded run has produced — is unknown; no fix was made without a reproduction.
+      **The duplicate counter (2026-09-27).** Scenario 06 counted the DISTINCT lines with a
+      duplicate, so a line already twice in the history hid every further copy: after the idle
+      narrowing had left `l#36` twice, the idle shrink, the settled drag and the fast drag each
+      added a copy of it (`l#36` ×5 by the height drag) and every "0 duplicated" stayed green.
+      It counts copies now, each block against the copies before it. The mechanism, byte-
+      recorded: the frame's staged rows (the stream's last four lines) were last drawn at full
+      width; the drag's first step rewraps what sits above the cursor, the pass erases the
+      frame's own rows counted up from the cursor (B3: the growth is not claimed), so it starts
+      one row low and redraws `l#36` under the old one — X-52 residual (1), inside the frozen
+      budget of 2 per drag. Measured 15 of 15 runs (tmux 3.7c, 3.7c under six CPU burners,
+      3.4): idle narrowing 1, idle shrink 1, settled drag 1, fast drag 1 (2 while it lasts; the
+      band close takes one), paced drag 0, height drag 0 and 0, mid-stream shrink 2 — the caps.
+      **Open, one CI run (36305402235, macos-14; its re-run green; 0 of ~75 local runs, loaded,
+      on 3.7c and 3.4):** 06's height drag with `scroll-on-clear on` left the frame three rows
+      up with its top separator gone, the drag's end repaint writing its two restored columns
+      on rows below it, and two streamed lines lost; with it `off`, the bottom separator stayed
+      68 columns. Not the duplication above — a height drag rewraps nothing, and adds no copy in
+      any run — but the frame's bookkeeping out of step with the screen, the same family as
+      the loaded tmux 3.4 overwrite. The block records its bytes and a red CI run uploads them.
 
 ## 5. Window title (the title stack)
 
