@@ -424,7 +424,7 @@ check_measured() {
 # The standard frame invariant: a separator pair at the terminal's width, exactly one
 # composer row between them, and an occupied bottom zone.
 check_frame_intact() {
-    local label="$1" width="$2" t b
+    local label="$1" width="$2" t b f0="$FAIL"
     # A resize opens a drag: the frame is a few columns short until DRAG_SETTLE (2 s) passes
     # with no further resize, then repainted at full width (W5's burst layout, X-52). A resize
     # pass that lands after a key re-opens the drag, so wait DRAG_SETTLE twice plus a slow
@@ -445,6 +445,11 @@ check_frame_intact() {
     else
         bad "$label: the bottom zone is empty"
     fi
+    # A pair that is there but wrong (a separator short, a second composer row) is as much a
+    # broken frame as a missing one: the red run shows the pane (CI 36305402235 printed only
+    # "got '68'" for one leg, and nothing said where the missing columns had gone).
+    [ "$FAIL" -gt "$f0" ] && dump_pane
+    return 0
 }
 
 finish() {

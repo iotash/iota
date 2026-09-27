@@ -55,6 +55,23 @@ dup_rows() { capall | grep -oE 'l#[0-9][0-9] line' | sort | uniq -c | awk -v n="
 lost_rows() { capall | grep -oE 'l#[0-9][0-9] line' | sort | uniq -c | awk -v n="$1" '$1 < n' | wc -l | tr -d ' '; }
 # Lines missing from the history altogether.
 absent_rows() { echo $((40 - $(uniq_all 'l#[0-9][0-9] line'))); }
+# The streamed lines present fewer than <copies> times, each with its count (`l#07×0`).
+missing_rows() {
+    local n c
+    for n in $(seq -w 0 39); do
+        c="$(count_all "l#$n line")"
+        [ "$c" -lt "$1" ] && printf 'l#%s×%s ' "$n" "$c"
+    done
+}
+# check_no_loss <label> <copies> — every streamed line is in the history at least <copies>
+# times; a loss names the lines, so a red run says WHICH rows went (top of the stream, the rows
+# on screen, the rows by the frame) instead of only how many.
+check_no_loss() {
+    local lost
+    if [ "$2" -eq 1 ]; then lost="$(absent_rows)"; else lost="$(lost_rows "$2")"; fi
+    check "$1" "$lost" 0
+    [ "$lost" = 0 ] || echo "    MISSING: $(missing_rows "$2")"
+}
 
 # check_budget <label> <actual> <max> — an upper bound, reported with the number.
 check_budget() {
@@ -103,7 +120,7 @@ settle || bad "frame never settled after the mid-stream resize"
 if alive; then ok "the app survived a mid-stream SIGWINCH (grow)"; else bad "the app died on resize"; fi
 check_frame_intact "after the mid-stream grow" 110
 check "status line is intact" "$(status_model)" "  fake"
-check "no streamed row is lost across the mid-stream grow" "$(absent_rows)" 0
+check_no_loss "no streamed row is lost across the mid-stream grow" 1
 check_budget "duplicated rows after the mid-stream grow (§4 budget)" "$(dup_rows 1)" 2
 check_budget "stale frames pushed out by the mid-stream grow (W9)" "$(($(stale_frames) - stale))" 1
 stale="$(stale_frames)"
@@ -121,7 +138,7 @@ idle_shrink() {
     check_frame_intact "after the $label" "$w"
     check "status line survived the $label" "$(status_model)" "  fake"
     if alive; then ok "the app survived an idle SIGWINCH ($label)"; else bad "the app died on the $label"; fi
-    check "no streamed row is lost across the $label" "$(absent_rows)" 0
+    check_no_loss "no streamed row is lost across the $label" 1
     # B3 (2026-09-26): what the narrowing grew above the cursor is not claimed — measured: 1 row.
     check_budget "streamed rows duplicated by the $label (B3)" "$(($(dup_rows 1) - dups))" 1
     check "separator rows the $label added to the history" "$(extra_seps)" 0
@@ -155,7 +172,7 @@ drag_block() {
     settle || bad "frame never settled after the $label"
     check_frame_intact "after the $label" "${last%x*}"
     if alive; then ok "the app survived the $label"; else bad "the app died during the $label"; fi
-    check "no streamed row is lost across the $label" "$(absent_rows)" 0
+    check_no_loss "no streamed row is lost across the $label" 1
     check "no streamed row is duplicated across the $label" "$(($(dup_rows 1) - dups0))" 0
     check "separator rows the $label added to the history" "$(($(extra_seps) - seps0))" 0
     # Under W5's burst layout only a drag's FIRST step rewraps the frame (it was full width);
@@ -185,15 +202,41 @@ settle || bad "frame never settled after the paced drag's release"
 # A HEIGHT drag down and back up within one drag (100 ms apart), both `scroll-on-clear` settings:
 # the verifier's P0 — tmux pulls history rows back on a grow, the loop handled a stale size and
 # erased the committed row above the frame. Loss is the one hard failure (X-52's budget).
+#
+# RECORDED, always: this block failed once on the macos-14 runner (CI 36305402235 — the frame
+# three rows up, its top separator gone, the drag's end repaint writing the two restored
+# columns on rows below it, two streamed lines lost) and not once in 60 local runs under load
+# on tmux 3.7c and 3.4. The next red run must carry the bytes: the pane's output (raw-<soc>.out),
+# the history before and after (hist-<soc>-{before,after}.txt), and a timeline of the steps with
+# the byte offset and the cursor at each (steps-<soc>.log — the offset is what the pipe had
+# written by then, a lower bound). A failing scenario keeps its scratch dir, and the CI job
+# uploads it (ci.yml).
 for soc in off on; do
     tm set-option -w -t s scroll-on-clear "$soc"
     dups="$(dup_rows 1)"
-    for h in 19 18 17 16 15 14 15 16 17 18 19 20; do tm resize-window -t s -x 70 -y "$h"; sleep 0.1; done
+    f0="$FAIL"
+    RAW="$SCEN_TMP/raw-$soc.out"
+    pipe_raw
+    capall >"$SCEN_TMP/hist-$soc-before.txt"
+    steps="$SCEN_TMP/steps-$soc.log"
+    : >"$steps"
+    for h in 19 18 17 16 15 14 15 16 17 18 19 20; do
+        tm resize-window -t s -x 70 -y "$h"
+        echo "h=$h bytes=$(wc -c <"$RAW" | tr -d ' ') cursor=$(cursor_xy) hist=$(hist_size)" >>"$steps"
+        sleep 0.1
+    done
     settle || bad "frame never settled after the height drag (scroll-on-clear $soc)"
+    echo "settled bytes=$(wc -c <"$RAW" | tr -d ' ') cursor=$(cursor_xy) hist=$(hist_size)" >>"$steps"
     check_frame_intact "after a height drag down and back (scroll-on-clear $soc)" 70
-    check "no streamed row is lost across a height drag down and back (scroll-on-clear $soc)" "$(absent_rows)" 0
+    check_no_loss "no streamed row is lost across a height drag down and back (scroll-on-clear $soc)" 1
     check "no streamed row is duplicated across a height drag down and back (scroll-on-clear $soc)" \
         "$(($(dup_rows 1) - dups))" 0
+    capall >"$SCEN_TMP/hist-$soc-after.txt"
+    tm pipe-pane -t s
+    if [ "$FAIL" -gt "$f0" ]; then
+        echo "    RECORDED (scroll-on-clear $soc): raw-$soc.out, steps-$soc.log, hist-$soc-{before,after}.txt in $SCEN_TMP"
+        sed 's/^/    STEP: /' "$steps"
+    fi
 done
 tm set-option -w -t s scroll-on-clear off
 stale="$(stale_frames)"
@@ -213,7 +256,7 @@ check_frame_intact "after the mid-stream shrink" 60
 check_pinned "after the mid-stream shrink" 18
 check "status line is intact after the shrink" "$(status_model)" "  fake"
 # Two streams of the same 40 lines are in the history now: none may be missing a copy.
-check "no streamed row is lost across the mid-stream shrink (every line at least twice)" "$(lost_rows 2)" 0
+check_no_loss "no streamed row is lost across the mid-stream shrink (every line at least twice)" 2
 # §4's budget since B3 (2026-09-26): the reflow's overhang above the cursor is not claimed —
 # measured 3 (it was 0 while the pass claimed it).
 check_budget "duplicated rows after the mid-stream shrink (§4 budget, B3)" "$(dup_rows 2)" 3

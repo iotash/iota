@@ -79,6 +79,29 @@ jobs:
           IOTA_SANDBOX_REQUIRED: "1"
         run: ./ci.sh
 
+      # A failing tmux scenario keeps its scratch dir (`iota-tmux-<pid>-<script>` under the
+      # process's temp dir, tests/ui_tmux/main.rs): the session bundles, the captured stderr and
+      # what a scenario records — 06's height drag always records the pane's output bytes. The
+      # failures that need them are intermittent on this runner and never reproduced locally
+      # (CI 36305402235: 1 red run, its re-run green, 0 of 60 loaded local runs), so the red run
+      # itself must carry them. Rust's temp_dir is $TMPDIR, falling back to /tmp; both are searched.
+      - name: Collect failed tmux scenarios (macOS)
+        if: failure() && runner.os == 'macOS'
+        run: |
+          mkdir -p "$RUNNER_TEMP/tmux-scenarios"
+          for d in "${TMPDIR:-/tmp}" /tmp; do
+            find "$d" -maxdepth 1 -name 'iota-tmux-*' -type d -exec cp -R {} "$RUNNER_TEMP/tmux-scenarios/" \; 2>/dev/null || true
+          done
+          ls -la "$RUNNER_TEMP/tmux-scenarios"
+
+      - name: Upload failed tmux scenarios (macOS)
+        if: failure() && runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tmux-scenarios-${{ matrix.os }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tmux-scenarios
+          if-no-files-found: ignore
+
       # Windows runs no `ci.sh`: that script is the Unix gate, and half of it is things this platform
       # does not have (tmux, bubblewrap, the sandbox) or does not ship (the release size budget, which
       # is measured once, on the platforms that are released). The checks it runs that are NOT
