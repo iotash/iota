@@ -707,13 +707,14 @@ fn raw_tools(yaml: &str) -> ToolsConfig {
     serde_norway::from_str::<Raw>(yaml).expect("yaml").tools
 }
 
-/// An `ToolEnv` rooted in a temp project (the shape the host builds: project root + host dirs, never the process
-/// environment).
+/// An `ToolEnv` rooted in a temp project (the shape the host builds: project root + host dirs + the run's job
+/// registry, never the process environment).
 fn project_env() -> (tempfile::TempDir, ToolEnv) {
     let (dir, dirs) = temp_project(&[("AGENTS.md", "# rules")]);
     let env = ToolEnv {
         project_root: Some(dir.path().to_path_buf()),
         dirs,
+        jobs: Some(iota::shell::jobs::Jobs::new(dir.path())),
         ..ToolEnv::default()
     };
     (dir, env)

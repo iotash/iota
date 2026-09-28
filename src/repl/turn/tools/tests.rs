@@ -681,9 +681,13 @@ async fn shell_calls_share_one_parallel_batch() {
         serde_norway::from_str("sandbox: off\nauto_run: true\n").expect("shell config");
     let mut cfg = crate::tool::sets::ToolsConfig::new();
     cfg.insert("shell".to_owned(), node);
-    let registry = crate::tool::Registry::build(&crate::tool::ToolEnv::default(), &cfg, &mut |w| {
-        panic!("the shell set complained: {w}")
-    });
+    let dir = tempfile::tempdir().expect("tempdir");
+    let env = crate::tool::ToolEnv {
+        jobs: Some(crate::shell::jobs::Jobs::new(dir.path())),
+        ..crate::tool::ToolEnv::default()
+    };
+    let registry =
+        crate::tool::Registry::build(&env, &cfg, &mut |w| panic!("the shell set complained: {w}"));
     assert!(
         registry.supports_parallel("shell", None),
         "the shell tool must batch"

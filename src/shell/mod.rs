@@ -1,6 +1,6 @@
-//! Process execution (internal/shell): one interpreter child in its own process group with a capped, combined
-//! output pipe (`exec`), sandboxed with Seatbelt on macOS / bwrap on Linux when available (`sandbox`), plus
-//! the run's registry of children that outlive their round (`jobs`). WHICH interpreter — `bash -c` on Unix,
+//! Process execution (internal/shell): one interpreter child in its own process group with a combined output
+//! log read back under caps (`exec`), sandboxed with Seatbelt on macOS / bwrap on Linux when available
+//! (`sandbox`), plus the run's registry every call runs through (`jobs`). WHICH interpreter — `bash -c` on Unix,
 //! Git Bash / PowerShell / `cmd.exe` on Windows — is `interp`, and whether a command line is iota itself
 //! (the one line the sandbox lets out) is `selfcall`. The mechanism layer only: the `shell` tool's policy
 //! (approval, config, result formatting) is `crate::tool::builtins::shell`.
