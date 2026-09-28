@@ -13,8 +13,9 @@
 //! ([`crate::text::header_command`]), the text the `[shell …]` row, the notice and the status row show.
 //!
 //! The detail page — a `View` titled `job b3`: the command in full, the clock with the wall-clock start,
-//! the pid, the log path and the log's last twenty lines — re-reads the clock and the tail each tick, and
-//! when the job ends under it the clock line becomes the verdict, `finished: exit 0 after 1m 12s` (or
+//! the pid, the log path and the log's last twenty lines — re-reads the clock each tick over the tail's
+//! latest snapshot (read off the UI loop by [`follow_tail`], on the blocking pool, while the page is
+//! open), and when the job ends under it the clock line becomes the verdict, `finished: exit 0 after 1m 12s` (or
 //! `killed`, or `timed out after …`, [`Jobs::ended`]), the rest of the page staying as it was; Esc returns
 //! to the list, re-read, until Esc closes the list. No key on the page kills the job: the list is
 //! searchable, so a letter there is the filter, and the same key meaning two things on one surface was
@@ -26,7 +27,9 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+use tokio_util::sync::CancellationToken;
 
 use crate::shell::exec::read_capped;
 use crate::shell::jobs::{JobDone, JobInfo, Jobs, job_status};
@@ -193,8 +196,9 @@ pub(crate) fn job_detail(
 }
 
 /// The last [`TAIL_LINES`] lines of the log at `path` — read under the notice's byte caps
-/// ([`read_capped`]: two seeks, never the whole of a big file), so the page costs the loop one open.
-/// Empty for a missing log or one holding only whitespace.
+/// ([`read_capped`]: one bounded snapshot, never the whole of a big or growing file). Blocking file I/O:
+/// the page calls it through [`read_tail`], never from the UI loop. Empty for a missing log or one holding
+/// only whitespace.
 pub(crate) fn log_tail(path: &Path) -> Vec<String> {
     let text = read_capped(path).unwrap_or_default();
     if text.trim().is_empty() {
@@ -207,19 +211,56 @@ pub(crate) fn log_tail(path: &Path) -> Vec<String> {
         .collect()
 }
 
-/// The page's lines as of now: the tail re-read from the log, and the job's end — if it has ended
-/// ([`Jobs::ended`]) — in the clock's place. What the page opens with and what each tick brings.
-pub(crate) fn page_lines(jobs: &Jobs, job: &JobInfo, home: Option<&Path>) -> Vec<String> {
-    let tail = log_tail(&job.output_path);
+/// The page's lines as of now over `tail`, the log's latest snapshot ([`follow_tail`]): the clock, and
+/// the job's end — if it has ended ([`Jobs::ended`], a registry read) — in the clock's place. What the
+/// page opens with and what each tick brings; no file is touched here, so the UI loop runs it.
+pub(crate) fn page_lines(
+    jobs: &Jobs,
+    job: &JobInfo,
+    home: Option<&Path>,
+    tail: &[String],
+) -> Vec<String> {
     let ended = jobs.ended(&job.id);
     job_detail(
         job,
         Instant::now(),
         &jiff::Zoned::now(),
         home,
-        &tail,
+        tail,
         ended.as_ref(),
     )
+}
+
+/// [`log_tail`] on Tokio's blocking pool: the REPL's side of the page reads the log, the UI loop never.
+pub(crate) async fn read_tail(path: PathBuf) -> Vec<String> {
+    tokio::task::spawn_blocking(move || log_tail(&path))
+        .await
+        .unwrap_or_default()
+}
+
+/// Keeps `tail` the log's latest snapshot while the detail page is open: one [`read_tail`] a refresh
+/// period, until `stop` (the page closed) or the job has ended and the read after its end is in — the log
+/// is whole then, and the snapshot stays for the verdict's page. `done` is whether the job had already
+/// ended before the page's opening read, which is then already the last one.
+pub(crate) async fn follow_tail(
+    jobs: Arc<Jobs>,
+    job: JobInfo,
+    tail: Arc<Mutex<Vec<String>>>,
+    mut done: bool,
+    stop: CancellationToken,
+) {
+    while !done {
+        tokio::select! {
+            () = stop.cancelled() => return,
+            () = tokio::time::sleep(Duration::from_millis(REFRESH_EVERY_MS)) => {}
+        }
+        done = jobs.ended(&job.id).is_some();
+        let lines = read_tail(job.output_path.clone()).await;
+        if stop.is_cancelled() {
+            return;
+        }
+        *lock(&tail) = lines;
+    }
 }
 
 /// `/jobs`: the two tabs, then — for a row picked on `Jobs` — the page, then the tabs again, until the
@@ -277,14 +318,32 @@ pub(crate) async fn cmd_jobs(repl: &Repl) {
             return;
         };
         let home: Option<PathBuf> = repl.conv.agent.home.clone();
-        let lines = page_lines(jobs, &job, home.as_deref());
+        // The log is read here and by the follower, on the blocking pool; the page's refresh only takes
+        // the latest snapshot. The end is checked before the opening read, so a job ending between the two
+        // still gets its read after the end.
+        let done = jobs.ended(&job.id).is_some();
+        let tail = Arc::new(Mutex::new(read_tail(job.output_path.clone()).await));
+        let lines = page_lines(jobs, &job, home.as_deref(), &lock(&tail));
+        let stop = CancellationToken::new();
+        // Closing the page — or this command going away mid-page — ends the follower.
+        let _follower = stop.clone().drop_guard();
+        tokio::spawn(follow_tail(
+            Arc::clone(jobs),
+            job.clone(),
+            Arc::clone(&tail),
+            done,
+            stop,
+        ));
         let (page_jobs, page_job) = (Arc::clone(jobs), job.clone());
         let page = TabbedSpec {
             refresh_every_ms: REFRESH_EVERY_MS,
             panels: vec![
                 Panel::view(format!("job {}", job.id), lines)
                     .with_wrap(true)
-                    .with_refresh(move || page_lines(&page_jobs, &page_job, home.as_deref())),
+                    .with_refresh(move || {
+                        let tail = lock(&tail).clone();
+                        page_lines(&page_jobs, &page_job, home.as_deref(), &tail)
+                    }),
             ],
             ..TabbedSpec::default()
         };
@@ -309,7 +368,14 @@ mod tests {
     use crate::shell::jobs::{JobDone, JobInfo, Jobs};
     use crate::text::ansi::strip_sgr;
 
-    use super::{LiveRows, TAIL_LINES, job_count, job_detail, job_rows, log_tail, page_lines};
+    use std::sync::{Arc, Mutex};
+
+    use tokio_util::sync::CancellationToken;
+
+    use super::{
+        LiveRows, TAIL_LINES, follow_tail, job_count, job_detail, job_rows, log_tail, page_lines,
+        read_tail,
+    };
 
     fn job(id: &str, command: &str, ago: u64, now: Instant) -> JobInfo {
         JobInfo {
@@ -564,7 +630,7 @@ mod tests {
         assert_eq!(live.shown(0).map(|j| j.id), Some("b2".to_owned()));
 
         // The page open on b1: its clock line is the verdict now, and the rest is what it was.
-        let page: Vec<String> = page_lines(&jobs, &b1, None)
+        let page: Vec<String> = page_lines(&jobs, &b1, None, &[])
             .iter()
             .map(|l| strip_sgr(l))
             .collect();
@@ -574,7 +640,7 @@ mod tests {
         assert_eq!(page[4], "── last 20 lines ──");
         // …and on b2, still running, the clock.
         let b2 = live.shown(0).expect("b2");
-        let page: Vec<String> = page_lines(&jobs, &b2, None)
+        let page: Vec<String> = page_lines(&jobs, &b2, None, &[])
             .iter()
             .map(|l| strip_sgr(l))
             .collect();
@@ -589,13 +655,76 @@ mod tests {
         let b3 = live.shown(b3.keys.len() - 1).expect("b3");
         assert_eq!(b3.id, "b3");
         running(&jobs, 1).await;
-        let page: Vec<String> = page_lines(&jobs, &b3, None)
+        let tail = read_tail(b3.output_path.clone()).await;
+        let page: Vec<String> = page_lines(&jobs, &b3, None, &tail)
             .iter()
             .map(|l| strip_sgr(l))
             .collect();
         assert!(page[1].starts_with("finished: exit 0 after "), "{page:?}");
         assert_eq!(page[5], "all green");
 
+        jobs.kill_all();
+    }
+
+    // New: the page's follower keeps the snapshot current off the loop — a job that writes, ends, and
+    // writes no more leaves the tail holding its last line, and the follower returns on its own after the
+    // read that followed the end; the page over that snapshot reads the verdict.
+    #[tokio::test]
+    async fn the_follower_reads_the_tail_until_the_end() {
+        if skip_unless_posix("the_follower_reads_the_tail_until_the_end") {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let jobs = Jobs::new(dir.path());
+        jobs.spawn(&opts("echo one; sleep 0.3; echo two"))
+            .expect("spawn");
+        let job = jobs.snapshot().pop().expect("the job");
+        let tail = Arc::new(Mutex::new(Vec::new()));
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            follow_tail(
+                Arc::clone(&jobs),
+                job.clone(),
+                Arc::clone(&tail),
+                false,
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("the follower ends once the job has");
+        let tail = crate::sync::lock(&tail).clone();
+        assert_eq!(tail, ["one", "two"]);
+        let page: Vec<String> = page_lines(&jobs, &job, None, &tail)
+            .iter()
+            .map(|l| strip_sgr(l))
+            .collect();
+        assert!(page[1].starts_with("finished: exit 0 after "), "{page:?}");
+        assert_eq!(page[5..], ["one", "two"]);
+    }
+
+    // New: closing the page ends the follower of a job still running, without waiting for the job.
+    #[tokio::test]
+    async fn the_follower_stops_with_the_page() {
+        if skip_unless_posix("the_follower_stops_with_the_page") {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let jobs = Jobs::new(dir.path());
+        jobs.spawn(&opts("sleep 30")).expect("spawn");
+        let job = jobs.snapshot().pop().expect("the job");
+        let stop = CancellationToken::new();
+        let follower = tokio::spawn(follow_tail(
+            Arc::clone(&jobs),
+            job,
+            Arc::default(),
+            false,
+            stop.clone(),
+        ));
+        drop(stop.drop_guard());
+        tokio::time::timeout(Duration::from_secs(2), follower)
+            .await
+            .expect("the follower stops with the page")
+            .expect("join");
         jobs.kill_all();
     }
 }
