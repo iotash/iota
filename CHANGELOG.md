@@ -53,10 +53,10 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 - **After you make the window narrower, the last few lines of a streaming
   reply can appear twice** (measured: 3 lines in tmux and 2 in herdr and
-  Ghostty when a drag narrows the window a column at a time; 3 or 4 in tmux
-  when the width drops by half or more). iota no longer guesses how your
-  terminal rewrapped those lines, so it no longer erases lines on that guess
-  (X-52).
+  Ghostty when a drag narrows the window a column at a time; 3 in tmux and 4
+  in herdr and Ghostty when the width drops by half or more). iota no longer
+  guesses how your terminal rewrapped those lines, so it no longer erases
+  lines on that guess (X-52).
 - **A running background job keeps the host at working.** While a job runs and
   the chat is otherwise idle, herdr shows the pane `working`, the terminal's
   progress indicator stays on and cmux reads `Running`, until the job's notice
