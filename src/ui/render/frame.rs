@@ -27,7 +27,7 @@ pub const SEPARATOR_GLYPH: &str = "┄";
 
 use crate::shell::jobs::JobInfo;
 use crate::text;
-use crate::text::ansi::truncate_ansi;
+use crate::text::ansi::{ansi_width, truncate_ansi};
 use crate::text::width::str_width;
 use crate::ui::facade::StatusData;
 
@@ -294,22 +294,6 @@ pub(crate) fn status_line(
     // truncation (model.go:1139-1142).
     let dbg = if s.debug { "debug" } else { "" };
 
-    let mut plain = format!("  {model}");
-    for seg in [tokens.as_str(), ctx.as_str(), dbg] {
-        if !seg.is_empty() {
-            let _ = write!(plain, " · {seg}");
-        }
-    }
-    if busy.is_some() {
-        let _ = write!(plain, " · {frame}{tail}");
-    }
-    // The job segment takes what the row has left after everything else; its command gives way first.
-    let room = (width as usize).saturating_sub(str_width(&plain) + 3);
-    let jobs_seg = jobs_segment(jobs, now, room);
-    if let Some(seg) = &jobs_seg {
-        let _ = write!(plain, " · {}", seg.plain);
-    }
-
     let mut out = format!("  {CYAN}{FAINT}{model}{RESET}");
     if !tokens.is_empty() {
         let _ = write!(out, "{FAINT} · {RESET}{GREEN}{FAINT}{tokens}{RESET}");
@@ -326,11 +310,13 @@ pub(crate) fn status_line(
             "{FAINT} · {RESET}{CYAN}{frame}{RESET}{FAINT}{tail}{RESET}"
         );
     }
-    if let Some(seg) = &jobs_seg {
-        let _ = write!(out, "{FAINT} · {}{RESET}", seg.styled);
+    // The job segment takes what the row has left after everything else; its command gives way first.
+    let room = (width as usize).saturating_sub(ansi_width(&out) + 3);
+    if let Some(seg) = jobs_segment(jobs, now, room) {
+        let _ = write!(out, "{FAINT} · {seg}{RESET}");
     }
 
-    if str_width(&plain) > width as usize {
+    if ansi_width(&out) > width as usize {
         // A row wider than the terminal is CUT, hues and all — `truncate_ansi` walks the
         // styled row by display width and keeps every escape, the closing reset included.
         // Go (model.go:1153-1163) and the port until 2026-09-23 fell back to the plain row
@@ -351,22 +337,12 @@ pub(crate) fn status_line(
     out
 }
 
-/// The status row's job segment in its two forms: the text, for the row's width, and the same text
-/// with the command in the `[shell …]` header's cyan, for the row.
-struct JobSegment {
-    /// `job b3 cargo test 1m12s` / `3 jobs 3m01s`, no escapes.
-    plain: String,
-    /// The same with the command between `CYAN` and a return to the row's faint; equal to `plain`
-    /// when there is no command (several jobs, or no room for it).
-    styled: String,
-}
-
 /// The job segment for `room` columns: `job b3 <command> 1m12s` for one job — the command as the
 /// `[shell …]` header showed it ([`crate::text::header_command`]: one line, 64 runes), then cut to
 /// the columns between the id and the clock and dropped below four of them, and in the header's
 /// cyan (2026-09-23) where the id and the clock keep the row's faint — or `3 jobs 3m01s` for
 /// several, with the oldest's clock; `None` with none.
-fn jobs_segment(jobs: &[JobInfo], now: Instant, room: usize) -> Option<JobSegment> {
+fn jobs_segment(jobs: &[JobInfo], now: Instant, room: usize) -> Option<String> {
     let clock_of = |job: &JobInfo| text::clock(now.saturating_duration_since(job.started));
     match jobs {
         [] => None,
@@ -376,17 +352,12 @@ fn jobs_segment(jobs: &[JobInfo], now: Instant, room: usize) -> Option<JobSegmen
             let command = crate::text::header_command(&job.command);
             let cmd_room = room.saturating_sub(str_width(&head) + str_width(&clock) + 2);
             if command.is_empty() || cmd_room < 4 {
-                let plain = format!("{head} {clock}");
-                Some(JobSegment {
-                    styled: plain.clone(),
-                    plain,
-                })
+                Some(format!("{head} {clock}"))
             } else {
                 let command = truncate_ansi(&command, cmd_room, "…");
-                Some(JobSegment {
-                    plain: format!("{head} {command} {clock}"),
-                    styled: format!("{head} {RESET}{CYAN}{command}{RESET}{FAINT} {clock}"),
-                })
+                Some(format!(
+                    "{head} {RESET}{CYAN}{command}{RESET}{FAINT} {clock}"
+                ))
             }
         }
         many => {
@@ -394,11 +365,7 @@ fn jobs_segment(jobs: &[JobInfo], now: Instant, room: usize) -> Option<JobSegmen
                 .iter()
                 .min_by_key(|j| j.started)
                 .map_or_else(String::new, clock_of);
-            let plain = format!("{} jobs {oldest}", many.len());
-            Some(JobSegment {
-                styled: plain.clone(),
-                plain,
-            })
+            Some(format!("{} jobs {oldest}", many.len()))
         }
     }
 }
