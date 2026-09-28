@@ -443,10 +443,11 @@ pub const READ_CAPPED_BOUND: usize = MAX_OUTPUT_BYTES + 1 + TAIL_BYTES;
 /// Reads `path` under the byte caps: the whole file up to [`MAX_OUTPUT_BYTES`], else its head and its tail
 /// with the omission marker between them — the same bytes [`truncate_output`]'s BYTE cap alone would
 /// produce for the same content when the file holds still while it is read. It applies no line cap: over
-/// [`MAX_OUTPUT_LINES`] lines it is not `truncate_output`'s result, and the callers (`shell/jobs.rs`) pass
-/// it through `truncate_output` for that. A file that grows, shrinks or misreports its end mid-read gets a
-/// snapshot of its head and a tail as of the second end-seek (possibly empty, and not necessarily the
-/// file's final end), not that exact text, and its omission count follows that seek.
+/// [`MAX_OUTPUT_LINES`] lines it is not `truncate_output`'s result: the notice paths in `shell/jobs.rs` pass
+/// it through `truncate_output`, and `/jobs`'s `log_tail` takes its own last lines. A file that grows,
+/// shrinks or misreports its end mid-read gets a snapshot of its head and a tail starting where the second
+/// end-seek put it (possibly empty, possibly holding bytes written after that seek, and not necessarily
+/// the file's final end), not that exact text, and its omission count follows that seek.
 ///
 /// One bounded snapshot, never a stream: every read is a `take`, so a background job that wrote gigabytes —
 /// or is still writing — costs the reader one open and at most [`READ_CAPPED_BOUND`] bytes.
