@@ -359,7 +359,8 @@ point: `tui-terminal-contract`.
 pinned under the terminal's NATIVE scrollback; no alternate screen. Output is inserted above the frame
 and scrolls into the terminal's own history (search, copy, scroll all native). This is the load-bearing
 choice (brain `ui-bubbletea-v2`, the Go original's; DIVERGENCES X-52). Its price is reflow physics the
-app cannot observe: a resize may leave rows blank or twice, never lost. If "zero residuals" ever
+app cannot observe: a resize may leave rows blank or twice; a lost row is the one outcome the
+design is accepted against (the budget below). If "zero residuals" ever
 outranks native scrollback, the answer is an alt-screen pager and the design changes wholesale
 (the 2026-09-24 UI evaluation's §4.2 falsifier) — not another round of heuristics.
 
@@ -368,10 +369,11 @@ and the widgets; its `Terminal` is not used. The ONE invariant: after the startu
 DSR just reported) no byte names a row number — every move is `CUU`, `LF`, `CR`+`CUF`, or `IL`/`DL`/`SD`
 on the frame's own rows, counted from the cursor, which the emulator carries with its cell through any
 resize. `CUU` can only stop short (into the frame), `LF` moves exactly one content row even where it
-scrolls. That closed the loss class: a stream writing under a size iota had not read yet (tmux,
-height drag: 6/6 runs lost rows → 0/6), a terminal that never answers the DSR (4/4 → 0/4), and a grow
-between the cursor answer and the erase (a low-probability race; pinned by deterministic replays that
-fail on the absolute-addressing build). The absolute top and size are bookkeeping only.
+scrolls. That closed the three losses it was built against: a stream writing under a size iota had
+not read yet (tmux, height drag: 6/6 runs lost rows → 0/6), a terminal that never answers the DSR
+(4/4 → 0/4), and a grow between the cursor answer and the erase (a low-probability race; pinned by
+deterministic replays that fail on the absolute-addressing build). Those counts are the runs made,
+not a proof for every terminal. The absolute top and size are bookkeeping only.
 
 **The cursor rules.** The cursor wins over any size read (a cursor below the last row read means the
 screen grew). A DSR never sits inside an open batch or a synchronized block (WezTerm and Alacritty
@@ -379,10 +381,15 @@ hold input inside one; `debug_assert`). A resize pass is `Term::resize` computin
 frame's rows over the cursor, never more), the floor and the height, and `InlineTerminal::relayout`
 writing: DSR → one batch (climb, erase, `LF` onto the floor, lay the frame out) → recheck DSR.
 
-**DEC 2026** (X-55). A write longer than `SYNC_MIN` (1024 B, the macOS pty read block, measured;
-Linux reads 4096 — not measured here) is one synchronized update; a smaller one reaches the terminal
-in one read and goes out bare. The criterion is the transport, never a terminal name or version, and
-there is NO user switch. Measured cost, tmux 3.7c (which repaints the whole pane at the end of any
+**DEC 2026** (X-55). A write longer than `SYNC_MIN` (1024 B) is one synchronized update; a smaller
+one goes out bare. The threshold is an empirical choice, not a transport guarantee: 1024 B is the
+macOS pty read block (measured; Linux reads 4096 — not measured here), so a small write usually lands
+in one read, but nothing iota writes controls how many bytes the receiving side reads at once —
+`write_all` promises no single write, and neither a pty nor TCP keeps application write boundaries
+(RFC 9293 §3.7). So the contract is: small batches keep the reads few; large batches ask a terminal
+that supports DEC 2026 to present them at once. A small write is not promised to show no
+intermediate state. The criterion is the size, never a terminal name or version, and there is NO user
+switch. Measured cost, tmux 3.7c (which repaints the whole pane at the end of any
 block): one pane repaint per large write; typing and streaming are bare (11 keystrokes 22 840 → 13 B,
 `stream 100 20` 82 884 → 8 581 B to the outer terminal). tmux 3.8-rc2 repaints the whole pane only for
 blocks that scroll (the third evaluation, `/tmp/ui-eval-3.md` §2.1; not re-measured here).
@@ -392,11 +399,20 @@ a few columns short while a drag lasts; the drag ends `DRAG_SETTLE` (2 s) after 
 once on a key, a paste, a turn or a surface; the margin is twice the widest step, 2..=`DRAG_MARGIN_MAX`
 (8). A flush frame stays on the floor `S − h`; the rows between are a blank band the next output fills,
 closed (`DL`+`SD`) when the drag ends. `RESIZE_QUIET` (50 ms) merges a burst of events into one pass.
-**Budget:** a LOST row is the one hard failure (bound 0); per drag ≤ 2 blank or duplicated rows; a
-report inside the budget is closed as by design. Measured residuals are X-52's list — note that since
-B3 (the overhang inference deleted) a one-column drag leaves 3 staged rows twice in tmux 3.7c (2 in
-herdr and Ghostty) and a ≥ 2× narrowing 3–4: above the frozen ≤ 2, recorded but not yet reconciled
-with it.
+**The band is blank:** the `pad` rows directly above the frame hold nothing, and all three of its
+consumers — `close_band`'s `DL`, the next batch's `fill_above`, `ensure_height`'s `grow_up` — take
+them for blank. So an insert fills the band first, a batch laid out for a wider terminal (measured
+taller than it is long) included, and only what the band cannot hold is inserted
+(`Term::insert_rows`). A row put under a band still open sits where a blank row is expected, and the
+next consumer deletes or overwrites it: LOST (F1, fixed in 0.5.1; `vt100_tests::verify_f1_*`).
+**Budget:** zero LOST rows is the hard acceptance target (bound 0) — a target the tests and runs are
+held to, not a fact they prove: the verified scenarios are TUI-VERIFY §4.3–4.5's, and the open
+records stand beside them (§4.5: a loaded tmux 3.4 run with the frame over two rows, not reproduced;
+one CI height drag that lost two streamed lines). Per drag ≤ 2 blank or duplicated rows; a report
+inside the budget is closed as by design. Measured residuals are X-52's list, each for the terminal
+it was measured on — note that since B3 (the overhang inference deleted) a one-column drag leaves 3
+staged rows twice in tmux 3.7c and 2 in herdr 0.9.1 and Ghostty 1.3.1, and a ≥ 2× narrowing 3 in
+tmux 3.7c and 4 in herdr and Ghostty: above the frozen ≤ 2, recorded but not yet reconciled with it.
 
 **Where the detail lives.** X-36 (the `┄` separators), X-52 (resize, budget, residuals), X-53 (the
 closed box, withdrawn), X-54 (the owned terminal), X-55 (2026); TUI-VERIFY §2 (scrollback), §3
