@@ -3,6 +3,24 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## Unreleased
+
+### Fixed
+
+- **A reply streaming through a narrowing no longer loses its last lines.** A
+  line laid out for the wider window and printed while the window was being
+  made narrower went in under the blank rows the resize had left above the
+  prompt; when the drag ended, when the next line came or when the prompt
+  grew, iota took those rows back as blank and the line went with them. Such a
+  line now fills the blank rows first, and only what does not fit is inserted
+  above them, so none of the three touches a printed line (X-52).
+- **`/jobs`, the status row and the host no longer hold on to a job that has
+  ended.** When two jobs changed at nearly the same moment, the older of the
+  two updates could arrive last: the list, the status row's job segment and
+  the host's `working` then stayed on a set of jobs that was no longer the one
+  running. The updates now go out in the order they were taken, so the last
+  one is the running set (X-50).
+
 ## 0.5.0 - 2026-09-27
 
 ### Added
