@@ -169,7 +169,7 @@ pub(crate) fn start(opts: TuiOptions) -> io::Result<Tui> {
     // The pre-raw-mode cursor row anchors the viewport (raw mode is on, so the DSR
     // round-trip cooperates with crossterm's event reader — wart W8).
     let (_, row) = crossterm::cursor::position()?;
-    let term = Term::new(Box::new(io::stdout), 1, row, None)?;
+    let term = Term::new(Box::new(io::stdout), 1, row)?;
     let handle = spawn(term, CrosstermEvents, width, height, Some(restore))?;
     // The probed tone is the loop's first message: the input shade follows it from frame one.
     handle.set_dark_background(opts.dark);
@@ -451,13 +451,12 @@ mod tests {
     fn start_facade() -> FacadeHarness {
         let width = Arc::new(AtomicU16::new(80));
         let height = Arc::new(AtomicU16::new(24));
-        let geo = crate::ui::runtime::term::Geometry::new(80, 24);
+        let geo = crate::ui::runtime::geometry::Geometry::new(80, 24);
         let buf = SharedBuf::default();
         let wtr = buf.clone();
         // start_top 19 mirrors the WP44 loop harness: the viewport starts at the bottom.
-        let t =
-            crate::ui::runtime::term::Term::new(Box::new(move || wtr.clone()), 1, 19, Some(geo))
-                .unwrap();
+        let t = crate::ui::runtime::term::Term::headless(Box::new(move || wtr.clone()), 1, 19, geo)
+            .unwrap();
         let (etx, erx) = mpsc::channel();
         let events = ChannelEvents::new(erx);
         let ui = crate::ui::runtime::handle::spawn(t, events, width, height, None).unwrap();
