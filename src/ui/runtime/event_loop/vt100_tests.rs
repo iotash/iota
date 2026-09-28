@@ -106,16 +106,16 @@ fn direct_term(
 ) -> (
     crate::ui::runtime::term::Term<SharedBuf>,
     SharedBuf,
-    crate::ui::runtime::term::Geometry,
+    crate::ui::runtime::geometry::Geometry,
 ) {
-    let geo = crate::ui::runtime::term::Geometry::new(80, 24);
+    let geo = crate::ui::runtime::geometry::Geometry::new(80, 24);
     let buf = SharedBuf::default();
     let wtr = buf.clone();
-    let t = crate::ui::runtime::term::Term::new(
+    let t = crate::ui::runtime::term::Term::headless(
         Box::new(move || wtr.clone()),
         view_height,
         top,
-        Some(geo.clone()),
+        geo.clone(),
     )
     .unwrap();
     (t, buf, geo)
@@ -127,7 +127,7 @@ struct LoopHarness {
     tx: mpsc::Sender<UiMsg>,
     etx: mpsc::Sender<Event>,
     buf: SharedBuf,
-    geo: crate::ui::runtime::term::Geometry,
+    geo: crate::ui::runtime::geometry::Geometry,
     width: Arc<AtomicU16>,
     height: Arc<AtomicU16>,
     region: Arc<Mutex<crate::ui::render::region::Region>>,
@@ -157,14 +157,14 @@ fn start_loop_at(start_top: u16) -> LoopHarness {
         height: Arc::clone(&height),
         region: Arc::clone(&region),
     };
-    let geo = crate::ui::runtime::term::Geometry::new(80, 24);
+    let geo = crate::ui::runtime::geometry::Geometry::new(80, 24);
     let buf = SharedBuf::default();
     let wtr = buf.clone();
-    let t = crate::ui::runtime::term::Term::new(
+    let t = crate::ui::runtime::term::Term::headless(
         Box::new(move || wtr.clone()),
         1,
         start_top,
-        Some(geo.clone()),
+        geo.clone(),
     )
     .unwrap();
     let (etx, erx) = mpsc::channel();
@@ -657,7 +657,7 @@ fn a_write_is_one_synchronized_update_exactly_when_the_transport_would_split_it(
 #[test]
 fn no_cursor_query_sits_inside_a_synchronized_update() {
     fn arm(
-        geo: &crate::ui::runtime::term::Geometry,
+        geo: &crate::ui::runtime::geometry::Geometry,
         buf: &SharedBuf,
         seen: &Arc<Mutex<Vec<bool>>>,
     ) {
@@ -2318,7 +2318,7 @@ fn raced_term(
 ) -> (
     crate::ui::runtime::term::Term<SharedBuf>,
     SharedBuf,
-    crate::ui::runtime::term::Geometry,
+    crate::ui::runtime::geometry::Geometry,
     Arc<Mutex<TmuxReflowEmu>>,
     crate::ui::render::frame::FrameView,
 ) {
@@ -2331,15 +2331,11 @@ fn raced_term(
     }
     prelude.push_str(&"\n".repeat(8));
     io::Write::write_all(&mut buf.clone(), prelude.as_bytes()).unwrap();
-    let geo = crate::ui::runtime::term::Geometry::new(80, 24);
+    let geo = crate::ui::runtime::geometry::Geometry::new(80, 24);
     let wtr = buf.clone();
-    let mut t = crate::ui::runtime::term::Term::new(
-        Box::new(move || wtr.clone()),
-        9,
-        15,
-        Some(geo.clone()),
-    )
-    .unwrap();
+    let mut t =
+        crate::ui::runtime::term::Term::headless(Box::new(move || wtr.clone()), 9, 15, geo.clone())
+            .unwrap();
     let frame = crate::ui::render::frame::FrameView {
         // The status row runs 70 columns: a narrowing to 60 wraps it BELOW the cursor.
         rows: (0..9)
@@ -2365,7 +2361,7 @@ fn raced_term(
 fn emu_resize(
     emu: &Mutex<TmuxReflowEmu>,
     buf: &SharedBuf,
-    geo: &crate::ui::runtime::term::Geometry,
+    geo: &crate::ui::runtime::geometry::Geometry,
     (w, h): (u16, u16),
 ) {
     let moved = emu.lock().unwrap().resize(&buf.bytes(), w, h);
@@ -2379,7 +2375,7 @@ fn resize_after_query(
     size: (u16, u16),
     emu: &Arc<Mutex<TmuxReflowEmu>>,
     buf: &SharedBuf,
-    geo: &crate::ui::runtime::term::Geometry,
+    geo: &crate::ui::runtime::geometry::Geometry,
 ) {
     let (emu, buf, g) = (Arc::clone(emu), buf.clone(), geo.clone());
     geo.after_query(nth, move || emu_resize(&emu, &buf, &g, size));

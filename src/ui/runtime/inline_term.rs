@@ -29,8 +29,8 @@
 //! absolute rows — is bookkeeping for the resize pass's floor (`Term::resize`), resynced from
 //! a DSR there; a stale model misplaces nothing, because nothing is placed by it.
 //!
-//! [`Geometry`] (the headless seam) mirrors each move the way a terminal would carry the
-//! cursor, so the synthetic DSR answers what a real one would.
+//! In a headless test `geometry::Geometry` (test configuration only) mirrors each move the
+//! way a terminal would carry the cursor, so the synthetic DSR answers what a real one would.
 
 use std::io::{self, Write};
 
@@ -45,7 +45,8 @@ use ratatui::buffer::{Buffer, Cell, CellWidth};
 use ratatui::layout::{Position, Rect, Size};
 use ratatui::style::{Color, Modifier};
 
-use super::term::Geometry;
+#[cfg(test)]
+use super::geometry::Geometry;
 
 /// The SGR state of the pen while a run of cells is written.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -93,6 +94,8 @@ pub(crate) struct InlineTerminal<W: Write> {
     /// The bytes of the operation in progress: every public operation writes them in one
     /// `write_all` + flush, so an emulator gets it in as few reads as the pipe allows.
     pending: Vec<u8>,
+    /// The synthetic terminal every cursor move is mirrored into ([`InlineTerminal::mirror`]).
+    #[cfg(test)]
     geo: Option<Geometry>,
     /// The terminal size the frame is laid out against (the resize pass sets it).
     size: Size,
@@ -114,19 +117,14 @@ impl<W: Write> InlineTerminal<W> {
     /// Reserves `height` rows for the frame from row `at` down — the row a DSR has just
     /// reported the cursor on, before anything was drawn: the one absolute move this type
     /// makes. Rows the screen does not have are made by scrolling (`LF`), as a shell does.
-    pub(crate) fn new(
-        out: W,
-        geo: Option<Geometry>,
-        size: Size,
-        height: u16,
-        at: u16,
-    ) -> io::Result<Self> {
+    pub(crate) fn new(out: W, size: Size, height: u16, at: u16) -> io::Result<Self> {
         let at = at.min(size.height.saturating_sub(1));
         let viewport = Rect::new(0, at, size.width, 1);
         let mut t = Self {
             out,
             pending: Vec::new(),
-            geo,
+            #[cfg(test)]
+            geo: None,
             size,
             viewport,
             shown: Buffer::empty(viewport),
@@ -135,12 +133,16 @@ impl<W: Write> InlineTerminal<W> {
             batch: 0,
         };
         queue!(t.pending, MoveTo(0, at))?;
-        if let Some(g) = &t.geo {
-            g.put_cursor(Position::new(0, at));
-        }
         t.reserve(height);
         t.commit()?;
         Ok(t)
+    }
+
+    /// Mirrors every cursor move from now on into `geo`, its cursor put where this one is.
+    #[cfg(test)]
+    pub(super) fn mirror(&mut self, geo: Geometry) {
+        geo.put_cursor(self.cursor);
+        self.geo = Some(geo);
     }
 
     /// The terminal size the frame is laid out against.
@@ -484,6 +486,7 @@ impl<W: Write> InlineTerminal<W> {
         queue!(self.pending, Print(cell.symbol()))?;
         let w = cell.cell_width().max(1);
         self.cursor.x = self.cursor.x.saturating_add(w).min(self.size.width);
+        #[cfg(test)]
         if let Some(g) = &self.geo {
             g.set_col(self.cursor.x.min(self.size.width.saturating_sub(1)));
         }
@@ -563,6 +566,7 @@ impl<W: Write> InlineTerminal<W> {
             if p.x > 0 {
                 write!(self.pending, "\x1b[{}C", p.x)?;
                 self.cursor.x = p.x;
+                #[cfg(test)]
                 if let Some(g) = &self.geo {
                     g.set_col(p.x);
                 }
@@ -577,6 +581,7 @@ impl<W: Write> InlineTerminal<W> {
         }
         write!(self.pending, "\x1b[{n}A")?;
         self.cursor.y = self.cursor.y.saturating_sub(n);
+        #[cfg(test)]
         if let Some(g) = &self.geo {
             g.up(n);
         }
@@ -596,6 +601,7 @@ impl<W: Write> InlineTerminal<W> {
             .y
             .saturating_add(n)
             .min(self.size.height.saturating_sub(1));
+        #[cfg(test)]
         if let Some(g) = &self.geo {
             g.lf(n);
         }
@@ -604,6 +610,7 @@ impl<W: Write> InlineTerminal<W> {
     fn cr(&mut self) {
         self.pending.push(b'\r');
         self.cursor.x = 0;
+        #[cfg(test)]
         if let Some(g) = &self.geo {
             g.set_col(0);
         }

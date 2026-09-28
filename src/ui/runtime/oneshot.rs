@@ -62,7 +62,7 @@ pub(crate) fn run_surface(spec: TabbedSpec, dark: bool) -> io::Result<TabbedResu
     st.set_term_height(height);
     let rows = st.render(width).rows;
     let h = u16::try_from(rows.len()).unwrap_or(u16::MAX).max(1);
-    let mut term: Term<io::Stdout> = Term::new(Box::new(io::stdout), h, start_row, None)?;
+    let mut term: Term<io::Stdout> = Term::new(Box::new(io::stdout), h, start_row)?;
 
     let refresh = Duration::from_millis(refresh_every_ms);
     let mut last_refresh = Instant::now();
