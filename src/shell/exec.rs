@@ -434,28 +434,51 @@ fn is_executable(p: &Path) -> bool {
     }
 }
 
-/// Reads `path` under the byte caps: the whole file up to [`MAX_OUTPUT_BYTES`], else its head and its tail
-/// with the omission marker between them — byte-identical to what [`truncate_output`] would produce for the
-/// same content.
-///
-/// Two seeks, never a stream: a background job that wrote gigabytes costs the reader one open and ~30 KB,
-/// so rendering its completion notice can never stall the loop that renders it.
-pub fn read_capped(path: &Path) -> std::io::Result<String> {
-    use std::io::{Read as _, Seek as _, SeekFrom};
+/// The most bytes one [`read_capped`] takes from its file, however big the file is or however fast it
+/// grows while being read: the whole-file attempt ([`MAX_OUTPUT_BYTES`] + 1, the one byte saying "more")
+/// and then the tail. Every read is a `take` under this; the file's reported size only picks the path.
+pub const READ_CAPPED_BOUND: usize = MAX_OUTPUT_BYTES + 1 + TAIL_BYTES;
 
-    let mut f = std::fs::File::open(path)?;
-    let total = usize::try_from(f.metadata()?.len()).unwrap_or(usize::MAX);
-    if total <= MAX_OUTPUT_BYTES {
-        let mut all = Vec::with_capacity(total);
-        f.read_to_end(&mut all)?;
-        return Ok(String::from_utf8_lossy(&all).into_owned());
+/// Reads `path` under the byte caps: the whole file up to [`MAX_OUTPUT_BYTES`], else its head and its tail
+/// with the omission marker between them — byte-identical to what [`truncate_output`]'s byte cap would
+/// produce for the same content when the file holds still while it is read. A file that grows, shrinks or
+/// misreports its end mid-read gets a snapshot of its head and some tail, not that exact text.
+///
+/// One bounded snapshot, never a stream: every read is a `take`, so a background job that wrote gigabytes —
+/// or is still writing — costs the reader one open and at most [`READ_CAPPED_BOUND`] bytes.
+pub fn read_capped(path: &Path) -> std::io::Result<String> {
+    read_capped_from(&mut std::fs::File::open(path)?)
+}
+
+/// [`read_capped`] over any seekable reader. The size the end-seek reports is a hint, not a bound (the
+/// file can grow after it): it only skips the whole-file attempt when the file is already over the cap.
+pub(crate) fn read_capped_from<R: std::io::Read + std::io::Seek>(
+    f: &mut R,
+) -> std::io::Result<String> {
+    use std::io::{Read as _, SeekFrom};
+
+    let hint = f.seek(SeekFrom::End(0))?;
+    f.seek(SeekFrom::Start(0))?;
+    let first = if usize::try_from(hint).is_ok_and(|n| n <= MAX_OUTPUT_BYTES) {
+        MAX_OUTPUT_BYTES + 1
+    } else {
+        HEAD_BYTES
+    };
+    let mut head = Vec::with_capacity(first);
+    f.by_ref().take(first as u64).read_to_end(&mut head)?;
+    if first > HEAD_BYTES && head.len() <= MAX_OUTPUT_BYTES {
+        return Ok(String::from_utf8_lossy(&head).into_owned());
     }
-    let mut head = vec![0u8; HEAD_BYTES];
-    f.read_exact(&mut head)?;
-    let back = i64::try_from(TAIL_BYTES).unwrap_or(i64::MAX);
-    f.seek(SeekFrom::End(-back))?;
-    let mut tail = vec![0u8; TAIL_BYTES];
-    f.read_exact(&mut tail)?;
+    head.truncate(HEAD_BYTES);
+    // The tail is the last TAIL_BYTES as of this seek, never overlapping the head a shrunken file left.
+    let end = f.seek(SeekFrom::End(0))?;
+    let start = end.saturating_sub(TAIL_BYTES as u64).max(head.len() as u64);
+    f.seek(SeekFrom::Start(start))?;
+    let mut tail = Vec::with_capacity(TAIL_BYTES);
+    f.take(TAIL_BYTES as u64).read_to_end(&mut tail)?;
+    let total = usize::try_from(start)
+        .unwrap_or(usize::MAX)
+        .saturating_add(tail.len());
     let head = trim_back_to_rune_start(&head);
     let tail = trim_front_to_rune_start(&tail);
     let omitted = total.saturating_sub(head.len() + tail.len());
@@ -527,7 +550,12 @@ const fn is_rune_start(b: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{TAIL_BYTES, find_in_path, is_rune_start, truncate_output};
+    use std::io::{Cursor, Read, Seek, SeekFrom};
+
+    use super::{
+        READ_CAPPED_BOUND, TAIL_BYTES, find_in_path, is_rune_start, read_capped_from,
+        truncate_middle, truncate_output,
+    };
 
     /// The byte cap, spelled once for the boundary test.
     const MAX: usize = super::MAX_OUTPUT_BYTES;
@@ -554,6 +582,86 @@ mod tests {
         // Anything at or below the cap passes through untouched.
         let small = "é".repeat(MAX / 2);
         assert_eq!(truncate_output(&small), small);
+    }
+
+    /// A reader that counts the bytes it hands out, over `inner`; `endless` makes it a log that never stops
+    /// growing (every read returns a full buffer, whatever the position) and `reported` the size its end-seek
+    /// claims — the lie a file's metadata tells about a log still being written.
+    struct Probe<R> {
+        inner: R,
+        endless: bool,
+        reported: Option<u64>,
+        pos: u64,
+        taken: usize,
+    }
+
+    impl<R> Probe<R> {
+        fn new(inner: R) -> Self {
+            Self {
+                inner,
+                endless: false,
+                reported: None,
+                pos: 0,
+                taken: 0,
+            }
+        }
+    }
+
+    impl<R: Read> Read for Probe<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = if self.endless {
+                buf.fill(b'x');
+                buf.len()
+            } else {
+                self.inner.read(buf)?
+            };
+            self.taken += n;
+            self.pos += n as u64;
+            Ok(n)
+        }
+    }
+
+    impl<R: Seek> Seek for Probe<R> {
+        fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
+            self.pos = match (to, self.reported) {
+                (SeekFrom::End(d), Some(len)) => len.saturating_add_signed(d),
+                _ => self.inner.seek(to)?,
+            };
+            if self.reported.is_some() {
+                self.inner.seek(SeekFrom::Start(self.pos))?;
+            }
+            Ok(self.pos)
+        }
+    }
+
+    // New: one read is one bounded snapshot — a log far over the cap, a log whose reported size says
+    // "small" while it keeps growing, and one whose reported size says "huge" all cost at most
+    // READ_CAPPED_BOUND bytes; the big one still reads byte-identical to truncate_middle (the byte cap alone).
+    #[test]
+    fn read_capped_takes_at_most_the_bound() {
+        let big = "0123456789abcdef\n".repeat(64 * 1024); // 1 MiB, 32x the cap
+        let mut probe = Probe::new(Cursor::new(big.clone().into_bytes()));
+        let out = read_capped_from(&mut probe).expect("read");
+        assert_eq!(out, truncate_middle(&big));
+        assert!(probe.taken <= READ_CAPPED_BOUND, "took {}", probe.taken);
+
+        for reported in [10, 1 << 40] {
+            let mut probe = Probe::new(Cursor::new(Vec::new()));
+            probe.endless = true;
+            probe.reported = Some(reported);
+            let out = read_capped_from(&mut probe).expect("read");
+            assert!(
+                probe.taken <= READ_CAPPED_BOUND,
+                "reported {reported}: took {} > {READ_CAPPED_BOUND}",
+                probe.taken
+            );
+            assert!(out.contains("bytes omitted"), "reported {reported}");
+        }
+
+        let small = "hello\n".repeat(100);
+        let mut probe = Probe::new(Cursor::new(small.clone().into_bytes()));
+        assert_eq!(read_capped_from(&mut probe).expect("read"), small);
+        assert_eq!(probe.taken, small.len());
     }
 
     // New: the PATH scan finds a real binary and rejects a name that is not one.
