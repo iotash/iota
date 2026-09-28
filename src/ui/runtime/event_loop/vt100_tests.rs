@@ -2115,6 +2115,12 @@ fn the_next_output_follows_the_transcript_after_a_drag() {
         last_old + 1,
         "the next output follows line-11 directly:\n{dump}"
     );
+    assert!(
+        (0..6).all(|i| all
+            .get(first_new + i)
+            .is_some_and(|r| r.contains(&format!("next-{i}")))),
+        "next-0..5 land on consecutive rows, in order:\n{dump}"
+    );
     let composer = screen.iter().position(|r| r.contains('❯')).unwrap();
     assert_eq!(composer, screen.len() - 3, "the frame stays flush:\n{dump}");
 }
