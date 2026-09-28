@@ -128,7 +128,8 @@ pub type JobSink = Box<dyn Fn(JobDone) + Send + Sync>;
 
 /// Called with the whole running set — oldest first — whenever it changes: a job started or adopted, a
 /// job finished (BEFORE its notice is delivered, so the row that lists it is gone by the time the notice
-/// is read). Never called from under the registry's lock.
+/// is read). Never called from under the registry's lock; calls are serialized, each with a set taken after
+/// the previous call's, so the last call heard is always the set as it stands.
 pub type JobWatch = Box<dyn Fn(Vec<JobInfo>) + Send + Sync>;
 
 /// Why [`Jobs::start_child`] produced no child.
@@ -210,6 +211,10 @@ pub struct Jobs {
     /// `<temp>/iota-jobs/<pid>` — this process's log directory.
     dir: PathBuf,
     state: Mutex<State>,
+    /// Held from a watch call's snapshot to its return. Without it two tasks on two workers can each take a
+    /// snapshot and deliver them in the opposite order, leaving the listing on the older set — a job
+    /// running under an idle `/jobs`, status row and host — until the set next changes.
+    watch_order: Mutex<()>,
     /// Woken whenever a job lands in `finished` or the last runner leaves.
     done: tokio::sync::Notify,
 }
@@ -221,6 +226,7 @@ impl Jobs {
         Arc::new(Self {
             dir: temp.join(JOBS_DIR).join(std::process::id().to_string()),
             state: Mutex::new(State::default()),
+            watch_order: Mutex::new(()),
             done: tokio::sync::Notify::new(),
         })
     }
@@ -247,6 +253,7 @@ impl Jobs {
     /// Installs (or, with `None`, removes) the interactive listing seam. A watch installed while jobs are
     /// already running hears about them at once.
     pub fn set_watch(&self, watch: Option<JobWatch>) {
+        let _order = crate::sync::lock(&self.watch_order);
         let (watch, running) = {
             let mut st = self.lock();
             st.watch = watch.map(Arc::new);
@@ -261,6 +268,7 @@ impl Jobs {
 
     /// Tells the watch, if any, what is running now.
     fn notify_watch(&self) {
+        let _order = crate::sync::lock(&self.watch_order);
         let (watch, running) = {
             let st = self.lock();
             (st.watch.clone(), st.snapshot())
