@@ -436,13 +436,17 @@ fn is_executable(p: &Path) -> bool {
 
 /// The most bytes one [`read_capped`] takes from its file, however big the file is or however fast it
 /// grows while being read: the whole-file attempt ([`MAX_OUTPUT_BYTES`] + 1, the one byte saying "more")
-/// and then the tail. Every read is a `take` under this; the file's reported size only picks the path.
+/// and then the tail. Every read is a `take` under this. The first end-seek's size only picks the path;
+/// the second one's (after the head) sets where the tail starts and the omission count.
 pub const READ_CAPPED_BOUND: usize = MAX_OUTPUT_BYTES + 1 + TAIL_BYTES;
 
 /// Reads `path` under the byte caps: the whole file up to [`MAX_OUTPUT_BYTES`], else its head and its tail
-/// with the omission marker between them — byte-identical to what [`truncate_output`]'s byte cap would
-/// produce for the same content when the file holds still while it is read. A file that grows, shrinks or
-/// misreports its end mid-read gets a snapshot of its head and some tail, not that exact text.
+/// with the omission marker between them — the same bytes [`truncate_output`]'s BYTE cap alone would
+/// produce for the same content when the file holds still while it is read. It applies no line cap: over
+/// [`MAX_OUTPUT_LINES`] lines it is not `truncate_output`'s result, and the callers (`shell/jobs.rs`) pass
+/// it through `truncate_output` for that. A file that grows, shrinks or misreports its end mid-read gets a
+/// snapshot of its head and a tail as of the second end-seek (possibly empty, and not necessarily the
+/// file's final end), not that exact text, and its omission count follows that seek.
 ///
 /// One bounded snapshot, never a stream: every read is a `take`, so a background job that wrote gigabytes —
 /// or is still writing — costs the reader one open and at most [`READ_CAPPED_BOUND`] bytes.
@@ -450,8 +454,9 @@ pub fn read_capped(path: &Path) -> std::io::Result<String> {
     read_capped_from(&mut std::fs::File::open(path)?)
 }
 
-/// [`read_capped`] over any seekable reader. The size the end-seek reports is a hint, not a bound (the
-/// file can grow after it): it only skips the whole-file attempt when the file is already over the cap.
+/// [`read_capped`] over any seekable reader. The size the first end-seek reports is a hint, not a bound
+/// (the file can grow after it): it only skips the whole-file attempt when the file is already over the
+/// cap. The second end-seek decides the tail's offset and the omitted count.
 pub(crate) fn read_capped_from<R: std::io::Read + std::io::Seek>(
     f: &mut R,
 ) -> std::io::Result<String> {

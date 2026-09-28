@@ -650,11 +650,12 @@ impl<W: Write> InlineTerminal<W> {
 
     /// Hands the operation's bytes — or a whole batch's, at its outermost end — to the
     /// terminal in one write. A write longer than [`SYNC_MIN`] goes out as one DEC 2026
-    /// synchronized update (`ESC[?2026h … ESC[?2026l`): the transport splits it, and an
+    /// synchronized update (`ESC[?2026h … ESC[?2026l`): the transport may split it, and an
     /// emulator that knows the mode shows the screen before the block or after it, never a
-    /// half-drawn panel in between. A shorter write arrives in one read and goes out bare —
-    /// there is no in-between to hide, and a terminal that repaints a whole pane per block
-    /// (tmux 3.7) pays nothing for typing or streaming. Sent blind, like crossterm's
+    /// half-drawn panel in between. A shorter write goes out bare — it usually lands in one
+    /// read (the threshold is empirical, not a promise about how the other side reads), and a
+    /// terminal that repaints a whole pane per block (tmux 3.7) pays nothing for typing or
+    /// streaming. Sent blind, like crossterm's
     /// `BeginSynchronizedUpdate`; the criterion is the size, never the terminal. Inside a batch
     /// the bytes wait for its end.
     fn commit(&mut self) -> io::Result<()> {
@@ -676,10 +677,13 @@ impl<W: Write> InlineTerminal<W> {
     }
 }
 
-/// The longest write that goes out without a synchronized update: the smallest read block a
-/// transport splits a write into — the macOS pty's (1024 B, measured; Linux reads 4096, a TCP
-/// segment carries ~1448), so a write this size or smaller reaches the terminal whole. A
-/// property of the transport, not a terminal, and not a knob (X-55).
+/// The longest write that goes out without a synchronized update — an empirical threshold, not
+/// a transport guarantee: the macOS pty's read block (1024 B, measured; Linux reads 4096, a TCP
+/// segment carries ~1448), so a write this size or smaller usually lands in one read. Nothing
+/// here controls how many bytes the receiving side reads at once (`write_all` promises no single
+/// write; TCP keeps no application write boundary, RFC 9293 §3.7): small writes keep the reads
+/// few, large ones ask a DEC 2026 terminal to present them at once. Chosen by size, never by
+/// terminal, and not a knob (X-55).
 pub(crate) const SYNC_MIN: usize = 1024;
 
 /// DEC private mode 2026, synchronized output: begin and end of one update.

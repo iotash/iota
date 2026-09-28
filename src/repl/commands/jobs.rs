@@ -214,7 +214,8 @@ pub(crate) fn log_tail(path: &Path) -> Vec<String> {
 /// The page's lines as of now over `tail`, the log's latest snapshot ([`follow_tail`]): the clock, and
 /// the job's end — if it has ended ([`Jobs::ended`], a registry read) — in the clock's place. What the
 /// page opens with and what each tick brings. The log file is not opened here, so the UI loop runs it
-/// (the wall clock, `Zoned::now`, may still read the time-zone database, as it always has).
+/// (the wall clock, `Zoned::now`, may still read the time-zone database synchronously — on the UI loop,
+/// as it always has).
 pub(crate) fn page_lines(
     jobs: &Jobs,
     job: &JobInfo,
@@ -242,7 +243,9 @@ pub(crate) async fn read_tail(path: PathBuf) -> Vec<String> {
 /// Keeps `tail` the log at `path`'s latest snapshot while the detail page is open: one [`read_tail`] a
 /// refresh period, until `stop` (the page closed) and only then. The job's end is the verdict's, never
 /// the reads': [`Jobs::ended`] says the leader exited, not that every writer closed the log — a child it
-/// left in the background can still write to it, and the page keeps showing that.
+/// left in the background can still write to it, and the page keeps showing that. The tail the page shows
+/// is usually about a period old, but that is no bound: the read's own time, the phases of this timer and
+/// the page's refresh tick, and scheduling all add to it.
 pub(crate) async fn follow_tail(
     path: PathBuf,
     tail: Arc<Mutex<Vec<String>>>,

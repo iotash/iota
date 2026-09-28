@@ -32,8 +32,9 @@
 //!   anchor); and a DSR that fails costs the floor, not the anchor (no fallback row).
 //! - **W6**: `insert_before` height comes from `Paragraph::line_count(width)` of the
 //!   SAME `Paragraph` rendered into the buffer (feature `unstable-rendered-line-info`), at
-//!   the width the terminal has now — never a second source of truth. The region pre-wraps
-//!   every entry to ≤ width−1, so that is one row an entry; a row laid out for a wider
+//!   the width the terminal has now — never a second source of truth. The region hard-wraps
+//!   an entry wider than the screen to width−1 and passes the rest (≤ width) through
+//!   untouched, so that is one row an entry; a row laid out for a wider
 //!   terminal just before a narrowing takes its wrapped rows, nothing cut. This
 //!   self-consistency is what kills Go's `sanitizeOverflow` (T-01).
 //!
@@ -158,9 +159,10 @@ impl<W: Write> Term<W> {
     ///    the pieces of the frame's own full-width rows that wrapped (a separator, a staged
     ///    row) — is NOT claimed: whether an emulator reflows at all cannot be asked, and a
     ///    guess that it did would erase transcript rows on one that does not. Those pieces
-    ///    stay as a duplicate above the frame — the budget of X-52's residual (1): at most
-    ///    one separator piece on a drag's first step, the staged rows that wrapped besides
-    ///    on a jump of 2× or more.
+    ///    stay as a duplicate above the frame — X-52's residual (1), measured per terminal
+    ///    since B3: the staged rows that wrapped, no separator piece (a one-column drag: 3 in
+    ///    tmux 3.7c, 2 in herdr and Ghostty; a ≥ 2× narrowing: 3 in tmux, 4 in herdr and
+    ///    Ghostty — above the frozen ≤ 2, ARCHITECTURE §12).
     /// 2. **The floor.** The ONE DSR, before any byte is written, says where that row is:
     ///    `start = cursor − c`. A frame that was flush with the bottom stays flush:
     ///    `top = S' − new_h`. An emulator keeps its last row on the bottom through a reflow
@@ -254,7 +256,8 @@ impl<W: Write> Term<W> {
         let width = self.t.size().width.max(1);
         let lines: Vec<Line<'static>> = rows.iter().map(|r| ansi_to_spans(r)).collect();
         // W6: the height is what the SAME paragraph measures at the terminal's width NOW. The
-        // region pre-wraps to ≤ width−1, so that is one row an entry — except for rows laid out
+        // region wraps only entries wider than the screen (to width−1), so that is one row an
+        // entry — except for rows laid out
         // for a wider terminal just before a narrowing: the drag's last resize pass waits for
         // the burst to end (`RESIZE_QUIET`), and a row committed meanwhile (the user's block
         // on Enter, a streamed line) is still the old width when it is inserted. Measured, it
@@ -267,7 +270,8 @@ impl<W: Write> Term<W> {
         // does not move — only what the band cannot hold is inserted (and scrolls anything).
         // A row inserted past a band that is still open would sit between it and the frame,
         // and the band's next consumer (`close_band`'s `DL`, the next `fill_above`,
-        // `grow_up`) would take it for a blank one.
+        // `grow_up`) would take it for a blank one — LOST (the band invariant, ARCHITECTURE
+        // §12).
         let pad = self.pad.min(self.top());
         let k = pad.min(total);
         if k > 0 {

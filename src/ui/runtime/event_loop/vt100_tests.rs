@@ -539,15 +539,16 @@ fn sync_pairs(bytes: &[u8]) -> (usize, bool) {
     (pairs, !nested && !open)
 }
 
-/// DEC 2026 by SIZE (X-55): a write the transport cannot split — at most `SYNC_MIN` bytes, one
-/// pty read — goes out bare: a keystroke's composer redraw, a one-line insert, a height change,
-/// a clear, a whole small batch, an OSC. A write larger than that goes out as exactly ONE
-/// synchronized update around all its bytes: a 12-line insert of wide rows, a `/model`-sized
-/// frame opening (the height change and the draw in one batch). The criterion is the size of
-/// what one `write_all` carries, never the terminal; vt100 ignores the mode, so every replay
-/// in this file runs through the same bytes.
+/// DEC 2026 by SIZE (X-55) — the threshold's choice and the pairing, not a transport claim: a
+/// write of at most `SYNC_MIN` bytes goes out bare: a keystroke's composer redraw, a one-line
+/// insert, a height change, a clear, a whole small batch, an OSC. A write larger than that goes
+/// out as exactly ONE synchronized update around all its bytes: a 12-line insert of wide rows, a
+/// `/model`-sized frame opening (the height change and the draw in one batch). The criterion is
+/// the size of what one `write_all` carries, never the terminal. Whether a transport splits a
+/// write is not tested here (nothing can pin it), and vt100 ignores the mode, so every replay in
+/// this file runs through the same bytes.
 #[test]
-fn a_write_is_one_synchronized_update_exactly_when_the_transport_would_split_it() {
+fn a_write_is_one_synchronized_update_exactly_when_it_is_longer_than_sync_min() {
     use crate::ui::runtime::inline_term::SYNC_MIN;
     let (mut t, buf, _geo) = direct_term(4, 20);
     let view = |rows: Vec<String>, cursor: (u16, u16)| crate::ui::render::frame::FrameView {
