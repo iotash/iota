@@ -21,10 +21,11 @@ use std::{
 use iota::provider::model::JsonObject;
 use iota::shell::exec;
 use iota::shell::exec::{
-    CappedBuffer, HEAD_BYTES, MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES, Options, Outcome, RunResult,
-    Sandbox, TAIL_BYTES, truncate_output, writable_paths,
+    HEAD_BYTES, MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES, Options, Outcome, RunResult, Sandbox,
+    TAIL_BYTES, read_capped, truncate_output, writable_paths,
 };
 use iota::shell::interp::{Family, Interpreter};
+use iota::shell::jobs::{CallEnd, Jobs};
 use iota::tool::Registry;
 use iota::tool::builtins::shell::{
     BASH_DESC_PREFIX, CMD_DESC_PREFIX, PWSH_DESC_PREFIX, SHELL_DESC_SANDBOXED,
@@ -86,14 +87,15 @@ fn raw_tools(yaml: &str) -> ToolsConfig {
     serde_norway::from_str::<Raw>(yaml).expect("yaml").tools
 }
 
-/// An `ToolEnv` rooted in a temp project (the host shape: project root + injected host dirs, never the process
-/// environment).
+/// An `ToolEnv` rooted in a temp project (the host shape: project root + injected host dirs + the run's job
+/// registry, never the process environment).
 fn shell_env() -> (TempDir, ToolEnv, PathBuf) {
     let (dir, dirs) = temp_project(&[]);
     let root = dir.path().to_path_buf();
     let env = ToolEnv {
         project_root: Some(root.clone()),
         dirs,
+        jobs: Some(Jobs::new(dir.path())),
         ..ToolEnv::default()
     };
     (dir, env, root)
@@ -179,7 +181,18 @@ async fn sandbox_runs(sb: &Sandbox, dir: &Path) -> bool {
 
 /// `shell.Run` under a token nobody cancels.
 async fn run(opts: Options) -> RunResult {
-    exec::run(&CancellationToken::new(), opts).await
+    run_under(&CancellationToken::new(), opts).await
+}
+
+/// One call the way the `shell` tool makes it — through a job registry, its output in a log file read back
+/// under the caps — with a window no test reaches, so it always ends in the foreground.
+async fn run_under(cancel: &CancellationToken, opts: Options) -> RunResult {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let window = Duration::from_secs(3600);
+    match Jobs::new(dir.path()).run(cancel, &opts, window).await {
+        CallEnd::Ended(res) => res,
+        other => panic!("the call outlived its window: {other:?}"),
+    }
 }
 #[tokio::test]
 async fn the_shell_tool_runs_a_command_and_reports_its_output_and_status() {
@@ -270,8 +283,8 @@ async fn shell_timeout_argument_caps_the_call() {
     }
 }
 
-/// The shell set over a temp project root WITH a job registry bound (what both entry points build).
-fn new_shell_with_jobs(cfg_yaml: &str) -> (TempDir, Arc<iota::shell::jobs::Jobs>, Arc<dyn Tool>) {
+/// The shell set over a temp project root, with the job registry it runs through.
+fn new_shell_with_jobs(cfg_yaml: &str) -> (TempDir, Arc<Jobs>, Arc<dyn Tool>) {
     new_shell_yielding_after(cfg_yaml, None)
 }
 
@@ -279,10 +292,9 @@ fn new_shell_with_jobs(cfg_yaml: &str) -> (TempDir, Arc<iota::shell::jobs::Jobs>
 fn new_shell_yielding_after(
     cfg_yaml: &str,
     window: Option<Duration>,
-) -> (TempDir, Arc<iota::shell::jobs::Jobs>, Arc<dyn Tool>) {
+) -> (TempDir, Arc<Jobs>, Arc<dyn Tool>) {
     let (dir, mut env, _root) = shell_env();
-    let jobs = iota::shell::jobs::Jobs::new(dir.path());
-    env.jobs = Some(Arc::clone(&jobs));
+    let jobs = env.jobs.clone().expect("shell_env binds a registry");
     env.shell_yield = window;
     let tools = new_shell_set(&env, node(cfg_yaml).as_ref()).expect("shell set");
     (dir, jobs, Arc::clone(&tools[0]))
@@ -414,7 +426,7 @@ async fn shell_background_returns_a_receipt_and_keeps_running() {
 }
 
 // The argument checks are the foreground ones, in the same order: a bad `timeout` is refused before
-// anything is started, and a run with no registry refuses rather than silently blocking the turn.
+// anything is started.
 #[tokio::test]
 async fn shell_background_keeps_the_argument_rules() {
     let (_dir, jobs, tool) = new_shell_with_jobs("sandbox: off\nauto_run: true\n");
@@ -431,15 +443,6 @@ async fn shell_background_keeps_the_argument_rules() {
 
     let (out, is_err) = call(&tool, json!({"command": "  ", "background": true})).await;
     assert!(is_err && out.contains("missing required argument"), "{out}");
-
-    // Without the host seam a background call is refused, never run in the foreground — the model asked
-    // NOT to wait for it.
-    let (_dir, _root, seamless) = new_shell("sandbox: off\nauto_run: true\n");
-    let (out, is_err) = call(&seamless, json!({"command": "true", "background": true})).await;
-    assert_eq!(
-        (out.as_str(), is_err),
-        ("background jobs are not available in this run", true)
-    );
 }
 
 // The header names the mode: a row that settles while its command is still going has to say so.
@@ -547,6 +550,13 @@ fn a_bad_shell_config_names_its_fault() {
     ] {
         assert!(new_shell_set(&env, node(cfg).as_ref()).is_ok(), "{cfg:?}");
     }
+
+    // Every call runs through the run's job registry, so a host that bound none gets no set.
+    let bare = ToolEnv { jobs: None, ..env };
+    let Err(err) = new_shell_set(&bare, None) else {
+        panic!("a shell set without a job registry must not build");
+    };
+    assert_eq!(err, SetError::NoJobs);
 }
 #[tokio::test]
 async fn a_shell_key_enables_the_shell_tool() {
@@ -715,7 +725,7 @@ async fn cancelling_a_run_kills_the_whole_process_tree() {
         token.cancel();
     });
     let start = Instant::now();
-    let res = exec::run(
+    let res = run_under(
         &cancel,
         Options {
             command: "sleep 30 & sleep 30 & wait".to_owned(),
@@ -749,7 +759,7 @@ async fn cancelling_a_sandboxed_run_kills_the_whole_process_tree() {
     });
     let start = Instant::now();
     // The group kill must reach THROUGH the wrapper: the direct child is sandbox-exec / bwrap.
-    let res = exec::run(
+    let res = run_under(
         &cancel,
         Options {
             command: "sleep 30".to_owned(),
@@ -785,7 +795,7 @@ async fn a_background_child_does_not_wedge_the_run() {
     let elapsed = start.elapsed();
     assert!(
         elapsed < Duration::from_secs(15),
-        "run with a lingering child took {elapsed:?}, want the WaitDelay bound"
+        "run with a lingering child took {elapsed:?}, want a prompt return"
     );
     assert!(
         res.outcome == Outcome::Exited(0) && res.output.contains("started"),
@@ -851,7 +861,7 @@ async fn a_run_cancelled_before_it_starts_reports_cancelled() {
     let dir = tempfile::tempdir().expect("tempdir");
     let cancel = CancellationToken::new();
     cancel.cancel();
-    let res = exec::run(
+    let res = run_under(
         &cancel,
         Options {
             command: "echo hi".to_owned(),
@@ -958,6 +968,7 @@ async fn the_sandbox_lets_iota_itself_out_and_nothing_else() {
             cache: sb.cache_dir.clone(),
             exe: Some(exe.clone()),
         },
+        jobs: Some(Jobs::new(dir.path())),
         ..ToolEnv::default()
     };
     let shell_set = |cfg: &str| {
@@ -1144,32 +1155,32 @@ fn truncate_output_keeps_head_and_tail_and_says_what_it_dropped() {
     assert_eq!(truncate_output("short output"), "short output");
 }
 #[test]
-fn the_capped_buffer_stops_at_its_cap() {
-    let mut b = CappedBuffer::default();
-    b.write(b"start-");
-    let chunk = "x".repeat(8 * 1024);
+fn a_log_is_read_back_under_the_caps() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let log = dir.path().join("big.log");
+    let mut big = String::from("start-");
     for _ in 0..40 {
-        // ~320KB through a ~52KB window
-        b.write(chunk.as_bytes());
+        // ~320KB read back through a ~30KB window
+        big.push_str(&"x".repeat(8 * 1024));
     }
-    b.write(b"-end");
-    let out = b.into_string();
+    big.push_str("-end");
+    fs::write(&log, &big).expect("write the log");
+    let out = read_capped(&log).expect("read the log");
     assert!(
         out.starts_with("start-") && out.ends_with("-end"),
-        "stream head/tail not preserved"
+        "log head/tail not preserved"
     );
     assert!(out.contains("bytes omitted"), "missing omission marker");
     assert!(
         out.len() <= HEAD_BYTES + TAIL_BYTES + 64,
-        "reassembled {} bytes, want ≈ head+tail",
+        "read back {} bytes, want ≈ head+tail",
         out.len()
     );
+    assert_eq!(out, truncate_output(&big), "the log and a string cap alike");
 
-    // Small writes pass through exactly.
-    let mut s = CappedBuffer::default();
-    s.write(b"hello ");
-    s.write(b"world");
-    assert_eq!(s.into_string(), "hello world");
+    // A small log comes back exactly.
+    fs::write(&log, "hello world").expect("write the log");
+    assert_eq!(read_capped(&log).expect("read the log"), "hello world");
 }
 #[tokio::test]
 async fn a_runs_output_is_capped() {
@@ -1225,7 +1236,7 @@ async fn run_deadline_and_cancel_are_exclusive() {
         tokio::time::sleep(Duration::from_millis(200)).await;
         token.cancel();
     });
-    let res = exec::run(
+    let res = run_under(
         &cancel,
         Options {
             command: "sleep 30".to_owned(),

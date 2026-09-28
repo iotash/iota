@@ -67,11 +67,6 @@ pub const SHELL_YIELD_ENV: &str = "IOTA_SHELL_YIELD";
 /// number the model chose, whatever it is.
 const TIMEOUT_ERR: &str = "timeout must be a positive number of seconds";
 
-/// The refusal a `background` call gets when the run has no job registry (tests only — both entry points
-/// bind one). Running it in the FOREGROUND instead would hold the turn for as long as the model asked to be
-/// free of it, which is the opposite of what it requested.
-const NO_JOBS_ERR: &str = "background jobs are not available in this run";
-
 /// The mark a call header and its approval prompt carry when the command is iota itself and the set is
 /// sandboxed: the one thing the user is being asked about is that this call runs where the others do not.
 pub const OUTSIDE_SANDBOX_MARK: &str = "(outside the sandbox)";
@@ -109,9 +104,8 @@ pub(crate) struct ShellTool {
     /// The interpreter its calls run under, resolved ONCE at assembly so the description cannot describe a
     /// different shell from the one the first call finds.
     shell: Interpreter,
-    /// The run's background-job registry (`ToolEnv.jobs`); None in a test env, where a call runs in the
-    /// foreground to its end as it did before jobs existed.
-    jobs: Option<Arc<Jobs>>,
+    /// The run's background-job registry (`ToolEnv.jobs`): every call runs through it, foreground or not.
+    jobs: Arc<Jobs>,
     /// The foreground window ([`SHELL_YIELD`], or what [`SHELL_YIELD_ENV`] said).
     yield_after: Duration,
     root: PathBuf,
@@ -127,7 +121,8 @@ pub(crate) struct ShellTool {
 }
 
 /// Decode → `ShellConfig(err)`; sandbox "" → "auto"; not auto|off → `BadSandbox`; `sandboxed = sandbox == "auto"
-/// && exec::available()` evaluated ONCE — and so is the interpreter (`crate::shell::interp::resolve`).
+/// && exec::available()` evaluated ONCE — and so is the interpreter (`crate::shell::interp::resolve`); then
+/// no job registry → `NoJobs`, since every call runs through it.
 ///
 /// A machine with no interpreter at all is the one case where the set refuses: on Windows, where that means
 /// neither Git Bash nor PowerShell nor `cmd.exe` is reachable, a registered tool would spend the model's
@@ -150,12 +145,13 @@ pub fn new_shell_set(
         Err(e) if cfg!(windows) => return Err(SetError::NoShell(e.to_string())),
         Err(_) => Interpreter::new("bash"),
     };
+    let jobs = env.jobs.clone().ok_or(SetError::NoJobs)?;
     // A sandbox binary appearing or disappearing later has no effect on this run.
     let sandboxed = shell_cfg.sandbox == "auto" && exec::available();
     Ok(vec![Arc::new(ShellTool {
         shell_cfg,
         shell,
-        jobs: env.jobs.clone(),
+        jobs,
         yield_after: env.shell_yield.unwrap_or(SHELL_YIELD),
         root: env.root().unwrap_or_default(),
         cwd: env
@@ -238,33 +234,24 @@ impl Tool for ShellTool {
                 timeout,
                 sandbox,
             };
-            let background = bool_arg(args, "background", false);
-            let Some(jobs) = self.jobs.as_ref() else {
-                // No registry (tests): a background call is refused rather than run in the foreground —
-                // that would hold the turn for as long as the model asked to be free of it — and a
-                // foreground call runs to its end, as it did before jobs existed.
-                if background {
-                    return Ok(ToolOutput::err(NO_JOBS_ERR));
-                }
-                let res = exec::run(&cx.cancel, opts).await;
-                return Ok(format_result(&res, timeout));
-            };
-            if background {
-                return Ok(self.start_background(cx, jobs, &opts));
+            if bool_arg(args, "background", false) {
+                return Ok(self.start_background(cx, &opts));
             }
-            Ok(match jobs.run(&cx.cancel, &opts, self.yield_after).await {
-                CallEnd::Ended(res) => format_result(&res, timeout),
-                CallEnd::Waited(res) => {
-                    let mut out = format_result(&res, timeout);
-                    out.text = format!("{}\n{}", waited_note(), out.text);
-                    out
-                }
-                CallEnd::Yielded { start, output } => {
-                    post_artifact(cx, job_artifact(&start.id, Some(self.yield_after), &output));
-                    let tail = self.shell.tail_command(&start.output_path);
-                    ToolOutput::ok(yield_receipt(self.yield_after, &start, &output, &tail))
-                }
-            })
+            Ok(
+                match self.jobs.run(&cx.cancel, &opts, self.yield_after).await {
+                    CallEnd::Ended(res) => format_result(&res, timeout),
+                    CallEnd::Waited(res) => {
+                        let mut out = format_result(&res, timeout);
+                        out.text = format!("{}\n{}", waited_note(), out.text);
+                        out
+                    }
+                    CallEnd::Yielded { start, output } => {
+                        post_artifact(cx, job_artifact(&start.id, Some(self.yield_after), &output));
+                        let tail = self.shell.tail_command(&start.output_path);
+                        ToolOutput::ok(yield_receipt(self.yield_after, &start, &output, &tail))
+                    }
+                },
+            )
         })
     }
 
@@ -332,8 +319,8 @@ impl ShellTool {
     /// Hands the command to the job registry and answers with the receipt the model needs to follow it: the
     /// id the notice will carry, the pid, and the file it can `tail` meanwhile. The transcript learns of
     /// the job through the artifact slot, as it does for a yield, so its group summary counts it.
-    fn start_background(&self, cx: &RunCtx, jobs: &Arc<Jobs>, opts: &Options) -> ToolOutput {
-        match jobs.spawn(opts) {
+    fn start_background(&self, cx: &RunCtx, opts: &Options) -> ToolOutput {
+        match self.jobs.spawn(opts) {
             Err(e) => ToolOutput::err(e.to_string()),
             Ok(JobStart {
                 id,

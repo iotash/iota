@@ -6,27 +6,23 @@
 //! `cmd.exe` that the machine has. Everything below is the same code either way — an interpreter is a
 //! program plus the arguments that precede the script.
 //!
-//! The three stages are separate so a background job (`crate::shell::jobs`) can reuse the first two without
-//! the third: [`spawn`] starts the child (sandbox, working directory, `setpgid`, one destination for fd 1 and
-//! fd 2), [`Started::wait`] supervises it (deadline, cancellation, `killpg`, the bounded reap), and only the
-//! in-memory [`Capture::Memory`] destination collects output at all. [`run`] is those three in a row — the
-//! foreground call, unchanged.
+//! Two stages, both driven by the job registry (`crate::shell::jobs`), which is the only caller: [`spawn`]
+//! starts the child (sandbox, working directory, `setpgid`, one log file for fd 1 and fd 2), and
+//! [`Started::wait`] supervises it (deadline, cancellation, `killpg`, the bounded reap). The output is never
+//! collected here — the file has it, and [`read_capped`] reads it back under the caps.
 //!
 //! Two of those stages are the OS's, not ours, so they are the only things this module forks by platform
 //! (`Child`, `spawn_supervised`, `Started::kill_tree`, `kill_group`): Unix keeps `setpgid` +
 //! `killpg(SIGKILL)` verbatim, Windows gets the twin primitive — a Job Object, whose `TerminateJobObject`
-//! kills the whole tree — through `process-wrap`. Everything else (the caps, the single combined pipe, the
-//! deadline, the bounded reap) is the same code on both, because `std::io::pipe` is.
+//! kills the whole tree — through `process-wrap`. Everything else (the caps, the single combined log, the
+//! deadline, the bounded reap) is the same code on both.
 
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{Arc, Mutex, MutexGuard},
     time::{Duration, Instant},
 };
 
-#[cfg(unix)]
-use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
 /// The supervised child: a plain tokio child in its own process group on Unix, and on Windows one wrapped in
@@ -50,11 +46,8 @@ pub const MAX_OUTPUT_LINES: usize = 512;
 pub(crate) const HEAD_LINES: usize = 128;
 /// Lines kept from the tail when the line cap trips.
 pub(crate) const TAIL_LINES: usize = 384;
-/// How long to wait for the pipe to drain after the child exits (Go `WaitDelay`).
+/// How long to wait for a killed child to be reaped (Go `WaitDelay`).
 pub(crate) const WAIT_DELAY: Duration = Duration::from_secs(3);
-
-/// Size of one read from the child's pipe.
-const READ_CHUNK: usize = 8 * 1024;
 
 /// The sandbox a command runs in.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -98,32 +91,14 @@ pub enum ShellError {
     Spawn(String),
 }
 
-/// What a foreground run produced: the capped, combined stdout/stderr and how the child ended.
+/// What a call that ended in the foreground produced: the capped, combined stdout/stderr and how the child
+/// ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunResult {
     /// Combined, capped stdout/stderr.
     pub output: String,
     /// How it ended.
     pub outcome: Outcome,
-}
-
-impl RunResult {
-    /// A result carrying nothing but the outcome (shell.go:71,84 — no output was produced).
-    fn without_output(outcome: Outcome) -> Self {
-        Self {
-            output: String::new(),
-            outcome,
-        }
-    }
-}
-
-/// Where a child's combined stdout/stderr goes.
-pub enum Capture {
-    /// A capped in-memory buffer, read back by [`Started::into_output`] — the foreground `bash` call.
-    Memory,
-    /// Appended straight to this file, UNCAPPED — a background job's log, which the reader caps when it
-    /// reads it back.
-    File(std::fs::File),
 }
 
 /// Why [`spawn`] produced no child.
@@ -136,16 +111,13 @@ pub enum SpawnFail {
     Failed(ShellError),
 }
 
-/// A started child: the handle to wait on, its process-group leader, and the in-memory sink when the
-/// output is captured.
+/// A started child: the handle to wait on and its process-group leader.
 pub struct Started {
     child: Child,
     /// The group leader — what `kill_group` signals. Public so a supervisor outside this module (the job
     /// registry) can kill the tree without awaiting anything. On Windows it names the child but cannot reach
     /// its tree: see `kill_group`.
     pub pid: Option<i32>,
-    reader: Option<tokio::task::JoinHandle<()>>,
-    buf: Option<Arc<Mutex<CappedBuffer>>>,
     /// When the child was spawned. The deadline [`Started::wait`] enforces is measured from HERE, not from
     /// the call that waits: a wait that is resumed (a foreground call the registry could not let go of)
     /// or handed on (a job adopted after its yield) never restarts the clock.
@@ -167,13 +139,13 @@ pub enum Outcome {
     Failed(ShellError),
 }
 
-/// Starts `opts.command` under the resolved interpreter, in its own process group, with fd 1 and fd 2 joined
-/// into `capture` (shell.go:69-96). The order of the refusals is Go's: no interpreter → sandbox → a done
+/// Starts `opts.command` under the resolved interpreter, in its own process group, with fd 1 and fd 2 both
+/// appended to `log` — UNCAPPED; [`read_capped`] caps it when it reads it back (shell.go:69-96). The order of the refusals is Go's: no interpreter → sandbox → a done
 /// token → the spawn itself.
 pub fn spawn(
     cancel: &CancellationToken,
     opts: &Options,
-    capture: Capture,
+    log: std::fs::File,
 ) -> Result<Started, SpawnFail> {
     let fail = |e: ShellError| SpawnFail::Failed(e);
     // The interpreter is resolved per call, like Go's exec.LookPath (shell.go:69-72).
@@ -210,49 +182,17 @@ pub fn spawn(
     cmd.kill_on_drop(false);
 
     // ONE destination for fd 1 and fd 2, like Go's shared cappedBuffer: interleaving is preserved in write
-    // order either way. `std::io::pipe` is the portable spelling of what `nix::unistd::pipe` gave us — the
-    // same `pipe(2)`, now with `O_CLOEXEC`, so the read end no longer leaks into the child as a stray fd.
-    let sink = match capture {
-        Capture::File(file) => {
-            let dup = file
-                .try_clone()
-                .map_err(|e| fail(ShellError::Spawn(e.to_string())))?;
-            cmd.stdout(Stdio::from(file));
-            cmd.stderr(Stdio::from(dup));
-            None
-        }
-        Capture::Memory => {
-            let (rx, tx) = std::io::pipe().map_err(|e| fail(ShellError::Spawn(e.to_string())))?;
-            let tx_dup = tx
-                .try_clone()
-                .map_err(|e| fail(ShellError::Spawn(e.to_string())))?;
-            cmd.stdout(Stdio::from(tx));
-            cmd.stderr(Stdio::from(tx_dup));
-            Some(rx)
-        }
-    };
-
-    // The reader is armed BEFORE the child exists, as it was when the pipe end went straight to the
-    // reactor: a failure here must not leave a running child nobody reaps. It cannot hang waiting for a
-    // spawn that never happens either — `cmd` still owns the parent's copies of the write end, and
-    // dropping it (which `spawn_supervised` does, success or failure, by taking it BY VALUE) is exactly
-    // what lets this task see EOF.
-    let (reader, buf) = match sink {
-        None => (None, None),
-        Some(rx) => {
-            let buf = Arc::new(Mutex::new(CappedBuffer::default()));
-            let task = start_drain(rx, Arc::clone(&buf))
-                .map_err(|e| fail(ShellError::Spawn(e.to_string())))?;
-            (Some(task), Some(buf))
-        }
-    };
+    // order.
+    let dup = log
+        .try_clone()
+        .map_err(|e| fail(ShellError::Spawn(e.to_string())))?;
+    cmd.stdout(Stdio::from(log));
+    cmd.stderr(Stdio::from(dup));
     let child = spawn_supervised(cmd).map_err(|e| fail(ShellError::Spawn(e.to_string())))?;
     let pid = child.id().and_then(|p| i32::try_from(p).ok());
     Ok(Started {
         child,
         pid,
-        reader,
-        buf,
         spawned: Instant::now(),
     })
 }
@@ -264,8 +204,8 @@ impl Started {
     }
 
     /// Supervises the child to its end (shell.go:97-121): the deadline and the token race `wait()`, either
-    /// one `killpg`s the group and reaps it under Go's `WaitDelay`, and a capture reader is given the same
-    /// bounded window to drain — a background grandchild holding the pipe can never wedge the caller.
+    /// one `killpg`s the group and reaps it under Go's `WaitDelay`. A background grandchild still holding
+    /// the log cannot wedge the caller: nothing waits for the file to close.
     pub async fn wait(&mut self, cancel: &CancellationToken, timeout: Option<Duration>) -> Outcome {
         // With no window the wait can only end with the child: the `None` arm is unreachable, and the
         // fallback merely keeps the function total.
@@ -308,13 +248,6 @@ impl Started {
                 killed
             }
         };
-        if let Some(reader) = &mut self.reader
-            && tokio::time::timeout(WAIT_DELAY, &mut *reader)
-                .await
-                .is_err()
-        {
-            reader.abort();
-        }
         Some(outcome)
     }
 
@@ -329,29 +262,6 @@ impl Started {
             tracing::debug!("TerminateJobObject failed: {e}");
         }
     }
-
-    /// Everything the in-memory capture collected ([`Capture::File`] collects nothing here — the file has it).
-    pub fn into_output(self) -> String {
-        self.buf.map_or_else(String::new, |buf| {
-            std::mem::take(&mut *lock(&buf)).into_string()
-        })
-    }
-}
-
-/// The single foreground entry point: [`spawn`] with [`Capture::Memory`], [`Started::wait`], then the output
-/// caps. Order after the child finishes (shell.go:97-121): `timed_out` (deadline) → cancelled (token) →
-/// wait-delay expiry (exited, code) → Ok(0) → nonzero/signal (-1) → spawn error.
-pub async fn run(cancel: &CancellationToken, opts: Options) -> RunResult {
-    let mut started = match spawn(cancel, &opts, Capture::Memory) {
-        Ok(s) => s,
-        Err(SpawnFail::Cancelled) => return RunResult::without_output(Outcome::Cancelled),
-        Err(SpawnFail::Failed(e)) => return RunResult::without_output(Outcome::Failed(e)),
-    };
-    let outcome = started.wait(cancel, opts.timeout).await;
-    RunResult {
-        output: truncate_output(&started.into_output()),
-        outcome,
-    }
 }
 
 /// Fires after `d`, or never when the run has no deadline.
@@ -363,8 +273,7 @@ async fn deadline(d: Option<Duration>) {
 }
 
 /// Starts the child in its own process group (`setpgid`, `proc_unix.go:21`), so cancellation kills the whole
-/// tree and not just the `bash` wrapper. Takes the command by value: its copies of the pipe's write end must
-/// be gone before the reader can ever see EOF.
+/// tree and not just the `bash` wrapper.
 #[cfg(unix)]
 fn spawn_supervised(mut cmd: tokio::process::Command) -> std::io::Result<Child> {
     cmd.process_group(0);
@@ -385,59 +294,6 @@ fn spawn_supervised(cmd: tokio::process::Command) -> std::io::Result<Child> {
     wrap.wrap(JobObject);
     wrap.wrap(CreationFlags(CREATE_NO_WINDOW));
     wrap.spawn()
-}
-
-/// Puts the pipe's read end on a task that streams it into the capped buffer — one the caller can bound and
-/// abandon.
-#[cfg(unix)]
-fn start_drain(
-    rx: std::io::PipeReader,
-    buf: Arc<Mutex<CappedBuffer>>,
-) -> std::io::Result<tokio::task::JoinHandle<()>> {
-    let rx = tokio::net::unix::pipe::Receiver::from_owned_fd(std::os::fd::OwnedFd::from(rx))?;
-    Ok(tokio::spawn(drain(rx, buf)))
-}
-
-/// Windows has no reactor registration for an anonymous pipe, so the same drain is a blocking read on the
-/// blocking pool. The difference is the abandonment case: [`Started::wait`] still stops WAITING for this task
-/// after `WAIT_DELAY`, but `abort` cannot interrupt a blocking read, so the thread stays parked until the
-/// last write end closes. Bounded (one per in-flight command) and never in the caller's way.
-///
-/// The `Result` is the Unix twin's, kept so the call site is one line on both platforms; nothing here fails.
-#[cfg(windows)]
-#[allow(clippy::unnecessary_wraps)]
-fn start_drain(
-    rx: std::io::PipeReader,
-    buf: Arc<Mutex<CappedBuffer>>,
-) -> std::io::Result<tokio::task::JoinHandle<()>> {
-    Ok(tokio::task::spawn_blocking(move || {
-        use std::io::Read as _;
-        let mut rx = rx;
-        let mut chunk = vec![0u8; READ_CHUNK];
-        loop {
-            match rx.read(&mut chunk) {
-                Ok(0) | Err(_) => return,
-                Ok(n) => lock(&buf).write(&chunk[..n]),
-            }
-        }
-    }))
-}
-
-/// Streams the child's combined output into the capped buffer until EOF (or a read error).
-#[cfg(unix)]
-async fn drain(mut rx: tokio::net::unix::pipe::Receiver, buf: Arc<Mutex<CappedBuffer>>) {
-    let mut chunk = vec![0u8; READ_CHUNK];
-    loop {
-        match rx.read(&mut chunk).await {
-            Ok(0) | Err(_) => return,
-            Ok(n) => lock(&buf).write(&chunk[..n]),
-        }
-    }
-}
-
-/// The capped buffer is only ever appended to, so a poisoned lock still holds usable output.
-fn lock(buf: &Mutex<CappedBuffer>) -> MutexGuard<'_, CappedBuffer> {
-    crate::sync::lock(buf)
 }
 
 /// `kill(-pid, SIGKILL)` (proc_unix.go:22-28): the whole group dies, and an already-gone group (`ESRCH`) is
@@ -578,58 +434,9 @@ fn is_executable(p: &Path) -> bool {
     }
 }
 
-/// Head/tail byte buffer (shell.go:163-200): keeps the first `HEAD_BYTES` and the last `TAIL_BYTES`.
-#[derive(Debug, Default)]
-pub struct CappedBuffer {
-    head: Vec<u8>,
-    tail: Vec<u8>,
-    total: usize,
-}
-
-impl CappedBuffer {
-    /// Appends `p`.
-    pub fn write(&mut self, p: &[u8]) {
-        self.total += p.len();
-        let mut rest = p;
-        let room = HEAD_BYTES.saturating_sub(self.head.len());
-        if room > 0 {
-            let take = room.min(rest.len());
-            self.head.extend_from_slice(&rest[..take]);
-            rest = &rest[take..];
-        }
-        if !rest.is_empty() {
-            self.tail.extend_from_slice(rest);
-            if self.tail.len() > 2 * TAIL_BYTES {
-                self.tail = self.tail[self.tail.len() - TAIL_BYTES..].to_vec();
-            }
-        }
-    }
-
-    /// The captured text with the marker `\n[... {n} bytes omitted ...]\n` when bytes were dropped.
-    pub fn into_string(self) -> String {
-        if self.total <= self.head.len() + self.tail.len() {
-            let mut all = self.head;
-            all.extend_from_slice(&self.tail);
-            return String::from_utf8_lossy(&all).into_owned();
-        }
-        let head = trim_back_to_rune_start(&self.head);
-        let mut tail: &[u8] = &self.tail;
-        if tail.len() > TAIL_BYTES {
-            tail = &tail[tail.len() - TAIL_BYTES..];
-        }
-        let tail = trim_front_to_rune_start(tail);
-        let omitted = self.total.saturating_sub(head.len() + tail.len());
-        format!(
-            "{}\n[... {omitted} bytes omitted ...]\n{}",
-            String::from_utf8_lossy(head),
-            String::from_utf8_lossy(tail)
-        )
-    }
-}
-
-/// Reads `path` under the SAME byte caps a captured run gets: the whole file up to [`MAX_OUTPUT_BYTES`],
-/// else its head and its tail with the omission marker between them — byte-identical to what
-/// [`truncate_output`] would produce for the same content.
+/// Reads `path` under the byte caps: the whole file up to [`MAX_OUTPUT_BYTES`], else its head and its tail
+/// with the omission marker between them — byte-identical to what [`truncate_output`] would produce for the
+/// same content.
 ///
 /// Two seeks, never a stream: a background job that wrote gigabytes costs the reader one open and ~30 KB,
 /// so rendering its completion notice can never stall the loop that renders it.
@@ -720,31 +527,7 @@ const fn is_rune_start(b: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        CappedBuffer, HEAD_BYTES, TAIL_BYTES, find_in_path, is_rune_start, truncate_output,
-    };
-
-    // Go: internal/shell/shell_test.go:191 — the memory bound needs the private head/tail lengths; the
-    // observable half of TestCappedBuffer is `test_capped_buffer` in tests/shell.rs.
-    #[test]
-    fn capped_buffer_memory_bound() {
-        let mut b = CappedBuffer::default();
-        b.write(b"start-");
-        let chunk = vec![b'x'; 8 * 1024];
-        for _ in 0..40 {
-            // ~320KB through a ~52KB window
-            b.write(&chunk);
-        }
-        b.write(b"-end");
-        let cap = HEAD_BYTES + 2 * TAIL_BYTES + 16 * 1024;
-        assert!(
-            b.head.len() + b.tail.len() <= cap,
-            "buffer grew to {} bytes, want ≤ {cap}",
-            b.head.len() + b.tail.len()
-        );
-        assert_eq!(b.total, 6 + 40 * 8 * 1024 + 4);
-        assert_eq!(b.head.len(), HEAD_BYTES);
-    }
+    use super::{TAIL_BYTES, find_in_path, is_rune_start, truncate_output};
 
     /// The byte cap, spelled once for the boundary test.
     const MAX: usize = super::MAX_OUTPUT_BYTES;

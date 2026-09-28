@@ -318,9 +318,8 @@ pub struct ToolEnv {
     pub project_root: Option<PathBuf>,
     /// Process-level directories.
     pub dirs: HostDirs,
-    /// The run's background-job registry, which `shell` starts `background: true` calls in. Bound by both
-    /// entry points; None only in tests, where a `background` call is refused rather than silently run in
-    /// the foreground.
+    /// The run's background-job registry, which every `shell` call runs through. Bound by both entry points;
+    /// None only in tests that build no `shell` set, which refuses to build without one.
     pub jobs: Option<Arc<crate::shell::jobs::Jobs>>,
     /// Some only interactively: `new_ask_set` contributes the ask tools when it is bound
     /// (headless stays empty). `ToolEnv` is built with `..ToolEnv::default()`

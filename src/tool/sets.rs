@@ -41,6 +41,9 @@ pub enum SetError {
     /// `crate::shell::interp::NoShell` text).
     #[error("{0}")]
     NoShell(String),
+    /// `tools.shell` was asked for by a host that bound no job registry (`ToolEnv::jobs`) — a test.
+    #[error("the shell set needs the run's job registry")]
+    NoJobs,
     /// `tools.shell.sandbox` is neither `auto` nor `off`.
     #[error("sandbox must be \"auto\" or \"off\", got {0:?}")]
     BadSandbox(String),

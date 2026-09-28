@@ -18,7 +18,8 @@ use std::{
     time::Duration,
 };
 
-use iota::shell::exec::{self, Options, Outcome};
+use iota::shell::exec::{Options, Outcome, RunResult};
+use iota::shell::jobs::{CallEnd, Jobs};
 use tokio_util::sync::CancellationToken;
 
 /// A shell of our own, which echoes the argv it was handed: its output then proves both halves of the
@@ -73,18 +74,23 @@ fn iota_shell_replaces_the_interpreter_end_to_end() {
     }
 }
 
-/// One run under the interpreter the environment names.
-async fn run(command: &str, dir: &Path) -> exec::RunResult {
-    exec::run(
-        &CancellationToken::new(),
-        Options {
-            command: command.to_owned(),
-            dir: dir.to_path_buf(),
-            timeout: Some(Duration::from_secs(30)),
-            sandbox: None,
-        },
-    )
-    .await
+/// One call under the interpreter the environment names, through the job registry the `shell` tool runs
+/// every call through; `dir` holds its log.
+async fn run(command: &str, dir: &Path) -> RunResult {
+    let opts = Options {
+        command: command.to_owned(),
+        dir: dir.to_path_buf(),
+        timeout: Some(Duration::from_secs(30)),
+        sandbox: None,
+    };
+    let window = Duration::from_secs(60);
+    match Jobs::new(dir)
+        .run(&CancellationToken::new(), &opts, window)
+        .await
+    {
+        CallEnd::Ended(res) => res,
+        other => panic!("the call outlived its window: {other:?}"),
+    }
 }
 
 // The child half: `IOTA_SHELL` names our fake shell, so that is what runs — bash never does.

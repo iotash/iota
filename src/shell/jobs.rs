@@ -3,8 +3,7 @@
 //! the completion notice each one produces.
 //!
 //! A job is an ordinary [`exec::spawn`] child — same sandbox, same `setpgid`, same `killpg` deadline — with
-//! its combined output going to a file instead of the round's 32 KB buffer, so the model's turn ends while
-//! the work continues. EVERY `shell` call starts in that shape ([`Jobs::run`]): the file is opened before
+//! its combined output going to a file, so the model's turn ends while the work continues. EVERY `shell` call starts in that shape ([`Jobs::run`]): the file is opened before
 //! the child, the call waits for the exit or the window, and a command still running at the window is
 //! adopted where it stands — an id, the file renamed after it, a supervisor — while the call answers with
 //! what the file holds so far. A command that exits inside the window answers as a foreground call always
@@ -32,7 +31,7 @@ use std::{
 
 use tokio_util::sync::CancellationToken;
 
-use crate::shell::exec::{self, Capture, Options, Outcome, RunResult, ShellError, SpawnFail};
+use crate::shell::exec::{self, Options, Outcome, RunResult, ShellError, SpawnFail};
 
 /// How many jobs one run may have in flight. Past it the tool refuses rather than queues: a queue the model
 /// cannot see would make `background` a lie.
@@ -93,8 +92,7 @@ pub struct JobDone {
 /// How one `shell` call ended in the registry's hands ([`Jobs::run`]).
 #[derive(Debug)]
 pub enum CallEnd {
-    /// The command ended inside the window (or never started): the foreground result, exactly as
-    /// [`exec::run`] would have answered.
+    /// The command ended inside the window (or never started): the foreground result.
     Ended(RunResult),
     /// The window ran out with the command still running: it is a job now, and `output` is what it had
     /// written by then, under the foreground caps.
@@ -412,7 +410,7 @@ impl Jobs {
     ) -> Result<exec::Started, StartFail> {
         std::fs::create_dir_all(&self.dir).map_err(StartFail::Output)?;
         let file = std::fs::File::create(output_path).map_err(StartFail::Output)?;
-        exec::spawn(cancel, opts, Capture::File(file)).map_err(StartFail::Spawn)
+        exec::spawn(cancel, opts, file).map_err(StartFail::Spawn)
     }
 
     /// Detaches the task that sees the job to its end.
