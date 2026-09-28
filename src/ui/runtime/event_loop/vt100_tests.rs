@@ -2497,3 +2497,223 @@ fn a_height_round_trip_without_a_cursor_answer_loses_no_row() {
         }
     }
 }
+
+// --- verify-050-f1: F1 (a band left by a resize, then a batch measured wider than it is
+// long) — reproduction / regression tests. Expected to FAIL on 481d002.
+
+/// A flush frame, a transcript above it, a narrowing that leaves a 3-row band (the cursor
+/// moved up 3), then ONE batch laid out for the old width (80 → 60: `measured` 2 ≠ len 1).
+fn f1_term_after_band() -> (
+    crate::ui::runtime::term::Term<SharedBuf>,
+    SharedBuf,
+    crate::ui::render::frame::FrameView,
+    usize,
+) {
+    let (mut t, buf, geo) = direct_term(3, 21);
+    let frame = crate::ui::render::frame::FrameView {
+        rows: vec!["SEP".to_owned(), "❯ ".to_owned(), "status".to_owned()],
+        cursor: Some((2, 1)),
+    };
+    t.draw_frame(&frame).unwrap();
+    t.insert_lines(&(0..30).map(|i| format!("hist-{i:02}")).collect::<Vec<_>>())
+        .unwrap();
+    t.draw_frame(&frame).unwrap();
+    assert_eq!(t.top(), 21);
+    let mark = buf.bytes().len();
+    geo.shift_cursor(-3);
+    geo.set_size(60, 24);
+    t.resize(
+        ratatui::layout::Size {
+            width: 60,
+            height: 24,
+        },
+        3,
+    )
+    .unwrap();
+    t.draw_frame(&frame).unwrap();
+    (t, buf, frame, mark)
+}
+
+/// Every `w` the user can still reach (heads and continuation rows alike).
+fn f1_ws(buf: &SharedBuf, mark: usize) -> usize {
+    let mut p = parse_shifted(buf, mark, -3);
+    reachable(&mut p)
+        .iter()
+        .map(|r| r.chars().filter(|&c| c == 'w').count())
+        .sum()
+}
+
+fn f1_find(buf: &SharedBuf, mark: usize, prefix: &str) -> usize {
+    let mut p = parse_shifted(buf, mark, -3);
+    reachable(&mut p)
+        .iter()
+        .filter(|r| r.starts_with(prefix))
+        .count()
+}
+
+/// F1, variant A (the report's path): the wide batch goes through `insert_before`, the band
+/// stays ABOVE it, and the drag's `close_band` deletes the `pad` rows right above the frame
+/// — the batch.
+#[test]
+fn verify_f1_close_band_after_a_wide_batch_loses_it() {
+    let (mut t, buf, frame, mark) = f1_term_after_band();
+    let wide = format!("WIDE{}", "w".repeat(66)); // 70 cols: one row at 80, two at 60
+    t.insert_lines(&[wide]).unwrap();
+    t.draw_frame(&frame).unwrap();
+    assert_eq!(f1_find(&buf, mark, "WIDE"), 1, "present before close_band");
+    assert_eq!(f1_ws(&buf, mark), 66, "whole before close_band");
+    t.close_band().unwrap();
+    t.draw_frame(&frame).unwrap();
+    let mut p = parse_shifted(&buf, mark, -3);
+    let all = reachable(&mut p);
+    assert_eq!(
+        (f1_find(&buf, mark, "WIDE"), f1_ws(&buf, mark)),
+        (1, 66),
+        "the wide row was deleted by close_band:\n{}",
+        all.join("\n")
+    );
+}
+
+/// F1, variant B (no drag end needed): after the wide batch the band is still `pad` rows
+/// "above the frame" in the model, but those rows are now the batch — the next ordinary
+/// batch (streamed at the new width) is written over them by `fill_above`.
+#[test]
+fn verify_f1_next_narrow_batch_overwrites_the_wide_batch() {
+    let (mut t, buf, frame, mark) = f1_term_after_band();
+    // Two rows laid out for 80: four at 60, more than the 3-row band.
+    let wide: Vec<String> = (0..2)
+        .map(|i| format!("WIDE{i}{}", "w".repeat(65)))
+        .collect();
+    t.insert_lines(&wide).unwrap();
+    t.draw_frame(&frame).unwrap();
+    assert_eq!(f1_ws(&buf, mark), 130, "whole before the next batch");
+    t.insert_lines(&["next-0".to_owned()]).unwrap();
+    t.draw_frame(&frame).unwrap();
+    let mut p = parse_shifted(&buf, mark, -3);
+    let all = reachable(&mut p);
+    assert_eq!(
+        f1_ws(&buf, mark),
+        130,
+        "a wide row was overwritten by the next batch:\n{}",
+        all.join("\n")
+    );
+}
+
+/// F1 in the REAL loop (tmux reflow model): a narrowing of a flush idle frame while lines
+/// are committed inside the `RESIZE_QUIET` window — they are laid out at the old width and
+/// queued (the loop drains no insert while `resizing`), land after the pass on top of its
+/// band, and the drag settles `DRAG_SETTLE` later with `close_band`.
+fn f1_loop(wide: usize, narrow_tail: bool, then_narrow: bool) {
+    f1_loop_at(wide, narrow_tail, then_narrow, false);
+}
+
+/// `late`: the control — the same commit after the pass (laid out at the new width).
+fn f1_loop_at(wide: usize, narrow_tail: bool, then_narrow: bool, late: bool) {
+    let lh = idle_loop();
+    let mut emu = TmuxReflowEmu::new();
+    let mark = lh.buf.bytes().len();
+    let moved = emu.resize(&lh.buf.bytes(), 60, 24);
+    lh.geo.shift_cursor(moved);
+    lh.geo.set_size(60, 24);
+    lh.etx.send(Event::Resize(60, 24)).unwrap();
+    if late {
+        assert!(
+            lh.wait_until(Duration::from_secs(1), |h| h.width.load(Ordering::Relaxed)
+                < 80)
+        );
+        thread::sleep(Duration::from_millis(100));
+    } else {
+        // Inside the quiet window: the region still lays out at 80.
+        thread::sleep(Duration::from_millis(5));
+        assert_eq!(
+            lh.width.load(Ordering::Relaxed),
+            80,
+            "committed before the pass"
+        );
+    }
+    lh.region.lock().unwrap().commit(
+        (0..wide)
+            .map(|i| format!("WIDE-{i}-{}", "w".repeat(63)))
+            .chain((0..if narrow_tail { 4 } else { 0 }).map(|i| format!("tail-{i}")))
+            .collect(),
+    );
+    assert!(
+        lh.wait_until(Duration::from_secs(1), |h| h.width.load(Ordering::Relaxed)
+            < 80)
+    );
+    thread::sleep(Duration::from_millis(100));
+    if then_narrow {
+        lh.region
+            .lock()
+            .unwrap()
+            .commit((0..8).map(|i| format!("next-{i}")).collect());
+        thread::sleep(Duration::from_millis(100));
+    }
+    thread::sleep(crate::ui::runtime::event_loop::DRAG_SETTLE + Duration::from_millis(200));
+    let bytes = lh.buf.bytes();
+    let after = String::from_utf8_lossy(&bytes[mark..]).into_owned();
+    let (all, _screen) = emu.finish(&bytes);
+    lh.quit_and_join(Duration::from_secs(2));
+    let dump = all.join("\n");
+    eprintln!("scroll-downs after the resize: {}", scroll_downs(&after));
+    eprintln!("--- reachable ---\n{dump}");
+    let mut lost = Vec::new();
+    for i in 0..wide {
+        // Every copy of WIDE-i is its head row plus the continuation rows (only `w`s)
+        // under it; at least one copy must carry all 63 `w`s.
+        let whole = all.iter().enumerate().any(|(at, r)| {
+            let Some(head) = r.strip_prefix(&format!("WIDE-{i}-")) else {
+                return false;
+            };
+            let mut ws = head.trim_end().len();
+            for next in &all[at + 1..] {
+                let n = next.trim_end();
+                if n.is_empty() || !n.chars().all(|c| c == 'w') {
+                    break;
+                }
+                ws += n.len();
+            }
+            ws == 63
+        });
+        if !whole {
+            lost.push(format!("WIDE-{i} (cut)"));
+        }
+    }
+    for i in 0..8 {
+        if then_narrow && !all.iter().any(|r| r.trim_end() == format!("next-{i}")) {
+            lost.push(format!("next-{i}"));
+        }
+        if narrow_tail && i < 4 && !all.iter().any(|r| r.trim_end() == format!("tail-{i}")) {
+            lost.push(format!("tail-{i}"));
+        }
+    }
+    for i in 0..12 {
+        if !all.iter().any(|r| r.contains(&format!("line-{i:02}"))) {
+            lost.push(format!("line-{i:02}"));
+        }
+    }
+    assert!(lost.is_empty(), "LOST {lost:?}:\n{dump}");
+}
+
+#[test]
+fn verify_f1_loop_wide_rows_then_settle() {
+    f1_loop(8, false, false);
+}
+
+/// Variant C: the wide rows all leave through the mailbox and the staged tail is narrow, so
+/// no later batch takes the band — it is still `pad` at the settle, and `close_band` runs.
+#[test]
+fn verify_f1_loop_wide_scrollback_narrow_tail_then_settle() {
+    f1_loop(4, true, false);
+}
+
+#[test]
+fn verify_f1_loop_wide_rows_then_stream_then_settle() {
+    f1_loop(8, false, true);
+}
+
+/// Control for C: the same commit AFTER the pass loses nothing (the rows fit the band).
+#[test]
+fn verify_f1_control_commit_after_the_pass_loses_nothing() {
+    f1_loop_at(4, true, false, true);
+}
