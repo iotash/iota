@@ -9,7 +9,7 @@
 //! replacement) live here too — they assert on the real byte stream.
 
 use std::io::{self};
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -201,6 +201,18 @@ impl LoopHarness {
             thread::sleep(Duration::from_millis(5));
         }
         pred(self)
+    }
+
+    /// Waits until the loop has written everything owed for what happened before the call: a
+    /// fresh title goes through the mailbox (FIFO, behind every message sent before it) and is
+    /// written in the ONE batch of the iteration that drains it, after every earlier
+    /// iteration's. Its OSC in the bytes is that write landed, whatever the load.
+    fn sync(&self) {
+        static SYNCS: AtomicUsize = AtomicUsize::new(0);
+        let token = format!("<sync {}>", SYNCS.fetch_add(1, Ordering::Relaxed));
+        self.tx.send(UiMsg::Title(token.clone())).unwrap();
+        let written = |h: &Self| String::from_utf8_lossy(&h.buf.bytes()).contains(&token);
+        assert!(self.wait_until(Duration::from_secs(10), written), "{token}");
     }
 
     fn quit_and_join(self, timeout: Duration) {
@@ -1361,35 +1373,44 @@ fn idle_loop() -> LoopHarness {
         .unwrap()
         .commit((0..12).map(|i| format!("line-{i:02}")).collect());
     assert!(lh.wait_until(Duration::from_secs(2), |h| h.contents().contains("line-11")));
-    thread::sleep(Duration::from_millis(150)); // settle: the loop is idle from here
+    lh.sync(); // the loop is idle from here
     lh
 }
 
-/// Sends one resize and waits for its pass and the retrim job's round to land.
+/// Sends one resize, waits for its pass and the retrim job's round to land, then for the
+/// drag to settle: an isolated resize, the full width back.
 fn resize_and_settle(lh: &LoopHarness, w: u16, h: u16) {
     resize_step(lh, w, h);
-    // Past DRAG_SETTLE: an isolated resize, the full width back.
-    thread::sleep(crate::ui::runtime::event_loop::DRAG_SETTLE + Duration::from_millis(150));
+    settle(lh, w);
 }
 
-/// One step of a DRAG: the resize lands and its pass runs, and the next step comes well
-/// inside `DRAG_SETTLE`, so the burst layout (a column short) holds between steps.
-fn drag_step(lh: &LoopHarness, w: u16, h: u16) {
-    resize_step(lh, w, h);
-    thread::sleep(Duration::from_millis(60));
+/// Waits out `DRAG_SETTLE`: the full width `w` is back (`Model::settle_drag` stores it) and the
+/// repaint of that iteration has landed.
+fn settle(lh: &LoopHarness, w: u16) {
+    let back = |h: &LoopHarness| h.width.load(Ordering::Relaxed) == w;
+    let limit = crate::ui::runtime::event_loop::DRAG_SETTLE + Duration::from_secs(10);
+    assert!(lh.wait_until(limit, back), "the full width {w} is not back");
+    lh.sync();
 }
 
-/// Sends one resize and waits for its pass: the shared width carries the frame's width
-/// (the terminal's, or a column short while the burst lasts).
+/// One resize to `w`×`h` — a step of a drag when the next comes inside `DRAG_SETTLE` —
+/// landed: see [`resize_event`].
 fn resize_step(lh: &LoopHarness, w: u16, h: u16) {
     lh.geo.set_size(w, h);
-    lh.etx.send(Event::Resize(w, h)).unwrap();
-    assert!(lh.wait_until(Duration::from_secs(1), |lh| {
-        let got = lh.width.load(Ordering::Relaxed);
-        let short = crate::ui::runtime::event_loop::DRAG_MARGIN_MAX;
-        got <= w && got + short >= w && lh.height.load(Ordering::Relaxed) == h
-    }));
-    thread::sleep(Duration::from_millis(40));
+    resize_event(lh, Event::Resize(w, h));
+}
+
+/// Sends `ev` (a resize, stale or not) and waits until its W5 pass has run and everything it
+/// caused has landed, the retrim's round included. The pass's first act is the loop's only
+/// cursor query; the loop drained its mailbox before it, so the sync sent after that query is
+/// drained on a later iteration — behind whatever the pass published.
+fn resize_event(lh: &LoopHarness, ev: Event) {
+    let (ran, seen) = mpsc::channel();
+    lh.geo.after_query(0, move || ran.send(()).unwrap_or(()));
+    lh.etx.send(ev).unwrap();
+    seen.recv_timeout(Duration::from_secs(10))
+        .expect("no resize pass ran");
+    lh.sync();
 }
 
 /// ONE scripted resize to `w`×`h` of the idle loop, with `emulate` standing in for the
@@ -1528,15 +1549,10 @@ fn settled_drag_in_a_reflowing_emulator_stays_flush_and_clean() {
     for w in (50..80).rev() {
         let moved = emu.resize(&lh.buf.bytes(), w, 24);
         lh.geo.shift_cursor(moved);
-        drag_step(&lh, w, 24);
+        resize_step(&lh, w, 24);
     }
     // The drag settles: the full width comes back with a repaint, nothing reflows.
-    thread::sleep(crate::ui::runtime::event_loop::DRAG_SETTLE + Duration::from_millis(150));
-    assert_eq!(
-        lh.width.load(Ordering::Relaxed),
-        50,
-        "the full width is restored"
-    );
+    settle(&lh, 50);
     let bytes = lh.buf.bytes();
     let after = String::from_utf8_lossy(&bytes[mark..]).into_owned();
     let history = emu.history(&bytes);
@@ -1882,7 +1898,7 @@ fn a_3x_narrowing_at_startup_loses_nothing_and_stays_within_the_budget() {
     assert!(lh.wait_until(Duration::from_secs(2), |h| {
         h.contents().contains("banner-2")
     }));
-    thread::sleep(Duration::from_millis(150));
+    lh.sync();
     let mut emu = TmuxReflowEmu::new();
     let mark = lh.buf.bytes().len();
     let moved = emu.resize(&lh.buf.bytes(), 27, 24);
@@ -2081,15 +2097,14 @@ fn the_next_output_follows_the_transcript_after_a_drag() {
     for w in (75..80).rev() {
         let moved = emu.resize(&lh.buf.bytes(), w, 24);
         lh.geo.shift_cursor(moved);
-        drag_step(&lh, w, 24);
+        resize_step(&lh, w, 24);
     }
-    thread::sleep(crate::ui::runtime::event_loop::DRAG_SETTLE + Duration::from_millis(150));
+    settle(&lh, 75);
     lh.region
         .lock()
         .unwrap()
         .commit((0..6).map(|i| format!("next-{i}")).collect());
-    assert!(lh.wait_until(Duration::from_secs(1), |h| h.contents().contains("next-5")));
-    thread::sleep(Duration::from_millis(150));
+    lh.sync();
     let (all, screen) = emu.finish(&lh.buf.bytes());
     lh.quit_and_join(Duration::from_secs(2));
     let dump = all.join("\n");
@@ -2114,9 +2129,9 @@ fn a_drag_of_two_column_steps_leaves_no_band() {
     for w in (60..=78).rev().step_by(2) {
         let moved = emu.resize(&lh.buf.bytes(), w, 24);
         lh.geo.shift_cursor(moved);
-        drag_step(&lh, w, 24);
+        resize_step(&lh, w, 24);
     }
-    thread::sleep(crate::ui::runtime::event_loop::DRAG_SETTLE + Duration::from_millis(150));
+    settle(&lh, 60);
     let bytes = lh.buf.bytes();
     let history = emu.history(&bytes);
     let (all, screen) = emu.finish(&bytes);
@@ -2168,9 +2183,11 @@ fn a_paced_drag_stays_one_burst_and_leaves_no_hole() {
         let moved = emu.resize(&lh.buf.bytes(), w, 24);
         lh.geo.shift_cursor(moved);
         resize_step(&lh, w, 24);
+        // The scenario's pace — a hand that pauses — not a wait for state: well past
+        // `RESIZE_QUIET`, well inside `DRAG_SETTLE`.
         thread::sleep(Duration::from_millis(1000));
     }
-    thread::sleep(crate::ui::runtime::event_loop::DRAG_SETTLE + Duration::from_millis(200));
+    settle(&lh, 75);
     let bytes = lh.buf.bytes();
     let history = emu.history(&bytes);
     let (_, screen) = emu.finish(&bytes);
@@ -2243,21 +2260,20 @@ fn a_height_drag_down_and_back_loses_no_row() {
     for h in [22, 20] {
         let moved = emu.resize(&lh.buf.bytes(), 80, h);
         lh.geo.shift_cursor(moved);
-        drag_step(&lh, 80, h);
+        resize_step(&lh, 80, h);
     }
     // The race: the emulator goes 20 → 21 (a row pulled back), and only THEN does the loop
     // read an event — a stale one still saying 20.
     let moved = emu.resize(&lh.buf.bytes(), 80, 21);
     lh.geo.shift_cursor(moved);
     lh.geo.set_size(80, 21);
-    lh.etx.send(Event::Resize(80, 20)).unwrap();
-    thread::sleep(Duration::from_millis(150));
+    resize_event(&lh, Event::Resize(80, 20));
     for h in [21, 23, 24] {
         let moved = emu.resize(&lh.buf.bytes(), 80, h);
         lh.geo.shift_cursor(moved);
-        drag_step(&lh, 80, h);
+        resize_step(&lh, 80, h);
     }
-    thread::sleep(crate::ui::runtime::event_loop::DRAG_SETTLE + Duration::from_millis(200));
+    settle(&lh, 80);
     let (all, _) = emu.finish(&lh.buf.bytes());
     lh.quit_and_join(Duration::from_secs(2));
     assert_no_line_lost_or_doubled("height 24→20→(21)→24", &all);
@@ -2279,12 +2295,11 @@ fn an_oscillating_height_loses_no_row() {
         lh.geo.set_size(80, h);
         // Every third event arrives late: the loop reads the size before this one.
         let seen = if i % 3 == 2 { prev } else { h };
-        lh.etx.send(Event::Resize(80, seen)).unwrap();
-        thread::sleep(Duration::from_millis(120));
+        resize_event(&lh, Event::Resize(80, seen));
         prev = h;
     }
-    lh.etx.send(Event::Resize(80, prev)).unwrap();
-    thread::sleep(crate::ui::runtime::event_loop::DRAG_SETTLE + Duration::from_millis(300));
+    resize_event(&lh, Event::Resize(80, prev));
+    settle(&lh, 80);
     let (all, _) = emu.finish(&lh.buf.bytes());
     lh.quit_and_join(Duration::from_secs(2));
     assert_no_line_lost_or_doubled("oscillating height", &all);
@@ -2621,7 +2636,7 @@ fn f1_loop_at(wide: usize, narrow_tail: bool, then_narrow: bool, late: bool) {
             lh.wait_until(Duration::from_secs(1), |h| h.width.load(Ordering::Relaxed)
                 < 80)
         );
-        thread::sleep(Duration::from_millis(100));
+        lh.sync();
     } else {
         // Inside the quiet window: the region still lays out at 80.
         thread::sleep(Duration::from_millis(5));
@@ -2641,15 +2656,15 @@ fn f1_loop_at(wide: usize, narrow_tail: bool, then_narrow: bool, late: bool) {
         lh.wait_until(Duration::from_secs(1), |h| h.width.load(Ordering::Relaxed)
             < 80)
     );
-    thread::sleep(Duration::from_millis(100));
+    lh.sync();
     if then_narrow {
         lh.region
             .lock()
             .unwrap()
             .commit((0..8).map(|i| format!("next-{i}")).collect());
-        thread::sleep(Duration::from_millis(100));
+        lh.sync();
     }
-    thread::sleep(crate::ui::runtime::event_loop::DRAG_SETTLE + Duration::from_millis(200));
+    settle(&lh, 60);
     let bytes = lh.buf.bytes();
     let after = String::from_utf8_lossy(&bytes[mark..]).into_owned();
     let (all, _screen) = emu.finish(&bytes);
