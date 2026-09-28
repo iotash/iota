@@ -176,7 +176,9 @@ its own viewport top. Some emulators will strand a row above the new viewport. T
       tmux's default `scroll-on-clear on`. Asserted: zero rows lost, zero stale frames, the
       composer on the pane's third-last row (flush with the bottom), and the rows left twice
       within each block's MEASURED cap (B3, 2026-09-26: 1–3 duplicated rows, ≤ 4 separator
-      rows with `/model` open — scenario 26's numbers, a larger one is a regression; scenario
+      rows with `/model` open — scenario 26's numbers, a larger one is a regression, each named
+      by the rows it is: B 2, the stream's last two staged rows; D 1, the user's own row; E 2,
+      the banner's last two rows; scenario
       06: 1 for each idle narrowing, 1 for the settled and the fast drag, 0 for the paced drag,
       which starts inside the release's burst — X-52 residual (1)). The
       resize pass (wart W5, `term.rs`) reads the cursor with one DSR before writing a byte,
@@ -290,6 +292,17 @@ terminal is a finding — and tmux 3.7c's narrowing is one (4.2).
       68 columns. Not the duplication above — a height drag rewraps nothing, and adds no copy in
       any run — but the frame's bookkeeping out of step with the screen, the same family as
       the loaded tmux 3.4 overwrite. The block records its bytes and a red CI run uploads them.
+      **Scenario 26's B and D, named (2026-09-28).** Re-measured over 100 runs of the scenario
+      (tmux 3.7c and 3.4; alone, under six CPU burners, and three copies at once): B's 2 are the
+      stream's last two staged rows (`l#56`, `l#57`) for both narrowings, 2 in 99 runs each; one
+      3 (2026-09-27, beside loaded scenario-06 loops) printed no rows and has not recurred — the
+      block lists its rows now. D measured 2 in 5 of 94 runs, and those 2 were E's banner rows,
+      not the user's row: `wait_vis 'sleep 1.5'` was satisfied by the DRAFT, so the narrowing
+      could land before the Enter, while the banner was still staged. D now waits for the draft to
+      leave the composer (`wait_sent`): 1 in 29 of 30 loaded runs, 0 once; cap 1, the user's row.
+      Seen only with three suites at once plus six burners, bounds unchanged: 26 H (a drag with
+      `/model` open, OVER BUDGET ≤ 6) measured 7 separator rows in 7 of 60 runs on tmux 3.7c
+      (never on 3.4: 4–6), and 26 G's gap measured 3 in 3 runs that landed at the same moment.
 
 ## 5. Window title (the title stack)
 

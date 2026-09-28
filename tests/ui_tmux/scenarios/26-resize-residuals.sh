@@ -10,9 +10,12 @@
 #
 #   A. a drastic narrowing — the old width 2× and 3× the new (a maximized window restored, a
 #      full-width pane halved) — with the startup banner still staged in the frame;
-#   B. an idle narrowing right after FAST output (20 ms a line);
+#   B. an idle narrowing right after FAST output (20 ms a line) — 2 duplicated rows both ways: the
+#      stream's last two staged rows (`l#56`, `l#57`), the frame's top rows when it narrows;
 #   C. a narrowing with a surface open (`/model`), then closed;
-#   D. a narrowing while a foreground tool call runs (the user's own `❯ runfg:…` row);
+#   D. a narrowing while a foreground tool call runs — 1 duplicated row: the user's own
+#      `❯ runfg:…` row, the frame's top staged row then (a narrowing that landed BEFORE the Enter
+#      left E's two banner rows instead: the block's wait, fixed 2026-09-28 — `wait_sent`);
 #   E. tmux's DEFAULT `scroll-on-clear on`: a narrowing right after startup can re-anchor the frame
 #      on row 0 — an erase-below from the home position would make tmux file the old frame and
 #      the banner into the history;
@@ -48,13 +51,14 @@ fresh() {
     tm set-option -w -t s scroll-on-clear off
     settle || bad "startup never settled"
 }
-# after_resize <label> <width> <duplicated rows> <separator rows> — the invariants every block
-# ends with; the last two are the block's measured budget (B3's residual).
+# after_resize <label> <width> <duplicated rows> <separator rows> [<which rows>] — the invariants
+# every block ends with; the last two are the block's measured budget (B3's residual), and
+# <which rows> names what the duplicated ones are.
 after_resize() {
     settle || bad "$1: frame never settled"
     check_frame_intact "$1" "$2"
     if alive; then ok "$1: the app survived"; else bad "$1: the app died"; fi
-    check_budget "$1: rows that appear twice in the history (B3)" "$(dup_lines)" "$3"
+    check_budget "$1: rows that appear twice in the history (B3${5:+: $5})" "$(dup_lines)" "$3"
     capall | sed 's/ *$//' | grep -v '^$' | grep -v '^┄' | LC_ALL=C sort | LC_ALL=C uniq -d | sed 's/^/    DUP: /'
     check_budget "$1: separator rows in the whole history (B3)" "$(seps_all)" "$4"
 }
@@ -70,7 +74,11 @@ done
 # ------------------------------------------------------------------ B: fast output, then idle
 # 70x24 is a width-only narrowing, 60x18 a diagonal one (tmux eats the rows below the cursor
 # before it rewraps): since B3 neither claims what grew above the cursor, and the frame's first
-# rows that far up stay behind — measured 2 for both.
+# rows that far up stay behind — the stream's last two staged rows, `l#56` and `l#57`. Measured
+# 2026-09-28, 100 runs (tmux 3.7c and 3.4; alone, under six CPU burners, three suites at once):
+# 2 in 99 for each (1 once for 60x18, 0 once for 70x24). One 3 for 60x18 (2026-09-27, a whole
+# suite beside loaded scenario-06 loops) printed no rows and has not come back; a 3 now shows
+# which row it is.
 for to in 70x24 60x18; do
     fresh 80 24
     type_ 'stream 60 20'
@@ -80,13 +88,13 @@ for to in 70x24 60x18; do
     check "fast output, before any resize: no row appears twice" "$(dup_lines)" 0
     tm resize-window -t s -x "${to%x*}" -y "${to#*x}"
     if [ "$to" = 70x24 ]; then
-        after_resize "fast output, then 80x24→$to" "${to%x*}" 2 2
+        after_resize "fast output, then 80x24→$to" "${to%x*}" 2 2 "the stream's last two staged rows"
     else
         settle || bad "fast output → $to: frame never settled"
         check_frame_intact "fast output, then 80x24→$to" "${to%x*}"
-        check_budget "fast output → $to (a diagonal narrowing, B3)" "$(dup_lines)" 2
-        # Which rows, as after_resize prints them: a red run (3 > 2, once, under load,
-        # 2026-09-27) said only how many.
+        check_budget "fast output → $to (a diagonal narrowing, B3: the stream's last two staged rows)" \
+            "$(dup_lines)" 2
+        # Which rows, as after_resize prints them.
         capall | sed 's/ *$//' | grep -v '^$' | grep -v '^┄' | LC_ALL=C sort | LC_ALL=C uniq -d | sed 's/^/    DUP: /'
         check "fast output → $to: separator rows in the whole history" "$(seps_all)" 2
     fi
@@ -114,10 +122,15 @@ check_budget "/model open, 80→68: empty composer rows in the history (B3)" "$(
 fresh 80 24
 type_ 'runfg:sleep 1.5; seq -f "t#%02g out" 0 30'
 key Enter
-wait_vis 'sleep 1.5' || bad "the tool call never started"
+# The narrowing must land while the tool call runs: after the Enter (see `wait_sent`), inside
+# its 1.5 s sleep.
+wait_sent 'runfg:sleep 1.5' || bad "the tool call never started"
 tm resize-window -t s -x 70 -y 24
 wait_all 'ran: ' || bad "the tool round never closed"
-after_resize "a tool call running, 80→70" 70 1 2
+# Measured 2026-09-28 with the wait above, 30 runs (three suites at once, six CPU burners, tmux
+# 3.7c and 3.4): 1 in 29, 0 once. Before it, 5 of 94 runs narrowed before the Enter landed and
+# measured E's banner rows (2) — a startup narrowing, not this block's case.
+after_resize "a tool call running, 80→70" 70 1 2 "the user's own row, the frame's top staged row"
 check_budget "a tool call running, 80→70: the user's own row (B3: its piece above the cursor)" "$(count_all '❯ runfg:')" 2
 
 # ------------------------------------------------------------------ E: scroll-on-clear on

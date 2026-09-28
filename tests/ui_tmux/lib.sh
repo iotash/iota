@@ -221,6 +221,17 @@ wait_all() { _poll_until 200 _all_has "$1"; }
 # Pattern has left the visible pane.
 wait_gone() { _poll_until 120 _vis_lacks "$1"; }
 
+# wait_sent <fixed string> — the key that sent a draft has landed: the text is on screen ABOVE
+# the frame's separator pair and no longer in the composer. A `wait_vis` for text the user typed
+# is satisfied by the draft itself, before Enter is read — scenario 26 D resized a pane whose
+# frame still held the startup banner in 3 of ~100 loaded runs that way (2026-09-28).
+_sent() {
+    local t
+    t="$(frame_top)"
+    [ -n "$t" ] && cap | head -n "$((t - 1))" | grep -qF -- "$1" && ! composer_block | grep -qF -- "$1"
+}
+wait_sent() { _poll_until 120 _sent "$1"; }
+
 # wait_all_more <fixed string> <count> — the history holds MORE than <count> copies.
 #
 # A scenario's SECOND turn over the same document cannot `wait_all` for the same marker:
