@@ -34,7 +34,9 @@
 //! own — the notice wakes the loop — so the conversation is not done until the job is; herdr's
 //! `agent prompt --wait` therefore waits for it too. That is also why a job that leaves the running
 //! set still counts until its notice is taken (`Presenter::notice_taken`): the registry drops the
-//! job BEFORE it delivers the notice, and the gap between the two must not flash `Idle`. `Busy`, `NeedsInput` and `Error` pass through
+//! job BEFORE it delivers the notice, and the gap between the two must not flash `Idle`. The end
+//! arrives as a fact (`Presenter::job_ended`, with the set that no longer lists the job), not as a
+//! drop in the count: a count can hide an end behind a start, or a job that never started. `Busy`, `NeedsInput` and `Error` pass through
 //! untouched: a chat blocked on an approval is blocked whatever runs behind it. The rewrite lives
 //! here, so every host gets it and no REPL call site of `set_state` changes.
 
@@ -213,7 +215,7 @@ struct Shown {
     requested: Option<State>,
     /// How many shell jobs are running (`set_jobs`).
     jobs: usize,
-    /// Jobs that left the running set whose notice the loop has not taken yet (`notice_taken`).
+    /// Jobs that ended (`job_ended`) whose notice the loop has not taken yet (`notice_taken`).
     owed: usize,
     /// The last state reported; `None` until the first, which is therefore never deduplicated.
     sent: Option<State>,
@@ -274,12 +276,19 @@ impl Presenter {
     }
 
     /// Records how many shell jobs are running: an idle chat with one is shown as `Busy`.
-    /// Deduplicated like [`Self::set_state`]; before the first `set_state` it only records. A
-    /// drop in the count is jobs that ended, each owing the chat a notice: they keep it `Busy`
-    /// until [`Self::notice_taken`] — the interactive loop delivers one for every job that ends.
+    /// Deduplicated like [`Self::set_state`]; before the first `set_state` it only records. It says
+    /// nothing about ends — a job that ended arrives as [`Self::job_ended`] — so a drop here (a job
+    /// that never started) owes no notice.
     pub fn set_jobs(&self, n: usize) {
+        self.update(|shown| shown.jobs = n);
+    }
+
+    /// One job ended, and `n` are still running: its notice is on the way and keeps the chat `Busy`
+    /// until [`Self::notice_taken`] — the interactive loop delivers one for every job that ends. One
+    /// update, so the job leaving the count and its notice being owed never show `Idle` between them.
+    pub fn job_ended(&self, n: usize) {
         self.update(|shown| {
-            shown.owed += shown.jobs.saturating_sub(n);
+            shown.owed += 1;
             shown.jobs = n;
         });
     }
@@ -697,7 +706,8 @@ mod tests {
         p.set_state(State::Idle);
         p.set_jobs(1);
         p.set_jobs(2); // still busy: no repeat
-        p.set_jobs(0); // both ended; their notices are on the way
+        p.job_ended(1);
+        p.job_ended(0); // both ended; their notices are on the way
         p.set_state(State::Idle); // the loop wakes for the first notice
         p.notice_taken();
         p.set_state(State::Busy); // its turn
@@ -717,7 +727,8 @@ mod tests {
         p.notice_taken(); // nothing owed: stays at zero
         p.set_state(State::Idle);
         p.set_jobs(2);
-        p.set_jobs(0);
+        p.job_ended(1);
+        p.job_ended(0);
         p.notice_taken();
         p.set_state(State::Idle);
         p.notice_taken();
@@ -725,6 +736,37 @@ mod tests {
         assert_eq!(
             *states.lock().unwrap(),
             vec![State::Idle, State::Busy, State::Idle]
+        );
+    }
+
+    /// Every end is its own fact: a job ending while another starts leaves the count where it was,
+    /// yet both notices are owed, and the chat stays Busy until the second is taken. A job that
+    /// leaves the set without ending (it never started) owes nothing.
+    #[test]
+    fn an_end_masked_by_a_start_is_still_owed() {
+        let (p, states) = recording();
+        p.set_state(State::Idle);
+        p.set_jobs(1); // b1
+        p.job_ended(0); // b1 ends…
+        p.set_jobs(1); // …as b2 is adopted
+        p.job_ended(0); // b2 ends
+        p.set_state(State::Idle);
+        p.notice_taken(); // b1's
+        p.set_state(State::Idle); // b2's is still owed: no Idle
+        p.notice_taken(); // b2's
+        p.set_state(State::Idle);
+        p.set_jobs(1);
+        p.set_jobs(0); // a claimed slot whose child never started
+        p.set_state(State::Idle); // nothing owed: Idle, where a count's drop would have owed one
+        assert_eq!(
+            *states.lock().unwrap(),
+            vec![
+                State::Idle,
+                State::Busy,
+                State::Idle,
+                State::Busy,
+                State::Idle
+            ]
         );
     }
 
@@ -749,7 +791,7 @@ mod tests {
         let (p, states) = recording();
         p.set_state(State::Busy);
         p.set_jobs(1);
-        p.set_jobs(0);
+        p.job_ended(0);
         p.notice_taken();
         p.set_jobs(3);
         assert_eq!(*states.lock().unwrap(), vec![State::Busy]);

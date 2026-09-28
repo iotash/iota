@@ -14,6 +14,15 @@
 //! adopted or started, a job gone), which is what puts `/jobs` in the command table and the job segment on
 //! the status row, and takes them away again.
 //!
+//! **The publish order.** Both seams hear FACTS, and a fact is decided where the registry changes: under
+//! the registry's lock, in the same critical section as the change, the fact is queued — the running set
+//! the change left, with the job whose end made it if that is what it was, and then that job's notice. The
+//! queue's order is therefore the registry's order. ONE exit ([`Jobs::publish`], serialized by its own
+//! lock and never under the registry's) hands the queue to the seams in that order, and every change drains
+//! it before returning. So: no set is heard out of order or skipped, the last set heard is the set as it
+//! stands, a job's end reaches the watch exactly once (with the set that no longer lists it), and its
+//! notice reaches the sink right after that — never before, never overtaken by a later change's set.
+//!
 //! Nothing here outlives the process: [`Jobs::kill_all`] is synchronous `killpg` precisely so a `/quit` or a
 //! failed headless run cannot leave a tree behind, and a resumed session therefore never sees a job it
 //! started last time (documented in the README). One job is killed the same way, by the user, from the
@@ -124,11 +133,20 @@ pub enum JobError {
 /// Called with every [`JobDone`] the moment it lands (interactive delivery).
 pub type JobSink = Box<dyn Fn(JobDone) + Send + Sync>;
 
-/// Called with the whole running set — oldest first — whenever it changes: a job started or adopted, a
-/// job finished (BEFORE its notice is delivered, so the row that lists it is gone by the time the notice
-/// is read). Never called from under the registry's lock; calls are serialized, each with a set taken after
-/// the previous call's, so the last call heard is always the set as it stands.
-pub type JobWatch = Box<dyn Fn(Vec<JobInfo>) + Send + Sync>;
+/// Called with the whole running set — oldest first — after every change (the module doc's publish
+/// order): a job started or adopted, a job gone. When the change is a job's END, the second argument is
+/// that job, and its notice is the very next thing the sink hears — so the row that lists it is gone by the
+/// time the notice is read, and the end is a fact of its own rather than a drop in a count. Never called
+/// from under the registry's lock, never twice at once, and never with a set older than the last one heard.
+pub type JobWatch = Box<dyn Fn(Vec<JobInfo>, Option<&JobDone>) + Send + Sync>;
+
+/// One fact for the interactive seams, queued in the critical section of the change that makes it true.
+enum Publish {
+    /// The running set a change left, and the job whose end made the change, if that is what it was.
+    Set(Vec<JobInfo>, Option<JobDone>),
+    /// A job's notice, for the sink installed when it was queued.
+    Notice(JobDone, Arc<JobSink>),
+}
 
 /// Why [`Jobs::start_child`] produced no child.
 enum StartFail {
@@ -170,6 +188,8 @@ struct State {
     sink: Option<Arc<JobSink>>,
     /// The interactive listing seam.
     watch: Option<Arc<JobWatch>>,
+    /// Facts not yet handed to the seams, in the order the registry changed ([`Jobs::publish`]).
+    outbox: VecDeque<Publish>,
 }
 
 impl State {
@@ -188,6 +208,13 @@ impl State {
             .collect();
         jobs.sort_by_key(|j| j.started);
         jobs
+    }
+
+    /// Queues the set this change left — `ended` when the change is that job leaving it. Called in the
+    /// change's own critical section, which is what makes the queue's order the registry's.
+    fn changed(&mut self, ended: Option<JobDone>) {
+        let running = self.snapshot();
+        self.outbox.push_back(Publish::Set(running, ended));
     }
 
     /// Claims the next job id and its slot, or `None` at the cap. Under ONE lock with the check, so two
@@ -209,10 +236,9 @@ pub struct Jobs {
     /// `<temp>/iota-jobs/<pid>` — this process's log directory.
     dir: PathBuf,
     state: Mutex<State>,
-    /// Held from a watch call's snapshot to its return. Without it two tasks on two workers can each take a
-    /// snapshot and deliver them in the opposite order, leaving the listing on the older set — a job
-    /// running under an idle `/jobs`, status row and host — until the set next changes.
-    watch_order: Mutex<()>,
+    /// The one exit: held while the queued facts are handed to the seams, so two tasks never deliver at
+    /// once and none can overtake the order the facts were queued in ([`Jobs::publish`]).
+    exit: Mutex<()>,
     /// Woken whenever a job lands in `finished` or the last runner leaves.
     done: tokio::sync::Notify,
 }
@@ -224,7 +250,7 @@ impl Jobs {
         Arc::new(Self {
             dir: temp.join(JOBS_DIR).join(std::process::id().to_string()),
             state: Mutex::new(State::default()),
-            watch_order: Mutex::new(()),
+            exit: Mutex::new(()),
             done: tokio::sync::Notify::new(),
         })
     }
@@ -232,47 +258,56 @@ impl Jobs {
     /// Installs (or, with `None`, removes) the interactive delivery seam. Anything already parked in
     /// `finished` is handed over immediately, so a sink installed after a job landed still sees it.
     pub fn set_sink(&self, sink: Option<JobSink>) {
-        let (sink, parked) = {
+        {
             let mut st = self.lock();
             st.sink = sink.map(Arc::new);
-            let parked = match st.sink {
-                Some(_) => std::mem::take(&mut st.finished),
-                None => Vec::new(),
-            };
-            (st.sink.clone(), parked)
-        };
-        if let Some(sink) = sink {
-            for done in parked {
-                sink(done);
+            if let Some(sink) = st.sink.clone() {
+                for done in std::mem::take(&mut st.finished) {
+                    st.outbox
+                        .push_back(Publish::Notice(done, Arc::clone(&sink)));
+                }
             }
         }
+        self.publish();
     }
 
     /// Installs (or, with `None`, removes) the interactive listing seam. A watch installed while jobs are
     /// already running hears about them at once.
     pub fn set_watch(&self, watch: Option<JobWatch>) {
-        let _order = crate::sync::lock(&self.watch_order);
-        let (watch, running) = {
+        {
             let mut st = self.lock();
             st.watch = watch.map(Arc::new);
-            (st.watch.clone(), st.snapshot())
-        };
-        if let Some(watch) = watch
-            && !running.is_empty()
-        {
-            watch(running);
+            if st.watch.is_some() && !st.running.is_empty() {
+                st.changed(None);
+            }
         }
+        self.publish();
     }
 
-    /// Tells the watch, if any, what is running now.
-    fn notify_watch(&self) {
-        let _order = crate::sync::lock(&self.watch_order);
-        let (watch, running) = {
-            let st = self.lock();
-            (st.watch.clone(), st.snapshot())
-        };
-        if let Some(watch) = watch {
-            watch(running);
+    /// The one exit: hands every queued fact to the seams, oldest first, outside the registry's lock. A
+    /// set goes to the watch installed when it is handed over (none: it is dropped — a watch installed
+    /// later hears the set as it then stands); a notice goes to the sink it was queued for. Every change
+    /// calls this after queuing its facts, and it returns only once the queue has been empty with the exit
+    /// held — whoever held it before drained what was queued by then — so a change's own facts have been
+    /// heard by the time it returns.
+    fn publish(&self) {
+        let _exit = crate::sync::lock(&self.exit);
+        loop {
+            let (fact, watch) = {
+                let mut st = self.lock();
+                let Some(fact) = st.outbox.pop_front() else {
+                    return;
+                };
+                (fact, st.watch.clone())
+            };
+            match fact {
+                Publish::Set(running, ended) => {
+                    if let Some(watch) = watch {
+                        watch(running, ended.as_ref());
+                    }
+                }
+                Publish::Notice(done, sink) => sink(done),
+            }
         }
     }
 
@@ -295,8 +330,14 @@ impl Jobs {
         let started = match self.start_child(&cancel, opts, &output_path) {
             Ok(started) => started,
             Err(e) => {
-                // A slot claimed by a job that never started is a slot leaked forever.
-                self.lock().running.remove(&id);
+                // A slot claimed by a job that never started is a slot leaked forever — and a set some
+                // other change published in between may list it, so its going is a change of its own.
+                {
+                    let mut st = self.lock();
+                    st.running.remove(&id);
+                    st.changed(None);
+                }
+                self.publish();
                 return Err(match e {
                     StartFail::Output(e) => JobError::Output(e.to_string()),
                     StartFail::Spawn(SpawnFail::Cancelled) => {
@@ -307,12 +348,16 @@ impl Jobs {
             }
         };
         let pid = started.pid;
-        if let Some(job) = self.lock().running.get_mut(&id) {
-            job.pid = pid;
-            job.started = started.started();
-            job.output_path.clone_from(&output_path);
+        {
+            let mut st = self.lock();
+            if let Some(job) = st.running.get_mut(&id) {
+                job.pid = pid;
+                job.started = started.started();
+                job.output_path.clone_from(&output_path);
+            }
+            st.changed(None);
         }
-        self.notify_watch();
+        self.publish();
         self.supervise(&id, started, cancel, opts, output_path.clone());
         Ok(JobStart {
             id,
@@ -381,13 +426,17 @@ impl Jobs {
         } else {
             pending
         };
-        if let Some(job) = self.lock().running.get_mut(&id) {
-            job.output_path.clone_from(&output_path);
+        {
+            let mut st = self.lock();
+            if let Some(job) = st.running.get_mut(&id) {
+                job.output_path.clone_from(&output_path);
+            }
+            st.changed(None);
         }
+        self.publish();
         let output = exec::read_capped(&output_path)
             .map(|s| exec::truncate_output(&s))
             .unwrap_or_default();
-        self.notify_watch();
         let pid = started.pid;
         self.supervise(&id, started, own, opts, output_path.clone());
         CallEnd::Yielded {
@@ -547,28 +596,25 @@ async fn supervise(
         exec::Outcome::Exited(code) if !done.killed => Some(code),
         _ => None,
     };
-    let sink = {
+    {
         let mut st = jobs.lock();
         st.running.remove(&done.id);
         st.ended.push_back(done.clone());
         while st.ended.len() > ENDED_KEEP {
             st.ended.pop_front();
         }
-        let sink = st.sink.clone();
-        if sink.is_none() {
-            st.finished.push(done.clone());
+        // The listing hears the job is gone, and that it ENDED, BEFORE the notice is delivered, so the
+        // row that names it never outlives the line that says it finished.
+        st.changed(Some(done.clone()));
+        match st.sink.clone() {
+            Some(sink) => st.outbox.push_back(Publish::Notice(done, sink)),
+            None => st.finished.push(done),
         }
-        sink
-    };
-    // The listing hears the job is gone BEFORE the notice is delivered, so the row that names it never
-    // outlives the line that says it finished.
-    jobs.notify_watch();
+    }
+    jobs.publish();
     // The waiter is woken either way: a delivered job still changes `running()`, which is what ends a
     // headless wait that has nothing left to wait for.
     jobs.done.notify_waiters();
-    if let Some(sink) = sink {
-        sink(done);
-    }
 }
 
 /// How a job ended, in the fixed shape the notice and the `/jobs` page share: `exit 0 after 1m 12s`,
