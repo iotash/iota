@@ -2717,3 +2717,30 @@ fn verify_f1_loop_wide_rows_then_stream_then_settle() {
 fn verify_f1_control_commit_after_the_pass_loses_nothing() {
     f1_loop_at(4, true, false, true);
 }
+
+/// F1, the third consumer (`ensure_height` → `grow_up`): a taller frame grows up into the
+/// `pad` rows over it — with the band left above the wide batch, those rows were the batch,
+/// and the next draw painted the frame over them.
+#[test]
+fn verify_f1_grow_up_after_a_wide_batch_keeps_it() {
+    let (mut t, buf, _, mark) = f1_term_after_band();
+    let wide = format!("WIDE{}", "w".repeat(66)); // 70 cols: one row at 80, two at 60
+    t.insert_lines(&[wide]).unwrap();
+    let tall = crate::ui::render::frame::FrameView {
+        rows: ["SEP", "a", "b", "❯ ", "status"]
+            .iter()
+            .map(|r| (*r).to_owned())
+            .collect(),
+        cursor: Some((2, 3)),
+    };
+    assert!(t.ensure_height(5).unwrap());
+    t.draw_frame(&tall).unwrap();
+    let mut p = parse_shifted(&buf, mark, -3);
+    let all = reachable(&mut p);
+    assert_eq!(
+        (f1_find(&buf, mark, "WIDE"), f1_ws(&buf, mark)),
+        (1, 66),
+        "the frame grew up over the wide row:\n{}",
+        all.join("\n")
+    );
+}

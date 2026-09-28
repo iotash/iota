@@ -458,43 +458,29 @@ impl<W: Write> Term<W> {
         // on Enter, a streamed line) is still the old width when it is inserted. Measured, it
         // takes its wrapped rows and nothing is cut; assumed one row, its tail was dropped (and
         // a debug build panicked here — CI, 2026-09).
-        let measured = Paragraph::new(Text::from(lines.clone()))
-            .wrap(Wrap { trim: false })
-            .line_count(width);
-        if measured != rows.len() {
-            let n = u16::try_from(measured).unwrap_or(u16::MAX);
-            let para = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
-            self.t.insert_before(n, |buf| {
-                let area = buf.area;
-                para.render(area, buf);
-            })?;
-            return Ok(n);
-        }
-        let total = u16::try_from(rows.len()).unwrap_or(u16::MAX);
-        let mut lines = lines;
-        // The band a resize left above the frame (W5) takes the first rows: they are written
-        // straight into it, right under the transcript, and the frame does not move — only
-        // what the band cannot hold is inserted (and scrolls anything).
+        let para = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
+        let total = u16::try_from(para.line_count(width)).unwrap_or(u16::MAX);
+        // The band a resize left above the frame (W5) takes the first rows — wrapped rows
+        // too: they are written straight into it, right under the transcript, and the frame
+        // does not move — only what the band cannot hold is inserted (and scrolls anything).
+        // A row inserted past a band that is still open would sit between it and the frame,
+        // and the band's next consumer (`close_band`'s `DL`, the next `fill_above`,
+        // `grow_up`) would take it for a blank one.
         let pad = self.pad.min(self.top());
-        if pad > 0 {
-            let k = pad.min(total);
-            let rest = lines.split_off(usize::from(k));
-            let para = Paragraph::new(Text::from(lines));
+        let k = pad.min(total);
+        if k > 0 {
+            let para = para.clone();
             self.t.fill_above(pad, k, |buf| {
                 let area = buf.area;
                 para.render(area, buf);
             })?;
             self.pad = pad - k;
-            lines = rest;
         }
-        if !lines.is_empty() {
-            let n = u16::try_from(lines.len()).unwrap_or(u16::MAX);
-            let para = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
-            self.t.insert_before(n, |buf| {
-                let area = buf.area;
-                para.render(area, buf);
-            })?;
-        }
+        let para = para.scroll((k, 0));
+        self.t.insert_before(total - k, |buf| {
+            let area = buf.area;
+            para.render(area, buf);
+        })?;
         Ok(total)
     }
 
