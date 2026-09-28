@@ -440,8 +440,9 @@ fn is_executable(p: &Path) -> bool {
 pub const READ_CAPPED_BOUND: usize = MAX_OUTPUT_BYTES + 1 + TAIL_BYTES;
 
 /// Reads `path` under the byte caps: the whole file up to [`MAX_OUTPUT_BYTES`], else its head and its tail
-/// with the omission marker between them — byte-identical to what [`truncate_output`] would produce for the
-/// same content.
+/// with the omission marker between them — byte-identical to what [`truncate_output`]'s byte cap would
+/// produce for the same content when the file holds still while it is read. A file that grows, shrinks or
+/// misreports its end mid-read gets a snapshot of its head and some tail, not that exact text.
 ///
 /// One bounded snapshot, never a stream: every read is a `take`, so a background job that wrote gigabytes —
 /// or is still writing — costs the reader one open and at most [`READ_CAPPED_BOUND`] bytes.
