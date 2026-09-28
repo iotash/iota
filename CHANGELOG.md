@@ -110,7 +110,9 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   tmux 3.7 and newer) show it in one piece instead of half-drawn. Small updates,
   like typing or a streaming line, are sent as before, so tmux 3.7 over a slow
   connection is not slowed down (X-55).
-- **No line is lost while a reply streams through a resize.** Dragging a tmux
+- **A resize while a reply streams no longer erases lines iota cannot prove
+  are its own; a narrowing could still cut the reply's last lines until
+  0.5.1.** Dragging a tmux
   window's or pane's height while a reply was streaming lost a few of its lines
   every time; so did a height drag in a terminal that never answers iota's
   cursor query, and, rarely, one in tmux under load. iota now draws the whole
