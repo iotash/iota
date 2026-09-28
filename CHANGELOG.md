@@ -34,10 +34,11 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 ### Changed
 
 - **After you make the window narrower, the last few lines of a streaming
-  reply can appear twice** (2 or 3 lines in tmux, herdr and Ghostty; up to 4
+  reply can appear twice** (measured: 3 lines in tmux and 2 in herdr and
+  Ghostty when a drag narrows the window a column at a time; 3 or 4 in tmux
   when the width drops by half or more). iota no longer guesses how your
-  terminal rewrapped those lines, so it never erases one it cannot prove is its
-  own. No line is lost (X-52).
+  terminal rewrapped those lines, so it no longer erases lines on that guess
+  (X-52).
 - **A running background job keeps the host at working.** While a job runs and
   the chat is otherwise idle, herdr shows the pane `working`, the terminal's
   progress indicator stays on and cmux reads `Running`, until the job's notice
@@ -117,15 +118,16 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   the top of the screen and wiped everything that was on screen above them;
   in a terminal that keeps cleared screens (tmux) each step of a drag left
   another copy of the separators in the scrollback instead. iota now handles
-  the resize itself: the prompt stays at the bottom through any drag, the
-  transcript above it is intact, and no line, separator or blank row is left
-  behind — also with a picker such as `/model` open, while a tool runs, and
-  when a maximized window is restored to half its width. While you drag the
+  the resize itself: the prompt stays at the bottom through any drag and the
+  transcript above it is no longer wiped — also with a picker such as
+  `/model` open, while a tool runs, and when a maximized window is restored
+  to half its width. While you drag the
   window's edge, the prompt's lines stop a few columns short of the right edge
   (twice the widest step of the drag, at most 8) so the drag does not break
   them; two seconds after the last resize — or at once when you type — they
-  span the full width again. A drag can still leave up to two blank or
-  repeated lines in the scrollback, never a lost one (X-52). The staged last
+  span the full width again. A narrowing can still leave the last lines of a
+  streaming reply repeated in the scrollback — the measured counts are under
+  Changed (X-52). The staged last
   lines of a reply stay where they are, rewrapped for the new width, instead
   of being printed again. A row that ends in a wide character — CJK, an
   emoji — is measured to that character's right edge, so deleting one at the
