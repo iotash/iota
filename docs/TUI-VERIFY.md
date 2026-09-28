@@ -136,8 +136,10 @@ For each terminal:
 
 ## 3. Flicker (Ghostty and Terminal.app are mandatory)
 
-A write of at most 1 KiB (`SYNC_MIN`) arrives in a single read, so it has no intermediate state
-to show: it goes out bare. A larger write — a panel opening, a big insert, the frame after a
+A write of at most 1 KiB (`SYNC_MIN`) goes out bare: the threshold is the macOS pty read block,
+so such a write usually lands in one read, but that is an empirical choice, not a transport
+guarantee — nothing controls how many bytes the terminal reads at once, and a small write may
+show an intermediate state. A larger write — a panel opening, a big insert, the frame after a
 resize — is one DEC 2026 synchronized update (X-55; one loop iteration is one write, none
 around a cursor query), and in a terminal that knows the mode (Ghostty, kitty, WezTerm,
 Alacritty, iTerm2, foot, Windows Terminal, herdr, tmux ≥ 3.7 in a pane) it must not flicker;
@@ -151,7 +153,8 @@ stream is the stress case. There is no switch.
       erased and not written again (only the rows below them are erased), so the separator,
       the composer and the status row must NOT blink at all — any flash of them is a defect.
       (Under W1/W3 each change erased the frame and repainted every cell.) A panel opening
-      larger than 1 KiB must not flicker in a 2026 terminal; a smaller one is one read.
+      larger than 1 KiB must not flicker in a 2026 terminal; a smaller one goes out bare (usually
+      one read, not promised).
       Terminal.app/VTE may show one frame of a large one.
 
 ## 4. Resize reflow — count the orphans
@@ -168,7 +171,8 @@ its own viewport top. Some emulators will strand a row above the new viewport. T
       before X-52. What grew above the cursor stays behind as a duplicate: the pass no longer
       infers whether or how an emulator reflowed. Asserted ≤ 2 (15 of 15 runs, 2026-09-27; the
       3 measured when B3 landed counted distinct lines and included one the earlier blocks had
-      duplicated — see 4.5). No row is ever LOST — that bound is zero.)*
+      duplicated — see 4.5). Zero LOST rows is the hard target, its bound zero; no run of this
+      block has lost one, which is a record, not a proof — see the open records in 4.5.)*
 - [x] 自动化：scenarios 06 + 26 **4.3** Resize at idle — a narrowing, a diagonal shrink, a
       settled 25-step drag, a fast 8-step drag (SIGWINCHes 60 ms apart), and on fresh panes a
       2× and a 3× narrowing with the banner still staged, a narrowing right after 20 ms-a-line
@@ -195,8 +199,9 @@ its own viewport top. Some emulators will strand a row above the new viewport. T
       X-53's box) avoided the separators' rewrap on one-column steps; at full width every
       step rewraps them.
       **The budget (the owner's rule, 2026-09-24 — the resize protocol is FROZEN):** a LOST
-      row is the one hard failure, its bound is zero; per drag, at most 2 blank or duplicated
-      rows. The residuals listed below are BY DESIGN — native scrollback won over
+      row is the one hard failure, its bound is zero — an acceptance target every scenario is
+      held to, not a fact the runs below establish for every terminal (the unresolved records
+      are in 4.5); per drag, at most 2 blank or duplicated rows. The residuals listed below are BY DESIGN — native scrollback won over
       zero-residuals (no alt-screen) — and a report inside this budget is closed as such, not
       a new round. Over-budget items are named as such below.
       The owner's burst layout (2026-09-24): full width at rest, the frame a few columns
@@ -209,8 +214,8 @@ its own viewport top. Some emulators will strand a row above the new viewport. T
       one with no hole inside it, full width after the drag, composer flush, nothing lost; a
       stream starting as the drag ends leaves no band (scenario 26 G).
       Accepted residuals (X-52), each measured and bounded: (1) a drag's first step leaves
-      ≤ 2 blank rows per drag, at the top of the screen once it ends (paced +0, fast/mixed
-      +2); (2) a full-width user block already in the history rewraps its padding when the
+      ≤ 2 blank rows per drag, at the top of the screen once it ends (tmux 3.7c: paced +0,
+      fast/mixed +2; herdr: +2); (2) a full-width user block already in the history rewraps its padding when the
       terminal narrows, ⌈W/W'⌉ − 1 rows per block row (1-column step and 2×: 1, ⅓ width: 2);
       (3) the session's first narrowing with a row shrink: 1 duplicate once; (4) a drag
       mid-turn duplicates the 2 rows staged when it starts (tmux, the frozen build: 6 of 6
@@ -238,8 +243,9 @@ its own viewport top. Some emulators will strand a row above the new viewport. T
       tracked top the anchor of an erase (a proxy swallowing the queries, height 30→20→30:
       4/4 → 0/4); the scroll-on-clear race — a grow between a cursor answer and the erase
       (headless: `vt100_tests::a_grow_*`, `term::tests::a_grow_between_the_dsr_and_the_erase_*`).
-      Every byte is now counted from the cursor, which the emulator moves with its cell. A
-      DSR outage in a real terminal remains the manual check.)*
+      Every byte is now counted from the cursor, which the emulator moves with its cell. The
+      0/N counts are the runs made, not a global proof. A DSR outage in a real terminal
+      remains the manual check.)*
       Real emulators: drag a corner in Ghostty, iTerm2, kitty, herdr. No row may be missing
       from the scrollback, and there is exactly one separator pair at the end.
 - [x] 自动化：scenario 06 **4.4** After every resize: exactly one composer row, separators at the new width,
@@ -247,7 +253,10 @@ its own viewport top. Some emulators will strand a row above the new viewport. T
       it where reflow is real.)
 
 Budget: **≤ 2 orphaned rows per mid-stream resize** is accepted. More than that on a given
-terminal is a finding — and tmux 3.7c's narrowing is one (4.2).
+terminal is a finding — and since B3 there are known ones, each on the terminal it was measured
+on (X-52): a 10-step one-column drag after `stream 60 20` leaves 3 staged rows twice in tmux
+3.7c, 2 in herdr 0.9.1 and Ghostty 1.3.1; one ≥ 2× narrowing leaves 3 in tmux 3.7c, 4 in herdr
+and Ghostty.
 - [x] 自动化：scenarios 06 + 26 **4.5** The numbers are per tmux version — each scenario
       prints the tmux it ran on (`lib.sh`). Audited 2026-09-27 against tmux 3.7c (brew) and
       3.4 (Ubuntu 24.04's, built from source): all 31 bounded numbers in scenarios 06 and 26
