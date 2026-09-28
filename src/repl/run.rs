@@ -511,20 +511,24 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             ui_sink.enqueue(job_notice(&done));
         })));
     }
-    // The running set is what `/jobs` hangs off: the watch hears every change — a call that yielded, a
-    // `background: true` start, a job gone (before its notice is delivered) — and flips the row, re-issuing
-    // the table the `/save` way when the flag actually moved. The one-table law holds because the same
-    // flag gates the dispatch arm below.
+    // The running set is what `/jobs` hangs off: the watch hears every change, in the registry's order — a
+    // call that yielded, a `background: true` start, a job gone (with the job, when it ended: its notice is
+    // the next thing delivered) — and flips the row, re-issuing the table the `/save` way when the flag
+    // actually moved. The one-table law holds because the same flag gates the dispatch arm below.
     {
         let ui_watch = Arc::clone(&ui);
         let table_watch = Arc::clone(&repl.handles.table);
         let pres_watch = Arc::clone(&repl.handles.pres);
-        repl.handles.jobs.set_watch(Some(Box::new(move |running| {
-            let any = !running.is_empty();
-            // An idle chat with a job running is Busy to the host (`host` module doc).
-            pres_watch.set_jobs(running.len());
+        repl.handles.jobs.set_watch(Some(Box::new(move |set, end| {
+            let any = !set.is_empty();
+            // An idle chat with a job running is Busy to the host, and so is one owed an ended
+            // job's notice (`host` module doc): the end is a fact, not a drop in the count.
+            match end {
+                Some(_) => pres_watch.job_ended(set.len()),
+                None => pres_watch.set_jobs(set.len()),
+            }
             // The status row's job segment follows the same set (and ticks while it is non-empty).
-            ui_watch.set_jobs(running);
+            ui_watch.set_jobs(set);
             let mut table = lock(&table_watch);
             if table.set_jobs(any) {
                 ui_watch.set_slash_commands(table.active());

@@ -377,7 +377,7 @@ async fn wait_any_ends_on_nothing_running_or_a_cancelled_run() {
 fn watched(jobs: &Arc<Jobs>) -> Arc<Mutex<Vec<Vec<String>>>> {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&seen);
-    jobs.set_watch(Some(Box::new(move |running| {
+    jobs.set_watch(Some(Box::new(move |running, _| {
         sink.lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(running.into_iter().map(|j| j.id).collect());
@@ -622,5 +622,94 @@ async fn the_watch_hears_the_running_set_change() {
         seen(&watch).len(),
         3,
         "kill_all reported through a dropped watch"
+    );
+}
+
+// The review's interleaving (architecture §2.1): b1 ends and its set `[b2]` is in hand when its delivery is
+// held up; b2 ends meanwhile. However late b1's `[b2]` lands, b2's `[]` cannot overtake it — the facts are
+// heard in the order the registry changed, so the last set heard is the set as it stands and b2 is never
+// brought back; each end reaches the watch once, with the set that no longer lists it, and its notice
+// follows at once. The hold is inside the watch, before the set is recorded: on a registry that delivers
+// from two tasks unordered (0.5.0), b2's `[]` is recorded during the hold and b1's `[b2]` after it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_held_set_is_never_overtaken_by_a_later_one() {
+    if skip_unless_posix("a_held_set_is_never_overtaken_by_a_later_one") {
+        return;
+    }
+    let (_dir, jobs) = registry();
+    let log: Arc<Mutex<Vec<String>>> = Arc::default();
+    let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let go_rx = Mutex::new(go_rx);
+    let record = Arc::clone(&log);
+    jobs.set_watch(Some(Box::new(move |running, ended| {
+        let ids: Vec<String> = running.into_iter().map(|j| j.id).collect();
+        if ids == ["b2"] {
+            // b1's end, `[b2]` in hand: held until b2 has ended too.
+            let _ = held_tx.send(());
+            let _ = go_rx
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .recv_timeout(Duration::from_secs(8));
+        }
+        let ended = ended.map_or(String::new(), |d| format!(" ended {}", d.id));
+        record
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(format!("{ids:?}{ended}"));
+    })));
+    let record = Arc::clone(&log);
+    jobs.set_sink(Some(Box::new(move |done: JobDone| {
+        record
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(format!("notice {}", done.id));
+    })));
+    let heard =
+        |log: &Arc<Mutex<Vec<String>>>| log.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    jobs.spawn(&opts("sleep 30", None)).expect("spawn b1");
+    jobs.spawn(&opts("sleep 30", None)).expect("spawn b2");
+
+    // The rest runs on a plain thread: the held watch and b2's supervisor each block a worker, and the
+    // steps here must not wait on the runtime's timer to take their turn.
+    let steps = Arc::clone(&jobs);
+    let steps_log = Arc::clone(&log);
+    tokio::task::spawn_blocking(move || {
+        let poll = |done: &dyn Fn() -> bool, ticks: u32| {
+            for _ in 0..ticks {
+                if done() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        steps.kill("b1");
+        held_rx
+            .recv_timeout(Duration::from_secs(8))
+            .expect("b1's end never reached the watch");
+        steps.kill("b2");
+        poll(&|| steps.running() == 0, 400);
+        assert_eq!(steps.running(), 0, "b2 never left the registry");
+        // Room for a delivery that does not wait its turn to land before b1's is let go.
+        poll(
+            &|| heard(&steps_log).iter().any(|e| e.starts_with("[]")),
+            30,
+        );
+        go_tx.send(()).expect("release");
+        poll(&|| heard(&steps_log).len() >= 6, 400);
+    })
+    .await
+    .expect("the steps panicked");
+    assert_eq!(
+        heard(&log),
+        [
+            r#"["b1"]"#,
+            r#"["b1", "b2"]"#,
+            r#"["b2"] ended b1"#,
+            "notice b1",
+            "[] ended b2",
+            "notice b2",
+        ],
+        "the facts were heard out of the order the registry changed in"
     );
 }

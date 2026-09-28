@@ -149,12 +149,12 @@ async fn a_running_job_keeps_the_pane_working() {
     let p = Presenter::new(&probe(&mock.env("w1:p2")), None, true);
     p.set_state(State::Idle);
     p.set_jobs(1); // a job starts while the chat is idle
-    p.set_jobs(0); // it ends; the notice is on the way
+    p.job_ended(0); // it ends; the notice is on the way
     p.set_state(State::Idle); // the loop wakes for it
     p.notice_taken();
     p.set_state(State::Busy); // the notice's turn
     p.set_jobs(1);
-    p.set_jobs(0);
+    p.job_ended(0);
     p.notice_taken(); // drained at a round boundary
     p.set_state(State::Idle);
     p.close().await;
