@@ -17,11 +17,20 @@
 //! **The publish order.** Both seams hear FACTS, and a fact is decided where the registry changes: under
 //! the registry's lock, in the same critical section as the change, the fact is queued — the running set
 //! the change left, with the job whose end made it if that is what it was, and then that job's notice. The
-//! queue's order is therefore the registry's order. ONE exit ([`Jobs::publish`], serialized by its own
-//! lock and never under the registry's) hands the queue to the seams in that order, and every change drains
-//! it before returning. So: no set is heard out of order or skipped, the last set heard is the set as it
-//! stands, a job's end reaches the watch exactly once (with the set that no longer lists it), and its
-//! notice reaches the sink right after that — never before, never overtaken by a later change's set.
+//! changes that queue are the ones a caller can see the end of: a job started or adopted (once its child
+//! and log are in place), a slot given back because its child never started, a job gone, a watch installed
+//! on a non-empty set, parked notices handed to a new sink. ONE change does not queue: the CLAIM
+//! (`State::claim`) that takes a slot before the child exists — an intermediate state its own call
+//! always closes, by the start or the give-back above, before it returns. A set is taken whole, so a claimed
+//! slot IS heard when another change's set is taken in that window (`spawn`'s is still `pid: None`, with
+//! no log yet) — and then its close is heard after it, never before. The queue's order is therefore the
+//! registry's order at every change that queues. ONE exit (`Jobs::publish`, serialized by its own lock
+//! and never under the registry's) hands the queue to the seams in that order, and every queuing change
+//! drains it before returning. So: no queued set is heard out of order or dropped, no start, give-back or
+//! end is skipped (only a claim with nothing else in its window goes unheard, and its close is heard), the
+//! last set heard is the set as it stands, a job's end reaches the watch exactly once (with the set that no
+//! longer lists it), and its notice reaches the sink right after that — never before, never overtaken by a
+//! later change's set.
 //!
 //! Nothing here outlives the process: [`Jobs::kill_all`] is synchronous `killpg` precisely so a `/quit` or a
 //! failed headless run cannot leave a tree behind, and a resumed session therefore never sees a job it
@@ -330,8 +339,9 @@ impl Jobs {
         let started = match self.start_child(&cancel, opts, &output_path) {
             Ok(started) => started,
             Err(e) => {
-                // A slot claimed by a job that never started is a slot leaked forever — and a set some
-                // other change published in between may list it, so its going is a change of its own.
+                // A slot claimed by a job that never started is a slot leaked forever — and the claim
+                // queued nothing, but a set another change took in between may list it (the module doc's
+                // publish order), so giving it back is a change of its own.
                 {
                     let mut st = self.lock();
                     st.running.remove(&id);
