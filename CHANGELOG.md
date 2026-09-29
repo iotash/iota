@@ -3,6 +3,30 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## 0.5.2 - 2026-09-29
+
+### Fixed
+
+- **An MCP tool whose schema escapes a character needlessly no longer fails
+  the turn.** JSON Schema's regexes are the Unicode-mode dialect, where an
+  escape like `\_` is an error; exa's `agent_run` declares
+  `^agent\_run\_`, and DeepSeek, which checks every `pattern` when the
+  schema names its `$schema`, refused every request that carried the tool.
+  iota now drops such backslashes when it lists a server's tools — the
+  pattern matches the same strings — and leaves the rest of the schema,
+  `$schema` included, as the server wrote it (X-57).
+- **A job's page no longer holds up the prompt while its log grows.** The
+  `/jobs` page read the job's log on every refresh from the loop that draws
+  the screen; it now reads it off that loop, once a refresh, never more than
+  a fixed number of bytes, and for as long as the page is open — output from
+  a command the job left running in the background still shows (X-50).
+- **The host no longer shows iota idle while a job's end is still to be
+  taken.** The host's state followed the count of running jobs, so when one
+  job ended as another started the count did not move: herdr, cmux or the
+  terminal's progress could show iota idle before it had taken the ended
+  job's notice, and a job that never started could keep it busy. Each end now
+  reaches the host as its own event, in the order the jobs changed (X-50).
+
 ## 0.5.1 - 2026-09-28
 
 ### Fixed
