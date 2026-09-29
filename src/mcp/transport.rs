@@ -148,7 +148,8 @@ impl StderrCapture {
 
 /// manager.go:337-398 — expand (`opts.resolver`) → endpoint → transport → `ClientInfo::new(
 /// ClientCapabilities::default(), opts.client_info.clone()).serve(transport)` → `peer().list_all_tools()` →
-/// `ToolDef { name: raw, description: unwrap_or_default, input_schema: Some((*input_schema).clone()), deferred: false }`.
+/// `ToolDef { name: raw, description: unwrap_or_default, input_schema: Some((*input_schema).clone()), deferred: false }`,
+/// the schema passed through [`schema::normalize`](crate::mcp::schema::normalize).
 ///
 /// Transport selection: url non-empty → must start `http://` / `https://` else `UnsupportedScheme(url)`, then
 /// by the entry's [`effective_auth`](ServerConfig::effective_auth) — `oauth`: [`connect_oauth`]; `none`:
@@ -345,7 +346,11 @@ async fn list_tools(
         .map(|t| ToolDef {
             name: t.name.into_owned(),
             description: t.description.map(Cow::into_owned).unwrap_or_default(),
-            input_schema: Some((*t.input_schema).clone()),
+            input_schema: Some({
+                let mut schema = (*t.input_schema).clone();
+                crate::mcp::schema::normalize(&mut schema);
+                schema
+            }),
             deferred: false,
         })
         .collect();
