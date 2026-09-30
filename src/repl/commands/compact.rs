@@ -7,7 +7,9 @@
 //! before a send is not.
 //!
 //! **What compaction keeps.** A leading system message (the prompt is not conversation),
-//! and the LAST TURN — everything from the final user message to the end. Whatever lies
+//! and the LAST TURN — everything from the final user message to the end. In a bot's session the last turn
+//! starts at the final message the USER sent, not at a host notice: the memory flush is a notice turn of its
+//! own, and it is kept after the user's turn rather than instead of it (docs/design/bot-mode.md §3.6.1). Whatever lies
 //! between them is summarized into one paragraph that is PREPENDED into a COPY of the first
 //! retained message rather than inserted as a message of its own: two consecutive
 //! same-role messages are a shape some providers reject, and the summary belongs to the
@@ -33,9 +35,12 @@ use crate::provider::usage::Usage;
 use crate::sync::lock;
 use tokio_util::sync::CancellationToken;
 
-use crate::repl::context::tokens::go_map;
+use crate::host::{Event, Kind, State};
+use crate::repl::bot::{COMPACTED_WITHOUT_FLUSH, Compacted};
+use crate::repl::context::tokens::{TokenCounter, go_map};
 use crate::repl::render::styles::truncate_runes;
 use crate::repl::run::Repl;
+use crate::session::CompactionStats;
 
 /// The instruction that hands the retention decision to the model and hardens against
 /// prompt injection from the conversation being summarized (`chat/compact.go`
@@ -45,13 +50,72 @@ pub(crate) const SUMMARY_INSTRUCTION: &str = "You are compressing a conversation
 /// How much of one tool result the summary pass is shown (`chat/compact.go` `summarize`).
 const TOOL_RESULT_CAP: usize = 2_000;
 
-/// How many trailing messages form the last turn — from the last user message to the end
-/// (`chat/compact.go` `retainTailCount`). At least 1 when the history is non-empty.
-pub(crate) fn retain_tail_count(history: &[Message]) -> usize {
+/// The part of the bot's addendum that does not depend on the flush.
+macro_rules! bot_summary_focus {
+    () => {
+        "Focus on conversational state: open threads, pending requests, recent decisions and their reasons. Keep the summary under about 1,500 words."
+    };
+}
+
+/// The bot's addition to [`SUMMARY_INSTRUCTION`] (docs/design/bot-mode.md §3.6.2 item 3), for a flush that
+/// saved something: the summary pass is shown `MEMORY.md`, so "do not repeat it" is an instruction it can
+/// follow. [`bot_summary_addendum`] words it for what the flush actually did.
+pub(crate) const BOT_SUMMARY_ADDENDUM: &str = concat!(
+    "Durable facts that are already in the LONG-TERM MEMORY section below are visible to the model separately; do not repeat them. ",
+    bot_summary_focus!()
+);
+
+/// [`BOT_SUMMARY_ADDENDUM`] for a compaction whose flush wrote nothing — or did not run: nothing new is in
+/// the memory, so nothing may be left out of the summary on the strength of it (critique S3).
+pub(crate) const BOT_SUMMARY_NOTHING_SAVED: &str = concat!(
+    "Nothing was saved to long-term memory this time; keep durable facts in the summary. ",
+    bot_summary_focus!()
+);
+
+/// The addendum for a flush that wrote `writes` lines to `MEMORY.md`.
+fn bot_summary_addendum(writes: u32) -> String {
+    match writes {
+        0 => BOT_SUMMARY_NOTHING_SAVED.to_owned(),
+        1 => format!(
+            "{BOT_SUMMARY_ADDENDUM} The memory flush just before this compaction saved 1 line."
+        ),
+        n => format!(
+            "{BOT_SUMMARY_ADDENDUM} The memory flush just before this compaction saved {n} lines."
+        ),
+    }
+}
+
+/// What a bot's compaction hands the summary pass beyond the conversation (docs/design/bot-mode.md §3.6.2).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BotCompact<'a> {
+    /// `MEMORY.md` as it is now (the body, at most 8 KiB).
+    pub(crate) memory: &'a str,
+    /// Lines the memory flush wrote just before this compaction (`0`: none, or no flush ran).
+    pub(crate) flush_writes: u32,
+}
+
+/// How many trailing messages form the last turn — from the last message `turn_start` accepts to the end
+/// (`chat/compact.go` `retainTailCount`, whose rule is [`any_user`]). At least 1 when the history is
+/// non-empty and `turn_start` accepts something.
+pub(crate) fn retain_tail_count(
+    history: &[Message],
+    turn_start: impl Fn(&Message) -> bool,
+) -> usize {
     history
         .iter()
-        .rposition(|m| m.role() == Role::User)
+        .rposition(turn_start)
         .map_or(history.len(), |i| history.len() - i)
+}
+
+/// Go's turn start: any user-role message, a host notice included.
+pub(crate) fn any_user(m: &Message) -> bool {
+    m.role() == Role::User
+}
+
+/// A bot's turn start: a message the user sent — never a host notice (the flush, a finished job, a memory
+/// write's record), which rides along with the turn before it.
+pub(crate) fn user_sent(m: &Message) -> bool {
+    m.role() == Role::User && !m.is_notice()
 }
 
 /// What one compaction pass produced.
@@ -65,10 +129,15 @@ pub(crate) enum Compaction {
         history: Vec<Message>,
         /// The summary text (persisted in the marker).
         summary: String,
-        /// How many trailing messages were retained.
+        /// How many trailing CONVERSATION messages were retained — the non-system ones, which is what
+        /// the writer's `conv_count` counts: a defer mount in the retained turn is not one of them.
         retain_tail: usize,
         /// What the summary call itself billed.
         usage: Option<Usage>,
+        /// The local count of the messages the summary replaced.
+        middle_tokens: u64,
+        /// The local count of the summary.
+        summary_tokens: u64,
     },
 }
 
@@ -84,26 +153,38 @@ pub(crate) enum CompactError {
     Provider(#[from] ProviderError),
 }
 
-/// Summarizes the older portion of `history` (`chat/compact.go` `compactHistory`).
+/// Summarizes the older portion of `history` (`chat/compact.go` `compactHistory`). `bot` is a bot's
+/// session: its last turn starts at the last message the user sent ([`user_sent`]), and the summary pass
+/// is shown the memory and told what the flush wrote.
 pub(crate) async fn compact_history(
     cancel: &CancellationToken,
     provider: &dyn Provider,
     history: &[Message],
     hint: &str,
+    bot: Option<&BotCompact<'_>>,
 ) -> Result<Compaction, CompactError> {
     let sys_end = usize::from(history.first().is_some_and(|m| m.role() == Role::System));
-    let retain_tail = retain_tail_count(history).min(history.len() - sys_end);
-    let middle_end = history.len() - retain_tail;
+    let tail = if bot.is_some() {
+        retain_tail_count(history, user_sent)
+    } else {
+        retain_tail_count(history, any_user)
+    };
+    let tail = tail.min(history.len() - sys_end);
+    let middle_end = history.len() - tail;
     if middle_end <= sys_end {
         return Ok(Compaction::Unchanged); // nothing older than the last turn
     }
 
+    let counter = TokenCounter::new();
+    let middle_tokens = counter.count_messages(&history[sys_end..middle_end]);
     let (previous, middle) = split_previous_summary(&history[sys_end..middle_end]);
-    let (summary, usage) = summarize(cancel, provider, previous.as_deref(), &middle, hint).await?;
+    let (summary, usage) =
+        summarize(cancel, provider, previous.as_deref(), &middle, hint, bot).await?;
     let summary = summary.trim().to_owned();
     if summary.is_empty() {
         return Err(CompactError::EmptySummary);
     }
+    let summary_tokens = counter.count(&summary);
 
     // Rebuild: system + (summary prepended into a COPY of the first retained message) +
     // rest. The caller's slice is never mutated.
@@ -120,8 +201,10 @@ pub(crate) async fn compact_history(
     Ok(Compaction::Done {
         history: out,
         summary,
-        retain_tail,
+        retain_tail: retained.iter().filter(|m| m.role() != Role::System).count(),
         usage,
+        middle_tokens,
+        summary_tokens,
     })
 }
 
@@ -153,12 +236,19 @@ fn split_previous_summary(middle: &[Message]) -> (Option<String>, Vec<Message>) 
 /// unary call — no tools, isolated from the conversation (`chat/compact.go` `summarize`).
 /// `previous` is the summary an earlier pass wove into the view: it gets its own fenced
 /// section so it is carried forward, not re-summarized as conversation.
+///
+/// The prompt's order (a bot's parts only with `bot`): the instruction, the bot's addendum, the user's
+/// hint, the previous summary, the long-term memory, the conversation. The addendum refines the
+/// instruction, so it follows it directly; the hint comes after both, so what the user asked for this
+/// compaction is the last word before the data; the memory sits between the previous summary and the
+/// conversation, the two things the summary pass must not repeat from it.
 async fn summarize(
     cancel: &CancellationToken,
     provider: &dyn Provider,
     previous: Option<&str>,
     middle: &[Message],
     hint: &str,
+    bot: Option<&BotCompact<'_>>,
 ) -> Result<(String, Option<Usage>), CompactError> {
     let mut body = String::new();
     for m in middle {
@@ -196,19 +286,36 @@ async fn summarize(
     }
 
     let mut prompt = String::from(SUMMARY_INSTRUCTION);
+    if let Some(b) = bot {
+        prompt.push_str("\n\n");
+        prompt.push_str(&bot_summary_addendum(b.flush_writes));
+    }
     if !hint.is_empty() {
         prompt.push_str("\n\nExtra guidance from the user — emphasize this: ");
         prompt.push_str(hint);
     }
-    let start = match previous {
-        Some(prev) => {
-            prompt.push_str("\n\n--- PREVIOUS SUMMARY (already condensed: carry forward what still matters, drop what is resolved) ---\n");
-            prompt.push_str(prev);
-            "\n--- NEW CONVERSATION START ---\n"
-        }
-        None => "\n\n--- CONVERSATION START ---\n",
-    };
-    prompt.push_str(start);
+    if let Some(prev) = previous {
+        prompt.push_str("\n\n--- PREVIOUS SUMMARY (already condensed: carry forward what still matters, drop what is resolved) ---\n");
+        prompt.push_str(prev);
+    }
+    if let Some(b) = bot {
+        prompt.push_str(
+            "\n\n--- LONG-TERM MEMORY (already saved separately; do not repeat these) ---\n",
+        );
+        prompt.push_str(if b.memory.is_empty() {
+            "(empty)"
+        } else {
+            b.memory
+        });
+    }
+    // A section above ends without a blank line before the conversation; only a previous summary makes
+    // the conversation "new".
+    let fenced = previous.is_some() || bot.is_some();
+    prompt.push_str(match (fenced, previous.is_some()) {
+        (_, true) => "\n--- NEW CONVERSATION START ---\n",
+        (true, false) => "\n--- CONVERSATION START ---\n",
+        (false, false) => "\n\n--- CONVERSATION START ---\n",
+    });
     prompt.push_str(&body);
     prompt.push_str("--- CONVERSATION END ---");
 
@@ -222,26 +329,40 @@ async fn summarize(
 /// that there was nothing to do. `repl.conv.compact_declined` is the auto-offer's snooze watermark, which any
 /// SUCCESSFUL compaction clears — the conversation the user declined to compact no longer
 /// exists.
+///
+/// In a bot's session (docs/design/bot-mode.md §3.6, §4.1) the summary pass is shown `MEMORY.md` and told
+/// what the flush wrote, the marker records whether the flush was skipped, and the outcome goes through the
+/// bot's flush machine: a success re-reads the memory copy, nothing to compact snoozes, and the second
+/// failure in a row tells the host.
 pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
+    let flush = repl.conv.bot.as_ref().map(|b| b.flush.report());
+    let memory = repl.conv.bot.as_ref().map(|b| b.memory.current().body);
+    let bot = flush.zip(memory.as_deref()).map(|(f, memory)| BotCompact {
+        memory,
+        flush_writes: f.writes,
+    });
     let busy = repl.handles.ui.busy("Compacting context…");
     let res = compact_history(
         &repl.handles.cancel,
         &*repl.conv.provider,
         &repl.conv.history,
         hint,
+        bot.as_ref(),
     )
     .await;
     busy.stop();
 
-    let (history, summary, retain_tail, usage) = match res {
+    let (history, summary, retain_tail, usage, middle_tokens, summary_tokens) = match res {
         Err(e) => {
             repl.handles.tr.error(&format!("Compaction failed: {e}"));
+            bot_compacted(repl, Compacted::Failed, &e.to_string());
             return;
         }
         Ok(Compaction::Unchanged) => {
             if manual {
                 repl.handles.tr.notice("Nothing to compact yet.");
             }
+            bot_compacted(repl, Compacted::Unchanged, "");
             return;
         }
         Ok(Compaction::Done {
@@ -249,17 +370,31 @@ pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
             summary,
             retain_tail,
             usage,
-        }) => (history, summary, retain_tail, usage),
+            middle_tokens,
+            summary_tokens,
+        }) => (
+            history,
+            summary,
+            retain_tail,
+            usage,
+            middle_tokens,
+            summary_tokens,
+        ),
     };
 
     repl.conv.history = history;
     // The summary pass is a billed call of its own: book it (no message carries it, so the
     // marker does).
     let booked = repl.conv.ctxm.book_call(usage);
+    let stats = CompactionStats {
+        middle_tokens: Some(middle_tokens),
+        summary_tokens: Some(summary_tokens),
+        flush_skipped: flush.is_some_and(|f| f.skipped),
+    };
     let persist = {
         let mut slot = lock(&repl.session.writer);
         slot.as_mut()
-            .map(|w| w.append_compaction(&summary, retain_tail, booked))
+            .map(|w| w.append_compaction_with(&summary, retain_tail, booked, stats))
     };
     if let Some(Err(e)) = persist {
         repl.handles.tr.error(&format!(
@@ -272,13 +407,45 @@ pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
     repl.conv.budget.reseed(&history);
     repl.conv.history = history;
     repl.conv.compact_declined = 0;
-    // bot-mode.md §3.4's second refresh moment belongs here — the history's prefix has just changed, so the
-    // prompt cache is cold anyway: `repl.conv.bot`'s `memory.reload()` (T7, with the memory flush).
     repl.handles.tr.notice(&format!(
         "Context compacted → {}",
         repl.conv.budget.status()
     ));
+    // Asked for by hand, a compaction without a flush is what the user chose; unasked, it is said out loud.
+    if !manual && stats.flush_skipped {
+        repl.handles.tr.notice(COMPACTED_WITHOUT_FLUSH);
+    }
+    bot_compacted(repl, Compacted::Done, "");
     repl.push_status();
+}
+
+/// Feeds a compaction's outcome to a bot's flush machine and does what it answers (§4.1); nothing outside a
+/// bot's session. `err` is the failure's text.
+fn bot_compacted(repl: &mut Repl, outcome: Compacted, err: &str) {
+    let Some(bot) = repl.conv.bot.as_mut() else {
+        return;
+    };
+    let after = bot.flush.compacted(outcome);
+    if after.reload {
+        // §3.4's second refresh moment: the history's prefix has just changed, so the prompt cache is cold
+        // anyway, and the flush's writes join the copy every send carries.
+        bot.memory.reload();
+        if let Some(warn) = bot.memory.warning() {
+            repl.handles.tr.notice(&format!("⚠ {warn}"));
+        }
+    }
+    if after.alarm {
+        let text = format!("bot {}: compaction failing — {err}", bot.name);
+        repl.handles.pres.set_state(State::Error);
+        repl.handles.pres.notify(Event {
+            kind: Kind::Failed,
+            text,
+        });
+    }
+    if after.snooze {
+        // The next attempt — and the next flush — waits for the usage to grow by 5% of the window.
+        repl.conv.compact_declined = repl.conv.budget.used();
+    }
 }
 
 /// The pre-send auto-compaction offer (`chat/run.go:979-989`).
@@ -288,6 +455,10 @@ pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
 /// text, and the estimator only has to be the right order of magnitude for a threshold
 /// check). Declining — or a facade error, which must never block the send — snoozes the
 /// offer at the projected usage.
+///
+/// A bot's session is not asked (docs/design/bot-mode.md §4.1): nobody may be there to answer, so it
+/// compacts — at the threshold, or when a compaction is owed because this message arrived ahead of the
+/// flush notice (§3.6.1: no flush then; safety first). The flush notice itself never comes through here.
 pub(crate) async fn offer_before_send(repl: &mut Repl, input: &str) {
     if !repl.conv.ctxm.is_enabled() {
         return;
@@ -297,11 +468,17 @@ pub(crate) async fn offer_before_send(repl: &mut Repl, input: &str) {
     for att in &repl.conv.pending {
         extra += u64::try_from(att.data.len() / 1000).unwrap_or(0);
     }
-    if !repl
+    let over = repl
         .conv
         .budget
-        .should_offer_compact(extra, repl.conv.compact_declined)
-    {
+        .should_offer_compact(extra, repl.conv.compact_declined);
+    if let Some(bot) = repl.conv.bot.as_ref() {
+        if bot.flush.before_send(over) {
+            compact_now(repl, "", false).await;
+        }
+        return;
+    }
+    if !over {
         return;
     }
     let title = format!(
@@ -328,7 +505,10 @@ mod tests {
     use crate::testing::FakeProvider;
     use tokio_util::sync::CancellationToken;
 
-    use super::{Compaction, compact_history, retain_tail_count};
+    use super::{
+        BOT_SUMMARY_ADDENDUM, BOT_SUMMARY_NOTHING_SAVED, BotCompact, Compaction,
+        SUMMARY_INSTRUCTION, any_user, compact_history, retain_tail_count, user_sent,
+    };
 
     /// Go's `stubProvider`: a one-shot `Chat` answering `"SUMMARY"`.
     fn summarizer() -> FakeProvider {
@@ -356,24 +536,27 @@ mod tests {
             Message::user("u2"),
             Message::assistant("a2"),
         ];
-        assert_eq!(retain_tail_count(&h), 2);
-        assert_eq!(retain_tail_count(&[]), 0);
-        assert_eq!(retain_tail_count(&[Message::system("s")]), 1);
+        assert_eq!(retain_tail_count(&h, any_user), 2);
+        assert_eq!(retain_tail_count(&[], any_user), 0);
+        assert_eq!(retain_tail_count(&[Message::system("s")], any_user), 1);
         assert_eq!(
-            retain_tail_count(&[Message::user("only")]),
+            retain_tail_count(&[Message::user("only")], any_user),
             1,
             "a lone user message IS the last turn"
         );
         assert_eq!(
-            retain_tail_count(&[
-                Message::user("u"),
-                Message {
-                    body: Body::Tool(ToolBody {
-                        ..ToolBody::default()
-                    }),
-                    ..Message::default()
-                },
-            ]),
+            retain_tail_count(
+                &[
+                    Message::user("u"),
+                    Message {
+                        body: Body::Tool(ToolBody {
+                            ..ToolBody::default()
+                        }),
+                        ..Message::default()
+                    },
+                ],
+                any_user
+            ),
             2
         );
     }
@@ -384,7 +567,7 @@ mod tests {
     #[tokio::test]
     async fn a_compacted_history_is_system_summary_and_the_last_turn() {
         let h = history();
-        let out = compact_history(&CancellationToken::new(), &summarizer(), &h, "")
+        let out = compact_history(&CancellationToken::new(), &summarizer(), &h, "", None)
             .await
             .expect("compaction succeeded");
         let Compaction::Done {
@@ -425,7 +608,7 @@ mod tests {
                 Message::assistant("a1"),
             ],
         ] {
-            let out = compact_history(&CancellationToken::new(), &summarizer(), &h, "")
+            let out = compact_history(&CancellationToken::new(), &summarizer(), &h, "", None)
                 .await
                 .expect("no error");
             assert!(
@@ -439,7 +622,7 @@ mod tests {
     #[tokio::test]
     async fn an_empty_summary_is_an_error() {
         let p = FakeProvider::scripted(Vec::new(), "   \n ");
-        let e = compact_history(&CancellationToken::new(), &p, &history(), "")
+        let e = compact_history(&CancellationToken::new(), &p, &history(), "", None)
             .await
             .expect_err("an empty summary must fail");
         assert_eq!(e.to_string(), "empty summary");
@@ -476,9 +659,15 @@ mod tests {
             },
             Message::user("u2"),
         ];
-        compact_history(&CancellationToken::new(), &p, &h, "keep the file paths")
-            .await
-            .expect("compaction succeeded");
+        compact_history(
+            &CancellationToken::new(),
+            &p,
+            &h,
+            "keep the file paths",
+            None,
+        )
+        .await
+        .expect("compaction succeeded");
 
         let prompt = p.last();
         assert!(prompt.starts_with(super::SUMMARY_INSTRUCTION));
@@ -520,7 +709,7 @@ mod tests {
             Message::user("u3"),
             Message::assistant("a3"),
         ];
-        compact_history(&CancellationToken::new(), &p, &h, "")
+        compact_history(&CancellationToken::new(), &p, &h, "", None)
             .await
             .expect("compaction succeeded");
 
@@ -559,7 +748,7 @@ mod tests {
             Message::assistant("a1"),
             Message::user("u2"),
         ];
-        compact_history(&CancellationToken::new(), &p, &h, "")
+        compact_history(&CancellationToken::new(), &p, &h, "", None)
             .await
             .expect("compaction succeeded");
         let prompt = log.prompts().pop().expect("the summary call was made");
@@ -585,7 +774,7 @@ mod tests {
                 Message::assistant("a1"),
                 Message::user("u2"),
             ];
-            compact_history(&CancellationToken::new(), &p, &h, "")
+            compact_history(&CancellationToken::new(), &p, &h, "", None)
                 .await
                 .expect("compaction succeeded");
             let prompt = log.prompts().pop().expect("the summary call was made");
@@ -598,6 +787,207 @@ mod tests {
                 "{prompt}"
             );
         }
+    }
+
+    /// A bot's history at the moment the flush turn's compaction runs: the user's last turn, then the
+    /// flush exchange and the record of the write it made — three host notices, all user-role.
+    fn flushed_history() -> Vec<Message> {
+        vec![
+            Message::system("sys"),
+            Message::user("u1"),
+            Message::assistant("a1"),
+            Message::user("u2"),
+            Message::assistant("a2"),
+            Message::notice("The conversation is about to be compacted: …"),
+            Message::assistant("Saved 1 line."),
+            Message::notice("memory: MEMORY.md ## User +1 line: [user] tabs"),
+        ]
+    }
+
+    /// bot-mode.md §3.6.1 (critique S2c): in a bot's session the last turn starts at the last message the
+    /// USER sent, so user turn → flush turn → compaction keeps the user's turn, the flush exchange riding
+    /// after it. Go's rule, kept outside a bot, would keep the memory-write notice alone.
+    #[tokio::test]
+    async fn a_bot_keeps_the_users_last_turn_not_the_flush() {
+        let h = flushed_history();
+        assert_eq!(retain_tail_count(&h, user_sent), 5);
+        assert_eq!(retain_tail_count(&h, any_user), 1);
+
+        let bot = BotCompact {
+            memory: "",
+            flush_writes: 1,
+        };
+        let p = summarizer();
+        let log = p.log();
+        let Compaction::Done {
+            history: out,
+            retain_tail,
+            ..
+        } = compact_history(&CancellationToken::new(), &p, &h, "", Some(&bot))
+            .await
+            .expect("compaction succeeded")
+        else {
+            panic!("nothing compacted");
+        };
+        assert_eq!(retain_tail, 5);
+        assert_eq!(
+            out.iter().map(|m| m.content.as_str()).collect::<Vec<_>>()[2..],
+            h.iter().map(|m| m.content.as_str()).collect::<Vec<_>>()[4..]
+        );
+        assert_eq!(
+            out[1].content,
+            format!("{}u2", crate::session::summary_preamble("SUMMARY"))
+        );
+        let prompt = log.prompts().pop().expect("the summary call was made");
+        assert!(
+            prompt.ends_with("User: u1\nAssistant: a1\n--- CONVERSATION END ---"),
+            "{prompt}"
+        );
+
+        // Without a message the user sent there is no turn to keep, and nothing to compact.
+        let notices_only = vec![
+            Message::notice("n1"),
+            Message::assistant("a"),
+            Message::notice("n2"),
+        ];
+        assert!(matches!(
+            compact_history(
+                &CancellationToken::new(),
+                &summarizer(),
+                &notices_only,
+                "",
+                Some(&bot)
+            )
+            .await
+            .expect("no error"),
+            Compaction::Unchanged
+        ));
+    }
+
+    /// The marker's `retain_tail` counts conversation messages — the writer's `conv_count` never counts a
+    /// system message, and a defer mount appended in the last turn is one (it is not even persisted). The
+    /// slice kept in memory still carries it.
+    #[tokio::test]
+    async fn a_mount_in_the_last_turn_is_not_a_retained_conversation_message() {
+        let h = vec![
+            Message::system("sys"),
+            Message::user("u1"),
+            Message::assistant("a1"),
+            Message::user("u2"),
+            Message::assistant_with_calls("", Vec::new(), None),
+            Message::system_tools(vec![crate::provider::model::ToolDef {
+                name: "loaded".to_owned(),
+                ..crate::provider::model::ToolDef::default()
+            }]),
+            Message::assistant("a2"),
+        ];
+        let Compaction::Done {
+            history: out,
+            retain_tail,
+            ..
+        } = compact_history(&CancellationToken::new(), &summarizer(), &h, "", None)
+            .await
+            .expect("compaction succeeded")
+        else {
+            panic!("nothing compacted");
+        };
+        assert_eq!(retain_tail, 3, "u2, the calls, a2 — not the mount");
+        assert_eq!(out.len(), 5, "system + the four messages of the last turn");
+        assert!(
+            !out[3].tools().is_empty(),
+            "the mount stays in the live view"
+        );
+    }
+
+    /// The figures the marker carries: the middle's and the summary's local token counts.
+    #[tokio::test]
+    async fn a_compaction_counts_the_middle_and_the_summary() {
+        let h = history();
+        let Compaction::Done {
+            middle_tokens,
+            summary_tokens,
+            ..
+        } = compact_history(&CancellationToken::new(), &summarizer(), &h, "", None)
+            .await
+            .expect("compaction succeeded")
+        else {
+            panic!("nothing compacted");
+        };
+        let counter = crate::repl::context::tokens::TokenCounter::new();
+        assert_eq!(middle_tokens, counter.count_messages(&h[1..3]));
+        assert_eq!(summary_tokens, counter.count("SUMMARY"));
+        assert!(middle_tokens > 0 && summary_tokens > 0);
+    }
+
+    /// bot-mode.md §3.6.2 (critique S3): a bot's summary pass is shown MEMORY.md and told how many lines the
+    /// flush wrote. The order: instruction, addendum, hint, previous summary, memory, conversation.
+    #[tokio::test]
+    async fn a_bots_summary_pass_sees_the_memory_and_the_flush_writes() {
+        let p = summarizer();
+        let log = p.log();
+        let mut h = flushed_history();
+        h[1].content = format!("{}u1", crate::session::summary_preamble("OLD"));
+        let bot = BotCompact {
+            memory: "## User\n- [user] tabs (2026-09-30)",
+            flush_writes: 2,
+        };
+        compact_history(&CancellationToken::new(), &p, &h, "keep paths", Some(&bot))
+            .await
+            .expect("compaction succeeded");
+        assert_eq!(
+            log.prompts().pop().expect("the summary call was made"),
+            format!(
+                "{SUMMARY_INSTRUCTION}\n\n{BOT_SUMMARY_ADDENDUM} The memory flush just before this compaction saved 2 lines.{}",
+                concat!(
+                    "\n\nExtra guidance from the user — emphasize this: keep paths",
+                    "\n\n--- PREVIOUS SUMMARY (already condensed: carry forward what still matters, drop what is resolved) ---\n",
+                    "OLD",
+                    "\n\n--- LONG-TERM MEMORY (already saved separately; do not repeat these) ---\n",
+                    "## User\n- [user] tabs (2026-09-30)",
+                    "\n--- NEW CONVERSATION START ---\n",
+                    "User: u1\n",
+                    "Assistant: a1\n",
+                    "--- CONVERSATION END ---",
+                )
+            )
+        );
+    }
+
+    /// A flush that wrote nothing — or never ran — must not let the summary lean on the memory: the first
+    /// sentence changes, and an empty memory is shown as empty rather than left out.
+    #[tokio::test]
+    async fn nothing_saved_keeps_durable_facts_in_the_summary() {
+        let p = summarizer();
+        let log = p.log();
+        let bot = BotCompact {
+            memory: "",
+            flush_writes: 0,
+        };
+        compact_history(
+            &CancellationToken::new(),
+            &p,
+            &flushed_history(),
+            "",
+            Some(&bot),
+        )
+        .await
+        .expect("compaction succeeded");
+        let prompt = log.prompts().pop().expect("the summary call was made");
+        assert!(
+            prompt.starts_with(&format!("{SUMMARY_INSTRUCTION}\n\n{BOT_SUMMARY_NOTHING_SAVED}\n\n--- LONG-TERM MEMORY (already saved separately; do not repeat these) ---\n(empty)\n--- CONVERSATION START ---\nUser: u1\n")),
+            "{prompt}"
+        );
+        assert!(
+            !prompt.contains("already in the LONG-TERM MEMORY"),
+            "{prompt}"
+        );
+        assert!(BOT_SUMMARY_NOTHING_SAVED.starts_with("Nothing was saved to long-term memory this time; keep durable facts in the summary. Focus on conversational state"));
+        assert_eq!(
+            super::bot_summary_addendum(1),
+            format!(
+                "{BOT_SUMMARY_ADDENDUM} The memory flush just before this compaction saved 1 line."
+            )
+        );
     }
 
     /// A `Provider` that answers `"SUMMARY"` and keeps every prompt it was sent.

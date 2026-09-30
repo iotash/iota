@@ -44,8 +44,8 @@ use crate::sync::lock;
 use crate::ui::facade::{StatusData, Ui};
 
 use crate::repl::context::tokens::{
-    COMPACT_RESERVE_TOKENS, COMPACT_SNOOZE_PERCENT, COMPACT_THRESHOLD_PERCENT,
-    DEFAULT_CONTEXT_WINDOW, TokenCounter,
+    BOT_RESERVE_PERCENT, BOT_RESERVE_TOKENS, COMPACT_RESERVE_TOKENS, COMPACT_SNOOZE_PERCENT,
+    COMPACT_THRESHOLD_PERCENT, DEFAULT_CONTEXT_WINDOW, TokenCounter,
 };
 
 /// The window and its occupancy — the state [`ContextBudget`] and [`CtxMeter`] share.
@@ -59,6 +59,8 @@ struct Occupancy {
     pending: u64,
     /// Whether `settled` came from the provider rather than the local tokenizer.
     have_usage: bool,
+    /// A bot's session: the threshold keeps the bot's larger reserve ([`bot_threshold_of`]).
+    bot: bool,
     /// The last booked call's usage, CONSUMED by the next settle (Go's per-call
     /// `LastUsageFull` reset, expressed as ownership).
     last_usage: Option<Usage>,
@@ -98,6 +100,25 @@ impl Occupancy {
 fn threshold_of(window: u64) -> u64 {
     let pct = window * COMPACT_THRESHOLD_PERCENT / 100;
     window.saturating_sub(COMPACT_RESERVE_TOKENS).max(pct)
+}
+
+/// A bot's threshold (docs/design/bot-mode.md §3.6.1, §4.1): the reserve is `max(32k, 25%)` of the window,
+/// so the threshold is `min(75%, window − 32k)` — the flush turn and a user turn typed ahead of it both
+/// land between the threshold and the compaction.
+fn bot_threshold_of(window: u64) -> u64 {
+    let reserve = BOT_RESERVE_TOKENS.max(window * BOT_RESERVE_PERCENT / 100);
+    window.saturating_sub(reserve)
+}
+
+impl Occupancy {
+    /// The threshold this budget compacts at.
+    fn threshold(self) -> u64 {
+        if self.bot {
+            bot_threshold_of(self.window)
+        } else {
+            threshold_of(self.window)
+        }
+    }
 }
 
 type Shared = Arc<Mutex<Occupancy>>;
@@ -241,14 +262,19 @@ impl ContextBudget {
     /// Only the tests read it directly — the loop asks `should_compact`.
     #[cfg(test)]
     pub fn threshold(&self) -> u64 {
-        threshold_of(lock(&self.st).window)
+        lock(&self.st).threshold()
+    }
+
+    /// Makes this a bot's budget: its threshold keeps the bot's larger reserve from now on.
+    pub fn set_bot_reserve(&mut self) {
+        lock(&self.st).bot = true;
     }
 
     /// Whether the next request (current usage plus `extra` tokens of new, not-yet-sent
     /// content) would reach the threshold (Go `budget.shouldCompact`).
     pub fn should_compact(&self, extra: u64) -> bool {
         let st = lock(&self.st);
-        st.window > 0 && st.used().saturating_add(extra) >= threshold_of(st.window)
+        st.window > 0 && st.used().saturating_add(extra) >= st.threshold()
     }
 
     /// Whether the auto-compaction confirmation should be offered before the next request
@@ -674,6 +700,29 @@ mod tests {
                 "window {window}: the threshold must stay below the window"
             );
         }
+    }
+
+    // A bot's reserve is max(32k, 25% of the window) (bot-mode.md §3.6.1): the threshold is
+    // min(75%, window − 32k), below the ordinary one on every window, and the setting sticks through a
+    // window change.
+    #[test]
+    fn a_bots_threshold_keeps_the_larger_reserve() {
+        for (window, want, why) in [
+            (128_000_u64, 96_000_u64, "128k: 32k beats 25%"),
+            (200_000, 150_000, "200k: 25% (50k) beats 32k"),
+            (1_000_000, 750_000, "1m: 25%"),
+            (64_000, 32_000, "64k: 32k"),
+        ] {
+            let mut b = budget(window);
+            let ordinary = b.threshold();
+            b.set_bot_reserve();
+            assert_eq!(b.threshold(), want, "window {window}: {why}");
+            assert!(b.threshold() < ordinary, "window {window}");
+        }
+        let mut b = budget(128_000);
+        b.set_bot_reserve();
+        b.set_window(200_000);
+        assert_eq!(b.threshold(), 150_000, "a /model window change keeps it");
     }
 
     // Go: chat/tokens_test.go:216 TestShouldOfferCompact — window 100k → threshold

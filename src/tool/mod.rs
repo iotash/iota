@@ -21,7 +21,7 @@ pub(crate) mod yaml11;
 pub use approval::Approval;
 pub use defer::mode::DeferMode;
 pub use defer::{DeferredGroup, SEARCH_TOOL_NAME, defer};
-pub use dispatch::{Registry, merge, set_disabled};
+pub use dispatch::{Registry, merge, only, set_disabled};
 
 use crate::BoxFuture;
 use crate::app::HostDirs;

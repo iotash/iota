@@ -13,6 +13,7 @@ mod common {
 }
 
 mod artifact;
+mod bot_flush;
 mod commands;
 mod compact;
 mod debug;

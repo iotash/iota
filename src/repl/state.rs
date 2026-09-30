@@ -73,10 +73,11 @@ pub(crate) struct Conversation {
 /// moments a refresh is due — and a bot's own writes are not one of them.
 pub(crate) struct BotState {
     /// The bot's name.
-    #[allow(dead_code)] // bot-mode.md §3.6.1: the flush orchestration (T7) is its first reader
     pub(crate) name: String,
     /// The copy of `MEMORY.md` every send carries, last in the overlay.
     pub(crate) memory: crate::agents::memory::Snapshot,
+    /// The memory flush and the compaction after it (bot-mode.md §3.6.1).
+    pub(crate) flush: crate::repl::bot::Flush,
 }
 
 /// The bundle the chat is persisted into, and the name it carries.

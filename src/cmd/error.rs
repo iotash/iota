@@ -165,6 +165,10 @@ pub enum SetupError {
     /// A config-level failure (`system_file`, unknown `mcp_servers` name).
     #[error(transparent)]
     Config(#[from] ConfigError),
+    /// A bot's provider cannot meter its context or call tools (docs/design/bot-mode.md §4.1): an unattended
+    /// session compacts on the token count and remembers through a tool, so it has to have both.
+    #[error("bot \"{0}\" needs a chat model that reports token usage and supports tools")]
+    BotProvider(String),
     /// The interactive branch was reached without a terminal on stdin/stdout (root.go:400).
     #[error("interactive mode requires a terminal; use -m/--message for piped input")]
     NotATerminal,

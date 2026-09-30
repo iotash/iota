@@ -49,4 +49,4 @@ pub use store::{BotOpen, NewSession, PROJECTS_DIR_NAME, SessionInfo, SessionStor
 pub use tuning::{
     Overrides, apply_session_tuning, replay_session_settings, warn_if_session_agent_is_gone,
 };
-pub use writer::{OnCreated, SessionWriter};
+pub use writer::{CompactionStats, OnCreated, SessionWriter};

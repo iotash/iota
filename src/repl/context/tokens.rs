@@ -42,6 +42,13 @@ pub(crate) const COMPACT_THRESHOLD_PERCENT: u64 = 80;
 /// (`chat/compact.go` `compactReserveTokens`).
 pub(crate) const COMPACT_RESERVE_TOKENS: u64 = 16_000;
 
+/// A bot's reserve floor (docs/design/bot-mode.md §3.6.1): between the threshold and the compaction there is
+/// the flush turn, and possibly a user turn typed ahead of it.
+pub(crate) const BOT_RESERVE_TOKENS: u64 = 32_000;
+
+/// A bot's reserve as a share of the window; the larger of this and [`BOT_RESERVE_TOKENS`] applies.
+pub(crate) const BOT_RESERVE_PERCENT: u64 = 25;
+
 /// How much of the window usage must grow after a declined auto-compaction offer before it
 /// is offered again (`chat/compact.go` `compactSnoozePercent`).
 pub(crate) const COMPACT_SNOOZE_PERCENT: u64 = 5;

@@ -35,6 +35,19 @@ pub(crate) struct BotSession {
     pub(crate) repair_notice: Option<String>,
 }
 
+/// Refuses a provider a bot cannot run on (bot-mode.md §4.1): one that does not report token usage (the
+/// compaction threshold would be a guess) or cannot call tools (no `remember`). Image providers fail both.
+pub(crate) fn check_bot_provider(
+    name: &str,
+    provider: &dyn Provider,
+) -> Result<(), crate::cmd::error::SetupError> {
+    if provider.reports_usage() && provider.as_tool_provider().is_some() {
+        Ok(())
+    } else {
+        Err(crate::cmd::error::SetupError::BotProvider(name.to_owned()))
+    }
+}
+
 /// Opens bot `name`'s session from `<bots>/<name>`. `fresh` describes the bundle a first launch creates;
 /// `system` is the config's (trimmed) system prompt. On a resume the session's own model and parameters
 /// are NOT replayed — the provider keeps what the config (or `-M`) gave it, and the meta is told the
@@ -134,13 +147,31 @@ fn adopt_system(
 
 #[cfg(test)]
 mod tests {
-    use super::{NEVER_SAVED, SYSTEM_UPDATED, open_bot_session};
+    use super::{NEVER_SAVED, SYSTEM_UPDATED, check_bot_provider, open_bot_session};
     use crate::provider::model::{Message, Role};
     use crate::provider::{Provider, ProviderKind};
     use crate::session::{
         BOT_POINTER_FILE, BotPointer, NewSession, SessionError, SessionMeta, SessionStore, load_log,
     };
     use crate::testing::FakeProvider;
+
+    /// bot-mode.md §4.1: a bot needs a provider that reports usage AND calls tools; either missing is a setup
+    /// error in the document's words.
+    #[test]
+    fn a_bot_needs_usage_and_tools() {
+        let refused =
+            r#"bot "coder" needs a chat model that reports token usage and supports tools"#;
+        for p in [
+            FakeProvider::new(),
+            FakeProvider::new().reporting_usage(),
+            FakeProvider::new().with_tools(),
+        ] {
+            let e = check_bot_provider("coder", &p).expect_err("refused");
+            assert_eq!(e.to_string(), refused);
+        }
+        check_bot_provider("coder", &FakeProvider::new().reporting_usage().with_tools())
+            .expect("usage and tools are enough");
+    }
 
     /// The bundle a first launch creates.
     fn fresh(kind: ProviderKind, model: &str) -> NewSession {

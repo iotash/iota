@@ -23,6 +23,18 @@ use crate::session::record::{
     SessionRaw, SessionRecord, SessionToolCall,
 };
 
+/// The optional figures a compaction marker carries beyond the summary (docs/design/bot-mode.md §3.6.2 item 4):
+/// the raw material for measuring how much each compaction loses. Every field is optional on disk.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CompactionStats {
+    /// Tokens of the messages the summary replaced.
+    pub middle_tokens: Option<u64>,
+    /// Tokens of the summary.
+    pub summary_tokens: Option<u64>,
+    /// A bot's session compacted without its memory flush.
+    pub flush_skipped: bool,
+}
+
 /// What [`SessionWriter::on_created`] runs once the bundle is on disk.
 pub type OnCreated = Box<dyn FnMut() -> Result<(), SessionError> + Send>;
 
@@ -204,12 +216,28 @@ impl SessionWriter {
         retain_tail: usize,
         usage: Option<Usage>,
     ) -> Result<(), SessionError> {
+        self.append_compaction_with(summary, retain_tail, usage, CompactionStats::default())
+    }
+
+    /// [`Self::append_compaction`] with the marker's optional figures (docs/design/bot-mode.md §3.6.2 item 4).
+    /// `retain_tail` counts CONVERSATION messages — the non-system ones, the same ones `conv_count` counts —
+    /// so a frozen-mode mount in the retained turn cannot shift `compacted_through`.
+    pub fn append_compaction_with(
+        &mut self,
+        summary: &str,
+        retain_tail: usize,
+        usage: Option<Usage>,
+        stats: CompactionStats,
+    ) -> Result<(), SessionError> {
         self.ensure_created()?;
         let mut rec = SessionRecord {
             role: ROLE_COMPACTION.to_owned(),
             content: summary.to_owned(),
             compacted_through: i64::try_from(self.conv_count.saturating_sub(retain_tail))
                 .unwrap_or(i64::MAX),
+            middle_tokens: stats.middle_tokens,
+            summary_tokens: stats.summary_tokens,
+            flush_skipped: stats.flush_skipped,
             ..SessionRecord::default()
         };
         if let Some(u) = usage {

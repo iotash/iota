@@ -25,7 +25,7 @@ use crate::text::go_quote;
 
 mod snapshot;
 
-pub use snapshot::Snapshot;
+pub use snapshot::{Current, Snapshot};
 
 /// The memory file inside a bot's directory.
 pub const MEMORY_FILE: &str = "MEMORY.md";
@@ -468,8 +468,9 @@ fn kib(len: usize) -> String {
     format!("{}.{}", tenths / 10, tenths % 10)
 }
 
-/// The soft-threshold sentence (§3.5), or `None` below it.
-fn soft_warning(len: usize) -> Option<String> {
+/// The soft-threshold sentence (§3.5) for a body of `len` bytes, or `None` below it. The write result carries
+/// it, and so does a bot's memory-flush notice (§3.6.1).
+pub fn soft_warning(len: usize) -> Option<String> {
     (len >= MEMORY_SOFT_CAP).then(|| {
         format!(
             "MEMORY.md is at {}% — consolidate soon (merge related lines with replace, drop stale ones with remove)",

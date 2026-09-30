@@ -102,6 +102,9 @@ pub(crate) struct TurnCtx {
     pub(crate) code_theme: CodeTheme,
     /// The host presenter (progress state + attention pings — T3).
     pub(crate) pres: Arc<Presenter>,
+    /// Whether round boundaries take typed-ahead messages into the turn — `false` only for a bot's memory
+    /// flush turn (docs/design/bot-mode.md §3.6.1).
+    pub(crate) steering: bool,
 }
 
 /// One turn's live scaffolding: the turn cancel scope, the stream handle
@@ -295,12 +298,18 @@ pub(crate) struct TurnEngine {
 impl TurnEngine {
     /// An engine for one message: the turn context the loop composed and the root cancel scope.
     pub(crate) fn new(cx: TurnCtx, root_cancel: CancellationToken) -> Self {
-        let steer = Steerer::new(Arc::clone(&cx.ui), Arc::clone(&cx.tr));
+        let steer = Steerer::new(Arc::clone(&cx.ui), Arc::clone(&cx.tr), cx.steering);
         Self {
             cx,
             steer,
             root_cancel,
         }
+    }
+
+    /// The flush notices this turn's steering took off the queue without injecting them; the loop queues
+    /// them again (docs/design/bot-mode.md §3.6.1).
+    pub(crate) fn take_held(&mut self) -> Vec<crate::ui::facade::Input> {
+        self.steer.take_held()
     }
 
     /// Runs the turn with the turn-level retry (chat/run.go:1030-1068). `hist0` is the history

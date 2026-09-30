@@ -236,20 +236,22 @@ impl Repl {
 
     /// Records the memory writes the turn just made (bot-mode.md §3.7 item 1): one dim line and one notice
     /// message each, persisted at once so the log says when what was written. The queue is drained, so a
-    /// write is recorded exactly once.
-    pub(crate) fn record_memory_writes(&mut self) {
+    /// write is recorded exactly once. Returns how many there were — each write is one line.
+    pub(crate) fn record_memory_writes(&mut self) -> u32 {
         let Some(log) = &self.session.memory_writes else {
-            return;
+            return 0;
         };
         let written = log.take();
         if written.is_empty() {
-            return;
+            return 0;
         }
+        let n = u32::try_from(written.len()).unwrap_or(u32::MAX);
         for notice in written {
             self.handles.tr.notice(&notice);
             self.conv.history.push(Message::notice(notice));
         }
         self.persist_turn();
+        n
     }
 
     /// Tells the hosts which session the chat persists into — the live writer's id and bundle
@@ -356,6 +358,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     let bot_state = memory.map(|m| BotState {
         name: m.name().to_owned(),
         memory: Snapshot::load(m),
+        flush: crate::repl::bot::Flush::default(),
     });
 
     // ---- history seeding (chat/run.go:67-79) ----
@@ -369,6 +372,10 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     };
     let persisted = if resumed { history.len() } else { 0 };
     let mut budget = ContextBudget::new(params.context_window.value);
+    if bot_state.is_some() {
+        // A bot compacts with a larger reserve: the flush turn, and maybe a user turn, come first (§3.6.1).
+        budget.set_bot_reserve();
+    }
     // The live meter exists only for a provider whose usage it can settle against
     // (chat/run.go:161-164); everything else keeps Go's nil meter, whose methods are all
     // no-ops — which is why every `ctxm.…` call below is unconditional (T-10).
@@ -629,9 +636,23 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         if line.is_empty() {
             continue;
         }
+        // A bot's memory-flush notice (bot-mode.md §3.6.1) runs as the flush turn — unless the compaction it
+        // was queued for already happened (a message typed ahead of it compacted first): then it is dropped,
+        // neither sent nor persisted.
+        let flush = notice && crate::repl::bot::is_flush_notice(&input.text);
+        if flush
+            && !repl
+                .conv
+                .bot
+                .as_ref()
+                .is_some_and(|b| b.flush.notice_arrived())
+        {
+            continue;
+        }
         // Whatever the input is, the loop is awake for the user now (run.go:381).
         repl.handles.pres.set_state(State::Idle);
-        if notice {
+        // A flush notice is the loop's own, not a job's: it never held the host.
+        if notice && !flush {
             // The notice's turn holds the host from here (`host` module doc).
             repl.handles.pres.notice_taken();
         }
@@ -750,7 +771,11 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         // The auto-compaction offer runs on the message about to be sent, BEFORE it joins
         // the history: what it asks about is the projected occupancy, and compacting after
         // the append would summarize the very message being sent (chat/run.go:979-989).
-        crate::repl::commands::compact::offer_before_send(&mut repl, &content).await;
+        // The flush notice alone skips it: the flush turn runs over the threshold by design, and the
+        // compaction follows it at once.
+        if !flush {
+            crate::repl::commands::compact::offer_before_send(&mut repl, &content).await;
+        }
 
         repl.conv.history.push(Message {
             content,
@@ -772,11 +797,13 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             repl.handles.tr.set_dark(known);
             ui.set_dark_background(known);
         }
-        let mut engine = TurnEngine::new(repl.turn_ctx(send_overlay), root_cancel.clone());
+        let mut engine = TurnEngine::new(repl.turn_ctx(send_overlay, flush), root_cancel.clone());
         let outcome = match engine.run(&mut repl.conv, hist0, turn_snap).await {
             Ok(report) => report,
             Err(ui_err) => break 'main Err(ReplError::Ui(ui_err)),
         };
+        let held = engine.take_held();
+        let mut landed = false;
 
         let interrupted = outcome.is_interrupted();
         let TurnReport {
@@ -798,12 +825,15 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                     TurnFailure::Chat(c) => crate::repl::errors::describe_error(c),
                     TurnFailure::Ui(u) => crate::repl::errors::ErrorReport::request_failed(u),
                 };
-                // The host hears about the failure BEFORE the red block lands (run.go:1076-1080).
-                repl.handles.pres.set_state(State::Error);
-                repl.handles.pres.notify(Event {
-                    kind: Kind::Failed,
-                    text: report.headline.clone(),
-                });
+                // The host hears about the failure BEFORE the red block lands (run.go:1076-1080). A failed
+                // flush is not the host's business: it is best-effort, and the compaction runs anyway.
+                if !flush {
+                    repl.handles.pres.set_state(State::Error);
+                    repl.handles.pres.notify(Event {
+                        kind: Kind::Failed,
+                        text: report.headline.clone(),
+                    });
+                }
                 repl.handles
                     .tr
                     .error_block(&report.headline, &report.lines());
@@ -852,14 +882,19 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 repl.conv.history = history;
                 repl.push_status();
                 repl.handles.pres.set_state(State::Idle);
-                repl.handles.pres.notify(Event {
-                    kind: Kind::Done,
-                    text: digest,
-                });
+                // The flush turn is the loop talking to itself: no `Done` ping (bot-mode.md §4.3).
+                if !flush {
+                    repl.handles.pres.notify(Event {
+                        kind: Kind::Done,
+                        text: digest,
+                    });
+                }
+                landed = true;
             }
         }
         // Whatever became of the turn, a memory write it made is on disk: it is recorded now.
-        repl.record_memory_writes();
+        let memory_writes = repl.record_memory_writes();
+        after_bot_turn(&mut repl, flush, landed, memory_writes, held).await;
     };
     // The loop is over: a background job has no one left to report to, and `background` never promised to
     // outlive iota. `kill_all` is synchronous `killpg`, so nothing depends on a task being polled again.
@@ -872,11 +907,20 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
 impl Repl {
     /// The turn's context for one message (chat/run.go:1007-1012): the shared handles plus
     /// the harness and the overlay this message composed.
-    fn turn_ctx(&self, overlay: String) -> TurnCtx {
+    /// A bot's flush turn (`flush`) sees the memory set alone and takes no steering (bot-mode.md §3.6.1).
+    fn turn_ctx(&self, overlay: String, flush: bool) -> TurnCtx {
+        let dispatch = if flush {
+            crate::tool::only(
+                Arc::clone(&self.conv.dispatch),
+                &[crate::tool::builtins::memory::REMEMBER],
+            )
+        } else {
+            Arc::clone(&self.conv.dispatch)
+        };
         TurnCtx {
             ui: Arc::clone(&self.handles.ui),
             tr: Arc::clone(&self.handles.tr),
-            dispatch: Arc::clone(&self.conv.dispatch),
+            dispatch,
             gate: Arc::clone(&self.handles.gate),
             harness: self.conv.harness.clone(),
             overlay,
@@ -884,6 +928,7 @@ impl Repl {
             can_retry: !self.conv.image_provider,
             code_theme: code_theme_of(self.handles.dark),
             pres: Arc::clone(&self.handles.pres),
+            steering: !flush,
         }
     }
 
@@ -972,6 +1017,45 @@ impl Repl {
             drop(guard);
             titler.land(generation, &name);
         }));
+    }
+}
+
+/// A bot's bookkeeping once a turn is over (bot-mode.md §3.6.1); nothing outside a bot's session.
+///
+/// After the flush turn — landed, failed or interrupted, with the `writes` it made — the compaction runs at
+/// once. After any other turn that `landed`, a usage at the (snoozed) threshold queues the flush notice.
+/// Flush notices the turn's steering took off the queue go back on it while one is still owed.
+async fn after_bot_turn(
+    repl: &mut Repl,
+    flush: bool,
+    landed: bool,
+    writes: u32,
+    held: Vec<crate::ui::facade::Input>,
+) {
+    let Some(bot) = repl.conv.bot.as_mut() else {
+        return;
+    };
+    if flush {
+        bot.flush.flush_ended(writes, landed);
+        crate::repl::commands::compact::compact_now(repl, "", false).await;
+        return;
+    }
+    if bot.flush.notice_arrived() {
+        for input in held {
+            repl.handles.ui.enqueue(input);
+        }
+    }
+    let over = repl
+        .conv
+        .budget
+        .should_offer_compact(0, repl.conv.compact_declined);
+    if landed && bot.flush.turn_ended(over) {
+        let consolidate = crate::agents::memory::soft_warning(bot.memory.current().len);
+        repl.handles.ui.enqueue(crate::ui::facade::Input {
+            display: crate::repl::bot::FLUSH_HEADLINE.to_owned(),
+            text: crate::repl::bot::flush_notice(consolidate.as_deref()),
+            kind: InputKind::Notice,
+        });
     }
 }
 

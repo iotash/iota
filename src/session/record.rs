@@ -66,6 +66,18 @@ pub struct SessionRecord {
     /// What the API call behind this record cost; the log's sum is the session's cumulative usage.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<SessionUsage>,
+    /// `role == "compaction"` only: the local tokenizer's count of the messages the summary replaced
+    /// (docs/design/bot-mode.md §3.6.2 item 4). Rust-only and optional, like the two below: Go ignores the
+    /// key, and a marker written before it existed reads back as `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub middle_tokens: Option<u64>,
+    /// `role == "compaction"` only: the local tokenizer's count of the summary itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary_tokens: Option<u64>,
+    /// `role == "compaction"` only: a bot's session compacted without the memory flush running first
+    /// (§3.6.1). Written only by a bot's session; `false` omits the key.
+    #[serde(skip_serializing_if = "is_false")]
+    pub flush_skipped: bool,
 }
 
 /// One requested tool call (chat/session.go:115-119). `arguments` has NO `omitempty`: it is always

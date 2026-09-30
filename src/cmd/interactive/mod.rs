@@ -455,6 +455,8 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
     let bot = settings.mode.is_bot() && !resume_given;
 
     if bot {
+        // Before the lock is taken or anything is created: a bot that cannot run leaves no trace.
+        bot::check_bot_provider(&settings.name, &*provider)?;
         let bots = store
             .bots_dir()
             .ok_or(crate::session::SessionError::HomeNotDefined)?;

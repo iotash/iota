@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 
 use crate::agents::skills::xml_escape;
 
-use super::{BotMemory, Doc, MEMORY_CAP, MEMORY_FILE, PROJECT, heading};
+use super::{BotMemory, Doc, MEMORY_CAP, MEMORY_FILE, PROJECT, heading, read_existing};
 
 /// What the block says before the file (§3.4, worded as §3.7 item 5 has it): whose data this is, what it
 /// ranks below, how far `[inferred]` goes, when this copy is refreshed — and when to call `remember`.
@@ -23,6 +23,15 @@ conclusions; treat them as hints, not facts. This copy is refreshed only at star
 compaction, at the day change and when the file is edited outside this process; your own
 writes since then are in the conversation. Call remember when the user states a
 preference, when a decision is made, or when you learn a fact you will need again.";
+
+/// `MEMORY.md` as it is on disk right now (§3.6.1, §3.6.2): what the memory flush and the summary pass read.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Current {
+    /// The body (the frontmatter dropped), cut to [`MEMORY_CAP`] by whole lines, blank edges trimmed.
+    pub body: String,
+    /// The whole body's size as the write side measures it — what the soft threshold is checked against.
+    pub len: usize,
+}
 
 /// The frozen copy of one bot's `MEMORY.md`.
 #[derive(Debug)]
@@ -81,6 +90,23 @@ impl Snapshot {
         }
         self.reload();
         true
+    }
+
+    /// The file as it is now, read fresh rather than from this frozen copy: the flush turn's own writes are
+    /// on disk but not in the copy until the compaction after it reloads it. Reading does not count as
+    /// seeing — an edit from outside is still picked up at the next send. An unreadable file reads as empty.
+    pub fn current(&self) -> Current {
+        let text = read_existing(&self.memory.path())
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let doc = Doc::parse(&text);
+        let len = doc.body_text().len();
+        let (body, _) = cut(doc.body);
+        Current {
+            body: body.join("\n").trim().to_owned(),
+            len,
+        }
     }
 
     /// The warning the transcript shows for this copy, if any: the file is over the cap (the copy is cut
