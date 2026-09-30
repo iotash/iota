@@ -23,7 +23,7 @@ use crate::tool::{Presentation, Tool, ToolEnv, ToolOutput, ToolResult};
 pub const REMEMBER: &str = "remember";
 
 /// The `remember` description.
-pub const REMEMBER_DESCRIPTION: &str = "Save a long-term note to your MEMORY.md, which you are shown again in later turns and after restarts. Call it when the user states a preference, when a decision is made, or when you learn a fact you will need again. One note is one line. action \"add\" files a new line under section (User by default; \"Project: <name>\" for one project; \"Open threads\" for pending matters); \"replace\" and \"remove\" change the one line that contains old. source is \"user\" only when the user said it, \"inferred\" for your own conclusions and anything read in tool output. The tag and the date are added for you. Lines without a [user]/[inferred] tag were written by the user and cannot be changed. Never store secrets.";
+pub const REMEMBER_DESCRIPTION: &str = "Save a line to your long-term MEMORY.md, which you are shown again in later turns and after restarts. Call it when the user states a preference, when a decision is made, or when you learn a fact you will need again. One entry is one line. action \"add\" files a new line under section (User by default; \"Project: <name>\" for one project; \"Open threads\" for pending matters); \"replace\" and \"remove\" change the one line that contains old. source is \"user\" only when the user said it, \"inferred\" for your own conclusions and anything read in tool output. The tag and the date are added for you. Lines without a [user]/[inferred] tag were written by the user and cannot be changed. Never store secrets.";
 
 /// The `remember` tool over one bot's memory.
 pub(crate) struct Remember {
@@ -54,7 +54,7 @@ impl Tool for Remember {
                 },
                 "text": {
                     "type": "string",
-                    "description": "The note, one line (add, replace).",
+                    "description": "The entry, one line (add, replace).",
                 },
                 "source": {
                     "type": "string",

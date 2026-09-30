@@ -305,7 +305,7 @@ fn past_the_soft_threshold_the_write_asks_for_consolidation() {
     assert!((6144..MEMORY_CAP).contains(&len), "{len}");
     assert!(
         a.result.ends_with(&format!(
-            "\n\nMEMORY.md is at {}% — consolidate soon (merge related lines, move detail into a note)",
+            "\n\nMEMORY.md is at {}% — consolidate soon (merge related lines with replace, drop stale ones with remove)",
             len * 100 / MEMORY_CAP
         )),
         "{}",
@@ -358,9 +358,9 @@ fn one_line_is_at_most_500_bytes() {
         TODAY,
     )
     .expect_err("long");
-    assert!(
-        e.starts_with("a memory line is at most 500 bytes and this one is 522"),
-        "{e}"
+    assert_eq!(
+        e,
+        "a memory line is at most 500 bytes and this one is 522: shorten it to the one fact you need to recall, or split it into separate lines"
     );
     // `- [user] ` + text + ` (2026-09-30)` = 22 bytes of the tool's own.
     apply(

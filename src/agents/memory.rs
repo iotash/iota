@@ -403,7 +403,7 @@ fn make_line(text: &str, source: Source, today: &str) -> Result<String, String> 
     let line = format!("- {} {text} ({today})", source.tag());
     if line.len() > MEMORY_LINE_CAP {
         return Err(format!(
-            "a memory line is at most {MEMORY_LINE_CAP} bytes and this one is {}: keep only what you need to recall, in one short line",
+            "a memory line is at most {MEMORY_LINE_CAP} bytes and this one is {}: shorten it to the one fact you need to recall, or split it into separate lines",
             line.len()
         ));
     }
@@ -464,7 +464,7 @@ fn kib(len: usize) -> String {
 fn soft_warning(len: usize) -> Option<String> {
     (len >= MEMORY_SOFT_CAP).then(|| {
         format!(
-            "MEMORY.md is at {}% — consolidate soon (merge related lines, move detail into a note)",
+            "MEMORY.md is at {}% — consolidate soon (merge related lines with replace, drop stale ones with remove)",
             len * 100 / MEMORY_CAP
         )
     })

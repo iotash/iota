@@ -787,3 +787,26 @@ async fn unary_chat_splits_inline_think_and_surfaces_images() {
     assert_eq!(out.images[0].data, [1, 2]);
     assert!(out.images[0].filename.is_empty());
 }
+
+/// A host notice followed by the user's next message (a bot's memory-write notice lands at turn end) folds
+/// the same way: model → notice → user is two contents, not three.
+#[test]
+fn a_notice_and_the_next_user_message_fold_into_one() {
+    let p = gemini("http://127.0.0.1:1", "m", None);
+    let (contents, _) = p.build_contents(&[
+        Message::user("hi"),
+        Message::assistant("hello"),
+        Message::notice("memory: MEMORY.md ## User +1 line: [user] x (2026-09-30)"),
+        Message::user("again"),
+    ]);
+    let roles: Vec<&str> = contents.iter().map(|c| c.role.as_str()).collect();
+    assert_eq!(roles, ["user", "model", "user"]);
+    let texts: Vec<&str> = contents[2].parts.iter().map(|p| p.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        [
+            "memory: MEMORY.md ## User +1 line: [user] x (2026-09-30)",
+            "again"
+        ]
+    );
+}

@@ -84,8 +84,10 @@ impl AnthropicProvider {
             stream: false,
         };
 
-        // Consecutive tool results coalesce into ONE user message; a user message that follows them merges in
-        // instead of flushing first (the API rejects two consecutive user-role messages).
+        // Every run of user-role messages — tool results and user messages alike — coalesces into ONE user
+        // message (the API rejects two consecutive user-role messages): only a system or assistant message,
+        // or the end, closes the run. Tool results followed by a user message are one such run; so is a
+        // host notice followed by what the user typed next (a bot's memory-write notice lands at turn end).
         let mut pending: Vec<Block> = Vec::new();
 
         for msg in messages {
@@ -110,7 +112,6 @@ impl AnthropicProvider {
                     pending.push(Block::Typed(TypedBlock::Text {
                         text: msg.content.clone(),
                     }));
-                    flush_tool_results(&mut req.messages, &mut pending);
                 }
                 Role::Assistant => {
                     let mut blocks: Vec<Block> = Vec::new();
@@ -356,7 +357,8 @@ fn attachment_block(att: &Attachment) -> TypedBlock {
     }
 }
 
-/// Emits the buffered tool-result blocks as ONE user message (provider/anthropic.go:105-110).
+/// Emits the buffered user-role blocks (tool results, user messages) as ONE user message
+/// (provider/anthropic.go:105-110).
 fn flush_tool_results(messages: &mut Vec<AnthropicMsg>, pending: &mut Vec<Block>) {
     if !pending.is_empty() {
         messages.push(AnthropicMsg {

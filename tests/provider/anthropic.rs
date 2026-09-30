@@ -175,6 +175,52 @@ async fn the_anthropic_request_body_is_byte_exact() {
         })
     );
 }
+/// A host notice followed by what the user typed next (a bot's memory-write notice lands at turn end, so the
+/// next request carries assistant → notice → user) is ONE user message, both texts in order: the API rejects
+/// two consecutive user-role messages. A tool result, a notice and a user message are one run too.
+#[tokio::test]
+async fn consecutive_user_role_messages_are_one_user_message() {
+    const STOP: &str = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+    let server = MockServer::start().await;
+    mock_sse(&server, "POST", "/v1/messages", STOP).await;
+    let p = provider(&server, "claude-sonnet-4-6", None);
+
+    let call = ToolCall {
+        id: "t1".to_owned(),
+        name: "f".to_owned(),
+        arguments: obj(json!({})),
+    };
+    let messages = vec![
+        Message::user("hi"),
+        Message::assistant("hello"),
+        Message::notice("memory: MEMORY.md ## User +1 line: [user] x (2026-09-30)"),
+        Message::user("again"),
+        Message::assistant_with_calls("", vec![call.clone()], None),
+        Message::tool_result(&call, "result", false),
+        Message::notice("[background job b1 finished]"),
+        Message::user("next"),
+    ];
+    round(&p, &messages, &[]).await.expect("round");
+
+    let requests = server.received_requests().await.expect("recorded requests");
+    let body = body_json(&requests[0]);
+    let roles: Vec<&str> = body["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .map(|m| m["role"].as_str().expect("role"))
+        .collect();
+    assert_eq!(roles, ["user", "assistant", "user", "assistant", "user"]);
+    assert_eq!(
+        body["messages"][2]["content"],
+        json!([
+            {"type": "text", "text": "memory: MEMORY.md ## User +1 line: [user] x (2026-09-30)"},
+            {"type": "text", "text": "again"},
+        ])
+    );
+    assert_eq!(block_types(&body, 4), ["tool_result", "text", "text"]);
+}
+
 #[tokio::test]
 async fn an_anthropic_stream_assembles_text_thinking_tool_use_and_usage() {
     // Index 3's delta arrives between index 2's two fragments and the stops arrive out of index order: only
