@@ -75,9 +75,9 @@ pub enum AgentMode {
     Chat,
     /// The `AGENTS.md` overlay, the skills set and a project-bucketed session.
     Agent,
-    /// Everything `agent` has, plus the never-ending session and memory. Before T4 none of that exists: a
-    /// bot reads [`has_workspace`](Self::has_workspace) like an agent everywhere, except that a new
-    /// session is flat (the two `== Agent` tests in `cmd::interactive`), which is the layout §1.3 fixes.
+    /// Everything `agent` has, plus the never-ending session and memory: a bot reads
+    /// [`has_workspace`](Self::has_workspace) like an agent everywhere, except that its session is flat
+    /// (the two `== Agent` tests in `cmd::interactive`), which is the layout §1.3 fixes.
     Bot,
 }
 

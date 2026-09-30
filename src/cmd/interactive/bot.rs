@@ -530,7 +530,7 @@ mod tests {
         assert_eq!(super::elapsed(10 * 86_400 + 3_600), "10 days");
     }
 
-    /// Only one process runs a bot: the second is refused with the bot's sentence — even while the first
+    /// Only one process runs a bot: the second is refused, naming the bot — even while the first
     /// has written its pointer and nothing else.
     #[test]
     fn a_running_bot_is_locked() {
@@ -542,7 +542,10 @@ mod tests {
         };
         assert_eq!(
             err.to_string(),
-            format!("bot coder is already running (pid {})", std::process::id())
+            format!(
+                "bot coder is open in another iota process (pid {})",
+                std::process::id()
+            )
         );
         drop(first);
         open(&h, &mut p, "").expect("free once the first run is gone");

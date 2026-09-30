@@ -1,8 +1,8 @@
 use std::fmt::Write as _;
 
 use super::{
-    BotMemory, Edit, MEMORY_CAP, MEMORY_FILE, MEMORY_LINE_CAP, MEMORY_PREV_FILE,
-    MEMORY_SECTION_CAP, Section, Source, USER_LINE_REFUSAL, apply,
+    BotMemory, Edit, MEMORY_CAP, MEMORY_FILE, MEMORY_LINE_CAP, MEMORY_PREV_FILE, Section, Source,
+    USER_LINE_REFUSAL, apply,
 };
 
 const TODAY: &str = "2026-09-30";
@@ -187,16 +187,6 @@ fn a_section_is_one_heading_line() {
             "{bad:?}"
         );
     }
-    let long = format!("Project: {}", "p".repeat(MEMORY_SECTION_CAP));
-    assert_eq!(
-        Section::parse(&long).expect_err("long"),
-        format!(
-            "section is at most {MEMORY_SECTION_CAP} bytes and this one is {}",
-            long.len()
-        )
-    );
-    let fits = format!("Project: {}", "p".repeat(MEMORY_SECTION_CAP - 9));
-    assert!(Section::parse(&fits).is_ok());
 }
 
 /// A newline in `text` cannot split the entry: it is folded before any check, so the injection lands as

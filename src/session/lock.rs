@@ -52,11 +52,12 @@ pub(crate) fn lock_bundle(dir: &Path, id: &str) -> Result<HeldLock, SessionError
     })
 }
 
-/// Takes the bot lock in `bot_dir` (created when missing) or refuses with [`SessionError::BotRunning`].
+/// Takes the bot lock in `bot_dir` (created when missing) or refuses with [`SessionError::Locked`] naming
+/// `bot <name>`.
 pub(crate) fn lock_bot(bot_dir: &Path, bot: &str) -> Result<HeldLock, SessionError> {
     std::fs::create_dir_all(bot_dir)?;
-    try_lock_file(&bot_dir.join(BOT_LOCK_FILE))?.map_err(|pid| SessionError::BotRunning {
-        bot: bot.to_owned(),
+    try_lock_file(&bot_dir.join(BOT_LOCK_FILE))?.map_err(|pid| SessionError::Locked {
+        what: format!("bot {bot}"),
         pid,
     })
 }
@@ -273,7 +274,7 @@ pub(crate) mod tests {
         drop(held);
     }
 
-    /// The bot lock refuses with the bot's own sentence, and creates the bot directory it lives in.
+    /// The bot lock refuses naming the bot, and creates the bot directory it lives in.
     #[test]
     fn bot_lock_names_the_bot() {
         let home = tempfile::tempdir().expect("tempdir");
@@ -283,11 +284,14 @@ pub(crate) mod tests {
         let err = lock_bot(&dir, "coder").expect_err("second lock refused");
         assert!(matches!(
             &err,
-            SessionError::BotRunning { bot, pid } if bot == "coder" && *pid == Some(std::process::id())
+            SessionError::Locked { what, pid } if what == "bot coder" && *pid == Some(std::process::id())
         ));
         assert_eq!(
             err.to_string(),
-            format!("bot coder is already running (pid {})", std::process::id())
+            format!(
+                "bot coder is open in another iota process (pid {})",
+                std::process::id()
+            )
         );
         drop(held);
         drop(lock_bot(&dir, "coder").expect("re-lock after drop"));

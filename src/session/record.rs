@@ -57,7 +57,7 @@ pub struct SessionRecord {
     #[serde(skip_serializing_if = "is_false")]
     pub notice: bool,
     /// `role == "system"` only: an EMPTY system prompt that was meant — a bot's config lost its `system:`
-    /// (docs/design/bot-mode.md §2.2). Rust-only, like `middle_tokens`: an empty system record WITHOUT it
+    /// (docs/design/bot-mode.md §2.2). Rust-only, like `flush_skipped`: an empty system record WITHOUT it
     /// is a frozen-mode defer mount an older build persisted by mistake, and must not win on load.
     #[serde(skip_serializing_if = "is_false")]
     pub system_cleared: bool,
@@ -71,16 +71,9 @@ pub struct SessionRecord {
     /// What the API call behind this record cost; the log's sum is the session's cumulative usage.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<SessionUsage>,
-    /// `role == "compaction"` only: the local tokenizer's count of the messages the summary replaced
-    /// (docs/design/bot-mode.md §3.6.2 item 4). Rust-only and optional, like the two below: Go ignores the
-    /// key, and a marker written before it existed reads back as `None`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub middle_tokens: Option<u64>,
-    /// `role == "compaction"` only: the local tokenizer's count of the summary itself.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub summary_tokens: Option<u64>,
     /// `role == "compaction"` only: a bot's session compacted without the memory flush running first
-    /// (§3.6.1). Written only by a bot's session; `false` omits the key.
+    /// (docs/design/bot-mode.md §3.6.1). Rust-only: Go ignores the key. Written only by a bot's session;
+    /// `false` omits the key.
     #[serde(skip_serializing_if = "is_false")]
     pub flush_skipped: bool,
 }

@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 
 use crate::agents::skills::xml_escape;
 
-use super::{BotMemory, Doc, MEMORY_CAP, MEMORY_FILE, PROJECT, heading, read_existing};
+use super::{BotMemory, Doc, MEMORY_CAP, MEMORY_FILE, PROJECT, heading};
 
 /// What the block says before the file (§3.4, worded as §3.7 item 5 has it): whose data this is, what it
 /// ranks below, how far `[inferred]` goes, when this copy is refreshed — and when to call `remember`.
@@ -31,6 +31,8 @@ pub struct Current {
     pub body: String,
     /// The whole body's size as the write side measures it — what the soft threshold is checked against.
     pub len: usize,
+    /// Why the body is empty although the file is there: it could not be read, or it belongs to another bot.
+    pub warning: Option<String>,
 }
 
 /// The frozen copy of one bot's `MEMORY.md`.
@@ -94,18 +96,20 @@ impl Snapshot {
 
     /// The file as it is now, read fresh rather than from this frozen copy: the flush turn's own writes are
     /// on disk but not in the copy until the compaction after it reloads it. Reading does not count as
-    /// seeing — an edit from outside is still picked up at the next send. An unreadable file reads as empty.
+    /// seeing — an edit from outside is still picked up at the next send. A file that cannot be read, or whose
+    /// frontmatter names another bot, reads as empty and says why in [`Current::warning`].
     pub fn current(&self) -> Current {
-        let text = read_existing(&self.memory.path())
-            .ok()
-            .flatten()
-            .unwrap_or_default();
+        let (text, warning) = match self.memory.read_owned() {
+            Ok(text) => (text.unwrap_or_default(), None),
+            Err(e) => (String::new(), Some(e)),
+        };
         let doc = Doc::parse(&text);
         let len = doc.body_text().len();
         let (body, _) = cut(doc.body);
         Current {
             body: body.join("\n").trim().to_owned(),
             len,
+            warning,
         }
     }
 

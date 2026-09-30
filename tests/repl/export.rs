@@ -532,7 +532,7 @@ async fn a_saved_session_exports_the_full_log_past_a_compaction() {
         ])
         .expect("round 1");
     writer
-        .append_compaction("SUMMARY", 0, None)
+        .append_compaction("SUMMARY", 0, None, false)
         .expect("marker");
     writer
         .append_messages(&[

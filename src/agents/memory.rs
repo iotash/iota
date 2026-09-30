@@ -35,8 +35,6 @@ pub const MEMORY_CAP: usize = 8 * 1024;
 pub const MEMORY_SOFT_CAP: usize = 6 * 1024;
 /// Cap of one line, its `- `, tag and date included.
 pub const MEMORY_LINE_CAP: usize = 500;
-/// Cap of a `section` argument, a leading `## ` included.
-pub const MEMORY_SECTION_CAP: usize = 100;
 /// The refusal for an `old` that names a hand-written line (§3.7 item 3).
 pub const USER_LINE_REFUSAL: &str = "that line was written by the user; ask them to change it";
 
@@ -87,18 +85,12 @@ pub enum Section {
 impl Section {
     /// `User`, `Project: <name>` or `Open threads` (a leading `## ` is tolerated); anything else is the
     /// model-facing refusal. The argument becomes a heading line, so it is one line: a newline or any other
-    /// control character is refused rather than folded, as is anything past [`MEMORY_SECTION_CAP`].
+    /// control character is refused rather than folded.
     pub fn parse(s: &str) -> Result<Self, String> {
         if s.chars().any(breaks_line) {
             return Err(format!(
                 "section is one heading line, without newlines or control characters: got {}",
                 go_quote(s)
-            ));
-        }
-        if s.len() > MEMORY_SECTION_CAP {
-            return Err(format!(
-                "section is at most {MEMORY_SECTION_CAP} bytes and this one is {}",
-                s.len()
             ));
         }
         let s = s.trim();
@@ -219,6 +211,19 @@ impl Doc {
             let (k, v) = l.split_once(':')?;
             (k.trim() == key).then(|| v.trim().trim_matches(['"', '\'']).to_owned())
         })
+    }
+
+    /// The frontmatter's `bot:` names `bot`, or names no one: a file copied from another bot's directory is
+    /// that bot's data, refused on every read and write alike rather than shown to or edited by this one.
+    fn check_owner(&self, bot: &str) -> Result<(), String> {
+        match self.front_value("bot") {
+            Some(owner) if owner != bot => Err(format!(
+                "{MEMORY_FILE} says it belongs to bot {} (frontmatter bot:), not {}",
+                go_quote(&owner),
+                go_quote(bot)
+            )),
+            _ => Ok(()),
+        }
     }
 
     fn body_text(&self) -> String {
@@ -501,15 +506,8 @@ pub fn apply(
             body: vec![format!("# {bot} memory"), String::new()],
         },
     };
-    if let Some(owner) = doc.front_value("bot")
-        && owner != bot
-    {
-        return Err(format!(
-            "MEMORY.md says it belongs to bot {} (frontmatter bot:), not {}; nothing was written — ask the user to fix the file",
-            go_quote(&owner),
-            go_quote(bot)
-        ));
-    }
+    doc.check_owner(bot)
+        .map_err(|e| format!("{e}; nothing was written — ask the user to fix the file"))?;
     let old_body = if current.is_some() {
         doc.body_text()
     } else {
@@ -681,15 +679,26 @@ impl BotMemory {
 
     /// Reads the file for a snapshot and records its mtime as seen. The mtime is taken first, so an edit
     /// that lands during the read shows up as a changed mtime at the next check rather than being missed.
+    /// A file whose frontmatter names another bot is refused like an unreadable one — and still seen, so it
+    /// is not re-read at every send until it changes.
     fn read_for_snapshot(&self) -> Result<Option<String>, String> {
-        let path = self.path();
-        let before = mtime(&path);
-        let text = read_existing(&path);
+        let before = mtime(&self.path());
+        let text = self.read_owned();
         *lock(&self.seen) = Seen {
             mtime: before,
             edited: false,
         };
         text
+    }
+
+    /// The file's text (`None` when it does not exist), refused when it cannot be read or its frontmatter
+    /// names another bot ([`Doc::check_owner`], the same check a write makes).
+    fn read_owned(&self) -> Result<Option<String>, String> {
+        let text = read_existing(&self.path())?;
+        if let Some(text) = &text {
+            Doc::parse(text).check_owner(&self.name)?;
+        }
+        Ok(text)
     }
 }
 

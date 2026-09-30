@@ -112,6 +112,7 @@ fn session_usage_round_trip() {
                 output: 50,
                 ..Usage::default()
             }),
+            false,
         )
         .unwrap();
     writer
@@ -333,7 +334,7 @@ fn compaction_marker_bumps_no_counter() {
     assert_eq!(writer.meta().message_count, 3);
 
     // conv_count is 2 (system excluded), so retain_tail 0 supersedes both.
-    writer.append_compaction("SUMMARY", 0, None).unwrap();
+    writer.append_compaction("SUMMARY", 0, None, false).unwrap();
     assert_eq!(
         writer.meta().message_count,
         3,
@@ -352,7 +353,7 @@ fn compaction_marker_bumps_no_counter() {
     // A second marker after one more round indexes from the FULL conversation length, not the view.
     let (mut writer, _) = store.resume(&id, KIND).unwrap();
     writer.append_messages(&[Message::user("u2")]).unwrap();
-    writer.append_compaction("AGAIN", 1, None).unwrap();
+    writer.append_compaction("AGAIN", 1, None, false).unwrap();
     drop(writer);
     let lines = log_lines(&dir);
     assert_eq!(
@@ -368,7 +369,9 @@ fn compaction_through_never_goes_negative() {
     let mut writer = store.create(NewSession::new(KIND, "m1")).unwrap();
     let dir = writer.dir().to_path_buf();
     writer.append_messages(&[Message::user("u1")]).unwrap();
-    writer.append_compaction("SUMMARY", 10, None).unwrap();
+    writer
+        .append_compaction("SUMMARY", 10, None, false)
+        .unwrap();
     drop(writer);
     // `compacted_through: 0` is omitted by omitempty, exactly like Go.
     assert_eq!(

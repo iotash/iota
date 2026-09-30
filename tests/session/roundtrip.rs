@@ -47,7 +47,7 @@ fn every_record_shape_survives_the_round_trip() {
     // on disk.
     let again = [Message::user("again"), Message::assistant("again answer")];
     writer.append_messages(&again).unwrap();
-    writer.append_compaction("SUMMARY", 2, None).unwrap();
+    writer.append_compaction("SUMMARY", 2, None, false).unwrap();
     let dir = writer.dir().to_path_buf();
     drop(writer);
     assert_eq!(log_lines(&dir).len(), 9, "6 shapes + 2 + the marker");

@@ -330,3 +330,39 @@ fn reload_takes_the_tools_writes_in() {
     );
     assert!(!snapshot.refresh());
 }
+
+/// A file whose frontmatter names another bot — copied in from that bot's directory — is refused on the read
+/// side as on the write side: the model is shown no memory, the flush and summary pass read nothing, and
+/// both say why.
+#[test]
+fn another_bots_file_is_not_injected() {
+    let foreign = EXAMPLE.replace("bot: coder", "bot: writer");
+    let (_dir, memory) = bot(Some(&foreign));
+    let snapshot = Snapshot::load(memory.clone());
+    let block = snapshot.block(Some("iota"));
+    assert!(!block.contains("回复用中文"), "{block}");
+    assert!(block.contains(MEMORY_PREAMBLE), "{block}");
+    assert_eq!(
+        snapshot.warning(),
+        Some(
+            "MEMORY.md says it belongs to bot \"writer\" (frontmatter bot:), not \"coder\"; the model is shown no memory"
+        )
+    );
+    let current = snapshot.current();
+    assert_eq!(current.body, "");
+    assert_eq!(current.len, 0);
+    assert_eq!(
+        current.warning.as_deref(),
+        Some("MEMORY.md says it belongs to bot \"writer\" (frontmatter bot:), not \"coder\"")
+    );
+    // Refused, not re-read: the next send does not reload a file nothing has changed.
+    let mut snapshot = snapshot;
+    assert!(!snapshot.refresh());
+
+    // Fixing the name is an edit from outside: the next send picks the memory up.
+    edit_outside(&memory.path(), EXAMPLE, 60);
+    assert!(snapshot.refresh());
+    assert_eq!(snapshot.warning(), None);
+    assert!(snapshot.block(Some("iota")).contains("回复用中文"));
+    assert_eq!(snapshot.current().warning, None);
+}

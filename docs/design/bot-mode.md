@@ -1,6 +1,6 @@
 # bot 模式设计：永不结束的会话 + 记忆
 
-Status: **Proposal**（rev 2，2026-09-30）· 依据：`docs/design/bot-mode-recon.md`（下称 recon）、`docs/design/bot-mode-research.md`（下称 research）、`docs/design/bot-mode-critique.md`（下称评审）
+Status: **Proposal**（rev 2，2026-09-30）· 依据：[`docs/history/bot-mode/bot-mode-recon.md`](../history/bot-mode/bot-mode-recon.md)（下称 recon）、[`docs/design/bot-mode-research.md`](bot-mode-research.md)（下称 research）、[`docs/history/bot-mode/bot-mode-critique.md`](../history/bot-mode/bot-mode-critique.md)（下称评审）
 
 实现状态（2026-10-01）：本设计的 v1 已在 `bot-mode-v1` 分支实现（21 个 commit，至 `d0b87d9`），两轮评审与修复验收均已通过；未验收项见 §5.2「验收状态」，已知残留见 §7.1。
 
@@ -68,7 +68,7 @@ bot 目录布局（全部新增）：
 
 ```
 ~/.iota/bots/<name>/
-    bot.json        # {"v":1,"session":"01K…","materialized":true}
+    bot.json        # {"session":"01K…","materialized":true}
                     # 指针：这个 bot 的会话是哪一个，以及本体是否已落盘（§2.7）；tmp+rename 原子写
     lock            # 进程锁（File::try_lock），内容为持有者 pid，仅用于报错信息
     MEMORY.md       # 常驻记忆层（§3.2），8 KiB 硬上限，文件级 frontmatter + 三个约定小节
@@ -125,7 +125,7 @@ bot 目录布局（全部新增）：
 
 ```rust
 /// `~/.iota/bots/<name>/bot.json`.
-pub struct BotPointer { pub v: i64, pub session: String, pub materialized: bool }
+pub struct BotPointer { pub session: String, pub materialized: bool }
 impl BotPointer {
     pub fn read(bot_dir: &Path) -> Result<Option<BotPointer>, SessionError>;   // 文件不存在 → Ok(None)
     pub fn write(&self, bot_dir: &Path) -> Result<(), SessionError>;           // app::fs::write_atomic
@@ -195,7 +195,7 @@ rev 1 直接沿用 resume 的 meta 回放，后果是 system 与模型冻结在�
 
 | 选项 | 评价 |
 |---|---|
-| **拒绝**（推荐） | `SessionError::Locked { what, pid }`，文案 `bot coder is already running (pid 4242)` / `session 01K… is open in another iota process (pid 4242)`。简单，也不会出现两个进程对同一段对话持有不同的内存视图 |
+| **拒绝**（推荐） | `SessionError::Locked { what, pid }`，文案 `bot coder is open in another iota process (pid 4242)` / `session 01K… is open in another iota process (pid 4242)`。简单，也不会出现两个进程对同一段对话持有不同的内存视图 |
 | 只读打开 | 要一个只读 REPL：不能发消息、要实时跟随另一个进程的追加（tail）。和 L3 的入站通道（往运行中的 bot 发话）是同一个需求，届时用 inbox 或 socket 实现，比「只读 REPL」更有用 |
 | 接管 | 需要通知旧进程交出会话，而旧进程可能正处在一轮中间。复杂度高，收益只是省去手动关旧窗口 |
 
@@ -237,7 +237,7 @@ L2 的惰性物化（不改格式）：
 
 - 滚动只在压缩刚完成时发生（此时视图 = system + 摘要 + 用户最后一轮 + flush 交换，正好是一个新 bundle 的完整开头）。
 - 新 bundle 的日志开头依次是：system 记录、一条 `compaction` 标记（`compacted_through: 0`，摘要即当前摘要。loader 在保留部分为空时会合成一条 user 前言，见 `src/session/loader.rs:268-270`，无需改代码）、保留尾部的原文。
-- `bot.json` 变成 `{"v":1,"session":"<新>","materialized":true,"previous":["<旧1>","<旧2>"]}`，原子改写。
+- `bot.json` 变成 `{"session":"<新>","materialized":true,"previous":["<旧1>","<旧2>"]}`，原子改写。
 - 记忆本来就在 bot 目录里，不随段走，所以跨段不需要额外机制。跨段回读原文只能靠 L2 的 `recall` 档案检索，它顺着 `previous` 往回扫。
 - 不按时间滚动：时间和成本没有关系，按天切会在最需要连贯的时候制造断点。
 
@@ -299,7 +299,7 @@ updated: 2026-09-30
 - [user] 等 bot-retention.sh 的数据把记忆上限定稿 (2026-09-30)
 ```
 
-- **文件级 frontmatter（OKF）**：只有两个键。`bot`（bot 名，工具校验与目录一致）、`updated`（工具每次写入时刷新为当天；人手编辑不要求维护，新鲜度靠 mtime）。**不写 `okf_version`**（已定 2026-09-30）：OKF 的 `okf_version` 是声明在 bundle 根 `index.md` 上的，我们既没有 bundle 也没有 `index.md`，写在这里是没人消费也没人校验的声明；等 `notes/` 长成真正的 bundle 时再在 `notes/index.md` 上标。**不加逐条 schema**：一行就是一条，没有逐条的 frontmatter 或字段。
+- **文件级 frontmatter（OKF）**：只有两个键。`bot`（bot 名，与目录一致；写入与读取都校验——名字不符的文件整份拒绝：不注入、不给 flush 与摘要看，transcript 上打 `⚠` 说明，`remember` 也拒写）、`updated`（工具每次写入时刷新为当天；人手编辑不要求维护，新鲜度靠 mtime）。**不写 `okf_version`**（已定 2026-09-30）：OKF 的 `okf_version` 是声明在 bundle 根 `index.md` 上的，我们既没有 bundle 也没有 `index.md`，写在这里是没人消费也没人校验的声明；等 `notes/` 长成真正的 bundle 时再在 `notes/index.md` 上标。**不加逐条 schema**：一行就是一条，没有逐条的 frontmatter 或字段。
 - **三个小节是约定，小节就是作用域**：`## User`（全局，在哪个项目都注入）、`## Project: <名字>`（项目域，只在该项目里全文注入，其它项目只列标题，见 §3.4）、`## Open threads`（未结事项，全局注入；flush 轮负责清掉已结的）。`remember` 的 `section` 参数只接受这三种（`Project:` 要带名字），缺失的小节由工具按这个顺序创建。人手加的其它小节保留原样，按全局处理。
 - **`## Project: <名字>` 用目录名**（已定 2026-09-30）：名字就是当前 `project_root` 的目录名（例如 `iota`），不用 `project_slug`。slug 是 `-Users-joyqi-Work-iota` 这种给会话桶用的编码路径，是给机器看的；记忆是给人看的。同名冲突罕见，行文里能写清。评审 I7 建议的 slug 不采纳；上面的示例即按目录名写。
 - **一条 = 一行**，以 `- ` 开头。**来源标记（评审 B）**：工具写的行以 `[user]`（用户明说的）或 `[inferred]`（模型从上下文或工具输出推断的）开头，末尾的 `(YYYY-MM-DD)` 由工具自动追加，模型不用写；人手写的行没有标记，也不要求日期。工具只能 `replace` / `remove` 带标记的行；无标记的行只有人能改（§3.7）。单条 ≤ 500 字节：长的内容放进 note，这里只留一行指针。
@@ -489,7 +489,7 @@ rev 1 在三处会把用户正在做的事压掉（评审 S2），逐条修正�
    - **记忆为空**：addendum 按上面两种之一，LONG-TERM MEMORY 段的内容写 `(empty)`。
 
    rev 1 的「事实已存进记忆」是摘要调用看不见、也核对不了的假设（评审 S3），现在它看得见。**摘要只承载对话状态，长期事实归记忆**，仍是让摘要长度不随压缩次数增长的主要手段。
-4. compaction 记录加三个 optional 键：`middle_tokens`（中段 token 数）、`summary_tokens`（摘要 token 数）、`flush_skipped`。前两个是将来量化衰减的唯一数据源（评审 S3）；Go 读取时忽略未知键。
+4. compaction 记录加一个 optional 键 `flush_skipped`（§3.6.1）；Go 读取时忽略未知键。rev 2 曾经再加 `middle_tokens` / `summary_tokens` 两个统计键，因为没有任何读者，已删（过度设计评审）。
 
 **压缩标记的显式化**：
 
@@ -503,7 +503,7 @@ rev 1 只处理了 `</memory>` 的结构逃逸。评审 S1 指出的问题更大
 
 1. **写入可见**。`remember` 的 presentation 用 Expanded：改动的行展开在 transcript 里，而不是折叠成一行 `saved to …`。写入发生的那一轮结束后，追加一条 `notice: true` 的记录（`memory: MEMORY.md ## User +1 line: [inferred] …`），进 history 也进日志，让 `/export`、resume 回放和将来的 `recall(archive)` 都能看到「什么时候写了什么」。复用现有 record 形状，不改格式。
 2. **写前备份**。每次工具写入前把旧文件存为 `MEMORY.md.prev`（一份足够，配合日志里的写入记录可追溯）。`notes/` 同样，`<topic>.md.prev`（L2）。
-3. **来源标记，人写的行不可改**。§3.2 的 `[user]` / `[inferred]`；无标记的行只有人能改，`replace` / `remove` 命中它就报错。flush 提示词只对 `[user]` 行用「偏好」措辞。评审 S1 的备选「命中人写的行时走审批门」不需要了：人写的行根本不可改，剩下的都是模型自己写的。为此工具自己写不出无标记的行：`section` 必须是一个标题行——只接受 `User` / `Project: <名字>` / `Open threads`（可带 `## `），拒绝换行与控制字符，上限 100 字节；`text` 先归一化（折叠换行、去前后空白）再校验，残留的控制字符（如孤立的 `\r`）拒绝，500 字节上限作用在最终落盘的那一行上（评审 codex R3）。
+3. **来源标记，人写的行不可改**。§3.2 的 `[user]` / `[inferred]`；无标记的行只有人能改，`replace` / `remove` 命中它就报错。flush 提示词只对 `[user]` 行用「偏好」措辞。评审 S1 的备选「命中人写的行时走审批门」不需要了：人写的行根本不可改，剩下的都是模型自己写的。为此工具自己写不出无标记的行：`section` 必须是一个标题行——只接受 `User` / `Project: <名字>` / `Open threads`（可带 `## `），拒绝换行与控制字符（长度只受整份 8 KiB 上限约束）；`text` 先归一化（折叠换行、去前后空白）再校验，残留的控制字符（如孤立的 `\r`）拒绝，500 字节上限作用在最终落盘的那一行上（评审 codex R3）。
 4. **不做代码级过滤**。写入侧不做内容审查，风险由明文、可 diff 与可回滚承担。写进记忆的内容无法用代码完全控制与阻拦，密钥只是其中一类；一张窄网既挡不全，又会误伤合法写入（评审 fable R1：`disk-usage`、`task-based`、`risk-adjusted` 都被当成密钥拒写）。`remember` 的工具描述里保留一句提示：不要在这里存密钥或令牌，文件是明文、可能进 git（2026-10-01 定）。
 5. **前言改口径**。§3.4 的块前言写明这是「data written by you in earlier turns」，低于 AGENTS.md 与用户当下指令，不是用户说的话，`[inferred]` 只是线索。
 6. **外部编辑与工具写入的竞争**（I8）。mtime 检测只能发现「文件变了」；用户在编辑器里改到一半、模型写入、用户保存，一方会覆盖另一方。`MEMORY.md.prev` 让被覆盖的一方可恢复；不做更细的合并。
@@ -623,7 +623,7 @@ rev 1 只处理了 `</memory>` 的结构逃逸。评审 S1 指出的问题更大
 
 - **已交付，跑在 `cargo test` 里**：长跑实验——`testing::GrowingProvider` 加 `tests/repl/bot_longrun.rs` 的不变量测试，两个 32k 场景（记忆保持简短的、停在软阈值的）各 2000 轮，含 drop/resume 与不重启的对照、超窗时真拒绝；8k 场景作为反例保留为 `#[ignore]`。
 - **已写、未跑**：保留率实验脚本 `scripts/bot-retention.sh`（只做过 `bash -n`、源码核对与无模型干跑）。它要用真模型跑；在它跑出结果之前，**§6 #13 的上限（8 KiB / 500 B / 1500 词等）仍是临时值**，L1 的这一项验收未完成。
-- **评审与验收记录**：第一轮评审 `bot-mode-review-fable.md`、`bot-mode-review-codex.md`；第二轮评审 `bot-mode-review-fable-2.md`、`bot-mode-review-codex-2.md`；修复验收与复核 `bot-mode-verify-codex.md`（均在 `docs/design/`）。
+- **评审与验收记录**：均已冻结在 [`docs/history/bot-mode/`](../history/bot-mode/README.md)——第一轮评审 `bot-mode-review-fable.md`、`bot-mode-review-codex.md`；第二轮评审 `bot-mode-review-fable-2.md`、`bot-mode-review-codex-2.md`；修复验收与复核 `bot-mode-verify-codex.md`；合并前的过度设计评审 `bot-mode-overdesign-{fable,opus,codex}.md`。
 
 ---
 

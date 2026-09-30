@@ -710,19 +710,18 @@ async fn one_mode_requests(mode_line: &str, fresh: bool) -> Vec<String> {
     out
 }
 
-/// bot-mode.md §1.1 (T3): `mode:` replaced `workspace:` without changing a byte of either side of it.
-/// `mode: agent` sends what `workspace: true` sent — the `AGENTS.md` overlay with its skills catalog, and the
-/// skills set — fresh and resumed; the expected text was captured from the last binary that read
-/// `workspace: true` (8f3c875) and is pinned verbatim. `mode: chat` is exactly the key left out. A bot
-/// refuses a fresh `-m` (T4, §2.2: `BotHeadless`), but resuming an ordinary session under it sends what
-/// `agent` does — the overlay and the skills set are the same.
+/// The requests `mode: agent` sends — the `AGENTS.md` overlay with its skills catalog, and the skills set —
+/// fresh and resumed, pinned verbatim in `agent-requests.txt` (baseline captured at 8f3c875, when the key
+/// was still `workspace: true`). `mode: chat` is exactly the key left out. A bot refuses a fresh `-m` (§2.2:
+/// `BotHeadless`), but resuming an ordinary session under it sends what `agent` does — the overlay and the
+/// skills set are the same.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mode_agent_is_what_workspace_true_was() {
+async fn mode_agent_requests_are_pinned() {
     let agent = one_mode_run("\n    mode: agent").await;
     assert_eq!(
         agent,
         fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mode/workspace-true.txt")
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mode/agent-requests.txt")
         )
         .expect("read the pinned run")
     );

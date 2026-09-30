@@ -192,6 +192,7 @@ fn jsonl_omitempty_matrix() {
                 output: 20,
                 ..Usage::default()
             }),
+            false,
         )
         .unwrap();
     drop(writer);

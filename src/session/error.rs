@@ -28,23 +28,13 @@ pub enum SessionError {
     /// `DeleteSession`); it can never address anything outside the sessions root.
     #[error("invalid session id {0:?}")]
     InvalidId(String),
-    /// Another process holds the bundle's single-writer lock (docs/design/bot-mode.md §2.3). `what` names
-    /// the bundle (`session <id>`); `pid` is what the holder wrote into the lock file, `None` when it has
-    /// not written it yet.
+    /// Another process holds a single-writer lock (docs/design/bot-mode.md §2.3): a bundle's, or a bot's
+    /// (`~/.iota/bots/<name>/lock`). `what` names the holder's subject (`session <id>`, `bot <name>`); `pid`
+    /// is what the holder wrote into the lock file, `None` when it has not written it yet.
     #[error("{what} is open in another iota process{}", pid_suffix(*.pid))]
     Locked {
         /// What is locked, as the text names it.
         what: String,
-        /// The holder's pid, when known.
-        pid: Option<u32>,
-    },
-    /// Another process holds the bot's lock (`~/.iota/bots/<name>/lock`, §2.3): the bot is running. A
-    /// variant of its own rather than a second spelling of [`Locked`](Self::Locked) — what is refused
-    /// here is running the bot, not opening a bundle, and the sentence says so.
-    #[error("bot {bot} is already running{}", pid_suffix(*.pid))]
-    BotRunning {
-        /// The bot's name.
-        bot: String,
         /// The holder's pid, when known.
         pid: Option<u32>,
     },
@@ -204,20 +194,20 @@ mod tests {
             "disk on fire"
         );
         assert_eq!(
-            SessionError::BotRunning {
-                bot: "coder".to_owned(),
+            SessionError::Locked {
+                what: "bot coder".to_owned(),
                 pid: Some(4242),
             }
             .to_string(),
-            "bot coder is already running (pid 4242)"
+            "bot coder is open in another iota process (pid 4242)"
         );
         assert_eq!(
-            SessionError::BotRunning {
-                bot: "coder".to_owned(),
+            SessionError::Locked {
+                what: "bot coder".to_owned(),
                 pid: None,
             }
             .to_string(),
-            "bot coder is already running"
+            "bot coder is open in another iota process"
         );
         assert_eq!(
             SessionError::BotOwned {

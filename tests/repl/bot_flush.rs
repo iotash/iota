@@ -325,8 +325,6 @@ async fn the_flush_turn_saves_memory_then_the_users_last_turn_survives_the_compa
     let m = marker(&dir);
     assert_eq!(m["compacted_through"], 2, "{m}");
     assert!(m.get("flush_skipped").is_none(), "{m}");
-    assert!(m["middle_tokens"].as_u64().is_some_and(|n| n > 0), "{m}");
-    assert!(m["summary_tokens"].as_u64().is_some_and(|n| n > 0), "{m}");
     let view = iota::session::load_log(&dir, ProviderKind::OpenAi)
         .expect("load")
         .view;

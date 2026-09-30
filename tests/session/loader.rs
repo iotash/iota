@@ -43,7 +43,7 @@ fn load_log_weaves_the_last_compaction() {
             Message::assistant("first answer"),
         ])
         .unwrap();
-    writer.append_compaction("SUMMARY", 0, None).unwrap();
+    writer.append_compaction("SUMMARY", 0, None, false).unwrap();
     writer
         .append_messages(&[
             Message::user("second question"),
@@ -306,7 +306,7 @@ fn load_full_history_ignores_compaction() {
             Message::assistant("first answer"),
         ])
         .unwrap();
-    writer.append_compaction("SUMMARY", 0, None).unwrap();
+    writer.append_compaction("SUMMARY", 0, None, false).unwrap();
     writer
         .append_messages(&[
             Message::user("second question"),

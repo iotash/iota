@@ -30,7 +30,7 @@ pub(crate) mod store;
 pub(crate) mod tuning;
 pub(crate) mod writer;
 
-pub use bot::{BOT_POINTER_FILE, BOT_POINTER_VERSION, BotPointer, valid_bot_name};
+pub use bot::{BOT_POINTER_FILE, BotPointer, valid_bot_name};
 pub use error::SessionError;
 pub use id::{SESSION_ID_ALPHABET, SESSION_ID_LENGTH, resolve_in};
 pub use loader::{
@@ -49,4 +49,4 @@ pub use store::{BotOpen, NewSession, PROJECTS_DIR_NAME, SessionInfo, SessionStor
 pub use tuning::{
     Overrides, apply_session_tuning, replay_session_settings, warn_if_session_agent_is_gone,
 };
-pub use writer::{CompactionStats, OnCreated, SessionWriter};
+pub use writer::{OnCreated, SessionWriter};

@@ -37,11 +37,11 @@ use crate::sync::lock;
 use tokio_util::sync::CancellationToken;
 
 use crate::repl::bot::{COMPACTED_WITHOUT_FLUSH, Compacted, Event as BotEvent};
-use crate::repl::context::tokens::{TokenCounter, go_map};
+use crate::repl::context::tokens::go_map;
 use crate::repl::render::styles::truncate_runes;
 use crate::repl::run::Repl;
 use crate::repl::run::bot_perform;
-use crate::session::{CompactionStats, SessionError};
+use crate::session::SessionError;
 
 /// The instruction that hands the retention decision to the model and hardens against
 /// prompt injection from the conversation being summarized (`chat/compact.go`
@@ -122,10 +122,6 @@ pub(crate) enum Compaction {
         retain_tail: usize,
         /// What the summary call itself billed.
         usage: Option<Usage>,
-        /// The local count of the messages the summary replaced.
-        middle_tokens: u64,
-        /// The local count of the summary.
-        summary_tokens: u64,
     },
 }
 
@@ -157,8 +153,6 @@ pub(crate) async fn compact_history(
         return Ok(Compaction::Unchanged); // nothing older than the last turn
     }
 
-    let counter = TokenCounter::new();
-    let middle_tokens = counter.count_messages(&history[sys_end..middle_end]);
     let (previous, middle) = split_previous_summary(&history[sys_end..middle_end]);
     let (summary, usage) =
         summarize(cancel, provider, previous.as_deref(), &middle, hint, bot).await?;
@@ -166,7 +160,6 @@ pub(crate) async fn compact_history(
     if summary.is_empty() {
         return Err(CompactError::EmptySummary);
     }
-    let summary_tokens = counter.count(&summary);
 
     // Rebuild: system + (summary prepended into a COPY of the first retained message) +
     // rest. The caller's slice is never mutated.
@@ -185,8 +178,6 @@ pub(crate) async fn compact_history(
         summary,
         retain_tail: retained.iter().filter(|m| m.role() != Role::System).count(),
         usage,
-        middle_tokens,
-        summary_tokens,
     })
 }
 
@@ -318,7 +309,13 @@ async fn summarize(
 /// failure in a row tells the host.
 pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
     let flush = repl.conv.bot.as_ref().map(|b| b.flush.report());
-    let memory = repl.conv.bot.as_ref().map(|b| b.memory.current().body);
+    let memory = repl.conv.bot.as_ref().map(|b| b.memory.current());
+    if let Some(warn) = memory.as_ref().and_then(|m| m.warning.as_deref()) {
+        repl.handles
+            .tr
+            .notice(&format!("⚠ {warn}; the summary pass is shown no memory"));
+    }
+    let memory = memory.map(|m| m.body);
     let bot = flush.zip(memory.as_deref()).map(|(f, memory)| BotCompact {
         memory,
         flush_writes: f.writes,
@@ -342,7 +339,7 @@ pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
     .await;
     busy.stop();
 
-    let (history, summary, retain_tail, usage, middle_tokens, summary_tokens) = match res {
+    let (history, summary, retain_tail, usage) = match res {
         Err(e) => {
             repl.handles.tr.error(&format!("Compaction failed: {e}"));
             bot_compacted(repl, Compacted::Failed, &e.to_string()).await;
@@ -360,30 +357,17 @@ pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
             summary,
             retain_tail,
             usage,
-            middle_tokens,
-            summary_tokens,
-        }) => (
-            history,
-            summary,
-            retain_tail,
-            usage,
-            middle_tokens,
-            summary_tokens,
-        ),
+        }) => (history, summary, retain_tail, usage),
     };
 
     // The summary pass is a billed call of its own: the marker carries it (no message does), and the meter
     // books it only once the marker is in the log — a failed marker leaves no compaction whose call it was.
     let booked = usage.filter(|_| repl.conv.ctxm.is_enabled());
-    let stats = CompactionStats {
-        middle_tokens: Some(middle_tokens),
-        summary_tokens: Some(summary_tokens),
-        flush_skipped: flush.is_some_and(|f| f.skipped),
-    };
+    let flush_skipped = flush.is_some_and(|f| f.skipped);
     let persist = {
         let mut slot = lock(&repl.session.writer);
         slot.as_mut()
-            .map(|w| w.append_compaction_with(&summary, retain_tail, booked, stats))
+            .map(|w| w.append_compaction(&summary, retain_tail, booked, flush_skipped))
     };
     match persist {
         // The marker is in the log; only its meta rewrite failed.
@@ -414,7 +398,7 @@ pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
         repl.conv.budget.status()
     ));
     // Asked for by hand, a compaction without a flush is what the user chose; unasked, it is said out loud.
-    if !manual && stats.flush_skipped {
+    if !manual && flush_skipped {
         repl.handles.tr.notice(COMPACTED_WITHOUT_FLUSH);
     }
     bot_compacted(repl, Compacted::Done, "").await;
@@ -908,26 +892,6 @@ mod tests {
             !out[3].tools().is_empty(),
             "the mount stays in the live view"
         );
-    }
-
-    /// The figures the marker carries: the middle's and the summary's local token counts.
-    #[tokio::test]
-    async fn a_compaction_counts_the_middle_and_the_summary() {
-        let h = history();
-        let Compaction::Done {
-            middle_tokens,
-            summary_tokens,
-            ..
-        } = compact_history(&CancellationToken::new(), &summarizer(), &h, "", None)
-            .await
-            .expect("compaction succeeded")
-        else {
-            panic!("nothing compacted");
-        };
-        let counter = crate::repl::context::tokens::TokenCounter::new();
-        assert_eq!(middle_tokens, counter.count_messages(&h[1..3]));
-        assert_eq!(summary_tokens, counter.count("SUMMARY"));
-        assert!(middle_tokens > 0 && summary_tokens > 0);
     }
 
     /// bot-mode.md §3.6.2 (critique S3): a bot's summary pass is shown MEMORY.md and told how many lines the

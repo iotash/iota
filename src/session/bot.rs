@@ -12,14 +12,9 @@ use crate::session::error::SessionError;
 /// The pointer's file name inside a bot's directory.
 pub const BOT_POINTER_FILE: &str = "bot.json";
 
-/// The pointer format's version.
-pub const BOT_POINTER_VERSION: i64 = 1;
-
 /// `<bots>/<name>/bot.json`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BotPointer {
-    /// The format version ([`BOT_POINTER_VERSION`]).
-    pub v: i64,
     /// The session id this bot is.
     pub session: String,
     /// The bundle has reached the disk at least once.
@@ -30,7 +25,6 @@ impl BotPointer {
     /// A pointer at `session`, not yet materialised.
     pub fn new(session: &str) -> Self {
         Self {
-            v: BOT_POINTER_VERSION,
             session: session.to_owned(),
             materialized: false,
         }
@@ -111,7 +105,7 @@ mod tests {
         ptr.write(&dir).expect("write");
         assert_eq!(
             std::fs::read_to_string(dir.join(BOT_POINTER_FILE)).expect("file"),
-            "{\"v\":1,\"session\":\"01KABC\",\"materialized\":false}\n"
+            "{\"session\":\"01KABC\",\"materialized\":false}\n"
         );
         ptr.materialized = true;
         ptr.write(&dir).expect("rewrite");
@@ -131,6 +125,14 @@ mod tests {
         let home = tempfile::tempdir().expect("tempdir");
         std::fs::write(home.path().join(BOT_POINTER_FILE), "{oops").expect("write");
         let err = BotPointer::read(home.path()).expect_err("corrupt");
+        assert!(err.to_string().contains(BOT_POINTER_FILE), "{err}");
+        // Well-formed JSON without the session it must name is just as corrupt.
+        std::fs::write(
+            home.path().join(BOT_POINTER_FILE),
+            "{\"materialized\":true}",
+        )
+        .expect("write");
+        let err = BotPointer::read(home.path()).expect_err("no session");
         assert!(err.to_string().contains(BOT_POINTER_FILE), "{err}");
     }
 
