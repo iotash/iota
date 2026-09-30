@@ -56,7 +56,10 @@ agents:
 - **一个例外：会话布局。** `agent` 进项目桶（`~/.iota/sessions/projects/<slug>/`），`bot` 走 flat 布局（bot 覆盖项目分桶，见 §1.3）。
 - **`workspace:` 键删除，不留兼容。** `AGENT_KEYS`（`src/config/strict.rs:37-52`）去掉 `workspace`、加上 `mode`，仍是 14 个键。不进 `RETIRED_KEYS`（`strict.rs:70-87`）：写了 `workspace` 得到的就是普通的未知键错误。已有的那条 retired 记录「`agent` is now `workspace:` on an `agents:` entry」（`strict.rs:82-86`）的替换文案改成指向 `mode: agent`——它不能再推荐一个不存在的键。
 - **`no_save` 保持独立**，不并进 mode。`mode: bot` + `no_save: true` 是 `ConfigError`（§2.2）。
-- **落地**：`AgentConfig.workspace: bool`（`src/config/agent.rs:40-44`）换成 `mode: AgentMode`（serde 小写枚举；未知值报 `ConfigError`，坐标 `agents.<name>.mode`，文案列出三个合法值）。`RunSettings.agent_mode: bool`（`src/cmd/resolve.rs:36`、`:137`）换成 `mode: AgentMode`。现有 `agent_mode` 的读点分两类：overlay、skills、jail 的（`src/cmd/mod.rs:308`、`:427`、`:500`；`src/cmd/assemble.rs:174-183`；`src/cmd/interactive/mod.rs:253`、`:546`）读 `mode.has_workspace()`，agent 与 bot 都为真；项目分桶的两处（`src/cmd/interactive/mod.rs:500`、`:520`）读 `mode == AgentMode::Agent`，bot 走 flat。
+- **落地**：`AgentConfig.workspace: bool`（`src/config/agent.rs:40-44`）换成 `mode: AgentMode`（serde 小写枚举；未知值报 `ConfigError`，坐标 `agents.<name>.mode`，文案列出三个合法值）。`RunSettings.agent_mode: bool`（`src/cmd/resolve.rs:36`、`:137`）换成 `RunSettings::mode`。现有 `agent_mode` 的读点分三类，落地后都改读 `RunSettings::mode`：
+  - overlay、skills、jail 的（`src/cmd/mod.rs:308`、`:500`；`src/cmd/assemble.rs:174-183`；`src/cmd/interactive/mod.rs:546`）改为 `AgentMode::has_workspace` 的调用点，agent 与 bot 都为真；
+  - **resume 的查找范围**（`src/cmd/mod.rs:427`，headless 的 `-m` resume；`src/cmd/interactive/mod.rs:253`，picker 与 `resolve_id`）同样改为 `AgentMode::has_workspace` 的调用点：先查当前项目的桶，查不到再放宽到全部会话（`SessionStore::resolve_id`）。bot 的 `iota run` 走 `SessionStore::open_bot`，不经过它；`iota resume <id>` 仍经过，并在查找之后按 §2.7 拒绝 bot 的会话（`SessionStore::check_not_bot_owned`）；
+  - 项目分桶的两处（`src/cmd/interactive/mod.rs:500`、`:520`）改为 `mode == AgentMode::Agent`，bot 走 flat。
 - 备选「保留 `workspace` + 新增 `bot` 两个布尔」没选，理由见 §6 #17。
 
 bot 目录布局（全部新增）：
@@ -73,7 +76,7 @@ bot 目录布局（全部新增）：
 ```
 
 - 路径由新增的 `HostDirs::bots_dir()`（`src/app/mod.rs`，与 `app_home()` 并列，返回 `<app home>/bots`）给出。`session` 和 `agents` 两层都从注入的 `HostDirs` 拿根目录，守住「`session` 不读环境变量」这条（ARCHITECTURE §1.2）。
-- **bot 名的校验**：`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`。bot 名直接做目录名，所以名字不合规时，由 `Config::validate` 报 `ConfigError`，坐标为 `agents.<name>.mode`。
+- **bot 名的校验**：`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`。bot 名直接做目录名，所以名字不合规时，由 `Config::validate` 报 `ConfigError`，坐标为 `agents.<name>`（名字本身不合规，不是 `mode` 的值不合规；`mode` 的未知值才报在 `agents.<name>.mode`）。
 
 ### 1.2 「会话文件是本体，进程只是缓存」的具体含义
 
@@ -98,9 +101,9 @@ bot 目录布局（全部新增）：
 - **「一条会话」是这个功能的前提**，C 直接违背了它。C 的实质是「按项目自动 resume」，而 agent 模式的项目桶加 `iota resume` 已经能做到。
 - **overlay 本来就是易失的**，不进 history，也不落盘。agent-mode.md 已经明确写过：「resuming a session in another directory applies **that** directory's AGENTS.md — the correct ambient semantics」。A 只是把这条语义用到 bot 上，不需要新机制。
 - B 等于给 A 加了一个配置键。需要固定目录的用户，在那个目录里启动就行；真有需求时再加 `bot_root:`，不挡路。
-- 代价：模型在对话中途「换了个项目」，历史里提到的文件可能不在当前 jail 里。缓解办法：harness 的 `project_root:` 每条消息都是真实值（§2.5 的重组会顺带更新）；`MEMORY.md` 的 `## Project: <名字>` 小节按当前项目裁剪注入（§3.2、§3.4，评审 I7）；`Resumed` 且 cwd ≠ `meta.cwd` 时打一条 notice `Resumed in a different project: <old> → <new>`（评审 M3），让模型能区分「文件没了」和「换了项目」。
+- 代价：模型在对话中途「换了个项目」，历史里提到的文件可能不在当前 jail 里。缓解办法：harness 的 `project_root:` 每条消息都是真实值（§2.5 的重组会顺带更新）；`MEMORY.md` 的 `## Project: <名字>` 小节按当前项目裁剪注入（§3.2、§3.4，评审 I7）；`Resumed` 且本次的项目根 ≠ `meta.cwd`（上一次运行的目录，见下面的落地）时打一条 notice `Resumed in a different project: <old> → <new>`（评审 M3，§2.5），让模型能区分「文件没了」和「换了项目」。
 
-**落地**：bot 会话**永远走 flat 布局**。`wire_session` 为 bot 创建会话时传 `NewSession { project: false, cwd: <首次启动目录>, .. }`，所以 bot 会话不进任何项目桶。`cwd` 只是一条记录。
+**落地**：bot 会话**永远走 flat 布局**。`wire_session` 为 bot 创建会话时传 `NewSession { project: false, cwd: <本次的项目根>, .. }`，所以 bot 会话不进任何项目桶。`meta.cwd` 记的是**上一次运行的目录**：每次 `Resumed` 都先读出旧值、再把它更新为本次的项目根（`open_bot_session` 里 `m.cwd = cwd`），上面那条「换了项目」的 notice 比较的就是这两个值。不更新的话，bot 离开首次启动的目录之后，每次重启都会误报「换了项目」。
 
 ---
 
@@ -159,6 +162,7 @@ match ptr:
 |---|---|
 | `iota run <bot>` | resume-or-create（上面的流程） |
 | `iota resume <bot 会话 id>` | **拒绝**：`SessionError::BotOwned`，文案 `session 01K… belongs to bot coder; run iota run coder`。rev 1 允许它以普通 resume 打开，评审 M1 指出那是同一本体两种人格（不 flush、不注记忆），而 I1 要求 picker 里也看不到它，所以一并拒绝。判定靠 `bots/*/bot.json` 反查（§2.7） |
+| `iota resume <普通会话 id>`，而 `agents.default` 本身是 `mode: bot` | 走**普通 resume**：不抑制 `/session`、照常起标题、参数用 session 的（meta 回放，不是「以 config 为准」）。`iota resume` 没有写 agent 名的位置，`wire_session` 里 bot 分支的条件是 `mode.is_bot() && !resume_given`，所以 resume 一律走普通分支；会话若属于某个 bot，仍按上一行拒绝 |
 | `iota run <bot> -m …` | **v1 拒绝**：`ArgsError::BotHeadless`，文案 `bot agents are interactive-only for now; run iota run <name>`。headless 没有压缩（recon §4），放行会让 bot 会话无上限增长。L3 开放（先 inbox，再 headless，§5） |
 | `--no-save` 或 `no_save: true` | 配置层拒绝：`ConfigError`，`no_save contradicts mode: bot` |
 | `-M <model>` | 允许，本次运行的覆盖（现有优先级 `-M` > config），不回写 config |
@@ -207,7 +211,9 @@ rev 1 直接沿用 resume 的 meta 回放，后果是 system 与模型冻结在�
 ### 2.5 常驻带来的几个小改动（v1 必需）
 
 - **harness 按日重组**：`Conversation.harness` 是启动时组装一次的（`src/cmd/interactive/mod.rs:327`），跨日后 `date:` 会过期。做法：`Repl` 保留 `HarnessInputs` 和 `Presenter` 的引用，新增 `Conversation.harness_day: String`。每条消息发送前比较 `harness::today()`，变了才重组，所以 prompt cache 一天最多失效一次。重组时顺带刷新 §3.4 的记忆快照，一次失效合并成一次。
-- **Resumed 时的两条 notice（评审 M2、M3）**：`Resumed after 3 days (last message 2026-09-27 18:02)`，用 `meta.updated_at`（`src/session/meta.rs:54`）算；cwd 变了再加一条（§1.3）。视图里没有时间戳（`SessionRecord.at` 在 L2），这两条是模型重启后唯一的时间感来源。
+- **Resumed 时的两条 notice（评审 M2、M3）**：
+  - 时间：`Resumed after 3 days (last message 2026-09-27 18:02)`，**间隔 ≥ 1 小时才发**（`RESUME_GAP_NOTICE_SECS = 3_600`）；更短的重启不值得每次往日志和上下文里多写一行。时间用**修复尾部之前**的 `meta.updated_at`（`Session::last_written`）：§2.7 的 `repair_tail` 会追加记录、刷新 `updated_at`，用刷新后的值就会把「隔了三天」算成「刚刚」。显示按本机时区。
+  - 地点：本次的项目根 ≠ `meta.cwd`（上一次运行的目录，§1.3）时加一条 `Resumed in a different project: <old> → <new>`，**不设门槛**——换项目是事件，不是噪音。`meta.cwd` 为空（早于这个键的老 bundle）时不发。视图里没有时间戳（`SessionRecord.at` 在 L2），这两条是模型重启后唯一的时间感来源。
 - **jobs 退出通知（L2）**：退出前如果还有运行中的 job，先 `append_messages` 一条 `notice` 记录 `Background jobs <ids> were killed when iota exited.`，再 `kill_all`。下次启动时模型能看到。
 
 ### 2.6 会话切不切分
@@ -344,9 +350,9 @@ skills 目录             (Overlay::content 的后半，mode ≥ agent 时)
 <memory>…</memory>      ← 新增，bot 时；放在最后，因为它是 overlay 里变化最频繁的一段
 ```
 
-bot 一定开着 AGENTS.md 与 skills 的 overlay（bot ⊇ agent），但记忆块不挂在 `Overlay` 结构里：`Overlay` 的新鲜度规则是每轮 stat、有变就重读，而记忆的刷新规则不同（下面的四个时刻，且模型自己的写入不触发）。所以新增 `Conversation.bot: Option<BotState>`（`src/repl/state.rs:33-67`），其中 `BotState { name, memory: agents::memory::Snapshot, flush_pending: bool, flush_writes: u32, compact_failures: u8 }`。`src/repl/run.rs:686` 算 `send_overlay` 的地方改为 `join(overlay.content(), bot.memory.block(project))`。headless 在 L3 开放时同样在 `src/headless/run.rs:147-153` 拼一次。
+bot 一定开着 AGENTS.md 与 skills 的 overlay（bot ⊇ agent，`has_workspace()` 对 bot 为真），记忆块不挂在 `Overlay` 结构里，是因为**记忆有自己的刷新时机**：`Overlay` 的新鲜度规则是每轮 stat、有变就重读，而记忆只在下面的四个时刻刷新，模型自己的写入不触发。所以新增 `Conversation.bot: Option<BotState>`（`src/repl/state.rs:33-67`），其中 `BotState { name, memory: agents::memory::Snapshot, flush: repl::bot::Flush }`（flush 待办、本次 flush 写了几行、压缩失败计数都在 §3.6.1 的状态机 `Flush` 里）。`src/repl/run.rs:686` 算 `send_overlay` 的地方（落地后在 `Repl::refresh_overlay`）拼成 `join_overlay(overlay.content(), bot.memory.block(project))`。headless 在 L3 开放时同样在 `src/headless/run.rs:147-153` 拼一次。
 
-**按作用域裁剪（评审 I7）**：`Snapshot::block(project)` 注入 `## User` 与 `## Open threads` 全文、当前项目的 `## Project:` 小节全文；其它项目的小节只列一行标题和行数。8 KiB 上限仍按整个文件算（§3.5）：六个项目吃掉 6 KiB 时，模型在 flush 轮合并的压力和今天一样，但至少不会在项目 X 里读到 Y 的「提交前跑 make lint」并照做。
+**按作用域裁剪（评审 I7）**：`Snapshot::block(project)` 注入 `## User` 与 `## Open threads` 全文、当前项目的 `## Project:` 小节全文；其它项目的小节不注入正文，汇总成一行放在正文**之后**：`Other projects: ` 后接各小节标题及其行数（空行不计，`(1 line)` / `(N lines)`），逗号连接，例如 `Other projects: ## Project: herdr (3 lines), ## Project: web (1 line)`。frontmatter 之后、第一个小节之前的前言，以及人手加的其它小节，都按全局整段注入。没有当前项目时（`project_root` 取不出目录名），块上不写 `project=` 属性，所有 `## Project:` 小节都进汇总行（以 `agents::memory::Snapshot::block` 与其测试 `another_projects_section_is_one_line`、`hand_added_sections_are_global_and_other_projects_are_counted` 为准）。8 KiB 上限仍按整个文件算（§3.5）：六个项目吃掉 6 KiB 时，模型在 flush 轮合并的压力和今天一样，但至少不会在项目 X 里读到 Y 的「提交前跑 make lint」并照做。
 
 **记忆块的形态**（`agents::memory::Snapshot::block()`）：
 
@@ -401,13 +407,13 @@ Notes (read with recall):
 
 | 对象 | 软阈值 | 硬上限 | 越限时的行为 |
 |---|---|---|---|
-| `MEMORY.md` 总长（不含 frontmatter；`.prev` 不计） | 6 KiB（75%） | 8 KiB（`agents::memory::MEMORY_CAP`） | 软阈值：写入成功，结果附一句 `MEMORY.md is at 82% — consolidate soon (merge related lines, move detail into a note)`。硬上限：**拒绝写入**（`is_error`），文件不变，错误里带上**当前全文**和大小，让模型当场合并（`replace`/`remove`）后重试。缩小体积的 `replace`/`remove` 永远放行 |
-| 单条 | — | 500 字节 | 拒绝，提示改写成 note 加一行指针 |
+| `MEMORY.md` 总长（不含 frontmatter；`.prev` 不计） | 6 KiB（75%） | 8 KiB（`agents::memory::MEMORY_CAP`） | 软阈值：写入成功，结果附一句 `MEMORY.md is at 82% — consolidate soon (merge related lines with replace, drop stale ones with remove)`（`agents::memory::soft_warning`）。硬上限：**拒绝写入**（`is_error`），文件不变，错误里带上**当前全文**和大小，让模型当场合并（`replace`/`remove`）后重试。缩小体积的 `replace`/`remove` 永远放行 |
+| 单条 | — | 500 字节 | 拒绝，`a memory line is at most 500 bytes and this one is N: shorten it to the one fact you need to recall, or split it into separate lines`（`make_line`）。v1 没有 notes，所以不提 note |
 | 单个 note | — | 32 KiB | 拒绝，提示拆分或精简 |
 | note 个数 | — | 200 | 拒绝新建，提示合并主题 |
 | 人手编辑超限 | — | — | 注入时按行截到 8 KiB，末尾写 `[memory truncated: N bytes over the cap — consolidate]`，transcript 打一条警告。**不改文件** |
 
-**让模型自己合并的时机**：只在 flush 轮里做，不另起任务。flush 提示词在 `MEMORY.md` 超过软阈值时多加一段「also consolidate: merge duplicates, drop stale lines, move detail into notes」。合并只能动带标记的行（§3.7）。不做静默截断，也不做后台整理（这是 Hermes 的做法，research §5.4）。
+**让模型自己合并的时机**：只在 flush 轮里做，不另起任务。flush 提示词在 `MEMORY.md` 超过软阈值时，在 `FLUSH_NOTICE` 后空一行接上**同一句**软阈值提示（`repl::bot::flush_notice(soft_warning(..))`，与写入结果里那句出自同一个函数，都不提 note）。合并只能动带标记的行（§3.7）。不做静默截断，也不做后台整理（这是 Hermes 的做法，research §5.4）。
 
 ### 3.6 与压缩的交互
 
@@ -423,9 +429,10 @@ Notes (read with recall):
   │      只广告 memory 工具集；本轮不 drain typed-ahead；落盘为 notice: true，transcript 可见
   │      结束后立刻 compact_now(repl, "", false)
   │        → 成功：flush_pending = false，compact_failures = 0，bot.memory.reload()
-  │        → 失败：见 §4.1
-  ├─ 是用户消息（typed-ahead 排在 flush notice 之前）─► 不 flush，直接压缩（安全优先），flush_pending = false；
-  │      transcript 打显眼 notice `Compacted without a memory flush`，compaction 记录写 flush_skipped: true
+  │        → 失败：见 §4.1、§4.3（flush 不重跑，压缩在下一次发送前重试）
+  ├─ 是用户消息（typed-ahead 排在 flush notice 之前）─► 不 flush，直接压缩（安全优先）；成功才 flush_pending = false，
+  │      失败则保留（随后到达的 flush notice 照常跑 flush 再重试压缩，§4.3）；
+  │      transcript 打显眼 notice `⚠ Compacted without a memory flush`，compaction 记录写 flush_skipped: true
   └─ 是 flush notice 但 flush_pending 已为假（上面那条路刚压缩过）─► 丢弃，不发送、不落盘
 ```
 
@@ -433,8 +440,8 @@ rev 1 在三处会把用户正在做的事压掉（评审 S2），逐条修正�
 
 - **只有 flush notice 本身跳过压缩检查**（S2a）。rev 1 写的是「`flush_pending` 为真就跳过」，但 flush notice 是轮末才入队的，排在用户已经敲下的 typed-ahead 之后（`src/ui/facade.rs:885-888`），用户消息会在 ≥ 阈值时不压缩就发出去；今天的阈值只留 16k 余量，一次 `read_file` 最多 64 KiB ≈ 16k token（`src/tool/builtins/code/mod.rs:28`），超窗是 400、不重试、整轮回滚。改法如上：判定条件是「本条输入就是 flush notice」；用户消息先到时二选一写死为「直接压缩不 flush」，这本来就是 rev 1 兜底路径的逻辑，现在把它变成可见的（notice + `flush_skipped`）。
 - **flush 轮只广告 memory 工具集，不接受 steering**（S2b）。`tool_loop` 每个 round 从 `dispatch.tools()` 取工具（`src/repl/turn/tools.rs:58-60`），dispatcher 是 LIVE view，包一层本轮过滤钩子即可；`Steerer::drain`（`src/repl/turn/tools.rs:147-152`）在 flush 轮关闭，typed-ahead 留在队列里，flush 结束后正常处理。rev 1「和 job notice 撞上打字时一样」的说法作废：一个被告知「一行回复」、随后马上要被压缩的轮，不该带着全部工具替用户干活。
-- **flush 轮不算「最后一轮」**（S2c）。`retain_tail_count`（`src/repl/commands/compact.rs:50-55`）从最后一条 `Role::User` 起算，而 `Body::Notice` 的 role 就是 `User`（`src/provider/model.rs:309-316`），所以 rev 1 会保留「flush notice + 一行回复」，把用户真正的最后一轮整个压进摘要。改为：bot 下从**最后一条非 notice 的 user 消息**起保留，flush 交换附在其后一起保留；`compacted_through` 按此计算。`compact_history` 多一个保留起点参数，`retain_tail_count` 多一个谓词。FLUSH_NOTICE 里「everything except your last turn」于是重新成立。
-- **bot 单独的 reserve**。今天的阈值是 `max(80%, window − 16k)`（`src/repl/context/meter.rs:98-101`；`tokens.rs:39-43`）。bot 的 reserve 取 `max(32k, 25% 窗口)`，即阈值 `min(75%, window − 32k)`：压缩之间多了一轮 flush，还可能插一轮用户消息。
+- **flush 轮不算「最后一轮」**（S2c）。`retain_tail_count`（`src/repl/commands/compact.rs:50-55`）从最后一条 `Role::User` 起算，而 `Body::Notice` 的 role 就是 `User`（`src/provider/model.rs:309-316`），所以 rev 1 会保留「flush notice + 一行回复」，把用户真正的最后一轮整个压进摘要。改为：从**最后一条非 notice 的 user 消息**起保留，flush 交换附在其后一起保留；`compacted_through` 按此计算。这条锚点**所有模式都生效**，不只 bot：job 完成的 notice（X-08）同样会抢走 Go 的锚点、把用户那一轮压进摘要，所以 `retain_tail_count` 直接改成 `m.role() == Role::User && !m.is_notice()`，`compact_history` 不需要额外的保留起点参数（以测试 `a_bot_keeps_the_users_last_turn_not_the_flush`、`a_job_notice_does_not_take_the_last_turn` 为准）。FLUSH_NOTICE 里「everything except your last turn」于是重新成立。
+- **bot 单独的 reserve**。今天的阈值是 `max(80%, window − 16k)`（`src/repl/context/meter.rs:98-101`；`tokens.rs:39-43`）。bot 的 reserve 取 `min(max(32k, 25% 窗口), window / 2)`，即阈值 `window − reserve`（`context::meter` 的 `bot_threshold_of`；常量 `BOT_RESERVE_TOKENS`、`BOT_RESERVE_PERCENT` 在 `context::tokens`）：压缩之间多了一轮 flush，还可能插一轮用户消息。reserve **最多占半个窗口**：固定 32k 会让 32k 窗口的阈值落到 0、每轮都压缩。取值举例：1M → 750k、200k → 150k（25% 胜出）、128k → 96k（32k 胜出）、64k → 32k（恰好一半）、32k → 16k、20k → 10k（封顶一半）。bot 的阈值在所有窗口上都低于普通阈值，且不低于 50%；`/model` 换窗口后照样适用（以测试 `a_bots_threshold_keeps_the_larger_reserve` 为准）。
 - **summarize 看得到 MEMORY.md，也知道 flush 写了几行**（S3）：见 §3.6.2。
 - **措辞如实**（S2d）：不是「空闲时」。主循环单线程，flush notice 是下一个输入，之后 `compact_now` 用 busy spinner 同步等 summarize（100k 输入几十秒）；用户的下一条消息要等 flush 轮加摘要调用结束。这是 v1 接受的代价，L3 压缩下沉后再谈异步。
 
@@ -446,30 +453,38 @@ rev 1 在三处会把用户正在做的事压掉（评审 S2），逐条修正�
 
 **编排状态机放 `repl::bot`**（已定 2026-09-30，§6 #23）：上面的流程写成无 I/O 的状态机——输入是轮结束的用量、flush 完成、压缩成败、日期变化；输出是入队 flush、压缩、刷新快照、通知。硬约束：状态机的输入输出只能用朴素数据（数字、枚举、bool），不得出现 `CtxMeter`、`ContextBudget`、`Ui`、任何 `repl::*` 类型；违反这条就失去了 L3 无痛下移的前提。v1 就要给它单元测试——纯函数不测白不抽。L3 压缩下沉时整文件下移。
 
-代价（评审 A）：`compact_history` 与 `retain_tail_count` 各多一个参数；`tool_loop` 需要一个本轮工具过滤钩子和一个「本轮不 drain」开关；每次压缩多 ≤ 8 KiB 输入；compaction 标记多三个 optional 键。换来的是：用户最后一轮原文不丢、flush 轮不会替用户干活、摘要与记忆的分工可核对、衰减可测。
+代价（评审 A）：`compact_history` 多一个 `bot: Option<&BotCompact>` 参数，`retain_tail_count` 的锚点多一个 notice 判定；`tool_loop` 需要一个本轮工具过滤钩子和一个「本轮不 drain」开关；每次压缩多 ≤ 8 KiB 输入；compaction 标记多三个 optional 键。换来的是：用户最后一轮原文不丢、flush 轮不会替用户干活、摘要与记忆的分工可核对、衰减可测。
 
 #### 3.6.2 避免摘要套摘要（所有模式都受益，v1 做）
 
 问题：摘要以前言 `[Earlier conversation summary]\n…\n\n———\n\n` 拼进第一条保留消息的**内容**（`src/repl/commands/compact.rs:107-118`、`src/session/loader.rs:24-38`）。下一次压缩时，`summarize` 把它当成普通的 `User: …` 文本，和真实用户消息混在一起再摘要一遍（recon §4）。
 
-改法：只动 `compact_history` 和 `summarize`（`src/repl/commands/compact.rs:88-181`），磁盘格式和 `SUMMARY_PREFIX` 常量都不变（它们被 Go 互通测试钉住了）。
+改法：只动 `compact_history` 和 `summarize`（`src/repl/commands/compact.rs:88-181`；落地后多一个 `split_previous_summary`），磁盘格式和 `SUMMARY_PREFIX` 常量都不变（它们被 Go 互通测试钉住了）。
 
-1. `compact_history` 看中间段的第一条消息：若 `content` 以 `SUMMARY_PREFIX` 开头并包含 `SUMMARY_SEPARATOR`，就剥成 `(previous_summary, rest)`，`rest` 为空则丢掉这条。这就是 Codex 靠 `SUMMARY_PREFIX` 识别摘要的做法（research §2.1）。
-2. `summarize(cancel, provider, previous: Option<&str>, middle, hint, memory: Option<&str>, flush_writes: u32)` 的提示词结构变成：
+1. `compact_history` 看中间段的第一条消息：若 `content` 以 `SUMMARY_PREFIX` 开头并包含 `SUMMARY_SEPARATOR`，就剥成 `(previous_summary, rest)`（按第一个分隔符切分，见 §7.1）；`rest` 为空**且**这条消息不带 `tool_calls` 才丢掉——带 `tool_calls` 的 assistant 消息即使文本为空也保留，否则摘要会漏掉它的 `Assistant called tool …` 行（`split_previous_summary`）。这就是 Codex 靠 `SUMMARY_PREFIX` 识别摘要的做法（research §2.1）。
+2. `summarize(cancel, provider, previous: Option<&str>, middle, hint, bot: Option<&BotCompact>)`（`BotCompact { memory, flush_writes }`）的提示词段序定稿为（以 `summarize` 为准；带 `[bot]` 的段只在 bot 下出现，`[hint]`、`[previous]` 只在有 hint、有旧摘要时出现）：
 
    ```
    SUMMARY_INSTRUCTION
-   [bot] BOT_SUMMARY_ADDENDUM
-   --- PREVIOUS SUMMARY (already condensed: carry forward what still matters, drop what is resolved) ---
-   …
-   [bot] --- LONG-TERM MEMORY (already saved separately; do not repeat these) ---
-   …MEMORY.md 全文，≤ 8 KiB…
-   --- NEW CONVERSATION START ---
+   [bot]      BOT_SUMMARY_ADDENDUM（措辞随 flush 结果，见第 3 步）
+   [hint]     Extra guidance from the user — emphasize this: <hint>
+   [previous] --- PREVIOUS SUMMARY (already condensed: carry forward what still matters, drop what is resolved) ---
+              …
+   [bot]      --- LONG-TERM MEMORY (already saved separately; do not repeat these) ---
+              …MEMORY.md 正文（去掉 frontmatter，≤ 8 KiB）；记忆为空时写 (empty)…
+   --- NEW CONVERSATION START ---      （有旧摘要时；否则是 --- CONVERSATION START ---）
    …
    --- CONVERSATION END ---
    ```
 
-3. `BOT_SUMMARY_ADDENDUM`（bot 专有）：「Durable facts that are already in the LONG-TERM MEMORY section below are visible to the model separately; do not repeat them. Focus on conversational state: open threads, pending requests, recent decisions and their reasons. Keep the summary under about 1,500 words.」flush 写了 0 行或被跳过时（`flush_writes == 0`），第一句换成「Nothing was saved to long-term memory this time; keep durable facts in the summary.」——rev 1 的「事实已存进记忆」是摘要调用看不见、也核对不了的假设（评审 S3），现在它看得见。**摘要只承载对话状态，长期事实归记忆**，仍是让摘要长度不随压缩次数增长的主要手段。
+   addendum 细化 instruction，所以紧跟其后；hint 在两者之后，是数据之前的最后一句话；记忆夹在旧摘要与对话之间，这两样都是摘要不该从记忆里重复的东西。
+
+3. `BOT_SUMMARY_ADDENDUM`（bot 专有）按 flush 的结果有三种措辞（以 `bot_summary_addendum` 与测试 `a_bots_summary_pass_sees_the_memory_and_the_flush_writes`、`nothing_saved_keeps_durable_facts_in_the_summary` 为准）：
+   - **本次 flush 写了 N 行**（N ≥ 1）：「Durable facts that are already in the LONG-TERM MEMORY section below are visible to the model separately; do not repeat them. Focus on conversational state: open threads, pending requests, recent decisions and their reasons. Keep the summary under about 1,500 words. The memory flush just before this compaction saved N lines.」（N = 1 时是 `saved 1 line.`）
+   - **什么都没写**（`flush_writes == 0`：flush 没写、没跑，或被跳过）：`BOT_SUMMARY_NOTHING_SAVED`，第一句换成「Nothing was saved to long-term memory this time; keep durable facts in the summary.」，后两句不变。flush 轮失败但已经写了几行时，按写了的行数走第一种。
+   - **记忆为空**：addendum 按上面两种之一，LONG-TERM MEMORY 段的内容写 `(empty)`。
+
+   rev 1 的「事实已存进记忆」是摘要调用看不见、也核对不了的假设（评审 S3），现在它看得见。**摘要只承载对话状态，长期事实归记忆**，仍是让摘要长度不随压缩次数增长的主要手段。
 4. compaction 记录加三个 optional 键：`middle_tokens`（中段 token 数）、`summary_tokens`（摘要 token 数）、`flush_skipped`。前两个是将来量化衰减的唯一数据源（评审 S3）；Go 读取时忽略未知键。
 
 **压缩标记的显式化**：
@@ -503,11 +518,11 @@ rev 1 只处理了 `</memory>` 的结构逃逸。评审 S1 指出的问题更大
 |---|---|
 | bot 必须能计量 | 启动时检查：provider 必须 `reports_usage()`（`src/repl/run.rs:293`）且支持工具（记忆需要），否则报 `SetupError::BotProvider`，文案 `bot "<name>" needs a chat model that reports token usage and supports tools`。图像类 provider 天然被排除 |
 | 跳过确认 | `offer_before_send`（`src/repl/commands/compact.rs:253-284`）在 `repl.conv.bot.is_some()` 时不调 `ui.confirm`，直接 `compact_now` |
-| 阈值 | bot 用 §3.6.1 的 reserve `max(32k, 25%)`，不是今天的 `max(80%, window − 16k)` |
-| 不反复压缩 | `Compaction::Unchanged`（只剩一轮可留）时，把 `compact_declined` 设为当前用量，沿用现有的「再涨 5% 窗口才重试」规则（`src/repl/context/tokens.rs:47`）；flush 也跟着这个水位，不会每轮都 flush。flush 之后尾部是「用户最后一轮 + flush 交换」，几乎不会 `Unchanged`；这条退避实际只在跳过 flush 的兜底路径上触发（评审 M12） |
-| 压缩失败 | 保留原历史（现状，`compact.rs:200-204`），transcript 报 `Compaction failed: …`，`compact_failures += 1`。下一次空闲或发送时重试。**连续 2 次失败** → `pres.set_state(State::Error)` + `notify(Kind::Failed, "bot <name>: compaction failing — <err>")`，之后每涨 5% 窗口再试一次 |
+| 阈值 | bot 用 §3.6.1 的 reserve `min(max(32k, 25%), window / 2)`，即阈值 `window − reserve`，不是今天的 `max(80%, window − 16k)`。reserve 最多占半个窗口，所以小窗口的阈值不低于 50%（32k 窗口 → 16k，20k → 10k），不会每轮都压缩 |
+| 不反复压缩 | `Compaction::Unchanged`（只剩一轮可留）时，把 `compact_declined` 设为当前用量，沿用现有的「再涨 5% 窗口才重试」规则（`src/repl/context/tokens.rs:47`，常量 `COMPACT_SNOOZE_PERCENT`）；flush 也跟着这个水位，不会每轮都 flush。flush 之后尾部是「用户最后一轮 + flush 交换」，几乎不会 `Unchanged`；这条退避实际只在跳过 flush 的兜底路径上触发（评审 M12） |
+| 压缩失败 | 保留原历史（现状，`compact.rs:200-204`），transcript 报 `Compaction failed: …`，失败计数 +1，**欠着的东西照旧欠着**（`flush_pending` 保留：排着的 flush notice 到达时照常跑 flush，已跑过的 flush 不重跑）。第 1 次失败：下一次发送前重试，即使还没到阈值。**从第 2 次连续失败起，每次失败**都 `pres.set_state(State::Error)` + `notify(Kind::Failed, "bot <name>: compaction failing — <err>")`，并把 `compact_declined` 设为当前用量——之后只在用量再涨 5% 窗口时重试。成功一次计数清零（`FAILURES_BEFORE_ALARM = 2`；以测试 `a_failed_compaction_counts_and_moves_the_watermark`、`two_failed_compactions_in_a_row_tell_the_host` 为准） |
 | 超窗 | 不做自动截断之类的有损兜底。provider 返回上下文超限时，这一轮按现有失败路径报错并通知，人来决定（手动 `/compact <hint>` 或换更大的窗口模型）。换到更小的窗口后保留尾部可能大于新窗口（评审 M6）：同一条规则，人来处理 |
-| flush 失败或被跳过 | flush 是 best-effort：flush 轮失败、被中断、或用户消息先到，照常压缩；transcript 打显眼 notice，compaction 记录 `flush_skipped: true`（§3.6.1） |
+| flush 失败或被跳过 | flush 是 best-effort：flush 轮失败、被中断、或用户消息先到，照常压缩；transcript 打显眼 notice，compaction 记录 `flush_skipped: true`（§3.6.1、§4.3） |
 | 取消 | 压缩和 flush 都挂在根 cancel 上，Ctrl+C 可中断，行为同今天 |
 
 ### 4.2 审批策略 ★
@@ -527,8 +542,10 @@ rev 1 只处理了 `</memory>` 的结构逃逸。评审 S1 指出的问题更大
 |---|---|---|
 | 普通轮完成 | Idle | Done（现有） |
 | flush 轮完成 | Idle | **无**（新增：跳过） |
-| 压缩成功 | Idle | 无，只有 transcript notice `Context compacted → …`（现有）；跳过 flush 时多一条显眼 notice（§3.6.1） |
-| 压缩连续失败 ≥ 2 | Error | Failed（新增） |
+| flush 轮失败 / 被中断 | 不进 Error | **无**。flush 是 best-effort，不是宿主的事：失败时 transcript 照常出红色错误块、这一轮照常回滚，被中断时走现有的中断路径；已经写进 `MEMORY.md` 的行照常记 notice。随后**立刻照常压缩**，compaction 记录 `flush_skipped: true`，打显眼 notice `⚠ Compacted without a memory flush`（`repl::run` 主循环里的 `if !flush`） |
+| 压缩成功 | Idle | 无，只有 transcript notice `Context compacted → …`（现有）；自动压缩跳过了 flush 时多一条显眼 notice `⚠ Compacted without a memory flush`（§3.6.1）。手动 `/compact` 在 bot 下同样写 `flush_skipped: true`（它前面没有 flush），但**不打**这条 notice——那是用户自己选的（`compact_now` 的 `!manual && flush_skipped`） |
+| 压缩失败 | 第 1 次不变 | 第 1 次无：只有 transcript 的 `Compaction failed: …`，`flush_pending` 保留，下一次发送前重试（§4.1） |
+| 压缩连续失败 ≥ 2 | Error | Failed（新增），文案 `bot <name>: compaction failing — <err>`。从第 2 次起**每次**失败都发，并把水位设为当前用量，涨 5% 窗口才重试（§4.1） |
 | 等审批 | NeedsInput | NeedsInput（现有） |
 | 轮失败 | Error | Failed（现有） |
 
@@ -604,7 +621,7 @@ rev 1 只处理了 `</memory>` 的结构逃逸。评审 S1 指出的问题更大
 | 14 | **审批** | 人在环 / bot 专用预设 | **人在环 + 已有的 `auto_run`/`auto_write`** | 形态 A 有人可问；预设已经存在 | 无新代码 |
 | 15 | **`-m` 与 bot** | v1 拒绝 / v1 放行但不压缩 | **拒绝，L3 开放（先 inbox）** | 放行意味着一条永不压缩的写入路径 | `ArgsError::BotHeadless` |
 | 16 | **记录时间戳** | 加 `SessionRecord.at` / 不加 | **加（L2，所有模式）** | 按日期检索、「上周说的」都要用；optional 字段，与 Go 互通无损 | `src/session/record.rs`、writer |
-| 17 | **`mode` 枚举** | a. `agents.<name>.mode: chat \| agent \| bot`，删 `workspace`；b. 保留 `workspace: bool` 再加 `bot: bool` 两个布尔；c. 只加 `bot: bool`，由校验强制它隐含 `workspace` | **a——已定（2026-09-30）** | bot 在 agent 之上是包含关系（chat ⊂ agent ⊂ bot），一个枚举把「bot 但没 workspace」这种无意义组合从类型上排除。b 的四种组合里有一种要靠 `Config::validate` 拦，还要在文档里解释 bot 为什么强制 workspace；c 少一个键但同样要解释隐含关系，且读者看不出三档。键数不变（14）。不留 `workspace` 兼容、不进 `RETIRED_KEYS`：0.x 阶段，strict 的未知键错误本身就是迁移提示 | `AgentConfig.mode`、`AGENT_KEYS`、retired 文案、`RunSettings.mode`、`agent_mode` 的九个读点（§1.1） |
+| 17 | **`mode` 枚举** | a. `agents.<name>.mode: chat \| agent \| bot`，删 `workspace`；b. 保留 `workspace: bool` 再加 `bot: bool` 两个布尔；c. 只加 `bot: bool`，由校验强制它隐含 `workspace` | **a——已定（2026-09-30）** | bot 在 agent 之上是包含关系（chat ⊂ agent ⊂ bot），一个枚举把「bot 但没 workspace」这种无意义组合从类型上排除。b 的四种组合里有一种要靠 `Config::validate` 拦，还要在文档里解释 bot 为什么强制 workspace；c 少一个键但同样要解释隐含关系，且读者看不出三档。键数不变（14）。不留 `workspace` 兼容、不进 `RETIRED_KEYS`：0.x 阶段，strict 的未知键错误本身就是迁移提示 | `AgentConfig.mode`、`AGENT_KEYS`、retired 文案、`RunSettings.mode`、`agent_mode` 的读点（§1.1 分三类） |
 | 18 | **notes 的 OKF frontmatter** | a. OKF 核心：`type` 必填（Preference / Fact / Decision / Runbook / Reference）+ `title` / `description` / `tags` 可选，目录 = readdir + description；b. rev 1 的「文件名 + 首个非空行」，无 frontmatter；c. OKF 全量，含 v0.2 的 `sources` / `generated` / `verified` / `status` / `stale_after` | **a——已定（2026-09-30）** | `type` 词表让目录段可读、可过滤，`description` 比「首个非空行」稳定；不建 `index.md` / `log.md`，目录由 readdir 生成就不会过期。c 的信任/生命周期字段要有写入方维护才有意义，v1、L2 没有消费者，记 backlog（§7） | `agents::memory`（L2）、`remember(type:)` |
 | 19 | **`MEMORY.md` 的 frontmatter 与小节** | a. 文件级 frontmatter（`bot` / `updated`）+ 三个约定小节即作用域；b. rev 1：无 frontmatter，小节只是推荐；c. 逐条 schema | **a——已定（2026-09-30）** | 两个键够辨认文件、看新鲜度；`okf_version` 删掉——它声明在 bundle 根 `index.md` 上，这里没有 bundle 也没有 `index.md`，写上没人消费也没人校验，等 `notes/` 长成 bundle 再标在 `notes/index.md`。小节从「推荐」变「约定」后，注入才能按作用域裁剪（评审 I7）。c 让人手编辑变难，且 8 KiB 里塞不下逐条字段。`## Project: <名字>` 用目录名；来源标记 `[user]` / `[inferred]` 保留，不算逐条 schema（均已定，§3.2） | `agents::memory`、`remember(section:)`、`Snapshot::block(project)` |
 | 20 | **压缩与 flush 的时序** | a. 评审 A（§3.6.1）；b. rev 1 的流程 | **a——已定（2026-09-30，并入评审）** | rev 1 在 typed-ahead、自由的 flush 轮、保留 flush 轮而非用户轮三处会压掉用户正在做的事（评审 S2）；摘要看不到记忆（S3） | `compact_history`、`retain_tail_count`、`tool_loop` 过滤钩子、`Steerer::drain` 开关、`meter.rs`、标记三个键 |
@@ -650,3 +667,6 @@ rev 1 只处理了 `</memory>` 的结构逃逸。评审 S1 指出的问题更大
 - **同步盘**（评审 M5）：`try_lock` 不跨机器；append 在同步盘上会产生 conflicted copy。`~/.iota/sessions` 不要放进 iCloud / Dropbox；`bots/<name>/` 可以（记忆是明文 Markdown，密钥已在写入侧拒掉）。
 - **锁的平台差异**（评审 M7）：Windows 的 `try_lock` 是强制锁；Go 版不认 flock。锁文件与数据文件分开（`.lock`、`lock`），保持。
 - **换到更小的窗口**（评审 M6）：保留尾部若大于新窗口，summarize 自身超窗，按 §4.1 的超窗规则由人处理；不做分块摘要。
+- **视图中段的孤儿 `tool_use` 修不了**（§2.7）：`repair_tail` 只看视图末尾最后一条非 tool 消息，靠追加合成结果修复；中段的孤儿无法靠追加补上，这样的会话照样会被 API 拒绝，只能手工处理日志。
+- **同进程内被中断的轮可能当场留下孤儿**：Ctrl+C / SIGTERM / SIGHUP 中断一轮时，落盘的部分历史可能以带 `tool_calls`、缺结果的 assistant 收尾。下次启动 reload 时 `repair_tail` 能修；但同一个进程里接着发消息，可能吃 Anthropic 的 400。与 L2 的失败轮保留（§2.4）一起处理。
+- **旧摘要按第一个分隔符切分**（§3.6.2）：`split_previous_summary` 用 `split_once(SUMMARY_SEPARATOR)`，摘要正文里恰好含 `\n\n———\n\n` 时会切错，一段摘要被当成对话。概率极低；loader 今天同样没防。
