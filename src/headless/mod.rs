@@ -58,7 +58,7 @@ pub fn parse_output_format(s: &str) -> Result<OutputFormat, ChatError> {
 /// banner names where the chat runs, `~`-shortened); the overlay reads them only under `enabled`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentOptions {
-    /// Whether agent mode is on (`agents.<name>.workspace: true`): compose the AGENTS.md + skills overlay.
+    /// Whether agent mode is on (`agents.<name>.mode: agent` or `bot`): compose the AGENTS.md + skills overlay.
     pub enabled: bool,
     /// The project root the overlay chain starts from.
     pub root: PathBuf,

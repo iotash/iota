@@ -32,7 +32,7 @@ use crate::mcp::config::AuthMode;
 use crate::provider::ProviderKind;
 use crate::tool::DeferMode;
 
-pub use agent::AgentConfig;
+pub use agent::{AgentConfig, AgentMode};
 pub use model::{BadModelRef, ModelConfig, ModelEntry, ModelRef};
 pub use params::{Declared, ParamLayers, WindowDecl};
 pub use provider::{ApiKey, Endpoint, ProviderConfig};

@@ -15,8 +15,8 @@ use iota::cmd::io::Streams;
 use iota::cmd::list::{provider_line, run_list};
 use iota::cmd::window::parse_window_size;
 use iota::cmd::{
-    ArgsError, Cli, CliError, Command, Config, Invocation, ProviderConfig, Resume, SetupError,
-    resolve_run,
+    AgentMode, ArgsError, Cli, CliError, Command, Config, Invocation, ProviderConfig, Resume,
+    SetupError, resolve_run,
 };
 use pretty_assertions::assert_eq;
 
@@ -414,7 +414,7 @@ fn resolve_precedence_key_env_then_config() {
     assert_eq!(s.system, "cfg-system");
     assert_eq!(s.message, None);
     assert_eq!(s.temperature, None);
-    assert!(!s.agent_mode);
+    assert_eq!(s.mode, AgentMode::Chat);
     assert_eq!(s.max_turns, None);
     assert_eq!(s.output_format_raw, None);
     assert_eq!(s.resolved.provider, cfg.providers["deepseek"]);
@@ -1080,7 +1080,7 @@ agents:
   default:
     model: sonnet
     system: the default prompt
-    workspace: true
+    mode: agent
 ",
     );
 
@@ -1090,7 +1090,11 @@ agents:
     assert_eq!(s.model, "claude-sonnet-4");
     assert_eq!(s.system, "the default prompt");
     assert_eq!(s.api_key, "ak");
-    assert!(s.agent_mode, "the default agent's workspace: true applies");
+    assert_eq!(
+        s.mode,
+        AgentMode::Agent,
+        "the default agent's mode: agent applies"
+    );
     assert_eq!(s.resolved.agent_name, iota::cmd::DEFAULT_AGENT);
 
     // `iota run`, and naming it explicitly, mean the same thing.
@@ -1154,7 +1158,7 @@ agents:
   openai:
     model: \"anthropic:from-agents\"
     system: agent prompt
-    workspace: true
+    mode: agent
 ",
     );
     let s = resolve(&["run", "openai"], &cfg, &[]).unwrap();
@@ -1165,8 +1169,9 @@ agents:
     assert_eq!(s.model, "from-agents");
     assert_eq!(s.system, "agent prompt");
     assert_eq!(s.api_key, "ak");
-    assert!(
-        s.agent_mode,
-        "workspace: true is what the --agent flag used to switch on"
+    assert_eq!(
+        s.mode,
+        AgentMode::Agent,
+        "mode: agent is what the --agent flag used to switch on"
     );
 }

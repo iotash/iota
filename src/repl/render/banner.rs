@@ -43,7 +43,7 @@ const FRAME_COLS: usize = 4;
 
 /// What the three facts say.
 pub(crate) struct BannerFacts<'a> {
-    /// Agent mode (`agents.<name>.workspace: true`) — the overlay is on.
+    /// Agent mode (`agents.<name>.mode: agent` or `bot`) — the overlay is on.
     pub(crate) workspace: bool,
     /// The bundle the chat persists into; `None` while it has none.
     pub(crate) session_id: Option<&'a str>,

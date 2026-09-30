@@ -45,6 +45,7 @@ use crate::cmd::args::{Invocation, Resume};
 use crate::cmd::error::{ArgsError, CliError, RunError, SetupError};
 use crate::cmd::resolve::RunSettings;
 use crate::cmd::{RunContext, ToolAssembly, host_probe};
+use crate::config::AgentMode;
 use picker::{picker_spec, project_hint};
 
 /// Everything `run` has resolved by the time it reaches Go's headless-vs-interactive branch (root.go:259):
@@ -250,7 +251,7 @@ pub(crate) async fn run_interactive(
     // root.go:292-334 (the picker half): the store is listed BEFORE anything is spawned, so an empty bucket or
     // an unreadable store fails with nothing to clean up, and the spec the picker will show is ready.
     let store = SessionStore::from_dirs(&ctx.env.dirs)?;
-    let scope: Option<PathBuf> = settings.agent_mode.then(|| agent.root.clone());
+    let scope: Option<PathBuf> = settings.mode.has_workspace().then(|| agent.root.clone());
     let resume_given = inv.resume.is_some();
     // `iota resume` with no id IS the picker; `iota resume <id>` resolves the fragment instead.
     let picker_rows: Vec<SessionInfo> = if inv.resume == Some(Resume::Pick) {
@@ -501,7 +502,8 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
                     temperature: settings.temperature,
                     base_url: settings.base_url.clone(),
                     cwd: session_cwd.clone(),
-                    project: settings.agent_mode,
+                    // A bot's session is flat (bot-mode.md §1.3): only `agent` buckets by project.
+                    project: settings.mode == AgentMode::Agent,
                     agent: settings.resolved.agent_name.clone(),
                     ..NewSession::new(kind, provider.model())
                 })
@@ -521,7 +523,7 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
             .and_then(|t| t.temperature())
             .or(settings.temperature);
         let base_url = settings.base_url.clone();
-        let project = settings.agent_mode;
+        let project = settings.mode == AgentMode::Agent;
         let agent_name = settings.resolved.agent_name.clone();
         Some(Box::new(move || {
             store.create(NewSession {
@@ -547,7 +549,7 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         &settings.resolved.model,
         mcp_part,
         mcp_defers,
-        settings.agent_mode,
+        settings.mode.has_workspace(),
         tool_env,
         &mut |m| io.caution(&m),
     );

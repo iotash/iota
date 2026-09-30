@@ -50,7 +50,7 @@ agents:
     tools:
       code:                   # read/write/edit/grep over the project
       shell:                  # shell commands, with a sandbox by default
-    # workspace: true         # AGENTS.md overlay, skills, project-scoped sessions
+    # mode: agent             # AGENTS.md overlay, skills, project-scoped sessions
 
 # MCP servers go under a top-level `mcp_servers:` block, which `iota mcp add <name> -- <command>`
 # (or `--url <url>`) writes and `iota mcp remove <name>` edits for you.
@@ -216,5 +216,17 @@ mod tests {
             resolved.agent.choices,
             vec![crate::config::ModelRef::Entry("gpt".to_owned())]
         );
+        assert_eq!(resolved.agent.mode, crate::config::AgentMode::Chat);
+    }
+
+    /// The commented `mode:` line is one the user can uncomment as it stands.
+    #[test]
+    fn the_starter_mode_line_uncomments_to_agent_mode() {
+        let uncommented = STARTER.replacen("    # mode: agent ", "    mode: agent   ", 1);
+        assert_ne!(uncommented, STARTER, "the starter carries `# mode: agent`");
+        let cfg =
+            crate::config::Config::parse(uncommented.as_bytes(), &Env::default(), &mut |_| {})
+                .expect("the uncommented starter parses and validates");
+        assert_eq!(cfg.agents["default"].mode, crate::config::AgentMode::Agent);
     }
 }

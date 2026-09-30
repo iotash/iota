@@ -1,0 +1,178 @@
+{
+  "contents": [
+    {
+      "parts": [
+        {
+          "text": "hi"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "systemInstruction": {
+    "parts": [
+      {
+        "text": "Run the linter before every commit.\n\nTo use a skill, call the load_skill tool with its name as the \"skill\" argument and follow the instructions it returns; read files the skill references by calling load_skill again with the \"file\" argument, and run its bundled scripts with the shell tool.\n\n<available_skills>\n<skill>\n<name>lint</name>\n<description>How this project lints.</description>\n</skill>\n</available_skills>"
+      }
+    ],
+    "role": "user"
+  },
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "description": "Load a skill by name to activate it: returns the skill's instructions and its directory (the base for its bundled files and scripts). Available skills are listed in the system prompt. Pass the optional \"file\" to read a file the skill's instructions reference, as a path relative to the skill's directory. Long content is windowed by \"offset\"/\"limit\" lines.",
+          "name": "load_skill",
+          "parametersJsonSchema": {
+            "properties": {
+              "file": {
+                "description": "Optional file to read instead of the skill's instructions, relative to the skill's directory (e.g. \"references/api.md\").",
+                "type": "string"
+              },
+              "limit": {
+                "description": "Maximum number of lines to return (default: all remaining lines).",
+                "type": "integer"
+              },
+              "offset": {
+                "description": "1-based line number to start reading from (default 1).",
+                "type": "integer"
+              },
+              "skill": {
+                "description": "Skill name exactly as listed in the available skills catalog.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "skill"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    }
+  ]
+}
+{
+  "contents": [
+    {
+      "parts": [
+        {
+          "inlineData": {
+            "data": "aGVsbG8=",
+            "mimeType": "text/plain"
+          }
+        },
+        {
+          "text": "hi"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "parts": [
+        {
+          "text": "thinking...",
+          "thought": true,
+          "thoughtSignature": "AQID"
+        },
+        {
+          "functionCall": {
+            "args": {
+              "q": 1
+            },
+            "id": "c1",
+            "name": "f"
+          }
+        }
+      ],
+      "role": "model"
+    },
+    {
+      "parts": [
+        {
+          "functionResponse": {
+            "id": "c1",
+            "name": "f",
+            "response": {
+              "output": "ok"
+            }
+          }
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "parts": [
+        {
+          "text": "done"
+        }
+      ],
+      "role": "model"
+    },
+    {
+      "parts": [
+        {
+          "text": "cut"
+        }
+      ],
+      "role": "model"
+    },
+    {
+      "parts": [
+        {
+          "text": "hi"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "generationConfig": {
+    "temperature": 0.7,
+    "thinkingConfig": {
+      "includeThoughts": true,
+      "thinkingLevel": "HIGH"
+    }
+  },
+  "systemInstruction": {
+    "parts": [
+      {
+        "text": "sys\n\nRun the linter before every commit.\n\nTo use a skill, call the load_skill tool with its name as the \"skill\" argument and follow the instructions it returns; read files the skill references by calling load_skill again with the \"file\" argument, and run its bundled scripts with the shell tool.\n\n<available_skills>\n<skill>\n<name>lint</name>\n<description>How this project lints.</description>\n</skill>\n</available_skills>"
+      }
+    ],
+    "role": "user"
+  },
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "description": "Load a skill by name to activate it: returns the skill's instructions and its directory (the base for its bundled files and scripts). Available skills are listed in the system prompt. Pass the optional \"file\" to read a file the skill's instructions reference, as a path relative to the skill's directory. Long content is windowed by \"offset\"/\"limit\" lines.",
+          "name": "load_skill",
+          "parametersJsonSchema": {
+            "properties": {
+              "file": {
+                "description": "Optional file to read instead of the skill's instructions, relative to the skill's directory (e.g. \"references/api.md\").",
+                "type": "string"
+              },
+              "limit": {
+                "description": "Maximum number of lines to return (default: all remaining lines).",
+                "type": "integer"
+              },
+              "offset": {
+                "description": "1-based line number to start reading from (default 1).",
+                "type": "integer"
+              },
+              "skill": {
+                "description": "Skill name exactly as listed in the available skills catalog.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "skill"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    }
+  ]
+}

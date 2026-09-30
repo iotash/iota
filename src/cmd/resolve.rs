@@ -32,8 +32,8 @@ pub struct RunSettings {
     pub message: Option<String>,
     /// The temperature the agent or its model declares (range-checked).
     pub temperature: Option<f64>,
-    /// The agent's `workspace: true` — the AGENTS.md overlay and the skills toolset.
-    pub agent_mode: bool,
+    /// The agent's `mode:` — `agent` and `bot` turn on the AGENTS.md overlay and the skills toolset.
+    pub mode: crate::config::AgentMode,
     /// `--max-turns` as a cap (`None` = unlimited; the flag's `<= 0`).
     pub max_turns: Option<std::num::NonZeroU32>,
     /// `--output-format` as typed (`None` = flag absent). Carried RAW: `run` parses it at exactly Go's
@@ -134,7 +134,7 @@ pub fn resolve_run(
         system,
         message,
         temperature,
-        agent_mode: resolved.agent.workspace,
+        mode: resolved.agent.mode,
         max_turns: crate::tool::context::turn_cap(inv.args.max_turns),
         output_format_raw: inv.args.output_format.clone(),
         resume: match &inv.resume {

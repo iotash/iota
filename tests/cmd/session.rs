@@ -105,13 +105,13 @@ fn iota(cwd: &Path, home: &Path) -> Command {
 }
 
 /// Writes `<cwd>/.iota.yaml`: a gemini endpoint (its key, and the mock server's URL when one is serving)
-/// driven by `agents.default`. `model` may be `""` — then the agent sets no `model:` and its choices are
-/// the `p:*` wildcard, which is how a run reaches the resume stage with no model of its own and takes the
-/// bundle's (D-52).
+/// driven by `agents.default`, with `mode: <mode>` unless `mode` is `""`. `model` may be `""` — then the
+/// agent sets no `model:` and its choices are the `p:*` wildcard, which is how a run reaches the resume stage
+/// with no model of its own and takes the bundle's (D-52).
 ///
 /// Since `-k` and `-u` were retired, a test points at its mock server the way a user points at an endpoint:
 /// in the `providers:` layer (brain page `cli-surface-agent-first`).
-fn write_config(cwd: &Path, url: &str, model: &str, workspace: bool) {
+fn write_config(cwd: &Path, url: &str, model: &str, mode: &str) {
     let url = if url.is_empty() {
         String::new()
     } else {
@@ -122,15 +122,15 @@ fn write_config(cwd: &Path, url: &str, model: &str, workspace: bool) {
     } else {
         format!("model: \"p:{model}\"")
     };
-    let workspace = if workspace {
-        "\n    workspace: true"
+    let mode = if mode.is_empty() {
+        String::new()
     } else {
-        ""
+        format!("\n    mode: {mode}")
     };
     fs::write(
         cwd.join(".iota.yaml"),
         format!(
-            "providers:\n  p: {{type: gemini, key: x{url}}}\nagents:\n  default:\n    {start}{workspace}\n"
+            "providers:\n  p: {{type: gemini, key: x{url}}}\nagents:\n  default:\n    {start}{mode}\n"
         ),
     )
     .expect("write config");
@@ -276,7 +276,7 @@ async fn resume_go_bundle_appends_one_turn() {
         serde_json::from_slice(&fs::read(bundle.join("meta.json")).expect("read meta"))
             .expect("meta is JSON");
 
-    write_config(cwd.path(), &server.uri(), "", false);
+    write_config(cwd.path(), &server.uri(), "", "");
     let mut cmd = iota(cwd.path(), home.path());
     cmd.args(["resume", &prefix, "-m", "second question"]);
     let o = output(cmd).await;
@@ -410,7 +410,7 @@ async fn resume_tuning_precedence_explicit_model_wins() {
     let f = fixture("go-gemini-rich");
     let bundle = sessions_root(home.path()).join(f["dir"].as_str().unwrap());
 
-    write_config(cwd.path(), &server.uri(), "", false);
+    write_config(cwd.path(), &server.uri(), "", "");
     let mut cmd = iota(cwd.path(), home.path());
     cmd.args([
         "resume",
@@ -503,7 +503,7 @@ fn resume_unknown_fragment() {
     let m = manifest();
     let fragment = m["resolution"]["unknown_fragment"].as_str().unwrap();
     let expected = m["resolution"]["unknown_error"].as_str().unwrap();
-    write_config(cwd.path(), "", "", false);
+    write_config(cwd.path(), "", "", "");
     let mut cmd = iota(cwd.path(), home.path());
     cmd.args(["resume", fragment, "-m", "hi"]);
     assert_error(&cmd.output().expect("run"), expected);
@@ -518,7 +518,7 @@ fn resume_ambiguous_fragment() {
     let m = manifest();
     let fragment = m["resolution"]["ambiguous_fragment"].as_str().unwrap();
     let expected = m["resolution"]["ambiguous_error"].as_str().unwrap();
-    write_config(cwd.path(), "", "", false);
+    write_config(cwd.path(), "", "", "");
     let mut cmd = iota(cwd.path(), home.path());
     cmd.args(["resume", fragment, "-m", "hi"]);
     assert_error(&cmd.output().expect("run"), expected);
@@ -530,7 +530,7 @@ fn resume_missing_bundle_is_not_found() {
     let cwd = TempDir::new().expect("temp cwd");
     let home = TempDir::new().expect("temp home");
     fs::create_dir_all(sessions_root(home.path())).expect("mkdir sessions");
-    write_config(cwd.path(), "", "", false);
+    write_config(cwd.path(), "", "", "");
     let mut cmd = iota(cwd.path(), home.path());
     cmd.args(["resume", "nosuchsession", "-m", "hi"]);
     assert_error(
@@ -548,7 +548,7 @@ fn resume_provider_mismatch_re_raises_model_required() {
     let home = home_with_fixtures();
     let f = fixture("go-openai-compaction"); // provider "openai", resumed here as gemini
     let prefix = f["unique_prefix"].as_str().unwrap();
-    write_config(cwd.path(), "", "", false);
+    write_config(cwd.path(), "", "", "");
     let mut cmd = iota(cwd.path(), home.path());
     cmd.args(["resume", prefix, "-m", "hi"]);
     assert_error(
@@ -561,7 +561,7 @@ fn resume_provider_mismatch_re_raises_model_required() {
 
 /// chat/session.go:288-305 through the CLI: agent mode resolves against the project's OWN bucket first, so a
 /// fragment that is ambiguous across the flat root is unique inside it. The same fragment, the same corpus and
-/// the same binary — only the agent's `workspace: true` differs (the `--agent` flag that used to say the same
+/// the same binary — only the agent's `mode: agent` differs (the `--agent` flag that used to say the same
 /// thing is gone).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resume_agent_mode_prefers_the_project_bucket() {
@@ -594,9 +594,9 @@ async fn resume_agent_mode_prefers_the_project_bucket() {
         &[rec("system", "scoped sys"), rec("user", "scoped question")],
     );
 
-    // Without `workspace:` the flat view is the mode's own view: the fragment is ambiguous there (and the
+    // Without `mode: agent` the flat view is the mode's own view: the fragment is ambiguous there (and the
     // scoped bundle is invisible to it).
-    write_config(&root, &server.uri(), "", false);
+    write_config(&root, &server.uri(), "", "");
     let mut cmd = iota(&root, home.path());
     cmd.args(["resume", fragment, "-m", "hi"]);
     assert_error(
@@ -605,7 +605,7 @@ async fn resume_agent_mode_prefers_the_project_bucket() {
     );
 
     // With it, the bucket answers first, unambiguously, and the turn lands in the bucketed bundle.
-    write_config(&root, &server.uri(), "", true);
+    write_config(&root, &server.uri(), "", "agent");
     let mut cmd = iota(&root, home.path());
     cmd.args(["resume", fragment, "-m", "hi"]);
     let o = output(cmd).await;
@@ -635,7 +635,7 @@ async fn resume_agent_mode_widens_to_the_flat_root() {
     let f = fixture("go-gemini-rich");
     let id = f["id"].as_str().unwrap().to_owned();
 
-    write_config(cwd.path(), &server.uri(), "", true);
+    write_config(cwd.path(), &server.uri(), "", "agent");
     let mut cmd = iota(cwd.path(), home.path());
     cmd.args(["resume", &id, "-m", "hi"]);
     let o = output(cmd).await;
@@ -645,6 +645,85 @@ async fn resume_agent_mode_widens_to_the_flat_root() {
         "stderr: {}",
         err(&o)
     );
+}
+
+/// What one `agents.default.mode` does to a run, with everything else fixed: a project (`.git`, an
+/// `AGENTS.md`, one skill) and two headless turns, one fresh and one resuming the `go-gemini-rich` fixture.
+/// The requests' bodies come back pretty-printed, with the two temp paths replaced by `<root>` and `<home>`.
+/// A headless run never mints a bundle, so the layout half of the mode (the project bucket) is not here.
+async fn one_mode_run(mode_line: &str) -> String {
+    let server = MockServer::start().await;
+    google_stub(&server, false).await;
+    let cwd = TempDir::new().expect("temp cwd");
+    fs::create_dir_all(cwd.path().join(".git")).expect("mkdir .git");
+    let root = strip_verbatim(&fs::canonicalize(cwd.path()).expect("canonical cwd"));
+    fs::write(
+        root.join("AGENTS.md"),
+        "Run the linter before every commit.\n",
+    )
+    .expect("AGENTS.md");
+    let skill = root.join(".agents").join("skills").join("lint");
+    fs::create_dir_all(&skill).expect("mkdir skill");
+    fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: lint\ndescription: How this project lints.\n---\nRun `make lint`.\n",
+    )
+    .expect("SKILL.md");
+    fs::write(
+        root.join(".iota.yaml"),
+        format!(
+            "providers:\n  p: {{type: gemini, key: x, url: {}}}\nagents:\n  default:\n    model: \"p:gemini-2.5-pro\"{mode_line}\n",
+            server.uri()
+        ),
+    )
+    .expect("write config");
+    let home = home_with_fixtures();
+    let home_path = strip_verbatim(&fs::canonicalize(home.path()).expect("canonical home"));
+    let id = fixture("go-gemini-rich")["id"].as_str().unwrap().to_owned();
+
+    for args in [vec!["-m", "hi"], vec!["resume", &id, "-m", "hi"]] {
+        let mut cmd = iota(&root, home.path());
+        cmd.args(&args);
+        let o = output(cmd).await;
+        assert_eq!(o.status.code(), Some(0), "{args:?} stderr: {}", err(&o));
+    }
+
+    let mut out = String::new();
+    for req in server.received_requests().await.expect("requests") {
+        let body: serde_json::Value = serde_json::from_slice(&req.body).expect("JSON");
+        out.push_str(&serde_json::to_string_pretty(&body).expect("pretty"));
+        out.push('\n');
+    }
+    for (path, name) in [(&root, "<root>"), (&home_path, "<home>")] {
+        out = out.replace(&*path.to_string_lossy(), name);
+    }
+    out
+}
+
+/// bot-mode.md §1.1 (T3): `mode:` replaced `workspace:` without changing a byte of either side of it.
+/// `mode: agent` sends what `workspace: true` sent — the `AGENTS.md` overlay with its skills catalog, and the
+/// skills set — fresh and resumed; the expected text was captured from the last binary that read
+/// `workspace: true` (8f3c875) and is pinned verbatim. `mode: chat` is exactly the key left out. And until T4
+/// gives a bot its own session, `mode: bot` sends what `agent` does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mode_agent_is_what_workspace_true_was() {
+    let agent = one_mode_run("\n    mode: agent").await;
+    assert_eq!(
+        agent,
+        fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mode/workspace-true.txt")
+        )
+        .expect("read the pinned run")
+    );
+
+    let chat = one_mode_run("\n    mode: chat").await;
+    assert_eq!(chat, one_mode_run("").await);
+    assert!(
+        !chat.contains("Run the linter"),
+        "no overlay in a chat: {chat}"
+    );
+
+    assert_eq!(one_mode_run("\n    mode: bot").await, agent);
 }
 
 // ---------------------------------------------------------------- awkward bundle shapes
@@ -686,7 +765,7 @@ async fn resume_a_log_ending_in_tool_results() {
         ],
     );
 
-    write_config(cwd.path(), &server.uri(), "", false);
+    write_config(cwd.path(), &server.uri(), "", "");
     let mut cmd = iota(cwd.path(), home.path());
     cmd.args(["resume", id, "-m", "carry on"]);
     let o = output(cmd).await;
@@ -722,7 +801,7 @@ async fn a_failed_resumed_turn_persists_nothing() {
     let log_before = fs::read(bundle.join("messages.jsonl")).expect("log");
     let meta_before = fs::read(bundle.join("meta.json")).expect("meta");
 
-    write_config(cwd.path(), &server.uri(), "", false);
+    write_config(cwd.path(), &server.uri(), "", "");
     let mut cmd = iota(cwd.path(), home.path());
     cmd.args([
         "resume",
@@ -758,7 +837,7 @@ async fn resumed_image_turn_persists_the_saved_attachment() {
     let bundle = sessions_root(home.path()).join(f["dir"].as_str().unwrap());
     let log_before = fs::read(bundle.join("messages.jsonl")).expect("log");
 
-    write_config(cwd.path(), &server.uri(), "", false);
+    write_config(cwd.path(), &server.uri(), "", "");
     let mut cmd = iota(cwd.path(), home.path());
     cmd.args([
         "resume",
@@ -835,7 +914,7 @@ async fn bare_m_run_writes_nothing_under_home() {
     let cwd = TempDir::new().expect("temp cwd");
     let home = TempDir::new().expect("temp home");
 
-    write_config(cwd.path(), &server.uri(), "gemini-2.5-pro", false);
+    write_config(cwd.path(), &server.uri(), "gemini-2.5-pro", "");
     let mut cmd = iota(cwd.path(), home.path());
     cmd.args(["-m", "hi"]);
     let o = output(cmd).await;

@@ -1,6 +1,6 @@
 //! `agents.<name>` — the USAGE layer: the model this agent starts on and the ones it may switch to, the
 //! prompt it drives them with, the tools and MCP servers it loads, and the session-shaped switches
-//! (`workspace`, `no_save`, `notify`).
+//! (`mode`, `no_save`, `notify`).
 //!
 //! An agent may override the four parameters a model sets as defaults (`context_window`/`effort`/
 //! `temperature`/`top_p`) — ONE level of inheritance, deliberately not a chain (brain page
@@ -37,11 +37,11 @@ pub struct AgentConfig {
     /// `mcp_servers:` — which top-level servers this agent loads: `None` (key absent) = all, `Some([])` =
     /// none, names = that subset (an unknown name is [`ConfigError::UnknownMcpServer`]).
     pub mcp_servers: Option<Vec<String>>,
-    /// `workspace:` — the project overlay (layered `AGENTS.md`) and the skills toolset. It is the ONLY way
-    /// in: the `--agent` flag that used to switch it on per run was a second name for a config decision
-    /// (brain page `cli-surface-agent-first`).
-    #[serde(deserialize_with = "crate::tool::yaml11::deserialize_bool")]
-    pub workspace: bool,
+    /// `mode:` — `chat` (the default), `agent` or `bot` (docs/design/bot-mode.md §1.1). It is the ONLY way
+    /// into the project overlay (layered `AGENTS.md`) and the skills toolset: the `--agent` flag that used to
+    /// switch it on per run was a second name for a config decision (brain page `cli-surface-agent-first`).
+    /// A value outside the three is refused by the key audit, at `agents.<name>.mode`.
+    pub mode: AgentMode,
     /// `no_save:` — start ephemeral, as `--no-save` does.
     #[serde(deserialize_with = "crate::tool::yaml11::deserialize_bool")]
     pub no_save: bool,
@@ -64,6 +64,36 @@ pub struct AgentConfig {
     pub temperature: Option<f64>,
     /// `top_p:` — overrides the model's default.
     pub top_p: Option<f64>,
+}
+
+/// `agents.<name>.mode` — three nested levels, chat ⊂ agent ⊂ bot.
+#[derive(serde::Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentMode {
+    /// No overlay, no skills set, a flat-layout session.
+    #[default]
+    Chat,
+    /// The `AGENTS.md` overlay, the skills set and a project-bucketed session.
+    Agent,
+    /// Everything `agent` has, plus the never-ending session and memory. Before T4 none of that exists: a
+    /// bot reads [`has_workspace`](Self::has_workspace) like an agent everywhere, except that a new
+    /// session is flat (the two `== Agent` tests in `cmd::interactive`), which is the layout §1.3 fixes.
+    Bot,
+}
+
+impl AgentMode {
+    /// The spellings `mode:` accepts, in the order an error lists them.
+    pub const NAMES: [&str; 3] = ["chat", "agent", "bot"];
+
+    /// The overlay, the skills set and the jail root at the project: `agent` and `bot`.
+    pub fn has_workspace(self) -> bool {
+        matches!(self, Self::Agent | Self::Bot)
+    }
+
+    /// `mode: bot`.
+    pub fn is_bot(self) -> bool {
+        self == Self::Bot
+    }
 }
 
 impl AgentConfig {

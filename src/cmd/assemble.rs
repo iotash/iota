@@ -171,13 +171,13 @@ pub(crate) fn build_dispatcher(
     model_cfg: &ModelConfig,
     mcp: Option<McpPart>,
     defers: Vec<DeferredGroup>,
-    agent_mode: bool,
+    workspace: bool,
     env: &ToolEnv,
     warn: &mut dyn FnMut(String),
 ) -> Arc<dyn Dispatcher> {
     // root.go:578-587. The built-ins are the first part, so they win any tool-name collision with MCP.
     let mut registry = Registry::build(env, &agent_cfg.tools, warn);
-    if agent_mode {
+    if workspace {
         // Skills are activated through the `skills` set's `load_skill`; a config entry may still declare it.
         registry.enable_set(env, crate::tool::sets::SKILLS_SET, warn);
     }

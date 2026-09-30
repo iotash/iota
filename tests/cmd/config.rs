@@ -10,7 +10,7 @@ use std::{
 
 use crate::common::temp_project;
 use iota::app::env::Env;
-use iota::cmd::{AgentConfig, Config, ConfigError, ModelRef};
+use iota::cmd::{AgentConfig, AgentMode, Config, ConfigError, ModelRef};
 use pretty_assertions::assert_eq;
 
 /// `Load(path)` from the Go tests: the explicit file alone, no home/cwd tiers, warnings collected.
@@ -103,34 +103,31 @@ agents:
     assert_eq!(cfg.resolve_agent("missing"), None);
 }
 
-// What Go spelled `agent:` under a provider is `workspace:` on an agent.
+// What Go spelled `agent:` under a provider is `mode: agent` on an agent.
 #[test]
-fn an_agent_entry_loads_with_its_workspace_flag() {
+fn an_agent_entry_loads_with_its_mode() {
     let (dir, _dirs) = temp_project(&[]);
     let cfg = load_yaml(
         dir.path(),
         "config.yaml",
         "
 agents:
-  a: {model: \"openai:x\", workspace: true}
-  b: {model: \"openai:x\", workspace: yes}
-  c: {model: \"openai:x\", workspace: on}
-  d: {model: \"openai:x\", workspace: false}
-  e: {model: \"openai:x\"}
+  a: {model: \"openai:x\", mode: agent}
+  b: {model: \"openai:x\", mode: bot}
+  c: {model: \"openai:x\", mode: chat}
+  d: {model: \"openai:x\"}
 ",
     );
-    for name in ["a", "b", "c"] {
-        assert!(
-            cfg.agents[name].workspace,
-            "agent {name}: workspace should be enabled"
-        );
+    assert_eq!(cfg.agents["a"].mode, AgentMode::Agent);
+    assert_eq!(cfg.agents["b"].mode, AgentMode::Bot);
+    for name in ["c", "d"] {
+        assert_eq!(cfg.agents[name].mode, AgentMode::Chat, "agent {name}");
     }
-    for name in ["d", "e", "missing"] {
-        assert!(
-            !cfg.resolve_agent(name).is_some_and(|r| r.agent.workspace),
-            "agent {name}: workspace should be disabled"
-        );
-    }
+    // chat ⊂ agent ⊂ bot: the overlay/skills/jail readers see agent and bot alike.
+    assert!(cfg.agents["a"].mode.has_workspace() && !cfg.agents["a"].mode.is_bot());
+    assert!(cfg.agents["b"].mode.has_workspace() && cfg.agents["b"].mode.is_bot());
+    assert!(!cfg.agents["c"].mode.has_workspace() && !cfg.agents["c"].mode.is_bot());
+    assert!(cfg.resolve_agent("missing").is_none());
 
     // DIVERGENCES I-01: every YAML 1.1 spelling, any case, quoted or plain, for every bool field.
     let cfg = load_yaml(
@@ -146,12 +143,10 @@ models:
 agents:
   f:
     model: m
-    workspace: On
     no_save: off
     notify: No
 ",
     );
-    assert!(cfg.agents["f"].workspace);
     assert!(cfg.models["m"].image && cfg.models["m"].json_edits);
     assert!(!cfg.agents["f"].no_save);
     assert_eq!(cfg.agents["f"].notify, Some(false));
@@ -462,7 +457,7 @@ fn the_one_layer_keys_report_their_new_home() {
         ),
         (
             "providers:\n  p: {type: openai, agent: true}\n",
-            "providers.p.agent: `agent` is now `workspace:` on an `agents:` entry",
+            "providers.p.agent: `agent` is now `mode: agent` on an `agents:` entry",
         ),
         (
             "providers:\n  p: {type: openai, effort: high}\n",
@@ -501,7 +496,7 @@ fn an_unknown_key_is_refused_with_its_coordinate() {
         ),
         (
             "agents:\n  coder: {model: m, sytem: hi}\n",
-            "agents.coder.sytem: unknown key (want model, choices, system, system_file, tools, mcp_servers, workspace, no_save, notify, description, context_window, effort, temperature, top_p)",
+            "agents.coder.sytem: unknown key (want model, choices, system, system_file, tools, mcp_servers, mode, no_save, notify, description, context_window, effort, temperature, top_p)",
         ),
         (
             "agnets:\n  coder: {}\n",
@@ -1250,7 +1245,7 @@ fn config_parse_error_drops_file_with_warning() {
     let (cfg, warnings) = load_explicit(
         &{
             let p = dir.path().join("badbool.yaml");
-            fs::write(&p, "agents:\n  x: {model: m, workspace: 1}\n").unwrap();
+            fs::write(&p, "agents:\n  x: {model: m, no_save: 1}\n").unwrap();
             p
         },
         &env,

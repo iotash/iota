@@ -17,8 +17,9 @@ pub(crate) mod tuning;
 pub use crate::config::edit;
 pub use crate::config::window;
 pub use crate::config::{
-    AgentConfig, BadModelRef, Config, ConfigError, DEFAULT_AGENT, Declared, McpServerConfig,
-    ModelConfig, ModelEntry, ModelRef, ParamLayers, ProviderConfig, Resolved, WindowDecl,
+    AgentConfig, AgentMode, BadModelRef, Config, ConfigError, DEFAULT_AGENT, Declared,
+    McpServerConfig, ModelConfig, ModelEntry, ModelRef, ParamLayers, ProviderConfig, Resolved,
+    WindowDecl,
 };
 pub use args::{
     Cli, Command, ConfigAction, Invocation, ListWhat, McpAction, McpAddCmd, McpAuthArg, McpCmd,
@@ -305,7 +306,7 @@ fn assemble_tools(
     // discovery, so it is resolved in every mode; only agent mode makes a missing cwd fatal. The cwd and
     // the home go along in every mode too — the banner names the directory the chat runs in.
     let project_root = dirs.cwd.as_deref().map(crate::agents::project_root);
-    let agent = if settings.agent_mode {
+    let agent = if settings.mode.has_workspace() {
         let root = project_root
             .clone()
             .ok_or_else(|| SetupError::Cwd(cwd_err()))?;
@@ -424,7 +425,10 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
             let store = crate::session::SessionStore::from_dirs(dirs)?;
             // root.go:298: agent mode tries the project's own bucket first and only widens on no match; normal
             // mode looks at the flat root (Go passes an empty `agentOpts.Root`).
-            let scope = settings.agent_mode.then_some(agent.root.as_path());
+            let scope = settings
+                .mode
+                .has_workspace()
+                .then_some(agent.root.as_path());
             let id = store.resolve_id(fragment, scope)?;
             let (writer, resumed) = store.resume(&id, kind)?;
             // The bundle records the agent it ran under; one that has since been deleted is announced, and
@@ -500,7 +504,7 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         &settings.resolved.model,
         mcp_part,
         mcp_defers,
-        settings.agent_mode,
+        settings.mode.has_workspace(),
         &tool_env,
         &mut |m| io.caution(&m),
     );
