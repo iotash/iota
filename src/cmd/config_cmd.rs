@@ -51,6 +51,16 @@ agents:
       code:                   # read/write/edit/grep over the project
       shell:                  # shell commands, with a sandbox by default
     # mode: agent             # AGENTS.md overlay, skills, project-scoped sessions
+  # A bot (`iota run coder`): one conversation that never ends, with a memory of its own. By default it
+  # stops at every approval gate and waits for you; the two `auto_` keys below are what let it carry on
+  # unattended. They are an opt-in, and only sensible with the sandbox on — where no sandbox is available,
+  # `auto_run` runs every command unconfined without asking.
+  # coder:
+  #   mode: bot
+  #   model: gpt
+  #   tools:
+  #     code: { auto_write: true }                  # writes and edits land without a yes
+  #     shell: { sandbox: auto, auto_run: true }    # commands run confined, none waits for a yes
 
 # MCP servers go under a top-level `mcp_servers:` block, which `iota mcp add <name> -- <command>`
 # (or `--url <url>`) writes and `iota mcp remove <name>` edits for you.
@@ -217,6 +227,32 @@ mod tests {
             vec![crate::config::ModelRef::Entry("gpt".to_owned())]
         );
         assert_eq!(resolved.agent.mode, crate::config::AgentMode::Chat);
+    }
+
+    /// The commented bot entry is one the user can uncomment as it stands: a bot that does not stop for
+    /// approval, with the sandbox on — and the default agent it sits beside is untouched.
+    #[test]
+    fn the_starter_bot_entry_uncomments_to_an_unattended_bot() {
+        let uncommented: String = STARTER
+            .lines()
+            .map(|l| {
+                if l.starts_with("  # coder:") || l.starts_with("  #   ") {
+                    l.replacen("# ", "", 1)
+                } else {
+                    l.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let cfg =
+            crate::config::Config::parse(uncommented.as_bytes(), &Env::default(), &mut |_| {})
+                .expect("the uncommented starter parses and validates");
+        assert_eq!(cfg.agents["coder"].mode, crate::config::AgentMode::Bot);
+        assert_eq!(cfg.agents["default"].mode, crate::config::AgentMode::Chat);
+        let tools = serde_json::to_value(&cfg.agents["coder"].tools).expect("json");
+        assert_eq!(tools["code"]["auto_write"], true, "{tools}");
+        assert_eq!(tools["shell"]["auto_run"], true, "{tools}");
+        assert_eq!(tools["shell"]["sandbox"], "auto", "{tools}");
     }
 
     /// The commented `mode:` line is one the user can uncomment as it stands.

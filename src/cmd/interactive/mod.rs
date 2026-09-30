@@ -167,6 +167,23 @@ struct Wiring {
     memory: Option<crate::agents::memory::BotMemory>,
 }
 
+impl Wiring {
+    /// The loop's session half, over `store` and `scope`: every session field the wiring carries is taken
+    /// over — a field left behind here is a feature that silently never reaches the loop.
+    fn take_session(&mut self, store: SessionStore, scope: Option<PathBuf>) -> SessionCtx {
+        SessionCtx {
+            writer: self.writer.take(),
+            store,
+            new_session: self.new_session.take(),
+            scope,
+            bot: self.bot,
+            notices: std::mem::take(&mut self.notices),
+            recorded_notices: std::mem::take(&mut self.recorded_notices),
+            memory: self.memory.take(),
+        }
+    }
+}
+
 /// `TUI_DESIGN` §8.4 steps 2, 3, 5 and 6, in one function so their order is a local invariant.
 ///
 /// The OSC-11 probe and the picker are blocking raw-mode I/O and never run inline on a runtime worker; `wire`
@@ -315,7 +332,7 @@ pub(crate) async fn run_interactive(
         })
     })
     .await;
-    let (dark, wiring, ui_session) = match opened {
+    let (dark, mut wiring, ui_session) = match opened {
         Ok(opened) => opened,
         Err(e) => {
             // Go's `defer manager.Close()`: a cancelled picker or a bad session id still hands the servers back.
@@ -338,6 +355,7 @@ pub(crate) async fn run_interactive(
         notify,
     ));
     let mcp = mcp_hooks(&manager, mcp_events);
+    let session = wiring.take_session(store, scope);
 
     // Boxed: the loop's future is the largest in the run, and the harness inputs it now carries whole (to
     // re-compose on a new day) tipped the caller over clippy's `large_futures` line.
@@ -352,16 +370,7 @@ pub(crate) async fn run_interactive(
         dispatch: Arc::clone(&wiring.dispatch),
         jobs,
         mcp,
-        session: SessionCtx {
-            writer: wiring.writer,
-            store,
-            new_session: wiring.new_session,
-            scope,
-            bot: wiring.bot,
-            notices: wiring.notices,
-            recorded_notices: wiring.recorded_notices,
-            memory: wiring.memory,
-        },
+        session,
         params: wiring.params,
         layers: wiring.layers,
         catalog,
@@ -989,5 +998,42 @@ mod tests {
             SetupError::NoSessionToResume.to_string(),
             "no session to resume"
         );
+    }
+
+    /// Every session field of the wiring reaches the loop — the notices it shows, the notices it records, the
+    /// bot's memory — and the wiring keeps none of them behind.
+    #[test]
+    fn the_wiring_hands_every_session_field_to_the_loop() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let memory = crate::agents::memory::BotMemory::new("coder", tmp.path().join("coder"));
+        let mut wiring = super::Wiring {
+            writer: None,
+            new_session: None,
+            history: Vec::new(),
+            params: crate::session::LayeredParams::default(),
+            layers: crate::config::ParamLayers::default(),
+            dispatch: Arc::new(crate::testing::StaticDispatcher::new(&[])),
+            title_provider: None,
+            bot: true,
+            notices: vec!["shown".to_owned()],
+            recorded_notices: vec!["recorded".to_owned()],
+            memory: Some(memory.clone()),
+        };
+        let store = crate::session::SessionStore::new(tmp.path().join("sessions"));
+        let scope = Some(tmp.path().to_path_buf());
+        let session = wiring.take_session(store, scope.clone());
+        assert!(session.bot);
+        assert_eq!(session.scope, scope);
+        assert_eq!(session.notices, ["shown"]);
+        assert_eq!(session.recorded_notices, ["recorded"]);
+        assert_eq!(
+            session
+                .memory
+                .as_ref()
+                .map(crate::agents::memory::BotMemory::path),
+            Some(memory.path())
+        );
+        assert!(wiring.notices.is_empty() && wiring.recorded_notices.is_empty());
+        assert!(wiring.memory.is_none());
     }
 }

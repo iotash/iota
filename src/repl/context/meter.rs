@@ -231,6 +231,28 @@ impl ContextBudget {
         lock(&self.st).settle_with(counted);
     }
 
+    /// Re-measures a turn the interrupt KEPT, whose messages start at `turn`. A round's settle already
+    /// consumed the figure [`Self::update`] reads, so it would fall back to a local count and lose what the
+    /// provider measured: instead the last message of the turn that carries usage is the measurement, and
+    /// what follows it (the answers to the calls the interrupt left unanswered) is estimated on top — the
+    /// same split a settle mid-turn leaves. A turn that carries no usage is [`Self::update`].
+    pub fn update_kept(&mut self, history: &[Message], turn: usize) {
+        let measured = history.get(turn..).and_then(|t| {
+            t.iter()
+                .rposition(|m| m.usage().is_some())
+                .and_then(|i| Some((turn + i, t[i].usage()?)))
+        });
+        let Some((at, u)) = measured else {
+            return self.update(history);
+        };
+        let tail = self.counter.count_messages(&history[at + 1..]);
+        let mut st = lock(&self.st);
+        st.settled = u.context_tokens();
+        st.pending = tail;
+        st.have_usage = true;
+        st.last_usage = None;
+    }
+
     /// Re-seeds from a locally counted history — compaction and session swaps, where the
     /// provider's last figure no longer describes what will be sent (Go `budget.reseed`).
     pub fn reseed(&mut self, history: &[Message]) {
@@ -591,6 +613,42 @@ mod tests {
         assert!(b.used() > 5_000, "note recorded nothing");
         m.reset();
         assert_eq!(b.used(), 5_000);
+    }
+
+    /// A kept interrupted turn is re-measured from its last round's usage — which that round's settle already
+    /// consumed — plus a local estimate of what the interrupt put after it; a turn without usage counts locally.
+    #[test]
+    fn a_kept_turn_keeps_its_measured_usage() {
+        let mut b = budget(100_000);
+        let mut m = meter(&b);
+        let round = Usage {
+            input: 60_000,
+            total: 60_000,
+            ..Usage::default()
+        };
+        let mut history = vec![
+            Message::user("earlier"),
+            Message::user("go"),
+            Message::assistant("calling").with_usage(Some(round)),
+        ];
+        m.record(history.last_mut());
+        m.settle(&history);
+        history.push(tool("interrupted"));
+        m.reset();
+
+        b.update_kept(&history, 1);
+        assert!(b.have_usage());
+        let tail = b.used() - 60_000;
+        assert!(tail > 0 && tail < 100, "the answer on top: {tail}");
+
+        // What `update` would have done: the settle consumed the figure, so it counts locally.
+        b.update(&history);
+        assert!(!b.have_usage());
+        assert!(b.used() < 1_000);
+
+        // The measurement must be the turn's own: an earlier turn's does not count.
+        b.update_kept(&history, 3);
+        assert!(!b.have_usage());
     }
 
     // Go: chat/tokens_test.go:117 TestCtxMeterRecord — a finished call is booked in TWO

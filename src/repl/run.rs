@@ -1224,7 +1224,12 @@ fn interrupt_turn(
     }
     repl.conv.ctxm.reset();
     let history = std::mem::take(&mut repl.conv.history);
-    repl.conv.budget.update(&history);
+    // A kept turn keeps what its rounds measured: a bot's threshold check reads it (fable M2).
+    if persist {
+        repl.conv.budget.update_kept(&history, watermark);
+    } else {
+        repl.conv.budget.update(&history);
+    }
     repl.conv.history = history;
     repl.push_status();
     persist

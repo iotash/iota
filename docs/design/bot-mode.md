@@ -531,7 +531,19 @@ rev 1 只处理了 `</memory>` 的结构逃逸。评审 S1 指出的问题更大
 **推荐：v1 沿用人在环，不加 bot 专用策略。**
 
 - 形态 A 下 bot 就开在一个终端 pane 里。审批门本来就会 `set_state(NeedsInput)` 并 `notify(Kind::NeedsInput)`（`src/repl/turn/approval.rs`），herdr 显示 blocked，ANSI 在终端失焦时发 OSC 9。「bot 在等你」这个信号已经有了。
-- 想真正放手，就用已有的预设 `tools.shell.auto_run` / `tools.code.auto_write`，再加上 shell 集的沙箱。文档里给出一份 bot 推荐配置模板（sandbox + `auto_run` + `auto_write`）作为默认答案（评审 M8），不发明新机制。
+- 想真正放手，就用已有的预设 `tools.shell.auto_run` / `tools.code.auto_write`，再加上 shell 集的沙箱。下面这份推荐配置模板（评审 M8、codex R9）就是默认答案，不发明新机制。它是 **opt-in**：默认值不变，`iota config init` 的 starter 里只有一段注释掉的同款示例（`src/cmd/config_cmd.rs` 的 `STARTER`，取消注释即可用，`the_starter_bot_entry_uncomments_to_an_unattended_bot` 钉住）。
+
+  ```yaml
+  agents:
+    coder:
+      mode: bot
+      model: gpt
+      tools:
+        code: { auto_write: true }                 # 写文件、改文件不再等人点头
+        shell: { sandbox: auto, auto_run: true }   # 命令在沙箱里跑，也不再等人点头
+  ```
+
+  这份配置意味着：**无人值守时它不再停下来等人**。审批门是人在环时唯一的刹车，打开这两个键就是把刹车交给沙箱——`code` 集的写入直接落到项目里，`shell` 的命令直接执行，模型做错的事要等你回来从 `git` 和日志里发现。沙箱（`sandbox: auto`，也是缺省值，这里写出来是为了显式）把命令的写入限制在项目根目录和临时/缓存目录里、默认断网（`network: false`），但不限制读；**没有可用沙箱的平台（Windows、缺沙箱二进制的 Linux）上 `auto_run` 照样免审批，命令就是不受约束地直接跑**，所以那里不要用这份模板。iota 自身的调用本来就在沙箱外（DIVERGENCES X-44），`auto_run` 同样免掉它的审批。只想放开一半时，去掉 `auto_write` 保留 `auto_run`（写入仍然等人）是更保守的折中。
 - 会话级的「本次总是允许」授权在进程重启后清空（§1.2），这是期望的保守行为；夜里等审批等于挂起，所以上面的模板是无人值守的前提。
 - 形态 B（L4）没有人可问，照搬 headless 的 `QuietHost` 拒绝（`src/headless/run.rs:26-52`），被拒的调用会作为 tool error 回到模型。到时候再议「挂起等审批 + 通知」。
 

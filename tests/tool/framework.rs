@@ -17,7 +17,7 @@ use iota::tool::error::ToolError;
 use iota::tool::set_disabled;
 use iota::tool::sets::ToolsConfig;
 use iota::tool::{
-    DeferMode, DeferredGroup, Owner, Registry, SEARCH_TOOL_NAME, ToolSearcher, merge,
+    DeferMode, DeferredGroup, Owner, Registry, SEARCH_TOOL_NAME, ToolSearcher, merge, only,
 };
 use iota::tool::{DeferState, Dispatcher, ToolEnv, ToolOutput, ToolResult};
 use pretty_assertions::assert_eq;
@@ -838,6 +838,30 @@ async fn merge_exposes_and_routes_every_parts_tools() {
     assert!(empty.as_tool_searcher().is_none());
     assert!(empty.deferred_tools().is_empty());
     assert!(empty.take_pending_loads().is_empty());
+}
+
+// A bot's flush turn runs over `only` (docs/design/bot-mode.md §3.6.1): a tool left out is neither advertised
+// nor callable — a call to it is an unknown tool, even though the dispatcher underneath owns it — and it asks
+// for no approval.
+#[tokio::test]
+async fn a_narrowed_dispatcher_refuses_a_tool_outside_its_names() {
+    let inner = iota::testing::StaticDispatcher::new(&["remember", "read_file"])
+        .with_approval(&["read_file"]);
+    let narrowed = only(Arc::new(inner), &["remember"]);
+    let names: Vec<String> = narrowed.tools().into_iter().map(|d| d.name).collect();
+    assert_eq!(names, ["remember"]);
+    assert!(!narrowed.requires_approval("read_file", None));
+
+    let out = call(&*narrowed, "remember", JsonObject::new()).await;
+    assert!(
+        !out.is_error && out.text.starts_with("remember:"),
+        "{out:?}"
+    );
+    let err = narrowed
+        .call_tool(&RunCtx::default(), "read_file", JsonObject::new())
+        .await
+        .expect_err("read_file is outside the names");
+    assert!(matches!(&err, ToolError::UnknownTool(n) if n == "read_file"));
 }
 
 // The ask and shell sets stand in for every set here; the shell and agent halves have their own suites.

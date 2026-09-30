@@ -278,7 +278,7 @@ pub(crate) struct Only {
     names: &'static [&'static str],
 }
 
-/// `inner` narrowed to `names` ([`Only`]).
+/// `inner` narrowed to `names`: a live view that advertises and runs those tools alone.
 pub fn only(inner: Arc<dyn Dispatcher>, names: &'static [&'static str]) -> Arc<dyn Dispatcher> {
     Arc::new(Only { inner, names })
 }

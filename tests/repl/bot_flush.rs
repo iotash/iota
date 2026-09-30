@@ -1009,16 +1009,16 @@ async fn the_flush_turn_does_not_advertise_a_mounted_tool() {
 
 /// Fable M2: a turn the interrupt KEPT — its call's approval cancelled after the round crossed the threshold
 /// — is in the history and the log like a finished one, so it queues the flush; the next message does not
-/// compact without one.
+/// compact without one. What crosses is the round's MEASURED usage: the history counted locally is a few
+/// hundred tokens, so a budget that fell back to the local count would never queue the flush.
 #[tokio::test]
 async fn an_interrupted_turn_that_was_kept_still_queues_the_flush() {
     fn turn(prompt: &str) -> Round {
         match prompt {
-            // The interrupt path re-counts the history locally: the call's own arguments carry it over.
             "go" => Round::calls(vec![iota::testing::tool_call_with(
                 "c1",
                 "read_file",
-                &[("path", &"x ".repeat(120_000))],
+                &[("path", "x")],
             )])
             .usage(usage(100_000)),
             _ => Round::text(&format!("re {prompt}")).usage(usage(1_000)),
@@ -1049,4 +1049,147 @@ async fn an_interrupted_turn_that_was_kept_still_queues_the_flush() {
             .iter()
             .any(|l| l.contains("without a memory flush"))
     );
+}
+
+/// A flush turn that did not finish (§3.6.1, §4.1): it is best-effort, so it is not the host's business — no
+/// `Failed` ping, no `Error` state — and the compaction after it runs anyway, recorded and said out loud as
+/// one without a flush.
+async fn a_flush_that_did_not_finish(flush: fn() -> Round) {
+    let f = Fixture::new(vec![
+        input("zero"),
+        input("one"),
+        Reply::Enqueued, // the flush turn, which does not finish; the compaction follows
+        input("two"),
+        Reply::Interrupted,
+    ]);
+    let p = provider(Some("SUMMARY"), flush, over_on_one);
+    let log = p.log();
+    let dir = f.run(p, "").await;
+
+    let prompts = log.prompts();
+    assert_eq!(
+        prompts.len(),
+        5,
+        "zero, one, flush, summary, two: {prompts:?}"
+    );
+    assert!(prompts[2].starts_with(FLUSH_MARK));
+    assert!(prompts[3].starts_with(SUMMARY_MARK));
+    assert!(
+        prompts[3].contains("Nothing was saved to long-term memory this time"),
+        "{}",
+        prompts[3]
+    );
+    assert_eq!(prompts[4], "two");
+
+    let m = marker(&dir);
+    assert_eq!(m["flush_skipped"], true, "{m}");
+    assert!(
+        f.pings(Kind::Failed).is_empty(),
+        "{:?}",
+        f.pings(Kind::Failed)
+    );
+    assert!(!f.states.lock().unwrap().contains(&State::Error));
+    assert_eq!(
+        f.printed()
+            .iter()
+            .filter(|l| l.as_str() == "⚠ Compacted without a memory flush")
+            .count(),
+        1,
+        "{:?}",
+        f.printed()
+    );
+    assert_eq!(f.pings(Kind::Done), ["re zero", "re one", "re two"]);
+}
+
+#[tokio::test]
+async fn a_failed_flush_turn_still_compacts_and_does_not_alarm_the_host() {
+    a_flush_that_did_not_finish(|| Round::permanent("flush blew up")).await;
+}
+
+#[tokio::test]
+async fn an_interrupted_flush_turn_still_compacts_and_does_not_alarm_the_host() {
+    a_flush_that_did_not_finish(|| {
+        Round::failing("dropped").interrupting(iota::testing::Interrupt::Call)
+    })
+    .await;
+}
+
+/// A `/compact` typed in a bot's session runs without a flush: the marker records it, but the transcript does
+/// not warn — the user asked for exactly that (§3.6.1).
+#[tokio::test]
+async fn a_manual_compact_records_the_skipped_flush_without_the_warning() {
+    let f = Fixture::new(vec![
+        input("zero"),
+        input("one"),
+        input("/compact"),
+        Reply::Interrupted,
+    ]);
+    let p = provider(Some("SUMMARY"), remember_tabs, |prompt| {
+        Round::text(&format!("re {prompt}")).usage(usage(1_000))
+    });
+    let log = p.log();
+    let dir = f.run(p, "").await;
+
+    let prompts = log.prompts();
+    assert_eq!(prompts.len(), 3, "zero, one, the summary: {prompts:?}");
+    assert!(prompts[2].starts_with(SUMMARY_MARK));
+    assert!(!prompts.iter().any(|p| p.starts_with(FLUSH_MARK)));
+    let m = marker(&dir);
+    assert_eq!(m["flush_skipped"], true, "{m}");
+    assert_eq!(m["compacted_through"], 2, "{m}");
+    assert!(
+        !f.printed()
+            .iter()
+            .any(|l| l.contains("without a memory flush")),
+        "{:?}",
+        f.printed()
+    );
+}
+
+/// Nothing older than the last turn (§4.1, M12): the flush of a bot whose first turn crossed the threshold
+/// leaves nothing to compact. No summary pass, no marker, no alarm — and the snooze holds the next flush until
+/// the usage has grown by 5% of the window: a turn that adds 1k does not queue one.
+#[tokio::test]
+async fn an_unchanged_compaction_snoozes_the_next_flush() {
+    fn turn(prompt: &str) -> Round {
+        let at = match prompt {
+            "one" => 100_000,
+            "two" => 101_000,
+            _ => 1_000,
+        };
+        Round::text(&format!("re {prompt}")).usage(usage(at))
+    }
+    let f = Fixture::new(vec![
+        input("one"),
+        Reply::Enqueued, // the flush turn; the compaction after it finds nothing to compact
+        input("two"),
+        input("three"),
+        Reply::Interrupted,
+    ]);
+    let p = provider(Some("SUMMARY"), remember_tabs, turn);
+    let log = p.log();
+    let dir = f.run(p, "").await;
+
+    let prompts = log.prompts();
+    assert_eq!(
+        prompts.len(),
+        5,
+        "one, the flush's two rounds, two, three: {prompts:?}"
+    );
+    assert!(prompts[1].starts_with(FLUSH_MARK));
+    assert_eq!(&prompts[3..], ["two", "three"]);
+    assert!(!prompts.iter().any(|p| p.starts_with(SUMMARY_MARK)));
+
+    let log_text = std::fs::read_to_string(dir.join("messages.jsonl")).expect("log");
+    assert!(!log_text.contains("\"compaction\""), "{log_text}");
+    assert!(f.pings(Kind::Failed).is_empty());
+    assert!(!f.states.lock().unwrap().contains(&State::Error));
+    assert!(
+        !f.printed()
+            .iter()
+            .any(|l| l.contains("Nothing to compact") || l.contains("without a memory flush")),
+        "{:?}",
+        f.printed()
+    );
+    assert_eq!(f.pings(Kind::Done), ["re one", "re two", "re three"]);
 }
