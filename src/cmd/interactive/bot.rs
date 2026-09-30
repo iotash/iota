@@ -10,12 +10,26 @@ use std::path::Path;
 use crate::provider::Provider;
 use crate::provider::model::{Message, Role};
 use crate::session::{
-    BotOpen, NewSession, Overrides, SessionError, SessionMeta, SessionStore, SessionWriter,
+    BotOpen, NewSession, Overrides, SessionError, SessionStore, SessionWriter,
     replay_session_settings,
 };
 
 /// The notice a config-edited system prompt leaves in the transcript.
 pub(crate) const SYSTEM_UPDATED: &str = "system prompt updated from config";
+
+/// A resume's time notice is given only after at least this long away (seconds). Below it the model has lost
+/// nothing worth a record — a restart minutes later would put one more line in the log and the context each
+/// time. A changed project has no such gate: that is an event, not noise.
+pub(crate) const RESUME_GAP_NOTICE_SECS: i64 = 3_600;
+
+/// What a resumed bot's last run left behind, read before this run stamps anything over it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LastRun {
+    /// When the session was last written (RFC3339; `Session::last_written`, untouched by a tail repair).
+    pub(crate) written: String,
+    /// The directory it ran in (`meta.cwd`; empty for a bundle older than the key).
+    pub(crate) cwd: String,
+}
 
 /// The notice for a pointer whose bundle never reached the disk.
 pub(crate) const NEVER_SAVED: &str =
@@ -31,9 +45,8 @@ pub(crate) struct BotSession {
     pub(crate) resumed: bool,
     /// Dim transcript lines for the chat's opening.
     pub(crate) notices: Vec<String>,
-    /// On a resume, the meta as the last run left it — before this run stamped its model and directory
-    /// over it. [`resume_notices`] reads it.
-    pub(crate) previous: Option<SessionMeta>,
+    /// On a resume, what the last run left: [`resume_notices`] reads it.
+    pub(crate) previous: Option<LastRun>,
     /// The tail repair's announcement, when the resume had to repair anything.
     pub(crate) repair_notice: Option<String>,
 }
@@ -53,24 +66,26 @@ pub(crate) fn check_bot_provider(
 
 /// The lines a resumed bot's model is told first (bot-mode.md §2.5, review M2/M3) — across a restart its only
 /// sense of time and place, since the view carries no timestamps: how long ago the session was last written
-/// (`meta.updated_at`, read in `now`'s time zone) and, when `cwd` is not the directory it last ran in
-/// (`meta.cwd`), that the project changed. An unparsable `updated_at` says nothing about time; an empty
-/// `meta.cwd` (a bundle older than the key) nothing about place.
-pub(crate) fn resume_notices(meta: &SessionMeta, cwd: &str, now: &jiff::Zoned) -> Vec<String> {
+/// (read in `now`'s time zone), once that is at least [`RESUME_GAP_NOTICE_SECS`], and, when `cwd` is not the
+/// directory the last run was in, that the project changed. An unparsable stamp says nothing about time; an
+/// empty last `cwd` (a bundle older than the key) nothing about place.
+pub(crate) fn resume_notices(last: &LastRun, cwd: &str, now: &jiff::Zoned) -> Vec<String> {
     let mut out = Vec::new();
-    if let Ok(last) = meta.updated_at.parse::<jiff::Timestamp>() {
-        let secs = (now.timestamp().as_second() - last.as_second()).max(0);
-        let at = last.to_zoned(now.time_zone().clone());
-        out.push(format!(
-            "Resumed after {} (last message {})",
-            elapsed(secs),
-            at.strftime("%Y-%m-%d %H:%M")
-        ));
+    if let Ok(at) = last.written.parse::<jiff::Timestamp>() {
+        let secs = (now.timestamp().as_second() - at.as_second()).max(0);
+        if secs >= RESUME_GAP_NOTICE_SECS {
+            let at = at.to_zoned(now.time_zone().clone());
+            out.push(format!(
+                "Resumed after {} (last message {})",
+                elapsed(secs),
+                at.strftime("%Y-%m-%d %H:%M")
+            ));
+        }
     }
-    if !meta.cwd.is_empty() && meta.cwd != cwd {
+    if !last.cwd.is_empty() && last.cwd != cwd {
         out.push(format!(
             "Resumed in a different project: {} → {cwd}",
-            meta.cwd
+            last.cwd
         ));
     }
     out
@@ -154,7 +169,10 @@ pub(crate) fn open_bot_session(
                 history,
                 resumed: true,
                 notices,
-                previous: Some(session.meta),
+                previous: Some(LastRun {
+                    written: session.last_written,
+                    cwd: session.meta.cwd,
+                }),
                 repair_notice,
             })
         }
@@ -193,7 +211,7 @@ fn adopt_system(
 #[cfg(test)]
 mod tests {
     use super::{
-        NEVER_SAVED, SYSTEM_UPDATED, check_bot_provider, open_bot_session, resume_notices,
+        LastRun, NEVER_SAVED, SYSTEM_UPDATED, check_bot_provider, open_bot_session, resume_notices,
     };
     use crate::provider::model::{Message, Role};
     use crate::provider::{Provider, ProviderKind};
@@ -333,6 +351,15 @@ mod tests {
         );
     }
 
+    /// Backdates the bundle's `meta.updated_at` on disk (the writer stamps the real clock).
+    fn backdate(dir: &std::path::Path, at: &str) {
+        let path = dir.join(crate::session::META_FILE);
+        let mut meta: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("meta")).expect("json");
+        meta["updated_at"] = at.into();
+        std::fs::write(&path, meta.to_string()).expect("write meta");
+    }
+
     /// bot-mode.md §2.5 (review M2/M3): a resume tells the model how long it was away — from the meta's
     /// `updated_at` — and, started in another directory, that the project changed; the meta then records this
     /// run's directory, so the next resume from the same place says nothing about it. A fresh launch says
@@ -353,17 +380,12 @@ mod tests {
             .expect("first write");
         let dir = first.writer.dir().to_path_buf();
         drop(first);
-        // Last written three days and a bit before `now` (the writer stamps the real clock).
-        let path = dir.join(crate::session::META_FILE);
-        let mut meta: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).expect("meta")).expect("json");
-        meta["updated_at"] = "2026-09-27T18:02:41+00:00".into();
-        std::fs::write(&path, meta.to_string()).expect("write meta");
+        backdate(&dir, "2026-09-27T18:02:41+00:00");
 
         let again = open_in(&h, &mut p, "", "/work/herdr").expect("resume");
-        let previous = again.previous.as_ref().expect("resumed");
+        let last = again.previous.as_ref().expect("resumed");
         assert_eq!(
-            resume_notices(previous, "/work/herdr", &now),
+            resume_notices(last, "/work/herdr", &now),
             [
                 "Resumed after 3 days (last message 2026-09-27 18:02)",
                 "Resumed in a different project: /work/iota → /work/herdr",
@@ -373,26 +395,77 @@ mod tests {
         drop(again);
 
         let third = open_in(&h, &mut p, "", "/work/herdr").expect("resume");
-        let notices = resume_notices(
-            third.previous.as_ref().expect("resumed"),
-            "/work/herdr",
-            &jiff::Zoned::now(),
-        );
-        assert_eq!(
-            notices.len(),
-            1,
-            "same directory as the last run: {notices:?}"
-        );
+        let last = third.previous.as_ref().expect("resumed");
+        assert_eq!(last.cwd, "/work/herdr", "the last run's directory");
         assert!(
-            notices[0].starts_with("Resumed after less than a minute (last message "),
-            "{notices:?}"
+            resume_notices(last, "/work/herdr", &jiff::Zoned::now()).is_empty(),
+            "a restart moments later, in the same place: nothing to say"
         );
         // An unparsable stamp and a bundle older than `cwd` say nothing.
-        let bare = SessionMeta {
-            updated_at: "garbage".to_owned(),
-            ..SessionMeta::default()
+        let bare = LastRun {
+            written: "garbage".to_owned(),
+            cwd: String::new(),
         };
         assert!(resume_notices(&bare, "/work/herdr", &now).is_empty());
+    }
+
+    /// The time notice waits for [`RESUME_GAP_NOTICE_SECS`]; the project notice has no gate.
+    #[test]
+    fn the_time_notice_waits_for_an_hour_the_project_notice_does_not() {
+        let now: jiff::Zoned = "2026-09-30T19:30:00+00:00[UTC]".parse().expect("now");
+        let at = |written: &str, cwd: &str| LastRun {
+            written: written.to_owned(),
+            cwd: cwd.to_owned(),
+        };
+        assert!(resume_notices(&at("2026-09-30T18:30:01+00:00", "/p"), "/p", &now).is_empty());
+        assert_eq!(
+            resume_notices(&at("2026-09-30T18:30:00+00:00", "/p"), "/p", &now),
+            ["Resumed after 1 hour (last message 2026-09-30 18:30)"]
+        );
+        assert_eq!(
+            resume_notices(&at("2026-09-30T19:28:00+00:00", "/a"), "/b", &now),
+            ["Resumed in a different project: /a → /b"],
+            "two minutes away, but in another project"
+        );
+    }
+
+    /// A resume whose log ends in unanswered tool calls repairs the tail — an append, which restamps the meta
+    /// — and still says how long the bot was away: the time is the last run's, not the repair's.
+    #[test]
+    fn a_repaired_resume_still_says_how_long_it_was_away() {
+        let h = home();
+        let mut p = provider("gpt-4o");
+        let mut first = open(&h, &mut p, "").expect("fresh");
+        let call = crate::provider::model::ToolCall {
+            id: "c1".to_owned(),
+            name: "shell".to_owned(),
+            ..crate::provider::model::ToolCall::default()
+        };
+        first
+            .writer
+            .append_messages(&[
+                Message::user("run it"),
+                Message::assistant("").with_tool_calls(vec![call]),
+            ])
+            .expect("a turn cut off mid-call");
+        let dir = first.writer.dir().to_path_buf();
+        drop(first);
+        backdate(&dir, "2026-09-27T18:02:41+00:00");
+
+        let again = open(&h, &mut p, "").expect("resume");
+        assert!(again.repair_notice.is_some(), "the tail was repaired");
+        assert_ne!(
+            again.writer.meta().updated_at,
+            "2026-09-27T18:02:41+00:00",
+            "the repair restamped the meta"
+        );
+        let last = again.previous.as_ref().expect("resumed");
+        assert_eq!(last.written, "2026-09-27T18:02:41+00:00");
+        let now: jiff::Zoned = "2026-09-30T19:30:00+00:00[UTC]".parse().expect("now");
+        assert_eq!(
+            resume_notices(last, "/work/proj", &now),
+            ["Resumed after 3 days (last message 2026-09-27 18:02)"]
+        );
     }
 
     /// The elapsed time in its largest whole unit, singular or plural.

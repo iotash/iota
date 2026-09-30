@@ -47,6 +47,10 @@ pub fn summary_preamble(summary: &str) -> String {
 pub struct Session {
     /// The bundle's metadata.
     pub meta: SessionMeta,
+    /// `meta.updated_at` as the bundle had it before this open wrote anything: when the session was last
+    /// written. A resume's tail repair appends — and so restamps `meta.updated_at` — before the caller sees
+    /// the meta; this keeps the time the last run left.
+    pub last_written: String,
     /// The replay view.
     pub messages: Vec<Message>,
     /// Cumulative token cost of the whole log.

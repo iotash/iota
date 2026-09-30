@@ -783,7 +783,6 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             }
         }
         roll_day(&mut repl).await;
-        let send_overlay = repl.refresh_overlay();
 
         // The auto-compaction offer runs on the message about to be sent, BEFORE it joins
         // the history: what it asks about is the projected occupancy, and compacting after
@@ -793,6 +792,10 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         if !flush {
             crate::repl::commands::compact::offer_before_send(&mut repl, &content).await;
         }
+        // The overlay is read AFTER the offer: a compaction there refreshes a bot's memory copy, and this
+        // send must carry the refreshed block — composed before, it would carry the old one and the next send
+        // would change the system segment again (two cache misses where one was meant, bot-mode.md §3.4).
+        let send_overlay = repl.refresh_overlay();
 
         repl.conv.history.push(Message {
             content,

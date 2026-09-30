@@ -335,11 +335,13 @@ impl SessionStore {
         let mut file = open_append_0644(&path)?;
         terminate_last_line(&path, &mut file)?;
         let repaired = repair_tail(&mut log.view);
+        let last_written = meta.updated_at.clone();
         let mut writer =
             SessionWriter::resumed(dir, meta, kind, file, log.conv_count, log.usage, lock);
         writer.append_messages(&log.view[log.view.len() - repaired..])?;
         let session = Session {
             meta: writer.meta().clone(),
+            last_written,
             messages: log.view,
             usage: log.usage,
             repaired,
@@ -354,6 +356,7 @@ impl SessionStore {
         let meta = read_meta(&dir, id)?;
         let log = load_log(&dir, kind)?;
         Ok(Session {
+            last_written: meta.updated_at.clone(),
             meta,
             messages: log.view,
             usage: log.usage,

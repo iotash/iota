@@ -669,3 +669,55 @@ async fn the_resume_notices_are_recorded_and_the_model_reads_them() {
         .collect();
     assert_eq!(tail, ["hello", moved, away], "{sent:?}");
 }
+
+/// §3.4 with §3.6.1: a compaction before a send refreshes the memory copy, and THAT send carries the refreshed
+/// block — the overlay is read after the pre-send check — so the system segment changes once, with the
+/// compaction, not again on the send after it. The bot's own write of an earlier turn reaches the copy there.
+#[tokio::test]
+async fn the_send_after_a_pre_send_compaction_carries_the_refreshed_memory() {
+    let f = Fixture::new(vec![
+        input("zero"),
+        Reply::Queued(Vec::new()), // the round boundary after the remember call: nothing typed
+        input("one"),              // over the threshold: the loop queues the notice
+        input("typed ahead"),      // compacts before it is sent, without a flush
+        Reply::Enqueued,           // the notice: dropped
+        input("after"),
+        Reply::Interrupted,
+    ]);
+    let p = FakeProvider::new()
+        .with_model("gpt-test")
+        .reporting_usage()
+        .with_tools()
+        .answering(|_, messages| {
+            let last = messages.last().expect("a message");
+            if last.content.starts_with(SUMMARY_MARK) {
+                return Round::reply("SUMMARY").usage(usage(900));
+            }
+            if last.role() == Role::Tool {
+                return Round::text("Saved.").usage(usage(1_000));
+            }
+            match last.content.as_str() {
+                "zero" => remember_tabs(),
+                "one" => Round::text("re one").usage(usage(100_000)),
+                other => Round::text(&format!("re {other}")).usage(usage(1_000)),
+            }
+        });
+    let log = p.log();
+    f.run(p, "## User\n- [user] old line (2026-09-01)\n").await;
+
+    let prompts = log.prompts();
+    // zero ×2 rounds, one, the summary, typed ahead, after.
+    assert_eq!(prompts.len(), 6, "{prompts:?}");
+    assert!(prompts[3].starts_with(SUMMARY_MARK), "{prompts:?}");
+    assert_eq!(prompts[4], "typed ahead");
+    let (one, typed, after) = (system_of(&log, 2), system_of(&log, 4), system_of(&log, 5));
+    assert!(
+        !one.contains("prefers tabs"),
+        "the bot's own write waits for a refresh: {one}"
+    );
+    assert!(
+        typed.contains("prefers tabs"),
+        "the compaction's refresh reaches the send it ran before: {typed}"
+    );
+    assert_eq!(after, typed, "and nothing changes on the send after it");
+}
