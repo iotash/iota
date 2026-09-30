@@ -11,6 +11,7 @@
 /iota
 .iota.*
 .env
+/iota.pen
 
 # Project-brain tooling (not part of the public tree)
 .claude/
