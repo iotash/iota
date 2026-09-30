@@ -5,14 +5,14 @@ use std::path::Path;
 
 use iota::app::HostDirs;
 use iota::provider::ProviderKind;
-use iota::provider::model::Message;
+use iota::provider::model::{Message, ToolCall};
 use iota::session::{
-    NewSession, PROJECTS_DIR_NAME, SESSION_ID_ALPHABET, SESSION_ID_LENGTH, SessionError,
-    SessionInfo, SessionStore, resolve_in,
+    INTERRUPTED_RESULT, LOCK_FILE, NewSession, PROJECTS_DIR_NAME, SESSION_ID_ALPHABET,
+    SESSION_ID_LENGTH, SessionError, SessionInfo, SessionStore, resolve_in,
 };
 use pretty_assertions::assert_eq;
 
-use crate::common::{bucket_dir, temp_store, write_bundle};
+use crate::common::{bucket_dir, log_lines, temp_store, write_bundle};
 
 const KIND: ProviderKind = ProviderKind::OpenAi;
 
@@ -389,4 +389,166 @@ fn unreadable_meta_is_cannot_read_and_unlisted() {
     );
     assert!(matches!(err, SessionError::CannotRead { .. }));
     assert!(store.list(None).unwrap().is_empty());
+}
+
+// ---------------------------------------------------------------- the bundle lock (bot-mode.md §2.3)
+
+/// The text of a refusal naming this process as the holder.
+fn locked_text(id: &str) -> String {
+    format!(
+        "session {id} is open in another iota process (pid {})",
+        std::process::id()
+    )
+}
+
+/// A bundle with one exchange in it, its writer already dropped.
+fn saved_session(store: &SessionStore) -> String {
+    let mut w = store.create(NewSession::new(KIND, "m1")).unwrap();
+    w.append_messages(&[Message::user("q"), Message::assistant("a")])
+        .unwrap();
+    w.id().to_owned()
+}
+
+/// Two stores over the same root stand in for two iota processes: while one holds the bundle, the
+/// other's resume is refused with `Locked` (naming the holder's pid); once the holder drops, the
+/// bundle can be resumed again.
+#[test]
+fn resume_is_refused_while_another_store_holds_the_bundle() {
+    let (home, store) = temp_store();
+    let other = SessionStore::new(store.root());
+    let id = saved_session(&store);
+
+    let (held, _) = store.resume(&id, KIND).unwrap();
+    let err = other.resume(&id, KIND).expect_err("second writer refused");
+    assert!(
+        matches!(&err, SessionError::Locked { pid: Some(p), .. } if *p == std::process::id()),
+        "{err:?}"
+    );
+    assert_eq!(err.to_string(), locked_text(&id));
+    // Refused BEFORE anything was touched: the log is exactly what it was.
+    assert_eq!(log_lines(&store.dir(&id).unwrap()).len(), 2);
+
+    drop(held);
+    let (again, session) = other.resume(&id, KIND).expect("re-entry after drop");
+    assert_eq!(session.messages.len(), 2);
+    drop(again);
+    drop(home);
+}
+
+/// A fresh session takes the lock when its bundle is materialised (`ensure_created`), not before: a
+/// pending writer holds nothing, a materialised one refuses a resume from elsewhere.
+#[test]
+fn a_new_bundle_is_locked_from_its_first_append() {
+    let (_home, store) = temp_store();
+    let mut w = store.create(NewSession::new(KIND, "m1")).unwrap();
+    assert!(
+        !w.dir().join(LOCK_FILE).exists(),
+        "a pending writer takes no lock"
+    );
+    w.append_messages(&[Message::user("q")]).unwrap();
+    assert!(w.dir().join(LOCK_FILE).exists());
+    let id = w.id().to_owned();
+    let other = SessionStore::new(store.root());
+    let err = other.resume(&id, KIND).expect_err("refused");
+    assert_eq!(err.to_string(), locked_text(&id));
+    drop(w);
+    assert!(other.resume(&id, KIND).is_ok());
+}
+
+/// `delete` refuses a bundle that is held open, and removes it once the holder is gone.
+#[test]
+fn delete_is_refused_while_the_bundle_is_held() {
+    let (_home, store) = temp_store();
+    let id = saved_session(&store);
+    let dir = store.dir(&id).unwrap();
+    let (held, _) = store.resume(&id, KIND).unwrap();
+    let other = SessionStore::new(store.root());
+    let err = other.delete(&id).expect_err("refused");
+    assert!(matches!(err, SessionError::Locked { .. }), "{err:?}");
+    assert!(dir.exists());
+    drop(held);
+    other.delete(&id).unwrap();
+    assert!(!dir.exists());
+}
+
+// ---------------------------------------------------------------- repairing the tail (bot-mode.md §2.7)
+
+fn call(id: &str) -> ToolCall {
+    ToolCall {
+        id: id.to_owned(),
+        name: "shell".to_owned(),
+        ..ToolCall::default()
+    }
+}
+
+/// A batch cut off after the assistant's tool calls (one answered, one not) comes back with the
+/// missing result synthesised as an interrupted error, appended to the log so a second resume finds
+/// nothing left to repair.
+#[test]
+fn resume_answers_the_tool_calls_the_log_left_open() {
+    let (_home, store) = temp_store();
+    let mut w = store.create(NewSession::new(KIND, "m1")).unwrap();
+    let id = w.id().to_owned();
+    let calls = vec![call("c1"), call("c2")];
+    w.append_messages(&[
+        Message::user("run both"),
+        Message::assistant("").with_tool_calls(calls.clone()),
+        Message::tool_result(&calls[0], "ok", false),
+    ])
+    .unwrap();
+    drop(w);
+
+    let (writer, session) = store.resume(&id, KIND).unwrap();
+    assert_eq!(session.repaired, 1);
+    assert_eq!(
+        session.repair_notice().as_deref(),
+        Some("Recovered 1 tool call(s) with no recorded result; they are marked as interrupted.")
+    );
+    let last = session.messages.last().unwrap();
+    assert_eq!(last.tool_call_id(), "c2");
+    assert_eq!(last.tool_call_name(), "shell");
+    assert_eq!(last.content, INTERRUPTED_RESULT);
+    assert!(last.is_error());
+    assert_eq!(
+        session.meta.message_count, 4,
+        "the synthesised result is counted"
+    );
+    drop(writer);
+
+    let (_w, again) = store.resume(&id, KIND).unwrap();
+    assert_eq!(again.repaired, 0);
+    assert_eq!(again.repair_notice(), None);
+    assert_eq!(again.messages, session.messages, "the repair was persisted");
+}
+
+/// A torn final line (a crash mid-write, no newline) must not swallow what the next append writes:
+/// resume terminates it first, so the repair lands as a record of its own.
+#[test]
+fn resume_terminates_a_torn_last_line_before_appending() {
+    let (_home, store) = temp_store();
+    let mut w = store.create(NewSession::new(KIND, "m1")).unwrap();
+    let id = w.id().to_owned();
+    let dir = w.dir().to_path_buf();
+    w.append_messages(&[
+        Message::user("go"),
+        Message::assistant("").with_tool_calls(vec![call("c1")]),
+    ])
+    .unwrap();
+    drop(w);
+    let mut log = std::fs::OpenOptions::new()
+        .append(true)
+        .open(dir.join("messages.jsonl"))
+        .unwrap();
+    std::io::Write::write_all(&mut log, br#"{"role":"tool","content":"half"#).unwrap();
+    drop(log);
+
+    let (w, session) = store.resume(&id, KIND).unwrap();
+    assert_eq!(session.repaired, 1);
+    drop(w);
+    let (_w, again) = store.resume(&id, KIND).unwrap();
+    assert_eq!(
+        again.repaired, 0,
+        "the synthesised record survived the reload"
+    );
+    assert_eq!(again.messages.last().unwrap().content, INTERRUPTED_RESULT);
 }

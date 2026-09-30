@@ -141,6 +141,10 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
             let Some(s) = deletable.get(i) else { continue };
             match repl.session.store.delete(&s.id) {
                 Ok(()) => deleted += 1,
+                // Open in another iota process: skipped, not failed — it can be deleted once that exits.
+                Err(e @ crate::session::SessionError::Locked { .. }) => {
+                    repl.handles.tr.notice(&format!("Skipped: {e}"));
+                }
                 Err(e) => repl
                     .handles
                     .tr
@@ -184,6 +188,7 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
     repl.handles
         .ui
         .set_title(&window_title(&repl.session.session_title()));
+    let repair_notice = resumed.repair_notice();
     repl.conv.history = resumed.messages;
     repl.session.persisted = repl.conv.history.len();
     repl.conv.budget.reseed(&repl.conv.history);
@@ -206,6 +211,9 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
         "Resumed session {id} ({} messages)",
         repl.conv.history.len()
     ));
+    if let Some(notice) = repair_notice {
+        repl.handles.tr.notice(&notice);
+    }
     let msgs = last_rounds(&repl.conv.history, RESUME_ECHO_ROUNDS);
     if !msgs.is_empty() {
         let dispatch = Arc::clone(&repl.conv.dispatch);

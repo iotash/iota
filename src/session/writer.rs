@@ -14,6 +14,8 @@ use crate::provider::usage::Usage;
 use sha2::{Digest, Sha256};
 
 use crate::session::error::SessionError;
+use crate::session::loader::MAX_LOG_LINE;
+use crate::session::lock::{BundleLock, lock_bundle};
 use crate::session::meta::{SessionMeta, write_0644};
 use crate::session::rawcodec::raw_to_blob;
 use crate::session::record::{
@@ -36,6 +38,9 @@ pub struct SessionWriter {
     created: bool,
     /// What the log sums to: a resumed session's cumulative figures pick up from here, not from zero.
     usage: Usage,
+    /// The bundle's single-writer lock (`<dir>/.lock`), taken when the writer first holds the files and
+    /// released when it drops — `None` while the bundle is still pending.
+    lock: Option<BundleLock>,
 }
 
 impl SessionWriter {
@@ -50,18 +55,21 @@ impl SessionWriter {
             conv_count: 0,
             created: false,
             usage: Usage::default(),
+            lock: None,
         }
     }
 
     /// A writer over an EXISTING bundle, positioned to append (`ResumeSession`, chat/session.go:396-400):
-    /// `conv_count` and `usage` are seeded from the log that was just loaded.
-    pub fn resumed(
+    /// `conv_count` and `usage` are seeded from the log that was just loaded; `lock` is the bundle lock the
+    /// caller already holds.
+    pub(crate) fn resumed(
         dir: PathBuf,
         meta: SessionMeta,
         kind: ProviderKind,
         file: std::fs::File,
         conv_count: usize,
         usage: Usage,
+        lock: BundleLock,
     ) -> Self {
         Self {
             dir,
@@ -71,6 +79,7 @@ impl SessionWriter {
             conv_count,
             created: true,
             usage,
+            lock: Some(lock),
         }
     }
 
@@ -119,8 +128,14 @@ impl SessionWriter {
     /// [`raw_to_blob`], and the compact line plus `'\n'` to the log; `message_count`
     /// grows ALWAYS, `conv_count` only for a non-system role, and `usage` accumulates the message's own.
     /// After the WHOLE batch: ONE `sync_all()`, then ONE meta rewrite.
+    ///
+    /// A frozen-mode defer mount (`Message::system_tools`) is SKIPPED: it is runtime state, not persisted
+    /// (tool-defer.md), and the record shape has no place for its tools — it would land as an empty system
+    /// record. It counts toward nothing. Callers keep their watermark on the slice they HANDED in, so the
+    /// skipped mount is still behind it and never retried; a batch of nothing but mounts touches no disk.
     pub fn append_messages(&mut self, msgs: &[Message]) -> Result<(), SessionError> {
-        if msgs.is_empty() {
+        let mut msgs = msgs.iter().filter(|m| m.tools().is_empty()).peekable();
+        if msgs.peek().is_none() {
             return Ok(());
         }
         self.ensure_created()?;
@@ -180,21 +195,24 @@ impl SessionWriter {
     }
 
     /// Materialises the bundle on first use (`ensureCreated`, chat/session.go:363-378): `attachments/`
-    /// UNCONDITIONALLY, the append handle, then the first meta write (which flushes pending setters).
+    /// UNCONDITIONALLY, the bundle lock, the append handle, then the first meta write (which flushes
+    /// pending setters).
     fn ensure_created(&mut self) -> Result<(), SessionError> {
         if self.created {
             return Ok(());
         }
         std::fs::create_dir_all(self.dir.join(ATTACHMENTS_DIR))?;
+        self.lock = Some(lock_bundle(&self.dir, &self.meta.id)?);
         self.file = Some(open_append_0644(&self.dir.join(LOG_FILE))?);
         self.created = true;
         self.meta.write(&self.dir)
     }
 
-    /// Serialises one record compactly and appends it plus `'\n'`.
+    /// Serialises one record compactly — cut down by [`fit_line`] when it would reach the reader's line
+    /// cap — and appends it plus `'\n'`.
     fn write_line(&mut self, rec: &SessionRecord) -> Result<(), SessionError> {
         use std::io::Write;
-        let mut line = serde_json::to_vec(rec)?;
+        let mut line = fit_line(rec, MAX_LOG_LINE)?;
         line.push(b'\n');
         self.log()?.write_all(&line)?;
         Ok(())
@@ -210,6 +228,53 @@ impl SessionWriter {
     fn log(&mut self) -> Result<&mut std::fs::File, SessionError> {
         self.file.as_mut().ok_or(SessionError::LogNotOpen)
     }
+}
+
+/// The compact serialisation of `rec`, guaranteed SHORTER than `cap` bytes (docs/design/bot-mode.md §2.7):
+/// the reader aborts on a line that reaches [`MAX_LOG_LINE`], so one oversized record written here would
+/// make the bundle unloadable for good.
+///
+/// An over-long record keeps its shape — no new key, no format change. Its `raw` payload goes first (a
+/// dialect replaying it would resend the untruncated text), then `content` and, failing that, `reasoning`
+/// are cut on a char boundary and end in `[record truncated: N bytes over the log line cap]`, `N` being
+/// how far the original line was over. A record that still does not fit (its tool-call arguments alone
+/// exceed the cap) is refused with `InvalidData`.
+fn fit_line(rec: &SessionRecord, cap: usize) -> Result<Vec<u8>, SessionError> {
+    let line = serde_json::to_vec(rec)?;
+    if line.len() < cap {
+        return Ok(line);
+    }
+    let over = line.len() + 1 - cap;
+    let marker = format!("\n[record truncated: {over} bytes over the log line cap]");
+    let mut rec = rec.clone();
+    rec.raw = None;
+    let mut line = serde_json::to_vec(&rec)?;
+    if line.len() >= cap {
+        shrink(&mut rec.content, line.len() + 1 - cap, &marker);
+        line = serde_json::to_vec(&rec)?;
+    }
+    if line.len() >= cap {
+        shrink(&mut rec.reasoning, line.len() + 1 - cap, &marker);
+        line = serde_json::to_vec(&rec)?;
+    }
+    if line.len() < cap {
+        Ok(line)
+    } else {
+        Err(SessionError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("a session record exceeds the {cap}-byte log line limit"),
+        )))
+    }
+}
+
+/// Cuts `text` so its serialisation loses at least `excess` bytes, then ends it with `marker`. Every source
+/// byte serialises to at least one byte, so cutting the excess plus the marker's own escaped length (`\n`
+/// → two bytes) is always enough — when the text is long enough to give it.
+fn shrink(text: &mut String, excess: usize, marker: &str) {
+    let cut = excess + marker.len() + 1;
+    let keep = text.floor_char_boundary(text.len().saturating_sub(cut));
+    text.truncate(keep);
+    text.push_str(marker);
 }
 
 /// `os.OpenFile(path, O_CREATE|O_WRONLY|O_APPEND, 0o644)` (chat/session.go:371).
@@ -294,4 +359,75 @@ fn hex_lower(bytes: &[u8]) -> String {
         out.push(char::from(HEX[usize::from(b & 0x0f)]));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fit_line;
+    use crate::session::record::{SessionRaw, SessionRecord};
+
+    fn tool(content: &str) -> SessionRecord {
+        SessionRecord {
+            role: "tool".to_owned(),
+            content: content.to_owned(),
+            tool_call_id: "c1".to_owned(),
+            ..SessionRecord::default()
+        }
+    }
+
+    /// A record under the cap is serialised untouched.
+    #[test]
+    fn a_short_record_is_untouched() {
+        let rec = tool("hello");
+        assert_eq!(
+            fit_line(&rec, 1024).expect("fits"),
+            serde_json::to_vec(&rec).expect("json")
+        );
+    }
+
+    /// An over-long record keeps its keys, ends its content in the marker, and comes out strictly
+    /// shorter than the cap — even when the content is all multi-byte characters and escapes.
+    #[test]
+    fn an_over_long_record_is_cut_to_fit_with_the_marker() {
+        let cap = 400;
+        for body in ["x".repeat(1000), "é\"\n".repeat(300)] {
+            let rec = tool(&body);
+            let over = serde_json::to_vec(&rec).expect("json").len() + 1 - cap;
+            let line = fit_line(&rec, cap).expect("fits after cutting");
+            assert!(line.len() < cap, "{} >= {cap}", line.len());
+            let back: SessionRecord = serde_json::from_slice(&line).expect("still one record");
+            assert_eq!(back.tool_call_id, "c1");
+            assert!(body.starts_with(back.content.split('\n').next().unwrap_or_default()));
+            assert!(
+                back.content.ends_with(&format!(
+                    "[record truncated: {over} bytes over the log line cap]"
+                )),
+                "{}",
+                back.content
+            );
+        }
+    }
+
+    /// The raw replay payload is dropped first: it would carry the untruncated text back to the API.
+    #[test]
+    fn the_raw_payload_goes_before_the_content() {
+        let mut rec = tool("short");
+        rec.role = "assistant".to_owned();
+        rec.raw = Some(SessionRaw {
+            provider: "openai".to_owned(),
+            blob: serde_json::from_str(&format!("{:?}", "y".repeat(1000))).expect("blob"),
+        });
+        let line = fit_line(&rec, 400).expect("fits");
+        let back: SessionRecord = serde_json::from_slice(&line).expect("record");
+        assert_eq!(back.raw, None);
+        assert_eq!(back.content, "short", "dropping raw was enough");
+    }
+
+    /// When no text field can absorb the excess the record is refused rather than written.
+    #[test]
+    fn a_record_that_cannot_fit_is_refused() {
+        let mut rec = tool("");
+        rec.tool_call_id = "z".repeat(1000);
+        assert!(fit_line(&rec, 400).is_err());
+    }
 }

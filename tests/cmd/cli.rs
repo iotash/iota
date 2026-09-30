@@ -885,6 +885,20 @@ async fn cli_400_prints_error_and_exits_1() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cli_sigint_exits_130_with_interrupted_json() {
+    signal_interrupts_the_run("INT").await;
+}
+
+/// bot-mode.md §2.7: SIGHUP (the pane or terminal closing) takes SIGTERM's path — the root token is cancelled
+/// and the run winds down through the interrupt table instead of dying on the default action.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cli_sighup_exits_130_with_interrupted_json() {
+    signal_interrupts_the_run("HUP").await;
+}
+
+/// Raises `SIG<sig>` at a `-m` run whose request is in flight and asserts it was cancelled, not killed.
+#[cfg(unix)]
+async fn signal_interrupts_the_run(sig: &str) {
     use std::time::Duration;
 
     let server = MockServer::start().await;
@@ -917,10 +931,10 @@ async fn cli_sigint_exits_130_with_interrupted_json() {
     // `kill` is a POSIX shell builtin, so no extra dependency is needed to raise the signal.
     let signalled = Command::new("/bin/sh")
         .arg("-c")
-        .arg(format!("kill -INT {pid}"))
+        .arg(format!("kill -{sig} {pid}"))
         .status()
-        .expect("send SIGINT");
-    assert!(signalled.success(), "kill -INT failed");
+        .expect("send the signal");
+    assert!(signalled.success(), "kill -{sig} failed");
 
     let o = tokio::task::spawn_blocking(move || child.wait_with_output().expect("wait"))
         .await

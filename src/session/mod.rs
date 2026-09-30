@@ -20,6 +20,7 @@
 pub(crate) mod error;
 pub(crate) mod id;
 pub(crate) mod loader;
+pub(crate) mod lock;
 pub(crate) mod meta;
 pub(crate) mod params;
 pub(crate) mod rawcodec;
@@ -31,9 +32,10 @@ pub(crate) mod writer;
 pub use error::SessionError;
 pub use id::{SESSION_ID_ALPHABET, SESSION_ID_LENGTH, resolve_in};
 pub use loader::{
-    LoadedLog, MAX_LOG_LINE, Session, load_full_history, load_log, record_to_message, scan_records,
-    summary_preamble,
+    INTERRUPTED_RESULT, LoadedLog, MAX_LOG_LINE, Session, load_full_history, load_log,
+    record_to_message, repair_tail, scan_records, summary_preamble,
 };
+pub use lock::LOCK_FILE;
 pub use meta::{META_FILE, META_TMP_FILE, SESSION_SCHEMA_VERSION, SessionMeta, now_rfc3339};
 pub use params::{LayeredParams, Param, ParamSource, ParamSources};
 pub use rawcodec::{blob_to_raw, raw_to_blob};

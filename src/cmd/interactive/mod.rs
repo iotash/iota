@@ -462,6 +462,7 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
             },
             &mut |w| io.warning(&w),
         );
+        let repair_notice = resumed.repair_notice();
         resumed_meta = Some(resumed.meta);
         history = resumed.messages;
         // root.go:333, on plain stdout with the trailing blank Go prints — the last thing written before the
@@ -471,6 +472,9 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
             "Resumed session {id} ({} messages)\n",
             history.len()
         );
+        if let Some(notice) = repair_notice {
+            io.warning(&notice);
+        }
         // The facade takes stdout a few steps from here; nothing may still be sitting in a buffer then.
         let _ = io.stdout.flush();
         writer = Some(w);

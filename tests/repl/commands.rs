@@ -722,6 +722,158 @@ async fn session_delete_tab_removes_the_checked_bundles() {
     assert!(!doomed_dir.exists(), "the bundle is gone from disk");
 }
 
+/// A checked bundle another iota process holds open (its writer is alive) is skipped with a
+/// notice, not removed and not counted (docs/design/bot-mode.md §2.3).
+#[tokio::test]
+async fn session_delete_tab_skips_a_bundle_open_elsewhere() {
+    let f = Fixture::new(vec![
+        input("/session"),
+        Reply::Tabbed(TabbedResult {
+            cancelled: false,
+            focused: 1,
+            panels: vec![
+                PanelResult::default(),
+                PanelResult {
+                    checked: vec![0],
+                    ..PanelResult::default()
+                },
+            ],
+        }),
+        Reply::Interrupted,
+    ]);
+    // Standing in for the other process: a live writer holds the bundle lock throughout the run.
+    let mut busy = f.writer();
+    busy.append_messages(&[Message::user("still running")])
+        .expect("materialise");
+    let busy_id = busy.id().to_owned();
+    let busy_dir = busy.dir().to_path_buf();
+    let mut current = f.writer();
+    current
+        .append_messages(&[Message::user("hi")])
+        .expect("materialise");
+    let session = f.session(Some(current));
+    iota::repl::run(f.params(provider("gpt-4o", Ok(vec![])), session))
+        .await
+        .expect("exit");
+
+    let lines = printed(&f.ui);
+    let skipped = format!(
+        "Skipped: session {busy_id} is open in another iota process (pid {})",
+        std::process::id()
+    );
+    assert!(lines.contains(&skipped), "{lines:?}");
+    assert!(
+        !lines.iter().any(|l| l.starts_with("Deleted ")),
+        "{lines:?}"
+    );
+    assert!(busy_dir.exists(), "a held bundle survives");
+    drop(busy);
+}
+
+/// A frozen-mode defer dispatcher: one `loader` tool whose first call leaves a deferred definition pending,
+/// handed out ONCE at the next round boundary — the shape that pushes `Message::system_tools` into history.
+#[derive(Default)]
+struct MountingDispatch {
+    called: std::sync::Mutex<bool>,
+    handed: std::sync::Mutex<bool>,
+}
+
+impl Dispatcher for MountingDispatch {
+    fn tools(&self) -> Vec<iota::provider::model::ToolDef> {
+        vec![iota::testing::tool_def("loader")]
+    }
+
+    fn call_tool<'a>(
+        &'a self,
+        _cx: &'a iota::tool::context::RunCtx,
+        _name: &'a str,
+        _args: iota::provider::model::JsonObject,
+    ) -> iota::BoxFuture<'a, iota::tool::ToolResult> {
+        Box::pin(async move {
+            *self.called.lock().unwrap() = true;
+            Ok(iota::tool::ToolOutput::ok("loaded"))
+        })
+    }
+
+    fn take_pending_loads(&self) -> Vec<iota::provider::model::ToolDef> {
+        let mut handed = self.handed.lock().unwrap();
+        if *handed || !*self.called.lock().unwrap() {
+            return Vec::new();
+        }
+        *handed = true;
+        vec![iota::testing::tool_def("late_tool")]
+    }
+}
+
+/// tool-defer.md: a frozen-mode mount is runtime state. The first turn mounts one mid-turn (the model's
+/// next round SEES it), `persist_turn` hands it to the writer, and the writer skips it: the log carries no
+/// system record at all (this chat has no system prompt). The watermark still moves past the mount — the
+/// second turn appends only its own two messages, nothing is written twice — and a resume replays the six
+/// conversation messages.
+#[tokio::test]
+async fn a_frozen_tools_mount_is_skipped_on_write_and_the_watermark_passes_it() {
+    let f = Fixture::new(vec![
+        input("load it"),
+        Reply::Queued(Vec::new()), // the round boundary's steer drain: nothing typed meanwhile
+        input("again"),
+        Reply::Interrupted,
+    ]);
+    let saw_mount = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = Arc::clone(&saw_mount);
+    let p = FakeProvider::new()
+        .with_tools()
+        .on_call(move |_, history| {
+            if history.iter().any(|m| !m.tools().is_empty()) {
+                seen.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        })
+        .rounds([
+            iota::testing::Round::calls(vec![iota::testing::tool_call("c1", "loader")]),
+            iota::testing::Round::text("first"),
+            iota::testing::Round::text("second"),
+        ]);
+    let writer = f.writer();
+    let id = writer.id().to_owned();
+    let dir = writer.dir().to_path_buf();
+    let mut params = f.params(p, f.session(Some(writer)));
+    params.dispatch = Arc::new(MountingDispatch::default());
+    iota::repl::run(params).await.expect("exit");
+    assert!(
+        saw_mount.load(std::sync::atomic::Ordering::Relaxed),
+        "the mount never reached the history — the test would prove nothing"
+    );
+
+    let recs: Vec<serde_json::Value> = std::fs::read_to_string(dir.join("messages.jsonl"))
+        .expect("log")
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("record"))
+        .collect();
+    let shape: Vec<(String, String)> = recs
+        .iter()
+        .map(|r| {
+            (
+                r["role"].as_str().unwrap_or_default().to_owned(),
+                r["content"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    let row = |role: &str, content: &str| (role.to_owned(), content.to_owned());
+    assert_eq!(
+        shape,
+        vec![
+            row("user", "load it"),
+            row("assistant", ""),
+            row("tool", "loaded"),
+            row("assistant", "first"),
+            row("user", "again"),
+            row("assistant", "second"),
+        ]
+    );
+    let (_w, resumed) = f.store.resume(&id, ProviderKind::OpenAi).expect("resume");
+    assert_eq!(resumed.messages.len(), 6);
+    assert_eq!(resumed.meta.message_count, 6);
+}
+
 // ---------------------------------------------------------------------------
 // /save
 // ---------------------------------------------------------------------------

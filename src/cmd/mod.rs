@@ -468,6 +468,9 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
                 "Resumed session {id} ({} messages)",
                 resumed.messages.len()
             ));
+            if let Some(notice) = resumed.repair_notice() {
+                io.warning(&notice);
+            }
             Some((writer, resumed))
         }
     };

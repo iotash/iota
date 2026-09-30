@@ -28,6 +28,16 @@ pub enum SessionError {
     /// `DeleteSession`); it can never address anything outside the sessions root.
     #[error("invalid session id {0:?}")]
     InvalidId(String),
+    /// Another process holds the bundle's single-writer lock (docs/design/bot-mode.md §2.3). `what` names
+    /// the bundle (`session <id>`); `pid` is what the holder wrote into the lock file, `None` when it has
+    /// not written it yet.
+    #[error("{what} is open in another iota process{}", pid_suffix(*.pid))]
+    Locked {
+        /// What is locked, as the text names it.
+        what: String,
+        /// The holder's pid, when known.
+        pid: Option<u32>,
+    },
     /// A write reached the log before `ensure_created` opened it — a bug, not a state.
     #[error("session log is not open")]
     LogNotOpen,
@@ -41,6 +51,11 @@ pub enum SessionError {
     /// Any other filesystem failure.
     #[error("{0}")]
     Io(#[from] std::io::Error),
+}
+
+/// ` (pid N)` when the holder is known, nothing otherwise.
+fn pid_suffix(pid: Option<u32>) -> String {
+    pid.map_or_else(String::new, |p| format!(" (pid {p})"))
 }
 
 impl From<serde_json::Error> for SessionError {

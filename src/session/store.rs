@@ -13,7 +13,8 @@ use crate::provider::model::Message;
 
 use crate::session::error::SessionError;
 use crate::session::id::{generate_id, resolve_in};
-use crate::session::loader::{Session, load_full_history, load_log};
+use crate::session::loader::{Session, load_full_history, load_log, repair_tail};
+use crate::session::lock::lock_bundle;
 use crate::session::meta::{
     META_FILE, SESSION_SCHEMA_VERSION, SessionMeta, now_rfc3339, parse_rfc3339,
 };
@@ -242,21 +243,32 @@ impl SessionStore {
     /// `ResumeSession` (chat/session.go:383-402): locate the bundle, read its meta (failures become
     /// [`SessionError::CannotRead`]), load the log, and open `messages.jsonl` for appending. The writer
     /// comes back seeded with the log's `conv_count` and usage; the [`Session`] carries the derived view.
+    ///
+    /// The bundle lock is taken FIRST — a bundle another process holds is refused with
+    /// [`SessionError::Locked`] before anything is read — and the returned writer keeps it. The view's
+    /// unanswered tail is then repaired ([`repair_tail`]) and the synthesised results appended, so the
+    /// session never comes back in a shape every provider rejects.
     pub fn resume(
         &self,
         id: &str,
         kind: ProviderKind,
     ) -> Result<(SessionWriter, Session), SessionError> {
         let dir = self.dir(id)?;
+        let lock = lock_bundle(&dir, id)?;
         let meta = read_meta(&dir, id)?;
-        let log = load_log(&dir, kind)?;
-        let file = open_append_0644(&dir.join(LOG_FILE))?;
-        let writer =
-            SessionWriter::resumed(dir, meta.clone(), kind, file, log.conv_count, log.usage);
+        let mut log = load_log(&dir, kind)?;
+        let path = dir.join(LOG_FILE);
+        let mut file = open_append_0644(&path)?;
+        terminate_last_line(&path, &mut file)?;
+        let repaired = repair_tail(&mut log.view);
+        let mut writer =
+            SessionWriter::resumed(dir, meta, kind, file, log.conv_count, log.usage, lock);
+        writer.append_messages(&log.view[log.view.len() - repaired..])?;
         let session = Session {
-            meta,
+            meta: writer.meta().clone(),
             messages: log.view,
             usage: log.usage,
+            repaired,
         };
         Ok((writer, session))
     }
@@ -271,6 +283,7 @@ impl SessionStore {
             meta,
             messages: log.view,
             usage: log.usage,
+            repaired: 0,
         })
     }
 
@@ -291,11 +304,15 @@ impl SessionStore {
     /// escape the sessions root; and because the locator only matches REAL bundles (a
     /// directory holding `meta.json`), the `projects/` container itself can never be
     /// removed by id.
+    ///
+    /// A bundle another process holds open is refused with [`SessionError::Locked`]; the lock is kept
+    /// until the bundle is gone, so nobody can open it halfway through the removal.
     pub fn delete(&self, id: &str) -> Result<(), SessionError> {
         if id.is_empty() || id.contains(['/', '\\']) || id.contains("..") {
             return Err(SessionError::InvalidId(id.to_owned()));
         }
         let dir = self.dir(id)?;
+        let _lock = lock_bundle(&dir, id)?;
         std::fs::remove_dir_all(dir).map_err(SessionError::Io)
     }
 
@@ -314,6 +331,23 @@ impl SessionStore {
             .map(|e| e.path())
             .collect()
     }
+}
+
+/// Ends the log with `'\n'` when a torn write left its last line unterminated, so the next append starts
+/// a record of its own instead of gluing onto the fragment (and being skipped with it on the next load).
+fn terminate_last_line(path: &Path, append: &mut std::fs::File) -> Result<(), SessionError> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let mut f = std::fs::File::open(path)?;
+    if f.metadata()?.len() == 0 {
+        return Ok(());
+    }
+    let mut last = [0u8; 1];
+    f.seek(SeekFrom::End(-1))?;
+    f.read_exact(&mut last)?;
+    if last[0] != b'\n' {
+        append.write_all(b"\n")?;
+    }
+    Ok(())
 }
 
 /// `loadMeta` wrapped in Go's `cannot read session %s: %w` (chat/session.go:388-391, :909-912).
