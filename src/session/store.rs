@@ -145,11 +145,13 @@ impl SessionStore {
         let Some(bots) = self.bots.as_deref() else {
             return Ok(None);
         };
-        let pointers =
-            crate::session::bot::pointers(bots).map_err(|e| SessionError::BotOwnerUnknown {
+        let pointers = crate::session::bot::pointers(bots).map_err(|(path, e)| {
+            SessionError::BotOwnerUnknown {
                 id: id.to_owned(),
+                path,
                 source: Box::new(e),
-            })?;
+            }
+        })?;
         Ok(pointers
             .into_iter()
             .find(|(_, p)| p.session == id)

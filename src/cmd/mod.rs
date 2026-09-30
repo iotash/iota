@@ -439,6 +439,9 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
             // A bot's body opens only as that bot (bot-mode.md §2.2, §2.7).
             store.check_not_bot_owned(&id)?;
             let (writer, resumed) = store.resume(&id, kind)?;
+            for line in writer.lock_cautions() {
+                io.caution(&line);
+            }
             // The bundle records the agent it ran under; one that has since been deleted is announced, and
             // the run falls back to the provider and model the meta carries (Phase 1b step 9).
             crate::session::warn_if_session_agent_is_gone(

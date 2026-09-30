@@ -79,11 +79,15 @@ pub enum SessionError {
     #[error("{0}")]
     MetaNotSaved(#[source] Box<SessionError>),
     /// Whether a session is a bot's body cannot be told: a pointer under the bots root (or the root itself)
-    /// cannot be read (§2.7). Anything that would write or delete a bot's body is refused until it can.
-    #[error("cannot tell whether session {id} belongs to a bot: {source}")]
+    /// cannot be read (§2.7). Anything that would write or delete a bot's body is refused until it can —
+    /// fail-closed, so ONE broken pointer blocks every session's resume and delete; the text names the file
+    /// and the way out.
+    #[error("cannot tell whether session {id} belongs to a bot: {source}; {}", owner_unknown_fix(.path))]
     BotOwnerUnknown {
         /// The session id.
         id: String,
+        /// What could not be read: a `bot.json`, a bot directory, or the bots root.
+        path: std::path::PathBuf,
         /// Why the pointers could not be read.
         #[source]
         source: Box<SessionError>,
@@ -113,6 +117,20 @@ impl From<serde_json::Error> for SessionError {
     /// `InvalidData` so `cannot read session {id}: {e}` keeps serde's own text.
     fn from(e: serde_json::Error) -> Self {
         Self::Io(e.into())
+    }
+}
+
+/// The way out of [`SessionError::BotOwnerUnknown`] for `path`: a pointer is repaired or deleted (deleting it
+/// lets its bundle go back to being an ordinary session, and the bot starts a new one); anything else must be
+/// made readable again.
+fn owner_unknown_fix(path: &std::path::Path) -> String {
+    if path.file_name() == Some(std::ffi::OsStr::new(crate::session::bot::BOT_POINTER_FILE)) {
+        format!(
+            "repair or delete {} (without it the bot starts a new session; memory is kept)",
+            path.display()
+        )
+    } else {
+        format!("make {} readable", path.display())
     }
 }
 

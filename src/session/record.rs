@@ -56,6 +56,11 @@ pub struct SessionRecord {
     /// `false` — an old log still replays exactly as it did.
     #[serde(skip_serializing_if = "is_false")]
     pub notice: bool,
+    /// `role == "system"` only: an EMPTY system prompt that was meant — a bot's config lost its `system:`
+    /// (docs/design/bot-mode.md §2.2). Rust-only, like `middle_tokens`: an empty system record WITHOUT it
+    /// is a frozen-mode defer mount an older build persisted by mistake, and must not win on load.
+    #[serde(skip_serializing_if = "is_false")]
+    pub system_cleared: bool,
     /// The dialect's opaque replay payload, tagged with the provider type that produced it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw: Option<SessionRaw>,

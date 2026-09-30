@@ -184,26 +184,31 @@ pub(crate) fn open_bot_session(
 /// the format needs nothing new — and the view's head is replaced. `true` when anything changed. The same
 /// prompt changes nothing, so the prompt cache survives a restart.
 ///
-/// An EMPTY config prompt is left alone: the log cannot say "no system prompt" (an empty system record
-/// never wins), so a bot whose `system:` was removed keeps the last one it had.
+/// An EMPTY config prompt (its `system:` removed) clears the session's: an empty system record is appended
+/// — the writer flags it `system_cleared`, which is what lets it win over the one before it on the next load
+/// while an old log's content-less defer mount still does not — and the view's head is dropped.
 fn adopt_system(
     writer: &mut SessionWriter,
     history: &mut Vec<Message>,
     system: &str,
 ) -> Result<bool, SessionError> {
-    if system.is_empty() {
-        return Ok(false);
-    }
     let head_is_system = history.first().is_some_and(|m| m.role() == Role::System);
-    if head_is_system && history[0].content == system {
+    let current = if head_is_system {
+        history[0].content.as_str()
+    } else {
+        ""
+    };
+    if current == system {
         return Ok(false);
     }
     let msg = Message::system(system.to_owned());
     writer.append_messages(std::slice::from_ref(&msg))?;
-    if head_is_system {
-        history[0] = msg;
-    } else {
-        history.insert(0, msg);
+    match (head_is_system, system.is_empty()) {
+        (true, true) => {
+            history.remove(0);
+        }
+        (true, false) => history[0] = msg,
+        (false, _) => history.insert(0, msg),
     }
     Ok(true)
 }
@@ -690,5 +695,177 @@ mod tests {
         h.store
             .check_not_bot_owned("otherid00000")
             .expect("not a bot's");
+    }
+
+    /// Opens the bot with config prompt `system`, sends `hi` through the loop, and answers the notices the
+    /// open produced and what the model was actually sent.
+    async fn send_hi(h: &Home, system: &str) -> (Vec<String>, Vec<Message>) {
+        let hi = crate::testing::Reply::Input(crate::ui::facade::Input {
+            display: "hi".to_owned(),
+            text: "hi".to_owned(),
+            ..crate::ui::facade::Input::default()
+        });
+        let (notices, log) = run_bot(h, system, vec![hi, crate::testing::Reply::Interrupted]).await;
+        (notices, log.send(0))
+    }
+
+    /// Opens the bot with config prompt `system` and runs the loop over `script`: the open's notices and the
+    /// provider's log.
+    async fn run_bot(
+        h: &Home,
+        system: &str,
+        script: Vec<crate::testing::Reply>,
+    ) -> (Vec<String>, crate::testing::Log) {
+        use crate::testing::{ScriptedUi, StaticDispatcher};
+        use std::sync::Arc;
+        let mut p = provider("gpt-4o")
+            .reporting_usage()
+            .with_tools()
+            .replying("ok");
+        let log = p.log();
+        let opened = open(h, &mut p, system).expect("open");
+        let ui = ScriptedUi::new(script);
+        let notices = opened.notices.clone();
+        crate::repl::run(crate::repl::RunParams {
+            ui: ui as Arc<dyn crate::ui::facade::Ui>,
+            provider: Box::new(p),
+            title_provider: None,
+            system: system.to_owned(),
+            harness: crate::agents::harness::HarnessInputs::default(),
+            imported_history: opened.history,
+            dispatch: Arc::new(StaticDispatcher::new(&[])),
+            jobs: crate::shell::jobs::Jobs::new(std::path::Path::new("")),
+            mcp: crate::repl::McpHooks::default(),
+            session: crate::repl::SessionCtx {
+                writer: Some(opened.writer),
+                store: h.store.clone(),
+                new_session: None,
+                scope: None,
+                bot: true,
+                notices: opened.notices,
+                recorded_notices: Vec::new(),
+                memory: None,
+            },
+            params: crate::session::LayeredParams::default(),
+            layers: crate::cmd::ParamLayers::default(),
+            catalog: crate::repl::ModelCatalog::default(),
+            agent: crate::headless::AgentOptions::default(),
+            dark_background: true,
+            root_cancel: tokio_util::sync::CancellationToken::new(),
+            reqlog: Arc::new(crate::llm::reqlog::RequestLog::new()),
+            pres: Arc::new(crate::host::Presenter::with_hosts(Vec::new(), true)),
+        })
+        .await
+        .expect("exit");
+        (notices, log)
+    }
+
+    /// Codex R5: removing `system:` from the config clears the session's prompt — the next run is told so
+    /// and sends none of the old one, and the run after it (the empty record winning on load) neither says
+    /// anything nor brings it back.
+    #[tokio::test]
+    async fn a_removed_system_prompt_is_cleared_not_kept() {
+        let h = home();
+        let (notices, sent) = send_hi(&h, "old prompt").await;
+        assert!(notices.is_empty());
+        assert!(
+            sent.iter().any(|m| m.content.contains("old prompt")),
+            "{sent:?}"
+        );
+
+        let (notices, sent) = send_hi(&h, "").await;
+        assert_eq!(notices, [SYSTEM_UPDATED]);
+        assert!(
+            !sent.iter().any(|m| m.content.contains("old prompt")),
+            "{sent:?}"
+        );
+        assert_eq!(sent.last().map(|m| m.content.as_str()), Some("hi"));
+
+        let (notices, sent) = send_hi(&h, "").await;
+        assert!(notices.is_empty(), "already cleared: {notices:?}");
+        assert!(
+            !sent.iter().any(|m| m.content.contains("old prompt")),
+            "{sent:?}"
+        );
+    }
+
+    /// An older build persisted a frozen-mode defer mount as a content-less, unflagged system record: it
+    /// never wins on load, where a cleared prompt (flagged) does.
+    #[test]
+    fn a_legacy_empty_mount_does_not_clear_the_prompt() {
+        let h = home();
+        let mut p = provider("gpt-4o");
+        let mut s = open(&h, &mut p, "keep me").expect("fresh");
+        s.writer
+            .append_messages(&[Message::system("keep me".to_owned()), Message::user("hi")])
+            .expect("write");
+        let dir = s.writer.dir().to_path_buf();
+        drop(s);
+        let path = dir.join(crate::session::LOG_FILE);
+        let mut log = std::fs::read_to_string(&path).expect("log");
+        log.push_str("{\"role\":\"system\"}\n");
+        std::fs::write(&path, log).expect("legacy mount");
+
+        let view = load_log(&dir, ProviderKind::OpenAi).expect("load").view;
+        assert_eq!(view[0].content, "keep me", "{view:?}");
+        let s = open(&h, &mut p, "keep me").expect("resume");
+        assert!(s.notices.is_empty(), "nothing changed: {:?}", s.notices);
+        drop(s);
+
+        let s = open(&h, &mut p, "").expect("clear");
+        assert_eq!(s.notices, [SYSTEM_UPDATED]);
+        assert_eq!(s.history[0].content, "hi");
+        drop(s);
+        let last = std::fs::read_to_string(&path).expect("log");
+        assert_eq!(
+            last.lines().last(),
+            Some("{\"role\":\"system\",\"system_cleared\":true}")
+        );
+        let view = load_log(&dir, ProviderKind::OpenAi).expect("load").view;
+        assert_eq!(view.len(), 1, "no system message left: {view:?}");
+    }
+
+    /// Fable M4: a bot opened and closed again without a message leaves `updated_at` where the last real write
+    /// put it — the startup stamps restate what did not change — so the next resume still says how long ago
+    /// the session was written.
+    #[tokio::test]
+    async fn opening_and_closing_does_not_move_the_last_written_time() {
+        let h = home();
+        send_hi(&h, "be terse").await;
+        let dir = h.store.root().join(&pointer(&h).session);
+        backdate(&dir, "2026-09-27T18:02:41+00:00");
+
+        run_bot(&h, "be terse", vec![crate::testing::Reply::Interrupted]).await;
+        assert_eq!(
+            SessionMeta::read(&dir).expect("meta").updated_at,
+            "2026-09-27T18:02:41+00:00",
+            "a look-and-close wrote the meta"
+        );
+        let mut p = provider("gpt-4o");
+        let again = open(&h, &mut p, "be terse").expect("resume");
+        let last = again.previous.as_ref().expect("resumed");
+        assert_eq!(last.written, "2026-09-27T18:02:41+00:00");
+    }
+
+    /// Fable M5: a bot whose directories sit on a filesystem without locks still resumes, with one caution
+    /// per lock it could not take.
+    #[test]
+    fn a_bot_without_locks_still_resumes_with_a_caution() {
+        use crate::session::lock::tests::without_locks;
+        let h = home();
+        let mut p = provider("gpt-4o");
+        let mut s = open(&h, &mut p, "").expect("fresh");
+        s.writer
+            .append_messages(&[Message::user("hi")])
+            .expect("write");
+        let dir = s.writer.dir().to_path_buf();
+        drop(s);
+
+        let s = without_locks(|| open(&h, &mut p, "")).expect("resumes");
+        assert!(s.resumed);
+        let cautions = s.writer.lock_cautions();
+        assert_eq!(cautions.len(), 2, "{cautions:?}");
+        assert!(cautions[0].contains(&h.bots.join("coder").display().to_string()));
+        assert!(cautions[1].contains(&dir.display().to_string()));
     }
 }

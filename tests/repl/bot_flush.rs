@@ -58,6 +58,8 @@ struct Fixture {
     on_created: Mutex<Option<iota::session::OnCreated>>,
     /// `read_file` asks for approval.
     approve_read: bool,
+    /// The history the loop starts from (a resumed view).
+    imported: Vec<Message>,
 }
 
 impl Fixture {
@@ -74,6 +76,7 @@ impl Fixture {
             events: Arc::default(),
             on_created: Mutex::new(None),
             approve_read: false,
+            imported: Vec::new(),
         }
     }
 
@@ -146,7 +149,7 @@ impl Fixture {
             title_provider: None,
             system: String::new(),
             harness,
-            imported_history: Vec::new(),
+            imported_history: self.imported.clone(),
             dispatch,
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
             mcp: McpHooks::default(),
@@ -937,5 +940,113 @@ async fn an_interrupted_batch_is_answered_before_the_memory_notice_follows_it() 
     assert_eq!(
         conversation(&session.messages),
         conversation(&[again, vec![Message::assistant("re again")]].concat())
+    );
+}
+
+/// A frozen-mode mount carrying `names`.
+fn mount(names: &[&str]) -> Message {
+    Message::system_tools(
+        names
+            .iter()
+            .map(|n| iota::provider::model::ToolDef {
+                name: (*n).to_owned(),
+                ..iota::provider::model::ToolDef::default()
+            })
+            .collect(),
+    )
+}
+
+/// Codex R8: the flush turn's dispatcher is narrowed to the memory set, and so is what the history's frozen
+/// mounts advertise in ITS requests — a mount of other tools alone is dropped from the send, a mixed one keeps
+/// `remember` — while the turns around it, and the history itself, keep the mounts whole.
+#[tokio::test]
+async fn the_flush_turn_does_not_advertise_a_mounted_tool() {
+    let mut f = Fixture::new(vec![
+        input("zero"),
+        input("one"),
+        Reply::Enqueued,
+        Reply::Interrupted,
+    ]);
+    f.imported = vec![
+        Message::user("earlier"),
+        Message::assistant("sure"),
+        mount(&["grep"]),
+        mount(&["glob", "remember"]),
+    ];
+    let p = provider(Some("SUMMARY"), remember_tabs, over_on_one);
+    let log = p.log();
+    f.run(p, "").await;
+
+    let mounted = |i: usize| -> Vec<Vec<String>> {
+        log.send(i)
+            .iter()
+            .filter(|m| m.is_tools_mount())
+            .map(|m| m.tools().iter().map(|d| d.name.clone()).collect())
+            .collect()
+    };
+    assert!(
+        log.prompts()[2].starts_with(FLUSH_MARK),
+        "{:?}",
+        log.prompts()
+    );
+    let whole = vec![
+        vec!["grep".to_owned()],
+        vec!["glob".to_owned(), "remember".to_owned()],
+    ];
+    assert_eq!(mounted(0), whole, "an ordinary turn sends the mounts whole");
+    assert_eq!(mounted(1), whole);
+    for i in [2, 3] {
+        assert_eq!(mounted(i), [["remember"]], "flush round {i}");
+        assert!(
+            !log.send(i)
+                .iter()
+                .any(|m| m.role() == Role::System && m.content.is_empty() && !m.is_tools_mount()),
+            "a narrowed-away mount is dropped, not sent empty"
+        );
+    }
+    assert_eq!(log.seen_tools()[2], ["remember"]);
+}
+
+/// Fable M2: a turn the interrupt KEPT — its call's approval cancelled after the round crossed the threshold
+/// — is in the history and the log like a finished one, so it queues the flush; the next message does not
+/// compact without one.
+#[tokio::test]
+async fn an_interrupted_turn_that_was_kept_still_queues_the_flush() {
+    fn turn(prompt: &str) -> Round {
+        match prompt {
+            // The interrupt path re-counts the history locally: the call's own arguments carry it over.
+            "go" => Round::calls(vec![iota::testing::tool_call_with(
+                "c1",
+                "read_file",
+                &[("path", &"x ".repeat(120_000))],
+            )])
+            .usage(usage(100_000)),
+            _ => Round::text(&format!("re {prompt}")).usage(usage(1_000)),
+        }
+    }
+    let mut f = Fixture::new(vec![
+        input("zero"),
+        input("go"),
+        Reply::Interrupted, // read_file's approval
+        Reply::Enqueued,    // the flush notice
+        Reply::Interrupted,
+    ]);
+    f.approve_read = true;
+    let p = provider(Some("SUMMARY"), remember_tabs, turn);
+    let log = p.log();
+    let dir = f.run(p, "").await;
+
+    let prompts = log.prompts();
+    assert!(prompts[2].starts_with(FLUSH_MARK), "{prompts:?}");
+    assert!(
+        prompts.last().is_some_and(|p| p.starts_with(SUMMARY_MARK)),
+        "{prompts:?}"
+    );
+    let m = marker(&dir);
+    assert!(m.get("flush_skipped").is_none(), "{m}");
+    assert!(
+        !f.printed()
+            .iter()
+            .any(|l| l.contains("without a memory flush"))
     );
 }

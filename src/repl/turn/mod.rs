@@ -105,6 +105,44 @@ pub(crate) struct TurnCtx {
     /// Whether round boundaries take typed-ahead messages into the turn — `false` only for a bot's memory
     /// flush turn (docs/design/bot-mode.md §3.6.1).
     pub(crate) steering: bool,
+    /// A bot's flush turn: the only tools a frozen mount in the history may still advertise in the send
+    /// (codex R8). The dispatcher is narrowed the same way; this keeps the request from offering what the
+    /// dispatcher would refuse. `None` everywhere else.
+    pub(crate) mounts_only: Option<&'static [&'static str]>,
+}
+
+impl TurnCtx {
+    /// What one round sends: [`compose_send_history`], and on the flush turn every mount narrowed to
+    /// [`Self::mounts_only`] — a mount left with nothing is dropped. Only the copy changes: the history and
+    /// the log keep the mounts as they are.
+    pub(crate) fn send_history<'a>(
+        &self,
+        history: &'a [Message],
+    ) -> std::borrow::Cow<'a, [Message]> {
+        let send = compose_send_history(history, &self.harness, &self.overlay);
+        let Some(names) = self.mounts_only else {
+            return send;
+        };
+        if !send.iter().any(Message::is_tools_mount) {
+            return send;
+        }
+        let narrowed = send
+            .iter()
+            .filter_map(|m| {
+                if !m.is_tools_mount() {
+                    return Some(m.clone());
+                }
+                let defs: Vec<_> = m
+                    .tools()
+                    .iter()
+                    .filter(|d| names.contains(&d.name.as_str()))
+                    .cloned()
+                    .collect();
+                (!defs.is_empty()).then(|| Message::system_tools(defs))
+            })
+            .collect();
+        std::borrow::Cow::Owned(narrowed)
+    }
 }
 
 /// One turn's live scaffolding: the turn cancel scope, the stream handle
@@ -401,7 +439,7 @@ pub(crate) async fn stream_turn(
 ) -> TurnReport {
     t.cx.tr.begin_round();
     let phases = Phases::new(Arc::clone(&t.cx.ui));
-    let send = compose_send_history(history, &t.cx.harness, &t.cx.overlay);
+    let send = t.cx.send_history(history);
     let res = TURN_PROGRESS
         .scope(Arc::clone(&t.progress), async {
             let _watch = watch_phases(&t.progress, phases.clone());

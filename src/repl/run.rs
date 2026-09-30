@@ -841,7 +841,11 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         } = outcome;
         match turn_result {
             Err(_) if interrupted => {
-                interrupt_turn(&mut repl, hist0 - 1, &partial, &partial_reasoning);
+                let saved = interrupt_turn(&mut repl, hist0 - 1, &partial, &partial_reasoning);
+                // A turn the interrupt kept is in the history and the log like any other, and its usage
+                // counts toward the threshold: it lands (fable M2), or crossing the threshold with it would
+                // skip the flush. An interrupted flush turn is still one that did not finish.
+                landed = saved && !flush;
                 // The user did the interrupting: back to idle, no ping (run.go:1070-1074).
                 repl.handles.pres.set_state(State::Idle);
             }
@@ -936,11 +940,9 @@ impl Repl {
     /// the harness and the overlay this message composed.
     /// A bot's flush turn (`flush`) sees the memory set alone and takes no steering (bot-mode.md §3.6.1).
     fn turn_ctx(&self, overlay: String, flush: bool) -> TurnCtx {
+        const MEMORY_ONLY: &[&str] = &[crate::tool::builtins::memory::REMEMBER];
         let dispatch = if flush {
-            crate::tool::only(
-                Arc::clone(&self.conv.dispatch),
-                &[crate::tool::builtins::memory::REMEMBER],
-            )
+            crate::tool::only(Arc::clone(&self.conv.dispatch), MEMORY_ONLY)
         } else {
             Arc::clone(&self.conv.dispatch)
         };
@@ -956,6 +958,7 @@ impl Repl {
             code_theme: code_theme_of(self.handles.dark),
             pres: Arc::clone(&self.handles.pres),
             steering: !flush,
+            mounts_only: flush.then_some(MEMORY_ONLY),
         }
     }
 
@@ -1172,7 +1175,14 @@ pub(crate) async fn bot_perform(
 /// The user did the interrupting, so this is not an error path: no red block, no
 /// notification. A discarded turn hands its attachments BACK — cancelling a send must not
 /// silently strip the file the user attached — and gives the session name back with them.
-fn interrupt_turn(repl: &mut Repl, watermark: usize, partial: &str, partial_reasoning: &str) {
+///
+/// `true` when the turn was kept (and saved), `false` when it was discarded whole.
+fn interrupt_turn(
+    repl: &mut Repl,
+    watermark: usize,
+    partial: &str,
+    partial_reasoning: &str,
+) -> bool {
     let InterruptDecision {
         history,
         persist,
@@ -1217,4 +1227,5 @@ fn interrupt_turn(repl: &mut Repl, watermark: usize, partial: &str, partial_reas
     repl.conv.budget.update(&history);
     repl.conv.history = history;
     repl.push_status();
+    persist
 }

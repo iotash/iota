@@ -83,12 +83,12 @@ pub(crate) enum Compacted {
 /// queue and its clock, and hands over what they said. A variant that carries one of those breaks the L3 move.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Event {
-    /// A turn is over. `flush`: it was the flush turn. `landed`: it ended in success (not failed, not
-    /// interrupted). `writes`: the memory writes it made. `over`: the usage is at the (snoozed) threshold.
+    /// A turn is over. `flush`: it was the flush turn. `landed`: it ended in success, or was interrupted and
+    /// kept (never for the flush turn: an interrupted flush did not finish); not failed, not discarded. `writes`: the memory writes it made. `over`: the usage is at the (snoozed) threshold.
     TurnEnded {
         /// The turn was the flush turn.
         flush: bool,
-        /// The turn ended in success.
+        /// The turn ended in success, or was interrupted and kept.
         landed: bool,
         /// The memory writes the turn made.
         writes: u32,

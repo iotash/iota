@@ -71,20 +71,25 @@ pub fn valid_bot_name(name: &str) -> bool {
 
 /// Every bot directory's pointer under `bots`, as `(bot name, pointer)`, name-sorted. A missing `bots`
 /// directory is no bots, a bot directory without a pointer is skipped; a pointer (or the directory) that
-/// cannot be read is an error — "no owner" must never stand in for "cannot tell" (§2.7).
-pub(crate) fn pointers(bots: &Path) -> Result<Vec<(String, BotPointer)>, SessionError> {
+/// cannot be read is an error — "no owner" must never stand in for "cannot tell" (§2.7) — together with the
+/// path that could not be read.
+pub(crate) fn pointers(
+    bots: &Path,
+) -> Result<Vec<(String, BotPointer)>, (std::path::PathBuf, SessionError)> {
+    let root = |e: std::io::Error| (bots.to_path_buf(), SessionError::Io(e));
     let entries = match std::fs::read_dir(bots) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(SessionError::Io(e)),
+        Err(e) => return Err(root(e)),
     };
     let mut out = Vec::new();
     for e in entries {
-        let e = e?;
-        if !e.file_type()?.is_dir() {
+        let e = e.map_err(root)?;
+        let dir = e.path();
+        if !e.file_type().map_err(|e| (dir.clone(), e.into()))?.is_dir() {
             continue;
         }
-        if let Some(ptr) = BotPointer::read(&e.path())? {
+        if let Some(ptr) = BotPointer::read(&dir).map_err(|e| (dir.join(BOT_POINTER_FILE), e))? {
             out.push((e.file_name().to_string_lossy().into_owned(), ptr));
         }
     }
@@ -180,7 +185,8 @@ mod tests {
         );
         std::fs::create_dir_all(home.path().join("bad")).expect("bad");
         std::fs::write(home.path().join("bad").join(BOT_POINTER_FILE), "x").expect("bad ptr");
-        let err = pointers(home.path()).expect_err("a corrupt pointer");
+        let (path, err) = pointers(home.path()).expect_err("a corrupt pointer");
+        assert_eq!(path, home.path().join("bad").join(BOT_POINTER_FILE));
         assert!(err.to_string().contains(BOT_POINTER_FILE), "{err}");
     }
 }

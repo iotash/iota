@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::provider::ProviderKind;
-use crate::provider::model::{Attachment, Message, Role};
+use crate::provider::model::{Attachment, Body, Message, Role};
 use crate::provider::usage::Usage;
 use sha2::{Digest, Sha256};
 
@@ -129,6 +129,16 @@ impl SessionWriter {
         if !self.created {
             self.on_created = Some(f);
         }
+    }
+
+    /// What to tell the user when this writer's bundle or bot lock could not be taken because the filesystem
+    /// cannot lock at all (fable M5): it is open without one. One line per such lock.
+    pub fn lock_cautions(&self) -> Vec<String> {
+        [&self.bot_lock, &self.lock]
+            .into_iter()
+            .flatten()
+            .filter_map(HeldLock::caution)
+            .collect()
     }
 
     /// Keeps a bot's lock alive for as long as this writer lives.
@@ -267,16 +277,20 @@ impl SessionWriter {
 
     /// The single meta mutator, standing in for Go's eight `Set*` methods (chat/session.go:612-741):
     /// applies `f`, then writes `meta.json` ONLY when the bundle already exists — a pending value is
-    /// flushed by `ensure_created`'s first meta write, exactly like Go.
+    /// flushed by `ensure_created`'s first meta write, exactly like Go — and `f` changed something. An
+    /// unchanged meta is not rewritten, so `updated_at` stays the last write that said anything: a bot that
+    /// is opened and closed again restates what it runs under every time, and its next resume must still
+    /// read how long ago the session was really written (fable M4).
     ///
     /// The writer owns `id`, `version`, `message_count` and `updated_at`; a closure that changes them is
     /// the caller's problem.
     pub fn update_meta(&mut self, f: impl FnOnce(&mut SessionMeta)) -> Result<(), SessionError> {
+        let before = self.created.then(|| self.meta.clone());
         f(&mut self.meta);
-        if !self.created {
-            return Ok(());
+        match before {
+            Some(before) if before != self.meta => self.meta.write(&self.dir),
+            _ => Ok(()),
         }
-        self.meta.write(&self.dir)
     }
 
     /// Materialises the bundle on first use (`ensureCreated`, chat/session.go:363-378): `attachments/`
@@ -430,6 +444,8 @@ fn to_record(dir: &Path, kind: ProviderKind, msg: &Message) -> Result<SessionRec
         is_error: msg.is_error(),
         interrupted: msg.interrupted(),
         notice: msg.is_notice(),
+        // An empty `Body::System` is a cleared prompt (a mount is filtered out before it gets here).
+        system_cleared: matches!(msg.body, Body::System) && msg.content.is_empty(),
         usage: msg.usage().map(Into::into),
         ..SessionRecord::default()
     };

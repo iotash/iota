@@ -617,10 +617,14 @@ fn an_unreadable_pointer_blocks_the_gate_and_delete() {
             matches!(&err, SessionError::BotOwnerUnknown { .. }),
             "{err:?}"
         );
+        let pointer = bots.join("coder").join(BOT_POINTER_FILE);
         assert!(
             err.to_string().starts_with(&format!(
                 "cannot tell whether session {s} belongs to a bot: "
-            )) && err.to_string().contains(BOT_POINTER_FILE),
+            )) && err.to_string().ends_with(&format!(
+                "; repair or delete {} (without it the bot starts a new session; memory is kept)",
+                pointer.display()
+            )),
             "{err}"
         );
         let err = store.delete(s).expect_err("not deleted");

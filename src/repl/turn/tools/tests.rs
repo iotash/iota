@@ -201,6 +201,7 @@ impl Fx {
                 code_theme: CodeTheme::Monokai,
                 pres,
                 steering: true,
+                mounts_only: None,
             },
             root: CancellationToken::new(),
         }
@@ -1432,6 +1433,7 @@ fn order_fixture(script: Vec<Reply>) -> OrderFx {
         code_theme: CodeTheme::Monokai,
         pres,
         steering: true,
+        mounts_only: None,
     };
     OrderFx {
         ui: order,

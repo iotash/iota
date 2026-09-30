@@ -268,8 +268,9 @@ pub fn repair_tail(view: &mut Vec<Message>) -> usize {
 
 /// `loadLog` (chat/session.go:845-901).
 ///
-/// Usage is summed over EVERY record, markers included. The LAST system record with content wins and is
-/// placed FIRST in the view (a content-less one is a persisted defer mount — see the closure). The LAST
+/// Usage is summed over EVERY record, markers included. The LAST system record wins and is placed FIRST in
+/// the view — unless it is a cleared prompt, which leaves the view without one; a content-less record
+/// without the `system_cleared` flag is a persisted defer mount and never wins (see the closure). The LAST
 /// compaction marker wins, with `compacted_through` clamped to `[0, conversation length]`; when anything
 /// is retained the FIRST retained message's content gets [`summary_preamble`] PREPENDED, otherwise a
 /// synthetic `{role: User, content: preamble}` is appended.
@@ -295,13 +296,16 @@ pub fn load_log(dir: &Path, kind: ProviderKind) -> Result<LoadedLog, SessionErro
             return; // unknown role — skipped like a corrupt line (D-47)
         };
         if msg.role() == Role::System {
-            // A frozen-mode defer mount (`Message::system_tools`) is runtime state (tool-defer.md), but it
-            // rides in the history the REPL appends and lands here as a system record with NO content. It
-            // must not win — it would replace the system prompt with an empty one (bot-mode.md §2.7).
-            // No real system prompt is ever empty: an empty one is never put in the history at all.
-            if !msg.content.is_empty() {
-                system = Some(msg);
+            // Two kinds of system record, told apart by what was WRITTEN, not by the text: a frozen-mode
+            // defer mount (`Message::system_tools`) is runtime state (tool-defer.md) that older builds
+            // persisted as a system record with no content and no flag — it must not win, or it would
+            // replace the prompt with an empty one (bot-mode.md §2.7). A cleared prompt (`system_cleared`,
+            // a bot whose config lost its `system:`, §2.2) is a real system record and wins like any other:
+            // the view then has no system message at all.
+            if msg.content.is_empty() && !rec.system_cleared {
+                return;
             }
+            system = Some(msg);
             return;
         }
         conv.push(msg);
@@ -309,7 +313,7 @@ pub fn load_log(dir: &Path, kind: ProviderKind) -> Result<LoadedLog, SessionErro
 
     let conv_count = conv.len();
     let mut view: Vec<Message> = Vec::new();
-    if let Some(sys) = system {
+    if let Some(sys) = system.filter(|m| !m.content.is_empty()) {
         view.push(sys);
     }
     // A hand-edited negative `compacted_through` clamps to 0, as in Go.

@@ -479,6 +479,9 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
             &mut *provider,
             &mut |w| io.warning(&w),
         )?;
+        for line in opened.writer.lock_cautions() {
+            io.caution(&line);
+        }
         if opened.resumed {
             let _ = writeln!(
                 io.stdout,
@@ -514,6 +517,9 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         // A bot's body opens only as that bot (bot-mode.md §2.2, §2.7).
         store.check_not_bot_owned(&id)?;
         let (w, resumed) = store.resume(&id, kind)?;
+        for line in w.lock_cautions() {
+            io.caution(&line);
+        }
         // The bundle records the agent it ran under; one that has since been deleted is announced, and the
         // run falls back to the provider and model the meta carries (Phase 1b step 9).
         crate::session::warn_if_session_agent_is_gone(
