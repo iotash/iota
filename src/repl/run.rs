@@ -26,6 +26,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::agents::Overlay;
+use crate::agents::memory::Snapshot;
 use crate::agents::skills::Skill;
 use crate::host::{Event, Kind, Presenter, State};
 use crate::llm::reqlog::RequestLog;
@@ -48,7 +49,7 @@ use crate::repl::render::banner::{BannerFacts, banner_lines, overlay_warnings};
 use crate::repl::render::mcpreport::report_mcp_failures;
 use crate::repl::render::replay::{RESUME_ECHO_ROUNDS, echo_rounds, last_rounds};
 use crate::repl::render::transcript::{Transcript, notify_digest};
-use crate::repl::state::{Conversation, SessionSlot, UiHandles};
+use crate::repl::state::{BotState, Conversation, SessionSlot, UiHandles};
 use crate::repl::title::{
     SessionTitle, TITLE_TIMEOUT, WriterSlot, generate_title_text, is_read_only_viewer,
     status_model_label, window_title,
@@ -121,9 +122,10 @@ pub struct SessionCtx {
     /// learned about the session that the model's user should see (a bot's pointer that never saved, a
     /// system prompt taken over from the config).
     pub notices: Vec<String>,
-    /// A bot's memory writes (bot-mode.md §3.7): what the `remember` tool announced during a turn, recorded
-    /// by the loop as notice messages once the turn is over. `None` outside a bot's session.
-    pub memory_writes: Option<crate::agents::memory::WriteLog>,
+    /// A bot's memory (bot-mode.md §3.4, §3.7): the loop injects its snapshot as the last part of every
+    /// send's overlay and records what the `remember` tool announced during a turn as notice messages once
+    /// the turn is over. `None` outside a bot's session.
+    pub memory: Option<crate::agents::memory::BotMemory>,
 }
 
 /// Everything `run()` needs (`TUI_CONTRACTS` §7).
@@ -260,6 +262,15 @@ impl Repl {
     }
 }
 
+/// The overlay's parts in send order, a blank line between them; an empty part is left out.
+fn join_overlay(agent: String, memory: String) -> String {
+    match (agent.is_empty(), memory.is_empty()) {
+        (_, true) => agent,
+        (true, false) => memory,
+        (false, false) => format!("{agent}\n\n{memory}"),
+    }
+}
+
 /// The completion table's view of the discovered skills (completion.go:63-73).
 fn skill_entries(skills: &[Skill]) -> Vec<SkillEntry> {
     skills
@@ -317,7 +328,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         scope,
         bot,
         notices,
-        memory_writes,
+        memory,
     } = session;
 
     // ---- capability probes (chat/run.go:53-55) ----
@@ -338,6 +349,13 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         let root = agent.root.as_path();
         let cwd = agent.cwd.as_deref().unwrap_or(root);
         Overlay::new(root, cwd, agent.home.as_deref())
+    });
+    // A bot's memory is read once here (bot-mode.md §3.4's first refresh moment); its writes are recorded
+    // through the log the tool shares.
+    let memory_writes = memory.as_ref().map(|m| m.writes().clone());
+    let bot_state = memory.map(|m| BotState {
+        name: m.name().to_owned(),
+        memory: Snapshot::load(m),
     });
 
     // ---- history seeding (chat/run.go:67-79) ----
@@ -454,6 +472,9 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     for notice in &notices {
         tr.notice(notice);
     }
+    if let Some(warn) = bot_state.as_ref().and_then(|b| b.memory.warning()) {
+        tr.notice(&format!("⚠ {warn}"));
+    }
 
     let titler = Arc::new(SessionTitle::new(
         Arc::clone(&writer),
@@ -496,6 +517,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             harness,
             overlay,
             agent,
+            bot: bot_state,
             image_provider,
         },
         session: SessionSlot {
@@ -866,9 +888,35 @@ impl Repl {
     }
 
     /// Re-probes the agent-mode overlay for this message; the notices fire ONLY on a real
-    /// change (chat/run.go:965-976; the D-27 lift, T-37). Returns the overlay text to send,
-    /// `""` outside agent mode.
+    /// change (chat/run.go:965-976; the D-27 lift, T-37). Returns the overlay text to send:
+    /// the AGENTS.md chain and the skills catalog, then a bot's `<memory>` block — last, as the
+    /// part that changes most often (bot-mode.md §3.4); `""` when there is none of them.
     fn refresh_overlay(&mut self) -> String {
+        let content = self.refresh_agent_overlay();
+        let project = self
+            .conv
+            .agent
+            .enabled
+            .then(|| self.conv.agent.root.file_name())
+            .flatten()
+            .map(|n| n.to_string_lossy().into_owned());
+        let Some(bot) = self.conv.bot.as_mut() else {
+            return content;
+        };
+        // The fourth refresh moment: an edit from outside this process, picked up before the send. The other
+        // three are startup (`run`), a successful compaction (`compact_now`, T7) and the harness's day-change
+        // re-composition (T8); each calls `bot.memory.reload()`.
+        if bot.memory.refresh() {
+            self.handles.tr.notice("MEMORY.md reloaded");
+            if let Some(warn) = bot.memory.warning() {
+                self.handles.tr.notice(&format!("⚠ {warn}"));
+            }
+        }
+        join_overlay(content, bot.memory.block(project.as_deref()))
+    }
+
+    /// The agent-mode half of [`Self::refresh_overlay`]: `""` outside agent mode.
+    fn refresh_agent_overlay(&mut self) -> String {
         let Some(o) = self.conv.overlay.as_mut() else {
             return String::new();
         };

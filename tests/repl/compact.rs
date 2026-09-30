@@ -113,7 +113,7 @@ impl Fixture {
                 scope: None,
                 bot: false,
                 notices: Vec::new(),
-                memory_writes: None,
+                memory: None,
             },
             params: iota::session::LayeredParams {
                 context_window: iota::session::Param::config(context_window),

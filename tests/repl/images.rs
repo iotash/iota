@@ -95,7 +95,7 @@ async fn run_one(p: FakeProvider) -> (Arc<ScriptedUi>, tempfile::TempDir, Log, S
             scope: None,
             bot: false,
             notices: Vec::new(),
-            memory_writes: None,
+            memory: None,
         },
         params: iota::session::LayeredParams::default(),
         layers: iota::cmd::ParamLayers::default(),

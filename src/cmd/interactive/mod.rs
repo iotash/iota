@@ -161,8 +161,8 @@ struct Wiring {
     bot: bool,
     /// Dim lines the transcript opens with.
     notices: Vec<String>,
-    /// A bot's memory writes, for the loop to record (bot-mode.md §3.7).
-    memory_writes: Option<crate::agents::memory::WriteLog>,
+    /// A bot's memory: the loop injects it and records its writes (bot-mode.md §3.4, §3.7).
+    memory: Option<crate::agents::memory::BotMemory>,
 }
 
 /// `TUI_DESIGN` §8.4 steps 2, 3, 5 and 6, in one function so their order is a local invariant.
@@ -358,7 +358,7 @@ pub(crate) async fn run_interactive(
             scope,
             bot: wiring.bot,
             notices: wiring.notices,
-            memory_writes: wiring.memory_writes,
+            memory: wiring.memory,
         },
         params: wiring.params,
         layers: wiring.layers,
@@ -593,12 +593,11 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
     let params = resolve_params(settings, provider, kind, resumed_meta.as_ref(), io)?;
 
     // root.go:390 + 588-592.
-    let memory_writes = memory.as_ref().map(|m| m.writes().clone());
     let bot_env;
-    let tool_env = match memory {
+    let tool_env = match &memory {
         Some(memory) => {
             bot_env = ToolEnv {
-                memory: Some(memory),
+                memory: Some(memory.clone()),
                 ..tool_env.clone()
             };
             &bot_env
@@ -643,7 +642,7 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         title_provider,
         bot,
         notices,
-        memory_writes,
+        memory,
     })
 }
 

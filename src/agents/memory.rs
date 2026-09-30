@@ -9,15 +9,23 @@
 //! The pure half ([`apply`]) turns the current text and an [`Edit`] into the new text or the model-facing
 //! refusal; [`BotMemory::write`] is the I/O around it: the lazy first write, the `.prev` backup, and the
 //! write notice the chat loop records once the turn is over ([`WriteLog`]).
+//!
+//! The read side is [`Snapshot`] (§3.4): the `<memory>` block a bot's every send carries, frozen between
+//! the moments a refresh is due.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::SystemTime;
 
 use regex::Regex;
 
 use crate::sync::lock;
 use crate::text::go_quote;
+
+mod snapshot;
+
+pub use snapshot::Snapshot;
 
 /// The memory file inside a bot's directory.
 pub const MEMORY_FILE: &str = "MEMORY.md";
@@ -583,12 +591,25 @@ impl WriteLog {
     }
 }
 
+/// What this process last knew of the file's mtime — shared between the tool that writes the file and the
+/// snapshot that reads it, so the snapshot can tell an edit from outside the process from the tool's own
+/// write (§3.4, the fourth refresh moment).
+#[derive(Debug, Default)]
+struct Seen {
+    /// The mtime after this process last read or wrote the file (`None`: there was no file).
+    mtime: Option<SystemTime>,
+    /// The tool found the file changed from outside before it wrote over it: the next check reloads even
+    /// though the mtime is the tool's own by then.
+    edited: bool,
+}
+
 /// One bot's memory on disk: its name, its directory, and the log its writes are announced through.
 #[derive(Clone, Debug)]
 pub struct BotMemory {
     name: String,
     dir: PathBuf,
     writes: WriteLog,
+    seen: Arc<Mutex<Seen>>,
 }
 
 impl BotMemory {
@@ -598,6 +619,7 @@ impl BotMemory {
             name: name.to_owned(),
             dir,
             writes: WriteLog::default(),
+            seen: Arc::default(),
         }
     }
 
@@ -621,6 +643,11 @@ impl BotMemory {
     /// [`Self::writes`]; every failure is a model-facing refusal and leaves the file as it was.
     pub fn write(&self, edit: &Edit, today: &str) -> Result<Applied, String> {
         let path = self.path();
+        // An edit from outside that the snapshot has not picked up yet is about to be folded into this
+        // write; the mark keeps it from passing for the tool's own.
+        if mtime(&path) != lock(&self.seen).mtime {
+            lock(&self.seen).edited = true;
+        }
         let current = read_existing(&path)?;
         let applied = apply(current.as_deref(), &self.name, edit, today)?;
         if let Some(old) = &current {
@@ -633,9 +660,34 @@ impl BotMemory {
         }
         crate::app::fs::write_atomic(&path, applied.file.as_bytes(), Some(0o644))
             .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        lock(&self.seen).mtime = mtime(&path);
         self.writes.push(applied.notice.clone());
         Ok(applied)
     }
+
+    /// Whether the file changed since this process last read or wrote it — an edit from outside.
+    fn edited_outside(&self) -> bool {
+        let seen = lock(&self.seen);
+        seen.edited || mtime(&self.path()) != seen.mtime
+    }
+
+    /// Reads the file for a snapshot and records its mtime as seen. The mtime is taken first, so an edit
+    /// that lands during the read shows up as a changed mtime at the next check rather than being missed.
+    fn read_for_snapshot(&self) -> Result<Option<String>, String> {
+        let path = self.path();
+        let before = mtime(&path);
+        let text = read_existing(&path);
+        *lock(&self.seen) = Seen {
+            mtime: before,
+            edited: false,
+        };
+        text
+    }
+}
+
+/// The file's mtime, `None` when it cannot be read (a missing file above all).
+fn mtime(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 /// The file's text, `None` when it does not exist.

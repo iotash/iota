@@ -61,9 +61,22 @@ pub(crate) struct Conversation {
     pub(crate) overlay: Option<Overlay>,
     /// Agent-mode options: the project root and the skills home.
     pub(crate) agent: crate::headless::AgentOptions,
+    /// A bot's own state (bot-mode.md §3.4; `None` outside a bot's session).
+    pub(crate) bot: Option<BotState>,
     /// A dedicated image provider bills per attempt (a relay 5xx can arrive AFTER a charged
     /// generation), so its turns are never auto-retried.
     pub(crate) image_provider: bool,
+}
+
+/// What a bot's session carries beyond an agent's (bot-mode.md §3.4). Its memory lives here rather than in
+/// the [`Overlay`]: the overlay is re-probed on every send, while the memory's copy is frozen between the
+/// moments a refresh is due — and a bot's own writes are not one of them.
+pub(crate) struct BotState {
+    /// The bot's name.
+    #[allow(dead_code)] // bot-mode.md §3.6.1: the flush orchestration (T7) is its first reader
+    pub(crate) name: String,
+    /// The copy of `MEMORY.md` every send carries, last in the overlay.
+    pub(crate) memory: crate::agents::memory::Snapshot,
 }
 
 /// The bundle the chat is persisted into, and the name it carries.

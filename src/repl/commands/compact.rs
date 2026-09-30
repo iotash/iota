@@ -272,6 +272,8 @@ pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
     repl.conv.budget.reseed(&history);
     repl.conv.history = history;
     repl.conv.compact_declined = 0;
+    // bot-mode.md §3.4's second refresh moment belongs here — the history's prefix has just changed, so the
+    // prompt cache is cold anyway: `repl.conv.bot`'s `memory.reload()` (T7, with the memory flush).
     repl.handles.tr.notice(&format!(
         "Context compacted → {}",
         repl.conv.budget.status()

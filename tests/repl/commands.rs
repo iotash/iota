@@ -122,7 +122,7 @@ impl Fixture {
             scope: None,
             bot: false,
             notices: Vec::new(),
-            memory_writes: None,
+            memory: None,
         }
     }
 }
@@ -274,7 +274,7 @@ async fn banner_offers_save_for_an_ephemeral_chat() {
         scope: None,
         bot: false,
         notices: Vec::new(),
-        memory_writes: None,
+        memory: None,
     };
     iota::repl::run(f.params(provider("gpt-4o", Ok(vec![])), session))
         .await
@@ -941,7 +941,7 @@ async fn save_mints_late_and_flushes_the_backlog() {
         scope: None,
         bot: false,
         notices: Vec::new(),
-        memory_writes: None,
+        memory: None,
     };
     let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
     params.params.context_window = iota::session::Param::config(200_000);
@@ -1287,7 +1287,7 @@ async fn persist_warns_and_retries_the_backlog() {
             scope: None,
             bot: false,
             notices: Vec::new(),
-            memory_writes: None,
+            memory: None,
         },
         params: iota::session::LayeredParams::default(),
         layers: iota::cmd::ParamLayers::default(),
@@ -1373,7 +1373,7 @@ async fn a_bot_run_has_no_session_command_and_keeps_its_name() {
         scope: None,
         bot: true,
         notices: vec!["system prompt updated from config".to_owned()],
-        memory_writes: None,
+        memory: None,
     };
     let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
     params.title_provider = Some(Box::new(
@@ -1528,7 +1528,7 @@ async fn a_memory_write_is_recorded_once_after_its_turn() {
         scope: None,
         bot: true,
         notices: Vec::new(),
-        memory_writes: Some(memory.writes().clone()),
+        memory: Some(memory.clone()),
     };
     let mut params = f.params(p, session);
     params.dispatch = Arc::new(registry);
@@ -1582,4 +1582,179 @@ async fn a_memory_write_is_recorded_once_after_its_turn() {
         "{file}"
     );
     assert!(memory.writes().take().is_empty());
+}
+
+/// A bot `coder` running in project `proj` (an AGENTS.md of its own) with `memory` as its MEMORY.md: the
+/// store, the session, the memory, the project root, and a dispatcher carrying `remember`.
+fn bot_in_project(
+    f: &Fixture,
+    memory: &str,
+) -> (
+    SessionCtx,
+    iota::agents::memory::BotMemory,
+    PathBuf,
+    Arc<dyn Dispatcher>,
+) {
+    let (store, bots) = bot_store(f);
+    let writer = bot_writer(&store, &bots);
+    let bot = iota::agents::memory::BotMemory::new("coder", bots.join("coder"));
+    std::fs::write(bot.path(), memory).expect("MEMORY.md");
+    let root = bots.parent().expect("tmp").join("proj");
+    std::fs::create_dir_all(&root).expect("project root");
+    std::fs::write(root.join("AGENTS.md"), "PROJECT RULES").expect("AGENTS.md");
+    let env = iota::tool::ToolEnv {
+        memory: Some(bot.clone()),
+        ..iota::tool::ToolEnv::default()
+    };
+    let mut registry = iota::tool::Registry::default();
+    registry.enable_set(&env, iota::tool::sets::MEMORY_SET, &mut |w| {
+        panic!("unexpected warning {w}")
+    });
+    let session = SessionCtx {
+        writer: Some(writer),
+        store,
+        new_session: None,
+        scope: None,
+        bot: true,
+        notices: Vec::new(),
+        memory: Some(bot.clone()),
+    };
+    (session, bot, root, Arc::new(registry))
+}
+
+/// The block a fresh read of `memory`'s file gives in project `proj`.
+fn memory_block(memory: &iota::agents::memory::BotMemory) -> String {
+    iota::agents::memory::Snapshot::load(iota::agents::memory::BotMemory::new(
+        "coder",
+        memory.path().parent().expect("bot dir").to_path_buf(),
+    ))
+    .block(Some("proj"))
+}
+
+/// bot-mode.md §3.4: a bot's `<memory>` block is the last part of the overlay, after the AGENTS.md chain.
+/// It is frozen: the `remember` tool's own write does not change it, an edit from outside does — picked up
+/// before the next send, with ONE dim `MEMORY.md reloaded` — and nothing reloads again after that.
+#[tokio::test]
+async fn a_bots_memory_closes_the_overlay_and_reloads_on_an_outside_edit_only() {
+    let f = Fixture::new(vec![
+        input("one"),
+        Reply::Queued(Vec::new()), // the round boundary's steer drain: nothing typed meanwhile
+        input("two"),
+        input("three"),
+        Reply::Interrupted,
+    ]);
+    let (session, memory, root, dispatch) =
+        bot_in_project(&f, "---\nbot: coder\n---\n## User\n- 不要用 rebase\n");
+    let before = memory_block(&memory);
+    let path = memory.path();
+    let p = FakeProvider::new()
+        .with_tools()
+        .rounds([
+            iota::testing::Round::calls(vec![iota::testing::tool_call_with(
+                "c1",
+                "remember",
+                &[
+                    ("action", "add"),
+                    ("text", "prefers tabs"),
+                    ("source", "user"),
+                ],
+            )]),
+            iota::testing::Round::text("noted"),
+            iota::testing::Round::text("second"),
+            iota::testing::Round::text("third"),
+        ])
+        // Inside turn one, after the tool's write: the user edits the file by hand.
+        .on_call(move |n, _| {
+            if n == 2 {
+                let text = std::fs::read_to_string(&path)
+                    .expect("MEMORY.md")
+                    .replace("不要用 rebase", "不要用 rebase，也不要 force push");
+                std::fs::write(&path, text).expect("edit");
+                let t = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+                std::fs::File::options()
+                    .write(true)
+                    .open(&path)
+                    .expect("open")
+                    .set_modified(t)
+                    .expect("stamp");
+            }
+        });
+    let log = p.log();
+    let mut params = f.params(p, session);
+    params.dispatch = dispatch;
+    params.agent = iota::headless::AgentOptions {
+        enabled: true,
+        root: root.clone(),
+        cwd: Some(root),
+        home: None,
+    };
+    iota::repl::run(params).await.expect("exit");
+
+    let after = memory_block(&memory);
+    assert!(
+        after.contains("- 不要用 rebase，也不要 force push\n"),
+        "{after}"
+    );
+    assert!(after.contains("prefers tabs"), "{after}");
+    let systems: Vec<String> = log.sent().iter().map(|h| h[0].content.clone()).collect();
+    assert_eq!(systems.len(), 4, "{systems:?}");
+    for (i, system) in systems.iter().enumerate() {
+        let block = if i < 2 { &before } else { &after };
+        assert!(system.starts_with("PROJECT RULES"), "{system}");
+        assert!(
+            system.ends_with(&format!("\n\n{block}")),
+            "call {i}: {system}"
+        );
+    }
+    assert_eq!(
+        printed(&f.ui)
+            .iter()
+            .filter(|l| l.starts_with("MEMORY.md reloaded"))
+            .count(),
+        1,
+        "{:?}",
+        printed(&f.ui)
+    );
+}
+
+/// bot-mode.md §3.5's last row, end to end: a hand-edited file over the cap is announced once at startup,
+/// the model is sent it cut short with the marker, and the file stays as it was.
+#[tokio::test]
+async fn a_bots_memory_over_the_cap_is_announced_and_cut_short() {
+    let f = Fixture::new(vec![input("hi"), Reply::Interrupted]);
+    let text: String = std::iter::once("## User\n".to_owned())
+        .chain((0..100).map(|i| format!("- line {i:03} {}\n", "x".repeat(80))))
+        .collect();
+    let over = text.len() - iota::agents::memory::MEMORY_CAP;
+    let (session, memory, root, dispatch) = bot_in_project(&f, &text);
+    let p = provider("gpt-4o", Ok(vec![]));
+    let log = p.log();
+    let mut params = f.params(p, session);
+    params.dispatch = dispatch;
+    params.agent = iota::headless::AgentOptions {
+        enabled: true,
+        root: root.clone(),
+        cwd: Some(root),
+        home: None,
+    };
+    iota::repl::run(params).await.expect("exit");
+
+    let warning = format!(
+        "⚠ MEMORY.md is {over} bytes over its 8 KiB cap: the model is shown it cut short — consolidate it (the file was not changed)"
+    );
+    assert_eq!(
+        printed(&f.ui).iter().filter(|l| **l == warning).count(),
+        1,
+        "{:?}",
+        printed(&f.ui)
+    );
+    let system = log.sent()[0][0].content.clone();
+    assert!(
+        system.ends_with(&format!(
+            "\n[memory truncated: {over} bytes over the cap — consolidate]\n</memory>"
+        )),
+        "{system}"
+    );
+    assert!(!system.contains("- line 099"), "{system}");
+    assert_eq!(std::fs::read_to_string(memory.path()).expect("file"), text);
 }
