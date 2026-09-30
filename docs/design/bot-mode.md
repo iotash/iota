@@ -683,5 +683,6 @@ rev 1 只处理了 `</memory>` 的结构逃逸。评审 S1 指出的问题更大
 - **同步盘**（评审 M5）：`try_lock` 不跨机器；append 在同步盘上会产生 conflicted copy。`~/.iota/sessions` 不要放进 iCloud / Dropbox；`bots/<name>/` 可以（记忆是明文 Markdown；不要把密钥写进记忆）。
 - **锁的平台差异**（评审 M7）：Windows 的 `try_lock` 是强制锁；Go 版不认 flock。锁文件与数据文件分开（`.lock`、`lock`），保持。文件系统根本不支持加锁（NFS / SMB 上 `try_lock` 报 `ENOTSUP` / `EOPNOTSUPP`）时**失败关闭**：写式打开（resume、新建落盘、bot 锁）与删除都报 `SessionError::LockUnsupported`，文案 `file locking is not supported under <dir>; iota cannot open or delete a session there`。不降级为无锁：失败批的截回依赖独占，无锁时 A 的 `set_len` 会截掉 B 已确认保存的数据（评审 codex N1，2026-10-01 定，撤回上一轮按 fable M5 加的降级）。只读加载不取锁，不受影响。不为少数文件系统另做锁实现。
 - **换到更小的窗口**（评审 M6）：保留尾部若大于新窗口，summarize 自身超窗，按 §4.1 的超窗规则由人处理；不做分块摘要。
+- **失败批之后 meta 的 `message_count` 会少计**（§2.7，验收 codex 2026-10-01 §6，合并后跟进）：一批记录已进日志、meta 没跟上（进程在批后 meta 重写前死掉，或截回失败后换了进程）时，`SessionWriter::resumed` 直接沿用 `meta.json` 里的计数、不据日志重算，之后只按新追加的条数累加——实测 resume 补一条结果后磁盘四条、`message_count=2`。`db11a05` 起即如此，不是 R1 修复引入的。只影响 `/session` 列表显示的条数；决定压缩标记与保留尾部的 `conv_count` 已从日志重算（`LoadedLog::conv_count`），不受影响。跟进：resume 时按日志校准该计数。
 - **视图中段的孤儿 `tool_use` 修不了**（§2.7）：`repair_tail` 只看视图末尾最后一条非 tool 消息，靠追加合成结果修复；中段的孤儿无法靠追加补上，这样的会话照样会被 API 拒绝，只能手工处理日志。
 - **旧摘要按第一个分隔符切分**（§3.6.2）：`split_previous_summary` 用 `split_once(SUMMARY_SEPARATOR)`，摘要正文里恰好含 `\n\n———\n\n` 时会切错，一段摘要被当成对话。概率极低；loader 今天同样没防。

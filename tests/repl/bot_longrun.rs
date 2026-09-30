@@ -17,7 +17,8 @@
 //!    startup is a refresh moment) while the running process keeps its copy until the next compaction. The
 //!    model may answer the re-read block differently, and that alone is listed, not failed: once what the
 //!    fake produced after it was shown the block (its new tool calls, their results, the `memory:` notices of
-//!    their writes) is left out, the two sides must make the same calls with the same histories, in order
+//!    their writes) is left out — and, in a summary request, the memory section and the count of lines its
+//!    flush saved — the two sides must make the same calls with the same histories, in order
 //!    ([`refresh_explains`]). Anything else — a call of another kind, an older message changed, a history cut
 //!    or reordered — is the process's, and fails;
 //! 7. the startup load time as the log grows — printed, and held to the §2.6 threshold (2 s) as a loose bound.
@@ -320,6 +321,103 @@ fn call_ids(view: &[Message]) -> BTreeSet<&str> {
         .collect()
 }
 
+/// A write one of the model's new calls made to the memory: where its result says it saved, and the line the
+/// call passed (`text`, `new` or `old` — the notice of the write shows it).
+struct Write {
+    place: String,
+    line: String,
+}
+
+impl Write {
+    /// Whether `notice` is this write's: `memory: <place> <verb>: <line …>`.
+    fn made(&self, notice: &str) -> bool {
+        notice
+            .strip_prefix("memory: ")
+            .and_then(|n| n.strip_prefix(self.place.as_str()))
+            .and_then(|n| n.strip_prefix(' '))
+            .is_some_and(|n| n.contains(self.line.as_str()))
+    }
+}
+
+/// The writes that the calls in `view` whose ids are `fresh` made: each successful result (`saved to <place>
+/// (…)`) with its call.
+fn new_writes(view: &[Message], fresh: &dyn Fn(&str) -> bool) -> Vec<Write> {
+    view.iter()
+        .filter(|r| r.role() == Role::Tool && !r.is_error() && fresh(r.tool_call_id()))
+        .filter_map(|r| {
+            let call = view
+                .iter()
+                .flat_map(Message::tool_calls)
+                .find(|c| c.id == r.tool_call_id())?;
+            let (place, _) = r
+                .content
+                .lines()
+                .next()?
+                .strip_prefix("saved to ")?
+                .rsplit_once(" (")?;
+            let line = ["text", "new", "old"]
+                .iter()
+                .find_map(|k| call.arguments.get(*k)?.as_str())?;
+            Some(Write {
+                place: place.to_owned(),
+                line: line.to_owned(),
+            })
+        })
+        .collect()
+}
+
+/// The header of a bot's summary request's long-term memory section (`repl::commands::compact::summarize`).
+const MEMORY_SECTION: &str =
+    "\n\n--- LONG-TERM MEMORY (already saved separately; do not repeat these) ---\n";
+
+/// `prompt` with the body of its long-term memory section — `MEMORY.md` as the summary pass is shown it,
+/// which a restart re-reads (§3.4) — replaced by a placeholder; the rest, the rendered history included, is
+/// kept byte for byte.
+fn without_memory_section(prompt: &str) -> String {
+    let Some(at) = prompt.find(MEMORY_SECTION) else {
+        return prompt.to_owned();
+    };
+    let body = at + MEMORY_SECTION.len();
+    let end = [
+        "\n--- CONVERSATION START ---\n",
+        "\n--- NEW CONVERSATION START ---\n",
+    ]
+    .iter()
+    .filter_map(|mark| prompt[body..].find(mark))
+    .min()
+    .map_or(prompt.len(), |i| body + i);
+    format!("{}<memory>{}", &prompt[..body], &prompt[end..])
+}
+
+/// The writes the flush in `view` made: its successful results (`saved to …`) after the flush notice.
+fn flush_writes(view: &[Message]) -> usize {
+    view.iter()
+        .rposition(|m| m.is_notice() && m.content.starts_with(FLUSH_MARK))
+        .map_or(0, |at| {
+            view[at + 1..]
+                .iter()
+                .filter(|m| {
+                    m.role() == Role::Tool && !m.is_error() && m.content.starts_with("saved to ")
+                })
+                .count()
+        })
+}
+
+/// A summary request as the process is accountable for it: [`without_memory_section`], and the number of
+/// lines the flush saved — which the model's answer decides — replaced by a placeholder only when it is the
+/// number of writes that side's flush made (`writes`); a wrong count stays and differs.
+fn summary_request(prompt: &str, writes: usize) -> String {
+    let saved = format!(
+        " The memory flush just before this compaction saved {writes} line{}.",
+        if writes == 1 { "" } else { "s" }
+    );
+    without_memory_section(prompt).replacen(
+        &saved,
+        " The memory flush just before this compaction saved <its writes>.",
+        1,
+    )
+}
+
 /// Whether the model's answer to the re-read memory block — first shown in call `m` — explains every
 /// difference between the two sides up to the next user turn. The model decides what it calls and how many
 /// rounds it takes (the follow-ups); the process decides everything else. So:
@@ -327,14 +425,18 @@ fn call_ids(view: &[Message]) -> BTreeSet<&str> {
 /// - nothing differs up to call `m`;
 /// - with the messages the model's new answer produced left out of every history — an assistant message whose
 ///   tool calls are all new since call `m`, those calls' results, and the `memory:` notices of the writes they
-///   made (a notice not already in call `m`'s history) — the two sides make the same calls with the same
-///   histories, in order. A reply the model gave after call `m` is compared without its usage: that measures
-///   its request, which the new messages made longer. A follow-up round that adds nothing else is the model's own and folds into
-///   the call before it, so a side may take more of them. Every other message — an older one, a plain reply, a
-///   user message, a summary — must be equal and in place, so a history cut, reordered or rewritten fails even
-///   after a legitimate refresh;
-/// - a summary pass is compared by kind only: its request is the history rendered into one text, which the
-///   model's new calls are part of — and that history is the one the call before it was checked on.
+///   made — the two sides make the same calls with the same histories, in order. A `memory:` notice is left
+///   out only when it is not already in call `m`'s history AND a write of a new call in the same history
+///   accounts for it (its result saved to the place the notice names, and the notice shows the line the call
+///   passed), one notice per write: a notice no new write made is the process's. A reply the model gave after
+///   call `m` is compared without its usage: that measures its request, which the new messages made longer. A
+///   follow-up round that adds nothing else is the model's own and folds into the call before it, so a side may
+///   take more of them. Every other message — an older one, a plain reply, a user message, a summary — must be
+///   equal and in place, so a history cut, reordered or rewritten fails even after a legitimate refresh;
+/// - a summary pass is compared on its whole request — the older history rendered into one text, in order —
+///   less its long-term memory section, which is the re-read memory itself, and less the count of lines the
+///   flush saved when that count is the side's own flush's writes ([`summary_request`]). What it summarizes
+///   ends before the last user turn, so the flush exchange the model answered differently is not in it.
 fn refresh_explains(
     turn: u64,
     reference: &[GrowingCall],
@@ -351,15 +453,7 @@ fn refresh_explains(
     }
     let shown = view_of(&a[m]);
     let before = call_ids(shown);
-    let old = |msg: &&Message| {
-        let fresh = |id: &str| !before.contains(id);
-        let calls = msg.tool_calls();
-        match msg.role() {
-            Role::Assistant => calls.is_empty() || !calls.iter().all(|c| fresh(&c.id)),
-            Role::Tool => !fresh(msg.tool_call_id()),
-            _ => !(msg.is_notice() && msg.content.starts_with("memory: ") && !shown.contains(msg)),
-        }
-    };
+    let fresh = |id: &str| !before.contains(id);
     let unmeasured = |msg: &Message| {
         if msg.role() == Role::Assistant && !shown.contains(msg) {
             msg.clone().with_usage(None)
@@ -367,13 +461,51 @@ fn refresh_explains(
             msg.clone()
         }
     };
+    // What the process put in `view`: everything but the new calls, their results, and the notices of the
+    // writes they made.
+    let of_the_process = |view: &[Message]| -> Vec<Message> {
+        let mut writes = new_writes(view, &fresh);
+        let mut out = Vec::new();
+        for msg in view {
+            let calls = msg.tool_calls();
+            let keep = match msg.role() {
+                Role::Assistant => calls.is_empty() || !calls.iter().all(|c| fresh(&c.id)),
+                Role::Tool => !fresh(msg.tool_call_id()),
+                _ if msg.is_notice() && !shown.contains(msg) => {
+                    match writes.iter().position(|w| w.made(&msg.content)) {
+                        Some(i) => {
+                            writes.remove(i);
+                            false
+                        }
+                        None => true,
+                    }
+                }
+                _ => true,
+            };
+            if keep {
+                out.push(unmeasured(msg));
+            }
+        }
+        out
+    };
     let process = |cs: &[GrowingCall]| -> Vec<(CallKind, Vec<Message>)> {
         let mut out: Vec<(CallKind, Vec<Message>)> = Vec::new();
-        for c in cs {
+        for (i, c) in cs.iter().enumerate() {
             let view: Vec<Message> = if c.kind == CallKind::Summary {
-                Vec::new()
+                // The flush it follows is read off the call before it, which carries every round's result.
+                let writes = i
+                    .checked_sub(1)
+                    .map_or(0, |p| flush_writes(view_of(&cs[p])));
+                c.messages
+                    .iter()
+                    .map(|msg| {
+                        let mut msg = msg.clone();
+                        msg.content = summary_request(&msg.content, writes);
+                        msg
+                    })
+                    .collect()
             } else {
-                view_of(c).iter().filter(old).map(unmeasured).collect()
+                of_the_process(view_of(c))
             };
             if c.kind == CallKind::Followup && out.last().is_some_and(|(_, v)| *v == view) {
                 continue;
@@ -673,13 +805,17 @@ fn flush_accounting(records: &[serde_json::Value]) -> Vec<(usize, bool)> {
 }
 
 /// Invariant 0, read off the log: every user turn's number in the order it was saved (a flush notice is not a
-/// user turn), and the turns whose final reply — an assistant message without tool calls, not interrupted —
-/// was saved before the next user turn.
+/// user turn), and the turns whose final reply — an assistant message without tool calls, not interrupted,
+/// naming the turn back (`[#n] …`) — was saved inside the turn. A turn ends at the next user message OR the
+/// next notice: what the model answers after a flush notice (`[#n] Saved.`, named after the last user turn
+/// too) is the flush's reply, never the user's.
 fn saved_turns(records: &[serde_json::Value]) -> (Vec<u64>, BTreeSet<u64>) {
     let (mut asked, mut answered, mut current) = (Vec::new(), BTreeSet::new(), None);
     for r in records {
         let content = r["content"].as_str().unwrap_or("");
-        if r["role"] == "user" && r["notice"] != true {
+        if r["role"] == "user" && r["notice"] == true {
+            current = None;
+        } else if r["role"] == "user" {
             current = content
                 .strip_prefix('#')
                 .and_then(|t| t.split(' ').next())
@@ -689,11 +825,37 @@ fn saved_turns(records: &[serde_json::Value]) -> (Vec<u64>, BTreeSet<u64>) {
             && r["interrupted"] != true
             && r["tool_calls"].as_array().is_none_or(Vec::is_empty)
             && let Some(n) = current
+            && content.starts_with(&format!("[#{n}] "))
         {
             answered.insert(n);
         }
     }
     (asked, answered)
+}
+
+/// Invariant 0's verdict over the main line's log.
+fn every_turn_answered(records: &[serde_json::Value]) -> Verdict {
+    let (asked, answered) = saved_turns(records);
+    let every: BTreeSet<u64> = (1..=TURNS).collect();
+    let twice = asked.len() - asked.iter().collect::<BTreeSet<_>>().len();
+    let missing: Vec<u64> = every.difference(&answered).copied().collect();
+    verdict(
+        "0 every turn saved with its reply",
+        twice == 0 && asked.iter().copied().collect::<BTreeSet<_>>() == every && answered == every,
+        format!(
+            "{} of {TURNS} turns saved with a final reply, {} user turns in the log, {twice} twice{}",
+            answered.len(),
+            asked.len(),
+            if missing.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "; missing or unanswered: {:?}",
+                    &missing[..missing.len().min(20)]
+                )
+            }
+        ),
+    )
 }
 
 /// One invariant's verdict: what was measured, and whether it held.
@@ -724,24 +886,7 @@ fn verdicts(run: &Run) -> Vec<Verdict> {
 
     // 0. Every user turn is in the log once, answered: the main line's turns, read off the disk — not the
     // calls, which include the no-restart references, and not a count of lines.
-    let (asked, answered) = saved_turns(records);
-    let every: BTreeSet<u64> = (1..=TURNS).collect();
-    let twice = asked.len() - asked.iter().collect::<BTreeSet<_>>().len();
-    let missing: Vec<u64> = every.difference(&answered).copied().collect();
-    out.push(verdict(
-        "0 every turn saved with its reply",
-        twice == 0 && answered == every,
-        format!(
-            "{} of {TURNS} turns saved with a final reply, {} user turns in the log, {twice} twice{}",
-            answered.len(),
-            asked.len(),
-            if missing.is_empty() {
-                String::new()
-            } else {
-                format!("; missing or unanswered: {:?}", &missing[..missing.len().min(20)])
-            }
-        ),
-    ));
+    out.push(every_turn_answered(records));
 
     // 1. The log only grows: every look at it (one per provider call, one per restart) found the bytes of the
     // last look unchanged at its head.
@@ -1052,7 +1197,7 @@ fn only_the_models_answer_to_the_reread_block_is_excused() {
         round.push(remove(old));
         round.push(Message::tool_result(
             &remove(old).tool_calls()[0],
-            "saved",
+            "saved to MEMORY.md ## User (1 / 8 KiB)",
             false,
         ));
         let mut turn = round.clone();
@@ -1087,6 +1232,164 @@ fn only_the_models_answer_to_the_reread_block_is_excused() {
     let mut other = side("memory as re-read", "fact-u2;", &written, false);
     other[2].kind = CallKind::Summary;
     assert!(refresh_explains(2, &held, &other, 0).is_err());
+
+    // A `memory:` notice the new write did not make — another place, or another line — is the process's.
+    for invented in [
+        "memory: invented unrelated process notice",
+        "memory: MEMORY.md ## User -1 line: fact-u9;",
+    ] {
+        let extra = [Message::notice(invented)];
+        let odd = side("memory as re-read", "fact-u2;", &extra, false);
+        let err = refresh_explains(2, &held, &odd, 0).expect_err(invented);
+        assert!(err.contains("(Turn) differs"), "{err}");
+    }
+    // Nor does one write excuse two notices.
+    let twice = [written[0].clone(), written[0].clone()];
+    let doubled = side("memory as re-read", "fact-u2;", &twice, false);
+    assert!(refresh_explains(2, &held, &doubled, 0).is_err());
+}
+
+/// A call of `kind` in a unit test of the judges.
+fn test_call(kind: CallKind, messages: Vec<Message>) -> GrowingCall {
+    GrowingCall {
+        kind,
+        turn: 1,
+        messages,
+        tools: Vec::new(),
+        input: 0,
+        output: 0,
+        refused: false,
+    }
+}
+
+/// A `memory:` notice with no new tool call behind it is not the model's answer: the two sides share their
+/// older history and differ only in the memory block, and one of them has a notice nothing wrote.
+#[test]
+fn a_memory_notice_no_new_write_made_is_not_excused() {
+    let side = |block: &str, extra: &[Message]| {
+        let head = vec![
+            Message::system(block),
+            Message::user("#1 tell me about item 1."),
+            Message::assistant("[#1] Here is item 1."),
+            Message::notice(FLUSH_MARK),
+        ];
+        let mut turn = head.clone();
+        turn.push(Message::assistant("[#1] Nothing to keep."));
+        turn.extend_from_slice(extra);
+        turn.push(Message::user("#2 tell me about item 2."));
+        vec![
+            test_call(CallKind::Flush, head),
+            test_call(CallKind::Turn, turn),
+        ]
+    };
+    let held = side("memory as held", &[]);
+    assert_eq!(
+        refresh_explains(2, &held, &side("memory as re-read", &[]), 0),
+        Ok(())
+    );
+    let invented = side(
+        "memory as re-read",
+        &[Message::notice("memory: invented unrelated process notice")],
+    );
+    let err = refresh_explains(2, &held, &invented, 0).expect_err("a notice nothing wrote");
+    assert!(err.contains("(Turn) differs"), "{err}");
+}
+
+/// A summary pass is compared on the history it was handed, not by kind: with the older history the same on
+/// both sides and only the memory block re-read, a summary request whose history is lost is the process's —
+/// while one that differs only in its long-term memory section (the re-read memory) is not.
+#[test]
+fn a_summary_request_that_lost_its_history_is_not_excused() {
+    let summary = |memory: &str, conversation: &str| {
+        format!(
+            "Summarize.{MEMORY_SECTION}{memory}\n--- CONVERSATION START ---\n{conversation}--- CONVERSATION END ---"
+        )
+    };
+    let old = "User: #1 tell me about item 1.\nAssistant: [#1] Here is item 1.\n";
+    let side = |block: &str, request: String| {
+        let head = vec![
+            Message::system(block),
+            Message::user("#1 tell me about item 1."),
+            Message::assistant("[#1] Here is item 1."),
+            Message::notice(FLUSH_MARK),
+        ];
+        let mut turn = head.clone();
+        turn.push(Message::assistant("[#1] Nothing to keep."));
+        turn.push(Message::user("#2 tell me about item 2."));
+        vec![
+            test_call(CallKind::Flush, head),
+            test_call(CallKind::Summary, vec![Message::user(request)]),
+            test_call(CallKind::Turn, turn),
+        ]
+    };
+    let held = side("memory as held", summary("- [user] fact-u1; a", old));
+    let reread = side("memory as re-read", summary("- [user] fact-u2; b", old));
+    assert_eq!(refresh_explains(2, &held, &reread, 0), Ok(()));
+
+    let lost = side(
+        "memory as re-read",
+        summary("- [user] fact-u2; b", "CORRUPTED: all old history lost\n"),
+    );
+    assert!(compare(2, &held, &lost).is_some());
+    assert_eq!(memory_differs_at(2, &held, &lost), Some(0));
+    let err = refresh_explains(2, &held, &lost, 0).expect_err("a summary of lost history");
+    assert!(err.contains("(Summary) differs"), "{err}");
+
+    // Cut a message from what the summary pass is handed: also the process's.
+    let cut = side(
+        "memory as re-read",
+        summary("- [user] fact-u2; b", "User: #1 tell me about item 1.\n"),
+    );
+    assert!(refresh_explains(2, &held, &cut, 0).is_err());
+
+    // A count of saved lines the side's flush did not make (it wrote nothing): the process's.
+    let miscounted = side(
+        "memory as re-read",
+        summary("- [user] fact-u2; b", old).replacen(
+            "Summarize.",
+            "Summarize. The memory flush just before this compaction saved 2 lines.",
+            1,
+        ),
+    );
+    assert!(refresh_explains(2, &held, &miscounted, 0).is_err());
+}
+
+/// Invariant 0 is the user's turn answered, not any reply after it: turns whose only reply without tool calls
+/// is the flush's (`[#n] Saved.` after the flush notice) fail, while the same log with the user's own final
+/// reply in each turn passes.
+#[test]
+fn a_flush_reply_does_not_answer_the_users_turn() {
+    use serde_json::json;
+    let log = |answered: bool| {
+        let mut records = Vec::new();
+        for n in 1..=TURNS {
+            records
+                .push(json!({"role": "user", "content": format!("#{n} tell me about item {n}.")}));
+            records.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": format!("t-{n}-0add"), "name": "remember", "arguments": {}}]}));
+            records.push(json!({"role": "tool", "content": "saved to MEMORY.md ## User (1 / 8 KiB)", "tool_call_id": format!("t-{n}-0add")}));
+            if answered {
+                records.push(json!({"role": "assistant", "content": format!("[#{n}] Saved.")}));
+            }
+            records.push(json!({"role": "user", "notice": true, "content": FLUSH_MARK}));
+            records.push(json!({"role": "assistant", "content": "Saved the memory."}));
+            records.push(json!({"role": "assistant", "content": format!("[#{n}] Saved.")}));
+        }
+        records
+    };
+    let bad = every_turn_answered(&log(false));
+    assert!(!bad.held, "{}", bad.detail);
+    assert!(bad.detail.starts_with("0 of 2000 turns"), "{}", bad.detail);
+    let good = every_turn_answered(&log(true));
+    assert!(good.held, "{}", good.detail);
+
+    // A turn missing from the log, or saved twice, fails too.
+    let mut records = log(true);
+    records.retain(|r| r["content"] != "#5 tell me about item 5.");
+    assert!(!every_turn_answered(&records).held);
+    let mut records = log(true);
+    records.push(json!({"role": "user", "content": "#5 tell me about item 5."}));
+    records.push(json!({"role": "assistant", "content": "[#5] Here is item 5."}));
+    assert!(!every_turn_answered(&records).held);
 }
 
 /// The mechanism in the smallest window a bot runs in, with a model that keeps its memory short (at most 12
