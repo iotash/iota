@@ -89,6 +89,8 @@ pub(crate) struct SessionSlot {
     /// Where generated images are saved, resolved LAZILY: a bundle materialises on first
     /// use, and an image-less chat must not create one (chat/images.go:115).
     pub(crate) images_dir: ImagesDir,
+    /// A bot's pending memory-write notices (`None` outside a bot's session).
+    pub(crate) memory_writes: Option<crate::agents::memory::WriteLog>,
 }
 
 impl SessionSlot {

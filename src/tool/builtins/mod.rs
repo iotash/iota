@@ -6,4 +6,5 @@
 pub mod agent;
 pub mod ask;
 pub mod code;
+pub mod memory;
 pub mod shell;

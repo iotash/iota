@@ -145,6 +145,7 @@ impl Fixture {
                 scope: None,
                 bot: false,
                 notices: Vec::new(),
+                memory_writes: None,
             },
             params: iota::session::LayeredParams::default(),
             layers: iota::cmd::ParamLayers::default(),
@@ -540,6 +541,7 @@ async fn save_reports_the_minted_session_to_herdr() {
         scope: None,
         bot: false,
         notices: Vec::new(),
+        memory_writes: None,
     };
     params.pres = herdr_presenter(&mock, "w1:p2");
     iota::repl::run(params).await.expect("clean exit");

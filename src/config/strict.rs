@@ -357,6 +357,11 @@ mod tests {
             check("agents:\n  a: {model: m, tools: {nosuchset: {}}}\n"),
             "agents.a.tools.nosuchset: unknown toolset (want shell, skills, code, ask)"
         );
+        // A bot's memory set comes with the bot; it is not configurable (bot-mode.md §3.3).
+        assert_eq!(
+            check("agents:\n  a: {model: m, mode: bot, tools: {memory: {}}}\n"),
+            "agents.a.tools.memory: unknown toolset (want shell, skills, code, ask)"
+        );
         assert_eq!(
             check("agents:\n  a: {model: m, tools: {agent: {}}}\n"),
             "agents.a.tools.agent: the `agent` toolset is now called `skills` (the word `agent` names a config layer)"

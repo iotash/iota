@@ -329,6 +329,9 @@ pub struct ToolEnv {
     /// background job. `None` is the tool's own [`builtins::shell::SHELL_YIELD`]; the binary edge sets it
     /// from the `IOTA_SHELL_YIELD` test hook, and a test sets it directly.
     pub shell_yield: Option<std::time::Duration>,
+    /// Some only for a bot's own session (docs/design/bot-mode.md §3.3): the `memory` set's `remember`
+    /// writes into it, and the chat loop records the writes it announces.
+    pub memory: Option<crate::agents::memory::BotMemory>,
 }
 
 impl ToolEnv {

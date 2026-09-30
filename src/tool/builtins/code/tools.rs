@@ -653,7 +653,7 @@ fn numbered_window(content: &str, args: &JsonObject, display: &str) -> Result<St
 /// file header would duplicate the title, and the display is for the user's eyes — the
 /// model-facing result text stays untouched (a full diff there costs tokens). An empty
 /// diff posts nothing; headless runs inject no slot, so the post is a no-op there.
-fn post_diff(cx: &RunCtx, display: &str, old: &str, new: &str) {
+pub(crate) fn post_diff(cx: &RunCtx, display: &str, old: &str, new: &str) {
     let unified = super::udiff::unified(display, display, old, new);
     let mut lines: Vec<&str> = if unified.is_empty() {
         Vec::new()

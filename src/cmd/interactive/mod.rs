@@ -161,6 +161,8 @@ struct Wiring {
     bot: bool,
     /// Dim lines the transcript opens with.
     notices: Vec<String>,
+    /// A bot's memory writes, for the loop to record (bot-mode.md §3.7).
+    memory_writes: Option<crate::agents::memory::WriteLog>,
 }
 
 /// `TUI_DESIGN` §8.4 steps 2, 3, 5 and 6, in one function so their order is a local invariant.
@@ -356,6 +358,7 @@ pub(crate) async fn run_interactive(
             scope,
             bot: wiring.bot,
             notices: wiring.notices,
+            memory_writes: wiring.memory_writes,
         },
         params: wiring.params,
         layers: wiring.layers,
@@ -445,6 +448,8 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
     // under, and a resume RESTORES those values rather than evaluating the config again.
     let mut resumed_meta: Option<crate::session::SessionMeta> = None;
     let mut notices = Vec::new();
+    // The memory a bot's own session writes into (bot-mode.md §3.3): its `remember` tool is built over it.
+    let mut memory: Option<crate::agents::memory::BotMemory> = None;
     // `iota run <bot>` (bot-mode.md §2.2): the bot's one session, resumed or created under its pointer. A
     // resume names a session of its own and takes the branch below.
     let bot = settings.mode.is_bot() && !resume_given;
@@ -483,6 +488,10 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         history = opened.history;
         notices = opened.notices;
         writer = Some(opened.writer);
+        memory = Some(crate::agents::memory::BotMemory::new(
+            &settings.name,
+            bots.join(&settings.name),
+        ));
     } else if resume_given {
         // root.go:294-306: a bare `iota resume` took the picker; an id resolves as a prefix.
         let id = match &settings.resume {
@@ -584,6 +593,18 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
     let params = resolve_params(settings, provider, kind, resumed_meta.as_ref(), io)?;
 
     // root.go:390 + 588-592.
+    let memory_writes = memory.as_ref().map(|m| m.writes().clone());
+    let bot_env;
+    let tool_env = match memory {
+        Some(memory) => {
+            bot_env = ToolEnv {
+                memory: Some(memory),
+                ..tool_env.clone()
+            };
+            &bot_env
+        }
+        None => tool_env,
+    };
     let dispatch = crate::cmd::assemble::build_dispatcher(
         &settings.resolved.agent,
         &settings.resolved.model,
@@ -622,6 +643,7 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         title_provider,
         bot,
         notices,
+        memory_writes,
     })
 }
 

@@ -4,6 +4,7 @@
 //! composition puts ahead of the user's system prompt lives in `harness`.
 
 pub mod harness;
+pub mod memory;
 pub mod skills;
 
 use std::{

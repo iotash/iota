@@ -122,6 +122,7 @@ impl Fixture {
             scope: None,
             bot: false,
             notices: Vec::new(),
+            memory_writes: None,
         }
     }
 }
@@ -273,6 +274,7 @@ async fn banner_offers_save_for_an_ephemeral_chat() {
         scope: None,
         bot: false,
         notices: Vec::new(),
+        memory_writes: None,
     };
     iota::repl::run(f.params(provider("gpt-4o", Ok(vec![])), session))
         .await
@@ -939,6 +941,7 @@ async fn save_mints_late_and_flushes_the_backlog() {
         scope: None,
         bot: false,
         notices: Vec::new(),
+        memory_writes: None,
     };
     let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
     params.params.context_window = iota::session::Param::config(200_000);
@@ -1284,6 +1287,7 @@ async fn persist_warns_and_retries_the_backlog() {
             scope: None,
             bot: false,
             notices: Vec::new(),
+            memory_writes: None,
         },
         params: iota::session::LayeredParams::default(),
         layers: iota::cmd::ParamLayers::default(),
@@ -1369,6 +1373,7 @@ async fn a_bot_run_has_no_session_command_and_keeps_its_name() {
         scope: None,
         bot: true,
         notices: vec!["system prompt updated from config".to_owned()],
+        memory_writes: None,
     };
     let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
     params.title_provider = Some(Box::new(
@@ -1479,4 +1484,102 @@ async fn session_picker_hides_bot_sessions() {
     );
     assert_eq!(panels[1].items.len(), 1, "{:?}", panels[1].items);
     assert!(panels[1].items[0].starts_with("other chat · "));
+}
+
+/// bot-mode.md §3.7 item 1: a turn that wrote to the bot's memory is followed by ONE notice record — in the
+/// history and in the log, `notice: true` — and the next turn does not record it again.
+#[tokio::test]
+async fn a_memory_write_is_recorded_once_after_its_turn() {
+    let f = Fixture::new(vec![
+        input("remember that I like tabs"),
+        Reply::Queued(Vec::new()), // the round boundary's steer drain: nothing typed meanwhile
+        input("again"),
+        Reply::Interrupted,
+    ]);
+    let (store, bots) = bot_store(&f);
+    let writer = bot_writer(&store, &bots);
+    let dir = writer.dir().to_path_buf();
+    let memory = iota::agents::memory::BotMemory::new("coder", bots.join("coder"));
+    let env = iota::tool::ToolEnv {
+        memory: Some(memory.clone()),
+        ..iota::tool::ToolEnv::default()
+    };
+    let mut registry = iota::tool::Registry::default();
+    registry.enable_set(&env, iota::tool::sets::MEMORY_SET, &mut |w| {
+        panic!("unexpected warning {w}")
+    });
+    let p = FakeProvider::new().with_tools().rounds([
+        iota::testing::Round::calls(vec![iota::testing::tool_call_with(
+            "c1",
+            "remember",
+            &[
+                ("action", "add"),
+                ("text", "prefers tabs"),
+                ("source", "user"),
+            ],
+        )]),
+        iota::testing::Round::text("noted"),
+        iota::testing::Round::text("second"),
+    ]);
+    let session = SessionCtx {
+        writer: Some(writer),
+        store,
+        new_session: None,
+        scope: None,
+        bot: true,
+        notices: Vec::new(),
+        memory_writes: Some(memory.writes().clone()),
+    };
+    let mut params = f.params(p, session);
+    params.dispatch = Arc::new(registry);
+    iota::repl::run(params).await.expect("exit");
+
+    let today = iota::agents::harness::today();
+    let notice = format!("memory: MEMORY.md ## User +1 line: [user] prefers tabs ({today})");
+    let recs: Vec<serde_json::Value> = std::fs::read_to_string(dir.join("messages.jsonl"))
+        .expect("log")
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("record"))
+        .collect();
+    let shape: Vec<(String, String, bool)> = recs
+        .iter()
+        .filter(|r| r["role"] != "system")
+        .map(|r| {
+            (
+                r["role"].as_str().unwrap_or_default().to_owned(),
+                r["content"].as_str().unwrap_or_default().to_owned(),
+                r["notice"].as_bool().unwrap_or(false),
+            )
+        })
+        .filter(|(role, _, _)| role != "tool")
+        .collect();
+    let row =
+        |role: &str, content: &str, notice: bool| (role.to_owned(), content.to_owned(), notice);
+    assert_eq!(
+        shape,
+        vec![
+            row("user", "remember that I like tabs", false),
+            row("assistant", "", false),
+            row("assistant", "noted", false),
+            row("user", &notice, true),
+            row("user", "again", false),
+            row("assistant", "second", false),
+        ]
+    );
+    // The transcript shows it as the dim line a resume replays it as.
+    assert_eq!(
+        printed(&f.ui)
+            .iter()
+            .filter(|l| l.contains(&notice))
+            .count(),
+        1,
+        "{:?}",
+        printed(&f.ui)
+    );
+    let file = std::fs::read_to_string(memory.path()).expect("MEMORY.md");
+    assert!(
+        file.contains(&format!("- [user] prefers tabs ({today})")),
+        "{file}"
+    );
+    assert!(memory.writes().take().is_empty());
 }

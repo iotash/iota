@@ -116,6 +116,7 @@ impl Fixture {
                 scope: None,
                 bot: false,
                 notices: Vec::new(),
+                memory_writes: None,
             },
             params: iota::session::LayeredParams::default(),
             layers: iota::cmd::ParamLayers::default(),

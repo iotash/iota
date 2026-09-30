@@ -121,6 +121,9 @@ pub struct SessionCtx {
     /// learned about the session that the model's user should see (a bot's pointer that never saved, a
     /// system prompt taken over from the config).
     pub notices: Vec<String>,
+    /// A bot's memory writes (bot-mode.md §3.7): what the `remember` tool announced during a turn, recorded
+    /// by the loop as notice messages once the turn is over. `None` outside a bot's session.
+    pub memory_writes: Option<crate::agents::memory::WriteLog>,
 }
 
 /// Everything `run()` needs (`TUI_CONTRACTS` §7).
@@ -229,6 +232,24 @@ impl Repl {
         self.session.persisted = self.conv.history.len();
     }
 
+    /// Records the memory writes the turn just made (bot-mode.md §3.7 item 1): one dim line and one notice
+    /// message each, persisted at once so the log says when what was written. The queue is drained, so a
+    /// write is recorded exactly once.
+    pub(crate) fn record_memory_writes(&mut self) {
+        let Some(log) = &self.session.memory_writes else {
+            return;
+        };
+        let written = log.take();
+        if written.is_empty() {
+            return;
+        }
+        for notice in written {
+            self.handles.tr.notice(&notice);
+            self.conv.history.push(Message::notice(notice));
+        }
+        self.persist_turn();
+    }
+
     /// Tells the hosts which session the chat persists into — the live writer's id and bundle
     /// directory. Called wherever the writer is settled: at start-up, after `/save` mints one, and
     /// after `/session` swaps it. Nothing is said for an ephemeral chat.
@@ -296,6 +317,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         scope,
         bot,
         notices,
+        memory_writes,
     } = session;
 
     // ---- capability probes (chat/run.go:53-55) ----
@@ -486,6 +508,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             title_provider,
             title_task: None,
             images_dir,
+            memory_writes,
         },
         handles: UiHandles {
             ui: Arc::clone(&ui),
@@ -813,6 +836,8 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 });
             }
         }
+        // Whatever became of the turn, a memory write it made is on disk: it is recorded now.
+        repl.record_memory_writes();
     };
     // The loop is over: a background job has no one left to report to, and `background` never promised to
     // outlive iota. `kill_all` is synchronous `killpg`, so nothing depends on a task being polled again.

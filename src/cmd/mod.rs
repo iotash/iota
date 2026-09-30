@@ -354,7 +354,12 @@ fn assemble_tools(
     // its hosts are detected: they have facts for `<environment>` too.
     let harness = assemble::HarnessInputs {
         env: assemble::harness_environment(dirs, project_root.as_deref(), inv.config.as_deref()),
-        toolsets: assemble::enabled_toolsets(&settings.resolved.agent.tools),
+        toolsets: assemble::enabled_toolsets(
+            &settings.resolved.agent.tools,
+            // The bot's own session, the same test as the interactive branch's (`iota resume` names a session
+            // of its own).
+            settings.mode.is_bot() && inv.resume.is_none(),
+        ),
     };
 
     Ok(ToolAssembly {
