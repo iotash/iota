@@ -17,6 +17,7 @@
 //! [`HostDirs`](crate::app::HostDirs), and everything is synchronous `std::fs` under an fsync discipline —
 //! no async runtime and no HTTP client in this module.
 
+pub(crate) mod bot;
 pub(crate) mod error;
 pub(crate) mod id;
 pub(crate) mod loader;
@@ -29,13 +30,14 @@ pub(crate) mod store;
 pub(crate) mod tuning;
 pub(crate) mod writer;
 
+pub use bot::{BOT_POINTER_FILE, BOT_POINTER_VERSION, BotPointer, valid_bot_name};
 pub use error::SessionError;
 pub use id::{SESSION_ID_ALPHABET, SESSION_ID_LENGTH, resolve_in};
 pub use loader::{
     INTERRUPTED_RESULT, LoadedLog, MAX_LOG_LINE, Session, load_full_history, load_log,
     record_to_message, repair_tail, scan_records, summary_preamble,
 };
-pub use lock::LOCK_FILE;
+pub use lock::{BOT_LOCK_FILE, LOCK_FILE};
 pub use meta::{META_FILE, META_TMP_FILE, SESSION_SCHEMA_VERSION, SessionMeta, now_rfc3339};
 pub use params::{LayeredParams, Param, ParamSource, ParamSources};
 pub use rawcodec::{blob_to_raw, raw_to_blob};
@@ -43,8 +45,8 @@ pub use record::{
     ATTACHMENTS_DIR, LOG_FILE, SessionAttachment, SessionRaw, SessionRecord, SessionToolCall,
     SessionUsage,
 };
-pub use store::{NewSession, PROJECTS_DIR_NAME, SessionInfo, SessionStore};
+pub use store::{BotOpen, NewSession, PROJECTS_DIR_NAME, SessionInfo, SessionStore};
 pub use tuning::{
     Overrides, apply_session_tuning, replay_session_settings, warn_if_session_agent_is_gone,
 };
-pub use writer::SessionWriter;
+pub use writer::{OnCreated, SessionWriter};

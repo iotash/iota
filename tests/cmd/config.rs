@@ -152,6 +152,38 @@ agents:
     assert_eq!(cfg.agents["f"].notify, Some(false));
 }
 
+/// bot-mode.md §1.1, §2.2: a bot's name becomes a directory, and a bot is never ephemeral — both refused by
+/// the config, at `agents.<name>`. The same name and `no_save:` are fine on a chat or an agent.
+#[test]
+fn a_bot_needs_a_directory_name_and_a_saved_session() {
+    for bad in [".coder", "a b", "-x", "café"] {
+        let err = parse(&format!(
+            "agents:\n  \"{bad}\": {{model: \"openai:x\", mode: bot}}\n"
+        ))
+        .expect_err(bad);
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "agents.{bad}: a bot's name must match ^[A-Za-z0-9][A-Za-z0-9._-]{{0,63}}$ (it names ~/.iota/bots/<name>)"
+            )
+        );
+        parse(&format!(
+            "agents:\n  \"{bad}\": {{model: \"openai:x\", mode: agent}}\n"
+        ))
+        .expect("any name is fine outside bot mode");
+    }
+    parse("agents:\n  my.bot_2-x: {model: \"openai:x\", mode: bot}\n").expect("a valid bot name");
+
+    let err = parse("agents:\n  coder: {model: \"openai:x\", mode: bot, no_save: true}\n")
+        .expect_err("no_save on a bot");
+    assert_eq!(
+        err.to_string(),
+        "agents.coder: no_save contradicts mode: bot"
+    );
+    parse("agents:\n  coder: {model: \"openai:x\", mode: agent, no_save: true}\n")
+        .expect("no_save is fine on an agent");
+}
+
 // The prompt belongs to the agent now.
 #[test]
 fn the_system_prompt_resolves_from_system_then_system_file() {

@@ -71,6 +71,23 @@ pub fn resolve_run(
         None => cfg.default_agent().ok_or(ArgsError::NoAgent)?,
     };
     let mut resolved = resolve_agent(cfg, name)?;
+    // bot-mode.md §2.2: running a bot means ITS session, interactively and saved. `iota resume` names a
+    // session of its own and is judged by the session's owner instead (`SessionStore::check_not_bot_owned`).
+    if resolved.agent.mode.is_bot() && inv.resume.is_none() {
+        if inv.args.message.is_some() {
+            return Err(ArgsError::BotHeadless {
+                name: name.to_owned(),
+            }
+            .into());
+        }
+        if inv.args.no_save {
+            return Err(crate::config::ConfigError::Agent(
+                name.to_owned(),
+                "--no-save contradicts mode: bot".to_owned(),
+            )
+            .into());
+        }
+    }
     if let Some(flag) = &inv.args.model {
         apply_model_flag(&mut resolved, cfg, flag, warn);
     }

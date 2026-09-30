@@ -103,6 +103,8 @@ impl Fixture {
                 store: self.store.clone(),
                 new_session: None,
                 scope: None,
+                bot: false,
+                notices: Vec::new(),
             },
             params: iota::session::LayeredParams::default(),
             layers: iota::cmd::ParamLayers::default(),

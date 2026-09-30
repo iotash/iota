@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 
 use crate::session::error::SessionError;
 use crate::session::loader::MAX_LOG_LINE;
-use crate::session::lock::{BundleLock, lock_bundle};
+use crate::session::lock::{HeldLock, lock_bundle};
 use crate::session::meta::{SessionMeta, write_0644};
 use crate::session::rawcodec::raw_to_blob;
 use crate::session::record::{
@@ -23,9 +23,11 @@ use crate::session::record::{
     SessionRaw, SessionRecord, SessionToolCall,
 };
 
+/// What [`SessionWriter::on_created`] runs once the bundle is on disk.
+pub type OnCreated = Box<dyn FnMut() -> Result<(), SessionError> + Send>;
+
 /// Persists a live session: the bundle directory, its `meta.json`, the append-only `messages.jsonl` and
 /// the content-addressed attachment store.
-#[derive(Debug)]
 pub struct SessionWriter {
     dir: PathBuf,
     meta: SessionMeta,
@@ -40,7 +42,28 @@ pub struct SessionWriter {
     usage: Usage,
     /// The bundle's single-writer lock (`<dir>/.lock`), taken when the writer first holds the files and
     /// released when it drops — `None` while the bundle is still pending.
-    lock: Option<BundleLock>,
+    lock: Option<HeldLock>,
+    /// A bot's lock (`<bots>/<name>/lock`), held for as long as the writer lives — the bot runs exactly as
+    /// long as its session is open. `None` outside bot mode.
+    bot_lock: Option<HeldLock>,
+    /// Runs once the bundle is on disk; kept (and retried by the next write) until it succeeds.
+    on_created: Option<OnCreated>,
+}
+
+impl std::fmt::Debug for SessionWriter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionWriter")
+            .field("dir", &self.dir)
+            .field("meta", &self.meta)
+            .field("kind", &self.kind)
+            .field("conv_count", &self.conv_count)
+            .field("created", &self.created)
+            .field("usage", &self.usage)
+            .field("lock", &self.lock)
+            .field("bot_lock", &self.bot_lock)
+            .field("on_created", &self.on_created.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl SessionWriter {
@@ -56,6 +79,8 @@ impl SessionWriter {
             created: false,
             usage: Usage::default(),
             lock: None,
+            bot_lock: None,
+            on_created: None,
         }
     }
 
@@ -69,7 +94,7 @@ impl SessionWriter {
         file: std::fs::File,
         conv_count: usize,
         usage: Usage,
-        lock: BundleLock,
+        lock: HeldLock,
     ) -> Self {
         Self {
             dir,
@@ -80,7 +105,23 @@ impl SessionWriter {
             created: true,
             usage,
             lock: Some(lock),
+            bot_lock: None,
+            on_created: None,
         }
+    }
+
+    /// Registers `f` to run once the bundle has been materialised — right after the first write created it
+    /// (docs/design/bot-mode.md §2.2: a bot's pointer is marked `materialized` there). A failing `f` fails
+    /// that write and is tried again by the next one. On a bundle already on disk it never runs.
+    pub fn on_created(&mut self, f: OnCreated) {
+        if !self.created {
+            self.on_created = Some(f);
+        }
+    }
+
+    /// Keeps a bot's lock alive for as long as this writer lives.
+    pub(crate) fn hold_bot_lock(&mut self, lock: HeldLock) {
+        self.bot_lock = Some(lock);
     }
 
     /// The session id.
@@ -196,16 +237,20 @@ impl SessionWriter {
 
     /// Materialises the bundle on first use (`ensureCreated`, chat/session.go:363-378): `attachments/`
     /// UNCONDITIONALLY, the bundle lock, the append handle, then the first meta write (which flushes
-    /// pending setters).
+    /// pending setters) — and then the [`on_created`](Self::on_created) hook, until it has succeeded once.
     fn ensure_created(&mut self) -> Result<(), SessionError> {
-        if self.created {
-            return Ok(());
+        if !self.created {
+            std::fs::create_dir_all(self.dir.join(ATTACHMENTS_DIR))?;
+            self.lock = Some(lock_bundle(&self.dir, &self.meta.id)?);
+            self.file = Some(open_append_0644(&self.dir.join(LOG_FILE))?);
+            self.created = true;
+            self.meta.write(&self.dir)?;
         }
-        std::fs::create_dir_all(self.dir.join(ATTACHMENTS_DIR))?;
-        self.lock = Some(lock_bundle(&self.dir, &self.meta.id)?);
-        self.file = Some(open_append_0644(&self.dir.join(LOG_FILE))?);
-        self.created = true;
-        self.meta.write(&self.dir)
+        if let Some(f) = self.on_created.as_mut() {
+            f()?;
+            self.on_created = None;
+        }
+        Ok(())
     }
 
     /// Serialises one record compactly — cut down by [`fit_line`] when it would reach the reader's line

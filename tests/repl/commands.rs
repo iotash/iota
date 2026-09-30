@@ -120,6 +120,8 @@ impl Fixture {
             store: self.store.clone(),
             new_session: None,
             scope: None,
+            bot: false,
+            notices: Vec::new(),
         }
     }
 }
@@ -269,6 +271,8 @@ async fn banner_offers_save_for_an_ephemeral_chat() {
             store.create(NewSession::new(ProviderKind::OpenAi, "gpt-test"))
         })),
         scope: None,
+        bot: false,
+        notices: Vec::new(),
     };
     iota::repl::run(f.params(provider("gpt-4o", Ok(vec![])), session))
         .await
@@ -933,6 +937,8 @@ async fn save_mints_late_and_flushes_the_backlog() {
             store.create(NewSession::new(ProviderKind::OpenAi, "gpt-test"))
         })),
         scope: None,
+        bot: false,
+        notices: Vec::new(),
     };
     let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
     params.params.context_window = iota::session::Param::config(200_000);
@@ -1276,6 +1282,8 @@ async fn persist_warns_and_retries_the_backlog() {
             store,
             new_session: None,
             scope: None,
+            bot: false,
+            notices: Vec::new(),
         },
         params: iota::session::LayeredParams::default(),
         layers: iota::cmd::ParamLayers::default(),
@@ -1309,3 +1317,166 @@ fn set_mode(path: &Path, mode: u32) {
 
 #[cfg(not(unix))]
 fn set_mode(_path: &Path, _mode: u32) {}
+
+// ---------------------------------------------------------------------------
+// bot mode (docs/design/bot-mode.md §2.2, §2.7)
+// ---------------------------------------------------------------------------
+
+/// A store that knows a bots root, beside the fixture's sessions root.
+fn bot_store(f: &Fixture) -> (SessionStore, PathBuf) {
+    let bots = f
+        .store
+        .root()
+        .parent()
+        .expect("sessions root has a parent")
+        .join("bots");
+    (f.store.clone().with_bots(&bots), bots)
+}
+
+/// Opens bot `coder`'s session through the store, named after the bot the way `iota run coder` names it.
+fn bot_writer(store: &SessionStore, bots: &Path) -> SessionWriter {
+    match store
+        .open_bot(
+            &bots.join("coder"),
+            NewSession::new(ProviderKind::OpenAi, "gpt-test"),
+            ProviderKind::OpenAi,
+        )
+        .expect("open the bot")
+    {
+        iota::session::BotOpen::Fresh { mut writer, .. } => {
+            writer
+                .update_meta(|m| "coder".clone_into(&mut m.title))
+                .expect("title");
+            writer
+        }
+        iota::session::BotOpen::Resumed(writer, _) => writer,
+    }
+}
+
+/// A bot's process serves its own session only: `/session` is not in the completion row and typing it is
+/// a plain message (no picker opens). Its bundle keeps the bot's name — no placeholder, no title pass —
+/// the wiring's notices open the transcript, and the first write materialises the pointer.
+#[tokio::test]
+async fn a_bot_run_has_no_session_command_and_keeps_its_name() {
+    let f = Fixture::new(vec![input("/session"), Reply::Interrupted]);
+    let (store, bots) = bot_store(&f);
+    let writer = bot_writer(&store, &bots);
+    let dir = writer.dir().to_path_buf();
+    let session = SessionCtx {
+        writer: Some(writer),
+        store,
+        new_session: None,
+        scope: None,
+        bot: true,
+        notices: vec!["system prompt updated from config".to_owned()],
+    };
+    let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
+    params.title_provider = Some(Box::new(
+        provider("gpt-4o", Ok(vec![])).replying("A Model Title"),
+    ));
+    iota::repl::run(params).await.expect("exit");
+
+    assert!(
+        !completion_row(&f.ui).contains(&"/session".to_owned()),
+        "{:?}",
+        completion_row(&f.ui)
+    );
+    assert!(surfaces(&f.ui).is_empty(), "no picker opened");
+    assert!(
+        printed(&f.ui).contains(&"system prompt updated from config".to_owned()),
+        "{:?}",
+        printed(&f.ui)
+    );
+    let meta = iota::session::SessionMeta::read(&dir).expect("the message was persisted");
+    assert_eq!(meta.title, "coder", "never renamed after the first message");
+    let ptr = iota::session::BotPointer::read(&bots.join("coder"))
+        .expect("pointer")
+        .expect("present");
+    assert!(ptr.materialized);
+}
+
+/// §2.2: a bot's RESUMED bundle is stamped with the parameters the chat starts under (the config's, for a
+/// bot), where a normal resume leaves the meta as the session recorded it.
+#[tokio::test]
+async fn a_resumed_bot_is_stamped_with_the_running_parameters() {
+    for bot in [false, true] {
+        let f = Fixture::new(vec![Reply::Interrupted]);
+        let mut writer = f.writer();
+        writer
+            .update_meta(|m| "high".clone_into(&mut m.effort))
+            .expect("meta");
+        writer
+            .append_messages(&[Message::user("materialise")])
+            .expect("materialise");
+        let id = writer.id().to_owned();
+        let dir = writer.dir().to_path_buf();
+        drop(writer);
+        let (writer, _) = f.store.resume(&id, ProviderKind::OpenAi).expect("resume");
+        let mut session = f.session(Some(writer));
+        session.bot = bot;
+        let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
+        params.params = iota::session::LayeredParams {
+            context_window: iota::session::Param::config(400_000),
+            ..iota::session::LayeredParams::default()
+        };
+        iota::repl::run(params).await.expect("exit");
+        let meta = iota::session::SessionMeta::read(&dir).expect("meta");
+        if bot {
+            // This fake has no tuning capability, so the running effort is none at all.
+            assert_eq!(
+                meta.effort, "",
+                "the running value replaced the recorded one"
+            );
+            assert!(meta.records_params());
+        } else {
+            assert_eq!(meta.effort, "high", "a normal resume is not re-stamped");
+        }
+    }
+}
+
+/// §2.7 I1: a session a bot's pointer names is in neither tab of the normal `/session` picker.
+#[tokio::test]
+async fn session_picker_hides_bot_sessions() {
+    let f = Fixture::new(vec![
+        input("/session"),
+        Reply::Tabbed(TabbedResult {
+            cancelled: true,
+            ..TabbedResult::default()
+        }),
+        Reply::Interrupted,
+    ]);
+    let (store, bots) = bot_store(&f);
+    let mut body = bot_writer(&store, &bots);
+    body.append_messages(&[Message::user("the bot's")])
+        .expect("materialise");
+    drop(body);
+    let mut other = f.writer();
+    other
+        .append_messages(&[Message::user("someone else's")])
+        .expect("materialise");
+    other
+        .update_meta(|m| "other chat".clone_into(&mut m.title))
+        .expect("title");
+    drop(other);
+    let mut current = f.writer();
+    current
+        .append_messages(&[Message::user("hi")])
+        .expect("materialise");
+    let session = SessionCtx {
+        store,
+        ..f.session(Some(current))
+    };
+    iota::repl::run(f.params(provider("gpt-4o", Ok(vec![])), session))
+        .await
+        .expect("exit");
+
+    let panels = &surfaces(&f.ui)[0].panels;
+    assert_eq!(panels[0].items.len(), 2, "{:?}", panels[0].items);
+    assert!(
+        panels[0].items.iter().all(|r| !r.starts_with("coder · ")),
+        "{:?}",
+        panels[0].items
+    );
+    assert_eq!(panels[1].items.len(), 1, "{:?}", panels[1].items);
+    assert!(panels[1].items[0].starts_with("other chat · "));
+}

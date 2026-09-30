@@ -430,6 +430,8 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
                 .has_workspace()
                 .then_some(agent.root.as_path());
             let id = store.resolve_id(fragment, scope)?;
+            // A bot's body opens only as that bot (bot-mode.md §2.2, §2.7).
+            store.check_not_bot_owned(&id)?;
             let (writer, resumed) = store.resume(&id, kind)?;
             // The bundle records the agent it ran under; one that has since been deleted is announced, and
             // the run falls back to the provider and model the meta carries (Phase 1b step 9).

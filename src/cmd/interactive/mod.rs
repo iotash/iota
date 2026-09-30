@@ -23,6 +23,7 @@
 //! raw mode delivers Ctrl+C as a key event and the composer's cancel ladder answers it. SIGTERM still cancels
 //! the root token, which fails every facade waiter and lets the interrupt table persist the turn.
 
+mod bot;
 mod picker;
 mod title;
 
@@ -154,8 +155,12 @@ struct Wiring {
     layers: crate::config::ParamLayers,
     /// The live tool dispatcher.
     dispatch: Arc<dyn Dispatcher>,
-    /// The SECOND provider instance the async title pass runs on (`None` for image providers).
+    /// The SECOND provider instance the async title pass runs on (`None` for image providers and bots).
     title_provider: Option<Box<dyn Provider>>,
+    /// The writer is a bot's session.
+    bot: bool,
+    /// Dim lines the transcript opens with.
+    notices: Vec<String>,
 }
 
 /// `TUI_DESIGN` §8.4 steps 2, 3, 5 and 6, in one function so their order is a local invariant.
@@ -255,9 +260,13 @@ pub(crate) async fn run_interactive(
     let resume_given = inv.resume.is_some();
     // `iota resume` with no id IS the picker; `iota resume <id>` resolves the fragment instead.
     let picker_rows: Vec<SessionInfo> = if inv.resume == Some(Resume::Pick) {
-        store
+        let mut rows = store
             .list(scope.as_deref())
-            .map_err(SetupError::ListSessions)?
+            .map_err(SetupError::ListSessions)?;
+        // A bot's session opens only as that bot (bot-mode.md §2.7): the picker does not offer it.
+        let owned = store.bot_sessions();
+        rows.retain(|info| !owned.contains(&info.id));
+        rows
     } else {
         Vec::new()
     };
@@ -345,6 +354,8 @@ pub(crate) async fn run_interactive(
             store,
             new_session: wiring.new_session,
             scope,
+            bot: wiring.bot,
+            notices: wiring.notices,
         },
         params: wiring.params,
         layers: wiring.layers,
@@ -433,8 +444,46 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
     // The bundle a resume replayed, kept for the layering: it is the record of what the session was running
     // under, and a resume RESTORES those values rather than evaluating the config again.
     let mut resumed_meta: Option<crate::session::SessionMeta> = None;
+    let mut notices = Vec::new();
+    // `iota run <bot>` (bot-mode.md §2.2): the bot's one session, resumed or created under its pointer. A
+    // resume names a session of its own and takes the branch below.
+    let bot = settings.mode.is_bot() && !resume_given;
 
-    if resume_given {
+    if bot {
+        let bots = store
+            .bots_dir()
+            .ok_or(crate::session::SessionError::HomeNotDefined)?;
+        let opened = bot::open_bot_session(
+            store,
+            bots,
+            &settings.name,
+            NewSession {
+                temperature: settings.temperature,
+                base_url: settings.base_url.clone(),
+                cwd: session_cwd(ctx, scope),
+                agent: settings.resolved.agent_name.clone(),
+                ..NewSession::new(kind, provider.model())
+            },
+            settings.system.trim(),
+            &mut *provider,
+            &mut |w| io.warning(&w),
+        )?;
+        if opened.resumed {
+            let _ = writeln!(
+                io.stdout,
+                "Resumed session {} ({} messages)\n",
+                opened.writer.id(),
+                opened.history.len()
+            );
+            if let Some(notice) = &opened.repair_notice {
+                io.warning(notice);
+            }
+            let _ = io.stdout.flush();
+        }
+        history = opened.history;
+        notices = opened.notices;
+        writer = Some(opened.writer);
+    } else if resume_given {
         // root.go:294-306: a bare `iota resume` took the picker; an id resolves as a prefix.
         let id = match &settings.resume {
             Some(fragment) => store.resolve_id(fragment, scope)?,
@@ -443,6 +492,8 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         if id.is_empty() {
             return Err(SetupError::NoSessionToResume.into());
         }
+        // A bot's body opens only as that bot (bot-mode.md §2.2, §2.7).
+        store.check_not_bot_owned(&id)?;
         let (w, resumed) = store.resume(&id, kind)?;
         // The bundle records the agent it ran under; one that has since been deleted is announced, and the
         // run falls back to the provider and model the meta carries (Phase 1b step 9).
@@ -481,20 +532,7 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         writer = Some(w);
     }
 
-    // root.go:342-351: agent-mode bundles land in the project's bucket keyed by its root; normal-mode ones
-    // stay flat but still record where they started.
-    // `scope` IS the project root in agent mode (the bucket is the project).
-    let session_cwd = scope.map_or_else(
-        || {
-            ctx.env
-                .dirs
-                .cwd
-                .as_deref()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        },
-        |root| root.to_string_lossy().into_owned(),
-    );
+    let session_cwd = session_cwd(ctx, scope);
     if writer.is_none() && !ephemeral {
         writer = Some(
             store
@@ -502,7 +540,8 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
                     temperature: settings.temperature,
                     base_url: settings.base_url.clone(),
                     cwd: session_cwd.clone(),
-                    // A bot's session is flat (bot-mode.md §1.3): only `agent` buckets by project.
+                    // Only `agent` buckets by project (a bot's session is flat, bot-mode.md §1.3 — and
+                    // opened above).
                     project: settings.mode == AgentMode::Agent,
                     agent: settings.resolved.agent_name.clone(),
                     ..NewSession::new(kind, provider.model())
@@ -541,6 +580,7 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
 
     // root.go:365-385, widened to all four layered parameters: a resumed bundle's own values (with the
     // sources it recorded), else the two config layers, else the built-in defaults.
+    // A bot's resumed meta is not consulted: its parameters come from the config (bot-mode.md §2.2).
     let params = resolve_params(settings, provider, kind, resumed_meta.as_ref(), io)?;
 
     // root.go:390 + 588-592.
@@ -556,7 +596,8 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
     // root.go:402-412: the async title pass runs while a turn is still streaming and provider instances keep
     // per-call state, so titles ride their own instance. Dedicated image providers get none — asked for a
     // title they would paint one.
-    let title_provider = if provider.as_image_gen_tunable().is_some() {
+    // A bot's session is named after the bot and never titled (bot-mode.md §2.2).
+    let title_provider = if bot || provider.as_image_gen_tunable().is_some() {
         None
     } else {
         Some(crate::provider::new_provider(
@@ -579,7 +620,26 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         layers: crate::config::ParamLayers::new(cfg, &settings.resolved),
         dispatch,
         title_provider,
+        bot,
+        notices,
     })
+}
+
+/// root.go:342-351: the directory a new bundle records. Agent-mode bundles land in the project's bucket
+/// keyed by its root — `scope` IS that root (the bucket is the project); normal-mode ones stay flat but
+/// still record where they started.
+fn session_cwd(ctx: &RunContext, scope: Option<&std::path::Path>) -> String {
+    scope.map_or_else(
+        || {
+            ctx.env
+                .dirs
+                .cwd
+                .as_deref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        },
+        |root| root.to_string_lossy().into_owned(),
+    )
 }
 
 /// root.go:365-385, generalised to the four layered parameters (brain page `model-param-layering`): a

@@ -1,5 +1,7 @@
-//! The bundle's single-writer lock (docs/design/bot-mode.md §2.3): `<bundle>/.lock`, held by whichever
-//! process owns the bundle's [`SessionWriter`](crate::session::SessionWriter).
+//! The two single-writer locks of docs/design/bot-mode.md §2.3: the bundle's `<bundle>/.lock`, held by
+//! whichever process owns the bundle's [`SessionWriter`](crate::session::SessionWriter), and the bot's
+//! `<bots>/<name>/lock`, held by the one process running that bot — from before its pointer is read until it
+//! exits, so the window between writing the pointer and materialising the bundle has an owner too.
 //!
 //! The lock is `File::try_lock` — advisory, and released by the OS when the handle closes or the process
 //! dies, so there is no such thing as a stale lock. The pid written into the file is only there so the
@@ -13,7 +15,10 @@ use crate::session::error::SessionError;
 /// The lock file's name inside a bundle.
 pub const LOCK_FILE: &str = ".lock";
 
-/// A held bundle lock. Dropping it releases the lock EXPLICITLY (`File::unlock`) before the handle closes.
+/// The lock file's name inside a bot's directory.
+pub const BOT_LOCK_FILE: &str = "lock";
+
+/// A held lock (a bundle's or a bot's). Dropping it releases the lock EXPLICITLY (`File::unlock`) before the handle closes.
 ///
 /// Closing alone is not enough. On unix the lock is a `flock`, which belongs to the open file description,
 /// not to the descriptor — and a child forked while the lock is held gets a copy of that description until its
@@ -24,9 +29,9 @@ pub const LOCK_FILE: &str = ".lock";
 /// see `Locked` naming our own pid. Unlocking acts on the shared description, so it
 /// releases the lock for every copy at once.
 #[derive(Debug)]
-pub(crate) struct BundleLock(std::fs::File);
+pub(crate) struct HeldLock(std::fs::File);
 
-impl Drop for BundleLock {
+impl Drop for HeldLock {
     fn drop(&mut self) {
         // Nothing to do on failure: the close that follows is the fallback it always was.
         let _ = self.0.unlock();
@@ -35,19 +40,34 @@ impl Drop for BundleLock {
 
 /// Takes the bundle lock of `dir` (which must exist) or refuses with [`SessionError::Locked`]. `id` only
 /// names the session in that refusal. The returned guard IS the lock: dropping it releases it.
-pub(crate) fn lock_bundle(dir: &Path, id: &str) -> Result<BundleLock, SessionError> {
-    let mut file = open_lock_file(&dir.join(LOCK_FILE))?;
+pub(crate) fn lock_bundle(dir: &Path, id: &str) -> Result<HeldLock, SessionError> {
+    try_lock_file(&dir.join(LOCK_FILE))?.map_err(|pid| SessionError::Locked {
+        what: format!("session {id}"),
+        pid,
+    })
+}
+
+/// Takes the bot lock in `bot_dir` (created when missing) or refuses with [`SessionError::BotRunning`].
+pub(crate) fn lock_bot(bot_dir: &Path, bot: &str) -> Result<HeldLock, SessionError> {
+    std::fs::create_dir_all(bot_dir)?;
+    try_lock_file(&bot_dir.join(BOT_LOCK_FILE))?.map_err(|pid| SessionError::BotRunning {
+        bot: bot.to_owned(),
+        pid,
+    })
+}
+
+/// One `try_lock` on `path`: the held lock (with this process's pid written in), or — when another
+/// handle holds it — the pid that holder wrote. The outer error is an I/O fault, not a conflict.
+fn try_lock_file(path: &Path) -> std::io::Result<Result<HeldLock, Option<u32>>> {
+    let mut file = open_lock_file(path)?;
     match file.try_lock() {
         Ok(()) => {
             // Best effort: the pid is for the error text only, so a failed write does not fail the lock.
             let _ = write_pid(&mut file);
-            Ok(BundleLock(file))
+            Ok(Ok(HeldLock(file)))
         }
-        Err(std::fs::TryLockError::WouldBlock) => Err(SessionError::Locked {
-            what: format!("session {id}"),
-            pid: read_pid(&mut file),
-        }),
-        Err(std::fs::TryLockError::Error(e)) => Err(SessionError::Io(e)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(Err(read_pid(&mut file))),
+        Err(std::fs::TryLockError::Error(e)) => Err(e),
     }
 }
 
@@ -93,7 +113,7 @@ fn open_lock_file(path: &Path) -> std::io::Result<std::fs::File> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LOCK_FILE, lock_bundle};
+    use super::{BOT_LOCK_FILE, LOCK_FILE, lock_bot, lock_bundle};
     use crate::session::error::SessionError;
 
     /// A second holder is refused with the first one's pid; once the first handle drops, the lock is free.
@@ -115,7 +135,7 @@ mod tests {
             )
         );
         // Deterministic even while other tests in this binary spawn processes: the guard UNLOCKS on drop,
-        // so a child forked in the meantime cannot keep the lock alive (see `BundleLock`).
+        // so a child forked in the meantime cannot keep the lock alive (see `HeldLock`).
         drop(held);
         let again = lock_bundle(dir.path(), "k7q").expect("re-lock after drop");
         drop(again);
@@ -134,5 +154,25 @@ mod tests {
             "session k7q is open in another iota process"
         );
         drop(held);
+    }
+
+    /// The bot lock refuses with the bot's own sentence, and creates the bot directory it lives in.
+    #[test]
+    fn bot_lock_names_the_bot() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let dir = home.path().join("bots").join("coder");
+        let held = lock_bot(&dir, "coder").expect("first lock");
+        assert!(dir.join(BOT_LOCK_FILE).exists());
+        let err = lock_bot(&dir, "coder").expect_err("second lock refused");
+        assert!(matches!(
+            &err,
+            SessionError::BotRunning { bot, pid } if bot == "coder" && *pid == Some(std::process::id())
+        ));
+        assert_eq!(
+            err.to_string(),
+            format!("bot coder is already running (pid {})", std::process::id())
+        );
+        drop(held);
+        drop(lock_bot(&dir, "coder").expect("re-lock after drop"));
     }
 }

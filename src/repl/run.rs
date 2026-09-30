@@ -112,6 +112,15 @@ pub struct SessionCtx {
     pub new_session: Option<SessionFactory>,
     /// Agent-mode project bucket for /session (mode-isolated listing).
     pub scope: Option<PathBuf>,
+    /// The writer is a bot's session (docs/design/bot-mode.md §2.2): `/session` is not registered, the
+    /// title pass never runs (the bundle is named after the bot), and the meta is stamped with the
+    /// parameters the chat actually starts under even when the bundle was resumed — for a bot the config,
+    /// not the session, is what they come from.
+    pub bot: bool,
+    /// Dim lines the transcript opens with, after the banner and the resume echo — what the wiring
+    /// learned about the session that the model's user should see (a bot's pointer that never saved, a
+    /// system prompt taken over from the config).
+    pub notices: Vec<String>,
 }
 
 /// Everything `run()` needs (`TUI_CONTRACTS` §7).
@@ -285,6 +294,8 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         store,
         new_session,
         scope,
+        bot,
+        notices,
     } = session;
 
     // ---- capability probes (chat/run.go:53-55) ----
@@ -342,7 +353,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         if let Some(w) = slot.as_mut() {
             // A resumed session's cumulative ↑/↓ figures are what its own log adds up to.
             ctxm.seed_totals(w.usage());
-            fresh_bundle = !w.on_disk();
+            fresh_bundle = !w.on_disk() || bot;
         }
     }
 
@@ -353,6 +364,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         agent: overlay.is_some(),
         image: image_provider,
         jobs: false,
+        bot,
     });
     if let Some(o) = overlay.as_ref() {
         table.set_skills(skill_entries(o.skills()));
@@ -417,6 +429,9 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             ui.print_lines(lines);
         }
     }
+    for notice in &notices {
+        tr.notice(notice);
+    }
 
     let titler = Arc::new(SessionTitle::new(
         Arc::clone(&writer),
@@ -424,7 +439,8 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             let ui = Arc::clone(&ui);
             Box::new(move |name: &str| ui.set_title(&window_title(name)))
         },
-        resumed,
+        // A bot's bundle is named after the bot from the start (§2.2): nothing is seeded over that name.
+        resumed || bot,
     ));
     ui.set_title(&window_title(
         &lock(&writer)
@@ -615,7 +631,8 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 repl.push_status();
                 continue;
             }
-            if match_cmd(&line, "/session").is_some() {
+            if lock(&repl.handles.table).session_enabled() && match_cmd(&line, "/session").is_some()
+            {
                 session::cmd_session(&mut repl).await;
                 continue;
             }

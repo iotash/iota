@@ -136,6 +136,9 @@ pub(crate) struct CmdFlags {
     pub(crate) image: bool,
     /// A background job is running → `/jobs`. The one flag that flips at run time.
     pub(crate) jobs: bool,
+    /// A bot's process serves its own session only, so `/session` is not registered
+    /// (docs/design/bot-mode.md §2.2).
+    pub(crate) bot: bool,
 }
 
 /// The completion-facing view of a skill (completion.go:76 `skillEntry`).
@@ -185,6 +188,9 @@ impl CommandTable {
             if c.value == "/compact" && !self.flags.compact {
                 continue;
             }
+            if c.value == "/session" && self.flags.bot {
+                continue;
+            }
             out.push(suggestion(c));
         }
         if self.flags.jobs {
@@ -224,6 +230,11 @@ impl CommandTable {
     /// Whether `/skills` (and the per-skill rows) are registered.
     pub(crate) fn agent_enabled(&self) -> bool {
         self.flags.agent
+    }
+
+    /// Whether `/session` is registered — everywhere but a bot.
+    pub(crate) fn session_enabled(&self) -> bool {
+        !self.flags.bot
     }
 
     /// Whether `/jobs` is registered — a background job is running.
@@ -280,6 +291,7 @@ mod tests {
             agent,
             image,
             jobs: false,
+            bot: false,
         })
     }
 
@@ -471,5 +483,23 @@ mod tests {
         assert_eq!(match_cmd("/save ", "/save"), Some(""));
         assert_eq!(match_cmd("/saved", "/save"), None);
         assert_eq!(match_cmd("say /save", "/save"), None);
+    }
+
+    /// bot-mode.md §2.2: a bot's process serves its own session only — `/session` is neither
+    /// listed nor dispatched; every other row is untouched.
+    #[test]
+    fn a_bot_has_no_session_command() {
+        let flags = CmdFlags {
+            agent: true,
+            compact: true,
+            ..CmdFlags::default()
+        };
+        let chat = CommandTable::new(flags);
+        let bot = CommandTable::new(CmdFlags { bot: true, ..flags });
+        assert!(has(&chat, "/session") && chat.session_enabled());
+        assert!(!has(&bot, "/session") && !bot.session_enabled());
+        let mut want = names(&chat);
+        want.retain(|n| n != "/session");
+        assert_eq!(names(&bot), want);
     }
 }

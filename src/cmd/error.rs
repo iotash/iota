@@ -59,6 +59,13 @@ pub enum ArgsError {
     /// `iota list <what> <name>` where `<what>` is not `models` — only the choices belong to one agent.
     #[error("iota list {0} takes no argument (only `iota list models <agent>` does)")]
     ListTakesNoName(String),
+    /// `iota run <bot> -m …` (docs/design/bot-mode.md §2.2): a headless run has no compaction, so a bot's
+    /// never-ending session would grow without bound. Refused in v1.
+    #[error("bot agents are interactive-only for now; run iota run {name}")]
+    BotHeadless {
+        /// The bot's name.
+        name: String,
+    },
     /// `--no-save` with a resume: an ephemeral start and a resumed bundle are opposite intents (root.go:285).
     #[error("--no-save cannot be combined with iota resume")]
     NoSaveWithResume,

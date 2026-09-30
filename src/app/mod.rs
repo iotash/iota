@@ -64,6 +64,12 @@ impl HostDirs {
     pub fn images_dir(&self) -> Option<PathBuf> {
         self.app_home().map(|h| h.join("images"))
     }
+
+    /// `<home>/.iota/bots` — one `<name>/` per bot: its session pointer, its lock and its memory
+    /// (docs/design/bot-mode.md §1.1).
+    pub fn bots_dir(&self) -> Option<PathBuf> {
+        self.app_home().map(|h| h.join("bots"))
+    }
 }
 
 /// `std::fs::canonicalize` as a comparison key that is also fit to show: symlinks resolved, and on Windows
@@ -140,10 +146,15 @@ mod tests {
             dirs.images_dir(),
             Some(PathBuf::from("/tmp/iota-test-home/.iota/images"))
         );
+        assert_eq!(
+            dirs.bots_dir(),
+            Some(PathBuf::from("/tmp/iota-test-home/.iota/bots"))
+        );
         // Without a home there is no app home (Go: the UserHomeDir error).
         let none = HostDirs::default();
         assert!(none.app_home().is_none());
         assert!(none.images_dir().is_none());
+        assert!(none.bots_dir().is_none());
         // Identity constants.
         assert_eq!(NAME, "iota");
         assert_eq!(DOT_DIR, ".iota");

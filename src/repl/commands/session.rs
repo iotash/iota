@@ -4,7 +4,7 @@
 //! The listing is MODE-ISOLATED: agent mode lists the project bucket, normal mode the flat
 //! root, and the two never merge (only resume-id resolution widens). The Delete tab
 //! excludes the CURRENT session — deleting the bundle being written to is not a thing a
-//! picker should let happen.
+//! picker should let happen — and neither tab lists a session a bot's pointer names.
 //!
 //! The swap ordering is the load-bearing part and is reproduced exactly: close the old
 //! writer → install the new one → window title → history/watermark → budget → session
@@ -86,13 +86,17 @@ pub(crate) fn project_hint(scope: Option<&Path>) -> Option<String> {
 /// `/session` — pick a session to resume, or check off sessions to delete. A facade
 /// failure is a cancel (see [`super::model::cmd_model`]).
 pub(crate) async fn cmd_session(repl: &mut Repl) {
-    let infos = match repl.session.store.list(repl.session.scope.as_deref()) {
+    let mut infos = match repl.session.store.list(repl.session.scope.as_deref()) {
         Ok(i) => i,
         Err(e) => {
             repl.handles.tr.error(&format!("Error: {e}"));
             return;
         }
     };
+    // A bot's session is its body (docs/design/bot-mode.md §2.7): it is neither resumed nor deleted from
+    // here, so neither tab shows it.
+    let owned = repl.session.store.bot_sessions();
+    infos.retain(|s| !owned.contains(&s.id));
     if infos.is_empty() {
         repl.handles.tr.notice("No sessions yet.");
         return;

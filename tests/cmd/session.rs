@@ -20,8 +20,8 @@ use iota::cmd::Declared;
 use iota::provider::ProviderKind;
 use iota::provider::model::{RawContent, Role};
 use iota::session::{
-    Param, ParamSources, SESSION_SCHEMA_VERSION, SessionMeta, SessionRecord, SessionStore,
-    SessionToolCall,
+    BotPointer, Param, ParamSources, SESSION_SCHEMA_VERSION, SessionMeta, SessionRecord,
+    SessionStore, SessionToolCall,
 };
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
@@ -652,6 +652,11 @@ async fn resume_agent_mode_widens_to_the_flat_root() {
 /// The requests' bodies come back pretty-printed, with the two temp paths replaced by `<root>` and `<home>`.
 /// A headless run never mints a bundle, so the layout half of the mode (the project bucket) is not here.
 async fn one_mode_run(mode_line: &str) -> String {
+    one_mode_requests(mode_line, true).await.concat()
+}
+
+/// [`one_mode_run`]'s requests one by one; `fresh: false` skips the fresh `-m` run (a bot refuses it).
+async fn one_mode_requests(mode_line: &str, fresh: bool) -> Vec<String> {
     let server = MockServer::start().await;
     google_stub(&server, false).await;
     let cwd = TempDir::new().expect("temp cwd");
@@ -681,21 +686,26 @@ async fn one_mode_run(mode_line: &str) -> String {
     let home_path = strip_verbatim(&fs::canonicalize(home.path()).expect("canonical home"));
     let id = fixture("go-gemini-rich")["id"].as_str().unwrap().to_owned();
 
-    for args in [vec!["-m", "hi"], vec!["resume", &id, "-m", "hi"]] {
+    let mut runs = vec![vec!["resume", id.as_str(), "-m", "hi"]];
+    if fresh {
+        runs.insert(0, vec!["-m", "hi"]);
+    }
+    for args in runs {
         let mut cmd = iota(&root, home.path());
         cmd.args(&args);
         let o = output(cmd).await;
         assert_eq!(o.status.code(), Some(0), "{args:?} stderr: {}", err(&o));
     }
 
-    let mut out = String::new();
+    let mut out = Vec::new();
     for req in server.received_requests().await.expect("requests") {
         let body: serde_json::Value = serde_json::from_slice(&req.body).expect("JSON");
-        out.push_str(&serde_json::to_string_pretty(&body).expect("pretty"));
-        out.push('\n');
-    }
-    for (path, name) in [(&root, "<root>"), (&home_path, "<home>")] {
-        out = out.replace(&*path.to_string_lossy(), name);
+        let mut text = serde_json::to_string_pretty(&body).expect("pretty");
+        text.push('\n');
+        for (path, name) in [(&root, "<root>"), (&home_path, "<home>")] {
+            text = text.replace(&*path.to_string_lossy(), name);
+        }
+        out.push(text);
     }
     out
 }
@@ -703,8 +713,9 @@ async fn one_mode_run(mode_line: &str) -> String {
 /// bot-mode.md §1.1 (T3): `mode:` replaced `workspace:` without changing a byte of either side of it.
 /// `mode: agent` sends what `workspace: true` sent — the `AGENTS.md` overlay with its skills catalog, and the
 /// skills set — fresh and resumed; the expected text was captured from the last binary that read
-/// `workspace: true` (8f3c875) and is pinned verbatim. `mode: chat` is exactly the key left out. And until T4
-/// gives a bot its own session, `mode: bot` sends what `agent` does.
+/// `workspace: true` (8f3c875) and is pinned verbatim. `mode: chat` is exactly the key left out. A bot
+/// refuses a fresh `-m` (T4, §2.2: `BotHeadless`), but resuming an ordinary session under it sends what
+/// `agent` does — the overlay and the skills set are the same.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mode_agent_is_what_workspace_true_was() {
     let agent = one_mode_run("\n    mode: agent").await;
@@ -723,7 +734,12 @@ async fn mode_agent_is_what_workspace_true_was() {
         "no overlay in a chat: {chat}"
     );
 
-    assert_eq!(one_mode_run("\n    mode: bot").await, agent);
+    let agent_requests = one_mode_requests("\n    mode: agent", true).await;
+    assert_eq!(agent_requests.concat(), agent);
+    assert_eq!(
+        one_mode_requests("\n    mode: bot", false).await,
+        agent_requests[1..]
+    );
 }
 
 // ---------------------------------------------------------------- awkward bundle shapes
@@ -925,4 +941,112 @@ async fn bare_m_run_writes_nothing_under_home() {
         "a stateless -m run created {}",
         home.path().join(".iota").display()
     );
+}
+
+// ---------------------------------------------------------------- bot entry rules (bot-mode.md §2.2)
+
+/// A config with a bot `coder` beside an ordinary `default`, plus `extra` under the bot.
+fn write_bot_config(cwd: &Path, extra: &str) {
+    fs::write(
+        cwd.join(".iota.yaml"),
+        format!(
+            "providers:\n  p: {{type: gemini, key: x}}\nagents:\n  default:\n    model: \"p:gemini-2.5-pro\"\n  coder:\n    model: \"p:gemini-2.5-pro\"\n    mode: bot{extra}\n"
+        ),
+    )
+    .expect("write config");
+}
+
+/// Every refusal `iota run <bot>` has, each at its own layer — and `-M`, which a bot allows, reaches the
+/// interactive branch (here: its terminal check). None of them leaves a pointer or a bundle behind.
+#[test]
+fn a_bot_refuses_headless_and_ephemeral_runs() {
+    let cwd = TempDir::new().expect("temp cwd");
+    let home = TempDir::new().expect("temp home");
+    write_bot_config(cwd.path(), "");
+    let run = |args: &[&str]| {
+        let mut cmd = iota(cwd.path(), home.path());
+        cmd.args(args);
+        cmd.output().expect("run")
+    };
+
+    assert_error(
+        &run(&["run", "coder", "-m", "hi"]),
+        "bot agents are interactive-only for now; run iota run coder",
+    );
+    assert_error(
+        &run(&["run", "coder", "--no-save"]),
+        "agents.coder: --no-save contradicts mode: bot",
+    );
+    assert_error(
+        &run(&["run", "coder", "-M", "p:gemini-2.5-flash"]),
+        "interactive mode requires a terminal; use -m/--message for piped input",
+    );
+
+    write_bot_config(cwd.path(), "\n    no_save: true");
+    assert_error(
+        &run(&["run", "coder"]),
+        "agents.coder: no_save contradicts mode: bot",
+    );
+    assert!(!home.path().join(".iota").join("bots").exists());
+    assert!(!sessions_root(home.path()).exists());
+
+    // `agents.default` as a bot: a bare `iota -m` is `iota run default -m`.
+    fs::write(
+        cwd.path().join(".iota.yaml"),
+        "providers:\n  p: {type: gemini, key: x}\nagents:\n  default:\n    model: \"p:gemini-2.5-pro\"\n    mode: bot\n",
+    )
+    .expect("write config");
+    assert_error(
+        &run(&["-m", "hi"]),
+        "bot agents are interactive-only for now; run iota run default",
+    );
+}
+
+/// §2.2 / §2.7: `iota resume` refuses a session a bot's pointer names — by full id or by prefix — before
+/// anything is sent; an ordinary session resumes as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_refuses_a_bot_session() {
+    let server = MockServer::start().await;
+    google_stub(&server, false).await;
+    let cwd = TempDir::new().expect("temp cwd");
+    let home = TempDir::new().expect("temp home");
+    write_config(cwd.path(), &server.uri(), "gemini-2.5-pro", "");
+    let (bot_id, free_id) = ("botz00000001", "free00000001");
+    for id in [bot_id, free_id] {
+        plant_bundle(
+            &sessions_root(home.path()).join(id),
+            id,
+            "gemini",
+            "gemini-2.5-pro",
+            &[rec("user", "earlier"), rec("assistant", "noted")],
+        );
+    }
+    BotPointer {
+        materialized: true,
+        ..BotPointer::new(bot_id)
+    }
+    .write(&home.path().join(".iota").join("bots").join("coder"))
+    .expect("pointer");
+
+    for fragment in [bot_id, "botz"] {
+        let mut cmd = iota(cwd.path(), home.path());
+        cmd.args(["resume", fragment, "-m", "hi"]);
+        assert_error(
+            &output(cmd).await,
+            &format!("session {bot_id} belongs to bot coder; run iota run coder"),
+        );
+    }
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .is_empty(),
+        "nothing was sent"
+    );
+
+    let mut cmd = iota(cwd.path(), home.path());
+    cmd.args(["resume", free_id, "-m", "hi"]);
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
 }

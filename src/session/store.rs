@@ -11,10 +11,11 @@ use crate::app::paths;
 use crate::provider::ProviderKind;
 use crate::provider::model::Message;
 
+use crate::session::bot::{BOT_POINTER_FILE, BotPointer};
 use crate::session::error::SessionError;
 use crate::session::id::{generate_id, resolve_in};
 use crate::session::loader::{Session, load_full_history, load_log, repair_tail};
-use crate::session::lock::lock_bundle;
+use crate::session::lock::{lock_bot, lock_bundle};
 use crate::session::meta::{
     META_FILE, SESSION_SCHEMA_VERSION, SessionMeta, now_rfc3339, parse_rfc3339,
 };
@@ -60,6 +61,9 @@ pub struct NewSession {
     pub project: bool,
     /// The `agents:` entry the run was under (`""` = none).
     pub agent: String,
+    /// The id to create the bundle under; `None` mints a fresh one. A bot's session id is fixed by its
+    /// pointer before the bundle exists (docs/design/bot-mode.md §2.2).
+    pub id: Option<String>,
 }
 
 impl NewSession {
@@ -73,8 +77,25 @@ impl NewSession {
             cwd: String::new(),
             project: false,
             agent: String::new(),
+            id: None,
         }
     }
+}
+
+/// What [`SessionStore::open_bot`] found (docs/design/bot-mode.md §2.2).
+#[derive(Debug)]
+pub enum BotOpen {
+    /// The bot's session, resumed (the view boxed: it is the large half).
+    Resumed(SessionWriter, Box<Session>),
+    /// A new (still pending) bundle under the pointer's id. `never_saved`: a pointer was already there but
+    /// its bundle never reached the disk — the last run ended before its first message — so this is the
+    /// same empty session starting over, and the transcript says so.
+    Fresh {
+        /// The pending writer.
+        writer: SessionWriter,
+        /// A pointer existed whose bundle was never materialised.
+        never_saved: bool,
+    },
 }
 
 /// The sessions root (`<home>/.iota/sessions`) as a value. Constructed from a path in tests and from
@@ -82,20 +103,72 @@ impl NewSession {
 #[derive(Clone, Debug)]
 pub struct SessionStore {
     root: PathBuf,
+    /// `<app home>/bots` — the pointers that protect bot sessions (§2.7). `None` for a store built from a
+    /// bare path, which knows of no bots.
+    bots: Option<PathBuf>,
 }
 
 impl SessionStore {
     /// The sessions root directory verbatim (tests pass a temp dir).
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            bots: None,
+        }
     }
 
-    /// `<app home>/sessions` (chat/session.go:156-162); [`SessionError::HomeNotDefined`] when the host
-    /// has no home directory.
+    /// The same store, protecting the sessions the pointers under `bots` name.
+    #[must_use]
+    pub fn with_bots(mut self, bots: impl Into<PathBuf>) -> Self {
+        self.bots = Some(bots.into());
+        self
+    }
+
+    /// `<app home>/sessions` (chat/session.go:156-162), aware of `<app home>/bots`;
+    /// [`SessionError::HomeNotDefined`] when the host has no home directory.
     pub fn from_dirs(dirs: &HostDirs) -> Result<Self, SessionError> {
-        dirs.app_home()
-            .map(|home| Self::new(home.join("sessions")))
-            .ok_or(SessionError::HomeNotDefined)
+        let (Some(home), Some(bots)) = (dirs.app_home(), dirs.bots_dir()) else {
+            return Err(SessionError::HomeNotDefined);
+        };
+        Ok(Self::new(home.join("sessions")).with_bots(bots))
+    }
+
+    /// The bots root, when this store knows one.
+    pub fn bots_dir(&self) -> Option<&Path> {
+        self.bots.as_deref()
+    }
+
+    /// The bot whose pointer names session `id` (§2.7): a scan of `<bots>/*/bot.json`, O(bots). `None` for
+    /// an id no bot points at, and always for a store that knows no bots root.
+    pub fn bot_owner(&self, id: &str) -> Option<String> {
+        let bots = self.bots.as_deref()?;
+        crate::session::bot::pointers(bots)
+            .into_iter()
+            .find(|(_, p)| p.session == id)
+            .map(|(name, _)| name)
+    }
+
+    /// Every session id some bot points at — what a normal-mode picker leaves out (§2.7).
+    pub fn bot_sessions(&self) -> Vec<String> {
+        self.bots
+            .as_deref()
+            .map(crate::session::bot::pointers)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(_, p)| p.session)
+            .collect()
+    }
+
+    /// Refuses a session a bot owns with [`SessionError::BotOwned`] — the gate `iota resume <id>` and
+    /// [`delete`](Self::delete) pass through.
+    pub fn check_not_bot_owned(&self, id: &str) -> Result<(), SessionError> {
+        match self.bot_owner(id) {
+            Some(bot) => Err(SessionError::BotOwned {
+                id: id.to_owned(),
+                bot,
+            }),
+            None => Ok(()),
+        }
     }
 
     /// The sessions root.
@@ -216,8 +289,9 @@ impl SessionStore {
             cwd,
             project,
             agent,
+            id,
         } = session;
-        let id = self.new_id();
+        let id = id.unwrap_or_else(|| self.new_id());
         let bucket = if project && !cwd.is_empty() {
             self.bucket_of(Path::new(&cwd))
         } else {
@@ -311,9 +385,91 @@ impl SessionStore {
         if id.is_empty() || id.contains(['/', '\\']) || id.contains("..") {
             return Err(SessionError::InvalidId(id.to_owned()));
         }
+        self.check_not_bot_owned(id)?;
         let dir = self.dir(id)?;
         let _lock = lock_bundle(&dir, id)?;
         std::fs::remove_dir_all(dir).map_err(SessionError::Io)
+    }
+
+    /// The bot's resume-or-create (docs/design/bot-mode.md §2.2). `bot_dir` is `<bots>/<name>`; `fresh`
+    /// describes the bundle to create when there is none (its `id` and `project` are the pointer's business
+    /// and are overridden: a bot's session is always flat, §1.3).
+    ///
+    /// The bot lock is taken FIRST and handed to the returned writer, which keeps it for its lifetime — it
+    /// covers the window where the pointer is written and the bundle does not exist yet. Then:
+    ///
+    /// - no pointer: a new id is written into one (`materialized: false`) BEFORE anything else, and the
+    ///   bundle is created lazily under that id;
+    /// - a pointer whose bundle resumes: [`BotOpen::Resumed`];
+    /// - a pointer whose bundle is not found and was never materialised: the same empty session again
+    ///   (`Fresh { never_saved: true }`);
+    /// - a pointer whose bundle is not found but WAS materialised: [`SessionError::BotMissing`];
+    /// - anything else the resume reports (an unreadable meta or log, a held bundle lock) is returned as it
+    ///   is — a damaged body is never replaced by a new one.
+    ///
+    /// A `Fresh` writer marks the pointer `materialized` once its first write has created the bundle
+    /// ([`SessionWriter::on_created`]).
+    pub fn open_bot(
+        &self,
+        bot_dir: &Path,
+        fresh: NewSession,
+        kind: ProviderKind,
+    ) -> Result<BotOpen, SessionError> {
+        let bot = bot_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let bot_lock = lock_bot(bot_dir, &bot)?;
+        let (id, never_saved) = match BotPointer::read(bot_dir)? {
+            None => {
+                let id = self.new_id();
+                BotPointer::new(&id).write(bot_dir)?;
+                (id, false)
+            }
+            Some(ptr) => match self.resume(&ptr.session, kind) {
+                Ok((mut writer, session)) => {
+                    // A bundle that exists is materialised, whatever a crash between its creation and the
+                    // pointer's rewrite left in the file.
+                    if !ptr.materialized {
+                        BotPointer {
+                            materialized: true,
+                            ..ptr
+                        }
+                        .write(bot_dir)?;
+                    }
+                    writer.hold_bot_lock(bot_lock);
+                    return Ok(BotOpen::Resumed(writer, Box::new(session)));
+                }
+                Err(SessionError::NotFound(_)) if !ptr.materialized => (ptr.session, true),
+                Err(SessionError::NotFound(_)) => {
+                    return Err(SessionError::BotMissing {
+                        bundle: self.root.join(&ptr.session),
+                        pointer: bot_dir.join(BOT_POINTER_FILE),
+                        id: ptr.session,
+                        bot,
+                    });
+                }
+                Err(e) => return Err(e),
+            },
+        };
+        let mut writer = self.create(NewSession {
+            id: Some(id.clone()),
+            project: false,
+            ..fresh
+        })?;
+        let dir = bot_dir.to_path_buf();
+        writer.on_created(Box::new(move || {
+            BotPointer {
+                materialized: true,
+                ..BotPointer::new(&id)
+            }
+            .write(&dir)
+        }));
+        writer.hold_bot_lock(bot_lock);
+        Ok(BotOpen::Fresh {
+            writer,
+            never_saved,
+        })
     }
 
     /// `<root>/projects/<slug(project_root)>`.

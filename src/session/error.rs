@@ -38,6 +38,42 @@ pub enum SessionError {
         /// The holder's pid, when known.
         pid: Option<u32>,
     },
+    /// Another process holds the bot's lock (`~/.iota/bots/<name>/lock`, §2.3): the bot is running. A
+    /// variant of its own rather than a second spelling of [`Locked`](Self::Locked) — what is refused
+    /// here is running the bot, not opening a bundle, and the sentence says so.
+    #[error("bot {bot} is already running{}", pid_suffix(*.pid))]
+    BotRunning {
+        /// The bot's name.
+        bot: String,
+        /// The holder's pid, when known.
+        pid: Option<u32>,
+    },
+    /// The session is a bot's body (its `bot.json` points at it, §2.7): only `iota run <bot>` opens it, and
+    /// nothing deletes it while it is pointed at.
+    #[error("session {id} belongs to bot {bot}; run iota run {bot}")]
+    BotOwned {
+        /// The session id.
+        id: String,
+        /// The bot whose pointer names it.
+        bot: String,
+    },
+    /// The bot's session was saved once and is gone now (deleted, or the disk changed) — a hard error, never
+    /// a silent fresh start (§2.2, review I1). The text names both ways out.
+    #[error(
+        "bot {bot}'s session {id} is missing: restore {}, or delete {} to start over (memory is kept)",
+        .bundle.display(),
+        .pointer.display()
+    )]
+    BotMissing {
+        /// The bot's name.
+        bot: String,
+        /// The session id its pointer names.
+        id: String,
+        /// Where the bundle lived (`<sessions root>/<id>/`).
+        bundle: std::path::PathBuf,
+        /// The pointer to delete (`<bots>/<name>/bot.json`).
+        pointer: std::path::PathBuf,
+    },
     /// A write reached the log before `ensure_created` opened it — a bug, not a state.
     #[error("session log is not open")]
     LogNotOpen,
@@ -105,6 +141,40 @@ mod tests {
         assert_eq!(
             SessionError::Io(std::io::Error::other("disk on fire")).to_string(),
             "disk on fire"
+        );
+        assert_eq!(
+            SessionError::BotRunning {
+                bot: "coder".to_owned(),
+                pid: Some(4242),
+            }
+            .to_string(),
+            "bot coder is already running (pid 4242)"
+        );
+        assert_eq!(
+            SessionError::BotRunning {
+                bot: "coder".to_owned(),
+                pid: None,
+            }
+            .to_string(),
+            "bot coder is already running"
+        );
+        assert_eq!(
+            SessionError::BotOwned {
+                id: "01K".to_owned(),
+                bot: "coder".to_owned(),
+            }
+            .to_string(),
+            "session 01K belongs to bot coder; run iota run coder"
+        );
+        assert_eq!(
+            SessionError::BotMissing {
+                bot: "coder".to_owned(),
+                id: "01K".to_owned(),
+                bundle: "/h/.iota/sessions/01K".into(),
+                pointer: "/h/.iota/bots/coder/bot.json".into(),
+            }
+            .to_string(),
+            "bot coder's session 01K is missing: restore /h/.iota/sessions/01K, or delete /h/.iota/bots/coder/bot.json to start over (memory is kept)"
         );
     }
 

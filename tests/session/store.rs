@@ -7,7 +7,7 @@ use iota::app::HostDirs;
 use iota::provider::ProviderKind;
 use iota::provider::model::{Message, ToolCall};
 use iota::session::{
-    INTERRUPTED_RESULT, LOCK_FILE, NewSession, PROJECTS_DIR_NAME, SESSION_ID_ALPHABET,
+    BotPointer, INTERRUPTED_RESULT, LOCK_FILE, NewSession, PROJECTS_DIR_NAME, SESSION_ID_ALPHABET,
     SESSION_ID_LENGTH, SessionError, SessionInfo, SessionStore, resolve_in,
 };
 use pretty_assertions::assert_eq;
@@ -367,6 +367,11 @@ fn store_from_host_dirs() {
         SessionStore::from_dirs(&dirs).unwrap().root(),
         Path::new("/tmp/iota-test-home/.iota/sessions")
     );
+    assert_eq!(
+        SessionStore::from_dirs(&dirs).unwrap().bots_dir(),
+        Some(Path::new("/tmp/iota-test-home/.iota/bots"))
+    );
+    assert_eq!(SessionStore::new("/x").bots_dir(), None);
     let err = SessionStore::from_dirs(&HostDirs::default()).unwrap_err();
     assert_eq!(err.to_string(), "$HOME is not defined");
     assert!(matches!(err, SessionError::HomeNotDefined));
@@ -469,6 +474,106 @@ fn delete_is_refused_while_the_bundle_is_held() {
     drop(held);
     other.delete(&id).unwrap();
     assert!(!dir.exists());
+}
+
+// ---------------------------------------------------------------- bots (bot-mode.md §2.2, §2.7)
+
+/// `NewSession.id` fixes the id of the bundle `create` makes; `None` mints one as before.
+#[test]
+fn create_takes_a_given_id() {
+    let (_home, store) = temp_store();
+    let mut w = store
+        .create(NewSession {
+            id: Some("k7qz3xv9m2ht".to_owned()),
+            ..NewSession::new(KIND, "m1")
+        })
+        .unwrap();
+    assert_eq!(w.id(), "k7qz3xv9m2ht");
+    w.append_messages(&[Message::user("q")]).unwrap();
+    assert_eq!(
+        store.find_dir("k7qz3xv9m2ht"),
+        Some(store.root().join("k7qz3xv9m2ht"))
+    );
+}
+
+/// `bot_owner` answers from the pointers; `delete` refuses a pointed-at session whether or not the bot is
+/// running (nothing holds its lock here), and removes it once the pointer is gone.
+#[test]
+fn a_bot_session_is_protected_from_delete() {
+    let (home, store) = temp_store();
+    let bots = home.path().join("bots");
+    let store = store.with_bots(&bots);
+    let id = saved_session(&store);
+    let free = saved_session(&store);
+    assert_eq!(store.bot_owner(&id), None);
+    BotPointer::new(&id).write(&bots.join("coder")).unwrap();
+    assert_eq!(store.bot_owner(&id).as_deref(), Some("coder"));
+    assert_eq!(store.bot_owner(&free), None);
+    assert_eq!(store.bot_sessions(), vec![id.clone()]);
+
+    let err = store.delete(&id).expect_err("a bot's body");
+    assert!(matches!(&err, SessionError::BotOwned { .. }), "{err:?}");
+    assert_eq!(
+        err.to_string(),
+        format!("session {id} belongs to bot coder; run iota run coder")
+    );
+    assert!(store.find_dir(&id).is_some(), "still there");
+    store.delete(&free).expect("an ordinary session goes");
+
+    std::fs::remove_file(bots.join("coder").join(iota::session::BOT_POINTER_FILE)).unwrap();
+    store.delete(&id).expect("no longer pointed at");
+}
+
+/// A store without a bots root knows no owners, so nothing is refused for that reason.
+#[test]
+fn a_store_without_bots_knows_no_owner() {
+    let (home, store) = temp_store();
+    let id = saved_session(&store);
+    BotPointer::new(&id)
+        .write(&home.path().join("bots").join("coder"))
+        .unwrap();
+    assert_eq!(store.bot_owner(&id), None);
+}
+
+/// The `on_created` hook runs once, right after the first write created the bundle; a failing hook fails
+/// that write and is retried by the next; a resumed (already created) writer never runs one.
+#[test]
+fn on_created_runs_once_after_materialisation() {
+    use std::sync::{Arc, Mutex};
+    let (_home, store) = temp_store();
+    let mut w = store.create(NewSession::new(KIND, "m1")).unwrap();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&calls);
+    let dir = w.dir().to_path_buf();
+    w.on_created(Box::new(move || {
+        let mut seen = seen.lock().unwrap();
+        seen.push(dir.join("meta.json").exists());
+        if seen.len() == 1 {
+            return Err(SessionError::Io(std::io::Error::other(
+                "pointer write failed",
+            )));
+        }
+        Ok(())
+    }));
+    w.update_meta(|m| "t".clone_into(&mut m.title)).unwrap();
+    assert!(calls.lock().unwrap().is_empty(), "nothing on disk yet");
+    let err = w
+        .append_messages(&[Message::user("q")])
+        .expect_err("hook failed");
+    assert_eq!(err.to_string(), "pointer write failed");
+    w.append_messages(&[Message::user("q")]).unwrap();
+    w.append_messages(&[Message::user("again")]).unwrap();
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec![true, true],
+        "after the meta, then never again"
+    );
+
+    let id = w.id().to_owned();
+    drop(w);
+    let (mut resumed, _) = store.resume(&id, KIND).unwrap();
+    resumed.on_created(Box::new(|| panic!("a resumed bundle is already on disk")));
+    resumed.append_messages(&[Message::user("more")]).unwrap();
 }
 
 // ---------------------------------------------------------------- repairing the tail (bot-mode.md §2.7)
