@@ -2,6 +2,8 @@
 
 Status: **Proposal**（rev 2，2026-09-30）· 依据：`docs/design/bot-mode-recon.md`（下称 recon）、`docs/design/bot-mode-research.md`（下称 research）、`docs/design/bot-mode-critique.md`（下称评审）
 
+实现状态（2026-10-01）：本设计的 v1 已在 `bot-mode-v1` 分支实现（21 个 commit，至 `d0b87d9`），两轮评审与修复验收均已通过；未验收项见 §5.2「验收状态」，已知残留见 §7.1。
+
 修订：
 
 - rev 1（2026-09-30，`947ba46`）：初稿，基于 recon 与 research。
@@ -508,6 +510,8 @@ rev 1 只处理了 `</memory>` 的结构逃逸。评审 S1 指出的问题更大
 
 代价（评审 B）：复用现有 record 形状不改格式；一个 `.prev` 文件；`remember` 多一个来源参数；约百行。换来的是：注入有痕迹、误改可恢复。
 
+`remove` 只改 `MEMORY.md`，因而只影响此后注入的内容：被删的那行不会从历史里抹掉——它的写入记录与当时的对话仍留在会话日志（`messages.jsonl`）里，`/export` 与 resume 回放照样可读（评审 fable 第二轮 §1）。
+
 不做：`iota bot memory <name>` 之类的 diff 动词（动词集封闭；`.prev` 加 `git diff` 够用）；时效字段与「超过 N 天的 `[inferred]` 行确认或删除」——那是 OKF v0.2 生命周期家族的事，记 backlog（§7）。
 
 ---
@@ -614,6 +618,12 @@ rev 1 只处理了 `</memory>` 的结构逃逸。评审 S1 指出的问题更大
 | 缓存实测（手动，评审 I6） | 用真模型各跑一天：四时刻刷新 vs 每次 `remember` 后刷新，比较 `Usage::cache_hit_rate`。结果只作为复议 §6 #12 的数据，不改本 rev 的决定 |
 | **压缩先验**（L1 之前，今天就能做） | 廉价先验：用现有 iota 的手动 `/compact` 拿一段真实长对话压一次，看摘要保留了什么、丢了什么，检验「摘要装对话状态、事实归记忆」（§3.6.2）这个分工是否成立。不需要 bot，不需要新代码 |
 | **保留率实验**（L1 验收项；手动，不进 CI） | 用真模型跑一个 opt-in 脚本 `scripts/bot-retention.sh`：在第 k 轮埋入 20 个事实（一半适合进记忆，一半是对话状态），填充对话触发 N 次压缩，第 k+m 轮提问，统计召回率。对比三组：无 flush、只有 flush、flush 加 L2 `recall`。这回答 research §6.3 的开放问题，并**定稿** §6 #13 的上限数值——v1 里的 8 KiB / 500 B / 1500 词是临时值，由这个脚本定稿。它是 L1 验收清单的一项，不是「L1 收尾的可选项」（已定 2026-09-30，采纳评审 S3）。用一份 scratch 配置和临时 HOME 运行，不碰真实的 `~/.iota` |
+
+**验收状态（2026-10-01）**：
+
+- **已交付，跑在 `cargo test` 里**：长跑实验——`testing::GrowingProvider` 加 `tests/repl/bot_longrun.rs` 的不变量测试，两个 32k 场景（记忆保持简短的、停在软阈值的）各 2000 轮，含 drop/resume 与不重启的对照、超窗时真拒绝；8k 场景作为反例保留为 `#[ignore]`。
+- **已写、未跑**：保留率实验脚本 `scripts/bot-retention.sh`（只做过 `bash -n`、源码核对与无模型干跑）。它要用真模型跑；在它跑出结果之前，**§6 #13 的上限（8 KiB / 500 B / 1500 词等）仍是临时值**，L1 的这一项验收未完成。
+- **评审与验收记录**：第一轮评审 `bot-mode-review-fable.md`、`bot-mode-review-codex.md`；第二轮评审 `bot-mode-review-fable-2.md`、`bot-mode-review-codex-2.md`；修复验收与复核 `bot-mode-verify-codex.md`（均在 `docs/design/`）。
 
 ---
 
