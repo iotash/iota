@@ -15,10 +15,8 @@
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
-
-use regex::Regex;
 
 use crate::sync::lock;
 use crate::text::go_quote;
@@ -37,8 +35,8 @@ pub const MEMORY_CAP: usize = 8 * 1024;
 pub const MEMORY_SOFT_CAP: usize = 6 * 1024;
 /// Cap of one line, its `- `, tag and date included.
 pub const MEMORY_LINE_CAP: usize = 500;
-/// The refusal for a text that looks like a credential (§3.7 item 4).
-pub const SECRET_REFUSAL: &str = "refusing to store what looks like a secret";
+/// Cap of a `section` argument, a leading `## ` included.
+pub const MEMORY_SECTION_CAP: usize = 100;
 /// The refusal for an `old` that names a hand-written line (§3.7 item 3).
 pub const USER_LINE_REFUSAL: &str = "that line was written by the user; ask them to change it";
 
@@ -88,8 +86,21 @@ pub enum Section {
 
 impl Section {
     /// `User`, `Project: <name>` or `Open threads` (a leading `## ` is tolerated); anything else is the
-    /// model-facing refusal.
+    /// model-facing refusal. The argument becomes a heading line, so it is one line: a newline or any other
+    /// control character is refused rather than folded, as is anything past [`MEMORY_SECTION_CAP`].
     pub fn parse(s: &str) -> Result<Self, String> {
+        if s.chars().any(breaks_line) {
+            return Err(format!(
+                "section is one heading line, without newlines or control characters: got {}",
+                go_quote(s)
+            ));
+        }
+        if s.len() > MEMORY_SECTION_CAP {
+            return Err(format!(
+                "section is at most {MEMORY_SECTION_CAP} bytes and this one is {}",
+                s.len()
+            ));
+        }
         let s = s.trim();
         let s = s.strip_prefix("## ").unwrap_or(s).trim();
         if s == USER {
@@ -348,19 +359,10 @@ fn is_tagged(line: &str) -> bool {
     })
 }
 
-/// The patterns a stored line must not match (§3.7 item 4). A constant that always compiles (the tests
-/// pin it); were it ever to fail, every text would count as a secret — the gate fails closed.
-fn secret_patterns() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"sk-[A-Za-z0-9]|AKIA[0-9A-Z]{16}|ghp_|-----BEGIN|token=|Bearer ").ok()
-    })
-    .as_ref()
-}
-
-/// Whether `text` looks like it carries a credential.
-pub fn looks_like_secret(text: &str) -> bool {
-    secret_patterns().is_none_or(|re| re.is_match(text))
+/// A character that has no place inside one line of the file: a control character other than a tab (a
+/// newline, a lone `\r`), or a Unicode line or paragraph separator.
+fn breaks_line(c: char) -> bool {
+    (c.is_control() && c != '\t') || matches!(c, '\u{2028}' | '\u{2029}')
 }
 
 /// The entry text as one line: newlines folded into spaces, and a leading `- `, a leading source tag and
@@ -399,14 +401,19 @@ fn is_date_suffix(s: &str) -> bool {
             .all(|&i| b[i].is_ascii_digit())
 }
 
-/// The line the tool writes for `text`, or the refusal: an empty text, a secret, an over-long line.
+/// The line the tool writes for `text`, or the refusal: an empty text, a line break the folding leaves (a
+/// lone `\r`, a control character), an over-long line. The checks judge the normalized text — the line as it
+/// lands in the file.
 fn make_line(text: &str, source: Source, today: &str) -> Result<String, String> {
-    if looks_like_secret(text) {
-        return Err(SECRET_REFUSAL.to_owned());
-    }
     let text = normalize(text);
     if text.is_empty() {
         return Err("text is empty".to_owned());
+    }
+    if text.chars().any(breaks_line) {
+        return Err(format!(
+            "text is one line, without control characters: got {}",
+            go_quote(&text)
+        ));
     }
     let line = format!("- {} {text} ({today})", source.tag());
     if line.len() > MEMORY_LINE_CAP {

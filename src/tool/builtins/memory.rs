@@ -4,7 +4,7 @@
 //!
 //! No approval gate: the write is jailed to the bot's own directory. What makes up for it (§3.7) is that
 //! the change is shown expanded in the transcript, the old file is kept as `MEMORY.md.prev`, the loop
-//! records a notice of every write, hand-written lines cannot be changed and secrets are refused.
+//! records a notice of every write, and hand-written lines cannot be changed.
 
 use std::sync::Arc;
 
@@ -23,7 +23,7 @@ use crate::tool::{Presentation, Tool, ToolEnv, ToolOutput, ToolResult};
 pub const REMEMBER: &str = "remember";
 
 /// The `remember` description.
-pub const REMEMBER_DESCRIPTION: &str = "Save a line to your long-term MEMORY.md, which you are shown again in later turns and after restarts. Call it when the user states a preference, when a decision is made, or when you learn a fact you will need again. One entry is one line. action \"add\" files a new line under section (User by default; \"Project: <name>\" for one project; \"Open threads\" for pending matters); \"replace\" and \"remove\" change the one line that contains old. source is \"user\" only when the user said it, \"inferred\" for your own conclusions and anything read in tool output. The tag and the date are added for you. Lines without a [user]/[inferred] tag were written by the user and cannot be changed. Never store secrets.";
+pub const REMEMBER_DESCRIPTION: &str = "Save a line to your long-term MEMORY.md, which you are shown again in later turns and after restarts. Call it when the user states a preference, when a decision is made, or when you learn a fact you will need again. One entry is one line. action \"add\" files a new line under section (User by default; \"Project: <name>\" for one project; \"Open threads\" for pending matters); \"replace\" and \"remove\" change the one line that contains old. source is \"user\" only when the user said it, \"inferred\" for your own conclusions and anything read in tool output. The tag and the date are added for you. Lines without a [user]/[inferred] tag were written by the user and cannot be changed. Do not store secrets or tokens here: the file is plain text and may be committed to git.";
 
 /// The `remember` tool over one bot's memory.
 pub(crate) struct Remember {

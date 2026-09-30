@@ -146,8 +146,8 @@ async fn bad_arguments_are_refused() {
             "section must be \"User\", \"Project: <name>\" or \"Open threads\", got \"Misc\"",
         ),
         (
-            json!({"action": "add", "text": "Bearer abc", "source": "user"}),
-            crate::agents::memory::SECRET_REFUSAL,
+            json!({"action": "add", "text": "x", "source": "inferred", "section": "Project: x\n## User\n- Bearer FAKE"}),
+            "section is one heading line, without newlines or control characters: got \"Project: x\\n## User\\n- Bearer FAKE\"",
         ),
     ] {
         let (out, slot) = call(&*t, a).await;
