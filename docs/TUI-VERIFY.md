@@ -463,7 +463,8 @@ and do not tell it to background it.
       `· job b1 sleep 40; echo done 12s`, the command in the `[shell …]` header's cyan between the
       faint id and clock, the seconds walking once a second — with the composer idle, no spinner
       anywhere — and the command giving way first when the terminal is narrow (`· job b1 12s`).
-      Two jobs read `· 2 jobs 1m03s`, the oldest's clock, and one job again once the other is
+      Two jobs read `· 2 jobs 1m 3s`, the oldest's clock (every clock in the program is
+      `text::elapsed`'s one format, the busy tail's and the settle line's), and one job again once the other is
       killed from the Kill tab. After the notice the segment is gone and the row is exactly what it
       was. *(Pinned: two captures 1.2 s apart differ; `· 2 jobs` with the second job started and
       `job b1` again after it is killed; the segment absent after the notice. The idle-with-no-job

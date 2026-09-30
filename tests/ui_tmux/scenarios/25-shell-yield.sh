@@ -54,6 +54,9 @@ CMD='sleep 25; echo l4yield'
 CMD2='sleep 40; echo second'
 RECEIPT='still running after 2s → background job b1'
 
+# A job's clock as the list shows it: `text::elapsed`, whose first second reads `<1s` — b2 is listed
+# moments after it starts.
+CLK='(<1|[0-9]+)s'
 # The job segment's clock, off the status row ("" if the segment is absent).
 job_clock() { bottom_zone | grep -oE 'job b1 .* [0-9]+s$' | grep -oE '[0-9]+s$'; }
 # The clock on job `$1`'s row of the open list ("" if there is no such row) — the id, the clock, the
@@ -140,7 +143,7 @@ wait_vis '2 jobs running' || bad "the Jobs tab never opened with two jobs"
 check "the surface has the Kill tab" "$(cap | grep -cF 'Kill')" 1
 # A row is `▸ b1  12s  <command>` (the cursor's) or `  b1  12s  <command>`; on the Kill tab `[ ] ` sits
 # between the marker and the id. Nothing else on the pane has an id, a clock and two spaces in a row.
-check "both rows are there" "$(cap | grep -cE 'b[12] +[0-9]+s  ')" 2
+check "both rows are there" "$(cap | grep -cE "b[12] +$CLK  ")" 2
 first="$(row_clock b1)"
 sleep 1.2
 second="$(row_clock b1)"
@@ -151,11 +154,11 @@ else
 fi
 key Tab
 wait_vis '[ ] ' || bad "Tab did not open the Kill tab"
-check "the Kill tab has both rows, unchecked" "$(cap | grep -cE '\[ \] b[12] +[0-9]+s  ')" 2
+check "the Kill tab has both rows, unchecked" "$(cap | grep -cE "\\[ \\] b[12] +$CLK  ")" 2
 check "…under the same count" "$(count_vis '2 jobs running')" 1
 key Down
 key Space
-_kill_row_checked() { cap | grep -qE '\[x\] b2 +[0-9]+s  '; }
+_kill_row_checked() { cap | grep -qE "\\[x\\] b2 +$CLK  "; }
 _poll_until 30 _kill_row_checked || bad "Space did not check b2: $(cap | grep -E '\[.\] b')"
 check "only b2 is checked" "$(cap | grep -cF '[x] ')" 1
 key Enter
@@ -169,7 +172,7 @@ check "the status row is back to one job" "$(bottom_zone | grep -cF 'job b1')" 1
 type_ '/jobs'
 key Enter
 wait_vis '1 job running' || bad "the list did not reopen with one job"
-check "b2's row is gone" "$(cap | grep -cE 'b2 +[0-9]+s  ')" 0
+check "b2's row is gone" "$(cap | grep -cE "b2 +$CLK  ")" 0
 check "b1's row is still there" "$(cap | grep -cE "b1 +[0-9]+s +$CMD")" 1
 key Escape
 wait_gone '1 job running' || bad "ESC did not close the reopened list"
