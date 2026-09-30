@@ -213,3 +213,97 @@ bash -n scripts/bot-retention.sh                                 exit 0
 临时探针及原始输出留在本机 `/private/tmp/bot-verify-20261001/`：`probe.rs` / `probe.log` 为 R1、N2；`assertions.rs` / `assertions.log` 为原样提取函数的负例；`dry.py`、`shims/`、`dry.log` 为脚本干跑。仓库测试原始输出为 `/private/tmp/bot-verify-{session-lib,session,flush,longrun}.log`。它们是复现工作文件，不是额外交付文件。
 
 仓库仅新增本报告，未修改代码、测试或脚本，未 commit。**剩余必须修仅两项：A 用户完成断言不能借用 flush 回复；B refresh 豁免不能无条件放过 summary 输入和无来源的 memory notice。**
+
+## 复核：两条判定漏检的修复
+
+复核日期：2026-10-01；HEAD：`d0b87d963f7ac807dd9b7defc7d213d263ac13e1`；对照范围：`051227c..HEAD`。**最新结论：现在批准合并，A、B 两项均已修，取代前文的暂缓合并判定。** 本节只复核这两项及它们的判定边界，没有重开产品评审。实际 diff 还包含上一轮报告入库和设计文档中的计数跟进说明；执行逻辑的改动限于长跑测试及其辅助判定函数。
+
+### A：原 2000 轮坏输入现在判失败
+
+保留上一轮 `/private/tmp/bot-verify-20261001/assertions.rs` 的整个 `main` **逐字不变**，只从本次 HEAD 重新原样提取判定函数及新增辅助，链接当前重新构建的库。两份 `main` 字节相等，SHA-256 均为 `b36db89669bb458990b2d1294bd4f79625306778b23f91c32bc8fee49ccb0b36`。
+
+因此输入仍是每轮 `user → assistant(tool call) → tool(result) → user(notice, flush) → assistant("Saved the memory.")`，没有插入用户最终回复，也没有换用较容易拒绝的输入。输出为：
+
+```text
+no_user_final_answers: asked=2000; counted_answered=0; invariant0_accepts=false
+```
+
+对应 `tests/repl/bot_longrun.rs:816`：notice 清空 `current`；`:828` 还要求最终回复带当前轮的 `[#n] ` 前缀。为了确认不是只靠拒绝无轮号的字符串变绿，另喂入**带正确 `[#n] Saved.` 轮号的 flush 回复**，仍然计零个用户轮完成。
+
+同时原样提取当前的 `every_turn_answered`，直接运行正常和负面对照；以下为输出中的判定字段：
+
+```text
+A_normal_mainline_1_to_2000: invariant0_accepts=true
+A_missing_question_5: invariant0_accepts=false
+A_duplicate_question_5: invariant0_accepts=false
+A_extra_unanswered_question_2001: invariant0_accepts=false
+A_reply_wrong_round: invariant0_accepts=false
+A_interrupted_reply: invariant0_accepts=false
+A_only_flush_replies_with_round_number: invariant0_accepts=false
+```
+
+正常对照实测打印 `2000 of 2000 turns saved with a final reply, 2000 user turns in the log, 0 twice`；只有带轮号的 flush 回复时打印 `0 of 2000 turns saved with a final reply`。`:844` 现在同时要求重复数为零、**提问集合**等于 `1..=TURNS`、**完成集合**也等于它；额外一条未回答的 `#2001` 不会漏过。检查对象仍是主线最终磁盘记录（`:889`），两组 32k 测试仍将 invariant 0 列为必需项（`:1403`、`:1423`）。
+
+### B：两类原坏输入都被拒绝，合法对照保留
+
+同一份原 `main` 中的 summary 损坏和无来源 notice 探针也没有改输入。本次结果如下，错误仅摘录首行，省略其后打印的完整 Message 对象：
+
+```text
+summary_request_corrupted:
+  compare_detects_diff=true; memory_at=Some(0)
+  refresh_explains=Err("the process's call 1 (Summary) differs beyond the model's new calls, at message 0 of 1/1:")
+unrelated_memory_notice_without_tool_write:
+  refresh_explains=Err("the process's call 1 (Turn) differs beyond the model's new calls, at message 1 of 2/3:")
+ordinary_history_cut_rejected=true
+```
+
+增加两个正面对照：一是 summary 的旧历史完全相同，仅 memory block 和长期记忆小节正文不同；二是一侧实际成功写入 1 次、另一侧 2 次，各自的 summary 分别写 `saved 1 line`、`saved 2 lines`，调用、结果和 notice 均按该侧实际写入构造。两者都通过：
+
+```text
+B_only_memory_section_body: Ok(())
+B_saved_1_vs_2_matches_each_sides_writes: Ok(())
+```
+
+在同一对照上分别改坏一项，防止正规化再次吞掉进程差异：
+
+```text
+B_saved_count_does_not_match_own_writes: Err(... (Summary) differs ...)
+B_summary_old_history_cut: Err(... (Summary) differs ...)
+B_summary_old_history_reordered: Err(... (Summary) differs ...)
+B_summary_instruction_changed: Err(... (Summary) differs ...)
+B_summary_memory_boundary_missing: Err(... (Summary) differs ...)
+B_notice_wrong_place: Err(... (Turn) differs ...)
+B_notice_wrong_line: Err(... (Turn) differs ...)
+B_duplicate_notice_for_one_write: Err(... (Turn) differs ...)
+```
+
+该块为错误类型/定位的缩写；每项都用 `assert_eq!(result.is_ok(), false)` 校验，完整错误首行保留在临时输出中。错误写入数场景是一侧实际写 2 次，却仍报告 1；重复 notice 场景是只有一次实际写入而出现两条相同 notice。
+
+现在的豁免边界及理由如下，行号均为当前 `tests/repl/bot_longrun.rs`：
+
+- **Summary 不再整条丢弃。** `:494` 对每条消息保留角色、内容以外的字段及消息顺序，只正规化两个允许变化的文本部分：`:376` 按固定 header 和下一个 conversation 起始标记替换长期记忆正文；`:409` 仅替换与该侧 flush 成功写入数匹配的计数句。旧历史、旧摘要、其余指令及边界仍参与比较。记忆正文允许不同，是启动重读的既定行为；计数允许不同，是模型对新记忆作出不同工具调用的结果。
+- **Notice 必须有对应写入。** `:344` 从同一 history 找到新 call id 对应的成功 tool result，取其 `saved to` 目标及调用的 `text/new/old`；`:333` 要求 notice 目标匹配并包含对应行，`:475` 每匹配一条就消费一项写入。以前 history 中已有的 notice 不进入这一豁免。它允许工具格式化加入来源、日期等包装，不再仅凭 `memory:` 前缀放行；无写入、错目标、错行、多一条 notice 均已实测拒绝。
+- **保留原先允许的模型后续差异。** 新 tool calls 及其结果可不同；新 assistant 回复的 usage 可不同；过滤后没有其它历史差异的额外 Followup 可折叠（`:472`、`:457`、`:510`）。这些对应模型看到不同记忆后的调用选择、请求长度及工具轮数。普通回复正文、既有历史内容/顺序和其余调用种类仍受比较约束；刷新点及其之前先作严格检查（`:447`）。
+
+在本次相同探针及上述相邻负例覆盖范围内，**未发现新增漏检**。这里验收的是既定 `GrowingProvider` 负载下的续跑比较器，不把它宣称成任意日志格式校验器，也不把两侧同时出现相同错误的情形说成由差分比较保证排除。
+
+### 指定长跑复测
+
+执行且只执行一次指定命令：
+
+```text
+cargo test --test repl bot_longrun -- --nocapture
+test result: ok. 6 passed; 0 failed; 1 ignored; 0 measured; 143 filtered out; finished in 25.25s
+exit=0
+```
+
+四个判定单测全部通过：`a_flush_reply_does_not_answer_the_users_turn`、`a_memory_notice_no_new_write_made_is_not_excused`、`a_summary_request_that_lost_its_history_is_not_excused`、`only_the_models_answer_to_the_reread_block_is_excused`。另两个通过项为以下长跑：
+
+| 场景 | 已保存且完成的主线轮 | markers | 超窗拒绝 | 最大 input+output | 重载视图 | 合理 refresh 差异 |
+|---|---:|---:|---:|---:|---:|---:|
+| 32k，短记忆 | 2000/2000，重复 0 | 60 | 0 | 17297 | 24/24 相同 | 0 |
+| 32k，软阈值记忆 | 2000/2000，重复 0 | 80 | 0 | 23004 | 24/24 相同 | 1 |
+
+两组分别约 23.79 秒、25.20 秒。8k 的 `a_bot_whose_memory_sits_at_the_soft_threshold_outgrows_an_8k_window` 明确显示 `ignored, below the minimum window: the evidence for BOT_MIN_WINDOW (see the doc)`，没有被删除、解除 ignore 或冒充通过。
+
+本轮复现文件及输出位于 `/private/tmp/bot-reverify-d0b87d9/`：`original-inputs.rs` / `.log` 保留原探针输入，`controls.rs` / `.log` 为新增正负对照；长跑完整输出为 `/private/tmp/bot-reverify-d0b87d9-longrun.log`。本轮仅追加本节，未修改代码、测试辅助或脚本，未 commit，未运行真模型实验。原报告已经通过的 R1/N1/N2/R7 脚本结论不变，原先两个剩余阻断项现在关闭；跨进程失败后的 meta 计数校准仍按已记录的小项合并后跟进。
