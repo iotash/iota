@@ -382,9 +382,9 @@ fn job(id: &str, command: &str, ago: u64, now: Instant) -> JobInfo {
 }
 
 /// The job segment closes the status row — after busy — as a SEGMENT: the frame height
-/// never moves. One job: `job b3 <command> 1m12s`, the command as the `[shell …]` header
+/// never moves. One job: `job b3 <command> 1m 12s`, the command as the `[shell …]` header
 /// showed it (one line, 64 runes — `header_command`) and cut to what the row has left,
-/// dropped when fewer than four columns are; several: `3 jobs 3m01s` with the oldest's
+/// dropped when fewer than four columns are; several: `3 jobs 3m 1s` with the oldest's
 /// clock. No job, no segment.
 #[test]
 fn jobs_segment_in_status_line() {
@@ -410,7 +410,7 @@ fn jobs_segment_in_status_line() {
     let row = rows.last().expect("the status row");
     assert_eq!(
         row.as_str(),
-        "  gpt-4o · job b3 cargo test --test session resume 1m12s"
+        "  gpt-4o · job b3 cargo test --test session resume 1m 12s"
     );
     // The command wears the `[shell …]` header's cyan — not the row's faint — between the id and
     // the clock, which keep the row's own style; the text under the escapes is the row above.
@@ -418,7 +418,7 @@ fn jobs_segment_in_status_line() {
     assert_eq!(strip_sgr(&raw), *row);
     assert!(
         raw.ends_with(&format!(
-            "{FAINT} · job b3 {RESET}{CYAN}cargo test --test session resume{RESET}{FAINT} 1m12s{RESET}"
+            "{FAINT} · job b3 {RESET}{CYAN}cargo test --test session resume{RESET}{FAINT} 1m 12s{RESET}"
         )),
         "{raw:?}"
     );
@@ -437,7 +437,7 @@ fn jobs_segment_in_status_line() {
     };
     let row = plain(&view(&busy)).pop().expect("the status row");
     assert!(
-        row.ends_with(" Waiting · job b3 cargo test --test session resume 1m12s"),
+        row.ends_with(" Waiting · job b3 cargo test --test session resume 1m 12s"),
         "{row:?}"
     );
 
@@ -445,27 +445,27 @@ fn jobs_segment_in_status_line() {
     // at 64 runes before the row's own width has a say — the same text as the `[shell …]` row.
     let script = [job("b3", "cargo test\n   --test session resume", 72, now)];
     let row = strip_sgr(&status_line(&status, None, 0, false, &script, 80, now));
-    assert_eq!(row, "  gpt-4o · job b3 cargo test … 1m12s");
+    assert_eq!(row, "  gpt-4o · job b3 cargo test … 1m 12s");
     let long = [job("b3", &"x".repeat(100), 72, now)];
     let row = strip_sgr(&status_line(&status, None, 0, false, &long, 120, now));
-    assert_eq!(row, format!("  gpt-4o · job b3 {}… 1m12s", "x".repeat(63)));
+    assert_eq!(row, format!("  gpt-4o · job b3 {}… 1m 12s", "x".repeat(63)));
 
     // Narrow: the command gives way first — cut, then dropped — and the clock stays. The cut's
     // `…` is the command's, so it is cyan too; a segment without a command carries no cyan.
-    let raw = status_line(&status, None, 0, false, &one.jobs, 36, now);
+    let raw = status_line(&status, None, 0, false, &one.jobs, 37, now);
     let narrow = strip_sgr(&raw);
-    assert_eq!(narrow, "  gpt-4o · job b3 cargo test … 1m12s");
-    assert_eq!(str_width(&narrow), 36);
+    assert_eq!(narrow, "  gpt-4o · job b3 cargo test … 1m 12s");
+    assert_eq!(str_width(&narrow), 37);
     assert!(
-        raw.contains(&format!("{RESET}{CYAN}cargo test …{RESET}{FAINT} 1m12s")),
+        raw.contains(&format!("{RESET}{CYAN}cargo test …{RESET}{FAINT} 1m 12s")),
         "{raw:?}"
     );
     let raw = status_line(&status, None, 0, false, &one.jobs, 24, now);
     let narrower = strip_sgr(&raw);
-    assert_eq!(narrower, "  gpt-4o · job b3 1m12s");
+    assert_eq!(narrower, "  gpt-4o · job b3 1m 12s");
     assert!(
-        !raw.contains(&format!("{CYAN}1m12s"))
-            && raw.ends_with(&format!("{FAINT} · job b3 1m12s{RESET}")),
+        !raw.contains(&format!("{CYAN}1m 12s"))
+            && raw.ends_with(&format!("{FAINT} · job b3 1m 12s{RESET}")),
         "{raw:?}"
     );
     // Below even that, the row's own truncation takes over as for any segment.
@@ -484,17 +484,17 @@ fn jobs_segment_in_status_line() {
         ..Case::default()
     };
     let row = plain(&view(&many)).pop().expect("the status row");
-    assert_eq!(row, "  gpt-4o · 3 jobs 3m01s");
+    assert_eq!(row, "  gpt-4o · 3 jobs 3m 1s");
     let raw = status_line(&status, None, 0, false, &many.jobs, 80, now);
     assert!(
-        raw.ends_with(&format!("{FAINT} · 3 jobs 3m01s{RESET}")),
+        raw.ends_with(&format!("{FAINT} · 3 jobs 3m 1s{RESET}")),
         "a count names no command, so nothing is cyan: {raw:?}"
     );
 
     // The clock walks: a second later the same jobs read a second more.
     let later = now + Duration::from_secs(1);
     let row = strip_sgr(&status_line(&status, None, 0, false, &one.jobs, 80, later));
-    assert!(row.ends_with(" 1m13s"), "{row:?}");
+    assert!(row.ends_with(" 1m 13s"), "{row:?}");
 
     // No job: no segment, and the segment's absence leaves the row exactly as before.
     let after = plain(&view(&Case {

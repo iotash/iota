@@ -232,9 +232,9 @@ pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
 /// `" · "`-joined optional segments in order — tokens, ctx, debug, busy, jobs — with
 /// per-segment hues, truncated to one row with the debug marker re-appended. The jobs
 /// segment closes the row while a background job runs (2026-09-22): one job by id with
-/// its command and clock, `job b3 cargo test 1m12s`, the command cut to what the row has
+/// its command and clock, `job b3 cargo test 1m 12s`, the command cut to what the row has
 /// left and in the `[shell …]` header's cyan; several by count with the oldest's clock,
-/// `3 jobs 3m01s`.
+/// `3 jobs 3m 1s`.
 pub(crate) fn status_line(
     s: &StatusData,
     busy: Option<&BusyView>,
@@ -337,13 +337,13 @@ pub(crate) fn status_line(
     out
 }
 
-/// The job segment for `room` columns: `job b3 <command> 1m12s` for one job — the command as the
+/// The job segment for `room` columns: `job b3 <command> 1m 12s` for one job — the command as the
 /// `[shell …]` header showed it ([`crate::text::header_command`]: one line, 64 runes), then cut to
 /// the columns between the id and the clock and dropped below four of them, and in the header's
-/// cyan (2026-09-23) where the id and the clock keep the row's faint — or `3 jobs 3m01s` for
+/// cyan (2026-09-23) where the id and the clock keep the row's faint — or `3 jobs 3m 1s` for
 /// several, with the oldest's clock; `None` with none.
 fn jobs_segment(jobs: &[JobInfo], now: Instant, room: usize) -> Option<String> {
-    let clock_of = |job: &JobInfo| text::clock(now.saturating_duration_since(job.started));
+    let clock_of = |job: &JobInfo| text::elapsed(now.saturating_duration_since(job.started));
     match jobs {
         [] => None,
         [job] => {

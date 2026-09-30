@@ -35,7 +35,7 @@ use crate::shell::exec::read_capped;
 use crate::shell::jobs::{JobDone, JobInfo, Jobs, job_status};
 use crate::sync::lock;
 use crate::text::width::str_width;
-use crate::text::{clock, header_command};
+use crate::text::{elapsed, header_command};
 use crate::ui::facade::{Panel, Refreshed, TabbedSpec};
 
 use crate::repl::render::banner::tilde;
@@ -52,14 +52,14 @@ pub(crate) const TAIL_LINES: usize = 20;
 /// What `/jobs` says when the last job ended between the row and the command.
 pub(crate) const NO_JOBS: &str = "no background job is running";
 
-/// The list's rows, one per job: `b3  1m12s  cargo test --test session resume` — the id and the clock
+/// The list's rows, one per job: `b3  1m 12s  cargo test --test session resume` — the id and the clock
 /// padded to their widest, the command as the header showed it (one line, 64 runes), nothing else: the
 /// log path is the detail page's. Oldest first, as the registry lists them; empty for an empty set, which
 /// the command answers with [`NO_JOBS`] rather than a panel.
 pub(crate) fn job_rows(jobs: &[JobInfo], now: Instant) -> Vec<String> {
     let clocks: Vec<String> = jobs
         .iter()
-        .map(|j| clock(now.saturating_duration_since(j.started)))
+        .map(|j| elapsed(now.saturating_duration_since(j.started)))
         .collect();
     let id_width = jobs.iter().map(|j| str_width(&j.id)).max().unwrap_or(0);
     let clock_width = clocks.iter().map(|c| str_width(c)).max().unwrap_or(0);
@@ -132,7 +132,7 @@ impl LiveRows {
 /// ```text
 /// command:  cargo test --test session resume
 ///           --features everything
-/// running:  1m12s (started 14:02:11)
+/// running:  1m 12s (started 14:02:11)
 /// pid:      4242
 /// output:   ~/.cache/iota-jobs/77/b3.log
 /// ── last 20 lines ──
@@ -169,15 +169,15 @@ pub(crate) fn job_detail(
         // `finished:` is nine columns and one space: the verdict sits in the value column like the rest.
         lines.push(format!("{} {}", dim("finished:"), job_status(done)));
     } else {
-        let elapsed = now.saturating_duration_since(job.started);
-        let started = jiff::SignedDuration::try_from(elapsed)
+        let ran = now.saturating_duration_since(job.started);
+        let started = jiff::SignedDuration::try_from(ran)
             .ok()
             .and_then(|d| wall_now.checked_sub(d).ok())
             .map_or_else(|| "?".to_owned(), |at| at.strftime("%H:%M:%S").to_string());
         lines.push(format!(
             "{}{} (started {started})",
             label("running:"),
-            clock(elapsed)
+            elapsed(ran)
         ));
     }
     lines.push(format!("{}{pid}", label("pid:")));
@@ -399,8 +399,8 @@ mod tests {
         assert_eq!(
             rows,
             [
-                "b3      1m12s  cargo test …",
-                "b12  1h02m05s  cargo test --test session resume --features everything-under-th…",
+                "b3     1m 12s  cargo test …",
+                "b12  1h 2m 5s  cargo test --test session resume --features everything-under-th…",
             ]
         );
         assert_eq!(
@@ -408,14 +408,14 @@ mod tests {
             Some(crate::text::header_command(long).as_str())
         );
         assert!(!rows.iter().any(|r| r.contains(".log")), "{rows:?}");
-        // One job: no padding to speak of. A job "started" after `now` reads 0s: a clock cannot run
+        // One job: no padding to speak of. A job "started" after `now` reads <1s: a clock cannot run
         // backwards.
         assert_eq!(
             strip_sgr(&job_rows(&jobs[..1], now)[0]),
-            "b3  1m12s  cargo test …"
+            "b3  1m 12s  cargo test …"
         );
         let future = [job("b1", "x", 0, now + Duration::from_secs(5))];
-        assert_eq!(strip_sgr(&job_rows(&future, now)[0]), "b1  0s  x");
+        assert_eq!(strip_sgr(&job_rows(&future, now)[0]), "b1  <1s  x");
         // Nothing running — the race between the row and the registry — is no row at all: the command
         // says `NO_JOBS` and opens nothing.
         assert!(job_rows(&[], now).is_empty());
@@ -447,7 +447,7 @@ mod tests {
             [
                 "command:  cargo test".to_owned(),
                 "            --test session resume".to_owned(),
-                "running:  1m12s (started 14:02:11)".to_owned(),
+                "running:  1m 12s (started 14:02:11)".to_owned(),
                 "pid:      4242".to_owned(),
                 format!("output:   ~{sep}.cache/iota-jobs/77/b3.log"),
                 "── last 20 lines ──".to_owned(),
