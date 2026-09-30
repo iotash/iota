@@ -98,7 +98,8 @@ pub(crate) async fn compact_history(
         return Ok(Compaction::Unchanged); // nothing older than the last turn
     }
 
-    let (summary, usage) = summarize(cancel, provider, &history[sys_end..middle_end], hint).await?;
+    let (previous, middle) = split_previous_summary(&history[sys_end..middle_end]);
+    let (summary, usage) = summarize(cancel, provider, previous.as_deref(), &middle, hint).await?;
     let summary = summary.trim().to_owned();
     if summary.is_empty() {
         return Err(CompactError::EmptySummary);
@@ -124,11 +125,38 @@ pub(crate) async fn compact_history(
     })
 }
 
+/// Lifts an earlier compaction's summary out of the middle's first message, so the next pass
+/// sees it as the previous summary rather than as something the user said. The preamble is
+/// recognised by the same `SUMMARY_PREFIX` … `SUMMARY_SEPARATOR` frame the weave writes; a
+/// message left with nothing of its own (no text, no tool calls) is dropped.
+fn split_previous_summary(middle: &[Message]) -> (Option<String>, Vec<Message>) {
+    use crate::session::loader::{SUMMARY_PREFIX, SUMMARY_SEPARATOR};
+    let Some((summary, rest)) = middle.first().and_then(|m| {
+        m.content
+            .strip_prefix(SUMMARY_PREFIX)
+            .and_then(|s| s.split_once(SUMMARY_SEPARATOR))
+    }) else {
+        return (None, middle.to_vec());
+    };
+    let mut first = middle[0].clone();
+    rest.clone_into(&mut first.content);
+    let keep = !first.content.is_empty() || !first.tool_calls().is_empty();
+    let mut out = Vec::with_capacity(middle.len());
+    if keep {
+        out.push(first);
+    }
+    out.extend_from_slice(&middle[1..]);
+    (Some(summary.to_owned()), out)
+}
+
 /// Renders the messages to plain text and asks the provider for a summary via a one-shot
 /// unary call — no tools, isolated from the conversation (`chat/compact.go` `summarize`).
+/// `previous` is the summary an earlier pass wove into the view: it gets its own fenced
+/// section so it is carried forward, not re-summarized as conversation.
 async fn summarize(
     cancel: &CancellationToken,
     provider: &dyn Provider,
+    previous: Option<&str>,
     middle: &[Message],
     hint: &str,
 ) -> Result<(String, Option<Usage>), CompactError> {
@@ -172,7 +200,15 @@ async fn summarize(
         prompt.push_str("\n\nExtra guidance from the user — emphasize this: ");
         prompt.push_str(hint);
     }
-    prompt.push_str("\n\n--- CONVERSATION START ---\n");
+    let start = match previous {
+        Some(prev) => {
+            prompt.push_str("\n\n--- PREVIOUS SUMMARY (already condensed: carry forward what still matters, drop what is resolved) ---\n");
+            prompt.push_str(prev);
+            "\n--- NEW CONVERSATION START ---\n"
+        }
+        None => "\n\n--- CONVERSATION START ---\n",
+    };
+    prompt.push_str(start);
     prompt.push_str(&body);
     prompt.push_str("--- CONVERSATION END ---");
 
@@ -462,6 +498,104 @@ mod tests {
             ),
             "the system prompt and the last turn stay OUT of the summary body"
         );
+    }
+
+    /// A second compaction lifts the first one's summary out of the woven message into its
+    /// own PREVIOUS SUMMARY section: the model is told it is already condensed, and it no
+    /// longer reads as something the user said.
+    #[tokio::test]
+    async fn a_woven_summary_is_carried_forward_not_resummarized() {
+        use crate::session::loader::SUMMARY_PREFIX;
+        let p = summarizer();
+        let log = p.log();
+        let h = vec![
+            Message::system("sys"),
+            Message::user(format!(
+                "{}u2",
+                crate::session::summary_preamble("OLD SUMMARY")
+            )),
+            Message::assistant("a2"),
+            Message::user("u3"),
+            Message::assistant("a3"),
+        ];
+        compact_history(&CancellationToken::new(), &p, &h, "")
+            .await
+            .expect("compaction succeeded");
+
+        let prompt = log.prompts().pop().expect("the summary call was made");
+        assert_eq!(
+            prompt,
+            format!(
+                "{}{}",
+                super::SUMMARY_INSTRUCTION,
+                concat!(
+                    "\n\n--- PREVIOUS SUMMARY (already condensed: carry forward what still matters, drop what is resolved) ---\n",
+                    "OLD SUMMARY",
+                    "\n--- NEW CONVERSATION START ---\n",
+                    "User: u2\n",
+                    "Assistant: a2\n",
+                    "--- CONVERSATION END ---",
+                )
+            )
+        );
+        for line in prompt.lines().filter(|l| l.starts_with("User:")) {
+            assert!(
+                !line.contains(SUMMARY_PREFIX.trim_end()),
+                "the old preamble leaked into a User row: {line}"
+            );
+        }
+    }
+
+    /// A woven message with nothing of its own left after the preamble is dropped rather
+    /// than rendered as an empty `User:` row.
+    #[tokio::test]
+    async fn a_summary_only_message_is_dropped_from_the_body() {
+        let p = summarizer();
+        let log = p.log();
+        let h = vec![
+            Message::user(crate::session::summary_preamble("OLD")),
+            Message::assistant("a1"),
+            Message::user("u2"),
+        ];
+        compact_history(&CancellationToken::new(), &p, &h, "")
+            .await
+            .expect("compaction succeeded");
+        let prompt = log.prompts().pop().expect("the summary call was made");
+        let (_, body) = prompt
+            .split_once("\n--- NEW CONVERSATION START ---\n")
+            .expect("a previous summary opens a second section");
+        assert_eq!(body, "Assistant: a1\n--- CONVERSATION END ---");
+    }
+
+    /// No woven summary, no PREVIOUS SUMMARY section — and text that merely resembles the
+    /// prefix without the separator stays conversation.
+    #[tokio::test]
+    async fn without_a_previous_summary_the_prompt_keeps_one_section() {
+        use crate::session::loader::SUMMARY_PREFIX;
+        for first in [
+            "u1".to_owned(),
+            format!("{SUMMARY_PREFIX}no separator here"),
+        ] {
+            let p = summarizer();
+            let log = p.log();
+            let h = vec![
+                Message::user(first.clone()),
+                Message::assistant("a1"),
+                Message::user("u2"),
+            ];
+            compact_history(&CancellationToken::new(), &p, &h, "")
+                .await
+                .expect("compaction succeeded");
+            let prompt = log.prompts().pop().expect("the summary call was made");
+            assert!(!prompt.contains("PREVIOUS SUMMARY"), "{prompt}");
+            assert!(!prompt.contains("NEW CONVERSATION START"), "{prompt}");
+            assert!(
+                prompt.ends_with(&format!(
+                    "\n\n--- CONVERSATION START ---\nUser: {first}\nAssistant: a1\n--- CONVERSATION END ---"
+                )),
+                "{prompt}"
+            );
+        }
     }
 
     /// A `Provider` that answers `"SUMMARY"` and keeps every prompt it was sent.
