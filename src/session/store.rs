@@ -139,30 +139,45 @@ impl SessionStore {
     }
 
     /// The bot whose pointer names session `id` (§2.7): a scan of `<bots>/*/bot.json`, O(bots). `None` for
-    /// an id no bot points at, and always for a store that knows no bots root.
-    pub fn bot_owner(&self, id: &str) -> Option<String> {
-        let bots = self.bots.as_deref()?;
-        crate::session::bot::pointers(bots)
+    /// an id no bot points at, and always for a store that knows no bots root. A pointer that cannot be read
+    /// is [`SessionError::BotOwnerUnknown`]: it may name `id`.
+    pub fn bot_owner(&self, id: &str) -> Result<Option<String>, SessionError> {
+        let Some(bots) = self.bots.as_deref() else {
+            return Ok(None);
+        };
+        let pointers =
+            crate::session::bot::pointers(bots).map_err(|e| SessionError::BotOwnerUnknown {
+                id: id.to_owned(),
+                source: Box::new(e),
+            })?;
+        Ok(pointers
             .into_iter()
             .find(|(_, p)| p.session == id)
-            .map(|(name, _)| name)
+            .map(|(name, _)| name))
     }
 
-    /// Every session id some bot points at — what a normal-mode picker leaves out (§2.7).
+    /// Every session id some bot points at — what a normal-mode picker leaves out (§2.7). Only a listing:
+    /// the pointers that cannot be read are left out here, and the gate
+    /// ([`check_not_bot_owned`](Self::check_not_bot_owned)) refuses what they might name.
     pub fn bot_sessions(&self) -> Vec<String> {
-        self.bots
-            .as_deref()
-            .map(crate::session::bot::pointers)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(_, p)| p.session)
+        let Some(bots) = self.bots.as_deref() else {
+            return Vec::new();
+        };
+        let Ok(entries) = std::fs::read_dir(bots) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter_map(|e| BotPointer::read(&e.path()).ok().flatten())
+            .map(|p| p.session)
             .collect()
     }
 
-    /// Refuses a session a bot owns with [`SessionError::BotOwned`] — the gate `iota resume <id>` and
+    /// Refuses a session a bot owns with [`SessionError::BotOwned`], and every session while a pointer
+    /// cannot be read ([`SessionError::BotOwnerUnknown`]) — the gate `iota resume <id>`, `/session` and
     /// [`delete`](Self::delete) pass through.
     pub fn check_not_bot_owned(&self, id: &str) -> Result<(), SessionError> {
-        match self.bot_owner(id) {
+        match self.bot_owner(id)? {
             Some(bot) => Err(SessionError::BotOwned {
                 id: id.to_owned(),
                 bot,

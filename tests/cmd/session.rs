@@ -1050,3 +1050,54 @@ async fn resume_refuses_a_bot_session() {
     let o = output(cmd).await;
     assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
 }
+
+/// Review R6: a pointer that cannot be parsed is "cannot tell", not "no owner" — `iota resume` refuses the
+/// session it may name (and, the pointer being unreadable, any other), touching neither the log nor the
+/// model.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_refuses_while_a_bot_pointer_is_unreadable() {
+    let server = MockServer::start().await;
+    google_stub(&server, false).await;
+    let cwd = TempDir::new().expect("temp cwd");
+    let home = TempDir::new().expect("temp home");
+    write_config(cwd.path(), &server.uri(), "gemini-2.5-pro", "");
+    let bot_id = "botz00000001";
+    let bundle = sessions_root(home.path()).join(bot_id);
+    plant_bundle(
+        &bundle,
+        bot_id,
+        "gemini",
+        "gemini-2.5-pro",
+        &[rec("user", "earlier"), rec("assistant", "noted")],
+    );
+    let bot_dir = home.path().join(".iota").join("bots").join("coder");
+    fs::create_dir_all(&bot_dir).expect("bot dir");
+    let pointer = bot_dir.join(iota::session::BOT_POINTER_FILE);
+    fs::write(&pointer, "{\"v\":1,\"session\":\"botz00000001\"").expect("a torn pointer");
+    let before = fs::read(bundle.join("messages.jsonl")).expect("log");
+
+    let mut cmd = iota(cwd.path(), home.path());
+    cmd.args(["resume", bot_id, "-m", "hi"]);
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(1), "stderr was: {}", err(&o));
+    let stderr = err(&o);
+    assert!(
+        stderr.starts_with(&format!(
+            "Error: cannot tell whether session {bot_id} belongs to a bot: {}",
+            pointer.display()
+        )),
+        "{stderr}"
+    );
+    assert_eq!(
+        fs::read(bundle.join("messages.jsonl")).expect("log"),
+        before
+    );
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .is_empty(),
+        "nothing was sent"
+    );
+}

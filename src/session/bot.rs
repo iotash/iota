@@ -70,21 +70,26 @@ pub fn valid_bot_name(name: &str) -> bool {
 }
 
 /// Every bot directory's pointer under `bots`, as `(bot name, pointer)`, name-sorted. A missing `bots`
-/// directory is no bots; a pointer that cannot be read is skipped.
-pub(crate) fn pointers(bots: &Path) -> Vec<(String, BotPointer)> {
-    let Ok(entries) = std::fs::read_dir(bots) else {
-        return Vec::new();
+/// directory is no bots, a bot directory without a pointer is skipped; a pointer (or the directory) that
+/// cannot be read is an error — "no owner" must never stand in for "cannot tell" (§2.7).
+pub(crate) fn pointers(bots: &Path) -> Result<Vec<(String, BotPointer)>, SessionError> {
+    let entries = match std::fs::read_dir(bots) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(SessionError::Io(e)),
     };
-    let mut out: Vec<(String, BotPointer)> = entries
-        .flatten()
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-        .filter_map(|e| {
-            let ptr = BotPointer::read(&e.path()).ok()??;
-            Some((e.file_name().to_string_lossy().into_owned(), ptr))
-        })
-        .collect();
+    let mut out = Vec::new();
+    for e in entries {
+        let e = e?;
+        if !e.file_type()?.is_dir() {
+            continue;
+        }
+        if let Some(ptr) = BotPointer::read(&e.path())? {
+            out.push((e.file_name().to_string_lossy().into_owned(), ptr));
+        }
+    }
     out.sort_by(|a, b| a.0.cmp(&b.0));
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -144,11 +149,16 @@ mod tests {
         }
     }
 
-    /// The scan lists every readable pointer by directory name and skips the rest.
+    /// The scan lists every pointer by directory name and skips a directory without one; a pointer that
+    /// cannot be parsed fails the scan, naming the file (review R6: never "no owner").
     #[test]
     fn pointers_scan_the_bots_directory() {
         let home = tempfile::tempdir().expect("tempdir");
-        assert!(pointers(&home.path().join("absent")).is_empty());
+        assert!(
+            pointers(&home.path().join("absent"))
+                .expect("absent")
+                .is_empty()
+        );
         BotPointer::new("s2")
             .write(&home.path().join("b"))
             .expect("b");
@@ -156,9 +166,8 @@ mod tests {
             .write(&home.path().join("a"))
             .expect("a");
         std::fs::create_dir_all(home.path().join("empty")).expect("empty");
-        std::fs::create_dir_all(home.path().join("bad")).expect("bad");
-        std::fs::write(home.path().join("bad").join(BOT_POINTER_FILE), "x").expect("bad ptr");
         let got: Vec<(String, String)> = pointers(home.path())
+            .expect("scan")
             .into_iter()
             .map(|(n, p)| (n, p.session))
             .collect();
@@ -169,5 +178,9 @@ mod tests {
                 ("b".to_owned(), "s2".to_owned())
             ]
         );
+        std::fs::create_dir_all(home.path().join("bad")).expect("bad");
+        std::fs::write(home.path().join("bad").join(BOT_POINTER_FILE), "x").expect("bad ptr");
+        let err = pointers(home.path()).expect_err("a corrupt pointer");
+        assert!(err.to_string().contains(BOT_POINTER_FILE), "{err}");
     }
 }

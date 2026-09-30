@@ -74,6 +74,20 @@ pub enum SessionError {
         /// The pointer to delete (`<bots>/<name>/bot.json`).
         pointer: std::path::PathBuf,
     },
+    /// A batch reached the log, but `meta.json` could not be rewritten after it. The batch must NOT be
+    /// appended again; the meta catches up with the next write.
+    #[error("{0}")]
+    MetaNotSaved(#[source] Box<SessionError>),
+    /// Whether a session is a bot's body cannot be told: a pointer under the bots root (or the root itself)
+    /// cannot be read (§2.7). Anything that would write or delete a bot's body is refused until it can.
+    #[error("cannot tell whether session {id} belongs to a bot: {source}")]
+    BotOwnerUnknown {
+        /// The session id.
+        id: String,
+        /// Why the pointers could not be read.
+        #[source]
+        source: Box<SessionError>,
+    },
     /// A write reached the log before `ensure_created` opened it — a bug, not a state.
     #[error("session log is not open")]
     LogNotOpen,

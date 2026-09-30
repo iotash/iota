@@ -7,8 +7,9 @@ use iota::app::HostDirs;
 use iota::provider::ProviderKind;
 use iota::provider::model::{Message, ToolCall};
 use iota::session::{
-    BotPointer, INTERRUPTED_RESULT, LOCK_FILE, NewSession, PROJECTS_DIR_NAME, SESSION_ID_ALPHABET,
-    SESSION_ID_LENGTH, SessionError, SessionInfo, SessionStore, resolve_in,
+    BOT_POINTER_FILE, BotPointer, INTERRUPTED_RESULT, LOCK_FILE, MAX_LOG_LINE, META_TMP_FILE,
+    NewSession, PROJECTS_DIR_NAME, SESSION_ID_ALPHABET, SESSION_ID_LENGTH, SessionError,
+    SessionInfo, SessionStore, resolve_in,
 };
 use pretty_assertions::assert_eq;
 
@@ -460,6 +461,77 @@ fn a_new_bundle_is_locked_from_its_first_append() {
     assert!(other.resume(&id, KIND).is_ok());
 }
 
+/// A first open of the log that fails lets the bundle lock go with it: once the obstacle is gone, the SAME
+/// writer takes the lock again and appends, instead of being refused by its own guard (review R4).
+#[test]
+fn a_failed_first_open_leaves_the_lock_to_the_retry() {
+    let (_home, store) = temp_store();
+    let mut w = store.create(NewSession::new(KIND, "m1")).unwrap();
+    let log = w.dir().join("messages.jsonl");
+    std::fs::create_dir_all(&log).unwrap();
+    w.append_messages(&[Message::user("q")])
+        .expect_err("the log is a directory");
+    std::fs::remove_dir(&log).unwrap();
+    w.append_messages(&[Message::user("q")])
+        .expect("the same writer tries again");
+    assert_eq!(log_lines(w.dir()).len(), 1);
+    // And it holds the lock now, as any materialised writer does.
+    let err = SessionStore::new(store.root())
+        .resume(w.id(), KIND)
+        .expect_err("held");
+    assert_eq!(err.to_string(), locked_text(w.id()));
+}
+
+/// A batch is all or nothing for the log (review R1): one that fails partway is cut back to where it began,
+/// so retrying it appends it once; one whose meta rewrite alone fails IS in the log — `MetaNotSaved`, not to
+/// be appended again — and the counts carry on from it.
+#[test]
+fn a_failed_batch_is_all_or_nothing_and_a_failed_meta_is_not_a_failed_batch() {
+    let (_home, store) = temp_store();
+    let mut w = store.create(NewSession::new(KIND, "m1")).unwrap();
+    let id = w.id().to_owned();
+    w.append_messages(&[Message::user("seed")]).unwrap();
+    let dir = w.dir().to_path_buf();
+
+    // Partway: the second record cannot be written at all.
+    let mut huge = call("c1");
+    huge.arguments.insert(
+        "blob".to_owned(),
+        serde_json::Value::String("x".repeat(MAX_LOG_LINE)),
+    );
+    let err = w
+        .append_messages(&[
+            Message::user("q"),
+            Message::assistant("").with_tool_calls(vec![huge]),
+        ])
+        .expect_err("a record over the line cap");
+    assert!(!matches!(err, SessionError::MetaNotSaved(_)), "{err:?}");
+    assert_eq!(log_lines(&dir).len(), 1, "cut back to the batch's start");
+    assert_eq!(w.meta().message_count, 1);
+
+    // The meta rewrite alone fails: the batch is in the log.
+    std::fs::create_dir(dir.join(META_TMP_FILE)).unwrap();
+    let err = w
+        .append_messages(&[Message::user("q"), Message::assistant("a")])
+        .expect_err("meta.json cannot be rewritten");
+    assert!(matches!(err, SessionError::MetaNotSaved(_)), "{err:?}");
+    assert_eq!(log_lines(&dir).len(), 3);
+    std::fs::remove_dir(dir.join(META_TMP_FILE)).unwrap();
+
+    // What a caller does with `MetaNotSaved`: goes on with what comes next, and nothing is doubled.
+    w.append_messages(&[Message::user("more")]).unwrap();
+    assert_eq!(w.meta().message_count, 4);
+    drop(w);
+    let (_w, session) = store.resume(&id, KIND).unwrap();
+    assert_eq!(session.meta.message_count, 4);
+    let texts: Vec<&str> = session
+        .messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect();
+    assert_eq!(texts, ["seed", "q", "a", "more"]);
+}
+
 /// `delete` refuses a bundle that is held open, and removes it once the holder is gone.
 #[test]
 fn delete_is_refused_while_the_bundle_is_held() {
@@ -505,10 +577,10 @@ fn a_bot_session_is_protected_from_delete() {
     let store = store.with_bots(&bots);
     let id = saved_session(&store);
     let free = saved_session(&store);
-    assert_eq!(store.bot_owner(&id), None);
+    assert_eq!(store.bot_owner(&id).unwrap(), None);
     BotPointer::new(&id).write(&bots.join("coder")).unwrap();
-    assert_eq!(store.bot_owner(&id).as_deref(), Some("coder"));
-    assert_eq!(store.bot_owner(&free), None);
+    assert_eq!(store.bot_owner(&id).unwrap().as_deref(), Some("coder"));
+    assert_eq!(store.bot_owner(&free).unwrap(), None);
     assert_eq!(store.bot_sessions(), vec![id.clone()]);
 
     let err = store.delete(&id).expect_err("a bot's body");
@@ -524,6 +596,52 @@ fn a_bot_session_is_protected_from_delete() {
     store.delete(&id).expect("no longer pointed at");
 }
 
+/// A pointer that cannot be read is "cannot tell", never "no owner" (review R6): while it is broken the
+/// gate refuses every session — the pointer may name any of them — and `delete` removes none; the listing
+/// only leaves it out. Once it reads again, the ordinary rules are back.
+#[test]
+fn an_unreadable_pointer_blocks_the_gate_and_delete() {
+    let (home, store) = temp_store();
+    let bots = home.path().join("bots");
+    let store = store.with_bots(&bots);
+    let id = saved_session(&store);
+    let free = saved_session(&store);
+    BotPointer::new(&id).write(&bots.join("coder")).unwrap();
+    let err = store.delete(&id).expect_err("a bot's body");
+    assert!(matches!(&err, SessionError::BotOwned { .. }), "{err:?}");
+
+    std::fs::write(bots.join("coder").join(BOT_POINTER_FILE), "{oops").unwrap();
+    for s in [&id, &free] {
+        let err = store.check_not_bot_owned(s).expect_err("cannot tell");
+        assert!(
+            matches!(&err, SessionError::BotOwnerUnknown { .. }),
+            "{err:?}"
+        );
+        assert!(
+            err.to_string().starts_with(&format!(
+                "cannot tell whether session {s} belongs to a bot: "
+            )) && err.to_string().contains(BOT_POINTER_FILE),
+            "{err}"
+        );
+        let err = store.delete(s).expect_err("not deleted");
+        assert!(
+            matches!(&err, SessionError::BotOwnerUnknown { .. }),
+            "{err:?}"
+        );
+        assert!(store.find_dir(s).is_some(), "still there");
+    }
+    assert!(store.bot_sessions().is_empty(), "the listing skips it");
+
+    BotPointer::new(&id).write(&bots.join("coder")).unwrap();
+    assert!(matches!(
+        store.delete(&id),
+        Err(SessionError::BotOwned { .. })
+    ));
+    store
+        .delete(&free)
+        .expect("readable again: an ordinary session goes");
+}
+
 /// A store without a bots root knows no owners, so nothing is refused for that reason.
 #[test]
 fn a_store_without_bots_knows_no_owner() {
@@ -532,7 +650,7 @@ fn a_store_without_bots_knows_no_owner() {
     BotPointer::new(&id)
         .write(&home.path().join("bots").join("coder"))
         .unwrap();
-    assert_eq!(store.bot_owner(&id), None);
+    assert_eq!(store.bot_owner(&id).unwrap(), None);
 }
 
 /// The `on_created` hook runs once, right after the first write created the bundle; a failing hook fails

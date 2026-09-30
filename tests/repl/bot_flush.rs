@@ -54,6 +54,10 @@ struct Fixture {
     bots: PathBuf,
     states: Arc<Mutex<Vec<State>>>,
     events: Arc<Mutex<Vec<Event>>>,
+    /// Replaces the writer's `on_created` hook (the pointer's `materialized` rewrite) when set.
+    on_created: Mutex<Option<iota::session::OnCreated>>,
+    /// `read_file` asks for approval.
+    approve_read: bool,
 }
 
 impl Fixture {
@@ -68,11 +72,13 @@ impl Fixture {
             bots,
             states: Arc::default(),
             events: Arc::default(),
+            on_created: Mutex::new(None),
+            approve_read: false,
         }
     }
 
     fn writer(&self) -> SessionWriter {
-        match self
+        let mut writer = match self
             .store
             .open_bot(
                 &self.bots.join("coder"),
@@ -83,7 +89,11 @@ impl Fixture {
         {
             iota::session::BotOpen::Fresh { writer, .. }
             | iota::session::BotOpen::Resumed(writer, _) => writer,
+        };
+        if let Some(hook) = self.on_created.lock().unwrap().take() {
+            writer.on_created(hook);
         }
+        writer
     }
 
     /// Runs the loop to its end; returns the bundle directory.
@@ -119,7 +129,11 @@ impl Fixture {
         });
         let dispatch = iota::tool::merge(vec![
             Arc::new(registry) as Arc<dyn Dispatcher>,
-            Arc::new(StaticDispatcher::new(&["read_file"])) as Arc<dyn Dispatcher>,
+            Arc::new(if self.approve_read {
+                StaticDispatcher::new(&["read_file"]).with_approval(&["read_file"])
+            } else {
+                StaticDispatcher::new(&["read_file"])
+            }) as Arc<dyn Dispatcher>,
         ]);
         let host = RecordingHost {
             states: Arc::clone(&self.states),
@@ -720,4 +734,208 @@ async fn the_send_after_a_pre_send_compaction_carries_the_refreshed_memory() {
         "the compaction's refresh reaches the send it ran before: {typed}"
     );
     assert_eq!(after, typed, "and nothing changes on the send after it");
+}
+
+/// The conversation messages of `msgs` (system ones left out) as `(role, content)`.
+fn conversation(msgs: &[Message]) -> Vec<(Role, String)> {
+    msgs.iter()
+        .filter(|m| m.role() != Role::System)
+        .map(|m| (m.role(), m.content.clone()))
+        .collect()
+}
+
+/// Review R1: while the log refuses writes nothing is compacted — a summary may only replace what the log
+/// has. Once the disk is back, the compaction retried before the next send saves the backlog first, and
+/// the bundle reloads to exactly what that send carried.
+#[tokio::test]
+async fn a_backlog_the_log_refused_is_saved_before_the_compaction_and_survives_a_restart() {
+    let f = Fixture::new(vec![
+        input("zero"),
+        input("one"),
+        Reply::Enqueued, // the flush turn; its compaction finds the backlog unsaved
+        input("two"),    // the disk is back: the retried compaction runs first
+        Reply::Interrupted,
+    ]);
+    // The disk is "down" until the loop has said a compaction failed: every write fails in the hook that
+    // marks the pointer materialised (review R1's reproduction).
+    let ui = Arc::clone(&f.ui);
+    let bot_dir = f.bots.join("coder");
+    *f.on_created.lock().unwrap() = Some(Box::new(move || {
+        let failed = ui.events().into_iter().any(|e| match e {
+            iota::testing::UiEvent::Print(lines) => lines
+                .iter()
+                .any(|l| iota::text::ansi::strip_sgr(l).starts_with("Compaction failed")),
+            _ => false,
+        });
+        if !failed {
+            return Err(iota::session::SessionError::Io(std::io::Error::other(
+                "disk is down",
+            )));
+        }
+        let ptr = iota::session::BotPointer::read(&bot_dir)?.expect("the pointer");
+        iota::session::BotPointer {
+            materialized: true,
+            ..ptr
+        }
+        .write(&bot_dir)
+    }));
+    let p = provider(Some("SUMMARY"), remember_tabs, over_on_one);
+    let log = p.log();
+    let dir = f.run(p, "").await;
+
+    let printed = f.printed();
+    assert!(
+        printed
+            .iter()
+            .any(|l| l == "Compaction failed: the conversation is not saved yet"),
+        "{printed:?}"
+    );
+    let prompts = log.prompts();
+    assert_eq!(
+        prompts
+            .iter()
+            .filter(|p| p.starts_with(SUMMARY_MARK))
+            .count(),
+        1,
+        "no summary pass while the backlog is unsaved: {prompts:?}"
+    );
+    assert_eq!(prompts.last().map(String::as_str), Some("two"));
+
+    let mut live = conversation(&log.sent().last().cloned().expect("the send of two"));
+    live.push((Role::Assistant, "re two".to_owned()));
+    let view = iota::session::load_log(&dir, ProviderKind::OpenAi)
+        .expect("load")
+        .view;
+    assert_eq!(conversation(&view), live);
+    assert_eq!(
+        view[0].content,
+        format!("{}one", iota::session::summary_preamble("SUMMARY"))
+    );
+}
+
+/// Review R1: a batch that reached the log with only its `meta.json` rewrite failing is saved — the next
+/// save carries on after it and does not append it again.
+#[tokio::test]
+async fn a_failed_meta_rewrite_does_not_double_the_turn() {
+    let f = Fixture::new(vec![
+        input("zero"),
+        input("one"),
+        input("two"),
+        Reply::Interrupted,
+    ]);
+    let root = f.store.root().to_path_buf();
+    let bundle = move || {
+        std::fs::read_dir(&root)
+            .expect("sessions")
+            .flatten()
+            .next()
+            .expect("the bundle")
+            .path()
+    };
+    let p = FakeProvider::new()
+        .with_model("gpt-test")
+        .answering(move |_, messages| {
+            let prompt = messages.last().expect("a message").content.clone();
+            let tmp = || bundle().join(iota::session::META_TMP_FILE);
+            match prompt.as_str() {
+                "one" => std::fs::create_dir(tmp()).expect("block meta.json"),
+                "two" => std::fs::remove_dir(tmp()).expect("unblock meta.json"),
+                _ => {}
+            }
+            Round::text(&format!("re {prompt}"))
+        });
+    let dir = f.run(p, "").await;
+
+    assert!(
+        f.printed()
+            .iter()
+            .any(|l| l.starts_with("Warning: failed to save session:")),
+        "{:?}",
+        f.printed()
+    );
+    let view = iota::session::load_log(&dir, ProviderKind::OpenAi)
+        .expect("load")
+        .view;
+    let texts: Vec<&str> = view.iter().map(|m| m.content.as_str()).collect();
+    assert_eq!(texts, ["zero", "re zero", "one", "re one", "two", "re two"]);
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("meta.json")).expect("meta"))
+            .expect("json");
+    assert_eq!(meta["message_count"], 6, "{meta}");
+}
+
+/// Every assistant tool call is answered by the tool results right after it — exactly its ids, in order.
+fn assert_paired(msgs: &[Message]) {
+    for (i, m) in msgs.iter().enumerate() {
+        let calls: Vec<&str> = m.tool_calls().iter().map(|c| c.id.as_str()).collect();
+        if calls.is_empty() {
+            continue;
+        }
+        let answers: Vec<&str> = msgs[i + 1..]
+            .iter()
+            .take_while(|r| r.role() == Role::Tool)
+            .map(Message::tool_call_id)
+            .collect();
+        assert_eq!(answers, calls, "{msgs:#?}");
+    }
+}
+
+/// Review R2: `remember` lands, the next call's approval is cancelled. The unanswered call is answered
+/// (interrupted) BEFORE the memory notice follows it, so the next send and a later resume both carry a
+/// history whose calls pair exactly — nothing is left mid-history for no repair to reach.
+#[tokio::test]
+async fn an_interrupted_batch_is_answered_before_the_memory_notice_follows_it() {
+    fn turn(prompt: &str) -> Round {
+        match prompt {
+            "go" => Round::calls(vec![
+                iota::testing::tool_call_with(
+                    "c1",
+                    "remember",
+                    &[
+                        ("action", "add"),
+                        ("text", "prefers tabs"),
+                        ("source", "user"),
+                    ],
+                ),
+                iota::testing::tool_call_with("c2", "read_file", &[("path", "x")]),
+            ]),
+            _ => Round::text(&format!("re {prompt}")).usage(usage(1_000)),
+        }
+    }
+    let mut f = Fixture::new(vec![
+        input("go"),
+        Reply::Interrupted, // read_file's approval
+        input("again"),
+        Reply::Interrupted,
+    ]);
+    f.approve_read = true;
+    let p = provider(Some("SUMMARY"), remember_tabs, turn);
+    let log = p.log();
+    let dir = f.run(p, "").await;
+
+    let again = log.sent().last().cloned().expect("the send of again");
+    assert_eq!(again.last().map(|m| m.content.as_str()), Some("again"));
+    assert_paired(&again);
+    let results: Vec<(&str, &str)> = again
+        .iter()
+        .filter(|m| m.role() == Role::Tool)
+        .map(|m| (m.tool_call_id(), m.content.as_str()))
+        .collect();
+    assert_eq!(results.len(), 2, "{again:#?}");
+    assert_eq!(results[1], ("c2", iota::session::INTERRUPTED_RESULT));
+    let notice = again
+        .iter()
+        .position(|m| m.is_notice() && m.content.contains("prefers tabs"))
+        .expect("the memory notice");
+    assert_eq!(again[notice - 1].tool_call_id(), "c2", "{again:#?}");
+
+    // A restart finds nothing to repair and the same pairing.
+    let id = dir.file_name().expect("id").to_string_lossy().into_owned();
+    let (_w, session) = f.store.resume(&id, ProviderKind::OpenAi).expect("resume");
+    assert_eq!(session.repaired, 0);
+    assert_paired(&session.messages);
+    assert_eq!(
+        conversation(&session.messages),
+        conversation(&[again, vec![Message::assistant("re again")]].concat())
+    );
 }

@@ -172,6 +172,11 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
         return;
     }
     let kind = repl.conv.provider.kind();
+    // The listing left out the bots' bodies it could name; one behind an unreadable pointer is refused here.
+    if let Err(e) = repl.session.store.check_not_bot_owned(&id) {
+        repl.handles.tr.error(&format!("Error: {e}"));
+        return;
+    }
     let (writer, resumed) = match repl.session.store.resume(&id, kind) {
         Ok(v) => v,
         Err(e) => {

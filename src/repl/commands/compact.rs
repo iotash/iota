@@ -41,7 +41,7 @@ use crate::repl::context::tokens::{TokenCounter, go_map};
 use crate::repl::render::styles::truncate_runes;
 use crate::repl::run::Repl;
 use crate::repl::run::bot_perform;
-use crate::session::CompactionStats;
+use crate::session::{CompactionStats, SessionError};
 
 /// The instruction that hands the retention decision to the model and hardens against
 /// prompt injection from the conversation being summarized (`chat/compact.go`
@@ -323,6 +323,14 @@ pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
         memory,
         flush_writes: f.writes,
     });
+    // A summary may only replace what the log has: a backlog the last saves left behind goes first, and
+    // while it does not land nothing is compacted — the marker would count it as saved.
+    if !repl.persist_turn() {
+        let e = "the conversation is not saved yet";
+        repl.handles.tr.error(&format!("Compaction failed: {e}"));
+        bot_compacted(repl, Compacted::Failed, e).await;
+        return;
+    }
     let busy = repl.handles.ui.busy("Compacting context…");
     let res = compact_history(
         &repl.handles.cancel,
@@ -364,7 +372,6 @@ pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
         ),
     };
 
-    repl.conv.history = history;
     // The summary pass is a billed call of its own: book it (no message carries it, so the
     // marker does).
     let booked = repl.conv.ctxm.book_call(usage);
@@ -378,11 +385,23 @@ pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
         slot.as_mut()
             .map(|w| w.append_compaction_with(&summary, retain_tail, booked, stats))
     };
-    if let Some(Err(e)) = persist {
-        repl.handles.tr.error(&format!(
-            "Warning: failed to persist compaction marker: {e}"
-        ));
+    match persist {
+        // The marker is in the log; only its meta rewrite failed.
+        Some(Err(e @ SessionError::MetaNotSaved(_))) => {
+            repl.handles
+                .tr
+                .error(&format!("Warning: failed to save session: {e}"));
+        }
+        // No marker, no compaction: the history stays what the log says it is.
+        Some(Err(e)) => {
+            let e = format!("failed to persist compaction marker: {e}");
+            repl.handles.tr.error(&format!("Compaction failed: {e}"));
+            bot_compacted(repl, Compacted::Failed, &e).await;
+            return;
+        }
+        Some(Ok(())) | None => {}
     }
+    repl.conv.history = history;
     // The marker supersedes what it replaced: nothing re-appends, so the watermark jumps.
     repl.session.persisted = repl.conv.history.len();
     let history = std::mem::take(&mut repl.conv.history);

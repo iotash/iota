@@ -32,7 +32,7 @@ use crate::host::{Event, Kind, Presenter, State};
 use crate::llm::reqlog::RequestLog;
 use crate::markdown::CodeTheme;
 use crate::provider::model::{AssistantBody, Body, Message};
-use crate::session::SessionWriter;
+use crate::session::{SessionError, SessionWriter};
 use crate::sync::lock;
 use crate::ui::facade::{InputKind, StatusData};
 use tokio_util::sync::CancellationToken;
@@ -224,21 +224,28 @@ impl Repl {
     ///
     /// A failure warns and does NOT advance the watermark, so the next successful persist
     /// carries the backlog — which is also how `/save` flushes a whole ephemeral chat in
-    /// one append.
-    pub(crate) fn persist_turn(&mut self) {
+    /// one append. A batch that reached the log with only its meta rewrite failing is
+    /// saved: it warns and advances.
+    ///
+    /// `false`: a backlog is left that the log does not have. An ephemeral chat has none.
+    pub(crate) fn persist_turn(&mut self) -> bool {
         let mut slot = lock(&self.session.writer);
-        let Some(w) = slot.as_mut() else { return };
+        let Some(w) = slot.as_mut() else { return true };
         if self.session.persisted >= self.conv.history.len() {
-            return;
+            return true;
         }
-        if let Err(e) = w.append_messages(&self.conv.history[self.session.persisted..]) {
-            drop(slot);
+        let res = w.append_messages(&self.conv.history[self.session.persisted..]);
+        drop(slot);
+        let saved = matches!(res, Ok(()) | Err(SessionError::MetaNotSaved(_)));
+        if saved {
+            self.session.persisted = self.conv.history.len();
+        }
+        if let Err(e) = res {
             self.handles
                 .tr
                 .error(&format!("Warning: failed to save session: {e}"));
-            return;
         }
-        self.session.persisted = self.conv.history.len();
+        saved
     }
 
     /// Records the memory writes the turn just made (bot-mode.md §3.7 item 1): one dim line and one notice
@@ -1177,6 +1184,12 @@ fn interrupt_turn(repl: &mut Repl, watermark: usize, partial: &str, partial_reas
         partial_reasoning,
     );
     repl.conv.history = history;
+    // Calls the interrupt left unanswered are answered now, before the turn is saved and before any notice
+    // follows it: behind a notice they would sit mid-history, where no reload can repair them — and the
+    // next send carries this history too.
+    if persist {
+        crate::session::repair_tail(&mut repl.conv.history);
+    }
     repl.handles.tr.notice("Interrupted.");
     if !dropped.is_empty() {
         let n = dropped.len();

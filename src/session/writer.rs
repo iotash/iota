@@ -186,25 +186,38 @@ impl SessionWriter {
     /// (tool-defer.md), and the record shape has no place for its tools — it would land as an empty system
     /// record. It counts toward nothing. Callers keep their watermark on the slice they HANDED in, so the
     /// skipped mount is still behind it and never retried; a batch of nothing but mounts touches no disk.
+    ///
+    /// The batch is all or nothing for the log: a failure before the `sync_all()` has returned cuts the log
+    /// back to where the batch began and leaves the counters alone, so the caller retries the same slice. A
+    /// failure of the meta rewrite AFTER it is [`SessionError::MetaNotSaved`]: the batch IS in the log and
+    /// must not be appended again.
     pub fn append_messages(&mut self, msgs: &[Message]) -> Result<(), SessionError> {
         let mut msgs = msgs.iter().filter(|m| m.tools().is_empty()).peekable();
         if msgs.peek().is_none() {
             return Ok(());
         }
         self.ensure_created()?;
-        for msg in msgs {
-            let rec = to_record(&self.dir, self.kind, msg)?;
-            self.write_line(&rec)?;
-            self.meta.message_count += 1;
-            if msg.role() != Role::System {
-                self.conv_count += 1;
+        let start = self.log_len()?;
+        let (mut count, mut conv, mut usage) = (0, 0, Usage::default());
+        let written: Result<(), SessionError> = (|| {
+            for msg in msgs {
+                let rec = to_record(&self.dir, self.kind, msg)?;
+                self.write_line(&rec)?;
+                count += 1;
+                if msg.role() != Role::System {
+                    conv += 1;
+                }
+                if let Some(u) = msg.usage() {
+                    usage += u; // keep usage() == what the log sums to
+                }
             }
-            if let Some(u) = msg.usage() {
-                self.usage += u; // keep usage() == what the log sums to
-            }
-        }
-        self.sync()?;
-        self.meta.write(&self.dir)
+            self.sync()
+        })();
+        self.settle_batch(start, written)?;
+        self.meta.message_count += count;
+        self.conv_count += conv;
+        self.usage += usage;
+        self.write_meta_after_log()
     }
 
     /// `AppendCompaction` (chat/session.go:583-606): the summary plus how many leading conversation
@@ -242,11 +255,14 @@ impl SessionWriter {
         };
         if let Some(u) = usage {
             rec.usage = Some(u.into());
+        }
+        let start = self.log_len()?;
+        let written = self.write_line(&rec).and_then(|()| self.sync());
+        self.settle_batch(start, written)?;
+        if let Some(u) = usage {
             self.usage += u;
         }
-        self.write_line(&rec)?;
-        self.sync()?;
-        self.meta.write(&self.dir)
+        self.write_meta_after_log()
     }
 
     /// The single meta mutator, standing in for Go's eight `Set*` methods (chat/session.go:612-741):
@@ -269,8 +285,11 @@ impl SessionWriter {
     fn ensure_created(&mut self) -> Result<(), SessionError> {
         if !self.created {
             std::fs::create_dir_all(self.dir.join(ATTACHMENTS_DIR))?;
-            self.lock = Some(lock_bundle(&self.dir, &self.meta.id)?);
+            // The lock is kept only together with the handle: a failed open lets it go, so the next write
+            // can take it again instead of being refused by this writer's own guard.
+            let lock = lock_bundle(&self.dir, &self.meta.id)?;
             self.file = Some(open_append_0644(&self.dir.join(LOG_FILE))?);
+            self.lock = Some(lock);
             self.created = true;
             self.meta.write(&self.dir)?;
         }
@@ -279,6 +298,35 @@ impl SessionWriter {
             self.on_created = None;
         }
         Ok(())
+    }
+
+    /// The log's length before a batch — where [`Self::settle_batch`] cuts it back to.
+    fn log_len(&mut self) -> Result<u64, SessionError> {
+        Ok(self.log()?.metadata()?.len())
+    }
+
+    /// A batch that failed before its `sync_all()` returned leaves no trace in the log: whatever part of it
+    /// was written is cut off again (the bundle lock is held, so nobody else appended meanwhile). The error
+    /// is handed back as it came.
+    fn settle_batch(
+        &mut self,
+        start: u64,
+        written: Result<(), SessionError>,
+    ) -> Result<(), SessionError> {
+        let Err(e) = written else { return Ok(()) };
+        if let Ok(file) = self.log() {
+            // Best effort: a cut that fails too leaves the log as the failure left it.
+            let _ = file.set_len(start).and_then(|()| file.sync_all());
+        }
+        Err(e)
+    }
+
+    /// The meta rewrite that follows a batch already in the log: its failure is
+    /// [`SessionError::MetaNotSaved`], never a reason to append the batch again.
+    fn write_meta_after_log(&mut self) -> Result<(), SessionError> {
+        self.meta
+            .write(&self.dir)
+            .map_err(|e| SessionError::MetaNotSaved(Box::new(e)))
     }
 
     /// Serialises one record compactly — cut down by [`fit_line`] when it would reach the reader's line
