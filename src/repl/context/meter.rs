@@ -102,12 +102,15 @@ fn threshold_of(window: u64) -> u64 {
     window.saturating_sub(COMPACT_RESERVE_TOKENS).max(pct)
 }
 
-/// A bot's threshold (docs/design/bot-mode.md §3.6.1, §4.1): the reserve is `max(32k, 25%)` of the window,
-/// so the threshold is `min(75%, window − 32k)` — the flush turn and a user turn typed ahead of it both
-/// land between the threshold and the compaction.
+/// A bot's threshold (docs/design/bot-mode.md §3.6.1, §4.1): the reserve is `max(32k, 25%)` of the window —
+/// the flush turn and a user turn typed ahead of it both land between the threshold and the compaction — but
+/// never more than half of it, so a small window is not compacted on every turn (a flat 32k would put a 32k
+/// window's threshold at zero).
 fn bot_threshold_of(window: u64) -> u64 {
-    let reserve = BOT_RESERVE_TOKENS.max(window * BOT_RESERVE_PERCENT / 100);
-    window.saturating_sub(reserve)
+    let reserve = BOT_RESERVE_TOKENS
+        .max(window * BOT_RESERVE_PERCENT / 100)
+        .min(window / 2);
+    window - reserve
 }
 
 impl Occupancy {
@@ -702,22 +705,32 @@ mod tests {
         }
     }
 
-    // A bot's reserve is max(32k, 25% of the window) (bot-mode.md §3.6.1): the threshold is
-    // min(75%, window − 32k), below the ordinary one on every window, and the setting sticks through a
-    // window change.
+    // A bot's reserve is max(32k, 25% of the window), capped at half the window (bot-mode.md §3.6.1): below
+    // the ordinary threshold on every window, never below 50%, and the setting sticks through a window
+    // change.
     #[test]
     fn a_bots_threshold_keeps_the_larger_reserve() {
         for (window, want, why) in [
             (128_000_u64, 96_000_u64, "128k: 32k beats 25%"),
             (200_000, 150_000, "200k: 25% (50k) beats 32k"),
             (1_000_000, 750_000, "1m: 25%"),
-            (64_000, 32_000, "64k: 32k"),
+            (64_000, 32_000, "64k: 32k, exactly half"),
+            (
+                32_000,
+                16_000,
+                "32k: capped at half (a flat 32k would leave 0)",
+            ),
+            (20_000, 10_000, "20k: capped at half"),
         ] {
             let mut b = budget(window);
             let ordinary = b.threshold();
             b.set_bot_reserve();
             assert_eq!(b.threshold(), want, "window {window}: {why}");
             assert!(b.threshold() < ordinary, "window {window}");
+            assert!(
+                b.threshold() >= window / 2,
+                "window {window}: at most half is reserved"
+            );
         }
         let mut b = budget(128_000);
         b.set_bot_reserve();

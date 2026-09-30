@@ -7,9 +7,10 @@
 //! before a send is not.
 //!
 //! **What compaction keeps.** A leading system message (the prompt is not conversation),
-//! and the LAST TURN — everything from the final user message to the end. In a bot's session the last turn
-//! starts at the final message the USER sent, not at a host notice: the memory flush is a notice turn of its
-//! own, and it is kept after the user's turn rather than instead of it (docs/design/bot-mode.md §3.6.1). Whatever lies
+//! and the LAST TURN — everything from the final message the USER sent to the end. A host notice (a finished
+//! background job, a bot's memory flush, the record of a memory write) is user-role but never starts a turn:
+//! it rides along with the turn before it, so what is kept is what the user last said (Go's
+//! `retainTailCount` anchored on any user-role message; docs/design/bot-mode.md §3.6.1). Whatever lies
 //! between them is summarized into one paragraph that is PREPENDED into a COPY of the first
 //! retained message rather than inserted as a message of its own: two consecutive
 //! same-role messages are a shape some providers reject, and the summary belongs to the
@@ -94,28 +95,15 @@ pub(crate) struct BotCompact<'a> {
     pub(crate) flush_writes: u32,
 }
 
-/// How many trailing messages form the last turn — from the last message `turn_start` accepts to the end
-/// (`chat/compact.go` `retainTailCount`, whose rule is [`any_user`]). At least 1 when the history is
-/// non-empty and `turn_start` accepts something.
-pub(crate) fn retain_tail_count(
-    history: &[Message],
-    turn_start: impl Fn(&Message) -> bool,
-) -> usize {
+/// How many trailing messages form the last turn — from the last message the user sent to the end
+/// (`chat/compact.go` `retainTailCount`, whose anchor was any user-role message: a host notice injected
+/// after the user's message would take the anchor and push the user's turn into the summary). The whole
+/// history when the user sent nothing.
+pub(crate) fn retain_tail_count(history: &[Message]) -> usize {
     history
         .iter()
-        .rposition(turn_start)
+        .rposition(|m| m.role() == Role::User && !m.is_notice())
         .map_or(history.len(), |i| history.len() - i)
-}
-
-/// Go's turn start: any user-role message, a host notice included.
-pub(crate) fn any_user(m: &Message) -> bool {
-    m.role() == Role::User
-}
-
-/// A bot's turn start: a message the user sent — never a host notice (the flush, a finished job, a memory
-/// write's record), which rides along with the turn before it.
-pub(crate) fn user_sent(m: &Message) -> bool {
-    m.role() == Role::User && !m.is_notice()
 }
 
 /// What one compaction pass produced.
@@ -154,8 +142,7 @@ pub(crate) enum CompactError {
 }
 
 /// Summarizes the older portion of `history` (`chat/compact.go` `compactHistory`). `bot` is a bot's
-/// session: its last turn starts at the last message the user sent ([`user_sent`]), and the summary pass
-/// is shown the memory and told what the flush wrote.
+/// session: the summary pass is shown the memory and told what the flush wrote.
 pub(crate) async fn compact_history(
     cancel: &CancellationToken,
     provider: &dyn Provider,
@@ -164,12 +151,7 @@ pub(crate) async fn compact_history(
     bot: Option<&BotCompact<'_>>,
 ) -> Result<Compaction, CompactError> {
     let sys_end = usize::from(history.first().is_some_and(|m| m.role() == Role::System));
-    let tail = if bot.is_some() {
-        retain_tail_count(history, user_sent)
-    } else {
-        retain_tail_count(history, any_user)
-    };
-    let tail = tail.min(history.len() - sys_end);
+    let tail = retain_tail_count(history).min(history.len() - sys_end);
     let middle_end = history.len() - tail;
     if middle_end <= sys_end {
         return Ok(Compaction::Unchanged); // nothing older than the last turn
@@ -507,7 +489,7 @@ mod tests {
 
     use super::{
         BOT_SUMMARY_ADDENDUM, BOT_SUMMARY_NOTHING_SAVED, BotCompact, Compaction,
-        SUMMARY_INSTRUCTION, any_user, compact_history, retain_tail_count, user_sent,
+        SUMMARY_INSTRUCTION, compact_history, retain_tail_count,
     };
 
     /// Go's `stubProvider`: a one-shot `Chat` answering `"SUMMARY"`.
@@ -536,27 +518,24 @@ mod tests {
             Message::user("u2"),
             Message::assistant("a2"),
         ];
-        assert_eq!(retain_tail_count(&h, any_user), 2);
-        assert_eq!(retain_tail_count(&[], any_user), 0);
-        assert_eq!(retain_tail_count(&[Message::system("s")], any_user), 1);
+        assert_eq!(retain_tail_count(&h), 2);
+        assert_eq!(retain_tail_count(&[]), 0);
+        assert_eq!(retain_tail_count(&[Message::system("s")]), 1);
         assert_eq!(
-            retain_tail_count(&[Message::user("only")], any_user),
+            retain_tail_count(&[Message::user("only")]),
             1,
             "a lone user message IS the last turn"
         );
         assert_eq!(
-            retain_tail_count(
-                &[
-                    Message::user("u"),
-                    Message {
-                        body: Body::Tool(ToolBody {
-                            ..ToolBody::default()
-                        }),
-                        ..Message::default()
-                    },
-                ],
-                any_user
-            ),
+            retain_tail_count(&[
+                Message::user("u"),
+                Message {
+                    body: Body::Tool(ToolBody {
+                        ..ToolBody::default()
+                    }),
+                    ..Message::default()
+                },
+            ]),
             2
         );
     }
@@ -804,14 +783,13 @@ mod tests {
         ]
     }
 
-    /// bot-mode.md §3.6.1 (critique S2c): in a bot's session the last turn starts at the last message the
-    /// USER sent, so user turn → flush turn → compaction keeps the user's turn, the flush exchange riding
-    /// after it. Go's rule, kept outside a bot, would keep the memory-write notice alone.
+    /// bot-mode.md §3.6.1 (critique S2c): the last turn starts at the last message the USER sent, so user
+    /// turn → flush turn → compaction keeps the user's turn, the flush exchange riding after it. Go's anchor
+    /// (any user-role message) would have kept the memory-write notice alone.
     #[tokio::test]
     async fn a_bot_keeps_the_users_last_turn_not_the_flush() {
         let h = flushed_history();
-        assert_eq!(retain_tail_count(&h, user_sent), 5);
-        assert_eq!(retain_tail_count(&h, any_user), 1);
+        assert_eq!(retain_tail_count(&h), 5);
 
         let bot = BotCompact {
             memory: "",
@@ -862,6 +840,38 @@ mod tests {
             .expect("no error"),
             Compaction::Unchanged
         ));
+    }
+
+    /// The same rule outside a bot: a background job's notice injected at a round boundary of the user's
+    /// last turn does not take the anchor, so the next compaction keeps that turn whole.
+    #[tokio::test]
+    async fn a_job_notice_does_not_take_the_last_turn() {
+        let h = vec![
+            Message::system("sys"),
+            Message::user("u1"),
+            Message::assistant("a1"),
+            Message::user("u2"),
+            Message::assistant_with_calls("", Vec::new(), None),
+            Message::notice("[background job 1 finished]"),
+            Message::assistant("a2"),
+        ];
+        assert_eq!(retain_tail_count(&h), 4);
+        let Compaction::Done {
+            history: out,
+            retain_tail,
+            ..
+        } = compact_history(&CancellationToken::new(), &summarizer(), &h, "", None)
+            .await
+            .expect("compaction succeeded")
+        else {
+            panic!("nothing compacted");
+        };
+        assert_eq!(retain_tail, 4);
+        assert_eq!(
+            out[1].content,
+            format!("{}u2", crate::session::summary_preamble("SUMMARY"))
+        );
+        assert!(out[3].is_notice());
     }
 
     /// The marker's `retain_tail` counts conversation messages — the writer's `conv_count` never counts a
