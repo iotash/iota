@@ -372,9 +372,9 @@ pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
         ),
     };
 
-    // The summary pass is a billed call of its own: book it (no message carries it, so the
-    // marker does).
-    let booked = repl.conv.ctxm.book_call(usage);
+    // The summary pass is a billed call of its own: the marker carries it (no message does), and the meter
+    // books it only once the marker is in the log — a failed marker leaves no compaction whose call it was.
+    let booked = usage.filter(|_| repl.conv.ctxm.is_enabled());
     let stats = CompactionStats {
         middle_tokens: Some(middle_tokens),
         summary_tokens: Some(summary_tokens),
@@ -401,6 +401,7 @@ pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
         }
         Some(Ok(())) | None => {}
     }
+    repl.conv.ctxm.book_call(booked);
     repl.conv.history = history;
     // The marker supersedes what it replaced: nothing re-appends, so the watermark jumps.
     repl.session.persisted = repl.conv.history.len();

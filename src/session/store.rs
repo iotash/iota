@@ -354,7 +354,12 @@ impl SessionStore {
         let repaired = repair_tail(&mut log.view);
         let last_written = meta.updated_at.clone();
         let mut writer = SessionWriter::resumed(dir, meta, kind, file, &log, lock);
-        writer.append_messages(&log.view[log.view.len() - repaired..])?;
+        // The repair is in the log once the batch is; a meta that did not follow catches up with the next write
+        // and is no reason to refuse the session.
+        match writer.append_messages(&log.view[log.view.len() - repaired..]) {
+            Ok(()) | Err(SessionError::MetaNotSaved(_)) => {}
+            Err(e) => return Err(e),
+        }
         let session = Session {
             meta: writer.meta().clone(),
             last_written,

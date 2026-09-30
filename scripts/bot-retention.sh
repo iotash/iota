@@ -39,8 +39,9 @@
 #   RETENTION_TYPE           provider type                        (default: openai)
 #   RETENTION_URL            provider base URL                    (default: the type's own)
 #   RETENTION_MODEL          model id                             (required)
-#   RETENTION_WINDOW         context window the bot runs under    (default: 16000 — small, so compactions are
-#                            cheap; the bot's threshold is window minus max(32k, 25%), capped at half)
+#   RETENTION_WINDOW         context window the bot runs under    (default: 32000 — the smallest a bot runs in,
+#                            so compactions are cheap; the bot's threshold is window minus max(32k, 25%),
+#                            never below half)
 #   RETENTION_COMPACTIONS    compactions between facts and quiz   (default: 3)
 #   RETENTION_LEAD           filler turns before the facts        (default: 2)
 #   RETENTION_COMPACT_EVERY  noflush: filler turns per /compact   (default: 4)
@@ -51,7 +52,10 @@
 #
 # Output: one row per group on stdout and in $RETENTION_OUT/results.tsv — compactions, flush notices,
 # MEMORY.md bytes, facts recalled (memory kind / state kind / total). Read the three rows side by side;
-# the per-fact grades are in $RETENTION_OUT/<group>/grades.tsv.
+# the per-fact grades are in $RETENTION_OUT/<group>/grades.tsv. A group that did not meet the experiment's
+# conditions (fewer than RETENTION_COMPACTIONS compactions, or a flush in noflush) has an INVALID row with
+# no recall figures; a group that broke off has a FAILED row. Either makes the script exit 1 — only an exit 0
+# is a result.
 # bash 3.2 compatible.
 set -euo pipefail
 
@@ -61,7 +65,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 : "${RETENTION_TYPE:=openai}"
 : "${RETENTION_URL:=}"
 : "${RETENTION_MODEL:?RETENTION_MODEL must name the model id to run the bot on}"
-: "${RETENTION_WINDOW:=16000}"
+: "${RETENTION_WINDOW:=32000}"
 : "${RETENTION_COMPACTIONS:=3}"
 : "${RETENTION_LEAD:=2}"
 : "${RETENTION_COMPACT_EVERY:=4}"
@@ -71,12 +75,34 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 : "${RETENTION_OUT:=$(mktemp -d "${TMPDIR:-/tmp}/iota-retention.XXXXXX")}"
 
 BOT=retention
+BOT_MIN_WINDOW=32000 # src/repl/context/tokens.rs: a bot refuses to start under a smaller window
 SPINNER='⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏' # an alternation, never a bracket expression (C locale, multi-byte)
 FLUSH_MARK='The conversation is about to be compacted'
 
 [ -x "$IOTA_BIN" ] || { echo "bot-retention: no iota binary at $IOTA_BIN (cargo build first)" >&2; exit 2; }
 command -v tmux >/dev/null || { echo "bot-retention: needs tmux" >&2; exit 2; }
 command -v python3 >/dev/null || { echo "bot-retention: needs python3" >&2; exit 2; }
+# The knobs are checked before anything starts: a bad one would otherwise surface as a TUI that never comes
+# up, after the first group's tokens are spent.
+for knob in RETENTION_WINDOW RETENTION_COMPACTIONS RETENTION_COMPACT_EVERY RETENTION_MAX_TURNS RETENTION_TIMEOUT; do
+    case "${!knob}" in
+        '' | *[!0-9]* | 0) echo "bot-retention: $knob must be a positive integer, not '${!knob}'" >&2; exit 2 ;;
+    esac
+done
+case "$RETENTION_LEAD" in
+    '' | *[!0-9]*) echo "bot-retention: RETENTION_LEAD must be a whole number, not '$RETENTION_LEAD'" >&2; exit 2 ;;
+esac
+[ "$RETENTION_WINDOW" -ge "$BOT_MIN_WINDOW" ] || {
+    echo "bot-retention: RETENTION_WINDOW $RETENTION_WINDOW is under a bot's minimum of $BOT_MIN_WINDOW" >&2
+    exit 2
+}
+groups="${*:-noflush flush recall}"
+for g in $groups; do
+    case "$g" in
+        noflush | flush | recall) ;;
+        *) echo "bot-retention: unknown group $g (noflush, flush, recall)" >&2; exit 2 ;;
+    esac
+done
 mkdir -p "$RETENTION_OUT"
 RETENTION_OUT="$(cd "$RETENTION_OUT" && pwd -P)"
 real_home="$(cd "${HOME:?}" && pwd -P)"
@@ -128,7 +154,7 @@ facts_message() {
 }
 
 quiz_message() {
-    echo "A quiz on what you know about me and my work. Answer from what you actually know: if you do not know, write unknown — do not guess. One line per question, formatted N: answer."
+    echo "$QUIZ_HEAD Answer from what you actually know: if you do not know, write unknown — do not guess. One line per question, formatted N: answer."
     echo
     echo "$FACTS" | awk -F'|' '{ print NR ". " $4 }'
 }
@@ -141,11 +167,16 @@ filler_message() {
 
 # ---------------------------------------------------------------- the log
 
-# log_query <messages.jsonl> <finals|markers|flushes|last> — read with python3 (JSON in bash is a trap).
+# The quiz's first line: what its answer is found by.
+QUIZ_HEAD='A quiz on what you know about me and my work.'
+
+# log_query <messages.jsonl> <finals|markers|flushes|quiz> — read with python3 (JSON in bash is a trap).
+# `quiz` is the final reply of the LAST quiz turn — the user message starting with QUIZ_HEAD — not the log's
+# last reply: a flush turn and its compaction can follow the quiz, and their reply comes after it.
 log_query() {
-    python3 - "$1" "$2" "$FLUSH_MARK" <<'PY'
+    python3 - "$1" "$2" "$FLUSH_MARK" "$QUIZ_HEAD" <<'PY'
 import json, sys
-path, what, flush_mark = sys.argv[1], sys.argv[2], sys.argv[3]
+path, what, flush_mark, quiz_head = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 try:
     recs = [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
 except FileNotFoundError:
@@ -157,8 +188,15 @@ elif what == "markers":
     print(sum(1 for r in recs if r.get("role") == "compaction"))
 elif what == "flushes":
     print(sum(1 for r in recs if r.get("role") == "user" and r.get("content", "").startswith(flush_mark)))
-elif what == "last":
-    print(finals[-1].get("content", "") if finals else "")
+elif what == "quiz":
+    asked = [i for i, r in enumerate(recs) if r.get("role") == "user" and r.get("content", "").startswith(quiz_head)]
+    answer = ""
+    for r in recs[asked[-1] + 1:] if asked else []:
+        if r.get("role") == "user":
+            break
+        if r.get("role") == "assistant" and not r.get("tool_calls"):
+            answer = r.get("content", "")
+    print(answer)
 PY
 }
 
@@ -176,7 +214,6 @@ run_group() {
             fi
             tools="    tools: { $RETENTION_RECALL_SET: }"
             ;;
-        *) echo "bot-retention: unknown group $group (noflush, flush, recall)" >&2; return 2 ;;
     esac
 
     local dir="$RETENTION_OUT/$group"
@@ -286,10 +323,11 @@ run_group() {
     turn "$(facts_message)" || { give_up; return 1; }
     local base_markers
     base_markers="$(log_query "$(log)" markers)"
-    local filled=0
+    local filled=0 short=''
     while [ "$(log_query "$(log)" markers)" -lt $((base_markers + RETENTION_COMPACTIONS)) ]; do
         [ "$filled" -lt "$RETENTION_MAX_TURNS" ] || {
             echo "bot-retention: $group: $RETENTION_MAX_TURNS filler turns and still short of $RETENTION_COMPACTIONS compactions" >&2
+            short="reached $(( $(log_query "$(log)" markers) - base_markers )) of $RETENTION_COMPACTIONS compactions"
             break
         }
         n=$((n + 1)); filled=$((filled + 1))
@@ -301,13 +339,20 @@ run_group() {
             wait_count markers $((m + 1)) || { give_up; return 1; }
         fi
     done
+    if [ -n "$short" ]; then
+        capall >"$dir/pane.txt"
+        tm kill-server >/dev/null 2>&1 || true
+        cp "$(log)" "$dir/messages.jsonl"
+        printf '%s\tINVALID: %s\n' "$group" "$short" >>"$RETENTION_OUT/results.tsv"
+        return 3
+    fi
     turn "$(quiz_message)" || { give_up; return 1; }
     capall >"$dir/pane.txt"
     tm kill-server >/dev/null 2>&1 || true
 
     # ---- grade
     local answers="$dir/answers.txt"
-    log_query "$(log)" last >"$answers"
+    log_query "$(log)" quiz >"$answers"
     cp "$(log)" "$dir/messages.jsonl"
     local mem="$home/.iota/bots/$BOT/MEMORY.md"
     if [ -f "$mem" ]; then cp "$mem" "$dir/MEMORY.md"; fi
@@ -331,15 +376,34 @@ EOF
     flushes="$(log_query "$dir/messages.jsonl" flushes)"
     bytes=0
     if [ -f "$dir/MEMORY.md" ]; then bytes="$(wc -c <"$dir/MEMORY.md" | tr -d ' ')"; fi
-    if [ "$group" = noflush ] && [ "$flushes" -gt 0 ]; then note='CONTAMINATED: a flush ran'; fi
+    if [ ! -s "$answers" ] || [ -z "$(tr -d '[:space:]' <"$answers")" ]; then
+        printf '%s\tINVALID: no answer to the quiz in the log\n' "$group" >>"$RETENTION_OUT/results.tsv"
+        return 3
+    fi
+    if [ "$group" = noflush ] && [ "$flushes" -gt 0 ]; then
+        printf '%s\tINVALID: %s flush notices in the noflush group\n' "$group" "$flushes" >>"$RETENTION_OUT/results.tsv"
+        return 3
+    fi
     printf '%s\t%s\t%s\t%s\t%s/10\t%s/10\t%s/20\t%s\n' "$group" "$markers" "$flushes" "$bytes" \
         "$mem_ok" "$state_ok" $((mem_ok + state_ok)) "$note" >>"$RETENTION_OUT/results.tsv"
 }
 
-groups="${*:-noflush flush recall}"
 printf 'group\tcompactions\tflush notices\tMEMORY.md bytes\tmemory kind\tstate kind\ttotal\tnote\n' >"$RETENTION_OUT/results.tsv"
+status=0
 for g in $groups; do
-    run_group "$g" || echo "bot-retention: group $g failed; see $RETENTION_OUT/$g" >&2
+    rc=0
+    run_group "$g" || rc=$?
+    case "$rc" in
+        0) ;;
+        3) status=1; echo "bot-retention: group $g did not meet the experiment's conditions; see $RETENTION_OUT/$g" >&2 ;;
+        *)
+            status=1
+            printf '%s\tFAILED\n' "$g" >>"$RETENTION_OUT/results.tsv"
+            echo "bot-retention: group $g failed; see $RETENTION_OUT/$g" >&2
+            ;;
+    esac
 done
 column -t -s "$(printf '\t')" "$RETENTION_OUT/results.tsv" 2>/dev/null || cat "$RETENTION_OUT/results.tsv"
 echo "bot-retention: everything is in $RETENTION_OUT"
+[ "$status" -eq 0 ] || echo "bot-retention: NOT a valid result — a group is INVALID or FAILED (above)" >&2
+exit "$status"

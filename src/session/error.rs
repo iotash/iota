@@ -92,6 +92,35 @@ pub enum SessionError {
         #[source]
         source: Box<SessionError>,
     },
+    /// The filesystem under `dir` cannot lock at all (NFS or SMB without lock support). Opening a session for
+    /// writing and deleting one both need the single-writer lock, so they fail closed here; a read-only load
+    /// takes no lock and is not affected.
+    #[error(
+        "file locking is not supported under {}; iota cannot open or delete a session there",
+        .dir.display()
+    )]
+    LockUnsupported {
+        /// The directory the lock file is in.
+        dir: std::path::PathBuf,
+    },
+    /// A batch failed partway and cutting the log back to where it began failed too: the log may hold part of
+    /// it. The writer appends nothing more until a later attempt has cut it back (review R1).
+    #[error(
+        "writing the session log failed ({write}), and the part already written could not be cut back ({cut}); nothing more is written to it until it is"
+    )]
+    CutFailed {
+        /// Why the batch failed.
+        #[source]
+        write: Box<SessionError>,
+        /// Why the cut-back failed.
+        cut: std::io::Error,
+    },
+    /// An earlier batch's remains are still in the log and cutting them off failed again: nothing is written
+    /// ([`CutFailed`](Self::CutFailed)).
+    #[error(
+        "the session log still holds part of a batch that failed, and it could not be cut back ({0}); nothing is written until it is"
+    )]
+    LogNotCutBack(#[source] std::io::Error),
     /// A write reached the log before `ensure_created` opened it — a bug, not a state.
     #[error("session log is not open")]
     LogNotOpen,

@@ -255,9 +255,16 @@ pub(crate) async fn cmd_model(repl: &mut Repl) {
     let mut panels = vec![panel];
     let window = repl.conv.budget.window();
     let history = std::mem::take(&mut repl.conv.history);
+    // A bot is not offered a window it would fail in (bot-mode.md §4.1).
+    let floor = if repl.conv.bot.is_some() {
+        crate::repl::context::tokens::BOT_MIN_WINDOW
+    } else {
+        0
+    };
     let extras = Extras::assemble(
         &mut *repl.conv.provider,
         window,
+        floor,
         &history,
         &repl.conv.harness,
         &overlay,

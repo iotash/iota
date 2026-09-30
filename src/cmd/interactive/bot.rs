@@ -100,7 +100,7 @@ pub(crate) fn resume_notices(last: &LastRun, cwd: &str, now: &jiff::Zoned) -> Ve
         if secs >= RESUME_GAP_NOTICE_SECS {
             let at = at.to_zoned(now.time_zone().clone());
             out.push(format!(
-                "Resumed after {} (last message {})",
+                "Resumed after {} (last activity {})",
                 elapsed(secs),
                 at.strftime("%Y-%m-%d %H:%M")
             ));
@@ -208,9 +208,9 @@ pub(crate) fn open_bot_session(
 /// the format needs nothing new — and the view's head is replaced. `true` when anything changed. The same
 /// prompt changes nothing, so the prompt cache survives a restart.
 ///
-/// An EMPTY config prompt (its `system:` removed) clears the session's: an empty system record is appended
-/// — the writer flags it `system_cleared`, which is what lets it win over the one before it on the next load
-/// while an old log's content-less defer mount still does not — and the view's head is dropped.
+/// An EMPTY config prompt (its `system:` removed) clears the session's: [`SessionWriter::clear_system`]
+/// appends the record flagged `system_cleared`, which is what lets it win over the one before it on the next
+/// load while an old log's content-less defer mount still does not — and the view's head is dropped.
 fn adopt_system(
     writer: &mut SessionWriter,
     history: &mut Vec<Message>,
@@ -226,7 +226,16 @@ fn adopt_system(
         return Ok(false);
     }
     let msg = Message::system(system.to_owned());
-    writer.append_messages(std::slice::from_ref(&msg))?;
+    let written = if system.is_empty() {
+        writer.clear_system()
+    } else {
+        writer.append_messages(std::slice::from_ref(&msg))
+    };
+    // The record is in the log; a meta that did not follow catches up with the next write.
+    match written {
+        Ok(()) | Err(SessionError::MetaNotSaved(_)) => {}
+        Err(e) => return Err(e),
+    }
     match (head_is_system, system.is_empty()) {
         (true, true) => {
             history.remove(0);
@@ -430,7 +439,7 @@ mod tests {
         assert_eq!(
             resume_notices(last, "/work/herdr", &now),
             [
-                "Resumed after 3 days (last message 2026-09-27 18:02)",
+                "Resumed after 3 days (last activity 2026-09-27 18:02)",
                 "Resumed in a different project: /work/iota → /work/herdr",
             ]
         );
@@ -463,7 +472,7 @@ mod tests {
         assert!(resume_notices(&at("2026-09-30T18:30:01+00:00", "/p"), "/p", &now).is_empty());
         assert_eq!(
             resume_notices(&at("2026-09-30T18:30:00+00:00", "/p"), "/p", &now),
-            ["Resumed after 1 hour (last message 2026-09-30 18:30)"]
+            ["Resumed after 1 hour (last activity 2026-09-30 18:30)"]
         );
         assert_eq!(
             resume_notices(&at("2026-09-30T19:28:00+00:00", "/a"), "/b", &now),
@@ -507,7 +516,7 @@ mod tests {
         let now: jiff::Zoned = "2026-09-30T19:30:00+00:00[UTC]".parse().expect("now");
         assert_eq!(
             resume_notices(last, "/work/proj", &now),
-            ["Resumed after 3 days (last message 2026-09-27 18:02)"]
+            ["Resumed after 3 days (last activity 2026-09-27 18:02)"]
         );
     }
 
@@ -883,27 +892,5 @@ mod tests {
         let again = open(&h, &mut p, "be terse").expect("resume");
         let last = again.previous.as_ref().expect("resumed");
         assert_eq!(last.written, "2026-09-27T18:02:41+00:00");
-    }
-
-    /// Fable M5: a bot whose directories sit on a filesystem without locks still resumes, with one caution
-    /// per lock it could not take.
-    #[test]
-    fn a_bot_without_locks_still_resumes_with_a_caution() {
-        use crate::session::lock::tests::without_locks;
-        let h = home();
-        let mut p = provider("gpt-4o");
-        let mut s = open(&h, &mut p, "").expect("fresh");
-        s.writer
-            .append_messages(&[Message::user("hi")])
-            .expect("write");
-        let dir = s.writer.dir().to_path_buf();
-        drop(s);
-
-        let s = without_locks(|| open(&h, &mut p, "")).expect("resumes");
-        assert!(s.resumed);
-        let cautions = s.writer.lock_cautions();
-        assert_eq!(cautions.len(), 2, "{cautions:?}");
-        assert!(cautions[0].contains(&h.bots.join("coder").display().to_string()));
-        assert!(cautions[1].contains(&dir.display().to_string()));
     }
 }

@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::provider::ProviderKind;
-use crate::provider::model::{Attachment, Body, Message, Role};
+use crate::provider::model::{Attachment, Message, Role};
 use crate::provider::usage::Usage;
 use sha2::{Digest, Sha256};
 
@@ -62,6 +62,13 @@ pub struct SessionWriter {
     bot_lock: Option<HeldLock>,
     /// Runs once the bundle is on disk; kept (and retried by the next write) until it succeeds.
     on_created: Option<OnCreated>,
+    /// Where a failed batch began, while cutting the log back to it has not been confirmed: the log may still
+    /// hold part of that batch, so nothing more is appended until a cut succeeds (review R1 — a retry on top
+    /// of the remains would leave them in the middle of the log for good).
+    uncut: Option<u64>,
+    /// The meta in memory holds something `meta.json` does not: its last write failed. The next
+    /// [`SessionWriter::update_meta`] writes even when its own change is none.
+    meta_dirty: bool,
 }
 
 impl std::fmt::Debug for SessionWriter {
@@ -77,6 +84,8 @@ impl std::fmt::Debug for SessionWriter {
             .field("lock", &self.lock)
             .field("bot_lock", &self.bot_lock)
             .field("on_created", &self.on_created.is_some())
+            .field("uncut", &self.uncut)
+            .field("meta_dirty", &self.meta_dirty)
             .finish_non_exhaustive()
     }
 }
@@ -97,6 +106,8 @@ impl SessionWriter {
             lock: None,
             bot_lock: None,
             on_created: None,
+            uncut: None,
+            meta_dirty: false,
         }
     }
 
@@ -124,6 +135,8 @@ impl SessionWriter {
             lock: Some(lock),
             bot_lock: None,
             on_created: None,
+            uncut: None,
+            meta_dirty: false,
         }
     }
 
@@ -134,16 +147,6 @@ impl SessionWriter {
         if !self.created {
             self.on_created = Some(f);
         }
-    }
-
-    /// What to tell the user when this writer's bundle or bot lock could not be taken because the filesystem
-    /// cannot lock at all (fable M5): it is open without one. One line per such lock.
-    pub fn lock_cautions(&self) -> Vec<String> {
-        [&self.bot_lock, &self.lock]
-            .into_iter()
-            .flatten()
-            .filter_map(HeldLock::caution)
-            .collect()
     }
 
     /// Keeps a bot's lock alive for as long as this writer lives.
@@ -213,14 +216,17 @@ impl SessionWriter {
     /// The batch is all or nothing for the log: a failure before the `sync_all()` has returned cuts the log
     /// back to where the batch began and leaves the counters alone, so the caller retries the same slice. A
     /// failure of the meta rewrite AFTER it is [`SessionError::MetaNotSaved`]: the batch IS in the log and
-    /// must not be appended again.
+    /// must not be appended again. When the cut fails too, the error is [`SessionError::CutFailed`] and every
+    /// later append (and compaction marker) first tries the cut again — refusing with
+    /// [`SessionError::LogNotCutBack`] until it succeeds, then going on as if the batch had never been
+    /// tried.
     pub fn append_messages(&mut self, msgs: &[Message]) -> Result<(), SessionError> {
         let mut msgs = msgs.iter().filter(|m| m.tools().is_empty()).peekable();
         if msgs.peek().is_none() {
             return Ok(());
         }
         self.ensure_created()?;
-        let start = self.log_len()?;
+        let start = self.log_start()?;
         let (mut count, mut conv, mut usage) = (0, 0, Usage::default());
         let written: Result<(), SessionError> = (|| {
             for msg in msgs {
@@ -240,6 +246,25 @@ impl SessionWriter {
         self.meta.message_count += count;
         self.conv_count += conv;
         self.usage += usage;
+        self.write_meta_after_log()
+    }
+
+    /// Records that the session's system prompt was CLEARED (its `system:` removed from the config, §2.2): a
+    /// system record flagged `system_cleared`, which wins over the prompt before it on the next load. Said
+    /// explicitly, never read off an empty system message — any other empty system message the history holds
+    /// (a defer mount with no tools) is written without the flag and never clears anything. Counts toward
+    /// `message_count` like any system record; all or nothing like any batch.
+    pub fn clear_system(&mut self) -> Result<(), SessionError> {
+        self.ensure_created()?;
+        let rec = SessionRecord {
+            role: Role::System.as_str().to_owned(),
+            system_cleared: true,
+            ..SessionRecord::default()
+        };
+        let start = self.log_start()?;
+        let written = self.write_line(&rec).and_then(|()| self.sync());
+        self.settle_batch(start, written)?;
+        self.meta.message_count += 1;
         self.write_meta_after_log()
     }
 
@@ -279,7 +304,7 @@ impl SessionWriter {
         if let Some(u) = usage {
             rec.usage = Some(u.into());
         }
-        let start = self.log_len()?;
+        let start = self.log_start()?;
         let written = self.write_line(&rec).and_then(|()| self.sync());
         self.settle_batch(start, written)?;
         if let Some(u) = usage {
@@ -297,13 +322,24 @@ impl SessionWriter {
     ///
     /// The writer owns `id`, `version`, `message_count` and `updated_at`; a closure that changes them is
     /// the caller's problem.
+    ///
+    /// "Unchanged" means unchanged against what `meta.json` holds: after a failed write the memory is ahead of
+    /// the disk, so the next call writes even when it restates the same value.
     pub fn update_meta(&mut self, f: impl FnOnce(&mut SessionMeta)) -> Result<(), SessionError> {
         let before = self.created.then(|| self.meta.clone());
         f(&mut self.meta);
         match before {
-            Some(before) if before != self.meta => self.meta.write(&self.dir),
+            Some(before) if self.meta_dirty || before != self.meta => self.write_meta(),
             _ => Ok(()),
         }
+    }
+
+    /// Rewrites `meta.json`, remembering a failure so that [`Self::update_meta`] does not take the memory for
+    /// the disk.
+    fn write_meta(&mut self) -> Result<(), SessionError> {
+        let written = self.meta.write(&self.dir);
+        self.meta_dirty = written.is_err();
+        written
     }
 
     /// Materialises the bundle on first use (`ensureCreated`, chat/session.go:363-378): `attachments/`
@@ -318,7 +354,7 @@ impl SessionWriter {
             self.file = Some(open_append_0644(&self.dir.join(LOG_FILE))?);
             self.lock = Some(lock);
             self.created = true;
-            self.meta.write(&self.dir)?;
+            self.write_meta()?;
         }
         if let Some(f) = self.on_created.as_mut() {
             f()?;
@@ -327,32 +363,58 @@ impl SessionWriter {
         Ok(())
     }
 
-    /// The log's length before a batch — where [`Self::settle_batch`] cuts it back to.
-    fn log_len(&mut self) -> Result<u64, SessionError> {
+    /// The log's length before a batch — where [`Self::settle_batch`] cuts it back to. A failed batch whose
+    /// cut is still unconfirmed is cut first; while that keeps failing, nothing is written.
+    fn log_start(&mut self) -> Result<u64, SessionError> {
+        if let Some(start) = self.uncut {
+            self.cut_to(start).map_err(SessionError::LogNotCutBack)?;
+            self.uncut = None;
+        }
         Ok(self.log()?.metadata()?.len())
     }
 
     /// A batch that failed before its `sync_all()` returned leaves no trace in the log: whatever part of it
     /// was written is cut off again (the bundle lock is held, so nobody else appended meanwhile). The error
-    /// is handed back as it came.
+    /// is handed back as it came — unless the cut fails too: then the log may hold part of the batch, the
+    /// writer remembers where it began ([`Self::log_start`] retries the cut), and the error says both.
     fn settle_batch(
         &mut self,
         start: u64,
         written: Result<(), SessionError>,
     ) -> Result<(), SessionError> {
-        let Err(e) = written else { return Ok(()) };
-        if let Ok(file) = self.log() {
-            // Best effort: a cut that fails too leaves the log as the failure left it.
-            let _ = file.set_len(start).and_then(|()| file.sync_all());
+        let Err(write) = written else { return Ok(()) };
+        match self.cut_to(start) {
+            Ok(()) => Err(write),
+            Err(cut) => {
+                self.uncut = Some(start);
+                Err(SessionError::CutFailed {
+                    write: Box::new(write),
+                    cut,
+                })
+            }
         }
-        Err(e)
+    }
+
+    /// Cuts the log back to `len` bytes and syncs the cut — through a handle of its own opened for writing: the
+    /// append handle may not be allowed to truncate (on Windows an append-only handle lacks `FILE_WRITE_DATA`,
+    /// fable N3), and a cut that could never succeed would hold every later write back.
+    fn cut_to(&mut self, len: u64) -> std::io::Result<()> {
+        #[cfg(test)]
+        if tests::CUTS_TO_FAIL.get() > 0 {
+            tests::CUTS_TO_FAIL.set(tests::CUTS_TO_FAIL.get() - 1);
+            return Err(std::io::Error::other("injected: the cut fails"));
+        }
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(self.dir.join(LOG_FILE))?;
+        file.set_len(len)?;
+        file.sync_all()
     }
 
     /// The meta rewrite that follows a batch already in the log: its failure is
     /// [`SessionError::MetaNotSaved`], never a reason to append the batch again.
     fn write_meta_after_log(&mut self) -> Result<(), SessionError> {
-        self.meta
-            .write(&self.dir)
+        self.write_meta()
             .map_err(|e| SessionError::MetaNotSaved(Box::new(e)))
     }
 
@@ -457,8 +519,6 @@ fn to_record(dir: &Path, kind: ProviderKind, msg: &Message) -> Result<SessionRec
         is_error: msg.is_error(),
         interrupted: msg.interrupted(),
         notice: msg.is_notice(),
-        // An empty `Body::System` is a cleared prompt (a mount is filtered out before it gets here).
-        system_cleared: matches!(msg.body, Body::System) && msg.content.is_empty(),
         usage: msg.usage().map(Into::into),
         ..SessionRecord::default()
     };
@@ -515,6 +575,164 @@ fn hex_lower(bytes: &[u8]) -> String {
 mod tests {
     use super::fit_line;
     use crate::session::record::{SessionRaw, SessionRecord};
+
+    thread_local! {
+        /// How many of this thread's next cut-backs fail.
+        pub(super) static CUTS_TO_FAIL: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Review R1: a batch whose write AND cut-back both fail is reported as both, and the writer appends
+    /// nothing — not the retried batch, not a compaction marker — until a cut succeeds; then the retry lands
+    /// once, and no call is left without its result in the middle of the log.
+    #[test]
+    fn a_failed_cut_holds_every_write_until_the_log_is_cut_back() {
+        use crate::provider::ProviderKind;
+        use crate::provider::model::{Attachment, Message, Role, ToolCall};
+        use crate::session::error::SessionError;
+        use crate::session::{NewSession, SessionStore};
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = SessionStore::new(tmp.path().join("sessions"));
+        let mut w = store
+            .create(NewSession::new(ProviderKind::OpenAi, "gpt-test"))
+            .expect("create");
+        w.append_messages(&[Message::user("seed")]).expect("seed");
+        let (id, dir) = (w.id().to_owned(), w.dir().to_path_buf());
+        let lines = || {
+            std::fs::read_to_string(dir.join("messages.jsonl"))
+                .expect("log")
+                .lines()
+                .count()
+        };
+
+        // The third record's attachment cannot be stored, after two records reached the log.
+        let c1 = ToolCall {
+            id: "c1".to_owned(),
+            name: "read_file".to_owned(),
+            ..ToolCall::default()
+        };
+        let mut result = Message::tool_result(&c1, "ok", false);
+        result.attachments.push(Attachment {
+            filename: "a.bin".to_owned(),
+            mime_type: "application/octet-stream".to_owned(),
+            data: b"data".to_vec(),
+        });
+        let batch = [
+            Message::user("q"),
+            Message::assistant("").with_tool_calls(vec![c1]),
+            result,
+        ];
+        let attachments = dir.join("attachments");
+        std::fs::remove_dir(&attachments).expect("empty store");
+        std::fs::write(&attachments, "").expect("a file in its place");
+        CUTS_TO_FAIL.set(3);
+
+        let err = w.append_messages(&batch).expect_err("write and cut fail");
+        assert!(matches!(err, SessionError::CutFailed { .. }), "{err:?}");
+        assert!(err.to_string().contains("could not be cut back"), "{err}");
+        assert_eq!(lines(), 3, "the remains of the batch are still there");
+        std::fs::remove_file(&attachments).expect("clear");
+        std::fs::create_dir(&attachments).expect("restore the store");
+
+        // Refused, and nothing appended, while the cut keeps failing.
+        let err = w
+            .append_compaction("summary", 0, None)
+            .expect_err("no marker");
+        assert!(matches!(err, SessionError::LogNotCutBack(_)), "{err:?}");
+        let err = w.append_messages(&batch).expect_err("no retry");
+        assert!(matches!(err, SessionError::LogNotCutBack(_)), "{err:?}");
+        assert_eq!(lines(), 3);
+
+        // Once the cut succeeds, the same batch lands once.
+        w.append_messages(&batch).expect("the retry lands");
+        assert_eq!(lines(), 4);
+        assert_eq!(w.meta().message_count, 4);
+        drop(w);
+        let (_w, session) = store.resume(&id, ProviderKind::OpenAi).expect("resume");
+        let roles: Vec<Role> = session.messages.iter().map(Message::role).collect();
+        assert_eq!(roles, [Role::User, Role::User, Role::Assistant, Role::Tool]);
+        assert_eq!(session.messages[3].attachments.len(), 1);
+        assert_eq!(session.meta.message_count, 4);
+    }
+
+    /// Fable N4: only [`super::SessionWriter::clear_system`] clears the prompt; an empty system message that
+    /// reaches the log some other way is written as one an old log's empty mount was — and never wins.
+    #[test]
+    fn only_an_explicit_clear_is_a_cleared_prompt() {
+        use crate::provider::ProviderKind;
+        use crate::provider::model::Message;
+        use crate::session::{NewSession, SessionStore};
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = SessionStore::new(tmp.path().join("sessions"));
+        let mut w = store
+            .create(NewSession::new(ProviderKind::OpenAi, "gpt-test"))
+            .expect("create");
+        let last = |w: &super::SessionWriter| {
+            std::fs::read_to_string(w.dir().join("messages.jsonl"))
+                .expect("log")
+                .lines()
+                .last()
+                .map(str::to_owned)
+        };
+        w.append_messages(&[Message::system("keep me"), Message::user("hi")])
+            .expect("write");
+        w.append_messages(&[Message::system("")]).expect("write");
+        assert_eq!(last(&w).as_deref(), Some("{\"role\":\"system\"}"));
+        let id = w.id().to_owned();
+        assert_eq!(
+            store
+                .load(&id, ProviderKind::OpenAi)
+                .expect("load")
+                .messages[0]
+                .content,
+            "keep me"
+        );
+        w.clear_system().expect("clear");
+        assert_eq!(
+            last(&w).as_deref(),
+            Some("{\"role\":\"system\",\"system_cleared\":true}")
+        );
+        assert_eq!(w.meta().message_count, 4);
+        let loaded = store.load(&id, ProviderKind::OpenAi).expect("load");
+        assert!(loaded.messages.iter().all(|m| m.content != "keep me"));
+    }
+
+    /// Review N2: a meta rewrite that failed leaves the memory ahead of the disk, so restating the same value
+    /// writes it (and a reload sees it without any message having been appended); once saved, restating it
+    /// again writes nothing.
+    #[test]
+    fn a_meta_change_that_failed_is_written_by_the_same_change_again() {
+        use crate::provider::ProviderKind;
+        use crate::provider::model::Message;
+        use crate::session::meta::META_TMP_FILE;
+        use crate::session::{NewSession, SessionStore};
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = SessionStore::new(tmp.path().join("sessions"));
+        let mut w = store
+            .create(NewSession::new(ProviderKind::OpenAi, "gpt-test"))
+            .expect("create");
+        w.append_messages(&[Message::user("seed")]).expect("seed");
+        let dir = w.dir().to_path_buf();
+
+        std::fs::create_dir(dir.join(META_TMP_FILE)).expect("block the rewrite");
+        w.update_meta(|m| m.title = "changed".to_owned())
+            .expect_err("meta.json cannot be rewritten");
+        std::fs::remove_dir(dir.join(META_TMP_FILE)).expect("unblock");
+        w.update_meta(|m| m.title = "changed".to_owned())
+            .expect("the same change again");
+        let reloaded = store
+            .load(w.id(), ProviderKind::OpenAi)
+            .expect("reload without another message");
+        assert_eq!(reloaded.meta.title, "changed");
+
+        // Saved and unchanged: no rewrite, so `updated_at` stays put.
+        std::fs::write(dir.join("meta.json"), "{}").expect("mark the file");
+        w.update_meta(|m| m.title = "changed".to_owned())
+            .expect("nothing to do");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("meta.json")).expect("meta"),
+            "{}"
+        );
+    }
 
     fn tool(content: &str) -> SessionRecord {
         SessionRecord {

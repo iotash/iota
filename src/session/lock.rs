@@ -29,29 +29,17 @@ pub const BOT_LOCK_FILE: &str = "lock";
 /// see `Locked` naming our own pid. Unlocking acts on the shared description, so it
 /// releases the lock for every copy at once.
 ///
-/// `Err` inside: the filesystem cannot lock at all (NFS or SMB without lock support — fable M5), so nothing
-/// is held; it carries the directory the lock file is in, for [`HeldLock::caution`].
+/// A filesystem that cannot lock at all (NFS or SMB without lock support) yields no guard: the open or the
+/// delete that wanted it fails with [`SessionError::LockUnsupported`]. The writer's all-or-nothing batch cuts
+/// the log back to where it began, which is only safe while nobody else can append — an unheld lock would let
+/// that cut take another process's saved turns with it.
 #[derive(Debug)]
-pub(crate) struct HeldLock(Result<std::fs::File, std::path::PathBuf>);
-
-impl HeldLock {
-    /// What to tell the user when the filesystem refused to lock at all — a second process would not be
-    /// stopped; `None` for a lock that is really held.
-    pub(crate) fn caution(&self) -> Option<String> {
-        let dir = self.0.as_ref().err()?;
-        Some(format!(
-            "file locking is not supported under {}; opened without a lock, so do not open it from a second iota process",
-            dir.display()
-        ))
-    }
-}
+pub(crate) struct HeldLock(std::fs::File);
 
 impl Drop for HeldLock {
     fn drop(&mut self) {
         // Nothing to do on failure: the close that follows is the fallback it always was.
-        if let Ok(file) = &self.0 {
-            let _ = file.unlock();
-        }
+        let _ = self.0.unlock();
     }
 }
 
@@ -76,23 +64,23 @@ pub(crate) fn lock_bot(bot_dir: &Path, bot: &str) -> Result<HeldLock, SessionErr
 /// One `try_lock` on `path`: the held lock (with this process's pid written in), or — when another
 /// handle holds it — the pid that holder wrote. The outer error is an I/O fault, not a conflict.
 ///
-/// A filesystem that cannot lock at all (`ENOTSUP` / `EOPNOTSUPP`: NFS or SMB without lock support) is not
-/// a fault: the answer is a guard that holds nothing ([`HeldLock::caution`]), and the caller cautions (fable M5) — a
-/// session directory there would otherwise open nothing at all.
-fn try_lock_file(path: &Path) -> std::io::Result<Result<HeldLock, Option<u32>>> {
+/// A filesystem that cannot lock at all (`ENOTSUP` / `EOPNOTSUPP`: NFS or SMB without lock support) fails
+/// closed with [`SessionError::LockUnsupported`] naming the directory — never a guard that holds nothing.
+fn try_lock_file(path: &Path) -> Result<Result<HeldLock, Option<u32>>, SessionError> {
     let mut file = open_lock_file(path)?;
     match try_lock(&file) {
         Ok(()) => {
             // Best effort: the pid is for the error text only, so a failed write does not fail the lock.
             let _ = write_pid(&mut file);
-            Ok(Ok(HeldLock(Ok(file))))
+            Ok(Ok(HeldLock(file)))
         }
         Err(std::fs::TryLockError::WouldBlock) => Ok(Err(read_pid(&mut file))),
-        Err(std::fs::TryLockError::Error(e)) if cannot_lock(&e) => Ok(Ok(HeldLock(Err(path
-            .parent()
-            .unwrap_or(path)
-            .to_path_buf())))),
-        Err(std::fs::TryLockError::Error(e)) => Err(e),
+        Err(std::fs::TryLockError::Error(e)) if cannot_lock(&e) => {
+            Err(SessionError::LockUnsupported {
+                dir: path.parent().unwrap_or(path).to_path_buf(),
+            })
+        }
+        Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
     }
 }
 
@@ -186,35 +174,36 @@ pub(crate) mod tests {
         f()
     }
 
-    /// Fable M5: a filesystem that cannot lock opens unlocked instead of failing; any other error still fails.
+    /// A filesystem that cannot lock refuses the lock instead of handing out one that holds nothing (the
+    /// cut-back of a failed batch needs it held); any other error is an ordinary I/O fault.
     #[test]
-    fn an_unsupported_lock_opens_unlocked() {
+    fn an_unsupported_lock_fails_closed() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let held = without_locks(|| lock_bundle(dir.path(), "k7q")).expect("opens");
+        let err = without_locks(|| lock_bundle(dir.path(), "k7q")).expect_err("refused");
+        assert!(matches!(&err, SessionError::LockUnsupported { dir: d } if d == dir.path()));
         assert_eq!(
-            held.caution(),
-            Some(format!(
-                "file locking is not supported under {}; opened without a lock, so do not open it from a second iota process",
+            err.to_string(),
+            format!(
+                "file locking is not supported under {}; iota cannot open or delete a session there",
                 dir.path().display()
-            ))
+            )
         );
-        drop(held);
-        assert!(
-            lock_bundle(dir.path(), "k7q")
-                .expect("locks")
-                .caution()
-                .is_none()
-        );
+        let bot = dir.path().join("bots").join("coder");
+        assert!(matches!(
+            without_locks(|| lock_bot(&bot, "coder")),
+            Err(SessionError::LockUnsupported { .. })
+        ));
+        drop(lock_bundle(dir.path(), "k7q").expect("a real lock is taken"));
         assert!(super::cannot_lock(&std::io::Error::from_raw_os_error(
             super::EOPNOTSUPP
         )));
         assert!(!super::cannot_lock(&std::io::Error::from_raw_os_error(13)));
     }
 
-    /// Fable M5: a session directory on a filesystem without locks still resumes — with the caution the
-    /// caller prints.
+    /// A resume or a delete on a filesystem without locks is refused and leaves the bundle as it was; the
+    /// read-only load takes no lock and still reads it.
     #[test]
-    fn a_resume_without_locks_opens_with_a_caution() {
+    fn a_resume_without_locks_is_refused() {
         use crate::provider::ProviderKind;
         use crate::provider::model::Message;
         use crate::session::{NewSession, SessionStore};
@@ -224,22 +213,24 @@ pub(crate) mod tests {
             .create(NewSession::new(ProviderKind::OpenAi, "gpt-test"))
             .expect("create");
         w.append_messages(&[Message::user("hi")]).expect("write");
-        let (id, dir) = (w.id().to_owned(), w.dir().to_path_buf());
+        let (id, log_path) = (w.id().to_owned(), w.dir().join("messages.jsonl"));
         drop(w);
+        let log = std::fs::read(&log_path).expect("log");
 
-        let (w, session) =
-            without_locks(|| store.resume(&id, ProviderKind::OpenAi)).expect("resumes");
-        assert_eq!(session.messages.len(), 1);
-        assert_eq!(
-            w.lock_cautions(),
-            [format!(
-                "file locking is not supported under {}; opened without a lock, so do not open it from a second iota process",
-                dir.display()
-            )]
+        let err = without_locks(|| store.resume(&id, ProviderKind::OpenAi)).expect_err("refused");
+        assert!(
+            matches!(err, SessionError::LockUnsupported { .. }),
+            "{err:?}"
         );
-        drop(w);
-        let (w, _) = store.resume(&id, ProviderKind::OpenAi).expect("resumes");
-        assert!(w.lock_cautions().is_empty(), "a real lock says nothing");
+        let err = without_locks(|| store.delete(&id)).expect_err("refused");
+        assert!(
+            matches!(err, SessionError::LockUnsupported { .. }),
+            "{err:?}"
+        );
+        assert_eq!(std::fs::read(&log_path).expect("still there"), log);
+        let loaded = without_locks(|| store.load(&id, ProviderKind::OpenAi))
+            .expect("a read-only load needs no lock");
+        assert_eq!(loaded.messages.len(), 1);
     }
 
     /// A second holder is refused with the first one's pid; once the first handle drops, the lock is free.

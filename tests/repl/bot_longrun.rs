@@ -3,6 +3,7 @@
 //! [`GrowingProvider`] — whose usage is the request measured and which refuses a request over the window — with
 //! the process dropped and resumed at seeded random points. It checks the mechanism, not a model:
 //!
+//! 0. every user turn `1..=2000` is in the log exactly once, with its final reply after it;
 //! 1. the log only grows: every append leaves the bytes before it as they were;
 //! 2. every request fits the window (measured on the request, never estimated — and a request over it would
 //!    have been refused, so a pass is a real bound);
@@ -13,9 +14,12 @@
 //!    the disk taken at the drop point is what the restart resumes). 6a: the view the restart loads is, byte for
 //!    byte, the one the process held. 6b: the two send the model the same calls and the same history, up to and
 //!    including the next user turn — everything but the memory block, which a restart re-reads by design (§3.4:
-//!    startup is a refresh moment) while the running process keeps its copy until the next compaction. A
-//!    difference that comes after a call carrying a re-read block is the model answering what it was shown, and
-//!    is listed, not failed; one at or before it (a call of another kind, another history) is the process's;
+//!    startup is a refresh moment) while the running process keeps its copy until the next compaction. The
+//!    model may answer the re-read block differently, and that alone is listed, not failed: once what the
+//!    fake produced after it was shown the block (its new tool calls, their results, the `memory:` notices of
+//!    their writes) is left out, the two sides must make the same calls with the same histories, in order
+//!    ([`refresh_explains`]). Anything else — a call of another kind, an older message changed, a history cut
+//!    or reordered — is the process's, and fails;
 //! 7. the startup load time as the log grows — printed, and held to the §2.6 threshold (2 s) as a loose bound.
 //!
 //! Drops happen at the idle prompt, between turns — where a bot sits nearly all its life — including the
@@ -24,6 +28,12 @@
 //! each test requires the ones it names. One scenario is kept, `#[ignore]`d, as the evidence for the minimum
 //! window: [`a_bot_whose_memory_sits_at_the_soft_threshold_outgrows_an_8k_window`]. Most of the run's time is
 //! the durability path itself: every persisted batch is a `sync_all` (a full flush on macOS).
+//!
+//! What it does NOT cover (review R7), so it is no substitute for the targeted tests: every restart is at the
+//! idle prompt, never inside a write (the failed-batch, cut-back and interrupt paths have tests of their own,
+//! `tests/repl/bot_flush.rs` and `session::writer`); one fixed seed; only the memory toolset enabled, so no
+//! other tool's output; no agent overlay (AGENTS.md, skills) in the request; and a `bytes / 4` measure, not a
+//! real provider's tokenizer. Its load times are for a log of a few MiB and say nothing about 256 MiB.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -289,16 +299,115 @@ struct DropReport {
     diff: Option<(usize, String)>,
     /// The first call whose memory block differs (the restart's startup re-read, §3.4), if any.
     memory_at: Option<usize>,
+    /// When there is a `diff` and a `memory_at`: whether the model's answer to the re-read block accounts for
+    /// ALL of the difference ([`refresh_explains`]), or what it does not account for.
+    refresh: Option<Result<(), String>>,
 }
 
 impl DropReport {
-    /// A difference that comes AFTER the model was shown the re-read memory block: the model answered what it
-    /// was shown (the §3.4 refresh), not what the process kept or lost. One at or before that call is the
-    /// process's own doing — what it queued and what it measured decide a call's kind before any model reads
-    /// anything.
+    /// The only difference is the model answering the re-read memory block (the §3.4 refresh) — checked
+    /// message by message, not inferred from where the first difference sits.
     fn follows_the_refresh(&self) -> bool {
-        matches!((&self.diff, self.memory_at), (Some((i, _)), Some(m)) if m < *i)
+        matches!(self.refresh, Some(Ok(())))
     }
+}
+
+/// The ids of the tool calls in `view`.
+fn call_ids(view: &[Message]) -> BTreeSet<&str> {
+    view.iter()
+        .flat_map(Message::tool_calls)
+        .map(|c| c.id.as_str())
+        .collect()
+}
+
+/// Whether the model's answer to the re-read memory block — first shown in call `m` — explains every
+/// difference between the two sides up to the next user turn. The model decides what it calls and how many
+/// rounds it takes (the follow-ups); the process decides everything else. So:
+///
+/// - nothing differs up to call `m`;
+/// - with the messages the model's new answer produced left out of every history — an assistant message whose
+///   tool calls are all new since call `m`, those calls' results, and the `memory:` notices of the writes they
+///   made (a notice not already in call `m`'s history) — the two sides make the same calls with the same
+///   histories, in order. A reply the model gave after call `m` is compared without its usage: that measures
+///   its request, which the new messages made longer. A follow-up round that adds nothing else is the model's own and folds into
+///   the call before it, so a side may take more of them. Every other message — an older one, a plain reply, a
+///   user message, a summary — must be equal and in place, so a history cut, reordered or rewritten fails even
+///   after a legitimate refresh;
+/// - a summary pass is compared by kind only: its request is the history rendered into one text, which the
+///   model's new calls are part of — and that history is the one the call before it was checked on.
+fn refresh_explains(
+    turn: u64,
+    reference: &[GrowingCall],
+    restarted: &[GrowingCall],
+    m: usize,
+) -> Result<(), String> {
+    let (a, b) = (up_to_turn(reference, turn), up_to_turn(restarted, turn));
+    if a.iter()
+        .zip(b)
+        .take(m + 1)
+        .any(|(x, y)| view_of(x) != view_of(y) || x.kind != y.kind)
+    {
+        return Err(format!("a difference at or before call {m}"));
+    }
+    let shown = view_of(&a[m]);
+    let before = call_ids(shown);
+    let old = |msg: &&Message| {
+        let fresh = |id: &str| !before.contains(id);
+        let calls = msg.tool_calls();
+        match msg.role() {
+            Role::Assistant => calls.is_empty() || !calls.iter().all(|c| fresh(&c.id)),
+            Role::Tool => !fresh(msg.tool_call_id()),
+            _ => !(msg.is_notice() && msg.content.starts_with("memory: ") && !shown.contains(msg)),
+        }
+    };
+    let unmeasured = |msg: &Message| {
+        if msg.role() == Role::Assistant && !shown.contains(msg) {
+            msg.clone().with_usage(None)
+        } else {
+            msg.clone()
+        }
+    };
+    let process = |cs: &[GrowingCall]| -> Vec<(CallKind, Vec<Message>)> {
+        let mut out: Vec<(CallKind, Vec<Message>)> = Vec::new();
+        for c in cs {
+            let view: Vec<Message> = if c.kind == CallKind::Summary {
+                Vec::new()
+            } else {
+                view_of(c).iter().filter(old).map(unmeasured).collect()
+            };
+            if c.kind == CallKind::Followup && out.last().is_some_and(|(_, v)| *v == view) {
+                continue;
+            }
+            out.push((c.kind, view));
+        }
+        out
+    };
+    let (pa, pb) = (process(a), process(b));
+    let kinds = |p: &[(CallKind, Vec<Message>)]| p.iter().map(|c| c.0).collect::<Vec<_>>();
+    if kinds(&pa) != kinds(&pb) {
+        return Err(format!(
+            "the process made different calls: {:?} / {:?}",
+            kinds(&pa),
+            kinds(&pb)
+        ));
+    }
+    for (i, ((kind, x), (_, y))) in pa.iter().zip(&pb).enumerate() {
+        if x != y {
+            let at = x
+                .iter()
+                .zip(y)
+                .position(|(p, q)| p != q)
+                .unwrap_or(x.len().min(y.len()));
+            return Err(format!(
+                "the process's call {i} ({kind:?}) differs beyond the model's new calls, at message {at} of {}/{}:\n  without: {:?}\n  with:    {:?}",
+                x.len(),
+                y.len(),
+                x.get(at),
+                y.get(at)
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The view as it was at the drop, read off the first call that carries it (a user turn or the flush turn, less
@@ -496,12 +605,20 @@ async fn drive(window: u64, provider: GrowingProvider, drops: &BTreeSet<u64>) ->
 
         // The restart before this life, against the run that went on without it.
         if let Some((turn, reference, flush_queued)) = pending.take() {
+            let restarted = &calls[first..];
+            let diff = compare(turn, &reference, restarted);
+            let memory_at = memory_differs_at(turn, &reference, restarted);
+            let refresh = diff
+                .as_ref()
+                .and(memory_at)
+                .map(|m| refresh_explains(turn, &reference, restarted, m));
             run.drops.push(DropReport {
                 turn,
                 flush_queued,
-                loaded: compare_loaded(&reference, &calls[first..]),
-                diff: compare(turn, &reference, &calls[first..]),
-                memory_at: memory_differs_at(turn, &reference, &calls[first..]),
+                loaded: compare_loaded(&reference, restarted),
+                diff,
+                memory_at,
+                refresh,
             });
         }
         if dropped {
@@ -555,6 +672,30 @@ fn flush_accounting(records: &[serde_json::Value]) -> Vec<(usize, bool)> {
     out
 }
 
+/// Invariant 0, read off the log: every user turn's number in the order it was saved (a flush notice is not a
+/// user turn), and the turns whose final reply — an assistant message without tool calls, not interrupted —
+/// was saved before the next user turn.
+fn saved_turns(records: &[serde_json::Value]) -> (Vec<u64>, BTreeSet<u64>) {
+    let (mut asked, mut answered, mut current) = (Vec::new(), BTreeSet::new(), None);
+    for r in records {
+        let content = r["content"].as_str().unwrap_or("");
+        if r["role"] == "user" && r["notice"] != true {
+            current = content
+                .strip_prefix('#')
+                .and_then(|t| t.split(' ').next())
+                .and_then(|n| n.parse::<u64>().ok());
+            asked.extend(current);
+        } else if r["role"] == "assistant"
+            && r["interrupted"] != true
+            && r["tool_calls"].as_array().is_none_or(Vec::is_empty)
+            && let Some(n) = current
+        {
+            answered.insert(n);
+        }
+    }
+    (asked, answered)
+}
+
 /// One invariant's verdict: what was measured, and whether it held.
 struct Verdict {
     name: &'static str,
@@ -566,7 +707,7 @@ fn verdict(name: &'static str, held: bool, detail: String) -> Verdict {
     Verdict { name, held, detail }
 }
 
-/// The seven invariants over a finished run, each with what it measured.
+/// The invariants over a finished run, each with what it measured.
 #[allow(clippy::cast_precision_loss)] // token counts far below 2^52
 fn verdicts(run: &Run) -> Vec<Verdict> {
     let (window, threshold) = (run.window, threshold(run.window));
@@ -580,6 +721,27 @@ fn verdicts(run: &Run) -> Vec<Verdict> {
     let records = &run.records;
     let markers = records.iter().filter(|r| r["role"] == "compaction").count();
     let mut out = Vec::new();
+
+    // 0. Every user turn is in the log once, answered: the main line's turns, read off the disk — not the
+    // calls, which include the no-restart references, and not a count of lines.
+    let (asked, answered) = saved_turns(records);
+    let every: BTreeSet<u64> = (1..=TURNS).collect();
+    let twice = asked.len() - asked.iter().collect::<BTreeSet<_>>().len();
+    let missing: Vec<u64> = every.difference(&answered).copied().collect();
+    out.push(verdict(
+        "0 every turn saved with its reply",
+        twice == 0 && answered == every,
+        format!(
+            "{} of {TURNS} turns saved with a final reply, {} user turns in the log, {twice} twice{}",
+            answered.len(),
+            asked.len(),
+            if missing.is_empty() {
+                String::new()
+            } else {
+                format!("; missing or unanswered: {:?}", &missing[..missing.len().min(20)])
+            }
+        ),
+    ));
 
     // 1. The log only grows: every look at it (one per provider call, one per restart) found the bytes of the
     // last look unchanged at its head.
@@ -751,8 +913,14 @@ fn verdicts(run: &Run) -> Vec<Verdict> {
     let describe = |d: &DropReport| {
         d.diff.as_ref().map(|(_, diff)| {
             format!(
-                "drop before #{} (flush queued: {}, memory block differs from call {:?}): {diff}",
-                d.turn, d.flush_queued, d.memory_at
+                "drop before #{} (flush queued: {}, memory block differs from call {:?}): {diff}{}",
+                d.turn,
+                d.flush_queued,
+                d.memory_at,
+                match &d.refresh {
+                    Some(Err(why)) => format!("\n  not explained by the re-read block: {why}"),
+                    _ => String::new(),
+                }
             )
         })
     };
@@ -848,6 +1016,79 @@ fn report(title: &str, run: &Run, required: &[&str]) {
     assert!(failed.is_empty(), "{title}: invariants failed: {failed:?}");
 }
 
+/// The 6b exemption is the model's answer and nothing else: after a re-read block the flush may remove another
+/// line (new arguments, its result, its `memory:` notice, a longer request), but an older message cut from
+/// what the next turn is sent is the process's and is not explained — nor is a call of another kind.
+#[test]
+fn only_the_models_answer_to_the_reread_block_is_excused() {
+    use iota::provider::model::ToolCall;
+    let call = |kind, messages: Vec<Message>| GrowingCall {
+        kind,
+        turn: 1,
+        messages,
+        tools: Vec::new(),
+        input: 0,
+        output: 0,
+        refused: false,
+    };
+    let remove = |old: &str| {
+        Message::assistant("").with_tool_calls(vec![ToolCall {
+            id: "f-1-1rm".to_owned(),
+            name: "remember".to_owned(),
+            arguments: serde_json::json!({"action": "remove", "old": old})
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+        }])
+    };
+    let side = |block: &str, old: &str, extra: &[Message], cut: bool| {
+        let head = vec![
+            Message::system(block),
+            Message::user("#1 tell me about item 1."),
+            Message::assistant("[#1] Here is item 1."),
+            Message::notice(FLUSH_MARK),
+        ];
+        let mut round = head.clone();
+        round.push(remove(old));
+        round.push(Message::tool_result(
+            &remove(old).tool_calls()[0],
+            "saved",
+            false,
+        ));
+        let mut turn = round.clone();
+        turn.push(Message::assistant("[#1] Saved.").with_usage(Some(
+            iota::provider::usage::Usage {
+                input: 10 + extra.len() as u64,
+                ..Default::default()
+            },
+        )));
+        turn.extend_from_slice(extra);
+        turn.push(Message::user("#2 tell me about item 2."));
+        if cut {
+            turn.remove(2);
+        }
+        vec![
+            call(CallKind::Flush, head),
+            call(CallKind::Followup, round),
+            call(CallKind::Turn, turn),
+        ]
+    };
+    let written = [Message::notice(
+        "memory: MEMORY.md ## User -1 line: fact-u2;",
+    )];
+    let held = side("memory as held", "fact-u1;", &[], false);
+    let reread = side("memory as re-read", "fact-u2;", &written, false);
+    assert_eq!(refresh_explains(2, &held, &reread, 0), Ok(()));
+
+    let cut = side("memory as re-read", "fact-u2;", &written, true);
+    let err = refresh_explains(2, &held, &cut, 0).expect_err("an older message cut");
+    assert!(err.contains("(Turn) differs"), "{err}");
+
+    let mut other = side("memory as re-read", "fact-u2;", &written, false);
+    other[2].kind = CallKind::Summary;
+    assert!(refresh_explains(2, &held, &other, 0).is_err());
+}
+
 /// The mechanism in the smallest window a bot runs in, with a model that keeps its memory short (at most 12
 /// lines of its own): every invariant.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -856,7 +1097,7 @@ async fn a_bot_runs_two_thousand_turns_in_a_32k_window() {
     report(
         "tidy memory, 32k",
         &run,
-        &["1 ", "2 ", "3 ", "4 ", "5 ", "6a ", "6b ", "7 "],
+        &["0 ", "1 ", "2 ", "3 ", "4 ", "5 ", "6a ", "6b ", "7 "],
     );
 }
 
@@ -876,7 +1117,7 @@ async fn a_bot_whose_memory_sits_at_the_soft_threshold_runs_in_a_32k_window() {
     report(
         "memory at the soft threshold, 32k",
         &run,
-        &["1 ", "2 ", "3 ", "4 ", "5 ", "6a ", "6b ", "7 "],
+        &["0 ", "1 ", "2 ", "3 ", "4 ", "5 ", "6a ", "6b ", "7 "],
     );
 }
 
@@ -901,6 +1142,6 @@ async fn a_bot_whose_memory_sits_at_the_soft_threshold_outgrows_an_8k_window() {
     report(
         "memory at the soft threshold, 8k",
         &run,
-        &["1 ", "2 ", "3 ", "4 ", "5 ", "6a ", "6b ", "7 "],
+        &["0 ", "1 ", "2 ", "3 ", "4 ", "5 ", "6a ", "6b ", "7 "],
     );
 }
