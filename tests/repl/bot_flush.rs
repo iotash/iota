@@ -1,5 +1,5 @@
-//! A bot's memory flush and the compaction after it (docs/design/bot-mode.md §3.6.1, §4.1, §4.3), driven end
-//! to end through `iota::repl::run`.
+//! A bot's memory flush and the compaction after it (docs/design/bot-mode.md §3.6.1, §4.1, §4.3), the day
+//! change and the resume notices (§2.5), driven end to end through `iota::repl::run`.
 //!
 //! The scripted facade makes the queue order explicit: a `Reply::Input` is something the user typed, served
 //! before whatever the loop itself queued, and `Reply::Enqueued` serves the loop's own queue — the flush
@@ -88,6 +88,23 @@ impl Fixture {
 
     /// Runs the loop to its end; returns the bundle directory.
     async fn run(&self, provider: FakeProvider, memory: &str) -> PathBuf {
+        self.run_with(
+            provider,
+            memory,
+            iota::agents::harness::HarnessInputs::default(),
+            Vec::new(),
+        )
+        .await
+    }
+
+    /// [`Self::run`] with the harness prompt's inputs and the notices the model is told at startup.
+    async fn run_with(
+        &self,
+        provider: FakeProvider,
+        memory: &str,
+        harness: iota::agents::harness::HarnessInputs,
+        recorded_notices: Vec<String>,
+    ) -> PathBuf {
         let writer = self.writer();
         let dir = writer.dir().to_path_buf();
         let bot = iota::agents::memory::BotMemory::new("coder", self.bots.join("coder"));
@@ -114,7 +131,7 @@ impl Fixture {
             provider: Box::new(provider),
             title_provider: None,
             system: String::new(),
-            harness: String::new(),
+            harness,
             imported_history: Vec::new(),
             dispatch,
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
@@ -126,6 +143,7 @@ impl Fixture {
                 scope: None,
                 bot: true,
                 notices: Vec::new(),
+                recorded_notices,
                 memory: Some(bot),
             },
             params: iota::session::LayeredParams {
@@ -511,4 +529,143 @@ async fn a_flush_notice_taken_by_steering_is_put_back_not_injected() {
     );
     assert!(prompts[5].starts_with(FLUSH_MARK));
     assert!(prompts[6].starts_with(SUMMARY_MARK));
+}
+
+/// The system message of the `i`th request.
+fn system_of(log: &iota::testing::Log, i: usize) -> String {
+    let send = log.send(i);
+    assert_eq!(send[0].role(), Role::System, "{send:?}");
+    send[0].content.clone()
+}
+
+/// §2.5: the harness is re-composed on the first send of a new day — its `date:` moves — and the memory copy
+/// is refreshed with it (§3.4's third moment), so the system message changes exactly once: the bot's own
+/// write of the first day reaches the copy at the day change, not before, and nothing else does.
+#[tokio::test]
+async fn the_first_send_of_a_new_day_recomposes_the_harness_and_refreshes_the_memory_once() {
+    let day = Arc::new(Mutex::new("2026-09-29".to_owned()));
+    let clock = {
+        let day = Arc::clone(&day);
+        Arc::new(move || day.lock().unwrap().clone())
+    };
+    let harness = iota::agents::harness::HarnessInputs {
+        toolsets: vec!["fs".to_owned()],
+        clock,
+        ..iota::agents::harness::HarnessInputs::default()
+    };
+    let f = Fixture::new(vec![
+        input("one"),
+        Reply::Queued(Vec::new()), // the round boundary after the remember call: nothing typed
+        input("two"),
+        input("three"),
+        input("four"),
+        Reply::Interrupted,
+    ]);
+    let flip = Arc::clone(&day);
+    let p = FakeProvider::new()
+        .with_model("gpt-test")
+        .reporting_usage()
+        .with_tools()
+        .answering(move |_, messages| {
+            let last = messages.last().expect("a message");
+            if last.role() == Role::Tool {
+                return Round::text("Saved.").usage(usage(1_000));
+            }
+            match last.content.as_str() {
+                "one" => remember_tabs(),
+                // Midnight passes while the model answers two.
+                "two" => {
+                    "2026-09-30".clone_into(&mut flip.lock().unwrap());
+                    Round::text("re two").usage(usage(1_000))
+                }
+                other => Round::text(&format!("re {other}")).usage(usage(1_000)),
+            }
+        });
+    let log = p.log();
+    f.run_with(
+        p,
+        "## User\n- [user] old line (2026-09-01)\n",
+        harness,
+        Vec::new(),
+    )
+    .await;
+
+    // one (two rounds), two, three, four.
+    assert_eq!(log.records().len(), 5, "{:?}", log.prompts());
+    let systems: Vec<String> = (0..5).map(|i| system_of(&log, i)).collect();
+    let changes = systems.windows(2).filter(|w| w[0] != w[1]).count();
+    assert_eq!(
+        changes, 1,
+        "one cache miss, at the day change: {systems:#?}"
+    );
+    assert_eq!(systems[2], systems[0], "the same day changes nothing");
+    assert_ne!(systems[3], systems[2], "three is the new day's first send");
+
+    assert!(systems[0].contains("date: 2026-09-29"), "{}", systems[0]);
+    assert!(systems[0].contains("old line"), "{}", systems[0]);
+    assert!(
+        !systems[2].contains("prefers tabs"),
+        "the bot's own write does not refresh the copy: {}",
+        systems[2]
+    );
+    assert!(systems[3].contains("date: 2026-09-30"), "{}", systems[3]);
+    assert!(!systems[3].contains("date: 2026-09-29"));
+    assert!(
+        systems[3].contains("prefers tabs"),
+        "the day change refreshed the copy: {}",
+        systems[3]
+    );
+    // Refreshed by the day change, not picked up as an edit from outside.
+    assert!(
+        !f.printed().iter().any(|l| l.contains("MEMORY.md reloaded")),
+        "{:?}",
+        f.printed()
+    );
+}
+
+/// §2.5 (review M2/M3): what a resumed bot's model is told at startup is shown, recorded into the history as
+/// notice messages and written to the log at once — and the first request carries it ahead of the user's
+/// message.
+#[tokio::test]
+async fn the_resume_notices_are_recorded_and_the_model_reads_them() {
+    let away = "Resumed after 3 days (last message 2026-09-27 18:02)";
+    let moved = "Resumed in a different project: /work/iota → /work/herdr";
+    let f = Fixture::new(vec![input("hello"), Reply::Interrupted]);
+    let p = provider(None, remember_tabs, |prompt| {
+        Round::text(&format!("re {prompt}")).usage(usage(1_000))
+    });
+    let log = p.log();
+    let dir = f
+        .run_with(
+            p,
+            "",
+            iota::agents::harness::HarnessInputs::default(),
+            vec![away.to_owned(), moved.to_owned()],
+        )
+        .await;
+
+    let printed = f.printed();
+    for line in [away, moved] {
+        assert!(printed.iter().any(|l| l == line), "{printed:?}");
+    }
+    let view = iota::session::load_log(&dir, ProviderKind::OpenAi)
+        .expect("load")
+        .view;
+    let contents: Vec<(bool, &str)> = view
+        .iter()
+        .map(|m| (m.is_notice(), m.content.as_str()))
+        .collect();
+    assert_eq!(
+        contents[..3],
+        [(true, away), (true, moved), (false, "hello")],
+        "{contents:?}"
+    );
+    let sent = log.send(0);
+    let tail: Vec<&str> = sent
+        .iter()
+        .rev()
+        .take(3)
+        .map(|m| m.content.as_str())
+        .collect();
+    assert_eq!(tail, ["hello", moved, away], "{sent:?}");
 }

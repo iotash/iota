@@ -71,7 +71,7 @@ impl Fixture {
             provider: Box::new(provider),
             title_provider: None,
             system: String::new(),
-            harness: String::new(),
+            harness: iota::agents::harness::HarnessInputs::default(),
             imported_history: Vec::new(),
             dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
@@ -122,6 +122,7 @@ impl Fixture {
             scope: None,
             bot: false,
             notices: Vec::new(),
+            recorded_notices: Vec::new(),
             memory: None,
         }
     }
@@ -274,6 +275,7 @@ async fn banner_offers_save_for_an_ephemeral_chat() {
         scope: None,
         bot: false,
         notices: Vec::new(),
+        recorded_notices: Vec::new(),
         memory: None,
     };
     iota::repl::run(f.params(provider("gpt-4o", Ok(vec![])), session))
@@ -941,6 +943,7 @@ async fn save_mints_late_and_flushes_the_backlog() {
         scope: None,
         bot: false,
         notices: Vec::new(),
+        recorded_notices: Vec::new(),
         memory: None,
     };
     let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
@@ -1275,7 +1278,7 @@ async fn persist_warns_and_retries_the_backlog() {
         provider: Box::new(provider),
         title_provider: None,
         system: String::new(),
-        harness: String::new(),
+        harness: iota::agents::harness::HarnessInputs::default(),
         imported_history: Vec::new(),
         dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
         jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
@@ -1287,6 +1290,7 @@ async fn persist_warns_and_retries_the_backlog() {
             scope: None,
             bot: false,
             notices: Vec::new(),
+            recorded_notices: Vec::new(),
             memory: None,
         },
         params: iota::session::LayeredParams::default(),
@@ -1373,6 +1377,7 @@ async fn a_bot_run_has_no_session_command_and_keeps_its_name() {
         scope: None,
         bot: true,
         notices: vec!["system prompt updated from config".to_owned()],
+        recorded_notices: Vec::new(),
         memory: None,
     };
     let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
@@ -1528,6 +1533,7 @@ async fn a_memory_write_is_recorded_once_after_its_turn() {
         scope: None,
         bot: true,
         notices: Vec::new(),
+        recorded_notices: Vec::new(),
         memory: Some(memory.clone()),
     };
     let mut params = f.params(p, session);
@@ -1617,6 +1623,7 @@ fn bot_in_project(
         scope: None,
         bot: true,
         notices: Vec::new(),
+        recorded_notices: Vec::new(),
         memory: Some(bot.clone()),
     };
     (session, bot, root, Arc::new(registry))

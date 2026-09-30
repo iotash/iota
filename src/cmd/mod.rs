@@ -97,7 +97,7 @@ pub(crate) struct ToolAssembly {
     pub(crate) agent: AgentOptions,
     /// The built-in harness prompt's inputs (`agents::harness`), read once here for both branches and
     /// composed by each once its `Presenter` exists — the hosts add their facts to `<environment>`.
-    pub(crate) harness: assemble::HarnessInputs,
+    pub(crate) harness: crate::agents::harness::HarnessInputs,
 }
 
 /// The host detectors' view of the machine (host.go:71-74 `SystemEnv`): the run's injected environment
@@ -352,7 +352,7 @@ fn assemble_tools(
     // inside and where; with the `shell` set, how iota's own command line is driven from it. An agent without
     // tools sends nothing — its bytes on the wire are exactly what they were. Composed by the branch, once
     // its hosts are detected: they have facts for `<environment>` too.
-    let harness = assemble::HarnessInputs {
+    let harness = crate::agents::harness::HarnessInputs {
         env: assemble::harness_environment(dirs, project_root.as_deref(), inv.config.as_deref()),
         toolsets: assemble::enabled_toolsets(
             &settings.resolved.agent.tools,
@@ -360,6 +360,7 @@ fn assemble_tools(
             // of its own).
             settings.mode.is_bot() && inv.resume.is_none(),
         ),
+        clock: Arc::new(crate::agents::harness::today),
     };
 
     Ok(ToolAssembly {
@@ -519,7 +520,7 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
     let opts = OnceOptions {
         message,
         system: settings.system,
-        harness: harness.compose(&pres),
+        harness: harness.compose(&harness.today(), pres.environment()),
         agent,
         max_turns: settings.max_turns,
         format,

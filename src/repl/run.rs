@@ -38,6 +38,7 @@ use crate::ui::facade::{InputKind, StatusData};
 use tokio_util::sync::CancellationToken;
 
 use crate::repl::ReplError;
+use crate::repl::bot::{Action as BotAction, Event as BotEvent};
 use crate::repl::commands::edit::EditOutcome;
 use crate::repl::commands::skills::SkillsOutcome;
 use crate::repl::commands::{
@@ -122,6 +123,10 @@ pub struct SessionCtx {
     /// learned about the session that the model's user should see (a bot's pointer that never saved, a
     /// system prompt taken over from the config).
     pub notices: Vec<String>,
+    /// What the model must be told at startup, not only the user (bot-mode.md §2.5: a resumed bot's time
+    /// away and a changed project — across a restart its only sense of either). Each is shown as a dim line
+    /// AND recorded as a notice message into the history and the log, like a memory write (§3.7).
+    pub recorded_notices: Vec<String>,
     /// A bot's memory (bot-mode.md §3.4, §3.7): the loop injects its snapshot as the last part of every
     /// send's overlay and records what the `remember` tool announced during a turn as notice messages once
     /// the turn is over. `None` outside a bot's session.
@@ -138,9 +143,11 @@ pub struct RunParams {
     pub title_provider: Option<Box<dyn crate::provider::Provider>>,
     /// The system prompt.
     pub system: String,
-    /// The built-in harness prompt, composed by the binary for an agent with tools (`""` otherwise); it goes
-    /// ahead of `system` on every send and never into the history (`agents::harness`).
-    pub harness: String,
+    /// The built-in harness prompt's inputs (`agents::harness`): the loop composes the text once the presenter
+    /// is here — the hosts add their facts to `<environment>` — and again on the first send of a new day
+    /// (docs/design/bot-mode.md §2.5). It goes ahead of `system` on every send and never into the history; an
+    /// agent without tools composes `""`.
+    pub harness: crate::agents::harness::HarnessInputs,
     /// Resumed/imported history.
     pub imported_history: Vec<crate::provider::model::Message>,
     /// The tool dispatcher.
@@ -242,16 +249,22 @@ impl Repl {
             return 0;
         };
         let written = log.take();
-        if written.is_empty() {
-            return 0;
-        }
         let n = u32::try_from(written.len()).unwrap_or(u32::MAX);
-        for notice in written {
+        self.record_notices(written);
+        n
+    }
+
+    /// Tells the model, not only the user: each line is shown dim and joins the history as a notice
+    /// message, persisted at once so the log says when it was said. Nothing for no lines.
+    pub(crate) fn record_notices(&mut self, notices: Vec<String>) {
+        if notices.is_empty() {
+            return;
+        }
+        for notice in notices {
             self.handles.tr.notice(&notice);
             self.conv.history.push(Message::notice(notice));
         }
         self.persist_turn();
-        n
     }
 
     /// Tells the hosts which session the chat persists into — the live writer's id and bundle
@@ -330,6 +343,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         scope,
         bot,
         notices,
+        recorded_notices,
         memory,
     } = session;
 
@@ -371,6 +385,10 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         vec![Message::system(system)]
     };
     let persisted = if resumed { history.len() } else { 0 };
+    // The harness, now that the hosts it names in `<environment>` are known; the day it was composed on is
+    // what the first send of the next one compares against.
+    let harness_day = harness.today();
+    let harness_text = harness.compose(&harness_day, pres.environment());
     let mut budget = ContextBudget::new(params.context_window.value);
     if bot_state.is_some() {
         // A bot compacts with a larger reserve: the flush turn, and maybe a user turn, come first (§3.6.1).
@@ -521,7 +539,9 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             layers,
             catalog,
             compact_declined: 0,
-            harness,
+            harness: harness_text,
+            harness_day,
+            harness_inputs: harness,
             overlay,
             agent,
             bot: bot_state,
@@ -552,6 +572,8 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             jobs: Arc::clone(&jobs),
         },
     };
+    // What a resumed bot's model is told before anything else is said (bot-mode.md §2.5).
+    repl.record_notices(recorded_notices);
     repl.push_status();
     // The loop is up and waiting: the hosts hear `Idle` NOW, not at the first turn — a herdr pane
     // is listed from here — and then which session it writes into (herdr keys its records on it).
@@ -640,13 +662,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         // was queued for already happened (a message typed ahead of it compacted first): then it is dropped,
         // neither sent nor persisted.
         let flush = notice && crate::repl::bot::is_flush_notice(&input.text);
-        if flush
-            && !repl
-                .conv
-                .bot
-                .as_ref()
-                .is_some_and(|b| b.flush.notice_arrived())
-        {
+        if flush && !bot_notice_arrived(&mut repl).await {
             continue;
         }
         // Whatever the input is, the loop is awake for the user now (run.go:381).
@@ -766,6 +782,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 continue;
             }
         }
+        roll_day(&mut repl).await;
         let send_overlay = repl.refresh_overlay();
 
         // The auto-compaction offer runs on the message about to be sent, BEFORE it joins
@@ -949,8 +966,8 @@ impl Repl {
             return content;
         };
         // The fourth refresh moment: an edit from outside this process, picked up before the send. The other
-        // three are startup (`run`), a successful compaction (`compact_now`, T7) and the harness's day-change
-        // re-composition (T8); each calls `bot.memory.reload()`.
+        // three are startup (`run`), a successful compaction and the harness's day-change re-composition
+        // (`roll_day`) — the flush machine's `RefreshMemory`, which calls `bot.memory.reload()`.
         if bot.memory.refresh() {
             self.handles.tr.notice("MEMORY.md reloaded");
             if let Some(warn) = bot.memory.warning() {
@@ -1020,11 +1037,10 @@ impl Repl {
     }
 }
 
-/// A bot's bookkeeping once a turn is over (bot-mode.md §3.6.1); nothing outside a bot's session.
-///
-/// After the flush turn — landed, failed or interrupted, with the `writes` it made — the compaction runs at
-/// once. After any other turn that `landed`, a usage at the (snoozed) threshold queues the flush notice.
-/// Flush notices the turn's steering took off the queue go back on it while one is still owed.
+/// A bot's bookkeeping once a turn is over (bot-mode.md §3.6.1); nothing outside a bot's session. The flush
+/// machine decides (`repl::bot`), [`bot_perform`] does: after the flush turn the compaction runs at once; after
+/// any other turn that landed at the (snoozed) threshold the flush notice is queued; flush notices the turn's
+/// steering took off the queue go back on it while one is still owed.
 async fn after_bot_turn(
     repl: &mut Repl,
     flush: bool,
@@ -1032,31 +1048,112 @@ async fn after_bot_turn(
     writes: u32,
     held: Vec<crate::ui::facade::Input>,
 ) {
-    let Some(bot) = repl.conv.bot.as_mut() else {
-        return;
-    };
-    if flush {
-        bot.flush.flush_ended(writes, landed);
-        crate::repl::commands::compact::compact_now(repl, "", false).await;
-        return;
-    }
-    if bot.flush.notice_arrived() {
-        for input in held {
-            repl.handles.ui.enqueue(input);
-        }
-    }
     let over = repl
         .conv
         .budget
         .should_offer_compact(0, repl.conv.compact_declined);
-    if landed && bot.flush.turn_ended(over) {
-        let consolidate = crate::agents::memory::soft_warning(bot.memory.current().len);
-        repl.handles.ui.enqueue(crate::ui::facade::Input {
-            display: crate::repl::bot::FLUSH_HEADLINE.to_owned(),
-            text: crate::repl::bot::flush_notice(consolidate.as_deref()),
-            kind: InputKind::Notice,
-        });
+    let Some(bot) = repl.conv.bot.as_mut() else {
+        return;
+    };
+    let actions = bot.flush.step(BotEvent::TurnEnded {
+        flush,
+        landed,
+        writes,
+        over,
+    });
+    bot_perform(repl, actions, held, "").await;
+}
+
+/// Before every send (bot-mode.md §2.5): the harness's `date:` is today's. On the first send of a new day the
+/// harness is re-composed — the system segment changes, so the prompt cache misses at most once a day — and a
+/// bot's memory copy is refreshed in the same breath (§3.4's third moment), so the two changes cost one miss,
+/// not two. The same day changes nothing.
+async fn roll_day(repl: &mut Repl) {
+    let today = repl.conv.harness_inputs.today();
+    if today == repl.conv.harness_day {
+        return;
     }
+    repl.conv.harness = repl
+        .conv
+        .harness_inputs
+        .compose(&today, repl.handles.pres.environment());
+    repl.conv.harness_day = today;
+    let Some(bot) = repl.conv.bot.as_mut() else {
+        return;
+    };
+    let actions = bot.flush.step(BotEvent::DayChanged);
+    bot_perform(repl, actions, Vec::new(), "").await;
+}
+
+/// A flush notice is the next input. `true`: run it as the flush turn. `false`: drop it — the compaction it
+/// was queued for already happened, or this is not a bot's session at all.
+async fn bot_notice_arrived(repl: &mut Repl) -> bool {
+    let Some(bot) = repl.conv.bot.as_mut() else {
+        return false;
+    };
+    let actions = bot.flush.step(BotEvent::NoticeArrived);
+    bot_perform(repl, actions, Vec::new(), "").await
+}
+
+/// Carries out, in order, what a bot's flush machine answered (`repl::bot`, bot-mode.md §3.6.1, §4.1): the
+/// machine decides, this only does. `held` are the flush notices a turn's steering took off the queue
+/// ([`BotAction::Requeue`] puts them back); `error` is a failed compaction's text ([`BotAction::Alarm`] names
+/// it). `false`: the input at hand is dropped ([`BotAction::DropNotice`]). Nothing outside a bot's session.
+pub(crate) async fn bot_perform(
+    repl: &mut Repl,
+    actions: Vec<BotAction>,
+    mut held: Vec<crate::ui::facade::Input>,
+    error: &str,
+) -> bool {
+    let mut keep = true;
+    for action in actions {
+        match action {
+            BotAction::QueueFlush => {
+                let Some(bot) = repl.conv.bot.as_ref() else {
+                    continue;
+                };
+                let consolidate = crate::agents::memory::soft_warning(bot.memory.current().len);
+                repl.handles.ui.enqueue(crate::ui::facade::Input {
+                    display: crate::repl::bot::FLUSH_HEADLINE.to_owned(),
+                    text: crate::repl::bot::flush_notice(consolidate.as_deref()),
+                    kind: InputKind::Notice,
+                });
+            }
+            BotAction::Requeue => {
+                for input in std::mem::take(&mut held) {
+                    repl.handles.ui.enqueue(input);
+                }
+            }
+            BotAction::DropNotice => keep = false,
+            // Boxed: a compaction's outcome comes back through here.
+            BotAction::Compact => {
+                Box::pin(crate::repl::commands::compact::compact_now(repl, "", false)).await;
+            }
+            BotAction::RefreshMemory => {
+                let Some(bot) = repl.conv.bot.as_mut() else {
+                    continue;
+                };
+                bot.memory.reload();
+                if let Some(warn) = bot.memory.warning() {
+                    repl.handles.tr.notice(&format!("⚠ {warn}"));
+                }
+            }
+            BotAction::Alarm => {
+                let Some(bot) = repl.conv.bot.as_ref() else {
+                    continue;
+                };
+                let text = format!("bot {}: compaction failing — {error}", bot.name);
+                repl.handles.pres.set_state(State::Error);
+                repl.handles.pres.notify(Event {
+                    kind: Kind::Failed,
+                    text,
+                });
+            }
+            // The next attempt — and the next flush — waits for the usage to grow by 5% of the window.
+            BotAction::Snooze => repl.conv.compact_declined = repl.conv.budget.used(),
+        }
+    }
+    keep
 }
 
 /// Applies the three-state interrupt table and its bookkeeping (chat/run.go:281-307

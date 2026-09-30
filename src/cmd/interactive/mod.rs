@@ -161,6 +161,8 @@ struct Wiring {
     bot: bool,
     /// Dim lines the transcript opens with.
     notices: Vec<String>,
+    /// What the model is told at startup, recorded as notice messages (bot-mode.md §2.5).
+    recorded_notices: Vec<String>,
     /// A bot's memory: the loop injects it and records its writes (bot-mode.md §3.4, §3.7).
     memory: Option<crate::agents::memory::BotMemory>,
 }
@@ -335,12 +337,11 @@ pub(crate) async fn run_interactive(
         Some(Box::new(AnsiHost::new(Arc::clone(&ui)))),
         notify,
     ));
-    // The harness prompt, now that the hosts it names in `<environment>` are known.
-    let harness = harness.compose(&pres);
-
     let mcp = mcp_hooks(&manager, mcp_events);
 
-    let outcome = crate::repl::run(RunParams {
+    // Boxed: the loop's future is the largest in the run, and the harness inputs it now carries whole (to
+    // re-compose on a new day) tipped the caller over clippy's `large_futures` line.
+    let outcome = Box::pin(crate::repl::run(RunParams {
         ui: Arc::clone(&ui),
         provider,
         title_provider: wiring.title_provider,
@@ -358,6 +359,7 @@ pub(crate) async fn run_interactive(
             scope,
             bot: wiring.bot,
             notices: wiring.notices,
+            recorded_notices: wiring.recorded_notices,
             memory: wiring.memory,
         },
         params: wiring.params,
@@ -368,7 +370,7 @@ pub(crate) async fn run_interactive(
         root_cancel: ctx.cancel.clone(),
         reqlog: Arc::clone(&ctx.reqlog),
         pres,
-    })
+    }))
     .await;
 
     // Teardown, in the pinned order (`TUI_DESIGN` §8.4 step 6): flush the staging tail and join the loop
@@ -448,6 +450,8 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
     // under, and a resume RESTORES those values rather than evaluating the config again.
     let mut resumed_meta: Option<crate::session::SessionMeta> = None;
     let mut notices = Vec::new();
+    // What a resumed bot's model is told at startup (bot-mode.md §2.5).
+    let mut recorded_notices = Vec::new();
     // The memory a bot's own session writes into (bot-mode.md §3.3): its `remember` tool is built over it.
     let mut memory: Option<crate::agents::memory::BotMemory> = None;
     // `iota run <bot>` (bot-mode.md §2.2): the bot's one session, resumed or created under its pointer. A
@@ -489,6 +493,10 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         }
         history = opened.history;
         notices = opened.notices;
+        if let Some(previous) = &opened.previous {
+            recorded_notices =
+                bot::resume_notices(previous, &session_cwd(ctx, scope), &jiff::Zoned::now());
+        }
         writer = Some(opened.writer);
         memory = Some(crate::agents::memory::BotMemory::new(
             &settings.name,
@@ -644,6 +652,7 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         title_provider,
         bot,
         notices,
+        recorded_notices,
         memory,
     })
 }

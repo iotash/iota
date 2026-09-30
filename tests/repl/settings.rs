@@ -89,24 +89,29 @@ impl Fixture {
         writer: SessionWriter,
         history: Vec<Message>,
     ) -> RunParams {
-        self.params_with_harness(provider, writer, history, "")
+        self.params_with_harness(
+            provider,
+            writer,
+            history,
+            iota::agents::harness::HarnessInputs::default(),
+        )
     }
 
-    /// [`Fixture::params`] with the built-in harness prompt the binary would have composed for an agent
-    /// with tools (`agents::harness`).
+    /// [`Fixture::params`] with the built-in harness prompt's inputs, as the binary hands them over for an
+    /// agent with tools (`agents::harness`).
     fn params_with_harness(
         &self,
         provider: FakeProvider,
         writer: SessionWriter,
         history: Vec<Message>,
-        harness: &str,
+        harness: iota::agents::harness::HarnessInputs,
     ) -> RunParams {
         RunParams {
             ui: Arc::clone(&self.ui) as Arc<dyn Ui>,
             provider: Box::new(provider),
             title_provider: None,
             system: String::new(),
-            harness: harness.to_owned(),
+            harness,
             imported_history: history,
             dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
@@ -118,6 +123,7 @@ impl Fixture {
                 scope: None,
                 bot: false,
                 notices: Vec::new(),
+                recorded_notices: Vec::new(),
                 memory: None,
             },
             params: iota::session::LayeredParams::default(),
@@ -285,7 +291,12 @@ async fn model_shows_only_the_tabs_the_provider_has() {
 /// prompt of its own still gets the tab — the harness alone is what goes out (brain page `harness-prompt`).
 #[tokio::test]
 async fn model_system_tab_carries_the_harness() {
-    let harness = "You run inside iota.\n\n<environment>\nproject root: /p\n</environment>";
+    let harness = iota::agents::harness::HarnessInputs {
+        toolsets: vec!["fs".to_owned()],
+        clock: Arc::new(|| "2026-09-30".to_owned()),
+        ..iota::agents::harness::HarnessInputs::default()
+    };
+    let lines = harness.compose("2026-09-30", Vec::new()).lines().count();
     let f = Fixture::new(vec![
         input("/model"),
         Reply::Tabbed(TabbedResult {
@@ -296,7 +307,7 @@ async fn model_system_tab_carries_the_harness() {
     ]);
     let (writer, _dir) = f.writer();
     let history = vec![Message::system("Base prompt.")];
-    iota::repl::run(f.params_with_harness(text("a-model"), writer, history, harness))
+    iota::repl::run(f.params_with_harness(text("a-model"), writer, history, harness.clone()))
         .await
         .expect("exit");
     let s = &surfaces(&f.ui)[0];
@@ -306,8 +317,8 @@ async fn model_system_tab_carries_the_harness() {
         .find(|p| p.title == "System")
         .expect("the System tab");
     assert_eq!(system.kind, PanelKind::View);
-    // harness (5 lines) + blank + `<instructions>` + the prompt + `</instructions>`.
-    assert_eq!(system.line_count, 9, "{system:?}");
+    // the harness + blank + `<instructions>` + the prompt + `</instructions>`.
+    assert_eq!(system.line_count, lines + 4, "{system:?}");
 
     // No prompt of the chat's own: the tab still exists and shows the harness alone.
     let f = Fixture::new(vec![
@@ -328,7 +339,7 @@ async fn model_system_tab_carries_the_harness() {
         .iter()
         .find(|p| p.title == "System")
         .expect("the System tab exists for the harness alone");
-    assert_eq!(system.line_count, 5, "{system:?}");
+    assert_eq!(system.line_count, lines, "{system:?}");
 }
 
 // ---------------------------------------------------------------------------

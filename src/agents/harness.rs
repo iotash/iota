@@ -11,7 +11,7 @@
 //! The text lives here as data; every fact in `<environment>` arrives through [`Environment`], which the
 //! command layer fills once at the binary edge, so the composition stays pure and byte-pinnable.
 
-use std::{fmt::Write as _, path::PathBuf};
+use std::{fmt::Write as _, path::PathBuf, sync::Arc};
 
 /// The `tools:` key that brings `<iota_cli>` with it — the config name of the shell set
 /// (`tool::builtins::shell::SHELL_TOOL_NAME`, spelled here because `agents` sits beside `shell` in the
@@ -64,6 +64,57 @@ impl Default for ConfigFiles {
             user: None,
             project: None,
         }
+    }
+}
+
+/// The harness prompt's inputs, held for the whole run: the environment read at assembly, the enabled
+/// toolsets, and the clock that says which day it is. The text is composed from them once the hosts are known
+/// — their facts join `<environment>` — and again whenever the day changes, because `date:` is part of it
+/// (docs/design/bot-mode.md §2.5).
+#[derive(Clone)]
+pub struct HarnessInputs {
+    /// The run's own facts. `date` and `host` are overwritten by every [`Self::compose`].
+    pub env: Environment,
+    /// The enabled toolsets (`cmd::assemble::enabled_toolsets`).
+    pub toolsets: Vec<String>,
+    /// Today's local date, `YYYY-MM-DD`: [`today`] in a real run, anything a test wants in a test.
+    pub clock: Arc<dyn Fn() -> String + Send + Sync>,
+}
+
+impl Default for HarnessInputs {
+    /// No toolsets — the harness is `""` — on the real clock.
+    fn default() -> Self {
+        Self {
+            env: Environment::default(),
+            toolsets: Vec::new(),
+            clock: Arc::new(today),
+        }
+    }
+}
+
+impl std::fmt::Debug for HarnessInputs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HarnessInputs")
+            .field("env", &self.env)
+            .field("toolsets", &self.toolsets)
+            .finish_non_exhaustive()
+    }
+}
+
+impl HarnessInputs {
+    /// The date the clock reads now.
+    pub fn today(&self) -> String {
+        (self.clock)()
+    }
+
+    /// The harness text for `day`, with the hosts' `host` facts: `""` for an agent without tools.
+    pub fn compose(&self, day: &str, host: Vec<(String, String)>) -> String {
+        let env = Environment {
+            date: day.to_owned(),
+            host,
+            ..self.env.clone()
+        };
+        compose(&env, &self.toolsets)
     }
 }
 

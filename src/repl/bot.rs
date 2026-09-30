@@ -1,23 +1,27 @@
-//! A bot's compaction orchestration (docs/design/bot-mode.md §3.6.1, §4.1): when to ask for the memory flush,
-//! what an arriving flush notice means, when a send must compact first, and what a compaction's outcome
-//! turns into.
+//! A bot's orchestration (docs/design/bot-mode.md §3.6.1, §4.1, §2.5): when to ask for the memory flush,
+//! what an arriving flush notice means, when a send must compact first, what a compaction's outcome turns
+//! into, and what the day change refreshes.
 //!
-//! **No I/O, plain data only.** The machine's inputs and outputs are numbers, enums and bools — never a
-//! `CtxMeter`, a `ContextBudget`, a `Ui` or any other `repl::*` type (§6 #23): the loop reads the budget
-//! and the queue and does what the machine answers. That is what lets this file move down whole when
-//! compaction leaves the REPL (L3), and what lets every transition be tested without a terminal.
+//! **No I/O, plain data only.** The machine's inputs ([`Event`]) and outputs ([`Action`]) are numbers, enums
+//! and bools — never a `CtxMeter`, a `ContextBudget`, a `Ui` or any other `repl::*` type (§6 #23): the loop
+//! reads the budget, the queue and the clock, hands the machine what they said, and does what it answers.
+//! That is what lets this file move down whole when compaction leaves the REPL (L3), and what lets every
+//! transition be tested without a terminal. A new input or output keeps to the same rule, or the move is
+//! lost.
 //!
-//! **The timeline.** A turn that ends at the threshold queues the flush notice ([`Flush::turn_ended`]). The
-//! notice is the next input unless the user typed ahead of it; either way exactly one of two things
-//! happens before anything else is sent over the threshold:
+//! **The timeline.** A turn that ends at the threshold queues the flush notice ([`Event::TurnEnded`] →
+//! [`Action::QueueFlush`]). The notice is the next input unless the user typed ahead of it; either way
+//! exactly one of two things happens before anything else is sent over the threshold:
 //!
 //! - the notice arrives first: the flush turn runs (only the memory tools, no steering, no `Done` ping) and
-//!   the compaction follows at once ([`Flush::notice_arrived`], [`Flush::flush_ended`]);
+//!   the compaction follows at once ([`Event::NoticeArrived`], then [`Event::TurnEnded`] with `flush` →
+//!   [`Action::Compact`]);
 //! - a user message arrives first: it compacts before it is sent, without a flush — safety over memory —
-//!   and the notice, when it arrives, is dropped ([`Flush::before_send`]).
+//!   and the notice, when it arrives, is dropped ([`Event::BeforeSend`] → [`Action::Compact`], then
+//!   [`Action::DropNotice`]).
 //!
 //! A compaction that fails keeps what it owed and is retried at the next send; the second failure in a row
-//! raises the alarm and from then on waits for the usage to grow ([`Flush::compacted`]).
+//! raises the alarm and from then on waits for the usage to grow ([`Event::Compacted`]).
 
 /// What the flush turn is told (§3.6.1). The flush notice is this text, plus the consolidation request when
 /// `MEMORY.md` is past its soft threshold ([`flush_notice`]).
@@ -74,16 +78,59 @@ pub(crate) enum Compacted {
     Failed,
 }
 
-/// What the loop does after a compaction pass.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct After {
-    /// Snooze: set the auto-compaction watermark to the current usage, so the next attempt waits for
-    /// the usage to grow by 5% of the window.
-    pub(crate) snooze: bool,
-    /// Tell the host: `Error` state and a `Failed` ping.
-    pub(crate) alarm: bool,
-    /// Re-read `MEMORY.md` into the frozen copy (§3.4's second refresh moment).
-    pub(crate) reload: bool,
+/// What the loop tells the machine. **Plain data only** — numbers, enums, bools, strings; never a `CtxMeter`,
+/// a `ContextBudget`, a `Ui` or any `repl::*` type (§6 #23, the module doc): the loop reads its budget, its
+/// queue and its clock, and hands over what they said. A variant that carries one of those breaks the L3 move.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Event {
+    /// A turn is over. `flush`: it was the flush turn. `landed`: it ended in success (not failed, not
+    /// interrupted). `writes`: the memory writes it made. `over`: the usage is at the (snoozed) threshold.
+    TurnEnded {
+        /// The turn was the flush turn.
+        flush: bool,
+        /// The turn ended in success.
+        landed: bool,
+        /// The memory writes the turn made.
+        writes: u32,
+        /// The usage is at the snoozed threshold.
+        over: bool,
+    },
+    /// A flush notice is the next input.
+    NoticeArrived,
+    /// A message is about to be sent (never the flush notice); `over`: the usage with the message is at the
+    /// snoozed threshold.
+    BeforeSend {
+        /// The usage with the message is at the snoozed threshold.
+        over: bool,
+    },
+    /// A compaction pass came to this.
+    Compacted(Compacted),
+    /// The local date is not the one the harness was composed on (bot-mode.md §2.5).
+    DayChanged,
+}
+
+/// What the loop does, in the order given. **Plain data only**, under the same rule as [`Event`]: an action
+/// names what to do, and the loop owns everything it is done with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Action {
+    /// Queue the flush notice ([`flush_notice`], with the consolidation request when `MEMORY.md` is past its
+    /// soft threshold).
+    QueueFlush,
+    /// Put back on the queue the flush notices the turn's steering took off it: the flush is still owed, and
+    /// the notice runs as a turn of its own, never inside another.
+    Requeue,
+    /// Drop the flush notice at hand: the compaction it was queued for already happened. Neither sent nor
+    /// persisted.
+    DropNotice,
+    /// Compact now, without a confirmation.
+    Compact,
+    /// Re-read `MEMORY.md` into the frozen copy (§3.4: after a compaction, at the day change).
+    RefreshMemory,
+    /// Snooze: set the auto-compaction watermark to the current usage, so the next attempt — and the next
+    /// flush — waits for the usage to grow by 5% of the window.
+    Snooze,
+    /// Tell the host: `Error` state and a `Failed` ping naming the bot and the failure.
+    Alarm,
 }
 
 /// What a compaction reports about the flush before it (the summary pass and the marker read it).
@@ -95,7 +142,7 @@ pub(crate) struct FlushReport {
     pub(crate) skipped: bool,
 }
 
-/// One bot's flush-and-compact state (§3.6.1). Plain data in, plain data out.
+/// One bot's flush-and-compact state (§3.6.1). Plain data in ([`Event`]), plain data out ([`Action`]).
 #[derive(Debug, Default)]
 pub(crate) struct Flush {
     phase: Phase,
@@ -104,38 +151,76 @@ pub(crate) struct Flush {
 }
 
 impl Flush {
-    /// A turn ended successfully; `over` = the usage is at the (snoozed) threshold. `true`: queue the flush
-    /// notice now. Only one notice is ever outstanding, and none while a compaction is owed.
-    pub(crate) fn turn_ended(&mut self, over: bool) -> bool {
-        if !over || self.phase != Phase::Idle {
-            return false;
+    /// Takes one event; the answer is what the loop does about it, in order (empty: nothing).
+    pub(crate) fn step(&mut self, event: Event) -> Vec<Action> {
+        match event {
+            Event::TurnEnded {
+                flush: true,
+                landed,
+                writes,
+                over: _,
+            } => {
+                // The compaction runs next either way — a failed flush never holds it up (§4.1).
+                self.phase = Phase::Flushed {
+                    writes,
+                    failed: !landed,
+                };
+                vec![Action::Compact]
+            }
+            Event::TurnEnded {
+                flush: false,
+                landed,
+                writes: _,
+                over,
+            } => match self.phase {
+                // The notice is still queued: whatever copies steering took go back behind it.
+                Phase::Queued => vec![Action::Requeue],
+                // Only one notice is ever outstanding, and none while a compaction is owed.
+                Phase::Idle if landed && over => {
+                    self.phase = Phase::Queued;
+                    vec![Action::QueueFlush]
+                }
+                Phase::Idle | Phase::Flushed { .. } => Vec::new(),
+            },
+            // Run it as the flush turn (which skips the pre-send compaction check — only the notice does)
+            // unless the compaction it was queued for already happened.
+            Event::NoticeArrived if self.phase == Phase::Queued => Vec::new(),
+            Event::NoticeArrived => vec![Action::DropNotice],
+            // A compaction still owed — the notice queued behind this message, or a flush whose compaction
+            // failed — compacts even below the threshold, until the second failure in a row hands retrying
+            // over to the snoozed threshold alone.
+            Event::BeforeSend { over }
+                if over || (self.phase != Phase::Idle && self.failures < FAILURES_BEFORE_ALARM) =>
+            {
+                vec![Action::Compact]
+            }
+            Event::BeforeSend { .. } => Vec::new(),
+            Event::Compacted(Compacted::Done) => {
+                // The notice, if it is still queued, is dropped when it arrives.
+                self.phase = Phase::Idle;
+                self.failures = 0;
+                // §3.4's second refresh moment: the history's prefix has just changed.
+                vec![Action::RefreshMemory]
+            }
+            Event::Compacted(Compacted::Unchanged) => {
+                // Nothing to compact: nothing is owed, and the flush waits with the offer (§4.1, M12).
+                self.phase = Phase::Idle;
+                vec![Action::Snooze]
+            }
+            Event::Compacted(Compacted::Failed) => {
+                // What was owed stays owed: a queued notice still runs its flush, a finished flush is not run
+                // again.
+                self.failures += 1;
+                if self.failures >= FAILURES_BEFORE_ALARM {
+                    vec![Action::Alarm, Action::Snooze]
+                } else {
+                    Vec::new()
+                }
+            }
+            // §3.4's third refresh moment: the harness is re-composed, so the system segment changes anyway —
+            // one cache miss for both.
+            Event::DayChanged => vec![Action::RefreshMemory],
         }
-        self.phase = Phase::Queued;
-        true
-    }
-
-    /// A flush notice is the next input. `true`: run it as the flush turn (and skip the pre-send
-    /// compaction check — only the notice does). `false`: the compaction it was queued for already happened;
-    /// drop it without sending or persisting it.
-    pub(crate) fn notice_arrived(&self) -> bool {
-        self.phase == Phase::Queued
-    }
-
-    /// The flush turn is over: it made `writes` memory writes and ended in success (`ok`) or not. The
-    /// compaction runs next either way — a failed flush never holds it up (§4.1).
-    pub(crate) fn flush_ended(&mut self, writes: u32, ok: bool) {
-        self.phase = Phase::Flushed {
-            writes,
-            failed: !ok,
-        };
-    }
-
-    /// A message is about to be sent (never the flush notice); `over` = the usage with the message is at the
-    /// snoozed threshold. `true`: compact first, without a confirmation. A compaction still owed — the notice
-    /// queued behind this message, or a flush whose compaction failed — compacts even below the threshold,
-    /// until the second failure in a row hands retrying over to the snoozed threshold alone.
-    pub(crate) fn before_send(&self, over: bool) -> bool {
-        over || (self.phase != Phase::Idle && self.failures < FAILURES_BEFORE_ALARM)
     }
 
     /// What the compaction about to run reports about the flush before it.
@@ -151,69 +236,75 @@ impl Flush {
             },
         }
     }
-
-    /// A compaction pass came to `outcome`; the answer says what the loop does about it.
-    pub(crate) fn compacted(&mut self, outcome: Compacted) -> After {
-        match outcome {
-            Compacted::Done => {
-                // The notice, if it is still queued, is dropped when it arrives.
-                self.phase = Phase::Idle;
-                self.failures = 0;
-                After {
-                    reload: true,
-                    ..After::default()
-                }
-            }
-            Compacted::Unchanged => {
-                // Nothing to compact: nothing is owed, and the flush waits with the offer (§4.1, M12).
-                self.phase = Phase::Idle;
-                After {
-                    snooze: true,
-                    ..After::default()
-                }
-            }
-            Compacted::Failed => {
-                // What was owed stays owed: a queued notice still runs its flush, a finished flush is
-                // not run again.
-                self.failures += 1;
-                let alarm = self.failures >= FAILURES_BEFORE_ALARM;
-                After {
-                    snooze: alarm,
-                    alarm,
-                    reload: false,
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        After, Compacted, FLUSH_NOTICE, Flush, FlushReport, flush_notice, is_flush_notice,
+        Action, Compacted, Event, FLUSH_NOTICE, Flush, FlushReport, flush_notice, is_flush_notice,
     };
 
-    /// The notice is queued once, at the threshold, and not again while its compaction is owed.
-    #[test]
-    fn the_notice_is_queued_once_at_the_threshold() {
-        let mut f = Flush::default();
-        assert!(!f.turn_ended(false), "below the threshold");
-        assert!(f.turn_ended(true));
-        assert!(!f.turn_ended(true), "one notice outstanding");
-        assert!(f.notice_arrived());
-        f.flush_ended(2, true);
-        assert!(!f.turn_ended(true), "the compaction is still owed");
-        assert!(f.compacted(Compacted::Done).reload);
-        assert!(f.turn_ended(true), "a new cycle");
+    /// A turn that is not the flush turn.
+    fn turn(landed: bool, over: bool) -> Event {
+        Event::TurnEnded {
+            flush: false,
+            landed,
+            writes: 0,
+            over,
+        }
     }
 
-    /// The main line: notice → flush turn → compaction that knows how many lines the flush wrote.
+    /// The flush turn.
+    fn flushed(writes: u32, landed: bool) -> Event {
+        Event::TurnEnded {
+            flush: true,
+            landed,
+            writes,
+            over: true,
+        }
+    }
+
+    fn send(over: bool) -> Event {
+        Event::BeforeSend { over }
+    }
+
+    /// Crossing the threshold queues the flush — once, only for a turn that landed, and not again while its
+    /// compaction is owed.
     #[test]
-    fn a_flush_reports_its_writes_to_the_compaction() {
+    fn over_the_threshold_queues_the_flush() {
         let mut f = Flush::default();
-        f.turn_ended(true);
-        assert!(f.notice_arrived());
-        f.flush_ended(3, true);
+        assert!(f.step(turn(true, false)).is_empty(), "below the threshold");
+        assert!(f.step(turn(false, true)).is_empty(), "a failed turn");
+        assert_eq!(f.step(turn(true, true)), [Action::QueueFlush]);
+        assert_eq!(
+            f.step(turn(true, true)),
+            [Action::Requeue],
+            "one notice outstanding; what steering took goes back"
+        );
+        assert!(f.step(Event::NoticeArrived).is_empty(), "runs as the flush");
+        f.step(flushed(2, true));
+        assert!(
+            f.step(turn(true, true)).is_empty(),
+            "the compaction is still owed"
+        );
+        assert_eq!(
+            f.step(Event::Compacted(Compacted::Done)),
+            [Action::RefreshMemory]
+        );
+        assert_eq!(
+            f.step(turn(true, true)),
+            [Action::QueueFlush],
+            "a new cycle"
+        );
+    }
+
+    /// The flush turn over — landed or not — compacts at once, and the compaction knows what the flush wrote.
+    #[test]
+    fn a_finished_flush_compacts() {
+        let mut f = Flush::default();
+        f.step(turn(true, true));
+        assert!(f.step(Event::NoticeArrived).is_empty());
+        assert_eq!(f.step(flushed(3, true)), [Action::Compact]);
         assert_eq!(
             f.report(),
             FlushReport {
@@ -221,46 +312,16 @@ mod tests {
                 skipped: false
             }
         );
-        let after = f.compacted(Compacted::Done);
         assert_eq!(
-            after,
-            After {
-                reload: true,
-                ..After::default()
-            }
+            f.step(Event::Compacted(Compacted::Done)),
+            [Action::RefreshMemory]
         );
-        assert!(!f.notice_arrived());
-    }
+        assert_eq!(f.step(Event::NoticeArrived), [Action::DropNotice]);
 
-    /// Typed ahead of the notice: the user's message compacts first, with the flush skipped, and the notice
-    /// that arrives afterwards is dropped.
-    #[test]
-    fn a_message_ahead_of_the_notice_compacts_without_a_flush() {
+        // A failed flush is skipped, not waited for: the compaction runs and says so.
         let mut f = Flush::default();
-        f.turn_ended(true);
-        assert!(
-            f.before_send(false),
-            "owed: compacts even below the threshold"
-        );
-        assert_eq!(
-            f.report(),
-            FlushReport {
-                writes: 0,
-                skipped: true
-            }
-        );
-        f.compacted(Compacted::Done);
-        assert!(!f.notice_arrived(), "the notice is dropped");
-        assert!(!f.before_send(false));
-        assert!(f.before_send(true), "the threshold alone still compacts");
-    }
-
-    /// A failed flush turn is skipped, not waited for: the compaction runs and says so.
-    #[test]
-    fn a_failed_flush_still_compacts() {
-        let mut f = Flush::default();
-        f.turn_ended(true);
-        f.flush_ended(1, false);
+        f.step(turn(true, true));
+        assert_eq!(f.step(flushed(1, false)), [Action::Compact]);
         assert_eq!(
             f.report(),
             FlushReport {
@@ -270,34 +331,86 @@ mod tests {
         );
     }
 
-    /// One failure retries at the next send; the second in a row raises the alarm, snoozes, and leaves the
-    /// retry to the snoozed threshold. A success clears the count.
+    /// Typed ahead of the notice: the user's message compacts first, with the flush skipped, and the notice
+    /// that arrives afterwards is dropped.
     #[test]
-    fn two_failures_in_a_row_raise_the_alarm() {
+    fn a_message_ahead_of_the_notice_compacts_without_a_flush() {
         let mut f = Flush::default();
-        f.turn_ended(true);
-        f.flush_ended(2, true);
-        assert_eq!(f.compacted(Compacted::Failed), After::default());
-        assert!(f.before_send(false), "retried at the next send");
+        f.step(turn(true, true));
+        assert_eq!(
+            f.step(send(false)),
+            [Action::Compact],
+            "owed: compacts even below the threshold"
+        );
+        assert_eq!(
+            f.report(),
+            FlushReport {
+                writes: 0,
+                skipped: true
+            }
+        );
+        f.step(Event::Compacted(Compacted::Done));
+        assert_eq!(f.step(Event::NoticeArrived), [Action::DropNotice]);
+        assert!(f.step(send(false)).is_empty());
+        assert_eq!(
+            f.step(send(true)),
+            [Action::Compact],
+            "the threshold alone still compacts"
+        );
+    }
+
+    /// A failed compaction counts: the first retries at the next send, the second in a row raises the alarm
+    /// and snoozes, which leaves the retry to the snoozed threshold (the watermark). A success clears the
+    /// count.
+    #[test]
+    fn a_failed_compaction_counts_and_moves_the_watermark() {
+        let mut f = Flush::default();
+        f.step(turn(true, true));
+        f.step(flushed(2, true));
+        assert!(f.step(Event::Compacted(Compacted::Failed)).is_empty());
+        assert_eq!(
+            f.step(send(false)),
+            [Action::Compact],
+            "retried at the next send"
+        );
         assert_eq!(
             f.report().writes,
             2,
             "the flush is not run again, its writes still count"
         );
-        let after = f.compacted(Compacted::Failed);
-        assert!(after.alarm && after.snooze && !after.reload);
+        assert_eq!(
+            f.step(Event::Compacted(Compacted::Failed)),
+            [Action::Alarm, Action::Snooze]
+        );
         assert!(
-            !f.before_send(false),
+            f.step(send(false)).is_empty(),
             "now only the snoozed threshold retries"
         );
-        assert!(f.before_send(true));
-        assert!(f.compacted(Compacted::Failed).alarm, "still failing");
-        f.compacted(Compacted::Done);
-        f.turn_ended(true);
-        f.flush_ended(0, true);
+        assert_eq!(f.step(send(true)), [Action::Compact]);
+        assert_eq!(
+            f.step(Event::Compacted(Compacted::Failed)),
+            [Action::Alarm, Action::Snooze],
+            "still failing"
+        );
+        f.step(Event::Compacted(Compacted::Done));
+        f.step(turn(true, true));
+        f.step(flushed(0, true));
         assert!(
-            !f.compacted(Compacted::Failed).alarm,
+            f.step(Event::Compacted(Compacted::Failed)).is_empty(),
             "a success reset the count"
+        );
+    }
+
+    /// The day change refreshes the memory copy — in any phase, and without touching what is owed.
+    #[test]
+    fn the_day_change_refreshes_the_memory() {
+        let mut f = Flush::default();
+        assert_eq!(f.step(Event::DayChanged), [Action::RefreshMemory]);
+        f.step(turn(true, true));
+        assert_eq!(f.step(Event::DayChanged), [Action::RefreshMemory]);
+        assert!(
+            f.step(Event::NoticeArrived).is_empty(),
+            "the queued flush still runs"
         );
     }
 
@@ -305,25 +418,22 @@ mod tests {
     #[test]
     fn a_queued_notice_outlives_a_failed_compaction() {
         let mut f = Flush::default();
-        f.turn_ended(true);
-        f.compacted(Compacted::Failed);
-        assert!(f.notice_arrived());
+        f.step(turn(true, true));
+        f.step(Event::Compacted(Compacted::Failed));
+        assert!(f.step(Event::NoticeArrived).is_empty());
     }
 
     /// Nothing to compact: nothing owed, and the watermark snoozes the next flush too.
     #[test]
     fn an_unchanged_compaction_snoozes() {
         let mut f = Flush::default();
-        f.turn_ended(true);
+        f.step(turn(true, true));
         assert_eq!(
-            f.compacted(Compacted::Unchanged),
-            After {
-                snooze: true,
-                ..After::default()
-            }
+            f.step(Event::Compacted(Compacted::Unchanged)),
+            [Action::Snooze]
         );
-        assert!(!f.notice_arrived());
-        assert!(!f.before_send(false));
+        assert_eq!(f.step(Event::NoticeArrived), [Action::DropNotice]);
+        assert!(f.step(send(false)).is_empty());
     }
 
     #[test]

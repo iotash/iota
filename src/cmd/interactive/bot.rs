@@ -10,7 +10,7 @@ use std::path::Path;
 use crate::provider::Provider;
 use crate::provider::model::{Message, Role};
 use crate::session::{
-    BotOpen, NewSession, Overrides, SessionError, SessionStore, SessionWriter,
+    BotOpen, NewSession, Overrides, SessionError, SessionMeta, SessionStore, SessionWriter,
     replay_session_settings,
 };
 
@@ -31,6 +31,9 @@ pub(crate) struct BotSession {
     pub(crate) resumed: bool,
     /// Dim transcript lines for the chat's opening.
     pub(crate) notices: Vec<String>,
+    /// On a resume, the meta as the last run left it — before this run stamped its model and directory
+    /// over it. [`resume_notices`] reads it.
+    pub(crate) previous: Option<SessionMeta>,
     /// The tail repair's announcement, when the resume had to repair anything.
     pub(crate) repair_notice: Option<String>,
 }
@@ -48,10 +51,48 @@ pub(crate) fn check_bot_provider(
     }
 }
 
+/// The lines a resumed bot's model is told first (bot-mode.md §2.5, review M2/M3) — across a restart its only
+/// sense of time and place, since the view carries no timestamps: how long ago the session was last written
+/// (`meta.updated_at`, read in `now`'s time zone) and, when `cwd` is not the directory it last ran in
+/// (`meta.cwd`), that the project changed. An unparsable `updated_at` says nothing about time; an empty
+/// `meta.cwd` (a bundle older than the key) nothing about place.
+pub(crate) fn resume_notices(meta: &SessionMeta, cwd: &str, now: &jiff::Zoned) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(last) = meta.updated_at.parse::<jiff::Timestamp>() {
+        let secs = (now.timestamp().as_second() - last.as_second()).max(0);
+        let at = last.to_zoned(now.time_zone().clone());
+        out.push(format!(
+            "Resumed after {} (last message {})",
+            elapsed(secs),
+            at.strftime("%Y-%m-%d %H:%M")
+        ));
+    }
+    if !meta.cwd.is_empty() && meta.cwd != cwd {
+        out.push(format!(
+            "Resumed in a different project: {} → {cwd}",
+            meta.cwd
+        ));
+    }
+    out
+}
+
+/// `secs` in the largest whole unit: `3 days`, `1 hour`, `12 minutes`, `less than a minute`.
+fn elapsed(secs: i64) -> String {
+    let (n, unit) = match secs {
+        s if s >= 86_400 => (s / 86_400, "day"),
+        s if s >= 3_600 => (s / 3_600, "hour"),
+        s if s >= 60 => (s / 60, "minute"),
+        _ => return "less than a minute".to_owned(),
+    };
+    format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
+}
+
 /// Opens bot `name`'s session from `<bots>/<name>`. `fresh` describes the bundle a first launch creates;
 /// `system` is the config's (trimmed) system prompt. On a resume the session's own model and parameters
 /// are NOT replayed — the provider keeps what the config (or `-M`) gave it, and the meta is told the
-/// model it now runs; the loop stamps the other four the same way it stamps a new bundle.
+/// model it now runs; the loop stamps the other four the same way it stamps a new bundle. The meta is also
+/// told the directory this run is in, so the next resume's [`resume_notices`] compare against the last
+/// run's, not the first one's.
 pub(crate) fn open_bot_session(
     store: &SessionStore,
     bots: &Path,
@@ -62,6 +103,7 @@ pub(crate) fn open_bot_session(
     warn: &mut dyn FnMut(String),
 ) -> Result<BotSession, SessionError> {
     let kind = fresh.kind;
+    let cwd = fresh.cwd.clone();
     match store.open_bot(&bots.join(name), fresh, kind)? {
         BotOpen::Fresh {
             mut writer,
@@ -78,6 +120,7 @@ pub(crate) fn open_bot_session(
                     .then(|| NEVER_SAVED.to_owned())
                     .into_iter()
                     .collect(),
+                previous: None,
                 repair_notice: None,
             })
         }
@@ -98,6 +141,7 @@ pub(crate) fn open_bot_session(
             writer.update_meta(|m| {
                 m.model = model;
                 kind.as_str().clone_into(&mut m.provider);
+                m.cwd = cwd;
             })?;
             let repair_notice = session.repair_notice();
             let mut history = session.messages;
@@ -110,6 +154,7 @@ pub(crate) fn open_bot_session(
                 history,
                 resumed: true,
                 notices,
+                previous: Some(session.meta),
                 repair_notice,
             })
         }
@@ -147,7 +192,9 @@ fn adopt_system(
 
 #[cfg(test)]
 mod tests {
-    use super::{NEVER_SAVED, SYSTEM_UPDATED, check_bot_provider, open_bot_session};
+    use super::{
+        NEVER_SAVED, SYSTEM_UPDATED, check_bot_provider, open_bot_session, resume_notices,
+    };
     use crate::provider::model::{Message, Role};
     use crate::provider::{Provider, ProviderKind};
     use crate::session::{
@@ -212,12 +259,25 @@ mod tests {
         p: &mut FakeProvider,
         system: &str,
     ) -> Result<super::BotSession, SessionError> {
+        open_in(h, p, system, "/work/proj")
+    }
+
+    /// [`open`] from directory `cwd`.
+    fn open_in(
+        h: &Home,
+        p: &mut FakeProvider,
+        system: &str,
+        cwd: &str,
+    ) -> Result<super::BotSession, SessionError> {
         let model = p.model().to_owned();
         open_bot_session(
             &h.store,
             &h.bots,
             "coder",
-            fresh(ProviderKind::OpenAi, &model),
+            NewSession {
+                cwd: cwd.to_owned(),
+                ..fresh(ProviderKind::OpenAi, &model)
+            },
             system,
             p,
             &mut |w| panic!("unexpected warning: {w}"),
@@ -271,6 +331,78 @@ mod tests {
             again.notices.is_empty(),
             "same system prompt: nothing to say"
         );
+    }
+
+    /// bot-mode.md §2.5 (review M2/M3): a resume tells the model how long it was away — from the meta's
+    /// `updated_at` — and, started in another directory, that the project changed; the meta then records this
+    /// run's directory, so the next resume from the same place says nothing about it. A fresh launch says
+    /// neither.
+    #[test]
+    fn a_resume_tells_the_model_how_long_and_where() {
+        let h = home();
+        let mut p = provider("gpt-4o");
+        let now: jiff::Zoned = "2026-09-30T19:30:00+00:00[UTC]".parse().expect("now");
+        let mut first = open_in(&h, &mut p, "", "/work/iota").expect("fresh");
+        assert!(
+            first.previous.is_none(),
+            "a fresh launch has nothing to say"
+        );
+        first
+            .writer
+            .append_messages(&[Message::user("hi")])
+            .expect("first write");
+        let dir = first.writer.dir().to_path_buf();
+        drop(first);
+        // Last written three days and a bit before `now` (the writer stamps the real clock).
+        let path = dir.join(crate::session::META_FILE);
+        let mut meta: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("meta")).expect("json");
+        meta["updated_at"] = "2026-09-27T18:02:41+00:00".into();
+        std::fs::write(&path, meta.to_string()).expect("write meta");
+
+        let again = open_in(&h, &mut p, "", "/work/herdr").expect("resume");
+        let previous = again.previous.as_ref().expect("resumed");
+        assert_eq!(
+            resume_notices(previous, "/work/herdr", &now),
+            [
+                "Resumed after 3 days (last message 2026-09-27 18:02)",
+                "Resumed in a different project: /work/iota → /work/herdr",
+            ]
+        );
+        assert_eq!(again.writer.meta().cwd, "/work/herdr");
+        drop(again);
+
+        let third = open_in(&h, &mut p, "", "/work/herdr").expect("resume");
+        let notices = resume_notices(
+            third.previous.as_ref().expect("resumed"),
+            "/work/herdr",
+            &jiff::Zoned::now(),
+        );
+        assert_eq!(
+            notices.len(),
+            1,
+            "same directory as the last run: {notices:?}"
+        );
+        assert!(
+            notices[0].starts_with("Resumed after less than a minute (last message "),
+            "{notices:?}"
+        );
+        // An unparsable stamp and a bundle older than `cwd` say nothing.
+        let bare = SessionMeta {
+            updated_at: "garbage".to_owned(),
+            ..SessionMeta::default()
+        };
+        assert!(resume_notices(&bare, "/work/herdr", &now).is_empty());
+    }
+
+    /// The elapsed time in its largest whole unit, singular or plural.
+    #[test]
+    fn the_elapsed_time_reads_naturally() {
+        assert_eq!(super::elapsed(59), "less than a minute");
+        assert_eq!(super::elapsed(60), "1 minute");
+        assert_eq!(super::elapsed(2 * 3_600 + 59), "2 hours");
+        assert_eq!(super::elapsed(86_400), "1 day");
+        assert_eq!(super::elapsed(10 * 86_400 + 3_600), "10 days");
     }
 
     /// Only one process runs a bot: the second is refused with the bot's sentence — even while the first

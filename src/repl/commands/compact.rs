@@ -36,11 +36,11 @@ use crate::provider::usage::Usage;
 use crate::sync::lock;
 use tokio_util::sync::CancellationToken;
 
-use crate::host::{Event, Kind, State};
-use crate::repl::bot::{COMPACTED_WITHOUT_FLUSH, Compacted};
+use crate::repl::bot::{COMPACTED_WITHOUT_FLUSH, Compacted, Event as BotEvent};
 use crate::repl::context::tokens::{TokenCounter, go_map};
 use crate::repl::render::styles::truncate_runes;
 use crate::repl::run::Repl;
+use crate::repl::run::bot_perform;
 use crate::session::CompactionStats;
 
 /// The instruction that hands the retention decision to the model and hardens against
@@ -337,14 +337,14 @@ pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
     let (history, summary, retain_tail, usage, middle_tokens, summary_tokens) = match res {
         Err(e) => {
             repl.handles.tr.error(&format!("Compaction failed: {e}"));
-            bot_compacted(repl, Compacted::Failed, &e.to_string());
+            bot_compacted(repl, Compacted::Failed, &e.to_string()).await;
             return;
         }
         Ok(Compaction::Unchanged) => {
             if manual {
                 repl.handles.tr.notice("Nothing to compact yet.");
             }
-            bot_compacted(repl, Compacted::Unchanged, "");
+            bot_compacted(repl, Compacted::Unchanged, "").await;
             return;
         }
         Ok(Compaction::Done {
@@ -397,37 +397,19 @@ pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
     if !manual && stats.flush_skipped {
         repl.handles.tr.notice(COMPACTED_WITHOUT_FLUSH);
     }
-    bot_compacted(repl, Compacted::Done, "");
+    bot_compacted(repl, Compacted::Done, "").await;
     repl.push_status();
 }
 
-/// Feeds a compaction's outcome to a bot's flush machine and does what it answers (§4.1); nothing outside a
-/// bot's session. `err` is the failure's text.
-fn bot_compacted(repl: &mut Repl, outcome: Compacted, err: &str) {
+/// Feeds a compaction's outcome to a bot's flush machine and does what it answers (§3.4, §4.1): a success
+/// re-reads the memory copy, nothing to compact snoozes, the second failure in a row tells the host. Nothing
+/// outside a bot's session. `err` is the failure's text.
+async fn bot_compacted(repl: &mut Repl, outcome: Compacted, err: &str) {
     let Some(bot) = repl.conv.bot.as_mut() else {
         return;
     };
-    let after = bot.flush.compacted(outcome);
-    if after.reload {
-        // §3.4's second refresh moment: the history's prefix has just changed, so the prompt cache is cold
-        // anyway, and the flush's writes join the copy every send carries.
-        bot.memory.reload();
-        if let Some(warn) = bot.memory.warning() {
-            repl.handles.tr.notice(&format!("⚠ {warn}"));
-        }
-    }
-    if after.alarm {
-        let text = format!("bot {}: compaction failing — {err}", bot.name);
-        repl.handles.pres.set_state(State::Error);
-        repl.handles.pres.notify(Event {
-            kind: Kind::Failed,
-            text,
-        });
-    }
-    if after.snooze {
-        // The next attempt — and the next flush — waits for the usage to grow by 5% of the window.
-        repl.conv.compact_declined = repl.conv.budget.used();
-    }
+    let actions = bot.flush.step(BotEvent::Compacted(outcome));
+    bot_perform(repl, actions, Vec::new(), err).await;
 }
 
 /// The pre-send auto-compaction offer (`chat/run.go:979-989`).
@@ -454,10 +436,9 @@ pub(crate) async fn offer_before_send(repl: &mut Repl, input: &str) {
         .conv
         .budget
         .should_offer_compact(extra, repl.conv.compact_declined);
-    if let Some(bot) = repl.conv.bot.as_ref() {
-        if bot.flush.before_send(over) {
-            compact_now(repl, "", false).await;
-        }
+    if let Some(bot) = repl.conv.bot.as_mut() {
+        let actions = bot.flush.step(BotEvent::BeforeSend { over });
+        bot_perform(repl, actions, Vec::new(), "").await;
         return;
     }
     if !over {

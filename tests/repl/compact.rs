@@ -101,7 +101,7 @@ impl Fixture {
             provider: Box::new(provider),
             title_provider: None,
             system: String::new(),
-            harness: String::new(),
+            harness: iota::agents::harness::HarnessInputs::default(),
             imported_history: imported,
             dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
@@ -113,6 +113,7 @@ impl Fixture {
                 scope: None,
                 bot: false,
                 notices: Vec::new(),
+                recorded_notices: Vec::new(),
                 memory: None,
             },
             params: iota::session::LayeredParams {
