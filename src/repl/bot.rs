@@ -20,6 +20,10 @@
 //!   and the notice, when it arrives, is dropped ([`Event::BeforeSend`] → [`Action::Compact`], then
 //!   [`Action::DropNotice`]).
 //!
+//! A restart resumes the machine where the last run left it idle ([`Event::Resumed`]): a session that
+//! resumes at the threshold queues the flush the last run had queued when it went down — the notice lived in
+//! that process only.
+//!
 //! A compaction that fails keeps what it owed and is retried at the next send; the second failure in a row
 //! raises the alarm and from then on waits for the usage to grow ([`Event::Compacted`]).
 
@@ -107,6 +111,12 @@ pub(crate) enum Event {
     Compacted(Compacted),
     /// The local date is not the one the harness was composed on (bot-mode.md §2.5).
     DayChanged,
+    /// The session was resumed, before its first input. `over`: the usage it resumed at is at the threshold —
+    /// the last run's last turn ended there, so that run had queued a flush, and the notice went down with it.
+    Resumed {
+        /// The resumed usage is at the threshold.
+        over: bool,
+    },
 }
 
 /// What the loop does, in the order given. **Plain data only**, under the same rule as [`Event`]: an action
@@ -194,7 +204,12 @@ impl Flush {
             {
                 vec![Action::Compact]
             }
-            Event::BeforeSend { .. } => Vec::new(),
+            // The last run's queued flush, owed again: the same step its last turn's end took.
+            Event::Resumed { over: true } if self.phase == Phase::Idle => {
+                self.phase = Phase::Queued;
+                vec![Action::QueueFlush]
+            }
+            Event::BeforeSend { .. } | Event::Resumed { .. } => Vec::new(),
             Event::Compacted(Compacted::Done) => {
                 // The notice, if it is still queued, is dropped when it arrives.
                 self.phase = Phase::Idle;
@@ -296,6 +311,16 @@ mod tests {
             [Action::QueueFlush],
             "a new cycle"
         );
+    }
+
+    /// A restart at the threshold owes the flush the last run had queued; below it, nothing.
+    #[test]
+    fn a_resume_at_the_threshold_queues_the_flush() {
+        let mut f = Flush::default();
+        assert!(f.step(Event::Resumed { over: false }).is_empty());
+        assert_eq!(f.step(Event::Resumed { over: true }), [Action::QueueFlush]);
+        assert!(f.step(Event::NoticeArrived).is_empty(), "runs as the flush");
+        assert_eq!(f.step(flushed(1, true)), [Action::Compact]);
     }
 
     /// The flush turn over — landed or not — compacts at once, and the compaction knows what the flush wrote.

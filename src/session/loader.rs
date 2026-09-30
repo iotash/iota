@@ -81,6 +81,10 @@ pub struct LoadedLog {
     pub conv_count: usize,
     /// Cumulative token cost of the whole log.
     pub usage: Usage,
+    /// The usage on the last conversation record written since the last compaction marker that carries one:
+    /// what the view's last answered request measured. A retained record's usage is older than the marker
+    /// and measured the history before the compaction, so it never counts.
+    pub measured: Option<Usage>,
 }
 
 /// `scanRecords` (chat/session.go:813-837): line-oriented over `<dir>/messages.jsonl`, in append order.
@@ -281,6 +285,7 @@ pub fn load_log(dir: &Path, kind: ProviderKind) -> Result<LoadedLog, SessionErro
     let mut through: i64 = 0;
     let mut has_summary = false;
     let mut usage = Usage::default();
+    let mut measured = None;
 
     scan_records(dir, &mut |rec| {
         if let Some(u) = rec.usage {
@@ -290,6 +295,7 @@ pub fn load_log(dir: &Path, kind: ProviderKind) -> Result<LoadedLog, SessionErro
             has_summary = true;
             summary = rec.content;
             through = rec.compacted_through;
+            measured = None;
             return;
         }
         let Some(msg) = record_to_message(&rec, dir, kind) else {
@@ -307,6 +313,9 @@ pub fn load_log(dir: &Path, kind: ProviderKind) -> Result<LoadedLog, SessionErro
             }
             system = Some(msg);
             return;
+        }
+        if let Some(u) = msg.usage() {
+            measured = Some(u);
         }
         conv.push(msg);
     })?;
@@ -339,13 +348,15 @@ pub fn load_log(dir: &Path, kind: ProviderKind) -> Result<LoadedLog, SessionErro
         view,
         conv_count,
         usage,
+        measured,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        INTERRUPTED_RESULT, SUMMARY_PREFIX, SUMMARY_SEPARATOR, repair_tail, summary_preamble,
+        INTERRUPTED_RESULT, SUMMARY_PREFIX, SUMMARY_SEPARATOR, load_log, repair_tail,
+        summary_preamble,
     };
     use crate::provider::model::{Message, ToolCall};
 
@@ -355,6 +366,35 @@ mod tests {
             name: "t".to_owned(),
             ..ToolCall::default()
         }
+    }
+
+    /// `measured` is the last answer's usage since the last compaction marker: a retained answer measured the
+    /// history before the compaction, so a marker clears it until something is answered after it.
+    #[test]
+    fn the_measurement_is_the_last_answer_since_the_last_compaction() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let measured = |lines: &[&str]| {
+            std::fs::write(tmp.path().join("messages.jsonl"), lines.join("\n") + "\n")
+                .expect("log");
+            let log = load_log(tmp.path(), crate::provider::ProviderKind::OpenAi).expect("load");
+            log.measured.map(|u| (u.input, u.output))
+        };
+        let user = r#"{"role":"user","content":"q"}"#;
+        let first = r#"{"role":"assistant","content":"a","usage":{"in":900,"out":10}}"#;
+        let second = r#"{"role":"assistant","content":"b","usage":{"in":950,"out":20}}"#;
+        let marker =
+            r#"{"role":"compaction","content":"S","compacted_through":2,"usage":{"in":5,"out":5}}"#;
+        assert_eq!(measured(&[user]), None);
+        assert_eq!(measured(&[user, first, user, second]), Some((950, 20)));
+        assert_eq!(
+            measured(&[user, first, user, second, marker]),
+            None,
+            "the retained answer measured the history before the marker"
+        );
+        assert_eq!(
+            measured(&[user, first, user, second, marker, user, first]),
+            Some((900, 10))
+        );
     }
 
     /// Every call the tail left unanswered gets one interrupted error result, in call order.

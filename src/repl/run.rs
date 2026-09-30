@@ -284,6 +284,16 @@ impl Repl {
     }
 }
 
+/// The project a bot's memory block is cut to: the agent root's directory name (bot-mode.md §3.2), `None`
+/// outside agent mode.
+fn memory_project(agent: &crate::headless::AgentOptions) -> Option<String> {
+    agent
+        .enabled
+        .then(|| agent.root.file_name())
+        .flatten()
+        .map(|n| n.to_string_lossy().into_owned())
+}
+
 /// The overlay's parts in send order, a blank line between them; an empty part is left out.
 fn join_overlay(agent: String, memory: String) -> String {
     match (agent.is_empty(), memory.is_empty()) {
@@ -380,6 +390,8 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         name: m.name().to_owned(),
         memory: Snapshot::load(m),
         flush: crate::repl::bot::Flush::default(),
+        tool_tokens: crate::repl::context::tokens::TokenCounter::new()
+            .count_tools(&dispatch.tools()),
     });
 
     // ---- history seeding (chat/run.go:67-79) ----
@@ -413,7 +425,9 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     } else {
         CtxMeter::disabled()
     };
-    if !history.is_empty() {
+    // A resumed bot is seeded once its loop state is assembled (below): its overhead needs the memory copy,
+    // and its measurement the writer.
+    if !history.is_empty() && bot_state.is_none() {
         budget.update(&history);
     }
     let writer: WriterSlot = Arc::new(Mutex::new(writer));
@@ -581,6 +595,29 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     };
     // What a resumed bot's model is told before anything else is said (bot-mode.md §2.5).
     repl.record_notices(recorded_notices);
+    if repl.conv.bot.is_some() {
+        repl.price_bot_overhead();
+        if resumed {
+            // What the last run's meter held (§4.1): the last answer's measurement, the rest estimated on
+            // top — and a flush that run had queued is owed again.
+            let measured = lock(&writer).as_ref().and_then(SessionWriter::measured);
+            let history = std::mem::take(&mut repl.conv.history);
+            repl.conv.budget.seed_resumed(&history, measured);
+            repl.conv.history = history;
+            let over = repl
+                .conv
+                .budget
+                .should_offer_compact(0, repl.conv.compact_declined);
+            if let Some(bot) = repl.conv.bot.as_mut() {
+                let actions = bot.flush.step(BotEvent::Resumed { over });
+                bot_perform(&mut repl, actions, Vec::new(), "").await;
+            }
+        } else {
+            let history = std::mem::take(&mut repl.conv.history);
+            repl.conv.budget.reseed(&history);
+            repl.conv.history = history;
+        }
+    }
     repl.push_status();
     // The loop is up and waiting: the hosts hear `Idle` NOW, not at the first turn — a herdr pane
     // is listed from here — and then which session it writes into (herdr keys its records on it).
@@ -962,19 +999,26 @@ impl Repl {
         }
     }
 
+    /// Re-prices a bot's overhead — its memory block, as the next send will carry it, and its tool definitions
+    /// — for the budget's local counts (`ContextBudget::set_overhead`). Called at startup and whenever the
+    /// memory copy changes. Nothing outside a bot's session.
+    pub(crate) fn price_bot_overhead(&mut self) {
+        let project = memory_project(&self.conv.agent);
+        let Some(bot) = self.conv.bot.as_ref() else {
+            return;
+        };
+        let block = bot.memory.block(project.as_deref());
+        let tokens = self.conv.budget.counter().count(&block) + bot.tool_tokens;
+        self.conv.budget.set_overhead(tokens);
+    }
+
     /// Re-probes the agent-mode overlay for this message; the notices fire ONLY on a real
     /// change (chat/run.go:965-976; the D-27 lift, T-37). Returns the overlay text to send:
     /// the AGENTS.md chain and the skills catalog, then a bot's `<memory>` block — last, as the
     /// part that changes most often (bot-mode.md §3.4); `""` when there is none of them.
     fn refresh_overlay(&mut self) -> String {
         let content = self.refresh_agent_overlay();
-        let project = self
-            .conv
-            .agent
-            .enabled
-            .then(|| self.conv.agent.root.file_name())
-            .flatten()
-            .map(|n| n.to_string_lossy().into_owned());
+        let project = memory_project(&self.conv.agent);
         let Some(bot) = self.conv.bot.as_mut() else {
             return content;
         };
@@ -986,7 +1030,11 @@ impl Repl {
             if let Some(warn) = bot.memory.warning() {
                 self.handles.tr.notice(&format!("⚠ {warn}"));
             }
+            self.price_bot_overhead();
         }
+        let Some(bot) = self.conv.bot.as_ref() else {
+            return content;
+        };
         join_overlay(content, bot.memory.block(project.as_deref()))
     }
 
@@ -1150,6 +1198,7 @@ pub(crate) async fn bot_perform(
                 if let Some(warn) = bot.memory.warning() {
                     repl.handles.tr.notice(&format!("⚠ {warn}"));
                 }
+                repl.price_bot_overhead();
             }
             BotAction::Alarm => {
                 let Some(bot) = repl.conv.bot.as_ref() else {

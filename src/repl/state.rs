@@ -83,6 +83,9 @@ pub(crate) struct BotState {
     pub(crate) memory: crate::agents::memory::Snapshot,
     /// The memory flush and the compaction after it (bot-mode.md §3.6.1).
     pub(crate) flush: crate::repl::bot::Flush,
+    /// What the tool definitions cost every request, counted once at startup: with the memory block, the
+    /// budget's overhead (`ContextBudget::set_overhead`).
+    pub(crate) tool_tokens: u64,
 }
 
 /// The bundle the chat is persisted into, and the name it carries.

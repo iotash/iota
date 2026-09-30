@@ -80,8 +80,9 @@ impl Fixture {
         }
     }
 
-    fn writer(&self) -> SessionWriter {
-        let mut writer = match self
+    /// The bot's writer, and the view it resumed (`None`: a fresh session).
+    fn writer(&self) -> (SessionWriter, Option<Vec<Message>>) {
+        let (mut writer, view) = match self
             .store
             .open_bot(
                 &self.bots.join("coder"),
@@ -90,13 +91,18 @@ impl Fixture {
             )
             .expect("open the bot")
         {
-            iota::session::BotOpen::Fresh { writer, .. }
-            | iota::session::BotOpen::Resumed(writer, _) => writer,
+            iota::session::BotOpen::Fresh { writer, .. } => (writer, None),
+            iota::session::BotOpen::Resumed(writer, session) => (writer, Some(session.messages)),
         };
         if let Some(hook) = self.on_created.lock().unwrap().take() {
             writer.on_created(hook);
         }
-        writer
+        (writer, view)
+    }
+
+    /// The process went down; the next life of the bot runs `script` over the same store and resumes its view.
+    fn restart(&mut self, script: Vec<Reply>) {
+        self.ui = ScriptedUi::new(script);
     }
 
     /// Runs the loop to its end; returns the bundle directory.
@@ -118,7 +124,7 @@ impl Fixture {
         harness: iota::agents::harness::HarnessInputs,
         recorded_notices: Vec<String>,
     ) -> PathBuf {
-        let writer = self.writer();
+        let (writer, resumed) = self.writer();
         let dir = writer.dir().to_path_buf();
         let bot = iota::agents::memory::BotMemory::new("coder", self.bots.join("coder"));
         std::fs::write(bot.path(), memory).expect("MEMORY.md");
@@ -149,7 +155,7 @@ impl Fixture {
             title_provider: None,
             system: String::new(),
             harness,
-            imported_history: self.imported.clone(),
+            imported_history: resumed.unwrap_or_else(|| self.imported.clone()),
             dispatch,
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
             mcp: McpHooks::default(),
@@ -1192,4 +1198,108 @@ async fn an_unchanged_compaction_snoozes_the_next_flush() {
         f.printed()
     );
     assert_eq!(f.pings(Kind::Done), ["re one", "re two", "re three"]);
+}
+
+/// `one` lands just under the bot's 96k threshold (95,510 with its answer): the turn after it crosses it with
+/// its message alone.
+fn under_on_one(prompt: &str) -> Round {
+    Round::text(&format!("re {prompt}")).usage(usage(if prompt == "one" { 95_500 } else { 1_000 }))
+}
+
+/// About 700 tokens: what takes a view at 95,510 over the 96k threshold.
+fn long_message() -> String {
+    "the next thing to look at is ".repeat(120)
+}
+
+/// The summary passes a provider was asked for.
+fn summaries(log: &iota::testing::Log) -> usize {
+    log.prompts()
+        .iter()
+        .filter(|p| p.starts_with(SUMMARY_MARK))
+        .count()
+}
+
+/// §4.1, the resumed meter: the turn a running bot compacts before is compacted before after a restart too.
+/// The view is short on the disk — a local count of it is a few dozen tokens — but its last answer measured
+/// 95,510, and the resumed meter settles on that, so the next message still crosses the threshold.
+#[tokio::test]
+async fn a_restart_near_the_threshold_still_compacts_before_the_next_message() {
+    // Without the restart: the long message compacts first (no flush — it arrived ahead of any notice).
+    let f = Fixture::new(vec![
+        input("zero"),
+        input("one"),
+        input(&long_message()),
+        Reply::Interrupted,
+    ]);
+    let p = provider(Some("SUMMARY"), remember_tabs, under_on_one);
+    let log = p.log();
+    f.run(p, "").await;
+    assert_eq!(summaries(&log), 1, "running on: {:?}", log.prompts());
+
+    // With it: the same.
+    let mut f = Fixture::new(vec![input("zero"), input("one"), Reply::Interrupted]);
+    let p = provider(Some("SUMMARY"), remember_tabs, under_on_one);
+    let log = p.log();
+    f.run(p, "").await;
+    assert_eq!(summaries(&log), 0, "below the threshold, no flush queued");
+    f.restart(vec![input(&long_message()), Reply::Interrupted]);
+    let p = provider(Some("SUMMARY"), remember_tabs, under_on_one);
+    let log = p.log();
+    let dir = f.run(p, "").await;
+    let prompts = log.prompts();
+    assert!(prompts[0].starts_with(SUMMARY_MARK), "{prompts:?}");
+    assert_eq!(prompts.len(), 2, "{prompts:?}");
+    assert_eq!(marker(&dir)["flush_skipped"], true);
+}
+
+/// The reverse of the test above, on the same view: with the measurement gone from the log (every record's
+/// `usage` stripped), the restart has only a local count of the view — the memory block and the tool
+/// definitions on top — and the message that should have compacted first goes out uncompacted. The resumed
+/// meter's figure is the measurement, not the count.
+#[tokio::test]
+async fn without_the_measurement_the_restart_would_not_compact() {
+    let mut f = Fixture::new(vec![input("zero"), input("one"), Reply::Interrupted]);
+    let dir = f
+        .run(provider(Some("SUMMARY"), remember_tabs, under_on_one), "")
+        .await;
+    let path = dir.join("messages.jsonl");
+    let mut stripped = String::new();
+    for l in std::fs::read_to_string(&path).expect("log").lines() {
+        let mut v: serde_json::Value = serde_json::from_str(l).expect("json");
+        if let Some(o) = v.as_object_mut() {
+            o.remove("usage");
+        }
+        stripped.push_str(&v.to_string());
+        stripped.push('\n');
+    }
+    std::fs::write(&path, stripped).expect("strip");
+
+    f.restart(vec![input(&long_message()), Reply::Interrupted]);
+    let p = provider(Some("SUMMARY"), remember_tabs, under_on_one);
+    let log = p.log();
+    f.run(p, "").await;
+    assert_eq!(summaries(&log), 0, "{:?}", log.prompts());
+}
+
+/// §4.1: a flush the last run had queued when it went down — the notice lived in that process only — is
+/// queued again by the restart, which resumes at the same measured usage: the flush turn runs first and the
+/// compaction after it is one WITH a flush.
+#[tokio::test]
+async fn a_flush_queued_when_the_process_went_down_runs_after_the_restart() {
+    let mut f = Fixture::new(vec![input("zero"), input("one"), Reply::Interrupted]);
+    let p = provider(Some("SUMMARY"), remember_tabs, over_on_one);
+    let log = p.log();
+    f.run(p, "").await;
+    assert_eq!(log.prompts(), ["zero", "one"], "the notice never ran");
+
+    f.restart(vec![Reply::Enqueued, input("two"), Reply::Interrupted]);
+    let p = provider(Some("SUMMARY"), remember_tabs, over_on_one);
+    let log = p.log();
+    let dir = f.run(p, "").await;
+    let prompts = log.prompts();
+    assert!(prompts[0].starts_with(FLUSH_MARK), "{prompts:?}");
+    assert!(prompts[2].starts_with(SUMMARY_MARK), "{prompts:?}");
+    assert_eq!(prompts.last().map(String::as_str), Some("two"));
+    let m = marker(&dir);
+    assert!(m.get("flush_skipped").is_none(), "{m}");
 }

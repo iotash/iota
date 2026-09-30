@@ -64,6 +64,30 @@ pub(crate) fn check_bot_provider(
     }
 }
 
+/// Refuses a window a bot cannot live in (bot-mode.md §4.1): below [`BOT_MIN_WINDOW`] the flat memory cap and
+/// reserve leave no room for the conversation. `0` is no declared window — the 128k default applies.
+///
+/// [`BOT_MIN_WINDOW`]: crate::repl::context::tokens::BOT_MIN_WINDOW
+pub(crate) fn check_bot_window(
+    name: &str,
+    window: u64,
+) -> Result<(), crate::cmd::error::SetupError> {
+    use crate::repl::context::tokens::{BOT_MIN_WINDOW, DEFAULT_CONTEXT_WINDOW};
+    let window = if window == 0 {
+        DEFAULT_CONTEXT_WINDOW
+    } else {
+        window
+    };
+    if window >= BOT_MIN_WINDOW {
+        Ok(())
+    } else {
+        Err(crate::cmd::error::SetupError::BotWindow {
+            name: name.to_owned(),
+            window,
+        })
+    }
+}
+
 /// The lines a resumed bot's model is told first (bot-mode.md §2.5, review M2/M3) — across a restart its only
 /// sense of time and place, since the view carries no timestamps: how long ago the session was last written
 /// (read in `now`'s time zone), once that is at least [`RESUME_GAP_NOTICE_SECS`], and, when `cwd` is not the
@@ -216,7 +240,8 @@ fn adopt_system(
 #[cfg(test)]
 mod tests {
     use super::{
-        LastRun, NEVER_SAVED, SYSTEM_UPDATED, check_bot_provider, open_bot_session, resume_notices,
+        LastRun, NEVER_SAVED, SYSTEM_UPDATED, check_bot_provider, check_bot_window,
+        open_bot_session, resume_notices,
     };
     use crate::provider::model::{Message, Role};
     use crate::provider::{Provider, ProviderKind};
@@ -241,6 +266,19 @@ mod tests {
         }
         check_bot_provider("coder", &FakeProvider::new().reporting_usage().with_tools())
             .expect("usage and tools are enough");
+    }
+
+    /// bot-mode.md §4.1: a bot needs a window of at least 32k; none declared is the 128k default.
+    #[test]
+    fn a_bot_needs_a_32k_window() {
+        let e = check_bot_window("coder", 8_192).expect_err("8k refused");
+        assert_eq!(
+            e.to_string(),
+            r#"bot "coder" needs a context window of at least 32k, this one is 8.2k (context_window: in its config)"#
+        );
+        check_bot_window("coder", 31_999).expect_err("just under refused");
+        check_bot_window("coder", 32_000).expect("the floor itself runs");
+        check_bot_window("coder", 0).expect("the default window runs");
     }
 
     /// The bundle a first launch creates.

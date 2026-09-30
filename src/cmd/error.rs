@@ -169,6 +169,18 @@ pub enum SetupError {
     /// session compacts on the token count and remembers through a tool, so it has to have both.
     #[error("bot \"{0}\" needs a chat model that reports token usage and supports tools")]
     BotProvider(String),
+    /// A bot's context window is below the floor its flat memory cap and reserve assume (bot-mode.md §4.1).
+    #[error(
+        "bot \"{name}\" needs a context window of at least {}, this one is {} (context_window: in its config)",
+        crate::text::tokens(crate::repl::context::tokens::BOT_MIN_WINDOW),
+        crate::text::tokens(*window)
+    )]
+    BotWindow {
+        /// The bot.
+        name: String,
+        /// The window it would run in.
+        window: u64,
+    },
     /// The interactive branch was reached without a terminal on stdin/stdout (root.go:400).
     #[error("interactive mode requires a terminal; use -m/--message for piped input")]
     NotATerminal,

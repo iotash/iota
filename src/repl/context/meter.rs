@@ -61,6 +61,9 @@ struct Occupancy {
     have_usage: bool,
     /// A bot's session: the threshold keeps the bot's larger reserve ([`bot_threshold_of`]).
     bot: bool,
+    /// What every request carries beyond the history that a local count of it misses — a bot's memory block
+    /// and tool definitions. Added to every LOCAL count (a measured figure has it already); `0` outside a bot.
+    overhead: u64,
     /// The last booked call's usage, CONSUMED by the next settle (Go's per-call
     /// `LastUsageFull` reset, expressed as ownership).
     last_usage: Option<Usage>,
@@ -84,7 +87,7 @@ impl Occupancy {
             self.settled = u.context_tokens();
             self.have_usage = true;
         } else {
-            self.settled = counted;
+            self.settled = counted + self.overhead;
             self.have_usage = false;
         }
     }
@@ -258,10 +261,44 @@ impl ContextBudget {
     pub fn reseed(&mut self, history: &[Message]) {
         let counted = self.counter.count_messages(history);
         let mut st = lock(&self.st);
-        st.settled = counted;
+        st.settled = counted + st.overhead;
         st.pending = 0;
         st.have_usage = false;
         st.last_usage = None;
+    }
+
+    /// Seeds a resumed bot's budget (bot-mode.md §4.1): the resumed view's last measurement (`measured`,
+    /// [`crate::session::SessionWriter::measured`]) is what the next request carries up to that answer — the
+    /// system segment and the tool definitions included — and what follows it is estimated on top, the split
+    /// the running process held. Without one (nothing answered since the last compaction) it is a local count
+    /// plus the overhead, as a compaction's [`Self::reseed`] leaves it. A local count of the view alone would
+    /// under-count, and a turn the running process compacted before would go out uncompacted after a restart.
+    pub fn seed_resumed(&mut self, history: &[Message], measured: Option<Usage>) {
+        let at = measured.and_then(|u| {
+            history
+                .iter()
+                .rposition(|m| m.usage() == Some(u))
+                .map(|i| (i, u))
+        });
+        let Some((at, u)) = at else {
+            return self.reseed(history);
+        };
+        let tail = self.counter.count_messages(&history[at + 1..]);
+        let mut st = lock(&self.st);
+        st.settled = u.context_tokens();
+        st.pending = tail;
+        st.have_usage = true;
+        st.last_usage = None;
+    }
+
+    /// Sets what every request carries beyond the history ([`Occupancy::overhead`]). A local figure standing
+    /// now is re-priced with it; a measured one already has it.
+    pub fn set_overhead(&mut self, tokens: u64) {
+        let mut st = lock(&self.st);
+        if !st.have_usage {
+            st.settled = st.settled.saturating_sub(st.overhead) + tokens;
+        }
+        st.overhead = tokens;
     }
 
     /// The per-attempt rollback snapshot (Go `budget.snap`).
@@ -545,6 +582,45 @@ mod tests {
         }));
         b.update(&[]);
         assert_eq!(b.status(), "64k / 128k (50%)");
+    }
+
+    /// A resumed bot settles on the last measured answer and estimates what follows it on top; without one it
+    /// is a local count plus the overhead, and a changed overhead re-prices a local figure but not a measured
+    /// one.
+    #[test]
+    fn a_resumed_budget_settles_on_the_last_measurement() {
+        let measured = Usage {
+            input: 90_000,
+            output: 500,
+            ..Usage::default()
+        };
+        let history = vec![
+            Message::user("q"),
+            Message::assistant("a").with_usage(Some(measured)),
+            Message::notice("Resumed after 3 hours"),
+        ];
+        let tail = super::TokenCounter::new().count_messages(&history[2..]);
+
+        let mut b = budget(128_000);
+        b.set_overhead(1_000);
+        b.seed_resumed(&history, Some(measured));
+        assert!(b.have_usage());
+        assert_eq!(b.used(), 90_500 + tail);
+        b.set_overhead(2_000);
+        assert_eq!(
+            b.used(),
+            90_500 + tail,
+            "a measurement has the overhead in it"
+        );
+
+        let counted = super::TokenCounter::new().count_messages(&history);
+        let mut b = budget(128_000);
+        b.set_overhead(1_000);
+        b.seed_resumed(&history, None);
+        assert!(!b.have_usage());
+        assert_eq!(b.used(), counted + 1_000);
+        b.set_overhead(2_000);
+        assert_eq!(b.used(), counted + 2_000, "a local figure is re-priced");
     }
 
     // Go: chat/tokens_test.go:55 TestCtxMeterLiveFlow — the meter moves the figure DURING a

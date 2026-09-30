@@ -1,4 +1,5 @@
-//! The long run (docs/design/bot-mode.md §5.2): a bot with an 8k window driven through 2000 turns by
+//! The long run (docs/design/bot-mode.md §5.2): a bot with a 32k window — the smallest a bot runs in (§4.1) —
+//! driven through 2000 turns by
 //! [`GrowingProvider`] — whose usage is the request measured and which refuses a request over the window — with
 //! the process dropped and resumed at seeded random points. It checks the mechanism, not a model:
 //!
@@ -10,16 +11,19 @@
 //! 5. `MEMORY.md` stays within its 8 KiB cap;
 //! 6. a restart changes nothing: at every drop the same process is ALSO run on without the restart (a copy of
 //!    the disk taken at the drop point is what the restart resumes). 6a: the view the restart loads is, byte for
-//!    byte, the one the process held. 6b: the two send the model the same calls, history and memory block, up to
-//!    and including the next user turn;
+//!    byte, the one the process held. 6b: the two send the model the same calls and the same history, up to and
+//!    including the next user turn — everything but the memory block, which a restart re-reads by design (§3.4:
+//!    startup is a refresh moment) while the running process keeps its copy until the next compaction. A
+//!    difference that comes after a call carrying a re-read block is the model answering what it was shown, and
+//!    is listed, not failed; one at or before it (a call of another kind, another history) is the process's;
 //! 7. the startup load time as the log grows — printed, and held to the §2.6 threshold (2 s) as a loose bound.
 //!
 //! Drops happen at the idle prompt, between turns — where a bot sits nearly all its life — including the
-//! moment a flush notice has been queued and not yet run. Every verdict is printed (`--nocapture`); each test
-//! requires the ones it names. Two do not hold today and are kept, `#[ignore]`d, as reproductions:
-//! [`a_restart_sends_what_running_on_would_have`] (6b) and
-//! [`a_bot_whose_memory_sits_at_the_soft_threshold_outgrows_an_8k_window`] (2, 3, 6b). Most of the run's time
-//! is the durability path itself: every persisted batch is a `sync_all` (a full flush on macOS).
+//! moment a flush notice has been queued and not yet run. The harness clock is fixed, so no run crosses a
+//! midnight that one side of a restart sees and the other does not. Every verdict is printed (`--nocapture`);
+//! each test requires the ones it names. One scenario is kept, `#[ignore]`d, as the evidence for the minimum
+//! window: [`a_bot_whose_memory_sits_at_the_soft_threshold_outgrows_an_8k_window`]. Most of the run's time is
+//! the durability path itself: every persisted batch is a `sync_all` (a full flush on macOS).
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -39,10 +43,13 @@ use iota::tool::Dispatcher;
 use iota::ui::facade::{Input, Ui};
 use tokio_util::sync::CancellationToken;
 
-/// "8k": a bot's reserve is capped at half of it, so it compacts at 4096.
-const WINDOW: u64 = 8_192;
-/// The bot threshold for [`WINDOW`] (`min(max(32k, 25%), window / 2)` reserved).
-const THRESHOLD: u64 = WINDOW / 2;
+/// The smallest window a bot runs in (`BOT_MIN_WINDOW`, bot-mode.md §4.1): its reserve is capped at half of it,
+/// so it compacts at 16k.
+const WINDOW: u64 = 32_000;
+/// "8k" — below the minimum; kept only for the reproduction that shows why there is one.
+const SMALL_WINDOW: u64 = 8_192;
+/// The fixed date the harness clock reads.
+const TODAY: &str = "2026-10-01";
 const TURNS: u64 = 2_000;
 /// Fixed, so a failure reproduces: it picks the reply sizes and the drop points.
 const SEED: u64 = 0x5eed_2026_1001;
@@ -93,6 +100,11 @@ fn copy_tree(from: &Path, to: &Path) {
             std::fs::copy(e.path(), dst).expect("copy");
         }
     }
+}
+
+/// A bot's threshold for `window`: `min(max(32k, 25%), window / 2)` reserved.
+fn threshold(window: u64) -> u64 {
+    window - 32_000u64.max(window / 4).min(window / 2)
 }
 
 /// `MEMORY.md`'s body — what the cap measures (the frontmatter is not counted, §3.5).
@@ -171,6 +183,7 @@ impl Bot {
     /// `on_open` is told the bundle before the loop starts.
     async fn life(
         &self,
+        window: u64,
         provider: GrowingProvider,
         script: Vec<Reply>,
         on_open: impl FnOnce(&Path),
@@ -208,7 +221,10 @@ impl Bot {
             provider: Box::new(provider),
             title_provider: None,
             system: String::new(),
-            harness: iota::agents::harness::HarnessInputs::default(),
+            harness: iota::agents::harness::HarnessInputs {
+                clock: Arc::new(|| TODAY.to_owned()),
+                ..iota::agents::harness::HarnessInputs::default()
+            },
             imported_history: history,
             dispatch,
             jobs: iota::shell::jobs::Jobs::new(Path::new("")),
@@ -224,7 +240,7 @@ impl Bot {
                 memory: Some(memory),
             },
             params: iota::session::LayeredParams {
-                context_window: iota::session::Param::config(WINDOW),
+                context_window: iota::session::Param::config(window),
                 ..iota::session::LayeredParams::default()
             },
             layers: iota::cmd::ParamLayers::default(),
@@ -268,8 +284,21 @@ struct DropReport {
     /// 6a: the view the restart loaded against the one the process held; `None` when a compaction came first on
     /// either side, so neither call shows the view as it was at the drop.
     loaded: Option<Result<(), String>>,
-    /// 6b: what the two sent, up to the next user turn — `None` when it was the same.
-    diff: Option<String>,
+    /// 6b: where what the two sent, up to the next user turn, first differs — the calls or the history, not the
+    /// memory block; `None` when it was the same.
+    diff: Option<(usize, String)>,
+    /// The first call whose memory block differs (the restart's startup re-read, §3.4), if any.
+    memory_at: Option<usize>,
+}
+
+impl DropReport {
+    /// A difference that comes AFTER the model was shown the re-read memory block: the model answered what it
+    /// was shown (the §3.4 refresh), not what the process kept or lost. One at or before that call is the
+    /// process's own doing — what it queued and what it measured decide a call's kind before any model reads
+    /// anything.
+    fn follows_the_refresh(&self) -> bool {
+        matches!((&self.diff, self.memory_at), (Some((i, _)), Some(m)) if m < *i)
+    }
 }
 
 /// The view as it was at the drop, read off the first call that carries it (a user turn or the flush turn, less
@@ -308,40 +337,65 @@ fn compare_loaded(
     )))
 }
 
-/// Compares what the restarted run sent with what the run without the restart sent.
-fn compare(turn: u64, reference: &[GrowingCall], restarted: &[GrowingCall]) -> Option<String> {
+/// The first call, up to the next user turn, whose memory block (the system message) differs.
+fn memory_differs_at(
+    turn: u64,
+    reference: &[GrowingCall],
+    restarted: &[GrowingCall],
+) -> Option<usize> {
+    up_to_turn(reference, turn)
+        .iter()
+        .zip(up_to_turn(restarted, turn))
+        .position(|(x, y)| x.messages.first() != y.messages.first())
+}
+
+/// Where what the restarted run sent first differs from what the run without the restart sent — the kind of a
+/// call or its history, not its memory block ([`memory_differs_at`]): the call's index and what differed.
+fn compare(
+    turn: u64,
+    reference: &[GrowingCall],
+    restarted: &[GrowingCall],
+) -> Option<(usize, String)> {
     let a = up_to_turn(reference, turn);
     let b = up_to_turn(restarted, turn);
     let kinds = |cs: &[GrowingCall]| cs.iter().map(|c| c.kind).collect::<Vec<_>>();
-    if kinds(a) != kinds(b) {
-        return Some(format!(
-            "different calls: without the restart {:?}, with it {:?}",
-            kinds(a),
-            kinds(b)
-        ));
-    }
-    for (i, (x, y)) in a.iter().zip(b).enumerate() {
+    for i in 0..a.len().max(b.len()) {
+        let (Some(x), Some(y)) = (a.get(i), b.get(i)) else {
+            return Some((
+                i,
+                format!(
+                    "different calls: without the restart {:?}, with it {:?}",
+                    kinds(a),
+                    kinds(b)
+                ),
+            ));
+        };
+        if x.kind != y.kind {
+            return Some((
+                i,
+                format!(
+                    "different calls: without the restart {:?}, with it {:?}",
+                    kinds(a),
+                    kinds(b)
+                ),
+            ));
+        }
         if view_of(x) != view_of(y) {
             let at = view_of(x)
                 .iter()
                 .zip(view_of(y))
                 .position(|(p, q)| p != q)
                 .unwrap_or(view_of(x).len().min(view_of(y).len()));
-            return Some(format!(
-                "call {i} ({:?}): the views differ at message {at} of {}/{}:\n  without: {:?}\n  with:    {:?}",
-                x.kind,
-                view_of(x).len(),
-                view_of(y).len(),
-                view_of(x).get(at),
-                view_of(y).get(at)
-            ));
-        }
-        if x.messages.first() != y.messages.first() {
-            return Some(format!(
-                "call {i} ({:?}): the memory block differs:\n  without: {:?}\n  with:    {:?}",
-                x.kind,
-                x.messages.first(),
-                y.messages.first()
+            return Some((
+                i,
+                format!(
+                    "call {i} ({:?}): the views differ at message {at} of {}/{}:\n  without: {:?}\n  with:    {:?}",
+                    x.kind,
+                    view_of(x).len(),
+                    view_of(y).len(),
+                    view_of(x).get(at),
+                    view_of(y).get(at)
+                ),
             ));
         }
     }
@@ -350,6 +404,8 @@ fn compare(turn: u64, reference: &[GrowingCall], restarted: &[GrowingCall]) -> O
 
 /// What the whole run left.
 struct Run {
+    /// The window the bot ran in.
+    window: u64,
     elapsed: Duration,
     calls: Vec<GrowingCall>,
     /// Indices into `calls` of the branches run only as the no-restart reference (discarded afterwards).
@@ -364,7 +420,7 @@ struct Run {
 }
 
 /// Drives the bot through [`TURNS`] turns, dropping it after each turn in `drops`.
-async fn drive(provider: GrowingProvider, drops: &BTreeSet<u64>) -> Run {
+async fn drive(window: u64, provider: GrowingProvider, drops: &BTreeSet<u64>) -> Run {
     let started = Instant::now();
     let bot = Bot::new();
     let watch = Arc::new(Mutex::new(Watch::default()));
@@ -386,6 +442,7 @@ async fn drive(provider: GrowingProvider, drops: &BTreeSet<u64>) -> Run {
         });
     }
     let mut run = Run {
+        window,
         elapsed: Duration::ZERO,
         calls: Vec::new(),
         reference: Vec::new(),
@@ -430,7 +487,7 @@ async fn drive(provider: GrowingProvider, drops: &BTreeSet<u64>) -> Run {
             .map_or(0, |m| m.len());
         let slot = Arc::clone(&log_path);
         let (_, load) = bot
-            .life(provider.clone(), script, move |dir| {
+            .life(window, provider.clone(), script, move |dir| {
                 *slot.lock().unwrap() = Some(dir.join("messages.jsonl"));
             })
             .await;
@@ -444,6 +501,7 @@ async fn drive(provider: GrowingProvider, drops: &BTreeSet<u64>) -> Run {
                 flush_queued,
                 loaded: compare_loaded(&reference, &calls[first..]),
                 diff: compare(turn, &reference, &calls[first..]),
+                memory_at: memory_differs_at(turn, &reference, &calls[first..]),
             });
         }
         if dropped {
@@ -511,6 +569,7 @@ fn verdict(name: &'static str, held: bool, detail: String) -> Verdict {
 /// The seven invariants over a finished run, each with what it measured.
 #[allow(clippy::cast_precision_loss)] // token counts far below 2^52
 fn verdicts(run: &Run) -> Vec<Verdict> {
+    let (window, threshold) = (run.window, threshold(run.window));
     let calls = &run.calls;
     let mainline: Vec<&GrowingCall> = calls
         .iter()
@@ -548,9 +607,9 @@ fn verdicts(run: &Run) -> Vec<Verdict> {
     }
     out.push(verdict(
         "2 view ≤ window",
-        refused.is_empty() && widest <= WINDOW,
+        refused.is_empty() && widest <= window,
         format!(
-            "{} of {} calls refused as over {WINDOW} tokens {by_kind:?} (largest refused: {}); widest answered call {widest}",
+            "{} of {} calls refused as over {window} tokens {by_kind:?} (largest refused: {}); widest answered call {widest}",
             refused.len(),
             calls.len(),
             refused.iter().map(|c| c.input).max().unwrap_or(0),
@@ -608,7 +667,7 @@ fn verdicts(run: &Run) -> Vec<Verdict> {
         }
     }
     let growth = turn_sizes.iter().chain(&flush_sizes).sum::<u64>() as f64;
-    let room = THRESHOLD as f64 - mean(&kept);
+    let room = threshold as f64 - mean(&kept);
     let cycle = room + mean(&turn_sizes) / 2.0 + mean(&flush_sizes);
     let expected = growth / cycle;
     let ratio = markers as f64 / expected;
@@ -617,7 +676,7 @@ fn verdicts(run: &Run) -> Vec<Verdict> {
         "3 compactions ≈ expected",
         summaries.len() == markers && (0.85..=1.15).contains(&ratio),
         format!(
-            "{markers} markers ({} summary passes), expected ≈ {expected:.0} = growth {growth:.0} / ({THRESHOLD} − {:.0} kept + {:.0} half a turn + {:.0} flush); ratio {ratio:.2} (0.85–1.15 accepted), one per {:.1} turns",
+            "{markers} markers ({} summary passes), expected ≈ {expected:.0} = growth {growth:.0} / ({threshold} − {:.0} kept + {:.0} half a turn + {:.0} flush); ratio {ratio:.2} (0.85–1.15 accepted), one per {:.1} turns",
             summaries.len(),
             mean(&kept),
             mean(&turn_sizes) / 2.0,
@@ -686,32 +745,48 @@ fn verdicts(run: &Run) -> Vec<Verdict> {
         ),
     ));
 
-    // 6b. A restart sends the model what running on would have: the same calls, the same history and the same
-    // memory block, up to and including the next user turn.
+    // 6b. A restart sends the model what running on would have: the same calls and the same history, up to and
+    // including the next user turn. The memory block is not compared — a restart re-reads it (§3.4) — only
+    // counted.
+    let describe = |d: &DropReport| {
+        d.diff.as_ref().map(|(_, diff)| {
+            format!(
+                "drop before #{} (flush queued: {}, memory block differs from call {:?}): {diff}",
+                d.turn, d.flush_queued, d.memory_at
+            )
+        })
+    };
     let broken: Vec<String> = run
         .drops
         .iter()
-        .filter_map(|d| {
-            d.diff.as_ref().map(|diff| {
-                format!(
-                    "drop before #{} (flush queued: {}): {diff}",
-                    d.turn, d.flush_queued
-                )
-            })
-        })
+        .filter(|d| !d.follows_the_refresh())
+        .filter_map(describe)
+        .collect();
+    let refreshed: Vec<String> = run
+        .drops
+        .iter()
+        .filter(|d| d.follows_the_refresh())
+        .filter_map(describe)
         .collect();
     out.push(verdict(
         "6b restart sends what running on would have",
         broken.is_empty() && run.drops.len() == DROPS,
         format!(
-            "{} restarts compared ({} with a flush queued), {} differ{}",
+            "{} restarts compared ({} with a flush queued, {} with the memory block re-read differently), {} differ{}; {} differ only after the model was shown the re-read block{}",
             run.drops.len(),
             run.drops.iter().filter(|d| d.flush_queued).count(),
+            run.drops.iter().filter(|d| d.memory_at.is_some()).count(),
             broken.len(),
             if broken.is_empty() {
                 String::new()
             } else {
-                format!(":\n{}", broken.join("\n"))
+                format!(":\n{}\n", broken.join("\n"))
+            },
+            refreshed.len(),
+            if refreshed.is_empty() {
+                String::new()
+            } else {
+                format!(":\n{}", refreshed.join("\n"))
             }
         ),
     ));
@@ -773,62 +848,58 @@ fn report(title: &str, run: &Run, required: &[&str]) {
     assert!(failed.is_empty(), "{title}: invariants failed: {failed:?}");
 }
 
-/// The mechanism, with a model that keeps its memory short (at most 12 lines of its own): invariants 1–5, 6a
-/// and 7. 6b, the full restart statement, does not hold today — [`a_restart_sends_what_running_on_would_have`].
+/// The mechanism in the smallest window a bot runs in, with a model that keeps its memory short (at most 12
+/// lines of its own): every invariant.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_bot_runs_two_thousand_turns_in_an_8k_window() {
-    let run = drive(tidy(), &drop_points(SEED, DROPS)).await;
+async fn a_bot_runs_two_thousand_turns_in_a_32k_window() {
+    let run = drive(WINDOW, tidy(WINDOW), &drop_points(SEED, DROPS)).await;
     report(
-        "tidy memory",
+        "tidy memory, 32k",
         &run,
-        &["1 ", "2 ", "3 ", "4 ", "5 ", "6a ", "7 "],
+        &["1 ", "2 ", "3 ", "4 ", "5 ", "6a ", "6b ", "7 "],
     );
 }
 
 /// The long run's model: a `remember` every 25 turns, a line per flush, at most 12 lines kept.
-fn tidy() -> GrowingProvider {
-    GrowingProvider::new(WINDOW, SEED)
+fn tidy(window: u64) -> GrowingProvider {
+    GrowingProvider::new(window, SEED)
         .remembering_at(remember_turns())
         .keeping(12)
 }
 
-/// Invariant 6 in full: a restart sends the model exactly what running on would have sent.
-///
-/// FAILS (2026-10-01) on three counts, each a way the process is more than a cache of the session (§1.2):
-///
-/// - **A queued flush dies with the process.** `flush_pending` and the queued notice live in memory only; the
-///   restarted bot neither flushes nor, usually, compacts before the next turn (see the next point), and the
-///   flush it owed is gone.
-/// - **The resumed meter under-counts.** `repl::run` seeds the budget with `budget.update(&history)`, a local
-///   count of the view alone: the usage persisted on the view's last answer is not read, and neither the
-///   memory block nor the tool definitions are counted. A turn the running process would have compacted
-///   before (the projected usage over the threshold) goes out uncompacted after a restart.
-/// - **The memory block is re-read at startup** (§3.4 makes startup a refresh moment), while the running
-///   process keeps its copy frozen until the next compaction: after a `remember` in a normal turn, the system
-///   message differs. This one is by design; it is here because it is a difference the model sees.
+/// The long run with a model that consolidates only when told to — the design's own equilibrium: MEMORY.md
+/// grows to the soft threshold (6 KiB) and hovers there (§3.5) — in a 32k window. Every invariant.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "reproduces a design gap: a restart loses a queued flush and re-seeds the meter low (see the doc)"]
-async fn a_restart_sends_what_running_on_would_have() {
-    let run = drive(tidy(), &drop_points(SEED, DROPS)).await;
-    report("restart = running on", &run, &["6b "]);
+async fn a_bot_whose_memory_sits_at_the_soft_threshold_runs_in_a_32k_window() {
+    let provider = GrowingProvider::new(WINDOW, SEED).remembering_at(remember_turns());
+    let run = drive(WINDOW, provider, &drop_points(SEED, DROPS)).await;
+    report(
+        "memory at the soft threshold, 32k",
+        &run,
+        &["1 ", "2 ", "3 ", "4 ", "5 ", "6a ", "6b ", "7 "],
+    );
 }
 
-/// The long run with a model that consolidates only when told to — the design's own equilibrium: MEMORY.md
-/// grows to the soft threshold (6 KiB) and hovers there (§3.5). Every invariant.
+/// The same model in an 8k window — BELOW the minimum a bot runs in (bot-mode.md §4.1, `BOT_MIN_WINDOW`), which
+/// `iota run` now refuses at startup. Kept as the evidence for that minimum, not as a gap to close.
 ///
-/// FAILS (2026-10-01), kept as the reproduction of a design gap: 6 KiB of memory is ~1.5k tokens in every
-/// request's system message, each `remember` result repeats the whole section it wrote to (~6 KiB again), and
-/// the flush exchange carrying those results is what a compaction keeps (§3.6.1 S2c). In an 8k window the
-/// occupancy right after a compaction is already at the 4096 threshold, so the bot compacts every other turn
-/// (invariant 3: "one per 2.2 turns"), and a flush turn that writes, then consolidates twice, goes over the
-/// window and is refused (invariant 2). Nothing scales the flat 8 KiB cap or the section echo with the window.
+/// FAILS (2026-10-01): 6 KiB of memory is ~1.5k tokens in every request's system message, each `remember`
+/// result repeats the whole section it wrote to (~6 KiB again), and the flush exchange carrying those results
+/// is what a compaction keeps (§3.6.1 S2c). In an 8k window the occupancy right after a compaction is already
+/// at the 4096 threshold, so the bot compacts every other turn (invariant 3: "one per 2.2 turns"), and a flush
+/// turn that writes, then consolidates twice, goes over the window and is refused (invariant 2). The memory cap
+/// (8 KiB) and the reserve floor (32k) are flat — neither scales with the window — which is why the window has
+/// a floor instead. 6b fails here too, as a consequence: most drops follow a turn refused over the window, which
+/// (not having landed) queued no flush in the running process, while the restart — resumed over the threshold
+/// — queues one; the rest follow a snoozed compaction whose watermark lives in memory only. Neither happens in
+/// a 32k window.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "reproduces a design gap: a memory at its soft threshold outgrows an 8k window (see the doc)"]
+#[ignore = "below the minimum window: the evidence for BOT_MIN_WINDOW (see the doc)"]
 async fn a_bot_whose_memory_sits_at_the_soft_threshold_outgrows_an_8k_window() {
-    let provider = GrowingProvider::new(WINDOW, SEED).remembering_at(remember_turns());
-    let run = drive(provider, &drop_points(SEED, DROPS)).await;
+    let provider = GrowingProvider::new(SMALL_WINDOW, SEED).remembering_at(remember_turns());
+    let run = drive(SMALL_WINDOW, provider, &drop_points(SEED, DROPS)).await;
     report(
-        "memory at the soft threshold",
+        "memory at the soft threshold, 8k",
         &run,
         &["1 ", "2 ", "3 ", "4 ", "5 ", "6a ", "6b ", "7 "],
     );

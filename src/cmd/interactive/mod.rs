@@ -466,10 +466,16 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
     // `iota run <bot>` (bot-mode.md §2.2): the bot's one session, resumed or created under its pointer. A
     // resume names a session of its own and takes the branch below.
     let bot = settings.mode.is_bot() && !resume_given;
+    // A bot's parameters, resolved before its session is opened (the window is checked there).
+    let mut bot_params = None;
 
     if bot {
-        // Before the lock is taken or anything is created: a bot that cannot run leaves no trace.
+        // Before the lock is taken or anything is created: a bot that cannot run leaves no trace. Its
+        // parameters come from the config alone (§2.2), so the window is known already.
         bot::check_bot_provider(&settings.name, &*provider)?;
+        let params = resolve_params(settings, provider, kind, None, io)?;
+        bot::check_bot_window(&settings.name, params.context_window.value)?;
+        bot_params = Some(params);
         let bots = store
             .bots_dir()
             .ok_or(crate::session::SessionError::HomeNotDefined)?;
@@ -615,7 +621,10 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
     // root.go:365-385, widened to all four layered parameters: a resumed bundle's own values (with the
     // sources it recorded), else the two config layers, else the built-in defaults.
     // A bot's resumed meta is not consulted: its parameters come from the config (bot-mode.md §2.2).
-    let params = resolve_params(settings, provider, kind, resumed_meta.as_ref(), io)?;
+    let params = match bot_params {
+        Some(params) => params,
+        None => resolve_params(settings, provider, kind, resumed_meta.as_ref(), io)?,
+    };
 
     // root.go:390 + 588-592.
     let bot_env;

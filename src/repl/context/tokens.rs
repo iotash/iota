@@ -49,6 +49,12 @@ pub(crate) const BOT_RESERVE_TOKENS: u64 = 32_000;
 /// A bot's reserve as a share of the window; the larger of this and [`BOT_RESERVE_TOKENS`] applies.
 pub(crate) const BOT_RESERVE_PERCENT: u64 = 25;
 
+/// The smallest window a bot runs in (docs/design/bot-mode.md §4.1). The memory cap (8 KiB) and the reserve's
+/// floor ([`BOT_RESERVE_TOKENS`]) are flat — neither scales with the window — so below this the memory block,
+/// the `remember` echoes and the flush exchange a compaction keeps fill the threshold on their own: a bot
+/// compacts every other turn and its flush turn outgrows the window.
+pub(crate) const BOT_MIN_WINDOW: u64 = 32_000;
+
 /// How much of the window usage must grow after a declined auto-compaction offer before it
 /// is offered again (`chat/compact.go` `compactSnoozePercent`).
 pub(crate) const COMPACT_SNOOZE_PERCENT: u64 = 5;
@@ -122,6 +128,21 @@ impl TokenCounter {
             total += u64::try_from(m.attachments.len()).unwrap_or(0) * ATTACHMENT_TOKENS;
         }
         total
+    }
+
+    /// Tokens the tool definitions add to every request: each one's name, description and schema (as
+    /// compact JSON). An estimate like every other count here — the wire framing is the provider's.
+    pub fn count_tools(self, tools: &[crate::provider::model::ToolDef]) -> u64 {
+        tools
+            .iter()
+            .map(|t| {
+                let schema = t
+                    .input_schema
+                    .as_ref()
+                    .map_or_else(String::new, |s| Value::Object(s.clone()).to_string());
+                self.count(&t.name) + self.count(&t.description) + self.count(&schema)
+            })
+            .sum()
     }
 }
 

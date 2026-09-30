@@ -52,6 +52,8 @@ pub struct SessionWriter {
     created: bool,
     /// What the log sums to: a resumed session's cumulative figures pick up from here, not from zero.
     usage: Usage,
+    /// A resumed log's last measurement ([`crate::session::LoadedLog::measured`]); `None` for a fresh session.
+    measured: Option<Usage>,
     /// The bundle's single-writer lock (`<dir>/.lock`), taken when the writer first holds the files and
     /// released when it drops — `None` while the bundle is still pending.
     lock: Option<HeldLock>,
@@ -71,6 +73,7 @@ impl std::fmt::Debug for SessionWriter {
             .field("conv_count", &self.conv_count)
             .field("created", &self.created)
             .field("usage", &self.usage)
+            .field("measured", &self.measured)
             .field("lock", &self.lock)
             .field("bot_lock", &self.bot_lock)
             .field("on_created", &self.on_created.is_some())
@@ -90,6 +93,7 @@ impl SessionWriter {
             conv_count: 0,
             created: false,
             usage: Usage::default(),
+            measured: None,
             lock: None,
             bot_lock: None,
             on_created: None,
@@ -97,17 +101,17 @@ impl SessionWriter {
     }
 
     /// A writer over an EXISTING bundle, positioned to append (`ResumeSession`, chat/session.go:396-400):
-    /// `conv_count` and `usage` are seeded from the log that was just loaded; `lock` is the bundle lock the
-    /// caller already holds.
+    /// `conv_count`, `usage` and `measured` are seeded from the log that was just loaded; `lock` is the bundle
+    /// lock the caller already holds.
     pub(crate) fn resumed(
         dir: PathBuf,
         meta: SessionMeta,
         kind: ProviderKind,
         file: std::fs::File,
-        conv_count: usize,
-        usage: Usage,
+        log: &crate::session::LoadedLog,
         lock: HeldLock,
     ) -> Self {
+        let (conv_count, usage, measured) = (log.conv_count, log.usage, log.measured);
         Self {
             dir,
             meta,
@@ -116,6 +120,7 @@ impl SessionWriter {
             conv_count,
             created: true,
             usage,
+            measured,
             lock: Some(lock),
             bot_lock: None,
             on_created: None,
@@ -159,6 +164,14 @@ impl SessionWriter {
     /// What the log sums to (chat/session.go:407-412) — zero for a fresh session.
     pub fn usage(&self) -> Usage {
         self.usage
+    }
+
+    /// The usage the resumed log's last answer since its last compaction carries — what that request measured,
+    /// the system segment and the tool definitions included, which a local count of the view is not. A resumed
+    /// bot's meter settles on it (bot-mode.md §4.1). `None` for a fresh session, or when nothing has been
+    /// answered since the last compaction.
+    pub fn measured(&self) -> Option<Usage> {
+        self.measured
     }
 
     /// Whether the bundle exists on disk yet (chat/session.go:477-479).
