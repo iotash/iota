@@ -82,7 +82,7 @@ bot 目录布局（全部新增）：
 
 ### 1.2 「会话文件是本体，进程只是缓存」的具体含义
 
-1. **内存里没有不可重建的状态。** `Conversation.history` 可以随时由 `load_log` 从磁盘重建，这一点 resume 已经做到。bot 额外的内存状态只有几样：记忆快照、flush 待办标志、压缩失败计数、本次 flush 写了几行（§3.4、§4.1），全部可以丢。
+1. **内存里没有不可重建的状态。** `Conversation.history` 可以随时由 `load_log` 从磁盘重建，这一点 resume 已经做到。bot 额外的内存状态只有几样：记忆快照、flush 待办标志、压缩失败计数、本次 flush 存了几行（§3.4、§4.1），全部可以丢。
 2. **进程重启 = resume。** 启动时读 `bot.json` → `SessionStore::resume(id)` → 回放 meta，与 `iota resume <id>` 走同一条路（`src/cmd/interactive/mod.rs:436-477`）。用户看到的是同一段对话，transcript 回放沿用现有 replay。与普通 resume 的差别：system 与模型参数以 config 为准（§2.2）。
 3. **进程退出不等于会话结束。** Ctrl+D 或关窗口只是 bot 下线，会话不做任何收尾，没有「结束会话」这个概念。不加 `/new`；想要一段新对话，就用另一个 agent，或者把 bot 改名（§6 #9）。
 4. **单写者。** 一个 bundle 同一时刻最多被一个进程以写方式打开（§2.3）。
@@ -450,7 +450,7 @@ rev 1 在三处会把用户正在做的事压掉（评审 S2），逐条修正�
 - **flush 轮只广告 memory 工具集，不接受 steering**（S2b）。`tool_loop` 每个 round 从 `dispatch.tools()` 取工具（`src/repl/turn/tools.rs:58-60`），dispatcher 是 LIVE view，包一层本轮过滤钩子即可；`Steerer::drain`（`src/repl/turn/tools.rs:147-152`）在 flush 轮关闭，typed-ahead 留在队列里，flush 结束后正常处理。rev 1「和 job notice 撞上打字时一样」的说法作废：一个被告知「一行回复」、随后马上要被压缩的轮，不该带着全部工具替用户干活。
 - **flush 轮不算「最后一轮」**（S2c）。`retain_tail_count`（`src/repl/commands/compact.rs:50-55`）从最后一条 `Role::User` 起算，而 `Body::Notice` 的 role 就是 `User`（`src/provider/model.rs:309-316`），所以 rev 1 会保留「flush notice + 一行回复」，把用户真正的最后一轮整个压进摘要。改为：从**最后一条非 notice 的 user 消息**起保留，flush 交换附在其后一起保留；`compacted_through` 按此计算。这条锚点**所有模式都生效**，不只 bot：job 完成的 notice（X-08）同样会抢走 Go 的锚点、把用户那一轮压进摘要，所以 `retain_tail_count` 直接改成 `m.role() == Role::User && !m.is_notice()`，`compact_history` 不需要额外的保留起点参数（以测试 `a_bot_keeps_the_users_last_turn_not_the_flush`、`a_job_notice_does_not_take_the_last_turn` 为准）。FLUSH_NOTICE 里「everything except your last turn」于是重新成立。
 - **bot 单独的 reserve**。今天的阈值是 `max(80%, window − 16k)`（`src/repl/context/meter.rs:98-101`；`tokens.rs:39-43`）。bot 的 reserve 取 `min(max(32k, 25% 窗口), window / 2)`，即阈值 `window − reserve`（`context::meter` 的 `bot_threshold_of`；常量 `BOT_RESERVE_TOKENS`、`BOT_RESERVE_PERCENT` 在 `context::tokens`）：压缩之间多了一轮 flush，还可能插一轮用户消息。reserve **最多占半个窗口**：固定 32k 会让 32k 窗口的阈值落到 0、每轮都压缩。取值举例：1M → 750k、200k → 150k（25% 胜出）、128k → 96k（32k 胜出）、64k → 32k（恰好一半）、32k → 16k、20k → 10k（封顶一半）。bot 的阈值在所有窗口上都低于普通阈值，且不低于 50%；`/model` 换窗口后照样适用（以测试 `a_bots_threshold_keeps_the_larger_reserve` 为准）。
-- **summarize 看得到 MEMORY.md，也知道 flush 写了几行**（S3）：见 §3.6.2。
+- **summarize 看得到 MEMORY.md，也知道 flush 存了几行**（S3）：见 §3.6.2。
 - **措辞如实**（S2d）：不是「空闲时」。主循环单线程，flush notice 是下一个输入，之后 `compact_now` 用 busy spinner 同步等 summarize（100k 输入几十秒）；用户的下一条消息要等 flush 轮加摘要调用结束。这是 v1 接受的代价，L3 压缩下沉后再谈异步。
 
 其余不变：
@@ -488,8 +488,8 @@ rev 1 在三处会把用户正在做的事压掉（评审 S2），逐条修正�
    addendum 细化 instruction，所以紧跟其后；hint 在两者之后，是数据之前的最后一句话；记忆夹在旧摘要与对话之间，这两样都是摘要不该从记忆里重复的东西。
 
 3. `BOT_SUMMARY_ADDENDUM`（bot 专有）按 flush 的结果有三种措辞（以 `bot_summary_addendum` 与测试 `a_bots_summary_pass_sees_the_memory_and_the_flush_writes`、`nothing_saved_keeps_durable_facts_in_the_summary` 为准）：
-   - **本次 flush 写了 N 行**（N ≥ 1）：「Durable facts that are already in the LONG-TERM MEMORY section below are visible to the model separately; do not repeat them. Focus on conversational state: open threads, pending requests, recent decisions and their reasons. Keep the summary under about 1,500 words. The memory flush just before this compaction saved N lines.」（N = 1 时是 `saved 1 line.`）
-   - **什么都没写**（`flush_writes == 0`：flush 没写、没跑，或被跳过）：`BOT_SUMMARY_NOTHING_SAVED`，第一句换成「Nothing was saved to long-term memory this time; keep durable facts in the summary.」，后两句不变。flush 轮失败但已经写了几行时，按写了的行数走第一种。
+   - **本次 flush 存了 N 行**（N ≥ 1；N 只数 `add` 与 `replace`，`remove` 不算——被删的行不在记忆里，不能拿它当省略的理由。notice 照旧每次写入一条，删除的也有）：「Durable facts that are already in the LONG-TERM MEMORY section below are visible to the model separately; do not repeat them. Focus on conversational state: open threads, pending requests, recent decisions and their reasons. Keep the summary under about 1,500 words. The memory flush just before this compaction saved N lines.」（N = 1 时是 `saved 1 line.`）
+   - **什么都没存**（`flush_writes == 0`：flush 没写、只删不存、没跑，或被跳过）：`BOT_SUMMARY_NOTHING_SAVED`，第一句换成「Nothing was saved to long-term memory this time; keep durable facts in the summary.」，后两句不变。flush 轮失败但已经存了几行时，按存了的行数走第一种。计数的来源是 `WriteLog` 每条记录的 `saved`（`BotMemory::write` 按 edit 种类填，不去解析 notice 文本），测试 `a_flush_that_only_removes_is_not_a_save_and_the_summary_keeps_the_facts` / `a_flush_that_replaces_a_line_still_saved_one` 钉住两侧。
    - **记忆为空**：addendum 按上面两种之一，LONG-TERM MEMORY 段的内容写 `(empty)`。
 
    rev 1 的「事实已存进记忆」是摘要调用看不见、也核对不了的假设（评审 S3），现在它看得见。**摘要只承载对话状态，长期事实归记忆**，仍是让摘要长度不随压缩次数增长的主要手段。
@@ -703,4 +703,9 @@ rev 1 只处理了 `</memory>` 的结构逃逸。评审 S1 指出的问题更大
 - **失败批之后 meta 的 `message_count` 会少计**（§2.7，验收 codex 2026-10-01 §6，合并后跟进）：一批记录已进日志、meta 没跟上（进程在批后 meta 重写前死掉，或截回失败后换了进程）时，`SessionWriter::resumed` 直接沿用 `meta.json` 里的计数、不据日志重算，之后只按新追加的条数累加——实测 resume 补一条结果后磁盘四条、`message_count=2`。`db11a05` 起即如此，不是 R1 修复引入的。只影响 `/session` 列表显示的条数；决定压缩标记与保留尾部的 `conv_count` 已从日志重算（`LoadedLog::conv_count`），不受影响。跟进：resume 时按日志校准该计数。
 - **视图中段的孤儿 `tool_use` 修不了**（§2.7）：`repair_tail` 只看视图末尾最后一条非 tool 消息，靠追加合成结果修复；中段的孤儿无法靠追加补上，这样的会话照样会被 API 拒绝，只能手工处理日志。
 - **旧摘要按第一个分隔符切分**（§3.6.2）：`split_previous_summary` 用 `split_once(SUMMARY_SEPARATOR)`，摘要正文里恰好含 `\n\n———\n\n` 时会切错，一段摘要被当成对话。概率极低；loader 今天同样没防。
-- **flush 与摘要之间的交接缺口**（待议，§3.6.1 / §3.6.2；2026-10-01 保留率试运行报告 §4.2，单次观察）：`flush` 组的第 1 次 flush 轮里，模型按 flush 提示「不要存 transient state，摘要会保留」用 `remember remove` **删掉了**记忆里那行状态（`## Open threads` 的 Live state 行）；而同一次压缩的摘要看到的是删除之前的记忆块，以「已在记忆里」为由**一条状态也没写**，于是那条状态既不在记忆里、也不在摘要里——丢了。其余 9 条状态事实能留下来是**侥幸**：删除时生成的 `-1 line` notice 带着整行原文，又正好落在保留区，第 2 次摘要把它抄了回来；这不是机制保证的。（第 10 条 S9 从没进过记忆，第 1 次摘要也让给了记忆，在第 1 次压缩时就丢了。）也就是 §3.6.2「摘要装对话状态、事实归记忆」的分工在这里双向推诿：flush 把状态推给摘要，摘要把状态推给记忆，而两者看到的记忆版本不同。是否处理、怎么处理（例如摘要提示不因「已在记忆里」省略状态，或 flush 提示不鼓励 remove）待议；**现在不改设计，也不改代码**。
+- **flush 与摘要之间的交接缺口**（§3.6.1 / §3.6.2；2026-10-01 保留率试运行报告 §4.2 的单次观察，机制以交接评审 `bot-mode-handoff-fable.md` §1、`bot-mode-handoff-opus.md` §1 为准；留证见 `docs/history/bot-mode/retention-2026-10-01/`）。
+  - **发生了什么**：`flush` 组的第 1 次 flush 轮里，模型按 flush 提示「不要存 transient state，摘要会保留」用 `remember remove` 删掉了记忆里那行状态（`## Open threads` 的 Live state 行），什么也没存；同一次压缩的摘要以「已在记忆里」为由一条状态也没写，那条状态于是既不在记忆里、也不在摘要里。S9 从没进过记忆，也随这次「整类让给记忆」丢了。
+  - **机制（更正报告 §4.2 第 2 点与本条旧文）**：摘要调用看到的是**删除之后**的记忆——`compact_now` 调 `memory.current()` 从磁盘现读，不是冻结副本；删除本身在保留区（flush 轮总在锚点之后），摘要也看不到。它说「在记忆里」，依据的是对话中段里更早的 `remember add` 记录，而不是给它的记忆段。推它这样判断的有一处**代码缺陷**：flush 的写入数是 notice 的条数，`remove` 也算一条，于是这次只删不存的 flush 让 addendum 走了「do not repeat」那一版，还附上「saved 1 line」。报告冻结不改，以本条为准。
+  - **这次修的**：只修计数——`remove` 不算存（§3.6.2 第 3 点）。只删不存的 flush 现在走 `BOT_SUMMARY_NOTHING_SAVED`（「keep durable facts in the summary」），iota 不再对摘要说假话。三段提示词一字未改。它不闭合整类问题：模型仍可能以对话里的旧记录为准而不看记忆段（同一次运行的摘要 #3 在 `NOTHING_SAVED` 下也犯过一次）。
+  - **接受的残留**：一次 flush **既存又删**（例如 add 1、remove 1）时计数 > 0，摘要仍走「do not repeat」那一版。这句话本身是真的——被删的那行不在记忆段里，「do not repeat」管不到它——但被删行携带的状态同样没有人接。被删的原文在保留区的 `-1 line` notice 里，下一次压缩的中段一定有它；抄不抄由下一次摘要决定。普通轮里落在保留区的记忆改动同理。
+  - **将来的结构性手段（只记不做）**：把保留区里的 `memory:` notice 原样附给摘要调用（一个小段，说明「这些改动已体现在上面的记忆段里」）。不读文件、不加状态、不动状态机，重启后照样成立，也覆盖普通轮的改动；保证强度是「送到」，不是「写进去」。等这类丢失带着实际损失再出现一次再做。不做的：让摘要别因「已在记忆里」省略（无材料，安慰剂）、让 flush 别 remove（与软阈值的合并要求冲突）、由 iota 算 flush 前后的差分（要存 flush 前的快照，重启即失，且 notice 里已带原文）。

@@ -580,19 +580,29 @@ pub fn apply(
     })
 }
 
-/// The write notices a turn produced, waiting for the loop to record them once the turn is over (§3.7
-/// item 1). Shared between the tool and the loop; each notice is taken exactly once.
+/// One write a turn made: the notice the loop records for it, and whether it saved a line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Written {
+    /// `memory: MEMORY.md ## <section> +1 line: …` — one per write, a remove's included.
+    pub notice: String,
+    /// The write put a line into the file: an add or a replace. A remove saved nothing — the line it took
+    /// out is in neither the file nor the summary's memory section (bot-mode.md §3.6.2 item 3).
+    pub saved: bool,
+}
+
+/// The writes a turn made, waiting for the loop to record them once the turn is over (§3.7 item 1).
+/// Shared between the tool and the loop; each write is taken exactly once.
 #[derive(Clone, Debug, Default)]
-pub struct WriteLog(Arc<Mutex<Vec<String>>>);
+pub struct WriteLog(Arc<Mutex<Vec<Written>>>);
 
 impl WriteLog {
-    /// Queues one notice.
-    pub fn push(&self, notice: String) {
-        lock(&self.0).push(notice);
+    /// Queues one write.
+    pub fn push(&self, written: Written) {
+        lock(&self.0).push(written);
     }
 
     /// Everything queued since the last take, oldest first.
-    pub fn take(&self) -> Vec<String> {
+    pub fn take(&self) -> Vec<Written> {
         std::mem::take(&mut *lock(&self.0))
     }
 }
@@ -639,7 +649,7 @@ impl BotMemory {
         self.dir.join(MEMORY_FILE)
     }
 
-    /// The notices of the writes the loop has not recorded yet.
+    /// The writes the loop has not recorded yet.
     pub fn writes(&self) -> &WriteLog {
         &self.writes
     }
@@ -667,7 +677,10 @@ impl BotMemory {
         crate::app::fs::write_atomic(&path, applied.file.as_bytes(), Some(0o644))
             .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
         lock(&self.seen).mtime = mtime(&path);
-        self.writes.push(applied.notice.clone());
+        self.writes.push(Written {
+            notice: applied.notice.clone(),
+            saved: !matches!(edit, Edit::Remove { .. }),
+        });
         Ok(applied)
     }
 

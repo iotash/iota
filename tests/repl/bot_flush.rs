@@ -350,6 +350,99 @@ async fn the_flush_turn_saves_memory_then_the_users_last_turn_survives_the_compa
     );
 }
 
+/// A flush that only removed a line saved nothing (§3.6.2 item 3): the summary pass is told "Nothing was
+/// saved", never "saved 1 line" — the removed line is in neither the memory it is shown nor the
+/// conversation it summarises, so "do not repeat" would leave the state it carried with nowhere to live.
+/// The removed line itself survives in the kept turn's `-1 line` notice.
+#[tokio::test]
+async fn a_flush_that_only_removes_is_not_a_save_and_the_summary_keeps_the_facts() {
+    fn remove_old() -> Round {
+        Round::calls(vec![iota::testing::tool_call_with(
+            "c1",
+            "remember",
+            &[("action", "remove"), ("old", "old line")],
+        )])
+    }
+    let f = Fixture::new(vec![
+        input("zero"),
+        input("one"),
+        Reply::Enqueued,
+        Reply::Interrupted,
+    ]);
+    let p = provider(Some("SUMMARY"), remove_old, over_on_one);
+    let log = p.log();
+    let dir = f
+        .run(
+            p,
+            "## User\n- [user] old line (2026-09-01)\n- [user] kept (2026-09-01)\n",
+        )
+        .await;
+
+    let summary = log.prompts()[4].clone();
+    assert!(summary.starts_with(SUMMARY_MARK), "{summary}");
+    assert!(
+        summary.contains(
+            "Nothing was saved to long-term memory this time; keep durable facts in the summary."
+        ),
+        "a remove is not a save: {summary}"
+    );
+    assert!(!summary.contains("do not repeat them"), "{summary}");
+    assert!(!summary.contains("saved 1 line"), "{summary}");
+    // The memory shown is the file after the remove.
+    let (_, memory) = summary
+        .split_once("--- LONG-TERM MEMORY (already saved separately; do not repeat these) ---\n")
+        .expect("a memory section");
+    assert!(
+        memory.starts_with("## User\n- [user] kept (2026-09-01)\n"),
+        "{memory}"
+    );
+    assert!(!summary.contains("old line"), "{summary}");
+
+    let view = iota::session::load_log(&dir, ProviderKind::OpenAi)
+        .expect("load")
+        .view;
+    assert!(
+        view.last().is_some_and(|m| m.is_notice()
+            && m.content == "memory: MEMORY.md ## User -1 line: [user] old line (2026-09-01)"),
+        "{view:?}"
+    );
+}
+
+/// The control for the case above: a flush that replaced a line saved one, and the summary pass is told
+/// "do not repeat" and "saved 1 line" as before.
+#[tokio::test]
+async fn a_flush_that_replaces_a_line_still_saved_one() {
+    fn replace_old() -> Round {
+        Round::calls(vec![iota::testing::tool_call_with(
+            "c1",
+            "remember",
+            &[
+                ("action", "replace"),
+                ("old", "old line"),
+                ("text", "new line"),
+                ("source", "user"),
+            ],
+        )])
+    }
+    let f = Fixture::new(vec![
+        input("zero"),
+        input("one"),
+        Reply::Enqueued,
+        Reply::Interrupted,
+    ]);
+    let p = provider(Some("SUMMARY"), replace_old, over_on_one);
+    let log = p.log();
+    f.run(p, "## User\n- [user] old line (2026-09-01)\n").await;
+
+    let summary = log.prompts()[4].clone();
+    assert!(summary.starts_with(SUMMARY_MARK), "{summary}");
+    assert!(
+        summary.contains("The memory flush just before this compaction saved 1 line."),
+        "{summary}"
+    );
+    assert!(!summary.contains("Nothing was saved"), "{summary}");
+}
+
 /// The user typed ahead of the notice (§3.6.1, critique S2a): their message compacts first, without a flush —
 /// said out loud and recorded — and is sent after it; the notice that arrives afterwards is dropped, never
 /// sent, never persisted.

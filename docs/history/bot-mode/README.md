@@ -11,6 +11,9 @@
 | `bot-mode-verify-codex.md` | 修复验收与放行 |
 | `bot-mode-overdesign-{fable,opus,codex}.md` | 合并前的三份过度设计评审（codex 那份含仲裁结论） |
 | `bot-mode-8k-evidence.md` | `BOT_MIN_WINDOW` 的实测出处：删掉的 8k 长跑反例的命令、提交与输出摘要 |
+| `bot-mode-retention-2026-10-01.md` | 保留率实验第一次用真模型跑（deepseek-flash，32k）；§4.2 记下了 flush 与摘要的交接缺口 |
+| `bot-mode-handoff-{fable,opus}.md` | 对那个交接缺口四种修法的两份独立评审；结论都是只修计数（删除不算存），见设计 §7.1 |
+| `retention-2026-10-01/` | 那次试运行 flush 组收尾时的 `MEMORY.md` 原件；会话日志超过入库上限，只记了大小与 sha256 |
 
 读的时候注意：
 

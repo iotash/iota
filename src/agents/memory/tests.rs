@@ -573,12 +573,50 @@ fn the_disk_write_is_lazy_backed_up_and_announced() {
     assert_eq!(std::fs::read_to_string(&prev).expect("prev"), first);
 
     // Each successful write queued one notice, taken once.
+    let notices: Vec<String> = mem.writes().take().into_iter().map(|w| w.notice).collect();
     assert_eq!(
-        mem.writes().take(),
+        notices,
         [
             "memory: MEMORY.md ## User +1 line: [user] one (2026-09-30)",
             "memory: MEMORY.md ## User +1 line: [inferred] two (2026-09-30)",
         ]
     );
     assert!(mem.writes().take().is_empty());
+}
+
+/// A remove is announced like any write — its notice carries the whole line it took out — but it is not a
+/// save: only an add or a replace leaves a line in the file (bot-mode.md §3.6.2 item 3).
+#[test]
+fn a_remove_is_announced_but_is_not_a_save() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mem = BotMemory::new("coder", dir.path().join("coder"));
+    mem.write(&add("one", Source::User, Section::User), TODAY)
+        .expect("add");
+    mem.write(&replace("one", "uno"), TODAY).expect("replace");
+    mem.write(&remove("uno"), TODAY).expect("remove");
+
+    let written: Vec<(String, bool)> = mem
+        .writes()
+        .take()
+        .into_iter()
+        .map(|w| (w.notice, w.saved))
+        .collect();
+    assert_eq!(
+        written,
+        [
+            (
+                "memory: MEMORY.md ## User +1 line: [user] one (2026-09-30)".to_owned(),
+                true
+            ),
+            (
+                "memory: MEMORY.md ## User ~1 line: [user] uno (2026-09-30) (was: - [user] one (2026-09-30))"
+                    .to_owned(),
+                true
+            ),
+            (
+                "memory: MEMORY.md ## User -1 line: [user] uno (2026-09-30)".to_owned(),
+                false
+            ),
+        ]
+    );
 }

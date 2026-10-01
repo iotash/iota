@@ -250,16 +250,18 @@ impl Repl {
     }
 
     /// Records the memory writes the turn just made (bot-mode.md §3.7 item 1): one dim line and one notice
-    /// message each, persisted at once so the log says when what was written. The queue is drained, so a
-    /// write is recorded exactly once. Returns how many there were — each write is one line.
+    /// message each, a remove's included, persisted at once so the log says when what was written. The queue
+    /// is drained, so a write is recorded exactly once. Returns how many lines they saved — adds and replaces
+    /// only: a remove saved nothing, and a flush that only removed must tell the summary pass so (§3.6.2
+    /// item 3), not "saved 1 line".
     pub(crate) fn record_memory_writes(&mut self) -> u32 {
         let Some(log) = &self.session.memory_writes else {
             return 0;
         };
         let written = log.take();
-        let n = u32::try_from(written.len()).unwrap_or(u32::MAX);
-        self.record_notices(written);
-        n
+        let saved = written.iter().filter(|w| w.saved).count();
+        self.record_notices(written.into_iter().map(|w| w.notice).collect());
+        u32::try_from(saved).unwrap_or(u32::MAX)
     }
 
     /// Tells the model, not only the user: each line is shown dim and joins the history as a notice

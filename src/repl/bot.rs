@@ -64,7 +64,7 @@ enum Phase {
     Queued,
     /// The flush turn is over and the compaction after it has not succeeded yet.
     Flushed {
-        /// The memory writes the flush turn made.
+        /// The lines the flush turn saved to `MEMORY.md` (adds and replaces; a remove saves none).
         writes: u32,
         /// The flush turn failed or was interrupted.
         failed: bool,
@@ -88,13 +88,13 @@ pub(crate) enum Compacted {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Event {
     /// A turn is over. `flush`: it was the flush turn. `landed`: it ended in success, or was interrupted and
-    /// kept (never for the flush turn: an interrupted flush did not finish); not failed, not discarded. `writes`: the memory writes it made. `over`: the usage is at the (snoozed) threshold.
+    /// kept (never for the flush turn: an interrupted flush did not finish); not failed, not discarded. `writes`: the lines its memory writes saved (adds and replaces, never a remove). `over`: the usage is at the (snoozed) threshold.
     TurnEnded {
         /// The turn was the flush turn.
         flush: bool,
         /// The turn ended in success, or was interrupted and kept.
         landed: bool,
-        /// The memory writes the turn made.
+        /// The lines the turn's memory writes saved: adds and replaces, never a remove.
         writes: u32,
         /// The usage is at the snoozed threshold.
         over: bool,
@@ -146,7 +146,8 @@ pub(crate) enum Action {
 /// What a compaction reports about the flush before it (the summary pass and the marker read it).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct FlushReport {
-    /// Lines the flush turn wrote to `MEMORY.md` (`0`: none, or no flush ran).
+    /// Lines the flush turn saved to `MEMORY.md` — adds and replaces; a remove saves none (`0`: nothing
+    /// saved, or no flush ran).
     pub(crate) writes: u32,
     /// The compaction runs without a flush that finished: none ran, or it failed.
     pub(crate) skipped: bool,

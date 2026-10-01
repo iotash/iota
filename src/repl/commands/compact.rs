@@ -66,14 +66,14 @@ pub(crate) const BOT_SUMMARY_ADDENDUM: &str = concat!(
     bot_summary_focus!()
 );
 
-/// [`BOT_SUMMARY_ADDENDUM`] for a compaction whose flush wrote nothing — or did not run: nothing new is in
+/// [`BOT_SUMMARY_ADDENDUM`] for a compaction whose flush saved nothing — only removed, or did not run: nothing new is in
 /// the memory, so nothing may be left out of the summary on the strength of it (critique S3).
 pub(crate) const BOT_SUMMARY_NOTHING_SAVED: &str = concat!(
     "Nothing was saved to long-term memory this time; keep durable facts in the summary. ",
     bot_summary_focus!()
 );
 
-/// The addendum for a flush that wrote `writes` lines to `MEMORY.md`.
+/// The addendum for a flush that saved `writes` lines to `MEMORY.md` (adds and replaces).
 fn bot_summary_addendum(writes: u32) -> String {
     match writes {
         0 => BOT_SUMMARY_NOTHING_SAVED.to_owned(),
@@ -91,7 +91,8 @@ fn bot_summary_addendum(writes: u32) -> String {
 pub(crate) struct BotCompact<'a> {
     /// `MEMORY.md` as it is now (the body, at most 8 KiB).
     pub(crate) memory: &'a str,
-    /// Lines the memory flush wrote just before this compaction (`0`: none, or no flush ran).
+    /// Lines the memory flush saved just before this compaction — adds and replaces; a remove saves none
+    /// (`0`: nothing saved, or no flush ran).
     pub(crate) flush_writes: u32,
 }
 
