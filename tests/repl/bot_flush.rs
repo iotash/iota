@@ -1,5 +1,7 @@
 //! A bot's memory flush and the compaction after it (docs/design/bot-mode.md §3.6.1, §4.1, §4.3), the day
-//! change and the resume notices (§2.5), driven end to end through `iota::repl::run`.
+//! change and the resume notices (§2.5), driven end to end through `iota::repl::run`. The restart tests at the
+//! end include two paired runs — a restart against the same process running on, with the model's every answer
+//! fixed — which are what compares a restart's sends; the long run (`bot_longrun.rs`) compares only the view.
 //!
 //! The scripted facade makes the queue order explicit: a `Reply::Input` is something the user typed, served
 //! before whatever the loop itself queued, and `Reply::Enqueued` serves the loop's own queue — the flush
@@ -50,7 +52,8 @@ fn input(s: &str) -> Reply {
 /// ordinary tool, and a presenter whose one host records every state and ping.
 struct Fixture {
     ui: Arc<ScriptedUi>,
-    _tmp: tempfile::TempDir,
+    /// The store and the bots live under it (a paired run copies it aside and puts it back).
+    tmp: tempfile::TempDir,
     store: SessionStore,
     bots: PathBuf,
     states: Arc<Mutex<Vec<State>>>,
@@ -70,7 +73,7 @@ impl Fixture {
         let store = SessionStore::new(tmp.path().join("sessions")).with_bots(&bots);
         Self {
             ui: ScriptedUi::new(script),
-            _tmp: tmp,
+            tmp,
             store,
             bots,
             states: Arc::default(),
@@ -1283,4 +1286,201 @@ async fn a_flush_queued_when_the_process_went_down_runs_after_the_restart() {
     assert_eq!(prompts.last().map(String::as_str), Some("two"));
     let m = marker(&dir);
     assert!(m.get("flush_skipped").is_none(), "{m}");
+}
+
+/// What a call was, read off its last message: the summary pass, the flush turn's first round, a round
+/// answering tool results, or a user turn.
+fn kind_of(messages: &[Message]) -> &'static str {
+    let last = messages.last().expect("a message");
+    if last.role() == Role::Tool {
+        "followup"
+    } else if last.content.starts_with(SUMMARY_MARK) {
+        "summary"
+    } else if last.is_notice() && last.content.starts_with(FLUSH_MARK) {
+        "flush"
+    } else {
+        "turn"
+    }
+}
+
+/// A call's history without its system message — the memory block lives there.
+fn view_of(messages: &[Message]) -> &[Message] {
+    match messages.first() {
+        Some(m) if m.role() == Role::System => &messages[1..],
+        _ => messages,
+    }
+}
+
+/// The model of the paired runs, its every answer fixed by the prompt alone (never by the memory block it is
+/// shown): `zero` remembers a line, `one` lands at `one_at`, the flush remembers another, the summary pass
+/// answers `SUMMARY`.
+fn fixed_model(one_at: u64) -> FakeProvider {
+    FakeProvider::new()
+        .with_model("gpt-test")
+        .reporting_usage()
+        .with_tools()
+        .answering(move |_, messages| {
+            let last = messages.last().expect("a message");
+            if last.content.starts_with(SUMMARY_MARK) {
+                return Round::reply("SUMMARY").usage(usage(900));
+            }
+            let in_flush = messages
+                .iter()
+                .rev()
+                .find(|m| m.role() == Role::User)
+                .is_some_and(|m| m.content.starts_with(FLUSH_MARK));
+            if last.role() == Role::Tool {
+                return Round::text("Saved.").usage(usage(if in_flush { one_at } else { 1_000 }));
+            }
+            if in_flush {
+                return Round::calls(vec![iota::testing::tool_call_with(
+                    "f1",
+                    "remember",
+                    &[
+                        ("action", "add"),
+                        ("text", "deploys on fridays"),
+                        ("source", "inferred"),
+                    ],
+                )]);
+            }
+            match last.content.as_str() {
+                "zero" => remember_tabs(),
+                "one" => Round::text("re one").usage(usage(one_at)),
+                other => Round::text(&format!("re {other}")).usage(usage(1_000)),
+            }
+        })
+}
+
+/// A harness clock that never crosses a midnight, so the two sides of a paired run see the same day.
+fn fixed_day() -> iota::agents::harness::HarnessInputs {
+    iota::agents::harness::HarnessInputs {
+        clock: Arc::new(|| "2026-10-01".to_owned()),
+        ..iota::agents::harness::HarnessInputs::default()
+    }
+}
+
+/// The calls of one side of a paired run.
+struct Side(Vec<Vec<Message>>);
+
+/// A restart against running on, with the model's every action fixed (§4.1): the bot runs `zero` (which
+/// remembers a line — the running process's memory copy keeps the old block until a refresh, §3.4) and `one`,
+/// then idles at the prompt, where the disk is copied aside; the SAME process then runs on over `after()`. The
+/// copy is put back and a new process resumes it over `after()` again. Returns the calls the running process
+/// made after the drop point, and the restarted process's.
+async fn paired(one_at: u64, after: fn() -> Vec<Reply>) -> (Side, Side) {
+    let snapshot = tempfile::tempdir().expect("tempdir");
+    let mut f = Fixture::new(Vec::new());
+    let root = f.tmp.path().to_path_buf();
+    let p = fixed_model(one_at);
+    let log = p.log();
+    let at = Arc::new(Mutex::new(None));
+    let mut script = vec![
+        input("zero"),
+        Reply::Queued(Vec::new()), // the round boundary after the remember call: nothing typed
+        input("one"),
+    ];
+    {
+        let (log, at, snap) = (log.clone(), Arc::clone(&at), snapshot.path().join("t"));
+        let root = root.clone();
+        script.push(Reply::Pause(Arc::new(move || {
+            super::bot_longrun::copy_tree(&root, &snap);
+            *at.lock().unwrap() = Some(log.calls());
+        })));
+    }
+    script.extend(after());
+    script.push(Reply::Interrupted);
+    f.restart(script);
+    f.run_with(p, "", fixed_day(), Vec::new()).await;
+    let at = at.lock().unwrap().expect("the drop point was reached");
+    let running_on = Side(log.sent()[at..].to_vec());
+
+    // The kill: what the process did after the drop point never happened.
+    for dir in ["sessions", "bots"] {
+        std::fs::remove_dir_all(root.join(dir)).expect("rm");
+    }
+    for e in std::fs::read_dir(snapshot.path().join("t")).expect("snapshot") {
+        let e = e.expect("entry");
+        std::fs::rename(e.path(), root.join(e.file_name())).expect("restore");
+    }
+    let bot = iota::agents::memory::BotMemory::new("coder", f.bots.join("coder"));
+    let memory = std::fs::read_to_string(bot.path()).expect("MEMORY.md at the drop");
+    assert!(memory.contains("prefers tabs"), "{memory}");
+    let mut script = after();
+    script.push(Reply::Interrupted);
+    f.restart(script);
+    let p = fixed_model(one_at);
+    let log = p.log();
+    f.run_with(p, &memory, fixed_day(), Vec::new()).await;
+    (running_on, Side(log.sent()))
+}
+
+/// The two sides made the same calls, in the same order — `kinds` — and sent the same history in each, byte
+/// for byte: a summary pass its whole request (the older history rendered into one text, and the memory
+/// section), every other call its messages less the system message. The memory block is compared apart.
+fn assert_same_sends(running_on: &Side, restarted: &Side, kinds: &[&str]) {
+    let of = |s: &Side| s.0.iter().map(|m| kind_of(m)).collect::<Vec<_>>();
+    assert_eq!(of(running_on), kinds, "running on");
+    assert_eq!(of(restarted), kinds, "restarted");
+    for (i, (a, b)) in running_on.0.iter().zip(&restarted.0).enumerate() {
+        let (a, b) = if kinds[i] == "summary" {
+            (&a[..], &b[..])
+        } else {
+            (view_of(a), view_of(b))
+        };
+        assert_eq!(a, b, "call {i} ({})", kinds[i]);
+    }
+}
+
+/// §4.1 with §3.4, paired: the process went down with a flush notice queued (`one` crossed the threshold).
+/// Running on and restarted, the bot runs the flush turn, then the compaction, then `two` — the same calls
+/// with the same history, the summary pass shown the same history and the same memory. Only the memory block
+/// of the flush turn may differ, and does here: the running process still holds the block from before `zero`'s
+/// write, the restart re-read `MEMORY.md` at startup; the compaction refreshes the running one, so `two`'s
+/// block is the same on both sides.
+#[tokio::test]
+async fn a_restart_sends_what_running_on_would_have_with_a_flush_queued() {
+    let (running_on, restarted) = paired(100_000, || vec![Reply::Enqueued, input("two")]).await;
+    assert_same_sends(
+        &running_on,
+        &restarted,
+        &["flush", "followup", "summary", "turn"],
+    );
+    let (held, reread) = (&running_on.0[0][0], &restarted.0[0][0]);
+    assert!(!held.content.contains("prefers tabs"), "{}", held.content);
+    assert!(
+        reread.content.contains("prefers tabs"),
+        "{}",
+        reread.content
+    );
+    let summary = &running_on.0[2].last().expect("a message").content;
+    assert!(
+        summary.contains("prefers tabs")
+            && summary.contains("deploys on fridays")
+            && summary.contains("User: zero"),
+        "the summary request carries the memory and the history: {summary}"
+    );
+    assert_eq!(
+        running_on.0[3][0], restarted.0[3][0],
+        "after the compaction"
+    );
+    assert!(running_on.0[3][0].content.contains("deploys on fridays"));
+}
+
+/// §4.1, paired: the process went down just under the threshold, and the next message crosses it on its own.
+/// Running on and restarted, it is compacted before it is sent (no flush: nothing was queued) — the same
+/// summary request, then the same history for the message — and both sends of it carry the refreshed memory.
+#[tokio::test]
+async fn a_restart_sends_what_running_on_would_have_when_the_next_message_compacts() {
+    let (running_on, restarted) = paired(95_500, || vec![input(&long_message())]).await;
+    assert_same_sends(&running_on, &restarted, &["summary", "turn"]);
+    let summary = &running_on.0[0].last().expect("a message").content;
+    assert!(
+        summary.contains("prefers tabs") && summary.contains("User: zero"),
+        "the summary request carries the memory and the history: {summary}"
+    );
+    assert_eq!(
+        running_on.0[1][0], restarted.0[1][0],
+        "after the compaction"
+    );
+    assert!(running_on.0[1][0].content.contains("prefers tabs"));
 }

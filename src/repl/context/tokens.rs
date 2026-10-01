@@ -52,7 +52,14 @@ pub(crate) const BOT_RESERVE_PERCENT: u64 = 25;
 /// The smallest window a bot runs in (docs/design/bot-mode.md §4.1). The memory cap (8 KiB) and the reserve's
 /// floor ([`BOT_RESERVE_TOKENS`]) are flat — neither scales with the window — so below this the memory block,
 /// the `remember` echoes and the flush exchange a compaction keeps fill the threshold on their own: a bot
-/// compacts every other turn and its flush turn outgrows the window.
+/// compacts every few turns and its flush turn outgrows the window.
+///
+/// Measured, not derived: the long run's soft-threshold model (`tests/repl/bot_longrun.rs`, memory hovering at
+/// 6 KiB) passes every invariant at 32k, and at 8k (8192) it failed — at `db11a05`, 1245 of 2668 calls refused
+/// as over the window and a compaction about every 9.6 turns; rerun at `11082d0`, 961 of 2929 refused, one
+/// every 6.9 turns, with the occupancy a compaction leaves (3777) already at the 4096 threshold. The command and
+/// the output are in `docs/history/bot-mode/bot-mode-8k-evidence.md`. That shows this load fails at 8k, not that
+/// 31,999 would: a change to this floor, the memory cap or the reserve needs a new measurement.
 pub(crate) const BOT_MIN_WINDOW: u64 = 32_000;
 
 /// How much of the window usage must grow after a declined auto-compaction offer before it

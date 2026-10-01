@@ -75,7 +75,6 @@ struct Shared {
     window: u64,
     seed: u64,
     remember_at: BTreeSet<u64>,
-    keep_lines: Option<usize>,
     calls: Mutex<Vec<GrowingCall>>,
     on_call: Mutex<Option<Hook>>,
 }
@@ -92,21 +91,15 @@ impl GrowingProvider {
     /// A usage-reporting tool provider (`openai`/`gpt-test`) with a `window`-token context; `seed` picks the
     /// reply sizes.
     pub fn new(window: u64, seed: u64) -> Self {
-        Self::build(window, seed, BTreeSet::new(), None)
+        Self::build(window, seed, BTreeSet::new())
     }
 
-    fn build(
-        window: u64,
-        seed: u64,
-        remember_at: BTreeSet<u64>,
-        keep_lines: Option<usize>,
-    ) -> Self {
+    fn build(window: u64, seed: u64, remember_at: BTreeSet<u64>) -> Self {
         Self {
             shared: Arc::new(Shared {
                 window,
                 seed,
                 remember_at,
-                keep_lines,
                 calls: Mutex::new(Vec::new()),
                 on_call: Mutex::new(None),
             }),
@@ -121,20 +114,6 @@ impl GrowingProvider {
             self.shared.window,
             self.shared.seed,
             turns.into_iter().collect(),
-            self.shared.keep_lines,
-        )
-    }
-
-    /// A tidy model: it keeps at most `lines` of its own lines, removing the oldest before it adds when the
-    /// memory it is shown already has that many. Without it the memory grows to the soft threshold (§3.5) and
-    /// hovers there — the model consolidates only when told to.
-    #[must_use]
-    pub fn keeping(self, lines: usize) -> Self {
-        Self::build(
-            self.shared.window,
-            self.shared.seed,
-            self.shared.remember_at.clone(),
-            Some(lines),
         )
     }
 
@@ -285,12 +264,8 @@ impl GrowingProvider {
             );
         }
 
-        let full = self
-            .shared
-            .keep_lines
-            .is_some_and(|n| facts(&memory_block(messages)) >= n);
         if flush {
-            if (full || prompt.contains("consolidate soon"))
+            if prompt.contains("consolidate soon")
                 && let Some(old) = oldest_fact(&memory_block(messages), own)
             {
                 return (CallKind::Flush, remove(&id("rm"), &old));
@@ -305,9 +280,6 @@ impl GrowingProvider {
             );
         }
         if self.shared.remember_at.contains(&turn) {
-            if full && let Some(old) = oldest_fact(&memory_block(messages), own) {
-                return (CallKind::Turn, remove(&id("rm"), &old));
-            }
             return (
                 CallKind::Turn,
                 add(
@@ -384,13 +356,6 @@ fn oldest_fact(text: &str, own: &[Message]) -> Option<String> {
             Some(l[at..=at + end].to_owned())
         })
         .find(|id| !removed.contains(id))
-}
-
-/// How many of this fake's lines `text` shows.
-fn facts(text: &str) -> usize {
-    text.lines()
-        .filter(|l| l.starts_with("- [") && l.contains(FACT_MARK))
-        .count()
 }
 
 /// A deterministic 64-bit mix (splitmix64's finaliser).

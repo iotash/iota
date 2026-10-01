@@ -1,6 +1,6 @@
 //! The long run (docs/design/bot-mode.md §5.2): a bot with a 32k window — the smallest a bot runs in (§4.1) —
 //! driven through 2000 turns by
-//! [`GrowingProvider`] — whose usage is the request measured and which refuses a request over the window — with
+//! [`GrowingProvider`] — a model whose memory grows to the soft threshold and hovers there; whose usage is the request measured and which refuses a request over the window — with
 //! the process dropped and resumed at seeded random points. It checks the mechanism, not a model:
 //!
 //! 0. every user turn `1..=2000` is in the log exactly once, with its final reply after it;
@@ -10,25 +10,21 @@
 //! 3. the compactions are about as many as the growth divided by the room each one frees;
 //! 4. every compaction is preceded by exactly one flush notice, or its marker says `flush_skipped`;
 //! 5. `MEMORY.md` stays within its 8 KiB cap;
-//! 6. a restart changes nothing: at every drop the same process is ALSO run on without the restart (a copy of
-//!    the disk taken at the drop point is what the restart resumes). 6a: the view the restart loads is, byte for
-//!    byte, the one the process held. 6b: the two send the model the same calls and the same history, up to and
-//!    including the next user turn — everything but the memory block, which a restart re-reads by design (§3.4:
-//!    startup is a refresh moment) while the running process keeps its copy until the next compaction. The
-//!    model may answer the re-read block differently, and that alone is listed, not failed: once what the
-//!    fake produced after it was shown the block (its new tool calls, their results, the `memory:` notices of
-//!    their writes) is left out — and, in a summary request, the memory section and the count of lines its
-//!    flush saved — the two sides must make the same calls with the same histories, in order
-//!    ([`refresh_explains`]). Anything else — a call of another kind, an older message changed, a history cut
-//!    or reordered — is the process's, and fails;
+//! 6. (6a) a restart loads the view the process held: at every drop the same process is ALSO run on without the
+//!    restart (a copy of the disk taken at the drop point is what the restart resumes), and the view the restart
+//!    loaded is, byte for byte, the one the running process sends next. What the two then SEND is not compared
+//!    here — the fake answers the memory block, which a restart re-reads (§3.4), so the two may diverge for the
+//!    model's reasons; the paired runs with a fixed model in `tests/repl/bot_flush.rs`
+//!    (`a_restart_sends_what_running_on_would_have_*`) compare the sends;
 //! 7. the startup load time as the log grows — printed, and held to the §2.6 threshold (2 s) as a loose bound.
 //!
 //! Drops happen at the idle prompt, between turns — where a bot sits nearly all its life — including the
 //! moment a flush notice has been queued and not yet run. The harness clock is fixed, so no run crosses a
 //! midnight that one side of a restart sees and the other does not. Every verdict is printed (`--nocapture`);
-//! each test requires the ones it names. One scenario is kept, `#[ignore]`d, as the evidence for the minimum
-//! window: [`a_bot_whose_memory_sits_at_the_soft_threshold_outgrows_an_8k_window`]. Most of the run's time is
-//! the durability path itself: every persisted batch is a `sync_all` (a full flush on macOS).
+//! the test requires the ones it names. The 8k run that is the evidence for the minimum window is no longer
+//! here: `docs/history/bot-mode/bot-mode-8k-evidence.md` keeps its command and output, and `BOT_MIN_WINDOW` its
+//! numbers. Most of the run's time is the durability path itself: every persisted batch is a `sync_all` (a full
+//! flush on macOS).
 //!
 //! What it does NOT cover (review R7), so it is no substitute for the targeted tests: every restart is at the
 //! idle prompt, never inside a write (the failed-batch, cut-back and interrupt paths have tests of their own,
@@ -57,8 +53,6 @@ use tokio_util::sync::CancellationToken;
 /// The smallest window a bot runs in (`BOT_MIN_WINDOW`, bot-mode.md §4.1): its reserve is capped at half of it,
 /// so it compacts at 16k.
 const WINDOW: u64 = 32_000;
-/// "8k" — below the minimum; kept only for the reproduction that shows why there is one.
-const SMALL_WINDOW: u64 = 8_192;
 /// The fixed date the harness clock reads.
 const TODAY: &str = "2026-10-01";
 const TURNS: u64 = 2_000;
@@ -100,7 +94,7 @@ fn feed(s: String) -> Reply {
 }
 
 /// Copies directory `from` to `to` (which must not exist).
-fn copy_tree(from: &Path, to: &Path) {
+pub(crate) fn copy_tree(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).expect("mkdir");
     for e in std::fs::read_dir(from).expect("readdir") {
         let e = e.expect("entry");
@@ -190,7 +184,7 @@ impl Bot {
     }
 
     /// One life of the process: opens the bot as `iota run coder` does (resumed, or created under its
-    /// pointer), runs the loop over `script`, returns the bundle and how long the open took.
+    /// pointer), runs the loop over `script`, returns the bundle, how long the open took and the view it loaded.
     /// `on_open` is told the bundle before the loop starts.
     async fn life(
         &self,
@@ -198,7 +192,7 @@ impl Bot {
         provider: GrowingProvider,
         script: Vec<Reply>,
         on_open: impl FnOnce(&Path),
-    ) -> (PathBuf, Duration) {
+    ) -> (PathBuf, Duration, Vec<Message>) {
         let t0 = Instant::now();
         let opened = self
             .store
@@ -236,7 +230,7 @@ impl Bot {
                 clock: Arc::new(|| TODAY.to_owned()),
                 ..iota::agents::harness::HarnessInputs::default()
             },
-            imported_history: history,
+            imported_history: history.clone(),
             dispatch,
             jobs: iota::shell::jobs::Jobs::new(Path::new("")),
             mcp: McpHooks::default(),
@@ -266,7 +260,7 @@ impl Bot {
             )),
         };
         iota::repl::run(params).await.expect("exit");
-        (dir, load)
+        (dir, load, history)
     }
 }
 
@@ -278,272 +272,18 @@ fn view_of(call: &GrowingCall) -> &[Message] {
     }
 }
 
-/// `calls` up to and including the first round of user turn `turn` (all of them when it never came).
-fn up_to_turn(calls: &[GrowingCall], turn: u64) -> &[GrowingCall] {
-    let end = calls
-        .iter()
-        .position(|c| c.kind == CallKind::Turn && c.turn == turn)
-        .map_or(calls.len(), |i| i + 1);
-    &calls[..end]
-}
-
 /// How one restart compared with running on.
 struct DropReport {
     turn: u64,
     /// A flush notice was queued when the process went down.
     flush_queued: bool,
-    /// 6a: the view the restart loaded against the one the process held; `None` when a compaction came first on
-    /// either side, so neither call shows the view as it was at the drop.
+    /// 6a: the view the restart loaded against the one the process held; `None` when the run without the
+    /// restart compacted first, so its first call does not show the view as it was at the drop.
     loaded: Option<Result<(), String>>,
-    /// 6b: where what the two sent, up to the next user turn, first differs — the calls or the history, not the
-    /// memory block; `None` when it was the same.
-    diff: Option<(usize, String)>,
-    /// The first call whose memory block differs (the restart's startup re-read, §3.4), if any.
-    memory_at: Option<usize>,
-    /// When there is a `diff` and a `memory_at`: whether the model's answer to the re-read block accounts for
-    /// ALL of the difference ([`refresh_explains`]), or what it does not account for.
-    refresh: Option<Result<(), String>>,
 }
 
-impl DropReport {
-    /// The only difference is the model answering the re-read memory block (the §3.4 refresh) — checked
-    /// message by message, not inferred from where the first difference sits.
-    fn follows_the_refresh(&self) -> bool {
-        matches!(self.refresh, Some(Ok(())))
-    }
-}
-
-/// The ids of the tool calls in `view`.
-fn call_ids(view: &[Message]) -> BTreeSet<&str> {
-    view.iter()
-        .flat_map(Message::tool_calls)
-        .map(|c| c.id.as_str())
-        .collect()
-}
-
-/// A write one of the model's new calls made to the memory: where its result says it saved, and the line the
-/// call passed (`text`, `new` or `old` — the notice of the write shows it).
-struct Write {
-    place: String,
-    line: String,
-}
-
-impl Write {
-    /// Whether `notice` is this write's: `memory: <place> <verb>: <line …>`.
-    fn made(&self, notice: &str) -> bool {
-        notice
-            .strip_prefix("memory: ")
-            .and_then(|n| n.strip_prefix(self.place.as_str()))
-            .and_then(|n| n.strip_prefix(' '))
-            .is_some_and(|n| n.contains(self.line.as_str()))
-    }
-}
-
-/// The writes that the calls in `view` whose ids are `fresh` made: each successful result (`saved to <place>
-/// (…)`) with its call.
-fn new_writes(view: &[Message], fresh: &dyn Fn(&str) -> bool) -> Vec<Write> {
-    view.iter()
-        .filter(|r| r.role() == Role::Tool && !r.is_error() && fresh(r.tool_call_id()))
-        .filter_map(|r| {
-            let call = view
-                .iter()
-                .flat_map(Message::tool_calls)
-                .find(|c| c.id == r.tool_call_id())?;
-            let (place, _) = r
-                .content
-                .lines()
-                .next()?
-                .strip_prefix("saved to ")?
-                .rsplit_once(" (")?;
-            let line = ["text", "new", "old"]
-                .iter()
-                .find_map(|k| call.arguments.get(*k)?.as_str())?;
-            Some(Write {
-                place: place.to_owned(),
-                line: line.to_owned(),
-            })
-        })
-        .collect()
-}
-
-/// The header of a bot's summary request's long-term memory section (`repl::commands::compact::summarize`).
-const MEMORY_SECTION: &str =
-    "\n\n--- LONG-TERM MEMORY (already saved separately; do not repeat these) ---\n";
-
-/// `prompt` with the body of its long-term memory section — `MEMORY.md` as the summary pass is shown it,
-/// which a restart re-reads (§3.4) — replaced by a placeholder; the rest, the rendered history included, is
-/// kept byte for byte.
-fn without_memory_section(prompt: &str) -> String {
-    let Some(at) = prompt.find(MEMORY_SECTION) else {
-        return prompt.to_owned();
-    };
-    let body = at + MEMORY_SECTION.len();
-    let end = [
-        "\n--- CONVERSATION START ---\n",
-        "\n--- NEW CONVERSATION START ---\n",
-    ]
-    .iter()
-    .filter_map(|mark| prompt[body..].find(mark))
-    .min()
-    .map_or(prompt.len(), |i| body + i);
-    format!("{}<memory>{}", &prompt[..body], &prompt[end..])
-}
-
-/// The writes the flush in `view` made: its successful results (`saved to …`) after the flush notice.
-fn flush_writes(view: &[Message]) -> usize {
-    view.iter()
-        .rposition(|m| m.is_notice() && m.content.starts_with(FLUSH_MARK))
-        .map_or(0, |at| {
-            view[at + 1..]
-                .iter()
-                .filter(|m| {
-                    m.role() == Role::Tool && !m.is_error() && m.content.starts_with("saved to ")
-                })
-                .count()
-        })
-}
-
-/// A summary request as the process is accountable for it: [`without_memory_section`], and the number of
-/// lines the flush saved — which the model's answer decides — replaced by a placeholder only when it is the
-/// number of writes that side's flush made (`writes`); a wrong count stays and differs.
-fn summary_request(prompt: &str, writes: usize) -> String {
-    let saved = format!(
-        " The memory flush just before this compaction saved {writes} line{}.",
-        if writes == 1 { "" } else { "s" }
-    );
-    without_memory_section(prompt).replacen(
-        &saved,
-        " The memory flush just before this compaction saved <its writes>.",
-        1,
-    )
-}
-
-/// Whether the model's answer to the re-read memory block — first shown in call `m` — explains every
-/// difference between the two sides up to the next user turn. The model decides what it calls and how many
-/// rounds it takes (the follow-ups); the process decides everything else. So:
-///
-/// - nothing differs up to call `m`;
-/// - with the messages the model's new answer produced left out of every history — an assistant message whose
-///   tool calls are all new since call `m`, those calls' results, and the `memory:` notices of the writes they
-///   made — the two sides make the same calls with the same histories, in order. A `memory:` notice is left
-///   out only when it is not already in call `m`'s history AND a write of a new call in the same history
-///   accounts for it (its result saved to the place the notice names, and the notice shows the line the call
-///   passed), one notice per write: a notice no new write made is the process's. A reply the model gave after
-///   call `m` is compared without its usage: that measures its request, which the new messages made longer. A
-///   follow-up round that adds nothing else is the model's own and folds into the call before it, so a side may
-///   take more of them. Every other message — an older one, a plain reply, a user message, a summary — must be
-///   equal and in place, so a history cut, reordered or rewritten fails even after a legitimate refresh;
-/// - a summary pass is compared on its whole request — the older history rendered into one text, in order —
-///   less its long-term memory section, which is the re-read memory itself, and less the count of lines the
-///   flush saved when that count is the side's own flush's writes ([`summary_request`]). What it summarizes
-///   ends before the last user turn, so the flush exchange the model answered differently is not in it.
-fn refresh_explains(
-    turn: u64,
-    reference: &[GrowingCall],
-    restarted: &[GrowingCall],
-    m: usize,
-) -> Result<(), String> {
-    let (a, b) = (up_to_turn(reference, turn), up_to_turn(restarted, turn));
-    if a.iter()
-        .zip(b)
-        .take(m + 1)
-        .any(|(x, y)| view_of(x) != view_of(y) || x.kind != y.kind)
-    {
-        return Err(format!("a difference at or before call {m}"));
-    }
-    let shown = view_of(&a[m]);
-    let before = call_ids(shown);
-    let fresh = |id: &str| !before.contains(id);
-    let unmeasured = |msg: &Message| {
-        if msg.role() == Role::Assistant && !shown.contains(msg) {
-            msg.clone().with_usage(None)
-        } else {
-            msg.clone()
-        }
-    };
-    // What the process put in `view`: everything but the new calls, their results, and the notices of the
-    // writes they made.
-    let of_the_process = |view: &[Message]| -> Vec<Message> {
-        let mut writes = new_writes(view, &fresh);
-        let mut out = Vec::new();
-        for msg in view {
-            let calls = msg.tool_calls();
-            let keep = match msg.role() {
-                Role::Assistant => calls.is_empty() || !calls.iter().all(|c| fresh(&c.id)),
-                Role::Tool => !fresh(msg.tool_call_id()),
-                _ if msg.is_notice() && !shown.contains(msg) => {
-                    match writes.iter().position(|w| w.made(&msg.content)) {
-                        Some(i) => {
-                            writes.remove(i);
-                            false
-                        }
-                        None => true,
-                    }
-                }
-                _ => true,
-            };
-            if keep {
-                out.push(unmeasured(msg));
-            }
-        }
-        out
-    };
-    let process = |cs: &[GrowingCall]| -> Vec<(CallKind, Vec<Message>)> {
-        let mut out: Vec<(CallKind, Vec<Message>)> = Vec::new();
-        for (i, c) in cs.iter().enumerate() {
-            let view: Vec<Message> = if c.kind == CallKind::Summary {
-                // The flush it follows is read off the call before it, which carries every round's result.
-                let writes = i
-                    .checked_sub(1)
-                    .map_or(0, |p| flush_writes(view_of(&cs[p])));
-                c.messages
-                    .iter()
-                    .map(|msg| {
-                        let mut msg = msg.clone();
-                        msg.content = summary_request(&msg.content, writes);
-                        msg
-                    })
-                    .collect()
-            } else {
-                of_the_process(view_of(c))
-            };
-            if c.kind == CallKind::Followup && out.last().is_some_and(|(_, v)| *v == view) {
-                continue;
-            }
-            out.push((c.kind, view));
-        }
-        out
-    };
-    let (pa, pb) = (process(a), process(b));
-    let kinds = |p: &[(CallKind, Vec<Message>)]| p.iter().map(|c| c.0).collect::<Vec<_>>();
-    if kinds(&pa) != kinds(&pb) {
-        return Err(format!(
-            "the process made different calls: {:?} / {:?}",
-            kinds(&pa),
-            kinds(&pb)
-        ));
-    }
-    for (i, ((kind, x), (_, y))) in pa.iter().zip(&pb).enumerate() {
-        if x != y {
-            let at = x
-                .iter()
-                .zip(y)
-                .position(|(p, q)| p != q)
-                .unwrap_or(x.len().min(y.len()));
-            return Err(format!(
-                "the process's call {i} ({kind:?}) differs beyond the model's new calls, at message {at} of {}/{}:\n  without: {:?}\n  with:    {:?}",
-                x.len(),
-                y.len(),
-                x.get(at),
-                y.get(at)
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// The view as it was at the drop, read off the first call that carries it (a user turn or the flush turn, less
-/// its new last message) — unless a compaction's summary pass came first.
+/// The view the process held at the drop, read off the first call it made after it (a user turn or the flush
+/// turn, less its new last message) — unless a compaction's summary pass came first.
 fn view_at_drop(calls: &[GrowingCall]) -> Option<&[Message]> {
     let first = calls.first()?;
     match first.kind {
@@ -555,92 +295,29 @@ fn view_at_drop(calls: &[GrowingCall]) -> Option<&[Message]> {
     }
 }
 
-/// 6a for one drop.
-fn compare_loaded(
-    reference: &[GrowingCall],
-    restarted: &[GrowingCall],
-) -> Option<Result<(), String>> {
-    let (a, b) = (view_at_drop(reference)?, view_at_drop(restarted)?);
-    if a == b {
+/// 6a for one drop: the view the restart loaded (`loaded`, as `open_bot` returned it) against the one the run
+/// without the restart held.
+fn compare_loaded(reference: &[GrowingCall], loaded: &[Message]) -> Option<Result<(), String>> {
+    let held = view_at_drop(reference)?;
+    let loaded = match loaded.first() {
+        Some(m) if m.role() == Role::System => &loaded[1..],
+        _ => loaded,
+    };
+    if held == loaded {
         return Some(Ok(()));
     }
-    let at = a
+    let at = held
         .iter()
-        .zip(b)
+        .zip(loaded)
         .position(|(p, q)| p != q)
-        .unwrap_or(a.len().min(b.len()));
+        .unwrap_or(held.len().min(loaded.len()));
     Some(Err(format!(
         "the views differ at message {at} of {}/{}:\n  held:   {:?}\n  loaded: {:?}",
-        a.len(),
-        b.len(),
-        a.get(at),
-        b.get(at)
+        held.len(),
+        loaded.len(),
+        held.get(at),
+        loaded.get(at)
     )))
-}
-
-/// The first call, up to the next user turn, whose memory block (the system message) differs.
-fn memory_differs_at(
-    turn: u64,
-    reference: &[GrowingCall],
-    restarted: &[GrowingCall],
-) -> Option<usize> {
-    up_to_turn(reference, turn)
-        .iter()
-        .zip(up_to_turn(restarted, turn))
-        .position(|(x, y)| x.messages.first() != y.messages.first())
-}
-
-/// Where what the restarted run sent first differs from what the run without the restart sent — the kind of a
-/// call or its history, not its memory block ([`memory_differs_at`]): the call's index and what differed.
-fn compare(
-    turn: u64,
-    reference: &[GrowingCall],
-    restarted: &[GrowingCall],
-) -> Option<(usize, String)> {
-    let a = up_to_turn(reference, turn);
-    let b = up_to_turn(restarted, turn);
-    let kinds = |cs: &[GrowingCall]| cs.iter().map(|c| c.kind).collect::<Vec<_>>();
-    for i in 0..a.len().max(b.len()) {
-        let (Some(x), Some(y)) = (a.get(i), b.get(i)) else {
-            return Some((
-                i,
-                format!(
-                    "different calls: without the restart {:?}, with it {:?}",
-                    kinds(a),
-                    kinds(b)
-                ),
-            ));
-        };
-        if x.kind != y.kind {
-            return Some((
-                i,
-                format!(
-                    "different calls: without the restart {:?}, with it {:?}",
-                    kinds(a),
-                    kinds(b)
-                ),
-            ));
-        }
-        if view_of(x) != view_of(y) {
-            let at = view_of(x)
-                .iter()
-                .zip(view_of(y))
-                .position(|(p, q)| p != q)
-                .unwrap_or(view_of(x).len().min(view_of(y).len()));
-            return Some((
-                i,
-                format!(
-                    "call {i} ({:?}): the views differ at message {at} of {}/{}:\n  without: {:?}\n  with:    {:?}",
-                    x.kind,
-                    view_of(x).len(),
-                    view_of(y).len(),
-                    view_of(x).get(at),
-                    view_of(y).get(at)
-                ),
-            ));
-        }
-    }
-    None
 }
 
 /// What the whole run left.
@@ -719,7 +396,6 @@ async fn drive(window: u64, provider: GrowingProvider, drops: &BTreeSet<u64>) ->
         script.push(Reply::Pause(Arc::new(|| {})));
         script.push(Reply::Interrupted);
 
-        let first = provider.call_count();
         let log_bytes = log_path
             .lock()
             .unwrap()
@@ -727,7 +403,7 @@ async fn drive(window: u64, provider: GrowingProvider, drops: &BTreeSet<u64>) ->
             .and_then(|p| std::fs::metadata(p).ok())
             .map_or(0, |m| m.len());
         let slot = Arc::clone(&log_path);
-        let (_, load) = bot
+        let (_, load, loaded) = bot
             .life(window, provider.clone(), script, move |dir| {
                 *slot.lock().unwrap() = Some(dir.join("messages.jsonl"));
             })
@@ -737,20 +413,10 @@ async fn drive(window: u64, provider: GrowingProvider, drops: &BTreeSet<u64>) ->
 
         // The restart before this life, against the run that went on without it.
         if let Some((turn, reference, flush_queued)) = pending.take() {
-            let restarted = &calls[first..];
-            let diff = compare(turn, &reference, restarted);
-            let memory_at = memory_differs_at(turn, &reference, restarted);
-            let refresh = diff
-                .as_ref()
-                .and(memory_at)
-                .map(|m| refresh_explains(turn, &reference, restarted, m));
             run.drops.push(DropReport {
                 turn,
                 flush_queued,
-                loaded: compare_loaded(&reference, restarted),
-                diff,
-                memory_at,
-                refresh,
+                loaded: compare_loaded(&reference, &loaded),
             });
         }
         if dropped {
@@ -786,6 +452,11 @@ async fn drive(window: u64, provider: GrowingProvider, drops: &BTreeSet<u64>) ->
 
 /// Invariant 4, read off the log: between one compaction marker and the next, the flush notices that were
 /// persisted, and whether the marker says the flush was skipped.
+///
+/// Its reach: the main line's own log agreeing with itself — one flush (or a skip) per compaction, counted. It
+/// never sees a no-restart reference, so it is no restart/no-restart comparison: a restart that ran the flush
+/// at another turn, ran the summary before it, or sent a different history still balances here. The sends
+/// are compared by the paired runs in `tests/repl/bot_flush.rs`.
 fn flush_accounting(records: &[serde_json::Value]) -> Vec<(usize, bool)> {
     let mut out = Vec::new();
     let mut notices = 0;
@@ -1025,9 +696,9 @@ fn verdicts(run: &Run) -> Vec<Verdict> {
         ),
     ));
 
-    // 6a. A restart loads exactly the view the process held: byte for byte, at every drop where some call shows
-    // it (a compaction's summary pass first, on either side, hides it) — and at least half of them must, or the
-    // check would be vacuous.
+    // 6a. A restart loads exactly the view the process held: byte for byte, at every drop where the run without
+    // the restart shows it (its compaction's summary pass first hides it; the restart's side is read off the open
+    // itself, so never hidden) — and at least half of them must, or the check would be vacuous.
     let loaded_bad: Vec<String> = run
         .drops
         .iter()
@@ -1039,67 +710,16 @@ fn verdicts(run: &Run) -> Vec<Verdict> {
     let compared = run.drops.iter().filter(|d| d.loaded.is_some()).count();
     out.push(verdict(
         "6a restart loads the view the process held",
-        loaded_bad.is_empty() && compared * 2 >= DROPS,
+        loaded_bad.is_empty() && run.drops.len() == DROPS && compared * 2 >= DROPS,
         format!(
-            "{compared} of {} drops show the view on both sides, {} differ{}",
+            "{compared} of {} drops compared ({} with a flush queued), {} differ{}",
             run.drops.len(),
+            run.drops.iter().filter(|d| d.flush_queued).count(),
             loaded_bad.len(),
             if loaded_bad.is_empty() {
                 String::new()
             } else {
                 format!(":\n{}", loaded_bad.join("\n"))
-            }
-        ),
-    ));
-
-    // 6b. A restart sends the model what running on would have: the same calls and the same history, up to and
-    // including the next user turn. The memory block is not compared — a restart re-reads it (§3.4) — only
-    // counted.
-    let describe = |d: &DropReport| {
-        d.diff.as_ref().map(|(_, diff)| {
-            format!(
-                "drop before #{} (flush queued: {}, memory block differs from call {:?}): {diff}{}",
-                d.turn,
-                d.flush_queued,
-                d.memory_at,
-                match &d.refresh {
-                    Some(Err(why)) => format!("\n  not explained by the re-read block: {why}"),
-                    _ => String::new(),
-                }
-            )
-        })
-    };
-    let broken: Vec<String> = run
-        .drops
-        .iter()
-        .filter(|d| !d.follows_the_refresh())
-        .filter_map(describe)
-        .collect();
-    let refreshed: Vec<String> = run
-        .drops
-        .iter()
-        .filter(|d| d.follows_the_refresh())
-        .filter_map(describe)
-        .collect();
-    out.push(verdict(
-        "6b restart sends what running on would have",
-        broken.is_empty() && run.drops.len() == DROPS,
-        format!(
-            "{} restarts compared ({} with a flush queued, {} with the memory block re-read differently), {} differ{}; {} differ only after the model was shown the re-read block{}",
-            run.drops.len(),
-            run.drops.iter().filter(|d| d.flush_queued).count(),
-            run.drops.iter().filter(|d| d.memory_at.is_some()).count(),
-            broken.len(),
-            if broken.is_empty() {
-                String::new()
-            } else {
-                format!(":\n{}\n", broken.join("\n"))
-            },
-            refreshed.len(),
-            if refreshed.is_empty() {
-                String::new()
-            } else {
-                format!(":\n{}", refreshed.join("\n"))
             }
         ),
     ));
@@ -1161,199 +781,6 @@ fn report(title: &str, run: &Run, required: &[&str]) {
     assert!(failed.is_empty(), "{title}: invariants failed: {failed:?}");
 }
 
-/// The 6b exemption is the model's answer and nothing else: after a re-read block the flush may remove another
-/// line (new arguments, its result, its `memory:` notice, a longer request), but an older message cut from
-/// what the next turn is sent is the process's and is not explained — nor is a call of another kind.
-#[test]
-fn only_the_models_answer_to_the_reread_block_is_excused() {
-    use iota::provider::model::ToolCall;
-    let call = |kind, messages: Vec<Message>| GrowingCall {
-        kind,
-        turn: 1,
-        messages,
-        tools: Vec::new(),
-        input: 0,
-        output: 0,
-        refused: false,
-    };
-    let remove = |old: &str| {
-        Message::assistant("").with_tool_calls(vec![ToolCall {
-            id: "f-1-1rm".to_owned(),
-            name: "remember".to_owned(),
-            arguments: serde_json::json!({"action": "remove", "old": old})
-                .as_object()
-                .cloned()
-                .unwrap_or_default(),
-        }])
-    };
-    let side = |block: &str, old: &str, extra: &[Message], cut: bool| {
-        let head = vec![
-            Message::system(block),
-            Message::user("#1 tell me about item 1."),
-            Message::assistant("[#1] Here is item 1."),
-            Message::notice(FLUSH_MARK),
-        ];
-        let mut round = head.clone();
-        round.push(remove(old));
-        round.push(Message::tool_result(
-            &remove(old).tool_calls()[0],
-            "saved to MEMORY.md ## User (1 / 8 KiB)",
-            false,
-        ));
-        let mut turn = round.clone();
-        turn.push(Message::assistant("[#1] Saved.").with_usage(Some(
-            iota::provider::usage::Usage {
-                input: 10 + extra.len() as u64,
-                ..Default::default()
-            },
-        )));
-        turn.extend_from_slice(extra);
-        turn.push(Message::user("#2 tell me about item 2."));
-        if cut {
-            turn.remove(2);
-        }
-        vec![
-            call(CallKind::Flush, head),
-            call(CallKind::Followup, round),
-            call(CallKind::Turn, turn),
-        ]
-    };
-    let written = [Message::notice(
-        "memory: MEMORY.md ## User -1 line: fact-u2;",
-    )];
-    let held = side("memory as held", "fact-u1;", &[], false);
-    let reread = side("memory as re-read", "fact-u2;", &written, false);
-    assert_eq!(refresh_explains(2, &held, &reread, 0), Ok(()));
-
-    let cut = side("memory as re-read", "fact-u2;", &written, true);
-    let err = refresh_explains(2, &held, &cut, 0).expect_err("an older message cut");
-    assert!(err.contains("(Turn) differs"), "{err}");
-
-    let mut other = side("memory as re-read", "fact-u2;", &written, false);
-    other[2].kind = CallKind::Summary;
-    assert!(refresh_explains(2, &held, &other, 0).is_err());
-
-    // A `memory:` notice the new write did not make — another place, or another line — is the process's.
-    for invented in [
-        "memory: invented unrelated process notice",
-        "memory: MEMORY.md ## User -1 line: fact-u9;",
-    ] {
-        let extra = [Message::notice(invented)];
-        let odd = side("memory as re-read", "fact-u2;", &extra, false);
-        let err = refresh_explains(2, &held, &odd, 0).expect_err(invented);
-        assert!(err.contains("(Turn) differs"), "{err}");
-    }
-    // Nor does one write excuse two notices.
-    let twice = [written[0].clone(), written[0].clone()];
-    let doubled = side("memory as re-read", "fact-u2;", &twice, false);
-    assert!(refresh_explains(2, &held, &doubled, 0).is_err());
-}
-
-/// A call of `kind` in a unit test of the judges.
-fn test_call(kind: CallKind, messages: Vec<Message>) -> GrowingCall {
-    GrowingCall {
-        kind,
-        turn: 1,
-        messages,
-        tools: Vec::new(),
-        input: 0,
-        output: 0,
-        refused: false,
-    }
-}
-
-/// A `memory:` notice with no new tool call behind it is not the model's answer: the two sides share their
-/// older history and differ only in the memory block, and one of them has a notice nothing wrote.
-#[test]
-fn a_memory_notice_no_new_write_made_is_not_excused() {
-    let side = |block: &str, extra: &[Message]| {
-        let head = vec![
-            Message::system(block),
-            Message::user("#1 tell me about item 1."),
-            Message::assistant("[#1] Here is item 1."),
-            Message::notice(FLUSH_MARK),
-        ];
-        let mut turn = head.clone();
-        turn.push(Message::assistant("[#1] Nothing to keep."));
-        turn.extend_from_slice(extra);
-        turn.push(Message::user("#2 tell me about item 2."));
-        vec![
-            test_call(CallKind::Flush, head),
-            test_call(CallKind::Turn, turn),
-        ]
-    };
-    let held = side("memory as held", &[]);
-    assert_eq!(
-        refresh_explains(2, &held, &side("memory as re-read", &[]), 0),
-        Ok(())
-    );
-    let invented = side(
-        "memory as re-read",
-        &[Message::notice("memory: invented unrelated process notice")],
-    );
-    let err = refresh_explains(2, &held, &invented, 0).expect_err("a notice nothing wrote");
-    assert!(err.contains("(Turn) differs"), "{err}");
-}
-
-/// A summary pass is compared on the history it was handed, not by kind: with the older history the same on
-/// both sides and only the memory block re-read, a summary request whose history is lost is the process's —
-/// while one that differs only in its long-term memory section (the re-read memory) is not.
-#[test]
-fn a_summary_request_that_lost_its_history_is_not_excused() {
-    let summary = |memory: &str, conversation: &str| {
-        format!(
-            "Summarize.{MEMORY_SECTION}{memory}\n--- CONVERSATION START ---\n{conversation}--- CONVERSATION END ---"
-        )
-    };
-    let old = "User: #1 tell me about item 1.\nAssistant: [#1] Here is item 1.\n";
-    let side = |block: &str, request: String| {
-        let head = vec![
-            Message::system(block),
-            Message::user("#1 tell me about item 1."),
-            Message::assistant("[#1] Here is item 1."),
-            Message::notice(FLUSH_MARK),
-        ];
-        let mut turn = head.clone();
-        turn.push(Message::assistant("[#1] Nothing to keep."));
-        turn.push(Message::user("#2 tell me about item 2."));
-        vec![
-            test_call(CallKind::Flush, head),
-            test_call(CallKind::Summary, vec![Message::user(request)]),
-            test_call(CallKind::Turn, turn),
-        ]
-    };
-    let held = side("memory as held", summary("- [user] fact-u1; a", old));
-    let reread = side("memory as re-read", summary("- [user] fact-u2; b", old));
-    assert_eq!(refresh_explains(2, &held, &reread, 0), Ok(()));
-
-    let lost = side(
-        "memory as re-read",
-        summary("- [user] fact-u2; b", "CORRUPTED: all old history lost\n"),
-    );
-    assert!(compare(2, &held, &lost).is_some());
-    assert_eq!(memory_differs_at(2, &held, &lost), Some(0));
-    let err = refresh_explains(2, &held, &lost, 0).expect_err("a summary of lost history");
-    assert!(err.contains("(Summary) differs"), "{err}");
-
-    // Cut a message from what the summary pass is handed: also the process's.
-    let cut = side(
-        "memory as re-read",
-        summary("- [user] fact-u2; b", "User: #1 tell me about item 1.\n"),
-    );
-    assert!(refresh_explains(2, &held, &cut, 0).is_err());
-
-    // A count of saved lines the side's flush did not make (it wrote nothing): the process's.
-    let miscounted = side(
-        "memory as re-read",
-        summary("- [user] fact-u2; b", old).replacen(
-            "Summarize.",
-            "Summarize. The memory flush just before this compaction saved 2 lines.",
-            1,
-        ),
-    );
-    assert!(refresh_explains(2, &held, &miscounted, 0).is_err());
-}
-
 /// Invariant 0 is the user's turn answered, not any reply after it: turns whose only reply without tool calls
 /// is the flush's (`[#n] Saved.` after the flush notice) fail, while the same log with the user's own final
 /// reply in each turn passes.
@@ -1392,25 +819,6 @@ fn a_flush_reply_does_not_answer_the_users_turn() {
     assert!(!every_turn_answered(&records).held);
 }
 
-/// The mechanism in the smallest window a bot runs in, with a model that keeps its memory short (at most 12
-/// lines of its own): every invariant.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_bot_runs_two_thousand_turns_in_a_32k_window() {
-    let run = drive(WINDOW, tidy(WINDOW), &drop_points(SEED, DROPS)).await;
-    report(
-        "tidy memory, 32k",
-        &run,
-        &["0 ", "1 ", "2 ", "3 ", "4 ", "5 ", "6a ", "6b ", "7 "],
-    );
-}
-
-/// The long run's model: a `remember` every 25 turns, a line per flush, at most 12 lines kept.
-fn tidy(window: u64) -> GrowingProvider {
-    GrowingProvider::new(window, SEED)
-        .remembering_at(remember_turns())
-        .keeping(12)
-}
-
 /// The long run with a model that consolidates only when told to — the design's own equilibrium: MEMORY.md
 /// grows to the soft threshold (6 KiB) and hovers there (§3.5) — in a 32k window. Every invariant.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1420,31 +828,6 @@ async fn a_bot_whose_memory_sits_at_the_soft_threshold_runs_in_a_32k_window() {
     report(
         "memory at the soft threshold, 32k",
         &run,
-        &["0 ", "1 ", "2 ", "3 ", "4 ", "5 ", "6a ", "6b ", "7 "],
-    );
-}
-
-/// The same model in an 8k window — BELOW the minimum a bot runs in (bot-mode.md §4.1, `BOT_MIN_WINDOW`), which
-/// `iota run` now refuses at startup. Kept as the evidence for that minimum, not as a gap to close.
-///
-/// FAILS (2026-10-01): 6 KiB of memory is ~1.5k tokens in every request's system message, each `remember`
-/// result repeats the whole section it wrote to (~6 KiB again), and the flush exchange carrying those results
-/// is what a compaction keeps (§3.6.1 S2c). In an 8k window the occupancy right after a compaction is already
-/// at the 4096 threshold, so the bot compacts every other turn (invariant 3: "one per 2.2 turns"), and a flush
-/// turn that writes, then consolidates twice, goes over the window and is refused (invariant 2). The memory cap
-/// (8 KiB) and the reserve floor (32k) are flat — neither scales with the window — which is why the window has
-/// a floor instead. 6b fails here too, as a consequence: most drops follow a turn refused over the window, which
-/// (not having landed) queued no flush in the running process, while the restart — resumed over the threshold
-/// — queues one; the rest follow a snoozed compaction whose watermark lives in memory only. Neither happens in
-/// a 32k window.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "below the minimum window: the evidence for BOT_MIN_WINDOW (see the doc)"]
-async fn a_bot_whose_memory_sits_at_the_soft_threshold_outgrows_an_8k_window() {
-    let provider = GrowingProvider::new(SMALL_WINDOW, SEED).remembering_at(remember_turns());
-    let run = drive(SMALL_WINDOW, provider, &drop_points(SEED, DROPS)).await;
-    report(
-        "memory at the soft threshold, 8k",
-        &run,
-        &["0 ", "1 ", "2 ", "3 ", "4 ", "5 ", "6a ", "6b ", "7 "],
+        &["0 ", "1 ", "2 ", "3 ", "4 ", "5 ", "6a ", "7 "],
     );
 }

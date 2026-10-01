@@ -10,6 +10,7 @@
 | `bot-mode-review-fable-2.md`、`bot-mode-review-codex-2.md` | 修复后的第二轮评审 |
 | `bot-mode-verify-codex.md` | 修复验收与放行 |
 | `bot-mode-overdesign-{fable,opus,codex}.md` | 合并前的三份过度设计评审（codex 那份含仲裁结论） |
+| `bot-mode-8k-evidence.md` | `BOT_MIN_WINDOW` 的实测出处：删掉的 8k 长跑反例的命令、提交与输出摘要 |
 
 读的时候注意：
 
