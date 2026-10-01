@@ -48,6 +48,9 @@ pub(crate) const BUSY_ELAPSED_MIN: Duration = Duration::from_secs(2);
 /// overflow row when newest items are hidden (model.go:998).
 const QUEUE_HINT: &str = " · ↑ edit";
 
+/// What a newline inside a queued item renders as — the item stays one row (X-65).
+const QUEUE_NEWLINE: &str = " ⏎ ";
+
 /// The live busy phase (model.go `busyState`): label + optional detail + phase clock.
 #[derive(Debug, Clone)]
 pub(crate) struct BusyView {
@@ -179,7 +182,12 @@ pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
             } else {
                 budget(fi.width, 4)
             };
-            let mut item = truncate_ansi(entry, width, "…");
+            // One frame row per item: a multi-line draft shows its breaks as ` ⏎ `. A raw
+            // `\n` never reaches the wire — the ratatui buffer drops control characters —
+            // so the lines would silently glue (`a\nb` → `ab`). `queue_rows()` keeps the
+            // original text for ↑ and fold-back.
+            let flat = entry.replace('\n', QUEUE_NEWLINE);
+            let mut item = truncate_ansi(&flat, width, "…");
             if item.starts_with('/') {
                 item = format!("{GREEN}{item}{RESET}{FAINT}");
             }

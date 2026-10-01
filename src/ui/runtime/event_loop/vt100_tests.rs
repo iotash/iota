@@ -2762,3 +2762,56 @@ fn verify_f1_grow_up_after_a_wide_batch_keeps_it() {
         all.join("\n")
     );
 }
+
+/// A queued two-line draft (Ctrl+J between the lines, X-65) keeps ONE frame row: the newline
+/// shows as ` ⏎ `, the hint stays on that row, and the separator under it is whole. Without
+/// the ` ⏎ ` the frame does not tear — the ratatui buffer drops the `\n` — but the row reads
+/// `» ab`, two lines glued into a word that was never typed.
+#[test]
+fn a_queued_multi_line_draft_keeps_one_frame_row() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let lh = start_loop();
+    assert!(lh.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));
+    let mut evs = typed("a");
+    evs.push(Event::Key(KeyEvent::new(
+        KeyCode::Char('j'),
+        KeyModifiers::CONTROL,
+    )));
+    evs.extend(typed("b"));
+    evs.push(key(KeyCode::Enter)); // no reader parked → queued
+    for ev in evs {
+        lh.etx.send(ev).unwrap();
+    }
+    assert!(
+        lh.wait_until(Duration::from_secs(2), |h| h.contents().contains("» a ⏎ b")),
+        "the queue row never showed:\n{}",
+        lh.contents()
+    );
+    lh.sync();
+    let screen = lh.contents();
+    let rows: Vec<&str> = screen.lines().map(str::trim_end).collect();
+    let q = rows
+        .iter()
+        .position(|r| r.contains("» a ⏎ b"))
+        .expect("queue row");
+    assert!(
+        rows[q].ends_with("» a ⏎ b · ↑ edit"),
+        "the hint must stay on the item's row:\n{screen}"
+    );
+    let sep = crate::ui::render::frame::SEPARATOR_GLYPH.repeat(80);
+    assert_eq!(
+        rows[q + 1],
+        sep,
+        "the separator under the queue is torn:\n{screen}"
+    );
+    assert_eq!(
+        rows.iter().filter(|r| **r == sep).count(),
+        2,
+        "want both separators whole:\n{screen}"
+    );
+    assert!(
+        rows[q + 2].starts_with('❯'),
+        "the composer follows the separator:\n{screen}"
+    );
+    lh.quit_and_join(Duration::from_secs(2));
+}

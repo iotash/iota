@@ -311,11 +311,26 @@ shared turn-state races. Adopted instead:
   issue to file: insertAbove should restore the cursor itself.)
 - **Type-ahead queue rendering**: queued submits show as dim "»" lines above
   the separator (content side — inputs about to become history), one row
-  each (ANSI-aware truncation), capped at 3 shown + "+N more"; commands keep
+  each (ANSI-aware truncation; a multi-line item shows its breaks as ` ⏎ `),
+  capped at 3 shown + "+N more"; commands keep
   their highlight. On interrupt the queue joins (newline-separated) into the
   composer draft, ahead of any half-typed text; when input history (↑↓)
   lands in P3, queued items are also pushed there individually so message
   boundaries stay recoverable.
+- **Newline in the composer (2026-10-02, DIVERGENCES X-65).** The composer's
+  key ladder (`src/ui/input/keys.rs`, its module comment is the table) has a
+  row 7a ahead of Enter's submit: **Ctrl+J**, **Alt+Enter** and
+  **Shift+Enter** insert a newline at the cursor and end the history walk;
+  bare Enter and **Ctrl+Enter submit**. Ctrl+J (raw-mode LF) is the one chord
+  every target terminal delivers with no keyboard protocol; Alt+Enter is
+  ESC CR; Shift+Enter carries SHIFT only where the terminal reports it, and
+  is a plain submitting Enter elsewhere. Ctrl+Enter is not bound because
+  without a protocol it IS a bare Enter, and no Kitty protocol is pushed
+  (X-65 has the measured exit residue). The binding is deliberately NOT in
+  the shared `Editor::on_key`: the surface's one-line `Field`s (`/model`'s
+  typed row, Ask's "Other…", the search boxes) run that too, and they are one
+  line by design — their pastes flatten newlines. The composer's height is
+  its wrapped row count, newline breaks included (1..=5).
 
 ## Non-TTY / Once
 

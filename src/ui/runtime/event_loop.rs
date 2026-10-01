@@ -687,8 +687,6 @@ impl Model {
                 draft.push_str(&cur);
             }
             self.composer.set_value(&draft);
-            let rows = self.composer.line_count().min(MAX_COMPOSER_ROWS);
-            self.composer.set_height(rows);
             self.composer.move_to_end();
         }
         self.dirty = true;
