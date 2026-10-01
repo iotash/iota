@@ -62,6 +62,7 @@ async fn sse_frames_parse_across_chunk_boundaries() {
         event: ping\ndata: {\"a\":1}\n\n\
         data: line1\ndata:line2\n\n\
         data: [DONE]\n\n\
+        data: {\"late\":1}\n\n\
         ignored: field\n";
     let mut s = Sse::new(sse_stream(RAW), CancellationToken::new());
 
@@ -78,12 +79,12 @@ async fn sse_frames_parse_across_chunk_boundaries() {
     assert_eq!(evt.data, b"line1\nline2", "multi-line data join");
     assert!(
         s.next().await.unwrap().is_none(),
-        "expected EOF after [DONE] drain"
+        "the stream ends at [DONE]; what follows is never read"
     );
     assert!(s.done() && s.saw_event(), "Done/SawEvent not set");
     assert!(
         s.next().await.unwrap().is_none(),
-        "EOF is sticky once the body is exhausted"
+        "the end is sticky: an event after [DONE] is never handed out"
     );
 
     // No trailing blank line: the last event still dispatches at EOF.
@@ -705,6 +706,140 @@ async fn a_zero_idle_bound_never_times_a_stream_out() {
         .await
         .expect("cancel still ends the read");
     assert!(matches!(res, Err(LlmError::Cancelled)), "{res:?}");
+}
+
+/// A transport whose SSE reads carry `idle` as their bound.
+fn idle_transport(idle: Duration) -> iota::provider::HttpTransport {
+    iota::provider::HttpTransport {
+        client: reqwest::Client::new(),
+        recorder: None,
+        stream_idle: Some(idle),
+    }
+}
+
+/// Plays one tool-loop round of `p` against a body that sends `transcript` and then holds the
+/// connection open in silence (a relay that never closes the body): the round must END at the
+/// dialect's terminal event — well inside the idle bound — and keep the usage that came before it.
+async fn a_finished_round_over_an_open_body(
+    p: &dyn iota::provider::ToolProvider,
+) -> iota::provider::RoundResult {
+    let mut sink = iota::testing::RecordingSink::default();
+    let started = std::time::Instant::now();
+    let res = tokio::time::timeout(
+        Duration::from_secs(5),
+        p.stream_chat_with_tools(
+            &CancellationToken::new(),
+            &[iota::provider::model::Message::user("q")],
+            &[],
+            &mut sink,
+        ),
+    )
+    .await
+    .expect("the round never ended")
+    .expect("a finished answer must not fail as a stall");
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the round waited on the open body instead of ending at the terminal event: {:?}",
+        started.elapsed()
+    );
+    res
+}
+
+/// The idle bound for the open-body tests: far past where the round must have ended.
+const OPEN_BODY_IDLE: Duration = Duration::from_secs(2);
+
+/// Chat completions: `[DONE]` is the end. The usage chunk (after the `finish_reason` chunk,
+/// before `[DONE]`) is kept; the body that stays open afterwards is never waited on.
+#[tokio::test]
+async fn chat_completions_ends_at_done_although_the_body_stays_open() {
+    let (url, accepts) = head_then(vec![(
+        Duration::ZERO,
+        concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"all of it\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n",
+            "data: [DONE]\n\n",
+        ),
+    )])
+    .await;
+    let p = iota::provider::openai::OpenAiProvider::new(
+        "k",
+        &url,
+        "m",
+        None,
+        idle_transport(OPEN_BODY_IDLE),
+    );
+    let res = a_finished_round_over_an_open_body(&p).await;
+    assert_eq!(res.content, "all of it");
+    let usage = res.usage.expect("the usage chunk before [DONE] is kept");
+    assert_eq!((usage.input, usage.output), (10, 5));
+    assert_eq!(accepts.load(Ordering::SeqCst), 1);
+}
+
+/// Anthropic: `message_stop` is the end; the usage rode `message_delta` before it.
+#[tokio::test]
+async fn anthropic_ends_at_message_stop_although_the_body_stays_open() {
+    let (url, _) = head_then(vec![(
+        Duration::ZERO,
+        concat!(
+            "event: message_start\n",
+            r#"data: {"type":"message_start","message":{"usage":{"input_tokens":12,"output_tokens":0}}}"#,
+            "\n\n",
+            "event: content_block_start\n",
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}"#,
+            "\n\n",
+            "event: content_block_delta\n",
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"all of it"}}"#,
+            "\n\n",
+            "event: content_block_stop\n",
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            "\n\n",
+            "event: message_delta\n",
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}"#,
+            "\n\n",
+            "event: message_stop\n",
+            r#"data: {"type":"message_stop"}"#,
+            "\n\n",
+        ),
+    )])
+    .await;
+    let p = iota::provider::anthropic::AnthropicProvider::new(
+        "k",
+        &url,
+        "m",
+        None,
+        idle_transport(OPEN_BODY_IDLE),
+    );
+    let res = a_finished_round_over_an_open_body(&p).await;
+    assert_eq!(res.content, "all of it");
+    let usage = res.usage.expect("message_delta's usage is kept");
+    assert_eq!((usage.input, usage.output), (12, 7));
+}
+
+/// Responses: `response.completed` is the end, and it carries the usage itself.
+#[tokio::test]
+async fn responses_ends_at_completed_although_the_body_stays_open() {
+    let (url, _) = head_then(vec![(
+        Duration::ZERO,
+        concat!(
+            r#"data: {"type":"response.output_text.delta","delta":"all of it"}"#,
+            "\n\n",
+            r#"data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}}"#,
+            "\n\n",
+        ),
+    )])
+    .await;
+    let p = iota::provider::openresponses::OpenResponsesProvider::new(
+        "k",
+        &url,
+        "m",
+        None,
+        idle_transport(OPEN_BODY_IDLE),
+    );
+    let res = a_finished_round_over_an_open_body(&p).await;
+    assert_eq!(res.content, "all of it");
+    let usage = res.usage.expect("response.completed's usage is kept");
+    assert_eq!((usage.input, usage.output), (3, 4));
 }
 
 /// `wire::models::openai_model_ids`: ids sorted bytewise; a GET carries no body and no Content-Type.

@@ -24,7 +24,7 @@ pub struct Event {
 type Body = Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send>>;
 
 /// A streaming SSE body. Grammar (sse.go:36-98): lines end at `\n`, all trailing `\r`/`\n` trimmed; a blank line
-/// dispatches pending data (a `[DONE]`-prefixed payload sets `done` instead); `:` lines are comments; the field
+/// dispatches pending data (a `[DONE]`-prefixed payload sets `done` and ENDS the stream instead); `:` lines are comments; the field
 /// splits at the first `:` with one leading space stripped from the value; `data` joins with `\n`, `event` last
 /// wins, other fields are ignored. At EOF pending non-`[DONE]` data is dispatched. The line buffer is unbounded.
 pub struct Sse {
@@ -81,6 +81,9 @@ impl Sse {
 
     /// Ok(Some(ev)) next event; Ok(None) clean end; Err(Transport|StreamIdle|Cancelled) otherwise.
     pub async fn next(&mut self) -> Result<Option<Event>, LlmError> {
+        if self.done {
+            return Ok(None);
+        }
         let mut kind = String::new();
         let mut data: Vec<u8> = Vec::new();
         let mut have_data = false;
@@ -95,11 +98,12 @@ impl Sse {
                     continue;
                 }
                 if data.starts_with(DONE) {
+                    // The protocol's end: the stream ends HERE, not at the body's EOF. Go drained
+                    // the remainder, which waits on a server (or relay) that never closes the body
+                    // — forever, and under the idle bound a finished answer failed as a stall.
+                    // Nothing is lost: chat completions sends its usage chunk BEFORE `[DONE]`.
                     self.done = true;
-                    data.clear();
-                    have_data = false;
-                    kind.clear();
-                    continue; // drain the remainder
+                    return Ok(None);
                 }
                 self.saw_event = true;
                 return Ok(Some(Event { kind, data }));

@@ -171,10 +171,10 @@ pub(crate) struct TurnReport {
     /// Executed calls the parallel gate does not vouch for as read-only — what a
     /// whole-turn replay would run AGAIN (chat/run.go:1030-1031).
     pub(crate) side_fx: u32,
-    /// Content streamed before the user interrupted (EMPTY on every other outcome — Go's
-    /// `fail()` returns the buffers only on cancellation).
+    /// Content streamed before the user interrupted or the stream stalled (EMPTY on every other
+    /// outcome — Go's `fail()` returns the buffers only on cancellation; a stall has no Go twin).
     pub(crate) partial: String,
-    /// Reasoning streamed before the interrupt.
+    /// Reasoning streamed before the interrupt or the stall.
     pub(crate) partial_reasoning: String,
 }
 
@@ -182,6 +182,12 @@ impl TurnReport {
     /// Whether the user interrupted (the finalize path, not the error path).
     pub(crate) fn is_interrupted(&self) -> bool {
         matches!(self.outcome, Err(TurnFailure::Chat(ChatError::Interrupted)))
+    }
+
+    /// Whether the stream went silent past its idle bound: still the error path, but the
+    /// completed tool rounds and the partial stay (`ProviderError::is_stall`).
+    pub(crate) fn is_stalled(&self) -> bool {
+        matches!(&self.outcome, Err(TurnFailure::Chat(ChatError::Provider(e))) if e.is_stall())
     }
 
     /// A completed turn; `used_tools` is stamped by `run_turn`.
@@ -464,6 +470,14 @@ pub(crate) async fn stream_round(
             if interrupted {
                 RoundOutcome {
                     result: Err(ChatError::Interrupted),
+                    partial,
+                    partial_reasoning: reasoning,
+                }
+            } else if e.is_stall() {
+                // A stall cuts the round off mid-stream the way ESC does: what streamed was
+                // real, so it travels with the error (the run loop keeps it, `stalled_turn`).
+                RoundOutcome {
+                    result: Err(ChatError::Provider(e)),
                     partial,
                     partial_reasoning: reasoning,
                 }

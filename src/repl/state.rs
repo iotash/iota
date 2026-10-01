@@ -114,17 +114,14 @@ impl SessionSlot {
         lock(&self.writer).as_ref().map_or_else(String::new, f)
     }
 
-    /// Waits for an in-flight title pass, so a landed name is written before anything
-    /// touches the writer.
-    pub(crate) async fn join_title(&mut self) {
-        if let Some(h) = self.title_task.take() {
-            let _ = h.await;
-        }
-    }
-
-    /// Drops an in-flight title pass (its request goes with it), so the next [`Self::join_title`]
-    /// has nothing to wait for. A pass that already landed is untouched — `abort` on a finished
-    /// task is a no-op.
+    /// Drops an in-flight title pass (its request goes with it); the placeholder name stands. A
+    /// pass that already landed is untouched — `abort` on a finished task is a no-op.
+    ///
+    /// Nothing ever WAITS on the pass: the loop gives it up wherever it must not run on (before a
+    /// command that may swap or mint the writer, at exit, with the name it would replace given
+    /// back), and otherwise lets it finish in the background. Go joined it there instead, which
+    /// held the next input — or the exit — for up to `TITLE_TIMEOUT` with ESC and Ctrl+C dead
+    /// (DIVERGENCES X-64).
     pub(crate) fn abort_title(&mut self) {
         if let Some(h) = self.title_task.take() {
             h.abort();

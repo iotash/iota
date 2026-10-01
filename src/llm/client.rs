@@ -29,10 +29,16 @@ pub(crate) const DEFAULT_RETRIES: u32 = 2;
 pub(crate) const HEADER_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long a streaming body may go without a single byte before the read fails with
 /// [`LlmError::StreamIdle`]. Counted in BYTES, not parsed events, so a provider's `ping` event or
-/// `:` comment heartbeat keeps the stream alive. The industry range is two to five minutes (Claude
-/// Code widened an early 90 s default after it killed extended-thinking pauses); 180 s sits inside
-/// it and is overridable through [`STREAM_IDLE_TIMEOUT_ENV`].
-pub const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
+/// `:` comment heartbeat keeps the stream alive.
+///
+/// 300 s, the top of the industry's two-to-five-minute range (Codex, opencode and Gemini CLI use
+/// it; Claude Code widened an early 90 s default to it after it killed extended-thinking pauses),
+/// because a reasoning model can think in total silence here: no request asks for a reasoning
+/// summary, so an `OpenAI` reasoning model may send nothing at all until its answer starts. A stall
+/// is not retried and fails the turn, so cutting a live think short costs far more than noticing
+/// a dead stream two minutes later — and ESC ends a wait at any time. Overridable through
+/// [`STREAM_IDLE_TIMEOUT_ENV`].
+pub const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// `IOTA_STREAM_IDLE_TIMEOUT=<seconds>` overrides [`STREAM_IDLE_TIMEOUT`] for one run; `0` turns the
 /// check off (a local model that thinks for minutes without a byte). Read once at the binary edge
 /// ([`stream_idle_timeout`]); nothing else reads it.
@@ -677,7 +683,7 @@ mod tests {
                 "{junk:?}"
             );
         }
-        assert_eq!(STREAM_IDLE_TIMEOUT, Duration::from_secs(180));
+        assert_eq!(STREAM_IDLE_TIMEOUT, Duration::from_secs(300));
     }
 
     // The connection-level bounds land in the builder. reqwest's `Debug` shows `connect_timeout`

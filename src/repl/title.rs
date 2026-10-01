@@ -16,7 +16,8 @@
 //! Nothing here waits for the assistant: both the placeholder and the model pass are
 //! derived from the user's message alone. The pass rides a SECOND provider instance (the
 //! turn is still streaming on the first, whose per-call state is not safe for a concurrent
-//! request) and is joined before any input that could swap or mint the writer.
+//! request) and is never waited on: it is given up (the placeholder stands) before a command
+//! that could swap or mint the writer and at exit, and otherwise finishes in the background.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -118,23 +119,25 @@ impl SessionTitle {
         self.set(&mut st, name);
     }
 
-    /// Drops a name whose message is no longer in the history (chat/title.go `unseed`).
+    /// Drops a name whose message is no longer in the history (chat/title.go `unseed`);
+    /// `true` when it did — the pass in flight, if any, can then only land a name nobody keeps.
     ///
     /// Seeding before the turn means the name can outlive what it was named after, so a
     /// rolled-back turn has to give it back — model-written or not: the text it summarized
     /// is gone either way. A settled title is never touched, and the generation bump
     /// invalidates a pass still in flight.
-    pub(crate) fn unseed(&self, history: &[Message]) {
+    pub(crate) fn unseed(&self, history: &[Message]) -> bool {
         let mut st = self.lock();
         if st.titled || !st.seeded {
-            return;
+            return false;
         }
         if !first_user_text(history).is_empty() {
-            return;
+            return false;
         }
         st.seeded = false;
         st.generation += 1;
         self.set(&mut st, "");
+        true
     }
 
     /// Settles the name without touching it — a session resumed mid-chat arrives with its
@@ -270,14 +273,14 @@ pub(crate) fn status_model_label(model: &str, provider_type: &str) -> String {
 }
 
 /// Whether `input` only opens a READ-ONLY viewer — it never calls the provider and never
-/// mutates the session writer, so it need not wait on the background title pass
-/// (chat/chat.go:188-195).
+/// mutates the session writer, so the background title pass may keep running through it
+/// (chat/chat.go:188-195; every other command gives an unfinished pass up, X-64).
 ///
 /// The set is Go's four: `{/debug, /status, /tools, /skills}` (T-31 closed by T3, which
 /// registered the two that were missing). It guards the "`/debug` is slow right after the
 /// first chat" bug: a viewer that blocked on the ~1 s async title request would feel broken
 /// for no reason. The match is the dispatch chain's own rule — the bare command or the
-/// command followed by a space — so `/debugx` is a plain message and still waits.
+/// command followed by a space — so `/debugx` is not a viewer and gives an unfinished pass up.
 pub fn is_read_only_viewer(input: &str) -> bool {
     ["/debug", "/status", "/tools", "/skills"].iter().any(|c| {
         input == *c
@@ -702,9 +705,10 @@ mod tests {
     }
 
     // A read-only viewer skips the title-pass
-    // wait (the "/debug is slow after the first chat" fix). The FULL Go set, restored by T3 when
-    // /debug and /skills registered (T-31): provider-touching and mutating commands — and plain
-    // messages, and the near-miss `/debugx` prefix matching must not over-match — still wait.
+    // wait (the "/debug is slow after the first chat" fix) — and, since nothing waits any more
+    // (X-64), keeps an unfinished pass running through it. The FULL Go set, restored by T3 when
+    // /debug and /skills registered (T-31): provider-touching and mutating commands — and the
+    // near-miss `/debugx` prefix matching must not over-match — are not viewers.
     #[test]
     fn read_only_viewers_skip_the_title_pass_and_nothing_else_does() {
         for input in [
@@ -733,7 +737,7 @@ mod tests {
         ] {
             assert!(
                 !is_read_only_viewer(input),
-                "{input} must wait for the title pass"
+                "{input} is not a read-only viewer"
             );
         }
     }

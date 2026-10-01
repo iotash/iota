@@ -549,7 +549,10 @@ impl Responses {
             .client
             .stream(cancel, Method::POST, PATH_RESPONSES, Some(&*req))
             .await?;
-        Ok(RespStream { sse })
+        Ok(RespStream {
+            sse,
+            completed: false,
+        })
     }
 
     /// = `models::openai_model_ids` (§3.8.0).
@@ -561,6 +564,9 @@ impl Responses {
 /// A responses SSE stream of `RespEvent`s.
 pub(crate) struct RespStream {
     sse: Sse,
+    /// `response.completed` was handed out: the response is over, whether or not the body ever
+    /// closes.
+    completed: bool,
 }
 
 impl RespStream {
@@ -568,7 +574,14 @@ impl RespStream {
     /// `Failure(RespFailure{event:"error", code, message})`; `"response.failed"` → `Failure{event, code:
     /// response.error.code, message: response.error.message}`; `"response.incomplete"` → `Failure{event, code:
     /// response.incomplete_details.reason, message: ""}`.
+    ///
+    /// `response.completed` is terminal: it carries the usage, and every later call answers `Ok(None)`
+    /// without waiting for the body's EOF — a relay that holds the body open must not turn a finished
+    /// response into a stall.
     pub(crate) async fn next(&mut self) -> Result<Option<RespEvent>, LlmError> {
+        if self.completed {
+            return Ok(None);
+        }
         let Some(event) = self.sse.next().await? else {
             // A stream that ended without a single event never streamed at all (client.go:47).
             return if self.sse.saw_event() {
@@ -586,7 +599,9 @@ impl RespStream {
         if let Some(failure) = parsed.failure() {
             return Err(LlmError::Failure(failure));
         }
-        Ok(Some(parsed.classify()))
+        let event = parsed.classify();
+        self.completed = matches!(event, RespEvent::Completed(_));
+        Ok(Some(event))
     }
 }
 
@@ -604,6 +619,7 @@ mod tests {
                 futures::stream::iter([Ok(Bytes::from_static(raw.as_bytes()))]),
                 CancellationToken::new(),
             ),
+            completed: false,
         }
     }
 

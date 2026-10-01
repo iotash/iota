@@ -555,9 +555,10 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     // below (Go's `defer pres.Close()`).
     let outcome: Result<(), ReplError> = 'main: loop {
         let Ok(input) = ui.read_input(&root_cancel).await else {
-            // ErrInterrupted (idle Ctrl+C / Ctrl+D), ErrClosed, or shutdown: join the
-            // title pass so a landed name is written before the writer is dropped.
-            repl.session.join_title().await;
+            // ErrInterrupted (idle Ctrl+C / Ctrl+D), ErrClosed, or shutdown. A landed name is
+            // already written; an unfinished title pass is given up — the placeholder stands
+            // rather than the exit waiting on a model that may never answer.
+            repl.session.abort_title();
             break Ok(());
         };
         // A host notice (a finished background job) answers the same `read_input` a typed line does — that
@@ -574,10 +575,12 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             // The notice's turn holds the host from here (`host` module doc).
             repl.handles.pres.notice_taken();
         }
-        if !is_read_only_viewer(&line) {
-            // A read-only viewer neither calls the provider nor mutates the writer, so it
-            // need not wait; anything else must not race a writer swap or mint.
-            repl.session.join_title().await;
+        if line.starts_with('/') && !is_read_only_viewer(&line) {
+            // A command may swap or mint the writer, and an unfinished title pass must not
+            // land on the wrong bundle: it is given up (the placeholder stands) rather than
+            // waited on — that wait had an empty cancel stack, ESC and Ctrl+C dead. A message
+            // touches the writer only to append, so the pass keeps running through its turn.
+            repl.session.abort_title();
         }
 
         // ---- the dispatch chain, in Go's fixed order; first match wins ----
@@ -717,6 +720,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         };
 
         let interrupted = outcome.is_interrupted();
+        let stalled = outcome.is_stalled();
         let TurnReport {
             outcome: turn_result,
             partial,
@@ -745,14 +749,21 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 repl.handles
                     .tr
                     .error_block(&report.headline, &report.lines());
-                // The turn rolls back WITH its user message — and the name derived from it, so a
-                // title pass still in flight could only land a name `unseed` already discards.
-                repl.conv.history.truncate(hist0 - 1);
-                repl.session.abort_title();
-                repl.session.titler.unseed(&repl.conv.history);
-                repl.conv.ctxm.reset();
-                repl.conv.budget.restore(turn_snap);
-                repl.push_status();
+                // A stall keeps what the turn completed; anything else — or a stall with
+                // nothing to keep — rolls the turn back WITH its user message, and the name
+                // derived from it, so a title pass still in flight could only land a name
+                // `unseed` already discards.
+                if !(stalled
+                    && keep_stalled_turn(&mut repl, hist0 - 1, &partial, &partial_reasoning))
+                {
+                    repl.conv.history.truncate(hist0 - 1);
+                    if repl.session.titler.unseed(&repl.conv.history) {
+                        repl.session.abort_title();
+                    }
+                    repl.conv.ctxm.reset();
+                    repl.conv.budget.restore(turn_snap);
+                    repl.push_status();
+                }
             }
             Ok(out) => {
                 let mut amsg = Message::assistant_body(
@@ -894,14 +905,6 @@ impl Repl {
 /// notification. A discarded turn hands its attachments BACK — cancelling a send must not
 /// silently strip the file the user attached — and gives the session name back with them.
 fn interrupt_turn(repl: &mut Repl, watermark: usize, partial: &str, partial_reasoning: &str) {
-    // The interrupt cancels what the turn started, the title pass included. It runs under the
-    // ROOT scope (it may outlive a short turn, so it cannot be a child of the turn's token), and
-    // the loop joins it before the next input and before exiting — with an empty cancel stack,
-    // where ESC and Ctrl+C reach nothing. Left running against a hung provider, that join held
-    // the next message, or the exit, for up to `TITLE_TIMEOUT`. A discarded turn gives its name
-    // back below, so the pass could only land a name nobody keeps; a kept partial keeps the
-    // placeholder name instead of a model title that had not arrived by the time of the ESC.
-    repl.session.abort_title();
     let InterruptDecision {
         history,
         persist,
@@ -924,17 +927,67 @@ fn interrupt_turn(repl: &mut Repl, watermark: usize, partial: &str, partial_reas
             .notice(&format!("{n} attachment(s) kept for your next message."));
     }
     if persist {
-        // A cancelled call rarely reports usage, but when it did (the figures arrived
-        // before ESC) the partial message carries them like any other.
-        if let Some(last) = repl.conv.history.last_mut()
-            && last.interrupted()
-        {
-            repl.conv.ctxm.record(Some(last));
-        }
-        repl.persist_turn();
+        // The title pass keeps running: the message it names survives, and nothing waits on
+        // it (`SessionSlot::abort_title`).
+        persist_kept_turn(repl);
     } else {
-        repl.session.titler.unseed(&repl.conv.history);
+        // A discarded turn gives its name back, so its pass could only land a name nobody keeps:
+        // it goes, and its request with it. A later turn's discard leaves the first message —
+        // and a pass still naming the session after it — alone.
+        if repl.session.titler.unseed(&repl.conv.history) {
+            repl.session.abort_title();
+        }
     }
+    rebudget_kept_turn(repl);
+}
+
+/// Keeps what a stalled turn completed (`LlmError::StreamIdle`, the stream idle bound) — the
+/// interrupt table's kept branches, under the error the caller already showed: the completed
+/// tool rounds stay (their side effects happened, and a history without them would have the
+/// model run them again), and the partial text lands as an assistant message marked cut short.
+/// Returns `false`, touching nothing, when there is nothing to keep — the plain rollback then
+/// runs. The stall stays an error (red block, `State::Error`, no retry); only the bookkeeping
+/// follows ESC's.
+fn keep_stalled_turn(
+    repl: &mut Repl,
+    watermark: usize,
+    partial: &str,
+    partial_reasoning: &str,
+) -> bool {
+    let InterruptDecision {
+        history, persist, ..
+    } = finalize_interrupt(
+        repl.conv.history.clone(),
+        watermark,
+        partial,
+        partial_reasoning,
+    );
+    if !persist {
+        return false;
+    }
+    repl.conv.history = history;
+    repl.handles
+        .tr
+        .notice("What arrived before the stall is kept — the reply may be incomplete.");
+    persist_kept_turn(repl);
+    rebudget_kept_turn(repl);
+    true
+}
+
+/// Persists a turn cut short with something worth keeping. A cut-short call rarely reports
+/// usage, but when it did (the figures arrived before the cut) the partial message carries them
+/// like any other.
+fn persist_kept_turn(repl: &mut Repl) {
+    if let Some(last) = repl.conv.history.last_mut()
+        && last.interrupted()
+    {
+        repl.conv.ctxm.record(Some(last));
+    }
+    repl.persist_turn();
+}
+
+/// Re-derives the budget and the status row from the history a cut-short turn left.
+fn rebudget_kept_turn(repl: &mut Repl) {
     repl.conv.ctxm.reset();
     let history = std::mem::take(&mut repl.conv.history);
     repl.conv.budget.update(&history);
