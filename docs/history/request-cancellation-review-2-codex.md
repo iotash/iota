@@ -117,3 +117,78 @@ Responses 的反向结果特别有价值：旧行为在这个 fixture 下未必�
 **必须修一项：切换 writer 前使旧标题 pass 在同步意义上失效，并用并发交错用例钉住它。** 现有标题盲区、终止事件、停滞保留、默认值修复及其变红对照均成立，无需重做。
 
 `interrupted` 的通用标记、放弃未完成标题留下占位名、300 秒及 `0` 的语义均可接受；tmux 第 6 段的正向结束断言值得补，但已有 wire 覆盖，不单独阻止合并。首轮涉及且本次未改的首部等待、HTTP/2 策略等不在本轮重开评审。
+
+## 收尾核对
+
+核对日期：2026-10-01。仅核 `git diff aa989fb..7e72e4a` 中上一轮唯一必修项 **P2：旧标题 pass 与 writer 交换竞态**；HEAD 为 `7e72e4afe6aec19fff907336b90ee1b1eaaae557`。本节行号指这个 HEAD；前文保留原样。本次只追加本节，不修改仓库代码或测试，不 commit；探针和反向验证源文件均在 `/private/tmp`。
+
+**结论：现在批准合并。本次 P2 已修复，现有同步交错回归用例能在恢复旧交换顺序后变红；没有发现这次修复新增的正常标题丢失或锁顺序死锁，已无必须修事项。** 此结论只关闭上述 P2，不代表重新评审整个分支。
+
+### 1. 重跑原检查点：B 不再被覆盖，已经进入同步收尾的标题仍写回 A
+
+上一轮探针由 stdin 编译，只留下二进制和日志；本次按前文记录重建相同检查点，源码留在 `/private/tmp/iota-review2-close-probe.rs`。通过 `#[path]` 直接加载 **HEAD 原样** `src/repl/title.rs`（非 `cfg(test)` 构建，不启用新增测试钩子）和 `render/styles.rs`，链接真实 `SessionStore` / `SessionWriter`。两份会话均先 append 使 bundle 实际落盘，最后用 `SessionMeta::read` 读取 A、B 的磁盘标题。标题任务运行在 **Tokio 双 worker runtime**；检查点仍只设于探针的 `sync::lock` 包装层：通过 `land` 检查、持有 `TitleState`，但尚未取得 `WriterSlot` 锁时暂停。没有改动标题实现。
+
+原插入点仍适用。不同的是，此时不能再在主线程上先完成交换再释放标题任务：HEAD 的 `switch_writer` 必须等待标题状态锁。因此由独立线程执行真实 `switch_writer`，在它尝试取得 `TitleState` 锁前再发一个检查点通知；主线程确认共享 slot 仍是 A，才恢复标题线程。另测实际 HEAD 的“不 abort 就切换”路径，以及切换先于 `land` 取得状态锁的相反顺序。所有检查点接收均有 5 秒超时，不靠 sleep 猜测交错。
+
+HEAD 实测输出（`/private/tmp/iota-review2-close-probe.log`，`SessionWriter lock` 即 `WriterSlot` 内的 mutex；`window` 只记录标题模块的 sink，不模拟命令切换后的 B 窗口刷新）：
+
+```text
+checkpoint=before SessionWriter lock; abort=true; slot_before_resume=A; join=Ok(()); A_disk="A model title"; B_disk="B original title"; window=["A placeholder", "A model title"]
+checkpoint=before SessionWriter lock; abort=false; slot_before_resume=A; join=Ok(()); A_disk="A model title"; B_disk="B original title"; window=["A placeholder", "A model title"]
+checkpoint=before TitleState lock; abort=false; slot_before_resume=B; join=Ok(()); A_disk="A placeholder"; B_disk="B original title"; window=["A placeholder"]
+```
+
+同一探针再以 `#[path]` 加载 `git show aa989fb:src/repl/title.rs`，恢复旧调用顺序 `abort → swap writer → adopt`，得到（`/private/tmp/iota-review2-close-old-probe.log`）：
+
+```text
+checkpoint=before SessionWriter lock; abort=true; slot_before_resume=B; join=Ok(()); A_disk="A placeholder"; B_disk="A model title"; window=["A placeholder", "A model title"]
+```
+
+这也再次证明 `abort()` 没有打断当前同步 poll：新旧两版的 join 都是 `Ok(())`，修复靠的是互斥边界。`land` 在 `src/repl/title.rs:123` 取得状态锁，检查后持续持有至写 meta、更新窗口结束（`:131`、`:191`）；`switch_writer` 在 `:160` 取得**同一把锁**，先置 `seeded/titled`，再于 `:164` 换 writer。实际 `/session` 在 `src/repl/commands/session.rs:179` 调这个方法，返回后才刷新 B 的窗口（`:183`）。所以只有“先写完 A 再切 B”或“先切 B，旧 pass 因 `titled` 返回”两种顺序，没有原来的检查通过后换入 B 再误写的窗口。本探针是实际模块的受控并发验证，仍不是完整 REPL `/session` 端到端调度测试。
+
+### 2. 哪条回归真的覆盖同步窗口，以及反向结果
+
+`tests/repl/stall.rs:279` 的 **`a_command_during_the_title_pass_keeps_it` 不覆盖这个竞态**：fixture 的 writer 为 `None`（`:58`），标题 provider 延迟 300 ms（`:310`），输入是 `/model` 并取消选择器（`:313`），没有交换 writer，也没有 `land` 检查后的停点。它测的是删除 slash-command 无条件 abort 后，正常标题仍能到达窗口；不能拿它单独证明 P2 修好。
+
+真正的竞态用例在 **`src/repl/title.rs:591`，`repl::title::tests::a_pass_landing_across_a_session_switch_never_names_the_new_session`**。新增 `cfg(test)` 钩子在 `land` 检查后、写入前执行（`:127`）；两个 barrier 把标题线程停在持有状态锁的同步段（`:599`），另一线程交换 writer（`:610`），最后断言 B 仍叫 `B original`（`:617`）。`:624` 还验证交换后迟到的 pass 不写 B。它不调用 Tokio abort，但确实覆盖 abort 无法终止的那段同步执行；HEAD 的命令路径已不再 abort，而上节独立探针另外补验了真实 `JoinHandle::abort`。
+
+反向验证只复制 `title.rs` 到 `/private/tmp/iota-review2-close-mut-title.rs`，将 `switch_writer` 的生产函数体改回旧行为的等价顺序（先交换、释放 writer 锁，再取得状态锁并 settle）；**保留 HEAD 测试模块逐字不变**：
+
+```rust
+*lock(&self.writer) = Some(writer);
+let mut st = self.lock();
+st.seeded = true;
+st.titled = true;
+```
+
+用同一 `rustc --test` 包装分别加载 HEAD 与这个临时副本，运行上述完整测试名，实测 HEAD **1 passed / 0 failed**，旧顺序 **0 passed / 1 failed，退出码 101**。后者输出如下（仅去掉 ANSI 颜色）：
+
+```text
+panicked at /private/tmp/iota-review2-close-mut-title.rs:617:9:
+assertion failed: `(left == right)`: the pass wrote the session switched to
+<A model title
+>B original
+test repl::title::tests::a_pass_landing_across_a_session_switch_never_names_the_new_session ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 22 filtered out; finished in 0.11s
+```
+
+日志为 `/private/tmp/iota-review2-close-{head,mut}-test.log`；包装及二进制为同前缀的 `probe.rs`、`mut-probe.rs`、`head-test`、`mut-test`。这不是改坏断言造红，也不需要在仓库内回退代码。
+
+该用例有一个**非阻塞的测试强度局限**：`:612` 用 100 ms sleep 给切换线程调度机会，没有确认它已尝试取得锁。**推测：** 极端调度延迟下，旧行为可能因切换线程太晚启动而假绿。本次旧行为实际变红；独立探针另有明确的取锁前检查点，因此不影响本次 P2 结案。这个局限也不把它变成网络 await 用例。
+
+### 3. 正常标题与锁顺序
+
+- **已经进入 `land` 的正常结果不会被取消步骤无故吞掉。** 前述两次同步窗口实测，不论是否发 abort，A 磁盘均得到 `A model title`，B 保持原名。`switch_writer` 不能抢先修改它正在使用的状态。
+- **切换确实先完成时，A 尚未落地的结果仍会被放弃，A 保留占位名。** 上述第三行是实测，不能宣称所有正在命名的旧会话最终都能拿到模型标题。但 `aa989fb` 原本在进入 `/session` 等命令前就 abort；这不是本提交新引入的标题丢失，也是前文已接受的“离开会话可保留占位名”取舍。现在只在真正换入另一个 writer 时 settle；取消选择器、选当前会话或 resume 失败均提前返回（`commands/session.rs:129`、`:161`、`:166`），不会失效旧 pass。普通命令也不再统一 abort（`run.rs:578`），因此比前版少放弃正常标题。
+- **没有发现新锁环。** `land/seed/adopt_name/reapply` 和 `switch_writer` 均按 **TitleState → WriterSlot** 取锁（`title.rs:103`、`:123`、`:160`、`:170`、`:180`、`:198`）。实际交换调用方不预持 writer 锁；`/save` 在 `commands/save.rs:55` 结束 writer 临界区后，才于 `:64` / `:66` 调标题方法。核对其它 writer 使用点（persist、model/settings、compact、export、liveparams）未见持 writer 再反取标题锁。`SessionWriter::update_meta` 是同步磁盘写（`src/session/writer.rs:174`），没有反向调用 titler；窗口 sink 最终只发 UI 消息（`src/ui/runtime/handle.rs:349`），不等待 UI 回调。provider 锁也在调用 `land` 前释放（`run.rs:887`）。
+- **同步等待仍存在但不等待网络请求。** 交换可能等待正在执行的 meta 文件写和窗口消息发送完成，这是序列化旧 pass 所需的临界区；锁未跨网络 await，也未恢复 title task 的 30 秒 join。**推测：** 若底层文件系统本身卡住，这段同步等待也可能变长；本次未故障注入文件系统停顿，不把正常磁盘实测说成无条件耗时上界。
+
+本次实际运行的仓库测试（仅与本 P2 / 正常标题有关）：
+
+| 命令 | 结果 | 日志 |
+| --- | --- | --- |
+| `cargo test --lib repl::title::tests:: -- --nocapture` | **20 passed / 0 failed**，含同步竞态用例 | `/private/tmp/iota-review2-close-title-tests.log` |
+| `cargo test --test repl stall::a_command_during_the_title_pass_keeps_it -- --exact --nocapture` | **1 passed / 0 failed** | `/private/tmp/iota-review2-close-command-test.log` |
+| `cargo test --test repl commands::title_pass_names_the_session_on_the_second_provider -- --exact --nocapture` | **1 passed / 0 failed**，核窗口顺序及 `meta.json` 标题（`tests/repl/commands.rs:1021`、`:1029`） | `/private/tmp/iota-review2-close-normal-title-test.log` |
+
+未重跑协议、工具停滞、tmux 或全分支测试；没有重开上一轮已结案事项。
