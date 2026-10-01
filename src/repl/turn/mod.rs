@@ -475,7 +475,7 @@ pub(crate) async fn stream_round(
                 }
             } else if e.is_stall() {
                 // A stall cuts the round off mid-stream the way ESC does: what streamed was
-                // real, so it travels with the error (the run loop keeps it, `stalled_turn`).
+                // real, so it travels with the error (the run loop keeps it, `keep_stalled_turn`).
                 RoundOutcome {
                     result: Err(ChatError::Provider(e)),
                     partial,

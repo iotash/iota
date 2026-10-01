@@ -16,8 +16,10 @@
 //! Nothing here waits for the assistant: both the placeholder and the model pass are
 //! derived from the user's message alone. The pass rides a SECOND provider instance (the
 //! turn is still streaming on the first, whose per-call state is not safe for a concurrent
-//! request) and is never waited on: it is given up (the placeholder stands) before a command
-//! that could swap or mint the writer and at exit, and otherwise finishes in the background.
+//! request) and is never waited on: it finishes in the background, or is given up at exit (the
+//! placeholder stands). What keeps it off the wrong bundle is the lock, not the wait: `land`
+//! writes under the state lock, and [`SessionTitle::switch_writer`] settles the name under that
+//! same lock before it installs another session's writer.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -70,6 +72,10 @@ pub(crate) struct SessionTitle {
     writer: WriterSlot,
     window: WindowSink,
     state: Mutex<TitleState>,
+    /// Runs once inside `land`, after its checks and before its write — where a test parks a
+    /// pass to race it against a writer swap.
+    #[cfg(test)]
+    landing: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl SessionTitle {
@@ -83,6 +89,8 @@ impl SessionTitle {
                 titled: resumed,
                 ..TitleState::default()
             }),
+            #[cfg(test)]
+            landing: Mutex::new(None),
         }
     }
 
@@ -116,6 +124,10 @@ impl SessionTitle {
         if generation != st.generation || st.titled || name.is_empty() {
             return;
         }
+        #[cfg(test)]
+        if let Some(park) = lock(&self.landing).take() {
+            park();
+        }
         self.set(&mut st, name);
     }
 
@@ -140,12 +152,16 @@ impl SessionTitle {
         true
     }
 
-    /// Settles the name without touching it — a session resumed mid-chat arrives with its
-    /// own (chat/title.go `adopt`).
-    pub(crate) fn adopt(&self) {
+    /// Installs a resumed session's writer (`/session`), which brings its own name — settled
+    /// without touching it (chat/title.go `adopt`), under the state lock and BEFORE the swap. `land` writes under that same lock, so a pass that
+    /// already passed its checks finishes on the session it named before the swap can happen,
+    /// and one that comes later is dropped as settled. Aborting the pass's task cannot stand in
+    /// for this: `abort` does not interrupt a `land` already running on another worker.
+    pub(crate) fn switch_writer(&self, writer: crate::session::SessionWriter) {
         let mut st = self.lock();
         st.seeded = true;
         st.titled = true;
+        *lock(&self.writer) = Some(writer);
     }
 
     /// Settles an EXPLICIT name: a title the user chose (`/save "…"`) is never overwritten,
@@ -272,24 +288,6 @@ pub(crate) fn status_model_label(model: &str, provider_type: &str) -> String {
     }
 }
 
-/// Whether `input` only opens a READ-ONLY viewer — it never calls the provider and never
-/// mutates the session writer, so the background title pass may keep running through it
-/// (chat/chat.go:188-195; every other command gives an unfinished pass up, X-64).
-///
-/// The set is Go's four: `{/debug, /status, /tools, /skills}` (T-31 closed by T3, which
-/// registered the two that were missing). It guards the "`/debug` is slow right after the
-/// first chat" bug: a viewer that blocked on the ~1 s async title request would feel broken
-/// for no reason. The match is the dispatch chain's own rule — the bare command or the
-/// command followed by a space — so `/debugx` is not a viewer and gives an unfinished pass up.
-pub fn is_read_only_viewer(input: &str) -> bool {
-    ["/debug", "/status", "/tools", "/skills"].iter().any(|c| {
-        input == *c
-            || input
-                .strip_prefix(*c)
-                .is_some_and(|rest| rest.starts_with(' '))
-    })
-}
-
 /// Asks the model for a title of `first_user` (chat/chat.go:175-183). A failed or empty
 /// pass returns `""`, which [`SessionTitle::land`] drops — the placeholder is a complete
 /// fallback on its own and there is no retry.
@@ -313,8 +311,8 @@ mod tests {
     #![allow(dead_code)]
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     //! The session-title state machine and its helpers (`chat/titlestate_test.go` — all 13,
-    //! `chat/title_test.go`, `chat/run_test.go`'s two label pins, and `chat/debug_test.go`'s
-    //! read-only set).
+    //! `chat/title_test.go` and `chat/run_test.go`'s two label pins; `chat/debug_test.go`'s
+    //! read-only set went with the gate it pinned, X-64).
     //!
     //! The state machine is crate-private (its only consumer is the run loop), so these tests
     //! live in-file (formerly a `#[path]`-mounted `tests/title.rs`; merged 2026-09-02).
@@ -325,8 +323,8 @@ mod tests {
     use crate::provider::ProviderKind;
     use crate::provider::model::{Attachment, Message};
     use crate::repl::title::{
-        SessionTitle, WriterSlot, first_user_text, is_read_only_viewer, sanitize_title,
-        status_model_label, title_from, window_title,
+        SessionTitle, WriterSlot, first_user_text, sanitize_title, status_model_label, title_from,
+        window_title,
     };
     use crate::session::{NewSession, SessionStore, SessionWriter};
     use pretty_assertions::assert_eq;
@@ -580,9 +578,51 @@ mod tests {
         let first = p.set_writer(Some(p.mint())).expect("the original writer");
         assert_eq!(first.meta().title, "first chat");
 
-        p.titler.adopt(); // /session resumed another bundle
+        p.titler.switch_writer(p.mint()); // /session resumed another bundle
         p.titler.seed(&user_turn("first chat")); // adopted: a no-op either way
         assert_eq!(p.name(), "", "the swapped-in session must not be renamed");
+    }
+
+    // The sync window `abort` cannot reach: a pass that already passed `land`'s checks when the
+    // loop gave it up and `/session` swapped the writer. The switch settles the name under the
+    // lock `land` holds, so the pass finishes on the session it named or not at all — it never
+    // writes the session the user switched to.
+    #[test]
+    fn a_pass_landing_across_a_session_switch_never_names_the_new_session() {
+        let p = Probe::new(false);
+        let (_, generation) = p.titler.seed(&user_turn("session a")).expect("seed");
+        let mut b = p.mint();
+        b.update_meta(|m| "B original".clone_into(&mut m.title))
+            .expect("name b");
+        let parked = Arc::new(std::sync::Barrier::new(2));
+        let resume = Arc::new(std::sync::Barrier::new(2));
+        *lock(&p.titler.landing) = Some(Box::new({
+            let (parked, resume) = (Arc::clone(&parked), Arc::clone(&resume));
+            move || {
+                parked.wait();
+                resume.wait();
+            }
+        }));
+
+        std::thread::scope(|s| {
+            let pass = s.spawn(|| p.titler.land(generation, "A model title"));
+            parked.wait(); // checks passed, the write not yet made
+            let switch = s.spawn(|| p.titler.switch_writer(b));
+            // A switch that did not wait for the pass would have swapped by now.
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            resume.wait();
+            pass.join().expect("pass");
+            switch.join().expect("switch");
+        });
+        assert_eq!(
+            p.name(),
+            "B original",
+            "the pass wrote the session switched to"
+        );
+
+        // And a pass that lands after the switch is dropped as settled.
+        p.titler.land(generation, "A late title");
+        assert_eq!(p.name(), "B original");
     }
 
     // `land` arrives from the pass
@@ -702,43 +742,5 @@ mod tests {
     fn status_model_label_falls_back_to_type() {
         assert_eq!(status_model_label("gpt-4o", "openai"), "gpt-4o");
         assert_eq!(status_model_label("", "openai"), "openai");
-    }
-
-    // A read-only viewer skips the title-pass
-    // wait (the "/debug is slow after the first chat" fix) — and, since nothing waits any more
-    // (X-64), keeps an unfinished pass running through it. The FULL Go set, restored by T3 when
-    // /debug and /skills registered (T-31): provider-touching and mutating commands — and the
-    // near-miss `/debugx` prefix matching must not over-match — are not viewers.
-    #[test]
-    fn read_only_viewers_skip_the_title_pass_and_nothing_else_does() {
-        for input in [
-            "/debug",
-            "/status",
-            "/tools",
-            "/skills",
-            "/tools foo",
-            "/debug on",
-            "/skills brain-page do it",
-            "/status ",
-        ] {
-            assert!(is_read_only_viewer(input), "{input} is a read-only viewer");
-        }
-        for input in [
-            "/model",
-            "/compact",
-            "/session",
-            "/file",
-            "你好",
-            "/debugx",
-            "/statusx",
-            "/toolsy",
-            "/skillset",
-            "plain text",
-        ] {
-            assert!(
-                !is_read_only_viewer(input),
-                "{input} is not a read-only viewer"
-            );
-        }
     }
 }

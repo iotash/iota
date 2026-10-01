@@ -50,8 +50,7 @@ use crate::repl::render::replay::{RESUME_ECHO_ROUNDS, echo_rounds, last_rounds};
 use crate::repl::render::transcript::{Transcript, notify_digest};
 use crate::repl::state::{Conversation, SessionSlot, UiHandles};
 use crate::repl::title::{
-    SessionTitle, TITLE_TIMEOUT, WriterSlot, generate_title_text, is_read_only_viewer,
-    status_model_label, window_title,
+    SessionTitle, TITLE_TIMEOUT, WriterSlot, generate_title_text, status_model_label, window_title,
 };
 use crate::repl::turn::approval::ApprovalGate;
 use crate::repl::turn::interrupt::{InterruptDecision, finalize_interrupt};
@@ -574,13 +573,6 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         if notice {
             // The notice's turn holds the host from here (`host` module doc).
             repl.handles.pres.notice_taken();
-        }
-        if line.starts_with('/') && !is_read_only_viewer(&line) {
-            // A command may swap or mint the writer, and an unfinished title pass must not
-            // land on the wrong bundle: it is given up (the placeholder stands) rather than
-            // waited on — that wait had an empty cancel stack, ESC and Ctrl+C dead. A message
-            // touches the writer only to append, so the pass keeps running through its turn.
-            repl.session.abort_title();
         }
 
         // ---- the dispatch chain, in Go's fixed order; first match wins ----

@@ -78,10 +78,11 @@ pub async fn retry_round<T>(
 /// past its idle bound (`StreamIdle`) and HTTP 4xx except 429. Everything else — 429, 5xx,
 /// transport faults, malformed frames — retries.
 ///
-/// `StreamIdle` stays out on purpose: it fires after the response head, when the stream may
-/// already have produced text or tool calls, and the wire layer retries only up to the head so a
-/// replay can never run a tool call twice. The user sees the error (with the knob that widens the
-/// bound) and decides.
+/// `StreamIdle` stays out on purpose: it fires after the response head, and the wire layer retries
+/// only up to the head. A replay would not run the round's tool calls twice (they run only after
+/// its stream ends), but the tool rounds the turn already completed cannot be replayed — the turn
+/// keeps them and reports the stall — and every attempt would sit out the whole bound again. The
+/// user sees the error (with the knob that widens the bound) and decides.
 pub(crate) fn is_retryable(err: &ChatError) -> bool {
     match err {
         ChatError::Interrupted

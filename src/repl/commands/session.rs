@@ -15,7 +15,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::session::SessionInfo;
-use crate::sync::lock;
 use crate::ui::facade::{Panel, TabbedSpec};
 
 use crate::repl::render::replay::{RESUME_ECHO_ROUNDS, echo_rounds, last_rounds};
@@ -174,12 +173,10 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
 
     // ---- the swap, in the ONE order that leaves nothing stale (run.go:762-793) ----
     // Installing the new writer drops the old one, which closes its handle (Go's
-    // sw.Close()); the title state resolves the slot per call, so it follows.
+    // sw.Close()). The resumed bundle brings its own name, settled under the title lock
+    // before the swap: a title pass for the session being left lands there or not at all.
     let usage = writer.usage();
-    {
-        let mut slot = lock(&repl.session.writer);
-        *slot = Some(writer);
-    }
+    repl.session.titler.switch_writer(writer);
     repl.report_session();
     repl.handles
         .ui
@@ -189,7 +186,6 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
     repl.conv.budget.reseed(&repl.conv.history);
     repl.conv.ctxm.seed_totals(usage); // the switched-to session brings its own totals
     repl.conv.pending.clear();
-    repl.session.titler.adopt(); // the resumed bundle brings its own name
     // A live switch takes the bundle's model and tuning whole: no flag is in play any more.
     let warn_tr = Arc::clone(&repl.handles.tr);
     let window = crate::session::replay_session_settings(

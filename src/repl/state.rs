@@ -117,11 +117,15 @@ impl SessionSlot {
     /// Drops an in-flight title pass (its request goes with it); the placeholder name stands. A
     /// pass that already landed is untouched — `abort` on a finished task is a no-op.
     ///
-    /// Nothing ever WAITS on the pass: the loop gives it up wherever it must not run on (before a
-    /// command that may swap or mint the writer, at exit, with the name it would replace given
-    /// back), and otherwise lets it finish in the background. Go joined it there instead, which
-    /// held the next input — or the exit — for up to `TITLE_TIMEOUT` with ESC and Ctrl+C dead
-    /// (DIVERGENCES X-64).
+    /// Nothing ever WAITS on the pass: the loop gives it up only at exit and with the name it
+    /// would replace given back, and otherwise lets it finish in the background — through
+    /// commands too. Go joined it before every command but the read-only viewers and at exit,
+    /// which held the next input — or the exit — for up to `TITLE_TIMEOUT` with ESC and Ctrl+C
+    /// dead (DIVERGENCES X-64).
+    ///
+    /// Giving it up is not what keeps it off another session's bundle: `abort` cannot interrupt
+    /// a `land` already running on another worker. The title lock does that
+    /// ([`SessionTitle::switch_writer`](crate::repl::title::SessionTitle::switch_writer)).
     pub(crate) fn abort_title(&mut self) {
         if let Some(h) = self.title_task.take() {
             h.abort();

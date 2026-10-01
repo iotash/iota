@@ -270,9 +270,10 @@ impl Client {
     /// JSON request whose 2xx body is an SSE stream. Retries only until the first successful response head.
     ///
     /// The body is read under the client's byte-level idle bound ([`LlmError::StreamIdle`]). That
-    /// failure happens AFTER the head, so it is never retried, here or by the turn: by then the
-    /// stream may already have produced text or tool calls, and replaying the request would run
-    /// those tool calls twice.
+    /// failure happens AFTER the head, so it is never retried, here or by the turn. Not because
+    /// the round's own tool calls would run twice — they run only after its stream ends — but
+    /// because the tool rounds the turn already completed cannot be replayed (the turn keeps
+    /// them and reports the stall), and every attempt would sit out the whole bound again.
     pub async fn stream<B: serde::Serialize + Sync>(
         &self,
         cancel: &CancellationToken,

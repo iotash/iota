@@ -2,8 +2,8 @@
 //! DIVERGENCES X-64, `docs/history/request-cancellation-review-*.md`).
 //!
 //! What only exists end to end is what the NEXT request carries — whether a stall kept the turn's
-//! completed tool round — and whether the loop's next step (another message, the exit) waits on a
-//! title pass that never answers. Both are read off the provider's call log and the wall clock.
+//! completed tool round — and whether the loop's next step (another message, a command, the exit)
+//! waits on a title pass that never answers, or gives up one that would have. Both are read off the provider's call log and the wall clock.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -18,7 +18,7 @@ use iota::testing::{
 };
 use iota::text::ansi::strip_sgr;
 use iota::tool::Dispatcher;
-use iota::ui::facade::{Input, Ui};
+use iota::ui::facade::{Input, TabbedResult, Ui};
 use tokio_util::sync::CancellationToken;
 
 /// Far under the title pass's own 30 s deadline, far over a slow runner's turn.
@@ -269,5 +269,60 @@ async fn an_interrupt_that_keeps_a_partial_keeps_the_title_pass() {
     assert!(
         *landed.lock().unwrap(),
         "the model's title never landed after an ESC that kept the partial"
+    );
+}
+
+/// A command right after the first answer, while its title pass is still out, does not give the
+/// pass up: the model's name still lands (giving it up before every command left the placeholder
+/// for good). What keeps a pass off the bundle `/session` swaps in is the title lock, not this.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_command_during_the_title_pass_keeps_it() {
+    let ui_slot: Arc<Mutex<Option<Arc<ScriptedUi>>>> = Arc::default();
+    let seen = Arc::clone(&ui_slot);
+    let landed = Arc::new(Mutex::new(false));
+    let flag = Arc::clone(&landed);
+    // The second turn holds its call until the model's name is on the window — or gives up.
+    let provider = FakeProvider::new()
+        .with_tools()
+        .with_models(&["fake-model"])
+        .replying("ok")
+        .on_call(move |n, _| {
+            if n != 2 {
+                return;
+            }
+            let ui = seen.lock().unwrap().clone().expect("the ui");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
+                let titled = ui
+                    .events()
+                    .iter()
+                    .any(|e| matches!(e, UiEvent::Title(t) if t.contains("Model Name")));
+                if titled {
+                    *flag.lock().unwrap() = true;
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+    // The name takes longer than the first turn, so `/model` runs while the pass is in flight.
+    let title = FakeProvider::new()
+        .replying("Model Name")
+        .answering_after(Duration::from_millis(300));
+    let fx = Fixture::new(vec![
+        input("first"),
+        input("/model"),
+        Reply::Tabbed(TabbedResult {
+            cancelled: true,
+            ..TabbedResult::default()
+        }),
+        input("second"),
+        Reply::Closed,
+    ]);
+    *ui_slot.lock().unwrap() = Some(Arc::clone(&fx.ui));
+    fx.run(provider, Some(title), &[]).await;
+
+    assert!(
+        *landed.lock().unwrap(),
+        "the model's title never landed after a command ran during its pass"
     );
 }
