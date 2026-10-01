@@ -295,7 +295,8 @@ pub struct HttpTransport {
     /// The `/debug` request log, when this transport records.
     pub recorder: Option<Arc<RequestLog>>,
     /// The byte-level idle bound of every SSE body read over this transport (`None` = never);
-    /// [`crate::llm::client::STREAM_IDLE_TIMEOUT`] unless `IOTA_STREAM_IDLE_TIMEOUT` said otherwise.
+    /// [`crate::llm::client::STREAM_IDLE_TIMEOUT`] unless the `IOTA_STREAM_IDLE_TIMEOUT` test hook said
+    /// otherwise.
     pub stream_idle: Option<std::time::Duration>,
 }
 

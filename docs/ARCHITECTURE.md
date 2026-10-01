@@ -315,6 +315,11 @@ Principles: unit tests beside code (and ONLY there for `pub(crate)` seams — `t
 
 CI (`ci.sh`, one package, one binary — since 2026-09-02/2026-09-01): `cargo fmt --check` · `scripts/check-deps.sh` (direct deps ⊆ `scripts/direct-deps.allow`, via `cargo metadata`) · `scripts/check-stubs.sh` (no `todo!()`, no stub header) · `cargo clippy --all-targets -- -D warnings` (pedantic via `[lints]`) · `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` · `cargo test` (which runs the layering gate of §1.2, `tests/layering.rs` — three greps here until 2026-09-15) under `IOTA_TMUX_REQUIRED=1 IOTA_SANDBOX_REQUIRED=1` (since 2026-09-15: the single L4 tmux execution rides that one invocation, and a missing tmux / bash / mock port / bubblewrap is a red test naming it, not a `SKIP:` that passes; a plain `cargo test` without the variables still skips) · `cargo build --release` + `scripts/size.sh` writing the one size row into `target/size.md` (a CI artifact).
 
+**Test hooks in the binary.** Two variables are read once at the binary edge so an L4 scenario can drive the real binary on a shorter clock; they have no product meaning, no message names them, and the user-facing table in `README.md` (Environment variables) leaves them out on purpose:
+
+- `IOTA_SHELL_YIELD=<seconds>` — the foreground `shell` window (`tool::builtins::shell::SHELL_YIELD`, 20 s), into `ToolEnv::shell_yield`; scenario 25 uses 2.
+- `IOTA_STREAM_IDLE_TIMEOUT=<seconds>` — the stream idle bound (`llm::client::STREAM_IDLE_TIMEOUT`, 300 s; `0` = none, a test path only), into `HttpTransport::stream_idle`; scenario 27 uses 2. Not a user setting since 2026-10-01 (DIVERGENCES X-64).
+
 The session slice adds one testing rule to the list above: **no test hardcodes a fixture session id.** The Go-written bundles under `tests/fixtures/sessions/` carry random ids, and every id, prefix, count and expected string is read from their `manifest.json` (whose `expect` block was measured by loading each bundle back through the real Go loader). Regenerating the corpus therefore never invalidates a test.
 
 ---

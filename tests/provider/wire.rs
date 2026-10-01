@@ -650,9 +650,8 @@ async fn a_silent_stream_fails_at_the_idle_bound() {
     );
     let err = res.unwrap_err();
     assert!(
-        err.to_string()
-            .contains("IOTA_STREAM_IDLE_TIMEOUT=<seconds>"),
-        "the message names the knob: {err}"
+        !err.to_string().contains("IOTA_STREAM_IDLE_TIMEOUT"),
+        "the message names no knob — the variable is a test hook: {err}"
     );
     assert!(
         !should_retry(&err, None),
@@ -686,8 +685,9 @@ async fn a_heartbeat_keeps_a_stream_alive_past_the_idle_bound() {
     );
 }
 
-/// `IOTA_STREAM_IDLE_TIMEOUT=0` turns the bound off: a silent stream is still waiting long past
-/// where a 300 ms bound would have fired, and ESC still ends it.
+/// The `IOTA_STREAM_IDLE_TIMEOUT=0` test hook turns the bound off (a test path, not a user
+/// setting): a silent stream is still waiting long past where a 300 ms bound would have fired, and
+/// ESC still ends it.
 #[tokio::test]
 async fn a_zero_idle_bound_never_times_a_stream_out() {
     let idle = iota::llm::client::stream_idle_timeout(Some("0"));

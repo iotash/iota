@@ -36,12 +36,13 @@ pub(crate) const HEADER_TIMEOUT: Duration = Duration::from_secs(120);
 /// because a reasoning model can think in total silence here: no request asks for a reasoning
 /// summary, so an `OpenAI` reasoning model may send nothing at all until its answer starts. A stall
 /// is not retried and fails the turn, so cutting a live think short costs far more than noticing
-/// a dead stream two minutes later — and ESC ends a wait at any time. Overridable through
-/// [`STREAM_IDLE_TIMEOUT_ENV`].
+/// a dead stream two minutes later — and ESC ends a wait at any time. Not a user setting (decided
+/// 2026-10-01): it is network policy, and no message or document points a user at a way to change it.
 pub const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
-/// `IOTA_STREAM_IDLE_TIMEOUT=<seconds>` overrides [`STREAM_IDLE_TIMEOUT`] for one run; `0` turns the
-/// check off (a local model that thinks for minutes without a byte). Read once at the binary edge
-/// ([`stream_idle_timeout`]); nothing else reads it.
+/// The test hook over [`STREAM_IDLE_TIMEOUT`]: `IOTA_STREAM_IDLE_TIMEOUT=<seconds>` in the process
+/// environment sets the bound for one run (`0` = none) — read once at the binary edge
+/// ([`stream_idle_timeout`]), so a tmux scenario sees a stall after two seconds where a user waits
+/// five minutes. It has no product meaning and no user-facing text names it. Nothing else reads it.
 pub const STREAM_IDLE_TIMEOUT_ENV: &str = "IOTA_STREAM_IDLE_TIMEOUT";
 /// TCP + TLS connect bound of [`default_http_client`]: a black-holed route fails here instead of
 /// spending the whole [`HEADER_TIMEOUT`].
@@ -566,8 +567,8 @@ fn header_str<'a>(h: &'a HeaderMap, name: &str) -> Option<&'a str> {
     h.get(name).and_then(|v| v.to_str().ok())
 }
 
-/// The byte-level idle bound [`STREAM_IDLE_TIMEOUT_ENV`] names: absent or not a whole number of
-/// seconds ⇒ [`STREAM_IDLE_TIMEOUT`], `0` ⇒ `None` (off), `n` ⇒ `n` seconds.
+/// The byte-level idle bound under the [`STREAM_IDLE_TIMEOUT_ENV`] test hook: absent or not a whole
+/// number of seconds ⇒ [`STREAM_IDLE_TIMEOUT`], `0` ⇒ `None` (off), `n` ⇒ `n` seconds.
 pub fn stream_idle_timeout(var: Option<&str>) -> Option<Duration> {
     match var.and_then(|s| s.trim().parse::<u64>().ok()) {
         None => Some(STREAM_IDLE_TIMEOUT),
@@ -668,7 +669,7 @@ mod tests {
         assert!(cut.ends_with('…'));
     }
 
-    // `IOTA_STREAM_IDLE_TIMEOUT`: whole seconds, `0` = off, anything else = the default.
+    // The `IOTA_STREAM_IDLE_TIMEOUT` test hook: whole seconds, `0` = off, anything else = the default.
     #[test]
     fn stream_idle_timeout_reads_the_override() {
         assert_eq!(stream_idle_timeout(None), Some(STREAM_IDLE_TIMEOUT));

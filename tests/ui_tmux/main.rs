@@ -555,9 +555,9 @@ fn tmux_resize_residuals() {
 
 /// L4 #27 — a hung provider (docs/history/request-cancellation-recon.md): the busy row's
 /// first-token phase, ESC followed by the next message and by the exit with no wait on the title
-/// pass, the stream idle bound failing a silent stream (`IOTA_STREAM_IDLE_TIMEOUT=2`), a title pass
-/// that alone hangs holding neither the next message nor the exit, and a finished answer over a
-/// body that never closes succeeding.
+/// pass, the stream idle bound failing a silent stream (the `IOTA_STREAM_IDLE_TIMEOUT=2` test hook)
+/// with a block that names no knob, a title pass that alone hangs holding neither the next message
+/// nor the exit, and a finished answer over a body that never closes succeeding.
 #[test]
 fn tmux_hung_provider() {
     run_scenario("27-hung-provider.sh");

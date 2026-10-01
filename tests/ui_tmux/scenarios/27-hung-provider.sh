@@ -10,8 +10,9 @@
 #      join for the whole `TITLE_TIMEOUT` (30 s) with an empty cancel stack: no echo, no busy row,
 #      ESC and Ctrl+C both dead.
 #   2. The same, then Ctrl+C at idle: the program exits at once instead of after the title timeout.
-#   3. `IOTA_STREAM_IDLE_TIMEOUT=2`: the silent stream fails on its own after two seconds with the
-#      `Response stalled` block naming the knob, and is NOT retried.
+#   3. `IOTA_STREAM_IDLE_TIMEOUT=2` (a test hook, read once at the binary edge; a user waits the
+#      constant five minutes): the silent stream fails on its own after two seconds with the
+#      `Response stalled` block, which names no knob, and is NOT retried.
 #   4. The answer arrives at once and only the title pass hangs: the next message still goes out at
 #      once — the loop never waits on a name (it waited the whole 30 s before).
 #   5. The same, then Ctrl+C at idle: the exit is immediate, the placeholder name standing.
@@ -75,7 +76,8 @@ if _poll_until "$FAST" _all_has 'Response stalled'; then
 else
     bad "the idle bound never fired"
 fi
-check_once "the error names the knob" 'set IOTA_STREAM_IDLE_TIMEOUT=<seconds>'
+check_once "the error says the request was not retried" 'the request was not retried'
+check "the error names no knob" "$(count_all 'IOTA_STREAM_IDLE_TIMEOUT')" 0
 check "a mid-stream stall is not retried" "$(count_all 'retrying (attempt')" 0
 check "it is an error, not an interrupt" "$(count_all 'Interrupted.')" 0
 

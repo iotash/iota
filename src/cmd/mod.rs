@@ -67,7 +67,7 @@ impl RunContext {
         let transport = HttpTransport {
             client: http.clone(),
             recorder: Some(Arc::clone(&reqlog)),
-            // The one process-environment read the wire layer never makes itself.
+            // The one process-environment read the wire layer never makes itself — a test hook.
             stream_idle: crate::llm::client::stream_idle_timeout(
                 env.var(crate::llm::client::STREAM_IDLE_TIMEOUT_ENV)
                     .as_deref(),

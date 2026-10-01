@@ -86,6 +86,18 @@ of deliberate behavioural decisions, [`docs/design/`](docs/design/) the design
 notes per feature, and [`docs/RELEASING.md`](docs/RELEASING.md) how a release
 is cut.
 
+## Environment variables
+
+Everything else is configured in the YAML file. These four are for the cases a
+config file cannot cover:
+
+| Variable | What it does | When you would use it |
+|---|---|---|
+| `IOTA_SHELL` | The interpreter the `shell` tool runs commands with — an absolute path or a name on `PATH`. Wins on every platform. | Your commands need a shell other than the one iota finds (`bash` on macOS and Linux; Git Bash, then PowerShell, then `cmd.exe` on Windows). A value that is not an executable is an error, never a silent fallback. |
+| `IOTA_GIT_BASH_PATH` | Windows only: the `bash.exe` of Git Bash. | Git for Windows is installed somewhere iota does not look (not next to the `git.exe` on `PATH`, not in a default install root), or you want an MSYS2 bash. |
+| `IOTA_LOG` | A file path; iota appends its diagnostic log there (`tracing` events: iota at `DEBUG`, its libraries at `INFO`). | Something misbehaves — an MCP server, a connection — and you want to see what happened underneath. Nothing reaches this log unless the variable is set; warnings you need to act on are always shown in the terminal regardless. |
+| `IOTA_DEBUG_REGION` | A file path; iota appends a trace of every operation on the terminal's live region there. | You are reporting (or fixing) a rendering glitch — a stray blank row, a misplaced line — and need to show which layer drew it. Developer tooling; most people never need it. |
+
 ## Development
 
 ```bash
