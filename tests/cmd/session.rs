@@ -1020,12 +1020,9 @@ async fn resume_refuses_a_bot_session() {
             &[rec("user", "earlier"), rec("assistant", "noted")],
         );
     }
-    BotPointer {
-        materialized: true,
-        ..BotPointer::new(bot_id)
-    }
-    .write(&home.path().join(".iota").join("bots").join("coder"))
-    .expect("pointer");
+    BotPointer::new(bot_id)
+        .write(&home.path().join(".iota").join("bots").join("coder"))
+        .expect("pointer");
 
     for fragment in [bot_id, "botz"] {
         let mut cmd = iota(cwd.path(), home.path());

@@ -18,7 +18,7 @@ Status: **Proposal**（rev 2，2026-09-30）· 依据：[`docs/history/bot-mode/
 ## 0. 一页结论
 
 - **一个 bot = 一个 `mode: bot` 的 `agents.<name>` 条目 + 一个 bot 目录 `~/.iota/bots/<name>/`。** `mode` 是包含关系 chat ⊂ agent ⊂ bot（§1.1，已定）：bot 一定带 AGENTS.md 链与 skills 集；`workspace:` 键删除。目录里有指向会话的指针文件、记忆文件和锁；会话本身仍是 `~/.iota/sessions/<ULID>/` 下的普通 session bundle。
-- **会话文件是本体，进程只是缓存。** `iota run <name>` 读指针 → `store.resume`；指针不存在就铸一个 ULID、写指针、懒创建。进程退出就是 bot 下线，下次启动原地接上。同一时间只允许一个写者（`File::try_lock`），第二个进程直接拒绝。本体受保护：普通模式的 picker 看不到它、删不掉它；物化之后不见了是硬错误；断电留下的孤儿 `tool_calls` 在加载时修好（§2.7）。改了配置要生效：system 比对后追加，模型与窗口以 config 为准（§2.2）。
+- **会话文件是本体，进程只是缓存。** `iota run <name>` 读指针 → `store.resume`；指针不存在就新建 bundle、落盘，再写指针（§2.2）。进程退出就是 bot 下线，下次启动原地接上。同一时间只允许一个写者（`File::try_lock`），第二个进程直接拒绝。本体受保护：普通模式的 picker 看不到它、删不掉它；指针指着却不见了是硬错误；断电留下的孤儿 `tool_calls` 在加载时修好（§2.7）。改了配置要生效：system 比对后追加，模型与窗口以 config 为准（§2.2）。
 - **会话 v1 不切分。** 一个 bundle 一直追加。启动成本靠 loader 的惰性物化控制（L2）；切分作为 L4 的备用手段，量化门槛写在 §2.6。
 - **记忆分三层：** 会话日志（全量档案）、`MEMORY.md`（常驻层，8 KiB 硬上限，作为 overlay 的最后一段注入；文件级 frontmatter + 三个约定小节，小节就是作用域，注入时按当前项目裁剪）、`notes/*.md`（检索层，L2；每篇带 OKF frontmatter，`type` 必填）。写入走模型显式调用的 `remember` 工具，外加压缩前的 memory flush 轮；每次写入在 transcript 里展开、落一条 notice、留 `.prev`，人写的行模型不能改；写入侧不做内容审查（§3.7）。常驻层的快照只在四个时刻刷新：启动、压缩后、换日、外部编辑（已定）。
 - **压缩无人值守，时序按评审 A 修正（§3.6.1）。** bot 下跳过 Confirm。本轮结束越过阈值 → 入队 flush notice → flush 轮（只带 memory 工具集、不接受 steering、不算「最后一轮」）→ 紧接着压缩，用户的下一条消息要等。只有 flush notice 本身跳过压缩检查，用户消息先到就直接压缩；bot 的 reserve 单独取 `max(32k, 25%)`；summarize 看得到 MEMORY.md。同时修掉「摘要套摘要」：压缩时把旧摘要从首条消息里剥出来，单独作为「上一版摘要」交给摘要调用。
@@ -68,8 +68,8 @@ bot 目录布局（全部新增）：
 
 ```
 ~/.iota/bots/<name>/
-    bot.json        # {"session":"01K…","materialized":true}
-                    # 指针：这个 bot 的会话是哪一个，以及本体是否已落盘（§2.7）；tmp+rename 原子写
+    bot.json        # {"session":"01K…"}
+                    # 指针：这个 bot 的会话是哪一个；只在本体落盘之后发布（§2.2），tmp+rename 原子写
     lock            # 进程锁（File::try_lock），内容为持有者 pid，仅用于报错信息
     MEMORY.md       # 常驻记忆层（§3.2），8 KiB 硬上限，文件级 frontmatter + 三个约定小节
     MEMORY.md.prev  # 上一版（§3.7），每次工具写入前保存
@@ -125,38 +125,42 @@ bot 目录布局（全部新增）：
 
 ```rust
 /// `~/.iota/bots/<name>/bot.json`.
-pub struct BotPointer { pub session: String, pub materialized: bool }
+pub struct BotPointer { pub session: String }
 impl BotPointer {
     pub fn read(bot_dir: &Path) -> Result<Option<BotPointer>, SessionError>;   // 文件不存在 → Ok(None)
     pub fn write(&self, bot_dir: &Path) -> Result<(), SessionError>;           // app::fs::write_atomic
 }
 ```
 
-`NewSession` 加 `id: Option<String>`（`src/session/store.rs:47`）。`SessionStore::create` 在 `Some` 时用给定 id，不再调 `new_id()`。
-
 ### 2.2 resume-or-create 的判定
 
 新增 `SessionStore::open_bot(&self, bot_dir, fresh: NewSession, kind) -> Result<BotOpen, SessionError>`，其中 `enum BotOpen { Resumed(SessionWriter, Session), Fresh(SessionWriter) }`：
 
 ```
-ptr = BotPointer::read(bot_dir)?
+（调用前：wire_session 已检查配置与 provider，check_bot_provider / check_bot_window）
+lock_bot(bot_dir)?                              // bot 锁，第一步；交给返回的 writer，活到进程结束
+ptr = BotPointer::read(bot_dir)?                // 读坏 → 原样报错
 match ptr:
-  None ─────────────► id = new_id(); BotPointer{session:id, materialized:false}.write()
-                      // 先写指针，id 从第一次启动起就固定
-                      Fresh(create(NewSession{ id: Some(id), project: false, .. }))   // 仍然懒创建
+  None ─────────────► w = create(NewSession{ project: false, .. })   // 现有 create 生成 id
+                      w.update_meta(title = bot 名)                    // 新会话元信息，先于落盘
+                      w.materialize()?                                 // bundle 落盘、拿 bundle 锁、写 meta.json
+                      BotPointer{session: w.id()}.write(bot_dir)?      // 原子发布指针
+                      Fresh(w)                                         // 之后才交给交互循环
   Some(p) ─► resume(p.session, kind)
        Ok(w, s)                  ─► Resumed(w, s)
-       Err(NotFound)
-         !p.materialized        ─► Fresh(create(NewSession{ id: Some(p.session), .. }))
-                                    // 上次启动没发过消息，bundle 从未物化：等价于「从空会话开始」，transcript 打一条 notice
-         p.materialized         ─► Err(SessionError::BotMissing { bot, id })   // 本体不见了（被删、换了盘）：硬错误（评审 I1）
+       Err(NotFound)             ─► Err(SessionError::BotMissing { bot, id })   // 本体不见了（被删、换了盘）：硬错误（评审 I1）
                                     // 文案给恢复线索：restore ~/.iota/sessions/<id>/, or delete
                                     // ~/.iota/bots/<name>/bot.json to start over (memory is kept)
        Err(CannotRead | ReadLog) ─► 原样报错，退出。**绝不**静默换新会话：损坏的本体不能被覆盖
                                     // 能自愈的损坏（孤儿 tool_calls）在 load_log 之后修，见 §2.7
 ```
 
-`materialized` 在 bundle 第一次真正落盘时置真：`wire_session` 给 `Fresh` 的 writer 挂一个 `on_created` 回调（新增 `SessionWriter::on_created`，在 `ensure_created`，`src/session/writer.rs:184`，成功后调一次），回调原子改写 `bot.json`。之后 `NotFound` 就是硬错误，不再「从空开始」。
+**先落盘、后发布**：指针只会指向已经在盘上的 bundle，所以 `NotFound` 一律是硬错误，没有「上次没说话、本体从未落盘」这种中间态。实现是 `open_bot`（`src/session/store.rs`）里的一段顺序代码；`SessionWriter::materialize` 只对 `session` 层内部可见（`pub(super)`，包住 `ensure_created`），不是公开的生命周期 API。两处失败的处理：
+
+- **物化失败**（建目录、拿 bundle 锁、开日志、写 `meta.json` 任一步失败）：`open_bot` 报错退出，**不发布指针**。目录可能已经建了一半，但没有指针指它，下次启动从「无指针」重来。
+- **指针发布失败，或物化之后、发布之前进程死掉**：留下一个没有指针的空 bundle（标题是 bot 名、没有对话记录）。它就是一个普通的空会话，出现在普通 picker 里，可以照常删；下次启动看见的仍是「无指针」，另建一个。**不为回收它做 GC。**
+
+**产品变化（如实记录，不是零成本）**：bot 的 bundle 不再懒创建。启动 bot、一句话没说就退出，也会为它留下一份空会话——一个没有对话记录的正常 bundle（只有 `meta.json`、空的 `messages.jsonl`、`attachments/`）。被指针指着的这份照旧不出现在普通 picker 里，但 `iota list sessions`（不过滤，§2.7）从首次启动起就会列出它，而不是等第一句话之后；上面那种无主空 bundle 则作为一个可见的空对象出现在普通 picker 和 `iota list sessions` 里（picker 仍排除 bot 本体）。旧做法（指针先写、bundle 懒建，靠 `materialized` 标志和首写回调补发布）为了「没说话不留目录」这条对 bot 没用的性质，多了一个指针状态位、一个 writer 回调、一个「从未保存」分支和一条 notice；2026-10-01 按过度设计评审删掉（`docs/history/bot-mode/bot-mode-overdesign-*.md`）。
 
 `wire_session`（`src/cmd/interactive/mod.rs:413-577`）在 `resume_given` 分支之前插一个 `if settings.mode.is_bot()` 分支，调 `open_bot`。`Resumed` 走现有 resume 的 meta 回放，但有下面「配置变更要生效」的修正；`Fresh` 走现有新会话路径。bot 下的其它入口：
 
@@ -186,7 +190,7 @@ rev 1 直接沿用 resume 的 meta 回放，后果是 system 与模型冻结在�
 
 锁有两把，职责不同：
 
-1. **bot 锁 `~/.iota/bots/<name>/lock`**：在 `open_bot` 最开头获取，覆盖「指针已写、bundle 还没物化」这段懒创建窗口。
+1. **bot 锁 `~/.iota/bots/<name>/lock`**：在 `open_bot` 最开头获取，交给返回的 writer、活到进程结束。它串行化同名 bot 的首次启动（两个进程都读到「无指针」时，只有一个能走完建 bundle、发布指针），也拒绝第二个进程打开正在运行的 bot。
 2. **bundle 锁 `<bundle>/.lock`**：`SessionWriter` 真正持有文件时获取，也就是在 `SessionStore::resume` 和 `SessionWriter::ensure_created`（`src/session/writer.rs:184`）里。这把锁**对所有模式生效**，顺手修掉「两个终端 `iota resume` 同一个 id 双写 `messages.jsonl`」这个今天就存在的隐患（session-format §12 的遗留项）。
 
 实现：`std::fs::File::try_lock()`（std 自 1.89 起稳定，工具链是 1.98），不引新依赖，macOS、Linux、Windows 都能用。锁是 advisory 的，进程死了 OS 自动释放，**不存在陈旧锁**。文件里写 pid 只是为了报错时能说出是谁占着。`SessionWriter` 新增字段 `lock: Option<std::fs::File>`，drop 时释放。
@@ -237,7 +241,7 @@ L2 的惰性物化（不改格式）：
 
 - 滚动只在压缩刚完成时发生（此时视图 = system + 摘要 + 用户最后一轮 + flush 交换，正好是一个新 bundle 的完整开头）。
 - 新 bundle 的日志开头依次是：system 记录、一条 `compaction` 标记（`compacted_through: 0`，摘要即当前摘要。loader 在保留部分为空时会合成一条 user 前言，见 `src/session/loader.rs:268-270`，无需改代码）、保留尾部的原文。
-- `bot.json` 变成 `{"session":"<新>","materialized":true,"previous":["<旧1>","<旧2>"]}`，原子改写。
+- `bot.json` 变成 `{"session":"<新>","previous":["<旧1>","<旧2>"]}`，原子改写。
 - 记忆本来就在 bot 目录里，不随段走，所以跨段不需要额外机制。跨段回读原文只能靠 L2 的 `recall` 档案检索，它顺着 `previous` 往回扫。
 - 不按时间滚动：时间和成本没有关系，按天切会在最需要连贯的时候制造断点。
 
@@ -247,7 +251,7 @@ rev 1 的「绝不静默换新会话」只覆盖了「读不了」，没覆盖�
 
 - **被指向的 bundle 受保护（I1，L1）**。`SessionStore` 新增 `bot_owner(id) -> Result<Option<String>, SessionError>`：扫 `bots/*/bot.json`，O(bot 数)，通常个位数。普通模式的 `/session` picker 与 Delete tab（`src/repl/commands/session.rs:88-153`）过滤掉被指向的 id；`SessionStore::delete`（`src/session/store.rs:294-300`）对被指向的 id 拒绝，`SessionError::BotOwned`，不管 bot 是否在运行；`iota resume <id>` 同样拒绝（§2.2）。`iota list sessions` 只读 meta，不变。bot 会话的标题都是 bot 名（§2.2），只要它不出现在普通 picker 里就不成问题（评审 M11）。
   - **读不出指针时失败关闭（评审 R6）**。某个 `bot.json`（或某个 bot 目录、或 bots 根目录本身）读不出来时，`bot_owner` 不回答「没有主人」，而是报 `SessionError::BotOwnerUnknown`——坏掉的那个指针可能正指着这个 id。门（`check_not_bot_owned`）因此拒绝**所有**写式打开：`iota resume <id>`、`/session` 切换、`SessionStore::delete` 一律拒绝，不管 id 是不是 bot 的；只有 picker 的列表照常显示（读不出的指针只是不参与过滤）。代价是明确的：**一个坏指针会让所有普通会话的 resume 与 delete 被拒**，直到把它修好或删掉。所以错误信息必须能直接照做：带上读不出的路径和做法——`cannot tell whether session <id> belongs to a bot: <原因>; repair or delete <bots>/<name>/bot.json (without it the bot starts a new session; memory is kept)`；读不出的是目录时改为 `make <path> readable`。删掉 `bot.json` 等于 §2.2 的「重来」：旧 bundle 不再被指向，变回普通会话，记忆保留。宁可暂时打不开，也不让普通模式把 bot 的本体当普通会话写进或删掉。
-- **物化后不见了是硬错误（I1，L1）**：`bot.json.materialized`，见 §2.2。要真的重来：删 `bot.json`——旧 bundle 从此不再被指向，变回普通会话，可以在普通 picker 里删（§6 #9）。
+- **指针指着却不见了是硬错误（I1，L1）**：指针只在本体落盘后发布，见 §2.2。要真的重来：删 `bot.json`——旧 bundle 从此不再被指向，变回普通会话，可以在普通 picker 里删（§6 #9）。
 - **加载后的配对校验（I3，L0）**。`append_messages` 逐行 `write_all`、批末一次 `sync_all`（`src/session/writer.rs:122-140`），批中途断电会留下「assistant 带 `tool_calls`、没有对应 tool 记录」的前缀；`scan_records` 对解析失败的行静默跳过（`src/session/loader.rs:114-122`）也会造成同样的形状。Anthropic 方言为每个 `tool_calls` 发 `tool_use` 块、只从 `Role::Tool` 记录发 `tool_result`（`src/provider/anthropic.rs:88-166`），孤儿 `tool_use` 被 API 以 400 拒绝且不重试（`src/repl/turn/retry.rs:87-90`）——bot 能启动、每句都失败，人只能手工编辑几百 MB 的 jsonl。改法：新增 `session::loader::repair_tail`，`load_log` 之后检查视图末尾，为每个孤儿 `tool_use` 合成一条 `is_error` 的 tool 结果（内容 `interrupted: no result was recorded`），追加落盘，打一条 notice。所有模式生效，是今天 resume 就该有的。同进程内中断一轮（Ctrl+C / SIGTERM / SIGHUP）时，`interrupt_turn` 在保留这一轮之前就地跑同一个 `repair_tail`，缺结果的调用当场补上 `interrupted` 结果再落盘，同一进程接着发消息也不会带出孤儿。
 - **一批要么整批进日志、要么不进（评审 R1）**。`append_messages` / 压缩标记在 `sync_all` 返回之前失败时，把日志截回（`set_len`）批的起点，计数不动，调用方原样重试同一批；只有批后的 meta 重写失败是 `SessionError::MetaNotSaved`（批已在日志里，不得重追加）。截回本身也失败时报 `SessionError::CutFailed`（写入与截回都失败），writer 记住批起点，此后每次追加或写压缩标记都先重试截回，截回确认之前一律以 `SessionError::LogNotCutBack` 拒绝写入——否则重试的批会叠在残留之上，把残留的 `tool_calls` 留成中段孤儿，`repair_tail` 救不了。截回依赖 bundle 锁的独占，所以锁不能降级（§7.1「锁的平台差异」）。meta 写失败后 writer 记 dirty，下一次 `update_meta` 即使值没变也真的写盘；已保存且无变化时仍不写、不刷新 `updated_at`。
 - **写侧拒绝超长记录（I3，L0）**。`MAX_LOG_LINE`（32 MiB）今天只在读侧检查（`loader.rs:30`），一条超长记录写下去，之后每次启动都 `ReadLog`，永久。改法：`append_messages` 序列化后检查长度，超限的记录把内容截到上限并在末尾加 `[record truncated: N bytes over the log line cap]`，不加新键、不改格式。MCP 工具结果没有上限（`src/mcp/` 无相关 cap）的问题由这道门兜住，不另给 MCP 单独上限。
@@ -255,7 +259,7 @@ rev 1 的「绝不静默换新会话」只覆盖了「读不了」，没覆盖�
 - **SIGHUP（I4，L0）**。`src/cmd/signals.rs` 只接 SIGINT / SIGTERM；关 pane 时宿主可能发 SIGHUP，走默认动作直接终止，不经 `finalize_interrupt`。改为 SIGHUP 与 SIGTERM 同路径（取消根 token → 中断表落盘）。一个 25 分钟的 `auto_run` 迁移轮被关掉时，已完成的 round 能留在日志里，模型重启后知道做到哪了。
 - **不加新动词**。评审建议的 `iota session check <id>` 不做：动词集封闭（§6 #1），且上面的校验在加载时自动完成，没有需要人手触发的修复。
 
-代价（评审 C）：`wire_session` 里几十行；pointer 多一个字段；picker 一行过滤；loader 一个校验函数；signals 一行。换来的是：改配置生效、误删有门、断电不变砖、关 pane 不丢已完成的部分。
+代价（评审 C）：`wire_session` 里几十行；picker 一行过滤；loader 一个校验函数；signals 一行。换来的是：改配置生效、误删有门、断电不变砖、关 pane 不丢已完成的部分。
 
 ---
 
@@ -580,7 +584,7 @@ rev 1 只处理了 `</memory>` 的结构逃逸。评审 S1 指出的问题更大
 | 层 | 范围 | 用户得到什么 | 主要改动面 |
 |---|---|---|---|
 | **L0 前置**（与 bot 无关，可以单独发） | 1. bundle 单写者锁（§2.3）；2. 摘要剥离（§3.6.2 的 1、2 两步）；3. 加载后 `tool_calls` 配对校验 + 写侧拒绝超长记录（§2.7；ToolsMount 落盘的推测先在此复现，属实则并入本项，不另开工作项）；4. SIGHUP 与 SIGTERM 同路径（§2.7） | 两个终端 resume 同一会话不再双写；多次压缩的摘要质量变好；断电后的会话能继续用；关 pane 不丢已完成的部分 | `src/session/{store,writer,error,loader}.rs`；`src/repl/commands/compact.rs`；`src/repl/commands/session.rs`（删除前检查锁）；`src/cmd/signals.rs` |
-| **L1 = v1** | 1. `mode` 枚举（`chat` / `agent` / `bot`）与校验，删 `workspace`；2. `bots/<name>/` 目录、`bot.json`（含 `materialized`）、bot 锁、resume-or-create，物化后 `NotFound` 是硬错误；3. bot 下拒绝 `-m`、`no_save`、`iota resume <bot 会话 id>`，不注册 `/session`，标题 = bot 名，普通 picker / Delete 跳过被指向的 bundle，`delete` 拒绝；4. 配置变更生效：system 比对追加、model / window 以 config 为准回写 meta、`/model` 只对本次进程有效；5. harness 按日重组 + Resumed 时的「隔了几天」「换了项目」notice；6. 无人值守压缩：评审 A 的时序（flush 轮只带 memory 集、不 drain、保留规则、只有 notice 跳过检查、bot reserve、summarize 附 MEMORY.md 与 flush 行数、标记三个键）+ 失败策略；7. `MEMORY.md` 常驻层：文件级 frontmatter、三个约定小节、按作用域注入、四时刻快照；`remember`（只作用于 MEMORY.md）+ 评审 B（Expanded、写入 notice、`.prev`、来源标记、前言口径）；8. 压缩前 flush 轮 + `BOT_SUMMARY_ADDENDUM` | 在某个 pane 里 `iota run coder`，聊几周；随时关、随时开，接着聊；改了配置重启就生效；上下文自己压缩，压缩不会吃掉你正在做的事；重要的事记在 `MEMORY.md` 里，人能看、能改、能回滚 | `src/config/{agent,strict}.rs`（`AGENT_KEYS` 仍 14：去 `workspace` 加 `mode`；retired 文案）、`src/cmd/{resolve,mod,assemble,args,error}.rs`、`src/cmd/interactive/mod.rs::wire_session`、`src/session/tuning.rs`（bot 以 config 为准）、`src/repl/commands/session.rs`（picker 过滤）、`src/app/mod.rs`（`bots_dir`）、新增 `src/session/bot.rs`、新增 `src/agents/memory.rs`、新增 `src/tool/builtins/memory.rs`、新增 `src/repl/bot.rs`、`src/repl/{run,state}.rs`、`src/repl/turn/{tools,steer}.rs`（flush 轮的工具过滤与不 drain）、`src/repl/context/{meter,tokens}.rs`（bot reserve）、`src/repl/commands/{compact,mod}.rs` |
+| **L1 = v1** | 1. `mode` 枚举（`chat` / `agent` / `bot`）与校验，删 `workspace`；2. `bots/<name>/` 目录、`bot.json`、bot 锁、resume-or-create（先落盘后发布指针），`NotFound` 是硬错误；3. bot 下拒绝 `-m`、`no_save`、`iota resume <bot 会话 id>`，不注册 `/session`，标题 = bot 名，普通 picker / Delete 跳过被指向的 bundle，`delete` 拒绝；4. 配置变更生效：system 比对追加、model / window 以 config 为准回写 meta、`/model` 只对本次进程有效；5. harness 按日重组 + Resumed 时的「隔了几天」「换了项目」notice；6. 无人值守压缩：评审 A 的时序（flush 轮只带 memory 集、不 drain、保留规则、只有 notice 跳过检查、bot reserve、summarize 附 MEMORY.md 与 flush 行数、标记三个键）+ 失败策略；7. `MEMORY.md` 常驻层：文件级 frontmatter、三个约定小节、按作用域注入、四时刻快照；`remember`（只作用于 MEMORY.md）+ 评审 B（Expanded、写入 notice、`.prev`、来源标记、前言口径）；8. 压缩前 flush 轮 + `BOT_SUMMARY_ADDENDUM` | 在某个 pane 里 `iota run coder`，聊几周；随时关、随时开，接着聊；改了配置重启就生效；上下文自己压缩，压缩不会吃掉你正在做的事；重要的事记在 `MEMORY.md` 里，人能看、能改、能回滚 | `src/config/{agent,strict}.rs`（`AGENT_KEYS` 仍 14：去 `workspace` 加 `mode`；retired 文案）、`src/cmd/{resolve,mod,assemble,args,error}.rs`、`src/cmd/interactive/mod.rs::wire_session`、`src/session/tuning.rs`（bot 以 config 为准）、`src/repl/commands/session.rs`（picker 过滤）、`src/app/mod.rs`（`bots_dir`）、新增 `src/session/bot.rs`、新增 `src/agents/memory.rs`、新增 `src/tool/builtins/memory.rs`、新增 `src/repl/bot.rs`、`src/repl/{run,state}.rs`、`src/repl/turn/{tools,steer}.rs`（flush 轮的工具过滤与不 drain）、`src/repl/context/{meter,tokens}.rs`（bot reserve）、`src/repl/commands/{compact,mod}.rs` |
 | **L2 检索与可靠性** | `notes/`（OKF frontmatter、目录段）+ `remember(file:, type:)` + `recall`（`memory` 和 `archive` 两个 source）+ `notes` 的 `.prev`；`SessionRecord.at`；loader 惰性物化 + bot 下 `/export` 按范围导出 + 图像附件延迟读取（评审 I9）；失败轮保留副作用（§2.4）+ round 边界 `.inflight` 侧文件（评审 I4）；退出时的 jobs notice | 模型能找回被压缩掉的原文和细节笔记；一个月的会话启动依然快；关 pane、失败轮都不再让模型「不知道自己做过」 | `src/session/{loader,record}.rs`、`src/agents/memory.rs`、`src/tool/builtins/memory.rs`、`src/cmd/mod.rs`（注入 `ArchiveSearch`）、`src/repl/run.rs`、`src/repl/commands/export.rs` |
 | **L3 入站** | 1. inbox 目录 `bots/<name>/inbox/`（评审 I5）：运行中的 bot 轮询（或 watch）它，每个文件原子 rename 后读入 `ui.enqueue(Notice)`；`iota run <bot> -m` 在锁被占时把消息写进 inbox 并退出——不需要 socket，cron、脚本、第二终端都能用。inbox 是 L3 的第一项，也是 L3 唯一的入场券：L3 不为别的开工（已定 2026-09-30，§6 #24）；2. 压缩核心下沉出 `repl`（`compact_history`/`summarize`/`retain_tail_count` → `src/headless/compact.rs`，`go_map`、`truncate_runes` 随之下沉到 `text`/`tool::fmt`；分层门会卡住任何上行引用），bot 的编排状态机随之下沉（评审 I10，§6 #23）；3. bot 没在运行时 `-m` 走 headless 加自动压缩；4. Unix socket `~/.iota/bots/<name>/sock` 只在 inbox 不够用时（例如要拿到回复）再做 | 可以在脚本、cron、别的终端里给 bot 发话，由正在运行的 bot 处理 | `src/headless/`、`src/repl/commands/compact.rs`、`src/cmd/`、`src/repl/run.rs:505-513` 旁 |
 | **L4 常驻与渠道** | heartbeat / 对话内定时（往主会话注入持久提示词）；形态 B 守护进程（复用 L3 的 headless + 压缩）；MCP `claude/channel` 协议接 IM（默认拒绝、配对码）；会话按大小滚动（§2.6，按需） | 不开终端也能活，能从手机或 IM 找到它 | 另开设计 |
@@ -593,7 +597,7 @@ rev 1 只处理了 `</memory>` 的结构逃逸。评审 S1 指出的问题更大
 
 | 评审 | 去向 |
 |---|---|
-| I1 本体可见可删 | v1（§2.2、§2.7：`materialized`、picker 过滤、`delete` 拒绝、`iota resume` 拒绝） |
+| I1 本体可见可删 | v1（§2.2、§2.7：先落盘后发布指针、picker 过滤、`delete` 拒绝、`iota resume` 拒绝） |
 | I2 配置冻结 | v1（§2.2 配置变更要生效） |
 | I3 损坏静默 | v1 / L0（§2.7：配对校验、写侧截断）；ToolsMount 落盘先在 L0 复现，属实则并入配对校验；不加 `iota session check` |
 | I4 关窗口丢整轮 | SIGHUP 同路径 v1 / L0（§2.7）；round 边界 `.inflight` L2（§2.4） |
@@ -612,7 +616,7 @@ rev 1 只处理了 `</memory>` 的结构逃逸。评审 S1 指出的问题更大
 |---|---|
 | L0 | 单元测试：`try_lock` 冲突返回 `SessionError::Locked`，drop 后可重入；两个 `SessionStore` 实例抢同一个 bundle。`compact_history` 对「首条带前言」的历史，断言 `summarize` 收到的提示词里有 `PREVIOUS SUMMARY` 段，且 `User:` 行里不再出现 `SUMMARY_PREFIX`。一个末尾带孤儿 `tool_calls` 的 fixture 日志加载后视图末尾多出合成的 `is_error` tool 结果，且日志被追加；一条超过 `MAX_LOG_LINE` 的消息写入后能被读回（已截断）。老的 fixture 会话照常加载（`tests/cmd/session.rs`） |
 | L1 配置 | strict 测试：`workspace:` 是未知键；`mode: bots` 报错并列出三个合法值；`mode: bot` + `no_save: true` 报 `ConfigError`；`mode: agent` 与 rev 1 的 `workspace: true` 行为逐字相同（回归） |
-| L1 集成 | `tests/repl/` 里用 `ScriptedUi` 加 `FakeProvider::reporting_usage().with_tools()` 覆盖：首次启动写出 `bot.json`、第二次启动 resume 同一个 id；物化后删掉 bundle 再启动报硬错误；锁被占时报错；普通模式的 picker 看不到 bot 会话、`delete` 拒绝；改了 config 的 system 后重启，日志多一条 system 记录且视图首条是新的；config 换模型后 `/status` 显示新模型；越过阈值后队列里出现 flush notice，flush 轮里 `dispatch.tools()` 只有 memory 集、typed-ahead 没被 drain，flush 轮之后日志多了一条 `compaction` 记录且保留部分以用户最后一轮开头、flush 交换在后，全程没有 `confirm` 事件；用户消息先于 flush notice 到达时直接压缩、标记带 `flush_skipped`、随后的 flush notice 被丢弃；`remember` 超过上限时返回 `is_error` 且文件不变；`remember` 命中无标记行报错；`section` / `text` 带换行写不出第二行；每次写入后 `.prev` 是上一版；在项目 X 里注入块只含 X 的 `## Project:` 小节全文；外部改了 `MEMORY.md` 会出现 reload notice，模型自己写入不会；跨日时 harness 重组（日期通过 `HarnessInputs` 注入，测试里固定） |
+| L1 集成 | `tests/repl/` 里用 `ScriptedUi` 加 `FakeProvider::reporting_usage().with_tools()` 覆盖：首次启动写出 `bot.json`、第二次启动 resume 同一个 id；删掉 bundle 再启动报硬错误；锁被占时报错；普通模式的 picker 看不到 bot 会话、`delete` 拒绝；改了 config 的 system 后重启，日志多一条 system 记录且视图首条是新的；config 换模型后 `/status` 显示新模型；越过阈值后队列里出现 flush notice，flush 轮里 `dispatch.tools()` 只有 memory 集、typed-ahead 没被 drain，flush 轮之后日志多了一条 `compaction` 记录且保留部分以用户最后一轮开头、flush 交换在后，全程没有 `confirm` 事件；用户消息先于 flush notice 到达时直接压缩、标记带 `flush_skipped`、随后的 flush notice 被丢弃；`remember` 超过上限时返回 `is_error` 且文件不变；`remember` 命中无标记行报错；`section` / `text` 带换行写不出第二行；每次写入后 `.prev` 是上一版；在项目 X 里注入块只含 X 的 `## Project:` 小节全文；外部改了 `MEMORY.md` 会出现 reload notice，模型自己写入不会；跨日时 harness 重组（日期通过 `HarnessInputs` 注入，测试里固定） |
 | L1 状态机（§6 #23） | `repl::bot` 状态机的单元测试，v1 必带（纯函数不测白不抽）：输入输出只有朴素数据（数字、枚举、bool），测试里不构造 `CtxMeter`、`ContextBudget`、`Ui` 或任何 `repl::*` 类型 |
 | **长跑实验**（L1 收尾，可行） | 新增测试 fake `testing::GrowingProvider`：回复和 usage 都由请求**计算**出来（`input = 发送字节数 / 4`，回复里带上轮次编号，按脚本在指定轮调 `remember`）。主场景窗口是 **32k**（§4.1 的最小窗口），驱动 2000 轮，中途在 24 个随机点 drop Repl 再 resume，每个 drop 点同时让同一进程不重启地跑下去做对照；harness 的时钟是注入的固定日期，不依赖真实日期。断言的不变量：日志只增不改；视图大小始终 ≤ 窗口；压缩次数 ≈ 预期；每次压缩前恰好有一个 flush notice（或标记带 `flush_skipped`）；`MEMORY.md` ≤ 8 KiB；每次重启后的视图 = 不重启时的视图，且发出去的调用与历史**除记忆块外逐字节相同**（记忆块在启动时刷新是 §3.4 规定的行为；模型对刷新后的块答得不同，列出不算失败，但只豁免模型的答复本身：去掉刷新后新发出的工具调用、它们的结果和对应的 `memory:` 写入通知之后，进程发出的调用种类、顺序与历史必须逐条相同，旧消息被改、被截、被重排一律算失败；follow-up 轮数由模型决定，可以不同）；每个用户轮号 `1..=2000` 在日志里恰好一次且带最终回复；启动加载耗时随日志的增长曲线（给 §2.6 的门槛提供数据）。两种模型各跑一遍：记忆保持简短的，和只在被要求时才合并、停在软阈值的（§3.5 的平衡态）。8k 场景保留为 `#[ignore]` 的复现，是最小窗口的证据（`tests/repl/bot_longrun.rs`）。这验证的是**机制**，跑在 `cargo test` 里，每个场景约半分钟（大半是每批的 `sync_all`） |
 | 缓存实测（手动，评审 I6） | 用真模型各跑一天：四时刻刷新 vs 每次 `remember` 后刷新，比较 `Usage::cache_hit_rate`。结果只作为复议 §6 #12 的数据，不改本 rev 的决定 |
@@ -652,7 +656,7 @@ rev 1 只处理了 `</memory>` 的结构逃逸。评审 S1 指出的问题更大
 | 19 | **`MEMORY.md` 的 frontmatter 与小节** | a. 文件级 frontmatter（`bot` / `updated`）+ 三个约定小节即作用域；b. rev 1：无 frontmatter，小节只是推荐；c. 逐条 schema | **a——已定（2026-09-30）** | 两个键够辨认文件、看新鲜度；`okf_version` 删掉——它声明在 bundle 根 `index.md` 上，这里没有 bundle 也没有 `index.md`，写上没人消费也没人校验，等 `notes/` 长成 bundle 再标在 `notes/index.md`。小节从「推荐」变「约定」后，注入才能按作用域裁剪（评审 I7）。c 让人手编辑变难，且 8 KiB 里塞不下逐条字段。`## Project: <名字>` 用目录名；来源标记 `[user]` / `[inferred]` 保留，不算逐条 schema（均已定，§3.2） | `agents::memory`、`remember(section:)`、`Snapshot::block(project)` |
 | 20 | **压缩与 flush 的时序** | a. 评审 A（§3.6.1）；b. rev 1 的流程 | **a——已定（2026-09-30，并入评审）** | rev 1 在 typed-ahead、自由的 flush 轮、保留 flush 轮而非用户轮三处会压掉用户正在做的事（评审 S2）；摘要看不到记忆（S3） | `compact_history`、`retain_tail_count`、`tool_loop` 过滤钩子、`Steerer::drain` 开关、`meter.rs`、标记三个键 |
 | 21 | **记忆写入的可见性** | a. 评审 B（§3.7）；b. rev 1：只回显一行、免审批、无来源、无备份；c. 写入走审批门 | **a——已定（2026-09-30，并入评审）** | 记忆是免审批、进 system 段、永不过期的注入通道（评审 S1）；b 没有痕迹，c 让 flush 轮在无人值守时挂起。a 用可见、可回滚、人写的行不可改换掉审批；密钥拒写 2026-10-01 撤掉（§3.7 第 4 条） | `remember` 的 presentation 与 `source` 参数、写入 notice、`.prev`、块前言 |
-| 22 | **本体与配置的关系** | a. 评审 C（§2.2、§2.7）；b. rev 1：沿用 resume 回放，`NotFound` 一律从空开始，picker 可删 | **a——已定（2026-09-30，并入评审）** | 永不结束的会话把 resume 的小毛病变成永久的：配置冻结（I2）、一勾就删（I1）、断电变砖（I3） | `wire_session`、`tuning.rs`、`bot.json.materialized`、picker 过滤、`repair_tail`、写侧截断 |
+| 22 | **本体与配置的关系** | a. 评审 C（§2.2、§2.7）；b. rev 1：沿用 resume 回放，`NotFound` 一律从空开始，picker 可删 | **a——已定（2026-09-30，并入评审）** | 永不结束的会话把 resume 的小毛病变成永久的：配置冻结（I2）、一勾就删（I1）、断电变砖（I3） | `wire_session`、`tuning.rs`、`bot.json`、picker 过滤、`repair_tail`、写侧截断 |
 | 23 | **编排状态机放哪一层** | a. v1 写成无 I/O 的状态机（输入：轮结束的用量、flush 完成、压缩成败、日期变化；输出：入队 flush、压缩、刷新快照、通知），放在 `repl::bot`，L3 压缩下沉时整文件下移；b. 现在就放到 `repl` 之下（`headless` 或新模块）；c. 不抽状态机，直接写在 `repl::run` | **a——已定（2026-09-30）** | 评审 I10：写进 `repl` 的编排在形态 B 时要重写一遍。a 用纯函数换零重写，且不需要现在就决定它在 `headless` 还是新模块里；b 要先回答「bot 编排属于哪一层」；c 是 rev 1 的写法。硬约束：状态机的输入输出只能用朴素数据（数字、枚举、bool），不得出现 `CtxMeter`、`ContextBudget`、`Ui`、任何 `repl::*` 类型——违反这条就失去了 L3 无痛下移的前提。v1 就要给它单元测试（纯函数不测白不抽） | 新增 `src/repl/bot.rs` 的形状及其单元测试（§3.6.1、§5.2） |
 | 24 | **inbox 是否提前到 v1** | a. 留在 L3 第一项；b. 提前到 v1（评审 I5：几十行，让 cron 与脚本在 v1 就能触达 bot） | **a——已定（2026-09-30）**；inbox 是 L3 的**第一项，也是 L3 唯一的入场券**——L3 不为别的开工 | v1 已因 A / B / C 变大，且 inbox 让「谁能往 bot 里塞消息」成为新的信任面（文件即输入）。inbox 不是「几十行」：它要回答「谁能写这个目录、投进来的算 Notice 还是用户消息、限长、处理完删不删、失败怎么办」，这些不定就是停摆方案；而且 v1 的核心（永不结束的会话 + 记忆）不需要它——bot 就开在 pane 里，你本来就能对它说话。锁只在一个 bot 正在运行时锁住它那条会话，普通会话的 `iota resume <id> -m` 照旧可用 | `src/repl/run.rs` 的输入源；`iota run <bot> -m` 的锁被占分支 |
 
@@ -688,6 +692,8 @@ rev 1 只处理了 `</memory>` 的结构逃逸。评审 S1 指出的问题更大
 - **为未来预留的抽象**：不做「记忆后端」trait，不做「会话存储」插件，不做通用的事件总线。L3、L4 需要的接缝（`ui.enqueue`、`ArchiveSearch` 闭包）都是现成的，或者到时候一处注入就能加上。#23 的状态机不是抽象：它是把已有的编排写成可测的纯函数。
 
 ### 7.1 已知限制（文档写明，不做机制）
+
+- **没说话也留一份空会话**（§2.2，2026-10-01 删懒物化时引入）：bot 首次启动就把 bundle 落盘，启动后一句话没说就退出也会留下一份没有对话记录的正常 bundle，这是 bot 的本体，下次启动接着用；`iota list sessions` 从此就列出它。物化之后、指针发布之前失败或崩溃，会留下一份没有指针的空 bundle：它在普通 picker 和 `iota list sessions` 里是一个可见的空对象（标题是 bot 名），可以手动删；下次启动另建，不做自动回收。
 
 - **多 bot 并发**（评审 M4）：每个进程各自拉起 stdio MCP servers（`src/cmd/interactive/mod.rs:270-280`），`MAX_JOBS` 每进程 16（`src/shell/jobs.rs:56`）。同一项目里开两个带 `code` 集的 bot 会互相覆盖文件，不能双开的 MCP server 会起两份。文档写明；同项目多 bot 至少 warning。
 - **同步盘**（评审 M5）：`try_lock` 不跨机器；append 在同步盘上会产生 conflicted copy。`~/.iota/sessions` 不要放进 iCloud / Dropbox；`bots/<name>/` 可以（记忆是明文 Markdown；不要把密钥写进记忆）。

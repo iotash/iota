@@ -1,9 +1,8 @@
 //! A bot's home and its pointer (docs/design/bot-mode.md §1.1, §2.1): `<bots>/<name>/bot.json` names the ONE
-//! session that is the bot's body, and whether that session has ever reached the disk.
+//! session that is the bot's body.
 //!
-//! The pointer is written before the bundle exists — the id is fixed from the first launch on — and is
-//! rewritten once more, with `materialized: true`, when the bundle's first write lands. From then on a
-//! bundle that cannot be found is lost, not "not yet created" (§2.7). Every write is `tmp + rename`.
+//! The pointer is published only once the bundle it names is on disk (§2.2), so a bundle that cannot be
+//! found is lost, never "not yet created" (§2.7). The write is `tmp + rename`.
 
 use std::path::Path;
 
@@ -17,16 +16,13 @@ pub const BOT_POINTER_FILE: &str = "bot.json";
 pub struct BotPointer {
     /// The session id this bot is.
     pub session: String,
-    /// The bundle has reached the disk at least once.
-    pub materialized: bool,
 }
 
 impl BotPointer {
-    /// A pointer at `session`, not yet materialised.
+    /// A pointer at `session`.
     pub fn new(session: &str) -> Self {
         Self {
             session: session.to_owned(),
-            materialized: false,
         }
     }
 
@@ -101,14 +97,13 @@ mod tests {
         let home = tempfile::tempdir().expect("tempdir");
         let dir = home.path().join("coder");
         assert_eq!(BotPointer::read(&dir).expect("read"), None);
-        let mut ptr = BotPointer::new("01KABC");
-        ptr.write(&dir).expect("write");
+        BotPointer::new("01KOLD").write(&dir).expect("write");
+        let ptr = BotPointer::new("01KABC");
+        ptr.write(&dir).expect("rewrite");
         assert_eq!(
             std::fs::read_to_string(dir.join(BOT_POINTER_FILE)).expect("file"),
-            "{\"session\":\"01KABC\",\"materialized\":false}\n"
+            "{\"session\":\"01KABC\"}\n"
         );
-        ptr.materialized = true;
-        ptr.write(&dir).expect("rewrite");
         assert_eq!(BotPointer::read(&dir).expect("read"), Some(ptr));
         // Nothing but the pointer is left behind: the temp file was renamed over it.
         let names: Vec<_> = std::fs::read_dir(&dir)
@@ -127,11 +122,7 @@ mod tests {
         let err = BotPointer::read(home.path()).expect_err("corrupt");
         assert!(err.to_string().contains(BOT_POINTER_FILE), "{err}");
         // Well-formed JSON without the session it must name is just as corrupt.
-        std::fs::write(
-            home.path().join(BOT_POINTER_FILE),
-            "{\"materialized\":true}",
-        )
-        .expect("write");
+        std::fs::write(home.path().join(BOT_POINTER_FILE), "{\"name\":\"coder\"}").expect("write");
         let err = BotPointer::read(home.path()).expect_err("no session");
         assert!(err.to_string().contains(BOT_POINTER_FILE), "{err}");
     }

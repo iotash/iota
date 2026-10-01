@@ -8,6 +8,7 @@
 //! that the flush turn takes none.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use iota::host::{Event, Kind, Presenter, State};
@@ -54,8 +55,8 @@ struct Fixture {
     bots: PathBuf,
     states: Arc<Mutex<Vec<State>>>,
     events: Arc<Mutex<Vec<Event>>>,
-    /// Replaces the writer's `on_created` hook (the pointer's `materialized` rewrite) when set.
-    on_created: Mutex<Option<iota::session::OnCreated>>,
+    /// While raised, the bot's log refuses every write (a disk gone under the open handle).
+    disk_down: Option<Arc<AtomicBool>>,
     /// `read_file` asks for approval.
     approve_read: bool,
     /// The history the loop starts from (a resumed view).
@@ -74,7 +75,7 @@ impl Fixture {
             bots,
             states: Arc::default(),
             events: Arc::default(),
-            on_created: Mutex::new(None),
+            disk_down: None,
             approve_read: false,
             imported: Vec::new(),
         }
@@ -91,11 +92,11 @@ impl Fixture {
             )
             .expect("open the bot")
         {
-            iota::session::BotOpen::Fresh { writer, .. } => (writer, None),
+            iota::session::BotOpen::Fresh(writer) => (writer, None),
             iota::session::BotOpen::Resumed(writer, session) => (writer, Some(session.messages)),
         };
-        if let Some(hook) = self.on_created.lock().unwrap().take() {
-            writer.on_created(hook);
+        if let Some(down) = &self.disk_down {
+            writer.fail_log_writes_while(Arc::clone(down));
         }
         (writer, view)
     }
@@ -756,36 +757,18 @@ fn conversation(msgs: &[Message]) -> Vec<(Role, String)> {
 /// the bundle reloads to exactly what that send carried.
 #[tokio::test]
 async fn a_backlog_the_log_refused_is_saved_before_the_compaction_and_survives_a_restart() {
-    let f = Fixture::new(vec![
+    // The disk is down from the start: every line the log is handed fails, and each batch is cut back.
+    let down = Arc::new(AtomicBool::new(true));
+    let up = Arc::clone(&down);
+    let mut f = Fixture::new(vec![
         input("zero"),
         input("one"),
         Reply::Enqueued, // the flush turn; its compaction finds the backlog unsaved
-        input("two"),    // the disk is back: the retried compaction runs first
+        Reply::Pause(Arc::new(move || up.store(false, Ordering::SeqCst))), // the disk is back
+        input("two"),    // the retried compaction runs first
         Reply::Interrupted,
     ]);
-    // The disk is "down" until the loop has said a compaction failed: every write fails in the hook that
-    // marks the pointer materialised (review R1's reproduction).
-    let ui = Arc::clone(&f.ui);
-    let bot_dir = f.bots.join("coder");
-    *f.on_created.lock().unwrap() = Some(Box::new(move || {
-        let failed = ui.events().into_iter().any(|e| match e {
-            iota::testing::UiEvent::Print(lines) => lines
-                .iter()
-                .any(|l| iota::text::ansi::strip_sgr(l).starts_with("Compaction failed")),
-            _ => false,
-        });
-        if !failed {
-            return Err(iota::session::SessionError::Io(std::io::Error::other(
-                "disk is down",
-            )));
-        }
-        let ptr = iota::session::BotPointer::read(&bot_dir)?.expect("the pointer");
-        iota::session::BotPointer {
-            materialized: true,
-            ..ptr
-        }
-        .write(&bot_dir)
-    }));
+    f.disk_down = Some(down);
     let p = provider(Some("SUMMARY"), remember_tabs, over_on_one);
     let log = p.log();
     let dir = f.run(p, "").await;

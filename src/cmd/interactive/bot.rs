@@ -1,6 +1,6 @@
 //! The bot branch of the session wiring (docs/design/bot-mode.md §2.2): `iota run <bot>` opens the bot's
-//! ONE session — resumed when it exists, created under the pointer's id when it does not — and makes the
-//! config, not the session's first day, decide the system prompt and the model parameters.
+//! ONE session — resumed when the pointer names it, created (and then pointed at) when there is no pointer —
+//! and makes the config, not the session's first day, decide the system prompt and the model parameters.
 //!
 //! Kept apart from `wire_session` so the whole branch runs in a unit test: everything here is the store, a
 //! provider and plain values, nothing that needs a terminal.
@@ -30,10 +30,6 @@ pub(crate) struct LastRun {
     /// The directory it ran in (`meta.cwd`; empty for a bundle older than the key).
     pub(crate) cwd: String,
 }
-
-/// The notice for a pointer whose bundle never reached the disk.
-pub(crate) const NEVER_SAVED: &str =
-    "The bot's last run ended before anything was saved; its session starts empty.";
 
 /// What the bot branch hands back to `wire_session`.
 pub(crate) struct BotSession {
@@ -144,25 +140,14 @@ pub(crate) fn open_bot_session(
     let kind = fresh.kind;
     let cwd = fresh.cwd.clone();
     match store.open_bot(&bots.join(name), fresh, kind)? {
-        BotOpen::Fresh {
-            mut writer,
-            never_saved,
-        } => {
-            // No titler for a bot: its one session is named after it (§2.2). Pending, so nothing is written
-            // until the first message lands.
-            writer.update_meta(|m| name.clone_into(&mut m.title))?;
-            Ok(BotSession {
-                writer,
-                history: Vec::new(),
-                resumed: false,
-                notices: never_saved
-                    .then(|| NEVER_SAVED.to_owned())
-                    .into_iter()
-                    .collect(),
-                previous: None,
-                repair_notice: None,
-            })
-        }
+        BotOpen::Fresh(writer) => Ok(BotSession {
+            writer,
+            history: Vec::new(),
+            resumed: false,
+            notices: Vec::new(),
+            previous: None,
+            repair_notice: None,
+        }),
         BotOpen::Resumed(mut writer, session) => {
             // What the bundle carries besides the five knobs the config owns (image output, json edits)
             // still replays.
@@ -249,8 +234,8 @@ fn adopt_system(
 #[cfg(test)]
 mod tests {
     use super::{
-        LastRun, NEVER_SAVED, SYSTEM_UPDATED, check_bot_provider, check_bot_window,
-        open_bot_session, resume_notices,
+        LastRun, SYSTEM_UPDATED, check_bot_provider, check_bot_window, open_bot_session,
+        resume_notices,
     };
     use crate::provider::model::{Message, Role};
     use crate::provider::{Provider, ProviderKind};
@@ -360,9 +345,8 @@ mod tests {
             .expect("a pointer")
     }
 
-    /// A first launch writes the pointer BEFORE any bundle exists, names the pending bundle after the bot,
-    /// keeps it flat, and marks the pointer materialised once the first message lands; the second launch
-    /// resumes that same session.
+    /// A first launch puts the bundle on disk — flat, named after the bot — and only then points at it; the
+    /// second launch resumes that same session.
     #[test]
     fn first_launch_then_resume() {
         let h = home();
@@ -370,27 +354,18 @@ mod tests {
         let mut first = open(&h, &mut p, "be terse").expect("fresh");
         assert!(!first.resumed && first.history.is_empty() && first.notices.is_empty());
         let id = first.writer.id().to_owned();
-        assert_eq!(
-            pointer(&h),
-            BotPointer::new(&id),
-            "pointer first, bundle later"
-        );
-        assert!(!first.writer.on_disk());
-        assert_eq!(first.writer.meta().title, "coder");
+        assert_eq!(pointer(&h), BotPointer::new(&id));
+        assert!(first.writer.on_disk(), "the bundle before the pointer");
         assert_eq!(first.writer.dir(), h.store.root().join(&id), "flat layout");
+        assert_eq!(
+            SessionMeta::read(first.writer.dir()).expect("meta").title,
+            "coder"
+        );
 
         first
             .writer
             .append_messages(&[Message::system("be terse".to_owned()), Message::user("hi")])
             .expect("first write");
-        assert!(
-            pointer(&h).materialized,
-            "the first write materialises the pointer"
-        );
-        assert_eq!(
-            SessionMeta::read(first.writer.dir()).expect("meta").title,
-            "coder"
-        );
         drop(first);
 
         let again = open(&h, &mut p, "be terse").expect("resume");
@@ -530,8 +505,8 @@ mod tests {
         assert_eq!(super::elapsed(10 * 86_400 + 3_600), "10 days");
     }
 
-    /// Only one process runs a bot: the second is refused, naming the bot — even while the first
-    /// has written its pointer and nothing else.
+    /// Only one process runs a bot: the second is refused, naming the bot — even while the first has not
+    /// said a word yet.
     #[test]
     fn a_running_bot_is_locked() {
         let h = home();
@@ -551,32 +526,63 @@ mod tests {
         open(&h, &mut p, "").expect("free once the first run is gone");
     }
 
-    /// A pointer whose bundle never reached the disk: the same id, empty again, with a notice.
+    /// A bundle that cannot be put on disk publishes no pointer: the next launch starts from nothing, not
+    /// from a pointer at a bundle that never was.
     #[test]
-    fn an_unsaved_pointer_starts_over_under_the_same_id() {
+    fn a_bundle_that_cannot_be_created_publishes_no_pointer() {
         let h = home();
-        BotPointer::new("k7qz3xv9m2ht")
-            .write(&h.bots.join("coder"))
-            .expect("pointer");
+        std::fs::write(h.store.root(), "not a directory").expect("block the sessions root");
         let mut p = provider("gpt-4o");
-        let s = open(&h, &mut p, "").expect("fresh again");
+        assert!(open(&h, &mut p, "").is_err(), "nowhere to put the bundle");
+        assert_eq!(
+            BotPointer::read(&h.bots.join("coder")).expect("read"),
+            None,
+            "no pointer at a bundle that is not there"
+        );
+
+        std::fs::remove_file(h.store.root()).expect("unblock");
+        let s = open(&h, &mut p, "").expect("fresh");
         assert!(!s.resumed);
-        assert_eq!(s.writer.id(), "k7qz3xv9m2ht");
-        assert_eq!(s.notices, vec![NEVER_SAVED.to_owned()]);
+        assert_eq!(pointer(&h), BotPointer::new(s.writer.id()));
     }
 
-    /// A materialised pointer whose bundle is gone is a hard error with both ways out — and nothing is
-    /// created in its place.
+    /// A pointer that cannot be published leaves its bundle behind unnamed — an ordinary empty session, not
+    /// the bot's — and the next launch creates another one.
+    #[cfg(unix)]
     #[test]
-    fn a_missing_materialised_bundle_is_a_hard_error() {
+    fn an_unpublished_pointer_leaves_an_ordinary_empty_session() {
+        use std::os::unix::fs::PermissionsExt;
         let h = home();
         let dir = h.bots.join("coder");
-        BotPointer {
-            materialized: true,
-            ..BotPointer::new("k7qz3xv9m2ht")
-        }
-        .write(&dir)
-        .expect("pointer");
+        std::fs::create_dir_all(&dir).expect("bot dir");
+        std::fs::write(dir.join(crate::session::BOT_LOCK_FILE), "").expect("lock file");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).expect("read-only");
+        let mut p = provider("gpt-4o");
+        let failed = open(&h, &mut p, "");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).expect("writable");
+        assert!(failed.is_err(), "the pointer could not be written");
+        assert_eq!(BotPointer::read(&dir).expect("read"), None);
+        let orphans = h.store.list(None).expect("list");
+        assert_eq!(orphans.len(), 1, "{orphans:?}");
+        let orphan = orphans[0].id.clone();
+        assert_eq!(orphans[0].message_count, 0);
+        assert_eq!(h.store.bot_owner(&orphan).expect("owner"), None);
+
+        let s = open(&h, &mut p, "").expect("fresh");
+        assert_ne!(s.writer.id(), orphan, "a new bundle, not the orphan");
+        assert_eq!(pointer(&h), BotPointer::new(s.writer.id()));
+        assert_eq!(h.store.bot_sessions(), vec![s.writer.id().to_owned()]);
+    }
+
+    /// A pointer whose bundle is gone is a hard error with both ways out — and nothing is created in its
+    /// place.
+    #[test]
+    fn a_missing_bundle_is_a_hard_error() {
+        let h = home();
+        let dir = h.bots.join("coder");
+        BotPointer::new("k7qz3xv9m2ht")
+            .write(&dir)
+            .expect("pointer");
         let mut p = provider("gpt-4o");
         let Err(err) = open(&h, &mut p, "") else {
             panic!("must not start a new session");
@@ -591,7 +597,11 @@ mod tests {
             )
         );
         assert!(!h.store.root().join("k7qz3xv9m2ht").exists());
-        assert!(pointer(&h).materialized, "the pointer is left as it was");
+        assert_eq!(
+            pointer(&h),
+            BotPointer::new("k7qz3xv9m2ht"),
+            "the pointer is left as it was"
+        );
     }
 
     /// An unreadable body is reported as it is, never replaced by a new session.
@@ -601,12 +611,9 @@ mod tests {
         let bundle = h.store.root().join("k7qz3xv9m2ht");
         std::fs::create_dir_all(&bundle).expect("bundle");
         std::fs::write(bundle.join(crate::session::META_FILE), "{oops").expect("meta");
-        BotPointer {
-            materialized: true,
-            ..BotPointer::new("k7qz3xv9m2ht")
-        }
-        .write(&h.bots.join("coder"))
-        .expect("pointer");
+        BotPointer::new("k7qz3xv9m2ht")
+            .write(&h.bots.join("coder"))
+            .expect("pointer");
         let mut p = provider("gpt-4o");
         let Err(err) = open(&h, &mut p, "") else {
             panic!("a damaged body must not be replaced");
@@ -617,25 +624,6 @@ mod tests {
             std::fs::read_to_string(bundle.join(crate::session::META_FILE)).expect("meta"),
             "{oops"
         );
-    }
-
-    /// A pointer left `materialized: false` by a crash between the bundle's creation and the pointer's
-    /// rewrite is corrected by the next resume.
-    #[test]
-    fn a_resume_fixes_a_stale_materialized_flag() {
-        let h = home();
-        let mut p = provider("gpt-4o");
-        let mut s = open(&h, &mut p, "").expect("fresh");
-        s.writer
-            .append_messages(&[Message::user("hi")])
-            .expect("write");
-        let id = s.writer.id().to_owned();
-        drop(s);
-        BotPointer::new(&id)
-            .write(&h.bots.join("coder"))
-            .expect("stale pointer");
-        assert!(open(&h, &mut p, "").expect("resume").resumed);
-        assert!(pointer(&h).materialized);
     }
 
     /// §2.2 "配置变更要生效": a changed `system:` is appended as a new system record (the log's last one wins

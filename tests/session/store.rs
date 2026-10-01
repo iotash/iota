@@ -550,24 +550,6 @@ fn delete_is_refused_while_the_bundle_is_held() {
 
 // ---------------------------------------------------------------- bots (bot-mode.md §2.2, §2.7)
 
-/// `NewSession.id` fixes the id of the bundle `create` makes; `None` mints one as before.
-#[test]
-fn create_takes_a_given_id() {
-    let (_home, store) = temp_store();
-    let mut w = store
-        .create(NewSession {
-            id: Some("k7qz3xv9m2ht".to_owned()),
-            ..NewSession::new(KIND, "m1")
-        })
-        .unwrap();
-    assert_eq!(w.id(), "k7qz3xv9m2ht");
-    w.append_messages(&[Message::user("q")]).unwrap();
-    assert_eq!(
-        store.find_dir("k7qz3xv9m2ht"),
-        Some(store.root().join("k7qz3xv9m2ht"))
-    );
-}
-
 /// `bot_owner` answers from the pointers; `delete` refuses a pointed-at session whether or not the bot is
 /// running (nothing holds its lock here), and removes it once the pointer is gone.
 #[test]
@@ -655,47 +637,6 @@ fn a_store_without_bots_knows_no_owner() {
         .write(&home.path().join("bots").join("coder"))
         .unwrap();
     assert_eq!(store.bot_owner(&id).unwrap(), None);
-}
-
-/// The `on_created` hook runs once, right after the first write created the bundle; a failing hook fails
-/// that write and is retried by the next; a resumed (already created) writer never runs one.
-#[test]
-fn on_created_runs_once_after_materialisation() {
-    use std::sync::{Arc, Mutex};
-    let (_home, store) = temp_store();
-    let mut w = store.create(NewSession::new(KIND, "m1")).unwrap();
-    let calls = Arc::new(Mutex::new(Vec::new()));
-    let seen = Arc::clone(&calls);
-    let dir = w.dir().to_path_buf();
-    w.on_created(Box::new(move || {
-        let mut seen = seen.lock().unwrap();
-        seen.push(dir.join("meta.json").exists());
-        if seen.len() == 1 {
-            return Err(SessionError::Io(std::io::Error::other(
-                "pointer write failed",
-            )));
-        }
-        Ok(())
-    }));
-    w.update_meta(|m| "t".clone_into(&mut m.title)).unwrap();
-    assert!(calls.lock().unwrap().is_empty(), "nothing on disk yet");
-    let err = w
-        .append_messages(&[Message::user("q")])
-        .expect_err("hook failed");
-    assert_eq!(err.to_string(), "pointer write failed");
-    w.append_messages(&[Message::user("q")]).unwrap();
-    w.append_messages(&[Message::user("again")]).unwrap();
-    assert_eq!(
-        *calls.lock().unwrap(),
-        vec![true, true],
-        "after the meta, then never again"
-    );
-
-    let id = w.id().to_owned();
-    drop(w);
-    let (mut resumed, _) = store.resume(&id, KIND).unwrap();
-    resumed.on_created(Box::new(|| panic!("a resumed bundle is already on disk")));
-    resumed.append_messages(&[Message::user("more")]).unwrap();
 }
 
 // ---------------------------------------------------------------- repairing the tail (bot-mode.md §2.7)

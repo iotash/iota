@@ -1341,7 +1341,7 @@ fn bot_store(f: &Fixture) -> (SessionStore, PathBuf) {
     (f.store.clone().with_bots(&bots), bots)
 }
 
-/// Opens bot `coder`'s session through the store, named after the bot the way `iota run coder` names it.
+/// Opens bot `coder`'s session through the store (which names a new one after the bot).
 fn bot_writer(store: &SessionStore, bots: &Path) -> SessionWriter {
     match store
         .open_bot(
@@ -1351,19 +1351,15 @@ fn bot_writer(store: &SessionStore, bots: &Path) -> SessionWriter {
         )
         .expect("open the bot")
     {
-        iota::session::BotOpen::Fresh { mut writer, .. } => {
-            writer
-                .update_meta(|m| "coder".clone_into(&mut m.title))
-                .expect("title");
+        iota::session::BotOpen::Fresh(writer) | iota::session::BotOpen::Resumed(writer, _) => {
             writer
         }
-        iota::session::BotOpen::Resumed(writer, _) => writer,
     }
 }
 
 /// A bot's process serves its own session only: `/session` is not in the completion row and typing it is
 /// a plain message (no picker opens). Its bundle keeps the bot's name — no placeholder, no title pass —
-/// the wiring's notices open the transcript, and the first write materialises the pointer.
+/// the wiring's notices open the transcript, and the pointer names the bundle the message went to.
 #[tokio::test]
 async fn a_bot_run_has_no_session_command_and_keeps_its_name() {
     let f = Fixture::new(vec![input("/session"), Reply::Interrupted]);
@@ -1397,12 +1393,13 @@ async fn a_bot_run_has_no_session_command_and_keeps_its_name() {
         "{:?}",
         printed(&f.ui)
     );
-    let meta = iota::session::SessionMeta::read(&dir).expect("the message was persisted");
+    let meta = iota::session::SessionMeta::read(&dir).expect("meta");
+    assert!(meta.message_count > 0, "the message was persisted");
     assert_eq!(meta.title, "coder", "never renamed after the first message");
     let ptr = iota::session::BotPointer::read(&bots.join("coder"))
         .expect("pointer")
         .expect("present");
-    assert!(ptr.materialized);
+    assert_eq!(ptr.session, meta.id);
 }
 
 /// §2.2: a bot's RESUMED bundle is stamped with the parameters the chat starts under (the config's, for a

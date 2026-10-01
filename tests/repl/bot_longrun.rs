@@ -212,7 +212,7 @@ impl Bot {
         // The wiring's own resume (`cmd::interactive::bot`): the view as loaded; the config's system prompt is
         // empty, which the view's head already agrees with; no resume notice (the gap is under an hour).
         let (writer, history) = match opened {
-            BotOpen::Fresh { writer, .. } => (writer, Vec::new()),
+            BotOpen::Fresh(writer) => (writer, Vec::new()),
             BotOpen::Resumed(writer, session) => (writer, session.messages),
         };
         let dir = writer.dir().to_path_buf();

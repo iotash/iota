@@ -1,10 +1,11 @@
 //! Writing a bundle (chat/session.go:307-748).
 //!
-//! The bundle is created LAZILY: [`SessionStore::create`](crate::session::SessionStore::create) touches no disk, so
-//! a session that never reaches a real turn leaves nothing behind. Go's nil-receiver no-ops become an
-//! `Option<SessionWriter>` at the call site, and Go's eight `Set*` methods collapse into
-//! [`SessionWriter::update_meta`] — the schema forces one rule for all of them. There is no `close()`:
-//! `Drop` closes the handle and every batch already `sync_all()`s.
+//! The bundle is created LAZILY: [`SessionStore::create`](crate::session::SessionStore::create) touches no disk,
+//! so a session that never reaches a real turn leaves nothing behind — except a bot's, which is put on disk
+//! at its first launch so its pointer never names a bundle that does not exist (docs/design/bot-mode.md
+//! §2.2). Go's nil-receiver no-ops become an `Option<SessionWriter>` at the call site, and Go's eight `Set*`
+//! methods collapse into [`SessionWriter::update_meta`] — the schema forces one rule for all of them. There
+//! is no `close()`: `Drop` closes the handle and every batch already `sync_all()`s.
 
 use std::path::{Path, PathBuf};
 
@@ -22,9 +23,6 @@ use crate::session::record::{
     ATTACHMENTS_DIR, DATA_REF_PREFIX, IMAGES_DIR, LOG_FILE, ROLE_COMPACTION, SessionAttachment,
     SessionRaw, SessionRecord, SessionToolCall,
 };
-
-/// What [`SessionWriter::on_created`] runs once the bundle is on disk.
-pub type OnCreated = Box<dyn FnMut() -> Result<(), SessionError> + Send>;
 
 /// Persists a live session: the bundle directory, its `meta.json`, the append-only `messages.jsonl` and
 /// the content-addressed attachment store.
@@ -48,8 +46,10 @@ pub struct SessionWriter {
     /// A bot's lock (`<bots>/<name>/lock`), held for as long as the writer lives — the bot runs exactly as
     /// long as its session is open. `None` outside bot mode.
     bot_lock: Option<HeldLock>,
-    /// Runs once the bundle is on disk; kept (and retried by the next write) until it succeeds.
-    on_created: Option<OnCreated>,
+    /// While set and raised, every log line fails to write — a disk going away under an open handle, which
+    /// no file-system trick in a test can reproduce ([`SessionWriter::fail_log_writes_while`]).
+    #[cfg(feature = "testing")]
+    log_down: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Where a failed batch began, while cutting the log back to it has not been confirmed: the log may still
     /// hold part of that batch, so nothing more is appended until a cut succeeds (review R1 — a retry on top
     /// of the remains would leave them in the middle of the log for good).
@@ -71,7 +71,6 @@ impl std::fmt::Debug for SessionWriter {
             .field("measured", &self.measured)
             .field("lock", &self.lock)
             .field("bot_lock", &self.bot_lock)
-            .field("on_created", &self.on_created.is_some())
             .field("uncut", &self.uncut)
             .field("meta_dirty", &self.meta_dirty)
             .finish_non_exhaustive()
@@ -93,7 +92,8 @@ impl SessionWriter {
             measured: None,
             lock: None,
             bot_lock: None,
-            on_created: None,
+            #[cfg(feature = "testing")]
+            log_down: None,
             uncut: None,
             meta_dirty: false,
         }
@@ -122,19 +122,24 @@ impl SessionWriter {
             measured,
             lock: Some(lock),
             bot_lock: None,
-            on_created: None,
+            #[cfg(feature = "testing")]
+            log_down: None,
             uncut: None,
             meta_dirty: false,
         }
     }
 
-    /// Registers `f` to run once the bundle has been materialised — right after the first write created it
-    /// (docs/design/bot-mode.md §2.2: a bot's pointer is marked `materialized` there). A failing `f` fails
-    /// that write and is tried again by the next one. On a bundle already on disk it never runs.
-    pub fn on_created(&mut self, f: OnCreated) {
-        if !self.created {
-            self.on_created = Some(f);
-        }
+    /// Puts the bundle on disk now instead of at the first write: a bot's pointer may only name a bundle that
+    /// exists (docs/design/bot-mode.md §2.2).
+    pub(super) fn materialize(&mut self) -> Result<(), SessionError> {
+        self.ensure_created()
+    }
+
+    /// Test seam: while `down` is raised every log line this writer writes fails, as a disk that went away
+    /// under the open handle would. The batch is then cut back like any failed batch.
+    #[cfg(feature = "testing")]
+    pub fn fail_log_writes_while(&mut self, down: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        self.log_down = Some(down);
     }
 
     /// Keeps a bot's lock alive for as long as this writer lives.
@@ -321,7 +326,7 @@ impl SessionWriter {
 
     /// Materialises the bundle on first use (`ensureCreated`, chat/session.go:363-378): `attachments/`
     /// UNCONDITIONALLY, the bundle lock, the append handle, then the first meta write (which flushes
-    /// pending setters) — and then the [`on_created`](Self::on_created) hook, until it has succeeded once.
+    /// pending setters).
     fn ensure_created(&mut self) -> Result<(), SessionError> {
         if !self.created {
             std::fs::create_dir_all(self.dir.join(ATTACHMENTS_DIR))?;
@@ -332,10 +337,6 @@ impl SessionWriter {
             self.lock = Some(lock);
             self.created = true;
             self.write_meta()?;
-        }
-        if let Some(f) = self.on_created.as_mut() {
-            f()?;
-            self.on_created = None;
         }
         Ok(())
     }
@@ -401,6 +402,16 @@ impl SessionWriter {
         use std::io::Write;
         let mut line = fit_line(rec, MAX_LOG_LINE)?;
         line.push(b'\n');
+        #[cfg(feature = "testing")]
+        if self
+            .log_down
+            .as_ref()
+            .is_some_and(|d| d.load(std::sync::atomic::Ordering::SeqCst))
+        {
+            return Err(SessionError::Io(std::io::Error::other(
+                "injected: the disk is down",
+            )));
+        }
         self.log()?.write_all(&line)?;
         Ok(())
     }
