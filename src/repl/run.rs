@@ -37,6 +37,7 @@ use crate::sync::lock;
 use crate::ui::facade::{InputKind, StatusData};
 use tokio_util::sync::CancellationToken;
 
+use crate::config::AgentMode;
 use crate::repl::ReplError;
 use crate::repl::bot::{Action as BotAction, Event as BotEvent};
 use crate::repl::commands::edit::EditOutcome;
@@ -487,7 +488,14 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         };
         let mut lines = banner_lines(
             &BannerFacts {
-                workspace: overlay.is_some(),
+                // A bot has an agent's overlay; what tells it apart is its session.
+                mode: if bot {
+                    AgentMode::Bot
+                } else if overlay.is_some() {
+                    AgentMode::Agent
+                } else {
+                    AgentMode::Chat
+                },
                 session_id: session_id.as_deref(),
                 ephemeral: new_session.is_some(),
                 resumed,

@@ -174,6 +174,31 @@ fn params(ui: &Arc<ScriptedUi>, store: &SessionStore) -> RunParams {
 // the gate
 // ---------------------------------------------------------------------------
 
+/// The banner's mode word wears a color per mode (`bot` yellow, `agent` cyan, `chat` green when painted); under
+/// `NO_COLOR` a bot's card is bare text — and it says `bot`, not `agent`, though a bot has an agent's workspace.
+#[tokio::test]
+async fn a_bot_banner_names_its_mode_escape_free() {
+    no_color();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = SessionStore::new(tmp.path().join("sessions"));
+    let ui = ScriptedUi::new(vec![Reply::Interrupted]);
+    let mut p = params(&ui, &store);
+    p.agent = iota::headless::AgentOptions {
+        enabled: true,
+        root: tmp.path().to_path_buf(),
+        cwd: Some(tmp.path().to_path_buf()),
+        home: None,
+    };
+    p.session.bot = true;
+    iota::repl::run(p).await.expect("clean exit");
+
+    let lines = texts(&ui.events());
+    assert_escape_free("bot banner", &lines);
+    let joined = lines.join("\n");
+    assert!(joined.contains("│ bot · session "), "{joined}");
+    assert!(!joined.contains("agent · "), "{joined}");
+}
+
 /// Gate (i), end to end: a whole interactive run — banner, a streamed sentence, a tool
 /// call with its cyan header and its shaded diff, a markdown document with every styled
 /// block, a red error block — reaches the facade without one escape byte.
@@ -199,6 +224,7 @@ async fn a_whole_run_reaches_the_facade_escape_free() {
     let joined = lines.join("\n");
     for needle in [
         "│ ι> iota  v", // the banner card: its edge (dim when painted), mark (cyan) and version (dim)
+        "│ chat · session ", // the mode row: the mode word (green when painted), the dim dots
         "Let me edit that.", // the streamed sentence
         "edit",         // the tool-call header (cyan when painted)
         "+ fn main() { run(); }", // a diff row (256-color block when painted)
