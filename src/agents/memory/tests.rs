@@ -404,6 +404,64 @@ fn past_the_hard_cap_only_shrinking_edits_go_through() {
     assert!(e.contains("over its 8 KiB cap"), "{e}");
 }
 
+/// A section name has no length cap of its own (the 100-byte cap is gone): a long, well-formed
+/// `Project:` heading is accepted, written as one heading line, and found again by the next write.
+#[test]
+fn a_long_section_name_is_accepted() {
+    let name = format!("{}-service", "p".repeat(300));
+    let heading = format!("Project: {name}");
+    assert!(heading.len() > 100, "{}", heading.len());
+    assert_eq!(Section::parse(&heading), Ok(Section::Project(name.clone())));
+    let a = apply(
+        None,
+        "b",
+        &add("first", Source::User, Section::Project(name.clone())),
+        TODAY,
+    )
+    .expect("a long section name");
+    let b = apply(
+        Some(&a.file),
+        "b",
+        &add("second", Source::User, Section::Project(name.clone())),
+        TODAY,
+    )
+    .expect("the same section again");
+    assert!(
+        b.file.ends_with(&format!(
+            "\n## {heading}\n- [user] first (2026-09-30)\n- [user] second (2026-09-30)\n"
+        )),
+        "{}",
+        b.file
+    );
+    assert_eq!(b.file.matches("## Project:").count(), 1, "{}", b.file);
+}
+
+/// The 8 KiB cap judges the whole body, headings included: a write that would take it past 8 KiB by
+/// opening a new section under a long name is refused, nothing written, while one that lands exactly on
+/// the cap goes through.
+#[test]
+fn a_new_section_cannot_carry_the_body_past_the_cap() {
+    let file = file_of(MEMORY_CAP - 600);
+    let open = |len: usize| {
+        apply(
+            Some(&file),
+            "b",
+            &add("z", Source::User, Section::Project("n".repeat(len))),
+            TODAY,
+        )
+    };
+    let probe = body_len(&open(150).expect("well under the cap").file);
+    let exact = 150 + MEMORY_CAP - probe;
+    let fits = open(exact).expect("exactly the cap");
+    assert_eq!(body_len(&fits.file), MEMORY_CAP);
+    let e = open(exact + 1).expect_err("one byte over");
+    assert!(
+        e.starts_with("MEMORY.md would be 8.0 KiB, over its 8 KiB cap; nothing was written."),
+        "{e}"
+    );
+    assert!(e.ends_with(&file), "the error carries the file as it was");
+}
+
 #[test]
 fn one_line_is_at_most_500_bytes() {
     let e = apply(
