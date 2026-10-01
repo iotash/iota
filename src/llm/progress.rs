@@ -14,8 +14,8 @@ use bytes::Bytes;
 
 /// The byte-progress handler: `(done, total)`.
 pub(crate) type OnSend = Box<dyn Fn(u64, u64) + Send + Sync>;
-/// The "request fully sent" handler.
-pub(crate) type OnSent = Box<dyn Fn() + Send + Sync>;
+/// The "round-trip returned" handler; the flag is `true` when a success head arrived.
+pub(crate) type OnSent = Box<dyn Fn(bool) + Send + Sync>;
 
 /// The per-turn reporter (progress.go:20-60): handlers are installed by the phase watcher and
 /// cleared when it drops; a reporter with no handlers is silent.
@@ -43,10 +43,11 @@ impl TurnProgress {
         }
     }
 
-    /// Reports that the round-trip returned (fires on EVERY arm — ok, error, timeout, cancel).
-    pub(crate) fn sent(&self) {
+    /// Reports that the round-trip returned (fires on EVERY arm — ok, error, timeout, cancel);
+    /// `headed` is `true` only for a success head, whose body the caller reads next.
+    pub(crate) fn sent(&self, headed: bool) {
         if let Some((_, on_sent)) = lock(&self.handlers).as_ref() {
-            on_sent();
+            on_sent(headed);
         }
     }
 }
@@ -136,7 +137,7 @@ mod tests {
         let sink = Arc::clone(&log);
         rep.set_handlers(Some((
             Box::new(move |d, t| sink.lock().unwrap().push((d, t))),
-            Box::new(|| {}),
+            Box::new(|_| {}),
         )));
         let mut body = ProgressBody::new(payload, Arc::clone(rep));
         let mut out = Vec::new();
@@ -155,7 +156,7 @@ mod tests {
         assert!(current().is_none(), "a bare task carries no progress slot");
         let bare = TurnProgress::new();
         bare.send(1, 2); // must not panic and must deliver nothing
-        bare.sent();
+        bare.sent(true);
         bare.set_handlers(None);
 
         let tp = TurnProgress::new();
@@ -233,12 +234,12 @@ mod wire_tests {
             .await;
 
         let uploaded: Arc<Mutex<u64>> = Arc::default();
-        let sent: Arc<Mutex<usize>> = Arc::default();
+        let sent: Arc<Mutex<Vec<bool>>> = Arc::default();
         let (up, sn) = (Arc::clone(&uploaded), Arc::clone(&sent));
         let rep = TurnProgress::new();
         rep.set_handlers(Some((
             Box::new(move |done, _| *up.lock().unwrap() = done),
-            Box::new(move || *sn.lock().unwrap() += 1),
+            Box::new(move |headed| sn.lock().unwrap().push(headed)),
         )));
 
         let body = Bytes::from(vec![b'y'; 2048]);
@@ -267,8 +268,8 @@ mod wire_tests {
         assert_eq!(*uploaded.lock().unwrap(), 2048);
         assert_eq!(
             *sent.lock().unwrap(),
-            1,
-            "sent() must fire once per attempt"
+            vec![true],
+            "sent() must fire once per attempt, flagged as a success head"
         );
     }
 }

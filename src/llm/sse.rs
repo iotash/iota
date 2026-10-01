@@ -1,6 +1,7 @@
 //! Server-sent events reader (internal/llm/sse.go): `Event` and the cancellable `Sse` body reader.
 
 use std::pin::Pin;
+use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
 use futures::{Stream, StreamExt};
@@ -35,6 +36,8 @@ pub struct Sse {
     done: bool,
     eof: bool,
     cancel: CancellationToken,
+    /// The longest wait for the body's next bytes; `None` = forever.
+    idle: Option<Duration>,
 }
 
 impl std::fmt::Debug for Sse {
@@ -49,7 +52,8 @@ impl std::fmt::Debug for Sse {
 }
 
 impl Sse {
-    /// Wraps a byte stream; `cancel` aborts any pending read with `LlmError::Cancelled`.
+    /// Wraps a byte stream; `cancel` aborts any pending read with `LlmError::Cancelled`. No idle
+    /// bound until [`Sse::with_idle_timeout`] sets one.
     pub fn new(
         body: impl Stream<Item = reqwest::Result<Bytes>> + Send + 'static,
         cancel: CancellationToken,
@@ -62,10 +66,20 @@ impl Sse {
             done: false,
             eof: false,
             cancel,
+            idle: None,
         }
     }
 
-    /// Ok(Some(ev)) next event; Ok(None) clean end; Err(Transport|Cancelled) otherwise.
+    /// Fails a read with `LlmError::StreamIdle` when the body sends no byte for `idle` (`None` =
+    /// never). The clock restarts on every chunk, so a heartbeat (`:` comment line, `ping` event)
+    /// keeps the stream alive although it never parses into an event.
+    #[must_use]
+    pub fn with_idle_timeout(mut self, idle: Option<Duration>) -> Self {
+        self.idle = idle;
+        self
+    }
+
+    /// Ok(Some(ev)) next event; Ok(None) clean end; Err(Transport|StreamIdle|Cancelled) otherwise.
     pub async fn next(&mut self) -> Result<Option<Event>, LlmError> {
         let mut kind = String::new();
         let mut data: Vec<u8> = Vec::new();
@@ -157,10 +171,16 @@ impl Sse {
                 self.scanned = 0;
                 return Ok((self.buf.split().freeze(), true));
             }
+            // A fresh timer per chunk: the bound is on the gap between bytes, never on the
+            // stream's total length.
             let chunk = tokio::select! {
                 biased;
                 () = self.cancel.cancelled() => return Err(LlmError::Cancelled),
                 c = self.body.next() => c,
+                d = idle_elapsed(self.idle) => {
+                    self.eof = true;
+                    return Err(LlmError::StreamIdle(d));
+                }
             };
             match chunk {
                 Some(Ok(bytes)) => self.buf.extend_from_slice(&bytes),
@@ -171,6 +191,17 @@ impl Sse {
                 None => self.eof = true,
             }
         }
+    }
+}
+
+/// Resolves with `idle` once it has elapsed; never resolves for `None`.
+async fn idle_elapsed(idle: Option<Duration>) -> Duration {
+    match idle {
+        Some(d) => {
+            tokio::time::sleep(d).await;
+            d
+        }
+        None => std::future::pending().await,
     }
 }
 

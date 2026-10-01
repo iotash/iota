@@ -121,6 +121,15 @@ impl SessionSlot {
             let _ = h.await;
         }
     }
+
+    /// Drops an in-flight title pass (its request goes with it), so the next [`Self::join_title`]
+    /// has nothing to wait for. A pass that already landed is untouched — `abort` on a finished
+    /// task is a no-op.
+    pub(crate) fn abort_title(&mut self) {
+        if let Some(h) = self.title_task.take() {
+            h.abort();
+        }
+    }
 }
 
 /// The facade, the transcript, the presenter — and the run's shared handles the loop hands around.

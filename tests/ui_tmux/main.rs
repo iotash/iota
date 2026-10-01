@@ -62,6 +62,7 @@
 //! | `24-iota-outside-sandbox.sh` | brain `harness-prompt`, X-44 | — (a sandboxed `shell` set asked about `iota mcp list` from the model: the `(outside the sandbox)` mark on the prompt and the header, the allowed call's output, iota in a pipe unasked and unmarked) |
 //! | `26-resize-residuals.sh` | TUI-VERIFY §4.3, X-52 | — (fresh panes: a 2× and a 3× narrowing with the banner staged, an idle narrowing after 20 ms-a-line output, a narrowing with `/model` open, one while a foreground tool call runs — no row twice, no separator added) |
 //! | `25-shell-yield.sh` | TUI-VERIFY §8.6–8.9, X-47, X-50 | — (a foreground `shell` call past its window: the receipt row, `/jobs` in the completion row, its list and the page a row opens, the list's clock walking with a second job started, the Kill tab ending that job with its `killed` notice, the status row's job clock walking, all gone after the notice; the OSC 9;4 state held busy while a job runs and cleared after the last notice turn) |
+//! | `27-hung-provider.sh` | request-cancellation recon | — (a provider that sends a head and then nothing: `Waiting for the first token`, ESC then the next message and ESC then the exit without the title pass's 30 s, `IOTA_STREAM_IDLE_TIMEOUT=2` failing the stream as `Response stalled`, not retried) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -550,4 +551,12 @@ fn tmux_shell_yield() {
 #[test]
 fn tmux_resize_residuals() {
     run_scenario("26-resize-residuals.sh");
+}
+
+/// L4 #27 — a hung provider (docs/history/request-cancellation-recon.md): the busy row's
+/// first-token phase, ESC followed by the next message and by the exit with no wait on the title
+/// pass, and the stream idle bound failing a silent stream (`IOTA_STREAM_IDLE_TIMEOUT=2`).
+#[test]
+fn tmux_hung_provider() {
+    run_scenario("27-hung-provider.sh");
 }

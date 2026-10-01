@@ -74,8 +74,14 @@ pub async fn retry_round<T>(
 /// Whether the error is likely transient and worth retrying (chat.go:136-158).
 ///
 /// Non-retryable: user interruption, the tool-loop caps, a cancelled or provider-declared
-/// permanent failure, a non-streaming stream response (`ErrNoEvents`) and HTTP 4xx except
-/// 429. Everything else — 429, 5xx, transport faults, malformed frames — retries.
+/// permanent failure, a non-streaming stream response (`ErrNoEvents`), a stream that went silent
+/// past its idle bound (`StreamIdle`) and HTTP 4xx except 429. Everything else — 429, 5xx,
+/// transport faults, malformed frames — retries.
+///
+/// `StreamIdle` stays out on purpose: it fires after the response head, when the stream may
+/// already have produced text or tool calls, and the wire layer retries only up to the head so a
+/// replay can never run a tool call twice. The user sees the error (with the knob that widens the
+/// bound) and decides.
 pub(crate) fn is_retryable(err: &ChatError) -> bool {
     match err {
         ChatError::Interrupted
@@ -83,7 +89,7 @@ pub(crate) fn is_retryable(err: &ChatError) -> bool {
         | ChatError::SharedCap { .. }
         | ChatError::Provider(ProviderError::Cancelled | ProviderError::Permanent(_)) => false,
         ChatError::Provider(ProviderError::Wire { source, .. }) => match source.as_ref() {
-            LlmError::NoEvents | LlmError::Cancelled => false,
+            LlmError::NoEvents | LlmError::Cancelled | LlmError::StreamIdle(_) => false,
             LlmError::Status(se) => se.status == 429 || se.status >= 500,
             _ => true,
         },
@@ -159,6 +165,11 @@ mod tests {
         assert!(is_retryable(&status(503)));
         assert!(!is_retryable(&status(400)));
         assert!(!is_retryable(&status(404)));
+        // A stream that went silent after its head is reported, never replayed.
+        assert!(!is_retryable(&ChatError::Provider(ProviderError::wire(
+            WireOp::Stream,
+            LlmError::StreamIdle(std::time::Duration::from_secs(180))
+        ))));
         // An in-band stream error carries no status: it retries.
         assert!(is_retryable(&ChatError::Provider(ProviderError::wire(
             WireOp::Stream,

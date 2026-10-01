@@ -565,6 +565,148 @@ async fn header_timeout_is_transport_error() {
     );
 }
 
+/// A loopback server that answers every request with a `200 text/event-stream` head and then
+/// sends exactly the chunks `script` names — `(gap before it, bytes)` — and nothing more, holding
+/// the connection open until the client drops it. Returns the base URL and the accept counter.
+async fn head_then(script: Vec<(Duration, &'static str)>) -> (String, Arc<AtomicUsize>) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let accepts = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&accepts);
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            counter.fetch_add(1, Ordering::SeqCst);
+            let script = script.clone();
+            tokio::spawn(async move {
+                // The request head and its (small) body: everything up to the blank line, then
+                // whatever Content-Length says.
+                let mut req = Vec::new();
+                let mut buf = [0u8; 4096];
+                while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match sock.read(&mut buf).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => req.extend_from_slice(&buf[..n]),
+                    }
+                }
+                let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+                if sock.write_all(head.as_bytes()).await.is_err() {
+                    return;
+                }
+                for (gap, bytes) in script {
+                    tokio::time::sleep(gap).await;
+                    let chunk = format!("{:x}\r\n{bytes}\r\n", bytes.len());
+                    if sock.write_all(chunk.as_bytes()).await.is_err() {
+                        return;
+                    }
+                }
+                // Silent from here on: drain until the client walks away.
+                while matches!(sock.read(&mut buf).await, Ok(n) if n > 0) {}
+            });
+        }
+    });
+    (url, accepts)
+}
+
+/// Opens the stream on `url` with the given idle bound.
+async fn open_stream(url: &str, idle: Option<Duration>, cancel: &CancellationToken) -> Sse {
+    Client::new(url, reqwest::Client::new())
+        .with_jitter(Arc::new(NoJitter))
+        .with_stream_idle_timeout(idle)
+        .stream(
+            cancel,
+            Method::POST,
+            "/chat",
+            Some(&serde_json::json!({"model": "m"})),
+        )
+        .await
+        .expect("the head arrives")
+}
+
+/// A head followed by silence fails the read at the idle bound with its own error — not
+/// `Cancelled` (which ends a turn quietly) and not a retry: the server saw ONE request.
+#[tokio::test]
+async fn a_silent_stream_fails_at_the_idle_bound() {
+    let (url, accepts) = head_then(Vec::new()).await;
+    let cancel = CancellationToken::new();
+    let idle = Duration::from_millis(300);
+    let mut sse = open_stream(&url, Some(idle), &cancel).await;
+    let started = std::time::Instant::now();
+    let res = tokio::time::timeout(Duration::from_secs(5), sse.next())
+        .await
+        .expect("the idle bound never fired");
+    let elapsed = started.elapsed();
+    assert!(
+        matches!(res, Err(LlmError::StreamIdle(d)) if d == idle),
+        "{res:?}"
+    );
+    assert!(
+        elapsed >= idle && elapsed < Duration::from_secs(3),
+        "{elapsed:?}"
+    );
+    let err = res.unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("IOTA_STREAM_IDLE_TIMEOUT=<seconds>"),
+        "the message names the knob: {err}"
+    );
+    assert!(
+        !should_retry(&err, None),
+        "a mid-stream stall is never retried"
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(accepts.load(Ordering::SeqCst), 1, "no replayed request");
+}
+
+/// The bound is on the gap between BYTES: a `:` comment heartbeat that never parses into an event
+/// keeps a stream alive well past the bound, and the event behind it still arrives.
+#[tokio::test]
+async fn a_heartbeat_keeps_a_stream_alive_past_the_idle_bound() {
+    let beat = Duration::from_millis(100);
+    let mut script = vec![(beat, ": ping\n\n"); 8];
+    script.push((beat, "data: {\"ok\":1}\n\n"));
+    let (url, _) = head_then(script).await;
+    let cancel = CancellationToken::new();
+    let mut sse = open_stream(&url, Some(Duration::from_millis(300)), &cancel).await;
+    let started = std::time::Instant::now();
+    let ev = tokio::time::timeout(Duration::from_secs(5), sse.next())
+        .await
+        .expect("the event never arrived")
+        .expect("a heartbeat must not count as silence")
+        .expect("one event");
+    assert_eq!(ev.data, b"{\"ok\":1}");
+    assert!(
+        started.elapsed() >= Duration::from_millis(600),
+        "the event came after more than twice the bound: {:?}",
+        started.elapsed()
+    );
+}
+
+/// `IOTA_STREAM_IDLE_TIMEOUT=0` turns the bound off: a silent stream is still waiting long past
+/// where a 300 ms bound would have fired, and ESC still ends it.
+#[tokio::test]
+async fn a_zero_idle_bound_never_times_a_stream_out() {
+    let idle = iota::llm::client::stream_idle_timeout(Some("0"));
+    assert_eq!(idle, None);
+    let (url, _) = head_then(Vec::new()).await;
+    let cancel = CancellationToken::new();
+    let mut sse = open_stream(&url, idle, &cancel).await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1200), sse.next())
+            .await
+            .is_err(),
+        "a disabled bound must not end the stream"
+    );
+    cancel.cancel();
+    let res = tokio::time::timeout(Duration::from_secs(2), sse.next())
+        .await
+        .expect("cancel still ends the read");
+    assert!(matches!(res, Err(LlmError::Cancelled)), "{res:?}");
+}
+
 /// `wire::models::openai_model_ids`: ids sorted bytewise; a GET carries no body and no Content-Type.
 #[tokio::test]
 async fn openai_model_ids_sorted() {

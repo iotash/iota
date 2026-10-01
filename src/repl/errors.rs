@@ -65,6 +65,11 @@ fn describe_llm(llm: &LlmError, whole: &dyn std::fmt::Display) -> ErrorReport {
             detail: vec![whole.to_string()],
             hint: String::new(),
         },
+        LlmError::StreamIdle(_) => ErrorReport {
+            headline: "Response stalled".to_owned(),
+            detail: vec![whole.to_string()],
+            hint: String::new(),
+        },
         _ => ErrorReport::request_failed(whole),
     }
 }

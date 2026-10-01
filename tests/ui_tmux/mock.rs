@@ -22,6 +22,7 @@
 //! | `emoji`       | [`EMOJI`]: a table whose cells carry emoji, flag sequences and VS16 characters |
 //! | `run:<cmd>`   | ONE `shell` tool call, `{"command": <cmd>, "background": true}`, `finish_reason: tool_calls` |
 //! | `runfg:<cmd>` | the same call in the foreground (no `background` key)          |
+//! | `hang:<word>` | the `200` head, then not one byte until the client walks away   |
 //! | anything else | `echo: <the message>`                                        |
 //!
 //! Two directives ride ANY message rather than selecting a script:
@@ -31,6 +32,8 @@
 //!   is keyed by the whole message text, so two scenarios never share one (`FAILS`).
 //! * `title:<word>` in the session-title pass (the unary request embeds the first user message):
 //!   the pass answers `<word>` alone, so a scenario can choose the window title it then reads back.
+//! * `hang:` in the session-title pass: the pass gets no answer at all — not even a head — so it
+//!   sits on `TITLE_TIMEOUT` like a title request to a provider that stopped answering.
 //!
 //! A request whose LAST message is a tool result (the follow-up of a `run:` call) streams
 //! `ran: <the result's first line>` — the text turn that closes a tool round.
@@ -176,6 +179,9 @@ fn serve(mut sock: TcpStream) -> std::io::Result<()> {
         return images_reply(&mut sock);
     }
     let prompt = last_content(&body).unwrap_or_default();
+    if prompt.contains("hang:") {
+        return hang(&mut sock, &mut reader, body.contains("\"stream\":true"));
+    }
     if body.contains("\"stream\":true") {
         if let Some(status) = fail_now(&body) {
             return status_reply(&mut sock, status);
@@ -185,6 +191,26 @@ fn serve(mut sock: TcpStream) -> std::io::Result<()> {
     } else {
         unary_reply(&mut sock, &prompt)
     }
+}
+
+/// `hang:` — a provider that stopped answering: a streaming request gets its `200` head (the
+/// connection is up, the model is silent), the unary title pass not even that. Either way the
+/// connection is held until the client drops it (ESC, the idle bound, the title timeout).
+fn hang(
+    sock: &mut TcpStream,
+    reader: &mut BufReader<TcpStream>,
+    head: bool,
+) -> std::io::Result<()> {
+    if head {
+        write!(
+            sock,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+        )?;
+        sock.flush()?;
+    }
+    let mut buf = [0u8; 1024];
+    while reader.read(&mut buf)? > 0 {}
+    Ok(())
 }
 
 /// `fail:<status>:<n>` — the status this request must answer with: that of the FIRST directive

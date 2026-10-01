@@ -745,8 +745,10 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 repl.handles
                     .tr
                     .error_block(&report.headline, &report.lines());
-                // The turn rolls back WITH its user message — and the name derived from it.
+                // The turn rolls back WITH its user message — and the name derived from it, so a
+                // title pass still in flight could only land a name `unseed` already discards.
                 repl.conv.history.truncate(hist0 - 1);
+                repl.session.abort_title();
                 repl.session.titler.unseed(&repl.conv.history);
                 repl.conv.ctxm.reset();
                 repl.conv.budget.restore(turn_snap);
@@ -892,6 +894,14 @@ impl Repl {
 /// notification. A discarded turn hands its attachments BACK — cancelling a send must not
 /// silently strip the file the user attached — and gives the session name back with them.
 fn interrupt_turn(repl: &mut Repl, watermark: usize, partial: &str, partial_reasoning: &str) {
+    // The interrupt cancels what the turn started, the title pass included. It runs under the
+    // ROOT scope (it may outlive a short turn, so it cannot be a child of the turn's token), and
+    // the loop joins it before the next input and before exiting — with an empty cancel stack,
+    // where ESC and Ctrl+C reach nothing. Left running against a hung provider, that join held
+    // the next message, or the exit, for up to `TITLE_TIMEOUT`. A discarded turn gives its name
+    // back below, so the pass could only land a name nobody keeps; a kept partial keeps the
+    // placeholder name instead of a model title that had not arrived by the time of the ESC.
+    repl.session.abort_title();
     let InterruptDecision {
         history,
         persist,

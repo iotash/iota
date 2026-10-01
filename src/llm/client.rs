@@ -27,6 +27,24 @@ use super::{error::LlmError, sse::Sse};
 pub(crate) const DEFAULT_RETRIES: u32 = 2;
 /// Uniform response-header timeout on EVERY client (POLICY I-02); never a whole-request timeout.
 pub(crate) const HEADER_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long a streaming body may go without a single byte before the read fails with
+/// [`LlmError::StreamIdle`]. Counted in BYTES, not parsed events, so a provider's `ping` event or
+/// `:` comment heartbeat keeps the stream alive. The industry range is two to five minutes (Claude
+/// Code widened an early 90 s default after it killed extended-thinking pauses); 180 s sits inside
+/// it and is overridable through [`STREAM_IDLE_TIMEOUT_ENV`].
+pub const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
+/// `IOTA_STREAM_IDLE_TIMEOUT=<seconds>` overrides [`STREAM_IDLE_TIMEOUT`] for one run; `0` turns the
+/// check off (a local model that thinks for minutes without a byte). Read once at the binary edge
+/// ([`stream_idle_timeout`]); nothing else reads it.
+pub const STREAM_IDLE_TIMEOUT_ENV: &str = "IOTA_STREAM_IDLE_TIMEOUT";
+/// TCP + TLS connect bound of [`default_http_client`]: a black-holed route fails here instead of
+/// spending the whole [`HEADER_TIMEOUT`].
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// HTTP/2 PING interval of [`default_http_client`] (sent only while a stream is open): a dead h2
+/// connection is noticed by the protocol, not by the stream idle timeout.
+pub(crate) const HTTP2_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(30);
+/// How long an HTTP/2 PING may go unacknowledged before the connection is closed.
+pub(crate) const HTTP2_KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 /// Backoff base: `min(500ms << attempt, 8s) - jitter(d/4)`.
 pub const BACKOFF_BASE: Duration = Duration::from_millis(500);
 /// Backoff cap.
@@ -76,6 +94,8 @@ pub struct Client {
     retries: u32,
     jitter: Arc<dyn Jitter>,
     header_timeout: Duration,
+    /// The byte-level idle bound of every SSE body this client opens; `None` = never.
+    stream_idle: Option<Duration>,
     /// The `/debug` request log; `None` = nothing is ever recorded (every test client, MCP).
     recorder: Option<Arc<RequestLog>>,
 }
@@ -123,13 +143,15 @@ impl std::fmt::Debug for Client {
             .field("auth", &self.auth.is_some())
             .field("retries", &self.retries)
             .field("header_timeout", &self.header_timeout)
+            .field("stream_idle", &self.stream_idle)
             .field("recorder", &self.recorder.is_some())
             .finish_non_exhaustive()
     }
 }
 
 impl Client {
-    /// `retries = DEFAULT_RETRIES`, `jitter = RandJitter`, `header_timeout = HEADER_TIMEOUT`; trailing `/` trimmed from `base_url`.
+    /// `retries = DEFAULT_RETRIES`, `jitter = RandJitter`, `header_timeout = HEADER_TIMEOUT`,
+    /// `stream_idle = STREAM_IDLE_TIMEOUT`; trailing `/` trimmed from `base_url`.
     pub fn new(base_url: &str, http: reqwest::Client) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_owned(),
@@ -139,6 +161,7 @@ impl Client {
             retries: DEFAULT_RETRIES,
             jitter: Arc::new(RandJitter),
             header_timeout: HEADER_TIMEOUT,
+            stream_idle: Some(STREAM_IDLE_TIMEOUT),
             recorder: None,
         }
     }
@@ -193,6 +216,14 @@ impl Client {
         self
     }
 
+    /// The byte-level idle bound of the SSE bodies [`Client::stream`] opens (default
+    /// [`STREAM_IDLE_TIMEOUT`]); `None` turns it off.
+    #[must_use]
+    pub fn with_stream_idle_timeout(mut self, d: Option<Duration>) -> Self {
+        self.stream_idle = d;
+        self
+    }
+
     /// The base URL (trailing slashes trimmed).
     pub fn base_url(&self) -> &str {
         &self.base_url
@@ -231,6 +262,11 @@ impl Client {
     }
 
     /// JSON request whose 2xx body is an SSE stream. Retries only until the first successful response head.
+    ///
+    /// The body is read under the client's byte-level idle bound ([`LlmError::StreamIdle`]). That
+    /// failure happens AFTER the head, so it is never retried, here or by the turn: by then the
+    /// stream may already have produced text or tool calls, and replaying the request would run
+    /// those tool calls twice.
     pub async fn stream<B: serde::Serialize + Sync>(
         &self,
         cancel: &CancellationToken,
@@ -240,7 +276,7 @@ impl Client {
     ) -> Result<Sse, LlmError> {
         let payload = encode(body)?;
         let resp = self.send(cancel, method, path, payload).await?;
-        Ok(Sse::new(resp.bytes_stream(), cancel.clone()))
+        Ok(Sse::new(resp.bytes_stream(), cancel.clone()).with_idle_timeout(self.stream_idle))
     }
 
     /// The retry loop over a JSON body (client.go:114-168); returns the successful (status < 400)
@@ -288,7 +324,7 @@ impl Client {
                 biased;
                 () = cancel.cancelled() => {
                     if let Some(tp) = &progress {
-                        tp.sent();
+                        tp.sent(false);
                     }
                     // Go's `RoundTrip` returns the context error and records it; the row must
                     // not be left pending forever.
@@ -303,9 +339,10 @@ impl Client {
                     Err(_) => Err(LlmError::HeaderTimeout(self.header_timeout)),
                 },
             };
-            // Go fires `sent` whenever `RoundTrip` returns, whatever it returned.
+            // Go fires `sent` whenever `RoundTrip` returns, whatever it returned; the flag says
+            // whether a success head arrived (the body is what the turn waits for next).
             if let Some(tp) = &progress {
-                tp.sent();
+                tp.sent(matches!(&outcome, Ok(resp) if resp.status().as_u16() < 400));
             }
             // Step 4 — record: the status line now, the body as the caller streams it.
             let outcome = record_attempt(entry, outcome, start);
@@ -477,6 +514,8 @@ pub fn should_retry(err: &LlmError, headers: Option<&HeaderMap>) -> bool {
             matches!(se.status, 408 | 409 | 429) || se.status >= 500
         }
         LlmError::Transport(_) | LlmError::HeaderTimeout(_) => true,
+        // `StreamIdle` never reaches this loop (it fails a body read, after the head), and would
+        // not retry if it did: see `Client::stream`.
         _ => false,
     }
 }
@@ -520,15 +559,35 @@ fn header_str<'a>(h: &'a HeaderMap, name: &str) -> Option<&'a str> {
     h.get(name).and_then(|v| v.to_str().ok())
 }
 
+/// The byte-level idle bound [`STREAM_IDLE_TIMEOUT_ENV`] names: absent or not a whole number of
+/// seconds ⇒ [`STREAM_IDLE_TIMEOUT`], `0` ⇒ `None` (off), `n` ⇒ `n` seconds.
+pub fn stream_idle_timeout(var: Option<&str>) -> Option<Duration> {
+    match var.and_then(|s| s.trim().parse::<u64>().ok()) {
+        None => Some(STREAM_IDLE_TIMEOUT),
+        Some(0) => None,
+        Some(n) => Some(Duration::from_secs(n)),
+    }
+}
+
 /// reqwest client: rustls, HTTP/2 allowed, system proxy env honoured, NO whole-request timeout, NO read timeout.
 #[allow(clippy::expect_used)] // TLS backend init failure is unrecoverable here
 pub fn default_http_client() -> reqwest::Client {
-    // The builder with no options set is exactly `Client::new()`; `build()` only fails when the TLS backend
-    // cannot initialise, and `Client::new()` PANICS on that same failure — so there is no fallback to
-    // offer, only an honest message instead of reqwest's internal one.
-    reqwest::Client::builder()
+    // `build()` only fails when the TLS backend cannot initialise, and `Client::new()` PANICS on that
+    // same failure — so there is no fallback to offer, only an honest message instead of reqwest's
+    // internal one.
+    http_client_builder()
         .build()
         .expect("TLS backend failed to initialize")
+}
+
+/// [`default_http_client`]'s builder: reqwest's defaults (TCP keep-alive is already on, 15 s × 3)
+/// plus the two cheap connection-level bounds — a connect timeout, and HTTP/2 PINGs while a stream
+/// is open — none of which can cut a slow but live stream short.
+fn http_client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .http2_keep_alive_interval(HTTP2_KEEP_ALIVE_INTERVAL)
+        .http2_keep_alive_timeout(HTTP2_KEEP_ALIVE_TIMEOUT)
 }
 
 /// A non-2xx/3xx response (client.go:32-47): `POST "http://…": 400 Bad Request {"message":…}`.
@@ -600,6 +659,41 @@ mod tests {
         let cut = error_detail(long.as_bytes());
         assert_eq!(cut.len(), ERROR_DETAIL_CAP + "…".len());
         assert!(cut.ends_with('…'));
+    }
+
+    // `IOTA_STREAM_IDLE_TIMEOUT`: whole seconds, `0` = off, anything else = the default.
+    #[test]
+    fn stream_idle_timeout_reads_the_override() {
+        assert_eq!(stream_idle_timeout(None), Some(STREAM_IDLE_TIMEOUT));
+        assert_eq!(stream_idle_timeout(Some("0")), None);
+        assert_eq!(
+            stream_idle_timeout(Some(" 600 ")),
+            Some(Duration::from_secs(600))
+        );
+        for junk in ["", "abc", "-5", "1.5", "3m"] {
+            assert_eq!(
+                stream_idle_timeout(Some(junk)),
+                Some(STREAM_IDLE_TIMEOUT),
+                "{junk:?}"
+            );
+        }
+        assert_eq!(STREAM_IDLE_TIMEOUT, Duration::from_secs(180));
+    }
+
+    // The connection-level bounds land in the builder. reqwest's `Debug` shows `connect_timeout`
+    // (on the builder only — a built `Client` prints neither it nor the HTTP/2 PING settings, and
+    // reqwest has no getter), so the PING interval/timeout are pinned by their constants alone.
+    #[test]
+    fn the_default_client_carries_the_connection_bounds() {
+        let shown = format!("{:?}", http_client_builder());
+        assert!(
+            shown.contains(&format!("connect_timeout: {CONNECT_TIMEOUT:?}")),
+            "{shown}"
+        );
+        // `connect_timeout` is the only timeout field shown: no `timeout` (overall), no `read_timeout`.
+        assert_eq!(shown.matches("timeout: ").count(), 1, "{shown}");
+        assert!((10..=30).contains(&CONNECT_TIMEOUT.as_secs()));
+        assert!(HTTP2_KEEP_ALIVE_TIMEOUT < HTTP2_KEEP_ALIVE_INTERVAL);
     }
 
     #[test]

@@ -324,6 +324,7 @@ async fn the_relay_image_fetch_is_recorded() {
     let transport = HttpTransport {
         client: reqwest::Client::new(),
         recorder: Some(Arc::clone(&log)),
+        stream_idle: None,
     };
     let provider = ImagesProvider::new("k", &server.uri(), "gpt-image-1", transport);
     let out = provider
