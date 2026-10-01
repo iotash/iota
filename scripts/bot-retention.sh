@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Bot retention experiment (docs/design/bot-mode.md §5.2, the L1 acceptance item): how much of what a bot
-# was told survives N compactions. Its numbers are what FINALISE §6 #13 — the v1 caps (MEMORY.md 8 KiB with
-# a 6 KiB soft threshold, 500 B per line, a 1500-word summary) are provisional until this has been run.
+# was told survives N compactions, with and without the memory flush. It checks a direction — does the flush
+# keep more than compaction alone — and does not finalise the §6 #13 caps: it neither varies them nor balances
+# the two groups' input lengths and compaction spacing, and it grades by keyword (see the design's §5.2).
 #
 # OPT-IN, MANUAL, NEVER IN CI: it drives a real model and spends real tokens. It is not called by ci.sh.
 #
@@ -11,15 +12,13 @@
 # are conversation state (the step I am on, the test that fails right now) — then filler until the log holds
 # N compactions, then one quiz asking for all 20. Each answer is graded by a keyword.
 #
-# The three groups compared:
+# The two groups compared:
 #   noflush  compactions WITHOUT the memory flush: the script types `/compact` every
 #            RETENTION_COMPACT_EVERY filler turns, which keeps the usage below the bot's threshold, so the
 #            flush never triggers (a hand-typed /compact records `flush_skipped` and does not flush). The
 #            `remember` tool is still there: what the model saves of its own accord counts, as it would.
 #            A flush notice found in this group's log marks the group CONTAMINATED in the results.
 #   flush    the v1 mechanism: nothing typed but the conversation; each compaction follows its flush turn.
-#   recall   flush plus the L2 `recall` tool. DEPENDS ON L2, which is not in v1: the group is skipped unless
-#            RETENTION_RECALL_SET names the toolset that provides `recall`, which the config then enables.
 #
 # Isolation: every group runs under a temporary HOME inside RETENTION_OUT, with a scratch config written
 # there and a scratch working directory — the real ~/.iota (config, sessions, bots, memory) is never read or
@@ -30,7 +29,7 @@
 # Usage:
 #   cargo build                                  # or point IOTA_BIN at a release build
 #   export OPENAI_API_KEY=...                    # whatever key variable the provider type reads
-#   RETENTION_MODEL=gpt-5.2 scripts/bot-retention.sh [group...]     # default: noflush flush recall
+#   RETENTION_MODEL=gpt-5.2 scripts/bot-retention.sh [group...]     # default: noflush flush
 #
 # Needs: bash, tmux, python3 (to read the JSONL log).
 #
@@ -47,11 +46,10 @@
 #   RETENTION_COMPACT_EVERY  noflush: filler turns per /compact   (default: 4)
 #   RETENTION_MAX_TURNS      filler turns before giving up        (default: 120)
 #   RETENTION_TIMEOUT        seconds one turn may take            (default: 300)
-#   RETENTION_RECALL_SET     the toolset providing L2 `recall`    (default: empty — group skipped)
 #   RETENTION_OUT            where everything is kept             (default: a new temp directory)
 #
 # Output: one row per group on stdout and in $RETENTION_OUT/results.tsv — compactions, flush notices,
-# MEMORY.md bytes, facts recalled (memory kind / state kind / total). Read the three rows side by side;
+# MEMORY.md bytes, facts recalled (memory kind / state kind / total). Read the two rows side by side;
 # the per-fact grades are in $RETENTION_OUT/<group>/grades.tsv. A group that did not meet the experiment's
 # conditions (fewer than RETENTION_COMPACTIONS compactions, or a flush in noflush) has an INVALID row with
 # no recall figures; a group that broke off has a FAILED row. Either makes the script exit 1 — only an exit 0
@@ -71,7 +69,6 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 : "${RETENTION_COMPACT_EVERY:=4}"
 : "${RETENTION_MAX_TURNS:=120}"
 : "${RETENTION_TIMEOUT:=300}"
-: "${RETENTION_RECALL_SET:=}"
 : "${RETENTION_OUT:=$(mktemp -d "${TMPDIR:-/tmp}/iota-retention.XXXXXX")}"
 
 BOT=retention
@@ -96,11 +93,11 @@ esac
     echo "bot-retention: RETENTION_WINDOW $RETENTION_WINDOW is under a bot's minimum of $BOT_MIN_WINDOW" >&2
     exit 2
 }
-groups="${*:-noflush flush recall}"
+groups="${*:-noflush flush}"
 for g in $groups; do
     case "$g" in
-        noflush | flush | recall) ;;
-        *) echo "bot-retention: unknown group $g (noflush, flush, recall)" >&2; exit 2 ;;
+        noflush | flush) ;;
+        *) echo "bot-retention: unknown group $g (noflush, flush)" >&2; exit 2 ;;
     esac
 done
 mkdir -p "$RETENTION_OUT"
@@ -203,19 +200,7 @@ PY
 # ---------------------------------------------------------------- one group
 
 run_group() {
-    local group=$1 tools=''
-    case "$group" in
-        noflush | flush) ;;
-        recall)
-            if [ -z "$RETENTION_RECALL_SET" ]; then
-                echo "bot-retention: group recall skipped — it needs L2 recall; set RETENTION_RECALL_SET once it exists" >&2
-                printf '%s\tskipped (needs L2 recall)\n' "$group" >>"$RETENTION_OUT/results.tsv"
-                return 0
-            fi
-            tools="    tools: { $RETENTION_RECALL_SET: }"
-            ;;
-    esac
-
+    local group=$1
     local dir="$RETENTION_OUT/$group"
     local home="$dir/home" work="$dir/work"
     local sock="iota-retention-$$-$group"
@@ -237,7 +222,6 @@ run_group() {
         echo '    mode: bot'
         echo '    model: m'
         echo '    system: "You are a helpful assistant."'
-        if [ -n "$tools" ]; then echo "$tools"; fi
     } >"$home/.iota.yaml"
 
     tm() { tmux -L "$sock" "$@"; }

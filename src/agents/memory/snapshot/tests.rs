@@ -21,7 +21,7 @@ updated: 2026-09-30
 - [inferred] 发布流程见 notes/release (2026-09-28)
 
 ## Open threads
-- [user] 等 bot-retention.sh 的数据把记忆上限定稿 (2026-09-30)
+- [user] 等 bot-retention.sh 的两组试运行看 flush 的方向 (2026-09-30)
 ";
 
 /// A bot `coder` in a fresh directory, its file holding `text` when given.
@@ -84,7 +84,7 @@ preference, when a decision is made, or when you learn a fact you will need agai
 - [inferred] 发布流程见 notes/release (2026-09-28)
 
 ## Open threads
-- [user] 等 bot-retention.sh 的数据把记忆上限定稿 (2026-09-30)
+- [user] 等 bot-retention.sh 的两组试运行看 flush 的方向 (2026-09-30)
 </memory>"
     );
 }
@@ -123,7 +123,7 @@ fn another_projects_section_is_one_line() {
 - 不要用 rebase
 
 ## Open threads
-- [user] 等 bot-retention.sh 的数据把记忆上限定稿 (2026-09-30)
+- [user] 等 bot-retention.sh 的两组试运行看 flush 的方向 (2026-09-30)
 
 Other projects: ## Project: iota (1 line)
 </memory>";

@@ -24,7 +24,7 @@ updated: 2026-09-30
 - [inferred] 发布流程见 notes/release (2026-09-28)
 
 ## Open threads
-- [user] 等 bot-retention.sh 的数据把记忆上限定稿 (2026-09-30)
+- [user] 等 bot-retention.sh 的两组试运行看 flush 的方向 (2026-09-30)
 ";
 
 fn add(text: &str, source: Source, section: Section) -> Edit {
@@ -261,7 +261,7 @@ fn remove_drops_one_tagged_line() {
     );
     assert_eq!(
         a.notice,
-        "memory: MEMORY.md ## Open threads -1 line: [user] 等 bot-retention.sh 的数据把记忆上限定稿 (2026-09-30)"
+        "memory: MEMORY.md ## Open threads -1 line: [user] 等 bot-retention.sh 的两组试运行看 flush 的方向 (2026-09-30)"
     );
     // The last line of a section that is followed by another shows its own section, not the next one.
     let b = apply(Some(EXAMPLE), "coder", &remove("发布流程"), TODAY).expect("remove");
