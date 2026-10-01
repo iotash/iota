@@ -5,8 +5,13 @@
 //!
 //! The newline keys live HERE, not in the shared `Editor::on_key`: the surface's one-line
 //! `Field`s run that too, and they are one line by design (their pastes flatten newlines).
-//! Ctrl+Enter still submits — without a keyboard protocol a terminal sends it as a bare
-//! Enter, so binding it would be a key that works in one place only (`DIVERGENCES.md` X-65).
+//! What reaches this table differs per key (`DIVERGENCES.md` X-65). Ctrl+J is LF, a different
+//! byte from Enter's CR, so it inserts in every terminal. Alt+Enter and Shift+Enter insert only
+//! where the terminal reports the modifier; an unreported Shift+Enter is a bare Enter and
+//! submits — except under Ghostty's defaults, whose `ESC[27;2;13~` crossterm drops whole, so
+//! nothing happens (one line of Ghostty config fixes it). Ctrl+Enter is not bound: without a
+//! keyboard protocol it carries no CONTROL — the same CR as Enter, or dropped like Shift+Enter
+//! under Ghostty — so a newline on it would work almost nowhere; where it arrives, it submits.
 //!
 //! Any key that is not Tab ends the completion cycle (model.go:436); any key that
 //! reaches the edit set ends history navigation (model.go:493). ESC with no scopes
@@ -94,7 +99,8 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
     // Row 7a: a newline into the draft, never a submit. Ctrl+J is the one chord every
     // target terminal delivers distinctly (raw-mode LF); Alt+Enter is ESC CR; Shift+Enter
     // arrives only when the terminal itself reports SHIFT (a CSI-u mapping, tmux
-    // `extended-keys`) — elsewhere it is a bare Enter and submits below (X-65).
+    // `extended-keys`, the Windows console) — elsewhere it is a bare Enter that submits
+    // below, or, under Ghostty's defaults, no event at all (X-65).
     let newline = (ctrl && key.code == KeyCode::Char('j'))
         || (key.code == KeyCode::Enter
             && key

@@ -48,6 +48,10 @@ newline_turn() {
     # The user block and the model's echo both carry line two; counted after the reply landed,
     # so the composer's own row is gone.
     check "$label: the model saw line two" "$(count_all "$two")" 2
+    # …and saw it on its OWN line: the echo's first row ends at line one (`capture-pane` strips
+    # trailing blanks). A submit that flattened the break to a space would read
+    # `echo: <one> <two>` on one row and pass every count above.
+    check "$label: the echo breaks after line one" "$(capall | grep -cE "echo: ${one}\$")" 1
     check "$label: the composer collapsed" "$(composer_block | wc -l | tr -d ' ')" 1
 }
 

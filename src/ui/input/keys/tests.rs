@@ -442,8 +442,9 @@ fn row_6_arrows_walk_the_history_only_in_a_single_row_draft() {
 /// submits like Enter; what was submitted is the newest history entry.
 ///
 /// Ctrl+Enter stays a submit because on Unix it only ever carries CONTROL when the terminal
-/// speaks CSI u — legacy encoding sends it as a bare CR — so a newline bound to it would
-/// work in one terminal and submit everywhere else. (Enter with SHIFT or ALT is row 7a's.)
+/// speaks CSI u — legacy encoding sends it as a bare CR, and Ghostty's default
+/// `ESC[27;5;13~` is dropped inside crossterm (no event at all) — so a newline bound to it
+/// would work almost nowhere. (Enter with SHIFT or ALT is row 7a's.)
 #[test]
 fn row_7_enter_submits_trimmed_or_ignores_blank() {
     let mut m = test_model();
@@ -556,10 +557,13 @@ fn row_7a_newline_after_a_paste_tag_submits_both() {
 
 /// Row 7a sits AFTER rows 2–6 and claims nothing they own, and nothing ahead of it eats
 /// Ctrl+J: it is not row 2's interrupt (a live turn stays live, a parked reader stays
-/// parked), and it ends both the completion cycle (row 4) and the history walk — after a
-/// recall plus Ctrl+J the draft has two rows, so ↑ moves the cursor instead of walking on.
+/// parked), and it ends the completion cycle (row 4). After a recall plus Ctrl+J, ↑ moves the
+/// cursor instead of walking on — but that is the two-row draft's doing (`history_navigable`),
+/// not row 7a's `end_history_nav()`: that call is defensive and has no observable effect today
+/// (every way back to a one-row draft goes through the edit set or a submit, which reset the
+/// walk themselves), so nothing here pins it, and nothing should be contrived to.
 #[test]
-fn row_7a_is_not_eaten_and_ends_the_cycle_and_the_walk() {
+fn row_7a_is_not_eaten_and_ends_the_cycle() {
     let mut m = test_model();
     let turn = CancellationToken::new();
     m.apply(UiMsg::ScopePush(turn.clone()));

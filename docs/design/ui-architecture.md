@@ -321,11 +321,23 @@ shared turn-state races. Adopted instead:
   key ladder (`src/ui/input/keys.rs`, its module comment is the table) has a
   row 7a ahead of Enter's submit: **Ctrl+J**, **Alt+Enter** and
   **Shift+Enter** insert a newline at the cursor and end the history walk;
-  bare Enter and **Ctrl+Enter submit**. Ctrl+J (raw-mode LF) is the one chord
-  every target terminal delivers with no keyboard protocol; Alt+Enter is
-  ESC CR; Shift+Enter carries SHIFT only where the terminal reports it, and
-  is a plain submitting Enter elsewhere. Ctrl+Enter is not bound because
-  without a protocol it IS a bare Enter, and no Kitty protocol is pushed
+  bare Enter submits, and so does Ctrl+Enter wherever it arrives. What each
+  key does depends on what the terminal sends:
+  - **Ctrl+J** inserts in every terminal — raw-mode LF is a different byte
+    from Enter's CR, no keyboard protocol needed.
+  - **Alt+Enter / Shift+Enter** insert where the terminal reports the
+    modifier: Alt+Enter is ESC CR (Ghostty, tmux; Terminal.app only with
+    Option-as-Meta; Windows Terminal takes it for full screen); Shift+Enter
+    needs a CSI-u report (a terminal-side mapping, tmux `extended-keys`, the
+    Windows console API). Unreported, Shift+Enter is a bare Enter in most
+    terminals and submits; under **Ghostty's default config** it is
+    `ESC[27;2;13~`, which crossterm drops whole — nothing happens at all.
+    One line in the Ghostty config makes it a newline (X-65 has it).
+  - **Ctrl+Enter** is not bound: with no protocol it carries no CONTROL —
+    the same CR as Enter (it submits), or dropped under Ghostty's defaults
+    like Shift+Enter. A newline on it would work almost nowhere.
+
+  No Kitty protocol is pushed
   (X-65 has the measured exit residue). The binding is deliberately NOT in
   the shared `Editor::on_key`: the surface's one-line `Field`s (`/model`'s
   typed row, Ask's "Other…", the search boxes) run that too, and they are one
