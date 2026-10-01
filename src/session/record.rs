@@ -56,6 +56,11 @@ pub struct SessionRecord {
     /// `false` — an old log still replays exactly as it did.
     #[serde(skip_serializing_if = "is_false")]
     pub notice: bool,
+    /// `role == "system"` only: an EMPTY system prompt that was meant — a bot's config lost its `system:`
+    /// (docs/design/bot-mode.md §2.2). Rust-only, like `flush_skipped`: an empty system record WITHOUT it
+    /// is a frozen-mode defer mount an older build persisted by mistake, and must not win on load.
+    #[serde(skip_serializing_if = "is_false")]
+    pub system_cleared: bool,
     /// The dialect's opaque replay payload, tagged with the provider type that produced it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw: Option<SessionRaw>,
@@ -66,6 +71,11 @@ pub struct SessionRecord {
     /// What the API call behind this record cost; the log's sum is the session's cumulative usage.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<SessionUsage>,
+    /// `role == "compaction"` only: a bot's session compacted without the memory flush running first
+    /// (docs/design/bot-mode.md §3.6.1). Rust-only: Go ignores the key. Written only by a bot's session;
+    /// `false` omits the key.
+    #[serde(skip_serializing_if = "is_false")]
+    pub flush_skipped: bool,
 }
 
 /// One requested tool call (chat/session.go:115-119). `arguments` has NO `omitempty`: it is always

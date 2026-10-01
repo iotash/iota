@@ -93,7 +93,7 @@ impl Fixture {
             provider: Box::new(FakeProvider::new().with_kind(KIND).with_model("gpt-x")),
             title_provider: None,
             system: String::new(),
-            harness: String::new(),
+            harness: iota::agents::harness::HarnessInputs::default(),
             imported_history: history,
             dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
@@ -103,6 +103,10 @@ impl Fixture {
                 store: self.store.clone(),
                 new_session: None,
                 scope: None,
+                bot: false,
+                notices: Vec::new(),
+                recorded_notices: Vec::new(),
+                memory: None,
             },
             params: iota::session::LayeredParams::default(),
             layers: iota::cmd::ParamLayers::default(),
@@ -528,7 +532,7 @@ async fn a_saved_session_exports_the_full_log_past_a_compaction() {
         ])
         .expect("round 1");
     writer
-        .append_compaction("SUMMARY", 0, None)
+        .append_compaction("SUMMARY", 0, None, false)
         .expect("marker");
     writer
         .append_messages(&[

@@ -59,6 +59,13 @@ pub enum ArgsError {
     /// `iota list <what> <name>` where `<what>` is not `models` — only the choices belong to one agent.
     #[error("iota list {0} takes no argument (only `iota list models <agent>` does)")]
     ListTakesNoName(String),
+    /// `iota run <bot> -m …` (docs/design/bot-mode.md §2.2): a headless run has no compaction, so a bot's
+    /// never-ending session would grow without bound. Refused in v1.
+    #[error("bot agents are interactive-only for now; run iota run {name}")]
+    BotHeadless {
+        /// The bot's name.
+        name: String,
+    },
     /// `--no-save` with a resume: an ephemeral start and a resumed bundle are opposite intents (root.go:285).
     #[error("--no-save cannot be combined with iota resume")]
     NoSaveWithResume,
@@ -158,6 +165,22 @@ pub enum SetupError {
     /// A config-level failure (`system_file`, unknown `mcp_servers` name).
     #[error(transparent)]
     Config(#[from] ConfigError),
+    /// A bot's provider cannot meter its context or call tools (docs/design/bot-mode.md §4.1): an unattended
+    /// session compacts on the token count and remembers through a tool, so it has to have both.
+    #[error("bot \"{0}\" needs a chat model that reports token usage and supports tools")]
+    BotProvider(String),
+    /// A bot's context window is below the floor its flat memory cap and reserve assume (bot-mode.md §4.1).
+    #[error(
+        "bot \"{name}\" needs a context window of at least {}, this one is {} (context_window: in its config)",
+        crate::text::tokens(crate::repl::context::tokens::BOT_MIN_WINDOW),
+        crate::text::tokens(*window)
+    )]
+    BotWindow {
+        /// The bot.
+        name: String,
+        /// The window it would run in.
+        window: u64,
+    },
     /// The interactive branch was reached without a terminal on stdin/stdout (root.go:400).
     #[error("interactive mode requires a terminal; use -m/--message for piped input")]
     NotATerminal,

@@ -3,6 +3,8 @@
 //! names a terminal crate (ci.sh grep gate: only `ui` may); reuses the provider/tool/MCP/session machinery
 //! (`TUI_DESIGN` §8.1) instead of forking the headless loop in `crate::repl::chat`.
 
+/// A bot's compaction orchestration: the memory flush and the compaction after it (bot-mode.md §3.6.1).
+pub(crate) mod bot;
 /// The agent's choices as the `/model` picker sees them (brain page `config-three-layers`).
 pub mod catalog;
 pub(crate) mod commands;

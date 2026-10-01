@@ -268,6 +268,66 @@ impl Dispatcher for Merged {
     }
 }
 
+// ---- a narrowed view ----
+
+/// A live view of `inner` narrowed to the tools named in `names`: nothing else is advertised, a call to
+/// anything else is an unknown tool, nothing deferred is searched or mounted. A bot's memory flush turn runs
+/// over it with the memory set alone (docs/design/bot-mode.md §3.6.1).
+pub(crate) struct Only {
+    inner: Arc<dyn Dispatcher>,
+    names: &'static [&'static str],
+}
+
+/// `inner` narrowed to `names`: a live view that advertises and runs those tools alone.
+pub fn only(inner: Arc<dyn Dispatcher>, names: &'static [&'static str]) -> Arc<dyn Dispatcher> {
+    Arc::new(Only { inner, names })
+}
+
+impl Only {
+    fn allows(&self, name: &str) -> bool {
+        self.names.contains(&name)
+    }
+}
+
+impl Dispatcher for Only {
+    fn tools(&self) -> Vec<ToolDef> {
+        self.inner
+            .tools()
+            .into_iter()
+            .filter(|d| self.allows(&d.name))
+            .collect()
+    }
+
+    fn call_tool<'a>(
+        &'a self,
+        cx: &'a RunCtx,
+        name: &'a str,
+        args: JsonObject,
+    ) -> BoxFuture<'a, ToolResult> {
+        if self.allows(name) {
+            self.inner.call_tool(cx, name, args)
+        } else {
+            Box::pin(async move { Err(ToolError::UnknownTool(name.to_owned())) })
+        }
+    }
+
+    fn requires_approval(&self, name: &str, args: Option<&JsonObject>) -> bool {
+        self.allows(name) && self.inner.requires_approval(name, args)
+    }
+
+    fn presentation(&self, name: &str) -> Presentation {
+        self.inner.presentation(name)
+    }
+
+    fn supports_parallel(&self, name: &str, args: Option<&JsonObject>) -> bool {
+        self.allows(name) && self.inner.supports_parallel(name, args)
+    }
+
+    fn header_summary(&self, name: &str, args: &JsonObject) -> Option<String> {
+        self.inner.header_summary(name, args)
+    }
+}
+
 impl ToolSearcher for Merged {
     /// The first part's hits, even when they are empty.
     fn search_tools(&self, query: &str) -> Vec<ToolDef> {

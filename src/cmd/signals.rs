@@ -1,10 +1,12 @@
-//! SIGINT/SIGTERM → `CancellationToken` (DIVERGENCES I-03): the run is cancelled, MCP servers are closed, and the
-//! process exits 130 (text mode prints nothing; JSON mode prints the report with `"error": "interrupted"`).
+//! SIGINT/SIGTERM/SIGHUP → `CancellationToken` (DIVERGENCES I-03): the run is cancelled, MCP servers are closed,
+//! and the process exits 130 (text mode prints nothing; JSON mode prints the report with `"error": "interrupted"`).
 //!
 //! Interactive runs disarm the SIGINT half (`TUI_DESIGN` §8.4 step 7): raw mode owns Ctrl+C — the terminal
 //! delivers it as a key event that the composer's cancel ladder answers — so a process-level handler would race
 //! the loop. SIGTERM keeps cancelling the root token, which fails every facade waiter and lets the interrupt
-//! table persist what the turn produced.
+//! table persist what the turn produced. SIGHUP takes the same path (docs/design/bot-mode.md §2.7): closing the
+//! pane or terminal a run lives in would otherwise kill it outright, and the rounds it had finished would never
+//! reach the log.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -14,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 /// most one interactive run, and the terminal it takes over is never handed back to a headless path.
 static SIGINT_IGNORED: AtomicBool = AtomicBool::new(false);
 
-/// `tokio::signal::ctrl_c` + unix SIGTERM → `cancel()`. Spawned once.
+/// `tokio::signal::ctrl_c` + unix SIGTERM and SIGHUP → `cancel()`. Spawned once.
 ///
 /// Spawns the listener task onto the current runtime, so it must be called from inside `block_on` (main.rs does).
 pub fn install(cancel: CancellationToken) {
@@ -25,7 +27,7 @@ pub fn install(cancel: CancellationToken) {
 }
 
 /// Disarms the SIGINT half of the listener installed by [`install`] — the interactive branch calls it before it
-/// takes the terminal, and from then on only SIGTERM cancels the run (`TUI_DESIGN` §8.4 step 7).
+/// takes the terminal, and from then on only SIGTERM and SIGHUP cancel the run (`TUI_DESIGN` §8.4 step 7).
 ///
 /// The already-spawned listener cannot be un-spawned, so it consults this flag instead: a SIGINT that arrives
 /// while it is set is dropped and the listener re-arms. There is no way back — nothing re-enables it.
@@ -38,30 +40,44 @@ fn sigint_ignored() -> bool {
     SIGINT_IGNORED.load(Ordering::Relaxed)
 }
 
-/// Resolves when a signal that must cancel the run arrives: SIGTERM (unix), or SIGINT while it is still armed.
-/// A SIGTERM listener that cannot be registered is skipped rather than fatal; a failed Ctrl-C registration
-/// simply never fires.
+/// Resolves when a signal that must cancel the run arrives: SIGTERM or SIGHUP (unix), or SIGINT while it is
+/// still armed. A SIGTERM or SIGHUP listener that cannot be registered is skipped rather than fatal; a failed
+/// Ctrl-C registration simply never fires.
 async fn wait_for_signal() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
-        match signal(SignalKind::terminate()) {
-            Ok(mut term) => loop {
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {
-                        if !sigint_ignored() {
-                            return;
-                        }
+        let mut term = signal(SignalKind::terminate()).ok();
+        let mut hup = signal(SignalKind::hangup()).ok();
+        if term.is_none() && hup.is_none() {
+            return wait_for_ctrl_c().await;
+        }
+        loop {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    if !sigint_ignored() {
+                        return;
                     }
-                    _ = term.recv() => return,
                 }
-            },
-            Err(_) => wait_for_ctrl_c().await,
+                () = recv(term.as_mut()) => return,
+                () = recv(hup.as_mut()) => return,
+            }
         }
     }
     #[cfg(not(unix))]
     {
         wait_for_ctrl_c().await;
+    }
+}
+
+/// Resolves when `sig` delivers (or its stream closes); never, for a listener that was not registered.
+#[cfg(unix)]
+async fn recv(sig: Option<&mut tokio::signal::unix::Signal>) {
+    match sig {
+        Some(sig) => {
+            sig.recv().await;
+        }
+        None => std::future::pending::<()>().await,
     }
 }
 

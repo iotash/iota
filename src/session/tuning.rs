@@ -38,6 +38,11 @@ pub struct Overrides {
     pub temperature: bool,
     /// The caller fixed a context window (likewise: `--context-window` is gone).
     pub window: bool,
+    /// A bot (docs/design/bot-mode.md §2.2): the config owns the model, the context window, effort,
+    /// temperature and `top_p`, so the session's record of them replays NOTHING — a config edit takes effect
+    /// on the next start instead of being frozen at the session's first day. The rest of the bundle's tuning
+    /// (image output and generation, json edits) still replays.
+    pub config_wins: bool,
 }
 
 /// Replays a resumed session onto the live provider: its model (only when the caller did not pick one, and
@@ -50,7 +55,11 @@ pub fn replay_session_settings(
     overrides: &Overrides,
     warn: &mut dyn FnMut(String),
 ) -> Option<u64> {
-    if !overrides.model && meta.provider == kind.as_str() && !meta.model.is_empty() {
+    if !overrides.model
+        && !overrides.config_wins
+        && meta.provider == kind.as_str()
+        && !meta.model.is_empty()
+    {
         provider.set_model(meta.model.clone());
     }
     apply_session_tuning(meta, provider, kind, overrides, warn)
@@ -67,6 +76,9 @@ pub fn replay_session_settings(
 ///   absent meta leaves the config defaults alone (the effort convention);
 /// - **json edits**: `set_json_edits(true)` only when `meta.json_edits`.
 ///
+/// With `overrides.config_wins` (a bot) temperature, effort, `top_p` and the window are skipped: the config
+/// owns them.
+///
 /// The context window is RETURNED rather than pushed through Go's `setWindow` callback — headless has no
 /// context budget to route it into. `Some(n)` when the caller did not fix one and `meta.context_window > 0`.
 ///
@@ -82,7 +94,9 @@ pub fn apply_session_tuning(
     if meta.provider != kind.as_str() {
         return None;
     }
-    if let Some(tunable) = provider.as_tunable() {
+    if !overrides.config_wins
+        && let Some(tunable) = provider.as_tunable()
+    {
         if !overrides.temperature && meta.temperature.is_some() {
             tunable.set_temperature(meta.temperature);
         }
@@ -97,7 +111,8 @@ pub fn apply_session_tuning(
     }
     // `top_p` has no flag and no `/model` tab; a bundle carries it only because the layering made it one of
     // the four a session runs under, and a resume is where that record is handed back to the provider.
-    if let Some(top_p) = meta.top_p
+    if !overrides.config_wins
+        && let Some(top_p) = meta.top_p
         && let Some(tunable) = provider.as_top_p_tunable()
     {
         tunable.set_top_p(Some(top_p));
@@ -118,7 +133,7 @@ pub fn apply_session_tuning(
     {
         edits.set_json_edits(true);
     }
-    if overrides.window {
+    if overrides.window || overrides.config_wins {
         return None;
     }
     u64::try_from(meta.context_window).ok().filter(|w| *w > 0)

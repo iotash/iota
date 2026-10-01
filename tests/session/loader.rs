@@ -43,7 +43,7 @@ fn load_log_weaves_the_last_compaction() {
             Message::assistant("first answer"),
         ])
         .unwrap();
-    writer.append_compaction("SUMMARY", 0, None).unwrap();
+    writer.append_compaction("SUMMARY", 0, None, false).unwrap();
     writer
         .append_messages(&[
             Message::user("second question"),
@@ -306,7 +306,7 @@ fn load_full_history_ignores_compaction() {
             Message::assistant("first answer"),
         ])
         .unwrap();
-    writer.append_compaction("SUMMARY", 0, None).unwrap();
+    writer.append_compaction("SUMMARY", 0, None, false).unwrap();
     writer
         .append_messages(&[
             Message::user("second question"),
@@ -425,4 +425,31 @@ fn load_full_history_reports_a_missing_log() {
     std::fs::remove_file(store.root().join(id).join(LOG_FILE)).unwrap();
     let err = store.load_full(id, KIND).unwrap_err();
     assert!(matches!(err, SessionError::Io(_)), "got {err:?}");
+}
+
+/// docs/design/bot-mode.md §2.7, the persisted `ToolsMount` (reproduced before the writer learned to skip
+/// it): builds before that fix wrote a frozen-mode defer mount as a system record with NO content, and the
+/// last system record wins on reload. Such a log must still come back with its real system prompt.
+#[test]
+fn an_old_empty_system_record_does_not_replace_the_system_prompt() {
+    let dir = log_dir(concat!(
+        r#"{"role":"system","content":"SYSTEM PROMPT"}"#,
+        "\n",
+        r#"{"role":"user","content":"q"}"#,
+        "\n",
+        r#"{"role":"assistant","content":"a"}"#,
+        "\n",
+        r#"{"role":"system"}"#,
+        "\n",
+        r#"{"role":"assistant","content":"done"}"#,
+        "\n",
+    ));
+    let log = load_log(dir.path(), KIND).unwrap();
+    assert_eq!(log.view[0].role(), Role::System);
+    assert_eq!(log.view[0].content, "SYSTEM PROMPT");
+    assert_eq!(
+        log.view.iter().filter(|m| m.role() == Role::System).count(),
+        1
+    );
+    assert_eq!(log.conv_count, 3);
 }

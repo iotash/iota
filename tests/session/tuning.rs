@@ -253,3 +253,32 @@ fn non_positive_window_is_not_returned() {
         assert_eq!(got, None, "window {window}");
     }
 }
+
+/// docs/design/bot-mode.md §2.2: a bot's config owns the model, the window, effort, temperature and
+/// `top_p` — none of them replays from the meta — while the rest of the bundle's tuning still does.
+#[test]
+fn a_bot_replays_nothing_the_config_owns() {
+    let mut provider = stub().with_temperature(Some(0.9));
+    let meta = SessionMeta {
+        model: "m-old".to_owned(),
+        image: true,
+        json_edits: true,
+        ..tuned_meta()
+    };
+    let window = iota::session::replay_session_settings(
+        &meta,
+        &mut provider,
+        KIND,
+        &Overrides {
+            config_wins: true,
+            ..Overrides::default()
+        },
+        &mut |w| panic!("unexpected warning: {w}"),
+    );
+    assert_eq!(window, None);
+    assert_eq!(iota::provider::Provider::model(&provider), "m1");
+    assert_eq!(provider.temperature(), Some(0.9));
+    assert_eq!(provider.effort(), None);
+    assert!(provider.image_output(), "image output still replays");
+    assert!(provider.json_edits(), "json edits still replay");
+}

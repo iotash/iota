@@ -1,4 +1,5 @@
-//! Shared test fakes (feature `testing`): the one fake provider ([`FakeProvider`]), the fake dispatchers
+//! Shared test fakes (feature `testing`): the one scripted fake provider ([`FakeProvider`]), the long-run fake
+//! that computes its answers from the request ([`GrowingProvider`]), the fake dispatchers
 //! (`dispatch`), a recording sink and the scripted UI facade. (The environment fixture that replaces
 //! `t.Setenv` is `app::env::Env::fixed`, in the library proper.)
 
@@ -11,12 +12,14 @@ use crate::provider::sink::StreamSink;
 use crate::provider::usage::Usage;
 
 mod dispatch;
+mod growing;
 mod provider;
 mod scripted;
 pub use dispatch::{
     FakeMcp, GatedDispatch, GrowingDispatcher, HeaderDispatch, NoCapDispatch, ParallelDispatch,
     StaticDispatcher, prefix_for, static_prefix, stub_tool,
 };
+pub use growing::{CallKind, FACT_MARK, GrowingCall, GrowingProvider, TURN_MARK};
 pub use provider::{Call, Failure, FakeProvider, Interrupt, Log, Path, Round};
 pub use scripted::{PanelSummary, RecordingHost, Reply, ScriptedUi, TabbedSummary, UiEvent};
 

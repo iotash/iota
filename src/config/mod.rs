@@ -32,7 +32,7 @@ use crate::mcp::config::AuthMode;
 use crate::provider::ProviderKind;
 use crate::tool::DeferMode;
 
-pub use agent::AgentConfig;
+pub use agent::{AgentConfig, AgentMode};
 pub use model::{BadModelRef, ModelConfig, ModelEntry, ModelRef};
 pub use params::{Declared, ParamLayers, WindowDecl};
 pub use provider::{ApiKey, Endpoint, ProviderConfig};
@@ -389,6 +389,23 @@ impl Config {
             }
         }
         for (name, a) in &self.agents {
+            // A bot's name is its directory under `~/.iota/bots` (bot-mode.md §1.1), and a bot's session is
+            // never ephemeral (§2.2).
+            if a.mode.is_bot() {
+                if !crate::session::valid_bot_name(name) {
+                    return Err(ConfigError::Agent(
+                        name.clone(),
+                        "a bot's name must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ (it names ~/.iota/bots/<name>)"
+                            .to_owned(),
+                    ));
+                }
+                if a.no_save {
+                    return Err(ConfigError::Agent(
+                        name.clone(),
+                        "no_save contradicts mode: bot".to_owned(),
+                    ));
+                }
+            }
             // `model:` names ONE model. A wildcard is the set the picker opens on, and leaving `model:` unset
             // is how a run asks for the picker — so the wildcard is refused with the spelling that does that.
             if let Some(r) = &a.model {

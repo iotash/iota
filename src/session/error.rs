@@ -28,6 +28,89 @@ pub enum SessionError {
     /// `DeleteSession`); it can never address anything outside the sessions root.
     #[error("invalid session id {0:?}")]
     InvalidId(String),
+    /// Another process holds a single-writer lock (docs/design/bot-mode.md §2.3): a bundle's, or a bot's
+    /// (`~/.iota/bots/<name>/lock`). `what` names the holder's subject (`session <id>`, `bot <name>`); `pid`
+    /// is what the holder wrote into the lock file, `None` when it has not written it yet.
+    #[error("{what} is open in another iota process{}", pid_suffix(*.pid))]
+    Locked {
+        /// What is locked, as the text names it.
+        what: String,
+        /// The holder's pid, when known.
+        pid: Option<u32>,
+    },
+    /// The session is a bot's body (its `bot.json` points at it, §2.7): only `iota run <bot>` opens it, and
+    /// nothing deletes it while it is pointed at.
+    #[error("session {id} belongs to bot {bot}; run iota run {bot}")]
+    BotOwned {
+        /// The session id.
+        id: String,
+        /// The bot whose pointer names it.
+        bot: String,
+    },
+    /// The bot's session was saved once and is gone now (deleted, or the disk changed) — a hard error, never
+    /// a silent fresh start (§2.2, review I1). The text names both ways out.
+    #[error(
+        "bot {bot}'s session {id} is missing: restore {}, or delete {} to start over (memory is kept)",
+        .bundle.display(),
+        .pointer.display()
+    )]
+    BotMissing {
+        /// The bot's name.
+        bot: String,
+        /// The session id its pointer names.
+        id: String,
+        /// Where the bundle lived (`<sessions root>/<id>/`).
+        bundle: std::path::PathBuf,
+        /// The pointer to delete (`<bots>/<name>/bot.json`).
+        pointer: std::path::PathBuf,
+    },
+    /// A batch reached the log, but `meta.json` could not be rewritten after it. The batch must NOT be
+    /// appended again; the meta catches up with the next write.
+    #[error("{0}")]
+    MetaNotSaved(#[source] Box<SessionError>),
+    /// Whether a session is a bot's body cannot be told: a pointer under the bots root (or the root itself)
+    /// cannot be read (§2.7). Anything that would write or delete a bot's body is refused until it can —
+    /// fail-closed, so ONE broken pointer blocks every session's resume and delete; the text names the file
+    /// and the way out.
+    #[error("cannot tell whether session {id} belongs to a bot: {source}; {}", owner_unknown_fix(.path))]
+    BotOwnerUnknown {
+        /// The session id.
+        id: String,
+        /// What could not be read: a `bot.json`, a bot directory, or the bots root.
+        path: std::path::PathBuf,
+        /// Why the pointers could not be read.
+        #[source]
+        source: Box<SessionError>,
+    },
+    /// The filesystem under `dir` cannot lock at all (NFS or SMB without lock support). Opening a session for
+    /// writing and deleting one both need the single-writer lock, so they fail closed here; a read-only load
+    /// takes no lock and is not affected.
+    #[error(
+        "file locking is not supported under {}; iota cannot open or delete a session there",
+        .dir.display()
+    )]
+    LockUnsupported {
+        /// The directory the lock file is in.
+        dir: std::path::PathBuf,
+    },
+    /// A batch failed partway and cutting the log back to where it began failed too: the log may hold part of
+    /// it. The writer appends nothing more until a later attempt has cut it back (review R1).
+    #[error(
+        "writing the session log failed ({write}), and the part already written could not be cut back ({cut}); nothing more is written to it until it is"
+    )]
+    CutFailed {
+        /// Why the batch failed.
+        #[source]
+        write: Box<SessionError>,
+        /// Why the cut-back failed.
+        cut: std::io::Error,
+    },
+    /// An earlier batch's remains are still in the log and cutting them off failed again: nothing is written
+    /// ([`CutFailed`](Self::CutFailed)).
+    #[error(
+        "the session log still holds part of a batch that failed, and it could not be cut back ({0}); nothing is written until it is"
+    )]
+    LogNotCutBack(#[source] std::io::Error),
     /// A write reached the log before `ensure_created` opened it — a bug, not a state.
     #[error("session log is not open")]
     LogNotOpen,
@@ -43,11 +126,30 @@ pub enum SessionError {
     Io(#[from] std::io::Error),
 }
 
+/// ` (pid N)` when the holder is known, nothing otherwise.
+fn pid_suffix(pid: Option<u32>) -> String {
+    pid.map_or_else(String::new, |p| format!(" (pid {p})"))
+}
+
 impl From<serde_json::Error> for SessionError {
     /// A JSON encode/decode failure is a data fault on the bundle: it travels as an `Io` error of kind
     /// `InvalidData` so `cannot read session {id}: {e}` keeps serde's own text.
     fn from(e: serde_json::Error) -> Self {
         Self::Io(e.into())
+    }
+}
+
+/// The way out of [`SessionError::BotOwnerUnknown`] for `path`: a pointer is repaired or deleted (deleting it
+/// lets its bundle go back to being an ordinary session, and the bot starts a new one); anything else must be
+/// made readable again.
+fn owner_unknown_fix(path: &std::path::Path) -> String {
+    if path.file_name() == Some(std::ffi::OsStr::new(crate::session::bot::BOT_POINTER_FILE)) {
+        format!(
+            "repair or delete {} (without it the bot starts a new session; memory is kept)",
+            path.display()
+        )
+    } else {
+        format!("make {} readable", path.display())
     }
 }
 
@@ -90,6 +192,40 @@ mod tests {
         assert_eq!(
             SessionError::Io(std::io::Error::other("disk on fire")).to_string(),
             "disk on fire"
+        );
+        assert_eq!(
+            SessionError::Locked {
+                what: "bot coder".to_owned(),
+                pid: Some(4242),
+            }
+            .to_string(),
+            "bot coder is open in another iota process (pid 4242)"
+        );
+        assert_eq!(
+            SessionError::Locked {
+                what: "bot coder".to_owned(),
+                pid: None,
+            }
+            .to_string(),
+            "bot coder is open in another iota process"
+        );
+        assert_eq!(
+            SessionError::BotOwned {
+                id: "01K".to_owned(),
+                bot: "coder".to_owned(),
+            }
+            .to_string(),
+            "session 01K belongs to bot coder; run iota run coder"
+        );
+        assert_eq!(
+            SessionError::BotMissing {
+                bot: "coder".to_owned(),
+                id: "01K".to_owned(),
+                bundle: "/h/.iota/sessions/01K".into(),
+                pointer: "/h/.iota/bots/coder/bot.json".into(),
+            }
+            .to_string(),
+            "bot coder's session 01K is missing: restore /h/.iota/sessions/01K, or delete /h/.iota/bots/coder/bot.json to start over (memory is kept)"
         );
     }
 

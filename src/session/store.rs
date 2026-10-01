@@ -11,9 +11,11 @@ use crate::app::paths;
 use crate::provider::ProviderKind;
 use crate::provider::model::Message;
 
+use crate::session::bot::{BOT_POINTER_FILE, BotPointer};
 use crate::session::error::SessionError;
 use crate::session::id::{generate_id, resolve_in};
-use crate::session::loader::{Session, load_full_history, load_log};
+use crate::session::loader::{Session, load_full_history, load_log, repair_tail};
+use crate::session::lock::{lock_bot, lock_bundle};
 use crate::session::meta::{
     META_FILE, SESSION_SCHEMA_VERSION, SessionMeta, now_rfc3339, parse_rfc3339,
 };
@@ -76,25 +78,103 @@ impl NewSession {
     }
 }
 
+/// What [`SessionStore::open_bot`] found (docs/design/bot-mode.md §2.2).
+#[derive(Debug)]
+pub enum BotOpen {
+    /// The bot's session, resumed (the view boxed: it is the large half).
+    Resumed(SessionWriter, Box<Session>),
+    /// A new session: its bundle is already on disk and the pointer names it.
+    Fresh(SessionWriter),
+}
+
 /// The sessions root (`<home>/.iota/sessions`) as a value. Constructed from a path in tests and from
 /// [`HostDirs`] in the binary — it NEVER reads the process environment.
 #[derive(Clone, Debug)]
 pub struct SessionStore {
     root: PathBuf,
+    /// `<app home>/bots` — the pointers that protect bot sessions (§2.7). `None` for a store built from a
+    /// bare path, which knows of no bots.
+    bots: Option<PathBuf>,
 }
 
 impl SessionStore {
     /// The sessions root directory verbatim (tests pass a temp dir).
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            bots: None,
+        }
     }
 
-    /// `<app home>/sessions` (chat/session.go:156-162); [`SessionError::HomeNotDefined`] when the host
-    /// has no home directory.
+    /// The same store, protecting the sessions the pointers under `bots` name.
+    #[must_use]
+    pub fn with_bots(mut self, bots: impl Into<PathBuf>) -> Self {
+        self.bots = Some(bots.into());
+        self
+    }
+
+    /// `<app home>/sessions` (chat/session.go:156-162), aware of `<app home>/bots`;
+    /// [`SessionError::HomeNotDefined`] when the host has no home directory.
     pub fn from_dirs(dirs: &HostDirs) -> Result<Self, SessionError> {
-        dirs.app_home()
-            .map(|home| Self::new(home.join("sessions")))
-            .ok_or(SessionError::HomeNotDefined)
+        let (Some(home), Some(bots)) = (dirs.app_home(), dirs.bots_dir()) else {
+            return Err(SessionError::HomeNotDefined);
+        };
+        Ok(Self::new(home.join("sessions")).with_bots(bots))
+    }
+
+    /// The bots root, when this store knows one.
+    pub fn bots_dir(&self) -> Option<&Path> {
+        self.bots.as_deref()
+    }
+
+    /// The bot whose pointer names session `id` (§2.7): a scan of `<bots>/*/bot.json`, O(bots). `None` for
+    /// an id no bot points at, and always for a store that knows no bots root. A pointer that cannot be read
+    /// is [`SessionError::BotOwnerUnknown`]: it may name `id`.
+    pub fn bot_owner(&self, id: &str) -> Result<Option<String>, SessionError> {
+        let Some(bots) = self.bots.as_deref() else {
+            return Ok(None);
+        };
+        let pointers = crate::session::bot::pointers(bots).map_err(|(path, e)| {
+            SessionError::BotOwnerUnknown {
+                id: id.to_owned(),
+                path,
+                source: Box::new(e),
+            }
+        })?;
+        Ok(pointers
+            .into_iter()
+            .find(|(_, p)| p.session == id)
+            .map(|(name, _)| name))
+    }
+
+    /// Every session id some bot points at — what a normal-mode picker leaves out (§2.7). Only a listing:
+    /// the pointers that cannot be read are left out here, and the gate
+    /// ([`check_not_bot_owned`](Self::check_not_bot_owned)) refuses what they might name.
+    pub fn bot_sessions(&self) -> Vec<String> {
+        let Some(bots) = self.bots.as_deref() else {
+            return Vec::new();
+        };
+        let Ok(entries) = std::fs::read_dir(bots) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter_map(|e| BotPointer::read(&e.path()).ok().flatten())
+            .map(|p| p.session)
+            .collect()
+    }
+
+    /// Refuses a session a bot owns with [`SessionError::BotOwned`], and every session while a pointer
+    /// cannot be read ([`SessionError::BotOwnerUnknown`]) — the gate `iota resume <id>`, `/session` and
+    /// [`delete`](Self::delete) pass through.
+    pub fn check_not_bot_owned(&self, id: &str) -> Result<(), SessionError> {
+        match self.bot_owner(id)? {
+            Some(bot) => Err(SessionError::BotOwned {
+                id: id.to_owned(),
+                bot,
+            }),
+            None => Ok(()),
+        }
     }
 
     /// The sessions root.
@@ -242,21 +322,38 @@ impl SessionStore {
     /// `ResumeSession` (chat/session.go:383-402): locate the bundle, read its meta (failures become
     /// [`SessionError::CannotRead`]), load the log, and open `messages.jsonl` for appending. The writer
     /// comes back seeded with the log's `conv_count` and usage; the [`Session`] carries the derived view.
+    ///
+    /// The bundle lock is taken FIRST — a bundle another process holds is refused with
+    /// [`SessionError::Locked`] before anything is read — and the returned writer keeps it. The view's
+    /// unanswered tail is then repaired ([`repair_tail`]) and the synthesised results appended, so the
+    /// session never comes back in a shape every provider rejects.
     pub fn resume(
         &self,
         id: &str,
         kind: ProviderKind,
     ) -> Result<(SessionWriter, Session), SessionError> {
         let dir = self.dir(id)?;
+        let lock = lock_bundle(&dir, id)?;
         let meta = read_meta(&dir, id)?;
-        let log = load_log(&dir, kind)?;
-        let file = open_append_0644(&dir.join(LOG_FILE))?;
-        let writer =
-            SessionWriter::resumed(dir, meta.clone(), kind, file, log.conv_count, log.usage);
+        let mut log = load_log(&dir, kind)?;
+        let path = dir.join(LOG_FILE);
+        let mut file = open_append_0644(&path)?;
+        terminate_last_line(&path, &mut file)?;
+        let repaired = repair_tail(&mut log.view);
+        let last_written = meta.updated_at.clone();
+        let mut writer = SessionWriter::resumed(dir, meta, kind, file, &log, lock);
+        // The repair is in the log once the batch is; a meta that did not follow catches up with the next write
+        // and is no reason to refuse the session.
+        match writer.append_messages(&log.view[log.view.len() - repaired..]) {
+            Ok(()) | Err(SessionError::MetaNotSaved(_)) => {}
+            Err(e) => return Err(e),
+        }
         let session = Session {
-            meta,
+            meta: writer.meta().clone(),
+            last_written,
             messages: log.view,
             usage: log.usage,
+            repaired,
         };
         Ok((writer, session))
     }
@@ -268,9 +365,11 @@ impl SessionStore {
         let meta = read_meta(&dir, id)?;
         let log = load_log(&dir, kind)?;
         Ok(Session {
+            last_written: meta.updated_at.clone(),
             meta,
             messages: log.view,
             usage: log.usage,
+            repaired: 0,
         })
     }
 
@@ -291,12 +390,70 @@ impl SessionStore {
     /// escape the sessions root; and because the locator only matches REAL bundles (a
     /// directory holding `meta.json`), the `projects/` container itself can never be
     /// removed by id.
+    ///
+    /// A bundle another process holds open is refused with [`SessionError::Locked`]; the lock is kept
+    /// until the bundle is gone, so nobody can open it halfway through the removal.
     pub fn delete(&self, id: &str) -> Result<(), SessionError> {
         if id.is_empty() || id.contains(['/', '\\']) || id.contains("..") {
             return Err(SessionError::InvalidId(id.to_owned()));
         }
+        self.check_not_bot_owned(id)?;
         let dir = self.dir(id)?;
+        let _lock = lock_bundle(&dir, id)?;
         std::fs::remove_dir_all(dir).map_err(SessionError::Io)
+    }
+
+    /// The bot's resume-or-create (docs/design/bot-mode.md §2.2). `bot_dir` is `<bots>/<name>`; `fresh`
+    /// describes the bundle to create when there is none (its `project` is overridden: a bot's session is
+    /// always flat, §1.3).
+    ///
+    /// The bot lock is taken FIRST and handed to the returned writer, which keeps it for its lifetime: two
+    /// first launches of the same bot are serialised by it, and a running bot is refused. Then:
+    ///
+    /// - no pointer: a new bundle — titled after the bot — is put on disk (the bundle lock taken), and only
+    ///   then is the pointer published, atomically: [`BotOpen::Fresh`]. A bundle that could not be created
+    ///   publishes nothing; one whose pointer could not be written is left behind unnamed, an ordinary empty
+    ///   session, and the next launch creates another;
+    /// - a pointer whose bundle resumes: [`BotOpen::Resumed`];
+    /// - a pointer whose bundle is not found: [`SessionError::BotMissing`];
+    /// - anything else the resume reports (an unreadable meta or log, a held bundle lock) is returned as it
+    ///   is — a damaged body is never replaced by a new one.
+    pub fn open_bot(
+        &self,
+        bot_dir: &Path,
+        fresh: NewSession,
+        kind: ProviderKind,
+    ) -> Result<BotOpen, SessionError> {
+        let bot = bot_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let bot_lock = lock_bot(bot_dir, &bot)?;
+        if let Some(ptr) = BotPointer::read(bot_dir)? {
+            return match self.resume(&ptr.session, kind) {
+                Ok((mut writer, session)) => {
+                    writer.hold_bot_lock(bot_lock);
+                    Ok(BotOpen::Resumed(writer, Box::new(session)))
+                }
+                Err(SessionError::NotFound(_)) => Err(SessionError::BotMissing {
+                    bundle: self.root.join(&ptr.session),
+                    pointer: bot_dir.join(BOT_POINTER_FILE),
+                    id: ptr.session,
+                    bot,
+                }),
+                Err(e) => Err(e),
+            };
+        }
+        let mut writer = self.create(NewSession {
+            project: false,
+            ..fresh
+        })?;
+        // No titler for a bot: its one session is named after it (§2.2).
+        writer.update_meta(|m| bot.clone_into(&mut m.title))?;
+        writer.materialize()?;
+        BotPointer::new(writer.id()).write(bot_dir)?;
+        writer.hold_bot_lock(bot_lock);
+        Ok(BotOpen::Fresh(writer))
     }
 
     /// `<root>/projects/<slug(project_root)>`.
@@ -314,6 +471,23 @@ impl SessionStore {
             .map(|e| e.path())
             .collect()
     }
+}
+
+/// Ends the log with `'\n'` when a torn write left its last line unterminated, so the next append starts
+/// a record of its own instead of gluing onto the fragment (and being skipped with it on the next load).
+fn terminate_last_line(path: &Path, append: &mut std::fs::File) -> Result<(), SessionError> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let mut f = std::fs::File::open(path)?;
+    if f.metadata()?.len() == 0 {
+        return Ok(());
+    }
+    let mut last = [0u8; 1];
+    f.seek(SeekFrom::End(-1))?;
+    f.read_exact(&mut last)?;
+    if last[0] != b'\n' {
+        append.write_all(b"\n")?;
+    }
+    Ok(())
 }
 
 /// `loadMeta` wrapped in Go's `cannot read session %s: %w` (chat/session.go:388-391, :909-912).

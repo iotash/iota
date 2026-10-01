@@ -133,7 +133,7 @@ impl Fixture {
             provider,
             title_provider: None,
             system: String::new(),
-            harness: String::new(),
+            harness: iota::agents::harness::HarnessInputs::default(),
             imported_history: Vec::new(),
             dispatch,
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
@@ -143,6 +143,10 @@ impl Fixture {
                 store: self.store.clone(),
                 new_session: None,
                 scope: None,
+                bot: false,
+                notices: Vec::new(),
+                recorded_notices: Vec::new(),
+                memory: None,
             },
             params: iota::session::LayeredParams::default(),
             layers: iota::cmd::ParamLayers::default(),
@@ -536,6 +540,10 @@ async fn save_reports_the_minted_session_to_herdr() {
             Ok(w)
         })),
         scope: None,
+        bot: false,
+        notices: Vec::new(),
+        recorded_notices: Vec::new(),
+        memory: None,
     };
     params.pres = herdr_presenter(&mock, "w1:p2");
     iota::repl::run(params).await.expect("clean exit");

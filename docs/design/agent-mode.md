@@ -2,9 +2,10 @@
 
 ## Switch
 
-Agent mode is **explicitly opt-in**: `--agent` flag or per-provider config
-`agent: true` (YAML truthy: `on`/`true`/`yes`). Off means byte-for-byte today's
-behavior — nothing below activates.
+Agent mode is **explicitly opt-in**, and only in config: `mode: agent` on an
+`agents.<name>` entry (`chat`, the default, is off; `bot` includes everything
+here — see `bot-mode.md` §1.1). There is no flag. Off means byte-for-byte
+today's behavior — nothing below activates.
 
 The **project root** anchors everything: the git root of the working directory,
 falling back to the cwd itself outside a repository.

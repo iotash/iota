@@ -84,10 +84,14 @@ pub(crate) struct Rows<T> {
     pub(crate) cursor: usize,
 }
 
-/// The Context tab's rows: the preset windows plus the current one (inserted SORTED when
-/// it is not a preset), the current row marked.
-pub(crate) fn context_window_rows(current: u64) -> Rows<u64> {
-    let mut values = CONTEXT_PRESETS.to_vec();
+/// The Context tab's rows: the preset windows from `floor` up plus the current one (inserted SORTED when
+/// it is not a preset), the current row marked. A bot's floor is the smallest window it runs in
+/// (`BOT_MIN_WINDOW`, bot-mode.md §4.1), so the tab does not offer one it would fail in; `0` offers every preset.
+pub(crate) fn context_window_rows(current: u64, floor: u64) -> Rows<u64> {
+    let mut values: Vec<u64> = CONTEXT_PRESETS
+        .into_iter()
+        .filter(|&v| v >= floor)
+        .collect();
     if !values.contains(&current) && current > 0 {
         values.push(current);
         values.sort_unstable();
@@ -209,8 +213,9 @@ pub(crate) struct Extras {
 
 impl Extras {
     /// Appends every tab this provider can act on to `panels`, after the Model tab
-    /// (chat/run.go:544-630). `window` is the live context budget; `history`, `harness` and
-    /// `overlay` feed the read-only System tab.
+    /// (chat/run.go:544-630). `window` is the live context budget and `window_floor` the smallest one the
+    /// Context tab offers ([`context_window_rows`]); `history`, `harness` and `overlay` feed the read-only
+    /// System tab.
     ///
     /// The capability probes run in Go's order — Context, Effort, Temperature, Image,
     /// Aspect/Size/Negative, JSON edits, System — because the recorded indices ARE the
@@ -218,6 +223,7 @@ impl Extras {
     pub(crate) fn assemble(
         provider: &mut dyn Provider,
         window: u64,
+        window_floor: u64,
         history: &[crate::provider::model::Message],
         harness: &str,
         overlay: &str,
@@ -234,7 +240,7 @@ impl Extras {
                 values: windows,
                 labels,
                 cursor,
-            } = context_window_rows(window);
+            } = context_window_rows(window, window_floor);
             ex.windows = windows;
             ex.window_open = window;
             ex.ctx = Some(panels.len());
@@ -582,7 +588,7 @@ mod tests {
             values,
             labels,
             cursor,
-        } = context_window_rows(128_000);
+        } = context_window_rows(128_000, 0);
         assert_eq!(values.len(), 6, "a preset current must not grow the list");
         assert_eq!(values[cursor], 128_000);
         assert_eq!(labels[cursor], "128k (current)");
@@ -596,7 +602,7 @@ mod tests {
             values,
             labels,
             cursor,
-        } = context_window_rows(64_000);
+        } = context_window_rows(64_000, 0);
         assert_eq!(values.len(), 7, "a non-preset current must be inserted");
         assert!(values.windows(2).all(|w| w[0] <= w[1]), "values not sorted");
         assert_eq!(values[cursor], 64_000);
@@ -608,10 +614,26 @@ mod tests {
             values,
             labels,
             cursor,
-        } = context_window_rows(0);
+        } = context_window_rows(0, 0);
         assert_eq!(values.len(), 6);
         assert_eq!(cursor, 0);
         assert!(labels.iter().all(|l| !l.contains("(current)")));
+    }
+
+    // A bot's tab offers no preset under the smallest window a bot runs in; a current window below it is
+    // still shown, marked, so an untouched tab stays a no-op.
+    #[test]
+    fn a_bot_is_not_offered_a_window_below_its_minimum() {
+        use crate::repl::context::tokens::BOT_MIN_WINDOW;
+        let Rows { values, .. } = context_window_rows(128_000, BOT_MIN_WINDOW);
+        assert_eq!(values, [32_000, 128_000, 200_000, 256_000, 1_000_000]);
+        let Rows {
+            values,
+            labels,
+            cursor,
+        } = context_window_rows(16_000, BOT_MIN_WINDOW);
+        assert_eq!(values[0], 16_000);
+        assert_eq!(labels[cursor], "16k (current)");
     }
 
     // The unset level maps to the "default"
@@ -728,7 +750,7 @@ mod assemble_tests {
 
     fn tabs(p: &mut dyn Provider, history: &[Message], overlay: &str) -> (Vec<Panel>, Extras) {
         let mut panels = Vec::new();
-        let ex = Extras::assemble(p, 128_000, history, "", overlay, &mut panels);
+        let ex = Extras::assemble(p, 128_000, 0, history, "", overlay, &mut panels);
         (panels, ex)
     }
 

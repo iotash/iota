@@ -17,9 +17,10 @@
 use std::path::Path;
 
 use crate::agents::Overlay;
+use crate::config::AgentMode;
 use crate::text::width::{str_width, truncate_middle};
 
-use crate::repl::render::styles::{cyan, dim};
+use crate::repl::render::styles::{cyan, dim, green, yellow};
 
 /// The mark that opens the card: the letter, the prompt, the name — cyan, one piece.
 const MARK: &str = "ι> iota";
@@ -43,8 +44,8 @@ const FRAME_COLS: usize = 4;
 
 /// What the three facts say.
 pub(crate) struct BannerFacts<'a> {
-    /// Agent mode (`agents.<name>.workspace: true`) — the overlay is on.
-    pub(crate) workspace: bool,
+    /// The agent's `mode:` — the mode row's first word, in its own color.
+    pub(crate) mode: AgentMode,
     /// The bundle the chat persists into; `None` while it has none.
     pub(crate) session_id: Option<&'a str>,
     /// The chat STARTED without a bundle: a `/save` factory exists.
@@ -135,12 +136,22 @@ pub(crate) fn overlay_warnings(overlay: Option<&Overlay>) -> Vec<String> {
         .collect()
 }
 
-/// `agent`/`chat`, then where the chat is being saved — `session <id>`, `resumed <id>`, or the
+/// The mode row's first word and its color: `chat` green, `agent` cyan, `bot` yellow.
+fn mode_word(mode: AgentMode) -> (&'static str, fn(&str) -> String) {
+    match mode {
+        AgentMode::Chat => ("chat", green),
+        AgentMode::Agent => ("agent", cyan),
+        AgentMode::Bot => ("bot", yellow),
+    }
+}
+
+/// The mode — `chat`, `agent` or `bot`, each in its color — then where the chat is being saved — `session <id>`, `resumed <id>`, or the
 /// `/save` hint — then `in <host>` inside a detected host, joined with a dim ` · `. A chat with
 /// no bundle and no way to mint one (a test fixture; a real run always has one or the other)
 /// skips the middle segment.
 fn mode_row(f: &BannerFacts<'_>) -> Row {
-    let mut segments = vec![(if f.workspace { "agent" } else { "chat" }).to_owned()];
+    let (word, paint) = mode_word(f.mode);
+    let mut segments = vec![word.to_owned()];
     match (f.session_id, f.resumed, f.ephemeral) {
         (Some(id), true, _) => segments.push(format!("resumed {id}")),
         (Some(id), false, _) => segments.push(format!("session {id}")),
@@ -150,8 +161,10 @@ fn mode_row(f: &BannerFacts<'_>) -> Row {
     if let Some(host) = f.host {
         segments.push(format!("in {host}"));
     }
+    // Measured bare, before the mode word is painted.
     let cols = segments.iter().map(|s| str_width(s)).sum::<usize>()
         + str_width(SEP) * segments.len().saturating_sub(1);
+    segments[0] = paint(word);
     Row {
         text: segments.join(&dim(SEP)),
         cols,
@@ -177,6 +190,7 @@ mod tests {
     use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 
     use super::{BannerFacts, banner_lines};
+    use crate::config::AgentMode;
     use crate::text::ansi::strip_sgr;
     use crate::text::width::str_width;
 
@@ -187,7 +201,7 @@ mod tests {
 
     fn facts<'a>(dir: &'a Path, home: Option<&'a Path>) -> BannerFacts<'a> {
         BannerFacts {
-            workspace: false,
+            mode: AgentMode::Chat,
             session_id: Some(ID),
             ephemeral: false,
             resumed: false,
@@ -279,7 +293,7 @@ mod tests {
         }
     }
 
-    /// The mode row: `agent` or `chat`, then the bundle in one of its three states — or, with
+    /// The mode row: `chat`, `agent` or `bot`, then the bundle in one of its three states — or, with
     /// no bundle and no factory, the mode alone.
     #[test]
     fn mode_row_states() {
@@ -298,10 +312,15 @@ mod tests {
         };
         assert_eq!(mode_row(&f), "chat · not saved · /save keeps it");
         let f = BannerFacts {
-            workspace: true,
+            mode: AgentMode::Agent,
             ..facts(dir, None)
         };
         assert_eq!(mode_row(&f), format!("agent · session {ID}"));
+        let f = BannerFacts {
+            mode: AgentMode::Bot,
+            ..facts(dir, None)
+        };
+        assert_eq!(mode_row(&f), format!("bot · session {ID}"));
         let f = BannerFacts {
             session_id: None,
             ..facts(dir, None)
@@ -310,11 +329,11 @@ mod tests {
     }
 
     /// Every ` · ` in the mode row is dim — the one inside `not saved · /save keeps it`
-    /// included — and the segments between them carry no style of their own.
+    /// included — and the segments after the mode word carry no style of their own.
     #[test]
     fn the_mode_row_joins_its_segments_with_dim_dots() {
         let f = BannerFacts {
-            workspace: true,
+            mode: AgentMode::Agent,
             session_id: None,
             ephemeral: true,
             host: Some("herdr"),
@@ -323,7 +342,7 @@ mod tests {
         let row = &banner_lines(&f, 80)[2];
         assert!(
             row.contains(
-                "agent\x1b[2m · \x1b[0mnot saved\x1b[2m · \x1b[0m/save keeps it\x1b[2m · \x1b[0min herdr"
+                "\x1b[36magent\x1b[0m\x1b[2m · \x1b[0mnot saved\x1b[2m · \x1b[0m/save keeps it\x1b[2m · \x1b[0min herdr"
             ),
             "{row:?}"
         );
@@ -331,6 +350,52 @@ mod tests {
         assert!(!strip_sgr(row).contains('\x1b'), "{row:?}");
         assert_eq!(row.matches(" · ").count(), 3);
         assert_eq!(row.matches("\x1b[2m · \x1b[0m").count(), 3);
+    }
+
+    /// Each mode opens the row with its own word in its own color — `chat` green, `agent` cyan,
+    /// `bot` yellow — and the card is still measured by the bare text: every row as wide as
+    /// the frame, whatever the word's escapes add.
+    #[test]
+    fn each_mode_has_its_word_and_color() {
+        for (mode, painted, bare) in [
+            (AgentMode::Chat, "\x1b[32mchat\x1b[0m", "chat"),
+            (AgentMode::Agent, "\x1b[36magent\x1b[0m", "agent"),
+            (AgentMode::Bot, "\x1b[33mbot\x1b[0m", "bot"),
+        ] {
+            let f = BannerFacts {
+                mode,
+                ..facts(Path::new("/srv/app"), None)
+            };
+            let lines = banner_lines(&f, 80);
+            assert!(
+                lines[2].starts_with(&format!(
+                    "\x1b[2m│\x1b[0m {painted}\x1b[2m · \x1b[0msession {ID}"
+                )),
+                "{mode:?}: {:?}",
+                lines[2]
+            );
+            assert_eq!(mode_row(&f), format!("{bare} · session {ID}"));
+            let width = str_width(&plain(&lines)[0]);
+            for row in plain(&lines) {
+                assert_eq!(str_width(&row), width, "{mode:?}: {row:?}");
+            }
+        }
+    }
+
+    /// `mode: bot` reads `bot`, never `agent` — a bot has the workspace an agent has, and the
+    /// row once asked only that.
+    #[test]
+    fn a_bot_reads_bot_not_agent() {
+        let f = BannerFacts {
+            mode: AgentMode::Bot,
+            session_id: None,
+            ephemeral: true,
+            host: Some("herdr"),
+            ..facts(Path::new("/srv/app"), None)
+        };
+        let row = mode_row(&f);
+        assert_eq!(row, "bot · not saved · /save keeps it · in herdr");
+        assert!(!row.contains("agent"), "{row:?}");
     }
 
     /// Inside a detected host the mode row ends with `in <host>` — after the bundle segment,
@@ -344,7 +409,7 @@ mod tests {
         };
         assert_eq!(mode_row(&f), format!("chat · session {ID} · in herdr"));
         let f = BannerFacts {
-            workspace: true,
+            mode: AgentMode::Agent,
             session_id: None,
             ephemeral: true,
             host: Some("cmux"),
@@ -386,7 +451,7 @@ mod tests {
     #[test]
     fn a_narrow_terminal_drops_the_frame() {
         let longest = BannerFacts {
-            workspace: true,
+            mode: AgentMode::Agent,
             session_id: None,
             ephemeral: true,
             ..facts(Path::new("/srv/app"), None)
@@ -419,7 +484,7 @@ mod tests {
     #[test]
     fn a_named_host_widens_the_frame_threshold() {
         let hosted = BannerFacts {
-            workspace: true,
+            mode: AgentMode::Agent,
             session_id: None,
             ephemeral: true,
             host: Some("herdr"),

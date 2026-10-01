@@ -17,8 +17,9 @@ pub(crate) mod tuning;
 pub use crate::config::edit;
 pub use crate::config::window;
 pub use crate::config::{
-    AgentConfig, BadModelRef, Config, ConfigError, DEFAULT_AGENT, Declared, McpServerConfig,
-    ModelConfig, ModelEntry, ModelRef, ParamLayers, ProviderConfig, Resolved, WindowDecl,
+    AgentConfig, AgentMode, BadModelRef, Config, ConfigError, DEFAULT_AGENT, Declared,
+    McpServerConfig, ModelConfig, ModelEntry, ModelRef, ParamLayers, ProviderConfig, Resolved,
+    WindowDecl,
 };
 pub use args::{
     Cli, Command, ConfigAction, Invocation, ListWhat, McpAction, McpAddCmd, McpAuthArg, McpCmd,
@@ -96,7 +97,7 @@ pub(crate) struct ToolAssembly {
     pub(crate) agent: AgentOptions,
     /// The built-in harness prompt's inputs (`agents::harness`), read once here for both branches and
     /// composed by each once its `Presenter` exists — the hosts add their facts to `<environment>`.
-    pub(crate) harness: assemble::HarnessInputs,
+    pub(crate) harness: crate::agents::harness::HarnessInputs,
 }
 
 /// The host detectors' view of the machine (host.go:71-74 `SystemEnv`): the run's injected environment
@@ -305,7 +306,7 @@ fn assemble_tools(
     // discovery, so it is resolved in every mode; only agent mode makes a missing cwd fatal. The cwd and
     // the home go along in every mode too — the banner names the directory the chat runs in.
     let project_root = dirs.cwd.as_deref().map(crate::agents::project_root);
-    let agent = if settings.agent_mode {
+    let agent = if settings.mode.has_workspace() {
         let root = project_root
             .clone()
             .ok_or_else(|| SetupError::Cwd(cwd_err()))?;
@@ -351,9 +352,15 @@ fn assemble_tools(
     // inside and where; with the `shell` set, how iota's own command line is driven from it. An agent without
     // tools sends nothing — its bytes on the wire are exactly what they were. Composed by the branch, once
     // its hosts are detected: they have facts for `<environment>` too.
-    let harness = assemble::HarnessInputs {
+    let harness = crate::agents::harness::HarnessInputs {
         env: assemble::harness_environment(dirs, project_root.as_deref(), inv.config.as_deref()),
-        toolsets: assemble::enabled_toolsets(&settings.resolved.agent.tools),
+        toolsets: assemble::enabled_toolsets(
+            &settings.resolved.agent.tools,
+            // The bot's own session, the same test as the interactive branch's (`iota resume` names a session
+            // of its own).
+            settings.mode.is_bot() && inv.resume.is_none(),
+        ),
+        clock: Arc::new(crate::agents::harness::today),
     };
 
     Ok(ToolAssembly {
@@ -424,8 +431,13 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
             let store = crate::session::SessionStore::from_dirs(dirs)?;
             // root.go:298: agent mode tries the project's own bucket first and only widens on no match; normal
             // mode looks at the flat root (Go passes an empty `agentOpts.Root`).
-            let scope = settings.agent_mode.then_some(agent.root.as_path());
+            let scope = settings
+                .mode
+                .has_workspace()
+                .then_some(agent.root.as_path());
             let id = store.resolve_id(fragment, scope)?;
+            // A bot's body opens only as that bot (bot-mode.md §2.2, §2.7).
+            store.check_not_bot_owned(&id)?;
             let (writer, resumed) = store.resume(&id, kind)?;
             // The bundle records the agent it ran under; one that has since been deleted is announced, and
             // the run falls back to the provider and model the meta carries (Phase 1b step 9).
@@ -468,6 +480,9 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
                 "Resumed session {id} ({} messages)",
                 resumed.messages.len()
             ));
+            if let Some(notice) = resumed.repair_notice() {
+                io.warning(&notice);
+            }
             Some((writer, resumed))
         }
     };
@@ -497,7 +512,7 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         &settings.resolved.model,
         mcp_part,
         mcp_defers,
-        settings.agent_mode,
+        settings.mode.has_workspace(),
         &tool_env,
         &mut |m| io.caution(&m),
     );
@@ -505,7 +520,7 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
     let opts = OnceOptions {
         message,
         system: settings.system,
-        harness: harness.compose(&pres),
+        harness: harness.compose(&harness.today(), pres.environment()),
         agent,
         max_turns: settings.max_turns,
         format,

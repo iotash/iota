@@ -1,8 +1,8 @@
-//! The one fake `Provider`. [`FakeProvider`] is a builder over three things every hand-rolled test
-//! provider used to reimplement: an identity (kind, model, model listing, usage reporting), a set of
-//! optional capabilities switched on one at a time (tools, tuning, image knobs, progressive frames), and a
-//! script of [`Round`]s played in call order — with a [`Log`] of every call that a test reads back after
-//! the provider itself was boxed into the run loop.
+//! The scripted fake `Provider` (the long run computes its answers instead: [`super::GrowingProvider`]).
+//! [`FakeProvider`] is a builder over three things every hand-rolled test provider used to reimplement: an
+//! identity (kind, model, model listing, usage reporting), a set of optional capabilities switched on one at a
+//! time (tools, tuning, image knobs, progressive frames), and a script of [`Round`]s played in call order —
+//! with a [`Log`] of every call that a test reads back after the provider itself was boxed into the run loop.
 //!
 //! It stays a recorder plus a script. Behaviour that depends on what was sent goes through
 //! [`FakeProvider::answering`], a closure that sees the call number and the history; nothing here

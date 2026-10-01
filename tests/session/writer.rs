@@ -4,7 +4,7 @@
 use iota::provider::ProviderKind;
 use iota::provider::model::{Attachment, JsonObject, Message, Raw, RawContent, Role, ToolCall};
 use iota::provider::usage::Usage;
-use iota::session::{ATTACHMENTS_DIR, NewSession};
+use iota::session::{ATTACHMENTS_DIR, MAX_LOG_LINE, NewSession};
 use pretty_assertions::assert_eq;
 
 use crate::common::{log_lines, temp_store};
@@ -112,6 +112,7 @@ fn session_usage_round_trip() {
                 output: 50,
                 ..Usage::default()
             }),
+            false,
         )
         .unwrap();
     writer
@@ -333,7 +334,7 @@ fn compaction_marker_bumps_no_counter() {
     assert_eq!(writer.meta().message_count, 3);
 
     // conv_count is 2 (system excluded), so retain_tail 0 supersedes both.
-    writer.append_compaction("SUMMARY", 0, None).unwrap();
+    writer.append_compaction("SUMMARY", 0, None, false).unwrap();
     assert_eq!(
         writer.meta().message_count,
         3,
@@ -352,7 +353,7 @@ fn compaction_marker_bumps_no_counter() {
     // A second marker after one more round indexes from the FULL conversation length, not the view.
     let (mut writer, _) = store.resume(&id, KIND).unwrap();
     writer.append_messages(&[Message::user("u2")]).unwrap();
-    writer.append_compaction("AGAIN", 1, None).unwrap();
+    writer.append_compaction("AGAIN", 1, None, false).unwrap();
     drop(writer);
     let lines = log_lines(&dir);
     assert_eq!(
@@ -368,7 +369,9 @@ fn compaction_through_never_goes_negative() {
     let mut writer = store.create(NewSession::new(KIND, "m1")).unwrap();
     let dir = writer.dir().to_path_buf();
     writer.append_messages(&[Message::user("u1")]).unwrap();
-    writer.append_compaction("SUMMARY", 10, None).unwrap();
+    writer
+        .append_compaction("SUMMARY", 10, None, false)
+        .unwrap();
     drop(writer);
     // `compacted_through: 0` is omitted by omitempty, exactly like Go.
     assert_eq!(
@@ -461,4 +464,85 @@ fn a_deferred_save_flushes_the_whole_backlog_in_one_append() {
     );
     assert_eq!(sess.meta.title, "keeper");
     assert_eq!(sess.meta.context_window, 128_000);
+}
+
+/// bot-mode.md §2.7: a tool result past the reader's 32 MiB line cap is cut down on the WAY IN, so the
+/// bundle stays loadable — before, it was written whole and every later load failed with `ReadLog`.
+#[test]
+fn an_oversized_record_is_truncated_on_write_and_the_bundle_still_loads() {
+    let (_home, store) = temp_store();
+    let mut w = store.create(NewSession::new(KIND, "m1")).unwrap();
+    let id = w.id().to_owned();
+    let dir = w.dir().to_path_buf();
+    let c = call("c1", "mcp_dump", &[]);
+    let huge = "x".repeat(MAX_LOG_LINE + 4096);
+    w.append_messages(&[
+        Message::user("dump it"),
+        Message::assistant("").with_tool_calls(vec![c.clone()]),
+        Message::tool_result(&c, huge, false),
+        Message::assistant("done"),
+    ])
+    .unwrap();
+    drop(w);
+
+    let lines = log_lines(&dir);
+    assert_eq!(lines.len(), 4);
+    assert!(lines[2].len() < MAX_LOG_LINE);
+    let (_w, session) = store.resume(&id, KIND).expect("the bundle loads");
+    assert_eq!(session.messages.len(), 4);
+    let result = &session.messages[2];
+    assert_eq!(result.role(), Role::Tool);
+    assert_eq!(result.tool_call_id(), "c1");
+    assert!(result.content.starts_with("xxxx"));
+    assert!(
+        result.content.ends_with(" bytes over the log line cap]"),
+        "{}",
+        &result.content[result.content.len() - 80..]
+    );
+}
+
+/// A frozen-mode defer mount is runtime state (tool-defer.md): `append_messages` skips it — no record, no
+/// count — while the rest of the batch lands in order. A batch holding ONLY a mount materialises nothing.
+#[test]
+fn a_tools_mount_is_not_persisted() {
+    use iota::provider::model::ToolDef;
+    let mount = || {
+        Message::system_tools(vec![ToolDef {
+            name: "late_tool".to_owned(),
+            ..ToolDef::default()
+        }])
+    };
+
+    let (_home, store) = temp_store();
+    let mut w = store.create(NewSession::new(KIND, "m1")).unwrap();
+    w.append_messages(&[mount()]).unwrap();
+    assert!(
+        !w.on_disk(),
+        "a mount alone must not materialise the bundle"
+    );
+
+    w.append_messages(&[
+        Message::system("SYSTEM PROMPT"),
+        Message::user("q"),
+        Message::assistant("a"),
+        mount(),
+        Message::assistant("done"),
+    ])
+    .unwrap();
+    let id = w.id().to_owned();
+    let dir = w.dir().to_path_buf();
+    assert_eq!(w.meta().message_count, 4);
+    drop(w);
+
+    let roles: Vec<String> = log_lines(&dir)
+        .iter()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["role"].to_string())
+        .collect();
+    assert_eq!(
+        roles,
+        ["\"system\"", "\"user\"", "\"assistant\"", "\"assistant\""]
+    );
+    let (_w, session) = store.resume(&id, KIND).unwrap();
+    assert_eq!(session.messages[0].content, "SYSTEM PROMPT");
+    assert_eq!(session.messages.len(), 4);
 }

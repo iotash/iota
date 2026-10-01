@@ -11,7 +11,7 @@
 
 use serde_norway::Value;
 
-use crate::config::ConfigError;
+use crate::config::{AgentMode, ConfigError};
 use crate::tool::sets::SET_NAMES;
 
 /// The top-level maps.
@@ -41,7 +41,7 @@ const AGENT_KEYS: [&str; 14] = [
     "system_file",
     "tools",
     "mcp_servers",
-    "workspace",
+    "mode",
     "no_save",
     "notify",
     "description",
@@ -82,7 +82,7 @@ const RETIRED_KEYS: [(&str, &str, &str); 3] = [
     (
         "",
         "agent",
-        "`agent` is now `workspace:` on an `agents:` entry",
+        "`agent` is now `mode: agent` on an `agents:` entry",
     ),
 ];
 
@@ -137,6 +137,9 @@ fn audit_section(section: &str, entries: &Value) -> Result<(), ConfigError> {
             check_key(section, name, key)?;
             if section == "agents" && key == "tools" {
                 check_tools(name, value)?;
+            }
+            if section == "agents" && key == "mode" {
+                check_mode(name, value)?;
             }
         }
     }
@@ -214,6 +217,18 @@ fn check_tools(agent: &str, tools: &Value) -> Result<(), ConfigError> {
     Ok(())
 }
 
+/// `agents.<name>.mode`: one of the three spellings. Checked here so the refusal carries the coordinate and
+/// the choices, not the typed decode's `unknown variant` text.
+fn check_mode(agent: &str, mode: &Value) -> Result<(), ConfigError> {
+    if mode.as_str().is_some_and(|m| AgentMode::NAMES.contains(&m)) {
+        return Ok(());
+    }
+    Err(ConfigError::Key {
+        at: format!("agents.{agent}.mode"),
+        message: format!("unknown mode (want {})", AgentMode::NAMES.join(", ")),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::audit;
@@ -275,7 +290,7 @@ mod tests {
         );
         assert_eq!(
             check("providers:\n  openai: {key: k, agent: true}\n"),
-            "providers.openai.agent: `agent` is now `workspace:` on an `agents:` entry"
+            "providers.openai.agent: `agent` is now `mode: agent` on an `agents:` entry"
         );
         // The agent's old one list, split in two on 2026-09-22.
         assert_eq!(
@@ -307,11 +322,45 @@ mod tests {
         );
     }
 
+    /// `workspace:` was replaced by `mode:` with no retirement hint: it is simply not a key.
+    #[test]
+    fn workspace_is_an_unknown_agent_key() {
+        assert_eq!(
+            check("agents:\n  a: {model: m, workspace: true}\n"),
+            "agents.a.workspace: unknown key (want model, choices, system, system_file, tools, mcp_servers, mode, no_save, notify, description, context_window, effort, temperature, top_p)"
+        );
+    }
+
+    #[test]
+    fn mode_takes_one_of_three_values() {
+        for mode in ["chat", "agent", "bot"] {
+            assert_eq!(check(&format!("agents:\n  a: {{mode: {mode}}}\n")), "");
+        }
+        assert_eq!(
+            check("agents:\n  a: {model: m, mode: bots}\n"),
+            "agents.a.mode: unknown mode (want chat, agent, bot)"
+        );
+        // The old boolean is not a mode either, nor is an empty value.
+        assert_eq!(
+            check("agents:\n  a: {mode: true}\n"),
+            "agents.a.mode: unknown mode (want chat, agent, bot)"
+        );
+        assert_eq!(
+            check("agents:\n  a: {mode: }\n"),
+            "agents.a.mode: unknown mode (want chat, agent, bot)"
+        );
+    }
+
     #[test]
     fn toolset_names_are_checked_where_they_are_written() {
         assert_eq!(
             check("agents:\n  a: {model: m, tools: {nosuchset: {}}}\n"),
             "agents.a.tools.nosuchset: unknown toolset (want shell, skills, code, ask)"
+        );
+        // A bot's memory set comes with the bot; it is not configurable (bot-mode.md §3.3).
+        assert_eq!(
+            check("agents:\n  a: {model: m, mode: bot, tools: {memory: {}}}\n"),
+            "agents.a.tools.memory: unknown toolset (want shell, skills, code, ask)"
         );
         assert_eq!(
             check("agents:\n  a: {model: m, tools: {agent: {}}}\n"),

@@ -7,9 +7,8 @@ use std::sync::Arc;
 
 use crate::agents::harness::{self, ConfigFiles, Environment};
 use crate::app::HostDirs;
-use crate::host::Presenter;
 use crate::mcp::config::{ServerConfig, parse_mcp_flag};
-use crate::tool::sets::{ToolsConfig, set_factory};
+use crate::tool::sets::{MEMORY_SET, ToolsConfig, set_factory};
 use crate::tool::{DeferredGroup, Registry, merge, set_disabled};
 use crate::tool::{Dispatcher, PrefixOf, ToolEnv};
 
@@ -36,13 +35,19 @@ use crate::config::{AgentConfig, Config, ModelConfig};
 
 /// The built-in toolsets an agent's `tools:` enables: every key naming a set, minus the ones written `false`
 /// — what decides whether the harness prompt is sent at all, and whether it carries `<iota_cli>` (brain page
-/// `harness-prompt`). An unknown key is the registry's warning, not a toolset.
-pub(crate) fn enabled_toolsets(tools: &ToolsConfig) -> Vec<String> {
-    tools
+/// `harness-prompt`). An unknown key is the registry's warning, not a toolset. A bot's own session adds the
+/// `memory` set it is given without asking (docs/design/bot-mode.md §3.3), so a bot without `tools:` still
+/// gets the harness and its `date:`.
+pub(crate) fn enabled_toolsets(tools: &ToolsConfig, bot: bool) -> Vec<String> {
+    let mut sets: Vec<String> = tools
         .keys()
         .filter(|name| set_factory(name).is_some() && !set_disabled(tools, name))
         .cloned()
-        .collect()
+        .collect();
+    if bot {
+        sets.push(MEMORY_SET.to_owned());
+    }
+    sets
 }
 
 /// The `<environment>` block's facts, read once here at the binary edge: the project root the run resolved,
@@ -83,24 +88,6 @@ pub(crate) fn harness_environment(
         exe: dirs.exe.clone(),
         configs,
         host: Vec::new(),
-    }
-}
-
-/// The harness prompt's two inputs, held until the hosts are known: the environment is read at assembly
-/// time, but what a host adds to it (`host: herdr`, the pane id) exists only once the branch has built its
-/// `Presenter` — which happens after the tools, so the text is composed THEN, in [`Self::compose`].
-pub(crate) struct HarnessInputs {
-    /// The run's own facts.
-    pub(crate) env: Environment,
-    /// The enabled toolsets ([`enabled_toolsets`]).
-    pub(crate) toolsets: Vec<String>,
-}
-
-impl HarnessInputs {
-    /// The harness text, the hosts' facts included: `""` for an agent without tools.
-    pub(crate) fn compose(mut self, pres: &Presenter) -> String {
-        self.env.host = pres.environment();
-        harness::compose(&self.env, &self.toolsets)
     }
 }
 
@@ -162,7 +149,8 @@ pub(crate) fn build_mcp_configs(
 }
 
 /// The MCP part arrives as a [`McpPart`] (`None` when no server is configured).
-/// `Registry::build` → `enable_set("skills")` in agent mode → `enable_set("ask")` when `env.interactor` is set
+/// `Registry::build` → `enable_set("skills")` in agent mode → `enable_set("memory")` when `env.memory` is set (a
+/// bot's own session) → `enable_set("ask")` when `env.interactor` is set
 /// (interactive runs only) → parts = [registry if non-empty] + [defer wrapper |
 /// mcp dispatcher] → merge. Warn sink receives messages WITHOUT prefix; the caller prints `⚠ {msg}`.
 /// `` defer_mode has no effect without a deferred mcp server (add `defer: "<summary>"` to one) ``.
@@ -171,15 +159,20 @@ pub(crate) fn build_dispatcher(
     model_cfg: &ModelConfig,
     mcp: Option<McpPart>,
     defers: Vec<DeferredGroup>,
-    agent_mode: bool,
+    workspace: bool,
     env: &ToolEnv,
     warn: &mut dyn FnMut(String),
 ) -> Arc<dyn Dispatcher> {
     // root.go:578-587. The built-ins are the first part, so they win any tool-name collision with MCP.
     let mut registry = Registry::build(env, &agent_cfg.tools, warn);
-    if agent_mode {
+    if workspace {
         // Skills are activated through the `skills` set's `load_skill`; a config entry may still declare it.
         registry.enable_set(env, crate::tool::sets::SKILLS_SET, warn);
+    }
+    // A bot's memory (docs/design/bot-mode.md §3.3): bound only for the bot's own session, and never a
+    // `tools:` key.
+    if env.memory.is_some() {
+        registry.enable_set(env, MEMORY_SET, warn);
     }
     // root.go:588-592: the ask set is interactive-only (it needs `env.Interact`), so a headless run never
     // enables it and the model never sees a tool it cannot use. Enabled HERE so `choose`/`confirm` keep Go's
@@ -422,13 +415,26 @@ mod tests {
         let raw = |yaml: &str| -> crate::tool::sets::ToolsConfig {
             serde_norway::from_str(yaml).expect("yaml")
         };
-        assert!(super::enabled_toolsets(&raw("{}")).is_empty());
-        assert!(super::enabled_toolsets(&raw("ask: false")).is_empty());
-        assert!(super::enabled_toolsets(&raw("nosuchset:")).is_empty());
+        assert!(super::enabled_toolsets(&raw("{}"), false).is_empty());
+        assert!(super::enabled_toolsets(&raw("ask: false"), false).is_empty());
+        assert!(super::enabled_toolsets(&raw("nosuchset:"), false).is_empty());
         assert_eq!(
-            super::enabled_toolsets(&raw("shell:\ncode: {auto_write: true}\nask: false")),
+            super::enabled_toolsets(&raw("shell:\ncode: {auto_write: true}\nask: false"), false),
             ["code", "shell"]
         );
+        // A bot counts its memory set: a bot with no `tools:` still has the harness (review M10).
+        assert_eq!(super::enabled_toolsets(&raw("{}"), true), ["memory"]);
+        assert_eq!(
+            super::enabled_toolsets(&raw("shell:"), true),
+            ["shell", "memory"]
+        );
+        let env = crate::agents::harness::Environment {
+            date: "2026-09-30".to_owned(),
+            ..crate::agents::harness::Environment::default()
+        };
+        let harness =
+            crate::agents::harness::compose(&env, &super::enabled_toolsets(&raw("{}"), true));
+        assert!(harness.contains("date: 2026-09-30"), "{harness}");
     }
 
     /// The environment probe names what it could not find rather than leaving a blank, and `-c` collapses
@@ -471,6 +477,42 @@ mod tests {
             ConfigFiles::Explicit(dirs.cwd.as_deref().expect("a cwd").join("cfg.yml"))
         );
         assert_eq!(env.project_root, std::path::PathBuf::new());
+    }
+
+    /// The memory set comes with a bot's own session and nothing else: it is not a `tools:` key, and
+    /// without a bot's memory in the environment there is no `remember`.
+    #[test]
+    fn remember_is_registered_for_a_bot_only() {
+        let names = |env: &ToolEnv| -> Vec<String> {
+            build_dispatcher(
+                &AgentConfig::default(),
+                &ModelConfig::default(),
+                None,
+                Vec::new(),
+                true,
+                env,
+                &mut |w| panic!("unexpected warning {w}"),
+            )
+            .tools()
+            .into_iter()
+            .map(|d| d.name)
+            .collect()
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent = ToolEnv {
+            project_root: Some(dir.path().to_path_buf()),
+            ..ToolEnv::default()
+        };
+        assert_eq!(names(&agent), ["load_skill"]);
+        let bot = ToolEnv {
+            memory: Some(crate::agents::memory::BotMemory::new(
+                "coder",
+                dir.path().join("coder"),
+            )),
+            ..agent
+        };
+        assert_eq!(names(&bot), ["load_skill", "remember"]);
+        assert!(!crate::tool::sets::SET_NAMES.contains(&crate::tool::sets::MEMORY_SET));
     }
 
     /// Unknown toolset keys are warnings, never aborts, and the ask set is never enabled headlessly.

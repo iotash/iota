@@ -23,6 +23,7 @@
 //! raw mode delivers Ctrl+C as a key event and the composer's cancel ladder answers it. SIGTERM still cancels
 //! the root token, which fails every facade waiter and lets the interrupt table persist the turn.
 
+mod bot;
 mod picker;
 mod title;
 
@@ -45,6 +46,7 @@ use crate::cmd::args::{Invocation, Resume};
 use crate::cmd::error::{ArgsError, CliError, RunError, SetupError};
 use crate::cmd::resolve::RunSettings;
 use crate::cmd::{RunContext, ToolAssembly, host_probe};
+use crate::config::AgentMode;
 use picker::{picker_spec, project_hint};
 
 /// Everything `run` has resolved by the time it reaches Go's headless-vs-interactive branch (root.go:259):
@@ -153,8 +155,33 @@ struct Wiring {
     layers: crate::config::ParamLayers,
     /// The live tool dispatcher.
     dispatch: Arc<dyn Dispatcher>,
-    /// The SECOND provider instance the async title pass runs on (`None` for image providers).
+    /// The SECOND provider instance the async title pass runs on (`None` for image providers and bots).
     title_provider: Option<Box<dyn Provider>>,
+    /// The writer is a bot's session.
+    bot: bool,
+    /// Dim lines the transcript opens with.
+    notices: Vec<String>,
+    /// What the model is told at startup, recorded as notice messages (bot-mode.md §2.5).
+    recorded_notices: Vec<String>,
+    /// A bot's memory: the loop injects it and records its writes (bot-mode.md §3.4, §3.7).
+    memory: Option<crate::agents::memory::BotMemory>,
+}
+
+impl Wiring {
+    /// The loop's session half, over `store` and `scope`: every session field the wiring carries is taken
+    /// over — a field left behind here is a feature that silently never reaches the loop.
+    fn take_session(&mut self, store: SessionStore, scope: Option<PathBuf>) -> SessionCtx {
+        SessionCtx {
+            writer: self.writer.take(),
+            store,
+            new_session: self.new_session.take(),
+            scope,
+            bot: self.bot,
+            notices: std::mem::take(&mut self.notices),
+            recorded_notices: std::mem::take(&mut self.recorded_notices),
+            memory: self.memory.take(),
+        }
+    }
 }
 
 /// `TUI_DESIGN` §8.4 steps 2, 3, 5 and 6, in one function so their order is a local invariant.
@@ -250,13 +277,17 @@ pub(crate) async fn run_interactive(
     // root.go:292-334 (the picker half): the store is listed BEFORE anything is spawned, so an empty bucket or
     // an unreadable store fails with nothing to clean up, and the spec the picker will show is ready.
     let store = SessionStore::from_dirs(&ctx.env.dirs)?;
-    let scope: Option<PathBuf> = settings.agent_mode.then(|| agent.root.clone());
+    let scope: Option<PathBuf> = settings.mode.has_workspace().then(|| agent.root.clone());
     let resume_given = inv.resume.is_some();
     // `iota resume` with no id IS the picker; `iota resume <id>` resolves the fragment instead.
     let picker_rows: Vec<SessionInfo> = if inv.resume == Some(Resume::Pick) {
-        store
+        let mut rows = store
             .list(scope.as_deref())
-            .map_err(SetupError::ListSessions)?
+            .map_err(SetupError::ListSessions)?;
+        // A bot's session opens only as that bot (bot-mode.md §2.7): the picker does not offer it.
+        let owned = store.bot_sessions();
+        rows.retain(|info| !owned.contains(&info.id));
+        rows
     } else {
         Vec::new()
     };
@@ -301,7 +332,7 @@ pub(crate) async fn run_interactive(
         })
     })
     .await;
-    let (dark, wiring, ui_session) = match opened {
+    let (dark, mut wiring, ui_session) = match opened {
         Ok(opened) => opened,
         Err(e) => {
             // Go's `defer manager.Close()`: a cancelled picker or a bad session id still hands the servers back.
@@ -323,12 +354,12 @@ pub(crate) async fn run_interactive(
         Some(Box::new(AnsiHost::new(Arc::clone(&ui)))),
         notify,
     ));
-    // The harness prompt, now that the hosts it names in `<environment>` are known.
-    let harness = harness.compose(&pres);
-
     let mcp = mcp_hooks(&manager, mcp_events);
+    let session = wiring.take_session(store, scope);
 
-    let outcome = crate::repl::run(RunParams {
+    // Boxed: the loop's future is the largest in the run, and the harness inputs it now carries whole (to
+    // re-compose on a new day) tipped the caller over clippy's `large_futures` line.
+    let outcome = Box::pin(crate::repl::run(RunParams {
         ui: Arc::clone(&ui),
         provider,
         title_provider: wiring.title_provider,
@@ -339,12 +370,7 @@ pub(crate) async fn run_interactive(
         dispatch: Arc::clone(&wiring.dispatch),
         jobs,
         mcp,
-        session: SessionCtx {
-            writer: wiring.writer,
-            store,
-            new_session: wiring.new_session,
-            scope,
-        },
+        session,
         params: wiring.params,
         layers: wiring.layers,
         catalog,
@@ -353,7 +379,7 @@ pub(crate) async fn run_interactive(
         root_cancel: ctx.cancel.clone(),
         reqlog: Arc::clone(&ctx.reqlog),
         pres,
-    })
+    }))
     .await;
 
     // Teardown, in the pinned order (`TUI_DESIGN` §8.4 step 6): flush the staging tail and join the loop
@@ -432,8 +458,66 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
     // The bundle a resume replayed, kept for the layering: it is the record of what the session was running
     // under, and a resume RESTORES those values rather than evaluating the config again.
     let mut resumed_meta: Option<crate::session::SessionMeta> = None;
+    let mut notices = Vec::new();
+    // What a resumed bot's model is told at startup (bot-mode.md §2.5).
+    let mut recorded_notices = Vec::new();
+    // The memory a bot's own session writes into (bot-mode.md §3.3): its `remember` tool is built over it.
+    let mut memory: Option<crate::agents::memory::BotMemory> = None;
+    // `iota run <bot>` (bot-mode.md §2.2): the bot's one session, resumed or created under its pointer. A
+    // resume names a session of its own and takes the branch below.
+    let bot = settings.mode.is_bot() && !resume_given;
+    // A bot's parameters, resolved before its session is opened (the window is checked there).
+    let mut bot_params = None;
 
-    if resume_given {
+    if bot {
+        // Before the lock is taken or anything is created: a bot that cannot run leaves no trace. Its
+        // parameters come from the config alone (§2.2), so the window is known already.
+        bot::check_bot_provider(&settings.name, &*provider)?;
+        let params = resolve_params(settings, provider, kind, None, io)?;
+        bot::check_bot_window(&settings.name, params.context_window.value)?;
+        bot_params = Some(params);
+        let bots = store
+            .bots_dir()
+            .ok_or(crate::session::SessionError::HomeNotDefined)?;
+        let opened = bot::open_bot_session(
+            store,
+            bots,
+            &settings.name,
+            NewSession {
+                temperature: settings.temperature,
+                base_url: settings.base_url.clone(),
+                cwd: session_cwd(ctx, scope),
+                agent: settings.resolved.agent_name.clone(),
+                ..NewSession::new(kind, provider.model())
+            },
+            settings.system.trim(),
+            &mut *provider,
+            &mut |w| io.warning(&w),
+        )?;
+        if opened.resumed {
+            let _ = writeln!(
+                io.stdout,
+                "Resumed session {} ({} messages)\n",
+                opened.writer.id(),
+                opened.history.len()
+            );
+            if let Some(notice) = &opened.repair_notice {
+                io.warning(notice);
+            }
+            let _ = io.stdout.flush();
+        }
+        history = opened.history;
+        notices = opened.notices;
+        if let Some(previous) = &opened.previous {
+            recorded_notices =
+                bot::resume_notices(previous, &session_cwd(ctx, scope), &jiff::Zoned::now());
+        }
+        writer = Some(opened.writer);
+        memory = Some(crate::agents::memory::BotMemory::new(
+            &settings.name,
+            bots.join(&settings.name),
+        ));
+    } else if resume_given {
         // root.go:294-306: a bare `iota resume` took the picker; an id resolves as a prefix.
         let id = match &settings.resume {
             Some(fragment) => store.resolve_id(fragment, scope)?,
@@ -442,6 +526,8 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         if id.is_empty() {
             return Err(SetupError::NoSessionToResume.into());
         }
+        // A bot's body opens only as that bot (bot-mode.md §2.2, §2.7).
+        store.check_not_bot_owned(&id)?;
         let (w, resumed) = store.resume(&id, kind)?;
         // The bundle records the agent it ran under; one that has since been deleted is announced, and the
         // run falls back to the provider and model the meta carries (Phase 1b step 9).
@@ -462,6 +548,7 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
             },
             &mut |w| io.warning(&w),
         );
+        let repair_notice = resumed.repair_notice();
         resumed_meta = Some(resumed.meta);
         history = resumed.messages;
         // root.go:333, on plain stdout with the trailing blank Go prints — the last thing written before the
@@ -471,25 +558,15 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
             "Resumed session {id} ({} messages)\n",
             history.len()
         );
+        if let Some(notice) = repair_notice {
+            io.warning(&notice);
+        }
         // The facade takes stdout a few steps from here; nothing may still be sitting in a buffer then.
         let _ = io.stdout.flush();
         writer = Some(w);
     }
 
-    // root.go:342-351: agent-mode bundles land in the project's bucket keyed by its root; normal-mode ones
-    // stay flat but still record where they started.
-    // `scope` IS the project root in agent mode (the bucket is the project).
-    let session_cwd = scope.map_or_else(
-        || {
-            ctx.env
-                .dirs
-                .cwd
-                .as_deref()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        },
-        |root| root.to_string_lossy().into_owned(),
-    );
+    let session_cwd = session_cwd(ctx, scope);
     if writer.is_none() && !ephemeral {
         writer = Some(
             store
@@ -497,7 +574,9 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
                     temperature: settings.temperature,
                     base_url: settings.base_url.clone(),
                     cwd: session_cwd.clone(),
-                    project: settings.agent_mode,
+                    // Only `agent` buckets by project (a bot's session is flat, bot-mode.md §1.3 — and
+                    // opened above).
+                    project: settings.mode == AgentMode::Agent,
                     agent: settings.resolved.agent_name.clone(),
                     ..NewSession::new(kind, provider.model())
                 })
@@ -517,7 +596,7 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
             .and_then(|t| t.temperature())
             .or(settings.temperature);
         let base_url = settings.base_url.clone();
-        let project = settings.agent_mode;
+        let project = settings.mode == AgentMode::Agent;
         let agent_name = settings.resolved.agent_name.clone();
         Some(Box::new(move || {
             store.create(NewSession {
@@ -535,22 +614,38 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
 
     // root.go:365-385, widened to all four layered parameters: a resumed bundle's own values (with the
     // sources it recorded), else the two config layers, else the built-in defaults.
-    let params = resolve_params(settings, provider, kind, resumed_meta.as_ref(), io)?;
+    // A bot's resumed meta is not consulted: its parameters come from the config (bot-mode.md §2.2).
+    let params = match bot_params {
+        Some(params) => params,
+        None => resolve_params(settings, provider, kind, resumed_meta.as_ref(), io)?,
+    };
 
     // root.go:390 + 588-592.
+    let bot_env;
+    let tool_env = match &memory {
+        Some(memory) => {
+            bot_env = ToolEnv {
+                memory: Some(memory.clone()),
+                ..tool_env.clone()
+            };
+            &bot_env
+        }
+        None => tool_env,
+    };
     let dispatch = crate::cmd::assemble::build_dispatcher(
         &settings.resolved.agent,
         &settings.resolved.model,
         mcp_part,
         mcp_defers,
-        settings.agent_mode,
+        settings.mode.has_workspace(),
         tool_env,
         &mut |m| io.caution(&m),
     );
     // root.go:402-412: the async title pass runs while a turn is still streaming and provider instances keep
     // per-call state, so titles ride their own instance. Dedicated image providers get none — asked for a
     // title they would paint one.
-    let title_provider = if provider.as_image_gen_tunable().is_some() {
+    // A bot's session is named after the bot and never titled (bot-mode.md §2.2).
+    let title_provider = if bot || provider.as_image_gen_tunable().is_some() {
         None
     } else {
         Some(crate::provider::new_provider(
@@ -573,7 +668,28 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         layers: crate::config::ParamLayers::new(cfg, &settings.resolved),
         dispatch,
         title_provider,
+        bot,
+        notices,
+        recorded_notices,
+        memory,
     })
+}
+
+/// root.go:342-351: the directory a new bundle records. Agent-mode bundles land in the project's bucket
+/// keyed by its root — `scope` IS that root (the bucket is the project); normal-mode ones stay flat but
+/// still record where they started.
+fn session_cwd(ctx: &RunContext, scope: Option<&std::path::Path>) -> String {
+    scope.map_or_else(
+        || {
+            ctx.env
+                .dirs
+                .cwd
+                .as_deref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        },
+        |root| root.to_string_lossy().into_owned(),
+    )
 }
 
 /// root.go:365-385, generalised to the four layered parameters (brain page `model-param-layering`): a
@@ -885,5 +1001,42 @@ mod tests {
             SetupError::NoSessionToResume.to_string(),
             "no session to resume"
         );
+    }
+
+    /// Every session field of the wiring reaches the loop — the notices it shows, the notices it records, the
+    /// bot's memory — and the wiring keeps none of them behind.
+    #[test]
+    fn the_wiring_hands_every_session_field_to_the_loop() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let memory = crate::agents::memory::BotMemory::new("coder", tmp.path().join("coder"));
+        let mut wiring = super::Wiring {
+            writer: None,
+            new_session: None,
+            history: Vec::new(),
+            params: crate::session::LayeredParams::default(),
+            layers: crate::config::ParamLayers::default(),
+            dispatch: Arc::new(crate::testing::StaticDispatcher::new(&[])),
+            title_provider: None,
+            bot: true,
+            notices: vec!["shown".to_owned()],
+            recorded_notices: vec!["recorded".to_owned()],
+            memory: Some(memory.clone()),
+        };
+        let store = crate::session::SessionStore::new(tmp.path().join("sessions"));
+        let scope = Some(tmp.path().to_path_buf());
+        let session = wiring.take_session(store, scope.clone());
+        assert!(session.bot);
+        assert_eq!(session.scope, scope);
+        assert_eq!(session.notices, ["shown"]);
+        assert_eq!(session.recorded_notices, ["recorded"]);
+        assert_eq!(
+            session
+                .memory
+                .as_ref()
+                .map(crate::agents::memory::BotMemory::path),
+            Some(memory.path())
+        );
+        assert!(wiring.notices.is_empty() && wiring.recorded_notices.is_empty());
+        assert!(wiring.memory.is_none());
     }
 }

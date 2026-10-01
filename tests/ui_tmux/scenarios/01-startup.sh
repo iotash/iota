@@ -22,7 +22,7 @@ if capall | grep -F 'ι> iota' | grep -qE '^│ ι> iota  v[0-9]+\.[0-9]+\.[0-9]
 else
     bad "banner: the mark row is not '│ ι> iota  vX.Y.Z … │'"
 fi
-# The mode row: a plain agent (no `workspace:`) is a chat, persisted into a fresh bundle.
+# The mode row: a plain agent (no `mode:`) is a chat, persisted into a fresh bundle.
 if capall | grep -qE '^│ chat · session [a-z0-9]{12} +│$'; then
     ok "banner: the mode row (chat, session id)"
 else

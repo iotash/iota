@@ -200,6 +200,8 @@ impl Fx {
                 can_retry: true,
                 code_theme: CodeTheme::Monokai,
                 pres,
+                steering: true,
+                mounts_only: None,
             },
             root: CancellationToken::new(),
         }
@@ -207,7 +209,7 @@ impl Fx {
 
     async fn turn(&self, p: &dyn Provider, history: &mut Vec<Message>) -> TurnReport {
         let mut ctxm = CtxMeter::disabled();
-        let mut steer = Steerer::new(Arc::clone(&self.cx.ui), Arc::clone(&self.cx.tr));
+        let mut steer = Steerer::new(Arc::clone(&self.cx.ui), Arc::clone(&self.cx.tr), true);
         run_turn(&self.cx, &self.root, p, history, &mut ctxm, &mut steer).await
     }
 
@@ -1405,7 +1407,7 @@ struct OrderFx {
 impl OrderFx {
     async fn turn(&self, p: &dyn Provider, history: &mut Vec<Message>) -> TurnReport {
         let mut ctxm = CtxMeter::disabled();
-        let mut steer = Steerer::new(Arc::clone(&self.cx.ui), Arc::clone(&self.cx.tr));
+        let mut steer = Steerer::new(Arc::clone(&self.cx.ui), Arc::clone(&self.cx.tr), true);
         run_turn(&self.cx, &self.root, p, history, &mut ctxm, &mut steer).await
     }
 }
@@ -1430,6 +1432,8 @@ fn order_fixture(script: Vec<Reply>) -> OrderFx {
         can_retry: true,
         code_theme: CodeTheme::Monokai,
         pres,
+        steering: true,
+        mounts_only: None,
     };
     OrderFx {
         ui: order,

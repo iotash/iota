@@ -71,7 +71,7 @@ impl Fixture {
             provider: Box::new(provider),
             title_provider: None,
             system: String::new(),
-            harness: String::new(),
+            harness: iota::agents::harness::HarnessInputs::default(),
             imported_history: Vec::new(),
             dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
@@ -120,6 +120,10 @@ impl Fixture {
             store: self.store.clone(),
             new_session: None,
             scope: None,
+            bot: false,
+            notices: Vec::new(),
+            recorded_notices: Vec::new(),
+            memory: None,
         }
     }
 }
@@ -269,6 +273,10 @@ async fn banner_offers_save_for_an_ephemeral_chat() {
             store.create(NewSession::new(ProviderKind::OpenAi, "gpt-test"))
         })),
         scope: None,
+        bot: false,
+        notices: Vec::new(),
+        recorded_notices: Vec::new(),
+        memory: None,
     };
     iota::repl::run(f.params(provider("gpt-4o", Ok(vec![])), session))
         .await
@@ -722,6 +730,158 @@ async fn session_delete_tab_removes_the_checked_bundles() {
     assert!(!doomed_dir.exists(), "the bundle is gone from disk");
 }
 
+/// A checked bundle another iota process holds open (its writer is alive) is skipped with a
+/// notice, not removed and not counted (docs/design/bot-mode.md §2.3).
+#[tokio::test]
+async fn session_delete_tab_skips_a_bundle_open_elsewhere() {
+    let f = Fixture::new(vec![
+        input("/session"),
+        Reply::Tabbed(TabbedResult {
+            cancelled: false,
+            focused: 1,
+            panels: vec![
+                PanelResult::default(),
+                PanelResult {
+                    checked: vec![0],
+                    ..PanelResult::default()
+                },
+            ],
+        }),
+        Reply::Interrupted,
+    ]);
+    // Standing in for the other process: a live writer holds the bundle lock throughout the run.
+    let mut busy = f.writer();
+    busy.append_messages(&[Message::user("still running")])
+        .expect("materialise");
+    let busy_id = busy.id().to_owned();
+    let busy_dir = busy.dir().to_path_buf();
+    let mut current = f.writer();
+    current
+        .append_messages(&[Message::user("hi")])
+        .expect("materialise");
+    let session = f.session(Some(current));
+    iota::repl::run(f.params(provider("gpt-4o", Ok(vec![])), session))
+        .await
+        .expect("exit");
+
+    let lines = printed(&f.ui);
+    let skipped = format!(
+        "Skipped: session {busy_id} is open in another iota process (pid {})",
+        std::process::id()
+    );
+    assert!(lines.contains(&skipped), "{lines:?}");
+    assert!(
+        !lines.iter().any(|l| l.starts_with("Deleted ")),
+        "{lines:?}"
+    );
+    assert!(busy_dir.exists(), "a held bundle survives");
+    drop(busy);
+}
+
+/// A frozen-mode defer dispatcher: one `loader` tool whose first call leaves a deferred definition pending,
+/// handed out ONCE at the next round boundary — the shape that pushes `Message::system_tools` into history.
+#[derive(Default)]
+struct MountingDispatch {
+    called: std::sync::Mutex<bool>,
+    handed: std::sync::Mutex<bool>,
+}
+
+impl Dispatcher for MountingDispatch {
+    fn tools(&self) -> Vec<iota::provider::model::ToolDef> {
+        vec![iota::testing::tool_def("loader")]
+    }
+
+    fn call_tool<'a>(
+        &'a self,
+        _cx: &'a iota::tool::context::RunCtx,
+        _name: &'a str,
+        _args: iota::provider::model::JsonObject,
+    ) -> iota::BoxFuture<'a, iota::tool::ToolResult> {
+        Box::pin(async move {
+            *self.called.lock().unwrap() = true;
+            Ok(iota::tool::ToolOutput::ok("loaded"))
+        })
+    }
+
+    fn take_pending_loads(&self) -> Vec<iota::provider::model::ToolDef> {
+        let mut handed = self.handed.lock().unwrap();
+        if *handed || !*self.called.lock().unwrap() {
+            return Vec::new();
+        }
+        *handed = true;
+        vec![iota::testing::tool_def("late_tool")]
+    }
+}
+
+/// tool-defer.md: a frozen-mode mount is runtime state. The first turn mounts one mid-turn (the model's
+/// next round SEES it), `persist_turn` hands it to the writer, and the writer skips it: the log carries no
+/// system record at all (this chat has no system prompt). The watermark still moves past the mount — the
+/// second turn appends only its own two messages, nothing is written twice — and a resume replays the six
+/// conversation messages.
+#[tokio::test]
+async fn a_frozen_tools_mount_is_skipped_on_write_and_the_watermark_passes_it() {
+    let f = Fixture::new(vec![
+        input("load it"),
+        Reply::Queued(Vec::new()), // the round boundary's steer drain: nothing typed meanwhile
+        input("again"),
+        Reply::Interrupted,
+    ]);
+    let saw_mount = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = Arc::clone(&saw_mount);
+    let p = FakeProvider::new()
+        .with_tools()
+        .on_call(move |_, history| {
+            if history.iter().any(|m| !m.tools().is_empty()) {
+                seen.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        })
+        .rounds([
+            iota::testing::Round::calls(vec![iota::testing::tool_call("c1", "loader")]),
+            iota::testing::Round::text("first"),
+            iota::testing::Round::text("second"),
+        ]);
+    let writer = f.writer();
+    let id = writer.id().to_owned();
+    let dir = writer.dir().to_path_buf();
+    let mut params = f.params(p, f.session(Some(writer)));
+    params.dispatch = Arc::new(MountingDispatch::default());
+    iota::repl::run(params).await.expect("exit");
+    assert!(
+        saw_mount.load(std::sync::atomic::Ordering::Relaxed),
+        "the mount never reached the history — the test would prove nothing"
+    );
+
+    let recs: Vec<serde_json::Value> = std::fs::read_to_string(dir.join("messages.jsonl"))
+        .expect("log")
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("record"))
+        .collect();
+    let shape: Vec<(String, String)> = recs
+        .iter()
+        .map(|r| {
+            (
+                r["role"].as_str().unwrap_or_default().to_owned(),
+                r["content"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    let row = |role: &str, content: &str| (role.to_owned(), content.to_owned());
+    assert_eq!(
+        shape,
+        vec![
+            row("user", "load it"),
+            row("assistant", ""),
+            row("tool", "loaded"),
+            row("assistant", "first"),
+            row("user", "again"),
+            row("assistant", "second"),
+        ]
+    );
+    let (_w, resumed) = f.store.resume(&id, ProviderKind::OpenAi).expect("resume");
+    assert_eq!(resumed.messages.len(), 6);
+    assert_eq!(resumed.meta.message_count, 6);
+}
+
 // ---------------------------------------------------------------------------
 // /save
 // ---------------------------------------------------------------------------
@@ -781,6 +941,10 @@ async fn save_mints_late_and_flushes_the_backlog() {
             store.create(NewSession::new(ProviderKind::OpenAi, "gpt-test"))
         })),
         scope: None,
+        bot: false,
+        notices: Vec::new(),
+        recorded_notices: Vec::new(),
+        memory: None,
     };
     let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
     params.params.context_window = iota::session::Param::config(200_000);
@@ -1114,7 +1278,7 @@ async fn persist_warns_and_retries_the_backlog() {
         provider: Box::new(provider),
         title_provider: None,
         system: String::new(),
-        harness: String::new(),
+        harness: iota::agents::harness::HarnessInputs::default(),
         imported_history: Vec::new(),
         dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
         jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
@@ -1124,6 +1288,10 @@ async fn persist_warns_and_retries_the_backlog() {
             store,
             new_session: None,
             scope: None,
+            bot: false,
+            notices: Vec::new(),
+            recorded_notices: Vec::new(),
+            memory: None,
         },
         params: iota::session::LayeredParams::default(),
         layers: iota::cmd::ParamLayers::default(),
@@ -1157,3 +1325,440 @@ fn set_mode(path: &Path, mode: u32) {
 
 #[cfg(not(unix))]
 fn set_mode(_path: &Path, _mode: u32) {}
+
+// ---------------------------------------------------------------------------
+// bot mode (docs/design/bot-mode.md §2.2, §2.7)
+// ---------------------------------------------------------------------------
+
+/// A store that knows a bots root, beside the fixture's sessions root.
+fn bot_store(f: &Fixture) -> (SessionStore, PathBuf) {
+    let bots = f
+        .store
+        .root()
+        .parent()
+        .expect("sessions root has a parent")
+        .join("bots");
+    (f.store.clone().with_bots(&bots), bots)
+}
+
+/// Opens bot `coder`'s session through the store (which names a new one after the bot).
+fn bot_writer(store: &SessionStore, bots: &Path) -> SessionWriter {
+    match store
+        .open_bot(
+            &bots.join("coder"),
+            NewSession::new(ProviderKind::OpenAi, "gpt-test"),
+            ProviderKind::OpenAi,
+        )
+        .expect("open the bot")
+    {
+        iota::session::BotOpen::Fresh(writer) | iota::session::BotOpen::Resumed(writer, _) => {
+            writer
+        }
+    }
+}
+
+/// A bot's process serves its own session only: `/session` is not in the completion row and typing it is
+/// a plain message (no picker opens). Its bundle keeps the bot's name — no placeholder, no title pass —
+/// the wiring's notices open the transcript, and the pointer names the bundle the message went to.
+#[tokio::test]
+async fn a_bot_run_has_no_session_command_and_keeps_its_name() {
+    let f = Fixture::new(vec![input("/session"), Reply::Interrupted]);
+    let (store, bots) = bot_store(&f);
+    let writer = bot_writer(&store, &bots);
+    let dir = writer.dir().to_path_buf();
+    let session = SessionCtx {
+        writer: Some(writer),
+        store,
+        new_session: None,
+        scope: None,
+        bot: true,
+        notices: vec!["system prompt updated from config".to_owned()],
+        recorded_notices: Vec::new(),
+        memory: None,
+    };
+    let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
+    params.title_provider = Some(Box::new(
+        provider("gpt-4o", Ok(vec![])).replying("A Model Title"),
+    ));
+    iota::repl::run(params).await.expect("exit");
+
+    assert!(
+        !completion_row(&f.ui).contains(&"/session".to_owned()),
+        "{:?}",
+        completion_row(&f.ui)
+    );
+    assert!(surfaces(&f.ui).is_empty(), "no picker opened");
+    assert!(
+        printed(&f.ui).contains(&"system prompt updated from config".to_owned()),
+        "{:?}",
+        printed(&f.ui)
+    );
+    let meta = iota::session::SessionMeta::read(&dir).expect("meta");
+    assert!(meta.message_count > 0, "the message was persisted");
+    assert_eq!(meta.title, "coder", "never renamed after the first message");
+    let ptr = iota::session::BotPointer::read(&bots.join("coder"))
+        .expect("pointer")
+        .expect("present");
+    assert_eq!(ptr.session, meta.id);
+}
+
+/// §2.2: a bot's RESUMED bundle is stamped with the parameters the chat starts under (the config's, for a
+/// bot), where a normal resume leaves the meta as the session recorded it.
+#[tokio::test]
+async fn a_resumed_bot_is_stamped_with_the_running_parameters() {
+    for bot in [false, true] {
+        let f = Fixture::new(vec![Reply::Interrupted]);
+        let mut writer = f.writer();
+        writer
+            .update_meta(|m| "high".clone_into(&mut m.effort))
+            .expect("meta");
+        writer
+            .append_messages(&[Message::user("materialise")])
+            .expect("materialise");
+        let id = writer.id().to_owned();
+        let dir = writer.dir().to_path_buf();
+        drop(writer);
+        let (writer, _) = f.store.resume(&id, ProviderKind::OpenAi).expect("resume");
+        let mut session = f.session(Some(writer));
+        session.bot = bot;
+        let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
+        params.params = iota::session::LayeredParams {
+            context_window: iota::session::Param::config(400_000),
+            ..iota::session::LayeredParams::default()
+        };
+        iota::repl::run(params).await.expect("exit");
+        let meta = iota::session::SessionMeta::read(&dir).expect("meta");
+        if bot {
+            // This fake has no tuning capability, so the running effort is none at all.
+            assert_eq!(
+                meta.effort, "",
+                "the running value replaced the recorded one"
+            );
+            assert!(meta.records_params());
+        } else {
+            assert_eq!(meta.effort, "high", "a normal resume is not re-stamped");
+        }
+    }
+}
+
+/// §2.7 I1: a session a bot's pointer names is in neither tab of the normal `/session` picker.
+#[tokio::test]
+async fn session_picker_hides_bot_sessions() {
+    let f = Fixture::new(vec![
+        input("/session"),
+        Reply::Tabbed(TabbedResult {
+            cancelled: true,
+            ..TabbedResult::default()
+        }),
+        Reply::Interrupted,
+    ]);
+    let (store, bots) = bot_store(&f);
+    let mut body = bot_writer(&store, &bots);
+    body.append_messages(&[Message::user("the bot's")])
+        .expect("materialise");
+    drop(body);
+    let mut other = f.writer();
+    other
+        .append_messages(&[Message::user("someone else's")])
+        .expect("materialise");
+    other
+        .update_meta(|m| "other chat".clone_into(&mut m.title))
+        .expect("title");
+    drop(other);
+    let mut current = f.writer();
+    current
+        .append_messages(&[Message::user("hi")])
+        .expect("materialise");
+    let session = SessionCtx {
+        store,
+        ..f.session(Some(current))
+    };
+    iota::repl::run(f.params(provider("gpt-4o", Ok(vec![])), session))
+        .await
+        .expect("exit");
+
+    let panels = &surfaces(&f.ui)[0].panels;
+    assert_eq!(panels[0].items.len(), 2, "{:?}", panels[0].items);
+    assert!(
+        panels[0].items.iter().all(|r| !r.starts_with("coder · ")),
+        "{:?}",
+        panels[0].items
+    );
+    assert_eq!(panels[1].items.len(), 1, "{:?}", panels[1].items);
+    assert!(panels[1].items[0].starts_with("other chat · "));
+}
+
+/// bot-mode.md §3.7 item 1: a turn that wrote to the bot's memory is followed by ONE notice record — in the
+/// history and in the log, `notice: true` — and the next turn does not record it again.
+#[tokio::test]
+async fn a_memory_write_is_recorded_once_after_its_turn() {
+    let f = Fixture::new(vec![
+        input("remember that I like tabs"),
+        Reply::Queued(Vec::new()), // the round boundary's steer drain: nothing typed meanwhile
+        input("again"),
+        Reply::Interrupted,
+    ]);
+    let (store, bots) = bot_store(&f);
+    let writer = bot_writer(&store, &bots);
+    let dir = writer.dir().to_path_buf();
+    let memory = iota::agents::memory::BotMemory::new("coder", bots.join("coder"));
+    let env = iota::tool::ToolEnv {
+        memory: Some(memory.clone()),
+        ..iota::tool::ToolEnv::default()
+    };
+    let mut registry = iota::tool::Registry::default();
+    registry.enable_set(&env, iota::tool::sets::MEMORY_SET, &mut |w| {
+        panic!("unexpected warning {w}")
+    });
+    let p = FakeProvider::new().with_tools().rounds([
+        iota::testing::Round::calls(vec![iota::testing::tool_call_with(
+            "c1",
+            "remember",
+            &[
+                ("action", "add"),
+                ("text", "prefers tabs"),
+                ("source", "user"),
+            ],
+        )]),
+        iota::testing::Round::text("noted"),
+        iota::testing::Round::text("second"),
+    ]);
+    let session = SessionCtx {
+        writer: Some(writer),
+        store,
+        new_session: None,
+        scope: None,
+        bot: true,
+        notices: Vec::new(),
+        recorded_notices: Vec::new(),
+        memory: Some(memory.clone()),
+    };
+    let mut params = f.params(p, session);
+    params.dispatch = Arc::new(registry);
+    iota::repl::run(params).await.expect("exit");
+
+    let today = iota::agents::harness::today();
+    let notice = format!("memory: MEMORY.md ## User +1 line: [user] prefers tabs ({today})");
+    let recs: Vec<serde_json::Value> = std::fs::read_to_string(dir.join("messages.jsonl"))
+        .expect("log")
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("record"))
+        .collect();
+    let shape: Vec<(String, String, bool)> = recs
+        .iter()
+        .filter(|r| r["role"] != "system")
+        .map(|r| {
+            (
+                r["role"].as_str().unwrap_or_default().to_owned(),
+                r["content"].as_str().unwrap_or_default().to_owned(),
+                r["notice"].as_bool().unwrap_or(false),
+            )
+        })
+        .filter(|(role, _, _)| role != "tool")
+        .collect();
+    let row =
+        |role: &str, content: &str, notice: bool| (role.to_owned(), content.to_owned(), notice);
+    assert_eq!(
+        shape,
+        vec![
+            row("user", "remember that I like tabs", false),
+            row("assistant", "", false),
+            row("assistant", "noted", false),
+            row("user", &notice, true),
+            row("user", "again", false),
+            row("assistant", "second", false),
+        ]
+    );
+    // The transcript shows it as the dim line a resume replays it as.
+    assert_eq!(
+        printed(&f.ui)
+            .iter()
+            .filter(|l| l.contains(&notice))
+            .count(),
+        1,
+        "{:?}",
+        printed(&f.ui)
+    );
+    let file = std::fs::read_to_string(memory.path()).expect("MEMORY.md");
+    assert!(
+        file.contains(&format!("- [user] prefers tabs ({today})")),
+        "{file}"
+    );
+    assert!(memory.writes().take().is_empty());
+}
+
+/// A bot `coder` running in project `proj` (an AGENTS.md of its own) with `memory` as its MEMORY.md: the
+/// store, the session, the memory, the project root, and a dispatcher carrying `remember`.
+fn bot_in_project(
+    f: &Fixture,
+    memory: &str,
+) -> (
+    SessionCtx,
+    iota::agents::memory::BotMemory,
+    PathBuf,
+    Arc<dyn Dispatcher>,
+) {
+    let (store, bots) = bot_store(f);
+    let writer = bot_writer(&store, &bots);
+    let bot = iota::agents::memory::BotMemory::new("coder", bots.join("coder"));
+    std::fs::write(bot.path(), memory).expect("MEMORY.md");
+    let root = bots.parent().expect("tmp").join("proj");
+    std::fs::create_dir_all(&root).expect("project root");
+    std::fs::write(root.join("AGENTS.md"), "PROJECT RULES").expect("AGENTS.md");
+    let env = iota::tool::ToolEnv {
+        memory: Some(bot.clone()),
+        ..iota::tool::ToolEnv::default()
+    };
+    let mut registry = iota::tool::Registry::default();
+    registry.enable_set(&env, iota::tool::sets::MEMORY_SET, &mut |w| {
+        panic!("unexpected warning {w}")
+    });
+    let session = SessionCtx {
+        writer: Some(writer),
+        store,
+        new_session: None,
+        scope: None,
+        bot: true,
+        notices: Vec::new(),
+        recorded_notices: Vec::new(),
+        memory: Some(bot.clone()),
+    };
+    (session, bot, root, Arc::new(registry))
+}
+
+/// The block a fresh read of `memory`'s file gives in project `proj`.
+fn memory_block(memory: &iota::agents::memory::BotMemory) -> String {
+    iota::agents::memory::Snapshot::load(iota::agents::memory::BotMemory::new(
+        "coder",
+        memory.path().parent().expect("bot dir").to_path_buf(),
+    ))
+    .block(Some("proj"))
+}
+
+/// bot-mode.md §3.4: a bot's `<memory>` block is the last part of the overlay, after the AGENTS.md chain.
+/// It is frozen: the `remember` tool's own write does not change it, an edit from outside does — picked up
+/// before the next send, with ONE dim `MEMORY.md reloaded` — and nothing reloads again after that.
+#[tokio::test]
+async fn a_bots_memory_closes_the_overlay_and_reloads_on_an_outside_edit_only() {
+    let f = Fixture::new(vec![
+        input("one"),
+        Reply::Queued(Vec::new()), // the round boundary's steer drain: nothing typed meanwhile
+        input("two"),
+        input("three"),
+        Reply::Interrupted,
+    ]);
+    let (session, memory, root, dispatch) =
+        bot_in_project(&f, "---\nbot: coder\n---\n## User\n- 不要用 rebase\n");
+    let before = memory_block(&memory);
+    let path = memory.path();
+    let p = FakeProvider::new()
+        .with_tools()
+        .rounds([
+            iota::testing::Round::calls(vec![iota::testing::tool_call_with(
+                "c1",
+                "remember",
+                &[
+                    ("action", "add"),
+                    ("text", "prefers tabs"),
+                    ("source", "user"),
+                ],
+            )]),
+            iota::testing::Round::text("noted"),
+            iota::testing::Round::text("second"),
+            iota::testing::Round::text("third"),
+        ])
+        // Inside turn one, after the tool's write: the user edits the file by hand.
+        .on_call(move |n, _| {
+            if n == 2 {
+                let text = std::fs::read_to_string(&path)
+                    .expect("MEMORY.md")
+                    .replace("不要用 rebase", "不要用 rebase，也不要 force push");
+                std::fs::write(&path, text).expect("edit");
+                let t = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+                std::fs::File::options()
+                    .write(true)
+                    .open(&path)
+                    .expect("open")
+                    .set_modified(t)
+                    .expect("stamp");
+            }
+        });
+    let log = p.log();
+    let mut params = f.params(p, session);
+    params.dispatch = dispatch;
+    params.agent = iota::headless::AgentOptions {
+        enabled: true,
+        root: root.clone(),
+        cwd: Some(root),
+        home: None,
+    };
+    iota::repl::run(params).await.expect("exit");
+
+    let after = memory_block(&memory);
+    assert!(
+        after.contains("- 不要用 rebase，也不要 force push\n"),
+        "{after}"
+    );
+    assert!(after.contains("prefers tabs"), "{after}");
+    let systems: Vec<String> = log.sent().iter().map(|h| h[0].content.clone()).collect();
+    assert_eq!(systems.len(), 4, "{systems:?}");
+    for (i, system) in systems.iter().enumerate() {
+        let block = if i < 2 { &before } else { &after };
+        assert!(system.starts_with("PROJECT RULES"), "{system}");
+        assert!(
+            system.ends_with(&format!("\n\n{block}")),
+            "call {i}: {system}"
+        );
+    }
+    assert_eq!(
+        printed(&f.ui)
+            .iter()
+            .filter(|l| l.starts_with("MEMORY.md reloaded"))
+            .count(),
+        1,
+        "{:?}",
+        printed(&f.ui)
+    );
+}
+
+/// bot-mode.md §3.5's last row, end to end: a hand-edited file over the cap is announced once at startup,
+/// the model is sent it cut short with the marker, and the file stays as it was.
+#[tokio::test]
+async fn a_bots_memory_over_the_cap_is_announced_and_cut_short() {
+    let f = Fixture::new(vec![input("hi"), Reply::Interrupted]);
+    let text: String = std::iter::once("## User\n".to_owned())
+        .chain((0..100).map(|i| format!("- line {i:03} {}\n", "x".repeat(80))))
+        .collect();
+    let over = text.len() - iota::agents::memory::MEMORY_CAP;
+    let (session, memory, root, dispatch) = bot_in_project(&f, &text);
+    let p = provider("gpt-4o", Ok(vec![]));
+    let log = p.log();
+    let mut params = f.params(p, session);
+    params.dispatch = dispatch;
+    params.agent = iota::headless::AgentOptions {
+        enabled: true,
+        root: root.clone(),
+        cwd: Some(root),
+        home: None,
+    };
+    iota::repl::run(params).await.expect("exit");
+
+    let warning = format!(
+        "⚠ MEMORY.md is {over} bytes over its 8 KiB cap: the model is shown it cut short — consolidate it (the file was not changed)"
+    );
+    assert_eq!(
+        printed(&f.ui).iter().filter(|l| **l == warning).count(),
+        1,
+        "{:?}",
+        printed(&f.ui)
+    );
+    let system = log.sent()[0][0].content.clone();
+    assert!(
+        system.ends_with(&format!(
+            "\n[memory truncated: {over} bytes over the cap — consolidate]\n</memory>"
+        )),
+        "{system}"
+    );
+    assert!(!system.contains("- line 099"), "{system}");
+    assert_eq!(std::fs::read_to_string(memory.path()).expect("file"), text);
+}

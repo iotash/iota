@@ -4,7 +4,7 @@
 //! The listing is MODE-ISOLATED: agent mode lists the project bucket, normal mode the flat
 //! root, and the two never merge (only resume-id resolution widens). The Delete tab
 //! excludes the CURRENT session — deleting the bundle being written to is not a thing a
-//! picker should let happen.
+//! picker should let happen — and neither tab lists a session a bot's pointer names.
 //!
 //! The swap ordering is the load-bearing part and is reproduced exactly: close the old
 //! writer → install the new one → window title → history/watermark → budget → session
@@ -86,13 +86,17 @@ pub(crate) fn project_hint(scope: Option<&Path>) -> Option<String> {
 /// `/session` — pick a session to resume, or check off sessions to delete. A facade
 /// failure is a cancel (see [`super::model::cmd_model`]).
 pub(crate) async fn cmd_session(repl: &mut Repl) {
-    let infos = match repl.session.store.list(repl.session.scope.as_deref()) {
+    let mut infos = match repl.session.store.list(repl.session.scope.as_deref()) {
         Ok(i) => i,
         Err(e) => {
             repl.handles.tr.error(&format!("Error: {e}"));
             return;
         }
     };
+    // A bot's session is its body (docs/design/bot-mode.md §2.7): it is neither resumed nor deleted from
+    // here, so neither tab shows it.
+    let owned = repl.session.store.bot_sessions();
+    infos.retain(|s| !owned.contains(&s.id));
     if infos.is_empty() {
         repl.handles.tr.notice("No sessions yet.");
         return;
@@ -141,6 +145,10 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
             let Some(s) = deletable.get(i) else { continue };
             match repl.session.store.delete(&s.id) {
                 Ok(()) => deleted += 1,
+                // Open in another iota process: skipped, not failed — it can be deleted once that exits.
+                Err(e @ crate::session::SessionError::Locked { .. }) => {
+                    repl.handles.tr.notice(&format!("Skipped: {e}"));
+                }
                 Err(e) => repl
                     .handles
                     .tr
@@ -164,6 +172,11 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
         return;
     }
     let kind = repl.conv.provider.kind();
+    // The listing left out the bots' bodies it could name; one behind an unreadable pointer is refused here.
+    if let Err(e) = repl.session.store.check_not_bot_owned(&id) {
+        repl.handles.tr.error(&format!("Error: {e}"));
+        return;
+    }
     let (writer, resumed) = match repl.session.store.resume(&id, kind) {
         Ok(v) => v,
         Err(e) => {
@@ -184,6 +197,7 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
     repl.handles
         .ui
         .set_title(&window_title(&repl.session.session_title()));
+    let repair_notice = resumed.repair_notice();
     repl.conv.history = resumed.messages;
     repl.session.persisted = repl.conv.history.len();
     repl.conv.budget.reseed(&repl.conv.history);
@@ -206,6 +220,9 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
         "Resumed session {id} ({} messages)",
         repl.conv.history.len()
     ));
+    if let Some(notice) = repair_notice {
+        repl.handles.tr.notice(&notice);
+    }
     let msgs = last_rounds(&repl.conv.history, RESUME_ECHO_ROUNDS);
     if !msgs.is_empty() {
         let dispatch = Arc::clone(&repl.conv.dispatch);

@@ -19,6 +19,11 @@ pub(crate) const SET_NAMES: [&str; 4] = ["shell", SKILLS_SET, "code", "ask"];
 /// `config-three-layers`). The old spelling is refused by `crate::config::strict`, which names the new one.
 pub const SKILLS_SET: &str = "skills";
 
+/// The memory set — `remember` alone (docs/design/bot-mode.md §3.3). Not in `SET_NAMES`: no `tools:` key
+/// names it and it has no settings; a bot's session enables it on its own, the way `mode: agent` enables
+/// [`SKILLS_SET`].
+pub const MEMORY_SET: &str = "memory";
+
 /// The factory of a built-in set; `None` for unknown names.
 pub fn set_factory(name: &str) -> Option<SetFactory> {
     match name {
@@ -26,6 +31,7 @@ pub fn set_factory(name: &str) -> Option<SetFactory> {
         SKILLS_SET => Some(super::builtins::agent::new_skills_set),
         "code" => Some(super::builtins::code::new_code_set),
         "ask" => Some(super::builtins::ask::new_ask_set),
+        MEMORY_SET => Some(super::builtins::memory::new_memory_set),
         _ => None,
     }
 }

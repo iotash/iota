@@ -213,6 +213,16 @@ pub enum Reply {
     /// waiting for it (up to eight seconds) as the live facade's idle prompt does: the one reply that
     /// lets a test sit through a job's end.
     Enqueued,
+    /// The idle prompt with nothing typed ahead: `read_input` serves what [`Ui::enqueue`] brought first — the
+    /// loop's own notice is picked up the moment the loop is idle, as the live facade's prompt does — and
+    /// resolves with this input only when that queue is empty (it stays at the front until then); a
+    /// `take_queued_messages` meeting it answers "nothing typed ahead" and leaves it there. What drives a long
+    /// run whose notices land where no script could place them.
+    Feed(Input),
+    /// `read_input` runs this with the loop idle (between turns — a test acting on the world there, e.g. copying
+    /// the session as a kill at that instant would leave it), then resolves with the next reply. Like
+    /// [`Reply::Feed`], it answers a `take_queued_messages` with nothing typed ahead.
+    Pause(std::sync::Arc<dyn Fn() + Send + Sync>),
 }
 
 /// The scripted facade double: blocking calls return ready futures popping the script;
@@ -350,7 +360,19 @@ impl Ui for ScriptedUi {
         let r = if self.shut() {
             Err(UiError::Closed)
         } else {
-            match self.pop("read_input") {
+            let mut next = self.pop("read_input");
+            while let Reply::Pause(f) = next {
+                f();
+                next = self.pop("read_input");
+            }
+            match next {
+                Reply::Feed(i) => match lock(&self.queue).pop_front() {
+                    Some(queued) => {
+                        lock(&self.script).push_front(Reply::Feed(i));
+                        Ok(queued)
+                    }
+                    None => Ok(i),
+                },
                 Reply::Input(i) => Ok(i),
                 Reply::Interrupted => Err(UiError::Interrupted),
                 Reply::Closed => Err(UiError::Closed),
@@ -365,7 +387,7 @@ impl Ui for ScriptedUi {
                         panic!("ScriptedUi: nothing was enqueued within eight seconds")
                     });
                 }
-                Reply::Tabbed(_) | Reply::Queued(_) => {
+                Reply::Tabbed(_) | Reply::Queued(_) | Reply::Pause(_) => {
                     panic!("ScriptedUi: read_input got a non-input reply")
                 }
             }
@@ -386,7 +408,11 @@ impl Ui for ScriptedUi {
                 Reply::Tabbed(t) => Ok(t),
                 Reply::Interrupted => Err(UiError::Interrupted),
                 Reply::Closed => Err(UiError::Closed),
-                Reply::Input(_) | Reply::Queued(_) | Reply::Enqueued => {
+                Reply::Input(_)
+                | Reply::Queued(_)
+                | Reply::Enqueued
+                | Reply::Feed(_)
+                | Reply::Pause(_) => {
                     panic!("ScriptedUi: tabbed got a non-tabbed reply")
                 }
             }
@@ -396,13 +422,23 @@ impl Ui for ScriptedUi {
 
     fn take_queued_messages(&self) -> BoxFuture<'_, Vec<Input>> {
         self.record(UiEvent::TakeQueued);
-        let r = if self.shut() {
+        // A `Feed` or `Pause` next: the prompt is idle with nothing typed ahead.
+        let idle = matches!(
+            lock(&self.script).front(),
+            Some(Reply::Feed(_) | Reply::Pause(_))
+        );
+        let r = if self.shut() || idle {
             Vec::new()
         } else {
             match self.pop("take_queued_messages") {
                 Reply::Queued(v) => v,
                 Reply::Closed => Vec::new(), // Go returns nil once the Program died
-                Reply::Input(_) | Reply::Interrupted | Reply::Tabbed(_) | Reply::Enqueued => {
+                Reply::Input(_)
+                | Reply::Interrupted
+                | Reply::Tabbed(_)
+                | Reply::Enqueued
+                | Reply::Feed(_)
+                | Reply::Pause(_) => {
                     panic!("ScriptedUi: take_queued_messages got a non-queue reply")
                 }
             }

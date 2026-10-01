@@ -29,6 +29,9 @@ pub(crate) const SUMMARY_SEPARATOR: &str = "\n\n———\n\n";
 /// scan with `read session log: …` (D-56).
 pub const MAX_LOG_LINE: usize = 32 * 1024 * 1024;
 
+/// The content of a tool result [`repair_tail`] synthesises for a call the log never answered.
+pub const INTERRUPTED_RESULT: &str = "interrupted: no result was recorded";
+
 /// The initial read buffer, matching `bufio.NewScanner`'s 64 KiB start (chat/session.go:821).
 const SCAN_CHUNK: usize = 64 * 1024;
 
@@ -44,10 +47,28 @@ pub fn summary_preamble(summary: &str) -> String {
 pub struct Session {
     /// The bundle's metadata.
     pub meta: SessionMeta,
+    /// `meta.updated_at` as the bundle had it before this open wrote anything: when the session was last
+    /// written. A resume's tail repair appends — and so restamps `meta.updated_at` — before the caller sees
+    /// the meta; this keeps the time the last run left.
+    pub last_written: String,
     /// The replay view.
     pub messages: Vec<Message>,
     /// Cumulative token cost of the whole log.
     pub usage: Usage,
+    /// How many unanswered tool calls [`repair_tail`] answered (and appended) on the way in.
+    pub repaired: usize,
+}
+
+impl Session {
+    /// The transcript line announcing a [`repair_tail`], or `None` when nothing was repaired.
+    pub fn repair_notice(&self) -> Option<String> {
+        (self.repaired > 0).then(|| {
+            format!(
+                "Recovered {} tool call(s) with no recorded result; they are marked as interrupted.",
+                self.repaired
+            )
+        })
+    }
 }
 
 /// What [`load_log`] produces (chat/session.go:845-901).
@@ -60,6 +81,10 @@ pub struct LoadedLog {
     pub conv_count: usize,
     /// Cumulative token cost of the whole log.
     pub usage: Usage,
+    /// The usage on the last conversation record written since the last compaction marker that carries one:
+    /// what the view's last answered request measured. A retained record's usage is older than the marker
+    /// and measured the history before the compaction, so it never counts.
+    pub measured: Option<Usage>,
 }
 
 /// `scanRecords` (chat/session.go:813-837): line-oriented over `<dir>/messages.jsonl`, in append order.
@@ -220,12 +245,39 @@ pub fn load_full_history(dir: &Path, kind: ProviderKind) -> Result<Vec<Message>,
     Ok(msgs)
 }
 
+/// Answers the tool calls the view's tail left open (docs/design/bot-mode.md §2.7): a batch cut short by a
+/// crash or power loss, or a corrupt line [`scan_records`] skipped, can leave the last assistant message
+/// with `tool_calls` that no tool record follows. Every dialect rejects such a history outright (Anthropic
+/// with a 400 that is never retried), so the session would load and then fail every request.
+///
+/// Each unanswered call gets an `is_error` result with [`INTERRUPTED_RESULT`], appended to `view` in call
+/// order; the return value is how many — the caller appends exactly `view[len - n..]` to the log, which
+/// puts them where they belong on the next load too. Only the TAIL is inspected: an open call earlier in
+/// the view cannot be repaired by appending.
+pub fn repair_tail(view: &mut Vec<Message>) -> usize {
+    let Some(last) = view.iter().rposition(|m| m.role() != Role::Tool) else {
+        return 0;
+    };
+    let answered: Vec<&str> = view[last + 1..].iter().map(Message::tool_call_id).collect();
+    let synthesized: Vec<Message> = view[last]
+        .tool_calls()
+        .iter()
+        .filter(|call| !answered.contains(&call.id.as_str()))
+        .map(|call| Message::tool_result(call, INTERRUPTED_RESULT, true))
+        .collect();
+    let n = synthesized.len();
+    view.extend(synthesized);
+    n
+}
+
 /// `loadLog` (chat/session.go:845-901).
 ///
-/// Usage is summed over EVERY record, markers included. The LAST system record wins and is placed FIRST
-/// in the view. The LAST compaction marker wins, with `compacted_through` clamped to
-/// `[0, conversation length]`; when anything is retained the FIRST retained message's content gets
-/// [`summary_preamble`] PREPENDED, otherwise a synthetic `{role: User, content: preamble}` is appended.
+/// Usage is summed over EVERY record, markers included. The LAST system record wins and is placed FIRST in
+/// the view — unless it is a cleared prompt, which leaves the view without one; a content-less record
+/// without the `system_cleared` flag is a persisted defer mount and never wins (see the closure). The LAST
+/// compaction marker wins, with `compacted_through` clamped to `[0, conversation length]`; when anything
+/// is retained the FIRST retained message's content gets [`summary_preamble`] PREPENDED, otherwise a
+/// synthetic `{role: User, content: preamble}` is appended.
 pub fn load_log(dir: &Path, kind: ProviderKind) -> Result<LoadedLog, SessionError> {
     let mut system: Option<Message> = None;
     let mut conv: Vec<Message> = Vec::new();
@@ -233,6 +285,7 @@ pub fn load_log(dir: &Path, kind: ProviderKind) -> Result<LoadedLog, SessionErro
     let mut through: i64 = 0;
     let mut has_summary = false;
     let mut usage = Usage::default();
+    let mut measured = None;
 
     scan_records(dir, &mut |rec| {
         if let Some(u) = rec.usage {
@@ -242,21 +295,34 @@ pub fn load_log(dir: &Path, kind: ProviderKind) -> Result<LoadedLog, SessionErro
             has_summary = true;
             summary = rec.content;
             through = rec.compacted_through;
+            measured = None;
             return;
         }
         let Some(msg) = record_to_message(&rec, dir, kind) else {
             return; // unknown role — skipped like a corrupt line (D-47)
         };
         if msg.role() == Role::System {
+            // Two kinds of system record, told apart by what was WRITTEN, not by the text: a frozen-mode
+            // defer mount (`Message::system_tools`) is runtime state (tool-defer.md) that older builds
+            // persisted as a system record with no content and no flag — it must not win, or it would
+            // replace the prompt with an empty one (bot-mode.md §2.7). A cleared prompt (`system_cleared`,
+            // a bot whose config lost its `system:`, §2.2) is a real system record and wins like any other:
+            // the view then has no system message at all.
+            if msg.content.is_empty() && !rec.system_cleared {
+                return;
+            }
             system = Some(msg);
             return;
+        }
+        if let Some(u) = msg.usage() {
+            measured = Some(u);
         }
         conv.push(msg);
     })?;
 
     let conv_count = conv.len();
     let mut view: Vec<Message> = Vec::new();
-    if let Some(sys) = system {
+    if let Some(sys) = system.filter(|m| !m.content.is_empty()) {
         view.push(sys);
     }
     // A hand-edited negative `compacted_through` clamps to 0, as in Go.
@@ -282,12 +348,99 @@ pub fn load_log(dir: &Path, kind: ProviderKind) -> Result<LoadedLog, SessionErro
         view,
         conv_count,
         usage,
+        measured,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{SUMMARY_PREFIX, SUMMARY_SEPARATOR, summary_preamble};
+    use super::{
+        INTERRUPTED_RESULT, SUMMARY_PREFIX, SUMMARY_SEPARATOR, load_log, repair_tail,
+        summary_preamble,
+    };
+    use crate::provider::model::{Message, ToolCall};
+
+    fn call(id: &str) -> ToolCall {
+        ToolCall {
+            id: id.to_owned(),
+            name: "t".to_owned(),
+            ..ToolCall::default()
+        }
+    }
+
+    /// `measured` is the last answer's usage since the last compaction marker: a retained answer measured the
+    /// history before the compaction, so a marker clears it until something is answered after it.
+    #[test]
+    fn the_measurement_is_the_last_answer_since_the_last_compaction() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let measured = |lines: &[&str]| {
+            std::fs::write(tmp.path().join("messages.jsonl"), lines.join("\n") + "\n")
+                .expect("log");
+            let log = load_log(tmp.path(), crate::provider::ProviderKind::OpenAi).expect("load");
+            log.measured.map(|u| (u.input, u.output))
+        };
+        let user = r#"{"role":"user","content":"q"}"#;
+        let first = r#"{"role":"assistant","content":"a","usage":{"in":900,"out":10}}"#;
+        let second = r#"{"role":"assistant","content":"b","usage":{"in":950,"out":20}}"#;
+        let marker =
+            r#"{"role":"compaction","content":"S","compacted_through":2,"usage":{"in":5,"out":5}}"#;
+        assert_eq!(measured(&[user]), None);
+        assert_eq!(measured(&[user, first, user, second]), Some((950, 20)));
+        assert_eq!(
+            measured(&[user, first, user, second, marker]),
+            None,
+            "the retained answer measured the history before the marker"
+        );
+        assert_eq!(
+            measured(&[user, first, user, second, marker, user, first]),
+            Some((900, 10))
+        );
+    }
+
+    /// Every call the tail left unanswered gets one interrupted error result, in call order.
+    #[test]
+    fn repair_tail_answers_open_calls_in_order() {
+        let calls = vec![call("a"), call("b"), call("c")];
+        let mut view = vec![
+            Message::user("q"),
+            Message::assistant("").with_tool_calls(calls.clone()),
+            Message::tool_result(&calls[1], "ok", false),
+        ];
+        assert_eq!(repair_tail(&mut view), 2);
+        assert_eq!(view.len(), 5);
+        for (msg, id) in view[3..].iter().zip(["a", "c"]) {
+            assert_eq!(msg.tool_call_id(), id);
+            assert_eq!(msg.content, INTERRUPTED_RESULT);
+            assert!(msg.is_error());
+        }
+    }
+
+    /// A closed tail, a tail without calls, and an empty view are left alone; an open call EARLIER in
+    /// the view is not the tail's business.
+    #[test]
+    fn repair_tail_leaves_a_closed_view_alone() {
+        let c = call("a");
+        let closed = vec![
+            Message::user("q"),
+            Message::assistant("").with_tool_calls(vec![c.clone()]),
+            Message::tool_result(&c, "ok", false),
+            Message::assistant("done"),
+        ];
+        let mut view = closed.clone();
+        assert_eq!(repair_tail(&mut view), 0);
+        assert_eq!(view, closed);
+
+        let mut answered = closed[..3].to_vec();
+        assert_eq!(repair_tail(&mut answered), 0);
+
+        let mut earlier = vec![
+            Message::assistant("").with_tool_calls(vec![call("x")]),
+            Message::user("next"),
+        ];
+        assert_eq!(repair_tail(&mut earlier), 0);
+
+        assert_eq!(repair_tail(&mut Vec::new()), 0);
+    }
 
     /// The preamble is the Go constants around the TRIMMED summary (chat/compact.go:25-27).
     #[test]

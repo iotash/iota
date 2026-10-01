@@ -55,15 +55,37 @@ pub(crate) struct Conversation {
     /// said "Not now" (0 = never asked). Cleared by any successful compaction.
     pub(crate) compact_declined: u64,
     /// The built-in harness prompt ahead of every send (`""` for an agent without tools; brain page
-    /// `harness-prompt`). Composed once at startup; never part of `history`.
+    /// `harness-prompt`). Composed at startup and again on the first send of a new day (`harness_day`);
+    /// never part of `history`.
     pub(crate) harness: String,
+    /// The day `harness` was composed on (`YYYY-MM-DD`): its `date:` line (docs/design/bot-mode.md §2.5).
+    pub(crate) harness_day: String,
+    /// What `harness` is composed from, the clock included.
+    pub(crate) harness_inputs: crate::agents::harness::HarnessInputs,
     /// The agent-mode overlay woven into every send (`None` outside agent mode).
     pub(crate) overlay: Option<Overlay>,
     /// Agent-mode options: the project root and the skills home.
     pub(crate) agent: crate::headless::AgentOptions,
+    /// A bot's own state (bot-mode.md §3.4; `None` outside a bot's session).
+    pub(crate) bot: Option<BotState>,
     /// A dedicated image provider bills per attempt (a relay 5xx can arrive AFTER a charged
     /// generation), so its turns are never auto-retried.
     pub(crate) image_provider: bool,
+}
+
+/// What a bot's session carries beyond an agent's (bot-mode.md §3.4). Its memory lives here rather than in
+/// the [`Overlay`]: the overlay is re-probed on every send, while the memory's copy is frozen between the
+/// moments a refresh is due — and a bot's own writes are not one of them.
+pub(crate) struct BotState {
+    /// The bot's name.
+    pub(crate) name: String,
+    /// The copy of `MEMORY.md` every send carries, last in the overlay.
+    pub(crate) memory: crate::agents::memory::Snapshot,
+    /// The memory flush and the compaction after it (bot-mode.md §3.6.1).
+    pub(crate) flush: crate::repl::bot::Flush,
+    /// What the tool definitions cost every request, counted once at startup: with the memory block, the
+    /// budget's overhead (`ContextBudget::set_overhead`).
+    pub(crate) tool_tokens: u64,
 }
 
 /// The bundle the chat is persisted into, and the name it carries.
@@ -89,6 +111,8 @@ pub(crate) struct SessionSlot {
     /// Where generated images are saved, resolved LAZILY: a bundle materialises on first
     /// use, and an image-less chat must not create one (chat/images.go:115).
     pub(crate) images_dir: ImagesDir,
+    /// A bot's pending memory-write notices (`None` outside a bot's session).
+    pub(crate) memory_writes: Option<crate::agents::memory::WriteLog>,
 }
 
 impl SessionSlot {

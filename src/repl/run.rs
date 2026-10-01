@@ -26,17 +26,20 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::agents::Overlay;
+use crate::agents::memory::Snapshot;
 use crate::agents::skills::Skill;
 use crate::host::{Event, Kind, Presenter, State};
 use crate::llm::reqlog::RequestLog;
 use crate::markdown::CodeTheme;
 use crate::provider::model::{AssistantBody, Body, Message};
-use crate::session::SessionWriter;
+use crate::session::{SessionError, SessionWriter};
 use crate::sync::lock;
 use crate::ui::facade::{InputKind, StatusData};
 use tokio_util::sync::CancellationToken;
 
+use crate::config::AgentMode;
 use crate::repl::ReplError;
+use crate::repl::bot::{Action as BotAction, Event as BotEvent};
 use crate::repl::commands::edit::EditOutcome;
 use crate::repl::commands::skills::SkillsOutcome;
 use crate::repl::commands::{
@@ -48,7 +51,7 @@ use crate::repl::render::banner::{BannerFacts, banner_lines, overlay_warnings};
 use crate::repl::render::mcpreport::report_mcp_failures;
 use crate::repl::render::replay::{RESUME_ECHO_ROUNDS, echo_rounds, last_rounds};
 use crate::repl::render::transcript::{Transcript, notify_digest};
-use crate::repl::state::{Conversation, SessionSlot, UiHandles};
+use crate::repl::state::{BotState, Conversation, SessionSlot, UiHandles};
 use crate::repl::title::{
     SessionTitle, TITLE_TIMEOUT, WriterSlot, generate_title_text, is_read_only_viewer,
     status_model_label, window_title,
@@ -112,6 +115,23 @@ pub struct SessionCtx {
     pub new_session: Option<SessionFactory>,
     /// Agent-mode project bucket for /session (mode-isolated listing).
     pub scope: Option<PathBuf>,
+    /// The writer is a bot's session (docs/design/bot-mode.md §2.2): `/session` is not registered, the
+    /// title pass never runs (the bundle is named after the bot), and the meta is stamped with the
+    /// parameters the chat actually starts under even when the bundle was resumed — for a bot the config,
+    /// not the session, is what they come from.
+    pub bot: bool,
+    /// Dim lines the transcript opens with, after the banner and the resume echo — what the wiring
+    /// learned about the session that the model's user should see (a bot's pointer that never saved, a
+    /// system prompt taken over from the config).
+    pub notices: Vec<String>,
+    /// What the model must be told at startup, not only the user (bot-mode.md §2.5: a resumed bot's time
+    /// away and a changed project — across a restart its only sense of either). Each is shown as a dim line
+    /// AND recorded as a notice message into the history and the log, like a memory write (§3.7).
+    pub recorded_notices: Vec<String>,
+    /// A bot's memory (bot-mode.md §3.4, §3.7): the loop injects its snapshot as the last part of every
+    /// send's overlay and records what the `remember` tool announced during a turn as notice messages once
+    /// the turn is over. `None` outside a bot's session.
+    pub memory: Option<crate::agents::memory::BotMemory>,
 }
 
 /// Everything `run()` needs (`TUI_CONTRACTS` §7).
@@ -124,9 +144,11 @@ pub struct RunParams {
     pub title_provider: Option<Box<dyn crate::provider::Provider>>,
     /// The system prompt.
     pub system: String,
-    /// The built-in harness prompt, composed by the binary for an agent with tools (`""` otherwise); it goes
-    /// ahead of `system` on every send and never into the history (`agents::harness`).
-    pub harness: String,
+    /// The built-in harness prompt's inputs (`agents::harness`): the loop composes the text once the presenter
+    /// is here — the hosts add their facts to `<environment>` — and again on the first send of a new day
+    /// (docs/design/bot-mode.md §2.5). It goes ahead of `system` on every send and never into the history; an
+    /// agent without tools composes `""`.
+    pub harness: crate::agents::harness::HarnessInputs,
     /// Resumed/imported history.
     pub imported_history: Vec<crate::provider::model::Message>,
     /// The tool dispatcher.
@@ -203,21 +225,56 @@ impl Repl {
     ///
     /// A failure warns and does NOT advance the watermark, so the next successful persist
     /// carries the backlog — which is also how `/save` flushes a whole ephemeral chat in
-    /// one append.
-    pub(crate) fn persist_turn(&mut self) {
+    /// one append. A batch that reached the log with only its meta rewrite failing is
+    /// saved: it warns and advances.
+    ///
+    /// `false`: a backlog is left that the log does not have. An ephemeral chat has none.
+    pub(crate) fn persist_turn(&mut self) -> bool {
         let mut slot = lock(&self.session.writer);
-        let Some(w) = slot.as_mut() else { return };
+        let Some(w) = slot.as_mut() else { return true };
         if self.session.persisted >= self.conv.history.len() {
-            return;
+            return true;
         }
-        if let Err(e) = w.append_messages(&self.conv.history[self.session.persisted..]) {
-            drop(slot);
+        let res = w.append_messages(&self.conv.history[self.session.persisted..]);
+        drop(slot);
+        let saved = matches!(res, Ok(()) | Err(SessionError::MetaNotSaved(_)));
+        if saved {
+            self.session.persisted = self.conv.history.len();
+        }
+        if let Err(e) = res {
             self.handles
                 .tr
                 .error(&format!("Warning: failed to save session: {e}"));
+        }
+        saved
+    }
+
+    /// Records the memory writes the turn just made (bot-mode.md §3.7 item 1): one dim line and one notice
+    /// message each, a remove's included, persisted at once so the log says when what was written. The queue
+    /// is drained, so a write is recorded exactly once. Returns how many lines they saved — adds and replaces
+    /// only: a remove saved nothing, and a flush that only removed must tell the summary pass so (§3.6.2
+    /// item 3), not "saved 1 line".
+    pub(crate) fn record_memory_writes(&mut self) -> u32 {
+        let Some(log) = &self.session.memory_writes else {
+            return 0;
+        };
+        let written = log.take();
+        let saved = written.iter().filter(|w| w.saved).count();
+        self.record_notices(written.into_iter().map(|w| w.notice).collect());
+        u32::try_from(saved).unwrap_or(u32::MAX)
+    }
+
+    /// Tells the model, not only the user: each line is shown dim and joins the history as a notice
+    /// message, persisted at once so the log says when it was said. Nothing for no lines.
+    pub(crate) fn record_notices(&mut self, notices: Vec<String>) {
+        if notices.is_empty() {
             return;
         }
-        self.session.persisted = self.conv.history.len();
+        for notice in notices {
+            self.handles.tr.notice(&notice);
+            self.conv.history.push(Message::notice(notice));
+        }
+        self.persist_turn();
     }
 
     /// Tells the hosts which session the chat persists into — the live writer's id and bundle
@@ -227,6 +284,25 @@ impl Repl {
         if let Some(w) = lock(&self.session.writer).as_ref() {
             self.handles.pres.set_session(w.id(), w.dir());
         }
+    }
+}
+
+/// The project a bot's memory block is cut to: the agent root's directory name (bot-mode.md §3.2), `None`
+/// outside agent mode.
+fn memory_project(agent: &crate::headless::AgentOptions) -> Option<String> {
+    agent
+        .enabled
+        .then(|| agent.root.file_name())
+        .flatten()
+        .map(|n| n.to_string_lossy().into_owned())
+}
+
+/// The overlay's parts in send order, a blank line between them; an empty part is left out.
+fn join_overlay(agent: String, memory: String) -> String {
+    match (agent.is_empty(), memory.is_empty()) {
+        (_, true) => agent,
+        (true, false) => memory,
+        (false, false) => format!("{agent}\n\n{memory}"),
     }
 }
 
@@ -285,6 +361,10 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         store,
         new_session,
         scope,
+        bot,
+        notices,
+        recorded_notices,
+        memory,
     } = session;
 
     // ---- capability probes (chat/run.go:53-55) ----
@@ -306,6 +386,16 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         let cwd = agent.cwd.as_deref().unwrap_or(root);
         Overlay::new(root, cwd, agent.home.as_deref())
     });
+    // A bot's memory is read once here (bot-mode.md §3.4's first refresh moment); its writes are recorded
+    // through the log the tool shares.
+    let memory_writes = memory.as_ref().map(|m| m.writes().clone());
+    let bot_state = memory.map(|m| BotState {
+        name: m.name().to_owned(),
+        memory: Snapshot::load(m),
+        flush: crate::repl::bot::Flush::default(),
+        tool_tokens: crate::repl::context::tokens::TokenCounter::new()
+            .count_tools(&dispatch.tools()),
+    });
 
     // ---- history seeding (chat/run.go:67-79) ----
     let resumed = !imported_history.is_empty();
@@ -317,7 +407,15 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         vec![Message::system(system)]
     };
     let persisted = if resumed { history.len() } else { 0 };
+    // The harness, now that the hosts it names in `<environment>` are known; the day it was composed on is
+    // what the first send of the next one compares against.
+    let harness_day = harness.today();
+    let harness_text = harness.compose(&harness_day, pres.environment());
     let mut budget = ContextBudget::new(params.context_window.value);
+    if bot_state.is_some() {
+        // A bot compacts with a larger reserve: the flush turn, and maybe a user turn, come first (§3.6.1).
+        budget.set_bot_reserve();
+    }
     // The live meter exists only for a provider whose usage it can settle against
     // (chat/run.go:161-164); everything else keeps Go's nil meter, whose methods are all
     // no-ops — which is why every `ctxm.…` call below is unconditional (T-10).
@@ -330,7 +428,9 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     } else {
         CtxMeter::disabled()
     };
-    if !history.is_empty() {
+    // A resumed bot is seeded once its loop state is assembled (below): its overhead needs the memory copy,
+    // and its measurement the writer.
+    if !history.is_empty() && bot_state.is_none() {
         budget.update(&history);
     }
     let writer: WriterSlot = Arc::new(Mutex::new(writer));
@@ -342,7 +442,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         if let Some(w) = slot.as_mut() {
             // A resumed session's cumulative ↑/↓ figures are what its own log adds up to.
             ctxm.seed_totals(w.usage());
-            fresh_bundle = !w.on_disk();
+            fresh_bundle = !w.on_disk() || bot;
         }
     }
 
@@ -353,6 +453,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         agent: overlay.is_some(),
         image: image_provider,
         jobs: false,
+        bot,
     });
     if let Some(o) = overlay.as_ref() {
         table.set_skills(skill_entries(o.skills()));
@@ -389,7 +490,14 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         };
         let mut lines = banner_lines(
             &BannerFacts {
-                workspace: overlay.is_some(),
+                // A bot has an agent's overlay; what tells it apart is its session.
+                mode: if bot {
+                    AgentMode::Bot
+                } else if overlay.is_some() {
+                    AgentMode::Agent
+                } else {
+                    AgentMode::Chat
+                },
                 session_id: session_id.as_deref(),
                 ephemeral: new_session.is_some(),
                 resumed,
@@ -417,6 +525,12 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             ui.print_lines(lines);
         }
     }
+    for notice in &notices {
+        tr.notice(notice);
+    }
+    if let Some(warn) = bot_state.as_ref().and_then(|b| b.memory.warning()) {
+        tr.notice(&format!("⚠ {warn}"));
+    }
 
     let titler = Arc::new(SessionTitle::new(
         Arc::clone(&writer),
@@ -424,7 +538,8 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             let ui = Arc::clone(&ui);
             Box::new(move |name: &str| ui.set_title(&window_title(name)))
         },
-        resumed,
+        // A bot's bundle is named after the bot from the start (§2.2): nothing is seeded over that name.
+        resumed || bot,
     ));
     ui.set_title(&window_title(
         &lock(&writer)
@@ -455,9 +570,12 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             layers,
             catalog,
             compact_declined: 0,
-            harness,
+            harness: harness_text,
+            harness_day,
+            harness_inputs: harness,
             overlay,
             agent,
+            bot: bot_state,
             image_provider,
         },
         session: SessionSlot {
@@ -470,6 +588,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             title_provider,
             title_task: None,
             images_dir,
+            memory_writes,
         },
         handles: UiHandles {
             ui: Arc::clone(&ui),
@@ -484,6 +603,31 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             jobs: Arc::clone(&jobs),
         },
     };
+    // What a resumed bot's model is told before anything else is said (bot-mode.md §2.5).
+    repl.record_notices(recorded_notices);
+    if repl.conv.bot.is_some() {
+        repl.price_bot_overhead();
+        if resumed {
+            // What the last run's meter held (§4.1): the last answer's measurement, the rest estimated on
+            // top — and a flush that run had queued is owed again.
+            let measured = lock(&writer).as_ref().and_then(SessionWriter::measured);
+            let history = std::mem::take(&mut repl.conv.history);
+            repl.conv.budget.seed_resumed(&history, measured);
+            repl.conv.history = history;
+            let over = repl
+                .conv
+                .budget
+                .should_offer_compact(0, repl.conv.compact_declined);
+            if let Some(bot) = repl.conv.bot.as_mut() {
+                let actions = bot.flush.step(BotEvent::Resumed { over });
+                bot_perform(&mut repl, actions, Vec::new(), "").await;
+            }
+        } else {
+            let history = std::mem::take(&mut repl.conv.history);
+            repl.conv.budget.reseed(&history);
+            repl.conv.history = history;
+        }
+    }
     repl.push_status();
     // The loop is up and waiting: the hosts hear `Idle` NOW, not at the first turn — a herdr pane
     // is listed from here — and then which session it writes into (herdr keys its records on it).
@@ -568,9 +712,17 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         if line.is_empty() {
             continue;
         }
+        // A bot's memory-flush notice (bot-mode.md §3.6.1) runs as the flush turn — unless the compaction it
+        // was queued for already happened (a message typed ahead of it compacted first): then it is dropped,
+        // neither sent nor persisted.
+        let flush = notice && crate::repl::bot::is_flush_notice(&input.text);
+        if flush && !bot_notice_arrived(&mut repl).await {
+            continue;
+        }
         // Whatever the input is, the loop is awake for the user now (run.go:381).
         repl.handles.pres.set_state(State::Idle);
-        if notice {
+        // A flush notice is the loop's own, not a job's: it never held the host.
+        if notice && !flush {
             // The notice's turn holds the host from here (`host` module doc).
             repl.handles.pres.notice_taken();
         }
@@ -615,7 +767,8 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 repl.push_status();
                 continue;
             }
-            if match_cmd(&line, "/session").is_some() {
+            if lock(&repl.handles.table).session_enabled() && match_cmd(&line, "/session").is_some()
+            {
                 session::cmd_session(&mut repl).await;
                 continue;
             }
@@ -683,12 +836,20 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 continue;
             }
         }
-        let send_overlay = repl.refresh_overlay();
+        roll_day(&mut repl).await;
 
         // The auto-compaction offer runs on the message about to be sent, BEFORE it joins
         // the history: what it asks about is the projected occupancy, and compacting after
         // the append would summarize the very message being sent (chat/run.go:979-989).
-        crate::repl::commands::compact::offer_before_send(&mut repl, &content).await;
+        // The flush notice alone skips it: the flush turn runs over the threshold by design, and the
+        // compaction follows it at once.
+        if !flush {
+            crate::repl::commands::compact::offer_before_send(&mut repl, &content).await;
+        }
+        // The overlay is read AFTER the offer: a compaction there refreshes a bot's memory copy, and this
+        // send must carry the refreshed block — composed before, it would carry the old one and the next send
+        // would change the system segment again (two cache misses where one was meant, bot-mode.md §3.4).
+        let send_overlay = repl.refresh_overlay();
 
         repl.conv.history.push(Message {
             content,
@@ -710,11 +871,13 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             repl.handles.tr.set_dark(known);
             ui.set_dark_background(known);
         }
-        let mut engine = TurnEngine::new(repl.turn_ctx(send_overlay), root_cancel.clone());
+        let mut engine = TurnEngine::new(repl.turn_ctx(send_overlay, flush), root_cancel.clone());
         let outcome = match engine.run(&mut repl.conv, hist0, turn_snap).await {
             Ok(report) => report,
             Err(ui_err) => break 'main Err(ReplError::Ui(ui_err)),
         };
+        let held = engine.take_held();
+        let mut landed = false;
 
         let interrupted = outcome.is_interrupted();
         let TurnReport {
@@ -725,7 +888,11 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         } = outcome;
         match turn_result {
             Err(_) if interrupted => {
-                interrupt_turn(&mut repl, hist0 - 1, &partial, &partial_reasoning);
+                let saved = interrupt_turn(&mut repl, hist0 - 1, &partial, &partial_reasoning);
+                // A turn the interrupt kept is in the history and the log like any other, and its usage
+                // counts toward the threshold: it lands (fable M2), or crossing the threshold with it would
+                // skip the flush. An interrupted flush turn is still one that did not finish.
+                landed = saved && !flush;
                 // The user did the interrupting: back to idle, no ping (run.go:1070-1074).
                 repl.handles.pres.set_state(State::Idle);
             }
@@ -736,12 +903,15 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                     TurnFailure::Chat(c) => crate::repl::errors::describe_error(c),
                     TurnFailure::Ui(u) => crate::repl::errors::ErrorReport::request_failed(u),
                 };
-                // The host hears about the failure BEFORE the red block lands (run.go:1076-1080).
-                repl.handles.pres.set_state(State::Error);
-                repl.handles.pres.notify(Event {
-                    kind: Kind::Failed,
-                    text: report.headline.clone(),
-                });
+                // The host hears about the failure BEFORE the red block lands (run.go:1076-1080). A failed
+                // flush is not the host's business: it is best-effort, and the compaction runs anyway.
+                if !flush {
+                    repl.handles.pres.set_state(State::Error);
+                    repl.handles.pres.notify(Event {
+                        kind: Kind::Failed,
+                        text: report.headline.clone(),
+                    });
+                }
                 repl.handles
                     .tr
                     .error_block(&report.headline, &report.lines());
@@ -790,12 +960,19 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 repl.conv.history = history;
                 repl.push_status();
                 repl.handles.pres.set_state(State::Idle);
-                repl.handles.pres.notify(Event {
-                    kind: Kind::Done,
-                    text: digest,
-                });
+                // The flush turn is the loop talking to itself: no `Done` ping (bot-mode.md §4.3).
+                if !flush {
+                    repl.handles.pres.notify(Event {
+                        kind: Kind::Done,
+                        text: digest,
+                    });
+                }
+                landed = true;
             }
         }
+        // Whatever became of the turn, a memory write it made is on disk: it is recorded now.
+        let memory_writes = repl.record_memory_writes();
+        after_bot_turn(&mut repl, flush, landed, memory_writes, held).await;
     };
     // The loop is over: a background job has no one left to report to, and `background` never promised to
     // outlive iota. `kill_all` is synchronous `killpg`, so nothing depends on a task being polled again.
@@ -808,11 +985,18 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
 impl Repl {
     /// The turn's context for one message (chat/run.go:1007-1012): the shared handles plus
     /// the harness and the overlay this message composed.
-    fn turn_ctx(&self, overlay: String) -> TurnCtx {
+    /// A bot's flush turn (`flush`) sees the memory set alone and takes no steering (bot-mode.md §3.6.1).
+    fn turn_ctx(&self, overlay: String, flush: bool) -> TurnCtx {
+        const MEMORY_ONLY: &[&str] = &[crate::tool::builtins::memory::REMEMBER];
+        let dispatch = if flush {
+            crate::tool::only(Arc::clone(&self.conv.dispatch), MEMORY_ONLY)
+        } else {
+            Arc::clone(&self.conv.dispatch)
+        };
         TurnCtx {
             ui: Arc::clone(&self.handles.ui),
             tr: Arc::clone(&self.handles.tr),
-            dispatch: Arc::clone(&self.conv.dispatch),
+            dispatch,
             gate: Arc::clone(&self.handles.gate),
             harness: self.conv.harness.clone(),
             overlay,
@@ -820,13 +1004,52 @@ impl Repl {
             can_retry: !self.conv.image_provider,
             code_theme: code_theme_of(self.handles.dark),
             pres: Arc::clone(&self.handles.pres),
+            steering: !flush,
+            mounts_only: flush.then_some(MEMORY_ONLY),
         }
     }
 
+    /// Re-prices a bot's overhead — its memory block, as the next send will carry it, and its tool definitions
+    /// — for the budget's local counts (`ContextBudget::set_overhead`). Called at startup and whenever the
+    /// memory copy changes. Nothing outside a bot's session.
+    pub(crate) fn price_bot_overhead(&mut self) {
+        let project = memory_project(&self.conv.agent);
+        let Some(bot) = self.conv.bot.as_ref() else {
+            return;
+        };
+        let block = bot.memory.block(project.as_deref());
+        let tokens = self.conv.budget.counter().count(&block) + bot.tool_tokens;
+        self.conv.budget.set_overhead(tokens);
+    }
+
     /// Re-probes the agent-mode overlay for this message; the notices fire ONLY on a real
-    /// change (chat/run.go:965-976; the D-27 lift, T-37). Returns the overlay text to send,
-    /// `""` outside agent mode.
+    /// change (chat/run.go:965-976; the D-27 lift, T-37). Returns the overlay text to send:
+    /// the AGENTS.md chain and the skills catalog, then a bot's `<memory>` block — last, as the
+    /// part that changes most often (bot-mode.md §3.4); `""` when there is none of them.
     fn refresh_overlay(&mut self) -> String {
+        let content = self.refresh_agent_overlay();
+        let project = memory_project(&self.conv.agent);
+        let Some(bot) = self.conv.bot.as_mut() else {
+            return content;
+        };
+        // The fourth refresh moment: an edit from outside this process, picked up before the send. The other
+        // three are startup (`run`), a successful compaction and the harness's day-change re-composition
+        // (`roll_day`) — the flush machine's `RefreshMemory`, which calls `bot.memory.reload()`.
+        if bot.memory.refresh() {
+            self.handles.tr.notice("MEMORY.md reloaded");
+            if let Some(warn) = bot.memory.warning() {
+                self.handles.tr.notice(&format!("⚠ {warn}"));
+            }
+            self.price_bot_overhead();
+        }
+        let Some(bot) = self.conv.bot.as_ref() else {
+            return content;
+        };
+        join_overlay(content, bot.memory.block(project.as_deref()))
+    }
+
+    /// The agent-mode half of [`Self::refresh_overlay`]: `""` outside agent mode.
+    fn refresh_agent_overlay(&mut self) -> String {
         let Some(o) = self.conv.overlay.as_mut() else {
             return String::new();
         };
@@ -885,13 +1108,140 @@ impl Repl {
     }
 }
 
+/// A bot's bookkeeping once a turn is over (bot-mode.md §3.6.1); nothing outside a bot's session. The flush
+/// machine decides (`repl::bot`), [`bot_perform`] does: after the flush turn the compaction runs at once; after
+/// any other turn that landed at the (snoozed) threshold the flush notice is queued; flush notices the turn's
+/// steering took off the queue go back on it while one is still owed.
+async fn after_bot_turn(
+    repl: &mut Repl,
+    flush: bool,
+    landed: bool,
+    writes: u32,
+    held: Vec<crate::ui::facade::Input>,
+) {
+    let over = repl
+        .conv
+        .budget
+        .should_offer_compact(0, repl.conv.compact_declined);
+    let Some(bot) = repl.conv.bot.as_mut() else {
+        return;
+    };
+    let actions = bot.flush.step(BotEvent::TurnEnded {
+        flush,
+        landed,
+        writes,
+        over,
+    });
+    bot_perform(repl, actions, held, "").await;
+}
+
+/// Before every send (bot-mode.md §2.5): the harness's `date:` is today's. On the first send of a new day the
+/// harness is re-composed — the system segment changes, so the prompt cache misses at most once a day — and a
+/// bot's memory copy is refreshed in the same breath (§3.4's third moment), so the two changes cost one miss,
+/// not two. The same day changes nothing.
+async fn roll_day(repl: &mut Repl) {
+    let today = repl.conv.harness_inputs.today();
+    if today == repl.conv.harness_day {
+        return;
+    }
+    repl.conv.harness = repl
+        .conv
+        .harness_inputs
+        .compose(&today, repl.handles.pres.environment());
+    repl.conv.harness_day = today;
+    let Some(bot) = repl.conv.bot.as_mut() else {
+        return;
+    };
+    let actions = bot.flush.step(BotEvent::DayChanged);
+    bot_perform(repl, actions, Vec::new(), "").await;
+}
+
+/// A flush notice is the next input. `true`: run it as the flush turn. `false`: drop it — the compaction it
+/// was queued for already happened, or this is not a bot's session at all.
+async fn bot_notice_arrived(repl: &mut Repl) -> bool {
+    let Some(bot) = repl.conv.bot.as_mut() else {
+        return false;
+    };
+    let actions = bot.flush.step(BotEvent::NoticeArrived);
+    bot_perform(repl, actions, Vec::new(), "").await
+}
+
+/// Carries out, in order, what a bot's flush machine answered (`repl::bot`, bot-mode.md §3.6.1, §4.1): the
+/// machine decides, this only does. `held` are the flush notices a turn's steering took off the queue
+/// ([`BotAction::Requeue`] puts them back); `error` is a failed compaction's text ([`BotAction::Alarm`] names
+/// it). `false`: the input at hand is dropped ([`BotAction::DropNotice`]). Nothing outside a bot's session.
+pub(crate) async fn bot_perform(
+    repl: &mut Repl,
+    actions: Vec<BotAction>,
+    mut held: Vec<crate::ui::facade::Input>,
+    error: &str,
+) -> bool {
+    let mut keep = true;
+    for action in actions {
+        match action {
+            BotAction::QueueFlush => {
+                let Some(bot) = repl.conv.bot.as_ref() else {
+                    continue;
+                };
+                let consolidate = crate::agents::memory::soft_warning(bot.memory.current().len);
+                repl.handles.ui.enqueue(crate::ui::facade::Input {
+                    display: crate::repl::bot::FLUSH_HEADLINE.to_owned(),
+                    text: crate::repl::bot::flush_notice(consolidate.as_deref()),
+                    kind: InputKind::Notice,
+                });
+            }
+            BotAction::Requeue => {
+                for input in std::mem::take(&mut held) {
+                    repl.handles.ui.enqueue(input);
+                }
+            }
+            BotAction::DropNotice => keep = false,
+            // Boxed: a compaction's outcome comes back through here.
+            BotAction::Compact => {
+                Box::pin(crate::repl::commands::compact::compact_now(repl, "", false)).await;
+            }
+            BotAction::RefreshMemory => {
+                let Some(bot) = repl.conv.bot.as_mut() else {
+                    continue;
+                };
+                bot.memory.reload();
+                if let Some(warn) = bot.memory.warning() {
+                    repl.handles.tr.notice(&format!("⚠ {warn}"));
+                }
+                repl.price_bot_overhead();
+            }
+            BotAction::Alarm => {
+                let Some(bot) = repl.conv.bot.as_ref() else {
+                    continue;
+                };
+                let text = format!("bot {}: compaction failing — {error}", bot.name);
+                repl.handles.pres.set_state(State::Error);
+                repl.handles.pres.notify(Event {
+                    kind: Kind::Failed,
+                    text,
+                });
+            }
+            // The next attempt — and the next flush — waits for the usage to grow by 5% of the window.
+            BotAction::Snooze => repl.conv.compact_declined = repl.conv.budget.used(),
+        }
+    }
+    keep
+}
+
 /// Applies the three-state interrupt table and its bookkeeping (chat/run.go:281-307
 /// `interruptTurn`).
 ///
 /// The user did the interrupting, so this is not an error path: no red block, no
 /// notification. A discarded turn hands its attachments BACK — cancelling a send must not
 /// silently strip the file the user attached — and gives the session name back with them.
-fn interrupt_turn(repl: &mut Repl, watermark: usize, partial: &str, partial_reasoning: &str) {
+///
+/// `true` when the turn was kept (and saved), `false` when it was discarded whole.
+fn interrupt_turn(
+    repl: &mut Repl,
+    watermark: usize,
+    partial: &str,
+    partial_reasoning: &str,
+) -> bool {
     let InterruptDecision {
         history,
         persist,
@@ -903,6 +1253,12 @@ fn interrupt_turn(repl: &mut Repl, watermark: usize, partial: &str, partial_reas
         partial_reasoning,
     );
     repl.conv.history = history;
+    // Calls the interrupt left unanswered are answered now, before the turn is saved and before any notice
+    // follows it: behind a notice they would sit mid-history, where no reload can repair them — and the
+    // next send carries this history too.
+    if persist {
+        crate::session::repair_tail(&mut repl.conv.history);
+    }
     repl.handles.tr.notice("Interrupted.");
     if !dropped.is_empty() {
         let n = dropped.len();
@@ -927,7 +1283,13 @@ fn interrupt_turn(repl: &mut Repl, watermark: usize, partial: &str, partial_reas
     }
     repl.conv.ctxm.reset();
     let history = std::mem::take(&mut repl.conv.history);
-    repl.conv.budget.update(&history);
+    // A kept turn keeps what its rounds measured: a bot's threshold check reads it (fable M2).
+    if persist {
+        repl.conv.budget.update_kept(&history, watermark);
+    } else {
+        repl.conv.budget.update(&history);
+    }
     repl.conv.history = history;
     repl.push_status();
+    persist
 }

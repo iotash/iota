@@ -44,8 +44,8 @@ use crate::sync::lock;
 use crate::ui::facade::{StatusData, Ui};
 
 use crate::repl::context::tokens::{
-    COMPACT_RESERVE_TOKENS, COMPACT_SNOOZE_PERCENT, COMPACT_THRESHOLD_PERCENT,
-    DEFAULT_CONTEXT_WINDOW, TokenCounter,
+    BOT_RESERVE_PERCENT, BOT_RESERVE_TOKENS, COMPACT_RESERVE_TOKENS, COMPACT_SNOOZE_PERCENT,
+    COMPACT_THRESHOLD_PERCENT, DEFAULT_CONTEXT_WINDOW, TokenCounter,
 };
 
 /// The window and its occupancy — the state [`ContextBudget`] and [`CtxMeter`] share.
@@ -59,6 +59,11 @@ struct Occupancy {
     pending: u64,
     /// Whether `settled` came from the provider rather than the local tokenizer.
     have_usage: bool,
+    /// A bot's session: the threshold keeps the bot's larger reserve ([`bot_threshold_of`]).
+    bot: bool,
+    /// What every request carries beyond the history that a local count of it misses — a bot's memory block
+    /// and tool definitions. Added to every LOCAL count (a measured figure has it already); `0` outside a bot.
+    overhead: u64,
     /// The last booked call's usage, CONSUMED by the next settle (Go's per-call
     /// `LastUsageFull` reset, expressed as ownership).
     last_usage: Option<Usage>,
@@ -82,7 +87,7 @@ impl Occupancy {
             self.settled = u.context_tokens();
             self.have_usage = true;
         } else {
-            self.settled = counted;
+            self.settled = counted + self.overhead;
             self.have_usage = false;
         }
     }
@@ -98,6 +103,28 @@ impl Occupancy {
 fn threshold_of(window: u64) -> u64 {
     let pct = window * COMPACT_THRESHOLD_PERCENT / 100;
     window.saturating_sub(COMPACT_RESERVE_TOKENS).max(pct)
+}
+
+/// A bot's threshold (docs/design/bot-mode.md §3.6.1, §4.1): the reserve is `max(32k, 25%)` of the window —
+/// the flush turn and a user turn typed ahead of it both land between the threshold and the compaction — but
+/// never more than half of it, so a small window is not compacted on every turn (a flat 32k would put a 32k
+/// window's threshold at zero).
+fn bot_threshold_of(window: u64) -> u64 {
+    let reserve = BOT_RESERVE_TOKENS
+        .max(window * BOT_RESERVE_PERCENT / 100)
+        .min(window / 2);
+    window - reserve
+}
+
+impl Occupancy {
+    /// The threshold this budget compacts at.
+    fn threshold(self) -> u64 {
+        if self.bot {
+            bot_threshold_of(self.window)
+        } else {
+            threshold_of(self.window)
+        }
+    }
 }
 
 type Shared = Arc<Mutex<Occupancy>>;
@@ -207,15 +234,71 @@ impl ContextBudget {
         lock(&self.st).settle_with(counted);
     }
 
+    /// Re-measures a turn the interrupt KEPT, whose messages start at `turn`. A round's settle already
+    /// consumed the figure [`Self::update`] reads, so it would fall back to a local count and lose what the
+    /// provider measured: instead the last message of the turn that carries usage is the measurement, and
+    /// what follows it (the answers to the calls the interrupt left unanswered) is estimated on top — the
+    /// same split a settle mid-turn leaves. A turn that carries no usage is [`Self::update`].
+    pub fn update_kept(&mut self, history: &[Message], turn: usize) {
+        let measured = history.get(turn..).and_then(|t| {
+            t.iter()
+                .rposition(|m| m.usage().is_some())
+                .and_then(|i| Some((turn + i, t[i].usage()?)))
+        });
+        let Some((at, u)) = measured else {
+            return self.update(history);
+        };
+        let tail = self.counter.count_messages(&history[at + 1..]);
+        let mut st = lock(&self.st);
+        st.settled = u.context_tokens();
+        st.pending = tail;
+        st.have_usage = true;
+        st.last_usage = None;
+    }
+
     /// Re-seeds from a locally counted history — compaction and session swaps, where the
     /// provider's last figure no longer describes what will be sent (Go `budget.reseed`).
     pub fn reseed(&mut self, history: &[Message]) {
         let counted = self.counter.count_messages(history);
         let mut st = lock(&self.st);
-        st.settled = counted;
+        st.settled = counted + st.overhead;
         st.pending = 0;
         st.have_usage = false;
         st.last_usage = None;
+    }
+
+    /// Seeds a resumed bot's budget (bot-mode.md §4.1): the resumed view's last measurement (`measured`,
+    /// [`crate::session::SessionWriter::measured`]) is what the next request carries up to that answer — the
+    /// system segment and the tool definitions included — and what follows it is estimated on top, the split
+    /// the running process held. Without one (nothing answered since the last compaction) it is a local count
+    /// plus the overhead, as a compaction's [`Self::reseed`] leaves it. A local count of the view alone would
+    /// under-count, and a turn the running process compacted before would go out uncompacted after a restart.
+    pub fn seed_resumed(&mut self, history: &[Message], measured: Option<Usage>) {
+        let at = measured.and_then(|u| {
+            history
+                .iter()
+                .rposition(|m| m.usage() == Some(u))
+                .map(|i| (i, u))
+        });
+        let Some((at, u)) = at else {
+            return self.reseed(history);
+        };
+        let tail = self.counter.count_messages(&history[at + 1..]);
+        let mut st = lock(&self.st);
+        st.settled = u.context_tokens();
+        st.pending = tail;
+        st.have_usage = true;
+        st.last_usage = None;
+    }
+
+    /// Sets what every request carries beyond the history ([`Occupancy::overhead`]). A local figure standing
+    /// now is re-priced with it; a measured one already has it.
+    pub fn set_overhead(&mut self, tokens: u64) {
+        let mut st = lock(&self.st);
+        if !st.have_usage {
+            st.settled = st.settled.saturating_sub(st.overhead) + tokens;
+        }
+        st.overhead = tokens;
     }
 
     /// The per-attempt rollback snapshot (Go `budget.snap`).
@@ -241,14 +324,19 @@ impl ContextBudget {
     /// Only the tests read it directly — the loop asks `should_compact`.
     #[cfg(test)]
     pub fn threshold(&self) -> u64 {
-        threshold_of(lock(&self.st).window)
+        lock(&self.st).threshold()
+    }
+
+    /// Makes this a bot's budget: its threshold keeps the bot's larger reserve from now on.
+    pub fn set_bot_reserve(&mut self) {
+        lock(&self.st).bot = true;
     }
 
     /// Whether the next request (current usage plus `extra` tokens of new, not-yet-sent
     /// content) would reach the threshold (Go `budget.shouldCompact`).
     pub fn should_compact(&self, extra: u64) -> bool {
         let st = lock(&self.st);
-        st.window > 0 && st.used().saturating_add(extra) >= threshold_of(st.window)
+        st.window > 0 && st.used().saturating_add(extra) >= st.threshold()
     }
 
     /// Whether the auto-compaction confirmation should be offered before the next request
@@ -496,6 +584,45 @@ mod tests {
         assert_eq!(b.status(), "64k / 128k (50%)");
     }
 
+    /// A resumed bot settles on the last measured answer and estimates what follows it on top; without one it
+    /// is a local count plus the overhead, and a changed overhead re-prices a local figure but not a measured
+    /// one.
+    #[test]
+    fn a_resumed_budget_settles_on_the_last_measurement() {
+        let measured = Usage {
+            input: 90_000,
+            output: 500,
+            ..Usage::default()
+        };
+        let history = vec![
+            Message::user("q"),
+            Message::assistant("a").with_usage(Some(measured)),
+            Message::notice("Resumed after 3 hours"),
+        ];
+        let tail = super::TokenCounter::new().count_messages(&history[2..]);
+
+        let mut b = budget(128_000);
+        b.set_overhead(1_000);
+        b.seed_resumed(&history, Some(measured));
+        assert!(b.have_usage());
+        assert_eq!(b.used(), 90_500 + tail);
+        b.set_overhead(2_000);
+        assert_eq!(
+            b.used(),
+            90_500 + tail,
+            "a measurement has the overhead in it"
+        );
+
+        let counted = super::TokenCounter::new().count_messages(&history);
+        let mut b = budget(128_000);
+        b.set_overhead(1_000);
+        b.seed_resumed(&history, None);
+        assert!(!b.have_usage());
+        assert_eq!(b.used(), counted + 1_000);
+        b.set_overhead(2_000);
+        assert_eq!(b.used(), counted + 2_000, "a local figure is re-priced");
+    }
+
     // Go: chat/tokens_test.go:55 TestCtxMeterLiveFlow — the meter moves the figure DURING a
     // turn: appended messages land in the pending estimate immediately, a settle replaces
     // the whole thing with the provider's real usage, and a snapshot restore rolls a failed
@@ -562,6 +689,42 @@ mod tests {
         assert!(b.used() > 5_000, "note recorded nothing");
         m.reset();
         assert_eq!(b.used(), 5_000);
+    }
+
+    /// A kept interrupted turn is re-measured from its last round's usage — which that round's settle already
+    /// consumed — plus a local estimate of what the interrupt put after it; a turn without usage counts locally.
+    #[test]
+    fn a_kept_turn_keeps_its_measured_usage() {
+        let mut b = budget(100_000);
+        let mut m = meter(&b);
+        let round = Usage {
+            input: 60_000,
+            total: 60_000,
+            ..Usage::default()
+        };
+        let mut history = vec![
+            Message::user("earlier"),
+            Message::user("go"),
+            Message::assistant("calling").with_usage(Some(round)),
+        ];
+        m.record(history.last_mut());
+        m.settle(&history);
+        history.push(tool("interrupted"));
+        m.reset();
+
+        b.update_kept(&history, 1);
+        assert!(b.have_usage());
+        let tail = b.used() - 60_000;
+        assert!(tail > 0 && tail < 100, "the answer on top: {tail}");
+
+        // What `update` would have done: the settle consumed the figure, so it counts locally.
+        b.update(&history);
+        assert!(!b.have_usage());
+        assert!(b.used() < 1_000);
+
+        // The measurement must be the turn's own: an earlier turn's does not count.
+        b.update_kept(&history, 3);
+        assert!(!b.have_usage());
     }
 
     // Go: chat/tokens_test.go:117 TestCtxMeterRecord — a finished call is booked in TWO
@@ -674,6 +837,39 @@ mod tests {
                 "window {window}: the threshold must stay below the window"
             );
         }
+    }
+
+    // A bot's reserve is max(32k, 25% of the window), capped at half the window (bot-mode.md §3.6.1): below
+    // the ordinary threshold on every window, never below 50%, and the setting sticks through a window
+    // change.
+    #[test]
+    fn a_bots_threshold_keeps_the_larger_reserve() {
+        for (window, want, why) in [
+            (128_000_u64, 96_000_u64, "128k: 32k beats 25%"),
+            (200_000, 150_000, "200k: 25% (50k) beats 32k"),
+            (1_000_000, 750_000, "1m: 25%"),
+            (64_000, 32_000, "64k: 32k, exactly half"),
+            (
+                32_000,
+                16_000,
+                "32k: capped at half (a flat 32k would leave 0)",
+            ),
+            (20_000, 10_000, "20k: capped at half"),
+        ] {
+            let mut b = budget(window);
+            let ordinary = b.threshold();
+            b.set_bot_reserve();
+            assert_eq!(b.threshold(), want, "window {window}: {why}");
+            assert!(b.threshold() < ordinary, "window {window}");
+            assert!(
+                b.threshold() >= window / 2,
+                "window {window}: at most half is reserved"
+            );
+        }
+        let mut b = budget(128_000);
+        b.set_bot_reserve();
+        b.set_window(200_000);
+        assert_eq!(b.threshold(), 150_000, "a /model window change keeps it");
     }
 
     // Go: chat/tokens_test.go:216 TestShouldOfferCompact — window 100k → threshold
