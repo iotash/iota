@@ -5,28 +5,23 @@
 //!
 //! Layout is computed per call from the width the frame passes in (`rows`/`cursor_pos`)
 //! — the composer stores no width, so a resize needs no notification (Go called
-//! `ta.SetWidth`; here the next draw simply re-wraps). The stored `height` matters only
-//! for multi-logical-line drafts (the queue fold-back); a single logical line follows
-//! its wrapped height, clamped to `MAX_COMPOSER_ROWS` (model.go resizeComposer).
+//! `ta.SetWidth`; here the next draw simply re-wraps). The height follows the wrapped
+//! row count — newline breaks and soft wraps alike — clamped to `MAX_COMPOSER_ROWS`
+//! (model.go resizeComposer; a multi-line draft counts its wrapped rows, not its logical
+//! lines — `DIVERGENCES.md` X-65).
 
 use crate::text::width::{graphemes, str_width};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::editor::Editor;
 use crate::ui::render::theme::{CYAN, RESET};
-
-/// Composer growth cap (model.go:29; duplicated from the loop to keep this module
-/// self-contained — the two consts are pinned equal by the WP46 tests).
-const MAX_ROWS: usize = 5;
+use crate::ui::runtime::event_loop::MAX_COMPOSER_ROWS;
 
 /// The composer state (model.go `ta` + the history/suggest model fields — the loop
 /// model is WP44-frozen, so the WP46 state lives here).
 pub(crate) struct Composer {
     /// The raw draft and its cursor; paste tags stay collapsed in here (model.go:84-88).
     editor: Editor,
-    /// Explicit height for multi-logical-line drafts (`fire_cancel`'s fold-back);
-    /// single-line drafts derive their height from the wrap instead.
-    height: usize,
     /// Submitted and queued inputs, ↑/↓ navigable (model.go:74-76).
     history: Vec<String>,
     /// `== history.len()` when not navigating.
@@ -78,7 +73,6 @@ impl Composer {
     pub(crate) fn new() -> Self {
         Self {
             editor: Editor::new(),
-            height: 1,
             history: Vec::new(),
             hist_idx: 0,
             hist_draft: String::new(),
@@ -92,11 +86,9 @@ impl Composer {
         self.editor.value()
     }
 
-    /// Replaces the draft; cursor moves to the end (Go setDraft shape). Explicit
-    /// height tracks the logical line count; a single line re-derives at render.
+    /// Replaces the draft; cursor moves to the end (Go setDraft shape).
     pub(crate) fn set_value(&mut self, s: &str) {
         self.editor.set_value(s);
-        self.height = self.line_count().clamp(1, MAX_ROWS);
     }
 
     /// Moves the cursor to the end of the draft.
@@ -108,13 +100,12 @@ impl Composer {
     /// rows; model.go:475-476). History, pastes and the cycle state are untouched.
     pub(crate) fn reset(&mut self) {
         self.editor.clear();
-        self.height = 1;
     }
 
-    /// Inserts text at the cursor (paste tags and verbatim single-line pastes).
+    /// Inserts text at the cursor (paste tags, verbatim single-line pastes, and the
+    /// newline keys — `keys.rs`).
     pub(crate) fn insert_str(&mut self, s: &str) {
         self.editor.insert_str(s);
-        self.height = self.line_count().clamp(1, MAX_ROWS);
     }
 
     /// Whether the draft is blank (whitespace only) — the ↑ queue-pop gate.
@@ -127,19 +118,11 @@ impl Composer {
         self.editor.value().split('\n').count()
     }
 
-    /// Sets the explicit height (multi-logical-line drafts keep it; `fire_cancel`).
-    pub(crate) fn set_height(&mut self, rows: usize) {
-        self.height = rows.clamp(1, MAX_ROWS);
-    }
-
-    /// The height the frame renders: a single logical line follows its wrapped height
-    /// (model.go resizeComposer); multi-line drafts keep the explicit height.
-    fn effective_height(&self, total_rows: usize) -> usize {
-        if self.line_count() <= 1 {
-            total_rows.clamp(1, MAX_ROWS)
-        } else {
-            self.height.clamp(1, MAX_ROWS)
-        }
+    /// The height the frame renders: the wrapped row count, newline breaks included,
+    /// clamped to 1..=`MAX_COMPOSER_ROWS` (model.go resizeComposer). A long logical line
+    /// inside a multi-line draft grows the box by every row it wraps to (X-65).
+    fn effective_height(total_rows: usize) -> usize {
+        total_rows.clamp(1, MAX_COMPOSER_ROWS)
     }
 
     /// The cursor's (display row, display column) under the same wrap walk as
@@ -184,7 +167,7 @@ impl Composer {
     pub(crate) fn rows(&self, width: u16) -> Vec<String> {
         let w = content_width(width);
         let spans = wrap_spans(self.editor.value(), w);
-        let h = self.effective_height(spans.len());
+        let h = Self::effective_height(spans.len());
         let (cursor_row, _) = self.cursor_rowcol(w);
         let offset = Self::scroll_offset(cursor_row, h);
         (0..h)
@@ -208,7 +191,7 @@ impl Composer {
     pub(crate) fn cursor_pos(&self, width: u16) -> (u16, u16) {
         let w = content_width(width);
         let total = wrap_spans(self.editor.value(), w).len();
-        let h = self.effective_height(total);
+        let h = Self::effective_height(total);
         let (cursor_row, cursor_col) = self.cursor_rowcol(w);
         let offset = Self::scroll_offset(cursor_row, h);
         (
@@ -279,7 +262,7 @@ impl Composer {
 
     /// The editing set is the shared [`Editor`]'s (`on_key`); what stays here is what only a
     /// multi-row composer has — ↑/↓ as display-row cursor movement, reached only when history
-    /// navigation did not claim the arrows — and the height that follows every edit.
+    /// navigation did not claim the arrows.
     pub(crate) fn handle_edit_key(&mut self, key: &KeyEvent, width: u16) {
         if !self.editor.on_key(key) && !key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
@@ -288,7 +271,6 @@ impl Composer {
                 _ => {}
             }
         }
-        self.height = self.line_count().clamp(1, MAX_ROWS);
     }
 
     /// Moves the cursor one display row up/down, holding the display column
@@ -663,6 +645,43 @@ mod tests {
         let rows = c.rows(10);
         assert_eq!(rows.len(), 1);
         assert_eq!(strip_sgr(&rows[0]), "❯ ");
+    }
+
+    /// A multi-line draft grows by its WRAPPED rows, not its logical lines (X-65): a 200-column
+    /// line plus a newline plus `b` is 3 + 1 rows at width 80 — typed, set, or folded back.
+    #[test]
+    fn a_multi_line_draft_grows_by_its_wrapped_rows() {
+        let long = "x".repeat(200); // 200 cols at 78 content cols → 3 rows
+
+        let mut m = test_model();
+        type_text(&mut m, &long);
+        m.handle_key(crate::ui::testutil::ctrl('j'));
+        type_text(&mut m, "b");
+        let rows = m.composer.rows(80);
+        assert_eq!(rows.len(), 4, "3 wrapped rows + 1: {rows:?}");
+        assert!(rows[0].contains('❯'), "the whole draft fits: no scroll");
+        assert_eq!(strip_sgr(&rows[3]), "  b");
+        assert_eq!(m.composer.cursor_pos(80), (3, 3));
+
+        let mut c = Composer::new();
+        c.set_value(&format!("{long}\nb"));
+        assert_eq!(c.rows(80).len(), 4, "set_value: same height");
+
+        // The fold-back: an interrupt joins a long queued item into the draft.
+        let mut m = test_model();
+        let turn = tokio_util::sync::CancellationToken::new();
+        m.apply(UiMsg::ScopePush(turn));
+        type_text(&mut m, &long);
+        enter(&mut m); // a turn is running and no reader is parked → queued
+        type_text(&mut m, "b");
+        m.handle_key(key(KeyCode::Esc));
+        assert_eq!(m.composer.value(), format!("{long}\nb"));
+        assert_eq!(m.composer.rows(80).len(), 4, "fold-back: same height");
+
+        // Still capped: a sixth row scrolls.
+        let mut c = Composer::new();
+        c.set_value(&format!("{long}\n{long}"));
+        assert_eq!(c.rows(80).len(), 5, "growth cap");
     }
 
     /// A paste that arrives while a surface is open belongs to the surface's focused

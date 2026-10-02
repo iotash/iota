@@ -438,9 +438,13 @@ fn row_6_arrows_walk_the_history_only_in_a_single_row_draft() {
 }
 
 /// Row 7: Enter submits the TRIMMED draft — to a parked reader, else onto the queue — and
-/// collapses the composer to one empty row; a blank draft submits nothing; the modifiers
-/// on Enter are ignored (no terminal's Shift+Enter inserts a newline here); what was
-/// submitted is the newest history entry.
+/// collapses the composer to one empty row; a blank draft submits nothing; Ctrl+Enter
+/// submits like Enter; what was submitted is the newest history entry.
+///
+/// Ctrl+Enter stays a submit because on Unix it only ever carries CONTROL when the terminal
+/// speaks CSI u — legacy encoding sends it as a bare CR, and Ghostty's default
+/// `ESC[27;5;13~` is dropped inside crossterm (no event at all) — so a newline bound to it
+/// would work almost nowhere. (Enter with SHIFT or ALT is row 7a's.)
 #[test]
 fn row_7_enter_submits_trimmed_or_ignores_blank() {
     let mut m = test_model();
@@ -459,24 +463,10 @@ fn row_7_enter_submits_trimmed_or_ignores_blank() {
     assert_eq!(m.composer.value(), "", "…but the composer still collapses");
     m.apply(UiMsg::ReadCancel { id: 2 });
 
-    for mo in [
-        KeyModifiers::SHIFT,
-        KeyModifiers::ALT,
-        KeyModifiers::CONTROL,
-    ] {
-        type_text(&mut m, "x");
-        m.handle_key(mods(KeyCode::Enter, mo));
-        assert_eq!(
-            m.composer.value(),
-            "",
-            "Enter with {mo:?} must still submit"
-        );
-    }
-    assert_eq!(
-        m.queue_rows(),
-        vec!["x", "x", "x"],
-        "no reader parked: queued"
-    );
+    type_text(&mut m, "x");
+    m.handle_key(mods(KeyCode::Enter, KeyModifiers::CONTROL));
+    assert_eq!(m.composer.value(), "", "Ctrl+Enter must still submit");
+    assert_eq!(m.queue_rows(), vec!["x"], "no reader parked: queued");
 
     m.queue.clear();
     up(&mut m);
@@ -485,6 +475,174 @@ fn row_7_enter_submits_trimmed_or_ignores_blank() {
         "x",
         "a submit is the newest history entry"
     );
+}
+
+/// Row 7a: Ctrl+J, Alt+Enter and Shift+Enter each insert a newline at the cursor and submit
+/// nothing; the two-line draft then goes out WHOLE on Enter — through `submit`'s trim and
+/// `make_input`, to the reader.
+///
+/// What each one is on the wire: Ctrl+J is raw-mode LF (crossterm decodes `0x0A` to
+/// `Char('j')` + CONTROL); Alt+Enter is ESC CR. Shift+Enter carries SHIFT only when the
+/// terminal reports it — a CSI-u `ESC[13;2u` (a user mapping, tmux `extended-keys`); Ghostty's
+/// default `ESC[27;2;13~` is dropped inside crossterm and never reaches this table, and legacy
+/// terminals send a bare CR, which is row 7. Binding SHIFT costs nothing where it never comes.
+#[test]
+fn row_7a_newline_keys_insert_and_never_submit() {
+    for (name, k) in [
+        ("Ctrl+J", ctrl('j')),
+        ("Alt+Enter", mods(KeyCode::Enter, KeyModifiers::ALT)),
+        ("Shift+Enter", mods(KeyCode::Enter, KeyModifiers::SHIFT)),
+    ] {
+        let mut m = test_model();
+        let mut reader = park(&mut m, 1);
+        type_text(&mut m, "a");
+        m.handle_key(k);
+        assert_eq!(m.composer.value(), "a\n", "{name} must insert a newline");
+        assert!(reader.try_recv().is_err(), "{name} must not submit");
+        assert!(m.queue.is_empty(), "{name} must not queue");
+        assert_eq!(m.composer.rows(80).len(), 2, "{name}: a two-row composer");
+
+        type_text(&mut m, "b");
+        enter(&mut m);
+        let got = reader.try_recv().expect("served").expect("read err");
+        assert_eq!(got.text, "a\nb", "{name}: the reader gets both lines");
+        assert_eq!(m.composer.value(), "");
+    }
+}
+
+/// Row 7a inserts at the CURSOR, not at the end; leading and trailing newlines fall to
+/// `submit`'s trim, and a newline-only draft submits nothing.
+#[test]
+fn row_7a_inserts_at_the_cursor_and_submit_trims_the_edges() {
+    let mut m = test_model();
+    type_text(&mut m, "abc");
+    m.handle_key(key(KeyCode::Left));
+    m.handle_key(key(KeyCode::Left));
+    m.handle_key(ctrl('j'));
+    assert_eq!(m.composer.value(), "a\nbc");
+    assert_eq!(cursor(&m), (2, 1), "the cursor follows onto the new row");
+
+    m.composer.reset();
+    let mut reader = park(&mut m, 1);
+    m.handle_key(ctrl('j'));
+    type_text(&mut m, "hi");
+    m.handle_key(ctrl('j'));
+    enter(&mut m);
+    let got = reader.try_recv().expect("served").expect("read err");
+    assert_eq!(got.text, "hi", "edge newlines are trimmed");
+
+    let mut reader = park(&mut m, 2);
+    m.handle_key(ctrl('j'));
+    m.handle_key(ctrl('j'));
+    enter(&mut m);
+    assert!(
+        reader.try_recv().is_err(),
+        "a newline-only draft submits nothing"
+    );
+}
+
+/// Row 7a and the paste tags: a newline typed after a collapsed `[#1 …]` tag survives, and
+/// the submit expands the tag around it.
+#[test]
+fn row_7a_newline_after_a_paste_tag_submits_both() {
+    let mut m = test_model();
+    let mut reader = park(&mut m, 1);
+    m.route_paste("p1\np2");
+    m.handle_key(ctrl('j'));
+    type_text(&mut m, "x");
+    enter(&mut m);
+    let got = reader.try_recv().expect("served").expect("read err");
+    assert_eq!(got.text, "p1\np2\nx");
+}
+
+/// Row 7a sits AFTER rows 2–6 and claims nothing they own, and nothing ahead of it eats
+/// Ctrl+J: it is not row 2's interrupt (a live turn stays live, a parked reader stays
+/// parked), and it ends the completion cycle (row 4). After a recall plus Ctrl+J, ↑ moves the
+/// cursor instead of walking on — but that is the two-row draft's doing (`history_navigable`),
+/// not row 7a's `end_history_nav()`: that call is defensive and has no observable effect today
+/// (every way back to a one-row draft goes through the edit set or a submit, which reset the
+/// walk themselves), so nothing here pins it, and nothing should be contrived to.
+#[test]
+fn row_7a_is_not_eaten_and_ends_the_cycle() {
+    let mut m = test_model();
+    let turn = CancellationToken::new();
+    m.apply(UiMsg::ScopePush(turn.clone()));
+    m.handle_key(ctrl('j'));
+    assert!(!turn.is_cancelled(), "Ctrl+J is not an interrupt");
+    assert_eq!(m.composer.value(), "\n");
+    m.apply(UiMsg::ScopePop);
+
+    let mut m = test_model();
+    commands(&mut m, &["/model", "/mode"]);
+    type_text(&mut m, "/mo");
+    m.handle_key(key(KeyCode::Tab));
+    assert!(
+        m.composer.suggestion_index.is_some(),
+        "precondition: cycling"
+    );
+    m.handle_key(ctrl('j'));
+    assert!(
+        m.composer.suggestion_base.is_empty() && m.composer.suggestion_index.is_none(),
+        "Ctrl+J ends the completion cycle"
+    );
+
+    let mut m = test_model();
+    history(&mut m, &["one", "two"]);
+    up(&mut m);
+    assert_eq!(m.composer.value(), "two");
+    m.handle_key(ctrl('j'));
+    type_text(&mut m, "b");
+    up(&mut m);
+    assert_eq!(
+        m.composer.value(),
+        "two\nb",
+        "↑ in a two-line draft is a row move, never a history step"
+    );
+    assert_eq!(cursor(&m), (3, 0), "↑ moved the cursor to the first row");
+    down(&mut m);
+    assert_eq!(cursor(&m), (3, 1), "↓ moved it back down");
+    assert_eq!(m.composer.value(), "two\nb");
+}
+
+/// Row 7a is the COMPOSER's: with a surface open, Ctrl+J and Alt/Shift+Enter never reach a
+/// one-line field — Ctrl+J is no edit there, the Enters commit the surface — and the
+/// composer underneath stays as it was.
+#[test]
+fn row_7a_never_reaches_a_surface_field() {
+    let mut m = test_model();
+    type_text(&mut m, "draft");
+    let (tx, mut rx) = oneshot::channel();
+    m.apply(UiMsg::TabbedOpen {
+        spec: TabbedSpec {
+            panels: vec![
+                Panel::input("Model".to_owned(), String::new(), "model name".to_owned())
+                    .with_input_width(20),
+            ],
+            ..TabbedSpec::default()
+        },
+        reply: tx,
+    });
+    type_text(&mut m, "gpt");
+    m.handle_key(ctrl('j'));
+    let s = m.surface.as_ref().expect("surface still open");
+    assert_eq!(
+        s.st.slots[0].state.input.value(),
+        "gpt",
+        "Ctrl+J must not insert into the field"
+    );
+    assert_eq!(m.composer.value(), "draft", "the composer is untouched");
+    assert!(rx.try_recv().is_err(), "Ctrl+J does not close the surface");
+
+    let mut f = Field::new();
+    f.set_value("ab");
+    for k in [
+        ctrl('j'),
+        mods(KeyCode::Enter, KeyModifiers::ALT),
+        mods(KeyCode::Enter, KeyModifiers::SHIFT),
+    ] {
+        f.handle_key(&k);
+        assert_eq!(f.value(), "ab", "{k:?} changed the field");
+    }
 }
 
 // ---- the edit set (rows 8–9), through the ladder ------------------------------------------
