@@ -64,6 +64,7 @@
 //! | `25-shell-yield.sh` | TUI-VERIFY §8.6–8.9, X-47, X-50 | — (a foreground `shell` call past its window: the receipt row, `/jobs` in the completion row, its list and the page a row opens, the list's clock walking with a second job started, the Kill tab ending that job with its `killed` notice, the status row's job clock walking, all gone after the notice; the OSC 9;4 state held busy while a job runs and cleared after the last notice turn) |
 //! | `27-hung-provider.sh` | request-cancellation recon, reviews | — (a provider that sends a head and then nothing: `Waiting for the first token`, ESC then the next message and ESC then the exit without the title pass's 30 s, `IOTA_STREAM_IDLE_TIMEOUT=2` failing the stream as `Response stalled`, not retried; a title pass that alone never answers holding neither the next message nor the exit; a complete answer whose body stays open ending at `[DONE]`, not as a stall) |
 //! | `28-composer-newline.sh` | X-65 | — (Ctrl+J, the LF byte, Alt+Enter and CSI-u Shift+Enter each add a composer row without submitting, Enter sends ONE two-line message; a two-line queued item is one ` ⏎ ` row and folds back on ESC) |
+//! | `29-signal-exit.sh` | the 2026-10-02 orphan leak | — (SIGTERM mid-turn: the run ends, the turn in the session log, raw mode and bracketed paste handed back to the shell; `kill-server` under an idle run: the process gone within 2 s, inside the 5 s close backstop) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -570,4 +571,12 @@ fn tmux_hung_provider() {
 #[test]
 fn tmux_composer_newline() {
     run_scenario("28-composer-newline.sh");
+}
+
+/// L4 #29 — signals and a hangup end the run: SIGTERM mid-turn winds down with the turn
+/// persisted and the terminal restored; a pty that hangs up (`tmux kill-server`) takes the process
+/// with it in seconds instead of leaving a 100%-CPU orphan only SIGKILL ends.
+#[test]
+fn tmux_signal_exit() {
+    run_scenario("29-signal-exit.sh");
 }
