@@ -242,6 +242,7 @@ mod shared_request_log {
         let transport = HttpTransport {
             client: reqwest::Client::new(),
             recorder: Some(Arc::clone(&reqlog)),
+            stream_idle: None,
         };
         let uri = server.uri();
         let params = || ProviderParams {

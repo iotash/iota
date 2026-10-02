@@ -223,8 +223,8 @@ pub(crate) fn status_rows(items: &[StatusItem]) -> Vec<String> {
         .collect()
 }
 
-/// `/status`: a read-only viewer, so it neither waits for the title pass nor changes
-/// anything. A facade failure is a cancel (see [`super::model::cmd_model`]).
+/// `/status`: a read-only viewer — it changes nothing. A facade failure is a cancel (see
+/// [`super::model::cmd_model`]).
 pub(crate) async fn cmd_status(repl: &mut Repl) {
     let tools = repl.conv.dispatch.tools().len();
     let mcp = repl.handles.mcp.servers.as_ref().map(|f| {

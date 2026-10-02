@@ -28,5 +28,6 @@ mod images;
 mod jobs;
 mod settings;
 mod skills;
+mod stall;
 mod tokens;
 mod toolfmt;

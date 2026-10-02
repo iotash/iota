@@ -79,17 +79,20 @@ pub(crate) fn b64_decode(s: &str) -> Result<Vec<u8>, base64::DecodeError> {
     base64::engine::general_purpose::STANDARD.decode(s)
 }
 
-/// `Client::new(base_url_or_default, http.client)` with the transport's `/debug` recorder installed
-/// when present; `None` ⇒ `default_http_client()` and no recorder.
+/// `Client::new(base_url_or_default, http.client)` with the transport's stream idle bound and its
+/// `/debug` recorder installed when present; `None` ⇒ `default_http_client()` and no recorder.
 pub(crate) fn make_client(base_url: &str, default: &str, http: Option<HttpTransport>) -> Client {
     let base = if base_url.is_empty() {
         default
     } else {
         base_url
     };
-    let HttpTransport { client, recorder } =
-        http.unwrap_or_else(|| HttpTransport::from(default_http_client()));
-    let mut c = Client::new(base, client);
+    let HttpTransport {
+        client,
+        recorder,
+        stream_idle,
+    } = http.unwrap_or_else(|| HttpTransport::from(default_http_client()));
+    let mut c = Client::new(base, client).with_stream_idle_timeout(stream_idle);
     if let Some(log) = recorder {
         c = c.with_recorder(log);
     }

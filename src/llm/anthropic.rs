@@ -574,7 +574,10 @@ impl Anthropic {
             .client
             .stream(cancel, Method::POST, PATH_MESSAGES, Some(&*req))
             .await?;
-        Ok(AnthropicStream { sse })
+        Ok(AnthropicStream {
+            sse,
+            stopped: false,
+        })
     }
 
     /// GET `/v1/models`, then `/v1/models?after_id=<urlencoded last_id>` while `has_more && last_id != ""`; sorted ids.
@@ -603,12 +606,19 @@ impl Anthropic {
 /// An anthropic SSE stream, classified into `AnthropicEvent`s.
 pub(crate) struct AnthropicStream {
     sse: Sse,
+    /// `message_stop` arrived: the message is over, whether or not the body ever closes.
+    stopped: bool,
 }
 
 impl AnthropicStream {
     /// Skips "ping"; event type = JSON `type`, falling back to the SSE `event:` field when empty; type "error" →
-    /// `InBand` (error envelope raw JSON if present, else the whole data).
+    /// `InBand` (error envelope raw JSON if present, else the whole data). `message_stop` ends the stream
+    /// (`Ok(None)` from then on) without waiting for the body's EOF: the usage rode `message_delta` before
+    /// it, and a relay that holds the body open must not turn a finished message into a stall.
     pub(crate) async fn next(&mut self) -> Result<Option<AnthropicEvent>, LlmError> {
+        if self.stopped {
+            return Ok(None);
+        }
         loop {
             let Some(evt) = self.sse.next().await? else {
                 // A body that carried no event at all never streamed (anthropic.go:231-233).
@@ -625,6 +635,10 @@ impl AnthropicStream {
             }
             match out.r#type.as_str() {
                 "ping" => continue,
+                "message_stop" => {
+                    self.stopped = true;
+                    return Ok(None);
+                }
                 // In-band stream error (e.g. overloaded_error arrives on a 200 stream, not as HTTP 529).
                 "error" => {
                     let detail = out.error.as_ref().map_or_else(

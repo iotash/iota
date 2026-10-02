@@ -81,6 +81,12 @@ impl ProviderError {
         }
     }
 
+    /// The stream went silent past its idle bound (`LlmError::StreamIdle`): a failure, not a
+    /// cancel, but one that ends a round mid-stream like ESC does — what streamed before it was real.
+    pub fn is_stall(&self) -> bool {
+        matches!(self, Self::Wire { source, .. } if matches!(**source, LlmError::StreamIdle(_)))
+    }
+
     /// `Other` wrapping `e`.
     pub fn other(e: impl Into<BoxError>) -> Self {
         Self::Other(e.into())

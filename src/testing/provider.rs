@@ -32,6 +32,9 @@ pub enum Failure {
     Other(String),
     /// `ProviderError::permanent_msg(msg)` — a failure retrying cannot fix.
     Permanent(String),
+    /// The stream went silent past its idle bound: `LlmError::StreamIdle` wrapped as the wire
+    /// layer wraps it, after whatever the round streamed.
+    Stalled(Duration),
 }
 
 impl Failure {
@@ -39,6 +42,10 @@ impl Failure {
         match self {
             Self::Other(msg) => ProviderError::other(msg.clone()),
             Self::Permanent(msg) => ProviderError::permanent_msg(msg.clone()),
+            Self::Stalled(d) => ProviderError::wire(
+                crate::provider::error::WireOp::Stream,
+                crate::llm::LlmError::StreamIdle(*d),
+            ),
         }
     }
 }
@@ -69,6 +76,9 @@ pub struct Round {
     pub interrupt: Option<Interrupt>,
     /// Returned instead of `result`.
     pub fail: Option<Failure>,
+    /// Never answers: the call waits until its token is cancelled (then `ProviderError::Cancelled`)
+    /// or the call is dropped — a provider that stopped answering.
+    pub hang: bool,
 }
 
 impl Round {
@@ -117,6 +127,23 @@ impl Round {
     pub fn permanent(msg: &str) -> Self {
         Self {
             fail: Some(Failure::Permanent(msg.to_owned())),
+            ..Self::default()
+        }
+    }
+
+    /// Streams `partial`, then stalls (`Failure::Stalled`, a 300 s bound).
+    pub fn stalled(partial: &str) -> Self {
+        Self {
+            content: vec![partial.to_owned()],
+            fail: Some(Failure::Stalled(Duration::from_secs(300))),
+            ..Self::default()
+        }
+    }
+
+    /// Never answers (see [`Round::hang`]).
+    pub fn hanging() -> Self {
+        Self {
+            hang: true,
             ..Self::default()
         }
     }
@@ -272,6 +299,7 @@ pub struct FakeProvider {
     model: String,
     models: Result<Vec<String>, String>,
     list_delay: Duration,
+    answer_delay: Duration,
     usage: bool,
     tools: bool,
     tuning: Option<Tuning>,
@@ -293,6 +321,7 @@ impl Default for FakeProvider {
             model: "gpt-test".to_owned(),
             models: Ok(Vec::new()),
             list_delay: Duration::ZERO,
+            answer_delay: Duration::ZERO,
             usage: false,
             tools: false,
             tuning: None,
@@ -356,6 +385,14 @@ impl FakeProvider {
     #[must_use]
     pub fn with_models_after(mut self, delay: Duration) -> Self {
         self.list_delay = delay;
+        self
+    }
+
+    /// Every `chat` / tool-loop call answers only after `delay` (tokio time) — a model that takes
+    /// its time; the call is recorded at once.
+    #[must_use]
+    pub fn answering_after(mut self, delay: Duration) -> Self {
+        self.answer_delay = delay;
         self
     }
 
@@ -579,6 +616,12 @@ impl FakeProvider {
     }
 }
 
+/// A hung call: nothing until `cancel` fires.
+async fn hold(cancel: &CancellationToken) -> ProviderError {
+    cancel.cancelled().await;
+    ProviderError::Cancelled
+}
+
 /// Round `n` of [`FakeProvider::looping`]: `calls` requests for `noop` with ids `call-<n>` (or
 /// `call-<n>-<i>` when a round carries several).
 fn looping_round(n: u32, calls: u32) -> RoundResult {
@@ -629,9 +672,14 @@ impl Provider for FakeProvider {
         messages: &'a [Message],
     ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
         Box::pin(async move {
-            self.next(Path::Chat, messages, &[])
-                .settle(cancel)
-                .map(chat_result)
+            let round = self.next(Path::Chat, messages, &[]);
+            if !self.answer_delay.is_zero() {
+                tokio::time::sleep(self.answer_delay).await;
+            }
+            if round.hang {
+                return Err(hold(cancel).await);
+            }
+            round.settle(cancel).map(chat_result)
         })
     }
 
@@ -681,6 +729,12 @@ impl ToolProvider for FakeProvider {
     ) -> BoxFuture<'a, Result<RoundResult, ProviderError>> {
         Box::pin(async move {
             let round = self.next(Path::Tools, messages, tools);
+            if !self.answer_delay.is_zero() {
+                tokio::time::sleep(self.answer_delay).await;
+            }
+            if round.hang {
+                return Err(hold(cancel).await);
+            }
             for d in &round.reasoning {
                 sink.reasoning(d);
             }

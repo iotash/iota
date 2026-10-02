@@ -1150,8 +1150,9 @@ fn deleting_a_bucketed_session_removes_its_bundle() {
 // ---------------------------------------------------------------------------
 
 /// The session is named at SEND time: the placeholder lands
-/// synchronously and the model pass (on the SECOND provider instance) upgrades it. The
-/// loop joins the pass before it exits, so both sinks have settled by then.
+/// synchronously and the model pass (on the SECOND provider instance) upgrades it while the
+/// turn runs — the turn takes 50 ms here, the pass none. The exit never waits on the pass (an
+/// unfinished one is given up, X-64), so it is the turn's length that lets both sinks settle.
 #[tokio::test]
 async fn title_pass_names_the_session_on_the_second_provider() {
     let f = Fixture::new(vec![
@@ -1164,7 +1165,10 @@ async fn title_pass_names_the_session_on_the_second_provider() {
         .expect("materialise");
     let dir = writer.dir().to_path_buf();
     let session = f.session(Some(writer));
-    let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
+    let mut params = f.params(
+        provider("gpt-4o", Ok(vec![])).answering_after(std::time::Duration::from_millis(50)),
+        session,
+    );
     params.title_provider = Some(Box::new(
         provider("gpt-4o", Ok(vec![])).replying("Profiling Allocations"),
     ));

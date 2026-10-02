@@ -294,6 +294,10 @@ pub struct HttpTransport {
     pub client: reqwest::Client,
     /// The `/debug` request log, when this transport records.
     pub recorder: Option<Arc<RequestLog>>,
+    /// The byte-level idle bound of every SSE body read over this transport (`None` = never);
+    /// [`crate::llm::client::STREAM_IDLE_TIMEOUT`] unless the `IOTA_STREAM_IDLE_TIMEOUT` test hook said
+    /// otherwise.
+    pub stream_idle: Option<std::time::Duration>,
 }
 
 impl From<reqwest::Client> for HttpTransport {
@@ -301,6 +305,7 @@ impl From<reqwest::Client> for HttpTransport {
         Self {
             client,
             recorder: None,
+            stream_idle: Some(crate::llm::client::STREAM_IDLE_TIMEOUT),
         }
     }
 }

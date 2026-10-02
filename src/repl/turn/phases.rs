@@ -12,6 +12,10 @@ use crate::ui::facade::{BusyGuard, Ui};
 
 /// The label while the request is in flight (run.go:1222,1230).
 pub(crate) const PHASE_WAITING: &str = "Waiting for the model";
+/// The label once the response head arrived and the body has not yet produced anything: the
+/// provider answered, the model has not. Tells "cannot reach the provider" apart from "the stream
+/// is silent".
+pub(crate) const PHASE_FIRST_TOKEN: &str = "Waiting for the first token";
 /// The label while a large request body uploads (run.go:1220).
 pub(crate) const PHASE_SENDING: &str = "Sending request";
 /// Bodies at or above this size narrate their upload (progress.go:18).
@@ -83,8 +87,8 @@ impl Drop for PhaseWatch {
 /// `on_send` only narrates bodies at or above [`SEND_PROGRESS_MIN`] — smaller uploads are not
 /// worth a phase. It sets the label once (a repeated [`Phases::set`] is a no-op, so the phase
 /// clock keeps running) and updates the detail on every report. `on_sent` fires when the
-/// round-trip returns — headers received, or the attempt failed — and hands the row back to
-/// "waiting".
+/// round-trip returns: a success head moves the row to [`PHASE_FIRST_TOKEN`], a failed attempt
+/// (retried next) hands it back to [`PHASE_WAITING`].
 pub(crate) fn watch_phases(tp: &Arc<TurnProgress>, phases: Phases) -> PhaseWatch {
     let sending = phases.clone();
     let start = phases.clone();
@@ -100,7 +104,13 @@ pub(crate) fn watch_phases(tp: &Arc<TurnProgress>, phases: Phases) -> PhaseWatch
             }
         }),
         // `phases` itself moves into the "headers received" handler, which outlives this call.
-        Box::new(move || phases.set(PHASE_WAITING)),
+        Box::new(move |headed| {
+            phases.set(if headed {
+                PHASE_FIRST_TOKEN
+            } else {
+                PHASE_WAITING
+            });
+        }),
     )));
     start.set(PHASE_WAITING);
     PhaseWatch(Arc::clone(tp))
@@ -123,7 +133,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::{
-        PHASE_SENDING, PHASE_WAITING, Phases, SEND_PROGRESS_MIN, format_byte_size, watch_phases,
+        PHASE_FIRST_TOKEN, PHASE_SENDING, PHASE_WAITING, Phases, SEND_PROGRESS_MIN,
+        format_byte_size, watch_phases,
     };
     use crate::llm::progress::TurnProgress;
     use crate::testing::{ScriptedUi, UiEvent};
@@ -184,7 +195,7 @@ mod tests {
             let _watch = watch_phases(&tp, phases.clone());
             let total = SEND_PROGRESS_MIN - 1;
             tp.send(total, total);
-            tp.sent();
+            tp.sent(false);
         }
         phases.end();
         assert_eq!(
@@ -206,7 +217,7 @@ mod tests {
             let _watch = watch_phases(&tp, phases.clone());
             tp.send(65_536, SEND_PROGRESS_MIN);
             tp.send(SEND_PROGRESS_MIN, SEND_PROGRESS_MIN);
-            tp.sent();
+            tp.sent(false);
         }
         phases.end();
         assert_eq!(
@@ -224,6 +235,31 @@ mod tests {
         );
     }
 
+    // The row tells "the provider has not answered" from "it answered and the body is silent": a
+    // failed attempt keeps "Waiting for the model" running (same label, same clock), a success
+    // head moves the row to "Waiting for the first token" with a fresh clock.
+    #[test]
+    fn a_success_head_moves_the_row_to_the_first_token_phase() {
+        let ui = ScriptedUi::new(Vec::new());
+        let phases = Phases::new(Arc::clone(&ui) as Arc<dyn Ui>);
+        let tp = TurnProgress::new();
+        {
+            let _watch = watch_phases(&tp, phases.clone());
+            tp.sent(false); // a 503 / header timeout, retried
+            tp.sent(true); // the retry's 200 head
+        }
+        phases.end();
+        assert_eq!(
+            ui.events(),
+            vec![
+                busy(PHASE_WAITING),
+                UiEvent::BusyOff,
+                busy(PHASE_FIRST_TOKEN),
+                UiEvent::BusyOff,
+            ]
+        );
+    }
+
     #[test]
     fn watch_sets_waiting_and_clears_handlers_on_drop() {
         let ui = ScriptedUi::new(Vec::new());
@@ -234,7 +270,7 @@ mod tests {
         }
         // The watch is gone: a late report from a background call narrates nothing.
         tp.send(SEND_PROGRESS_MIN, SEND_PROGRESS_MIN);
-        tp.sent();
+        tp.sent(false);
         phases.end();
         assert_eq!(ui.events(), vec![busy(PHASE_WAITING), UiEvent::BusyOff]);
     }

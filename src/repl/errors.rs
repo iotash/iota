@@ -51,6 +51,10 @@ pub fn describe_error(e: &ChatError) -> ErrorReport {
     }
 }
 
+/// What a user can do about a stalled stream. It names no setting on purpose: the idle bound is a
+/// constant (`client::STREAM_IDLE_TIMEOUT`), not a knob (decided 2026-10-01).
+const STALL_HINT: &str = "Send the message again, or check the provider's base URL and model (/model); ESC stops a silent wait sooner";
+
 /// The wire rows of the table; `whole` is the full error text the detail row shows.
 fn describe_llm(llm: &LlmError, whole: &dyn std::fmt::Display) -> ErrorReport {
     match llm {
@@ -64,6 +68,11 @@ fn describe_llm(llm: &LlmError, whole: &dyn std::fmt::Display) -> ErrorReport {
             headline: "Network error".to_owned(),
             detail: vec![whole.to_string()],
             hint: String::new(),
+        },
+        LlmError::StreamIdle(_) => ErrorReport {
+            headline: "Response stalled".to_owned(),
+            detail: vec![whole.to_string()],
+            hint: STALL_HINT.to_owned(),
         },
         _ => ErrorReport::request_failed(whole),
     }
@@ -272,6 +281,13 @@ mod tests {
                 headline: "Provider did not stream",
                 detail: format!("stream error: {}", LlmError::NoEvents),
                 hint: "",
+            },
+            Case {
+                name: "a stall says what to do and names no knob",
+                err: wire(LlmError::StreamIdle(std::time::Duration::from_secs(300))),
+                headline: "Response stalled",
+                detail: "stream error: no data from the provider for 5m0s (stream idle timeout); the request was not retried".to_owned(),
+                hint: "Send the message again, or check the provider's base URL and model (/model); ESC stops a silent wait sooner",
             },
             Case {
                 name: "plain error",

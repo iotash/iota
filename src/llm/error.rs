@@ -48,6 +48,15 @@ pub enum LlmError {
     /// The 2-minute response-header timeout (POLICY I-02) expired; retried like `Transport`.
     #[error("response headers not received within {}", go_duration(*.0))]
     HeaderTimeout(Duration),
+    /// A streaming body sent no byte for this long after its head (`client::STREAM_IDLE_TIMEOUT`).
+    /// Unlike `Cancelled` it is reported, and unlike `HeaderTimeout` it is NEVER retried: the stream
+    /// may already have produced output. The text names no knob: the bound is a constant, and its
+    /// test hook (`client::STREAM_IDLE_TIMEOUT_ENV`) is not something a user is meant to set.
+    #[error(
+        "no data from the provider for {} (stream idle timeout); the request was not retried",
+        go_duration(*.0)
+    )]
+    StreamIdle(Duration),
     /// A 2xx body that is not the expected JSON.
     #[error("{0}")]
     Decode(#[source] serde_json::Error),
@@ -179,5 +188,9 @@ mod tests {
             r#"llm: invalid model name "bad?x""#
         );
         assert_eq!(LlmError::Cancelled.to_string(), "interrupted");
+        assert_eq!(
+            LlmError::StreamIdle(Duration::from_secs(180)).to_string(),
+            "no data from the provider for 3m0s (stream idle timeout); the request was not retried"
+        );
     }
 }
