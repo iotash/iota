@@ -1134,6 +1134,70 @@ async fn an_interrupted_turn_that_was_kept_still_queues_the_flush() {
     );
 }
 
+/// The same for a turn a stall KEPT (X-64's stream idle bound): the tool round crossed the threshold, the
+/// round explaining its result stalled after some text. The kept turn lands, its calls paired and its measured
+/// usage counted, so it queues the flush — the stall is an error, not a turn that never happened.
+#[tokio::test]
+async fn a_stalled_turn_that_was_kept_still_queues_the_flush() {
+    let f = Fixture::new(vec![
+        input("zero"),
+        input("go"),
+        Reply::Queued(Vec::new()), // the tool walk's steering check
+        Reply::Enqueued,           // the flush notice
+        Reply::Interrupted,
+    ]);
+    let p = FakeProvider::new()
+        .with_model("gpt-test")
+        .reporting_usage()
+        .with_tools()
+        .answering(|_, messages| {
+            let last = messages.last().expect("a message");
+            let prompt = last.content.as_str();
+            if prompt.starts_with(SUMMARY_MARK) {
+                return Round::reply("SUMMARY").usage(usage(900));
+            }
+            if last.role() == Role::Tool {
+                return match last.tool_call_id() {
+                    "r1" => Round::stalled("the file says"),
+                    _ => Round::text("Saved.").usage(usage(1_000)),
+                };
+            }
+            match prompt {
+                "go" => Round::calls(vec![iota::testing::tool_call_with(
+                    "r1",
+                    "read_file",
+                    &[("path", "x")],
+                )])
+                .usage(usage(100_000)),
+                p if p.starts_with(FLUSH_MARK) => remember_tabs(),
+                p => Round::text(&format!("re {p}")).usage(usage(1_000)),
+            }
+        });
+    let log = p.log();
+    let dir = f.run(p, "").await;
+
+    assert!(
+        f.printed().iter().any(|l| l.contains("Response stalled")),
+        "{:?}",
+        f.printed()
+    );
+    let prompts = log.prompts();
+    assert!(
+        prompts.get(3).is_some_and(|p| p.starts_with(FLUSH_MARK)),
+        "{prompts:?}"
+    );
+    let flush = &log.sent()[3];
+    assert_paired(flush);
+    assert!(
+        flush
+            .iter()
+            .any(|m| m.role() == Role::Tool && m.tool_call_id() == "r1"),
+        "{flush:#?}"
+    );
+    let m = marker(&dir);
+    assert!(m.get("flush_skipped").is_none(), "{m}");
+}
+
 /// A flush turn that did not finish (§3.6.1, §4.1): it is best-effort, so it is not the host's business — no
 /// `Failed` ping, no `Error` state — and the compaction after it runs anyway, recorded and said out loud as
 /// one without a flush.

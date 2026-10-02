@@ -914,10 +914,11 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 // A stall keeps what the turn completed; anything else — or a stall with
                 // nothing to keep — rolls the turn back WITH its user message, and the name
                 // derived from it, so a title pass still in flight could only land a name
-                // `unseed` already discards.
-                if !(stalled
-                    && keep_stalled_turn(&mut repl, hist0 - 1, &partial, &partial_reasoning))
+                // `unseed` already discards. A kept stall lands like a kept interrupt (fable M2).
+                if stalled && keep_stalled_turn(&mut repl, hist0 - 1, &partial, &partial_reasoning)
                 {
+                    landed = !flush;
+                } else {
                     repl.conv.history.truncate(hist0 - 1);
                     if repl.session.titler.unseed(&repl.conv.history) {
                         repl.session.abort_title();
@@ -1296,7 +1297,8 @@ fn interrupt_turn(
 /// model run them again), and the partial text lands as an assistant message marked cut short.
 /// Returns `false`, touching nothing, when there is nothing to keep — the plain rollback then
 /// runs. The stall stays an error (red block, `State::Error`, no retry); only the bookkeeping
-/// follows ESC's.
+/// follows ESC's — all of it: unanswered calls answered before the save, the rounds' measured
+/// usage kept for a bot's threshold, and the caller counts the turn as landed.
 fn keep_stalled_turn(
     repl: &mut Repl,
     watermark: usize,
@@ -1315,11 +1317,12 @@ fn keep_stalled_turn(
         return false;
     }
     repl.conv.history = history;
+    crate::session::repair_tail(&mut repl.conv.history);
     repl.handles
         .tr
         .notice("What arrived before the stall is kept — the reply may be incomplete.");
     persist_kept_turn(repl);
-    rebudget_kept_turn(repl, watermark, false);
+    rebudget_kept_turn(repl, watermark, true);
     true
 }
 
