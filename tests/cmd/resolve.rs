@@ -38,6 +38,9 @@ fn config(yaml: &str) -> Config {
     Config::parse(yaml.as_bytes(), &Env::default(), &mut |_| {}).expect("test config")
 }
 
+// `resolve_run`'s own signature, forwarded. `CliError` is 128 bytes on Windows (a 120-byte stage error plus
+// the tag) and the lint only sees that from outside the crate that defines it.
+#[allow(clippy::result_large_err)]
 fn resolve(
     args: &[&str],
     cfg: &Config,

@@ -392,6 +392,11 @@ pub(crate) async fn run_interactive(
 
     match outcome {
         Err(e) => Err(repl_error(e)),
+        // A signal ended the run (DIVERGENCES I-03): only `signals::install` cancels the root token — SIGTERM
+        // or SIGHUP, since raw mode turned SIGINT into a key event — so this wind-down was the signal's, not
+        // Ctrl+D's or `/exit`'s, and the exit is 130 like a headless run's. A draw error stored after a hangup
+        // is the hangup itself, not news.
+        Ok(()) if ctx.cancel.is_cancelled() => Err(RunError::Interrupted.into()),
         // The loop exits cleanly even when the terminal died under it (every waiter fails `Closed`), so the
         // draw error the loop thread stored is the only witness left — Go had none to surface.
         Ok(()) => closed.map_err(|e| RunError::Io(e).into()),

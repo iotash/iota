@@ -59,14 +59,17 @@ pub fn valid_bot_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
+/// Why [`pointers`] failed: the path that could not be read, and the error — boxed, as
+/// [`SessionError::BotOwnerUnknown`] holds it; unboxed, a Windows `PathBuf` tips the pair over clippy's
+/// `result_large_err`.
+pub(crate) type PointerError = (std::path::PathBuf, Box<SessionError>);
+
 /// Every bot directory's pointer under `bots`, as `(bot name, pointer)`, name-sorted. A missing `bots`
 /// directory is no bots, a bot directory without a pointer is skipped; a pointer (or the directory) that
 /// cannot be read is an error — "no owner" must never stand in for "cannot tell" (§2.7) — together with the
-/// path that could not be read.
-pub(crate) fn pointers(
-    bots: &Path,
-) -> Result<Vec<(String, BotPointer)>, (std::path::PathBuf, SessionError)> {
-    let root = |e: std::io::Error| (bots.to_path_buf(), SessionError::Io(e));
+/// path that could not be read ([`PointerError`]).
+pub(crate) fn pointers(bots: &Path) -> Result<Vec<(String, BotPointer)>, PointerError> {
+    let root = |e: std::io::Error| (bots.to_path_buf(), Box::new(SessionError::Io(e)));
     let entries = match std::fs::read_dir(bots) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -76,10 +79,16 @@ pub(crate) fn pointers(
     for e in entries {
         let e = e.map_err(root)?;
         let dir = e.path();
-        if !e.file_type().map_err(|e| (dir.clone(), e.into()))?.is_dir() {
+        if !e
+            .file_type()
+            .map_err(|e| (dir.clone(), Box::new(e.into())))?
+            .is_dir()
+        {
             continue;
         }
-        if let Some(ptr) = BotPointer::read(&dir).map_err(|e| (dir.join(BOT_POINTER_FILE), e))? {
+        if let Some(ptr) =
+            BotPointer::read(&dir).map_err(|e| (dir.join(BOT_POINTER_FILE), Box::new(e)))?
+        {
             out.push((e.file_name().to_string_lossy().into_owned(), ptr));
         }
     }

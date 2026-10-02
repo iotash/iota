@@ -138,7 +138,7 @@ impl SessionStore {
             SessionError::BotOwnerUnknown {
                 id: id.to_owned(),
                 path,
-                source: Box::new(e),
+                source: e,
             }
         })?;
         Ok(pointers
