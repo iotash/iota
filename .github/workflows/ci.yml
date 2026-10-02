@@ -101,6 +101,9 @@ jobs:
           name: tmux-scenarios-${{ matrix.os }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/tmux-scenarios
           if-no-files-found: ignore
+          # The bundles live under `<scratch>/home/.iota`, a dot directory upload-artifact@v4 leaves
+          # out by default — without this the red run of CI 37025565018 uploaded nothing at all.
+          include-hidden-files: true
 
       # Windows runs no `ci.sh`: that script is the Unix gate, and half of it is things this platform
       # does not have (tmux, bubblewrap, the sandbox) or does not ship (the release size budget, which

@@ -3,9 +3,16 @@
 //! `<bots>/<name>/lock`, held by the one process running that bot — from before its pointer is read until it
 //! exits, so the window between writing the pointer and materialising the bundle has an owner too.
 //!
-//! The lock is `File::try_lock` — advisory, and released by the OS when the handle closes or the process
-//! dies, so there is no such thing as a stale lock. The pid written into the file is only there so the
-//! refusal can say who holds it; nothing ever trusts it for anything else.
+//! The lock is `File::try_lock`, released by the OS when the handle closes or the process dies, so there is
+//! no such thing as a stale lock. The holder's pid is written down only so the refusal can say who holds it;
+//! nothing ever trusts it for anything else.
+//!
+//! Where the pid lives differs by platform ([`pid_path`]). On unix the lock is an advisory `flock` and the pid
+//! goes into the lock file itself. On Windows `try_lock` is `LockFileEx` over the WHOLE file, a mandatory lock:
+//! every other handle's read of a locked byte fails with `ERROR_LOCK_VIOLATION`, so a pid inside the lock file
+//! could never be read by the one process that needs it — the one being refused. (A lock on a byte range
+//! past the pid would need `LockFileEx` itself, and this crate forbids `unsafe`.) There the pid goes into a
+//! sibling `<lock>.pid` instead, which nobody locks.
 
 use std::io::{Read, Seek, Write};
 use std::path::Path;
@@ -68,14 +75,14 @@ pub(crate) fn lock_bot(bot_dir: &Path, bot: &str) -> Result<HeldLock, SessionErr
 /// A filesystem that cannot lock at all (`ENOTSUP` / `EOPNOTSUPP`: NFS or SMB without lock support) fails
 /// closed with [`SessionError::LockUnsupported`] naming the directory — never a guard that holds nothing.
 fn try_lock_file(path: &Path) -> Result<Result<HeldLock, Option<u32>>, SessionError> {
-    let mut file = open_lock_file(path)?;
+    let file = open_lock_file(path)?;
     match try_lock(&file) {
         Ok(()) => {
             // Best effort: the pid is for the error text only, so a failed write does not fail the lock.
-            let _ = write_pid(&mut file);
+            let _ = write_pid(&file, path);
             Ok(Ok(HeldLock(file)))
         }
-        Err(std::fs::TryLockError::WouldBlock) => Ok(Err(read_pid(&mut file))),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(Err(read_pid(&file, path))),
         Err(std::fs::TryLockError::Error(e)) if cannot_lock(&e) => {
             Err(SessionError::LockUnsupported {
                 dir: path.parent().unwrap_or(path).to_path_buf(),
@@ -112,19 +119,43 @@ fn cannot_lock(e: &std::io::Error) -> bool {
         || matches!(e.raw_os_error(), Some(n) if n == ENOTSUP || n == EOPNOTSUPP)
 }
 
-/// Replaces the file's contents with this process's pid.
-fn write_pid(file: &mut std::fs::File) -> std::io::Result<()> {
-    file.set_len(0)?;
-    file.rewind()?;
-    file.write_all(std::process::id().to_string().as_bytes())
+/// Where the holder of the lock at `lock` writes its pid: the lock file itself on unix, the sibling
+/// `<lock>.pid` on Windows, where the lock file's bytes cannot be read by anyone but the holder (module docs).
+fn pid_path(lock: &Path) -> std::borrow::Cow<'_, Path> {
+    if cfg!(windows) {
+        let mut name = lock.as_os_str().to_owned();
+        name.push(".pid");
+        std::borrow::Cow::Owned(name.into())
+    } else {
+        std::borrow::Cow::Borrowed(lock)
+    }
 }
 
-/// The holder's pid as it wrote it; `None` when the file is empty (the holder has not written it yet) or
-/// holds anything else.
-fn read_pid(file: &mut std::fs::File) -> Option<u32> {
-    let mut text = String::new();
-    file.rewind().ok()?;
-    file.read_to_string(&mut text).ok()?;
+/// Replaces the contents of [`pid_path`] with this process's pid. `file` is the held lock file, written
+/// through the very handle that holds the lock when the pid lives in it.
+fn write_pid(mut file: &std::fs::File, lock: &Path) -> std::io::Result<()> {
+    let pid = std::process::id().to_string();
+    let path = pid_path(lock);
+    if *path != *lock {
+        return std::fs::write(path, pid);
+    }
+    file.set_len(0)?;
+    file.rewind()?;
+    file.write_all(pid.as_bytes())
+}
+
+/// The holder's pid as it wrote it; `None` when there is none to read (the holder has not written it yet)
+/// or it holds anything else.
+fn read_pid(mut file: &std::fs::File, lock: &Path) -> Option<u32> {
+    let path = pid_path(lock);
+    let text = if *path == *lock {
+        let mut text = String::new();
+        file.rewind().ok()?;
+        file.read_to_string(&mut text).ok()?;
+        text
+    } else {
+        std::fs::read_to_string(path).ok()?
+    };
     text.trim().parse().ok()
 }
 
@@ -260,16 +291,38 @@ pub(crate) mod tests {
         assert!(dir.path().join(LOCK_FILE).exists());
     }
 
-    /// A holder whose pid is not (yet) in the file is still refused — the text just omits the pid.
+    /// A holder whose pid is not (yet) written down is still refused — the text just omits the pid.
     #[test]
     fn unknown_pid_is_omitted_from_the_text() {
         let dir = tempfile::tempdir().expect("tempdir");
         let held = lock_bundle(dir.path(), "k7q").expect("first lock");
-        std::fs::write(dir.path().join(LOCK_FILE), "").expect("clear pid");
+        std::fs::write(super::pid_path(&dir.path().join(LOCK_FILE)), "").expect("clear pid");
         let err = lock_bundle(dir.path(), "k7q").expect_err("refused");
         assert_eq!(
             err.to_string(),
             "session k7q is open in another iota process"
+        );
+        drop(held);
+    }
+
+    /// The pid sits where every other process can read it while the lock is held: in the lock file under
+    /// unix's advisory `flock`, beside it under Windows' mandatory `LockFileEx` (module docs). The refusals
+    /// above that name the holder's pid are what fails when it is put back inside on Windows.
+    #[test]
+    fn the_pid_is_readable_while_the_lock_is_held() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let lock = dir.path().join(LOCK_FILE);
+        let pid = super::pid_path(&lock);
+        if cfg!(windows) {
+            assert_eq!(*pid, *dir.path().join(".lock.pid"));
+        } else {
+            assert_eq!(*pid, *lock);
+        }
+        let held = lock_bundle(dir.path(), "k7q").expect("lock");
+        // Another handle, as the refused process has: a read the holder's lock does not block.
+        assert_eq!(
+            std::fs::read_to_string(&pid).expect("readable while held"),
+            std::process::id().to_string()
         );
         drop(held);
     }

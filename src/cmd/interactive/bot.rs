@@ -378,6 +378,15 @@ mod tests {
         );
     }
 
+    /// The instant `at` seen from UTC. Built from [`jiff::tz::TimeZone::UTC`], not parsed from a `[UTC]`
+    /// annotation: a named zone is looked up in the tz database, and the Windows build has none
+    /// (`tzdb-zoneinfo` reads `/usr/share/zoneinfo`), so the parse fails there before the test begins.
+    fn utc(at: &str) -> jiff::Zoned {
+        at.parse::<jiff::Timestamp>()
+            .expect("timestamp")
+            .to_zoned(jiff::tz::TimeZone::UTC)
+    }
+
     /// Backdates the bundle's `meta.updated_at` on disk (the writer stamps the real clock).
     fn backdate(dir: &std::path::Path, at: &str) {
         let path = dir.join(crate::session::META_FILE);
@@ -395,7 +404,7 @@ mod tests {
     fn a_resume_tells_the_model_how_long_and_where() {
         let h = home();
         let mut p = provider("gpt-4o");
-        let now: jiff::Zoned = "2026-09-30T19:30:00+00:00[UTC]".parse().expect("now");
+        let now = utc("2026-09-30T19:30:00Z");
         let mut first = open_in(&h, &mut p, "", "/work/iota").expect("fresh");
         assert!(
             first.previous.is_none(),
@@ -439,7 +448,7 @@ mod tests {
     /// The time notice waits for [`RESUME_GAP_NOTICE_SECS`]; the project notice has no gate.
     #[test]
     fn the_time_notice_waits_for_an_hour_the_project_notice_does_not() {
-        let now: jiff::Zoned = "2026-09-30T19:30:00+00:00[UTC]".parse().expect("now");
+        let now = utc("2026-09-30T19:30:00Z");
         let at = |written: &str, cwd: &str| LastRun {
             written: written.to_owned(),
             cwd: cwd.to_owned(),
@@ -488,7 +497,7 @@ mod tests {
         );
         let last = again.previous.as_ref().expect("resumed");
         assert_eq!(last.written, "2026-09-27T18:02:41+00:00");
-        let now: jiff::Zoned = "2026-09-30T19:30:00+00:00[UTC]".parse().expect("now");
+        let now = utc("2026-09-30T19:30:00Z");
         assert_eq!(
             resume_notices(last, "/work/proj", &now),
             ["Resumed after 3 days (last activity 2026-09-27 18:02)"]

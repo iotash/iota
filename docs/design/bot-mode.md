@@ -71,6 +71,7 @@ bot 目录布局（全部新增）：
     bot.json        # {"session":"01K…"}
                     # 指针：这个 bot 的会话是哪一个；只在本体落盘之后发布（§2.2），tmp+rename 原子写
     lock            # 进程锁（File::try_lock），内容为持有者 pid，仅用于报错信息
+    lock.pid        # 仅 Windows：持有者 pid（强制锁下 lock 本身读不了，见 §7.1 锁的平台差异）
     MEMORY.md       # 常驻记忆层（§3.2），8 KiB 硬上限，文件级 frontmatter + 三个约定小节
     MEMORY.md.prev  # 上一版（§3.7），每次工具写入前保存
     notes/          # 检索记忆层（§3.3，L2），每篇带 OKF frontmatter
@@ -698,7 +699,7 @@ rev 1 只处理了 `</memory>` 的结构逃逸。评审 S1 指出的问题更大
 
 - **多 bot 并发**（评审 M4）：每个进程各自拉起 stdio MCP servers（`src/cmd/interactive/mod.rs:270-280`），`MAX_JOBS` 每进程 16（`src/shell/jobs.rs:56`）。同一项目里开两个带 `code` 集的 bot 会互相覆盖文件，不能双开的 MCP server 会起两份。文档写明；同项目多 bot 至少 warning。
 - **同步盘**（评审 M5）：`try_lock` 不跨机器；append 在同步盘上会产生 conflicted copy。`~/.iota/sessions` 不要放进 iCloud / Dropbox；`bots/<name>/` 可以（记忆是明文 Markdown；不要把密钥写进记忆）。
-- **锁的平台差异**（评审 M7）：Windows 的 `try_lock` 是强制锁；Go 版不认 flock。锁文件与数据文件分开（`.lock`、`lock`），保持。文件系统根本不支持加锁（NFS / SMB 上 `try_lock` 报 `ENOTSUP` / `EOPNOTSUPP`）时**失败关闭**：写式打开（resume、新建落盘、bot 锁）与删除都报 `SessionError::LockUnsupported`，文案 `file locking is not supported under <dir>; iota cannot open or delete a session there`。不降级为无锁：失败批的截回依赖独占，无锁时 A 的 `set_len` 会截掉 B 已确认保存的数据（评审 codex N1，2026-10-01 定，撤回上一轮按 fable M5 加的降级）。只读加载不取锁，不受影响。不为少数文件系统另做锁实现。
+- **锁的平台差异**（评审 M7）：Windows 的 `try_lock` 是强制锁；Go 版不认 flock。锁文件与数据文件分开（`.lock`、`lock`），保持。强制锁的后果之一：`LockFileEx` 锁住整个文件，别的句柄读锁文件报 `ERROR_LOCK_VIOLATION`，被拒的一方读不到 pid（CI 37025565018 的 Windows 腿）；所以 Windows 上 pid 写在旁边不加锁的 `<lock>.pid`（`.lock.pid`、`lock.pid`），unix 仍写在锁文件里（`session::lock::pid_path`）。只锁 pid 之外的字节区间要直接调 `LockFileEx`，本 crate 禁 `unsafe`，不走。文件系统根本不支持加锁（NFS / SMB 上 `try_lock` 报 `ENOTSUP` / `EOPNOTSUPP`）时**失败关闭**：写式打开（resume、新建落盘、bot 锁）与删除都报 `SessionError::LockUnsupported`，文案 `file locking is not supported under <dir>; iota cannot open or delete a session there`。不降级为无锁：失败批的截回依赖独占，无锁时 A 的 `set_len` 会截掉 B 已确认保存的数据（评审 codex N1，2026-10-01 定，撤回上一轮按 fable M5 加的降级）。只读加载不取锁，不受影响。不为少数文件系统另做锁实现。
 - **换到更小的窗口**（评审 M6）：保留尾部若大于新窗口，summarize 自身超窗，按 §4.1 的超窗规则由人处理；不做分块摘要。
 - **失败批之后 meta 的 `message_count` 会少计**（§2.7，验收 codex 2026-10-01 §6，合并后跟进）：一批记录已进日志、meta 没跟上（进程在批后 meta 重写前死掉，或截回失败后换了进程）时，`SessionWriter::resumed` 直接沿用 `meta.json` 里的计数、不据日志重算，之后只按新追加的条数累加——实测 resume 补一条结果后磁盘四条、`message_count=2`。`db11a05` 起即如此，不是 R1 修复引入的。只影响 `/session` 列表显示的条数；决定压缩标记与保留尾部的 `conv_count` 已从日志重算（`LoadedLog::conv_count`），不受影响。跟进：resume 时按日志校准该计数。
 - **视图中段的孤儿 `tool_use` 修不了**（§2.7）：`repair_tail` 只看视图末尾最后一条非 tool 消息，靠追加合成结果修复；中段的孤儿无法靠追加补上，这样的会话照样会被 API 拒绝，只能手工处理日志。
