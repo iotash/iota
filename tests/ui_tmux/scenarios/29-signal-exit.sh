@@ -8,7 +8,11 @@
 # that thread for good, and every later SIGTERM fell on a tokio handler nobody listened to.
 #
 # A: SIGTERM mid-turn, the terminal alive: the run winds down — the turn's message in the
-#    session log, raw mode and bracketed paste handed back to the shell that started it.
+#    session log, raw mode and bracketed paste handed back to the shell that started it — and
+#    exits 130, the status DIVERGENCES I-03 gives a signalled run in either mode (it was 0 until
+#    0.6.0: the wind-down is the normal exit path, and the status never noticed the signal).
+# C: the same shell-hosted run left with an idle Ctrl+D exits 0 — the 130 is the signal's, not
+#    every wind-down's.
 # B: the pty hung up (`kill-server`): the process is gone well inside `CLOSE_GRACE` (5 s, the
 #    backstop in `Ui::close`), so this measures the hangup watch, not the backstop. Without the
 #    watch it exits at 5 s on the backstop alone, and without both it never does — a run that
@@ -58,8 +62,7 @@ else
     bad "A: iota was still running 3 s after SIGTERM"
     kill -KILL "$IOTA_PID" 2>/dev/null
 fi
-# The status itself is not pinned: an interactive run ends its loop on a cancelled read the way it
-# does on Ctrl+D (exit 0) — the 130 of DIVERGENCES I-03 is the headless contract.
+check "A: …with status 130 (DIVERGENCES I-03)" "$(cap | grep -o 'rc=[0-9]*' | tail -1)" "rc=130"
 _poll_until 30 _vis_has 'tty=' || bad "A: the shell never printed the tty mode"
 check "A: …raw mode handed back (the tty is canonical again)" "$(cap | grep -o 'tty=-*icanon' | tail -1)" "tty=icanon"
 check "A: …bracketed paste switched off" "$(tm display-message -pt s '#{bracket_paste_flag}')" "0"
@@ -69,6 +72,19 @@ if [ -n "$log" ] && grep -qF '"stream 60"' "$log"; then
     ok "A: …and the interrupted turn's message is in the session log"
 else
     bad "A: the session log has no record of the interrupted turn (${log:-no log})"
+fi
+
+# ---------------------------------------------------------------- C: Ctrl+D is not a signal
+
+start_shell 80 24 || finish
+type_ "$cmd; echo \"r\"\"c=\$?\""
+key Enter
+wait_vis '❯' || bad "C: the composer never came up under the shell"
+key C-d
+if _poll_until 30 _vis_has 'rc='; then
+    check "C: an idle Ctrl+D exits 0" "$(cap | grep -o 'rc=[0-9]*' | tail -1)" "rc=0"
+else
+    bad "C: iota was still running 3 s after an idle Ctrl+D"
 fi
 
 # ---------------------------------------------------------------- B: the terminal goes away
