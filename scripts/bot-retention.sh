@@ -204,6 +204,7 @@ run_group() {
     local dir="$RETENTION_OUT/$group"
     local home="$dir/home" work="$dir/work"
     local sock="iota-retention-$$-$group"
+    CURRENT_SOCK=$sock
     mkdir -p "$home" "$work"
     local url_line=''
     [ -n "$RETENTION_URL" ] && url_line="    url: \"$RETENTION_URL\""
@@ -371,6 +372,15 @@ EOF
     printf '%s\t%s\t%s\t%s\t%s/10\t%s/10\t%s/20\t%s\n' "$group" "$markers" "$flushes" "$bytes" \
         "$mem_ok" "$state_ok" $((mem_ok + state_ok)) "$note" >>"$RETENTION_OUT/results.tsv"
 }
+
+# A run broken off mid-group (Ctrl+C, a closed terminal) ends that group's private tmux server, and with it the
+# bot in its pane, which exits when its terminal hangs up — not left serving an experiment nobody reads.
+CURRENT_SOCK=''
+end_current_group() {
+    if [ -n "$CURRENT_SOCK" ]; then tmux -L "$CURRENT_SOCK" kill-server >/dev/null 2>&1 || true; fi
+}
+trap end_current_group EXIT
+trap 'end_current_group; exit 130' INT TERM HUP
 
 printf 'group\tcompactions\tflush notices\tMEMORY.md bytes\tmemory kind\tstate kind\ttotal\tnote\n' >"$RETENTION_OUT/results.tsv"
 status=0

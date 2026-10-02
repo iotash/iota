@@ -27,6 +27,7 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use crate::sync::lock;
 use std::thread;
+use std::time::Duration;
 
 use crate::BoxFuture;
 use crate::text::ansi::wrap_by_width;
@@ -63,16 +64,32 @@ impl TermGuard {
 
 impl Drop for TermGuard {
     fn drop(&mut self) {
-        // Best-effort: restore errors are unreportable on an exit path.
-        let mut out = io::stdout();
-        let _ = crossterm::execute!(
-            out,
-            crossterm::event::DisableBracketedPaste,
-            crossterm::cursor::Show
-        );
-        let _ = crossterm::terminal::disable_raw_mode();
+        restore_terminal();
     }
 }
+
+/// Bracketed paste off, cursor shown, raw mode off — when raw mode is on, and a no-op otherwise, so a
+/// headless run's stdout never sees the sequences and a second call (the guard after [`Ui::close`]
+/// gave up on the loop, or a forced exit) writes nothing. Best-effort: restore errors are
+/// unreportable on an exit path.
+pub(crate) fn restore_terminal() {
+    if !crossterm::terminal::is_raw_mode_enabled().unwrap_or(false) {
+        return;
+    }
+    let mut out = io::stdout();
+    let _ = crossterm::execute!(
+        out,
+        crossterm::event::DisableBracketedPaste,
+        crossterm::cursor::Show
+    );
+    let _ = crossterm::terminal::disable_raw_mode();
+}
+
+/// How long [`Ui::close`] waits for the loop thread to stop after `Quit`. An idle loop drains `Quit`
+/// within one `IDLE_POLL_MAX`; a busy one lands its last inserts first — seconds only on a terminal that
+/// is barely reading. A loop that has not stopped by then never will (a terminal operation that does not
+/// return), and the run must still end: the caller restores the terminal and goes on without it.
+pub(crate) const CLOSE_GRACE: Duration = Duration::from_secs(5);
 
 /// The facade handle (`TUI_CONTRACTS` §2): shared by every consumer, talks to the
 /// `"iota-tui"` loop thread through the mailbox and to the staging window through the
@@ -170,7 +187,7 @@ pub(crate) fn start(opts: TuiOptions) -> io::Result<Tui> {
     // round-trip cooperates with crossterm's event reader — wart W8).
     let (_, row) = crossterm::cursor::position()?;
     let term = Term::new(Box::new(io::stdout), 1, row)?;
-    let handle = spawn(term, CrosstermEvents, width, height, Some(restore))?;
+    let handle = spawn(term, CrosstermEvents::new(), width, height, Some(restore))?;
     // The probed tone is the loop's first message: the input shade follows it from frame one.
     handle.set_dark_background(opts.dark);
     Ok(Tui { handle })
@@ -266,7 +283,18 @@ impl Ui for TuiHandle {
             // 50ms poll deadline (the close-at-idle deadlock regression).
             lock(&self.region).flush();
             let _ = self.tx.send(UiMsg::Quit);
-            self.done.cancelled().await;
+            if tokio::time::timeout(CLOSE_GRACE, self.done.cancelled())
+                .await
+                .is_err()
+            {
+                // The loop is wedged and holds the guard: restore from here, and leave the thread
+                // (the process exit ends it). Nothing is joined — the join would wait just the same.
+                restore_terminal();
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "the terminal loop did not stop",
+                ));
+            }
             let join = lock(&self.join).take();
             if let Some(handle) = join {
                 // Join off the async worker (a thread join is blocking I/O); the

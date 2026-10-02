@@ -117,15 +117,92 @@ pub(crate) trait EventSource {
 }
 
 /// The live [`EventSource`] over crossterm's global event stream.
-pub(crate) struct CrosstermEvents;
+///
+/// crossterm is never let near a terminal that has hung up: its unix reader (0.29,
+/// `UnixInternalEventSource::try_read`) leaves its read loop only on `WouldBlock` or a parsed event,
+/// so the EOF a hung-up tty answers with (macOS: `Ok(0)`; Linux: `EIO`, which it swallows) keeps it
+/// reading forever — one core at 100%, the loop never back to its mailbox, `close()` waiting on
+/// it for good, and the process an orphan nothing but SIGKILL ends (2026-10-02: fifty of them,
+/// left by `tmux kill-server`). So [`HangupWatch`] waits on the terminal itself first and turns a
+/// hangup into the loop's error exit; crossterm is then asked with a zero timeout, which still
+/// hands over a parsed event, a buffered one, or a `SIGWINCH` that arrived meanwhile.
+pub(crate) struct CrosstermEvents {
+    /// The terminal crossterm reads (`None`: no terminal to open — crossterm then fails on its own).
+    #[cfg(unix)]
+    watch: Option<HangupWatch>,
+}
+
+impl CrosstermEvents {
+    /// Watches the terminal crossterm itself will read (unix; elsewhere there is no such reader).
+    pub(crate) fn new() -> Self {
+        Self {
+            #[cfg(unix)]
+            watch: HangupWatch::open(),
+        }
+    }
+}
 
 impl EventSource for CrosstermEvents {
     fn poll(&mut self, timeout: Duration) -> io::Result<bool> {
+        #[cfg(unix)]
+        if let Some(watch) = &self.watch {
+            watch.wait(timeout)?;
+            return crossterm::event::poll(Duration::ZERO);
+        }
         crossterm::event::poll(timeout)
     }
 
     fn read(&mut self) -> io::Result<Event> {
         crossterm::event::read()
+    }
+}
+
+/// The terminal crossterm reads, polled for a hangup before crossterm is (see [`CrosstermEvents`]).
+#[cfg(unix)]
+enum HangupWatch {
+    /// stdin is a terminal: crossterm's `tty_fd()` reads it.
+    Stdin,
+    /// stdin is not: crossterm opens `/dev/tty`, and so does this side — the same device.
+    DevTty(std::fs::File),
+}
+
+#[cfg(unix)]
+impl HangupWatch {
+    /// The descriptor crossterm reads; `None` when there is no terminal to open.
+    fn open() -> Option<Self> {
+        use std::io::IsTerminal as _;
+        if io::stdin().is_terminal() {
+            Some(Self::Stdin)
+        } else {
+            std::fs::File::open("/dev/tty").ok().map(Self::DevTty)
+        }
+    }
+
+    /// Waits up to `timeout` for the terminal to have input; `Err` once it has hung up (or the
+    /// descriptor is gone). Readable or timed out are both `Ok` — the caller asks crossterm next.
+    fn wait(&self, timeout: Duration) -> io::Result<()> {
+        use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+        use std::os::fd::AsFd as _;
+        let stdin = io::stdin();
+        let fd = match self {
+            Self::Stdin => stdin.as_fd(),
+            Self::DevTty(f) => f.as_fd(),
+        };
+        let mut fds = [PollFd::new(fd, PollFlags::POLLIN)];
+        // The W10 deadline is at most a few seconds; the fallback is never reached.
+        let timeout = PollTimeout::try_from(timeout).unwrap_or(PollTimeout::MAX);
+        match poll(&mut fds, timeout) {
+            Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+            Err(e) => return Err(e.into()),
+        }
+        let gone = PollFlags::POLLHUP | PollFlags::POLLERR | PollFlags::POLLNVAL;
+        if fds[0].revents().is_some_and(|r| r.intersects(gone)) {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "the terminal hung up",
+            ));
+        }
+        Ok(())
     }
 }
 
