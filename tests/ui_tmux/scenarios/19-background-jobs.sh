@@ -123,11 +123,12 @@ check "the typed-ahead lines queue as » rows" "$(count_vis '» ahead one')" 1
 check "…both of them" "$(count_vis '» ahead two')" 1
 key Up
 wait_vis '❯ ahead two' || bad "↑ did not recall the newest typed line"
-# CI 37025565018 (macos-14) read 0 here once — '❯ ahead two' already visible, yet not between the
-# frame's separators — while 22 local runs (loaded, and under the runner's C.UTF-8) and the same
-# commit's ubuntu leg read 1. A miss prints the pane, which that run could not show.
+# The stream is still running here, so the frame is being repainted under the read: polled, not
+# sampled once. CI 37025565018 and 37031410245 (macos-14) read 0 once each — '❯ ahead two'
+# already visible, the pane dumped right after showed it between the separators — from a
+# capture that landed inside a repaint (lib.sh, "the frame window"). A miss prints the pane.
 f0="$FAIL"
-check "↑ recalls the user's newest line into the composer" "$(count_composer '❯ ahead two')" 1
+check "↑ recalls the user's newest line into the composer" "$(wait_composer '❯ ahead two' 1)" 1
 [ "$FAIL" = "$f0" ] || dump_pane
 check "…taking it off the queue" "$(count_vis '» ahead two')" 0
 check "…stepping over the job's headline" "$(count_vis '» [background job b4 finished')" 1

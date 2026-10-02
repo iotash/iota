@@ -226,9 +226,10 @@ wait_gone() { _poll_until 120 _vis_lacks "$1"; }
 # is satisfied by the draft itself, before Enter is read — scenario 26 D resized a pane whose
 # frame still held the startup banner in 3 of ~100 loaded runs that way (2026-09-28).
 _sent() {
-    local t
-    t="$(frame_top)"
-    [ -n "$t" ] && cap | head -n "$((t - 1))" | grep -qF -- "$1" && ! composer_block | grep -qF -- "$1"
+    local s t
+    s="$(cap)"
+    t="$(frame_top "$s")"
+    [ -n "$t" ] && printf '%s\n' "$s" | head -n "$((t - 1))" | grep -qF -- "$1" && ! composer_block "$s" | grep -qF -- "$1"
 }
 wait_sent() { _poll_until 120 _sent "$1"; }
 
@@ -298,27 +299,55 @@ count_all() { capall | grep -cF -- "$1" | tr -d ' '; }
 # pane: a committed user block opens with the same `❯` glyph the composer uses, and a
 # resize can strand a stale separator of the old width above the live frame. The pair is
 # the only unambiguous anchor.
+#
+# A helper that reads the pair AND the rows between it reads them off ONE capture (`_snap`):
+# the frame moves under a running turn — every streamed line scrolls the screen up and inserts
+# itself back above the frame, a recalled draft repaints the frame from an erase-to-end — and
+# `capture-pane` shows those repaints half-done (tmux 3.7c does not hold a capture for an open
+# DEC 2026 update). Separators from one capture and rows from the next read the wrong window
+# (CI 37031410245, the macos-14 leg: 0 for a composer row the pane showed).
 
-frame_top() { cap | grep -n '^┄┄┄' | tail -2 | head -1 | cut -d: -f1; }
-frame_bot() { cap | grep -n '^┄┄┄' | tail -1 | cut -d: -f1; }
+# _snap [capture] — the capture given, or a fresh one.
+_snap() { if [ "$#" -gt 0 ]; then printf '%s\n' "$1"; else cap; fi; }
+
+frame_top() { _snap "$@" | grep -n '^┄┄┄' | tail -2 | head -1 | cut -d: -f1; }
+frame_bot() { _snap "$@" | grep -n '^┄┄┄' | tail -1 | cut -d: -f1; }
 
 # Everything between the separators: the composer rows plus any completion-candidates row.
 composer_block() {
-    local t b
-    t="$(frame_top)"
-    b="$(frame_bot)"
-    if [ -n "$t" ] && [ -n "$b" ] && [ "$b" -gt "$t" ]; then cap | sed -n "$((t + 1)),$((b - 1))p"; fi
+    local s t b
+    s="$(_snap "$@")"
+    t="$(frame_top "$s")"
+    b="$(frame_bot "$s")"
+    if [ -n "$t" ] && [ -n "$b" ] && [ "$b" -gt "$t" ]; then printf '%s\n' "$s" | sed -n "$((t + 1)),$((b - 1))p"; fi
 }
 
 # 1-based pane row of the composer's first (prompt) row.
 composer_row() {
-    local t off
-    t="$(frame_top)"
-    off="$(composer_block | grep -n '❯' | head -1 | cut -d: -f1)"
+    local s t off
+    s="$(cap)"
+    t="$(frame_top "$s")"
+    off="$(composer_block "$s" | grep -n '❯' | head -1 | cut -d: -f1)"
     if [ -n "$t" ] && [ -n "$off" ]; then echo $((t + off)); fi
 }
 
 count_composer() { composer_block | grep -cF -- "$1" | tr -d ' '; }
+
+# wait_composer <fixed string> <count> — polls until the frame window holds <count> copies and
+# prints the last count read, for `check` to judge. One capture can land inside a repaint even
+# when it is self-consistent, so a frame assertion made while a turn is still streaming polls
+# for its outcome the way `wait_vis` does; one made after `settle` reads a still frame and
+# needs no poll. Bounded like `wait_vis` (12 s): a composer that never gets there still fails.
+wait_composer() {
+    local n i=0
+    while :; do
+        n="$(count_composer "$1")"
+        [ "$n" = "$2" ] || [ "$i" -ge 120 ] && break
+        sleep 0.1
+        i=$((i + 1))
+    done
+    echo "$n"
+}
 
 # The frame's bottom zone: the row directly under the LOWER separator (status line, the
 # selected suggestion's description, or a surface's first row).
