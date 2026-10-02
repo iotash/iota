@@ -39,9 +39,23 @@ iota_pid() {
 _iota_up() { IOTA_PID="$(iota_pid)"; }
 gone() { ! kill -0 "$1" 2>/dev/null; }
 
+# Bracketed paste as the pane's bytes last set it: `on` after `ESC[?2004h`, `off` after
+# `ESC[?2004l`, empty before either. Read from the raw tap, not from tmux's
+# `#{bracket_paste_flag}`: that format is newer than the tmux 3.4 the ubuntu runner installs,
+# where it expands to nothing (CI 37025565018). The shell is `sh` (dash, or bash 3.2 on macOS),
+# which never toggles the mode itself, so every toggle in the capture is iota's.
+paste_mode() {
+    case "$(LC_ALL=C grep -aoE "$(printf '\033')\\[\\?2004[hl]" "$RAW" 2>/dev/null | tail -1)" in
+        *h) echo on ;;
+        *l) echo off ;;
+    esac
+}
+_paste_is() { [ "$(paste_mode)" = "$1" ]; }
+
 # ---------------------------------------------------------------- A: SIGTERM mid-turn
 
 start_shell 80 24 || finish
+pipe_raw
 cmd="$(iota_cmd openai fake)"
 # After iota: its exit status, then whether the tty is cooked again (`icanon` set, not
 # `-icanon`). One line each, so the capture reads them back; each marker is split by an empty
@@ -50,7 +64,8 @@ type_ "$cmd; echo \"r\"\"c=\$?\"; stty -a | tr ' ' '\\n' | grep -xE -- '-?icanon
 key Enter
 wait_vis '❯' || bad "A: the composer never came up under the shell"
 _poll_until 50 _iota_up || bad "A: no iota process under the pane's shell"
-check "A: bracketed paste is on while iota runs" "$(tm display-message -pt s '#{bracket_paste_flag}')" "1"
+_poll_until 30 _paste_is on
+check "A: bracketed paste is on while iota runs" "$(paste_mode)" "on"
 
 type_ 'stream 60'
 key Enter
@@ -65,7 +80,8 @@ fi
 check "A: …with status 130 (DIVERGENCES I-03)" "$(cap | grep -o 'rc=[0-9]*' | tail -1)" "rc=130"
 _poll_until 30 _vis_has 'tty=' || bad "A: the shell never printed the tty mode"
 check "A: …raw mode handed back (the tty is canonical again)" "$(cap | grep -o 'tty=-*icanon' | tail -1)" "tty=icanon"
-check "A: …bracketed paste switched off" "$(tm display-message -pt s '#{bracket_paste_flag}')" "0"
+_poll_until 30 _paste_is off
+check "A: …bracketed paste switched off" "$(paste_mode)" "off"
 # The interrupt table persisted the turn: the bundle holds the message SIGTERM cut short.
 log="$(find "$SCEN_HOME/.iota/sessions" -name messages.jsonl 2>/dev/null | head -1)"
 if [ -n "$log" ] && grep -qF '"stream 60"' "$log"; then
