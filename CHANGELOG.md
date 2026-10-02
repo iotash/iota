@@ -3,6 +3,124 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## 0.6.0 - 2026-10-02
+
+### Added
+
+- **A third mode, `bot`: one session that never ends.** `mode: bot` on an
+  `agents:` entry makes that agent a bot — everything `mode: agent` is (the
+  AGENTS.md chain, the skills), plus one session that belongs to it.
+  `iota run <name>` opens that session wherever you left it: the bot's
+  directory, `~/.iota/bots/<name>/`, holds a pointer to it, so a bot has no
+  `/new`, no picker and no resume to remember — close the pane, start it again
+  tomorrow, and the conversation goes on. A bot that has been away for an hour
+  or more, or that starts in a different project, is told so when it resumes.
+  The session is kept under `~/.iota/sessions/` like any other, but it opens
+  only as its bot: the session picker does not offer it, `/session` cannot
+  delete it, and an edited system prompt or model in the config takes effect
+  on the next start (X-58).
+- **A bot remembers.** Its session log is the full record; on top of it sits
+  `~/.iota/bots/<name>/MEMORY.md`, a Markdown file of at most 8 KiB with three
+  sections — `## User`, `## Project: <name>`, `## Open threads` — that goes out
+  with every request, the project sections cut to the project the bot is
+  running in. The model writes it through a `remember` tool (add, replace or
+  remove one line); each write is shown in the transcript, the previous file is
+  kept as `MEMORY.md.prev`, and a line you wrote yourself is one the model may
+  not change. It is a plain file: edit it while the bot runs and the next
+  request carries your version.
+- **A bot compacts by itself.** When the context passes the bot's threshold,
+  the bot first gets a turn to save what should outlive the compaction to its
+  memory (the memory flush), then compacts — without asking, since nobody may
+  be there to answer. The compaction keeps your last message and what came
+  after it verbatim. A compaction that fails twice in a row tells the host
+  (`bot <name>: compaction failing — …`) and waits for the context to grow
+  before it tries again (X-63).
+- **What a bot needs, checked before it starts.** A bot needs a chat model that
+  reports token usage and can call tools, and a context window of at least
+  32k; anything less is refused before a file is created
+  (`bot "coder" needs a context window of at least 32k, this one is 8.2k`). A
+  bot runs interactively and saved: `iota run <bot> -m …` and `--no-save` are
+  refused, and so is `iota resume <id>` of the session a bot owns
+  (`session <id> belongs to bot coder; run iota run coder`). The startup card's
+  mode row says `chat`, `agent` or `bot`, each in its own color, and
+  `iota config init`'s starter carries a commented-out bot entry.
+- **Newlines in the composer.** `Ctrl+J` inserts a line break in every
+  terminal. `Alt+Enter` and `Shift+Enter` do so where the terminal reports the
+  modifier — `Alt+Enter` in Ghostty and tmux by default, and in Terminal.app
+  with Option as Meta; `Shift+Enter` where the terminal sends it as its own
+  key. Elsewhere they are a plain Enter and send the message, as before.
+  `Ctrl+Enter` still sends. In Ghostty's default config `Shift+Enter` does
+  nothing at all; the line `keybind = shift+enter=text:\n` in Ghostty's config
+  makes it a newline, through tmux too. The composer now grows by the rows a
+  draft wraps to, and a queued multi-line message shows its breaks as `⏎`
+  (X-65).
+- **The environment variables, written down.** The README has a table of the
+  four a user might reach for: `IOTA_SHELL`, `IOTA_GIT_BASH_PATH`, `IOTA_LOG`
+  and `IOTA_DEBUG_REGION`. Everything else is configured in the YAML file.
+
+### Changed
+
+- **`workspace: true` is now `mode: agent`.** `agents.<name>.mode` takes `chat`
+  (the default — what leaving `workspace:` out was), `agent` (what
+  `workspace: true` was, byte for byte) or `bot`. There is no compatibility
+  shim: a config that still says `workspace:` gets the unknown-key error, whose
+  list of keys names `mode` (X-58).
+- **One process writes a session at a time.** Two terminals that resumed the
+  same session used to interleave two conversations in one log. The second
+  `iota resume <id>` is now refused (`session <id> is open in another iota
+  process (pid N)`), and `/session`'s Delete tab skips a session that is open
+  elsewhere. On a filesystem that cannot lock (some NFS and SMB mounts), iota
+  refuses to open or delete a session there rather than write without the lock
+  (X-60).
+- **A compaction carries the previous summary forward.** The summary an earlier
+  compaction left was fed to the next one as if you had said it, so every pass
+  summarized a summary. It now goes in as the previous summary, to be carried
+  forward or dropped where resolved (X-62).
+- **A compaction keeps your last turn, not the notice after it.** A host notice
+  — a background job's completion, for one — that arrived after your last
+  message used to take its place as the start of the kept tail, and your
+  message went into the summary. The tail now starts at your last message, in
+  every mode (X-63).
+- **The busy row says when the model has answered.** Once the response has
+  started, the row moves from `Waiting for the model` to `Waiting for the first
+  token` (X-64).
+- **One timer format.** The status row's job segment and `/jobs` read `1m 12s`
+  like every other timer on the screen, where they had their own `1m12s`; a
+  job's first second reads `<1s`.
+
+### Fixed
+
+- **A provider that stops sending no longer hangs the turn forever.** A stream
+  that sends no byte for 300 seconds now fails with `Response stalled` — a
+  heartbeat or a `ping` event keeps it alive — and is not retried, since a
+  retry would sit out the whole wait again. What the turn finished before the
+  stall stays: its tool calls and their results, and the partial reply, marked
+  as cut short. The bound is fixed, not a setting. Connections now time out
+  after 15 seconds, and HTTP/2 connections are pinged while a stream is open,
+  so a dead link is noticed beside the 120-second wait for the response's
+  headers that was already there (X-64).
+- **A finished answer is no longer taken for a stall.** A stream ends at its
+  protocol's end — `[DONE]`, `message_stop`, `response.completed` — rather than
+  when the server closes the body, which some relays never do (X-64).
+- **The session title no longer holds up the next message or the exit.** The
+  pass that names a new session could keep the composer, ESC and Ctrl+C waiting
+  for up to 30 seconds before the next message and before the exit. Nothing
+  waits on it now; an exit gives it up and the placeholder name stands (X-64).
+- **Closing the terminal no longer loses the turn in progress.** A hangup
+  (SIGHUP — closing the window or the pane, killing the tmux server) used to
+  end iota on the spot; it now takes the SIGTERM path: the running turn is
+  interrupted, what it finished is saved, the MCP servers are closed, and iota
+  exits even though the terminal is gone. A second SIGTERM forces the exit.
+- **An interactive iota ended by SIGTERM or SIGHUP exits 130**, after the same
+  wind-down as a normal exit, as a headless run already did; Ctrl+D is still a
+  clean 0 (I-03).
+- **A session left with an unanswered tool call loads and keeps working.** A
+  crash or power loss in the middle of a tool round could leave the log ending
+  on a call with no result, and every later request was refused by the
+  provider. A resume now answers such calls as interrupted and says so; and a
+  record too long for the log to read back is cut to fit when it is written,
+  instead of making the session unreadable (X-61).
+
 ## 0.5.2 - 2026-09-29
 
 ### Fixed
