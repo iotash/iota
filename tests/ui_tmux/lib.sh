@@ -331,7 +331,12 @@ composer_row() {
     if [ -n "$t" ] && [ -n "$off" ]; then echo $((t + off)); fi
 }
 
-count_composer() { composer_block | grep -cF -- "$1" | tr -d ' '; }
+# count_composer <fixed string> [capture]
+count_composer() {
+    local f="$1"
+    shift
+    composer_block "$@" | grep -cF -- "$f" | tr -d ' '
+}
 
 # wait_composer <fixed string> <count> — polls until the frame window holds <count> copies and
 # prints the last count read, for `check` to judge. One capture can land inside a repaint even
@@ -352,9 +357,10 @@ wait_composer() {
 # The frame's bottom zone: the row directly under the LOWER separator (status line, the
 # selected suggestion's description, or a surface's first row).
 bottom_zone() {
-    local bot
-    bot="$(frame_bot)"
-    [ -n "$bot" ] && cap | sed -n "$((bot + 1))p"
+    local s bot
+    s="$(_snap "$@")"
+    bot="$(frame_bot "$s")"
+    [ -n "$bot" ] && printf '%s\n' "$s" | sed -n "$((bot + 1))p"
 }
 
 # The status row's MODEL segment alone — everything before the first " · " joiner.
@@ -365,10 +371,13 @@ bottom_zone() {
 # The token half has its own pin in 01-startup.sh.
 status_model() { bottom_zone | sed 's/ · .*$//'; }
 
-# Display columns of a separator row (grep -o counts runes, not bytes).
-row_width() { cap | sed -n "${1}p" | grep -o '┄' | wc -l | tr -d ' '; }
+# row_width <row> [capture] — display columns of a separator row (grep -o counts runes, not bytes).
+row_width() {
+    local r="$1"
+    shift
+    _snap "$@" | sed -n "${r}p" | grep -o '┄' | wc -l | tr -d ' '
+}
 sep_width() { row_width "$(frame_bot)"; }
-_sep_is() { [ "$(sep_width)" = "$1" ]; }
 
 # Distinct matches of an extended pattern across the whole history.
 uniq_all() { capall | grep -oE -- "$1" | sort -u | wc -l | tr -d ' '; }
@@ -444,9 +453,11 @@ check_once() { check "$1" "$(count_all "$2")" 1; }
 
 # The visible pane, numbered — printed under a failed measurement so a red run shows WHAT
 # the helpers could not read instead of an empty value.
+#
+# dump_pane [capture] — the capture given (the one a judgement was made on), or a fresh one.
 dump_pane() {
     echo "    ---- pane (visible, numbered) ----"
-    cap | nl -ba | sed 's/^/    /'
+    _snap "$@" | nl -ba | sed 's/^/    /'
     echo "    ---- end of pane ----"
 }
 
@@ -461,26 +472,50 @@ check_measured() {
     check "$1" "$2" "$3"
 }
 
+# _frame_holds <capture> <width> — the whole invariant below, judged on that one capture.
+_frame_holds() {
+    local t b
+    t="$(frame_top "$1")"
+    b="$(frame_bot "$1")"
+    [ -n "$t" ] && [ -n "$b" ] && [ "$b" -gt "$t" ] \
+        && [ "$(row_width "$t" "$1")" = "$2" ] && [ "$(row_width "$b" "$1")" = "$2" ] \
+        && [ "$(count_composer '❯' "$1")" = 1 ] \
+        && [ -n "$(bottom_zone "$1")" ]
+}
+
 # The standard frame invariant: a separator pair at the terminal's width, exactly one
 # composer row between them, and an occupied bottom zone.
+#
+# Every part is read off ONE capture, and the verdict is the last capture's. Read part by part
+# (a capture per helper, seven of them), the separators came from before a repaint and the
+# composer row and bottom zone from after it — a window the pane never showed — and a scenario
+# that asserts the frame while a turn still streams (28's queued item) reads exactly that.
+# So the invariant is polled as a whole, a fresh capture per try, until one capture holds all
+# of it; a frame that never gets there fails on the last capture, and the pane printed under
+# the failure is that capture, the one the verdict was made on.
 check_frame_intact() {
-    local label="$1" width="$2" t b f0="$FAIL"
+    local label="$1" width="$2" s t b f0="$FAIL" i=0
     # A resize opens a drag: the frame is a few columns short until DRAG_SETTLE (2 s) passes
     # with no further resize, then repainted at full width (W5's burst layout, X-52). A resize
     # pass that lands after a key re-opens the drag, so wait DRAG_SETTLE twice plus a slow
     # runner's slack (6 s) for the outcome, not a mid-flight geometry.
-    _poll_until 60 _sep_is "$width" || true
-    t="$(frame_top)"
-    b="$(frame_bot)"
+    while :; do
+        s="$(cap)"
+        _frame_holds "$s" "$width" || [ "$i" -ge 60 ] && break
+        sleep 0.1
+        i=$((i + 1))
+    done
+    t="$(frame_top "$s")"
+    b="$(frame_bot "$s")"
     if [ -z "$t" ] || [ -z "$b" ] || [ "$b" -le "$t" ]; then
         bad "$label: the frame's separator pair is missing (top=$t bottom=$b)"
-        dump_pane
+        dump_pane "$s"
         return
     fi
-    check "$label: top separator spans the terminal" "$(row_width "$t")" "$width"
-    check "$label: bottom separator spans the terminal" "$(row_width "$b")" "$width"
-    check "$label: exactly one composer row between them" "$(count_composer '❯')" 1
-    if [ -n "$(bottom_zone)" ]; then
+    check "$label: top separator spans the terminal" "$(row_width "$t" "$s")" "$width"
+    check "$label: bottom separator spans the terminal" "$(row_width "$b" "$s")" "$width"
+    check "$label: exactly one composer row between them" "$(count_composer '❯' "$s")" 1
+    if [ -n "$(bottom_zone "$s")" ]; then
         ok "$label: the bottom zone is occupied (row $((b + 1)))"
     else
         bad "$label: the bottom zone is empty"
@@ -488,7 +523,7 @@ check_frame_intact() {
     # A pair that is there but wrong (a separator short, a second composer row) is as much a
     # broken frame as a missing one: the red run shows the pane (CI 36305402235 printed only
     # "got '68'" for one leg, and nothing said where the missing columns had gone).
-    [ "$FAIL" -gt "$f0" ] && dump_pane
+    [ "$FAIL" -gt "$f0" ] && dump_pane "$s"
     return 0
 }
 
