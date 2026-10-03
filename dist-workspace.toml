@@ -71,8 +71,6 @@ github-build-setup = "../build-setup.yml"
 # jobs on it simply fail — before that), so a tag pushed then would go red on this one build.
 # `macos-15` is the same arm64 hardware one OS newer; the string form keeps the host triple dist
 # infers, and the matrix is computed by `plan` at release time, so `release.yml` does not change.
-# `ubuntu-22.04(-arm)` and `windows-2022` keep dist's own pick: those are separate decisions
-# (the Ubuntu one sets the glibc floor of the Linux builds).
 #
 # `x86_64-apple-darwin` leaves `macos-15-intel`, the last Intel image, which GitHub retires around
 # 2027-08; keeping it would hang every release on that date. It now cross-compiles on the same
@@ -81,6 +79,31 @@ github-build-setup = "../build-setup.yml"
 # same dylibs as the native build. Same string form as above — dist infers the runner's own host
 # (`aarch64-apple-darwin`) and, seeing host and target differ, has rustup add the x86_64 std
 # before it builds.
+#
+# `x86_64-pc-windows-msvc` keeps dist's own pick, `windows-2022`.
+#
+# `global` is the runner for every job that ships no user artifact — plan, build-global-artifacts,
+# host, publish-homebrew-formula, announce. dist 0.33.0 defaults those to `ubuntu-22.04`, which
+# GitHub retires on 2027-04-17 (brownouts from 2027-03); none of them cares about glibc, so they
+# move straight to `ubuntu-24.04`. Unlike the string overrides above, this one is baked into
+# `release.yml`'s `runs-on:` lines, so the file was regenerated with it.
 [dist.github-custom-runners]
 aarch64-apple-darwin = "macos-15"
 x86_64-apple-darwin = "macos-15"
+global = "ubuntu-24.04"
+
+# The two Linux builds run on `ubuntu-24.04(-arm)` but inside a manylinux_2_28 container
+# (AlmaLinux 8, glibc 2.28). The runner's glibc is what the binary links against, and dist also
+# writes it into the manifest as the floor the shell installer enforces: built on bare 24.04 that
+# would be 2.39 and lock out Ubuntu 22.04, Debian 12, the RHEL 9 family and AL2023. In the
+# container the floor is 2.28, which also takes in RHEL 8, Debian 11 and Ubuntu 20.04.
+# Before this, on bare 22.04, the binary needed GLIBC_2.34 but the installer demanded 2.35 (the
+# build machine's), so RHEL 9 / AL2023 users could run iota but not install it.
+# `host` is spelled out because a container entry needs it; it is the same triple as the target.
+[dist.github-custom-runners.x86_64-unknown-linux-gnu]
+runner = "ubuntu-24.04"
+container = { image = "quay.io/pypa/manylinux_2_28_x86_64", host = "x86_64-unknown-linux-gnu" }
+
+[dist.github-custom-runners.aarch64-unknown-linux-gnu]
+runner = "ubuntu-24.04-arm"
+container = { image = "quay.io/pypa/manylinux_2_28_aarch64", host = "aarch64-unknown-linux-gnu" }
