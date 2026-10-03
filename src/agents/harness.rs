@@ -382,4 +382,20 @@ mod tests {
         assert_eq!(date.as_bytes()[4], b'-');
         assert_eq!(date.as_bytes()[7], b'-');
     }
+
+    /// [`today`] is local only if the zone `tz-system` maps the Windows setting to can be looked up,
+    /// and Windows has no tz database on disk: jiff's zoneinfo search list is empty off unix, so the
+    /// copy `tzdb-bundle-platform` links in is the only one. Without it this lookup fails and every
+    /// `Zoned::now()` is UTC. `Asia/Shanghai` is the UTC+8 zone the wrong `date:` was seen in, and with
+    /// no DST since 1991 its offset at a fixed instant is a constant only real data can produce; a
+    /// `UTC` offset of zero is also what the fallback answers, so it could not tell the two apart.
+    /// Windows-only because a unix result depends on the machine's tzdata, not on our feature set.
+    #[cfg(windows)]
+    #[test]
+    fn named_zone_resolves_on_windows() {
+        let tz = jiff::tz::TimeZone::get("Asia/Shanghai")
+            .expect("no tz database: is jiff's `tzdb-bundle-platform` feature on?");
+        let offset = tz.to_offset(jiff::Timestamp::from_second(1_790_000_000).expect("timestamp"));
+        assert_eq!(offset, jiff::tz::offset(8));
+    }
 }
