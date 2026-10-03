@@ -39,7 +39,9 @@ fn config(yaml: &str) -> Config {
 }
 
 // `resolve_run`'s own signature, forwarded. `CliError` is 128 bytes on Windows (a 120-byte stage error plus
-// the tag) and the lint only sees that from outside the crate that defines it.
+// the tag) and the lint only sees that from outside the crate that defines it. The tag's word is Windows'
+// 32-byte `PathBuf` (24 on Unix): the two in a `SessionError` variant lift `SetupError` to 120, level with
+// `RunError`, so the tag no longer fits in a niche — on Unix `CliError` is 120, under clippy's default 128.
 #[allow(clippy::result_large_err)]
 fn resolve(
     args: &[&str],
