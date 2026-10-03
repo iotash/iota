@@ -35,7 +35,7 @@ on:
 jobs:
   verify-macos-signing:
     name: verify macOS signatures
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       # Both macOS archives, whichever runners produced them. `codesign` reads
       # Mach-O headers and executes nothing, so this arm64 runner verifies the
