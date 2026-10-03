@@ -9,7 +9,8 @@ git push origin v0.2.0
 ```
 
 `.github/workflows/release.yml` does the rest: it builds the five targets of
-[Platforms](https://iota.sh/docs/install#platforms) on native runners, packs each one as
+[Platforms](https://iota.sh/docs/install#platforms) — natively, except the Intel
+macOS build, which is cross-compiled on the arm64 macOS runner — packs each one as
 `iota-<target>.tar.xz` (`.zip` on Windows) with a SHA-256, opens the GitHub
 Release, publishes `iota-installer.sh` and `iota-installer.ps1` beside the
 archives and commits `Formula/iota.rb` to
