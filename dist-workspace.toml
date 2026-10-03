@@ -17,7 +17,10 @@ ci = "github"
 # The `.ps1` already is the one-line install, so the MSI would only buy an Add/Remove entry.
 installers = ["shell", "powershell", "homebrew"]
 # Target platforms to build apps for (Rust target-triple syntax).
-# Five native targets, one runner each — aws-lc-rs wants a C toolchain, so no cross-compiling.
+# One runner per target. aws-lc-rs compiles C, so crossing to another OS would need a second C
+# toolchain (a Linux host building Windows, say); crossing architectures inside macOS needs
+# nothing extra — Apple clang emits x86_64 as readily as arm64, and the `cc` crate only adds
+# `-arch`. So `x86_64-apple-darwin` is cross-built on an arm64 runner; the other four are native.
 # Windows joined the list once `nix` moved behind `cfg(unix)`; `x86_64-pc-windows-msvc` builds on
 # `windows-2022`, which needs the NASM step from `github-build-setup` below.
 #
@@ -68,7 +71,16 @@ github-build-setup = "../build-setup.yml"
 # jobs on it simply fail — before that), so a tag pushed then would go red on this one build.
 # `macos-15` is the same arm64 hardware one OS newer; the string form keeps the host triple dist
 # infers, and the matrix is computed by `plan` at release time, so `release.yml` does not change.
-# Every other target keeps dist's own pick: `macos-15-intel`, `ubuntu-22.04(-arm)` and
-# `windows-2022` are separate decisions (the Ubuntu one sets the glibc floor of the Linux builds).
+# `ubuntu-22.04(-arm)` and `windows-2022` keep dist's own pick: those are separate decisions
+# (the Ubuntu one sets the glibc floor of the Linux builds).
+#
+# `x86_64-apple-darwin` leaves `macos-15-intel`, the last Intel image, which GitHub retires around
+# 2027-08; keeping it would hang every release on that date. It now cross-compiles on the same
+# arm64 `macos-15`: Apple clang targets both architectures, so aws-lc-sys builds through `cc`
+# (no CMake, no NASM) and the result is a plain x86_64 binary with the same 10.12 floor and the
+# same dylibs as the native build. Same string form as above — dist infers the runner's own host
+# (`aarch64-apple-darwin`) and, seeing host and target differ, has rustup add the x86_64 std
+# before it builds.
 [dist.github-custom-runners]
 aarch64-apple-darwin = "macos-15"
+x86_64-apple-darwin = "macos-15"
