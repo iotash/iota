@@ -82,7 +82,7 @@ memchr   = "2"
 globset  = "0.4"
 ignore   = "0.4"
 walkdir  = "2"
-jiff     = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
+jiff     = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-bundle-platform", "tzdb-zoneinfo"] }
 # TUI stack — pinned exact; verified against ~/.cargo/registry (TUI_CONTRACTS §12). Only
 # `src/ui/**` may name ratatui/crossterm (ci.sh grep gate).
 # No "scrolling-regions" (2026-09-25, DIVERGENCES X-54): the inline terminal is iota's own

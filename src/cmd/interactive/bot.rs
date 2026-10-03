@@ -379,8 +379,8 @@ mod tests {
     }
 
     /// The instant `at` seen from UTC. Built from [`jiff::tz::TimeZone::UTC`], not parsed from a `[UTC]`
-    /// annotation: a named zone is looked up in the tz database, and the Windows build has none
-    /// (`tzdb-zoneinfo` reads `/usr/share/zoneinfo`), so the parse fails there before the test begins.
+    /// annotation: a named zone is looked up in the tz database (`/usr/share/zoneinfo` on Unix, jiff's bundled
+    /// copy on Windows), and the fixed zone keeps the test off whatever copy the machine has.
     fn utc(at: &str) -> jiff::Zoned {
         at.parse::<jiff::Timestamp>()
             .expect("timestamp")
