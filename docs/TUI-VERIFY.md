@@ -568,6 +568,24 @@ NO_COLOR=1 target/release/iota          # then the same session with TERM=dumb
 - [x] 自动化：scenario 16 **8c.7 `TERM=dumb` behaves the same.** Repeat 8c.1–8c.3 with `TERM=dumb` instead of the
       variable (the emulator's own TERM is what the app sees, so set it on the command line).
 
+## 8d. Newlines in the composer
+
+Added with the newline keys (DIVERGENCES X-65). L1 pins the ladder (`src/ui/input/keys.rs` row
+7a) and L4 types the keys through a real pty (`tests/ui_tmux/scenarios/28-composer-newline.sh`).
+What tmux cannot show is what a given emulator sends for a physical key — Shift+Enter cannot be
+typed into tmux at all, so scenario 28 injects its CSI-u bytes — and that a terminal-side
+mapping actually fires.
+
+- [x] 自动化：scenario 28 **8d.1 Ctrl+J and Alt+Enter insert a newline.** The draft grows to two
+      composer rows, nothing is sent, and Enter then sends ONE two-line message.
+- [x] 自动化：scenario 28 **8d.2 A queued two-line draft is one row.** Queued mid-turn it shows
+      ` ⏎ ` for the break; ESC folds it back as a two-row draft.
+- [x] **8d.3 Ghostty's Shift+Enter mapping.** Add `keybind = shift+enter=text:\n` to the Ghostty
+      config (`ghostty +edit-config`; on macOS
+      `~/Library/Application Support/com.mitchellh.ghostty/config.ghostty`), reload, and press a
+      physical Shift+Enter in the composer: a newline, not a submit. *(Verified by hand
+      2026-10-04, Ghostty 1.3.1 on macOS.)*
+
 ## 9. Windows Terminal — NOT YET RUN
 
 **Status: not one item below has been executed.** There is no Windows machine here, and
