@@ -66,6 +66,8 @@ pub(crate) struct Conversation {
     pub(crate) overlay: Option<Overlay>,
     /// Agent-mode options: the project root and the skills home.
     pub(crate) agent: crate::headless::AgentOptions,
+    /// The mode the chat runs in, as the banner names it — fixed for the run.
+    pub(crate) mode: crate::config::AgentMode,
     /// A bot's own state (bot-mode.md §3.4; `None` outside a bot's session).
     pub(crate) bot: Option<BotState>,
     /// A dedicated image provider bills per attempt (a relay 5xx can arrive AFTER a charged
@@ -121,9 +123,9 @@ impl SessionSlot {
         self.with_writer(|w| w.id().to_owned())
     }
 
-    /// The live session title, or `""`.
+    /// The session's name as the window shows it — ephemeral or not — or `""`.
     pub(crate) fn session_title(&self) -> String {
-        self.with_writer(|w| w.meta().title.clone())
+        self.titler.current()
     }
 
     /// A path of the live writer (`images_path()`), or `None` while the chat is ephemeral.

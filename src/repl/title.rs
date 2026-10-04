@@ -79,14 +79,20 @@ pub(crate) struct SessionTitle {
 }
 
 impl SessionTitle {
-    /// Wires the sinks. A resumed session arrives already named, so it is left alone.
+    /// Wires the sinks. A resumed session arrives already named, so it is left alone — but its
+    /// name (or a bot's, stamped at creation) is taken as `current`, so the window and
+    /// `/status` read it from here like any other.
     pub(crate) fn new(writer: WriterSlot, window: WindowSink, resumed: bool) -> Self {
+        let current = lock(&writer)
+            .as_ref()
+            .map_or_else(String::new, |w| w.meta().title.clone());
         Self {
             writer,
             window,
             state: Mutex::new(TitleState {
                 seeded: resumed,
                 titled: resumed,
+                current,
                 ..TitleState::default()
             }),
             #[cfg(test)]
@@ -157,11 +163,22 @@ impl SessionTitle {
     /// already passed its checks finishes on the session it named before the swap can happen,
     /// and one that comes later is dropped as settled. Aborting the pass's task cannot stand in
     /// for this: `abort` does not interrupt a `land` already running on another worker.
+    ///
+    /// The adopted name becomes `current` and goes to the window — not to the bundle, which
+    /// already holds it.
     pub(crate) fn switch_writer(&self, writer: crate::session::SessionWriter) {
         let mut st = self.lock();
         st.seeded = true;
         st.titled = true;
+        writer.meta().title.clone_into(&mut st.current);
         *lock(&self.writer) = Some(writer);
+        (self.window)(&st.current);
+    }
+
+    /// The session's name as last set — the one the window shows, ephemeral or not; `""`
+    /// before it has one.
+    pub(crate) fn current(&self) -> String {
+        self.lock().current.clone()
     }
 
     /// Settles an EXPLICIT name: a title the user chose (`/save "…"`) is never overwritten,
@@ -183,7 +200,8 @@ impl SessionTitle {
         }
     }
 
-    /// Writes a name to both the session and the window. An ephemeral chat has no writer
+    /// Writes a name to the session and the window and keeps it as `current` — the ONE value
+    /// both of them, and `/status`, are fed from. An ephemeral chat has no writer
     /// (a no-op) — the window still gets the name, and `current` remembers it for a writer
     /// minted later.
     fn set(&self, st: &mut TitleState, name: &str) {
@@ -566,6 +584,36 @@ mod tests {
         let p = Probe::new(false);
         p.titler.reapply();
         assert_eq!(p.name(), "");
+    }
+
+    /// `current` is what the window shows on every path that names it — the one value
+    /// `/status` reads: an ephemeral seed, a rollback, a `/session` switch, a resume.
+    #[test]
+    fn current_is_what_the_window_shows() {
+        let p = Probe::new(false);
+        p.set_writer(None); // ephemeral
+        p.titler.seed(&user_turn("an ephemeral question"));
+        assert_eq!(p.titler.current(), "an ephemeral question");
+        assert_eq!(p.titler.current(), p.last_window());
+
+        assert!(p.titler.unseed(&[]), "the rollback gives the name back");
+        assert_eq!(p.titler.current(), "");
+        assert_eq!(p.last_window(), "");
+
+        let mut b = p.mint();
+        b.update_meta(|m| "B original".clone_into(&mut m.title))
+            .expect("name b");
+        p.titler.switch_writer(b);
+        assert_eq!(p.titler.current(), "B original");
+        assert_eq!(p.last_window(), "B original");
+        assert_eq!(p.name(), "B original", "the bundle is not rewritten");
+
+        // A resumed bundle is named before the titler exists.
+        let mut w = p.mint();
+        w.update_meta(|m| "an earlier chat".clone_into(&mut m.title))
+            .expect("name it");
+        let resumed = SessionTitle::new(Arc::new(Mutex::new(Some(w))), Box::new(|_| {}), true);
+        assert_eq!(resumed.current(), "an earlier chat");
     }
 
     // /session swaps the writer

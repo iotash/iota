@@ -472,6 +472,16 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         tr.set_verbose(Some(Box::new(move || log.verbose())));
     }
 
+    // A bot has an agent's overlay; what tells it apart is its session. The banner and `/status`
+    // both read this one value.
+    let mode = if bot {
+        AgentMode::Bot
+    } else if overlay.is_some() {
+        AgentMode::Agent
+    } else {
+        AgentMode::Chat
+    };
+
     // ---- the banner, then EITHER the resume echo OR one blank (chat/run.go:86-116) ----
     // Exactly one blank separates the environment from the first transcript block: an echo
     // ends with its own round separator, so it is not followed by another.
@@ -489,14 +499,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         };
         let mut lines = banner_lines(
             &BannerFacts {
-                // A bot has an agent's overlay; what tells it apart is its session.
-                mode: if bot {
-                    AgentMode::Bot
-                } else if overlay.is_some() {
-                    AgentMode::Agent
-                } else {
-                    AgentMode::Chat
-                },
+                mode,
                 session_id: session_id.as_deref(),
                 ephemeral: new_session.is_some(),
                 resumed,
@@ -540,11 +543,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         // A bot's bundle is named after the bot from the start (§2.2): nothing is seeded over that name.
         resumed || bot,
     ));
-    ui.set_title(&window_title(
-        &lock(&writer)
-            .as_ref()
-            .map_or_else(String::new, |w| w.meta().title.clone()),
-    ));
+    ui.set_title(&window_title(&titler.current()));
     ui.set_slash_commands(lock(&table).active());
 
     let gate = Arc::new(ApprovalGate::new(
@@ -574,6 +573,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             harness_inputs: harness,
             overlay,
             agent,
+            mode,
             bot: bot_state,
             image_provider,
         },
