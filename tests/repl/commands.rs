@@ -1013,9 +1013,9 @@ async fn status_renders_the_capability_rows() {
     // The summary reduces a View's lines to a count; the row CONTENT is pinned beside
     // `status_lines` itself (src/commands/status.rs), which this asserts the wiring of.
     assert_eq!(
-        view.line_count, 8,
-        "Version, Mode, Provider, Model, Messages, Tools, MCP, Session — no token rows in T1 \
-         (T-10), and no Title row for an ephemeral chat"
+        view.line_count, 9,
+        "Provider, Model, Messages, Tools, MCP, Version, Mode, Session, Title — no token rows \
+         in T1 (T-10)"
     );
 }
 

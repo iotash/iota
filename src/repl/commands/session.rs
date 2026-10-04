@@ -19,7 +19,6 @@ use crate::ui::facade::{Panel, TabbedSpec};
 
 use crate::repl::render::replay::{RESUME_ECHO_ROUNDS, echo_rounds, last_rounds};
 use crate::repl::run::Repl;
-use crate::repl::title::window_title;
 
 /// A session's one-line picker row (chat/session.go:1046-1063 `sessionLabel`).
 ///
@@ -191,9 +190,6 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
     let usage = writer.usage();
     repl.session.titler.switch_writer(writer);
     repl.report_session();
-    repl.handles
-        .ui
-        .set_title(&window_title(&repl.session.session_title()));
     let repair_notice = resumed.repair_notice();
     repl.conv.history = resumed.messages;
     repl.session.persisted = repl.conv.history.len();

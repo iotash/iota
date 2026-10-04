@@ -11,11 +11,11 @@
 //! (Go asserts `provider.UsageReporter`). A provider without usage reporting therefore
 //! renders Go's token-less-provider shape (T-10).
 //!
-//! The Title row follows the same rule: it exists only beside a saved session, since an
-//! ephemeral chat has no bundle to carry a name. A saved session with no name yet — before
-//! its first message, after rolling that message back, or resumed from a bundle that never
-//! had one — says `(untitled)`; there is no "generating" state to show, because the
-//! placeholder lands synchronously at the first send and the model pass only upgrades it.
+//! The Title row reads the name the window shows (`SessionTitle::current`), so an ephemeral
+//! chat has one too. A chat with no name yet — before its first message, after rolling that
+//! message back, or resumed from a bundle that never had one — says `(untitled)`; there is no
+//! "generating" state to show, because the placeholder lands synchronously at the first send
+//! and the model pass only upgrades it.
 
 use std::fmt::Write as _;
 
@@ -82,7 +82,7 @@ pub(crate) struct TokenStatus {
 /// Plain arguments rather than the loop's state, so the capability gating is unit-testable
 /// against a bare provider: `mcp` is `Some((connected, configured))` only where the binary
 /// wired the hook, `tokens` is `Some` only while accounting is live, `session_id` is
-/// empty while the chat is ephemeral, and `title` is the saved session's name (`""` before
+/// empty while the chat is ephemeral, and `title` is the name the window shows (`""` before
 /// it has one).
 #[allow(clippy::too_many_arguments)] // plain values, so the gating stays unit-testable
 pub(crate) fn status_lines(
@@ -104,8 +104,6 @@ pub(crate) fn status_lines(
     };
 
     let mut items = vec![
-        item("Version", crate::app::VERSION),
-        item("Mode", mode.as_str()),
         item("Provider", provider_type),
         item(
             "Model",
@@ -191,6 +189,8 @@ pub(crate) fn status_lines(
         },
     ));
     items.push(item("MCP", mcp));
+    items.push(item("Version", crate::app::VERSION));
+    items.push(item("Mode", mode.as_str()));
     items.push(item(
         "Session",
         if session_id.is_empty() {
@@ -199,16 +199,14 @@ pub(crate) fn status_lines(
             session_id
         },
     ));
-    if !session_id.is_empty() {
-        items.push(item(
-            "Title",
-            if title.is_empty() {
-                "(untitled)"
-            } else {
-                title
-            },
-        ));
-    }
+    items.push(item(
+        "Title",
+        if title.is_empty() {
+            "(untitled)"
+        } else {
+            title
+        },
+    ));
     items
 }
 
@@ -325,7 +323,8 @@ mod tests {
         assert_eq!(
             names(&items),
             [
-                "Version", "Mode", "Provider", "Model", "Messages", "Tools", "MCP", "Session"
+                "Provider", "Model", "Messages", "Tools", "MCP", "Version", "Mode", "Session",
+                "Title"
             ]
         );
         assert_eq!(value(&items, "Provider"), "openai");
@@ -350,14 +349,14 @@ mod tests {
         assert_eq!(
             names(&items),
             [
-                "Version",
-                "Mode",
                 "Provider",
                 "Model",
                 "Messages",
                 "Attachments",
                 "Tools",
                 "MCP",
+                "Version",
+                "Mode",
                 "Session",
                 "Title"
             ]
@@ -372,9 +371,8 @@ mod tests {
     }
 
     /// The version is the binary's own (the one `--version` prints), the mode is the
-    /// banner's word for each of the three, and the Title row rides beside a SAVED session
-    /// only: a name when it has one, `(untitled)` before it does, and no row at all while
-    /// the chat is ephemeral (there is no bundle to carry a name).
+    /// banner's word for each of the three, and the Title row is always there: a name when
+    /// the chat has one — ephemeral or not — and `(untitled)` before it does.
     #[test]
     fn version_mode_and_title_rows() {
         let mut p = FakeProvider::looping(0, 1);
@@ -416,10 +414,23 @@ mod tests {
         );
         assert_eq!(value(&untitled, "Title"), "(untitled)");
 
-        // Ephemeral: no bundle, no Title row — the Session row already says why.
-        let ephemeral = status_lines(&mut p, AgentMode::Chat, 0, 0, 0, None, None, "", "");
-        assert!(!names(&ephemeral).contains(&"Title"));
+        // Ephemeral: no bundle, but the window's name is still the chat's name.
+        let ephemeral = status_lines(
+            &mut p,
+            AgentMode::Chat,
+            0,
+            0,
+            0,
+            None,
+            None,
+            "",
+            "Fix the status page",
+        );
         assert_eq!(value(&ephemeral, "Session"), "not saved (ephemeral)");
+        assert_eq!(names(&ephemeral).last(), Some(&"Title"));
+        assert_eq!(value(&ephemeral, "Title"), "Fix the status page");
+        let ephemeral = status_lines(&mut p, AgentMode::Chat, 0, 0, 0, None, None, "", "");
+        assert_eq!(value(&ephemeral, "Title"), "(untitled)");
     }
 
     /// A token-accounting provider gains the whole token block, in Go's order and byte
@@ -444,8 +455,6 @@ mod tests {
         assert_eq!(
             names(&items),
             [
-                "Version",
-                "Mode",
                 "Provider",
                 "Model",
                 "Context",
@@ -456,7 +465,10 @@ mod tests {
                 "Messages",
                 "Tools",
                 "MCP",
-                "Session"
+                "Version",
+                "Mode",
+                "Session",
+                "Title"
             ]
         );
         assert_eq!(value(&items, "Context"), "64k / 128k tokens (50%)");

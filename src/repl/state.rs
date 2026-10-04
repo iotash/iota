@@ -123,9 +123,9 @@ impl SessionSlot {
         self.with_writer(|w| w.id().to_owned())
     }
 
-    /// The live session title, or `""`.
+    /// The session's name as the window shows it — ephemeral or not — or `""`.
     pub(crate) fn session_title(&self) -> String {
-        self.with_writer(|w| w.meta().title.clone())
+        self.titler.current()
     }
 
     /// A path of the live writer (`images_path()`), or `None` while the chat is ephemeral.

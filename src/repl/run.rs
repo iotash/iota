@@ -543,11 +543,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         // A bot's bundle is named after the bot from the start (§2.2): nothing is seeded over that name.
         resumed || bot,
     ));
-    ui.set_title(&window_title(
-        &lock(&writer)
-            .as_ref()
-            .map_or_else(String::new, |w| w.meta().title.clone()),
-    ));
+    ui.set_title(&window_title(&titler.current()));
     ui.set_slash_commands(lock(&table).active());
 
     let gate = Arc::new(ApprovalGate::new(
