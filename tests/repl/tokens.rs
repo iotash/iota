@@ -252,14 +252,14 @@ async fn status_gains_the_token_block_for_a_reporting_provider() {
     assert_eq!(view.title, "Status");
     assert_eq!(view.kind, iota::ui::facade::PanelKind::View);
     assert_eq!(
-        view.line_count, 12,
-        "Provider, Model, Context, Token count, Last turn, Session in/out/cache, \
-         Messages, Tools, MCP, Session"
+        view.line_count, 15,
+        "Version, Mode, Provider, Model, Context, Token count, Last turn, Session in/out/cache, \
+         Messages, Tools, MCP, Session, Title"
     );
 
     let view = &with(token_less()).await.panels[0];
     assert_eq!(
-        view.line_count, 6,
+        view.line_count, 9,
         "a token-less provider keeps Go's token-less shape (T-10)"
     );
 }

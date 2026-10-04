@@ -66,6 +66,8 @@ pub(crate) struct Conversation {
     pub(crate) overlay: Option<Overlay>,
     /// Agent-mode options: the project root and the skills home.
     pub(crate) agent: crate::headless::AgentOptions,
+    /// The mode the chat runs in, as the banner names it — fixed for the run.
+    pub(crate) mode: crate::config::AgentMode,
     /// A bot's own state (bot-mode.md §3.4; `None` outside a bot's session).
     pub(crate) bot: Option<BotState>,
     /// A dedicated image provider bills per attempt (a relay 5xx can arrive AFTER a charged

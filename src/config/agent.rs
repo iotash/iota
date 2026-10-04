@@ -94,6 +94,15 @@ impl AgentMode {
     pub fn is_bot(self) -> bool {
         self == Self::Bot
     }
+
+    /// The `mode:` spelling — what the banner and `/status` name the mode by.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Chat => "chat",
+            Self::Agent => "agent",
+            Self::Bot => "bot",
+        }
+    }
 }
 
 impl AgentConfig {

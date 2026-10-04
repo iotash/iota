@@ -138,11 +138,12 @@ pub(crate) fn overlay_warnings(overlay: Option<&Overlay>) -> Vec<String> {
 
 /// The mode row's first word and its color: `chat` green, `agent` cyan, `bot` yellow.
 fn mode_word(mode: AgentMode) -> (&'static str, fn(&str) -> String) {
-    match mode {
-        AgentMode::Chat => ("chat", green),
-        AgentMode::Agent => ("agent", cyan),
-        AgentMode::Bot => ("bot", yellow),
-    }
+    let paint: fn(&str) -> String = match mode {
+        AgentMode::Chat => green,
+        AgentMode::Agent => cyan,
+        AgentMode::Bot => yellow,
+    };
+    (mode.as_str(), paint)
 }
 
 /// The mode — `chat`, `agent` or `bot`, each in its color — then where the chat is being saved — `session <id>`, `resumed <id>`, or the

@@ -10,9 +10,16 @@
 //! while token accounting is live — the same single gate `/compact`'s registration reads
 //! (Go asserts `provider.UsageReporter`). A provider without usage reporting therefore
 //! renders Go's token-less-provider shape (T-10).
+//!
+//! The Title row follows the same rule: it exists only beside a saved session, since an
+//! ephemeral chat has no bundle to carry a name. A saved session with no name yet — before
+//! its first message, after rolling that message back, or resumed from a bundle that never
+//! had one — says `(untitled)`; there is no "generating" state to show, because the
+//! placeholder lands synchronously at the first send and the model pass only upgrades it.
 
 use std::fmt::Write as _;
 
+use crate::config::AgentMode;
 use crate::provider::usage::Usage;
 use crate::text;
 use crate::text::width::str_width;
@@ -74,16 +81,20 @@ pub(crate) struct TokenStatus {
 ///
 /// Plain arguments rather than the loop's state, so the capability gating is unit-testable
 /// against a bare provider: `mcp` is `Some((connected, configured))` only where the binary
-/// wired the hook, `tokens` is `Some` only while accounting is live, and `session_id` is
-/// empty while the chat is ephemeral.
+/// wired the hook, `tokens` is `Some` only while accounting is live, `session_id` is
+/// empty while the chat is ephemeral, and `title` is the saved session's name (`""` before
+/// it has one).
+#[allow(clippy::too_many_arguments)] // plain values, so the gating stays unit-testable
 pub(crate) fn status_lines(
     provider: &mut dyn crate::provider::Provider,
+    mode: AgentMode,
     messages: usize,
     pending: usize,
     tools: usize,
     mcp: Option<(usize, usize)>,
     tokens: Option<&TokenStatus>,
     session_id: &str,
+    title: &str,
 ) -> Vec<StatusItem> {
     let provider_type = provider.kind().as_str().to_owned();
     let model = provider.model().to_owned();
@@ -93,6 +104,8 @@ pub(crate) fn status_lines(
     };
 
     let mut items = vec![
+        item("Version", crate::app::VERSION),
+        item("Mode", mode.as_str()),
         item("Provider", provider_type),
         item(
             "Model",
@@ -186,6 +199,16 @@ pub(crate) fn status_lines(
             session_id
         },
     ));
+    if !session_id.is_empty() {
+        items.push(item(
+            "Title",
+            if title.is_empty() {
+                "(untitled)"
+            } else {
+                title
+            },
+        ));
+    }
     items
 }
 
@@ -237,6 +260,7 @@ pub(crate) async fn cmd_status(repl: &mut Repl) {
     let messages = repl.conv.history.len();
     let pending = repl.conv.pending.len();
     let session_id = repl.session.session_id();
+    let title = repl.session.session_title();
     // Go asserts `provider.UsageReporter`; the Rust twin is the meter's own gate, which is
     // built from exactly that capability (`provider.reports_usage()`).
     let tokens = repl.conv.ctxm.is_enabled().then(|| TokenStatus {
@@ -248,12 +272,14 @@ pub(crate) async fn cmd_status(repl: &mut Repl) {
     });
     let items = status_lines(
         &mut *repl.conv.provider,
+        repl.conv.mode,
         messages,
         pending,
         tools,
         mcp,
         tokens.as_ref(),
         &session_id,
+        &title,
     );
     let lines = status_rows(&items);
     let _ = repl
@@ -275,7 +301,7 @@ mod tests {
     use crate::testing::FakeProvider;
     use pretty_assertions::assert_eq;
 
-    use super::{StatusItem, TokenStatus, Usage, status_lines, status_rows};
+    use super::{AgentMode, StatusItem, TokenStatus, Usage, status_lines, status_rows};
 
     fn names(items: &[StatusItem]) -> Vec<&str> {
         items.iter().map(|i| i.name.as_str()).collect()
@@ -295,10 +321,12 @@ mod tests {
     #[test]
     fn status_rows_are_capability_gated() {
         let mut p = FakeProvider::looping(0, 1);
-        let items = status_lines(&mut p, 4, 0, 2, None, None, "");
+        let items = status_lines(&mut p, AgentMode::Chat, 4, 0, 2, None, None, "", "");
         assert_eq!(
             names(&items),
-            ["Provider", "Model", "Messages", "Tools", "MCP", "Session"]
+            [
+                "Version", "Mode", "Provider", "Model", "Messages", "Tools", "MCP", "Session"
+            ]
         );
         assert_eq!(value(&items, "Provider"), "openai");
         assert_eq!(value(&items, "Model"), "gpt-test");
@@ -308,17 +336,30 @@ mod tests {
         assert_eq!(value(&items, "Session"), "not saved (ephemeral)");
 
         // Pending attachments add a row; no tools and no servers degrade to words.
-        let items = status_lines(&mut p, 0, 3, 0, Some((1, 2)), None, "k7qz3xv9m2ht");
+        let items = status_lines(
+            &mut p,
+            AgentMode::Chat,
+            0,
+            3,
+            0,
+            Some((1, 2)),
+            None,
+            "k7qz3xv9m2ht",
+            "",
+        );
         assert_eq!(
             names(&items),
             [
+                "Version",
+                "Mode",
                 "Provider",
                 "Model",
                 "Messages",
                 "Attachments",
                 "Tools",
                 "MCP",
-                "Session"
+                "Session",
+                "Title"
             ]
         );
         assert_eq!(value(&items, "Attachments"), "3 pending");
@@ -326,8 +367,59 @@ mod tests {
         assert_eq!(value(&items, "MCP"), "1/2 servers connected");
         assert_eq!(value(&items, "Session"), "k7qz3xv9m2ht");
         // A configured-but-empty server set is still "none configured".
-        let items = status_lines(&mut p, 0, 0, 0, Some((0, 0)), None, "");
+        let items = status_lines(&mut p, AgentMode::Chat, 0, 0, 0, Some((0, 0)), None, "", "");
         assert_eq!(value(&items, "MCP"), "none configured");
+    }
+
+    /// The version is the binary's own (the one `--version` prints), the mode is the
+    /// banner's word for each of the three, and the Title row rides beside a SAVED session
+    /// only: a name when it has one, `(untitled)` before it does, and no row at all while
+    /// the chat is ephemeral (there is no bundle to carry a name).
+    #[test]
+    fn version_mode_and_title_rows() {
+        let mut p = FakeProvider::looping(0, 1);
+        for (mode, word) in [
+            (AgentMode::Chat, "chat"),
+            (AgentMode::Agent, "agent"),
+            (AgentMode::Bot, "bot"),
+        ] {
+            let items = status_lines(&mut p, mode, 0, 0, 0, None, None, "k7qz3xv9m2ht", "");
+            assert_eq!(value(&items, "Version"), crate::app::VERSION);
+            assert_eq!(value(&items, "Mode"), word);
+        }
+
+        let titled = status_lines(
+            &mut p,
+            AgentMode::Agent,
+            0,
+            0,
+            0,
+            None,
+            None,
+            "k7qz3xv9m2ht",
+            "Fix the status page",
+        );
+        assert_eq!(names(&titled).last(), Some(&"Title"));
+        assert_eq!(value(&titled, "Title"), "Fix the status page");
+
+        // Not named yet: the row is there and says so rather than going blank.
+        let untitled = status_lines(
+            &mut p,
+            AgentMode::Agent,
+            0,
+            0,
+            0,
+            None,
+            None,
+            "k7qz3xv9m2ht",
+            "",
+        );
+        assert_eq!(value(&untitled, "Title"), "(untitled)");
+
+        // Ephemeral: no bundle, no Title row — the Session row already says why.
+        let ephemeral = status_lines(&mut p, AgentMode::Chat, 0, 0, 0, None, None, "", "");
+        assert!(!names(&ephemeral).contains(&"Title"));
+        assert_eq!(value(&ephemeral, "Session"), "not saved (ephemeral)");
     }
 
     /// A token-accounting provider gains the whole token block, in Go's order and byte
@@ -348,10 +440,12 @@ mod tests {
             },
             last: None,
         };
-        let items = status_lines(&mut p, 2, 0, 1, None, Some(&bare), "");
+        let items = status_lines(&mut p, AgentMode::Chat, 2, 0, 1, None, Some(&bare), "", "");
         assert_eq!(
             names(&items),
             [
+                "Version",
+                "Mode",
                 "Provider",
                 "Model",
                 "Context",
@@ -390,7 +484,17 @@ mod tests {
                 ..Usage::default()
             }),
         };
-        let items = status_lines(&mut p, 2, 0, 1, None, Some(&cached), "");
+        let items = status_lines(
+            &mut p,
+            AgentMode::Chat,
+            2,
+            0,
+            1,
+            None,
+            Some(&cached),
+            "",
+            "",
+        );
         assert_eq!(value(&items, "Context"), "1k / 0 tokens (0%)");
         assert_eq!(value(&items, "Token count"), "estimated (local tokenizer)");
         assert_eq!(
