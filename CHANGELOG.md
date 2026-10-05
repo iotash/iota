@@ -3,6 +3,36 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## 0.6.1 - 2026-10-04
+
+### Added
+
+- **`/status` shows the version, the mode and the session's title.** Three
+  new rows: `Version`, what `iota --version` prints; `Mode`, the startup
+  card's `chat`, `agent` or `bot`; and `Title`, the name the window shows —
+  for a chat that is not being saved too. A chat with no name yet, before its
+  first message or resumed from a session that never got one, says
+  `(untitled)`. The page now ends Version, Mode, Session, Title.
+
+### Changed
+
+- **The Linux builds need glibc 2.28, and the install script asks for no
+  more.** The Linux binaries are now built against glibc 2.28
+  (manylinux_2_28) instead of 2.34, so they also run on RHEL 8, Debian 11 and
+  Ubuntu 20.04. The shell installer takes its minimum from the build machine,
+  and until now that was 2.35 — more than the binary needed — so on the
+  RHEL 9 family and Amazon Linux 2023 (glibc 2.34) `iota-installer.sh`
+  refused a binary that would have run there. Both now say 2.28.
+
+### Fixed
+
+- **Local time on Windows is local.** The Windows build shipped without a
+  time-zone database, so every local time iota showed or sent was UTC — above
+  all the date an agent is told is today: east of UTC it was yesterday's until
+  UTC caught up (until 08:00 in UTC+8), and west of it, tomorrow's in the
+  evening. The database is now built into the Windows binary, which grows by
+  about 0.2 MiB; macOS and Linux read the system's, as before.
+
 ## 0.6.0 - 2026-10-02
 
 ### Added
