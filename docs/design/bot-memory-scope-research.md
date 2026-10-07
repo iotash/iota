@@ -4,7 +4,9 @@ Status: **Research** · 日期：2026-10-07 · 用途：为 iota `mode: bot` 的
 
 本文只做调研，不含设计决定。第 10 节列出三个选项及其代价，但不做推荐。
 
-**iota 现状**（[IO1] §3.1–3.6，实现见 [IO2]）：一个 bot = 一个身份 + 一条永不结束的会话；长期记忆在 `~/.iota/bots/<bot 名>/`（`MEMORY.md` 常驻层 8 KiB + `notes/*.md` 检索层），**按 bot 名存，不按项目目录存**。项目维度是 `MEMORY.md` 里的 `## Project: <目录名>` 小节，注入时按当前项目裁剪；`User`、`Open threads`、前言和未知小节对所有项目可见。设计上「不做按项目的独立记忆文件」，理由是项目知识应进 AGENTS.md（人维护、可 review、进 git）。
+**iota 现状**（[IO1] §3.1–3.6，实现见 [IO2]）：一个 bot = 一个身份 + 一条永不结束的会话；长期记忆在 `~/.iota/bots/<bot 名>/`，**按 bot 名存，不按项目目录存**。目前实现的只有 `MEMORY.md` 常驻层（8 KiB）；设计里的 `notes/*.md` 检索层和 `recall` 工具属于 L2，**代码里还没有**（[IO1] §3.3；仓库中 `notes/` 只以记忆正文里的字符串出现）。项目维度是 `MEMORY.md` 里的 `## Project: <目录名>` 小节，注入时按当前项目裁剪；`User`、`Open threads`、前言和未知小节对所有项目可见。
+
+「当前项目」取的是项目根的目录名（`src/repl/run.rs:291` `memory_project`），项目根由 `src/agents/mod.rs:31-44` `project_root` 从 cwd 向上找、**遇到 `.git` 就停，目录和文件都算**。所以在 linked worktree 里（它的 `.git` 是文件），`## Project:` 拿到的是 **worktree 自己的目录名**，不是主仓库名：例如本文写作所在的 worktree `~/.herdr/worktrees/iota/mem-archive` 会被认成项目 `mem-archive`，而不是 `iota`。同一仓库的每个 worktree 因此各占一个 `Project:` 小节（下文称「worktree 碎片化」）。两份原始调研都没有提到这一点，是合并时补充的；行为与 Qwen Code、Aider 取 worktree 自己的 git root 相同（§2.2）。设计上「不做按项目的独立记忆文件」，理由是项目知识应进 AGENTS.md（人维护、可 review、进 git）。
 
 本文合并了两份独立调研：一份是**产品横向调研**（19 个 coding agent 各自怎么做），一份是**系统与模式调研**（专用记忆系统、官方 API 做法、学术与工程证据、公开失败记录）。合并时按「作用域键」重新组织，不按原报告分章；两份在同一产品上的结论已去重，说法不一致的地方单列在第 11 节。
 
@@ -175,8 +177,8 @@ Coding agent 之外的专用记忆系统和官方 API。Codex、Claude Code、Co
 |---|---|---|
 | 所有者／身份 | 这是哪个人、bot、组织拥有的长期状态？ | `<bot 名>`，不等于项目目录 |
 | 适用范围 | 某条事实在哪些项目、工作流、分支成立？ | `User`、`Project: <名字>`、`Open threads` |
-| 存储分区 | 一个文件、一组文件、数据库行还是独立数据库？ | 一个 `MEMORY.md`＋notes |
-| 读取视图 | 这一轮先给模型看哪些内容？ | 项目小节裁剪、notes 索引、显式 recall |
+| 存储分区 | 一个文件、一组文件、数据库行还是独立数据库？ | 一个 `MEMORY.md`（＋设计中尚未实现的 L2 `notes/`） |
+| 读取视图 | 这一轮先给模型看哪些内容？ | 项目小节裁剪；notes 索引与显式 `recall` 属于尚未实现的 L2 |
 | 生命周期／来源 | 何时失效、如何覆盖、能否回到原始证据？ | 时间与来源标记、`.prev`、会话档案 |
 
 此表是对产品模式的抽象，不是现成行业标准。**一个文件可以有多个逻辑 scope；多个文件也可以被无条件一起注入**（Codex 一份摘要内按项目分组 [CX2]；Goose 的全局记忆按 category 分文件但全量注入，§4.2.4）。因此，仅把文件移到 `projects/` 下不足以证明隔离更强；仅按 bot 保存也不意味着必须全文全局注入 [ME1][LM2][CX2][FR4]。
@@ -186,7 +188,7 @@ Coding agent 之外的专用记忆系统和官方 API。Codex、Claude Code、Co
 | 「项目」的定义 | 自动记忆按它存的 | 只有规则 / 会话 / 索引按它存的 | worktree 与多 clone 的结果 |
 |---|---|---|---|
 | **git 仓库**（由仓库推导，worktree 与子目录共用；非 git 用项目根） | Claude Code（§4.1.1） | — | worktree 共享；多 clone 是否共享**未找到**（路径派生命名推测为两份） |
-| **git root 绝对路径**（`.git` 文件也算根） | Qwen Code（§4.2.1） | Aider 的历史与缓存（§4.6.3） | linked worktree 各自一份（Qwen 官方明说，#6449）；多 clone 各自一份 |
+| **git root 绝对路径**（`.git` 文件也算根） | Qwen Code（§4.2.1）；iota 现状也属于这一类，只是取其 basename（见开头「iota 现状」） | Aider 的历史与缓存（§4.6.3） | linked worktree 各自一份（Qwen 官方明说，#6449）；多 clone 各自一份 |
 | **启动目录 / workspace 绝对路径**（或其 hash、basename slug） | Gemini CLI（basename slug，旧版 sha256）、OpenHands SDK、Goose、Trae（`{project_path}`，编码未证实）、Windsurf legacy Cascade（键形式未证实） | Cline（hash）、Roo（sha256 前 16 位）、Continue（目录 + git 分支）、pi（精确 cwd）、Kiro 工作区 | 换路径即另一个项目；子目录启动在 Gemini 是另一个项目；同路径换了仓库内容会共享旧记忆（Gemini） |
 | **git 远程 URL 的 hash**（无远程 → 根提交 sha；非 git → global） | — | OpenCode 的 project 记录与会话列表（§4.6.6）；Amp thread 的 Project（仓库 URL，§4.6.5） | 同一远程的所有 clone / worktree 共享 |
 | **GitHub 仓库身份 owner/repo**（服务端，需写权限才能创建） | Copilot Memory 的 repository facts（§4.2.6） | — | 本地路径、clone、worktree 完全无关；fork 是否共享**未找到** |
@@ -345,8 +347,8 @@ Mem0 的服务 `project_id`、Zep 的服务 project 与 **iota 的本地代码�
 
 ##### ② 存在哪
 - 主会话 auto memory：`~/.claude/projects/<project>/memory/`，内含 `MEMORY.md`（索引，一行一条）+ 若干主题文件（如 `user_role.md`、`feedback_testing.md`）。【官方】memory 页「Storage location」。
-- `<project>` 名的规则（sessions 页「Where transcripts are stored」）：工作目录绝对路径，**非字母数字字符全部替换为 `-`**；转换后超过 200 字符则截到 200 并附全路径 hash。【本机】`/Users/joyqi/.herdr/worktrees/iota/bot-mode` → `-Users-joyqi--herdr-worktrees-iota-bot-mode`（`.` 也变成 `-`，于是出现双横线）；`/Users/joyqi/Work/brain.md` → `-Users-joyqi-Work-brain-md`。
-- 但 **memory 子目录的 `<project>` 不按 cwd，而按 git 仓库推导**（见本节③）。【本机】本机 `~/.claude/projects/` 下有 35 个 `-Users-joyqi--herdr-worktrees-iota-*` 目录（都只有会话 `.jsonl`），**没有一个含 `memory/`**；`memory/` 只存在于主仓库目录 `-Users-joyqi-Work-iota/memory/`（15 个文件，MEMORY.md 2080 字节）。
+- `<project>` 名的规则（sessions 页「Where transcripts are stored」）：工作目录绝对路径，**非字母数字字符全部替换为 `-`**；转换后超过 200 字符则截到 200 并附全路径 hash。【本机】`/Users/<user>/.herdr/worktrees/iota/bot-mode` → `-Users-<user>--herdr-worktrees-iota-bot-mode`（`.` 也变成 `-`，于是出现双横线）；`/Users/<user>/Work/brain.md` → `-Users-<user>-Work-brain-md`。
+- 但 **memory 子目录的 `<project>` 不按 cwd，而按 git 仓库推导**（见本节③）。【本机】本机 `~/.claude/projects/` 下有 35 个 `-Users-<user>--herdr-worktrees-iota-*` 目录（都只有会话 `.jsonl`），**没有一个含 `memory/`**；`memory/` 只存在于主仓库目录 `-Users-<user>-Work-iota/memory/`（15 个文件，MEMORY.md 2080 字节）。
 - 可改位置：`autoMemoryDirectory`（2.1.74 加入，任意 settings 层级，须绝对路径或 `~/` 开头）；`CLAUDE_CONFIG_DIR` + `CLAUDE_CODE_PROJECT_DIR_NAME`（2.1.234+，把 transcripts 和 auto memory 一起放到 `<config dir>/projects/<name>/`，「whatever the working directory is」）。【官方】memory、sessions、env-vars 页。
 - 子代理记忆：`~/.claude/agent-memory/<agent>/`（user）、`.claude/agent-memory/<agent>/`（project，可入库）、`.claude/agent-memory-local/<agent>/`（local）。【官方】sub-agents 页。
 - 会话 transcript：`~/.claude/projects/<project>/<session-id>.jsonl`（按 cwd 键）；`cleanupPeriodDays`（默认 30 天）清理 transcript 但**不清 memory 目录**（2.1.228 修过误删）。本机另有 `~/.claude/history.jsonl`（每行带 `"project": "/abs/path"`）。
@@ -365,7 +367,7 @@ Mem0 的服务 `project_id`、Zep 的服务 project 与 **iota 的本地代码�
 | 会话 | session-id（按 cwd 键） | transcript（不是记忆；fork 子代理继承父会话含已加载 memory） |
 | 云端项目 | Claude Projects 的 project | project memory（与本机 auto memory 无关） |
 
-- git 键到底是什么（common dir？主工作树路径？）闭源无法核对 → **未证实**。但【本机】观察：用 `git worktree add` 建在主仓库之外的 `~/.herdr/worktrees/iota/*` 仍与 `/Users/joyqi/Work/iota` 共用 memory 目录（worktree 目录无 memory/），与「derived from the git repository」一致，说明键落在主仓库而非 worktree 自身的 top-level。
+- git 键到底是什么（common dir？主工作树路径？）闭源无法核对 → **未证实**。但【本机】观察：用 `git worktree add` 建在主仓库之外的 `~/.herdr/worktrees/iota/*` 仍与 `/Users/<user>/Work/iota` 共用 memory 目录（worktree 目录无 memory/），与「derived from the git repository」一致，说明键落在主仓库而非 worktree 自身的 top-level。
 - 不是远程 URL 键：目录名由路径派生，同一仓库的两个独立 clone 应是两套 memory（官方未明说 → **未证实**，但「machine-local」+ 路径派生命名可推）。
 
 ##### ④ 谁写
@@ -1617,7 +1619,7 @@ Claude Code（同属 Anthropic）在产品层做了明确选择：主会话按 g
 | 知识形态 | semantic facts/profile、episodic experiences、procedural skills | 当前事实、经历与做法的组织方式不同 | 用户／项目隔离 | LangMem、A-MEM、Zep [LM1][PA3][PA4] |
 | 业务与权限 | tenant/user/agent/project/thread | 归属、共享、适用范围和生命周期 | 内容正确性、召回充分性 | Mem0、Zep、Cognee、Copilot [ME1][ZE3][CG2][GH1] |
 
-**【推断】iota 的 L0/L1/L2 已在第一条轴上分层，Project 小节在第三条轴上分层。** 是否拆项目文件不会取代核心／档案／检索分层，也不要求把永续 bot 会话拆成项目会话 [IO1]。
+**【推断】iota 的 L0/L1/L2 在设计上按第一条轴分层（目前实现了 L0 会话档案与 L1 `MEMORY.md`，L2 `notes/` 与 `recall` 尚未实现），Project 小节在第三条轴上分层。** 是否拆项目文件不会取代核心／档案／检索分层，也不要求把永续 bot 会话拆成项目会话 [IO1]。
 
 ### 6.2 作用域过粗的代价
 
@@ -1701,7 +1703,7 @@ Claude Code（同属 Anthropic）在产品层做了明确选择：主会话按 g
 
 **精确答案：未找到。** 在两份调研核查的成熟系统与 19 个 coding agent 中，没有找到明确采用「一个命名 bot 的单一 Markdown，保存多个 `Project` 小节，宿主每轮按当前项目精确选择正文、其他项目只列标题」，并公开验证其长期效果的案例。**广义答案：有充分的相邻机制先例**——身份所有权下的一份长期库、文件内标注适用范围、按当前上下文形成较小视图，都已存在。可将它们作为模式依据，不能将「有相似实现」写成「iota 方案已被证明成功」[LE4][CX2][ZE1][ME1][LM2]。
 
-**【推断】因此，与现状最相关的问题未必是「一个文件合不合理」，而是这份文件的 scope 是否被所有访问路径一致解释。** 当前 iota 的裁剪针对 L1 注入；`User`、`Open threads`、前言和未知小节全局可见；recall 会搜索 MEMORY.md、notes，archive 仍是同一个永续会话，压缩摘要还可能保留之前的项目事实。它是**默认上下文的相关性控制**，不能描述成跨项目不可访问的硬隔离。这既与「bot 连续身份」目标相容，也意味着只拆 L1 文件不足以实现全面隔离（[IO1] §3.4–3.6）[IO2]。
+**【推断】因此，与现状最相关的问题未必是「一个文件合不合理」，而是这份文件的 scope 是否被所有访问路径一致解释。** 当前 iota 的裁剪针对 L1 注入；`User`、`Open threads`、前言和未知小节全局可见；archive 仍是同一个永续会话，压缩摘要还可能保留之前的项目事实。按设计，L2 的 `recall` 会搜索 MEMORY.md 与 `notes/`、`recall(source: "archive")` 会回读档案——**这两条路径目前尚未实现**，它们绕过按项目裁剪的风险是未来的、不是已存在的。它是**默认上下文的相关性控制**，不能描述成跨项目不可访问的硬隔离。此外，项目键本身在 worktree 下就已碎片化：同一仓库的不同 worktree 落到不同的 `Project:` 小节，彼此的项目事实默认互不注入（见开头「iota 现状」）。这既与「bot 连续身份」目标相容，也意味着只拆 L1 文件不足以实现全面隔离（[IO1] §3.4–3.6）[IO2]。
 
 ---
 
@@ -1711,13 +1713,14 @@ Claude Code（同属 Anthropic）在产品层做了明确选择：主会话按 g
 
 | project key 候选 | 好处 | 代价／风险 | 已有产品（出处） |
 |---|---|---|---|
-| 当前 basename（iota 现状） | 人可读；父目录迁移不改 basename 时仍能匹配 | 两个无关同名目录碰撞；项目改名后旧节不自动匹配；不能表达多仓库共同项目 | Gemini CLI 用 basename slug，但用 `projects.json` 注册绝对路径、冲突时加 `-1` 后缀并以 `.project_root` 校验归属，不会误共享（§4.2.2） |
+| 当前 basename（iota 现状） | 人可读；父目录迁移不改 basename 时仍能匹配 | 两个无关同名目录碰撞；项目改名后旧节不自动匹配；不能表达多仓库共同项目；**worktree 碎片化**：iota 的项目根遇到 `.git` 文件就停，linked worktree 取的是 worktree 自己的目录名（常是分支名），同一仓库的每个 worktree 各成一个项目（`src/agents/mod.rs:31-44`、`src/repl/run.rs:291`） | Gemini CLI 用 basename slug，但用 `projects.json` 注册绝对路径、冲突时加 `-1` 后缀并以 `.project_root` 校验归属，不会误共享（§4.2.2） |
 | 规范化绝对路径／路径 hash | 实现直观，区分同名目录 | 移动、改名、不同机器、独立 clone、临时 worktree 会碎片化；hash 只隐藏路径，不使身份稳定 | OpenHands SDK、Goose、Trae（编码未证实）、Cline、Roo、Continue、pi、Kiro 工作区；Claude Code 的目录名也由路径派生（§2.2）；改名失联见 [FR1] |
 | Git common root／repo identity | 可让同 repo worktree 共享 | 本地 root 仍会移动；repo 并不等于业务项目；分支状态会混入共用经验 | Claude Code（「derived from the git repository」，具体取 common dir 还是主工作树路径未证实，§4.1.1）；对照：Qwen、Aider 取 worktree 自己的 git root，worktree 各自一份（§4.2.1、§4.6.3） |
 | remote URL 或其规范化值 | 跨 checkout／机器较容易归一 | fork、迁仓、多个 remote、SSH/HTTPS 别名、无 remote 项目都需规则 | OpenCode：`Hash("git-remote:" + host 小写 + 去 .git 的路径)`，无远程退到缓存 id、再退到根提交 sha，非 git 为 `global`（§4.6.6）；Amp thread 按仓库 URL，可配 Git Remote Aliases（§4.6.5）；Copilot 用服务端 owner/repo，fork 是否共享未找到（§4.2.6） |
+| 沿第一父提交走到的根提交（root commit sha） | 由仓库历史决定，不依赖路径与 remote：改名、搬家、worktree、另一个 clone 都认作同一项目；无需网络与配置 | 非 git 目录没有；新建仓库首个提交之前没有；从同一模板/历史 fork 出的不同项目会共享同一根提交；改写历史（换根、filter-repo）后变化；多根历史要靠「第一父」规则选定唯一一个 | OpenCode 在没有远程时退到首个根提交 sha，旧版用 `git rev-list --max-parents=0 --all` 的根提交（§4.6.6）；本文未找到以它为首选键的产品 |
 | 显式稳定 project ID＋路径／repo aliases | 能表示改名、多个 checkout、多仓库同项目；显示名可单独改变 | 需建立、迁移、别名与冲突管理；ID 文件被复制时仍须定义是否代表同项目 | 部分接近：OpenCode 把项目 id 缓存进 `<git common dir>/opencode`；Amp 的多仓库 Project（2026-08-27）；Gemini 的 `projects.json` 注册表（§4.6.6、§4.6.5、§4.2.2） |
 
-这张键表是工程推理，**没有论文证明某一行普遍最优**。其中 basename 的碰撞／改名行为可从 iota 当前匹配契约直接推得；路径键风险则已有真实报告（[IO1] §3.2）[FR1][FR2]。
+这张键表是工程推理，**没有论文证明某一行普遍最优**。其中 basename 的碰撞／改名行为可从 iota 当前匹配契约直接推得，worktree 碎片化可从项目根查找代码直接推得（合并时补充，两份原稿都没有写）；路径键风险则已有真实报告（[IO1] §3.2）[FR1][FR2]。
 
 ---
 
@@ -1737,11 +1740,11 @@ Claude Code（同属 Anthropic）在产品层做了明确选择：主会话按 g
 
 **保留内容**：bot 继续拥有唯一长期记忆与永续会话；身份、通用偏好和项目事实共存，L1 按当前项目裁剪，L2 显式检索。无迁移成本，人能一次浏览、纠正所有记忆 [IO1]。
 
-**代价／风险**：全部项目共用 8 KiB L1 配额，一个项目的增长会挤压其他项目的常驻摘要；basename 同名／改名问题仍在；模型若漏写 section，默认 User 会扩大适用范围；Open threads 及检索／摘要路径仍可能带入其他项目。它不适合被承诺为客户／租户安全隔离（[IO1] §3.2–3.6）[IO2]。
+**代价／风险**：全部项目共用 8 KiB L1 配额，一个项目的增长会挤压其他项目的常驻摘要；basename 同名／改名问题仍在，linked worktree 还会被认成独立项目（worktree 碎片化）；模型若漏写 section，默认 User 会扩大适用范围；Open threads 及压缩摘要仍可能带入其他项目，L2 的 `recall`／`notes/` 落地后检索路径也会（目前尚未实现）。它不适合被承诺为客户／租户安全隔离（[IO1] §3.2–3.6）[IO2]。
 
 **他人经验**：Letta 支持 agent 所有权，Codex 支持统一手册内部标 scope，Zep 支持全集按上下文取视图，所以方向并不孤立；但 Copilot 的误归类报告说明「把项目事实写到全局层」是关键风险，Cognee／Cursor 说明过滤必须覆盖实际读路径 [LE4][CX2][ZE1][FR5][CG2][FR4]。产品侧，19 个 coding agent 里没有同款（§3.4、§8）。相邻先例支持该选项的合理性，不能证明当前大小、键或裁剪方式已足够。
 
-**可单独考虑、不要求换布局的增强**：项目 ID 与显示名分离；记忆条目／小节明确适用边界；默认写入 scope 更显式；跨项目 recall 返回来源；把项目临时事项与真正跨项目事项区分。它们增加格式与工具复杂度，是否需要应由实际失效案例决定 [ME1][CX2][FR1]。
+**可单独考虑、不要求换布局的增强**：项目 ID 与显示名分离；记忆条目／小节明确适用边界；默认写入 scope 更显式；（L2 落地后）跨项目 recall 返回来源；把项目临时事项与真正跨项目事项区分。它们增加格式与工具复杂度，是否需要应由实际失效案例决定 [ME1][CX2][FR1]。
 
 ### 10.3 ② 改成按项目分目录：让项目成为主要知识容器
 
@@ -1795,6 +1798,8 @@ Claude Code（同属 Anthropic）在产品层做了明确选择：主会话按 g
 **产品调研内部的计数不一致（不是两份之间的分歧）**：正文写「以下 19 节」，专题与取舍两节写「20 家」。按产品小节数是 19（Codex 节含 ChatGPT，Kiro 节含 Kiro Web 与 Crew），本文统一写 19；原稿的「20 家」可能把 ChatGPT 单独计入，未核实。另外原稿取舍一节说「项目 + 用户」双层有五家（不含 Copilot），专题一节说六家（含 Copilot）；本文按六家写，并注明 Copilot 的「项目」是 GitHub 仓库身份（§3.4）。
 
 **各自的盲区**：产品调研不看专用记忆系统、论文与公开 issue；模式调研对 Gemini CLI、Qwen Code、OpenHands、Goose、Trae、Devin、Kiro 等产品没有单独核查。上面「项目＋用户双层最常见」「iota 的方案没有同款」等结论，只在各自覆盖的范围内成立。
+
+**两份都漏掉、合并时补上的 iota 现状事实**：① linked worktree 下的 worktree 碎片化（项目键取 worktree 自己的目录名，见开头「iota 现状」与 §9）；② 两份都把 `notes/` 与 `recall` 当成现有机制推理，实际它们是 [IO1] 设计中尚未实现的 L2，相关推理处已逐一标注。
 
 ---
 
