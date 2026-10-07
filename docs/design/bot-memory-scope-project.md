@@ -7,7 +7,7 @@ Status: **Proposal**（供选择，未拍板）· 日期：2026-10-07 · 基线�
 依据：
 
 - 现状设计 [`bot-mode.md`](bot-mode.md) §1.3、§2、§3（下称 bot-mode），现状代码 `src/agents/memory.rs`、`src/agents/memory/snapshot.rs`、`src/repl/run.rs`、`src/agents/mod.rs`。
-- 本次调研 [`bot-memory-scope-research.md`](bot-memory-scope-research.md)（下称 research）。它由两份报告合并而成，下文按原报告的节号引用：**research/landscape** 是 19 个 coding agent 的做法，**research/patterns** 是专用记忆系统、失败记录和 project key 的代价。
+- 本次调研 [`bot-memory-scope-research.md`](bot-memory-scope-research.md)（下称 research）。它由两份报告合并而成，下文写「research §N」指合并后文档的节号，方括号里的 `[FR2]` 之类是它附 B 的引用编号。
 
 证据标记：**【先例】**表示 research 里有已实现的产品或公开记录，后面给出处；**【推断】**表示本文自己的工程推理；**【无证据】**表示没有找到任何支持或反驳的材料，只能靠 §9 的验证来回答。
 
@@ -41,12 +41,12 @@ Status: **Proposal**（供选择，未拍板）· 日期：2026-10-07 · 基线�
 任务书给了两种形态：bot 目录里的 `projects/<project-id>/`，或者把项目知识放在仓库里、让多个 bot 共享。两者的所有者不同：前者归 bot，后者归项目或团队。**本方案选前者：bot 私有。** 理由按分量排列：
 
 1. **仓库里本来就有一个归项目所有的层，就是 AGENTS.md。**再在仓库里放一份「模型写的项目记忆」，等于同一个所有者有两份文件：一份人维护、要 review，一份模型免审批写。bot-mode §3.1 不做按项目文件的理由正是这一条。bot 私有的项目记忆和 AGENTS.md 所有者不同（bot 对项目），不和它竞争。
-2. **放进仓库，就要和 git 打交道，而两种选择都有问题。**如果文件被跟踪：切分支会换掉记忆内容；合并会冲突；模型免审批写下的行会出现在 diff 和 PR 里；bot-mode §3.7 第 4 条明确不做内容过滤，密钥可能被提交。如果文件不跟踪（gitignore）：每个 worktree、每个 clone 各有一份，正好重现 Claude Code #28037 的问题，worktree 删掉，经验跟着丢（【先例】research/patterns §5 [F2]），「共享」也就落空了。
+2. **放进仓库，就要和 git 打交道，而两种选择都有问题。**如果文件被跟踪：切分支会换掉记忆内容；合并会冲突；模型免审批写下的行会出现在 diff 和 PR 里；bot-mode §3.7 第 4 条明确不做内容过滤，密钥可能被提交。如果文件不跟踪（gitignore）：每个 worktree、每个 clone 各有一份，正好重现 Claude Code #28037 的问题，worktree 删掉，经验跟着丢（【先例】research §7.1 [FR2]），「共享」也就落空了。
 3. **写入 jail 和审批会变。**现在 memory 工具的写入被 jail 在 bot 目录里，所以免审批（bot-mode §3.3）。往仓库里写，属于 code 工具集那条要审批的路径（`src/tool/builtins/code/tools.rs:271-273`）。无人值守的 flush 轮要么要人审批，要么就得为它开一个口子。
 4. **并发要另外加锁。**bot 锁只覆盖 `~/.iota/bots/<name>/`。两个 bot 同时在一个仓库里写同一个文件，需要一把跨 bot 的新锁。
 5. **信任边界会变。**记忆块的前言说这是「你（模型）自己早先写下的数据」（`snapshot.rs` 的 `MEMORY_PREAMBLE`）。如果是仓库共享的，别的 bot、别的人写的内容也会以这个口吻进来，前言就不成立了。
 
-仓库共享形态有先例：Qwen Code 的 `<repo>/.qwen/team-memory/` 是 opt-in，写入默认询问并做秘密扫描（【先例】research/landscape §3.3、§4 第 6 条）。也就是说，它必须带上 iota 已经明确拒绝的那两样东西：审批和内容扫描。「bot 私有的项目层」也有先例：Claude Code 子代理的 `memory: project` 是「某个 agent 名 × 某个项目」（【先例】research/patterns §3.3 第 3 条 [H3]）。不同的是，它把目录放在仓库里的 `.claude/agent-memory/`，本方案放在 bot 目录里。
+仓库共享形态有先例：Qwen Code 的 `<repo>/.qwen/team-memory/` 是 opt-in，写入默认询问并做秘密扫描（【先例】research §3.4、§3.6）。也就是说，它必须带上 iota 已经明确拒绝的那两样东西：审批和内容扫描。「bot 私有的项目层」也有先例：Claude Code 子代理的 `memory: project` 是「某个 agent 名 × 某个项目」（【先例】research §3.3 [CC2]）。不同的是，它把目录放在仓库里的 `.claude/agent-memory/`，本方案放在 bot 目录里。
 
 ### 2.2 五个维度
 
@@ -73,17 +73,17 @@ Status: **Proposal**（供选择，未拍板）· 日期：2026-10-07 · 基线�
 
 | 候选 | 为什么不选 | 本方案的键在这里的表现 |
 |---|---|---|
-| 当前 basename（现状） | 不相关的同名目录会碰撞；改名后找不回旧小节。还有一条 research 漏了：iota 的 `project_root` 遇到 `.git` **文件**就停（`src/agents/mod.rs:31-44`），所以 linked worktree 的项目根是 worktree 目录本身，basename 取的是 worktree 名。例如本工作树叫 `mem-design-a`，现状下它看不到 `## Project: iota`（`src/repl/run.rs:291-297`）。换句话说，现状对 worktree 已经是碎片化的 | 同名目录不碰撞；改名、worktree 都认作同一个项目 |
-| 绝对路径 / 路径 hash | 移动、改名、另一个 clone、临时 worktree 都会碎片化。有公开记录：Claude Code #61349 改名后旧记忆不再加载（【先例】research/patterns §5 [F1]） | 和路径无关 |
+| 当前 basename（现状） | 不相关的同名目录会碰撞；改名后找不回旧小节。还有一条两份原始调研都漏了（合并后的 research 已在开头「iota 现状」与 §9 补上）：iota 的 `project_root` 遇到 `.git` **文件**就停（`src/agents/mod.rs:31-44`），所以 linked worktree 的项目根是 worktree 目录本身，basename 取的是 worktree 名。例如本工作树叫 `mem-design-a`，现状下它看不到 `## Project: iota`（`src/repl/run.rs:291-297`）。换句话说，现状对 worktree 已经是碎片化的 | 同名目录不碰撞；改名、worktree 都认作同一个项目 |
+| 绝对路径 / 路径 hash | 移动、改名、另一个 clone、临时 worktree 都会碎片化。有公开记录：Claude Code #61349 改名后旧记忆不再加载（【先例】research §7.1 [FR1]） | 和路径无关 |
 | git common root | 所有 worktree 能共用，但主工作树的路径一移动就失联；而且依然是路径 | 同上 |
-| 远程 URL | fork、迁仓、多个 remote、SSH 和 HTTPS 别名都要定规则；没有 remote 的本地仓库（个人项目里很常见）得另找退路。OpenCode 首选它，没有 remote 时就退到根提交（【先例】research/landscape §2.16） | 迁仓、换 remote 不影响；没有 remote 的仓库照样有键 |
+| 远程 URL | fork、迁仓、多个 remote、SSH 和 HTTPS 别名都要定规则；没有 remote 的本地仓库（个人项目里很常见）得另找退路。OpenCode 首选它，没有 remote 时就退到根提交（【先例】research §4.6.6） | 迁仓、换 remote 不影响；没有 remote 的仓库照样有键 |
 | 显式稳定 ID + 别名 | 表达力最强，但要有人建 ID、维护别名、处理复制冲突。ID 放仓库里就是往用户仓库写文件，放 bot 目录里就退化成「路径 → ID」的别名表，改名后仍要人补别名 | 不需要人建，也没有别名表 |
 
 为什么用 **`--first-parent`**：仓库合并进一段不相关的历史（subtree merge）时，那段历史的根是作为第二父进来的，沿第一父走下去仍然是项目自己原来的根，键不变。不加 `--first-parent` 会得到多个根，取哪个都会在某次合并后变。**【推断】**
 
 2026-10-07 在临时仓库里手工核对过（git 2.50）：用 `--allow-unrelated-histories` 合并一段孤儿历史之后，`--max-parents=0 HEAD` 返回两个根，加上 `--first-parent` 只返回原来的根；linked worktree 返回同一个根；`--depth 1` 的 clone 上 `--is-shallow-repository` 为 `true`；没有提交的仓库上 `rev-list` 以 128 退出。这只证明命令的行为符合设计，不证明真实仓库里键的稳定性（§8.3）。
 
-有先例的部分：OpenCode 没有 remote 时退到根提交 sha，旧版本直接用 `git rev-list --max-parents=0 --all` 当项目 ID（【先例】research/landscape §2.16）。它用的是 `--all`，不是第一父，而且会把 ID 缓存在 `<git common dir>/opencode` 里。本方案不写用户的 `.git`，所以不缓存。
+有先例的部分：OpenCode 没有 remote 时退到根提交 sha，旧版本直接用 `git rev-list --max-parents=0 --all` 当项目 ID（【先例】research §4.6.6）。它用的是 `--all`，不是第一父，而且会把 ID 缓存在 `<git common dir>/opencode` 里。本方案不写用户的 `.git`，所以不缓存。
 
 **代价**（选它就要付的）：
 
@@ -180,7 +180,7 @@ updated: 2026-10-07
 | `User` | bot 级 `## User` | 没有当前项目时，缺省是它 |
 | `Open threads` | bot 级 `## Open threads` | |
 
-- **为什么缺省写 Project**：「把项目事实误存成个人偏好，然后带到无关仓库」是有公开记录的失败（Copilot Discussion #201874，【先例】research/patterns §4.2、§5 [F5]）。缺省写窄的那一层，是把错误推向「偏好只留在一个项目里」这一侧。两种错误哪个代价更大，**【无证据】**，见 §8 和 §9 Q6。
+- **为什么缺省写 Project**：「把项目事实误存成个人偏好，然后带到无关仓库」是有公开记录的失败（Copilot Discussion #201874，【先例】research §6.2、§7.1 [FR5]）。缺省写窄的那一层，是把错误推向「偏好只留在一个项目里」这一侧。两种错误哪个代价更大，**【无证据】**，见 §8 和 §9 Q6。
 - **为什么还要保留 `Project: <名字>`**：会话跨项目延续。bot 昨天在 herdr 里工作，今天在 iota 里重启时，上次压缩之后的那段对话里还有 herdr 的内容。如果此时的 flush 只能写当前项目，herdr 的经验要么丢进摘要，要么被误存进 iota，而后者正是这条路承诺要避免的串味。多仓库任务（在 iota 里改完要去 website 仓库发文章）同理。只能写已存在的项目，避免了模型凭一个名字凭空造出一个新项目。
 - **没选的方案**：「换项目时先强制做一次 flush 加压缩」也能防止串味，但每次换项目都要等一次摘要调用（几十秒），而且对同一轮里跨多个仓库的任务没用。它比一个按名字定位的参数复杂，作用又更窄。
 - **`replace` / `remove` 的 `old` 匹配**：在 bot 级文件和当前项目文件（如果给了 `Project: <名字>`，就是那个项目的文件）里一起找，必须恰好命中一行，否则报错并列出候选，规则同 bot-mode §3.3。
@@ -195,7 +195,7 @@ updated: 2026-10-07
 2. **记忆块前言**（§5）：加上优先级。「`## Project` 里的行只在这个项目里成立，在这个项目里优先于 `## User`；不要因为某个项目的例外去改 `## User` 的行。」这是防止「局部反例推翻全局偏好」的主要手段。**【推断】**，效果见 §9 Q6。
 3. **`FLUSH_NOTICE`**：加一句「facts about this repository go to section Project; facts about another project you worked on earlier in this conversation go to `Project: <name>` (see Other projects)」。
 
-有先例：Gemini CLI 把路由规则写进系统提示，并规定「一条事实只能落一层、不许跨层镜像」（【先例】research/landscape §3.3）。Qwen 按 `type` 路由（同上）。Copilot 存储时向用户显示 scope（同上）。
+有先例：Gemini CLI 把路由规则写进系统提示，并规定「一条事实只能落一层、不许跨层镜像」（【先例】research §3.4）。Qwen 按 `type` 路由（同上）。Copilot 存储时向用户显示 scope（同上）。
 
 ### 4.4 人怎么改
 
@@ -214,7 +214,7 @@ updated: 2026-10-07
 | 单行 500 字节 | 不变 |
 | 人手编辑超限 | 按文件截断注入，`[memory truncated …]` 写在对应文件的那一段末尾（§5） |
 
-**不新增常量**：一个上限、一套规则，作用在每个文件上。代价是注入上限从 8 KiB 变成 16 KiB（bot 级 + 当前项目各 8 KiB）。**【推断】**bot 级文件不再装项目内容后，实际会远小于 8 KiB。同行的常驻上限在 6,000 字符到 25 KB 之间（【先例】research/landscape §4 第 9 条），16 KiB 落在区间内。
+**不新增常量**：一个上限、一套规则，作用在每个文件上。代价是注入上限从 8 KiB 变成 16 KiB（bot 级 + 当前项目各 8 KiB）。**【推断】**bot 级文件不再装项目内容后，实际会远小于 8 KiB。同行的常驻上限在 6,000 字符到 25 KB 之间（【先例】research §3.4「常驻索引上限对照」），16 KiB 落在区间内。
 
 ---
 
@@ -302,7 +302,7 @@ Notes (read with recall):          ← L2 才出现
 
 ### 8.1 这条路比另一条（按 bot 一份、小节裁剪）差在哪
 
-1. **写入要多做一次路由判断，而且错误的方向反过来了。**现状缺省写 `## User`，容易把项目事实泛化到所有项目（Copilot 式失败）。本方案缺省写 `Project`，容易把真正的个人偏好困在一个项目里，换个项目就要再纠正一次。哪种错误更伤，**【无证据】**。research 找不到比较「身份全局 / 按项目 / 混合」的对照研究（research/patterns §4.4 检索结论）。
+1. **写入要多做一次路由判断，而且错误的方向反过来了。**现状缺省写 `## User`，容易把项目事实泛化到所有项目（Copilot 式失败）。本方案缺省写 `Project`，容易把真正的个人偏好困在一个项目里，换个项目就要再纠正一次。哪种错误更伤，**【无证据】**。research 找不到比较「身份全局 / 按项目 / 混合」的对照研究（research §6.4 检索结论）。
 2. **硬依赖 git**：非 git 目录、空仓库、浅克隆、没装 git 的机器都没有项目层。另一条路用目录名，在哪都能用（§2.3 代价 1）。
 3. **人看不到全貌**：现在一个文件就是 bot 的全部记忆；本方案要看 N+1 个文件，而且要手动迁移。
 4. **L1 的隔离收益几乎为零。**这是最需要老实说的一点：现状注入时已经把其它项目的小节正文裁掉了（`Snapshot::block`），所以在「切到 B 之后会不会在常驻层读到 A 的工具链」这个问题上，本方案和现状都是「看不到」。本方案独有的收益只有三条：
@@ -310,15 +310,15 @@ Notes (read with recall):          ← L2 才出现
    - **按项目的生命周期**：整个目录删掉、备份、查看；
    - **写入目标由工具解析**：模型写不错项目名，也凭空造不出项目。
 
-   **稳定的项目键和存储布局是两个独立的决定**（research/patterns §7.1）：根提交这个键也可以装到另一条路的单文件小节上。如果所有者最在意的是改名、同名、worktree 这三个问题，另一条路换个键就能解决，不必拆文件。
+   **稳定的项目键和存储布局是两个独立的决定**（research §9）：根提交这个键也可以装到另一条路的单文件小节上。如果所有者最在意的是改名、同名、worktree 这三个问题，另一条路换个键就能解决，不必拆文件。
 5. **代码和概念更多**：一个子进程解析、一个多文件快照、一个跨项目定位参数、`/status` 一行、一条旧形状警告。另一条路改键只需要换掉 `memory_project()`。
 6. **注入上限翻倍**（8 → 16 KiB），每次发送的固定开销随之上限翻倍。被冻结的快照不影响缓存命中，但会影响窗口占用和 bot reserve 前的余量。
-7. **worktree 共享带来的 checkout 专属状态混入。**同一仓库的所有 worktree 共用一份项目记忆，某个分支上的临时命令、没合并的实现细节可能被别的 worktree 误用。Claude Code 改成按 repo 共享之后，就有人报告过路径混淆（【先例】research/patterns §5 [F3]）。本方案没有结构性的缓解，只靠行文里写清分支。另一条路如果也换成仓库级的键，同样有这个问题；保留目录名作键，反而碰巧按 worktree 隔离了（§2.3 表格第一行）。
+7. **worktree 共享带来的 checkout 专属状态混入。**同一仓库的所有 worktree 共用一份项目记忆，某个分支上的临时命令、没合并的实现细节可能被别的 worktree 误用。Claude Code 改成按 repo 共享之后，就有人报告过路径混淆（【先例】research §7.1 [FR3]）。本方案没有结构性的缓解，只靠行文里写清分支。另一条路如果也换成仓库级的键，同样有这个问题；保留目录名作键，反而碰巧按 worktree 隔离了（§2.3 表格第一行）。
 
 ### 8.2 两条路共有、本方案并不解决的风险
 
-- 档案和压缩摘要仍然跨项目（§5 末尾），本方案**不是硬隔离**，不能承诺租户或客户级别的隔离。research/patterns §6 末尾对现状的判断同样适用于本方案。
-- 被污染的「成功经验」被持续召回（MemoryGraft，【先例】research/patterns §4.2 [P7]）：按项目分文件只是缩小了影响范围，错误照样可能写进同一个项目或者 bot 级。
+- 档案和压缩摘要仍然跨项目（§5 末尾），本方案**不是硬隔离**，不能承诺租户或客户级别的隔离。research §8 末尾对现状的判断同样适用于本方案。
+- 被污染的「成功经验」被持续召回（MemoryGraft，【先例】research §6.2 [PA7]）：按项目分文件只是缩小了影响范围，错误照样可能写进同一个项目或者 bot 级。
 
 ### 8.3 哪些是没有证明的
 
@@ -329,7 +329,7 @@ Notes (read with recall):          ← L2 才出现
 | 「项目行在本项目内优先于 User 行」这句前言能阻止局部反例改写全局偏好 | **【推断】** |
 | 第一父根提交在真实用户仓库里稳定（不会因为模板、孤儿分支、重写历史而频繁变化） | **【推断】**；OpenCode 用根提交有先例，但用的是 `--all`，没有它稳定性的数据 |
 | 大仓库里 `rev-list --first-parent` 的启动开销可以接受 | **【无证据】** |
-| 注入上限 16 KiB 不明显降低任务表现 | **【无证据】**；AGENTS.md 的实验显示多塞约束可能增加成本（research/patterns §4.2 [P6]），但那不是记忆实验 |
+| 注入上限 16 KiB 不明显降低任务表现 | **【无证据】**；AGENTS.md 的实验显示多塞约束可能增加成本（research §6.2 [PA6]），但那不是记忆实验 |
 
 ---
 
@@ -352,7 +352,7 @@ Notes (read with recall):          ← L2 才出现
 | Q11 | 键的稳定性 | 确定性：subtree merge 一段不相关历史之后键不变；切到孤儿分支之后键变（预期行为，测试钉住） | 两条都符合预期 |
 | Q12 | 旧形状会不会泄漏 | 确定性：bot 级文件里有 `## Project: iota`，断言它不进块，transcript 有 `⚠`；`remember` 不往里写 | 不注入，有警告 |
 
-Q1、Q8 的行为部分，和另一条路用同一份脚本、同一组事实跑，结果才能对照。research/patterns §7.5 提出的维度（错域应用、未召回、重复纠正、注入量、迁移维护成本）就是这份脚本的计分项。
+Q1、Q8 的行为部分，和另一条路用同一份脚本、同一组事实跑，结果才能对照。research §10.5 提出的维度（错域应用、未召回、重复纠正、注入量、迁移维护成本）就是这份脚本的计分项。
 
 ---
 
