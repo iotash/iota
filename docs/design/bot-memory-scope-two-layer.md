@@ -5,7 +5,7 @@ Status: **Proposal**（供选择，未拍板）· 日期：2026-10-07 · 分支 
 依据：
 
 - 现状设计 [`docs/design/bot-mode.md`](bot-mode.md) §3（下称 **bot-mode**）与源码 `src/agents/memory.rs`、`src/agents/memory/snapshot.rs`、`src/agents/mod.rs`、`src/repl/run.rs`、`src/tool/builtins/memory.rs`（坐标指 `9022f72`）。
-- 本次调研 [`docs/design/bot-memory-scope-research.md`](bot-memory-scope-research.md)（下称 **research**）。它由两份报告合并而成，本文按原报告分别引用：**同行篇**（19 个 coding agent 的作用域键、存放位置、注入还是检索、worktree 怎么处理）与 **模式篇**（专用记忆系统、证据等级、失败记录、project key 候选、§7.5 的验证问题）。例如「research 同行篇 §2.10」指同行篇的 Copilot 一节，「research 模式篇 §7.1」指 project key 表。
+- 本次调研 [`docs/design/bot-memory-scope-research.md`](bot-memory-scope-research.md)（下称 **research**）。它由两份报告（19 个 coding agent 的横向调研，与专用记忆系统、证据等级、失败记录的模式调研）合并而成。本文写「research §N」指合并后文档的节号，例如「research §4.2.6」是 Copilot 一节，「research §9」是 project key 候选表；方括号里的 `[FR2]` 之类是它附 B 的引用编号。
 
 标注约定：**【先例】**有产品或系统已经这样做，并给出 research 中的出处；**【推断】**本文自己的设计推理，没有外部证据；**【无证据】**目前没有任何数据支持或反驳，只能靠第 9 节的验证来回答。
 
@@ -38,7 +38,7 @@ Status: **Proposal**（供选择，未拍板）· 日期：2026-10-07 · 分支 
 
 ### 2.1 五个维度
 
-维度划分取自 research 模式篇 §1。
+维度划分取自 research §2.1。
 
 | 维度 | 身份层 | 项目层 |
 |---|---|---|
@@ -48,7 +48,7 @@ Status: **Proposal**（供选择，未拍板）· 日期：2026-10-07 · 分支 
 | **读取视图** | 每轮全文注入 | 每轮只注入**当前项目**那一份的全文；其它项目只列名字和行数，一行 |
 | **生命周期** | 跟 bot 走：删 bot 目录才消失。模型能改/删带标记的行，人能改任何行 | 跟项目走：项目文件可以整目录删除、归档，不影响身份层和其它项目。项目改名/搬走后，人改一行 `root:` 就能重新挂上（§3.3） |
 
-**冲突优先级**（从高到低）：用户当下的请求 > AGENTS.md > **项目层** > 身份层。项目层排在身份层前面，理由是「局部覆盖一般」：近处优先。【先例】AGENTS.md 嵌套目录近处优先（research 模式篇 §3.1）；OpenAI Cookbook 的 session overrides 先于 global defaults（research 模式篇 §2.8）。项目层**只在本项目内**覆盖身份层，不改写身份层：项目里的反例写进项目层，身份层那一行原样不动（§4.3）。
+**冲突优先级**（从高到低）：用户当下的请求 > AGENTS.md > **项目层** > 身份层。项目层排在身份层前面，理由是「局部覆盖一般」：近处优先。【先例】AGENTS.md 嵌套目录近处优先（research §3.5）；OpenAI Cookbook 的 session overrides 先于 global defaults（research §5.8）。项目层**只在本项目内**覆盖身份层，不改写身份层：项目里的反例写进项目层，身份层那一行原样不动（§4.3）。
 
 ### 2.2 project key：选 git common dir 的规范化路径
 
@@ -63,19 +63,19 @@ Status: **Proposal**（供选择，未拍板）· 日期：2026-10-07 · 分支 
 
 实测本工作树：`.git` 是文件，内容为 `gitdir: /Users/joyqi/Work/iota/.git/worktrees/mem-design-b`；那个目录下的 `commondir` 是 `../..`，所以 common dir 是 `/Users/joyqi/Work/iota/.git`，显示名是 `iota`。**按现状的规则，这个工作树的项目名却是 `mem-design-b`**，见下面「为什么不选当前 basename」。
 
-**为什么选它，不选其它四个候选**（候选和各自的代价见 research 模式篇 §7.1）：
+**为什么选它，不选其它四个候选**（候选和各自的代价见 research §9）：
 
 | 候选 | 不选的理由 |
 |---|---|
-| 当前 basename（现状） | `project_root` 在 linked worktree 里停在 worktree 自己的 `.git` **文件**上，所以 basename 是**worktree 的目录名**。这个仓库的日常工作方式恰恰是每个分支一个 worktree（`~/.herdr/worktrees/iota/<分支>`）：现状下每个分支都会长出一个 `## Project: <分支名>` 小节，worktree 删掉后那一节就成了孤儿。再加上两个无关仓库同名时会串（research 模式篇 §7.1）。research 模式篇只记了碰撞和改名两条，漏掉了 worktree 这一条，而它是本项目最常碰到的 |
-| 规范化绝对路径（`project_root` 本身） | worktree 各算一个项目，问题同上；Claude Code #28037 正是这个失败（research 模式篇 §5，F2） |
-| 远程 URL | 没有 remote 的本地仓库、fork、多个 remote、SSH/HTTPS 两种写法都要额外定规则（research 模式篇 §7.1）；读 remote 要解析 `.git/config`，它比 `commondir` 复杂得多 |
+| 当前 basename（现状） | `project_root` 在 linked worktree 里停在 worktree 自己的 `.git` **文件**上，所以 basename 是**worktree 的目录名**。这个仓库的日常工作方式恰恰是每个分支一个 worktree（`~/.herdr/worktrees/iota/<分支>`）：现状下每个分支都会长出一个 `## Project: <分支名>` 小节，worktree 删掉后那一节就成了孤儿。再加上两个无关仓库同名时会串（research §9）。合并前的模式调研原稿只记了碰撞和改名两条，漏掉了 worktree 这一条（合并后的 research §9 已补上），而它是本项目最常碰到的 |
+| 规范化绝对路径（`project_root` 本身） | worktree 各算一个项目，问题同上；Claude Code #28037 正是这个失败（research §7.1 [FR2]） |
+| 远程 URL | 没有 remote 的本地仓库、fork、多个 remote、SSH/HTTPS 两种写法都要额外定规则（research §9）；读 remote 要解析 `.git/config`，它比 `commondir` 复杂得多 |
 | 显式稳定 ID + 别名 | 要么把 ID 写进用户仓库（写到 bot 目录之外，越出记忆工具的 jail），要么存在 bot 目录里、用路径当别名，可改名后照样找不回来，还多一层别名管理。对单用户、本机这个场景，收益撑不起它的复杂度【推断】 |
-| （补充）根提交 sha | OpenCode 在没有 remote 时用它（research 同行篇 §2.16）。改名、搬家、换机器都不会变。但要么起 `git` 子进程（iota 现在一处也没有），要么自己解析 packfile；空仓库和非 git 目录还得另配一套回落；从模板 clone 来的仓库会共用同一个根提交。不选 |
+| （补充）根提交 sha | OpenCode 在没有 remote 时用它（research §4.6.6）。改名、搬家、换机器都不会变。但要么起 `git` 子进程（iota 现在一处也没有），要么自己解析 packfile；空仓库和非 git 目录还得另配一套回落；从模板 clone 来的仓库会共用同一个根提交。不选 |
 
 **选它的理由**：
 
-- **worktree 共享**，这是这个仓库的主要工作方式。【先例】Claude Code 让同一仓库的 worktree 共用记忆，这是官方明确表态的唯一一家（research 同行篇 §3 第 7 条）。
+- **worktree 共享**，这是这个仓库的主要工作方式。【先例】Claude Code 让同一仓库的 worktree 共用记忆，这是官方明确表态的唯一一家（research §2.2、§3.1）。
 - **同名不串**：路径本身唯一。
 - **零新依赖**：只读两个小文本文件（`.git`、`commondir`），不起 git 进程。`project_root` 已经在做「找 `.git`」这件事，这里只是往下多走一步。
 - **非 git 目录不用另写分支**：key 直接是 cwd，同一套代码。
@@ -83,30 +83,30 @@ Status: **Proposal**（供选择，未拍板）· 日期：2026-10-07 · 分支 
 **代价**（都写进第 8 节）：
 
 - **改名/搬家会断**：路径变了就匹配不上。缓解是§3.3 的「疑似改名」提示，人改一行 `root:` 就能重新挂上；不做自动重挂，因为路径相同不代表是同一个项目，反过来也一样。
-- **同一仓库的两个独立 clone 算两个项目**（不同的 common dir）。research 提到的产品里没有一家讨论过多 clone（research 同行篇 §3 第 7 条）。
-- **分支状态混进共用经验**：所有 worktree 读同一份项目层，某个分支特有的命令可能在别的分支被误用。【先例】Copilot 用当前分支核对 citation（research 同行篇 §2.10）；本方案不做核对，只在工具描述里要求「只对某个分支成立的事不要写进项目层」，这条约束能不能起作用【无证据】。
+- **同一仓库的两个独立 clone 算两个项目**（不同的 common dir）。research 提到的产品里没有一家讨论过多 clone（research §2.2）。
+- **分支状态混进共用经验**：所有 worktree 读同一份项目层，某个分支特有的命令可能在别的分支被误用。【先例】Copilot 用当前分支核对 citation（research §4.2.6）；本方案不做核对，只在工具描述里要求「只对某个分支成立的事不要写进项目层」，这条约束能不能起作用【无证据】。
 - 在 `~`、`/tmp` 这种非 git 目录里启动，也会各算一个「项目」。项目文件在第一次写入时才创建，所以不写就不留痕迹。
 
 ### 2.3 写入路由：选「模型显式选 + 宿主硬约束」，不选其它四家的做法
 
-双层产品决定「这一条落哪层」的机制，research 归纳为三种（同行篇 §3 末尾）：模型按系统提示里的路由规则（Gemini、OpenHands，Qwen 按 type 路由），写入参数（Goose 的 `is_global`），条目自带 scope 且用户可见（Copilot）。本方案的选择：
+双层产品决定「这一条落哪层」的机制，research 归纳为三种（§3.4 事实小结）：模型按系统提示里的路由规则（Gemini、OpenHands，Qwen 按 type 路由），写入参数（Goose 的 `is_global`），条目自带 scope 且用户可见（Copilot）。本方案的选择：
 
-- **写入参数，必填**：`remember(section: "User" | "Open threads" | "Project")`，没有缺省值。【先例】Goose `is_global`（research 同行篇 §2.14）。现状缺省是 `User`；research 模式篇 §7.2 指出「模型漏写 section 时缺省成 User 会扩大适用范围」，Copilot #201874 就是这种失败（F5）。改成必填，模型就必须当场判断。
-- **工具描述里写路由规则**：【先例】Gemini 系统提示里的路由规则，包括「一条事实只能落一层、不许跨层镜像」（research 同行篇 §2.9）。规则原文见 §4.2。
+- **写入参数，必填**：`remember(section: "User" | "Open threads" | "Project")`，没有缺省值。【先例】Goose `is_global`（research §4.2.4）。现状缺省是 `User`；research §10.2 指出「模型漏写 section 时缺省成 User 会扩大适用范围」，Copilot #201874 就是这种失败（[FR5]）。改成必填，模型就必须当场判断。
+- **工具描述里写路由规则**：【先例】Gemini 系统提示里的路由规则，包括「一条事实只能落一层、不许跨层镜像」（research §4.2.2）。规则原文见 §4.2。
 - **宿主的两条硬约束**【推断，无先例】：
-  1. **`User` 只收 `source: user`**。身份层只放用户明说的话（以及人手写的行）。模型自己推断出来的东西只能进 `Project` 或 `Open threads`。这条直接针对 research 模式篇 §5 的第 ② 类失败「写入归属错误」：把局部经验升成个人事实（F5）。
+  1. **`User` 只收 `source: user`**。身份层只放用户明说的话（以及人手写的行）。模型自己推断出来的东西只能进 `Project` 或 `Open threads`。这条直接针对 research §7.2 的第 ② 类失败「写入归属错误」：把局部经验升成个人事实（[FR5]）。
   2. **跨层精确去重**：`add` 归一化后的文本如果和另一层的某一行完全相同，就拒绝写入，并提示「已经在 X 层；要挪层先 remove」。只做精确匹配，语义上的重复抓不到。
-- **条目可见**：每次写入在 transcript 里展开，notice 带层名（§4.4）。【先例】Copilot CLI 每次存储都显示 scope（research 同行篇 §2.10）；iota 不加审批门，这一点沿用 bot-mode §3.7。
+- **条目可见**：每次写入在 transcript 里展开，notice 带层名（§4.4）。【先例】Copilot CLI 每次存储都显示 scope（research §4.2.6）；iota 不加审批门，这一点沿用 bot-mode §3.7。
 
 **没选的做法**：
 
 | 做法 | 不选的理由 |
 |---|---|
 | Copilot：每次写入都弹确认 | bot 要能无人值守地跑（bot-mode §4），flush 轮里不能停下来等人确认。bot-mode §3.7 已经定了「可见 + 可回滚」替代审批 |
-| Qwen：按 type 路由（`user` 类型永远进用户层）+ 后台 Dream 合并 + team 层 | type 词表是 notes（L2）的事，L1 一行一条、不加逐条 schema（bot-mode §3.2）。后台整理 bot-mode §3.3 明确不做。team 层要进 git，越出 bot 目录的 jail，还要做秘密扫描，和「不做内容审查」冲突（bot-mode §3.7 第 4 条）（research 同行篇 §2.17） |
+| Qwen：按 type 路由（`user` 类型永远进用户层）+ 后台 Dream 合并 + team 层 | type 词表是 notes（L2）的事，L1 一行一条、不加逐条 schema（bot-mode §3.2）。后台整理 bot-mode §3.3 明确不做。team 层要进 git，越出 bot 目录的 jail，还要做秘密扫描，和「不做内容审查」冲突（bot-mode §3.7 第 4 条）（research §4.2.1） |
 | Gemini：拿不准时问用户 | 「问用户」放进工具描述，作为模型可以做的事，但不当成宿主机制；flush 轮里没人可问 |
-| OpenHands：两层共用一个预算、按层公平分（合计 6,000 字符） | 共用预算正好保留了「一个项目写多了挤掉别的」这个问题，只是从「挤掉别的项目」变成「挤掉身份层」。本方案每个文件各有固定上限，现有代码本来就是按文件算上限（`MEMORY_CAP`），只需要把它变成参数（research 同行篇 §2.13） |
-| Goose：本地层不预载、只能检索 | 项目事实（工具链、命令）恰恰是每轮都需要的；不预载就会出现「切到项目后忘了用 pnpm」（research 同行篇 §2.14） |
+| OpenHands：两层共用一个预算、按层公平分（合计 6,000 字符） | 共用预算正好保留了「一个项目写多了挤掉别的」这个问题，只是从「挤掉别的项目」变成「挤掉身份层」。本方案每个文件各有固定上限，现有代码本来就是按文件算上限（`MEMORY_CAP`），只需要把它变成参数（research §4.2.3） |
+| Goose：本地层不预载、只能检索 | 项目事实（工具链、命令）恰恰是每轮都需要的；不预载就会出现「切到项目后忘了用 pnpm」（research §4.2.4） |
 
 ---
 
@@ -250,7 +250,7 @@ Other projects: herdr (3 lines), web (1 line)
 </memory>
 ```
 
-- **顺序**：身份层在前、项目层在后。【先例】OpenHands 也是用户层在前、项目层在后，理由是后出现的内容模型更关注（research 同行篇 §2.13）；这也和「项目层优先」的口径一致。
+- **顺序**：身份层在前、项目层在后。【先例】OpenHands 也是用户层在前、项目层在后，理由是后出现的内容模型更关注（research §4.2.3）；这也和「项目层优先」的口径一致。
 - `project=` 属性取显示名（目录名），不再是 basename。
 - **其它项目一行**：保留现在的 `Other projects:` 汇总，数据来源从「同一文件里的其它小节」变成「`projects/*/MEMORY.md` 的行数」。它提示模型还有别的项目记忆，是 L2 跨项目 recall 的入口（§5.3）。
 - **上限**：身份层 ≤ 4 KiB + 项目层 ≤ 4 KiB + 汇总行。人手编辑超出上限时，各自按行截断，各自打 `[memory truncated …]`（沿用 `cut`）。
@@ -266,7 +266,7 @@ Other projects: herdr (3 lines), web (1 line)
 
 - notes 跟着层走：`notes/` 放身份层笔记，`projects/<p>/notes/` 放项目层笔记。`remember(file: "notes/<topic>")` 按 `section` 决定落在哪层的 `notes/` 下（`User` / `Open threads` → 身份层，`Project` → 当前项目）。
 - 记忆块里的笔记目录：身份层的 notes + 当前项目的 notes。
-- `recall(source: "memory")` 默认搜身份层 + 当前项目层（`MEMORY.md` 和 notes）；加 `projects: "all"` 时搜所有项目，每条结果前面标项目显示名。这是跨多仓库任务召回别的项目经验的唯一途径。【先例】Graphiti 的多个 `group_ids`、LangMem 组合 namespace，都是显式组合查询（research 模式篇 §4.3）。
+- `recall(source: "memory")` 默认搜身份层 + 当前项目层（`MEMORY.md` 和 notes）；加 `projects: "all"` 时搜所有项目，每条结果前面标项目显示名。这是跨多仓库任务召回别的项目经验的唯一途径。【先例】Graphiti 的多个 `group_ids`、LangMem 组合 namespace，都是显式组合查询（research §6.3）。
 - `recall(source: "archive")` 不变：会话只有一条，不分项目。
 
 ---
@@ -282,7 +282,7 @@ Other projects: herdr (3 lines), web (1 line)
 
 ### 6.2 会话档案（永不结束的那一条）
 
-不变。会话不按项目切，`messages.jsonl` 里有所有项目的原文。**这意味着项目层分开存不等于项目之间互相看不见**：压缩摘要可能带着前一个项目的事实，`recall(archive)` 也能搜到。research 模式篇 §6 末尾对现状说的「这是默认上下文的相关性控制，不是硬隔离」，对本方案同样成立。本方案缩小的是**默认注入**的范围，不是可访问的范围。
+不变。会话不按项目切，`messages.jsonl` 里有所有项目的原文。**这意味着项目层分开存不等于项目之间互相看不见**：压缩摘要可能带着前一个项目的事实，`recall(archive)` 也能搜到。research §8 末尾对现状说的「这是默认上下文的相关性控制，不是硬隔离」，对本方案同样成立。本方案缩小的是**默认注入**的范围，不是可访问的范围。
 
 ### 6.3 `## Project:` 小节
 
@@ -290,7 +290,7 @@ Other projects: herdr (3 lines), web (1 line)
 
 ### 6.4 与 AGENTS.md 的分工（以及为什么推翻 bot-mode §3.1）
 
-bot-mode §3.1 不做项目文件的理由是「项目知识的正确归宿是 AGENTS.md」。这个分工**仍然成立**：AGENTS.md 放规范性指令（这个项目应该怎么做），由人维护、进 git、团队共享；项目层放的是**这个 bot 的经验性记忆**（此前观察到什么、用户怎么纠正过），私有、不进 git。【先例】research 模式篇 §3.2：Claude Code 和 Codex 都把人写的 instructions 和模型写的 learnings 分开。
+bot-mode §3.1 不做项目文件的理由是「项目知识的正确归宿是 AGENTS.md」。这个分工**仍然成立**：AGENTS.md 放规范性指令（这个项目应该怎么做），由人维护、进 git、团队共享；项目层放的是**这个 bot 的经验性记忆**（此前观察到什么、用户怎么纠正过），私有、不进 git。【先例】research §3.6：Claude Code 和 Codex 都把人写的 instructions 和模型写的 learnings 分开。
 
 推翻的是另一半：「写进 `MEMORY.md` 的 `## Project:` 小节，足够用」。双层的理由在第 1 节和 §2.1，但要老实说清楚：**目前没有观察到单文件不够用的实际案例**。本机唯一的 bot（`herdr`）至今还没有 `MEMORY.md`。是否值得推翻，取决于所有者怎么看第 8 节的代价。
 
@@ -336,7 +336,7 @@ Memory   MEMORY.md 2.1/4 KiB · projects/iota 3.0/4 KiB (/Users/joyqi/Work/iota/
 
 ### 8.1 这条路比另一条（一份记忆 + 按项目裁剪）差在哪
 
-1. **写错层的后果更隐蔽**。单文件里，事实放错小节，人打开一个文件就能看到；双层下，一条本该是通用偏好的话落进了项目 A，在项目 B 里就**完全不存在**，人得先想到去 `projects/a/` 里找。「人能一次浏览、纠正所有记忆」（research 模式篇 §7.2 列为现状的优点）在这条路上没有了。
+1. **写错层的后果更隐蔽**。单文件里，事实放错小节，人打开一个文件就能看到；双层下，一条本该是通用偏好的话落进了项目 A，在项目 B 里就**完全不存在**，人得先想到去 `projects/a/` 里找。「人能一次浏览、纠正所有记忆」（research §10.2 列为现状的优点）在这条路上没有了。
 2. **改动面更大**。新增 project key 解析，`BotMemory` 从单文件拆成「身份文件 + 当前项目文件」，`Snapshot` 要组合两个副本，`apply` 的上限和可用小节变成参数，`old` 要跨文件匹配，`/status` 加一行，工具描述、前言、flush 提示都要改，bot-mode §3 要重写（清单见 §10.3）。另一条路如果只修 project key，改动小得多。
 3. **身份层容量减半**：从 8 KiB（和项目小节共用）变成 4 KiB 专用，加上 `User` 只收 `source: user`，模型推断出来的跨项目知识（例如「这个用户主要写 Rust」）身份层不再收，只能散落在各个项目层里重复写。
 4. **推翻了一条有书面理由的决定**（bot-mode §3.1），用的却是没有使用数据支撑的理由（§6.4）。
@@ -351,12 +351,12 @@ Memory   MEMORY.md 2.1/4 KiB · projects/iota 3.0/4 KiB (/Users/joyqi/Work/iota/
 | 模型因为局部反例去改身份层 | 工具描述 + 前言优先级 | 【无证据】 |
 | 分支特有的事实在别的 worktree 被误用 | 工具描述禁止写分支特有的事 | 【无证据】；Copilot 用 citation 核对，本方案不做 |
 | 4 KiB 不够 | 软阈值促使模型合并；上限是常量，有数据再调 | 【无证据】本机零样本 |
-| 改名后找不回 | 疑似改名 notice + `/status` 显示 key + 人改 `root:` | 【先例】Claude Code #61349 是改名后失联的真实报告（research 模式篇 §5，F1）；本方案不自动修，只是让人看得见 |
+| 改名后找不回 | 疑似改名 notice + `/status` 显示 key + 人改 `root:` | 【先例】Claude Code #61349 是改名后失联的真实报告（research §7.1 [FR1]）；本方案不自动修，只是让人看得见 |
 | 人复制项目目录导致两个文件 `root:` 相同 | 查找时发现重复就拒绝加载项目层，⚠ 列出两个文件（和 `bot:` 不符时的处理同类） | 【推断】 |
 
 ### 8.3 哪些未经证明
 
-- **双层在长期使用中是否比单文件裁剪更好**：research 模式篇 §4.4 明确说，没有找到对比「身份全局 / 按项目 / 混合」的实证研究。Copilot 是双层的真实先例，但它的身份是 GitHub 用户、存在服务端、写入要确认，和 iota 的条件不同（research 模式篇 §3.3）。
+- **双层在长期使用中是否比单文件裁剪更好**：research §6.4 明确说，没有找到对比「身份全局 / 按项目 / 混合」的实证研究。Copilot 是双层的真实先例，但它的身份是 GitHub 用户、存在服务端、写入要确认，和 iota 的条件不同（research §4.2.6）。
 - **「一个项目写多了挤掉另一个项目」这个问题现在存不存在**：没有任何使用数据。按项目分预算解决的是一个**预期中**的问题。
 - 4 KiB + 4 KiB 的尺寸、`source` 门槛的效果、必填 `section` 能不能提高路由正确率：都【无证据】。
 
@@ -364,7 +364,7 @@ Memory   MEMORY.md 2.1/4 KiB · projects/iota 3.0/4 KiB (/Users/joyqi/Work/iota/
 
 ## 9. 验证方式
 
-前提：用同一个 bot、同一组脚本化轨迹，分别跑现状和本方案，这样能和另一条路对照（research 模式篇 §7.5）。分两类：**确定性测试**（单元测试或带 fake provider 的集成测试，进 `cargo test`）和**模型行为探测**（真模型，脚本驱动，人工判读，不进 CI）。真模型探测按 provider 实测的老办法做：scratch 配置 + 独立的 `HOME`，发送前先确认状态行。
+前提：用同一个 bot、同一组脚本化轨迹，分别跑现状和本方案，这样能和另一条路对照（research §10.5）。分两类：**确定性测试**（单元测试或带 fake provider 的集成测试，进 `cargo test`）和**模型行为探测**（真模型，脚本驱动，人工判读，不进 CI）。真模型探测按 provider 实测的老办法做：scratch 配置 + 独立的 `HOME`，发送前先确认状态行。
 
 | # | 问题 | 怎么测 | 通过标准 |
 |---|---|---|---|
