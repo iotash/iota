@@ -1,13 +1,13 @@
 # bot 记忆作用域方案：按项目
 
-Status: **Proposal**（供选择，未拍板）· 日期：2026-10-07 · 基线：main `9022f72`（0.6.1）
+Status: **Superseded**（2026-10-09，被 [`bot-memory-scope.md`](../../design/bot-memory-scope.md) 取代：所有者决定项目键用 `project_slug`；本文冻结，不再更新）· 原状态：Proposal（供选择，未拍板）· 日期：2026-10-07 · 基线：main `9022f72`（0.6.1）
 
 这是两份对照方案之一，讲的是「按项目」这条路：让项目成为 bot 记忆的主要容器。另一份方案用同一个骨架，两份可以逐节对照。
 
 依据：
 
-- 现状设计 [`bot-mode.md`](bot-mode.md) §1.3、§2、§3（下称 bot-mode），现状代码 `src/agents/memory.rs`、`src/agents/memory/snapshot.rs`、`src/repl/run.rs`、`src/agents/mod.rs`。
-- 本次调研 [`bot-memory-scope-research.md`](bot-memory-scope-research.md)（下称 research）。它由两份报告合并而成，下文写「research §N」指合并后文档的节号，方括号里的 `[FR2]` 之类是它附 B 的引用编号。
+- 现状设计 [`bot-mode.md`](../../design/bot-mode.md) §1.3、§2、§3（下称 bot-mode），现状代码 `src/agents/memory.rs`、`src/agents/memory/snapshot.rs`、`src/repl/run.rs`、`src/agents/mod.rs`。
+- 本次调研 [`bot-memory-scope-research.md`](../../design/bot-memory-scope-research.md)（下称 research）。它由两份报告合并而成，下文写「research §N」指合并后文档的节号，方括号里的 `[FR2]` 之类是它附 B 的引用编号。
 
 证据标记：**【先例】**表示 research 里有已实现的产品或公开记录，后面给出处；**【推断】**表示本文自己的工程推理；**【无证据】**表示没有找到任何支持或反驳的材料，只能靠 §9 的验证来回答。
 

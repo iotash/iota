@@ -1,11 +1,11 @@
 # bot 记忆作用域：身份层 + 项目层双层分存（方案说明）
 
-Status: **Proposal**（供选择，未拍板）· 日期：2026-10-07 · 分支 `mem-design-b`（自 main `9022f72`）
+Status: **Superseded**（2026-10-09，被 [`bot-memory-scope.md`](../../design/bot-memory-scope.md) 取代：所有者决定项目键用 `project_slug`；本文冻结，不再更新）· 原状态：Proposal（供选择，未拍板）· 日期：2026-10-07 · 分支 `mem-design-b`（自 main `9022f72`）
 
 依据：
 
-- 现状设计 [`docs/design/bot-mode.md`](bot-mode.md) §3（下称 **bot-mode**）与源码 `src/agents/memory.rs`、`src/agents/memory/snapshot.rs`、`src/agents/mod.rs`、`src/repl/run.rs`、`src/tool/builtins/memory.rs`（坐标指 `9022f72`）。
-- 本次调研 [`docs/design/bot-memory-scope-research.md`](bot-memory-scope-research.md)（下称 **research**）。它由两份报告（19 个 coding agent 的横向调研，与专用记忆系统、证据等级、失败记录的模式调研）合并而成。本文写「research §N」指合并后文档的节号，例如「research §4.2.6」是 Copilot 一节，「research §9」是 project key 候选表；方括号里的 `[FR2]` 之类是它附 B 的引用编号。
+- 现状设计 [`docs/design/bot-mode.md`](../../design/bot-mode.md) §3（下称 **bot-mode**）与源码 `src/agents/memory.rs`、`src/agents/memory/snapshot.rs`、`src/agents/mod.rs`、`src/repl/run.rs`、`src/tool/builtins/memory.rs`（坐标指 `9022f72`）。
+- 本次调研 [`docs/design/bot-memory-scope-research.md`](../../design/bot-memory-scope-research.md)（下称 **research**）。它由两份报告（19 个 coding agent 的横向调研，与专用记忆系统、证据等级、失败记录的模式调研）合并而成。本文写「research §N」指合并后文档的节号，例如「research §4.2.6」是 Copilot 一节，「research §9」是 project key 候选表；方括号里的 `[FR2]` 之类是它附 B 的引用编号。
 
 标注约定：**【先例】**有产品或系统已经这样做，并给出 research 中的出处；**【推断】**本文自己的设计推理，没有外部证据；**【无证据】**目前没有任何数据支持或反驳，只能靠第 9 节的验证来回答。
 
