@@ -111,9 +111,14 @@ async fn send_anthropic(messages: &[Message]) -> Value {
     let server = MockServer::start().await;
     mock_sse(&server, "POST", "/v1/messages", ANTHROPIC_STOP).await;
     let p = AnthropicProvider::new("k", &server.uri(), "claude-x", None, reqwest::Client::new());
-    p.stream_chat_with_tools(&CancellationToken::new(), messages, &[tool()], &mut NullSink)
-        .await
-        .expect("anthropic round");
+    p.stream_chat_with_tools(
+        &CancellationToken::new(),
+        messages,
+        &[tool()],
+        &mut NullSink,
+    )
+    .await
+    .expect("anthropic round");
     body_json(&server.received_requests().await.expect("recorded")[0])
 }
 
@@ -121,9 +126,14 @@ async fn send_responses(messages: &[Message]) -> Value {
     let server = MockServer::start().await;
     mock_sse(&server, "POST", "/responses", RESPONSES_DONE).await;
     let p = OpenResponsesProvider::new("k", &server.uri(), "gpt-x", None, reqwest::Client::new());
-    p.stream_chat_with_tools(&CancellationToken::new(), messages, &[tool()], &mut NullSink)
-        .await
-        .expect("responses round");
+    p.stream_chat_with_tools(
+        &CancellationToken::new(),
+        messages,
+        &[tool()],
+        &mut NullSink,
+    )
+    .await
+    .expect("responses round");
     body_json(&server.received_requests().await.expect("recorded")[0])
 }
 
@@ -131,9 +141,14 @@ async fn send_chatcomp(messages: &[Message]) -> Value {
     let server = MockServer::start().await;
     mock_sse(&server, "POST", "/chat/completions", CHATCOMP_DONE).await;
     let p = OpenAiProvider::new("k", &server.uri(), "gpt-x", None, reqwest::Client::new());
-    p.stream_chat_with_tools(&CancellationToken::new(), messages, &[tool()], &mut NullSink)
-        .await
-        .expect("chatcomp round");
+    p.stream_chat_with_tools(
+        &CancellationToken::new(),
+        messages,
+        &[tool()],
+        &mut NullSink,
+    )
+    .await
+    .expect("chatcomp round");
     body_json(&server.received_requests().await.expect("recorded")[0])
 }
 
@@ -191,13 +206,22 @@ async fn anthropic_history_on_the_responses_dialect_loses_only_what_is_not_neutr
     let text = body.to_string();
     assert_eq!(
         input_shape(&body),
-        ["user", "function_call", "function_call_output", "assistant", "user"]
+        [
+            "user",
+            "function_call",
+            "function_call_output",
+            "assistant",
+            "user"
+        ]
     );
     assert_eq!(body["instructions"], json!("sys"));
     assert_eq!(body["input"][1]["call_id"], json!("toolu_1"));
     assert_eq!(body["input"][1]["arguments"], json!(r#"{"q":"x"}"#));
     assert_eq!(body["input"][3]["content"], json!("answer 1"));
-    assert!(!text.contains("SIG_A1") && !text.contains("SIG_B1"), "{text}");
+    assert!(
+        !text.contains("SIG_A1") && !text.contains("SIG_B1"),
+        "{text}"
+    );
     assert!(!text.contains("thinking"), "{text}");
     assert!(
         !text.contains("weigh 1") && !text.contains("settle 1"),
@@ -225,7 +249,10 @@ async fn responses_history_on_the_anthropic_dialect_is_rebuilt_without_thinking(
     );
     assert_eq!(body["messages"][1]["content"][0]["id"], json!("call_1"));
     assert_eq!(body["system"][0]["text"], json!("sys"));
-    assert!(!text.contains("OPAQUE_1") && !text.contains("rs_1"), "{text}");
+    assert!(
+        !text.contains("OPAQUE_1") && !text.contains("rs_1"),
+        "{text}"
+    );
     assert!(
         !text.contains("think 1") && !text.contains("settle 1"),
         "the reasoning text is never sent: {text}"
@@ -285,7 +312,10 @@ async fn a_mixed_history_replays_each_dialects_own_payload_and_rebuilds_the_rest
             "user"
         ]
     );
-    assert!(!text.contains("SIG_A1") && !text.contains("SIG_B1"), "{text}");
+    assert!(
+        !text.contains("SIG_A1") && !text.contains("SIG_B1"),
+        "{text}"
+    );
     assert_eq!(body["input"][5]["encrypted_content"], json!("OPAQUE_2"));
     assert_eq!(body["input"][6]["call_id"], json!("call_2"));
     assert_eq!(body["input"][6].get("id"), None);
