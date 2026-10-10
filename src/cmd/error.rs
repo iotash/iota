@@ -187,6 +187,17 @@ pub enum SetupError {
     /// `iota resume` whose picker found nothing, or that the user walked away from (root.go:314).
     #[error("no session to resume")]
     NoSessionToResume,
+    /// A resumed session runs on a provider the config no longer defines (renamed or removed). Never a quiet
+    /// fall back to another endpoint: that would continue the session somewhere it never ran.
+    #[error(
+        "session {id} runs on provider {provider:?}, which the config does not define; resume it elsewhere with -M <provider>:<model>"
+    )]
+    SessionProviderGone {
+        /// The session id.
+        id: String,
+        /// The provider name its meta records.
+        provider: String,
+    },
     /// A resumed bundle's meta or `context_window:` failed to parse (root.go:365-385).
     #[error("{label}: {source}")]
     ContextWindow {

@@ -47,7 +47,7 @@ fn replay(
     let window = apply_session_tuning(
         meta,
         provider,
-        KIND,
+        KIND.as_str(),
         &Overrides {
             temperature: skip_temperature,
             window: skip_window,
@@ -91,6 +91,7 @@ fn apply_session_tuning_explicit_window_flag_wins() {
     assert_eq!(window, None, "flag window overridden");
 }
 
+/// A bundle recorded on another provider replays nothing — and says so, once, naming both.
 #[test]
 fn apply_session_tuning_provider_mismatch_applies_nothing() {
     let mut provider = stub();
@@ -105,8 +106,13 @@ fn apply_session_tuning_provider_mismatch_applies_nothing() {
     assert!(!provider.image_output());
     assert!(!provider.json_edits());
     assert_eq!(*provider.image_gen_params(), ImageGenParams::default());
-    assert_eq!(window, None, "the window is gated on the type too");
-    assert!(warnings.is_empty());
+    assert_eq!(window, None, "the window is gated on the provider too");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].starts_with("Warning: session was recorded on different:")
+            && warnings[0].ends_with("its model and tuning are not replayed"),
+        "{warnings:?}"
+    );
 }
 
 #[test]
@@ -231,7 +237,7 @@ fn provider_without_capabilities_still_yields_the_window() {
     let window = apply_session_tuning(
         &tuned_meta(),
         &mut provider,
-        KIND,
+        KIND.as_str(),
         &Overrides::default(),
         &mut |w| warnings.push(w),
     );
@@ -268,7 +274,7 @@ fn a_bot_replays_nothing_the_config_owns() {
     let window = iota::session::replay_session_settings(
         &meta,
         &mut provider,
-        KIND,
+        KIND.as_str(),
         &Overrides {
             config_wins: true,
             ..Overrides::default()

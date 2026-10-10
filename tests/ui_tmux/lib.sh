@@ -538,7 +538,8 @@ finish() {
 
 # write_session <id> <rounds> <tail_body_lines> — synthesises a session bundle in
 # $SCEN_HOME/.iota/sessions/<id> (chat/session.go bundle layout: meta.json +
-# messages.jsonl). The LAST three rounds — the resume echo window, `RESUME_ECHO_ROUNDS` —
+# messages.jsonl), on the `mock` provider the pane's config defines (a meta names its provider; the
+# endpoint's URL is the config's). The LAST three rounds — the resume echo window, `RESUME_ECHO_ROUNDS` —
 # carry `tail_body_lines` body lines each so the echo overflows the screen.
 write_session() {
     local id="$1" rounds="$2" tail_lines="$3"
@@ -570,10 +571,9 @@ write_session() {
   "id": "$id",
   "created_at": "$now",
   "updated_at": "$now",
-  "provider": "openai",
+  "provider": "mock",
   "model": "fake",
   "context_window": 128000,
-  "base_url": "http://127.0.0.1:$IOTA_PORT",
   "cwd": "$SCEN_TMP",
   "title": "resume fixture",
   "message_count": $((rounds * 2))

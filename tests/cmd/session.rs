@@ -118,9 +118,9 @@ fn write_config(cwd: &Path, url: &str, model: &str, mode: &str) {
         format!(", url: {url}")
     };
     let start = if model.is_empty() {
-        "choices: [\"p:*\"]".to_owned()
+        "choices: [\"gemini:*\"]".to_owned()
     } else {
-        format!("model: \"p:{model}\"")
+        format!("model: \"gemini:{model}\"")
     };
     let mode = if mode.is_empty() {
         String::new()
@@ -129,9 +129,7 @@ fn write_config(cwd: &Path, url: &str, model: &str, mode: &str) {
     };
     fs::write(
         cwd.join(".iota.yaml"),
-        format!(
-            "providers:\n  p: {{type: gemini, key: x{url}}}\nagents:\n  default:\n    {start}{mode}\n"
-        ),
+        format!("providers:\n  gemini: {{key: x{url}}}\nagents:\n  default:\n    {start}{mode}\n"),
     )
     .expect("write config");
 }
@@ -398,7 +396,8 @@ async fn resume_go_bundle_appends_one_turn() {
 }
 
 /// cmd/root.go:323-333 (design §3.5): `-M` is the ONE thing that wins over the session's meta — it supplies
-/// the model and does NOT rewrite `meta.model`. Everything else the bundle recorded replays, because the
+/// the model, and the meta follows it: it names what the session runs on, so the next resume continues there.
+/// Everything else the bundle recorded replays (the model stayed on the session's provider), because the
 /// flags that used to suppress temperature and the window (`-t`, `--context-window`) are gone: a resumed run
 /// is the run it resumes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -439,12 +438,64 @@ async fn resume_tuning_precedence_explicit_model_wins() {
         "effort has no flag, so the session's value still applies"
     );
 
-    // root.go:323-325: Go never calls `SetModel` on the writer, so an explicit `-M` leaves meta.model alone.
+    // Go never called `SetModel` on the writer; the meta now names what the session runs on.
     let meta: serde_json::Value =
         serde_json::from_slice(&fs::read(bundle.join("meta.json")).expect("meta")).expect("JSON");
-    assert_eq!(meta["model"], "gemini-2.5-pro");
+    assert_eq!(meta["provider"], "gemini");
+    assert_eq!(meta["model"], "gemini-flash-latest");
     assert_eq!(meta["temperature"], 0.7);
     assert_eq!(meta["context_window"], 200_000);
+}
+
+/// `-M` onto ANOTHER provider: the run goes there, the session's tuning is not replayed — and that is said,
+/// naming both endpoints — and the meta follows, so the next resume continues on the provider the session
+/// moved to. The bundle's `base_url` (a key a meta no longer writes) plays no part: the endpoint is the
+/// config's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_with_another_provider_moves_the_session_there() {
+    let server = MockServer::start().await;
+    google_stub(&server, false).await;
+    let cwd = TempDir::new().expect("temp cwd");
+    let home = home_with_fixtures();
+    let f = fixture("go-gemini-rich");
+    let id = f["id"].as_str().unwrap().to_owned();
+    let bundle = sessions_root(home.path()).join(f["dir"].as_str().unwrap());
+    fs::write(
+        cwd.path().join(".iota.yaml"),
+        format!(
+            "providers:\n  gemini: {{key: x}}\n  g2: {{type: gemini, key: x, url: {}}}\nagents:\n  default:\n    model: \"gemini:gemini-2.5-pro\"\n",
+            server.uri()
+        ),
+    )
+    .expect("write config");
+    let mut cmd = iota(cwd.path(), home.path());
+    cmd.args([
+        "resume",
+        f["unique_prefix"].as_str().unwrap(),
+        "-M",
+        "g2:gemini-flash-latest",
+        "-m",
+        "second question",
+    ]);
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    let view_count = f["expect"]["view_count"].as_u64().unwrap();
+    assert_eq!(
+        err(&o),
+        format!(
+            "Warning: session was recorded on gemini:gemini-2.5-pro; this run is on g2:gemini-flash-latest — its model and tuning are not replayed\nResumed session {id} ({view_count} messages)\n"
+        )
+    );
+    let reqs = server.received_requests().await.expect("requests");
+    assert!(
+        reqs[0].url.path().contains("gemini-flash-latest"),
+        "{}",
+        reqs[0].url
+    );
+    let meta: serde_json::Value =
+        serde_json::from_slice(&fs::read(bundle.join("meta.json")).expect("meta")).expect("JSON");
+    assert_eq!(meta["provider"], "g2");
+    assert_eq!(meta["model"], "gemini-flash-latest");
 }
 
 /// A bundle written BEFORE the layering existed — one of the frozen Go-corpus fixtures, which carries a
@@ -540,17 +591,78 @@ fn resume_missing_bundle_is_not_found() {
     assert!(!sessions_root(home.path()).join("nosuchsession").exists());
 }
 
-/// DIVERGENCES D-52: a bundle recorded under ANOTHER provider replays neither its model nor its tuning, so the
-/// deferred `no model chosen …` is re-raised byte-identically (X-48 reworded Go's `--model/-M is required …`).
+/// A session resumes on the provider its meta names, not on the agent's: a bundle recorded on `openai`, resumed
+/// under an agent on `gemini`, goes to `openai` — and says so, the session and not the config having chosen
+/// the endpoint. Here that endpoint has no key, so the run stops on it rather than falling back to gemini.
 #[test]
-fn resume_provider_mismatch_re_raises_model_required() {
+fn resume_runs_on_the_provider_the_session_records() {
     let cwd = TempDir::new().expect("temp cwd");
     let home = home_with_fixtures();
-    let f = fixture("go-openai-compaction"); // provider "openai", resumed here as gemini
+    let f = fixture("go-openai-compaction"); // provider "openai"
     let prefix = f["unique_prefix"].as_str().unwrap();
-    write_config(cwd.path(), "", "", "");
+    write_config(cwd.path(), "", "gemini-2.5-pro", "");
     let mut cmd = iota(cwd.path(), home.path());
     cmd.args(["resume", prefix, "-m", "hi"]);
+    let o = cmd.output().expect("run");
+    assert_eq!(o.status.code(), Some(1), "stderr was: {}", err(&o));
+    let meta: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            sessions_root(home.path())
+                .join(f["dir"].as_str().unwrap())
+                .join("meta.json"),
+        )
+        .expect("meta"),
+    )
+    .expect("JSON");
+    assert_eq!(
+        err(&o),
+        format!(
+            "Resuming on openai:{}, where the session was recorded\nError: API key is required: set OPENAI_API_KEY or providers.openai.key in your config\n",
+            meta["model"].as_str().unwrap()
+        )
+    );
+}
+
+/// A session whose provider the config no longer defines (renamed, removed) is refused by name — never resumed
+/// quietly on another endpoint.
+#[test]
+fn resume_refuses_a_provider_the_config_does_not_define() {
+    let cwd = TempDir::new().expect("temp cwd");
+    let home = TempDir::new().expect("temp home");
+    let id = "k7qz3xv9m2ht";
+    plant_bundle(
+        &sessions_root(home.path()).join(id),
+        id,
+        "relay",
+        "vendor/y",
+        &[rec("user", "q"), rec("assistant", "a")],
+    );
+    write_config(cwd.path(), "", "gemini-2.5-pro", "");
+    let mut cmd = iota(cwd.path(), home.path());
+    cmd.args(["resume", id, "-m", "hi"]);
+    assert_error(
+        &cmd.output().expect("run"),
+        "session k7qz3xv9m2ht runs on provider \"relay\", which the config does not define; resume it elsewhere with -M <provider>:<model>",
+    );
+}
+
+/// DIVERGENCES D-52: a bundle that records no model, resumed by an agent with none, still has none, so the
+/// deferred `no model chosen …` is re-raised byte-identically (X-48 reworded Go's `--model/-M is required …`).
+#[test]
+fn resume_without_any_model_re_raises_model_required() {
+    let cwd = TempDir::new().expect("temp cwd");
+    let home = TempDir::new().expect("temp home");
+    let id = "k7qz3xv9m2ht";
+    plant_bundle(
+        &sessions_root(home.path()).join(id),
+        id,
+        "gemini",
+        "",
+        &[rec("user", "q"), rec("assistant", "a")],
+    );
+    write_config(cwd.path(), "", "", "");
+    let mut cmd = iota(cwd.path(), home.path());
+    cmd.args(["resume", id, "-m", "hi"]);
     assert_error(
         &cmd.output().expect("run"),
         "no model chosen: set agents.default.model or pass -M",
@@ -677,7 +789,7 @@ async fn one_mode_requests(mode_line: &str, fresh: bool) -> Vec<String> {
     fs::write(
         root.join(".iota.yaml"),
         format!(
-            "providers:\n  p: {{type: gemini, key: x, url: {}}}\nagents:\n  default:\n    model: \"p:gemini-2.5-pro\"{mode_line}\n",
+            "providers:\n  gemini: {{key: x, url: {}}}\nagents:\n  default:\n    model: \"gemini:gemini-2.5-pro\"{mode_line}\n",
             server.uri()
         ),
     )

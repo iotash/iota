@@ -145,19 +145,117 @@ fn commit(provider: &mut dyn Provider, writer: &WriterSlot, name: &str) {
     }
 }
 
-/// Reports a candidate this session cannot take: a chat stays on the endpoint it started on.
-///
-/// The history it replays is that dialect's own (signed thinking blocks, response items), the
-/// bundle records the provider type it was created under, and the dispatcher was assembled for it
-/// — so a provider move is a new run, and saying so is the same answer `/model` already gives for
-/// a `defer_mode` it cannot hand over (`repl::liveparams::switch_model`).
-fn report_elsewhere(repl: &Repl, catalog: &ModelCatalog, provider: &str, id: &str) {
-    let agent = catalog.agent();
+/// Reports a candidate this chat cannot move to — `why` says what keeps it — with the command that would start a
+/// run there instead.
+fn start_there(repl: &Repl, provider: &str, id: &str, why: &str) {
+    let agent = repl.conv.catalog.agent();
     let agent = if agent.is_empty() { "<agent>" } else { agent };
     repl.handles.tr.notice(&format!(
-        "{provider}:{id} runs on another provider; a session keeps the endpoint it started on \
-         (its history is that dialect's). Start one there: iota run {agent} -M {provider}:{id}"
+        "{provider}:{id} runs on another provider; {why}. Start one there: iota run {agent} -M {provider}:{id}"
     ));
+}
+
+/// Moves a chat that has no reply yet to `provider:id` — another endpoint. `false` (reported, nothing changed)
+/// when it cannot: a model has already replied, the chat never moves (a bot), or the endpoint cannot be built
+/// or is another kind of model ([`open_endpoint`]).
+///
+/// The end state is the one `iota run <agent> -M provider:id` starts in: the provider, its title twin, the
+/// declarations the next switch reads and the picker's own endpoint are all the target's, and the bundle —
+/// still pending, there being nothing to write before a reply — records the target. What the chat already
+/// holds stays: the history (no reply in it, so nothing dialect-specific), the dispatcher, the tokenizer and
+/// the persist watermark. The knobs the chat runs under go along, so the caller's model switch re-evaluates
+/// them exactly as a switch on one endpoint does.
+pub(crate) fn move_to(repl: &mut Repl, provider: &str, id: &str) -> bool {
+    use crate::provider::model::Role;
+    if repl
+        .conv
+        .history
+        .iter()
+        .any(|m| m.role() == Role::Assistant)
+    {
+        // The history it would carry over holds that dialect's own payloads (signed thinking blocks, response
+        // items), which another dialect does not replay: a provider move mid-conversation is a new run.
+        start_there(
+            repl,
+            provider,
+            id,
+            "a session moves only before its first reply (after it, its history is that dialect's)",
+        );
+        return false;
+    }
+    let Some(mut ep) = open_endpoint(repl, provider, id) else {
+        return false;
+    };
+    let running = crate::repl::liveparams::current(repl);
+    crate::repl::liveparams::carry(&mut *ep.provider, &running);
+    install(repl, ep);
+    let kind = repl.conv.provider.kind();
+    let model = repl.conv.provider.model().to_owned();
+    let on = provider.to_owned();
+    if let Some(w) = lock(&repl.session.writer).as_mut() {
+        let _ = w.move_to(kind, &on, &model);
+    }
+    // An ephemeral chat's bundle is minted by `/save`, later: it is minted on the endpoint the chat is on.
+    if let Some(mut mint) = repl.session.new_session.take() {
+        repl.session.new_session = Some(Box::new(move || {
+            let mut w = mint()?;
+            w.move_to(kind, &on, &model)?;
+            Ok(w)
+        }));
+    }
+    true
+}
+
+/// The endpoint `provider:id` names, ready to take the chat's place — or `None`, reported, with nothing
+/// changed: the chat never moves, the endpoint cannot be built (an unknown provider, a missing key), or it is
+/// another KIND of model. What a run settles at startup from its provider's kind — the token meter and
+/// `/compact`, the image commands and the retry policy — is not rebuilt, so a move keeps it.
+pub(crate) fn open_endpoint(
+    repl: &mut Repl,
+    provider: &str,
+    id: &str,
+) -> Option<crate::repl::Endpoint> {
+    let Some(factory) = repl.conv.endpoints.as_ref() else {
+        start_there(
+            repl,
+            provider,
+            id,
+            "this chat keeps the endpoint it started on",
+        );
+        return None;
+    };
+    let tr = Arc::clone(&repl.handles.tr);
+    let mut ep = match factory(provider, id, &mut |w| tr.notice(&w)) {
+        Ok(ep) => ep,
+        Err(e) => {
+            tr.error(&format!("Error: {e}"));
+            return None;
+        }
+    };
+    if ep.provider.reports_usage() != repl.conv.provider.reports_usage()
+        || ep.provider.as_image_gen_tunable().is_some() != repl.conv.image_provider
+    {
+        start_there(
+            repl,
+            provider,
+            id,
+            "it is another kind of model (token accounting, image generation) than this chat was started for",
+        );
+        return None;
+    }
+    Some(ep)
+}
+
+/// Puts `ep` in the place of the endpoint the chat is on: the provider, the title twin, the declarations and
+/// the picker. A title pass still in flight is given up — it runs on the instance being replaced.
+pub(crate) fn install(repl: &mut Repl, ep: crate::repl::Endpoint) {
+    repl.session.abort_title();
+    repl.session.title_provider = ep
+        .title_provider
+        .map(|p| Arc::new(tokio::sync::Mutex::new(p)));
+    repl.conv.layers = ep.layers;
+    repl.conv.catalog = ep.catalog;
+    repl.conv.provider = ep.provider;
 }
 
 /// The lazy model picker (chat/run.go:1112-1157 `ensureModel`).
@@ -200,8 +298,14 @@ pub(crate) async fn ensure_model(repl: &mut Repl, cancel: &CancellationToken) ->
     let name = match repl.conv.catalog.pick(&chosen) {
         Pick::Here(id) => id,
         Pick::Elsewhere(provider, id) => {
-            report_elsewhere(repl, &repl.conv.catalog, &provider, &id);
-            return false;
+            if !move_to(repl, &provider, &id) {
+                return false;
+            }
+            repl.handles
+                .tr
+                .notice(&format!("Using model: {id} on {provider}"));
+            crate::repl::liveparams::switch_model(repl, &id);
+            return true;
         }
     };
     if name.is_empty() {
@@ -308,7 +412,13 @@ pub(crate) async fn cmd_model(repl: &mut Repl) {
             changed = true;
         }
         Some(Pick::Elsewhere(provider, id)) => {
-            report_elsewhere(repl, &repl.conv.catalog, &provider, &id);
+            if move_to(repl, &provider, &id) {
+                repl.handles
+                    .tr
+                    .notice(&format!("Model switched to {id} on {provider}"));
+                crate::repl::liveparams::switch_model(repl, &id);
+                changed = true;
+            }
         }
         Some(Pick::Here(_)) | None => {}
     }

@@ -13,7 +13,8 @@ use pretty_assertions::assert_eq;
 use crate::common::{log_lines, temp_store};
 
 /// `meta.json` as the Go writer produced it in the probe run (`json.MarshalIndent(m, "", "  ")`,
-/// struct-order keys, NO trailing newline).
+/// struct-order keys, NO trailing newline) — minus `base_url`, which a meta no longer records: the endpoint
+/// is the config's, read through the provider name.
 const GO_META: &str = r#"{
   "v": 1,
   "id": "ws0b07cp764v",
@@ -22,7 +23,6 @@ const GO_META: &str = r#"{
   "provider": "openai",
   "model": "gpt-probe",
   "temperature": 0.7,
-  "base_url": "http://127.0.0.1:1/v1",
   "cwd": "/tmp/probe-cwd",
   "title": "probe session",
   "message_count": 3
@@ -46,7 +46,6 @@ fn meta_serialises_exactly_like_go() {
         provider: "openai".to_owned(),
         model: "gpt-probe".to_owned(),
         temperature: Some(0.7),
-        base_url: "http://127.0.0.1:1/v1".to_owned(),
         cwd: "/tmp/probe-cwd".to_owned(),
         title: "probe session".to_owned(),
         message_count: 3,
@@ -64,7 +63,6 @@ fn meta_file_has_go_key_order_and_no_trailing_newline() {
     let mut writer = store
         .create(NewSession {
             temperature: Some(0.7),
-            base_url: "http://127.0.0.1:1/v1".to_owned(),
             cwd: "/tmp/probe-cwd".to_owned(),
             ..NewSession::new(ProviderKind::OpenAi, "gpt-probe")
         })
@@ -110,7 +108,6 @@ fn meta_file_has_go_key_order_and_no_trailing_newline() {
             "provider",
             "model",
             "temperature",
-            "base_url",
             "cwd",
             "title",
             "message_count",

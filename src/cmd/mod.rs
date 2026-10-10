@@ -206,7 +206,7 @@ async fn run_agent(
     // root.go:125-131
     let ctx = RunContext::new(env, cancel);
     // root.go:132-181
-    let (kind, provider) = open_provider(&settings, &ctx, io)?;
+    let (kind, provider) = open_provider(&settings, &ctx.transport, &mut |w| io.warning(&w))?;
     // root.go:187-241
     let tools = assemble_tools(&inv, &cfg, &settings, &*provider, &ctx, io)?;
 
@@ -254,11 +254,12 @@ async fn run_agent(
     .await
 }
 
-/// root.go:132-181 — the conversation provider, constructed and tuned.
-fn open_provider(
+/// root.go:132-181 — the conversation provider, constructed and tuned: at startup, and again wherever the run
+/// moves to another endpoint (a resume of a session recorded on another provider, the chat's own move).
+pub(crate) fn open_provider(
     settings: &RunSettings,
-    ctx: &RunContext,
-    io: &mut io::Streams,
+    transport: &crate::provider::HttpTransport,
+    warn: &mut dyn FnMut(String),
 ) -> Result<(ProviderKind, Box<dyn crate::provider::Provider>), CliError> {
     let kind: ProviderKind = settings.raw_type.parse()?;
     let mut provider = crate::provider::new_provider(
@@ -269,15 +270,53 @@ fn open_provider(
             model: &settings.model,
             temperature: settings.temperature,
         },
-        Some(ctx.transport.clone()),
+        Some(transport.clone()),
     )?;
     tuning::apply(
         &mut *provider,
         &settings.resolved,
         settings.temperature,
-        &mut |w| io.warning(&w),
+        warn,
     )?;
     Ok((kind, provider))
+}
+
+/// The endpoint a resumed session runs on: the provider and the model its meta records — the run moves there
+/// exactly as if `-M <provider>:<model>` had been typed — unless `-M` chose one. A provider the config no
+/// longer defines is refused ([`SetupError::SessionProviderGone`]): falling back to another endpoint would
+/// continue the session somewhere it never ran, silently.
+pub(crate) fn resume_endpoint(
+    meta: &crate::session::SessionMeta,
+    cfg: &Config,
+    env: &Env,
+    transport: &crate::provider::HttpTransport,
+    settings: &mut RunSettings,
+    opened: &mut (ProviderKind, Box<dyn crate::provider::Provider>),
+    warn: &mut dyn FnMut(String),
+) -> Result<(), CliError> {
+    if settings.model_flag
+        || (meta.provider == settings.resolved.provider_name && meta.model == settings.model)
+    {
+        return Ok(());
+    }
+    if !cfg.knows_provider(&meta.provider) {
+        return Err(SetupError::SessionProviderGone {
+            id: meta.id.clone(),
+            provider: meta.provider.clone(),
+        }
+        .into());
+    }
+    // Another endpoint than the agent's is said: the session, not the config, chose it.
+    if meta.provider != settings.resolved.provider_name {
+        warn(format!(
+            "Resuming on {}:{}, where the session was recorded",
+            meta.provider, meta.model
+        ));
+    }
+    // The session's own model is not the user's pick: whether the agent lists it is not news here.
+    settings.move_to(cfg, env, &meta.provider, &meta.model, &mut |_| {})?;
+    *opened = open_provider(settings, transport, warn)?;
+    Ok(())
 }
 
 /// root.go:187-241 — MCP configs, the agent options and the tool environment, in Go's order (each step's
@@ -405,13 +444,14 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
     let Headless {
         message,
         cfg,
-        settings,
+        mut settings,
         kind,
-        mut provider,
+        provider,
         tools,
         ctx,
         format,
     } = h;
+    let mut opened = (kind, provider);
     let ToolAssembly {
         mcp_configs,
         mcp_defers,
@@ -422,7 +462,11 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         harness,
     } = tools;
     let RunContext {
-        env, http, cancel, ..
+        env,
+        http,
+        cancel,
+        transport,
+        ..
     } = ctx;
     let dirs = &env.dirs;
 
@@ -443,7 +487,18 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
             let id = store.resolve_id(fragment, scope)?;
             // A bot's body opens only as that bot (bot-mode.md §2.2, §2.7).
             store.check_not_bot_owned(&id)?;
-            let (writer, resumed) = store.resume(&id, kind)?;
+            // The session runs where it was recorded, unless `-M` says otherwise.
+            resume_endpoint(
+                &store.meta(&id)?,
+                cfg,
+                &env,
+                &transport,
+                &mut settings,
+                &mut opened,
+                &mut |w| io.warning(&w),
+            )?;
+            let (kind, provider) = &mut opened;
+            let (mut writer, resumed) = store.resume(&id, *kind)?;
             // The bundle records the agent it ran under; one that has since been deleted is announced, and
             // the run falls back to the provider and model the meta carries (Phase 1b step 9).
             crate::session::warn_if_session_agent_is_gone(
@@ -451,14 +506,20 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
                 cfg.agents.contains_key(&resumed.meta.agent),
                 &mut |w| io.warning(&w),
             );
-            // root.go:323-325: the session supplies the model only when `-M`/`model:` did not, and only for a
-            // session recorded under this provider type. An explicit `-M` does NOT rewrite `meta.model`.
-            if settings.model.is_empty()
-                && resumed.meta.provider == kind.as_str()
-                && !resumed.meta.model.is_empty()
-            {
-                provider.set_model(resumed.meta.model.clone());
-            }
+            // root.go:326-333: `-M` is the only flag a session must not overwrite; the model, temperature,
+            // effort and the window replay — a resumed run is the run it resumes. The replayed window is
+            // discarded: headless has no context budget to route it into.
+            let on = settings.resolved.provider_name.clone();
+            let _window = crate::session::replay_session_settings(
+                &resumed.meta,
+                &mut **provider,
+                &on,
+                &crate::session::Overrides {
+                    model: settings.model_flag,
+                    ..crate::session::Overrides::default()
+                },
+                &mut |w| io.warning(&w),
+            );
             // root.go:107-109, deferred out of `resolve_run` and re-raised byte-identically here (D-52).
             if provider.model().is_empty() {
                 return Err(ArgsError::ModelRequired {
@@ -466,19 +527,11 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
                 }
                 .into());
             }
-            // root.go:326-333: `-M` is the only flag left that a session must not overwrite, so temperature,
-            // effort and the window always replay — a resumed run is the run it resumes. The replayed window
-            // is discarded: headless has no context budget to route it into.
-            let _window = crate::session::apply_session_tuning(
-                &resumed.meta,
-                &mut *provider,
-                kind,
-                &crate::session::Overrides {
-                    model: !settings.model.is_empty(),
-                    ..crate::session::Overrides::default()
-                },
-                &mut |w| io.warning(&w),
-            );
+            // The meta names where the session runs NOW: a `-M` that moved it is recorded, so the next resume
+            // continues there.
+            if let Err(e) = writer.move_to(*kind, &on, provider.model()) {
+                io.warning(&format!("Warning: failed to save session: {e}"));
+            }
             // root.go:334, on stderr with a single newline (DIVERGENCES D-44): headless stdout is the reply or
             // the JSON report alone, but with prefix resolution the user must see which session was picked.
             io.warning(&format!(
@@ -486,6 +539,9 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
                 resumed.messages.len()
             ));
             if let Some(notice) = resumed.repair_notice() {
+                io.warning(&notice);
+            }
+            if let Some(notice) = resumed.foreign_notice(*kind) {
                 io.warning(&notice);
             }
             Some((writer, resumed))
@@ -544,7 +600,7 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         jobs: Some(jobs),
     };
     let outcome =
-        crate::headless::once(cancel, &mut *provider, dispatch, opts, &mut *io.stdout).await;
+        crate::headless::once(cancel, &mut *opened.1, dispatch, opts, &mut *io.stdout).await;
 
     // chat/run.go:221-229, once (DIVERGENCES D-43): a headless run IS exactly one turn, so a SUCCESSFUL one
     // persists its delta in a single batch — one fsync, one meta rewrite. A failed or cancelled run persists

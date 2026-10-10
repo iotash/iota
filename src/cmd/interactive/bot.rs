@@ -125,7 +125,7 @@ fn elapsed(secs: i64) -> String {
 /// Opens bot `name`'s session from `<bots>/<name>`. `fresh` describes the bundle a first launch creates;
 /// `system` is the config's (trimmed) system prompt. On a resume the session's own model and parameters
 /// are NOT replayed — the provider keeps what the config (or `-M`) gave it, and the meta is told the
-/// model it now runs; the loop stamps the other four the same way it stamps a new bundle. The meta is also
+/// provider and the model it now runs on; the loop stamps the other four the same way it stamps a new bundle. The meta is also
 /// told the directory this run is in, so the next resume's [`resume_notices`] compare against the last
 /// run's, not the first one's.
 pub(crate) fn open_bot_session(
@@ -138,6 +138,7 @@ pub(crate) fn open_bot_session(
     warn: &mut dyn FnMut(String),
 ) -> Result<BotSession, SessionError> {
     let kind = fresh.kind;
+    let on = fresh.provider.clone();
     let cwd = fresh.cwd.clone();
     match store.open_bot(&bots.join(name), fresh, kind)? {
         BotOpen::Fresh(writer) => Ok(BotSession {
@@ -154,22 +155,19 @@ pub(crate) fn open_bot_session(
             replay_session_settings(
                 &session.meta,
                 provider,
-                kind,
+                &on,
                 &Overrides {
                     config_wins: true,
                     ..Overrides::default()
                 },
                 warn,
             );
-            let model = provider.model().to_owned();
-            writer.update_meta(|m| {
-                m.model = model;
-                kind.as_str().clone_into(&mut m.provider);
-                m.cwd = cwd;
-            })?;
+            writer.move_to(kind, &on, provider.model())?;
+            writer.update_meta(|m| m.cwd = cwd)?;
             let repair_notice = session.repair_notice();
+            // A bot whose config moved it to another provider type keeps the old type's payloads on disk only.
+            let mut notices: Vec<String> = session.foreign_notice(kind).into_iter().collect();
             let mut history = session.messages;
-            let mut notices = Vec::new();
             if adopt_system(&mut writer, &mut history, system)? {
                 notices.push(SYSTEM_UPDATED.to_owned());
             }
@@ -796,6 +794,7 @@ mod tests {
             params: crate::session::LayeredParams::default(),
             layers: crate::cmd::ParamLayers::default(),
             catalog: crate::repl::ModelCatalog::default(),
+            endpoints: None,
             agent: crate::headless::AgentOptions::default(),
             dark_background: true,
             root_cancel: tokio_util::sync::CancellationToken::new(),

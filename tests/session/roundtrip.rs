@@ -19,7 +19,6 @@ fn every_record_shape_survives_the_round_trip() {
     let mut writer = store
         .create(NewSession {
             temperature: Some(0.7),
-            base_url: "http://127.0.0.1:1/v1".to_owned(),
             cwd: "/tmp/roundtrip-cwd".to_owned(),
             ..NewSession::new(KIND, "gpt-probe")
         })
@@ -33,7 +32,6 @@ fn every_record_shape_survives_the_round_trip() {
     assert_eq!(loaded.messages, shapes);
     assert_eq!(loaded.meta.model, "gpt-probe");
     assert_eq!(loaded.meta.temperature, Some(0.7));
-    assert_eq!(loaded.meta.base_url, "http://127.0.0.1:1/v1");
     assert_eq!(loaded.meta.cwd, "/tmp/roundtrip-cwd");
     assert_eq!(loaded.meta.message_count, 6);
     assert_eq!(

@@ -59,9 +59,14 @@ impl Fixture {
         }
     }
 
+    /// A bundle on the provider the fixture's catalog names — none (`ModelCatalog::default()`), so `/session`
+    /// resumes it where the chat already is.
     fn writer(&self) -> SessionWriter {
         self.store
-            .create(NewSession::new(ProviderKind::OpenAi, "gpt-test"))
+            .create(NewSession {
+                provider: String::new(),
+                ..NewSession::new(ProviderKind::OpenAi, "gpt-test")
+            })
             .expect("create writer")
     }
 
@@ -80,6 +85,7 @@ impl Fixture {
             params: iota::session::LayeredParams::default(),
             layers: iota::cmd::ParamLayers::default(),
             catalog: iota::repl::ModelCatalog::default(),
+            endpoints: None,
             agent: iota::headless::AgentOptions::default(),
             dark_background: true,
             root_cancel: CancellationToken::new(),
@@ -110,6 +116,7 @@ impl Fixture {
         );
         RunParams {
             catalog,
+            endpoints: None,
             ..self.params(provider, session)
         }
     }
@@ -504,11 +511,11 @@ async fn model_lists_the_agents_candidate_set() {
     );
 }
 
-/// A row on another provider is listed but not taken: a session keeps the endpoint it started on
-/// (its history is that dialect's), so the picker says so and names the command that would start
-/// a run there, rather than half-applying a switch whose next request would go to the wrong API.
+/// A row on another provider is listed but not taken once a model has replied: the history it would carry
+/// over is that dialect's, so the picker says so and names the command that would start a run there, rather
+/// than half-applying a switch whose next request would go to the wrong API — and no endpoint is built.
 #[tokio::test]
-async fn model_reports_a_candidate_on_another_provider() {
+async fn model_refuses_another_provider_after_the_first_reply() {
     let f = Fixture::new(vec![
         input("/model"),
         commit(PanelResult {
@@ -519,13 +526,16 @@ async fn model_reports_a_candidate_on_another_provider() {
     ]);
     let session = f.session(Some(f.writer()));
     let provider = provider("a-model", Ok(vec!["a-model".to_owned()]));
-    let params = f.params_with_catalog(provider, session, CANDIDATE_SET);
+    let built = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut params = f.params_with_catalog(provider, session, CANDIDATE_SET);
+    params.imported_history = vec![Message::user("q"), Message::assistant("a")];
+    params.endpoints = Some(counting_endpoints(Arc::clone(&built)));
     iota::repl::run(params).await.expect("exit");
 
     let lines = printed(&f.ui);
     assert!(
         lines.iter().any(|l| l.starts_with(
-            "relay:vendor/y runs on another provider; a session keeps the endpoint it started on"
+            "relay:vendor/y runs on another provider; a session moves only before its first reply"
         ) && l.contains("iota run default -M relay:vendor/y")),
         "{lines:?}"
     );
@@ -533,6 +543,330 @@ async fn model_reports_a_candidate_on_another_provider() {
         !lines.iter().any(|l| l.starts_with("Model switched")),
         "nothing was switched: {lines:?}"
     );
+    assert_eq!(built.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+/// An endpoint factory that only counts how often it is asked, and refuses.
+fn counting_endpoints(n: Arc<std::sync::atomic::AtomicUsize>) -> iota::repl::EndpointFactory {
+    Box::new(move |_, _, _| {
+        n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err("not reached".to_owned())
+    })
+}
+
+/// Two endpoints of different types; `relay` declares its model's window, which a move must pick up.
+const TWO_ENDPOINTS: &str = r#"
+providers:
+  mock: {type: openai, key: k}
+  relay: {type: openresponses, key: k, url: "http://127.0.0.1:9"}
+models:
+  m: mock:a-model
+  y: {provider: relay, id: vendor/y, context_window: 1m}
+agents:
+  default:
+    model: m
+    choices: [m, y]
+"#;
+
+/// The call logs of what a [`relay_endpoints`] factory builds.
+#[derive(Clone, Default)]
+struct Built {
+    /// The conversation instance's calls.
+    main: iota::testing::Log,
+    /// The title twin's calls.
+    title: iota::testing::Log,
+    /// The `provider:id` pairs asked for.
+    asked: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+/// The endpoint factory the binary would hand in, over `yaml`, with fakes standing in for the providers:
+/// `relay` answers as an `openresponses` endpoint, any name the config does not know is refused the way the
+/// real factory refuses it. The layers and the catalog are the real ones, built for the moved run.
+fn relay_endpoints(yaml: &str, built: &Built) -> iota::repl::EndpointFactory {
+    let cfg =
+        iota::cmd::Config::parse(yaml.as_bytes(), &iota::app::env::Env::default(), &mut |w| {
+            panic!("unexpected config warning: {w}")
+        })
+        .expect("the config loads");
+    let built = built.clone();
+    Box::new(move |provider, id, _warn| {
+        built.asked.lock().unwrap().push(format!("{provider}:{id}"));
+        if !cfg.knows_provider(provider) {
+            return Err(format!(
+                "provider {provider:?} is not defined in the config"
+            ));
+        }
+        let mut resolved = cfg.resolve_agent("default").expect("the agent resolves");
+        resolved.move_to_provider(&cfg, provider);
+        let fake = |log: &iota::testing::Log, reply: &str| {
+            FakeProvider::new()
+                .with_kind(ProviderKind::OpenResponses)
+                .with_model(id)
+                .reporting_usage()
+                .replying(reply)
+                .with_log(log.clone())
+        };
+        Ok(iota::repl::Endpoint {
+            // The turn takes 50 ms so the title pass, which rides beside it, settles before the exit.
+            provider: Box::new(
+                fake(&built.main, "moved answer")
+                    .answering_after(std::time::Duration::from_millis(50)),
+            ),
+            title_provider: Some(Box::new(fake(&built.title, "A moved title"))),
+            layers: iota::cmd::ParamLayers::new(&cfg, &resolved),
+            catalog: iota::repl::ModelCatalog::new(
+                &cfg,
+                &resolved,
+                &iota::app::env::Env::default(),
+                &iota::provider::HttpTransport::from(iota::llm::default_http_client()),
+            ),
+        })
+    })
+}
+
+/// Before its first reply a chat MOVES to a row on another provider — the end state of `-M relay:vendor/y`:
+/// the next send goes to the new endpoint, the title pass rides the new endpoint's own instance with the new
+/// model (never the old instance with the new model's id — codex P7), the declarations the switch reads are
+/// the new endpoint's (its window lands), the picker is relative to it, and the bundle names it.
+#[tokio::test]
+async fn model_moves_a_chat_with_no_reply_to_another_provider() {
+    let f = Fixture::new(vec![
+        input("/model"),
+        commit(PanelResult {
+            cursor: 1,
+            ..PanelResult::default()
+        }),
+        input("hello"),
+        input("/model"),
+        Reply::Tabbed(TabbedResult {
+            cancelled: true,
+            ..TabbedResult::default()
+        }),
+        Reply::Interrupted,
+    ]);
+    let session = f.session(Some(f.writer()));
+    let old = provider("a-model", Ok(vec![])).reporting_usage();
+    let old_log = old.log();
+    let old_title = FakeProvider::new().replying("An old title");
+    let old_title_log = old_title.log();
+    let built = Built::default();
+    let mut params = f.params_with_catalog(old, session, TWO_ENDPOINTS);
+    params.title_provider = Some(Box::new(old_title));
+    params.endpoints = Some(relay_endpoints(TWO_ENDPOINTS, &built));
+    iota::repl::run(params).await.expect("exit");
+
+    let lines = printed(&f.ui);
+    assert!(
+        lines.contains(&"Model switched to vendor/y on relay".to_owned()),
+        "{lines:?}"
+    );
+    assert!(
+        lines.contains(&"Context window: ≈0 / 1m (0%)".to_owned()),
+        "the relay entry's window landed: {lines:?}"
+    );
+    assert_eq!(*built.asked.lock().unwrap(), ["relay:vendor/y"]);
+    // The send went to the new endpoint, with the history the chat held.
+    assert_eq!(old_log.calls(), 0, "nothing reached the old endpoint");
+    let sent = built.main.records();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].model, "vendor/y");
+    assert!(sent[0].messages.iter().any(|m| m.content == "hello"));
+    // P7: the title pass rode the new endpoint's twin, with the new model.
+    assert_eq!(
+        old_title_log.calls(),
+        0,
+        "the old title instance was not asked"
+    );
+    let titles = built.title.records();
+    assert_eq!(titles.len(), 1);
+    assert_eq!(titles[0].model, "vendor/y");
+    // The picker is relative to where the chat is now.
+    let rows = &surfaces(&f.ui)[1].panels[0].items;
+    assert_eq!(rows, &["mock:a-model", "vendor/y (current)"]);
+    // The bundle names the endpoint the reply came from.
+    let infos = f.store.list(None).expect("list");
+    assert_eq!(infos.len(), 1);
+    let meta = iota::session::SessionMeta::read(&f.store.dir(&infos[0].id).unwrap()).unwrap();
+    assert_eq!(
+        (meta.provider.as_str(), meta.model.as_str()),
+        ("relay", "vendor/y")
+    );
+}
+
+/// The startup pick moves the same way: a chat with no model yet takes a row on another endpoint.
+#[tokio::test]
+async fn the_startup_pick_moves_to_another_provider() {
+    let f = Fixture::new(vec![
+        commit(PanelResult {
+            cursor: 1,
+            ..PanelResult::default()
+        }),
+        Reply::Interrupted,
+    ]);
+    let session = f.session(None);
+    let built = Built::default();
+    let mut params = f.params_with_catalog(
+        provider("", Ok(vec![])).reporting_usage(),
+        session,
+        TWO_ENDPOINTS,
+    );
+    params.endpoints = Some(relay_endpoints(TWO_ENDPOINTS, &built));
+    iota::repl::run(params).await.expect("exit");
+    let lines = printed(&f.ui);
+    assert!(
+        lines.contains(&"Using model: vendor/y on relay".to_owned()),
+        "{lines:?}"
+    );
+}
+
+/// A move that cannot be built — here an endpoint of another kind (no token accounting where the chat has
+/// it), and one whose construction fails — is reported and changes NOTHING: the next send still goes to the
+/// endpoint the chat is on.
+#[tokio::test]
+async fn a_move_that_cannot_be_made_changes_nothing() {
+    for (factory, said) in [
+        (
+            Box::new(|_: &str, _: &str, _: &mut dyn FnMut(String)| {
+                Ok(iota::repl::Endpoint {
+                    provider: Box::new(FakeProvider::new().with_model("vendor/y")),
+                    title_provider: None,
+                    layers: iota::cmd::ParamLayers::default(),
+                    catalog: iota::repl::ModelCatalog::default(),
+                })
+            }) as iota::repl::EndpointFactory,
+            "relay:vendor/y runs on another provider; it is another kind of model",
+        ),
+        (
+            Box::new(|_: &str, _: &str, _: &mut dyn FnMut(String)| {
+                Err(
+                    "API key is required: set OPENAI_API_KEY or providers.relay.key in your config"
+                        .to_owned(),
+                )
+            }) as iota::repl::EndpointFactory,
+            "Error: API key is required",
+        ),
+    ] {
+        let f = Fixture::new(vec![
+            input("/model"),
+            commit(PanelResult {
+                cursor: 1,
+                ..PanelResult::default()
+            }),
+            input("hello"),
+            Reply::Interrupted,
+        ]);
+        let session = f.session(Some(f.writer()));
+        let old = provider("a-model", Ok(vec![])).reporting_usage();
+        let old_log = old.log();
+        let mut params = f.params_with_catalog(old, session, TWO_ENDPOINTS);
+        params.endpoints = Some(factory);
+        iota::repl::run(params).await.expect("exit");
+        let lines = printed(&f.ui);
+        assert!(lines.iter().any(|l| l.starts_with(said)), "{lines:?}");
+        assert!(
+            !lines.iter().any(|l| l.starts_with("Model switched")),
+            "{lines:?}"
+        );
+        assert_eq!(old_log.calls(), 1, "the send stayed on the old endpoint");
+    }
+}
+
+/// An ephemeral chat that moved mints its bundle on the endpoint it moved to: `/save` records the new
+/// provider, not the one the chat started on.
+#[tokio::test]
+async fn save_after_a_move_mints_the_bundle_on_the_new_provider() {
+    let f = Fixture::new(vec![
+        input("/model"),
+        commit(PanelResult {
+            cursor: 1,
+            ..PanelResult::default()
+        }),
+        input("/save"),
+        input("hello"),
+        Reply::Interrupted,
+    ]);
+    let store = f.store.clone();
+    let session = SessionCtx {
+        new_session: Some(Box::new(move || {
+            store.create(NewSession {
+                provider: "mock".to_owned(),
+                ..NewSession::new(ProviderKind::OpenAi, "a-model")
+            })
+        })),
+        ..f.session(None)
+    };
+    let built = Built::default();
+    let mut params = f.params_with_catalog(
+        provider("a-model", Ok(vec![])).reporting_usage(),
+        session,
+        TWO_ENDPOINTS,
+    );
+    params.endpoints = Some(relay_endpoints(TWO_ENDPOINTS, &built));
+    iota::repl::run(params).await.expect("exit");
+    let infos = f.store.list(None).expect("list");
+    assert_eq!(infos.len(), 1, "{:?}", printed(&f.ui));
+    let meta = iota::session::SessionMeta::read(&f.store.dir(&infos[0].id).unwrap()).unwrap();
+    assert_eq!(
+        (meta.provider.as_str(), meta.model.as_str()),
+        ("relay", "vendor/y")
+    );
+}
+
+/// `/session` resumes a bundle on the provider it records, as `iota resume` does: the chat moves there
+/// first — and a bundle on a provider the config does not define is refused, with nothing swapped.
+#[tokio::test]
+async fn session_resumes_a_bundle_on_its_own_provider() {
+    for (provider_name, moved) in [("relay", true), ("gone", false)] {
+        let f = Fixture::new(vec![
+            input("/session"),
+            Reply::Tabbed(TabbedResult {
+                cancelled: false,
+                focused: 0,
+                panels: vec![PanelResult::default(), PanelResult::default()],
+            }),
+            input("hello"),
+            Reply::Interrupted,
+        ]);
+        let mut other = f
+            .store
+            .create(NewSession {
+                provider: provider_name.to_owned(),
+                ..NewSession::new(ProviderKind::OpenResponses, "vendor/y")
+            })
+            .unwrap();
+        other
+            .append_messages(&[Message::user("older"), Message::assistant("answer")])
+            .unwrap();
+        let other_id = other.id().to_owned();
+        drop(other);
+        let session = f.session(None);
+        let old = provider("a-model", Ok(vec![])).reporting_usage();
+        let old_log = old.log();
+        let built = Built::default();
+        let mut params = f.params_with_catalog(old, session, TWO_ENDPOINTS);
+        params.endpoints = Some(relay_endpoints(TWO_ENDPOINTS, &built));
+        iota::repl::run(params).await.expect("exit");
+
+        let lines = printed(&f.ui);
+        assert_eq!(
+            *built.asked.lock().unwrap(),
+            [format!("{provider_name}:vendor/y")]
+        );
+        let resumed = lines
+            .iter()
+            .any(|l| l.starts_with(&format!("Resumed session {other_id}")));
+        assert_eq!(resumed, moved, "{lines:?}");
+        if moved {
+            assert_eq!(old_log.calls(), 0);
+            assert_eq!(built.main.records()[0].model, "vendor/y");
+        } else {
+            assert!(
+                lines.contains(&"Error: provider \"gone\" is not defined in the config".to_owned()),
+                "{lines:?}"
+            );
+            assert_eq!(old_log.calls(), 1, "the chat stayed where it was");
+        }
+    }
 }
 
 /// An agent whose candidate set spans two endpoints; only `mock` is the one the session talks to.
@@ -1301,6 +1635,7 @@ async fn persist_warns_and_retries_the_backlog() {
         params: iota::session::LayeredParams::default(),
         layers: iota::cmd::ParamLayers::default(),
         catalog: iota::repl::ModelCatalog::default(),
+        endpoints: None,
         agent: iota::headless::AgentOptions::default(),
         dark_background: true,
         root_cancel: CancellationToken::new(),

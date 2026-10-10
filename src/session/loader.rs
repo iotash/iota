@@ -57,6 +57,9 @@ pub struct Session {
     pub usage: Usage,
     /// How many unanswered tool calls [`repair_tail`] answered (and appended) on the way in.
     pub repaired: usize,
+    /// The provider type of every message in the view whose raw payload was NOT restored because another
+    /// dialect produced it ([`LoadedLog::foreign`]).
+    pub foreign: Vec<String>,
 }
 
 impl Session {
@@ -68,6 +71,23 @@ impl Session {
                 self.repaired
             )
         })
+    }
+
+    /// The transcript line saying which earlier replies lost their dialect's own payload on the way in (it was
+    /// loaded for `kind`), or `None` when every payload in the view was restored. The records keep it on disk;
+    /// what the user must know is that this run's model does not see it.
+    pub fn foreign_notice(&self, kind: ProviderKind) -> Option<String> {
+        if self.foreign.is_empty() {
+            return None;
+        }
+        let mut types: Vec<&str> = self.foreign.iter().map(String::as_str).collect();
+        types.sort_unstable();
+        types.dedup();
+        Some(format!(
+            "{} earlier repl(ies) carry {} reasoning that {kind} does not replay; the model sees their text and tool calls only.",
+            self.foreign.len(),
+            types.join("/")
+        ))
     }
 }
 
@@ -85,6 +105,9 @@ pub struct LoadedLog {
     /// what the view's last answered request measured. A retained record's usage is older than the marker
     /// and measured the history before the compaction, so it never counts.
     pub measured: Option<Usage>,
+    /// The `raw.provider` tag of every view message whose payload was dropped because it is not the loading
+    /// type's — a session that moved between providers carries both dialects, and each load restores its own.
+    pub foreign: Vec<String>,
 }
 
 /// `scanRecords` (chat/session.go:813-837): line-oriented over `<dir>/messages.jsonl`, in append order.
@@ -281,6 +304,8 @@ pub fn repair_tail(view: &mut Vec<Message>) -> usize {
 pub fn load_log(dir: &Path, kind: ProviderKind) -> Result<LoadedLog, SessionError> {
     let mut system: Option<Message> = None;
     let mut conv: Vec<Message> = Vec::new();
+    // Parallel to `conv`: the tag of a payload the loading type could not take.
+    let mut foreign: Vec<Option<String>> = Vec::new();
     let mut summary = String::new();
     let mut through: i64 = 0;
     let mut has_summary = false;
@@ -317,6 +342,11 @@ pub fn load_log(dir: &Path, kind: ProviderKind) -> Result<LoadedLog, SessionErro
         if let Some(u) = msg.usage() {
             measured = Some(u);
         }
+        foreign.push(
+            rec.raw
+                .filter(|raw| raw.provider != kind.as_str())
+                .map(|raw| raw.provider),
+        );
         conv.push(msg);
     })?;
 
@@ -332,6 +362,7 @@ pub fn load_log(dir: &Path, kind: ProviderKind) -> Result<LoadedLog, SessionErro
         0
     };
     let mut retained = conv.split_off(start);
+    let foreign = foreign.split_off(start).into_iter().flatten().collect();
     if has_summary {
         if retained.is_empty() {
             view.push(Message::user(summary_preamble(&summary)));
@@ -349,6 +380,7 @@ pub fn load_log(dir: &Path, kind: ProviderKind) -> Result<LoadedLog, SessionErro
         conv_count,
         usage,
         measured,
+        foreign,
     })
 }
 

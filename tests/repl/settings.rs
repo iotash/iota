@@ -129,6 +129,7 @@ impl Fixture {
             params: iota::session::LayeredParams::default(),
             layers: iota::cmd::ParamLayers::default(),
             catalog: iota::repl::ModelCatalog::default(),
+            endpoints: None,
             agent: iota::headless::AgentOptions::default(),
             dark_background: true,
             root_cancel: CancellationToken::new(),
@@ -622,7 +623,7 @@ async fn session_meta_tuning_round_trip() {
     let window = apply_session_tuning(
         &meta,
         &mut fresh,
-        ProviderKind::OpenAi,
+        "openai",
         &Overrides::default(),
         &mut |w| warnings.push(w),
     );

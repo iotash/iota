@@ -65,15 +65,19 @@ A session is a **directory** on disk:
   "id": "01JZ8QK3V9XYZABCDEFGHJKMNP",          // ULID
   "created_at": "2026-05-31T15:30:12+08:00",   // RFC3339
   "updated_at": "2026-05-31T15:42:08+08:00",
-  "provider": "vertexai",          // provider type tag, used to match RawContent
-  "model": "gemini-2.5-pro",       // last-used model (/model updates it)
+  "provider": "vertex",            // the provider NAME (a `providers:` entry, or a built-in type name)
+  "model": "gemini-2.5-pro",       // the model on it (/model updates it)
   "temperature": 0.7,              // optional
-  "base_url": "",                  // optional; non-secret, helps reconstruct the provider
   "title": "Refactor the JSON parser in Go"  // primary human-readable list label, auto-generated (§4.4)
 }
 ```
 
-> Security: `meta.json` **never** stores an API key. `base_url` is usually non-secret; if a user embeds credentials in the URL that's on them (redaction can be added later).
+> Security: `meta.json` **never** stores an API key — nor a URL: the session's identity is (provider name, model,
+> parameters), and the endpoint's type, URL and key are read from the config under that name when the session is
+> resumed (decision of 2026-10-10). `provider` follows the session when it moves (`-M` on a resume, `/model` before
+> the first reply), so it says where the session runs NOW; which dialect produced each record is the record's own
+> `raw.provider` tag (§5). A bundle written before carries a `base_url` key and a type name in `provider`: the key is
+> ignored (it rides along as an unknown key), and the type name is read as the built-in provider of that name.
 
 ### 4.2 `messages.jsonl` (one line each)
 
@@ -232,8 +236,8 @@ For switching/resuming mid-conversation. `/session` opens a tabbed ui surface wi
 
 ### 8.3 Shared rules
 
-- The bound provider is decided by the `iota <provider>` subcommand; resume **continues under the current provider** and does not rebuild from the session's origin provider (there's no key to rebuild with anyway).
-- If the loaded session's `meta.provider == the current provider.Type()` → `RawContent` is restored; otherwise `raw` is dropped per §5.
+- *(Superseded 2026-10-10.)* A resume runs on the provider `meta.provider` names, built from the config as `-M <provider>:<model>` would build it, unless `-M` chose another; a name the config does not define is an error, never a fall back to another endpoint. Its model and tuning replay only on that same provider — on another one (`-M`) nothing replays, and a warning says so.
+- Each record's `raw` is restored when its own `raw.provider` tag equals the loading type; one that is dropped is counted, and the resume says how many earlier replies' reasoning the model does not see.
 
 ## 9. Decoupling from context budgeting / compaction (important property)
 

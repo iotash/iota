@@ -51,6 +51,8 @@ pub(crate) struct Conversation {
     pub(crate) layers: crate::config::ParamLayers,
     /// What `/model` offers: the agent's choices and the listers its wildcards need.
     pub(crate) catalog: crate::repl::ModelCatalog,
+    /// Builds the endpoint a move goes to (`None`: the chat never moves).
+    pub(crate) endpoints: Option<crate::repl::EndpointFactory>,
     /// The auto-compaction snooze watermark: the projected usage at which the user last
     /// said "Not now" (0 = never asked). Cleared by any successful compaction.
     pub(crate) compact_declined: u64,

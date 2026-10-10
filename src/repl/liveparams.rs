@@ -54,6 +54,20 @@ pub(crate) fn current(repl: &mut Repl) -> LayeredParams {
     }
 }
 
+/// Hands the three tunables the chat runs under to `provider` — the instance a move to another endpoint puts in
+/// place of the live one — so [`switch_model`] re-evaluates what the session was running under, as it does
+/// for a switch on one endpoint, rather than the fresh instance's own defaults. A knob the dialect has no
+/// place for is dropped with it. The window lives in the budget and needs no carrying.
+pub(crate) fn carry(provider: &mut dyn crate::provider::Provider, running: &LayeredParams) {
+    if let Some(t) = provider.as_tunable() {
+        t.set_effort(Effort::optional(&running.effort.value).ok().flatten());
+        t.set_temperature(running.temperature.value);
+    }
+    if let Some(t) = provider.as_top_p_tunable() {
+        t.set_top_p(running.top_p.value);
+    }
+}
+
 /// Re-evaluates the four parameters for the model the chat has just switched to, and applies whatever moved.
 ///
 /// This is the second (and last) evaluating moment: `agents:` → the NEW model's `models:` entry → the

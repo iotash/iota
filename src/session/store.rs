@@ -42,19 +42,19 @@ pub struct SessionInfo {
     pub message_count: i64,
 }
 
-/// What a new bundle records at creation: the provider and model it runs under, the endpoint, the
-/// working directory it belongs to, and the agent. `NewSession::new(kind, model)` is the bare bundle
-/// every other field defaulted — no temperature, no base URL, no cwd, flat (not project-scoped), no agent.
+/// What a new bundle records at creation: the provider and model it runs under, the working directory it
+/// belongs to, and the agent. `NewSession::new(kind, model)` is the bare bundle every other field defaulted —
+/// on the built-in provider of that type, no temperature, no cwd, flat (not project-scoped), no agent.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NewSession {
-    /// The provider type the bundle is written under.
+    /// The provider type the bundle's raw payloads are written under.
     pub kind: ProviderKind,
+    /// The provider name recorded in meta ([`SessionMeta::provider`]).
+    pub provider: String,
     /// The model id recorded in meta.
     pub model: String,
     /// The temperature recorded in meta (`None` omits the key).
     pub temperature: Option<f64>,
-    /// The endpoint recorded in meta (`""` omits the key).
-    pub base_url: String,
     /// The working directory recorded in meta (`""` omits the key), and — with `project` — the bucket.
     pub cwd: String,
     /// Project-scoped: `cwd` is non-empty and the bundle lives in `projects/<slug(cwd)>/<id>`.
@@ -68,9 +68,9 @@ impl NewSession {
     pub fn new(kind: ProviderKind, model: &str) -> Self {
         Self {
             kind,
+            provider: kind.as_str().to_owned(),
             model: model.to_owned(),
             temperature: None,
-            base_url: String::new(),
             cwd: String::new(),
             project: false,
             agent: String::new(),
@@ -289,9 +289,9 @@ impl SessionStore {
     pub fn create(&self, session: NewSession) -> Result<SessionWriter, SessionError> {
         let NewSession {
             kind,
+            provider,
             model,
             temperature,
-            base_url,
             cwd,
             project,
             agent,
@@ -308,10 +308,9 @@ impl SessionStore {
             id: id.clone(),
             created_at: now.clone(),
             updated_at: now,
-            provider: kind.as_str().to_owned(),
+            provider,
             model,
             temperature,
-            base_url,
             cwd,
             agent,
             ..SessionMeta::default()
@@ -354,8 +353,15 @@ impl SessionStore {
             messages: log.view,
             usage: log.usage,
             repaired,
+            foreign: log.foreign,
         };
         Ok((writer, session))
+    }
+
+    /// A bundle's meta alone — what a resume reads FIRST, to learn which provider the session runs on before
+    /// anything is opened for it.
+    pub fn meta(&self, id: &str) -> Result<SessionMeta, SessionError> {
+        read_meta(&self.dir(id)?, id)
     }
 
     /// `LoadSession` (chat/session.go:904-918): [`resume`](Self::resume) without the writer — nothing is
@@ -370,6 +376,7 @@ impl SessionStore {
             messages: log.view,
             usage: log.usage,
             repaired: 0,
+            foreign: log.foreign,
         })
     }
 

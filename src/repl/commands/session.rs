@@ -7,9 +7,10 @@
 //! picker should let happen — and neither tab lists a session a bot's pointer names.
 //!
 //! The swap ordering is the load-bearing part and is reproduced exactly: close the old
-//! writer → install the new one → window title → history/watermark → budget → session
-//! totals → clear attachments → adopt the resumed name → conditional model replay →
-//! tuning replay → the notice → the echo → status.
+//! writer → install the new one → window title → the bundle's own endpoint, when it is
+//! another one → history/watermark → budget → session totals → clear attachments → adopt
+//! the resumed name → conditional model replay → tuning replay → the notice → the echo →
+//! status.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -169,12 +170,31 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
         repl.handles.tr.notice("Already in this session.");
         return;
     }
-    let kind = repl.conv.provider.kind();
     // The listing left out the bots' bodies it could name; one behind an unreadable pointer is refused here.
     if let Err(e) = repl.session.store.check_not_bot_owned(&id) {
         repl.handles.tr.error(&format!("Error: {e}"));
         return;
     }
+    // A session runs on the provider it records: one the chat is not on is built — and the swap refused,
+    // with nothing changed, when it cannot be — before the bundle is opened for its type.
+    let meta = match repl.session.store.meta(&id) {
+        Ok(meta) => meta,
+        Err(e) => {
+            repl.handles.tr.error(&format!("Error: {e}"));
+            return;
+        }
+    };
+    let endpoint = if meta.provider == repl.conv.catalog.session_provider() {
+        None
+    } else {
+        match super::model::open_endpoint(repl, &meta.provider, &meta.model) {
+            Some(ep) => Some(ep),
+            None => return,
+        }
+    };
+    let kind = endpoint
+        .as_ref()
+        .map_or_else(|| repl.conv.provider.kind(), |ep| ep.provider.kind());
     let (writer, resumed) = match repl.session.store.resume(&id, kind) {
         Ok(v) => v,
         Err(e) => {
@@ -190,7 +210,11 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
     let usage = writer.usage();
     repl.session.titler.switch_writer(writer);
     repl.report_session();
+    if let Some(ep) = endpoint {
+        super::model::install(repl, ep);
+    }
     let repair_notice = resumed.repair_notice();
+    let foreign_notice = resumed.foreign_notice(kind);
     repl.conv.history = resumed.messages;
     repl.session.persisted = repl.conv.history.len();
     repl.conv.budget.reseed(&repl.conv.history);
@@ -198,10 +222,11 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
     repl.conv.pending.clear();
     // A live switch takes the bundle's model and tuning whole: no flag is in play any more.
     let warn_tr = Arc::clone(&repl.handles.tr);
+    let on = repl.conv.catalog.session_provider().to_owned();
     let window = crate::session::replay_session_settings(
         &resumed.meta,
         &mut *repl.conv.provider,
-        kind,
+        &on,
         &crate::session::Overrides::default(),
         &mut |w| warn_tr.notice(&w),
     );
@@ -213,6 +238,9 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
         repl.conv.history.len()
     ));
     if let Some(notice) = repair_notice {
+        repl.handles.tr.notice(&notice);
+    }
+    if let Some(notice) = foreign_notice {
         repl.handles.tr.notice(&notice);
     }
     let msgs = last_rounds(&repl.conv.history, RESUME_ECHO_ROUNDS);

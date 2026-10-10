@@ -538,8 +538,8 @@ impl Config {
         agent_cfg.choices = self.choices_of(&agent_cfg);
         let model = match &agent_cfg.model {
             Some(r) => self.model_of(r).unwrap_or_default(),
-            // No `model:` — the run starts in the picker. A session keeps the endpoint it starts on, so the
-            // FIRST choice decides which one that is (its provider, no id, none of its knobs: the picker's
+            // No `model:` — the run starts in the picker. The FIRST choice decides which endpoint the run
+            // starts on (its provider, no id, none of its knobs: the picker's
             // pick evaluates them against the model it names), exactly as a `provider:*` at the head of the
             // old candidate list did.
             None => agent_cfg

@@ -52,9 +52,12 @@ pub struct SessionMeta {
     pub created_at: String,
     /// RFC3339; restamped by every [`SessionMeta::write`].
     pub updated_at: String,
-    /// The provider type that wrote the session (`ProviderKind::as_str`). ALWAYS emitted, even empty.
+    /// The provider the session runs on: the `providers:` entry name, or a built-in type name for an endpoint no
+    /// entry declares. It names an endpoint of the CONFIG — its type, URL and key are read from there when the
+    /// session is resumed, never from here — and it follows the session when the session moves (`-M` on a
+    /// resume, `/model` before the first reply). ALWAYS emitted, even empty.
     pub provider: String,
-    /// The model in use. ALWAYS emitted, even empty.
+    /// The model in use on that provider. ALWAYS emitted, even empty.
     pub model: String,
     /// Recorded temperature; `None` omits the key.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -84,9 +87,6 @@ pub struct SessionMeta {
     /// Whether edits use the JSON wire format; false omits the key.
     #[serde(skip_serializing_if = "is_false")]
     pub json_edits: bool,
-    /// The base URL the session ran against; empty omits the key.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub base_url: String,
     /// Where the session was started (the project root in agent mode); empty omits the key. Old bundles
     /// simply lack it.
     #[serde(skip_serializing_if = "String::is_empty")]

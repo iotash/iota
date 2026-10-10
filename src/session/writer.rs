@@ -316,6 +316,22 @@ impl SessionWriter {
         }
     }
 
+    /// Moves the session to another endpoint: the payloads appended from here on are tagged with `kind`, and
+    /// the meta names the provider and the model the session now runs on. The records already in the log keep
+    /// their own tags — each one says which dialect produced it.
+    pub fn move_to(
+        &mut self,
+        kind: ProviderKind,
+        provider: &str,
+        model: &str,
+    ) -> Result<(), SessionError> {
+        self.kind = kind;
+        self.update_meta(|m| {
+            provider.clone_into(&mut m.provider);
+            model.clone_into(&mut m.model);
+        })
+    }
+
     /// Rewrites `meta.json`, remembering a failure so that [`Self::update_meta`] does not take the memory for
     /// the disk.
     fn write_meta(&mut self) -> Result<(), SessionError> {
