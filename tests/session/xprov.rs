@@ -59,9 +59,17 @@ fn a_bundle_resumed_under_another_type_holds_both_dialects_while_meta_names_one(
     drop(w);
 
     let (mut w2, resumed) = store.resume(&id, ProviderKind::OpenResponses).unwrap();
-    assert_eq!(resumed.messages[1].raw_content(), None, "the foreign blob is dropped");
+    assert_eq!(
+        resumed.messages[1].raw_content(),
+        None,
+        "the foreign blob is dropped"
+    );
     assert_eq!(resumed.messages[1].tool_calls().len(), 1);
-    assert_eq!(resumed.messages[1].reasoning(), "weigh", "the reasoning text is kept");
+    assert_eq!(
+        resumed.messages[1].reasoning(),
+        "weigh",
+        "the reasoning text is kept"
+    );
     assert_eq!(resumed.meta.provider, "anthropic");
     assert_eq!(resumed.meta.model, "claude-x");
 
@@ -71,15 +79,26 @@ fn a_bundle_resumed_under_another_type_holds_both_dialects_while_meta_names_one(
         Message::assistant_with_calls(
             "",
             vec![c2.clone()],
-            Some(RawContent::OpenResponses(vec![raw(REASONING), raw(FUNCTION_CALL)])),
+            Some(RawContent::OpenResponses(vec![
+                raw(REASONING),
+                raw(FUNCTION_CALL),
+            ])),
         ),
         Message::tool_result(&c2, "result", false),
         Message::assistant("answer 2"),
     ])
     .unwrap();
     let lines = log_lines(&dir);
-    assert!(lines[1].contains(r#""raw":{"provider":"anthropic","#), "{}", lines[1]);
-    assert!(lines[5].contains(r#""raw":{"provider":"openresponses","#), "{}", lines[5]);
+    assert!(
+        lines[1].contains(r#""raw":{"provider":"anthropic","#),
+        "{}",
+        lines[1]
+    );
+    assert!(
+        lines[5].contains(r#""raw":{"provider":"openresponses","#),
+        "{}",
+        lines[5]
+    );
     assert_eq!(
         w2.meta().provider,
         "anthropic",
@@ -113,14 +132,21 @@ fn a_writer_of_one_type_silently_drops_the_other_dialects_payload() {
         Message::assistant_with_calls(
             "",
             vec![c],
-            Some(RawContent::OpenResponses(vec![raw(REASONING), raw(FUNCTION_CALL)])),
+            Some(RawContent::OpenResponses(vec![
+                raw(REASONING),
+                raw(FUNCTION_CALL),
+            ])),
         ),
     ])
     .expect("the append succeeds");
     let dir = w.dir().to_path_buf();
     drop(w);
     let lines = log_lines(&dir);
-    assert!(!lines[1].contains("raw"), "the payload never reached the disk: {}", lines[1]);
+    assert!(
+        !lines[1].contains("raw"),
+        "the payload never reached the disk: {}",
+        lines[1]
+    );
     let under_r = store.load(&id, ProviderKind::OpenResponses).unwrap();
     assert_eq!(under_r.messages[1].raw_content(), None);
     assert_eq!(under_r.messages[1].tool_calls().len(), 1);
@@ -176,12 +202,11 @@ models:
 agents:
   default: {model: a, choices: [a, r, r2]}
 ";
-    let cfg = iota::cmd::Config::parse(
-        YAML.as_bytes(),
-        &iota::app::env::Env::default(),
-        &mut |w| panic!("unexpected config warning: {w}"),
-    )
-    .expect("the config loads");
+    let cfg =
+        iota::cmd::Config::parse(YAML.as_bytes(), &iota::app::env::Env::default(), &mut |w| {
+            panic!("unexpected config warning: {w}")
+        })
+        .expect("the config loads");
     let resolved = cfg.resolve_agent("default").expect("the agent resolves");
     assert_eq!(resolved.provider_name, "anth");
     let layers = iota::cmd::ParamLayers::new(&cfg, &resolved);
@@ -192,7 +217,10 @@ agents:
         Some("low"),
         "the anthropic entry answers for an id the user would pick on resp"
     );
-    assert_eq!(layers.model_of("shared-id").map(|m| m.provider.as_str()), Some("anth"));
+    assert_eq!(
+        layers.model_of("shared-id").map(|m| m.provider.as_str()),
+        Some("anth")
+    );
 
     let mut asked = false;
     let d = layers.declared("only-on-resp", |_| {
@@ -200,6 +228,9 @@ agents:
         Some(1_000_000)
     });
     assert_eq!(d.context_window, None);
-    assert!(!asked, "no window declaration was found for the responses-only id");
+    assert!(
+        !asked,
+        "no window declaration was found for the responses-only id"
+    );
     assert!(layers.model_of("only-on-resp").is_none());
 }
