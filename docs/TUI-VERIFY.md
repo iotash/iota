@@ -221,7 +221,8 @@ its own viewport top. Some emulators will strand a row above the new viewport. T
       mid-turn duplicates the 2 rows staged when it starts (tmux, the frozen build: 6 of 6
       runs; the build before: 1 row), inside the budget. OVER BUDGET, known: a drag with
       `/model` open splits 4–6 separator rows into the history (verifier: 6; the frozen
-      build: 4, 3 of 3 runs) — scenario 26 H caps it at 6 by that name.
+      build: 4, 3 of 3 runs) — scenario 26 H drags one step a pass and caps it at 4 by that name
+      (§4.5, 2026-10-12).
       P0 (2026-09-25, fixed): tmux lost committed rows on a HEIGHT drag down and back up (it
       pulls history rows back on a grow while the loop is still writing the previous pass).
       A resize is now applied only after `RESIZE_QUIET` (50 ms) with no further one, nothing is
@@ -312,6 +313,19 @@ and Ghostty.
       Seen only with three suites at once plus six burners, bounds unchanged: 26 H (a drag with
       `/model` open, OVER BUDGET ≤ 6) measured 7 separator rows in 7 of 60 runs on tmux 3.7c
       (never on 3.4: 4–6), and 26 G's gap measured 3 in 3 runs that landed at the same moment.
+      **26 H, paced (2026-10-12).** The 7 came back on the macos-15 runners (CI 37909980649, a
+      docs-only commit, and 38122791446). Not a late count: the pieces are in the history the
+      moment they are stranded, and the count read before and after the frame is back at full
+      width was the same in 12 of 12 runs. What varies is which steps one pass takes together —
+      the steps went out blind 50 ms apart, `RESIZE_QUIET`'s own length — and a pass that sees a
+      step wider than the drag's margin strands the tail of the frame drawn for the last one (a
+      4- or 8-column separator piece). Reproduced on this host with the iota process at the
+      background QoS (`taskpolicy -b`), ten CPU burners and three copies at once: 4/5/6/7 in
+      10/7/6/1 of 24 runs, the 7 the CI line word for word. The block now waits for each step's
+      pass to be drawn before the next resize: 4 in 32 of 32 runs whose steps all landed (2 of
+      21 under the three-copy load had a pass slower than the 1.5 s wait, and say which step).
+      The cap is 4, the frozen build's number: with an injected pass that claims one row too
+      few the paced drag reads 6, which the old cap of 6 let through.
 
 ## 5. Window title (the title stack)
 
