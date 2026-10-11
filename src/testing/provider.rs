@@ -212,6 +212,8 @@ pub struct Call {
     pub messages: Vec<Message>,
     /// The tool names advertised (the tool path only).
     pub tools: Vec<String>,
+    /// The model the provider was set to when it was called.
+    pub model: String,
 }
 
 /// The provider's call log, shared with every handle: `FakeProvider::log` before the provider is boxed
@@ -603,6 +605,7 @@ impl FakeProvider {
             path,
             messages: messages.to_vec(),
             tools: tools.iter().map(|t| t.name.clone()).collect(),
+            model: self.model.clone(),
         });
         if let Some(f) = &self.on_call {
             f(n, messages);

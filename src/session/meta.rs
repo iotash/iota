@@ -7,12 +7,43 @@
 use std::path::Path;
 
 use crate::provider::error::InvalidEffort;
-use crate::provider::{Effort, ImageGenParams};
+use crate::provider::{Effort, ImageGenParams, Provider, ProviderKind};
 use crate::session::error::SessionError;
-use crate::session::params::ParamSources;
+use crate::session::params::{LayeredParams, ParamSources};
 
-/// `sessionSchemaVersion` (chat/session.go:34).
-pub const SESSION_SCHEMA_VERSION: i64 = 1;
+/// The image settings a provider runs under, as a meta records them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ImageSettings {
+    /// Image output switched on (`ImageTunable`).
+    pub output: bool,
+    /// The image-generation knobs (`ImageGenTunable`).
+    pub generation: ImageGenParams,
+    /// Edits on the JSON wire format (`ImageEditJsonTunable`).
+    pub json_edits: bool,
+}
+
+impl ImageSettings {
+    /// What `provider` runs under: each read through its capability, off/empty without it.
+    pub fn of(provider: &mut dyn Provider) -> Self {
+        Self {
+            output: provider
+                .as_image_tunable()
+                .is_some_and(|t| t.image_output()),
+            generation: provider
+                .as_image_gen_tunable()
+                .map(|t| t.image_gen_params().clone())
+                .unwrap_or_default(),
+            json_edits: provider
+                .as_image_edit_json_tunable()
+                .is_some_and(|t| t.json_edits()),
+        }
+    }
+}
+
+/// The schema version every bundle is written with. `2` (2026-10-11): `provider` is the provider NAME the
+/// session runs on. A `1` bundle — Go's, and every Rust build's before it — recorded the provider TYPE there,
+/// and is read that way ([`SessionMeta::recorded_on`]) until a run moves it to v2 by the name it actually ran on.
+pub const SESSION_SCHEMA_VERSION: i64 = 2;
 /// The metadata file inside a bundle.
 pub const META_FILE: &str = "meta.json";
 /// The fixed temp name the atomic rewrite renames from (D-45); invisible to Go's locator and lister.
@@ -52,9 +83,13 @@ pub struct SessionMeta {
     pub created_at: String,
     /// RFC3339; restamped by every [`SessionMeta::write`].
     pub updated_at: String,
-    /// The provider type that wrote the session (`ProviderKind::as_str`). ALWAYS emitted, even empty.
+    /// v2: the provider the session runs on — the `providers:` entry name, or a built-in type name for an
+    /// endpoint no entry declares. It names an endpoint of the CONFIG: its type, URL and key are read from there
+    /// when the session is resumed, never from here; and it follows the session when the session moves (`-M` on
+    /// a resume, `/model` before the first reply). v1: the provider TYPE the session was written under — see
+    /// [`SessionMeta::recorded_on`]. ALWAYS emitted, even empty.
     pub provider: String,
-    /// The model in use. ALWAYS emitted, even empty.
+    /// The model in use on that provider. ALWAYS emitted, even empty.
     pub model: String,
     /// Recorded temperature; `None` omits the key.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -84,9 +119,6 @@ pub struct SessionMeta {
     /// Whether edits use the JSON wire format; false omits the key.
     #[serde(skip_serializing_if = "is_false")]
     pub json_edits: bool,
-    /// The base URL the session ran against; empty omits the key.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub base_url: String,
     /// Where the session was started (the project root in agent mode); empty omits the key. Old bundles
     /// simply lack it.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -175,6 +207,53 @@ pub(crate) fn write_0644(path: &Path, data: &[u8]) -> std::io::Result<()> {
 }
 
 impl SessionMeta {
+    /// Whether this bundle was recorded on the endpoint a run is on — `on` is that endpoint's provider name,
+    /// `kind` its type. A v2 bundle names its provider and matches on the name; a v1 bundle recorded only a
+    /// type, and matches any endpoint of that type, as every build before v2 read it.
+    pub fn recorded_on(&self, on: &str, kind: ProviderKind) -> bool {
+        if self.names_provider() {
+            self.provider == on
+        } else {
+            self.provider == kind.as_str()
+        }
+    }
+
+    /// Whether `provider` is a provider NAME (v2), rather than the type a v1 bundle recorded.
+    pub fn names_provider(&self) -> bool {
+        self.version >= 2
+    }
+
+    /// Where the bundle says it was recorded, as a warning names it: `provider:model` for v2, the type for v1.
+    pub fn recorded_where(&self) -> String {
+        if self.names_provider() {
+            format!("{}:{}", self.provider, self.model)
+        } else {
+            format!("a {} endpoint ({})", self.provider, self.model)
+        }
+    }
+
+    /// Stamps the four layered parameters the session runs under, and the source of each — `window` is
+    /// `None` for a provider with no token accounting, which has no window to record.
+    pub fn stamp(&mut self, window: Option<u64>, params: &LayeredParams) {
+        if let Some(window) = window {
+            self.set_context_window(window);
+        }
+        params.effort.value.clone_into(&mut self.effort);
+        self.temperature = params.temperature.value;
+        self.top_p = params.top_p.value;
+        self.param_sources = Some(params.sources());
+    }
+
+    /// Records the image settings a provider runs under (all off/empty for one without the capability).
+    pub fn set_image(&mut self, image: &ImageSettings) {
+        self.image = image.output;
+        self.json_edits = image.json_edits;
+        let opt = |v: &Option<String>| v.clone().unwrap_or_default();
+        self.aspect_ratio = opt(&image.generation.aspect_ratio);
+        self.image_size = opt(&image.generation.image_size);
+        self.negative_prompt = opt(&image.generation.negative_prompt);
+    }
+
     /// Records the context window (the disk field is Go's `int`; a `u64` beyond it saturates).
     pub fn set_context_window(&mut self, window: u64) {
         self.context_window = i64::try_from(window).unwrap_or(i64::MAX);
@@ -254,10 +333,30 @@ mod tests {
         assert_eq!(parse_rfc3339(""), None);
     }
 
-    /// The schema version constant is Go's.
+    /// The schema version is 2 (`provider` is a name); a meta that does not say is not a v2 one.
     #[test]
-    fn schema_version_is_one() {
-        assert_eq!(SESSION_SCHEMA_VERSION, 1);
+    fn schema_version_is_two() {
+        assert_eq!(SESSION_SCHEMA_VERSION, 2);
         assert_eq!(SessionMeta::default().version, 0);
+        assert!(!SessionMeta::default().names_provider());
+    }
+
+    /// v1 matches on the type it recorded, v2 on the provider name.
+    #[test]
+    fn recorded_on_reads_v1_as_a_type_and_v2_as_a_name() {
+        use crate::provider::ProviderKind;
+        let v1 = SessionMeta {
+            version: 1,
+            provider: "gemini".to_owned(),
+            ..SessionMeta::default()
+        };
+        assert!(v1.recorded_on("p", ProviderKind::Gemini));
+        assert!(!v1.recorded_on("gemini", ProviderKind::OpenAi));
+        let v2 = SessionMeta {
+            version: SESSION_SCHEMA_VERSION,
+            ..v1
+        };
+        assert!(!v2.recorded_on("p", ProviderKind::Gemini));
+        assert!(v2.recorded_on("gemini", ProviderKind::OpenAi));
     }
 }

@@ -435,17 +435,15 @@ impl Extras {
             }
         }
 
-        if let Some(i) = self.image {
+        // The image switches land only through the capability, like the four layered parameters: a tab
+        // opened on the provider a move just left must not record — or announce — a setting the provider
+        // the chat is now on has no place for.
+        if let Some(i) = self.image
+            && let Some(img) = repl.conv.provider.as_image_tunable()
+        {
             let on = r.panels.get(i).is_some_and(|p| p.on);
-            let current = repl
-                .conv
-                .provider
-                .as_image_tunable()
-                .is_some_and(|img| img.image_output());
-            if on != current {
-                if let Some(img) = repl.conv.provider.as_image_tunable() {
-                    img.set_image_output(on);
-                }
+            if on != img.image_output() {
+                img.set_image_output(on);
                 update_meta(repl, |m| m.image = on);
                 repl.handles.tr.notice(&format!(
                     "Image generation: {}",
@@ -457,17 +455,12 @@ impl Extras {
 
         changed |= self.apply_image_gen(r, repl);
 
-        if let Some(i) = self.json_edits {
+        if let Some(i) = self.json_edits
+            && let Some(edits) = repl.conv.provider.as_image_edit_json_tunable()
+        {
             let on = r.panels.get(i).is_some_and(|p| p.on);
-            let current = repl
-                .conv
-                .provider
-                .as_image_edit_json_tunable()
-                .is_some_and(|edits| edits.json_edits());
-            if on != current {
-                if let Some(edits) = repl.conv.provider.as_image_edit_json_tunable() {
-                    edits.set_json_edits(on);
-                }
+            if on != edits.json_edits() {
+                edits.set_json_edits(on);
                 update_meta(repl, |m| m.json_edits = on);
                 repl.handles.tr.notice(&format!(
                     "Image edits sent as: {}",

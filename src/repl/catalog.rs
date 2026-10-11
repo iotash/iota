@@ -67,10 +67,9 @@ impl Candidate {
 pub(crate) enum Pick {
     /// A model on the session's own endpoint: switch to it.
     Here(String),
-    /// A model on another endpoint. A session cannot move between providers — the history it
-    /// replays is the dialect's own (signed thinking blocks, response items), the bundle records
-    /// the type it was created under, and the dispatcher was assembled for it — so this is
-    /// reported, never half-applied (the same law as a `defer_mode` a switch cannot hand over).
+    /// A model on another endpoint: the chat moves there while it has no reply yet, and once it has one
+    /// the pick is reported, never half-applied — the history it would carry is that dialect's own
+    /// (`commands::model::move_to`).
     Elsewhere(String, String),
 }
 
@@ -100,8 +99,9 @@ enum Source {
 
 /// The agent's choices plus the listers its wildcards need.
 ///
-/// A chat holds one for its whole life: the config cannot change under a running session, so what
-/// CAN be offered is fixed at startup and only the listings are asked for again.
+/// The config cannot change under a running session, so what CAN be offered is fixed when the catalog is
+/// built and only the listings are asked for again. It is built for ONE endpoint, the one the session is on:
+/// a chat that moves is handed a new one (`crate::repl::Endpoint`).
 #[derive(Default)]
 pub struct ModelCatalog {
     /// `agents.<name>.choices` as the run resolved them, in declaration order — the order the picker
@@ -177,6 +177,12 @@ impl ModelCatalog {
         &self.session
     }
 
+    /// Whether `provider` is a name the config knows — a `providers:` entry or a built-in type — as `-M` and a
+    /// resume read it.
+    pub(crate) fn knows(&self, provider: &str) -> bool {
+        self.known.iter().any(|k| k == provider)
+    }
+
     /// The `agents:` entry the chat runs (`""` when it names none).
     pub(crate) fn agent(&self) -> &str {
         &self.agent
@@ -198,7 +204,7 @@ impl ModelCatalog {
         if let Some((provider, id)) = text.split_once(':')
             && !id.is_empty()
             && id != "*"
-            && self.known.iter().any(|k| k == provider)
+            && self.knows(provider)
         {
             return Candidate {
                 provider: provider.to_owned(),

@@ -43,6 +43,70 @@ pub struct RunSettings {
     /// The id fragment `iota resume <id>` named; `None` for `iota run` AND for the bare `iota resume`, whose
     /// session the interactive picker chooses.
     pub resume: Option<String>,
+    /// `-M` was given: the user chose the endpoint and the model, so a resumed session's own do not apply.
+    pub model_flag: bool,
+}
+
+impl RunSettings {
+    /// Moves the run to `provider:id` after it was resolved — exactly what `-M provider:id` would have
+    /// resolved (an empty `id` is `provider:*`, the picker): the endpoint, its key, the model and the knobs its
+    /// `models:` entry declares. The caller has checked that the config knows `provider`.
+    ///
+    /// Two callers: a resume whose bundle names another provider, and the chat's own move before its first
+    /// reply (`crate::repl::EndpointFactory`).
+    pub(crate) fn move_to(
+        &mut self,
+        cfg: &Config,
+        env: &Env,
+        provider: &str,
+        id: &str,
+        warn: &mut dyn FnMut(String),
+    ) -> Result<(), CliError> {
+        let mut resolved = self.resolved.clone();
+        let flag = if id.is_empty() {
+            format!("{provider}:*")
+        } else {
+            format!("{provider}:{id}")
+        };
+        apply_model_flag(&mut resolved, cfg, &flag, warn);
+        self.api_key = key_of(&resolved, resolved.endpoint().api_key(env))?;
+        self.temperature = temperature_of(&resolved)?;
+        self.raw_type.clone_from(&resolved.provider_type);
+        self.base_url.clone_from(&resolved.provider.url);
+        self.model.clone_from(&resolved.model.id);
+        self.resolved = resolved;
+        Ok(())
+    }
+}
+
+impl RunSettings {
+    /// The key of the endpoint the run is on, looked up again — what a resume, whose key `resolve_run` left
+    /// unchecked, does once its endpoint is settled.
+    pub(crate) fn check_key(&mut self, env: &Env) -> Result<(), CliError> {
+        self.api_key = key_of(&self.resolved, self.resolved.endpoint().api_key(env))?;
+        Ok(())
+    }
+}
+
+/// root.go:89-92: the key the endpoint resolved to, or `ApiKeyRequired` naming the variable that would supply it.
+fn key_of(resolved: &Resolved, api_key: ApiKey) -> Result<String, CliError> {
+    match api_key {
+        ApiKey::Env { key, .. } | ApiKey::Config(key) => Ok(key),
+        ApiKey::Missing { var } => Err(SetupError::ApiKeyRequired {
+            env: var,
+            provider: resolved.provider_name.clone(),
+        }
+        .into()),
+    }
+}
+
+/// root.go:114-123: the temperature the agent or its model declares, range-checked (the `-t` flag that skipped
+/// the check is gone).
+fn temperature_of(resolved: &Resolved) -> Result<Option<f64>, CliError> {
+    match resolved.temperature() {
+        Some(t) if !(0.0..=2.0).contains(&t) => Err(SetupError::ConfigTemperature(t).into()),
+        t => Ok(t),
+    }
 }
 
 /// Pure. Order (root.go:53-123): the agent — the name given, else `agents.default` when the config declares
@@ -103,16 +167,11 @@ pub fn resolve_run(
         None => resolved.agent.resolve_system()?,
     };
 
-    // root.go:89-92
+    // A resume's endpoint is the SESSION's to name (`crate::cmd::resume_endpoint`), so a key missing here —
+    // on the agent's own endpoint — is not yet an error: the resume checks the key of the endpoint it lands on.
     let api_key = match api_key {
-        ApiKey::Env { key, .. } | ApiKey::Config(key) => key,
-        ApiKey::Missing { var } => {
-            return Err(SetupError::ApiKeyRequired {
-                env: var,
-                provider: resolved.provider_name.clone(),
-            }
-            .into());
-        }
+        ApiKey::Missing { .. } if inv.resume.is_some() => String::new(),
+        api_key => key_of(&resolved, api_key)?,
     };
 
     // root.go:95-104 (`-m -`), then POLICY F-03 (`-m ""`).
@@ -134,13 +193,7 @@ pub fn resolve_run(
         .into());
     }
 
-    // root.go:114-123: the config default is range-checked (the `-t` flag that skipped the check is gone).
-    let temperature = match resolved.temperature() {
-        Some(t) if !(0.0..=2.0).contains(&t) => {
-            return Err(SetupError::ConfigTemperature(t).into());
-        }
-        t => t,
-    };
+    let temperature = temperature_of(&resolved)?;
 
     Ok(RunSettings {
         name: name.to_owned(),
@@ -158,6 +211,7 @@ pub fn resolve_run(
             Some(Resume::Id(id)) => Some(id.clone()),
             Some(Resume::Pick) | None => None,
         },
+        model_flag: inv.args.model.is_some(),
         resolved,
     })
 }

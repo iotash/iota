@@ -104,6 +104,25 @@ pub struct McpHooks {
 pub type SessionFactory =
     Box<dyn FnMut() -> Result<crate::session::SessionWriter, crate::session::SessionError> + Send>;
 
+/// What the chat runs on when it moves to another endpoint: everything that names the endpoint it is on,
+/// built the way the run built its own at startup.
+pub struct Endpoint {
+    /// The conversation provider, tuned with what its `models:` entry declares.
+    pub provider: Box<dyn crate::provider::Provider>,
+    /// Its title-pass twin (`None` for a dedicated image provider).
+    pub title_provider: Option<Box<dyn crate::provider::Provider>>,
+    /// The declarations a `/model` switch re-evaluates against, looked up on this endpoint.
+    pub layers: crate::config::ParamLayers,
+    /// What `/model` offers, with this endpoint as the one the session is on.
+    pub catalog: crate::repl::ModelCatalog,
+}
+
+/// Builds the [`Endpoint`] that `provider:id` names, exactly as `-M provider:id` would have built the run's own:
+/// the binary owns the config, the environment and the transport, which the loop never sees. Warnings (a
+/// knob the dialect cannot take) go to the closure; an `Err` is the line to show, and nothing has changed.
+pub type EndpointFactory =
+    Box<dyn Fn(&str, &str, &mut dyn FnMut(String)) -> Result<Endpoint, String> + Send>;
+
 /// Session wiring of one interactive run.
 pub struct SessionCtx {
     /// The live writer (None while ephemeral).
@@ -168,6 +187,9 @@ pub struct RunParams {
     pub layers: crate::config::ParamLayers,
     /// The agent's choices, as `/model` offers them (`repl::catalog`).
     pub catalog: crate::repl::ModelCatalog,
+    /// Builds another endpoint for the chat to move to (`None`: it never moves — a bot, whose config owns
+    /// its model, or a test that does not need one).
+    pub endpoints: Option<EndpointFactory>,
     /// Agent-mode options.
     pub agent: crate::headless::AgentOptions,
     /// Whether the terminal's background is dark, as the ONE pre-loop OSC-11 probe answered
@@ -305,6 +327,13 @@ fn join_overlay(agent: String, memory: String) -> String {
     }
 }
 
+/// Whether `history` holds a model's reply.
+pub(crate) fn has_reply(history: &[Message]) -> bool {
+    history
+        .iter()
+        .any(|m| m.role() == crate::provider::model::Role::Assistant)
+}
+
 /// The completion table's view of the discovered skills (completion.go:63-73).
 fn skill_entries(skills: &[Skill]) -> Vec<SkillEntry> {
     skills
@@ -349,6 +378,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         params,
         layers,
         catalog,
+        endpoints,
         agent,
         dark_background,
         root_cancel,
@@ -406,6 +436,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         vec![Message::system(system)]
     };
     let persisted = if resumed { history.len() } else { 0 };
+    let replied = has_reply(&history) || writer.as_ref().is_some_and(SessionWriter::replied);
     // The harness, now that the hosts it names in `<environment>` are known; the day it was composed on is
     // what the first send of the next one compares against.
     let harness_day = harness.today();
@@ -561,12 +592,14 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             provider,
             dispatch: Arc::clone(&dispatch),
             history,
+            replied,
             pending: Vec::new(),
             budget,
             ctxm,
             param_sources: params.sources(),
             layers,
             catalog,
+            endpoints,
             compact_declined: 0,
             harness: harness_text,
             harness_day,
@@ -976,6 +1009,9 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 landed = true;
             }
         }
+        // A reply that landed — whole, kept after an interrupt or a stall — makes this a session a model has
+        // replied in, whatever a later compaction leaves in the view.
+        repl.conv.replied |= has_reply(&repl.conv.history);
         // Whatever became of the turn, a memory write it made is on disk: it is recorded now.
         let memory_writes = repl.record_memory_writes();
         after_bot_turn(&mut repl, flush, landed, memory_writes, held).await;

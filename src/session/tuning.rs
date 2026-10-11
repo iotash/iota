@@ -1,7 +1,7 @@
 //! Replaying a resumed session's persisted tuning onto the live provider (`ApplySessionTuning`,
 //! chat/session.go:414-455).
 
-use crate::provider::{Provider, ProviderKind};
+use crate::provider::Provider;
 
 use crate::session::meta::SessionMeta;
 
@@ -46,27 +46,29 @@ pub struct Overrides {
 }
 
 /// Replays a resumed session onto the live provider: its model (only when the caller did not pick one, and
-/// only for a bundle recorded under this provider type — an explicit `-M` never rewrites `meta.model`), then
-/// its tuning through [`apply_session_tuning`]. Returns the replayed context window.
+/// only for a bundle recorded on this provider — [`SessionMeta::recorded_on`]), then its tuning
+/// through [`apply_session_tuning`]. Returns the replayed context window.
 pub fn replay_session_settings(
     meta: &SessionMeta,
     provider: &mut dyn Provider,
-    kind: ProviderKind,
+    on: &str,
     overrides: &Overrides,
     warn: &mut dyn FnMut(String),
 ) -> Option<u64> {
     if !overrides.model
         && !overrides.config_wins
-        && meta.provider == kind.as_str()
+        && meta.recorded_on(on, provider.kind())
         && !meta.model.is_empty()
     {
         provider.set_model(meta.model.clone());
     }
-    apply_session_tuning(meta, provider, kind, overrides, warn)
+    apply_session_tuning(meta, provider, on, overrides, warn)
 }
 
 /// Replays the knobs `meta` recorded. Like the model replay, the WHOLE replay is gated on
-/// `meta.provider == kind.as_str()` — a mismatch applies NOTHING, the context window included.
+/// [`SessionMeta::recorded_on`] (`on` is the provider name the run is on; a v1 bundle matches on the type) —
+/// a mismatch applies NOTHING, the context window included, and says so
+/// in ONE warning, unless `overrides.config_wins` (a bot replays none of it anyway).
 ///
 /// - **temperature**: only when the caller did not fix one (`overrides.temperature`) and the session recorded one;
 /// - **effort**: whenever the session recorded one — Go has no effort flag, so there is no skip;
@@ -87,11 +89,18 @@ pub fn replay_session_settings(
 pub fn apply_session_tuning(
     meta: &SessionMeta,
     provider: &mut dyn Provider,
-    kind: ProviderKind,
+    on: &str,
     overrides: &Overrides,
     warn: &mut dyn FnMut(String),
 ) -> Option<u64> {
-    if meta.provider != kind.as_str() {
+    if !meta.recorded_on(on, provider.kind()) {
+        if !overrides.config_wins {
+            warn(format!(
+                "Warning: session was recorded on {}; this run is on {on}:{} — its model and tuning are not replayed",
+                meta.recorded_where(),
+                provider.model()
+            ));
+        }
         return None;
     }
     if !overrides.config_wins

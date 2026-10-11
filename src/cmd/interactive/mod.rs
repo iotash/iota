@@ -58,10 +58,9 @@ pub(crate) struct Interactive<'a> {
     pub(crate) cfg: &'a crate::config::Config,
     /// The resolved run settings.
     pub(crate) settings: RunSettings,
-    /// The resolved provider type.
-    pub(crate) kind: ProviderKind,
-    /// The conversation provider, already tuned.
-    pub(crate) provider: Box<dyn Provider>,
+    /// The resolved provider type and the conversation provider, already tuned — `None` for a resume, which
+    /// opens the one its session names once the session is chosen.
+    pub(crate) opened: Option<(ProviderKind, Box<dyn Provider>)>,
     /// The shared run environment.
     pub(crate) ctx: RunContext,
     /// The tool side.
@@ -142,6 +141,8 @@ impl UiSession for LiveUi {
 
 /// What [`open_ui`]'s continuation produced: everything `crate::repl::run` needs that only the binary can build.
 struct Wiring {
+    /// The conversation provider — the run's own, or the one a resumed session names.
+    provider: Box<dyn Provider>,
     /// The live session writer (`None` = the chat started ephemeral).
     writer: Option<SessionWriter>,
     /// Mints the writer late (`/save`); `Some` = started ephemeral.
@@ -236,17 +237,11 @@ pub(crate) async fn run_interactive(
     let Interactive {
         inv,
         cfg,
-        settings,
-        kind,
-        mut provider,
+        mut settings,
+        opened,
         ctx,
         tools,
     } = s;
-    // What `/model` will offer. Built here, before anything claims the terminal: it needs the
-    // config and the environment (the keys of the endpoints the choices name besides the one this
-    // run talks to), which the loop deliberately knows nothing about, and constructing a
-    // wildcard's endpoint is pure (the listings happen when the picker opens).
-    let catalog = crate::repl::ModelCatalog::new(cfg, &settings.resolved, &ctx.env, &ctx.transport);
     let ToolAssembly {
         mcp_configs,
         mcp_defers,
@@ -299,6 +294,7 @@ pub(crate) async fn run_interactive(
     // an in-flight connect; from here on EVERY exit path closes the manager, exactly like Go's deferred
     // `defer manager.Close()` / `defer cancelConnect()`.
     let connect_cancel = ctx.cancel.child_token();
+    let mcp_count = mcp_configs.len();
     let (manager, mcp_part, mcp_events) = {
         let configured = !mcp_configs.is_empty();
         let manager = crate::mcp::Manager::new(
@@ -316,9 +312,9 @@ pub(crate) async fn run_interactive(
     let opened = open_ui(&seam, picker, |_dark, picked| {
         wire_session(Wire {
             cfg,
-            settings: &settings,
-            kind,
-            provider: &mut *provider,
+            settings: &mut settings,
+            opened,
+            mcp_count,
             ctx: &ctx,
             tool_env: &tool_env,
             io,
@@ -356,12 +352,18 @@ pub(crate) async fn run_interactive(
     ));
     let mcp = mcp_hooks(&manager, mcp_events);
     let session = wiring.take_session(store, scope);
+    // What `/model` will offer, and how the chat reaches another endpoint: both need the config and the
+    // environment (the keys of the endpoints the choices name besides the one this run talks to), which the
+    // loop deliberately knows nothing about. Built on the settings the wiring left — a resume may have moved
+    // them to the session's own provider; constructing an endpoint is pure (no I/O until it is asked).
+    let catalog = crate::repl::ModelCatalog::new(cfg, &settings.resolved, &ctx.env, &ctx.transport);
+    let endpoints = (!session.bot).then(|| endpoint_factory(cfg, &settings, &ctx));
 
     // Boxed: the loop's future is the largest in the run, and the harness inputs it now carries whole (to
     // re-compose on a new day) tipped the caller over clippy's `large_futures` line.
     let outcome = Box::pin(crate::repl::run(RunParams {
         ui: Arc::clone(&ui),
-        provider,
+        provider: wiring.provider,
         title_provider: wiring.title_provider,
         // root.go:341 — trimmed once, here, exactly like Go.
         system: settings.system.trim().to_owned(),
@@ -374,6 +376,7 @@ pub(crate) async fn run_interactive(
         params: wiring.params,
         layers: wiring.layers,
         catalog,
+        endpoints,
         agent,
         dark_background: dark,
         root_cancel: ctx.cancel.clone(),
@@ -408,12 +411,13 @@ pub(crate) async fn run_interactive(
 struct Wire<'a> {
     /// The merged config (a resumed bundle's agent is looked up in it).
     cfg: &'a crate::config::Config,
-    /// The resolved run settings.
-    settings: &'a RunSettings,
-    /// The resolved provider type.
-    kind: ProviderKind,
-    /// The conversation provider: a resume replays the bundle's model and tuning onto it.
-    provider: &'a mut dyn Provider,
+    /// The resolved run settings — moved to the bundle's provider by a resume that records another one.
+    settings: &'a mut RunSettings,
+    /// The resolved provider type and the conversation provider; `None` for a resume, which opens the one its
+    /// session names ([`crate::cmd::open_resumed`]) — a resume replays the bundle's model and tuning onto it.
+    opened: Option<(ProviderKind, Box<dyn Provider>)>,
+    /// How many MCP servers the run configures (the tools warning a resume gives once its provider is open).
+    mcp_count: usize,
     /// The run-wide context (the environment, the transport the title instance shares).
     ctx: &'a RunContext,
     /// The tool environment the dispatcher is built over.
@@ -445,8 +449,8 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
     let Wire {
         cfg,
         settings,
-        kind,
-        provider,
+        opened,
+        mcp_count,
         ctx,
         tool_env,
         io,
@@ -458,11 +462,34 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         mcp_part,
         mcp_defers,
     } = wire;
+    // A resume runs on the provider its session names: the session is chosen and its meta read BEFORE any
+    // provider is opened for it (`crate::cmd::open_resumed`).
+    let (resume_id, (kind, mut opened)) = if let Some(opened) = opened {
+        (None, opened)
+    } else {
+        // root.go:294-306: a bare `iota resume` took the picker; an id resolves as a prefix.
+        let id = match &settings.resume {
+            Some(fragment) => store.resolve_id(fragment, scope)?,
+            None => picked.unwrap_or_default(),
+        };
+        if id.is_empty() {
+            return Err(SetupError::NoSessionToResume.into());
+        }
+        // A bot's body opens only as that bot (bot-mode.md §2.2, §2.7).
+        store.check_not_bot_owned(&id)?;
+        let resumed =
+            crate::cmd::open_resumed(&store.meta(&id)?, cfg, ctx, settings, mcp_count, &mut |w| {
+                io.warning(&w);
+            })?;
+        (Some(id), resumed)
+    };
+    let settings: &RunSettings = settings;
+    let provider: &mut dyn Provider = &mut *opened;
     let mut history = Vec::new();
     let mut writer: Option<SessionWriter> = None;
-    // The bundle a resume replayed, kept for the layering: it is the record of what the session was running
-    // under, and a resume RESTORES those values rather than evaluating the config again.
-    let mut resumed_meta: Option<crate::session::SessionMeta> = None;
+    // The parameters a resume restored from its bundle — a resume RESTORES the values the session was running
+    // under rather than evaluating the config again.
+    let mut resumed_params: Option<crate::session::LayeredParams> = None;
     let mut notices = Vec::new();
     // What a resumed bot's model is told at startup (bot-mode.md §2.5).
     let mut recorded_notices = Vec::new();
@@ -478,27 +505,27 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         // Before the lock is taken or anything is created: a bot that cannot run leaves no trace. Its
         // parameters come from the config alone (§2.2), so the window is known already.
         bot::check_bot_provider(&settings.name, &*provider)?;
-        let params = resolve_params(settings, provider, kind, None, io)?;
+        let params = resolve_params(settings, provider, None, io)?;
         bot::check_bot_window(&settings.name, params.context_window.value)?;
-        bot_params = Some(params);
         let bots = store
             .bots_dir()
             .ok_or(crate::session::SessionError::HomeNotDefined)?;
         let opened = bot::open_bot_session(
             store,
-            bots,
-            &settings.name,
+            &bots.join(&settings.name),
             NewSession {
                 temperature: settings.temperature,
-                base_url: settings.base_url.clone(),
+                provider: settings.resolved.provider_name.clone(),
                 cwd: session_cwd(ctx, scope),
                 agent: settings.resolved.agent_name.clone(),
                 ..NewSession::new(kind, provider.model())
             },
             settings.system.trim(),
             &mut *provider,
+            &params,
             &mut |w| io.warning(&w),
         )?;
+        bot_params = Some(params);
         if opened.resumed {
             let _ = writeln!(
                 io.stdout,
@@ -522,18 +549,8 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
             &settings.name,
             bots.join(&settings.name),
         ));
-    } else if resume_given {
-        // root.go:294-306: a bare `iota resume` took the picker; an id resolves as a prefix.
-        let id = match &settings.resume {
-            Some(fragment) => store.resolve_id(fragment, scope)?,
-            None => picked.unwrap_or_default(),
-        };
-        if id.is_empty() {
-            return Err(SetupError::NoSessionToResume.into());
-        }
-        // A bot's body opens only as that bot (bot-mode.md §2.2, §2.7).
-        store.check_not_bot_owned(&id)?;
-        let (w, resumed) = store.resume(&id, kind)?;
+    } else if let Some(id) = resume_id {
+        let (mut w, resumed) = store.resume(&id, kind)?;
         // The bundle records the agent it ran under; one that has since been deleted is announced, and the
         // run falls back to the provider and model the meta carries (Phase 1b step 9).
         crate::session::warn_if_session_agent_is_gone(
@@ -541,20 +558,34 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
             cfg.agents.contains_key(&resumed.meta.agent),
             &mut |w| io.warning(&w),
         );
-        // root.go:317-331: `-M` is the only flag a session must not overwrite; temperature, effort and the
-        // window always replay, because a resumed chat is the chat it resumes.
+        // root.go:317-331: `-M` is the only flag a session must not overwrite; the model, temperature, effort
+        // and the window replay, because a resumed chat is the chat it resumes.
         crate::session::replay_session_settings(
             &resumed.meta,
             &mut *provider,
-            kind,
+            &settings.resolved.provider_name,
             &crate::session::Overrides {
-                model: !settings.model.is_empty(),
+                model: crate::cmd::model_overridden(&resumed.meta, settings),
                 ..crate::session::Overrides::default()
             },
             &mut |w| io.warning(&w),
         );
+        let params = resolve_params(settings, provider, Some(&resumed.meta), io)?;
+        // Where the session runs NOW, in ONE write: a `-M` that moved it, or a v1 bundle settling under the
+        // name it runs on. A chat has no moment of "success" to wait for — opening the session is the run.
+        if crate::cmd::settles(&resumed.meta, settings, kind)
+            && let Err(e) = w.move_to(&crate::cmd::settled(
+                settings,
+                kind,
+                &mut *provider,
+                params.clone(),
+            ))
+        {
+            io.warning(&format!("Warning: failed to save session: {e}"));
+        }
+        resumed_params = Some(params);
         let repair_notice = resumed.repair_notice();
-        resumed_meta = Some(resumed.meta);
+        let foreign_notice = resumed.foreign_notice(kind);
         history = resumed.messages;
         // root.go:333, on plain stdout with the trailing blank Go prints — the last thing written before the
         // banner the facade puts in the scrollback.
@@ -564,6 +595,9 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
             history.len()
         );
         if let Some(notice) = repair_notice {
+            io.warning(&notice);
+        }
+        if let Some(notice) = foreign_notice {
             io.warning(&notice);
         }
         // The facade takes stdout a few steps from here; nothing may still be sitting in a buffer then.
@@ -577,7 +611,7 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
             store
                 .create(NewSession {
                     temperature: settings.temperature,
-                    base_url: settings.base_url.clone(),
+                    provider: settings.resolved.provider_name.clone(),
                     cwd: session_cwd.clone(),
                     // Only `agent` buckets by project (a bot's session is flat, bot-mode.md §1.3 — and
                     // opened above).
@@ -600,13 +634,13 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
             .as_tunable()
             .and_then(|t| t.temperature())
             .or(settings.temperature);
-        let base_url = settings.base_url.clone();
+        let provider_name = settings.resolved.provider_name.clone();
         let project = settings.mode == AgentMode::Agent;
         let agent_name = settings.resolved.agent_name.clone();
         Some(Box::new(move || {
             store.create(NewSession {
                 temperature,
-                base_url: base_url.clone(),
+                provider: provider_name.clone(),
                 cwd: session_cwd.clone(),
                 project,
                 agent: agent_name.clone(),
@@ -620,9 +654,9 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
     // root.go:365-385, widened to all four layered parameters: a resumed bundle's own values (with the
     // sources it recorded), else the two config layers, else the built-in defaults.
     // A bot's resumed meta is not consulted: its parameters come from the config (bot-mode.md §2.2).
-    let params = match bot_params {
+    let params = match bot_params.or(resumed_params) {
         Some(params) => params,
-        None => resolve_params(settings, provider, kind, resumed_meta.as_ref(), io)?,
+        None => resolve_params(settings, provider, None, io)?,
     };
 
     // root.go:390 + 588-592.
@@ -646,26 +680,15 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         tool_env,
         &mut |m| io.caution(&m),
     );
-    // root.go:402-412: the async title pass runs while a turn is still streaming and provider instances keep
-    // per-call state, so titles ride their own instance. Dedicated image providers get none — asked for a
-    // title they would paint one.
     // A bot's session is named after the bot and never titled (bot-mode.md §2.2).
-    let title_provider = if bot || provider.as_image_gen_tunable().is_some() {
+    let title_provider = if bot {
         None
     } else {
-        Some(crate::provider::new_provider(
-            kind,
-            ProviderParams {
-                api_key: &settings.api_key,
-                base_url: &settings.base_url,
-                model: &settings.model,
-                temperature: settings.temperature,
-            },
-            Some(ctx.transport.clone()),
-        )?)
+        title_instance(settings, kind, provider, &ctx.transport)?
     };
 
     Ok(Wiring {
+        provider: opened,
         writer,
         new_session,
         history,
@@ -677,6 +700,62 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         notices,
         recorded_notices,
         memory,
+    })
+}
+
+/// root.go:402-412: the async title pass runs while a turn is still streaming and provider instances keep
+/// per-call state, so titles ride their own instance, built like `provider`. Dedicated image providers get
+/// none — asked for a title they would paint one.
+fn title_instance(
+    settings: &RunSettings,
+    kind: ProviderKind,
+    provider: &mut dyn Provider,
+    transport: &crate::provider::HttpTransport,
+) -> Result<Option<Box<dyn Provider>>, CliError> {
+    if provider.as_image_gen_tunable().is_some() {
+        return Ok(None);
+    }
+    Ok(Some(crate::provider::new_provider(
+        kind,
+        ProviderParams {
+            api_key: &settings.api_key,
+            base_url: &settings.base_url,
+            model: &settings.model,
+            temperature: settings.temperature,
+        },
+        Some(transport.clone()),
+    )?))
+}
+
+/// The chat's way to another endpoint (`crate::repl::EndpointFactory`): the run's own settings moved to
+/// `provider:id` — exactly what `-M provider:id` resolves — and everything the run built on its settings at
+/// startup built again on those: the tuned provider, its title twin, the parameter layers, the catalog.
+fn endpoint_factory(
+    cfg: &crate::config::Config,
+    settings: &RunSettings,
+    ctx: &RunContext,
+) -> crate::repl::EndpointFactory {
+    let (cfg, base) = (cfg.clone(), settings.clone());
+    let (env, transport) = (ctx.env.clone(), ctx.transport.clone());
+    Box::new(move |provider, id, warn| {
+        if !cfg.knows_provider(provider) {
+            return Err(format!(
+                "provider {provider:?} is not defined in the config"
+            ));
+        }
+        let mut s = base.clone();
+        s.move_to(&cfg, &env, provider, id, warn)
+            .map_err(|e| e.to_string())?;
+        let (kind, mut p) =
+            crate::cmd::open_provider(&s, &transport, warn).map_err(|e| e.to_string())?;
+        let title_provider =
+            title_instance(&s, kind, &mut *p, &transport).map_err(|e| e.to_string())?;
+        Ok(crate::repl::Endpoint {
+            provider: p,
+            title_provider,
+            layers: crate::config::ParamLayers::new(&cfg, &s.resolved),
+            catalog: crate::repl::ModelCatalog::new(&cfg, &s.resolved, &env, &transport),
+        })
     })
 }
 
@@ -697,40 +776,16 @@ fn session_cwd(ctx: &RunContext, scope: Option<&std::path::Path>) -> String {
     )
 }
 
-/// root.go:365-385, generalised to the four layered parameters (brain page `model-param-layering`): a
-/// resumed bundle's recorded values come back as they were recorded, everything else is evaluated
-/// `agents:` → `models:` → the built-in default. Plus Go's warning for a window on a provider that cannot
+/// [`crate::cmd::layered_params`] — the ONE evaluating moment on the way in; the other two are a `/model`
+/// model switch and a move to another endpoint — plus Go's warning for a window on a provider that cannot
 /// count tokens at all.
-///
-/// This is the ONE evaluating moment on the way in; the other is a `/model` model switch. The
-/// `--context-window` flag that used to precede the config is gone: the window is a property of the model,
-/// and `/model`'s Context tab is where one run changes it.
-///
-/// A `context_window:` that does not parse aborts the run here — at startup there is nothing yet to keep
-/// going with, and the label says which layer wrote it.
 fn resolve_params(
     settings: &RunSettings,
     provider: &dyn Provider,
-    kind: ProviderKind,
     resumed: Option<&crate::session::SessionMeta>,
     io: &mut crate::cmd::io::Streams,
 ) -> Result<crate::session::LayeredParams, CliError> {
-    let window = match settings.resolved.window_decl() {
-        None => None,
-        Some(decl) => Some(crate::config::window::parse_window_size(decl.raw).map_err(
-            |source| SetupError::ContextWindow {
-                label: decl.label.to_owned(),
-                source,
-            },
-        )?),
-    };
-    let declared = settings.resolved.declared(window);
-    let params = match resumed {
-        // `apply_session_tuning` replays nothing for a bundle recorded under another provider type, so for
-        // this run that bundle recorded nothing either.
-        Some(meta) => declared.resume(meta, meta.provider == kind.as_str()),
-        None => declared.evaluate(&crate::session::LayeredParams::default()),
-    };
+    let params = crate::cmd::layered_params(settings, provider, resumed)?;
     if params.context_window.value > 0 && !provider.reports_usage() {
         io.warning(&format!(
             "Warning: context window does not apply to provider type {} (no token accounting)",
@@ -1015,6 +1070,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let memory = crate::agents::memory::BotMemory::new("coder", tmp.path().join("coder"));
         let mut wiring = super::Wiring {
+            provider: Box::new(crate::testing::FakeProvider::new()),
             writer: None,
             new_session: None,
             history: Vec::new(),

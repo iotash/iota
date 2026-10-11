@@ -1,14 +1,16 @@
-//! PROBE (evaluation `xprov-fable`, 2026-10-09): what the persistence layer and the config layers do when
-//! a session's provider type is not the one its bundle was created under — the state `iota resume -M
-//! other:model` puts a bundle in today, and the state an in-session provider switch would put the live
-//! writer and the parameter layers in.
-//!
-//! Not product code. Each test pins one measured fact the evaluation relies on.
+//! A session that moves between providers (`iota resume -M other:model`, a `/model` move before the first
+//! reply): what the persistence layer and the config layers do with it. Born as the probes of evaluation
+//! `xprov-fable` (2026-10-09), which pinned the debt — a meta that kept naming the old provider, a writer
+//! that silently dropped the new dialect's payload, a resume that replayed nothing and said nothing, layers
+//! that looked ids up on the startup provider — and flipped when the move was made honest.
 
 use crate::common::{log_lines, temp_store};
 use iota::provider::model::{JsonObject, Message, Raw, RawContent, ToolCall};
 use iota::provider::{Provider, ProviderKind};
-use iota::session::{NewSession, Overrides, SessionMeta, replay_session_settings};
+use iota::session::{
+    ImageSettings, LayeredParams, Moved, NewSession, Overrides, SESSION_SCHEMA_VERSION,
+    SessionMeta, replay_session_settings,
+};
 use iota::testing::FakeProvider;
 use pretty_assertions::assert_eq;
 
@@ -24,19 +26,31 @@ fn call(id: &str) -> ToolCall {
     }
 }
 
+/// A move to `provider:model` of type `kind`, with nothing else to record.
+fn moved(kind: ProviderKind, provider: &str, model: &str) -> Moved {
+    Moved {
+        kind,
+        provider: provider.to_owned(),
+        model: model.to_owned(),
+        params: LayeredParams::default(),
+        window: None,
+        image: ImageSettings::default(),
+    }
+}
+
 const THINKING: &str = r#"{"type":"thinking","thinking":"weigh","signature":"SIG"}"#;
 const REASONING: &str =
     r#"{"id":"rs_2","type":"reasoning","summary":[],"encrypted_content":"OPAQUE"}"#;
 const FUNCTION_CALL: &str =
     r#"{"id":"fc_2","type":"function_call","call_id":"call_2","name":"f","arguments":"{}"}"#;
 
-/// 【实测】A bundle created under `anthropic`, resumed under `openresponses` (what `resume -M` does): the
-/// anthropic blob is dropped on load and text / tool calls / reasoning text survive; the records the
-/// resumed writer appends are tagged `openresponses`; `meta.provider` is NOT moved and keeps saying
-/// `anthropic`. The log is per-record tagged already — each type restores exactly its own records — so the
-/// on-disk format needs nothing for a mixed-dialect session; only `meta.provider` is a lie about it.
+/// A bundle created under `anthropic`, resumed under `openresponses` (what `resume -M` does): the anthropic
+/// blob is dropped on load — and SAID to be ([`Session::foreign_notice`]) — while text / tool calls /
+/// reasoning text survive; the records the moved writer appends are tagged `openresponses`, and the meta
+/// names the provider and the model the session now runs on. The log is per-record tagged, so each type
+/// restores exactly its own records.
 #[test]
-fn a_bundle_resumed_under_another_type_holds_both_dialects_while_meta_names_one() {
+fn a_bundle_that_moves_holds_both_dialects_and_its_meta_follows() {
     let (_home, store) = temp_store();
     let mut w = store
         .create(NewSession::new(ProviderKind::Anthropic, "claude-x"))
@@ -71,7 +85,19 @@ fn a_bundle_resumed_under_another_type_holds_both_dialects_while_meta_names_one(
         "the reasoning text is kept"
     );
     assert_eq!(resumed.meta.provider, "anthropic");
-    assert_eq!(resumed.meta.model, "claude-x");
+    assert_eq!(resumed.foreign, ["anthropic"]);
+    assert_eq!(
+        resumed
+            .foreign_notice(ProviderKind::OpenResponses)
+            .as_deref(),
+        Some(
+            "1 earlier reply carries anthropic-specific payload (reasoning, provider-side tool state) that openresponses does not replay; the model sees their text and tool calls only."
+        )
+    );
+    w2.move_to(&moved(ProviderKind::OpenResponses, "resp", "gpt-x"))
+        .unwrap();
+    assert_eq!(SessionMeta::read(w2.dir()).unwrap().provider, "resp");
+    assert_eq!(SessionMeta::read(w2.dir()).unwrap().model, "gpt-x");
 
     let c2 = call("call_2");
     w2.append_messages(&[
@@ -99,33 +125,32 @@ fn a_bundle_resumed_under_another_type_holds_both_dialects_while_meta_names_one(
         "{}",
         lines[5]
     );
-    assert_eq!(
-        w2.meta().provider,
-        "anthropic",
-        "the writer appended under openresponses and left meta.provider alone"
-    );
-    assert_eq!(SessionMeta::read(&dir).unwrap().provider, "anthropic");
+    assert_eq!(SessionMeta::read(&dir).unwrap().provider, "resp");
     drop(w2);
 
     let under_a = store.load(&id, ProviderKind::Anthropic).unwrap();
     assert!(under_a.messages[1].raw_content().is_some());
     assert!(under_a.messages[5].raw_content().is_none());
+    assert_eq!(under_a.foreign, ["openresponses"]);
     let under_r = store.load(&id, ProviderKind::OpenResponses).unwrap();
     assert!(under_r.messages[1].raw_content().is_none());
     assert!(under_r.messages[5].raw_content().is_some());
+    assert_eq!(under_r.foreign, ["anthropic"]);
 }
 
-/// 【实测】The failure an in-memory provider switch would cause if the live writer were NOT rebuilt: a
-/// writer whose `kind` is `anthropic` is handed the responses dialect's payload and writes the record
-/// WITHOUT it — no error, no warning — so a later resume under `openresponses` has no reasoning item to
-/// replay. This is `SessionWriter.kind`, identity point 3 of the evaluation, measured.
+/// A writer encodes the payloads of ITS type only: one created under `anthropic` and handed the responses
+/// dialect's payload would write the record without it. A chat that moves therefore moves its writer
+/// ([`SessionWriter::move_to`]) — and the payload the new dialect produces reaches the disk, tagged with it,
+/// for a later resume under that type to replay. Identity point 3 of the evaluation.
 #[test]
-fn a_writer_of_one_type_silently_drops_the_other_dialects_payload() {
+fn a_moved_writer_keeps_the_new_dialects_payload() {
     let (_home, store) = temp_store();
     let mut w = store
         .create(NewSession::new(ProviderKind::Anthropic, "claude-x"))
         .unwrap();
     let id = w.id().to_owned();
+    w.move_to(&moved(ProviderKind::OpenResponses, "resp", "gpt-x"))
+        .unwrap();
     let c = call("call_1");
     w.append_messages(&[
         Message::user("q"),
@@ -143,21 +168,22 @@ fn a_writer_of_one_type_silently_drops_the_other_dialects_payload() {
     drop(w);
     let lines = log_lines(&dir);
     assert!(
-        !lines[1].contains("raw"),
-        "the payload never reached the disk: {}",
+        lines[1].contains(r#""raw":{"provider":"openresponses","#),
+        "the payload reached the disk under its own tag: {}",
         lines[1]
     );
+    assert_eq!(SessionMeta::read(&dir).unwrap().provider, "resp");
     let under_r = store.load(&id, ProviderKind::OpenResponses).unwrap();
-    assert_eq!(under_r.messages[1].raw_content(), None);
-    assert_eq!(under_r.messages[1].tool_calls().len(), 1);
+    assert!(under_r.messages[1].raw_content().is_some());
+    assert!(under_r.foreign.is_empty());
 }
 
-/// 【实测】The resume gate: a bundle recorded under `anthropic` resumed on an `openresponses` provider
-/// replays NOTHING — not the model, not the effort, not the temperature, not the window — and emits no
-/// warning while doing so. The consistency debt the two earlier investigations named, pinned.
+/// The resume gate: a bundle recorded on `anthropic` resumed on another provider (`-M`) replays NOTHING — not
+/// the model, not the effort, not the temperature, not the window — and SAYS so, naming both.
 #[test]
-fn a_resume_under_another_type_replays_nothing_and_says_nothing() {
+fn a_resume_on_another_provider_replays_nothing_and_says_so() {
     let meta = SessionMeta {
+        version: SESSION_SCHEMA_VERSION,
         provider: "anthropic".to_owned(),
         model: "claude-x".to_owned(),
         effort: "high".to_owned(),
@@ -170,27 +196,28 @@ fn a_resume_under_another_type_replays_nothing_and_says_nothing() {
         .with_model("gpt-x")
         .tunable();
     let mut warnings = Vec::new();
-    let window = replay_session_settings(
-        &meta,
-        &mut p,
-        ProviderKind::OpenResponses,
-        &Overrides::default(),
-        &mut |w| warnings.push(w),
-    );
+    let window = replay_session_settings(&meta, &mut p, "resp", &Overrides::default(), &mut |w| {
+        warnings.push(w);
+    });
     assert_eq!(window, None);
     assert_eq!(p.model(), "gpt-x");
     let t = p.as_tunable().expect("tunable");
     assert_eq!(t.effort(), None);
     assert_eq!(t.temperature(), None);
-    assert!(warnings.is_empty(), "nothing told the user: {warnings:?}");
+    assert_eq!(
+        warnings,
+        [
+            "Warning: session was recorded on anthropic:claude-x; this run is on resp:gpt-x — its model and tuning are not replayed"
+        ]
+    );
 }
 
-/// 【实测】`ParamLayers` resolves a model id on the STARTUP provider only (identity point 6): after a
-/// switch to `resp`, picking `shared-id` would land the ANTHROPIC entry's knobs on the responses model, and
-/// an id that exists only on `resp` declares nothing at all — its `context_window: 1m` never lands. The
-/// layers must move with the provider, or the switch applies the wrong declarations silently.
+/// `ParamLayers` resolves a model id on the provider it was built for (identity point 6): layers built for
+/// `anth` would land the ANTHROPIC entry's knobs on `resp:shared-id`, and declare nothing for an id only
+/// `resp` serves. So a move builds them again for the run moved to the new provider — as `-M resp:…` would
+/// have resolved it — and they answer for `resp`.
 #[test]
-fn the_layers_look_a_model_id_up_on_the_startup_provider_only() {
+fn layers_built_for_a_moved_run_look_ids_up_on_the_new_provider() {
     const YAML: &str = r"
 providers:
   anth: {type: anthropic, key: k}
@@ -207,19 +234,22 @@ agents:
             panic!("unexpected config warning: {w}")
         })
         .expect("the config loads");
-    let resolved = cfg.resolve_agent("default").expect("the agent resolves");
+    let mut resolved = cfg.resolve_agent("default").expect("the agent resolves");
     assert_eq!(resolved.provider_name, "anth");
-    let layers = iota::cmd::ParamLayers::new(&cfg, &resolved);
-
-    let d = layers.declared("shared-id", |_| Some(1));
+    let startup = iota::cmd::ParamLayers::new(&cfg, &resolved);
     assert_eq!(
-        d.effort.as_deref(),
+        startup.declared("shared-id", |_| Some(1)).effort.as_deref(),
         Some("low"),
-        "the anthropic entry answers for an id the user would pick on resp"
+        "built for anth, the anthropic entry answers"
     );
+
+    resolved.move_to_provider(&cfg, "resp");
+    let layers = iota::cmd::ParamLayers::new(&cfg, &resolved);
+    let d = layers.declared("shared-id", |_| Some(1));
+    assert_eq!(d.effort.as_deref(), Some("high"), "the resp entry answers");
     assert_eq!(
         layers.model_of("shared-id").map(|m| m.provider.as_str()),
-        Some("anth")
+        Some("resp")
     );
 
     let mut asked = false;
@@ -227,10 +257,57 @@ agents:
         asked = true;
         Some(1_000_000)
     });
-    assert_eq!(d.context_window, None);
+    assert!(asked, "the responses-only id's window is declared");
+    assert_eq!(d.context_window, Some(1_000_000));
+    assert!(layers.model_of("only-on-resp").is_some());
+}
+
+/// `SessionWriter::move_to` is ONE write: on an existing bundle whose meta cannot be written it fails and the
+/// writer is exactly what it was — the meta in memory, and the type the next payload is tagged with — and once
+/// the write goes through, the bundle is v2 and says everything the move carries.
+#[test]
+fn a_move_is_written_whole_or_not_at_all() {
+    let (_home, store) = temp_store();
+    let mut w = store
+        .create(NewSession::new(ProviderKind::Anthropic, "claude-x"))
+        .unwrap();
+    w.append_messages(&[Message::user("q")]).unwrap();
+    let dir = w.dir().to_path_buf();
+    let before = w.meta().clone();
+
+    std::fs::create_dir(dir.join(iota::session::META_TMP_FILE)).unwrap();
+    let mut to = moved(ProviderKind::OpenResponses, "resp", "gpt-x");
+    to.params.temperature = iota::session::Param::config(Some(0.2));
+    assert!(w.move_to(&to).is_err());
+    assert_eq!(*w.meta(), before, "nothing changed in memory");
+    let c = call("call_1");
+    w.append_messages(&[Message::assistant_with_calls(
+        "",
+        vec![c],
+        Some(RawContent::OpenResponses(vec![
+            raw(REASONING),
+            raw(FUNCTION_CALL),
+        ])),
+    )])
+    .unwrap_or_else(|e| {
+        assert!(
+            matches!(e, iota::session::SessionError::MetaNotSaved(_)),
+            "{e}"
+        );
+    });
     assert!(
-        !asked,
-        "no window declaration was found for the responses-only id"
+        !log_lines(&dir)[1].contains("raw"),
+        "the writer still encodes for anthropic"
     );
-    assert!(layers.model_of("only-on-resp").is_none());
+
+    std::fs::remove_dir(dir.join(iota::session::META_TMP_FILE)).unwrap();
+    w.move_to(&to).unwrap();
+    let meta = SessionMeta::read(&dir).unwrap();
+    assert_eq!(meta.version, SESSION_SCHEMA_VERSION);
+    assert_eq!(
+        (meta.provider.as_str(), meta.model.as_str()),
+        ("resp", "gpt-x")
+    );
+    assert_eq!(meta.temperature, Some(0.2));
+    assert!(meta.param_sources.is_some());
 }

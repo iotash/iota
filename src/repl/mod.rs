@@ -28,7 +28,9 @@ pub(crate) mod turn;
 
 pub use catalog::ModelCatalog;
 
-pub use run::{McpEvent, McpHooks, RunParams, SessionCtx, SessionFactory, run};
+pub use run::{
+    Endpoint, EndpointFactory, McpEvent, McpHooks, RunParams, SessionCtx, SessionFactory, run,
+};
 pub(crate) use turn::interact::Interactor;
 
 // Loop internals the command layer reads.

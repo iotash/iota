@@ -533,8 +533,10 @@ agents:
       carries it verbatim, the real cursor sits two columns past the field's start. The
       preedit itself is the IME's — a look.)*
 - [ ] **8b.10 A row from another provider.** Pick a `relay:…` row while the session runs on
-      `openai`: one line must say the session keeps its endpoint and name the `iota run … -M
-      relay:…` that starts one there — and the model must NOT change.
+      `openai`. Before the first reply: `Model switched to … on relay`, the status row shows the new
+      model and the next message goes to the relay. After a reply: one line must say a session moves
+      only before its first reply and name the `iota run … -M relay:…` that starts one there — and
+      the model must NOT change.
 
 ## 8c. `NO_COLOR`
 

@@ -122,6 +122,7 @@ impl Fixture {
             },
             layers: iota::cmd::ParamLayers::default(),
             catalog: iota::repl::ModelCatalog::default(),
+            endpoints: None,
             agent: iota::headless::AgentOptions::default(),
             dark_background: true,
             root_cancel: CancellationToken::new(),

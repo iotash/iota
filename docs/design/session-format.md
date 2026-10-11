@@ -61,19 +61,34 @@ A session is a **directory** on disk:
 
 ```jsonc
 {
-  "v": 1,                                       // schema version
+  "v": 2,                                       // schema version (2: `provider` is a name; see below)
   "id": "01JZ8QK3V9XYZABCDEFGHJKMNP",          // ULID
   "created_at": "2026-05-31T15:30:12+08:00",   // RFC3339
   "updated_at": "2026-05-31T15:42:08+08:00",
-  "provider": "vertexai",          // provider type tag, used to match RawContent
-  "model": "gemini-2.5-pro",       // last-used model (/model updates it)
+  "provider": "vertex",            // the provider NAME (a `providers:` entry, or a built-in type name)
+  "model": "gemini-2.5-pro",       // the model on it (/model updates it)
   "temperature": 0.7,              // optional
-  "base_url": "",                  // optional; non-secret, helps reconstruct the provider
   "title": "Refactor the JSON parser in Go"  // primary human-readable list label, auto-generated (§4.4)
 }
 ```
 
-> Security: `meta.json` **never** stores an API key. `base_url` is usually non-secret; if a user embeds credentials in the URL that's on them (redaction can be added later).
+> Security: `meta.json` **never** stores an API key — nor a URL: the session's identity is (provider name, model,
+> parameters), and the endpoint's type, URL and key are read from the config under that name when the session is
+> resumed (decisions of 2026-10-10/11).
+>
+> **v2** (`SESSION_SCHEMA_VERSION = 2`, 2026-10-11): `provider` is the provider NAME — a `providers:` entry, or a
+> built-in type name for an endpoint no entry declares. It follows the session when it moves (`-M` on a resume,
+> `/model` before the first reply), and a move rewrites it together with `model`, the four layered parameters and
+> their sources and the image settings in ONE write (`SessionWriter::move_to`) — the move is the third evaluating
+> moment of the parameter layering. A resume runs on the named provider (unless `-M` names another); a name the
+> config does not define is an error, never a fall back. Which dialect produced each record is the record's own
+> `raw.provider` tag (§5).
+>
+> **v1** (Go, and every Rust build before v2): `provider` is the provider TYPE, and `base_url` was recorded. A v1
+> bundle is read as such: it resumes on the agent's endpoint, replays its model and tuning only on an endpoint of
+> that type (a warning otherwise), and the first run on it settles it as v2 under the name it actually ran on —
+> when the type matched, or where `-M` moved it; its `base_url` goes with v1. The version is the only thing that
+> tells the two apart: the same `provider: anthropic` means a type in v1 and a name in v2.
 
 ### 4.2 `messages.jsonl` (one line each)
 
@@ -232,8 +247,8 @@ For switching/resuming mid-conversation. `/session` opens a tabbed ui surface wi
 
 ### 8.3 Shared rules
 
-- The bound provider is decided by the `iota <provider>` subcommand; resume **continues under the current provider** and does not rebuild from the session's origin provider (there's no key to rebuild with anyway).
-- If the loaded session's `meta.provider == the current provider.Type()` → `RawContent` is restored; otherwise `raw` is dropped per §5.
+- *(Superseded 2026-10-10/11.)* A v2 resume runs on the provider `meta.provider` names, built from the config as `-M <provider>:<model>` would build it, unless `-M` chose another; a name the config does not define is an error, never a fall back to another endpoint. The meta is read BEFORE any provider is opened (DIVERGENCES X-67). Its model and tuning replay only on that same provider — on another one (`-M`) nothing replays, a warning says so, and the session migrates (X-66). A v1 resume keeps the rule above it (§4.1).
+- Each record's `raw` is restored when its own `raw.provider` tag equals the loading type; one that is dropped is counted, and the resume says how many earlier replies' reasoning the model does not see.
 
 ## 9. Decoupling from context budgeting / compaction (important property)
 

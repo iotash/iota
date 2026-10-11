@@ -119,7 +119,7 @@ impl Declared {
     /// file on disk did.
     ///
     /// `replayed` is the caller's answer to "did this bundle's tuning actually apply?" — a bundle recorded
-    /// under another provider type replays NOTHING (`apply_session_tuning`'s own gate), so it has recorded
+    /// on another provider replays NOTHING (`apply_session_tuning`'s own gate), so it has recorded
     /// nothing for this run either.
     pub fn resume(&self, meta: &SessionMeta, replayed: bool) -> LayeredParams {
         let evaluated = self.evaluate(&LayeredParams::default());
@@ -205,9 +205,8 @@ fn first_non_empty(a: &str, b: &str) -> Option<String> {
 /// What a `/model` switch evaluates against: the running agent's declarations, and every `models:` entry,
 /// so the model the user just picked can be looked up by the `provider:id` pair it names.
 ///
-/// A chat holds one of these for its whole life. The provider cannot change inside a session (`/model`
-/// offers the models of the endpoint the run started on), so the provider name is fixed here too and a
-/// lookup is by model id alone.
+/// One of these describes ONE endpoint: a lookup is by model id alone, relative to the provider it was built
+/// for. A chat that moves to another endpoint is handed a new one built for it (`crate::repl::Endpoint`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParamLayers {
     /// The `agents:` entry driving the chat: tier 1 of the rule.
@@ -256,6 +255,17 @@ impl ParamLayers {
             provider: resolved.provider_name.clone(),
             models,
             defer_mode: resolved.model.defer_mode(),
+        }
+    }
+
+    /// These layers with the `defer_mode` of `running` — the layers of the endpoint a chat is moving FROM. A
+    /// move rebuilds the provider but keeps the dispatcher, so the mode it was assembled with comes along; the
+    /// target model's own declaration is what [`Self::defer_mode_drift`] then reports as not handed over.
+    #[must_use]
+    pub fn keeping_defer_mode(self, running: &ParamLayers) -> Self {
+        Self {
+            defer_mode: running.defer_mode,
+            ..self
         }
     }
 
@@ -498,7 +508,7 @@ mod tests {
     }
 
     /// A bundle whose tuning does not apply to this run recorded nothing FOR it: the replay is gated on the
-    /// provider type, and the parameters follow the same gate. Likewise an effort spelling this build cannot
+    /// provider, and the parameters follow the same gate. Likewise an effort spelling this build cannot
     /// parse — the replay never applied it, so the session is not running under it.
     #[test]
     fn a_bundle_that_does_not_replay_records_nothing() {

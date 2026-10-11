@@ -536,12 +536,15 @@ finish() {
 
 # ---------------------------------------------------------------- session fixtures
 
-# write_session <id> <rounds> <tail_body_lines> — synthesises a session bundle in
+# write_session <id> <rounds> <tail_body_lines> [v1] — synthesises a session bundle in
 # $SCEN_HOME/.iota/sessions/<id> (chat/session.go bundle layout: meta.json +
-# messages.jsonl). The LAST three rounds — the resume echo window, `RESUME_ECHO_ROUNDS` —
+# messages.jsonl). By default a v2 bundle on the `mock` provider the pane's config defines (a v2 meta
+# names its provider; the endpoint's URL is the config's). With `v1`, the shape every build before v2
+# wrote: the provider TYPE (`openai`, the type of `mock`) and a `base_url` — read by type, resumed on
+# the agent's endpoint, and settled as v2 under the name it runs on. The LAST three rounds — the resume echo window, `RESUME_ECHO_ROUNDS` —
 # carry `tail_body_lines` body lines each so the echo overflows the screen.
 write_session() {
-    local id="$1" rounds="$2" tail_lines="$3"
+    local id="$1" rounds="$2" tail_lines="$3" shape="${4:-v2}"
     local dir="$SCEN_HOME/.iota/sessions/$id"
     mkdir -p "$dir"
     local now
@@ -564,7 +567,8 @@ write_session() {
         fi
         n=$((n + 1))
     done
-    cat >"$dir/meta.json" <<EOF
+    if [ "$shape" = v1 ]; then
+        cat >"$dir/meta.json" <<EOF
 {
   "v": 1,
   "id": "$id",
@@ -574,6 +578,22 @@ write_session() {
   "model": "fake",
   "context_window": 128000,
   "base_url": "http://127.0.0.1:$IOTA_PORT",
+  "cwd": "$SCEN_TMP",
+  "title": "resume fixture",
+  "message_count": $((rounds * 2))
+}
+EOF
+        return
+    fi
+    cat >"$dir/meta.json" <<EOF
+{
+  "v": 2,
+  "id": "$id",
+  "created_at": "$now",
+  "updated_at": "$now",
+  "provider": "mock",
+  "model": "fake",
+  "context_window": 128000,
   "cwd": "$SCEN_TMP",
   "title": "resume fixture",
   "message_count": $((rounds * 2))
