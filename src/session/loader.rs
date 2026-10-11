@@ -111,6 +111,9 @@ pub struct LoadedLog {
     /// The `raw.provider` tag of every view message whose payload was dropped because it is not the loading
     /// type's — a session that moved between providers carries both dialects, and each load restores its own.
     pub foreign: Vec<String>,
+    /// A model has replied in this session: the log holds an assistant record — compacted away from the view
+    /// or not. The view cannot say it: a compaction may leave no assistant message in it.
+    pub replied: bool,
 }
 
 /// `scanRecords` (chat/session.go:813-837): line-oriented over `<dir>/messages.jsonl`, in append order.
@@ -314,6 +317,7 @@ pub fn load_log(dir: &Path, kind: ProviderKind) -> Result<LoadedLog, SessionErro
     let mut has_summary = false;
     let mut usage = Usage::default();
     let mut measured = None;
+    let mut replied = false;
 
     scan_records(dir, &mut |rec| {
         if let Some(u) = rec.usage {
@@ -345,6 +349,7 @@ pub fn load_log(dir: &Path, kind: ProviderKind) -> Result<LoadedLog, SessionErro
         if let Some(u) = msg.usage() {
             measured = Some(u);
         }
+        replied |= msg.role() == Role::Assistant;
         foreign.push(
             rec.raw
                 .filter(|raw| raw.provider != kind.as_str())
@@ -384,6 +389,7 @@ pub fn load_log(dir: &Path, kind: ProviderKind) -> Result<LoadedLog, SessionErro
         usage,
         measured,
         foreign,
+        replied,
     })
 }
 

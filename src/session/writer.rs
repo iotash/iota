@@ -72,6 +72,8 @@ pub struct SessionWriter {
     usage: Usage,
     /// A resumed log's last measurement ([`crate::session::LoadedLog::measured`]); `None` for a fresh session.
     measured: Option<Usage>,
+    /// The log holds an assistant record ([`crate::session::LoadedLog::replied`]), kept as records are appended.
+    replied: bool,
     /// The bundle's single-writer lock (`<dir>/.lock`), taken when the writer first holds the files and
     /// released when it drops — `None` while the bundle is still pending.
     lock: Option<HeldLock>,
@@ -122,6 +124,7 @@ impl SessionWriter {
             created: false,
             usage: Usage::default(),
             measured: None,
+            replied: false,
             lock: None,
             bot_lock: None,
             #[cfg(feature = "testing")]
@@ -142,7 +145,8 @@ impl SessionWriter {
         log: &crate::session::LoadedLog,
         lock: HeldLock,
     ) -> Self {
-        let (conv_count, usage, measured) = (log.conv_count, log.usage, log.measured);
+        let (conv_count, usage, measured, replied) =
+            (log.conv_count, log.usage, log.measured, log.replied);
         Self {
             dir,
             meta,
@@ -152,6 +156,7 @@ impl SessionWriter {
             created: true,
             usage,
             measured,
+            replied,
             lock: Some(lock),
             bot_lock: None,
             #[cfg(feature = "testing")]
@@ -200,6 +205,12 @@ impl SessionWriter {
     /// answered since the last compaction.
     pub fn measured(&self) -> Option<Usage> {
         self.measured
+    }
+
+    /// Whether a model has replied in this session: the log holds an assistant record, compacted away from the
+    /// view or not — the fact a chat's view cannot give once a compaction has left no assistant message in it.
+    pub fn replied(&self) -> bool {
+        self.replied
     }
 
     /// Whether the bundle exists on disk yet (chat/session.go:477-479).
@@ -252,7 +263,7 @@ impl SessionWriter {
         }
         self.ensure_created()?;
         let start = self.log_start()?;
-        let (mut count, mut conv, mut usage) = (0, 0, Usage::default());
+        let (mut count, mut conv, mut usage, mut replied) = (0, 0, Usage::default(), false);
         let written: Result<(), SessionError> = (|| {
             for msg in msgs {
                 let rec = to_record(&self.dir, self.kind, msg)?;
@@ -261,6 +272,7 @@ impl SessionWriter {
                 if msg.role() != Role::System {
                     conv += 1;
                 }
+                replied |= msg.role() == Role::Assistant;
                 if let Some(u) = msg.usage() {
                     usage += u; // keep usage() == what the log sums to
                 }
@@ -271,6 +283,7 @@ impl SessionWriter {
         self.meta.message_count += count;
         self.conv_count += conv;
         self.usage += usage;
+        self.replied |= replied;
         self.write_meta_after_log()
     }
 

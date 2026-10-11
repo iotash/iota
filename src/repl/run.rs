@@ -327,6 +327,13 @@ fn join_overlay(agent: String, memory: String) -> String {
     }
 }
 
+/// Whether `history` holds a model's reply.
+pub(crate) fn has_reply(history: &[Message]) -> bool {
+    history
+        .iter()
+        .any(|m| m.role() == crate::provider::model::Role::Assistant)
+}
+
 /// The completion table's view of the discovered skills (completion.go:63-73).
 fn skill_entries(skills: &[Skill]) -> Vec<SkillEntry> {
     skills
@@ -429,6 +436,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         vec![Message::system(system)]
     };
     let persisted = if resumed { history.len() } else { 0 };
+    let replied = has_reply(&history) || writer.as_ref().is_some_and(SessionWriter::replied);
     // The harness, now that the hosts it names in `<environment>` are known; the day it was composed on is
     // what the first send of the next one compares against.
     let harness_day = harness.today();
@@ -584,6 +592,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             provider,
             dispatch: Arc::clone(&dispatch),
             history,
+            replied,
             pending: Vec::new(),
             budget,
             ctxm,
@@ -1000,6 +1009,9 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 landed = true;
             }
         }
+        // A reply that landed — whole, kept after an interrupt or a stall — makes this a session a model has
+        // replied in, whatever a later compaction leaves in the view.
+        repl.conv.replied |= has_reply(&repl.conv.history);
         // Whatever became of the turn, a memory write it made is on disk: it is recorded now.
         let memory_writes = repl.record_memory_writes();
         after_bot_turn(&mut repl, flush, landed, memory_writes, held).await;

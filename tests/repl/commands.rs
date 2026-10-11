@@ -1012,10 +1012,13 @@ async fn session_resumes_a_bundle_on_its_own_provider() {
         iota::repl::run(params).await.expect("exit");
 
         let lines = printed(&f.ui);
-        assert_eq!(
-            *built.asked.lock().unwrap(),
-            [format!("{provider_name}:vendor/y")]
-        );
+        // A provider the config does not define is refused before any endpoint is built.
+        let asked: &[String] = if moved {
+            &[format!("{provider_name}:vendor/y")]
+        } else {
+            &[]
+        };
+        assert_eq!(*built.asked.lock().unwrap(), asked);
         let resumed = lines
             .iter()
             .any(|l| l.starts_with(&format!("Resumed session {other_id}")));
@@ -1025,12 +1028,119 @@ async fn session_resumes_a_bundle_on_its_own_provider() {
             assert_eq!(built.main.records()[0].model, "vendor/y");
         } else {
             assert!(
-                lines.contains(&"Error: provider \"gone\" is not defined in the config".to_owned()),
+                lines.contains(&format!(
+                    "Error: session {other_id} runs on provider \"gone\", which the config does not define; \
+                     resume it elsewhere with: iota resume {other_id} -M <provider>:<model>"
+                )),
                 "{lines:?}"
             );
             assert_eq!(old_log.calls(), 1, "the chat stayed where it was");
         }
     }
+}
+
+/// `/session` onto a bundle whose provider is another KIND of model than the chat was started for: nothing is
+/// swapped, and the way out named is resuming THAT bundle in a new run — not starting a new session.
+#[tokio::test]
+async fn session_onto_another_kind_of_model_points_at_resume() {
+    let f = Fixture::new(vec![
+        input("/session"),
+        Reply::Tabbed(TabbedResult {
+            cancelled: false,
+            focused: 0,
+            panels: vec![PanelResult::default(), PanelResult::default()],
+        }),
+        Reply::Interrupted,
+    ]);
+    let mut other = f
+        .store
+        .create(NewSession {
+            provider: "relay".to_owned(),
+            ..NewSession::new(ProviderKind::OpenResponses, "vendor/y")
+        })
+        .unwrap();
+    other
+        .append_messages(&[Message::user("older"), Message::assistant("answer")])
+        .unwrap();
+    let other_id = other.id().to_owned();
+    drop(other);
+    // The chat counts no tokens; the relay's endpoint does.
+    let mut params = f.params_with_catalog(
+        provider("a-model", Ok(vec![])),
+        f.session(None),
+        TWO_ENDPOINTS,
+    );
+    params.endpoints = Some(relay_endpoints(TWO_ENDPOINTS, &Built::default()));
+    iota::repl::run(params).await.expect("exit");
+    let lines = printed(&f.ui);
+    assert!(
+        lines.iter().any(|l| l
+            .starts_with("relay:vendor/y runs on another provider; it is another kind of model")
+            && l.ends_with(&format!(
+                "Nothing was switched. It resumes there in a new run: iota resume {other_id}"
+            ))),
+        "{lines:?}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.starts_with(&format!("Resumed session {other_id}"))),
+        "{lines:?}"
+    );
+}
+
+/// "Before the first reply" is a fact of the SESSION, not of the view: a resumed bundle whose compaction left
+/// no assistant message in the view has still been replied in — its log says so — and is refused like any
+/// other (codex review F6).
+#[tokio::test]
+async fn a_compacted_session_is_not_a_new_one() {
+    let f = Fixture::new(vec![
+        input("/model"),
+        commit(PanelResult {
+            cursor: 1,
+            ..PanelResult::default()
+        }),
+        Reply::Interrupted,
+    ]);
+    let mut w = f.writer();
+    w.append_messages(&[
+        Message::user("first"),
+        Message::assistant("an answer"),
+        Message::user("second"),
+    ])
+    .unwrap();
+    // A compaction that retains only the last user message: the view is the summary and that message.
+    w.append_compaction("we talked", 1, None, false).unwrap();
+    let id = w.id().to_owned();
+    drop(w);
+    let (writer, session) = f.store.resume(&id, ProviderKind::OpenAi).unwrap();
+    assert!(
+        !session
+            .messages
+            .iter()
+            .any(|m| m.role() == iota::provider::model::Role::Assistant),
+        "the view shows no reply"
+    );
+    let built = Built::default();
+    let mut params = f.params_with_catalog(
+        provider("a-model", Ok(vec![])).reporting_usage(),
+        f.session(Some(writer)),
+        TWO_ENDPOINTS,
+    );
+    params.imported_history = session.messages;
+    params.endpoints = Some(relay_endpoints(TWO_ENDPOINTS, &built));
+    iota::repl::run(params).await.expect("exit");
+    let lines = printed(&f.ui);
+    assert!(
+        lines.iter().any(|l| l.starts_with(
+            "relay:vendor/y runs on another provider; a session moves only before its first reply"
+        )),
+        "{lines:?}"
+    );
+    assert!(
+        built.asked.lock().unwrap().is_empty(),
+        "no endpoint was built"
+    );
 }
 
 /// An agent whose candidate set spans two endpoints; only `mock` is the one the session talks to.

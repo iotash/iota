@@ -37,6 +37,10 @@ pub(crate) struct Conversation {
     pub(crate) dispatch: Arc<dyn Dispatcher>,
     /// The conversation.
     pub(crate) history: Vec<Message>,
+    /// A model has replied in this session — a fact of the session, not of `history`: a compaction can leave
+    /// no assistant message in the view. Seeded from the bundle's log ([`SessionWriter::replied`]) and from an
+    /// imported history, raised after every turn that left one.
+    pub(crate) replied: bool,
     /// Attachments riding the next user message.
     pub(crate) pending: Vec<Attachment>,
     /// The context window (and, from WP53, its occupancy).

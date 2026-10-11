@@ -189,7 +189,18 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
         if !meta.names_provider() || meta.provider == repl.conv.catalog.session_provider() {
             None
         } else {
-            match super::model::open_endpoint(repl, &meta.provider, &meta.model) {
+            // `iota resume`'s refusal, with the session it names: a provider the config does not define is
+            // not fallen back from.
+            if !repl.conv.catalog.knows(&meta.provider) {
+                repl.handles.tr.error(&format!(
+                    "Error: session {id} runs on provider {:?}, which the config does not define; \
+                     resume it elsewhere with: iota resume {id} -M <provider>:<model>",
+                    meta.provider
+                ));
+                return;
+            }
+            let next = format!("It resumes there in a new run: iota resume {id}");
+            match super::model::open_endpoint(repl, &meta.provider, &meta.model, &next) {
                 Some(ep) => Some(ep),
                 None => return,
             }
@@ -210,6 +221,7 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
     // sw.Close()). The resumed bundle brings its own name, settled under the title lock
     // before the swap: a title pass for the session being left lands there or not at all.
     let usage = writer.usage();
+    repl.conv.replied = writer.replied();
     repl.session.titler.switch_writer(writer);
     repl.report_session();
     if let Some(ep) = endpoint {

@@ -177,6 +177,12 @@ impl ModelCatalog {
         &self.session
     }
 
+    /// Whether `provider` is a name the config knows — a `providers:` entry or a built-in type — as `-M` and a
+    /// resume read it.
+    pub(crate) fn knows(&self, provider: &str) -> bool {
+        self.known.iter().any(|k| k == provider)
+    }
+
     /// The `agents:` entry the chat runs (`""` when it names none).
     pub(crate) fn agent(&self) -> &str {
         &self.agent
@@ -198,7 +204,7 @@ impl ModelCatalog {
         if let Some((provider, id)) = text.split_once(':')
             && !id.is_empty()
             && id != "*"
-            && self.known.iter().any(|k| k == provider)
+            && self.knows(provider)
         {
             return Candidate {
                 provider: provider.to_owned(),

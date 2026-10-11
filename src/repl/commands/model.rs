@@ -145,15 +145,18 @@ fn commit(provider: &mut dyn Provider, writer: &WriterSlot, name: &str) {
     }
 }
 
-/// Reports a candidate this chat cannot move to — `why` says what keeps it — with the command that would start a
-/// NEW session there instead.
-fn start_there(repl: &Repl, provider: &str, id: &str, why: &str) {
+/// Reports a candidate this chat cannot move to — `why` says what keeps it, `next` what the user can run instead.
+fn refuse(repl: &Repl, provider: &str, id: &str, why: &str, next: &str) {
+    repl.handles.tr.notice(&format!(
+        "{provider}:{id} runs on another provider; {why}. Nothing was switched. {next}"
+    ));
+}
+
+/// What a `/model` pick the chat cannot take leaves the user: a NEW session on that endpoint.
+fn new_session_there(repl: &Repl, provider: &str, id: &str) -> String {
     let agent = repl.conv.catalog.agent();
     let agent = if agent.is_empty() { "<agent>" } else { agent };
-    repl.handles.tr.notice(&format!(
-        "{provider}:{id} runs on another provider; {why}. Nothing was switched. \
-         A NEW session starts there with: iota run {agent} -M {provider}:{id}"
-    ));
+    format!("A NEW session starts there with: iota run {agent} -M {provider}:{id}")
 }
 
 /// Moves a chat that has no reply yet to `provider:id` — another endpoint — and returns the parameters the
@@ -174,24 +177,21 @@ pub(crate) fn move_to(
     provider: &str,
     id: &str,
 ) -> Option<crate::session::LayeredParams> {
-    use crate::provider::model::Role;
-    if repl
-        .conv
-        .history
-        .iter()
-        .any(|m| m.role() == Role::Assistant)
-    {
+    // A fact of the session, not a scan of the view: a compacted or resumed history may show no reply.
+    if repl.conv.replied {
         // The history it would carry over holds that dialect's own payloads (signed thinking blocks, response
         // items), which another dialect does not replay.
-        start_there(
+        refuse(
             repl,
             provider,
             id,
             "a session moves only before its first reply (after it, its history is that dialect's)",
+            &new_session_there(repl, provider, id),
         );
         return None;
     }
-    let mut ep = open_endpoint(repl, provider, id)?;
+    let next = new_session_there(repl, provider, id);
+    let mut ep = open_endpoint(repl, provider, id, &next)?;
     let running = crate::repl::liveparams::current(repl);
     crate::repl::liveparams::carry(&mut *ep.provider, &running);
     let next = crate::repl::liveparams::reevaluate(repl, &ep.layers, id, &running);
@@ -230,20 +230,22 @@ pub(crate) fn move_to(
 
 /// The endpoint `provider:id` names, ready to take the chat's place — or `None`, reported, with nothing
 /// changed: the chat never moves, the endpoint cannot be built (an unknown provider, a missing key), or it is
-/// another KIND of model. What a run settles at startup from its provider's kind — the token meter and
+/// another KIND of model — a refusal ends with `next`, what the user can run instead. What a run settles at startup from its provider's kind — the token meter and
 /// `/compact`, the image commands and the retry policy — is not rebuilt, so a move keeps it; nor is the
 /// dispatcher, so the target's layers keep the `defer_mode` it was assembled with.
 pub(crate) fn open_endpoint(
     repl: &mut Repl,
     provider: &str,
     id: &str,
+    next: &str,
 ) -> Option<crate::repl::Endpoint> {
     let Some(factory) = repl.conv.endpoints.as_ref() else {
-        start_there(
+        refuse(
             repl,
             provider,
             id,
             "this chat keeps the endpoint it started on",
+            next,
         );
         return None;
     };
@@ -258,11 +260,12 @@ pub(crate) fn open_endpoint(
     if ep.provider.reports_usage() != repl.conv.provider.reports_usage()
         || ep.provider.as_image_gen_tunable().is_some() != repl.conv.image_provider
     {
-        start_there(
+        refuse(
             repl,
             provider,
             id,
             "it is another kind of model (token accounting, image generation) than this chat was started for",
+            next,
         );
         return None;
     }
