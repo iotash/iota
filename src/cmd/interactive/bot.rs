@@ -10,8 +10,8 @@ use std::path::Path;
 use crate::provider::Provider;
 use crate::provider::model::{Message, Role};
 use crate::session::{
-    BotOpen, NewSession, Overrides, SessionError, SessionStore, SessionWriter,
-    replay_session_settings,
+    BotOpen, ImageSettings, LayeredParams, Moved, NewSession, Overrides, SessionError,
+    SessionStore, SessionWriter, replay_session_settings,
 };
 
 /// The notice a config-edited system prompt leaves in the transcript.
@@ -123,24 +123,25 @@ fn elapsed(secs: i64) -> String {
 }
 
 /// Opens bot `name`'s session from `<bots>/<name>`. `fresh` describes the bundle a first launch creates;
-/// `system` is the config's (trimmed) system prompt. On a resume the session's own model and parameters
-/// are NOT replayed — the provider keeps what the config (or `-M`) gave it, and the meta is told the
-/// provider and the model it now runs on; the loop stamps the other four the same way it stamps a new bundle. The meta is also
+/// `dir` is the bot's directory under the bots home, `system` the config's (trimmed) system prompt and `params`
+/// the four layered parameters the config gives it. On a resume the session's own model and parameters
+/// are NOT replayed — the provider keeps what the config (or `-M`) gave it, and the meta is told, in one write,
+/// the provider, the model and the parameters it now runs on; the loop stamps the other four the same way it stamps a new bundle. The meta is also
 /// told the directory this run is in, so the next resume's [`resume_notices`] compare against the last
 /// run's, not the first one's.
 pub(crate) fn open_bot_session(
     store: &SessionStore,
-    bots: &Path,
-    name: &str,
+    dir: &Path,
     fresh: NewSession,
     system: &str,
     provider: &mut dyn Provider,
+    params: &LayeredParams,
     warn: &mut dyn FnMut(String),
 ) -> Result<BotSession, SessionError> {
     let kind = fresh.kind;
     let on = fresh.provider.clone();
     let cwd = fresh.cwd.clone();
-    match store.open_bot(&bots.join(name), fresh, kind)? {
+    match store.open_bot(dir, fresh, kind)? {
         BotOpen::Fresh(writer) => Ok(BotSession {
             writer,
             history: Vec::new(),
@@ -162,7 +163,14 @@ pub(crate) fn open_bot_session(
                 },
                 warn,
             );
-            writer.move_to(kind, &on, provider.model())?;
+            writer.move_to(&Moved {
+                kind,
+                provider: on,
+                model: provider.model().to_owned(),
+                params: params.clone(),
+                window: crate::cmd::window_of(provider, params),
+                image: ImageSettings::of(provider),
+            })?;
             writer.update_meta(|m| m.cwd = cwd)?;
             let repair_notice = session.repair_notice();
             // A bot whose config moved it to another provider type keeps the old type's payloads on disk only.
@@ -325,14 +333,14 @@ mod tests {
         let model = p.model().to_owned();
         open_bot_session(
             &h.store,
-            &h.bots,
-            "coder",
+            &h.bots.join("coder"),
             NewSession {
                 cwd: cwd.to_owned(),
                 ..fresh(ProviderKind::OpenAi, &model)
             },
             system,
             p,
+            &crate::session::LayeredParams::default(),
             &mut |w| panic!("unexpected warning: {w}"),
         )
     }

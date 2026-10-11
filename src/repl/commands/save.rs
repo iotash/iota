@@ -49,7 +49,7 @@ pub(crate) fn cmd_save(repl: &mut Repl, arg: &str) {
         if let Some(w) = slot.as_mut() {
             let _ = w.update_meta(|m| {
                 m.model = model;
-                crate::repl::liveparams::stamp(m, Some(window), &params);
+                m.stamp(Some(window), &params);
             });
         }
     }

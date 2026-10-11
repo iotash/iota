@@ -7,7 +7,10 @@
 use crate::common::{log_lines, temp_store};
 use iota::provider::model::{JsonObject, Message, Raw, RawContent, ToolCall};
 use iota::provider::{Provider, ProviderKind};
-use iota::session::{NewSession, Overrides, SessionMeta, replay_session_settings};
+use iota::session::{
+    ImageSettings, LayeredParams, Moved, NewSession, Overrides, SESSION_SCHEMA_VERSION,
+    SessionMeta, replay_session_settings,
+};
 use iota::testing::FakeProvider;
 use pretty_assertions::assert_eq;
 
@@ -20,6 +23,18 @@ fn call(id: &str) -> ToolCall {
         id: id.to_owned(),
         name: "f".to_owned(),
         arguments: JsonObject::new(),
+    }
+}
+
+/// A move to `provider:model` of type `kind`, with nothing else to record.
+fn moved(kind: ProviderKind, provider: &str, model: &str) -> Moved {
+    Moved {
+        kind,
+        provider: provider.to_owned(),
+        model: model.to_owned(),
+        params: LayeredParams::default(),
+        window: None,
+        image: ImageSettings::default(),
     }
 }
 
@@ -76,10 +91,10 @@ fn a_bundle_that_moves_holds_both_dialects_and_its_meta_follows() {
             .foreign_notice(ProviderKind::OpenResponses)
             .as_deref(),
         Some(
-            "1 earlier repl(ies) carry anthropic reasoning that openresponses does not replay; the model sees their text and tool calls only."
+            "1 earlier reply carries anthropic-specific payload (reasoning, provider-side tool state) that openresponses does not replay; the model sees their text and tool calls only."
         )
     );
-    w2.move_to(ProviderKind::OpenResponses, "resp", "gpt-x")
+    w2.move_to(&moved(ProviderKind::OpenResponses, "resp", "gpt-x"))
         .unwrap();
     assert_eq!(SessionMeta::read(w2.dir()).unwrap().provider, "resp");
     assert_eq!(SessionMeta::read(w2.dir()).unwrap().model, "gpt-x");
@@ -134,7 +149,7 @@ fn a_moved_writer_keeps_the_new_dialects_payload() {
         .create(NewSession::new(ProviderKind::Anthropic, "claude-x"))
         .unwrap();
     let id = w.id().to_owned();
-    w.move_to(ProviderKind::OpenResponses, "resp", "gpt-x")
+    w.move_to(&moved(ProviderKind::OpenResponses, "resp", "gpt-x"))
         .unwrap();
     let c = call("call_1");
     w.append_messages(&[
@@ -168,6 +183,7 @@ fn a_moved_writer_keeps_the_new_dialects_payload() {
 #[test]
 fn a_resume_on_another_provider_replays_nothing_and_says_so() {
     let meta = SessionMeta {
+        version: SESSION_SCHEMA_VERSION,
         provider: "anthropic".to_owned(),
         model: "claude-x".to_owned(),
         effort: "high".to_owned(),
@@ -244,4 +260,54 @@ agents:
     assert!(asked, "the responses-only id's window is declared");
     assert_eq!(d.context_window, Some(1_000_000));
     assert!(layers.model_of("only-on-resp").is_some());
+}
+
+/// `SessionWriter::move_to` is ONE write: on an existing bundle whose meta cannot be written it fails and the
+/// writer is exactly what it was — the meta in memory, and the type the next payload is tagged with — and once
+/// the write goes through, the bundle is v2 and says everything the move carries.
+#[test]
+fn a_move_is_written_whole_or_not_at_all() {
+    let (_home, store) = temp_store();
+    let mut w = store
+        .create(NewSession::new(ProviderKind::Anthropic, "claude-x"))
+        .unwrap();
+    w.append_messages(&[Message::user("q")]).unwrap();
+    let dir = w.dir().to_path_buf();
+    let before = w.meta().clone();
+
+    std::fs::create_dir(dir.join(iota::session::META_TMP_FILE)).unwrap();
+    let mut to = moved(ProviderKind::OpenResponses, "resp", "gpt-x");
+    to.params.temperature = iota::session::Param::config(Some(0.2));
+    assert!(w.move_to(&to).is_err());
+    assert_eq!(*w.meta(), before, "nothing changed in memory");
+    let c = call("call_1");
+    w.append_messages(&[Message::assistant_with_calls(
+        "",
+        vec![c],
+        Some(RawContent::OpenResponses(vec![
+            raw(REASONING),
+            raw(FUNCTION_CALL),
+        ])),
+    )])
+    .unwrap_or_else(|e| {
+        assert!(
+            matches!(e, iota::session::SessionError::MetaNotSaved(_)),
+            "{e}"
+        );
+    });
+    assert!(
+        !log_lines(&dir)[1].contains("raw"),
+        "the writer still encodes for anthropic"
+    );
+
+    std::fs::remove_dir(dir.join(iota::session::META_TMP_FILE)).unwrap();
+    w.move_to(&to).unwrap();
+    let meta = SessionMeta::read(&dir).unwrap();
+    assert_eq!(meta.version, SESSION_SCHEMA_VERSION);
+    assert_eq!(
+        (meta.provider.as_str(), meta.model.as_str()),
+        ("resp", "gpt-x")
+    );
+    assert_eq!(meta.temperature, Some(0.2));
+    assert!(meta.param_sources.is_some());
 }

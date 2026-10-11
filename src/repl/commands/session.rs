@@ -176,7 +176,8 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
         return;
     }
     // A session runs on the provider it records: one the chat is not on is built — and the swap refused,
-    // with nothing changed, when it cannot be — before the bundle is opened for its type.
+    // with nothing changed, when it cannot be — before the bundle is opened for its type. A v1 bundle
+    // recorded only a type, which names no endpoint: it runs where the chat is, as it always did.
     let meta = match repl.session.store.meta(&id) {
         Ok(meta) => meta,
         Err(e) => {
@@ -184,14 +185,15 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
             return;
         }
     };
-    let endpoint = if meta.provider == repl.conv.catalog.session_provider() {
-        None
-    } else {
-        match super::model::open_endpoint(repl, &meta.provider, &meta.model) {
-            Some(ep) => Some(ep),
-            None => return,
-        }
-    };
+    let endpoint =
+        if !meta.names_provider() || meta.provider == repl.conv.catalog.session_provider() {
+            None
+        } else {
+            match super::model::open_endpoint(repl, &meta.provider, &meta.model) {
+                Some(ep) => Some(ep),
+                None => return,
+            }
+        };
     let kind = endpoint
         .as_ref()
         .map_or_else(|| repl.conv.provider.kind(), |ep| ep.provider.kind());

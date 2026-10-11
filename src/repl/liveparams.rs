@@ -8,7 +8,7 @@
 //! where each of them came from. A second copy of the values would be a second thing to keep in step with a
 //! provider every tab in `/model` can already write to.
 
-use crate::provider::Effort;
+use crate::provider::{Effort, Provider};
 use crate::session::{LayeredParams, Param, ParamSources, SessionMeta};
 use crate::sync::lock;
 
@@ -18,9 +18,16 @@ use crate::repl::run::Repl;
 
 /// What the chat is running under right now, read from where each value actually lives.
 pub(crate) fn current(repl: &mut Repl) -> LayeredParams {
-    let sources = repl.conv.param_sources;
-    let window = repl.conv.budget.window();
-    let (effort, temperature) = repl.conv.provider.as_tunable().map_or_else(
+    read(
+        &mut *repl.conv.provider,
+        repl.conv.budget.window(),
+        repl.conv.param_sources,
+    )
+}
+
+/// What `provider` runs under, with the budget's `window`, each value tagged with where it came from.
+fn read(provider: &mut dyn Provider, window: u64, sources: ParamSources) -> LayeredParams {
+    let (effort, temperature) = provider.as_tunable().map_or_else(
         || (String::new(), None),
         |t| {
             (
@@ -29,11 +36,7 @@ pub(crate) fn current(repl: &mut Repl) -> LayeredParams {
             )
         },
     );
-    let top_p = repl
-        .conv
-        .provider
-        .as_top_p_tunable()
-        .and_then(|t| t.top_p());
+    let top_p = provider.as_top_p_tunable().and_then(|t| t.top_p());
     LayeredParams {
         context_window: Param {
             value: window,
@@ -77,7 +80,23 @@ pub(crate) fn carry(provider: &mut dyn crate::provider::Provider, running: &Laye
 /// A `context_window:` on the model being switched TO that does not parse is a warning here, not a failure:
 /// the chat is already running, and the honest answer to a bad value is to leave that key silent and say so.
 pub(crate) fn switch_model(repl: &mut Repl, id: &str) -> bool {
-    let declared = repl.conv.layers.declared(id, |decl| {
+    let running = current(repl);
+    let r: &Repl = repl;
+    let next = reevaluate(r, &r.conv.layers, id, &running);
+    apply(repl, &next)
+}
+
+/// The four parameters re-evaluated for `id` against `layers`, from what the session is `running` under: the
+/// evaluating half of [`switch_model`], warning about a declaration it cannot take and a `defer_mode` it cannot
+/// hand over. A move to another endpoint evaluates against THAT endpoint's layers before anything is
+/// installed, so what it writes into the bundle is what will land (`commands::model::move_to`).
+pub(crate) fn reevaluate(
+    repl: &Repl,
+    layers: &crate::config::ParamLayers,
+    id: &str,
+    running: &LayeredParams,
+) -> LayeredParams {
+    let declared = layers.declared(id, |decl| {
         match crate::config::window::parse_window_size(decl.raw) {
             Ok(window) => Some(window),
             Err(e) => {
@@ -114,15 +133,14 @@ pub(crate) fn switch_model(repl: &mut Repl, id: &str) -> bool {
     // The one thing a model declares that a switch canNOT hand over: the deferring wrapper was built around
     // the MCP dispatcher at startup and there is no rebuild seam, so the mode is announced instead of
     // silently ignored (brain page `config-three-layers`, 2026-09-09 — changing it means a new session).
-    if let Some((running, wanted)) = repl.conv.layers.defer_mode_drift(id) {
+    if let Some((kept, wanted)) = layers.defer_mode_drift(id) {
         repl.handles.tr.notice(&format!(
             "Note: {id} asks for defer_mode {:?}; this session keeps {:?} — deferred MCP tools are mounted once, at startup.",
             wanted.name(),
-            running.name(),
+            kept.name(),
         ));
     }
-    let next = declared.evaluate(&current(repl));
-    apply(repl, &next)
+    declared.evaluate(running)
 }
 
 /// Whether `v` is inside `[lo, hi]`, warning with `label` when it is not.
@@ -152,30 +170,8 @@ pub(crate) fn apply(repl: &mut Repl, next: &LayeredParams) -> bool {
     let counts_tokens = repl.conv.provider.reports_usage();
     let tunable = repl.conv.provider.as_tunable().is_some();
     let nucleus = repl.conv.provider.as_top_p_tunable().is_some();
-
-    // What the chat ends up running under: `next` for every parameter that lands, `now` for the rest.
-    let mut landed = now.clone();
-    // An evaluation that dropped a declared window leaves `0` behind, which is the SPELLING of "no window
-    // configured"; the budget refuses a zero (it must never clobber a real window), so the built-in default
-    // is named explicitly here.
-    let window = if next.context_window.value == 0 {
-        DEFAULT_CONTEXT_WINDOW
-    } else {
-        next.context_window.value
-    };
-    if counts_tokens {
-        landed.context_window = Param {
-            value: window,
-            source: next.context_window.source,
-        };
-    }
-    if tunable {
-        landed.effort = next.effort.clone();
-        landed.temperature = next.temperature.clone();
-    }
-    if nucleus {
-        landed.top_p = next.top_p.clone();
-    }
+    let landed = landing(&mut *repl.conv.provider, &now, next);
+    let window = landed.context_window.value;
     let sources = landed.sources();
     let mut changed = false;
 
@@ -238,6 +234,43 @@ pub(crate) fn apply(repl: &mut Repl, next: &LayeredParams) -> bool {
     changed
 }
 
+/// What the chat runs under once `next` is applied to `provider`, whose values are `now`: `next` for every
+/// parameter the provider can act on, `now` for the rest (the gates of [`apply`]).
+pub(crate) fn landing(
+    provider: &mut dyn Provider,
+    now: &LayeredParams,
+    next: &LayeredParams,
+) -> LayeredParams {
+    let mut landed = now.clone();
+    if provider.reports_usage() {
+        // An evaluation that dropped a declared window leaves `0` behind, which is the SPELLING of "no window
+        // configured"; the budget refuses a zero (it must never clobber a real window), so the built-in
+        // default is named explicitly here.
+        landed.context_window = Param {
+            value: if next.context_window.value == 0 {
+                DEFAULT_CONTEXT_WINDOW
+            } else {
+                next.context_window.value
+            },
+            source: next.context_window.source,
+        };
+    }
+    if provider.as_tunable().is_some() {
+        landed.effort = next.effort.clone();
+        landed.temperature = next.temperature.clone();
+    }
+    if provider.as_top_p_tunable().is_some() {
+        landed.top_p = next.top_p.clone();
+    }
+    landed
+}
+
+/// The chat's parameters as [`read`] reads them off `provider` — the instance a move is about to install —
+/// with the budget's window and the chat's sources: what [`apply`] will compare against once it is installed.
+pub(crate) fn read_off(repl: &Repl, provider: &mut dyn Provider) -> LayeredParams {
+    read(provider, repl.conv.budget.window(), repl.conv.param_sources)
+}
+
 /// What a session STARTING writes into a bundle it has just created: the four values it is running under
 /// and the source of each, so a resume finds the session as it was rather than re-deriving it from a config
 /// that may have moved since.
@@ -250,19 +283,7 @@ pub(crate) fn apply(repl: &mut Repl, next: &LayeredParams) -> bool {
 /// window to record. The other three come from [`current`], i.e. from the provider itself, so a knob the
 /// dialect cannot act on is recorded as the nothing it is.
 pub(crate) fn stamp_bundle(repl: &Repl, window: Option<u64>, params: &LayeredParams) {
-    update_meta(repl, |m| stamp(m, window, params));
-}
-
-/// [`stamp_bundle`] on a meta record — the shape `/save` needs, which mints its bundle and stamps it in one
-/// write.
-pub(crate) fn stamp(meta: &mut SessionMeta, window: Option<u64>, params: &LayeredParams) {
-    if let Some(window) = window {
-        meta.set_context_window(window);
-    }
-    params.effort.value.clone_into(&mut meta.effort);
-    meta.temperature = params.temperature.value;
-    meta.top_p = params.top_p.value;
-    meta.param_sources = Some(params.sources());
+    update_meta(repl, |m| m.stamp(window, params));
 }
 
 /// ONE knob's write: its value and the source map it landed with, together (see [`apply`]).

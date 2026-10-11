@@ -83,9 +83,12 @@ impl Session {
         let mut types: Vec<&str> = self.foreign.iter().map(String::as_str).collect();
         types.sort_unstable();
         types.dedup();
+        let replies = match self.foreign.len() {
+            1 => "1 earlier reply carries".to_owned(),
+            n => format!("{n} earlier replies carry"),
+        };
         Some(format!(
-            "{} earlier repl(ies) carry {} reasoning that {kind} does not replay; the model sees their text and tool calls only.",
-            self.foreign.len(),
+            "{replies} {}-specific payload (reasoning, provider-side tool state) that {kind} does not replay; the model sees their text and tool calls only.",
             types.join("/")
         ))
     }

@@ -38,7 +38,9 @@ pub use loader::{
     record_to_message, repair_tail, scan_records, summary_preamble,
 };
 pub use lock::{BOT_LOCK_FILE, LOCK_FILE};
-pub use meta::{META_FILE, META_TMP_FILE, SESSION_SCHEMA_VERSION, SessionMeta, now_rfc3339};
+pub use meta::{
+    ImageSettings, META_FILE, META_TMP_FILE, SESSION_SCHEMA_VERSION, SessionMeta, now_rfc3339,
+};
 pub use params::{LayeredParams, Param, ParamSource, ParamSources};
 pub use rawcodec::{blob_to_raw, raw_to_blob};
 pub use record::{
@@ -49,4 +51,4 @@ pub use store::{BotOpen, NewSession, PROJECTS_DIR_NAME, SessionInfo, SessionStor
 pub use tuning::{
     Overrides, apply_session_tuning, replay_session_settings, warn_if_session_agent_is_gone,
 };
-pub use writer::SessionWriter;
+pub use writer::{Moved, SessionWriter};

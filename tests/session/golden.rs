@@ -13,10 +13,10 @@ use pretty_assertions::assert_eq;
 use crate::common::{log_lines, temp_store};
 
 /// `meta.json` as the Go writer produced it in the probe run (`json.MarshalIndent(m, "", "  ")`,
-/// struct-order keys, NO trailing newline) — minus `base_url`, which a meta no longer records: the endpoint
-/// is the config's, read through the provider name.
+/// struct-order keys, NO trailing newline) — as v2 writes it: `v: 2`, and no `base_url`, which a v2 meta does
+/// not record (the endpoint is the config's, read through the provider name).
 const GO_META: &str = r#"{
-  "v": 1,
+  "v": 2,
   "id": "ws0b07cp764v",
   "created_at": "2026-08-31T17:28:23+08:00",
   "updated_at": "2026-08-31T17:28:23+08:00",
@@ -90,7 +90,7 @@ fn meta_file_has_go_key_order_and_no_trailing_newline() {
         !text.ends_with('\n'),
         "meta.json must have no trailing newline"
     );
-    assert!(text.starts_with("{\n  \"v\": 1,\n  \"id\": "), "got {text}");
+    assert!(text.starts_with("{\n  \"v\": 2,\n  \"id\": "), "got {text}");
     assert!(text.ends_with("\n  \"message_count\": 3\n}"), "got {text}");
     // The key ORDER is Go's struct order, not alphabetical.
     let keys: Vec<&str> = text

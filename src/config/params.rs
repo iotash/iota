@@ -258,6 +258,17 @@ impl ParamLayers {
         }
     }
 
+    /// These layers with the `defer_mode` of `running` — the layers of the endpoint a chat is moving FROM. A
+    /// move rebuilds the provider but keeps the dispatcher, so the mode it was assembled with comes along; the
+    /// target model's own declaration is what [`Self::defer_mode_drift`] then reports as not handed over.
+    #[must_use]
+    pub fn keeping_defer_mode(self, running: &ParamLayers) -> Self {
+        Self {
+            defer_mode: running.defer_mode,
+            ..self
+        }
+    }
+
     /// The `defer_mode:` the dispatcher runs under, and the one `id` would ask for: a pair, so the caller
     /// can say which model it belongs to. Equal modes are the silent case.
     pub fn defer_mode_drift(&self, id: &str) -> Option<(DeferMode, DeferMode)> {

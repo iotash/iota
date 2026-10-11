@@ -58,10 +58,9 @@ pub(crate) struct Interactive<'a> {
     pub(crate) cfg: &'a crate::config::Config,
     /// The resolved run settings.
     pub(crate) settings: RunSettings,
-    /// The resolved provider type.
-    pub(crate) kind: ProviderKind,
-    /// The conversation provider, already tuned.
-    pub(crate) provider: Box<dyn Provider>,
+    /// The resolved provider type and the conversation provider, already tuned — `None` for a resume, which
+    /// opens the one its session names once the session is chosen.
+    pub(crate) opened: Option<(ProviderKind, Box<dyn Provider>)>,
     /// The shared run environment.
     pub(crate) ctx: RunContext,
     /// The tool side.
@@ -142,6 +141,8 @@ impl UiSession for LiveUi {
 
 /// What [`open_ui`]'s continuation produced: everything `crate::repl::run` needs that only the binary can build.
 struct Wiring {
+    /// The conversation provider — the run's own, or the one a resumed session names.
+    provider: Box<dyn Provider>,
     /// The live session writer (`None` = the chat started ephemeral).
     writer: Option<SessionWriter>,
     /// Mints the writer late (`/save`); `Some` = started ephemeral.
@@ -237,12 +238,10 @@ pub(crate) async fn run_interactive(
         inv,
         cfg,
         mut settings,
-        kind,
-        provider,
+        opened,
         ctx,
         tools,
     } = s;
-    let mut endpoint = (kind, provider);
     let ToolAssembly {
         mcp_configs,
         mcp_defers,
@@ -295,6 +294,7 @@ pub(crate) async fn run_interactive(
     // an in-flight connect; from here on EVERY exit path closes the manager, exactly like Go's deferred
     // `defer manager.Close()` / `defer cancelConnect()`.
     let connect_cancel = ctx.cancel.child_token();
+    let mcp_count = mcp_configs.len();
     let (manager, mcp_part, mcp_events) = {
         let configured = !mcp_configs.is_empty();
         let manager = crate::mcp::Manager::new(
@@ -313,7 +313,8 @@ pub(crate) async fn run_interactive(
         wire_session(Wire {
             cfg,
             settings: &mut settings,
-            opened: &mut endpoint,
+            opened,
+            mcp_count,
             ctx: &ctx,
             tool_env: &tool_env,
             io,
@@ -362,7 +363,7 @@ pub(crate) async fn run_interactive(
     // re-compose on a new day) tipped the caller over clippy's `large_futures` line.
     let outcome = Box::pin(crate::repl::run(RunParams {
         ui: Arc::clone(&ui),
-        provider: endpoint.1,
+        provider: wiring.provider,
         title_provider: wiring.title_provider,
         // root.go:341 — trimmed once, here, exactly like Go.
         system: settings.system.trim().to_owned(),
@@ -412,9 +413,11 @@ struct Wire<'a> {
     cfg: &'a crate::config::Config,
     /// The resolved run settings — moved to the bundle's provider by a resume that records another one.
     settings: &'a mut RunSettings,
-    /// The resolved provider type and the conversation provider: a resume replays the bundle's model and
-    /// tuning onto it, after reopening it on the bundle's own provider when that is another one.
-    opened: &'a mut (ProviderKind, Box<dyn Provider>),
+    /// The resolved provider type and the conversation provider; `None` for a resume, which opens the one its
+    /// session names ([`crate::cmd::open_resumed`]) — a resume replays the bundle's model and tuning onto it.
+    opened: Option<(ProviderKind, Box<dyn Provider>)>,
+    /// How many MCP servers the run configures (the tools warning a resume gives once its provider is open).
+    mcp_count: usize,
     /// The run-wide context (the environment, the transport the title instance shares).
     ctx: &'a RunContext,
     /// The tool environment the dispatcher is built over.
@@ -447,6 +450,7 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         cfg,
         settings,
         opened,
+        mcp_count,
         ctx,
         tool_env,
         io,
@@ -458,9 +462,11 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         mcp_part,
         mcp_defers,
     } = wire;
-    // A resume runs where the session was recorded (unless `-M` says otherwise), so the endpoint is settled
-    // before anything is built on it.
-    let resume_id = if resume_given {
+    // A resume runs on the provider its session names: the session is chosen and its meta read BEFORE any
+    // provider is opened for it (`crate::cmd::open_resumed`).
+    let (resume_id, (kind, mut opened)) = if let Some(opened) = opened {
+        (None, opened)
+    } else {
         // root.go:294-306: a bare `iota resume` took the picker; an id resolves as a prefix.
         let id = match &settings.resume {
             Some(fragment) => store.resolve_id(fragment, scope)?,
@@ -471,27 +477,19 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         }
         // A bot's body opens only as that bot (bot-mode.md §2.2, §2.7).
         store.check_not_bot_owned(&id)?;
-        crate::cmd::resume_endpoint(
-            &store.meta(&id)?,
-            cfg,
-            &ctx.env,
-            &ctx.transport,
-            settings,
-            opened,
-            &mut |w| io.warning(&w),
-        )?;
-        Some(id)
-    } else {
-        None
+        let resumed =
+            crate::cmd::open_resumed(&store.meta(&id)?, cfg, ctx, settings, mcp_count, &mut |w| {
+                io.warning(&w);
+            })?;
+        (Some(id), resumed)
     };
     let settings: &RunSettings = settings;
-    let kind = opened.0;
-    let provider: &mut dyn Provider = &mut *opened.1;
+    let provider: &mut dyn Provider = &mut *opened;
     let mut history = Vec::new();
     let mut writer: Option<SessionWriter> = None;
-    // The bundle a resume replayed, kept for the layering: it is the record of what the session was running
-    // under, and a resume RESTORES those values rather than evaluating the config again.
-    let mut resumed_meta: Option<crate::session::SessionMeta> = None;
+    // The parameters a resume restored from its bundle — a resume RESTORES the values the session was running
+    // under rather than evaluating the config again.
+    let mut resumed_params: Option<crate::session::LayeredParams> = None;
     let mut notices = Vec::new();
     // What a resumed bot's model is told at startup (bot-mode.md §2.5).
     let mut recorded_notices = Vec::new();
@@ -509,14 +507,12 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         bot::check_bot_provider(&settings.name, &*provider)?;
         let params = resolve_params(settings, provider, None, io)?;
         bot::check_bot_window(&settings.name, params.context_window.value)?;
-        bot_params = Some(params);
         let bots = store
             .bots_dir()
             .ok_or(crate::session::SessionError::HomeNotDefined)?;
         let opened = bot::open_bot_session(
             store,
-            bots,
-            &settings.name,
+            &bots.join(&settings.name),
             NewSession {
                 temperature: settings.temperature,
                 provider: settings.resolved.provider_name.clone(),
@@ -526,8 +522,10 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
             },
             settings.system.trim(),
             &mut *provider,
+            &params,
             &mut |w| io.warning(&w),
         )?;
+        bot_params = Some(params);
         if opened.resumed {
             let _ = writeln!(
                 io.stdout,
@@ -562,25 +560,32 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
         );
         // root.go:317-331: `-M` is the only flag a session must not overwrite; the model, temperature, effort
         // and the window replay, because a resumed chat is the chat it resumes.
-        let on = &settings.resolved.provider_name;
         crate::session::replay_session_settings(
             &resumed.meta,
             &mut *provider,
-            on,
+            &settings.resolved.provider_name,
             &crate::session::Overrides {
-                model: settings.model_flag,
+                model: crate::cmd::model_overridden(&resumed.meta, settings),
                 ..crate::session::Overrides::default()
             },
             &mut |w| io.warning(&w),
         );
-        // The meta names where the session runs NOW: a `-M` that moved it is recorded, so the next resume
-        // continues there.
-        if let Err(e) = w.move_to(kind, on, provider.model()) {
+        let params = resolve_params(settings, provider, Some(&resumed.meta), io)?;
+        // Where the session runs NOW, in ONE write: a `-M` that moved it, or a v1 bundle settling under the
+        // name it runs on. A chat has no moment of "success" to wait for — opening the session is the run.
+        if crate::cmd::settles(&resumed.meta, settings, kind)
+            && let Err(e) = w.move_to(&crate::cmd::settled(
+                settings,
+                kind,
+                &mut *provider,
+                params.clone(),
+            ))
+        {
             io.warning(&format!("Warning: failed to save session: {e}"));
         }
+        resumed_params = Some(params);
         let repair_notice = resumed.repair_notice();
         let foreign_notice = resumed.foreign_notice(kind);
-        resumed_meta = Some(resumed.meta);
         history = resumed.messages;
         // root.go:333, on plain stdout with the trailing blank Go prints — the last thing written before the
         // banner the facade puts in the scrollback.
@@ -649,9 +654,9 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
     // root.go:365-385, widened to all four layered parameters: a resumed bundle's own values (with the
     // sources it recorded), else the two config layers, else the built-in defaults.
     // A bot's resumed meta is not consulted: its parameters come from the config (bot-mode.md §2.2).
-    let params = match bot_params {
+    let params = match bot_params.or(resumed_params) {
         Some(params) => params,
-        None => resolve_params(settings, provider, resumed_meta.as_ref(), io)?,
+        None => resolve_params(settings, provider, None, io)?,
     };
 
     // root.go:390 + 588-592.
@@ -683,6 +688,7 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
     };
 
     Ok(Wiring {
+        provider: opened,
         writer,
         new_session,
         history,
@@ -770,39 +776,16 @@ fn session_cwd(ctx: &RunContext, scope: Option<&std::path::Path>) -> String {
     )
 }
 
-/// root.go:365-385, generalised to the four layered parameters (brain page `model-param-layering`): a
-/// resumed bundle's recorded values come back as they were recorded, everything else is evaluated
-/// `agents:` → `models:` → the built-in default. Plus Go's warning for a window on a provider that cannot
+/// [`crate::cmd::layered_params`] — the ONE evaluating moment on the way in; the other two are a `/model`
+/// model switch and a move to another endpoint — plus Go's warning for a window on a provider that cannot
 /// count tokens at all.
-///
-/// This is the ONE evaluating moment on the way in; the other is a `/model` model switch. The
-/// `--context-window` flag that used to precede the config is gone: the window is a property of the model,
-/// and `/model`'s Context tab is where one run changes it.
-///
-/// A `context_window:` that does not parse aborts the run here — at startup there is nothing yet to keep
-/// going with, and the label says which layer wrote it.
 fn resolve_params(
     settings: &RunSettings,
     provider: &dyn Provider,
     resumed: Option<&crate::session::SessionMeta>,
     io: &mut crate::cmd::io::Streams,
 ) -> Result<crate::session::LayeredParams, CliError> {
-    let window = match settings.resolved.window_decl() {
-        None => None,
-        Some(decl) => Some(crate::config::window::parse_window_size(decl.raw).map_err(
-            |source| SetupError::ContextWindow {
-                label: decl.label.to_owned(),
-                source,
-            },
-        )?),
-    };
-    let declared = settings.resolved.declared(window);
-    let params = match resumed {
-        // `apply_session_tuning` replays nothing for a bundle recorded on another provider, so for this run
-        // that bundle recorded nothing either.
-        Some(meta) => declared.resume(meta, meta.provider == settings.resolved.provider_name),
-        None => declared.evaluate(&crate::session::LayeredParams::default()),
-    };
+    let params = crate::cmd::layered_params(settings, provider, resumed)?;
     if params.context_window.value > 0 && !provider.reports_usage() {
         io.warning(&format!(
             "Warning: context window does not apply to provider type {} (no token accounting)",
@@ -1087,6 +1070,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let memory = crate::agents::memory::BotMemory::new("coder", tmp.path().join("coder"));
         let mut wiring = super::Wiring {
+            provider: Box::new(crate::testing::FakeProvider::new()),
             writer: None,
             new_session: None,
             history: Vec::new(),

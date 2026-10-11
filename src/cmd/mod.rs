@@ -159,7 +159,8 @@ pub async fn run(
 /// The run pipeline, in Go's order (cmd/root.go:46-268, kept EXACTLY so every byte-pinned error Go raises
 /// before it decides headless-vs-interactive still wins over the interactive branch's own refusals):
 /// `RunArgs::reject_unsupported` (`-m` runs only) → `Config::load` → `resolve_run` → provider construction
-/// (`ProviderKind::from_str`, `new_provider`) →
+/// (`ProviderKind::from_str`, `new_provider`; NOT for a resume, which reads its bundle first and opens the
+/// provider the session names at its resume stage — DIVERGENCES X-67) →
 /// `tuning::apply` → `assemble::build_mcp_configs` → `tuning::warn_tools_without_calling` → cwd/root
 /// (`SetupError::Cwd` in agent mode) → `ToolEnv` → output format parse
 /// (`crate::headless::parse_output_format` runs HERE, root.go:249-252, so `unknown output format …` loses to every
@@ -205,10 +206,24 @@ async fn run_agent(
 
     // root.go:125-131
     let ctx = RunContext::new(env, cancel);
-    // root.go:132-181
-    let (kind, provider) = open_provider(&settings, &ctx.transport, &mut |w| io.warning(&w))?;
+    // root.go:132-181 — except for a resume, which runs on the provider its SESSION names: the bundle is read
+    // first and the provider opened for it then (`open_resumed`), so nothing is built on the agent's endpoint
+    // in between (DIVERGENCES X-67).
+    let opened = match inv.resume {
+        Some(_) => None,
+        None => Some(open_provider(&settings, &ctx.transport, &mut |w| {
+            io.warning(&w);
+        })?),
+    };
     // root.go:187-241
-    let tools = assemble_tools(&inv, &cfg, &settings, &*provider, &ctx, io)?;
+    let tools = assemble_tools(
+        &inv,
+        &cfg,
+        &settings,
+        opened.as_ref().map(|(_, p)| &**p),
+        &ctx,
+        io,
+    )?;
 
     // root.go:249-255: `--output-format` describes a single `-m` run. Parsed HERE — after tuning/MCP
     // assembly — so a bad value keeps Go's precedence (a bad config `effort`/`top_p` or `mcp_servers` name wins
@@ -229,8 +244,7 @@ async fn run_agent(
                 inv: &inv,
                 cfg: &cfg,
                 settings,
-                kind,
-                provider,
+                opened,
                 ctx,
                 tools,
             },
@@ -243,8 +257,7 @@ async fn run_agent(
             message,
             cfg: &cfg,
             settings,
-            kind,
-            provider,
+            opened,
             tools,
             ctx,
             format,
@@ -281,23 +294,26 @@ pub(crate) fn open_provider(
     Ok((kind, provider))
 }
 
-/// The endpoint a resumed session runs on: the provider and the model its meta records — the run moves there
-/// exactly as if `-M <provider>:<model>` had been typed — unless `-M` chose one. A provider the config no
-/// longer defines is refused ([`SetupError::SessionProviderGone`]): falling back to another endpoint would
-/// continue the session somewhere it never ran, silently.
+/// The endpoint a resumed session runs on, settled BEFORE any provider is opened for it.
+///
+/// A v2 bundle names its provider: the run moves there exactly as if `-M <provider>:<model>` had been typed —
+/// unless `-M` chose one. A provider the config no longer defines is refused
+/// ([`SetupError::SessionProviderGone`]): falling back to another endpoint would continue the session
+/// somewhere it never ran. A v1 bundle recorded only a type, which names no endpoint: it runs on the agent's,
+/// as every build before v2 ran it. Either way the key of the endpoint the run lands on is checked here —
+/// `resolve_run` leaves a missing one to the resume.
 pub(crate) fn resume_endpoint(
     meta: &crate::session::SessionMeta,
     cfg: &Config,
     env: &Env,
-    transport: &crate::provider::HttpTransport,
     settings: &mut RunSettings,
-    opened: &mut (ProviderKind, Box<dyn crate::provider::Provider>),
     warn: &mut dyn FnMut(String),
 ) -> Result<(), CliError> {
-    if settings.model_flag
-        || (meta.provider == settings.resolved.provider_name && meta.model == settings.model)
-    {
-        return Ok(());
+    let stays = settings.model_flag
+        || !meta.names_provider()
+        || (meta.provider == settings.resolved.provider_name && meta.model == settings.model);
+    if stays {
+        return settings.check_key(env);
     }
     if !cfg.knows_provider(&meta.provider) {
         return Err(SetupError::SessionProviderGone {
@@ -309,14 +325,115 @@ pub(crate) fn resume_endpoint(
     // Another endpoint than the agent's is said: the session, not the config, chose it.
     if meta.provider != settings.resolved.provider_name {
         warn(format!(
-            "Resuming on {}:{}, where the session was recorded",
+            "Resuming on {}:{}, the provider the session records",
             meta.provider, meta.model
         ));
     }
     // The session's own model is not the user's pick: whether the agent lists it is not news here.
-    settings.move_to(cfg, env, &meta.provider, &meta.model, &mut |_| {})?;
-    *opened = open_provider(settings, transport, warn)?;
-    Ok(())
+    settings.move_to(cfg, env, &meta.provider, &meta.model, &mut |_| {})
+}
+
+/// The provider a resumed session runs on: its endpoint settled from its meta ([`resume_endpoint`]), then
+/// opened and tuned as a run opens its own, then the tools warning `assemble_tools` gives every other run.
+pub(crate) fn open_resumed(
+    meta: &crate::session::SessionMeta,
+    cfg: &Config,
+    ctx: &RunContext,
+    settings: &mut RunSettings,
+    mcp_count: usize,
+    warn: &mut dyn FnMut(String),
+) -> Result<(ProviderKind, Box<dyn crate::provider::Provider>), CliError> {
+    resume_endpoint(meta, cfg, &ctx.env, settings, warn)?;
+    let (kind, provider) = open_provider(settings, &ctx.transport, warn)?;
+    tuning::warn_tools_without_calling(&*provider, &settings.resolved.agent, mcp_count, warn);
+    Ok((kind, provider))
+}
+
+/// The four layered parameters a run starts under: a resumed bundle's own values when it was recorded on
+/// this endpoint (with the sources it recorded), else the two config layers, else the built-in defaults.
+/// root.go:365-385, widened to all four (brain page `model-param-layering`).
+///
+/// A `context_window:` that does not parse aborts the run here — at startup there is nothing yet to keep
+/// going with, and the label says which layer wrote it.
+pub(crate) fn layered_params(
+    settings: &RunSettings,
+    provider: &dyn crate::provider::Provider,
+    resumed: Option<&crate::session::SessionMeta>,
+) -> Result<crate::session::LayeredParams, CliError> {
+    let window = match settings.resolved.window_decl() {
+        None => None,
+        Some(decl) => Some(crate::config::window::parse_window_size(decl.raw).map_err(
+            |source| SetupError::ContextWindow {
+                label: decl.label.to_owned(),
+                source,
+            },
+        )?),
+    };
+    let declared = settings.resolved.declared(window);
+    Ok(match resumed {
+        // `apply_session_tuning` replays nothing for a bundle recorded on another endpoint, so for this run
+        // that bundle recorded nothing either.
+        Some(meta) => declared.resume(
+            meta,
+            meta.recorded_on(&settings.resolved.provider_name, provider.kind()),
+        ),
+        None => declared.evaluate(&crate::session::LayeredParams::default()),
+    })
+}
+
+/// What a resumed session runs under once it is settled — the move a resume writes into its bundle
+/// (`SessionWriter::move_to`): the provider and model the run is on, the four parameters it starts under,
+/// the window its budget will hold (none for a provider without token accounting), the image settings.
+pub(crate) fn settled(
+    settings: &RunSettings,
+    kind: ProviderKind,
+    provider: &mut dyn crate::provider::Provider,
+    params: crate::session::LayeredParams,
+) -> crate::session::Moved {
+    let window = window_of(provider, &params);
+    crate::session::Moved {
+        kind,
+        provider: settings.resolved.provider_name.clone(),
+        model: provider.model().to_owned(),
+        params,
+        window,
+        image: crate::session::ImageSettings::of(provider),
+    }
+}
+
+/// The window a bundle records for `params` on `provider`: the one its budget holds — the built-in default when
+/// nothing declares one — and none at all for a provider with no token accounting.
+pub(crate) fn window_of(
+    provider: &dyn crate::provider::Provider,
+    params: &crate::session::LayeredParams,
+) -> Option<u64> {
+    provider
+        .reports_usage()
+        .then_some(match params.context_window.value {
+            0 => crate::repl::context::tokens::DEFAULT_CONTEXT_WINDOW,
+            w => w,
+        })
+}
+
+/// Whether a resume writes [`settled`] into its bundle: when it runs on what the bundle records (a v1 bundle
+/// thereby becomes v2 under the name it actually ran on — a fact, not a guess) or where `-M` moved it. A v1
+/// bundle resumed on another type without `-M` stays v1: its record names no endpoint the run is on.
+pub(crate) fn settles(
+    meta: &crate::session::SessionMeta,
+    settings: &RunSettings,
+    kind: ProviderKind,
+) -> bool {
+    settings.model_flag || meta.recorded_on(&settings.resolved.provider_name, kind)
+}
+
+/// `-M` is what a resumed session's model yields to. A v1 bundle keeps the rule every build before v2 read
+/// it under — an agent's own `model:` wins too — so an old session resumes exactly as it did.
+pub(crate) fn model_overridden(meta: &crate::session::SessionMeta, settings: &RunSettings) -> bool {
+    if meta.names_provider() {
+        settings.model_flag
+    } else {
+        !settings.model.is_empty()
+    }
 }
 
 /// root.go:187-241 — MCP configs, the agent options and the tool environment, in Go's order (each step's
@@ -325,7 +442,7 @@ fn assemble_tools(
     inv: &Invocation,
     cfg: &Config,
     settings: &RunSettings,
-    provider: &dyn crate::provider::Provider,
+    provider: Option<&dyn crate::provider::Provider>,
     ctx: &RunContext,
     io: &mut io::Streams,
 ) -> Result<ToolAssembly, CliError> {
@@ -336,15 +453,17 @@ fn assemble_tools(
             io.warning(&w);
         })?;
 
-    // root.go:195-199
-    tuning::warn_tools_without_calling(
-        provider,
-        &settings.resolved.agent,
-        mcp_configs.len(),
-        &mut |w| {
-            io.warning(&w);
-        },
-    );
+    // root.go:195-199 — a resume says it once its provider is open (`open_resumed`).
+    if let Some(provider) = provider {
+        tuning::warn_tools_without_calling(
+            provider,
+            &settings.resolved.agent,
+            mcp_configs.len(),
+            &mut |w| {
+                io.warning(&w);
+            },
+        );
+    }
 
     // root.go:206-217: the project root anchors the AGENTS.md/skills overlay and the agent set's skill
     // discovery, so it is resolved in every mode; only agent mode makes a missing cwd fatal. The cwd and
@@ -427,10 +546,9 @@ struct Headless<'a> {
     cfg: &'a Config,
     /// The resolved run settings.
     settings: RunSettings,
-    /// The resolved provider type.
-    kind: ProviderKind,
-    /// The conversation provider, already tuned.
-    provider: Box<dyn crate::provider::Provider>,
+    /// The resolved provider type and the conversation provider, already tuned — `None` for a resume, which
+    /// opens the one its session names.
+    opened: Option<(ProviderKind, Box<dyn crate::provider::Provider>)>,
     /// The tool side: MCP configs, defers, the tool environment, the jobs, the agent options.
     tools: ToolAssembly,
     /// The run-wide context (the environment, the HTTP client, the request log, the root token).
@@ -445,13 +563,11 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         message,
         cfg,
         mut settings,
-        kind,
-        provider,
+        opened,
         tools,
         ctx,
         format,
     } = h;
-    let mut opened = (kind, provider);
     let ToolAssembly {
         mcp_configs,
         mcp_defers,
@@ -461,92 +577,96 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         agent,
         harness,
     } = tools;
-    let RunContext {
-        env,
-        http,
-        cancel,
-        transport,
-        ..
-    } = ctx;
-    let dirs = &env.dirs;
+    let dirs = ctx.env.dirs.clone();
 
     // root.go:284-334, moved onto the `-m` path (DIVERGENCES D-41). It sits HERE — after the interactive
     // branch, before the MCP connect — so `iota resume <id>` without `-m` belongs to the interactive branch (which
     // resumes it itself), every earlier byte-pinned error still wins, and a bad session id never spawns an MCP
     // server.
-    let mut session = match &settings.resume {
-        None => None,
-        Some(fragment) => {
-            let store = crate::session::SessionStore::from_dirs(dirs)?;
-            // root.go:298: agent mode tries the project's own bucket first and only widens on no match; normal
-            // mode looks at the flat root (Go passes an empty `agentOpts.Root`).
-            let scope = settings
-                .mode
-                .has_workspace()
-                .then_some(agent.root.as_path());
-            let id = store.resolve_id(fragment, scope)?;
-            // A bot's body opens only as that bot (bot-mode.md §2.2, §2.7).
-            store.check_not_bot_owned(&id)?;
-            // The session runs where it was recorded, unless `-M` says otherwise.
-            resume_endpoint(
-                &store.meta(&id)?,
-                cfg,
-                &env,
-                &transport,
-                &mut settings,
-                &mut opened,
-                &mut |w| io.warning(&w),
-            )?;
-            let (kind, provider) = &mut opened;
-            let (mut writer, resumed) = store.resume(&id, *kind)?;
-            // The bundle records the agent it ran under; one that has since been deleted is announced, and
-            // the run falls back to the provider and model the meta carries (Phase 1b step 9).
-            crate::session::warn_if_session_agent_is_gone(
-                &resumed.meta,
-                cfg.agents.contains_key(&resumed.meta.agent),
-                &mut |w| io.warning(&w),
-            );
-            // root.go:326-333: `-M` is the only flag a session must not overwrite; the model, temperature,
-            // effort and the window replay — a resumed run is the run it resumes. The replayed window is
-            // discarded: headless has no context budget to route it into.
-            let on = settings.resolved.provider_name.clone();
-            let _window = crate::session::replay_session_settings(
-                &resumed.meta,
-                &mut **provider,
-                &on,
-                &crate::session::Overrides {
-                    model: settings.model_flag,
-                    ..crate::session::Overrides::default()
-                },
-                &mut |w| io.warning(&w),
-            );
-            // root.go:107-109, deferred out of `resolve_run` and re-raised byte-identically here (D-52).
-            if provider.model().is_empty() {
-                return Err(ArgsError::ModelRequired {
-                    agent: settings.name.clone(),
-                }
-                .into());
+    // The run's own provider is open unless it resumes: then the session names the one it runs on.
+    let resumed = if let Some(opened) = opened {
+        Err(opened)
+    } else {
+        let fragment = settings
+            .resume
+            .clone()
+            .ok_or(SetupError::NoSessionToResume)?;
+        let store = crate::session::SessionStore::from_dirs(&dirs)?;
+        // root.go:298: agent mode tries the project's own bucket first and only widens on no match; normal
+        // mode looks at the flat root (Go passes an empty `agentOpts.Root`).
+        let scope = settings
+            .mode
+            .has_workspace()
+            .then_some(agent.root.as_path());
+        let id = store.resolve_id(&fragment, scope)?;
+        // A bot's body opens only as that bot (bot-mode.md §2.2, §2.7).
+        store.check_not_bot_owned(&id)?;
+        let meta = store.meta(&id)?;
+        let (kind, mut provider) = open_resumed(
+            &meta,
+            cfg,
+            &ctx,
+            &mut settings,
+            mcp_configs.len(),
+            &mut |w| io.warning(&w),
+        )?;
+        let (writer, resumed) = store.resume(&id, kind)?;
+        // The bundle records the agent it ran under; one that has since been deleted is announced, and
+        // the run falls back to the provider and model the meta carries (Phase 1b step 9).
+        crate::session::warn_if_session_agent_is_gone(
+            &resumed.meta,
+            cfg.agents.contains_key(&resumed.meta.agent),
+            &mut |w| io.warning(&w),
+        );
+        // root.go:326-333: `-M` is the only flag a session must not overwrite; the model, temperature,
+        // effort and the window replay — a resumed run is the run it resumes. The replayed window is
+        // discarded: headless has no context budget to route it into.
+        let _window = crate::session::replay_session_settings(
+            &resumed.meta,
+            &mut *provider,
+            &settings.resolved.provider_name,
+            &crate::session::Overrides {
+                model: model_overridden(&resumed.meta, &settings),
+                ..crate::session::Overrides::default()
+            },
+            &mut |w| io.warning(&w),
+        );
+        // root.go:107-109, deferred out of `resolve_run` and re-raised byte-identically here (D-52).
+        if provider.model().is_empty() {
+            return Err(ArgsError::ModelRequired {
+                agent: settings.name.clone(),
             }
-            // The meta names where the session runs NOW: a `-M` that moved it is recorded, so the next resume
-            // continues there.
-            if let Err(e) = writer.move_to(*kind, &on, provider.model()) {
-                io.warning(&format!("Warning: failed to save session: {e}"));
-            }
-            // root.go:334, on stderr with a single newline (DIVERGENCES D-44): headless stdout is the reply or
-            // the JSON report alone, but with prefix resolution the user must see which session was picked.
-            io.warning(&format!(
-                "Resumed session {id} ({} messages)",
-                resumed.messages.len()
-            ));
-            if let Some(notice) = resumed.repair_notice() {
-                io.warning(&notice);
-            }
-            if let Some(notice) = resumed.foreign_notice(*kind) {
-                io.warning(&notice);
-            }
-            Some((writer, resumed))
+            .into());
         }
+        // Where the session runs NOW, for the bundle — written with the turn's delta, on SUCCESS only
+        // (D-43): a run that fails leaves the bundle where it was.
+        let moved = if settles(&resumed.meta, &settings, kind) {
+            let params = layered_params(&settings, &*provider, Some(&resumed.meta))?;
+            Some(settled(&settings, kind, &mut *provider, params))
+        } else {
+            None
+        };
+        // root.go:334, on stderr with a single newline (DIVERGENCES D-44): headless stdout is the reply or
+        // the JSON report alone, but with prefix resolution the user must see which session was picked.
+        io.warning(&format!(
+            "Resumed session {id} ({} messages)",
+            resumed.messages.len()
+        ));
+        if let Some(notice) = resumed.repair_notice() {
+            io.warning(&notice);
+        }
+        if let Some(notice) = resumed.foreign_notice(kind) {
+            io.warning(&notice);
+        }
+        Ok((kind, provider, writer, resumed, moved))
     };
+    let (mut provider, mut session, moved) = match resumed {
+        Ok((_, provider, writer, resumed, moved)) => (provider, Some((writer, resumed)), moved),
+        Err((_, provider)) => (provider, None, None),
+    };
+    let RunContext {
+        env, http, cancel, ..
+    } = ctx;
 
     // The host presenter of a `-m` run: the detected hosts alone — no ANSI fallback (there is no facade to
     // write OSC through; stdout is the reply) and no pings (`notify` is a chat's knob). A multiplexer still
@@ -600,13 +720,16 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         jobs: Some(jobs),
     };
     let outcome =
-        crate::headless::once(cancel, &mut *opened.1, dispatch, opts, &mut *io.stdout).await;
+        crate::headless::once(cancel, &mut *provider, dispatch, opts, &mut *io.stdout).await;
 
     // chat/run.go:221-229, once (DIVERGENCES D-43): a headless run IS exactly one turn, so a SUCCESSFUL one
     // persists its delta in a single batch — one fsync, one meta rewrite. A failed or cancelled run persists
     // nothing, and a failure to save is a warning, never the run's exit status.
     if let (Ok(done), Some((writer, _))) = (&outcome, &mut session)
-        && let Err(e) = writer.append_messages(&done.delta)
+        && let Err(e) = moved
+            .as_ref()
+            .map_or(Ok(()), |moved| writer.move_to(moved))
+            .and_then(|()| writer.append_messages(&done.delta))
     {
         io.warning(&format!("Warning: failed to save session: {e}"));
     }

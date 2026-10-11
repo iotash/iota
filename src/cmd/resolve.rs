@@ -79,6 +79,15 @@ impl RunSettings {
     }
 }
 
+impl RunSettings {
+    /// The key of the endpoint the run is on, looked up again — what a resume, whose key `resolve_run` left
+    /// unchecked, does once its endpoint is settled.
+    pub(crate) fn check_key(&mut self, env: &Env) -> Result<(), CliError> {
+        self.api_key = key_of(&self.resolved, self.resolved.endpoint().api_key(env))?;
+        Ok(())
+    }
+}
+
 /// root.go:89-92: the key the endpoint resolved to, or `ApiKeyRequired` naming the variable that would supply it.
 fn key_of(resolved: &Resolved, api_key: ApiKey) -> Result<String, CliError> {
     match api_key {
@@ -158,7 +167,12 @@ pub fn resolve_run(
         None => resolved.agent.resolve_system()?,
     };
 
-    let api_key = key_of(&resolved, api_key)?;
+    // A resume's endpoint is the SESSION's to name (`crate::cmd::resume_endpoint`), so a key missing here —
+    // on the agent's own endpoint — is not yet an error: the resume checks the key of the endpoint it lands on.
+    let api_key = match api_key {
+        ApiKey::Missing { .. } if inv.resume.is_some() => String::new(),
+        api_key => key_of(&resolved, api_key)?,
+    };
 
     // root.go:95-104 (`-m -`), then POLICY F-03 (`-m ""`).
     let message = match inv.args.message.as_deref() {

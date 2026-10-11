@@ -24,6 +24,38 @@ use crate::session::record::{
     SessionRaw, SessionRecord, SessionToolCall,
 };
 
+/// Where a session runs after a move: the endpoint and everything the session runs under there —
+/// [`SessionWriter::move_to`] writes all of it at once, so a meta never names one endpoint while carrying
+/// another's parameters.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Moved {
+    /// The type the payloads appended from here on are tagged with.
+    pub kind: ProviderKind,
+    /// The provider name ([`SessionMeta::provider`]).
+    pub provider: String,
+    /// The model on it.
+    pub model: String,
+    /// The four layered parameters as they landed there, with their sources.
+    pub params: crate::session::LayeredParams,
+    /// The context window to record; `None` for a provider with no token accounting.
+    pub window: Option<u64>,
+    /// The image settings it runs under.
+    pub image: crate::session::ImageSettings,
+}
+
+impl Moved {
+    /// The meta after the move: v2, the endpoint, the parameters and the image settings. A v1 bundle's
+    /// `base_url` is that version's own key, not a stranger's: v2 has none, so it goes with the upgrade.
+    fn apply(&self, meta: &mut SessionMeta) {
+        meta.version = crate::session::SESSION_SCHEMA_VERSION;
+        self.provider.clone_into(&mut meta.provider);
+        self.model.clone_into(&mut meta.model);
+        meta.stamp(self.window, &self.params);
+        meta.set_image(&self.image);
+        meta.extra.remove("base_url");
+    }
+}
+
 /// Persists a live session: the bundle directory, its `meta.json`, the append-only `messages.jsonl` and
 /// the content-addressed attachment store.
 pub struct SessionWriter {
@@ -316,20 +348,24 @@ impl SessionWriter {
         }
     }
 
-    /// Moves the session to another endpoint: the payloads appended from here on are tagged with `kind`, and
-    /// the meta names the provider and the model the session now runs on. The records already in the log keep
-    /// their own tags — each one says which dialect produced it.
-    pub fn move_to(
-        &mut self,
-        kind: ProviderKind,
-        provider: &str,
-        model: &str,
-    ) -> Result<(), SessionError> {
-        self.kind = kind;
-        self.update_meta(|m| {
-            provider.clone_into(&mut m.provider);
-            model.clone_into(&mut m.model);
-        })
+    /// Moves the session to another endpoint, or settles where a resumed one runs: the payloads appended from
+    /// here on are tagged with `to.kind`, and the meta becomes v2 and says — in ONE write — the provider, the
+    /// model and everything the session runs under there ([`Moved`]). The records already in the log keep their
+    /// own tags.
+    ///
+    /// A pending bundle changes in memory only (its first write carries it). An existing one is written first
+    /// and changed in memory only once the write succeeded: on an `Err` the writer is exactly what it was, and
+    /// the caller must not go on as though the session had moved.
+    pub fn move_to(&mut self, to: &Moved) -> Result<(), SessionError> {
+        let mut meta = self.meta.clone();
+        to.apply(&mut meta);
+        if self.created && (self.meta_dirty || meta != self.meta) {
+            meta.write(&self.dir)?;
+            self.meta_dirty = false;
+        }
+        self.meta = meta;
+        self.kind = to.kind;
+        Ok(())
     }
 
     /// Rewrites `meta.json`, remembering a failure so that [`Self::update_meta`] does not take the memory for

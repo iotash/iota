@@ -34,7 +34,7 @@ pub struct SessionInfo {
     pub title: String,
     /// The model recorded in meta.
     pub model: String,
-    /// The provider type recorded in meta.
+    /// `meta.provider`: the provider name (v2), or the type a v1 bundle recorded.
     pub provider: String,
     /// `meta.updated_at`; `None` when unparsable — Go's zero time, which sorts last.
     pub updated_at: Option<jiff::Timestamp>,

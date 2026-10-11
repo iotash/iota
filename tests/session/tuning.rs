@@ -109,7 +109,7 @@ fn apply_session_tuning_provider_mismatch_applies_nothing() {
     assert_eq!(window, None, "the window is gated on the provider too");
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(
-        warnings[0].starts_with("Warning: session was recorded on different:")
+        warnings[0].starts_with("Warning: session was recorded on a different endpoint")
             && warnings[0].ends_with("its model and tuning are not replayed"),
         "{warnings:?}"
     );

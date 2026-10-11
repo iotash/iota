@@ -118,9 +118,9 @@ fn write_config(cwd: &Path, url: &str, model: &str, mode: &str) {
         format!(", url: {url}")
     };
     let start = if model.is_empty() {
-        "choices: [\"gemini:*\"]".to_owned()
+        "choices: [\"p:*\"]".to_owned()
     } else {
-        format!("model: \"gemini:{model}\"")
+        format!("model: \"p:{model}\"")
     };
     let mode = if mode.is_empty() {
         String::new()
@@ -129,7 +129,9 @@ fn write_config(cwd: &Path, url: &str, model: &str, mode: &str) {
     };
     fs::write(
         cwd.join(".iota.yaml"),
-        format!("providers:\n  gemini: {{key: x{url}}}\nagents:\n  default:\n    {start}{mode}\n"),
+        format!(
+            "providers:\n  p: {{type: gemini, key: x{url}}}\nagents:\n  default:\n    {start}{mode}\n"
+        ),
     )
     .expect("write config");
 }
@@ -219,7 +221,8 @@ async fn google_stub(server: &MockServer, image: bool) {
 
 // ---------------------------------------------------------------- planting a bundle by hand
 
-/// Writes a bundle (meta + log) at `dir` with a CHOSEN id, so a test can pin resolution order. The bytes go
+/// Writes a v2 bundle (meta + log) at `dir` with a CHOSEN id, so a test can pin resolution order — `provider` is
+/// the provider NAME (the configs here call their endpoint `p`). The bytes go
 /// through `iota_session`'s own serde types — the same writer shapes, just without the random id
 /// `SessionStore::create` mints.
 fn plant_bundle(dir: &Path, id: &str, provider: &str, model: &str, records: &[SessionRecord]) {
@@ -348,7 +351,8 @@ async fn resume_go_bundle_appends_one_turn() {
     );
 
     // meta.json: `future_key` survived a Rust rewrite (D-46), the count grew by the delta, the stamp moved,
-    // and NO key Go does not model was invented.
+    // and the v1 bundle settled as v2 (`resume_upgrades_a_v1_bundle_to_the_name_it_runs_on`): its `base_url`
+    // went with v1, the parameters it runs under were recorded with their sources — and nothing else changed.
     let meta_after: serde_json::Value =
         serde_json::from_slice(&fs::read(bundle.join("meta.json")).expect("read meta"))
             .expect("meta is JSON");
@@ -359,11 +363,24 @@ async fn resume_go_bundle_appends_one_turn() {
     );
     assert_ne!(meta_after["updated_at"], meta_before["updated_at"]);
     assert_eq!(meta_after["created_at"], meta_before["created_at"]);
-    let keys_before: Vec<&String> = meta_before.as_object().unwrap().keys().collect();
-    let keys_after: Vec<&String> = meta_after.as_object().unwrap().keys().collect();
+    let mut keys_before: Vec<&str> = meta_before
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .filter(|k| *k != "base_url")
+        .chain(["param_sources"])
+        .collect();
+    keys_before.sort_unstable();
+    let keys_after: Vec<&str> = meta_after
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
     assert_eq!(
         keys_after, keys_before,
-        "the rewrite neither dropped nor invented a meta key"
+        "the upgrade dropped v1's base_url, recorded the sources, and invented nothing else"
     );
     // The atomic write left no debris behind (D-45).
     assert!(!bundle.join("meta.json.tmp").exists());
@@ -441,18 +458,113 @@ async fn resume_tuning_precedence_explicit_model_wins() {
     // Go never called `SetModel` on the writer; the meta now names what the session runs on.
     let meta: serde_json::Value =
         serde_json::from_slice(&fs::read(bundle.join("meta.json")).expect("meta")).expect("JSON");
-    assert_eq!(meta["provider"], "gemini");
+    assert_eq!(meta["provider"], "p");
     assert_eq!(meta["model"], "gemini-flash-latest");
     assert_eq!(meta["temperature"], 0.7);
     assert_eq!(meta["context_window"], 200_000);
 }
 
-/// `-M` onto ANOTHER provider: the run goes there, the session's tuning is not replayed — and that is said,
-/// naming both endpoints — and the meta follows, so the next resume continues on the provider the session
-/// moved to. The bundle's `base_url` (a key a meta no longer writes) plays no part: the endpoint is the
-/// config's.
+/// `config` with two gemini endpoints: `p`, the agent's, nowhere (`127.0.0.1:9`), and `g2` on `url`, whose
+/// `fl` entry declares a temperature — what a session moved onto `g2` runs under there.
+fn write_two_endpoints(cwd: &Path, url: &str) {
+    fs::write(
+        cwd.join(".iota.yaml"),
+        format!(
+            "providers:\n  p: {{type: gemini, key: x, url: \"http://127.0.0.1:9\"}}\n  g2: {{type: gemini, key: x, url: {url}}}\n  g3: {{type: gemini, key: x, url: \"http://127.0.0.1:9\"}}\nmodels:\n  fl: {{provider: g2, id: gemini-flash-latest, temperature: 0.2}}\nagents:\n  default:\n    model: \"p:gemini-2.5-pro\"\n    choices: [\"p:*\", fl]\n"
+        ),
+    )
+    .expect("write config");
+}
+
+/// `-M` onto ANOTHER provider moves the session there, and the move is ONE write: the bundle names `g2` AND
+/// records what the session runs under on `g2` — the `fl` entry's temperature, no effort — with their sources,
+/// not `p`'s `0.7`/`high`. So a second resume, with no flag, runs on `g2` exactly as the first did: nothing
+/// of the old endpoint comes back. And a run whose turn FAILS moves nothing (D-43).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resume_with_another_provider_moves_the_session_there() {
+    let server = MockServer::start().await;
+    google_stub(&server, false).await;
+    let cwd = TempDir::new().expect("temp cwd");
+    let home = TempDir::new().expect("temp home");
+    let id = "k7qz3xv9m2ht";
+    let bundle = sessions_root(home.path()).join(id);
+    plant_bundle(
+        &bundle,
+        id,
+        "p",
+        "gemini-2.5-pro",
+        &[rec("user", "q"), rec("assistant", "a")],
+    );
+    let mut meta = SessionMeta::read(&bundle).expect("meta");
+    meta.temperature = Some(0.7);
+    "high".clone_into(&mut meta.effort);
+    meta.write(&bundle).expect("meta");
+    write_two_endpoints(cwd.path(), &server.uri());
+    let read_meta = || -> serde_json::Value {
+        serde_json::from_slice(&fs::read(bundle.join("meta.json")).expect("meta")).expect("JSON")
+    };
+
+    // A move whose turn fails (g3 answers nowhere) leaves the bundle where it was.
+    let before = fs::read(bundle.join("meta.json")).expect("meta");
+    let mut cmd = iota(cwd.path(), home.path());
+    cmd.args(["resume", id, "-M", "g3:gemini-flash-latest", "-m", "q"]);
+    assert_eq!(output(cmd).await.status.code(), Some(1));
+    assert_eq!(fs::read(bundle.join("meta.json")).expect("meta"), before);
+
+    let mut cmd = iota(cwd.path(), home.path());
+    cmd.args(["resume", id, "-M", "g2:gemini-flash-latest", "-m", "first"]);
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    assert_eq!(
+        err(&o),
+        format!(
+            "Warning: session was recorded on p:gemini-2.5-pro; this run is on g2:gemini-flash-latest — its model and tuning are not replayed\nResumed session {id} (2 messages)\n"
+        )
+    );
+    let meta = read_meta();
+    assert_eq!(meta["v"], 2);
+    assert_eq!(meta["provider"], "g2");
+    assert_eq!(meta["model"], "gemini-flash-latest");
+    assert_eq!(meta["temperature"], 0.2, "what runs on g2, not p's 0.7");
+    assert!(
+        meta.get("effort").is_none(),
+        "p's `high` did not survive: {meta}"
+    );
+    assert_eq!(meta["param_sources"]["temperature"], "config");
+
+    let mut cmd = iota(cwd.path(), home.path());
+    cmd.args(["resume", id, "-m", "second"]);
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    assert!(
+        err(&o)
+            .starts_with("Resuming on g2:gemini-flash-latest, the provider the session records\n"),
+        "{}",
+        err(&o)
+    );
+    let reqs = server.received_requests().await.expect("requests");
+    assert_eq!(reqs.len(), 2);
+    for req in &reqs {
+        assert!(
+            req.url.path().contains("gemini-flash-latest"),
+            "{}",
+            req.url
+        );
+        let body: serde_json::Value = serde_json::from_slice(&req.body).expect("JSON");
+        assert_eq!(body["generationConfig"]["temperature"], 0.2, "{body}");
+        assert!(
+            body["generationConfig"].get("thinkingConfig").is_none(),
+            "p's effort never came back: {body}"
+        );
+    }
+}
+
+/// The v1 contract, unchanged: a Go-era bundle recorded the TYPE `gemini` (and a `base_url`). Resumed by an
+/// agent on `p` — a gemini endpoint under another name — it runs on `p` and replays its model and tuning as
+/// every build before v2 did; and it settles as v2 under the name it actually ran on: `provider: p`, its
+/// `base_url` gone with v1. The NEXT resume reads that name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_upgrades_a_v1_bundle_to_the_name_it_runs_on() {
     let server = MockServer::start().await;
     google_stub(&server, false).await;
     let cwd = TempDir::new().expect("temp cwd");
@@ -460,42 +572,40 @@ async fn resume_with_another_provider_moves_the_session_there() {
     let f = fixture("go-gemini-rich");
     let id = f["id"].as_str().unwrap().to_owned();
     let bundle = sessions_root(home.path()).join(f["dir"].as_str().unwrap());
-    fs::write(
-        cwd.path().join(".iota.yaml"),
-        format!(
-            "providers:\n  gemini: {{key: x}}\n  g2: {{type: gemini, key: x, url: {}}}\nagents:\n  default:\n    model: \"gemini:gemini-2.5-pro\"\n",
-            server.uri()
-        ),
-    )
-    .expect("write config");
-    let mut cmd = iota(cwd.path(), home.path());
-    cmd.args([
-        "resume",
-        f["unique_prefix"].as_str().unwrap(),
-        "-M",
-        "g2:gemini-flash-latest",
-        "-m",
-        "second question",
-    ]);
-    let o = output(cmd).await;
-    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
-    let view_count = f["expect"]["view_count"].as_u64().unwrap();
-    assert_eq!(
-        err(&o),
-        format!(
-            "Warning: session was recorded on gemini:gemini-2.5-pro; this run is on g2:gemini-flash-latest — its model and tuning are not replayed\nResumed session {id} ({view_count} messages)\n"
-        )
-    );
-    let reqs = server.received_requests().await.expect("requests");
-    assert!(
-        reqs[0].url.path().contains("gemini-flash-latest"),
-        "{}",
-        reqs[0].url
-    );
-    let meta: serde_json::Value =
+    let before: serde_json::Value =
         serde_json::from_slice(&fs::read(bundle.join("meta.json")).expect("meta")).expect("JSON");
-    assert_eq!(meta["provider"], "g2");
-    assert_eq!(meta["model"], "gemini-flash-latest");
+    assert_eq!(before["v"], 1);
+    assert_eq!(before["provider"], "gemini");
+    assert_eq!(before["base_url"], "https://example.test/v1");
+
+    write_config(cwd.path(), &server.uri(), "", "");
+    for question in ["one", "two"] {
+        let mut cmd = iota(cwd.path(), home.path());
+        cmd.args(["resume", &id, "-m", question]);
+        let o = output(cmd).await;
+        assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+        // No move is announced: the session runs where the agent is, the first time by type, then by name.
+        assert!(err(&o).starts_with("Resumed session "), "{}", err(&o));
+    }
+    let reqs = server.received_requests().await.expect("requests");
+    assert_eq!(reqs.len(), 2);
+    for req in &reqs {
+        assert!(req.url.path().contains("gemini-2.5-pro"), "{}", req.url);
+        let body: serde_json::Value = serde_json::from_slice(&req.body).expect("JSON");
+        assert_eq!(body["generationConfig"]["temperature"], 0.7, "{body}");
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "HIGH"
+        );
+    }
+    let after: serde_json::Value =
+        serde_json::from_slice(&fs::read(bundle.join("meta.json")).expect("meta")).expect("JSON");
+    assert_eq!(after["v"], 2);
+    assert_eq!(after["provider"], "p");
+    assert_eq!(after["model"], "gemini-2.5-pro");
+    assert_eq!(after["temperature"], 0.7);
+    assert_eq!(after["effort"], "high");
+    assert!(after.get("base_url").is_none(), "{after}");
 }
 
 /// A bundle written BEFORE the layering existed — one of the frozen Go-corpus fixtures, which carries a
@@ -591,40 +701,51 @@ fn resume_missing_bundle_is_not_found() {
     assert!(!sessions_root(home.path()).join("nosuchsession").exists());
 }
 
-/// A session resumes on the provider its meta names, not on the agent's: a bundle recorded on `openai`, resumed
-/// under an agent on `gemini`, goes to `openai` — and says so, the session and not the config having chosen
-/// the endpoint. Here that endpoint has no key, so the run stops on it rather than falling back to gemini.
-#[test]
-fn resume_runs_on_the_provider_the_session_records() {
+/// A v2 session resumes on the provider it NAMES, not on the agent's — and says so — even when the agent's own
+/// endpoint has no key: the session's endpoint is decided before any provider is opened, so the agent's
+/// missing key never stands in the way (DIVERGENCES X-67).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_runs_on_the_provider_the_session_records() {
+    let server = MockServer::start().await;
+    google_stub(&server, false).await;
     let cwd = TempDir::new().expect("temp cwd");
-    let home = home_with_fixtures();
-    let f = fixture("go-openai-compaction"); // provider "openai"
-    let prefix = f["unique_prefix"].as_str().unwrap();
-    write_config(cwd.path(), "", "gemini-2.5-pro", "");
-    let mut cmd = iota(cwd.path(), home.path());
-    cmd.args(["resume", prefix, "-m", "hi"]);
-    let o = cmd.output().expect("run");
-    assert_eq!(o.status.code(), Some(1), "stderr was: {}", err(&o));
-    let meta: serde_json::Value = serde_json::from_slice(
-        &fs::read(
-            sessions_root(home.path())
-                .join(f["dir"].as_str().unwrap())
-                .join("meta.json"),
-        )
-        .expect("meta"),
+    let home = TempDir::new().expect("temp home");
+    let id = "k7qz3xv9m2ht";
+    plant_bundle(
+        &sessions_root(home.path()).join(id),
+        id,
+        "g2",
+        "gemini-2.5-pro",
+        &[rec("user", "q"), rec("assistant", "a")],
+    );
+    fs::write(
+        cwd.path().join(".iota.yaml"),
+        format!(
+            "providers:\n  p: {{type: openai}}\n  g2: {{type: gemini, key: x, url: {}}}\nagents:\n  default:\n    model: \"p:gpt-x\"\n",
+            server.uri()
+        ),
     )
-    .expect("JSON");
+    .expect("write config");
+    let mut cmd = iota(cwd.path(), home.path());
+    cmd.args(["resume", id, "-m", "hi"]);
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
     assert_eq!(
         err(&o),
         format!(
-            "Resuming on openai:{}, where the session was recorded\nError: API key is required: set OPENAI_API_KEY or providers.openai.key in your config\n",
-            meta["model"].as_str().unwrap()
+            "Resuming on g2:gemini-2.5-pro, the provider the session records\nResumed session {id} (2 messages)\n"
         )
+    );
+    let reqs = server.received_requests().await.expect("requests");
+    assert!(
+        reqs[0].url.path().contains("gemini-2.5-pro"),
+        "{}",
+        reqs[0].url
     );
 }
 
 /// A session whose provider the config no longer defines (renamed, removed) is refused by name — never resumed
-/// quietly on another endpoint.
+/// quietly on another endpoint — and the agent's own endpoint having no key does not hide that.
 #[test]
 fn resume_refuses_a_provider_the_config_does_not_define() {
     let cwd = TempDir::new().expect("temp cwd");
@@ -637,7 +758,11 @@ fn resume_refuses_a_provider_the_config_does_not_define() {
         "vendor/y",
         &[rec("user", "q"), rec("assistant", "a")],
     );
-    write_config(cwd.path(), "", "gemini-2.5-pro", "");
+    fs::write(
+        cwd.path().join(".iota.yaml"),
+        "providers:\n  p: {type: openai}\nagents:\n  default:\n    model: \"p:gpt-x\"\n",
+    )
+    .expect("write config");
     let mut cmd = iota(cwd.path(), home.path());
     cmd.args(["resume", id, "-m", "hi"]);
     assert_error(
@@ -656,7 +781,7 @@ fn resume_without_any_model_re_raises_model_required() {
     plant_bundle(
         &sessions_root(home.path()).join(id),
         id,
-        "gemini",
+        "p",
         "",
         &[rec("user", "q"), rec("assistant", "a")],
     );
@@ -701,7 +826,7 @@ async fn resume_agent_mode_prefers_the_project_bucket() {
     plant_bundle(
         &bucket.join(&scoped_id),
         &scoped_id,
-        "gemini",
+        "p",
         "gemini-2.5-pro",
         &[rec("system", "scoped sys"), rec("user", "scoped question")],
     );
@@ -789,7 +914,7 @@ async fn one_mode_requests(mode_line: &str, fresh: bool) -> Vec<String> {
     fs::write(
         root.join(".iota.yaml"),
         format!(
-            "providers:\n  gemini: {{key: x, url: {}}}\nagents:\n  default:\n    model: \"gemini:gemini-2.5-pro\"{mode_line}\n",
+            "providers:\n  p: {{type: gemini, key: x, url: {}}}\nagents:\n  default:\n    model: \"p:gemini-2.5-pro\"{mode_line}\n",
             server.uri()
         ),
     )
@@ -868,7 +993,7 @@ async fn resume_a_log_ending_in_tool_results() {
     plant_bundle(
         &sessions_root(home.path()).join(id),
         id,
-        "gemini",
+        "p",
         "gemini-2.5-pro",
         &[
             rec("system", "sys"),
@@ -1127,7 +1252,7 @@ async fn resume_refuses_a_bot_session() {
         plant_bundle(
             &sessions_root(home.path()).join(id),
             id,
-            "gemini",
+            "p",
             "gemini-2.5-pro",
             &[rec("user", "earlier"), rec("assistant", "noted")],
         );
@@ -1174,7 +1299,7 @@ async fn resume_refuses_while_a_bot_pointer_is_unreadable() {
     plant_bundle(
         &bundle,
         bot_id,
-        "gemini",
+        "p",
         "gemini-2.5-pro",
         &[rec("user", "earlier"), rec("assistant", "noted")],
     );

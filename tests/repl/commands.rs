@@ -581,7 +581,8 @@ struct Built {
 
 /// The endpoint factory the binary would hand in, over `yaml`, with fakes standing in for the providers:
 /// `relay` answers as an `openresponses` endpoint, any name the config does not know is refused the way the
-/// real factory refuses it. The layers and the catalog are the real ones, built for the moved run.
+/// real factory refuses it. The layers and the catalog are the real ones, built for the run moved the way
+/// `-M provider:id` moves it.
 fn relay_endpoints(yaml: &str, built: &Built) -> iota::repl::EndpointFactory {
     let cfg =
         iota::cmd::Config::parse(yaml.as_bytes(), &iota::app::env::Env::default(), &mut |w| {
@@ -598,6 +599,16 @@ fn relay_endpoints(yaml: &str, built: &Built) -> iota::repl::EndpointFactory {
         }
         let mut resolved = cfg.resolve_agent("default").expect("the agent resolves");
         resolved.move_to_provider(&cfg, provider);
+        // As `-M provider:id` resolves it: the `models:` entry serving that pair, with its own knobs.
+        if let Some((name, entry)) = cfg
+            .models
+            .iter()
+            .find(|(name, m)| m.provider_or(name) == provider && m.id == id)
+        {
+            let mut entry = entry.clone();
+            entry.anchor_provider(name);
+            resolved.model = entry;
+        }
         let fake = |log: &iota::testing::Log, reply: &str| {
             FakeProvider::new()
                 .with_kind(ProviderKind::OpenResponses)
@@ -690,6 +701,159 @@ async fn model_moves_a_chat_with_no_reply_to_another_provider() {
     assert_eq!(
         (meta.provider.as_str(), meta.model.as_str()),
         ("relay", "vendor/y")
+    );
+}
+
+/// The dispatcher is not rebuilt by a move, so the target's layers keep the `defer_mode` it was ASSEMBLED with:
+/// a target model that asks for another mode is told it does not get it — exactly as a switch on one endpoint
+/// says so — rather than the layers pretending the target's own mode is running.
+#[tokio::test]
+async fn a_move_keeps_the_dispatchers_defer_mode() {
+    const DEFER: &str = r#"
+providers:
+  mock: {type: openai, key: k}
+  relay: {type: openresponses, key: k, url: "http://127.0.0.1:9"}
+models:
+  m: mock:a-model
+  y: {provider: relay, id: vendor/y, defer_mode: tool-search}
+agents:
+  default:
+    model: m
+    choices: [m, y]
+"#;
+    let f = Fixture::new(vec![
+        input("/model"),
+        commit(PanelResult {
+            cursor: 1,
+            ..PanelResult::default()
+        }),
+        Reply::Interrupted,
+    ]);
+    let session = f.session(Some(f.writer()));
+    let built = Built::default();
+    let mut params = f.params_with_catalog(
+        provider("a-model", Ok(vec![])).reporting_usage(),
+        session,
+        DEFER,
+    );
+    params.layers = {
+        let cfg = iota::cmd::Config::parse(
+            DEFER.as_bytes(),
+            &iota::app::env::Env::default(),
+            &mut |w| panic!("unexpected config warning: {w}"),
+        )
+        .expect("the config loads");
+        iota::cmd::ParamLayers::new(&cfg, &cfg.resolve_agent("default").expect("the agent"))
+    };
+    params.endpoints = Some(relay_endpoints(DEFER, &built));
+    iota::repl::run(params).await.expect("exit");
+    let lines = printed(&f.ui);
+    assert!(
+        lines.iter().any(|l| l.starts_with(
+            "Note: vendor/y asks for defer_mode \"tool-search\"; this session keeps \"normal\""
+        )),
+        "{lines:?}"
+    );
+    assert!(
+        lines.contains(&"Model switched to vendor/y on relay".to_owned()),
+        "{lines:?}"
+    );
+}
+
+/// The move is ONE write, made before anything is installed: when an existing bundle cannot be told — its
+/// meta cannot be written — the chat does not move. It says so, the bundle still names where it was, and the
+/// next send goes to the endpoint the chat was on. (A system-only bundle is on disk before any reply: a
+/// `--no-save` chat that `/save`d before its first send has one.)
+#[tokio::test]
+async fn a_move_the_bundle_cannot_record_is_not_made() {
+    let f = Fixture::new(vec![
+        input("/model"),
+        commit(PanelResult {
+            cursor: 1,
+            ..PanelResult::default()
+        }),
+        input("hello"),
+        Reply::Interrupted,
+    ]);
+    let mut writer = f.writer();
+    writer
+        .append_messages(&[Message::system("be brief")])
+        .expect("put the bundle on disk");
+    let dir = writer.dir().to_path_buf();
+    // The meta's atomic rewrite goes through `meta.json.tmp`: a directory there makes every write fail.
+    std::fs::create_dir(dir.join(iota::session::META_TMP_FILE)).expect("block the meta");
+    let session = f.session(Some(writer));
+    let old = provider("a-model", Ok(vec![])).reporting_usage();
+    let old_log = old.log();
+    let built = Built::default();
+    let mut params = f.params_with_catalog(old, session, TWO_ENDPOINTS);
+    params.system = "be brief".to_owned();
+    params.endpoints = Some(relay_endpoints(TWO_ENDPOINTS, &built));
+    iota::repl::run(params).await.expect("exit");
+
+    let lines = printed(&f.ui);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("Error: the session could not be moved: ")),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.starts_with("Model switched")),
+        "{lines:?}"
+    );
+    assert_eq!(old_log.calls(), 1, "the send stayed on the old endpoint");
+    assert_eq!(built.main.calls(), 0);
+    let meta = iota::session::SessionMeta::read(&dir).expect("meta");
+    assert_eq!(
+        meta.provider, "",
+        "the bundle still names where the chat is"
+    );
+}
+
+/// The `/model` surface's capability tabs were opened on the endpoint a move leaves. Committed afterwards, one
+/// the target has no place for lands nowhere — no "Image generation: on", no `image: true` in the bundle —
+/// even though the tab still shows the old endpoint's switch on (codex review F7).
+#[tokio::test]
+async fn a_move_does_not_claim_a_capability_the_target_lacks() {
+    let all_on = || PanelResult {
+        on: true,
+        ..PanelResult::default()
+    };
+    let f = Fixture::new(vec![
+        input("/model"),
+        Reply::Tabbed(TabbedResult {
+            cancelled: false,
+            focused: 0,
+            panels: std::iter::once(PanelResult {
+                cursor: 1,
+                ..PanelResult::default()
+            })
+            .chain(std::iter::repeat_with(all_on).take(6))
+            .collect(),
+        }),
+        Reply::Interrupted,
+    ]);
+    let session = f.session(Some(f.writer()));
+    let old = provider("a-model", Ok(vec![])).with_image_output(true);
+    let mut params = f.params_with_catalog(old, session, TWO_ENDPOINTS);
+    params.endpoints = Some(Box::new(|_: &str, id: &str, _: &mut dyn FnMut(String)| {
+        Ok(iota::repl::Endpoint {
+            provider: Box::new(FakeProvider::new().with_model(id)),
+            title_provider: None,
+            layers: iota::cmd::ParamLayers::default(),
+            catalog: iota::repl::ModelCatalog::default(),
+        })
+    }));
+    iota::repl::run(params).await.expect("exit");
+    let lines = printed(&f.ui);
+    assert!(
+        lines.contains(&"Model switched to vendor/y on relay".to_owned()),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.starts_with("Image generation")),
+        "{lines:?}"
     );
 }
 

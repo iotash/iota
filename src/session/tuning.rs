@@ -46,7 +46,7 @@ pub struct Overrides {
 }
 
 /// Replays a resumed session onto the live provider: its model (only when the caller did not pick one, and
-/// only for a bundle recorded on this provider — `on` is the provider name the run is on), then its tuning
+/// only for a bundle recorded on this provider — [`SessionMeta::recorded_on`]), then its tuning
 /// through [`apply_session_tuning`]. Returns the replayed context window.
 pub fn replay_session_settings(
     meta: &SessionMeta,
@@ -55,14 +55,19 @@ pub fn replay_session_settings(
     overrides: &Overrides,
     warn: &mut dyn FnMut(String),
 ) -> Option<u64> {
-    if !overrides.model && !overrides.config_wins && meta.provider == on && !meta.model.is_empty() {
+    if !overrides.model
+        && !overrides.config_wins
+        && meta.recorded_on(on, provider.kind())
+        && !meta.model.is_empty()
+    {
         provider.set_model(meta.model.clone());
     }
     apply_session_tuning(meta, provider, on, overrides, warn)
 }
 
-/// Replays the knobs `meta` recorded. Like the model replay, the WHOLE replay is gated on `meta.provider == on`
-/// (the provider name the run is on) — a mismatch applies NOTHING, the context window included, and says so
+/// Replays the knobs `meta` recorded. Like the model replay, the WHOLE replay is gated on
+/// [`SessionMeta::recorded_on`] (`on` is the provider name the run is on; a v1 bundle matches on the type) —
+/// a mismatch applies NOTHING, the context window included, and says so
 /// in ONE warning, unless `overrides.config_wins` (a bot replays none of it anyway).
 ///
 /// - **temperature**: only when the caller did not fix one (`overrides.temperature`) and the session recorded one;
@@ -88,12 +93,11 @@ pub fn apply_session_tuning(
     overrides: &Overrides,
     warn: &mut dyn FnMut(String),
 ) -> Option<u64> {
-    if meta.provider != on {
+    if !meta.recorded_on(on, provider.kind()) {
         if !overrides.config_wins {
             warn(format!(
-                "Warning: session was recorded on {}:{}; this run is on {on}:{} — its model and tuning are not replayed",
-                meta.provider,
-                meta.model,
+                "Warning: session was recorded on {}; this run is on {on}:{} — its model and tuning are not replayed",
+                meta.recorded_where(),
                 provider.model()
             ));
         }
