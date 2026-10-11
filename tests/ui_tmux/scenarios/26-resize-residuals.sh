@@ -201,7 +201,41 @@ check_measured "a stream right at the drag's end: no hole inside the new turn" \
 # ------------------------------------------------------------------ H: a drag with /model open
 # OVER BUDGET, known (X-52, the frozen protocol): the surface's input cursor sits on the frame's
 # last row, the drag's first step cannot show the reflow, and the split separator pieces reach
-# the history — the verifier measured 6 separator rows, the frozen build 4. Capped at 6 by name.
+# the history — the verifier measured 6 separator rows, the frozen build 4. The paced drag below
+# measures 4 every run, the frozen build's number, and is capped there by name.
+#
+# The drag is PACED: each step waits for its own pass to be drawn (`step_landed`) before the next
+# resize. Steps fired blind 50 ms apart — RESIZE_QUIET's own length — left it to the runner which
+# steps one pass took together, and the pieces depend on it: a pass that sees a step wider than
+# the drag's margin rewraps the frame drawn for the last one and strands its tail above the
+# cursor (B3: not claimed) — e.g. a 4-column `┄┄┄┄` piece of a separator drawn at 94 when the
+# terminal was already 90. Rows that reach the history stay there, so waiting longer before
+# counting changes nothing (measured: the same count before and after the frame is back at full
+# width, 12 of 12 runs). The blind drag read 5 on ubuntu, 4/5/7 on the macos-15 runners (7 red in
+# CI 37909980649 on a docs-only commit, and 38122791446); with the iota process demoted to the
+# background QoS (`taskpolicy -b`) beside ten CPU burners, three at once, it read 4, 5, 6 and 7
+# (10/7/6/1 of 24, the 7 this block's CI failure) — the paced one 4 in every run whose steps all
+# landed (32 of 32, loaded and not; 2026-10-12, tmux 3.7c). Under the three-at-once load a pass
+# took longer than `step_landed` waits in 2 of 21 runs: the block names the step, before any
+# count. The cap of 6 the blind drag needed let a pass that claims one row too few through (an
+# injected one: 4 → 6, measured); 4 does not.
+
+# step_landed <frame width> — polls until a drag step's pass has been drawn: the bottom separator
+# at <frame width> (one-column steps keep the drag's margin at its 2-column floor, so the frame is
+# the terminal's width less 2) and two captures 60 ms apart the same. Bounded at 1.5 s, inside
+# DRAG_SETTLE (2 s), so the steps stay one drag even when a pass is slow.
+step_landed() {
+    local s prev="" i=0
+    while [ "$i" -lt 25 ]; do
+        s="$(cap)"
+        [ "$s" = "$prev" ] && [ "$(row_width "$(frame_bot "$s")" "$s")" = "$1" ] && return 0
+        prev="$s"
+        sleep 0.06
+        i=$((i + 1))
+    done
+    return 1
+}
+
 fresh 100 40
 type_ 'stream 30'
 key Enter
@@ -211,13 +245,18 @@ type_ '/model'
 key Enter
 wait_vis '↑↓ move' || bad "the /model panel never opened"
 settle || bad "the panel never settled"
-for w in 99 98 97 96 95 94 93 92 91 90; do tm resize-window -t s -x "$w" -y 40; sleep 0.05; done
+for w in 99 98 97 96 95 94 93 92 91 90; do
+    tm resize-window -t s -x "$w" -y 40
+    step_landed $((w - 2)) || bad "a drag with /model open: the step to $w was never drawn (frame $((w - 2)))"
+done
 settle || bad "the panel never settled after the drag"
 key Escape
 wait_gone '↑↓ move' || bad "the /model panel never closed"
 settle || bad "frame never settled"
+# Counted at rest: the drag over and the frame back at the full width.
+check_frame_intact "a drag with /model open, 100→90" 90
 check_budget "a drag with /model open: rows that appear twice (B3)" "$(dup_lines)" 1
-check_budget "a drag with /model open: separator rows in the history (X-52 OVER BUDGET, known: ≤ 6)" \
-    "$(seps_all)" 6
+check_budget "a drag with /model open, paced: separator rows in the history (X-52 OVER BUDGET, known: 4)" \
+    "$(seps_all)" 4
 
 finish
