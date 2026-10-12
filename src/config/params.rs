@@ -299,11 +299,6 @@ impl ParamLayers {
         &self.agent
     }
 
-    /// Whether the `agents:` entry declares `max_tokens:` — it then overrides every model's.
-    pub fn agent_declares_max_tokens(&self) -> bool {
-        self.agent.max_tokens.is_some()
-    }
-
     /// The `models:` entry that configures `id` on this run's provider, or `None` when the id is one the
     /// config never mentions (a raw id from the picker, which is the common case).
     ///

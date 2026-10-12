@@ -57,11 +57,19 @@ impl Fixture {
                 panic!("unexpected config warning: {w}")
             })
             .expect("the config loads");
-        let resolved = cfg.resolve_agent("default").expect("the agent resolves");
+        let resolved = resolve(yaml);
         self.params = resolved
             .declared(None)
             .evaluate(&iota::session::LayeredParams::default());
         self.layers = iota::cmd::ParamLayers::new(&cfg, &resolved);
+        self
+    }
+
+    /// A RESUMED run under the config `yaml`: the layers it declares, and the five parameters restored from
+    /// `meta` — `replayed` false for a bundle recorded on another endpoint (a `-M` move).
+    fn resumed(mut self, yaml: &str, meta: &iota::session::SessionMeta, replayed: bool) -> Self {
+        self = self.under(yaml);
+        self.params = resolve(yaml).declared(None).resume(meta, replayed);
         self
     }
 
@@ -162,6 +170,16 @@ impl Fixture {
     }
 }
 
+/// The `default` agent of the config `yaml`, resolved as a run resolves it.
+fn resolve(yaml: &str) -> iota::cmd::Resolved {
+    iota::cmd::Config::parse(yaml.as_bytes(), &iota::app::env::Env::default(), &mut |w| {
+        panic!("unexpected config warning: {w}")
+    })
+    .expect("the config loads")
+    .resolve_agent("default")
+    .expect("the agent resolves")
+}
+
 fn input(s: &str) -> Reply {
     Reply::Input(Input {
         display: s.to_owned(),
@@ -255,106 +273,285 @@ async fn a_stall_with_nothing_to_keep_rolls_the_turn_back() {
     assert_eq!(fx.printed_count("the reply may be incomplete"), 0);
 }
 
-/// F6: the cut's hint names the layer the ceiling the chat runs under came from. An `agents:` value overrides
-/// the model's, so a hint pointing at the model entry would send the user to a key that changes nothing.
+/// One `anthropic` provider `a`; `ma` declares `model` (if any), the `default` agent runs `ma` and declares
+/// `agent` (if any). `mb` on the same provider is a second model to switch through.
+fn ceiling_config(agent: Option<u32>, model: Option<u32>) -> String {
+    let key = |v: Option<u32>| v.map(|v| format!(", max_tokens: {v}")).unwrap_or_default();
+    format!(
+        "providers:\n  a: {{type: anthropic, key: x}}\nmodels:\n  ma: {{provider: a, id: claude-x{}}}\n  mb: {{provider: a, id: claude-y, max_tokens: 2222}}\nagents:\n  default: {{model: ma{}}}\n",
+        key(model),
+        key(agent)
+    )
+}
+
+/// A bundle on `a` recording `max_tokens: value` with the five-key source map tagging it `source`.
+fn ceiling_meta(value: u32, source: &str) -> iota::session::SessionMeta {
+    serde_json::from_value(serde_json::json!({
+        "v": 2, "provider": "a", "model": "claude-x", "max_tokens": value,
+        "param_sources": {"context_window": "builtin", "effort": "builtin", "temperature": "builtin", "top_p": "builtin", "max_tokens": source},
+    }))
+    .expect("meta")
+}
+
+/// R1/R2: the cut's hint never credits a declaration with a ceiling the session is not running under. A
+/// resumed session restores the value it recorded whatever today's config says, and a `config` tag does
+/// not say which entry it came from — so the hint says only what the record says, and points the edit at
+/// the entry of the LOADED config that can take effect: the agent's when it declares the key (it overrides
+/// every model's — the model entry is then never offered), else the model's.
 #[tokio::test]
-async fn a_cut_names_the_config_layer_its_ceiling_came_from() {
-    let yaml = |agent: &str| {
-        format!(
-            "providers:\n  a: {{type: anthropic, key: x}}\nmodels:\n  ma: {{provider: a, id: claude-x, max_tokens: 64000}}\nagents:\n  default: {{model: ma{agent}}}\n"
-        )
+async fn a_cut_never_credits_a_declaration_the_session_is_not_running_under() {
+    const RECORDED: &str = "This session runs under a ceiling it recorded from the config.";
+    const OWN: &str = "This session runs under a ceiling of its own, not one the config declares.";
+    const EDIT_AGENT: &str =
+        "To raise it, edit max_tokens: on the agent's `agents:` entry — it overrides every model's";
+    const EDIT_MODEL: &str = "To raise it, set max_tokens: on this model's `models:` entry";
+    // A value a move evaluated from the target's model entry, then resumed under a config whose agent
+    // declares another ceiling since.
+    let moved = {
+        let mut m = iota::session::SessionMeta {
+            provider: "a".to_owned(),
+            model: "claude-x".to_owned(),
+            ..iota::session::SessionMeta::default()
+        };
+        m.stamp(
+            None,
+            &resolve(&ceiling_config(None, Some(16_000)))
+                .declared(None)
+                .resume(&ceiling_meta(9_000, "config"), false),
+        );
+        assert_eq!(
+            m.max_tokens,
+            Some(16_000),
+            "the move evaluated the target's entry"
+        );
+        m
     };
-    for (agent, names, not) in [
+    let cases: [(&str, Fixture, &str, &str); 6] = [
         (
-            ", max_tokens: 1234",
-            "on the agent's `agents:` entry, which overrides the model's",
-            "on this model's `models:` entry — raise it there",
+            "agent declaration added since",
+            Fixture::new(vec![]).resumed(
+                &ceiling_config(Some(64_000), Some(48_000)),
+                &ceiling_meta(16_000, "config"),
+                true,
+            ),
+            RECORDED,
+            EDIT_AGENT,
         ),
         (
-            "",
-            "on this model's `models:` entry — raise it there",
-            "which overrides the model's",
+            "agent declaration removed since",
+            Fixture::new(vec![]).resumed(
+                &ceiling_config(None, Some(48_000)),
+                &ceiling_meta(16_000, "config"),
+                true,
+            ),
+            RECORDED,
+            EDIT_MODEL,
         ),
-    ] {
-        let provider = FakeProvider::new().round(Round::cut_off("", "half a reply"));
-        let fx = Fixture::new(vec![input("q"), Reply::Closed]).under(&yaml(agent));
-        fx.run(provider, None, &[]).await;
+        (
+            "model declaration removed since",
+            Fixture::new(vec![]).resumed(
+                &ceiling_config(None, None),
+                &ceiling_meta(16_000, "config"),
+                true,
+            ),
+            RECORDED,
+            EDIT_MODEL,
+        ),
+        (
+            "both layers declare the same value",
+            Fixture::new(vec![]).under(&ceiling_config(Some(16_000), Some(16_000))),
+            RECORDED,
+            EDIT_AGENT,
+        ),
+        (
+            "a moved config value, resumed under a changed config",
+            Fixture::new(vec![]).resumed(&ceiling_config(Some(64_000), None), &moved, true),
+            RECORDED,
+            EDIT_AGENT,
+        ),
+        (
+            "the session's own value while the agent declares",
+            Fixture::new(vec![]).resumed(
+                &ceiling_config(Some(1234), Some(64_000)),
+                &ceiling_meta(16_000, "user"),
+                true,
+            ),
+            OWN,
+            EDIT_AGENT,
+        ),
+    ];
+    let squeeze = |s: &str| s.split_whitespace().collect::<String>();
+    for (name, fx, runs, edit) in cases {
+        assert_eq!(
+            fx.params.max_tokens.value,
+            Some(16_000),
+            "{name}: the ceiling the session runs under"
+        );
+        let fx = Fixture {
+            ui: ScriptedUi::new(vec![input("q"), Reply::Closed]),
+            ..fx
+        };
+        fx.run(
+            FakeProvider::new().round(Round::cut_off("", "half a reply")),
+            None,
+            &[],
+        )
+        .await;
         // The hint row wraps mid-word, so the block is compared with its whitespace taken out.
-        let squeeze = |s: &str| s.split_whitespace().collect::<String>();
         let block = squeeze(&fx.printed().join(" "));
         assert!(
-            block.contains(&squeeze(names)),
-            "{agent:?}: {:#?}",
+            block.contains(&squeeze(runs)),
+            "{name}: {:#?}",
             fx.printed()
         );
         assert!(
-            !block.contains(&squeeze(not)),
-            "{agent:?}: {:#?}",
+            block.contains(&squeeze(edit)),
+            "{name}: {:#?}",
             fx.printed()
         );
+        for claim in [
+            "This ceiling is max_tokens:",
+            "which overrides the model's — raise it there",
+        ] {
+            assert!(
+                !block.contains(&squeeze(claim)),
+                "{name}: an entry credited with the value: {:#?}",
+                fx.printed()
+            );
+        }
+        if edit == EDIT_AGENT {
+            assert!(
+                !block.contains("`models:`"),
+                "{name}: the model entry is overridden: {:#?}",
+                fx.printed()
+            );
+        }
         assert!(
             block.contains(&squeeze(
-                "keeps its ceiling until /model switches its model."
+                "quit, resume this session, then use /model to switch to another model and back"
             )),
-            "{agent:?}: how an edit reaches this session"
+            "{name}: how an edit reaches this session"
         );
     }
 }
 
-/// The GLM bug (X-69, X-70): the output ceiling cuts the model off mid-THOUGHT — no text at all. The draft is not
-/// promoted to the answer: the turn is an error naming the ceiling and the knob, it is not retried, and with
-/// nothing to keep it rolls back — so the next request carries neither the question nor the half-thought as
-/// something the assistant said.
+/// R2, the steps the hint gives, pinned. A RUNNING chat never re-reads the config file: a `/model` switch
+/// away and back re-evaluates the snapshot it started with, so an edit on disk changes nothing.
 #[tokio::test]
-async fn a_thought_cut_off_by_the_ceiling_is_never_the_answer() {
-    let log = Log::default();
-    let provider = FakeProvider::new()
-        .with_tools()
-        .round(Round::cut_off(
-            "The user is leaning toward option 1. This needs flagging as a",
-            "",
+async fn a_config_edit_on_disk_never_reaches_a_running_chat() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join(".iota.yaml");
+    let yaml = ceiling_config(None, Some(1234));
+    std::fs::write(&path, &yaml).expect("write config");
+    // The closing turn materialises the bundle, so its meta can be read back.
+    let script = vec![
+        input("/model"),
+        pick(1),
+        input("/model"),
+        pick(0),
+        input("q"),
+        Reply::Closed,
+    ];
+    let fx = Fixture::new(script).under(&std::fs::read_to_string(&path).expect("read config"));
+    // Edited AFTER the run loaded it, as a user would while the chat is open.
+    std::fs::write(&path, yaml.replace("max_tokens: 1234", "max_tokens: 64000"))
+        .expect("edit config");
+    let writer = fx
+        .store
+        .create(iota::session::NewSession::new(
+            iota::provider::ProviderKind::Anthropic,
+            "claude-x",
         ))
-        .replying("ok")
-        .with_log(log.clone());
-    let fx = Fixture::new(vec![input("geo dns?"), input("next"), Reply::Closed]);
-    fx.run(provider, None, &[]).await;
-
+        .expect("writer");
+    let id = writer.id().to_owned();
+    let p = FakeProvider::new()
+        .with_model("claude-x")
+        .with_models(&["claude-x", "claude-y"])
+        .with_max_tokens(Some(1234))
+        .round(Round::reply("ok"));
+    fx.run_on(Box::new(p), None, &[], Some(writer)).await;
     assert_eq!(
-        log.calls(),
-        2,
-        "the cut is not retried: {:?}",
-        log.prompts()
-    );
-    let second: Vec<_> = log.send(1).iter().map(shape).collect();
-    assert!(
-        !second
-            .iter()
-            .any(|(_, content, _)| content.contains("flagging as a")),
-        "the half-thought leaked into the history: {second:#?}"
-    );
-    assert!(
-        !second.iter().any(|(_, content, _)| content == "geo dns?"),
-        "nothing was kept, so the turn rolled back: {second:#?}"
-    );
-    assert_eq!(
-        fx.printed_count("Output truncated"),
+        fx.printed_count("Max tokens: 2222"),
         1,
         "{:#?}",
         fx.printed()
     );
-    assert_eq!(fx.printed_count("32000-token limit"), 1);
     assert_eq!(
-        fx.printed_count("This ceiling is the built-in default"),
+        fx.printed_count("Max tokens: 1234"),
         1,
-        "nothing set the ceiling, and the hint says so: {:#?}",
+        "back on the snapshot's value"
+    );
+    assert_eq!(fx.printed_count("64000"), 0, "{:#?}", fx.printed());
+    let saved = fx
+        .store
+        .load(&id, iota::provider::ProviderKind::Anthropic)
+        .expect("load");
+    assert_eq!(saved.meta.max_tokens, Some(1234));
+}
+
+/// R2, the other half: after a restart the edit IS loaded, yet a resume keeps the ceiling the session
+/// recorded; a `/model` switch to another model and back is what adopts the new value.
+#[tokio::test]
+async fn after_a_restart_a_switch_away_and_back_adopts_the_edit() {
+    let edited = ceiling_config(None, Some(64_000));
+    // The closing turn materialises the bundle, so its meta can be read back.
+    let script = vec![
+        input("/model"),
+        pick(1),
+        input("/model"),
+        pick(0),
+        input("q"),
+        Reply::Closed,
+    ];
+    let fx = Fixture::new(script).resumed(&edited, &ceiling_meta(1234, "config"), true);
+    assert_eq!(
+        fx.params.max_tokens.value,
+        Some(1234),
+        "a resume alone keeps the recorded ceiling"
+    );
+    let writer = fx
+        .store
+        .create(iota::session::NewSession::new(
+            iota::provider::ProviderKind::Anthropic,
+            "claude-x",
+        ))
+        .expect("writer");
+    let id = writer.id().to_owned();
+    let p = FakeProvider::new()
+        .with_model("claude-x")
+        .with_models(&["claude-x", "claude-y"])
+        .with_max_tokens(Some(1234))
+        .round(Round::reply("ok"));
+    fx.run_on(Box::new(p), None, &[], Some(writer)).await;
+    assert_eq!(
+        fx.printed_count("Max tokens: 2222"),
+        1,
+        "{:#?}",
         fx.printed()
     );
     assert_eq!(
-        fx.printed_count("flagging as a"),
-        0,
-        "the thought must not be printed as an answer: {:#?}",
+        fx.printed_count("Max tokens: 64000"),
+        1,
+        "{:#?}",
         fx.printed()
     );
+    let saved = fx
+        .store
+        .load(&id, iota::provider::ProviderKind::Anthropic)
+        .expect("load");
+    assert_eq!(saved.meta.max_tokens, Some(64_000));
+}
+
+/// The Model tab's answer: row `cursor` picked.
+fn pick(cursor: usize) -> Reply {
+    Reply::Tabbed(TabbedResult {
+        cancelled: false,
+        focused: 0,
+        panels: vec![iota::ui::facade::PanelResult {
+            cursor,
+            ..iota::ui::facade::PanelResult::default()
+        }],
+    })
 }
 
 /// A cut that lands after the model started its REPLY keeps that text — it is what the model said —
