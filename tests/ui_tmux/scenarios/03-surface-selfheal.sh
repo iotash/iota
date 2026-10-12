@@ -26,7 +26,9 @@ wait_vis '↑↓ move' || bad "the /model panel never opened"
 settle || bad "panel never settled"
 
 comp="$(composer_row)"
-panel="$(row_of '▸ fake (current)')"
+# The default config's set is all on `mock`, so rows are bare ids; the current one carries the name `m` it
+# is chosen by.
+panel="$(row_of '▸ fake [m] (current)')"
 foot="$(row_of '↑↓ move')"
 if [ -n "$comp" ] && [ -n "$panel" ] && [ "$panel" -gt "$comp" ]; then
     ok "panel renders BELOW the composer (composer row $comp, first option row $panel)"

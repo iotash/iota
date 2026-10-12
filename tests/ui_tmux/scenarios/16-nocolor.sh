@@ -117,7 +117,7 @@ type_ '/model'
 key Enter
 wait_vis 'Enter select' || bad "NO_COLOR: the /model combo never opened"
 settle || bad "NO_COLOR: the combo never settled"
-check "NO_COLOR: the surface keeps its ▸ cursor marker" "$(count_vis '▸ fake (current)')" 1
+check "NO_COLOR: the surface keeps its ▸ cursor marker" "$(count_vis '▸ fake [m] (current)')" 1
 check "NO_COLOR: the combo field keeps its placeholder" "$(count_vis 'model name (e.g. gpt-4o)')" 1
 check "NO_COLOR: …behind a ❯ edge of its own (the composer's and the field's)" "$(cap | grep -c '^❯' | tr -d ' ')" 2
 if raw_has_color; then
