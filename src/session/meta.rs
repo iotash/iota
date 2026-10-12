@@ -98,6 +98,10 @@ pub struct SessionMeta {
     /// layering made it one of the four a session carries (brain page `model-param-layering`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f64>,
+    /// Recorded `max_tokens`; `None` omits the key (the dialect's default). No Go twin: Go sent a fixed
+    /// 4096 (DIVERGENCES X-68).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
     /// Recorded context window; 0 omits the key.
     #[serde(skip_serializing_if = "is_zero_i64")]
     pub context_window: i64,
@@ -232,7 +236,7 @@ impl SessionMeta {
         }
     }
 
-    /// Stamps the four layered parameters the session runs under, and the source of each — `window` is
+    /// Stamps the five layered parameters the session runs under, and the source of each — `window` is
     /// `None` for a provider with no token accounting, which has no window to record.
     pub fn stamp(&mut self, window: Option<u64>, params: &LayeredParams) {
         if let Some(window) = window {
@@ -241,6 +245,7 @@ impl SessionMeta {
         params.effort.value.clone_into(&mut self.effort);
         self.temperature = params.temperature.value;
         self.top_p = params.top_p.value;
+        self.max_tokens = params.max_tokens.value;
         self.param_sources = Some(params.sources());
     }
 
@@ -308,6 +313,11 @@ impl SessionMeta {
     /// The recorded `top_p`; `None` when the bundle never recorded one.
     pub fn recorded_top_p(&self) -> Option<f64> {
         self.top_p
+    }
+
+    /// The recorded `max_tokens`; `None` when the bundle never recorded one.
+    pub fn recorded_max_tokens(&self) -> Option<u32> {
+        self.max_tokens
     }
 }
 

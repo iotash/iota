@@ -113,6 +113,7 @@ impl OpenResponsesProvider {
                 temperature,
                 top_p: None,
                 effort: None,
+                max_tokens: None,
             },
             client: Responses { client },
             image_output: false,
@@ -457,6 +458,7 @@ impl OpenResponsesProvider {
                 usage,
                 raw_content,
                 images,
+                truncated: None,
             });
         }
 
@@ -486,6 +488,7 @@ impl OpenResponsesProvider {
             // heals blobs persisted by older builds that rewrote id := call_id.
             raw_content: Some(RawContent::OpenResponses(raw_items)),
             images,
+            truncated: None,
         })
     }
 
@@ -655,6 +658,7 @@ impl Provider for OpenResponsesProvider {
                 text,
                 usage: resp.usage.as_ref().map(openai_usage),
                 images,
+                truncated: None,
             })
         })
     }

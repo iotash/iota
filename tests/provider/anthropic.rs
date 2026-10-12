@@ -15,7 +15,9 @@ use iota::provider::model::{
 };
 use iota::provider::sink::NullSink;
 use iota::provider::usage::Usage;
-use iota::provider::{Effort, Provider, RoundResult, ToolProvider, TopPTunable, Tunable};
+use iota::provider::{
+    Effort, MaxTokensTunable, Provider, RoundResult, ToolProvider, TopPTunable, Truncation, Tunable,
+};
 use iota::testing::RecordingSink;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
@@ -133,14 +135,14 @@ async fn the_anthropic_request_body_is_byte_exact() {
     assert_eq!(request.headers["x-api-key"], "sk-test");
     assert_eq!(request.headers["anthropic-version"], "2023-06-01");
 
-    // The whole body: max_tokens is the hard 4096; the user blocks run image / document / inlined text file with
+    // The whole body: max_tokens is the 32000 default (X-68; Go's hard 4096 cut thinking models off); the user blocks run image / document / inlined text file with
     // the message text LAST; the tool_result and the following user text are ONE user message (is_error always
     // present); the tools schema forwards only type/properties/required; stream is on.
     assert_eq!(
         body_json(request),
         json!({
             "model": "claude-sonnet-4-6",
-            "max_tokens": 4096,
+            "max_tokens": 32000,
             "messages": [
                 {"role": "user", "content": [
                     {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AQ=="}},
@@ -330,6 +332,10 @@ async fn an_anthropic_stream_assembles_text_thinking_tool_use_and_usage() {
             output: 7,
             ..Usage::default()
         })
+    );
+    assert_eq!(
+        out.truncated, None,
+        "a round that ended at tool_use was not cut off"
     );
 }
 
@@ -664,10 +670,35 @@ async fn overloaded_529_is_retried_by_the_status_rule() {
     assert_eq!(out.content, "");
     assert_eq!(hits.load(Ordering::SeqCst), 2, "529 must be retried");
 }
+/// The unary call rides the stream (X-71): a non-streaming response sends its headers only once the
+/// whole output is generated, and with a ceiling this large that is past the client's 120 s header bound.
+/// It still reports only its own usage, sends no tools, and carries the default ceiling.
 #[tokio::test]
-async fn an_anthropic_unary_call_reports_only_its_own_usage() {
-    const WITH_USAGE: &str = r#"{"content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":11,"output_tokens":7}}"#;
-    const WITHOUT_USAGE: &str = r#"{"content":[{"type":"text","text":"hi"}]}"#;
+async fn an_anthropic_unary_call_streams_and_reports_only_its_own_usage() {
+    const WITH_USAGE: &str = concat!(
+        "event: message_start\n",
+        r#"data: {"type":"message_start","message":{"usage":{"input_tokens":11}}}"#,
+        "\n\n",
+        "event: content_block_start\n",
+        r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}"#,
+        "\n\n",
+        "event: content_block_delta\n",
+        r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#,
+        "\n\n",
+        "event: message_delta\n",
+        r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}"#,
+        "\n\n",
+        "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+    );
+    const WITHOUT_USAGE: &str = concat!(
+        "event: content_block_start\n",
+        r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}"#,
+        "\n\n",
+        "event: content_block_delta\n",
+        r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#,
+        "\n\n",
+        "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+    );
 
     let server = MockServer::start().await;
     let hits = Arc::new(AtomicUsize::new(0));
@@ -680,7 +711,7 @@ async fn an_anthropic_unary_call_reports_only_its_own_usage() {
             } else {
                 WITHOUT_USAGE
             };
-            ResponseTemplate::new(200).set_body_raw(body, "application/json")
+            ResponseTemplate::new(200).set_body_raw(body, "text/event-stream")
         })
         .mount(&server)
         .await;
@@ -700,6 +731,7 @@ async fn an_anthropic_unary_call_reports_only_its_own_usage() {
             ..Usage::default()
         })
     );
+    assert_eq!(first.truncated, None);
 
     // A second call whose response omits usage must not keep reporting the first call's figures.
     let second = p
@@ -709,12 +741,139 @@ async fn an_anthropic_unary_call_reports_only_its_own_usage() {
     assert_eq!(second.text, "hi");
     assert_eq!(second.usage, None);
     assert_eq!(hits.load(Ordering::SeqCst), 2);
-    // A unary request never streams and never carries tools.
+    // A unary request streams and never carries tools.
     let requests = server.received_requests().await.expect("recorded requests");
     let body = body_json(&requests[0]);
-    assert_eq!(body.get("stream"), None);
+    assert_eq!(body["stream"], json!(true));
     assert_eq!(body.get("tools"), None);
-    assert_eq!(body["max_tokens"], json!(4096));
+    assert_eq!(body["max_tokens"], json!(32000));
+}
+
+/// `max_tokens:` from the config (X-68) is what the request carries, on both entry points.
+#[tokio::test]
+async fn a_configured_max_tokens_rides_the_wire() {
+    const STOP: &str = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+    let server = MockServer::start().await;
+    mock_sse(&server, "POST", "/v1/messages", STOP).await;
+    let mut p = provider(&server, "glm-5.3", None);
+    p.set_max_tokens(Some(131_072));
+    assert_eq!(p.max_tokens(), Some(131_072));
+    round(&p, &[Message::user("q")], &[]).await.expect("round");
+    p.chat(&CancellationToken::new(), &[Message::user("q")])
+        .await
+        .expect("unary");
+    let requests = server.received_requests().await.expect("recorded requests");
+    assert_eq!(requests.len(), 2);
+    for r in &requests {
+        assert_eq!(body_json(r)["max_tokens"], json!(131_072));
+    }
+}
+
+/// What GLM-5.3 sends when the ceiling hits mid-thought (`/tmp/iota-glm-probe/r1_4096_max.sse`, shortened):
+/// a sealed thinking block, no text block, `stop_reason: max_tokens`.
+const CUT_MID_THOUGHT: &str = concat!(
+    "event: message_start\n",
+    r#"data: {"type":"message_start","message":{"usage":{"input_tokens":0,"output_tokens":0}}}"#,
+    "\n\n",
+    "event: content_block_start\n",
+    r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}"#,
+    "\n\n",
+    "event: content_block_delta\n",
+    r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The user is leaning toward option 1. This needs flagging as a"}}"#,
+    "\n\n",
+    "event: content_block_delta\n",
+    r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"2e2c9b8a9d6c47e3a7e00bc7"}}"#,
+    "\n\n",
+    "event: content_block_stop\n",
+    r#"data: {"type":"content_block_stop","index":0}"#,
+    "\n\n",
+    "event: message_delta\n",
+    r#"data: {"type":"message_delta","delta":{"stop_reason":"max_tokens","stop_sequence":null},"usage":{"input_tokens":733,"output_tokens":32000}}"#,
+    "\n\n",
+    "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+);
+
+/// `stop_reason: max_tokens` is no longer dropped (X-69): the round says it was cut off, at which ceiling,
+/// and still hands back the sealed thinking block (the replay contract does not change).
+#[tokio::test]
+async fn a_round_cut_off_at_max_tokens_reports_the_truncation() {
+    let server = MockServer::start().await;
+    mock_sse(&server, "POST", "/v1/messages", CUT_MID_THOUGHT).await;
+    let p = provider(&server, "glm-5.3", None);
+    let out = round(&p, &[Message::user("q")], &[]).await.expect("round");
+    assert_eq!(
+        out.truncated,
+        Some(Truncation {
+            reason: "stop_reason: max_tokens".to_owned(),
+            limit: Some(32_000),
+            dropped_tools: Vec::new(),
+        })
+    );
+    assert_eq!(out.content, "", "the endpoint opened no text block");
+    assert!(
+        out.reasoning.ends_with("flagging as a"),
+        "{}",
+        out.reasoning
+    );
+    assert!(out.tool_calls.is_empty());
+    let Some(RawContent::Anthropic(blocks)) = out.raw_content else {
+        panic!("the sealed thinking block must still be captured");
+    };
+    assert!(blocks[0].get().contains("2e2c9b8a9d6c47e3a7e00bc7"));
+
+    // The unary path reports the same cut.
+    let unary = p
+        .chat(&CancellationToken::new(), &[Message::user("q")])
+        .await
+        .expect("unary");
+    assert_eq!(unary.text, "");
+    assert_eq!(
+        unary.truncated.map(|t| t.limit),
+        Some(Some(32_000)),
+        "the unary call must not pass a cut-off reply off as finished"
+    );
+}
+
+/// A ceiling that hits while a tool call's arguments are still streaming: the call is dropped — its JSON
+/// may be cut mid-value — and the truncation NAMES it, where Go dropped it without a word (X-69).
+#[tokio::test]
+async fn a_tool_call_cut_off_mid_arguments_is_dropped_by_name() {
+    const TRANSCRIPT: &str = concat!(
+        "event: content_block_start\n",
+        r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}"#,
+        "\n\n",
+        "event: content_block_delta\n",
+        r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Writing the file."}}"#,
+        "\n\n",
+        "event: content_block_start\n",
+        r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t1","name":"write_file"}}"#,
+        "\n\n",
+        "event: content_block_delta\n",
+        r#"data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"a.rs\",\"content\":\"fn ma"}}"#,
+        "\n\n",
+        "event: message_delta\n",
+        r#"data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":32000}}"#,
+        "\n\n",
+        "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+    );
+    let server = MockServer::start().await;
+    mock_sse(&server, "POST", "/v1/messages", TRANSCRIPT).await;
+    let p = provider(&server, "m", None);
+    let tools = [ToolDef {
+        name: "write_file".to_owned(),
+        ..ToolDef::default()
+    }];
+    let out = round(&p, &[Message::user("q")], &tools)
+        .await
+        .expect("round");
+    assert!(out.tool_calls.is_empty(), "a cut-off call never runs");
+    assert_eq!(out.content, "Writing the file.");
+    let cut = out.truncated.expect("the cut is reported");
+    assert_eq!(cut.dropped_tools, vec!["write_file".to_owned()]);
+    assert_eq!(
+        cut.to_string(),
+        "stop_reason: max_tokens: the output hit its 32000-token limit; the tool call it was composing was dropped (write_file)"
+    );
 }
 
 // A thinking

@@ -58,6 +58,7 @@ impl OpenAiProvider {
                 temperature,
                 top_p: None,
                 effort: None,
+                max_tokens: None,
             },
             client: ChatComp { client },
         }
@@ -278,6 +279,7 @@ impl Provider for OpenAiProvider {
                 text,
                 usage,
                 images: Vec::new(),
+                truncated: None,
             })
         })
     }
@@ -418,6 +420,7 @@ impl ToolProvider for OpenAiProvider {
                     usage,
                     raw_content: None,
                     images: Vec::new(),
+                    truncated: None,
                 });
             }
 
@@ -458,6 +461,7 @@ impl ToolProvider for OpenAiProvider {
                 usage,
                 raw_content,
                 images: Vec::new(),
+                truncated: None,
             })
         })
     }

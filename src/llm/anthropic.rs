@@ -14,8 +14,13 @@ pub(crate) const PATH_MESSAGES: &str = "/v1/messages";
 pub(crate) const PATH_MODELS: &str = "/v1/models";
 /// The `anthropic-version` header value.
 pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
-/// Always sent as `max_tokens` (POLICY 5 quirk).
-pub(crate) const MAX_TOKENS: u32 = 4096;
+/// The `max_tokens` every request carries unless the model's config sets one (`models.<x>.max_tokens`).
+///
+/// Thinking counts toward it, so it has to leave room for a long think AND the answer after it: GLM-5.3
+/// thinks 7k–15k tokens on a multi-option analysis, which Go's 4096 cut off mid-thought every time. 32000
+/// is twice that measured peak and stays under every target endpoint's own ceiling (GLM 131072, current
+/// Claude models ≥ 64k) — a value above an endpoint's ceiling is a 400, not a clamp (DIVERGENCES X-68).
+pub(crate) const DEFAULT_MAX_TOKENS: u32 = 32_000;
 /// The server-side tool-search tool type.
 pub(crate) const SERVER_SEARCH_TOOL_TYPE: &str = "tool_search_tool_regex_20251119";
 /// The server-side tool-search tool name.
@@ -26,7 +31,7 @@ pub(crate) const SERVER_SEARCH_TOOL_NAME: &str = "tool_search_tool_regex";
 pub(crate) struct AnthropicRequest {
     /// Model id.
     pub(crate) model: String,
-    /// Always `MAX_TOKENS`.
+    /// The output ceiling: the model's `max_tokens:`, else `DEFAULT_MAX_TOKENS`.
     pub(crate) max_tokens: u32,
     /// Conversation.
     pub(crate) messages: Vec<AnthropicMsg>,
@@ -226,33 +231,6 @@ impl AnthropicUsage {
             self.cache_creation_input_tokens = Some(n);
         }
     }
-}
-
-/// Unary response body.
-#[derive(Deserialize, Default)]
-pub(crate) struct AnthropicResponse {
-    /// Content blocks.
-    #[serde(default)]
-    pub(crate) content: Vec<RespBlock>,
-    /// Usage, when reported.
-    #[serde(default)]
-    pub(crate) usage: Option<AnthropicUsage>,
-}
-
-/// One unary content block; only text is read (a unary response never carries tool calls).
-#[derive(Deserialize)]
-#[serde(tag = "type")]
-pub(crate) enum RespBlock {
-    /// A text block.
-    #[serde(rename = "text")]
-    Text {
-        /// The text.
-        #[serde(default)]
-        text: String,
-    },
-    /// Any other block type.
-    #[serde(other)]
-    Other,
 }
 
 /// A content block's class, as `content_block_start` names it — or as a stored replay block names itself.
@@ -551,18 +529,6 @@ pub(crate) struct Anthropic {
 }
 
 impl Anthropic {
-    /// POST /v1/messages with stream=false.
-    pub(crate) async fn message(
-        &self,
-        cancel: &CancellationToken,
-        req: &mut AnthropicRequest,
-    ) -> Result<AnthropicResponse, LlmError> {
-        req.stream = false;
-        self.client
-            .do_json(cancel, Method::POST, PATH_MESSAGES, Some(&*req))
-            .await
-    }
-
     /// POST /v1/messages with stream=true.
     pub(crate) async fn stream_message(
         &self,
@@ -722,7 +688,7 @@ mod tests {
     fn request_omitempty_shape() {
         let req = AnthropicRequest {
             model: "m".to_owned(),
-            max_tokens: MAX_TOKENS,
+            max_tokens: DEFAULT_MAX_TOKENS,
             messages: vec![AnthropicMsg {
                 role: "user",
                 content: vec![
@@ -751,7 +717,7 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_string(&req).unwrap(),
-            r#"{"model":"m","max_tokens":4096,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"r"}],"is_error":false},{"type":"server_tool_use"}]}],"tools":[{"type":"tool_search_tool_regex_20251119","name":"tool_search_tool_regex"}]}"#
+            r#"{"model":"m","max_tokens":32000,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"r"}],"is_error":false},{"type":"server_tool_use"}]}],"tools":[{"type":"tool_search_tool_regex_20251119","name":"tool_search_tool_regex"}]}"#
         );
     }
 }

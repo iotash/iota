@@ -212,10 +212,11 @@ pub(crate) struct TurnReport {
     /// Executed calls the parallel gate does not vouch for as read-only — what a
     /// whole-turn replay would run AGAIN (chat/run.go:1030-1031).
     pub(crate) side_fx: u32,
-    /// Content streamed before the user interrupted or the stream stalled (EMPTY on every other
-    /// outcome — Go's `fail()` returns the buffers only on cancellation; a stall has no Go twin).
+    /// Content streamed before the user interrupted, the stream stalled or the output ceiling
+    /// cut it off (EMPTY on every other outcome — Go's `fail()` returns the buffers only on
+    /// cancellation; a stall and a truncation have no Go twin).
     pub(crate) partial: String,
-    /// Reasoning streamed before the interrupt or the stall.
+    /// Reasoning streamed before the interrupt, the stall or the cut-off.
     pub(crate) partial_reasoning: String,
 }
 
@@ -225,10 +226,20 @@ impl TurnReport {
         matches!(self.outcome, Err(TurnFailure::Chat(ChatError::Interrupted)))
     }
 
-    /// Whether the stream went silent past its idle bound: still the error path, but the
-    /// completed tool rounds and the partial stay (`ProviderError::is_stall`).
-    pub(crate) fn is_stalled(&self) -> bool {
-        matches!(&self.outcome, Err(TurnFailure::Chat(ChatError::Provider(e))) if e.is_stall())
+    /// Whether the turn was cut off mid-answer — the stream went silent past its idle bound
+    /// (`ProviderError::is_stall`), or the output ceiling stopped it (`ChatError::Truncated`,
+    /// X-69): still the error path, but the completed tool rounds and the partial stay. `Some`
+    /// carries the notice that says what was kept.
+    pub(crate) fn cut_short(&self) -> Option<&'static str> {
+        match &self.outcome {
+            Err(TurnFailure::Chat(ChatError::Provider(e))) if e.is_stall() => {
+                Some("What arrived before the stall is kept — the reply may be incomplete.")
+            }
+            Err(TurnFailure::Chat(ChatError::Truncated(_))) => {
+                Some("What arrived before the cut-off is kept — the reply is incomplete.")
+            }
+            _ => None,
+        }
     }
 
     /// A completed turn; `used_tools` is stamped by `run_turn`.
@@ -469,6 +480,10 @@ pub(crate) async fn stream_turn(
             return TurnReport::bare(ChatError::Provider(e));
         }
     };
+    // A unary reply the output ceiling cut off is an error, as in the tool loop (X-69).
+    if let Some(cut) = result.truncated {
+        return TurnReport::bare(ChatError::Truncated(cut));
+    }
     if !result.text.is_empty() {
         let mut block = Scaffold::of(t).block(t.cx.tr.content_block());
         block.write(&result.text);
@@ -522,7 +537,7 @@ pub(crate) async fn stream_round(
                 }
             } else if e.is_stall() {
                 // A stall cuts the round off mid-stream the way ESC does: what streamed was
-                // real, so it travels with the error (the run loop keeps it, `keep_stalled_turn`).
+                // real, so it travels with the error (the run loop keeps it, `keep_cut_short_turn`).
                 RoundOutcome {
                     result: Err(ChatError::Provider(e)),
                     partial,
@@ -540,7 +555,20 @@ pub(crate) async fn stream_round(
                 partial_reasoning: reasoning,
             }
         }
-        Ok(round) => {
+        Ok(mut round) => {
+            // A round the output ceiling cut off is an error, never an answer (X-69, X-70): what
+            // streamed travels as the partial — the stall's shape — so visible text the
+            // model DID write is kept, marked cut short, while a thought cut off mid-sentence
+            // is never promoted to a reply below.
+            if let Some(cut) = round.truncated.take() {
+                sink.render_spill();
+                let (partial, reasoning) = sink.finish_partials();
+                return RoundOutcome {
+                    result: Err(ChatError::Truncated(cut)),
+                    partial,
+                    partial_reasoning: reasoning,
+                };
+            }
             // Reasoning-only response: the model thought and said nothing else, so the
             // reasoning IS the answer — rendered as content rather than reported as an
             // empty turn (run.go:1811-1817). Images make a text-less round valid on their

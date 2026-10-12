@@ -1,5 +1,5 @@
-//! A stalled stream and a hung title pass through the public entry point (`iota::repl::run`;
-//! DIVERGENCES X-64, `docs/history/request-cancellation-review-*.md`).
+//! A stalled stream, an output the ceiling cut off and a hung title pass through the public entry point
+//! (`iota::repl::run`; DIVERGENCES X-64, X-69, `docs/history/request-cancellation-review-*.md`).
 //!
 //! What only exists end to end is what the NEXT request carries — whether a stall kept the turn's
 //! completed tool round — and whether the loop's next step (another message, a command, the exit)
@@ -189,6 +189,92 @@ async fn a_stall_with_nothing_to_keep_rolls_the_turn_back() {
     assert!(!second.contains(&"do it".to_owned()), "{second:?}");
     assert_eq!(fx.printed_count("Response stalled"), 1);
     assert_eq!(fx.printed_count("the reply may be incomplete"), 0);
+}
+
+/// The GLM bug (X-69, X-70): the output ceiling cuts the model off mid-THOUGHT — no text at all. The draft is not
+/// promoted to the answer: the turn is an error naming the ceiling and the knob, it is not retried, and with
+/// nothing to keep it rolls back — so the next request carries neither the question nor the half-thought as
+/// something the assistant said.
+#[tokio::test]
+async fn a_thought_cut_off_by_the_ceiling_is_never_the_answer() {
+    let log = Log::default();
+    let provider = FakeProvider::new()
+        .with_tools()
+        .round(Round::cut_off(
+            "The user is leaning toward option 1. This needs flagging as a",
+            "",
+        ))
+        .replying("ok")
+        .with_log(log.clone());
+    let fx = Fixture::new(vec![input("geo dns?"), input("next"), Reply::Closed]);
+    fx.run(provider, None, &[]).await;
+
+    assert_eq!(
+        log.calls(),
+        2,
+        "the cut is not retried: {:?}",
+        log.prompts()
+    );
+    let second: Vec<_> = log.send(1).iter().map(shape).collect();
+    assert!(
+        !second
+            .iter()
+            .any(|(_, content, _)| content.contains("flagging as a")),
+        "the half-thought leaked into the history: {second:#?}"
+    );
+    assert!(
+        !second.iter().any(|(_, content, _)| content == "geo dns?"),
+        "nothing was kept, so the turn rolled back: {second:#?}"
+    );
+    assert_eq!(
+        fx.printed_count("Output truncated"),
+        1,
+        "{:#?}",
+        fx.printed()
+    );
+    assert_eq!(fx.printed_count("32000-token limit"), 1);
+    assert_eq!(fx.printed_count("Raise max_tokens:"), 1);
+    assert_eq!(
+        fx.printed_count("flagging as a"),
+        0,
+        "the thought must not be printed as an answer: {:#?}",
+        fx.printed()
+    );
+}
+
+/// A cut that lands after the model started its REPLY keeps that text — it is what the model said —
+/// marked cut short like a stall's partial, under the same error.
+#[tokio::test]
+async fn a_reply_cut_off_by_the_ceiling_keeps_its_text_marked_cut_short() {
+    let log = Log::default();
+    let provider = FakeProvider::new()
+        .with_tools()
+        .round(Round::cut_off("weigh it", "Cloudflare's DNS has no geo"))
+        .replying("ok")
+        .with_log(log.clone());
+    let fx = Fixture::new(vec![input("geo dns?"), input("next"), Reply::Closed]);
+    fx.run(provider, None, &[]).await;
+
+    assert_eq!(log.calls(), 2);
+    let second: Vec<_> = log.send(1).iter().map(shape).collect();
+    let tail = &second[second.len() - 3..];
+    assert_eq!(tail[0], (Role::User, "geo dns?".to_owned(), vec![]));
+    assert_eq!(
+        (tail[1].0, tail[1].1.as_str()),
+        (Role::Assistant, "Cloudflare's DNS has no geo"),
+        "the text that streamed before the cut is kept"
+    );
+    assert_eq!(tail[2], (Role::User, "next".to_owned(), vec![]));
+    assert_eq!(
+        fx.printed_count("Output truncated"),
+        1,
+        "{:#?}",
+        fx.printed()
+    );
+    assert_eq!(
+        fx.printed_count("What arrived before the cut-off is kept"),
+        1
+    );
 }
 
 /// The answer arrives at once and only the title pass hangs: the next message goes out at once —

@@ -133,6 +133,10 @@ pub(crate) enum CompactError {
     /// The model answered with nothing to keep.
     #[error("empty summary")]
     EmptySummary,
+    /// The output ceiling cut the summary off: a fragment must not replace the history it summarises
+    /// (DIVERGENCES X-69).
+    #[error("summary {0}")]
+    Truncated(crate::provider::Truncation),
     /// The summary call failed.
     #[error(transparent)]
     Provider(#[from] ProviderError),
@@ -294,6 +298,9 @@ async fn summarize(
     prompt.push_str("--- CONVERSATION END ---");
 
     let res = provider.chat(cancel, &[Message::user(prompt)]).await?;
+    if let Some(cut) = res.truncated {
+        return Err(CompactError::Truncated(cut));
+    }
     Ok((res.text, res.usage))
 }
 
@@ -591,6 +598,21 @@ mod tests {
             .await
             .expect_err("an empty summary must fail");
         assert_eq!(e.to_string(), "empty summary");
+    }
+
+    /// A summary the output ceiling cut off is a failed pass too (X-69): a fragment must not replace
+    /// the history it was summarising.
+    #[tokio::test]
+    async fn a_truncated_summary_is_an_error() {
+        let p = FakeProvider::new().round(crate::testing::Round::cut_off("", "The user asked"));
+        let e = compact_history(&CancellationToken::new(), &p, &history(), "", None)
+            .await
+            .expect_err("a cut-off summary must fail");
+        assert!(matches!(e, super::CompactError::Truncated(_)), "{e:?}");
+        assert_eq!(
+            e.to_string(),
+            "summary stop_reason: max_tokens: the output hit its 32000-token limit"
+        );
     }
 
     /// The summary prompt: the hardened instruction, the user's hint where Go puts it, and

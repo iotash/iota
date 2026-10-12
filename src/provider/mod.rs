@@ -176,6 +176,40 @@ impl Effort {
     }
 }
 
+/// Why a call's output stopped before the model ended it: the request's output ceiling cut it off.
+///
+/// Dialect-neutral on purpose — Anthropic's `stop_reason: max_tokens` fills it today; `OpenAI`'s
+/// `finish_reason: length` and Gemini's `MAX_TOKENS` are the same fact in other spellings. A truncated
+/// call is NOT an answer: the reasoning-only rule must not promote a thought cut off mid-sentence to a
+/// reply, and a tool call whose arguments were still streaming never runs (DIVERGENCES X-69, X-70).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Truncation {
+    /// The dialect's own spelling of the stop, as the error text quotes it (`stop_reason: max_tokens`).
+    pub reason: String,
+    /// The ceiling the request carried, when the dialect sends one.
+    pub limit: Option<u32>,
+    /// The tool calls the model had started composing when the ceiling hit, by name. They are dropped,
+    /// never run — this list is how that stays visible.
+    pub dropped_tools: Vec<String>,
+}
+
+impl std::fmt::Display for Truncation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.limit {
+            Some(n) => write!(f, "{}: the output hit its {n}-token limit", self.reason)?,
+            None => write!(f, "{}: the output hit its token limit", self.reason)?,
+        }
+        if !self.dropped_tools.is_empty() {
+            write!(
+                f,
+                "; the tool call it was composing was dropped ({})",
+                self.dropped_tools.join(", ")
+            )?;
+        }
+        Ok(())
+    }
+}
+
 /// Result of a unary `Provider::chat` call.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChatResult {
@@ -185,6 +219,8 @@ pub struct ChatResult {
     pub usage: Option<Usage>,
     /// Images the call generated.
     pub images: Vec<Attachment>,
+    /// `Some` when the output ceiling cut the reply off (see [`Truncation`]).
+    pub truncated: Option<Truncation>,
 }
 
 /// Result of one tool-loop round (`ToolProvider::stream_chat_with_tools`).
@@ -202,6 +238,9 @@ pub struct RoundResult {
     pub raw_content: Option<RawContent>,
     /// Images the round generated.
     pub images: Vec<Attachment>,
+    /// `Some` when the output ceiling cut the round off (see [`Truncation`]): `content` and `reasoning`
+    /// are then what streamed before the cut, and `tool_calls` is empty.
+    pub truncated: Option<Truncation>,
 }
 
 /// An LLM provider. Calls take `&self`; every per-call product is returned in `ChatResult`/`RoundResult`.
@@ -236,6 +275,10 @@ pub trait Provider: Send + Sync {
     }
     /// Nucleus-sampling capability.
     fn as_top_p_tunable(&mut self) -> Option<&mut dyn TopPTunable> {
+        None
+    }
+    /// Output-ceiling capability: the dialect sends a `max_tokens` on every request.
+    fn as_max_tokens_tunable(&mut self) -> Option<&mut dyn MaxTokensTunable> {
         None
     }
     /// Image-output opt-in capability.
@@ -341,6 +384,14 @@ pub trait TopPTunable: Send + Sync {
     fn set_top_p(&mut self, p: Option<f64>);
     /// The configured `top_p`.
     fn top_p(&self) -> Option<f64>;
+}
+
+/// The output ceiling a dialect sends on every request (config-only `max_tokens`; DIVERGENCES X-68).
+pub trait MaxTokensTunable: Send + Sync {
+    /// Sets `max_tokens` (`None` = the dialect's default).
+    fn set_max_tokens(&mut self, n: Option<u32>);
+    /// The configured `max_tokens`; `None` = the dialect's default.
+    fn max_tokens(&self) -> Option<u32>;
 }
 
 /// Providers whose image generation needs an explicit request-side opt-in.

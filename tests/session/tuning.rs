@@ -288,3 +288,55 @@ fn a_bot_replays_nothing_the_config_owns() {
     assert!(provider.image_output(), "image output still replays");
     assert!(provider.json_edits(), "json edits still replay");
 }
+
+/// `max_tokens` (DIVERGENCES X-68) replays like `top_p`: a recorded ceiling goes back onto a dialect that
+/// sends one, a bundle with none leaves the dialect's default, and a bot's config owns it.
+#[test]
+fn a_recorded_max_tokens_replays_unless_the_config_owns_it() {
+    use iota::provider::MaxTokensTunable;
+    let anthropic = || {
+        iota::provider::anthropic::AnthropicProvider::new(
+            "k",
+            "",
+            "glm-5.3",
+            None,
+            reqwest::Client::new(),
+        )
+    };
+    let meta = SessionMeta {
+        provider: "anthropic".to_owned(),
+        max_tokens: Some(64_000),
+        ..SessionMeta::default()
+    };
+    let mut warn = |w: String| panic!("unexpected warning: {w}");
+
+    let mut p = anthropic();
+    apply_session_tuning(&meta, &mut p, "anthropic", &Overrides::default(), &mut warn);
+    assert_eq!(p.max_tokens(), Some(64_000));
+
+    let mut p = anthropic();
+    let silent = SessionMeta {
+        max_tokens: None,
+        ..meta.clone()
+    };
+    apply_session_tuning(
+        &silent,
+        &mut p,
+        "anthropic",
+        &Overrides::default(),
+        &mut warn,
+    );
+    assert_eq!(
+        p.max_tokens(),
+        None,
+        "no record: the dialect's default stands"
+    );
+
+    let mut p = anthropic();
+    let bot = Overrides {
+        config_wins: true,
+        ..Overrides::default()
+    };
+    apply_session_tuning(&meta, &mut p, "anthropic", &bot, &mut warn);
+    assert_eq!(p.max_tokens(), None, "a bot's config owns the ceiling");
+}

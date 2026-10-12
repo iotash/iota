@@ -47,9 +47,17 @@ impl ErrorReport {
 pub fn describe_error(e: &ChatError) -> ErrorReport {
     match e {
         ChatError::Provider(ProviderError::Wire { source, .. }) => describe_llm(source, e),
+        ChatError::Truncated(t) => ErrorReport {
+            headline: "Output truncated".to_owned(),
+            detail: vec![t.to_string()],
+            hint: TRUNCATED_HINT.to_owned(),
+        },
         other => ErrorReport::request_failed(other),
     }
 }
+
+/// What a user can do about an output the ceiling cut off: raise the ceiling, or think less.
+const TRUNCATED_HINT: &str = "Raise max_tokens: on this model's config entry (thinking counts toward it), or lower its effort in /model";
 
 /// What a user can do about a stalled stream. It names no setting on purpose: the idle bound is a
 /// constant (`client::STREAM_IDLE_TIMEOUT`), not a knob (decided 2026-10-01).
@@ -288,6 +296,17 @@ mod tests {
                 headline: "Response stalled",
                 detail: "stream error: no data from the provider for 5m0s (stream idle timeout); the request was not retried".to_owned(),
                 hint: "Send the message again, or check the provider's base URL and model (/model); ESC stops a silent wait sooner",
+            },
+            Case {
+                name: "a truncated output names the ceiling and the knob",
+                err: ChatError::Truncated(crate::provider::Truncation {
+                    reason: "stop_reason: max_tokens".to_owned(),
+                    limit: Some(32_000),
+                    dropped_tools: Vec::new(),
+                }),
+                headline: "Output truncated",
+                detail: "stop_reason: max_tokens: the output hit its 32000-token limit".to_owned(),
+                hint: "Raise max_tokens: on this model's config entry (thinking counts toward it), or lower its effort in /model",
             },
             Case {
                 name: "plain error",

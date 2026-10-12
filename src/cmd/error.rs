@@ -153,6 +153,9 @@ pub enum SetupError {
     /// The config `top_p:` is outside 0.0-1.0.
     #[error("config top_p {}: want 0.0-1.0", go_float(*.0))]
     ConfigTopP(f64),
+    /// The config `max_tokens:` is 0.
+    #[error("config max_tokens {0}: want 1 or more")]
+    ConfigMaxTokens(u32),
     /// The working directory could not be resolved (agent mode).
     #[error("failed to resolve working directory: {0}")]
     Cwd(#[source] std::io::Error),

@@ -908,7 +908,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         let mut landed = false;
 
         let interrupted = outcome.is_interrupted();
-        let stalled = outcome.is_stalled();
+        let cut_short = outcome.cut_short();
         let TurnReport {
             outcome: turn_result,
             partial,
@@ -944,11 +944,18 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 repl.handles
                     .tr
                     .error_block(&report.headline, &report.lines());
-                // A stall keeps what the turn completed; anything else — or a stall with
-                // nothing to keep — rolls the turn back WITH its user message, and the name
-                // derived from it, so a title pass still in flight could only land a name
-                // `unseed` already discards. A kept stall lands like a kept interrupt (fable M2).
-                if stalled && keep_stalled_turn(&mut repl, hist0 - 1, &partial, &partial_reasoning)
+                // A stall or a truncation keeps what the turn completed; anything else — or
+                // a cut with nothing to keep — rolls the turn back WITH its user message, and
+                // the name derived from it, so a title pass still in flight could only land a
+                // name `unseed` already discards. A kept cut lands like a kept interrupt (fable M2).
+                if let Some(notice) = cut_short
+                    && keep_cut_short_turn(
+                        &mut repl,
+                        hist0 - 1,
+                        &partial,
+                        &partial_reasoning,
+                        notice,
+                    )
                 {
                     landed = !flush;
                 } else {
@@ -1327,19 +1334,22 @@ fn interrupt_turn(
     persist
 }
 
-/// Keeps what a stalled turn completed (`LlmError::StreamIdle`, the stream idle bound) — the
-/// interrupt table's kept branches, under the error the caller already showed: the completed
-/// tool rounds stay (their side effects happened, and a history without them would have the
-/// model run them again), and the partial text lands as an assistant message marked cut short.
+/// Keeps what a turn cut short completed — a stall (`LlmError::StreamIdle`, the stream idle
+/// bound) or a truncation (`ChatError::Truncated`, X-69) — the interrupt table's kept branches,
+/// under the error the caller already showed: the completed tool rounds stay (their side
+/// effects happened, and a history without them would have the model run them again), and the
+/// partial text lands as an assistant message marked cut short.
 /// Returns `false`, touching nothing, when there is nothing to keep — the plain rollback then
-/// runs. The stall stays an error (red block, `State::Error`, no retry); only the bookkeeping
+/// runs. The cut stays an error (red block, `State::Error`, no retry); only the bookkeeping
 /// follows ESC's — all of it: unanswered calls answered before the save, the rounds' measured
-/// usage kept for a bot's threshold, and the caller counts the turn as landed.
-fn keep_stalled_turn(
+/// usage kept for a bot's threshold, and the caller counts the turn as landed. `notice` says
+/// what was kept ([`TurnReport::cut_short`](crate::repl::turn::TurnReport::cut_short)).
+fn keep_cut_short_turn(
     repl: &mut Repl,
     watermark: usize,
     partial: &str,
     partial_reasoning: &str,
+    notice: &str,
 ) -> bool {
     let InterruptDecision {
         history, persist, ..
@@ -1354,9 +1364,7 @@ fn keep_stalled_turn(
     }
     repl.conv.history = history;
     crate::session::repair_tail(&mut repl.conv.history);
-    repl.handles
-        .tr
-        .notice("What arrived before the stall is kept — the reply may be incomplete.");
+    repl.handles.tr.notice(notice);
     persist_kept_turn(repl);
     rebudget_kept_turn(repl, watermark, true);
     true

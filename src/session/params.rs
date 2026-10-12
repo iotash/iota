@@ -1,8 +1,8 @@
-//! The four parameters a session runs under, each with the SOURCE that put it there (brain page
+//! The five parameters a session runs under, each with the SOURCE that put it there (brain page
 //! `model-param-layering`).
 //!
-//! `context_window`, `effort`, `temperature` and `top_p` are declared in two config layers and can also be
-//! set by hand in `/model`. The value alone is not enough to decide what a later model switch should do with
+//! `context_window`, `effort`, `temperature`, `top_p` and `max_tokens` are declared in two config layers;
+//! the first three can also be set by hand in `/model`. The value alone is not enough to decide what a later model switch should do with
 //! it — a window inherited from `models.gpt5` must not survive a switch to a model that declares none, while
 //! one the user typed must — so every value carries where it came from ([`ParamSource`]), and the tag is
 //! persisted beside the value in `meta.json`.
@@ -48,6 +48,8 @@ pub struct ParamSources {
     pub temperature: ParamSource,
     /// Where the recorded `top_p` came from.
     pub top_p: ParamSource,
+    /// Where the recorded `max_tokens` came from.
+    pub max_tokens: ParamSource,
 }
 
 impl ParamSources {
@@ -64,9 +66,10 @@ impl ParamSources {
         effort: ParamSource::User,
         temperature: ParamSource::User,
         top_p: ParamSource::User,
+        max_tokens: ParamSource::User,
     };
 
-    /// Every parameter at the same source — the four evaluated at once, for a caller with nothing to
+    /// Every parameter at the same source — the five evaluated at once, for a caller with nothing to
     /// distinguish them by.
     pub const fn all(source: ParamSource) -> ParamSources {
         ParamSources {
@@ -74,6 +77,7 @@ impl ParamSources {
             effort: source,
             temperature: source,
             top_p: source,
+            max_tokens: source,
         }
     }
 }
@@ -81,7 +85,8 @@ impl ParamSources {
 /// One layered parameter: the value the session currently runs under, and where it came from.
 ///
 /// `T` is the value AS THE SESSION HOLDS IT, with `T::default()` meaning "unset" — `0` for the window, `""`
-/// for the effort, `None` for the two sampling knobs — so one evaluation serves all four.
+/// for the effort, `None` for the two sampling knobs and the output ceiling — so one evaluation serves all
+/// five.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Param<T> {
     /// The value.
@@ -108,10 +113,10 @@ impl<T> Param<T> {
     }
 }
 
-/// The four layered parameters as ONE value: what the session runs under right now.
+/// The five layered parameters as ONE value: what the session runs under right now.
 ///
 /// It is assembled from where each value actually lives — the context budget for the window, the provider
-/// for the three tunables — rather than kept as a second copy of them; only the sources are state of their
+/// for the four tunables — rather than kept as a second copy of them; only the sources are state of their
 /// own ([`ParamSources`]).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LayeredParams {
@@ -123,16 +128,19 @@ pub struct LayeredParams {
     pub temperature: Param<Option<f64>>,
     /// Nucleus sampling; `None` = omit the parameter.
     pub top_p: Param<Option<f64>>,
+    /// The output ceiling; `None` = the dialect's default (DIVERGENCES X-68).
+    pub max_tokens: Param<Option<u32>>,
 }
 
 impl LayeredParams {
-    /// The four sources, in the shape `meta.json` records.
+    /// The five sources, in the shape `meta.json` records.
     pub fn sources(&self) -> ParamSources {
         ParamSources {
             context_window: self.context_window.source,
             effort: self.effort.source,
             temperature: self.temperature.source,
             top_p: self.top_p.source,
+            max_tokens: self.max_tokens.source,
         }
     }
 }
@@ -167,7 +175,7 @@ mod tests {
         let text = serde_json::to_string(&sources).expect("serialise");
         assert_eq!(
             text,
-            r#"{"context_window":"config","effort":"user","temperature":"builtin","top_p":"builtin"}"#
+            r#"{"context_window":"config","effort":"user","temperature":"builtin","top_p":"builtin","max_tokens":"builtin"}"#
         );
         assert_eq!(
             serde_json::from_str::<ParamSources>(&text).expect("decode"),

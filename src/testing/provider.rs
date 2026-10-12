@@ -22,7 +22,8 @@ use crate::provider::sink::StreamSink;
 use crate::provider::usage::Usage;
 use crate::provider::{
     ChatResult, Effort, ImageEditJsonTunable, ImageGenOptions, ImageGenParams, ImageGenTunable,
-    ImagePartialProvider, ImageTunable, Provider, ProviderKind, RoundResult, ToolProvider, Tunable,
+    ImagePartialProvider, ImageTunable, MaxTokensTunable, Provider, ProviderKind, RoundResult,
+    ToolProvider, Tunable,
 };
 
 /// How a round fails instead of answering.
@@ -140,6 +141,33 @@ impl Round {
         }
     }
 
+    /// Streams `reasoning` and then `content` (either may be empty), and returns them as a round the
+    /// output ceiling cut off — Anthropic's `stop_reason: max_tokens` at the default 32000 (X-69).
+    pub fn cut_off(reasoning: &str, content: &str) -> Self {
+        let deltas = |s: &str| {
+            if s.is_empty() {
+                Vec::new()
+            } else {
+                vec![s.to_owned()]
+            }
+        };
+        Self {
+            reasoning: deltas(reasoning),
+            content: deltas(content),
+            result: RoundResult {
+                content: content.to_owned(),
+                reasoning: reasoning.to_owned(),
+                truncated: Some(crate::provider::Truncation {
+                    reason: "stop_reason: max_tokens".to_owned(),
+                    limit: Some(32_000),
+                    dropped_tools: Vec::new(),
+                }),
+                ..RoundResult::default()
+            },
+            ..Self::default()
+        }
+    }
+
     /// Never answers (see [`Round::hang`]).
     pub fn hanging() -> Self {
         Self {
@@ -189,6 +217,7 @@ fn chat_result(r: RoundResult) -> ChatResult {
         text: r.content,
         usage: r.usage,
         images: r.images,
+        truncated: r.truncated,
     }
 }
 
@@ -308,6 +337,7 @@ pub struct FakeProvider {
     image_output: Option<bool>,
     image_gen: Option<(ImageGenOptions, ImageGenParams)>,
     json_edits: Option<bool>,
+    max_tokens: MaxTokensSlot,
     frames: Option<Vec<Vec<u8>>>,
     rounds: Mutex<VecDeque<Round>>,
     tail: Round,
@@ -330,6 +360,7 @@ impl Default for FakeProvider {
             image_output: None,
             image_gen: None,
             json_edits: None,
+            max_tokens: MaxTokensSlot::default(),
             frames: None,
             rounds: Mutex::new(VecDeque::new()),
             tail: Round::default(),
@@ -338,6 +369,13 @@ impl Default for FakeProvider {
             log: Log::default(),
         }
     }
+}
+
+/// The `MaxTokensTunable` state: whether the capability is on, and the ceiling (`None` = the default).
+#[derive(Clone, Copy, Debug, Default)]
+struct MaxTokensSlot {
+    on: bool,
+    value: Option<u32>,
 }
 
 /// The empty parameters an `ImageGenTunable` without knobs reports.
@@ -453,6 +491,13 @@ impl FakeProvider {
     #[must_use]
     pub fn with_json_edits(mut self, on: bool) -> Self {
         self.json_edits = Some(on);
+        self
+    }
+
+    /// Switches the `MaxTokensTunable` capability on, the ceiling initially `n` (`None` = the default).
+    #[must_use]
+    pub fn with_max_tokens(mut self, n: Option<u32>) -> Self {
+        self.max_tokens = MaxTokensSlot { on: true, value: n };
         self
     }
 
@@ -694,6 +739,12 @@ impl Provider for FakeProvider {
         self.tuning.is_some().then_some(self as &mut dyn Tunable)
     }
 
+    fn as_max_tokens_tunable(&mut self) -> Option<&mut dyn MaxTokensTunable> {
+        self.max_tokens
+            .on
+            .then_some(self as &mut dyn MaxTokensTunable)
+    }
+
     fn as_image_tunable(&mut self) -> Option<&mut dyn ImageTunable> {
         self.image_output
             .is_some()
@@ -785,6 +836,18 @@ impl Tunable for FakeProvider {
 
     fn effort(&self) -> Option<Effort> {
         self.tuning.and_then(|t| t.effort)
+    }
+}
+
+impl MaxTokensTunable for FakeProvider {
+    fn set_max_tokens(&mut self, n: Option<u32>) {
+        if self.max_tokens.on {
+            self.max_tokens.value = n;
+        }
+    }
+
+    fn max_tokens(&self) -> Option<u32> {
+        self.max_tokens.value
     }
 }
 

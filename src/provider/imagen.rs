@@ -202,6 +202,7 @@ impl Provider for ImagenProvider {
                 text: String::new(),
                 usage: None,
                 images,
+                truncated: None,
             })
         })
     }

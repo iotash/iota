@@ -73,7 +73,8 @@ pub async fn retry_round<T>(
 
 /// Whether the error is likely transient and worth retrying (chat.go:136-158).
 ///
-/// Non-retryable: user interruption, the tool-loop caps, a cancelled or provider-declared
+/// Non-retryable: user interruption, an output the ceiling cut off (the same request hits it again), the
+/// tool-loop caps, a cancelled or provider-declared
 /// permanent failure, a non-streaming stream response (`ErrNoEvents`), a stream that went silent
 /// past its idle bound (`StreamIdle`) and HTTP 4xx except 429. Everything else — 429, 5xx,
 /// transport faults, malformed frames — retries.
@@ -86,6 +87,7 @@ pub async fn retry_round<T>(
 pub(crate) fn is_retryable(err: &ChatError) -> bool {
     match err {
         ChatError::Interrupted
+        | ChatError::Truncated(_)
         | ChatError::LocalCap { .. }
         | ChatError::SharedCap { .. }
         | ChatError::Provider(ProviderError::Cancelled | ProviderError::Permanent(_)) => false,
@@ -153,6 +155,10 @@ mod tests {
             turns: std::num::NonZeroU32::new(3).expect("nonzero")
         }));
         assert!(!is_retryable(&ChatError::SharedCap { turns: 3 }));
+        // An output the ceiling cut off hits the same ceiling again (X-69).
+        assert!(!is_retryable(&ChatError::Truncated(
+            crate::provider::Truncation::default()
+        )));
         assert!(!is_retryable(&ChatError::Provider(
             ProviderError::Cancelled
         )));

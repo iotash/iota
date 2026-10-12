@@ -149,6 +149,7 @@ impl ImagesProvider {
             text: String::new(),
             usage: None,
             images,
+            truncated: None,
         })
     }
 }

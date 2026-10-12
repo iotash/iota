@@ -80,6 +80,7 @@ impl GoogleProvider {
                 temperature,
                 top_p: None,
                 effort: None,
+                max_tokens: None,
             },
             client: Google {
                 client: api_key_client(api_key, base_url, GEMINI_DEFAULT_BASE_URL, http.into()),
@@ -108,6 +109,7 @@ impl GoogleProvider {
                 temperature,
                 top_p: None,
                 effort: None,
+                max_tokens: None,
             },
             client: Google {
                 client: api_key_client(api_key, base_url, VERTEX_DEFAULT_BASE_URL, http.into()),
@@ -417,6 +419,7 @@ impl Provider for GoogleProvider {
                 text,
                 usage,
                 images,
+                truncated: None,
             })
         })
     }
@@ -546,6 +549,7 @@ impl ToolProvider for GoogleProvider {
                 usage,
                 raw_content,
                 images,
+                truncated: None,
             })
         })
     }

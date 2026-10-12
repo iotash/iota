@@ -39,7 +39,7 @@ pub struct Overrides {
     /// The caller fixed a context window (likewise: `--context-window` is gone).
     pub window: bool,
     /// A bot (docs/design/bot-mode.md §2.2): the config owns the model, the context window, effort,
-    /// temperature and `top_p`, so the session's record of them replays NOTHING — a config edit takes effect
+    /// temperature, `top_p` and `max_tokens`, so the session's record of them replays NOTHING — a config edit takes effect
     /// on the next start instead of being frozen at the session's first day. The rest of the bundle's tuning
     /// (image output and generation, json edits) still replays.
     pub config_wins: bool,
@@ -73,12 +73,13 @@ pub fn replay_session_settings(
 /// - **temperature**: only when the caller did not fix one (`overrides.temperature`) and the session recorded one;
 /// - **effort**: whenever the session recorded one — Go has no effort flag, so there is no skip;
 /// - **`top_p`**: whenever the session recorded one (no flag, no skip);
+/// - **`max_tokens`**: likewise (DIVERGENCES X-68);
 /// - **image**: `set_image_output(true)` only when `meta.image`;
 /// - **image generation**: only when `{aspect_ratio, image_size, negative_prompt}` is non-empty, so an
 ///   absent meta leaves the config defaults alone (the effort convention);
 /// - **json edits**: `set_json_edits(true)` only when `meta.json_edits`.
 ///
-/// With `overrides.config_wins` (a bot) temperature, effort, `top_p` and the window are skipped: the config
+/// With `overrides.config_wins` (a bot) temperature, effort, `top_p`, `max_tokens` and the window are skipped: the config
 /// owns them.
 ///
 /// The context window is RETURNED rather than pushed through Go's `setWindow` callback — headless has no
@@ -125,6 +126,14 @@ pub fn apply_session_tuning(
         && let Some(tunable) = provider.as_top_p_tunable()
     {
         tunable.set_top_p(Some(top_p));
+    }
+    // `max_tokens` is the same kind of record: config-only, carried so a resume runs under the ceiling the
+    // session was started with.
+    if !overrides.config_wins
+        && let Some(n) = meta.max_tokens
+        && let Some(tunable) = provider.as_max_tokens_tunable()
+    {
+        tunable.set_max_tokens(Some(n));
     }
     if meta.image
         && let Some(image) = provider.as_image_tunable()

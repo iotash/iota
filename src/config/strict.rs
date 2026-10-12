@@ -19,7 +19,7 @@ const TOP_KEYS: [&str; 4] = ["providers", "models", "agents", "mcp_servers"];
 /// Every key a `providers.<name>` entry accepts — the ENDPOINT.
 const PROVIDER_KEYS: [&str; 3] = ["type", "key", "url"];
 /// Every key a `models.<name>` entry accepts.
-const MODEL_KEYS: [&str; 12] = [
+const MODEL_KEYS: [&str; 13] = [
     "provider",
     "id",
     "context_window",
@@ -27,6 +27,7 @@ const MODEL_KEYS: [&str; 12] = [
     "effort",
     "temperature",
     "top_p",
+    "max_tokens",
     "image",
     "aspect_ratio",
     "image_size",
@@ -34,7 +35,7 @@ const MODEL_KEYS: [&str; 12] = [
     "json_edits",
 ];
 /// Every key an `agents.<name>` entry accepts.
-const AGENT_KEYS: [&str; 14] = [
+const AGENT_KEYS: [&str; 15] = [
     "model",
     "choices",
     "system",
@@ -49,6 +50,7 @@ const AGENT_KEYS: [&str; 14] = [
     "effort",
     "temperature",
     "top_p",
+    "max_tokens",
 ];
 /// Every key an `mcp_servers.<name>` entry accepts.
 const MCP_KEYS: [&str; 10] = [
@@ -327,7 +329,7 @@ mod tests {
     fn workspace_is_an_unknown_agent_key() {
         assert_eq!(
             check("agents:\n  a: {model: m, workspace: true}\n"),
-            "agents.a.workspace: unknown key (want model, choices, system, system_file, tools, mcp_servers, mode, no_save, notify, description, context_window, effort, temperature, top_p)"
+            "agents.a.workspace: unknown key (want model, choices, system, system_file, tools, mcp_servers, mode, no_save, notify, description, context_window, effort, temperature, top_p, max_tokens)"
         );
     }
 

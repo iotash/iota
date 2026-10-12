@@ -37,6 +37,9 @@ fn read(provider: &mut dyn Provider, window: u64, sources: ParamSources) -> Laye
         },
     );
     let top_p = provider.as_top_p_tunable().and_then(|t| t.top_p());
+    let max_tokens = provider
+        .as_max_tokens_tunable()
+        .and_then(|t| t.max_tokens());
     LayeredParams {
         context_window: Param {
             value: window,
@@ -54,10 +57,14 @@ fn read(provider: &mut dyn Provider, window: u64, sources: ParamSources) -> Laye
             value: top_p,
             source: sources.top_p,
         },
+        max_tokens: Param {
+            value: max_tokens,
+            source: sources.max_tokens,
+        },
     }
 }
 
-/// Hands the three tunables the chat runs under to `provider` — the instance a move to another endpoint puts in
+/// Hands the four tunables the chat runs under to `provider` — the instance a move to another endpoint puts in
 /// place of the live one — so [`switch_model`] re-evaluates what the session was running under, as it does
 /// for a switch on one endpoint, rather than the fresh instance's own defaults. A knob the dialect has no
 /// place for is dropped with it. The window lives in the budget and needs no carrying.
@@ -69,9 +76,12 @@ pub(crate) fn carry(provider: &mut dyn crate::provider::Provider, running: &Laye
     if let Some(t) = provider.as_top_p_tunable() {
         t.set_top_p(running.top_p.value);
     }
+    if let Some(t) = provider.as_max_tokens_tunable() {
+        t.set_max_tokens(running.max_tokens.value);
+    }
 }
 
-/// Re-evaluates the four parameters for the model the chat has just switched to, and applies whatever moved.
+/// Re-evaluates the five parameters for the model the chat has just switched to, and applies whatever moved.
 ///
 /// This is the second (and last) evaluating moment: `agents:` → the NEW model's `models:` entry → the
 /// session's current value, with a value that came from a declaration dropped rather than carried onto a
@@ -86,7 +96,7 @@ pub(crate) fn switch_model(repl: &mut Repl, id: &str) -> bool {
     apply(repl, &next)
 }
 
-/// The four parameters re-evaluated for `id` against `layers`, from what the session is `running` under: the
+/// The five parameters re-evaluated for `id` against `layers`, from what the session is `running` under: the
 /// evaluating half of [`switch_model`], warning about a declaration it cannot take and a `defer_mode` it cannot
 /// hand over. A move to another endpoint evaluates against THAT endpoint's layers before anything is
 /// installed, so what it writes into the bundle is what will land (`commands::model::move_to`).
@@ -127,6 +137,15 @@ pub(crate) fn reevaluate(
                 1.0,
                 &format!("config top_p {}", crate::text::go_float(*p)),
             )
+        }),
+        max_tokens: declared.max_tokens.filter(|n| {
+            if *n > 0 {
+                return true;
+            }
+            repl.handles
+                .tr
+                .error("Warning: config max_tokens 0: want 1 or more (ignored)");
+            false
         }),
         ..declared
     };
@@ -170,6 +189,7 @@ pub(crate) fn apply(repl: &mut Repl, next: &LayeredParams) -> bool {
     let counts_tokens = repl.conv.provider.reports_usage();
     let tunable = repl.conv.provider.as_tunable().is_some();
     let nucleus = repl.conv.provider.as_top_p_tunable().is_some();
+    let ceiling = repl.conv.provider.as_max_tokens_tunable().is_some();
     let landed = landing(&mut *repl.conv.provider, &now, next);
     let window = landed.context_window.value;
     let sources = landed.sources();
@@ -225,6 +245,18 @@ pub(crate) fn apply(repl: &mut Repl, next: &LayeredParams) -> bool {
         changed = true;
     }
 
+    if ceiling && landed.max_tokens.value != now.max_tokens.value {
+        if let Some(t) = repl.conv.provider.as_max_tokens_tunable() {
+            t.set_max_tokens(landed.max_tokens.value);
+        }
+        let max_tokens = landed.max_tokens.value;
+        commit(repl, sources, move |m| m.max_tokens = max_tokens);
+        repl.handles
+            .tr
+            .notice(&format!("Max tokens: {}", max_tokens_label(max_tokens)));
+        changed = true;
+    }
+
     // A source can move without its value doing so — a declaration that merely CONFIRMS what the session was
     // already running under still takes ownership of it, and the next switch must know that.
     if !changed && repl.conv.param_sources != sources {
@@ -262,7 +294,18 @@ pub(crate) fn landing(
     if provider.as_top_p_tunable().is_some() {
         landed.top_p = next.top_p.clone();
     }
+    if provider.as_max_tokens_tunable().is_some() {
+        landed.max_tokens = next.max_tokens.clone();
+    }
     landed
+}
+
+/// How a `Max tokens:` notice names a ceiling: the number, or `default (32000)` for the dialect's own.
+fn max_tokens_label(n: Option<u32>) -> String {
+    n.map_or_else(
+        || format!("default ({})", crate::llm::anthropic::DEFAULT_MAX_TOKENS),
+        |n| n.to_string(),
+    )
 }
 
 /// The chat's parameters as [`read`] reads them off `provider` — the instance a move is about to install —
@@ -271,7 +314,7 @@ pub(crate) fn read_off(repl: &Repl, provider: &mut dyn Provider) -> LayeredParam
     read(provider, repl.conv.budget.window(), repl.conv.param_sources)
 }
 
-/// What a session STARTING writes into a bundle it has just created: the four values it is running under
+/// What a session STARTING writes into a bundle it has just created: the five values it is running under
 /// and the source of each, so a resume finds the session as it was rather than re-deriving it from a config
 /// that may have moved since.
 ///
@@ -280,7 +323,7 @@ pub(crate) fn read_off(repl: &Repl, provider: &mut dyn Provider) -> LayeredParam
 /// would restate a config the user may be about to edit.
 ///
 /// `window` is `None` for a provider with no token accounting: a session that cannot count tokens has no
-/// window to record. The other three come from [`current`], i.e. from the provider itself, so a knob the
+/// window to record. The other four come from [`current`], i.e. from the provider itself, so a knob the
 /// dialect cannot act on is recorded as the nothing it is.
 pub(crate) fn stamp_bundle(repl: &Repl, window: Option<u64>, params: &LayeredParams) {
     update_meta(repl, |m| m.stamp(window, params));
