@@ -39,7 +39,9 @@ wait_vis 'Enter select' || bad "the model combo never opened"
 settle || bad "the combo never settled"
 
 comp="$(composer_row)"
-first="$(row_of 'fake (current)')"
+# The set names two endpoints (`dead:*` too, though it lists nothing), so every row says which one it is
+# on, and the entry's row carries the name it is chosen by.
+first="$(row_of 'mock:fake [m] (current)')"
 if [ -n "$comp" ] && [ -n "$first" ] && [ "$first" -gt "$comp" ]; then
     ok "the combo renders BELOW the composer (composer row $comp, first row $first)"
 else
@@ -48,8 +50,8 @@ else
 fi
 check "the mock's listing is offered" "$(count_vis 'gemini-pro')" 1
 # Matched as a whole row: `gpt-4o` also appears inside the input row's placeholder.
-check "…and so is the rest of it" "$(cap | grep -cE '^ +gpt-4o *$' | tr -d ' ')" 1
-check "the candidate the entry names is the current model" "$(count_vis 'fake (current)')" 1
+check "…and so is the rest of it" "$(cap | grep -cE '^ +mock:gpt-4o *$' | tr -d ' ')" 1
+check "the candidate the entry names is the current model" "$(count_vis 'mock:fake [m] (current)')" 1
 # THE law of a mixed list: the dead endpoint costs its own rows and nothing else.
 if cap | grep -qF 'dead:'; then
     ok "the failed source is one line in the panel's prompt row"
@@ -167,7 +169,7 @@ check "no switch on ESC" "$(count_all 'Model switched to')" 1
 # so ↓ lands on the first listed candidate.
 type_ '/model'
 key Enter
-wait_vis 'my-own-model (current)' || bad "the combo does not carry the current model"
+wait_vis 'mock:my-own-model (current)' || bad "the combo does not carry the current model"
 settle || bad "the combo never settled"
 key Down
 key Enter

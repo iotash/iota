@@ -49,20 +49,22 @@ impl Candidate {
         }
     }
 
-    /// How the row reads. A candidate on the endpoint the session is ALREADY talking to is written
-    /// bare — that provider is the implicit context of the whole chat, and prefixing every row with
-    /// it would be noise on the common single-provider list. Anything else carries the
-    /// `provider:id` of `-M`, which is both the answer to "which one is this?" and the marker that
-    /// it is not this session's to switch to (see [`ModelCatalog::pick`]).
-    pub(crate) fn label(&self, session: &str) -> String {
-        if self.provider.is_empty() || self.provider == session {
+    /// The row's NAME — what the row is, whichever endpoint the chat is on: `provider:id`, the pair `-M` takes,
+    /// or the bare id when `implicit` — the ONE provider the whole candidate set is on
+    /// ([`ModelCatalog::implicit_provider`]) — already says where it runs. That is a fact of the config, never of
+    /// where the session happens to be, so a chat that moves (or a source that fails a listing) rewrites no
+    /// row; and it keeps the common single-provider list free of a prefix every row would repeat. What picking
+    /// the row DOES to this chat is a separate annotation ([`ModelCatalog::row_label`]).
+    pub(crate) fn label(&self, implicit: &str) -> String {
+        if self.provider.is_empty() || self.provider == implicit {
             return self.id.clone();
         }
         format!("{}:{}", self.provider, self.id)
     }
 }
 
-/// What committing a row (or the typed text) means for THIS session.
+/// What committing a row (or the typed text) means for THIS session — what a row's `(elsewhere)`
+/// annotation announces ([`ModelCatalog::row_label`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Pick {
     /// A model on the session's own endpoint: switch to it.
@@ -196,22 +198,105 @@ impl ModelCatalog {
         Pick::Elsewhere(c.provider.clone(), c.id.clone())
     }
 
-    /// The candidate a typed string names, read exactly as `-M` reads its argument: `provider:id`
-    /// is an endpoint reference only when `provider` is a name iota knows, and everything else —
-    /// including a string with a colon in it — is a raw model id on the session's own endpoint.
-    pub(crate) fn parse_typed(&self, text: &str) -> Candidate {
+    /// The one provider every choice is on — the session's own when there are no choices (the implicit
+    /// `<session>:*`) — or `""` when they span several. A row on it is written bare ([`Candidate::label`]).
+    ///
+    /// Read off the REFERENCES, not the rows: a wildcard whose listing failed still names its provider, so
+    /// one source going quiet does not rewrite how every other row reads.
+    pub(crate) fn implicit_provider(&self) -> &str {
+        if self.refs.is_empty() {
+            return &self.session;
+        }
+        let mut providers = self.refs.iter().filter_map(|r| match r {
+            ModelRef::Entry(name) => self.entries.get(name).map(|m| m.provider.as_str()),
+            _ => r.provider(),
+        });
+        let Some(first) = providers.next() else {
+            return "";
+        };
+        if providers.all(|p| p == first) {
+            first
+        } else {
+            ""
+        }
+    }
+
+    /// The `models:` entries among the choices that serve `c`'s pair, in declaration order — the words
+    /// [`parse_typed`](Self::parse_typed) and `-M` take for it. An entry named after its own id is left out:
+    /// the row's name already says it.
+    fn names_of(&self, c: &Candidate) -> Vec<&str> {
+        let provider = if c.provider.is_empty() {
+            self.session.as_str()
+        } else {
+            c.provider.as_str()
+        };
+        let mut names: Vec<&str> = Vec::new();
+        for r in &self.refs {
+            let ModelRef::Entry(name) = r else { continue };
+            if name == &c.id || names.contains(&name.as_str()) {
+                continue;
+            }
+            if self
+                .entries
+                .get(name)
+                .is_some_and(|m| m.provider == provider && m.id == c.id)
+            {
+                names.push(name);
+            }
+        }
+        names
+    }
+
+    /// How a row reads in the picker: its name ([`Candidate::label`]), then the choices' entry names that
+    /// serve it as `[a, b]` — so the words of the config are on the row, and the filter finds them — then,
+    /// for a row on ANOTHER endpoint than the chat's, `(elsewhere)`: what picking it does to this chat (it
+    /// moves the chat, or it needs a new session). The name never depends on where the chat is; the
+    /// annotation does, exactly as `(current)` does.
+    pub(crate) fn row_label(&self, c: &Candidate, elsewhere: &str) -> String {
+        let mut label = c.label(self.implicit_provider());
+        let names = self.names_of(c);
+        if !names.is_empty() {
+            label = format!("{label} [{}]", names.join(", "));
+        }
+        if matches!(self.pick(c), Pick::Elsewhere(..)) {
+            label = format!("{label} ({elsewhere})");
+        }
+        label
+    }
+
+    /// The candidate a typed string names, read exactly as `-M` reads its argument
+    /// (`cmd::resolve::apply_model_flag`): `provider:id` is an endpoint reference when `provider` is a name
+    /// iota knows; a bare word is a `models:` entry when the agent's CHOICES name it (an entry only in
+    /// `models:` is not, as for `-M`); and everything else — including a string with a colon in it, a relay's
+    /// own ids have them — is a raw model id on the session's own endpoint. `provider:*` names an endpoint
+    /// and no model, which for `-M` is "start in the picker" and here, already in it, is nothing to commit:
+    /// `None`.
+    ///
+    /// It reads as far as the PAIR. Which entry's knobs come with it is the switch's to decide, for a typed
+    /// name exactly as for a listed row (brain page `model-param-layering`).
+    pub(crate) fn parse_typed(&self, text: &str) -> Option<Candidate> {
         let text = text.trim();
         if let Some((provider, id)) = text.split_once(':')
             && !id.is_empty()
-            && id != "*"
             && self.knows(provider)
         {
-            return Candidate {
+            return (id != "*").then(|| Candidate {
                 provider: provider.to_owned(),
                 id: id.to_owned(),
-            };
+            });
         }
-        Candidate::here(text)
+        if self
+            .refs
+            .iter()
+            .any(|r| matches!(r, ModelRef::Entry(n) if n == text))
+            && let Some(m) = self.entries.get(text)
+        {
+            return Some(Candidate {
+                provider: m.provider.clone(),
+                id: m.id.clone(),
+            });
+        }
+        Some(Candidate::here(text))
     }
 
     /// The catalog expanded into rows: the written-down references in declaration order, then each
@@ -521,9 +606,16 @@ mod tests {
             ]
         );
         assert!(got.notes.is_empty());
-        // The label law: the session's own endpoint is implicit, anything else is `provider:id`.
-        assert_eq!(got.rows[0].label("anthropic"), "claude-sonnet-4");
-        assert_eq!(got.rows[1].label("anthropic"), "relay:vendor/x");
+        // The set spans two endpoints, so every row says which one it is on — the session's own included —
+        // with the entry's name beside the pair it stands for; a row on another endpoint says what picking it does.
+        assert_eq!(
+            cat.row_label(&got.rows[0], "moves the chat"),
+            "anthropic:claude-sonnet-4 [sonnet]"
+        );
+        assert_eq!(
+            cat.row_label(&got.rows[1], "moves the chat"),
+            "relay:vendor/x (moves the chat)"
+        );
     }
 
     /// `provider:*` on the session's OWN provider asks the live instance — the one the chat is
@@ -539,7 +631,7 @@ mod tests {
         assert_eq!(
             got.rows
                 .iter()
-                .map(|c| c.label("anthropic"))
+                .map(|c| c.label(cat.implicit_provider()))
                 .collect::<Vec<_>>(),
             ["claude-a", "claude-b"]
         );
@@ -685,7 +777,7 @@ mod tests {
         assert_eq!(
             got.rows
                 .iter()
-                .map(|c| c.label("anthropic"))
+                .map(|c| c.label(cat.implicit_provider()))
                 .collect::<Vec<_>>(),
             ["a-model", "b-model"]
         );
@@ -697,21 +789,188 @@ mod tests {
         assert_eq!(got.notes, ["anthropic: no such endpoint"]);
     }
 
-    /// A typed string is read exactly as `-M` reads its argument.
+    /// `catalog` plus `models:` entries, written `name: provider:id`.
+    fn with_entries(mut cat: ModelCatalog, entries: &[(&str, &str, &str)]) -> ModelCatalog {
+        for (name, provider, id) in entries {
+            cat.entries.insert(
+                (*name).to_owned(),
+                ModelConfig {
+                    provider: (*provider).to_owned(),
+                    id: (*id).to_owned(),
+                    ..ModelConfig::default()
+                },
+            );
+        }
+        cat
+    }
+
+    fn entry(name: &str) -> ModelRef {
+        ModelRef::Entry(name.to_owned())
+    }
+
+    fn on(provider: &str, id: &str) -> Candidate {
+        Candidate {
+            provider: provider.to_owned(),
+            id: id.to_owned(),
+        }
+    }
+
+    /// A typed string is read exactly as `-M` reads its argument (`cmd::resolve::apply_model_flag`).
     #[test]
     fn typed_text_follows_the_model_flag_rule() {
-        let cat = catalog(Vec::new(), Vec::new());
+        let cat = with_entries(
+            catalog(vec![entry("sonnet"), entry("fast")], Vec::new()),
+            &[
+                ("fast", "relay", "vendor/fast"),
+                ("hidden", "relay", "vendor/hidden"),
+            ],
+        );
         // A known provider name before the colon IS an endpoint reference.
         assert_eq!(
             cat.parse_typed("relay:vendor/x"),
-            Candidate {
-                provider: "relay".to_owned(),
-                id: "vendor/x".to_owned()
-            }
+            Some(on("relay", "vendor/x"))
         );
         // An unknown one is not: the whole string is the model id (relays ship ids with colons).
-        assert_eq!(cat.parse_typed("vendor:x"), Candidate::here("vendor:x"));
-        assert_eq!(cat.parse_typed("  gpt-4o  "), Candidate::here("gpt-4o"));
+        assert_eq!(
+            cat.parse_typed("vendor:x"),
+            Some(Candidate::here("vendor:x"))
+        );
+        assert_eq!(
+            cat.parse_typed("  gpt-4o  "),
+            Some(Candidate::here("gpt-4o"))
+        );
+        // A choice by name is the pair its entry stands for — on whichever endpoint that is — never a wire id
+        // spelled like the name.
+        assert_eq!(cat.parse_typed("fast"), Some(on("relay", "vendor/fast")));
+        assert_eq!(
+            cat.parse_typed(" sonnet "),
+            Some(on("anthropic", "claude-sonnet-4"))
+        );
+        // …but only a choice: an entry the agent does not offer is a raw id, as it is for `-M`.
+        assert_eq!(cat.parse_typed("hidden"), Some(Candidate::here("hidden")));
+        // `provider:*` names an endpoint and no model: nothing to commit. An unknown prefix keeps its star.
+        assert_eq!(cat.parse_typed("relay:*"), None);
+        assert_eq!(
+            cat.parse_typed("vendor:*"),
+            Some(Candidate::here("vendor:*"))
+        );
+    }
+
+    /// An entry named after a provider is still a NAME: the bare word is the entry, the colon form the
+    /// endpoint — `-M`'s order — and on the row the name sits in its own brackets, never where a provider goes.
+    #[test]
+    fn an_entry_named_after_a_provider_is_not_one() {
+        let cat = with_entries(
+            catalog(vec![entry("relay"), wildcard("anthropic")], Vec::new()),
+            &[("relay", "relay", "vendor/chat")],
+        );
+        assert_eq!(cat.parse_typed("relay"), Some(on("relay", "vendor/chat")));
+        assert_eq!(cat.parse_typed("relay:other"), Some(on("relay", "other")));
+        assert_eq!(
+            cat.row_label(&on("relay", "vendor/chat"), "moves the chat"),
+            "relay:vendor/chat [relay] (moves the chat)"
+        );
+    }
+
+    /// The provider that goes without saying is the one the whole SET is on — read off the references, so a
+    /// wildcard whose listing failed still counts — and no provider at all once the set spans two.
+    #[test]
+    fn the_implicit_provider_is_the_sets_own() {
+        let one = catalog(vec![entry("sonnet"), wildcard("anthropic")], Vec::new());
+        assert_eq!(one.implicit_provider(), "anthropic");
+        let two = catalog(vec![entry("sonnet"), wildcard("relay")], Vec::new());
+        assert_eq!(two.implicit_provider(), "");
+        // No choices is the implicit `<session>:*`.
+        assert_eq!(
+            catalog(Vec::new(), Vec::new()).implicit_provider(),
+            "anthropic"
+        );
+        // A set on ONE other endpoint than the session's still writes its rows bare; what marks them is the
+        // annotation, and the current row (from outside the set) carries its provider.
+        let mut away = catalog(vec![wildcard("relay")], Vec::new());
+        away.session = "anthropic".to_owned();
+        assert_eq!(
+            away.row_label(&on("relay", "a"), "moves the chat"),
+            "a (moves the chat)"
+        );
+        assert_eq!(
+            away.row_label(&on("anthropic", "claude-x"), "moves the chat"),
+            "anthropic:claude-x"
+        );
+    }
+
+    /// A row's name is a fact of the config: the catalog a moved chat is handed (`commands::model::install`)
+    /// names every row exactly as the one it replaced did. Only the annotation — what picking the row does to
+    /// THIS chat — follows the chat, as `(current)` does.
+    #[test]
+    fn a_rows_name_does_not_follow_the_chat() {
+        let refs = vec![entry("sonnet"), entry("fast"), wildcard("relay")];
+        let entries = [("fast", "relay", "vendor/fast")];
+        let before = with_entries(catalog(refs.clone(), Vec::new()), &entries);
+        let mut after = with_entries(catalog(refs, Vec::new()), &entries);
+        after.session = "relay".to_owned();
+        let rows = [
+            on("anthropic", "claude-sonnet-4"),
+            on("relay", "vendor/fast"),
+            on("relay", "listed"),
+        ];
+        let labels = |cat: &ModelCatalog| {
+            rows.iter()
+                .map(|c| cat.row_label(c, "moves the chat"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            labels(&before),
+            [
+                "anthropic:claude-sonnet-4 [sonnet]",
+                "relay:vendor/fast [fast] (moves the chat)",
+                "relay:listed (moves the chat)",
+            ]
+        );
+        assert_eq!(
+            labels(&after),
+            [
+                "anthropic:claude-sonnet-4 [sonnet] (moves the chat)",
+                "relay:vendor/fast [fast]",
+                "relay:listed",
+            ]
+        );
+    }
+
+    /// A row is one PAIR, so it carries every choice that serves it, in declaration order — none of them is
+    /// "its" name — whichever reference produced the row; an entry outside the choices is not offered, and
+    /// one named after its own id adds nothing to the row's name.
+    #[test]
+    fn a_row_names_every_choice_serving_it() {
+        let cat = with_entries(
+            catalog(
+                vec![
+                    wildcard("relay"),
+                    entry("b"),
+                    entry("same"),
+                    entry("a"),
+                    entry("vendor/x"),
+                ],
+                Vec::new(),
+            ),
+            &[
+                ("a", "relay", "vendor/x"),
+                ("b", "relay", "vendor/x"),
+                ("same", "relay", "vendor/x"),
+                ("vendor/x", "relay", "vendor/x"),
+                ("unoffered", "relay", "vendor/x"),
+            ],
+        );
+        // `same` is a third name for the pair; `vendor/x` is spelled like the id and is left out.
+        assert_eq!(
+            cat.row_label(&on("relay", "vendor/x"), "moves the chat"),
+            "vendor/x [b, same, a] (moves the chat)"
+        );
+        // A pair no choice names by entry reads as the pair alone.
+        assert_eq!(
+            cat.row_label(&on("relay", "y"), "moves the chat"),
+            "y (moves the chat)"
+        );
     }
 
     /// A pick on the session's endpoint switches; one on another endpoint is reported.

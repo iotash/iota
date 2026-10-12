@@ -469,7 +469,9 @@ async fn model_keeps_the_picker_when_a_listing_fails() {
 
 /// The candidate set IS the picker's row list: a `models:` entry and an inline `provider:id` are
 /// rows on the spot, `provider:*` on the session's own endpoint is whatever it lists, and a model
-/// reachable twice is one row. Rows on another endpoint carry it; rows on this one do not.
+/// reachable twice is one row. The set spans two endpoints, so every row names its own — the current one too —
+/// a row carries the name of the choice that serves it, and a row on another endpoint says what picking it does
+/// to this chat (this one has no endpoint factory, so it cannot move: a new session).
 #[tokio::test]
 async fn model_lists_the_agents_candidate_set() {
     let f = Fixture::new(vec![
@@ -492,12 +494,12 @@ async fn model_lists_the_agents_candidate_set() {
     assert_eq!(
         panels[0].items,
         [
-            // the `models:` entry, which is also what the chat is running
-            "a-model (current)",
-            // an inline reference to ANOTHER endpoint: written as `-M` writes it
-            "relay:vendor/y",
+            // the `models:` entry, which is also what the chat is running, with the name it is chosen by
+            "mock:a-model [m] (current)",
+            // an inline reference to ANOTHER endpoint: written as `-M` writes it, and what picking it costs
+            "relay:vendor/y (needs a new session)",
             // the wildcard's own listing, minus the id the entry already offered
-            "b-model",
+            "mock:b-model",
         ]
     );
     assert_eq!(
@@ -509,6 +511,71 @@ async fn model_lists_the_agents_candidate_set() {
         "{:?}",
         printed(&f.ui)
     );
+}
+
+/// The combo's field reads a typed word as `-M` reads it: a choice's NAME is the model its entry stands for,
+/// never a wire id spelled like the name — and the row says that name, so what the user sees is what they type.
+/// `provider:*` names no model, so committing it changes nothing.
+#[tokio::test]
+async fn model_reads_a_typed_choice_by_name() {
+    const NAMED: &str = r"
+providers:
+  mock: {type: openai, key: k}
+models:
+  m: mock:a-model
+  fast: mock:b-model
+agents:
+  default:
+    model: m
+    choices: [m, fast]
+";
+    let f = Fixture::new(vec![
+        input("/model"),
+        commit(PanelResult {
+            // One past the two rows: the typed text.
+            cursor: 2,
+            text: "fast".to_owned(),
+            ..PanelResult::default()
+        }),
+        input("/model"),
+        commit(PanelResult {
+            cursor: 2,
+            text: "mock:*".to_owned(),
+            ..PanelResult::default()
+        }),
+        Reply::Interrupted,
+    ]);
+    let mut writer = f.writer();
+    writer
+        .append_messages(&[Message::user("earlier")])
+        .expect("materialise");
+    let dir = writer.dir().to_path_buf();
+    let session = f.session(Some(writer));
+    let provider = provider("a-model", Ok(vec![]));
+    let params = f.params_with_catalog(provider, session, NAMED);
+    iota::repl::run(params).await.expect("exit");
+
+    // One endpoint, so the rows are bare; each carries the name it is chosen by.
+    assert_eq!(
+        surfaces(&f.ui)[0].panels[0].items,
+        ["a-model [m] (current)", "b-model [fast]"]
+    );
+    let lines = printed(&f.ui);
+    assert!(
+        lines.contains(&"Model switched to b-model".to_owned()),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("switched to fast")),
+        "{lines:?}"
+    );
+    assert_eq!(
+        lines.last().map(String::as_str),
+        Some("No changes."),
+        "`mock:*` names no model: {lines:?}"
+    );
+    let meta = iota::session::SessionMeta::read(&dir).expect("meta written");
+    assert_eq!(meta.model, "b-model");
 }
 
 /// A row on another provider is listed but not taken once a model has replied: the history it would carry
@@ -691,9 +758,23 @@ async fn model_moves_a_chat_with_no_reply_to_another_provider() {
     let titles = built.title.records();
     assert_eq!(titles.len(), 1);
     assert_eq!(titles[0].model, "vendor/y");
-    // The picker is relative to where the chat is now.
-    let rows = &surfaces(&f.ui)[1].panels[0].items;
-    assert_eq!(rows, &["mock:a-model", "vendor/y (current)"]);
+    // Every row keeps its name across the move; what follows the chat is the annotations: `(current)`, and what
+    // picking a row on another endpoint does — before the first reply it moves the chat, after it it cannot.
+    let opened = surfaces(&f.ui);
+    assert_eq!(
+        opened[0].panels[0].items,
+        [
+            "mock:a-model [m] (current)",
+            "relay:vendor/y [y] (moves the chat)"
+        ]
+    );
+    assert_eq!(
+        opened[1].panels[0].items,
+        [
+            "mock:a-model [m] (needs a new session)",
+            "relay:vendor/y [y] (current)"
+        ]
+    );
     // The bundle names the endpoint the reply came from.
     let infos = f.store.list(None).expect("list");
     assert_eq!(infos.len(), 1);

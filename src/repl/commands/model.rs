@@ -40,14 +40,14 @@ const MODEL_PLACEHOLDER: &str = "model name (e.g. gpt-4o)";
 /// visited changes nothing. An unset model becomes the `"(not selected)"` row, and committing it
 /// is a no-op (the caller's `!= ""` guard).
 ///
-/// `session` is the endpoint the chat is on; it decides how a row reads (`Candidate::label`).
+/// `label` is how a row reads (`ModelCatalog::row_label`); this adds the `(current)` mark.
 ///
 /// Returns `(values, labels, cursor)`: `values` are what a commit reads, `labels` what the panel
 /// shows.
 pub(crate) fn model_rows(
     current: &Candidate,
     models: &[Candidate],
-    session: &str,
+    label: impl Fn(&Candidate) -> String,
 ) -> (Vec<Candidate>, Vec<String>, usize) {
     let mut values: Vec<Candidate> = models.to_vec();
     if !values.iter().any(|v| v == current) {
@@ -58,7 +58,7 @@ pub(crate) fn model_rows(
         .iter()
         .enumerate()
         .map(|(i, v)| {
-            let label = v.label(session);
+            let label = label(v);
             if v == current {
                 cursor = i;
                 if label.is_empty() {
@@ -90,7 +90,21 @@ fn chosen(values: &[Candidate], catalog: &ModelCatalog, r: &PanelResult) -> Opti
         return Some(c.clone());
     }
     let typed = r.text.trim();
-    (!typed.is_empty()).then(|| catalog.parse_typed(typed))
+    if typed.is_empty() {
+        return None;
+    }
+    catalog.parse_typed(typed)
+}
+
+/// What picking a row on another endpoint does to this chat — the annotation such a row carries in place of
+/// the `provider:` prefix that used to imply it: before the first reply the chat MOVES there ([`move_to`]);
+/// after it, or in a chat that never moves (a bot), the pick is refused and names the new session to start.
+fn elsewhere(repl: &Repl) -> &'static str {
+    if repl.conv.replied || repl.conv.endpoints.is_none() {
+        "needs a new session"
+    } else {
+        "moves the chat"
+    }
 }
 
 /// Builds the Model tab: the choices expanded (one concurrent round of listings), the rows
@@ -101,6 +115,7 @@ async fn model_tab(
     live: &dyn Provider,
     title: &str,
     current: Option<&Candidate>,
+    elsewhere: &str,
     cancel: &CancellationToken,
 ) -> ModelTab {
     let expanded = catalog.expand(ui, live, cancel).await;
@@ -111,13 +126,13 @@ async fn model_tab(
             cancelled: true,
         };
     }
-    let session = catalog.session_provider();
+    let label = |c: &Candidate| catalog.row_label(c, elsewhere);
     // `/model` lays the rows out around the model the chat is running, with the cursor on it; the
     // startup pick has no current model to preserve, so the candidates stand alone.
     let (values, labels, cursor) = if let Some(current) = current {
-        model_rows(current, &expanded.rows, session)
+        model_rows(current, &expanded.rows, label)
     } else {
-        let labels = expanded.rows.iter().map(|c| c.label(session)).collect();
+        let labels = expanded.rows.iter().map(label).collect();
         (expanded.rows, labels, 0)
     };
     let mut panel = Panel::list(title.to_owned(), labels)
@@ -303,6 +318,7 @@ pub(crate) async fn ensure_model(repl: &mut Repl, cancel: &CancellationToken) ->
         &*repl.conv.provider,
         "Select a model",
         None,
+        elsewhere(repl),
         cancel,
     )
     .await;
@@ -375,6 +391,7 @@ pub(crate) async fn cmd_model(repl: &mut Repl) {
         &*repl.conv.provider,
         "Model",
         Some(&current),
+        elsewhere(repl),
         cancel,
     )
     .await;
@@ -464,6 +481,11 @@ mod tests {
         Candidate::here(id)
     }
 
+    /// The name of a row on the session's own endpoint (`Candidate::here`).
+    fn bare(c: &Candidate) -> String {
+        c.label("")
+    }
+
     fn on(provider: &str, id: &str) -> Candidate {
         Candidate {
             provider: provider.to_owned(),
@@ -478,14 +500,14 @@ mod tests {
         let models = vec![here("a-model"), here("b-model")];
 
         // Current model present in the list: marked in place, no growth.
-        let (values, labels, cur) = model_rows(&here("b-model"), &models, "");
+        let (values, labels, cur) = model_rows(&here("b-model"), &models, bare);
         assert_eq!(values.len(), 2);
         assert_eq!(values[cur], here("b-model"));
         assert_eq!(labels[cur], "b-model (current)");
 
         // Missing current (a delisted model, a different naming scheme): PREPENDED, so
         // submitting a tab the user never visited changes nothing.
-        let (values, labels, cur) = model_rows(&here("models/c"), &models, "");
+        let (values, labels, cur) = model_rows(&here("models/c"), &models, bare);
         assert_eq!(cur, 0);
         assert_eq!(values[0], here("models/c"));
         assert_eq!(labels[0], "models/c (current)");
@@ -493,15 +515,15 @@ mod tests {
 
         // No model selected yet: a "(not selected)" row representing "" is prepended;
         // committing it is a no-op (the caller's non-empty guard).
-        let (values, labels, cur) = model_rows(&here(""), &models, "");
+        let (values, labels, cur) = model_rows(&here(""), &models, bare);
         assert_eq!(cur, 0);
         assert_eq!(values[0], here(""));
         assert_eq!(labels[0], "(not selected)");
     }
 
-    /// A mixed list says where each row comes from: the session's own endpoint is implicit, every
-    /// other one is written `provider:id` — which is also what makes the same id on two providers
-    /// two distinguishable rows.
+    /// A mixed list says where each row comes from — every row, the current one included — which is also
+    /// what makes the same id on two providers two distinguishable rows. The current row is found by its PAIR,
+    /// whatever its label says.
     #[test]
     fn rows_from_other_providers_carry_their_provider() {
         let models = vec![
@@ -509,12 +531,18 @@ mod tests {
             on("relay", "claude-x"),
             on("relay", "vendor/y"),
         ];
-        let (values, labels, cur) = model_rows(&on("anthropic", "claude-x"), &models, "anthropic");
+        // `""`: the set spans two endpoints, so no provider is implicit (`ModelCatalog::implicit_provider`).
+        let (values, labels, cur) =
+            model_rows(&on("anthropic", "claude-x"), &models, |c| c.label(""));
         assert_eq!(values.len(), 3, "the current model is already in the set");
         assert_eq!(cur, 0);
         assert_eq!(
             labels,
-            ["claude-x (current)", "relay:claude-x", "relay:vendor/y"]
+            [
+                "anthropic:claude-x (current)",
+                "relay:claude-x",
+                "relay:vendor/y"
+            ]
         );
     }
 }
