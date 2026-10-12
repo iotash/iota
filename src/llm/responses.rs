@@ -237,6 +237,9 @@ pub(crate) struct RespIncomplete {
     pub(crate) reason: String,
 }
 
+/// The `incomplete_details.reason` of a response the output ceiling cut off.
+pub(crate) const MAX_OUTPUT_TOKENS: &str = "max_output_tokens";
+
 /// One output item of a response object.
 #[derive(Deserialize, Default)]
 pub(crate) struct RespOutput {
@@ -276,6 +279,14 @@ impl RespResponse {
     /// Concat of every content part with type `output_text` across items.
     ///
     /// SDK `Response.OutputText` parity (responses.go:165-175): refusal parts are skipped, item order is kept.
+    /// Whether the output ceiling cut this response off (`incomplete_details.reason: max_output_tokens`) —
+    /// a cut, not a failure (DIVERGENCES X-72).
+    pub(crate) fn cut_off(&self) -> bool {
+        self.incomplete_details
+            .as_ref()
+            .is_some_and(|d| d.reason == MAX_OUTPUT_TOKENS)
+    }
+
     pub(crate) fn output_text(&self) -> String {
         let mut out = String::new();
         for item in &self.output {
@@ -291,7 +302,8 @@ impl RespResponse {
 
 /// One stream event, classified once here so the dialect matches on shapes, never on strings
 /// (responses.go:245-300). Terminal failures never reach this enum: `next()` turns them into
-/// `LlmError::Failure` / `LlmError::InBand`.
+/// `LlmError::Failure` / `LlmError::InBand`. A response the output ceiling cut off is not one of them: it
+/// arrives as [`RespEvent::CutOff`].
 pub(crate) enum RespEvent {
     /// `response.reasoning_summary_text.delta`.
     ReasoningDelta(String),
@@ -322,6 +334,10 @@ pub(crate) enum RespEvent {
     ItemDone(Raw),
     /// `response.completed`: the response object (usage lives there).
     Completed(Option<RespResponse>),
+    /// `response.incomplete` with `incomplete_details.reason: max_output_tokens`: the output ceiling cut the
+    /// response off. Terminal like `Completed`, and its response object carries the usage the cut billed
+    /// (DIVERGENCES X-72).
+    CutOff(Option<RespResponse>),
     /// Anything else — nothing to act on.
     Other,
 }
@@ -429,6 +445,8 @@ impl RawRespEvent {
             },
             "response.output_item.done" => self.item.map_or(RespEvent::Other, RespEvent::ItemDone),
             "response.completed" => RespEvent::Completed(self.response),
+            // `failure()` already took every other incomplete reason.
+            "response.incomplete" => RespEvent::CutOff(self.response),
             // Some relays emit type-less delta frames; they are content.
             "" if !self.delta.is_empty() => RespEvent::TextDelta(self.delta),
             _ => RespEvent::Other,
@@ -484,7 +502,9 @@ impl RespOutputItem {
 }
 
 impl RawRespEvent {
-    /// Terminal failure events → `RespFailure` (responses.go:301-319); everything else → `None`.
+    /// Terminal failure events → `RespFailure` (responses.go:301-319); everything else → `None`. A
+    /// `response.incomplete` the output ceiling caused is a cut, not a failure: it classifies as
+    /// [`RespEvent::CutOff`] (DIVERGENCES X-72).
     fn failure(&self) -> Option<RespFailure> {
         match self.r#type.as_str() {
             "error" => Some(RespFailure {
@@ -499,6 +519,9 @@ impl RawRespEvent {
                     code: err.map(|e| e.code.clone()).unwrap_or_default(),
                     message: err.map(|e| e.message.clone()).unwrap_or_default(),
                 })
+            }
+            "response.incomplete" if self.response.as_ref().is_some_and(RespResponse::cut_off) => {
+                None
             }
             "response.incomplete" => Some(RespFailure {
                 event: self.r#type.clone(),
@@ -573,9 +596,10 @@ impl RespStream {
     /// Next event. Terminal mapping: data `error` non-null → `InBand`; type `"error"` →
     /// `Failure(RespFailure{event:"error", code, message})`; `"response.failed"` → `Failure{event, code:
     /// response.error.code, message: response.error.message}`; `"response.incomplete"` → `Failure{event, code:
-    /// response.incomplete_details.reason, message: ""}`.
+    /// response.incomplete_details.reason, message: ""}` — except the ceiling's `max_output_tokens`, which is
+    /// the terminal [`RespEvent::CutOff`] (DIVERGENCES X-72).
     ///
-    /// `response.completed` is terminal: it carries the usage, and every later call answers `Ok(None)`
+    /// `response.completed` (and `CutOff`) is terminal: it carries the usage, and every later call answers `Ok(None)`
     /// without waiting for the body's EOF — a relay that holds the body open must not turn a finished
     /// response into a stall.
     pub(crate) async fn next(&mut self) -> Result<Option<RespEvent>, LlmError> {
@@ -600,7 +624,7 @@ impl RespStream {
             return Err(LlmError::Failure(failure));
         }
         let event = parsed.classify();
-        self.completed = matches!(event, RespEvent::Completed(_));
+        self.completed = matches!(event, RespEvent::Completed(_) | RespEvent::CutOff(_));
         Ok(Some(event))
     }
 }
@@ -653,8 +677,8 @@ mod tests {
                 "response.failed: model exploded (server_error)",
             ),
             (
-                "data: {\"type\":\"response.incomplete\",\"response\":{\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n",
-                "response.incomplete: max_output_tokens",
+                "data: {\"type\":\"response.incomplete\",\"response\":{\"incomplete_details\":{\"reason\":\"content_filter\"}}}\n\n",
+                "response.incomplete: content_filter",
             ),
             (
                 "data: {\"type\":\"error\",\"code\":\"ERR_UPSTREAM\",\"message\":\"bad stream\"}\n\n",
@@ -679,6 +703,26 @@ mod tests {
             s.next().await.unwrap().unwrap(),
             RespEvent::Completed(None)
         ));
+    }
+
+    // The ceiling's cut is no failure (X-72): it is the terminal event, its usage kept, and nothing after it
+    // is read.
+    #[tokio::test]
+    async fn a_response_the_ceiling_cut_off_is_a_terminal_event_not_a_failure() {
+        let mut s = stream_of(concat!(
+            "data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",",
+            "\"incomplete_details\":{\"reason\":\"max_output_tokens\"},",
+            "\"usage\":{\"input_tokens\":7,\"output_tokens\":64}}}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"never read\"}\n\n",
+        ));
+        match s.next().await.unwrap().unwrap() {
+            RespEvent::CutOff(Some(r)) => {
+                assert!(r.cut_off());
+                assert_eq!(r.usage.map(|u| u.output_tokens), Some(64));
+            }
+            _ => panic!("not a cut"),
+        }
+        assert!(s.next().await.unwrap().is_none(), "the cut is terminal");
     }
 
     #[test]
@@ -723,12 +767,18 @@ mod tests {
         );
 
         let incomplete: RawRespEvent = serde_json::from_str(
-            r#"{"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}"#,
+            r#"{"type":"response.incomplete","response":{"incomplete_details":{"reason":"content_filter"}}}"#,
         )
         .unwrap();
         let f = incomplete.failure().unwrap();
-        assert_eq!(f.code, "max_output_tokens");
+        assert_eq!(f.code, "content_filter");
         assert_eq!(f.message, "");
+        // The ceiling's cut is not a failure (X-72).
+        let cut: RawRespEvent = serde_json::from_str(
+            r#"{"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}"#,
+        )
+        .unwrap();
+        assert!(cut.failure().is_none());
 
         let error: RawRespEvent =
             serde_json::from_str(r#"{"type":"error","code":"ERR","message":"bad","param":null}"#)

@@ -206,9 +206,11 @@ impl From<ChatError> for TurnFailure {
 pub(crate) struct TurnReport {
     /// The turn's result, or why it ended badly.
     pub(crate) outcome: Result<TurnOutput, TurnFailure>,
-    /// Whether the turn ran the tool loop over a non-empty tool set — Go's `usedTools`,
-    /// the first clause of the turn-level replay guard (chat/run.go:1032-1036).
-    pub(crate) used_tools: bool,
+    /// Whether the turn ran the tool loop — whatever its tool set, an empty one included (T-36). The
+    /// loop's `retry_round` owns the retry budget of every call it issued, so the turn-level replay
+    /// steps aside: Go's `usedTools` guard (chat/run.go:1032-1036), widened to the empty set because
+    /// Go sent that turn through `streamTurn`, which had no ladder of its own (DIVERGENCES X-73).
+    pub(crate) ran_tool_loop: bool,
     /// Executed calls the parallel gate does not vouch for as read-only — what a
     /// whole-turn replay would run AGAIN (chat/run.go:1030-1031).
     pub(crate) side_fx: u32,
@@ -260,11 +262,11 @@ impl TurnReport {
         }
     }
 
-    /// A completed turn; `used_tools` is stamped by `run_turn`.
+    /// A completed turn; `ran_tool_loop` is stamped by `run_turn`.
     pub(crate) fn success(out: TurnOutput, side_fx: u32) -> Self {
         Self {
             outcome: Ok(out),
-            used_tools: false,
+            ran_tool_loop: false,
             side_fx,
             partial: String::new(),
             partial_reasoning: String::new(),
@@ -276,7 +278,7 @@ impl TurnReport {
     pub(crate) fn failed(err: impl Into<TurnFailure>, side_fx: u32) -> Self {
         Self {
             outcome: Err(err.into()),
-            used_tools: false,
+            ran_tool_loop: false,
             side_fx,
             partial: String::new(),
             partial_reasoning: String::new(),
@@ -348,10 +350,11 @@ pub(crate) async fn run_turn(
         progress: TurnProgress::new(),
     };
     let tools = cx.dispatch.tools();
-    // Go's `usedTools` (run.go:1032): a turn that advertised tools is never replayed
-    // whole — the tool loop already retried its own failing calls with the completed
-    // rounds, and their side effects, kept in place.
-    let used_tools = provider.as_tool_provider().is_some() && !tools.is_empty();
+    // ONE retry budget per model call (X-73): a turn the tool loop ran is never replayed
+    // whole — the loop already retried its own failing calls (with the completed rounds,
+    // and their side effects, kept in place), an empty tool set's single call included.
+    // Replaying it as well multiplied the two budgets (11 × 11 calls).
+    let ran_tool_loop = provider.as_tool_provider().is_some();
     let mut report = match provider.as_tool_provider() {
         Some(tp) => tool_loop(&turn, tp, history, ctxm, steer, tools).await,
         None => stream_turn(&turn, provider, history).await,
@@ -359,7 +362,7 @@ pub(crate) async fn run_turn(
     turn.sink.done();
     cx.tr.reset_turn();
     cancel.cancel();
-    report.used_tools = used_tools;
+    report.ran_tool_loop = ran_tool_loop;
     report
 }
 
@@ -395,6 +398,10 @@ impl TurnEngine {
     /// turn's messages and live estimates, then re-lands the injections a previous attempt took
     /// off the queue — the queue no longer holds them. `Err` is the one failure a turn cannot
     /// survive: the facade closed under it, and there is nothing left to print the error on.
+    ///
+    /// The budget rule (X-73): every model call has ONE retry ladder of `MAX_RETRIES`. A call
+    /// the tool loop issued is covered by its `retry_round`, so this replay serves only the
+    /// turn no ladder covered — the unary fallback, [`stream_turn`].
     pub(crate) async fn run(
         &mut self,
         conv: &mut Conversation,
@@ -432,9 +439,10 @@ impl TurnEngine {
             if !self.cx.can_retry || attempt >= MAX_RETRIES || !is_retryable(chat_err) {
                 return Ok(report);
             }
-            if report.used_tools {
+            if report.ran_tool_loop {
                 // The tool loop already retried its own failing calls with the completed
-                // rounds — and their side effects — kept in place: its errors are final.
+                // rounds — and their side effects — kept in place: its errors are final, and
+                // the budget it spent is the turn's whole budget (X-73).
                 return Ok(report);
             }
             if report.side_fx > 0 {

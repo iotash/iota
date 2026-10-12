@@ -297,7 +297,10 @@ async fn no_tools_turn_streams_markdown_through_the_tool_loop() {
     let report = fx.turn(&p, &mut history).await;
     let out = report.outcome.expect("turn");
     assert_eq!(out.content, "Hello **world**\n");
-    assert!(!report.used_tools, "an empty tool set is not a tool turn");
+    assert!(
+        report.ran_tool_loop,
+        "an empty tool set still runs the loop, and the loop owns the retry budget (X-73)"
+    );
     assert_eq!(p.calls(), 1);
 
     let events = fx.events();
@@ -1690,7 +1693,7 @@ async fn unary_provider_takes_the_stream_turn_fallback() {
     let report = fx.turn(&p, &mut history).await;
     let out = report.outcome.expect("turn");
     assert_eq!(out.content, "an image, described\n");
-    assert!(!report.used_tools);
+    assert!(!report.ran_tool_loop);
     assert_eq!(plain(&fx.events()), vec!["an image, described".to_owned()]);
 }
 

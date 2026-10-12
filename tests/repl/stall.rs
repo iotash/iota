@@ -1,5 +1,6 @@
-//! A stalled stream, an output the ceiling cut off and a hung title pass through the public entry point
-//! (`iota::repl::run`; DIVERGENCES X-64, X-69, `docs/history/request-cancellation-review-*.md`).
+//! A stalled stream, an output the ceiling cut off, the retry budget and a hung title pass through the public
+//! entry point (`iota::repl::run`; DIVERGENCES X-64, X-69, X-72, X-73,
+//! `docs/history/request-cancellation-review-*.md`).
 //!
 //! What only exists end to end is what the NEXT request carries — whether a stall kept the turn's
 //! completed tool round — and whether the loop's next step (another message, a command, the exit)
@@ -28,6 +29,7 @@ struct Fixture {
     ui: Arc<ScriptedUi>,
     _tmp: tempfile::TempDir,
     store: SessionStore,
+    deadline: Duration,
 }
 
 impl Fixture {
@@ -38,7 +40,15 @@ impl Fixture {
             ui: ScriptedUi::new(script),
             _tmp: tmp,
             store,
+            deadline: PROMPT,
         }
+    }
+
+    /// A run under tokio's paused clock, where whole retry ladders pass in virtual time: the deadline is
+    /// virtual too, so it is set past the longest ladder the test could climb.
+    fn patient(mut self) -> Self {
+        self.deadline = Duration::from_secs(3600);
+        self
     }
 
     /// Runs the script to its end with `provider` answering the turns, `title` the title pass and
@@ -107,7 +117,7 @@ impl Fixture {
             reqlog: Arc::new(RequestLog::new()),
             pres: Arc::new(Presenter::with_hosts(Vec::new(), true)),
         };
-        tokio::time::timeout(PROMPT, iota::repl::run(params))
+        tokio::time::timeout(self.deadline, iota::repl::run(params))
             .await
             .expect("the loop waited on something that never answers")
             .expect("clean exit");
@@ -754,4 +764,148 @@ async fn a_command_during_the_title_pass_keeps_it() {
         *landed.lock().unwrap(),
         "the model's title never landed after a command ran during its pass"
     );
+}
+
+/// The responses dialect's cut (X-72) takes the anthropic one's path end to end: shown as `Output truncated` with
+/// the hint for a ceiling iota never sent, NOT retried — with or without tools advertised, with or without text
+/// before the cut — and the text that arrived before it is kept, marked cut short, never passed off as the
+/// answer. Before X-72 a cut with nothing before it was a retryable failure (11 calls with tools, 121
+/// without), and one after text was silently the answer.
+#[tokio::test]
+async fn a_responses_cut_is_shown_once_and_never_retried() {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+    const TEXT: &str =
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Cloudflare has no\"}\n\n";
+    const CUT: &str = concat!(
+        "data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",",
+        "\"incomplete_details\":{\"reason\":\"max_output_tokens\"},",
+        "\"usage\":{\"input_tokens\":9,\"output_tokens\":512}}}\n\n",
+    );
+    for (tools, text) in [
+        (&[][..], true),
+        (&["read_file"][..], true),
+        (&[][..], false),
+        (&["read_file"][..], false),
+    ] {
+        let body = if text {
+            format!("{TEXT}{CUT}")
+        } else {
+            CUT.to_owned()
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+            .mount(&server)
+            .await;
+        let provider = iota::provider::openresponses::OpenResponsesProvider::new(
+            "k",
+            &server.uri(),
+            "gpt-x",
+            None,
+            reqwest::Client::new(),
+        );
+        let fx = Fixture::new(vec![input("geo dns?"), Reply::Closed]);
+        fx.run_on(Box::new(provider), None, tools, None).await;
+
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(
+            requests.len(),
+            1,
+            "tools {tools:?}, text {text}: the cut is not retried"
+        );
+        assert_eq!(
+            fx.printed_count("Output truncated"),
+            1,
+            "tools {tools:?}: {:#?}",
+            fx.printed()
+        );
+        assert_eq!(
+            fx.printed_count(
+                "response.incomplete: max_output_tokens: the output hit its token limit"
+            ),
+            1
+        );
+        assert_eq!(
+            fx.printed_count("The endpoint's own output limit cut it"),
+            1
+        );
+        assert_eq!(
+            fx.printed_count("Raise max_tokens:"),
+            0,
+            "no ceiling was sent"
+        );
+        assert_eq!(fx.printed_count("retrying"), 0);
+        assert_eq!(
+            fx.printed_count("What arrived before the cut-off is kept"),
+            usize::from(text),
+            "tools {tools:?}, text {text}: {:#?}",
+            fx.printed()
+        );
+    }
+}
+
+/// X-73: ONE retry budget per model call. A failure the table calls transient is retried `MAX_RETRIES` times
+/// — 1 call + 10 retries — whether the tool loop advertised tools or ran with an empty set; the turn-level
+/// replay no longer climbs a second ladder over the loop's (11 × 11 = 121 calls before).
+#[tokio::test(start_paused = true)]
+async fn a_transient_failure_climbs_one_ladder_with_or_without_tools() {
+    for tools in [&[][..], &["noop"][..]] {
+        let log = Log::default();
+        let provider = FakeProvider::new()
+            .with_tools()
+            .tail(Round::failing("connection reset by peer"))
+            .with_log(log.clone());
+        let fx = Fixture::new(vec![input("q"), Reply::Closed]).patient();
+        fx.run(provider, None, tools).await;
+
+        assert_eq!(log.calls(), 11, "tools {tools:?}: 1 call + 10 retries");
+        assert_eq!(
+            fx.printed_count("connection reset by peer"),
+            1,
+            "{:#?}",
+            fx.printed()
+        );
+    }
+}
+
+/// The other half of X-73: the ladder is still there — a transient failure that clears is retried until it
+/// does, empty tool set included, and the turn answers.
+#[tokio::test(start_paused = true)]
+async fn a_transient_failure_is_still_retried_until_it_clears() {
+    for tools in [&[][..], &["noop"][..]] {
+        let log = Log::default();
+        let provider = FakeProvider::new()
+            .with_tools()
+            .rounds([
+                Round::failing("connection reset by peer"),
+                Round::failing("connection reset by peer"),
+            ])
+            .replying("an answer")
+            .with_log(log.clone());
+        let fx = Fixture::new(vec![input("q"), Reply::Closed]).patient();
+        fx.run(provider, None, tools).await;
+
+        assert_eq!(log.calls(), 3, "tools {tools:?}");
+        assert_eq!(
+            fx.printed_count("⟳ Request failed — recovered after 2 attempt(s)"),
+            1,
+            "{:#?}",
+            fx.printed()
+        );
+    }
+}
+
+/// A provider without tool calling takes the unary fallback, which no `retry_round` covers: there the
+/// turn-level replay IS the ladder, and it still climbs exactly once (X-73).
+#[tokio::test(start_paused = true)]
+async fn the_unary_fallback_is_replayed_on_the_same_budget() {
+    let log = Log::default();
+    let provider = FakeProvider::new()
+        .tail(Round::failing("connection reset by peer"))
+        .with_log(log.clone());
+    let fx = Fixture::new(vec![input("q"), Reply::Closed]).patient();
+    fx.run(provider, None, &[]).await;
+
+    assert_eq!(log.calls(), 11, "1 call + 10 replays");
 }

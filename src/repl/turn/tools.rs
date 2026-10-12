@@ -86,7 +86,7 @@ pub(crate) async fn tool_loop(
             Err(e) => {
                 return TurnReport {
                     outcome: Err(e.into()),
-                    used_tools: false,
+                    ran_tool_loop: false,
                     side_fx,
                     partial,
                     partial_reasoning,
