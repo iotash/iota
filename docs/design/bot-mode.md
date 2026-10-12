@@ -79,7 +79,9 @@ bot 目录布局（全部新增）：
         <project_slug>/
             MEMORY.md       # ## Project，8 KiB 硬上限；第一次写入时创建
             MEMORY.md.prev
-    notes/          # 检索记忆层（§3.3，L2），每篇带 OKF frontmatter
+            notes/          # 该项目的检索记忆层（L2，未实现），格式同下
+                <topic>.md
+    notes/          # bot 级检索记忆层（§3.3，L2，未实现），每篇带 OKF frontmatter
         <topic>.md
 ```
 
@@ -277,7 +279,7 @@ rev 1 的「绝不静默换新会话」只覆盖了「读不了」，没覆盖�
 |---|---|---|---|---|---|
 | **L0 档案** | 全部原文，包括被压缩掉的 | 会话 bundle 的 `messages.jsonl`（现有） | 每轮自动（现有） | 人：`/export`。模型：L2 起经 `recall(source: "archive")` | 无；增长见 §2.6 |
 | **L1 常驻** | bot 级：稳定偏好、身份、进行中的长期事项；项目级：这个项目的工具链、命令、约定、坑 | bot 级 `~/.iota/bots/<name>/MEMORY.md`（`## User`、`## Open threads`）+ 项目级 `~/.iota/bots/<name>/projects/<project_slug>/MEMORY.md`（`## Project`）；Markdown，文件级 frontmatter（§3.2） | 模型经 `remember`；压缩前的 flush 轮；人手动编辑 | 每次发送都在 overlay 里：bot 级全文 + 当前项目那一份全文（快照规则见 §3.4） | 每个文件 8 KiB 硬上限 |
-| **L2 检索** | 细节、长文、某个主题的笔记 | `~/.iota/bots/<name>/notes/<topic>.md`，OKF frontmatter（§3.3） | 模型经 `remember(file: "notes/<topic>", type: …)` | overlay 只放目录（文件名 + type + description）；正文经 `recall` 按需取 | 单文件 32 KiB，最多 200 个文件 |
+| **L2 检索** | 细节、长文、某个主题的笔记 | bot 级 `~/.iota/bots/<name>/notes/<topic>.md` + 项目级 `~/.iota/bots/<name>/projects/<project_slug>/notes/<topic>.md`（rev 3：跟着文件走），OKF frontmatter（§3.3） | 模型经 `remember(file: "notes/<topic>", type: …)` | overlay 只放目录（文件名 + type + description）；正文经 `recall` 按需取 | 单文件 32 KiB，最多 200 个文件 |
 | （现有）项目指令 | 人写的项目规则 | AGENTS.md 链 | 人 | overlay（mode ≥ agent 时；bot 恒有） | 32 KiB |
 
 **作用域（已定 2026-10-09，rev 3；取代 2026-09-30 的「按 bot 一份、小节即作用域」）**：记忆**归 bot**，分两种文件——bot 级 `MEMORY.md`（`## User` 全局、`## Open threads` 未结事项）与每个项目一份的 `projects/<project_slug>/MEMORY.md`（`## Project`）。**项目键就是会话桶的键**：`SessionStore::project_slug(project_root)`（`src/session/store.rs:195`），一套键两处用。完整设计、代价与验证见 [`bot-memory-scope.md`](bot-memory-scope.md)。
@@ -341,12 +343,12 @@ updated: 2026-09-30
 | `source` | `add`、`replace` 必填：`user`（用户明说的）/ `inferred`（模型自己的结论或来自工具输出）。写成行首的 `[user]` / `[inferred]` |
 | `old` | `replace`、`remove` 用：要匹配的**子串**，必须在 `section` 选定的文件里**恰好命中一行**。命中 0 行或多行都报错，并列出候选行；命中无标记（人写的）行报错 `that line was written by the user; ask them to change it` |
 | `section` | **三个动作都必填**（rev 3）：`User` / `Open threads` → bot 级 `MEMORY.md`；`Project` → 当前项目的 `projects/<project_slug>/MEMORY.md`（不带名字，只能写当前项目）。`add` 时小节不存在就新建；`replace` / `remove` 时它选定在哪个文件里匹配 `old` |
-| `file` | L2 起可选：`notes/<topic>`（`[a-z0-9-]{1,64}`），缺省为 `MEMORY.md`。对 note 的 `add` 允许多行 |
+| `file` | L2 起可选：`notes/<topic>`（`[a-z0-9-]{1,64}`），缺省为 `MEMORY.md`。落在哪个 `notes/` 由 `section` 决定（rev 3）：`User` / `Open threads` → bot 级 `notes/`，`Project` → `projects/<project_slug>/notes/`。对 note 的 `add` 允许多行 |
 | `type` | L2 起，新建 note 时必填：OKF 词表 `Preference` / `Fact` / `Decision` / `Runbook` / `Reference`；词表外报错。追加到已有 note 不用给 |
 
 返回值：成功时返回 `saved to MEMORY.md ## User (6.1 / 8 KiB)` 和**受影响的整个小节**（评审 I6：快照冻结期间模型只能靠返回值知道文件现状，只回显一行会让它对着过期副本写 `old`），**不回显全文**。
 
-**notes/ 的格式（L2，OKF 核心，已定 2026-09-30）**：
+**notes/ 的格式（L2，OKF 核心，已定 2026-09-30）**：bot 级 `notes/` 与项目级 `projects/<project_slug>/notes/` 格式相同（rev 3）。
 
 ```markdown
 ---
@@ -406,7 +408,7 @@ Notes (read with recall):
 
 - 前言按评审 B 改口径：是数据、优先级低、不是用户说的话；并加上「何时该 remember」的规则（评审 M9），否则写入几乎只靠 flush 触发。
 - 正文里出现的 `</memory>` 会被转义，和 skills 目录的 XML 转义（agent-mode.md §Skills）是同一个理由：记忆是模型写的，内容可能源自工具输出。
-- notes 目录段（OKF）：每个文件一行——文件名、`[type]`、`description`（没有 description 就只有文件名和 type），总长 ≤ 2 KiB，超出的写一句省略说明。这一段 L2 才出现。
+- notes 目录段（OKF）：列 bot 级 `notes/` 与当前项目的 `projects/<project_slug>/notes/`（rev 3；别的项目的笔记不列），每个文件一行——文件名、`[type]`、`description`（没有 description 就只有文件名和 type），总长 ≤ 2 KiB，超出的写一句省略说明。这一段 L2 才出现。
 
 **快照刷新规则（已定 2026-09-30）**：这是本节的关键决策，对应 Hermes「开局冻结」（research §5.4）在永不结束的会话里的等价物。
 

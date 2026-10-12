@@ -120,13 +120,19 @@ Status: **已定（2026-10-09），未落地** · 基线：main `dc1f49d` · 取
     lock                      # bot 锁（不变）：覆盖整个目录，含 projects/
     MEMORY.md                 # bot 级：frontmatter + ## User + ## Open threads（+ 人手加的小节）
     MEMORY.md.prev
+    notes/                    # L2，未实现：bot 级笔记（remember 的 section 为 User / Open threads 时）
+        <topic>.md
     projects/
         -Users-joyqi-Work-iota/
             MEMORY.md         # 项目级：frontmatter + ## Project
             MEMORY.md.prev
+            notes/            # L2，未实现：该项目的笔记（section 为 Project 时）
+                <topic>.md
         -Users-joyqi-.herdr-worktrees-iota-mem-simplify/
             MEMORY.md
 ```
+
+`notes/` 跟着文件走（§5 末尾）：哪一层的记忆文件，就在哪一层旁边放笔记。两处都要等 L2 才有，L1 的切片（§10）不建它们。
 
 `projects/<slug>/` 与会话根下的 `projects/<slug>/` 同名同构（`PROJECTS_DIR_NAME`），只是一个在 `~/.iota/sessions/`、一个在 bot 目录里。
 
