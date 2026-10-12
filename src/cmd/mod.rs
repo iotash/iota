@@ -349,9 +349,9 @@ pub(crate) fn open_resumed(
     Ok((kind, provider))
 }
 
-/// The four layered parameters a run starts under: a resumed bundle's own values when it was recorded on
+/// The five layered parameters a run starts under: a resumed bundle's own values when it was recorded on
 /// this endpoint (with the sources it recorded), else the two config layers, else the built-in defaults.
-/// root.go:365-385, widened to all four (brain page `model-param-layering`).
+/// root.go:365-385, widened to all five (brain page `model-param-layering`).
 ///
 /// A bundle recorded on ANOTHER endpoint is a move, evaluated as a `/model` move is
 /// ([`Declared::resume`]); the replay applied none of it, so what the evaluation kept of it is handed to
@@ -392,7 +392,7 @@ pub(crate) fn layered_params(
 }
 
 /// What a resumed session runs under once it is settled — the move a resume writes into its bundle
-/// (`SessionWriter::move_to`): the provider and model the run is on, the four parameters it starts under,
+/// (`SessionWriter::move_to`): the provider and model the run is on, the five parameters it starts under,
 /// the window its budget will hold (none for a provider without token accounting), the image settings.
 pub(crate) fn settled(
     settings: &RunSettings,

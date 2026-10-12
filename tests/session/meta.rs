@@ -128,6 +128,7 @@ fn meta_records_where_each_layered_parameter_came_from() {
     let text = std::fs::read_to_string(dir.join(META_FILE)).unwrap();
     assert!(!text.contains("param_sources"), "{text}");
     assert!(!text.contains("top_p"), "{text}");
+    assert!(!text.contains("max_tokens"), "{text}");
     // ...and it reads back as the conservative legacy answer, which is what that absence MEANS.
     let legacy = SessionMeta::read(&dir).unwrap();
     assert_eq!(legacy.param_sources, None, "the key is not there at all");
@@ -139,18 +140,21 @@ fn meta_records_where_each_layered_parameter_came_from() {
     writer
         .update_meta(|m| {
             m.top_p = Some(0.9);
+            m.max_tokens = Some(64_000);
             m.effort = "high".to_owned();
             m.param_sources = Some(ParamSources {
                 context_window: ParamSource::Builtin,
                 effort: ParamSource::Config,
                 temperature: ParamSource::Builtin,
                 top_p: ParamSource::Config,
+                max_tokens: Some(ParamSource::Config),
             });
         })
         .unwrap();
     drop(writer);
     let text = std::fs::read_to_string(dir.join(META_FILE)).unwrap();
     assert!(text.contains("\"top_p\": 0.9"), "{text}");
+    assert!(text.contains("\"max_tokens\": 64000"), "{text}");
     assert!(text.contains("\"effort\": \"config\""), "{text}");
 
     let (mut writer, _) = store.resume(&id, KIND).unwrap();
@@ -158,6 +162,8 @@ fn meta_records_where_each_layered_parameter_came_from() {
     drop(writer);
     let after = store.load(&id, KIND).unwrap().meta;
     assert_eq!(after.top_p, Some(0.9));
+    assert_eq!(after.max_tokens, Some(64_000));
+    assert_eq!(after.sources().max_tokens, Some(ParamSource::Config));
     assert_eq!(after.sources().effort, ParamSource::Config);
     assert_eq!(after.sources().context_window, ParamSource::Builtin);
 }

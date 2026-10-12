@@ -345,6 +345,31 @@ fn the_top_p_field_parses_and_stays_optional() {
         "top_p must default None"
     );
 }
+/// `max_tokens:` is a model key and an agent override like `top_p` (DIVERGENCES X-68): the agent's wins,
+/// and a run that declares neither carries `None` — the dialect's default.
+#[test]
+fn the_max_tokens_field_parses_layers_and_stays_optional() {
+    let (dir, _dirs) = temp_project(&[]);
+    let cfg = load_yaml(
+        dir.path(),
+        "c.yaml",
+        "models:\n  glm: {provider: anthropic, id: glm-5.3, max_tokens: 64000}\n  norm: anthropic:x\nagents:\n  norm: {model: norm}\n  long: {model: glm, max_tokens: 128000}\n  plain: {model: glm}\n",
+    );
+    assert_eq!(cfg.models["glm"].max_tokens, Some(64_000));
+    assert_eq!(
+        cfg.resolve_agent("plain").unwrap().max_tokens(),
+        Some(64_000)
+    );
+    assert_eq!(
+        cfg.resolve_agent("long").unwrap().max_tokens(),
+        Some(128_000)
+    );
+    assert_eq!(
+        cfg.resolve_agent("norm").unwrap().max_tokens(),
+        None,
+        "max_tokens must default None"
+    );
+}
 #[test]
 fn the_notify_field_defaults_on_and_parses_yaml_booleans() {
     let (dir, _dirs) = temp_project(&[]);
@@ -524,11 +549,11 @@ fn an_unknown_key_is_refused_with_its_coordinate() {
         ),
         (
             "models:\n  m: {provider: openai, idd: x}\n",
-            "models.m.idd: unknown key (want provider, id, context_window, defer_mode, effort, temperature, top_p, image, aspect_ratio, image_size, negative_prompt, json_edits)",
+            "models.m.idd: unknown key (want provider, id, context_window, defer_mode, effort, temperature, top_p, max_tokens, image, aspect_ratio, image_size, negative_prompt, json_edits)",
         ),
         (
             "agents:\n  coder: {model: m, sytem: hi}\n",
-            "agents.coder.sytem: unknown key (want model, choices, system, system_file, tools, mcp_servers, mode, no_save, notify, description, context_window, effort, temperature, top_p)",
+            "agents.coder.sytem: unknown key (want model, choices, system, system_file, tools, mcp_servers, mode, no_save, notify, description, context_window, effort, temperature, top_p, max_tokens)",
         ),
         (
             "agnets:\n  coder: {}\n",

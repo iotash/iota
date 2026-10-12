@@ -176,6 +176,10 @@ pub async fn run_once(
             let result = provider.chat(&cx.cancel, &send).await?;
             // The tool loop records each of its rounds; this path has exactly one (chat.go:121).
             host.rec.observe(result.usage, Vec::new());
+            // A reply the output ceiling cut off fails the run, as in the tool loop (X-69).
+            if let Some(cut) = result.truncated {
+                return Err(ChatError::Truncated(cut));
+            }
             // `ChatResult` carries no reasoning: the unary path has no thinking text to persist.
             LoopOutcome {
                 content: result.text,
@@ -266,7 +270,8 @@ pub struct TurnParams<'a> {
 
 /// Round order per chat.go:284-379 (see ARCHITECTURE §8): cancellation check (I-03) → local cap →
 /// `budget.take()` → live `tools()` after round 0 → `take_pending_loads()` mount → the request with
-/// `compose_send_history(history, overlay)` and a `NullSink` → `rec.observe` → termination (reasoning-only rule) →
+/// `compose_send_history(history, overlay)` and a `NullSink` → `rec.observe` → a truncated round fails the run
+/// (`ChatError::Truncated`, X-69) → termination (reasoning-only rule) →
 /// assistant message with `raw_content` and the round's `usage` (D-55) → execution walk (`parallel_run` /
 /// `run_batch` / serial with the approval gate). `images` and `usage` on the outcome are the terminating
 /// (no-tool-call) round's; earlier rounds' images are dropped (Go: `LastImages` is per call) and are therefore
@@ -332,7 +337,14 @@ pub async fn execute_with_tools(
             raw_content,
             images,
             usage,
+            truncated,
         } = round;
+        // A round the output ceiling cut off fails the run before the reasoning-only rule can read a
+        // thought cut off mid-sentence as the reply (X-70) — the responses dialect's `response.incomplete`
+        // fails it the same way. The rounds that completed stay billed in the report.
+        if let Some(cut) = truncated {
+            return Err(ChatError::Truncated(cut));
+        }
         if tool_calls.is_empty() {
             let outcome = if content.is_empty() && !reasoning.is_empty() {
                 // Reasoning-only response: the reasoning IS the answer (chat.go:319-322).

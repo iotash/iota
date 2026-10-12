@@ -14,8 +14,13 @@ pub(crate) const PATH_MESSAGES: &str = "/v1/messages";
 pub(crate) const PATH_MODELS: &str = "/v1/models";
 /// The `anthropic-version` header value.
 pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
-/// Always sent as `max_tokens` (POLICY 5 quirk).
-pub(crate) const MAX_TOKENS: u32 = 4096;
+/// The `max_tokens` every request carries unless the model's config sets one (`models.<x>.max_tokens`).
+///
+/// Thinking counts toward it, so it has to leave room for a long think AND the answer after it: GLM-5.3
+/// thinks 7k–15k tokens on a multi-option analysis, which Go's 4096 cut off mid-thought every time. 32000
+/// is twice that measured peak and stays under every target endpoint's own ceiling (GLM 131072, current
+/// Claude models ≥ 64k) — a value above an endpoint's ceiling is a 400, not a clamp (DIVERGENCES X-68).
+pub(crate) const DEFAULT_MAX_TOKENS: u32 = 32_000;
 /// The server-side tool-search tool type.
 pub(crate) const SERVER_SEARCH_TOOL_TYPE: &str = "tool_search_tool_regex_20251119";
 /// The server-side tool-search tool name.
@@ -26,7 +31,7 @@ pub(crate) const SERVER_SEARCH_TOOL_NAME: &str = "tool_search_tool_regex";
 pub(crate) struct AnthropicRequest {
     /// Model id.
     pub(crate) model: String,
-    /// Always `MAX_TOKENS`.
+    /// The output ceiling: the model's `max_tokens:`, else `DEFAULT_MAX_TOKENS`.
     pub(crate) max_tokens: u32,
     /// Conversation.
     pub(crate) messages: Vec<AnthropicMsg>,
@@ -228,33 +233,6 @@ impl AnthropicUsage {
     }
 }
 
-/// Unary response body.
-#[derive(Deserialize, Default)]
-pub(crate) struct AnthropicResponse {
-    /// Content blocks.
-    #[serde(default)]
-    pub(crate) content: Vec<RespBlock>,
-    /// Usage, when reported.
-    #[serde(default)]
-    pub(crate) usage: Option<AnthropicUsage>,
-}
-
-/// One unary content block; only text is read (a unary response never carries tool calls).
-#[derive(Deserialize)]
-#[serde(tag = "type")]
-pub(crate) enum RespBlock {
-    /// A text block.
-    #[serde(rename = "text")]
-    Text {
-        /// The text.
-        #[serde(default)]
-        text: String,
-    },
-    /// Any other block type.
-    #[serde(other)]
-    Other,
-}
-
 /// A content block's class, as `content_block_start` names it — or as a stored replay block names itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum BlockKind {
@@ -344,6 +322,17 @@ pub(crate) enum StopReason {
 }
 
 impl StopReason {
+    /// The wire spelling.
+    fn as_str(&self) -> &str {
+        match self {
+            Self::EndTurn => "end_turn",
+            Self::MaxTokens => "max_tokens",
+            Self::StopSequence => "stop_sequence",
+            Self::ToolUse => "tool_use",
+            Self::Other(s) => s,
+        }
+    }
+
     /// The reason for a `stop_reason` string; `None` when it is empty.
     fn parse(reason: &str) -> Option<Self> {
         Some(match reason {
@@ -388,7 +377,8 @@ pub(crate) enum AnthropicEvent {
     },
     /// `message_delta`: the stop reason and the message's cumulative usage.
     MessageDelta {
-        /// Why the message stopped.
+        /// The stop reason THIS event carried (`None` when it carried none). The message's reason is the
+        /// stream's merged one, [`AnthropicStream::stop_reason`] — read that, not this.
         stop_reason: Option<StopReason>,
         /// The cumulative usage, when reported — whichever fields the event carries: `output_tokens`
         /// always, the input side too on the real API and on the compatible endpoints that give it only
@@ -551,18 +541,6 @@ pub(crate) struct Anthropic {
 }
 
 impl Anthropic {
-    /// POST /v1/messages with stream=false.
-    pub(crate) async fn message(
-        &self,
-        cancel: &CancellationToken,
-        req: &mut AnthropicRequest,
-    ) -> Result<AnthropicResponse, LlmError> {
-        req.stream = false;
-        self.client
-            .do_json(cancel, Method::POST, PATH_MESSAGES, Some(&*req))
-            .await
-    }
-
     /// POST /v1/messages with stream=true.
     pub(crate) async fn stream_message(
         &self,
@@ -577,6 +555,7 @@ impl Anthropic {
         Ok(AnthropicStream {
             sse,
             stopped: false,
+            stop_reason: None,
         })
     }
 
@@ -608,6 +587,9 @@ pub(crate) struct AnthropicStream {
     sse: Sse,
     /// `message_stop` arrived: the message is over, whether or not the body ever closes.
     stopped: bool,
+    /// The message's stop reason, merged over every `message_delta` (see [`Self::stop_reason`]). It is
+    /// the ONE terminal fact: the completion check below and the caller's truncation check both read it.
+    stop_reason: Option<StopReason>,
 }
 
 impl AnthropicStream {
@@ -615,6 +597,12 @@ impl AnthropicStream {
     /// `InBand` (error envelope raw JSON if present, else the whole data). `message_stop` ends the stream
     /// (`Ok(None)` from then on) without waiting for the body's EOF: the usage rode `message_delta` before
     /// it, and a relay that holds the body open must not turn a finished message into a stall.
+    ///
+    /// The message is COMPLETE when `message_stop` arrived — the protocol's terminator — or, for an
+    /// endpoint that closes the body without sending it, when the body ends after a `message_delta`
+    /// that carried a `stop_reason` (the model's own "I am done"). A body that ends anywhere else
+    /// was cut: `IncompleteStream`, never a finished message — Go read every such EOF as the end,
+    /// which handed a fragment back as a whole answer (DIVERGENCES X-71).
     pub(crate) async fn next(&mut self) -> Result<Option<AnthropicEvent>, LlmError> {
         if self.stopped {
             return Ok(None);
@@ -622,10 +610,12 @@ impl AnthropicStream {
         loop {
             let Some(evt) = self.sse.next().await? else {
                 // A body that carried no event at all never streamed (anthropic.go:231-233).
-                return if self.sse.saw_event() {
+                return if !self.sse.saw_event() {
+                    Err(LlmError::NoEvents)
+                } else if self.stop_reason.is_some() {
                     Ok(None)
                 } else {
-                    Err(LlmError::NoEvents)
+                    Err(LlmError::IncompleteStream)
                 };
             };
             let mut out: RawEvent =
@@ -649,8 +639,45 @@ impl AnthropicStream {
                 }
                 _ => {}
             }
-            return Ok(Some(out.classify()));
+            let event = out.classify();
+            if let AnthropicEvent::MessageDelta {
+                stop_reason: Some(reason),
+                ..
+            } = &event
+            {
+                self.merge_stop_reason(reason)?;
+            }
+            return Ok(Some(event));
         }
+    }
+
+    /// Why the message stopped, as far as the stream has read: the merge of every `stop_reason` the
+    /// `message_delta` events carried.
+    pub(crate) fn stop_reason(&self) -> Option<&StopReason> {
+        self.stop_reason.as_ref()
+    }
+
+    /// One `message_delta`'s reason folded into the message's. A delta WITHOUT one (a usage-only update)
+    /// never reaches here: a missing field is no update, never a retraction. `max_tokens` is a fact once
+    /// seen — the output WAS cut, and no later reason can make the round a finished one (review R1). Two
+    /// different non-empty reasons otherwise contradict each other (did the model stop for its tools, or
+    /// at its turn's end?), and neither can be trusted: a protocol error.
+    fn merge_stop_reason(&mut self, reason: &StopReason) -> Result<(), LlmError> {
+        match &self.stop_reason {
+            None => self.stop_reason = Some(reason.clone()),
+            Some(StopReason::MaxTokens) => {}
+            Some(_) if *reason == StopReason::MaxTokens => {
+                self.stop_reason = Some(StopReason::MaxTokens);
+            }
+            Some(first) if first == reason => {}
+            Some(first) => {
+                return Err(LlmError::ConflictingStopReason {
+                    first: first.as_str().to_owned(),
+                    then: reason.as_str().to_owned(),
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -722,7 +749,7 @@ mod tests {
     fn request_omitempty_shape() {
         let req = AnthropicRequest {
             model: "m".to_owned(),
-            max_tokens: MAX_TOKENS,
+            max_tokens: DEFAULT_MAX_TOKENS,
             messages: vec![AnthropicMsg {
                 role: "user",
                 content: vec![
@@ -751,7 +778,7 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_string(&req).unwrap(),
-            r#"{"model":"m","max_tokens":4096,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"r"}],"is_error":false},{"type":"server_tool_use"}]}],"tools":[{"type":"tool_search_tool_regex_20251119","name":"tool_search_tool_regex"}]}"#
+            r#"{"model":"m","max_tokens":32000,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"r"}],"is_error":false},{"type":"server_tool_use"}]}],"tools":[{"type":"tool_search_tool_regex_20251119","name":"tool_search_tool_regex"}]}"#
         );
     }
 }

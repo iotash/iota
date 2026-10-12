@@ -857,6 +857,71 @@ async fn a_declaration_wins_the_switch_and_a_hand_move_wins_the_surface() {
     );
 }
 
+/// `max_tokens:` (X-68) follows the switch like the other declarations: the model switched TO declares a
+/// ceiling, so it lands on the provider with a notice and is recorded in the bundle with its source; a
+/// switch away to a model that declares none drops it back to the dialect's default.
+#[tokio::test]
+async fn a_declared_max_tokens_lands_on_a_switch_and_leaves_with_it() {
+    let f = Fixture::new(vec![
+        input("/model"),
+        commit(vec![
+            // Model: row 1 = "b-model", configured with `max_tokens: 64000`.
+            PanelResult {
+                cursor: 1,
+                ..PanelResult::default()
+            },
+            PanelResult {
+                cursor: 3,
+                ..PanelResult::default()
+            },
+            PanelResult::default(),
+            PanelResult::default(),
+        ]),
+        input("/model"),
+        commit(vec![
+            // Back to row 0 = "a-model", which declares no ceiling.
+            PanelResult::default(),
+            PanelResult {
+                cursor: 3,
+                ..PanelResult::default()
+            },
+            PanelResult::default(),
+            PanelResult::default(),
+        ]),
+        Reply::Interrupted,
+    ]);
+    let (writer, dir) = f.writer();
+    let provider = text("a-model").with_max_tokens(None);
+    let mut params = f.params(provider, writer, Vec::new());
+    params.params = LayeredParams::default();
+    params.layers = layering(
+        AgentConfig::default(),
+        &[(
+            "b",
+            ModelConfig {
+                max_tokens: Some(64_000),
+                ..declared_model("b-model", "", "")
+            },
+        )],
+    );
+    iota::repl::run(params).await.expect("exit");
+
+    let lines = printed(&f.ui);
+    let notices: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.starts_with("Max tokens:"))
+        .collect();
+    assert_eq!(
+        notices,
+        ["Max tokens: 64000", "Max tokens: default (32000)"],
+        "{lines:?}"
+    );
+    let meta = SessionMeta::read(&dir).expect("meta");
+    assert_eq!(meta.model, "a-model");
+    assert_eq!(meta.max_tokens, None, "the declaration left with its model");
+    assert_eq!(meta.sources().max_tokens, Some(ParamSource::Builtin));
+}
+
 /// The `agents:` entry outranks the model on both sides of a switch — including the `context_window` the
 /// layer gained for this rule — so a switch cannot take a window the agent insists on away from it.
 #[tokio::test]

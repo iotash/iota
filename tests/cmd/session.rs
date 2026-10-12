@@ -507,6 +507,7 @@ async fn resume_with_another_provider_moves_the_session_there() {
         effort: ParamSource::User,
         temperature: ParamSource::User,
         top_p: ParamSource::Config,
+        max_tokens: Some(ParamSource::Builtin),
     });
     meta.write(&bundle).expect("meta");
     write_two_endpoints(cwd.path(), &server.uri());
@@ -1358,4 +1359,353 @@ async fn resume_refuses_while_a_bot_pointer_is_unreadable() {
             .is_empty(),
         "nothing was sent"
     );
+}
+
+// ---------------------------------------------------------------- max_tokens across a resume (X-68)
+
+/// A complete Anthropic answer, as SSE.
+const ANTHROPIC_OK: &str = concat!(
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n",
+    "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n",
+    "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n",
+    "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+    "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n",
+    "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+);
+
+/// Two anthropic endpoints on one mock; `ma` on `a` declares `max_tokens: {ceiling}`, `mb` on `b` declares
+/// 2222.
+fn write_anthropic_config(cwd: &Path, url: &str, ceiling: u32) {
+    fs::write(
+        cwd.join(".iota.yaml"),
+        format!(
+            "providers:\n  a: {{type: anthropic, key: x, url: {url}}}\n  b: {{type: anthropic, key: x, url: {url}}}\nmodels:\n  ma: {{provider: a, id: claude-x, max_tokens: {ceiling}}}\n  mb: {{provider: b, id: claude-y, max_tokens: 2222}}\nagents:\n  default: {{model: ma, choices: [ma, mb]}}\n"
+        ),
+    )
+    .expect("write config");
+}
+
+/// One planted session on `a:claude-x` whose meta is laid over with `patch`, resumed once per entry of
+/// `runs` (`(ceiling configured for ma, extra args)`). Returns each run's wire `max_tokens` and the meta
+/// after it.
+async fn resume_max_tokens(
+    patch: serde_json::Value,
+    runs: &[(u32, &[&str])],
+) -> Vec<(serde_json::Value, serde_json::Value)> {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(ANTHROPIC_OK, "text/event-stream"))
+        .mount(&server)
+        .await;
+    let cwd = TempDir::new().expect("temp cwd");
+    let home = TempDir::new().expect("temp home");
+    let id = "m4xq7tz2k9pa";
+    let bundle = sessions_root(home.path()).join(id);
+    plant_bundle(
+        &bundle,
+        id,
+        "a",
+        "claude-x",
+        &[rec("user", "q"), rec("assistant", "a")],
+    );
+    let meta_file = bundle.join("meta.json");
+    let mut meta: serde_json::Value =
+        serde_json::from_slice(&fs::read(&meta_file).expect("meta")).expect("JSON");
+    for (k, v) in patch.as_object().expect("patch object") {
+        meta[k] = v.clone();
+    }
+    fs::write(&meta_file, serde_json::to_vec(&meta).expect("JSON")).expect("meta");
+
+    let mut out = Vec::new();
+    for (n, (ceiling, extra)) in runs.iter().enumerate() {
+        write_anthropic_config(cwd.path(), &server.uri(), *ceiling);
+        let mut cmd = iota(cwd.path(), home.path());
+        cmd.args(["resume", id]).args(*extra).args(["-m", "next"]);
+        let o = output(cmd).await;
+        assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+        let reqs = server.received_requests().await.expect("requests");
+        assert_eq!(reqs.len(), n + 1);
+        let body: serde_json::Value = serde_json::from_slice(&reqs[n].body).expect("JSON");
+        let meta: serde_json::Value =
+            serde_json::from_slice(&fs::read(&meta_file).expect("meta")).expect("JSON");
+        out.push((body["max_tokens"].clone(), meta));
+    }
+    out
+}
+
+/// The ceiling a meta says the session runs under: its value, else the dialect's default.
+fn recorded_ceiling(meta: &serde_json::Value) -> serde_json::Value {
+    meta.get("max_tokens")
+        .cloned()
+        .unwrap_or(serde_json::json!(32000))
+}
+
+/// The five-key source map a build that knows `max_tokens` writes.
+fn five_sources(max_tokens: &str) -> serde_json::Value {
+    serde_json::json!({"context_window":"builtin","effort":"builtin","temperature":"builtin","top_p":"builtin","max_tokens":max_tokens})
+}
+
+/// M2: a RECORDED ceiling — a value, or the default — is what a resume runs under, whatever the config
+/// says now and however it changed between restarts; the request and the meta agree.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resume_runs_under_the_ceiling_the_bundle_records() {
+    // A recorded value: 16000 by hand, the config 1234 and then 5555.
+    let runs = resume_max_tokens(
+        serde_json::json!({"max_tokens": 16000, "param_sources": five_sources("user")}),
+        &[(1234, &[]), (5555, &[])],
+    )
+    .await;
+    for (wire, meta) in &runs {
+        assert_eq!(wire, &serde_json::json!(16000), "{meta}");
+        assert_eq!(recorded_ceiling(meta), *wire, "request and meta agree");
+        assert_eq!(meta["param_sources"]["max_tokens"], "user");
+    }
+
+    // A recorded DEFAULT: startup installs the config's 1234 (then 5555); the resume must clear it.
+    let runs = resume_max_tokens(
+        serde_json::json!({"param_sources": five_sources("builtin")}),
+        &[(1234, &[]), (5555, &[])],
+    )
+    .await;
+    for (wire, meta) in &runs {
+        assert_eq!(
+            wire,
+            &serde_json::json!(32000),
+            "a recorded default beats the config: {meta}"
+        );
+        assert_eq!(recorded_ceiling(meta), *wire, "request and meta agree");
+        assert_eq!(meta["param_sources"]["max_tokens"], "builtin");
+    }
+}
+
+/// M3: the source map a build without `max_tokens` wrote — main's four keys, verbatim — says nothing about
+/// the fifth: the first resume EVALUATES it (the config's 1234, tagged config) and records what it ran
+/// under; from then on the bundle knows it, so a config changed to 5555 does not reach it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_four_key_source_map_evaluates_the_new_ceiling_and_records_it() {
+    let runs = resume_max_tokens(
+        serde_json::json!({"temperature": 0.5, "param_sources": {"context_window":"builtin","effort":"builtin","temperature":"user","top_p":"builtin"}}),
+        &[(1234, &[]), (5555, &[])],
+    )
+    .await;
+    let (wire, meta) = &runs[0];
+    assert_eq!(wire, &serde_json::json!(1234), "{meta}");
+    assert_eq!(
+        meta["max_tokens"], 1234,
+        "the meta records what ran: {meta}"
+    );
+    assert_eq!(meta["param_sources"]["max_tokens"], "config");
+    assert_eq!(
+        meta["param_sources"]["temperature"], "user",
+        "the four it knew are untouched"
+    );
+    let (wire, meta) = &runs[1];
+    assert_eq!(
+        wire,
+        &serde_json::json!(1234),
+        "now recorded, a resume restores it: {meta}"
+    );
+    assert_eq!(recorded_ceiling(meta), *wire);
+}
+
+/// M2, the other endpoint: `-M` onto `b` replays nothing the bundle recorded on `a` — the ceiling is
+/// evaluated there (`mb`'s 2222) and the move records it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_move_evaluates_the_ceiling_on_the_new_endpoint() {
+    let runs = resume_max_tokens(
+        serde_json::json!({"max_tokens": 16000, "param_sources": five_sources("user")}),
+        &[(1234, &["-M", "b:claude-y"]), (1234, &[])],
+    )
+    .await;
+    for (wire, meta) in &runs {
+        assert_eq!(wire, &serde_json::json!(2222), "{meta}");
+        assert_eq!(meta["provider"], "b");
+        assert_eq!(recorded_ceiling(meta), *wire, "request and meta agree");
+        assert_eq!(meta["param_sources"]["max_tokens"], "config");
+    }
+}
+
+/// M4 (X-71), end to end through the REAL unary call: a headless run with no tools takes
+/// `Provider::chat`, and a body that ends before the message did fails the run — exit 1, nothing on stdout,
+/// and the resumed session's log is not touched (D-43) — instead of returning the fragment as the reply.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cut_unary_stream_fails_the_run_and_persists_nothing() {
+    const CUT: &str = concat!(
+        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"unfinished\"}}\n\n",
+    );
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(CUT, "text/event-stream"))
+        .mount(&server)
+        .await;
+    let cwd = TempDir::new().expect("temp cwd");
+    let home = TempDir::new().expect("temp home");
+    let id = "c9tq2xk7m4za";
+    let bundle = sessions_root(home.path()).join(id);
+    plant_bundle(
+        &bundle,
+        id,
+        "a",
+        "claude-x",
+        &[rec("user", "q"), rec("assistant", "a")],
+    );
+    write_anthropic_config(cwd.path(), &server.uri(), 1234);
+    let log_before = fs::read(bundle.join("messages.jsonl")).expect("log");
+
+    let mut cmd = iota(cwd.path(), home.path());
+    cmd.args(["resume", id, "-m", "next"]);
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(1), "stderr: {}", err(&o));
+    assert!(
+        err(&o).contains("stream ended before the message did"),
+        "{}",
+        err(&o)
+    );
+    assert!(
+        out(&o).is_empty(),
+        "the fragment must not be the reply: {}",
+        out(&o)
+    );
+    assert_eq!(
+        fs::read(bundle.join("messages.jsonl")).expect("log"),
+        log_before,
+        "a failed turn persists nothing"
+    );
+    let reqs = server.received_requests().await.expect("requests");
+    let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).expect("JSON");
+    assert!(body.get("tools").is_none(), "the unary path: {body}");
+}
+
+/// R1 (X-69) through the real binary: `max_tokens`, then a usage-only `message_delta`, then `message_stop`.
+/// The later delta does not erase the cut — in `text` and in `json`, the run exits 1, prints no reply, and
+/// the resumed session's log is untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_late_usage_delta_still_fails_a_cut_headless_run() {
+    const LATE: &str = concat!(
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":0}}}\n\n",
+        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"FORBIDDEN PARTIAL ANSWER\"}}\n\n",
+        "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"},\"usage\":{\"output_tokens\":1234}}\n\n",
+        "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{},\"usage\":{\"input_tokens\":23,\"output_tokens\":1234}}\n\n",
+        "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+    );
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(LATE, "text/event-stream"))
+        .mount(&server)
+        .await;
+    let cwd = TempDir::new().expect("temp cwd");
+    let home = TempDir::new().expect("temp home");
+    let id = "r1qz7tx2k9pa";
+    let bundle = sessions_root(home.path()).join(id);
+    plant_bundle(
+        &bundle,
+        id,
+        "a",
+        "claude-x",
+        &[rec("user", "q"), rec("assistant", "a")],
+    );
+    write_anthropic_config(cwd.path(), &server.uri(), 1234);
+    let log_before = fs::read(bundle.join("messages.jsonl")).expect("log");
+
+    for format in ["text", "json"] {
+        let mut cmd = iota(cwd.path(), home.path());
+        cmd.args(["resume", id, "-m", "next", "--output-format", format]);
+        let o = output(cmd).await;
+        assert_eq!(o.status.code(), Some(1), "{format}: stderr: {}", err(&o));
+        assert!(
+            err(&o).contains("Error: output truncated"),
+            "{format}: {}",
+            err(&o)
+        );
+        assert!(
+            !out(&o).contains("FORBIDDEN PARTIAL ANSWER"),
+            "{format}: the fragment must not be the reply: {}",
+            out(&o)
+        );
+        if format == "json" {
+            let report: serde_json::Value = serde_json::from_str(&out(&o)).expect("report");
+            assert_eq!(report["reply"], "");
+            assert!(
+                report["error"]
+                    .as_str()
+                    .is_some_and(|e| e.contains("max_tokens")),
+                "{report}"
+            );
+        } else {
+            assert!(out(&o).is_empty());
+        }
+        assert_eq!(
+            fs::read(bundle.join("messages.jsonl")).expect("log"),
+            log_before,
+            "{format}: a failed turn persists nothing"
+        );
+    }
+    assert_eq!(
+        server.received_requests().await.expect("requests").len(),
+        2,
+        "one request per run: no retry"
+    );
+}
+
+/// The merge with main's move rule (`resume -M` evaluates the bundle as a `/model` move does): a ceiling the
+/// USER set comes along to a model on another endpoint that declares none — on the wire and in the meta — and
+/// one the old endpoint's config supplied stays behind (the target's silence is the dialect's default).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_move_keeps_a_user_ceiling_and_drops_a_config_one() {
+    for (source, want) in [
+        ("user", serde_json::json!(16000)),
+        ("config", serde_json::json!(32000)),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(ANTHROPIC_OK, "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+        let cwd = TempDir::new().expect("temp cwd");
+        let home = TempDir::new().expect("temp home");
+        let id = "mv2qz7tx9kpa";
+        let bundle = sessions_root(home.path()).join(id);
+        plant_bundle(
+            &bundle,
+            id,
+            "a",
+            "claude-x",
+            &[rec("user", "q"), rec("assistant", "a")],
+        );
+        let meta_file = bundle.join("meta.json");
+        let mut meta: serde_json::Value =
+            serde_json::from_slice(&fs::read(&meta_file).expect("meta")).expect("JSON");
+        meta["max_tokens"] = serde_json::json!(16000);
+        meta["param_sources"] = five_sources(source);
+        fs::write(&meta_file, serde_json::to_vec(&meta).expect("JSON")).expect("meta");
+        // `b` serves `claude-z`, which no `models:` entry configures: its config is silent.
+        fs::write(
+            cwd.path().join(".iota.yaml"),
+            format!(
+                "providers:\n  a: {{type: anthropic, key: x, url: {url}}}\n  b: {{type: anthropic, key: x, url: {url}}}\nmodels:\n  ma: {{provider: a, id: claude-x, max_tokens: 1234}}\nagents:\n  default: {{model: ma, choices: [ma, \"b:*\"]}}\n",
+                url = server.uri()
+            ),
+        )
+        .expect("config");
+        let mut cmd = iota(cwd.path(), home.path());
+        cmd.args(["resume", id, "-M", "b:claude-z", "-m", "next"]);
+        let o = output(cmd).await;
+        assert_eq!(o.status.code(), Some(0), "{source}: stderr: {}", err(&o));
+        let reqs = server.received_requests().await.expect("requests");
+        let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).expect("JSON");
+        assert_eq!(body["max_tokens"], want, "{source}: {body}");
+        let meta: serde_json::Value =
+            serde_json::from_slice(&fs::read(&meta_file).expect("meta")).expect("JSON");
+        assert_eq!(meta["provider"], "b");
+        assert_eq!(
+            recorded_ceiling(&meta),
+            want,
+            "{source}: request and meta agree: {meta}"
+        );
+    }
 }

@@ -306,3 +306,118 @@ fn a_bot_replays_nothing_the_config_owns() {
     assert!(provider.image_output(), "image output still replays");
     assert!(provider.json_edits(), "json edits still replay");
 }
+
+/// `max_tokens` (DIVERGENCES X-68) replays like `top_p`: a recorded ceiling goes back onto a dialect that
+/// sends one, a bundle with none leaves the dialect's default, and a bot's config owns it.
+#[test]
+fn a_recorded_max_tokens_replays_unless_the_config_owns_it() {
+    use iota::provider::MaxTokensTunable;
+    let anthropic = || {
+        iota::provider::anthropic::AnthropicProvider::new(
+            "k",
+            "",
+            "glm-5.3",
+            None,
+            reqwest::Client::new(),
+        )
+    };
+    let meta = SessionMeta {
+        provider: "anthropic".to_owned(),
+        max_tokens: Some(64_000),
+        ..SessionMeta::default()
+    };
+    let mut warn = |w: String| panic!("unexpected warning: {w}");
+
+    let mut p = anthropic();
+    apply_session_tuning(&meta, &mut p, "anthropic", &Overrides::default(), &mut warn);
+    assert_eq!(p.max_tokens(), Some(64_000));
+
+    let mut p = anthropic();
+    let silent = SessionMeta {
+        max_tokens: None,
+        ..meta.clone()
+    };
+    apply_session_tuning(
+        &silent,
+        &mut p,
+        "anthropic",
+        &Overrides::default(),
+        &mut warn,
+    );
+    assert_eq!(
+        p.max_tokens(),
+        None,
+        "no record: the dialect's default stands"
+    );
+
+    let mut p = anthropic();
+    let bot = Overrides {
+        config_wins: true,
+        ..Overrides::default()
+    };
+    apply_session_tuning(&meta, &mut p, "anthropic", &bot, &mut warn);
+    assert_eq!(p.max_tokens(), None, "a bot's config owns the ceiling");
+}
+
+/// M2/M3: startup has already installed the CURRENT config's ceiling when the replay runs. A bundle whose
+/// source map carries `max_tokens` restores what it says — its recorded default clears the installed
+/// value; one whose map predates the key (main's four keys, decoded from the bytes main writes) leaves the
+/// installed value standing; a bot keeps its config's either way.
+#[test]
+fn a_recorded_default_clears_the_installed_ceiling_and_a_four_key_map_does_not() {
+    use iota::provider::MaxTokensTunable;
+    let installed = || {
+        let mut p = iota::provider::anthropic::AnthropicProvider::new(
+            "k",
+            "",
+            "glm-5.3",
+            None,
+            reqwest::Client::new(),
+        );
+        p.set_max_tokens(Some(1234)); // what `cmd::tuning::apply` put there from the config
+        p
+    };
+    let mut warn = |w: String| panic!("unexpected warning: {w}");
+    let meta = |sources: &str| -> SessionMeta {
+        serde_json::from_str(&format!(
+            r#"{{"v":2,"provider":"anthropic","param_sources":{sources}}}"#
+        ))
+        .expect("meta")
+    };
+    let five = meta(
+        r#"{"context_window":"builtin","effort":"builtin","temperature":"builtin","top_p":"builtin","max_tokens":"builtin"}"#,
+    );
+    let four = meta(
+        r#"{"context_window":"builtin","effort":"builtin","temperature":"builtin","top_p":"builtin"}"#,
+    );
+    assert!(five.records_max_tokens());
+    assert!(!four.records_max_tokens(), "main's map never knew the key");
+
+    let mut p = installed();
+    apply_session_tuning(&five, &mut p, "anthropic", &Overrides::default(), &mut warn);
+    assert_eq!(
+        p.max_tokens(),
+        None,
+        "a recorded default clears the config's 1234"
+    );
+
+    let mut p = installed();
+    apply_session_tuning(&four, &mut p, "anthropic", &Overrides::default(), &mut warn);
+    assert_eq!(
+        p.max_tokens(),
+        Some(1234),
+        "nothing recorded: the config's value stands"
+    );
+
+    let bot = Overrides {
+        config_wins: true,
+        ..Overrides::default()
+    };
+    let mut p = installed();
+    apply_session_tuning(&five, &mut p, "anthropic", &bot, &mut warn);
+    assert_eq!(
+        p.max_tokens(),
+        Some(1234),
+        "a bot's config owns the ceiling"
+    );
+}

@@ -21,6 +21,11 @@ pub enum ChatError {
         /// The shared cap that was exhausted.
         turns: u32,
     },
+    /// The output ceiling cut the model off (DIVERGENCES X-69): an error, never an answer — the reply
+    /// would be a fragment, and a fragment of THOUGHT promoted to a reply is what the reasoning-only rule
+    /// did before. Not retried: the same request hits the same ceiling.
+    #[error("output truncated — {0}")]
+    Truncated(crate::provider::Truncation),
     /// The provider failed; Display is the provider's own text.
     #[error(transparent)]
     Provider(#[from] ProviderError),
@@ -53,5 +58,14 @@ mod tests {
             "tool loop reached the --max-turns limit without a final response (5 turns, the whole run's budget)"
         );
         assert_eq!(ChatError::Interrupted.to_string(), "interrupted");
+        assert_eq!(
+            ChatError::Truncated(crate::provider::Truncation {
+                reason: "stop_reason: max_tokens".to_owned(),
+                limit: Some(32_000),
+                dropped_tools: vec!["bash".to_owned()],
+            })
+            .to_string(),
+            "output truncated — stop_reason: max_tokens: the output hit its 32000-token limit; the tool call it was composing was dropped (bash)"
+        );
     }
 }

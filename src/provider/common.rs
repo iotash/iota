@@ -1,7 +1,9 @@
 //! Shared provider state (provider/base.go): `ProviderCore`, `HasCore` with the blanket `Tunable`/`TopPTunable`
 //! impls over it, the attachment data-URL / base64 helpers and `make_client`.
 
-use crate::provider::{Effort, HttpTransport, ProviderKind, TopPTunable, Tunable};
+use crate::provider::{
+    Effort, HttpTransport, MaxTokensTunable, ProviderKind, TopPTunable, Tunable,
+};
 use base64::Engine;
 
 use crate::llm::client::{Client, default_http_client};
@@ -20,6 +22,8 @@ pub(crate) struct ProviderCore {
     pub(crate) top_p: Option<f64>,
     /// Reasoning effort; `None` = omit.
     pub(crate) effort: Option<Effort>,
+    /// Output ceiling; `None` = the dialect's default. Only a dialect that sends one reads it.
+    pub(crate) max_tokens: Option<u32>,
 }
 
 /// Access to the shared core of a text provider.
@@ -58,6 +62,17 @@ impl<T: HasCore + Send + Sync> TopPTunable for T {
 
     fn top_p(&self) -> Option<f64> {
         self.core().top_p
+    }
+}
+
+/// The `max_tokens` twin of the blanket `Tunable` impl.
+impl<T: HasCore + Send + Sync> MaxTokensTunable for T {
+    fn set_max_tokens(&mut self, n: Option<u32>) {
+        self.core_mut().max_tokens = n;
+    }
+
+    fn max_tokens(&self) -> Option<u32> {
+        self.core().max_tokens
     }
 }
 

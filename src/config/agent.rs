@@ -2,8 +2,8 @@
 //! prompt it drives them with, the tools and MCP servers it loads, and the session-shaped switches
 //! (`mode`, `no_save`, `notify`).
 //!
-//! An agent may override the four parameters a model sets as defaults (`context_window`/`effort`/
-//! `temperature`/`top_p`) — ONE level of inheritance, deliberately not a chain (brain page
+//! An agent may override the five parameters a model sets as defaults (`context_window`/`effort`/
+//! `temperature`/`top_p`/`max_tokens`) — ONE level of inheritance, deliberately not a chain (brain page
 //! `config-three-layers`), and the layered evaluation that re-derives them on a `/model` switch lives in
 //! [`crate::config::params`].
 
@@ -64,6 +64,8 @@ pub struct AgentConfig {
     pub temperature: Option<f64>,
     /// `top_p:` — overrides the model's default.
     pub top_p: Option<f64>,
+    /// `max_tokens:` — overrides the model's default.
+    pub max_tokens: Option<u32>,
 }
 
 /// `agents.<name>.mode` — three nested levels, chat ⊂ agent ⊂ bot.

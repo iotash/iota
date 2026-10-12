@@ -133,6 +133,10 @@ pub(crate) enum CompactError {
     /// The model answered with nothing to keep.
     #[error("empty summary")]
     EmptySummary,
+    /// The output ceiling cut the summary off: a fragment must not replace the history it summarises
+    /// (DIVERGENCES X-69).
+    #[error("summary {0}")]
+    Truncated(crate::provider::Truncation),
     /// The summary call failed.
     #[error(transparent)]
     Provider(#[from] ProviderError),
@@ -294,6 +298,9 @@ async fn summarize(
     prompt.push_str("--- CONVERSATION END ---");
 
     let res = provider.chat(cancel, &[Message::user(prompt)]).await?;
+    if let Some(cut) = res.truncated {
+        return Err(CompactError::Truncated(cut));
+    }
     Ok((res.text, res.usage))
 }
 
@@ -591,6 +598,82 @@ mod tests {
             .await
             .expect_err("an empty summary must fail");
         assert_eq!(e.to_string(), "empty summary");
+    }
+
+    /// M4 (X-71): the summary pass through the REAL anthropic unary call, whose stream ends before the
+    /// message did — the fragment is a failure, not a summary to replace the history with.
+    #[tokio::test]
+    async fn a_cut_summary_stream_is_an_error() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+        let server = MockServer::start().await;
+        let cut = concat!(
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"The user asked\"}}\n\n",
+        );
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(cut, "text/event-stream"))
+            .mount(&server)
+            .await;
+        let p = crate::provider::anthropic::AnthropicProvider::new(
+            "k",
+            &server.uri(),
+            "m",
+            None,
+            reqwest::Client::new(),
+        );
+        let e = compact_history(&CancellationToken::new(), &p, &history(), "", None)
+            .await
+            .expect_err("a cut summary must fail");
+        assert!(
+            e.to_string()
+                .contains("stream ended before the message did"),
+            "{e}"
+        );
+    }
+
+    /// R1 (X-69): a cut summary followed by a usage-only `message_delta` and `message_stop` — the later
+    /// delta does not make it a finished summary, so no compaction is produced (no marker can be written).
+    #[tokio::test]
+    async fn a_late_usage_delta_does_not_commit_a_cut_summary() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+        let server = MockServer::start().await;
+        let late = concat!(
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"FORBIDDEN PARTIAL SUMMARY\"}}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"},\"usage\":{\"output_tokens\":4096}}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{},\"usage\":{\"input_tokens\":23,\"output_tokens\":4096}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        );
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(late, "text/event-stream"))
+            .mount(&server)
+            .await;
+        let p = crate::provider::anthropic::AnthropicProvider::new(
+            "k",
+            &server.uri(),
+            "m",
+            None,
+            reqwest::Client::new(),
+        );
+        let e = compact_history(&CancellationToken::new(), &p, &history(), "", None)
+            .await
+            .expect_err("a cut summary must fail");
+        assert!(matches!(e, super::CompactError::Truncated(_)), "{e:?}");
+    }
+
+    /// A summary the output ceiling cut off is a failed pass too (X-69): a fragment must not replace
+    /// the history it was summarising.
+    #[tokio::test]
+    async fn a_truncated_summary_is_an_error() {
+        let p = FakeProvider::new().round(crate::testing::Round::cut_off("", "The user asked"));
+        let e = compact_history(&CancellationToken::new(), &p, &history(), "", None)
+            .await
+            .expect_err("a cut-off summary must fail");
+        assert!(matches!(e, super::CompactError::Truncated(_)), "{e:?}");
+        assert_eq!(
+            e.to_string(),
+            "summary stop_reason: max_tokens: the output hit its 32000-token limit"
+        );
     }
 
     /// The summary prompt: the hardened instruction, the user's hint where Go puts it, and

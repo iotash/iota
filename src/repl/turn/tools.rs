@@ -66,6 +66,7 @@ pub(crate) async fn tool_loop(
         let send = t.cx.send_history(history);
         let mut partial = String::new();
         let mut partial_reasoning = String::new();
+        let mut cut_round = None;
         let round = retry_round(
             &t.cancel,
             t.cx.can_retry,
@@ -75,6 +76,7 @@ pub(crate) async fn tool_loop(
                 let outcome = stream_round(t, tp, &send, &tools).await;
                 partial = outcome.partial;
                 partial_reasoning = outcome.partial_reasoning;
+                cut_round = outcome.cut_round;
                 outcome.result
             },
         )
@@ -88,6 +90,7 @@ pub(crate) async fn tool_loop(
                     side_fx,
                     partial,
                     partial_reasoning,
+                    cut_round,
                 };
             }
         };

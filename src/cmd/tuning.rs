@@ -1,5 +1,5 @@
-//! Provider tuning from the config (cmd/root.go:133-199): image → effort → `top_p` → temperature → `json_edits` →
-//! generation params, each warning byte-equal to Go, then the `tools`/`mcp_servers` warning for providers without tool
+//! Provider tuning from the config (cmd/root.go:133-199): image → effort → `top_p` → `max_tokens` → temperature →
+//! `json_edits` → generation params, each warning byte-equal to Go, then the `tools`/`mcp_servers` warning for providers without tool
 //! calling.
 //!
 //! The values come from the resolved MODEL (an image knob or a reasoning effort is a property of the model,
@@ -9,6 +9,7 @@
 //! `` Warning: `image: true` is redundant for provider type {k} (it always generates images) `` ·
 //! `` Warning: `effort` does not apply to provider type {k} (ignored) `` ·
 //! `` Warning: `top_p` does not apply to provider type {k} (ignored) `` ·
+//! `` Warning: `max_tokens` does not apply to provider type {k} (ignored) `` (no Go twin, X-68) ·
 //! `Warning: temperature does not apply to provider type {k} (ignored)` ·
 //! `` Warning: `json_edits` applies only to the images provider type (ignored for {k}) `` ·
 //! `Warning: aspect_ratio/image_size/negative_prompt apply only to image providers (ignored for type {k})`.
@@ -18,8 +19,8 @@ use crate::provider::Provider;
 use crate::cmd::SetupError;
 use crate::config::Resolved;
 
-/// Fixed order: image → effort → `top_p` → temperature → `json_edits` → gen-params. Warnings carry the `Warning: `
-/// prefix. Errors: `ConfigEffort`, `ConfigTopP`.
+/// Fixed order: image → effort → `top_p` → `max_tokens` → temperature → `json_edits` → gen-params. Warnings carry
+/// the `Warning: ` prefix. Errors: `ConfigEffort`, `ConfigTopP`, `ConfigMaxTokens`.
 ///
 /// Every step is Go's `p.(provider.XTunable)` type assertion spelled as the capability accessor: the tuning lands
 /// when the provider has the capability and warns (naming `p.kind()`, Go's `p.Type()`) when it does not. The
@@ -67,6 +68,20 @@ pub(crate) fn apply(
         } else {
             warn(format!(
                 "Warning: `top_p` does not apply to provider type {kind} (ignored)"
+            ));
+        }
+    }
+
+    // No Go twin: Go sent a fixed 4096 (DIVERGENCES X-68).
+    if let Some(n) = resolved.max_tokens() {
+        if n == 0 {
+            return Err(SetupError::ConfigMaxTokens(n));
+        }
+        if let Some(tunable) = p.as_max_tokens_tunable() {
+            tunable.set_max_tokens(Some(n));
+        } else {
+            warn(format!(
+                "Warning: `max_tokens` does not apply to provider type {kind} (ignored)"
             ));
         }
     }
@@ -173,6 +188,16 @@ mod tests {
             r.expect_err("top_p must be rejected").to_string(),
             "config top_p 2: want 0.0-1.0"
         );
+
+        let zero = ModelConfig {
+            max_tokens: Some(0),
+            ..ModelConfig::default()
+        };
+        let (r, _) = run(&zero, None);
+        assert_eq!(
+            r.expect_err("a zero ceiling must be rejected").to_string(),
+            "config max_tokens 0: want 1 or more"
+        );
     }
 
     /// A provider with no tuning capability warns about every knob, in root.go's order. (`image: true` is silent
@@ -184,6 +209,7 @@ mod tests {
             image: true,
             effort: "high".to_owned(),
             top_p: Some(0.5),
+            max_tokens: Some(64_000),
             json_edits: true,
             aspect_ratio: "1:1".to_owned(),
             ..ModelConfig::default()
@@ -195,6 +221,7 @@ mod tests {
             vec![
                 "Warning: `effort` does not apply to provider type imagen (ignored)".to_owned(),
                 "Warning: `top_p` does not apply to provider type imagen (ignored)".to_owned(),
+                "Warning: `max_tokens` does not apply to provider type imagen (ignored)".to_owned(),
                 "Warning: temperature does not apply to provider type imagen (ignored)".to_owned(),
                 "Warning: `json_edits` applies only to the images provider type (ignored for imagen)"
                     .to_owned(),

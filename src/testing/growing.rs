@@ -457,6 +457,7 @@ impl Provider for GrowingProvider {
                 text: r.content,
                 usage: r.usage,
                 images: r.images,
+                truncated: r.truncated,
             })
             .map_err(|input| overflow(WireOp::Chat, self.shared.window, input));
         Box::pin(std::future::ready(r))

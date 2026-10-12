@@ -198,6 +198,7 @@ fn a_resume_on_another_provider_keeps_what_the_user_set_and_says_so() {
             effort: ParamSource::User,
             temperature: ParamSource::Config,
             top_p: ParamSource::Builtin,
+            max_tokens: Some(ParamSource::Builtin),
         }),
         ..SessionMeta::default()
     };

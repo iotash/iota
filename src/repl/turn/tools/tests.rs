@@ -386,6 +386,37 @@ async fn reasoning_only_response_becomes_the_answer() {
     );
 }
 
+// The same reasoning-only round, cut off by the output ceiling (X-70): the thought is a
+// draft that stopped mid-sentence, not an answer — the turn fails with the truncation, the
+// thought rides out only as the partial reasoning, and nothing is rendered as content.
+#[tokio::test]
+async fn a_truncated_reasoning_only_round_is_never_the_answer() {
+    let fx = Fx::new(Arc::new(StaticDispatcher::new(&[])), Vec::new());
+    let p = stream(vec![Round::cut_off("this needs flagging as a", "")]);
+    let mut history = vec![Message::user("hi")];
+
+    let report = fx.turn(&p, &mut history).await;
+    assert!(
+        matches!(
+            &report.outcome,
+            Err(TurnFailure::Chat(crate::headless::ChatError::Truncated(t))) if t.limit == Some(32_000)
+        ),
+        "want Truncated, got {:?}",
+        report.outcome
+    );
+    assert!(report.cut_short().is_some(), "a cut keeps what streamed");
+    assert_eq!(report.partial, "", "no text streamed");
+    assert_eq!(report.partial_reasoning, "this needs flagging as a");
+    assert_eq!(p.calls(), 1, "a truncation is not retried");
+    assert!(
+        !plain(&fx.events())
+            .iter()
+            .any(|l| l.contains("flagging as a")),
+        "the thought must not be rendered as the answer: {:#?}",
+        fx.events()
+    );
+}
+
 // A turn that ends in TEXT carries the terminating round's raw
 // blocks out, so the run loop can stamp them on the assistant message it builds. Anthropic
 // rejects a replayed thinking-mode turn whose thinking block is missing, and a turn ending in

@@ -238,6 +238,64 @@ async fn reasoning_only_reply_is_the_reply() {
     assert_eq!(out.reply, "only thought");
 }
 
+/// The reasoning-only rule above does NOT apply to a round the output ceiling cut off (X-70): the run fails
+/// with the truncation — on the tool loop and on the unary path alike — so a half-thought never becomes the
+/// reply on stdout or a delta a resumed session would persist.
+#[tokio::test]
+async fn a_truncated_reasoning_only_round_fails_the_run() {
+    let cut = || RoundResult {
+        reasoning: "this needs flagging as a".to_owned(),
+        truncated: Some(iota::provider::Truncation {
+            reason: "stop_reason: max_tokens".to_owned(),
+            limit: Some(32_000),
+            dropped_tools: Vec::new(),
+        }),
+        ..RoundResult::default()
+    };
+    let dispatch: Arc<StaticDispatcher> = Arc::new(StaticDispatcher::new(&["noop"]));
+    let tp = FakeProvider::scripted(vec![cut()], "unused");
+    let mut history = vec![Message::user("go")];
+    let err = execute_with_tools(
+        TurnParams {
+            cx: &RunCtx::default(),
+            tp: &tp,
+            dispatch: dispatch.clone(),
+            tools: dispatch.tools(),
+            harness: "",
+            overlay: "",
+            max_turns: None,
+        },
+        &mut history,
+        &mut QuietHost::new(),
+    )
+    .await
+    .expect_err("a cut-off round is not a reply");
+    assert!(matches!(err, ChatError::Truncated(_)), "{err:?}");
+    assert_eq!(
+        err.to_string(),
+        "output truncated — stop_reason: max_tokens: the output hit its 32000-token limit"
+    );
+    assert_eq!(history, vec![Message::user("go")], "nothing was appended");
+
+    // The unary path (no tools advertised) fails the same way.
+    let tp = FakeProvider::scripted(vec![cut()], "unused");
+    let err = run_once(
+        &RunCtx::default(),
+        &tp,
+        &RunRequest {
+            message: "go".to_owned(),
+            ..RunRequest::default()
+        },
+        Arc::new(StaticDispatcher::new(&[])),
+        None,
+        &mut QuietHost::new(),
+        None,
+    )
+    .await
+    .expect_err("a cut-off unary reply is not a reply");
+    assert!(matches!(err, ChatError::Truncated(_)), "{err:?}");
+}
+
 // New (chat.go:112 `saveImagesQuiet(tp)` after the loop): only the TERMINATING round's images are saved.
 #[tokio::test]
 async fn tool_loop_final_round_images_are_saved() {

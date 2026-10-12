@@ -162,6 +162,11 @@ impl Resolved {
         self.agent.top_p.or(self.model.top_p)
     }
 
+    /// The agent's override, else the model's default.
+    pub fn max_tokens(&self) -> Option<u32> {
+        self.agent.max_tokens.or(self.model.max_tokens)
+    }
+
     /// The `context_window:` this run declares — the agent's override, else the model's own — as it was
     /// WRITTEN; `None` when neither layer wrote one. Parsing it is the caller's (see [`WindowDecl`]).
     pub fn window_decl(&self) -> Option<WindowDecl<'_>> {

@@ -247,6 +247,9 @@ pub struct ModelConfig {
     pub temperature: Option<f64>,
     /// `top_p:` — nucleus sampling (0.0-1.0; range-checked by tuning).
     pub top_p: Option<f64>,
+    /// `max_tokens:` — the output ceiling every request carries, thinking included (≥ 1; checked by
+    /// tuning). Only the anthropic dialect sends one; absent = its default (DIVERGENCES X-68).
+    pub max_tokens: Option<u32>,
     /// `image:` — image-generation opt-in for providers that need one.
     #[serde(deserialize_with = "crate::tool::yaml11::deserialize_bool")]
     pub image: bool,

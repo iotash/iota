@@ -1,7 +1,7 @@
-//! The layered evaluation of the four parameters `models:` and `agents:` share (brain page
+//! The layered evaluation of the five parameters `models:` and `agents:` share (brain page
 //! `model-param-layering`).
 //!
-//! `context_window`, `effort`, `temperature` and `top_p` are resolved from three tiers, highest first:
+//! `context_window`, `effort`, `temperature`, `top_p` and `max_tokens` are resolved from three tiers, highest first:
 //!
 //! 1. what the `agents:` entry declares — a hard override, one level, never a chain;
 //! 2. what the model the session is RUNNING declares in its `models:` entry;
@@ -60,6 +60,8 @@ pub struct Declared {
     pub temperature: Option<f64>,
     /// `top_p:`.
     pub top_p: Option<f64>,
+    /// `max_tokens:`.
+    pub max_tokens: Option<u32>,
 }
 
 impl Declared {
@@ -93,10 +95,11 @@ impl Declared {
             effort: first_non_empty(&agent.effort, &model.effort),
             temperature: agent.temperature.or(model.temperature),
             top_p: agent.top_p.or(model.top_p),
+            max_tokens: agent.max_tokens.or(model.max_tokens),
         }
     }
 
-    /// THE rule, for all four parameters at once: a declaration wins; with none, the session keeps its own
+    /// THE rule, for all five parameters at once: a declaration wins; with none, the session keeps its own
     /// value and drops one that a declaration had supplied.
     ///
     /// Both evaluating moments are this one call — a new session passes [`LayeredParams::default`] as
@@ -107,10 +110,11 @@ impl Declared {
             effort: evaluate_one(self.effort.clone(), &current.effort),
             temperature: evaluate_one(self.temperature.map(Some), &current.temperature),
             top_p: evaluate_one(self.top_p.map(Some), &current.top_p),
+            max_tokens: evaluate_one(self.max_tokens.map(Some), &current.max_tokens),
         }
     }
 
-    /// A RESUMED session's four parameters. Resume is NOT an evaluating moment: a bundle's value IS the
+    /// A RESUMED session's five parameters. Resume is NOT an evaluating moment: a bundle's value IS the
     /// session's current value written down, so it comes back with the source it was written with, and the
     /// evaluation runs only for a parameter the bundle never recorded.
     ///
@@ -164,6 +168,16 @@ impl Declared {
                 pick(complete, meta.recorded_top_p().map(Some)),
                 src.top_p,
                 evaluated.top_p,
+            ),
+            // The fifth parameter's record is complete only when the map carries ITS key: a map
+            // written by a four-parameter build is complete about four (X-68).
+            max_tokens: restore_one(
+                pick(
+                    meta.records_max_tokens(),
+                    meta.recorded_max_tokens().map(Some),
+                ),
+                src.max_tokens.unwrap_or(ParamSource::User),
+                evaluated.max_tokens,
             ),
         }
     }
@@ -334,6 +348,7 @@ mod tests {
             effort: "low".to_owned(),
             temperature: Some(0.9),
             top_p: Some(0.5),
+            max_tokens: Some(64_000),
             ..ModelConfig::default()
         }
     }
@@ -395,6 +410,7 @@ mod tests {
             effort: Param::user("max".to_owned()),
             temperature: Param::config(Some(0.4)),
             top_p: Param::default(),
+            max_tokens: Param::config(Some(64_000)),
         };
         let p = Declared::default().evaluate(&current);
         assert_eq!(
@@ -409,6 +425,11 @@ mod tests {
             "what the user typed is the session's own and survives config silence"
         );
         assert_eq!(p.top_p, Param::default(), "a built-in default stays one");
+        assert_eq!(
+            p.max_tokens,
+            Param::default(),
+            "a ceiling one model declared must not cap the next one"
+        );
     }
 
     /// MOMENT 2b — a `/model` switch onto a model that DOES declare: the declaration outranks the session's
@@ -420,12 +441,90 @@ mod tests {
             effort: Param::user("max".to_owned()),
             temperature: Param::user(Some(1.5)),
             top_p: Param::user(Some(0.1)),
+            max_tokens: Param::default(),
         };
         let p = Declared::of(&AgentConfig::default(), &model(), Some(128_000)).evaluate(&current);
         assert_eq!(p.context_window, Param::config(128_000));
         assert_eq!(p.effort, Param::config("low".to_owned()));
         assert_eq!(p.temperature, Param::config(Some(0.9)));
         assert_eq!(p.top_p, Param::config(Some(0.5)));
+        assert_eq!(p.max_tokens, Param::config(Some(64_000)));
+    }
+
+    /// `max_tokens` (DIVERGENCES X-68) is layered like the other four: the agent's key over the model's,
+    /// and a resume restores what the bundle recorded with its tag — or, for a bundle that records the
+    /// layering but no ceiling, the dialect's default rather than whatever the config says now.
+    #[test]
+    fn the_output_ceiling_is_layered_like_the_rest() {
+        let agent = AgentConfig {
+            max_tokens: Some(128_000),
+            ..AgentConfig::default()
+        };
+        assert_eq!(
+            Declared::of(&agent, &model(), None).max_tokens,
+            Some(128_000)
+        );
+        assert_eq!(
+            Declared::of(&AgentConfig::default(), &model(), None).max_tokens,
+            Some(64_000)
+        );
+
+        let declared = Declared::of(&AgentConfig::default(), &model(), None);
+        let recorded = SessionMeta {
+            provider: "anthropic".to_owned(),
+            max_tokens: Some(16_000),
+            param_sources: Some(ParamSources {
+                max_tokens: Some(ParamSource::User),
+                ..ParamSources::default()
+            }),
+            ..SessionMeta::default()
+        };
+        assert_eq!(
+            declared.resume(&recorded, true).max_tokens,
+            Param::user(Some(16_000))
+        );
+        let silent = SessionMeta {
+            max_tokens: None,
+            param_sources: Some(ParamSources::default()),
+            ..recorded.clone()
+        };
+        assert_eq!(declared.resume(&silent, true).max_tokens, Param::default());
+        assert_eq!(
+            declared.resume(&recorded, false).max_tokens,
+            Param::config(Some(64_000)),
+            "a bundle that does not replay recorded nothing: the declaration applies"
+        );
+    }
+
+    /// M3 (X-68): a source map written by a build that knew FOUR parameters — the bytes main writes — is
+    /// complete about those four only. Its silence about `max_tokens` is not a recorded default: the
+    /// fifth parameter is evaluated from the config, while the four keep the bundle's reading.
+    #[test]
+    fn a_four_key_source_map_evaluates_the_fifth_parameter() {
+        let meta: SessionMeta = serde_json::from_str(
+            r#"{"v":2,"provider":"anthropic","param_sources":{"context_window":"builtin","effort":"builtin","temperature":"builtin","top_p":"builtin"}}"#,
+        )
+        .expect("meta");
+        assert!(meta.records_params());
+        assert!(!meta.records_max_tokens());
+        let declared = Declared {
+            max_tokens: Some(4096),
+            top_p: Some(0.5),
+            ..Declared::default()
+        };
+        let p = declared.resume(&meta, true);
+        assert_eq!(p.max_tokens, Param::config(Some(4096)));
+        assert_eq!(
+            p.top_p,
+            Param::default(),
+            "the four it knew stay as recorded: no top_p is a deliberate absence"
+        );
+        // The same map WITH the key records the default.
+        let five: SessionMeta = serde_json::from_str(
+            r#"{"v":2,"provider":"anthropic","param_sources":{"context_window":"builtin","effort":"builtin","temperature":"builtin","top_p":"builtin","max_tokens":"builtin"}}"#,
+        )
+        .expect("meta");
+        assert_eq!(declared.resume(&five, true).max_tokens, Param::default());
     }
 
     /// MOMENT 4 — a resume: the bundle's values come back with the bundle's own tags, whatever the config
@@ -524,6 +623,7 @@ mod tests {
                 effort: ParamSource::User,
                 temperature: ParamSource::Config,
                 top_p: ParamSource::Builtin,
+                max_tokens: Some(ParamSource::Builtin),
             }),
             ..SessionMeta::default()
         };

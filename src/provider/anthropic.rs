@@ -7,11 +7,11 @@ use crate::provider::error::{ProviderError, WireOp};
 use crate::provider::model::{
     Attachment, JsonObject, Message, Raw, RawContent, Role, ToolCall, ToolDef,
 };
-use crate::provider::sink::{ReasoningGate, StreamSink};
+use crate::provider::sink::{NullSink, ReasoningGate, StreamSink};
 use crate::provider::usage::Usage;
 use crate::provider::{
-    ChatResult, HttpTransport, Provider, ProviderKind, RoundResult, ToolProvider, TopPTunable,
-    Tunable,
+    ChatResult, HttpTransport, MaxTokensTunable, Provider, ProviderKind, RoundResult, ToolProvider,
+    TopPTunable, Truncation, Tunable,
 };
 use reqwest::header::{HeaderName, HeaderValue};
 use serde::Serialize;
@@ -19,19 +19,20 @@ use tokio_util::sync::CancellationToken;
 
 use crate::llm::anthropic::{
     ANTHROPIC_VERSION, Anthropic, AnthropicEvent, AnthropicMsg, AnthropicRequest, AnthropicTool,
-    AnthropicToolEntry, AnthropicUsage, Block, BlockKind, DeltaKind, MAX_TOKENS, OutputConfig,
-    RespBlock, SERVER_SEARCH_TOOL_NAME, SERVER_SEARCH_TOOL_TYPE, ServerTool, Source, StopReason,
+    AnthropicToolEntry, AnthropicUsage, Block, BlockKind, DEFAULT_MAX_TOKENS, DeltaKind,
+    OutputConfig, SERVER_SEARCH_TOOL_NAME, SERVER_SEARCH_TOOL_TYPE, ServerTool, Source, StopReason,
     TextBlock, ToolSchema, TypedBlock,
 };
 use crate::llm::error::LlmError;
 use crate::provider::common::{HasCore, ProviderCore, credential_header, make_client};
-use crate::provider::think::{StreamThinkSplitter, split_inline_think};
+use crate::provider::think::StreamThinkSplitter;
 use crate::provider::usage_conv::anthropic_usage;
 
 /// Default base URL (`https://api.anthropic.com`).
 pub(crate) const ANTHROPIC_DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 
-/// Anthropic provider (tool, tunable, `top_p`; `RawContent::Anthropic`, replayed only with a deferred tool).
+/// Anthropic provider (tool, tunable, `top_p`, `max_tokens`; `RawContent::Anthropic`, replayed only with a
+/// deferred tool).
 pub struct AnthropicProvider {
     core: ProviderCore,
     client: Anthropic,
@@ -62,9 +63,15 @@ impl AnthropicProvider {
                 temperature,
                 top_p: None,
                 effort: None,
+                max_tokens: None,
             },
             client: Anthropic { client },
         }
+    }
+
+    /// The `max_tokens` a request carries: the configured ceiling, else [`DEFAULT_MAX_TOKENS`].
+    fn max_tokens_sent(&self) -> u32 {
+        self.core.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS)
     }
 
     /// provider/anthropic.go:91-190. `replay_server_blocks` is the reference-protocol gate: without a deferred
@@ -72,7 +79,7 @@ impl AnthropicProvider {
     fn build_request(&self, messages: &[Message], replay_server_blocks: bool) -> AnthropicRequest {
         let mut req = AnthropicRequest {
             model: self.core.model.clone(),
-            max_tokens: MAX_TOKENS,
+            max_tokens: self.max_tokens_sent(),
             messages: Vec::new(),
             system: Vec::new(),
             temperature: self.core.temperature,
@@ -206,7 +213,6 @@ impl AnthropicProvider {
         // Content blocks accumulate BY INDEX: content_block_delta events address blocks by `index` and can
         // interleave across open blocks (parallel tool_use). A BTreeMap assembles in ascending index order.
         let mut blocks: BTreeMap<u32, BlockAcc> = BTreeMap::new();
-        let mut stop_reason: Option<StopReason> = None;
         // Usage arrives in two events: message_start reports the input side (plus cache counts) and
         // message_delta the message's CUMULATIVE usage — the output figure always, and the input side too
         // on the real API and on the compatible endpoints that send placeholder zeros at message_start
@@ -279,11 +285,9 @@ impl AnthropicProvider {
                     }
                     DeltaKind::Other => {}
                 },
-                AnthropicEvent::MessageDelta {
-                    stop_reason: reason,
-                    usage: delta,
-                } => {
-                    stop_reason = reason;
+                // The reason is the STREAM's merged one (read below): a later usage-only delta must not
+                // erase a `max_tokens` an earlier one reported. The usage is laid over as it arrives.
+                AnthropicEvent::MessageDelta { usage: delta, .. } => {
                     if let Some(delta) = delta {
                         usage.overlay(&delta); // cumulative: what it carries is the message's figure
                         published = Some(anthropic_usage(&usage));
@@ -296,6 +300,9 @@ impl AnthropicProvider {
         gate.close();
 
         let assembled = assemble(&blocks);
+        // The message's ONE terminal fact, merged by the stream over every `message_delta` — the same fact
+        // the stream's completion check read (X-69, X-71).
+        let stop_reason = stream.stop_reason().cloned();
         // Thinking blocks replay UNCONDITIONALLY (the API rejects a thinking-mode turn whose
         // thinking is missing); server blocks only under the reference protocol, so a future
         // web_search's blocks are not dragged into history as orphans. Both lists were built in
@@ -310,6 +317,18 @@ impl AnthropicProvider {
         } else {
             Some(RawContent::Anthropic(replay))
         };
+        // A round the ceiling cut off is reported as such, never passed off as finished: a tool call
+        // whose arguments were still streaming cannot run (they may be cut mid-JSON), so it is dropped —
+        // by name, in the truncation, rather than silently (DIVERGENCES X-69).
+        let truncated = (stop_reason == Some(StopReason::MaxTokens)).then(|| Truncation {
+            reason: "stop_reason: max_tokens".to_owned(),
+            limit: Some(req.max_tokens),
+            dropped_tools: assembled
+                .tool_calls
+                .iter()
+                .map(|c| c.name.clone())
+                .collect(),
+        });
         let tool_calls =
             if stop_reason == Some(StopReason::ToolUse) && !assembled.tool_calls.is_empty() {
                 assembled.tool_calls
@@ -323,6 +342,7 @@ impl AnthropicProvider {
             usage: published,
             raw_content,
             images: Vec::new(),
+            truncated,
         })
     }
 }
@@ -572,30 +592,33 @@ impl Provider for AnthropicProvider {
         })
     }
 
+    /// The unary call rides the STREAM: a `max_tokens` this large (thinking counts toward it) can take
+    /// minutes to GENERATE, and the client bounds only the response HEADERS (`HEADER_TIMEOUT`, 120 s),
+    /// not the whole answer. A server that holds a non-streaming response's headers until the output is
+    /// done would trip that bound on a long generation; a stream sends its head first. Anthropic
+    /// recommends streaming above ~21k tokens for the same reason. No tools, no sink: only the text,
+    /// the cost and the truncation come back (DIVERGENCES X-71).
     fn chat<'a>(
         &'a self,
         cancel: &'a CancellationToken,
         messages: &'a [Message],
     ) -> BoxFuture<'a, Result<ChatResult, ProviderError>> {
         Box::pin(async move {
-            let mut req = self.build_request(messages, false);
-            let resp = self
-                .client
-                .message(cancel, &mut req)
+            let round = self
+                .stream_internal(cancel, messages, &[], &mut NullSink)
                 .await
-                .map_err(|e| ProviderError::wire(WireOp::Chat, e))?;
-            // Only text blocks are read; a unary response never carries tool calls (Chat sends no tools).
-            let mut result = String::new();
-            for block in &resp.content {
-                if let RespBlock::Text { text } = block {
-                    result.push_str(text);
-                }
-            }
-            let (content, _) = split_inline_think(&result);
+                .map_err(|e| match e {
+                    ProviderError::Wire { source, .. } => ProviderError::Wire {
+                        op: WireOp::Chat,
+                        source,
+                    },
+                    other => other,
+                })?;
             Ok(ChatResult {
-                text: content,
-                usage: resp.usage.as_ref().map(anthropic_usage),
+                text: round.content,
+                usage: round.usage,
                 images: Vec::new(),
+                truncated: round.truncated,
             })
         })
     }
@@ -609,6 +632,10 @@ impl Provider for AnthropicProvider {
     }
 
     fn as_top_p_tunable(&mut self) -> Option<&mut dyn TopPTunable> {
+        Some(self)
+    }
+
+    fn as_max_tokens_tunable(&mut self) -> Option<&mut dyn MaxTokensTunable> {
         Some(self)
     }
 }
