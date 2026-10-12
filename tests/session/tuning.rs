@@ -408,11 +408,64 @@ fn a_recorded_zero_ceiling_is_ignored_with_a_warning() {
         config_wins: true,
         ..Overrides::default()
     };
-    let mut p = installed();
-    apply_session_tuning(&meta, &mut p, "anthropic", &bot, &mut |w| {
-        panic!("unexpected warning: {w}")
-    });
-    assert_eq!(p.max_tokens(), Some(1234));
+    for on in ["anthropic", "elsewhere"] {
+        let mut p = installed();
+        apply_session_tuning(&meta, &mut p, on, &bot, &mut |w| {
+            panic!("{on}: unexpected warning: {w}")
+        });
+        assert_eq!(p.max_tokens(), Some(1234));
+    }
+}
+
+/// R3: the warning does not depend on the dialect having a ceiling to set. A responses session (no
+/// `max_tokens` capability) that records a 0 is told once on a resume on its own endpoint, as on a move;
+/// a bot, on either, is told nothing.
+#[test]
+fn a_recorded_zero_ceiling_warns_on_a_dialect_without_one() {
+    let meta: SessionMeta = serde_json::from_str(
+        r#"{"v":2,"provider":"responses","max_tokens":0,"param_sources":{"context_window":"builtin","effort":"builtin","temperature":"builtin","top_p":"builtin","max_tokens":"builtin"}}"#,
+    )
+    .expect("meta");
+    let provider = || {
+        iota::provider::openresponses::OpenResponsesProvider::new(
+            "k",
+            "",
+            "gpt-x",
+            None,
+            reqwest::Client::new(),
+        )
+    };
+    assert!(
+        iota::provider::Provider::as_max_tokens_tunable(&mut provider()).is_none(),
+        "the dialect sends no ceiling"
+    );
+    for on in ["responses", "elsewhere"] {
+        let mut warnings = Vec::new();
+        apply_session_tuning(
+            &meta,
+            &mut provider(),
+            on,
+            &Overrides::default(),
+            &mut |w| {
+                warnings.push(w);
+            },
+        );
+        assert_eq!(
+            warnings
+                .iter()
+                .filter(|w| w.contains("max_tokens 0"))
+                .count(),
+            1,
+            "{on}: {warnings:?}"
+        );
+        let bot = Overrides {
+            config_wins: true,
+            ..Overrides::default()
+        };
+        apply_session_tuning(&meta, &mut provider(), on, &bot, &mut |w| {
+            panic!("{on}: a bot was warned: {w}")
+        });
+    }
 }
 
 /// M2/M3: startup has already installed the CURRENT config's ceiling when the replay runs. A bundle whose

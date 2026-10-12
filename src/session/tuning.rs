@@ -101,6 +101,24 @@ pub fn apply_session_tuning(
     overrides: &Overrides,
     warn: &mut dyn FnMut(String),
 ) -> Option<u64> {
+    let window = replay_tuning(meta, provider, on, *overrides, warn);
+    // A hand-edited `max_tokens: 0` is reported once, here, on either branch and whatever the dialect can
+    // do with a ceiling: the record is ignored all the same, and the settled meta drops it. A bot replays
+    // nothing of the kind, so it is not told about it.
+    if !overrides.config_wins && meta.invalid_max_tokens() {
+        warn(INVALID_MAX_TOKENS.to_owned());
+    }
+    window
+}
+
+/// [`apply_session_tuning`]'s replay, without the one warning that does not depend on its branch.
+fn replay_tuning(
+    meta: &SessionMeta,
+    provider: &mut dyn Provider,
+    on: &str,
+    overrides: Overrides,
+    warn: &mut dyn FnMut(String),
+) -> Option<u64> {
     if !meta.recorded_on(on, provider.kind()) {
         if !overrides.config_wins {
             warn(format!(
@@ -113,9 +131,6 @@ pub fn apply_session_tuning(
                     "Warning: session effort {:?} is not recognised; keeping the current setting",
                     meta.effort
                 ));
-            }
-            if meta.invalid_max_tokens() {
-                warn(INVALID_MAX_TOKENS.to_owned());
             }
         }
         return None;
@@ -150,9 +165,8 @@ pub fn apply_session_tuning(
     if !overrides.config_wins
         && let Some(tunable) = provider.as_max_tokens_tunable()
     {
-        if meta.invalid_max_tokens() {
-            warn(INVALID_MAX_TOKENS.to_owned());
-        } else if meta.records_max_tokens() {
+        // An invalid record is neither (`records_max_tokens`/`recorded_max_tokens`): nothing is set.
+        if meta.records_max_tokens() {
             tunable.set_max_tokens(meta.recorded_max_tokens());
         } else if let Some(n) = meta.recorded_max_tokens() {
             tunable.set_max_tokens(Some(n));
