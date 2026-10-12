@@ -487,8 +487,8 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
     let provider: &mut dyn Provider = &mut *opened;
     let mut history = Vec::new();
     let mut writer: Option<SessionWriter> = None;
-    // The parameters a resume restored from its bundle — a resume RESTORES the values the session was running
-    // under rather than evaluating the config again.
+    // The parameters a resume settled on — the bundle's values restored, or, for a bundle recorded on another
+    // endpoint, evaluated as a move evaluates them.
     let mut resumed_params: Option<crate::session::LayeredParams> = None;
     let mut notices = Vec::new();
     // What a resumed bot's model is told at startup (bot-mode.md §2.5).
@@ -781,7 +781,7 @@ fn session_cwd(ctx: &RunContext, scope: Option<&std::path::Path>) -> String {
 /// count tokens at all.
 fn resolve_params(
     settings: &RunSettings,
-    provider: &dyn Provider,
+    provider: &mut dyn Provider,
     resumed: Option<&crate::session::SessionMeta>,
     io: &mut crate::cmd::io::Streams,
 ) -> Result<crate::session::LayeredParams, CliError> {

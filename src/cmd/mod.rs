@@ -353,11 +353,15 @@ pub(crate) fn open_resumed(
 /// this endpoint (with the sources it recorded), else the two config layers, else the built-in defaults.
 /// root.go:365-385, widened to all four (brain page `model-param-layering`).
 ///
+/// A bundle recorded on ANOTHER endpoint is a move, evaluated as a `/model` move is
+/// ([`Declared::resume`]); the replay applied none of it, so what the evaluation kept of it is handed to
+/// `provider` here, and a knob the dialect has no place for is recorded as the nothing it is.
+///
 /// A `context_window:` that does not parse aborts the run here — at startup there is nothing yet to keep
 /// going with, and the label says which layer wrote it.
 pub(crate) fn layered_params(
     settings: &RunSettings,
-    provider: &dyn crate::provider::Provider,
+    provider: &mut dyn crate::provider::Provider,
     resumed: Option<&crate::session::SessionMeta>,
 ) -> Result<crate::session::LayeredParams, CliError> {
     let window = match settings.resolved.window_decl() {
@@ -371,12 +375,18 @@ pub(crate) fn layered_params(
     };
     let declared = settings.resolved.declared(window);
     Ok(match resumed {
-        // `apply_session_tuning` replays nothing for a bundle recorded on another endpoint, so for this run
-        // that bundle recorded nothing either.
-        Some(meta) => declared.resume(
-            meta,
-            meta.recorded_on(&settings.resolved.provider_name, provider.kind()),
-        ),
+        Some(meta) if !meta.recorded_on(&settings.resolved.provider_name, provider.kind()) => {
+            let next = declared.resume(meta, false);
+            crate::repl::liveparams::carry(provider, &next);
+            // The window is not the provider's to take: it stays as evaluated, for the budget and for the
+            // warning a provider that counts no tokens gives about one.
+            let now = crate::session::LayeredParams {
+                context_window: next.context_window.clone(),
+                ..crate::session::LayeredParams::default()
+            };
+            crate::repl::liveparams::landing(provider, &now, &next)
+        }
+        Some(meta) => declared.resume(meta, true),
         None => declared.evaluate(&crate::session::LayeredParams::default()),
     })
 }
@@ -640,12 +650,9 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         }
         // Where the session runs NOW, for the bundle — written with the turn's delta, on SUCCESS only
         // (D-43): a run that fails leaves the bundle where it was.
-        let moved = if settles(&resumed.meta, &settings, kind) {
-            let params = layered_params(&settings, &*provider, Some(&resumed.meta))?;
-            Some(settled(&settings, kind, &mut *provider, params))
-        } else {
-            None
-        };
+        let params = layered_params(&settings, &mut *provider, Some(&resumed.meta))?;
+        let moved = settles(&resumed.meta, &settings, kind)
+            .then(|| settled(&settings, kind, &mut *provider, params));
         // root.go:334, on stderr with a single newline (DIVERGENCES D-44): headless stdout is the reply or
         // the JSON report alone, but with prefix resolution the user must see which session was picked.
         io.warning(&format!(

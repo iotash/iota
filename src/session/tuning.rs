@@ -67,8 +67,10 @@ pub fn replay_session_settings(
 
 /// Replays the knobs `meta` recorded. Like the model replay, the WHOLE replay is gated on
 /// [`SessionMeta::recorded_on`] (`on` is the provider name the run is on; a v1 bundle matches on the type) —
-/// a mismatch applies NOTHING, the context window included, and says so
-/// in ONE warning, unless `overrides.config_wins` (a bot replays none of it anyway).
+/// a mismatch applies NOTHING, the context window included, and says so in ONE warning, unless
+/// `overrides.config_wins` (a bot replays none of it anyway). Such a resume is a move: of the four layered
+/// parameters, the caller keeps the ones the user set where the config here is silent
+/// ([`Declared::resume`](crate::config::Declared::resume)), and the warning says that too.
 ///
 /// - **temperature**: only when the caller did not fix one (`overrides.temperature`) and the session recorded one;
 /// - **effort**: whenever the session recorded one — Go has no effort flag, so there is no skip;
@@ -96,10 +98,16 @@ pub fn apply_session_tuning(
     if !meta.recorded_on(on, provider.kind()) {
         if !overrides.config_wins {
             warn(format!(
-                "Warning: session was recorded on {}; this run is on {on}:{} — its model and tuning are not replayed",
+                "Warning: session was recorded on {}; this run is on {on}:{} — its model is not replayed, and of its tuning only what was set by hand carries over, unless this run's config sets it",
                 meta.recorded_where(),
                 provider.model()
             ));
+            if meta.effort().is_err() {
+                warn(format!(
+                    "Warning: session effort {:?} is not recognised; keeping the current setting",
+                    meta.effort
+                ));
+            }
         }
         return None;
     }

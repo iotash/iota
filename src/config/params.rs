@@ -14,8 +14,9 @@
 //! hand-set value stands.** A `/model` adjustment is the temporary answer for what no declaration covers,
 //! not a permanent override of one — that is what editing `agents:` is for.
 //!
-//! Exactly TWO moments evaluate: a new session starting, and a `/model` model switch. A manual `/model`
-//! change writes the session value directly (tagged [`ParamSource::User`]), and a resume RESTORES the
+//! Exactly THREE moments evaluate: a new session starting, a `/model` model switch, and a move to another
+//! endpoint — `/model` onto one, or `resume -M` onto one. A manual `/model` change writes the session value
+//! directly (tagged [`ParamSource::User`]), and a resume on the endpoint the bundle records RESTORES the
 //! bundle's values and tags rather than re-deriving them — a bundle's value is the session's current value
 //! after a restart, no more and no less, which is why a config edited in between only reaches an old
 //! session when the user switches models inside it.
@@ -118,26 +119,31 @@ impl Declared {
     /// the user switches models inside it — so a conversation never changes shape halfway through because a
     /// file on disk did.
     ///
-    /// `replayed` is the caller's answer to "did this bundle's tuning actually apply?" — a bundle recorded
-    /// on another provider replays NOTHING (`apply_session_tuning`'s own gate), so it has recorded
-    /// nothing for this run either.
+    /// `replayed` is the caller's answer to "was this bundle recorded on the endpoint the run is on?". A
+    /// bundle recorded on ANOTHER one is a move (`resume -M`), and a move is an evaluating moment: the
+    /// bundle's values, with their tags, are the session's current value and are evaluated against the
+    /// declarations here — exactly what a `/model` move does with the values the chat runs under. A value
+    /// a declaration supplied is dropped; one the user set, or a default, stays unless this config declares
+    /// the key.
     pub fn resume(&self, meta: &SessionMeta, replayed: bool) -> LayeredParams {
+        if !replayed {
+            return self.evaluate(&Declared::default().resume(meta, true));
+        }
         let evaluated = self.evaluate(&LayeredParams::default());
         let src = meta.sources();
         // A bundle that carries the source map has said everything: a parameter it records no value for is
         // one the session deliberately runs WITHOUT (an effort the user set back to "default" is a value,
         // not a gap), so its default stands instead of being evaluated. An older bundle only ever recorded
         // a value that is actually there, which is how a resume read one before the sources existed.
-        let complete = replayed && meta.records_params();
+        let complete = meta.records_params();
         LayeredParams {
             context_window: restore_one(
-                pick(replayed, complete, meta.recorded_window()),
+                pick(complete, meta.recorded_window()),
                 src.context_window,
                 evaluated.context_window,
             ),
             effort: restore_one(
                 pick(
-                    replayed,
                     complete,
                     meta.recorded_effort()
                         // A level this build cannot parse was NOT applied to the provider — the replay
@@ -150,12 +156,12 @@ impl Declared {
                 evaluated.effort,
             ),
             temperature: restore_one(
-                pick(replayed, complete, meta.recorded_temperature().map(Some)),
+                pick(complete, meta.recorded_temperature().map(Some)),
                 src.temperature,
                 evaluated.temperature,
             ),
             top_p: restore_one(
-                pick(replayed, complete, meta.recorded_top_p().map(Some)),
+                pick(complete, meta.recorded_top_p().map(Some)),
                 src.top_p,
                 evaluated.top_p,
             ),
@@ -172,13 +178,9 @@ fn restore_one<T>(recorded: Option<T>, source: ParamSource, evaluated: Param<T>)
     }
 }
 
-/// What the bundle recorded for one parameter: nothing when its tuning does not apply to this run at all,
-/// the value it carries otherwise — and, for a bundle whose record is COMPLETE, the parameter's own default
-/// when it carries none (see [`Declared::resume`]).
-fn pick<T: Default>(replayed: bool, complete: bool, value: Option<T>) -> Option<T> {
-    if !replayed {
-        return None;
-    }
+/// What the bundle recorded for one parameter: the value it carries — and, for a bundle whose record is
+/// COMPLETE, the parameter's own default when it carries none (see [`Declared::resume`]).
+fn pick<T: Default>(complete: bool, value: Option<T>) -> Option<T> {
     value.or_else(|| complete.then(T::default))
 }
 
@@ -507,19 +509,52 @@ mod tests {
         assert_eq!(declared.resume(&complete, true).top_p, Param::default());
     }
 
-    /// A bundle whose tuning does not apply to this run recorded nothing FOR it: the replay is gated on the
-    /// provider, and the parameters follow the same gate. Likewise an effort spelling this build cannot
-    /// parse — the replay never applied it, so the session is not running under it.
+    /// MOMENT 3 across a restart — a resume onto ANOTHER endpoint (`resume -M`) is a move, and evaluates the
+    /// bundle as a `/model` move evaluates the chat: what the user set stays, what a declaration supplied
+    /// goes, a default stays a default, and a declaration here outranks all three.
     #[test]
-    fn a_bundle_that_does_not_replay_records_nothing() {
+    fn a_resume_onto_another_endpoint_evaluates_the_bundle() {
         let meta = SessionMeta {
             provider: "anthropic".to_owned(),
             context_window: 64_000,
+            effort: "max".to_owned(),
+            temperature: Some(0.3),
+            param_sources: Some(ParamSources {
+                context_window: ParamSource::Config,
+                effort: ParamSource::User,
+                temperature: ParamSource::Config,
+                top_p: ParamSource::Builtin,
+            }),
             ..SessionMeta::default()
         };
-        let p = Declared::of(&AgentConfig::default(), &model(), Some(128_000)).resume(&meta, false);
-        assert_eq!(p.context_window, Param::config(128_000));
+        let p = Declared::default().resume(&meta, false);
+        assert_eq!(p.effort, Param::user("max".to_owned()), "the user's own");
+        assert_eq!(
+            p.context_window,
+            Param::default(),
+            "the old endpoint's declaration"
+        );
+        assert_eq!(p.temperature, Param::default(), "likewise");
+        assert_eq!(p.top_p, Param::default(), "the default it ran under");
 
+        let declared = Declared {
+            effort: Some("low".to_owned()),
+            top_p: Some(0.5),
+            ..Declared::default()
+        };
+        let p = declared.resume(&meta, false);
+        assert_eq!(p.effort, Param::config("low".to_owned()));
+        assert_eq!(p.top_p, Param::config(Some(0.5)));
+
+        // It is the `/model` move's function, not a twin of it: the same evaluation of the same values.
+        let restored = Declared::default().resume(&meta, true);
+        assert_eq!(declared.resume(&meta, false), declared.evaluate(&restored));
+    }
+
+    /// An effort spelling this build cannot parse was never applied — the replay warns and keeps the current
+    /// setting — so the session is not running under it.
+    #[test]
+    fn an_effort_this_build_cannot_parse_is_not_restored() {
         let meta = SessionMeta {
             provider: "openai".to_owned(),
             effort: "turbo".to_owned(),
