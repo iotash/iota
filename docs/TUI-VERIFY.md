@@ -548,9 +548,11 @@ agents:
       preedit itself is the IME's — a look.)*
 - [ ] **8b.10 A row from another provider.** Pick a `relay:…` row while the session runs on
       `openai`. Before the first reply: `Model switched to … on relay`, the status row shows the new
-      model and the next message goes to the relay. After a reply: one line must say a session moves
-      only before its first reply and name the `iota run … -M relay:…` that starts one there — and
-      the model must NOT change.
+      model and the next message goes to the relay. After a reply: three lines above a two-row
+      `Move this chat to relay:…?` list say how many replies' payload the relay does not replay,
+      that `iota resume <id>` continues on the relay afterwards, and the way back; `Stay on …`
+      changes nothing, `Move it` switches and the next message goes to the relay with the history.
+      Picking the old row again asks the same way and moves the chat back.
 
 ## 8c. `NO_COLOR`
 
