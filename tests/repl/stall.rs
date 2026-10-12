@@ -30,6 +30,9 @@ struct Fixture {
     _tmp: tempfile::TempDir,
     store: SessionStore,
     deadline: Duration,
+    /// What the run starts under and the config layers behind it (both empty unless [`Self::under`]).
+    params: iota::session::LayeredParams,
+    layers: iota::cmd::ParamLayers,
 }
 
 impl Fixture {
@@ -41,7 +44,25 @@ impl Fixture {
             _tmp: tmp,
             store,
             deadline: PROMPT,
+            params: iota::session::LayeredParams::default(),
+            layers: iota::cmd::ParamLayers::default(),
         }
+    }
+
+    /// A run under the config `yaml` (its `default` agent): the layers it declares, and the five
+    /// parameters a new session evaluates from them.
+    fn under(mut self, yaml: &str) -> Self {
+        let cfg =
+            iota::cmd::Config::parse(yaml.as_bytes(), &iota::app::env::Env::default(), &mut |w| {
+                panic!("unexpected config warning: {w}")
+            })
+            .expect("the config loads");
+        let resolved = cfg.resolve_agent("default").expect("the agent resolves");
+        self.params = resolved
+            .declared(None)
+            .evaluate(&iota::session::LayeredParams::default());
+        self.layers = iota::cmd::ParamLayers::new(&cfg, &resolved);
+        self
     }
 
     /// A run under tokio's paused clock, where whole retry ladders pass in virtual time: the deadline is
@@ -107,8 +128,8 @@ impl Fixture {
                 recorded_notices: Vec::new(),
                 memory: None,
             },
-            params: iota::session::LayeredParams::default(),
-            layers: iota::cmd::ParamLayers::default(),
+            params: self.params.clone(),
+            layers: self.layers.clone(),
             catalog: iota::repl::ModelCatalog::default(),
             endpoints: None,
             agent: iota::headless::AgentOptions::default(),
@@ -234,6 +255,52 @@ async fn a_stall_with_nothing_to_keep_rolls_the_turn_back() {
     assert_eq!(fx.printed_count("the reply may be incomplete"), 0);
 }
 
+/// F6: the cut's hint names the layer the ceiling the chat runs under came from. An `agents:` value overrides
+/// the model's, so a hint pointing at the model entry would send the user to a key that changes nothing.
+#[tokio::test]
+async fn a_cut_names_the_config_layer_its_ceiling_came_from() {
+    let yaml = |agent: &str| {
+        format!(
+            "providers:\n  a: {{type: anthropic, key: x}}\nmodels:\n  ma: {{provider: a, id: claude-x, max_tokens: 64000}}\nagents:\n  default: {{model: ma{agent}}}\n"
+        )
+    };
+    for (agent, names, not) in [
+        (
+            ", max_tokens: 1234",
+            "on the agent's `agents:` entry, which overrides the model's",
+            "on this model's `models:` entry — raise it there",
+        ),
+        (
+            "",
+            "on this model's `models:` entry — raise it there",
+            "which overrides the model's",
+        ),
+    ] {
+        let provider = FakeProvider::new().round(Round::cut_off("", "half a reply"));
+        let fx = Fixture::new(vec![input("q"), Reply::Closed]).under(&yaml(agent));
+        fx.run(provider, None, &[]).await;
+        // The hint row wraps mid-word, so the block is compared with its whitespace taken out.
+        let squeeze = |s: &str| s.split_whitespace().collect::<String>();
+        let block = squeeze(&fx.printed().join(" "));
+        assert!(
+            block.contains(&squeeze(names)),
+            "{agent:?}: {:#?}",
+            fx.printed()
+        );
+        assert!(
+            !block.contains(&squeeze(not)),
+            "{agent:?}: {:#?}",
+            fx.printed()
+        );
+        assert!(
+            block.contains(&squeeze(
+                "keeps its ceiling until /model switches its model."
+            )),
+            "{agent:?}: how an edit reaches this session"
+        );
+    }
+}
+
 /// The GLM bug (X-69, X-70): the output ceiling cuts the model off mid-THOUGHT — no text at all. The draft is not
 /// promoted to the answer: the turn is an error naming the ceiling and the knob, it is not retried, and with
 /// nothing to keep it rolls back — so the next request carries neither the question nor the half-thought as
@@ -276,7 +343,12 @@ async fn a_thought_cut_off_by_the_ceiling_is_never_the_answer() {
         fx.printed()
     );
     assert_eq!(fx.printed_count("32000-token limit"), 1);
-    assert_eq!(fx.printed_count("Raise max_tokens:"), 1);
+    assert_eq!(
+        fx.printed_count("This ceiling is the built-in default"),
+        1,
+        "nothing set the ceiling, and the hint says so: {:#?}",
+        fx.printed()
+    );
     assert_eq!(
         fx.printed_count("flagging as a"),
         0,
@@ -830,11 +902,7 @@ async fn a_responses_cut_is_shown_once_and_never_retried() {
             fx.printed_count("The endpoint's own output limit cut it"),
             1
         );
-        assert_eq!(
-            fx.printed_count("Raise max_tokens:"),
-            0,
-            "no ceiling was sent"
-        );
+        assert_eq!(fx.printed_count("max_tokens:"), 0, "no ceiling was sent");
         assert_eq!(fx.printed_count("retrying"), 0);
         assert_eq!(
             fx.printed_count("What arrived before the cut-off is kept"),

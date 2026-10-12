@@ -30,6 +30,18 @@ impl ErrorReport {
         }
     }
 
+    /// Names the layer the ceiling came from in a truncation's hint (see [`truncated_hint`]); any
+    /// other report, and a cut whose request carried no ceiling, is returned as it was.
+    #[must_use]
+    pub fn naming_ceiling(mut self, e: &ChatError, layer: CeilingLayer) -> Self {
+        if let ChatError::Truncated(t) = e
+            && t.limit.is_some()
+        {
+            self.hint = truncated_hint(Some(layer));
+        }
+        self
+    }
+
     /// Flattens the report into the errorBlock detail rows — hint last (errors.go:23-28).
     pub fn lines(&self) -> Vec<String> {
         let mut out = self.detail.clone();
@@ -52,18 +64,70 @@ pub fn describe_error(e: &ChatError) -> ErrorReport {
             detail: vec![t.to_string()],
             // A ceiling the request carried is the user's knob; without one the endpoint's own limit cut it.
             hint: if t.limit.is_some() {
-                TRUNCATED_HINT
+                truncated_hint(None)
             } else {
-                TRUNCATED_UNSENT_HINT
-            }
-            .to_owned(),
+                TRUNCATED_UNSENT_HINT.to_owned()
+            },
         },
         other => ErrorReport::request_failed(other),
     }
 }
 
-/// What a user can do about an output the ceiling cut off: raise the ceiling, or think less.
-const TRUNCATED_HINT: &str = "Raise max_tokens: on this model's config entry (thinking counts toward it), or lower its effort in /model";
+/// Which layer set the ceiling a cut hit: the session's `max_tokens` source, with a config one split by
+/// whether the `agents:` entry declares it (it overrides the model's, so editing the model's would not help).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CeilingLayer {
+    /// The `agents:` entry's `max_tokens:`.
+    Agent,
+    /// The current model's `models:` entry.
+    Model,
+    /// A value the session carries as its own (`ParamSource::User`), not the config's.
+    Session,
+    /// Nothing set one: the dialect's default.
+    Builtin,
+}
+
+impl CeilingLayer {
+    /// The layer behind a ceiling tagged `source`; `agent_declares` says whether the `agents:` entry sets
+    /// `max_tokens:`.
+    pub fn of(source: crate::session::ParamSource, agent_declares: bool) -> Self {
+        use crate::session::ParamSource;
+        match source {
+            ParamSource::Config if agent_declares => Self::Agent,
+            ParamSource::Config => Self::Model,
+            ParamSource::User => Self::Session,
+            ParamSource::Builtin => Self::Builtin,
+        }
+    }
+}
+
+/// What a user can do about an output the ceiling cut off — raise the ceiling where it is actually set, or
+/// think less — and how an edit reaches a running session: the config is read at startup, a resume restores
+/// the ceiling the session recorded, and only a model switch re-evaluates it (brain `model-param-layering`).
+/// `None` (no layer known) names both config layers in their precedence order.
+pub(crate) fn truncated_hint(layer: Option<CeilingLayer>) -> String {
+    let head = match layer {
+        Some(CeilingLayer::Agent) => {
+            "This ceiling is max_tokens: on the agent's `agents:` entry, which overrides the model's — raise it there (thinking counts toward it), or lower the effort in /model."
+        }
+        Some(CeilingLayer::Model) => {
+            "This ceiling is max_tokens: on this model's `models:` entry — raise it there (thinking counts toward it), or lower the effort in /model."
+        }
+        Some(CeilingLayer::Session) => {
+            "This ceiling is the one this session recorded, not the config's — set max_tokens: on the agent's `agents:` or this model's `models:` entry (thinking counts toward it), or lower the effort in /model."
+        }
+        Some(CeilingLayer::Builtin) => {
+            "This ceiling is the built-in default — set max_tokens: on this model's `models:` entry or the agent's `agents:` entry (thinking counts toward it), or lower the effort in /model."
+        }
+        None => {
+            "Raise max_tokens: on the agent's `agents:` entry when it sets one, else on this model's `models:` entry (thinking counts toward it), or lower the effort in /model."
+        }
+    };
+    format!("{head} {TRUNCATED_APPLY}")
+}
+
+/// The second sentence of every ceiling hint: how a config edit reaches this session.
+const TRUNCATED_APPLY: &str = "A config edit is read at startup: a new session takes it, while this one — resumed or not — keeps its ceiling until /model switches its model.";
 
 /// The same cut where the request carried no ceiling (the responses dialect, X-72): the endpoint's own limit
 /// cannot be raised from here, so the hint names only what can be lowered.
@@ -316,7 +380,7 @@ mod tests {
                 }),
                 headline: "Output truncated",
                 detail: "stop_reason: max_tokens: the output hit its 32000-token limit".to_owned(),
-                hint: "Raise max_tokens: on this model's config entry (thinking counts toward it), or lower its effort in /model",
+                hint: "Raise max_tokens: on the agent's `agents:` entry when it sets one, else on this model's `models:` entry (thinking counts toward it), or lower the effort in /model. A config edit is read at startup: a new session takes it, while this one — resumed or not — keeps its ceiling until /model switches its model.",
             },
             Case {
                 name: "a cut with no ceiling sent names only what can be lowered",
@@ -344,6 +408,72 @@ mod tests {
             assert_eq!(r.detail.join("\n"), c.detail, "{}: detail", c.name);
             assert_eq!(r.hint, c.hint, "{}: hint", c.name);
         }
+    }
+
+    /// F6: a truncation's hint names the layer its ceiling actually came from — an `agents:` value
+    /// overrides the model's, so pointing at the model entry would send the user to a key that changes
+    /// nothing — and every variant says how an edit reaches the running (or resumed) session. Any other
+    /// report, and a cut with no ceiling sent, keeps its hint.
+    #[test]
+    fn a_truncation_hint_names_the_layer_that_set_the_ceiling() {
+        use super::CeilingLayer;
+        use crate::session::ParamSource;
+        let cut = |limit| {
+            ChatError::Truncated(crate::provider::Truncation {
+                reason: "stop_reason: max_tokens".to_owned(),
+                limit,
+                dropped_tools: Vec::new(),
+            })
+        };
+        let cases = [
+            (
+                ParamSource::Config,
+                true,
+                CeilingLayer::Agent,
+                "on the agent's `agents:` entry, which overrides the model's",
+            ),
+            (
+                ParamSource::Config,
+                false,
+                CeilingLayer::Model,
+                "on this model's `models:` entry — raise it there",
+            ),
+            (
+                ParamSource::User,
+                true,
+                CeilingLayer::Session,
+                "the one this session recorded, not the config's",
+            ),
+            (
+                ParamSource::Builtin,
+                false,
+                CeilingLayer::Builtin,
+                "the built-in default",
+            ),
+        ];
+        for (source, agent, layer, names) in cases {
+            assert_eq!(CeilingLayer::of(source, agent), layer, "{source:?}/{agent}");
+            let e = cut(Some(32_000));
+            let hint = describe_error(&e).naming_ceiling(&e, layer).hint;
+            assert!(hint.contains(names), "{layer:?}: {hint}");
+            assert!(
+                hint.ends_with("keeps its ceiling until /model switches its model."),
+                "{layer:?}: {hint}"
+            );
+        }
+        let unsent = cut(None);
+        assert_eq!(
+            describe_error(&unsent)
+                .naming_ceiling(&unsent, CeilingLayer::Agent)
+                .hint,
+            describe_error(&unsent).hint,
+            "no ceiling was sent: nothing to name"
+        );
+        let other = ChatError::Io(std::io::Error::other("x"));
+        assert_eq!(
+            describe_error(&other).naming_ceiling(&other, CeilingLayer::Agent),
+            describe_error(&other)
+        );
     }
 
     /// `lines()` appends the hint after the detail rows.

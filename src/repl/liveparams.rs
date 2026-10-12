@@ -25,6 +25,14 @@ pub(crate) fn current(repl: &mut Repl) -> LayeredParams {
     )
 }
 
+/// The layer the output ceiling the chat runs under came from — what a truncation's hint names.
+pub(crate) fn ceiling_layer(repl: &Repl) -> crate::repl::errors::CeilingLayer {
+    crate::repl::errors::CeilingLayer::of(
+        repl.conv.param_sources.max_tokens.unwrap_or_default(),
+        repl.conv.layers.agent_declares_max_tokens(),
+    )
+}
+
 /// What `provider` runs under, with the budget's `window`, each value tagged with where it came from.
 fn read(provider: &mut dyn Provider, window: u64, sources: ParamSources) -> LayeredParams {
     let (effort, temperature) = provider.as_tunable().map_or_else(
