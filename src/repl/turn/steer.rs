@@ -1,7 +1,7 @@
 //! Steering: the queued-message drain at each ROUND boundary — the only place a user
 //! message can legally enter mid-turn (a round's tool results must directly follow its
-//! calls; chat/run.go:1016-1029, 1639-1644) — plus the `injected` record a turn-level
-//! retry re-lands (run.go:1050-1058).
+//! calls; chat/run.go:1016-1029, 1639-1644). Go also kept an `injected` record for its turn-level
+//! retry to re-land (run.go:1050-1058); that replay is gone here (X-73), and the record with it.
 
 use std::sync::Arc;
 
@@ -11,10 +11,9 @@ use crate::ui::facade::{Input, InputKind, Ui};
 use crate::repl::context::meter::CtxMeter;
 use crate::repl::render::transcript::Transcript;
 
-/// The steering bookkeeping of one turn (Go's `steer` + `injected` closures on `Run`'s
+/// The steering bookkeeping of one turn (Go's `steer` closure on `Run`'s
 /// stack): draining echoes the `❯` block — which SETTLES the running activity group, the
-/// user being a stronger boundary than content — and remembers every taken injection so
-/// a retried attempt can re-land it (the queue no longer holds it). A background job's
+/// user being a stronger boundary than content. A background job's
 /// completion notice arrives the same way and is echoed as a notice line instead.
 ///
 /// A bot's memory-flush notice is never injected: it is a turn of its own (docs/design/bot-mode.md §3.6.1).
@@ -24,7 +23,6 @@ use crate::repl::render::transcript::Transcript;
 pub(crate) struct Steerer {
     ui: Arc<dyn Ui>,
     tr: Arc<Transcript>,
-    injected: Vec<Message>,
     open: bool,
     held: Vec<Input>,
 }
@@ -35,7 +33,6 @@ impl Steerer {
         Self {
             ui,
             tr,
-            injected: Vec::new(),
             open,
             held: Vec::new(),
         }
@@ -44,7 +41,7 @@ impl Steerer {
     /// Drains the contiguous non-command prefix of the queue (the facade's
     /// `take_queued_messages` law — a queued slash command stops the take): each taken
     /// input is echoed FIRST (`tr.user` settles the activity group before the injection
-    /// lands), recorded for retry re-landing, and booked into the meter (run.go:1019-1029).
+    /// lands), then booked into the meter (run.go:1019-1029).
     pub(crate) async fn drain(&mut self, ctxm: &mut CtxMeter) -> Vec<Message> {
         let mut out = Vec::new();
         if !self.open {
@@ -66,17 +63,10 @@ impl Steerer {
                 self.tr.user(&input.display);
                 Message::user(input.text)
             };
-            out.push(m.clone());
-            self.injected.push(m.clone());
             ctxm.note(&m);
+            out.push(m);
         }
         out
-    }
-
-    /// Every injection taken so far this turn — what a retried attempt re-appends right
-    /// after the user message (run.go:1050-1058; the queue no longer holds them).
-    pub(crate) fn injected(&self) -> &[Message] {
-        &self.injected
     }
 
     /// The flush notices taken off the queue and not injected, for the loop to queue again.
