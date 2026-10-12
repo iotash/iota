@@ -209,9 +209,19 @@ impl Fx {
     }
 
     async fn turn(&self, p: &dyn Provider, history: &mut Vec<Message>) -> TurnReport {
-        let mut ctxm = CtxMeter::disabled();
+        self.turn_metered(p, history, &mut CtxMeter::disabled())
+            .await
+    }
+
+    /// [`Self::turn`] booking into `ctxm` — a live meter when the test is about the budget.
+    async fn turn_metered(
+        &self,
+        p: &dyn Provider,
+        history: &mut Vec<Message>,
+        ctxm: &mut CtxMeter,
+    ) -> TurnReport {
         let mut steer = Steerer::new(Arc::clone(&self.cx.ui), Arc::clone(&self.cx.tr), true);
-        run_turn(&self.cx, &self.root, p, history, &mut ctxm, &mut steer).await
+        run_turn(&self.cx, &self.root, p, history, ctxm, &mut steer).await
     }
 
     fn events(&self) -> Vec<UiEvent> {
@@ -1746,6 +1756,51 @@ async fn unary_provider_retries_on_the_round_ladder() {
     assert_eq!(count(|e| matches!(e, UiEvent::Done)), 1);
     assert!(matches!(events.first(), Some(UiEvent::StreamStart)));
     assert!(matches!(events.last(), Some(UiEvent::Done)));
+}
+
+// X-73 on a LIVE meter: a call retried after a tool round books nothing per attempt — the tool round's
+// usage once, its result estimated once on top — and the answer's usage comes back for the run loop to book.
+#[tokio::test(start_paused = true)]
+async fn a_retried_call_books_the_meter_once() {
+    use crate::provider::usage::Usage;
+    use crate::repl::context::meter::ContextBudget;
+
+    let fx = Fx::new(Arc::new(StaticDispatcher::new(&["noop"])), quiet(1));
+    let tool_round = Usage {
+        input: 1000,
+        output: 50,
+        ..Usage::default()
+    };
+    let answer = Usage {
+        input: 1200,
+        output: 80,
+        ..Usage::default()
+    };
+    let p = FakeProvider::new().with_tools().reporting_usage().rounds([
+        Round::calls(vec![call("c1", "noop", serde_json::json!({}))]).usage(tool_round),
+        Round::failing("connection reset by peer"),
+        Round::failing("connection reset by peer"),
+        Round::reply("done").usage(answer),
+    ]);
+    let budget = ContextBudget::new(200_000);
+    let mut ctxm = budget.meter(
+        Arc::clone(&fx.cx.ui),
+        "fake".to_owned(),
+        Arc::new(crate::llm::reqlog::RequestLog::new()),
+    );
+    let mut history = vec![Message::user("q")];
+    let report = fx.turn_metered(&p, &mut history, &mut ctxm).await;
+
+    assert_eq!(report.outcome.expect("recovered").usage, Some(answer));
+    assert_eq!(p.calls(), 4, "the tool round, 2 failures, the answer");
+    assert_eq!(ctxm.totals(), tool_round, "booked once, never per attempt");
+    assert_eq!(history.len(), 3, "user, the call, its result");
+    assert_eq!(
+        budget.used(),
+        tool_round.context_tokens() + budget.counter().count_messages(&history[2..]),
+        "the tool round measured, its result estimated on top — once"
+    );
+    assert!(budget.have_usage());
 }
 
 // X-73: the unary fallback's ladder yields to the turn's cancel — ESC during the backoff ends the turn

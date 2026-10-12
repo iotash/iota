@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use iota::host::Presenter;
 use iota::llm::reqlog::RequestLog;
 use iota::provider::model::{Message, Role};
+use iota::provider::usage::Usage;
 use iota::provider::{ImageGenOptions, ImageGenParams, ProviderKind};
 use iota::repl::{McpHooks, RunParams, SessionCtx};
 use iota::session::SessionStore;
@@ -20,7 +21,7 @@ use iota::testing::{
 };
 use iota::text::ansi::strip_sgr;
 use iota::tool::Dispatcher;
-use iota::ui::facade::{Input, TabbedResult, Ui};
+use iota::ui::facade::{Input, StatusData, TabbedResult, Ui};
 use tokio_util::sync::CancellationToken;
 
 /// Far under the title pass's own 30 s deadline, far over a slow runner's turn.
@@ -93,7 +94,7 @@ impl Fixture {
         provider: Box<dyn iota::provider::Provider>,
         title: Option<Box<dyn iota::provider::Provider>>,
     ) {
-        self.run_full(provider, title, &[], None).await;
+        self.run_full(provider, title, dispatch(&[]), None).await;
     }
 
     /// [`Self::run`] with any provider — a real dialect against a mock server — and, when given, a
@@ -106,7 +107,26 @@ impl Fixture {
         writer: Option<iota::session::SessionWriter>,
     ) {
         let title = title.map(|t| Box::new(t) as Box<dyn iota::provider::Provider>);
-        self.run_full(provider, title, tools, writer).await;
+        self.run_full(provider, title, dispatch(tools), writer)
+            .await;
+    }
+
+    /// [`Self::run`] over a dispatcher the test holds, to count what it executed.
+    async fn run_dispatching(&self, provider: FakeProvider, dispatch: Arc<StaticDispatcher>) {
+        self.run_full(Box::new(provider), None, dispatch, None)
+            .await;
+    }
+
+    /// Every status row the run published, in order.
+    fn statuses(&self) -> Vec<StatusData> {
+        self.ui
+            .events()
+            .into_iter()
+            .filter_map(|e| match e {
+                UiEvent::Status(s) => Some(s),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The one place a run is assembled.
@@ -114,7 +134,7 @@ impl Fixture {
         &self,
         provider: Box<dyn iota::provider::Provider>,
         title_provider: Option<Box<dyn iota::provider::Provider>>,
-        tools: &[&str],
+        dispatch: Arc<StaticDispatcher>,
         writer: Option<iota::session::SessionWriter>,
     ) {
         let params = RunParams {
@@ -124,7 +144,7 @@ impl Fixture {
             system: String::new(),
             harness: iota::agents::harness::HarnessInputs::default(),
             imported_history: Vec::new(),
-            dispatch: Arc::new(StaticDispatcher::new(tools)) as Arc<dyn Dispatcher>,
+            dispatch: dispatch as Arc<dyn Dispatcher>,
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
             mcp: McpHooks::default(),
             session: SessionCtx {
@@ -169,6 +189,11 @@ impl Fixture {
     fn printed_count(&self, needle: &str) -> usize {
         self.printed().iter().filter(|l| l.contains(needle)).count()
     }
+}
+
+/// A dispatcher advertising `tools`.
+fn dispatch(tools: &[&str]) -> Arc<StaticDispatcher> {
+    Arc::new(StaticDispatcher::new(tools))
 }
 
 /// The `default` agent of the config `yaml`, resolved as a run resolves it.
@@ -1322,12 +1347,18 @@ async fn a_failing_call_after_a_tool_round_retries_without_replaying_it() {
         Reply::Closed,
     ])
     .patient();
-    fx.run(provider, None, &["noop"]).await;
+    let tools = dispatch(&["noop"]);
+    fx.run_dispatching(provider, Arc::clone(&tools)).await;
 
     assert_eq!(
         log.calls(),
         13,
         "the tool round, 1 + 10 for the next call, the next message"
+    );
+    assert_eq!(
+        tools.calls.lock().expect("calls").len(),
+        1,
+        "the tool ran once, whatever the wire re-sent"
     );
     let retried: Vec<Vec<_>> = (1..12)
         .map(|n| log.send(n).iter().map(shape).collect())
@@ -1360,5 +1391,65 @@ async fn a_failing_call_after_a_tool_round_retries_without_replaying_it() {
         next,
         [(Role::User, "next".to_owned(), vec![])],
         "the failed turn rolled back whole"
+    );
+}
+
+/// A usage figure with no cache split: its context share is `input + output`.
+fn usage(input: u64, output: u64) -> Usage {
+    Usage {
+        input,
+        output,
+        ..Usage::default()
+    }
+}
+
+/// The last status row: what the loop left after the script's last turn.
+fn last_status(fx: &Fixture) -> StatusData {
+    fx.statuses().pop().expect("a status row")
+}
+
+/// X-73 on a LIVE meter (a provider that reports usage): a failing call after a tool round climbs its ladder
+/// without booking anything per attempt — the session totals count the base turn and the tool round once each,
+/// at every point of the run — the tool ran once, and the rolled-back turn gives the context budget back to
+/// what the base turn measured, which is the figure a bot's compaction threshold reads.
+#[tokio::test(start_paused = true)]
+async fn a_failed_turn_books_each_call_once_and_gives_the_budget_back() {
+    let base = usage(1000, 40);
+    let round = usage(1500, 60);
+    let provider = FakeProvider::new().with_tools().reporting_usage().rounds(
+        [
+            Round::reply("base answer").usage(base),
+            Round::calls(vec![tool_call("c1", "noop")]).usage(round),
+        ]
+        .into_iter()
+        .chain((0..11).map(|_| Round::failing("connection reset by peer"))),
+    );
+    let fx = Fixture::new(vec![
+        input("base"),
+        input("do it"),
+        Reply::Queued(Vec::new()),
+        Reply::Closed,
+    ])
+    .patient();
+    let tools = dispatch(&["noop"]);
+    fx.run_dispatching(provider, Arc::clone(&tools)).await;
+
+    assert_eq!(tools.calls.lock().expect("calls").len(), 1);
+    let statuses = fx.statuses();
+    assert_eq!(
+        statuses.iter().map(|s| s.in_tokens).max(),
+        Some(base.input + round.input),
+        "no attempt booked twice"
+    );
+    let last = last_status(&fx);
+    assert_eq!(
+        (last.in_tokens, last.out_tokens),
+        (base.input + round.input, base.output + round.output),
+        "a call that answered stays billed after the rollback"
+    );
+    assert_eq!(
+        (last.ctx_used, last.estimated),
+        (base.context_tokens(), false),
+        "the budget is the base turn's measurement again"
     );
 }
