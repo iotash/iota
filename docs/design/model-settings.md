@@ -105,6 +105,11 @@ Notes:
   (a numeric budget can't carry a level verbatim, and budget brings side
   constraints: `max_tokens > budget`, temperature omission). `MaxTokens: 4096`
   and temperature handling stay untouched.
+  **Reversed 2026-10-12 (DIVERGENCES X-68):** thinking counts toward
+  `max_tokens`, so 4096 cut thinking models off mid-thought (GLM-5.3: 4 of 4
+  probes). The default is now 32000 and `models.<x>.max_tokens` /
+  `agents.<y>.max_tokens` override it; a cut-off output is reported, never
+  passed off as an answer (X-69, X-70).
 - gemini `thinkingLevel` was chosen over `thinkingBudget` for the same reason
   (numeric, would require a mapping).
 - Temperature range differs: anthropic caps at 1.0, others at 2.0. The chat
