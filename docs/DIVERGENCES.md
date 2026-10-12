@@ -252,8 +252,8 @@ pre-T3 divergence re-confirmed rather than changed).
 
 Parity with the Go binary is the baseline, not the ceiling. Rows here record a deliberate
 divergence taken AFTER the port reached parity: a Go feature dropped (X-01 … X-04, X-11 … X-13), a Go law
-broken (X-05, X-06), a Go reading of the wire corrected (X-30, X-31, X-33, X-69, X-71, X-72), a Go budget restored after the port
-broke it (X-73), a capability added (X-07 … X-09, X-14, X-16, X-24, X-25, X-27 … X-29, X-32, X-43, X-44, X-50) or the command surface itself
+broken (X-05, X-06), a Go reading of the wire corrected (X-30, X-31, X-33, X-69, X-71, X-72), a Go retry budget restored and its REPL implementation and feedback unified
+(X-73), a capability added (X-07 … X-09, X-14, X-16, X-24, X-25, X-27 … X-29, X-32, X-43, X-44, X-50) or the command surface itself
 rebuilt (X-10, X-15).
 
 **Compatibility ended with X-15 (2026-09-10).** A retired key used to stay ACCEPTED with a warning until

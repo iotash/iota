@@ -129,7 +129,7 @@ impl Occupancy {
 
 type Shared = Arc<Mutex<Occupancy>>;
 
-/// A budget snapshot taken before a turn and restored per retry attempt (Go `budgetSnap`).
+/// A budget snapshot taken before a turn and restored when the turn fails and rolls back (Go `budgetSnap`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BudgetSnap {
     settled: u64,
@@ -301,7 +301,8 @@ impl ContextBudget {
         st.overhead = tokens;
     }
 
-    /// The per-attempt rollback snapshot (Go `budget.snap`).
+    /// The snapshot a failed turn's rollback restores (Go `budget.snap`). A retried call never needs it:
+    /// it re-sends the same request, and the meter books only the attempt that answers (X-73).
     pub fn snap(&self) -> BudgetSnap {
         let st = lock(&self.st);
         BudgetSnap {
@@ -311,8 +312,8 @@ impl ContextBudget {
         }
     }
 
-    /// Restores a [`ContextBudget::snap`] (Go `budget.restore`) — a retried, interrupted or
-    /// failed turn takes its live estimates back with its messages.
+    /// Restores a [`ContextBudget::snap`] (Go `budget.restore`) — a failed turn rolled back
+    /// takes its live estimates back with its messages.
     pub fn restore(&mut self, snap: BudgetSnap) {
         let mut st = lock(&self.st);
         st.settled = snap.settled;
