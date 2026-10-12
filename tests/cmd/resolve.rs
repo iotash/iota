@@ -566,7 +566,7 @@ fn resolve_stdin_message_trimmed_and_empty_error() {
     ));
 }
 
-/// POLICY F-03: `-m ""` is an error, not an interactive run.
+/// DIVERGENCES F-03: `-m ""` is an error, not an interactive run.
 #[test]
 fn resolve_message_empty_is_error() {
     let cfg = simple();

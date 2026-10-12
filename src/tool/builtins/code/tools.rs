@@ -49,9 +49,9 @@ fn schema(v: Value) -> Option<JsonObject> {
     }
 }
 
-/// The four readers hand their filesystem work to the blocking pool so a parallel round really overlaps
-/// (POLICY, "blocking filesystem work runs under `spawn_blocking` where it matters"). A join failure can only
-/// mean the runtime is going away, which the run reports as an interruption.
+/// The four readers hand their filesystem work to the blocking pool (`spawn_blocking`) so a parallel round
+/// really overlaps. A join failure can only mean the runtime is going away, which the run reports as an
+/// interruption.
 async fn blocking<F: FnOnce() -> ToolOutput + Send + 'static>(f: F) -> ToolResult {
     tokio::task::spawn_blocking(f)
         .await
@@ -209,7 +209,7 @@ impl Tool for ReadFile {
         }
     }
 
-    /// Reads through the numbered window, with POLICY fix F-06 for an oversized single line.
+    /// Reads through the numbered window, with the DIVERGENCES F-06 fix for an oversized single line.
     fn call<'a>(&'a self, _cx: &'a RunCtx, args: &'a JsonObject) -> BoxFuture<'a, ToolResult> {
         let cs = Arc::clone(&self.0);
         let args = args.clone();
@@ -594,7 +594,7 @@ fn read_file_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
     ToolOutput::ok(out)
 }
 
-/// The numbered line window, with POLICY fix F-06: an oversized single row is cut to `CODE_MAX_OUTPUT - 4`
+/// The numbered line window, with the DIVERGENCES F-06 fix: an oversized single row is cut to `CODE_MAX_OUTPUT - 4`
 /// bytes so that the row plus its `…\n` still fits the window (cut to the full cap, the row was then
 /// rejected — an empty window the model could not escape).
 fn numbered_window(content: &str, args: &JsonObject, display: &str) -> Result<String, ToolOutput> {
@@ -917,7 +917,7 @@ mod tests {
         );
     }
 
-    // POLICY F-06: the oversized row is cut so it fits, instead of leaving an empty window.
+    // DIVERGENCES F-06: the oversized row is cut so it fits, instead of leaving an empty window.
     #[test]
     fn numbered_window_cuts_one_oversized_row_to_fit() {
         let content = format!("{}\n", "x".repeat(CODE_MAX_OUTPUT + 4096));

@@ -33,7 +33,7 @@ use crate::mcp::transport::{CALL_INTERRUPTED, CLOSE_TIMEOUT, Session, connect_on
 /// Default per-server connect deadline (handshake + `tools/list`).
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Default cap on the captured stderr of a stdio server (POLICY §4: 64 KiB).
+/// Default cap on the captured stderr of a stdio server (64 KiB, DIVERGENCES I-05).
 pub const DEFAULT_STDERR_CAP: usize = 64 * 1024;
 
 /// `clientInfo.name` sent in the `initialize` handshake.

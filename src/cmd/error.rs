@@ -40,7 +40,7 @@ pub enum ArgsError {
     /// `-m -` read only whitespace.
     #[error("no message provided via stdin")]
     EmptyStdin,
-    /// `-m ""` (POLICY F-03).
+    /// `-m ""` (DIVERGENCES F-03).
     #[error("--message must not be empty")]
     MessageEmpty,
     /// `-m` with no model from `-M` or `agents.<name>.model` — headless has no picker to open (X-48; it was
@@ -53,7 +53,7 @@ pub enum ArgsError {
     /// `--output-format` without `-m` (root.go:253).
     #[error("--output-format applies to -m runs only")]
     OutputFormatWithoutMessage,
-    /// `--mcp ""` (POLICY F-02).
+    /// `--mcp ""` (DIVERGENCES F-02).
     #[error(transparent)]
     McpFlag(#[from] crate::mcp::config::McpFlagError),
     /// `iota list <what> <name>` where `<what>` is not `models` — only the choices belong to one agent.

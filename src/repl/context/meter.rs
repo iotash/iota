@@ -129,7 +129,7 @@ impl Occupancy {
 
 type Shared = Arc<Mutex<Occupancy>>;
 
-/// A budget snapshot taken before a turn and restored per retry attempt (Go `budgetSnap`).
+/// A budget snapshot taken before a turn and restored when the turn fails and rolls back (Go `budgetSnap`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BudgetSnap {
     settled: u64,
@@ -301,7 +301,8 @@ impl ContextBudget {
         st.overhead = tokens;
     }
 
-    /// The per-attempt rollback snapshot (Go `budget.snap`).
+    /// The snapshot a failed turn's rollback restores (Go `budget.snap`). A retried call never needs it:
+    /// it re-sends the same request, and the meter books only the attempt that answers (X-73).
     pub fn snap(&self) -> BudgetSnap {
         let st = lock(&self.st);
         BudgetSnap {
@@ -311,8 +312,8 @@ impl ContextBudget {
         }
     }
 
-    /// Restores a [`ContextBudget::snap`] (Go `budget.restore`) — a retried, interrupted or
-    /// failed turn takes its live estimates back with its messages.
+    /// Restores a [`ContextBudget::snap`] (Go `budget.restore`) — a failed turn rolled back
+    /// takes its live estimates back with its messages.
     pub fn restore(&mut self, snap: BudgetSnap) {
         let mut st = lock(&self.st);
         st.settled = snap.settled;
@@ -472,6 +473,19 @@ impl CtxMeter {
         }
         inner.publish();
         Some(u)
+    }
+
+    /// Books a call whose answer the history does not keep — a truncated round with no text, whose
+    /// turn rolled back or kept only its earlier rounds. Its cost is real, so the session totals and
+    /// `/status`'s last call count it, as they count a tool round a failed turn rolled back; but it
+    /// measured a request that no longer describes the history, so no settle may read it and the
+    /// budget (what the next request carries, a bot's threshold) stays the caller's rollback.
+    pub fn book_spent(&mut self, usage: Option<Usage>) {
+        let Some(inner) = self.0.as_mut() else { return };
+        let Some(u) = usage else { return };
+        inner.session += u;
+        lock(&inner.st).last_full = Some(u);
+        inner.publish();
     }
 
     /// Clears the turn's live estimates (Go `ctxMeter.reset`) so residue cannot be charged
@@ -671,6 +685,44 @@ mod tests {
         b.restore(snap);
         assert_eq!(b.used(), 10_000);
         assert!(b.have_usage());
+    }
+
+    // A call whose answer the history does not keep (a cut with no text) is billed — the session totals and
+    // `/status`'s last call — but measures nothing: a bot's budget rolled back past it stays under its
+    // threshold, and the next settle counts the history rather than reading the dropped request's figure.
+    #[test]
+    fn a_spent_call_counts_its_cost_and_never_measures_the_budget() {
+        let mut b = budget(200_000);
+        b.set_bot_reserve();
+        let mut m = meter(&b);
+        let base = Usage {
+            input: 10_000,
+            total: 10_000,
+            ..Usage::default()
+        };
+        m.book_call(Some(base));
+        b.update(&[]);
+        let snap = b.snap();
+
+        let cut = Usage {
+            input: 150_000,
+            output: 32_000,
+            total: 182_000,
+            ..Usage::default()
+        };
+        m.book_spent(Some(cut));
+        b.restore(snap);
+        let mut both = base;
+        both += cut;
+        assert_eq!(m.totals(), both);
+        assert_eq!(b.last_usage(), Some(cut));
+        assert_eq!(b.used(), 10_000);
+        assert!(!b.should_compact(0), "the dropped request is not the bot's");
+
+        let history = [Message::user("q")];
+        b.update(&history);
+        assert!(!b.have_usage(), "no settle reads the spent call's figure");
+        assert!(b.used() < 10_000);
     }
 
     // Go: chat/tokens_test.go:97 TestCtxMeterResetClearsPending — reset drops the pending

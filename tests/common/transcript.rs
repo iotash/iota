@@ -3,7 +3,7 @@
 //!
 //! The mounted responder answers BOTH shapes the headless run can ask for on `/chat/completions`, chosen by the
 //! request's own `"stream"` field: the tool loop streams (`stream: true` → SSE, ending in `[DONE]`), and a run
-//! with no tools advertised sends the unary request instead (chat.go:117, POLICY §5). Both carry the same reply
+//! with no tools advertised sends the unary request instead (chat.go:117). Both carry the same reply
 //! and the same usage, so a test asserts one set of numbers whatever the toolset is.
 
 use std::time::Duration;

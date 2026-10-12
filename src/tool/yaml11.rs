@@ -32,7 +32,7 @@ pub(crate) fn yaml11_bool(v: &RawNode) -> Option<bool> {
     }
 }
 
-/// POLICY divergence: any YAML-1.1 false spelling disables (`false`, `False`, `no`, `off`, "false" quoted…).
+/// DIVERGENCES I-01: any YAML-1.1 false spelling disables (`false`, `False`, `no`, `off`, "false" quoted…).
 pub(crate) fn is_false_scalar(v: &RawNode) -> bool {
     yaml11_bool(v) == Some(false)
 }

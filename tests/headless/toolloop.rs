@@ -435,7 +435,7 @@ async fn tool_loop_final_round_images_are_saved() {
     assert_eq!(files.len(), 1, "{files:?}");
     assert_eq!(host.rec.round_count(), 2);
 
-    // Children pass None: nothing is saved, and every image is an error line (POLICY I-06 + HOME_NOT_DEFINED).
+    // Children pass None: nothing is saved, and every image is an error line (DIVERGENCES I-06 + HOME_NOT_DEFINED).
     let tp = FakeProvider::scripted(
         vec![RoundResult {
             content: "done".to_owned(),
