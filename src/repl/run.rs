@@ -913,7 +913,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             outcome: turn_result,
             partial,
             partial_reasoning,
-            cut_round,
+            mut cut_round,
             ..
         } = outcome;
         match turn_result {
@@ -958,7 +958,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                         hist0 - 1,
                         &partial,
                         &partial_reasoning,
-                        cut_round,
+                        &mut cut_round,
                         notice,
                     )
                 {
@@ -971,6 +971,12 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                     repl.conv.ctxm.reset();
                     repl.conv.budget.restore(turn_snap);
                     repl.push_status();
+                }
+                // A cut with no text to carry its cost: the call was billed all the same. Its cost
+                // counts, as a tool round's in a rolled-back turn does; the budget stays the
+                // rollback's or the kept rounds' measurement.
+                if let Some(cut) = cut_round {
+                    repl.conv.ctxm.book_spent(cut.usage);
                 }
             }
             Ok(out) => {
@@ -1364,14 +1370,15 @@ fn interrupt_turn(
 /// what was kept ([`TurnReport::cut_short`](crate::repl::turn::TurnReport::cut_short)).
 ///
 /// `cut` is what a TRUNCATED round returned (X-69): its response completed, so the kept text
-/// takes the round's raw blocks — a sealed thinking block replays ahead of it — and its cost.
+/// takes the round's raw blocks — a sealed thinking block replays ahead of it — and its cost,
+/// TAKEN out of `cut`; with no text to carry them `cut` is left for the caller to book.
 /// A stall passes `None`: what it left is of unknown completeness, and stays plain text.
 fn keep_cut_short_turn(
     repl: &mut Repl,
     watermark: usize,
     partial: &str,
     partial_reasoning: &str,
-    cut: Option<CutRound>,
+    cut: &mut Option<CutRound>,
     notice: &str,
 ) -> bool {
     let InterruptDecision {
@@ -1389,7 +1396,7 @@ fn keep_cut_short_turn(
     }
     // `finalize_interrupt` pushes the partial LAST, and only when there is one.
     if !partial.is_empty()
-        && let Some(cut) = cut
+        && let Some(cut) = cut.take()
         && let Some(Message {
             body: Body::Assistant(body),
             ..

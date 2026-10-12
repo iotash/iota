@@ -1453,3 +1453,55 @@ async fn a_failed_turn_books_each_call_once_and_gives_the_budget_back() {
         "the budget is the base turn's measurement again"
     );
 }
+
+/// A cut with no text to keep still cost what the provider reported: the session totals count it, whether the
+/// turn rolls back whole or keeps an earlier tool round — and the context budget stays what the history
+/// carries (the base turn's measurement, or the kept round's), never the cut request's, so a bot's threshold
+/// does not see a turn the history no longer holds.
+#[tokio::test]
+async fn a_cut_with_no_text_still_counts_its_cost() {
+    let base = usage(1000, 40);
+    let round = usage(1500, 60);
+    let cut = usage(50_000, 32_000);
+    for after_a_tool_round in [false, true] {
+        let mut rounds = vec![Round::reply("base answer").usage(base)];
+        if after_a_tool_round {
+            rounds.push(Round::calls(vec![tool_call("c1", "noop")]).usage(round));
+        }
+        rounds.push(Round::cut_off("", "").usage(cut));
+        let provider = FakeProvider::new()
+            .with_tools()
+            .reporting_usage()
+            .rounds(rounds);
+        let mut script = vec![input("base"), input("q")];
+        if after_a_tool_round {
+            script.push(Reply::Queued(Vec::new()));
+        }
+        script.push(Reply::Closed);
+        let fx = Fixture::new(script);
+        fx.run(provider, None, &["noop"]).await;
+
+        assert_eq!(fx.printed_count("Output truncated"), 1);
+        let last = last_status(&fx);
+        let mut spent = base;
+        if after_a_tool_round {
+            spent += round;
+        }
+        spent += cut;
+        assert_eq!(
+            (last.in_tokens, last.out_tokens),
+            (spent.input, spent.output),
+            "tool round first: {after_a_tool_round}"
+        );
+        assert!(!last.estimated);
+        if after_a_tool_round {
+            assert!(
+                last.ctx_used >= round.context_tokens() && last.ctx_used < cut.context_tokens(),
+                "the kept round measures the budget: {}",
+                last.ctx_used
+            );
+        } else {
+            assert_eq!(last.ctx_used, base.context_tokens(), "rolled back");
+        }
+    }
+}
