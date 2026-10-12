@@ -372,7 +372,7 @@ async fn stream_completed_frame_is_the_result() {
 }
 
 /// An in-band `error` frame aborts the defensive stream with the raw JSON (`"error": null` stays ABSENT,
-/// POLICY F-05).
+/// DIVERGENCES F-05).
 #[tokio::test]
 async fn stream_in_band_error_aborts() {
     let server = MockServer::start().await;

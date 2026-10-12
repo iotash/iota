@@ -1,5 +1,5 @@
 //! HTTP client (internal/llm/client.go): one provider endpoint with static headers, an optional per-attempt auth
-//! hook, the byte-for-byte retry policy, the uniform response-header timeout (POLICY I-02) and `StatusError`.
+//! hook, the byte-for-byte retry policy, the uniform response-header timeout (DIVERGENCES I-02) and `StatusError`.
 
 use std::{
     sync::Arc,
@@ -25,7 +25,7 @@ use super::{error::LlmError, sse::Sse};
 
 /// Extra attempts after the first (client.go).
 pub(crate) const DEFAULT_RETRIES: u32 = 2;
-/// Uniform response-header timeout on EVERY client (POLICY I-02); never a whole-request timeout.
+/// Uniform response-header timeout on EVERY client (DIVERGENCES I-02); never a whole-request timeout.
 pub(crate) const HEADER_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long a streaming body may go without a single byte before the read fails with
 /// [`LlmError::StreamIdle`]. Counted in BYTES, not parsed events, so a provider's `ping` event or

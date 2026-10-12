@@ -727,7 +727,7 @@ fn only_the_read_only_code_tools_opt_into_parallel() {
     }
 }
 
-// New (POLICY F-06): Go cut the row to the full 64 KiB cap and then rejected it, leaving an empty window plus a
+// New (DIVERGENCES F-06): Go cut the row to the full 64 KiB cap and then rejected it, leaving an empty window plus a
 // continuation marker pointing at the same line — a loop the model could not escape.
 #[tokio::test]
 async fn read_file_oversized_line_is_cut_to_fit() {

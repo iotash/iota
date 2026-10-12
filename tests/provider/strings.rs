@@ -1,5 +1,5 @@
 //! Pins the user-visible `Display` texts of iota-core's error types byte-for-byte against the Go sources
-//! (provider.go:329, openai.go:64,148,154,182, tool.go:521, POLICY F-02).
+//! (provider.go:329, openai.go:64,148,154,182, tool.go:521, DIVERGENCES F-02).
 
 use std::error::Error;
 

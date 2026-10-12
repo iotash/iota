@@ -174,7 +174,7 @@ pub fn resolve_run(
         api_key => key_of(&resolved, api_key)?,
     };
 
-    // root.go:95-104 (`-m -`), then POLICY F-03 (`-m ""`).
+    // root.go:95-104 (`-m -`), then DIVERGENCES F-03 (`-m ""`).
     let message = match inv.args.message.as_deref() {
         None => None,
         Some("-") => Some(read_stdin_message(stdin)?),

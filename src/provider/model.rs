@@ -413,7 +413,7 @@ mod tests {
     use super::{Attachment, Message, Raw, RawContent, Role, ToolCall, ToolDef};
     use crate::provider::usage::Usage;
 
-    /// Option<Raw>: a literal null is ABSENT (POLICY F-05), a present object is kept verbatim.
+    /// Option<Raw>: a literal null is ABSENT (DIVERGENCES F-05), a present object is kept verbatim.
     #[derive(Deserialize)]
     struct Envelope {
         error: Option<Raw>,

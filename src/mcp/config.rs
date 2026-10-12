@@ -113,7 +113,7 @@ pub fn redirect_uri(redirect_port: Option<u16>) -> String {
     )
 }
 
-/// manager.go:530-549 + POLICY F-02: trim; empty → `Err(EmptyFlag)`; `http(s)://` prefix → `{name: value, url:
+/// manager.go:530-549 + DIVERGENCES F-02: trim; empty → `Err(EmptyFlag)`; `http(s)://` prefix → `{name: value, url:
 /// value}`; else `split_whitespace` → `{name: argv0, command: argv0, args: rest}`.
 pub fn parse_mcp_flag(value: &str) -> Result<ServerConfig, McpFlagError> {
     let value = value.trim();
@@ -192,7 +192,7 @@ mod tests {
     use crate::app::HostDirs;
     use crate::app::env::Env;
 
-    // Go: mcp/manager.go:530 (ParseMCPFlag has no Go test; the cases are the spec's, plus POLICY F-02).
+    // Go: mcp/manager.go:530 (ParseMCPFlag has no Go test; the cases are the spec's, plus DIVERGENCES F-02).
     #[test]
     fn test_parse_mcp_flag() {
         // URL form: the URL is both the name and the endpoint.
@@ -236,7 +236,7 @@ mod tests {
         assert_eq!(other.command, "ftp://x");
         assert!(other.url.is_empty());
 
-        // POLICY F-02: an empty or whitespace-only value is an error, never a panic.
+        // DIVERGENCES F-02: an empty or whitespace-only value is an error, never a panic.
         for bad in ["", "  ", "\t\n"] {
             assert_eq!(parse_mcp_flag(bad), Err(McpFlagError::EmptyFlag), "{bad:?}");
         }

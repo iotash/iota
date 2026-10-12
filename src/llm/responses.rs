@@ -616,7 +616,7 @@ impl RespStream {
         };
         let parsed: RawRespEvent =
             serde_json::from_slice(&event.data).map_err(LlmError::MalformedEvent)?;
-        // A literal `"error": null` is ABSENT (POLICY F-05): `Option<Raw>` decodes it to `None`.
+        // A literal `"error": null` is ABSENT (DIVERGENCES F-05): `Option<Raw>` decodes it to `None`.
         if let Some(err) = &parsed.error {
             return Err(LlmError::InBand(err.get().to_owned()));
         }
@@ -657,7 +657,7 @@ mod tests {
 
     #[tokio::test]
     async fn next_maps_terminal_events_and_treats_a_null_error_as_absent() {
-        // POLICY F-05: a literal `"error": null` is ABSENT, not an in-band failure.
+        // DIVERGENCES F-05: a literal `"error": null` is ABSENT, not an in-band failure.
         let mut s = stream_of(
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\",\"error\":null}\n\n",
         );

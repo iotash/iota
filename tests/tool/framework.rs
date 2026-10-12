@@ -590,7 +590,8 @@ fn each_defer_mode_supports_its_dialects() {
     ] {
         assert!(DeferMode::Normal.supports(kind));
     }
-    // The resolved kind decides (POLICY F-01): a Gemini/Vertex/Imagen/Images provider never carries a protocol mode.
+    // The resolved kind decides (DIVERGENCES F-01): a Gemini/Vertex/Imagen/Images provider never
+    // carries a protocol mode.
     for kind in [
         ProviderKind::Gemini,
         ProviderKind::VertexAi,

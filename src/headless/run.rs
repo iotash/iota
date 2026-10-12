@@ -117,7 +117,7 @@ pub fn install_tool_searcher(provider: &mut dyn Provider, dispatch: &Arc<dyn Dis
 /// else `provider.chat(compose_send_history(..))` + `rec.observe(usage, vec![])` → images = `result.images`
 /// (chat.go:122). Both sends carry `req.harness` ahead of the system message.
 /// BOTH paths then run `save_images_for_turn(&images, images_dir)`; images saved only when `images_dir` is Some
-/// (children pass None — POLICY I-06).
+/// (children pass None — DIVERGENCES I-06).
 /// The final assistant message (Go's `amsg`, chat/run.go:1092-1095) is then pushed onto the history with the
 /// terminating round's usage and the SAVED image subset, and `RunOutcome.delta` is everything past the
 /// watermark — what a session persists.

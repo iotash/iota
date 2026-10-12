@@ -285,7 +285,7 @@ mod tests {
         );
     }
 
-    /// POLICY F-02 in the one place that is compiled in EVERY feature set — `assemble.rs` names no `iota_mcp`
+    /// DIVERGENCES F-02 in the one place that is compiled in EVERY feature set — `assemble.rs` names no `iota_mcp`
     /// type, so `--mcp ""` fails identically in a build without the `mcp` feature (`cli_mcp_flag_empty` pins the
     /// end-to-end half).
     #[test]

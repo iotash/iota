@@ -186,7 +186,7 @@ fn errors_raised_before_the_branch_still_win_over_the_interactive_branch() {
         &o,
         "API key is required: set OPENAI_API_KEY or providers.p.key in your config",
     );
-    // An unknown `--mcp` value (POLICY F-02), raised during MCP config assembly.
+    // An unknown `--mcp` value (DIVERGENCES F-02), raised during MCP config assembly.
     write_config(dir.path());
     let mut cmd = piped(dir.path(), &home);
     cmd.args(["--mcp", ""]);

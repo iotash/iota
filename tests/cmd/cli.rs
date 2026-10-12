@@ -89,7 +89,7 @@ fn write_agent_config(cwd: &Path, kind: &str, url: &str, model: &str) {
 
 // ---------------------------------------------------------------- resolution errors (no network)
 
-/// POLICY F-03: `-m ""` is an error, not the TUI.
+/// DIVERGENCES F-03: `-m ""` is an error, not the TUI.
 #[test]
 fn cli_message_empty() {
     let (dir, home) = project();
@@ -267,7 +267,7 @@ fn cli_unknown_agent_text() {
     );
 }
 
-/// POLICY F-02 (Go panicked). `assemble::build_mcp_configs` names no `iota_mcp` type, so this text is produced in
+/// DIVERGENCES F-02 (Go panicked). `assemble::build_mcp_configs` names no `iota_mcp` type, so this text is produced in
 /// EVERY feature set — the unit test `assemble::tests::mcp_flag_empty_is_feature_independent` pins the half a
 /// build without the `mcp` feature runs, and `ci.sh` compiles that build.
 #[test]

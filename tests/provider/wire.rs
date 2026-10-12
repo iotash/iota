@@ -520,7 +520,7 @@ fn retry_delay_precedence_table() {
     assert!(!should_retry(&LlmError::Cancelled, none));
 }
 
-/// POLICY I-02: the response-header timeout is its own variant, classified like a transport error (retried,
+/// DIVERGENCES I-02: the response-header timeout is its own variant, classified like a transport error (retried,
 /// not a list fallback) and printed with Go's duration text.
 #[tokio::test]
 async fn header_timeout_is_transport_error() {

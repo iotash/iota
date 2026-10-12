@@ -93,7 +93,7 @@ pub(crate) fn ext_for_mime(mime: &str) -> &'static str {
 /// returned {code}`; > 64 MiB → `image exceeds 64 MB`; mime = Content-Type essence, "image/png" unless it starts
 /// with "image/".
 ///
-/// The `execute` (response head) is wrapped in `tokio::time::timeout(HEADER_TIMEOUT, ..)` — POLICY I-02 applies
+/// The `execute` (response head) is wrapped in `tokio::time::timeout(HEADER_TIMEOUT, ..)` — DIVERGENCES I-02 applies
 /// to EVERY provider HTTP call, this relay fetch included; expiry is a plain error text `response headers not
 /// received within 2m0s`. The body read is never time-limited.
 pub(crate) async fn fetch_image(

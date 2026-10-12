@@ -58,7 +58,7 @@ pub enum LlmError {
     /// A transport-level reqwest failure (retried).
     #[error("{0}")]
     Transport(#[source] reqwest::Error),
-    /// The 2-minute response-header timeout (POLICY I-02) expired; retried like `Transport`.
+    /// The 2-minute response-header timeout (DIVERGENCES I-02) expired; retried like `Transport`.
     #[error("response headers not received within {}", go_duration(*.0))]
     HeaderTimeout(Duration),
     /// A streaming body sent no byte for this long after its head (`client::STREAM_IDLE_TIMEOUT`).
