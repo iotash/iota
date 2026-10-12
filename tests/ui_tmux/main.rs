@@ -65,6 +65,8 @@
 //! | `27-hung-provider.sh` | request-cancellation recon, reviews | — (a provider that sends a head and then nothing: `Waiting for the first token`, ESC then the next message and ESC then the exit without the title pass's 30 s, `IOTA_STREAM_IDLE_TIMEOUT=2` failing the stream as `Response stalled`, not retried; a title pass that alone never answers holding neither the next message nor the exit; a complete answer whose body stays open ending at `[DONE]`, not as a stall) |
 //! | `28-composer-newline.sh` | X-65 | — (Ctrl+J, the LF byte, Alt+Enter and CSI-u Shift+Enter each add a composer row without submitting, Enter sends ONE two-line message; a two-line queued item is one ` ⏎ ` row and folds back on ESC) |
 //! | `29-signal-exit.sh` | the 2026-10-02 orphan leak | — (SIGTERM mid-turn: the run ends with status 130 (I-03), the turn in the session log, raw mode and bracketed paste handed back to the shell; an idle Ctrl+D exits 0; `kill-server` under an idle run: the process gone within 2 s, inside the 5 s close backstop) |
+//! | `30-thinking-cut.sh` | F3, X-69 | — (Anthropic dialect: a reply cut mid-thought — the red `Output truncated` block and its detail, the widget wound down, the frame intact, no fake answer, the next request clean; a finished turn as the no-red control) |
+//! | `31-tool-args-cut.sh` | F3, X-69 | — (Anthropic dialect: a reply cut mid-arguments — the error naming the dropped `shell` call, the `[shell …]` row torn down, the call never run nor answered; the whole call as the control that does run) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -579,4 +581,21 @@ fn tmux_composer_newline() {
 #[test]
 fn tmux_signal_exit() {
     run_scenario("29-signal-exit.sh");
+}
+
+/// L4 #30 (X-69, F3) — an Anthropic reply the output ceiling cuts off mid-THOUGHT, on a real terminal: the red
+/// `Output truncated` block with its detail, the thinking widget wound down, the frame intact, no answer made
+/// of the half-thought, and the next request (read off the mock's log) carrying neither the question nor the
+/// thought — with a finished turn as the control that the no-red reads are live.
+#[test]
+fn tmux_thinking_cut() {
+    run_scenario("30-thinking-cut.sh");
+}
+
+/// L4 #31 (X-69, F3) — an Anthropic reply cut off mid-ARGUMENTS: the error names the dropped `shell` call,
+/// the composing `[shell …]` row is torn down, the call never runs (no marker file, no `tool_result` sent),
+/// the frame intact — and the same call made whole (the control) does run.
+#[test]
+fn tmux_tool_args_cut() {
+    run_scenario("31-tool-args-cut.sh");
 }

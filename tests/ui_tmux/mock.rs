@@ -1,4 +1,4 @@
-//! The L4 mock provider: a dependency-free chat-completions server on loopback.
+//! The L4 mock provider: a dependency-free chat-completions (and Anthropic Messages) server on loopback.
 //!
 //! `wiremock` cannot express what these scenarios need — a response that DRIPS over
 //! seconds so ESC, Ctrl+C, a surface open and a SIGWINCH all land mid-stream — and
@@ -53,11 +53,31 @@
 //! | `GET  /slow/models`            | the same listing after [`SLOW_LIST`] — a fetch ESC can land in |
 //! | `POST /images/generations`     | SSE: one `image_generation.partial_image`, then `.completed` |
 //! | `POST /images/edits`           | the same (both the multipart and the JSON edit form)      |
+//! | `POST /v1/messages`            | the Anthropic Messages dialect below (a `type: anthropic` provider) |
+//! | `GET  /v1/messages/log`        | every `/v1/messages` body received so far, one per line   |
 //! | anything else (`POST`)         | the chat-completions dialect above                        |
 //!
 //! Both image frames carry the checked-in 2×2 PNG (`tests/fixtures/images/rb-2x2.png`),
 //! base64-encoded here rather than pulled in as a dependency — the partial frame is held
 //! for [`PARTIAL_GAP`] so the generation widget is observable before the picture lands.
+//!
+//! **The Anthropic dialect (F3).** `POST /v1/messages` answers in typed SSE events (`message_start`,
+//! `content_block_start`/`_delta`/`_stop` per block, `message_delta` with the `stop_reason`,
+//! `message_stop`), the script picked by the text of the request's LAST message — the user's turn,
+//! or the `tool_result` that closes a call:
+//!
+//! | last message    | reply                                                                     |
+//! |-----------------|---------------------------------------------------------------------------|
+//! | `thinkcut`      | a thinking block (30 `halfthought #` deltas, [`THINK_GAP`] apart, then its `signature_delta`), `stop_reason: max_tokens` — NO text block |
+//! | `toolcut:<cmd>` | a `shell` `tool_use` whose ONE `input_json_delta` is `{"command":"<cmd>` (string and object left open), held [`COMPOSE_HOLD`], the block stopped, `stop_reason: max_tokens` |
+//! | `run:<cmd>`     | the same call, whole (`{"command":<cmd>}`), `stop_reason: tool_use` — the control that DOES run |
+//! | a `tool_result` | `ran: <the result's first line>`, `end_turn`                              |
+//! | anything else   | a sealed `considering #` thought, then `echo: <the message>`, `end_turn`  |
+//!
+//! A request that advertises no `tools` is the session-title pass (the client streams it too,
+//! X-71): it gets the text `Mock title`, whatever its embedded message asks for. Every body is
+//! kept, in order, and `GET /v1/messages/log` hands them back — the only way a scenario can see
+//! what the client SENT after a cut (the half-thought, the dropped call, the rolled-back message).
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -75,6 +95,10 @@ const LINE_GAP: Duration = Duration::from_millis(60);
 /// Gap between reasoning deltas (30 of them ≈ 1.5 s — past the 1 s the `◇ thought for 1s`
 /// marker needs to be more than `<1s`).
 const THINK_GAP: Duration = Duration::from_millis(50);
+
+/// How long the `toolcut:` script holds its half-composed call before the cut: long enough that a
+/// scenario can see the composing widget `[shell …]` up, so its absence afterwards means something.
+const COMPOSE_HOLD: Duration = Duration::from_millis(1500);
 
 /// Gap between the partial image frame and the finished picture: long enough that a
 /// scenario can observe the generation widget, short enough not to pad the suite.
@@ -173,6 +197,9 @@ fn serve(mut sock: TcpStream) -> std::io::Result<()> {
     let body = String::from_utf8_lossy(&body).into_owned();
 
     if is_get {
+        if path.ends_with("/v1/messages/log") {
+            return messages_log(&mut sock);
+        }
         if path.contains("/slow/") {
             thread::sleep(SLOW_LIST);
         }
@@ -180,6 +207,9 @@ fn serve(mut sock: TcpStream) -> std::io::Result<()> {
     }
     if path.ends_with("/images/generations") || path.ends_with("/images/edits") {
         return images_reply(&mut sock);
+    }
+    if path.ends_with("/v1/messages") {
+        return anthropic_reply(&mut sock, &body);
     }
     let prompt = last_content(&body).unwrap_or_default();
     if prompt.contains("hang:") {
@@ -599,4 +629,217 @@ fn unescape_until_quote(s: &str) -> String {
         }
     }
     out
+}
+
+/// Every `POST /v1/messages` body the mock has served, in arrival order — what
+/// `GET /v1/messages/log` hands back, so a scenario can read what the client SENT after a cut.
+static MESSAGES_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// `GET /v1/messages/log` — every recorded Anthropic request body, one per line (the client writes
+/// compact JSON, so a body never holds a raw newline).
+fn messages_log(sock: &mut TcpStream) -> std::io::Result<()> {
+    let body = {
+        let log = MESSAGES_LOG
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut b = log.join("\n");
+        if !b.is_empty() {
+            b.push('\n');
+        }
+        b
+    };
+    write!(
+        sock,
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )?;
+    sock.flush()
+}
+
+/// The Anthropic Messages dialect (`POST /v1/messages`, `llm/anthropic.rs`): typed SSE events —
+/// `message_start`, a `content_block_start`/`_delta`/`_stop` run per block, `message_delta` with the
+/// `stop_reason` and `message_stop` — the script picked by the request's LAST message (see the
+/// module table).
+///
+/// The client streams every request on this dialect, the session-title pass included (X-71); that
+/// pass is the one request that advertises no `tools`, and it gets a plain title so a scenario's
+/// keyword never truncates the title too.
+fn anthropic_reply(sock: &mut TcpStream, body: &str) -> std::io::Result<()> {
+    MESSAGES_LOG
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(body.to_owned());
+    write!(
+        sock,
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+    )?;
+    sock.flush()?;
+    event(
+        sock,
+        "message_start",
+        r#"{"type":"message_start","message":{"id":"msg_l4","type":"message","role":"assistant","content":[],"usage":{"input_tokens":11,"output_tokens":1}}}"#,
+    )?;
+
+    let last = last_message(body);
+    let texts = string_values_after(last, "\"text\":\"");
+    let prompt = texts.last().cloned().unwrap_or_default();
+    let stop = if !body.contains("\"tools\":[") {
+        text_block(sock, 0, "Mock title")?;
+        "end_turn"
+    } else if last.contains("\"type\":\"tool_result\"") {
+        let first = texts
+            .first()
+            .and_then(|t| t.lines().find(|l| !l.trim().is_empty()))
+            .unwrap_or("")
+            .to_owned();
+        text_block(sock, 0, &format!("ran: {first}"))?;
+        "end_turn"
+    } else if prompt.contains("thinkcut") {
+        // Cut mid-THOUGHT: a sealed thinking block and nothing after it — no text block at all.
+        thinking_block(sock, 0, "halfthought")?;
+        "max_tokens"
+    } else if let Some(at) = prompt.find("toolcut:") {
+        // Cut mid-ARGUMENTS: the call is named, half its input arrives, the block closes, the
+        // ceiling is the stop reason. The pause keeps the composing widget observable.
+        let cmd = prompt[at + "toolcut:".len()..].trim();
+        let id = format!("toolu_l4_{}", CALLS.fetch_add(1, Ordering::Relaxed) + 1);
+        event(
+            sock,
+            "content_block_start",
+            &format!(
+                r#"{{"type":"content_block_start","index":0,"content_block":{{"type":"tool_use","id":"{id}","name":"shell","input":{{}}}}}}"#
+            ),
+        )?;
+        // `{"command":"<cmd>` — the string never closes, the object never ends.
+        let half = format!("{{\"command\":{}", json_string(cmd));
+        let half = &half[..half.len() - 1];
+        event(
+            sock,
+            "content_block_delta",
+            &format!(
+                r#"{{"type":"content_block_delta","index":0,"delta":{{"type":"input_json_delta","partial_json":{}}}}}"#,
+                json_string(half)
+            ),
+        )?;
+        thread::sleep(COMPOSE_HOLD);
+        block_stop(sock, 0)?;
+        "max_tokens"
+    } else if let Some(at) = prompt.find("run:") {
+        // The control: the same call, whole, closed by `tool_use` — this one DOES run.
+        let cmd = prompt[at + "run:".len()..].trim();
+        let id = format!("toolu_l4_{}", CALLS.fetch_add(1, Ordering::Relaxed) + 1);
+        event(
+            sock,
+            "content_block_start",
+            &format!(
+                r#"{{"type":"content_block_start","index":0,"content_block":{{"type":"tool_use","id":"{id}","name":"shell","input":{{}}}}}}"#
+            ),
+        )?;
+        let args = format!("{{\"command\":{}}}", json_string(cmd));
+        event(
+            sock,
+            "content_block_delta",
+            &format!(
+                r#"{{"type":"content_block_delta","index":0,"delta":{{"type":"input_json_delta","partial_json":{}}}}}"#,
+                json_string(&args)
+            ),
+        )?;
+        block_stop(sock, 0)?;
+        "tool_use"
+    } else {
+        // The ordinary turn: a short sealed thought, then the answer — a turn that ENDS.
+        thinking_block(sock, 0, "considering")?;
+        text_block(sock, 1, &format!("echo: {prompt}"))?;
+        "end_turn"
+    };
+
+    event(
+        sock,
+        "message_delta",
+        &format!(
+            r#"{{"type":"message_delta","delta":{{"stop_reason":"{stop}","stop_sequence":null}},"usage":{{"output_tokens":7}}}}"#
+        ),
+    )?;
+    event(sock, "message_stop", r#"{"type":"message_stop"}"#)?;
+    sock.write_all(b"0\r\n\r\n")?;
+    sock.flush()
+}
+
+/// A thinking block at `index`: [`THINK_GAP`]-spaced `thinking_delta`s of `<word> #`, then the
+/// `signature_delta` that seals it, then its stop.
+fn thinking_block(sock: &mut TcpStream, index: u32, word: &str) -> std::io::Result<()> {
+    event(
+        sock,
+        "content_block_start",
+        &format!(
+            r#"{{"type":"content_block_start","index":{index},"content_block":{{"type":"thinking","thinking":"","signature":""}}}}"#
+        ),
+    )?;
+    for i in 0..30 {
+        event(
+            sock,
+            "content_block_delta",
+            &format!(
+                r#"{{"type":"content_block_delta","index":{index},"delta":{{"type":"thinking_delta","thinking":{}}}}}"#,
+                json_string(&format!("{word} {i} "))
+            ),
+        )?;
+        thread::sleep(THINK_GAP);
+    }
+    event(
+        sock,
+        "content_block_delta",
+        &format!(
+            r#"{{"type":"content_block_delta","index":{index},"delta":{{"type":"signature_delta","signature":"c2lnLWw0"}}}}"#
+        ),
+    )?;
+    block_stop(sock, index)
+}
+
+/// A text block at `index` carrying `text` in one `text_delta`.
+fn text_block(sock: &mut TcpStream, index: u32, text: &str) -> std::io::Result<()> {
+    event(
+        sock,
+        "content_block_start",
+        &format!(
+            r#"{{"type":"content_block_start","index":{index},"content_block":{{"type":"text","text":""}}}}"#
+        ),
+    )?;
+    event(
+        sock,
+        "content_block_delta",
+        &format!(
+            r#"{{"type":"content_block_delta","index":{index},"delta":{{"type":"text_delta","text":{}}}}}"#,
+            json_string(text)
+        ),
+    )?;
+    block_stop(sock, index)
+}
+
+/// `content_block_stop` for `index`.
+fn block_stop(sock: &mut TcpStream, index: u32) -> std::io::Result<()> {
+    event(
+        sock,
+        "content_block_stop",
+        &format!(r#"{{"type":"content_block_stop","index":{index}}}"#),
+    )
+}
+
+/// One named SSE event (`event: <kind>` + `data: <json>`), as the Messages API frames them.
+fn event(sock: &mut TcpStream, kind: &str, data: &str) -> std::io::Result<()> {
+    chunk(sock, &format!("event: {kind}\ndata: {data}\n\n"))
+}
+
+/// The request's LAST message: from its `"role":"` up to where the message list ends (the
+/// `system` and `tools` arrays follow `messages` in the body, and the system prompt has `text`
+/// values of its own).
+fn last_message(body: &str) -> &str {
+    let from = body.rfind("{\"role\":\"").unwrap_or(0);
+    let rest = &body[from..];
+    let end = ["],\"system\":[", "],\"tools\":[", "],\"stream\":"]
+        .iter()
+        .filter_map(|k| rest.find(k))
+        .min()
+        .unwrap_or(rest.len());
+    &rest[..end]
 }
