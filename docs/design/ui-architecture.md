@@ -280,8 +280,9 @@ shared turn-state races. Adopted instead:
   user messages, so the NEXT round's request carries them and the model
   reacts mid-task. The transcript settles the running activity group first
   (a user speaking outranks content as a boundary) and echoes the ❯ block
-  in place. A turn-level retry re-lands taken injections after the history
-  reset — the queue no longer holds them. Streaming turns without tools
+  in place. A failing call is retried in place (one ladder per call,
+  DIVERGENCES X-73), so taken injections stay where they landed and are
+  never re-landed. Streaming turns without tools
   have no boundary: their queue still drains at turn end, and interrupts
   still fold the *remaining* queue into the draft (injected messages are
   already part of the turn and follow its finalize table).

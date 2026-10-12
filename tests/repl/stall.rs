@@ -1168,8 +1168,8 @@ async fn a_responses_cut_is_shown_once_and_never_retried() {
 }
 
 /// X-73: ONE retry budget per model call. A failure the table calls transient is retried `MAX_RETRIES` times
-/// — 1 call + 10 retries — whether the tool loop advertised tools or ran with an empty set; the turn-level
-/// replay no longer climbs a second ladder over the loop's (11 × 11 = 121 calls before).
+/// — 1 call + 10 retries — whether the tool loop advertised tools or ran with an empty set; no second ladder
+/// climbs over the loop's (11 × 11 = 121 calls before).
 #[tokio::test(start_paused = true)]
 async fn a_transient_failure_climbs_one_ladder_with_or_without_tools() {
     for tools in [&[][..], &["noop"][..]] {
