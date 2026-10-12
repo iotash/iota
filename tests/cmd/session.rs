@@ -1550,3 +1550,76 @@ async fn a_cut_unary_stream_fails_the_run_and_persists_nothing() {
     let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).expect("JSON");
     assert!(body.get("tools").is_none(), "the unary path: {body}");
 }
+
+/// R1 (X-69) through the real binary: `max_tokens`, then a usage-only `message_delta`, then `message_stop`.
+/// The later delta does not erase the cut — in `text` and in `json`, the run exits 1, prints no reply, and
+/// the resumed session's log is untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_late_usage_delta_still_fails_a_cut_headless_run() {
+    const LATE: &str = concat!(
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":0}}}\n\n",
+        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"FORBIDDEN PARTIAL ANSWER\"}}\n\n",
+        "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"},\"usage\":{\"output_tokens\":1234}}\n\n",
+        "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{},\"usage\":{\"input_tokens\":23,\"output_tokens\":1234}}\n\n",
+        "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+    );
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(LATE, "text/event-stream"))
+        .mount(&server)
+        .await;
+    let cwd = TempDir::new().expect("temp cwd");
+    let home = TempDir::new().expect("temp home");
+    let id = "r1qz7tx2k9pa";
+    let bundle = sessions_root(home.path()).join(id);
+    plant_bundle(
+        &bundle,
+        id,
+        "a",
+        "claude-x",
+        &[rec("user", "q"), rec("assistant", "a")],
+    );
+    write_anthropic_config(cwd.path(), &server.uri(), 1234);
+    let log_before = fs::read(bundle.join("messages.jsonl")).expect("log");
+
+    for format in ["text", "json"] {
+        let mut cmd = iota(cwd.path(), home.path());
+        cmd.args(["resume", id, "-m", "next", "--output-format", format]);
+        let o = output(cmd).await;
+        assert_eq!(o.status.code(), Some(1), "{format}: stderr: {}", err(&o));
+        assert!(
+            err(&o).contains("Error: output truncated"),
+            "{format}: {}",
+            err(&o)
+        );
+        assert!(
+            !out(&o).contains("FORBIDDEN PARTIAL ANSWER"),
+            "{format}: the fragment must not be the reply: {}",
+            out(&o)
+        );
+        if format == "json" {
+            let report: serde_json::Value = serde_json::from_str(&out(&o)).expect("report");
+            assert_eq!(report["reply"], "");
+            assert!(
+                report["error"]
+                    .as_str()
+                    .is_some_and(|e| e.contains("max_tokens")),
+                "{report}"
+            );
+        } else {
+            assert!(out(&o).is_empty());
+        }
+        assert_eq!(
+            fs::read(bundle.join("messages.jsonl")).expect("log"),
+            log_before,
+            "{format}: a failed turn persists nothing"
+        );
+    }
+    assert_eq!(
+        server.received_requests().await.expect("requests").len(),
+        2,
+        "one request per run: no retry"
+    );
+}

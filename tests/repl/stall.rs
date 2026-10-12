@@ -451,6 +451,114 @@ async fn a_reply_cut_off_by_the_ceiling_keeps_its_sealed_thinking() {
     }
 }
 
+/// R1's tail (X-69): a cut reported, then a usage-only `message_delta` (no `stop_reason`), then — when `stop`
+/// — `message_stop`. `text` is the reply the model had started, if any.
+fn cut_then_usage(thought: &str, text: Option<&str>, stop: bool) -> String {
+    use serde_json::json;
+    let mut events = vec![
+        json!({"type":"message_start","message":{"usage":{"input_tokens":0}}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":thought}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"SIG"}}),
+        json!({"type":"content_block_stop","index":0}),
+    ];
+    if let Some(text) = text {
+        events.extend([
+            json!({"type":"content_block_start","index":1,"content_block":{"type":"text"}}),
+            json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":text}}),
+            json!({"type":"content_block_stop","index":1}),
+        ]);
+    }
+    events.extend([
+        json!({"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":4096}}),
+        json!({"type":"message_delta","delta":{},"usage":{"input_tokens":23,"output_tokens":4096}}),
+    ]);
+    if stop {
+        events.push(json!({"type":"message_stop"}));
+    }
+    events.iter().map(event).collect()
+}
+
+/// R1 through the REPL: a usage-only delta AFTER `max_tokens` (with or without `message_stop`) does not turn
+/// the cut into a finished round. A half-thought is never the answer — nothing of it reaches the next
+/// request as text, the turn rolls back, `Output truncated` is shown, no retry — and text the model did
+/// write is kept only as a cut-short record (its sealed block ahead of it).
+#[tokio::test]
+async fn a_later_usage_delta_never_turns_a_cut_into_an_answer() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate, matchers::method};
+
+    for stop in [true, false] {
+        for text in [None, Some("half an answer")] {
+            let server = MockServer::start().await;
+            let calls = Arc::new(AtomicUsize::new(0));
+            let c = Arc::clone(&calls);
+            let first = cut_then_usage("FORBIDDEN HALF THOUGHT", text, stop);
+            let next = anthropic_answer(
+                &[
+                    serde_json::json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}),
+                ],
+                "ok",
+                false,
+            );
+            Mock::given(method("POST"))
+                .respond_with(move |_: &Request| {
+                    let body = if c.fetch_add(1, Ordering::SeqCst) == 0 {
+                        first.clone()
+                    } else {
+                        next.clone()
+                    };
+                    ResponseTemplate::new(200).set_body_raw(body, "text/event-stream")
+                })
+                .mount(&server)
+                .await;
+            let provider = iota::provider::anthropic::AnthropicProvider::new(
+                "k",
+                &server.uri(),
+                "m",
+                None,
+                reqwest::Client::new(),
+            );
+            let fx = Fixture::new(vec![input("first"), input("next"), Reply::Closed]);
+            fx.run_on(Box::new(provider), None, &[], None).await;
+
+            let case = format!("stop={stop} text={text:?}");
+            let requests = server.received_requests().await.expect("requests");
+            assert_eq!(requests.len(), 2, "{case}: no retry");
+            let wire = String::from_utf8_lossy(&requests[1].body).into_owned();
+            assert!(
+                !wire.contains(r#""text":"FORBIDDEN HALF THOUGHT""#),
+                "{case}: the half-thought replayed as text: {wire}"
+            );
+            assert_eq!(fx.printed_count("Output truncated"), 1, "{case}");
+            assert_eq!(fx.printed_count("FORBIDDEN HALF THOUGHT"), 0, "{case}");
+            let body: serde_json::Value = serde_json::from_slice(&requests[1].body).expect("json");
+            let assistants: Vec<_> = body["messages"]
+                .as_array()
+                .expect("messages")
+                .iter()
+                .filter(|m| m["role"] == "assistant")
+                .collect();
+            match text {
+                None => {
+                    assert!(assistants.is_empty(), "{case}: rolled back: {body}");
+                    assert!(!wire.contains(r#""text":"first""#), "{case}: {wire}");
+                }
+                Some(t) => {
+                    assert_eq!(assistants.len(), 1, "{case}");
+                    assert_eq!(assistants[0]["content"][0]["type"], "thinking", "{case}");
+                    assert_eq!(assistants[0]["content"][1]["text"], t, "{case}");
+                    assert_eq!(
+                        fx.printed_count("What arrived before the cut-off is kept"),
+                        1,
+                        "{case}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// M5 (X-68): the title pass runs on its own instance, built from the endpoint alone — and must still carry
 /// the ceiling the chat runs under, or an endpoint that only accepts a lower `max_tokens:` refuses every
 /// title. Both instances are the real dialect; the chat's carries the configured 4096 (what startup tuning

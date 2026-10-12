@@ -213,7 +213,6 @@ impl AnthropicProvider {
         // Content blocks accumulate BY INDEX: content_block_delta events address blocks by `index` and can
         // interleave across open blocks (parallel tool_use). A BTreeMap assembles in ascending index order.
         let mut blocks: BTreeMap<u32, BlockAcc> = BTreeMap::new();
-        let mut stop_reason: Option<StopReason> = None;
         // Usage arrives in two events: message_start reports the input side (plus cache counts) and
         // message_delta the message's CUMULATIVE usage — the output figure always, and the input side too
         // on the real API and on the compatible endpoints that send placeholder zeros at message_start
@@ -286,11 +285,9 @@ impl AnthropicProvider {
                     }
                     DeltaKind::Other => {}
                 },
-                AnthropicEvent::MessageDelta {
-                    stop_reason: reason,
-                    usage: delta,
-                } => {
-                    stop_reason = reason;
+                // The reason is the STREAM's merged one (read below): a later usage-only delta must not
+                // erase a `max_tokens` an earlier one reported. The usage is laid over as it arrives.
+                AnthropicEvent::MessageDelta { usage: delta, .. } => {
                     if let Some(delta) = delta {
                         usage.overlay(&delta); // cumulative: what it carries is the message's figure
                         published = Some(anthropic_usage(&usage));
@@ -303,6 +300,9 @@ impl AnthropicProvider {
         gate.close();
 
         let assembled = assemble(&blocks);
+        // The message's ONE terminal fact, merged by the stream over every `message_delta` — the same fact
+        // the stream's completion check read (X-69, X-71).
+        let stop_reason = stream.stop_reason().cloned();
         // Thinking blocks replay UNCONDITIONALLY (the API rejects a thinking-mode turn whose
         // thinking is missing); server blocks only under the reference protocol, so a future
         // web_search's blocks are not dragged into history as orphans. Both lists were built in
@@ -593,10 +593,11 @@ impl Provider for AnthropicProvider {
     }
 
     /// The unary call rides the STREAM: a `max_tokens` this large (thinking counts toward it) can take
-    /// minutes to generate, and a non-streaming response sends its headers only once it is done — past
-    /// the client's response-header bound (`HEADER_TIMEOUT`, 120 s; Anthropic recommends streaming above
-    /// ~21k tokens for the same reason). No tools, no sink: only the text and the cost come back
-    /// (DIVERGENCES X-71).
+    /// minutes to GENERATE, and the client bounds only the response HEADERS (`HEADER_TIMEOUT`, 120 s),
+    /// not the whole answer. A server that holds a non-streaming response's headers until the output is
+    /// done would trip that bound on a long generation; a stream sends its head first. Anthropic
+    /// recommends streaming above ~21k tokens for the same reason. No tools, no sink: only the text,
+    /// the cost and the truncation come back (DIVERGENCES X-71).
     fn chat<'a>(
         &'a self,
         cancel: &'a CancellationToken,

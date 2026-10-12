@@ -34,6 +34,15 @@ pub enum LlmError {
     /// `message_delta` carrying a `stop_reason` (DIVERGENCES X-71).
     #[error("llm: stream ended before the message did (no message_stop or stop_reason)")]
     IncompleteStream,
+    /// Two `message_delta` events carried different non-empty stop reasons, neither `max_tokens`: the
+    /// message's end is contradicted, so neither reading is trusted (DIVERGENCES X-69).
+    #[error("llm: stream reported conflicting stop reasons ({first}, then {then})")]
+    ConflictingStopReason {
+        /// The reason the stream reported first.
+        first: String,
+        /// The one that contradicted it.
+        then: String,
+    },
     /// An images SSE stream that ended without a `.completed` frame.
     #[error("llm: image stream ended without a completed image")]
     ImageStreamIncomplete,

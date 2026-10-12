@@ -322,6 +322,17 @@ pub(crate) enum StopReason {
 }
 
 impl StopReason {
+    /// The wire spelling.
+    fn as_str(&self) -> &str {
+        match self {
+            Self::EndTurn => "end_turn",
+            Self::MaxTokens => "max_tokens",
+            Self::StopSequence => "stop_sequence",
+            Self::ToolUse => "tool_use",
+            Self::Other(s) => s,
+        }
+    }
+
     /// The reason for a `stop_reason` string; `None` when it is empty.
     fn parse(reason: &str) -> Option<Self> {
         Some(match reason {
@@ -366,7 +377,8 @@ pub(crate) enum AnthropicEvent {
     },
     /// `message_delta`: the stop reason and the message's cumulative usage.
     MessageDelta {
-        /// Why the message stopped.
+        /// The stop reason THIS event carried (`None` when it carried none). The message's reason is the
+        /// stream's merged one, [`AnthropicStream::stop_reason`] — read that, not this.
         stop_reason: Option<StopReason>,
         /// The cumulative usage, when reported — whichever fields the event carries: `output_tokens`
         /// always, the input side too on the real API and on the compatible endpoints that give it only
@@ -543,7 +555,7 @@ impl Anthropic {
         Ok(AnthropicStream {
             sse,
             stopped: false,
-            stop_reason_seen: false,
+            stop_reason: None,
         })
     }
 
@@ -575,9 +587,9 @@ pub(crate) struct AnthropicStream {
     sse: Sse,
     /// `message_stop` arrived: the message is over, whether or not the body ever closes.
     stopped: bool,
-    /// A `message_delta` carried a `stop_reason`: the model is done, and a body that ends here ended
-    /// with the message (see [`Self::next`]).
-    stop_reason_seen: bool,
+    /// The message's stop reason, merged over every `message_delta` (see [`Self::stop_reason`]). It is
+    /// the ONE terminal fact: the completion check below and the caller's truncation check both read it.
+    stop_reason: Option<StopReason>,
 }
 
 impl AnthropicStream {
@@ -600,7 +612,7 @@ impl AnthropicStream {
                 // A body that carried no event at all never streamed (anthropic.go:231-233).
                 return if !self.sse.saw_event() {
                     Err(LlmError::NoEvents)
-                } else if self.stop_reason_seen {
+                } else if self.stop_reason.is_some() {
                     Ok(None)
                 } else {
                     Err(LlmError::IncompleteStream)
@@ -629,14 +641,43 @@ impl AnthropicStream {
             }
             let event = out.classify();
             if let AnthropicEvent::MessageDelta {
-                stop_reason: Some(_),
+                stop_reason: Some(reason),
                 ..
             } = &event
             {
-                self.stop_reason_seen = true;
+                self.merge_stop_reason(reason)?;
             }
             return Ok(Some(event));
         }
+    }
+
+    /// Why the message stopped, as far as the stream has read: the merge of every `stop_reason` the
+    /// `message_delta` events carried.
+    pub(crate) fn stop_reason(&self) -> Option<&StopReason> {
+        self.stop_reason.as_ref()
+    }
+
+    /// One `message_delta`'s reason folded into the message's. A delta WITHOUT one (a usage-only update)
+    /// never reaches here: a missing field is no update, never a retraction. `max_tokens` is a fact once
+    /// seen — the output WAS cut, and no later reason can make the round a finished one (review R1). Two
+    /// different non-empty reasons otherwise contradict each other (did the model stop for its tools, or
+    /// at its turn's end?), and neither can be trusted: a protocol error.
+    fn merge_stop_reason(&mut self, reason: &StopReason) -> Result<(), LlmError> {
+        match &self.stop_reason {
+            None => self.stop_reason = Some(reason.clone()),
+            Some(StopReason::MaxTokens) => {}
+            Some(_) if *reason == StopReason::MaxTokens => {
+                self.stop_reason = Some(StopReason::MaxTokens);
+            }
+            Some(first) if first == reason => {}
+            Some(first) => {
+                return Err(LlmError::ConflictingStopReason {
+                    first: first.as_str().to_owned(),
+                    then: reason.as_str().to_owned(),
+                });
+            }
+        }
+        Ok(())
     }
 }
 

@@ -223,12 +223,13 @@ pub(crate) struct TurnReport {
     pub(crate) cut_round: Option<CutRound>,
 }
 
-/// The replay payload and cost of a round the output ceiling cut off (X-69). Unlike an ESC or
-/// a stall, a truncated round's RESPONSE completed — every block it opened was closed and the
-/// stream ended at its stop event — so its raw blocks are whole: a sealed thinking block must
-/// go back with the text it kept, or the next request replays that text without the thinking
-/// the endpoint signed (brain `anthropic-thinking-replay`). An interrupt or a stall never fills
-/// this: what reached the buffer then is of unknown completeness.
+/// The replay payload and cost of a round the output ceiling cut off (X-69). A truncation is a
+/// round the provider RETURNED — the stream met X-71's completion condition (`message_stop`, or
+/// EOF after a reported `stop_reason`) — so the replay blocks it collected are kept with the text
+/// it kept: a sealed thinking block must go back with that text, or the next request replays it
+/// without the thinking the endpoint signed (brain `anthropic-thinking-replay`). An interrupt or a
+/// stall never fills this: those rounds never returned, and their buffers are of unknown
+/// completeness.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct CutRound {
     /// The dialect's replay blocks for the kept message.

@@ -631,6 +631,36 @@ mod tests {
         );
     }
 
+    /// R1 (X-69): a cut summary followed by a usage-only `message_delta` and `message_stop` — the later
+    /// delta does not make it a finished summary, so no compaction is produced (no marker can be written).
+    #[tokio::test]
+    async fn a_late_usage_delta_does_not_commit_a_cut_summary() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+        let server = MockServer::start().await;
+        let late = concat!(
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"FORBIDDEN PARTIAL SUMMARY\"}}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"},\"usage\":{\"output_tokens\":4096}}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{},\"usage\":{\"input_tokens\":23,\"output_tokens\":4096}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        );
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(late, "text/event-stream"))
+            .mount(&server)
+            .await;
+        let p = crate::provider::anthropic::AnthropicProvider::new(
+            "k",
+            &server.uri(),
+            "m",
+            None,
+            reqwest::Client::new(),
+        );
+        let e = compact_history(&CancellationToken::new(), &p, &history(), "", None)
+            .await
+            .expect_err("a cut summary must fail");
+        assert!(matches!(e, super::CompactError::Truncated(_)), "{e:?}");
+    }
+
     /// A summary the output ceiling cut off is a failed pass too (X-69): a fragment must not replace
     /// the history it was summarising.
     #[tokio::test]
