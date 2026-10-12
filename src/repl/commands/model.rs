@@ -97,10 +97,11 @@ fn chosen(values: &[Candidate], catalog: &ModelCatalog, r: &PanelResult) -> Opti
 }
 
 /// What picking a row on another endpoint does to this chat — the annotation such a row carries in place of
-/// the `provider:` prefix that used to imply it: before the first reply the chat MOVES there ([`move_to`]);
-/// after it, or in a chat that never moves (a bot), the pick is refused and names the new session to start.
+/// the `provider:` prefix that used to imply it: the chat MOVES there ([`move_to`]; once a model has replied,
+/// after the user agreed to what it costs), unless it is a chat that never moves (a bot), where the pick is
+/// refused and names the new session to start.
 fn elsewhere(repl: &Repl) -> &'static str {
-    if repl.conv.replied || repl.conv.endpoints.is_none() {
+    if repl.conv.endpoints.is_none() {
         "needs a new session"
     } else {
         "moves the chat"
@@ -167,46 +168,57 @@ fn refuse(repl: &Repl, provider: &str, id: &str, why: &str, next: &str) {
     ));
 }
 
-/// What a `/model` pick the chat cannot take leaves the user: a NEW session on that endpoint.
-fn new_session_there(repl: &Repl, provider: &str, id: &str) -> String {
+/// What a `/model` pick the chat cannot take leaves the user: THIS chat, continued there in a new run, when it
+/// has a bundle to resume — `iota resume <id> -M` moves it — or a NEW session there when it has none (an
+/// ephemeral chat, one not on disk yet) or is a bot's, which only its config moves.
+fn way_out(repl: &Repl, provider: &str, id: &str) -> String {
+    let session = lock(&repl.session.writer)
+        .as_ref()
+        .filter(|w| w.on_disk() && repl.conv.bot.is_none())
+        .map(|w| w.id().to_owned());
+    if let Some(session) = session {
+        return format!(
+            "This chat continues there in a new run: iota resume {session} -M {provider}:{id}"
+        );
+    }
     let agent = repl.conv.catalog.agent();
     let agent = if agent.is_empty() { "<agent>" } else { agent };
     format!("A NEW session starts there with: iota run {agent} -M {provider}:{id}")
 }
 
-/// Moves a chat that has no reply yet to `provider:id` — another endpoint — and returns the parameters the
-/// caller's [`liveparams::apply`](crate::repl::liveparams::apply) lands there. `None` (reported, nothing
-/// changed) when it cannot: a model has already replied, the chat never moves (a bot), the endpoint cannot be
-/// built or is another kind of model ([`open_endpoint`]), or the bundle could not be told.
+/// Moves the chat to `provider:id` — another endpoint — and returns the parameters the caller's
+/// [`liveparams::apply`](crate::repl::liveparams::apply) lands there. `None` (reported, nothing changed) when it
+/// does not: the chat never moves (a bot), the endpoint cannot be built or is another kind of model
+/// ([`open_endpoint`]), a chat a model has replied in cannot save what it holds first ([`saved`]), the user
+/// declines ([`consent`]), or the bundle could not be told.
+///
+/// A chat a model has replied in moves as `iota resume <id> -M provider:id` moves it, in this process: what
+/// it holds is saved first, under the type it was said in; the log is read again for the target's type; and
+/// the user agrees to what that costs before anything is written ([`consent`]).
 ///
 /// The move is ONE state write, then the swap. Everything is computed on the target before anything is
 /// installed: the knobs the chat runs under are carried onto the new instance and re-evaluated against the
 /// target's layers — the third evaluating moment, beside a new session and a `/model` switch (brain page
 /// `model-param-layering`) — and the bundle is told the endpoint, the model, the four parameters with their
 /// sources and the image settings in one write ([`SessionWriter::move_to`](crate::session::SessionWriter::move_to)).
-/// Only when that write succeeded is the endpoint installed. The end state is the one `iota run <agent> -M
-/// provider:id` starts in. What the chat already holds stays: the history (no reply in it, so nothing
-/// dialect-specific), the dispatcher, the tokenizer and the persist watermark.
-pub(crate) fn move_to(
+/// Only when that write succeeded is the endpoint installed, with the history as the log reads for it. What
+/// the chat holds beside the history stays: the dispatcher, the tokenizer and the persist watermark.
+pub(crate) async fn move_to(
     repl: &mut Repl,
     provider: &str,
     id: &str,
 ) -> Option<crate::session::LayeredParams> {
     // A fact of the session, not a scan of the view: a compacted or resumed history may show no reply.
-    if repl.conv.replied {
-        // The history it would carry over holds that dialect's own payloads (signed thinking blocks, response
-        // items), which another dialect does not replay.
-        refuse(
-            repl,
-            provider,
-            id,
-            "a session moves only before its first reply (after it, its history is that dialect's)",
-            &new_session_there(repl, provider, id),
-        );
+    if repl.conv.replied && !saved(repl, provider, id) {
         return None;
     }
-    let next = new_session_there(repl, provider, id);
+    let next = way_out(repl, provider, id);
     let mut ep = open_endpoint(repl, provider, id, &next)?;
+    let history = if repl.conv.replied {
+        Some(consent(repl, ep.provider.kind(), provider, id).await?)
+    } else {
+        None
+    };
     let running = crate::repl::liveparams::current(repl);
     crate::repl::liveparams::carry(&mut *ep.provider, &running);
     let next = crate::repl::liveparams::reevaluate(repl, &ep.layers, id, &running);
@@ -232,6 +244,10 @@ pub(crate) fn move_to(
         return None;
     }
     install(repl, ep);
+    if let Some(history) = history {
+        repl.conv.history = history;
+        repl.conv.budget.reseed(&repl.conv.history);
+    }
     // An ephemeral chat's bundle is minted by `/save`, later: it is minted where the chat is then.
     if let Some(mut mint) = repl.session.new_session.take() {
         repl.session.new_session = Some(Box::new(move || {
@@ -241,6 +257,114 @@ pub(crate) fn move_to(
         }));
     }
     Some(next)
+}
+
+/// Whether everything a chat a model has replied in holds is in its log, saved under the type it was said in
+/// — reported when not. A reply saved after the writer's type changed would lose its payload: the text would
+/// be kept, the signed thinking or the reasoning items not. An ephemeral chat has no log to save it to.
+fn saved(repl: &mut Repl, provider: &str, id: &str) -> bool {
+    if lock(&repl.session.writer).is_none() {
+        refuse(
+            repl,
+            provider,
+            id,
+            "this chat is not saved, and saved after the move its replies would lose their payload",
+            "Save it with /save, then pick the model again.",
+        );
+        return false;
+    }
+    if !repl.persist_turn() {
+        refuse(
+            repl,
+            provider,
+            id,
+            "what this chat holds could not be saved first, and saved after the move its replies would lose their payload",
+            "Pick the model again once the session saves.",
+        );
+        return false;
+    }
+    true
+}
+
+/// The history a chat a model has replied in takes to `provider:id`, of type `kind` — once the user agreed.
+/// `None`: reported, or declined.
+///
+/// It is the log read again for `kind`, as `iota resume -M` reads it. The view this process holds was loaded
+/// for the type the chat is on, so a reply the target's own dialect made in an earlier run lost its payload
+/// on the way in: the log still has it, and the reload brings it back ([`reloaded`]). The reload also says
+/// which replies' payload the target does not replay — the first of the three things the user is told before
+/// agreeing, beside where `iota resume` goes afterwards and the way back.
+async fn consent(
+    repl: &mut Repl,
+    kind: crate::provider::ProviderKind,
+    provider: &str,
+    id: &str,
+) -> Option<Vec<crate::provider::model::Message>> {
+    let session = repl.session.session_id();
+    let loaded = match repl.session.store.load(&session, kind) {
+        Ok(loaded) => loaded,
+        Err(e) => {
+            repl.handles
+                .tr
+                .error(&format!("Error: the session could not be read again: {e}"));
+            return None;
+        }
+    };
+    let lost = loaded.foreign_notice(kind).unwrap_or_else(|| {
+        format!("No earlier reply carries payload that {kind} does not replay.")
+    });
+    let Some(history) = reloaded(&repl.conv.history, loaded.messages) else {
+        repl.handles.tr.error(
+            "Error: the session's log does not hold this chat as it stands; nothing was switched.",
+        );
+        return None;
+    };
+    let here = Candidate {
+        provider: repl.conv.catalog.session_provider().to_owned(),
+        id: repl.conv.provider.model().to_owned(),
+    }
+    .label("");
+    let tr = &repl.handles.tr;
+    tr.notice(&lost);
+    tr.notice(&format!(
+        "Once moved, iota resume {session} continues this chat on {provider}:{id}."
+    ));
+    tr.notice(&format!(
+        "{here} stays reachable: picking it again moves the chat back, and the replies made there replay their payload again."
+    ));
+    let ui = Arc::clone(&repl.handles.ui);
+    let agreed = ui
+        .confirm(
+            &repl.handles.cancel,
+            &format!("Move this chat to {provider}:{id}?"),
+            "Move it",
+            &format!("Stay on {here}"),
+        )
+        .await
+        .unwrap_or(false);
+    agreed.then_some(history)
+}
+
+/// The chat's `history` with every message its log holds replaced by the log's own, as `view` — the log read
+/// for another type — has it. A frozen-mode tools mount, which the log never holds, stays where it is. `None`
+/// when the two do not line up message for message.
+fn reloaded(
+    history: &[crate::provider::model::Message],
+    view: Vec<crate::provider::model::Message>,
+) -> Option<Vec<crate::provider::model::Message>> {
+    if history.iter().filter(|m| !m.is_tools_mount()).count() != view.len() {
+        return None;
+    }
+    let mut view = view.into_iter();
+    history
+        .iter()
+        .map(|m| {
+            if m.is_tools_mount() {
+                return Some(m.clone());
+            }
+            view.next().filter(|v| v.role() == m.role())
+        })
+        .collect()
 }
 
 /// The endpoint `provider:id` names, ready to take the chat's place — or `None`, reported, with nothing
@@ -341,7 +465,7 @@ pub(crate) async fn ensure_model(repl: &mut Repl, cancel: &CancellationToken) ->
     let name = match repl.conv.catalog.pick(&chosen) {
         Pick::Here(id) => id,
         Pick::Elsewhere(provider, id) => {
-            let Some(next) = move_to(repl, &provider, &id) else {
+            let Some(next) = move_to(repl, &provider, &id).await else {
                 return false;
             };
             repl.handles
@@ -456,7 +580,7 @@ pub(crate) async fn cmd_model(repl: &mut Repl) {
             changed = true;
         }
         Some(Pick::Elsewhere(provider, id)) => {
-            if let Some(next) = move_to(repl, &provider, &id) {
+            if let Some(next) = move_to(repl, &provider, &id).await {
                 repl.handles
                     .tr
                     .notice(&format!("Model switched to {id} on {provider}"));
@@ -474,7 +598,8 @@ pub(crate) async fn cmd_model(repl: &mut Repl) {
 
 #[cfg(test)]
 mod tests {
-    use super::model_rows;
+    use super::{model_rows, reloaded};
+    use crate::provider::model::{Message, Raw, RawContent, ToolDef};
     use crate::repl::catalog::Candidate;
 
     fn here(id: &str) -> Candidate {
@@ -543,6 +668,30 @@ mod tests {
                 "relay:claude-x",
                 "relay:vendor/y"
             ]
+        );
+    }
+
+    /// A move takes the log's copy of every message the log holds — read for the target's type, so with the
+    /// payload the chat's own view had lost — and keeps a frozen-mode tools mount, which the log never holds,
+    /// where it was. A view that does not line up with the chat is not taken.
+    #[test]
+    fn a_reload_keeps_the_mounts_and_takes_the_logs_copy() {
+        let payload = RawContent::OpenResponses(vec![Raw::from_string("{}".to_owned()).unwrap()]);
+        let mount = Message::system_tools(vec![ToolDef {
+            name: "late".to_owned(),
+            ..ToolDef::default()
+        }]);
+        let history = vec![Message::user("q"), mount.clone(), Message::assistant("a")];
+        let restored = Message::assistant_with_calls("a", Vec::new(), Some(payload));
+        let view = vec![Message::user("q"), restored.clone()];
+        assert_eq!(
+            reloaded(&history, view),
+            Some(vec![Message::user("q"), mount, restored])
+        );
+        assert_eq!(reloaded(&history, vec![Message::user("q")]), None);
+        assert_eq!(
+            reloaded(&history, vec![Message::user("q"), Message::user("a")]),
+            None
         );
     }
 }
