@@ -428,6 +428,79 @@ _meas_at() { [ "$(tm display-message -pt meas '#{cursor_x}')" = "$1" ]; }
 # wc -l` is not (tmux trims trailing blank rows).
 hist_size() { tm display-message -pt s '#{history_size}'; }
 
+# ---------------------------------------------------------------- red foreground
+#
+# Whether a row is painted RED, read off `capture-pane -e`, which re-encodes every attribute as
+# SGR: the `✗` error block's SGR 31 (styles.rs `red`) comes back as palette index 1, `38;5;1`.
+#
+# The SGR parameters are WALKED, not pattern-matched: a regex with an optional parameter prefix
+# (`([0-9;]*;)?(31|91|38;5;1|38;5;9)m`, 22-retry.sh until 2026-10-13) swallows the `38;5;` of an
+# extended colour and reads its palette index as a basic SGR — so `38;5;31` (a blue) and `38;5;91`
+# were "red". Here `38`/`48` consume their own arguments (`5;n` or `2;r;g;b`, or one colon-joined
+# parameter), and a foreground is red when it is basic 31/91 or palette 1/9. A red BACKGROUND is
+# not a red foreground. A truecolour red is not recognised: tmux never writes one for SGR 31.
+#
+# Colon-separated parameters are read by their ANSI meaning, the same as the semicolon form:
+# `38:5:1` and `38:5:9` ARE red (palette 1/9 spelled the other legal way), `38:5:31` and `38:5:91`
+# are not. tmux writes only the semicolon form; the colon form is accepted for completeness, and
+# `check_red_detector` pins both verdicts.
+
+# sgr_red_rows — stdin is `capture-pane -e` text; prints how many LINES carry at least one SGR that
+# sets a red foreground. Lines, not cells: a whole red row counts once.
+sgr_red_rows() {
+    LC_ALL=C awk -v esc="$(printf '\033')" '
+    BEGIN { re = esc "\\[[0-9;:]*m" }
+    {
+        line = $0; red = 0
+        while (match(line, re)) {
+            p = substr(line, RSTART + 2, RLENGTH - 3)
+            line = substr(line, RSTART + RLENGTH)
+            n = split(p, a, ";")
+            for (i = 1; i <= n; i++) {
+                v = a[i]
+                if (index(v, ":") > 0) {
+                    # One colon-joined extended colour (`38:5:1`, `38:2::r:g:b`).
+                    m = split(v, c, ":")
+                    if (c[1] == "38" && c[2] == "5" && (c[3] == "1" || c[3] == "9")) red = 1
+                    continue
+                }
+                if (v == "38" || v == "48") {
+                    if (a[i + 1] == "5") {
+                        if (v == "38" && (a[i + 2] == "1" || a[i + 2] == "9")) red = 1
+                        i += 2
+                    } else if (a[i + 1] == "2") {
+                        i += 4
+                    }
+                    continue
+                }
+                if (v == "31" || v == "91") red = 1
+            }
+        }
+        if (red) rows++
+    }
+    END { print rows + 0 }'
+}
+
+# red_rows — rows of the pane and its scrollback painted red. red_rows_with <fixed> — of those, the
+# rows that also carry <fixed>.
+red_rows() { tm capture-pane -e -pt s -S -400 2>/dev/null | sgr_red_rows; }
+red_rows_with() { tm capture-pane -e -pt s -S -400 2>/dev/null | LC_ALL=C grep -aF -- "$1" | sgr_red_rows; }
+
+# check_red_detector — the detector judged on known bytes BEFORE a scenario trusts it: every red
+# spelling reads 1, and every look-alike — an extended colour whose index ends in 31/91, palette 1 as
+# a background, plain green, a reset — reads 0. Each verdict is one PASS/FAIL line.
+check_red_detector() {
+    local e sgr
+    e="$(printf '\033')"
+    for sgr in '31' '91' '38;5;1' '38;5;9' '1;31' '0;38;5;1' '2;38;5;9' '38:5:1' '38:5:9'; do
+        check "red detector: ESC[${sgr}m is red" "$(printf '%s[%smx%s[0m\n' "$e" "$sgr" "$e" | sgr_red_rows)" 1
+    done
+    for sgr in '38;5;31' '38;5;91' '38;5;131' '48;5;1' '48;5;9' '32' '39' '0' '38;2;1;31;91' '38:5:31' '38:5:91'; do
+        check "red detector: ESC[${sgr}m is not red" "$(printf '%s[%smx%s[0m\n' "$e" "$sgr" "$e" | sgr_red_rows)" 0
+    done
+    check "red detector: counts rows, not SGRs" "$(printf '%s[31ma%s[31mb\nplain\n%s[38;5;1mc\n' "$e" "$e" "$e" | sgr_red_rows)" 2
+}
+
 # ---------------------------------------------------------------- reporting
 
 ok() {

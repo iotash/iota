@@ -604,6 +604,26 @@ mapping actually fires.
       physical Shift+Enter in the composer: a newline, not a submit. *(Verified by hand
       2026-10-04, Ghostty 1.3.1 on macOS.)*
 
+## 8e. A reply the output ceiling cuts off
+
+Added with the truncation contract (DIVERGENCES X-69). ScriptedUi pins the words, the rollback and
+the next request (`tests/repl/stall.rs`); L4 drives the Anthropic dialect of the mock through a real
+pty (`tests/ui_tmux/scenarios/30-thinking-cut.sh`, `31-tool-args-cut.sh`) and reads the requests back
+off the mock's log. Each opens with a turn that ends normally as the control: no red row there,
+the cut's red block after it.
+
+- [x] 自动化：scenario 30 **8e.1 Cut mid-thought.** A reply that is all thinking and stops on
+      `max_tokens`: ONE red `✗ Output truncated` block with the stop, the 32000-token limit and the
+      hint; the `Thinking` widget winds down into its `◇ thought` marker; no row of the thought is
+      printed as an answer; the frame is intact; the next request carries neither the question nor
+      the thought, and the session log does not record the turn.
+- [x] 自动化：scenario 31 **8e.2 Cut mid-arguments.** A `shell` call whose arguments stop half-way:
+      the composing `[shell …]` row comes up, then is torn down without settling into a header; the
+      block names the dropped call (`… was dropped (shell)`); the call is not dispatched — no
+      `tool_result` answers it on the wire and the next request holds only the control's call —
+      while the same call made whole (the control) does run; the frame is intact. No marker file
+      appears either, but that is no proof by itself: half the arguments never make a `command`.
+
 ## 9. Windows Terminal — NOT YET RUN
 
 **Status: not one item below has been executed.** There is no Windows machine here, and
@@ -758,6 +778,6 @@ under 4.2), §5.1/5.2 (17), §6 (10, 21), §7.1/7.2 (14, 18), §8 (19), §8b exc
 §8c except 8c.3/8c.6 (16), the app's half of §1.3/1.4 and 8b.9 (10, 04, 15), and the
 retryable error path — `retrying (attempt n/10)` on the status row, one recovery notice, a
 message queued during the backoff landing once, Ctrl+C during a backoff leaving no red block
-(22). It covers **none** of §1's preedit, §3, §5.3/5.4, §7.3/7.4, §8b.10, §8c.3/8c.6 or §9:
+(22), and a reply cut off by the output ceiling mid-thought and mid-arguments (§8e: 30, 31). It covers **none** of §1's preedit, §3, §5.3/5.4, §7.3/7.4, §8b.10, §8c.3/8c.6 or §9:
 tmux does not run on Windows, and the Windows CI job builds and unit-tests the crate without
 ever opening a terminal.
