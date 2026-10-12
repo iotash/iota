@@ -1649,3 +1649,63 @@ async fn a_late_usage_delta_still_fails_a_cut_headless_run() {
         "one request per run: no retry"
     );
 }
+
+/// The merge with main's move rule (`resume -M` evaluates the bundle as a `/model` move does): a ceiling the
+/// USER set comes along to a model on another endpoint that declares none — on the wire and in the meta — and
+/// one the old endpoint's config supplied stays behind (the target's silence is the dialect's default).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_move_keeps_a_user_ceiling_and_drops_a_config_one() {
+    for (source, want) in [
+        ("user", serde_json::json!(16000)),
+        ("config", serde_json::json!(32000)),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(ANTHROPIC_OK, "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+        let cwd = TempDir::new().expect("temp cwd");
+        let home = TempDir::new().expect("temp home");
+        let id = "mv2qz7tx9kpa";
+        let bundle = sessions_root(home.path()).join(id);
+        plant_bundle(
+            &bundle,
+            id,
+            "a",
+            "claude-x",
+            &[rec("user", "q"), rec("assistant", "a")],
+        );
+        let meta_file = bundle.join("meta.json");
+        let mut meta: serde_json::Value =
+            serde_json::from_slice(&fs::read(&meta_file).expect("meta")).expect("JSON");
+        meta["max_tokens"] = serde_json::json!(16000);
+        meta["param_sources"] = five_sources(source);
+        fs::write(&meta_file, serde_json::to_vec(&meta).expect("JSON")).expect("meta");
+        // `b` serves `claude-z`, which no `models:` entry configures: its config is silent.
+        fs::write(
+            cwd.path().join(".iota.yaml"),
+            format!(
+                "providers:\n  a: {{type: anthropic, key: x, url: {url}}}\n  b: {{type: anthropic, key: x, url: {url}}}\nmodels:\n  ma: {{provider: a, id: claude-x, max_tokens: 1234}}\nagents:\n  default: {{model: ma, choices: [ma, \"b:*\"]}}\n",
+                url = server.uri()
+            ),
+        )
+        .expect("config");
+        let mut cmd = iota(cwd.path(), home.path());
+        cmd.args(["resume", id, "-M", "b:claude-z", "-m", "next"]);
+        let o = output(cmd).await;
+        assert_eq!(o.status.code(), Some(0), "{source}: stderr: {}", err(&o));
+        let reqs = server.received_requests().await.expect("requests");
+        let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).expect("JSON");
+        assert_eq!(body["max_tokens"], want, "{source}: {body}");
+        let meta: serde_json::Value =
+            serde_json::from_slice(&fs::read(&meta_file).expect("meta")).expect("JSON");
+        assert_eq!(meta["provider"], "b");
+        assert_eq!(
+            recorded_ceiling(&meta),
+            want,
+            "{source}: request and meta agree: {meta}"
+        );
+    }
+}
