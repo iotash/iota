@@ -319,6 +319,14 @@ impl SessionMeta {
     pub fn recorded_max_tokens(&self) -> Option<u32> {
         self.max_tokens
     }
+
+    /// Whether this bundle's record of `max_tokens` is COMPLETE: its source map carries the key, so an
+    /// absent value is the dialect's default deliberately recorded. A map written before the key
+    /// existed (the four-parameter one) says nothing about it, and neither does a bundle with no map
+    /// (X-68).
+    pub fn records_max_tokens(&self) -> bool {
+        self.param_sources.is_some_and(|s| s.max_tokens.is_some())
+    }
 }
 
 #[cfg(test)]

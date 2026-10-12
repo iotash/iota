@@ -816,6 +816,49 @@ async fn anthropic_ends_at_message_stop_although_the_body_stays_open() {
     assert_eq!((usage.input, usage.output), (12, 7));
 }
 
+/// The same open body under the UNARY call (X-71 rides the stream): `message_stop` ends it too — the
+/// completion check (M4) must not turn a finished message whose body stays open into a wait.
+#[tokio::test]
+async fn an_anthropic_unary_call_ends_at_message_stop_although_the_body_stays_open() {
+    let (url, _) = head_then(vec![(
+        Duration::ZERO,
+        concat!(
+            "event: content_block_start\n",
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}"#,
+            "\n\n",
+            "event: content_block_delta\n",
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"all of it"}}"#,
+            "\n\n",
+            "event: message_delta\n",
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}"#,
+            "\n\n",
+            "event: message_stop\n",
+            r#"data: {"type":"message_stop"}"#,
+            "\n\n",
+        ),
+    )])
+    .await;
+    let p = iota::provider::anthropic::AnthropicProvider::new(
+        "k",
+        &url,
+        "m",
+        None,
+        idle_transport(OPEN_BODY_IDLE),
+    );
+    let res = tokio::time::timeout(
+        Duration::from_secs(5),
+        iota::provider::Provider::chat(
+            &p,
+            &CancellationToken::new(),
+            &[iota::provider::model::Message::user("q")],
+        ),
+    )
+    .await
+    .expect("the unary call never ended")
+    .expect("a finished message is not incomplete");
+    assert_eq!(res.text, "all of it");
+}
+
 /// Responses: `response.completed` is the end, and it carries the usage itself.
 #[tokio::test]
 async fn responses_ends_at_completed_although_the_body_stays_open() {

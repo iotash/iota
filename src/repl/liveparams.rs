@@ -59,7 +59,7 @@ fn read(provider: &mut dyn Provider, window: u64, sources: ParamSources) -> Laye
         },
         max_tokens: Param {
             value: max_tokens,
-            source: sources.max_tokens,
+            source: sources.max_tokens.unwrap_or_default(),
         },
     }
 }

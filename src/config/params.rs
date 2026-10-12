@@ -163,9 +163,15 @@ impl Declared {
                 src.top_p,
                 evaluated.top_p,
             ),
+            // The fifth parameter's record is complete only when the map carries ITS key: a map
+            // written by a four-parameter build is complete about four (X-68).
             max_tokens: restore_one(
-                pick(replayed, complete, meta.recorded_max_tokens().map(Some)),
-                src.max_tokens,
+                pick(
+                    replayed,
+                    replayed && meta.records_max_tokens(),
+                    meta.recorded_max_tokens().map(Some),
+                ),
+                src.max_tokens.unwrap_or(ParamSource::User),
                 evaluated.max_tokens,
             ),
         }
@@ -467,7 +473,7 @@ mod tests {
             provider: "anthropic".to_owned(),
             max_tokens: Some(16_000),
             param_sources: Some(ParamSources {
-                max_tokens: ParamSource::User,
+                max_tokens: Some(ParamSource::User),
                 ..ParamSources::default()
             }),
             ..SessionMeta::default()
@@ -487,6 +493,37 @@ mod tests {
             Param::config(Some(64_000)),
             "a bundle that does not replay recorded nothing: the declaration applies"
         );
+    }
+
+    /// M3 (X-68): a source map written by a build that knew FOUR parameters — the bytes main writes — is
+    /// complete about those four only. Its silence about `max_tokens` is not a recorded default: the
+    /// fifth parameter is evaluated from the config, while the four keep the bundle's reading.
+    #[test]
+    fn a_four_key_source_map_evaluates_the_fifth_parameter() {
+        let meta: SessionMeta = serde_json::from_str(
+            r#"{"v":2,"provider":"anthropic","param_sources":{"context_window":"builtin","effort":"builtin","temperature":"builtin","top_p":"builtin"}}"#,
+        )
+        .expect("meta");
+        assert!(meta.records_params());
+        assert!(!meta.records_max_tokens());
+        let declared = Declared {
+            max_tokens: Some(4096),
+            top_p: Some(0.5),
+            ..Declared::default()
+        };
+        let p = declared.resume(&meta, true);
+        assert_eq!(p.max_tokens, Param::config(Some(4096)));
+        assert_eq!(
+            p.top_p,
+            Param::default(),
+            "the four it knew stay as recorded: no top_p is a deliberate absence"
+        );
+        // The same map WITH the key records the default.
+        let five: SessionMeta = serde_json::from_str(
+            r#"{"v":2,"provider":"anthropic","param_sources":{"context_window":"builtin","effort":"builtin","temperature":"builtin","top_p":"builtin","max_tokens":"builtin"}}"#,
+        )
+        .expect("meta");
+        assert_eq!(declared.resume(&five, true).max_tokens, Param::default());
     }
 
     /// MOMENT 4 — a resume: the bundle's values come back with the bundle's own tags, whatever the config

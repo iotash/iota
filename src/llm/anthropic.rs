@@ -543,6 +543,7 @@ impl Anthropic {
         Ok(AnthropicStream {
             sse,
             stopped: false,
+            stop_reason_seen: false,
         })
     }
 
@@ -574,6 +575,9 @@ pub(crate) struct AnthropicStream {
     sse: Sse,
     /// `message_stop` arrived: the message is over, whether or not the body ever closes.
     stopped: bool,
+    /// A `message_delta` carried a `stop_reason`: the model is done, and a body that ends here ended
+    /// with the message (see [`Self::next`]).
+    stop_reason_seen: bool,
 }
 
 impl AnthropicStream {
@@ -581,6 +585,12 @@ impl AnthropicStream {
     /// `InBand` (error envelope raw JSON if present, else the whole data). `message_stop` ends the stream
     /// (`Ok(None)` from then on) without waiting for the body's EOF: the usage rode `message_delta` before
     /// it, and a relay that holds the body open must not turn a finished message into a stall.
+    ///
+    /// The message is COMPLETE when `message_stop` arrived — the protocol's terminator — or, for an
+    /// endpoint that closes the body without sending it, when the body ends after a `message_delta`
+    /// that carried a `stop_reason` (the model's own "I am done"). A body that ends anywhere else
+    /// was cut: `IncompleteStream`, never a finished message — Go read every such EOF as the end,
+    /// which handed a fragment back as a whole answer (DIVERGENCES X-71).
     pub(crate) async fn next(&mut self) -> Result<Option<AnthropicEvent>, LlmError> {
         if self.stopped {
             return Ok(None);
@@ -588,10 +598,12 @@ impl AnthropicStream {
         loop {
             let Some(evt) = self.sse.next().await? else {
                 // A body that carried no event at all never streamed (anthropic.go:231-233).
-                return if self.sse.saw_event() {
+                return if !self.sse.saw_event() {
+                    Err(LlmError::NoEvents)
+                } else if self.stop_reason_seen {
                     Ok(None)
                 } else {
-                    Err(LlmError::NoEvents)
+                    Err(LlmError::IncompleteStream)
                 };
             };
             let mut out: RawEvent =
@@ -615,7 +627,15 @@ impl AnthropicStream {
                 }
                 _ => {}
             }
-            return Ok(Some(out.classify()));
+            let event = out.classify();
+            if let AnthropicEvent::MessageDelta {
+                stop_reason: Some(_),
+                ..
+            } = &event
+            {
+                self.stop_reason_seen = true;
+            }
+            return Ok(Some(event));
         }
     }
 }

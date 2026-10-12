@@ -128,12 +128,17 @@ pub fn apply_session_tuning(
         tunable.set_top_p(Some(top_p));
     }
     // `max_tokens` is the same kind of record: config-only, carried so a resume runs under the ceiling the
-    // session was started with.
+    // session was started with. A bundle that records the key restores what it says, the DEFAULT included —
+    // startup already installed the current config's ceiling, and a recorded default must clear it. One
+    // that never knew the key leaves that ceiling standing (X-68; the same reading as `Declared::resume`).
     if !overrides.config_wins
-        && let Some(n) = meta.max_tokens
         && let Some(tunable) = provider.as_max_tokens_tunable()
     {
-        tunable.set_max_tokens(Some(n));
+        if meta.records_max_tokens() {
+            tunable.set_max_tokens(meta.max_tokens);
+        } else if let Some(n) = meta.max_tokens {
+            tunable.set_max_tokens(Some(n));
+        }
     }
     if meta.image
         && let Some(image) = provider.as_image_tunable()

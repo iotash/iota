@@ -919,7 +919,7 @@ async fn a_declared_max_tokens_lands_on_a_switch_and_leaves_with_it() {
     let meta = SessionMeta::read(&dir).expect("meta");
     assert_eq!(meta.model, "a-model");
     assert_eq!(meta.max_tokens, None, "the declaration left with its model");
-    assert_eq!(meta.sources().max_tokens, ParamSource::Builtin);
+    assert_eq!(meta.sources().max_tokens, Some(ParamSource::Builtin));
 }
 
 /// The `agents:` entry outranks the model on both sides of a switch — including the `context_window` the

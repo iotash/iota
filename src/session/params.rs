@@ -37,19 +37,39 @@ pub enum ParamSource {
 /// layering, so what it says is complete — a parameter it records no value for is one the session
 /// deliberately runs without, not a gap to fill from the config. A bundle without the key predates the rule
 /// (`meta.param_sources` is `None`), and [`ParamSources::LEGACY`] is how its values are read instead.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
+///
+/// A key missing from a PRESENT map decodes field by field: one of the four is the built-in default, the
+/// fifth is `None` (see [`ParamSources::max_tokens`]) — not the struct's [`Default`], which is what a build
+/// that knows all five writes for a session running on defaults.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ParamSources {
     /// Where the recorded `context_window` came from.
+    #[serde(default)]
     pub context_window: ParamSource,
     /// Where the recorded `effort` came from.
+    #[serde(default)]
     pub effort: ParamSource,
     /// Where the recorded `temperature` came from.
+    #[serde(default)]
     pub temperature: ParamSource,
     /// Where the recorded `top_p` came from.
+    #[serde(default)]
     pub top_p: ParamSource,
-    /// Where the recorded `max_tokens` came from.
-    pub max_tokens: ParamSource,
+    /// Where the recorded `max_tokens` came from — `None` when the map predates the key.
+    ///
+    /// The fifth parameter joined after bundles that record the other four were already on disk, and
+    /// the key's absence from such a map is NOT a statement: that build never knew the parameter, so
+    /// a resume must evaluate it from the config, not read "builtin" into a silence (X-68). A build
+    /// that knows the key always writes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<ParamSource>,
+}
+
+impl Default for ParamSources {
+    /// Every parameter at the built-in default — the five of them, the fifth's key included.
+    fn default() -> Self {
+        Self::all(ParamSource::Builtin)
+    }
 }
 
 impl ParamSources {
@@ -66,7 +86,7 @@ impl ParamSources {
         effort: ParamSource::User,
         temperature: ParamSource::User,
         top_p: ParamSource::User,
-        max_tokens: ParamSource::User,
+        max_tokens: Some(ParamSource::User),
     };
 
     /// Every parameter at the same source — the five evaluated at once, for a caller with nothing to
@@ -77,7 +97,7 @@ impl ParamSources {
             effort: source,
             temperature: source,
             top_p: source,
-            max_tokens: source,
+            max_tokens: Some(source),
         }
     }
 }
@@ -140,7 +160,7 @@ impl LayeredParams {
             effort: self.effort.source,
             temperature: self.temperature.source,
             top_p: self.top_p.source,
-            max_tokens: self.max_tokens.source,
+            max_tokens: Some(self.max_tokens.source),
         }
     }
 }
@@ -162,6 +182,10 @@ mod tests {
         let partial: ParamSources = serde_json::from_str(r#"{"effort":"config"}"#).expect("decode");
         assert_eq!(partial.effort, ParamSource::Config);
         assert_eq!(partial.context_window, ParamSource::Builtin);
+        assert_eq!(
+            partial.max_tokens, None,
+            "a map without the fifth key says nothing about it (X-68)"
+        );
     }
 
     /// The wire spelling, which `meta.json` is read back through.

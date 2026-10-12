@@ -57,7 +57,7 @@ use crate::repl::title::{
 };
 use crate::repl::turn::approval::ApprovalGate;
 use crate::repl::turn::interrupt::{InterruptDecision, finalize_interrupt};
-use crate::repl::turn::{TurnCtx, TurnEngine, TurnFailure, TurnReport, collect_images};
+use crate::repl::turn::{CutRound, TurnCtx, TurnEngine, TurnFailure, TurnReport, collect_images};
 
 /// The `Done` ping of an image-only reply (chat/run.go:1105).
 const IMAGE_READY: &str = "Image ready";
@@ -913,6 +913,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             outcome: turn_result,
             partial,
             partial_reasoning,
+            cut_round,
             ..
         } = outcome;
         match turn_result {
@@ -954,6 +955,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                         hist0 - 1,
                         &partial,
                         &partial_reasoning,
+                        cut_round,
                         notice,
                     )
                 {
@@ -1140,11 +1142,24 @@ impl Repl {
             return;
         };
         let model = self.conv.provider.model().to_owned();
+        // The ceiling the chat runs under rides along like the model (X-68): the title instance is built
+        // from the endpoint alone, untuned, and an endpoint that only accepts a lower `max_tokens:` than the
+        // dialect's default would refuse every title. Only the ceiling: the title keeps its own effort.
+        let ceiling = self
+            .conv
+            .provider
+            .as_max_tokens_tunable()
+            .map(|t| t.max_tokens());
         let titler = Arc::clone(&self.session.titler);
         let cancel = self.handles.cancel.child_token();
         self.session.title_task = Some(tokio::spawn(async move {
             let mut guard = tp.lock().await;
             guard.set_model(model);
+            if let Some(ceiling) = ceiling
+                && let Some(t) = guard.as_max_tokens_tunable()
+            {
+                t.set_max_tokens(ceiling);
+            }
             let name = tokio::time::timeout(
                 TITLE_TIMEOUT,
                 generate_title_text(&cancel, &**guard, &first_user),
@@ -1344,15 +1359,22 @@ fn interrupt_turn(
 /// follows ESC's — all of it: unanswered calls answered before the save, the rounds' measured
 /// usage kept for a bot's threshold, and the caller counts the turn as landed. `notice` says
 /// what was kept ([`TurnReport::cut_short`](crate::repl::turn::TurnReport::cut_short)).
+///
+/// `cut` is what a TRUNCATED round returned (X-69): its response completed, so the kept text
+/// takes the round's raw blocks — a sealed thinking block replays ahead of it — and its cost.
+/// A stall passes `None`: what it left is of unknown completeness, and stays plain text.
 fn keep_cut_short_turn(
     repl: &mut Repl,
     watermark: usize,
     partial: &str,
     partial_reasoning: &str,
+    cut: Option<CutRound>,
     notice: &str,
 ) -> bool {
     let InterruptDecision {
-        history, persist, ..
+        mut history,
+        persist,
+        ..
     } = finalize_interrupt(
         repl.conv.history.clone(),
         watermark,
@@ -1361,6 +1383,17 @@ fn keep_cut_short_turn(
     );
     if !persist {
         return false;
+    }
+    // `finalize_interrupt` pushes the partial LAST, and only when there is one.
+    if !partial.is_empty()
+        && let Some(cut) = cut
+        && let Some(Message {
+            body: Body::Assistant(body),
+            ..
+        }) = history.last_mut()
+    {
+        body.raw_content = cut.raw_content;
+        body.usage = cut.usage;
     }
     repl.conv.history = history;
     crate::session::repair_tail(&mut repl.conv.history);

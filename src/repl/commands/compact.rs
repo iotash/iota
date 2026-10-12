@@ -600,6 +600,37 @@ mod tests {
         assert_eq!(e.to_string(), "empty summary");
     }
 
+    /// M4 (X-71): the summary pass through the REAL anthropic unary call, whose stream ends before the
+    /// message did — the fragment is a failure, not a summary to replace the history with.
+    #[tokio::test]
+    async fn a_cut_summary_stream_is_an_error() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+        let server = MockServer::start().await;
+        let cut = concat!(
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"The user asked\"}}\n\n",
+        );
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(cut, "text/event-stream"))
+            .mount(&server)
+            .await;
+        let p = crate::provider::anthropic::AnthropicProvider::new(
+            "k",
+            &server.uri(),
+            "m",
+            None,
+            reqwest::Client::new(),
+        );
+        let e = compact_history(&CancellationToken::new(), &p, &history(), "", None)
+            .await
+            .expect_err("a cut summary must fail");
+        assert!(
+            e.to_string()
+                .contains("stream ended before the message did"),
+            "{e}"
+        );
+    }
+
     /// A summary the output ceiling cut off is a failed pass too (X-69): a fragment must not replace
     /// the history it was summarising.
     #[tokio::test]

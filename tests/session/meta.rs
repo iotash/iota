@@ -147,7 +147,7 @@ fn meta_records_where_each_layered_parameter_came_from() {
                 effort: ParamSource::Config,
                 temperature: ParamSource::Builtin,
                 top_p: ParamSource::Config,
-                max_tokens: ParamSource::Config,
+                max_tokens: Some(ParamSource::Config),
             });
         })
         .unwrap();
@@ -163,7 +163,7 @@ fn meta_records_where_each_layered_parameter_came_from() {
     let after = store.load(&id, KIND).unwrap().meta;
     assert_eq!(after.top_p, Some(0.9));
     assert_eq!(after.max_tokens, Some(64_000));
-    assert_eq!(after.sources().max_tokens, ParamSource::Config);
+    assert_eq!(after.sources().max_tokens, Some(ParamSource::Config));
     assert_eq!(after.sources().effort, ParamSource::Config);
     assert_eq!(after.sources().context_window, ParamSource::Builtin);
 }

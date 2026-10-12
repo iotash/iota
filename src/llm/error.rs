@@ -30,6 +30,10 @@ pub enum LlmError {
     /// An images response that is not valid JSON.
     #[error("llm: malformed images response: {0}")]
     MalformedImages(#[source] serde_json::Error),
+    /// An Anthropic message stream whose body ended before the message did: no `message_stop`, and no
+    /// `message_delta` carrying a `stop_reason` (DIVERGENCES X-71).
+    #[error("llm: stream ended before the message did (no message_stop or stop_reason)")]
+    IncompleteStream,
     /// An images SSE stream that ended without a `.completed` frame.
     #[error("llm: image stream ended without a completed image")]
     ImageStreamIncomplete,

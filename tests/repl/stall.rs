@@ -44,10 +44,43 @@ impl Fixture {
     /// Runs the script to its end with `provider` answering the turns, `title` the title pass and
     /// `tools` advertised; panics when the run outlives [`PROMPT`].
     async fn run(&self, provider: FakeProvider, title: Option<FakeProvider>, tools: &[&str]) {
+        self.run_on(Box::new(provider), title, tools, None).await;
+    }
+
+    /// A run on `provider` with a title instance of any type (no tools, no writer).
+    async fn run_on_with_title(
+        &self,
+        provider: Box<dyn iota::provider::Provider>,
+        title: Option<Box<dyn iota::provider::Provider>>,
+    ) {
+        self.run_full(provider, title, &[], None).await;
+    }
+
+    /// [`Self::run`] with any provider — a real dialect against a mock server — and, when given, a
+    /// session writer the turns persist through.
+    async fn run_on(
+        &self,
+        provider: Box<dyn iota::provider::Provider>,
+        title: Option<FakeProvider>,
+        tools: &[&str],
+        writer: Option<iota::session::SessionWriter>,
+    ) {
+        let title = title.map(|t| Box::new(t) as Box<dyn iota::provider::Provider>);
+        self.run_full(provider, title, tools, writer).await;
+    }
+
+    /// The one place a run is assembled.
+    async fn run_full(
+        &self,
+        provider: Box<dyn iota::provider::Provider>,
+        title_provider: Option<Box<dyn iota::provider::Provider>>,
+        tools: &[&str],
+        writer: Option<iota::session::SessionWriter>,
+    ) {
         let params = RunParams {
             ui: Arc::clone(&self.ui) as Arc<dyn Ui>,
-            provider: Box::new(provider),
-            title_provider: title.map(|t| Box::new(t) as Box<dyn iota::provider::Provider>),
+            provider,
+            title_provider,
             system: String::new(),
             harness: iota::agents::harness::HarnessInputs::default(),
             imported_history: Vec::new(),
@@ -55,7 +88,7 @@ impl Fixture {
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
             mcp: McpHooks::default(),
             session: SessionCtx {
-                writer: None,
+                writer,
                 store: self.store.clone(),
                 new_session: None,
                 scope: None,
@@ -275,6 +308,203 @@ async fn a_reply_cut_off_by_the_ceiling_keeps_its_text_marked_cut_short() {
         fx.printed_count("What arrived before the cut-off is kept"),
         1
     );
+}
+
+/// One Anthropic SSE event.
+fn event(v: &serde_json::Value) -> String {
+    format!(
+        "event: {}\ndata: {v}\n\n",
+        v["type"].as_str().expect("type")
+    )
+}
+
+/// A complete Anthropic response: `lead` (the thinking block, in whichever of its three shapes) at
+/// index 0, `text` at index 1, then the stop — `max_tokens` when `cut`.
+fn anthropic_answer(lead: &[serde_json::Value], text: &str, cut: bool) -> String {
+    use serde_json::json;
+    let mut out = event(&json!({"type":"message_start","message":{"usage":{"input_tokens":23}}}));
+    for e in lead {
+        out.push_str(&event(e));
+    }
+    for e in [
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"content_block_start","index":1,"content_block":{"type":"text"}}),
+        json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":text}}),
+        json!({"type":"content_block_stop","index":1}),
+        json!({"type":"message_delta","delta":{"stop_reason": if cut {"max_tokens"} else {"end_turn"}},"usage":{"output_tokens":32000}}),
+        json!({"type":"message_stop"}),
+    ] {
+        out.push_str(&event(&e));
+    }
+    out
+}
+
+/// M1 (X-69): text a TRUNCATED round wrote is kept together with the thinking block the endpoint
+/// sealed — the response completed, so its raw blocks are whole. Through the real dialect, the REPL
+/// and the session: the next request replays the block ahead of the kept text, and the persisted
+/// record carries it. All three thinking shapes: a signed block, a signature-only block, a
+/// `redacted_thinking` block.
+#[tokio::test]
+async fn a_reply_cut_off_by_the_ceiling_keeps_its_sealed_thinking() {
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate, matchers::method};
+
+    let shapes: [(&str, Vec<serde_json::Value>, serde_json::Value); 3] = [
+        (
+            "signed",
+            vec![
+                json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}),
+                json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"sealed thought"}}),
+                json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-keep-me"}}),
+            ],
+            json!({"type":"thinking","thinking":"sealed thought","signature":"sig-keep-me"}),
+        ),
+        (
+            "signature-only",
+            vec![
+                json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}),
+                json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"SEAL"}}),
+            ],
+            json!({"type":"thinking","thinking":"","signature":"SEAL"}),
+        ),
+        (
+            "redacted",
+            vec![
+                json!({"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"OPAQUE"}}),
+            ],
+            json!({"type":"redacted_thinking","data":"OPAQUE"}),
+        ),
+    ];
+    for (name, lead, want) in shapes {
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&calls);
+        let first = anthropic_answer(&lead, "partial answer", true);
+        let next = anthropic_answer(&lead, "next answer", false);
+        Mock::given(method("POST"))
+            .respond_with(move |_: &Request| {
+                let body = if c.fetch_add(1, Ordering::SeqCst) == 0 {
+                    first.clone()
+                } else {
+                    next.clone()
+                };
+                ResponseTemplate::new(200).set_body_raw(body, "text/event-stream")
+            })
+            .mount(&server)
+            .await;
+        let provider = iota::provider::anthropic::AnthropicProvider::new(
+            "k",
+            &server.uri(),
+            "m",
+            None,
+            reqwest::Client::new(),
+        );
+        let fx = Fixture::new(vec![input("first"), input("next"), Reply::Closed]);
+        let writer = fx
+            .store
+            .create(iota::session::NewSession::new(
+                iota::provider::ProviderKind::Anthropic,
+                "m",
+            ))
+            .expect("writer");
+        let id = writer.id().to_owned();
+        fx.run_on(Box::new(provider), None, &[], Some(writer)).await;
+
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(requests.len(), 2, "{name}");
+        let body: serde_json::Value = serde_json::from_slice(&requests[1].body).expect("json");
+        let kept = body["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .find(|m| m["role"] == "assistant")
+            .unwrap_or_else(|| panic!("{name}: no assistant replayed: {body}"));
+        assert_eq!(
+            kept["content"],
+            json!([want, {"type":"text","text":"partial answer"}]),
+            "{name}: the sealed block must lead the kept text on the next request"
+        );
+        assert_eq!(fx.printed_count("Output truncated"), 1, "{name}");
+
+        // The session holds the same: the kept record carries the block and the round's cost.
+        let loaded = fx
+            .store
+            .load(&id, iota::provider::ProviderKind::Anthropic)
+            .expect("load");
+        let kept = loaded
+            .messages
+            .iter()
+            .find(|m| m.role() == Role::Assistant)
+            .expect("kept record");
+        assert_eq!(kept.content, "partial answer", "{name}");
+        assert!(kept.interrupted(), "{name}: still marked cut short");
+        assert!(
+            kept.raw_content().is_some(),
+            "{name}: the persisted record lost its raw blocks"
+        );
+        assert_eq!(
+            kept.usage().map(|u| u.output),
+            Some(32_000),
+            "{name}: the round's cost rides the kept record"
+        );
+    }
+}
+
+/// M5 (X-68): the title pass runs on its own instance, built from the endpoint alone — and must still carry
+/// the ceiling the chat runs under, or an endpoint that only accepts a lower `max_tokens:` refuses every
+/// title. Both instances are the real dialect; the chat's carries the configured 4096 (what startup tuning
+/// installs), the title's is untuned (what `title_instance` builds), and both requests carry 4096.
+#[tokio::test]
+async fn the_title_request_carries_the_chats_ceiling() {
+    use iota::provider::MaxTokensTunable;
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+    let server = MockServer::start().await;
+    let ok = anthropic_answer(
+        &[
+            serde_json::json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}),
+        ],
+        "Geo DNS on Cloudflare",
+        false,
+    );
+    // The chat's answer is held back a second, so the title request — sent the moment the turn starts —
+    // is on the server before the turn ends and the exit gives the title pass up.
+    Mock::given(method("POST"))
+        .respond_with(move |r: &wiremock::Request| {
+            let title = String::from_utf8_lossy(&r.body).contains("short title");
+            let t = ResponseTemplate::new(200).set_body_raw(ok.clone(), "text/event-stream");
+            if title {
+                t
+            } else {
+                t.set_delay(Duration::from_secs(1))
+            }
+        })
+        .mount(&server)
+        .await;
+    let anthropic = || {
+        iota::provider::anthropic::AnthropicProvider::new(
+            "k",
+            &server.uri(),
+            "glm-5.3",
+            None,
+            reqwest::Client::new(),
+        )
+    };
+    let mut chat = anthropic();
+    chat.set_max_tokens(Some(4096));
+    let title = anthropic();
+    let fx = Fixture::new(vec![input("geo dns?"), Reply::Interrupted]);
+    let params_title: Box<dyn iota::provider::Provider> = Box::new(title);
+    fx.run_on_with_title(Box::new(chat), Some(params_title))
+        .await;
+
+    let requests = server.received_requests().await.expect("requests");
+    assert_eq!(requests.len(), 2, "the chat's request and the title's");
+    for r in &requests {
+        let body: serde_json::Value = serde_json::from_slice(&r.body).expect("json");
+        assert_eq!(body["max_tokens"], 4096, "{body}");
+    }
 }
 
 /// The answer arrives at once and only the title pass hangs: the next message goes out at once —

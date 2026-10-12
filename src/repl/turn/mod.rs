@@ -218,6 +218,23 @@ pub(crate) struct TurnReport {
     pub(crate) partial: String,
     /// Reasoning streamed before the interrupt, the stall or the cut-off.
     pub(crate) partial_reasoning: String,
+    /// What a truncated round returned beside its partials (see [`CutRound`]); `None` on every
+    /// other outcome.
+    pub(crate) cut_round: Option<CutRound>,
+}
+
+/// The replay payload and cost of a round the output ceiling cut off (X-69). Unlike an ESC or
+/// a stall, a truncated round's RESPONSE completed — every block it opened was closed and the
+/// stream ended at its stop event — so its raw blocks are whole: a sealed thinking block must
+/// go back with the text it kept, or the next request replays that text without the thinking
+/// the endpoint signed (brain `anthropic-thinking-replay`). An interrupt or a stall never fills
+/// this: what reached the buffer then is of unknown completeness.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct CutRound {
+    /// The dialect's replay blocks for the kept message.
+    pub(crate) raw_content: Option<crate::provider::model::RawContent>,
+    /// The round's reported cost.
+    pub(crate) usage: Option<crate::provider::usage::Usage>,
 }
 
 impl TurnReport {
@@ -250,6 +267,7 @@ impl TurnReport {
             side_fx,
             partial: String::new(),
             partial_reasoning: String::new(),
+            cut_round: None,
         }
     }
 
@@ -261,6 +279,7 @@ impl TurnReport {
             side_fx,
             partial: String::new(),
             partial_reasoning: String::new(),
+            cut_round: None,
         }
     }
 
@@ -281,6 +300,8 @@ pub(crate) struct RoundOutcome {
     pub(crate) partial: String,
     /// Reasoning streamed before a user interrupt.
     pub(crate) partial_reasoning: String,
+    /// A truncated round's replay payload and cost ([`CutRound`]).
+    pub(crate) cut_round: Option<CutRound>,
 }
 
 impl RoundOutcome {
@@ -290,6 +311,7 @@ impl RoundOutcome {
             result,
             partial: String::new(),
             partial_reasoning: String::new(),
+            cut_round: None,
         }
     }
 }
@@ -534,6 +556,7 @@ pub(crate) async fn stream_round(
                     result: Err(ChatError::Interrupted),
                     partial,
                     partial_reasoning: reasoning,
+                    cut_round: None,
                 }
             } else if e.is_stall() {
                 // A stall cuts the round off mid-stream the way ESC does: what streamed was
@@ -542,6 +565,7 @@ pub(crate) async fn stream_round(
                     result: Err(ChatError::Provider(e)),
                     partial,
                     partial_reasoning: reasoning,
+                    cut_round: None,
                 }
             } else {
                 RoundOutcome::of(Err(ChatError::Provider(e)))
@@ -553,6 +577,7 @@ pub(crate) async fn stream_round(
                 result: Err(ChatError::Interrupted),
                 partial,
                 partial_reasoning: reasoning,
+                cut_round: None,
             }
         }
         Ok(mut round) => {
@@ -567,6 +592,10 @@ pub(crate) async fn stream_round(
                     result: Err(ChatError::Truncated(cut)),
                     partial,
                     partial_reasoning: reasoning,
+                    cut_round: Some(CutRound {
+                        raw_content: round.raw_content,
+                        usage: round.usage,
+                    }),
                 };
             }
             // Reasoning-only response: the model thought and said nothing else, so the

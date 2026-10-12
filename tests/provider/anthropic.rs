@@ -749,6 +749,71 @@ async fn an_anthropic_unary_call_streams_and_reports_only_its_own_usage() {
     assert_eq!(body["max_tokens"], json!(32000));
 }
 
+/// M4 (X-71): a body that ends before the message did is an error on BOTH entry points — the tool
+/// round and the unary call — never a finished answer. Complete is `message_stop`, or (for an endpoint
+/// that closes without it) a body ending after a `message_delta` that carried a `stop_reason`.
+#[tokio::test]
+async fn a_stream_that_ends_before_the_message_did_is_incomplete() {
+    const TEXT: &str = concat!(
+        "event: content_block_start\n",
+        r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}"#,
+        "\n\n",
+        "event: content_block_delta\n",
+        r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"unfinished"}}"#,
+        "\n\n",
+    );
+    const PING: &str = "event: ping\ndata: {\"type\":\"ping\"}\n\n";
+    const DELTA_NO_REASON: &str = concat!(
+        "event: message_delta\n",
+        r#"data: {"type":"message_delta","delta":{},"usage":{"output_tokens":3}}"#,
+        "\n\n",
+    );
+    let cut = [
+        ("ping only", PING.to_owned()),
+        ("text, then EOF", TEXT.to_owned()),
+        (
+            "a message_delta without a stop_reason",
+            format!("{TEXT}{DELTA_NO_REASON}"),
+        ),
+    ];
+    for (name, body) in cut {
+        let server = MockServer::start().await;
+        mock_sse(&server, "POST", "/v1/messages", body.leak()).await;
+        let p = provider(&server, "m", None);
+        let e = round(&p, &[Message::user("q")], &[]).await.expect_err(name);
+        assert!(
+            e.to_string()
+                .contains("stream ended before the message did"),
+            "{name}: {e}"
+        );
+        let e = p
+            .chat(&CancellationToken::new(), &[Message::user("q")])
+            .await
+            .expect_err(name);
+        assert!(
+            e.to_string()
+                .contains("stream ended before the message did"),
+            "{name} (unary): {e}"
+        );
+    }
+
+    // The compatible ending: a stop_reason, then EOF with no message_stop — complete, cut or not.
+    for (reason, cut) in [("end_turn", false), ("max_tokens", true)] {
+        let body = format!(
+            "{TEXT}event: message_delta\ndata: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"{reason}\"}},\"usage\":{{\"output_tokens\":3}}}}\n\n"
+        );
+        let server = MockServer::start().await;
+        mock_sse(&server, "POST", "/v1/messages", body.leak()).await;
+        let p = provider(&server, "m", None);
+        let out = p
+            .chat(&CancellationToken::new(), &[Message::user("q")])
+            .await
+            .expect(reason);
+        assert_eq!(out.text, "unfinished");
+        assert_eq!(out.truncated.is_some(), cut, "{reason}");
+    }
+}
+
 /// `max_tokens:` from the config (X-68) is what the request carries, on both entry points.
 #[tokio::test]
 async fn a_configured_max_tokens_rides_the_wire() {
