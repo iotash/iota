@@ -948,8 +948,7 @@ async fn the_tool_search_leg_loads_tools_and_replays_them_mounted() {
     assert!(out.raw_content.is_none(), "{:?}", out.raw_content);
 }
 
-/// A searcher with no hits still answers the call — with an empty ARRAY, never Go's `"tools":null`
-/// (POLICY parity item 5 / CONTRACTS §3.8.2).
+/// A searcher with no hits still answers the call — with an empty ARRAY, never Go's `"tools":null`.
 #[tokio::test]
 async fn tool_search_output_with_no_hits_emits_empty_array() {
     let srv = MockServer::start().await;

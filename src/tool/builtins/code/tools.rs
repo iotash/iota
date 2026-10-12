@@ -49,9 +49,9 @@ fn schema(v: Value) -> Option<JsonObject> {
     }
 }
 
-/// The four readers hand their filesystem work to the blocking pool so a parallel round really overlaps
-/// (POLICY, "blocking filesystem work runs under `spawn_blocking` where it matters"). A join failure can only
-/// mean the runtime is going away, which the run reports as an interruption.
+/// The four readers hand their filesystem work to the blocking pool (`spawn_blocking`) so a parallel round
+/// really overlaps. A join failure can only mean the runtime is going away, which the run reports as an
+/// interruption.
 async fn blocking<F: FnOnce() -> ToolOutput + Send + 'static>(f: F) -> ToolResult {
     tokio::task::spawn_blocking(f)
         .await
