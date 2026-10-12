@@ -16,7 +16,7 @@
 # refused, the seventh answered.
 #
 # A 400 at the end is the CONTROL: it is not retryable, so it must paint the red `✗` block —
-# proof that the "no red" assertions above were live.
+# proof that the "no red" assertions above were live (counts are of red ROWS, lib.sh `red_rows`).
 #
 # The pane is 120 columns: the status row truncates to its width with `…`, and the busy
 # segment — `⠋ Provider server error (503) — retrying (attempt 1/10)  1s (ESC to cancel)` —
@@ -25,12 +25,9 @@
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
 
-ESC="$(printf '\033')"
-# A red foreground as `capture-pane -e` re-encodes it: the error block's `✗` is SGR 31
-# (styles.rs `red`), which tmux stores as palette index 1 and writes back as `38;5;1` — so both
-# spellings, and the bright pair, are red here; `38;5;31` (a blue) is not.
-RED_SGR="${ESC}\\[([0-9;]*;)?(31|91|38;5;1|38;5;9)m"
-red_cells() { tm capture-pane -e -pt s -S -400 2>/dev/null | LC_ALL=C grep -acE -- "$RED_SGR" | tr -d ' '; }
+# Red is read by lib.sh's `red_rows` (SGR parameters walked, so `38;5;31` is not red), and the
+# detector is judged on known bytes first.
+check_red_detector
 
 start 120 24 || finish
 settle || bad "startup never settled"
@@ -53,7 +50,7 @@ check_once "ONE recovery notice" '⟳ Provider server error (503) — recovered 
 check_once "the answer landed once" 'echo: fail:503:6 hello'
 check_once "the line typed during the backoff landed once" '❯ steer'
 check_once "…and was answered once" 'echo: steer'
-check "no red block anywhere" "$(red_cells)" 0
+check "no red block anywhere" "$(red_rows)" 0
 check "no ✗ row" "$(count_all '✗')" 0
 check "the busy segment is gone from the status row" "$(count_vis 'retrying')" 0
 check_frame_intact "after the recovery" 120
@@ -68,7 +65,7 @@ wait_all 'Interrupted.' || bad "Ctrl+C during the backoff did not interrupt the 
 settle || bad "frame never settled after the interrupt"
 check_once "the interrupt notice is committed once" 'Interrupted.'
 if alive; then ok "the app is still running"; else bad "Ctrl+C during a backoff exited the program"; finish; fi
-check "no red block after an interrupted retry" "$(red_cells)" 0
+check "no red block after an interrupted retry" "$(red_rows)" 0
 check "no ✗ row after an interrupted retry" "$(count_all '✗')" 0
 check "the busy segment is gone" "$(count_vis 'retrying')" 0
 check_frame_intact "after the interrupted retry" 120
@@ -79,7 +76,7 @@ key Enter
 wait_all '✗ Request rejected (400' || bad "the non-retryable error never painted its block"
 settle || bad "frame never settled after the error"
 check_once "a non-retryable error is ONE ✗ block" '✗ Request rejected (400 Bad Request)'
-if [ "$(red_cells)" -gt 0 ]; then
+if [ "$(red_rows)" -gt 0 ]; then
     ok "…painted red (the assertions above were live)"
 else
     bad "the error block carries no red SGR — the no-red assertions above prove nothing"

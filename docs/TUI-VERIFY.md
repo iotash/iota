@@ -619,9 +619,10 @@ the cut's red block after it.
       the thought, and the session log does not record the turn.
 - [x] 自动化：scenario 31 **8e.2 Cut mid-arguments.** A `shell` call whose arguments stop half-way:
       the composing `[shell …]` row comes up, then is torn down without settling into a header; the
-      block names the dropped call (`… was dropped (shell)`); the call never runs — no `tool_result`
-      reaches the wire, its command's file is not there — while the same call made whole (the
-      control) does run; the frame is intact and the next request holds only the control's call.
+      block names the dropped call (`… was dropped (shell)`); the call is not dispatched — no
+      `tool_result` answers it on the wire and the next request holds only the control's call —
+      while the same call made whole (the control) does run; the frame is intact. No marker file
+      appears either, but that is no proof by itself: half the arguments never make a `command`.
 
 ## 9. Windows Terminal — NOT YET RUN
 

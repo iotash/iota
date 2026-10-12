@@ -13,20 +13,17 @@
 # request after the cut carries neither the question nor the thought.
 #
 # A: the CONTROL first — an ordinary turn that ends (a sealed thought, then `echo: hello`) leaves no red
-#    cell and no `✗`. B's red block is what proves A's zero was a live reading, not a detector that never
-#    fires (22-retry.sh's `RED_SGR` and its 400 control, the other way round).
+#    row and no `✗`. B's red block is what proves A's zero was a live reading, not a detector that never
+#    fires (22-retry.sh's 400 control, the other way round; lib.sh `red_rows`, after `check_red_detector`).
 # B: the cut. C: the next message — answered, and its request clean.
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
 
 command -v curl >/dev/null 2>&1 || { bad "curl not found (the mock's request log is read with it)"; finish; }
 
-ESC="$(printf '\033')"
-# A red foreground as `capture-pane -e` re-encodes it (see 22-retry.sh): SGR 31 comes back as `38;5;1`.
-RED_SGR="${ESC}\\[([0-9;]*;)?(31|91|38;5;1|38;5;9)m"
-red_cells() { tm capture-pane -e -pt s -S -400 2>/dev/null | LC_ALL=C grep -acE -- "$RED_SGR" | tr -d ' '; }
-# The rows that carry `$1` AND a red SGR.
-red_rows_with() { tm capture-pane -e -pt s -S -400 2>/dev/null | LC_ALL=C grep -aF -- "$1" | LC_ALL=C grep -acE -- "$RED_SGR" | tr -d ' '; }
+# Red is read by lib.sh's `red_rows`/`red_rows_with` (SGR parameters walked, so the extended colour
+# `38;5;31` is not red), and the detector is judged on known bytes — red and look-alikes — first.
+check_red_detector
 
 # The mock's request log: every `/v1/messages` body so far, one per line.
 wire() { curl -s "http://127.0.0.1:$IOTA_PORT/v1/messages/log"; }
@@ -43,7 +40,7 @@ key Enter
 wait_all 'echo: hello' || bad "the control turn never answered"
 settle || bad "frame never settled after the control turn"
 check_once "the control turn's answer landed once" 'echo: hello'
-check "the control turn left no red cell" "$(red_cells)" 0
+check "the control turn left no red row" "$(red_rows)" 0
 check "…and no ✗ row" "$(count_all '✗')" 0
 check_frame_intact "after the control turn" 120
 
@@ -56,15 +53,15 @@ wait_all '✗ Output truncated' || bad "the cut never painted its block"
 settle || bad "frame never settled after the cut"
 check_once "the cut is ONE ✗ Output truncated block" '✗ Output truncated'
 check_once "…its detail names the stop and the ceiling" 'stop_reason: max_tokens: the output hit its 32000-token limit'
-check_once "…its hint says what the session runs under" 'This session runs under the built-in default ceiling.'
+check_once "…its hint opens with what the session runs under" 'This session runs under the built-in default ceiling.'
 check "…the headline row is painted red" "$(red_rows_with '✗ Output truncated')" 1
-if [ "$(red_cells)" -gt 0 ]; then
+if [ "$(red_rows)" -gt 0 ]; then
     ok "the red detector fires on the cut (A's zero was live)"
 else
     bad "the cut's block carries no red SGR — the no-red reading in A proves nothing"
 fi
 check "not one row of the half-thought is printed" "$(count_all 'halfthought')" 0
-check "no answer row follows the question" "$(count_all 'echo: thinkcut')" 0
+check "no echo: answer row follows the question" "$(count_all 'echo: thinkcut')" 0
 # The widget wound down: the transient label and its meter are gone, the thought settled into its marker.
 check "the Thinking widget is gone from the pane" "$(count_vis 'Thinking')" 0
 check "…and its meter with it" "$(count_vis 'ESC to cancel')" 0
@@ -89,7 +86,7 @@ fi
 check "…it carries no half-thought" "$(printf '%s' "$next" | grep -cF 'halfthought' | tr -d ' ')" 0
 check "…nor the rolled-back question" "$(printf '%s' "$next" | grep -cF 'thinkcut' | tr -d ' ')" 0
 check "…but the control turn is still history" "$(printf '%s' "$next" | grep -cF '"text":"echo: hello"' | tr -d ' ')" 1
-check "the cut reached the wire once (not retried, not replayed by a later turn)" "$(wire | grep -F '"tools":[' | grep -cF 'thinkcut' | tr -d ' ')" 1
+check "the cut reached the wire once (not retried, not replayed by the next turn)" "$(wire | grep -F '"tools":[' | grep -cF 'thinkcut' | tr -d ' ')" 1
 # The session log on disk: the rolled-back turn is not recorded either.
 sess="$(cat "$SCEN_HOME"/.iota/sessions/*/messages.jsonl 2>/dev/null)"
 if [ -n "$sess" ]; then
@@ -99,7 +96,7 @@ if [ -n "$sess" ]; then
 else
     bad "no session log under $SCEN_HOME/.iota/sessions"
 fi
-check "one red block in the whole run" "$(red_rows_with '✗')" 1
+check "one red ✗ row in the whole run" "$(red_rows_with '✗')" 1
 check_frame_intact "after the next turn" 120
 
 finish
