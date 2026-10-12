@@ -273,6 +273,62 @@ async fn a_stall_with_nothing_to_keep_rolls_the_turn_back() {
     assert_eq!(fx.printed_count("the reply may be incomplete"), 0);
 }
 
+/// The GLM bug (X-69, X-70): the output ceiling cuts the model off mid-THOUGHT — no text at all. The draft is not
+/// promoted to the answer: the turn is an error naming the ceiling and the knob, it is not retried, and with
+/// nothing to keep it rolls back — so the next request carries neither the question nor the half-thought as
+/// something the assistant said.
+#[tokio::test]
+async fn a_thought_cut_off_by_the_ceiling_is_never_the_answer() {
+    let log = Log::default();
+    let provider = FakeProvider::new()
+        .with_tools()
+        .round(Round::cut_off(
+            "The user is leaning toward option 1. This needs flagging as a",
+            "",
+        ))
+        .replying("ok")
+        .with_log(log.clone());
+    let fx = Fixture::new(vec![input("geo dns?"), input("next"), Reply::Closed]);
+    fx.run(provider, None, &[]).await;
+
+    assert_eq!(
+        log.calls(),
+        2,
+        "the cut is not retried: {:?}",
+        log.prompts()
+    );
+    let second: Vec<_> = log.send(1).iter().map(shape).collect();
+    assert!(
+        !second
+            .iter()
+            .any(|(_, content, _)| content.contains("flagging as a")),
+        "the half-thought leaked into the history: {second:#?}"
+    );
+    assert!(
+        !second.iter().any(|(_, content, _)| content == "geo dns?"),
+        "nothing was kept, so the turn rolled back: {second:#?}"
+    );
+    assert_eq!(
+        fx.printed_count("Output truncated"),
+        1,
+        "{:#?}",
+        fx.printed()
+    );
+    assert_eq!(fx.printed_count("32000-token limit"), 1);
+    assert_eq!(
+        fx.printed_count("This session runs under the built-in default ceiling."),
+        1,
+        "nothing set the ceiling, and the hint says so: {:#?}",
+        fx.printed()
+    );
+    assert_eq!(
+        fx.printed_count("flagging as a"),
+        0,
+        "the thought must not be printed as an answer: {:#?}",
+        fx.printed()
+    );
+}
+
 /// One `anthropic` provider `a`; `ma` declares `model` (if any), the `default` agent runs `ma` and declares
 /// `agent` (if any). `mb` on the same provider is a second model to switch through.
 fn ceiling_config(agent: Option<u32>, model: Option<u32>) -> String {
