@@ -296,6 +296,87 @@ async fn a_truncated_reasoning_only_round_fails_the_run() {
     assert!(matches!(err, ChatError::Truncated(_)), "{err:?}");
 }
 
+/// The responses dialect's cut (X-72) fails a headless run the same way, on both entries: the tool loop's
+/// stream (`response.incomplete` event) and the unary body (`incomplete_details`) — one request each, the
+/// fragment never the reply, nothing appended.
+#[tokio::test]
+async fn a_responses_cut_fails_the_run_on_the_stream_and_the_unary_entry() {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+    const CUT: &str = concat!(
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"half an ans\"}\n\n",
+        "data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",",
+        "\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n",
+    );
+    const WANT: &str =
+        "output truncated — response.incomplete: max_output_tokens: the output hit its token limit";
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(CUT, "text/event-stream"))
+        .mount(&server)
+        .await;
+    let tp = iota::provider::openresponses::OpenResponsesProvider::new(
+        "k",
+        &server.uri(),
+        "gpt-x",
+        None,
+        reqwest::Client::new(),
+    );
+    let dispatch: Arc<StaticDispatcher> = Arc::new(StaticDispatcher::new(&["noop"]));
+    let mut history = vec![Message::user("go")];
+    let err = execute_with_tools(
+        TurnParams {
+            cx: &RunCtx::default(),
+            tp: &tp,
+            dispatch: dispatch.clone(),
+            tools: dispatch.tools(),
+            harness: "",
+            overlay: "",
+            max_turns: None,
+        },
+        &mut history,
+        &mut QuietHost::new(),
+    )
+    .await
+    .expect_err("a cut stream is not a reply");
+    assert_eq!(err.to_string(), WANT);
+    assert_eq!(history, vec![Message::user("go")], "nothing was appended");
+    assert_eq!(server.received_requests().await.expect("requests").len(), 1);
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "half an ans"}]}]
+        })))
+        .mount(&server)
+        .await;
+    let p = iota::provider::openresponses::OpenResponsesProvider::new(
+        "k",
+        &server.uri(),
+        "gpt-x",
+        None,
+        reqwest::Client::new(),
+    );
+    let err = run_once(
+        &RunCtx::default(),
+        &p,
+        &RunRequest {
+            message: "go".to_owned(),
+            ..RunRequest::default()
+        },
+        Arc::new(StaticDispatcher::new(&[])),
+        None,
+        &mut QuietHost::new(),
+        None,
+    )
+    .await
+    .expect_err("a cut unary body is not a reply");
+    assert_eq!(err.to_string(), WANT);
+    assert_eq!(server.received_requests().await.expect("requests").len(), 1);
+}
+
 // New (chat.go:112 `saveImagesQuiet(tp)` after the loop): only the TERMINATING round's images are saved.
 #[tokio::test]
 async fn tool_loop_final_round_images_are_saved() {

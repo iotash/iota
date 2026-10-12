@@ -12,16 +12,16 @@ use crate::provider::sink::{ReasoningGate, StreamSink};
 use crate::provider::usage::Usage;
 use crate::provider::{
     ChatResult, HttpTransport, ImageTunable, Provider, ProviderKind, RoundResult, ToolProvider,
-    ToolSearchHost, ToolSearcher, TopPTunable, Tunable,
+    ToolSearchHost, ToolSearcher, TopPTunable, Truncation, Tunable,
 };
 use reqwest::header::AUTHORIZATION;
 use tokio_util::sync::CancellationToken;
 
 use crate::llm::error::LlmError;
 use crate::llm::responses::{
-    InputItem, ItemKind, RespBuiltinTool, RespContent, RespEvent, RespFunctionCall,
-    RespFunctionCallOutput, RespMsg, RespOutputItem, RespPart, RespReasoning, RespRequest,
-    RespTool, RespToolSearch, RespToolSearchOutput, Responses, ToolEntry,
+    InputItem, ItemKind, MAX_OUTPUT_TOKENS, RespBuiltinTool, RespContent, RespEvent,
+    RespFunctionCall, RespFunctionCallOutput, RespMsg, RespOutputItem, RespPart, RespReasoning,
+    RespRequest, RespTool, RespToolSearch, RespToolSearchOutput, Responses, ToolEntry,
 };
 use crate::provider::common::{
     HasCore, OPENAI_DEFAULT_BASE_URL, ProviderCore, b64, b64_decode, credential_header, data_url,
@@ -59,6 +59,16 @@ pub struct OpenResponsesProvider {
 struct FnCallAcc {
     name: String,
     args: String,
+}
+
+/// The cut of a response the output ceiling stopped (DIVERGENCES X-72). No ceiling is sent on this dialect, so
+/// the limit is the endpoint's own and unknown; `dropped` names the calls the round was composing.
+fn cut_off(dropped_tools: Vec<String>) -> Truncation {
+    Truncation {
+        reason: format!("response.incomplete: {MAX_OUTPUT_TOKENS}"),
+        limit: None,
+        dropped_tools,
+    }
 }
 
 /// A `tool_search_call` this leg produced, to be answered client-side before the next leg.
@@ -295,12 +305,15 @@ impl OpenResponsesProvider {
         // item_id → function name, learned from `output_item.added` (the name arrives ONCE,
         // before any argument delta) so the composing observer can name each fragment.
         let mut item_names: HashMap<String, String> = HashMap::new();
+        // Every function call announced, in order — what a cut drops, by name.
+        let mut announced: Vec<String> = Vec::new();
         let mut fn_calls: HashMap<String, FnCallAcc> = HashMap::new();
         let mut fn_call_order: Vec<String> = Vec::new();
         let mut raw_items: Vec<Raw> = Vec::new();
         let mut images: Vec<Attachment> = Vec::new();
         let mut usage: Option<Usage> = None;
         let mut stream_err: Option<LlmError> = None;
+        let mut cut = false;
 
         for _leg in 0..MAX_SEARCH_LEGS {
             let mut leg_searches: Vec<SearchCall> = Vec::new();
@@ -354,6 +367,7 @@ impl OpenResponsesProvider {
                             // first delta leaves the gap this event exists to close
                             // (openresponses.go:341-351).
                             gate.tool_delta(Some(&name), COMPOSING_TICK);
+                            announced.push(name.clone());
                             item_names.insert(added.id.unwrap_or_default(), name);
                         }
                     }
@@ -385,6 +399,14 @@ impl OpenResponsesProvider {
                             usage = Some(openai_usage(u));
                         }
                     }
+                    RespEvent::CutOff(response) => {
+                        // The ceiling stopped the response: terminal, and what it billed is still the round's
+                        // cost (X-72).
+                        cut = true;
+                        if let Some(u) = response.as_ref().and_then(|r| r.usage.as_ref()) {
+                            usage = Some(openai_usage(u));
+                        }
+                    }
                     RespEvent::Other => {}
                 }
             }
@@ -392,7 +414,7 @@ impl OpenResponsesProvider {
             let Some(searcher) = self.searcher.as_ref() else {
                 break;
             };
-            if leg_searches.is_empty() || stream_err.is_some() {
+            if leg_searches.is_empty() || stream_err.is_some() || cut {
                 break;
             }
             // Replay EVERYTHING this leg produced, in arrival order: gpt-5.x pairs its reasoning items with the
@@ -444,6 +466,35 @@ impl OpenResponsesProvider {
                 error = %err,
                 "responses stream failed after content had arrived; keeping the partial round"
             );
+        }
+
+        if cut {
+            // A round the ceiling cut off is reported as such, never passed off as finished — nor as a failure
+            // to retry (the same request hits the same ceiling). Its function calls cannot run: they are
+            // dropped, by name, in the truncation (X-69, X-72).
+            // A gateway that skips `output_item.added` still names the call when it completes: a completed
+            // call no announcement accounts for is added.
+            let mut unclaimed = announced.clone();
+            let mut dropped = announced;
+            for acc in fn_call_order.iter().filter_map(|id| fn_calls.get(id)) {
+                match unclaimed.iter().position(|n| *n == acc.name) {
+                    Some(i) => {
+                        unclaimed.remove(i);
+                    }
+                    None => dropped.push(acc.name.clone()),
+                }
+            }
+            let raw_content = (!images.is_empty() && !raw_items.is_empty())
+                .then_some(RawContent::OpenResponses(raw_items));
+            return Ok(RoundResult {
+                content,
+                reasoning,
+                tool_calls: Vec::new(),
+                usage,
+                raw_content,
+                images,
+                truncated: Some(cut_off(dropped)),
+            });
         }
 
         if fn_calls.is_empty() {
@@ -658,7 +709,8 @@ impl Provider for OpenResponsesProvider {
                 text,
                 usage: resp.usage.as_ref().map(openai_usage),
                 images,
-                truncated: None,
+                // An incomplete body the ceiling cut off is a cut, as on the stream (X-72).
+                truncated: resp.cut_off().then(|| cut_off(Vec::new())),
             })
         })
     }

@@ -436,6 +436,130 @@ data: {"type":"response.completed","response":{"status":"completed","usage":{"in
     assert_eq!((usage.input, usage.output, usage.total), (650, 25, 675));
     assert_eq!(usage.cache_read, 0);
 }
+/// A response the ceiling cut off mid-reply, mid-thought or mid-arguments: `response.incomplete` with
+/// `incomplete_details.reason: max_output_tokens` and the usage the cut billed.
+fn cut_off_sse(before: &str) -> String {
+    format!(
+        "data: {{\"type\":\"response.created\",\"response\":{{\"status\":\"in_progress\"}}}}\n\n{before}\
+         event: response.incomplete\ndata: {{\"type\":\"response.incomplete\",\"response\":{{\"status\":\"incomplete\",\
+         \"incomplete_details\":{{\"reason\":\"max_output_tokens\"}},\
+         \"usage\":{{\"input_tokens\":9,\"output_tokens\":512,\"total_tokens\":521}}}}}}\n\n"
+    )
+}
+
+/// A cut the ceiling made is no failure but a truncation (X-72): the text that streamed comes back with it,
+/// with the cost the cut billed — the same contract as the anthropic dialect's `max_tokens` (X-69).
+#[tokio::test]
+async fn a_round_cut_off_at_max_output_tokens_reports_the_truncation() {
+    let srv = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            cut_off_sse(
+                "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"weighing it\"}\n\n\
+                 data: {\"type\":\"response.output_text.delta\",\"delta\":\"Cloudflare has no\"}\n\n",
+            ),
+            "text/event-stream",
+        ))
+        .mount(&srv)
+        .await;
+    let p = provider(&srv, "m");
+
+    let (out, _sink) = round(&p, &[Message::user("q")], &[]).await;
+    let cut = out.truncated.expect("the cut is reported");
+    assert_eq!(cut.reason, "response.incomplete: max_output_tokens");
+    assert_eq!(cut.limit, None, "no ceiling is sent on this dialect");
+    assert!(cut.dropped_tools.is_empty());
+    assert_eq!(
+        cut.to_string(),
+        "response.incomplete: max_output_tokens: the output hit its token limit"
+    );
+    assert_eq!(out.content, "Cloudflare has no");
+    assert_eq!(out.reasoning, "weighing it");
+    assert!(out.tool_calls.is_empty());
+    let usage = out.usage.expect("the cut's usage");
+    assert_eq!((usage.input, usage.output), (9, 512));
+
+    // Nothing streamed before the cut: still a truncation, never the bare wire error it used to be.
+    let srv = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(cut_off_sse(""), "text/event-stream"))
+        .mount(&srv)
+        .await;
+    let (out, _sink) = round(&provider(&srv, "m"), &[Message::user("q")], &[]).await;
+    assert!(out.truncated.is_some());
+    assert_eq!(out.content, "");
+}
+
+/// A tool call the ceiling cut — mid-arguments, or completed beside it — never runs: it is dropped, by name.
+#[tokio::test]
+async fn a_tool_call_cut_off_at_max_output_tokens_is_dropped_by_name() {
+    let srv = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            cut_off_sse(concat!(
+                "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"read_file\",\"arguments\":\"\"}}\n\n",
+                "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"{\\\"path\\\":\\\"a\\\"}\"}\n\n",
+                "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"a\\\"}\"}}\n\n",
+                "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_2\",\"type\":\"function_call\",\"call_id\":\"call_2\",\"name\":\"write_file\",\"arguments\":\"\"}}\n\n",
+                "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_2\",\"delta\":\"{\\\"path\\\":\"}\n\n",
+            )),
+            "text/event-stream",
+        ))
+        .mount(&srv)
+        .await;
+    let p = provider(&srv, "m");
+    let tools = [
+        ToolDef {
+            name: "read_file".to_owned(),
+            input_schema: Some(object_schema()),
+            ..ToolDef::default()
+        },
+        ToolDef {
+            name: "write_file".to_owned(),
+            input_schema: Some(object_schema()),
+            ..ToolDef::default()
+        },
+    ];
+
+    let (out, _sink) = round(&p, &[Message::user("q")], &tools).await;
+    assert!(out.tool_calls.is_empty(), "a cut round runs no call");
+    assert_eq!(
+        out.truncated.expect("the cut").dropped_tools,
+        vec!["read_file".to_owned(), "write_file".to_owned()]
+    );
+}
+
+/// The unary body the ceiling cut off is a truncation too (X-72): its text and cost come back with the cut.
+#[tokio::test]
+async fn a_unary_response_cut_off_at_max_output_tokens_reports_the_truncation() {
+    let srv = MockServer::start().await;
+    mock_json(
+        &srv,
+        "POST",
+        "/responses",
+        json!({
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "output": [{"id": "msg_1", "type": "message", "content": [{"type": "output_text", "text": "half a summ"}]}],
+            "usage": {"input_tokens": 3, "output_tokens": 64, "total_tokens": 67}
+        }),
+    )
+    .await;
+    let p = provider(&srv, "m");
+
+    let cancel = CancellationToken::new();
+    let out = p.chat(&cancel, &[Message::user("q")]).await.unwrap();
+    assert_eq!(out.text, "half a summ");
+    assert_eq!(
+        out.truncated.map(|t| t.reason),
+        Some("response.incomplete: max_output_tokens".to_owned())
+    );
+    assert_eq!(out.usage.map(|u| u.output), Some(64));
+}
+
 #[tokio::test]
 async fn the_terminal_events_map_to_their_errors() {
     let cases: [(&str, &str, &[&str], &str); 3] = [
@@ -445,11 +569,12 @@ async fn the_terminal_events_map_to_their_errors() {
             &["response.failed", "model exploded", "server_error"],
             "server_error",
         ),
+        // Every incomplete reason but the ceiling's stays a failure; that one is a cut (X-72, below).
         (
             "response.incomplete",
-            "event: response.incomplete\ndata: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n",
-            &["response.incomplete", "max_output_tokens"],
-            "max_output_tokens",
+            "event: response.incomplete\ndata: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"content_filter\"}}}\n\n",
+            &["response.incomplete", "content_filter"],
+            "content_filter",
         ),
         (
             "error event",

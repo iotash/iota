@@ -661,6 +661,37 @@ mod tests {
         assert!(matches!(e, super::CompactError::Truncated(_)), "{e:?}");
     }
 
+    /// The responses dialect's unary cut fails the pass the same way (X-72): `incomplete_details` names the
+    /// ceiling, and the fragment never replaces the history.
+    #[tokio::test]
+    async fn a_responses_summary_cut_off_is_an_error() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "FORBIDDEN PARTIAL SUMMARY"}]}]
+            })))
+            .mount(&server)
+            .await;
+        let p = crate::provider::openresponses::OpenResponsesProvider::new(
+            "k",
+            &server.uri(),
+            "m",
+            None,
+            reqwest::Client::new(),
+        );
+        let e = compact_history(&CancellationToken::new(), &p, &history(), "", None)
+            .await
+            .expect_err("a cut summary must fail");
+        assert!(matches!(e, super::CompactError::Truncated(_)), "{e:?}");
+        assert_eq!(
+            e.to_string(),
+            "summary response.incomplete: max_output_tokens: the output hit its token limit"
+        );
+    }
+
     /// A summary the output ceiling cut off is a failed pass too (X-69): a fragment must not replace
     /// the history it was summarising.
     #[tokio::test]

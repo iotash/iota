@@ -50,7 +50,13 @@ pub fn describe_error(e: &ChatError) -> ErrorReport {
         ChatError::Truncated(t) => ErrorReport {
             headline: "Output truncated".to_owned(),
             detail: vec![t.to_string()],
-            hint: TRUNCATED_HINT.to_owned(),
+            // A ceiling the request carried is the user's knob; without one the endpoint's own limit cut it.
+            hint: if t.limit.is_some() {
+                TRUNCATED_HINT
+            } else {
+                TRUNCATED_UNSENT_HINT
+            }
+            .to_owned(),
         },
         other => ErrorReport::request_failed(other),
     }
@@ -58,6 +64,10 @@ pub fn describe_error(e: &ChatError) -> ErrorReport {
 
 /// What a user can do about an output the ceiling cut off: raise the ceiling, or think less.
 const TRUNCATED_HINT: &str = "Raise max_tokens: on this model's config entry (thinking counts toward it), or lower its effort in /model";
+
+/// The same cut where the request carried no ceiling (the responses dialect, X-72): the endpoint's own limit
+/// cannot be raised from here, so the hint names only what can be lowered.
+const TRUNCATED_UNSENT_HINT: &str = "The endpoint's own output limit cut it: lower the model's effort in /model, or ask for a shorter reply";
 
 /// What a user can do about a stalled stream. It names no setting on purpose: the idle bound is a
 /// constant (`client::STREAM_IDLE_TIMEOUT`), not a knob (decided 2026-10-01).
@@ -307,6 +317,18 @@ mod tests {
                 headline: "Output truncated",
                 detail: "stop_reason: max_tokens: the output hit its 32000-token limit".to_owned(),
                 hint: "Raise max_tokens: on this model's config entry (thinking counts toward it), or lower its effort in /model",
+            },
+            Case {
+                name: "a cut with no ceiling sent names only what can be lowered",
+                err: ChatError::Truncated(crate::provider::Truncation {
+                    reason: "response.incomplete: max_output_tokens".to_owned(),
+                    limit: None,
+                    dropped_tools: Vec::new(),
+                }),
+                headline: "Output truncated",
+                detail: "response.incomplete: max_output_tokens: the output hit its token limit"
+                    .to_owned(),
+                hint: "The endpoint's own output limit cut it: lower the model's effort in /model, or ask for a shorter reply",
             },
             Case {
                 name: "plain error",
