@@ -27,6 +27,11 @@ pub fn warn_if_session_agent_is_gone(
     ));
 }
 
+/// A bundle's `max_tokens: 0` (only a hand edit writes one): ignored as though the key were absent, so the
+/// ceiling startup installed stands — on this endpoint, and on the one a move evaluates.
+const INVALID_MAX_TOKENS: &str =
+    "Warning: session max_tokens 0 is not valid (want 1 or more); keeping the current setting";
+
 /// What the caller already fixed from flags or config; a resumed session's stored value yields to each
 /// (root.go:317-331: explicit flags win).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -96,6 +101,24 @@ pub fn apply_session_tuning(
     overrides: &Overrides,
     warn: &mut dyn FnMut(String),
 ) -> Option<u64> {
+    let window = replay_tuning(meta, provider, on, *overrides, warn);
+    // A hand-edited `max_tokens: 0` is reported once, here, on either branch and whatever the dialect can
+    // do with a ceiling: the record is ignored all the same, and the settled meta drops it. A bot replays
+    // nothing of the kind, so it is not told about it.
+    if !overrides.config_wins && meta.invalid_max_tokens() {
+        warn(INVALID_MAX_TOKENS.to_owned());
+    }
+    window
+}
+
+/// [`apply_session_tuning`]'s replay, without the one warning that does not depend on its branch.
+fn replay_tuning(
+    meta: &SessionMeta,
+    provider: &mut dyn Provider,
+    on: &str,
+    overrides: Overrides,
+    warn: &mut dyn FnMut(String),
+) -> Option<u64> {
     if !meta.recorded_on(on, provider.kind()) {
         if !overrides.config_wins {
             warn(format!(
@@ -142,9 +165,10 @@ pub fn apply_session_tuning(
     if !overrides.config_wins
         && let Some(tunable) = provider.as_max_tokens_tunable()
     {
+        // An invalid record is neither (`records_max_tokens`/`recorded_max_tokens`): nothing is set.
         if meta.records_max_tokens() {
-            tunable.set_max_tokens(meta.max_tokens);
-        } else if let Some(n) = meta.max_tokens {
+            tunable.set_max_tokens(meta.recorded_max_tokens());
+        } else if let Some(n) = meta.recorded_max_tokens() {
             tunable.set_max_tokens(Some(n));
         }
     }

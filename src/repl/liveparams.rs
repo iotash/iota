@@ -25,6 +25,15 @@ pub(crate) fn current(repl: &mut Repl) -> LayeredParams {
     )
 }
 
+/// What a truncation's hint may say about the output ceiling: the session's recorded source, and whether
+/// the loaded `agents:` entry declares the key.
+pub(crate) fn ceiling(repl: &Repl) -> crate::repl::errors::Ceiling {
+    crate::repl::errors::Ceiling {
+        source: repl.conv.param_sources.max_tokens.unwrap_or_default(),
+        agent_declares: repl.conv.layers.agent().max_tokens.is_some(),
+    }
+}
+
 /// What `provider` runs under, with the budget's `window`, each value tagged with where it came from.
 fn read(provider: &mut dyn Provider, window: u64, sources: ParamSources) -> LayeredParams {
     let (effort, temperature) = provider.as_tunable().map_or_else(

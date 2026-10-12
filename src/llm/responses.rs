@@ -185,7 +185,7 @@ pub(crate) struct RespToolSearchOutput {
     pub(crate) status: &'static str,
     /// Always `"client"`.
     pub(crate) execution: &'static str,
-    /// The found tools; NO skip: `[]` when empty (Go null; POLICY 5 `"tools":null` → emit `[]`).
+    /// The found tools; NO skip: `[]` when empty, where Go sent `"tools":null`.
     pub(crate) tools: Vec<RespTool>,
 }
 

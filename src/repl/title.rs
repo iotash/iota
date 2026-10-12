@@ -306,9 +306,10 @@ pub(crate) fn status_model_label(model: &str, provider_type: &str) -> String {
     }
 }
 
-/// Asks the model for a title of `first_user` (chat/chat.go:175-183). A failed or empty
-/// pass returns `""`, which [`SessionTitle::land`] drops — the placeholder is a complete
-/// fallback on its own and there is no retry.
+/// Asks the model for a title of `first_user` (chat/chat.go:175-183). A failed, empty or
+/// TRUNCATED pass returns `""`, which [`SessionTitle::land`] drops — the placeholder is a
+/// complete fallback on its own and there is no retry. A cut-off answer is not a title,
+/// however much text it carries (X-69).
 pub(crate) async fn generate_title_text(
     cancel: &CancellationToken,
     provider: &dyn Provider,
@@ -319,8 +320,8 @@ pub(crate) async fn generate_title_text(
         truncate_runes(first_user, PROMPT_CAP)
     );
     match provider.chat(cancel, &[Message::user(prompt)]).await {
-        Ok(r) => sanitize_title(&r.text),
-        Err(_) => String::new(),
+        Ok(r) if r.truncated.is_none() => sanitize_title(&r.text),
+        Ok(_) | Err(_) => String::new(),
     }
 }
 
@@ -468,6 +469,30 @@ mod tests {
         let (_, generation) = p.titler.seed(&user_turn("a question")).expect("seeded");
         p.titler.land(generation, "");
         assert_eq!(p.name(), "a question");
+    }
+
+    // A title pass the output ceiling cut off (X-69) is no title, however much text it
+    // carries: the pass yields "" and the placeholder stands. A pass that ended lands as before.
+    #[tokio::test]
+    async fn a_truncated_title_pass_keeps_the_placeholder() {
+        use crate::repl::title::generate_title_text;
+        use crate::testing::{FakeProvider, Round};
+        use tokio_util::sync::CancellationToken;
+
+        let cancel = CancellationToken::new();
+        let p = Probe::new(false);
+        let (first_user, generation) = p.titler.seed(&user_turn("a question")).expect("seeded");
+        let cut = FakeProvider::new().round(Round::cut_off("", "Profiling Go allocations and"));
+        let name = generate_title_text(&cancel, &cut, &first_user).await;
+        assert_eq!(name, "", "a cut-off pass produced a title");
+        p.titler.land(generation, &name);
+        assert_eq!(p.name(), "a question", "the placeholder must stand");
+        assert_eq!(p.last_window(), "a question");
+
+        let ok = FakeProvider::new().round(Round::reply("Profiling Go allocations"));
+        let name = generate_title_text(&cancel, &ok, &first_user).await;
+        p.titler.land(generation, &name);
+        assert_eq!(p.name(), "Profiling Go allocations");
     }
 
     // A resumed bundle
