@@ -767,22 +767,35 @@ async fn a_command_during_the_title_pass_keeps_it() {
 }
 
 /// The responses dialect's cut (X-72) takes the anthropic one's path end to end: shown as `Output truncated` with
-/// the hint for a ceiling iota never sent, NOT retried — with or without tools advertised — and the text that
-/// arrived before it is kept, marked cut short, never passed off as the answer.
+/// the hint for a ceiling iota never sent, NOT retried — with or without tools advertised, with or without text
+/// before the cut — and the text that arrived before it is kept, marked cut short, never passed off as the
+/// answer. Before X-72 a cut with nothing before it was a retryable failure (11 calls with tools, 121
+/// without), and one after text was silently the answer.
 #[tokio::test]
 async fn a_responses_cut_is_shown_once_and_never_retried() {
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
+    const TEXT: &str =
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Cloudflare has no\"}\n\n";
     const CUT: &str = concat!(
-        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Cloudflare has no\"}\n\n",
         "data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",",
         "\"incomplete_details\":{\"reason\":\"max_output_tokens\"},",
         "\"usage\":{\"input_tokens\":9,\"output_tokens\":512}}}\n\n",
     );
-    for tools in [&[][..], &["read_file"][..]] {
+    for (tools, text) in [
+        (&[][..], true),
+        (&["read_file"][..], true),
+        (&[][..], false),
+        (&["read_file"][..], false),
+    ] {
+        let body = if text {
+            format!("{TEXT}{CUT}")
+        } else {
+            CUT.to_owned()
+        };
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_raw(CUT, "text/event-stream"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
             .mount(&server)
             .await;
         let provider = iota::provider::openresponses::OpenResponsesProvider::new(
@@ -796,7 +809,11 @@ async fn a_responses_cut_is_shown_once_and_never_retried() {
         fx.run_on(Box::new(provider), None, tools, None).await;
 
         let requests = server.received_requests().await.expect("requests");
-        assert_eq!(requests.len(), 1, "tools {tools:?}: the cut is not retried");
+        assert_eq!(
+            requests.len(),
+            1,
+            "tools {tools:?}, text {text}: the cut is not retried"
+        );
         assert_eq!(
             fx.printed_count("Output truncated"),
             1,
@@ -821,8 +838,8 @@ async fn a_responses_cut_is_shown_once_and_never_retried() {
         assert_eq!(fx.printed_count("retrying"), 0);
         assert_eq!(
             fx.printed_count("What arrived before the cut-off is kept"),
-            1,
-            "tools {tools:?}: {:#?}",
+            usize::from(text),
+            "tools {tools:?}, text {text}: {:#?}",
             fx.printed()
         );
     }
