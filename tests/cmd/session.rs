@@ -20,8 +20,8 @@ use iota::cmd::Declared;
 use iota::provider::ProviderKind;
 use iota::provider::model::{RawContent, Role};
 use iota::session::{
-    BotPointer, Param, ParamSources, SESSION_SCHEMA_VERSION, SessionMeta, SessionRecord,
-    SessionStore, SessionToolCall,
+    BotPointer, Param, ParamSource, ParamSources, SESSION_SCHEMA_VERSION, SessionMeta,
+    SessionRecord, SessionStore, SessionToolCall,
 };
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
@@ -477,9 +477,11 @@ fn write_two_endpoints(cwd: &Path, url: &str) {
 }
 
 /// `-M` onto ANOTHER provider moves the session there, and the move is ONE write: the bundle names `g2` AND
-/// records what the session runs under on `g2` — the `fl` entry's temperature, no effort — with their sources,
-/// not `p`'s `0.7`/`high`. So a second resume, with no flag, runs on `g2` exactly as the first did: nothing
-/// of the old endpoint comes back. And a run whose turn FAILS moves nothing (D-43).
+/// records what the session runs under on `g2`, with the sources — evaluated as a `/model` move evaluates
+/// the chat. The user's `0.7` yields to the `fl` entry's declared `0.2`; the user's `high`, which `g2`'s
+/// config says nothing about, comes along; the `top_p` and the window `p`'s config supplied stay behind.
+/// So a second resume, with no flag, runs on `g2` exactly as the first did. And a run whose turn FAILS
+/// moves nothing (D-43).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resume_with_another_provider_moves_the_session_there() {
     let server = MockServer::start().await;
@@ -498,6 +500,14 @@ async fn resume_with_another_provider_moves_the_session_there() {
     let mut meta = SessionMeta::read(&bundle).expect("meta");
     meta.temperature = Some(0.7);
     "high".clone_into(&mut meta.effort);
+    meta.top_p = Some(0.9);
+    meta.context_window = 64_000;
+    meta.param_sources = Some(ParamSources {
+        context_window: ParamSource::Config,
+        effort: ParamSource::User,
+        temperature: ParamSource::User,
+        top_p: ParamSource::Config,
+    });
     meta.write(&bundle).expect("meta");
     write_two_endpoints(cwd.path(), &server.uri());
     let read_meta = || -> serde_json::Value {
@@ -518,19 +528,30 @@ async fn resume_with_another_provider_moves_the_session_there() {
     assert_eq!(
         err(&o),
         format!(
-            "Warning: session was recorded on p:gemini-2.5-pro; this run is on g2:gemini-flash-latest — its model and tuning are not replayed\nResumed session {id} (2 messages)\n"
+            "Warning: session was recorded on p:gemini-2.5-pro; this run is on g2:gemini-flash-latest — its model is not replayed, and of its tuning only what was set by hand carries over, unless this run's config sets it\nResumed session {id} (2 messages)\n"
         )
     );
     let meta = read_meta();
     assert_eq!(meta["v"], 2);
     assert_eq!(meta["provider"], "g2");
     assert_eq!(meta["model"], "gemini-flash-latest");
-    assert_eq!(meta["temperature"], 0.2, "what runs on g2, not p's 0.7");
-    assert!(
-        meta.get("effort").is_none(),
-        "p's `high` did not survive: {meta}"
+    assert_eq!(
+        meta["temperature"], 0.2,
+        "g2's declaration outranks the 0.7"
     );
     assert_eq!(meta["param_sources"]["temperature"], "config");
+    assert_eq!(meta["effort"], "high", "the user's own, kept: {meta}");
+    assert_eq!(meta["param_sources"]["effort"], "user");
+    assert!(
+        meta.get("top_p").is_none(),
+        "p's config's 0.9 stayed: {meta}"
+    );
+    assert_eq!(meta["param_sources"]["top_p"], "builtin");
+    assert_eq!(
+        meta["context_window"], 128_000,
+        "the built-in default, not p's config's 64k: {meta}"
+    );
+    assert_eq!(meta["param_sources"]["context_window"], "builtin");
 
     let mut cmd = iota(cwd.path(), home.path());
     cmd.args(["resume", id, "-m", "second"]);
@@ -552,9 +573,13 @@ async fn resume_with_another_provider_moves_the_session_there() {
         );
         let body: serde_json::Value = serde_json::from_slice(&req.body).expect("JSON");
         assert_eq!(body["generationConfig"]["temperature"], 0.2, "{body}");
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"]["thinkingLevel"], "HIGH",
+            "the user's effort runs on g2: {body}"
+        );
         assert!(
-            body["generationConfig"].get("thinkingConfig").is_none(),
-            "p's effort never came back: {body}"
+            body["generationConfig"].get("topP").is_none(),
+            "p's config's top_p never came: {body}"
         );
     }
 }

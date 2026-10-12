@@ -91,7 +91,8 @@ fn apply_session_tuning_explicit_window_flag_wins() {
     assert_eq!(window, None, "flag window overridden");
 }
 
-/// A bundle recorded on another provider replays nothing — and says so, once, naming both.
+/// A bundle recorded on another provider replays nothing — what of it is kept is the layering's to say, a
+/// layer up — and the warning, once, names both and says what does carry over.
 #[test]
 fn apply_session_tuning_provider_mismatch_applies_nothing() {
     let mut provider = stub();
@@ -110,8 +111,25 @@ fn apply_session_tuning_provider_mismatch_applies_nothing() {
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(
         warnings[0].starts_with("Warning: session was recorded on a different endpoint")
-            && warnings[0].ends_with("its model and tuning are not replayed"),
+            && warnings[0].ends_with(
+                "its model is not replayed, and of its tuning only what was set by hand carries over, unless this run's config sets it"
+            ),
         "{warnings:?}"
+    );
+}
+
+/// An effort this build cannot read is dropped on a move as it is on a replay — and said, not swallowed.
+#[test]
+fn apply_session_tuning_provider_mismatch_names_an_unreadable_effort() {
+    let mut provider = stub();
+    let mut meta = tuned_meta();
+    meta.provider = "different".to_owned();
+    "turbo".clone_into(&mut meta.effort);
+    let (_, warnings) = replay(&meta, &mut provider, false, false);
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert_eq!(
+        warnings[1],
+        r#"Warning: session effort "turbo" is not recognised; keeping the current setting"#
     );
 }
 
