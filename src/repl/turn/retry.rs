@@ -13,8 +13,8 @@ use crate::repl::errors::describe_error;
 /// Max transient re-attempts of one model call (chat.go:126 `maxRetries`).
 pub(crate) const MAX_RETRIES: u32 = 10;
 
-/// One unit of the linear backoff — attempt N waits N of these, here and in the run loop's turn-level
-/// retry. Tests compress it through tokio's paused clock instead of a knob.
+/// One unit of the linear backoff — attempt N waits N of these. Tests compress it through tokio's
+/// paused clock instead of a knob.
 pub(crate) const RETRY_BACKOFF: Duration = Duration::from_secs(1);
 
 /// Linear backoff attempt×1s (test-compressible), max 10; cancel beats the timer; ONE

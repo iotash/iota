@@ -46,21 +46,20 @@ use crate::llm::progress::{TURN_PROGRESS, TurnProgress};
 use crate::markdown::{CodeTheme, RenderOptions, Writer, hyperlink};
 use crate::provider::model::{Attachment, Message};
 use crate::provider::sink::StreamSink;
-use crate::provider::{Provider, RoundResult, ToolProvider};
+use crate::provider::{ChatResult, Provider, RoundResult, ToolProvider};
 use crate::tool::Dispatcher;
 use crate::tool::Presentation;
 use crate::ui::facade::{Ui, UiError, UiStreamSink};
 use tokio_util::sync::CancellationToken;
 
-use crate::repl::context::meter::{BudgetSnap, CtxMeter};
-use crate::repl::errors::describe_error;
+use crate::repl::context::meter::CtxMeter;
 use crate::repl::render::group::{ThinkingMeter, composing_label};
 use crate::repl::render::transcript::{ContentCommitter, Transcript};
 use crate::repl::render::uisink::UiMdSink;
 use crate::repl::state::Conversation;
 use crate::repl::turn::approval::ApprovalGate;
 use crate::repl::turn::phases::watch_phases;
-use crate::repl::turn::retry::{MAX_RETRIES, RETRY_BACKOFF, is_retryable};
+use crate::repl::turn::retry::retry_round;
 use crate::repl::turn::steer::Steerer;
 use crate::repl::turn::tools::tool_loop;
 
@@ -198,22 +197,13 @@ impl From<ChatError> for TurnFailure {
     }
 }
 
-/// What a turn hands back to the run loop: the outcome, the bookkeeping the turn-level
-/// retry reads, and the partials the user actually saw. The partials travel outside the
+/// What a turn hands back to the run loop: the outcome and the partials the user actually saw. The partials travel outside the
 /// outcome because `ChatError::Interrupted` only signals the class: `finalize_interrupt`
 /// needs the streamed text to decide whether the turn is kept (chat/run.go:1327-1332).
 #[derive(Debug)]
 pub(crate) struct TurnReport {
     /// The turn's result, or why it ended badly.
     pub(crate) outcome: Result<TurnOutput, TurnFailure>,
-    /// Whether the turn ran the tool loop — whatever its tool set, an empty one included (T-36). The
-    /// loop's `retry_round` owns the retry budget of every call it issued, so the turn-level replay
-    /// steps aside: Go's `usedTools` guard (chat/run.go:1032-1036), widened to the empty set because
-    /// Go sent that turn through `streamTurn`, which had no ladder of its own (DIVERGENCES X-73).
-    pub(crate) ran_tool_loop: bool,
-    /// Executed calls the parallel gate does not vouch for as read-only — what a
-    /// whole-turn replay would run AGAIN (chat/run.go:1030-1031).
-    pub(crate) side_fx: u32,
     /// Content streamed before the user interrupted, the stream stalled or the output ceiling
     /// cut it off (EMPTY on every other outcome — Go's `fail()` returns the buffers only on
     /// cancellation; a stall and a truncation have no Go twin).
@@ -262,12 +252,10 @@ impl TurnReport {
         }
     }
 
-    /// A completed turn; `ran_tool_loop` is stamped by `run_turn`.
-    pub(crate) fn success(out: TurnOutput, side_fx: u32) -> Self {
+    /// A completed turn.
+    pub(crate) fn success(out: TurnOutput) -> Self {
         Self {
             outcome: Ok(out),
-            ran_tool_loop: false,
-            side_fx,
             partial: String::new(),
             partial_reasoning: String::new(),
             cut_round: None,
@@ -275,20 +263,13 @@ impl TurnReport {
     }
 
     /// A failure carrying no partials.
-    pub(crate) fn failed(err: impl Into<TurnFailure>, side_fx: u32) -> Self {
+    pub(crate) fn failed(err: impl Into<TurnFailure>) -> Self {
         Self {
             outcome: Err(err.into()),
-            ran_tool_loop: false,
-            side_fx,
             partial: String::new(),
             partial_reasoning: String::new(),
             cut_round: None,
         }
-    }
-
-    /// A failure carrying neither partials nor bookkeeping.
-    pub(crate) fn bare(err: impl Into<TurnFailure>) -> Self {
-        Self::failed(err, 0)
     }
 }
 
@@ -326,7 +307,8 @@ impl RoundOutcome {
 /// array, so a no-tools turn still streams markdown, still meters previews and the
 /// thinking widget, and ESC still yields partials. Providers WITHOUT tool support (the
 /// dedicated image dialects) take the unary [`stream_turn`] fallback: no streaming there,
-/// and an interrupt takes the zero-yield finalize path by construction.
+/// and an interrupt takes the zero-yield finalize path by construction. Either way every
+/// model call climbs ONE retry ladder, [`retry_round`], where it is issued (X-73).
 ///
 /// The turn's cancel scope and stream handle are minted here and torn down in the pinned
 /// order `sink.done()` → `tr.reset_turn()` → `cancel()` (chat/run.go:1069-1071) on EVERY
@@ -350,24 +332,18 @@ pub(crate) async fn run_turn(
         progress: TurnProgress::new(),
     };
     let tools = cx.dispatch.tools();
-    // ONE retry budget per model call (X-73): a turn the tool loop ran is never replayed
-    // whole — the loop already retried its own failing calls (with the completed rounds,
-    // and their side effects, kept in place), an empty tool set's single call included.
-    // Replaying it as well multiplied the two budgets (11 × 11 calls).
-    let ran_tool_loop = provider.as_tool_provider().is_some();
-    let mut report = match provider.as_tool_provider() {
+    let report = match provider.as_tool_provider() {
         Some(tp) => tool_loop(&turn, tp, history, ctxm, steer, tools).await,
         None => stream_turn(&turn, provider, history).await,
     };
     turn.sink.done();
     cx.tr.reset_turn();
     cancel.cancel();
-    report.ran_tool_loop = ran_tool_loop;
     report
 }
 
 /// One turn's engine (chat/run.go:1004-1068): the handles a turn runs over, its steerer, and the
-/// turn-level retry around [`run_turn`]. It runs over the [`Conversation`] alone — the provider,
+/// call of [`run_turn`]. It runs over the [`Conversation`] alone — the provider,
 /// the history and the meter are borrowed apart from the one `&mut` — which is what lets the
 /// loop's commands read and write the same state between turns.
 pub(crate) struct TurnEngine {
@@ -393,80 +369,28 @@ impl TurnEngine {
         self.steer.take_held()
     }
 
-    /// Runs the turn with the turn-level retry (chat/run.go:1030-1068). `hist0` is the history
-    /// length with the user message on, `snap` the budget before it. Each attempt RESETS the
-    /// turn's messages and live estimates, then re-lands the injections a previous attempt took
-    /// off the queue — the queue no longer holds them. `Err` is the one failure a turn cannot
-    /// survive: the facade closed under it, and there is nothing left to print the error on.
-    ///
-    /// The budget rule (X-73): every model call has ONE retry ladder of `MAX_RETRIES`. A call
-    /// the tool loop issued is covered by its `retry_round`, so this replay serves only the
-    /// turn no ladder covered — the unary fallback, [`stream_turn`].
-    pub(crate) async fn run(
-        &mut self,
-        conv: &mut Conversation,
-        hist0: usize,
-        snap: BudgetSnap,
-    ) -> Result<TurnReport, UiError> {
-        let mut attempt: u32 = 0;
-        loop {
-            conv.history.truncate(hist0);
-            let injected = self.steer.injected().to_vec();
-            conv.history.extend(injected.iter().cloned());
-            conv.ctxm.reset();
-            conv.budget.restore(snap);
-            if let Some(user) = conv.history.get(hist0 - 1) {
-                conv.ctxm.note(user); // the send moves the meter immediately
-            }
-            for m in &injected {
-                conv.ctxm.note(m);
-            }
-            let report = run_turn(
-                &self.cx,
-                &self.root_cancel,
-                &*conv.provider,
-                &mut conv.history,
-                &mut conv.ctxm,
-                &mut self.steer,
-            )
-            .await;
-            let chat_err = match &report.outcome {
-                Ok(_) => return Ok(report),
-                Err(TurnFailure::Chat(c)) => c,
-                Err(TurnFailure::Ui(ui_err)) => return Err(*ui_err),
-            };
-            // `can_retry` is false for a dedicated image provider: every attempt bills.
-            if !self.cx.can_retry || attempt >= MAX_RETRIES || !is_retryable(chat_err) {
-                return Ok(report);
-            }
-            if report.ran_tool_loop {
-                // The tool loop already retried its own failing calls with the completed
-                // rounds — and their side effects — kept in place: its errors are final, and
-                // the budget it spent is the turn's whole budget (X-73).
-                return Ok(report);
-            }
-            if report.side_fx > 0 {
-                // An invariant, not a live path: a plain streamed turn executes no tools.
-                // If one ever lands here, refuse loudly rather than re-run the user's
-                // tools.
-                self.cx.tr.notice(&format!(
-                    "⟳ {} — not replaying the turn: {} executed tool call(s) would run again",
-                    describe_error(chat_err).headline,
-                    report.side_fx
-                ));
-                return Ok(report);
-            }
-            attempt += 1;
-            let headline = describe_error(chat_err).headline;
-            let busy = self.cx.ui.busy(&format!(
-                "{headline} — retrying (attempt {attempt}/{MAX_RETRIES})"
-            ));
-            tokio::select! {
-                biased;
-                () = self.root_cancel.cancelled() => { busy.stop(); return Ok(report); }
-                () = tokio::time::sleep(RETRY_BACKOFF * attempt) => {}
-            }
-            busy.stop();
+    /// Runs the turn (chat/run.go:1030-1068): the user message — the history's last — moves the
+    /// meter, then [`run_turn`] sends it. There is no turn-level replay: every model call the turn
+    /// issues climbs its own [`retry_round`] where it is issued, the tool loop's and the unary
+    /// fallback's alike (X-73). `Err` is the one failure a turn cannot survive: the facade closed
+    /// under it, and there is nothing left to print the error on.
+    pub(crate) async fn run(&mut self, conv: &mut Conversation) -> Result<TurnReport, UiError> {
+        conv.ctxm.reset();
+        if let Some(user) = conv.history.last() {
+            conv.ctxm.note(user); // the send moves the meter immediately
+        }
+        let report = run_turn(
+            &self.cx,
+            &self.root_cancel,
+            &*conv.provider,
+            &mut conv.history,
+            &mut conv.ctxm,
+            &mut self.steer,
+        )
+        .await;
+        match report.outcome {
+            Err(TurnFailure::Ui(ui_err)) => Err(ui_err),
+            _ => Ok(report),
         }
     }
 }
@@ -480,57 +404,75 @@ impl TurnEngine {
 /// wants (the /edit canvas comes back as a pending attachment). A provider with the
 /// progressive-frame capability is called through `chat_observed` instead, its frames
 /// reaching the [`PartialWatcher`] (D4; interactive only — the headless body stays unary).
+///
+/// The call climbs the same [`retry_round`] as a tool round (X-73): the ladder, its backoff,
+/// its one recovery notice and its cancel, with retries off for a dedicated image provider.
 pub(crate) async fn stream_turn(
     t: &Turn<'_>,
     provider: &dyn Provider,
     history: &[Message],
 ) -> TurnReport {
+    // The send is composed once: a retried attempt re-issues the SAME request (X-73).
+    let send = t.cx.send_history(history);
+    let result = retry_round(
+        &t.cancel,
+        t.cx.can_retry,
+        |label| t.cx.ui.busy(label),
+        |line| t.cx.tr.notice(&line),
+        async || unary_call(t, provider, &send).await,
+    )
+    .await;
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => return TurnReport::failed(e),
+    };
+    if !result.text.is_empty() {
+        let mut block = Scaffold::of(t).block(t.cx.tr.content_block());
+        block.write(&result.text);
+        block.finish();
+    }
+    TurnReport::success(TurnOutput {
+        content: result.text,
+        reasoning: String::new(),
+        images: result.images,
+        usage: result.usage,
+        // The unary path exposes no raw blocks (chat.go:116 sends the plain history).
+        raw_content: None,
+    })
+}
+
+/// One attempt of the unary fallback: the provider call under the turn's progress scope and
+/// busy phases, its failure classified the way [`stream_round`] classifies a streamed one.
+async fn unary_call(
+    t: &Turn<'_>,
+    provider: &dyn Provider,
+    send: &[Message],
+) -> Result<ChatResult, ChatError> {
+    // A failed attempt may have leaked the streaming guards; clearing them makes the retry safe.
     t.cx.tr.begin_round();
     let phases = Phases::new(Arc::clone(&t.cx.ui));
-    let send = t.cx.send_history(history);
     let res = TURN_PROGRESS
         .scope(Arc::clone(&t.progress), async {
             let _watch = watch_phases(&t.progress, phases.clone());
             match provider.as_image_partial_provider() {
                 Some(ip) => {
                     let mut w = PartialWatcher::new(Arc::clone(&t.cx.ui), Arc::clone(&t.cx.tr));
-                    ip.chat_observed(&t.cancel, &send, &mut |f| w.frame(f))
-                        .await
+                    ip.chat_observed(&t.cancel, send, &mut |f| w.frame(f)).await
                 }
-                None => provider.chat(&t.cancel, &send).await,
+                None => provider.chat(&t.cancel, send).await,
             }
         })
         .await;
     phases.end();
-    let result = match res {
-        Ok(r) => r,
-        Err(e) => {
-            if t.cancel.is_cancelled() {
-                return TurnReport::bare(ChatError::Interrupted);
-            }
-            return TurnReport::bare(ChatError::Provider(e));
-        }
-    };
-    // A unary reply the output ceiling cut off is an error, as in the tool loop (X-69).
-    if let Some(cut) = result.truncated {
-        return TurnReport::bare(ChatError::Truncated(cut));
-    }
-    if !result.text.is_empty() {
-        let mut block = Scaffold::of(t).block(t.cx.tr.content_block());
-        block.write(&result.text);
-        block.finish();
-    }
-    TurnReport::success(
-        TurnOutput {
-            content: result.text,
-            reasoning: String::new(),
-            images: result.images,
-            usage: result.usage,
-            // The unary path exposes no raw blocks (chat.go:116 sends the plain history).
-            raw_content: None,
+    match res {
+        Err(_) if t.cancel.is_cancelled() => Err(ChatError::Interrupted),
+        Err(e) => Err(ChatError::Provider(e)),
+        // A unary reply the output ceiling cut off is an error, as in the tool loop (X-69).
+        Ok(mut r) => match r.truncated.take() {
+            Some(cut) => Err(ChatError::Truncated(cut)),
+            None => Ok(r),
         },
-        0,
-    )
+    }
 }
 
 /// Streams ONE tool round and renders it (chat/run.go:1696-1839 `streamToolRound`).

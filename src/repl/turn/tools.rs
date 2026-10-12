@@ -52,7 +52,6 @@ pub(crate) async fn tool_loop(
     tools: Vec<ToolDef>,
 ) -> TurnReport {
     let mut tools = tools;
-    let mut side_fx: u32 = 0;
     let mut rounds: u32 = 0;
     loop {
         if rounds > 0 {
@@ -86,8 +85,6 @@ pub(crate) async fn tool_loop(
             Err(e) => {
                 return TurnReport {
                     outcome: Err(e.into()),
-                    ran_tool_loop: false,
-                    side_fx,
                     partial,
                     partial_reasoning,
                     cut_round,
@@ -95,21 +92,18 @@ pub(crate) async fn tool_loop(
             }
         };
         if round.tool_calls.is_empty() {
-            return TurnReport::success(
-                TurnOutput {
-                    content: round.content,
-                    reasoning: round.reasoning,
-                    images: round.images,
-                    // The terminating round bills like any other; the run loop stamps it
-                    // onto the assistant message it builds from this output (D-55).
-                    usage: round.usage,
-                    // Its raw blocks ride out the same way: the thinking block of a turn
-                    // that ends in text has to replay on every later request
-                    // (chat/run.go:1092-1099).
-                    raw_content: round.raw_content,
-                },
-                side_fx,
-            );
+            return TurnReport::success(TurnOutput {
+                content: round.content,
+                reasoning: round.reasoning,
+                images: round.images,
+                // The terminating round bills like any other; the run loop stamps it
+                // onto the assistant message it builds from this output (D-55).
+                usage: round.usage,
+                // Its raw blocks ride out the same way: the thinking block of a turn
+                // that ends in text has to replay on every later request
+                // (chat/run.go:1092-1099).
+                raw_content: round.raw_content,
+            });
         }
 
         // The assistant message carries the calls, the round's own cost (the ONE record
@@ -140,8 +134,8 @@ pub(crate) async fn tool_loop(
         // than at turn end — the remaining rounds can run for minutes.
         ctxm.settle(history);
 
-        if let Err(failure) = walk(t, &round.tool_calls, history, ctxm, &mut side_fx).await {
-            return TurnReport::failed(failure, side_fx);
+        if let Err(failure) = walk(t, &round.tool_calls, history, ctxm).await {
+            return TurnReport::failed(failure);
         }
 
         // Round boundary: anything the user typed while the round ran joins the
@@ -175,7 +169,6 @@ async fn walk(
     calls: &[ToolCall],
     history: &mut Vec<Message>,
     ctxm: &mut CtxMeter,
-    side_fx: &mut u32,
 ) -> Result<(), TurnFailure> {
     let dispatch = Arc::clone(&t.cx.dispatch);
     let mut i = 0;
@@ -204,7 +197,7 @@ async fn walk(
         let mode = dispatch.presentation(&tc.name);
 
         if mode == Presentation::Surface {
-            surface_call(t, tc, history, ctxm, side_fx).await;
+            surface_call(t, tc, history, ctxm).await;
             if t.cancel.is_cancelled() {
                 return Err(interrupted());
             }
@@ -252,9 +245,6 @@ async fn walk(
             artifact: Some(slot.clone()),
             ..RunCtx::default()
         };
-        if !dispatch.supports_parallel(&tc.name, Some(&tc.arguments)) {
-            *side_fx += 1; // counted at execution: this is what a replay would re-run
-        }
         // ESC cancels the CALL (the innermost scope); Ctrl+C the turn.
         let scope = t.cx.ui.push_cancel_scope(call_cancel.clone());
         let started = Instant::now();
@@ -293,15 +283,7 @@ async fn surface_call(
     tc: &ToolCall,
     history: &mut Vec<Message>,
     ctxm: &mut CtxMeter,
-    side_fx: &mut u32,
 ) {
-    if !t
-        .cx
-        .dispatch
-        .supports_parallel(&tc.name, Some(&tc.arguments))
-    {
-        *side_fx += 1; // a replay would re-ask the user
-    }
     t.cx.tr.pause_for_input("waiting for your input");
     t.cx.pres.set_state(State::NeedsInput);
     t.cx.pres.notify(Event {

@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use iota::host::Presenter;
 use iota::llm::reqlog::RequestLog;
 use iota::provider::model::{Message, Role};
+use iota::provider::{ImageGenOptions, ImageGenParams, ProviderKind};
 use iota::repl::{McpHooks, RunParams, SessionCtx};
 use iota::session::SessionStore;
 use iota::testing::{
@@ -1167,8 +1168,8 @@ async fn a_responses_cut_is_shown_once_and_never_retried() {
 }
 
 /// X-73: ONE retry budget per model call. A failure the table calls transient is retried `MAX_RETRIES` times
-/// — 1 call + 10 retries — whether the tool loop advertised tools or ran with an empty set; the turn-level
-/// replay no longer climbs a second ladder over the loop's (11 × 11 = 121 calls before).
+/// — 1 call + 10 retries — whether the tool loop advertised tools or ran with an empty set; no second ladder
+/// climbs over the loop's (11 × 11 = 121 calls before).
 #[tokio::test(start_paused = true)]
 async fn a_transient_failure_climbs_one_ladder_with_or_without_tools() {
     for tools in [&[][..], &["noop"][..]] {
@@ -1217,16 +1218,147 @@ async fn a_transient_failure_is_still_retried_until_it_clears() {
     }
 }
 
-/// A provider without tool calling takes the unary fallback, which no `retry_round` covers: there the
-/// turn-level replay IS the ladder, and it still climbs exactly once (X-73).
+/// X-73 on the unary fallback of a provider without tool calling: its call climbs the same `retry_round` as a
+/// tool round — 1 call + 10 retries, the error shown once — and the failed turn leaves nothing behind: the
+/// next message is sent without it.
 #[tokio::test(start_paused = true)]
-async fn the_unary_fallback_is_replayed_on_the_same_budget() {
+async fn the_unary_fallback_climbs_the_same_ladder() {
     let log = Log::default();
     let provider = FakeProvider::new()
-        .tail(Round::failing("connection reset by peer"))
+        .rounds((0..11).map(|_| Round::failing("connection reset by peer")))
+        .replying("ok")
+        .with_log(log.clone());
+    let fx = Fixture::new(vec![input("q"), input("next"), Reply::Closed]).patient();
+    fx.run(provider, None, &[]).await;
+
+    assert_eq!(
+        log.calls(),
+        12,
+        "1 call + 10 retries, then the next message"
+    );
+    assert_eq!(fx.printed_count("connection reset by peer"), 1);
+    assert_eq!(fx.printed_count("retrying"), 0, "the busy row never lands");
+    assert_eq!(
+        log.prompts()[..11],
+        ["q"; 11],
+        "the same request every time"
+    );
+    let next: Vec<_> = log.send(11).iter().map(shape).collect();
+    assert_eq!(next, [(Role::User, "next".to_owned(), vec![])]);
+}
+
+/// The unary ladder recovers the way the tool loop's does: 3 calls for two transient failures, and EXACTLY
+/// ONE recovery notice (the turn-level replay it replaced left none).
+#[tokio::test(start_paused = true)]
+async fn the_unary_fallback_recovers_with_one_notice() {
+    let log = Log::default();
+    let provider = FakeProvider::new()
+        .rounds([
+            Round::failing("connection reset by peer"),
+            Round::failing("connection reset by peer"),
+        ])
+        .replying("an answer")
         .with_log(log.clone());
     let fx = Fixture::new(vec![input("q"), Reply::Closed]).patient();
     fx.run(provider, None, &[]).await;
 
-    assert_eq!(log.calls(), 11, "1 call + 10 replays");
+    assert_eq!(log.calls(), 3);
+    assert_eq!(
+        fx.printed_count("⟳ Request failed — recovered after 2 attempt(s)"),
+        1,
+        "{:#?}",
+        fx.printed()
+    );
+    assert_eq!(fx.printed_count("recovered after"), 1);
+    assert_eq!(fx.printed_count("an answer"), 1);
+}
+
+/// A dedicated image provider bills every attempt: its unary call goes out ONCE, transient failure or not.
+#[tokio::test(start_paused = true)]
+async fn an_image_provider_is_called_once() {
+    let log = Log::default();
+    let provider = FakeProvider::new()
+        .with_kind(ProviderKind::Images)
+        .with_model("gpt-image-1")
+        .with_image_gen(
+            ImageGenOptions {
+                aspect_ratios: Vec::new(),
+                image_sizes: vec!["auto"],
+                negative_prompt: false,
+            },
+            ImageGenParams::default(),
+        )
+        .tail(Round::failing("connection reset by peer"))
+        .with_log(log.clone());
+    let fx = Fixture::new(vec![input("draw"), Reply::Closed]).patient();
+    fx.run(provider, None, &[]).await;
+
+    assert_eq!(log.calls(), 1);
+    assert_eq!(fx.printed_count("connection reset by peer"), 1);
+}
+
+/// With the turn-level replay gone, a failing call after a tool round retries ALONE: the tool round — its
+/// call, its result — and the message the user typed meanwhile are sent once each on every attempt, never
+/// re-run or re-landed; and once the ladder gives up, the turn rolls back whole.
+#[tokio::test(start_paused = true)]
+async fn a_failing_call_after_a_tool_round_retries_without_replaying_it() {
+    let log = Log::default();
+    let provider = FakeProvider::new()
+        .with_tools()
+        .rounds(
+            std::iter::once(Round::calls(vec![tool_call("c1", "noop")]))
+                .chain((0..11).map(|_| Round::failing("connection reset by peer"))),
+        )
+        .replying("ok")
+        .with_log(log.clone());
+    let fx = Fixture::new(vec![
+        input("do it"),
+        Reply::Queued(vec![Input {
+            display: "also".to_owned(),
+            text: "also".to_owned(),
+            ..Input::default()
+        }]),
+        input("next"),
+        Reply::Closed,
+    ])
+    .patient();
+    fx.run(provider, None, &["noop"]).await;
+
+    assert_eq!(
+        log.calls(),
+        13,
+        "the tool round, 1 + 10 for the next call, the next message"
+    );
+    let retried: Vec<Vec<_>> = (1..12)
+        .map(|n| log.send(n).iter().map(shape).collect())
+        .collect();
+    assert!(
+        retried.iter().all(|s| *s == retried[0]),
+        "every attempt re-sends the same request"
+    );
+    let tail = &retried[0][retried[0].len() - 4..];
+    assert_eq!(tail[0], (Role::User, "do it".to_owned(), vec![]));
+    assert_eq!(
+        (tail[1].0, tail[1].2.clone()),
+        (Role::Assistant, vec!["c1".to_owned()])
+    );
+    assert_eq!(
+        (tail[2].0, tail[2].2.clone()),
+        (Role::Tool, vec!["c1".to_owned()])
+    );
+    assert_eq!(tail[3], (Role::User, "also".to_owned(), vec![]));
+    assert_eq!(
+        log.sent()
+            .iter()
+            .filter(|s| !s.iter().any(|m| m.role() == Role::Tool))
+            .count(),
+        2,
+        "only the turn's first call and the next message go out without the tool result"
+    );
+    let next: Vec<_> = log.send(12).iter().map(shape).collect();
+    assert_eq!(
+        next,
+        [(Role::User, "next".to_owned(), vec![])],
+        "the failed turn rolled back whole"
+    );
 }

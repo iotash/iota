@@ -900,7 +900,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             ui.set_dark_background(known);
         }
         let mut engine = TurnEngine::new(repl.turn_ctx(send_overlay, flush), root_cancel.clone());
-        let outcome = match engine.run(&mut repl.conv, hist0, turn_snap).await {
+        let outcome = match engine.run(&mut repl.conv).await {
             Ok(report) => report,
             Err(ui_err) => break 'main Err(ReplError::Ui(ui_err)),
         };

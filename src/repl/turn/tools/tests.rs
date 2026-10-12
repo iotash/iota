@@ -20,7 +20,8 @@ use crate::provider::model::{JsonObject, ToolDef};
 use crate::provider::sink::StreamSink;
 use crate::provider::{Provider, RoundResult};
 use crate::testing::{
-    Failure, FakeProvider, Interrupt, Reply, Round, ScriptedUi, StaticDispatcher, UiEvent, lock,
+    Failure, FakeProvider, Interrupt, Path, Reply, Round, ScriptedUi, StaticDispatcher, UiEvent,
+    lock,
 };
 use crate::tool::Dispatcher;
 use crate::tool::context::RunCtx;
@@ -266,6 +267,11 @@ fn plain(events: &[UiEvent]) -> Vec<String> {
         .collect()
 }
 
+/// The entry point of every call `p` took, in order.
+fn paths(p: &FakeProvider) -> Vec<Path> {
+    p.log().records().iter().map(|c| c.path).collect()
+}
+
 /// Index of the first event matching `pred`.
 fn pos(events: &[UiEvent], pred: impl Fn(&UiEvent) -> bool) -> usize {
     events
@@ -297,11 +303,11 @@ async fn no_tools_turn_streams_markdown_through_the_tool_loop() {
     let report = fx.turn(&p, &mut history).await;
     let out = report.outcome.expect("turn");
     assert_eq!(out.content, "Hello **world**\n");
-    assert!(
-        report.ran_tool_loop,
-        "an empty tool set still runs the loop, and the loop owns the retry budget (X-73)"
+    assert_eq!(
+        paths(&p),
+        [Path::Tools],
+        "an empty tool set still runs the loop, whose `retry_round` owns the call's budget (X-73)"
     );
-    assert_eq!(p.calls(), 1);
 
     let events = fx.events();
     assert!(
@@ -879,7 +885,6 @@ async fn surface_call_records_the_answer_and_pauses_the_clock() {
     let mut history = vec![Message::user("ask me")];
     let report = fx.turn(&p, &mut history).await;
     report.outcome.expect("turn");
-    assert_eq!(report.side_fx, 1, "a replay would re-ask the user");
 
     let events = fx.events();
     assert!(
@@ -1693,8 +1698,96 @@ async fn unary_provider_takes_the_stream_turn_fallback() {
     let report = fx.turn(&p, &mut history).await;
     let out = report.outcome.expect("turn");
     assert_eq!(out.content, "an image, described\n");
-    assert!(!report.ran_tool_loop);
+    assert_eq!(paths(&p), [Path::Chat]);
     assert_eq!(plain(&fx.events()), vec!["an image, described".to_owned()]);
+}
+
+// X-73: the unary fallback climbs the tool round's ladder — the same call re-issued until it clears,
+// EXACTLY ONE recovery notice, and one stream scaffold around every attempt; the history is untouched.
+#[tokio::test(start_paused = true)]
+async fn unary_provider_retries_on_the_round_ladder() {
+    let fx = Fx::new(Arc::new(StaticDispatcher::new(&[])), Vec::new());
+    let p = unary(vec![
+        Round::failing("connection reset by peer"),
+        Round::failing("connection reset by peer"),
+        Round::reply("drawn\n"),
+    ]);
+    let mut history = vec![Message::user("draw")];
+    let report = fx.turn(&p, &mut history).await;
+    assert_eq!(report.outcome.expect("recovered").content, "drawn\n");
+    assert_eq!(paths(&p), [Path::Chat; 3], "the same call, 3 times");
+    assert_eq!(history, vec![Message::user("draw")]);
+
+    let events = fx.events();
+    let busy: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::Busy(label) if label.contains("retrying") => Some(label.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        busy,
+        [
+            "Request failed — retrying (attempt 1/10)",
+            "Request failed — retrying (attempt 2/10)"
+        ]
+    );
+    assert_eq!(
+        plain(&events)
+            .iter()
+            .filter(|l| l.contains("recovered after"))
+            .collect::<Vec<_>>(),
+        ["⟳ Request failed — recovered after 2 attempt(s)"],
+        "{events:#?}"
+    );
+    let count = |want: fn(&UiEvent) -> bool| events.iter().filter(|e| want(e)).count();
+    assert_eq!(count(|e| matches!(e, UiEvent::StreamStart)), 1);
+    assert_eq!(count(|e| matches!(e, UiEvent::Done)), 1);
+    assert!(matches!(events.first(), Some(UiEvent::StreamStart)));
+    assert!(matches!(events.last(), Some(UiEvent::Done)));
+}
+
+// X-73: the unary fallback's ladder yields to the turn's cancel — ESC during the backoff ends the turn
+// as an interrupt at once, with no second call.
+#[tokio::test(start_paused = true)]
+async fn unary_provider_backoff_yields_to_an_interrupt() {
+    let fx = Fx::new(Arc::new(StaticDispatcher::new(&[])), Vec::new());
+    let p = unary(Vec::new()).tail(Round::failing("connection reset by peer"));
+    let root = fx.root.clone();
+    // Inside the first backoff (1 s): the call failed at t=0, the second would go out at t=1 s.
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        root.cancel();
+    });
+    let mut history = vec![Message::user("draw")];
+    let started = tokio::time::Instant::now();
+    let report = fx.turn(&p, &mut history).await;
+    assert!(report.is_interrupted(), "{:?}", report.outcome.map(|_| ()));
+    assert_eq!(p.calls(), 1);
+    assert_eq!(
+        started.elapsed(),
+        std::time::Duration::from_millis(500),
+        "the interrupt cut the backoff short"
+    );
+}
+
+// A dedicated image provider bills every attempt: its unary call is sent once, transient failure or not.
+#[tokio::test(start_paused = true)]
+async fn unary_image_provider_is_never_retried() {
+    let mut fx = Fx::new(Arc::new(StaticDispatcher::new(&[])), Vec::new());
+    fx.cx.can_retry = false;
+    let p = unary(Vec::new()).tail(Round::failing("connection reset by peer"));
+    let mut history = vec![Message::user("draw")];
+    let report = fx.turn(&p, &mut history).await;
+    assert!(report.outcome.is_err());
+    assert_eq!(p.calls(), 1);
+    assert!(
+        !fx.events()
+            .iter()
+            .any(|e| matches!(e, UiEvent::Busy(l) if l.contains("retrying"))),
+        "no retry row"
+    );
 }
 
 // New: the unary fallback has no partials by construction — an interrupted image turn
