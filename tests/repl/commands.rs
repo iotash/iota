@@ -581,46 +581,6 @@ agents:
 /// A row on another provider is listed but not taken once a model has replied: the history it would carry
 /// over is that dialect's, so the picker says so and names the command that would start a run there, rather
 /// than half-applying a switch whose next request would go to the wrong API — and no endpoint is built.
-#[tokio::test]
-async fn model_refuses_another_provider_after_the_first_reply() {
-    let f = Fixture::new(vec![
-        input("/model"),
-        commit(PanelResult {
-            cursor: 1,
-            ..PanelResult::default()
-        }),
-        Reply::Interrupted,
-    ]);
-    let session = f.session(Some(f.writer()));
-    let provider = provider("a-model", Ok(vec!["a-model".to_owned()]));
-    let built = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let mut params = f.params_with_catalog(provider, session, CANDIDATE_SET);
-    params.imported_history = vec![Message::user("q"), Message::assistant("a")];
-    params.endpoints = Some(counting_endpoints(Arc::clone(&built)));
-    iota::repl::run(params).await.expect("exit");
-
-    let lines = printed(&f.ui);
-    assert!(
-        lines.iter().any(|l| l.starts_with(
-            "relay:vendor/y runs on another provider; a session moves only before its first reply"
-        ) && l.contains("iota run default -M relay:vendor/y")),
-        "{lines:?}"
-    );
-    assert!(
-        !lines.iter().any(|l| l.starts_with("Model switched")),
-        "nothing was switched: {lines:?}"
-    );
-    assert_eq!(built.load(std::sync::atomic::Ordering::SeqCst), 0);
-}
-
-/// An endpoint factory that only counts how often it is asked, and refuses.
-fn counting_endpoints(n: Arc<std::sync::atomic::AtomicUsize>) -> iota::repl::EndpointFactory {
-    Box::new(move |_, _, _| {
-        n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Err("not reached".to_owned())
-    })
-}
-
 /// Two endpoints of different types; `relay` declares its model's window, which a move must pick up.
 const TWO_ENDPOINTS: &str = r#"
 providers:
@@ -759,7 +719,7 @@ async fn model_moves_a_chat_with_no_reply_to_another_provider() {
     assert_eq!(titles.len(), 1);
     assert_eq!(titles[0].model, "vendor/y");
     // Every row keeps its name across the move; what follows the chat is the annotations: `(current)`, and what
-    // picking a row on another endpoint does — before the first reply it moves the chat, after it it cannot.
+    // picking a row on another endpoint does — it moves the chat, after the first reply as before it.
     let opened = surfaces(&f.ui);
     assert_eq!(
         opened[0].panels[0].items,
@@ -771,7 +731,7 @@ async fn model_moves_a_chat_with_no_reply_to_another_provider() {
     assert_eq!(
         opened[1].panels[0].items,
         [
-            "mock:a-model [m] (needs a new session)",
+            "mock:a-model [m] (moves the chat)",
             "relay:vendor/y [y] (current)"
         ]
     );
@@ -1170,9 +1130,9 @@ async fn session_onto_another_kind_of_model_points_at_resume() {
     );
 }
 
-/// "Before the first reply" is a fact of the SESSION, not of the view: a resumed bundle whose compaction left
-/// no assistant message in the view has still been replied in — its log says so — and is refused like any
-/// other (codex review F6).
+/// "Has replied" is a fact of the SESSION, not of the view: a resumed bundle whose compaction left no assistant
+/// message in the view has still been replied in — its log says so — and is asked before it moves like any
+/// other (codex review F6). What it would lose is counted on the view, which holds no reply.
 #[tokio::test]
 async fn a_compacted_session_is_not_a_new_one() {
     let f = Fixture::new(vec![
@@ -1181,6 +1141,7 @@ async fn a_compacted_session_is_not_a_new_one() {
             cursor: 1,
             ..PanelResult::default()
         }),
+        agree(false),
         Reply::Interrupted,
     ]);
     let mut w = f.writer();
@@ -1213,15 +1174,404 @@ async fn a_compacted_session_is_not_a_new_one() {
     iota::repl::run(params).await.expect("exit");
     let lines = printed(&f.ui);
     assert!(
-        lines.iter().any(|l| l.starts_with(
-            "relay:vendor/y runs on another provider; a session moves only before its first reply"
-        )),
+        lines.contains(
+            &"No earlier reply carries payload that openresponses does not replay.".to_owned()
+        ),
         "{lines:?}"
     );
-    assert!(
-        built.asked.lock().unwrap().is_empty(),
-        "no endpoint was built"
+    assert_eq!(
+        surfaces(&f.ui)[1].panels[0].title,
+        "Move this chat to relay:vendor/y?"
     );
+    assert!(
+        !lines.iter().any(|l| l.starts_with("Model switched")),
+        "declined: {lines:?}"
+    );
+}
+
+/// A raw payload for a test record.
+fn raw(s: &str) -> iota::provider::model::Raw {
+    iota::provider::model::Raw::from_string(s.to_owned()).expect("valid JSON")
+}
+
+/// A chat-completions reply carrying its dialect's own payload.
+fn openai_reply(content: &str) -> Message {
+    Message::assistant_with_calls(
+        content,
+        Vec::new(),
+        Some(iota::provider::model::RawContent::OpenAi(raw(&format!(
+            r#"{{"role":"assistant","content":"{content}"}}"#
+        )))),
+    )
+}
+
+/// A saved bundle on `mock` whose model has replied (with chat-completions payload), resumed: the writer and
+/// the view a run takes over.
+fn replied_bundle(f: &Fixture) -> (SessionWriter, Vec<Message>) {
+    let mut w = f
+        .store
+        .create(NewSession {
+            provider: "mock".to_owned(),
+            ..NewSession::new(ProviderKind::OpenAi, "a-model")
+        })
+        .unwrap();
+    w.append_messages(&[Message::user("q"), openai_reply("a")])
+        .unwrap();
+    let id = w.id().to_owned();
+    drop(w);
+    let (writer, session) = f.store.resume(&id, ProviderKind::OpenAi).unwrap();
+    (writer, session.messages)
+}
+
+/// The meta of the one bundle in the store.
+fn only_meta(f: &Fixture) -> iota::session::SessionMeta {
+    let infos = f.store.list(None).expect("list");
+    assert_eq!(infos.len(), 1);
+    iota::session::SessionMeta::read(&f.store.dir(&infos[0].id).unwrap()).unwrap()
+}
+
+/// The confirmation a move asks for: the move, or staying where the chat is.
+fn agree(yes: bool) -> Reply {
+    commit(PanelResult {
+        cursor: usize::from(!yes),
+        ..PanelResult::default()
+    })
+}
+
+/// A chat a model has replied in moves to a row on another provider as `iota resume <id> -M relay:vendor/y`
+/// would move it — once the user agreed. Before asking, three things are said: what the target does not replay
+/// (how many replies, and what of them), where `iota resume` continues the chat afterwards, and the way back.
+/// Agreed, the history goes to the new endpoint and the bundle names it; declined, nothing changes and the
+/// next send stays where it was.
+#[tokio::test]
+async fn a_chat_that_has_replied_moves_once_the_user_agrees() {
+    for yes in [true, false] {
+        let f = Fixture::new(vec![
+            input("/model"),
+            commit(PanelResult {
+                cursor: 1,
+                ..PanelResult::default()
+            }),
+            agree(yes),
+            input("hello"),
+            Reply::Interrupted,
+        ]);
+        let (writer, history) = replied_bundle(&f);
+        let id = writer.id().to_owned();
+        let old = provider("a-model", Ok(vec![])).reporting_usage();
+        let old_log = old.log();
+        let built = Built::default();
+        let mut params = f.params_with_catalog(old, f.session(Some(writer)), TWO_ENDPOINTS);
+        params.imported_history = history;
+        params.endpoints = Some(relay_endpoints(TWO_ENDPOINTS, &built));
+        iota::repl::run(params).await.expect("exit");
+
+        let lines = printed(&f.ui);
+        for said in [
+            "1 earlier reply carries openai-specific payload (reasoning, provider-side tool state) that openresponses does not replay; the model sees their text and tool calls only.".to_owned(),
+            format!("Once moved, iota resume {id} continues this chat on relay:vendor/y."),
+            "mock:a-model stays reachable: picking it again moves the chat back, and the replies made there replay their payload again.".to_owned(),
+        ] {
+            assert!(lines.contains(&said), "{said:?} in {lines:?}");
+        }
+        let asked = &surfaces(&f.ui)[1].panels[0];
+        assert_eq!(asked.title, "Move this chat to relay:vendor/y?");
+        assert_eq!(asked.items, ["Move it", "Stay on mock:a-model"]);
+        assert_eq!(
+            lines.contains(&"Model switched to vendor/y on relay".to_owned()),
+            yes,
+            "{lines:?}"
+        );
+        let meta = only_meta(&f);
+        if yes {
+            assert_eq!(old_log.calls(), 0, "nothing reached the old endpoint");
+            let sent = built.main.send(0);
+            let said: Vec<&str> = sent
+                .iter()
+                .filter(|m| m.role() != iota::provider::model::Role::System)
+                .map(|m| m.content.as_str())
+                .collect();
+            assert_eq!(said, ["q", "a", "hello"]);
+            assert_eq!(
+                (meta.provider.as_str(), meta.model.as_str()),
+                ("relay", "vendor/y")
+            );
+        } else {
+            assert_eq!(old_log.calls(), 1, "the send stayed on the old endpoint");
+            assert_eq!(built.main.calls(), 0);
+            assert_eq!(
+                meta.provider, "mock",
+                "the bundle still names where the chat is"
+            );
+        }
+    }
+}
+
+/// The view a run holds was read from the log for the type it runs on: a session that once ran on the target's
+/// dialect — here moved to `relay` by `iota resume -M`, replied there, then resumed back on `mock` — has that
+/// reply in its log WITH its payload, and in the view without it. A move reads the log again for the target,
+/// as `iota resume -M relay:vendor/y` would: the reply relay made goes back to relay with its reasoning item,
+/// and only the reply made on `mock` is counted as not replayed.
+#[tokio::test]
+async fn a_move_back_to_a_dialect_the_session_ran_on_replays_its_payload() {
+    const REASONING: &str =
+        r#"{"id":"rs_2","type":"reasoning","summary":[],"encrypted_content":"OPAQUE"}"#;
+    let f = Fixture::new(vec![
+        input("/model"),
+        commit(PanelResult {
+            cursor: 1,
+            ..PanelResult::default()
+        }),
+        agree(true),
+        input("hello"),
+        Reply::Interrupted,
+    ]);
+    let to = |kind, provider: &str, model: &str| iota::session::Moved {
+        kind,
+        provider: provider.to_owned(),
+        model: model.to_owned(),
+        params: iota::session::LayeredParams::default(),
+        window: None,
+        image: iota::session::ImageSettings::default(),
+    };
+    let mut w = f
+        .store
+        .create(NewSession {
+            provider: "mock".to_owned(),
+            ..NewSession::new(ProviderKind::OpenAi, "a-model")
+        })
+        .unwrap();
+    w.append_messages(&[Message::user("q1"), openai_reply("a1")])
+        .unwrap();
+    w.move_to(&to(ProviderKind::OpenResponses, "relay", "vendor/y"))
+        .unwrap();
+    let relays = iota::provider::model::RawContent::OpenResponses(vec![raw(REASONING)]);
+    w.append_messages(&[
+        Message::user("q2"),
+        Message::assistant_with_calls("a2", Vec::new(), Some(relays.clone())),
+    ])
+    .unwrap();
+    w.move_to(&to(ProviderKind::OpenAi, "mock", "a-model"))
+        .unwrap();
+    let id = w.id().to_owned();
+    drop(w);
+    let (writer, session) = f.store.resume(&id, ProviderKind::OpenAi).unwrap();
+    let reply = |history: &[Message], content: &str| {
+        history
+            .iter()
+            .find(|m| m.content == content)
+            .and_then(|m| m.raw_content().cloned())
+    };
+    assert_eq!(
+        reply(&session.messages, "a2"),
+        None,
+        "loaded for mock, relay's reply lost its payload on the way in"
+    );
+
+    let built = Built::default();
+    let mut params = f.params_with_catalog(
+        provider("a-model", Ok(vec![])).reporting_usage(),
+        f.session(Some(writer)),
+        TWO_ENDPOINTS,
+    );
+    params.imported_history = session.messages;
+    params.endpoints = Some(relay_endpoints(TWO_ENDPOINTS, &built));
+    iota::repl::run(params).await.expect("exit");
+
+    let lines = printed(&f.ui);
+    assert!(
+        lines.contains(&"1 earlier reply carries openai-specific payload (reasoning, provider-side tool state) that openresponses does not replay; the model sees their text and tool calls only.".to_owned()),
+        "only the reply made on mock is not replayed: {lines:?}"
+    );
+    assert!(
+        lines.contains(&"Model switched to vendor/y on relay".to_owned()),
+        "{lines:?}"
+    );
+    let sent = built.main.send(0);
+    assert_eq!(
+        reply(&sent, "a2"),
+        Some(relays),
+        "relay's own reply goes back to it with its reasoning item"
+    );
+    assert_eq!(
+        reply(&sent, "a1"),
+        None,
+        "mock's reply is not replayed there"
+    );
+}
+
+/// A chat a model has replied in moves only once everything it holds is in its log, saved under the type it was
+/// said in: a reply saved after the writer's type changed would keep its text and lose its payload. While the
+/// save fails the move is refused, before any endpoint is built; once the disk is back the backlog is saved
+/// first — the reply with its chat-completions payload — and the chat moves.
+#[tokio::test]
+async fn a_move_that_cannot_save_first_is_not_made() {
+    let down = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let up = Arc::clone(&down);
+    let f = Fixture::new(vec![
+        input("hello"),
+        input("/model"),
+        commit(PanelResult {
+            cursor: 1,
+            ..PanelResult::default()
+        }),
+        Reply::Pause(Arc::new(move || {
+            up.store(false, std::sync::atomic::Ordering::SeqCst);
+        })),
+        input("/model"),
+        commit(PanelResult {
+            cursor: 1,
+            ..PanelResult::default()
+        }),
+        agree(true),
+        Reply::Interrupted,
+    ]);
+    let mut writer = f.writer();
+    writer.fail_log_writes_while(Arc::clone(&down));
+    let dir = writer.dir().to_path_buf();
+    let old = provider("a-model", Ok(vec![]))
+        .reporting_usage()
+        .with_tools()
+        .round(iota::testing::Round::result(iota::provider::RoundResult {
+            content: "an answer".to_owned(),
+            raw_content: openai_reply("an answer").raw_content().cloned(),
+            ..iota::provider::RoundResult::default()
+        }));
+    let built = Built::default();
+    let mut params = f.params_with_catalog(old, f.session(Some(writer)), TWO_ENDPOINTS);
+    params.endpoints = Some(relay_endpoints(TWO_ENDPOINTS, &built));
+    iota::repl::run(params).await.expect("exit");
+
+    let lines = printed(&f.ui);
+    assert!(
+        lines.iter().any(|l| l.starts_with(
+            "relay:vendor/y runs on another provider; what this chat holds could not be saved first"
+        ) && l
+            .ends_with("Nothing was switched. Pick the model again once the session saves.")),
+        "{lines:?}"
+    );
+    assert_eq!(
+        *built.asked.lock().unwrap(),
+        ["relay:vendor/y"],
+        "the refused pick built nothing"
+    );
+    assert!(
+        lines.contains(&"Model switched to vendor/y on relay".to_owned()),
+        "{lines:?}"
+    );
+    let log = std::fs::read_to_string(dir.join("messages.jsonl")).expect("the log");
+    let reply = log
+        .lines()
+        .find(|l| l.contains(r#""content":"an answer""#))
+        .expect("the reply was saved");
+    assert!(
+        reply.contains(r#""raw":{"provider":"openai","#),
+        "saved under the type it was said in: {reply}"
+    );
+}
+
+/// An ephemeral chat a model has replied in has no log to save its replies to before a move — `/save`d after
+/// it, they would lose their payload — so it is told to `/save` first; once it has, it moves like any other.
+#[tokio::test]
+async fn an_ephemeral_chat_that_has_replied_moves_once_saved() {
+    let f = Fixture::new(vec![
+        input("hello"),
+        input("/model"),
+        commit(PanelResult {
+            cursor: 1,
+            ..PanelResult::default()
+        }),
+        input("/save"),
+        input("/model"),
+        commit(PanelResult {
+            cursor: 1,
+            ..PanelResult::default()
+        }),
+        agree(true),
+        Reply::Interrupted,
+    ]);
+    let store = f.store.clone();
+    let session = SessionCtx {
+        new_session: Some(Box::new(move || {
+            store.create(NewSession {
+                provider: "mock".to_owned(),
+                ..NewSession::new(ProviderKind::OpenAi, "a-model")
+            })
+        })),
+        ..f.session(None)
+    };
+    let built = Built::default();
+    let mut params = f.params_with_catalog(
+        provider("a-model", Ok(vec![])).reporting_usage(),
+        session,
+        TWO_ENDPOINTS,
+    );
+    params.endpoints = Some(relay_endpoints(TWO_ENDPOINTS, &built));
+    iota::repl::run(params).await.expect("exit");
+
+    let lines = printed(&f.ui);
+    assert!(
+        lines.contains(&"relay:vendor/y runs on another provider; this chat is not saved, and saved after the move its replies would lose their payload. Nothing was switched. Save it with /save, then pick the model again.".to_owned()),
+        "{lines:?}"
+    );
+    assert_eq!(
+        *built.asked.lock().unwrap(),
+        ["relay:vendor/y"],
+        "the first pick built nothing"
+    );
+    assert!(
+        lines.contains(&"Model switched to vendor/y on relay".to_owned()),
+        "{lines:?}"
+    );
+    let meta = only_meta(&f);
+    assert_eq!(
+        (meta.provider.as_str(), meta.model.as_str()),
+        ("relay", "vendor/y")
+    );
+}
+
+/// A chat a model has replied in cannot move to another KIND of model (token accounting, image generation) —
+/// no confirmation re-installs what a run settles at startup. The way out named is THIS chat continued there
+/// in a new run, which `iota resume -M` moves — not a new session.
+#[tokio::test]
+async fn a_replied_chat_onto_another_kind_of_model_points_at_resume_with_the_move() {
+    let f = Fixture::new(vec![
+        input("/model"),
+        commit(PanelResult {
+            cursor: 1,
+            ..PanelResult::default()
+        }),
+        Reply::Interrupted,
+    ]);
+    let (writer, history) = replied_bundle(&f);
+    let id = writer.id().to_owned();
+    // The chat counts tokens; the endpoint built does not.
+    let mut params = f.params_with_catalog(
+        provider("a-model", Ok(vec![])).reporting_usage(),
+        f.session(Some(writer)),
+        TWO_ENDPOINTS,
+    );
+    params.imported_history = history;
+    params.endpoints = Some(Box::new(|_: &str, id: &str, _: &mut dyn FnMut(String)| {
+        Ok(iota::repl::Endpoint {
+            provider: Box::new(FakeProvider::new().with_model(id)),
+            title_provider: None,
+            layers: iota::cmd::ParamLayers::default(),
+            catalog: iota::repl::ModelCatalog::default(),
+        })
+    }));
+    iota::repl::run(params).await.expect("exit");
+    let lines = printed(&f.ui);
+    assert!(
+        lines.iter().any(|l| l
+            .starts_with("relay:vendor/y runs on another provider; it is another kind of model")
+            && l.ends_with(&format!(
+                "Nothing was switched. This chat continues there in a new run: iota resume {id} -M relay:vendor/y"
+            ))),
+        "{lines:?}"
+    );
+    assert_eq!(surfaces(&f.ui).len(), 1, "nothing was asked");
+    assert_eq!(only_meta(&f).provider, "mock");
 }
 
 /// An agent whose candidate set spans two endpoints; only `mock` is the one the session talks to.

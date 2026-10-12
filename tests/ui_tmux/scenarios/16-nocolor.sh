@@ -61,17 +61,61 @@ run_turn() {
     settle || bad "$1: frame never settled after the turn"
 }
 
+# iota_running — the pane's shell has an `iota` child (scenario 29 reads the pane the same way).
+iota_running() {
+    local pane child
+    pane="$(tm display-message -pt s '#{pane_pid}' 2>/dev/null)"
+    [ -n "$pane" ] || return 1
+    for child in $(pgrep -P "$pane" 2>/dev/null); do
+        case "$(ps -o comm= -p "$child" 2>/dev/null)" in
+            *iota) return 0 ;;
+        esac
+    done
+    return 1
+}
+_iota_gone() { ! iota_running; }
+
+# launch <label> <command> — starts the binary from the shell and waits for THIS run's banner: one
+# more `ι> iota` than the scrollback held before it. Not `wait_vis '❯'`: the composer row the run
+# before left on screen satisfies that at once, and a message typed before the new binary owns the
+# terminal is lost — the control run's `md` was, under load, and its document never came.
+launch() {
+    local before
+    before="$(count_all 'ι> iota')"
+    type_ "$2"
+    key Enter
+    if ! wait_all_more 'ι> iota' "$before"; then
+        bad "$1: the binary never came up in the shell pane"
+        finish
+    fi
+    settle || bad "$1: startup never settled"
+}
+
+QUITS=0
 # quit <label> — two Ctrl+C at idle exit the binary; the shell proves it by echoing a
 # marker the composer could only have shown with its quotes still in it.
+#
+# The marker is typed only once the process is GONE. Until its loop takes `Quit` the binary
+# still reads the terminal, so a line typed behind the Ctrl+C is the binary's to swallow, not
+# the shell's to run: the exit takes ~23 ms after the first Ctrl+C here and the marker landed
+# ~25 ms after it — a race won by a few milliseconds, lost on CI 38201248863 (ubuntu) as "did
+# not exit" by a binary that had exited (the control run after it started in that same shell).
 quit() {
+    iota_running || bad "$1: no iota under the shell to quit"
     key C-c
     key C-c
-    type_ "echo BACK_IN_THE_SH''ELL"
+    if ! _poll_until 60 _iota_gone; then
+        bad "$1: the binary did not exit"
+        return
+    fi
+    # Numbered per call, so a later quit cannot pass on the marker an earlier one left on screen.
+    QUITS=$((QUITS + 1))
+    type_ "echo BACK_IN_THE_SH''ELL_$QUITS"
     key Enter
-    if _poll_until 60 _vis_has 'BACK_IN_THE_SHELL'; then
+    if _poll_until 60 _vis_has "BACK_IN_THE_SHELL_$QUITS"; then
         ok "$1: the binary exited and the shell pane is back"
     else
-        bad "$1: the binary did not exit"
+        bad "$1: the binary exited but the shell never answered"
     fi
 }
 
@@ -79,13 +123,7 @@ start_shell 80 24 || finish
 
 # ------------------------------------------------------------------ A: NO_COLOR=1
 pipe_raw
-type_ "env NO_COLOR=1 $(iota_cmd openai fake)"
-key Enter
-wait_vis '❯' || {
-    bad "NO_COLOR: the binary never came up in the shell pane"
-    finish
-}
-settle || bad "NO_COLOR: startup never settled"
+launch NO_COLOR "env NO_COLOR=1 $(iota_cmd openai fake)"
 run_turn NO_COLOR
 
 # The frame side: attributes may stay, colors may not (X-28).
@@ -132,13 +170,7 @@ quit NO_COLOR
 
 # ------------------------------------------------------------------ B: the control run
 reset_raw
-type_ "$(iota_cmd openai fake)"
-key Enter
-wait_vis '❯' || {
-    bad "control: the binary never came up in the shell pane"
-    finish
-}
-settle || bad "control: startup never settled"
+launch control "$(iota_cmd openai fake)"
 run_turn control
 
 if raw_has_color; then
@@ -161,13 +193,7 @@ quit control
 # interpret escapes, so the chat side is bare and the frame carries attributes and no color —
 # exactly run A, read the same way (the THIRD heading row is this run's).
 reset_raw
-type_ "env TERM=dumb $(iota_cmd openai fake)"
-key Enter
-wait_vis '❯' || {
-    bad "TERM=dumb: the binary never came up in the shell pane"
-    finish
-}
-settle || bad "TERM=dumb: startup never settled"
+launch TERM=dumb "env TERM=dumb $(iota_cmd openai fake)"
 run_turn TERM=dumb
 if raw_has_color; then
     bad "TERM=dumb: a color SGR reached the terminal: $(LC_ALL=C grep -aoE -- "$COLOR_SGR" "$RAW" | head -3 | tr '\n' ' ')"

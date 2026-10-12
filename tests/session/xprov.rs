@@ -5,11 +5,12 @@
 //! that looked ids up on the startup provider — and flipped when the move was made honest.
 
 use crate::common::{log_lines, temp_store};
+use iota::cmd::Declared;
 use iota::provider::model::{JsonObject, Message, Raw, RawContent, ToolCall};
 use iota::provider::{Provider, ProviderKind};
 use iota::session::{
-    ImageSettings, LayeredParams, Moved, NewSession, Overrides, SESSION_SCHEMA_VERSION,
-    SessionMeta, replay_session_settings,
+    ImageSettings, LayeredParams, Moved, NewSession, Overrides, Param, ParamSource, ParamSources,
+    SESSION_SCHEMA_VERSION, SessionMeta, replay_session_settings,
 };
 use iota::testing::FakeProvider;
 use pretty_assertions::assert_eq;
@@ -178,10 +179,13 @@ fn a_moved_writer_keeps_the_new_dialects_payload() {
     assert!(under_r.foreign.is_empty());
 }
 
-/// The resume gate: a bundle recorded on `anthropic` resumed on another provider (`-M`) replays NOTHING — not
-/// the model, not the effort, not the temperature, not the window — and SAYS so, naming both.
+/// The resume gate: a bundle recorded on `anthropic` resumed on another provider (`-M`) is a MOVE. The replay
+/// still hands the provider nothing — not the model, not one knob — but that is no longer the end of it: the
+/// move evaluates the bundle as a `/model` move evaluates the chat, so the effort the user set comes back on
+/// `resp`, while the temperature and the window the old endpoint's config supplied stay behind. The warning
+/// says exactly that, naming both endpoints.
 #[test]
-fn a_resume_on_another_provider_replays_nothing_and_says_so() {
+fn a_resume_on_another_provider_keeps_what_the_user_set_and_says_so() {
     let meta = SessionMeta {
         version: SESSION_SCHEMA_VERSION,
         provider: "anthropic".to_owned(),
@@ -189,6 +193,13 @@ fn a_resume_on_another_provider_replays_nothing_and_says_so() {
         effort: "high".to_owned(),
         temperature: Some(0.3),
         context_window: 200_000,
+        param_sources: Some(ParamSources {
+            context_window: ParamSource::Config,
+            effort: ParamSource::User,
+            temperature: ParamSource::Config,
+            top_p: ParamSource::Builtin,
+            max_tokens: Some(ParamSource::Builtin),
+        }),
         ..SessionMeta::default()
     };
     let mut p = FakeProvider::new()
@@ -202,14 +213,24 @@ fn a_resume_on_another_provider_replays_nothing_and_says_so() {
     assert_eq!(window, None);
     assert_eq!(p.model(), "gpt-x");
     let t = p.as_tunable().expect("tunable");
-    assert_eq!(t.effort(), None);
-    assert_eq!(t.temperature(), None);
+    assert_eq!(t.effort(), None, "the replay itself applies nothing");
     assert_eq!(
         warnings,
         [
-            "Warning: session was recorded on anthropic:claude-x; this run is on resp:gpt-x — its model and tuning are not replayed"
+            "Warning: session was recorded on anthropic:claude-x; this run is on resp:gpt-x — its model is not replayed, and of its tuning only what was set by hand carries over, unless this run's config sets it"
         ]
     );
+
+    // `resp`'s config is silent on all four: what the session runs under there.
+    let kept = Declared::default().resume(&meta, false);
+    assert_eq!(
+        kept.effort,
+        Param::user("high".to_owned()),
+        "the user's own"
+    );
+    assert_eq!(kept.temperature, Param::default(), "anthropic's config's");
+    assert_eq!(kept.context_window, Param::default(), "likewise");
+    assert_eq!(kept.top_p, Param::default());
 }
 
 /// `ParamLayers` resolves a model id on the provider it was built for (identity point 6): layers built for
