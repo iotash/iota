@@ -359,6 +359,62 @@ fn a_recorded_max_tokens_replays_unless_the_config_owns_it() {
     assert_eq!(p.max_tokens(), None, "a bot's config owns the ceiling");
 }
 
+/// F6: a bundle's `max_tokens: 0` replays nothing — the installed ceiling stands, ONE warning says so —
+/// on this endpoint, and on another (where the move's own evaluation decides the ceiling). A bot's
+/// config owns the ceiling, so it neither replays nor warns.
+#[test]
+fn a_recorded_zero_ceiling_is_ignored_with_a_warning() {
+    use iota::provider::MaxTokensTunable;
+    let installed = || {
+        let mut p = iota::provider::anthropic::AnthropicProvider::new(
+            "k",
+            "",
+            "glm-5.3",
+            None,
+            reqwest::Client::new(),
+        );
+        p.set_max_tokens(Some(1234));
+        p
+    };
+    let meta: SessionMeta = serde_json::from_str(
+        r#"{"v":2,"provider":"anthropic","max_tokens":0,"param_sources":{"context_window":"builtin","effort":"builtin","temperature":"builtin","top_p":"builtin","max_tokens":"user"}}"#,
+    )
+    .expect("meta");
+    assert!(meta.invalid_max_tokens());
+    assert!(!meta.records_max_tokens(), "an invalid record is no record");
+    assert_eq!(meta.recorded_max_tokens(), None);
+
+    for on in ["anthropic", "elsewhere"] {
+        let mut warnings = Vec::new();
+        let mut p = installed();
+        apply_session_tuning(&meta, &mut p, on, &Overrides::default(), &mut |w| {
+            warnings.push(w);
+        });
+        assert_eq!(p.max_tokens(), Some(1234), "{on}: the 0 was replayed");
+        let zero: Vec<_> = warnings
+            .iter()
+            .filter(|w| w.contains("max_tokens 0"))
+            .collect();
+        assert_eq!(
+            zero,
+            [
+                "Warning: session max_tokens 0 is not valid (want 1 or more); keeping the current setting"
+            ],
+            "{on}: {warnings:?}"
+        );
+    }
+
+    let bot = Overrides {
+        config_wins: true,
+        ..Overrides::default()
+    };
+    let mut p = installed();
+    apply_session_tuning(&meta, &mut p, "anthropic", &bot, &mut |w| {
+        panic!("unexpected warning: {w}")
+    });
+    assert_eq!(p.max_tokens(), Some(1234));
+}
+
 /// M2/M3: startup has already installed the CURRENT config's ceiling when the replay runs. A bundle whose
 /// source map carries `max_tokens` restores what it says — its recorded default clears the installed
 /// value; one whose map predates the key (main's four keys, decoded from the bytes main writes) leaves the

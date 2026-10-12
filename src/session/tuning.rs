@@ -27,6 +27,11 @@ pub fn warn_if_session_agent_is_gone(
     ));
 }
 
+/// A bundle's `max_tokens: 0` (only a hand edit writes one): ignored as though the key were absent, so the
+/// ceiling startup installed stands — on this endpoint, and on the one a move evaluates.
+const INVALID_MAX_TOKENS: &str =
+    "Warning: session max_tokens 0 is not valid (want 1 or more); keeping the current setting";
+
 /// What the caller already fixed from flags or config; a resumed session's stored value yields to each
 /// (root.go:317-331: explicit flags win).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -109,6 +114,9 @@ pub fn apply_session_tuning(
                     meta.effort
                 ));
             }
+            if meta.invalid_max_tokens() {
+                warn(INVALID_MAX_TOKENS.to_owned());
+            }
         }
         return None;
     }
@@ -142,9 +150,11 @@ pub fn apply_session_tuning(
     if !overrides.config_wins
         && let Some(tunable) = provider.as_max_tokens_tunable()
     {
-        if meta.records_max_tokens() {
-            tunable.set_max_tokens(meta.max_tokens);
-        } else if let Some(n) = meta.max_tokens {
+        if meta.invalid_max_tokens() {
+            warn(INVALID_MAX_TOKENS.to_owned());
+        } else if meta.records_max_tokens() {
+            tunable.set_max_tokens(meta.recorded_max_tokens());
+        } else if let Some(n) = meta.recorded_max_tokens() {
             tunable.set_max_tokens(Some(n));
         }
     }
