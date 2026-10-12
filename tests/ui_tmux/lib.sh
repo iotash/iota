@@ -439,6 +439,11 @@ hist_size() { tm display-message -pt s '#{history_size}'; }
 # were "red". Here `38`/`48` consume their own arguments (`5;n` or `2;r;g;b`, or one colon-joined
 # parameter), and a foreground is red when it is basic 31/91 or palette 1/9. A red BACKGROUND is
 # not a red foreground. A truecolour red is not recognised: tmux never writes one for SGR 31.
+#
+# Colon-separated parameters are read by their ANSI meaning, the same as the semicolon form:
+# `38:5:1` and `38:5:9` ARE red (palette 1/9 spelled the other legal way), `38:5:31` and `38:5:91`
+# are not. tmux writes only the semicolon form; the colon form is accepted for completeness, and
+# `check_red_detector` pins both verdicts.
 
 # sgr_red_rows — stdin is `capture-pane -e` text; prints how many LINES carry at least one SGR that
 # sets a red foreground. Lines, not cells: a whole red row counts once.
@@ -487,10 +492,10 @@ red_rows_with() { tm capture-pane -e -pt s -S -400 2>/dev/null | LC_ALL=C grep -
 check_red_detector() {
     local e sgr
     e="$(printf '\033')"
-    for sgr in '31' '91' '38;5;1' '38;5;9' '1;31' '0;38;5;1' '2;38;5;9' '38:5:1'; do
+    for sgr in '31' '91' '38;5;1' '38;5;9' '1;31' '0;38;5;1' '2;38;5;9' '38:5:1' '38:5:9'; do
         check "red detector: ESC[${sgr}m is red" "$(printf '%s[%smx%s[0m\n' "$e" "$sgr" "$e" | sgr_red_rows)" 1
     done
-    for sgr in '38;5;31' '38;5;91' '38;5;131' '48;5;1' '48;5;9' '32' '39' '0' '38;2;1;31;91' '38:5:31'; do
+    for sgr in '38;5;31' '38;5;91' '38;5;131' '48;5;1' '48;5;9' '32' '39' '0' '38;2;1;31;91' '38:5:31' '38:5:91'; do
         check "red detector: ESC[${sgr}m is not red" "$(printf '%s[%smx%s[0m\n' "$e" "$sgr" "$e" | sgr_red_rows)" 0
     done
     check "red detector: counts rows, not SGRs" "$(printf '%s[31ma%s[31mb\nplain\n%s[38;5;1mc\n' "$e" "$e" "$e" | sgr_red_rows)" 2

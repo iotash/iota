@@ -609,7 +609,7 @@ mapping actually fires.
 Added with the truncation contract (DIVERGENCES X-69). ScriptedUi pins the words, the rollback and
 the next request (`tests/repl/stall.rs`); L4 drives the Anthropic dialect of the mock through a real
 pty (`tests/ui_tmux/scenarios/30-thinking-cut.sh`, `31-tool-args-cut.sh`) and reads the requests back
-off the mock's log. Each opens with a turn that ends normally as the control: no red cell there,
+off the mock's log. Each opens with a turn that ends normally as the control: no red row there,
 the cut's red block after it.
 
 - [x] 自动化：scenario 30 **8e.1 Cut mid-thought.** A reply that is all thinking and stops on

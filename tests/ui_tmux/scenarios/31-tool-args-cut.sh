@@ -24,7 +24,8 @@
 # B: the cut. C: the next message — answered on a history that holds the control's call and not the cut's.
 #
 # The agent runs `shell` unsandboxed and auto-approved (19-background-jobs.sh's config), so a call that
-# escaped the drop would run at once rather than stop at an approval prompt that hides the bug.
+# escaped the drop would go straight to dispatch (and answer with a `tool_result`) rather than wait at an
+# approval prompt that hides the bug.
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
 
@@ -94,7 +95,7 @@ check "the composing [shell …] row is gone from the pane" "$(count_vis '[shell
 check "…and never reached the scrollback" "$(count_all '[shell …]')" 0
 check "…its busy meter with it" "$(count_vis 'ESC to cancel')" 0
 check "the half call settled into no header" "$(count_all '[shell touch l4-cut-ran')" 0
-check "…and no output row of its own (the control's is the one)" "$(count_all '⎿ [command produced no output]')" 1
+check "…and no '[command produced no output]' row of its own (the control's is the one)" "$(count_all '⎿ [command produced no output]')" 1
 # Not dispatched: no tool_result answers it (the wire), not retried. The file is only a side observation —
 # a half call has no `command` to run (see the header).
 check "no tool_result answered the cut — not dispatched (the control's is the one)" "$(answered)" 1
