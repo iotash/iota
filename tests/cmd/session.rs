@@ -3,7 +3,9 @@
 //!
 //! The fixtures under `tests/fixtures/sessions/` are a frozen corpus of the v1 on-disk format, written by the
 //! original Go implementation (tag `go-final`) and verified through its loader; every id, prefix and expected
-//! count is read from their `manifest.json`, so no random id is ever hardcoded here. The last two-implementation
+//! count is read from their `manifest.json`, so no random id is ever hardcoded here. iota reads v1 no more:
+//! the tests resume the corpus as `scripts/session-v1-to-v2.py` converts it ([`home_with_fixtures`]), and
+//! the raw corpus is what the refusal and the script itself are pinned on. The last two-implementation
 //! round trip (that binary reading what this one wrote) is archived in `docs/history/ROUNDTRIP-FINAL.md`.
 //!
 //! Discipline (phase-1 bar): every child runs with a CLEARED environment (`common::cleared_env`) in a temp
@@ -51,12 +53,38 @@ fn fixture(name: &str) -> serde_json::Value {
         .clone()
 }
 
-/// A throwaway `$HOME` holding a private copy of every Go-written bundle at `<home>/.iota/sessions/`.
-fn home_with_fixtures() -> TempDir {
+/// A throwaway `$HOME` holding a private copy of every Go-written bundle at `<home>/.iota/sessions/`, as Go
+/// wrote it: v1.
+fn home_with_v1_fixtures() -> TempDir {
     let home = TempDir::new().expect("temp home");
     let sessions = home.path().join(".iota").join("sessions");
     fs::create_dir_all(&sessions).expect("mkdir sessions");
     copy_dir(&fixtures_dir(), &sessions);
+    home
+}
+
+/// [`home_with_v1_fixtures`], with the gemini bundles converted to v2 as `scripts/session-v1-to-v2.py`
+/// converts them under these tests' config, where `p` is the one gemini endpoint: `v: 2`, `provider: p`, no
+/// `base_url`, every other key as Go wrote it (the script's own run is pinned by
+/// `the_conversion_script_maps_v1_bundles_by_the_config`). The log is never touched.
+fn home_with_fixtures() -> TempDir {
+    let home = home_with_v1_fixtures();
+    let m = manifest();
+    for f in m["fixtures"].as_array().expect("fixtures array") {
+        let path = sessions_root(home.path())
+            .join(f["dir"].as_str().expect("dir"))
+            .join("meta.json");
+        let mut meta: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("meta")).expect("JSON");
+        if meta["provider"] != "gemini" {
+            continue;
+        }
+        let obj = meta.as_object_mut().expect("object");
+        obj.insert("v".to_owned(), SESSION_SCHEMA_VERSION.into());
+        obj.insert("provider".to_owned(), "p".into());
+        obj.remove("base_url");
+        fs::write(&path, serde_json::to_vec_pretty(&meta).expect("JSON")).expect("write meta");
+    }
     home
 }
 
@@ -351,8 +379,7 @@ async fn resume_go_bundle_appends_one_turn() {
     );
 
     // meta.json: `future_key` survived a Rust rewrite (D-46), the count grew by the delta, the stamp moved,
-    // and the v1 bundle settled as v2 (`resume_upgrades_a_v1_bundle_to_the_name_it_runs_on`): its `base_url`
-    // went with v1, the parameters it runs under were recorded with their sources — and nothing else changed.
+    // the parameters it runs under were recorded with their sources — and nothing else changed.
     let meta_after: serde_json::Value =
         serde_json::from_slice(&fs::read(bundle.join("meta.json")).expect("read meta"))
             .expect("meta is JSON");
@@ -368,7 +395,6 @@ async fn resume_go_bundle_appends_one_turn() {
         .unwrap()
         .keys()
         .map(String::as_str)
-        .filter(|k| *k != "base_url")
         .chain(["param_sources"])
         .collect();
     keys_before.sort_unstable();
@@ -380,7 +406,7 @@ async fn resume_go_bundle_appends_one_turn() {
         .collect();
     assert_eq!(
         keys_after, keys_before,
-        "the upgrade dropped v1's base_url, recorded the sources, and invented nothing else"
+        "the resume recorded the sources, and invented nothing else"
     );
     // The atomic write left no debris behind (D-45).
     assert!(!bundle.join("meta.json.tmp").exists());
@@ -585,32 +611,225 @@ async fn resume_with_another_provider_moves_the_session_there() {
     }
 }
 
-/// The v1 contract, unchanged: a Go-era bundle recorded the TYPE `gemini` (and a `base_url`). Resumed by an
-/// agent on `p` — a gemini endpoint under another name — it runs on `p` and replays its model and tuning as
-/// every build before v2 did; and it settles as v2 under the name it actually ran on: `provider: p`, its
-/// `base_url` gone with v1. The NEXT resume reads that name.
+/// A v1 bundle — Go's, and every build's before v2 — recorded the provider TYPE, which names no endpoint: it is
+/// not read. The resume fails before anything is opened, says what the bundle is and which script converts it
+/// and where that lives, and leaves the bundle exactly as it was — no fall back to the agent's endpoint.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn resume_upgrades_a_v1_bundle_to_the_name_it_runs_on() {
+async fn a_v1_bundle_is_refused_and_names_the_conversion_script() {
     let server = MockServer::start().await;
     google_stub(&server, false).await;
     let cwd = TempDir::new().expect("temp cwd");
-    let home = home_with_fixtures();
+    let home = home_with_v1_fixtures();
     let f = fixture("go-gemini-rich");
     let id = f["id"].as_str().unwrap().to_owned();
     let bundle = sessions_root(home.path()).join(f["dir"].as_str().unwrap());
-    let before: serde_json::Value =
-        serde_json::from_slice(&fs::read(bundle.join("meta.json")).expect("meta")).expect("JSON");
-    assert_eq!(before["v"], 1);
-    assert_eq!(before["provider"], "gemini");
-    assert_eq!(before["base_url"], "https://example.test/v1");
+    let meta_before = fs::read(bundle.join("meta.json")).expect("meta");
+    let log_before = fs::read(bundle.join("messages.jsonl")).expect("log");
 
-    write_config(cwd.path(), &server.uri(), "", "");
+    write_config(cwd.path(), &server.uri(), "gemini-2.5-pro", "");
+    let mut cmd = iota(cwd.path(), home.path());
+    cmd.args(["resume", &id, "-m", "hello"]);
+    let o = output(cmd).await;
+    assert_error(
+        &o,
+        &format!(
+            "session {id} was written by an older iota (meta.json v1: its provider is a type, not a provider name) and is no longer read; convert it with scripts/session-v1-to-v2.py from the iota source tree (a dry run by default, --write to apply)"
+        ),
+    );
+    assert!(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(iota::session::CONVERT_SCRIPT)
+            .is_file(),
+        "the script the refusal names exists"
+    );
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .is_empty(),
+        "nothing was sent anywhere"
+    );
+    assert_eq!(
+        fs::read(bundle.join("meta.json")).expect("meta"),
+        meta_before
+    );
+    assert_eq!(
+        fs::read(bundle.join("messages.jsonl")).expect("log"),
+        log_before
+    );
+}
+
+/// `python3 scripts/session-v1-to-v2.py`, run where a user runs it, on the Go corpus: the provider TYPE becomes
+/// the config's entry of that type — read by iota itself (`iota list providers`) — when there is exactly one;
+/// two of a type or none are reported and left alone, never guessed, until `--map` decides. A dry run writes
+/// nothing; `--write` rewrites `meta.json` alone; a second run finds nothing to do. The converted bundle then
+/// resumes on `p` and replays its model and tuning, and the next resume reads that name.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_conversion_script_maps_v1_bundles_by_the_config() {
+    let server = MockServer::start().await;
+    google_stub(&server, false).await;
+    let cwd = TempDir::new().expect("temp cwd");
+    let home = home_with_v1_fixtures();
+    let root = sessions_root(home.path());
+    // gemini: one entry (`p`); openai: two (`q1`, `q2`); anthropic and openresponses: none.
+    fs::write(
+        cwd.path().join(".iota.yaml"),
+        format!(
+            "providers:\n  p: {{type: gemini, key: x, url: {}}}\n  q1: {{type: openai, key: x}}\n  q2: {{type: openai, key: y, url: \"https://a.test/v1\"}}\nagents:\n  default:\n    choices: [\"p:*\"]\n",
+            server.uri()
+        ),
+    )
+    .expect("write config");
+    let snapshot = |root: &Path| -> Vec<(PathBuf, Vec<u8>)> {
+        let mut files = Vec::new();
+        let mut dirs = vec![root.to_path_buf()];
+        while let Some(d) = dirs.pop() {
+            for e in fs::read_dir(&d).expect("read_dir") {
+                let p = e.expect("entry").path();
+                if p.is_dir() {
+                    dirs.push(p);
+                } else {
+                    files.push((p.clone(), fs::read(&p).expect("read")));
+                }
+            }
+        }
+        files.sort();
+        files
+    };
+    let script = |args: &[&str]| {
+        let mut cmd = Command::new("python3");
+        cleared_env(&mut cmd, home.path())
+            .current_dir(cwd.path())
+            .stdin(Stdio::null())
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join(iota::session::CONVERT_SCRIPT))
+            .args(["--iota", env!("CARGO_BIN_EXE_iota")])
+            .args(args);
+        let o = cmd.output().expect("run python3");
+        assert!(o.stderr.is_empty(), "{}", err(&o));
+        (o.status.code(), out(&o))
+    };
+    let line = |report: &str, id: &str| {
+        report
+            .lines()
+            .find(|l| l.starts_with(&format!("{id}: ")))
+            .unwrap_or_else(|| panic!("no line for {id}: {report}"))
+            .to_owned()
+    };
+    let id_of = |name: &str| fixture(name)["id"].as_str().unwrap().to_owned();
+    let gemini = id_of("go-gemini-rich");
+    let openai: Vec<String> = manifest()["fixtures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["meta"]["provider"] == "openai")
+        .map(|f| f["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(openai.len(), 2, "the corpus has two openai bundles");
+    let anthropic = manifest()["fixtures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["meta"]["provider"] == "anthropic")
+        .map(|f| f["id"].as_str().unwrap().to_owned())
+        .expect("an anthropic bundle");
+
+    // The dry run reports each bundle and writes nothing.
+    let before = snapshot(&root);
+    let (code, report) = script(&[]);
+    assert_eq!(code, Some(1), "bundles were left alone: {report}");
+    assert_eq!(snapshot(&root), before, "a dry run wrote something");
+    assert!(
+        line(&report, &gemini).starts_with(&format!(
+            "{gemini}: v 1 -> 2; provider \"gemini\" -> \"p\"; removed base_url \"https://example.test/v1\" ("
+        )),
+        "unique: {report}"
+    );
+    for id in &openai {
+        assert!(
+            line(&report, id).starts_with(&format!(
+                "{id}: SKIPPED — type openai has 2 providers in the config (q1, q2); choose one with --map openai=<name> ("
+            )),
+            "ambiguous: {report}"
+        );
+    }
+    assert!(
+        line(&report, &anthropic).starts_with(&format!(
+            "{anthropic}: SKIPPED — no provider in the config has type anthropic; add one, or run it on the built-in endpoint with --map anthropic=anthropic ("
+        )),
+        "not found: {report}"
+    );
+    assert!(
+        report
+            .ends_with("1 to convert (dry run: rerun with --write), 4 left alone, 0 already v2\n"),
+        "{report}"
+    );
+
+    // `--write` rewrites the one it could map — its meta alone — and leaves the rest as they were.
+    let (code, report) = script(&["--write"]);
+    assert_eq!(code, Some(1), "{report}");
+    assert!(
+        report.ends_with("1 converted, 4 left alone, 0 already v2\n"),
+        "{report}"
+    );
+    let after = snapshot(&root);
+    let changed: Vec<&PathBuf> = after
+        .iter()
+        .zip(&before)
+        .filter(|(a, b)| a != b)
+        .map(|(a, _)| &a.0)
+        .collect();
+    let bundle = root.join(fixture("go-gemini-rich")["dir"].as_str().unwrap());
+    assert_eq!(after.len(), before.len(), "no file appeared or went");
+    assert_eq!(
+        changed,
+        [&bundle.join("meta.json")],
+        "only that meta changed"
+    );
+    let meta: serde_json::Value =
+        serde_json::from_slice(&fs::read(bundle.join("meta.json")).expect("meta")).expect("JSON");
+    assert_eq!(meta["v"], 2);
+    assert_eq!(meta["provider"], "p");
+    assert!(meta.get("base_url").is_none(), "{meta}");
+    assert_eq!(meta["future_key"]["n"], 42, "every other key kept");
+
+    // Again: nothing more to do. `--map` decides what the config does not, and is checked against it.
+    let (_, report) = script(&[]);
+    assert!(
+        report
+            .ends_with("0 to convert (dry run: rerun with --write), 4 left alone, 1 already v2\n"),
+        "{report}"
+    );
+    let (_, report) = script(&["--map", "openai=p"]);
+    assert!(
+        line(&report, &openai[0]).contains("SKIPPED — --map openai=p: p is of type gemini"),
+        "{report}"
+    );
+    let (code, report) = script(&[
+        "--write",
+        "--map",
+        "openai=q2",
+        "--map",
+        "anthropic=anthropic",
+        "--map",
+        "openresponses=openresponses",
+    ]);
+    assert_eq!(code, Some(0), "{report}");
+    assert!(
+        report.ends_with("4 converted, 0 left alone, 1 already v2\n"),
+        "{report}"
+    );
+    let (code, report) = script(&["--write"]);
+    assert_eq!(code, Some(0), "{report}");
+    assert_eq!(report, "0 converted, 0 left alone, 5 already v2\n");
+
+    // The converted Go bundle resumes on `p`, with its model and tuning — and so does the next resume.
     for question in ["one", "two"] {
         let mut cmd = iota(cwd.path(), home.path());
-        cmd.args(["resume", &id, "-m", question]);
+        cmd.args(["resume", &gemini, "-m", question]);
         let o = output(cmd).await;
         assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
-        // No move is announced: the session runs where the agent is, the first time by type, then by name.
         assert!(err(&o).starts_with("Resumed session "), "{}", err(&o));
     }
     let reqs = server.received_requests().await.expect("requests");
@@ -624,14 +843,10 @@ async fn resume_upgrades_a_v1_bundle_to_the_name_it_runs_on() {
             "HIGH"
         );
     }
-    let after: serde_json::Value =
+    let meta: serde_json::Value =
         serde_json::from_slice(&fs::read(bundle.join("meta.json")).expect("meta")).expect("JSON");
-    assert_eq!(after["v"], 2);
-    assert_eq!(after["provider"], "p");
-    assert_eq!(after["model"], "gemini-2.5-pro");
-    assert_eq!(after["temperature"], 0.7);
-    assert_eq!(after["effort"], "high");
-    assert!(after.get("base_url").is_none(), "{after}");
+    assert_eq!(meta["provider"], "p");
+    assert_eq!(meta["model"], "gemini-2.5-pro");
 }
 
 /// A bundle written BEFORE the layering existed — one of the frozen Go-corpus fixtures, which carries a

@@ -44,15 +44,12 @@ pub struct Moved {
 }
 
 impl Moved {
-    /// The meta after the move: v2, the endpoint, the parameters and the image settings. A v1 bundle's
-    /// `base_url` is that version's own key, not a stranger's: v2 has none, so it goes with the upgrade.
+    /// The meta after the move: the endpoint, the parameters and the image settings.
     fn apply(&self, meta: &mut SessionMeta) {
-        meta.version = crate::session::SESSION_SCHEMA_VERSION;
         self.provider.clone_into(&mut meta.provider);
         self.model.clone_into(&mut meta.model);
         meta.stamp(self.window, &self.params);
         meta.set_image(&self.image);
-        meta.extra.remove("base_url");
     }
 }
 
@@ -362,8 +359,8 @@ impl SessionWriter {
     }
 
     /// Moves the session to another endpoint, or settles where a resumed one runs: the payloads appended from
-    /// here on are tagged with `to.kind`, and the meta becomes v2 and says — in ONE write — the provider, the
-    /// model and everything the session runs under there ([`Moved`]). The records already in the log keep their
+    /// here on are tagged with `to.kind`, and the meta says — in ONE write — the provider, the model and
+    /// everything the session runs under there ([`Moved`]). The records already in the log keep their
     /// own tags.
     ///
     /// A pending bundle changes in memory only (its first write carries it). An existing one is written first

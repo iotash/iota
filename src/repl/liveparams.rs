@@ -9,7 +9,7 @@
 //! provider every tab in `/model` can already write to.
 
 use crate::provider::{Effort, Provider};
-use crate::session::{LayeredParams, Param, ParamSources, SessionMeta};
+use crate::session::{ImageSettings, LayeredParams, Moved, Param, ParamSources, SessionMeta};
 use crate::sync::lock;
 
 use crate::repl::commands::settings::{effort_label, float_ptr_equal, format_temperature};
@@ -73,23 +73,6 @@ fn read(provider: &mut dyn Provider, window: u64, sources: ParamSources) -> Laye
     }
 }
 
-/// Hands the four tunables the chat runs under to `provider` — the instance a move to another endpoint puts in
-/// place of the live one — so [`switch_model`] re-evaluates what the session was running under, as it does
-/// for a switch on one endpoint, rather than the fresh instance's own defaults. A knob the dialect has no
-/// place for is dropped with it. The window lives in the budget and needs no carrying.
-pub(crate) fn carry(provider: &mut dyn crate::provider::Provider, running: &LayeredParams) {
-    if let Some(t) = provider.as_tunable() {
-        t.set_effort(Effort::optional(&running.effort.value).ok().flatten());
-        t.set_temperature(running.temperature.value);
-    }
-    if let Some(t) = provider.as_top_p_tunable() {
-        t.set_top_p(running.top_p.value);
-    }
-    if let Some(t) = provider.as_max_tokens_tunable() {
-        t.set_max_tokens(running.max_tokens.value);
-    }
-}
-
 /// Re-evaluates the five parameters for the model the chat has just switched to, and applies whatever moved.
 ///
 /// This is the second (and last) evaluating moment: `agents:` → the NEW model's `models:` entry → the
@@ -102,7 +85,7 @@ pub(crate) fn switch_model(repl: &mut Repl, id: &str) -> bool {
     let running = current(repl);
     let r: &Repl = repl;
     let next = reevaluate(r, &r.conv.layers, id, &running);
-    apply(repl, &next)
+    apply(repl, &running, &next)
 }
 
 /// The five parameters re-evaluated for `id` against `layers`, from what the session is `running` under: the
@@ -182,8 +165,8 @@ fn in_range(repl: &Repl, v: f64, lo: f64, hi: f64, label: &str) -> bool {
     false
 }
 
-/// Applies every parameter whose value moved to the provider, the budget and the bundle, one dim notice
-/// each, and adopts the source of each one it applied.
+/// Applies every parameter whose value moved from `now` — what the chat ran under before the switch — to the
+/// provider, the budget and the bundle, one dim notice each, and adopts the source of each one it applied.
 ///
 /// A parameter the provider cannot act on is left alone ENTIRELY — value, notice and source. The capability
 /// accessor is the same gate the startup tuning uses (which warns once and moves on there); a chat must not
@@ -193,13 +176,12 @@ fn in_range(repl: &Repl, v: f64, lo: f64, hi: f64, label: &str) -> bool {
 /// Every write carries the source map with it. A value and where it came from are one fact: writing the
 /// value alone would leave a bundle saying a window the config supplied is the user's own, and the next
 /// switch would then keep a window it was supposed to drop.
-pub(crate) fn apply(repl: &mut Repl, next: &LayeredParams) -> bool {
-    let now = current(repl);
+pub(crate) fn apply(repl: &mut Repl, now: &LayeredParams, next: &LayeredParams) -> bool {
     let counts_tokens = repl.conv.provider.reports_usage();
     let tunable = repl.conv.provider.as_tunable().is_some();
     let nucleus = repl.conv.provider.as_top_p_tunable().is_some();
     let ceiling = repl.conv.provider.as_max_tokens_tunable().is_some();
-    let landed = landing(&mut *repl.conv.provider, &now, next);
+    let landed = landing(&mut *repl.conv.provider, now, next);
     let window = landed.context_window.value;
     let sources = landed.sources();
     let mut changed = false;
@@ -277,7 +259,7 @@ pub(crate) fn apply(repl: &mut Repl, next: &LayeredParams) -> bool {
 
 /// What the chat runs under once `next` is applied to `provider`, whose values are `now`: `next` for every
 /// parameter the provider can act on, `now` for the rest (the gates of [`apply`]).
-pub(crate) fn landing(
+fn landing(
     provider: &mut dyn Provider,
     now: &LayeredParams,
     next: &LayeredParams,
@@ -309,33 +291,73 @@ pub(crate) fn landing(
     landed
 }
 
+/// Puts `next` on `provider` — an instance about to run the session: a resume's, or the one a move installs —
+/// as far as its dialect takes it, and returns what the session runs under there: `next` for every knob the
+/// provider took, nothing for the rest. The window is not the provider's to take: it stays as evaluated, for
+/// the budget and for the warning a provider that counts no tokens gives about one — with the built-in
+/// default named where tokens are counted and the evaluation dropped a declared one ([`landing`]).
+pub(crate) fn land(provider: &mut dyn Provider, next: &LayeredParams) -> LayeredParams {
+    let mut landed = LayeredParams {
+        context_window: next.context_window.clone(),
+        ..LayeredParams::default()
+    };
+    if provider.reports_usage() && landed.context_window.value == 0 {
+        landed.context_window.value = DEFAULT_CONTEXT_WINDOW;
+    }
+    if let Some(t) = provider.as_tunable() {
+        t.set_effort(Effort::optional(&next.effort.value).ok().flatten());
+        t.set_temperature(next.temperature.value);
+        landed.effort = next.effort.clone();
+        landed.temperature = next.temperature.clone();
+    }
+    if let Some(t) = provider.as_top_p_tunable() {
+        t.set_top_p(next.top_p.value);
+        landed.top_p = next.top_p.clone();
+    }
+    if let Some(t) = provider.as_max_tokens_tunable() {
+        t.set_max_tokens(next.max_tokens.value);
+        landed.max_tokens = next.max_tokens.clone();
+    }
+    landed
+}
+
+/// Where the session runs once `provider` — named `name` in the config — runs it under `params`: what
+/// [`SessionWriter::move_to`](crate::session::SessionWriter::move_to) writes. The window recorded is the one
+/// the budget holds (the built-in default when nothing declares one), and none for a provider with no token
+/// accounting.
+pub(crate) fn moved(name: &str, provider: &mut dyn Provider, params: LayeredParams) -> Moved {
+    let window = provider
+        .reports_usage()
+        .then_some(match params.context_window.value {
+            0 => DEFAULT_CONTEXT_WINDOW,
+            w => w,
+        });
+    Moved {
+        kind: provider.kind(),
+        provider: name.to_owned(),
+        model: provider.model().to_owned(),
+        params,
+        window,
+        image: ImageSettings::of(provider),
+    }
+}
+
+/// Where the chat runs right now ([`moved`]): what a bundle this run created is told when the chat starts,
+/// and what `/save` mints one with — so a resume finds the session as it was rather than re-deriving it from
+/// a config that may have moved since. The values are read back from the provider and the budget
+/// ([`current`]), so a knob the dialect cannot act on is never recorded as though it had applied.
+pub(crate) fn moved_now(repl: &mut Repl) -> Moved {
+    let params = current(repl);
+    let name = repl.conv.catalog.session_provider().to_owned();
+    moved(&name, &mut *repl.conv.provider, params)
+}
+
 /// How a `Max tokens:` notice names a ceiling: the number, or `default (32000)` for the dialect's own.
 fn max_tokens_label(n: Option<u32>) -> String {
     n.map_or_else(
         || format!("default ({})", crate::llm::anthropic::DEFAULT_MAX_TOKENS),
         |n| n.to_string(),
     )
-}
-
-/// The chat's parameters as [`read`] reads them off `provider` — the instance a move is about to install —
-/// with the budget's window and the chat's sources: what [`apply`] will compare against once it is installed.
-pub(crate) fn read_off(repl: &Repl, provider: &mut dyn Provider) -> LayeredParams {
-    read(provider, repl.conv.budget.window(), repl.conv.param_sources)
-}
-
-/// What a session STARTING writes into a bundle it has just created: the five values it is running under
-/// and the source of each, so a resume finds the session as it was rather than re-deriving it from a config
-/// that may have moved since.
-///
-/// Only a fresh bundle is stamped. A resumed one already says what it was running under, and where it says
-/// nothing the evaluated value lives in memory until something changes it — rewriting its meta on the way in
-/// would restate a config the user may be about to edit.
-///
-/// `window` is `None` for a provider with no token accounting: a session that cannot count tokens has no
-/// window to record. The other four come from [`current`], i.e. from the provider itself, so a knob the
-/// dialect cannot act on is recorded as the nothing it is.
-pub(crate) fn stamp_bundle(repl: &Repl, window: Option<u64>, params: &LayeredParams) {
-    update_meta(repl, |m| m.stamp(window, params));
 }
 
 /// ONE knob's write: its value and the source map it landed with, together (see [`apply`]).

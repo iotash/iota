@@ -226,7 +226,7 @@ rev 1 直接沿用 resume 的 meta 回放，后果是 system 与模型冻结在�
 
 - **harness 按日重组**：`Conversation.harness` 是启动时组装一次的（`src/cmd/interactive/mod.rs:327`），跨日后 `date:` 会过期。做法：`Repl` 保留 `HarnessInputs` 和 `Presenter` 的引用，新增 `Conversation.harness_day: String`。每条消息发送前比较 `harness::today()`，变了才重组，所以 prompt cache 一天最多失效一次。重组时顺带刷新 §3.4 的记忆快照，一次失效合并成一次。
 - **Resumed 时的两条 notice（评审 M2、M3）**：
-  - 时间：`Resumed after 3 days (last activity 2026-09-27 18:02)`，**间隔 ≥ 1 小时才发**（`RESUME_GAP_NOTICE_SECS = 3_600`）；更短的重启不值得每次往日志和上下文里多写一行。时间用**修复尾部之前**的 `meta.updated_at`（`Session::last_written`）：§2.7 的 `repair_tail` 会追加记录、刷新 `updated_at`，用刷新后的值就会把「隔了三天」算成「刚刚」。同理，启动路径上写 meta 的地方（回写 model / provider / cwd、`stamp_bundle` 回写四个参数）**只在值真的变了才写**（`SessionWriter::update_meta` 比较前后），否则「打开看一眼就关」也会把 `updated_at` 推到刚才；`updated_at` 因此代表最后一次真正的写入。显示按本机时区。
+  - 时间：`Resumed after 3 days (last activity 2026-09-27 18:02)`，**间隔 ≥ 1 小时才发**（`RESUME_GAP_NOTICE_SECS = 3_600`）；更短的重启不值得每次往日志和上下文里多写一行。时间用**修复尾部之前**的 `meta.updated_at`（`Session::last_written`）：§2.7 的 `repair_tail` 会追加记录、刷新 `updated_at`，用刷新后的值就会把「隔了三天」算成「刚刚」。同理，启动路径上写 meta 的地方（回写 model / provider / cwd、`liveparams::moved_now` 回写五个参数）**只在值真的变了才写**（`SessionWriter::update_meta` 与 `move_to` 比较前后），否则「打开看一眼就关」也会把 `updated_at` 推到刚才；`updated_at` 因此代表最后一次真正的写入。显示按本机时区。
   - 地点：本次的项目根 ≠ `meta.cwd`（上一次运行的目录，§1.3）时加一条 `Resumed in a different project: <old> → <new>`，**不设门槛**——换项目是事件，不是噪音。`meta.cwd` 为空（早于这个键的老 bundle）时不发。视图里没有时间戳（`SessionRecord.at` 在 L2），这两条是模型重启后唯一的时间感来源。
 - **jobs 退出通知（L2）**：退出前如果还有运行中的 job，先 `append_messages` 一条 `notice` 记录 `Background jobs <ids> were killed when iota exited.`，再 `kill_all`。下次启动时模型能看到。
 

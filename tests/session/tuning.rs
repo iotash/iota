@@ -98,6 +98,7 @@ fn apply_session_tuning_provider_mismatch_applies_nothing() {
     let mut provider = stub();
     let mut meta = tuned_meta();
     meta.provider = "different".to_owned();
+    meta.model = "m0".to_owned();
     meta.image = true;
     meta.json_edits = true;
     meta.aspect_ratio = "3:2".to_owned();
@@ -110,8 +111,9 @@ fn apply_session_tuning_provider_mismatch_applies_nothing() {
     assert_eq!(window, None, "the window is gated on the provider too");
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(
-        warnings[0].starts_with("Warning: session was recorded on a different endpoint")
-            && warnings[0].ends_with(
+        warnings[0].starts_with(
+            "Warning: session was recorded on different:m0; this run is on openai:m1 — "
+        ) && warnings[0].ends_with(
                 "its model is not replayed, and of its tuning only what was set by hand carries over, unless this run's config sets it"
             ),
         "{warnings:?}"

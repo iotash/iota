@@ -16,6 +16,19 @@ pub enum SessionError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+    /// The bundle was written before the provider NAME became its identity (`meta.json` `v` below
+    /// [`SESSION_SCHEMA_VERSION`](crate::session::SESSION_SCHEMA_VERSION)): its `provider` is a TYPE, which
+    /// names no endpoint, so it is not read — the one-time script converts it.
+    #[error(
+        "session {id} was written by an older iota (meta.json v{version}: its provider is a type, not a provider name) and is no longer read; convert it with {} from the iota source tree (a dry run by default, --write to apply)",
+        crate::session::CONVERT_SCRIPT
+    )]
+    OldFormat {
+        /// The session id.
+        id: String,
+        /// The version its meta records (`0` when it records none).
+        version: i64,
+    },
     /// The fragment matched no session (chat/session.go:257,274 — `errNoSessionMatch` wrapped). Scoped
     /// resolution widens to the global view on THIS variant and no other.
     #[error("no session matches {0:?}")]

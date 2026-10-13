@@ -85,10 +85,16 @@ A session is a **directory** on disk:
 > `raw.provider` tag (§5).
 >
 > **v1** (Go, and every Rust build before v2): `provider` is the provider TYPE, and `base_url` was recorded. A v1
-> bundle is read as such: it resumes on the agent's endpoint, replays its model and tuning only on an endpoint of
-> that type (a warning otherwise), and the first run on it settles it as v2 under the name it actually ran on —
-> when the type matched, or where `-M` moved it; its `base_url` goes with v1. The version is the only thing that
-> tells the two apart: the same `provider: anthropic` means a type in v1 and a name in v2.
+> bundle is **no longer read** (decision of 2026-10-13): every way a session is opened — `iota resume`, `/session`,
+> a bot's launch — fails with `session <id> was written by an older iota (meta.json v1: …); convert it with
+> scripts/session-v1-to-v2.py …`, never silently and never by falling back to another endpoint. The one-time
+> script `scripts/session-v1-to-v2.py` converts them: a dry run by default (`--write` applies), it maps the type to
+> the ONE `providers:` entry of that type in the current config — read by `iota list providers`, so `-c` and the
+> project's `.iota.yaml` count as for a run — and reports a type with several entries or none instead of guessing
+> (`--map TYPE=NAME` decides; NAME may be the type itself for its built-in endpoint); it sets `v: 2`, drops
+> `base_url`, keeps every other key and never touches `messages.jsonl`; a v2 bundle is skipped, so a second run
+> changes nothing. The version is the only thing that tells the two apart: the same `provider: anthropic` means a
+> type in v1 and a name in v2. The listing still shows a v1 bundle; only opening it is refused.
 
 ### 4.2 `messages.jsonl` (one line each)
 
@@ -247,7 +253,7 @@ For switching/resuming mid-conversation. `/session` opens a tabbed ui surface wi
 
 ### 8.3 Shared rules
 
-- *(Superseded 2026-10-10/11.)* A v2 resume runs on the provider `meta.provider` names, built from the config as `-M <provider>:<model>` would build it, unless `-M` chose another; a name the config does not define is an error, never a fall back to another endpoint. The meta is read BEFORE any provider is opened (DIVERGENCES X-67). Its model and tuning replay only on that same provider — on another one (`-M`) nothing replays, a warning says so, and the session migrates (X-66). A v1 resume keeps the rule above it (§4.1).
+- *(Superseded 2026-10-10/11.)* A v2 resume runs on the provider `meta.provider` names, built from the config as `-M <provider>:<model>` would build it, unless `-M` chose another; a name the config does not define is an error, never a fall back to another endpoint. The meta is read BEFORE any provider is opened (DIVERGENCES X-67). Its model and tuning replay only on that same provider — on another one (`-M`) nothing replays, a warning says so, and the session migrates (X-66). A v1 bundle is not resumed at all (§4.1).
 - Each record's `raw` is restored when its own `raw.provider` tag equals the loading type; one that is dropped is counted, and the resume says how many earlier replies' reasoning the model does not see.
 
 ## 9. Decoupling from context budgeting / compaction (important property)
