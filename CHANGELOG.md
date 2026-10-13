@@ -3,6 +3,30 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## Unreleased
+
+### Changed
+
+- **An agent without `choices:` is offered its `model:` alone.** Since 0.4.0
+  it was offered every `models:` entry, so a model declared for one agent
+  showed up in every other agent's `/model` list. Write `choices:` to offer
+  more; an agent that names no model at all still gets every entry. A model
+  outside the choices is still allowed, with a warning. A bare word given to
+  `-M` or typed in the `/model` field is still read as the `models:` entry of
+  that name, whether or not it is among the choices — `-M fast` is the model
+  `fast` stands for, never a model id spelled `fast`. Only a word no entry has
+  is a model id on the current provider.
+- **`/model` rows no longer say what picking them does.** A row is the model,
+  the `models:` entries that name it in brackets, and `(current)` on the one
+  the chat is running; `(moves the chat)` and `(needs a new session)` are
+  gone. The pick reports itself — `Model switched to … on …`, the
+  confirmation before a chat that has replied moves, or the refusal in a bot.
+- **A compaction in progress shows in the transcript, not on the status
+  row.** `Compacting context…` is the spinner row thinking uses, raised while
+  the summary is written and replaced by the outcome when it is done. A
+  `/compact` with nothing to summarize still says only `Nothing to compact
+  yet.`
+
 ## 0.7.0 - 2026-10-13
 
 ### Added
