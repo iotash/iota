@@ -16,6 +16,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::session::SessionInfo;
+use crate::sync::lock;
 use crate::ui::facade::{Panel, TabbedSpec};
 
 use crate::repl::render::replay::{RESUME_ECHO_ROUNDS, echo_rounds, last_rounds};
@@ -231,18 +232,40 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
     repl.conv.budget.reseed(&repl.conv.history);
     repl.conv.ctxm.seed_totals(usage); // the switched-to session brings its own totals
     repl.conv.pending.clear();
+    // The auto-compaction snooze was the session being left's answer, about ITS occupancy.
+    repl.conv.compact_declined = 0;
     // A live switch takes the bundle's model and tuning whole: no flag is in play any more.
     let warn_tr = Arc::clone(&repl.handles.tr);
     let on = repl.conv.catalog.session_provider().to_owned();
-    let window = crate::session::replay_session_settings(
+    crate::session::replay_session_settings(
         &resumed.meta,
         &mut *repl.conv.provider,
         &on,
         &crate::session::Overrides::default(),
         &mut |w| warn_tr.notice(&w),
     );
-    if let Some(n) = window {
-        repl.conv.budget.set_window(n);
+    // The five layered parameters, as `iota resume` reads them (`Declared::resume`; brain page
+    // `model-param-layering`): the bundle's values WITH its sources — `ParamSources::LEGACY` for a bundle
+    // that has none — and the evaluation for a parameter it never recorded. All five land on the provider
+    // (the window on the budget): the replay only sets what the bundle carries, and whatever else the
+    // session being left ran under would otherwise stay behind, under a source map that is no longer its
+    // own. What is kept and recorded is the resume's reading itself, as `iota resume` keeps it — this is the
+    // endpoint the bundle was recorded on, so a knob its dialect has no place for keeps its record too.
+    let model = repl.conv.provider.model().to_owned();
+    let next = crate::repl::liveparams::declared(repl, &repl.conv.layers, &model)
+        .resume(&resumed.meta, true);
+    let landed = crate::repl::liveparams::land(&mut *repl.conv.provider, &next);
+    repl.conv.budget.set_window(landed.context_window.value);
+    repl.conv.param_sources = next.sources();
+    // Recorded at once, as `iota resume` records it: a bundle that never had a parameter gets the value it
+    // was evaluated to, and its source, before the next switch reads either.
+    let moved = crate::repl::liveparams::moved(&on, &mut *repl.conv.provider, next);
+    if let Some(w) = lock(&repl.session.writer).as_mut()
+        && let Err(e) = w.move_to(&moved)
+    {
+        repl.handles
+            .tr
+            .error(&format!("Warning: failed to save session: {e}"));
     }
     repl.handles.tr.notice(&format!(
         "Resumed session {id} ({} messages)",

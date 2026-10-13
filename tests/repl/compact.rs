@@ -495,3 +495,72 @@ async fn compaction_works_without_a_session_writer() {
         "an ephemeral chat has no marker to fail to write: {lines:?}"
     );
 }
+
+/// The snooze belongs to the conversation that was declined: a `/session` swap to another one — as full as
+/// the first, so the watermark would still be holding it back — is asked about on its first message.
+#[tokio::test]
+async fn a_session_swap_does_not_carry_the_snooze() {
+    let f = Fixture::new(vec![
+        input("first"),
+        answer(1), // "Not now"
+        input("/session"),
+        Reply::Tabbed(TabbedResult {
+            cancelled: false,
+            focused: 0,
+            panels: vec![PanelResult::default(), PanelResult::default()],
+        }),
+        input("second"),
+        answer(1),
+        Reply::Interrupted,
+    ]);
+    let history = vec![
+        Message::system("sys"),
+        Message::user(filler(900)),
+        Message::assistant(filler(900)),
+        Message::user("u2"),
+        Message::assistant("a2"),
+    ];
+    // The session swapped to: the same conversation under the same window, resumable in place (the
+    // fixture's catalog names no provider) and listed first.
+    let mut other = f
+        .store
+        .create(NewSession {
+            provider: String::new(),
+            ..NewSession::new(ProviderKind::OpenAi, "gpt-4o")
+        })
+        .expect("create the other bundle");
+    other.append_messages(&history).expect("append");
+    other
+        .update_meta(|m| m.set_context_window(2_000))
+        .expect("its window");
+    let other_dir = other.dir().to_path_buf();
+    drop(other);
+    let mut meta = iota::session::SessionMeta::read(&other_dir).expect("meta");
+    "2030-01-01T00:00:00+00:00".clone_into(&mut meta.updated_at);
+    std::fs::write(
+        other_dir.join("meta.json"),
+        serde_json::to_vec(&meta).expect("encode meta"),
+    )
+    .expect("write meta");
+
+    let mut writer = f.writer();
+    writer.append_messages(&history).expect("append");
+    iota::repl::run(f.params(
+        summarizer(Some("THE-SUMMARY")),
+        Some(writer),
+        history,
+        2_000,
+    ))
+    .await
+    .expect("clean exit");
+
+    let offers: Vec<String> = surface_titles(&f.ui)
+        .into_iter()
+        .filter(|t| t.starts_with("Context "))
+        .collect();
+    assert_eq!(
+        offers.len(),
+        2,
+        "the swapped-to session is asked about on its own: {offers:?}"
+    );
+}

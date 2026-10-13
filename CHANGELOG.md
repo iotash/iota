@@ -27,6 +27,16 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   `/compact` with nothing to summarize still says only `Nothing to compact
   yet.`
 
+### Fixed
+
+- **`/session` takes the session it switches to as `iota resume` would.**
+  The switch restored the session's model tuning but kept the old session's
+  record of where each setting came from, so the next `/model` switch could
+  drop a setting you had made by hand, or keep one the old model's config had
+  supplied. A setting the session never recorded kept the old session's
+  value too; it now comes from the config, as on resume. And declining the
+  offer to compact no longer silences that offer in the session you switch to.
+
 ## 0.7.0 - 2026-10-13
 
 ### Added
