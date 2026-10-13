@@ -492,7 +492,8 @@ async fn a_round_cut_off_at_max_output_tokens_reports_the_truncation() {
     assert_eq!(out.content, "");
 }
 
-/// A tool call the ceiling cut — mid-arguments, or completed beside it — never runs: it is dropped, by name.
+/// A tool call the ceiling cut — mid-arguments, or completed beside it — never runs: it is dropped, by name,
+/// each name once, a completed call no `output_item.added` announced included.
 #[tokio::test]
 async fn a_tool_call_cut_off_at_max_output_tokens_is_dropped_by_name() {
     let srv = MockServer::start().await;
@@ -503,6 +504,8 @@ async fn a_tool_call_cut_off_at_max_output_tokens_is_dropped_by_name() {
                 "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"read_file\",\"arguments\":\"\"}}\n\n",
                 "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"{\\\"path\\\":\\\"a\\\"}\"}\n\n",
                 "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"a\\\"}\"}}\n\n",
+                "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_0\",\"type\":\"function_call\",\"call_id\":\"call_0\",\"name\":\"list_dir\",\"arguments\":\"{}\"}}\n\n",
+                "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_3\",\"type\":\"function_call\",\"call_id\":\"call_3\",\"name\":\"read_file\",\"arguments\":\"\"}}\n\n",
                 "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_2\",\"type\":\"function_call\",\"call_id\":\"call_2\",\"name\":\"write_file\",\"arguments\":\"\"}}\n\n",
                 "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_2\",\"delta\":\"{\\\"path\\\":\"}\n\n",
             )),
@@ -528,7 +531,7 @@ async fn a_tool_call_cut_off_at_max_output_tokens_is_dropped_by_name() {
     assert!(out.tool_calls.is_empty(), "a cut round runs no call");
     assert_eq!(
         out.truncated.expect("the cut").dropped_tools,
-        vec!["read_file".to_owned(), "write_file".to_owned()]
+        ["read_file", "write_file", "list_dir"]
     );
 }
 

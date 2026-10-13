@@ -945,7 +945,7 @@ async fn a_later_usage_only_delta_never_erases_a_reported_truncation() {
 
 /// R1, the other half: a usage-only tail after a NORMAL end changes nothing — `end_turn` stays a finished
 /// answer, `tool_use` still hands its call back to run (once: one request). A `max_tokens` arriving after
-/// another reason still wins; two different non-max reasons contradict each other and are an error.
+/// another reason still wins; any other later reason is ignored.
 #[tokio::test]
 async fn a_usage_only_tail_after_a_normal_end_is_still_a_normal_end() {
     let usage_only = tail("{}", r#"{"input_tokens":23,"output_tokens":9}"#);
@@ -1009,7 +1009,8 @@ async fn a_usage_only_tail_after_a_normal_end_is_still_a_normal_end() {
         .expect("round");
     assert!(out.truncated.is_some());
 
-    // end_turn, then tool_use: contradictory, trusted neither way.
+    // end_turn, then tool_use: a later reason that is not max_tokens is ignored — the round ends as
+    // first reported, not as an error.
     let server = MockServer::start().await;
     mock_sse(
         &server,
@@ -1018,14 +1019,10 @@ async fn a_usage_only_tail_after_a_normal_end_is_still_a_normal_end() {
         round_body(TOOL_BLOCK, &[reason("end_turn"), reason("tool_use")], true),
     )
     .await;
-    let e = round(&provider(&server, "m", None), &[Message::user("q")], &[])
+    let out = round(&provider(&server, "m", None), &[Message::user("q")], &[])
         .await
-        .expect_err("conflicting reasons");
-    assert!(
-        e.to_string()
-            .contains("conflicting stop reasons (end_turn, then tool_use)"),
-        "{e}"
-    );
+        .expect("a later reason is no error");
+    assert_eq!(out.truncated, None);
 }
 
 /// `max_tokens:` from the config (X-68) is what the request carries, on both entry points.

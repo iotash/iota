@@ -53,7 +53,7 @@ wait_all '✗ Output truncated' || bad "the cut never painted its block"
 settle || bad "frame never settled after the cut"
 check_once "the cut is ONE ✗ Output truncated block" '✗ Output truncated'
 check_once "…its detail names the stop and the ceiling" 'stop_reason: max_tokens: the output hit its 32000-token limit'
-check_once "…its hint opens with what the session runs under" 'This session runs under the built-in default ceiling.'
+check_once "…its hint opens with the knob" 'Raise max_tokens: in the config'
 check "…the headline row is painted red" "$(red_rows_with '✗ Output truncated')" 1
 if [ "$(red_rows)" -gt 0 ]; then
     ok "the red detector fires on the cut (A's zero was live)"

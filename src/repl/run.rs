@@ -57,7 +57,7 @@ use crate::repl::title::{
 };
 use crate::repl::turn::approval::ApprovalGate;
 use crate::repl::turn::interrupt::{InterruptDecision, finalize_interrupt};
-use crate::repl::turn::{CutRound, TurnCtx, TurnEngine, TurnFailure, TurnReport, collect_images};
+use crate::repl::turn::{TurnCtx, TurnEngine, TurnFailure, TurnReport, collect_images};
 
 /// The `Done` ping of an image-only reply (chat/run.go:1105).
 const IMAGE_READY: &str = "Image ready";
@@ -921,8 +921,6 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             outcome: turn_result,
             partial,
             partial_reasoning,
-            mut cut_round,
-            ..
         } = outcome;
         match turn_result {
             Err(_) if interrupted => {
@@ -938,10 +936,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 // A `Ui` failure broke out above; classifying one costs nothing and keeps
                 // this total.
                 let report = match &failure {
-                    TurnFailure::Chat(c) => crate::repl::errors::describe_error_with(
-                        c,
-                        Some(crate::repl::liveparams::ceiling(&repl)),
-                    ),
+                    TurnFailure::Chat(c) => crate::repl::errors::describe_error(c),
                     TurnFailure::Ui(u) => crate::repl::errors::ErrorReport::request_failed(u),
                 };
                 // The host hears about the failure BEFORE the red block lands (run.go:1076-1080). A failed
@@ -966,7 +961,6 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                         hist0 - 1,
                         &partial,
                         &partial_reasoning,
-                        &mut cut_round,
                         notice,
                     )
                 {
@@ -979,12 +973,6 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                     repl.conv.ctxm.reset();
                     repl.conv.budget.restore(turn_snap);
                     repl.push_status();
-                }
-                // A cut with no text to carry its cost: the call was billed all the same. Its cost
-                // counts, as a tool round's in a rolled-back turn does; the budget stays the
-                // rollback's or the kept rounds' measurement.
-                if let Some(cut) = cut_round {
-                    repl.conv.ctxm.book_spent(cut.usage);
                 }
             }
             Ok(out) => {
@@ -1350,7 +1338,7 @@ fn interrupt_turn(
     if persist {
         // The title pass keeps running: the message it names survives, and nothing waits on
         // it (`SessionSlot::abort_title`).
-        persist_kept_turn(repl);
+        repl.persist_turn();
     } else {
         // A discarded turn gives its name back, so its pass could only land a name nobody keeps:
         // it goes, and its request with it. A later turn's discard leaves the first message —
@@ -1366,30 +1354,24 @@ fn interrupt_turn(
 /// Keeps what a turn cut short completed — a stall (`LlmError::StreamIdle`, the stream idle
 /// bound) or a truncation (`ChatError::Truncated`, X-69) — the interrupt table's kept branches,
 /// under the error the caller already showed: the completed tool rounds stay (their side
-/// effects happened, and a history without them would have the model run them again), and the
-/// partial text lands as an assistant message marked cut short.
+/// effects happened, and a history without them would have the model run them again), and a
+/// stall's partial text lands as an assistant message marked cut short. A truncation has no
+/// partial: its round RETURNED, and the tool loop already kept its text the same way, with the
+/// round's raw blocks and cost.
 /// Returns `false`, touching nothing, when there is nothing to keep — the plain rollback then
 /// runs. The cut stays an error (red block, `State::Error`, no retry); only the bookkeeping
 /// follows ESC's — all of it: unanswered calls answered before the save, the rounds' measured
 /// usage kept for a bot's threshold, and the caller counts the turn as landed. `notice` says
 /// what was kept ([`TurnReport::cut_short`](crate::repl::turn::TurnReport::cut_short)).
-///
-/// `cut` is what a TRUNCATED round returned (X-69): its response completed, so the kept text
-/// takes the round's raw blocks — a sealed thinking block replays ahead of it — and its cost,
-/// TAKEN out of `cut`; with no text to carry them `cut` is left for the caller to book.
-/// A stall passes `None`: what it left is of unknown completeness, and stays plain text.
 fn keep_cut_short_turn(
     repl: &mut Repl,
     watermark: usize,
     partial: &str,
     partial_reasoning: &str,
-    cut: &mut Option<CutRound>,
     notice: &str,
 ) -> bool {
     let InterruptDecision {
-        mut history,
-        persist,
-        ..
+        history, persist, ..
     } = finalize_interrupt(
         repl.conv.history.clone(),
         watermark,
@@ -1399,35 +1381,12 @@ fn keep_cut_short_turn(
     if !persist {
         return false;
     }
-    // `finalize_interrupt` pushes the partial LAST, and only when there is one.
-    if !partial.is_empty()
-        && let Some(cut) = cut.take()
-        && let Some(Message {
-            body: Body::Assistant(body),
-            ..
-        }) = history.last_mut()
-    {
-        body.raw_content = cut.raw_content;
-        body.usage = cut.usage;
-    }
     repl.conv.history = history;
     crate::session::repair_tail(&mut repl.conv.history);
     repl.handles.tr.notice(notice);
-    persist_kept_turn(repl);
+    repl.persist_turn();
     rebudget_kept_turn(repl, watermark, true);
     true
-}
-
-/// Persists a turn cut short with something worth keeping. A cut-short call rarely reports
-/// usage, but when it did (the figures arrived before the cut) the partial message carries them
-/// like any other.
-fn persist_kept_turn(repl: &mut Repl) {
-    if let Some(last) = repl.conv.history.last_mut()
-        && last.interrupted()
-    {
-        repl.conv.ctxm.record(Some(last));
-    }
-    repl.persist_turn();
 }
 
 /// Re-derives the budget and the status row from the history a cut-short turn left; `persist`

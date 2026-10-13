@@ -296,8 +296,8 @@ impl SessionMeta {
         self.top_p
     }
 
-    /// The recorded `max_tokens`; `None` when the bundle never recorded one — or recorded one no config
-    /// could have declared ([`Self::invalid_max_tokens`]), which a resume ignores.
+    /// The recorded `max_tokens`; `None` when the bundle never recorded one. A `0` — the config refuses it,
+    /// so only a hand-edited meta carries one — reads as no record at all (X-68).
     pub fn recorded_max_tokens(&self) -> Option<u32> {
         self.max_tokens.filter(|n| *n > 0)
     }
@@ -305,15 +305,9 @@ impl SessionMeta {
     /// Whether this bundle's record of `max_tokens` is COMPLETE: its source map carries the key, so an
     /// absent value is the dialect's default deliberately recorded. A map written before the key
     /// existed (the four-parameter one) says nothing about it, and neither does a bundle with no map
-    /// (X-68), nor one whose value is invalid — that record is ignored, not read as the default.
+    /// (X-68), nor one whose value is a hand-edited `0` — that is no record, not the default.
     pub fn records_max_tokens(&self) -> bool {
-        !self.invalid_max_tokens() && self.param_sources.is_some_and(|s| s.max_tokens.is_some())
-    }
-
-    /// The bundle records `max_tokens: 0`: the config refuses it (`want 1 or more`), so only a hand-edited
-    /// meta carries it, and a resume — on this endpoint or a move — warns and ignores it (X-68).
-    pub fn invalid_max_tokens(&self) -> bool {
-        self.max_tokens == Some(0)
+        self.max_tokens != Some(0) && self.param_sources.is_some_and(|s| s.max_tokens.is_some())
     }
 }
 

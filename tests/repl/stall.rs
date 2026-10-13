@@ -342,9 +342,9 @@ async fn a_thought_cut_off_by_the_ceiling_is_never_the_answer() {
     );
     assert_eq!(fx.printed_count("32000-token limit"), 1);
     assert_eq!(
-        fx.printed_count("This session runs under the built-in default ceiling."),
+        fx.printed_count("Raise max_tokens:"),
         1,
-        "nothing set the ceiling, and the hint says so: {:#?}",
+        "the hint names the knob: {:#?}",
         fx.printed()
     );
     assert_eq!(
@@ -375,145 +375,34 @@ fn ceiling_meta(value: u32, source: &str) -> iota::session::SessionMeta {
     .expect("meta")
 }
 
-/// R1/R2: the cut's hint never credits a declaration with a ceiling the session is not running under. A
-/// resumed session restores the value it recorded whatever today's config says, and a `config` tag does
-/// not say which entry it came from — so the hint says only what the record says, and points the edit at
-/// the entry of the LOADED config that can take effect: the agent's when it declares the key (it overrides
-/// every model's — the model entry is then never offered), else the model's.
+/// The cut's hint is one fixed text that reads no state, so it cannot misstate what the session runs
+/// under: here a resumed session runs under its own recorded value while the loaded agent declares
+/// another, and the hint says neither — only where the key goes and how an edit reaches this session.
 #[tokio::test]
-async fn a_cut_never_credits_a_declaration_the_session_is_not_running_under() {
-    const RECORDED: &str = "This session runs under a ceiling it recorded from the config.";
-    const OWN: &str = "This session runs under a ceiling of its own, not one the config declares.";
-    const EDIT_AGENT: &str =
-        "To raise it, edit max_tokens: on the agent's `agents:` entry — it overrides every model's";
-    const EDIT_MODEL: &str = "To raise it, set max_tokens: on this model's `models:` entry";
-    // A value a move evaluated from the target's model entry, then resumed under a config whose agent
-    // declares another ceiling since.
-    let moved = {
-        let mut m = iota::session::SessionMeta {
-            provider: "a".to_owned(),
-            model: "claude-x".to_owned(),
-            ..iota::session::SessionMeta::default()
-        };
-        m.stamp(
-            None,
-            &resolve(&ceiling_config(None, Some(16_000)))
-                .declared(None)
-                .resume(&ceiling_meta(9_000, "config"), false),
-        );
-        assert_eq!(
-            m.max_tokens,
-            Some(16_000),
-            "the move evaluated the target's entry"
-        );
-        m
+async fn a_cut_gives_the_one_hint_whatever_the_ceiling_came_from() {
+    const HINT: &str = "Raise max_tokens: in the config (an agents: entry overrides every model's). The config is read at startup: quit, resume, then /model away and back. Lowering effort applies at once.";
+    let fx = Fixture::new(vec![]).resumed(
+        &ceiling_config(Some(1234), Some(64_000)),
+        &ceiling_meta(16_000, "user"),
+        true,
+    );
+    assert_eq!(fx.params.max_tokens.value, Some(16_000));
+    let fx = Fixture {
+        ui: ScriptedUi::new(vec![input("q"), Reply::Closed]),
+        ..fx
     };
-    let cases: [(&str, Fixture, &str, &str); 6] = [
-        (
-            "agent declaration added since",
-            Fixture::new(vec![]).resumed(
-                &ceiling_config(Some(64_000), Some(48_000)),
-                &ceiling_meta(16_000, "config"),
-                true,
-            ),
-            RECORDED,
-            EDIT_AGENT,
-        ),
-        (
-            "agent declaration removed since",
-            Fixture::new(vec![]).resumed(
-                &ceiling_config(None, Some(48_000)),
-                &ceiling_meta(16_000, "config"),
-                true,
-            ),
-            RECORDED,
-            EDIT_MODEL,
-        ),
-        (
-            "model declaration removed since",
-            Fixture::new(vec![]).resumed(
-                &ceiling_config(None, None),
-                &ceiling_meta(16_000, "config"),
-                true,
-            ),
-            RECORDED,
-            EDIT_MODEL,
-        ),
-        (
-            "both layers declare the same value",
-            Fixture::new(vec![]).under(&ceiling_config(Some(16_000), Some(16_000))),
-            RECORDED,
-            EDIT_AGENT,
-        ),
-        (
-            "a moved config value, resumed under a changed config",
-            Fixture::new(vec![]).resumed(&ceiling_config(Some(64_000), None), &moved, true),
-            RECORDED,
-            EDIT_AGENT,
-        ),
-        (
-            "the session's own value while the agent declares",
-            Fixture::new(vec![]).resumed(
-                &ceiling_config(Some(1234), Some(64_000)),
-                &ceiling_meta(16_000, "user"),
-                true,
-            ),
-            OWN,
-            EDIT_AGENT,
-        ),
-    ];
+    fx.run(
+        FakeProvider::new().round(Round::cut_off("", "half a reply")),
+        None,
+        &[],
+    )
+    .await;
+    // The hint row wraps mid-word, so the block is compared with its whitespace taken out.
     let squeeze = |s: &str| s.split_whitespace().collect::<String>();
-    for (name, fx, runs, edit) in cases {
-        assert_eq!(
-            fx.params.max_tokens.value,
-            Some(16_000),
-            "{name}: the ceiling the session runs under"
-        );
-        let fx = Fixture {
-            ui: ScriptedUi::new(vec![input("q"), Reply::Closed]),
-            ..fx
-        };
-        fx.run(
-            FakeProvider::new().round(Round::cut_off("", "half a reply")),
-            None,
-            &[],
-        )
-        .await;
-        // The hint row wraps mid-word, so the block is compared with its whitespace taken out.
-        let block = squeeze(&fx.printed().join(" "));
-        assert!(
-            block.contains(&squeeze(runs)),
-            "{name}: {:#?}",
-            fx.printed()
-        );
-        assert!(
-            block.contains(&squeeze(edit)),
-            "{name}: {:#?}",
-            fx.printed()
-        );
-        for claim in [
-            "This ceiling is max_tokens:",
-            "which overrides the model's — raise it there",
-        ] {
-            assert!(
-                !block.contains(&squeeze(claim)),
-                "{name}: an entry credited with the value: {:#?}",
-                fx.printed()
-            );
-        }
-        if edit == EDIT_AGENT {
-            assert!(
-                !block.contains("`models:`"),
-                "{name}: the model entry is overridden: {:#?}",
-                fx.printed()
-            );
-        }
-        assert!(
-            block.contains(&squeeze(
-                "quit, resume this session, then use /model to switch to another model and back"
-            )),
-            "{name}: how an edit reaches this session"
-        );
+    let block = squeeze(&fx.printed().join(" "));
+    assert!(block.contains(&squeeze(HINT)), "{:#?}", fx.printed());
+    for claim in ["runs under", "16000", "1234", "64000"] {
+        assert!(!block.contains(claim), "{claim}: {:#?}", fx.printed());
     }
 }
 
@@ -1504,4 +1393,64 @@ async fn a_cut_with_no_text_still_counts_its_cost() {
             assert_eq!(last.ctx_used, base.context_tokens(), "rolled back");
         }
     }
+}
+
+/// The cut's figure never outlives its rollback: a cut with no text measured a request the history no longer
+/// holds, so when the next turn's call reports no usage of its own, the budget is the history's local count —
+/// never the cut request's figure read late by the next settle.
+#[tokio::test]
+async fn a_rolled_back_cut_never_measures_the_next_turn() {
+    let cut = usage(50_000, 32_000);
+    let provider = FakeProvider::new()
+        .with_tools()
+        .reporting_usage()
+        .rounds(vec![
+            Round::reply("base answer").usage(usage(1000, 40)),
+            Round::cut_off("", "").usage(cut),
+            Round::reply("after"),
+        ]);
+    let fx = Fixture::new(vec![
+        input("base"),
+        input("q"),
+        input("next"),
+        Reply::Closed,
+    ]);
+    fx.run(provider, None, &[]).await;
+
+    assert_eq!(fx.printed_count("Output truncated"), 1);
+    let last = last_status(&fx);
+    assert!(
+        last.ctx_used < cut.context_tokens(),
+        "the next turn read the cut's figure: {}",
+        last.ctx_used
+    );
+    assert!(last.estimated, "no call measured the history since");
+}
+
+/// A cut that keeps its text books its cost ONCE — the tool loop that kept the round booked it, and keeping
+/// the turn books nothing more — and the kept message measures the budget, as a finished reply would.
+#[tokio::test]
+async fn a_kept_cut_counts_its_cost_once() {
+    let base = usage(1000, 40);
+    let cut = usage(5000, 32_000);
+    let provider = FakeProvider::new()
+        .with_tools()
+        .reporting_usage()
+        .rounds(vec![
+            Round::reply("base answer").usage(base),
+            Round::cut_off("", "half a reply").usage(cut),
+        ]);
+    let fx = Fixture::new(vec![input("base"), input("q"), Reply::Closed]);
+    fx.run(provider, None, &[]).await;
+
+    assert_eq!(fx.printed_count("Output truncated"), 1);
+    let last = last_status(&fx);
+    let mut spent = base;
+    spent += cut;
+    assert_eq!(
+        (last.in_tokens, last.out_tokens),
+        (spent.input, spent.output)
+    );
+    assert!(!last.estimated);
+    assert!(last.ctx_used >= cut.context_tokens(), "{}", last.ctx_used);
 }
