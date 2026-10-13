@@ -967,3 +967,183 @@ async fn the_agents_entry_outranks_the_model_across_a_switch() {
     assert_eq!(meta.context_window, 1_000_000);
     assert_eq!(meta.sources().context_window, ParamSource::Config);
 }
+
+// ---------------------------------------------------------------------------
+// `/session`: a swap takes the bundle's sources along with its values
+// ---------------------------------------------------------------------------
+
+/// A tunable double with no token accounting — `/model` opens Model, Effort and Temperature, nothing more —
+/// whose listing offers `a-model` and `b-model`.
+fn tunable_only() -> FakeProvider {
+    FakeProvider::new()
+        .with_model("a-model")
+        .with_models(&["a-model", "b-model"])
+        .tunable()
+}
+
+/// Another bundle on `a-model`, resumable in place (the fixture's catalog names no provider), listed first,
+/// its meta as `edit` leaves it. Returns its directory.
+fn other_bundle(f: &Fixture, edit: impl FnOnce(&mut SessionMeta)) -> PathBuf {
+    let mut w = f
+        .store
+        .create(NewSession {
+            provider: String::new(),
+            ..NewSession::new(ProviderKind::OpenAi, "a-model")
+        })
+        .expect("create the other bundle");
+    w.append_messages(&[Message::user("an older question")])
+        .expect("materialise");
+    w.update_meta(edit).expect("its meta");
+    let dir = w.dir().to_path_buf();
+    drop(w);
+    // Listings sort by `updated_at` DESC: the Resume tab's first row is this bundle, not the current one.
+    let mut meta = SessionMeta::read(&dir).expect("meta");
+    "2030-01-01T00:00:00+00:00".clone_into(&mut meta.updated_at);
+    std::fs::write(
+        dir.join("meta.json"),
+        serde_json::to_vec(&meta).expect("encode meta"),
+    )
+    .expect("write meta");
+    dir
+}
+
+/// `/session`, resuming the first row.
+fn resume_first() -> [Reply; 2] {
+    [
+        input("/session"),
+        Reply::Tabbed(TabbedResult {
+            cancelled: false,
+            focused: 0,
+            panels: vec![PanelResult::default(), PanelResult::default()],
+        }),
+    ]
+}
+
+/// `/model` onto `b-model` — a model no declaration covers — with Effort committed on row `effort` and
+/// Temperature on `temperature`, the values each tab opens on after the swap.
+fn switch_to_b(effort: usize, temperature: Option<f64>) -> [Reply; 2] {
+    [
+        input("/model"),
+        commit(vec![
+            PanelResult {
+                cursor: 1,
+                ..PanelResult::default()
+            },
+            PanelResult {
+                cursor: effort,
+                ..PanelResult::default()
+            },
+            PanelResult {
+                value: temperature,
+                ..PanelResult::default()
+            },
+        ]),
+    ]
+}
+
+/// The chat ran under an effort its model's declaration supplied (`config`); the session it swaps to records
+/// the same effort as the user's own. After the swap the effort is the user's, so a switch to a model that
+/// declares none KEEPS it — rather than dropping it on the strength of a source the swapped-out session had.
+#[tokio::test]
+async fn a_session_swap_takes_the_bundles_sources_with_its_values() {
+    let mut script: Vec<Reply> = resume_first().into();
+    script.extend(switch_to_b(5, None));
+    script.push(Reply::Interrupted);
+    let f = Fixture::new(script);
+    let other = other_bundle(&f, |m| {
+        "max".clone_into(&mut m.effort);
+        m.param_sources = Some(iota::session::ParamSources::all(ParamSource::User));
+    });
+    let (writer, _) = f.writer();
+    let mut params = f.params(
+        tunable_only().with_effort(Some(Effort::Max)),
+        writer,
+        Vec::new(),
+    );
+    params.params = LayeredParams {
+        effort: Param::config("max".to_owned()),
+        ..LayeredParams::default()
+    };
+    params.layers = layering(
+        AgentConfig::default(),
+        &[("a", declared_model("a-model", "", "max"))],
+    );
+    iota::repl::run(params).await.expect("exit");
+
+    let lines = printed(&f.ui);
+    assert!(
+        lines.contains(&"Model switched to b-model".to_owned()),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.starts_with("Effort:")),
+        "the swapped-to session's effort is the user's, and survives the switch: {lines:?}"
+    );
+    let meta = SessionMeta::read(&other).expect("meta");
+    assert_eq!(meta.model, "b-model");
+    assert_eq!(meta.effort, "max");
+    assert_eq!(meta.sources().effort, ParamSource::User);
+}
+
+/// A bundle written before the layering carries no source map: its values come back as the user's
+/// (`ParamSources::LEGACY`), and a parameter it never recorded is evaluated for its model — NOT inherited
+/// from the session swapped out of, which ran a hand-set effort the bundle knows nothing about.
+#[tokio::test]
+async fn a_session_swap_to_a_legacy_bundle_reads_it_as_resume_does() {
+    let mut script: Vec<Reply> = resume_first().into();
+    script.extend(switch_to_b(0, Some(0.7)));
+    script.push(Reply::Interrupted);
+    let f = Fixture::new(script);
+    let other = other_bundle(&f, |m| {
+        m.temperature = Some(0.7);
+        m.effort.clear();
+        m.param_sources = None;
+    });
+    let (writer, _) = f.writer();
+    let mut params = f.params(
+        tunable_only()
+            .with_effort(Some(Effort::High))
+            .with_temperature(Some(0.3)),
+        writer,
+        Vec::new(),
+    );
+    params.params = LayeredParams {
+        effort: Param::user("high".to_owned()),
+        temperature: Param::config(Some(0.3)),
+        ..LayeredParams::default()
+    };
+    params.layers = layering(
+        AgentConfig::default(),
+        &[(
+            "a",
+            ModelConfig {
+                temperature: Some(0.3),
+                ..declared_model("a-model", "", "")
+            },
+        )],
+    );
+    iota::repl::run(params).await.expect("exit");
+
+    let lines = printed(&f.ui);
+    assert!(
+        lines.contains(&"Model switched to b-model".to_owned()),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.starts_with("Temperature:")),
+        "a legacy bundle's temperature is the user's, and survives the switch: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.starts_with("Effort:")),
+        "the swap already left the swapped-out session's effort behind: {lines:?}"
+    );
+    let meta = SessionMeta::read(&other).expect("meta");
+    assert_eq!(meta.temperature, Some(0.7));
+    assert_eq!(meta.effort, "");
+    assert!(
+        meta.param_sources.is_some(),
+        "the swap records what the session runs under, as `iota resume` does"
+    );
+    assert_eq!(meta.sources().temperature, ParamSource::User);
+    assert_eq!(meta.sources().effort, ParamSource::Builtin);
+}

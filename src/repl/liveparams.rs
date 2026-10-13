@@ -89,6 +89,27 @@ pub(crate) fn reevaluate(
     id: &str,
     running: &LayeredParams,
 ) -> LayeredParams {
+    let declared = declared(repl, layers, id);
+    // The one thing a model declares that a switch canNOT hand over: the deferring wrapper was built around
+    // the MCP dispatcher at startup and there is no rebuild seam, so the mode is announced instead of
+    // silently ignored (brain page `config-three-layers`, 2026-09-09 — changing it means a new session).
+    if let Some((kept, wanted)) = layers.defer_mode_drift(id) {
+        repl.handles.tr.notice(&format!(
+            "Note: {id} asks for defer_mode {:?}; this session keeps {:?} — deferred MCP tools are mounted once, at startup.",
+            wanted.name(),
+            kept.name(),
+        ));
+    }
+    declared.evaluate(running)
+}
+
+/// What `layers` declare for `id`, as far as a running chat can take it: a `context_window:` that does not
+/// parse, or a value outside its range, is warned about and left silent.
+pub(crate) fn declared(
+    repl: &Repl,
+    layers: &crate::config::ParamLayers,
+    id: &str,
+) -> crate::config::Declared {
     let declared = layers.declared(id, |decl| {
         match crate::config::window::parse_window_size(decl.raw) {
             Ok(window) => Some(window),
@@ -102,7 +123,7 @@ pub(crate) fn reevaluate(
     });
     // A declaration outside its range would be refused at startup; reached mid-chat it can only come from a
     // `models:` entry the run did not start on, so it is refused the same way and the key stays silent.
-    let declared = crate::config::Declared {
+    crate::config::Declared {
         temperature: declared.temperature.filter(|t| {
             in_range(
                 repl,
@@ -131,18 +152,7 @@ pub(crate) fn reevaluate(
             false
         }),
         ..declared
-    };
-    // The one thing a model declares that a switch canNOT hand over: the deferring wrapper was built around
-    // the MCP dispatcher at startup and there is no rebuild seam, so the mode is announced instead of
-    // silently ignored (brain page `config-three-layers`, 2026-09-09 — changing it means a new session).
-    if let Some((kept, wanted)) = layers.defer_mode_drift(id) {
-        repl.handles.tr.notice(&format!(
-            "Note: {id} asks for defer_mode {:?}; this session keeps {:?} — deferred MCP tools are mounted once, at startup.",
-            wanted.name(),
-            kept.name(),
-        ));
     }
-    declared.evaluate(running)
 }
 
 /// Whether `v` is inside `[lo, hi]`, warning with `label` when it is not.
