@@ -407,7 +407,7 @@ async fn reasoning_only_response_becomes_the_answer() {
 
 // The same reasoning-only round, cut off by the output ceiling (X-70): the thought is a
 // draft that stopped mid-sentence, not an answer — the turn fails with the truncation, the
-// thought rides out only as the partial reasoning, and nothing is rendered as content.
+// round has no text so nothing of it reaches the history, and nothing is rendered as content.
 #[tokio::test]
 async fn a_truncated_reasoning_only_round_is_never_the_answer() {
     let fx = Fx::new(Arc::new(StaticDispatcher::new(&[])), Vec::new());
@@ -423,9 +423,20 @@ async fn a_truncated_reasoning_only_round_is_never_the_answer() {
         "want Truncated, got {:?}",
         report.outcome
     );
-    assert!(report.cut_short().is_some(), "a cut keeps what streamed");
-    assert_eq!(report.partial, "", "no text streamed");
-    assert_eq!(report.partial_reasoning, "this needs flagging as a");
+    assert!(
+        report.cut_short().is_some(),
+        "a cut keeps what the turn completed"
+    );
+    assert_eq!(
+        (report.partial.as_str(), report.partial_reasoning.as_str()),
+        ("", ""),
+        "a cut carries no partials: the tool loop keeps what it keeps"
+    );
+    assert_eq!(
+        history,
+        vec![Message::user("hi")],
+        "the half-thought stays out"
+    );
     assert_eq!(p.calls(), 1, "a truncation is not retried");
     assert!(
         !plain(&fx.events())

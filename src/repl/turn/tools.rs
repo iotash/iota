@@ -21,7 +21,7 @@ use crate::headless::ChatError;
 use crate::headless::batch::{BatchOutcome, parallel_run};
 use crate::host::{Event, Kind, State};
 use crate::provider::ToolProvider;
-use crate::provider::model::{Message, ToolCall, ToolDef};
+use crate::provider::model::{AssistantBody, Message, ToolCall, ToolDef};
 use crate::tool::Presentation;
 use crate::tool::context::ArtifactSlot;
 use crate::tool::context::RunCtx;
@@ -65,7 +65,6 @@ pub(crate) async fn tool_loop(
         let send = t.cx.send_history(history);
         let mut partial = String::new();
         let mut partial_reasoning = String::new();
-        let mut cut_round = None;
         let round = retry_round(
             &t.cancel,
             t.cx.can_retry,
@@ -75,22 +74,44 @@ pub(crate) async fn tool_loop(
                 let outcome = stream_round(t, tp, &send, &tools).await;
                 partial = outcome.partial;
                 partial_reasoning = outcome.partial_reasoning;
-                cut_round = outcome.cut_round;
                 outcome.result
             },
         )
         .await;
-        let round = match round {
+        let mut round = match round {
             Ok(r) => r,
             Err(e) => {
                 return TurnReport {
                     outcome: Err(e.into()),
                     partial,
                     partial_reasoning,
-                    cut_round,
                 };
             }
         };
+        // A round the output ceiling cut off is a round the provider RETURNED (X-71's completion
+        // condition), so it is booked and kept like a terminating one — its text, reasoning, raw blocks
+        // (a sealed thinking block replays ahead of the text: brain `anthropic-thinking-replay`) and
+        // cost — marked cut short; and THEN the turn fails with the truncation, never retried (X-69). A
+        // cut with no text keeps nothing of the round, so a half-thought never reaches the history, but
+        // its cost still counts. Whether anything of the turn stays is the run loop's call.
+        if let Some(cut) = round.truncated.take() {
+            let mut msg = Message::assistant_body(
+                round.content,
+                AssistantBody {
+                    reasoning: round.reasoning,
+                    usage: round.usage,
+                    raw_content: round.raw_content,
+                    interrupted: true,
+                    ..AssistantBody::default()
+                },
+            );
+            ctxm.record(Some(&mut msg));
+            if !msg.content.is_empty() {
+                history.push(msg);
+            }
+            ctxm.settle(history);
+            return TurnReport::failed(ChatError::Truncated(cut));
+        }
         if round.tool_calls.is_empty() {
             return TurnReport::success(TurnOutput {
                 content: round.content,

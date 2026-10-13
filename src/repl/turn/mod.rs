@@ -204,30 +204,12 @@ impl From<ChatError> for TurnFailure {
 pub(crate) struct TurnReport {
     /// The turn's result, or why it ended badly.
     pub(crate) outcome: Result<TurnOutput, TurnFailure>,
-    /// Content streamed before the user interrupted, the stream stalled or the output ceiling
-    /// cut it off (EMPTY on every other outcome — Go's `fail()` returns the buffers only on
-    /// cancellation; a stall and a truncation have no Go twin).
+    /// Content streamed before the user interrupted or the stream stalled (EMPTY on every other
+    /// outcome — Go's `fail()` returns the buffers only on cancellation; a stall has no Go twin).
+    /// A truncation carries none: the tool loop already put what it kept in the history.
     pub(crate) partial: String,
-    /// Reasoning streamed before the interrupt, the stall or the cut-off.
+    /// Reasoning streamed before the interrupt or the stall.
     pub(crate) partial_reasoning: String,
-    /// What a truncated round returned beside its partials (see [`CutRound`]); `None` on every
-    /// other outcome.
-    pub(crate) cut_round: Option<CutRound>,
-}
-
-/// The replay payload and cost of a round the output ceiling cut off (X-69). A truncation is a
-/// round the provider RETURNED — the stream met X-71's completion condition (`message_stop`, or
-/// EOF after a reported `stop_reason`) — so the replay blocks it collected are kept with the text
-/// it kept: a sealed thinking block must go back with that text, or the next request replays it
-/// without the thinking the endpoint signed (brain `anthropic-thinking-replay`). An interrupt or a
-/// stall never fills this: those rounds never returned, and their buffers are of unknown
-/// completeness.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct CutRound {
-    /// The dialect's replay blocks for the kept message.
-    pub(crate) raw_content: Option<crate::provider::model::RawContent>,
-    /// The round's reported cost.
-    pub(crate) usage: Option<crate::provider::usage::Usage>,
 }
 
 impl TurnReport {
@@ -258,7 +240,6 @@ impl TurnReport {
             outcome: Ok(out),
             partial: String::new(),
             partial_reasoning: String::new(),
-            cut_round: None,
         }
     }
 
@@ -268,7 +249,6 @@ impl TurnReport {
             outcome: Err(err.into()),
             partial: String::new(),
             partial_reasoning: String::new(),
-            cut_round: None,
         }
     }
 }
@@ -284,8 +264,6 @@ pub(crate) struct RoundOutcome {
     pub(crate) partial: String,
     /// Reasoning streamed before a user interrupt.
     pub(crate) partial_reasoning: String,
-    /// A truncated round's replay payload and cost ([`CutRound`]).
-    pub(crate) cut_round: Option<CutRound>,
 }
 
 impl RoundOutcome {
@@ -295,7 +273,6 @@ impl RoundOutcome {
             result,
             partial: String::new(),
             partial_reasoning: String::new(),
-            cut_round: None,
         }
     }
 }
@@ -507,7 +484,6 @@ pub(crate) async fn stream_round(
                     result: Err(ChatError::Interrupted),
                     partial,
                     partial_reasoning: reasoning,
-                    cut_round: None,
                 }
             } else if e.is_stall() {
                 // A stall cuts the round off mid-stream the way ESC does: what streamed was
@@ -516,7 +492,6 @@ pub(crate) async fn stream_round(
                     result: Err(ChatError::Provider(e)),
                     partial,
                     partial_reasoning: reasoning,
-                    cut_round: None,
                 }
             } else {
                 RoundOutcome::of(Err(ChatError::Provider(e)))
@@ -528,32 +503,17 @@ pub(crate) async fn stream_round(
                 result: Err(ChatError::Interrupted),
                 partial,
                 partial_reasoning: reasoning,
-                cut_round: None,
             }
         }
-        Ok(mut round) => {
-            // A round the output ceiling cut off is an error, never an answer (X-69, X-70): what
-            // streamed travels as the partial — the stall's shape — so visible text the
-            // model DID write is kept, marked cut short, while a thought cut off mid-sentence
-            // is never promoted to a reply below.
-            if let Some(cut) = round.truncated.take() {
-                sink.render_spill();
-                let (partial, reasoning) = sink.finish_partials();
-                return RoundOutcome {
-                    result: Err(ChatError::Truncated(cut)),
-                    partial,
-                    partial_reasoning: reasoning,
-                    cut_round: Some(CutRound {
-                        raw_content: round.raw_content,
-                        usage: round.usage,
-                    }),
-                };
-            }
+        Ok(round) => {
             // Reasoning-only response: the model thought and said nothing else, so the
             // reasoning IS the answer — rendered as content rather than reported as an
             // empty turn (run.go:1811-1817). Images make a text-less round valid on their
-            // own, so they suppress the rule.
-            if round.tool_calls.is_empty()
+            // own, so they suppress the rule — and so does a cut: a thought the output ceiling
+            // stopped mid-sentence is never promoted to a reply (X-69, X-70; the tool loop
+            // turns the cut into the error).
+            if round.truncated.is_none()
+                && round.tool_calls.is_empty()
                 && round.content.is_empty()
                 && round.images.is_empty()
                 && !round.reasoning.is_empty()

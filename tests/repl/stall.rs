@@ -1394,3 +1394,63 @@ async fn a_cut_with_no_text_still_counts_its_cost() {
         }
     }
 }
+
+/// The cut's figure never outlives its rollback: a cut with no text measured a request the history no longer
+/// holds, so when the next turn's call reports no usage of its own, the budget is the history's local count —
+/// never the cut request's figure read late by the next settle.
+#[tokio::test]
+async fn a_rolled_back_cut_never_measures_the_next_turn() {
+    let cut = usage(50_000, 32_000);
+    let provider = FakeProvider::new()
+        .with_tools()
+        .reporting_usage()
+        .rounds(vec![
+            Round::reply("base answer").usage(usage(1000, 40)),
+            Round::cut_off("", "").usage(cut),
+            Round::reply("after"),
+        ]);
+    let fx = Fixture::new(vec![
+        input("base"),
+        input("q"),
+        input("next"),
+        Reply::Closed,
+    ]);
+    fx.run(provider, None, &[]).await;
+
+    assert_eq!(fx.printed_count("Output truncated"), 1);
+    let last = last_status(&fx);
+    assert!(
+        last.ctx_used < cut.context_tokens(),
+        "the next turn read the cut's figure: {}",
+        last.ctx_used
+    );
+    assert!(last.estimated, "no call measured the history since");
+}
+
+/// A cut that keeps its text books its cost ONCE — the tool loop that kept the round booked it, and keeping
+/// the turn books nothing more — and the kept message measures the budget, as a finished reply would.
+#[tokio::test]
+async fn a_kept_cut_counts_its_cost_once() {
+    let base = usage(1000, 40);
+    let cut = usage(5000, 32_000);
+    let provider = FakeProvider::new()
+        .with_tools()
+        .reporting_usage()
+        .rounds(vec![
+            Round::reply("base answer").usage(base),
+            Round::cut_off("", "half a reply").usage(cut),
+        ]);
+    let fx = Fixture::new(vec![input("base"), input("q"), Reply::Closed]);
+    fx.run(provider, None, &[]).await;
+
+    assert_eq!(fx.printed_count("Output truncated"), 1);
+    let last = last_status(&fx);
+    let mut spent = base;
+    spent += cut;
+    assert_eq!(
+        (last.in_tokens, last.out_tokens),
+        (spent.input, spent.output)
+    );
+    assert!(!last.estimated);
+    assert!(last.ctx_used >= cut.context_tokens(), "{}", last.ctx_used);
+}
