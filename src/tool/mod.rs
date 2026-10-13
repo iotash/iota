@@ -208,6 +208,9 @@ pub trait Dispatcher: Send + Sync {
     fn take_pending_loads(&self) -> Vec<ToolDef> {
         Vec::new()
     }
+    /// Forgets every deferred tool loaded so far, as though none had been searched in: a `/new` session starts
+    /// with the tools array the run started with (docs/design/new-session-command.md §3.2).
+    fn reset_loads(&self) {}
 }
 
 /// Deferred-group prefix oracle: `"mcp__<segment>__"` once the named server connected, `""` before; queried lazily

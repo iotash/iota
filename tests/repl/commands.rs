@@ -263,7 +263,7 @@ async fn banner_order_and_completion_row() {
     assert_eq!(
         completion_row(&f.ui),
         [
-            "/file", "/session", "/model", "/export", "/status", "/tools", "/debug"
+            "/file", "/new", "/session", "/model", "/export", "/status", "/tools", "/debug"
         ]
     );
 }
@@ -293,7 +293,8 @@ async fn banner_offers_save_for_an_ephemeral_chat() {
     assert_eq!(
         completion_row(&f.ui),
         [
-            "/file", "/session", "/model", "/export", "/status", "/tools", "/debug", "/save"
+            "/file", "/new", "/session", "/model", "/export", "/status", "/tools", "/debug",
+            "/save"
         ]
     );
 }
