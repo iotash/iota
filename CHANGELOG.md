@@ -41,13 +41,16 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   Anthropic dialect (`stop_reason: max_tokens`) and on the Responses dialect
   (`response.incomplete: max_output_tokens`), the chat shows a red
   `Output truncated` block: what cut it, the tool call it was composing if
-  any (dropped, by name — it does not run), and what to do — where to raise
-  `max_tokens:`, and that the edit reaches this session only after a restart,
-  a resume and a `/model` switch away and back, while a lower effort in
-  `/model` applies at once. Text the model did write is kept, marked
-  incomplete; with none, the turn is rolled back, though what the request
-  cost still counts in the session totals. A cut is not retried — the same
-  request would hit the same ceiling. A half-finished thought is no longer
+  any (dropped, by name — it does not run), and what to do. On Anthropic
+  that is where to raise `max_tokens:`, and that the edit reaches this
+  session only after a restart, a resume and a `/model` switch away and
+  back, while a lower effort in `/model` applies at once; the Responses
+  dialect has no such setting, so there it is to lower the effort in
+  `/model` or ask for a shorter reply. Text the model did write is kept,
+  marked incomplete; with no text or completed tool rounds to keep, the turn
+  is rolled back, though what the request cost still counts in the session
+  totals. A cut is not retried — the same request would hit the same
+  ceiling. A half-finished thought is no longer
   shown, saved or sent back to the model as the reply. With `-m`, a cut fails
   the run (exit 1, `Error: output truncated — …`, nothing saved), a cut-off
   compaction summary fails instead of replacing the history with a fragment,
