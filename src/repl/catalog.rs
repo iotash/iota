@@ -53,8 +53,7 @@ impl Candidate {
     /// or the bare id when `implicit` — the ONE provider the whole candidate set is on
     /// ([`ModelCatalog::implicit_provider`]) — already says where it runs. That is a fact of the config, never of
     /// where the session happens to be, so a chat that moves (or a source that fails a listing) rewrites no
-    /// row; and it keeps the common single-provider list free of a prefix every row would repeat. What picking
-    /// the row DOES to this chat is a separate annotation ([`ModelCatalog::row_label`]).
+    /// row; and it keeps the common single-provider list free of a prefix every row would repeat.
     pub(crate) fn label(&self, implicit: &str) -> String {
         if self.provider.is_empty() || self.provider == implicit {
             return self.id.clone();
@@ -63,8 +62,8 @@ impl Candidate {
     }
 }
 
-/// What committing a row (or the typed text) means for THIS session — what a row's `(elsewhere)`
-/// annotation announces ([`ModelCatalog::row_label`]).
+/// What committing a row (or the typed text) means for THIS session. The row does not foretell it: the
+/// action reports itself (`Model switched to … on …`, the move's confirmation, or the refusal).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Pick {
     /// A model on the session's own endpoint: switch to it.
@@ -248,20 +247,17 @@ impl ModelCatalog {
     }
 
     /// How a row reads in the picker: its name ([`Candidate::label`]), then the choices' entry names that
-    /// serve it as `[a, b]` — so the words of the config are on the row, and the filter finds them — then,
-    /// for a row on ANOTHER endpoint than the chat's, `(elsewhere)`: what picking it does to this chat (it
-    /// moves the chat, or it needs a new session). The name never depends on where the chat is; the
-    /// annotation does, exactly as `(current)` does.
-    pub(crate) fn row_label(&self, c: &Candidate, elsewhere: &str) -> String {
-        let mut label = c.label(self.implicit_provider());
+    /// serve it as `[a, b]` — so the words of the config are on the row, and the filter finds them. The name
+    /// says what the row IS and never depends on where the chat is. What picking it DOES is not foretold on
+    /// the row: the action reports itself — `Model switched to {id} on {provider}`, the confirmation before
+    /// a chat that has replied moves, or the refusal in a chat that never moves.
+    pub(crate) fn row_label(&self, c: &Candidate) -> String {
+        let label = c.label(self.implicit_provider());
         let names = self.names_of(c);
-        if !names.is_empty() {
-            label = format!("{label} [{}]", names.join(", "));
+        if names.is_empty() {
+            return label;
         }
-        if matches!(self.pick(c), Pick::Elsewhere(..)) {
-            label = format!("{label} ({elsewhere})");
-        }
-        label
+        format!("{label} [{}]", names.join(", "))
     }
 
     /// The candidate a typed string names, read exactly as `-M` reads its argument
@@ -607,15 +603,12 @@ mod tests {
         );
         assert!(got.notes.is_empty());
         // The set spans two endpoints, so every row says which one it is on — the session's own included —
-        // with the entry's name beside the pair it stands for; a row on another endpoint says what picking it does.
+        // with the entry's name beside the pair it stands for — and nothing about what picking it does.
         assert_eq!(
-            cat.row_label(&got.rows[0], "moves the chat"),
+            cat.row_label(&got.rows[0]),
             "anthropic:claude-sonnet-4 [sonnet]"
         );
-        assert_eq!(
-            cat.row_label(&got.rows[1], "moves the chat"),
-            "relay:vendor/x (moves the chat)"
-        );
+        assert_eq!(cat.row_label(&got.rows[1]), "relay:vendor/x");
     }
 
     /// `provider:*` on the session's OWN provider asks the live instance — the one the chat is
@@ -867,8 +860,8 @@ mod tests {
         assert_eq!(cat.parse_typed("relay"), Some(on("relay", "vendor/chat")));
         assert_eq!(cat.parse_typed("relay:other"), Some(on("relay", "other")));
         assert_eq!(
-            cat.row_label(&on("relay", "vendor/chat"), "moves the chat"),
-            "relay:vendor/chat [relay] (moves the chat)"
+            cat.row_label(&on("relay", "vendor/chat")),
+            "relay:vendor/chat [relay]"
         );
     }
 
@@ -885,23 +878,19 @@ mod tests {
             catalog(Vec::new(), Vec::new()).implicit_provider(),
             "anthropic"
         );
-        // A set on ONE other endpoint than the session's still writes its rows bare; what marks them is the
-        // annotation, and the current row (from outside the set) carries its provider.
+        // A set on ONE other endpoint than the session's still writes its rows bare — picking one says where
+        // it went (`Model switched to … on …`) — and the current row (from outside the set) carries its provider.
         let mut away = catalog(vec![wildcard("relay")], Vec::new());
         away.session = "anthropic".to_owned();
+        assert_eq!(away.row_label(&on("relay", "a")), "a");
         assert_eq!(
-            away.row_label(&on("relay", "a"), "moves the chat"),
-            "a (moves the chat)"
-        );
-        assert_eq!(
-            away.row_label(&on("anthropic", "claude-x"), "moves the chat"),
+            away.row_label(&on("anthropic", "claude-x")),
             "anthropic:claude-x"
         );
     }
 
     /// A row's name is a fact of the config: the catalog a moved chat is handed (`commands::model::install`)
-    /// names every row exactly as the one it replaced did. Only the annotation — what picking the row does to
-    /// THIS chat — follows the chat, as `(current)` does.
+    /// names every row exactly as the one it replaced did; only `(current)` follows the chat.
     #[test]
     fn a_rows_name_does_not_follow_the_chat() {
         let refs = vec![entry("sonnet"), entry("fast"), wildcard("relay")];
@@ -914,23 +903,19 @@ mod tests {
             on("relay", "vendor/fast"),
             on("relay", "listed"),
         ];
-        let labels = |cat: &ModelCatalog| {
-            rows.iter()
-                .map(|c| cat.row_label(c, "moves the chat"))
-                .collect::<Vec<_>>()
-        };
+        let labels = |cat: &ModelCatalog| rows.iter().map(|c| cat.row_label(c)).collect::<Vec<_>>();
         assert_eq!(
             labels(&before),
             [
                 "anthropic:claude-sonnet-4 [sonnet]",
-                "relay:vendor/fast [fast] (moves the chat)",
-                "relay:listed (moves the chat)",
+                "relay:vendor/fast [fast]",
+                "relay:listed",
             ]
         );
         assert_eq!(
             labels(&after),
             [
-                "anthropic:claude-sonnet-4 [sonnet] (moves the chat)",
+                "anthropic:claude-sonnet-4 [sonnet]",
                 "relay:vendor/fast [fast]",
                 "relay:listed",
             ]
@@ -963,14 +948,11 @@ mod tests {
         );
         // `same` is a third name for the pair; `vendor/x` is spelled like the id and is left out.
         assert_eq!(
-            cat.row_label(&on("relay", "vendor/x"), "moves the chat"),
-            "vendor/x [b, same, a] (moves the chat)"
+            cat.row_label(&on("relay", "vendor/x")),
+            "vendor/x [b, same, a]"
         );
         // A pair no choice names by entry reads as the pair alone.
-        assert_eq!(
-            cat.row_label(&on("relay", "y"), "moves the chat"),
-            "y (moves the chat)"
-        );
+        assert_eq!(cat.row_label(&on("relay", "y")), "y");
     }
 
     /// A pick on the session's endpoint switches; one on another endpoint is reported.

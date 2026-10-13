@@ -496,8 +496,9 @@ async fn model_lists_the_agents_candidate_set() {
         [
             // the `models:` entry, which is also what the chat is running, with the name it is chosen by
             "mock:a-model [m] (current)",
-            // an inline reference to ANOTHER endpoint: written as `-M` writes it, and what picking it costs
-            "relay:vendor/y (needs a new session)",
+            // an inline reference to ANOTHER endpoint: written as `-M` writes it, and nothing about what picking
+            // it does — in this chat, which never moves, the pick is refused and says so
+            "relay:vendor/y",
             // the wildcard's own listing, minus the id the entry already offered
             "mock:b-model",
         ]
@@ -718,22 +719,16 @@ async fn model_moves_a_chat_with_no_reply_to_another_provider() {
     let titles = built.title.records();
     assert_eq!(titles.len(), 1);
     assert_eq!(titles[0].model, "vendor/y");
-    // Every row keeps its name across the move; what follows the chat is the annotations: `(current)`, and what
-    // picking a row on another endpoint does — it moves the chat, after the first reply as before it.
+    // Every row keeps its name across the move — `relay:`, never a foretelling of what picking it does (the
+    // switch above said where the chat went); only `(current)` follows the chat.
     let opened = surfaces(&f.ui);
     assert_eq!(
         opened[0].panels[0].items,
-        [
-            "mock:a-model [m] (current)",
-            "relay:vendor/y [y] (moves the chat)"
-        ]
+        ["mock:a-model [m] (current)", "relay:vendor/y [y]"]
     );
     assert_eq!(
         opened[1].panels[0].items,
-        [
-            "mock:a-model [m] (moves the chat)",
-            "relay:vendor/y [y] (current)"
-        ]
+        ["mock:a-model [m]", "relay:vendor/y [y] (current)"]
     );
     // The bundle names the endpoint the reply came from.
     let infos = f.store.list(None).expect("list");
