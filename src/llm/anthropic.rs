@@ -322,17 +322,6 @@ pub(crate) enum StopReason {
 }
 
 impl StopReason {
-    /// The wire spelling.
-    fn as_str(&self) -> &str {
-        match self {
-            Self::EndTurn => "end_turn",
-            Self::MaxTokens => "max_tokens",
-            Self::StopSequence => "stop_sequence",
-            Self::ToolUse => "tool_use",
-            Self::Other(s) => s,
-        }
-    }
-
     /// The reason for a `stop_reason` string; `None` when it is empty.
     fn parse(reason: &str) -> Option<Self> {
         Some(match reason {
@@ -645,7 +634,7 @@ impl AnthropicStream {
                 ..
             } = &event
             {
-                self.merge_stop_reason(reason)?;
+                self.merge_stop_reason(reason);
             }
             return Ok(Some(event));
         }
@@ -659,25 +648,12 @@ impl AnthropicStream {
 
     /// One `message_delta`'s reason folded into the message's. A delta WITHOUT one (a usage-only update)
     /// never reaches here: a missing field is no update, never a retraction. `max_tokens` is a fact once
-    /// seen — the output WAS cut, and no later reason can make the round a finished one (review R1). Two
-    /// different non-empty reasons otherwise contradict each other (did the model stop for its tools, or
-    /// at its turn's end?), and neither can be trusted: a protocol error.
-    fn merge_stop_reason(&mut self, reason: &StopReason) -> Result<(), LlmError> {
-        match &self.stop_reason {
-            None => self.stop_reason = Some(reason.clone()),
-            Some(StopReason::MaxTokens) => {}
-            Some(_) if *reason == StopReason::MaxTokens => {
-                self.stop_reason = Some(StopReason::MaxTokens);
-            }
-            Some(first) if first == reason => {}
-            Some(first) => {
-                return Err(LlmError::ConflictingStopReason {
-                    first: first.as_str().to_owned(),
-                    then: reason.as_str().to_owned(),
-                });
-            }
+    /// seen — the output WAS cut, and no later reason can make the round a finished one (review R1). Any
+    /// other later reason is ignored: the first one reported stands.
+    fn merge_stop_reason(&mut self, reason: &StopReason) {
+        if self.stop_reason.is_none() || *reason == StopReason::MaxTokens {
+            self.stop_reason = Some(reason.clone());
         }
-        Ok(())
     }
 }
 

@@ -472,16 +472,16 @@ impl OpenResponsesProvider {
             // A round the ceiling cut off is reported as such, never passed off as finished — nor as a failure
             // to retry (the same request hits the same ceiling). Its function calls cannot run: they are
             // dropped, by name, in the truncation (X-69, X-72).
-            // A gateway that skips `output_item.added` still names the call when it completes: a completed
-            // call no announcement accounts for is added.
-            let mut unclaimed = announced.clone();
-            let mut dropped = announced;
-            for acc in fn_call_order.iter().filter_map(|id| fn_calls.get(id)) {
-                match unclaimed.iter().position(|n| *n == acc.name) {
-                    Some(i) => {
-                        unclaimed.remove(i);
-                    }
-                    None => dropped.push(acc.name.clone()),
+            // The names announced, then those completed (a gateway that skips `output_item.added` still
+            // names the call when it completes), each once: the list only goes into the error's text.
+            let mut dropped: Vec<String> = Vec::new();
+            let completed = fn_call_order.iter().filter_map(|id| fn_calls.get(id));
+            for name in announced
+                .into_iter()
+                .chain(completed.map(|acc| acc.name.clone()))
+            {
+                if !dropped.contains(&name) {
+                    dropped.push(name);
                 }
             }
             let raw_content = (!images.is_empty() && !raw_items.is_empty())
