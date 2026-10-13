@@ -10,8 +10,8 @@ use std::path::Path;
 use crate::provider::Provider;
 use crate::provider::model::{Message, Role};
 use crate::session::{
-    BotOpen, ImageSettings, LayeredParams, Moved, NewSession, Overrides, SessionError,
-    SessionStore, SessionWriter, replay_session_settings,
+    BotOpen, LayeredParams, NewSession, Overrides, SessionError, SessionStore, SessionWriter,
+    replay_session_settings,
 };
 
 /// The notice a config-edited system prompt leaves in the transcript.
@@ -163,14 +163,11 @@ pub(crate) fn open_bot_session(
                 },
                 warn,
             );
-            writer.move_to(&Moved {
-                kind,
-                provider: on,
-                model: provider.model().to_owned(),
-                params: params.clone(),
-                window: crate::cmd::window_of(provider, params),
-                image: ImageSettings::of(provider),
-            })?;
+            writer.move_to(&crate::repl::liveparams::moved(
+                &on,
+                provider,
+                params.clone(),
+            ))?;
             writer.update_meta(|m| m.cwd = cwd)?;
             let repair_notice = session.repair_notice();
             // A bot whose config moved it to another provider type keeps the old type's payloads on disk only.
@@ -762,6 +759,24 @@ mod tests {
         (notices, log.send(0))
     }
 
+    /// The catalog of a run on the `openai` endpoint the bundles [`fresh`] creates name: the chat restates
+    /// where it runs at startup, and it runs where its bundle says.
+    fn catalog() -> crate::repl::ModelCatalog {
+        let env = crate::app::env::Env::default();
+        let cfg = crate::config::Config::parse(
+            b"agents:\n  coder: {model: openai:gpt-4o}\n",
+            &env,
+            &mut |w| panic!("unexpected config warning: {w}"),
+        )
+        .expect("the config loads");
+        crate::repl::ModelCatalog::new(
+            &cfg,
+            &cfg.resolve_agent("coder").expect("the agent"),
+            &env,
+            &crate::provider::HttpTransport::from(crate::llm::default_http_client()),
+        )
+    }
+
     /// Opens the bot with config prompt `system` and runs the loop over `script`: the open's notices and the
     /// provider's log.
     async fn run_bot(
@@ -801,7 +816,7 @@ mod tests {
             },
             params: crate::session::LayeredParams::default(),
             layers: crate::cmd::ParamLayers::default(),
-            catalog: crate::repl::ModelCatalog::default(),
+            catalog: catalog(),
             endpoints: None,
             agent: crate::headless::AgentOptions::default(),
             dark_background: true,
