@@ -3,7 +3,7 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
-## Unreleased
+## 0.7.1 - 2026-10-13
 
 ### Added
 
@@ -15,7 +15,8 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   directory, and whether the chat is being saved at all. It starts with an
   empty conversation, no attachments and the token counts at zero. The screen
   is not cleared; a dim `New session <id>` line marks where the new session
-  begins. Background jobs keep running, and their results go to the new
+  begins (`New session · not saved · /save keeps it` when the chat is not
+  being saved). Background jobs keep running, and their results go to the new
   session. An unsaved chat a model has replied in asks before it is
   discarded. `/clear` does the same thing and is not listed. A bot's session
   never ends, so a bot refuses `/new` and says why.
@@ -41,6 +42,8 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   the summary is written and replaced by the outcome when it is done. A
   `/compact` with nothing to summarize still says only `Nothing to compact
   yet.`
+- **ruzstd is 0.9.1** (RUSTSEC-2026-0344). It only ever decompressed the token
+  table built into the binary, never input from outside.
 
 ### Fixed
 
