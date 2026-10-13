@@ -600,3 +600,11 @@ fn tmux_thinking_cut() {
 fn tmux_tool_args_cut() {
     run_scenario("31-tool-args-cut.sh");
 }
+
+/// L4 #32 (X-75) — `/new` on a real terminal: the divider below the untouched transcript, the status row's
+/// token half back at zero, the second message in a new bundle in the same bucket, and `iota resume <old id>`
+/// bringing the first session back.
+#[test]
+fn tmux_new_session() {
+    run_scenario("32-new-session.sh");
+}

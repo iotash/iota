@@ -175,6 +175,22 @@ impl SessionTitle {
         (self.window)(&st.current);
     }
 
+    /// Starts the name over for a NEW session (`/new`): `writer` (`None` for an ephemeral one) replaces the
+    /// slot's, the name goes back to none — on the window too — and the next first message seeds again.
+    /// Under the state lock and BEFORE the swap, as [`SessionTitle::switch_writer`]: a pass that already
+    /// passed its checks lands on the session it named, and one that comes later carries a generation this
+    /// bumps past, so it is dropped rather than naming the new session after the old one's message.
+    pub(crate) fn restart(&self, writer: Option<crate::session::SessionWriter>) {
+        let mut st = self.lock();
+        let generation = st.generation + 1;
+        *st = TitleState {
+            generation,
+            ..TitleState::default()
+        };
+        *lock(&self.writer) = writer;
+        (self.window)("");
+    }
+
     /// The session's name as last set — the one the window shows, ephemeral or not; `""`
     /// before it has one.
     pub(crate) fn current(&self) -> String {
@@ -459,6 +475,48 @@ mod tests {
         p.titler.land(generation, "Profiling Go allocations");
         assert_eq!(p.name(), "Profiling Go allocations");
         assert_eq!(p.last_window(), "Profiling Go allocations");
+    }
+
+    // `/new`: the old bundle keeps the name it got, the new one starts unnamed — even after a settled
+    // title — a pass still in flight for the old message is dropped, and the next message names the new
+    // session.
+    #[test]
+    fn restart_starts_the_name_over() {
+        let p = Probe::new(false);
+        let (_, stale) = p
+            .titler
+            .seed(&user_turn("the old question"))
+            .expect("seeded");
+        p.titler.adopt_name("a settled name");
+        let old = lock(&p.writer).take().expect("old writer");
+        assert_eq!(old.meta().title, "a settled name");
+
+        p.titler.restart(Some(p.mint()));
+        assert_eq!(p.titler.current(), "");
+        assert_eq!(
+            p.last_window(),
+            "",
+            "the window goes back to the application name"
+        );
+        p.titler.land(stale, "The Old Question");
+        assert_eq!(
+            p.name(),
+            "",
+            "a pass for the old message never names the new session"
+        );
+
+        let (first_user, generation) = p
+            .titler
+            .seed(&user_turn("the new question"))
+            .expect("the new session seeds again");
+        assert_eq!(first_user, "the new question");
+        p.titler.land(generation, "The New Question");
+        assert_eq!(p.name(), "The New Question");
+        assert_eq!(
+            old.meta().title,
+            "a settled name",
+            "the old bundle is untouched"
+        );
     }
 
     // A failed pass

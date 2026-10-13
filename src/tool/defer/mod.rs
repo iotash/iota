@@ -494,6 +494,11 @@ impl Dispatcher for DeferDispatcher {
     fn take_pending_loads(&self) -> Vec<ToolDef> {
         std::mem::take(&mut self.lock().pending)
     }
+
+    /// Back to nothing loaded, the mount queue included.
+    fn reset_loads(&self) {
+        *self.lock() = LoadState::default();
+    }
 }
 
 impl Owner for DeferDispatcher {

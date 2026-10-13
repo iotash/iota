@@ -43,8 +43,8 @@ use crate::repl::bot::{Action as BotAction, Event as BotEvent};
 use crate::repl::commands::edit::EditOutcome;
 use crate::repl::commands::skills::SkillsOutcome;
 use crate::repl::commands::{
-    CmdFlags, CommandTable, SkillEntry, debug, edit, export, file, jobs, match_cmd, model, save,
-    session, skills, status, tools,
+    CmdFlags, CommandTable, SkillEntry, debug, edit, export, file, jobs, match_cmd, model, new,
+    save, session, skills, status, tools,
 };
 use crate::repl::context::meter::{ContextBudget, CtxMeter};
 use crate::repl::render::banner::{BannerFacts, banner_lines, overlay_warnings};
@@ -309,8 +309,8 @@ impl Repl {
     }
 
     /// Tells the hosts which session the chat persists into — the live writer's id and bundle
-    /// directory. Called wherever the writer is settled: at start-up, after `/save` mints one, and
-    /// after `/session` swaps it. Nothing is said for an ephemeral chat.
+    /// directory. Called wherever the writer is settled: at start-up, after `/save` mints one, after
+    /// `/session` swaps it and after `/new` starts another. Nothing is said for an ephemeral chat.
     pub(crate) fn report_session(&self) {
         if let Some(w) = lock(&self.session.writer).as_ref() {
             self.handles.pres.set_session(w.id(), w.dir());
@@ -806,6 +806,13 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             if lock(&repl.handles.table).session_enabled() && match_cmd(&line, "/session").is_some()
             {
                 session::cmd_session(&mut repl).await;
+                continue;
+            }
+            // /new, and /clear for the muscle memory of other agents — matched, never listed
+            // (docs/design/new-session-command.md §3.1). A bot answers it with a refusal rather than sending
+            // it to the model (§3.3).
+            if let Some(arg) = match_cmd(&line, "/new").or_else(|| match_cmd(&line, "/clear")) {
+                new::cmd_new(&mut repl, arg).await;
                 continue;
             }
             // /compact sits between /session and /export in Go's chain, and exists only while

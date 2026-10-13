@@ -26,6 +26,7 @@ mod images;
 // Spawns real background children through `Jobs`; its command lines are POSIX, so each test that runs one
 // asks `jobs::skip_unless_posix` first (see `tests/tool/main.rs`).
 mod jobs;
+mod new_session;
 mod settings;
 mod skills;
 mod stall;

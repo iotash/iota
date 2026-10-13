@@ -266,6 +266,13 @@ impl Dispatcher for Merged {
             .flat_map(|p| p.take_pending_loads())
             .collect()
     }
+
+    /// Every part.
+    fn reset_loads(&self) {
+        for p in &self.parts {
+            p.reset_loads();
+        }
+    }
 }
 
 // ---- a narrowed view ----

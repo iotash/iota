@@ -1134,3 +1134,23 @@ fn the_registry_reports_header_summary_presence() {
         "unknown tool reported a summary"
     );
 }
+
+/// `/new` (docs/design/new-session-command.md §3.2): a new session starts with nothing loaded — the tools a
+/// search loaded go back into hiding, through a merge too, and a frozen mount queue is emptied.
+#[tokio::test]
+async fn reset_loads_hides_what_a_search_loaded() {
+    let (_, d) = new_defer_fixture();
+    let merged = merge(vec![
+        Arc::clone(&d),
+        Arc::new(FakeMcp::with_defs(&[("other", "x")])) as Arc<dyn Dispatcher>,
+    ]);
+    call(&*merged, SEARCH_TOOL_NAME, query("pull request")).await;
+    assert!(tool_names(&merged.tools()).contains("mcp__gh__create_pr"));
+    merged.reset_loads();
+    let names = tool_names(&merged.tools());
+    assert!(!names.contains("mcp__gh__create_pr"), "{names:?}");
+    assert!(names.contains(SEARCH_TOOL_NAME) && names.contains("other"));
+    // A search loads it again, as in a fresh run.
+    call(&*merged, SEARCH_TOOL_NAME, query("pull request")).await;
+    assert!(tool_names(&merged.tools()).contains("mcp__gh__create_pr"));
+}
