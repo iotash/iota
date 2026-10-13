@@ -15,7 +15,7 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   from, and `iota resume` restores what was recorded — the default included —
   whatever the config says today; a bot takes it from its config each start.
   Thinking counts toward it. There is no `/model` tab or flag for it, and a
-  hand-edited `max_tokens: 0` in a session is ignored with a warning. On any
+  hand-edited `max_tokens: 0` in a session is ignored. On any
   other provider type the key does nothing and says so
   (`` Warning: `max_tokens` does not apply to provider type … (ignored) ``).
 - **A chat can move to another provider from `/model`.** A row on another
