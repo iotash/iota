@@ -266,9 +266,10 @@ impl ModelCatalog {
 
     /// The candidate a typed string names, read exactly as `-M` reads its argument
     /// (`cmd::resolve::apply_model_flag`): `provider:id` is an endpoint reference when `provider` is a name
-    /// iota knows; a bare word is a `models:` entry when the agent's CHOICES name it (an entry only in
-    /// `models:` is not, as for `-M`); and everything else — including a string with a colon in it, a relay's
-    /// own ids have them — is a raw model id on the session's own endpoint. `provider:*` names an endpoint
+    /// iota knows; a bare word is the `models:` entry of that name when the config has one, listed among
+    /// the choices or not (they decide the rows, not the names — as for `-M`); and everything else —
+    /// including a string with a colon in it, a relay's own ids have them — is a raw model id on the
+    /// session's own endpoint. `provider:*` names an endpoint
     /// and no model, which for `-M` is "start in the picker" and here, already in it, is nothing to commit:
     /// `None`.
     ///
@@ -285,12 +286,7 @@ impl ModelCatalog {
                 id: id.to_owned(),
             });
         }
-        if self
-            .refs
-            .iter()
-            .any(|r| matches!(r, ModelRef::Entry(n) if n == text))
-            && let Some(m) = self.entries.get(text)
-        {
+        if let Some(m) = self.entries.get(text) {
             return Some(Candidate {
                 provider: m.provider.clone(),
                 id: m.id.clone(),
@@ -839,15 +835,23 @@ mod tests {
             cat.parse_typed("  gpt-4o  "),
             Some(Candidate::here("gpt-4o"))
         );
-        // A choice by name is the pair its entry stands for — on whichever endpoint that is — never a wire id
+        // An entry by name is the pair it stands for — on whichever endpoint that is — never a wire id
         // spelled like the name.
         assert_eq!(cat.parse_typed("fast"), Some(on("relay", "vendor/fast")));
         assert_eq!(
             cat.parse_typed(" sonnet "),
             Some(on("anthropic", "claude-sonnet-4"))
         );
-        // …but only a choice: an entry the agent does not offer is a raw id, as it is for `-M`.
-        assert_eq!(cat.parse_typed("hidden"), Some(Candidate::here("hidden")));
+        // …and so is an entry the agent does not offer: the choices decide what is LISTED, not which names
+        // the config knows (as for `-M`). Only a word no entry has is a raw id on the session's endpoint.
+        assert_eq!(
+            cat.parse_typed("hidden"),
+            Some(on("relay", "vendor/hidden"))
+        );
+        assert_eq!(
+            cat.parse_typed("unheard-of"),
+            Some(Candidate::here("unheard-of"))
+        );
         // `provider:*` names an endpoint and no model: nothing to commit. An unknown prefix keeps its star.
         assert_eq!(cat.parse_typed("relay:*"), None);
         assert_eq!(

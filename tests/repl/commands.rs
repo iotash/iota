@@ -578,6 +578,52 @@ agents:
     assert_eq!(meta.model, "b-model");
 }
 
+/// A `models:` entry the agent's choices leave out is still a NAME in the field: it is not listed, but typed it
+/// is the model its entry stands for, as for `-M` — never a wire id spelled like the name.
+#[tokio::test]
+async fn model_reads_a_typed_entry_outside_the_choices_by_name() {
+    const NARROW: &str = r"
+providers:
+  mock: {type: openai, key: k}
+models:
+  m: mock:a-model
+  fast: mock:b-model
+agents:
+  default:
+    model: m
+";
+    let f = Fixture::new(vec![
+        input("/model"),
+        commit(PanelResult {
+            // One past the one row: the typed text.
+            cursor: 1,
+            text: "fast".to_owned(),
+            ..PanelResult::default()
+        }),
+        Reply::Interrupted,
+    ]);
+    let session = f.session(None);
+    let provider = provider("a-model", Ok(vec![]));
+    let params = f.params_with_catalog(provider, session, NARROW);
+    iota::repl::run(params).await.expect("exit");
+
+    // The agent offers `m` alone, so `fast` is not a row…
+    assert_eq!(
+        surfaces(&f.ui)[0].panels[0].items,
+        ["a-model [m] (current)"]
+    );
+    // …but typed, it is `fast`'s model.
+    let lines = printed(&f.ui);
+    assert!(
+        lines.contains(&"Model switched to b-model".to_owned()),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("switched to fast")),
+        "{lines:?}"
+    );
+}
+
 /// A row on another provider is listed but not taken once a model has replied: the history it would carry
 /// over is that dialect's, so the picker says so and names the command that would start a run there, rather
 /// than half-applying a switch whose next request would go to the wrong API — and no endpoint is built.

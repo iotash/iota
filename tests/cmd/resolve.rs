@@ -1108,24 +1108,47 @@ agents:
     assert_eq!(s.unwrap().model, "glm-5.3");
     assert!(warnings.is_empty(), "{warnings:?}");
 
-    // The other agent's model: a warning, and the run moves there with that entry's knobs.
-    let (s, warnings) = resolve_warned(
-        &["run", "default", "-M", "deepseek:deepseek-flash"],
-        &cfg,
-        &[],
-    );
+    // The other agent's model, by its pair or by its NAME (the choices decide what is listed, not which
+    // names the config knows): a warning, and the run moves there with that entry's knobs.
+    for flag in ["deepseek:deepseek-flash", "deepseek-flash"] {
+        let (s, warnings) = resolve_warned(&["run", "default", "-M", flag], &cfg, &[]);
+        let s = s.unwrap();
+        assert_eq!(
+            (s.base_url.as_str(), s.api_key.as_str(), s.model.as_str()),
+            ("https://deepseek.example/v1", "dk", "deepseek-flash"),
+            "-M {flag}"
+        );
+        assert_eq!(s.temperature, Some(0.3), "-M {flag}");
+        assert_eq!(
+            warnings,
+            vec![
+                "Warning: model deepseek:deepseek-flash is not in agent \"default\"'s choices (using it anyway)"
+                    .to_owned()
+            ],
+            "-M {flag}"
+        );
+    }
+
+    // A word no entry has is still a raw id on the endpoint the run resolved to.
+    let (s, warnings) = resolve_warned(&["run", "default", "-M", "glm-4.6"], &cfg, &[]);
     let s = s.unwrap();
     assert_eq!(
         (s.base_url.as_str(), s.model.as_str()),
-        ("https://deepseek.example/v1", "deepseek-flash")
+        ("https://glm.example/v1", "glm-4.6")
     );
-    assert_eq!(s.temperature, Some(0.3));
     assert_eq!(
         warnings,
         vec![
-            "Warning: model deepseek:deepseek-flash is not in agent \"default\"'s choices (using it anyway)"
+            "Warning: model glm:glm-4.6 is not in agent \"default\"'s choices (using it anyway)"
                 .to_owned()
         ]
+    );
+
+    // `provider:*` is that endpoint with nothing chosen, as before.
+    let s = resolve(&["run", "default", "-M", "deepseek:*"], &cfg, &[]).unwrap();
+    assert_eq!(
+        (s.base_url.as_str(), s.model.as_str()),
+        ("https://deepseek.example/v1", "")
     );
 }
 

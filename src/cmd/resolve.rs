@@ -231,8 +231,9 @@ pub(crate) fn resolve_agent(cfg: &Config, name: &str) -> Result<Resolved, ArgsEr
 ///   name iota knows; a bare id that happens to contain a colon is left alone, which is what a relay's
 ///   `vendor:model` ids need);
 /// - `provider:*` — that provider with no model chosen, i.e. start in the picker;
-/// - a bare value — a `models:` entry from the agent's own choices if it names one, else a raw model id on
-///   the provider the run already resolved to.
+/// - a bare value — the `models:` entry of that name when the config has one, whether or not the agent's
+///   choices list it (they decide what is OFFERED, not which names the config knows), else a raw model id
+///   on the provider the run already resolved to.
 ///
 /// A model outside the agent's choices is a WARNING, never a refusal (decision of 2026-09-10): the set is
 /// advice about what is good here, not a whitelist.
@@ -255,26 +256,21 @@ fn apply_model_flag(r: &mut Resolved, cfg: &Config, flag: &str, warn: &mut dyn F
             r.model = model_at(r, cfg, provider, id);
             r.move_to_provider(cfg, provider);
         }
-        _ => match cfg.models.get(flag) {
-            // A choice by name brings its own provider and protocol with it.
-            Some(entry)
-                if r.agent
-                    .choices
-                    .iter()
-                    .any(|c| matches!(c, ModelRef::Entry(n) if n == flag)) =>
-            {
+        // An entry by name — a choice or not: the choices decide what is listed, not which names the config
+        // knows — brings its own provider and protocol with it.
+        _ => {
+            if let Some(entry) = cfg.models.get(flag) {
                 let mut model = entry.clone();
                 model.anchor_provider(flag);
                 let provider = model.provider.clone();
                 r.model = model;
                 r.move_to_provider(cfg, &provider);
-            }
-            // Everything else is a raw model id on the provider the run resolved to: `<provider>:id`.
-            _ => {
+            } else {
+                // Everything else is a raw model id on the provider the run resolved to: `<provider>:id`.
                 let provider = r.provider_name.clone();
                 r.model = model_at(r, cfg, &provider, flag);
             }
-        },
+        }
     }
     // No choices at all is an agent that names no model, no choices and has no `models:` to default to:
     // there is no set for a model to be outside of.
