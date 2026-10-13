@@ -988,6 +988,30 @@ fn image_widget_defers_behind_streaming_content() {
     assert_eq!(rec.joined(), want.join("\n"));
 }
 
+/// New (no Go twin — Go's compaction rode the status row's busy segment, X-74): a compaction's summary pass
+/// runs under the lifecycle widget, raised with the group's one separator and dropped without a summary, and
+/// the outcome reuses that separator — it lands where the widget was, never a second blank above it.
+#[test]
+fn a_raised_widget_closes_into_the_outcome_with_one_separator() {
+    let rec = Rec::default();
+    let tr = transcript(&rec);
+
+    tr.user("/compact");
+    tr.raise_widget("Compacting context…");
+    tr.close_widget();
+    tr.notice("Context compacted → ≈27 / 128k (0%)");
+    tr.close_widget(); // nothing up: a no-op, no second close
+
+    let want = [
+        "user:/compact".to_owned(),
+        "print:".to_owned(),
+        format!("call:{}", dim("Compacting context…")),
+        "settle".to_owned(),
+        format!("print:{}", dim("Context compacted → ≈27 / 128k (0%)")),
+    ];
+    assert_eq!(rec.joined(), want.join("\n"));
+}
+
 // The PLAIN wrapper the user block and
 // composer echo use: CJK runes are width 2, a wide rune never splits across the
 // boundary, embedded behavior is pure hard wrap.

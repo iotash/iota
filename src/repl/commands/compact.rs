@@ -342,10 +342,10 @@ pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
         bot_compacted(repl, Compacted::Failed, e).await;
         return;
     }
-    // Said in the transcript, not the status row, and only when a summary pass will run: a pass with nothing
-    // to summarize returns at once, and a line announcing it would be left with no outcome after it.
+    // The pass runs under the transcript's lifecycle widget, not the status row's busy segment, and only when
+    // there is something to summarize: a pass with nothing to do returns at once.
     if middle_bounds(&repl.conv.history).is_some() {
-        repl.handles.tr.notice("Compacting context…");
+        repl.handles.tr.raise_widget("Compacting context…");
     }
     let res = compact_history(
         &repl.handles.cancel,
@@ -355,6 +355,7 @@ pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
         bot.as_ref(),
     )
     .await;
+    repl.handles.tr.close_widget();
 
     let (history, summary, retain_tail, usage) = match res {
         Err(e) => {

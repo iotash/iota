@@ -372,6 +372,31 @@ impl Transcript {
         }
     }
 
+    /// Raises the lifecycle widget for a compaction's summary pass — the spinner row thinking rides, labelled
+    /// `label` — in the transcript, not on the status row. A compaction runs between turns (the typed
+    /// command, the pre-send offer, a bot's flush machine), after `reset_turn`: no thinking, content or
+    /// deferred call owns the slot, so nothing defers the raise. [`Self::close_widget`] takes it down.
+    pub fn raise_widget(&self, label: &str) {
+        let mut inner = self.lock();
+        if inner.grp.has_events() {
+            group::settle_group(&mut inner);
+        }
+        group::ensure_widget(&mut inner, &dim(label));
+    }
+
+    /// Takes down a widget [`Self::raise_widget`] raised. Nothing settled into the group, so
+    /// `settle_group` would leave it up; it is dropped instead, and the separator paid at the raise is left
+    /// for the outcome's block to reuse — the outcome lands where the widget was.
+    pub fn close_widget(&self) {
+        let mut inner = self.lock();
+        if !inner.grp.up {
+            return;
+        }
+        inner.grp = ActivityGroup::default();
+        inner.orphan_sep = true;
+        inner.u.close_preview();
+    }
+
     /// The committer for one markdown content block (transcript.go `contentBlock`). The
     /// block opens lazily on the first line — settling the activity group first: a
     /// content boundary is what closes a group — and re-opens (new separator) if an async
