@@ -1985,7 +1985,8 @@ async fn save_mints_late_and_flushes_the_backlog() {
         recorded_notices: Vec::new(),
         memory: None,
     };
-    let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
+    // A provider that counts tokens: one that does not has no window to record, minted early or late.
+    let mut params = f.params(provider("gpt-4o", Ok(vec![])).reporting_usage(), session);
     params.params.context_window = iota::session::Param::config(200_000);
     iota::repl::run(params).await.expect("exit");
 

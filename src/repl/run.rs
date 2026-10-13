@@ -298,6 +298,16 @@ impl Repl {
         self.persist_turn();
     }
 
+    /// Whether a model has replied in this session — a fact of the session, not of the view: a compaction can
+    /// leave no assistant message in `history`, and the bundle's log ([`SessionWriter::replied`]) still says
+    /// so.
+    pub(crate) fn replied(&self) -> bool {
+        has_reply(&self.conv.history)
+            || lock(&self.session.writer)
+                .as_ref()
+                .is_some_and(SessionWriter::replied)
+    }
+
     /// Tells the hosts which session the chat persists into — the live writer's id and bundle
     /// directory. Called wherever the writer is settled: at start-up, after `/save` mints one, and
     /// after `/session` swaps it. Nothing is said for an ephemeral chat.
@@ -436,7 +446,6 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         vec![Message::system(system)]
     };
     let persisted = if resumed { history.len() } else { 0 };
-    let replied = has_reply(&history) || writer.as_ref().is_some_and(SessionWriter::replied);
     // The harness, now that the hosts it names in `<environment>` are known; the day it was composed on is
     // what the first send of the next one compares against.
     let harness_day = harness.today();
@@ -592,7 +601,6 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             provider,
             dispatch: Arc::clone(&dispatch),
             history,
-            replied,
             pending: Vec::new(),
             budget,
             ctxm,
@@ -667,15 +675,15 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     repl.handles.pres.set_state(State::Idle);
     repl.report_session();
 
-    // What the chat is running under, and where each value came from, into a bundle this run created — so a
-    // resume finds the session as it was rather than re-deriving it from a config that may have moved since
-    // (brain page `model-param-layering`). The values are read back from the provider and the budget, so a
-    // knob the dialect cannot act on is never recorded as though it had applied; the window is left out
-    // entirely for a provider with no token accounting.
+    // Where the chat runs, under what and from where each value came, into a bundle this run created
+    // ([`moved_now`](crate::repl::liveparams::moved_now)). Only a fresh bundle: a resumed one already says what
+    // it was running under, and where it says nothing the evaluated value lives in memory until something
+    // changes it — rewriting its meta on the way in would restate a config the user may be about to edit.
     if fresh_bundle {
-        let running = crate::repl::liveparams::current(&mut repl);
-        let window = token_aware.then(|| repl.conv.budget.window());
-        crate::repl::liveparams::stamp_bundle(&repl, window, &running);
+        let moved = crate::repl::liveparams::moved_now(&mut repl);
+        if let Some(w) = lock(&repl.session.writer).as_mut() {
+            let _ = w.move_to(&moved);
+        }
     }
 
     // A finished job becomes the next input: the facade serves it to a parked `read_input` at once (an idle
@@ -1027,9 +1035,6 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 landed = true;
             }
         }
-        // A reply that landed — whole, kept after an interrupt or a stall — makes this a session a model has
-        // replied in, whatever a later compaction leaves in the view.
-        repl.conv.replied |= has_reply(&repl.conv.history);
         // Whatever became of the turn, a memory write it made is on disk: it is recorded now.
         let memory_writes = repl.record_memory_writes();
         after_bot_turn(&mut repl, flush, landed, memory_writes, held).await;

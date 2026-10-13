@@ -11,9 +11,7 @@
 . "${TMUX_LIB:?}"
 
 SESSION_ID=aaaabbbbcccc
-# A v1 bundle — the shape every build before v2 wrote: it resumes on the agent's endpoint by type, and
-# settles as v2 under the name it ran on (checked at the end).
-write_session "$SESSION_ID" 32 14 v1
+write_session "$SESSION_ID" 32 14
 
 start 80 24 resume "$SESSION_ID" || finish
 wait_all 'r31 body line 13' || bad "the resume echo never completed"
@@ -48,13 +46,6 @@ if grep -q '"content":"hello"' "$SCEN_HOME/.iota/sessions/$SESSION_ID/messages.j
     ok "the new turn appended to the resumed bundle"
 else
     bad "the new turn did not reach the session log"
-fi
-
-META="$SCEN_HOME/.iota/sessions/$SESSION_ID/meta.json"
-if grep -q '"v": 2' "$META" && grep -q '"provider": "mock"' "$META" && ! grep -q base_url "$META"; then
-    ok "the v1 bundle settled as v2 on the provider it ran on"
-else
-    bad "the v1 bundle did not settle as v2: $(tr -d '\n' <"$META")"
 fi
 
 finish

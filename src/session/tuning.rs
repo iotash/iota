@@ -60,10 +60,7 @@ pub fn replay_session_settings(
     overrides: &Overrides,
     warn: &mut dyn FnMut(String),
 ) -> Option<u64> {
-    if !overrides.model
-        && !overrides.config_wins
-        && meta.recorded_on(on, provider.kind())
-        && !meta.model.is_empty()
+    if !overrides.model && !overrides.config_wins && meta.recorded_on(on) && !meta.model.is_empty()
     {
         provider.set_model(meta.model.clone());
     }
@@ -71,7 +68,7 @@ pub fn replay_session_settings(
 }
 
 /// Replays the knobs `meta` recorded. Like the model replay, the WHOLE replay is gated on
-/// [`SessionMeta::recorded_on`] (`on` is the provider name the run is on; a v1 bundle matches on the type) —
+/// [`SessionMeta::recorded_on`] (`on` is the provider name the run is on) —
 /// a mismatch applies NOTHING, the context window included, and says so in ONE warning, unless
 /// `overrides.config_wins` (a bot replays none of it anyway). Such a resume is a move: of the five layered
 /// parameters, the caller keeps the ones the user set where the config here is silent
@@ -119,11 +116,12 @@ fn replay_tuning(
     overrides: Overrides,
     warn: &mut dyn FnMut(String),
 ) -> Option<u64> {
-    if !meta.recorded_on(on, provider.kind()) {
+    if !meta.recorded_on(on) {
         if !overrides.config_wins {
             warn(format!(
-                "Warning: session was recorded on {}; this run is on {on}:{} — its model is not replayed, and of its tuning only what was set by hand carries over, unless this run's config sets it",
-                meta.recorded_where(),
+                "Warning: session was recorded on {}:{}; this run is on {on}:{} — its model is not replayed, and of its tuning only what was set by hand carries over, unless this run's config sets it",
+                meta.provider,
+                meta.model,
                 provider.model()
             ));
             if meta.effort().is_err() {

@@ -176,8 +176,7 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
         return;
     }
     // A session runs on the provider it records: one the chat is not on is built — and the swap refused,
-    // with nothing changed, when it cannot be — before the bundle is opened for its type. A v1 bundle
-    // recorded only a type, which names no endpoint: it runs where the chat is, as it always did.
+    // with nothing changed, when it cannot be — before the bundle is opened for its type.
     let meta = match repl.session.store.meta(&id) {
         Ok(meta) => meta,
         Err(e) => {
@@ -185,26 +184,25 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
             return;
         }
     };
-    let endpoint =
-        if !meta.names_provider() || meta.provider == repl.conv.catalog.session_provider() {
-            None
-        } else {
-            // `iota resume`'s refusal, with the session it names: a provider the config does not define is
-            // not fallen back from.
-            if !repl.conv.catalog.knows(&meta.provider) {
-                repl.handles.tr.error(&format!(
-                    "Error: session {id} runs on provider {:?}, which the config does not define; \
+    let endpoint = if meta.provider == repl.conv.catalog.session_provider() {
+        None
+    } else {
+        // `iota resume`'s refusal, with the session it names: a provider the config does not define is
+        // not fallen back from.
+        if !repl.conv.catalog.knows(&meta.provider) {
+            repl.handles.tr.error(&format!(
+                "Error: session {id} runs on provider {:?}, which the config does not define; \
                      resume it elsewhere with: iota resume {id} -M <provider>:<model>",
-                    meta.provider
-                ));
-                return;
-            }
-            let next = format!("It resumes there in a new run: iota resume {id}");
-            match super::model::open_endpoint(repl, &meta.provider, &meta.model, &next) {
-                Some(ep) => Some(ep),
-                None => return,
-            }
-        };
+                meta.provider
+            ));
+            return;
+        }
+        let next = format!("It resumes there in a new run: iota resume {id}");
+        match super::model::open_endpoint(repl, &meta.provider, &meta.model, &next) {
+            Some(ep) => Some(ep),
+            None => return,
+        }
+    };
     let kind = endpoint
         .as_ref()
         .map_or_else(|| repl.conv.provider.kind(), |ep| ep.provider.kind());
@@ -221,7 +219,6 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
     // sw.Close()). The resumed bundle brings its own name, settled under the title lock
     // before the swap: a title pass for the session being left lands there or not at all.
     let usage = writer.usage();
-    repl.conv.replied = writer.replied();
     repl.session.titler.switch_writer(writer);
     repl.report_session();
     if let Some(ep) = endpoint {

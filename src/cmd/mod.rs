@@ -296,12 +296,11 @@ pub(crate) fn open_provider(
 
 /// The endpoint a resumed session runs on, settled BEFORE any provider is opened for it.
 ///
-/// A v2 bundle names its provider: the run moves there exactly as if `-M <provider>:<model>` had been typed —
+/// The bundle names its provider: the run moves there exactly as if `-M <provider>:<model>` had been typed —
 /// unless `-M` chose one. A provider the config no longer defines is refused
 /// ([`SetupError::SessionProviderGone`]): falling back to another endpoint would continue the session
-/// somewhere it never ran. A v1 bundle recorded only a type, which names no endpoint: it runs on the agent's,
-/// as every build before v2 ran it. Either way the key of the endpoint the run lands on is checked here —
-/// `resolve_run` leaves a missing one to the resume.
+/// somewhere it never ran. The key of the endpoint the run lands on is checked here — `resolve_run` leaves a
+/// missing one to the resume.
 pub(crate) fn resume_endpoint(
     meta: &crate::session::SessionMeta,
     cfg: &Config,
@@ -310,7 +309,6 @@ pub(crate) fn resume_endpoint(
     warn: &mut dyn FnMut(String),
 ) -> Result<(), CliError> {
     let stays = settings.model_flag
-        || !meta.names_provider()
         || (meta.provider == settings.resolved.provider_name && meta.model == settings.model);
     if stays {
         return settings.check_key(env);
@@ -354,8 +352,8 @@ pub(crate) fn open_resumed(
 /// root.go:365-385, widened to all five (brain page `model-param-layering`).
 ///
 /// A bundle recorded on ANOTHER endpoint is a move, evaluated as a `/model` move is
-/// ([`Declared::resume`]); the replay applied none of it, so what the evaluation kept of it is handed to
-/// `provider` here, and a knob the dialect has no place for is recorded as the nothing it is.
+/// ([`Declared::resume`]); the replay applied none of it, so what the evaluation kept of it lands on
+/// `provider` here ([`land`](crate::repl::liveparams::land)).
 ///
 /// A `context_window:` that does not parse aborts the run here — at startup there is nothing yet to keep
 /// going with, and the label says which layer wrote it.
@@ -375,75 +373,12 @@ pub(crate) fn layered_params(
     };
     let declared = settings.resolved.declared(window);
     Ok(match resumed {
-        Some(meta) if !meta.recorded_on(&settings.resolved.provider_name, provider.kind()) => {
-            let next = declared.resume(meta, false);
-            crate::repl::liveparams::carry(provider, &next);
-            // The window is not the provider's to take: it stays as evaluated, for the budget and for the
-            // warning a provider that counts no tokens gives about one.
-            let now = crate::session::LayeredParams {
-                context_window: next.context_window.clone(),
-                ..crate::session::LayeredParams::default()
-            };
-            crate::repl::liveparams::landing(provider, &now, &next)
+        Some(meta) if !meta.recorded_on(&settings.resolved.provider_name) => {
+            crate::repl::liveparams::land(provider, &declared.resume(meta, false))
         }
         Some(meta) => declared.resume(meta, true),
         None => declared.evaluate(&crate::session::LayeredParams::default()),
     })
-}
-
-/// What a resumed session runs under once it is settled — the move a resume writes into its bundle
-/// (`SessionWriter::move_to`): the provider and model the run is on, the five parameters it starts under,
-/// the window its budget will hold (none for a provider without token accounting), the image settings.
-pub(crate) fn settled(
-    settings: &RunSettings,
-    kind: ProviderKind,
-    provider: &mut dyn crate::provider::Provider,
-    params: crate::session::LayeredParams,
-) -> crate::session::Moved {
-    let window = window_of(provider, &params);
-    crate::session::Moved {
-        kind,
-        provider: settings.resolved.provider_name.clone(),
-        model: provider.model().to_owned(),
-        params,
-        window,
-        image: crate::session::ImageSettings::of(provider),
-    }
-}
-
-/// The window a bundle records for `params` on `provider`: the one its budget holds — the built-in default when
-/// nothing declares one — and none at all for a provider with no token accounting.
-pub(crate) fn window_of(
-    provider: &dyn crate::provider::Provider,
-    params: &crate::session::LayeredParams,
-) -> Option<u64> {
-    provider
-        .reports_usage()
-        .then_some(match params.context_window.value {
-            0 => crate::repl::context::tokens::DEFAULT_CONTEXT_WINDOW,
-            w => w,
-        })
-}
-
-/// Whether a resume writes [`settled`] into its bundle: when it runs on what the bundle records (a v1 bundle
-/// thereby becomes v2 under the name it actually ran on — a fact, not a guess) or where `-M` moved it. A v1
-/// bundle resumed on another type without `-M` stays v1: its record names no endpoint the run is on.
-pub(crate) fn settles(
-    meta: &crate::session::SessionMeta,
-    settings: &RunSettings,
-    kind: ProviderKind,
-) -> bool {
-    settings.model_flag || meta.recorded_on(&settings.resolved.provider_name, kind)
-}
-
-/// `-M` is what a resumed session's model yields to. A v1 bundle keeps the rule every build before v2 read
-/// it under — an agent's own `model:` wins too — so an old session resumes exactly as it did.
-pub(crate) fn model_overridden(meta: &crate::session::SessionMeta, settings: &RunSettings) -> bool {
-    if meta.names_provider() {
-        settings.model_flag
-    } else {
-        !settings.model.is_empty()
-    }
 }
 
 /// root.go:187-241 — MCP configs, the agent options and the tool environment, in Go's order (each step's
@@ -636,7 +571,7 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
             &mut *provider,
             &settings.resolved.provider_name,
             &crate::session::Overrides {
-                model: model_overridden(&resumed.meta, &settings),
+                model: settings.model_flag,
                 ..crate::session::Overrides::default()
             },
             &mut |w| io.warning(&w),
@@ -651,8 +586,11 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         // Where the session runs NOW, for the bundle — written with the turn's delta, on SUCCESS only
         // (D-43): a run that fails leaves the bundle where it was.
         let params = layered_params(&settings, &mut *provider, Some(&resumed.meta))?;
-        let moved = settles(&resumed.meta, &settings, kind)
-            .then(|| settled(&settings, kind, &mut *provider, params));
+        let moved = crate::repl::liveparams::moved(
+            &settings.resolved.provider_name,
+            &mut *provider,
+            params,
+        );
         // root.go:334, on stderr with a single newline (DIVERGENCES D-44): headless stdout is the reply or
         // the JSON report alone, but with prefix resolution the user must see which session was picked.
         io.warning(&format!(
@@ -667,9 +605,9 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         }
         Ok((kind, provider, writer, resumed, moved))
     };
-    let (mut provider, mut session, moved) = match resumed {
-        Ok((_, provider, writer, resumed, moved)) => (provider, Some((writer, resumed)), moved),
-        Err((_, provider)) => (provider, None, None),
+    let (mut provider, mut session) = match resumed {
+        Ok((_, provider, writer, resumed, moved)) => (provider, Some((writer, resumed, moved))),
+        Err((_, provider)) => (provider, None),
     };
     let RunContext {
         env, http, cancel, ..
@@ -681,7 +619,7 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
     // what it knows to `<environment>`. Built after the resume stage so every early return above leaves no
     // host to clean up; from here on the run ends at `pres.close()` below, whatever `once` says.
     let pres = Presenter::new(&host_probe(&env), None, false);
-    if let Some((writer, _)) = &session {
+    if let Some((writer, _, _)) = &session {
         pres.set_session(writer.id(), writer.dir());
     }
     pres.set_state(State::Busy);
@@ -717,12 +655,12 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         // `~/.iota/images`.
         images_dir: session
             .as_ref()
-            .map_or_else(|| dirs.images_dir(), |(w, _)| Some(w.images_path())),
+            .map_or_else(|| dirs.images_dir(), |(w, _, _)| Some(w.images_path())),
         // chat/run.go:69-74: a non-empty imported history wins over `-s` — a resumed session keeps the system
         // message from its own log.
         history: session
             .as_ref()
-            .map(|(_, s)| s.messages.clone())
+            .map(|(_, s, _)| s.messages.clone())
             .unwrap_or_default(),
         jobs: Some(jobs),
     };
@@ -732,10 +670,9 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
     // chat/run.go:221-229, once (DIVERGENCES D-43): a headless run IS exactly one turn, so a SUCCESSFUL one
     // persists its delta in a single batch — one fsync, one meta rewrite. A failed or cancelled run persists
     // nothing, and a failure to save is a warning, never the run's exit status.
-    if let (Ok(done), Some((writer, _))) = (&outcome, &mut session)
-        && let Err(e) = moved
-            .as_ref()
-            .map_or(Ok(()), |moved| writer.move_to(moved))
+    if let (Ok(done), Some((writer, _, moved))) = (&outcome, &mut session)
+        && let Err(e) = writer
+            .move_to(moved)
             .and_then(|()| writer.append_messages(&done.delta))
     {
         io.warning(&format!("Warning: failed to save session: {e}"));

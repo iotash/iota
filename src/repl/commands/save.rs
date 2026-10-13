@@ -34,23 +34,18 @@ pub(crate) fn cmd_save(repl: &mut Repl, arg: &str) {
             return;
         }
     };
-    let window = repl.conv.budget.window();
     // Go's factory takes the LIVE provider (root.go:360-366), so a mid-chat `/model` or a
     // temperature change lands in the freshly minted meta. The Rust factory is minted at
-    // wiring time and cannot see the provider any more, so the live tuning is stamped
-    // HERE instead: model, plus the four layered parameters and the source of each — this
-    // is the same stamp a session that started with a bundle got on the way in, only later
-    // (brain page `model-param-layering`).
-    let model = repl.conv.provider.model().to_owned();
-    let params = crate::repl::liveparams::current(repl);
+    // wiring time and cannot see the provider any more, so where the chat runs NOW is
+    // written HERE instead — the endpoint a move took it to, the model, the five layered
+    // parameters with their sources: the same write a session that started with a bundle
+    // got on the way in, only later (brain page `model-param-layering`).
+    let moved = crate::repl::liveparams::moved_now(repl);
     {
         let mut slot = lock(&repl.session.writer);
         *slot = Some(writer);
         if let Some(w) = slot.as_mut() {
-            let _ = w.update_meta(|m| {
-                m.model = model;
-                m.stamp(Some(window), &params);
-            });
+            let _ = w.move_to(&moved);
         }
     }
     // The watermark stayed at 0 while the chat was ephemeral, so this lands the WHOLE
