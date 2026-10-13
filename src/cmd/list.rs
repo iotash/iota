@@ -46,8 +46,8 @@ pub fn run_list(
 
 /// `iota list agents`: what a run may name, with the model each one starts on (`model:` as written, or
 /// `(picker)` when the run opens the picker instead), the size of its choices (the number `-M` and the
-/// picker choose from — every `models:` entry when the agent lists none) and the description the entry
-/// documents itself with.
+/// picker choose from — [`Config::choices_of`]'s default when the agent lists none) and the description
+/// the entry documents itself with.
 fn list_agents(cfg: &Config, io: &mut io::Streams) -> Result<(), CliError> {
     if cfg.agents.is_empty() {
         writeln!(
@@ -108,11 +108,11 @@ fn list_models(cfg: &Config, io: &mut io::Streams) -> Result<(), CliError> {
     Ok(())
 }
 
-/// `iota list models <agent>`: that agent's choices in declaration order — every `models:` entry when it
-/// lists none — with `*` on the model a run starts on. The default is marked where a row names its
-/// `provider:id`; a default the choices do not name (or name only through a wildcard) is a `*` row of its
-/// own on top, and an agent without `model:` marks nothing: its run starts in the picker. A `provider:*`
-/// line is a whole endpoint's catalogue (resolved in the picker).
+/// `iota list models <agent>`: that agent's choices in declaration order — its `model:` alone when it
+/// lists none, every `models:` entry when it names neither — with `*` on the model a run starts on. The
+/// default is marked where a row names its `provider:id`; a default the choices do not name (or name only
+/// through a wildcard) is a `*` row of its own on top, and an agent without `model:` marks nothing: its run
+/// starts in the picker. A `provider:*` line is a whole endpoint's catalogue (resolved in the picker).
 fn list_agent_models(cfg: &Config, name: &str, io: &mut io::Streams) -> Result<(), CliError> {
     let resolved = resolve_agent(cfg, name)?;
     let start = resolved.agent.model.as_ref();

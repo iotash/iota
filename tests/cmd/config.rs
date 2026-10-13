@@ -855,11 +855,11 @@ fn the_retired_agent_models_key_names_its_two_replacements() {
     );
 }
 
-/// No `model:` is a valid agent: the run starts in the picker (on the first choice's endpoint), and no
-/// `choices:` means every `models:` entry, in the order the config declares them — not name order, and
-/// not an implied wildcard.
+/// An agent that names no model at all is one that says "let me pick": the run starts in the picker (on
+/// the first choice's endpoint), and no `choices:` means every `models:` entry, in the order the config
+/// declares them — not name order, and not an implied wildcard.
 #[test]
-fn an_agent_without_choices_offers_every_model_entry_as_declared() {
+fn an_agent_naming_no_model_offers_every_model_entry_as_declared() {
     let cfg = parse(
         "
 providers:
@@ -869,7 +869,6 @@ models:
   alpha: relay:a
   mid: anthropic:m
 agents:
-  a: {model: mid}
   b: {}
   c: {model: mid, choices: [alpha]}
 ",
@@ -882,17 +881,10 @@ agents:
         ModelRef::Entry("mid".to_owned()),
     ];
 
-    // As written, the agent lists nothing; as resolved, it offers everything.
-    assert!(cfg.agents["a"].choices.is_empty());
-    assert_eq!(cfg.choices_of(&cfg.agents["a"]), all);
-    let a = cfg.resolve_agent("a").expect("resolves");
-    assert_eq!(a.agent.choices, all);
-    assert_eq!(
-        (a.provider_name.as_str(), a.model.id.as_str()),
-        ("anthropic", "m")
-    );
-
-    // No `model:` either: the picker, on the first choice's endpoint, with no model and none of its knobs.
+    // As written, the agent lists nothing; as resolved, it offers everything — the picker, on the first
+    // choice's endpoint, with no model and none of its knobs.
+    assert!(cfg.agents["b"].choices.is_empty());
+    assert_eq!(cfg.choices_of(&cfg.agents["b"]), all);
     let b = cfg.resolve_agent("b").expect("resolves");
     assert_eq!(b.agent.model, None);
     assert_eq!(b.agent.choices, all);
@@ -906,7 +898,7 @@ agents:
     assert_eq!(c.agent.choices, vec![ModelRef::Entry("alpha".to_owned())]);
 
     // Nothing to default to: the choices stay empty (the picker then asks the session's own endpoint).
-    let bare = parse("agents:\n  a: {model: \"openai:x\"}\n").expect("loads");
+    let bare = parse("agents:\n  a: {}\n").expect("loads");
     assert!(
         bare.resolve_agent("a")
             .expect("resolves")
@@ -914,23 +906,70 @@ agents:
             .choices
             .is_empty()
     );
-    assert!(
-        bare.resolve_agent("a")
-            .expect("resolves")
-            .agent
-            .model
-            .is_some()
+}
+
+/// An agent that names its `model:` and no `choices:` is offered THAT model and nothing else — an entry by
+/// its name, an inline `provider:id` as written. The models the config declares for other agents are not
+/// this one's (decision of 2026-10-13; until then the default was every `models:` entry for every agent).
+#[test]
+fn an_agent_with_a_model_and_no_choices_offers_that_model_alone() {
+    let cfg = parse(
+        "
+providers:
+  relay: {type: openai, key: k}
+models:
+  zeta: openai:z
+  alpha: relay:a
+  mid: anthropic:m
+agents:
+  entry: {model: mid}
+  inline: {model: \"relay:o3\"}
+",
+    )
+    .expect("loads");
+
+    let mid = vec![ModelRef::Entry("mid".to_owned())];
+    assert!(cfg.agents["entry"].choices.is_empty());
+    assert_eq!(cfg.choices_of(&cfg.agents["entry"]), mid);
+    let a = cfg.resolve_agent("entry").expect("resolves");
+    assert_eq!(a.agent.choices, mid);
+    assert_eq!(
+        (a.provider_name.as_str(), a.model.id.as_str()),
+        ("anthropic", "m")
+    );
+
+    let o3 = vec![ModelRef::Inline {
+        provider: "relay".to_owned(),
+        id: "o3".to_owned(),
+    }];
+    assert_eq!(cfg.choices_of(&cfg.agents["inline"]), o3);
+    let i = cfg.resolve_agent("inline").expect("resolves");
+    assert_eq!(i.agent.choices, o3);
+    assert_eq!(
+        (i.provider_name.as_str(), i.model.id.as_str()),
+        ("relay", "o3")
+    );
+
+    // An inline model needs no `models:` at all to be its own candidate set.
+    let bare = parse("agents:\n  a: {model: \"openai:x\"}\n").expect("loads");
+    assert_eq!(
+        bare.resolve_agent("a").expect("resolves").agent.choices,
+        vec![ModelRef::Inline {
+            provider: "openai".to_owned(),
+            id: "x".to_owned(),
+        }]
     );
 }
 
 /// Declaration order holds across the stack: the home file's entries first, then what the cwd file adds;
-/// an entry the cwd file REDEFINES keeps the place it was first declared at.
+/// an entry the cwd file REDEFINES keeps the place it was first declared at. (The agent names no model, so
+/// the whole of `models:` is its default.)
 #[test]
 fn model_order_is_declaration_order_across_the_merged_files() {
     let (_dir, dirs) = temp_project(&[
         (
             "home/.iota.yaml",
-            "models:\n  zeta: openai:z\n  shared: openai:home\nagents:\n  a: {model: zeta}\n",
+            "models:\n  zeta: openai:z\n  shared: openai:home\nagents:\n  a: {}\n",
         ),
         (
             ".iota.yml",
@@ -958,7 +997,9 @@ fn model_order_is_declaration_order_across_the_merged_files() {
 
 /// A `model:` outside the choices is a WARNING, never a refusal (decision of 2026-09-10, the rule `-M`
 /// already follows): the choices are advice about what is good here, not a whitelist. Coverage is by the
-/// `provider:id` a reference stands for, so an entry of another name and a wildcard both count.
+/// `provider:id` a reference stands for, so an entry of another name and a wildcard both count. An agent
+/// without `choices:` is offered its own `model:`, so its `model:` is never outside them (`inline`,
+/// `defaulted`): since 2026-10-13 it is `-M` that warns there.
 #[test]
 fn a_default_model_outside_the_choices_warns_and_stands() {
     let (cfg, warnings) = parse_warned(
@@ -982,7 +1023,6 @@ agents:
     assert_eq!(
         warnings,
         vec![
-            "Warning: config agents.inline.model: relay:o3 is not in choices (using it anyway)".to_owned(),
             "Warning: config agents.outside.model: openai:gpt-4o is not in choices (using it anyway)"
                 .to_owned(),
         ]
