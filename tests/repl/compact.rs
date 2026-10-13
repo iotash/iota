@@ -164,14 +164,59 @@ fn printed(ui: &ScriptedUi) -> Vec<String> {
         .collect()
 }
 
-fn busy_labels(ui: &ScriptedUi) -> Vec<String> {
+/// The summary pass's choreography, in order: the transcript widget it runs under (`widget:` with its
+/// label), the widget coming down (`close`), the printed lines (`print:`) and any status-row busy segment
+/// (`busy:`).
+fn lifecycle(ui: &ScriptedUi) -> Vec<String> {
     ui.events()
         .into_iter()
-        .filter_map(|e| match e {
-            UiEvent::Busy(l) => Some(l),
-            _ => None,
+        .flat_map(|e| match e {
+            UiEvent::CallPreview(l) => vec![format!("widget:{}", strip_sgr(&l))],
+            UiEvent::ClosePreview => vec!["close".to_owned()],
+            UiEvent::Print(lines) => lines
+                .iter()
+                .map(|l| format!("print:{}", strip_sgr(l)))
+                .collect(),
+            UiEvent::Busy(l) => vec![format!("busy:{l}")],
+            _ => Vec::new(),
         })
         .collect()
+}
+
+/// The summary pass ran under the transcript's spinner widget — raised, then taken down, then the outcome
+/// starting `outcome` — with no busy segment on the status row up to the outcome (a turn after it has its own)
+/// and no static `Compacting context…` line.
+fn assert_ran_under_the_widget(ui: &ScriptedUi, outcome: &str) {
+    let ev = lifecycle(ui);
+    let raised = ev
+        .iter()
+        .position(|e| e == "widget:Compacting context…")
+        .unwrap_or_else(|| panic!("the summary pass raises the widget: {ev:?}"));
+    let closed = ev[raised..].iter().position(|e| e == "close").map_or_else(
+        || panic!("the widget is taken down: {ev:?}"),
+        |i| raised + i,
+    );
+    let landed = ev[closed..]
+        .iter()
+        .position(|e| e.starts_with(&format!("print:{outcome}")))
+        .map_or_else(
+            || panic!("the outcome follows the widget: {ev:?}"),
+            |i| closed + i,
+        );
+    assert!(
+        ev[raised + 1..landed]
+            .iter()
+            .all(|e| e == "close" || e == "print:"),
+        "nothing but the close lands between the raise and the outcome: {ev:?}"
+    );
+    assert!(
+        !ev[..landed].iter().any(|e| e.starts_with("busy:")),
+        "the status row carries no busy segment for the pass: {ev:?}"
+    );
+    assert!(
+        !ev.iter().any(|e| e == "print:Compacting context…"),
+        "the label is the widget's, never a printed line: {ev:?}"
+    );
 }
 
 /// Every blocking surface title, in order — the auto-offer's confirmation is one.
@@ -206,8 +251,8 @@ fn filler(n: usize) -> String {
 // the command
 // ---------------------------------------------------------------------------
 
-/// The typed command runs the shared flow: a busy
-/// label while the summary pass runs, the rebuilt view, the persisted marker, and the
+/// The typed command runs the shared flow: the summary pass under the transcript's spinner widget (the status
+/// row carries no busy segment for it), the rebuilt view, the persisted marker, and the
 /// reclaimed-window notice carrying `budget.status()`.
 ///
 /// And reloading the bundle must
@@ -226,16 +271,7 @@ async fn compact_rebuilds_the_view_and_the_reload_agrees() {
         .await
         .expect("clean exit");
 
-    assert!(
-        busy_labels(&f.ui).contains(&"Compacting context…".to_owned()),
-        "the summary pass must show what it is doing: {:?}",
-        busy_labels(&f.ui)
-    );
-    let lines = printed(&f.ui);
-    assert!(
-        lines.iter().any(|l| l.starts_with("Context compacted → ")),
-        "the reclaimed-window notice is missing: {lines:?}"
-    );
+    assert_ran_under_the_widget(&f.ui, "Context compacted → ");
 
     // The bundle now reconstructs the compacted view from its marker.
     let reloaded = f.store.load(&id, ProviderKind::OpenAi).expect("load");
@@ -275,6 +311,12 @@ async fn nothing_to_compact_is_reported_only_for_the_typed_command() {
         prompts.prompts().is_empty(),
         "an empty middle must not cost an API call"
     );
+    let ev = lifecycle(&f.ui);
+    assert!(
+        !ev.iter()
+            .any(|e| e.contains("Compacting context…") || e == "close"),
+        "no pass runs, so no widget rises: {ev:?}"
+    );
     let reloaded = f.store.load(&id, ProviderKind::OpenAi).expect("load");
     assert_eq!(reloaded.messages.len(), 2, "the history was rewritten");
 }
@@ -293,11 +335,7 @@ async fn a_failed_summary_pass_leaves_the_conversation_alone() {
         .await
         .expect("clean exit");
 
-    let lines = printed(&f.ui);
-    assert!(
-        lines.iter().any(|l| l.starts_with("Compaction failed: ")),
-        "{lines:?}"
-    );
+    assert_ran_under_the_widget(&f.ui, "Compaction failed: ");
     let reloaded = f.store.load(&id, ProviderKind::OpenAi).expect("load");
     assert_eq!(
         reloaded.messages.len(),
@@ -377,6 +415,8 @@ async fn the_auto_offer_fires_over_the_threshold_and_compacts_when_accepted() {
             .any(|l| l.starts_with("Context compacted → ")),
         "accepting must run the shared flow"
     );
+    // The automatic path runs under the same widget.
+    assert_ran_under_the_widget(&f.ui, "Context compacted → ");
     let reloaded = f.store.load(&id, ProviderKind::OpenAi).expect("load");
     // system + summary-on-u2 + a2, then the sent message and its answer.
     assert_eq!(reloaded.messages.len(), 5);
