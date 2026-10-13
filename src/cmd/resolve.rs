@@ -276,6 +276,8 @@ fn apply_model_flag(r: &mut Resolved, cfg: &Config, flag: &str, warn: &mut dyn F
             }
         },
     }
+    // No choices at all is an agent that names no model, no choices and has no `models:` to default to:
+    // there is no set for a model to be outside of.
     if !r.agent.choices.is_empty()
         && !r.model.id.is_empty()
         && !r.covers(cfg, &r.provider_name, &r.model.id)

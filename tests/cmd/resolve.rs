@@ -763,8 +763,8 @@ agents:
     );
     let env = [("ANTHROPIC_API_KEY", "ant")];
 
-    // agents: the name, the model the run starts on, the size of the choices (every entry when the agent
-    // lists none), and what the entry says it is for.
+    // agents: the name, the model the run starts on, the size of the choices (every entry for an agent
+    // that names neither `choices:` nor `model:`), and what the entry says it is for.
     let (out, errs) = list(&["list"], &cfg, &env);
     assert_eq!(
         out,
@@ -780,7 +780,7 @@ agents:
     );
 
     // models <agent>: that agent's choices in declaration order, wildcards included, `*` on the model the
-    // run starts on — every entry, in declaration order, for an agent that lists none; nothing marked for
+    // run starts on — every entry, in declaration order, for an agent that names neither; nothing marked for
     // one that starts in the picker.
     assert_eq!(
         list(&["list", "models", "coder"], &cfg, &env).0,
@@ -1066,6 +1066,66 @@ agents:
     assert_eq!(
         (s.raw_type.as_str(), s.model.as_str()),
         ("anthropic", "vendor:weird:id")
+    );
+}
+
+/// A `models:` entry declared for ANOTHER agent is not a choice of one that names its own `model:` and no
+/// `choices:` (decision of 2026-10-13): the listings show that agent its model alone, and `-M` onto the
+/// other entry warns — its prompt was written for the model it names — and runs anyway.
+#[test]
+fn an_agent_naming_only_its_model_is_offered_nothing_else() {
+    let cfg = config(
+        "
+providers:
+  glm: {type: openai, key: gk, url: https://glm.example/v1}
+  deepseek: {type: openai, key: dk, url: https://deepseek.example/v1}
+models:
+  glm: glm:glm-5.3
+  deepseek-flash: {provider: deepseek, id: deepseek-flash, temperature: 0.3}
+agents:
+  default: {model: glm}
+  picky: {}
+",
+    );
+
+    // The listings: one choice, and the `*` row is the only row.
+    assert_eq!(
+        list(&["list", "agents"], &cfg, &[]).0,
+        "Agents:\n  default  glm       1 choice\n  picky    (picker)  2 choices\n"
+    );
+    assert_eq!(
+        list(&["list", "models", "default"], &cfg, &[]).0,
+        "Models for agent default:\n* glm (glm:glm-5.3)\n"
+    );
+    // An agent that names no model is still offered the whole of `models:`, in declaration order.
+    assert_eq!(
+        list(&["list", "models", "picky"], &cfg, &[]).0,
+        "Models for agent picky:\n  glm (glm:glm-5.3)\n  deepseek-flash (deepseek:deepseek-flash)\n"
+    );
+
+    // Its own model: no warning.
+    let (s, warnings) = resolve_warned(&["run", "default", "-M", "glm:glm-5.3"], &cfg, &[]);
+    assert_eq!(s.unwrap().model, "glm-5.3");
+    assert!(warnings.is_empty(), "{warnings:?}");
+
+    // The other agent's model: a warning, and the run moves there with that entry's knobs.
+    let (s, warnings) = resolve_warned(
+        &["run", "default", "-M", "deepseek:deepseek-flash"],
+        &cfg,
+        &[],
+    );
+    let s = s.unwrap();
+    assert_eq!(
+        (s.base_url.as_str(), s.model.as_str()),
+        ("https://deepseek.example/v1", "deepseek-flash")
+    );
+    assert_eq!(s.temperature, Some(0.3));
+    assert_eq!(
+        warnings,
+        vec![
+            "Warning: model deepseek:deepseek-flash is not in agent \"default\"'s choices (using it anyway)"
+                .to_owned()
+        ]
     );
 }
 

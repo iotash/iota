@@ -111,8 +111,8 @@ pub struct Config {
     pub models: BTreeMap<String, ModelConfig>,
     /// The names of `models`, in declaration order across the stack (first file first, an entry keeping
     /// the place it was first declared at even when a later file redefines it). It is what an agent
-    /// without `choices:` offers ([`choices_of`](Config::choices_of)); `models` itself stays a `BTreeMap`
-    /// because every other lookup wants name order. Maintained by `merge_document`.
+    /// without `choices:` or `model:` offers ([`choices_of`](Config::choices_of)); `models` itself stays a
+    /// `BTreeMap` because every other lookup wants name order. Maintained by `merge_document`.
     pub model_order: Vec<String>,
     /// `agents:` — configured usages by name.
     pub agents: BTreeMap<String, AgentConfig>,
@@ -135,7 +135,7 @@ pub struct Resolved {
     /// then starts in the picker, on the endpoint of the agent's first choice.
     pub model: ModelConfig,
     /// The agent driving it (default when the name reached no agent), with `choices` already the EFFECTIVE
-    /// set — the agent's own, or every `models:` entry when it wrote none ([`Config::choices_of`]).
+    /// set — the agent's own, else its `model:` alone, else every `models:` entry ([`Config::choices_of`]).
     pub agent: AgentConfig,
     /// The `agents:` entry name, or `""` when the positional name reached no agent. It is what a session
     /// bundle records, so a resume can say whether the agent it ran under still exists.
@@ -428,16 +428,15 @@ impl Config {
                 self.check_ref(name, "choices", r)?;
             }
             // The choices are advice about what is good here, not a whitelist (decision of 2026-09-10, the
-            // rule `-M` follows): a `model:` outside them is a warning, and the run starts on it anyway.
-            if let Some(model) = a.model.as_ref().and_then(|r| self.model_of(r)) {
-                let choices = self.choices_of(a);
-                if !choices.is_empty() && !self.choices_cover(&choices, &model.provider, &model.id)
-                {
-                    warn(format!(
-                        "Warning: config agents.{name}.model: {}:{} is not in choices (using it anyway)",
-                        model.provider, model.id
-                    ));
-                }
+            // rule `-M` follows): a `model:` outside them is a warning, and the run starts on it anyway. Only
+            // a WRITTEN `choices:` can leave it out — unwritten, they are the `model:` itself.
+            if let Some(model) = a.model.as_ref().and_then(|r| self.model_of(r))
+                && !self.choices_cover(&self.choices_of(a), &model.provider, &model.id)
+            {
+                warn(format!(
+                    "Warning: config agents.{name}.model: {}:{} is not in choices (using it anyway)",
+                    model.provider, model.id
+                ));
             }
         }
         Ok(())
@@ -462,12 +461,17 @@ impl Config {
         }
     }
 
-    /// What `/model` and `-M` pick from for `agent`: its `choices:` when it writes any, else every `models:`
-    /// entry in declaration order. The default is what the config DECLARES and nothing more — no implied
-    /// `provider:*`, because a wildcard is a network question and a default should cost nothing to answer.
+    /// What `/model` and `-M` pick from for `agent`: its `choices:` when it writes any; else its `model:`
+    /// alone, the one model it named; else — an agent that names nothing starts in the picker — every
+    /// `models:` entry in declaration order. The default is the narrowest set the agent ASKED for (another
+    /// agent's models are not this one's), and never an implied `provider:*`, because a wildcard is a
+    /// network question and a default should cost nothing to answer.
     pub fn choices_of(&self, agent: &AgentConfig) -> Vec<ModelRef> {
         if !agent.choices.is_empty() {
             return agent.choices.clone();
+        }
+        if let Some(model) = &agent.model {
+            return vec![model.clone()];
         }
         self.model_order
             .iter()

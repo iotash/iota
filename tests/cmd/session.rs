@@ -1505,10 +1505,16 @@ fn a_bot_refuses_headless_and_ephemeral_runs() {
         &run(&["run", "coder", "--no-save"]),
         "agents.coder: --no-save contradicts mode: bot",
     );
-    assert_error(
-        &run(&["run", "coder", "-M", "p:gemini-2.5-flash"]),
-        "interactive mode requires a terminal; use -m/--message for piped input",
+    // The bot names its `model:` and no `choices:`, so that model is all it is offered: another one is a
+    // warning, and the run goes on to the terminal check regardless.
+    let o = run(&["run", "coder", "-M", "p:gemini-2.5-flash"]);
+    assert_eq!(o.status.code(), Some(1), "stderr was: {}", err(&o));
+    assert_eq!(
+        err(&o),
+        "Warning: model p:gemini-2.5-flash is not in agent \"coder\"'s choices (using it anyway)\n\
+         Error: interactive mode requires a terminal; use -m/--message for piped input\n"
     );
+    assert!(out(&o).is_empty(), "a failed run printed to stdout");
 
     write_bot_config(cwd.path(), "\n    no_save: true");
     assert_error(

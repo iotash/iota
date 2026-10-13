@@ -43,7 +43,8 @@ models:
 agents:
   default:
     model: gpt                # the model a run starts on; leave it out to start in the picker
-    # choices: [gpt]          # what /model and -M pick from; absent = every `models:` entry
+    # choices: [gpt]          # what /model and -M pick from; absent = just `model:`
+                              # (and with no `model:`, every `models:` entry)
     # Your own instructions. iota already tells the model what it runs inside and where (the
     # built-in harness prompt: identity, environment, and its own command line when `shell` is on).
     system: \"You are a careful coding assistant.\"

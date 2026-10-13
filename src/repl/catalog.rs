@@ -1,7 +1,7 @@
 //! The agent's choices, as the `/model` picker sees them (brain page `config-three-layers`).
 //!
-//! `agents.<name>.choices` is a LIST of references — the agent's own, or every `models:` entry when
-//! it writes none — and the three forms cost different things to turn into rows:
+//! `agents.<name>.choices` is a LIST of references — the agent's own, else its `model:` alone, else
+//! every `models:` entry — and the three forms cost different things to turn into rows:
 //!
 //! - [`ModelRef::Entry`](crate::config::ModelRef::Entry) — a `models:` entry by name: its
 //!   `provider:id` is already written down;

@@ -22,8 +22,8 @@ pub struct AgentConfig {
     /// to pick from, not a model). Unset = the run starts in the picker, over `choices`.
     pub model: Option<ModelRef>,
     /// `choices:` — what `/model` and `-M` pick from, in declaration order: entry names, inline
-    /// `provider:id`s and `provider:*` wildcards. Unset = every top-level `models:` entry, in declaration
-    /// order — what the config declares, never an implied wildcard
+    /// `provider:id`s and `provider:*` wildcards. Unset = the `model:` alone; with no `model:` either, every
+    /// top-level `models:` entry, in declaration order — never an implied wildcard
     /// ([`Config::choices_of`](crate::config::Config::choices_of)); the `Resolved` a run carries has that
     /// default applied. The set is advice, not a whitelist: a `model:` or a `-M` outside it is a warning.
     #[serde(deserialize_with = "one_or_many")]
