@@ -96,18 +96,6 @@ fn chosen(values: &[Candidate], catalog: &ModelCatalog, r: &PanelResult) -> Opti
     catalog.parse_typed(typed)
 }
 
-/// What picking a row on another endpoint does to this chat — the annotation such a row carries in place of
-/// the `provider:` prefix that used to imply it: the chat MOVES there ([`move_to`]; once a model has replied,
-/// after the user agreed to what it costs), unless it is a chat that never moves (a bot), where the pick is
-/// refused and names the new session to start.
-fn elsewhere(repl: &Repl) -> &'static str {
-    if repl.conv.endpoints.is_none() {
-        "needs a new session"
-    } else {
-        "moves the chat"
-    }
-}
-
 /// Builds the Model tab: the choices expanded (one concurrent round of listings), the rows
 /// laid out around the current model, and whatever could not answer put in the prompt row.
 async fn model_tab(
@@ -116,7 +104,6 @@ async fn model_tab(
     live: &dyn Provider,
     title: &str,
     current: Option<&Candidate>,
-    elsewhere: &str,
     cancel: &CancellationToken,
 ) -> ModelTab {
     let expanded = catalog.expand(ui, live, cancel).await;
@@ -127,7 +114,7 @@ async fn model_tab(
             cancelled: true,
         };
     }
-    let label = |c: &Candidate| catalog.row_label(c, elsewhere);
+    let label = |c: &Candidate| catalog.row_label(c);
     // `/model` lays the rows out around the model the chat is running, with the cursor on it; the
     // startup pick has no current model to preserve, so the candidates stand alone.
     let (values, labels, cursor) = if let Some(current) = current {
@@ -423,7 +410,6 @@ pub(crate) async fn ensure_model(repl: &mut Repl, cancel: &CancellationToken) ->
         &*repl.conv.provider,
         "Select a model",
         None,
-        elsewhere(repl),
         cancel,
     )
     .await;
@@ -496,7 +482,6 @@ pub(crate) async fn cmd_model(repl: &mut Repl) {
         &*repl.conv.provider,
         "Model",
         Some(&current),
-        elsewhere(repl),
         cancel,
     )
     .await;
