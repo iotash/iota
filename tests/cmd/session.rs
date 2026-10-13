@@ -66,7 +66,7 @@ fn home_with_v1_fixtures() -> TempDir {
 /// [`home_with_v1_fixtures`], with the gemini bundles converted to v2 as `scripts/session-v1-to-v2.py`
 /// converts them under these tests' config, where `p` is the one gemini endpoint: `v: 2`, `provider: p`, no
 /// `base_url`, every other key as Go wrote it (the script's own run is pinned by
-/// `the_conversion_script_maps_v1_bundles_by_the_config`). The log is never touched.
+/// `the_conversion_script_converts_the_go_corpus_once`). The log is never touched.
 fn home_with_fixtures() -> TempDir {
     let home = home_with_v1_fixtures();
     let m = manifest();
@@ -660,28 +660,157 @@ async fn a_v1_bundle_is_refused_and_names_the_conversion_script() {
     );
 }
 
-/// `python3 scripts/session-v1-to-v2.py`, run where a user runs it, on the Go corpus: the provider TYPE becomes
-/// the config's entry of that type — read by iota itself (`iota list providers`) — when there is exactly one;
-/// two of a type or none are reported and left alone, never guessed, until `--map` decides. A dry run writes
-/// nothing; `--write` rewrites `meta.json` alone; a second run finds nothing to do. The converted bundle then
-/// resumes on `p` and replays its model and tuning, and the next resume reads that name.
+/// `python3 scripts/session-v1-to-v2.py` with the real binary reading the config in `cwd`, the way a user runs
+/// it: its exit status and its report.
+#[cfg(unix)]
+fn convert(cwd: &Path, home: &Path, args: &[&str]) -> (Option<i32>, String) {
+    let mut cmd = Command::new("python3");
+    cleared_env(&mut cmd, home)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join(iota::session::CONVERT_SCRIPT))
+        .args(["--iota", env!("CARGO_BIN_EXE_iota")])
+        .args(args);
+    let o = cmd.output().expect("run python3");
+    assert!(o.stderr.is_empty(), "{}", err(&o));
+    (o.status.code(), out(&o))
+}
+
+/// The report's line for bundle `id`, without the path it ends with.
+#[cfg(unix)]
+fn report_line(report: &str, id: &str) -> String {
+    let line = report
+        .lines()
+        .find(|l| l.starts_with(&format!("{id}: ")))
+        .unwrap_or_else(|| panic!("no line for {id}: {report}"));
+    line[..line.rfind(" (/").unwrap_or(line.len())].to_owned()
+}
+
+/// The mapping cases' config: two openresponses endpoints with their own urls (`self`'s written with a trailing
+/// slash), two anthropic ones at the same url, and an `openai` entry that is NOT of type openai.
+#[cfg(unix)]
+const CONVERT_CONFIG: &str = "providers:\n  deepseek: {type: openresponses, key: k, url: \"https://api.deepseek.com\"}\n  self: {type: openresponses, key: k, url: \"https://ai.appmisc.com/v1/\"}\n  twin-a: {type: anthropic, key: k, url: \"https://relay.test/anthropic\"}\n  twin-b: {type: anthropic, key: k, url: \"https://relay.test/anthropic\"}\n  openai: {type: openresponses, key: k}\n";
+
+/// A dry run of the script over one v1 bundle — `kind` recorded as its provider, `base_url` as Go and every v1
+/// build recorded it (absent for the type's default endpoint) — under [`CONVERT_CONFIG`]: the bundle's report
+/// line. Nothing is written.
+#[cfg(unix)]
+fn dry_run_one(kind: &str, base_url: Option<&str>, args: &[&str]) -> String {
+    let home = TempDir::new().expect("temp home");
+    let cwd = TempDir::new().expect("temp cwd");
+    fs::write(cwd.path().join(".iota.yaml"), CONVERT_CONFIG).expect("write config");
+    let dir = sessions_root(home.path()).join("v1bundle0001");
+    fs::create_dir_all(&dir).expect("mkdir bundle");
+    let url = base_url.map_or_else(String::new, |u| format!("\n  \"base_url\": \"{u}\","));
+    let meta = format!(
+        "{{\n  \"v\": 1,\n  \"id\": \"v1bundle0001\",\n  \"provider\": \"{kind}\",\n  \"model\": \"m\",{url}\n  \"message_count\": 0\n}}"
+    );
+    fs::write(dir.join("meta.json"), &meta).expect("write meta");
+    fs::write(dir.join("messages.jsonl"), "").expect("write log");
+    let (_, report) = convert(cwd.path(), home.path(), args);
+    assert_eq!(
+        fs::read_to_string(dir.join("meta.json")).expect("meta"),
+        meta,
+        "a dry run wrote"
+    );
+    report_line(&report, "v1bundle0001")
+}
+
+/// A recorded `base_url` names the endpoint the session ran on: the ONE entry of its type with that url is it,
+/// whatever else that type has — a trailing slash and the case of the host aside.
+#[cfg(unix)]
+#[test]
+fn the_conversion_maps_by_the_url_the_session_ran_against() {
+    assert_eq!(
+        dry_run_one("openresponses", Some("https://api.deepseek.com"), &[]),
+        "v1bundle0001: v 1 -> 2; provider \"openresponses\" -> \"deepseek\" [its base_url is deepseek's url]; removed base_url \"https://api.deepseek.com\""
+    );
+    assert_eq!(
+        dry_run_one("openresponses", Some("https://AI.appmisc.com/v1"), &[]),
+        "v1bundle0001: v 1 -> 2; provider \"openresponses\" -> \"self\" [its base_url is self's url]; removed base_url \"https://AI.appmisc.com/v1\""
+    );
+}
+
+/// Two entries of the type at that url: reported, not guessed.
+#[cfg(unix)]
+#[test]
+fn the_conversion_reports_a_url_two_entries_share() {
+    assert_eq!(
+        dry_run_one("anthropic", Some("https://relay.test/anthropic/"), &[]),
+        "v1bundle0001: SKIPPED — base_url https://relay.test/anthropic/ is the url of 2 anthropic providers (twin-a, twin-b); choose with --map anthropic=<name>"
+    );
+}
+
+/// A url no entry of the type has: reported, not guessed — the type's other endpoints are not it.
+#[cfg(unix)]
+#[test]
+fn the_conversion_reports_a_url_no_entry_has() {
+    assert_eq!(
+        dry_run_one("openresponses", Some("https://elsewhere.test/v1"), &[]),
+        "v1bundle0001: SKIPPED — base_url https://elsewhere.test/v1 is the url of no openresponses provider in the config (the openresponses providers: deepseek, openai, self); add one, or choose with --map openresponses=<name>"
+    );
+}
+
+/// No `base_url`: v1 records the url it ran against, so none is the type's default endpoint — the built-in
+/// provider of that name, and the report says why. An entry of another type that has taken the name is not it.
+#[cfg(unix)]
+#[test]
+fn the_conversion_maps_no_url_to_the_built_in_endpoint() {
+    assert_eq!(
+        dry_run_one("images", None, &[]),
+        "v1bundle0001: v 1 -> 2; provider \"images\" -> \"images\" [no base_url: v1 records the URL it ran against, so it ran on the built-in images endpoint]"
+    );
+    assert_eq!(
+        dry_run_one("openai", None, &[]),
+        "v1bundle0001: SKIPPED — no base_url: it ran on the built-in openai endpoint, but the config's provider openai is of type openresponses; add a provider of type openai without a url and --map openai=<it>"
+    );
+}
+
+/// `--map` is the user's decision and comes first, over the url — and is checked against the config.
+#[cfg(unix)]
+#[test]
+fn the_conversion_takes_map_over_the_url() {
+    assert_eq!(
+        dry_run_one(
+            "openresponses",
+            Some("https://api.deepseek.com"),
+            &["--map", "openresponses=self"]
+        ),
+        "v1bundle0001: v 1 -> 2; provider \"openresponses\" -> \"self\" [--map]; removed base_url \"https://api.deepseek.com\""
+    );
+    assert_eq!(
+        dry_run_one(
+            "openresponses",
+            Some("https://api.deepseek.com"),
+            &["--map", "openresponses=twin-a"]
+        ),
+        "v1bundle0001: SKIPPED — --map openresponses=twin-a: twin-a is of type anthropic"
+    );
+}
+
+/// The script on the Go corpus, where a user runs it: a dry run writes nothing; `--write` rewrites each
+/// `meta.json` and nothing else; a second run finds nothing to do. The converted bundle then resumes on `p`
+/// and replays its model and tuning, and the next resume reads that name.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_conversion_script_maps_v1_bundles_by_the_config() {
+async fn the_conversion_script_converts_the_go_corpus_once() {
     let server = MockServer::start().await;
     google_stub(&server, false).await;
     let cwd = TempDir::new().expect("temp cwd");
     let home = home_with_v1_fixtures();
     let root = sessions_root(home.path());
-    // gemini: one entry (`p`); openai: two (`q1`, `q2`); anthropic and openresponses: none.
-    fs::write(
-        cwd.path().join(".iota.yaml"),
-        format!(
-            "providers:\n  p: {{type: gemini, key: x, url: {}}}\n  q1: {{type: openai, key: x}}\n  q2: {{type: openai, key: y, url: \"https://a.test/v1\"}}\nagents:\n  default:\n    choices: [\"p:*\"]\n",
-            server.uri()
-        ),
-    )
-    .expect("write config");
+    // `p` is the mock, not the url the corpus recorded: the corpus is mapped by hand.
+    write_config(cwd.path(), &server.uri(), "", "");
+    let maps = [
+        "--map",
+        "gemini=p",
+        "--map",
+        "openai=openai",
+        "--map",
+        "anthropic=anthropic",
+        "--map",
+        "openresponses=openresponses",
+    ];
     let snapshot = |root: &Path| -> Vec<(PathBuf, Vec<u8>)> {
         let mut files = Vec::new();
         let mut dirs = vec![root.to_path_buf()];
@@ -698,95 +827,43 @@ async fn the_conversion_script_maps_v1_bundles_by_the_config() {
         files.sort();
         files
     };
-    let script = |args: &[&str]| {
-        let mut cmd = Command::new("python3");
-        cleared_env(&mut cmd, home.path())
-            .current_dir(cwd.path())
-            .stdin(Stdio::null())
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join(iota::session::CONVERT_SCRIPT))
-            .args(["--iota", env!("CARGO_BIN_EXE_iota")])
-            .args(args);
-        let o = cmd.output().expect("run python3");
-        assert!(o.stderr.is_empty(), "{}", err(&o));
-        (o.status.code(), out(&o))
-    };
-    let line = |report: &str, id: &str| {
-        report
-            .lines()
-            .find(|l| l.starts_with(&format!("{id}: ")))
-            .unwrap_or_else(|| panic!("no line for {id}: {report}"))
-            .to_owned()
-    };
-    let id_of = |name: &str| fixture(name)["id"].as_str().unwrap().to_owned();
-    let gemini = id_of("go-gemini-rich");
-    let openai: Vec<String> = manifest()["fixtures"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|f| f["meta"]["provider"] == "openai")
-        .map(|f| f["id"].as_str().unwrap().to_owned())
-        .collect();
-    assert_eq!(openai.len(), 2, "the corpus has two openai bundles");
-    let anthropic = manifest()["fixtures"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|f| f["meta"]["provider"] == "anthropic")
-        .map(|f| f["id"].as_str().unwrap().to_owned())
-        .expect("an anthropic bundle");
+    let gemini = fixture("go-gemini-rich")["id"].as_str().unwrap().to_owned();
 
-    // The dry run reports each bundle and writes nothing.
     let before = snapshot(&root);
-    let (code, report) = script(&[]);
-    assert_eq!(code, Some(1), "bundles were left alone: {report}");
+    let (code, report) = convert(cwd.path(), home.path(), &maps);
+    assert_eq!(code, Some(0), "{report}");
     assert_eq!(snapshot(&root), before, "a dry run wrote something");
-    assert!(
-        line(&report, &gemini).starts_with(&format!(
-            "{gemini}: v 1 -> 2; provider \"gemini\" -> \"p\"; removed base_url \"https://example.test/v1\" ("
-        )),
-        "unique: {report}"
-    );
-    for id in &openai {
-        assert!(
-            line(&report, id).starts_with(&format!(
-                "{id}: SKIPPED — type openai has 2 providers in the config (q1, q2); choose one with --map openai=<name> ("
-            )),
-            "ambiguous: {report}"
-        );
-    }
-    assert!(
-        line(&report, &anthropic).starts_with(&format!(
-            "{anthropic}: SKIPPED — no provider in the config has type anthropic; add one, or run it on the built-in endpoint with --map anthropic=anthropic ("
-        )),
-        "not found: {report}"
+    assert_eq!(
+        report_line(&report, &gemini),
+        format!(
+            "{gemini}: v 1 -> 2; provider \"gemini\" -> \"p\" [--map]; removed base_url \"https://example.test/v1\""
+        )
     );
     assert!(
         report
-            .ends_with("1 to convert (dry run: rerun with --write), 4 left alone, 0 already v2\n"),
+            .ends_with("5 to convert (dry run: rerun with --write), 0 left alone, 0 already v2\n"),
         "{report}"
     );
 
-    // `--write` rewrites the one it could map — its meta alone — and leaves the rest as they were.
-    let (code, report) = script(&["--write"]);
-    assert_eq!(code, Some(1), "{report}");
+    let mut args = vec!["--write"];
+    args.extend(maps);
+    let (code, report) = convert(cwd.path(), home.path(), &args);
+    assert_eq!(code, Some(0), "{report}");
     assert!(
-        report.ends_with("1 converted, 4 left alone, 0 already v2\n"),
+        report.ends_with("5 converted, 0 left alone, 0 already v2\n"),
         "{report}"
     );
     let after = snapshot(&root);
-    let changed: Vec<&PathBuf> = after
-        .iter()
-        .zip(&before)
-        .filter(|(a, b)| a != b)
-        .map(|(a, _)| &a.0)
-        .collect();
-    let bundle = root.join(fixture("go-gemini-rich")["dir"].as_str().unwrap());
     assert_eq!(after.len(), before.len(), "no file appeared or went");
-    assert_eq!(
-        changed,
-        [&bundle.join("meta.json")],
-        "only that meta changed"
-    );
+    for ((path, now), (_, then)) in after.iter().zip(&before) {
+        assert_eq!(
+            now != then,
+            path.file_name().is_some_and(|n| n == "meta.json"),
+            "{}: only the metas change",
+            path.display()
+        );
+    }
+    let bundle = root.join(fixture("go-gemini-rich")["dir"].as_str().unwrap());
     let meta: serde_json::Value =
         serde_json::from_slice(&fs::read(bundle.join("meta.json")).expect("meta")).expect("JSON");
     assert_eq!(meta["v"], 2);
@@ -794,33 +871,7 @@ async fn the_conversion_script_maps_v1_bundles_by_the_config() {
     assert!(meta.get("base_url").is_none(), "{meta}");
     assert_eq!(meta["future_key"]["n"], 42, "every other key kept");
 
-    // Again: nothing more to do. `--map` decides what the config does not, and is checked against it.
-    let (_, report) = script(&[]);
-    assert!(
-        report
-            .ends_with("0 to convert (dry run: rerun with --write), 4 left alone, 1 already v2\n"),
-        "{report}"
-    );
-    let (_, report) = script(&["--map", "openai=p"]);
-    assert!(
-        line(&report, &openai[0]).contains("SKIPPED — --map openai=p: p is of type gemini"),
-        "{report}"
-    );
-    let (code, report) = script(&[
-        "--write",
-        "--map",
-        "openai=q2",
-        "--map",
-        "anthropic=anthropic",
-        "--map",
-        "openresponses=openresponses",
-    ]);
-    assert_eq!(code, Some(0), "{report}");
-    assert!(
-        report.ends_with("4 converted, 0 left alone, 1 already v2\n"),
-        "{report}"
-    );
-    let (code, report) = script(&["--write"]);
+    let (code, report) = convert(cwd.path(), home.path(), &["--write"]);
     assert_eq!(code, Some(0), "{report}");
     assert_eq!(report, "0 converted, 0 left alone, 5 already v2\n");
 

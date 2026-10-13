@@ -2,20 +2,29 @@
 """Converts v1 session bundles to v2, once.
 
 A v1 `meta.json` (Go's, and every iota build's before 2026-10-11) records the provider TYPE in `provider`
-and the endpoint's `base_url`; v2 records the provider NAME — a `providers:` entry of the config — and no
-URL. iota no longer reads v1 (`SessionError::OldFormat` names this script). This rewrites each v1 meta:
+and the URL it actually ran against in `base_url` (none for the type's default endpoint); v2 records the
+provider NAME — a `providers:` entry of the config — and no URL. iota no longer reads v1
+(`SessionError::OldFormat` names this script). This rewrites each v1 meta:
 
   v         1 -> 2
-  provider  <type> -> the one `providers:` entry of that type in the CURRENT config
+  provider  <type> -> the provider it ran on, by the CURRENT config (below)
   base_url  removed (v2 has no such key)
 
 and nothing else: `messages.jsonl` and the attachments are never touched, every other meta key is kept as
 it is, in its place.
 
-The config is read by iota itself (`iota list providers`, run in this directory, so the project's
-`.iota.yaml` counts as it would for a run; `--config` passes `-c`). A type that no entry has, or that
-several entries have, is NOT guessed: the bundle is reported and left alone, and `--map TYPE=NAME`
-decides — NAME is an entry of the config, or the type itself for its built-in endpoint.
+Which provider, in this order:
+
+  1. `--map TYPE=NAME`: the user's decision for every bundle of TYPE — NAME is an entry of that type, or
+     the type itself for its built-in endpoint;
+  2. a recorded `base_url`: the ONE entry of that type whose `url:` is that URL (a trailing slash and the
+     case of the scheme and host aside); two such entries, or none, are reported, not guessed;
+  3. no `base_url`: the session ran on the type's default endpoint, so it is the built-in provider of
+     that name — unless an entry of another type has taken the name, which is reported.
+
+The type alone never decides: two sessions of one type can have run on two endpoints, and the URL is what
+says which. The config is read by iota itself (`iota list providers`, run in this directory, so the
+project's `.iota.yaml` counts as it would for a run; `--config` passes `-c`).
 
 A dry run by default: it reports what it would change and writes nothing. `--write` applies it. A bundle
 already v2 is skipped, so running it again changes nothing. Exit status 1 when a bundle was left alone.
@@ -28,12 +37,14 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 VERSION = 2
 
 
 def providers_of(iota, config):
-    """`{name: type}` for every `providers:` entry the current config defines, as iota reads it."""
+    """`{name: (type, url)}` for every `providers:` entry the current config defines, as iota reads it; the
+    url is `""` for an entry that keeps its type's default."""
     cmd = [iota] + (["-c", config] if config else []) + ["list", "providers"]
     run = subprocess.run(cmd, capture_output=True, text=True)
     if run.returncode != 0:
@@ -41,32 +52,50 @@ def providers_of(iota, config):
     providers = {}
     for line in run.stdout.splitlines():
         # `  name (type: t, url: u)  [key: …]` — the type is the name itself when the line names none.
-        m = re.match(r"^  (\S+)(?: \(([^)]*)\))?  \[", line)
+        m = re.match(r"^  (\S+)(?: \((.*)\))?  \[", line)
         if not m:
             continue
-        kind = re.search(r"(?:^|, )type: ([^,]+)", m.group(2) or "")
-        providers[m.group(1)] = kind.group(1) if kind else m.group(1)
+        info = m.group(2) or ""
+        kind = re.search(r"(?:^|, )type: ([^,]+)", info)
+        url = re.search(r"(?:^|, )url: (.+)$", info)
+        providers[m.group(1)] = (kind.group(1) if kind else m.group(1), url.group(1) if url else "")
     return providers
 
 
-def resolve(kind, providers, chosen):
-    """The provider name a v1 bundle of type `kind` runs on: `(name, None)`, or `(None, why)` when the config
-    does not say which. `chosen` is `--map`: the user's own decision, checked against the config."""
+def same_url(a, b):
+    """Whether two URLs name the same endpoint: a trailing slash and the case of the scheme and host aside."""
+    def norm(u):
+        p = urlsplit(u.strip())
+        return (p.scheme.lower(), p.netloc.lower(), p.path.rstrip("/"), p.query)
+    return norm(a) == norm(b)
+
+
+def resolve(kind, base_url, providers, chosen):
+    """The provider a v1 bundle of type `kind` that ran against `base_url` runs on: `(name, basis, None)`,
+    or `(None, None, why)` when the config does not say which. `chosen` is `--map`, checked against the
+    config."""
     if kind in chosen:
         name = chosen[kind]
-        if name in providers and providers[name] != kind:
-            return None, "--map %s=%s: %s is of type %s" % (kind, name, name, providers[name])
+        if name in providers and providers[name][0] != kind:
+            return None, None, "--map %s=%s: %s is of type %s" % (kind, name, name, providers[name][0])
         if name in providers or name == kind:
-            return name, None
-        return None, "--map %s=%s: the config defines no provider %s" % (kind, name, name)
-    names = sorted(n for n, t in providers.items() if t == kind)
-    if len(names) == 1:
-        return names[0], None
-    if names:
-        return None, "type %s has %d providers in the config (%s); choose one with --map %s=<name>" % (
-            kind, len(names), ", ".join(names), kind)
-    return None, ("no provider in the config has type %s; add one, or run it on the built-in endpoint "
-                  "with --map %s=%s" % (kind, kind, kind))
+            return name, "--map", None
+        return None, None, "--map %s=%s: the config defines no provider %s" % (kind, name, name)
+    if base_url:
+        names = sorted(n for n, (t, u) in providers.items() if t == kind and u and same_url(u, base_url))
+        if len(names) == 1:
+            return names[0], "its base_url is %s's url" % names[0], None
+        if names:
+            return None, None, "base_url %s is the url of %d %s providers (%s); choose with --map %s=<name>" % (
+                base_url, len(names), kind, ", ".join(names), kind)
+        others = sorted(n for n, (t, _) in providers.items() if t == kind)
+        return None, None, "base_url %s is the url of no %s provider in the config (the %s providers: %s); add one, or choose with --map %s=<name>" % (
+            base_url, kind, kind, ", ".join(others) or "none", kind)
+    if kind in providers and providers[kind][0] != kind:
+        return None, None, ("no base_url: it ran on the built-in %s endpoint, but the config's provider %s is "
+                            "of type %s; add a provider of type %s without a url and --map %s=<it>" % (
+                                kind, kind, providers[kind][0], kind, kind))
+    return kind, "no base_url: v1 records the URL it ran against, so it ran on the built-in %s endpoint" % kind, None
 
 
 def bundles(root):
@@ -128,14 +157,14 @@ def main(argv=None):
             current += 1
             continue
         kind = meta.get("provider", "")
-        name, why = resolve(kind, providers, chosen)
+        name, basis, why = resolve(kind, meta.get("base_url") or "", providers, chosen)
         if name is None:
             print("%s: SKIPPED — %s (%s)" % (d.name, why, d))
             left += 1
             continue
         removed = "; removed base_url %s" % json.dumps(meta["base_url"]) if "base_url" in meta else ""
-        print("%s: v %s -> %d; provider %s -> %s%s (%s)" % (
-            d.name, version, VERSION, json.dumps(kind), json.dumps(name), removed, d))
+        print("%s: v %s -> %d; provider %s -> %s [%s]%s (%s)" % (
+            d.name, version, VERSION, json.dumps(kind), json.dumps(name), basis, removed, d))
         if args.write:
             write(path, convert(meta, name))
         changed += 1
