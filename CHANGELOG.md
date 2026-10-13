@@ -62,8 +62,12 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   a missing key on the agent's own endpoint no longer stops a session that
   runs on another. Resuming replies another dialect wrote says how many carry
   payload this one does not replay. Sessions written by earlier versions
-  (format v1) are no longer read: convert them once with the one-time
-  conversion script before resuming them.
+  (format v1) are no longer read: opening one is an error that names
+  `scripts/session-v1-to-v2.py`, which converts them once. The script only
+  reports what it would change until you add `--write`; it rewrites
+  `meta.json` alone, leaving the transcript and attachments as they are, and
+  a provider type your config has no single entry for waits for
+  `--map TYPE=NAME`.
 - **`iota resume <id> -M` moves the session for good.** `-M` on a resume used
   to change only that run; the session now records the new provider and
   model, so the next plain `iota resume` continues there. What you set by
