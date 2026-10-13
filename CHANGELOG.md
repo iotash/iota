@@ -62,7 +62,8 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   a missing key on the agent's own endpoint no longer stops a session that
   runs on another. Resuming replies another dialect wrote says how many carry
   payload this one does not replay. Sessions written by earlier versions
-  still resume as before.
+  (format v1) are no longer read: convert them once with the one-time
+  conversion script before resuming them.
 - **`iota resume <id> -M` moves the session for good.** `-M` on a resume used
   to change only that run; the session now records the new provider and
   model, so the next plain `iota resume` continues there. What you set by
