@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use crate::provider::error::InvalidEffort;
-use crate::provider::{Effort, ImageGenParams, Provider, ProviderKind};
+use crate::provider::{Effort, ImageGenParams, Provider};
 use crate::session::error::SessionError;
 use crate::session::params::{LayeredParams, ParamSources};
 
@@ -40,10 +40,12 @@ impl ImageSettings {
     }
 }
 
-/// The schema version every bundle is written with. `2` (2026-10-11): `provider` is the provider NAME the
-/// session runs on. A `1` bundle — Go's, and every Rust build's before it — recorded the provider TYPE there,
-/// and is read that way ([`SessionMeta::recorded_on`]) until a run moves it to v2 by the name it actually ran on.
+/// The schema version every bundle is written with, and the only one read. `2` (2026-10-11): `provider` is the
+/// provider NAME the session runs on. A `1` bundle — Go's, and every Rust build's before it — recorded the
+/// provider TYPE there; it is refused ([`SessionError::OldFormat`]) and converted by [`CONVERT_SCRIPT`].
 pub const SESSION_SCHEMA_VERSION: i64 = 2;
+/// The one-time conversion of v1 bundles, as the refusal names it: a path in the iota source tree.
+pub const CONVERT_SCRIPT: &str = "scripts/session-v1-to-v2.py";
 /// The metadata file inside a bundle.
 pub const META_FILE: &str = "meta.json";
 /// The fixed temp name the atomic rewrite renames from (D-45); invisible to Go's locator and lister.
@@ -83,11 +85,10 @@ pub struct SessionMeta {
     pub created_at: String,
     /// RFC3339; restamped by every [`SessionMeta::write`].
     pub updated_at: String,
-    /// v2: the provider the session runs on — the `providers:` entry name, or a built-in type name for an
+    /// The provider the session runs on — the `providers:` entry name, or a built-in type name for an
     /// endpoint no entry declares. It names an endpoint of the CONFIG: its type, URL and key are read from there
     /// when the session is resumed, never from here; and it follows the session when the session moves (`-M` on
-    /// a resume, `/model` before the first reply). v1: the provider TYPE the session was written under — see
-    /// [`SessionMeta::recorded_on`]. ALWAYS emitted, even empty.
+    /// a resume, `/model`). ALWAYS emitted, even empty.
     pub provider: String,
     /// The model in use on that provider. ALWAYS emitted, even empty.
     pub model: String,
@@ -211,29 +212,9 @@ pub(crate) fn write_0644(path: &Path, data: &[u8]) -> std::io::Result<()> {
 }
 
 impl SessionMeta {
-    /// Whether this bundle was recorded on the endpoint a run is on — `on` is that endpoint's provider name,
-    /// `kind` its type. A v2 bundle names its provider and matches on the name; a v1 bundle recorded only a
-    /// type, and matches any endpoint of that type, as every build before v2 read it.
-    pub fn recorded_on(&self, on: &str, kind: ProviderKind) -> bool {
-        if self.names_provider() {
-            self.provider == on
-        } else {
-            self.provider == kind.as_str()
-        }
-    }
-
-    /// Whether `provider` is a provider NAME (v2), rather than the type a v1 bundle recorded.
-    pub fn names_provider(&self) -> bool {
-        self.version >= 2
-    }
-
-    /// Where the bundle says it was recorded, as a warning names it: `provider:model` for v2, the type for v1.
-    pub fn recorded_where(&self) -> String {
-        if self.names_provider() {
-            format!("{}:{}", self.provider, self.model)
-        } else {
-            format!("a {} endpoint ({})", self.provider, self.model)
-        }
+    /// Whether this bundle was recorded on `on`, the provider name a run is on.
+    pub fn recorded_on(&self, on: &str) -> bool {
+        self.provider == on
     }
 
     /// Stamps the five layered parameters the session runs under, and the source of each — `window` is
@@ -332,7 +313,7 @@ impl SessionMeta {
 
 #[cfg(test)]
 mod tests {
-    use super::{SESSION_SCHEMA_VERSION, SessionMeta, now_rfc3339, parse_rfc3339};
+    use super::{now_rfc3339, parse_rfc3339};
 
     /// `now_rfc3339` is second-precision RFC3339 with a numeric offset, and parses back.
     #[test]
@@ -350,32 +331,5 @@ mod tests {
         assert!(parse_rfc3339("2026-08-31T17:28:23+08:00").is_some());
         assert_eq!(parse_rfc3339("not a time"), None);
         assert_eq!(parse_rfc3339(""), None);
-    }
-
-    /// The schema version is 2 (`provider` is a name); a meta that does not say is not a v2 one.
-    #[test]
-    fn schema_version_is_two() {
-        assert_eq!(SESSION_SCHEMA_VERSION, 2);
-        assert_eq!(SessionMeta::default().version, 0);
-        assert!(!SessionMeta::default().names_provider());
-    }
-
-    /// v1 matches on the type it recorded, v2 on the provider name.
-    #[test]
-    fn recorded_on_reads_v1_as_a_type_and_v2_as_a_name() {
-        use crate::provider::ProviderKind;
-        let v1 = SessionMeta {
-            version: 1,
-            provider: "gemini".to_owned(),
-            ..SessionMeta::default()
-        };
-        assert!(v1.recorded_on("p", ProviderKind::Gemini));
-        assert!(!v1.recorded_on("gemini", ProviderKind::OpenAi));
-        let v2 = SessionMeta {
-            version: SESSION_SCHEMA_VERSION,
-            ..v1
-        };
-        assert!(!v2.recorded_on("p", ProviderKind::Gemini));
-        assert!(v2.recorded_on("gemini", ProviderKind::OpenAi));
     }
 }

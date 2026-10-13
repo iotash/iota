@@ -12,10 +12,10 @@ use pretty_assertions::assert_eq;
 
 use crate::common::{log_lines, temp_store};
 
-/// `meta.json` as the Go writer produced it in the probe run (`json.MarshalIndent(m, "", "  ")`,
-/// struct-order keys, NO trailing newline) — as v2 writes it: `v: 2`, and no `base_url`, which a v2 meta does
+/// `meta.json` in the layout the Go writer produced in the probe run (`json.MarshalIndent(m, "", "  ")`,
+/// struct-order keys, NO trailing newline) with v2's content: `v: 2`, and no `base_url`, which a v2 meta does
 /// not record (the endpoint is the config's, read through the provider name).
-const GO_META: &str = r#"{
+const META: &str = r#"{
   "v": 2,
   "id": "ws0b07cp764v",
   "created_at": "2026-08-31T17:28:23+08:00",
@@ -35,9 +35,9 @@ const GO_LOG: [&str; 3] = [
     r#"{"role":"assistant","content":"hi there","usage":{"in":11,"out":7,"total":18}}"#,
 ];
 
-/// `to_string_pretty` on a `SessionMeta` reproduces the Go writer byte for byte.
+/// `to_string_pretty` on a `SessionMeta` keeps the Go writer's layout byte for byte.
 #[test]
-fn meta_serialises_exactly_like_go() {
+fn meta_serialises_in_the_go_writers_layout() {
     let meta = SessionMeta {
         version: SESSION_SCHEMA_VERSION,
         id: "ws0b07cp764v".to_owned(),
@@ -51,9 +51,9 @@ fn meta_serialises_exactly_like_go() {
         message_count: 3,
         ..SessionMeta::default()
     };
-    assert_eq!(serde_json::to_string_pretty(&meta).unwrap(), GO_META);
+    assert_eq!(serde_json::to_string_pretty(&meta).unwrap(), META);
     // ...and back, losslessly.
-    assert_eq!(serde_json::from_str::<SessionMeta>(GO_META).unwrap(), meta);
+    assert_eq!(serde_json::from_str::<SessionMeta>(META).unwrap(), meta);
 }
 
 /// The file on disk has 2-space indentation, Go's key order and NO trailing newline.

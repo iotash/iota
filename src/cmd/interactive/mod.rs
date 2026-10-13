@@ -565,22 +565,19 @@ fn wire_session(wire: Wire<'_>) -> Result<Wiring, CliError> {
             &mut *provider,
             &settings.resolved.provider_name,
             &crate::session::Overrides {
-                model: crate::cmd::model_overridden(&resumed.meta, settings),
+                model: settings.model_flag,
                 ..crate::session::Overrides::default()
             },
             &mut |w| io.warning(&w),
         );
         let params = resolve_params(settings, provider, Some(&resumed.meta), io)?;
-        // Where the session runs NOW, in ONE write: a `-M` that moved it, or a v1 bundle settling under the
-        // name it runs on. A chat has no moment of "success" to wait for — opening the session is the run.
-        if crate::cmd::settles(&resumed.meta, settings, kind)
-            && let Err(e) = w.move_to(&crate::cmd::settled(
-                settings,
-                kind,
-                &mut *provider,
-                params.clone(),
-            ))
-        {
+        // Where the session runs NOW, in ONE write — where a `-M` moved it, too. A chat has no moment of
+        // "success" to wait for: opening the session is the run.
+        if let Err(e) = w.move_to(&crate::repl::liveparams::moved(
+            &settings.resolved.provider_name,
+            &mut *provider,
+            params.clone(),
+        )) {
             io.warning(&format!("Warning: failed to save session: {e}"));
         }
         resumed_params = Some(params);

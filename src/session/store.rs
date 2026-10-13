@@ -34,7 +34,8 @@ pub struct SessionInfo {
     pub title: String,
     /// The model recorded in meta.
     pub model: String,
-    /// `meta.provider`: the provider name (v2), or the type a v1 bundle recorded.
+    /// `meta.provider`: the provider name — or, for a v1 bundle the listing still shows but no resume reads,
+    /// a type.
     pub provider: String,
     /// `meta.updated_at`; `None` when unparsable — Go's zero time, which sorts last.
     pub updated_at: Option<jiff::Timestamp>,
@@ -497,12 +498,20 @@ fn terminate_last_line(path: &Path, append: &mut std::fs::File) -> Result<(), Se
     Ok(())
 }
 
-/// `loadMeta` wrapped in Go's `cannot read session %s: %w` (chat/session.go:388-391, :909-912).
+/// `loadMeta` wrapped in Go's `cannot read session %s: %w` (chat/session.go:388-391, :909-912). A bundle
+/// older than v2 is refused ([`SessionError::OldFormat`]): every way a session is opened reads its meta here.
 fn read_meta(dir: &Path, id: &str) -> Result<SessionMeta, SessionError> {
-    SessionMeta::read(dir).map_err(|e| SessionError::CannotRead {
+    let meta = SessionMeta::read(dir).map_err(|e| SessionError::CannotRead {
         id: id.to_owned(),
         source: Box::new(e),
-    })
+    })?;
+    if meta.version < SESSION_SCHEMA_VERSION {
+        return Err(SessionError::OldFormat {
+            id: id.to_owned(),
+            version: meta.version,
+        });
+    }
+    Ok(meta)
 }
 
 /// The subdirectories of `dir`, sorted by name — `os.ReadDir`'s contract, which Go's locator and both

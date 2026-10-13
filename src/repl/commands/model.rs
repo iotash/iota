@@ -186,8 +186,9 @@ fn way_out(repl: &Repl, provider: &str, id: &str) -> String {
     format!("A NEW session starts there with: iota run {agent} -M {provider}:{id}")
 }
 
-/// Moves the chat to `provider:id` — another endpoint — and returns the parameters the caller's
-/// [`liveparams::apply`](crate::repl::liveparams::apply) lands there. `None` (reported, nothing changed) when it
+/// Moves the chat to `provider:id` — another endpoint — and returns what the chat ran under before and the
+/// parameters it runs under there, for the caller's [`liveparams::apply`](crate::repl::liveparams::apply) to
+/// announce and record. `None` (reported, nothing changed) when it
 /// does not: the chat never moves (a bot), the endpoint cannot be built or is another kind of model
 /// ([`open_endpoint`]), a chat a model has replied in cannot save what it holds first ([`saved`]), the user
 /// declines ([`consent`]), or the bundle could not be told.
@@ -197,8 +198,8 @@ fn way_out(repl: &Repl, provider: &str, id: &str) -> String {
 /// the user agrees to what that costs before anything is written ([`consent`]).
 ///
 /// The move is ONE state write, then the swap. Everything is computed on the target before anything is
-/// installed: the knobs the chat runs under are carried onto the new instance and re-evaluated against the
-/// target's layers — the third evaluating moment, beside a new session and a `/model` switch (brain page
+/// installed: the knobs the chat runs under are re-evaluated against the target's layers and land on the new
+/// instance — the third evaluating moment, beside a new session and a `/model` switch (brain page
 /// `model-param-layering`) — and the bundle is told the endpoint, the model, the four parameters with their
 /// sources and the image settings in one write ([`SessionWriter::move_to`](crate::session::SessionWriter::move_to)).
 /// Only when that write succeeded is the endpoint installed, with the history as the log reads for it. What
@@ -207,34 +208,22 @@ pub(crate) async fn move_to(
     repl: &mut Repl,
     provider: &str,
     id: &str,
-) -> Option<crate::session::LayeredParams> {
-    // A fact of the session, not a scan of the view: a compacted or resumed history may show no reply.
-    if repl.conv.replied && !saved(repl, provider, id) {
+) -> Option<(crate::session::LayeredParams, crate::session::LayeredParams)> {
+    let replied = repl.replied();
+    if replied && !saved(repl, provider, id) {
         return None;
     }
     let next = way_out(repl, provider, id);
     let mut ep = open_endpoint(repl, provider, id, &next)?;
-    let history = if repl.conv.replied {
+    let history = if replied {
         Some(consent(repl, ep.provider.kind(), provider, id).await?)
     } else {
         None
     };
     let running = crate::repl::liveparams::current(repl);
-    crate::repl::liveparams::carry(&mut *ep.provider, &running);
     let next = crate::repl::liveparams::reevaluate(repl, &ep.layers, id, &running);
-    let now = crate::repl::liveparams::read_off(repl, &mut *ep.provider);
-    let landed = crate::repl::liveparams::landing(&mut *ep.provider, &now, &next);
-    let moved = crate::session::Moved {
-        kind: ep.provider.kind(),
-        provider: provider.to_owned(),
-        model: ep.provider.model().to_owned(),
-        window: ep
-            .provider
-            .reports_usage()
-            .then_some(landed.context_window.value),
-        params: landed,
-        image: crate::session::ImageSettings::of(&mut *ep.provider),
-    };
+    let landed = crate::repl::liveparams::land(&mut *ep.provider, &next);
+    let moved = crate::repl::liveparams::moved(provider, &mut *ep.provider, landed);
     if let Some(w) = lock(&repl.session.writer).as_mut()
         && let Err(e) = w.move_to(&moved)
     {
@@ -248,15 +237,7 @@ pub(crate) async fn move_to(
         repl.conv.history = history;
         repl.conv.budget.reseed(&repl.conv.history);
     }
-    // An ephemeral chat's bundle is minted by `/save`, later: it is minted where the chat is then.
-    if let Some(mut mint) = repl.session.new_session.take() {
-        repl.session.new_session = Some(Box::new(move || {
-            let mut w = mint()?;
-            w.move_to(&moved)?;
-            Ok(w)
-        }));
-    }
-    Some(next)
+    Some((running, next))
 }
 
 /// Whether everything a chat a model has replied in holds is in its log, saved under the type it was said in
@@ -465,13 +446,13 @@ pub(crate) async fn ensure_model(repl: &mut Repl, cancel: &CancellationToken) ->
     let name = match repl.conv.catalog.pick(&chosen) {
         Pick::Here(id) => id,
         Pick::Elsewhere(provider, id) => {
-            let Some(next) = move_to(repl, &provider, &id).await else {
+            let Some((from, next)) = move_to(repl, &provider, &id).await else {
                 return false;
             };
             repl.handles
                 .tr
                 .notice(&format!("Using model: {id} on {provider}"));
-            crate::repl::liveparams::apply(repl, &next);
+            crate::repl::liveparams::apply(repl, &from, &next);
             return true;
         }
     };
@@ -580,11 +561,11 @@ pub(crate) async fn cmd_model(repl: &mut Repl) {
             changed = true;
         }
         Some(Pick::Elsewhere(provider, id)) => {
-            if let Some(next) = move_to(repl, &provider, &id).await {
+            if let Some((from, next)) = move_to(repl, &provider, &id).await {
                 repl.handles
                     .tr
                     .notice(&format!("Model switched to {id} on {provider}"));
-                crate::repl::liveparams::apply(repl, &next);
+                crate::repl::liveparams::apply(repl, &from, &next);
                 changed = true;
             }
         }

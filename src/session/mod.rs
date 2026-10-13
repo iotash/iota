@@ -39,7 +39,8 @@ pub use loader::{
 };
 pub use lock::{BOT_LOCK_FILE, LOCK_FILE};
 pub use meta::{
-    ImageSettings, META_FILE, META_TMP_FILE, SESSION_SCHEMA_VERSION, SessionMeta, now_rfc3339,
+    CONVERT_SCRIPT, ImageSettings, META_FILE, META_TMP_FILE, SESSION_SCHEMA_VERSION, SessionMeta,
+    now_rfc3339,
 };
 pub use params::{LayeredParams, Param, ParamSource, ParamSources};
 pub use rawcodec::{blob_to_raw, raw_to_blob};
