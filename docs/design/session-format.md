@@ -88,10 +88,14 @@ A session is a **directory** on disk:
 > bundle is **no longer read** (decision of 2026-10-13): every way a session is opened — `iota resume`, `/session`,
 > a bot's launch — fails with `session <id> was written by an older iota (meta.json v1: …); convert it with
 > scripts/session-v1-to-v2.py …`, never silently and never by falling back to another endpoint. The one-time
-> script `scripts/session-v1-to-v2.py` converts them: a dry run by default (`--write` applies), it maps the type to
-> the ONE `providers:` entry of that type in the current config — read by `iota list providers`, so `-c` and the
-> project's `.iota.yaml` count as for a run — and reports a type with several entries or none instead of guessing
-> (`--map TYPE=NAME` decides; NAME may be the type itself for its built-in endpoint); it sets `v: 2`, drops
+> script `scripts/session-v1-to-v2.py` converts them: a dry run by default (`--write` applies), it names the
+> provider by the current config — read by `iota list providers`, so `-c` and the project's `.iota.yaml` count as
+> for a run. `--map TYPE=NAME` decides first (NAME is an entry of that type, or the type itself for its built-in
+> endpoint); else a recorded `base_url` picks the ONE entry of the type whose `url:` it is (a trailing slash and the
+> case of scheme and host aside); else, with no `base_url` — v1 recorded the URL the session ran against, so none
+> is the type's default — it is the built-in provider of the type's name. Two entries at that URL, none, or a
+> built-in name an entry of another type has taken are reported, never guessed; the type alone never decides (one
+> type can have run on several endpoints). It sets `v: 2`, drops
 > `base_url`, keeps every other key and never touches `messages.jsonl`; a v2 bundle is skipped, so a second run
 > changes nothing. The version is the only thing that tells the two apart: the same `provider: anthropic` means a
 > type in v1 and a name in v2. The listing still shows a v1 bundle; only opening it is refused.
