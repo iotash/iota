@@ -3,6 +3,98 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## 0.7.0 - 2026-10-13
+
+### Added
+
+- **`max_tokens:` sets the output ceiling of an Anthropic-dialect model.** The
+  key goes on a `models:` entry or an `agents:` entry, and the agent's wins
+  over the model's, as for `effort`, `temperature` and `top_p`. It must be 1 or
+  more (`config max_tokens 0: want 1 or more`). A new session and a `/model`
+  switch evaluate it, the session records it in `meta.json` with where it came
+  from, and `iota resume` restores what was recorded — the default included —
+  whatever the config says today; a bot takes it from its config each start.
+  Thinking counts toward it. There is no `/model` tab or flag for it, and a
+  hand-edited `max_tokens: 0` in a session is ignored with a warning. On any
+  other provider type the key does nothing and says so
+  (`` Warning: `max_tokens` does not apply to provider type … (ignored) ``).
+- **A chat can move to another provider from `/model`.** A row on another
+  endpoint used to be refused with "start a new session there". Before the
+  first reply, picking it now moves the chat there. After a reply, iota first
+  saves the chat, then tells you how many earlier replies carry
+  provider-specific payload (reasoning, provider-side tool state) the target
+  does not replay, that `iota resume <id>` continues on the new model
+  afterwards, and that picking the old row moves it back — and asks
+  `Move this chat to <provider>:<model>?` before anything changes. Your
+  settings come along as they do on a `-M` resume (below). A chat that is not
+  saved is told to `/save` first, a model of another kind (an image model for
+  a chat) is still refused, and a bot never moves: its config does.
+
+### Changed
+
+- **The Anthropic dialect asks for up to 32000 output tokens, not 4096.** A
+  thinking model could spend all of 4096 thinking and be cut off before it
+  wrote a word. The ceiling is a bound, not a charge: tokens are billed as
+  they are produced. An endpoint that caps lower answers a too-large value
+  with an error, so set a smaller `max_tokens:` for such a model.
+- **An output the ceiling cut off is an error, never the answer.** On the
+  Anthropic dialect (`stop_reason: max_tokens`) and on the Responses dialect
+  (`response.incomplete: max_output_tokens`), the chat shows a red
+  `Output truncated` block: what cut it, the tool call it was composing if
+  any (dropped, by name — it does not run), and what to do — where to raise
+  `max_tokens:`, and that the edit reaches this session only after a restart,
+  a resume and a `/model` switch away and back, while a lower effort in
+  `/model` applies at once. Text the model did write is kept, marked
+  incomplete; with none, the turn is rolled back, though what the request
+  cost still counts in the session totals. A cut is not retried — the same
+  request would hit the same ceiling. A half-finished thought is no longer
+  shown, saved or sent back to the model as the reply. With `-m`, a cut fails
+  the run (exit 1, `Error: output truncated — …`, nothing saved), a cut-off
+  compaction summary fails instead of replacing the history with a fragment,
+  and a cut-off title leaves the placeholder title.
+- **Sessions record their provider by name, and resume there.** A session now
+  stores the `providers:` name it runs on (session format v2) instead of a
+  provider type and a URL, and `iota resume` — and `/session` — opens that
+  provider from the config, as if `-M <provider>:<model>` had been typed. A
+  name the config no longer defines is an error that says how to resume it
+  elsewhere (`… which the config does not define; resume it elsewhere with
+  -M <provider>:<model>`), never a quiet fall back to another endpoint, and
+  a missing key on the agent's own endpoint no longer stops a session that
+  runs on another. Resuming replies another dialect wrote says how many carry
+  payload this one does not replay. Sessions written by earlier versions
+  still resume as before.
+- **`iota resume <id> -M` moves the session for good.** `-M` on a resume used
+  to change only that run; the session now records the new provider and
+  model, so the next plain `iota resume` continues there. What you set by
+  hand — effort, temperature, `top_p`, the output ceiling — comes along unless
+  the config there sets it; what the old endpoint's config supplied stays
+  behind. The warning says so.
+- **`/model` rows read the same wherever the chat is.** A row is
+  `provider:model`, or just the model when every choice is on one provider,
+  followed by the `models:` entries that name it in brackets
+  (`relay:vendor/fast [fast]`). What picking it does is an annotation beside
+  it, like `(current)`: `(moves the chat)`, or `(needs a new session)` in a
+  bot.
+- **Anthropic calls without tools stream too.** A `-m` run with no tools, the
+  compaction summary and the title used a non-streaming request, which sends
+  nothing until the whole output exists and could outlast the 120 s wait for
+  a response. They now use the stream the chat uses, so an
+  Anthropic-compatible endpoint that cannot stream now fails there instead of
+  answering.
+
+### Fixed
+
+- **An Anthropic stream that stops early is an error, not an answer.** A
+  response that ended before the message did — no `message_stop`, no stop
+  reason — was taken as complete, so `-m` and a compaction could succeed on a
+  fragment.
+- **A failing request without tools is sent 11 times, not 121.** A turn
+  that offered the model no tools retried inside a retry, so one failing
+  request (a 5xx, a dropped connection) could go out up to 121 times with
+  minutes of backoff. Every model call now has one set of ten retries.
+- **Typing a choice's name in `/model` picks that choice.** Typing `fast`, the
+  name of a `models:` entry, sent `fast` to the provider as a model id; the
+  field now reads typed text as `-M` does, and `provider:*` picks nothing.
 ## 0.6.1 - 2026-10-04
 
 ### Added
