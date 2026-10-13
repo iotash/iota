@@ -68,9 +68,13 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   (format v1) are no longer read: opening one is an error that names
   `scripts/session-v1-to-v2.py`, which converts them once. The script only
   reports what it would change until you add `--write`; it rewrites
-  `meta.json` alone, leaving the transcript and attachments as they are, and
-  a provider type your config has no single entry for waits for
-  `--map TYPE=NAME`.
+  `meta.json` alone, leaving the transcript and attachments as they are. It
+  picks the provider by the endpoint the session recorded: the one entry of
+  that type whose `url:` is that URL, or the type's built-in provider when
+  the session ran on the default endpoint. When that does not settle it (no
+  entry matches, two do, or another type's entry has taken the built-in's
+  name), it reports the bundle and leaves it as it is for `--map TYPE=NAME`
+  to decide.
 - **`iota resume <id> -M` moves the session for good.** `-M` on a resume used
   to change only that run; the session now records the new provider and
   model, so the next plain `iota resume` continues there. What you set by
