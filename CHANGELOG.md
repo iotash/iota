@@ -5,6 +5,21 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ## Unreleased
 
+### Added
+
+- **`/new` starts a new session without leaving the chat.** The session you
+  leave is saved and stays on disk — `/session` or `iota resume <id>` brings
+  it back. The new one has its own id, in the same place, and keeps what the
+  chat was running under: the model and its settings (including any you
+  changed by hand), the system prompt, the tools and MCP servers, the
+  directory, and whether the chat is being saved at all. It starts with an
+  empty conversation, no attachments and the token counts at zero. The screen
+  is not cleared; a dim `New session <id>` line marks where the new session
+  begins. Background jobs keep running, and their results go to the new
+  session. An unsaved chat a model has replied in asks before it is
+  discarded. `/clear` does the same thing and is not listed. A bot's session
+  never ends, so a bot refuses `/new` and says why.
+
 ### Changed
 
 - **An agent without `choices:` is offered its `model:` alone.** Since 0.4.0

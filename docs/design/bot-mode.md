@@ -9,6 +9,7 @@ Status: **Proposal**（rev 2，2026-09-30）· 依据：[`docs/history/bot-mode/
 - rev 1（2026-09-30，`947ba46`）：初稿，基于 recon 与 research。
 - rev 2（2026-09-30）——并入用户决策、OKF 方案与对抗性评审。
 - rev 3（2026-10-09）——记忆作用域改为按 `project_slug` 分文件（所有者决定，设计见 [`bot-memory-scope.md`](bot-memory-scope.md)）。推翻 §3.1「不做按项目的独立记忆文件」与 §3.2「`## Project: <名字>` 用目录名、不用 `project_slug`」两条；§0、§1.1、§1.3、§3.1–§3.5、§3.7、§5.2 的 I7 行与 L1 集成行、§6 #10 / #13 / #19 随之改写。**这部分尚未落地**：代码仍是 rev 2 的单文件 + `## Project: <目录名>` 小节，按 `bot-memory-scope.md` §10 的切片合入后去掉本句。
+- rev 4（2026-10-13）——iota 加了 `/new`（所有者决定，设计见 [`new-session-command.md`](new-session-command.md)，11 点全按推荐）。**推翻** §1.2 第 3 条的「不加 `/new`」作为全局结论：普通 chat 与 agent 现在有 `/new`（隐藏别名 `/clear`）。bot 自身的结论**不变**：bot 的会话仍永不结束，`/new` 与 `/clear` 在 bot 里注册但拒绝并说明（不进补全表、不发给模型），文案 "A bot's session never ends: to start over, run another agent or rename the bot."；§6 #9「重开对话：不提供」对 bot 照旧。§1.2 第 3 条与 §6 #9 加了注，原文保留。
 
 已确认的前提：bot 的内核是**一条永不结束的会话**——跨天跨周活着，随时接着聊，不需要 `/new` 也不需要 resume。主要挑战是**记忆和会话的管理**。常驻进程、固定身份、多渠道是后续附加能力，v1 不做，但架构不能挡死。部署形态只考虑本机。
 
@@ -92,7 +93,7 @@ bot 目录布局（全部新增）：
 
 1. **内存里没有不可重建的状态。** `Conversation.history` 可以随时由 `load_log` 从磁盘重建，这一点 resume 已经做到。bot 额外的内存状态只有几样：记忆快照、flush 待办标志、压缩失败计数、本次 flush 存了几行（§3.4、§4.1），全部可以丢。
 2. **进程重启 = resume。** 启动时读 `bot.json` → `SessionStore::resume(id)` → 回放 meta，与 `iota resume <id>` 走同一条路（`src/cmd/interactive/mod.rs:436-477`）。用户看到的是同一段对话，transcript 回放沿用现有 replay。与普通 resume 的差别：system 与模型参数以 config 为准（§2.2）。
-3. **进程退出不等于会话结束。** Ctrl+D 或关窗口只是 bot 下线，会话不做任何收尾，没有「结束会话」这个概念。不加 `/new`；想要一段新对话，就用另一个 agent，或者把 bot 改名（§6 #9）。
+3. **进程退出不等于会话结束。** Ctrl+D 或关窗口只是 bot 下线，会话不做任何收尾，没有「结束会话」这个概念。不加 `/new`；想要一段新对话，就用另一个 agent，或者把 bot 改名（§6 #9）。〔rev 4，2026-10-13：iota 已加 `/new`（[`new-session-command.md`](new-session-command.md)），「不加 `/new`」只对 bot 仍成立——bot 里输入 `/new` / `/clear` 得到一句拒绝和这里的出路，而不是被当成消息发给模型。〕
 4. **单写者。** 一个 bundle 同一时刻最多被一个进程以写方式打开（§2.3）。
 5. **进程内那些会随进程消失的东西，要让模型知道它们消失了**：审批门的会话授权（`ApprovalGate.approved`，只在内存里）、后台 job（退出时 `jobs.kill_all`，`src/repl/run.rs:802`）。授权丢了无害，大不了再问一次。job 被杀是 L2 要补的一条退出 notice（§5）。
 
@@ -664,7 +665,7 @@ rev 1 只处理了 `</memory>` 的结构逃逸。评审 S1 指出的问题更大
 | 6 | **锁的范围** | 只锁 bot / 所有会话 | **所有会话** | 双写隐患今天就存在；实现是同一行 `try_lock` | 普通模式的行为变化：两个终端 resume 同一 id，后者被拒 |
 | 7 | **失败轮** | 照旧回滚 / 已执行工具的失败轮保留为 interrupted | **保留（L2，只在 bot 下）** | 长期会话里「模型不知道自己做过」会反复造成危害 | `src/repl/run.rs:733-754` 分支 |
 | 8 | **切分** | 永不切分 / 按大小滚动 / 按时间滚动 | **v1 不切分；L2 惰性加载；超过门槛再按大小滚动** | 一个月的量级在惰性加载下可控；按时间切会制造断点 | `session::loader`；`bot.json.previous` |
-| 9 | **重开对话** | 不提供 / `/reset` 另起 bundle | **不提供** | 前提就是「不需要 /new」。真要重来：删 `bot.json`（旧 bundle 变回普通会话，可在 picker 里删，§2.7）或换 bot 名。记忆保留，符合直觉 | 无 |
+| 9 | **重开对话** | 不提供 / `/reset` 另起 bundle | **不提供** | 前提就是「不需要 /new」。真要重来：删 `bot.json`（旧 bundle 变回普通会话，可在 picker 里删，§2.7）或换 bot 名。记忆保留，符合直觉。**rev 4（2026-10-13）**：iota 加了 `/new`（[`new-session-command.md`](new-session-command.md) §3.3、§3.7 #10），bot 里它注册但拒绝并说明；本行对 bot 的结论不变 | 无（rev 4：`repl::commands::new::BOT_REFUSAL`） |
 | 10 | **记忆作用域** | 按 bot 一份文件、小节即作用域 / 按项目分文件 / 全局 | **按项目分文件，项目键 = `project_slug`——已定（2026-10-09，rev 3；取代 2026-09-30 的「按 bot 一份，小节即作用域」）** | 所有者：「全面简化，用 `project_slug` 作为项目名称」。一套键两处用（会话桶 + 记忆）；worktree 碎片化、改名失联按会话桶的口径接受；项目规则仍归 AGENTS.md。设计、删掉的机制与代价见 [`bot-memory-scope.md`](bot-memory-scope.md)；被取代的两份对照方案在 `docs/history/bot-mode/`。全局层以后作为 overlay 的另一段加入，纯加法 | `agents::memory`、`agents::memory::snapshot`、`remember(section:)`、`cmd::interactive::wire_session`、`/status` |
 | 11 | **记忆写入** | 只用工具 / 只用 flush / 两者 / 后台挖掘 | **工具 + flush** | 工具覆盖「用户说记住」和模型主动记；flush 是压缩前最便宜的保险；后台挖掘费 token 且可能写错（research §6.2） | `remember`、`FLUSH_NOTICE` |
 | 12 | **快照刷新** | 每条消息 / 只在开局 / 在缓存失效时刻 + 外部编辑 | **启动 / 压缩后 / 换日 / 外部编辑——已定（2026-09-30）** | 永不结束的会话没有「下一个开局」；每条消息都刷新会让每次 `remember` 都打破缓存。评审 I6 的代价（对着过期副本改文件）由 `remember` 返回整个小节缓解；收益按 §5.2 实测 | `Snapshot::reload` 的调用点 |
