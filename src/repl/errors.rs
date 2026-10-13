@@ -45,12 +45,6 @@ impl ErrorReport {
 /// and transport failures get their own headlines; everything else keeps its error text
 /// as detail under a generic headline.
 pub fn describe_error(e: &ChatError) -> ErrorReport {
-    describe_error_with(e, None)
-}
-
-/// [`describe_error`] for the transcript's red block, where the chat knows what stands behind the ceiling
-/// a cut hit ([`Ceiling`]); `None` gives the hint that assumes nothing about it.
-pub fn describe_error_with(e: &ChatError, ceiling: Option<Ceiling>) -> ErrorReport {
     match e {
         ChatError::Provider(ProviderError::Wire { source, .. }) => describe_llm(source, e),
         ChatError::Truncated(t) => ErrorReport {
@@ -58,61 +52,22 @@ pub fn describe_error_with(e: &ChatError, ceiling: Option<Ceiling>) -> ErrorRepo
             detail: vec![t.to_string()],
             // A ceiling the request carried is the user's knob; without one the endpoint's own limit cut it.
             hint: if t.limit.is_some() {
-                truncated_hint(ceiling)
+                TRUNCATED_HINT
             } else {
-                TRUNCATED_UNSENT_HINT.to_owned()
-            },
+                TRUNCATED_UNSENT_HINT
+            }
+            .to_owned(),
         },
         other => ErrorReport::request_failed(other),
     }
 }
 
-/// What the chat can vouch for about the ceiling a cut hit — no more. `source` is the tag the session
-/// records for its `max_tokens`: a `config` tag does not say WHICH entry supplied it, and a resumed session
-/// restores the value it recorded whatever today's config declares, so the hint never names an entry as the
-/// value's origin. `agent_declares` is about the config loaded NOW: when its `agents:` entry sets the key,
-/// that is the only edit that can take effect, because it overrides every model's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Ceiling {
-    /// Where the session's value came from, as it records it.
-    pub source: crate::session::ParamSource,
-    /// The loaded `agents:` entry sets `max_tokens:`.
-    pub agent_declares: bool,
-}
-
-/// What a user can do about an output the ceiling cut off, in three parts: what the session runs under (as
-/// far as its record says), which entry of the loaded config an edit must go to, and how that edit reaches
-/// THIS session — the config is read at startup, a resume restores the recorded ceiling, and only a `/model`
-/// switch onto the model re-evaluates it (brain `model-param-layering`); a lower effort applies at once.
-/// There is no `/model` tab, flag or reload for `max_tokens`, and the hint implies none.
-pub(crate) fn truncated_hint(ceiling: Option<Ceiling>) -> String {
-    use crate::session::ParamSource;
-    let runs = match ceiling.map(|c| c.source) {
-        Some(ParamSource::Config) => {
-            "This session runs under a ceiling it recorded from the config. "
-        }
-        Some(ParamSource::User) => {
-            "This session runs under a ceiling of its own, not one the config declares. "
-        }
-        Some(ParamSource::Builtin) => "This session runs under the built-in default ceiling. ",
-        None => "",
-    };
-    let edit = match ceiling.map(|c| c.agent_declares) {
-        Some(true) => {
-            "To raise it, edit max_tokens: on the agent's `agents:` entry — it overrides every model's (thinking counts toward it)."
-        }
-        Some(false) => {
-            "To raise it, set max_tokens: on this model's `models:` entry (thinking counts toward it)."
-        }
-        None => {
-            "To raise it, set max_tokens: on the agent's `agents:` entry if it has one, else on this model's `models:` entry (thinking counts toward it)."
-        }
-    };
-    format!("{runs}{edit} {TRUNCATED_APPLY}")
-}
-
-/// How a config edit reaches the session the cut happened in, and the knob that needs no edit.
-const TRUNCATED_APPLY: &str = "The config is read only at startup: quit, resume this session, then use /model to switch to another model and back — a resume alone keeps the recorded ceiling. Lowering the effort in /model applies at once.";
+/// What a user can do about an output the ceiling cut off. It reads no state, so it cannot misstate any:
+/// where the key goes and which entry wins, then how an edit reaches THIS session — the config is read at
+/// startup, a resume restores the recorded ceiling, and only a `/model` switch onto the model re-evaluates it
+/// (brain `model-param-layering`) — and the knob that applies at once. There is no `/model` tab, flag or
+/// reload for `max_tokens`, and the hint implies none.
+const TRUNCATED_HINT: &str = "Raise max_tokens: in the config (an agents: entry overrides every model's). The config is read at startup: quit, resume, then /model away and back. Lowering effort applies at once.";
 
 /// The same cut where the request carried no ceiling (the responses dialect, X-72): the endpoint's own limit
 /// cannot be raised from here, so the hint names only what can be lowered.
@@ -365,7 +320,7 @@ mod tests {
                 }),
                 headline: "Output truncated",
                 detail: "stop_reason: max_tokens: the output hit its 32000-token limit".to_owned(),
-                hint: "To raise it, set max_tokens: on the agent's `agents:` entry if it has one, else on this model's `models:` entry (thinking counts toward it). The config is read only at startup: quit, resume this session, then use /model to switch to another model and back — a resume alone keeps the recorded ceiling. Lowering the effort in /model applies at once.",
+                hint: "Raise max_tokens: in the config (an agents: entry overrides every model's). The config is read at startup: quit, resume, then /model away and back. Lowering effort applies at once.",
             },
             Case {
                 name: "a cut with no ceiling sent names only what can be lowered",
@@ -393,93 +348,6 @@ mod tests {
             assert_eq!(r.detail.join("\n"), c.detail, "{}: detail", c.name);
             assert_eq!(r.hint, c.hint, "{}: hint", c.name);
         }
-    }
-
-    /// The cut's hint keeps two facts apart. What the session runs under is told only as far as its
-    /// record goes — a `config` tag never becomes "the agent's entry" or "this model's entry", because a
-    /// resumed session restores its value whatever today's config declares (review R1). Where to edit
-    /// follows the LOADED config's precedence: an `agents:` declaration overrides every model's, so with
-    /// one present the model entry is never offered, whatever the source (review R2). Every variant says
-    /// the edit needs a restart, a resume AND a switch away and back, and names the knob that applies at
-    /// once. No other report, and no cut without a ceiling, is touched.
-    #[test]
-    fn a_truncation_hint_vouches_only_for_what_the_session_records() {
-        use super::{Ceiling, describe_error_with};
-        use crate::session::ParamSource;
-        let cut = |limit| {
-            ChatError::Truncated(crate::provider::Truncation {
-                reason: "stop_reason: max_tokens".to_owned(),
-                limit,
-                dropped_tools: Vec::new(),
-            })
-        };
-        let hint = |source, agent_declares| {
-            describe_error_with(
-                &cut(Some(16_000)),
-                Some(Ceiling {
-                    source,
-                    agent_declares,
-                }),
-            )
-            .hint
-        };
-        let model_edit = "set max_tokens: on this model's `models:` entry";
-        let agent_edit =
-            "edit max_tokens: on the agent's `agents:` entry — it overrides every model's";
-        for source in [ParamSource::Config, ParamSource::User, ParamSource::Builtin] {
-            for agent in [true, false] {
-                let h = hint(source, agent);
-                // No variant names an entry as where the CURRENT value came from.
-                for claim in [
-                    "This ceiling is max_tokens:",
-                    "ceiling is the one",
-                    "on the agent's `agents:` entry, which",
-                ] {
-                    assert!(!h.contains(claim), "{source:?}/{agent}: {h}");
-                }
-                if agent {
-                    assert!(h.contains(agent_edit), "{source:?}/{agent}: {h}");
-                    assert!(
-                        !h.contains("models:"),
-                        "{source:?}/{agent}: the model entry is overridden: {h}"
-                    );
-                } else {
-                    assert!(h.contains(model_edit), "{source:?}/{agent}: {h}");
-                    assert!(!h.contains("agents:"), "{source:?}/{agent}: {h}");
-                }
-                for step in [
-                    "The config is read only at startup: quit, resume this session, then use /model to switch to another model and back",
-                    "a resume alone keeps the recorded ceiling",
-                    "Lowering the effort in /model applies at once.",
-                ] {
-                    assert!(h.contains(step), "{source:?}/{agent}: {h}");
-                }
-            }
-        }
-        assert!(
-            hint(ParamSource::Config, true)
-                .starts_with("This session runs under a ceiling it recorded from the config.")
-        );
-        assert!(hint(ParamSource::User, false).starts_with(
-            "This session runs under a ceiling of its own, not one the config declares."
-        ));
-        assert!(
-            hint(ParamSource::Builtin, true)
-                .starts_with("This session runs under the built-in default ceiling.")
-        );
-
-        let ceiling = Some(Ceiling {
-            source: ParamSource::Config,
-            agent_declares: true,
-        });
-        let unsent = cut(None);
-        assert_eq!(
-            describe_error_with(&unsent, ceiling),
-            describe_error(&unsent),
-            "no ceiling was sent: nothing to name"
-        );
-        let other = ChatError::Io(std::io::Error::other("x"));
-        assert_eq!(describe_error_with(&other, ceiling), describe_error(&other));
     }
 
     /// `lines()` appends the hint after the detail rows.

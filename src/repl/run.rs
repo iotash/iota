@@ -930,10 +930,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 // A `Ui` failure broke out above; classifying one costs nothing and keeps
                 // this total.
                 let report = match &failure {
-                    TurnFailure::Chat(c) => crate::repl::errors::describe_error_with(
-                        c,
-                        Some(crate::repl::liveparams::ceiling(&repl)),
-                    ),
+                    TurnFailure::Chat(c) => crate::repl::errors::describe_error(c),
                     TurnFailure::Ui(u) => crate::repl::errors::ErrorReport::request_failed(u),
                 };
                 // The host hears about the failure BEFORE the red block lands (run.go:1076-1080). A failed
