@@ -107,6 +107,15 @@ pub(crate) fn retain_tail_count(history: &[Message]) -> usize {
         .map_or(history.len(), |i| history.len() - i)
 }
 
+/// Where the summarized middle sits — after the system message, before the last turn — or `None` when nothing
+/// is older than the last turn and a pass would leave the history [`Compaction::Unchanged`].
+fn middle_bounds(history: &[Message]) -> Option<(usize, usize)> {
+    let sys_end = usize::from(history.first().is_some_and(|m| m.role() == Role::System));
+    let tail = retain_tail_count(history).min(history.len() - sys_end);
+    let middle_end = history.len() - tail;
+    (middle_end > sys_end).then_some((sys_end, middle_end))
+}
+
 /// What one compaction pass produced.
 #[derive(Debug)]
 pub(crate) enum Compaction {
@@ -151,12 +160,9 @@ pub(crate) async fn compact_history(
     hint: &str,
     bot: Option<&BotCompact<'_>>,
 ) -> Result<Compaction, CompactError> {
-    let sys_end = usize::from(history.first().is_some_and(|m| m.role() == Role::System));
-    let tail = retain_tail_count(history).min(history.len() - sys_end);
-    let middle_end = history.len() - tail;
-    if middle_end <= sys_end {
+    let Some((sys_end, middle_end)) = middle_bounds(history) else {
         return Ok(Compaction::Unchanged); // nothing older than the last turn
-    }
+    };
 
     let (previous, middle) = split_previous_summary(&history[sys_end..middle_end]);
     let (summary, usage) =
@@ -336,7 +342,11 @@ pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
         bot_compacted(repl, Compacted::Failed, e).await;
         return;
     }
-    let busy = repl.handles.ui.busy("Compacting context…");
+    // Said in the transcript, not the status row, and only when a summary pass will run: a pass with nothing
+    // to summarize returns at once, and a line announcing it would be left with no outcome after it.
+    if middle_bounds(&repl.conv.history).is_some() {
+        repl.handles.tr.notice("Compacting context…");
+    }
     let res = compact_history(
         &repl.handles.cancel,
         &*repl.conv.provider,
@@ -345,7 +355,6 @@ pub(crate) async fn compact_now(repl: &mut Repl, hint: &str, manual: bool) {
         bot.as_ref(),
     )
     .await;
-    busy.stop();
 
     let (history, summary, retain_tail, usage) = match res {
         Err(e) => {

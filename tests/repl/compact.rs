@@ -206,8 +206,8 @@ fn filler(n: usize) -> String {
 // the command
 // ---------------------------------------------------------------------------
 
-/// The typed command runs the shared flow: a busy
-/// label while the summary pass runs, the rebuilt view, the persisted marker, and the
+/// The typed command runs the shared flow: a transcript line before the summary pass runs (the status row
+/// carries no busy segment for it), the rebuilt view, the persisted marker, and the
 /// reclaimed-window notice carrying `budget.status()`.
 ///
 /// And reloading the bundle must
@@ -226,15 +226,23 @@ async fn compact_rebuilds_the_view_and_the_reload_agrees() {
         .await
         .expect("clean exit");
 
-    assert!(
-        busy_labels(&f.ui).contains(&"Compacting context…".to_owned()),
-        "the summary pass must show what it is doing: {:?}",
-        busy_labels(&f.ui)
+    assert_eq!(
+        busy_labels(&f.ui),
+        Vec::<String>::new(),
+        "the summary pass raises no busy segment on the status row"
     );
     let lines = printed(&f.ui);
+    let started = lines
+        .iter()
+        .position(|l| l == "Compacting context…")
+        .unwrap_or_else(|| panic!("the summary pass must say what it is doing: {lines:?}"));
+    let done = lines
+        .iter()
+        .position(|l| l.starts_with("Context compacted → "))
+        .unwrap_or_else(|| panic!("the reclaimed-window notice is missing: {lines:?}"));
     assert!(
-        lines.iter().any(|l| l.starts_with("Context compacted → ")),
-        "the reclaimed-window notice is missing: {lines:?}"
+        started < done,
+        "the line comes before the outcome: {lines:?}"
     );
 
     // The bundle now reconstructs the compacted view from its marker.
@@ -275,6 +283,11 @@ async fn nothing_to_compact_is_reported_only_for_the_typed_command() {
         prompts.prompts().is_empty(),
         "an empty middle must not cost an API call"
     );
+    assert!(
+        !printed(&f.ui).contains(&"Compacting context…".to_owned()),
+        "no pass runs, so none is announced: {:?}",
+        printed(&f.ui)
+    );
     let reloaded = f.store.load(&id, ProviderKind::OpenAi).expect("load");
     assert_eq!(reloaded.messages.len(), 2, "the history was rewritten");
 }
@@ -294,9 +307,13 @@ async fn a_failed_summary_pass_leaves_the_conversation_alone() {
         .expect("clean exit");
 
     let lines = printed(&f.ui);
+    let started = lines.iter().position(|l| l == "Compacting context…");
+    let failed = lines
+        .iter()
+        .position(|l| l.starts_with("Compaction failed: "));
     assert!(
-        lines.iter().any(|l| l.starts_with("Compaction failed: ")),
-        "{lines:?}"
+        started.is_some() && failed.is_some() && started < failed,
+        "the pass is announced, then its failure: {lines:?}"
     );
     let reloaded = f.store.load(&id, ProviderKind::OpenAi).expect("load");
     assert_eq!(
@@ -376,6 +393,17 @@ async fn the_auto_offer_fires_over_the_threshold_and_compacts_when_accepted() {
             .iter()
             .any(|l| l.starts_with("Context compacted → ")),
         "accepting must run the shared flow"
+    );
+    // The automatic path announces itself the same way: in the transcript, not on the status row.
+    assert!(
+        printed(&f.ui).contains(&"Compacting context…".to_owned()),
+        "{:?}",
+        printed(&f.ui)
+    );
+    assert!(
+        !busy_labels(&f.ui).contains(&"Compacting context…".to_owned()),
+        "{:?}",
+        busy_labels(&f.ui)
     );
     let reloaded = f.store.load(&id, ProviderKind::OpenAi).expect("load");
     // system + summary-on-u2 + a2, then the sent message and its answer.

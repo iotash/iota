@@ -471,7 +471,7 @@ rev 1 在三处会把用户正在做的事压掉（评审 S2），逐条修正�
 - **flush 轮不算「最后一轮」**（S2c）。`retain_tail_count`（`src/repl/commands/compact.rs:50-55`）从最后一条 `Role::User` 起算，而 `Body::Notice` 的 role 就是 `User`（`src/provider/model.rs:309-316`），所以 rev 1 会保留「flush notice + 一行回复」，把用户真正的最后一轮整个压进摘要。改为：从**最后一条非 notice 的 user 消息**起保留，flush 交换附在其后一起保留；`compacted_through` 按此计算。这条锚点**所有模式都生效**，不只 bot：job 完成的 notice（X-08）同样会抢走 Go 的锚点、把用户那一轮压进摘要，所以 `retain_tail_count` 直接改成 `m.role() == Role::User && !m.is_notice()`，`compact_history` 不需要额外的保留起点参数（以测试 `a_bot_keeps_the_users_last_turn_not_the_flush`、`a_job_notice_does_not_take_the_last_turn` 为准）。FLUSH_NOTICE 里「everything except your last turn」于是重新成立。
 - **bot 单独的 reserve**。今天的阈值是 `max(80%, window − 16k)`（`src/repl/context/meter.rs:98-101`；`tokens.rs:39-43`）。bot 的 reserve 取 `min(max(32k, 25% 窗口), window / 2)`，即阈值 `window − reserve`（`context::meter` 的 `bot_threshold_of`；常量 `BOT_RESERVE_TOKENS`、`BOT_RESERVE_PERCENT` 在 `context::tokens`）：压缩之间多了一轮 flush，还可能插一轮用户消息。reserve **最多占半个窗口**：固定 32k 会让 32k 窗口的阈值落到 0、每轮都压缩。取值举例：1M → 750k、200k → 150k（25% 胜出）、128k → 96k（32k 胜出）、64k → 32k（恰好一半）、32k → 16k、20k → 10k（封顶一半）。bot 的阈值在所有窗口上都低于普通阈值，且不低于 50%；`/model` 换窗口后照样适用（以测试 `a_bots_threshold_keeps_the_larger_reserve` 为准）。
 - **summarize 看得到 MEMORY.md，也知道 flush 存了几行**（S3）：见 §3.6.2。
-- **措辞如实**（S2d）：不是「空闲时」。主循环单线程，flush notice 是下一个输入，之后 `compact_now` 用 busy spinner 同步等 summarize（100k 输入几十秒）；用户的下一条消息要等 flush 轮加摘要调用结束。这是 v1 接受的代价，L3 压缩下沉后再谈异步。
+- **措辞如实**（S2d）：不是「空闲时」。主循环单线程，flush notice 是下一个输入，之后 `compact_now` 在转录区写一行 `Compacting context…`、同步等 summarize（100k 输入几十秒；2026-10-13 之前这一行是状态行的 busy spinner，X-74）；用户的下一条消息要等 flush 轮加摘要调用结束。这是 v1 接受的代价，L3 压缩下沉后再谈异步。
 
 其余不变：
 
