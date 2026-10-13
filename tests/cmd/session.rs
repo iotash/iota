@@ -1549,39 +1549,31 @@ fn write_silent_b_config(cwd: &Path, url: &str, ceiling: u32) {
     .expect("write config");
 }
 
-/// F6: a hand-edited `max_tokens: 0` (tagged as the user's) is never sent. A resume on the same endpoint
-/// warns and keeps the ceiling startup installed (the config's 1234); a move onto an endpoint that declares
-/// none warns and evaluates there (the dialect's default) instead of carrying the 0 across. Either way the
-/// settled meta records what actually ran, so the next resume is clean.
+/// F6: a hand-edited `max_tokens: 0` (tagged as the user's) is never sent, and nobody is told about it —
+/// it reads as no record. A resume on the same endpoint keeps the ceiling startup installed (the config's
+/// 1234); a move onto an endpoint that declares none evaluates there (the dialect's default) instead of
+/// carrying the 0 across. Either way the settled meta records what actually ran.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_hand_edited_zero_ceiling_is_ignored_with_a_warning() {
-    const WARNING: &str =
-        "Warning: session max_tokens 0 is not valid (want 1 or more); keeping the current setting";
+async fn a_hand_edited_zero_ceiling_is_ignored() {
     let zero = serde_json::json!({"max_tokens": 0, "param_sources": five_sources("user")});
 
     let runs = resume_max_tokens_with(zero.clone(), &[(1234, &[])], write_silent_b_config).await;
     let (wire, meta, stderr) = &runs[0];
     assert_eq!(wire, &serde_json::json!(1234), "{meta}");
-    assert!(stderr.contains(WARNING), "stderr: {stderr}");
+    assert!(!stderr.contains("max_tokens"), "stderr: {stderr}");
     assert_eq!(recorded_ceiling(meta), *wire, "request and meta agree");
 
     let runs = resume_max_tokens_with(
         zero,
-        &[(1234, &["-M", "b:claude-y"]), (1234, &[])],
+        &[(1234, &["-M", "b:claude-y"])],
         write_silent_b_config,
     )
     .await;
     let (wire, meta, stderr) = &runs[0];
     assert_eq!(wire, &serde_json::json!(32000), "{meta}");
-    assert!(stderr.contains(WARNING), "stderr: {stderr}");
+    assert!(!stderr.contains("max_tokens"), "stderr: {stderr}");
     assert_eq!(meta["provider"], "b");
     assert_eq!(recorded_ceiling(meta), *wire, "request and meta agree");
-    let (wire, meta, stderr) = &runs[1];
-    assert_eq!(wire, &serde_json::json!(32000), "{meta}");
-    assert!(
-        !stderr.contains(WARNING),
-        "the settled meta is clean: {stderr}"
-    );
 }
 
 /// M4 (X-71), end to end through the REAL unary call: a headless run with no tools takes
