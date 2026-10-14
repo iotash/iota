@@ -39,6 +39,14 @@
 //! drop in the count: a count can hide an end behind a start, or a job that never started. `Busy`, `NeedsInput` and `Error` pass through
 //! untouched: a chat blocked on an approval is blocked whatever runs behind it. The rewrite lives
 //! here, so every host gets it and no REPL call site of `set_state` changes.
+//!
+//! **The status row's whole-turn layer is derived here too** (docs/design/busy-span.md §3.5, point 8,
+//! decided 2026-10-14). The same inputs that give the host its state give the chat's own screen whether a
+//! turn is running ([`crate::ui::facade::TurnBusy`], sent to the facade [`Presenter::show_turn_on`]
+//! names): the turn's state BEFORE the jobs rewrite — `Busy` runs, `NeedsInput` waits (its clock stands
+//! still), `Idle` and `Error` are no turn. So the two can never drift inside a turn, and outside one their
+//! difference is this one rule: a job still running holds the host at `Busy`, while the status row shows
+//! only its static job segment (point 5, B).
 
 pub mod ansi;
 pub(crate) mod background;
@@ -48,11 +56,12 @@ pub(crate) mod herdr;
 pub use ansi::AnsiHost;
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::BoxFuture;
 use crate::app::env::Env;
 use crate::sync::lock;
+use crate::ui::facade::{TurnBusy, Ui};
 
 /// What the conversation is doing (host.go:22-29).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -206,6 +215,8 @@ pub struct Presenter {
     notify_on: bool,
     /// The inputs and the last state reported (see [`Shown`]).
     state: Mutex<Shown>,
+    /// The facade the whole-turn layer is shown on, when there is a screen (the module doc).
+    turn_view: Option<Arc<dyn Ui>>,
 }
 
 /// What the presenter's state output is computed from, and what it last sent.
@@ -219,6 +230,8 @@ struct Shown {
     owed: usize,
     /// The last state reported; `None` until the first, which is therefore never deduplicated.
     sent: Option<State>,
+    /// The last whole-turn layer shown.
+    turn_sent: TurnBusy,
 }
 
 impl Shown {
@@ -228,6 +241,15 @@ impl Shown {
         match self.requested {
             Some(State::Idle) if self.jobs + self.owed > 0 => Some(State::Busy),
             r => r,
+        }
+    }
+
+    /// The status row's whole-turn layer: the turn's own state, before the jobs rewrite (the module doc).
+    fn turn(&self) -> TurnBusy {
+        match self.requested {
+            Some(State::Busy) => TurnBusy::Running,
+            Some(State::NeedsInput) => TurnBusy::Waiting,
+            Some(State::Idle | State::Error) | None => TurnBusy::Off,
         }
     }
 }
@@ -257,7 +279,16 @@ impl Presenter {
             detected: None,
             notify_on: notify,
             state: Mutex::new(Shown::default()),
+            turn_view: None,
         }
+    }
+
+    /// Shows the whole-turn layer on `ui`'s status row (the module doc). Without it — headless, and the
+    /// fixtures that leave it out — the layer is only computed.
+    #[must_use]
+    pub fn show_turn_on(mut self, ui: Arc<dyn Ui>) -> Self {
+        self.turn_view = Some(ui);
+        self
     }
 
     /// The name of the host a detector matched (`herdr`, `cmux`) — what the banner's mode row
@@ -300,21 +331,29 @@ impl Presenter {
         shown.owed = shown.owed.saturating_sub(1);
     }
 
-    /// Applies `change` to the inputs and sends the effective state if it moved.
+    /// Applies `change` to the inputs, then sends whichever of the two outputs moved: the host's state
+    /// ([`Shown::effective`]) and the whole-turn layer ([`Shown::turn`]).
     fn update(&self, change: impl FnOnce(&mut Shown)) {
-        let s = {
+        let (host, turn) = {
             let mut shown = lock(&self.state);
             change(&mut shown);
-            let Some(s) = shown.effective() else {
-                return;
-            };
-            if shown.sent == Some(s) {
-                return;
-            }
-            shown.sent = Some(s);
-            s
+            let turn = shown.turn();
+            let turn = (shown.turn_sent != turn).then(|| {
+                shown.turn_sent = turn;
+                turn
+            });
+            let host = shown
+                .effective()
+                .filter(|s| shown.sent != Some(*s))
+                .inspect(|s| shown.sent = Some(*s));
+            (host, turn)
         };
-        if let Some(r) = self.hosts.iter().find_map(|h| h.as_state_reporter()) {
+        if let (Some(t), Some(ui)) = (turn, &self.turn_view) {
+            ui.turn_busy(t);
+        }
+        if let Some(s) = host
+            && let Some(r) = self.hosts.iter().find_map(|h| h.as_state_reporter())
+        {
             r.set_state(s);
         }
     }
@@ -819,5 +858,59 @@ mod tests {
             text: "nobody".to_owned(),
         });
         assert!(p.host_names().is_empty());
+    }
+
+    /// The status row's whole-turn layer comes out of the same update as the host's state (busy-span
+    /// point 8): `Busy` runs it, `NeedsInput` pauses it, `Idle` and `Error` end it — and a job still
+    /// running after the turn holds the HOST at `Busy` but not the layer (point 5, B).
+    #[test]
+    fn the_turn_layer_is_the_turn_state_before_the_jobs_rewrite() {
+        use crate::testing::{ScriptedUi, UiEvent};
+        use crate::ui::facade::{TurnBusy, Ui};
+        let ui = ScriptedUi::new(Vec::new());
+        let fb = host("full", FULL);
+        let states = Arc::clone(&fb.states);
+        let p = Presenter::with_hosts(vec![Box::new(fb)], true)
+            .show_turn_on(Arc::clone(&ui) as Arc<dyn Ui>);
+        p.set_state(State::Idle);
+        p.set_state(State::Busy); // the loop accepts a message
+        p.set_jobs(1); // a call yields: a job runs
+        p.set_state(State::NeedsInput); // an approval
+        p.set_state(State::Busy);
+        p.set_state(State::Idle); // the turn lands; the job still runs
+        p.job_ended(0);
+        p.set_state(State::Idle); // the loop wakes for its notice
+        p.notice_taken();
+        p.set_state(State::Busy); // the notice's turn
+        p.set_state(State::Error);
+        let turn: Vec<TurnBusy> = ui
+            .events()
+            .into_iter()
+            .filter_map(|e| match e {
+                UiEvent::Turn(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            turn,
+            vec![
+                TurnBusy::Running,
+                TurnBusy::Waiting,
+                TurnBusy::Running,
+                TurnBusy::Off, // the job keeps running: the layer is down all the same
+                TurnBusy::Running,
+                TurnBusy::Off,
+            ]
+        );
+        assert_eq!(
+            *states.lock().unwrap(),
+            vec![
+                State::Idle,
+                State::Busy,
+                State::NeedsInput,
+                State::Busy, // …while the host stays Busy through the landed turn and the owed notice
+                State::Error,
+            ]
+        );
     }
 }

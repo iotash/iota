@@ -24,7 +24,7 @@ use iota::session::{NewSession, SessionStore, SessionWriter};
 use iota::testing::{FakeProvider, Reply, Round, ScriptedUi, StaticDispatcher, UiEvent};
 use iota::text::ansi::strip_sgr;
 use iota::tool::Dispatcher;
-use iota::ui::facade::{Input, PanelResult, TabbedResult, Ui};
+use iota::ui::facade::{Input, PanelResult, TabbedResult, TurnBusy, Ui};
 use tokio_util::sync::CancellationToken;
 
 // ---------------------------------------------------------------------------
@@ -127,7 +127,10 @@ impl Fixture {
             dark_background: true,
             root_cancel: CancellationToken::new(),
             reqlog: Arc::new(RequestLog::new()),
-            pres: Arc::new(Presenter::with_hosts(Vec::new(), true)),
+            pres: Arc::new(
+                Presenter::with_hosts(Vec::new(), true)
+                    .show_turn_on(Arc::clone(&self.ui) as Arc<dyn Ui>),
+            ),
         }
     }
 }
@@ -184,9 +187,11 @@ fn lifecycle(ui: &ScriptedUi) -> Vec<String> {
 }
 
 /// The summary pass ran under the transcript's spinner widget — raised, then taken down, then the outcome
-/// starting `outcome` — with no busy segment on the status row up to the outcome (a turn after it has its own)
-/// and no static `Compacting context…` line.
-fn assert_ran_under_the_widget(ui: &ScriptedUi, outcome: &str) {
+/// starting `outcome` — and no static `Compacting context…` line. The status row carries no busy segment of
+/// the pass's own up to the outcome (a turn after it has its own): with `phase` — the pre-send paths, which
+/// run inside the turn the message starts (DIVERGENCES X-74, X-76) — the one busy there is that turn's phase
+/// name, `Compacting`, raised before the widget and over it.
+fn assert_ran_under_the_widget(ui: &ScriptedUi, outcome: &str, phase: Option<&str>) {
     let ev = lifecycle(ui);
     let raised = ev
         .iter()
@@ -209,10 +214,25 @@ fn assert_ran_under_the_widget(ui: &ScriptedUi, outcome: &str) {
             .all(|e| e == "close" || e == "print:"),
         "nothing but the close lands between the raise and the outcome: {ev:?}"
     );
-    assert!(
-        !ev[..landed].iter().any(|e| e.starts_with("busy:")),
-        "the status row carries no busy segment for the pass: {ev:?}"
-    );
+    let busy: Vec<&String> = ev[..landed]
+        .iter()
+        .filter(|e| e.starts_with("busy:"))
+        .collect();
+    match phase {
+        None => assert!(
+            busy.is_empty(),
+            "the status row carries no busy segment for the pass: {ev:?}"
+        ),
+        Some(p) => {
+            assert_eq!(
+                busy,
+                [&format!("busy:{p}")],
+                "only the turn's phase: {ev:?}"
+            );
+            let named = ev.iter().position(|e| e == &format!("busy:{p}")).unwrap();
+            assert!(named < raised, "the phase is named before the pass: {ev:?}");
+        }
+    }
     assert!(
         !ev.iter().any(|e| e == "print:Compacting context…"),
         "the label is the widget's, never a printed line: {ev:?}"
@@ -271,7 +291,7 @@ async fn compact_rebuilds_the_view_and_the_reload_agrees() {
         .await
         .expect("clean exit");
 
-    assert_ran_under_the_widget(&f.ui, "Context compacted → ");
+    assert_ran_under_the_widget(&f.ui, "Context compacted → ", None);
 
     // The bundle now reconstructs the compacted view from its marker.
     let reloaded = f.store.load(&id, ProviderKind::OpenAi).expect("load");
@@ -335,7 +355,7 @@ async fn a_failed_summary_pass_leaves_the_conversation_alone() {
         .await
         .expect("clean exit");
 
-    assert_ran_under_the_widget(&f.ui, "Compaction failed: ");
+    assert_ran_under_the_widget(&f.ui, "Compaction failed: ", None);
     let reloaded = f.store.load(&id, ProviderKind::OpenAi).expect("load");
     assert_eq!(
         reloaded.messages.len(),
@@ -416,7 +436,31 @@ async fn the_auto_offer_fires_over_the_threshold_and_compacts_when_accepted() {
         "accepting must run the shared flow"
     );
     // The automatic path runs under the same widget.
-    assert_ran_under_the_widget(&f.ui, "Context compacted → ");
+    assert_ran_under_the_widget(&f.ui, "Context compacted → ", Some("Compacting"));
+    // The offer is the turn's (busy-span point 1): it rises before the question, which waits on the user
+    // with the turn's clock stopped (point 4), and runs again for the pass and the request.
+    let ev = f.ui.events();
+    let turn: Vec<(usize, TurnBusy)> = ev
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| match e {
+            UiEvent::Turn(t) => Some((i, *t)),
+            _ => None,
+        })
+        .collect();
+    let asked = ev
+        .iter()
+        .position(|e| matches!(e, UiEvent::Tabbed(_)))
+        .expect("the question");
+    assert_eq!(
+        turn.iter().map(|(_, t)| *t).collect::<Vec<_>>()[..3],
+        [TurnBusy::Running, TurnBusy::Waiting, TurnBusy::Running],
+        "{turn:?}"
+    );
+    assert!(
+        turn[1].0 < asked && asked < turn[2].0,
+        "the question is the wait"
+    );
     let reloaded = f.store.load(&id, ProviderKind::OpenAi).expect("load");
     // system + summary-on-u2 + a2, then the sent message and its answer.
     assert_eq!(reloaded.messages.len(), 5);

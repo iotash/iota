@@ -879,6 +879,11 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 continue;
             }
         }
+        // The turn starts HERE, not in `run_turn` (docs/design/busy-span.md §3.2, point 1): the input is
+        // going to the model, and what comes before the request — a day roll, the compaction offer, the
+        // title, the host's background answer (up to a second under cmux) — is already the turn's. The host
+        // hears it and the status row's whole-turn layer rises with it (`host` module doc).
+        repl.handles.pres.set_state(State::Busy);
         roll_day(&mut repl).await;
 
         // The auto-compaction offer runs on the message about to be sent, BEFORE it joins
@@ -948,7 +953,10 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 };
                 // The host hears about the failure BEFORE the red block lands (run.go:1076-1080). A failed
                 // flush is not the host's business: it is best-effort, and the compaction runs anyway.
-                if !flush {
+                if flush {
+                    // The turn is over all the same: the status row's turn layer must not outlive it.
+                    repl.handles.pres.set_state(State::Idle);
+                } else {
                     repl.handles.pres.set_state(State::Error);
                     repl.handles.pres.notify(Event {
                         kind: Kind::Failed,

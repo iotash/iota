@@ -837,6 +837,84 @@ fn busy_detail_state_machine() {
     );
 }
 
+/// The whole-turn layer (docs/design/busy-span.md §3.1): inside a turn the busy segment's clock is the
+/// TURN's — a phase starting, ending or changing never resets it, only relabels the segment, which falls
+/// back to `TURN_LABEL` between phases — and a wait on the user stands it still. The turn ending takes the
+/// layer down, leaving a running job's static segment alone: no spinner chain outlives the turn.
+#[test]
+fn the_turn_layer_owns_the_busy_clock() {
+    use crate::ui::facade::{TURN_LABEL, TurnBusy};
+    let mut m = test_model();
+    m.apply(UiMsg::Turn(TurnBusy::Running));
+    assert!(m.spin_ticking, "a turn starts the spinner chain");
+    let later = Instant::now() + Duration::from_secs(10);
+    let at_start = m.busy_view(later).expect("the turn's segment");
+    assert_eq!(
+        at_start.label, TURN_LABEL,
+        "between phases the turn waits on the model"
+    );
+    let clock = |v: &crate::ui::render::frame::BusyView| later.duration_since(v.since);
+    assert!(clock(&at_start) >= Duration::from_secs(10));
+
+    for label in ["Waiting for the first token", "Responding", "Running tools"] {
+        m.apply(UiMsg::BusyOff);
+        m.apply(UiMsg::BusyOn(label.to_owned()));
+        let v = m.busy_view(later).unwrap();
+        assert_eq!(v.label, label);
+        assert_eq!(
+            v.since, at_start.since,
+            "{label}: a phase change reset the turn's clock"
+        );
+    }
+    m.apply(UiMsg::BusyOff);
+    let v = m.busy_view(later).unwrap();
+    assert_eq!(
+        v.label, TURN_LABEL,
+        "a phase ending hands the segment back to the turn"
+    );
+    assert_eq!(v.since, at_start.since);
+
+    // Waiting on the user: the figure stands still however long the wait.
+    m.apply(UiMsg::Turn(TurnBusy::Waiting));
+    let frozen = clock(&m.busy_view(later).unwrap());
+    let much_later = later + Duration::from_secs(600);
+    let v = m.busy_view(much_later).unwrap();
+    assert_eq!(
+        much_later.duration_since(v.since),
+        frozen,
+        "the clock ran while waiting"
+    );
+    m.apply(UiMsg::Turn(TurnBusy::Running));
+
+    // The turn ends with a job still running: the segment goes, the job's stays, and nothing spins.
+    m.apply(UiMsg::Jobs(vec![crate::shell::jobs::JobInfo {
+        id: "b1".to_owned(),
+        command: "sleep 600".to_owned(),
+        pid: None,
+        started: Instant::now(),
+        output_path: std::path::PathBuf::from("/tmp/b1.log"),
+    }]));
+    m.apply(UiMsg::Turn(TurnBusy::Off));
+    assert!(
+        m.busy_view(later).is_none(),
+        "the turn layer outlived the turn"
+    );
+    m.tick_spin();
+    assert!(!m.spin_ticking, "a job alone keeps no spinner (point 5, B)");
+    let status = m.frame_view().rows.last().cloned().unwrap();
+    let status = crate::text::ansi::strip_sgr(&status);
+    assert!(status.contains("job b1 sleep 600"), "{status:?}");
+    assert!(
+        !SPINNER_GLYPHS.chars().any(|g| status.contains(g)) && !status.contains("ESC"),
+        "the job segment is static: {status:?}"
+    );
+
+    // Outside a turn a phase keeps its own clock (`/model`'s listing).
+    m.apply(UiMsg::BusyOn("Fetching available models…".to_owned()));
+    let v = m.busy_view(later).unwrap();
+    assert_eq!(v.since, m.busy.as_ref().unwrap().since);
+}
+
 /// W10 pure unit: the poll deadline is ALWAYS finite — `IDLE_POLL_MAX` fully idle,
 /// tighter under the spinner/streaming timers, zero while a paint is owed; and the
 /// spinner chain stops itself at idle.

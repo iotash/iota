@@ -62,6 +62,50 @@ pub(crate) struct BusyView {
     pub(crate) since: Instant,
 }
 
+/// The whole-turn layer's clock (docs/design/busy-span.md §3.1, point 4): it starts when the turn does,
+/// never restarts on a phase change, and stands still while the turn waits on the user — the time a human
+/// spends deciding is taken out, as the call widget's own clock does (`pause_clock`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TurnClock {
+    /// When the turn started.
+    since: Instant,
+    /// When the current wait on the user began, while there is one.
+    paused_at: Option<Instant>,
+    /// Σ the waits already over.
+    paused: Duration,
+}
+
+impl TurnClock {
+    /// A clock started at `at`.
+    pub(crate) fn start(at: Instant) -> Self {
+        Self {
+            since: at,
+            paused_at: None,
+            paused: Duration::ZERO,
+        }
+    }
+
+    /// Stops the clock at `at` (idempotent).
+    pub(crate) fn pause(&mut self, at: Instant) {
+        self.paused_at.get_or_insert(at);
+    }
+
+    /// Restarts the clock at `at`, the wait taken out (idempotent).
+    pub(crate) fn resume(&mut self, at: Instant) {
+        if let Some(p) = self.paused_at.take() {
+            self.paused += at.saturating_duration_since(p);
+        }
+    }
+
+    /// The turn's running time at `now`: started, minus the waits.
+    pub(crate) fn elapsed(&self, now: Instant) -> Duration {
+        self.paused_at
+            .unwrap_or(now)
+            .saturating_duration_since(self.since)
+            .saturating_sub(self.paused)
+    }
+}
+
 /// What occupies the one bottom-zone slot below the second separator
 /// (surface > suggestion-desc > status — model.go:1049-1058).
 pub(crate) enum BottomZone<'a> {
@@ -143,8 +187,9 @@ pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
             ));
         }
         if let Some(since) = fi.region.since {
-            // The call preview's live status row: detail, elapsed (frozen while the
-            // clock is paused), and the cancel hint (model.go:966-978).
+            // The call preview's live status row: detail and elapsed (frozen while the
+            // clock is paused) (model.go:966-978). The cancel hint is the status row's alone
+            // (docs/design/busy-span.md §3.4, point 6): one place, where it never moves.
             let mut status = String::from("⎿ ");
             if !fi.region.detail.is_empty() {
                 status.push_str(&fi.region.detail);
@@ -155,9 +200,6 @@ pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
                 .paused_at
                 .map_or_else(|| fi.now.duration_since(since), |p| p.duration_since(since));
             status.push_str(&text::elapsed(elapsed));
-            if fi.scopes_active {
-                status.push_str(" · ESC to cancel");
-            }
             rows.push(format!(
                 "{FAINT}  {}{RESET}",
                 truncate_ansi(&status, budget(fi.width, 4), "…")

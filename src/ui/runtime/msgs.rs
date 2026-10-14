@@ -37,12 +37,15 @@ pub(crate) enum UiMsg {
     /// Replaces the running background jobs (the status row's job segment, and its one-second tick).
     Jobs(Vec<crate::shell::jobs::JobInfo>),
     /// Starts a busy phase: the label mounts on the status row, the phase clock
-    /// restarts, any previous detail clears (model.go busyOnMsg).
+    /// restarts, any previous detail clears (model.go busyOnMsg). Inside a turn the segment's
+    /// clock is the turn's ([`UiMsg::Turn`]), which a phase never resets.
     BusyOn(String),
     /// Updates the busy detail only — never the phase clock (model.go busyDetailMsg).
     BusyDetail(String),
     /// Ends the busy phase.
     BusyOff,
+    /// Moves the status row's whole-turn layer (`facade::TurnBusy`).
+    Turn(crate::ui::facade::TurnBusy),
     /// Pushes a cancel scope (bottom index 0 = the turn).
     ScopePush(CancellationToken),
     /// Pops the top cancel scope.

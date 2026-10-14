@@ -3,6 +3,24 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## Unreleased
+
+### Changed
+
+- **The status row says the chat is busy for the whole turn.** It used to
+  show a spinner only while waiting for the model and go blank once the reply
+  started or a tool ran. Now one busy segment stays up from the moment you
+  send a message until the turn is over, and names what the turn is doing:
+  `Waiting for the model`, `Thinking`, `Responding`, `Running tools`, or
+  `Compacting` when it compacts the context before sending. Its clock counts
+  the whole turn, and stops while the turn waits for you to answer an
+  approval or a question. Which tool is running, and for how long, is still
+  shown on the tool's own line above the input. `(ESC to cancel)` now appears
+  only on the status row. When the turn ends with a background job still
+  running, the status row just shows the job, without a spinner. Also fixed:
+  when a model wrote more text after a tool call, the tool could run with
+  nothing on screen, or under the wrong name.
+
 ## 0.7.1 - 2026-10-13
 
 ### Added

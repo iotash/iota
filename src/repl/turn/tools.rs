@@ -33,7 +33,9 @@ use crate::repl::render::styles::cyan;
 
 use crate::repl::turn::retry::retry_round;
 use crate::repl::turn::steer::Steerer;
-use crate::repl::turn::{Turn, TurnFailure, TurnOutput, TurnReport, collect_images, stream_round};
+use crate::repl::turn::{
+    PHASE_TOOLS, Turn, TurnFailure, TurnOutput, TurnReport, collect_images, stream_round,
+};
 
 /// What a refused call tells the model (chat/run.go:1570-1572).
 const DECLINED: &str = "The user declined this call.";
@@ -155,7 +157,12 @@ pub(crate) async fn tool_loop(
         // than at turn end — the remaining rounds can run for minutes.
         ctxm.settle(history);
 
-        if let Err(failure) = walk(t, &round.tool_calls, history, ctxm).await {
+        // The status row names the phase for the whole walk, the calls themselves are the widget's
+        // (docs/design/busy-span.md §3.4); an approval or a question covers the row while it waits.
+        let phase = t.cx.ui.busy(PHASE_TOOLS);
+        let walked = walk(t, &round.tool_calls, history, ctxm).await;
+        phase.stop();
+        if let Err(failure) = walked {
             return TurnReport::failed(failure);
         }
 

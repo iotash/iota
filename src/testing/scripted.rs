@@ -51,6 +51,8 @@ pub enum UiEvent {
     BusyOff,
     /// [`Ui::busy_detail`] with the detail.
     BusyDetail(String),
+    /// [`Ui::turn_busy`] with the state.
+    Turn(crate::ui::facade::TurnBusy),
     /// [`Ui::set_status`] with the data.
     Status(StatusData),
     /// [`Ui::set_title`] with the SANITIZED title (the facade sanitizes — a
@@ -480,6 +482,10 @@ impl Ui for ScriptedUi {
 
     fn busy_detail(&self, detail: &str) {
         self.record(UiEvent::BusyDetail(detail.to_owned()));
+    }
+
+    fn turn_busy(&self, state: crate::ui::facade::TurnBusy) {
+        self.record(UiEvent::Turn(state));
     }
 
     fn push_cancel_scope(&self, cancel: CancellationToken) -> ScopeGuard {
