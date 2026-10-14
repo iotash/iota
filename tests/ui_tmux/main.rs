@@ -66,6 +66,7 @@
 //! | `28-composer-newline.sh` | X-65 | — (Ctrl+J, the LF byte, Alt+Enter and CSI-u Shift+Enter each add a composer row without submitting, Enter sends ONE two-line message; a two-line queued item is one ` ⏎ ` row and folds back on ESC) |
 //! | `29-signal-exit.sh` | the 2026-10-02 orphan leak | — (SIGTERM mid-turn: the run ends with status 130 (I-03), the turn in the session log, raw mode and bracketed paste handed back to the shell; an idle Ctrl+D exits 0; `kill-server` under an idle run: the process gone within 2 s, inside the 5 s close backstop) |
 //! | `30-thinking-cut.sh` | F3, X-69 | — (Anthropic dialect: a reply cut mid-thought — the red `Output truncated` block and its detail, the widget wound down, the frame intact, no fake answer, the next request clean; a finished turn as the no-red control) |
+//! | `34-busy-span.sh` | busy-span, X-76 | — (the status row's turn layer phase by phase: the wait for the model, `Responding`, the approval hiding the row, `Running tools` with the approval's wait out of the turn's clock and one cancel hint on screen, and a job after the turn as a static segment alone) |
 //! | `33-trailing-text.sh` | busy-span §2.7 | — (a call composed and then followed by text — its arguments anonymous, then named: the call runs under its own live widget with its clock row, not under nothing or the composing label) |
 //! | `31-tool-args-cut.sh` | F3, X-69 | — (Anthropic dialect: a reply cut mid-arguments — the error naming the dropped `shell` call, the `[shell …]` row torn down, no `tool_result` answering the call and the next request without it (not dispatched); the whole call as the control that does run) |
 
@@ -615,4 +616,12 @@ fn tmux_new_session() {
 #[test]
 fn tmux_trailing_text() {
     run_scenario("33-trailing-text.sh");
+}
+
+/// L4 #34 (busy-span, X-76) — the status row's busy over the whole turn: each phase named on the one turn
+/// layer, the cancel hint there alone, an approval's wait out of the turn's clock, and a job outliving the
+/// turn shown by its static segment only.
+#[test]
+fn tmux_busy_span() {
+    run_scenario("34-busy-span.sh");
 }

@@ -43,13 +43,19 @@ key Enter
 wait_vis '⎿' || bad "call-preview status row never appeared"
 # The widget's whole shape in one comparison, with the three live cells (spinner frame,
 # elapsed clock, and — WP53 — the thinking meter's running token
-# estimate) normalised away: label row, then the ⎿ status row carrying the meter, the clock
-# and the cancel hint the active scope earns.
+# estimate) normalised away: label row, then the ⎿ status row carrying the meter and the clock.
+# The cancel hint the active scope earns is the status row's alone (busy-span point 6), where
+# the turn's phase is named too.
 prev="$(row_of 'Thinking')"
 if [ -n "$prev" ]; then
     check "preview widget shape" \
         "$(cap | sed -n "${prev},$((prev + 1))p" | norm)" \
-        "$(printf '* Thinking\n  ⎿ N tokens · Ts · ESC to cancel')"
+        "$(printf '* Thinking\n  ⎿ N tokens · Ts')"
+    shot="$(cap)"
+    zone="$(bottom_zone "$shot")"
+    check "…the status row names the phase" "$(printf '%s\n' "$zone" | grep -cF 'Thinking' | tr -d ' ')" 1
+    check "…and carries the cancel hint, the one on screen" \
+        "$(printf '%s\n' "$zone" | grep -cF '(ESC to cancel)' | tr -d ' ')$(printf '%s\n' "$shot" | grep -cF 'ESC to cancel' | tr -d ' ')" 11
 else
     bad "preview widget label missing"
 fi

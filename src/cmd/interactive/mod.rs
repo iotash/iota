@@ -345,11 +345,16 @@ pub(crate) async fn run_interactive(
     // plus the ANSI fallback over the live facade; `notify:` defaults to on (config.go, T-14). Built inside
     // the runtime — a detected cmux host spawns its worker task.
     let notify = settings.resolved.agent.notify.unwrap_or(true);
-    let pres = Arc::new(Presenter::new(
-        &host_probe(&ctx.env),
-        Some(Box::new(AnsiHost::new(Arc::clone(&ui)))),
-        notify,
-    ));
+    // The same presenter shows the status row's whole-turn layer (docs/design/busy-span.md §3.5): one
+    // computation for the host's state and the screen's.
+    let pres = Arc::new(
+        Presenter::new(
+            &host_probe(&ctx.env),
+            Some(Box::new(AnsiHost::new(Arc::clone(&ui)))),
+            notify,
+        )
+        .show_turn_on(Arc::clone(&ui)),
+    );
     let mcp = mcp_hooks(&manager, mcp_events);
     let session = wiring.take_session(store, scope);
     // What `/model` will offer, and how the chat reaches another endpoint: both need the config and the

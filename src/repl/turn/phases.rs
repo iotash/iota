@@ -1,7 +1,9 @@
 //! The busy-phase controller of a turn (chat/run.go:1184-1242 `turnPhases`) and the upload
 //! phase's watcher (T3 design D9): [`Phases`] owns the status row's busy label — `set` is a no-op
 //! when the label is unchanged, otherwise it stops the old phase and starts the new one; `end` is
-//! idempotent. It is `Clone` over an `Arc<Mutex<_>>` because the send-progress closure runs on the
+//! idempotent. Inside a turn a phase only NAMES the whole-turn layer's segment (docs/design/busy-span.md
+//! §3.1): the clock is the turn's, and ending a phase hands the segment back to
+//! [`crate::ui::facade::TURN_LABEL`] rather than taking it down. It is `Clone` over an `Arc<Mutex<_>>` because the send-progress closure runs on the
 //! reqwest driver while the round's `RenderSink` owns the other clone.
 
 use std::sync::{Arc, Mutex};
@@ -10,14 +12,25 @@ use crate::llm::progress::TurnProgress;
 use crate::sync::lock;
 use crate::ui::facade::{BusyGuard, Ui};
 
-/// The label while the request is in flight (run.go:1222,1230).
-pub(crate) const PHASE_WAITING: &str = "Waiting for the model";
+/// The label while the request is in flight (run.go:1222,1230) — and the turn layer's own label between
+/// phases.
+pub(crate) const PHASE_WAITING: &str = crate::ui::facade::TURN_LABEL;
 /// The label once the response head arrived and the body has not yet produced anything: the
 /// provider answered, the model has not. Tells "cannot reach the provider" apart from "the stream
 /// is silent".
 pub(crate) const PHASE_FIRST_TOKEN: &str = "Waiting for the first token";
 /// The label while a large request body uploads (run.go:1220).
 pub(crate) const PHASE_SENDING: &str = "Sending request";
+/// The label while the reply's text streams (docs/design/busy-span.md §3.1, point 2).
+pub(crate) const PHASE_RESPONDING: &str = "Responding";
+/// The label while reasoning streams; the thinking widget meters its tokens.
+pub(crate) const PHASE_THINKING: &str = "Thinking";
+/// The label from the first composed tool argument to the end of the round's calls (point 3): the
+/// phase, never the tool — the call's widget names it.
+pub(crate) const PHASE_TOOLS: &str = "Running tools";
+/// The label while the pre-send compaction runs (the auto-offer accepted, or a bot's own); its widget,
+/// `Compacting context…`, reports the pass itself.
+pub(crate) const PHASE_COMPACTING: &str = "Compacting";
 /// Bodies at or above this size narrate their upload (progress.go:18).
 pub(crate) const SEND_PROGRESS_MIN: u64 = 128 * 1024;
 

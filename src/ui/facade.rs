@@ -141,6 +141,29 @@ pub enum ProgressState {
     Error,
 }
 
+/// The whole-turn layer of the status row's busy segment (docs/design/busy-span.md §3.1): one per
+/// turn, from the moment the loop accepts a message for the model until the turn has landed. While it
+/// is up the segment's clock is the TURN's, and [`Ui::busy`] only names the phase the turn is in; while
+/// it is down a busy phase keeps a clock of its own (`/model`'s listing). It is told, never asked: the
+/// host presenter derives it from the turn's state, the same input it derives the host's state from
+/// (`crate::host::Presenter::show_turn_on`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TurnBusy {
+    /// No turn is running.
+    #[default]
+    Off,
+    /// A turn is running; its clock runs.
+    Running,
+    /// A turn is blocked on the user (an approval, an interactive tool, the compaction offer): its clock
+    /// stands still until the turn runs again, so human deliberation does not count.
+    Waiting,
+}
+
+/// What the turn layer says between two phases — no phase names itself, so the turn is waiting on the
+/// model (the request about to go out, or the reply being landed). The same words as the phase that
+/// opens every round (`crate::repl::turn::phases::PHASE_WAITING`).
+pub const TURN_LABEL: &str = "Waiting for the model";
+
 /// One surface panel (tabbed.go:35-103): what every kind shares, and the kind's own data in
 /// [`PanelBody`]. `items`/`lines`/`details` may carry raw SGR; the engine matches/truncates/highlights
 /// through escapes.
@@ -897,8 +920,13 @@ pub trait Ui: Send + Sync {
     fn start_stream(&self, cancel: CancellationToken) -> Box<dyn UiStreamSink>;
 
     /// Starts the busy phase; the UI appends elapsed (≥2s) + `" (ESC to cancel)"` itself
-    /// (ui-architecture.md:77).
+    /// (ui-architecture.md:77). Inside a turn ([`Ui::turn_busy`]) the phase only relabels the turn's
+    /// segment and the elapsed figure is the turn's; stopping the guard hands the segment back to
+    /// [`TURN_LABEL`], never takes it down.
     fn busy(&self, label: &str) -> BusyGuard;
+
+    /// Raises, pauses, resumes or ends the status row's whole-turn layer ([`TurnBusy`]).
+    fn turn_busy(&self, state: TurnBusy);
 
     /// Updates the busy detail only — never resets the phase clock.
     fn busy_detail(&self, detail: &str);

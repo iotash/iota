@@ -36,7 +36,8 @@ use crate::sync::lock;
 use std::time::{Duration, Instant};
 
 use crate::ui::facade::{
-    Input, ProgressState, StatusData, Suggestion, TabbedResult, TabbedSpec, UiError,
+    Input, ProgressState, StatusData, Suggestion, TURN_LABEL, TabbedResult, TabbedSpec, TurnBusy,
+    UiError,
 };
 use crossterm::event::{Event, KeyEvent};
 use tokio::sync::oneshot;
@@ -49,7 +50,9 @@ use crate::ui::input::composer::Composer;
 use crate::ui::input::keys;
 use crate::ui::input::paste;
 use crate::ui::input::suggest;
-use crate::ui::render::frame::{BottomZone, BusyView, FrameInput, FrameView, build_frame};
+use crate::ui::render::frame::{
+    BottomZone, BusyView, FrameInput, FrameView, TurnClock, build_frame,
+};
 use crate::ui::render::region::{Region, RegionSnapshot};
 use crate::ui::surface::{self, SurfaceEffect};
 
@@ -265,6 +268,9 @@ pub(crate) struct Model {
     pub(crate) waiter: Option<Waiter>,
     /// The live busy phase, if any.
     pub(crate) busy: Option<BusyView>,
+    /// The whole-turn layer's clock while a turn runs (`UiMsg::Turn`): the busy segment's clock then, and
+    /// its label [`TURN_LABEL`] between phases.
+    pub(crate) turn: Option<TurnClock>,
     /// The staging-window snapshot the frame renders.
     pub(crate) region_snap: RegionSnapshot,
     /// The open surface, if any.
@@ -375,6 +381,7 @@ impl Model {
             queue: Vec::new(),
             waiter: None,
             busy: None,
+            turn: None,
             region_snap: RegionSnapshot::default(),
             surface: None,
             surface_gen: 0,
@@ -450,7 +457,7 @@ impl Model {
         if !self.spin_ticking {
             return;
         }
-        if self.busy.is_none() && self.region_snap.label.is_empty() {
+        if self.busy.is_none() && self.turn.is_none() && self.region_snap.label.is_empty() {
             self.spin_ticking = false;
             return;
         }
@@ -551,6 +558,24 @@ impl Model {
             }
             UiMsg::BusyOff => {
                 self.busy = None;
+                self.dirty = true;
+            }
+            UiMsg::Turn(state) => {
+                let now = Instant::now();
+                match (state, self.turn.as_mut()) {
+                    (TurnBusy::Off, _) => self.turn = None,
+                    (TurnBusy::Running, Some(t)) => t.resume(now),
+                    (TurnBusy::Waiting, Some(t)) => t.pause(now),
+                    (TurnBusy::Running | TurnBusy::Waiting, None) => {
+                        self.end_drag(); // a turn starting ends a drag
+                        let mut t = TurnClock::start(now);
+                        if state == TurnBusy::Waiting {
+                            t.pause(now);
+                        }
+                        self.turn = Some(t);
+                        self.ensure_spin();
+                    }
+                }
                 self.dirty = true;
             }
             UiMsg::ScopePush(token) => {
@@ -905,6 +930,8 @@ impl Model {
             (None, Some(d)) => BottomZone::Desc(d),
             (None, None) => BottomZone::Status,
         };
+        let now = Instant::now();
+        let busy = self.busy_view(now);
         build_frame(&FrameInput {
             width: fw,
             region: &self.region_snap,
@@ -916,9 +943,27 @@ impl Model {
             candidates: candidates.as_deref(),
             bottom,
             status: &self.status,
-            busy: self.busy.as_ref(),
+            busy: busy.as_ref(),
             jobs: &self.running_jobs,
-            now: Instant::now(),
+            now,
+        })
+    }
+
+    /// The status row's busy segment at `now` (docs/design/busy-span.md §3.1): inside a turn, the phase's
+    /// label and detail — [`TURN_LABEL`] between phases — over the TURN's clock, so a phase change only
+    /// relabels the segment; outside one, the phase with its own clock, as before.
+    pub(crate) fn busy_view(&self, now: Instant) -> Option<BusyView> {
+        let Some(turn) = &self.turn else {
+            return self.busy.clone();
+        };
+        let (label, detail) = self.busy.as_ref().map_or_else(
+            || (TURN_LABEL.to_owned(), String::new()),
+            |b| (b.label.clone(), b.detail.clone()),
+        );
+        Some(BusyView {
+            label,
+            detail,
+            since: now.checked_sub(turn.elapsed(now)).unwrap_or(now),
         })
     }
 }

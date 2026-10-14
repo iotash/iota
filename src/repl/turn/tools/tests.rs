@@ -181,7 +181,8 @@ impl Fx {
         let ui = ScriptedUi::new(script);
         let ui_dyn: Arc<dyn Ui> = Arc::clone(&ui) as Arc<dyn Ui>;
         let tr = Arc::new(Transcript::new(Arc::clone(&ui_dyn), None));
-        let pres = Arc::new(Presenter::with_hosts(Vec::new(), true));
+        let pres =
+            Arc::new(Presenter::with_hosts(Vec::new(), true).show_turn_on(Arc::clone(&ui_dyn)));
         let gate = Arc::new(ApprovalGate::new(
             Arc::clone(&ui_dyn),
             Arc::clone(&tr),
@@ -224,9 +225,34 @@ impl Fx {
         run_turn(&self.cx, &self.root, p, history, ctxm, &mut steer).await
     }
 
+    /// [`Self::turn`] the way the run loop runs one: the turn is raised before `run_turn` and lands after
+    /// it (docs/design/busy-span.md §3.2), so the status row's whole-turn layer spans it.
+    async fn looped_turn(&self, p: &dyn Provider, history: &mut Vec<Message>) -> TurnReport {
+        self.cx.pres.set_state(crate::host::State::Busy);
+        let report = self.turn(p, history).await;
+        self.cx.pres.set_state(crate::host::State::Idle);
+        report
+    }
+
     fn events(&self) -> Vec<UiEvent> {
         self.ui.events()
     }
+}
+
+/// The status row's busy label in force at each event: a `Busy` names it, its guard's `BusyOff` clears it.
+fn busy_labels(events: &[UiEvent]) -> Vec<Option<String>> {
+    let mut now = None;
+    events
+        .iter()
+        .map(|e| {
+            match e {
+                UiEvent::Busy(l) => now = Some(l.clone()),
+                UiEvent::BusyOff => now = None,
+                _ => {}
+            }
+            now.clone()
+        })
+        .collect()
 }
 
 /// `n` empty steering drains — one per tool round (the loop asks at every round boundary).
@@ -625,6 +651,124 @@ async fn a_call_with_trailing_text_is_raised_before_it_runs() {
             "{case}: the trailing text is still committed"
         );
     }
+}
+
+// docs/design/busy-span.md §3.1 (points 2 and 3): every stretch of a turn names its phase on the status
+// row — `Thinking` while reasoning streams, `Responding` while the text does, `Running tools` from the
+// first composed argument to the end of the walk (the call RUNS under it) — where the row used to go
+// blank the moment anything streamed and stay blank through the calls.
+#[tokio::test]
+async fn the_status_row_names_every_phase_of_a_turn() {
+    let fx = Fx::new(Arc::new(StaticDispatcher::new(&["write_file"])), quiet(1));
+    let p = stream(vec![
+        Round {
+            reasoning: vec!["weighing it ".to_owned()],
+            content: vec!["let me write it\n".to_owned()],
+            deltas: vec![(
+                Some("write_file".to_owned()),
+                "{\"path\":\"a.txt\"}".to_owned(),
+            )],
+            ..Round::calls(vec![call(
+                "c1",
+                "write_file",
+                serde_json::json!({"path": "a.txt"}),
+            )])
+        },
+        Round::text("done"),
+    ]);
+    let mut history = vec![Message::user("go")];
+    fx.turn(&p, &mut history).await.outcome.expect("turn");
+
+    let events = fx.events();
+    let labels = busy_labels(&events);
+    let mut phases: Vec<&str> = labels.iter().flatten().map(String::as_str).collect();
+    phases.dedup();
+    assert_eq!(
+        phases,
+        [
+            "Waiting for the model",
+            "Thinking",
+            "Responding",
+            "Running tools",
+            "Waiting for the model",
+            "Responding",
+        ],
+        "the phases, in order"
+    );
+    let ran = pos(&events, |e| matches!(e, UiEvent::ScopePush));
+    assert_eq!(
+        labels[ran].as_deref(),
+        Some("Running tools"),
+        "the call ran with no phase on the status row"
+    );
+    let text = pos(
+        &events,
+        |e| matches!(e, UiEvent::Print(l) if l.iter().any(|l| l == "let me write it")),
+    );
+    assert_eq!(
+        labels[text].as_deref(),
+        Some("Responding"),
+        "the text streamed unnamed"
+    );
+}
+
+// docs/design/busy-span.md §3.5 (points 4 and 8): the whole-turn layer is the presenter's — raised with
+// the turn's `Busy`, paused while an approval waits on the user (so the wait is not counted), resumed
+// when the user answers, and down once the turn has landed.
+#[tokio::test]
+async fn the_turn_layer_spans_the_turn_and_waits_with_the_user() {
+    use crate::ui::facade::TurnBusy;
+    let dispatch = Arc::new(StaticDispatcher::new(&["write_file"]).with_approval(&["write_file"]));
+    let mut script = vec![choose(0)];
+    script.extend(quiet(1));
+    let fx = Fx::new(dispatch, script);
+    let p = stream(vec![
+        Round::calls(vec![call(
+            "c1",
+            "write_file",
+            serde_json::json!({"path": "a.txt"}),
+        )]),
+        Round::text("done"),
+    ]);
+    let mut history = vec![Message::user("edit")];
+    fx.looped_turn(&p, &mut history)
+        .await
+        .outcome
+        .expect("turn");
+
+    let events = fx.events();
+    let turn: Vec<(usize, TurnBusy)> = events
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| match e {
+            UiEvent::Turn(t) => Some((i, *t)),
+            _ => None,
+        })
+        .collect();
+    let states: Vec<TurnBusy> = turn.iter().map(|(_, t)| *t).collect();
+    assert_eq!(
+        states,
+        [
+            TurnBusy::Running,
+            TurnBusy::Waiting,
+            TurnBusy::Running,
+            TurnBusy::Off
+        ]
+    );
+    let asked = pos(&events, |e| matches!(e, UiEvent::Tabbed(_)));
+    assert!(
+        turn[1].0 < asked && asked < turn[2].0,
+        "the approval is not inside the wait"
+    );
+    let ran = pos(&events, |e| matches!(e, UiEvent::ScopePush));
+    assert!(
+        turn[2].0 < ran && ran < turn[3].0,
+        "the call ran outside the turn"
+    );
+    assert_eq!(busy_labels(&events)[ran].as_deref(), Some("Running tools"));
+    let streamed = pos(&events, |e| matches!(e, UiEvent::StreamStart));
+    assert!(turn[0].0 < streamed, "the layer rose after the turn began");
+    assert_eq!(turn[3].0, events.len() - 1, "the layer outlived the turn");
 }
 
 // ---------------------------------------------------------------------------
@@ -1642,6 +1786,10 @@ impl Ui for OrderUi {
 
     fn busy_detail(&self, detail: &str) {
         self.inner.busy_detail(detail);
+    }
+
+    fn turn_busy(&self, state: crate::ui::facade::TurnBusy) {
+        self.inner.turn_busy(state);
     }
 
     fn push_cancel_scope(&self, cancel: CancellationToken) -> ScopeGuard {

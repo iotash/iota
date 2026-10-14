@@ -747,8 +747,9 @@ fn status_line_debug_marker() {
     }
 }
 
-/// The call widget: spinner header over the live `"⎿ elapsed"` row; the cancel hint
-/// only with an active scope; the detail rides ahead of the elapsed figure.
+/// The call widget: spinner header over the live `"⎿ elapsed"` row; the detail rides ahead of
+/// the elapsed figure. The cancel hint is never the widget's: it lives on the status row alone
+/// (docs/design/busy-span.md §3.4, point 6), so a turn shows it exactly once.
 #[test]
 fn call_preview_rendering() {
     let base = Instant::now();
@@ -776,17 +777,34 @@ fn call_preview_rendering() {
         "cancel hint without a cancel scope:\n{joined}"
     );
 
+    // A turn: an active scope and the busy segment. The hint is on the status row, once.
     case.scopes_active = true;
-    let joined = plain(&view(&case)).join("\n");
+    case.busy = Some(BusyView {
+        label: "Running tools".to_owned(),
+        detail: String::new(),
+        since: base,
+    });
+    let rows = plain(&view(&case));
+    let widget = rows
+        .iter()
+        .find(|r| r.contains('⎿'))
+        .expect("the widget's status row");
+    assert_eq!(widget.trim(), "⎿ 3s", "the widget carries no cancel hint");
+    let hints: Vec<&String> = rows
+        .iter()
+        .filter(|r| r.contains("ESC to cancel"))
+        .collect();
+    assert_eq!(hints.len(), 1, "one cancel hint per frame: {rows:#?}");
     assert!(
-        joined.contains("⎿ 3s · ESC to cancel"),
-        "cancel hint missing with an active scope:\n{joined}"
+        hints[0].contains("Running tools  3s (ESC to cancel)"),
+        "the hint is the status row's: {hints:?}"
     );
+    case.busy = None;
 
     case.region.detail = "1.2k tokens".to_owned();
     let joined = plain(&view(&case)).join("\n");
     assert!(
-        joined.contains("⎿ 1.2k tokens · 3s · ESC to cancel"),
+        joined.contains("⎿ 1.2k tokens · 3s"),
         "detail missing from the status row:\n{joined}"
     );
 
@@ -990,5 +1008,38 @@ fn spans_osc8_zero_width_passthrough() {
     assert!(
         got.iter()
             .all(|(_, st)| st.add_modifier.contains(Modifier::DIM))
+    );
+}
+
+/// The whole-turn layer's clock (busy-span point 4): it runs from the turn's start, stands still while
+/// the turn waits on the user, and the waits are taken out of it — however many, and whether or not one
+/// is still open.
+#[test]
+fn the_turn_clock_takes_the_waits_out() {
+    use crate::ui::render::frame::TurnClock;
+    let t0 = Instant::now();
+    let at = |s: u64| t0 + Duration::from_secs(s);
+    let mut c = TurnClock::start(t0);
+    assert_eq!(c.elapsed(at(5)), Duration::from_secs(5));
+    c.pause(at(5)); // an approval
+    c.pause(at(7)); // idempotent: the wait began at 5
+    assert_eq!(
+        c.elapsed(at(30)),
+        Duration::from_secs(5),
+        "frozen while waiting"
+    );
+    c.resume(at(30));
+    c.resume(at(31)); // idempotent
+    assert_eq!(
+        c.elapsed(at(32)),
+        Duration::from_secs(7),
+        "25 s of waiting taken out"
+    );
+    c.pause(at(40));
+    c.resume(at(50));
+    assert_eq!(
+        c.elapsed(at(60)),
+        Duration::from_secs(25),
+        "every wait taken out"
     );
 }

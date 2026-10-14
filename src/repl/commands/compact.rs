@@ -36,11 +36,15 @@ use crate::provider::usage::Usage;
 use crate::sync::lock;
 use tokio_util::sync::CancellationToken;
 
-use crate::repl::bot::{COMPACTED_WITHOUT_FLUSH, Compacted, Event as BotEvent};
+use crate::host::State;
+use crate::repl::bot::{
+    Action as BotAction, COMPACTED_WITHOUT_FLUSH, Compacted, Event as BotEvent,
+};
 use crate::repl::context::tokens::go_map;
 use crate::repl::render::styles::truncate_runes;
 use crate::repl::run::Repl;
 use crate::repl::run::bot_perform;
+use crate::repl::turn::phases::PHASE_COMPACTING;
 use crate::session::SessionError;
 
 /// The instruction that hands the retention decision to the model and hardens against
@@ -460,7 +464,11 @@ pub(crate) async fn offer_before_send(repl: &mut Repl, input: &str) {
         .should_offer_compact(extra, repl.conv.compact_declined);
     if let Some(bot) = repl.conv.bot.as_mut() {
         let actions = bot.flush.step(BotEvent::BeforeSend { over });
+        // The compaction is the turn's phase (docs/design/busy-span.md §3.5); the pass is the widget's.
+        let compacting = actions.contains(&BotAction::Compact);
+        let phase = compacting.then(|| repl.handles.ui.busy(PHASE_COMPACTING));
         bot_perform(repl, actions, Vec::new(), "").await;
+        drop(phase);
         return;
     }
     if !over {
@@ -470,14 +478,20 @@ pub(crate) async fn offer_before_send(repl: &mut Repl, input: &str) {
         "Context {} — compact before sending?",
         repl.conv.budget.status()
     );
+    // The turn has started (`run`'s loop raised it before the offer): while the user decides, it waits on
+    // them — the host is told so, and the turn's clock stands still (docs/design/busy-span.md point 4).
+    repl.handles.pres.set_state(State::NeedsInput);
     let accepted = repl
         .handles
         .ui
         .confirm(&repl.handles.cancel, &title, "Compact now", "Not now")
         .await
         .unwrap_or(false);
+    repl.handles.pres.set_state(State::Busy);
     if accepted {
+        let phase = repl.handles.ui.busy(PHASE_COMPACTING);
         compact_now(repl, "", false).await;
+        phase.stop();
     } else {
         repl.conv.compact_declined = repl.conv.budget.used() + extra;
     }

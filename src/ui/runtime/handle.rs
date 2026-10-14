@@ -34,7 +34,7 @@ use crate::text::ansi::wrap_by_width;
 use crate::text::width::str_width;
 use crate::ui::facade::{
     BusyGuard, Input, ProgressState, ScopeGuard, StatusData, Suggestion, TabbedResult, TabbedSpec,
-    Ui, UiError, UiStreamSink, sanitize_window_title,
+    TurnBusy, Ui, UiError, UiStreamSink, sanitize_window_title,
 };
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -360,6 +360,10 @@ impl Ui for TuiHandle {
 
     fn busy_detail(&self, detail: &str) {
         let _ = self.tx.send(UiMsg::BusyDetail(detail.to_owned()));
+    }
+
+    fn turn_busy(&self, state: TurnBusy) {
+        let _ = self.tx.send(UiMsg::Turn(state));
     }
 
     fn push_cancel_scope(&self, cancel: CancellationToken) -> ScopeGuard {

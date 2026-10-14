@@ -20,9 +20,11 @@ use iota::provider::model::{Message, Role};
 use iota::provider::usage::Usage;
 use iota::repl::{McpHooks, RunParams, SessionCtx};
 use iota::session::{NewSession, SessionStore, SessionWriter};
-use iota::testing::{FakeProvider, RecordingHost, Reply, Round, ScriptedUi, StaticDispatcher};
+use iota::testing::{
+    FakeProvider, RecordingHost, Reply, Round, ScriptedUi, StaticDispatcher, UiEvent,
+};
 use iota::tool::Dispatcher;
-use iota::ui::facade::{Input, Ui};
+use iota::ui::facade::{Input, TurnBusy, Ui};
 use tokio_util::sync::CancellationToken;
 
 /// The summary prompt's first words.
@@ -184,7 +186,10 @@ impl Fixture {
             dark_background: true,
             root_cancel: CancellationToken::new(),
             reqlog: Arc::new(RequestLog::new()),
-            pres: Arc::new(Presenter::with_hosts(vec![Box::new(host)], true)),
+            pres: Arc::new(
+                Presenter::with_hosts(vec![Box::new(host)], true)
+                    .show_turn_on(Arc::clone(&self.ui) as Arc<dyn Ui>),
+            ),
         };
         iota::repl::run(params).await.expect("exit");
         dir
@@ -1237,6 +1242,22 @@ async fn a_flush_that_did_not_finish(flush: fn() -> Round) {
         f.pings(Kind::Failed)
     );
     assert!(!f.states.lock().unwrap().contains(&State::Error));
+    // The flush turn is over before the compaction that follows it: the status row's turn layer came down
+    // with it rather than spinning on through the pass and the idle wait (DIVERGENCES X-76).
+    let ev = f.ui.events();
+    let pass = ev
+        .iter()
+        .position(|e| matches!(e, UiEvent::CallPreview(l) if l.contains("Compacting context…")))
+        .expect("the summary pass's widget");
+    let last_turn = ev[..pass].iter().rev().find_map(|e| match e {
+        UiEvent::Turn(t) => Some(*t),
+        _ => None,
+    });
+    assert_eq!(
+        last_turn,
+        Some(TurnBusy::Off),
+        "the flush turn's layer outlived it"
+    );
     assert_eq!(
         f.printed()
             .iter()

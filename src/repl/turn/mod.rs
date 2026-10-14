@@ -41,7 +41,7 @@ use std::time::Instant;
 use crate::agents::compose_send_history;
 use crate::headless::ChatError;
 use crate::headless::images::{IMAGE_INDENT_COLS, IMAGE_MAX_COLS, IMAGE_MAX_ROWS, save_image};
-use crate::host::{Presenter, State};
+use crate::host::Presenter;
 use crate::llm::progress::{TURN_PROGRESS, TurnProgress};
 use crate::markdown::{CodeTheme, RenderOptions, Writer, hyperlink};
 use crate::provider::model::{Attachment, Message};
@@ -64,7 +64,9 @@ use crate::repl::turn::steer::Steerer;
 use crate::repl::turn::tools::tool_loop;
 
 // The busy-phase controller moved to `phases.rs` (T3 design D9); the names stay reachable here.
-pub(crate) use crate::repl::turn::phases::{PHASE_WAITING, Phases};
+pub(crate) use crate::repl::turn::phases::{
+    PHASE_RESPONDING, PHASE_THINKING, PHASE_TOOLS, PHASE_WAITING, Phases,
+};
 
 /// The progressive frame's widget geometry (chat/images.go:200 `watchImagePartials`).
 pub(crate) const PARTIAL_COLS: usize = 64;
@@ -287,6 +289,10 @@ impl RoundOutcome {
 /// and an interrupt takes the zero-yield finalize path by construction. Either way every
 /// model call climbs ONE retry ladder, [`retry_round`], where it is issued (X-73).
 ///
+/// The host's `Busy` — and with it the status row's whole-turn layer — is NOT raised here: the run loop
+/// raises it when it accepts the message, before the work that precedes the request (docs/design/
+/// busy-span.md §3.2).
+///
 /// The turn's cancel scope and stream handle are minted here and torn down in the pinned
 /// order `sink.done()` → `tr.reset_turn()` → `cancel()` (chat/run.go:1069-1071) on EVERY
 /// exit path: `done` drops a leaked preview and pops the turn scope, `reset_turn` reclaims
@@ -301,7 +307,6 @@ pub(crate) async fn run_turn(
 ) -> TurnReport {
     let cancel = parent_cancel.child_token();
     let sink: Arc<dyn UiStreamSink> = Arc::from(cx.ui.start_stream(cancel.clone()));
-    cx.pres.set_state(State::Busy);
     let turn = Turn {
         cx,
         sink,
@@ -862,7 +867,7 @@ impl StreamSink for RenderSink {
             // Defensive: dialects close reasoning through `ReasoningGate`, but a sink that
             // is written to directly must not leave the thinking widget up.
             self.settle_thinking();
-            self.phases.end(); // streaming output is its own progress from here
+            self.phases.set(PHASE_RESPONDING);
             self.block = Some(self.scaffold.block(self.tr.open_content()));
             self.block_closed = false;
             self.state = SinkState::Content;
@@ -877,7 +882,7 @@ impl StreamSink for RenderSink {
     fn reasoning(&mut self, delta: &str) {
         self.reasoning.push_str(delta);
         if self.state != SinkState::Thinking {
-            self.phases.end(); // the thinking widget takes over from the status spinner
+            self.phases.set(PHASE_THINKING); // the widget meters it; the status row names the phase
             self.thinking_start = Some(Instant::now());
             self.meter = Some(self.tr.open_thinking());
             self.state = SinkState::Thinking;
@@ -916,6 +921,8 @@ impl StreamSink for RenderSink {
             self.composing_seen = true;
             self.close_block();
             self.state = SinkState::Composing;
+            // Named or not, a call is being composed: the turn's phase from here to the walk's end.
+            self.phases.set(PHASE_TOOLS);
         }
         let Some(name) = name.filter(|n| !n.is_empty()) else {
             return;
@@ -928,7 +935,6 @@ impl StreamSink for RenderSink {
             return;
         }
         self.composing_label.clone_from(&label);
-        self.phases.end(); // the widget takes over from the status spinner
         self.tr.open_call(&label);
     }
 }
