@@ -66,6 +66,7 @@
 //! | `28-composer-newline.sh` | X-65 | — (Ctrl+J, the LF byte, Alt+Enter and CSI-u Shift+Enter each add a composer row without submitting, Enter sends ONE two-line message; a two-line queued item is one ` ⏎ ` row and folds back on ESC) |
 //! | `29-signal-exit.sh` | the 2026-10-02 orphan leak | — (SIGTERM mid-turn: the run ends with status 130 (I-03), the turn in the session log, raw mode and bracketed paste handed back to the shell; an idle Ctrl+D exits 0; `kill-server` under an idle run: the process gone within 2 s, inside the 5 s close backstop) |
 //! | `30-thinking-cut.sh` | F3, X-69 | — (Anthropic dialect: a reply cut mid-thought — the red `Output truncated` block and its detail, the widget wound down, the frame intact, no fake answer, the next request clean; a finished turn as the no-red control) |
+//! | `33-trailing-text.sh` | busy-span §2.7 | — (a call composed and then followed by text — its arguments anonymous, then named: the call runs under its own live widget with its clock row, not under nothing or the composing label) |
 //! | `31-tool-args-cut.sh` | F3, X-69 | — (Anthropic dialect: a reply cut mid-arguments — the error naming the dropped `shell` call, the `[shell …]` row torn down, no `tool_result` answering the call and the next request without it (not dispatched); the whole call as the control that does run) |
 
 use std::io::Write as _;
@@ -607,4 +608,11 @@ fn tmux_tool_args_cut() {
 #[test]
 fn tmux_new_session() {
     run_scenario("32-new-session.sh");
+}
+
+/// L4 #33 (busy-span §2.7) — a tool call followed by text: anonymous and named, the call runs under its own
+/// live widget, not under nothing (the widget rising only once the call was over) or the composing label.
+#[test]
+fn tmux_trailing_text() {
+    run_scenario("33-trailing-text.sh");
 }

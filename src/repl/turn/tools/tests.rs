@@ -579,6 +579,54 @@ async fn mark_content_fires_once_and_defers_the_widget() {
     );
 }
 
+/// The labels the call widget showed up to the moment the call RAN (its own cancel scope went up), SGR
+/// stripped.
+fn raised_before_the_call(events: &[UiEvent]) -> Vec<String> {
+    let ran = pos(events, |e| matches!(e, UiEvent::ScopePush));
+    events[..ran]
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::CallPreview(l) => Some(crate::text::ansi::strip_sgr(l)),
+            _ => None,
+        })
+        .collect()
+}
+
+// docs/design/busy-span.md §2.7: a model that composes its call and then keeps talking. The trailing
+// text spills (it lands below the widget), and the call must still have its widget, under its own
+// header, while it RUNS — not only once it is over. Before the fix the spill marked the content block
+// open, nothing closed it, and `open_call` deferred: an anonymous composer left the execution blank (the
+// widget rose at `finish_call`, its clock starting there), a named one left the composing label up.
+#[tokio::test]
+async fn a_call_with_trailing_text_is_raised_before_it_runs() {
+    for (case, name) in [("anonymous", None), ("named", Some("write_file"))] {
+        let fx = Fx::new(Arc::new(StaticDispatcher::new(&["write_file"])), quiet(1));
+        let p = stream(vec![
+            Round::calls(vec![call(
+                "c1",
+                "write_file",
+                serde_json::json!({"path": "a.txt"}),
+            )])
+            .composing(&[(name, "{\"path\":\"a.txt\"}")], "trailing words\n"),
+            Round::text("done"),
+        ]);
+        let mut history = vec![Message::user("go")];
+        fx.turn(&p, &mut history).await.outcome.expect("turn");
+
+        let events = fx.events();
+        let raised = raised_before_the_call(&events);
+        assert_eq!(
+            raised.last().map(String::as_str),
+            Some("[write_file path:a.txt]"),
+            "{case}: the call ran under {raised:?}"
+        );
+        assert!(
+            plain(&events).iter().any(|l| l == "trailing words"),
+            "{case}: the trailing text is still committed"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // the tool walk
 // ---------------------------------------------------------------------------

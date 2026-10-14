@@ -845,16 +845,18 @@ impl StreamSink for RenderSink {
     /// The first content byte marks the transcript's content block open — so a tool call
     /// announced by the observer in the same network read still defers — and opens the
     /// markdown block. Every byte lands in the history buffer whatever the state; past the
-    /// composing cut the bytes spill instead of rendering.
+    /// composing cut the bytes spill instead of rendering, and never mark: no block is open
+    /// for `close_block` to close, so a mark there would defer the walk's `open_call` until the
+    /// call was over (docs/design/busy-span.md §2.7).
     fn content(&mut self, delta: &str) {
-        if !self.marked {
-            self.marked = true;
-            self.tr.mark_content();
-        }
         self.content.push_str(delta);
         if self.state == SinkState::Composing {
             self.spill.push_str(delta);
             return;
+        }
+        if !self.marked {
+            self.marked = true;
+            self.tr.mark_content();
         }
         if self.state != SinkState::Content {
             // Defensive: dialects close reasoning through `ReasoningGate`, but a sink that

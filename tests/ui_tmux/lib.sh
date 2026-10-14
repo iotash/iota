@@ -534,6 +534,15 @@ dump_pane() {
     echo "    ---- end of pane ----"
 }
 
+# shot <label> — prints the visible pane under a header when IOTA_TMUX_FRAMES is set: the frames a
+# report quotes, taken at the moment a scenario judged them. Silent otherwise, so CI logs stay short.
+shot() {
+    [ -n "${IOTA_TMUX_FRAMES:-}" ] || return 0
+    echo "    ==== frame: $1 ===="
+    cap | sed 's/^/    | /'
+    echo "    ==== end of frame ===="
+}
+
 # check_measured <label> <value> <expected> — `check`, but a value the helpers could not
 # measure (an empty string: a marker row not found) fails as such, with the pane.
 check_measured() {

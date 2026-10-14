@@ -22,6 +22,8 @@
 //! | `emoji`       | [`EMOJI`]: a table whose cells carry emoji, flag sequences and VS16 characters |
 //! | `run:<cmd>`   | ONE `shell` tool call, `{"command": <cmd>, "background": true}`, `finish_reason: tool_calls` |
 //! | `runfg:<cmd>` | the same call in the foreground (no `background` key)          |
+//! | `runtail:<cmd>` | the foreground call, then [`TRAILING`] as content AFTER it — a model that keeps talking past its call |
+//! | `runanon:<cmd>` | the same, but the arguments arrive BEFORE the call's name (an anonymous composing delta) |
 //! | `hang:<word>` | the `200` head, then not one byte until the client walks away   |
 //! | `openend:<word>` | the full `echo:` answer through `[DONE]`, then the body held open (no last chunk) |
 //! | anything else | `echo: <the message>`                                        |
@@ -111,6 +113,9 @@ const SLOW_LIST: Duration = Duration::from_millis(2000);
 
 /// The image both image frames carry — the checked-in 2×2 fixture the L1 imgterm tests use.
 const PNG_2X2: &[u8] = include_bytes!("../fixtures/images/rb-2x2.png");
+
+/// The text `runtail:`/`runanon:` stream after their call (docs/design/busy-span.md §2.7).
+const TRAILING: &str = "TRAILTEXT after the call\n";
 
 /// `fail:<status>:<n>` bookkeeping: how many times each carrying message has been refused.
 static FAILS: Mutex<BTreeMap<String, u32>> = Mutex::new(BTreeMap::new());
@@ -359,6 +364,14 @@ fn stream_reply(sock: &mut TcpStream, prompt: &str, after_tool: bool) -> std::io
     } else if let Some(cmd) = prompt.strip_prefix("runfg:") {
         tool_call(sock, cmd.trim(), false)?;
         finish = "tool_calls";
+    } else if let Some(cmd) = prompt.strip_prefix("runtail:") {
+        tool_call(sock, cmd.trim(), false)?;
+        content(sock, TRAILING)?;
+        finish = "tool_calls";
+    } else if let Some(cmd) = prompt.strip_prefix("runanon:") {
+        anonymous_tool_call(sock, cmd.trim())?;
+        content(sock, TRAILING)?;
+        finish = "tool_calls";
     } else if prompt.starts_with("blocks") {
         for line in blocks_doc().lines() {
             content(sock, &format!("{line}\n"))?;
@@ -439,6 +452,25 @@ fn tool_call(sock: &mut TcpStream, cmd: &str, background: bool) -> std::io::Resu
             "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"function\":{{\"arguments\":{}}}}}]}},\"finish_reason\":null}}]}}\n\n",
             json_string(&args)
         ),
+    )
+}
+
+/// One foreground `shell` call whose argument object arrives BEFORE its name: the first delta carries the id
+/// and the whole arguments with no name, the second names the call — the composing observer sees an anonymous
+/// delta and nothing after it (the zombie-spinner rule raises no composing widget for it).
+fn anonymous_tool_call(sock: &mut TcpStream, cmd: &str) -> std::io::Result<()> {
+    let id = format!("call_l4_{}", CALLS.fetch_add(1, Ordering::Relaxed) + 1);
+    let args = format!("{{\"command\":{}}}", json_string(cmd));
+    chunk(
+        sock,
+        &format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"{id}\",\"type\":\"function\",\"function\":{{\"arguments\":{}}}}}]}},\"finish_reason\":null}}]}}\n\n",
+            json_string(&args)
+        ),
+    )?;
+    chunk(
+        sock,
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"shell\"}}]},\"finish_reason\":null}]}\n\n",
     )
 }
 

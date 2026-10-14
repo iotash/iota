@@ -71,6 +71,8 @@ pub struct Round {
     pub content: Vec<String>,
     /// Tool-argument deltas (`(name, chunk)`), streamed after the content.
     pub deltas: Vec<(Option<String>, String)>,
+    /// Content deltas streamed after the tool deltas: the text a model writes past its calls.
+    pub trailing: Vec<String>,
     /// What the round returns.
     pub result: RoundResult,
     /// Cancelled just before returning.
@@ -187,6 +189,18 @@ impl Round {
     #[must_use]
     pub fn images(mut self, images: Vec<Attachment>) -> Self {
         self.result.images = images;
+        self
+    }
+
+    /// The round streams `deltas` (`(name, chunk)`) after its content, then `trailing` as content again —
+    /// a model that composes its calls and then keeps talking.
+    #[must_use]
+    pub fn composing(mut self, deltas: &[(Option<&str>, &str)], trailing: &str) -> Self {
+        self.deltas = deltas
+            .iter()
+            .map(|(n, d)| (n.map(str::to_owned), (*d).to_owned()))
+            .collect();
+        self.trailing = vec![trailing.to_owned()];
         self
     }
 
@@ -773,7 +787,7 @@ impl Provider for FakeProvider {
 }
 
 impl ToolProvider for FakeProvider {
-    /// Streams the round — reasoning, `reasoning_done`, content, tool deltas — then settles it.
+    /// Streams the round — reasoning, `reasoning_done`, content, tool deltas, trailing content — then settles it.
     fn stream_chat_with_tools<'a>(
         &'a self,
         cancel: &'a CancellationToken,
@@ -798,6 +812,9 @@ impl ToolProvider for FakeProvider {
             }
             for (name, d) in &round.deltas {
                 sink.tool_delta(name.as_deref(), d);
+            }
+            for d in &round.trailing {
+                sink.content(d);
             }
             round.settle(cancel)
         })
