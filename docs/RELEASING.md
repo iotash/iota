@@ -25,11 +25,16 @@ a step added to the generated file by hand would not survive the next
 regeneration. `dist plan` prints what a tag would produce, without building
 anything.
 
-**The macOS binaries are signed; the Windows ones are not.** macOS gets an
-ad-hoc, linker-applied signature, and the `verify-macos-signing` job blocks
-publication of any archive whose signature does not match its contents. Windows
-has no equivalent here: Authenticode needs a certificate from a paid signing
-service, which is outside what this project runs, so `iota.exe` ships unsigned.
+**Only the Apple Silicon binary is signed.** The linker ad-hoc signs every
+arm64 Mach-O it produces, because arm64 macOS will not start an unsigned one;
+the Intel binary (`x86_64-apple-darwin`, cross-compiled on an arm64 runner)
+gets no signature, and x86_64 macOS does not require one. The
+`verify-macos-signing` job checks both before `host` may publish: a signature
+that does not match its binary's contents fails it on either architecture, and
+so does an arm64 binary with no signature at all; an unsigned x86_64 binary is
+the expected state and passes. Windows has no equivalent here: Authenticode
+needs a certificate from a paid signing service, which is outside what this
+project runs, so `iota.exe` ships unsigned.
 Expect SmartScreen to warn on first run, and expect the browser to flag the
 download. What you can check instead is the archive: every asset is published
 with a `.sha256` beside it, and `sha256.sum` lists them all.
