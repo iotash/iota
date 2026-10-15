@@ -53,6 +53,18 @@ pub trait Session: Send + Sync {
         Box::pin(std::future::ready(Vec::new()))
     }
 
+    /// The same tail as [`stderr_tail`](Self::stderr_tail), as captured right now — no wait, for a caller
+    /// that cannot `.await` (a status snapshot).
+    fn stderr_snapshot(&self) -> Vec<u8> {
+        Vec::new()
+    }
+
+    /// Whether the connection has closed — the server exited, or the transport went away — so no call can
+    /// get through. Read without sending anything.
+    fn is_closed(&self) -> bool {
+        false
+    }
+
     /// Closes the connection; a second call is a no-op.
     fn close(&self) -> BoxFuture<'_, ()>;
 }
@@ -166,6 +178,18 @@ impl Session for RmcpSession {
                 None => Vec::new(),
             }
         })
+    }
+
+    fn stderr_snapshot(&self) -> Vec<u8> {
+        self.stderr
+            .as_ref()
+            .map_or_else(Vec::new, |capture| lock(&capture.buf).clone())
+    }
+
+    /// rmcp's serve loop has ended (its receiver of the peer's requests is gone): the stdio child's stdout
+    /// reached EOF, or the HTTP worker stopped.
+    fn is_closed(&self) -> bool {
+        self.peer.is_transport_closed()
     }
 
     /// `timeout(10 s, running.cancel())` on the service taken out of the mutex (rmcp: transport close → stdin EOF →

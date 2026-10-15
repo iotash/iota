@@ -30,8 +30,8 @@ pub enum McpError {
     /// `mcp-graceful-degradation`).
     #[error("{}", crate::mcp::auth::not_logged_in(.0))]
     NotLoggedIn(String),
-    /// The per-server connect deadline elapsed: `crate::mcp::explain::timeout`'s sentence, the deadline in Go
-    /// duration form (`30s`, `300ms`).
+    /// The per-server connect deadline elapsed: `crate::mcp::explain::timeout`'s sentence, the deadline in
+    /// words (`30 seconds`, `300 ms`).
     #[error("{0}")]
     Timeout(String),
     /// The connection is gone — a stdio server that exited, a transport that closed. The manager marks the server

@@ -11,13 +11,14 @@
 #   23.1 the startup notice — a server whose handshake was answered 401, with no token, is ONE
 #        red line naming `iota mcp login nb`, not the generic failure; the chat is usable (the
 #        model, the composer);
-#   23.2 the MCP tab of `/tools` — the server reads `disconnected`, its error row the same
-#        sentence as the notice;
+#   23.2 `/tools` (X-79) — the server's row in the list reads `needs login`, and its page says
+#        the same sentence as the notice;
 #   23.3 `iota mcp login nb` beside the chat — the URL is the mock's, `$BROWSER` (a script that
 #        follows the redirect with curl) brings the callback back, the CLI announces the login,
 #        the token file appears with mode 600; the pane saw none of it;
-#   23.4 the chat started again — no notice this time, and the MCP tab reads `connected` with
-#        the server's tool;
+#   23.4 the SAME chat picks the new token up: Enter on the server's page reconnects it, the
+#        page reads `connected` with the server's tool and the transcript says so; then the chat
+#        started again — no notice this time, and the page reads `connected` from the start;
 #   23.5 `iota mcp logout nb` — the CLI says it forgot the file, and the file is gone.
 #
 # The mock authorization server + MCP endpoint is the runner's (`tests/common/oauth_mock.rs`,
@@ -51,8 +52,9 @@ EOB
 export BROWSER="sh $SCEN_TMP/browser.sh"
 TOKEN_FILE="$SCEN_HOME/.iota/mcp/auth/nb.json"
 NOTICE='⚠ MCP nb not logged in: run iota mcp login nb'
-# No trailing space: `capture-pane` trims the row's end, and the bar is the last thing on its row.
-TAB_BAR=' Tools  │  MCP'
+# The list's and the page's prompt lines (`/tools`, X-79): what says which level is open.
+LIST_PROMPT='Enter: open · Esc: close'
+PAGE_PROMPT='Esc: back'
 
 # iota_mcp <verb> [args…] — the CLI beside the pane: the HOME the pane runs under (the config
 # `start_provider` wrote there, the token directory under it), the same browser stand-in, and
@@ -67,18 +69,25 @@ check_cli() {
     if cli_has "$2"; then ok "$1"; else bad "$1: $(printf '%q' "$2") not in the CLI's output"; cat "$CLI_OUT"; fi
 }
 
-# open_mcp_tab / close_viewer — `/tools`, Tab to its second tab, and ESC back to the composer.
-open_mcp_tab() {
+# open_list / open_page / close_viewer — `/tools` (X-79): the list, Down to nb (the row under
+# `built in`) and Enter to its page, and ESC back — the page to the list, the list to the composer.
+open_list() {
     type_ '/tools'
     key Enter
-    wait_vis "$TAB_BAR" || { bad "the /tools viewer never opened"; cap; return 1; }
-    key Tab
-    wait_vis 'server(s)' || { bad "Tab did not reach the MCP tab"; return 1; }
-    settle || bad "the MCP tab never settled"
+    wait_vis "$LIST_PROMPT" || { bad "the /tools list never opened"; cap; return 1; }
+    settle || bad "the list never settled"
+}
+open_page() {
+    key Down
+    key Enter
+    wait_vis "$PAGE_PROMPT" || { bad "Enter did not open nb's page"; cap; return 1; }
+    settle || bad "the page never settled"
 }
 close_viewer() {
     key Escape
-    wait_gone "$TAB_BAR" || bad "ESC did not close the viewer"
+    wait_vis "$LIST_PROMPT" || bad "ESC did not go back to the list"
+    key Escape
+    wait_gone "$LIST_PROMPT" || bad "ESC did not close the list"
     settle || bad "frame never settled after the viewer"
 }
 
@@ -94,10 +103,11 @@ check "…and not the generic failure shape" "$(count_all 'MCP nb failed')" 0
 check_frame_intact "after the notice" 100
 [ -e "$TOKEN_FILE" ] && bad "a token file exists before any login"
 
-# ------------------------------------------------------------------ 23.2: the MCP tab, not logged in
-open_mcp_tab
-check "the server is disconnected" "$(count_vis 'nb  [disconnected]')" 1
-check "…and its row says why, in the CLI's words" "$(count_vis 'error: not logged in: run iota mcp login nb')" 1
+# ------------------------------------------------------------------ 23.2: /tools, not logged in
+open_list
+check "the server's row says it needs a login, in the CLI's words" "$(count_vis 'needs login: run iota mcp login nb')" 1
+open_page
+check "…and so does its page" "$(count_vis 'status        needs login: run iota mcp login nb')" 1
 close_viewer
 
 # ------------------------------------------------------------------ 23.3: iota mcp login nb, beside the chat
@@ -128,15 +138,25 @@ settle || bad "frame never settled while the CLI logged in"
 check "the chat saw nothing of the login" "$(count_all 'Logged in to nb')" 0
 check_frame_intact "after the login" 100
 
-# ------------------------------------------------------------------ 23.4: the chat again, logged in
-# A chat already running does not pick a new token up; the next one connects through the OAuth
-# transport from the start — no notice, the server and its tool on the MCP tab.
+# ------------------------------------------------------------------ 23.4: logged in — reconnect, then a new chat
+# The chat already running picks the new token up when the server is reconnected from its page (X-79):
+# the OAuth transport this time, the page `connected` with the server's tool, one transcript line.
+open_list
+open_page
+key Enter
+wait_vis 'Reconnected · 1 tool' || bad "the page never said the reconnect worked"
+check "the page reads connected" "$(count_vis 'status        connected')" 1
+check "…with its tool" "$(count_vis '  echo')" 1
+close_viewer
+check "the transcript says it was reconnected" "$(count_all 'MCP nb reconnected · 1 tool')" 1
+# The next chat connects through the OAuth transport from the start — no notice, connected at once.
 start_provider openai 100 30 || finish
 settle || bad "the second startup never settled"
-open_mcp_tab
-wait_vis 'nb  [connected]' || bad "the MCP tab never showed the server connected"
-check "the server is connected" "$(count_vis 'nb  [connected]')" 1
-check "…with its tool" "$(count_vis 'tools (1): echo')" 1
+open_list
+open_page
+wait_vis 'status        connected' || bad "the page never showed the server connected"
+check "the server is connected" "$(count_vis 'status        connected')" 1
+check "…with its tool" "$(count_vis '  echo')" 1
 close_viewer
 check "no not-logged-in notice this time" "$(count_all 'not logged in')" 0
 check_frame_intact "after the second startup" 100

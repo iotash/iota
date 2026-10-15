@@ -9,7 +9,7 @@
 //!
 //! The text contract every outlet already followed is now the deliberate one: **line 1 is the summary**, the
 //! only line the startup notice and `iota mcp list --probe` print; **the lines after it are the detail** — the
-//! cause chain, a response body cut to a line, the server's stderr — which the MCP tab of `/tools` and the
+//! cause chain, a response body cut to a line, the server's stderr — which a server's page in `/tools` and the
 //! headless stderr show under the summary, and `iota mcp list --json` carries whole. rmcp's own text, type
 //! names included, goes to the developer's channel (`IOTA_LOG`) and nowhere else.
 
@@ -66,10 +66,15 @@ pub(crate) fn split(text: &str) -> (&str, Vec<&str>) {
     (summary, lines.filter(|l| !l.trim().is_empty()).collect())
 }
 
-/// What a summary calls the server's endpoint: the URL, or the command in quotes.
+/// What a summary calls the server's endpoint: the URL, or the command's file name in quotes — a full path
+/// would push the reason out of a one-line notice, and the whole command line is the endpoint every outlet
+/// shows beside it.
 fn subject(cfg: &ServerConfig) -> String {
     if cfg.url.is_empty() {
-        format!("\"{}\"", cfg.command)
+        let name = std::path::Path::new(&cfg.command)
+            .file_name()
+            .map_or_else(|| cfg.command.clone(), |n| n.to_string_lossy().into_owned());
+        format!("\"{name}\"")
     } else {
         cfg.url.clone()
     }
@@ -430,7 +435,7 @@ pub(crate) fn call(err: &ServiceError) -> String {
 /// What a `ServiceError` means in words, and the hint that goes with it (none when the reason is the
 /// server's own message).
 fn service_reason(err: &ServiceError) -> (String, Option<&'static str>) {
-    const RECONNECT: &str = "restart iota to reconnect it";
+    const RECONNECT: &str = "reconnect it from /tools";
     match err {
         ServiceError::TransportClosed => (
             "disconnected (it exited or closed the connection)".to_owned(),
@@ -459,7 +464,7 @@ fn service_reason(err: &ServiceError) -> (String, Option<&'static str>) {
                 HttpError::Auth(_) | HttpError::AuthRequired(_) | HttpError::InsufficientScope(_),
             ) => (
                 "the server wants a new login".to_owned(),
-                Some("run iota mcp login, then restart iota"),
+                Some("run iota mcp login, then reconnect it from /tools"),
             ),
             // A stdio child that died: the write to its stdin fails before any read sees the EOF.
             _ if is_broken_pipe(send.error.as_ref()) => (
@@ -484,7 +489,7 @@ fn service_reason(err: &ServiceError) -> (String, Option<&'static str>) {
         ServiceError::Timeout { timeout } => (
             format!(
                 "no answer within {}, so the call was given up",
-                crate::text::go_duration(*timeout)
+                crate::text::human_duration(*timeout)
             ),
             Some(
                 "if the tool is meant to run that long, raise tool_timeout_sec for this server in the config",
@@ -516,7 +521,7 @@ pub(crate) fn is_disconnect(err: &ServiceError) -> bool {
 /// — that it exited, the last line it wrote to stderr, and that its tools fail from now on — and, as
 /// detail, the tail of its stderr.
 pub(crate) fn exited(cfg: &ServerConfig, stderr: &[u8]) -> Explained {
-    const UNTIL: &str = "its tools will fail until iota is restarted";
+    const UNTIL: &str = "its tools will fail until it is reconnected from /tools";
     if !cfg.url.is_empty() {
         return Explained::new(format!("the connection closed — {UNTIL}"), Vec::new());
     }
@@ -536,10 +541,10 @@ pub(crate) fn exited(cfg: &ServerConfig, stderr: &[u8]) -> Explained {
 /// found it gone and every one after it.
 pub(crate) fn down_call(cfg: &ServerConfig) -> String {
     if cfg.url.is_empty() {
-        "it has exited — its tools can't be used again in this session; restarting iota starts it again"
+        "it has exited — its tools won't work until it is reconnected, which the user can do from /tools"
             .to_owned()
     } else {
-        "its connection has closed — its tools can't be used again in this session; restarting iota reconnects it"
+        "its connection has closed — its tools won't work until it is reconnected, which the user can do from /tools"
             .to_owned()
     }
 }
@@ -625,7 +630,7 @@ mod tests {
     fn a_failed_call_says_what_happened() {
         assert_eq!(
             call(&ServiceError::TransportClosed),
-            "disconnected (it exited or closed the connection) — restart iota to reconnect it"
+            "disconnected (it exited or closed the connection) — reconnect it from /tools"
         );
         assert_eq!(
             call(&ServiceError::McpError(ErrorData::new(
@@ -665,7 +670,7 @@ mod tests {
         let quiet = exited(&stdio("python3"), b"");
         assert_eq!(
             quiet.summary,
-            "exited without a word on stderr — its tools will fail until iota is restarted"
+            "exited without a word on stderr — its tools will fail until it is reconnected from /tools"
         );
         assert!(quiet.detail.is_empty());
         let http = ServerConfig {
@@ -674,7 +679,7 @@ mod tests {
         };
         assert_eq!(
             exited(&http, b"").summary,
-            "the connection closed — its tools will fail until iota is restarted"
+            "the connection closed — its tools will fail until it is reconnected from /tools"
         );
         assert!(down_call(&http).starts_with("its connection has closed — "));
 
@@ -683,7 +688,7 @@ mod tests {
         };
         assert_eq!(
             call(&timeout),
-            "no answer within 30m0s, so the call was given up — if the tool is meant to run that long, \
+            "no answer within 30 minutes, so the call was given up — if the tool is meant to run that long, \
              raise tool_timeout_sec for this server in the config"
         );
         assert!(is_disconnect(&ServiceError::TransportClosed));

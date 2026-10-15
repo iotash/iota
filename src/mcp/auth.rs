@@ -67,7 +67,7 @@ const CALLBACK_PATH: &str = "/callback";
 const TOKEN_FILE_MODE: u32 = 0o600;
 
 /// The `McpError::Connect`-level text of a server whose store holds no usable token; the CLI hint is part of
-/// it so every outlet (headless stderr, the REPL notice, the MCP tab of `/tools`) says what to do.
+/// it so every outlet (headless stderr, the REPL notice, `/tools`) says what to do.
 pub fn not_logged_in(name: &str) -> String {
     format!("not logged in: run iota mcp login {name}")
 }

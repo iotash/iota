@@ -18,7 +18,7 @@ use crate::repl::run::McpEvent;
 /// Drains `events` into `tr` until the channel closes or `done` fires (the UI loop thread
 /// exited). Only the error's summary — its first line, which says what happened and what to do
 /// (`crate::mcp::explain`) — is shown: a stack of transport detail in the chat area buries the
-/// conversation. When there IS detail, the line says where it is: the MCP tab of `/tools`.
+/// conversation. When there IS detail, the line says where it is: the server's page in `/tools`.
 pub(crate) async fn report_mcp_failures(
     mut events: Receiver<McpEvent>,
     tr: Arc<Transcript>,

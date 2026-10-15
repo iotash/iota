@@ -29,7 +29,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::mcp::error::McpError;
 use crate::mcp::transport::{CLOSE_TIMEOUT, Session, connect_one};
-use crate::text::go_duration;
+use crate::text::human_duration;
 
 /// Default per-server connect deadline (handshake + `tools/list`).
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -149,9 +149,9 @@ pub enum ServerState {
     /// The connect failed: the `McpError` text.
     Failed(String),
     /// It connected, then a call found the connection gone — the server exited (X-78). Its tools stay
-    /// listed and keep their wire names (`segment`); calls to them fail with a sentence that says so. Only a
-    /// [`Manager::reconnect`] leaves this state; nothing in a chat calls one yet, so it lasts until iota is
-    /// restarted.
+    /// listed and keep their wire names (`segment`); calls to them fail with a sentence that says so. Also
+    /// reached without a call: a snapshot ([`Manager::servers`]) that finds the connection closed takes the
+    /// same step. Only a [`Manager::reconnect`] leaves this state — `/tools` offers one on the server's page.
     Down {
         /// The segment its wire names were registered under.
         segment: String,
@@ -222,7 +222,7 @@ impl ServerStatus {
     }
 
     /// The wire names the raw `tools` registered under, in the same order — the
-    /// `wire name → server` oracle the Tools tab's source column reads. Empty unless connected or down (a
+    /// `wire name → server` oracle `/tools` sorts the tools by. Empty unless connected or down (a
     /// down server's tools stay listed, X-78).
     pub fn wire_names(&self) -> Vec<String> {
         let segment = self.segment();
@@ -252,6 +252,17 @@ impl ServerStatus {
             .map(|wire| format!("duplicate wire tool name {wire}, skipping"))
             .collect()
     }
+}
+
+/// What [`Manager::detail`] reports of one server.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServerDetail {
+    /// A stdio (command) server, else an HTTP one.
+    pub stdio: bool,
+    /// How long one of its calls may go unanswered (`tool_timeout_sec`, else the manager's default).
+    pub call_timeout: Duration,
+    /// What a stdio server has written to stderr so far (the kept tail); empty for HTTP or no session.
+    pub stderr: String,
 }
 
 /// Construction-time knobs of a `Manager`.
@@ -506,7 +517,7 @@ impl Manager {
                 i,
                 &McpError::Timeout(crate::mcp::explain::timeout(
                     &expand_server_config(cfg, &self.opts.env),
-                    &go_duration(self.opts.connect_timeout),
+                    &human_duration(self.opts.connect_timeout),
                 )),
             )),
         }
@@ -536,11 +547,27 @@ impl Manager {
     }
 
     /// Snapshot of every server's status (index-aligned with the configs). A server's `login` is read off
-    /// its token file here, so a live view (the MCP tab of `/tools`, on its 500 ms refresh) sees a login or
+    /// its token file here, so a live view (`/tools`, on its 500 ms refresh) sees a login or
     /// logout as it happens: an `oauth` server always has one; an `auto` server has one when the file says
     /// so, or — with no usable file — when the server asked for a login (`login_required`); a `none` server
     /// never.
+    ///
+    /// A connected server whose connection has closed — a stdio server killed while nobody was calling it — is
+    /// marked down first ([`mark_down_now`](Self::mark_down_now)), so the snapshot never shows a dead server
+    /// as connected (X-78; Codex checks `is_transport_closed` on its status queries the same way).
     pub fn servers(&self) -> Vec<ServerStatus> {
+        let gone: Vec<(usize, Arc<dyn Session>)> = {
+            let st = read(&self.state);
+            st.session_of
+                .iter()
+                .filter(|(i, _)| st.servers.get(**i).is_some_and(ServerStatus::connected))
+                .filter_map(|(i, s)| st.sessions.get(*s).cloned().flatten().map(|s| (*i, s)))
+                .filter(|(_, s)| s.is_closed())
+                .collect()
+        };
+        for (i, session) in gone {
+            self.mark_down_now(i, &session.stderr_snapshot());
+        }
         let mut servers = read(&self.state).servers.clone();
         for (status, cfg) in servers.iter_mut().zip(&self.configs) {
             let stored = || {
@@ -568,6 +595,28 @@ impl Manager {
     /// The config index of the FIRST server called `name`.
     fn index_of(&self, name: &str) -> Option<usize> {
         self.configs.iter().position(|c| c.name == name)
+    }
+
+    /// What `/tools` shows on server `i`'s page beyond its status: how it is reached, its call deadline, and —
+    /// for a stdio server with a live session — what it has written to stderr so far (the kept tail).
+    /// `None` = no such server.
+    pub fn detail(&self, i: usize) -> Option<ServerDetail> {
+        let cfg = self.configs.get(i)?;
+        let stderr = {
+            let st = read(&self.state);
+            st.session_of
+                .get(&i)
+                .and_then(|s| st.sessions.get(*s).cloned().flatten())
+        }
+        .map(|session| session.stderr_snapshot())
+        .unwrap_or_default();
+        Some(ServerDetail {
+            stdio: cfg.url.is_empty(),
+            call_timeout: cfg
+                .tool_timeout_sec
+                .map_or(self.opts.call_timeout, Duration::from_secs),
+            stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        })
     }
 
     /// The config of the server called `name`, as declared (not expanded).
@@ -719,13 +768,18 @@ impl Manager {
     /// A server already down, or never connected, is left as it is: two calls that fail together announce it
     /// once.
     async fn mark_down(&self, i: usize, session: &dyn Session) {
+        // Read the stderr BEFORE taking the lock: the wait for the pipe's EOF is an `.await`.
+        let stderr = session.stderr_tail().await;
+        self.mark_down_now(i, &stderr);
+    }
+
+    /// [`mark_down`](Self::mark_down) with the stderr already read — what a snapshot does, which cannot wait.
+    fn mark_down_now(&self, i: usize, stderr: &[u8]) {
         let Some(cfg) = self.configs.get(i) else {
             return;
         };
-        // Read the stderr BEFORE taking the lock: the wait for the pipe's EOF is an `.await`.
-        let stderr = session.stderr_tail().await;
         let reason =
-            crate::mcp::explain::exited(&expand_server_config(cfg, &self.opts.env), &stderr)
+            crate::mcp::explain::exited(&expand_server_config(cfg, &self.opts.env), stderr)
                 .into_text();
         let announced = {
             let mut st = write(&self.state);
@@ -1334,8 +1388,8 @@ mod tests {
         );
         assert!(m.servers()[0].connected());
 
-        let want = "MCP server \"alpha\": it has exited — its tools can't be used again in this session; \
-                    restarting iota starts it again";
+        let want = "MCP server \"alpha\": it has exited — its tools won't work until it is reconnected, \
+                    which the user can do from /tools";
         for _ in 0..2 {
             let err = call(&m, "mcp__alpha__echo").await.expect_err("gone");
             assert_eq!(err.to_string(), want);
@@ -1351,7 +1405,7 @@ mod tests {
             status.failure(),
             Some((
                 "exited (its last stderr line: \"RuntimeError: database connection lost\") — its tools will \
-                 fail until iota is restarted",
+                 fail until it is reconnected from /tools",
                 vec![
                     "stderr:",
                     "  serving",

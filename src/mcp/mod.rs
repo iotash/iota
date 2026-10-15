@@ -17,7 +17,7 @@ pub use manager::{
     DEFAULT_CALL_TIMEOUT, DEFAULT_CONNECT_TIMEOUT, DEFAULT_STDERR_CAP, Manager, ManagerOptions,
     WIRE_NAME_MAX_LEN, sanitize_name_segment, wire_tool_name,
 };
-pub(crate) use manager::{ServerState, ServerStatus};
+pub(crate) use manager::{ServerDetail, ServerState, ServerStatus};
 
 /// In-process MCP servers for the unit tests (rmcp `server` dev-feature). Go: `mcp/manager_test.go` `startEchoServer`.
 #[cfg(test)]

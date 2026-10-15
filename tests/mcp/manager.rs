@@ -71,7 +71,7 @@ async fn a_server_that_never_answers_fails_at_the_connect_timeout() {
     assert_eq!(
         s.error(),
         Some(
-            "\"sh\" did not finish the MCP handshake within 300ms — check that it is an MCP server (one that speaks MCP on stdin/stdout)"
+            "\"sh\" did not finish the MCP handshake within 300 ms — check that it is an MCP server (one that speaks MCP on stdin/stdout)"
         ),
         "hung server should be a resolved failure with a timeout error, got {:?}",
         s.state
@@ -482,8 +482,8 @@ async fn a_call_to_a_server_that_exited_marks_it_down_and_names_it() {
     // The child has exited; give the transport a moment to see the end of its stdout.
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let want = "Error calling tool: MCP server \"gone\": it has exited — its tools can't be used again in this \
-                session; restarting iota starts it again";
+    let want = "Error calling tool: MCP server \"gone\": it has exited — its tools won't work until it is reconnected, \
+                which the user can do from /tools";
     let cx = RunCtx::new(CancellationToken::new());
     for _ in 0..2 {
         let (text, is_error) =
@@ -497,7 +497,7 @@ async fn a_call_to_a_server_that_exited_marks_it_down_and_names_it() {
     assert_eq!(
         status.failure(),
         Some((
-            "exited (its last stderr line: \"fatal: out of memory\") — its tools will fail until iota is restarted",
+            "exited (its last stderr line: \"fatal: out of memory\") — its tools will fail until it is reconnected from /tools",
             vec!["stderr:", "  fatal: out of memory"]
         ))
     );
@@ -540,8 +540,8 @@ async fn a_call_nobody_answers_ends_at_the_deadline() {
 
     let cx = RunCtx::new(CancellationToken::new());
     for (wire, after, name) in [
-        ("mcp__deaf__echo", "300ms", "deaf"),
-        ("mcp__slow__echo", "1s", "slow"),
+        ("mcp__deaf__echo", "300 ms", "deaf"),
+        ("mcp__slow__echo", "1 second", "slow"),
     ] {
         let start = std::time::Instant::now();
         let (text, is_error) =
@@ -563,5 +563,37 @@ async fn a_call_nobody_answers_ends_at_the_deadline() {
         m.servers().iter().all(|s| s.error().is_none()),
         "a timeout is not down"
     );
+    m.close().await;
+}
+
+/// X-79: a server that dies while nobody calls it is down in the next snapshot — what `/tools` shows on
+/// opening — not `connected` until some call trips over it.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_snapshot_finds_a_server_that_died_idle() {
+    let script = SH_SERVER.replace(
+        r#"'{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"echo","description":"says pong","inputSchema":{"type":"object"}}]}}' ;;"#,
+        r#"'{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"echo","description":"says pong","inputSchema":{"type":"object"}}]}}'; echo 'idle and gone' >&2; exit 1 ;;"#,
+    );
+    let m = Manager::new(vec![stdio("idle", "sh", &["-c", &script])], options());
+    assert!(m.connect_all(&CancellationToken::new()).await[0].connected());
+    let mut down = None;
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let s = m.servers().remove(0);
+        if !s.connected() {
+            down = Some(s);
+            break;
+        }
+    }
+    let s = down.expect("the snapshot never saw the server go");
+    assert_eq!(
+        s.failure(),
+        Some((
+            "exited (its last stderr line: \"idle and gone\") — its tools will fail until it is reconnected from /tools",
+            vec!["stderr:", "  idle and gone"]
+        ))
+    );
+    assert_eq!(s.wire_names(), vec!["mcp__idle__echo"], "its tools stay");
     m.close().await;
 }

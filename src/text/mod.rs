@@ -96,6 +96,30 @@ pub(crate) fn go_float(f: f64) -> String {
     out
 }
 
+/// A deadline in words, for a sentence a user reads: the largest unit it is a whole number of —
+/// `"30 minutes"`, `"1 hour"`, `"90 seconds"`, `"300 ms"` — where [`go_duration`] would say `30m0s`.
+pub(crate) fn human_duration(d: std::time::Duration) -> String {
+    let plural = |n: u128, unit: &str| {
+        if n == 1 {
+            format!("1 {unit}")
+        } else {
+            format!("{n} {unit}s")
+        }
+    };
+    let ms = d.as_millis();
+    if !ms.is_multiple_of(1000) || ms == 0 {
+        return format!("{ms} ms");
+    }
+    let secs = ms / 1000;
+    if secs.is_multiple_of(3600) {
+        plural(secs / 3600, "hour")
+    } else if secs.is_multiple_of(60) {
+        plural(secs / 60, "minute")
+    } else {
+        plural(secs, "second")
+    }
+}
+
 /// Go `time.Duration` `String()`: `"30s"`, `"300ms"`, `"10m0s"`, `"1m30s"`, `"2h0m0s"`.
 pub(crate) fn go_duration(d: std::time::Duration) -> String {
     const NS_PER_US: u128 = 1_000;
@@ -357,6 +381,22 @@ mod tests {
     }
 
     // Expectations generated with Go 1.27 `time.Duration.String()`.
+    #[test]
+    fn human_duration_names_the_largest_whole_unit() {
+        use std::time::Duration;
+        for (d, want) in [
+            (Duration::from_mins(30), "30 minutes"),
+            (Duration::from_hours(1), "1 hour"),
+            (Duration::from_secs(90), "90 seconds"),
+            (Duration::from_secs(1), "1 second"),
+            (Duration::from_mins(1), "1 minute"),
+            (Duration::from_millis(300), "300 ms"),
+            (Duration::from_millis(1500), "1500 ms"),
+        ] {
+            assert_eq!(super::human_duration(d), want, "{d:?}");
+        }
+    }
+
     #[test]
     fn go_duration_table() {
         let cases: [(u64, &str); 21] = [

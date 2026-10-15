@@ -7,33 +7,44 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Changed
 
+- **`/tools` is one list of where the tools come from.** The two tabs, Tools
+  and MCP, are now one list: `built in` (the tools iota ships with) and then
+  each MCP server, with how many tools it has and how it stands —
+  `connected`, `connecting…`, `down`, `needs login` or `failed`, with the
+  reason in a few words. Enter opens a page for that source: for a server
+  its endpoint, transport, login, tool names, call timeout, the full reason
+  it failed (its stderr included) and its tools; Esc goes back to the list.
+- **An MCP server can be reconnected from `/tools`.** Press Enter on a
+  server's page: it reconnects in the background, the page shows it
+  happening and how it went, and the chat gets one line —
+  `MCP db reconnected · 3 tools`, or why it did not. A server you have just
+  logged in to with `iota mcp login` no longer needs a restart of the chat to
+  use the new login.
 - **MCP failures say what happened and what to do.** A server that did not
   connect used to be reported with the library's own words — generic Rust
   type names, `when send initialize request`, and sometimes a proxy's whole
   HTML error page — with the actual reason buried or missing. Now the notice
   is one line that names the server, what went wrong, and what to check:
-  `⚠ MCP nb: can't reach https://example.com/mcp: connection refused — check the url, and
-  that the server is running · details in /tools`. A 404, a 5xx, a web page
-  where the MCP endpoint should be, a command that is not installed, a
-  server that exits during startup (its last stderr line is shown), a
-  handshake that never finishes and a rejected header are each worded the
-  same way. The full cause chain and the server's stderr are in the MCP tab
-  of `/tools`, and under the warning in a headless run. A tool call to a
-  server that has stopped now says so — `MCP server "x": disconnected (it
-  exited or closed the connection) — restart iota to reconnect it` — instead
-  of `Transport closed`.
+  `⚠ MCP nb: can't reach https://example.com/mcp: connection refused — check
+  the url, and that the server is running · details in /tools`. A 404, a 5xx,
+  a web page where the MCP endpoint should be, a command that is not
+  installed, a server that exits during startup (its last stderr line is
+  shown), a handshake that never finishes and a rejected header are each
+  worded the same way. The full cause chain and the server's stderr are on
+  the server's page in `/tools`, and under the warning in a headless run.
 
 ### Fixed
 
 - **An MCP server that stops mid-session is shown as stopped.** A stdio
-  server that exited — killed, or crashed — used to stay `connected` in the
-  MCP tab of `/tools`, with nothing said in the chat. Now the first call that
-  finds it gone marks it `disconnected`, and the chat says so once, with the
-  last line the server wrote to stderr: `⚠ MCP db: exited (its last stderr
-  line: "RuntimeError: database connection lost") — its tools will fail
-  until iota is restarted · details in /tools`. Its tools stay available to
-  the model, and every call to them answers with a sentence that says the
-  server has exited and that restarting iota brings it back.
+  server that exited — killed, or crashed — used to stay `connected` in
+  `/tools`, with nothing said in the chat. Now it shows as `down` as soon as
+  `/tools` is opened or a call finds it gone, and the chat says so once, with
+  the last line the server wrote to stderr: `⚠ MCP db: exited (its last
+  stderr line: "RuntimeError: database connection lost") — its tools will
+  fail until it is reconnected from /tools · details in /tools`. Its tools
+  stay available to the model, and every call to them answers with a
+  sentence that says the server has exited and that it can be reconnected
+  from `/tools` — instead of `Transport closed`.
 - **A tool call an MCP server never answers no longer hangs forever.** Every
   MCP tool call now has a deadline, 30 minutes by default, after which it is
   given up and the model is told why. A server whose tools legitimately run

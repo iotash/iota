@@ -677,7 +677,7 @@ fn mcp_list_probe_reports_each_server() {
     assert_eq!(
         lines[1],
         format!(
-            "  bad   stdio  {}  [auth: none]  failed: can't start \"/nonexistent/mcp-server\": command not found — check that it is installed and on PATH",
+            "  bad   stdio  {}  [auth: none]  failed: can't start \"mcp-server\": command not found — check that it is installed and on PATH",
             user.display()
         )
     );
@@ -694,7 +694,7 @@ fn mcp_list_probe_reports_each_server() {
     // `--json` carries the whole text: the summary, then the detail (the OS's own words).
     let error = rows[0]["probe"]["error"].as_str().unwrap();
     assert!(
-        error.starts_with("can't start \"/nonexistent/mcp-server\": command not found"),
+        error.starts_with("can't start \"mcp-server\": command not found"),
         "{error}"
     );
     assert!(error.contains("\nNo such file or directory"), "{error}");
