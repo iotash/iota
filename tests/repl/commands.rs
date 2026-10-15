@@ -2101,12 +2101,35 @@ async fn status_renders_the_capability_rows() {
     );
 }
 
-/// Two live tabs on a 500 ms refresh, and the result discarded.
+/// One commit of a single-panel surface: Enter on row `cursor`.
+fn enter(cursor: usize) -> Reply {
+    Reply::Tabbed(TabbedResult {
+        panels: vec![PanelResult {
+            cursor,
+            ..PanelResult::default()
+        }],
+        ..TabbedResult::default()
+    })
+}
+
+/// Esc on a surface.
+fn esc() -> Reply {
+    Reply::Tabbed(TabbedResult {
+        cancelled: true,
+        ..TabbedResult::default()
+    })
+}
+
+/// X-79: `/tools` is ONE live list — `built in` and then the servers — and Enter on a row opens that
+/// source's page; Esc on the page goes back to the list, with the cursor where it was; Esc on the list
+/// closes it. Both levels re-render every 500 ms.
 #[tokio::test]
-async fn tools_opens_two_live_tabs() {
+async fn tools_is_one_list_and_a_page_per_source() {
     let f = Fixture::new(vec![
         input("/tools"),
-        Reply::Tabbed(TabbedResult::default()),
+        enter(0),
+        esc(),
+        esc(),
         Reply::Interrupted,
     ]);
     let session = f.session(None);
@@ -2114,16 +2137,136 @@ async fn tools_opens_two_live_tabs() {
     params.dispatch = Arc::new(StaticDispatcher::new(&["shell"]));
     iota::repl::run(params).await.expect("exit");
 
-    let s = &surfaces(&f.ui)[0];
-    assert_eq!(s.refresh_every_ms, 500);
-    assert_eq!(s.panels.len(), 2);
-    assert_eq!(s.panels[0].title, "Tools");
-    assert_eq!(s.panels[1].title, "MCP");
-    assert!(s.panels[1].wrap, "the MCP tab wraps");
-    assert!(
-        s.panels[0].has_refresh && s.panels[1].has_refresh,
-        "both tabs re-render while open"
+    let s = surfaces(&f.ui);
+    assert_eq!(s.len(), 3, "the list, the page, the list again");
+    for list in [&s[0], &s[2]] {
+        assert_eq!(list.refresh_every_ms, 500);
+        assert_eq!(list.panels.len(), 1, "one tab");
+        let p = &list.panels[0];
+        assert_eq!((p.title.as_str(), p.kind), ("Tools", PanelKind::List));
+        assert_eq!(
+            p.items.iter().map(|i| strip_sgr(i)).collect::<Vec<_>>(),
+            vec!["built in  1 tool  available"]
+        );
+        assert_eq!(
+            p.prompt,
+            "0 MCP servers · 1 tool · Enter: open · Esc: close"
+        );
+        assert!(p.has_refresh);
+        assert_eq!(p.cursor, 0);
+    }
+    let page = &s[1].panels[0];
+    assert_eq!(
+        (page.title.as_str(), page.kind),
+        ("built in", PanelKind::View)
     );
+    assert_eq!(page.prompt, "Esc: back", "nothing to reconnect");
+    assert!(page.has_refresh && page.wrap);
+}
+
+/// A minimal MCP server in POSIX `sh`: `initialize`, `tools/list` (one tool `echo`), exiting on stdin EOF.
+#[cfg(unix)]
+const SH_SERVER: &str = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"fake","version":"1.0.0"}}}' ;;
+    *'"method":"tools/list"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"echo","description":"says pong","inputSchema":{"type":"object"}}]}}' ;;
+  esac
+done
+"#;
+
+/// X-79: Enter on a server's page reconnects it (`Manager::reconnect`, in the background) and the outcome
+/// lands in the transcript — `MCP <name> reconnected · N tools`, or the startup notice's own line in X-77's
+/// words. `flaky` serves once and refuses every later start, as a server whose license server went away.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tools_reconnects_a_server_from_its_page() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let marker = dir.path().join("started");
+    let flaky = dir.path().join("flaky.sh");
+    std::fs::write(
+        &flaky,
+        format!(
+            "if [ -e '{m}' ]; then echo 'license server unreachable' >&2; exit 1; fi\ntouch '{m}'\n{SH_SERVER}",
+            m = marker.display()
+        ),
+    )
+    .expect("write");
+    let stdio = |name: &str, command: &str, args: &[&str]| iota::mcp::config::ServerConfig {
+        name: name.to_owned(),
+        command: command.to_owned(),
+        args: args.iter().map(|a| (*a).to_owned()).collect(),
+        ..iota::mcp::config::ServerConfig::default()
+    };
+    let manager = iota::mcp::Manager::new(
+        vec![
+            stdio("good", "sh", &["-c", SH_SERVER]),
+            stdio("flaky", "sh", &[flaky.to_str().expect("utf-8")]),
+        ],
+        iota::mcp::ManagerOptions::new(reqwest::Client::new(), iota::app::env::Env::default()),
+    );
+    let statuses = manager.connect_all(&CancellationToken::new()).await;
+    assert!(statuses.iter().all(|s| s.error().is_none()), "{statuses:?}");
+
+    // Idle after `/tools` closed: wait (off the runtime's other thread) for both reconnects to land.
+    let waited = Arc::clone(&manager);
+    let settle = Reply::Pause(Arc::new(move || {
+        for _ in 0..100 {
+            let s = waited.servers();
+            if s[0].error().is_none() && s[1].error().is_some() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }));
+    let f = Fixture::new(vec![
+        input("/tools"),
+        enter(1), // good's page
+        enter(0), // reconnect
+        esc(),    // back to the list
+        enter(2), // flaky's page
+        enter(0), // reconnect: refused
+        esc(),
+        esc(), // close
+        settle,
+        Reply::Interrupted,
+    ]);
+    let session = f.session(None);
+    let mut params = f.params(provider("gpt-4o", Ok(vec![])), session);
+    let snapshot = Arc::clone(&manager);
+    params.mcp = McpHooks {
+        servers: Some(Arc::new(move || snapshot.servers())),
+        events: None,
+        manager: Some(Arc::clone(&manager)),
+    };
+    iota::repl::run(params).await.expect("exit");
+
+    let s = surfaces(&f.ui);
+    let page = &s[1].panels[0];
+    assert_eq!((page.title.as_str(), page.kind), ("good", PanelKind::View));
+    assert_eq!(page.prompt, "Enter: reconnect · Esc: back");
+    assert_eq!(s[3].panels[0].cursor, 1, "back on the row it came from");
+    let lines = printed(&f.ui);
+    assert!(
+        lines.contains(&"MCP good reconnected · 1 tool".to_owned()),
+        "{lines:?}"
+    );
+    assert!(
+        lines.contains(
+            &"⚠ MCP flaky: \"sh\" exited during startup: license server unreachable · details in /tools"
+                .to_owned()
+        ),
+        "{lines:?}"
+    );
+    assert!(manager.servers()[0].connected());
+    assert_eq!(
+        manager.servers()[1].failure().map(|(s, _)| s.to_owned()),
+        Some("\"sh\" exited during startup: license server unreachable".to_owned())
+    );
+    manager.close().await;
 }
 
 // ---------------------------------------------------------------------------
@@ -2150,7 +2293,11 @@ async fn mcp_failures_and_warnings_reach_the_transcript() {
     .expect("send");
     tx.send(McpEvent {
         name: "fs".to_owned(),
-        error: Some("dial tcp: refused\nstack line 2".to_owned()),
+        error: Some(
+            "can't reach http://fs.example/mcp: connection refused — check the url, and that the server is running\n\
+             tcp connect error\nConnection refused (os error 61)"
+                .to_owned(),
+        ),
         warnings: Vec::new(),
     })
     .await
@@ -2168,8 +2315,13 @@ async fn mcp_failures_and_warnings_reach_the_transcript() {
     // The reporter is a task: give it a scheduling window before asserting.
     tokio::task::yield_now().await;
     let lines = printed(&f.ui);
+    // X-77: the summary, then where the detail is — the server named once, no `failed:` in front of a line
+    // that already says what failed.
     assert!(
-        lines.contains(&"⚠ MCP fs failed: dial tcp: refused".to_owned()),
+        lines.contains(
+            &"⚠ MCP fs: can't reach http://fs.example/mcp: connection refused — check the url, and that the server is running · details in /tools"
+                .to_owned()
+        ),
         "{lines:?}"
     );
     assert!(
@@ -2177,7 +2329,7 @@ async fn mcp_failures_and_warnings_reach_the_transcript() {
         "a successful connect says nothing: {lines:?}"
     );
     assert!(
-        !lines.iter().any(|l| l.contains("stack line 2")),
+        !lines.iter().any(|l| l.contains("tcp connect error")),
         "only the first line of the error is shown: {lines:?}"
     );
     assert!(

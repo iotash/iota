@@ -369,9 +369,9 @@ async fn a_refused_refresh_says_to_log_in_again() {
     let statuses = m.connect_all(&CancellationToken::new()).await;
     let error = statuses[0].error().expect("the connect failed").to_owned();
     assert!(
-        error.starts_with("connect failed: OAuth token refresh failed: ")
+        error.starts_with("the login failed: OAuth token refresh failed: ")
             && error.contains("invalid_scope")
-            && error.ends_with("; run iota mcp login nb"),
+            && error.ends_with(" — run iota mcp login nb"),
         "{error}"
     );
     m.close().await;
@@ -872,26 +872,31 @@ async fn an_undeclared_auth_is_discovered_from_the_handshake() {
     assert_eq!(statuses[0].auth, AuthMode::Auto);
     assert!(statuses[0].login_required, "the server asked");
     assert_eq!(statuses[0].login, Some(LoginState::NotLoggedIn));
-    // (c) the entry's own bearer went out as written and was refused: a connect failure, no login state.
+    // (c) the entry's own bearer went out as written and was refused: a connect failure that names the header,
+    // no login state.
     assert_eq!(
         statuses[1].auth,
         AuthMode::None,
         "an Authorization header makes auto none"
     );
-    assert!(
-        statuses[1]
-            .error()
-            .is_some_and(|e| e.starts_with("connect failed: ")),
+    assert_eq!(
+        statuses[1].failure().map(|(summary, _)| summary.to_owned()),
+        Some(format!(
+            "{} refused the Authorization header in its config — check it",
+            mock.mcp_url()
+        )),
         "{:?}",
         statuses[1].state
     );
     assert!(!statuses[1].login_required);
     assert_eq!(statuses[1].login, None);
-    // (d) `auth: none`: the same failure shape.
-    assert!(
-        statuses[2]
-            .error()
-            .is_some_and(|e| e.starts_with("connect failed: ")),
+    // (d) `auth: none`: a connect failure that says why iota did not log in.
+    assert_eq!(
+        statuses[2].failure().map(|(summary, _)| summary.to_owned()),
+        Some(format!(
+            "{} asks for a login — the entry says auth: none; add credentials to its headers, or remove auth: none to log in",
+            mock.mcp_url()
+        )),
         "{:?}",
         statuses[2].state
     );
@@ -1023,9 +1028,9 @@ async fn a_bare_401_or_403_asks_for_a_login_too() {
         );
         assert_eq!(statuses[0].login, Some(LoginState::NotLoggedIn), "{status}");
         assert!(
-            statuses[1]
-                .error()
-                .is_some_and(|e| e.starts_with("connect failed: ")),
+            statuses[1].error().is_some_and(|e| e.ends_with(
+                "the entry says auth: none; add credentials to its headers, or remove auth: none to log in"
+            ) && !e.contains("rmcp::")),
             "{status}: {:?}",
             statuses[1].state
         );

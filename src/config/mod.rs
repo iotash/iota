@@ -82,6 +82,11 @@ pub struct McpServerConfig {
     /// (absent = 17801).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub redirect_port: Option<u16>,
+    /// `tool_timeout_sec:` — seconds one tool call may go unanswered before it is given up (absent = 30
+    /// minutes, `crate::mcp::DEFAULT_CALL_TIMEOUT`). A backstop for a server that stopped answering, not a
+    /// speed limit; raise it for a tool that is meant to run longer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_timeout_sec: Option<u64>,
 }
 
 /// ONE config document, exactly as it is written on disk. [`Config`] is what a stack of these merges into,

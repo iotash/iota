@@ -27,9 +27,9 @@
 //! dispatched but not listed: it is refused with the reason rather than sent to the model.
 //!
 //! No management command joins the table: `/mcp` (with `/mcp login|logout`) was here from 2026-09-18 to
-//! 2026-09-20 and left again — the MCP tab of `/tools` shows every server's state, a login is
-//! `iota mcp login <name>` from a shell, and configuration is for the config toolset, not a slash
-//! command (DIVERGENCES X-42).
+//! 2026-09-20 and left again — `/tools` lists every server's state and reconnects one from its page
+//! (X-79), a login is `iota mcp login <name>` from a shell, and configuration is for the config toolset,
+//! not a slash command (DIVERGENCES X-42).
 //!
 //! One row comes and goes at RUN time: `/jobs` exists while a background job runs and not otherwise
 //! (`CmdFlags::jobs`, set from the job registry's watch — `run.rs` — with the table re-issued each

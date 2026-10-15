@@ -28,13 +28,24 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::mcp::error::McpError;
-use crate::mcp::transport::{CALL_INTERRUPTED, CLOSE_TIMEOUT, Session, connect_one};
+use crate::mcp::transport::{CLOSE_TIMEOUT, Session, connect_one};
+use crate::text::human_duration;
 
 /// Default per-server connect deadline (handshake + `tools/list`).
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Default deadline of one `tools/call` (`ManagerOptions::call_timeout`; an entry's `tool_timeout_sec` overrides
+/// it). A BACKSTOP for a server that stopped answering without closing the connection — a wrapper still holding
+/// the pipe after the real server died (docs/design/mcp-child-death-research.md §2.6) — not a speed limit: 30
+/// minutes is three times Gemini CLI's 10 and six times Codex's 300 s, so a long build or crawl is not cut off,
+/// while a headless run or a bot, which have no ESC, still get their turn back (X-78).
+pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_mins(30);
+
 /// Default cap on the captured stderr of a stdio server (64 KiB, DIVERGENCES I-05).
 pub const DEFAULT_STDERR_CAP: usize = 64 * 1024;
+
+/// The failure text of a connect the run's cancellation abandoned.
+const CONNECT_INTERRUPTED: &str = "interrupted while connecting";
 
 /// `clientInfo.name` sent in the `initialize` handshake.
 pub(crate) const CLIENT_NAME: &str = "iota";
@@ -137,6 +148,16 @@ pub enum ServerState {
     },
     /// The connect failed: the `McpError` text.
     Failed(String),
+    /// It connected, then a call found the connection gone — the server exited (X-78). Its tools stay
+    /// listed and keep their wire names (`segment`); calls to them fail with a sentence that says so. Also
+    /// reached without a call: a snapshot ([`Manager::servers`]) that finds the connection closed takes the
+    /// same step. Only a [`Manager::reconnect`] leaves this state — `/tools` offers one on the server's page.
+    Down {
+        /// The segment its wire names were registered under.
+        segment: String,
+        /// `crate::mcp::explain::exited`'s text: the summary, then the tail of its stderr.
+        reason: String,
+    },
 }
 
 /// The status of one configured MCP server, index-aligned with the manager's configs.
@@ -176,39 +197,49 @@ impl ServerStatus {
         matches!(self.state, ServerState::Connected { .. })
     }
 
-    /// The failure text, when the connect failed.
+    /// The failure text, when the connect failed or the server went down: the summary line, then the detail
+    /// lines.
     pub fn error(&self) -> Option<&str> {
         match &self.state {
-            ServerState::Failed(err) => Some(err),
+            ServerState::Failed(err) | ServerState::Down { reason: err, .. } => Some(err),
             _ => None,
         }
     }
 
-    /// The wire-name segment; `""` unless connected.
+    /// The failure's summary — what happened and what to do, the one line a notice prints — and its detail
+    /// lines (the cause chain, a stdio server's stderr), which only the outlets with room show
+    /// (`crate::mcp::explain`). `None` unless the connect failed.
+    pub fn failure(&self) -> Option<(&str, Vec<&str>)> {
+        self.error().map(crate::mcp::explain::split)
+    }
+
+    /// The wire-name segment; `""` unless connected (or down: its tools keep their names).
     pub fn segment(&self) -> &str {
         match &self.state {
-            ServerState::Connected { segment } => segment,
+            ServerState::Connected { segment } | ServerState::Down { segment, .. } => segment,
             _ => "",
         }
     }
 
     /// The wire names the raw `tools` registered under, in the same order — the
-    /// `wire name → server` oracle the Tools tab's source column reads. Empty unless connected.
+    /// `wire name → server` oracle `/tools` sorts the tools by. Empty unless connected or down (a
+    /// down server's tools stay listed, X-78).
     pub fn wire_names(&self) -> Vec<String> {
-        let ServerState::Connected { segment } = &self.state else {
+        let segment = self.segment();
+        if segment.is_empty() {
             return Vec::new();
-        };
+        }
         self.tools
             .iter()
             .map(|raw| compose_wire_name(segment, raw))
             .collect()
     }
 
-    /// `"mcp__<segment>__"` when connected, else `""`.
+    /// `"mcp__<segment>__"` when connected or down, else `""`.
     pub fn wire_prefix(&self) -> String {
-        match &self.state {
-            ServerState::Connected { segment } => format!("{WIRE_NAME_PREFIX}{segment}__"),
-            _ => String::new(),
+        match self.segment() {
+            "" => String::new(),
+            segment => format!("{WIRE_NAME_PREFIX}{segment}__"),
         }
     }
 
@@ -223,11 +254,24 @@ impl ServerStatus {
     }
 }
 
+/// What [`Manager::detail`] reports of one server.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServerDetail {
+    /// A stdio (command) server, else an HTTP one.
+    pub stdio: bool,
+    /// How long one of its calls may go unanswered (`tool_timeout_sec`, else the manager's default).
+    pub call_timeout: Duration,
+    /// What a stdio server has written to stderr so far (the kept tail); empty for HTTP or no session.
+    pub stderr: String,
+}
+
 /// Construction-time knobs of a `Manager`.
 #[derive(Clone)]
 pub struct ManagerOptions {
     /// Per-server connect deadline; `Elapsed` → `McpError::Timeout(connect_timeout)`.
     pub connect_timeout: Duration,
+    /// Deadline of one `tools/call` ([`DEFAULT_CALL_TIMEOUT`]); an entry's `tool_timeout_sec` overrides it.
+    pub call_timeout: Duration,
     /// HTTP client shared by every streamable-HTTP transport (built AFTER the TLS provider is installed).
     pub http: reqwest::Client,
     /// `clientInfo` of the `initialize` handshake.
@@ -243,6 +287,7 @@ impl ManagerOptions {
     pub fn new(http: reqwest::Client, env: Env) -> Self {
         Self {
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            call_timeout: DEFAULT_CALL_TIMEOUT,
             http,
             client_info: rmcp::model::Implementation::new(CLIENT_NAME, CLIENT_VERSION),
             stderr_cap: DEFAULT_STDERR_CAP,
@@ -259,6 +304,10 @@ pub struct Manager {
     opts: ManagerOptions,
     /// Mutable view; never held across an `.await`.
     state: RwLock<State>,
+    /// Where a server that goes down mid-session is announced: the channel
+    /// [`connect_background`](Self::connect_background) returned, kept open for the run (X-78). `None` in a
+    /// headless run, whose only reader of a failure is the model.
+    notices: std::sync::Mutex<Option<tokio::sync::mpsc::Sender<ServerStatus>>>,
 }
 
 /// The manager's mutable view.
@@ -300,6 +349,11 @@ impl State {
 pub(crate) struct ToolTarget {
     /// Index into `State::sessions`.
     pub(crate) session: usize,
+    /// Index into the configs (and `State::servers`) of the server that owns it — what a call that finds the
+    /// connection gone marks down.
+    pub(crate) config: usize,
+    /// The configured name of the server that owns it — what a failed call's text names.
+    pub(crate) server: String,
     /// The raw (un-namespaced) tool name the server expects.
     pub(crate) raw: String,
 }
@@ -339,6 +393,7 @@ impl Manager {
                 servers,
                 ..State::default()
             }),
+            notices: std::sync::Mutex::new(None),
         })
     }
 
@@ -389,24 +444,42 @@ impl Manager {
     /// Interactive entry (Go `Connect`, manager.go:197-208): starts every server's connect concurrently, one
     /// task each, and returns IMMEDIATELY so a cold `npx` server overlaps the model/session selection instead of
     /// blocking it. Each result is merged the moment it lands — its tools join the live set at once — and the
-    /// resolved status is sent on the returned receiver, which CLOSES once every server has resolved (an empty
-    /// config list closes it before the caller can poll).
+    /// resolved status is sent on the returned receiver (an empty config list closes it before the caller can
+    /// poll).
     ///
-    /// The channel is buffered to the server count, so a connect task never waits on a late consumer; the
-    /// binary maps the statuses to `crate::repl::McpEvent` and the loop reports the failures once the transcript
-    /// exists (`TUI_DESIGN` §8.2.7).
+    /// The channel is buffered to twice the server count, so neither a connect task nor a server going down
+    /// ever waits on a late consumer; the binary maps the statuses to `crate::repl::McpEvent` and the loop
+    /// reports the failures once the transcript exists (`TUI_DESIGN` §8.2.7). The manager keeps a sender for
+    /// the run while a server it could announce is connected: one that goes down mid-session is announced on
+    /// the same channel, once (X-78). So the channel closes when the last connect resolves if none of them
+    /// connected — nothing can go down — and otherwise when the manager is dropped.
     pub fn connect_background(
         self: &Arc<Self>,
         cancel: &CancellationToken,
     ) -> tokio::sync::mpsc::Receiver<ServerStatus> {
-        let (tx, rx) = tokio::sync::mpsc::channel(self.configs.len().max(1));
+        let (tx, rx) = tokio::sync::mpsc::channel(2 * self.configs.len().max(1));
+        if !self.configs.is_empty() {
+            *crate::sync::lock(&self.notices) = Some(tx.clone());
+        }
+        let pending = Arc::new(std::sync::atomic::AtomicUsize::new(self.configs.len()));
         for i in 0..self.configs.len() {
             let this = Arc::clone(self);
             let cancel = cancel.clone();
             let tx = tx.clone();
+            let pending = Arc::clone(&pending);
             tokio::spawn(async move {
                 let result = this.connect_indexed(i, &cancel).await;
                 let status = this.merge_result(i, result);
+                // The last one to resolve lets the notice sender go when no server connected: nothing can
+                // go down, so the reporter is not kept waiting for the life of the chat.
+                if pending.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) == 1
+                    && !read(&this.state)
+                        .servers
+                        .iter()
+                        .any(ServerStatus::connected)
+                {
+                    crate::sync::lock(&this.notices).take();
+                }
                 // A receiver dropped before every server resolved is not an error: the run moved on.
                 let _ = tx.send(status).await;
             });
@@ -425,7 +498,7 @@ impl Manager {
         let outcome = tokio::select! {
             r = attempt => r,
             () = cancel.cancelled() => {
-                return ServerResult::Failed(self.failed_status(i, &McpError::Connect(CALL_INTERRUPTED.to_owned())));
+                return ServerResult::Failed(self.failed_status(i, &McpError::Connect(CONNECT_INTERRUPTED.to_owned())));
             }
         };
         match outcome {
@@ -440,9 +513,13 @@ impl Manager {
                 }
             }
             Ok(Err(e)) => ServerResult::Failed(self.failed_status(i, &e)),
-            Err(_elapsed) => ServerResult::Failed(
-                self.failed_status(i, &McpError::Timeout(self.opts.connect_timeout)),
-            ),
+            Err(_elapsed) => ServerResult::Failed(self.failed_status(
+                i,
+                &McpError::Timeout(crate::mcp::explain::timeout(
+                    &expand_server_config(cfg, &self.opts.env),
+                    &human_duration(self.opts.connect_timeout),
+                )),
+            )),
         }
     }
 
@@ -470,11 +547,27 @@ impl Manager {
     }
 
     /// Snapshot of every server's status (index-aligned with the configs). A server's `login` is read off
-    /// its token file here, so a live view (the MCP tab of `/tools`, on its 500 ms refresh) sees a login or
+    /// its token file here, so a live view (`/tools`, on its 500 ms refresh) sees a login or
     /// logout as it happens: an `oauth` server always has one; an `auto` server has one when the file says
     /// so, or — with no usable file — when the server asked for a login (`login_required`); a `none` server
     /// never.
+    ///
+    /// A connected server whose connection has closed — a stdio server killed while nobody was calling it — is
+    /// marked down first ([`mark_down_now`](Self::mark_down_now)), so the snapshot never shows a dead server
+    /// as connected (X-78; Codex checks `is_transport_closed` on its status queries the same way).
     pub fn servers(&self) -> Vec<ServerStatus> {
+        let gone: Vec<(usize, Arc<dyn Session>)> = {
+            let st = read(&self.state);
+            st.session_of
+                .iter()
+                .filter(|(i, _)| st.servers.get(**i).is_some_and(ServerStatus::connected))
+                .filter_map(|(i, s)| st.sessions.get(*s).cloned().flatten().map(|s| (*i, s)))
+                .filter(|(_, s)| s.is_closed())
+                .collect()
+        };
+        for (i, session) in gone {
+            self.mark_down_now(i, &session.stderr_snapshot());
+        }
         let mut servers = read(&self.state).servers.clone();
         for (status, cfg) in servers.iter_mut().zip(&self.configs) {
             let stored = || {
@@ -502,6 +595,28 @@ impl Manager {
     /// The config index of the FIRST server called `name`.
     fn index_of(&self, name: &str) -> Option<usize> {
         self.configs.iter().position(|c| c.name == name)
+    }
+
+    /// What `/tools` shows on server `i`'s page beyond its status: how it is reached, its call deadline, and —
+    /// for a stdio server with a live session — what it has written to stderr so far (the kept tail).
+    /// `None` = no such server.
+    pub fn detail(&self, i: usize) -> Option<ServerDetail> {
+        let cfg = self.configs.get(i)?;
+        let stderr = {
+            let st = read(&self.state);
+            st.session_of
+                .get(&i)
+                .and_then(|s| st.sessions.get(*s).cloned().flatten())
+        }
+        .map(|session| session.stderr_snapshot())
+        .unwrap_or_default();
+        Some(ServerDetail {
+            stdio: cfg.url.is_empty(),
+            call_timeout: cfg
+                .tool_timeout_sec
+                .map_or(self.opts.call_timeout, Duration::from_secs),
+            stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        })
     }
 
     /// The config of the server called `name`, as declared (not expanded).
@@ -647,6 +762,54 @@ impl Manager {
         })
     }
 
+    /// Server `i` was found gone by a call: `Connected` becomes `Down` — its tools and wire names stay, its
+    /// error is `explain::exited`'s text with the tail of its stderr — and the change is announced once on the
+    /// notice channel, where the chat's reporter prints `⚠ MCP <name>: <summary> · details in /tools` (X-78).
+    /// A server already down, or never connected, is left as it is: two calls that fail together announce it
+    /// once.
+    async fn mark_down(&self, i: usize, session: &dyn Session) {
+        // Read the stderr BEFORE taking the lock: the wait for the pipe's EOF is an `.await`.
+        let stderr = session.stderr_tail().await;
+        self.mark_down_now(i, &stderr);
+    }
+
+    /// [`mark_down`](Self::mark_down) with the stderr already read — what a snapshot does, which cannot wait.
+    fn mark_down_now(&self, i: usize, stderr: &[u8]) {
+        let Some(cfg) = self.configs.get(i) else {
+            return;
+        };
+        let reason =
+            crate::mcp::explain::exited(&expand_server_config(cfg, &self.opts.env), stderr)
+                .into_text();
+        let announced = {
+            let mut st = write(&self.state);
+            let Some(slot) = st.servers.get_mut(i) else {
+                return;
+            };
+            let ServerState::Connected { segment } = &slot.state else {
+                return;
+            };
+            slot.state = ServerState::Down {
+                segment: segment.clone(),
+                reason,
+            };
+            slot.clone()
+        };
+        let sender = crate::sync::lock(&self.notices).clone();
+        if let Some(tx) = sender {
+            // Buffered for every server twice over: a full channel is a reporter long gone, not a wait.
+            let _ = tx.try_send(announced);
+        }
+    }
+
+    /// The sentence a call to server `i` gets once it is down.
+    fn down_call(&self, i: usize) -> String {
+        self.configs.get(i).map_or_else(
+            || McpError::Disconnected.to_string(),
+            crate::mcp::explain::down_call,
+        )
+    }
+
     /// `crate::tool::PrefixOf` — one lookup in the name → prefix table `merge_result` fills (`""` for a name
     /// no connected server has); queried lazily per call. Until 2026-09-15 every call scanned `servers()`.
     pub fn prefix_of(self: &Arc<Self>) -> PrefixOf {
@@ -712,6 +875,8 @@ impl Manager {
                         wire,
                         ToolTarget {
                             session: session_idx,
+                            config: idx,
+                            server: status.name.clone(),
                             raw,
                         },
                     );
@@ -749,7 +914,10 @@ impl Dispatcher for Manager {
     }
 
     /// Looks up the target, clones the `Session` `Arc`, DROPS the lock, then calls. Unknown or closed →
-    /// `ToolError::UnknownTool`; `McpError` → `ToolError::Transport`; cancelled → `ToolError::Cancelled`. No other
+    /// `ToolError::UnknownTool`; `McpError` → `ToolError::Transport`, its text led by `MCP server "<name>": `
+    /// so the model and the transcript know whose call failed; cancelled → `ToolError::Cancelled`. A server
+    /// that is down is not called at all, and a call that finds the connection gone marks it down
+    /// ([`mark_down`](Manager::mark_down)): both answer `explain::down_call`'s sentence (X-78). No other
     /// capability.
     fn call_tool<'a>(
         &'a self,
@@ -761,23 +929,39 @@ impl Dispatcher for Manager {
             let target = {
                 let st = read(&self.state);
                 st.tool_index.get(name).and_then(|t| {
+                    let down = st
+                        .servers
+                        .get(t.config)
+                        .is_some_and(|s| matches!(s.state, ServerState::Down { .. }));
                     st.sessions
                         .get(t.session)
                         .cloned()
                         .flatten()
-                        .map(|session| (session, t.raw.clone()))
+                        .map(|session| (session, t.raw.clone(), t.server.clone(), t.config, down))
                 })
             };
-            let Some((session, raw)) = target else {
+            let Some((session, raw, server, config, down)) = target else {
                 return Err(ToolError::UnknownTool(name.to_owned()));
             };
             if cx.cancel.is_cancelled() {
                 return Err(ToolError::Cancelled);
             }
+            let failed = |reason: String| {
+                Err(ToolError::Transport(Box::new(McpError::Call(format!(
+                    "MCP server \"{server}\": {reason}"
+                )))))
+            };
+            if down {
+                return failed(self.down_call(config));
+            }
             match session.call_tool(&cx.cancel, &raw, args).await {
                 Ok((text, is_error)) => Ok(ToolOutput { text, is_error }),
                 Err(_) if cx.cancel.is_cancelled() => Err(ToolError::Cancelled),
-                Err(e) => Err(ToolError::Transport(Box::new(e))),
+                Err(McpError::Disconnected) => {
+                    self.mark_down(config, &*session).await;
+                    failed(self.down_call(config))
+                }
+                Err(e) => failed(e.to_string()),
             }
         })
     }
@@ -1160,5 +1344,90 @@ mod tests {
         let m = manager(&[]);
         let mut rx = m.connect_background(&CancellationToken::new());
         assert!(rx.recv().await.is_none());
+    }
+
+    /// A session whose server is gone: every call is `Disconnected`, and its stderr ends in a traceback.
+    struct GoneSession;
+
+    impl Session for GoneSession {
+        fn call_tool<'a>(
+            &'a self,
+            _cancel: &'a CancellationToken,
+            _raw: &'a str,
+            _args: JsonObject,
+        ) -> crate::BoxFuture<'a, Result<(String, bool), crate::mcp::error::McpError>> {
+            Box::pin(std::future::ready(Err(
+                crate::mcp::error::McpError::Disconnected,
+            )))
+        }
+
+        fn stderr_tail(&self) -> crate::BoxFuture<'_, Vec<u8>> {
+            Box::pin(std::future::ready(
+                b"serving\nTraceback (most recent call last):\nRuntimeError: database connection lost\n"
+                    .to_vec(),
+            ))
+        }
+
+        fn close(&self) -> crate::BoxFuture<'_, ()> {
+            Box::pin(std::future::ready(()))
+        }
+    }
+
+    // X-78: the first call that finds the connection gone marks the server down — the status says so, with the
+    // last stderr line in its summary and the tail under it — and announces it ONCE; the tools stay listed
+    // under their wire names, and every call answers the same actionable sentence without touching the
+    // session again.
+    #[tokio::test]
+    async fn a_call_that_finds_the_server_gone_marks_it_down_once() {
+        let m = manager(&["alpha"]);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        *crate::sync::lock(&m.notices) = Some(tx);
+        m.merge_result(
+            0,
+            connected("alpha", Arc::new(GoneSession), vec![echo_def("")]),
+        );
+        assert!(m.servers()[0].connected());
+
+        let want = "MCP server \"alpha\": it has exited — its tools won't work until it is reconnected, \
+                    which the user can do from /tools";
+        for _ in 0..2 {
+            let err = call(&m, "mcp__alpha__echo").await.expect_err("gone");
+            assert_eq!(err.to_string(), want);
+        }
+
+        let status = &m.servers()[0];
+        assert!(
+            matches!(status.state, ServerState::Down { .. }),
+            "{status:?}"
+        );
+        assert!(!status.connected());
+        assert_eq!(
+            status.failure(),
+            Some((
+                "exited (its last stderr line: \"RuntimeError: database connection lost\") — its tools will \
+                 fail until it is reconnected from /tools",
+                vec![
+                    "stderr:",
+                    "  serving",
+                    "  Traceback (most recent call last):",
+                    "  RuntimeError: database connection lost",
+                ]
+            ))
+        );
+        // Not taken out: the tools, their wire names and the prefix all stay.
+        assert_eq!(
+            m.tools()
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["mcp__alpha__echo"]
+        );
+        assert_eq!(status.wire_names(), vec!["mcp__alpha__echo"]);
+        assert_eq!(status.segment(), "alpha");
+
+        // Announced once, for two failed calls.
+        let announced = rx.try_recv().expect("one notice");
+        assert_eq!(announced, *status);
+        assert!(rx.try_recv().is_err(), "a second notice");
     }
 }

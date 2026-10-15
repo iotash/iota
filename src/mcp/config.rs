@@ -61,6 +61,9 @@ pub struct ServerConfig {
     /// fixed; a client the server registers on the spot, or takes by its metadata document, gets a random
     /// one.
     pub redirect_port: Option<u16>,
+    /// `tool_timeout_sec:` — how long one `tools/call` may go unanswered before it is given up (`None` = the
+    /// manager's default, [`crate::mcp::DEFAULT_CALL_TIMEOUT`]).
+    pub tool_timeout_sec: Option<u64>,
 }
 
 impl ServerConfig {
@@ -160,6 +163,7 @@ pub(crate) fn expand_server_config(server_cfg: &ServerConfig, env: &Env) -> Serv
         client_id: x(&server_cfg.client_id),
         client_secret: x(&server_cfg.client_secret),
         redirect_port: server_cfg.redirect_port,
+        tool_timeout_sec: server_cfg.tool_timeout_sec,
     }
 }
 
@@ -274,6 +278,7 @@ mod tests {
             client_id: "cid".to_owned(),
             client_secret: "${env:TOKEN}".to_owned(),
             redirect_port: Some(18000),
+            tool_timeout_sec: Some(90),
         };
         let got = expand_server_config(&server_cfg, &fixed());
         assert_eq!(
@@ -284,6 +289,11 @@ mod tests {
         assert_eq!(got.effective_auth(), super::AuthMode::Oauth);
         assert_eq!(got.client_id, "cid");
         assert_eq!(got.redirect_port, Some(18000));
+        assert_eq!(
+            got.tool_timeout_sec,
+            Some(90),
+            "the call deadline rides along"
+        );
         assert_eq!(super::redirect_uri(None), "http://127.0.0.1:17801/callback");
         assert_eq!(
             super::redirect_uri(Some(18000)),

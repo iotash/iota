@@ -673,13 +673,13 @@ fn mcp_list_probe_reports_each_server() {
     let text = ok(&o);
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.len(), 3, "{text}");
-    assert!(
-        lines[1].starts_with(&format!(
-            "  bad   stdio  {}  [auth: none]  failed: connect failed: ",
+    // X-77: the summary alone, in words.
+    assert_eq!(
+        lines[1],
+        format!(
+            "  bad   stdio  {}  [auth: none]  failed: can't start \"mcp-server\": command not found — check that it is installed and on PATH",
             user.display()
-        )),
-        "{}",
-        lines[1]
+        )
     );
     assert_eq!(
         lines[2],
@@ -691,12 +691,13 @@ fn mcp_list_probe_reports_each_server() {
     let o = mcp(cwd, &home, &["list", "--probe", "--json"]);
     let rows: serde_json::Value = serde_json::from_str(&ok(&o)).expect("json");
     assert_eq!(rows[0]["probe"]["state"], "failed");
+    // `--json` carries the whole text: the summary, then the detail (the OS's own words).
+    let error = rows[0]["probe"]["error"].as_str().unwrap();
     assert!(
-        rows[0]["probe"]["error"]
-            .as_str()
-            .unwrap()
-            .starts_with("connect failed: ")
+        error.starts_with("can't start \"mcp-server\": command not found"),
+        "{error}"
     );
+    assert!(error.contains("\nNo such file or directory"), "{error}");
     assert_eq!(
         rows[1]["probe"],
         serde_json::json!({"state": "connected", "tools": ["echo"], "error": null})
