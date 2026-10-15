@@ -164,11 +164,11 @@ pub(crate) fn mcp_status_lines(dispatch: &dyn Dispatcher, servers: &[ServerStatu
                 srv.tools.join(", ")
             )));
         }
-        if let ServerState::Failed(err) = &srv.state {
-            lines.push(red(&format!(
-                "  error: {}",
-                err.split('\n').next().unwrap_or_default()
-            )));
+        // The summary in red, then — this tab being where the notice sends the user for them — the detail
+        // lines: the cause chain, a stdio server's stderr (`crate::mcp::explain`).
+        if let Some((summary, detail)) = srv.failure() {
+            lines.push(red(&format!("  error: {summary}")));
+            lines.extend(detail.iter().map(|line| dim(&format!("    {line}"))));
         }
     }
     lines
@@ -436,7 +436,12 @@ pub(crate) mod tests {
             ServerStatus {
                 name: "broken".to_owned(),
                 endpoint: "broken-cmd --stdio".to_owned(),
-                state: ServerState::Failed("connect: no such file\nsecond line".to_owned()),
+                // `explain::spawn`'s text: the summary, then its detail line (X-77).
+                state: ServerState::Failed(
+                    "can't start \"broken-cmd\": command not found — check that it is installed and on PATH\n\
+                     No such file or directory (os error 2)"
+                        .to_owned(),
+                ),
                 ..ServerStatus::default()
             },
         ];
@@ -450,7 +455,9 @@ pub(crate) mod tests {
                 "broken  [disconnected]",
                 "  endpoint: broken-cmd --stdio",
                 "  tools: (none)",
-                "  error: connect: no such file",
+                "  error: can't start \"broken-cmd\": command not found — check that it is installed and on PATH",
+                // The detail the notice points here for (X-77); until 2026-10-15 this tab dropped it.
+                "    No such file or directory (os error 2)",
             ]
         );
     }

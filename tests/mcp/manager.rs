@@ -67,12 +67,15 @@ async fn a_server_that_never_answers_fails_at_the_connect_timeout() {
     let s = &statuses[0];
     assert_eq!(s.name, "hang");
     assert_eq!(s.endpoint, format!("sh -c {script}"));
-    assert!(
-        s.error().unwrap_or_default().contains("timed out"),
+    // X-77: what did not happen, within what deadline, and what to check — not `connection timed out after`.
+    assert_eq!(
+        s.error(),
+        Some(
+            "\"sh\" did not finish the MCP handshake within 300ms — check that it is an MCP server (one that speaks MCP on stdin/stdout)"
+        ),
         "hung server should be a resolved failure with a timeout error, got {:?}",
         s.state
     );
-    assert_eq!(s.error(), Some("connection timed out after 300ms"));
     assert_eq!(s.segment(), "");
     assert!(s.tools.is_empty() && s.tool_count == 0);
     assert!(
@@ -148,28 +151,24 @@ async fn reserved_header_is_a_connect_failure() {
         assert_eq!(s.segment(), "");
     }
     let hdr = &statuses[0];
-    assert!(
-        hdr.error()
-            .unwrap_or_default()
-            .starts_with("connect failed: "),
-        "{:?}",
-        hdr.state
-    );
-    assert!(
-        hdr.error()
-            .unwrap_or_default()
-            .contains("Header name 'accept' is reserved and conflicts with default headers"),
+    // X-77: the header named, and the fix — not rmcp's `Header name 'accept' is reserved …` behind
+    // `connect failed: Send message error Transport [rmcp::…]`.
+    assert_eq!(
+        hdr.error(),
+        Some(
+            "its config sets the header \"accept\", which iota sends itself — remove it from the headers"
+        ),
         "{:?}",
         hdr.state
     );
     assert_eq!(hdr.endpoint, "http://127.0.0.1:9/mcp");
     assert_eq!(
         statuses[1].error(),
-        Some("unsupported URL scheme: ftp://example.invalid/mcp")
+        Some("the url must start with http:// or https:// (it is ftp://example.invalid/mcp)")
     );
     assert_eq!(
         statuses[2].error(),
-        Some("server config must have either command or url")
+        Some("the entry has neither a command nor a url — give it one")
     );
     assert!(m.tools().is_empty());
     m.close().await;
@@ -200,7 +199,7 @@ async fn close_is_idempotent_and_clears_tools() {
     let m = Manager::new(
         vec![
             stdio("fake", "sh", &["-c", SH_SERVER]),
-            // A command that exits immediately without speaking MCP: `connect failed: …` with its stderr appended.
+            // A command that exits immediately without speaking MCP: its last stderr line is the reason (X-77).
             stdio("broken", "sh", &["-c", "echo boom >&2; exit 3"]),
         ],
         ManagerOptions {
@@ -219,20 +218,24 @@ async fn close_is_idempotent_and_clears_tools() {
     assert_eq!(fake.wire_prefix(), "mcp__fake__");
     assert_eq!(m.prefix_of()("fake"), "mcp__fake__");
     let broken = &statuses[1];
-    assert!(
-        broken
-            .error()
-            .unwrap_or_default()
-            .starts_with("connect failed: "),
+    // The summary names the command and what it said; the detail keeps the chain and the whole stderr.
+    assert_eq!(
+        broken.error(),
+        Some(
+            "\"sh\" exited during startup: boom\nconnection closed: initialize response\nstderr:\n  boom"
+        ),
         "{broken:?}"
     );
-    assert!(
-        broken
-            .error()
-            .unwrap_or_default()
-            .ends_with("\n  subprocess stderr:\nboom"),
-        "stderr appendix missing: {:?}",
-        broken.state
+    assert_eq!(
+        broken.failure(),
+        Some((
+            "\"sh\" exited during startup: boom",
+            vec![
+                "connection closed: initialize response",
+                "stderr:",
+                "  boom"
+            ]
+        ))
     );
 
     let defs = m.tools();
@@ -344,7 +347,147 @@ async fn cancelled_token_aborts_connect() {
     let start = std::time::Instant::now();
     let statuses = m.connect_all(&cancel).await;
     assert!(start.elapsed() < Duration::from_secs(10));
-    assert_eq!(statuses[0].error(), Some("connect failed: interrupted"));
+    assert_eq!(statuses[0].error(), Some("interrupted while connecting"));
     assert!(!statuses[0].connected());
+    m.close().await;
+}
+
+/// DIVERGENCES X-77: an HTTP server that does not connect is ONE line that says what happened and what to do,
+/// the cause chain kept as detail lines — never rmcp's `connect failed: Send message error Transport
+/// [rmcp::transport::worker::WorkerTransport<…>] error: …, when send initialize request`. One server per kind:
+/// a port nobody listens on (the line the owner quoted, 2026-10-15), a 404, a 5xx whose body is an HTML page
+/// (a proxy's error page), and a web page where the MCP endpoint should be.
+#[tokio::test]
+async fn http_failures_say_what_happened_and_what_to_do() {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+
+    let server = MockServer::start().await;
+    Mock::given(matchers::path("/404"))
+        .respond_with(ResponseTemplate::new(404).set_body_string(r#"{"error":"nope"}"#))
+        .mount(&server)
+        .await;
+    Mock::given(matchers::path("/503"))
+        .respond_with(ResponseTemplate::new(503).set_body_raw(
+            "<!doctype html>\n<html><head><title>Unable to connect</title></head><body>…</body></html>",
+            "text/html",
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(matchers::path("/page"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw("<html>hi</html>", "text/html"))
+        .mount(&server)
+        .await;
+    // A port that was free a moment ago: connecting to it is refused.
+    let closed = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        listener.local_addr().expect("addr").port()
+    };
+    let http = |name: &str, url: String| ServerConfig {
+        name: name.to_owned(),
+        url,
+        auth: iota::mcp::config::AuthMode::None,
+        ..ServerConfig::default()
+    };
+    let refused = format!("http://127.0.0.1:{closed}/api/mcp");
+    let m = Manager::new(
+        vec![
+            http("nb", refused.clone()),
+            http("missing", format!("{}/404", server.uri())),
+            http("proxied", format!("{}/503", server.uri())),
+            http("page", format!("{}/page", server.uri())),
+        ],
+        // The bare client: a developer machine's system proxy would answer for the closed port itself.
+        ManagerOptions::new(
+            reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("client"),
+            Env::default(),
+        ),
+    );
+    let statuses = m.connect_all(&CancellationToken::new()).await;
+    let summaries: Vec<&str> = statuses
+        .iter()
+        .map(|s| s.failure().expect("failed").0)
+        .collect();
+    assert_eq!(
+        summaries,
+        vec![
+            format!(
+                "can't reach {refused}: connection refused — check the url, and that the server is running"
+            ),
+            format!(
+                "{}/404 answered 404 Not Found — check that the url is the server's MCP endpoint",
+                server.uri()
+            ),
+            format!(
+                "{}/503 answered 503 Service Unavailable (\"Unable to connect\") — the server, or a proxy on the way to it, is failing; try again later",
+                server.uri()
+            ),
+            format!(
+                "{}/page answered with text/html, not MCP — check that the url is the server's MCP endpoint",
+                server.uri()
+            ),
+        ]
+    );
+    // The detail keeps what the summary words: the OS's own error at the bottom of the chain, the body cut to
+    // a line, an HTML page by its size.
+    let (_, detail) = statuses[0].failure().expect("failed");
+    assert!(
+        detail
+            .last()
+            .is_some_and(|l| l.starts_with("Connection refused")),
+        "{detail:?}"
+    );
+    assert_eq!(
+        statuses[1].failure().expect("failed").1,
+        vec![r#"response body: {"error":"nope"}"#]
+    );
+    let (_, detail) = statuses[2].failure().expect("failed");
+    assert!(
+        detail.len() == 1 && detail[0].starts_with("response body: an HTML page ("),
+        "{detail:?}"
+    );
+    for s in &statuses {
+        let text = s.error().expect("failed");
+        for leak in [
+            "rmcp::",
+            "WorkerTransport",
+            "when send initialize request",
+            "connect failed",
+            "<html",
+        ] {
+            assert!(!text.contains(leak), "{}: {leak:?} in {text:?}", s.name);
+        }
+    }
+    m.close().await;
+}
+
+/// DIVERGENCES X-77: a stdio server that exits mid-session. Its tools stay listed (what happens to them is
+/// docs/design/mcp-child-death-research.md's open question, not this test's), but a call to one tells the model
+/// WHOSE server is gone and what brings it back — not rmcp's bare `Transport closed`.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_to_a_server_that_exited_names_it() {
+    // SH_SERVER, except that it exits right after answering `tools/list`.
+    let script = SH_SERVER.replace(
+        r#"'{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"echo","description":"says pong","inputSchema":{"type":"object"}}]}}' ;;"#,
+        r#"'{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"echo","description":"says pong","inputSchema":{"type":"object"}}]}}'; exit 0 ;;"#,
+    );
+    assert_ne!(script, SH_SERVER, "the exit was spliced in");
+    let m = Manager::new(vec![stdio("gone", "sh", &["-c", &script])], options());
+    let statuses = m.connect_all(&CancellationToken::new()).await;
+    assert!(statuses[0].connected(), "{:?}", statuses[0]);
+    // The child has exited; give the transport a moment to see the end of its stdout.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let cx = RunCtx::new(CancellationToken::new());
+    let (text, is_error) =
+        iota::tool::model_text(m.call_tool(&cx, "mcp__gone__echo", JsonObject::new()).await);
+    assert!(is_error);
+    assert_eq!(
+        text,
+        "Error calling tool: MCP server \"gone\": disconnected (it exited or closed the connection) — restart iota to reconnect it"
+    );
     m.close().await;
 }

@@ -1036,7 +1036,8 @@ fn cli_defer_mode_mismatch_fails_at_config_load() {
 }
 
 /// DIVERGENCES I-05: a configured MCP server that does not connect is one `Warning:` line on stderr (Go was
-/// silent on the `-m` path) and never fails the run.
+/// silent on the `-m` path) and never fails the run. X-77: the line says what happened and what to do, in
+/// words — not rmcp's `connect failed: connection closed: initialize response`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cli_mcp_failed_server_warning() {
     let server = MockServer::start().await;
@@ -1048,10 +1049,19 @@ async fn cli_mcp_failed_server_warning() {
     let o = output(cmd).await;
     assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
     let stderr = err(&o);
-    assert!(
-        stderr.starts_with("Warning: mcp server sh: connect failed: "),
+    assert_eq!(
+        stderr.lines().next(),
+        Some(
+            // `--mcp` splits on whitespace, so `sh` gets `-c "'exit" "1'"` and says so on stderr: the
+            // summary carries the last line of it — the reason — instead of rmcp's `connection closed`.
+            "Warning: mcp server sh: \"sh\" exited during startup: 1': -c: line 1: syntax error: unexpected end of file"
+        ),
         "{stderr}"
     );
+    // The detail follows, indented: the whole of the child's stderr.
+    assert!(stderr.contains("\n  stderr:\n"), "{stderr}");
+    assert!(!stderr.contains("connect failed"), "{stderr}");
+    assert!(!stderr.contains("rmcp::"), "{stderr}");
     // The run still answered: a server that failed to connect degrades, it does not abort.
     assert_eq!(out(&o), format!("{}\n", transcript::REPLY));
 }

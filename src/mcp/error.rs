@@ -1,25 +1,27 @@
 //! `McpError` — the per-server and per-call MCP failure texts (mcp/manager.go). None of these aborts a run: every
 //! variant lands in `ServerState::Failed` or in a tool result. The only aborting MCP error, `--mcp: empty server
 //! specification`, is `crate::mcp::config::McpFlagError::EmptyFlag`.
-
-use std::time::Duration;
-
-use crate::text::go_duration;
+//!
+//! Every text is written for the user (DIVERGENCES X-77): its FIRST line says what happened and what to do,
+//! without the server's name (the outlet puts it in front); the lines after it are the detail
+//! (`crate::mcp::explain`). Until 2026-10-15 the variants prefixed rmcp's own text — `connect failed: Send
+//! message error Transport [rmcp::transport::worker::WorkerTransport<…>] error: …, when send initialize request`.
 
 /// A per-server connect failure or a per-call transport failure.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum McpError {
     /// Neither `command` nor `url` was configured.
-    #[error("server config must have either command or url")]
+    #[error("the entry has neither a command nor a url — give it one")]
     MissingTarget,
     /// The URL is not `http://` / `https://`.
-    #[error("unsupported URL scheme: {0}")]
+    #[error("the url must start with http:// or https:// (it is {0})")]
     UnsupportedScheme(String),
-    /// Spawn / handshake / header failure (stdio servers append `\n  subprocess stderr:\n<trimmed>`).
-    #[error("connect failed: {0}")]
+    /// Spawn / handshake / header failure, worded by `crate::mcp::explain`: the summary line, then the detail
+    /// lines (the cause chain, a stdio server's stderr).
+    #[error("{0}")]
     Connect(String),
-    /// `tools/list` failed after a successful handshake (the session is closed first).
-    #[error("list tools: {0}")]
+    /// `tools/list` failed after a successful handshake (the session is closed first); worded like `Connect`.
+    #[error("{0}")]
     ListTools(String),
     /// A server that wants a login nobody has done: an `auth: oauth` server with no usable token (none
     /// stored, or one the server rejected and the store could not refresh), or an `auto` server whose bare
@@ -28,10 +30,11 @@ pub enum McpError {
     /// `mcp-graceful-degradation`).
     #[error("{}", crate::mcp::auth::not_logged_in(.0))]
     NotLoggedIn(String),
-    /// The per-server connect deadline elapsed; displayed in Go duration form (`30s`, `300ms`).
-    #[error("connection timed out after {}", go_duration(*.0))]
-    Timeout(Duration),
-    /// A `tools/call` failure: the rmcp `ServiceError` Display text, or one of the two texts below.
+    /// The per-server connect deadline elapsed: `crate::mcp::explain::timeout`'s sentence, the deadline in Go
+    /// duration form (`30s`, `300ms`).
+    #[error("{0}")]
+    Timeout(String),
+    /// A `tools/call` failure: `crate::mcp::explain::call`'s sentence, `interrupted`, or one of the two texts below.
     #[error("{0}")]
     Call(String),
 }

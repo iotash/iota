@@ -2150,7 +2150,11 @@ async fn mcp_failures_and_warnings_reach_the_transcript() {
     .expect("send");
     tx.send(McpEvent {
         name: "fs".to_owned(),
-        error: Some("dial tcp: refused\nstack line 2".to_owned()),
+        error: Some(
+            "can't reach http://fs.example/mcp: connection refused — check the url, and that the server is running\n\
+             tcp connect error\nConnection refused (os error 61)"
+                .to_owned(),
+        ),
         warnings: Vec::new(),
     })
     .await
@@ -2168,8 +2172,13 @@ async fn mcp_failures_and_warnings_reach_the_transcript() {
     // The reporter is a task: give it a scheduling window before asserting.
     tokio::task::yield_now().await;
     let lines = printed(&f.ui);
+    // X-77: the summary, then where the detail is — the server named once, no `failed:` in front of a line
+    // that already says what failed.
     assert!(
-        lines.contains(&"⚠ MCP fs failed: dial tcp: refused".to_owned()),
+        lines.contains(
+            &"⚠ MCP fs: can't reach http://fs.example/mcp: connection refused — check the url, and that the server is running · details in /tools"
+                .to_owned()
+        ),
         "{lines:?}"
     );
     assert!(
@@ -2177,7 +2186,7 @@ async fn mcp_failures_and_warnings_reach_the_transcript() {
         "a successful connect says nothing: {lines:?}"
     );
     assert!(
-        !lines.iter().any(|l| l.contains("stack line 2")),
+        !lines.iter().any(|l| l.contains("tcp connect error")),
         "only the first line of the error is shown: {lines:?}"
     );
     assert!(

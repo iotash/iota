@@ -723,8 +723,13 @@ async fn connect_mcp(
         for status in manager.connect_all(cancel).await {
             // Go drained the events silently on the `-m` path; a server the user configured and did not get is
             // worth one line (DIVERGENCES I-05).
-            if let Some(err) = status.error() {
-                io.warning(&format!("Warning: mcp server {}: {err}", status.name));
+            // The summary on the `Warning:` line; a headless run has no `/tools`, so the detail lines (the
+            // cause chain, a stdio server's stderr) follow it here, indented.
+            if let Some((summary, detail)) = status.failure() {
+                io.warning(&format!("Warning: mcp server {}: {summary}", status.name));
+                for line in detail {
+                    io.warning(&format!("  {line}"));
+                }
             }
             for warning in status.warnings() {
                 io.warning(&format!("Warning: mcp server {}: {warning}", status.name));

@@ -16,8 +16,9 @@ use crate::repl::render::transcript::Transcript;
 use crate::repl::run::McpEvent;
 
 /// Drains `events` into `tr` until the channel closes or `done` fires (the UI loop thread
-/// exited). Only the FIRST line of an error is shown — a stack of transport detail in the
-/// chat area buries the conversation.
+/// exited). Only the error's summary — its first line, which says what happened and what to do
+/// (`crate::mcp::explain`) — is shown: a stack of transport detail in the chat area buries the
+/// conversation. When there IS detail, the line says where it is: the MCP tab of `/tools`.
 pub(crate) async fn report_mcp_failures(
     mut events: Receiver<McpEvent>,
     tr: Arc<Transcript>,
@@ -31,16 +32,52 @@ pub(crate) async fn report_mcp_failures(
                     tr.notice(&format!("⚠ MCP {}: {warning}", ev.name));
                 }
                 let Some(err) = ev.error else { continue }; // connected: nothing more to report
-                let first = err.split('\n').next().unwrap_or_default();
+                let (summary, detail) = crate::mcp::explain::split(&err);
                 // An OAuth server with no token is not broken, it is waiting for a login: the line says so
-                // rather than `failed`, and names the way in — the CLI, the one sentence every outlet uses.
-                if first.starts_with("not logged in") {
+                // and names the way in — the CLI, the one sentence every outlet uses.
+                if summary.starts_with("not logged in") {
                     tr.error(&format!("⚠ MCP {} {}", ev.name, not_logged_in(&ev.name)));
                     continue;
                 }
-                tr.error(&format!("⚠ MCP {} failed: {first}", ev.name));
+                tr.error(&notice_line(&ev.name, summary, !detail.is_empty()));
             }
             () = done.cancelled() => return,
         }
+    }
+}
+
+/// `⚠ MCP <name>: <summary>`, and ` · details in /tools` when the failure has detail lines to read there.
+pub(crate) fn notice_line(name: &str, summary: &str, has_detail: bool) -> String {
+    let pointer = if has_detail {
+        " · details in /tools"
+    } else {
+        ""
+    };
+    format!("⚠ MCP {name}: {summary}{pointer}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::notice_line;
+
+    // X-77: `⚠ MCP <name>: <summary>`, and the pointer only when there is something to find there.
+    #[test]
+    fn the_notice_points_at_the_detail_only_when_there_is_some() {
+        assert_eq!(
+            notice_line(
+                "nb",
+                "can't reach https://x/mcp: connection refused — check the url",
+                true
+            ),
+            "⚠ MCP nb: can't reach https://x/mcp: connection refused — check the url · details in /tools"
+        );
+        assert_eq!(
+            notice_line(
+                "bad",
+                "the url must start with http:// or https:// (it is ftp://x)",
+                false
+            ),
+            "⚠ MCP bad: the url must start with http:// or https:// (it is ftp://x)"
+        );
     }
 }

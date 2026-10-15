@@ -3,6 +3,26 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## Unreleased
+
+### Changed
+
+- **MCP failures say what happened and what to do.** A server that did not
+  connect used to be reported with the library's own words — generic Rust
+  type names, `when send initialize request`, and sometimes a proxy's whole
+  HTML error page — with the actual reason buried or missing. Now the notice
+  is one line that names the server, what went wrong, and what to check:
+  `⚠ MCP nb: can't reach https://example.com/mcp: connection refused — check the url, and
+  that the server is running · details in /tools`. A 404, a 5xx, a web page
+  where the MCP endpoint should be, a command that is not installed, a
+  server that exits during startup (its last stderr line is shown), a
+  handshake that never finishes and a rejected header are each worded the
+  same way. The full cause chain and the server's stderr are in the MCP tab
+  of `/tools`, and under the warning in a headless run. A tool call to a
+  server that has stopped now says so — `MCP server "x": disconnected (it
+  exited or closed the connection) — restart iota to reconnect it` — instead
+  of `Transport closed`.
+
 ## 0.7.2 - 2026-10-15
 
 ### Changed

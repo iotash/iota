@@ -16,6 +16,7 @@ use rmcp::{
 use tokio_util::sync::CancellationToken;
 
 use crate::mcp::error::{MRTR_UNSUPPORTED, McpError, TASK_UNSUPPORTED};
+use crate::mcp::explain;
 use crate::mcp::manager::ManagerOptions;
 use crate::sync::lock;
 
@@ -82,7 +83,7 @@ impl Session for RmcpSession {
     /// `peer.call_tool_once(CallToolRequestParams::new(raw).with_arguments(args))` selected against the token:
     /// `Complete(r)` → `(text blocks joined by "\n", r.is_error.unwrap_or(false))`; `InputRequired(_)` →
     /// `Err(McpError::Call(MRTR_UNSUPPORTED.into()))`; `Task(_)` → `Err(McpError::Call(TASK_UNSUPPORTED.into()))`;
-    /// `Err(ServiceError)` → `McpError::Call(e.to_string())`.
+    /// `Err(ServiceError)` → `McpError::Call(explain::call(&e))`, the sentence that follows the server's name.
     fn call_tool<'a>(
         &'a self,
         cancel: &'a CancellationToken,
@@ -105,7 +106,7 @@ impl Session for RmcpSession {
                 Ok(CallToolResponse::Task(_)) => Err(McpError::Call(TASK_UNSUPPORTED.to_owned())),
                 // `CallToolResponse` is `#[non_exhaustive]`: a kind this build does not know.
                 Ok(_) => Err(McpError::Call(ServiceError::UnexpectedResponse.to_string())),
-                Err(e) => Err(McpError::Call(e.to_string())),
+                Err(e) => Err(McpError::Call(explain::call(&e))),
             }
         })
     }
@@ -157,10 +158,10 @@ impl StderrCapture {
 /// the name (whatever it holds — a stale one is that path's own `NotLoggedIn`), else bare, where a 401/403 at
 /// the handshake ([`is_auth_required`]) is `NotLoggedIn(name)` — the server asked for a login nobody has done
 /// yet — and anything else `Connect`. Command non-empty → `spawn_stdio`; both empty → `MissingTarget`. A
-/// handshake failure is `Connect(e)` (stdio: plus `\n  subprocess stderr:\n<trimmed>` when the capture is
-/// non-empty, after a bounded wait for the pipe to reach EOF — [`STDERR_DRAIN_GRACE`]); a `tools/list`
-/// failure closes the session and is `ListTools(e)`. The caller wraps this in `timeout(connect_timeout, ..)`
-/// (`Elapsed` → `Timeout`).
+/// handshake failure is `Connect`, worded by [`explain::handshake`] (stdio: with the captured stderr, after a
+/// bounded wait for the pipe to reach EOF — [`STDERR_DRAIN_GRACE`] — its last line in the summary and the
+/// rest in the detail); a `tools/list` failure closes the session and is `ListTools`. The caller wraps this in
+/// `timeout(connect_timeout, ..)` (`Elapsed` → `Timeout`).
 pub(crate) async fn connect_one(
     server_cfg: &ServerConfig,
     opts: &ManagerOptions,
@@ -187,9 +188,13 @@ pub(crate) async fn connect_one(
             Err(e) if discover && is_auth_required(&e) => {
                 return Err(McpError::NotLoggedIn(server_cfg.name.clone()));
             }
-            Err(e) => return Err(McpError::Connect(e.to_string())),
+            Err(e) => {
+                return Err(McpError::Connect(
+                    explain::handshake(&server_cfg, &e, &[]).into_text(),
+                ));
+            }
         };
-        return list_tools(running).await;
+        return list_tools(&server_cfg, running).await;
     }
 
     if !server_cfg.command.is_empty() {
@@ -197,19 +202,16 @@ pub(crate) async fn connect_one(
         let running = match client_info(opts).serve(transport).await {
             Ok(running) => running,
             Err(e) => {
-                let mut msg = e.to_string();
                 // Bounded wait FIRST: the handshake can fail before the child's stderr has even
-                // been read, and an appendix that depends on which of the two wins is a diagnostic
+                // been read, and a reason that depends on which of the two wins is a diagnostic
                 // the user cannot rely on.
                 let captured = stderr.into_bytes().await;
-                if !captured.is_empty() {
-                    msg.push_str("\n  subprocess stderr:\n");
-                    msg.push_str(String::from_utf8_lossy(&captured).trim_end_matches('\n'));
-                }
-                return Err(McpError::Connect(msg));
+                return Err(McpError::Connect(
+                    explain::handshake(&server_cfg, &e, &captured).into_text(),
+                ));
             }
         };
-        return list_tools(running).await;
+        return list_tools(&server_cfg, running).await;
     }
 
     Err(McpError::MissingTarget)
@@ -246,7 +248,12 @@ async fn connect_oauth(
         Some(server_cfg.client_secret.as_str()),
     )
     .await
-    .map_err(|e| McpError::Connect(e.to_string()))?
+    .map_err(|e| {
+        McpError::Connect(format!(
+            "can't use the stored login: {e} — run iota mcp login {}",
+            server_cfg.name
+        ))
+    })?
     .ok_or_else(|| McpError::NotLoggedIn(server_cfg.name.clone()))?;
     let headers = parse_headers(server_cfg)?;
     let config = StreamableHttpClientTransportConfig::with_uri(server_cfg.url.as_str())
@@ -260,12 +267,15 @@ async fn connect_oauth(
         }
         Err(e) => {
             return Err(McpError::Connect(match auth_failure(&e) {
-                Some(text) => format!("{text}; run iota mcp login {}", server_cfg.name),
-                None => e.to_string(),
+                Some(text) => format!(
+                    "the login failed: {text} — run iota mcp login {}",
+                    server_cfg.name
+                ),
+                None => explain::handshake(server_cfg, &e, &[]).into_text(),
             }));
         }
     };
-    list_tools(running).await
+    list_tools(server_cfg, running).await
 }
 
 /// The OAuth failure inside a handshake error, when that is what it is — a refresh the server would not do,
@@ -330,15 +340,18 @@ fn client_info(opts: &ManagerOptions) -> ClientInfo {
 }
 
 /// manager.go:371-395 — `tools/list` (auto-paginated) on a served connection; a failure closes the session and is
-/// `ListTools(e)`.
+/// `ListTools`, worded by [`explain::list_tools`].
 async fn list_tools(
+    server_cfg: &ServerConfig,
     running: RunningService<RoleClient, ClientInfo>,
 ) -> Result<(Arc<dyn Session>, Vec<ToolDef>), McpError> {
     let tools = match running.peer().list_all_tools().await {
         Ok(tools) => tools,
         Err(e) => {
             let _ = tokio::time::timeout(CLOSE_TIMEOUT, running.cancel()).await;
-            return Err(McpError::ListTools(e.to_string()));
+            return Err(McpError::ListTools(
+                explain::list_tools(server_cfg, &e).into_text(),
+            ));
         }
     };
     let defs = tools
@@ -360,7 +373,7 @@ async fn list_tools(
 /// stdio half of `make_transport`: `tokio::process::Command::new(cmd).args(args).envs(env)`,
 /// `TokioChildProcess::builder(cmd).stderr(Stdio::piped()).spawn()`; the returned stderr is drained by a spawned task
 /// into the `stderr_cap`-capped capture, whose handle rides along in [`StderrCapture`] so a failed handshake can wait
-/// for it. Spawn failure → `Connect(e)`.
+/// for it. Spawn failure → `Connect`, worded by [`explain::spawn`].
 pub(crate) fn spawn_stdio(
     server_cfg: &ServerConfig,
     stderr_cap: usize,
@@ -372,7 +385,7 @@ pub(crate) fn spawn_stdio(
     let (transport, stderr) = rmcp::transport::TokioChildProcess::builder(command)
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| McpError::Connect(e.to_string()))?;
+        .map_err(|e| McpError::Connect(explain::spawn(server_cfg, &e).into_text()))?;
     let capture: Arc<std::sync::Mutex<Vec<u8>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
     let drain = stderr.map(|mut stderr| {
         let sink = Arc::clone(&capture);
@@ -415,7 +428,7 @@ pub(crate) fn http_transport(
     Ok(StreamableHttpClientTransport::with_client(http, config))
 }
 
-/// The config's `headers:` as typed header values; a parse failure → `Connect(e)`.
+/// The config's `headers:` as typed header values; a parse failure → `Connect`, naming the header.
 fn parse_headers(
     server_cfg: &ServerConfig,
 ) -> Result<
@@ -426,9 +439,13 @@ fn parse_headers(
 
     let mut headers = std::collections::HashMap::with_capacity(server_cfg.headers.len());
     for (name, value) in &server_cfg.headers {
-        let name = HeaderName::from_bytes(name.as_bytes())
-            .map_err(|e| McpError::Connect(e.to_string()))?;
-        let value = HeaderValue::from_str(value).map_err(|e| McpError::Connect(e.to_string()))?;
+        let invalid = |e: &dyn std::fmt::Display| {
+            McpError::Connect(format!(
+                "its config has an invalid header {name:?}: {e} — fix it in the config"
+            ))
+        };
+        let name = HeaderName::from_bytes(name.as_bytes()).map_err(|e| invalid(&e))?;
+        let value = HeaderValue::from_str(value).map_err(|e| invalid(&e))?;
         headers.insert(name, value);
     }
     Ok(headers)

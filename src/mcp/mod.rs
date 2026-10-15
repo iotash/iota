@@ -8,6 +8,7 @@
 pub mod auth;
 pub mod config;
 pub(crate) mod error;
+pub(crate) mod explain;
 pub(crate) mod manager;
 pub(crate) mod schema;
 pub(crate) mod transport;

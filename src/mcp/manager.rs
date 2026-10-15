@@ -28,13 +28,17 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::mcp::error::McpError;
-use crate::mcp::transport::{CALL_INTERRUPTED, CLOSE_TIMEOUT, Session, connect_one};
+use crate::mcp::transport::{CLOSE_TIMEOUT, Session, connect_one};
+use crate::text::go_duration;
 
 /// Default per-server connect deadline (handshake + `tools/list`).
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Default cap on the captured stderr of a stdio server (64 KiB, DIVERGENCES I-05).
 pub const DEFAULT_STDERR_CAP: usize = 64 * 1024;
+
+/// The failure text of a connect the run's cancellation abandoned.
+const CONNECT_INTERRUPTED: &str = "interrupted while connecting";
 
 /// `clientInfo.name` sent in the `initialize` handshake.
 pub(crate) const CLIENT_NAME: &str = "iota";
@@ -176,12 +180,19 @@ impl ServerStatus {
         matches!(self.state, ServerState::Connected { .. })
     }
 
-    /// The failure text, when the connect failed.
+    /// The failure text, when the connect failed: the summary line, then the detail lines.
     pub fn error(&self) -> Option<&str> {
         match &self.state {
             ServerState::Failed(err) => Some(err),
             _ => None,
         }
+    }
+
+    /// The failure's summary — what happened and what to do, the one line a notice prints — and its detail
+    /// lines (the cause chain, a stdio server's stderr), which only the outlets with room show
+    /// (`crate::mcp::explain`). `None` unless the connect failed.
+    pub fn failure(&self) -> Option<(&str, Vec<&str>)> {
+        self.error().map(crate::mcp::explain::split)
     }
 
     /// The wire-name segment; `""` unless connected.
@@ -300,6 +311,8 @@ impl State {
 pub(crate) struct ToolTarget {
     /// Index into `State::sessions`.
     pub(crate) session: usize,
+    /// The configured name of the server that owns it — what a failed call's text names.
+    pub(crate) server: String,
     /// The raw (un-namespaced) tool name the server expects.
     pub(crate) raw: String,
 }
@@ -425,7 +438,7 @@ impl Manager {
         let outcome = tokio::select! {
             r = attempt => r,
             () = cancel.cancelled() => {
-                return ServerResult::Failed(self.failed_status(i, &McpError::Connect(CALL_INTERRUPTED.to_owned())));
+                return ServerResult::Failed(self.failed_status(i, &McpError::Connect(CONNECT_INTERRUPTED.to_owned())));
             }
         };
         match outcome {
@@ -440,9 +453,13 @@ impl Manager {
                 }
             }
             Ok(Err(e)) => ServerResult::Failed(self.failed_status(i, &e)),
-            Err(_elapsed) => ServerResult::Failed(
-                self.failed_status(i, &McpError::Timeout(self.opts.connect_timeout)),
-            ),
+            Err(_elapsed) => ServerResult::Failed(self.failed_status(
+                i,
+                &McpError::Timeout(crate::mcp::explain::timeout(
+                    &expand_server_config(cfg, &self.opts.env),
+                    &go_duration(self.opts.connect_timeout),
+                )),
+            )),
         }
     }
 
@@ -712,6 +729,7 @@ impl Manager {
                         wire,
                         ToolTarget {
                             session: session_idx,
+                            server: status.name.clone(),
                             raw,
                         },
                     );
@@ -749,7 +767,8 @@ impl Dispatcher for Manager {
     }
 
     /// Looks up the target, clones the `Session` `Arc`, DROPS the lock, then calls. Unknown or closed →
-    /// `ToolError::UnknownTool`; `McpError` → `ToolError::Transport`; cancelled → `ToolError::Cancelled`. No other
+    /// `ToolError::UnknownTool`; `McpError` → `ToolError::Transport`, its text led by `MCP server "<name>": `
+    /// so the model and the transcript know whose call failed; cancelled → `ToolError::Cancelled`. No other
     /// capability.
     fn call_tool<'a>(
         &'a self,
@@ -765,10 +784,10 @@ impl Dispatcher for Manager {
                         .get(t.session)
                         .cloned()
                         .flatten()
-                        .map(|session| (session, t.raw.clone()))
+                        .map(|session| (session, t.raw.clone(), t.server.clone()))
                 })
             };
-            let Some((session, raw)) = target else {
+            let Some((session, raw, server)) = target else {
                 return Err(ToolError::UnknownTool(name.to_owned()));
             };
             if cx.cancel.is_cancelled() {
@@ -777,7 +796,9 @@ impl Dispatcher for Manager {
             match session.call_tool(&cx.cancel, &raw, args).await {
                 Ok((text, is_error)) => Ok(ToolOutput { text, is_error }),
                 Err(_) if cx.cancel.is_cancelled() => Err(ToolError::Cancelled),
-                Err(e) => Err(ToolError::Transport(Box::new(e))),
+                Err(e) => Err(ToolError::Transport(Box::new(McpError::Call(format!(
+                    "MCP server \"{server}\": {e}"
+                ))))),
             }
         })
     }
