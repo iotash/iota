@@ -1,7 +1,7 @@
 //! One live MCP connection (mcp/manager.go:337-398,478-512): `connect_one` builds the rmcp transport (stdio child
 //! process or streamable HTTP), runs the `initialize` handshake and lists the tools; `Session` is the crate-private
-//! seam the manager routes calls through, and `RmcpSession` is its production implementation over
-//! `Peer::call_tool_once` (never `call_tool`, which drives SEP-2322 MRTR rounds — DIVERGENCES D-33).
+//! seam the manager routes calls through, and `RmcpSession` is its production implementation: ONE `tools/call`
+//! request under the call deadline, never `Peer::call_tool`, which drives SEP-2322 MRTR rounds (DIVERGENCES D-33).
 
 use std::{borrow::Cow, sync::Arc, time::Duration};
 
@@ -10,8 +10,11 @@ use crate::mcp::config::{AuthMode, ServerConfig, expand_server_config};
 use crate::provider::model::{JsonObject, ToolDef};
 use rmcp::{
     RoleClient, ServiceExt,
-    model::{CallToolRequestParams, CallToolResponse, CallToolResult, ClientInfo, ContentBlock},
-    service::{Peer, RunningService, ServiceError},
+    model::{
+        CallToolRequest, CallToolRequestParams, CallToolResult, ClientInfo, ClientRequest,
+        ContentBlock, ServerResult,
+    },
+    service::{Peer, PeerRequestOptions, RunningService, ServiceError},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -36,12 +39,19 @@ pub(crate) const CALL_INTERRUPTED: &str = "interrupted";
 /// Crate-private seam over one live connection (`RmcpSession` in production; duplex echo server in unit tests).
 pub trait Session: Send + Sync {
     /// `tools/call` of the RAW tool name, selected against `cancel`; `Ok((joined text, is_error))`.
+    /// `Err(McpError::Disconnected)` when the connection is gone — the server exited or closed it.
     fn call_tool<'a>(
         &'a self,
         cancel: &'a CancellationToken,
         raw: &'a str,
         args: JsonObject,
     ) -> BoxFuture<'a, Result<(String, bool), McpError>>;
+
+    /// What a stdio server last wrote to stderr (the tail the capture kept), after a bounded wait for the
+    /// pipe to reach EOF — what explains a server that exited. Empty for every other kind of session.
+    fn stderr_tail(&self) -> BoxFuture<'_, Vec<u8>> {
+        Box::pin(std::future::ready(Vec::new()))
+    }
 
     /// Closes the connection; a second call is a no-op.
     fn close(&self) -> BoxFuture<'_, ()>;
@@ -55,16 +65,35 @@ pub(crate) struct RmcpSession {
     running: tokio::sync::Mutex<Option<RunningService<RoleClient, ClientInfo>>>,
     /// Cloned peer used by every call (no lock).
     peer: Peer<RoleClient>,
+    /// How long one `tools/call` may go unanswered (`ManagerOptions::call_timeout`, or the entry's
+    /// `tool_timeout_sec`).
+    call_timeout: Duration,
+    /// A stdio server's stderr, captured for the session's whole life; `None` for HTTP.
+    stderr: Option<StderrCapture>,
 }
 
 impl RmcpSession {
-    /// Wraps a freshly served connection, cloning its peer.
+    /// Wraps a freshly served connection, cloning its peer: the default call deadline, no stderr.
     pub(crate) fn new(running: RunningService<RoleClient, ClientInfo>) -> Self {
         let peer = running.peer().clone();
         Self {
             running: tokio::sync::Mutex::new(Some(running)),
             peer,
+            call_timeout: crate::mcp::manager::DEFAULT_CALL_TIMEOUT,
+            stderr: None,
         }
+    }
+
+    /// The call deadline.
+    pub(crate) fn with_call_timeout(mut self, call_timeout: Duration) -> Self {
+        self.call_timeout = call_timeout;
+        self
+    }
+
+    /// The stdio server's stderr capture, kept so an exit can be explained.
+    fn with_stderr(mut self, stderr: Option<StderrCapture>) -> Self {
+        self.stderr = stderr;
+        self
     }
 }
 
@@ -80,10 +109,14 @@ fn join_text(result: &CallToolResult) -> String {
 }
 
 impl Session for RmcpSession {
-    /// `peer.call_tool_once(CallToolRequestParams::new(raw).with_arguments(args))` selected against the token:
-    /// `Complete(r)` → `(text blocks joined by "\n", r.is_error.unwrap_or(false))`; `InputRequired(_)` →
-    /// `Err(McpError::Call(MRTR_UNSUPPORTED.into()))`; `Task(_)` → `Err(McpError::Call(TASK_UNSUPPORTED.into()))`;
-    /// `Err(ServiceError)` → `McpError::Call(explain::call(&e))`, the sentence that follows the server's name.
+    /// ONE `tools/call` request (`CallToolRequestParams::new(raw).with_arguments(args)`) — what rmcp's
+    /// `call_tool_once` sends — but under `PeerRequestOptions::with_timeout(call_timeout)`, so a server that
+    /// never answers ends in `ServiceError::Timeout` (rmcp then sends it `notifications/cancelled`) instead of
+    /// holding the turn forever; selected against the token. A call result → `(text blocks joined by "\n",
+    /// is_error.unwrap_or(false))`; `input_required` → `Err(McpError::Call(MRTR_UNSUPPORTED.into()))`; a task →
+    /// `Err(McpError::Call(TASK_UNSUPPORTED.into()))`; a closed connection → `Err(McpError::Disconnected)`;
+    /// any other `ServiceError` → `McpError::Call(explain::call(&e))`, the sentence that follows the server's
+    /// name.
     fn call_tool<'a>(
         &'a self,
         cancel: &'a CancellationToken,
@@ -92,21 +125,45 @@ impl Session for RmcpSession {
     ) -> BoxFuture<'a, Result<(String, bool), McpError>> {
         Box::pin(async move {
             let params = CallToolRequestParams::new(raw.to_owned()).with_arguments(args);
+            let request = ClientRequest::CallToolRequest(CallToolRequest::new(params));
+            let call = async {
+                self.peer
+                    .send_request_with_option(
+                        request,
+                        PeerRequestOptions::with_timeout(self.call_timeout),
+                    )
+                    .await?
+                    .await_response()
+                    .await
+            };
             let response = tokio::select! {
-                r = self.peer.call_tool_once(params) => r,
+                r = call => r,
                 () = cancel.cancelled() => return Err(McpError::Call(CALL_INTERRUPTED.to_owned())),
             };
             match response {
-                Ok(CallToolResponse::Complete(r)) => {
+                Ok(ServerResult::CallToolResult(r)) => {
                     Ok((join_text(&r), r.is_error.unwrap_or(false)))
                 }
-                Ok(CallToolResponse::InputRequired(_)) => {
+                Ok(ServerResult::InputRequiredResult(_)) => {
                     Err(McpError::Call(MRTR_UNSUPPORTED.to_owned()))
                 }
-                Ok(CallToolResponse::Task(_)) => Err(McpError::Call(TASK_UNSUPPORTED.to_owned())),
-                // `CallToolResponse` is `#[non_exhaustive]`: a kind this build does not know.
-                Ok(_) => Err(McpError::Call(ServiceError::UnexpectedResponse.to_string())),
+                Ok(ServerResult::CreateTaskResult(_)) => {
+                    Err(McpError::Call(TASK_UNSUPPORTED.to_owned()))
+                }
+                Ok(_) => Err(McpError::Call(explain::call(
+                    &ServiceError::UnexpectedResponse,
+                ))),
+                Err(e) if explain::is_disconnect(&e) => Err(McpError::Disconnected),
                 Err(e) => Err(McpError::Call(explain::call(&e))),
+            }
+        })
+    }
+
+    fn stderr_tail(&self) -> BoxFuture<'_, Vec<u8>> {
+        Box::pin(async move {
+            match &self.stderr {
+                Some(capture) => capture.bytes().await,
+                None => Vec::new(),
             }
         })
     }
@@ -123,24 +180,26 @@ impl Session for RmcpSession {
     }
 }
 
-/// Captured stderr of a stdio server: the `stderr_cap`-capped buffer a spawned task drains into,
-/// plus that task's handle, so a failed handshake can wait for the pipe to reach EOF before it
-/// reads. Reading the buffer without that wait is a race the child usually loses — the bytes are
-/// still in the pipe, or the task has not been scheduled yet — and the appendix `McpError::Connect`
-/// promises then appears only sometimes, which is the same as not promising it.
+/// Captured stderr of a stdio server: the buffer a spawned task drains into — its LAST `stderr_cap` bytes,
+/// the part that explains an exit — plus that task's handle, so a failed handshake or an exit can wait for
+/// the pipe to reach EOF before it reads. Reading the buffer without that wait is a race the child usually
+/// loses — the bytes are still in the pipe, or the task has not been scheduled yet — and the reason the
+/// text promises then appears only sometimes, which is the same as not promising it. Until 2026-10-15 the
+/// cap kept the FIRST bytes and the capture died with the handshake; it now lives as long as the session.
 pub(crate) struct StderrCapture {
-    /// What the drain task has captured so far, capped at `stderr_cap`.
+    /// What the drain task has captured: the tail, at most `stderr_cap` bytes.
     buf: Arc<std::sync::Mutex<Vec<u8>>>,
-    /// The drain task; it completes at EOF. `None` when the child had no stderr pipe.
-    drain: Option<tokio::task::JoinHandle<()>>,
+    /// The drain task; it completes at EOF. `None` when the child had no stderr pipe, or once waited for.
+    drain: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl StderrCapture {
-    /// The captured bytes, after waiting up to [`STDERR_DRAIN_GRACE`] for the drain to reach EOF.
-    /// On timeout the handle is dropped, which only detaches the task — it goes on capping the
-    /// buffer for as long as the pipe is open.
-    async fn into_bytes(mut self) -> Vec<u8> {
-        if let Some(drain) = self.drain.take() {
+    /// The captured bytes, after waiting up to [`STDERR_DRAIN_GRACE`] for the drain to reach EOF (the
+    /// first time only). On timeout the handle is dropped, which only detaches the task — it goes on
+    /// keeping the tail for as long as the pipe is open.
+    async fn bytes(&self) -> Vec<u8> {
+        let drain = lock(&self.drain).take();
+        if let Some(drain) = drain {
             let _ = tokio::time::timeout(STDERR_DRAIN_GRACE, drain).await;
         }
         lock(&self.buf).clone()
@@ -194,7 +253,7 @@ pub(crate) async fn connect_one(
                 ));
             }
         };
-        return list_tools(&server_cfg, running).await;
+        return list_tools(&server_cfg, opts, running, None).await;
     }
 
     if !server_cfg.command.is_empty() {
@@ -205,13 +264,13 @@ pub(crate) async fn connect_one(
                 // Bounded wait FIRST: the handshake can fail before the child's stderr has even
                 // been read, and a reason that depends on which of the two wins is a diagnostic
                 // the user cannot rely on.
-                let captured = stderr.into_bytes().await;
+                let captured = stderr.bytes().await;
                 return Err(McpError::Connect(
                     explain::handshake(&server_cfg, &e, &captured).into_text(),
                 ));
             }
         };
-        return list_tools(&server_cfg, running).await;
+        return list_tools(&server_cfg, opts, running, Some(stderr)).await;
     }
 
     Err(McpError::MissingTarget)
@@ -275,7 +334,7 @@ async fn connect_oauth(
             }));
         }
     };
-    list_tools(server_cfg, running).await
+    list_tools(server_cfg, opts, running, None).await
 }
 
 /// The OAuth failure inside a handshake error, when that is what it is — a refresh the server would not do,
@@ -340,10 +399,13 @@ fn client_info(opts: &ManagerOptions) -> ClientInfo {
 }
 
 /// manager.go:371-395 — `tools/list` (auto-paginated) on a served connection; a failure closes the session and is
-/// `ListTools`, worded by [`explain::list_tools`].
+/// `ListTools`, worded by [`explain::list_tools`]. The session gets the entry's call deadline
+/// (`tool_timeout_sec`, else the manager's) and, for a stdio server, its stderr capture.
 async fn list_tools(
     server_cfg: &ServerConfig,
+    opts: &ManagerOptions,
     running: RunningService<RoleClient, ClientInfo>,
+    stderr: Option<StderrCapture>,
 ) -> Result<(Arc<dyn Session>, Vec<ToolDef>), McpError> {
     let tools = match running.peer().list_all_tools().await {
         Ok(tools) => tools,
@@ -367,13 +429,19 @@ async fn list_tools(
             deferred: false,
         })
         .collect();
-    Ok((Arc::new(RmcpSession::new(running)), defs))
+    let call_timeout = server_cfg
+        .tool_timeout_sec
+        .map_or(opts.call_timeout, Duration::from_secs);
+    let session = RmcpSession::new(running)
+        .with_call_timeout(call_timeout)
+        .with_stderr(stderr);
+    Ok((Arc::new(session), defs))
 }
 
 /// stdio half of `make_transport`: `tokio::process::Command::new(cmd).args(args).envs(env)`,
 /// `TokioChildProcess::builder(cmd).stderr(Stdio::piped()).spawn()`; the returned stderr is drained by a spawned task
-/// into the `stderr_cap`-capped capture, whose handle rides along in [`StderrCapture`] so a failed handshake can wait
-/// for it. Spawn failure → `Connect`, worded by [`explain::spawn`].
+/// into the capture (its last `stderr_cap` bytes), whose handle rides along in [`StderrCapture`] so a failed
+/// handshake — or, through the session, an exit — can wait for it. Spawn failure → `Connect`, worded by [`explain::spawn`].
 pub(crate) fn spawn_stdio(
     server_cfg: &ServerConfig,
     stderr_cap: usize,
@@ -396,9 +464,11 @@ pub(crate) fn spawn_stdio(
                     Ok(0) | Err(_) => break,
                     Ok(n) => n,
                 };
+                // Keep the TAIL: what a server wrote last is what explains its exit.
                 let mut captured = lock(&sink);
-                let room = stderr_cap.saturating_sub(captured.len());
-                captured.extend_from_slice(&buf[..n.min(room)]);
+                captured.extend_from_slice(&buf[..n]);
+                let excess = captured.len().saturating_sub(stderr_cap);
+                captured.drain(..excess);
             }
         })
     });
@@ -406,7 +476,7 @@ pub(crate) fn spawn_stdio(
         transport,
         StderrCapture {
             buf: capture,
-            drain,
+            drain: std::sync::Mutex::new(drain),
         },
     ))
 }

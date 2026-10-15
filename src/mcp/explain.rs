@@ -356,19 +356,7 @@ fn stdio_handshake(cfg: &ServerConfig, err: &ClientInitializeError, stderr: &[u8
     let stderr = String::from_utf8_lossy(stderr);
     let stderr_lines: Vec<&str> = stderr.lines().filter(|l| !l.trim().is_empty()).collect();
     let mut detail = chain(err);
-    if !stderr_lines.is_empty() {
-        let skipped = stderr_lines.len().saturating_sub(STDERR_DETAIL_LINES);
-        let mut head = String::from("stderr:");
-        if skipped > 0 {
-            let _ = write!(
-                head,
-                " (last {STDERR_DETAIL_LINES} of {} lines)",
-                stderr_lines.len()
-            );
-        }
-        detail.push(head);
-        detail.extend(stderr_lines[skipped..].iter().map(|l| format!("  {l}")));
-    }
+    detail.extend(stderr_detail(&stderr_lines));
     let summary = match err {
         ClientInitializeError::ConnectionClosed(_)
         | ClientInitializeError::TransportError { .. } => match stderr_lines.last() {
@@ -493,13 +481,86 @@ fn service_reason(err: &ServiceError) -> (String, Option<&'static str>) {
             ),
             None,
         ),
-        ServiceError::Timeout { .. } => (format!("no answer: {err}"), None),
+        ServiceError::Timeout { timeout } => (
+            format!(
+                "no answer within {}, so the call was given up",
+                crate::text::go_duration(*timeout)
+            ),
+            Some(
+                "if the tool is meant to run that long, raise tool_timeout_sec for this server in the config",
+            ),
+        ),
         ServiceError::UnexpectedResponse => (
             "it answered with something that is not a result".to_owned(),
             None,
         ),
         _ => (one_line(&err.to_string()), None),
     }
+}
+
+/// Whether a call failed because the connection is gone — the transport closed (a stdio server's stdout
+/// reached EOF: it exited), or the write to a dead child's stdin broke. What marks the server down.
+pub(crate) fn is_disconnect(err: &ServiceError) -> bool {
+    match err {
+        ServiceError::TransportClosed => true,
+        ServiceError::TransportSend(send) => {
+            send.error.downcast_ref::<HttpError>().is_none() && is_broken_pipe(send.error.as_ref())
+        }
+        _ => false,
+    }
+}
+
+// ---------------------------------------------------------------- a server that went down
+
+/// What the server's status says once a call found its connection gone (`ServerState::Down`): the summary
+/// — that it exited, the last line it wrote to stderr, and that its tools fail from now on — and, as
+/// detail, the tail of its stderr.
+pub(crate) fn exited(cfg: &ServerConfig, stderr: &[u8]) -> Explained {
+    const UNTIL: &str = "its tools will fail until iota is restarted";
+    if !cfg.url.is_empty() {
+        return Explained::new(format!("the connection closed — {UNTIL}"), Vec::new());
+    }
+    let stderr = String::from_utf8_lossy(stderr);
+    let lines: Vec<&str> = stderr.lines().filter(|l| !l.trim().is_empty()).collect();
+    let summary = match lines.last() {
+        Some(last) => format!(
+            "exited (its last stderr line: \"{}\") — {UNTIL}",
+            clip(last, BODY_DETAIL_CHARS)
+        ),
+        None => format!("exited without a word on stderr — {UNTIL}"),
+    };
+    Explained::new(summary, stderr_detail(&lines))
+}
+
+/// The sentence after `MCP server "<name>": ` for a call to a server that is down — the first call that
+/// found it gone and every one after it.
+pub(crate) fn down_call(cfg: &ServerConfig) -> String {
+    if cfg.url.is_empty() {
+        "it has exited — its tools can't be used again in this session; restarting iota starts it again"
+            .to_owned()
+    } else {
+        "its connection has closed — its tools can't be used again in this session; restarting iota reconnects it"
+            .to_owned()
+    }
+}
+
+/// `stderr:` and the last [`STDERR_DETAIL_LINES`] lines under it, indented; nothing when there are none.
+fn stderr_detail(lines: &[&str]) -> Vec<String> {
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    let skipped = lines.len().saturating_sub(STDERR_DETAIL_LINES);
+    let mut head = String::from("stderr:");
+    if skipped > 0 {
+        let _ = write!(
+            head,
+            " (last {STDERR_DETAIL_LINES} of {} lines)",
+            lines.len()
+        );
+    }
+    let mut detail = vec![head];
+    detail.extend(lines[skipped..].iter().map(|l| format!("  {l}")));
+    detail
 }
 
 /// Whether an I/O `BrokenPipe` is anywhere in the chain.
@@ -594,5 +655,38 @@ mod tests {
         assert_eq!(html_title("{\"error\":\"nope\"}"), None);
         assert_eq!(clip("a\n  b   c", 10), "a b c");
         assert_eq!(clip("abcdefghijkl", 5), "abcde…");
+    }
+
+    // X-78: the words of a server that went down, and of a call nobody answered.
+    #[test]
+    fn a_server_that_went_down_and_a_call_that_timed_out_say_so() {
+        use super::{down_call, exited, is_disconnect};
+
+        let quiet = exited(&stdio("python3"), b"");
+        assert_eq!(
+            quiet.summary,
+            "exited without a word on stderr — its tools will fail until iota is restarted"
+        );
+        assert!(quiet.detail.is_empty());
+        let http = ServerConfig {
+            url: "https://x/mcp".to_owned(),
+            ..ServerConfig::default()
+        };
+        assert_eq!(
+            exited(&http, b"").summary,
+            "the connection closed — its tools will fail until iota is restarted"
+        );
+        assert!(down_call(&http).starts_with("its connection has closed — "));
+
+        let timeout = ServiceError::Timeout {
+            timeout: std::time::Duration::from_mins(30),
+        };
+        assert_eq!(
+            call(&timeout),
+            "no answer within 30m0s, so the call was given up — if the tool is meant to run that long, \
+             raise tool_timeout_sec for this server in the config"
+        );
+        assert!(is_disconnect(&ServiceError::TransportClosed));
+        assert!(!is_disconnect(&timeout), "a timeout is not a server gone");
     }
 }

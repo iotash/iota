@@ -34,6 +34,10 @@ pub enum McpError {
     /// duration form (`30s`, `300ms`).
     #[error("{0}")]
     Timeout(String),
+    /// The connection is gone — a stdio server that exited, a transport that closed. The manager marks the server
+    /// down on it (`ServerState::Down`) and words the call's failure itself.
+    #[error("disconnected (it exited or closed the connection)")]
+    Disconnected,
     /// A `tools/call` failure: `crate::mcp::explain::call`'s sentence, `interrupted`, or one of the two texts below.
     #[error("{0}")]
     Call(String),

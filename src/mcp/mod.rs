@@ -14,8 +14,8 @@ pub(crate) mod schema;
 pub(crate) mod transport;
 
 pub use manager::{
-    DEFAULT_CONNECT_TIMEOUT, DEFAULT_STDERR_CAP, Manager, ManagerOptions, WIRE_NAME_MAX_LEN,
-    sanitize_name_segment, wire_tool_name,
+    DEFAULT_CALL_TIMEOUT, DEFAULT_CONNECT_TIMEOUT, DEFAULT_STDERR_CAP, Manager, ManagerOptions,
+    WIRE_NAME_MAX_LEN, sanitize_name_segment, wire_tool_name,
 };
 pub(crate) use manager::{ServerState, ServerStatus};
 

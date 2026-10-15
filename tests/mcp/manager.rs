@@ -463,16 +463,17 @@ async fn http_failures_say_what_happened_and_what_to_do() {
     m.close().await;
 }
 
-/// DIVERGENCES X-77: a stdio server that exits mid-session. Its tools stay listed (what happens to them is
-/// docs/design/mcp-child-death-research.md's open question, not this test's), but a call to one tells the model
-/// WHOSE server is gone and what brings it back — not rmcp's bare `Transport closed`.
+/// DIVERGENCES X-77/X-78: a stdio server that exits mid-session, after a last word on stderr. The first call
+/// that finds it gone marks it down — the status carries that last line, and the tail of its stderr as
+/// detail — but its tools stay listed (the owner's decision 2026-10-15: not taken out); that call and every
+/// one after it tell the model WHOSE server is gone and what brings it back — not rmcp's `Transport closed`.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_call_to_a_server_that_exited_names_it() {
-    // SH_SERVER, except that it exits right after answering `tools/list`.
+async fn a_call_to_a_server_that_exited_marks_it_down_and_names_it() {
+    // SH_SERVER, except that it says why and exits right after answering `tools/list`.
     let script = SH_SERVER.replace(
         r#"'{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"echo","description":"says pong","inputSchema":{"type":"object"}}]}}' ;;"#,
-        r#"'{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"echo","description":"says pong","inputSchema":{"type":"object"}}]}}'; exit 0 ;;"#,
+        r#"'{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"echo","description":"says pong","inputSchema":{"type":"object"}}]}}'; echo 'fatal: out of memory' >&2; exit 1 ;;"#,
     );
     assert_ne!(script, SH_SERVER, "the exit was spliced in");
     let m = Manager::new(vec![stdio("gone", "sh", &["-c", &script])], options());
@@ -481,13 +482,86 @@ async fn a_call_to_a_server_that_exited_names_it() {
     // The child has exited; give the transport a moment to see the end of its stdout.
     tokio::time::sleep(Duration::from_millis(300)).await;
 
+    let want = "Error calling tool: MCP server \"gone\": it has exited — its tools can't be used again in this \
+                session; restarting iota starts it again";
     let cx = RunCtx::new(CancellationToken::new());
-    let (text, is_error) =
-        iota::tool::model_text(m.call_tool(&cx, "mcp__gone__echo", JsonObject::new()).await);
-    assert!(is_error);
+    for _ in 0..2 {
+        let (text, is_error) =
+            iota::tool::model_text(m.call_tool(&cx, "mcp__gone__echo", JsonObject::new()).await);
+        assert!(is_error);
+        assert_eq!(text, want);
+    }
+
+    let status = &m.servers()[0];
+    assert!(!status.connected());
     assert_eq!(
-        text,
-        "Error calling tool: MCP server \"gone\": disconnected (it exited or closed the connection) — restart iota to reconnect it"
+        status.failure(),
+        Some((
+            "exited (its last stderr line: \"fatal: out of memory\") — its tools will fail until iota is restarted",
+            vec!["stderr:", "  fatal: out of memory"]
+        ))
+    );
+    // Kept: the model is still offered the tool, and it is still the server's.
+    assert_eq!(
+        m.tools()
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["mcp__gone__echo"]
+    );
+    assert_eq!(status.wire_names(), vec!["mcp__gone__echo"]);
+    m.close().await;
+}
+
+/// DIVERGENCES X-78: a server that never answers a call — the shape of a wrapper still holding the pipe after
+/// the real server died — no longer holds the turn forever: the call is given up at the deadline, the entry's
+/// `tool_timeout_sec` over the manager's default, with a sentence that says so and how to allow longer. The
+/// server is NOT marked down: it may only be slow.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_nobody_answers_ends_at_the_deadline() {
+    // SH_SERVER without its `tools/call` answer: the request is read and ignored.
+    let script = SH_SERVER.replace(
+        r#"      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"content":[{"type":"text","text":"pong"}],"isError":false}}' ;;"#,
+        "      : ;;",
+    );
+    assert_ne!(script, SH_SERVER, "the answer was cut");
+    let mut slow = stdio("slow", "sh", &["-c", &script]);
+    slow.tool_timeout_sec = Some(1);
+    let m = Manager::new(
+        vec![stdio("deaf", "sh", &["-c", &script]), slow],
+        ManagerOptions {
+            call_timeout: Duration::from_millis(300),
+            ..options()
+        },
+    );
+    let statuses = m.connect_all(&CancellationToken::new()).await;
+    assert!(statuses.iter().all(|s| s.error().is_none()), "{statuses:?}");
+
+    let cx = RunCtx::new(CancellationToken::new());
+    for (wire, after, name) in [
+        ("mcp__deaf__echo", "300ms", "deaf"),
+        ("mcp__slow__echo", "1s", "slow"),
+    ] {
+        let start = std::time::Instant::now();
+        let (text, is_error) =
+            iota::tool::model_text(m.call_tool(&cx, wire, JsonObject::new()).await);
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "{wire} was not given up"
+        );
+        assert!(is_error);
+        assert_eq!(
+            text,
+            format!(
+                "Error calling tool: MCP server \"{name}\": no answer within {after}, so the call was given up — \
+                 if the tool is meant to run that long, raise tool_timeout_sec for this server in the config"
+            )
+        );
+    }
+    assert!(
+        m.servers().iter().all(|s| s.error().is_none()),
+        "a timeout is not down"
     );
     m.close().await;
 }

@@ -23,6 +23,22 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   exited or closed the connection) — restart iota to reconnect it` — instead
   of `Transport closed`.
 
+### Fixed
+
+- **An MCP server that stops mid-session is shown as stopped.** A stdio
+  server that exited — killed, or crashed — used to stay `connected` in the
+  MCP tab of `/tools`, with nothing said in the chat. Now the first call that
+  finds it gone marks it `disconnected`, and the chat says so once, with the
+  last line the server wrote to stderr: `⚠ MCP db: exited (its last stderr
+  line: "RuntimeError: database connection lost") — its tools will fail
+  until iota is restarted · details in /tools`. Its tools stay available to
+  the model, and every call to them answers with a sentence that says the
+  server has exited and that restarting iota brings it back.
+- **A tool call an MCP server never answers no longer hangs forever.** Every
+  MCP tool call now has a deadline, 30 minutes by default, after which it is
+  given up and the model is told why. A server whose tools legitimately run
+  longer can raise it with `tool_timeout_sec:` in its `mcp_servers` entry.
+
 ## 0.7.2 - 2026-10-15
 
 ### Changed

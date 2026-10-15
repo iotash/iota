@@ -53,7 +53,7 @@ const AGENT_KEYS: [&str; 15] = [
     "max_tokens",
 ];
 /// Every key an `mcp_servers.<name>` entry accepts.
-const MCP_KEYS: [&str; 10] = [
+const MCP_KEYS: [&str; 11] = [
     "command",
     "args",
     "url",
@@ -64,6 +64,7 @@ const MCP_KEYS: [&str; 10] = [
     "client_id",
     "client_secret",
     "redirect_port",
+    "tool_timeout_sec",
 ];
 
 /// Keys a redesign retired — `(section, key, replacement)`, `section` being `""` for "any" — and the
@@ -320,7 +321,7 @@ mod tests {
         );
         assert_eq!(
             check("mcp_servers:\n  fs: {commadn: npx}\n"),
-            "mcp_servers.fs.commadn: unknown key (want command, args, url, env, headers, defer, auth, client_id, client_secret, redirect_port)"
+            "mcp_servers.fs.commadn: unknown key (want command, args, url, env, headers, defer, auth, client_id, client_secret, redirect_port, tool_timeout_sec)"
         );
     }
 

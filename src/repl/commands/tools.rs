@@ -146,7 +146,7 @@ pub(crate) fn mcp_status_lines(dispatch: &dyn Dispatcher, servers: &[ServerStatu
         let mut status = match &srv.state {
             ServerState::Connected { .. } => green("connected"),
             ServerState::Connecting => dim("connecting…"),
-            ServerState::Failed(_) => red("disconnected"),
+            ServerState::Failed(_) | ServerState::Down { .. } => red("disconnected"),
         };
         if let Some(&(total_g, loaded)) = defer_by.get(&srv.name)
             && total_g > 0
