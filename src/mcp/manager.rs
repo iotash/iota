@@ -553,7 +553,7 @@ impl Manager {
     /// never.
     ///
     /// A connected server whose connection has closed — a stdio server killed while nobody was calling it — is
-    /// marked down first ([`mark_down_now`](Self::mark_down_now)), so the snapshot never shows a dead server
+    /// marked down first (`mark_down_now`), so the snapshot never shows a dead server
     /// as connected (X-78; Codex checks `is_transport_closed` on its status queries the same way).
     pub fn servers(&self) -> Vec<ServerStatus> {
         let gone: Vec<(usize, Arc<dyn Session>)> = {
@@ -917,7 +917,7 @@ impl Dispatcher for Manager {
     /// `ToolError::UnknownTool`; `McpError` → `ToolError::Transport`, its text led by `MCP server "<name>": `
     /// so the model and the transcript know whose call failed; cancelled → `ToolError::Cancelled`. A server
     /// that is down is not called at all, and a call that finds the connection gone marks it down
-    /// ([`mark_down`](Manager::mark_down)): both answer `explain::down_call`'s sentence (X-78). No other
+    /// (`mark_down`): both answer `explain::down_call`'s sentence (X-78). No other
     /// capability.
     fn call_tool<'a>(
         &'a self,
