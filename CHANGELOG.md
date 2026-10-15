@@ -3,7 +3,7 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
-## Unreleased
+## 0.7.2 - 2026-10-15
 
 ### Changed
 
@@ -17,9 +17,15 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   approval or a question. Which tool is running, and for how long, is still
   shown on the tool's own line above the input. `(ESC to cancel)` now appears
   only on the status row. When the turn ends with a background job still
-  running, the status row just shows the job, without a spinner. Also fixed:
-  when a model wrote more text after a tool call, the tool could run with
-  nothing on screen, or under the wrong name.
+  running, the status row just shows the job, without a spinner.
+
+### Fixed
+
+- **A tool call the model keeps talking after is shown while it runs.** When
+  a model wrote more text after composing a tool call, the call could run
+  with nothing on screen — its line appeared only once it had finished, its
+  clock starting there — or under the placeholder it had while being written
+  (`[write_file …]`) instead of its own header with its arguments.
 
 ## 0.7.1 - 2026-10-13
 
