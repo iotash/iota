@@ -1037,7 +1037,12 @@ fn cli_defer_mode_mismatch_fails_at_config_load() {
 
 /// DIVERGENCES I-05: a configured MCP server that does not connect is one `Warning:` line on stderr (Go was
 /// silent on the `-m` path) and never fails the run. X-77: the line says what happened and what to do, in
-/// words — not rmcp's `connect failed: connection closed: initialize response`.
+/// words — not rmcp's `connect failed: …` — and the detail follows it, indented.
+///
+/// The failure is a command that does not exist, the one failure that reads the same on every platform. Until
+/// CI run 38755105122 it was `sh -c 'exit 1'`, whose summary is the SHELL's own error: bash's on macOS, dash's
+/// on Linux (`Syntax error: Unterminated quoted string`), and no `sh` at all on Windows. What the summary does
+/// with a child's last stderr line is pinned with a script whose stderr is ours (`tests/mcp/manager.rs`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cli_mcp_failed_server_warning() {
     let server = MockServer::start().await;
@@ -1045,21 +1050,26 @@ async fn cli_mcp_failed_server_warning() {
     let (dir, home) = project();
     write_agent_config(dir.path(), "openai", &server.uri(), "gpt-test");
     let mut cmd = iota(dir.path(), &home);
-    cmd.args(["-m", "hi", "--mcp", "sh -c 'exit 1'"]);
+    cmd.args(["-m", "hi", "--mcp", "/nonexistent/mcp-server"]);
     let o = output(cmd).await;
     assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
     let stderr = err(&o);
+    let mut lines = stderr.lines();
     assert_eq!(
-        stderr.lines().next(),
+        lines.next(),
         Some(
-            // `--mcp` splits on whitespace, so `sh` gets `-c "'exit" "1'"` and says so on stderr: the
-            // summary carries the last line of it — the reason — instead of rmcp's `connection closed`.
-            "Warning: mcp server sh: \"sh\" exited during startup: 1': -c: line 1: syntax error: unexpected end of file"
+            "Warning: mcp server /nonexistent/mcp-server: can't start \"mcp-server\": command not found — check \
+             that it is installed and on PATH"
         ),
         "{stderr}"
     );
-    // The detail follows, indented: the whole of the child's stderr.
-    assert!(stderr.contains("\n  stderr:\n"), "{stderr}");
+    // The detail follows, indented: the OS's own words (they differ between Unix and Windows).
+    assert!(
+        lines
+            .next()
+            .is_some_and(|l| l.starts_with("  ") && !l.trim().is_empty()),
+        "{stderr}"
+    );
     assert!(!stderr.contains("connect failed"), "{stderr}");
     assert!(!stderr.contains("rmcp::"), "{stderr}");
     // The run still answered: a server that failed to connect degrades, it does not abort.

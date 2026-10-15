@@ -463,6 +463,29 @@ async fn http_failures_say_what_happened_and_what_to_do() {
     m.close().await;
 }
 
+/// `SH_SERVER`, except that once it has answered `tools/list` it reads no more: it waits for `trigger` to
+/// exist, then writes `last_words` to stderr and exits 1 — a server that dies mid-session WHEN THE TEST SAYS
+/// SO. A server that died on its own right after `tools/list` raced `connect_all`, whose snapshot
+/// (`Manager::servers`, X-79) marks a closed connection down: on a CI runner the child won and the server
+/// was down before the test could see it connected (CI run 38755105122).
+#[cfg(unix)]
+fn dies_on(trigger: &std::path::Path, last_words: &str) -> String {
+    let script = SH_SERVER.replace(
+        LIST_ANSWER,
+        &format!(
+            "{}; while [ ! -e '{}' ]; do sleep 0.05; done; echo '{last_words}' >&2; exit 1 ;;",
+            LIST_ANSWER.trim_end_matches(" ;;"),
+            trigger.display()
+        ),
+    );
+    assert_ne!(script, SH_SERVER, "the death was spliced in");
+    script
+}
+
+/// `SH_SERVER`'s `tools/list` answer line, as [`dies_on`] finds it.
+#[cfg(unix)]
+const LIST_ANSWER: &str = r#"'{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"echo","description":"says pong","inputSchema":{"type":"object"}}]}}' ;;"#;
+
 /// DIVERGENCES X-77/X-78: a stdio server that exits mid-session, after a last word on stderr. The first call
 /// that finds it gone marks it down — the status carries that last line, and the tail of its stderr as
 /// detail — but its tools stay listed (the owner's decision 2026-10-15: not taken out); that call and every
@@ -470,17 +493,15 @@ async fn http_failures_say_what_happened_and_what_to_do() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_call_to_a_server_that_exited_marks_it_down_and_names_it() {
-    // SH_SERVER, except that it says why and exits right after answering `tools/list`.
-    let script = SH_SERVER.replace(
-        r#"'{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"echo","description":"says pong","inputSchema":{"type":"object"}}]}}' ;;"#,
-        r#"'{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"echo","description":"says pong","inputSchema":{"type":"object"}}]}}'; echo 'fatal: out of memory' >&2; exit 1 ;;"#,
-    );
-    assert_ne!(script, SH_SERVER, "the exit was spliced in");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let trigger = dir.path().join("die");
+    let script = dies_on(&trigger, "fatal: out of memory");
     let m = Manager::new(vec![stdio("gone", "sh", &["-c", &script])], options());
     let statuses = m.connect_all(&CancellationToken::new()).await;
     assert!(statuses[0].connected(), "{:?}", statuses[0]);
-    // The child has exited; give the transport a moment to see the end of its stdout.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Now it dies. No wait is needed: it reads nothing more, so a call sent before it has exited goes
+    // unanswered until the connection closes — the same `Disconnected` as one sent after.
+    std::fs::write(&trigger, "").expect("trigger");
 
     let want = "Error calling tool: MCP server \"gone\": it has exited — its tools won't work until it is reconnected, \
                 which the user can do from /tools";
@@ -571,12 +592,13 @@ async fn a_call_nobody_answers_ends_at_the_deadline() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_snapshot_finds_a_server_that_died_idle() {
-    let script = SH_SERVER.replace(
-        r#"'{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"echo","description":"says pong","inputSchema":{"type":"object"}}]}}' ;;"#,
-        r#"'{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"echo","description":"says pong","inputSchema":{"type":"object"}}]}}'; echo 'idle and gone' >&2; exit 1 ;;"#,
-    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let trigger = dir.path().join("die");
+    let script = dies_on(&trigger, "idle and gone");
     let m = Manager::new(vec![stdio("idle", "sh", &["-c", &script])], options());
-    assert!(m.connect_all(&CancellationToken::new()).await[0].connected());
+    let statuses = m.connect_all(&CancellationToken::new()).await;
+    assert!(statuses[0].connected(), "{:?}", statuses[0]);
+    std::fs::write(&trigger, "").expect("trigger");
     let mut down = None;
     for _ in 0..50 {
         tokio::time::sleep(Duration::from_millis(100)).await;
