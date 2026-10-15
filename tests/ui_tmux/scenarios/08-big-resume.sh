@@ -37,9 +37,17 @@ check_frame_intact "after the oversized echo" 80
 check "status line survived the chunked insert" "$(status_model)" "  fake"
 
 # The resumed chat still works, and the new turn appends to the same bundle.
+#
+# Two waits, each on its own event: the Enter was read (the draft left the composer and sits above
+# the frame — `wait_sent`), THEN the reply landed. One `wait_all` for the reply could not tell a
+# submit that never happened from a reply that never came, and printed nothing either way (CI
+# 38759202470, the ubuntu leg: both checks below failed with no frame to read). A miss now shows
+# the pane as it stood.
+miss_pane() { echo "---- pane at the miss: $1 ----"; cap; echo "---- end of pane ----"; }
 type_ 'hello'
 key Enter
-wait_all 'echo: hello' || bad "the resumed chat did not accept a new turn"
+wait_sent 'hello' || { bad "the Enter that sends 'hello' was never read"; miss_pane "submit"; }
+wait_all 'echo: hello' || { bad "the resumed chat did not accept a new turn"; miss_pane "reply"; }
 settle || bad "frame never settled after the new turn"
 check_frame_intact "after a turn on the resumed session" 80
 if grep -q '"content":"hello"' "$SCEN_HOME/.iota/sessions/$SESSION_ID/messages.jsonl"; then

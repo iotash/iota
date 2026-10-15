@@ -431,12 +431,17 @@ async fn http_failures_say_what_happened_and_what_to_do() {
         ]
     );
     // The detail keeps what the summary words: the OS's own error at the bottom of the chain, the body cut to
-    // a line, an HTML page by its size.
+    // a line, an HTML page by its size. The OS's words are the platform's — `Connection refused (os error
+    // 61)` on macOS, `No connection could be made because the target machine actively refused it. (os
+    // error 10061)` on Windows (CI run 38759202470) — so the expected line is what THIS platform says for
+    // the same refused connect. Its kind is what the summary's `connection refused` rests on everywhere
+    // (std maps WSAECONNREFUSED to `ErrorKind::ConnectionRefused` as it does ECONNREFUSED).
+    let os = std::net::TcpStream::connect(("127.0.0.1", closed)).expect_err("the port is closed");
+    assert_eq!(os.kind(), std::io::ErrorKind::ConnectionRefused, "{os}");
     let (_, detail) = statuses[0].failure().expect("failed");
-    assert!(
-        detail
-            .last()
-            .is_some_and(|l| l.starts_with("Connection refused")),
+    assert_eq!(
+        detail.last().copied(),
+        Some(os.to_string().as_str()),
         "{detail:?}"
     );
     assert_eq!(
