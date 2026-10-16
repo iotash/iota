@@ -168,6 +168,7 @@ fn count(tools: &[ToolRow]) -> String {
 pub(crate) fn status_word(srv: &ServerStatus) -> String {
     match &srv.state {
         ServerState::Connecting => dim("connecting…"),
+        ServerState::Reconnecting { .. } => dim("reconnecting…"),
         ServerState::Connected { .. } => green("connected"),
         ServerState::Down { .. } => {
             let (summary, _) = srv.failure().unwrap_or_default();
@@ -195,7 +196,9 @@ pub(crate) fn overview(dispatch: &dyn Dispatcher, servers: &[ServerStatus]) -> R
     for (i, srv) in servers.iter().enumerate() {
         names.push(srv.name.clone());
         counts.push(match srv.state {
-            ServerState::Connected { .. } | ServerState::Down { .. } => count(inv.of_server(i)),
+            ServerState::Connected { .. }
+            | ServerState::Down { .. }
+            | ServerState::Reconnecting { .. } => count(inv.of_server(i)),
             _ => "—".to_owned(),
         });
         statuses.push(status_word(srv));
@@ -712,6 +715,34 @@ pub(crate) mod tests {
             r.prompt.as_deref(),
             Some("5 MCP servers · 5 tools · Enter: open · Esc: close")
         );
+    }
+
+    // X-79: a server being reconnected keeps its tools listed (the manager keeps them until the new connect
+    // lands), so its row counts them and says `reconnecting…`; its page still names them.
+    #[test]
+    fn a_server_reconnecting_keeps_its_count_and_says_so() {
+        let d = DeferStatus::new(&[("shell", "run"), ("mcp__fs__read", "read a file")], &[]);
+        let servers = vec![server(
+            "fs",
+            ServerState::Reconnecting {
+                segment: "fs".to_owned(),
+            },
+            &["read"],
+        )];
+        assert_eq!(
+            plain(&super::overview(&d, &servers).rows),
+            vec![
+                "built in  1 tool  available",
+                "fs        1 tool  reconnecting…",
+            ]
+        );
+        let page = plain(&super::server_page(&d, &servers, 0, None));
+        assert_eq!(page[0], "status        reconnecting…");
+        assert!(
+            page.contains(&"tool names    mcp__fs__<tool>".to_owned()),
+            "{page:?}"
+        );
+        assert!(page.contains(&"tools (1)".to_owned()), "{page:?}");
     }
 
     #[test]

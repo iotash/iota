@@ -624,3 +624,218 @@ async fn a_snapshot_finds_a_server_that_died_idle() {
     assert_eq!(s.wire_names(), vec!["mcp__idle__echo"], "its tools stay");
     m.close().await;
 }
+
+/// A stdio server run as `sh <script>` whose life the test steers through files in `dir`: `refuse` makes a
+/// start fail (`license server unreachable` on stderr, exit 1); `slow` holds a start for 2 s before it
+/// speaks; `die` kills a running one (`fatal: out of memory` on stderr first). Otherwise it is `SH_SERVER`,
+/// answering calls with `pong`. The watcher that does the killing ends with the server.
+#[cfg(unix)]
+fn steered(dir: &std::path::Path) -> std::path::PathBuf {
+    let script = dir.join("steered.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "d='{d}'\n\
+             if [ -e \"$d/refuse\" ]; then echo 'license server unreachable' >&2; exit 1; fi\n\
+             if [ -e \"$d/slow\" ]; then sleep 2; fi\n\
+             ( while [ ! -e \"$d/die\" ] && kill -0 $$ 2>/dev/null; do sleep 0.05; done\n\
+             \x20 if [ -e \"$d/die\" ]; then echo 'fatal: out of memory' >&2; kill $$; fi ) &\n\
+             {SH_SERVER}\n\
+             kill $! 2>/dev/null\n",
+            d = dir.display()
+        ),
+    )
+    .expect("write");
+    script
+}
+
+/// Polls the snapshot until server `i` is no longer connected (the snapshot marks a closed connection
+/// down, X-79).
+#[cfg(unix)]
+async fn wait_down(m: &Manager, i: usize) {
+    for _ in 0..100 {
+        if !m.servers()[i].connected() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("server {i} never went down");
+}
+
+/// The text the model gets for a call to `wire`.
+#[cfg(unix)]
+async fn model_text(m: &Manager, wire: &str) -> (String, bool) {
+    let cx = RunCtx::new(CancellationToken::new());
+    iota::tool::model_text(m.call_tool(&cx, wire, JsonObject::new()).await)
+}
+
+#[cfg(unix)]
+fn wire_tools(m: &Manager) -> Vec<String> {
+    m.tools().into_iter().map(|t| t.name).collect()
+}
+
+/// X-78 + X-79: a reconnect that fails does not take the tools out. A server that had tools — down, or
+/// connected and restarted from its page — and whose new start fails is DOWN afterwards, with the failure's
+/// text as the reason and its tools, wire names and prefix exactly as they were (the owner's decision
+/// 2026-10-15: the tool array does not change under the model). A reconnect that works replaces them: the
+/// new tools under the same segment, once, and calls answered by the new process. A server that never had
+/// tools stays `failed`.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reconnect_that_fails_leaves_the_server_down_with_its_tools() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = steered(dir.path());
+    let path = script.to_str().expect("utf-8");
+    let m = Manager::new(
+        vec![
+            stdio("flaky", "sh", &[path]),
+            stdio("never", "sh", &["-c", "echo 'no such licence' >&2; exit 2"]),
+        ],
+        options(),
+    );
+    let statuses = m.connect_all(&CancellationToken::new()).await;
+    assert!(statuses[0].connected(), "{:?}", statuses[0]);
+    assert!(statuses[1].error().is_some(), "{:?}", statuses[1]);
+    let prefix_of = m.prefix_of();
+    let down_text = "Error calling tool: MCP server \"flaky\": it has exited — its tools won't work until it is \
+                     reconnected, which the user can do from /tools";
+    let refused = "\"sh\" exited during startup: license server unreachable";
+
+    // Down, then a reconnect that fails: still down, nothing taken out.
+    std::fs::write(dir.path().join("die"), "").expect("die");
+    wait_down(&m, 0).await;
+    std::fs::write(dir.path().join("refuse"), "").expect("refuse");
+    let st = m.reconnect("flaky").await.expect("flaky");
+    // Down, not failed: an error, and the segment its tools are named under kept.
+    assert!(st.error().is_some() && st.segment() == "flaky", "{st:?}");
+    assert_eq!(st.failure().map(|(s, _)| s), Some(refused));
+    assert_eq!(st, m.servers()[0], "the snapshot agrees");
+    assert_eq!(
+        (st.tool_count, st.tools.clone()),
+        (1, vec!["echo".to_owned()])
+    );
+    assert_eq!(st.wire_names(), vec!["mcp__flaky__echo"]);
+    assert_eq!(wire_tools(&m), vec!["mcp__flaky__echo"]);
+    assert_eq!(prefix_of("flaky"), "mcp__flaky__");
+    assert_eq!(
+        model_text(&m, "mcp__flaky__echo").await,
+        (down_text.to_owned(), true)
+    );
+
+    // A reconnect that works: the new tools, under the same segment, once; the call reaches the new process.
+    std::fs::remove_file(dir.path().join("refuse")).expect("rm refuse");
+    std::fs::remove_file(dir.path().join("die")).expect("rm die");
+    let st = m.reconnect("flaky").await.expect("flaky");
+    assert!(st.connected(), "{st:?}");
+    assert_eq!(
+        st.segment(),
+        "flaky",
+        "the old segment was given back, not taken twice"
+    );
+    assert_eq!(wire_tools(&m), vec!["mcp__flaky__echo"]);
+    assert_eq!(prefix_of("flaky"), "mcp__flaky__");
+    assert_eq!(
+        model_text(&m, "mcp__flaky__echo").await,
+        ("pong".to_owned(), false)
+    );
+
+    // Connected, restarted from its page, and the new start fails: down, its tools kept.
+    std::fs::write(dir.path().join("refuse"), "").expect("refuse");
+    let st = m.reconnect("flaky").await.expect("flaky");
+    // Down, not failed: an error, and the segment its tools are named under kept.
+    assert!(st.error().is_some() && st.segment() == "flaky", "{st:?}");
+    assert_eq!(st.failure().map(|(s, _)| s), Some(refused));
+    assert_eq!(wire_tools(&m), vec!["mcp__flaky__echo"]);
+    assert_eq!(
+        model_text(&m, "mcp__flaky__echo").await,
+        (down_text.to_owned(), true)
+    );
+
+    // Never connected: nothing to keep, so a failed reconnect is `failed`, as at startup.
+    let st = m.reconnect("never").await.expect("never");
+    assert!(st.error().is_some() && st.segment().is_empty(), "{st:?}");
+    assert_eq!((st.tool_count, st.wire_names()), (0, Vec::<String>::new()));
+    assert_eq!(prefix_of("never"), "");
+    assert_eq!(wire_tools(&m), vec!["mcp__flaky__echo"]);
+    m.close().await;
+}
+
+/// X-78: the down notice does not depend on how the chat started. With every server failing at startup the
+/// notice channel stays open, so a server reconnected from `/tools` that then dies is announced like any
+/// other. Until 2026-10-16 the manager let its sender go once the last startup connect failed, and the
+/// death said nothing.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_that_dies_after_a_startup_with_none_connected_is_announced() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = steered(dir.path());
+    std::fs::write(dir.path().join("refuse"), "").expect("refuse");
+    let m = Manager::new(
+        vec![stdio("flaky", "sh", &[script.to_str().expect("utf-8")])],
+        options(),
+    );
+    let mut rx = m.connect_background(&CancellationToken::new());
+    let first = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+        .await
+        .expect("the startup status")
+        .expect("open");
+    assert!(first.error().is_some(), "{first:?}");
+
+    std::fs::remove_file(dir.path().join("refuse")).expect("rm refuse");
+    assert!(m.reconnect("flaky").await.expect("flaky").connected());
+    std::fs::write(dir.path().join("die"), "").expect("die");
+    wait_down(&m, 0).await;
+    let down = m.servers().remove(0);
+    let announced = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("a notice, not a wait");
+    assert_eq!(announced, Some(down), "the death was announced");
+    m.close().await;
+}
+
+/// X-79: while a server that has tools is reconnecting, its tools stay listed; the list says
+/// `reconnecting…`, and a call made meanwhile is told so rather than `unknown tool`.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_reconnecting_keeps_its_tools_and_says_so() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = steered(dir.path());
+    let m = Manager::new(
+        vec![stdio("flaky", "sh", &[script.to_str().expect("utf-8")])],
+        options(),
+    );
+    assert!(m.connect_all(&CancellationToken::new()).await[0].connected());
+    std::fs::write(dir.path().join("slow"), "").expect("slow");
+    let running = {
+        let m = std::sync::Arc::clone(&m);
+        tokio::spawn(async move { m.reconnect("flaky").await })
+    };
+    let mut seen = None;
+    for _ in 0..100 {
+        let s = m.servers().remove(0);
+        // Reconnecting: neither connected nor failed, the segment its tools are named under kept.
+        if !s.connected() && s.error().is_none() && !s.segment().is_empty() {
+            seen = Some(s);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let s = seen.expect("never seen reconnecting");
+    assert_eq!(s.wire_names(), vec!["mcp__flaky__echo"]);
+    assert_eq!(wire_tools(&m), vec!["mcp__flaky__echo"]);
+    assert_eq!(
+        model_text(&m, "mcp__flaky__echo").await,
+        (
+            "Error calling tool: MCP server \"flaky\": it is being reconnected — try again in a moment"
+                .to_owned(),
+            true
+        )
+    );
+    let st = running.await.expect("join").expect("flaky");
+    assert!(st.connected(), "{st:?}");
+    assert_eq!(
+        model_text(&m, "mcp__flaky__echo").await,
+        ("pong".to_owned(), false)
+    );
+    m.close().await;
+}

@@ -151,12 +151,21 @@ pub enum ServerState {
     /// It connected, then a call found the connection gone — the server exited (X-78). Its tools stay
     /// listed and keep their wire names (`segment`); calls to them fail with a sentence that says so. Also
     /// reached without a call: a snapshot ([`Manager::servers`]) that finds the connection closed takes the
-    /// same step. Only a [`Manager::reconnect`] leaves this state — `/tools` offers one on the server's page.
+    /// same step, and so does a [`Manager::reconnect`] that fails for a server that had tools. Only a
+    /// reconnect that works leaves this state — `/tools` offers one on the server's page.
     Down {
         /// The segment its wire names were registered under.
         segment: String,
-        /// `crate::mcp::explain::exited`'s text: the summary, then the tail of its stderr.
+        /// Why: `crate::mcp::explain::exited`'s text (the summary, then the tail of its stderr), or — after a
+        /// reconnect that failed — that failure's text.
         reason: String,
+    },
+    /// A [`Manager::reconnect`] is running for a server that had tools (connected or down): the old session
+    /// is closed, its tools stay listed under their wire names (`segment`) until the new connect lands, and a
+    /// call meanwhile is told so. A server with no tools reconnects through `Connecting`.
+    Reconnecting {
+        /// The segment its wire names were registered under.
+        segment: String,
     },
 }
 
@@ -213,17 +222,19 @@ impl ServerStatus {
         self.error().map(crate::mcp::explain::split)
     }
 
-    /// The wire-name segment; `""` unless connected (or down: its tools keep their names).
+    /// The wire-name segment; `""` unless connected (or down, or reconnecting: its tools keep their names).
     pub fn segment(&self) -> &str {
         match &self.state {
-            ServerState::Connected { segment } | ServerState::Down { segment, .. } => segment,
+            ServerState::Connected { segment }
+            | ServerState::Down { segment, .. }
+            | ServerState::Reconnecting { segment } => segment,
             _ => "",
         }
     }
 
     /// The wire names the raw `tools` registered under, in the same order — the
-    /// `wire name → server` oracle `/tools` sorts the tools by. Empty unless connected or down (a
-    /// down server's tools stay listed, X-78).
+    /// `wire name → server` oracle `/tools` sorts the tools by. Empty unless connected, down or reconnecting
+    /// (a down server's tools stay listed, X-78).
     pub fn wire_names(&self) -> Vec<String> {
         let segment = self.segment();
         if segment.is_empty() {
@@ -235,7 +246,7 @@ impl ServerStatus {
             .collect()
     }
 
-    /// `"mcp__<segment>__"` when connected or down, else `""`.
+    /// `"mcp__<segment>__"` when connected, down or reconnecting, else `""`.
     pub fn wire_prefix(&self) -> String {
         match self.segment() {
             "" => String::new(),
@@ -305,8 +316,9 @@ pub struct Manager {
     /// Mutable view; never held across an `.await`.
     state: RwLock<State>,
     /// Where a server that goes down mid-session is announced: the channel
-    /// [`connect_background`](Self::connect_background) returned, kept open for the run (X-78). `None` in a
-    /// headless run, whose only reader of a failure is the model.
+    /// [`connect_background`](Self::connect_background) returned, kept open for the life of the manager
+    /// (X-78) — however the startup went, since a server that failed it can be reconnected from `/tools` and
+    /// go down later. `None` in a headless run, whose only reader of a failure is the model.
     notices: std::sync::Mutex<Option<tokio::sync::mpsc::Sender<ServerStatus>>>,
 }
 
@@ -450,9 +462,10 @@ impl Manager {
     /// The channel is buffered to twice the server count, so neither a connect task nor a server going down
     /// ever waits on a late consumer; the binary maps the statuses to `crate::repl::McpEvent` and the loop
     /// reports the failures once the transcript exists (`TUI_DESIGN` §8.2.7). The manager keeps a sender for
-    /// the run while a server it could announce is connected: one that goes down mid-session is announced on
-    /// the same channel, once (X-78). So the channel closes when the last connect resolves if none of them
-    /// connected — nothing can go down — and otherwise when the manager is dropped.
+    /// as long as it lives: a server that goes down mid-session is announced on the same channel, once
+    /// (X-78) — including one that failed at startup and was reconnected from `/tools` since. So the channel
+    /// closes when the manager is dropped (at once when there is no server). Until 2026-10-16 the sender was
+    /// let go when every startup connect failed, and such a server's death went unannounced.
     pub fn connect_background(
         self: &Arc<Self>,
         cancel: &CancellationToken,
@@ -461,25 +474,13 @@ impl Manager {
         if !self.configs.is_empty() {
             *crate::sync::lock(&self.notices) = Some(tx.clone());
         }
-        let pending = Arc::new(std::sync::atomic::AtomicUsize::new(self.configs.len()));
         for i in 0..self.configs.len() {
             let this = Arc::clone(self);
             let cancel = cancel.clone();
             let tx = tx.clone();
-            let pending = Arc::clone(&pending);
             tokio::spawn(async move {
                 let result = this.connect_indexed(i, &cancel).await;
                 let status = this.merge_result(i, result);
-                // The last one to resolve lets the notice sender go when no server connected: nothing can
-                // go down, so the reporter is not kept waiting for the life of the chat.
-                if pending.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) == 1
-                    && !read(&this.state)
-                        .servers
-                        .iter()
-                        .any(ServerStatus::connected)
-                {
-                    crate::sync::lock(&this.notices).take();
-                }
                 // A receiver dropped before every server resolved is not an error: the run moved on.
                 let _ = tx.send(status).await;
             });
@@ -624,23 +625,68 @@ impl Manager {
         self.index_of(name).and_then(|i| self.configs.get(i))
     }
 
-    /// Connects server `name` again — after a login, or a failure the user has since fixed — under the same
-    /// deadline as the first attempt: whatever it had (a session, its tools, its wire-name segment) is taken
-    /// down first, and the result is merged as any connect is. `None` = no such server.
+    /// Connects server `name` again — after a login, a death, or a failure the user has since fixed — under
+    /// the same deadline as the first attempt. The old session is closed first (one copy of the server at a
+    /// time); its tools stay listed meanwhile (`Reconnecting`). Then, by outcome:
+    ///
+    /// - it connects: the old tools, index entries, segment and prefix are taken out and the new ones
+    ///   merged as any connect is — `Connected`, normally under the same segment;
+    /// - it fails, and the server had tools (it was connected or down): `Down`, with this failure's text as
+    ///   the reason and the tools, wire names and prefix exactly as they were — the tool array does not
+    ///   change under the model (X-78: a dead server's tools are not taken out);
+    /// - it fails, and the server had none (it failed at startup, or waits for a login): `Failed`, as at
+    ///   startup.
+    ///
+    /// `None` = no such server.
     pub async fn reconnect(&self, name: &str) -> Option<ServerStatus> {
         let i = self.index_of(name)?;
-        self.detach(i).await;
-        {
+        let (old, before) = {
             let mut st = write(&self.state);
-            if let Some(slot) = st.servers.get_mut(i) {
-                slot.state = ServerState::Connecting;
-                slot.tools.clear();
-                slot.tool_count = 0;
-                slot.duplicates.clear();
+            let old = st
+                .session_of
+                .get(&i)
+                .copied()
+                .and_then(|s| st.sessions.get_mut(s).and_then(Option::take));
+            let slot = st.servers.get_mut(i)?;
+            let before = slot.clone();
+            match before.segment() {
+                "" => {
+                    slot.state = ServerState::Connecting;
+                    slot.tools.clear();
+                    slot.tool_count = 0;
+                    slot.duplicates.clear();
+                }
+                segment => {
+                    slot.state = ServerState::Reconnecting {
+                        segment: segment.to_owned(),
+                    };
+                }
             }
+            (old, before)
+        };
+        if let Some(session) = old {
+            let _ = tokio::time::timeout(CLOSE_TIMEOUT, session.close()).await;
         }
         let result = self.connect_indexed(i, &CancellationToken::new()).await;
-        Some(self.merge_result(i, result))
+        match result {
+            ServerResult::Failed(failed) if !before.segment().is_empty() => {
+                let mut st = write(&self.state);
+                let slot = st.servers.get_mut(i)?;
+                *slot = ServerStatus {
+                    state: ServerState::Down {
+                        segment: before.segment().to_owned(),
+                        reason: failed.error().unwrap_or_default().to_owned(),
+                    },
+                    login_required: failed.login_required,
+                    ..before
+                };
+                Some(slot.clone())
+            }
+            result => {
+                self.detach(i).await;
+                Some(self.merge_result(i, result))
+            }
+        }
     }
 
     /// Takes server `i` out of the live set: its session (closed outside the lock), its tools and their index
@@ -895,6 +941,12 @@ impl Manager {
     }
 }
 
+/// Why a call is answered without calling: the server's state.
+enum Unavailable {
+    Down,
+    Reconnecting,
+}
+
 impl Owner for Manager {
     /// One `tool_index` lookup under the read lock — never a `tools()` clone. Empty after `close`, like
     /// the index.
@@ -926,21 +978,29 @@ impl Dispatcher for Manager {
         args: JsonObject,
     ) -> BoxFuture<'a, ToolResult> {
         Box::pin(async move {
+            // A server that is down or reconnecting has no session to call (a down one may still hold its
+            // dead one): its state answers.
             let target = {
                 let st = read(&self.state);
                 st.tool_index.get(name).and_then(|t| {
-                    let down = st
-                        .servers
-                        .get(t.config)
-                        .is_some_and(|s| matches!(s.state, ServerState::Down { .. }));
-                    st.sessions
-                        .get(t.session)
-                        .cloned()
-                        .flatten()
-                        .map(|session| (session, t.raw.clone(), t.server.clone(), t.config, down))
+                    let unavailable = st.servers.get(t.config).and_then(|s| match s.state {
+                        ServerState::Down { .. } => Some(Unavailable::Down),
+                        ServerState::Reconnecting { .. } => Some(Unavailable::Reconnecting),
+                        _ => None,
+                    });
+                    let session = st.sessions.get(t.session).cloned().flatten();
+                    (unavailable.is_some() || session.is_some()).then(|| {
+                        (
+                            session,
+                            t.raw.clone(),
+                            t.server.clone(),
+                            t.config,
+                            unavailable,
+                        )
+                    })
                 })
             };
-            let Some((session, raw, server, config, down)) = target else {
+            let Some((session, raw, server, config, unavailable)) = target else {
                 return Err(ToolError::UnknownTool(name.to_owned()));
             };
             if cx.cancel.is_cancelled() {
@@ -951,9 +1011,14 @@ impl Dispatcher for Manager {
                     "MCP server \"{server}\": {reason}"
                 )))))
             };
-            if down {
-                return failed(self.down_call(config));
-            }
+            let session = match (unavailable, session) {
+                (Some(Unavailable::Down), _) => return failed(self.down_call(config)),
+                (Some(Unavailable::Reconnecting), _) => {
+                    return failed(crate::mcp::explain::reconnecting_call().to_owned());
+                }
+                (None, Some(session)) => session,
+                (None, None) => return Err(ToolError::UnknownTool(name.to_owned())),
+            };
             match session.call_tool(&cx.cancel, &raw, args).await {
                 Ok((text, is_error)) => Ok(ToolOutput { text, is_error }),
                 Err(_) if cx.cancel.is_cancelled() => Err(ToolError::Cancelled),
@@ -1312,15 +1377,18 @@ mod tests {
         assert_eq!(s.segment(), "");
     }
 
-    /// `connect_background` publishes EVERY server's resolved status and then closes the channel — the shape
-    /// `iota_repl`'s MCP reporter task drains (WP51). The servers here connect to `true`, which exits before the
-    /// handshake, so both resolve as failures without touching the network.
+    /// `connect_background` publishes EVERY server's resolved status — the shape `iota_repl`'s MCP reporter task
+    /// drains (WP51) — and keeps the channel open while the manager lives, even when every server failed: one
+    /// reconnected from `/tools` can still go down and be announced (X-78). The manager gone, it closes. The
+    /// servers here connect to `true`, which exits before the handshake, so both resolve as failures without
+    /// touching the network.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn connect_background_forwards_every_status_then_closes() {
+    async fn connect_background_forwards_every_status_and_stays_open_while_the_manager_lives() {
         let m = manager(&["alpha", "beta"]);
         let mut rx = m.connect_background(&CancellationToken::new());
         let mut names = Vec::new();
-        while let Some(status) = rx.recv().await {
+        for _ in 0..2 {
+            let status = rx.recv().await.expect("a status per server");
             assert!(
                 status.error().is_some(),
                 "{} did not resolve as a failure: {:?}",
@@ -1331,10 +1399,16 @@ mod tests {
         }
         names.sort();
         assert_eq!(names, vec!["alpha".to_owned(), "beta".to_owned()]);
-        // Closed, not merely drained: every connect task has dropped its sender.
-        assert!(rx.recv().await.is_none());
         // The merge happened under the lock, so the snapshot agrees with what the channel published.
         assert!(m.servers().iter().all(|s| s.error().is_some()));
+        // Every server failed, and the channel is still open: drained, not closed.
+        assert_eq!(
+            rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        );
+        drop(m);
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await;
+        assert_eq!(closed, Ok(None), "closed once the manager is gone");
     }
 
     /// No configured server: the receiver is closed from the start, so the reporter task ends immediately

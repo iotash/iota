@@ -2266,6 +2266,16 @@ async fn tools_reconnects_a_server_from_its_page() {
         manager.servers()[1].failure().map(|(s, _)| s.to_owned()),
         Some("\"sh\" exited during startup: license server unreachable".to_owned())
     );
+    // It had a tool, so the failed reconnect leaves it down with that tool, not failed without it (X-78).
+    let flaky_after = &manager.servers()[1];
+    assert_eq!(
+        (flaky_after.segment(), flaky_after.wire_names()),
+        ("flaky", vec!["mcp__flaky__echo".to_owned()])
+    );
+    assert!(
+        manager.tools().iter().any(|t| t.name == "mcp__flaky__echo"),
+        "the model is still offered it"
+    );
     manager.close().await;
 }
 
