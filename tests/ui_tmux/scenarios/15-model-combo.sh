@@ -28,15 +28,15 @@ export CONFIG_BODY
 cursor_is() { [ "$(cursor_xy)" = "$1" ]; }
 
 start_provider openai 80 30 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 before="$(cap)"
 
 # ------------------------------------------------------------------ A: the candidate set
 type_ '/model'
 key Enter
-wait_vis 'Enter select' || bad "the model combo never opened"
-settle || bad "the combo never settled"
+wait_vis 'Enter select' || miss "the model combo never opened"
+settle || miss "the combo never settled"
 
 comp="$(composer_row)"
 # The set names two endpoints (`dead:*` too, though it lists nothing), so every row says which one it is
@@ -67,8 +67,8 @@ check "the real cursor sits in the field, right after its ❯" "$(cursor_xy)" "1
 check_frame_intact "with the combo open" 80
 
 key Escape
-wait_gone 'Enter select' || bad "the combo did not close on ESC"
-settle || bad "frame never settled after cancel"
+wait_gone 'Enter select' || miss "the combo did not close on ESC"
+settle || miss "frame never settled after cancel"
 if [ "$(cap)" = "$before" ]; then
     ok "ESC restores the pane exactly (no switch, no ghost rows)"
 else
@@ -79,10 +79,10 @@ fi
 # ------------------------------------------------------------------ B: typing filters
 type_ '/model'
 key Enter
-wait_vis 'Enter select' || bad "the combo never reopened"
+wait_vis 'Enter select' || miss "the combo never reopened"
 type_ 'gpt'
-wait_vis 'as typed' || bad "the typed row never appeared"
-settle || bad "the filter never settled"
+wait_vis 'as typed' || miss "the typed row never appeared"
+settle || miss "the filter never settled"
 check "the filter narrowed the list" "$(count_vis 'gemini-pro')" 0
 check "…to the row that matches" "$(count_vis 'gpt-4o')" 1
 check "the hint counts what the filter keeps" "$(count_vis '1 of 3')" 1
@@ -92,11 +92,11 @@ check "the hint counts what the filter keeps" "$(count_vis '1 of 3')" 1
 # the field, ←→ (and Ctrl+A/E) move it inside the field's text.
 read -r fx fy <<<"$(cursor_xy)"
 key Down
-settle || bad "the combo never settled after ↓"
+settle || miss "the combo never settled after ↓"
 check "↓ keeps the field's text" "$(count_vis '❯gpt')" 1
 check "…and the real cursor stays in the field" "$(cursor_xy)" "$fx $fy"
 key Up
-settle || bad "the combo never settled after ↑"
+settle || miss "the combo never settled after ↑"
 key Left
 _poll_until 20 cursor_is "$((fx - 1)) $fy" || true
 check "← moves the text cursor one column back inside the field" "$(cursor_xy)" "$((fx - 1)) $fy"
@@ -113,18 +113,18 @@ field_start=$((fx - 3))
 # row carries it verbatim, and the real cursor sits two columns past the field's start.
 key C-u
 type_ '中'
-wait_vis 'use "中" as typed' || bad "the typed row does not carry the composed rune"
+wait_vis 'use "中" as typed' || miss "the typed row does not carry the composed rune"
 # The list just shrank to the typed row alone: the surface re-lays itself out, so wait for
 # the frame to hold still before reading the field row and the cursor off it.
-settle || bad "the combo never settled after the composed rune"
+settle || miss "the combo never settled after the composed rune"
 check "a CJK rune in the field is the typed row, verbatim" "$(count_vis 'use "中" as typed')" 1
 # The list shrank to the typed row alone, so the field row moved: read its row again.
 check "…and the real cursor sits one wide rune past the field's start" "$(cursor_xy)" "$((field_start + 2)) $(($(row_of '❯中') - 1))"
 # …and `/` is a character here too (§8b.2): nothing else claims it.
 key C-u
 type_ 'a/b'
-wait_vis 'use "a/b" as typed' || bad "a slash did not type into the field"
-settle || bad "the combo never settled after the slash"
+wait_vis 'use "a/b" as typed' || miss "a slash did not type into the field"
+settle || miss "the combo never settled after the slash"
 check "a slash goes INTO the field" "$(count_vis 'use "a/b" as typed')" 1
 
 # ------------------------------------------------------------------ C: submitting the text
@@ -132,12 +132,12 @@ check "a slash goes INTO the field" "$(count_vis 'use "a/b" as typed')" 1
 # row alone in the list, with the cursor already on it — Enter then means "use what I typed".
 key C-u
 type_ 'my-own-model'
-wait_vis 'use "my-own-model" as typed' || bad "the typed row does not carry the text"
+wait_vis 'use "my-own-model" as typed' || miss "the typed row does not carry the text"
 check "a name nothing matches leaves the list to the typed row" "$(count_vis 'gpt-4o')" 0
 check "Enter is unambiguous, and says so" "$(count_vis 'Enter use typed')" 1
 key Enter
-wait_all 'Model switched to my-own-model' || bad "the typed text never committed"
-settle || bad "frame never settled after the switch"
+wait_all 'Model switched to my-own-model' || miss "the typed text never committed"
+settle || miss "frame never settled after the switch"
 check_once "the switch is announced exactly once" 'Model switched to my-own-model'
 check "no ghost combo rows after close" "$(count_vis 'Enter select')" 0
 check_frame_intact "after committing the typed text" 80
@@ -148,14 +148,14 @@ check_frame_intact "after committing the typed text" 80
 before_esc="$(cap)"
 type_ '/model'
 key Enter
-wait_vis 'Enter select' || bad "the combo never opened for the ESC check"
+wait_vis 'Enter select' || miss "the combo never opened for the ESC check"
 type_ 'q'
-wait_vis 'use "q" as typed' || bad "q did not type into the field"
-settle || bad "the combo never settled after q"
+wait_vis 'use "q" as typed' || miss "q did not type into the field"
+settle || miss "the combo never settled after q"
 check "q is a character in the field" "$(count_vis 'use "q" as typed')" 1
 key Escape
-wait_gone 'Enter select' || bad "ESC with text in the field did not close the surface"
-settle || bad "frame never settled after the ESC"
+wait_gone 'Enter select' || miss "ESC with text in the field did not close the surface"
+settle || miss "frame never settled after the ESC"
 if [ "$(cap)" = "$before_esc" ]; then
     ok "ESC with text in the field closes the whole surface and restores the pane exactly"
 else
@@ -169,12 +169,12 @@ check "no switch on ESC" "$(count_all 'Model switched to')" 1
 # so ↓ lands on the first listed candidate.
 type_ '/model'
 key Enter
-wait_vis 'mock:my-own-model (current)' || bad "the combo does not carry the current model"
-settle || bad "the combo never settled"
+wait_vis 'mock:my-own-model (current)' || miss "the combo does not carry the current model"
+settle || miss "the combo never settled"
 key Down
 key Enter
-wait_all 'Model switched to fake' || bad "arrow navigation never reached the first candidate"
-settle || bad "frame never settled after the second switch"
+wait_all 'Model switched to fake' || miss "arrow navigation never reached the first candidate"
+settle || miss "frame never settled after the second switch"
 check "the status row followed the model" "$(status_model)" '  fake'
 check_frame_intact "after the arrow-driven switch" 80
 
@@ -195,18 +195,18 @@ agents:
     choices: [m, \"mock:*\", \"dead:*\", \"slow:*\"]"
 export CONFIG_BODY
 start_provider openai 80 30 || finish
-settle || bad "startup never settled (slow source)"
+settle || miss "startup never settled (slow source)"
 before_fetch="$(cap)"
 type_ '/model'
 key Enter
-wait_vis 'Fetching available models from 3 providers' || bad "the fetch never showed on the status row"
+wait_vis 'Fetching available models from 3 providers' || miss "the fetch never showed on the status row"
 key Escape
 if _poll_until 10 _vis_lacks 'Fetching available models'; then
     ok "ESC abandons the fetch at once (under a second)"
 else
     bad "the fetch outlived ESC"
 fi
-settle || bad "frame never settled after the abandoned fetch"
+settle || miss "frame never settled after the abandoned fetch"
 check "no surface after the abandoned fetch" "$(count_vis 'Enter select')" 0
 if [ "$(cap)" = "$before_fetch" ]; then
     ok "the pane is exactly what it was before /model"
@@ -222,8 +222,8 @@ else
 fi
 type_ 'hello'
 key Enter
-wait_all 'echo: hello' || bad "the chat did not accept input after the abandoned fetch"
-settle || bad "frame never settled after the follow-up turn"
+wait_all 'echo: hello' || miss "the chat did not accept input after the abandoned fetch"
+settle || miss "frame never settled after the follow-up turn"
 check_frame_intact "after the abandoned fetch" 80
 
 finish

@@ -20,17 +20,20 @@ BEL="$(printf '\007')"
 
 start_shell 80 24 || finish
 # The title the shell pane carries before the binary — what the pop must restore.
-_poll_until 30 sh -c '[ -n "$1" ]' _ "$(pane_title)"
+# (The predicate reads the title on every try: `sh -c … "$(pane_title)"` read it once, before the
+# poll, and waited on that one value.)
+_titled() { [ -n "$(pane_title)" ]; }
+_poll_until 30 _titled || miss "the shell pane never had a title to restore"
 shell_title="$(pane_title)"
 pipe_raw
 
 type_ "$(iota_cmd openai fake)"
 key Enter
 wait_vis '❯' || {
-    bad "the binary never came up in the shell pane"
+    miss "the binary never came up in the shell pane"
     finish
 }
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 # ------------------------------------------------------------------ A: the start (§5.1)
 check_raw "the title stack is pushed (CSI 22;0 t)" "${ESC}[22;0t" yes
@@ -49,17 +52,17 @@ check "tmux reads the title back" "$(pane_title)" "iota"
 # word after the colon, so the session is named `你好世界` and the tab must follow.
 type_ 'title:你好世界 hello'
 key Enter
-wait_all 'echo: title:你好世界 hello' || bad "the turn never completed"
-_poll_until 100 pane_title_is '你好世界' || bad "the session title never reached the tab (title now: $(pane_title))"
+wait_all 'echo: title:你好世界 hello' || miss "the turn never completed"
+_poll_until 100 pane_title_is '你好世界' || miss "the session title never reached the tab (title now: $(pane_title))"
 check "the tab carries the composed CJK title" "$(pane_title)" '你好世界'
 check_raw "…as one OSC 0 with the UTF-8 bytes intact" "${ESC}]0;你好世界${BEL}" yes
-settle || bad "frame never settled after the turn"
+settle || miss "frame never settled after the turn"
 check_frame_intact "with the session titled" 80
 
 # ------------------------------------------------------------------ C: a clean exit (§5.2)
 key C-c
 key C-c
-_poll_until 60 raw_has "${ESC}[23;0t" || bad "the title stack was never popped"
+_poll_until 60 raw_has "${ESC}[23;0t" || miss "the title stack was never popped"
 check_raw "exit pops the title stack (CSI 23;0 t)" "${ESC}[23;0t" yes
 focus_off="$(raw_offset "${ESC}[?1004l")"
 pop_at="$(raw_offset "${ESC}[23;0t")"

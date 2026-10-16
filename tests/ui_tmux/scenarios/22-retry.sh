@@ -30,22 +30,22 @@
 check_red_detector
 
 start 120 24 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 # ------------------------------------------------------------------ A: two refusals, then the answer
 type_ 'fail:503:6 hello'
 key Enter
-wait_vis 'retrying (attempt 1/' || bad "the first refusal never reached the status row"
+wait_vis 'retrying (attempt 1/' || miss "the first refusal never reached the status row"
 check "the classification rides the status row" "$(count_vis 'Provider server error (503) — retrying (attempt 1/10)')" 1
 # Typed during the first backoff: the loop is busy, so the line queues.
 type_ 'steer'
 key Enter
-wait_vis '» steer' || bad "the line typed during the backoff never queued"
-wait_vis 'retrying (attempt 2/' || bad "the second refusal never reached the status row"
-wait_all 'echo: fail:503:6 hello' || bad "the turn never recovered"
+wait_vis '» steer' || miss "the line typed during the backoff never queued"
+wait_vis 'retrying (attempt 2/' || miss "the second refusal never reached the status row"
+wait_all 'echo: fail:503:6 hello' || miss "the turn never recovered"
 # The queued line is the next turn.
-wait_all 'echo: steer' || bad "the queued line never reached the model"
-settle || bad "frame never settled after the recovery"
+wait_all 'echo: steer' || miss "the queued line never reached the model"
+settle || miss "frame never settled after the recovery"
 check_once "ONE recovery notice" '⟳ Provider server error (503) — recovered after 2 attempt(s)'
 check_once "the answer landed once" 'echo: fail:503:6 hello'
 check_once "the line typed during the backoff landed once" '❯ steer'
@@ -58,11 +58,11 @@ check_frame_intact "after the recovery" 120
 # ------------------------------------------------------------------ B: Ctrl+C during a backoff
 type_ 'fail:503:3 again'
 key Enter
-wait_vis 'retrying (attempt 1/' || bad "the refusal never reached the status row"
+wait_vis 'retrying (attempt 1/' || miss "the refusal never reached the status row"
 check "the classification rides the status row again" "$(count_vis 'Provider server error (503) — retrying (attempt 1/10)')" 1
 key C-c
-wait_all 'Interrupted.' || bad "Ctrl+C during the backoff did not interrupt the turn"
-settle || bad "frame never settled after the interrupt"
+wait_all 'Interrupted.' || miss "Ctrl+C during the backoff did not interrupt the turn"
+settle || miss "frame never settled after the interrupt"
 check_once "the interrupt notice is committed once" 'Interrupted.'
 if alive; then ok "the app is still running"; else bad "Ctrl+C during a backoff exited the program"; finish; fi
 check "no red block after an interrupted retry" "$(red_rows)" 0
@@ -73,8 +73,8 @@ check_frame_intact "after the interrupted retry" 120
 # ------------------------------------------------------------------ C: the control — a 400 is red
 type_ 'fail:400:1 control'
 key Enter
-wait_all '✗ Request rejected (400' || bad "the non-retryable error never painted its block"
-settle || bad "frame never settled after the error"
+wait_all '✗ Request rejected (400' || miss "the non-retryable error never painted its block"
+settle || miss "frame never settled after the error"
 check_once "a non-retryable error is ONE ✗ block" '✗ Request rejected (400 Bad Request)'
 if [ "$(red_rows)" -gt 0 ]; then
     ok "…painted red (the assertions above were live)"

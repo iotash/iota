@@ -14,6 +14,7 @@
 //! | user message  | reply                                                        |
 //! |---------------|--------------------------------------------------------------|
 //! | `stream N [MS]` | `N` lines `l#00 line` … , 60 ms (or `MS`) apart (the interruptible one) |
+//! | `stream N [MS] hold@K:TAG` | the same, stopped after the K-th line until `GET /release/TAG` (a mid-stream window the scenario ends, not the clock) |
 //! | `think`       | ~1.5 s of reasoning deltas, then a small markdown document   |
 //! | `md`          | that markdown document, streamed in 7-byte chunks            |
 //! | `exact`       | `EXACTSTART`, a line of exactly 80 `x`, `EXACTEND`            |
@@ -57,6 +58,7 @@
 //! | `POST /images/edits`           | the same (both the multipart and the JSON edit form)      |
 //! | `POST /v1/messages`            | the Anthropic Messages dialect below (a `type: anthropic` provider) |
 //! | `GET  /v1/messages/log`        | every `/v1/messages` body received so far, one per line   |
+//! | `GET  /release/<tag>`          | releases a `hold@K:<tag>` stream (now, or when it reaches its hold) |
 //! | anything else (`POST`)         | the chat-completions dialect above                        |
 //!
 //! Both image frames carry the checked-in 2×2 PNG (`tests/fixtures/images/rb-2x2.png`),
@@ -81,12 +83,12 @@
 //! kept, in order, and `GET /v1/messages/log` hands them back — the only way a scenario can see
 //! what the client SENT after a cut (the half-thought, the dropped call, the rolled-back message).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
@@ -119,6 +121,13 @@ const TRAILING: &str = "TRAILTEXT after the call\n";
 
 /// `fail:<status>:<n>` bookkeeping: how many times each carrying message has been refused.
 static FAILS: Mutex<BTreeMap<String, u32>> = Mutex::new(BTreeMap::new());
+
+/// The `hold@K:<tag>` tags released so far (`GET /release/<tag>`). A tag is released once and for
+/// good, so a release that arrives before the stream reaches its hold is not lost.
+static RELEASED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+/// The longest a held stream waits for its release.
+const HOLD_MAX: Duration = Duration::from_secs(30);
 
 /// Tool-call ids, unique for the life of the process (a replayed round carries the old ones).
 static CALLS: AtomicU64 = AtomicU64::new(0);
@@ -204,6 +213,9 @@ fn serve(mut sock: TcpStream) -> std::io::Result<()> {
     if is_get {
         if path.ends_with("/v1/messages/log") {
             return messages_log(&mut sock);
+        }
+        if let Some(tag) = path.strip_prefix("/release/") {
+            return release(&mut sock, tag);
         }
         if path.contains("/slow/") {
             thread::sleep(SLOW_LIST);
@@ -307,6 +319,35 @@ fn status_reply(sock: &mut TcpStream, status: u16) -> std::io::Result<()> {
     sock.flush()
 }
 
+/// `GET /release/<tag>` — lets a `stream … hold@K:<tag>` past its hold, now or when it gets there.
+fn release(sock: &mut TcpStream, tag: &str) -> std::io::Result<()> {
+    RELEASED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(tag.to_owned());
+    write!(
+        sock,
+        "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )?;
+    sock.flush()
+}
+
+/// Blocks a held stream until its tag is released — or for [`HOLD_MAX`], so a scenario that fails
+/// before its release never leaves the turn hanging past the scenario.
+fn wait_release(tag: &str) {
+    let deadline = std::time::Instant::now() + HOLD_MAX;
+    while std::time::Instant::now() < deadline {
+        if RELEASED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(tag)
+        {
+            return;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// `GET /models` — the three ids `/model`'s picker lists.
 fn models(sock: &mut TcpStream) -> std::io::Result<()> {
     let body = r#"{"data":[{"id":"fake"},{"id":"gemini-pro"},{"id":"gpt-4o"}]}"#;
@@ -386,7 +427,17 @@ fn stream_reply(sock: &mut TcpStream, prompt: &str, after_tool: bool) -> std::io
             .next()
             .and_then(|a| a.parse().ok())
             .map_or(LINE_GAP, Duration::from_millis);
+        // `hold@K:TAG` anywhere after the count: stop after the K-th line until TAG is released.
+        let hold = rest.split_whitespace().find_map(|a| {
+            let (k, tag) = a.strip_prefix("hold@")?.split_once(':')?;
+            Some((k.parse::<usize>().ok()?, tag.to_owned()))
+        });
         for i in 0..n {
+            if let Some((k, tag)) = &hold
+                && i == *k
+            {
+                wait_release(tag);
+            }
             content(sock, &format!("l#{i:02} line\n"))?;
             thread::sleep(gap);
         }

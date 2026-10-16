@@ -100,7 +100,7 @@ check_pinned() {
 start 80 24 || finish
 # Unmask a lost row (see the header): a clear must not be filed into the history.
 tm set-option -w -t s scroll-on-clear off
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 check "separators start at the initial width" "$(sep_width)" 80
 # The startup leaves one: the frame the banner was inserted above (W9).
 check_budget "stale frames in the scrollback at startup (W9)" "$(stale_frames)" 1
@@ -108,7 +108,7 @@ stale="$(stale_frames)"
 
 # ------------------------------------------------------------------ idle grow (§4.3)
 tm resize-window -t s -x 90 -y 26
-settle || bad "frame never settled after the idle grow"
+settle || miss "frame never settled after the idle grow"
 check_frame_intact "after the idle grow" 90
 check "status line survived the idle grow" "$(status_model)" "  fake"
 if alive; then ok "the app survived an idle SIGWINCH (grow)"; else bad "the app died on the idle grow"; fi
@@ -118,11 +118,11 @@ stale="$(stale_frames)"
 # ------------------------------------------------------------------ mid-stream grow (§4.1)
 type_ 'stream 40'
 key Enter
-wait_vis 'l#05 line' || bad "the stream never started"
+wait_vis 'l#05 line' || miss "the stream never started"
 
 tm resize-window -t s -x 110 -y 30
-wait_all 'l#39 line' || bad "the stream did not survive a mid-stream resize"
-settle || bad "frame never settled after the mid-stream resize"
+wait_all 'l#39 line' || miss "the stream did not survive a mid-stream resize"
+settle || miss "frame never settled after the mid-stream resize"
 
 if alive; then ok "the app survived a mid-stream SIGWINCH (grow)"; else bad "the app died on resize"; fi
 check_frame_intact "after the mid-stream grow" 110
@@ -141,7 +141,7 @@ idle_shrink() {
     local label="$1" w="$2" h="$3" dups
     dups="$(dup_rows 1)"
     tm resize-window -t s -x "$w" -y "$h"
-    settle || bad "frame never settled after the $label"
+    settle || miss "frame never settled after the $label"
     check_frame_intact "after the $label" "$w"
     check "status line survived the $label" "$(status_model)" "  fake"
     if alive; then ok "the app survived an idle SIGWINCH ($label)"; else bad "the app died on the $label"; fi
@@ -157,37 +157,119 @@ idle_shrink "idle narrowing" 90 30
 idle_shrink "idle shrink" 70 20
 
 # ------------------------------------------------------------------ idle drags (§4.3)
-# drag_block <label> <settle each step: 1|0|paced> <duplicated rows> <step…> — SIGWINCHes one
-# after another, like a dragged corner, then the invariants: nothing lost, not one separator row
-# added to the history, no stale frame, the composer flush with the bottom — and the rows left
-# twice within the block's MEASURED number (X-52 residual (1), B3): the drag's first step
-# rewraps the staged rows whose lines the last full-width repaint drew to the old width, and
-# since B3 nothing a reflow grows above the cursor is claimed, so the frame's top staged row
-# (`l#36`) stays behind once. A drag that starts inside another's burst (the frame still a
-# margin short, its lines no wider than the new terminal) rewraps nothing: 0.
+# drag_block <label> <from: rest|burst> <pace: settled|paced|pairs|blind> <duplicated rows> <step…>
+# — SIGWINCHes one after another, like a dragged corner, then the invariants: nothing lost, not one
+# separator row added to the history, no stale frame, the composer flush with the bottom, and the
+# rows left twice confined to what the frame held when the drag began — and, for a drag whose
+# passes the test controls, within the block's MEASURED number (X-52 residual (1), B3): the drag's
+# first step rewraps the staged rows whose lines the last full-width repaint drew to the old width,
+# and since B3 nothing a reflow grows above the cursor is claimed, so the frame's top staged row
+# (`l#36`) stays behind once. A drag that starts inside another's burst (the frame still a margin
+# short, its lines no wider than the new terminal) rewraps nothing: 0.
+#
+# The number is a fact of two things the runner must not choose (the 2026-10-16 hardening, rule 4
+# in lib.sh):
+#
+#   * WHERE the drag starts — at rest (the frame back at full width, DRAG_SETTLE over) or inside
+#     the last resize's burst (still a margin short). <from> names it, and the block checks it
+#     before the first step: `rest` waits for the frame at full width; `burst` checks the frame is
+#     still short, and a drag that would start at rest is NOT MEASURED, said as such — the paced
+#     drag's 0 is a 0 only from inside a burst, and nothing used to check that it was.
+#   * WHICH steps one resize pass takes together — a pass that sees two steps at once rewraps
+#     what the last one drew for a wider terminal. `settled` waits for the pane to stand still
+#     after each step, `paced` is the hand's own 1 s pause (well past RESIZE_QUIET), and `pairs`
+#     sends the steps two at a time in ONE tmux command (both inside RESIZE_QUIET by construction:
+#     one pass each pair) and waits for each pair's pass to be drawn (`pass_landed`). `blind`
+#     fires them 60 ms apart and lets the runner group them — the real fast corner, kept for its
+#     race, held to what holds under ANY grouping: the hard invariants, the owner's per-drag budget
+#     (≤ 2 duplicated rows, the frozen protocol) and the confinement. Its exact number is not the
+#     code's: 1 on this host in every idle run, 2 on the ubuntu runner (CI 38759202470, `l#36`×6),
+#     and 1 or 2 here under load, the frame intact every time.
+#
+# The frame's staged rows when a drag begins are the stream's last four lines (`l#36`–`l#39`): a
+# copy of any OTHER line is a pass that rewrote committed history, whatever the count.
+staged_re='l#3[6-9] line'
+# Copies beyond the first of streamed lines that were NOT staged — a duplicate of committed history.
+dup_outside() { capall | grep -oE 'l#[0-9][0-9] line' | grep -vE "$staged_re" | sort | uniq -c | awk '$1 > 1 { d += $1 - 1 } END { print d + 0 }'; }
+term_width() { tm display-message -pt s '#{window_width}'; }
+dsr_count() { LC_ALL=C grep -aoF "$(printf '\033[6n')" "$RAW" 2>/dev/null | wc -l | tr -d ' '; }
+# pass_landed <DSR count before> — a resize pass has run (every pass reads the cursor with one DSR
+# before it writes a byte, term.rs) and its frame is drawn (two captures 60 ms apart the same).
+# Bounded at 1.5 s, inside DRAG_SETTLE (2 s), so the steps stay one drag when a pass is slow.
+pass_landed() {
+    local s prev="" i=0
+    while [ "$i" -lt 25 ]; do
+        s="$(cap)"
+        [ "$(dsr_count)" -gt "$1" ] && [ "$s" = "$prev" ] && return 0
+        prev="$s"
+        sleep 0.06
+        i=$((i + 1))
+    done
+    return 1
+}
+_at_rest() { [ "$(sep_width)" = "$(term_width)" ]; }
 drag_block() {
-    local label="$1" each="$2" dups="$3" step last seps0 stale0 dups0 blanks0
-    shift 3
+    local label="$1" from="$2" pace="$3" dups="$4" step last seps0 stale0 dups0 blanks0 out0 d0 w0
+    shift 4
+    if [ "$from" = rest ]; then
+        # DRAG_SETTLE (2 s) twice plus a slow runner's slack, like check_frame_intact.
+        _poll_until 60 _at_rest || miss "$label: the frame never came back to rest before the drag"
+    fi
+    w0="$(sep_width)"
     seps0="$(extra_seps)"
     blanks0="$(hist_blanks)"
     dups0="$(dup_rows 1)"
+    out0="$(dup_outside)"
     stale0="$(stale_frames)"
-    for step in "$@"; do
-        tm resize-window -t s -x "${step%x*}" -y "${step#*x}"
-        case "$each" in
-            1) settle || bad "$label: frame never settled at $step" ;;
-            paced) sleep 1 ;;
-            *) sleep 0.06 ;;
-        esac
-        last="$step"
-    done
-    settle || bad "frame never settled after the $label"
+    if [ "$from" = burst ] && [ "$w0" -ge "$(term_width)" ]; then
+        miss "$label: NOT MEASURED — it must start inside the release's burst, and the frame was already back at full width ($w0)"
+        return
+    fi
+    check "$label: it starts $from (frame $w0, terminal $(term_width))" \
+        "$([ "$w0" -lt "$(term_width)" ] && echo burst || echo rest)" "$from"
+    RAW="$SCEN_TMP/raw-drag.out"
+    pipe_raw
+    if [ "$pace" = pairs ]; then
+        set -- "$@" ""
+        while [ "$#" -ge 2 ] && [ -n "$1" ]; do
+            d0="$(dsr_count)"
+            if [ -n "$2" ]; then
+                tm resize-window -t s -x "${1%x*}" -y "${1#*x}" \; resize-window -t s -x "${2%x*}" -y "${2#*x}"
+                last="$2"
+                shift 2
+            else
+                tm resize-window -t s -x "${1%x*}" -y "${1#*x}"
+                last="$1"
+                shift
+            fi
+            pass_landed "$d0" || miss "$label: the pass for the step to $last was never drawn"
+        done
+    else
+        for step in "$@"; do
+            tm resize-window -t s -x "${step%x*}" -y "${step#*x}"
+            case "$pace" in
+                settled) settle || miss "$label: frame never settled at $step" ;;
+                # The input under test: a hand that pauses 1 s, a corner moved every 60 ms.
+                paced) sleep 1 ;;
+                *) sleep 0.06 ;;
+            esac
+            last="$step"
+        done
+    fi
+    settle || miss "frame never settled after the $label"
     check_frame_intact "after the $label" "${last%x*}"
+    tm pipe-pane -t s
     if alive; then ok "the app survived the $label"; else bad "the app died during the $label"; fi
     check_no_loss "no streamed row is lost across the $label" 1
-    check_budget "streamed rows the $label duplicated (X-52 (1), B3: measured $dups)" \
-        "$(($(dup_rows 1) - dups0))" "$dups"
-    [ "$(($(dup_rows 1) - dups0))" -le "$dups" ] || echo "    DUPLICATED: $(dup_list 1)"
+    if [ "$pace" = blind ]; then
+        check_budget "streamed rows the $label duplicated (any grouping: the per-drag budget)" \
+            "$(($(dup_rows 1) - dups0))" 2
+    else
+        check_budget "streamed rows the $label duplicated (X-52 (1), B3: measured $dups)" \
+            "$(($(dup_rows 1) - dups0))" "$dups"
+    fi
+    echo "    DUPLICATED (whole history): $(dup_list 1)"
+    check "the $label duplicated only the frame's staged rows (l#36–l#39)" "$(($(dup_outside) - out0))" 0
     check "separator rows the $label added to the history" "$(($(extra_seps) - seps0))" 0
     # Under W5's burst layout only a drag's FIRST step rewraps the frame (it was full width);
     # that band is closed when the drag ends and may reach the history later — X-52's accepted
@@ -197,27 +279,32 @@ drag_block() {
     check "stale frames the $label pushed out (W9)" "$(($(stale_frames) - stale0))" 0
     check_pinned "after the $label" "${last#*x}"
 }
+# release <label> — the drag's corner let go: back to 70x20, its pass drawn, the frame a margin
+# short for DRAG_SETTLE — the burst the next drag may start inside.
+drag_release() {
+    tm resize-window -t s -x 70 -y 20
+    settle || miss "frame never settled after the $1's release"
+}
 # The verifier's round-2 repro: 25 settled one-column steps (the frame used to climb a row
 # per step, reach the top at ~16, and pile separators into the history from there).
 # Measured 1 (15 of 15 runs: tmux 3.7c, 3.7c under six CPU burners, 3.4): it starts from the
 # idle shrink's full-width repaint.
-drag_block "settled 25-step drag" 1 1 69x20 68x20 67x20 66x20 65x20 64x20 63x20 62x20 61x20 60x20 \
+drag_block "settled 25-step drag" rest settled 1 69x20 68x20 67x20 66x20 65x20 64x20 63x20 62x20 61x20 60x20 \
     59x20 58x20 57x20 56x20 55x20 54x20 53x20 52x20 51x20 50x20 49x20 48x20 47x20 46x20 45x20
-tm resize-window -t s -x 70 -y 20
-settle || bad "frame never settled after the drag's release"
-# A fast corner: eight SIGWINCHes 60 ms apart, narrowing and shortening at once.
-# Measured 1 (15 of 15, as above): 2 while it lasts — its passes lag the steps — and the band
-# the drag's end closes takes one of them.
-drag_block "fast 8-step drag" 0 1 68x20 66x20 64x19 63x19 62x19 61x18 60x18 59x18
-tm resize-window -t s -x 70 -y 20
-settle || bad "frame never settled after the fast drag's release"
+drag_release "settled drag"
+# A fast corner: eight steps, narrowing and shortening at once, two to a pass — the passes lag the
+# steps by construction. MEASURED below (2026-10-16).
+drag_block "fast 8-step drag, two steps a pass" burst pairs 1 68x20 66x20 64x19 63x19 62x19 61x18 60x18 59x18
+drag_release "paired drag"
+# The same corner blind: eight SIGWINCHes 60 ms apart, grouped by whoever runs them.
+drag_block "fast 8-step drag, blind (60 ms apart)" burst blind 2 68x20 66x20 64x19 63x19 62x19 61x18 60x18 59x18
+drag_release "blind drag"
 # A PACED drag, one step a second (a hand that pauses, a keyboard resize): the verifier's round-2
 # repro — steps further apart than the old 750 ms window were separate drags, each rewrapping the
 # restored full-width separators into two more blank rows.
-# Measured 0 (15 of 15): it starts 0.4 s after the release, inside the release's burst.
-drag_block "paced 10-step drag (1 s apart)" paced 0 69x20 68x20 67x20 66x20 65x20 64x20 63x20 62x20 61x20 60x20
-tm resize-window -t s -x 70 -y 20
-settle || bad "frame never settled after the paced drag's release"
+# Measured 0 (15 of 15): it starts 0.4 s after the release, inside the release's burst — now checked.
+drag_block "paced 10-step drag (1 s apart)" burst paced 0 69x20 68x20 67x20 66x20 65x20 64x20 63x20 62x20 61x20 60x20
+drag_release "paced drag"
 # A HEIGHT drag down and back up within one drag (100 ms apart), both `scroll-on-clear` settings:
 # the verifier's P0 — tmux pulls history rows back on a grow, the loop handled a stale size and
 # erased the committed row above the frame. Loss is the one hard failure (X-52's budget).
@@ -244,7 +331,7 @@ for soc in off on; do
         echo "h=$h bytes=$(wc -c <"$RAW" | tr -d ' ') cursor=$(cursor_xy) hist=$(hist_size)" >>"$steps"
         sleep 0.1
     done
-    settle || bad "frame never settled after the height drag (scroll-on-clear $soc)"
+    settle || miss "frame never settled after the height drag (scroll-on-clear $soc)"
     echo "settled bytes=$(wc -c <"$RAW" | tr -d ' ') cursor=$(cursor_xy) hist=$(hist_size)" >>"$steps"
     check_frame_intact "after a height drag down and back (scroll-on-clear $soc)" 70
     check_no_loss "no streamed row is lost across a height drag down and back (scroll-on-clear $soc)" 1
@@ -267,11 +354,11 @@ before="$(count_all 'l#39 line')"
 dups="$(dup_rows 1)"
 type_ 'stream 40'
 key Enter
-wait_all_more 'l#05 line' "$(count_all 'l#05 line')" || bad "the second stream never started"
+wait_all_more 'l#05 line' "$(count_all 'l#05 line')" || miss "the second stream never started"
 
 tm resize-window -t s -x 60 -y 18
-wait_all_more 'l#39 line' "$before" || bad "the stream did not survive a mid-stream shrink"
-settle || bad "frame never settled after the mid-stream shrink"
+wait_all_more 'l#39 line' "$before" || miss "the stream did not survive a mid-stream shrink"
+settle || miss "frame never settled after the mid-stream shrink"
 
 if alive; then ok "the app survived a mid-stream SIGWINCH (shrink)"; else bad "the app died on the shrink"; fi
 check_frame_intact "after the mid-stream shrink" 60
@@ -289,8 +376,8 @@ check_budget "stale frames pushed out by the mid-stream shrink (W9)" "$(($(stale
 # ------------------------------------------------------------------ still usable
 type_ 'hello after resize'
 key Enter
-wait_all 'echo: hello after resize' || bad "input stopped working after the resizes"
-settle || bad "frame never settled after the follow-up turn"
+wait_all 'echo: hello after resize' || miss "input stopped working after the resizes"
+settle || miss "frame never settled after the follow-up turn"
 check_once "the follow-up echo committed once" '❯ hello after resize'
 check_frame_intact "after the follow-up turn" 60
 

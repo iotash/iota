@@ -17,7 +17,7 @@
 . "${TMUX_LIB:?}"
 
 start 80 24 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 # newline_turn <label> <first> <second> <key args…> — type <first>, press the key, type
 # <second>, assert the unsent two-row draft, press Enter, assert ONE two-line message.
@@ -27,8 +27,8 @@ newline_turn() {
     type_ "$one"
     key "$@"
     type_ "$two"
-    wait_vis "  $two" || bad "$label: the second line never rendered"
-    settle || bad "$label: composer never settled"
+    wait_vis "  $two" || miss "$label: the second line never rendered"
+    settle || miss "$label: composer never settled"
     # Nothing was submitted: no reply, and line one exists only as the composer's own row.
     # (Not `hist_size`: once the screen is full, the composer's second row pushes a transcript
     # row into the scrollback by itself.)
@@ -40,8 +40,8 @@ newline_turn() {
     check "$label: one prompt" "$(count_composer '❯')" 1
 
     key Enter
-    wait_all "echo: $one" || bad "$label: the message never reached the model"
-    settle || bad "$label: frame never settled after the submit"
+    wait_all "echo: $one" || miss "$label: the message never reached the model"
+    settle || miss "$label: frame never settled after the submit"
     check_once "$label: echo row 1" "❯ $one"
     check "$label: echo row 2 is a continuation, not a second prompt" "$(count_all "❯ $two")" 0
     check "$label: no second message for line two" "$(count_all "echo: $two")" 0
@@ -61,19 +61,21 @@ newline_turn "Alt+Enter" 'alt line one' 'alt line two' M-Enter
 newline_turn "Shift+Enter (CSI u)" 'sh line one' 'sh line two' -H 1b 5b 31 33 3b 32 75
 
 # The queue: a two-line item typed while a turn streams is one `»` row, and ESC folds it back.
-type_ 'stream 60'
+# Held after its sixth line (`hold@6`) and never released: ESC ends it. The queue row, the frame
+# check (which polls up to 6 s) and the ESC all land mid-stream, not inside the mock's 3.6 s.
+type_ "stream 60 60 hold@6:s28-$$"
 key Enter
-wait_vis 'l#05 line' || bad "the stream never started"
+wait_vis 'l#05 line' || miss "the stream never started"
 type_ 'q one'
 key C-j
 type_ 'q two'
 key Enter
-wait_vis '» q one ⏎ q two' || bad "the two-line queue row never rendered"
+wait_vis '» q one ⏎ q two' || miss "the two-line queue row never rendered"
 check "the queued item is ONE row" "$(count_vis 'q two')" 1
 check_frame_intact "with a two-line item queued" 80
 key Escape
-wait_all 'Interrupted.' || bad "ESC never reached the loop"
-settle || bad "frame never settled after the interrupt"
+wait_all 'Interrupted.' || miss "ESC never reached the loop"
+settle || miss "frame never settled after the interrupt"
 check "the queue row is gone (folded)" "$(count_vis '» q one')" 0
 check "fold row 1" "$(count_composer '❯ q one')" 1
 check "fold row 2" "$(count_composer '  q two')" 1

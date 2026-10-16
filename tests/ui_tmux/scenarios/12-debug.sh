@@ -10,7 +10,7 @@
 . "${TMUX_LIB:?}"
 
 start 80 24 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 status_ends_with_debug() { case "$(bottom_zone)" in *"· debug") return 0 ;; *) return 1 ;; esac; }
 
@@ -20,8 +20,8 @@ check "the status row carries no debug marker while recording is off" \
 
 type_ '/debug on'
 key Enter
-wait_all 'Request recording ON' || bad "the /debug on notice never landed"
-settle || bad "frame never settled after /debug on"
+wait_all 'Request recording ON' || miss "the /debug on notice never landed"
+settle || miss "frame never settled after /debug on"
 
 check_once "recording ON prints exactly one notice" \
     'Request recording ON — activity groups stay expanded'
@@ -34,14 +34,14 @@ fi
 # ------------------------------------------------------------------ B: a recorded turn
 type_ 'hello'
 key Enter
-wait_all 'echo: hello' || bad "the turn never completed"
-settle || bad "frame never settled after the turn"
+wait_all 'echo: hello' || miss "the turn never completed"
+settle || miss "frame never settled after the turn"
 
 # ------------------------------------------------------------------ C: the inspector
 type_ '/debug'
 key Enter
-wait_vis 'Messages' || bad "the /debug inspector never opened"
-settle || bad "the inspector never settled"
+wait_vis 'Messages' || miss "the /debug inspector never opened"
+settle || miss "the inspector never settled"
 
 comp="$(composer_row)"
 bar="$(row_of ' Messages  │  Verbose')"
@@ -60,18 +60,18 @@ fi
 
 # ------------------------------------------------------------------ D: drill in and back
 key Enter
-wait_vis '↑ Request' || bad "Enter did not drill into the highlighted entry"
-settle || bad "the drill-down never settled"
+wait_vis '↑ Request' || miss "Enter did not drill into the highlighted entry"
+settle || miss "the drill-down never settled"
 check "the drill-down offers both halves" "$(count_vis ' ↑ Request  │  ↓ Response')" 1
 
 key Escape
-wait_vis ' Messages  │  Verbose' || bad "Esc did not walk back to the list"
-settle || bad "the list never settled after the walk back"
+wait_vis ' Messages  │  Verbose' || miss "Esc did not walk back to the list"
+settle || miss "the list never settled after the walk back"
 check "the request view is gone after the walk back" "$(count_vis '↑ Request')" 0
 
 key Escape
-wait_gone ' Messages  │  Verbose' || bad "Esc did not close the inspector"
-settle || bad "frame never settled after closing the inspector"
+wait_gone ' Messages  │  Verbose' || miss "Esc did not close the inspector"
+settle || miss "frame never settled after closing the inspector"
 check "no ghost inspector rows" "$(count_vis 'Verbose')" 0
 check_frame_intact "after the inspector closed" 80
 if status_ends_with_debug; then
@@ -83,8 +83,8 @@ fi
 # ------------------------------------------------------------------ E: /debug off
 type_ '/debug off'
 key Enter
-wait_all 'Request recording OFF' || bad "the /debug off notice never landed"
-settle || bad "frame never settled after /debug off"
+wait_all 'Request recording OFF' || miss "the /debug off notice never landed"
+settle || miss "frame never settled after /debug off"
 check "the debug segment is gone" "$(count_vis '· debug')" 0
 
 finish

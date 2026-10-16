@@ -32,13 +32,13 @@ wire() { curl -s "http://127.0.0.1:$IOTA_PORT/v1/messages/log"; }
 turn_request() { wire | grep -F '"tools":[' | grep -F -- "\"text\":\"$1\"}]}]," | tail -1; }
 
 start_provider anthropic 120 30 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 # ------------------------------------------------------------------ A: the control — a turn that ends
 type_ 'hello'
 key Enter
-wait_all 'echo: hello' || bad "the control turn never answered"
-settle || bad "frame never settled after the control turn"
+wait_all 'echo: hello' || miss "the control turn never answered"
+settle || miss "frame never settled after the control turn"
 check_once "the control turn's answer landed once" 'echo: hello'
 check "the control turn left no red row" "$(red_rows)" 0
 check "…and no ✗ row" "$(count_all '✗')" 0
@@ -48,9 +48,9 @@ check_frame_intact "after the control turn" 120
 type_ 'thinkcut please'
 key Enter
 # The widget is up while the thought streams: what must be wound down afterwards.
-wait_vis 'Thinking' || bad "the Thinking widget never came up"
-wait_all '✗ Output truncated' || bad "the cut never painted its block"
-settle || bad "frame never settled after the cut"
+wait_vis 'Thinking' || miss "the Thinking widget never came up"
+wait_all '✗ Output truncated' || miss "the cut never painted its block"
+settle || miss "frame never settled after the cut"
 check_once "the cut is ONE ✗ Output truncated block" '✗ Output truncated'
 check_once "…its detail names the stop and the ceiling" 'stop_reason: max_tokens: the output hit its 32000-token limit'
 check_once "…its hint opens with the knob" 'Raise max_tokens: in the config'
@@ -73,8 +73,8 @@ check_frame_intact "after the cut" 120
 # ------------------------------------------------------------------ C: the next message, on a clean history
 type_ 'after'
 key Enter
-wait_all 'echo: after' || bad "the message after the cut was never answered"
-settle || bad "frame never settled after the next turn"
+wait_all 'echo: after' || miss "the message after the cut was never answered"
+settle || miss "frame never settled after the next turn"
 check_once "the next message was answered once" 'echo: after'
 next="$(turn_request after)"
 if [ -n "$next" ]; then

@@ -13,13 +13,13 @@
 . "${TMUX_LIB:?}"
 
 start 80 24 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 before_hist="$(hist_size)"
 
 printf 'paste line one\npaste line two\n第三行中文\n' | tm load-buffer -
 tm paste-buffer -pt s
-wait_vis '[#1 paste line one… 3 lines]' || bad "the paste tag never appeared"
-settle || bad "composer never settled after the paste"
+wait_vis '[#1 paste line one… 3 lines]' || miss "the paste tag never appeared"
+settle || miss "composer never settled after the paste"
 
 # ONE event: nothing was submitted (the block's newlines never reached the key handler),
 # the tag is a single composer row, and the store holds exactly one entry (id #1).
@@ -30,8 +30,8 @@ check "the tag counts the block's lines, CR-normalised" "$(count_composer '3 lin
 check_frame_intact "with a paste tag in the composer" 80
 
 key Enter
-wait_all 'echo: paste line one' || bad "the expanded paste never reached the model"
-settle || bad "frame never settled after the submit"
+wait_all 'echo: paste line one' || miss "the expanded paste never reached the model"
+settle || miss "frame never settled after the submit"
 
 # The echo: the tag expands to the block, one transcript row per line, CJK intact.
 check_once "echo row 1" '❯ paste line one'
@@ -46,7 +46,6 @@ check "the model saw line 3" "$(count_all '第三行中文')" 2
 # A second paste takes the next id — the store is per-session and append-only.
 printf 'second block\nsecond line\n' | tm load-buffer -
 tm paste-buffer -pt s
-wait_vis '[#2 second block… 2 lines]' || bad "the second paste did not take id #2"
-ok "a second paste takes the next tag id"
+if wait_vis '[#2 second block… 2 lines]'; then ok "a second paste takes the next tag id"; else miss "the second paste did not take id #2"; fi
 
 finish

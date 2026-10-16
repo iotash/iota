@@ -39,7 +39,7 @@ _clock_shown() { [ -n "$(turn_clock "$1")" ]; }
 _zone_has() { local z; z="$(bottom_zone)"; printf '%s\n' "$z" | grep -qF -- "$1" && printf '%s\n' "$z" | grep -qF '(ESC to cancel)'; }
 
 start_provider openai 110 24 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 check "idle: no busy on the status row" "$(count_vis 'ESC to cancel')" 0
 
 # ------------------------------------------------------------------ A: waiting for the model
@@ -50,36 +50,37 @@ if _poll_until 120 _zone_has 'Waiting for the first token'; then
 else
     bad "A: no 'Waiting for the first token (ESC to cancel)' on the status row"
 fi
-_poll_until 40 _clock_shown 'Waiting for the first token' || bad "A: the turn's clock never showed"
+_poll_until 40 _clock_shown 'Waiting for the first token' || miss "A: the turn's clock never showed"
 shot "A: waiting for the model"
 key Escape
-wait_gone 'ESC to cancel' || bad "A: ESC left the busy up"
-settle || bad "A: never settled"
+wait_gone 'ESC to cancel' || miss "A: ESC left the busy up"
+settle || miss "A: never settled"
 check "A: the turn over, the row is bare" "$(bottom_zone | grep -cE -- "$SPIN" | tr -d ' ')" 0
 
 # ------------------------------------------------------------------ B: the text streaming
 type_ 'stream 40 100'
 key Enter
-wait_vis 'l#05' || bad "B: the stream never started"
-if _zone_has 'Responding'; then ok "B: Responding while the text streams"; else bad "B: no 'Responding' on the status row"; fi
+wait_vis 'l#05' || miss "B: the stream never started"
+# Polled: one capture can land inside the repaint of a streamed line (lib.sh, "the frame window").
+if _poll_until 20 _zone_has 'Responding'; then ok "B: Responding while the text streams"; else miss "B: no 'Responding' on the status row"; fi
 check "B: …one hint on screen" "$(count_vis 'ESC to cancel')" 1
 shot "B: the text streaming (Responding)"
-wait_all 'l#39 line' || bad "B: the stream never finished"
-settle || bad "B: never settled"
+wait_all 'l#39 line' || miss "B: the stream never finished"
+settle || miss "B: never settled"
 check "B: the turn over, no hint" "$(count_vis 'ESC to cancel')" 0
 
 # ------------------------------------------------------------------ C/D: an approval, then the call running
 type_ 'runfg:sleep 4; echo fg-done'
 key Enter
 t0=$(date +%s)
-wait_vis 'allow?' || bad "C: the approval never opened"
+wait_vis 'allow?' || miss "C: the approval never opened"
 check "C: the surface hides the status row (no hint, no phase)" \
     "$(count_vis 'ESC to cancel')$(count_vis 'Running tools')" 00
 shot "C: waiting on the approval (the bottom zone is the surface)"
 sleep 3
 key Enter # Allow once
 if _poll_until 60 _zone_has 'Running tools'; then ok "D: Running tools while the call runs"; else bad "D: no 'Running tools' on the status row"; fi
-_poll_until 40 _clock_shown 'Running tools' || bad "D: the turn's clock never showed"
+_poll_until 40 _clock_shown 'Running tools' || miss "D: the turn's clock never showed"
 clock="$(turn_clock 'Running tools')"
 wall=$(($(date +%s) - t0))
 shot "D: the call running (Running tools)"
@@ -91,15 +92,17 @@ if [ -n "$clock" ] && [ "$((clock + 2))" -le "$wall" ]; then
 else
     bad "D: the turn's clock counted the wait (clock '${clock}'s, wall ${wall}s)"
 fi
-wait_all 'ran: fg-done' || bad "D: the follow-up round never answered"
-settle || bad "D: never settled"
+wait_all 'ran: fg-done' || miss "D: the follow-up round never answered"
+settle || miss "D: never settled"
 
 # ------------------------------------------------------------------ E: a job running after the turn
 type_ 'run:sleep 15; echo bg-done'
 key Enter
-wait_vis 'allow?' || bad "E: the approval never opened"
+wait_vis 'allow?' || miss "E: the approval never opened"
 key Enter
-wait_all 'ran: Started' || wait_all 'ran: ' || bad "E: the round never closed"
+# The receipt of THIS call: a bare `ran: ` is already in the history from D's round, so a wait for
+# it was over before E's round had closed.
+wait_all 'ran: Started background job b1' || miss "E: the round never closed"
 _job_static() { bottom_zone | grep -qF 'job b1' && ! bottom_zone | grep -qE -- "$SPIN|ESC"; }
 if _poll_until 60 _job_static; then
     ok "E: the turn landed — the row ends in the static job segment, no spinner, no hint"

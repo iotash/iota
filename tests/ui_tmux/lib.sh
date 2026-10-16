@@ -14,6 +14,24 @@
 # Assertions prefer semantic invariants (a line present exactly once, a constant cursor
 # row, an intact frame) over full snapshots.
 #
+# The rules every wait follows (the 2026-10-16 hardening; docs/TUI-VERIFY.md "Waiting"):
+#
+#   1. ONE wait, ONE event. A wait that two different failures can satisfy — or leave unsatisfied —
+#      says nothing when it misses: wait for the submit (`wait_sent`), THEN the reply; for the
+#      job's notice, THEN the turn it starts. A marker an earlier turn already printed is not an
+#      event (`wait_all_more`).
+#   2. Every miss prints the pane. A wait's `||` branch is `miss "<what did not happen>"`, which
+#      fails AND shows the frame it gave up on — a red CI run is then read, not guessed at.
+#   3. No `sleep` stands in for an event. A window that something must happen INSIDE (a key while
+#      a stream runs, a notice while a call runs) is held open by the test — `hold@K:<tag>` on a
+#      mock stream and `release <tag>`, a job that waits for a file the test creates — never by
+#      the mock's clock racing the runner's. `sleep` is left for what IS time: the pace of the
+#      input under test (a drag's step, a user's pause) and the window of a NEGATIVE claim
+#      ("nothing moves for 1 s"), each sized against the cadence it would otherwise catch.
+#   4. A count is read at rest, from a stated starting state. A budget whose number depends on
+#      which step a pass took together, or on whether the last drag's burst was still open, is
+#      measuring the runner (06's and 26 H's drags wait for each step's pass, `step_landed`).
+#
 # The runner (`tests/tmux.rs`) exports: TMUX_BIN, TMUX_SOCKET, IOTA_BIN, IOTA_PORT,
 # SCEN_TMP. Each scenario sources this file, calls `start`, asserts with `ok`/`bad`, and
 # ends with `finish` (exit 1 if anything failed).
@@ -532,6 +550,26 @@ dump_pane() {
     echo "    ---- pane (visible, numbered) ----"
     _snap "$@" | nl -ba | sed 's/^/    /'
     echo "    ---- end of pane ----"
+}
+
+# miss <what did not happen> — the `||` branch of every wait (rule 2 in the header): a FAIL line,
+# then the frame the wait gave up on — the visible pane numbered, the history rows just above it,
+# and whether the app is still there. One wait for a reply printed nothing on CI 38759202470 and
+# left a submit that never happened indistinguishable from a reply that never came.
+miss() {
+    local s
+    s="$(cap)"
+    bad "$1"
+    echo "    ---- at the miss: app $(if ! alive; then echo 'server gone'; elif pane_dead; then echo 'exited'; else echo 'running'; fi), history $(hist_size 2>/dev/null) rows ----"
+    tm capture-pane -pt s -S -12 -E -1 2>/dev/null | sed 's/^/    ^ /'
+    dump_pane "$s"
+}
+
+# release <tag> — lets the mock's `stream … hold@K:<tag>` past its hold (mock.rs). The window the
+# hold keeps open is the test's to end, not the mock's clock's: a step that must land mid-stream
+# lands there however slow the runner is. A tag is released for good, so name it per use.
+release() {
+    curl -s -o /dev/null --max-time 5 "http://127.0.0.1:$IOTA_PORT/release/$1" || bad "the mock did not take the release of $1"
 }
 
 # shot <label> — prints the visible pane under a header when IOTA_TMUX_FRAMES is set: the frames a

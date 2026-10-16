@@ -26,16 +26,16 @@ FAST=80 # tries of 100 ms
 
 # ---- 1. ESC, then the next message ----
 start 100 24 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 type_ 'hang:one'
 key Enter
-wait_vis 'Waiting for the first token' || bad "the busy row never said the head was in"
+wait_vis 'Waiting for the first token' || miss "the busy row never said the head was in"
 check "the head arrived, so the row no longer says 'Waiting for the model'" \
     "$(count_vis 'Waiting for the model')" 0
 
 key Escape
-wait_all 'Interrupted.' || bad "ESC never reached the turn"
+wait_all 'Interrupted.' || miss "ESC never reached the turn"
 type_ 'second'
 key Enter
 if _poll_until "$FAST" _all_has 'echo: second'; then
@@ -46,15 +46,15 @@ fi
 
 # ---- 2. ESC, then Ctrl+C at idle ----
 start 100 24 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 tm set-option -t s remain-on-exit on
 
 type_ 'hang:two'
 key Enter
-wait_vis 'Waiting for the first token' || bad "the second pane's turn never got its head"
+wait_vis 'Waiting for the first token' || miss "the second pane's turn never got its head"
 key Escape
-wait_all 'Interrupted.' || bad "ESC never reached the second pane's turn"
-settle || bad "frame never settled after the interrupt"
+wait_all 'Interrupted.' || miss "ESC never reached the second pane's turn"
+settle || miss "frame never settled after the interrupt"
 key C-c
 if _poll_until "$FAST" pane_dead; then
     ok "Ctrl+C at idle exits at once — no wait on the hung title pass"
@@ -66,11 +66,11 @@ fi
 # The tmux server is started by this script and inherits its environment.
 export IOTA_STREAM_IDLE_TIMEOUT=2
 start 120 24 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 type_ 'hang:three'
 key Enter
-wait_vis 'Waiting for the first token' || bad "the third pane's turn never got its head"
+wait_vis 'Waiting for the first token' || miss "the third pane's turn never got its head"
 if _poll_until "$FAST" _all_has 'Response stalled'; then
     ok "the silent stream failed on its own at the idle bound"
 else
@@ -83,12 +83,12 @@ check "it is an error, not an interrupt" "$(count_all 'Interrupted.')" 0
 
 # ---- 4. a hung title pass alone, then the next message ----
 start 100 24 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 type_ 'slowtitle:four'
 key Enter
-wait_all 'echo: slowtitle:four' || bad "the answer never arrived"
-settle || bad "frame never settled after the answer"
+wait_all 'echo: slowtitle:four' || miss "the answer never arrived"
+settle || miss "frame never settled after the answer"
 type_ 'fourth'
 key Enter
 if _poll_until "$FAST" _all_has 'echo: fourth'; then
@@ -99,13 +99,13 @@ fi
 
 # ---- 5. a hung title pass alone, then Ctrl+C at idle ----
 start 100 24 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 tm set-option -t s remain-on-exit on
 
 type_ 'slowtitle:five'
 key Enter
-wait_all 'echo: slowtitle:five' || bad "the fifth pane's answer never arrived"
-settle || bad "frame never settled after the answer"
+wait_all 'echo: slowtitle:five' || miss "the fifth pane's answer never arrived"
+settle || miss "frame never settled after the answer"
 key C-c
 if _poll_until "$FAST" pane_dead; then
     ok "Ctrl+C at idle exits at once — no wait on a title pass that never answers"
@@ -116,11 +116,11 @@ fi
 # ---- 6. a finished answer over a body that never closes ----
 # Still under IOTA_STREAM_IDLE_TIMEOUT=2 (exported in 3).
 start 120 24 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 type_ 'openend:six'
 key Enter
-wait_all 'echo: openend:six' || bad "the sixth pane's answer never arrived"
+wait_all 'echo: openend:six' || miss "the sixth pane's answer never arrived"
 # Three seconds: past the 2 s bound the drain-to-EOF reader used to fail on.
 if _poll_until 30 _all_has 'Response stalled'; then
     bad "a complete answer failed as a stall because its body stayed open"

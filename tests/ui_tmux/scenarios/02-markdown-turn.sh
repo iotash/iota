@@ -15,13 +15,13 @@
 . "${TMUX_LIB:?}"
 
 start 80 24 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 # --- turn one: 20 plain lines, streamed.
 type_ 'stream 20'
 key Enter
-wait_all 'l#19 line' || bad "the 20-line stream never completed"
-settle || bad "frame never settled after the stream"
+wait_all 'l#19 line' || miss "the 20-line stream never completed"
+settle || miss "frame never settled after the stream"
 
 check "history contiguous: 20 distinct lines" "$(uniq_all 'l#[0-9][0-9]')" 20
 dup="$(dupes_all 'l#[0-9][0-9] line')"
@@ -40,18 +40,19 @@ fi
 type_ 'think'
 key Enter
 
-wait_vis '⎿' || bad "call-preview status row never appeared"
+wait_vis '⎿' || miss "call-preview status row never appeared"
 # The widget's whole shape in one comparison, with the three live cells (spinner frame,
 # elapsed clock, and — WP53 — the thinking meter's running token
 # estimate) normalised away: label row, then the ⎿ status row carrying the meter and the clock.
 # The cancel hint the active scope earns is the status row's alone (busy-span point 6), where
 # the turn's phase is named too.
-prev="$(row_of 'Thinking')"
+# Row and shape off ONE capture: a second capture can be a later frame.
+shot="$(cap)"
+prev="$(printf '%s\n' "$shot" | grep -nF -- 'Thinking' | head -1 | cut -d: -f1)"
 if [ -n "$prev" ]; then
     check "preview widget shape" \
-        "$(cap | sed -n "${prev},$((prev + 1))p" | norm)" \
+        "$(printf '%s\n' "$shot" | sed -n "${prev},$((prev + 1))p" | norm)" \
         "$(printf '* Thinking\n  ⎿ N tokens · Ts')"
-    shot="$(cap)"
     zone="$(bottom_zone "$shot")"
     check "…the status row names the phase" "$(printf '%s\n' "$zone" | grep -cF 'Thinking' | tr -d ' ')" 1
     check "…and carries the cancel hint, the one on screen" \
@@ -59,14 +60,34 @@ if [ -n "$prev" ]; then
 else
     bad "preview widget label missing"
 fi
+# The morph claim, over the thinking phase itself rather than a fixed 0.6 s: the counter is read
+# again and again while the turn thinks, and a reading counts only if the widget is still up on a
+# capture taken AFTER it — so every counted reading was taken inside the phase, however slow the
+# runner. A fixed sleep could straddle the end of the 1.5 s of reasoning (the markdown then inserts
+# rows: a false red) or start after it (a vacuous green). Fewer than three readings inside the
+# phase is not a measurement and fails as such.
+thinking() { cap | grep -qF 'Thinking'; }
 a="$(hist_size)"
-sleep 0.6
-b="$(hist_size)"
-check "preview morphs in place (no rows inserted while thinking)" "$a" "$b"
+inside=0
+moved=0
+if thinking; then
+    while [ "$inside" -lt 60 ]; do
+        h="$(hist_size)"
+        thinking || break
+        inside=$((inside + 1))
+        [ "$h" = "$a" ] || moved=$((moved + 1))
+        sleep 0.05
+    done
+fi
+if [ "$inside" -lt 3 ]; then
+    miss "preview morphs in place: NOT MEASURED — $inside readings inside the thinking phase"
+else
+    check "preview morphs in place (no rows inserted while thinking; $inside readings inside the phase)" "$moved" 0
+fi
 
-wait_all '◇ thought for' || bad "thinking marker never committed"
-wait_all 'done.' || bad "markdown body never completed"
-settle || bad "frame never settled after the markdown turn"
+wait_all '◇ thought for' || miss "thinking marker never committed"
+wait_all 'done.' || miss "markdown body never completed"
+settle || miss "frame never settled after the markdown turn"
 
 check_once "the ◇ marker is committed exactly once" '◇ thought for'
 check_once "heading" 'Heading'

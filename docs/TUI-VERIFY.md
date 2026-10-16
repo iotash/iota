@@ -63,6 +63,50 @@ run.
 
 ---
 
+## Waiting — how an L4 scenario waits (2026-10-16)
+
+The automated items below are only as good as the waits under them. Five tmux flakes in a row
+(26 G, 16, 29, 26 H, then 08 and 06 on the ubuntu leg of CI 38759202470) had one cause: the
+scenario measured the runner instead of the app. Each was fixed where it bit; this is the rule
+set the whole suite now follows (`tests/ui_tmux/lib.sh`, its header):
+
+1. **One wait, one event.** A wait two different failures can satisfy, or leave unsatisfied,
+   says nothing when it misses — 08 waited for the reply alone and could not tell a submit that
+   never happened from a reply that never came. Wait for the submit (`wait_sent`), then the
+   reply; for the job's notice, then the turn it starts. A marker an earlier turn already printed
+   is not an event (`wait_all_more`; 34 E waited for a bare `ran: ` that D had printed).
+2. **Every miss prints the pane.** A wait's `||` branch is `miss "<what did not happen>"`: a FAIL
+   line, the visible pane numbered, the history rows just above it, and whether the app is still
+   running. 389 waits carry it.
+3. **No `sleep` stands in for an event.** A window something must happen INSIDE is held open by
+   the test: the mock's `stream N [MS] hold@K:<tag>` stops after its K-th line until the scenario
+   calls `release <tag>` (03, 04, 19, 28), and a background job waits for a file the test — or the
+   foreground call — creates (19's jobs 2-4). The mock's clock used to race the runner's: 60 lines
+   at 60 ms are 3.6 s for a dozen keys and captures, a `sleep 2` job had to finish inside a turn
+   that had not started yet. `sleep` is left for what IS time — the pace of the input under test
+   (a drag's 60 ms or 1 s steps, 34's three-second approval) and the window of a NEGATIVE claim
+   (04/05: nothing inserted for 1 s, sixteen `LINE_GAP`s) — and is commented as such. A claim
+   about a phase is read inside the phase: 02 counts the scrollback only on readings taken while
+   the thinking widget is still up, instead of across a fixed 0.6 s that could straddle its end.
+4. **A count is read at rest, from a stated starting state.** 06's drags name where they start —
+   at rest (the frame back at full width) or inside the last release's burst — and check it before
+   the first step; the paced drag's 0 is a 0 only from inside a burst, and nothing used to check
+   that it was. A drag whose number the test pins controls which steps one resize pass takes
+   together (26 H: one step a pass; 06: settled, paced, or two steps sent in ONE tmux command and
+   each pair's pass awaited — `pass_landed` counts the pass's DSR). The blind fast drag stays, for
+   its race, held to what holds under any grouping: no row lost, the frozen budget of 2 duplicated
+   rows per drag, and the duplicates confined to the frame's staged rows (`l#36`–`l#39`). It read
+   1 on this host in every run and 2 on the ubuntu runner; the paired twin reads 1 every run.
+5. **Measured, never assumed.** The suite was run 3× idle and 3× beside ten CPU burners after this
+   change (the numbers are in the commit). The heavier recipe — iota itself at the background QoS
+   (`taskpolicy -b`) under the same burners — is NOT a slow runner: there the app is starved for
+   seconds, and 06 breaks for real in 3 of 4 runs on the unchanged build: the frame drawn mid-screen
+   with its top separator gone and separator pieces below it, 1–3 streamed rows LOST (settled,
+   fast and paced drags; the height drag). That is the open §4.5 record (CI 36305402235; the loaded
+   tmux 3.4 overwrite), now with a recipe that reproduces it — a product finding, not a wait to fix.
+
+---
+
 ## 1. IME / CJK composition (the reason this file exists)
 
 The composer's real cursor is set every frame from
@@ -326,6 +370,15 @@ and Ghostty.
       21 under the three-copy load had a pass slower than the 1.5 s wait, and say which step).
       The cap is 4, the frozen build's number: with an injected pass that claims one row too
       few the paced drag reads 6, which the old cap of 6 let through.
+      **06's drags, anchored (2026-10-16).** The ubuntu runner read 2 for the fast 8-step drag
+      against its cap of 1 (CI 38759202470, `l#36`×6, every other check green). The same family as
+      26 H: eight steps fired blind 60 ms apart — barely past `RESIZE_QUIET` — are grouped into
+      passes by the runner (about four here, by the passes' DSRs), and the number follows the
+      grouping. The block is now two: the same eight steps sent two to a tmux command, each pair's
+      pass awaited — 1 in every run (8 idle, 7 beside ten burners) — and the blind drag held to the
+      frozen per-drag budget (≤ 2) and to duplicating only the frame's staged rows. Every drag also
+      names its starting state and checks it (waiting `≥ DRAG_SETTLE` for rest; the paced drag must
+      start inside the release's burst — the precondition of its 0).
 
 ## 5. Window title (the title stack)
 
