@@ -17,9 +17,11 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 - **An MCP server can be reconnected from `/tools`.** Press Enter on a
   server's page: it reconnects in the background, the page shows it
   happening and how it went, and the chat gets one line —
-  `MCP db reconnected · 3 tools`, or why it did not. A server you have just
-  logged in to with `iota mcp login` no longer needs a restart of the chat to
-  use the new login.
+  `MCP db reconnected · 3 tools`, or why it did not. A reconnect that fails
+  does not take a server's tools away: one that had tools stays `down` with
+  them, showing why the new start failed, and you can try again. A server you
+  have just logged in to with `iota mcp login` no longer needs a restart of
+  the chat to use the new login.
 - **MCP failures say what happened and what to do.** A server that did not
   connect used to be reported with the library's own words — generic Rust
   type names, `when send initialize request`, and sometimes a proxy's whole
@@ -44,7 +46,9 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   fail until it is reconnected from /tools · details in /tools`. Its tools
   stay available to the model, and every call to them answers with a
   sentence that says the server has exited and that it can be reconnected
-  from `/tools` — instead of `Transport closed`.
+  from `/tools` — instead of `Transport closed`. This holds for a server
+  reconnected from `/tools` too, even when no server connected when the
+  chat started.
 - **A tool call an MCP server never answers no longer hangs forever.** Every
   MCP tool call now has a deadline, 30 minutes by default, after which it is
   given up and the model is told why. A server whose tools legitimately run

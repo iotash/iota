@@ -549,6 +549,12 @@ pub(crate) fn down_call(cfg: &ServerConfig) -> String {
     }
 }
 
+/// The sentence after `MCP server "<name>": ` for a call made while the server is being reconnected from
+/// `/tools`: its tools are still listed, but there is no session to call until the new one lands.
+pub(crate) const fn reconnecting_call() -> &'static str {
+    "it is being reconnected — try again in a moment"
+}
+
 /// `stderr:` and the last [`STDERR_DETAIL_LINES`] lines under it, indented; nothing when there are none.
 fn stderr_detail(lines: &[&str]) -> Vec<String> {
     if lines.is_empty() {
