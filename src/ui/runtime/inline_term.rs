@@ -111,6 +111,8 @@ pub(crate) struct InlineTerminal<W: Write> {
     /// bytes wait in `pending` and the batch goes out as one write (one synchronized update if
     /// it is larger than [`SYNC_MIN`]).
     batch: u32,
+    /// The column the last cursor query was asked from ([`InlineTerminal::ask`]).
+    mark: u16,
 }
 
 impl<W: Write> InlineTerminal<W> {
@@ -131,6 +133,7 @@ impl<W: Write> InlineTerminal<W> {
             cursor: Position::new(0, at),
             pen: Pen::RESET,
             batch: 0,
+            mark: 0,
         };
         queue!(t.pending, MoveTo(0, at))?;
         t.reserve(height);
@@ -335,8 +338,9 @@ impl<W: Write> InlineTerminal<W> {
     /// 3. `dsr` again, outside the block: the bookkeeping follows the cursor, now on the
     ///    frame's first row. No byte depends on either answer.
     ///
-    /// Returns the band's rows. Without a cursor answer there is no floor: the frame is laid
-    /// out where it was, counted from the cursor all the same.
+    /// Both queries go through [`InlineTerminal::ask`]: an answer is taken only from the query
+    /// that asked it, never a late one. Returns the band's rows. Without a cursor answer there
+    /// is no floor: the frame is laid out where it was, counted from the cursor all the same.
     pub(crate) fn relayout(
         &mut self,
         above: u16,
@@ -349,7 +353,7 @@ impl<W: Write> InlineTerminal<W> {
             "a cursor query inside a synchronized update"
         );
         let mut floor = floor;
-        let start = dsr().ok().map(|pos| {
+        let start = self.ask(&mut dsr).ok().map(|pos| {
             if pos.y >= self.size.height {
                 let grew = pos.y + 1 - self.size.height;
                 self.size.height = pos.y + 1;
@@ -373,10 +377,60 @@ impl<W: Write> InlineTerminal<W> {
         self.cr();
         self.reserve(height);
         self.end_batch()?;
-        if let Ok(pos) = dsr() {
+        if let Ok(pos) = self.ask(&mut dsr) {
             self.resync(pos.y);
         }
         Ok(band)
+    }
+
+    /// One cursor query whose answer is its own. crossterm gives up on an answer after 2 s
+    /// (`cursor/sys/unix.rs`), but the answer still comes: it waits in crossterm's event queue
+    /// and the NEXT query takes it at once — from then on every answer is the one before, for
+    /// the rest of the session (a late answer is never dropped, and every query adds one). A
+    /// starved process (`taskpolicy -b`, a loaded host) times out once and is a query behind
+    /// for good: each pass took the frame's own rows for band and the drag's end closed them
+    /// with the frame (TUI-VERIFY §4.5, X-81).
+    ///
+    /// An answer names the column the cursor was on, and the cursor is put on a column of the
+    /// query's own first: `CR`, then `CUF` to [`DSR_MARKS`] columns in turn, never the last
+    /// query's. An answer from another column is an earlier query's, late — it is dropped and
+    /// the next one read (each read asks again from the same column, so the answers queued
+    /// behind are this query's). A timeout is waited out once more: the terminal answered the
+    /// startup anchor's query (`handle::start` needs it), so a timeout here is a SLOW answer,
+    /// and it carries this query's column — the read after the timeout takes it, late but its
+    /// own (nothing was written in between). At most [`DSR_READS`] reads and [`DSR_WAITS`]
+    /// timeouts, then no answer — a pass without one is laid out from the cursor all the
+    /// same. A one-column terminal has one mark and takes the first answer.
+    fn ask(&mut self, dsr: &mut impl FnMut() -> io::Result<Position>) -> io::Result<Position> {
+        let marks = DSR_MARKS.min(self.size.width.max(1));
+        self.mark = (self.mark + 1) % marks;
+        let mark = self.mark;
+        self.cr();
+        if mark > 0 {
+            write!(self.pending, "\x1b[{mark}C")?;
+            self.cursor.x = mark;
+            #[cfg(test)]
+            if let Some(g) = &self.geo {
+                g.set_col(mark);
+            }
+        }
+        self.commit()?;
+        let mut waits = 0;
+        for _ in 0..DSR_READS {
+            match dsr() {
+                Ok(pos) if pos.x == mark => return Ok(pos),
+                Ok(_) => {}
+                Err(e) => {
+                    waits += 1;
+                    if waits >= DSR_WAITS {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        Err(io::Error::other(
+            "every cursor answer read was an earlier query's",
+        ))
     }
 
     /// Bookkeeping from a DSR: the cursor is REALLY on `y` — the model follows (the frame
@@ -685,6 +739,20 @@ impl<W: Write> InlineTerminal<W> {
 /// few, large ones ask a DEC 2026 terminal to present them at once. Chosen by size, never by
 /// terminal, and not a knob (X-55).
 pub(crate) const SYNC_MIN: usize = 1024;
+
+/// The columns a cursor query is asked from in turn ([`InlineTerminal::ask`]): a late answer
+/// carries another query's column. Eight, so a late answer is told apart even after seven
+/// queries in a row that got none of their own.
+const DSR_MARKS: u16 = 8;
+
+/// The most answers one cursor query reads before it gives up: the late ones queued ahead of
+/// its own (one for every query that timed out), then its own.
+const DSR_READS: usize = 16;
+
+/// The timeouts one cursor query sits through before it goes without an answer: crossterm's
+/// 2 s each, so a starved process's slow answer is still read (measured: 2.0–2.5 s), and a
+/// query swallowed for good costs the pass 4 s.
+const DSR_WAITS: usize = 2;
 
 /// DEC private mode 2026, synchronized output: begin and end of one update.
 pub(crate) const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";

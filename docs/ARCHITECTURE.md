@@ -389,6 +389,10 @@ screen grew). A DSR never sits inside an open batch or a synchronized block (Wez
 hold input inside one; `debug_assert`). A resize pass is `Term::resize` computing `above` (the
 frame's rows over the cursor, never more), the floor and the height, and `InlineTerminal::relayout`
 writing: DSR → one batch (climb, erase, `LF` onto the floor, lay the frame out) → recheck DSR.
+An answer is taken only from the query that asked it (`InlineTerminal::ask`, X-81): crossterm keeps
+an answer that came after its 2 s timeout and hands it to the next query, so each query is asked
+from a column of its own (`CR` + `CUF`, eight in turn) and an answer naming another column is a late
+one, dropped; a timeout is waited out once more (the slow answer is this query's own).
 
 **DEC 2026** (X-55). A write longer than `SYNC_MIN` (1024 B) is one synchronized update; a smaller
 one goes out bare. The threshold is an empirical choice, not a transport guarantee: 1024 B is the

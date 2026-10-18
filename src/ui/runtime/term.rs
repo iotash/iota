@@ -655,6 +655,29 @@ mod tests {
         assert_all_once(&all, &transcript(&[], 1));
     }
 
+    /// A starved process's answer comes after crossterm's 2 s: the query waits it out once more
+    /// and reads it then — its own (its column), so the pass still has its floor. A flush frame
+    /// whose rows below the cursor reflowed (the cursor 3 rows up, the height unchanged) lands on
+    /// the floor, not where the cursor estimate put it.
+    #[test]
+    fn a_slow_cursor_answer_still_gives_the_pass_its_floor() {
+        let (mut t, _buf, geo) = term(80, 24, 4, 20);
+        t.draw_frame(&frame()).unwrap();
+        geo.set_answers_late(1);
+        geo.shift_cursor(-3);
+        geo.set_size(60, 24);
+        t.resize(Size::new(60, 24), 4).unwrap();
+        assert_eq!(t.top(), 20, "flush on the floor (24 − 4)");
+        t.draw_frame(&frame()).unwrap();
+        geo.set_size(59, 24);
+        t.resize(Size::new(59, 24), 4).unwrap();
+        assert_eq!(
+            t.top(),
+            20,
+            "and the next pass, its answers queued behind, too"
+        );
+    }
+
     /// A terminal that never answers the cursor query (crossterm times out with an error) must
     /// not take the loop down on a resize: the tracked top stays the anchor and the frame is
     /// drawn.

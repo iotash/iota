@@ -37,6 +37,15 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Fixed
 
+- **Resizing a slow or busy iota no longer breaks the screen for good.**
+  When iota was starved of CPU — run at background priority, or on a machine
+  under heavy load — and the terminal took more than two seconds to answer
+  one of the cursor-position questions a resize asks, every later answer was
+  the one before it. After that, resizing the window could draw the prompt
+  in the middle of the screen with its top line gone and lose the last lines
+  of a reply, and every later resize in that session could do it again. iota
+  now tells its own answer from a late one, ignores the late one and waits
+  a little longer for its own, so a slow machine only makes a resize slower.
 - **A herdr pane no longer stays "working" after an agent is run from the
   chat.** When the model ran another agent from the shell — `claude -p …`,
   say — that agent's herdr integration took over iota's pane, and herdr then
