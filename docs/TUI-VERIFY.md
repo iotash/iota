@@ -369,9 +369,19 @@ and Ghostty.
       frame whole, flush and full width, nothing lost and no band — and 6 of 6 still red on the
       DUPLICATE budgets alone (the staged rows only, X-52's residual (1): 3–14 a drag against
       caps of 0–2, a separator piece or two, one stale frame). Those are the drag outrunning a
-      pass that waits 2.5 s for its answer, not a stale answer; open — the suspicion, unverified,
-      is that the stall counts toward `DRAG_SETTLE`, so the drag is taken as over and the frame
-      repainted at full width with the drag's next steps still unread. Pinned deterministically by
+      pass that waits 2.5 s for its answer, not a stale answer — a KNOWN residual since
+      2026-10-18, accepted and listed over budget in X-52 (`docs/design/drag-settle-stall.md`).
+      Logged: the settle clock starts before the pass's query blocks and the same iteration
+      settles before reading the resizes queued meanwhile, so the drag ends and the frame is
+      repainted at full width with its next steps unread; and those steps then reach one pass
+      merged into a step wider than the margin (26 H's family). Why accepted: a cursor answer
+      over 2 s needs a starved process (never unloaded: a pass takes ≤ 4 ms), nothing is lost
+      and the live frame is whole; the settle half has a clean fix, X-52's B (poll the event
+      source before `settle_drag`), measured to cut the duplicates by about two thirds and left
+      for the next change to that part of the loop; the merged-step half has none short of a
+      non-blocking pass. Reproduce: `scripts/dsr-delay.py` as its header says — staged rows
+      duplicated is this residual; a row lost, the frame off the bottom after it settles or its
+      top separator gone is a regression. Pinned deterministically by
       `vt100_tests::answers_one_query_late_through_a_height_drag_and_its_end_keep_the_frame`
       (the `Geometry` seam answers 1, 2 or 3 queries late; a height drag down and back in the
       tmux model, the drag's end closing its band; the frame flush and whole, once, nothing
