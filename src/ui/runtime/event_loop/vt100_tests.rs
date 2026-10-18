@@ -1744,11 +1744,12 @@ fn resize_anchors_at_the_cursor_row_minus_its_frame_row() {
         !after.contains("\u{1b}[2J"),
         "full clear on resize:\n{after:?}"
     );
-    // Counted from the cursor, not from a row number: up the composer's frame row (2) and
-    // erase from there (EL 2 on the row, then an erase-below from its second column).
+    // Counted from the cursor, not from a row number: the cursor query's own column on the
+    // composer's row (`InlineTerminal::ask`), then up the composer's frame row (2) and erase
+    // from there (EL 2 on the row, then an erase-below from its second column).
     assert!(
-        after.starts_with("\u{1b}[2A\r\u{1b}[2K\u{1b}[C\u{1b}[J"),
-        "the first bytes after the event must climb the frame's 2 rows and erase:\n{after:?}"
+        after.starts_with("\r\u{1b}[1C\u{1b}[2A\r\u{1b}[2K\u{1b}[C\u{1b}[J"),
+        "the first bytes after the event must mark the query, climb the frame's 2 rows and erase:\n{after:?}"
     );
     let screen = parse_shifted(&buf, mark, -3).screen().contents();
     let rows: Vec<&str> = screen.lines().collect();
@@ -1791,8 +1792,8 @@ fn a_flush_frame_resizes_onto_the_floor_and_the_band_takes_the_next_output() {
     assert_eq!(t.top(), 19, "a flush frame lands on the floor (24 − 5)");
     let after = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
     assert!(
-        after.starts_with("\u{1b}[2A\r\u{1b}[2K\u{1b}[C\u{1b}[J\r\n\n\n"),
-        "clear from the cursor estimate (16, two rows up), then down 3 onto the floor:\n{after:?}"
+        after.starts_with("\r\u{1b}[1C\u{1b}[2A\r\u{1b}[2K\u{1b}[C\u{1b}[J\r\n\n\n"),
+        "the query's column, clear from the cursor estimate (16, two rows up), then down 3 onto the floor:\n{after:?}"
     );
     assert_eq!(
         scroll_downs(&after),
@@ -2530,11 +2531,11 @@ fn a_grow_between_the_cursor_query_and_the_band_erase_loses_no_row() {
 
 /// A cursor answer that arrives after crossterm's 2 s timeout is not lost: it waits in the
 /// event queue and the NEXT query takes it at once — from then on every answer is one query late
-/// (the load-only suspicion of 2026-09-27: a late reply taken as the next query's answer). Both
-/// of a pass's queries are then stale; neither may cost a row. The erase and the layout count
-/// from the cursor, so a stale answer can only misplace the bookkeeping (the floor, the tracked
-/// top) — replayed here through a narrowing drag and a height round trip, with output inserted
-/// between the passes, a surface's hidden cursor included.
+/// (the load-only suspicion of 2026-09-27: a late reply taken as the next query's answer). Since
+/// 2026-10-18 a query drops an answer from another query's column (`InlineTerminal::ask`); this
+/// one replays a narrowing drag and a height round trip, with output inserted between the
+/// passes, a surface's hidden cursor included, and no drag's end — that end, the band close,
+/// is where a stale answer DID cost rows: see the test after this one.
 #[test]
 fn answers_one_query_late_lose_no_row() {
     for cursor in [Some((2, 6)), None] {
@@ -2568,6 +2569,56 @@ fn answers_one_query_late_lose_no_row() {
                 all.join("\n")
             );
         }
+    }
+}
+
+/// The background-QoS repro (scenario 06's height drag, 3 of 4 under `taskpolicy -b` and ten
+/// burners): one cursor query times out, its reply comes late, and from then on every answer
+/// is the one before — the pass's first query reads where its last recheck left the cursor
+/// (the frame's first row, `above` rows over the composer), its recheck reads the composer's
+/// row. Each pass then took `above` rows of band that were the frame's, the model's frame sat
+/// `above` rows under the real one, and the drag's end closed the summed band with one `DL`
+/// that took the frame, its top separator and the staged rows (`close_band`, 17 rows in 20).
+/// An answer is only taken from the query that asked it: the drag ends with the frame flush,
+/// once, and every row reachable — one late answer queued or several (two queries in a row
+/// timed out in one of the recorded runs).
+#[test]
+fn answers_one_query_late_through_a_height_drag_and_its_end_keep_the_frame() {
+    for (late, cursor) in [1, 2, 3]
+        .into_iter()
+        .flat_map(|n| [(n, Some((2, 6))), (n, None)])
+    {
+        let (mut t, buf, geo, emu, frame) = raced_term(40, cursor);
+        emu.lock().unwrap().feed(&buf.bytes());
+        geo.set_answers_late(late);
+        for h in [23, 22, 21, 20, 19, 18, 19, 20, 21, 22, 23, 24] {
+            emu_resize(&emu, &buf, &geo, (80, h));
+            pass(&mut t, &frame, (80, h));
+        }
+        t.close_band().unwrap();
+        t.draw_frame(&frame).unwrap();
+        let tag = format!("{late} late answers, height drag, cursor {cursor:?}");
+        let (all, screen) = emu.lock().unwrap().finish(&buf.bytes());
+        assert_no_committed_row_lost(&tag, 40, &all);
+        let want: Vec<String> = frame.rows.clone();
+        let got: Vec<String> = screen[15..]
+            .iter()
+            .map(|r| r.trim_end().to_owned())
+            .collect();
+        assert_eq!(
+            got,
+            want,
+            "{tag}: the frame flush at the bottom:\n{}",
+            screen.join("\n")
+        );
+        let tops = screen.iter().filter(|r| r.trim_end() == "f-0").count();
+        assert_eq!(
+            tops,
+            1,
+            "{tag}: one frame on screen:\n{}",
+            screen.join("\n")
+        );
+        assert_eq!(t.top(), 15, "{tag}: the model's frame is flush on 24 rows");
     }
 }
 

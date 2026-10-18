@@ -2,6 +2,7 @@
 //! the races a live one has injected (a DSR failing or late, a size lagging the screen, a resize
 //! right after an answer). Test configuration only: the live build has none of it.
 
+use std::collections::VecDeque;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,11 +22,11 @@ pub(crate) struct Geometry {
     /// Test seam: the cursor query fails (a terminal that never answers the DSR — crossterm
     /// gives up after ~2 s with an error).
     dsr_fails: Arc<AtomicBool>,
-    /// Test seam: every answer is ONE query late — what crossterm does after a query has timed
-    /// out: the late reply waits in its event queue and the next query takes it at once
-    /// (`cursor/sys/unix.rs` `read_position_raw` polls the queue first). The first query of
-    /// the lag fails (it timed out); each later one answers where the cursor was at the query
-    /// before it. `None` = answers are current.
+    /// Test seam: every answer is `n` queries late — what crossterm does after `n` queries in a
+    /// row have timed out: each late reply waits in its event queue and the next query takes
+    /// the oldest at once (`cursor/sys/unix.rs` `read_position_raw` polls the queue first).
+    /// The lag's first `n` queries fail (they timed out); each later one answers where the
+    /// cursor was `n` queries before. `None` = answers are current.
     lagged: Arc<Mutex<Option<Lag>>>,
     /// Test seam: the rows the screen REALLY has when the reported size lags it (an emulator applies
     /// the next resize before the tty size or the event says so); the cursor moves within it.
@@ -36,11 +37,11 @@ pub(crate) struct Geometry {
     after_query: Arc<Mutex<AfterQuery>>,
 }
 
-/// The lagged-answer seam's state: the query that timed out, then the answer held for the next.
-#[derive(Clone, Copy)]
-enum Lag {
-    TimedOut,
-    Late(Position),
+/// The lagged-answer seam's state: the queries still to time out, and the answers queued
+/// (oldest first) for the queries after them.
+struct Lag {
+    timeouts: usize,
+    queued: VecDeque<Position>,
 }
 
 type AfterQuery = (usize, Option<(usize, Box<dyn FnOnce() + Send>)>);
@@ -79,7 +80,15 @@ impl Geometry {
 
     /// Makes every cursor answer one query late from now on (see `lagged`).
     pub(crate) fn set_answers_lagged(&self) {
-        *lock(&self.lagged) = Some(Lag::TimedOut);
+        self.set_answers_late(1);
+    }
+
+    /// Makes every cursor answer `n` queries late from now on (see `lagged`).
+    pub(crate) fn set_answers_late(&self, n: usize) {
+        *lock(&self.lagged) = Some(Lag {
+            timeouts: n,
+            queued: VecDeque::new(),
+        });
     }
 
     /// Makes every cursor query fail from now on (or answer again).
@@ -98,17 +107,18 @@ impl Geometry {
         let now = self.cursor();
         let answer = {
             let mut lag = lock(&self.lagged);
-            match lag.replace(Lag::Late(now)) {
-                None => {
-                    *lag = None;
-                    now
-                }
-                Some(Lag::Late(late)) => late,
-                Some(Lag::TimedOut) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "the terminal did not answer in time (its reply will come late)",
-                    ));
+            match lag.as_mut() {
+                None => now,
+                Some(lag) => {
+                    lag.queued.push_back(now);
+                    if lag.timeouts > 0 {
+                        lag.timeouts -= 1;
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "the terminal did not answer in time (its reply will come late)",
+                        ));
+                    }
+                    lag.queued.pop_front().unwrap_or(now)
                 }
             }
         };

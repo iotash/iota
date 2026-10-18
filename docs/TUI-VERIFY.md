@@ -102,8 +102,11 @@ set the whole suite now follows (`tests/ui_tmux/lib.sh`, its header):
    (`taskpolicy -b`) under the same burners — is NOT a slow runner: there the app is starved for
    seconds, and 06 breaks for real in 3 of 4 runs on the unchanged build: the frame drawn mid-screen
    with its top separator gone and separator pieces below it, 1–3 streamed rows LOST (settled,
-   fast and paced drags; the height drag). That is the open §4.5 record (CI 36305402235; the loaded
-   tmux 3.4 overwrite), now with a recipe that reproduces it — a product finding, not a wait to fix.
+   fast and paced drags; the height drag). That was the open §4.5 record (CI 36305402235; the loaded
+   tmux 3.4 overwrite), and the recipe reproduced it — a product finding, not a wait to fix: a
+   cursor answer later than crossterm's 2 s, taken by every later query (§4.5, X-81, fixed
+   2026-10-18). Under that recipe a run can still miss a wait (the stream never starting, a pass
+   slower than its 1.5 s) — starvation, not this defect; read the FAIL lines before the count.
 
 ---
 
@@ -216,7 +219,8 @@ its own viewport top. Some emulators will strand a row above the new viewport. T
       infers whether or how an emulator reflowed. Asserted ≤ 2 (15 of 15 runs, 2026-09-27; the
       3 measured when B3 landed counted distinct lines and included one the earlier blocks had
       duplicated — see 4.5). Zero LOST rows is the hard target, its bound zero; no run of this
-      block has lost one, which is a record, not a proof — see the open records in 4.5.)*
+      block has lost one, which is a record, not a proof — see 4.5: under background QoS a
+      late cursor answer did lose rows until 2026-10-18, X-81.)*
 - [x] 自动化：scenarios 06 + 26 **4.3** Resize at idle — a narrowing, a diagonal shrink, a
       settled 25-step drag, a fast 8-step drag (SIGWINCHes 60 ms apart), and on fresh panes a
       2× and a 3× narrowing with the banner still staged, a narrowing right after 20 ms-a-line
@@ -313,20 +317,72 @@ and Ghostty.
       turn had already printed and measured a screen frozen mid-drag, and a row laid out for
       the wider terminal before that late pass was inserted after it — a debug build panicked
       on W6 (the panic text overwrote a separator: "top=15 bottom=15"), a release build cut
-      the row's tail. **Open, not reproduced:** once in ~120 loaded runs on tmux 3.4 (ten CPU
-      burners, no byte recording) the frame was drawn over the new turn's last two rows (`l#18`,
-      `l#19`). Investigated 2026-09-27. The suspected mechanism — crossterm keeps a cursor reply
-      that arrives after its 2 s timeout in its event queue and hands it to the NEXT query, so
-      every later answer is one query late — is real in crossterm (`cursor/sys/unix.rs`) and
-      cannot cost a row here: a pass's answers feed only the bookkeeping (the floor, the
-      tracked top); the erase and the layout count from the cursor. Evidence: a proxy that
-      delays every reply by 300/1900/2100/2500/5000 ms (5 runs each on tmux 3.7c and 3.4, a
-      width drag, a height round trip and a turn started at the drag's end): 50 of 50 clean;
-      `vt100_tests::answers_one_query_late_lose_no_row` (every answer one query late) passes,
-      and fails — `t-27` lost — the moment the erase is anchored on the answer instead; and
-      the block itself, byte-recorded under the same load: 0 of 200 on 3.4, 0 of 100 on 3.7c.
-      What else could have drawn it — a tmux 3.4 grid defect under load, or an iota sequence
-      no recorded run has produced — is unknown; no fix was made without a reproduction.
+      the row's tail. **Diagnosed and fixed (2026-10-18, X-81) — the late cursor answer.**
+      Once in ~120 loaded runs on tmux 3.4 (ten CPU burners, no byte recording) the frame was drawn over the new
+      turn's last two rows (`l#18`, `l#19`); once on CI (below) 06's height drag left the frame
+      up the screen with its top separator gone. The 2026-09-27 suspicion was the right one and
+      its acquittal wrong. crossterm's `cursor::position()` gives up after 2 s
+      (`cursor/sys/unix.rs` `read_position_raw`), but the answer still comes: it waits in
+      crossterm's internal event queue (`event::read` skips it and keeps it) and the NEXT query
+      takes it at once — and since every query adds an answer and a late one is never dropped,
+      every answer from then on is the one before, for the rest of the session. A pass asks
+      twice: before it writes (the composer's row — the frame's first row is `above` rows up
+      from it) and after it is laid out (the frame's first row). One query behind, the first
+      reads the last recheck's row, `above` rows too high, so `start` is `above` rows short and
+      the pass makes a band of `floor − start` that is really the frame's own rows; the recheck
+      reads the composer's row, so the model's frame sits `above` rows under the real one. The
+      erase and the layout count from the cursor and are right — the 2026-09-27 replay checked
+      exactly that, and passed — but the band (`Term::pad`) is consumed by bytes: summed over a
+      drag it reached 17 rows in a 20-row pane, and the drag's end closed it with `CUU 21`,
+      `DL 17`, `SD 17` (`close_band`), which took the frame, its top separator and the staged
+      rows `l#38`/`l#39`; the repaint after it is a diff against a model that is wrong, so
+      nothing redraws the missing rows (the "not recovering in 6 s"), and every later pass is
+      still one behind. A band row is also where the next output is written in place
+      (`fill_above`) — a band that is the transcript's rows is the tmux 3.4 overwrite's shape,
+      consistent with it, not proven. Measured (this host, tmux 3.8, iota under `taskpolicy -b`,
+      scenario 06): the pass's DSRs logged, `Err("The cursor position could not be read within a
+      normal duration") after 2.04s`, then the recheck "answered" in 1 ms with the composer's
+      column 2 — the late answer — and each pass after it took a band of 6, 4, 3, 6, 8 rows
+      (`pad` 0 → 5 → 9 → 12); every red run had a timeout, no run without one was red (of 12;
+      one with two timeouts in a row stayed green: two behind, the queries fall back in phase,
+      one pass stale). The unchanged build, this host (tmux 3.8; the recipe's 3 of 4 was another
+      run's): ten burners 5 of 29 red; of the 25 runs with their DSRs logged, the 5 that had a
+      timeout gave 4 of the reds and the 20 without one none; twenty burners 8 of 8 red (6 with
+      the frame gone or rows lost — and the whole host stalling, `spindump` running: not a
+      condition to measure a fix under). **The fix** (`InlineTerminal::ask`):
+      an answer is taken only from the query that asked it. The answer names the cursor's
+      column, so each query is asked from a column of its own — `CR`, then `CUF` to one of
+      eight columns in turn, never the last query's — and an answer from another column is an
+      earlier query's, dropped, the next one read (at most 16). A timeout is waited out once
+      more: the terminal answered at startup, so a timeout is a slow answer, and the read after
+      it takes that answer — this query's column, nothing written in between (`DSR_WAITS` 2:
+      4 s, then the pass goes without, laid out from the cursor as before; a first cut without
+      the second wait left the composer 2 rows off the bottom after the settled drag in 2 of 7
+      runs under twenty burners — unlogged, the shape a pass without its floor leaves, and
+      `term::tests::a_slow_cursor_answer_still_gives_the_pass_its_floor` reads exactly that
+      without it). The fixed build, alternated with the unchanged one run by run (ten burners,
+      8 pairs): unchanged 2 of 8 red, both the frame gone and both with a timeout logged; fixed
+      0 of 8 — but no fixed run met a timeout, so that is no regression, not the fix proved. The
+      proof on a real terminal is `scripts/dsr-delay.py`, a pty that holds every 20th cursor
+      answer 2.5 s (no load, no QoS; 6 pairs): unchanged 6 of 6 red with the frame's separator
+      pair gone, blank rows by the dozen and the composer off the bottom; fixed 6 of 6 with the
+      frame whole, flush and full width, nothing lost and no band — and 6 of 6 still red on the
+      DUPLICATE budgets alone (the staged rows only, X-52's residual (1): 3–14 a drag against
+      caps of 0–2, a separator piece or two, one stale frame). Those are the drag outrunning a
+      pass that waits 2.5 s for its answer, not a stale answer; open — the suspicion, unverified,
+      is that the stall counts toward `DRAG_SETTLE`, so the drag is taken as over and the frame
+      repainted at full width with the drag's next steps still unread. Pinned deterministically by
+      `vt100_tests::answers_one_query_late_through_a_height_drag_and_its_end_keep_the_frame`
+      (the `Geometry` seam answers 1, 2 or 3 queries late; a height drag down and back in the
+      tmux model, the drag's end closing its band; the frame flush and whole, once, nothing
+      lost — red on the unfixed build for each lag: 1 and 3 the frame gone from the screen, 2 the
+      model's frame off by `above`) and
+      `term::tests::a_slow_cursor_answer_still_gives_the_pass_its_floor`. On a real terminal:
+      `scripts/dsr-delay.py` (its header has the wrapper).
+      The starvation recipe, kept for a second look: wrap the binary as
+      `exec taskpolicy -b <iota> "$@"`, point `IOTA_TMUX_BIN` at the wrapper, start ten or
+      twenty `yes >/dev/null`, run `IOTA_TMUX=1 IOTA_TMUX_FRAMES=1 cargo test --test ui_tmux
+      tmux_resize_mid_stream_and_idle`.
       **The duplicate counter (2026-09-27).** Scenario 06 counted the DISTINCT lines with a
       duplicate, so a line already twice in the history hid every further copy: after the idle
       narrowing had left `l#36` twice, the idle shrink, the settled drag and the fast drag each
@@ -339,13 +395,11 @@ and Ghostty.
       budget of 2 per drag. Measured 15 of 15 runs (tmux 3.7c, 3.7c under six CPU burners,
       3.4): idle narrowing 1, idle shrink 1, settled drag 1, fast drag 1 (2 while it lasts; the
       band close takes one), paced drag 0, height drag 0 and 0, mid-stream shrink 2 — the caps.
-      **Open, one CI run (36305402235, macos-14; its re-run green; 0 of ~75 local runs, loaded,
-      on 3.7c and 3.4):** 06's height drag with `scroll-on-clear on` left the frame three rows
-      up with its top separator gone, the drag's end repaint writing its two restored columns
-      on rows below it, and two streamed lines lost; with it `off`, the bottom separator stayed
-      68 columns. Not the duplication above — a height drag rewraps nothing, and adds no copy in
-      any run — but the frame's bookkeeping out of step with the screen, the same family as
-      the loaded tmux 3.4 overwrite. The block records its bytes and a red CI run uploads them.
+      **The CI run 36305402235 (macos-14, its re-run green; 0 of ~75 local runs, loaded, on
+      3.7c and 3.4)** — 06's height drag with `scroll-on-clear on` left the frame three rows up
+      with its top separator gone and two streamed lines lost — is the late cursor answer above
+      (X-81): the same frame, the same `close_band`, reproduced on this host under background
+      QoS. The block still records its bytes and a red CI run uploads them.
       **Scenario 26's B and D, named (2026-09-28).** Re-measured over 100 runs of the scenario
       (tmux 3.7c and 3.4; alone, under six CPU burners, and three copies at once): B's 2 are the
       stream's last two staged rows (`l#56`, `l#57`) for both narrowings, 2 in 99 runs each; one
