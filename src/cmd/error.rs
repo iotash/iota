@@ -156,6 +156,15 @@ pub enum SetupError {
     /// The config `max_tokens:` is 0.
     #[error("config max_tokens {0}: want 1 or more")]
     ConfigMaxTokens(u32),
+    /// A `mcp_servers` entry's `tool_timeout_sec:` is 0 — every call would time out at once; "no deadline" is
+    /// not on offer (X-78: headless and bot runs have no ESC).
+    #[error("config mcp_servers.{name}.tool_timeout_sec {secs}: want 1 or more")]
+    ConfigToolTimeout {
+        /// The `mcp_servers` entry.
+        name: String,
+        /// The value written.
+        secs: u64,
+    },
     /// The working directory could not be resolved (agent mode).
     #[error("failed to resolve working directory: {0}")]
     Cwd(#[source] std::io::Error),

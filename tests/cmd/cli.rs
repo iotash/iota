@@ -282,6 +282,24 @@ fn cli_mcp_flag_empty() {
     );
 }
 
+/// X-78: `tool_timeout_sec: 0` would time every call out at once, and "0 = no deadline" would hand a headless run
+/// back the hang the deadline exists for — so it is a setup error naming the server, before anything connects.
+#[test]
+fn cli_mcp_tool_timeout_zero() {
+    let (dir, home) = project();
+    write_config(
+        dir.path(),
+        "providers:\n  p: {type: openai, key: sk-x}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {model: m}\n\
+         mcp_servers:\n  slow: {command: never-run-me, tool_timeout_sec: 0}\n",
+    );
+    let mut cmd = iota(dir.path(), &home);
+    cmd.args(["-m", "hi"]);
+    assert_error(
+        &cmd.output().expect("run"),
+        "config mcp_servers.slow.tool_timeout_sec 0: want 1 or more",
+    );
+}
+
 /// DIVERGENCES D-23: `--no-save` is the one interactive-only flag left, and a headless run still refuses it.
 #[test]
 fn cli_unsupported_flag_no_save() {

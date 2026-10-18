@@ -12,7 +12,7 @@ use crate::tool::sets::{MEMORY_SET, ToolsConfig, set_factory};
 use crate::tool::{DeferredGroup, Registry, merge, set_disabled};
 use crate::tool::{Dispatcher, PrefixOf, ToolEnv};
 
-use crate::cmd::CliError;
+use crate::cmd::{CliError, SetupError};
 
 /// The MCP half of the dispatcher: the manager as a tool dispatcher plus its wire-prefix oracle.
 pub(crate) struct McpPart {
@@ -95,6 +95,7 @@ pub(crate) fn harness_environment(
 /// flags in order (`parse_mcp_flag` errors abort: `McpFlagError::EmptyFlag` → `ArgsError::McpFlag`). Deferred
 /// groups sorted by name.
 /// Blank defer → `Warning: mcp server {name}: defer needs a one-line summary of the server's tools (not deferred)`.
+/// `tool_timeout_sec: 0` on a selected server → `SetupError::ConfigToolTimeout` (the `max_tokens: 0` shape).
 pub(crate) fn build_mcp_configs(
     cfg: &Config,
     agent_cfg: &AgentConfig,
@@ -107,6 +108,13 @@ pub(crate) fn build_mcp_configs(
     let mut defers = Vec::new();
 
     for (name, server_cfg) in &selected {
+        if let Some(secs @ 0) = server_cfg.tool_timeout_sec {
+            return Err(SetupError::ConfigToolTimeout {
+                name: name.clone(),
+                secs,
+            }
+            .into());
+        }
         configs.push(ServerConfig {
             name: name.clone(),
             command: server_cfg.command.clone(),
@@ -313,6 +321,48 @@ mod tests {
             r.expect_err("unknown selection must fail").to_string(),
             "mcp_servers: \"nope\" is not defined under the top-level mcp_servers"
         );
+    }
+
+    /// X-78: `tool_timeout_sec: 0` is rejected naming the server (the `max_tokens: 0` shape, never "no deadline");
+    /// 1 is the smallest deadline there is; absent leaves the manager's 30-minute default.
+    #[test]
+    fn a_zero_tool_timeout_is_rejected_naming_the_server() {
+        let with = |secs: Option<u64>| Config {
+            mcp_servers: BTreeMap::from([(
+                "slow".to_owned(),
+                McpServerConfig {
+                    command: "slow-bin".to_owned(),
+                    tool_timeout_sec: secs,
+                    ..McpServerConfig::default()
+                },
+            )]),
+            ..Config::default()
+        };
+
+        let (r, warnings) = collect(&with(Some(0)), &AgentConfig::default(), &[]);
+        assert_eq!(
+            r.expect_err("a zero deadline must be rejected").to_string(),
+            "config mcp_servers.slow.tool_timeout_sec 0: want 1 or more"
+        );
+        assert!(warnings.is_empty());
+
+        let (r, _) = collect(&with(Some(1)), &AgentConfig::default(), &[]);
+        assert_eq!(r.expect("1 is accepted").0[0].tool_timeout_sec, Some(1));
+
+        let (r, _) = collect(&with(None), &AgentConfig::default(), &[]);
+        assert_eq!(r.expect("absent is accepted").0[0].tool_timeout_sec, None);
+        assert_eq!(
+            crate::mcp::DEFAULT_CALL_TIMEOUT,
+            std::time::Duration::from_mins(30)
+        );
+
+        // Only the servers the agent selects are checked, as only they are started.
+        let agent_cfg = AgentConfig {
+            mcp_servers: Some(vec![]),
+            ..AgentConfig::default()
+        };
+        let (r, _) = collect(&with(Some(0)), &agent_cfg, &[]);
+        assert!(r.expect("an unselected server is not started").0.is_empty());
     }
 
     /// A dispatcher part standing in for the manager (`lib.rs::run` passes the real one).
