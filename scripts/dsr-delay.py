@@ -5,10 +5,22 @@ is held DELAY seconds; a report behind a held one waits for it, so the answers s
 a terminal's do; every other byte passes at once. The window size follows the outer terminal
 (SIGWINCH). Each held report is logged to LOG.
 
-OPT-IN, MANUAL, NEVER IN CI. It reproduces on a real terminal the late cursor answer of
-TUI-VERIFY §4.5 / DIVERGENCES X-81 without starving the process: a DELAY over crossterm's 2 s
-makes that query time out and its answer come late. Wrap the binary and point the tmux suite at
-the wrapper:
+OPT-IN, MANUAL, NEVER IN CI. It puts on a real terminal, without starving the process, the
+cursor answer later than crossterm's 2 s of TUI-VERIFY §4.5: a DELAY over 2 s makes that query
+time out and its answer come late. The late answer taken by the next query (X-81) is FIXED; what
+this reproduces on a fixed build is the KNOWN residual of DIVERGENCES X-52 ("a slow cursor
+answer", docs/design/drag-settle-stall.md): the pass stalls, the drag settles under it and the
+steps queued meanwhile merge, so scenario 06 is red on its DUPLICATE budgets alone.
+
+How to read a run:
+  * expected (the residual): the frame's staged rows duplicated in the history (3-14 a drag
+    against caps of 0-2), a separator piece or two, a stale frame on the blind and paced drags;
+    the paired drag's "pass ... was never drawn" (its 1.5 s wait is shorter than DELAY);
+  * a REGRESSION: a streamed row lost, the frame's top separator gone, blank rows by the dozen,
+    or the composer off the bottom once the frame has settled (one read of a pane mid-stall can
+    show it a row high: check again after DRAG_SETTLE before calling it).
+
+Wrap the binary and point the tmux suite at the wrapper:
 
     printf '#!/bin/bash\nexec python3 -I %s 20 2.5 /tmp/held.log -- %s "$@"\n' \
         "$PWD/scripts/dsr-delay.py" "$PWD/target/debug/iota" > /tmp/iota-dsr-delay

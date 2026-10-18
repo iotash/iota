@@ -1,8 +1,8 @@
 # 慢光标回答下的拖拽提前结束：值不值得修（评估）
 
-Status: **Assessment** · 日期：2026-10-18 · 基于 `main` = `ec613dd`（qos-render 合并之后，X-81）· 本机 macOS 26（Darwin 25.6）、tmux 3.8
+Status: **Decided** (owner, 2026-10-18: D done — X-52, TUI-VERIFY §4.5, `scripts/dsr-delay.py`; B later, not A/C/E) · 日期：2026-10-18 · 基于 `main` = `ec613dd`（qos-render 合并之后，X-81）· 本机 macOS 26（Darwin 25.6）、tmux 3.8
 
-本文只做评估，不改代码，等所有者拍板。所有者要的是：修复价值、成本、会不会把架构搞丑、是不是为了修而修。
+本文是评估，不改代码。所有者已按 §0 的推荐拍板：做 D，B 留待以后顺手修。所有者要的是：修复价值、成本、会不会把架构搞丑、是不是为了修而修。
 
 ## 写作约定
 
