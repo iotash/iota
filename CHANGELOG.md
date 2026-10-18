@@ -3,7 +3,7 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
-## Unreleased
+## 0.7.3 - 2026-10-18
 
 ### Changed
 
@@ -34,6 +34,13 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   shown), a handshake that never finishes and a rejected header are each
   worded the same way. The full cause chain and the server's stderr are on
   the server's page in `/tools`, and under the warning in a headless run.
+- **rustls is 0.23.46** (RUSTSEC-2026-0346, -0347, -0348, -0349). iota keeps
+  no session store of its own, does not use Encrypted Client Hello and does
+  not enable the `brotli` feature, so the first three never applied. The
+  fourth did: a network attacker who answered one connection could make
+  later connections to the same host fall back from the post-quantum hybrid
+  key exchange to X25519 alone — a loss of post-quantum protection, with no
+  key exposed and no server authentication bypassed.
 
 ### Fixed
 
@@ -45,7 +52,9 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   in the middle of the screen with its top line gone and lose the last lines
   of a reply, and every later resize in that session could do it again. iota
   now tells its own answer from a late one, ignores the late one and waits
-  a little longer for its own, so a slow machine only makes a resize slower.
+  a little longer for its own. A slow machine now makes a resize slower, and
+  at worst a drag repeats a few of a reply's last lines in the scrollback;
+  nothing is lost, and the prompt stays whole at the bottom.
 - **A herdr pane no longer stays "working" after an agent is run from the
   chat.** When the model ran another agent from the shell — `claude -p …`,
   say — that agent's herdr integration took over iota's pane, and herdr then
