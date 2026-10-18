@@ -7,6 +7,14 @@
 //! forwards the ANSI host's OSC 9 ping, and taking the channel over would hand presence policy to
 //! cmux (cmux.go:20-25). Sidebar dressing is best-effort — a single worker task executes the
 //! batches off the chat loop, bursts coalesce to the newest, and every failure is silent.
+//!
+//! Nor does it implement [`ChildEnvironment`](crate::host::ChildEnvironment): a child keeps
+//! `CMUX_SURFACE_ID`. cmux binds an agent to its surface through exactly that inheritance on purpose,
+//! and keeps a nested child agent from overwriting the parent itself — its
+//! `automation.suppressSubagentNotifications` (default on) suppresses "status mutations from nested
+//! Codex or Claude child agents" (docs/design/child-env-identity-research.md §4.3) — and iota's status
+//! row is keyed `iota`, a key no other agent writes. No stuck surface has been reproduced under cmux;
+//! withholding the variable would take the `cmux` CLI away from the model for a failure nobody has seen.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -414,6 +422,8 @@ mod tests {
                 ("cmux surface".to_owned(), "surface-1".to_owned()),
             ]
         );
+        // A child keeps the surface (the module doc).
+        assert!(h.as_child_env().is_none(), "cmux withholds a variable");
         h.as_closer().expect("cmux closes").close().await;
     }
 }

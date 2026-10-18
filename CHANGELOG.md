@@ -35,6 +35,21 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Fixed
 
+- **A herdr pane no longer stays "working" after an agent is run from the
+  chat.** When the model ran another agent from the shell — `claude -p …`,
+  say — that agent's herdr integration took over iota's pane, and herdr then
+  ignored iota for good: the pane showed `working` with the chat idle until
+  the pane was closed. Inside herdr, the shell tool's commands and the MCP
+  servers now start without `HERDR_ENV`, so an agent started there leaves
+  the pane to iota. The model is told this in its environment, and the
+  `herdr` command line works as before — a pane it opens with `herdr` still
+  gets its own herdr identity, so an agent started in a pane of its own
+  reports there as it should.
+- **A job that finished while no model was chosen no longer keeps the host
+  busy.** If a background job's result woke a chat that had no model yet,
+  and the model choice was then cancelled, the host (herdr, cmux, the
+  terminal's progress indicator) went on showing the chat as busy until the
+  next turn. It now shows it idle.
 - **An MCP server that stops mid-session is shown as stopped.** A stdio
   server that exited — killed, or crashed — used to stay `connected` in
   `/tools`, with nothing said in the chat. Now it shows as `down` as soon as

@@ -59,6 +59,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::BoxFuture;
+pub use crate::app::env::ChildEnv;
 use crate::app::env::Env;
 use crate::sync::lock;
 use crate::ui::facade::{TurnBusy, Ui};
@@ -126,6 +127,10 @@ pub trait Host: Send + Sync {
     fn as_environment(&self) -> Option<&dyn EnvironmentContributor> {
         None
     }
+    /// The children's-environment capability.
+    fn as_child_env(&self) -> Option<&dyn ChildEnvironment> {
+        None
+    }
 }
 
 /// Shows the conversation's state.
@@ -168,6 +173,31 @@ pub trait EnvironmentContributor: Send + Sync {
     fn environment(&self) -> Vec<(String, String)>;
 }
 
+/// Knows which of the variables it put in the run's environment no child of the chat may inherit: a
+/// variable that would let a program the model starts (a shell command, an MCP stdio server) speak to the
+/// host AS the chat. A host implements it when the integrations it ships for other agents read that
+/// variable: an agent started from the shell tool would otherwise report into the chat's own pane and take
+/// its status over (the herdr host's doc names the variable and the evidence). Which variables, and why,
+/// lives in the host's own file; nothing outside `crate::host` names one.
+pub trait ChildEnvironment: Send + Sync {
+    /// The variable names, removed from every child's environment ([`child_env`], [`ChildEnv::apply`]).
+    fn withheld(&self) -> Vec<String>;
+}
+
+/// What every child of the chat is spawned without: the names the hosts' [`ChildEnvironment`]s withhold,
+/// gathered like the `<environment>` facts — every host given, in order, each name once. The command gives
+/// it the host [`detect`] found (the terminal fallback, built once the screen exists, withholds nothing).
+/// The [`ChildEnv`] it returns is the mechanism, which lives at the bottom of the graph (`app::env`) so the
+/// shell and MCP layers can apply it without knowing a host exists.
+pub fn child_env<'a>(hosts: impl IntoIterator<Item = &'a dyn Host>) -> ChildEnv {
+    ChildEnv::new(
+        hosts
+            .into_iter()
+            .filter_map(Host::as_child_env)
+            .flat_map(ChildEnvironment::withheld),
+    )
+}
+
 /// `exec.LookPath` as a closure (`None` when not found).
 pub type LookPathFn = Box<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
 
@@ -188,6 +218,14 @@ pub type Detector = fn(&Probe) -> Option<Box<dyn Host>>;
 /// before cmux, because a herdr pane inside a cmux window inherits a `CMUX_SURFACE_ID` that is the
 /// server's, not the pane's (the module doc).
 pub(crate) const DETECTORS: &[Detector] = &[herdr::detect_herdr, cmux::detect_cmux];
+
+/// The innermost host the environment names, or `None` (the module doc): the first detector that matches.
+/// Run it once per process — a detected host spawns its worker task, so it MUST be called inside the
+/// tokio runtime — and hand the host to [`Presenter::over`]. Nothing is reported to it until the presenter
+/// says so: a run that ends before then drops a host that never spoke.
+pub fn detect(probe: &Probe) -> Option<Box<dyn Host>> {
+    DETECTORS.iter().find_map(|d| d(probe))
+}
 
 /// The capability set a test host advertises (`crate::testing::RecordingHost`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -259,7 +297,17 @@ impl Presenter {
     /// then appends `fallback` (host.go:97-108, minus Go's "every detector" collect). MUST be called
     /// inside the tokio runtime: a detected host spawns its worker task.
     pub fn new(env: &Probe, fallback: Option<Box<dyn Host>>, notify: bool) -> Self {
-        let detected = DETECTORS.iter().find_map(|d| d(env));
+        Self::over(detect(env), fallback, notify)
+    }
+
+    /// [`Self::new`] over a host [`detect`] already found: the command detects once, at assembly — the
+    /// children's environment ([`ChildEnv`]) is needed before the presenter exists, by the shell tool and
+    /// by the MCP servers that start connecting before the screen does — and hands the host over here.
+    pub fn over(
+        detected: Option<Box<dyn Host>>,
+        fallback: Option<Box<dyn Host>>,
+        notify: bool,
+    ) -> Self {
         let name = detected.as_ref().map(|h| h.name().to_owned());
         let mut hosts: Vec<Box<dyn Host>> = detected.into_iter().collect();
         if let Some(f) = fallback {
@@ -623,6 +671,10 @@ mod tests {
             vec![
                 ("host".to_owned(), "herdr".to_owned()),
                 ("herdr pane".to_owned(), "w1:p2".to_owned()),
+                (
+                    "herdr note".to_owned(),
+                    super::herdr::HERDR_CHILD_NOTE.to_owned()
+                ),
             ]
         );
         p.close().await; // the release goes to a socket nobody listens on
@@ -694,6 +746,61 @@ mod tests {
 
         let p = Presenter::with_hosts(vec![Box::new(host("inert", Caps::default()))], true);
         assert!(p.environment().is_empty(), "an inert host contributed");
+    }
+
+    /// A host that withholds `names` from children, and nothing else.
+    struct Withholding(&'static str, &'static [&'static str]);
+
+    impl super::Host for Withholding {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn as_child_env(&self) -> Option<&dyn super::ChildEnvironment> {
+            Some(self)
+        }
+    }
+
+    impl super::ChildEnvironment for Withholding {
+        fn withheld(&self) -> Vec<String> {
+            self.1.iter().map(|n| (*n).to_owned()).collect()
+        }
+    }
+
+    /// Like the environment, what children are spawned without is GATHERED: every withholding host's
+    /// names, in host order, each once; a host without the capability adds nothing, and none means none.
+    #[test]
+    fn the_child_env_gathers_every_withholding_host_once() {
+        let first = Withholding("first", &["A_ID", "SHARED"]);
+        let inert = host("inert", Caps::default());
+        let second = Withholding("second", &["SHARED", "B_ID"]);
+        let hosts: [&dyn super::Host; 3] = [&first, &inert, &second];
+        assert_eq!(super::child_env(hosts).names(), ["A_ID", "SHARED", "B_ID"]);
+        let inert: &dyn super::Host = &host("inert", Caps::default());
+        assert!(super::child_env([inert]).names().is_empty());
+        assert!(super::child_env(None).names().is_empty());
+        assert_eq!(super::ChildEnv::default(), super::child_env(None));
+    }
+
+    /// `apply` takes a variable this process HAS out of a real child's environment, and a value the
+    /// caller sets after it — an MCP entry's own `env:` — is the caller's and reaches the child.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn apply_withholds_from_a_real_child_unless_the_caller_sets_it() {
+        assert!(std::env::var_os("HOME").is_some(), "the test needs a HOME");
+        let echo = |set: Option<&str>| {
+            let mut cmd = tokio::process::Command::new("/bin/sh");
+            cmd.args(["-c", "printf %s \"${HOME-withheld}\""]);
+            let hosts: [&dyn super::Host; 1] = [&Withholding("w", &["HOME"])];
+            super::child_env(hosts).apply(&mut cmd);
+            if let Some(v) = set {
+                cmd.env("HOME", v);
+            }
+            cmd
+        };
+        let out = echo(None).output().await.expect("run sh");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "withheld");
+        let out = echo(Some("/set/by/config")).output().await.expect("run sh");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "/set/by/config");
     }
 
     /// The session goes to the FIRST reporter, like a state; a host without the capability is

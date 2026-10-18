@@ -203,6 +203,8 @@ async fn an_unreachable_socket_never_blocks() {
 /// that order — and nothing when the pane has no workspace or tab.
 #[tokio::test]
 async fn the_environment_names_the_host_and_its_ids() {
+    // What the model is told about the variable its children are spawned without (`src/host/herdr.rs`).
+    const NOTE: &str = "HERDR_ENV is unset in your shell on purpose; the herdr CLI works";
     let mock = HerdrMock::start();
     let pairs = |kv: &[(&str, &str)]| -> Vec<(String, String)> {
         kv.iter()
@@ -217,6 +219,7 @@ async fn the_environment_names_the_host_and_its_ids() {
             ("herdr pane", "w1:p2"),
             ("herdr workspace", "w1"),
             ("herdr tab", "w1:t1"),
+            ("herdr note", NOTE),
         ])
     );
     p.close().await;
@@ -228,7 +231,11 @@ async fn the_environment_names_the_host_and_its_ids() {
     let p = Presenter::new(&probe(&bare), None, true);
     assert_eq!(
         p.environment(),
-        pairs(&[("host", "herdr"), ("herdr pane", "w1:p2")])
+        pairs(&[
+            ("host", "herdr"),
+            ("herdr pane", "w1:p2"),
+            ("herdr note", NOTE)
+        ])
     );
     p.close().await;
     assert_eq!(

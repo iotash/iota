@@ -8,6 +8,43 @@ use std::{borrow::Cow, collections::HashMap, fmt, path::Path, sync::Arc};
 
 use super::{DOT_DIR, HostDirs};
 
+/// Variables a child process is spawned without — the one mechanism every spawn point that runs what the
+/// model asked for applies (`shell::exec::spawn`, `mcp::transport::spawn_stdio`). WHICH names is not this
+/// module's knowledge: `crate::host::child_env` gathers them from the detected host. Cheap to clone; the
+/// default withholds nothing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChildEnv {
+    withheld: Arc<[String]>,
+}
+
+impl ChildEnv {
+    /// Withholds `names`, in order, each once.
+    pub fn new(names: impl IntoIterator<Item = String>) -> Self {
+        let mut withheld: Vec<String> = Vec::new();
+        for name in names {
+            if !withheld.contains(&name) {
+                withheld.push(name);
+            }
+        }
+        Self {
+            withheld: withheld.into(),
+        }
+    }
+
+    /// The withheld names.
+    pub fn names(&self) -> &[String] {
+        &self.withheld
+    }
+
+    /// Removes every withheld name from `cmd`'s environment. Call it BEFORE the caller's own `env`s: a
+    /// variable a config sets explicitly (an MCP entry's `env:`) is the user's choice, not an inheritance.
+    pub fn apply(&self, cmd: &mut tokio::process::Command) {
+        for name in self.withheld.iter() {
+            cmd.env_remove(name);
+        }
+    }
+}
+
 /// The variable lookup behind an [`Env`]: `None` when unset.
 type VarFn = dyn Fn(&str) -> Option<String> + Send + Sync;
 

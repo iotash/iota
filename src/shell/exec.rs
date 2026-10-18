@@ -25,6 +25,8 @@ use std::{
 
 use tokio_util::sync::CancellationToken;
 
+use crate::app::env::ChildEnv;
+
 /// The supervised child: a plain tokio child in its own process group on Unix, and on Windows one wrapped in
 /// a Job Object by `process-wrap`. Both answer `id`, `wait` and `start_kill` the same way, so only the
 /// functions named in the module doc ever have to know which is which.
@@ -141,11 +143,13 @@ pub enum Outcome {
 
 /// Starts `opts.command` under the resolved interpreter, in its own process group, with fd 1 and fd 2 both
 /// appended to `log` — UNCAPPED; [`read_capped`] caps it when it reads it back (shell.go:69-96). The order of the refusals is Go's: no interpreter → sandbox → a done
-/// token → the spawn itself.
+/// token → the spawn itself. The child inherits the process environment minus what `child_env` withholds;
+/// under the sandbox the wrapper is what inherits it, and it hands its own environment on.
 pub fn spawn(
     cancel: &CancellationToken,
     opts: &Options,
     log: std::fs::File,
+    child_env: &ChildEnv,
 ) -> Result<Started, SpawnFail> {
     let fail = |e: ShellError| SpawnFail::Failed(e);
     // The interpreter is resolved per call, like Go's exec.LookPath (shell.go:69-72).
@@ -178,6 +182,7 @@ pub fn spawn(
             cmd.env("PWD", abs);
         }
     }
+    child_env.apply(&mut cmd);
     cmd.stdin(Stdio::null());
     cmd.kill_on_drop(false);
 

@@ -98,6 +98,14 @@ pub(crate) struct ToolAssembly {
     /// The run's background-job registry, also held by `tool_env` — the `shell` tool starts jobs through it,
     /// the branch that takes it over delivers their notices and kills what is left on the way out.
     pub(crate) jobs: Arc<crate::shell::jobs::Jobs>,
+    /// The innermost host the environment names (`crate::host::detect`), detected HERE because what it
+    /// withholds from children ([`Self::child_env`]) is needed before either branch builds its `Presenter`:
+    /// the job registry above already applies it, and the MCP servers start connecting before the screen
+    /// exists. The branch hands it to `Presenter::over`; nothing is reported to it before then.
+    pub(crate) host: Option<Box<dyn crate::host::Host>>,
+    /// What every child of the run is spawned without: [`Self::host`]'s `ChildEnvironment`, for the MCP
+    /// stdio servers (the job registry holds its own copy).
+    pub(crate) child_env: crate::host::ChildEnv,
     /// Agent-mode options.
     pub(crate) agent: AgentOptions,
     /// The built-in harness prompt's inputs (`agents::harness`), read once here for both branches and
@@ -433,8 +441,11 @@ fn assemble_tools(
     };
 
     // root.go:221-232, plus the run's job registry: the `shell` tool needs it to exist before the dispatcher
-    // is built, and both branches need the same one afterwards.
-    let jobs = crate::shell::jobs::Jobs::new(&dirs.temp);
+    // is built, and both branches need the same one afterwards. Its children are spawned without what the
+    // detected host withholds — the hosts' knowledge, not this module's (`crate::host::ChildEnvironment`).
+    let host = crate::host::detect(&host_probe(&ctx.env));
+    let child_env = crate::host::child_env(host.as_deref());
+    let jobs = crate::shell::jobs::Jobs::withholding(&dirs.temp, child_env.clone());
     let mut tool_env = ToolEnv {
         project_root: project_root.clone(),
         dirs: dirs.clone(),
@@ -477,6 +488,8 @@ fn assemble_tools(
         tool_env,
         interactor,
         jobs,
+        host,
+        child_env,
         agent,
         harness,
     })
@@ -519,6 +532,8 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         tool_env,
         interactor: _,
         jobs,
+        host,
+        child_env,
         agent,
         harness,
     } = tools;
@@ -616,9 +631,10 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
     // The host presenter of a `-m` run: the detected hosts alone — no ANSI fallback (there is no facade to
     // write OSC through; stdout is the reply) and no pings (`notify` is a chat's knob). A multiplexer still
     // learns that its pane is working from here to the reply, which session a resume writes into, and adds
-    // what it knows to `<environment>`. Built after the resume stage so every early return above leaves no
-    // host to clean up; from here on the run ends at `pres.close()` below, whatever `once` says.
-    let pres = Presenter::new(&host_probe(&env), None, false);
+    // what it knows to `<environment>`. Built after the resume stage — over the host the assembly detected,
+    // which nothing has spoken to yet — so every early return above leaves no host to clean up; from here on
+    // the run ends at `pres.close()` below, whatever `once` says.
+    let pres = Presenter::over(host, None, false);
     if let Some((writer, _, _)) = &session {
         pres.set_session(writer.id(), writer.dir());
     }
@@ -627,7 +643,10 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
     // root.go:261-268: connect MCP synchronously (the single request needs the full tool set before it is sent).
     let (manager, mcp_part) = connect_mcp(
         mcp_configs,
-        crate::mcp::ManagerOptions::new(http, env.clone()),
+        crate::mcp::ManagerOptions {
+            child_env,
+            ..crate::mcp::ManagerOptions::new(http, env.clone())
+        },
         &cancel,
         io,
     )

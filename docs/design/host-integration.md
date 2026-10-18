@@ -73,6 +73,17 @@ outlive the process) and flushes bounded.
   progress report) is defused at the MECHANISM: the ui model prepends a
   space, so arbitrary content digests stay safe by construction.
 
+- **What a host knows about its environment stays in the host** (Rust,
+  2026-10-18, DIVERGENCES X-80). A host whose variables would let a CHILD of
+  the chat speak to it as the chat implements `ChildEnvironment`: it names
+  the variables, and the core only applies the gathered `ChildEnv` where it
+  spawns — the shell tool's commands and the MCP stdio servers, both. herdr
+  withholds `HERDR_ENV` (its agent hooks report only when it is `1`, and a
+  nested `claude -p` otherwise claims iota's pane for good) and tells the
+  model so in `<environment>`; cmux and the ANSI terminal withhold nothing.
+  The host is detected once, at assembly, because both children need the
+  names before the presenter exists.
+
 ## Future hosts the design anticipates
 
 - **tmux**: OSC must be wrapped in DCS passthrough to cross tmux — a tmux

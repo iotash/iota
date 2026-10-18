@@ -432,6 +432,55 @@ async fn a_yielded_job_keeps_the_host_busy_until_its_notice_turn_ends() {
     assert_eq!(f.pings(), vec![(Kind::Done, "noted".to_owned())]);
 }
 
+/// A job's notice that wakes a chat with no model, whose pick is then cancelled, runs no turn — and the
+/// host still settles: the notice it was owed is taken, so the chat is `Idle` again, not left `Busy`
+/// until some later turn happens to report.
+#[tokio::test]
+async fn a_notice_whose_model_pick_is_cancelled_leaves_the_host_idle() {
+    if crate::jobs::skip_unless_posix("a_notice_whose_model_pick_is_cancelled_leaves_the_host_idle")
+    {
+        return;
+    }
+    let cancelled = || {
+        Reply::Tabbed(TabbedResult {
+            cancelled: true,
+            focused: 0,
+            panels: Vec::new(),
+        })
+    };
+    let f = Fixture::new(vec![
+        cancelled(),     // the startup pick: deferred
+        Reply::Enqueued, // the job's notice
+        cancelled(),     // the notice's pick: cancelled too
+        Reply::Interrupted,
+    ]);
+    let temp = tempfile::tempdir().expect("tempdir");
+    let jobs = iota::shell::jobs::Jobs::new(temp.path());
+    let yielded = jobs
+        .run(
+            &CancellationToken::new(),
+            &iota::shell::exec::Options {
+                command: "sleep 0.5".to_owned(),
+                dir: std::path::PathBuf::new(),
+                timeout: None,
+                sandbox: None,
+            },
+            std::time::Duration::from_millis(50),
+        )
+        .await;
+    assert!(
+        matches!(yielded, iota::shell::jobs::CallEnd::Yielded { .. }),
+        "the call did not yield"
+    );
+    let provider = Box::new(FakeProvider::new().with_model("").with_models(&["a"]));
+    let mut params = f.params(provider, no_tools(), true);
+    params.jobs = jobs;
+    iota::repl::run(params).await.expect("clean exit");
+
+    assert_eq!(f.states(), vec![State::Idle, State::Busy, State::Idle]);
+    assert!(f.pings().is_empty(), "{:?}", f.pings());
+}
+
 // ---------------------------------------------------------------------------
 // the herdr host, over the mock socket (tests/common/herdr_mock.rs)
 // ---------------------------------------------------------------------------
