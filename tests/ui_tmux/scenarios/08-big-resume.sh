@@ -14,8 +14,8 @@ SESSION_ID=aaaabbbbcccc
 write_session "$SESSION_ID" 32 14
 
 start 80 24 resume "$SESSION_ID" || finish
-wait_all 'r31 body line 13' || bad "the resume echo never completed"
-settle || bad "frame never settled after the resume echo"
+wait_all 'r31 body line 13' || miss "the resume echo never completed"
+settle || miss "frame never settled after the resume echo"
 
 check_once "the resume notice names the bundle" "Resumed session $SESSION_ID (64 messages)"
 check_once "banner still printed after the resume notice" 'ι> iota'
@@ -43,12 +43,11 @@ check "status line survived the chunked insert" "$(status_model)" "  fake"
 # submit that never happened from a reply that never came, and printed nothing either way (CI
 # 38759202470, the ubuntu leg: both checks below failed with no frame to read). A miss now shows
 # the pane as it stood.
-miss_pane() { echo "---- pane at the miss: $1 ----"; cap; echo "---- end of pane ----"; }
 type_ 'hello'
 key Enter
-wait_sent 'hello' || { bad "the Enter that sends 'hello' was never read"; miss_pane "submit"; }
-wait_all 'echo: hello' || { bad "the resumed chat did not accept a new turn"; miss_pane "reply"; }
-settle || bad "frame never settled after the new turn"
+wait_sent 'hello' || miss "the Enter that sends 'hello' was never read"
+wait_all 'echo: hello' || miss "the resumed chat did not accept a new turn"
+settle || miss "frame never settled after the new turn"
 check_frame_intact "after a turn on the resumed session" 80
 if grep -q '"content":"hello"' "$SCEN_HOME/.iota/sessions/$SESSION_ID/messages.jsonl"; then
     ok "the new turn appended to the resumed bundle"

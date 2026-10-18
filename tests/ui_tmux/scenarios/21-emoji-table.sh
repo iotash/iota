@@ -37,12 +37,12 @@ table_rows() {
 VS16="$(printf '\357\270\217')"
 
 start 80 24 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 type_ 'emoji'
 key Enter
-wait_all 'EMOJIEND' || bad "the table never arrived"
-settle || bad "frame never settled after the turn"
+wait_all 'EMOJIEND' || miss "the table never arrived"
+settle || miss "frame never settled after the turn"
 
 # --- can this emulator judge the table at all? Its ruler must give the app's answer — two
 # columns — for each glyph class the table carries. brew's tmux on the macOS runner does not

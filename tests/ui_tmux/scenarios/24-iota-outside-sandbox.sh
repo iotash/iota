@@ -56,18 +56,18 @@ MARK='(outside the sandbox)'
 EMPTY='ran: No MCP servers configured'
 
 start_provider openai 100 24 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 # ------------------------------------------------------------------ 24.1: the prompt, and the mark
 type_ 'runfg:iota mcp list'
 key Enter
-wait_vis 'allow?' || bad "the approval prompt never opened for the call that leaves the sandbox"
+wait_vis 'allow?' || miss "the approval prompt never opened for the call that leaves the sandbox"
 check "the prompt's title carries the mark" "$(count_vis "shell iota mcp list $MARK wants to modify files")" 1
 
 # ------------------------------------------------------------------ 24.2: allowed once, it runs
 key Enter
-wait_all "$EMPTY" || bad "the allowed call never ran (or its output never closed the round)"
-settle || bad "frame never settled after the allowed call"
+wait_all "$EMPTY" || miss "the allowed call never ran (or its output never closed the round)"
+settle || miss "frame never settled after the allowed call"
 check_once "the call ran once" "$EMPTY"
 check "the settled call header carries the mark" "$(count_all "[shell iota mcp list $MARK]")" 1
 check "the prompt is gone" "$(count_vis 'allow?')" 0
@@ -77,8 +77,8 @@ check_frame_intact "after the allowed call" 100
 type_ 'runfg:echo hi | iota mcp list'
 key Enter
 # Nobody answers a prompt here: the round completing at all is the proof that none opened.
-wait_all_more "$EMPTY" 1 || bad "the piped call never ran — was it asked about?"
-settle || bad "frame never settled after the piped call"
+wait_all_more "$EMPTY" 1 || miss "the piped call never ran — was it asked about?"
+settle || miss "frame never settled after the piped call"
 check "the piped call's header is unmarked" "$(count_all '[shell echo hi | iota mcp list]')" 1
 check "…and carries no mark anywhere" "$(count_all "echo hi | iota mcp list $MARK")" 0
 check_frame_intact "after the piped call" 100

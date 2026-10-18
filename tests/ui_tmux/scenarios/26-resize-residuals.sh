@@ -49,13 +49,13 @@ seps_all() { capall | grep -c '^┄'; }
 fresh() {
     start "$1" "$2" || finish
     tm set-option -w -t s scroll-on-clear off
-    settle || bad "startup never settled"
+    settle || miss "startup never settled"
 }
 # after_resize <label> <width> <duplicated rows> <separator rows> [<which rows>] — the invariants
 # every block ends with; the last two are the block's measured budget (B3's residual), and
 # <which rows> names what the duplicated ones are.
 after_resize() {
-    settle || bad "$1: frame never settled"
+    settle || miss "$1: frame never settled"
     check_frame_intact "$1" "$2"
     if alive; then ok "$1: the app survived"; else bad "$1: the app died"; fi
     check_budget "$1: rows that appear twice in the history (B3${5:+: $5})" "$(dup_lines)" "$3"
@@ -83,14 +83,14 @@ for to in 70x24 60x18; do
     fresh 80 24
     type_ 'stream 60 20'
     key Enter
-    wait_all 'l#59 line' || bad "the fast stream never finished"
-    settle || bad "the fast stream never settled"
+    wait_all 'l#59 line' || miss "the fast stream never finished"
+    settle || miss "the fast stream never settled"
     check "fast output, before any resize: no row appears twice" "$(dup_lines)" 0
     tm resize-window -t s -x "${to%x*}" -y "${to#*x}"
     if [ "$to" = 70x24 ]; then
         after_resize "fast output, then 80x24→$to" "${to%x*}" 2 2 "the stream's last two staged rows"
     else
-        settle || bad "fast output → $to: frame never settled"
+        settle || miss "fast output → $to: frame never settled"
         check_frame_intact "fast output, then 80x24→$to" "${to%x*}"
         check_budget "fast output → $to (a diagonal narrowing, B3: the stream's last two staged rows)" \
             "$(dup_lines)" 2
@@ -105,16 +105,16 @@ done
 fresh 80 24
 type_ 'stream 30'
 key Enter
-wait_all 'l#29 line' || bad "the stream never finished"
-settle || bad "the stream never settled"
+wait_all 'l#29 line' || miss "the stream never finished"
+settle || miss "the stream never settled"
 type_ '/model'
 key Enter
-wait_vis '↑↓ move' || bad "the /model panel never opened"
-settle || bad "the panel never settled"
+wait_vis '↑↓ move' || miss "the /model panel never opened"
+settle || miss "the panel never settled"
 tm resize-window -t s -x 68 -y 24
-settle || bad "the panel never settled after the narrowing"
+settle || miss "the panel never settled after the narrowing"
 key Escape
-wait_gone '↑↓ move' || bad "the /model panel never closed"
+wait_gone '↑↓ move' || miss "the /model panel never closed"
 after_resize "/model open, 80→68" 68 1 4
 check_budget "/model open, 80→68: empty composer rows in the history (B3)" "$(capall | grep -c '^❯ *$')" 2
 
@@ -124,9 +124,14 @@ type_ 'runfg:sleep 1.5; seq -f "t#%02g out" 0 30'
 key Enter
 # The narrowing must land while the tool call runs: after the Enter (see `wait_sent`), inside
 # its 1.5 s sleep.
-wait_sent 'runfg:sleep 1.5' || bad "the tool call never started"
+wait_sent 'runfg:sleep 1.5' || miss "the Enter that sends the call was never read"
+# …and the call is RUNNING — its live widget is up — before the resize: the submit alone left the
+# narrowing to land while the request was still out, before the call (2026-10-16).
+wait_vis '[shell sleep 1.5; seq' || miss "the tool call never started"
 tm resize-window -t s -x 70 -y 24
-wait_all 'ran: ' || bad "the tool round never closed"
+# The narrowing landed inside the call: its round has not closed yet.
+check "a tool call running: the narrowing landed while the call ran (no ran: yet)" "$(count_all 'ran: ')" 0
+wait_all 'ran: ' || miss "the tool round never closed"
 # Measured 2026-09-28 with the wait above, 30 runs (three suites at once, six CPU burners, tmux
 # 3.7c and 3.4): 1 in 29, 0 once. Before it, 5 of 94 runs narrowed before the Enter landed and
 # measured E's banner rows (2) — a startup narrowing, not this block's case.
@@ -137,7 +142,7 @@ check_budget "a tool call running, 80→70: the user's own row (B3: its piece ab
 fresh 60 16
 tm set-option -w -t s scroll-on-clear on
 type_ '帮我看看这个 resize 的问题'
-settle || bad "the CJK draft never settled"
+settle || miss "the CJK draft never settled"
 tm resize-window -t s -x 44 -y 16
 # B3 at startup: the banner is still staged in the frame, and what the narrowing grew above the
 # cursor leaves the frame's first rows behind — the banner's last two rows when its box is
@@ -151,17 +156,17 @@ check "scroll-on-clear on: the draft is in the box once" "$(count_all '帮我看
 fresh 100 24
 type_ 'stream 30'
 key Enter
-wait_all 'l#29 line' || bad "the stream never finished"
-settle || bad "the stream never settled"
+wait_all 'l#29 line' || miss "the stream never finished"
+settle || miss "the stream never settled"
 type_ '/model'
 key Enter
-wait_vis '↑↓ move' || bad "the /model panel never opened"
-settle || bad "the panel never settled"
+wait_vis '↑↓ move' || miss "the /model panel never opened"
+settle || miss "the panel never settled"
 tm resize-window -t s -x 84 -y 24
-settle || bad "the panel never settled after the narrowing"
+settle || miss "the panel never settled after the narrowing"
 key Escape
-wait_gone '↑↓ move' || bad "the /model panel never closed"
-settle || bad "frame never settled"
+wait_gone '↑↓ move' || miss "the /model panel never closed"
+settle || miss "frame never settled"
 check_budget "surface cursor on the last row, first narrowing: rows that appear twice (B3)" "$(dup_lines)" 1
 check_budget "surface cursor on the last row, first narrowing: separator rows (B3)" \
     "$(seps_all)" 4
@@ -176,14 +181,14 @@ check_budget "surface cursor on the last row, first narrowing: separator rows (B
 fresh 100 24
 type_ 'stream 30'
 key Enter
-wait_all 'l#29 line' || bad "the stream never finished"
-settle || bad "the stream never settled"
+wait_all 'l#29 line' || miss "the stream never finished"
+settle || miss "the stream never settled"
 for w in 99 98 97 96 95; do tm resize-window -t s -x "$w" -y 24; sleep 0.03; done
 before="$(count_all 'l#19 line')"
 type_ 'stream 20'
 key Enter
-wait_all_more 'l#19 line' "$before" || bad "the second stream never finished"
-settle || bad "the second stream never settled"
+wait_all_more 'l#19 line' "$before" || miss "the second stream never finished"
+settle || miss "the second stream never settled"
 check_frame_intact "a stream right at the drag's end" 95
 # One blank row between turns at rest. When the drag's last resize pass lands AFTER the turn's first
 # key (a slow runner: the pass waits RESIZE_QUIET for the burst to end), its band keeps a blank row
@@ -239,20 +244,20 @@ step_landed() {
 fresh 100 40
 type_ 'stream 30'
 key Enter
-wait_all 'l#29 line' || bad "the stream never finished"
-settle || bad "the stream never settled"
+wait_all 'l#29 line' || miss "the stream never finished"
+settle || miss "the stream never settled"
 type_ '/model'
 key Enter
-wait_vis '↑↓ move' || bad "the /model panel never opened"
-settle || bad "the panel never settled"
+wait_vis '↑↓ move' || miss "the /model panel never opened"
+settle || miss "the panel never settled"
 for w in 99 98 97 96 95 94 93 92 91 90; do
     tm resize-window -t s -x "$w" -y 40
-    step_landed $((w - 2)) || bad "a drag with /model open: the step to $w was never drawn (frame $((w - 2)))"
+    step_landed $((w - 2)) || miss "a drag with /model open: the step to $w was never drawn (frame $((w - 2)))"
 done
-settle || bad "the panel never settled after the drag"
+settle || miss "the panel never settled after the drag"
 key Escape
-wait_gone '↑↓ move' || bad "the /model panel never closed"
-settle || bad "frame never settled"
+wait_gone '↑↓ move' || miss "the /model panel never closed"
+settle || miss "frame never settled"
 # Counted at rest: the drag over and the frame back at the full width.
 check_frame_intact "a drag with /model open, 100→90" 90
 check_budget "a drag with /model open: rows that appear twice (B3)" "$(dup_lines)" 1

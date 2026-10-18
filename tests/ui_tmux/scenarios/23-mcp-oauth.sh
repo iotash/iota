@@ -74,30 +74,30 @@ check_cli() {
 open_list() {
     type_ '/tools'
     key Enter
-    wait_vis "$LIST_PROMPT" || { bad "the /tools list never opened"; cap; return 1; }
-    settle || bad "the list never settled"
+    wait_vis "$LIST_PROMPT" || { miss "the /tools list never opened"; return 1; }
+    settle || miss "the list never settled"
 }
 open_page() {
     key Down
     key Enter
-    wait_vis "$PAGE_PROMPT" || { bad "Enter did not open nb's page"; cap; return 1; }
-    settle || bad "the page never settled"
+    wait_vis "$PAGE_PROMPT" || { miss "Enter did not open nb's page"; return 1; }
+    settle || miss "the page never settled"
 }
 close_viewer() {
     key Escape
-    wait_vis "$LIST_PROMPT" || bad "ESC did not go back to the list"
+    wait_vis "$LIST_PROMPT" || miss "ESC did not go back to the list"
     key Escape
-    wait_gone "$LIST_PROMPT" || bad "ESC did not close the list"
-    settle || bad "frame never settled after the viewer"
+    wait_gone "$LIST_PROMPT" || miss "ESC did not close the list"
+    settle || miss "frame never settled after the viewer"
 }
 
 start_provider openai 100 30 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 # ------------------------------------------------------------------ 23.1: the startup notice
 # Nothing declared the login: the 401 the bare handshake got is what makes this "not logged in"
 # rather than "failed: connect failed: …" — and the line names the CLI, not a slash command.
-wait_all "$NOTICE" || bad "the not-logged-in notice never appeared"
+wait_all "$NOTICE" || miss "the not-logged-in notice never appeared"
 check_once "the notice is one line, naming the CLI" "$NOTICE"
 check "…and not the generic failure shape" "$(count_all 'MCP nb failed')" 0
 check_frame_intact "after the notice" 100
@@ -134,7 +134,7 @@ if [ -f "$TOKEN_FILE" ]; then ok "the token file exists ($TOKEN_FILE)"; else bad
 mode_bits="$(ls -ld -- "$TOKEN_FILE" | cut -c2-10)"
 check "the token file is mode 600 (owner read/write, nothing else)" "$mode_bits" "rw-------"
 # The pane was not part of it: nothing new in the history, the frame as it was.
-settle || bad "frame never settled while the CLI logged in"
+settle || miss "frame never settled while the CLI logged in"
 check "the chat saw nothing of the login" "$(count_all 'Logged in to nb')" 0
 check_frame_intact "after the login" 100
 
@@ -144,17 +144,17 @@ check_frame_intact "after the login" 100
 open_list
 open_page
 key Enter
-wait_vis 'Reconnected · 1 tool' || bad "the page never said the reconnect worked"
+wait_vis 'Reconnected · 1 tool' || miss "the page never said the reconnect worked"
 check "the page reads connected" "$(count_vis 'status        connected')" 1
 check "…with its tool" "$(count_vis '  echo')" 1
 close_viewer
 check "the transcript says it was reconnected" "$(count_all 'MCP nb reconnected · 1 tool')" 1
 # The next chat connects through the OAuth transport from the start — no notice, connected at once.
 start_provider openai 100 30 || finish
-settle || bad "the second startup never settled"
+settle || miss "the second startup never settled"
 open_list
 open_page
-wait_vis 'status        connected' || bad "the page never showed the server connected"
+wait_vis 'status        connected' || miss "the page never showed the server connected"
 check "the server is connected" "$(count_vis 'status        connected')" 1
 check "…with its tool" "$(count_vis '  echo')" 1
 close_viewer

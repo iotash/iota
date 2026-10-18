@@ -9,7 +9,7 @@
 . "${TMUX_LIB:?}"
 
 start 80 24 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 # The banner is up: its mark, once (the exit gesture it used to name is the composer's own —
 # Ctrl+C at idle exits, which is what the rest of this scenario proves).
@@ -17,11 +17,11 @@ check_once "the banner is up" 'ι> iota'
 
 type_ 'stream 60'
 key Enter
-wait_vis 'l#05 line' || bad "the stream never started"
+wait_vis 'l#05 line' || miss "the stream never started"
 
 key C-c
-wait_all 'Interrupted.' || bad "Ctrl+C was lost during the stream"
-settle || bad "frame never settled after the cancel"
+wait_all 'Interrupted.' || miss "Ctrl+C was lost during the stream"
+settle || miss "frame never settled after the cancel"
 
 check_once "the first Ctrl+C cancels the turn" 'Interrupted.'
 if alive; then
@@ -31,6 +31,8 @@ else
     finish
 fi
 a="$(hist_size)"
+# A NEGATIVE claim's window, not a wait (lib.sh rule 3): a stream that Ctrl+C failed to stop would
+# insert a row every 60 ms (LINE_GAP), about sixteen inside it.
 sleep 1.0
 b="$(hist_size)"
 check "the cancelled stream really stopped" "$a" "$b"

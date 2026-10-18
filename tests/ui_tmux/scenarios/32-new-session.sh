@@ -9,22 +9,25 @@
 . "${TMUX_LIB:?}"
 
 start 100 30 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 old="$(cap | grep -o 'session [0-9a-z]\{12\}' | head -1 | cut -d' ' -f2)"
 check_measured "old session id from the banner is 12 characters" "${#old}" 12
 echo "old session: $old"
 
 type_ 'first question'
 key Enter
-wait_sent 'first question' || bad "first message never sent"
-settle || bad "the first turn never settled"
+# The submit, then the reply — each its own event: a `settle` behind the submit stood in for "the
+# turn is over" and could not say which of the two had not happened.
+wait_sent 'first question' || miss "first message never sent"
+wait_all 'echo: first question' || miss "the first turn's reply never landed"
+settle || miss "the first turn never settled"
 echo "---- status row after the first turn ----"
 cap | grep -F '↑' | tail -1
 
 type_ '/new'
 key Enter
-wait_vis 'New session ' || bad "no divider"
-settle || bad "never settled after /new"
+wait_vis 'New session ' || miss "no divider"
+settle || miss "never settled after /new"
 divider="$(cap | grep -F 'New session ' | tail -1 | sed 's/^ *//')"
 new="$(printf '%s' "$divider" | awk '{print $3}')"
 check_measured "new session id from the divider is 12 characters" "${#new}" 12
@@ -40,10 +43,13 @@ cap | grep -v '^$'
 
 type_ 'second question'
 key Enter
-wait_sent 'second question' || bad "second message never sent"
-settle || bad "the second turn never settled"
+wait_sent 'second question' || miss "second message never sent"
+wait_all 'echo: second question' || miss "the second turn's reply never landed"
+settle || miss "the second turn never settled"
 key C-d
-_poll_until 100 pane_dead || _poll_until 100 server_gone || true
+# The bundles below are read once the run is over — and a run that never ends says so.
+_exited() { server_gone || pane_dead; }
+_poll_until 100 _exited || miss "Ctrl+D at idle did not end the run"
 
 old_dir="$(find "$SCEN_HOME/.iota/sessions" -maxdepth 3 -type d -name "$old" | head -1)"
 new_dir="$(find "$SCEN_HOME/.iota/sessions" -maxdepth 3 -type d -name "$new" | head -1)"
@@ -56,7 +62,7 @@ grep -qF 'second question' "$new_dir/messages.jsonl" && ! grep -qF 'first questi
     && ok "new log: second question only" || bad "new log content"
 
 start 100 30 resume "$old" || finish
-settle || bad "resume never settled"
+settle || miss "resume never settled"
 echo "---- iota resume $old ----"
 capall | grep -v '^$' | head -20
 check_once "resumed the old session" "Resumed session $old"

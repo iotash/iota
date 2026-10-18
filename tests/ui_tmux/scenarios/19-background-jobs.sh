@@ -36,7 +36,7 @@ export CONFIG_BODY
 start_job() {
     type_ "run:$2"
     key Enter
-    wait_all "ran: Started background job b$1" || bad "job b$1 never started"
+    wait_all "ran: Started background job b$1" || miss "job b$1 never started"
 }
 
 # row_all <fixed string> — 1-based row of the LAST match in the whole history ("" if none).
@@ -50,17 +50,17 @@ job_running() { pgrep -f 'echo l4marker' >/dev/null 2>&1; }
 job_gone() { ! job_running; }
 
 start_provider openai 80 24 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 # ------------------------------------------------------------------ 8.1: idle wake-up
 start_job 1 'sleep 2; echo done'
-settle || bad "frame never settled after the call"
+settle || miss "frame never settled after the call"
 check_once "the call is echoed once" '❯ run:sleep 2; echo done'
 check "the call's receipt is the model's whole reply" "$(count_all 'ran: Started background job b1 (pid')" 1
 
-wait_all '[background job b1 finished' || bad "the job's notice never arrived"
-wait_all 'echo: [background job b1 finished' || bad "the notice never became a turn"
-settle || bad "frame never settled after the wake-up turn"
+wait_all '[background job b1 finished' || miss "the job's notice never arrived"
+wait_all 'echo: [background job b1 finished' || miss "the notice never became a turn"
+settle || miss "frame never settled after the wake-up turn"
 check "the notice is ONE dim headline" "$(headline_count 1)" 1
 check "…not a ❯ block" "$(count_all '❯ [background')" 0
 check "…answered by a normal turn" "$(capall | grep -cE '^echo: \[background job b1 finished: exit 0 after [0-9.]+s\] sleep 2; echo done$' | tr -d ' ')" 1
@@ -70,32 +70,41 @@ check "the job's output reached the model, not the scrollback" "$(capall | grep 
 check_frame_intact "after the idle wake-up" 80
 
 # ------------------------------------------------------------------ 8.2: the draft survives
-start_job 2 'sleep 2; echo done'
+# Jobs 2-4 end when the TEST says, not after a `sleep N` racing the turn they must meet: each
+# waits for a file of its own (the shell runs in the pane's cwd, $SCEN_TMP) that the test — or,
+# in 8.3, the foreground call — creates once the state the notice must land in is reached. A
+# two-second job here could finish before the draft was typed (the claim then vacuous), and in
+# 8.3 and 8.4 before the turn it must land inside had even started (the notice then an idle
+# wake-up of its own: the round-boundary and the queue assertions red).
+start_job 2 'until [ -e b2.go ]; do sleep 0.1; done; echo done'
 type_ 'half draft'
-wait_vis '❯ half draft' || bad "the draft never rendered"
+wait_vis '❯ half draft' || miss "the draft never rendered"
 comp="$(composer_row)"
 check "the cursor sits at the draft's end" "$(cursor_xy)" "12 $((comp - 1))"
 
-wait_all 'echo: [background job b2 finished' || bad "the second notice never became a turn"
-settle || bad "frame never settled after the second wake-up"
+: >"$SCEN_TMP/b2.go"
+wait_all '[background job b2 finished' || miss "the second job's notice never arrived"
+wait_all 'echo: [background job b2 finished' || miss "the second notice never became a turn"
+settle || miss "frame never settled after the second wake-up"
 check "the notice landed" "$(headline_count 2)" 1
 check "the draft is still in the composer" "$(count_composer '❯ half draft')" 1
 comp="$(composer_row)"
 check "…with the cursor where it was" "$(cursor_xy)" "12 $((comp - 1))"
 check_frame_intact "with the draft kept" 80
 key C-u
-wait_gone '❯ half draft' || bad "Ctrl+U did not clear the draft"
+wait_gone '❯ half draft' || miss "Ctrl+U did not clear the draft"
 
 # ------------------------------------------------------------------ 8.3: mid-turn arrival
-start_job 3 'sleep 2; echo done'
-type_ 'runfg:sleep 3'
+# The call itself releases the job, then runs on for 3 s: the notice arrives while it runs.
+start_job 3 'until [ -e b3.go ]; do sleep 0.1; done; echo done'
+type_ 'runfg:touch b3.go; sleep 3'
 key Enter
-wait_all 'echo: [background job b3 finished' || bad "the notice never reached the model mid-turn"
-settle || bad "frame never settled after the tool turn"
+wait_all 'echo: [background job b3 finished' || miss "the notice never reached the model mid-turn"
+settle || miss "frame never settled after the tool turn"
 check "the notice landed once" "$(headline_count 3)" 1
-check_once "the tool turn was echoed once" '❯ runfg:sleep 3'
-user_row="$(row_all '❯ runfg:sleep 3')"
-call_row="$(row_all '[shell sleep 3]')"
+check_once "the tool turn was echoed once" '❯ runfg:touch b3.go; sleep 3'
+user_row="$(row_all '❯ runfg:touch b3.go; sleep 3')"
+call_row="$(row_all '[shell touch b3.go; sleep 3]')"
 notice_row="$(capall | grep -n '^\[background job b3 finished: exit 0' | tail -1 | cut -d: -f1)"
 reply_row="$(row_all 'echo: [background job b3 finished')"
 if [ -n "$user_row" ] && [ -n "$call_row" ] && [ -n "$notice_row" ] && [ -n "$reply_row" ] \
@@ -109,20 +118,25 @@ check "no ❯ block for the mid-turn notice" "$(count_all '❯ [background')" 0
 check_frame_intact "after the mid-turn arrival" 80
 
 # ------------------------------------------------------------------ 8.4: queued while typing ahead
-start_job 4 'sleep 1; echo done'
-type_ 'stream 60'
+# The stream holds after its third line until the queue has been read and ↑ has recalled from it
+# (`hold@3`, released below): every step of this block happens mid-stream however slow the runner
+# — 60 lines at 60 ms were the mock's 3.6 s against a dozen captures and keys.
+start_job 4 'until [ -e b4.go ]; do sleep 0.1; done; echo done'
+HOLD="s19-$$"
+type_ "stream 60 60 hold@3:$HOLD"
 key Enter
-wait_vis 'l#02 line' || bad "the stream never started"
+wait_vis 'l#02 line' || miss "the stream never started"
 type_ 'ahead one'
 key Enter
 type_ 'ahead two'
 key Enter
-wait_vis '» ahead two' || bad "the typed-ahead rows never rendered"
-wait_vis '» [background job b4 finished' || bad "the job's headline never queued as a » row"
+wait_vis '» ahead two' || miss "the typed-ahead rows never rendered"
+: >"$SCEN_TMP/b4.go"
+wait_vis '» [background job b4 finished' || miss "the job's headline never queued as a » row"
 check "the typed-ahead lines queue as » rows" "$(count_vis '» ahead one')" 1
 check "…both of them" "$(count_vis '» ahead two')" 1
 key Up
-wait_vis '❯ ahead two' || bad "↑ did not recall the newest typed line"
+wait_vis '❯ ahead two' || miss "↑ did not recall the newest typed line"
 # The stream is still running here, so the frame is being repainted under the read: polled, not
 # sampled once. CI 37025565018 and 37031410245 (macos-14) read 0 once each — '❯ ahead two'
 # already visible, the pane dumped right after showed it between the separators — from a
@@ -134,8 +148,9 @@ check "…taking it off the queue" "$(count_vis '» ahead two')" 0
 check "…stepping over the job's headline" "$(count_vis '» [background job b4 finished')" 1
 check "…and leaving the older line queued" "$(count_vis '» ahead one')" 1
 key Enter
-wait_all 'echo: ahead two' || bad "the recalled line never reached the model"
-settle || bad "frame never settled after the queue drained"
+release "$HOLD"
+wait_all 'echo: ahead two' || miss "the recalled line never reached the model"
+settle || miss "frame never settled after the queue drained"
 check_once "the older line ran once" '❯ ahead one'
 check_once "the recalled line ran once" '❯ ahead two'
 check "the queued headline became its own turn" "$(headline_count 4)" 1
@@ -147,17 +162,17 @@ start_job 5 'sleep 30; echo l4marker'
 if job_running; then ok "the job is running (pgrep sees its command line)"; else bad "the job is not running"; fi
 type_ 'stream 60'
 key Enter
-wait_vis 'l#05 line' || bad "the stream never started"
+wait_vis 'l#05 line' || miss "the stream never started"
 key Escape
-wait_all 'Interrupted.' || bad "ESC never reached the loop"
-settle || bad "frame never settled after the interrupt"
+wait_all 'Interrupted.' || miss "ESC never reached the loop"
+settle || miss "frame never settled after the interrupt"
 check_once "the interrupt notice is committed once" 'Interrupted.'
 if job_running; then ok "ESC left the job running"; else bad "ESC killed the job"; fi
 check "no notice for a job still running" "$(headline_count 5)" 0
 
 key C-c
 key C-c
-_poll_until 60 server_gone || bad "the exit gesture did not exit"
+_poll_until 60 server_gone || miss "the exit gesture did not exit"
 if _poll_until 50 job_gone; then
     ok "the exit killed the job (its command line is gone from ps)"
 else

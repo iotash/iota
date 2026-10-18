@@ -37,12 +37,12 @@ _live() { cap | grep -qE -- "^$SPIN $(printf '%s' "$1" | sed 's/[][\.*^$]/\\&/g'
 wait_live() { _poll_until 30 _live "$1"; }
 
 start_provider openai 100 24 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 # ------------------------------------------------------------------ A: anonymous composer, trailing text
 type_ 'runanon:sleep 4; echo anon-done'
 key Enter
-wait_all 'TRAILTEXT after the call' || bad "A: the trailing text never landed"
+wait_all 'TRAILTEXT after the call' || miss "A: the trailing text never landed"
 if wait_live '[shell sleep 4; echo anon-done]'; then
     ok "A: the call's live widget is up while it runs"
     shot "A: anonymous composer + trailing text, mid-execution"
@@ -52,15 +52,15 @@ else
     bad "A: no live widget for the call while it ran"
     shot "A: anonymous composer + trailing text, mid-execution (no widget)"
 fi
-wait_all 'ran: anon-done' || bad "A: the follow-up round never answered"
-settle || bad "A: frame never settled"
+wait_all 'ran: anon-done' || miss "A: the follow-up round never answered"
+settle || miss "A: frame never settled"
 check_once "A: the call's header committed once" '[shell sleep 4; echo anon-done]'
 check_frame_intact "after A" 100
 
 # ------------------------------------------------------------------ B: named composer, trailing text
 type_ 'runtail:sleep 4; echo tail-done'
 key Enter
-wait_all_more 'TRAILTEXT after the call' 1 || bad "B: the trailing text never landed"
+wait_all_more 'TRAILTEXT after the call' 1 || miss "B: the trailing text never landed"
 if wait_live '[shell sleep 4; echo tail-done]'; then
     ok "B: the call runs under its own header"
     shot "B: named composer + trailing text, mid-execution"
@@ -70,8 +70,8 @@ else
     bad "B: the call never ran under its own header"
     shot "B: named composer + trailing text, mid-execution (composing label)"
 fi
-wait_all 'ran: tail-done' || bad "B: the follow-up round never answered"
-settle || bad "B: frame never settled"
+wait_all 'ran: tail-done' || miss "B: the follow-up round never answered"
+settle || miss "B: frame never settled"
 check_once "B: the call's header committed once" '[shell sleep 4; echo tail-done]'
 check_frame_intact "after B" 100
 

@@ -9,22 +9,28 @@
 . "${TMUX_LIB:?}"
 
 start 80 24 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
-type_ 'stream 60'
+# The stream holds after its sixth line while the queue and the draft are typed (`hold@6`), and is
+# released just before ESC — the keys land mid-stream however slow the runner, and ESC still meets a
+# stream that is FLOWING (it waits for the next line), so "frozen after ESC" below is about ESC.
+HOLD="s04-$$"
+type_ "stream 60 60 hold@6:$HOLD"
 key Enter
-wait_vis 'l#05 line' || bad "the stream never started"
+wait_vis 'l#05 line' || miss "the stream never started"
 
 # One queued submit and one half-typed draft, so the fold has both halves to join.
 type_ 'queued'
 key Enter
-wait_vis '» queued' || bad "the queued submit never rendered"
+wait_vis '» queued' || miss "the queued submit never rendered"
 type_ 'half'
-wait_vis '❯ half' || bad "the half-typed draft never rendered"
+wait_vis '❯ half' || miss "the half-typed draft never rendered"
 
+release "$HOLD"
+wait_all 'l#06 line' || miss "the released stream never moved on"
 key Escape
-wait_all 'Interrupted.' || bad "ESC never reached the loop"
-settle || bad "frame never settled after the interrupt"
+wait_all 'Interrupted.' || miss "ESC never reached the loop"
+settle || miss "frame never settled after the interrupt"
 
 check_once "the interrupt notice is committed exactly once" 'Interrupted.'
 check "the queue row is gone (folded, not dropped)" "$(count_vis '» queued')" 0
@@ -40,6 +46,8 @@ check "the real cursor sits at the end of the folded draft's last row" "$(cursor
 # The turn is really cancelled: no further inserts, and the cancel hint is gone with the
 # scope that owned it.
 frozen_a="$(hist_size)"
+# A NEGATIVE claim's window, not a wait (lib.sh rule 3): a stream that ESC failed to stop would
+# insert a row every 60 ms (LINE_GAP), about sixteen inside it.
 sleep 1.0
 frozen_b="$(hist_size)"
 check "insert counter frozen after ESC" "$frozen_a" "$frozen_b"
@@ -53,8 +61,8 @@ check "status line is back in the bottom zone" "$(status_model)" "  fake"
 
 # And the folded draft is a real draft: submitting it sends both lines.
 key Enter
-wait_all 'echo: queued' || bad "the folded draft never reached the model"
-settle || bad "frame never settled after the resubmit"
+wait_all 'echo: queued' || miss "the folded draft never reached the model"
+settle || miss "frame never settled after the resubmit"
 check "the folded draft submitted as ONE two-line message" "$(count_all '❯ queued')" 1
 check "the composer is empty again" "$(count_composer '❯ queued')" 0
 check_frame_intact "after resubmitting the folded draft" 80

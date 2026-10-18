@@ -61,13 +61,13 @@ CUT="$SCEN_TMP/l4-cut-ran"
 WHOLE="$SCEN_TMP/l4-whole-ran"
 
 start_provider anthropic 120 30 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 # ------------------------------------------------------------------ A: the control — the whole call runs
 type_ 'run:touch l4-whole-ran'
 key Enter
-wait_all 'ran: ' || bad "the control call's round never closed"
-settle || bad "frame never settled after the control call"
+wait_all 'ran: ' || miss "the control call's round never closed"
+settle || miss "frame never settled after the control call"
 if [ -e "$WHOLE" ]; then ok "the whole call ran (its file exists — the file check is live)"; else bad "the control call never ran: $WHOLE is missing"; fi
 check_once "…its header committed once" '[shell touch l4-whole-ran]'
 check "…one call answered on the wire (the wire check is live)" "$(answered)" 1
@@ -79,9 +79,9 @@ check_frame_intact "after the control call" 120
 type_ 'toolcut:touch l4-cut-ran'
 key Enter
 # The composing row is up while the arguments stream: what must be torn down afterwards.
-wait_vis '[shell …]' || bad "the composing [shell …] row never came up"
-wait_all '✗ Output truncated' || bad "the cut never painted its block"
-settle || bad "frame never settled after the cut"
+wait_vis '[shell …]' || miss "the composing [shell …] row never came up"
+wait_all '✗ Output truncated' || miss "the cut never painted its block"
+settle || miss "frame never settled after the cut"
 check_once "the cut is ONE ✗ Output truncated block" '✗ Output truncated'
 check_once "…its detail names the dropped call" 'the output hit its 32000-token limit; the tool call it was composing was dropped (shell)'
 check "…the headline row is painted red" "$(red_rows_with '✗ Output truncated')" 1
@@ -107,8 +107,8 @@ check_frame_intact "after the cut" 120
 # ------------------------------------------------------------------ C: the next message, on a clean history
 type_ 'after'
 key Enter
-wait_all 'echo: after' || bad "the message after the cut was never answered"
-settle || bad "frame never settled after the next turn"
+wait_all 'echo: after' || miss "the message after the cut was never answered"
+settle || miss "frame never settled after the next turn"
 check_once "the next message was answered once" 'echo: after'
 next="$(turn_request after)"
 if [ -n "$next" ]; then

@@ -25,10 +25,10 @@ pipe_raw
 type_ "$(iota_cmd openai fake)"
 key Enter
 wait_vis '❯' || {
-    bad "the binary never came up in the shell pane"
+    miss "the binary never came up in the shell pane"
     finish
 }
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 # ------------------------------------------------------------------ A: startup
 check_raw "focus reporting is enabled at startup (CSI ?1004h)" '[?1004h' yes
@@ -37,18 +37,16 @@ check_raw "an idle loop advertises no progress bar (no OSC 9;4;3)" ']9;4;3' no
 # ------------------------------------------------------------------ B: a turn is busy
 type_ 'stream 40'
 key Enter
-wait_raw ']9;4;3' || bad "the busy progress state was never emitted during the turn"
-ok "the turn set the terminal's progress indicator busy (OSC 9;4;3)"
+if wait_raw ']9;4;3'; then ok "the turn set the terminal's progress indicator busy (OSC 9;4;3)"; else miss "the busy progress state was never emitted during the turn"; fi
 
-wait_all 'l#39 line' || bad "the stream did not run to completion"
-settle || bad "frame never settled after the turn"
-wait_raw ']9;4;0' || bad "the progress indicator was never cleared when the turn ended"
-ok "going idle cleared the progress indicator (OSC 9;4;0)"
+wait_all 'l#39 line' || miss "the stream did not run to completion"
+settle || miss "frame never settled after the turn"
+if wait_raw ']9;4;0'; then ok "going idle cleared the progress indicator (OSC 9;4;0)"; else miss "the progress indicator was never cleared when the turn ended"; fi
 
 # ------------------------------------------------------------------ C: exit cleans up
 key C-c
 key C-c
-_poll_until 60 raw_has '[?1004l' || bad "focus reporting was never disabled on exit"
+_poll_until 60 raw_has '[?1004l' || miss "focus reporting was never disabled on exit"
 check_raw "exit disables focus reporting (CSI ?1004l)" '[?1004l' yes
 if alive; then
     ok "the pane survives the binary (the shell is still there)"

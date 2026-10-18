@@ -13,16 +13,15 @@
 . "${TMUX_LIB:?}"
 
 start 80 24 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 type_ 'blocks'
 key Enter
-wait_vis 'BLOCKSSTART' || bad "the document never started"
+wait_vis 'BLOCKSSTART' || miss "the document never started"
 # The buffered blocks show their metered row while they stream (§2.1's "watch it happen").
-wait_vis ' lines' || bad "no metered preview row appeared while the blocks streamed"
-ok "a buffered block streams behind its metered preview row"
-wait_all 'BLOCKSEND' || bad "the document never completed"
-settle || bad "frame never settled after the turn"
+if wait_vis ' lines'; then ok "a buffered block streams behind its metered preview row"; else miss "no metered preview row appeared while the blocks streamed"; fi
+wait_all 'BLOCKSEND' || miss "the document never completed"
+settle || miss "frame never settled after the turn"
 
 # --- the morph left nothing behind (§2.2: no gaps, no duplicated rows)
 check "no metered preview row survives the morph" "$(count_all ' lines')" 0
@@ -51,8 +50,8 @@ check_frame_intact "after the long document" 80
 # Still usable, and the frame walks down onto the next turn.
 type_ 'hello'
 key Enter
-wait_all 'echo: hello' || bad "input stopped working after the long document"
-settle || bad "frame never settled after the follow-up turn"
+wait_all 'echo: hello' || miss "input stopped working after the long document"
+settle || miss "frame never settled after the follow-up turn"
 check_frame_intact "after the follow-up turn" 80
 
 finish

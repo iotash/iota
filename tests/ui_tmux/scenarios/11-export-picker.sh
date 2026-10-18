@@ -12,21 +12,21 @@
 . "${TMUX_LIB:?}"
 
 start_provider openai 80 24 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 # One turn, so the export has two messages to write.
 type_ 'hello'
 key Enter
-wait_all 'echo: hello' || bad "the turn never completed"
-settle || bad "frame never settled after the turn"
+wait_all 'echo: hello' || miss "the turn never completed"
+settle || miss "frame never settled after the turn"
 
 # ------------------------------------------------------------------ A: open and cancel
 before="$(cap)"
 
 type_ '/export'
 key Enter
-wait_vis 'Export format' || bad "the /export picker never opened"
-settle || bad "the picker never settled"
+wait_vis 'Export format' || miss "the /export picker never opened"
+settle || miss "the picker never settled"
 
 comp="$(composer_row)"
 first="$(row_of 'HTML')"
@@ -42,8 +42,8 @@ check "the footer carries the move hint" "$(count_vis '↑↓ move')" 1
 check "the picker did not disturb the separator pair" "$(sep_width)" 80
 
 key Escape
-wait_gone '↑↓ move' || bad "the picker did not close on ESC"
-settle || bad "frame never settled after cancel"
+wait_gone '↑↓ move' || miss "the picker did not close on ESC"
+settle || miss "frame never settled after cancel"
 if [ "$(cap)" = "$before" ]; then
     ok "a cancelled picker restores the pane exactly (no export, no ghost rows)"
 else
@@ -59,11 +59,11 @@ fi
 # ------------------------------------------------------------------ B: commit Markdown
 type_ '/export'
 key Enter
-wait_vis 'Export format' || bad "the /export picker never reopened"
+wait_vis 'Export format' || miss "the /export picker never reopened"
 key Down
 key Enter
-wait_all 'Exported 2 messages → ' || bad "the export record never landed"
-settle || bad "frame never settled after the export"
+wait_all 'Exported 2 messages → ' || miss "the export record never landed"
+settle || miss "frame never settled after the export"
 
 check_once "committing leaves exactly ONE record line" 'Exported 2 messages → '
 check "no ghost picker rows after close" "$(count_vis '↑↓ move')" 0
@@ -91,10 +91,10 @@ fi
 # answer inside it — the export a user opens in a browser is the one this pane wrote.
 type_ '/export'
 key Enter
-wait_vis 'Export format' || bad "the /export picker never opened a third time"
+wait_vis 'Export format' || miss "the /export picker never opened a third time"
 key Enter
-wait_all_more 'Exported 2 messages → ' 1 || bad "the HTML export record never landed"
-settle || bad "frame never settled after the HTML export"
+wait_all_more 'Exported 2 messages → ' 1 || miss "the HTML export record never landed"
+settle || miss "frame never settled after the HTML export"
 check "a second commit leaves a second record line" "$(count_all 'Exported 2 messages → ')" 2
 check_frame_intact "after the HTML export" 80
 

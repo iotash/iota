@@ -9,7 +9,7 @@
 . "${TMUX_LIB:?}"
 
 start 80 24 || finish
-settle || bad "frame never settled"
+settle || miss "frame never settled"
 
 # --- the banner (X-46): a card — a rounded frame around three rows, the mark and the version,
 #     the mode row, the directory — inserted above the frame by the region. Fixed strings
@@ -82,10 +82,10 @@ check "cursor pinned across 5 idle polls" "$drift" 0
 # A keystroke moves it by exactly the glyph's display width — the IME anchor law, proved
 # here on the real terminal and nowhere else.
 type_ '中文'
-wait_vis '❯ 中文' || bad "CJK draft never rendered"
+wait_vis '❯ 中文' || miss "CJK draft never rendered"
 check "cursor after two double-width runes" "$(cursor_xy)" "6 $((comp - 1))"
 key BSpace
-wait_gone '❯ 中文' || bad "backspace over a wide rune failed"
+wait_gone '❯ 中文' || miss "backspace over a wide rune failed"
 check "cursor after backspace over one wide rune" "$(cursor_xy)" "4 $((comp - 1))"
 
 # --- the exit, with the banner's tail still in the staging window (X-49): Ctrl+D at the prompt
@@ -95,7 +95,7 @@ check "cursor after backspace over one wide rune" "$(cursor_xy)" "4 $((comp - 1)
 #     pane is kept past the exit (`remain-on-exit`) so the history can be read.
 tm set-option -t s remain-on-exit on
 key C-d
-_poll_until 60 pane_dead || bad "Ctrl+D at the prompt did not exit"
+_poll_until 60 pane_dead || miss "Ctrl+D at the prompt did not exit"
 check_once "the mode row is in the history once after the exit" '│ chat · session '
 check_once "the directory row is in the history once after the exit" "│ ${PWD:0:28}"
 check_once "the frame's bottom edge is in the history once after the exit" '╰─'

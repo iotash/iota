@@ -15,15 +15,15 @@
 . "${TMUX_LIB:?}"
 
 start 80 24 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 # ------------------------------------------------------------------ A: idle open/cancel
 before="$(cap)"
 
 type_ '/model'
 key Enter
-wait_vis '↑↓ move' || bad "the /model panel never opened"
-settle || bad "panel never settled"
+wait_vis '↑↓ move' || miss "the /model panel never opened"
+settle || miss "panel never settled"
 
 comp="$(composer_row)"
 # The default config's set is all on `mock`, so rows are bare ids; the current one carries the name `m` it
@@ -48,8 +48,8 @@ check "composer still the one input row" "$(count_composer '❯')" 1
 check "the panel did not disturb the separator pair" "$(sep_width)" 80
 
 key Escape
-wait_gone '↑↓ move' || bad "the panel did not close on ESC"
-settle || bad "frame never settled after cancel"
+wait_gone '↑↓ move' || miss "the panel did not close on ESC"
+settle || miss "frame never settled after cancel"
 if [ "$(cap)" = "$before" ]; then
     ok "a cancelled panel restores the pane exactly (no record, no ghost rows)"
 else
@@ -58,13 +58,19 @@ else
 fi
 
 # ------------------------------------------------------------------ B: queued mid-stream
-type_ 'stream 40'
+# The stream HOLDS after its 8th line (`hold@8`) until the queue row has been read, so the
+# command is queued mid-stream and the counter sampled mid-stream by construction: 40 lines at
+# 60 ms are 2.4 s of the mock's clock, and on a slow runner the typing, the wait and the sample
+# could all land after the stream had ended — the queue row then never renders (the command opens
+# at once) or the counter is read with the stream already over.
+HOLD="s03-$$"
+type_ "stream 40 60 hold@8:$HOLD"
 key Enter
-wait_vis 'l#05 line' || bad "the stream never started"
+wait_vis 'l#05 line' || miss "the stream never started"
 
 type_ '/model'
 key Enter
-wait_vis '» /model' || bad "the queued command row never rendered"
+wait_vis '» /model' || miss "the queued command row never rendered"
 check "the queue row carries the management hint" "$(count_vis '» /model · ↑ edit')" 1
 
 # PROGRESS, not a clock, says the stream kept flowing: the scrollback counter is sampled
@@ -75,7 +81,8 @@ check "the queue row carries the management hint" "$(count_vis '» /model · ↑
 # reach a 24-row pane without pushing rows past its top, so the comparison below is exact
 # and the only way it fails is the stall it is named for.
 queued="$(hist_size)"
-wait_all 'l#39 line' || bad "the stream did not run to completion"
+release "$HOLD"
+wait_all 'l#39 line' || miss "the stream did not run to completion"
 flowed="$(hist_size)"
 if [ "$flowed" -gt "$queued" ]; then
     ok "the stream kept flowing above the queue row ($queued -> $flowed rows in scrollback)"
@@ -83,12 +90,12 @@ else
     bad "the stream stalled while a command sat in the queue ($queued -> $flowed)"
 fi
 
-wait_vis '↑↓ move' || bad "the queued /model never opened after the stream"
+wait_vis '↑↓ move' || miss "the queued /model never opened after the stream"
 
 key Down
 key Enter
-wait_all 'Model switched to gemini-pro' || bad "the close record never landed"
-settle || bad "frame never settled after the commit"
+wait_all 'Model switched to gemini-pro' || miss "the close record never landed"
+settle || miss "frame never settled after the commit"
 
 check_once "closing commits exactly ONE one-line record" 'Model switched to gemini-pro'
 check "the status line swapped to the chosen model" "$(status_model)" "  gemini-pro"
@@ -101,8 +108,8 @@ check_frame_intact "after the panel closed" 80
 # The frame walks back down on the next output, and the record is not stranded in a gap.
 type_ 'hello'
 key Enter
-wait_all 'echo: hello' || bad "the chat did not accept input after the panel closed"
-settle || bad "frame never settled after the follow-up turn"
+wait_all 'echo: hello' || miss "the chat did not accept input after the panel closed"
+settle || miss "frame never settled after the follow-up turn"
 check_frame_intact "after the follow-up turn" 80
 
 finish

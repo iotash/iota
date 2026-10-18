@@ -57,8 +57,8 @@ run_turn() {
     before="$(count_all 'done.')"
     type_ 'md'
     key Enter
-    wait_all_more 'done.' "$before" || bad "$1: the markdown document never completed"
-    settle || bad "$1: frame never settled after the turn"
+    wait_all_more 'done.' "$before" || miss "$1: the markdown document never completed"
+    settle || miss "$1: frame never settled after the turn"
 }
 
 # iota_running — the pane's shell has an `iota` child (scenario 29 reads the pane the same way).
@@ -88,7 +88,7 @@ launch() {
         bad "$1: the binary never came up in the shell pane"
         finish
     fi
-    settle || bad "$1: startup never settled"
+    settle || miss "$1: startup never settled"
 }
 
 QUITS=0
@@ -153,8 +153,8 @@ check_frame_intact "NO_COLOR" 80
 # color either.
 type_ '/model'
 key Enter
-wait_vis 'Enter select' || bad "NO_COLOR: the /model combo never opened"
-settle || bad "NO_COLOR: the combo never settled"
+wait_vis 'Enter select' || miss "NO_COLOR: the /model combo never opened"
+settle || miss "NO_COLOR: the combo never settled"
 check "NO_COLOR: the surface keeps its ▸ cursor marker" "$(count_vis '▸ fake [m] (current)')" 1
 check "NO_COLOR: the combo field keeps its placeholder" "$(count_vis 'model name (e.g. gpt-4o)')" 1
 check "NO_COLOR: …behind a ❯ edge of its own (the composer's and the field's)" "$(cap | grep -c '^❯' | tr -d ' ')" 2
@@ -164,8 +164,8 @@ else
     ok "NO_COLOR: the surface painted no color"
 fi
 key Escape
-wait_gone 'Enter select' || bad "NO_COLOR: the combo did not close on ESC"
-settle || bad "NO_COLOR: frame never settled after the combo"
+wait_gone 'Enter select' || miss "NO_COLOR: the combo did not close on ESC"
+settle || miss "NO_COLOR: frame never settled after the combo"
 quit NO_COLOR
 
 # ------------------------------------------------------------------ B: the control run

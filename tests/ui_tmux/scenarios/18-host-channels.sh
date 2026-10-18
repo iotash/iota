@@ -47,8 +47,8 @@ focus() {
 turn() {
     type_ "$1"
     key Enter
-    wait_all "echo: $1" || bad "the turn '$1' never completed"
-    settle || bad "frame never settled after '$1'"
+    wait_all "echo: $1" || miss "the turn '$1' never completed"
+    settle || miss "frame never settled after '$1'"
 }
 
 start_shell 80 24 || finish
@@ -56,21 +56,21 @@ pipe_raw
 type_ "$(iota_cmd openai fake)"
 key Enter
 wait_vis '❯' || {
-    bad "the binary never came up in the shell pane"
+    miss "the binary never came up in the shell pane"
     finish
 }
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 # ------------------------------------------------------------------ A: the approval prompt (§7.1)
 type_ 'runfg:echo approved'
 key Enter
-wait_vis 'allow?' || bad "the approval prompt never opened"
-wait_raw ']9;4;4;100' || bad "the approval prompt did not put the progress bar in its warning state"
+wait_vis 'allow?' || miss "the approval prompt never opened"
+wait_raw ']9;4;4;100' || miss "the approval prompt did not put the progress bar in its warning state"
 check_raw "an approval prompt sets the warning state (OSC 9;4;4;100)" ']9;4;4;100' yes
 check "the prompt names the call" "$(count_vis 'wants to modify files')" 1
 key Enter
-wait_all 'ran: approved' || bad "the approved call never ran"
-settle || bad "frame never settled after the approved call"
+wait_all 'ran: approved' || miss "the approved call never ran"
+settle || miss "frame never settled after the approved call"
 check_raw "…and the turn went busy again after the answer (OSC 9;4;3)" ']9;4;3' yes
 check_once "the call ran once" 'ran: approved'
 check_frame_intact "after the approval" 80
@@ -81,7 +81,7 @@ check_raw "a turn finished while FOCUSED rings no notification" "${ESC}]9;echo: 
 
 focus lost
 turn 'blurred hello'
-wait_raw "${ESC}]9;echo: blurred hello${BEL}${BEL}" || bad "no notification after a blur"
+wait_raw "${ESC}]9;echo: blurred hello${BEL}${BEL}" || miss "no notification after a blur"
 check_raw "a turn finished while UNFOCUSED writes OSC 9 with the answer's first line" "${ESC}]9;echo: blurred hello${BEL}${BEL}" yes
 
 focus gained
@@ -93,14 +93,14 @@ check "the gate did not disturb the frame" "$(count_composer '❯')" 1
 : >"$RAW"
 type_ 'stream 60'
 key Enter
-wait_vis 'l#05 line' || bad "the stream never started"
-wait_raw ']9;4;3' || bad "the stream did not set the bar busy"
+wait_vis 'l#05 line' || miss "the stream never started"
+wait_raw ']9;4;3' || miss "the stream did not set the bar busy"
 key C-c
-wait_all 'Interrupted.' || bad "Ctrl+C did not cancel the stream"
-wait_raw ']9;4;0' || bad "the cancelled turn did not clear the bar"
+wait_all 'Interrupted.' || miss "Ctrl+C did not cancel the stream"
+wait_raw ']9;4;0' || miss "the cancelled turn did not clear the bar"
 check_raw "the cancelled turn clears the bar (OSC 9;4;0)" ']9;4;0' yes
 key C-c
-_poll_until 60 raw_has '[?1004l' || bad "the exit never turned focus reporting off"
+_poll_until 60 raw_has '[?1004l' || miss "the exit never turned focus reporting off"
 clear_at="$(raw_offset ']9;4;0')"
 off_at="$(raw_offset '[?1004l')"
 if [ -n "$clear_at" ] && [ -n "$off_at" ] && [ "$clear_at" -lt "$off_at" ]; then

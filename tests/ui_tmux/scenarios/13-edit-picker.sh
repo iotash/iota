@@ -17,7 +17,7 @@
 . "${TMUX_LIB:?}"
 
 start_provider images 80 30 || finish
-settle || bad "startup never settled"
+settle || miss "startup never settled"
 
 # The generation widget with a progressive frame already painted into it, in ONE capture:
 # the widget's live elapsed row (`⎿ `) and half-block preview rows at the same instant.
@@ -56,8 +56,8 @@ else
     bad "no progressive frame inside the generation widget"
     cap
 fi
-wait_all '🖼 saved: ' || bad "the picture was never committed"
-settle || bad "frame never settled after the generation"
+wait_all '🖼 saved: ' || miss "the picture was never committed"
+settle || miss "frame never settled after the generation"
 
 check_once "the saved-image caption lands exactly once" '🖼 saved: '
 # …under the user echo: the banner's wordmark above it is half blocks too.
@@ -74,8 +74,8 @@ before="$(cap)"
 
 type_ '/edit'
 key Enter
-wait_vis 'Edit an image' || bad "the /edit picker never opened"
-settle || bad "the picker never settled"
+wait_vis 'Edit an image' || miss "the /edit picker never opened"
+settle || miss "the picker never settled"
 
 comp="$(composer_row)"
 chip="$(row_of ' Edit an image')"
@@ -96,8 +96,8 @@ fi
 check "the picker did not disturb the separator pair" "$(sep_width)" 80
 
 key Escape
-wait_gone 'Edit an image' || bad "the picker did not close on ESC"
-settle || bad "frame never settled after cancel"
+wait_gone 'Edit an image' || miss "the picker did not close on ESC"
+settle || miss "frame never settled after cancel"
 if [ "$(cap)" = "$before" ]; then
     ok "a cancelled picker restores the pane exactly"
 else
@@ -108,18 +108,18 @@ fi
 # ------------------------------------------------------------------ C: /redo
 type_ '/redo'
 key Enter
-wait_all 'Redoing: a red square' || bad "the /redo echo never landed"
+wait_all 'Redoing: a red square' || miss "the /redo echo never landed"
 # The first picture's caption is in the scrollback already: wait for the SECOND.
-wait_all_more '🖼 saved: ' 1 || bad "the redo produced no picture"
-settle || bad "frame never settled after the redo"
+wait_all_more '🖼 saved: ' 1 || miss "the redo produced no picture"
+settle || miss "frame never settled after the redo"
 check "the redo committed a second picture" "$(count_all '🖼 saved: ')" 2
 check_frame_intact "after the redo" 80
 
 # ------------------------------------------------------------------ D: /edit <prompt>
 type_ '/edit make it blue'
 key Enter
-wait_all_more '🖼 saved: ' 2 || bad "the edit produced no picture"
-settle || bad "frame never settled after the edit"
+wait_all_more '🖼 saved: ' 2 || miss "the edit produced no picture"
+settle || miss "frame never settled after the edit"
 check "the edit committed a third picture" "$(count_all '🖼 saved: ')" 3
 check_frame_intact "after the edit" 80
 
