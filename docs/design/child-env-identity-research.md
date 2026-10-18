@@ -1,6 +1,6 @@
 # 子进程继承宿主身份：别家怎么做（调研）
 
-Status: **Research** · 日期：2026-10-17 · 基于 `busy-host-state` = `a9d7857`（v0.7.2 之后），本机 herdr 0.9.5、Claude Code 2.1.301、codex-cli 0.162.1、gemini-cli 0.46.0
+Status: **Research** · 日期：2026-10-17 · 基于 `busy-host-state` = `a9d7857`（v0.7.2 之后），本机 herdr 0.9.5、Claude Code 2.1.301、codex-cli 0.162.1、gemini-cli 0.46.0 · 第 7 节补充于 2026-10-18
 
 本文只做调研，不含设计决定，不改代码。所有者的原话：「我想看看其它的 coding agent 会怎么处理这个问题」。「这个问题」是 busy-host-state 分支查清的那一类：**agent 把自己的宿主/会话身份环境变量交给子进程（shell 命令、MCP stdio 服务器），子进程（尤其是嵌套的另一个 agent）顶着父 agent 的身份跟宿主说话，把父 agent 的身份抢掉。**
 
@@ -185,7 +185,7 @@ iota 的 shell 子进程边界，就是一次所有权**不**换手的 spawn：p
 | 选项 | 与别家的对照 | 效果 | 代价 |
 |---|---|---|---|
 | **扣 `HERDR_ENV`**（shell 与 MCP stdio 子进程） | 没有一家正好这样做；最接近 Crush（它扣了这个，外加两个）。与 herdr 自己的约定对齐：集成「Only report when `HERDR_ENV=1`」，34 个发行 hook 都引用它 | herdr 发行的全部集成（claude、codex、pi、omp…）在 iota 的子进程里都会跳过上报；`herdr` CLI 照常可用（`--current`、命名 session 都在） | herdr skill 第一步 `test "${HERDR_ENV:-}" = 1` 在 iota 的 shell 里会失败；第三方自带上报、但不按 herdr 约定检查 `HERDR_ENV` 的 agent 挡不住（查不到有没有这种） |
-| **扣 `HERDR_ENV` + `HERDR_PANE_ID`**（Crush 还扣了 `HERDR_SOCKET_PATH`） | **Crush 的做法**，且是唯一先例 | 更彻底：连「只看 `HERDR_PANE_ID`」的第三方上报也挡住 | 模型的 `herdr --current` 实测会**悄悄落到焦点 pane**（4.2），文档说会报错，实际不报；`herdr pane split` 不带目标时同样落到焦点 pane（文档 L861）。再扣 `HERDR_SOCKET_PATH` 则命名 session 下 CLI 连错 server |
+| **扣 `HERDR_ENV` + `HERDR_PANE_ID`**（Crush 还扣了 `HERDR_SOCKET_PATH`） | **Crush 的做法**，且是唯一先例 | 更彻底：连「只看 `HERDR_PANE_ID`」的第三方上报也挡住 | 模型的 `herdr --current` 实测会**悄悄落到焦点 pane**（4.2），文档说会报错，实际不报；`herdr pane split` 不带目标时同样落到焦点 pane（文档 L861）。（订正：`herdr pane split --current` 在没有 `HERDR_PANE_ID` 时实测会报错退出，见 7.4。）再扣 `HERDR_SOCKET_PATH` 则命名 session 下 CLI 连错 server |
 | **什么都不动** | 7 家里 6 家对宿主变量的做法；herdr 的 #2668/#4919/#4814 都卡在这里 | 无 | 本 bug 原样保留，且 herdr 已表明「一 pane 一权威」不会改（#2824）；卡住后协议内无解，只能关 pane |
 
 另外三点：
@@ -202,6 +202,69 @@ iota 的 shell 子进程边界，就是一次所有权**不**换手的 spawn：p
 - **「扣 `HERDR_ENV` 就够」的覆盖面**只针对 herdr 发行的 hook。自己实现 herdr 上报的 agent（Crush、iota 本身、还有 herdr 文档「Agents that support Herdr themselves」一节列的那些）是否检查 `HERDR_ENV`：没逐个查。Crush 的 `herdr.Init()` 检查哪些变量：没查。
 - herdr 文档 L861 与实测不符（`--current` 不报错、落到焦点 pane），只在私有 session 里测了一次，没有查源码确认是有意还是 bug。
 - herdr skill 的守卫失败之后模型会怎样（停下、还是照 `<environment>` 里的 `host: herdr` 继续）：没测。
+
+## 7. 补充实测：新 pane 的环境是谁给的（2026-10-18）
+
+所有者的问题：「当 iota 用 shell 打开另一个 pane 并启动 `claude -p` 时，除了继承自父进程的环境变量外，当前 pane 的环境变量是不是也要传过来？」他担心的是：子 agent 跑在**自己的新 pane** 里，本来就该向那个 pane 上报；如果扣掉 `HERDR_ENV`，会不会连这个正当场景也一起打断。
+
+**结论：不会打断。新 pane 里的 `HERDR_ENV`、`HERDR_PANE_ID`、`HERDR_SOCKET_PATH` 都由 herdr 服务端在启动 pane 进程时写入，值是新 pane 自己的。发起请求的客户端，它的环境一个变量都不会转进新 pane。** 所以 iota 的子进程里扣掉 `HERDR_ENV` 之后，经 `herdr pane split`/`tab create` 开出来的新 pane 照样拿到 `HERDR_ENV=1` 和自己的 `HERDR_PANE_ID`，里面的 `claude` 正常向自己的 pane 上报。被挡住的只有「直接在 iota 的 shell 里跑」这一条，也就是本 bug 那条路径。
+
+### 7.1 方法
+
+- 私有 tmux（`-L bhs`）里起私有 herdr session `bhs-probe`（herdr 0.9.5），启动命令是 `env -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_SOCKET_PATH SERVER_MARK=from-server-launch herdr --session bhs-probe`。`SERVER_MARK` 只存在于服务端进程的环境里，用来分辨新 pane 的环境底子是从哪里来的。没有碰所有者在用的 session。测完 `herdr server stop`、`herdr session delete bhs-probe`、`tmux -L bhs kill-server`。
+- 「发起方」是用 `env -i PATH=… HOME=… <手工设的 HERDR_*> CLIENT_MARK=from-client-<label>` **模拟**的 iota 子进程（不是真的 iota）。`CLIENT_MARK` 只存在于客户端的环境里。
+- 新 pane 里由它自己的 shell 执行 `env | grep -E '^(HERDR_|[A-Z_]*MARK=)' | sort`，结果写入文件。
+- 上报用的是本机真实的 herdr hook（`~/.claude/hooks/herdr-agent-state.sh`），由一个替身 `claude` 喂给它 SessionStart 事件，和第 1 节端到端复现里用的替身一样。
+
+### 7.2 新 pane 的环境：三种客户端环境，结果一样
+
+`herdr pane split --pane w1:p1 --direction right --no-focus`，客户端环境分三种：
+
+| 客户端环境（模拟） | 新 pane | 新 pane 里看到的（节选） |
+|---|---|---|
+| `HERDR_SOCKET_PATH` + `HERDR_ENV=1` + `HERDR_PANE_ID=w1:p1` | `w1:p2` | `HERDR_ENV=1` `HERDR_PANE_ID=w1:p2` `SERVER_MARK=from-server-launch`，**没有** `CLIENT_MARK` |
+| `HERDR_SOCKET_PATH` + `HERDR_PANE_ID=w1:p1`（**扣掉 `HERDR_ENV`**，即选项 1） | `w1:p3` | `HERDR_ENV=1` `HERDR_PANE_ID=w1:p3` `SERVER_MARK=…`，没有 `CLIENT_MARK` |
+| 只有 `HERDR_SOCKET_PATH` | `w1:p4` | `HERDR_ENV=1` `HERDR_PANE_ID=w1:p4` `SERVER_MARK=…`，没有 `CLIENT_MARK` |
+
+三种情况下，新 pane 完整的 `HERDR_*` 都是同一组：`HERDR_BIN_PATH=/opt/homebrew/bin/herdr`、`HERDR_ENV=1`、`HERDR_PANE_ID=<新 pane>`、`HERDR_SESSION=bhs-probe`、`HERDR_SOCKET_PATH=<bhs-probe 的 socket>`、`HERDR_TAB_ID=w1:t1`、`HERDR_WORKSPACE_ID=w1`。另外：
+
+- `herdr tab create --no-focus`，客户端没有 `HERDR_ENV`、带 `CLIENT_MARK=from-client-tab` → 新 pane `w1:p5` 看到 `HERDR_ENV=1`、`HERDR_PANE_ID=w1:p5`、`HERDR_TAB_ID=w1:t2`、`SERVER_MARK=…`，没有 `CLIENT_MARK`。
+- `herdr pane run w1:p2 "<env dump>"`，客户端 `HERDR_PANE_ID=w9:p9`、没有 `HERDR_ENV`、带 `CLIENT_MARK=from-client-run` → 跑出来的命令看到 `HERDR_ENV=1`、`HERDR_PANE_ID=w1:p2`、`SERVER_MARK=…`，没有 `CLIENT_MARK`。`pane run` 只是把命令文本交给目标 pane **已有的 shell**，环境用的是那个 shell 自己的。
+- 客户端**只有一种办法**把变量带进新 pane：显式加 `--env`。`herdr pane split … --env CLIENT_VIA_FLAG=1 --env HERDR_ENV=0 --env HERDR_PANE_ID=w9:p9` → 新 pane `w1:p6` 看到 `CLIENT_VIA_FLAG=1`，但 `HERDR_ENV=1`、`HERDR_PANE_ID=w1:p6`，传进去的 `HERDR_*` 被服务端的值覆盖了。
+- herdr 0.9.5 没有顶层 `herdr run`：`herdr run w1:p1 true` → `unknown command: run`，退出码 2。所有者说的「`herdr run`」，对应的是 `herdr pane run <PANE_ID> <COMMAND>`。
+
+源码与实测一致（本人复核，`2ecf19a9`）：`src/pane.rs:199-201` 先写入 `launch_env.extra`（也就是 `--env`），`:202` 写入 `HERDR_ENV=1`，`:203` 调 `apply_pane_base_env`（`src/integration/env.rs:28-33`：写入 `HERDR_SOCKET_PATH`、`HERDR_BIN_PATH`），`:205-214` 在 `Managed` 身份下写入新 pane 自己的 `HERDR_WORKSPACE_ID`/`HERDR_TAB_ID`/`HERDR_PANE_ID`。底子是服务端进程自己的环境（实测 `SERVER_MARK` 出现在每个新 pane 里），再加上第 4.2 节说的剥除。客户端的环境不在这条路径上。
+
+### 7.3 所有者问的那条路径，端到端
+
+pane A 先跑一个前台 `sleep`（避免 herdr「回到提示符」的兜底逻辑清掉状态），再用 socket 以 `source=iota` 报 `working`，模拟「iota 在 A 里干活」。然后用 `env -i` 构造 iota 的 shell 子进程（**模拟**：`HERDR_SOCKET_PATH` + `HERDR_PANE_ID=<A>`，有没有 `HERDR_ENV` 看具体用例），跑一个子脚本。子脚本按用例做三件事之一：`herdr pane split --current` 开出 B，然后用 `pane run` 在 B 里跑 `claude`；或者开出 B 后用 `send-text` + `Enter` 在 B 里手动跑 `claude`；或者直接在子进程里跑 `claude`。最后 iota 再报一次 `idle`，看 A 是否还听 iota 的。
+
+| 用例 | 子进程环境 | `claude` 看到的 | B 的 `agent_session` | A 跑完子进程后 | iota 报 idle 后的 A |
+|---|---|---|---|---|---|
+| split + `pane run` | 扣 `HERDR_ENV` | `HERDR_ENV=1` `HERDR_PANE_ID=w1:pE`（B 自己） | `herdr:claude/fake-claude-run` | `agent=iota status=working`，没有 session | `status=done`（听 iota 的） |
+| split + 手动 `send-text` | 扣 `HERDR_ENV` | `HERDR_ENV=1` `HERDR_PANE_ID=w1:pG`（B 自己） | `herdr:claude/fake-claude-sendtext` | `agent=iota status=working`，没有 session | `status=done` |
+| 直接在 shell 里跑（选项 1） | 扣 `HERDR_ENV` | `HERDR_ENV=<unset>` `HERDR_PANE_ID=w1:pH` | — | `agent=iota status=working`，没有 session | `status=done` |
+| 直接在 shell 里跑（现状，对照组） | 保留 `HERDR_ENV=1` | `HERDR_ENV=1` `HERDR_PANE_ID=w1:pJ` | — | session 变成 `herdr:claude/fake-claude-direct` | **仍是 `working`**——iota 的报告被丢弃，也就是本 bug |
+
+（`--current` 能用，是因为选项 1 保留了 `HERDR_PANE_ID`：子脚本的 `split --current` 退出码 0，在 A 旁边开出了 B。B 的 `agent` 字段是 `None`，因为替身只发了 SessionStart，hook 对这个事件只报 session；session 的 source 和 id 都落在 B 上，说明上报到达的是 B。）
+
+### 7.4 顺带的订正与实测
+
+- 第 5 节表里写「`herdr pane split` 不带目标时同样落到焦点 pane」。今天实测：在没有 `HERDR_PANE_ID` 的客户端（`env -i`，只有 `HERDR_SOCKET_PATH`）里跑 `herdr pane split --current --direction down --no-focus` → `--current requires HERDR_PANE_ID`，退出码 2，没有开出 pane。也就是说，`split --current` 在缺变量时会报错；第 4.2 节里那个「悄悄落到焦点 pane」的是 `herdr pane current --current`。两个子命令表现不一样。`split` 完全不带目标时会怎样，今天没测。
+- 推论（未实测）：如果选「再扣 `HERDR_PANE_ID`」，模型的 `herdr pane split --current` 会直接失败，得改成显式给 pane id；开出来的新 pane 仍然由服务端注入它自己的身份（7.2 第三行就是这种客户端环境）。
+
+### 7.5 对选项的影响
+
+- **选项 1（扣 `HERDR_ENV`）不会打断「子 agent 跑在自己的新 pane 里」**。新 pane 的身份由 herdr 服务端注入，不是从发起方继承的（7.2）；端到端实测，B 里的 `claude` 拿到 `HERDR_ENV=1` 和 B 的 id，上报落在 B 上，A 仍归 iota（7.3）。所以不需要「只对直接子进程扣、split/run 让 herdr 自己注入」这类更精细的修法：选项 1 实际效果就是这样，因为 herdr 本来就只在开 pane 的那一刻注入。
+- 不会自动走这条路的，是**不经过 herdr 开 pane**的情况：模型在 iota 的 shell 里另起 `tmux new-window`、开一个新的终端窗口等。那些进程的环境由各自的宿主决定，与 herdr 无关，本节没测。
+- 选项 1 保留 `HERDR_PANE_ID` 和 `HERDR_SOCKET_PATH`，模型的 `herdr pane split --current` 照常可用（7.3）。
+
+### 7.6 拿不准
+
+- 发起方是用 `env -i` **模拟**的 iota 子进程，不是真的 iota 跑出来的。7.2 的结论不依赖这一点（客户端的环境根本没进新 pane），但「真 iota + 选项 1」的端到端要等实现以后才能跑。
+- 只测了 herdr 0.9.5。新 pane 注入身份的源码逻辑在 `2ecf19a9`，以后的版本会不会改：不知道。
+- `claude` 是替身，只发 SessionStart；真 `claude -p` 的其余 hook 事件（`UserPromptSubmit`、`Stop`……）没在 B 里跑。它们读的是同一组环境变量（第 4.2 节），推断结果一样，但没测。
+- 原始输出没有入库，在 scratchpad 的 `inject/` 目录里（`*.env`、`*-A.out`、`*-B.out`、`probe.sh`、`child.sh`）。
 
 ## 材料
 
