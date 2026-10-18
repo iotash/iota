@@ -876,6 +876,9 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         if repl.conv.provider.model().is_empty() {
             let cancel = repl.handles.cancel.clone();
             if !model::ensure_model(&mut repl, &cancel).await {
+                // No turn runs, so none reports the state that settles the host: a notice taken above no
+                // longer holds it `Busy`, and only a report recomputes that (`Presenter::notice_taken`).
+                repl.handles.pres.set_state(State::Idle);
                 continue;
             }
         }

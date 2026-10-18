@@ -602,9 +602,16 @@ async fn probe(
         .iter()
         .map(|d| server_config(&d.name, &d.entry))
         .collect();
+    // A run's servers start without what the detected host withholds (`ToolAssembly::child_env`), so the
+    // probe's do too. The host is only asked that: it is dropped unspoken to.
+    let child_env =
+        crate::host::child_env(crate::host::detect(&crate::cmd::host_probe(env)).as_deref());
     let manager = crate::mcp::Manager::new(
         configs,
-        crate::mcp::ManagerOptions::new(crate::llm::default_http_client(), env.clone()),
+        crate::mcp::ManagerOptions {
+            child_env,
+            ..crate::mcp::ManagerOptions::new(crate::llm::default_http_client(), env.clone())
+        },
     );
     let statuses = manager.connect_all(cancel).await;
     manager.close().await;

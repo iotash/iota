@@ -17,6 +17,19 @@
 //! herdr also tells the model where it is — `host: herdr`, the pane id, and the workspace and tab
 //! ids when the pane has them — through the `<environment>` capability.
 //!
+//! **A child of the chat is spawned without `HERDR_ENV`** (decided 2026-10-18,
+//! docs/design/child-env-identity-research.md). herdr keeps one lifecycle authority per pane, and the
+//! hooks it installs for other agents report into the pane `HERDR_PANE_ID` names whenever `HERDR_ENV`
+//! is `1`. A `claude -p` the model runs from the shell tool inherited both, so its `SessionStart` hook
+//! claimed iota's pane under `herdr:claude`; from then on herdr dropped every report of iota's without an
+//! error, and the pane stayed `working` until it was closed. So the [`ChildEnvironment`] capability
+//! withholds `HERDR_ENV` — the switch every shipped hook checks (34 hook files reference it) — from the
+//! shell tool's commands and the MCP stdio servers alike. `HERDR_PANE_ID` and `HERDR_SOCKET_PATH` stay:
+//! the model's own `herdr pane split --current` needs them, and a pane it opens is not affected at all —
+//! herdr's server writes a new pane's `HERDR_*` itself, the new pane's own, whatever the client that asked
+//! for it carries (measured: research §7). The `<environment>` block says so, because herdr's own skill
+//! starts with `test "$HERDR_ENV" = 1`, which now fails inside the shell tool.
+//!
 //! Like cmux, herdr deliberately does NOT implement [`Notifier`](crate::host::Notifier): the
 //! presenter pings the first notifier only, so a host that implements it takes the OSC 9 channel
 //! away from the ANSI host — and herdr notifies from the semantic state it is given here, and
@@ -34,7 +47,8 @@ use tokio::task::JoinHandle;
 
 use crate::BoxFuture;
 use crate::host::{
-    Closer, EnvironmentContributor, Host, Probe, SessionReporter, State, StateReporter,
+    ChildEnvironment, Closer, EnvironmentContributor, Host, Probe, SessionReporter, State,
+    StateReporter,
 };
 use crate::sync::lock;
 
@@ -266,6 +280,10 @@ impl Host for HerdrHost {
     fn as_environment(&self) -> Option<&dyn EnvironmentContributor> {
         Some(self)
     }
+
+    fn as_child_env(&self) -> Option<&dyn ChildEnvironment> {
+        Some(self)
+    }
 }
 
 impl StateReporter for HerdrHost {
@@ -297,7 +315,22 @@ impl EnvironmentContributor for HerdrHost {
         if let Some(tab) = &self.pane.tab {
             out.push(("herdr tab".to_owned(), tab.clone()));
         }
+        out.push(("herdr note".to_owned(), HERDR_CHILD_NOTE.to_owned()));
         out
+    }
+}
+
+/// What the model is told about the withheld variable (the module doc): that its shell lacks it — so the
+/// herdr skill's `test "$HERDR_ENV" = 1` failing there is expected — on purpose, so it is not put back, and
+/// that herdr itself still answers (the `host: herdr` line above says where it is). Short, because every
+/// host line is paid for in every request: `tests::the_lines_fit_the_hosts_share_of_the_harness` bounds them.
+pub(crate) const HERDR_CHILD_NOTE: &str =
+    "HERDR_ENV is unset in your shell on purpose; the herdr CLI works";
+
+impl ChildEnvironment for HerdrHost {
+    /// `HERDR_ENV` alone (the module doc).
+    fn withheld(&self) -> Vec<String> {
+        vec![HERDR_ENV.to_owned()]
     }
 }
 
@@ -422,7 +455,9 @@ pub(crate) fn send_cli(bin: PathBuf, req: Request) -> BoxFuture<'static, ()> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-    use super::{HerdrHost, Pane, Report, Request, SendFn, detect_herdr, lifecycle};
+    use super::{
+        HERDR_CHILD_NOTE, HerdrHost, Pane, Report, Request, SendFn, detect_herdr, lifecycle,
+    };
     use crate::app::env::Env;
     use crate::host::{Closer, Probe, SessionReporter, State, StateReporter};
     use std::path::{Path, PathBuf};
@@ -499,7 +534,12 @@ mod tests {
             vec![
                 ("host".to_owned(), "herdr".to_owned()),
                 ("herdr pane".to_owned(), "w1:p2".to_owned()),
+                ("herdr note".to_owned(), HERDR_CHILD_NOTE.to_owned()),
             ]
+        );
+        assert_eq!(
+            h.as_child_env().expect("herdr withholds").withheld(),
+            vec!["HERDR_ENV".to_owned()]
         );
         // The release goes to a socket nobody listens on: a debug line, and `close` returns.
         h.as_closer().expect("herdr closes").close().await;
@@ -519,7 +559,40 @@ mod tests {
                 ("herdr pane".to_owned(), "w1:p2".to_owned()),
                 ("herdr workspace".to_owned(), "w1".to_owned()),
                 ("herdr tab".to_owned(), "w1:t3".to_owned()),
+                ("herdr note".to_owned(), HERDR_CHILD_NOTE.to_owned()),
             ]
+        );
+        h.as_closer().expect("herdr closes").close().await;
+    }
+
+    /// The note names the one variable withheld, says it is deliberate and what still works, so a model
+    /// whose herdr skill checks `HERDR_ENV` first neither stops using herdr nor puts the variable back.
+    #[test]
+    fn the_note_names_what_is_withheld_and_what_still_works() {
+        for needle in ["HERDR_ENV is unset", "on purpose", "herdr CLI works"] {
+            assert!(HERDR_CHILD_NOTE.contains(needle), "{needle:?} missing");
+        }
+    }
+
+    /// The most herdr ever says — every id injected, and the note — stays under a tenth of the harness
+    /// cap, the share a host's lines are allowed on top of the paragraph (`agents::harness`).
+    #[tokio::test]
+    async fn the_lines_fit_the_hosts_share_of_the_harness() {
+        let mut vars = FULL.to_vec();
+        vars.push(("HERDR_WORKSPACE_ID", "w123"));
+        vars.push(("HERDR_TAB_ID", "w123:t456"));
+        let h = detect_herdr(&probe(&vars)).expect("herdr not detected");
+        let bytes: usize = h
+            .as_environment()
+            .expect("herdr contributes")
+            .environment()
+            .iter()
+            .map(|(k, v)| k.len() + ": ".len() + v.len() + 1)
+            .sum();
+        let share = crate::agents::harness::HARNESS_CAP / 10;
+        assert!(
+            bytes <= share,
+            "herdr's lines are {bytes} bytes, its share {share}"
         );
         h.as_closer().expect("herdr closes").close().await;
     }

@@ -248,6 +248,8 @@ pub(crate) async fn run_interactive(
         tool_env,
         interactor,
         jobs,
+        host,
+        child_env,
         agent,
         harness,
     } = tools;
@@ -299,7 +301,10 @@ pub(crate) async fn run_interactive(
         let configured = !mcp_configs.is_empty();
         let manager = crate::mcp::Manager::new(
             mcp_configs,
-            crate::mcp::ManagerOptions::new(ctx.http.clone(), ctx.env.clone()),
+            crate::mcp::ManagerOptions {
+                child_env,
+                ..crate::mcp::ManagerOptions::new(ctx.http.clone(), ctx.env.clone())
+            },
         );
         let events = configured.then(|| manager.connect_background(&connect_cancel));
         let part = configured.then(|| crate::cmd::assemble::McpPart::of(&manager));
@@ -342,18 +347,14 @@ pub(crate) async fn run_interactive(
     interactor.bind(Arc::clone(&ui));
 
     // chat/run.go:139 `host.NewPresenter(host.SystemEnv(), host.NewANSI(u), notify)`: the detected hosts
-    // plus the ANSI fallback over the live facade; `notify:` defaults to on (config.go, T-14). Built inside
-    // the runtime — a detected cmux host spawns its worker task.
+    // plus the ANSI fallback over the live facade; `notify:` defaults to on (config.go, T-14). The host is
+    // the one the assembly detected (`ToolAssembly::host`): nothing has been reported to it yet.
     let notify = settings.resolved.agent.notify.unwrap_or(true);
     // The same presenter shows the status row's whole-turn layer (docs/design/busy-span.md §3.5): one
     // computation for the host's state and the screen's.
     let pres = Arc::new(
-        Presenter::new(
-            &host_probe(&ctx.env),
-            Some(Box::new(AnsiHost::new(Arc::clone(&ui)))),
-            notify,
-        )
-        .show_turn_on(Arc::clone(&ui)),
+        Presenter::over(host, Some(Box::new(AnsiHost::new(Arc::clone(&ui)))), notify)
+            .show_turn_on(Arc::clone(&ui)),
     );
     let mcp = mcp_hooks(&manager, mcp_events);
     let session = wiring.take_session(store, scope);

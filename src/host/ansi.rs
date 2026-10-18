@@ -2,6 +2,9 @@
 //! conversation state onto the terminal's native progress indicator (OSC 9;4) and forwards
 //! attention pings as OSC 9 notifications — both through the [`Ui`] facade, so the bytes are
 //! written by the UI loop thread and nowhere else (T3 design §5.2).
+//!
+//! It withholds nothing from a child ([`ChildEnvironment`](crate::host::ChildEnvironment)): it talks to
+//! the terminal through the chat's own output, not through any variable a child could use to speak for it.
 
 use std::sync::Arc;
 
@@ -96,5 +99,9 @@ mod tests {
         // ANSI implements neither Closer nor BackgroundReporter (ansi.go has no such methods).
         assert!(a.as_closer().is_none());
         assert!(a.as_background().is_none());
+        assert!(
+            a.as_child_env().is_none(),
+            "the terminal withholds a variable"
+        );
     }
 }

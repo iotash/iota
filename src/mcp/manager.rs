@@ -14,6 +14,7 @@ use std::{
 };
 
 use crate::BoxFuture;
+use crate::app::env::ChildEnv;
 use crate::app::env::Env;
 use crate::mcp::auth::LoginState;
 use crate::mcp::config::{AuthMode, ServerConfig, endpoint_of, expand_server_config};
@@ -291,6 +292,9 @@ pub struct ManagerOptions {
     pub stderr_cap: usize,
     /// The environment every config is expanded with (`expand_server_config`) before connecting.
     pub env: Env,
+    /// What every stdio server is spawned without — the hosts' knowledge (`crate::host::child_env`); empty
+    /// unless the command sets it.
+    pub child_env: ChildEnv,
 }
 
 impl ManagerOptions {
@@ -303,6 +307,7 @@ impl ManagerOptions {
             client_info: rmcp::model::Implementation::new(CLIENT_NAME, CLIENT_VERSION),
             stderr_cap: DEFAULT_STDERR_CAP,
             env,
+            child_env: ChildEnv::default(),
         }
     }
 }

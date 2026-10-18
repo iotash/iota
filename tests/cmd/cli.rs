@@ -1161,7 +1161,9 @@ async fn cli_headless_run_reports_to_herdr_and_names_the_pane() {
         .as_str()
         .expect("system text");
     let host_at = content
-        .find("\nhost: herdr\nherdr pane: w1:p2\nherdr workspace: w1\nherdr tab: w1:t1\n</environment>")
+        .find(&format!(
+            "\nhost: herdr\nherdr pane: w1:p2\nherdr workspace: w1\nherdr tab: w1:t1\nherdr note: {HERDR_NOTE}\n</environment>"
+        ))
         .unwrap_or_else(|| panic!("no host lines closing the environment: {content}"));
     // Right after the run's own facts — the config lines are the last of those.
     let previous_line = content[..host_at].rsplit('\n').next().unwrap_or_default();
@@ -1169,4 +1171,169 @@ async fn cli_headless_run_reports_to_herdr_and_names_the_pane() {
         previous_line.starts_with("project config: "),
         "the host lines do not follow the run's facts: {content}"
     );
+}
+
+/// The `<environment>` line the herdr host adds (`src/host/herdr.rs` `HERDR_CHILD_NOTE`), byte for byte.
+#[cfg(unix)]
+const HERDR_NOTE: &str = "HERDR_ENV is unset in your shell on purpose; the herdr CLI works";
+
+/// One `shell` call, then a plain reply once its result is in: the first request (no tool message yet) is
+/// answered with the call, every later one with text. Streaming only — a run with tools streams.
+#[cfg(unix)]
+struct OneShellCall {
+    command: String,
+}
+
+#[cfg(unix)]
+impl wiremock::Respond for OneShellCall {
+    fn respond(&self, req: &wiremock::Request) -> wiremock::ResponseTemplate {
+        let body: serde_json::Value = serde_json::from_slice(&req.body).expect("a JSON body");
+        let answered = body["messages"]
+            .as_array()
+            .is_some_and(|m| m.iter().any(|m| m["role"] == "tool"));
+        let chunks = if answered {
+            vec![
+                serde_json::json!({"choices": [{"delta": {"content": "ran."}}]}),
+                serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+            ]
+        } else {
+            let args = serde_json::json!({"command": self.command}).to_string();
+            vec![
+                serde_json::json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1", "type": "function", "function": {"name": "shell", "arguments": args}}]}}]}),
+                serde_json::json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+            ]
+        };
+        let mut sse = String::new();
+        for c in &chunks {
+            sse.push_str("data: ");
+            sse.push_str(&c.to_string());
+            sse.push_str("\n\n");
+        }
+        sse.push_str("data: [DONE]\n\n");
+        wiremock::ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream")
+    }
+}
+
+/// An MCP stdio server in POSIX `sh` (`tests/mcp/manager.rs`'s `SH_SERVER`) that first writes the
+/// `HERDR_*` it inherited to the file named by its one argument.
+#[cfg(unix)]
+const SH_SERVER_RECORDING_ENV: &str = r#"
+printf 'env=%s pane=%s\n' "${HERDR_ENV-unset}" "${HERDR_PANE_ID-unset}" > "$1"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"fake","version":"1.0.0"}}}' ;;
+    *'"method":"tools/list"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"echo","description":"says pong","inputSchema":{"type":"object"}}]}}' ;;
+  esac
+done
+"#;
+
+/// Inside a herdr pane, BOTH kinds of child the model can start — a `shell` call and an MCP stdio server —
+/// are spawned without `HERDR_ENV`, so a `claude -p` run from either cannot claim the chat's pane
+/// (docs/design/child-env-identity-research.md); they keep `HERDR_PANE_ID`, which the model's own
+/// `herdr … --current` needs. The pane still hears only iota.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_children_inside_herdr_are_spawned_without_herdr_env() {
+    let mock = crate::common::HerdrMock::start();
+    let (dir, home) = project();
+    let shell_seen = dir.path().join("shell.env");
+    let mcp_seen = dir.path().join("mcp.env");
+    let server = MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/chat/completions"))
+        .respond_with(OneShellCall {
+            command: format!(
+                "printf 'env=%s pane=%s\\n' \"${{HERDR_ENV-unset}}\" \"${{HERDR_PANE_ID-unset}}\" > '{}'",
+                shell_seen.display()
+            ),
+        })
+        .mount(&server)
+        .await;
+    write_config(
+        dir.path(),
+        &format!(
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{shell: {{sandbox: off, auto_run: true}}}}}}\n",
+            server.uri()
+        ),
+    );
+    let script = dir.path().join("server.sh");
+    fs::write(&script, SH_SERVER_RECORDING_ENV).expect("write the server script");
+    let mut cmd = iota(dir.path(), &home);
+    cmd.args([
+        "-m",
+        "go",
+        "--mcp",
+        &format!("sh {} {}", script.display(), mcp_seen.display()),
+    ])
+    .envs(mock.env("w1:p2"));
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    assert_eq!(out(&o), "ran.\n");
+
+    for (child, seen) in [
+        ("the shell call", &shell_seen),
+        ("the MCP server", &mcp_seen),
+    ] {
+        assert_eq!(
+            fs::read_to_string(seen).unwrap_or_else(|e| panic!("{child} wrote nothing: {e}")),
+            "env=unset pane=w1:p2\n",
+            "what {child} inherited"
+        );
+    }
+    assert_eq!(
+        mock.summaries(),
+        ["report_agent working", "report_agent idle", "release_agent"]
+    );
+    for r in &mock.requests() {
+        assert_eq!(r.param("source"), "iota", "{r:?}");
+    }
+}
+
+/// Outside herdr nothing is withheld — the variable reaches the shell call as it reaches iota — and the
+/// model is not told about a withheld variable.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_children_outside_herdr_inherit_everything() {
+    let (dir, home) = project();
+    let shell_seen = dir.path().join("shell.env");
+    let server = MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/chat/completions"))
+        .respond_with(OneShellCall {
+            command: format!(
+                "printf 'env=%s\\n' \"${{HERDR_ENV-unset}}\" > '{}'",
+                shell_seen.display()
+            ),
+        })
+        .mount(&server)
+        .await;
+    write_config(
+        dir.path(),
+        &format!(
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{shell: {{sandbox: off, auto_run: true}}}}}}\n",
+            server.uri()
+        ),
+    );
+    let mut cmd = iota(dir.path(), &home);
+    // `HERDR_ENV=1` without a pane is no herdr host (`detect_herdr`): nothing claims it.
+    cmd.args(["-m", "go"]).env("HERDR_ENV", "1");
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    assert_eq!(
+        fs::read_to_string(&shell_seen).expect("the shell call wrote"),
+        "env=1\n"
+    );
+    let sent = server.received_requests().await.expect("recorded");
+    let body: serde_json::Value = serde_json::from_slice(&sent[0].body).expect("a JSON body");
+    let system = body["messages"][0]["content"]
+        .as_str()
+        .expect("system text");
+    assert!(system.contains("</environment>"), "{system}");
+    // Not a bare "herdr": the binary's own path, which the run's facts name, may contain it.
+    for line in ["\nhost: ", "\nherdr note: "] {
+        assert!(!system.contains(line), "{line:?} in {system}");
+    }
 }

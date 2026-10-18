@@ -49,6 +49,7 @@ use std::{
 
 use tokio_util::sync::CancellationToken;
 
+use crate::app::env::ChildEnv;
 use crate::shell::exec::{self, Options, Outcome, RunResult, ShellError, SpawnFail};
 
 /// How many jobs one run may have in flight. Past it the tool refuses rather than queues: a queue the model
@@ -250,17 +251,27 @@ pub struct Jobs {
     exit: Mutex<()>,
     /// Woken whenever a job lands in `finished` or the last runner leaves.
     done: tokio::sync::Notify,
+    /// What every child is spawned without — the hosts' knowledge, applied here (`crate::host::child_env` gathers it).
+    child_env: ChildEnv,
 }
 
 impl Jobs {
     /// A registry writing its logs under `<temp>/iota-jobs/<this process's pid>`, so two iota processes
     /// sharing a temp dir never collide and a stale directory names the run that left it.
     pub fn new(temp: &Path) -> Arc<Self> {
+        Self::withholding(temp, ChildEnv::default())
+    }
+
+    /// [`Self::new`], with every child spawned without the variables `child_env` names — a run's registry,
+    /// built over the hosts the command detected. Every `shell` call runs through the registry, foreground
+    /// or not, so this is the one place the shell tool's children get their environment.
+    pub fn withholding(temp: &Path, child_env: ChildEnv) -> Arc<Self> {
         Arc::new(Self {
             dir: temp.join(JOBS_DIR).join(std::process::id().to_string()),
             state: Mutex::new(State::default()),
             exit: Mutex::new(()),
             done: tokio::sync::Notify::new(),
+            child_env,
         })
     }
 
@@ -469,7 +480,7 @@ impl Jobs {
     ) -> Result<exec::Started, StartFail> {
         std::fs::create_dir_all(&self.dir).map_err(StartFail::Output)?;
         let file = std::fs::File::create(output_path).map_err(StartFail::Output)?;
-        exec::spawn(cancel, opts, file).map_err(StartFail::Spawn)
+        exec::spawn(cancel, opts, file, &self.child_env).map_err(StartFail::Spawn)
     }
 
     /// Detaches the task that sees the job to its end.

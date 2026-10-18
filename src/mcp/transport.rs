@@ -281,7 +281,7 @@ pub(crate) async fn connect_one(
     }
 
     if !server_cfg.command.is_empty() {
-        let (transport, stderr) = spawn_stdio(&server_cfg, opts.stderr_cap)?;
+        let (transport, stderr) = spawn_stdio(&server_cfg, opts.stderr_cap, &opts.child_env)?;
         let running = match client_info(opts).serve(transport).await {
             Ok(running) => running,
             Err(e) => {
@@ -462,17 +462,20 @@ async fn list_tools(
     Ok((Arc::new(session), defs))
 }
 
-/// stdio half of `make_transport`: `tokio::process::Command::new(cmd).args(args).envs(env)`,
+/// stdio half of `make_transport`: `tokio::process::Command::new(cmd).args(args).envs(env)`, minus what
+/// `child_env` withholds — removed FIRST, so a variable the entry's own `env:` sets is the user's and stays;
 /// `TokioChildProcess::builder(cmd).stderr(Stdio::piped()).spawn()`; the returned stderr is drained by a spawned task
 /// into the capture (its last `stderr_cap` bytes), whose handle rides along in [`StderrCapture`] so a failed
 /// handshake — or, through the session, an exit — can wait for it. Spawn failure → `Connect`, worded by [`explain::spawn`].
 pub(crate) fn spawn_stdio(
     server_cfg: &ServerConfig,
     stderr_cap: usize,
+    child_env: &crate::app::env::ChildEnv,
 ) -> Result<(rmcp::transport::TokioChildProcess, StderrCapture), McpError> {
     use tokio::io::AsyncReadExt;
 
     let mut command = tokio::process::Command::new(&server_cfg.command);
+    child_env.apply(&mut command);
     command.args(&server_cfg.args).envs(&server_cfg.env);
     let (transport, stderr) = rmcp::transport::TokioChildProcess::builder(command)
         .stderr(std::process::Stdio::piped())

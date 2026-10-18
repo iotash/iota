@@ -224,7 +224,8 @@ mod tests {
         }
     }
 
-    /// The four lines a herdr pane adds — the most any host contributes today.
+    /// The four id lines a herdr pane adds. Its note line comes on top; the herdr host's own test bounds
+    /// everything it says (`host::herdr::tests::the_lines_fit_the_hosts_share_of_the_harness`).
     fn herdr_lines() -> Vec<(String, String)> {
         [
             ("host", "herdr"),
@@ -283,8 +284,8 @@ mod tests {
     }
 
     /// The whole paragraph, environment included, stays under the ceiling the decision set. The lines a
-    /// host adds come on top of it — only inside a multiplexer, and bounded here: the most any host says
-    /// today (the four herdr lines) is under a tenth of the cap.
+    /// host adds come on top of it — only inside a multiplexer, and bounded to a tenth of the cap: here for the
+    /// four herdr id lines, and by each host's own test for all it says.
     #[test]
     fn the_harness_fits_the_cap() {
         let text = compose(&env(), &sets(&["code", "shell"]));
