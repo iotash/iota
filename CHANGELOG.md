@@ -3,6 +3,19 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## Unreleased
+
+### Fixed
+
+- **`tool_timeout_sec: 0` is an error, not a deadline of nothing.** An
+  `mcp_servers` entry with `tool_timeout_sec: 0` used to make every call to
+  that server time out the moment it was made. It is now refused when the
+  run starts, naming the server:
+  `config mcp_servers.<name>.tool_timeout_sec 0: want 1 or more`. 0 does not
+  mean "no deadline": the deadline is what gives a headless run or a bot —
+  which have no Esc — its turn back from a server that stopped answering.
+  For a tool that runs long, write a large number instead.
+
 ## 0.7.3 - 2026-10-18
 
 ### Changed

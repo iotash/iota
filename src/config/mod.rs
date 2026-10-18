@@ -84,7 +84,8 @@ pub struct McpServerConfig {
     pub redirect_port: Option<u16>,
     /// `tool_timeout_sec:` — seconds one tool call may go unanswered before it is given up (absent = 30
     /// minutes, `crate::mcp::DEFAULT_CALL_TIMEOUT`). A backstop for a server that stopped answering, not a
-    /// speed limit; raise it for a tool that is meant to run longer.
+    /// speed limit; raise it for a tool that is meant to run longer. 0 is a setup error
+    /// (`SetupError::ConfigToolTimeout`), not "no deadline": headless and bot runs have no ESC.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_timeout_sec: Option<u64>,
 }
