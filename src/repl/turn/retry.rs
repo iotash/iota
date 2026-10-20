@@ -75,7 +75,8 @@ pub async fn retry_round<T>(
 ///
 /// Non-retryable: user interruption, an output the ceiling cut off (the same request hits it again), the
 /// tool-loop caps, a cancelled or provider-declared
-/// permanent failure, a non-streaming stream response (`ErrNoEvents`), a stream that went silent
+/// permanent failure, a failure after the round's text reached the user (`AfterOutput`), a
+/// non-streaming stream response (`ErrNoEvents`), a stream that went silent
 /// past its idle bound (`StreamIdle`) and HTTP 4xx except 429. Everything else — 429, 5xx,
 /// transport faults, malformed frames — retries.
 ///
@@ -84,10 +85,18 @@ pub async fn retry_round<T>(
 /// its stream ends), but the tool rounds the turn already completed cannot be replayed — the turn
 /// keeps them and reports the stall — and every attempt would sit out the whole bound again. The
 /// user sees the error (with the knob that widens the bound) and decides.
+///
+/// `AfterOutput` is the same reasoning for any other fault: the error alone cannot say whether the
+/// round's text was already on screen (a cut body, a malformed or in-band tail frame, a missing
+/// terminator all arrive after a whole answer as readily as before one), so `stream_round` wraps the
+/// failure once text streamed. A replay would put the same answer on screen again — eleven times when
+/// the tail fault is deterministic, the GLM loop (X-82). A failure before any text — a thought is
+/// only a meter row — still retries.
 pub(crate) fn is_retryable(err: &ChatError) -> bool {
     match err {
         ChatError::Interrupted
         | ChatError::Truncated(_)
+        | ChatError::AfterOutput(_)
         | ChatError::LocalCap { .. }
         | ChatError::SharedCap { .. }
         | ChatError::Provider(ProviderError::Cancelled | ProviderError::Permanent(_)) => false,
@@ -172,6 +181,11 @@ mod tests {
         assert!(is_retryable(&status(503)));
         assert!(!is_retryable(&status(400)));
         assert!(!is_retryable(&status(404)));
+        // A failure after the round's text reached the user is reported, never replayed (X-82) —
+        // whatever the fault, a transient-looking one included.
+        assert!(!is_retryable(&ChatError::AfterOutput(
+            ProviderError::other("connection reset by peer")
+        )));
         // A stream that went silent after its head is reported, never replayed.
         assert!(!is_retryable(&ChatError::Provider(ProviderError::wire(
             WireOp::Stream,
@@ -182,6 +196,150 @@ mod tests {
             WireOp::Stream,
             LlmError::InBand("overloaded_error".to_owned())
         ))));
+    }
+
+    /// One Anthropic SSE event.
+    fn sse(v: &serde_json::Value) -> String {
+        format!(
+            "event: {}\ndata: {v}\n\n",
+            v["type"].as_str().expect("type")
+        )
+    }
+
+    /// A WHOLE answer through `message_delta` (`stop_reason` included when `stop` is set) — what the
+    /// user sees — and no `message_stop`: each case appends its own tail.
+    fn whole_answer(stop: bool) -> String {
+        use serde_json::json;
+        let delta = if stop {
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":9}})
+        } else {
+            json!({"type":"message_delta","delta":{},"usage":{"output_tokens":9}})
+        };
+        [
+            json!({"type":"message_start","message":{"usage":{"input_tokens":3}}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"text"}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"the whole answer"}}),
+            json!({"type":"content_block_stop","index":0}),
+            delta,
+        ]
+        .iter()
+        .map(sse)
+        .collect()
+    }
+
+    /// Serves ONE request with `body` under a 200 head. `short` > 0 announces that many bytes MORE than
+    /// it sends and then closes the connection: the body is cut, a transport fault after the answer.
+    async fn serve_once(body: String, short: usize) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.expect("accept");
+            let mut req = Vec::new();
+            let mut buf = [0_u8; 4096];
+            // The head, then as much body as it announces.
+            let (head_end, want) = loop {
+                let n = sock.read(&mut buf).await.expect("read");
+                req.extend_from_slice(&buf[..n]);
+                if let Some(i) = req.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&req[..i]).to_ascii_lowercase();
+                    let len = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .map_or(0, |v| v.trim().parse().expect("length"));
+                    break (i + 4, len);
+                }
+            };
+            while req.len() < head_end + want {
+                let n = sock.read(&mut buf).await.expect("read");
+                req.extend_from_slice(&buf[..n]);
+            }
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\n\r\n",
+                body.len() + short
+            );
+            sock.write_all(head.as_bytes()).await.expect("head");
+            sock.write_all(body.as_bytes()).await.expect("body");
+            sock.flush().await.expect("flush");
+        });
+        format!("http://{addr}")
+    }
+
+    // Evidence for the replay bug: a round that streamed its WHOLE answer and then failed at the tail.
+    // Every tail fault the anthropic dialect can meet after the text is classified `Request failed` (a
+    // cut body: `Network error`) and RETRYABLE on its own — the error carries no trace of what already
+    // reached the user. Whether it is replayed is therefore the call site's business (`stream_round`
+    // marks it delivered, X-82), never this table's.
+    #[tokio::test]
+    async fn a_whole_answer_with_a_failing_tail_is_retryable_on_its_own() {
+        use crate::provider::ToolProvider;
+        use crate::repl::errors::describe_error;
+        use crate::testing::RecordingSink;
+        use serde_json::json;
+
+        let error = sse(&json!({"type":"error","error":{"type":"overloaded_error","message":"x"}}));
+        let cases: [(&str, String, usize, &str); 5] = [
+            // The relay drops the connection after `stop_reason`, before `message_stop`.
+            ("cut body", whole_answer(true), 64, "Network error"),
+            // A trailing frame that is not JSON.
+            (
+                "malformed tail",
+                format!(
+                    "{}event: message_stop\ndata: {{not json\n\n",
+                    whole_answer(true)
+                ),
+                0,
+                "Request failed",
+            ),
+            // The body ends with no `message_stop` and no `stop_reason` (X-71).
+            ("no terminator", whole_answer(false), 0, "Request failed"),
+            // The usage figure of the last frame does not parse.
+            (
+                "bad usage",
+                format!(
+                    "{}{}",
+                    whole_answer(true),
+                    sse(
+                        &json!({"type":"message_delta","delta":{},"usage":{"output_tokens":"many"}})
+                    )
+                ),
+                0,
+                "Request failed",
+            ),
+            // An in-band error after the answer (a post-hoc filter, an overload).
+            (
+                "in-band error",
+                format!("{}{error}", whole_answer(true)),
+                0,
+                "Request failed",
+            ),
+        ];
+        for (name, body, short, headline) in cases {
+            let url = serve_once(body, short).await;
+            let p = crate::provider::anthropic::AnthropicProvider::new(
+                "k",
+                &url,
+                "m",
+                None,
+                reqwest::Client::new(),
+            );
+            let mut sink = RecordingSink::default();
+            let err = p
+                .stream_chat_with_tools(&CancellationToken::new(), &[], &[], &mut sink)
+                .await
+                .map(|_| ())
+                .expect_err(name);
+            assert_eq!(
+                sink.content(),
+                "the whole answer",
+                "{name}: delivered first"
+            );
+            let err = ChatError::Provider(err);
+            assert_eq!(describe_error(&err).headline, headline, "{name}: {err}");
+            assert!(is_retryable(&err), "{name}: {err}");
+        }
     }
 
     // --- retry_round -----------------------------------------------------------------

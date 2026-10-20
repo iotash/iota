@@ -1283,6 +1283,103 @@ async fn a_failing_call_after_a_tool_round_retries_without_replaying_it() {
     );
 }
 
+/// X-82, the GLM loop: the round after a tool round streams its WHOLE answer, then fails at the tail (a
+/// transient-looking fault). The answer already reached the user, so the failure is shown ONCE and never
+/// replayed — before, the ladder re-streamed the same answer 11 times. What arrived is kept like a stall's
+/// partial, behind the tool round it explains; the tool ran once.
+#[tokio::test(start_paused = true)]
+async fn a_failure_after_the_answer_streamed_is_shown_once_and_never_replayed() {
+    let log = Log::default();
+    let provider = FakeProvider::new()
+        .with_tools()
+        .rounds([
+            Round::calls(vec![tool_call("c1", "noop")]),
+            Round::failing_after("the whole answer", "connection reset by peer"),
+        ])
+        .replying("ok")
+        .with_log(log.clone());
+    let fx = Fixture::new(vec![
+        input("do it"),
+        Reply::Queued(Vec::new()),
+        input("next"),
+        Reply::Closed,
+    ])
+    .patient();
+    let tools = dispatch(&["noop"]);
+    fx.run_dispatching(provider, Arc::clone(&tools)).await;
+
+    assert_eq!(
+        log.calls(),
+        3,
+        "the tool round, the failing round ONCE, the next message"
+    );
+    assert_eq!(
+        fx.printed_count("the whole answer"),
+        1,
+        "the answer is on screen once: {:#?}",
+        fx.printed()
+    );
+    assert_eq!(fx.printed_count("connection reset by peer"), 1);
+    assert_eq!(fx.printed_count("the reply may be incomplete"), 1);
+    assert_eq!(
+        fx.ui
+            .events()
+            .iter()
+            .filter(|e| matches!(e, UiEvent::Busy(l) if l.contains("retrying")))
+            .count(),
+        0,
+        "no retry row was raised"
+    );
+    assert_eq!(
+        tools.calls.lock().expect("calls").len(),
+        1,
+        "the tool ran once"
+    );
+    let next: Vec<_> = log.send(2).iter().map(shape).collect();
+    let tail = &next[next.len() - 5..];
+    assert_eq!(tail[0], (Role::User, "do it".to_owned(), vec![]));
+    assert_eq!(
+        (tail[1].0, tail[1].2.clone()),
+        (Role::Assistant, vec!["c1".to_owned()])
+    );
+    assert_eq!(
+        (tail[2].0, tail[2].2.clone()),
+        (Role::Tool, vec!["c1".to_owned()])
+    );
+    assert_eq!(
+        (tail[3].0, tail[3].1.as_str()),
+        (Role::Assistant, "the whole answer"),
+        "what the user saw is kept"
+    );
+    assert_eq!(tail[4], (Role::User, "next".to_owned(), vec![]));
+}
+
+/// The other half of X-82: a failure before any TEXT streamed delivered nothing the user could read — a
+/// thought is only a meter row — so it still climbs the ladder and recovers.
+#[tokio::test(start_paused = true)]
+async fn a_failure_before_any_text_is_still_retried() {
+    let log = Log::default();
+    let thought = || Round {
+        reasoning: vec!["a thought".to_owned()],
+        ..Round::failing("connection reset by peer")
+    };
+    let provider = FakeProvider::new()
+        .with_tools()
+        .rounds([thought(), thought()])
+        .replying("an answer")
+        .with_log(log.clone());
+    let fx = Fixture::new(vec![input("q"), Reply::Closed]).patient();
+    fx.run(provider, None, &["noop"]).await;
+
+    assert_eq!(log.calls(), 3);
+    assert_eq!(
+        fx.printed_count("⟳ Request failed — recovered after 2 attempt(s)"),
+        1,
+        "{:#?}",
+        fx.printed()
+    );
+}
+
 /// A usage figure with no cache split: its context share is `input + output`.
 fn usage(input: u64, output: u64) -> Usage {
     Usage {

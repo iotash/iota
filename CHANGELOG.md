@@ -7,6 +7,14 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Fixed
 
+- **A reply that failed after it streamed is no longer sent again and
+  again.** When a stream broke at its very end — after the whole answer was
+  on screen — iota retried the request, which printed the same answer again,
+  up to ten times; a provider that fails the same way every time looked like
+  an endless loop. Once text has reached the screen, a failure is now shown
+  once and not retried, and what arrived is kept (marked as possibly
+  incomplete), together with the tool calls the turn already ran. A failure
+  before any text arrives is still retried as before.
 - **`tool_timeout_sec: 0` is an error, not a deadline of nothing.** An
   `mcp_servers` entry with `tool_timeout_sec: 0` used to make every call to
   that server time out the moment it was made. It is now refused when the

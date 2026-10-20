@@ -126,6 +126,16 @@ impl Round {
         }
     }
 
+    /// Streams `partial` — the whole answer, as far as the user can tell — then fails with
+    /// `ProviderError::other(msg)`: a fault at the stream's tail, after the text was delivered.
+    pub fn failing_after(partial: &str, msg: &str) -> Self {
+        Self {
+            content: vec![partial.to_owned()],
+            fail: Some(Failure::Other(msg.to_owned())),
+            ..Self::default()
+        }
+    }
+
     /// A round failing with `ProviderError::permanent_msg(msg)`.
     pub fn permanent(msg: &str) -> Self {
         Self {

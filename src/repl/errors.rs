@@ -47,6 +47,17 @@ impl ErrorReport {
 pub fn describe_error(e: &ChatError) -> ErrorReport {
     match e {
         ChatError::Provider(ProviderError::Wire { source, .. }) => describe_llm(source, e),
+        // Worded as the fault itself, plus why nothing was retried (X-82).
+        ChatError::AfterOutput(p) => {
+            let mut r = match p {
+                ProviderError::Wire { source, .. } => describe_llm(source, e),
+                _ => ErrorReport::request_failed(e),
+            };
+            if r.hint.is_empty() {
+                AFTER_OUTPUT_HINT.clone_into(&mut r.hint);
+            }
+            r
+        }
         ChatError::Truncated(t) => ErrorReport {
             headline: "Output truncated".to_owned(),
             detail: vec![t.to_string()],
@@ -72,6 +83,9 @@ const TRUNCATED_HINT: &str = "Raise max_tokens: in the config (an agents: entry 
 /// The same cut where the request carried no ceiling (the responses dialect, X-72): the endpoint's own limit
 /// cannot be raised from here, so the hint names only what can be lowered.
 const TRUNCATED_UNSENT_HINT: &str = "The endpoint's own output limit cut it: lower the model's effort in /model, or ask for a shorter reply";
+
+/// Why a failure after the reply streamed was not retried, and what the user can do about it.
+const AFTER_OUTPUT_HINT: &str = "It failed after the reply had streamed, so it was not retried; send the message again if the reply is incomplete";
 
 /// What a user can do about a stalled stream. It names no setting on purpose: the idle bound is a
 /// constant (`client::STREAM_IDLE_TIMEOUT`), not a knob (decided 2026-10-01).
@@ -310,6 +324,16 @@ mod tests {
                 headline: "Response stalled",
                 detail: "stream error: no data from the provider for 5m0s (stream idle timeout); the request was not retried".to_owned(),
                 hint: "Send the message again, or check the provider's base URL and model (/model); ESC stops a silent wait sooner",
+            },
+            Case {
+                name: "a failure after the reply streamed keeps its class and says why it was not retried",
+                err: ChatError::AfterOutput(ProviderError::wire(
+                    WireOp::Stream,
+                    LlmError::IncompleteStream,
+                )),
+                headline: "Request failed",
+                detail: format!("stream error: {}", LlmError::IncompleteStream),
+                hint: "It failed after the reply had streamed, so it was not retried; send the message again if the reply is incomplete",
             },
             Case {
                 name: "a truncated output names the ceiling and the knob",
