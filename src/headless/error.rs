@@ -29,6 +29,11 @@ pub enum ChatError {
     /// The provider failed; Display is the provider's own text.
     #[error(transparent)]
     Provider(#[from] ProviderError),
+    /// The provider failed AFTER the round's text had reached the user (DIVERGENCES X-82): shown once,
+    /// never replayed — a retry would stream the same answer again. Display is the provider's own text.
+    /// Only the interactive tool loop raises it; headless has no retry to keep it from.
+    #[error(transparent)]
+    AfterOutput(ProviderError),
     /// `--output-format` was neither `text` nor `json` (chat/output.go:51).
     #[error("unknown output format {0:?} (want text or json)")]
     BadFormat(String),

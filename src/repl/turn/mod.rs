@@ -206,11 +206,12 @@ impl From<ChatError> for TurnFailure {
 pub(crate) struct TurnReport {
     /// The turn's result, or why it ended badly.
     pub(crate) outcome: Result<TurnOutput, TurnFailure>,
-    /// Content streamed before the user interrupted or the stream stalled (EMPTY on every other
-    /// outcome — Go's `fail()` returns the buffers only on cancellation; a stall has no Go twin).
+    /// Content streamed before the user interrupted, the stream stalled or a fault ended it after its
+    /// text (EMPTY on every other outcome — Go's `fail()` returns the buffers only on cancellation; a
+    /// stall and `AfterOutput` have no Go twin).
     /// A truncation carries none: the tool loop already put what it kept in the history.
     pub(crate) partial: String,
-    /// Reasoning streamed before the interrupt or the stall.
+    /// Reasoning streamed before the interrupt, the stall or the failure after text.
     pub(crate) partial_reasoning: String,
 }
 
@@ -221,8 +222,9 @@ impl TurnReport {
     }
 
     /// Whether the turn was cut off mid-answer — the stream went silent past its idle bound
-    /// (`ProviderError::is_stall`), or the output ceiling stopped it (`ChatError::Truncated`,
-    /// X-69): still the error path, but the completed tool rounds and the partial stay. `Some`
+    /// (`ProviderError::is_stall`), the output ceiling stopped it (`ChatError::Truncated`,
+    /// X-69), or it failed after its text reached the user (`ChatError::AfterOutput`, X-82):
+    /// still the error path, but the completed tool rounds and the partial stay. `Some`
     /// carries the notice that says what was kept.
     pub(crate) fn cut_short(&self) -> Option<&'static str> {
         match &self.outcome {
@@ -231,6 +233,9 @@ impl TurnReport {
             }
             Err(TurnFailure::Chat(ChatError::Truncated(_))) => {
                 Some("What arrived before the cut-off is kept — the reply is incomplete.")
+            }
+            Err(TurnFailure::Chat(ChatError::AfterOutput(_))) => {
+                Some("What arrived before the failure is kept — the reply may be incomplete.")
             }
             _ => None,
         }
@@ -257,14 +262,14 @@ impl TurnReport {
 
 /// What one streamed round leaves behind: the round, and the partials the sink
 /// accumulated. On a user interrupt those ARE the answer so far, and the caller carries
-/// them out of the turn; a non-interrupt failure leaves them empty (Go's `fail()` shape) —
-/// a half-streamed answer under a provider error is not something the history should keep.
+/// them out of the turn; so does a stall, and a failure after text streamed (X-82) — what
+/// the user already read. A failure before any text leaves them empty (Go's `fail()` shape).
 pub(crate) struct RoundOutcome {
     /// The round, or why it failed.
     pub(crate) result: Result<RoundResult, ChatError>,
-    /// Content streamed before a user interrupt.
+    /// Content streamed before a user interrupt, a stall or a failure after text.
     pub(crate) partial: String,
-    /// Reasoning streamed before a user interrupt.
+    /// Reasoning streamed before the same.
     pub(crate) partial_reasoning: String,
 }
 
@@ -495,6 +500,16 @@ pub(crate) async fn stream_round(
                 // real, so it travels with the error (the run loop keeps it, `keep_cut_short_turn`).
                 RoundOutcome {
                     result: Err(ChatError::Provider(e)),
+                    partial,
+                    partial_reasoning: reasoning,
+                }
+            } else if !partial.is_empty() {
+                // Any other fault after the round's text reached the user — a cut body, a malformed
+                // or in-band tail frame, a missing terminator — is the same cut: what streamed is
+                // kept, and the failure is shown, never replayed (X-82). A replay would stream the
+                // same answer again, and a deterministic tail fault would do so on every attempt.
+                RoundOutcome {
+                    result: Err(ChatError::AfterOutput(e)),
                     partial,
                     partial_reasoning: reasoning,
                 }

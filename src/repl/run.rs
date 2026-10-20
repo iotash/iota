@@ -969,7 +969,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 repl.handles
                     .tr
                     .error_block(&report.headline, &report.lines());
-                // A stall or a truncation keeps what the turn completed; anything else — or
+                // A stall, a truncation or a failure after text keeps what the turn completed; anything else — or
                 // a cut with nothing to keep — rolls the turn back WITH its user message, and
                 // the name derived from it, so a title pass still in flight could only land a
                 // name `unseed` already discards. A kept cut lands like a kept interrupt (fable M2).
@@ -1370,10 +1370,11 @@ fn interrupt_turn(
 }
 
 /// Keeps what a turn cut short completed — a stall (`LlmError::StreamIdle`, the stream idle
-/// bound) or a truncation (`ChatError::Truncated`, X-69) — the interrupt table's kept branches,
+/// bound), a truncation (`ChatError::Truncated`, X-69) or a failure after the round's text
+/// (`ChatError::AfterOutput`, X-82) — the interrupt table's kept branches,
 /// under the error the caller already showed: the completed tool rounds stay (their side
 /// effects happened, and a history without them would have the model run them again), and a
-/// stall's partial text lands as an assistant message marked cut short. A truncation has no
+/// stall's or a failure's partial text lands as an assistant message marked cut short. A truncation has no
 /// partial: its round RETURNED, and the tool loop already kept its text the same way, with the
 /// round's raw blocks and cost.
 /// Returns `false`, touching nothing, when there is nothing to keep — the plain rollback then
