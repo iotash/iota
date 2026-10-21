@@ -1,10 +1,14 @@
 # 工具调用标签 `[name …]` 的分段上色：清单与方案
 
-Status: **Proposal**（未实现，等所有者评估）· 日期：2026-10-21 · 基于 `main` = `1a1ff9d`（v0.7.4）· 分支 `tool-label-style` · 同日修订一次：「单句话」并入 key-value，成为无键参数（§2.1–§2.5、§3）
+Status: **Proposal**（未实现，等所有者评估）· 日期：2026-10-21 · 基于 `main` = `1a1ff9d`（v0.7.4）· 分支 `tool-label-style` · 同日修订两次：一修「`header_summary` 的输出是位置参数，不是单句话」，二修「单句话仍是合法的一类，只是今天没有产出者」（§2.1–§2.5、§3 均按二修写）
 
 所有者的原话：「我想优化一个显示方面的，也就是一系列工具调用 widget（可能不仅限于，需要你找出来），也就是用中括号 `[xxx xxx xxx...]` 渲染的这批，我希望显示的时候能有个高亮效果。首先括号的颜色和里面内容的颜色不一样，然后根据不同的渲染类型（比如：单句话，key value，多参数）适配不同的显示效果。我希望能把这个显示的函数进行统一，先列出所有需要改的地方，给我一个方案，然后我来评估后看能不能做。」
 
-所有者对初稿的修正：「`[shell ls -la]`、`[shell …]` 这样的不能识别为单句话，因为 `shell` 是名字，后面是参数，这应该是 key-value 的一种特殊形式。」于是初稿里的 `LabelBody::Phrase` 取消了，`header_summary` 的输出改成**一个无键（positional）参数**。本文以下各节都按修订后的写。
+所有者对初稿的修正：「`[shell ls -la]`、`[shell …]` 这样的不能识别为单句话，因为 `shell` 是名字，后面是参数，这应该是 key-value 的一种特殊形式。」
+
+所有者的第二次修正：「单句话不能说没有，只是我举的例子里没有——如果中括号里 `[...]` 就是没有特殊的、值得标记结构的一句话时，就适用单句话。」
+
+两次合起来：`header_summary` 今天的输出是**位置参数**（key-value 的无键特例）；**单句话**（`Phrase`）作为一类保留，判据是「内容是一句话、没有值得标记的结构」。今天没有任何工具产出它（§2.1 核过）。
 
 ## 写作约定
 
@@ -14,8 +18,8 @@ Status: **Proposal**（未实现，等所有者评估）· 日期：2026-10-21 �
 ## 0. 结论
 
 - 工具调用标签**只在 2 个地方拼字符串、3 个地方上色**：`tool::fmt::tool_call_header`（及其 `tool_call_detail`）拼，`repl/turn/tools.rs` 的两处 `cyan(…)` 和 `repl/render/group.rs` 的 `composing_label` 上色。下游 8 个消费点（widget 标签行、`✓` 事件行、`✗` 失败行、单调用经典块、showcase 头……）全都把标签当**不透明字符串**原样拼接，不用改。
-- 能统一：把「拼」改成产出结构化的 `ToolLabel`（名字 + 一列参数，参数的键可以为空；外加「生成中」这一种状态），把「上色」收成渲染层的一个 `paint_label`。**可见文本逐字节不变**，所以按纯文本钉的测试（约 35 处，含 7 个 tmux 场景）全部不动，真正要改的旧断言只有 1 条。
-- 值得做，但要小做：改动约 5 个源文件 + 1 条测试 + 新增测试 + DIVERGENCES 一行（X-83）+ CHANGELOG。其余带方括号的地方（skills 来源标签、`/tools` 的 defer 状态、picker 行、后台任务通知、粘贴占位）**不建议**并进这次，理由见 §1.3。
+- 能统一：把「拼」改成产出结构化的 `ToolLabel`（名字 + 四类形状之一：只有名字 / 位置参数 / 有键参数 / 单句话，外加「生成中」这一种状态），把「上色」收成渲染层的一个 `paint_label`。**可见文本逐字节不变**，所以按纯文本钉的测试（约 35 处，含 7 个 tmux 场景）全部不动，真正要改的旧断言只有 1 条。
+- 值得做，但要小做：改动 4 个源文件 + 1 条测试 + 新增测试 + DIVERGENCES 一行（X-83）+ CHANGELOG。其余带方括号的地方（skills 来源标签、`/tools` 的 defer 状态、picker 行、后台任务通知、粘贴占位）**不建议**并进这次，理由见 §1.2。
 
 ## 1. 清单
 
@@ -23,9 +27,9 @@ Status: **Proposal**（未实现，等所有者评估）· 日期：2026-10-21 �
 
 | # | 位置 | 拼在哪 | 上色在哪 | 形状 | 宽度 / 截断 |
 |---|---|---|---|---|---|
-| 1 | `src/tool/fmt.rs:23` `tool_call_header` | 这里：`format!("[{name}]")` / `format!("[{name} {detail}]")` | 不上色（纯文本，`tests/repl/toolfmt.rs`、`tests/headless/approval.rs` 钉它） | 只有名字 / 无键参数 / 有键参数 / 多参数 | 名字经 `display_tool_name`（`:61`，`mcp__srv__tool` → `srv:tool`）不截；见 #2 |
-| 2 | `src/tool/fmt.rs:38` `tool_call_detail` | 这里：有 `header_summary` 就整段接管（`Some("")` → 空 → 裸名）；否则键排序、每值 `value_one_line` + `truncate_runes(15)`、最多 3 个、超出 `"… +N args"`，用空格 `join` | 不上色 | 无键参数（summary）/ 有键参数 / 多参数 | **按 rune**，本模块不引宽度 crate（模块头那条已记录的分歧）。另一个调用方：审批的 `detail`（`repl/turn/tools.rs:246` → `approval.rs:49`），要保持纯文本 |
-| 2a | `header_summary` 的提供者：`src/tool/builtins/shell.rs:289`，`src/tool/builtins/code/tools.rs:177,225,283,332`（`list_dir`/`read_file`/`edit_file`/`write_file`） | 各工具自己：shell = `header_command`（64 rune，首行 + ` …`）+ 可选 `cd <dir> && ` + 前缀 `(background) ` + 后缀 `(outside the sandbox)`；文件工具 = `header_path`（48 rune，从**头**省略成 `.../`） | 不上色 | 无键参数（一个） | 各自已截好；返回的是 `String`，结构在这一层就丢了 |
+| 1 | `src/tool/fmt.rs:23` `tool_call_header` | 这里：`format!("[{name}]")` / `format!("[{name} {detail}]")` | 不上色（纯文本，`tests/repl/toolfmt.rs`、`tests/headless/approval.rs` 钉它） | 只有名字 / 位置参数 / 有键参数（含多参数） | 名字经 `display_tool_name`（`:61`，`mcp__srv__tool` → `srv:tool`）不截；见 #2 |
+| 2 | `src/tool/fmt.rs:38` `tool_call_detail` | 这里：有 `header_summary` 就整段接管（`Some("")` → 空 → 裸名）；否则键排序、每值 `value_one_line` + `truncate_runes(15)`、最多 3 个、超出 `"… +N args"`，用空格 `join` | 不上色 | 位置参数（summary）/ 有键参数（含多参数） | **按 rune**，本模块不引宽度 crate（模块头那条已记录的分歧）。另一个调用方：审批的 `detail`（`repl/turn/tools.rs:246` → `approval.rs:49`），要保持纯文本 |
+| 2a | `header_summary` 的提供者：`src/tool/builtins/shell.rs:289`，`src/tool/builtins/code/tools.rs:177,225,283,332`（`list_dir`/`read_file`/`edit_file`/`write_file`） | 各工具自己：shell = `header_command`（64 rune，首行 + ` …`）+ 可选 `cd <dir> && ` + 前缀 `(background) ` + 后缀 `(outside the sandbox)`；文件工具 = `header_path`（48 rune，从**头**省略成 `.../`） | 不上色 | 位置参数（一个值 + 可选标记）；今天没有单句话 | 各自已截好；返回的是 `String`，结构在这一层就丢了 |
 | 3 | `src/repl/turn/tools.rs:224` 串行调用 | 调 #1 | **整段 `cyan()`**（`styles.rs:33`，SGR 36） | 同 #1 | — |
 | 4 | `src/repl/turn/tools.rs:355` 并行批 | 调 #1 | **整段 `cyan()`** | 同 #1 | — |
 | 5 | `src/repl/render/group.rs:552` `composing_label`（`turn/mod.rs:948` 调，并拿它去重） | 这里：`format!("[{n} …]")`，无名时 `"tool"` | **整段 `cyan()`** | 只有名字 + 生成中 `…` | 不截。注释要求它「和最终落地的头长得一样」 |
@@ -68,23 +72,43 @@ Status: **Proposal**（未实现，等所有者评估）· 日期：2026-10-21 �
 
 ### 2.1 统一成什么
 
-**拼（数据，放 `src/tool/fmt.rs`）**——保持「不引宽度 crate、按 rune 截断」：
+#### 分类（所有者定）
+
+| 形状 | 判据 | 例 | 今天的产出者 |
+|---|---|---|---|
+| **只有名字** | 没有参数 | `[edit_file]`、`[ping]` | `header_summary` 返回 `Some("")`；或者没有 summary 也没有参数 |
+| **位置参数**（key-value 的无键特例） | 内容是这个工具的**一个输入值** | `[shell ls -la]`、`[read_file src/ui/model.rs]` | 5 个 `header_summary` 实现，全部 |
+| **有键参数**（含多参数：超过 3 个时带尾巴 `… +N args`） | 有 `k:v` | `[glob pattern:**/*.rs]`、`[srv:search limit:10 query:rust tui]`、`[x a:1 b:2 c:3 … +2 args]` | 通用摘要（没有 summary 的工具：`glob`、`grep`、`load_skill`、`remember`、全部 MCP 工具） |
+| **单句话** | 内容是一句话，**没有值得标记的结构** | （今天没有） | **无** |
+| *生成中*（状态，不是形状） | 参数还在流式生成 | `[shell …]` | `composing_label` |
+
+「生成中」单列成状态：它说的是参数还不知道，不是参数长什么样，流完以后会变成上面四类之一。
+
+**今天有没有单句话：没有。** 核过 5 个实现，产出的都是一个位置值加可选标记：
+
+- `shell.rs:289`：`header_command(cmd)`，可能写成 `cd <path> && <cmd>` / `cd <path>; <cmd>`；前缀 `(background) `；**后缀** ` (outside the sandbox)`（`shell.rs:304-307` 是 `push`，标记在命令**后面**，不是前面）。
+- `code/tools.rs:177/225/283/332`（`list_dir`/`read_file`/`edit_file`/`write_file`）：`header_arg(args)`，就是那个路径。
+- 默认实现（`tool/mod.rs:149,192`）返回 `None`；3 个转发（`dispatch.rs:146,245,333`）只转发；`testing/dispatch.rs:140,306` 的两个替身是测试用，返回什么都行，不算产出者。MCP 工具没有 summary。
+
+#### 数据
 
 ```rust
-/// 一个调用标签的结构：名字 + 参数。所有截断都在这里做完，渲染层只上色、不再截。
+/// 一个调用标签的结构：名字 + 形状。所有截断都在这里做完，渲染层只上色、不再截。
 pub struct ToolLabel {
     pub name: String,          // display_tool_name 之后
     pub body: LabelBody,
 }
 
 pub enum LabelBody {
-    /// [name …]：参数还在流式生成，内容未知。
+    /// [name …]：参数还在流式生成。
     Composing,
-    /// [name a b k:v …]：键为 None 的是无键（positional）参数，只显示值；
-    /// pairs 为空且 more == 0 就是裸 [name]。
+    /// [name <一句话>]：没有值得标记的结构，整句一个颜色。今天没有产出者。
+    Phrase(String),
+    /// [name v]、[name k:v k:v]、[name k:v … +N args]：键为 None 是位置参数；
+    /// pairs 为空且 more == 0 就是裸 [name]（只有名字）。
     Args {
         pairs: Vec<(Option<String>, String)>,
-        more: usize,           // > 0 → 尾巴 "… +N args"
+        more: usize,
     },
 }
 
@@ -93,126 +117,120 @@ pub fn composing_label(name: &str) -> ToolLabel;      // "" → "tool"
 impl std::fmt::Display for ToolLabel { … }             // 逐字节等于今天的纯文本
 ```
 
-`tool_label` 怎么填 `pairs`，就是今天 `tool_call_detail` 的分支，原样搬过来：
+`tool_label` 怎么填（就是今天 `tool_call_detail` 的分支，原样搬过来）：
 
-| 来源 | `pairs` | `more` | 值的截断 |
-|---|---|---|---|
-| `header_summary` 返回 `Some("")` | 空 | 0 | — |
-| `header_summary` 返回 `Some(s)`，`s` 非空 | `[(None, s)]`，一个无键参数 | 0 | **不再截**：`s` 已按工具自己的规则截过（`header_command` 64 rune、`header_path` 48 rune）。**不能**套 15 rune，否则字形会变 |
-| `header_summary` 返回 `None`，没有参数 | 空 | 0 | — |
-| `header_summary` 返回 `None`，有参数 | 键排序后的前 3 个，每个是 `(Some(k), v)` | 剩下的个数 | `value_one_line` + `truncate_runes(15)`，同今天 |
+| 来源 | 结果 | 值的截断 |
+|---|---|---|
+| `header_summary` → `Some("")` | `Args { pairs: [], more: 0 }` | — |
+| `header_summary` → `Some(s)`，`s` 非空 | `Args { pairs: [(None, s)], more: 0 }`，位置参数（方案 (b)，见下） | **不再截**：`s` 已按工具自己的规则截过（64 / 48 rune）。不能套 15 rune，否则字形变 |
+| `header_summary` → `None`，没有参数 | `Args { pairs: [], more: 0 }` | — |
+| `header_summary` → `None`，有参数 | 键排序后的前 3 个 `(Some(k), v)`，`more` = 剩下的个数 | `value_one_line` + `truncate_runes(15)`，同今天 |
+| （将来）工具声明自己是单句话 | `Phrase(s)` | 工具自己截，同位置参数 |
 
-`Display` 的规则：先 `[` 和名字；每个 pair 前加一个空格，有键写 `k:v`，无键只写 `v`；`more > 0` 时加 ` … +N args`；最后 `]`。`Composing` 写 `[name …]`。
+`Display` 的规则：`[` + 名字；`Phrase(s)` 写 ` s`；`Args` 的每个 pair 写一个空格，再写 `k:v`（有键）或 `v`（无键）；`more > 0` 写 ` … +N args`；`Composing` 写 ` …`；最后 `]`。`tool_call_header` = `tool_label(..).to_string()`，`tool_call_detail` = 同一套规则去掉名字和括号——**两者签名、输出都不变**。
 
-- `tool_call_header` 变成 `tool_label(..).to_string()`，`tool_call_detail` 变成「body 的纯文本」（同一套规则，只是不带名字和括号）——**两者签名不变、输出不变**，钉它们的 10 条测试和审批 `detail` 都不动。
-- 今天不会出现「无键和有键混在一个标签里」：summary 只给一个无键参数，摘要只给有键参数。模型允许混排，`Display` 和 `paint_label` 也按 pair 逐个处理，将来真有工具这么用也不用改。
-- 无键参数只能来自数据本身，**绝不从字符串里反解析**：`[shell echo a:b]` 的纯文本和「键 `echo a`、值 `b`」长得一样，只有结构知道它是一个无键参数。
+- 位置参数和单句话只从数据里来，**绝不从字符串反解析**：`[shell echo a:b]` 的纯文本和「键 `echo a`、值 `b`」长得一样。
+- 标记（`(background) `、` (outside the sandbox)`）留在位置值里，不单独成键。理由同上一版：它们不是参数键，成键就得改字形；拆字符串不可靠；同一串还是审批弹窗的 `detail`（shell.rs 注释：「the mark is written once」）。
 
-**`header_summary` 那条边界的结论**：`Dispatcher::header_summary` **不改签名**（仍返回 `String`），整串就是那个无键参数。shell 的 `(background) ` 前缀和 `(outside the sandbox)` 后缀**不单独成键**，留在值里、和命令同色。同意所有者的倾向，理由有四条：
+#### 单句话将来怎么产出：三条路
 
-1. 它们不是参数的键。对应的参数是 `background: true`，要成键就得显示成 `background:true` 这类字形，可见文本会变，违反「只改颜色」。
-2. 要拆就只能把 summary 字符串拆回去。可前缀是插在命令前面的，命令本身也可能以同样的文字开头，拆不可靠。要做对，得让 trait 返回结构：涉及 trait、5 个实现、`testing/dispatch.rs` 的两个替身和 headless。
-3. 同一串 summary 也是审批弹窗的 `detail`，shell.rs 的注释写明「the mark is written once」。它本来就是一句完整的话，不是几个字段。
-4. 这两个标记出现得很少，为它们改 trait 不划算。
+- **(a) 改返回类型**：`header_summary` 改成返回 `Option<Summary>`，`Summary::{Arg(String), Phrase(String)}`。每次调用都能各自决定形状。改动面：
+  - 源码 12 处：`Tool` 和 `Dispatcher` 的默认实现（`tool/mod.rs:149,192`）、3 个转发（`dispatch.rs:146,245,333`）、5 个实现、`testing/dispatch.rs:140,306` 的两个替身、`headless/run.rs:417`（`.unwrap_or_default()` 改成取文本）、`fmt.rs` 的 `tool_call_detail`。
+  - 测试约 20 处：`tests/tool/{framework,code,shell}.rs` 的 13 处 `header_summary(..).as_deref()` 比较，加上 `HeaderDispatch { summary: Some(String) }` 的构造（`tests/repl/toolfmt.rs`、`tests/headless/approval.rs`，约 6 处）。
+  - 可见文本不变；**今天的 5 个实现会全部返回 `Arg`**，`Phrase` 仍然没人用。
+- **(b) 不动签名（YAGNI）**：今天所有 summary 一律当位置参数。`Phrase` 先放进模型和渲染器（一个变体、`paint_label` 一个分支、一条测试），**等有工具需要时再加信号**。分类表里「单句话」暂时是空集，但它是合法的一类，渲染路径已经备好、测过。额外改动：0 个 trait、0 个实现。
+- **(c) 加一个附加的形状声明**：不改 `header_summary`，在 `Tool` 上新增一个带默认值的方法 `fn header_shape(&self) -> HeaderShape { HeaderShape::Arg }`，`Dispatcher` 按名字转发（默认实现 + 3 个转发），`tool_label` 读它：`Phrase` → `LabelBody::Phrase(s)`。改动面：源码约 6 处，**一个已有实现、一条已有测试都不用碰**；新工具只需覆写一行。局限是形状**按工具**定，不能按每次调用定。
 
-**上色（渲染，放 `src/repl/render/styles.rs`，或新开 `src/repl/render/label.rs`）**：
+**推荐 (b)，并把 (c) 写定为将来的入口。** 理由：
+
+1. 今天没有任何产出者。(a) 要改约 32 处，换来的只是 5 个实现全部改写成 `Arg(…)`，屏幕上一个字节都不变。这是为假设的需求付真实的成本。
+2. (b) 不是丢掉这一类：`Phrase` 在数据模型、`Display`、`paint_label` 里都有，单元测试直接构造它来测。缺的只是「谁来产出」这个信号，而这个信号最好等第一个真实的工具出现再定。
+3. 等它出现，(c) 是纯增量（约 6 处、不碰现有实现），够用的前提是「一个工具的标签总是同一种形状」。今天 5 个实现都满足（shell 永远是命令，文件工具永远是路径），可以合理预期新工具也满足。只有出现「同一个工具有时是参数、有时是一句话」的情况才需要 (a)，到那时 (a) 的成本和今天一样，没有因为推迟而变贵。
+
+#### 上色
 
 ```rust
-pub(crate) fn paint_label(l: &ToolLabel) -> String;
+pub(crate) fn paint_label(l: &ToolLabel) -> String;   // src/repl/render/styles.rs（或新开 label.rs）
 ```
-
-调用方的改法：
 
 | 现在 | 改成 |
 |---|---|
 | `turn/tools.rs:224` `cyan(&tool_call_header(&*dispatch, tc))` | `paint_label(&tool_label(&*dispatch, tc))` |
 | `turn/tools.rs:355` 同上（`map` 里） | 同上 |
-| `render/group.rs:552` `composing_label(name) -> String` 里的 `cyan(format!(…))` | `paint_label(&fmt::composing_label(name))`（函数名留着，`turn/mod.rs:948` 不动） |
+| `render/group.rs:552` `composing_label` 里的 `cyan(format!(…))` | `paint_label(&fmt::composing_label(name))`（函数名留着，`turn/mod.rs:948` 不动） |
 
-上色放渲染层而不放 `tool::fmt`，因为 `tool` 在 `repl` 之下（`src/tool` 不依赖 `crate::repl`），`styles` 又是 X-27 开关所在；`fmt` 继续只管「是什么」，和今天「fmt 出纯文本、调用方包 `cyan`」的分工一致。
+上色放渲染层：`tool` 在 `repl` 之下，`styles` 是 X-27 的开关所在；`fmt` 只管标签「是什么」，和今天「fmt 出纯文本、调用方包 `cyan`」的分工一致。
 
-### 2.2 配色（修订后重列）
+### 2.2 配色（第二次重列）
 
-现成的只有 16 色 SGR（`styles.rs`：dim 2、cyan 36、bold 1、yellow 33…），**不新增颜色**。
+只用现成的 16 色 SGR（dim 2、cyan 36、bold 1），**不新增颜色**。
 
-| 部件 | 样式 | 理由 |
+| 部件 | 样式 | 出现在 |
 |---|---|---|
-| `[` `]` | **dim**（2） | 括号是框，不是内容，退到背景 |
-| 名字（含 MCP 的 `srv:tool`，那个 `:` 是名字的一部分） | **bold cyan**（`1;36`，`styles` 里加一个 `sgr("1;36", …)` 的包装） | 保住今天「工具头是 cyan」的识别度；加粗把名字和后面的参数分开 |
-| 无键参数的值 | **cyan**（36） | 它就是一个值，和有键参数的值同色。和状态行任务段的命令同色（`frame.rs:390`），同一条命令在哪儿都是一个颜色 |
-| 键 + `:` | **dim** | 键是说明，值才是信息 |
-| 有键参数的值 | **cyan**（36） | 值里带空格（`query:rust tui`）时，颜色把边界画了出来，这是这种形状最大的收益 |
-| `… +N args` | **dim** | 省略信息 |
-| 生成中的 `…` | **dim** | 同上 |
-| 值内的省略记号：`truncate_runes` 的 `…`、`header_command` 多行时的 ` …`、`header_path` 的 `.../` | 跟值同色 | 都已经是值字符串的一部分（截断在上色前做完，见 §2.4） |
-| 名字与参数、参数与参数之间的空格 | 不上色 | — |
+| `[` `]` | **dim** | 全部 |
+| 名字（含 MCP 的 `srv:tool`，其中 `:` 属于名字） | **bold cyan**（`1;36`，`styles` 加一个包装） | 全部 |
+| 位置参数的值 | **cyan** | 位置参数 |
+| 单句话 | **整句 cyan，不拆键** | 单句话 |
+| 键 + `:` | **dim** | 有键参数 |
+| 有键参数的值 | **cyan** | 有键参数 |
+| `… +N args` | **dim** | 有键参数（多参数） |
+| 生成中的 `…` | **dim** | 生成中 |
+| 值或句子里的省略记号（`truncate_runes` 的 `…`、多行命令的 ` …`、路径的 `.../`） | 跟所在的值/句子同色 | 位置参数 / 有键参数 / 单句话 |
+| 空格 | 不上色 | — |
 
-「无键值跟值同色（cyan）」在修订后**仍然成立**，而且更顺了：初稿里它是单独的一类、只是碰巧也用 cyan；现在它本来就是值，规则只剩一条「值都是 cyan」。代价是无键参数前面没有 dim 的键，它和名字之间只靠 bold 和一个空格区分。见 §3。
+和上一版比只多了「单句话」一行，其余没变。注意：**按这张表，单句话和位置参数画出来完全一样**（都是整段 cyan，前面没有键）。见 §3。
 
-`NO_COLOR`（及 `TERM=dumb`、stdout 非终端）：
+`NO_COLOR`（及 `TERM=dumb`、stdout 非终端）：结论不变。所有片段都走 `styles` 的包装，无色时原样交回文本、不加属性（X-27），输出**逐字节等于今天**；frame 侧 X-28 的「丢颜色、留属性」没东西可剥。不让 bold/dim 绕过开关（`tests/nocolor/main.rs` 逐字节扫 `\x1b[`）。
 
-- 所有片段都走 `styles` 的包装，它们在 `color::enabled()` 为假时**原样交回文本、属性也不加**（X-27 的规矩）。所以 `NO_COLOR` 下的输出**逐字节等于今天**——括号与内容的区分在无色模式下消失，和 chat 侧其它一切一样。
-- 标签还会进 frame（widget 标签行、正文行），frame 侧的 X-28 是「丢颜色、留属性」；但 chat 侧已经什么转义都没发，frame 那道关没东西可剥，两条规矩不打架。
-- **不建议**为了无色模式下也能区分括号而让 bold/dim 绕过开关：那会破 X-27（`tests/nocolor/main.rs` 逐字节扫 `\x1b[`）。
+### 2.3 四类形状 + 生成中的具体样子
 
-### 2.3 形状与具体样子（修订后重排）
-
-记号：`‹d›` = dim，`‹c›` = cyan，`‹C›` = bold cyan，每段各自 `…\x1b[0m` 收尾；空格不上色。
+记号：`‹d›` = dim，`‹c›` = cyan，`‹C›` = bold cyan，每段各自 `\x1b[0m` 收尾；␠ = 不上色的空格。
 
 | 形状 | 数据 | 例子（可见文本，**与今天相同**） | 分段 |
 |---|---|---|---|
-| 只有名字 | `Args { pairs: [], more: 0 }` | `[edit_file]`、`[ping]` | `‹d›[` `‹C›edit_file` `‹d›]` |
+| 只有名字 | `Args { [], 0 }` | `[edit_file]` | `‹d›[` `‹C›edit_file` `‹d›]` |
 | 生成中 | `Composing` | `[shell …]` | `‹d›[` `‹C›shell` ␠ `‹d›…` `‹d›]` |
-| 无键参数 | `[(None, v)]` | `[shell ls -la]`、`[read_file src/ui/model.rs]`、`[shell (background) make test]`、`[shell echo a:b]` | `‹d›[` `‹C›shell` ␠ `‹c›ls -la` `‹d›]` |
-| 有键参数（≤3 个） | `[(Some(k), v), …]`，`more: 0` | `[glob pattern:**/*.rs]`、`[srv:search limit:10 query:rust tui]` | `‹d›[` `‹C›srv:search` ␠ `‹d›limit:` `‹c›10` ␠ `‹d›query:` `‹c›rust tui` `‹d›]` |
-| 多参数（>3 个） | 有键 ×3，`more: N` | `[x a:1 b:2 c:3 … +2 args]` | 同上，尾巴 ␠ `‹d›… +2 args` |
+| 位置参数 | `Args { [(None, v)], 0 }` | `[shell ls -la]`、`[read_file src/ui/model.rs]`、`[shell (background) make test]`、`[shell iota mcp list (outside the sandbox)]`、`[shell echo a:b]` | `‹d›[` `‹C›shell` ␠ `‹c›ls -la` `‹d›]` |
+| 有键参数 | `Args { [(Some(k), v), …], more }` | `[srv:search limit:10 query:rust tui]`；多参数 `[x a:1 b:2 c:3 … +2 args]` | `‹d›[` `‹C›srv:search` ␠ `‹d›limit:` `‹c›10` ␠ `‹d›query:` `‹c›rust tui` `‹d›]`；多参数再加 ␠ `‹d›… +2 args` |
+| 单句话 | `Phrase(s)` | （今天没有；假想例 `[delegate summarize the failing tests]`） | `‹d›[` `‹C›delegate` ␠ `‹c›summarize the failing tests` `‹d›]` |
 
-- 「多参数」不是另一种 pair，只是有键参数加一条尾巴。所有者原话里的「多参数」例子 `[shell command:… +3 args]` 就是这种形状。
-- `[shell echo a:b]` 这一行说明了为什么数据里一定要分有键和无键：纯文本看不出区别，颜色能看出来——`a:b` 整段是 cyan，没有 dim 的键。
-- 截断规则**一条都不改**：有键参数的值 15 rune、最多 3 个；无键参数用 summary 自己的 64 / 48 rune。
+截断规则一条不改：有键值 15 rune、最多 3 个；位置值（以及将来的单句话）由工具自己截。
 
 ### 2.4 截断与上色的顺序
 
-1. **先截断、后上色**。`ToolLabel` 里存的全是截好的纯文本片段；`paint_label` 只做「片段 → `sgr(params, 片段)` → 拼接」，自己不量宽度、不截。所以 rune 截断**永远看不到转义**，不存在切断转义的可能。
-2. 每个片段自带 `\x1b[0m` 收尾（`sgr` 现成就是这样），不依赖外层状态。现有包裹它的地方——`event_line` 的 dim `✓` / dim snippet、frame 正文行外层的 `{FAINT}…{RESET}`——今天就是「外层 FAINT 被标签末尾的 reset 关掉，snippet 再自己开 dim」，分段后行为相同（标签内部多几次 reset，但外层本来就在第一个 reset 处结束了）。
-3. 上色之后**仍会被截**的只有 frame 正文行（`frame.rs:186` 的 `truncate_ansi`）：它按显示宽度走、遇转义原样照抄、截点之后的转义也照抄，所以切在标签中间也不会留下没关的颜色。widget 标签行（`frame.rs:175`）今天就不截，不变。
-4. 不变式（建议写成单元测试）：`strip_sgr(&paint_label(&l)) == l.to_string()`，对 §2.3 的五种形状、CJK 值、空 summary、含 `:` 的无键值各跑一遍；以及 `color` 关时 `paint_label(&l) == l.to_string()`。
+1. **先截断、后上色**。`ToolLabel` 里存的全是截好的纯文本；`paint_label` 只做「片段 → `sgr(params, 片段)` → 拼接」，不量宽度、不截，所以 rune 截断永远碰不到转义。
+2. 每段自带 `\x1b[0m` 收尾，不依赖外层状态。外面包着它的 `event_line` 的 dim `✓`/snippet、frame 正文行的 `{FAINT}…{RESET}`，今天就是「外层 FAINT 被标签末尾的 reset 关掉，snippet 自己再开 dim」，分段后行为相同。
+3. 上色后**还会被截**的只有 frame 正文行（`frame.rs:186` 的 `truncate_ansi`）：按显示宽度走、遇到转义原样照抄、截点之后的转义也照抄，切在标签中间不会留下没关的颜色。widget 标签行（`frame.rs:175`）今天就不截。
+4. 不变式测试：`strip_sgr(&paint_label(&l)) == l.to_string()`，对 §2.3 的五行（含直接构造的 `Phrase`）、CJK 值、空 summary、含 `:` 的位置值各跑一遍；`color` 关时 `paint_label(&l) == l.to_string()`。
 
 ### 2.5 成本与风险
 
-**屏幕上变不变**：**可见文本不变**。改成「无键参数」只是数据模型换了个说法，`Display` 规则下 `(None, "ls -la")` 输出的还是 ` ls -la`，`[shell ls -la]`、`[read_file src/ui/model.rs]`、`[shell (background) make test]`、`[shell …]`、`[edit_file]` 都逐字节和今天一样；审批 `detail` 也一样。变的只有颜色。所以这次仍然只是「颜色 + 模型」，不改字形。唯一会让字形变的坑是给无键值也套 15 rune 截断，§2.1 的表里已经排除了。
+**屏幕上变不变**：**可见文本不变。** 今天只有位置参数（单句话没有产出者），所以位置参数和单句话之间**今天没有任何可见差异**。即使将来有了单句话，按 §2.2 的配色两者颜色也一样，只是数据上分开。全部 `[shell …]`、`[read_file …]`、`[edit_file]`、`[glob pattern:…]` 和审批 `detail` 都逐字节等于今天。这次仍然只是「颜色 + 模型」，不改字形。
 
-**要改的文件**（4 个源文件 + 2 份文档，修订没有增加）：`src/tool/fmt.rs`（`ToolLabel` + `Display` + 两个旧函数改成薄包装）、`src/repl/render/styles.rs`（`paint_label` + 一个 bold-cyan 包装 + `sgr_pins` 加一条）、`src/repl/turn/tools.rs`（2 处）、`src/repl/render/group.rs`（`composing_label`）；`docs/DIVERGENCES.md`（新 X-83：Go 的工具头是整段 `CodeStyle`，这里分段）、`CHANGELOG.md` Unreleased。修订后 `LabelBody` 从四个变体减到两个，`paint_label` 少一个分支，实现反而略小。
+**两种做法的改动面**：
 
-**会被影响的测试**（可见文本不变，所以分类改了也不影响测试改动数；绝大多数不动）：
+| | (b) 推荐 | (a) 改返回类型 | (c) 将来加形状声明（增量，不在这次） |
+|---|---|---|---|
+| 源文件 | 4 个：`tool/fmt.rs`、`repl/render/styles.rs`、`repl/turn/tools.rs`（2 处）、`repl/render/group.rs` | (b) 的 4 个 + 再 12 处：`tool/mod.rs`（2）、`tool/dispatch.rs`（3）、`builtins/shell.rs`、`builtins/code/tools.rs`（4）、`testing/dispatch.rs`（2）、`headless/run.rs` | `tool/mod.rs`（2）、`tool/dispatch.rs`（3）、`tool/fmt.rs` 读它，约 6 处 |
+| 已有测试要改 | **1 条**（`src/repl/turn/tools/tests.rs:562`，没剥 SGR 的 `contains`） | 1 + 约 20（13 处 `header_summary(..).as_deref()`、约 6 处 `HeaderDispatch` 构造） | 0 |
+| 新增测试 | 约 5 条（五行分段、strip 不变式、无色恒等、含 `:` 的位置值不出 dim 键、`Phrase` 整句一色） | 同左 | 1 条（覆写后得到 `Phrase`） |
+| 文档 | DIVERGENCES X-83、CHANGELOG | 同左 | 改 X-83 一句 |
+| 可见文本 | 不变 | 不变 | 不变 |
 
-| 测试 | 钉的字符串 | 是否要改 |
-|---|---|---|
-| `tests/repl/toolfmt.rs` | 6 条 `tool_call_header` 纯文本（其中 `[edit_file src/ui/model.rs]` 走无键参数） | 不改（函数输出不变） |
-| `tests/headless/approval.rs:233-259` | 4 条（`[write_file a/b.rs]` 走无键参数） | 不改 |
-| `src/repl/turn/tools/tests.rs:646,1032` | 2 条，经 `strip_sgr` | 不改 |
-| `src/repl/turn/tools/tests.rs:562` | `raised[0].contains("[write_file …]")`，**没剥 SGR** | **要改 1 条**（剥 SGR 再比，或直接比 `paint_label` 的期望） |
-| `src/repl/render/transcript/tests.rs`（85 行）、`src/ui/render/region/tests.rs`（15）、`frame/tests.rs`（4）、`testing/scripted.rs`（2） | 测试自己喂进去的字面标签（`"[shell]"` 等），不经过构造函数 | 不改 |
-| tmux 场景 19、24、25、26、31、33、34（约 16 处，几乎全是 `[shell <命令>]`，即无键参数） | `capture-pane -p`（无 `-e`）读纯文本 | 不改；建议 L4 加一处 `-e` 断言括号与名字的 SGR 不同 |
-| `tests/nocolor/main.rs` | 全程无转义 + 针 `"edit"` | 不改（无色下输出不变），它正好守住 §2.2 的 NO_COLOR 结论 |
+(b) 下按纯文本钉标签的断言约 35 处，仍然只改 1 处（明细见上一版，分类变化不影响：它们钉的是纯文本）。
 
-合计：钉住工具标签可见文本的断言约 35 处，**改 1 处**，修订前后相同；新增约 4 条（五种形状分段、strip 不变式、无色恒等、含 `:` 的无键值不出 dim 键），比初稿多 1 条。
+**性能**：每个调用多建一个小 `Vec` 和几次 `format!`，可忽略。
 
-**性能**：每个调用多建一个小 `Vec` 和几次 `format!`，一回合几十次，可忽略。`composing_label` 去重比的是上色后的字符串，结果仍确定。
+**兼容/视觉风险**：dim 在少数终端不生效，括号退化成正常色，不会更难读；每段多约 8 字节转义，`chunk_overflow`、`ansi_width` 都按可见宽度算，不受影响。和 Go 的分歧要记一行 X-83；`styles.rs` 头注释「CodeStyle=36 (tool headers)」要跟着改一句。
 
-**兼容/视觉风险**：
-
-- dim 在少数终端（部分 Windows conhost、某些主题）不生效或很淡：括号退化成正常色，最坏等于今天少了 cyan，不会更难读。
-- 字节变长：每段多约 8 字节转义，标签进 scrollback 的字节数涨几倍，但 `chunk_overflow`、`ansi_width` 都按可见宽度算，无影响。
-- Go 对齐：这是有意的分歧，需要 X-83 一行；`TUI_CONTRACTS §9`（`styles.rs` 头注释里引的「CodeStyle=36 (tool headers)」）的注释要跟着改一句。
-
-**值不值得**：值得，前提是按本方案「只改颜色、不改字形」做——一次小 PR，真正的风险面只有 3 个上色点。收益主要落在有键参数（MCP 工具、`glob`/`grep`/`load_skill`/`remember` 走的都是这一形状）：值里有空格时，现在整段 cyan 糊成一片，分段后一眼能看出几个参数。无键参数（shell、文件工具，最常见的那批）收益小：只是括号变淡、名字加粗。
+**值不值得**：值得，前提是只改颜色、不改字形，并且用 (b)。一次小 PR，风险面只有 3 个上色点。收益主要落在有键参数（MCP 工具，以及 `glob`/`grep` 这类）：值里有空格时，今天整段 cyan 糊成一片。位置参数（shell、文件工具，最常见的那批）收益小：只是括号变淡、名字加粗。
 
 ## 3. 不同意或拿不准的地方
 
-- **所有者的修正我同意**：`shell` 是名字、后面是参数，把 summary 当成一个无键参数比初稿的「单句话」更准确，数据模型也更小。这次修订没有我不同意的地方。
-- **「按类型适配」我理解为只换颜色，不换字形**。如果所有者想要的是字形也变（比如单个有键参数时省掉键名，写成 `[glob **/*.rs]`，也就是把有键改成无键），那是另一件事：会改可见文本，上面「约 35 处不改」就变成大面积改，tmux 场景也要跟着动，而且审批 `detail` 共用这串、要单独评估。建议先只做颜色。
-- **无键参数和名字挨得太近**：`[shell ls -la]` 里 `shell` 是 bold cyan，`ls -la` 是 cyan，只差一个加粗。bold 在有些终端或主题上不明显，那样名字和命令就连成一片了——而这正是最常见的那批标签。备选：无键值（以至所有值）改用默认前景色，名字留 cyan。代价是和状态行任务段的 cyan 命令不再一致，有键参数里「dim 键 + 默认色值」的对比也弱一些。我仍倾向 bold cyan，但这一条要真机看一眼再定。
-- **`image` widget 要不要变成 `[image]`**：它今天不带括号、不上色，是 Go 的原样。套进统一函数（空参数的 `Args`）会让它和工具调用长得一样，但它其实不是工具调用（专用图像 provider 的回合没有 tool call），而且改的是可见文本。建议不动，除非所有者觉得应该一致。
-- **skills 来源标签与 `/tools` defer 状态**：形状是「只有一个标签」，能复用括号画法（括号 dim、内容保持 yellow），成本各 1 行。放不放这次都行；我建议放第二期，这次 PR 只管工具调用，免得 X-83 的范围说不清。
-- **后台任务通知** `[background job … finished: …]`：所有者说的「可能不仅限于」最像指它，但这串是给模型 pattern-match 的固定格式，显示处又是整行 dim 的「次要信息」；分段上色只能在显示处（`tr.notice`）做，得先认出这个形状——我不建议。
+- **所有者的核对有一处小出入**：`(outside the sandbox)` 是**后缀**（`<cmd> (outside the sandbox)`，`shell.rs:304-307` 是 `push`），不是前缀；`(background) ` 才是前缀。不影响结论：两个标记都留在那个位置值里。
+- **「四类」与表里的五行**：我把「生成中」算作状态，不算形状。它说的是参数还不知道，流完就变成另外四类之一。「多参数」并进了「有键参数」：它只是有键参数加一条尾巴。所以是四类形状 + 一个状态，与所有者的表一致，只是归法写明了。
+- **按定下的配色，单句话和位置参数看起来一模一样**：都是名字后面跟一段 cyan，没有键。所以这一类今天在模型里有意义，在屏幕上没有。要让分类在屏幕上可见，得给其中一个换样式，比如单句话用默认前景色、不上 cyan，表示「这是描述，不是输入值」。我没有这么写，因为所有者明确要整句 cyan；建议等第一个真正的单句话出现、在真终端上对比过再定。
+- **位置值和名字挨得太近**（上一版提过，仍然成立）：`[shell ls -la]` 里名字和命令只差一个 bold。bold 不明显的终端上会连成一片，而这是最常见的那批标签。备选：值改用默认前景色。我仍倾向 bold cyan，要在真终端上看一眼再定。
+- **(c) 的局限**：形状按工具定，不按每次调用定。如果将来有工具需要「这次是参数、下次是一句话」，就得走 (a)。届时 (a) 的成本和今天一样，推迟不会让它变贵。
+- **「按类型适配」我理解为只换颜色，不换字形**（所有者尚未否决）。如果要改字形（例如单个有键参数省掉键名），可见文本会变，约 35 处断言和 tmux 场景都要大面积改，审批 `detail` 也要单独评估。
+- 其余照旧：`image` 不改成 `[image]`；skills 来源标签和 `/tools` 的 defer 状态放第二期；后台任务完成通知不碰。
