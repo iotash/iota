@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use crate::text::{elapsed, tokens};
 use crate::tool::{Artifact, ArtifactKind};
 
-use crate::repl::render::styles::{cyan, dim, red, truncate_runes};
+use crate::repl::render::styles::{dim, paint_label, red, truncate_runes};
 use crate::repl::render::transcript::{BlockKind, Inner, Transcript};
 use crate::text::go_duration;
 
@@ -546,14 +546,9 @@ impl ThinkingMeter {
     }
 }
 
-/// The streaming header, rendered exactly like the final committed tool-call header
-/// (`"[name …]"`, `CodeStyle`) so the widget settles into the collapsed form without
+/// The streaming header, painted exactly like the final committed tool-call header
+/// (`"[name …]"`, [`paint_label`]) so the widget settles into the collapsed form without
 /// changing its look (chat/run.go:1247-1253 `composingLabel`; `"tool"` when nameless).
 pub(crate) fn composing_label(name: &str) -> String {
-    let n = if name.is_empty() {
-        "tool".to_owned()
-    } else {
-        crate::tool::fmt::display_tool_name(name)
-    };
-    cyan(&format!("[{n} …]"))
+    paint_label(&crate::tool::fmt::composing_label(name))
 }

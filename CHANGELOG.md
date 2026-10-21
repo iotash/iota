@@ -3,6 +3,20 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## Unreleased
+
+### Changed
+
+- **Tool-call labels are easier to read.** The `[shell ls -la]`-style label
+  on every tool call — while the call is being written, while it runs, and
+  in the line it leaves behind — is no longer one block of cyan. The
+  brackets are faint, the tool's name is bold cyan, and what follows it is
+  cyan; when a call shows its arguments as `key:value`, the keys are faint,
+  so `[srv:search limit:10 query:rust tui]` reads as two arguments at a
+  glance. `… +N args` and the `…` of a call still being written are faint
+  too. The text is exactly what it was, and with `NO_COLOR` set the label is
+  plain text as before.
+
 ## 0.7.4 - 2026-10-20
 
 ### Fixed

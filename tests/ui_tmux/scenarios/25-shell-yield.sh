@@ -10,7 +10,9 @@
 #   8.6 the yield       — the classic block's receipt row `⎿ still running after 2s → background job b1`
 #                         lands under the call, and the model's reply closes the round with
 #                         `ran: Still running after 2s as background job b1 (pid …` — the text it was
-#                         told; the call never held the turn for the whole command;
+#                         told; the call never held the turn for the whole command; the committed
+#                         header is painted in segments (X-83) — read with `capture-pane -e`, its `[`
+#                         wears faint and its name cyan, two different SGR states;
 #   8.7 /jobs           — while the job runs, `/j` completes to `/jobs`, and the command opens the Jobs
 #                         tab with one row per job; Enter opens the job's page (the command in full,
 #                         the clock and its start, the pid, the log path, the log's last lines), Esc
@@ -67,6 +69,14 @@ has_jobs_candidate() { [ "$(count_composer '⎿ jobs')" -gt 0 ]; }
 # The last OSC 9;4 state the pane was sent ("" if none yet).
 last_progress() { LC_ALL=C grep -aoE '\]9;4;[0-9]' "$RAW" 2>/dev/null | tail -1 | cut -c6; }
 progress_is_idle() { [ "$(last_progress)" = 0 ]; }
+# label_sgr <name> — the SGR runs in front of the first committed `[<name> ` label's `[` and its name,
+# as `<bracket>|<name>`, off the rendered grid with its SGR state (`capture-pane -e`; tmux re-spells
+# the sequences — cyan comes back as `38;5;6` — so the runs are compared, not pinned byte for byte; the name's own reset sits between
+# it and the blank).
+label_sgr() {
+    tm capture-pane -e -pt s -S -400 2>/dev/null | NAME="$1" perl -ne \
+        'if (/((?:\e\[[0-9;]*m)*)\[((?:\e\[[0-9;]*m)*)\Q$ENV{NAME}\E(?:\e\[[0-9;]*m)* /) { print "$1|$2\n"; exit }'
+}
 
 start_provider openai 100 24 || finish
 settle || miss "startup never settled"
@@ -80,6 +90,16 @@ wait_all 'ran: Still running after 2s as background job b1 (pid' || miss "the mo
 settle || miss "frame never settled after the yield"
 check_once "the call is echoed once" "❯ runfg:$CMD"
 check_once "the call's header is committed once" "[shell $CMD]"
+sgr="$(label_sgr shell)"
+bracket_sgr="${sgr%%|*}"
+name_sgr="${sgr#*|}"
+if [ -n "$bracket_sgr" ] && [ -n "$name_sgr" ] && [ "$bracket_sgr" != "$name_sgr" ] \
+    && printf '%s' "$bracket_sgr" | LC_ALL=C grep -qE '\[([0-9;]*;)?2(;[0-9;]*)?m' \
+    && printf '%s' "$name_sgr" | LC_ALL=C grep -qE '\[([0-9;]*;)?(36|38;5;6)(;[0-9;]*)?m'; then
+    ok "the header's bracket (faint) and name (cyan) wear different SGR"
+else
+    bad "the header's bracket and name are not painted apart: $(printf '%q' "$sgr")"
+fi
 check "the receipt row is under the header" "$(count_all "⎿ $RECEIPT")" 1
 check "the model's receipt is the reply's first line" "$(count_all 'ran: Still running after 2s as background job b1 (pid')" 1
 check "…and no notice yet: the job is still running" "$(count_all '[background job b1 finished')" 0
