@@ -201,7 +201,7 @@ async fn a_bot_banner_names_its_mode_escape_free() {
 }
 
 /// Gate (i), end to end: a whole interactive run — banner, a streamed sentence, a tool
-/// call with its cyan header and its shaded diff, a markdown document with every styled
+/// call with its segmented header and its shaded diff, a markdown document with every styled
 /// block, a red error block — reaches the facade without one escape byte.
 #[tokio::test]
 async fn a_whole_run_reaches_the_facade_escape_free() {
@@ -227,7 +227,7 @@ async fn a_whole_run_reaches_the_facade_escape_free() {
         "│ ι> iota  v", // the banner card: its edge (dim when painted), mark (cyan) and version (dim)
         "│ chat · session ", // the mode row: the mode word (green when painted), the dim dots
         "Let me edit that.", // the streamed sentence
-        "edit",         // the tool-call header (cyan when painted)
+        "edit",         // the tool-call header (faint brackets, bold cyan name when painted — X-83)
         "+ fn main() { run(); }", // a diff row (256-color block when painted)
         "- fn main() {}",
         "Heading", // H1 (bold+underline when painted)

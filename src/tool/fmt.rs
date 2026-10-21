@@ -17,17 +17,98 @@ pub(crate) const TOOL_HEADER_MAX_VALUE: usize = 15;
 /// Max result lines shown inline under a call.
 pub(crate) const TOOL_RESULT_MAX_LINES: usize = 3;
 
-/// `"[name k:v k:v]"`: keys sorted, values one-lined + 15-rune cap + `"…"`, max 3 args then
-/// `"… +N args"`; a `Some(summary)` from `header_summary` takes over completely (`Some("")` →
-/// bare `"[name]"`).
-pub fn tool_call_header(dispatch: &dyn Dispatcher, tc: &ToolCall) -> String {
-    let name = display_tool_name(&tc.name);
-    let detail = tool_call_detail(dispatch, tc);
-    if detail.is_empty() {
-        format!("[{name}]")
-    } else {
-        format!("[{name} {detail}]")
+/// A call label's structure: the name and one of the label shapes (docs/design/tool-label-style.md).
+/// Every cut is made here, on rune boundaries — the painter (`repl::render::styles::paint_label`)
+/// only colors the finished segments, so a truncation never meets an escape. Its [`Display`] is the
+/// plain label, byte for byte the text the screen shows.
+///
+/// [`Display`]: std::fmt::Display
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolLabel {
+    /// The display name (`display_tool_name`).
+    pub name: String,
+    /// What follows the name.
+    pub body: LabelBody,
+}
+
+/// The shapes a label takes, plus the composing state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LabelBody {
+    /// `"[name …]"`: the arguments are still streaming.
+    Composing,
+    /// `"[name <sentence>]"`: one sentence with no structure worth marking, painted whole. A
+    /// legitimate shape with no producer today — every `header_summary` is a positional argument.
+    Phrase(String),
+    /// `"[name v]"`, `"[name k:v k:v]"`, `"[name k:v … +N args]"`: a `None` key is a positional
+    /// argument (a tool's own summary); no pairs and no tail is the bare `"[name]"`.
+    Args {
+        /// The arguments shown, already one-lined and cut.
+        pairs: Vec<(Option<String>, String)>,
+        /// Arguments not shown — the `"… +N args"` tail when non-zero.
+        more: usize,
+    },
+}
+
+impl LabelBody {
+    /// The plain text after the name (no leading blank): the approval evidence.
+    pub(crate) fn detail(&self) -> String {
+        match self {
+            Self::Composing => "…".to_owned(),
+            Self::Phrase(s) => s.clone(),
+            Self::Args { pairs, more } => {
+                let mut parts: Vec<String> = pairs
+                    .iter()
+                    .map(|(k, v)| match k {
+                        Some(k) => format!("{k}:{v}"),
+                        None => v.clone(),
+                    })
+                    .collect();
+                if *more > 0 {
+                    parts.push(format!("… +{more} args"));
+                }
+                parts.join(" ")
+            }
+        }
     }
+}
+
+impl std::fmt::Display for ToolLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let detail = self.body.detail();
+        if detail.is_empty() {
+            write!(f, "[{}]", self.name)
+        } else {
+            write!(f, "[{} {detail}]", self.name)
+        }
+    }
+}
+
+/// The label of a call: a `Some(summary)` from `header_summary` takes over completely as ONE
+/// positional argument (`Some("")` → bare `"[name]"`); otherwise keys sorted, values one-lined +
+/// 15-rune cap + `"…"`, max 3 args then `"… +N args"`.
+pub fn tool_label(dispatch: &dyn Dispatcher, tc: &ToolCall) -> ToolLabel {
+    ToolLabel {
+        name: display_tool_name(&tc.name),
+        body: label_body(dispatch, tc),
+    }
+}
+
+/// The streaming label `"[name …]"` (`"tool"` when nameless) — the same name the final label
+/// carries, so the widget settles without changing its look.
+pub fn composing_label(name: &str) -> ToolLabel {
+    ToolLabel {
+        name: if name.is_empty() {
+            "tool".to_owned()
+        } else {
+            display_tool_name(name)
+        },
+        body: LabelBody::Composing,
+    }
+}
+
+/// `"[name k:v k:v]"` — [`tool_label`] as plain text.
+pub fn tool_call_header(dispatch: &dyn Dispatcher, tc: &ToolCall) -> String {
+    tool_label(dispatch, tc).to_string()
 }
 
 /// Approval evidence: `header_summary` else the sorted-key digest.
@@ -36,23 +117,37 @@ pub fn tool_call_header(dispatch: &dyn Dispatcher, tc: &ToolCall) -> String {
 /// bare `"[name]"`, never as the argument digest (`edit_file`'s `new_string` must not
 /// reach a header).
 pub(crate) fn tool_call_detail(dispatch: &dyn Dispatcher, tc: &ToolCall) -> String {
+    label_body(dispatch, tc).detail()
+}
+
+fn label_body(dispatch: &dyn Dispatcher, tc: &ToolCall) -> LabelBody {
     if let Some(summary) = dispatch.header_summary(&tc.name, &tc.arguments) {
-        return summary;
+        // The tool cut its summary by its own rule (`header_command`, `header_path`): no 15-rune cap.
+        let pairs = if summary.is_empty() {
+            Vec::new()
+        } else {
+            vec![(None, summary)]
+        };
+        return LabelBody::Args { pairs, more: 0 };
     }
     let mut keys: Vec<&String> = tc.arguments.keys().collect();
     keys.sort();
 
     let shown = keys.len().min(TOOL_HEADER_MAX_ARGS);
-    let mut parts: Vec<String> = Vec::with_capacity(shown + 1);
-    for k in &keys[..shown] {
-        let v = value_one_line(&tc.arguments[k.as_str()]);
-        parts.push(format!("{k}:{}", truncate_runes(&v, TOOL_HEADER_MAX_VALUE)));
+    let pairs = keys[..shown]
+        .iter()
+        .map(|k| {
+            let v = value_one_line(&tc.arguments[k.as_str()]);
+            (
+                Some((*k).clone()),
+                truncate_runes(&v, TOOL_HEADER_MAX_VALUE),
+            )
+        })
+        .collect();
+    LabelBody::Args {
+        pairs,
+        more: keys.len() - shown,
     }
-    let extra = keys.len() - shown;
-    if extra > 0 {
-        parts.push(format!("… +{extra} args"));
-    }
-    parts.join(" ")
 }
 
 /// `"mcp__srv__tool"` → `"srv:tool"`; other names verbatim.

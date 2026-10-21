@@ -25,11 +25,11 @@ use crate::provider::model::{AssistantBody, Message, ToolCall, ToolDef};
 use crate::tool::Presentation;
 use crate::tool::context::ArtifactSlot;
 use crate::tool::context::RunCtx;
-use crate::tool::fmt::{display_tool_name, tool_call_detail, tool_call_header};
+use crate::tool::fmt::{display_tool_name, tool_call_detail, tool_label};
 use crate::ui::facade::UiError;
 
 use crate::repl::context::meter::CtxMeter;
-use crate::repl::render::styles::cyan;
+use crate::repl::render::styles::paint_label;
 
 use crate::repl::turn::retry::retry_round;
 use crate::repl::turn::steer::Steerer;
@@ -221,7 +221,7 @@ async fn walk(
         }
         let tc = &calls[i];
         i += 1;
-        let header = cyan(&tool_call_header(&*dispatch, tc));
+        let header = paint_label(&tool_label(&*dispatch, tc));
         let mode = dispatch.presentation(&tc.name);
 
         if mode == Presentation::Surface {
@@ -352,7 +352,7 @@ async fn run_parallel_batch(t: &Turn<'_>, calls: &[ToolCall]) -> Vec<Message> {
     let dispatch = Arc::clone(&t.cx.dispatch);
     let headers: Vec<String> = calls
         .iter()
-        .map(|tc| cyan(&tool_call_header(&*dispatch, tc)))
+        .map(|tc| paint_label(&tool_label(&*dispatch, tc)))
         .collect();
     // finishCall relabels the widget to "Working…" as the rows land, so the batch needs no
     // label of its own.

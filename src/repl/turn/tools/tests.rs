@@ -559,7 +559,16 @@ async fn the_content_tap_feeds_the_history_and_cuts_on_the_first_tool_delta() {
         })
         .collect();
     assert_eq!(raised.len(), 1, "one raise for one label: {raised:?}");
-    assert!(raised[0].contains("[write_file …]"), "{raised:?}");
+    // The label is painted in segments (X-83): its text is read with the SGR stripped, and its bytes
+    // are the composing label's own.
+    assert!(
+        crate::text::ansi::strip_sgr(raised[0]).contains("[write_file …]"),
+        "{raised:?}"
+    );
+    assert_eq!(
+        raised[0],
+        &crate::repl::render::group::composing_label("write_file")
+    );
     assert_eq!(
         plain(&events),
         vec![
