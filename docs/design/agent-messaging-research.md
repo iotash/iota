@@ -2,6 +2,8 @@
 
 Status: **Research + 建议** · 日期：2026-10-21 · 基于 `main` = `2929ed4`（v0.7.4 之后）· 分支 `agent-messaging` · 本机：herdr 0.9.5、Claude Code 2.1.306、codex-cli 0.162.1、tmux 3.8、rustc 1.98.0；iota 的 MCP 客户端是 rmcp 3.1.4
 
+**后续（2026-10-22）**：所有者选了 §4.2 B（socket），不走 inbox；v1 已实现，规格与实现见 [`agent-messaging.md`](agent-messaging.md)。与本文的出入：socket 本体在 `~/.iota/run/<pid>.sock`，`<bundle>/sock` 是指向它的链接——§5 第 16 条 (b) 的路径长度实测后不成立（本 worktree 下 110 字节，超过 macOS 的 104）。下文保持调研时的原样。
+
 本文只做调研和设计建议，不改代码。所有者的原话：「我想要调研一下，现在有没有业界比较通用的 agent 通信的方式？比如我的当前 session，其它进程可以向我发送消息。」
 
 ## 写作约定
