@@ -67,6 +67,16 @@ pub(crate) enum UiMsg {
     /// Host-injected input: served straight to a parked waiter, else appended to the
     /// type-ahead queue (the composer's draft is never touched).
     Enqueue(Input),
+    /// [`UiMsg::Enqueue`] with a receipt (`Ui::deliver`): the same two branches, refused when the queue
+    /// already holds `cap` messages from other processes.
+    Deliver {
+        /// The message, an `InputKind::Message`.
+        input: Input,
+        /// How many such messages the queue may hold.
+        cap: usize,
+        /// What became of it.
+        reply: oneshot::Sender<crate::ui::facade::Delivered>,
+    },
     /// Steering drain: pops the contiguous non-`'/'` prefix of the queue
     /// (a slash command stops the take — model.go takeQueuedMsg).
     TakeQueued {

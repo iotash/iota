@@ -26,6 +26,9 @@ mod images;
 // Spawns real background children through `Jobs`; its command lines are POSIX, so each test that runs one
 // asks `jobs::skip_unless_posix` first (see `tests/tool/main.rs`).
 mod jobs;
+// A real Unix socket: the chat's (`session::sock`), which only Unix has.
+#[cfg(unix)]
+mod messaging;
 mod new_session;
 mod settings;
 mod skills;

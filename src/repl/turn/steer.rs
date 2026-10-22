@@ -20,11 +20,17 @@ use crate::repl::render::transcript::Transcript;
 /// One taken off the queue mid-turn is HELD and handed back to the loop, which queues it again after the
 /// turn. And the flush turn itself takes nothing — a steerer built closed leaves the queue alone, so what
 /// the user typed meanwhile is answered after the flush, by a turn with all its tools.
+///
+/// A message from another process (`InputKind::Message`, `repl::inbound`) lands like a job's notice. In a chat
+/// that holds them for the user (its toolsets waive approval), it is HELD instead and handed back to the loop,
+/// which queues it again after the turn — the idle loop asks the user before the model reads it.
 pub(crate) struct Steerer {
     ui: Arc<dyn Ui>,
     tr: Arc<Transcript>,
     open: bool,
     held: Vec<Input>,
+    hold_messages: bool,
+    held_messages: Vec<Input>,
 }
 
 impl Steerer {
@@ -35,7 +41,15 @@ impl Steerer {
             tr,
             open,
             held: Vec::new(),
+            hold_messages: false,
+            held_messages: Vec::new(),
         }
+    }
+
+    /// Holds every message from another process this steerer takes, instead of injecting it.
+    pub(crate) fn holding_messages(mut self, hold: bool) -> Self {
+        self.hold_messages = hold;
+        self
     }
 
     /// Drains the contiguous non-command prefix of the queue (the facade's
@@ -52,11 +66,16 @@ impl Steerer {
                 self.held.push(input);
                 continue;
             }
+            if input.kind == InputKind::Message && self.hold_messages {
+                self.held_messages.push(input);
+                continue;
+            }
             // A host notice (a background job finished) rides the SAME queue and lands at the same
             // boundary, but it is not the user speaking: one dim headline, and the message says so.
             // It settles the running group exactly as the `❯` block does — the headline goes
-            // under the call that was running when the job ended, not above its rows.
-            let m = if input.kind == InputKind::Notice {
+            // under the call that was running when the job ended, not above its rows. A message from
+            // another process is the same kind of thing and lands the same way.
+            let m = if input.kind.is_notice() {
                 self.tr.boundary_notice(&input.display);
                 Message::notice(input.text)
             } else {
@@ -72,5 +91,10 @@ impl Steerer {
     /// The flush notices taken off the queue and not injected, for the loop to queue again.
     pub(crate) fn take_held(&mut self) -> Vec<Input> {
         std::mem::take(&mut self.held)
+    }
+
+    /// The messages from other processes taken off the queue and held, for the loop to queue again.
+    pub(crate) fn take_held_messages(&mut self) -> Vec<Input> {
+        std::mem::take(&mut self.held_messages)
     }
 }

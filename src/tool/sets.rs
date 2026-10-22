@@ -36,6 +36,22 @@ pub fn set_factory(name: &str) -> Option<SetFactory> {
     }
 }
 
+/// Whether `tools` enables a set that acts without asking: `shell` with `auto_run`, `code` with `auto_write`.
+/// A chat configured so lets whoever can message it make the model act unasked, so it holds a message from
+/// another process for the user first (`repl::inbound`, docs/design/agent-messaging.md §4). A value that does
+/// not decode answers `false` here — the set's own factory refuses it.
+pub fn waives_approval(tools: &ToolsConfig) -> bool {
+    use super::builtins::{code::CodeConfig, shell::ShellConfig};
+    let enabled = |name: &str| tools.contains_key(name) && !super::set_disabled(tools, name);
+    let shell = enabled("shell")
+        && super::yaml11::decode_mapping::<ShellConfig>(tools.get("shell"))
+            .is_ok_and(|c| c.auto_run);
+    let code = enabled("code")
+        && super::yaml11::decode_mapping::<CodeConfig>(tools.get("code"))
+            .is_ok_and(|c| c.auto_write);
+    shell || code
+}
+
 /// Why a toolset factory refused its configuration; [`SetError::NoShell`] reports a machine with no
 /// usable interpreter.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -75,5 +91,21 @@ mod tests {
             assert!(set_factory(name).is_some(), "{name} must have a factory");
         }
         assert!(set_factory("nope").is_none());
+    }
+    /// ⑩'s trigger: a set that acts without asking, enabled — and nothing else (a sandboxed shell that
+    /// still asks outside the sandbox, a disabled set, a value that does not decode).
+    #[test]
+    fn waiving_approval_is_auto_run_or_auto_write() {
+        let tools =
+            |yaml: &str| -> super::ToolsConfig { serde_norway::from_str(yaml).expect("yaml") };
+        assert!(super::waives_approval(&tools("shell: {auto_run: true}")));
+        assert!(super::waives_approval(&tools("code: {auto_write: yes}")));
+        assert!(!super::waives_approval(&tools("shell:\ncode:\nask:")));
+        assert!(!super::waives_approval(&tools("shell: {sandbox: auto}")));
+        assert!(!super::waives_approval(&tools(
+            "shell: false\ncode: {auto_write: false}"
+        )));
+        assert!(!super::waives_approval(&tools("shell: {auto_run: maybe}")));
+        assert!(!super::waives_approval(&tools("{}")));
     }
 }

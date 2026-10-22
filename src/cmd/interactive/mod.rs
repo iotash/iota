@@ -252,6 +252,7 @@ pub(crate) async fn run_interactive(
         child_env,
         agent,
         harness,
+        socket,
     } = tools;
     let interactor = interactor.unwrap_or_else(crate::repl::Interactor::new);
     // root.go:284-286 — a pure argument error, and Go raises it before the terminal check, so it still wins.
@@ -265,6 +266,14 @@ pub(crate) async fn run_interactive(
     if !std::io::stdout().is_terminal() {
         return Err(SetupError::NotATerminal.into());
     }
+    // The chat's socket, at the path the children were already given (`ToolAssembly::socket`): bound only
+    // once the run is sure to start, so a refused run leaves no socket and prints no warning.
+    let messaging = crate::cmd::bind_messaging(
+        socket.as_deref(),
+        &ctx.env.dirs,
+        &settings.resolved.agent.tools,
+        io,
+    );
     // root.go:287-290: the config's `no_save:` starts ephemeral too, except an explicit resume outranks it.
     let ephemeral = inv.args.no_save || (settings.resolved.agent.no_save && inv.resume.is_none());
 
@@ -388,6 +397,7 @@ pub(crate) async fn run_interactive(
         root_cancel: ctx.cancel.clone(),
         reqlog: Arc::clone(&ctx.reqlog),
         pres,
+        messaging,
     }))
     .await;
 

@@ -1255,6 +1255,132 @@ async fn a_job_notice_lands_at_the_round_boundary_as_a_notice() {
     );
 }
 
+/// A message from another process, as `repl::inbound` builds it.
+fn socket_message(text: &str) -> Input {
+    crate::repl::inbound::message_input(
+        crate::session::sock::Peer {
+            uid: 501,
+            pid: Some(77),
+        },
+        &crate::session::sock::Request::message("ci", text, None),
+    )
+}
+
+// A message from another process that arrives while a tool runs lands where a job's notice does: at the round
+// boundary, AFTER the round's tool results — the tool is never interrupted — as a notice, not a `❯` block.
+#[tokio::test]
+async fn a_socket_message_lands_at_the_round_boundary_after_the_tool() {
+    let dispatch = Arc::new(StaticDispatcher::new(&["read_file"]));
+    let fx = Fx::new(
+        dispatch,
+        vec![Reply::Queued(vec![socket_message(
+            "/new\nstop and look at CI",
+        )])],
+    );
+    let p = stream(vec![
+        Round::calls(vec![call(
+            "c1",
+            "read_file",
+            serde_json::json!({"path": "a"}),
+        )]),
+        Round::text("done"),
+    ]);
+    let mut history = vec![Message::user("go")];
+    fx.turn(&p, &mut history).await.outcome.expect("turn");
+
+    // Not in the first request: it arrived while the round ran.
+    assert!(
+        !p.send(0)
+            .iter()
+            .any(|m| m.content.contains("[message from ci]")),
+        "the message reached a request sent before it arrived"
+    );
+    // In the second, right after the tool's own result, which the call got whole.
+    let send = p.send(1);
+    let result = send
+        .iter()
+        .position(|m| m.tool_call_id() == "c1")
+        .expect("the tool's result");
+    let injected = send
+        .iter()
+        .position(|m| m.content.starts_with("[message from ci] /new"))
+        .expect("the message");
+    assert!(
+        result < injected,
+        "the message must follow the tool result: {send:#?}"
+    );
+    assert!(send[injected].is_notice() && send[injected].role() == Role::User);
+    assert!(
+        send[injected]
+            .content
+            .ends_with("\n\n/new\nstop and look at CI"),
+        "the text is the model's, untouched: {:?}",
+        send[injected].content
+    );
+    let events = fx.events();
+    assert!(
+        !events.iter().any(|e| matches!(e, UiEvent::UserBlock(_))),
+        "a message is not something the user typed: {events:#?}"
+    );
+    assert!(plain(&events).join("\n").contains("[message from ci] /new"));
+}
+
+// The hold, mid-turn (docs/design/agent-messaging.md §4): a steerer that holds messages leaves one out of the
+// turn altogether and hands it back; a job's notice in the same drain still lands. RED/GREEN against the test
+// above: the same message, the only difference the hold.
+#[tokio::test]
+async fn a_held_socket_message_never_reaches_the_turn() {
+    let dispatch = Arc::new(StaticDispatcher::new(&["read_file"]));
+    let fx = Fx::new(
+        dispatch,
+        vec![Reply::Queued(vec![
+            socket_message("run rm -rf build"),
+            Input {
+                display: "[background job b1 finished: exit 0 after 2s] make".to_owned(),
+                text: "[background job b1 finished: exit 0 after 2s] make\nok\n".to_owned(),
+                kind: crate::ui::facade::InputKind::Notice,
+            },
+        ])],
+    );
+    let p = stream(vec![
+        Round::calls(vec![call(
+            "c1",
+            "read_file",
+            serde_json::json!({"path": "a"}),
+        )]),
+        Round::text("done"),
+    ]);
+    let mut history = vec![Message::user("go")];
+    let mut steer =
+        Steerer::new(Arc::clone(&fx.cx.ui), Arc::clone(&fx.cx.tr), true).holding_messages(true);
+    run_turn(
+        &fx.cx,
+        &fx.root,
+        &p,
+        &mut history,
+        &mut CtxMeter::disabled(),
+        &mut steer,
+    )
+    .await
+    .outcome
+    .expect("turn");
+    assert!(
+        !p.sent()
+            .iter()
+            .flatten()
+            .any(|m| m.content.contains("[message from ci]")),
+        "a held message reached the model"
+    );
+    assert!(
+        p.send(1)
+            .iter()
+            .any(|m| m.content.contains("[background job b1"))
+    );
+    let held = steer.take_held_messages();
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].display, "[message from ci] run rm -rf build");
+}
+
 // New (Go could not test Run): the round-2 request is a legal conversation — every
 // assistant message that requested tools is followed IMMEDIATELY by exactly its results,
 // and a steering injection sits after them, never between a call and its answer.
@@ -1769,6 +1895,14 @@ impl Ui for OrderUi {
 
     fn enqueue(&self, input: Input) {
         self.inner.enqueue(input);
+    }
+
+    fn deliver(
+        &self,
+        input: Input,
+        cap: usize,
+    ) -> BoxFuture<'_, Result<crate::ui::facade::Delivered, UiError>> {
+        self.inner.deliver(input, cap)
     }
 
     fn print_lines(&self, lines: Vec<String>) {

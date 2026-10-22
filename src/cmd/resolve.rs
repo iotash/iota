@@ -321,7 +321,7 @@ fn model_at(r: &Resolved, cfg: &Config, provider: &str, id: &str) -> ModelConfig
 }
 
 /// root.go:95-104: read ALL of stdin, trim, reject an empty message.
-fn read_stdin_message(stdin: &mut dyn std::io::Read) -> Result<String, ArgsError> {
+pub(crate) fn read_stdin_message(stdin: &mut dyn std::io::Read) -> Result<String, ArgsError> {
     let mut data = Vec::new();
     stdin.read_to_end(&mut data).map_err(ArgsError::Stdin)?;
     let message = String::from_utf8_lossy(&data).trim().to_owned();

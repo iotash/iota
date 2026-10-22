@@ -36,8 +36,8 @@ use crate::sync::lock;
 use std::time::{Duration, Instant};
 
 use crate::ui::facade::{
-    Input, ProgressState, StatusData, Suggestion, TURN_LABEL, TabbedResult, TabbedSpec, TurnBusy,
-    UiError,
+    Delivered, Input, InputKind, ProgressState, StatusData, Suggestion, TURN_LABEL, TabbedResult,
+    TabbedSpec, TurnBusy, UiError,
 };
 use crossterm::event::{Event, KeyEvent};
 use tokio::sync::oneshot;
@@ -606,6 +606,22 @@ impl Model {
                 }
                 self.dirty = true;
             }
+            UiMsg::Deliver { input, cap, reply } => {
+                // `Enqueue`'s two branches, reported — plus the cap, counted over the messages alone: a
+                // flood from outside must never crowd out what the user typed or a job's notice.
+                let state = if let Some(w) = self.waiter.take() {
+                    let _ = w.reply.send(Ok(input));
+                    Delivered::Woken
+                } else if self.queued_messages() >= cap {
+                    Delivered::Full
+                } else {
+                    let ahead = self.queue.len();
+                    self.queue.push(Queued::Notice(input));
+                    Delivered::Queued { ahead }
+                };
+                let _ = reply.send(state);
+                self.dirty = true;
+            }
             UiMsg::ReadCancel { id } => {
                 // Revoke only the SAME waiter (model.go:302-306).
                 if self.waiter.as_ref().is_some_and(|w| w.id == id) {
@@ -737,6 +753,14 @@ impl Model {
         } else {
             self.queue.push(Queued::Typed(text));
         }
+    }
+
+    /// How many queued entries came from another process (`InputKind::Message`).
+    fn queued_messages(&self) -> usize {
+        self.queue
+            .iter()
+            .filter(|q| matches!(q, Queued::Notice(i) if i.kind == InputKind::Message))
+            .count()
     }
 
     /// The queue as the rows the frame shows it — the ONE read the tests assert on.

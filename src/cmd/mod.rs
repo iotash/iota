@@ -6,6 +6,7 @@
 pub(crate) mod args;
 pub(crate) mod assemble;
 pub(crate) mod config_cmd;
+pub(crate) mod deliver;
 pub(crate) mod error;
 pub(crate) mod interactive;
 pub mod io;
@@ -111,6 +112,12 @@ pub(crate) struct ToolAssembly {
     /// The built-in harness prompt's inputs (`agents::harness`), read once here for both branches and
     /// composed by each once its `Presenter` exists — the hosts add their facts to `<environment>`.
     pub(crate) harness: crate::agents::harness::HarnessInputs,
+    /// Where the interactive chat's socket will be bound (docs/design/agent-messaging.md), decided HERE
+    /// because [`Self::child_env`] gives it to every child as `IOTA_SOCKET`; the bind itself waits for the
+    /// interactive branch's terminal check (`bind_messaging`), so a run that is refused leaves nothing behind.
+    /// `None` for a `-m` run (no loop to deliver into), on a platform without Unix sockets, and for a path no
+    /// socket address can hold.
+    pub(crate) socket: Option<std::path::PathBuf>,
 }
 
 /// The host detectors' view of the machine (host.go:71-74 `SystemEnv`): the run's injected environment
@@ -208,9 +215,15 @@ async fn run_agent(
 
     // root.go:52-123
     let mut stdin = std::io::stdin();
-    let mut settings = resolve_run(&inv, &cfg, &env, &mut stdin, &mut |w| {
+    let resolved = resolve_run(&inv, &cfg, &env, &mut stdin, &mut |w| {
         io.warning(&w);
-    })?;
+    });
+    // `iota run <bot> -m`: a running bot takes the message through its socket (docs/design/agent-messaging.md
+    // §5); one that is not running keeps the refusal.
+    if let Err(CliError::Args(ArgsError::BotHeadless { name })) = resolved {
+        return deliver::to_bot(name, inv.args.message.as_deref(), &env, &mut stdin, io).await;
+    }
+    let mut settings = resolved?;
 
     // root.go:125-131
     let ctx = RunContext::new(env, cancel);
@@ -444,7 +457,17 @@ fn assemble_tools(
     // is built, and both branches need the same one afterwards. Its children are spawned without what the
     // detected host withholds — the hosts' knowledge, not this module's (`crate::host::ChildEnvironment`).
     let host = crate::host::detect(&host_probe(&ctx.env));
-    let child_env = crate::host::child_env(host.as_deref());
+    let socket = settings
+        .message
+        .is_none()
+        .then(|| dirs.run_dir())
+        .flatten()
+        .map(|run| crate::session::sock::socket_path(&run, std::process::id()))
+        .filter(|path| crate::session::sock::fits(path));
+    let mut child_env = crate::host::child_env(host.as_deref());
+    if let Some(path) = &socket {
+        child_env = child_env.giving(crate::session::sock::IOTA_SOCKET, &path.to_string_lossy());
+    }
     let jobs = crate::shell::jobs::Jobs::withholding(&dirs.temp, child_env.clone());
     let mut tool_env = ToolEnv {
         project_root: project_root.clone(),
@@ -492,7 +515,45 @@ fn assemble_tools(
         child_env,
         agent,
         harness,
+        socket,
     })
+}
+
+/// Binds the interactive chat's socket (`<home>/.iota/run/<pid>.sock`, `session::sock`). A chat whose
+/// toolsets act without asking holds every message for the user (`repl::inbound`). A failure is one warning and
+/// a chat no other process can reach — never a refusal to start; a platform without Unix sockets says nothing
+/// (docs/design/agent-messaging.md §2.4). Called after the terminal check: a refused run binds nothing.
+pub(crate) fn bind_messaging(
+    socket: Option<&std::path::Path>,
+    dirs: &crate::app::HostDirs,
+    tools: &crate::tool::sets::ToolsConfig,
+    io: &mut io::Streams,
+) -> Option<crate::repl::Messaging> {
+    let run_dir = dirs.run_dir()?;
+    let Some(socket) = socket else {
+        if cfg!(unix) {
+            io.warning(&format!(
+                "Warning: other processes cannot message this chat: {} is too long a path for a socket",
+                run_dir.display()
+            ));
+        }
+        return None;
+    };
+    let run_dir = socket.parent().unwrap_or(&run_dir);
+    match crate::session::sock::Listener::bind(run_dir, std::process::id()) {
+        Ok(listener) => Some(crate::repl::Messaging::new(
+            listener,
+            crate::tool::sets::waives_approval(tools),
+        )),
+        Err(e) => {
+            if cfg!(unix) {
+                io.warning(&format!(
+                    "Warning: other processes cannot message this chat: {e}"
+                ));
+            }
+            None
+        }
+    }
 }
 
 /// Everything `run` has resolved by the time it reaches Go's headless-vs-interactive branch (root.go:259),
@@ -536,6 +597,7 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         child_env,
         agent,
         harness,
+        socket: _,
     } = tools;
     let dirs = ctx.env.dirs.clone();
 
@@ -559,6 +621,21 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
             .has_workspace()
             .then_some(agent.root.as_path());
         let id = store.resolve_id(&fragment, scope)?;
+        // Held by another process: the message is handed to it through its socket, not refused — and nothing
+        // is opened for it here (docs/design/agent-messaging.md §5). A bot's body included: handing the bot a
+        // message does not open its session.
+        if let Some(pid) = store.holder(&id)? {
+            let bundle = store.dir(&id)?;
+            return deliver::to_holder(
+                &bundle,
+                format!("session {id}"),
+                pid,
+                &message,
+                &ctx.env,
+                io,
+            )
+            .await;
+        }
         // A bot's body opens only as that bot (bot-mode.md §2.2, §2.7).
         store.check_not_bot_owned(&id)?;
         let meta = store.meta(&id)?;
