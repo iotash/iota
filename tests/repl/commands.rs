@@ -91,6 +91,7 @@ impl Fixture {
             root_cancel: CancellationToken::new(),
             reqlog: Arc::new(RequestLog::new()),
             pres: Arc::new(Presenter::with_hosts(Vec::new(), true)),
+            messaging: None,
         }
     }
 
@@ -2551,6 +2552,7 @@ async fn persist_warns_and_retries_the_backlog() {
         root_cancel: CancellationToken::new(),
         reqlog: Arc::new(RequestLog::new()),
         pres: Arc::new(Presenter::with_hosts(Vec::new(), true)),
+        messaging: None,
     };
     iota::repl::run(params).await.expect("exit");
 

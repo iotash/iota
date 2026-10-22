@@ -26,6 +26,7 @@ pub(crate) mod meta;
 pub(crate) mod params;
 pub(crate) mod rawcodec;
 pub(crate) mod record;
+pub mod sock;
 pub(crate) mod store;
 pub(crate) mod tuning;
 pub(crate) mod writer;

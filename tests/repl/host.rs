@@ -157,6 +157,7 @@ impl Fixture {
             root_cancel: CancellationToken::new(),
             reqlog: Arc::new(RequestLog::new()),
             pres: self.presenter(notify),
+            messaging: None,
         }
     }
 

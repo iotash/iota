@@ -168,6 +168,7 @@ fn params(ui: &Arc<ScriptedUi>, store: &SessionStore) -> RunParams {
         root_cancel: CancellationToken::new(),
         reqlog: Arc::new(RequestLog::new()),
         pres: Arc::new(Presenter::with_hosts(Vec::new(), false)),
+        messaging: None,
     }
 }
 

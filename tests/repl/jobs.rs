@@ -55,6 +55,7 @@ fn params(
         root_cancel: CancellationToken::new(),
         reqlog: Arc::new(iota::llm::reqlog::RequestLog::new()),
         pres: Arc::new(iota::host::Presenter::with_hosts(Vec::new(), true)),
+        messaging: None,
     }
 }
 

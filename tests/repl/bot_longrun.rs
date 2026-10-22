@@ -259,6 +259,7 @@ impl Bot {
                 vec![Box::new(RecordingHost::new("recorder"))],
                 true,
             )),
+            messaging: None,
         };
         iota::repl::run(params).await.expect("exit");
         (dir, load, history)

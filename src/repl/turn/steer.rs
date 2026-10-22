@@ -24,12 +24,18 @@ use crate::repl::render::transcript::Transcript;
 /// A job's notice it injects is also RECORDED (`injected`): when a later round's 429 rolls the turn back, the
 /// loop hands those back to the notice gate instead of losing them with the history (X-84). This is not Go's
 /// replay record (X-73 removed that): nothing is re-sent from it, the gate decides when they go.
+///
+/// A message from another process (`InputKind::Message`, `repl::inbound`) lands like a job's notice. In a chat
+/// that holds them for the user (its toolsets waive approval), it is HELD instead and handed back to the loop,
+/// which queues it again after the turn — the idle loop asks the user before the model reads it.
 pub(crate) struct Steerer {
     ui: Arc<dyn Ui>,
     tr: Arc<Transcript>,
     open: bool,
     held: Vec<Input>,
     injected: Vec<Input>,
+    hold_messages: bool,
+    held_messages: Vec<Input>,
 }
 
 impl Steerer {
@@ -41,7 +47,15 @@ impl Steerer {
             open,
             held: Vec::new(),
             injected: Vec::new(),
+            hold_messages: false,
+            held_messages: Vec::new(),
         }
+    }
+
+    /// Holds every message from another process this steerer takes, instead of injecting it.
+    pub(crate) fn holding_messages(mut self, hold: bool) -> Self {
+        self.hold_messages = hold;
+        self
     }
 
     /// Drains the contiguous non-command prefix of the queue (the facade's
@@ -58,14 +72,23 @@ impl Steerer {
                 self.held.push(input);
                 continue;
             }
+            if input.kind == InputKind::Message && self.hold_messages {
+                self.held_messages.push(input);
+                continue;
+            }
             // A host notice (a background job finished) rides the SAME queue and lands at the same
             // boundary, but it is not the user speaking: one dim headline, and the message says so.
             // It settles the running group exactly as the `❯` block does — the headline goes
-            // under the call that was running when the job ended, not above its rows.
-            let m = if input.kind == InputKind::Notice {
+            // under the call that was running when the job ended, not above its rows. A message from
+            // another process is the same kind of thing and lands the same way.
+            let m = if input.kind.is_notice() {
                 self.tr.boundary_notice(&input.display);
                 let m = Message::notice(input.text.clone());
-                self.injected.push(input);
+                // Only a job's notice goes back to the gate: a message from outside is not automatic
+                // work, and a rollback loses it as it loses a line the user steered in (X-85).
+                if input.kind == InputKind::Notice {
+                    self.injected.push(input);
+                }
                 m
             } else {
                 self.tr.user(&input.display);
@@ -85,5 +108,10 @@ impl Steerer {
     /// The jobs' notices this turn injected, in arrival order (X-84).
     pub(crate) fn take_injected(&mut self) -> Vec<Input> {
         std::mem::take(&mut self.injected)
+    }
+
+    /// The messages from other processes taken off the queue and held, for the loop to queue again.
+    pub(crate) fn take_held_messages(&mut self) -> Vec<Input> {
+        std::mem::take(&mut self.held_messages)
     }
 }

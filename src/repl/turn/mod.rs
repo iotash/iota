@@ -362,6 +362,18 @@ impl TurnEngine {
         self.steer.take_injected()
     }
 
+    /// Holds the messages from other processes this turn's steering meets (`repl::inbound`, the hold).
+    #[must_use]
+    pub(crate) fn holding_messages(mut self, hold: bool) -> Self {
+        self.steer = self.steer.holding_messages(hold);
+        self
+    }
+
+    /// The messages from other processes this turn's steering held; the loop queues them again.
+    pub(crate) fn take_held_messages(&mut self) -> Vec<crate::ui::facade::Input> {
+        self.steer.take_held_messages()
+    }
+
     /// Runs the turn (chat/run.go:1030-1068): the `fresh` messages at the history's end — the user message,
     /// and the job notices it carries ahead of it (X-84) — move the meter, then [`run_turn`] sends them. There is no turn-level replay: every model call the turn
     /// issues climbs its own [`retry_round`] where it is issued, the tool loop's and the unary
