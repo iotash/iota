@@ -356,6 +356,12 @@ impl TurnEngine {
         self.steer.take_held()
     }
 
+    /// The jobs' notices this turn's steering injected, in arrival order: what a 429 rollback hands back to
+    /// the notice gate (X-84).
+    pub(crate) fn take_injected(&mut self) -> Vec<crate::ui::facade::Input> {
+        self.steer.take_injected()
+    }
+
     /// Runs the turn (chat/run.go:1030-1068): the user message — the history's last — moves the
     /// meter, then [`run_turn`] sends it. There is no turn-level replay: every model call the turn
     /// issues climbs its own [`retry_round`] where it is issued, the tool loop's and the unary

@@ -972,6 +972,9 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             Err(ui_err) => break 'main Err(ReplError::Ui(ui_err)),
         };
         let held = engine.take_held();
+        // Notices steered in mid-turn go back after the carried ones when a 429 rolls the turn back; their host
+        // debt was settled when they were taken, so they are handed back without settling it again (X-84).
+        carried.extend(engine.take_injected());
         let mut landed = false;
 
         let interrupted = outcome.is_interrupted();

@@ -14,7 +14,7 @@ use iota::provider::model::Message;
 use iota::repl::{McpHooks, RunParams, SessionCtx};
 use iota::session::{NewSession, SessionStore, SessionWriter};
 use iota::testing::{
-    FakeProvider, Interrupt, Log, Reply, Round, ScriptedUi, StaticDispatcher, UiEvent,
+    FakeProvider, Interrupt, Log, Reply, Round, ScriptedUi, StaticDispatcher, UiEvent, tool_call,
 };
 use iota::text::ansi::strip_sgr;
 use iota::tool::Dispatcher;
@@ -37,6 +37,8 @@ struct Fixture {
     store: SessionStore,
     /// The config the run resolves its `/model` choices from (`None`: none).
     yaml: Option<String>,
+    /// The tools the dispatcher advertises (and runs).
+    tools: &'static [&'static str],
 }
 
 impl Fixture {
@@ -48,6 +50,7 @@ impl Fixture {
             _tmp: tmp,
             store,
             yaml: None,
+            tools: &[],
         }
     }
 
@@ -91,7 +94,7 @@ impl Fixture {
             system: String::new(),
             harness: iota::agents::harness::HarnessInputs::default(),
             imported_history: Vec::new(),
-            dispatch: Arc::new(StaticDispatcher::new(&[])) as Arc<dyn Dispatcher>,
+            dispatch: Arc::new(StaticDispatcher::new(self.tools)) as Arc<dyn Dispatcher>,
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
             mcp: McpHooks::default(),
             session: SessionCtx {
@@ -508,4 +511,75 @@ async fn an_exit_at_the_deadline_is_not_a_probe() {
         assert_eq!(log.calls(), LADDER, "the exit started a probe");
         assert_eq!(fx.count("▶ Trying again"), 0);
     }
+}
+
+/// B2: a job's notice steered into a turn at a round boundary is not lost when a LATER round of that turn is
+/// refused with 429: the rollback hands it back to the gate, and the probe delivers it — once, persisted once.
+#[tokio::test(start_paused = true)]
+async fn a_notice_steered_in_before_a_429_is_not_lost() {
+    let log = Log::default();
+    let mut rounds = vec![Round::calls(vec![tool_call("c1", "noop")])];
+    rounds.extend(refused());
+    let p = FakeProvider::new()
+        .with_tools()
+        .rounds(rounds)
+        .replying("noted")
+        .with_log(log.clone());
+    let Reply::Input(b2) = notice(2) else {
+        unreachable!()
+    };
+    let mut fx = Fixture::new(vec![
+        input("go"),
+        Reply::Queued(vec![b2]), // the round boundary after the tool: b2 finished meanwhile
+        Reply::Idle,             // the probe
+        Reply::Closed,
+    ]);
+    fx.tools = &["noop"];
+    let writer = fx.writer();
+    let id = writer.id().to_owned();
+    fx.run(p, Some(writer)).await;
+
+    assert_eq!(log.calls(), 1 + LADDER + 1, "{:?}", log.prompts());
+    assert_eq!(
+        said(&log.send(1)),
+        ["go", "n:2"],
+        "steered in after the tool round"
+    );
+    assert_eq!(said(&log.send(1 + LADDER)), ["n:2"], "the probe carries it");
+    let saved = fx.store.load(&id, ProviderKind::Anthropic).expect("load");
+    assert_eq!(
+        said(&saved.messages),
+        ["n:2"],
+        "persisted once; the refused turn is gone"
+    );
+}
+
+/// B2's other half: a turn that is KEPT — here an interrupt after the tool round and the steered notice —
+/// keeps the notice in its history; nothing is handed back, so the next message does not carry it twice.
+#[tokio::test(start_paused = true)]
+async fn a_kept_turn_keeps_its_steered_notice_once() {
+    let log = Log::default();
+    let p = FakeProvider::new()
+        .with_tools()
+        .rounds([
+            Round::calls(vec![tool_call("c1", "noop")]),
+            Round::text("half").interrupting(Interrupt::Call),
+        ])
+        .replying("ok")
+        .with_log(log.clone());
+    let Reply::Input(b2) = notice(2) else {
+        unreachable!()
+    };
+    let mut fx = Fixture::new(vec![
+        input("go"),
+        Reply::Queued(vec![b2]),
+        input("next"),
+        Reply::Closed,
+    ]);
+    fx.tools = &["noop"];
+    fx.run(p, None).await;
+
+    assert_eq!(log.calls(), 3, "{:?}", log.prompts());
+    assert_eq!(said(&log.send(2)), ["go", "n:2", "next"]);
+    assert_eq!(fx.count("held"), 0, "nothing was handed back to the gate");
 }
