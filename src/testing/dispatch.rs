@@ -32,6 +32,8 @@ pub struct StaticDispatcher {
     pub parallel: HashSet<String>,
     /// Names that report `requires_approval`.
     pub approval: HashSet<String>,
+    /// What `waives_approval` answers: the tools act without asking (`auto_run` / `auto_write`).
+    pub waives: bool,
 }
 
 impl StaticDispatcher {
@@ -42,7 +44,15 @@ impl StaticDispatcher {
             calls: Mutex::new(Vec::new()),
             parallel: HashSet::new(),
             approval: HashSet::new(),
+            waives: false,
         }
+    }
+
+    /// Answers `waives_approval` with true — a chat whose tools act without asking.
+    #[must_use]
+    pub fn waiving_approval(mut self) -> Self {
+        self.waives = true;
+        self
     }
 
     /// Marks `names` as parallel-capable.
@@ -80,6 +90,10 @@ impl Dispatcher for StaticDispatcher {
 
     fn requires_approval(&self, name: &str, _args: Option<&JsonObject>) -> bool {
         self.approval.contains(name)
+    }
+
+    fn waives_approval(&self) -> bool {
+        self.waives
     }
 
     fn supports_parallel(&self, name: &str, _args: Option<&JsonObject>) -> bool {

@@ -52,11 +52,18 @@ impl Drop for HeldLock {
 
 /// Takes the bundle lock of `dir` (which must exist) or refuses with [`SessionError::Locked`]. `id` only
 /// names the session in that refusal. The returned guard IS the lock: dropping it releases it.
+///
+/// Taking it also removes the bundle's `sock` link (`session::sock`): a link names the socket of the process
+/// that holds the bundle, and that is this one now — whatever a link says, it was left by an earlier holder
+/// (one that crashed, or ran without a socket), and its pid may since belong to an unrelated chat.
 pub(crate) fn lock_bundle(dir: &Path, id: &str) -> Result<HeldLock, SessionError> {
-    try_lock_file(&dir.join(LOCK_FILE))?.map_err(|pid| SessionError::Locked {
+    let held = try_lock_file(&dir.join(LOCK_FILE))?.map_err(|pid| SessionError::Locked {
         what: format!("session {id}"),
         pid,
-    })
+    })?;
+    // Best effort, like the pid: a link that cannot be removed is no reason to refuse the session.
+    let _ = crate::session::sock::clear(dir);
+    Ok(held)
 }
 
 /// Takes the bot lock in `bot_dir` (created when missing) or refuses with [`SessionError::Locked`] naming

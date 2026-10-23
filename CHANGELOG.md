@@ -12,16 +12,16 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   can send it a line: `iota resume <id> -m "…"` (or `iota run <bot> -m "…"`
   for a running bot) used to refuse a session that was open elsewhere — it
   now hands the message to that chat and prints its receipt (`woken`,
-  `queued`, or why not: `blocked`, `too-large`, `refused`, `flooded`). The
-  message reaches the model at the next safe point — right away when the
-  chat is idle, between tool calls when it is busy, never in the middle of
-  one — as a dim `[message from …]` line, not as something you typed, and a
-  leading `/` is never run as a command. The model is told it came from
-  another process and is nobody's approval. A chat whose tools run without
-  asking (`auto_run`, `auto_write`) asks you before the model reads it.
-  Programs started from the chat find the socket in `IOTA_SOCKET`. Only the
-  same OS user can connect; there is no network listener. Not available on
-  Windows yet.
+  `queued`, `held`, or why not: `blocked`, `too-large`, `refused`,
+  `flooded`). The message reaches the model at the next safe point — right
+  away when the chat is idle, between tool calls when it is busy, never in
+  the middle of one — as a dim `[message from …]` line, not as something you
+  typed, and a leading `/` is never run as a command. The model is told it
+  came from another process and is nobody's approval. A chat whose tools run
+  without asking (`auto_run`, `auto_write`) answers `held` and asks you
+  before the model reads it. Programs started from the chat find the socket
+  in `IOTA_SOCKET`. Only the same OS user can connect; there is no network
+  listener. Not available on Windows yet.
 
 ### Changed
 

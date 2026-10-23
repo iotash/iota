@@ -273,6 +273,11 @@ impl Tool for EditFile {
         !self.0.auto_write
     }
 
+    /// `auto_write`, the setting [`Self::requires_approval`] reads.
+    fn waives_approval(&self) -> bool {
+        self.0.auto_write
+    }
+
     /// Writers are expanded.
     fn presentation(&self) -> Presentation {
         Presentation::Expanded
@@ -320,6 +325,11 @@ impl Tool for WriteFile {
     /// `!auto_write`, whatever the call.
     fn requires_approval(&self, _args: Option<&JsonObject>) -> bool {
         !self.0.auto_write
+    }
+
+    /// `auto_write`, the setting [`Self::requires_approval`] reads.
+    fn waives_approval(&self) -> bool {
+        self.0.auto_write
     }
 
     /// Writers are expanded.

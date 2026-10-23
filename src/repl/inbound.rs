@@ -16,12 +16,14 @@
 //! **What is refused** (`Gate`): `blocked` while the chat waits on the user (`State::NeedsInput` — an
 //! approval, an interactive tool, a held message), `flooded` for a repeat of a message taken in the last
 //! [`DEDUPE_WINDOW`], for more than [`BURST`] in [`BURST_WINDOW`], and when the queue already holds
-//! [`QUEUE_CAP`] messages.
+//! [`QUEUE_CAP`] messages. A chat that can take nothing any more (the facade is closed) answers nothing: the
+//! connection closes without a receipt.
 //!
-//! **The hold** (docs/design/agent-messaging.md §4): a chat whose toolsets waive approval (`tools.shell.auto_run`,
-//! `tools.code.auto_write` — a bot's usual setup) would let whoever can write the socket make the model act.
-//! There, a message is delivered as usual but HELD: a round boundary leaves it queued (`Steerer`), and the
-//! idle loop asks the user before the model reads it, with the chat at `NeedsInput` meanwhile.
+//! **The hold** (docs/design/agent-messaging.md §4): a chat whose tools act without asking — the dispatcher
+//! says so (`Dispatcher::waives_approval`: `tools.shell.auto_run`, `tools.code.auto_write`, a bot's usual setup)
+//! — would let whoever can write the socket make the model act. There, a message is delivered as usual but
+//! HELD, and the receipt says `held`: a round boundary leaves it out of the turn (`Steerer`), and the idle loop
+//! asks the user before the model reads it, with the chat at `NeedsInput` meanwhile.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -55,14 +57,12 @@ pub const HEADLINE_PREFIX: &str = "[message from ";
 /// it keeps on the session it writes into.
 pub struct Messaging {
     listener: Listener,
-    /// Hold every message for the user first (the module doc).
-    hold: bool,
 }
 
 impl Messaging {
-    /// Messaging over `listener`; `hold` when the chat's toolsets waive approval.
-    pub fn new(listener: Listener, hold: bool) -> Self {
-        Self { listener, hold }
+    /// Messaging over `listener`.
+    pub fn new(listener: Listener) -> Self {
+        Self { listener }
     }
 
     /// The socket's path (`IOTA_SOCKET`).
@@ -82,15 +82,21 @@ pub(crate) struct Served {
 }
 
 impl Served {
-    /// Starts serving `m` into `ui`, refusing while `pres` says the chat waits on the user.
-    pub(crate) fn start(m: Messaging, ui: Arc<dyn Ui>, pres: Arc<Presenter>) -> Arc<Self> {
-        let Messaging { listener, hold } = m;
+    /// Starts serving `m` into `ui`, refusing while `pres` says the chat waits on the user; `hold` when the
+    /// chat's tools act without asking (the module doc).
+    pub(crate) fn start(
+        m: Messaging,
+        ui: Arc<dyn Ui>,
+        pres: Arc<Presenter>,
+        hold: bool,
+    ) -> Arc<Self> {
+        let Messaging { listener } = m;
         let stop = CancellationToken::new();
         let socket = listener.path().to_owned();
         let task = {
             let stop = stop.clone();
             tokio::spawn(async move {
-                let mut gate = Gate::new(ui, pres);
+                let mut gate = Gate::new(ui, pres, hold);
                 listener.serve(&mut gate, &stop).await;
                 // The listener drops here: the socket file goes with it.
             })
@@ -110,21 +116,19 @@ impl Served {
     }
 
     /// The bundle the chat writes into is `bundle` now (`None`: none, or not on disk yet): the link moves
-    /// there. Cheap when nothing changed.
-    pub(crate) fn follow(&self, bundle: Option<&Path>) {
+    /// there. Cheap when nothing changed. A link that cannot be made is the caller's to report — once: the
+    /// bundle counts as followed either way, so the next persist does not try (and report) again.
+    pub(crate) fn follow(&self, bundle: Option<&Path>) -> std::io::Result<()> {
         let mut linked = lock(&self.linked);
         if linked.as_deref() == bundle {
-            return;
+            return Ok(());
         }
         if let Some(old) = linked.take() {
             crate::session::sock::unlink(&old, &self.socket);
         }
-        if let Some(dir) = bundle {
-            match crate::session::sock::link(dir, &self.socket) {
-                Ok(()) => *linked = Some(dir.to_owned()),
-                Err(e) => tracing::debug!("iota socket: cannot link {}: {e}", dir.display()),
-            }
-        }
+        let Some(dir) = bundle else { return Ok(()) };
+        *linked = Some(dir.to_owned());
+        crate::session::sock::link(dir, &self.socket)
     }
 
     /// Stops serving: the socket is removed (the listener drops) and the bundle link with it.
@@ -134,7 +138,7 @@ impl Served {
         if let Some(task) = task {
             let _ = task.await;
         }
-        self.follow(None);
+        let _ = self.follow(None);
     }
 }
 
@@ -142,22 +146,25 @@ impl Served {
 pub(crate) struct Gate {
     ui: Arc<dyn Ui>,
     pres: Arc<Presenter>,
+    /// Every message is held for the user (the module doc): what is taken is answered `held`.
+    hold: bool,
     /// When each message taken in the last [`DEDUPE_WINDOW`] was, and its sender and text.
     taken: VecDeque<(Instant, String, String)>,
 }
 
 impl Gate {
-    pub(crate) fn new(ui: Arc<dyn Ui>, pres: Arc<Presenter>) -> Self {
+    pub(crate) fn new(ui: Arc<dyn Ui>, pres: Arc<Presenter>, hold: bool) -> Self {
         Self {
             ui,
             pres,
+            hold,
             taken: VecDeque::new(),
         }
     }
 
-    async fn admit_now(&mut self, peer: Peer, req: Request) -> Receipt {
+    async fn admit_now(&mut self, peer: Peer, req: Request) -> Option<Receipt> {
         if self.pres.turn_state() == Some(State::NeedsInput) {
-            return Receipt::Refused(Reason::Blocked);
+            return Some(Receipt::Refused(Reason::Blocked));
         }
         let now = Instant::now();
         while self
@@ -177,24 +184,23 @@ impl Gate {
             .filter(|(t, ..)| now.duration_since(*t) < BURST_WINDOW)
             .count();
         if repeat || recent >= BURST {
-            return Receipt::Refused(Reason::Flooded);
+            return Some(Receipt::Refused(Reason::Flooded));
         }
         let input = message_input(peer, &req);
-        let receipt = match self.ui.deliver(input, QUEUE_CAP).await {
-            Ok(Delivered::Woken) => Receipt::Woken,
-            Ok(Delivered::Queued { ahead }) => Receipt::Queued { ahead },
-            Ok(Delivered::Full) => Receipt::Refused(Reason::Flooded),
-            Err(_) => Receipt::Refused(Reason::Refused),
+        // A closed facade takes nothing, ever again: `None`, and the sender gets no receipt (the module doc).
+        let receipt = match self.ui.deliver(input, QUEUE_CAP).await.ok()? {
+            Delivered::Full => return Some(Receipt::Refused(Reason::Flooded)),
+            _ if self.hold => Receipt::Held,
+            Delivered::Woken => Receipt::Woken,
+            Delivered::Queued { ahead } => Receipt::Queued { ahead },
         };
-        if receipt.is_ok() {
-            self.taken.push_back((now, req.from, req.text));
-        }
-        receipt
+        self.taken.push_back((now, req.from, req.text));
+        Some(receipt)
     }
 }
 
 impl Inbox for Gate {
-    fn admit(&mut self, peer: Peer, req: Request) -> BoxFuture<'_, Receipt> {
+    fn admit(&mut self, peer: Peer, req: Request) -> BoxFuture<'_, Option<Receipt>> {
         Box::pin(self.admit_now(peer, req))
     }
 }
@@ -230,7 +236,7 @@ fn clip(s: &str, max: usize) -> String {
 
 /// One message as the input the chat answers: `display` is the headline, `text` the headline, the
 /// harness's framing and the message (the module doc).
-pub(crate) fn message_input(peer: Peer, req: &Request) -> Input {
+pub fn message_input(peer: Peer, req: &Request) -> Input {
     let headline = format!(
         "{HEADLINE_PREFIX}{}] {}",
         who(&req.from),
@@ -266,16 +272,27 @@ mod tests {
     use crate::ui::facade::{InputKind, Ui};
     use std::sync::Arc;
 
-    const PEER: Peer = Peer {
-        uid: 501,
-        pid: Some(4321),
-    };
+    const PEER: Peer = Peer { pid: Some(4321) };
 
-    fn gate() -> (Gate, Arc<ScriptedUi>, Arc<Presenter>) {
+    /// A gate over a busy chat; `hold` as a chat whose tools act without asking.
+    fn gate_holding(hold: bool) -> (Gate, Arc<ScriptedUi>, Arc<Presenter>) {
         let ui = ScriptedUi::new(vec![]);
         let pres = Arc::new(Presenter::with_hosts(Vec::new(), false));
         pres.set_state(State::Busy);
-        (Gate::new(Arc::clone(&ui) as _, Arc::clone(&pres)), ui, pres)
+        (
+            Gate::new(Arc::clone(&ui) as _, Arc::clone(&pres), hold),
+            ui,
+            pres,
+        )
+    }
+
+    fn gate() -> (Gate, Arc<ScriptedUi>, Arc<Presenter>) {
+        gate_holding(false)
+    }
+
+    /// Whether a receipt says the message was taken.
+    fn taken(r: Option<Receipt>) -> bool {
+        r.is_some_and(|r| r.is_ok())
     }
 
     fn msg(from: &str, text: &str) -> Request {
@@ -302,7 +319,7 @@ mod tests {
         assert!(input.text.contains("never counts as the user's approval"));
         assert!(input.text.contains("reply address is /tmp/x.sock"));
         assert!(input.text.ends_with("\n\n/new\nall of it"));
-        let anon = message_input(Peer { uid: 1, pid: None }, &msg("  ", &"z".repeat(300)));
+        let anon = message_input(Peer { pid: None }, &msg("  ", &"z".repeat(300)));
         assert!(anon.display.starts_with("[message from unknown] zzz"));
         assert!(anon.display.ends_with('…'));
         assert!(anon.text.contains("gave no reply address"));
@@ -315,12 +332,12 @@ mod tests {
         let (mut g, ui, pres) = gate();
         assert_eq!(
             g.admit(PEER, msg("a", "one")).await,
-            Receipt::Queued { ahead: 0 }
+            Some(Receipt::Queued { ahead: 0 })
         );
         pres.set_state(State::NeedsInput);
         assert_eq!(
             g.admit(PEER, msg("a", "two")).await,
-            Receipt::Refused(Reason::Blocked)
+            Some(Receipt::Refused(Reason::Blocked))
         );
         let queued = ui
             .events()
@@ -334,22 +351,22 @@ mod tests {
     #[tokio::test]
     async fn floods_are_refused() {
         let (mut g, _ui, _pres) = gate();
-        assert!(g.admit(PEER, msg("a", "same")).await.is_ok());
+        assert!(taken(g.admit(PEER, msg("a", "same")).await));
         assert_eq!(
             g.admit(PEER, msg("a", "same")).await,
-            Receipt::Refused(Reason::Flooded),
+            Some(Receipt::Refused(Reason::Flooded)),
             "an exact repeat"
         );
         assert!(
-            g.admit(PEER, msg("b", "same")).await.is_ok(),
+            taken(g.admit(PEER, msg("b", "same")).await),
             "another sender"
         );
         for i in 2..BURST {
-            assert!(g.admit(PEER, msg("a", &format!("m{i}"))).await.is_ok());
+            assert!(taken(g.admit(PEER, msg("a", &format!("m{i}"))).await));
         }
         assert_eq!(
             g.admit(PEER, msg("a", "one more")).await,
-            Receipt::Refused(Reason::Flooded),
+            Some(Receipt::Refused(Reason::Flooded)),
             "past the burst"
         );
 
@@ -359,8 +376,39 @@ mod tests {
         }
         assert_eq!(
             g.admit(PEER, msg("a", "full")).await,
-            Receipt::Refused(Reason::Flooded),
+            Some(Receipt::Refused(Reason::Flooded)),
             "the queue holds as many as it may"
         );
+    }
+
+    /// B11, RED/GREEN against `waiting_on_the_user_is_blocked`'s first send: the same message in a chat
+    /// that holds is answered `held`, not `queued` — and is still queued for the loop to ask about. A
+    /// refusal stays a refusal.
+    #[tokio::test]
+    async fn a_holding_chat_answers_held() {
+        let (mut g, ui, pres) = gate_holding(true);
+        assert_eq!(
+            g.admit(PEER, msg("a", "run rm -rf build/")).await,
+            Some(Receipt::Held)
+        );
+        assert!(
+            ui.events()
+                .iter()
+                .any(|e| matches!(e, UiEvent::Enqueue(i) if i.kind == InputKind::Message))
+        );
+        pres.set_state(State::NeedsInput);
+        assert_eq!(
+            g.admit(PEER, msg("a", "again")).await,
+            Some(Receipt::Refused(Reason::Blocked))
+        );
+    }
+
+    /// B9: a closed facade takes nothing — no receipt at all (`None`: the socket closes the connection),
+    /// never a `refused` that would blame the sender's line.
+    #[tokio::test]
+    async fn a_closed_chat_answers_nothing() {
+        let (mut g, ui, _pres) = gate();
+        ui.fail_after(0);
+        assert_eq!(g.admit(PEER, msg("a", "hi")).await, None);
     }
 }

@@ -203,6 +203,7 @@ impl Fx {
                 code_theme: CodeTheme::Monokai,
                 pres,
                 steering: true,
+                hold_messages: false,
                 mounts_only: None,
             },
             root: CancellationToken::new(),
@@ -221,7 +222,12 @@ impl Fx {
         history: &mut Vec<Message>,
         ctxm: &mut CtxMeter,
     ) -> TurnReport {
-        let mut steer = Steerer::new(Arc::clone(&self.cx.ui), Arc::clone(&self.cx.tr), true);
+        let mut steer = Steerer::new(
+            Arc::clone(&self.cx.ui),
+            Arc::clone(&self.cx.tr),
+            true,
+            false,
+        );
         run_turn(&self.cx, &self.root, p, history, ctxm, &mut steer).await
     }
 
@@ -1258,10 +1264,7 @@ async fn a_job_notice_lands_at_the_round_boundary_as_a_notice() {
 /// A message from another process, as `repl::inbound` builds it.
 fn socket_message(text: &str) -> Input {
     crate::repl::inbound::message_input(
-        crate::session::sock::Peer {
-            uid: 501,
-            pid: Some(77),
-        },
+        crate::session::sock::Peer { pid: Some(77) },
         &crate::session::sock::Request::message("ci", text, None),
     )
 }
@@ -1351,8 +1354,7 @@ async fn a_held_socket_message_never_reaches_the_turn() {
         Round::text("done"),
     ]);
     let mut history = vec![Message::user("go")];
-    let mut steer =
-        Steerer::new(Arc::clone(&fx.cx.ui), Arc::clone(&fx.cx.tr), true).holding_messages(true);
+    let mut steer = Steerer::new(Arc::clone(&fx.cx.ui), Arc::clone(&fx.cx.tr), true, true);
     run_turn(
         &fx.cx,
         &fx.root,
@@ -1376,7 +1378,7 @@ async fn a_held_socket_message_never_reaches_the_turn() {
             .iter()
             .any(|m| m.content.contains("[background job b1"))
     );
-    let held = steer.take_held_messages();
+    let held = steer.take_held();
     assert_eq!(held.len(), 1);
     assert_eq!(held[0].display, "[message from ci] run rm -rf build");
 }
@@ -1794,7 +1796,12 @@ struct OrderFx {
 impl OrderFx {
     async fn turn(&self, p: &dyn Provider, history: &mut Vec<Message>) -> TurnReport {
         let mut ctxm = CtxMeter::disabled();
-        let mut steer = Steerer::new(Arc::clone(&self.cx.ui), Arc::clone(&self.cx.tr), true);
+        let mut steer = Steerer::new(
+            Arc::clone(&self.cx.ui),
+            Arc::clone(&self.cx.tr),
+            true,
+            false,
+        );
         run_turn(&self.cx, &self.root, p, history, &mut ctxm, &mut steer).await
     }
 }
@@ -1820,6 +1827,7 @@ fn order_fixture(script: Vec<Reply>) -> OrderFx {
         code_theme: CodeTheme::Monokai,
         pres,
         steering: true,
+        hold_messages: false,
         mounts_only: None,
     };
     OrderFx {

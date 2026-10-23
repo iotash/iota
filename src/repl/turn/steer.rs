@@ -22,34 +22,32 @@ use crate::repl::render::transcript::Transcript;
 /// the user typed meanwhile is answered after the flush, by a turn with all its tools.
 ///
 /// A message from another process (`InputKind::Message`, `repl::inbound`) lands like a job's notice. In a chat
-/// that holds them for the user (its toolsets waive approval), it is HELD instead and handed back to the loop,
-/// which queues it again after the turn — the idle loop asks the user before the model reads it.
+/// that holds them for the user (its tools act without asking), it is HELD the same way, in the same list: the
+/// loop queues it again after the turn, and the idle loop asks the user before the model reads it.
 pub(crate) struct Steerer {
     ui: Arc<dyn Ui>,
     tr: Arc<Transcript>,
     open: bool,
-    held: Vec<Input>,
     hold_messages: bool,
-    held_messages: Vec<Input>,
+    held: Vec<Input>,
 }
 
 impl Steerer {
-    /// A steerer for one turn over the facade and the transcript; `open: false` never drains.
-    pub(crate) fn new(ui: Arc<dyn Ui>, tr: Arc<Transcript>, open: bool) -> Self {
+    /// A steerer for one turn over the facade and the transcript; `open: false` never drains;
+    /// `hold_messages`: messages from other processes are held, not injected.
+    pub(crate) fn new(
+        ui: Arc<dyn Ui>,
+        tr: Arc<Transcript>,
+        open: bool,
+        hold_messages: bool,
+    ) -> Self {
         Self {
             ui,
             tr,
             open,
+            hold_messages,
             held: Vec::new(),
-            hold_messages: false,
-            held_messages: Vec::new(),
         }
-    }
-
-    /// Holds every message from another process this steerer takes, instead of injecting it.
-    pub(crate) fn holding_messages(mut self, hold: bool) -> Self {
-        self.hold_messages = hold;
-        self
     }
 
     /// Drains the contiguous non-command prefix of the queue (the facade's
@@ -62,12 +60,10 @@ impl Steerer {
             return out;
         }
         for input in self.ui.take_queued_messages().await {
-            if input.kind == InputKind::Notice && crate::repl::bot::is_flush_notice(&input.text) {
+            let flush =
+                input.kind == InputKind::Notice && crate::repl::bot::is_flush_notice(&input.text);
+            if flush || (input.kind == InputKind::Message && self.hold_messages) {
                 self.held.push(input);
-                continue;
-            }
-            if input.kind == InputKind::Message && self.hold_messages {
-                self.held_messages.push(input);
                 continue;
             }
             // A host notice (a background job finished) rides the SAME queue and lands at the same
@@ -88,13 +84,9 @@ impl Steerer {
         out
     }
 
-    /// The flush notices taken off the queue and not injected, for the loop to queue again.
+    /// What was taken off the queue and not injected — flush notices and held messages, in the order
+    /// taken — for the loop to queue again.
     pub(crate) fn take_held(&mut self) -> Vec<Input> {
         std::mem::take(&mut self.held)
-    }
-
-    /// The messages from other processes taken off the queue and held, for the loop to queue again.
-    pub(crate) fn take_held_messages(&mut self) -> Vec<Input> {
-        std::mem::take(&mut self.held_messages)
     }
 }
