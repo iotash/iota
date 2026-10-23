@@ -340,13 +340,13 @@ pub enum RunError {
         source: std::io::Error,
     },
     /// `-m` found the session (or the bot) open in another process, and that process did not take the
-    /// message: its receipt said why (docs/design/agent-messaging.md §3). The receipt is on stdout too.
-    #[error("{what} did not take the message: {reason}")]
+    /// message: its receipt, as written, says why (docs/design/agent-messaging.md §3). It is on stdout too.
+    #[error("{what} did not take the message: {receipt}")]
     NotDelivered {
         /// `session <id>` or `bot <name>`.
         what: String,
-        /// The receipt's `reason`.
-        reason: &'static str,
+        /// The receipt line.
+        receipt: String,
     },
     /// `-m` found the session (or the bot) open in another process, and no socket to reach it through — an
     /// iota without one, a chat on a platform without Unix sockets, or one still starting.

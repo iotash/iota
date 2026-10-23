@@ -36,22 +36,6 @@ pub fn set_factory(name: &str) -> Option<SetFactory> {
     }
 }
 
-/// Whether `tools` enables a set that acts without asking: `shell` with `auto_run`, `code` with `auto_write`.
-/// A chat configured so lets whoever can message it make the model act unasked, so it holds a message from
-/// another process for the user first (`repl::inbound`, docs/design/agent-messaging.md §4). A value that does
-/// not decode answers `false` here — the set's own factory refuses it.
-pub fn waives_approval(tools: &ToolsConfig) -> bool {
-    use super::builtins::{code::CodeConfig, shell::ShellConfig};
-    let enabled = |name: &str| tools.contains_key(name) && !super::set_disabled(tools, name);
-    let shell = enabled("shell")
-        && super::yaml11::decode_mapping::<ShellConfig>(tools.get("shell"))
-            .is_ok_and(|c| c.auto_run);
-    let code = enabled("code")
-        && super::yaml11::decode_mapping::<CodeConfig>(tools.get("code"))
-            .is_ok_and(|c| c.auto_write);
-    shell || code
-}
-
 /// Why a toolset factory refused its configuration; [`SetError::NoShell`] reports a machine with no
 /// usable interpreter.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -92,20 +76,32 @@ mod tests {
         }
         assert!(set_factory("nope").is_none());
     }
-    /// ⑩'s trigger: a set that acts without asking, enabled — and nothing else (a sandboxed shell that
-    /// still asks outside the sandbox, a disabled set, a value that does not decode).
+
+    /// C13: whether a chat holds a message from another process is the BUILT dispatcher's answer — the same
+    /// setting each tool's `requires_approval` reads — not a second reading of the YAML. The policy is pinned
+    /// as it stands: `auto_run` and `auto_write` waive; a sandboxed shell without `auto_run` does NOT, though
+    /// its confined commands run unasked (docs/design/agent-messaging.md §7: open, for the owner).
     #[test]
-    fn waiving_approval_is_auto_run_or_auto_write() {
-        let tools =
-            |yaml: &str| -> super::ToolsConfig { serde_norway::from_str(yaml).expect("yaml") };
-        assert!(super::waives_approval(&tools("shell: {auto_run: true}")));
-        assert!(super::waives_approval(&tools("code: {auto_write: yes}")));
-        assert!(!super::waives_approval(&tools("shell:\ncode:\nask:")));
-        assert!(!super::waives_approval(&tools("shell: {sandbox: auto}")));
-        assert!(!super::waives_approval(&tools(
-            "shell: false\ncode: {auto_write: false}"
-        )));
-        assert!(!super::waives_approval(&tools("shell: {auto_run: maybe}")));
-        assert!(!super::waives_approval(&tools("{}")));
+    fn the_dispatcher_says_whether_approval_is_waived() {
+        use crate::tool::{Dispatcher, ToolEnv};
+        let built = |yaml: &str| {
+            let tools: super::ToolsConfig = serde_norway::from_str(yaml).expect("yaml");
+            let tmp = std::env::temp_dir();
+            let env = ToolEnv {
+                jobs: Some(crate::shell::jobs::Jobs::new(&tmp)),
+                ..ToolEnv::default()
+            };
+            crate::tool::Registry::build(&env, &tools, &mut |w| panic!("{w}"))
+        };
+        assert!(built("shell: {auto_run: true}").waives_approval());
+        assert!(built("code: {auto_write: true}").waives_approval());
+        assert!(!built("code:\nask:").waives_approval());
+        assert!(!built("code: {auto_write: false}").waives_approval());
+        assert!(
+            !built("shell: {sandbox: auto}").waives_approval(),
+            "the sandbox is not a waiver — the open question, pinned as decided today"
+        );
+        assert!(!built("shell: {sandbox: \"off\"}").waives_approval());
+        assert!(!built("shell: false\ncode: false").waives_approval());
     }
 }

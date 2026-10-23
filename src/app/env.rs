@@ -13,12 +13,12 @@ use super::{DOT_DIR, HostDirs};
 /// module's knowledge: `crate::host::child_env` gathers them from the detected host. Cheap to clone; the
 /// default withholds nothing.
 ///
-/// It also carries the few variables a child is given that the run itself was not: an interactive chat's
+/// It also carries the one variable a child is given that the run itself was not: an interactive chat's
 /// `IOTA_SOCKET` (`session::sock`), so a script the model starts can message the chat it came from.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChildEnv {
     withheld: Arc<[String]>,
-    given: Arc<[(String, String)]>,
+    given: Option<(String, String)>,
 }
 
 impl ChildEnv {
@@ -32,35 +32,15 @@ impl ChildEnv {
         }
         Self {
             withheld: withheld.into(),
-            given: Arc::new([]),
+            given: None,
         }
     }
 
-    /// Also gives every child `name=value` (replacing an earlier value of `name`, and no longer withholding it).
+    /// Also gives every child `name=value`.
     #[must_use]
-    pub fn giving(self, name: &str, value: &str) -> Self {
-        let withheld: Vec<String> = self
-            .withheld
-            .iter()
-            .filter(|n| *n != name)
-            .cloned()
-            .collect();
-        let mut given: Vec<(String, String)> = self
-            .given
-            .iter()
-            .filter(|(n, _)| n != name)
-            .cloned()
-            .collect();
-        given.push((name.to_owned(), value.to_owned()));
-        Self {
-            withheld: withheld.into(),
-            given: given.into(),
-        }
-    }
-
-    /// The given variables, in order.
-    pub fn given(&self) -> &[(String, String)] {
-        &self.given
+    pub fn giving(mut self, name: &str, value: &str) -> Self {
+        self.given = Some((name.to_owned(), value.to_owned()));
+        self
     }
 
     /// The withheld names.
@@ -75,7 +55,7 @@ impl ChildEnv {
         for name in self.withheld.iter() {
             cmd.env_remove(name);
         }
-        for (name, value) in self.given.iter() {
+        if let Some((name, value)) = &self.given {
             cmd.env(name, value);
         }
     }
@@ -311,18 +291,11 @@ mod tests {
         assert!(format!("{copy:?}").starts_with("Env { dirs: "));
     }
 
-    /// A given variable is set on the child after the withheld ones are removed, and giving a name stops
-    /// withholding it; a later value replaces an earlier one.
+    /// A given variable is set on the child after the withheld ones are removed.
     #[test]
     fn a_child_is_given_what_it_is_given() {
-        let env = super::ChildEnv::new(["HERDR_ENV".to_owned(), "IOTA_SOCKET".to_owned()])
-            .giving("IOTA_SOCKET", "/a.sock")
-            .giving("IOTA_SOCKET", "/run/1.sock");
-        assert_eq!(env.names(), ["HERDR_ENV"]);
-        assert_eq!(
-            env.given(),
-            [("IOTA_SOCKET".to_owned(), "/run/1.sock".to_owned())]
-        );
+        let env =
+            super::ChildEnv::new(["HERDR_ENV".to_owned()]).giving("IOTA_SOCKET", "/run/1.sock");
         let mut cmd = tokio::process::Command::new("true");
         env.apply(&mut cmd);
         let envs: Vec<_> = cmd.as_std().get_envs().collect();

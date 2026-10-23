@@ -131,6 +131,11 @@ impl Dispatcher for Registry {
         self.get(name).is_some_and(|t| t.requires_approval(args))
     }
 
+    /// Any registered tool's answer.
+    fn waives_approval(&self) -> bool {
+        self.order.iter().any(|t| t.waives_approval())
+    }
+
     /// The tool's answer; unknown → `Group`.
     fn presentation(&self, name: &str) -> Presentation {
         self.get(name)
@@ -227,6 +232,11 @@ impl Dispatcher for Merged {
     fn requires_approval(&self, name: &str, args: Option<&JsonObject>) -> bool {
         self.owner(name)
             .is_some_and(|p| p.requires_approval(name, args))
+    }
+
+    /// Any part's answer.
+    fn waives_approval(&self) -> bool {
+        self.parts.iter().any(|p| p.waives_approval())
     }
 
     /// Owner's answer or the default.

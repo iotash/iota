@@ -2048,9 +2048,9 @@ impl iota::session::sock::Inbox for Holder {
         &mut self,
         _peer: iota::session::sock::Peer,
         req: iota::session::sock::Request,
-    ) -> iota::BoxFuture<'_, iota::session::sock::Receipt> {
+    ) -> iota::BoxFuture<'_, Option<iota::session::sock::Receipt>> {
         self.taken.lock().expect("lock").push(req);
-        Box::pin(std::future::ready(self.answer))
+        Box::pin(std::future::ready(Some(self.answer)))
     }
 }
 
@@ -2141,7 +2141,9 @@ async fn a_message_to_a_held_session_goes_to_its_socket() {
     assert_eq!(out(&o), "{\"ok\":false,\"reason\":\"blocked\"}\n");
     assert_eq!(
         err(&o),
-        format!("Error: session {id} did not take the message: blocked\n")
+        format!(
+            "Error: session {id} did not take the message: {{\"ok\":false,\"reason\":\"blocked\"}}\n"
+        )
     );
     // Nothing was appended by the senders: the bundle is the holder's.
     drop(writer);
@@ -2180,4 +2182,46 @@ async fn a_message_to_a_running_bot_goes_to_its_socket() {
     assert_eq!(out(&o), "{\"ok\":true,\"state\":\"woken\"}\n");
     assert_eq!(taken.lock().expect("lock")[0].text, "deploy finished");
     drop(writer);
+}
+
+/// B8: a link left by an earlier holder is never followed into another chat. The bundle's link names a live
+/// socket — an unrelated chat that now has the dead holder's pid — and the bundle is then opened by a chat
+/// with no socket of its own (here: this process, which takes the bundle lock). Taking the lock clears the
+/// link, so `-m` finds the holder unreachable and the unrelated chat is sent nothing. RED without the clear:
+/// the message lands in the wrong chat with exit 0.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stale_link_never_reaches_another_chat() {
+    use iota::session::sock::Receipt;
+    let home = TempDir::new().expect("home");
+    let cwd = TempDir::new().expect("cwd");
+    write_config(cwd.path(), "", "gemini-2.5-pro", "");
+    let store = SessionStore::new(sessions_root(home.path()));
+    let mut writer = store
+        .create(iota::session::NewSession::new(
+            ProviderKind::Gemini,
+            "gemini-2.5-pro",
+        ))
+        .expect("create");
+    writer
+        .append_messages(&[iota::provider::model::Message::user("hi")])
+        .expect("materialise");
+    let (id, bundle) = (writer.id().to_owned(), writer.dir().to_path_buf());
+    drop(writer);
+    // The crashed holder's link, now naming a live socket that belongs to someone else.
+    let unrelated = TempDir::new().expect("sock home");
+    let taken = hold_socket(unrelated.path(), &bundle, Receipt::Woken);
+    // A chat with no socket opens the bundle.
+    let (holder, _) = store.resume(&id, ProviderKind::Gemini).expect("resume");
+
+    let mut cmd = iota(cwd.path(), home.path());
+    cmd.args(["resume", &id, "-m", "for the chat that holds it"]);
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(1), "stdout was: {}", out(&o));
+    assert!(err(&o).contains("and cannot be messaged"), "{}", err(&o));
+    assert!(
+        taken.lock().expect("lock").is_empty(),
+        "the message went to an unrelated chat"
+    );
+    drop(holder);
 }

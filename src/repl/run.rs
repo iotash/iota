@@ -337,7 +337,11 @@ impl Repl {
             .as_ref()
             .map(|w| w.dir().to_owned())
             .filter(|d| d.join(crate::session::META_FILE).exists());
-        served.follow(dir.as_deref());
+        if let Err(e) = served.follow(dir.as_deref()) {
+            self.handles.tr.notice(&format!(
+                "⚠ Other processes cannot message this session: {e}"
+            ));
+        }
     }
 }
 
@@ -665,8 +669,14 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             dark,
             cancel: root_cancel.clone(),
             jobs: Arc::clone(&jobs),
+            // The hold's trigger is the dispatcher's own answer: one truth with the approvals it waives.
             inbound: messaging.map(|m| {
-                crate::repl::inbound::Served::start(m, Arc::clone(&ui), Arc::clone(&pres))
+                crate::repl::inbound::Served::start(
+                    m,
+                    Arc::clone(&ui),
+                    Arc::clone(&pres),
+                    dispatch.waives_approval(),
+                )
             }),
         },
         notices: NoticeGate::default(),
@@ -1019,18 +1029,21 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             repl.handles.tr.set_dark(known);
             ui.set_dark_background(known);
         }
-        let mut engine = TurnEngine::new(repl.turn_ctx(send_overlay, flush), root_cancel.clone())
-            .holding_messages(repl.handles.inbound.as_ref().is_some_and(|s| s.holds()));
+        let mut engine = TurnEngine::new(repl.turn_ctx(send_overlay, flush), root_cancel.clone());
         let outcome = match engine.run(&mut repl.conv, hist0 - turn_base).await {
             Ok(report) => report,
             Err(ui_err) => break 'main Err(ReplError::Ui(ui_err)),
         };
-        let held = engine.take_held();
         // Notices steered in mid-turn go back after the carried ones when a 429 rolls the turn back; their host
         // debt was settled when they were taken, so they are handed back without settling it again (X-84).
         carried.extend(engine.take_injected());
-        // Held messages go back on the queue: the idle loop asks about each before the model reads it.
-        for input in engine.take_held_messages() {
+        // Held messages go back on the queue now — the idle loop asks about each before the model reads it;
+        // the flush notices are the bot's machine's to put back (`after_bot_turn`).
+        let (messages, held): (Vec<_>, Vec<_>) = engine
+            .take_held()
+            .into_iter()
+            .partition(|input| input.kind == InputKind::Message);
+        for input in messages {
             ui.enqueue(input);
         }
         let mut landed = false;
@@ -1280,6 +1293,7 @@ impl Repl {
             code_theme: code_theme_of(self.handles.dark),
             pres: Arc::clone(&self.handles.pres),
             steering: !flush,
+            hold_messages: self.handles.inbound.as_ref().is_some_and(|s| s.holds()),
             mounts_only: flush.then_some(MEMORY_ONLY),
         }
     }

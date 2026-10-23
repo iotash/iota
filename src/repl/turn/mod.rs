@@ -106,6 +106,9 @@ pub(crate) struct TurnCtx {
     /// Whether round boundaries take typed-ahead messages into the turn — `false` only for a bot's memory
     /// flush turn (docs/design/bot-mode.md §3.6.1).
     pub(crate) steering: bool,
+    /// Whether a message from another process is held out of the turn rather than injected: the chat's tools
+    /// act without asking (`repl::inbound`, the hold).
+    pub(crate) hold_messages: bool,
     /// A bot's flush turn: the only tools a frozen mount in the history may still advertise in the send
     /// (codex R8). The dispatcher is narrowed the same way; this keeps the request from offering what the
     /// dispatcher would refuse. `None` everywhere else.
@@ -342,7 +345,12 @@ pub(crate) struct TurnEngine {
 impl TurnEngine {
     /// An engine for one message: the turn context the loop composed and the root cancel scope.
     pub(crate) fn new(cx: TurnCtx, root_cancel: CancellationToken) -> Self {
-        let steer = Steerer::new(Arc::clone(&cx.ui), Arc::clone(&cx.tr), cx.steering);
+        let steer = Steerer::new(
+            Arc::clone(&cx.ui),
+            Arc::clone(&cx.tr),
+            cx.steering,
+            cx.hold_messages,
+        );
         Self {
             cx,
             steer,
@@ -350,8 +358,9 @@ impl TurnEngine {
         }
     }
 
-    /// The flush notices this turn's steering took off the queue without injecting them; the loop queues
-    /// them again (docs/design/bot-mode.md §3.6.1).
+    /// What this turn's steering took off the queue without injecting it — a bot's flush notices
+    /// (docs/design/bot-mode.md §3.6.1) and held messages from other processes (`repl::inbound`); the loop
+    /// queues them again.
     pub(crate) fn take_held(&mut self) -> Vec<crate::ui::facade::Input> {
         self.steer.take_held()
     }
@@ -360,18 +369,6 @@ impl TurnEngine {
     /// the notice gate (X-84).
     pub(crate) fn take_injected(&mut self) -> Vec<crate::ui::facade::Input> {
         self.steer.take_injected()
-    }
-
-    /// Holds the messages from other processes this turn's steering meets (`repl::inbound`, the hold).
-    #[must_use]
-    pub(crate) fn holding_messages(mut self, hold: bool) -> Self {
-        self.steer = self.steer.holding_messages(hold);
-        self
-    }
-
-    /// The messages from other processes this turn's steering held; the loop queues them again.
-    pub(crate) fn take_held_messages(&mut self) -> Vec<crate::ui::facade::Input> {
-        self.steer.take_held_messages()
     }
 
     /// Runs the turn (chat/run.go:1030-1068): the `fresh` messages at the history's end — the user message,
