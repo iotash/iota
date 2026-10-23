@@ -58,6 +58,15 @@ pub(crate) const HTTP2_KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 /// An explicit `x-should-retry: true` still wins over this, as over every other rule: that response is
 /// retried, after the wait it names.
 pub const RETRY_AFTER_CAP: Duration = Duration::from_secs(60);
+/// The longest wait a `retry-after` is taken to name: a day (X-84, the review after the merge, m1). A longer
+/// one is clamped to it by [`retry_after`], so everything downstream — the wire's sleep under `x-should-retry`,
+/// the ladder's comparison with [`RETRY_AFTER_CAP`], the notice gate's `next` and its `held until HH:MM`
+/// line — sees a bounded value. A day because it is longer than any quota window a provider names in a header
+/// today (GLM's and Anthropic's run five hours), it is as long as Claude Code itself waits for a reset, and a
+/// `HH:MM` with no date only reads right within one; and because an unbounded one was a crash:
+/// `Duration::try_from_secs_f64` takes up to `u64::MAX` seconds, `Instant + Duration` panics past `i64` seconds,
+/// and `retry-after: 10000000000000000000` took the loop down in the gate.
+pub const RETRY_AFTER_HORIZON: Duration = Duration::from_hours(24);
 /// Backoff base: `min(500ms << attempt, 8s) - jitter(d/4)`.
 pub const BACKOFF_BASE: Duration = Duration::from_millis(500);
 /// Backoff cap.
@@ -560,8 +569,14 @@ pub fn retry_delay(headers: Option<&HeaderMap>, attempt: u32, jitter: &dyn Jitte
 
 /// What a response asks the client to wait before trying again: `retry-after-ms` (integer > 0) → ms;
 /// `retry-after` (float seconds > 0) → seconds; `retry-after` (HTTP-date with positive remaining time) → that;
-/// else `None`. Read once per refused response, into [`StatusError::retry_after`].
+/// else `None` — and never longer than [`RETRY_AFTER_HORIZON`]. Read once per refused response, into
+/// [`StatusError::retry_after`].
 pub fn retry_after(h: &HeaderMap) -> Option<Duration> {
+    named_wait(h).map(|d| d.min(RETRY_AFTER_HORIZON))
+}
+
+/// The wait as the headers name it, however long.
+fn named_wait(h: &HeaderMap) -> Option<Duration> {
     if let Some(ms) = header_str(h, "retry-after-ms")
         && let Ok(n) = ms.parse::<i64>()
         && n > 0
@@ -631,8 +646,8 @@ pub struct StatusError {
     /// Error detail: the trimmed body, or the raw text of a non-null top-level `error` value; cut at
     /// `ERROR_DETAIL_CAP` bytes plus `…`.
     pub body: String,
-    /// What the response asked the client to wait before trying again ([`retry_after`]); `None` when it
-    /// said nothing. Not part of `Display`.
+    /// What the response asked the client to wait before trying again ([`retry_after`], so at most
+    /// [`RETRY_AFTER_HORIZON`]); `None` when it said nothing. Not part of `Display`.
     pub retry_after: Option<Duration>,
 }
 

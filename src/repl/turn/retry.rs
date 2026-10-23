@@ -74,10 +74,11 @@ fn ceil_secs(d: Duration) -> u64 {
 
 /// Linear backoff attempt×1s (test-compressible), max 10; a 429 on its own rungs (X-84): at most
 /// [`RATE_RETRIES`], waiting its `retry-after` when that is at most [`RETRY_AFTER_CAP`] and 2/4/8 s when
-/// there is none, and not at all when it asks for longer. Cancel beats the timer; ONE recovery notice;
-/// [`Retries::None`] (image providers) passes through. `round` is an async closure (Rust 2024
-/// `AsyncFnMut`): each attempt's future re-borrows the closure's captures — the exact Go per-attempt
-/// closure shape (run.go:1426-1447).
+/// there is none, and not at all when it asks for longer; each ladder counts its own rungs, so three 503s do
+/// not use up a 429's three nor two 429s a 503's ten. Cancel beats the timer; ONE recovery notice (counting
+/// every retry made, whichever ladder); [`Retries::None`] (image providers) passes through. `round` is an
+/// async closure (Rust 2024 `AsyncFnMut`): each attempt's future re-borrows the closure's captures — the
+/// exact Go per-attempt closure shape (run.go:1426-1447).
 ///
 /// Nothing lands in the transcript until the turn gives up: the current error's
 /// classification rides the busy status row (`"%s — retrying (attempt %d/%d)"`, a 429 with a wait
@@ -97,13 +98,19 @@ pub async fn retry_round<T>(
         // Dedicated image providers bill per attempt: never auto-retry (run.go:1428).
         return result;
     }
-    let mut attempt: u32 = 1;
+    // Each ladder counts its own rungs (X-84, the review after the merge, m4): the linear one for 5xx,
+    // transport and in-band faults, the 429 one for rate limits — three 503s do not use up a 429's three. The
+    // recovery notice counts every retry made, whichever ladder.
+    let mut linear: u32 = 1;
+    let mut rate: u32 = 1;
+    let mut made: u32 = 0;
     while let Err(e) = &result {
         if !is_retryable(e) {
             break;
         }
-        let (max, wait, shown) = match rate_limit(e) {
-            None => (MAX_RETRIES, RETRY_BACKOFF * attempt, None),
+        let limit = rate_limit(e);
+        let (attempt, max, wait, shown) = match limit {
+            None => (linear, MAX_RETRIES, RETRY_BACKOFF * linear, None),
             Some(_) if retries == Retries::NoRateLimit => break,
             // Asked for longer than a minute: a limit with a time on it, not a fault to sleep through.
             Some(RateLimit {
@@ -111,10 +118,11 @@ pub async fn retry_round<T>(
             }) if d > RETRY_AFTER_CAP => break,
             Some(RateLimit {
                 retry_after: Some(d),
-            }) => (RATE_RETRIES, d, Some(d)),
+            }) => (rate, RATE_RETRIES, d, Some(d)),
             Some(RateLimit { retry_after: None }) => (
+                rate,
                 RATE_RETRIES,
-                RATE_BACKOFF * 2_u32.pow(attempt.saturating_sub(1).min(16)),
+                RATE_BACKOFF * 2_u32.pow(rate.saturating_sub(1).min(16)),
                 None,
             ),
         };
@@ -142,12 +150,15 @@ pub async fn retry_round<T>(
         }
         guard.stop();
         result = round().await;
+        made += 1;
         if result.is_ok() {
-            notice(format!(
-                "⟳ {headline} — recovered after {attempt} attempt(s)"
-            ));
+            notice(format!("⟳ {headline} — recovered after {made} attempt(s)"));
         }
-        attempt += 1;
+        if limit.is_some() {
+            rate += 1;
+        } else {
+            linear += 1;
+        }
     }
     result
 }
@@ -802,6 +813,50 @@ mod tests {
             at.len(),
             11,
             "a short wait on a 5xx keeps the linear ladder"
+        );
+    }
+
+    // m4 (the review after the merge): each ladder counts its own rungs. Three 503s then a 429: the 429
+    // still gets its three — calls at 0, 1, 3, 6 s up the linear ladder, then 2/4/8 s apart; two 429s then a
+    // 503: the 503 still climbs all ten, 1…10 s apart from where the rungs changed.
+    #[tokio::test(start_paused = true)]
+    async fn each_ladder_counts_its_own_rungs() {
+        let calls = Mutex::new(0_u32);
+        let (at, labels) = always(Retries::All, || {
+            let mut n = calls.lock().expect("calls");
+            *n += 1;
+            if *n <= 3 { status(503) } else { too_many(None) }
+        })
+        .await;
+        assert_eq!(at, secs(&[0, 1, 3, 6, 8, 12, 20]));
+        let rows: Vec<String> = [1, 2, 3]
+            .map(|n| format!("Provider server error (503) — retrying (attempt {n}/10)"))
+            .into_iter()
+            .chain([1, 2, 3].map(|n| format!("Rate limited (429) — retrying (attempt {n}/3)")))
+            .collect();
+        assert_eq!(labels, rows);
+
+        let calls = Mutex::new(0_u32);
+        let (at, labels) = always(Retries::All, || {
+            let mut n = calls.lock().expect("calls");
+            *n += 1;
+            if *n <= 2 { too_many(None) } else { status(503) }
+        })
+        .await;
+        assert_eq!(
+            at.len(),
+            13,
+            "2 rungs of the 429 ladder, then 1 + 10 of the linear one"
+        );
+        assert_eq!(at[2], std::time::Duration::from_secs(6));
+        assert_eq!(at[12], std::time::Duration::from_secs(6 + 55));
+        assert_eq!(
+            labels[2],
+            "Provider server error (503) — retrying (attempt 1/10)"
+        );
+        assert_eq!(
+            labels[11],
+            "Provider server error (503) — retrying (attempt 10/10)"
         );
     }
 }
