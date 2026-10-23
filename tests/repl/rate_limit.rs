@@ -31,6 +31,9 @@ const TWO_MODELS: &str = "providers:\n  a: {type: anthropic, key: x}\nmodels:\n 
 /// The ladder a first 429 climbs: 1 call + 3 retries.
 const LADDER: usize = 4;
 
+/// Builds the provider of `provider:id` for the fixture's endpoint factory.
+type BuildEndpoint = fn(&str, &str) -> Box<dyn iota::provider::Provider>;
+
 struct Fixture {
     ui: Arc<ScriptedUi>,
     _tmp: tempfile::TempDir,
@@ -42,6 +45,8 @@ struct Fixture {
     /// The history the loop starts from, and the context window it is measured against (`None`: default).
     imported: Vec<Message>,
     window: Option<u64>,
+    /// Lets `/model` move the chat to another configured provider: the factory the binary would hand in.
+    endpoints: Option<BuildEndpoint>,
 }
 
 impl Fixture {
@@ -56,6 +61,7 @@ impl Fixture {
             tools: &[],
             imported: Vec::new(),
             window: None,
+            endpoints: None,
         }
     }
 
@@ -74,7 +80,7 @@ impl Fixture {
 
     /// Runs the script to its end on `provider`; panics when the loop waits past a virtual hour.
     async fn run(&self, provider: FakeProvider, writer: Option<SessionWriter>) {
-        let (params, layers) = match &self.yaml {
+        let (params, layers, catalog, endpoints) = match &self.yaml {
             Some(yaml) => {
                 let cfg = iota::cmd::Config::parse(
                     yaml.as_bytes(),
@@ -83,11 +89,46 @@ impl Fixture {
                 )
                 .expect("the config loads");
                 let resolved = cfg.resolve_agent("default").expect("the agent resolves");
+                let catalog_of = |resolved: &iota::cmd::Resolved| {
+                    iota::repl::ModelCatalog::new(
+                        &cfg,
+                        resolved,
+                        &iota::app::env::Env::default(),
+                        &iota::provider::HttpTransport::from(iota::llm::default_http_client()),
+                    )
+                };
+                let catalog = if self.endpoints.is_some() {
+                    catalog_of(&resolved)
+                } else {
+                    iota::repl::ModelCatalog::default()
+                };
+                let endpoints = self.endpoints.map(|build| {
+                    let cfg = cfg.clone();
+                    Box::new(move |provider: &str, id: &str, _: &mut dyn FnMut(String)| {
+                        let mut moved = cfg.resolve_agent("default").expect("the agent resolves");
+                        moved.move_to_provider(&cfg, provider);
+                        Ok(iota::repl::Endpoint {
+                            provider: build(provider, id),
+                            title_provider: None,
+                            layers: iota::cmd::ParamLayers::new(&cfg, &moved),
+                            catalog: iota::repl::ModelCatalog::new(
+                                &cfg,
+                                &moved,
+                                &iota::app::env::Env::default(),
+                                &iota::provider::HttpTransport::from(
+                                    iota::llm::default_http_client(),
+                                ),
+                            ),
+                        })
+                    }) as iota::repl::EndpointFactory
+                });
                 (
                     resolved
                         .declared(None)
                         .evaluate(&iota::session::LayeredParams::default()),
                     iota::cmd::ParamLayers::new(&cfg, &resolved),
+                    catalog,
+                    endpoints,
                 )
             }
             None => Default::default(),
@@ -121,8 +162,8 @@ impl Fixture {
             },
             params,
             layers,
-            catalog: iota::repl::ModelCatalog::default(),
-            endpoints: None,
+            catalog,
+            endpoints,
             agent: iota::headless::AgentOptions::default(),
             dark_background: true,
             root_cancel: CancellationToken::new(),
@@ -702,4 +743,58 @@ async fn the_compaction_offer_prices_every_held_notice() {
             "typed {typed}: declined, the turn went"
         );
     }
+}
+
+/// Two accounts on the same API serving the same model id.
+const TWO_ACCOUNTS: &str = "providers:\n  glm_a: {type: anthropic, key: x}\n  glm_b: {type: anthropic, key: y}\nmodels:\n  ma: {provider: glm_a, id: glm-5.3}\n  mb: {provider: glm_b, id: glm-5.3}\nagents:\n  default: {model: ma, choices: [ma, mb]}\n";
+
+/// The second account's endpoint: it answers.
+static ACCOUNT_B: std::sync::OnceLock<Log> = std::sync::OnceLock::new();
+
+/// M4: `/model` onto the same dialect and model id on ANOTHER provider (a second account) is a switch: the
+/// hold the first account's quota left tries at once, on the new endpoint.
+#[tokio::test(start_paused = true)]
+async fn a_switch_to_another_account_with_the_same_model_probes_at_once() {
+    let a = Log::default();
+    let p = FakeProvider::new()
+        .with_kind(ProviderKind::Anthropic)
+        .with_model("glm-5.3")
+        .rounds(refused())
+        .with_log(a.clone());
+    let mut fx = Fixture::new(vec![
+        notice(1),
+        notice(2),
+        input("/model"),
+        pick(1),
+        Reply::Idle,
+        Reply::Closed,
+    ])
+    .under(TWO_ACCOUNTS);
+    fx.endpoints = Some(|_, id| {
+        Box::new(
+            FakeProvider::new()
+                .with_kind(ProviderKind::Anthropic)
+                .with_model(id)
+                .replying("ok")
+                .with_log(ACCOUNT_B.get_or_init(Log::default).clone()),
+        )
+    });
+    let t0 = tokio::time::Instant::now();
+    fx.run(p, None).await;
+
+    assert_eq!(
+        fx.count("Model switched to glm-5.3 on glm_b"),
+        1,
+        "{:#?}",
+        fx.printed()
+    );
+    assert_eq!(a.calls(), LADDER, "nothing more reached the first account");
+    let b = ACCOUNT_B.get_or_init(Log::default);
+    assert_eq!(b.calls(), 1);
+    assert_eq!(said(&b.send(0)), ["n:1", "n:2"]);
+    assert_eq!(
+        t0.elapsed(),
+        Duration::from_secs(14),
+        "no wait for the old deadline"
+    );
 }

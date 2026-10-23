@@ -812,15 +812,19 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 }
             }
             if match_cmd(&line, "/model").is_some() {
-                let was = (
-                    repl.conv.provider.kind(),
-                    repl.conv.provider.model().to_owned(),
-                );
+                let target = |r: &Repl| {
+                    (
+                        r.conv.catalog.session_provider().to_owned(),
+                        r.conv.provider.kind(),
+                        r.conv.provider.model().to_owned(),
+                    )
+                };
+                let was = target(&repl);
                 model::cmd_model(&mut repl).await;
-                // Another model may not share the limit: a rate-limit hold tries at once, on it (X-84).
-                if (repl.conv.provider.kind(), repl.conv.provider.model())
-                    != (was.0, was.1.as_str())
-                {
+                // Another endpoint or model may not share the limit: a rate-limit hold tries at once, on it
+                // (X-84). The configured provider counts, not just the dialect and the id — two accounts can
+                // serve the same model over the same API.
+                if target(&repl) != was {
                     repl.notices.model_switched(tokio::time::Instant::now());
                 }
                 repl.push_status();
