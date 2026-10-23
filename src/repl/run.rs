@@ -1421,23 +1421,16 @@ pub(crate) async fn bot_perform(
 /// The next input for the loop, and whether the notice gate let it out (`true`: a held notice, the probe of a
 /// rate-limit hold — DIVERGENCES X-84). `None` when the session ends (idle Ctrl+C / Ctrl+D, close).
 ///
-/// With notices held under a rate limit the prompt races the gate's deadline. The prompt is never dropped
-/// mid-wait — its parked waiter would swallow the next Enter — but cancelled through its own token, which
-/// revokes the waiter (`TuiHandle::read_input`); a cancel the timer did not cause is the user's and ends the
-/// session as before.
+/// The prompt is always read, even past the gate's deadline: anything already submitted or queued is served
+/// by the read before the revoke behind it (the mailbox is FIFO), so a due probe never overtakes the user.
+/// With notices held under a rate limit, a timer cancels the read's own child token at the deadline; the
+/// facade's acknowledged revoke hands back any input that won that race, and only a read revoked with
+/// nothing delivered (`UiError::Cancelled`) — the session still live — admits the probe. An idle Ctrl+C or a
+/// closed facade answers with its own error and ends the session as before, whatever the timer did.
 async fn next_input(repl: &mut Repl, root: &CancellationToken) -> Option<(Input, bool)> {
     let ui = Arc::clone(&repl.handles.ui);
     loop {
         let deadline = repl.notices.deadline();
-        if deadline.is_some_and(|at| at <= tokio::time::Instant::now()) {
-            // The newest is the probe's input; the rest go ahead of it, oldest first, at the message path.
-            let mut held = repl.notices.take_held();
-            let n = held.len();
-            let Some(newest) = held.pop() else { continue };
-            repl.handles.tr.notice(&noticegate::probe_line(n));
-            repl.notices.put_back(held);
-            return Some((newest, true));
-        }
         let wait = root.child_token();
         let timer = deadline.map(|at| {
             let wait = wait.clone();
@@ -1452,7 +1445,18 @@ async fn next_input(repl: &mut Repl, root: &CancellationToken) -> Option<(Input,
         }
         match got {
             Ok(input) => return Some((input, false)),
-            Err(UiError::Interrupted) if wait.is_cancelled() && !root.is_cancelled() => {}
+            Err(UiError::Cancelled) if !root.is_cancelled() && !ui.done().is_cancelled() => {
+                if deadline.is_none_or(|at| at > tokio::time::Instant::now()) {
+                    continue;
+                }
+                // The newest is the probe's input; the rest go ahead of it, oldest first, at the message path.
+                let mut held = repl.notices.take_held();
+                let n = held.len();
+                let Some(newest) = held.pop() else { continue };
+                repl.handles.tr.notice(&noticegate::probe_line(n));
+                repl.notices.put_back(held);
+                return Some((newest, true));
+            }
             Err(_) => return None,
         }
     }

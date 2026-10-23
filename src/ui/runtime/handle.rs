@@ -200,7 +200,7 @@ impl Ui for TuiHandle {
     ) -> BoxFuture<'a, Result<Input, UiError>> {
         Box::pin(async move {
             let id = self.next_read_id.fetch_add(1, Ordering::Relaxed);
-            let (reply_tx, reply_rx) = oneshot::channel();
+            let (reply_tx, mut reply_rx) = oneshot::channel();
             if self
                 .tx
                 .send(UiMsg::ReadReq {
@@ -213,15 +213,30 @@ impl Ui for TuiHandle {
             }
             tokio::select! {
                 biased;
-                r = reply_rx => r.unwrap_or(Err(UiError::Closed)),
-                () = cancel.cancelled() => {
-                    // Eager revoke: clear the parked waiter now so a later submit
-                    // queues instead of vanishing into a dead channel (the loop
-                    // revokes only the SAME id — a newer waiter is untouched).
-                    let _ = self.tx.send(UiMsg::ReadCancel { id });
-                    Err(UiError::Interrupted)
-                }
-                () = self.done.cancelled() => Err(UiError::Closed),
+                r = &mut reply_rx => return r.unwrap_or(Err(UiError::Closed)),
+                () = cancel.cancelled() => {}
+                () = self.done.cancelled() => return Err(UiError::Closed),
+            }
+            // Revoke, acknowledged (X-84). The loop may already have served the waiter — a submit or a notice
+            // it handled before this message — so the reply channel stays open until the ack: the mailbox is
+            // FIFO and the loop sends any reply before it acks, so a reply that won the race is read here and
+            // returned, never dropped. Only the ack alone means nothing was delivered. A later submit finds no
+            // waiter and queues (the loop revokes only the SAME id — a newer waiter is untouched).
+            let (ack_tx, ack_rx) = oneshot::channel();
+            if self.tx.send(UiMsg::ReadCancel { id, ack: ack_tx }).is_err() {
+                return Err(UiError::Closed);
+            }
+            // The ack alone decides: a revoked waiter's reply sender is dropped, which closes the channel
+            // before the ack lands, so the reply is read only once the ack is in.
+            let acked = tokio::select! {
+                biased;
+                a = ack_rx => a.is_ok(),
+                () = self.done.cancelled() => false,
+            };
+            match reply_rx.try_recv() {
+                Ok(r) => r,
+                Err(_) if acked => Err(UiError::Cancelled),
+                Err(_) => Err(UiError::Closed),
             }
         })
     }
@@ -593,11 +608,10 @@ mod tests {
         cancel.cancel();
         assert_eq!(
             reader.await.unwrap().expect_err("cancelled call"),
-            UiError::Interrupted,
-            "the cancel arm resolves the caller (Go returned ctx.Err())"
+            UiError::Cancelled,
+            "the cancel arm resolves the caller once the loop acknowledged the revoke"
         );
-        // Let the eager ReadCancel drain (W10 bounds it to one 50ms deadline).
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // No grace period: the revoke is acknowledged before the call returns (X-84).
         h.type_text("late");
         h.key(KeyCode::Enter, KeyModifiers::NONE);
         // The late submit queued; a fresh read_input drains the queue head.
@@ -606,6 +620,65 @@ mod tests {
                 .await
                 .expect("queued late submit drained");
         assert_eq!(got.text, "late");
+        h.ui.close().await.expect("close");
+    }
+
+    /// X-84 (B1), through the real loop and handle with no grace period: a submit sent while the revoke is
+    /// pending is either the cancelled call's answer or the next call's — never lost. The loop reads terminal
+    /// events before its mailbox, so which one it is depends on the scheduler; that it is one of them does not.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_submit_racing_a_revoke_is_never_lost() {
+        for round in 0..20 {
+            let h = start_facade();
+            h.wait_frame();
+            let cancel = CancellationToken::new();
+            let mut read = h.ui.read_input(&cancel);
+            assert!(poll_once(&mut read).is_pending());
+            h.barrier().await; // the waiter is parked
+            let text = format!("enter {round}");
+            h.type_text(&text);
+            h.key(KeyCode::Enter, KeyModifiers::NONE);
+            cancel.cancel(); // the revoke goes out on the next poll, racing the Enter
+            let got = match tokio::time::timeout(Duration::from_secs(10), read)
+                .await
+                .expect("the revoke was never answered")
+            {
+                Ok(input) => input,
+                Err(UiError::Cancelled) => tokio::time::timeout(
+                    Duration::from_secs(10),
+                    h.ui.read_input(&CancellationToken::new()),
+                )
+                .await
+                .expect("the Enter was swallowed")
+                .expect("queued submit"),
+                Err(e) => panic!("round {round}: {e}"),
+            };
+            assert_eq!(got.text, text, "round {round}");
+            h.ui.close().await.expect("close");
+        }
+    }
+
+    /// The queued-notice variant, deterministic: a notice the mailbox carries ahead of the revoke is served
+    /// to the waiter first (FIFO), so the cancelled call returns it instead of `Cancelled`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_notice_ahead_of_a_revoke_is_returned_not_dropped() {
+        let h = start_facade();
+        h.wait_frame();
+        let cancel = CancellationToken::new();
+        let mut read = h.ui.read_input(&cancel);
+        assert!(poll_once(&mut read).is_pending());
+        h.barrier().await;
+        h.ui.enqueue(crate::ui::facade::Input {
+            display: "[background job b1 finished]".to_owned(),
+            text: "[background job b1 finished]\nok".to_owned(),
+            kind: crate::ui::facade::InputKind::Notice,
+        });
+        cancel.cancel();
+        let got = tokio::time::timeout(Duration::from_secs(10), read)
+            .await
+            .expect("the revoke was never answered")
+            .expect("the notice won the race");
+        assert_eq!(got.display, "[background job b1 finished]");
         h.ui.close().await.expect("close");
     }
 

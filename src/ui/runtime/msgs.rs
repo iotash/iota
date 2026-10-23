@@ -63,6 +63,10 @@ pub(crate) enum UiMsg {
     ReadCancel {
         /// The id passed with the matching [`UiMsg::ReadReq`].
         id: u64,
+        /// Answered once the revoke is applied. Whatever the waiter was served before it — a submit, a
+        /// notice, an idle interrupt — was sent on its reply channel first, so the caller reads that
+        /// channel after this ack and loses nothing (X-84).
+        ack: oneshot::Sender<()>,
     },
     /// Host-injected input: served straight to a parked waiter, else appended to the
     /// type-ahead queue (the composer's draft is never touched).

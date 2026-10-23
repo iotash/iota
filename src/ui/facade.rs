@@ -14,6 +14,10 @@ pub enum UiError {
     /// An idle Ctrl+C / Ctrl+D interrupted the parked call.
     #[error("ui: interrupted")]
     Interrupted,
+    /// The caller's own cancel token revoked a parked `read_input` before anything was delivered to it:
+    /// not the user's interrupt. An input that won the race is returned instead, never dropped (X-84).
+    #[error("ui: cancelled")]
+    Cancelled,
 }
 
 /// Where one input came from.

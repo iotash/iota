@@ -226,9 +226,14 @@ pub enum Reply {
     /// [`Reply::Feed`], it answers a `take_queued_messages` with nothing typed ahead.
     Pause(std::sync::Arc<dyn Fn() + Send + Sync>),
     /// The idle prompt with nothing typed and nothing enqueued: `read_input` parks until ITS token is
-    /// cancelled, then resolves `Err(Interrupted)` — what the live facade does when the loop revokes a parked
-    /// prompt (the notice gate's timer, X-84). Answers a `take_queued_messages` with nothing typed ahead.
+    /// cancelled, then resolves `Err(Cancelled)` — what the live facade does when the loop revokes a parked
+    /// prompt and nothing won the race (the notice gate's timer, X-84). Answers a `take_queued_messages` with nothing typed ahead.
     Idle,
+    /// The user is away for this long — a command, a picker, a coffee: `read_input` sleeps (tokio's clock;
+    /// virtual under a paused one) WITHOUT answering its token, then resolves with the next reply. What a
+    /// test uses to let a deadline pass while the loop is not parked, or to land an input exactly as a timer
+    /// fires (X-84). Answers a `take_queued_messages` with nothing typed ahead.
+    Elapse(std::time::Duration),
 }
 
 /// The scripted facade double: blocking calls return ready futures popping the script;
@@ -393,10 +398,16 @@ impl Ui for ScriptedUi {
                         panic!("ScriptedUi: nothing was enqueued within eight seconds")
                     });
                 }
+                Reply::Elapse(d) => {
+                    return Box::pin(async move {
+                        tokio::time::sleep(d).await;
+                        self.read_input(cancel).await
+                    });
+                }
                 Reply::Idle => {
                     return Box::pin(async move {
                         cancel.cancelled().await;
-                        Err(UiError::Interrupted)
+                        Err(UiError::Cancelled)
                     });
                 }
                 Reply::Tabbed(_) | Reply::Queued(_) | Reply::Pause(_) => {
@@ -425,7 +436,8 @@ impl Ui for ScriptedUi {
                 | Reply::Enqueued
                 | Reply::Feed(_)
                 | Reply::Pause(_)
-                | Reply::Idle => {
+                | Reply::Idle
+                | Reply::Elapse(_) => {
                     panic!("ScriptedUi: tabbed got a non-tabbed reply")
                 }
             }
@@ -435,10 +447,10 @@ impl Ui for ScriptedUi {
 
     fn take_queued_messages(&self) -> BoxFuture<'_, Vec<Input>> {
         self.record(UiEvent::TakeQueued);
-        // A `Feed`, `Pause` or `Idle` next: the prompt is idle with nothing typed ahead.
+        // A `Feed`, `Pause`, `Idle` or `Elapse` next: the prompt is idle with nothing typed ahead.
         let idle = matches!(
             lock(&self.script).front(),
-            Some(Reply::Feed(_) | Reply::Pause(_) | Reply::Idle)
+            Some(Reply::Feed(_) | Reply::Pause(_) | Reply::Idle | Reply::Elapse(_))
         );
         let r = if self.shut() || idle {
             Vec::new()
@@ -452,7 +464,8 @@ impl Ui for ScriptedUi {
                 | Reply::Enqueued
                 | Reply::Feed(_)
                 | Reply::Pause(_)
-                | Reply::Idle => {
+                | Reply::Idle
+                | Reply::Elapse(_) => {
                     panic!("ScriptedUi: take_queued_messages got a non-queue reply")
                 }
             }

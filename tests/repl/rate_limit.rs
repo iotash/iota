@@ -25,6 +25,9 @@ use tokio_util::sync::CancellationToken;
 /// GLM's refusal at its 5-hour cap, as the error detail carries it: no `retry-after`, a generic type.
 const QUOTA: &str = r#"{"type":"rate_limit_error","code":"1308","message":"[1308][已达到 5 小时的使用上限。您的限额将在 2026-10-23 20:22:40 重置。]"}"#;
 
+/// One anthropic provider, two models on it.
+const TWO_MODELS: &str = "providers:\n  a: {type: anthropic, key: x}\nmodels:\n  ma: {provider: a, id: claude-x}\n  mb: {provider: a, id: claude-y}\nagents:\n  default: {model: ma}\n";
+
 /// The ladder a first 429 climbs: 1 call + 3 retries.
 const LADDER: usize = 4;
 
@@ -319,12 +322,14 @@ async fn a_model_switch_probes_at_once() {
         .rounds(refused())
         .replying("ok")
         .with_log(log.clone());
-    let yaml = "providers:\n  a: {type: anthropic, key: x}\nmodels:\n  ma: {provider: a, id: claude-x}\n  mb: {provider: a, id: claude-y}\nagents:\n  default: {model: ma}\n";
+    let yaml = TWO_MODELS;
     let fx = Fixture::new(vec![
         notice(1),
         notice(2),
         input("/model"),
         pick(1),
+        // The prompt is read even past the deadline (nothing typed ahead here): the revoke admits the probe.
+        Reply::Idle,
         Reply::Closed,
     ])
     .under(yaml);
@@ -417,4 +422,90 @@ async fn a_failed_rate_limited_turn_never_loses_its_notice() {
     assert_eq!(said(&log.send(LADDER)), ["n:1"]);
     let saved = fx.store.load(&id, ProviderKind::Anthropic).expect("load");
     assert_eq!(said(&saved.messages), ["n:1"]);
+}
+
+/// M2: input the user already submitted is served before a due probe. `/model` makes the held notices due at
+/// once, but the message typed behind it goes first — and carries them, on the new model, as one turn.
+#[tokio::test(start_paused = true)]
+async fn queued_input_behind_a_model_switch_goes_before_the_probe() {
+    let log = Log::default();
+    let p = FakeProvider::new()
+        .with_tools()
+        .with_model("claude-x")
+        .with_models(&["claude-x", "claude-y"])
+        .rounds(refused())
+        .replying("ok")
+        .with_log(log.clone());
+    let fx = Fixture::new(vec![
+        notice(1),
+        notice(2),
+        input("/model"),
+        pick(1),
+        input("go"),
+        Reply::Closed,
+    ])
+    .under(TWO_MODELS);
+    fx.run(p, None).await;
+
+    let records = log.records();
+    assert_eq!(records.len(), LADDER + 1, "{:?}", log.prompts());
+    assert_eq!(said(&records[LADDER].messages), ["n:1", "n:2", "go"]);
+    assert_eq!(
+        fx.count("▶ Trying again"),
+        0,
+        "no probe overtook the message"
+    );
+}
+
+/// M2: a deadline that passed while the loop was busy elsewhere (a command, a picker) does not overtake the
+/// input waiting when the loop comes back to the prompt.
+#[tokio::test(start_paused = true)]
+async fn a_deadline_crossed_during_a_command_does_not_overtake_input() {
+    let log = Log::default();
+    let p = FakeProvider::new()
+        .with_tools()
+        .rounds(refused())
+        .replying("ok")
+        .with_log(log.clone());
+    let fx = Fixture::new(vec![
+        notice(1),
+        notice(2),
+        Reply::Elapse(Duration::from_secs(120)),
+        input("/status"),
+        Reply::Tabbed(TabbedResult {
+            cancelled: true,
+            ..TabbedResult::default()
+        }),
+        input("go"),
+        Reply::Closed,
+    ]);
+    fx.run(p, None).await;
+
+    assert_eq!(log.calls(), LADDER + 1, "{:?}", log.prompts());
+    assert_eq!(said(&log.send(LADDER)), ["n:1", "n:2", "go"]);
+    assert_eq!(fx.count("▶ Trying again"), 0);
+}
+
+/// M2: an idle Ctrl+C, or the facade closing, that lands as the deadline fires is the user's exit — never
+/// taken for the timer's wake-up.
+#[tokio::test(start_paused = true)]
+async fn an_exit_at_the_deadline_is_not_a_probe() {
+    for exit in [Reply::Interrupted, Reply::Closed] {
+        let log = Log::default();
+        let p = FakeProvider::new()
+            .with_tools()
+            .rounds(refused())
+            .replying("ok")
+            .with_log(log.clone());
+        let fx = Fixture::new(vec![
+            notice(1),
+            notice(2),
+            // Away past the 60 s deadline: the timer fires during the wait, then the exit lands.
+            Reply::Elapse(Duration::from_secs(61)),
+            exit,
+        ]);
+        fx.run(p, None).await;
+        assert_eq!(log.calls(), LADDER, "the exit started a probe");
+        assert_eq!(fx.count("▶ Trying again"), 0);
+    }
 }
