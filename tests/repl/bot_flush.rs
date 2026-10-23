@@ -1140,6 +1140,60 @@ async fn an_interrupted_turn_that_was_kept_still_queues_the_flush() {
     );
 }
 
+/// X-84: the flush notice is the loop's own and never waits behind the notice gate. The kept interrupt above
+/// leaves an interrupt's hold — a job's notice arriving after the flush is put aside — yet the flush notice it
+/// queued runs its turn.
+#[tokio::test]
+async fn the_flush_notice_is_never_held() {
+    fn turn(prompt: &str) -> Round {
+        match prompt {
+            "go" => Round::calls(vec![iota::testing::tool_call_with(
+                "c1",
+                "read_file",
+                &[("path", "x")],
+            )])
+            .usage(usage(100_000)),
+            _ => Round::text(&format!("re {prompt}")).usage(usage(1_000)),
+        }
+    }
+    let job = "[background job b1 finished: exit 0 after 1s] make";
+    let mut f = Fixture::new(vec![
+        input("zero"),
+        input("go"),
+        Reply::Interrupted, // read_file's approval: the turn is interrupted, and kept
+        Reply::Enqueued,    // the flush notice
+        Reply::Input(Input {
+            display: job.to_owned(),
+            text: format!(
+                "{job}
+all green"
+            ),
+            kind: iota::ui::facade::InputKind::Notice,
+        }),
+        Reply::Interrupted,
+    ]);
+    f.approve_read = true;
+    let p = provider(Some("SUMMARY"), remember_tabs, turn);
+    let log = p.log();
+    f.run(p, "").await;
+
+    let prompts = log.prompts();
+    assert!(prompts[2].starts_with(FLUSH_MARK), "{prompts:?}");
+    assert!(
+        !prompts.iter().any(|p| p.contains("all green")),
+        "the job's notice was answered: {prompts:?}"
+    );
+    let printed = f.printed();
+    assert_eq!(
+        printed
+            .iter()
+            .filter(|l| l.starts_with("⏸ "))
+            .collect::<Vec<_>>(),
+        [&format!("⏸ {job} — held; it goes with your next message")],
+        "{printed:#?}"
+    );
+}
+
 /// The same for a turn a stall KEPT (X-64's stream idle bound): the tool round crossed the threshold, the
 /// round explaining its result stalled after some text. The kept turn lands, its calls paired and its measured
 /// usage counted, so it queues the flush — the stall is an error, not a turn that never happened.

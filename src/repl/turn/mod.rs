@@ -95,9 +95,9 @@ pub(crate) struct TurnCtx {
     pub(crate) overlay: String,
     /// Where generated images are saved (T-39).
     pub(crate) images_dir: ImagesDir,
-    /// `false` for dedicated image providers: every attempt bills, so a round is never
-    /// auto-retried (chat/run.go:1428).
-    pub(crate) can_retry: bool,
+    /// What a failed model call may retry: [`Retries::None`] for dedicated image providers (every attempt
+    /// bills — chat/run.go:1428), [`Retries::NoRateLimit`] while the loop holds for a rate limit (X-84).
+    pub(crate) retries: retry::Retries,
     /// Code-block theme of the detected terminal background; refreshed BETWEEN turns only,
     /// so a theme flip never lands inside a streaming block (chat/run.go:1007).
     pub(crate) code_theme: CodeTheme,
@@ -403,7 +403,7 @@ pub(crate) async fn stream_turn(
     let send = t.cx.send_history(history);
     let result = retry_round(
         &t.cancel,
-        t.cx.can_retry,
+        t.cx.retries,
         |label| t.cx.ui.busy(label),
         |line| t.cx.tr.notice(&line),
         async || unary_call(t, provider, &send).await,

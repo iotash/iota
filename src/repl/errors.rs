@@ -91,6 +91,15 @@ const AFTER_OUTPUT_HINT: &str = "It failed after the reply had streamed, so it w
 /// constant (`client::STREAM_IDLE_TIMEOUT`), not a knob (decided 2026-10-01).
 const STALL_HINT: &str = "Send the message again, or check the provider's base URL and model (/model); ESC stops a silent wait sooner";
 
+/// The hint under a 429 the ladder could not clear (DIVERGENCES X-84): what the loop does with the notices
+/// of finished background jobs meanwhile, and the two ways to try sooner. `next_try` is a wall-clock `HH:MM`.
+/// The provider's own message — a reset time, when it gives one — is the block's detail, above it.
+pub(crate) fn rate_limit_hint(next_try: &str) -> String {
+    format!(
+        "Background-job notices wait until {next_try}, then iota tries again; send a message to try now, or /model to switch"
+    )
+}
+
 /// The wire rows of the table; `whole` is the full error text the detail row shows.
 fn describe_llm(llm: &LlmError, whole: &dyn std::fmt::Display) -> ErrorReport {
     match llm {
@@ -207,7 +216,7 @@ mod tests {
     //! `describe_error` classification (formerly `tests/repl/errors.rs`, reached through a hidden `pub use`
     //! re-export; moved in-file 2026-09-15).
 
-    use super::{ErrorReport, describe_error};
+    use super::{ErrorReport, describe_error, rate_limit_hint};
     use crate::headless::ChatError;
     use crate::llm::{LlmError, StatusError};
     use crate::provider::error::{ProviderError, WireOp};
@@ -386,5 +395,27 @@ mod tests {
         assert_eq!(r.lines().join("|"), "a|b|h");
         r.hint = String::new();
         assert_eq!(r.lines().join("|"), "a|b");
+    }
+
+    /// X-84: GLM's 5-hour cap — a generic `rate_limit_error` whose difference lives only in a vendor code
+    /// and Chinese prose — keeps the provider's whole sentence, reset time included, as the detail; the
+    /// table gives a 429 no hint of its own, the loop's hint names the next try.
+    #[test]
+    fn a_quota_429_keeps_the_providers_own_sentence() {
+        let body = r#"{"type":"rate_limit_error","code":"1308","message":"[1308][已达到 5 小时的使用上限。您的限额将在 2026-10-23 20:22:40 重置。][req]"}"#;
+        let r = describe_error(&wire(status_err(429, body)));
+        assert_eq!(r.headline, "Rate limited (429)");
+        assert_eq!(
+            r.detail,
+            vec![
+                "[1308][已达到 5 小时的使用上限。您的限额将在 2026-10-23 20:22:40 重置。][req]"
+                    .to_owned()
+            ]
+        );
+        assert_eq!(r.hint, "");
+        assert_eq!(
+            rate_limit_hint("17:42"),
+            "Background-job notices wait until 17:42, then iota tries again; send a message to try now, or /model to switch"
+        );
     }
 }

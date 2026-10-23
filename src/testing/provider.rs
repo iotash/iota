@@ -36,6 +36,14 @@ pub enum Failure {
     /// The stream went silent past its idle bound: `LlmError::StreamIdle` wrapped as the wire
     /// layer wraps it, after whatever the round streamed.
     Stalled(Duration),
+    /// The endpoint refused the request with 429: `LlmError::Status` wrapped as the wire layer wraps it,
+    /// with the error body's detail and the `retry-after` the response named (X-84).
+    RateLimited {
+        /// The error detail (`StatusError::body`).
+        body: String,
+        /// The `retry-after` the response named.
+        retry_after: Option<Duration>,
+    },
 }
 
 impl Failure {
@@ -46,6 +54,17 @@ impl Failure {
             Self::Stalled(d) => ProviderError::wire(
                 crate::provider::error::WireOp::Stream,
                 crate::llm::LlmError::StreamIdle(*d),
+            ),
+            Self::RateLimited { body, retry_after } => ProviderError::wire(
+                crate::provider::error::WireOp::Stream,
+                crate::llm::LlmError::Status(crate::llm::StatusError {
+                    status: 429,
+                    status_text: "Too Many Requests".to_owned(),
+                    method: "POST".to_owned(),
+                    url: "http://fake/v1/messages".to_owned(),
+                    body: body.clone(),
+                    retry_after: *retry_after,
+                }),
             ),
         }
     }
@@ -132,6 +151,18 @@ impl Round {
         Self {
             content: vec![partial.to_owned()],
             fail: Some(Failure::Other(msg.to_owned())),
+            ..Self::default()
+        }
+    }
+
+    /// A round the endpoint refuses with 429 — `body` is the error detail (the envelope's `message` shows),
+    /// `retry_after` the wait the response named.
+    pub fn rate_limited(body: &str, retry_after: Option<Duration>) -> Self {
+        Self {
+            fail: Some(Failure::RateLimited {
+                body: body.to_owned(),
+                retry_after,
+            }),
             ..Self::default()
         }
     }
