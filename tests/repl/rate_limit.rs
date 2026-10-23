@@ -583,3 +583,38 @@ async fn a_kept_turn_keeps_its_steered_notice_once() {
     assert_eq!(said(&log.send(2)), ["go", "n:2", "next"]);
     assert_eq!(fx.count("held"), 0, "nothing was handed back to the gate");
 }
+
+/// M1 end to end: a 503 asking for an hour is answered like a quota — one call, one block naming the next try,
+/// and the notices of the jobs behind it put aside until then, not one 11-call ladder each.
+#[tokio::test(start_paused = true)]
+async fn a_503_with_a_long_retry_after_holds_like_a_rate_limit() {
+    let log = Log::default();
+    let p = FakeProvider::new()
+        .with_tools()
+        .tail(Round::refused(
+            503,
+            r#"{"message":"overloaded, come back later"}"#,
+            Some(Duration::from_hours(1)),
+        ))
+        .with_log(log.clone());
+    let fx = Fixture::new(vec![notice(1), notice(2), notice(3), Reply::Closed]);
+    let t0 = tokio::time::Instant::now();
+    fx.run(p, None).await;
+
+    assert_eq!(
+        log.calls(),
+        1,
+        "no ladder, and no turn for the notices behind it"
+    );
+    assert_eq!(
+        fx.count("✗ Provider server error (503)"),
+        1,
+        "{:#?}",
+        fx.printed()
+    );
+    assert_eq!(fx.count("Background-job notices wait until "), 1);
+    for n in [2, 3] {
+        assert_eq!(fx.count(&format!("⏸ {} — held until ", headline(n))), 1);
+    }
+    assert_eq!(t0.elapsed(), Duration::ZERO, "nothing was slept");
+}

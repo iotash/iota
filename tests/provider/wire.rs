@@ -1107,3 +1107,29 @@ async fn client_request_shape() {
     assert!(matches!(err, LlmError::Cancelled), "{err:?}");
     assert_eq!(srv5.received_requests().await.unwrap().len(), 1);
 }
+
+/// M1 on the wire: a 503 asking for an hour is one request and returns at once, carrying the wait the
+/// interactive loop turns into a hold.
+#[tokio::test]
+async fn a_503_with_a_long_retry_after_is_one_request() {
+    let srv = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/x"))
+        .respond_with(ResponseTemplate::new(503).insert_header("retry-after", "3600"))
+        .mount(&srv)
+        .await;
+    let cancel = CancellationToken::new();
+    let body = serde_json::json!({});
+    let err = tokio::time::timeout(
+        Duration::from_secs(10),
+        client(&srv).do_json::<_, serde_json::Value>(&cancel, Method::POST, "/x", Some(&body)),
+    )
+    .await
+    .expect("the client slept on an hour's retry-after")
+    .unwrap_err();
+    assert_eq!(srv.received_requests().await.unwrap().len(), 1);
+    assert_eq!(
+        err.status().and_then(|s| s.retry_after),
+        Some(Duration::from_secs(3600))
+    );
+}

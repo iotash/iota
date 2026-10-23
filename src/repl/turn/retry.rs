@@ -38,14 +38,17 @@ pub(crate) enum Retries {
     None,
 }
 
-/// A call the provider refused with 429, and the wait it asked for (X-84).
+/// A call the provider refused for now — a 429, or any status that asked to be retried later than
+/// [`RETRY_AFTER_CAP`] — and the wait it asked for (X-84).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RateLimit {
     /// The response's `retry-after`, when it sent one.
     pub(crate) retry_after: Option<Duration>,
 }
 
-/// The 429 behind `err`, if that is what it is — the status itself, never the body's wording.
+/// The rate limit behind `err`, if that is what it is: a 429 whatever it says, or any other status whose
+/// `retry-after` is past [`RETRY_AFTER_CAP`] (a 503 asking for an hour is a limit with a time on it, not a
+/// fault for the linear ladder). The status and the header, never the body's wording.
 pub(crate) fn rate_limit(err: &ChatError) -> Option<RateLimit> {
     let (ChatError::Provider(ProviderError::Wire { source, .. })
     | ChatError::AfterOutput(ProviderError::Wire { source, .. })) = err
@@ -53,9 +56,13 @@ pub(crate) fn rate_limit(err: &ChatError) -> Option<RateLimit> {
         return None;
     };
     match source.as_ref() {
-        LlmError::Status(se) if se.status == 429 => Some(RateLimit {
-            retry_after: se.retry_after,
-        }),
+        LlmError::Status(se)
+            if se.status == 429 || se.retry_after.is_some_and(|d| d > RETRY_AFTER_CAP) =>
+        {
+            Some(RateLimit {
+                retry_after: se.retry_after,
+            })
+        }
         _ => None,
     }
 }
@@ -755,5 +762,46 @@ mod tests {
         assert_eq!(rate_limit(&status(503)), None);
         assert_eq!(rate_limit(&transient()), None);
         assert_eq!(rate_limit(&ChatError::Interrupted), None);
+    }
+
+    /// A status that is not 429 but asks for longer than a minute (M1).
+    fn asks_for(status_code: u16, wait: std::time::Duration) -> ChatError {
+        ChatError::Provider(ProviderError::wire(
+            WireOp::Stream,
+            LlmError::Status(StatusError {
+                status: status_code,
+                status_text: String::new(),
+                method: "POST".to_owned(),
+                url: "http://x".to_owned(),
+                body: String::new(),
+                retry_after: Some(wait),
+            }),
+        ))
+    }
+
+    // M1: a 503 asking for an hour is a limit — one call, no ladder, classified for the gate; one asking for
+    // half a minute is an ordinary fault and keeps the linear ladder.
+    #[tokio::test(start_paused = true)]
+    async fn a_long_retry_after_on_any_status_is_a_limit() {
+        use super::{RateLimit, rate_limit};
+        let hour = std::time::Duration::from_hours(1);
+        assert_eq!(
+            rate_limit(&asks_for(503, hour)),
+            Some(RateLimit {
+                retry_after: Some(hour)
+            })
+        );
+        let (at, labels) = always(Retries::All, || asks_for(503, hour)).await;
+        assert_eq!(at, secs(&[0]));
+        assert!(labels.is_empty(), "{labels:?}");
+
+        let half = std::time::Duration::from_secs(30);
+        assert_eq!(rate_limit(&asks_for(503, half)), None);
+        let (at, _) = always(Retries::All, || asks_for(503, half)).await;
+        assert_eq!(
+            at.len(),
+            11,
+            "a short wait on a 5xx keeps the linear ladder"
+        );
     }
 }
