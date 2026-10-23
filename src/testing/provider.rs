@@ -36,6 +36,16 @@ pub enum Failure {
     /// The stream went silent past its idle bound: `LlmError::StreamIdle` wrapped as the wire
     /// layer wraps it, after whatever the round streamed.
     Stalled(Duration),
+    /// The endpoint refused the request with `status`: `LlmError::Status` wrapped as the wire layer wraps
+    /// it, with the error body's detail and the `retry-after` the response named (X-84).
+    Status {
+        /// The HTTP status.
+        status: u16,
+        /// The error detail (`StatusError::body`).
+        body: String,
+        /// The `retry-after` the response named.
+        retry_after: Option<Duration>,
+    },
 }
 
 impl Failure {
@@ -46,6 +56,25 @@ impl Failure {
             Self::Stalled(d) => ProviderError::wire(
                 crate::provider::error::WireOp::Stream,
                 crate::llm::LlmError::StreamIdle(*d),
+            ),
+            Self::Status {
+                status,
+                body,
+                retry_after,
+            } => ProviderError::wire(
+                crate::provider::error::WireOp::Stream,
+                crate::llm::LlmError::Status(crate::llm::StatusError {
+                    status: *status,
+                    status_text: reqwest::StatusCode::from_u16(*status)
+                        .ok()
+                        .and_then(|s| s.canonical_reason())
+                        .unwrap_or("")
+                        .to_owned(),
+                    method: "POST".to_owned(),
+                    url: "http://fake/v1/messages".to_owned(),
+                    body: body.clone(),
+                    retry_after: *retry_after,
+                }),
             ),
         }
     }
@@ -132,6 +161,24 @@ impl Round {
         Self {
             content: vec![partial.to_owned()],
             fail: Some(Failure::Other(msg.to_owned())),
+            ..Self::default()
+        }
+    }
+
+    /// A round the endpoint refuses with 429 — `body` is the error detail (the envelope's `message` shows),
+    /// `retry_after` the wait the response named.
+    pub fn rate_limited(body: &str, retry_after: Option<Duration>) -> Self {
+        Self::refused(429, body, retry_after)
+    }
+
+    /// A round the endpoint refuses with `status`, `body` the error detail, `retry_after` the wait it named.
+    pub fn refused(status: u16, body: &str, retry_after: Option<Duration>) -> Self {
+        Self {
+            fail: Some(Failure::Status {
+                status,
+                body: body.to_owned(),
+                retry_after,
+            }),
             ..Self::default()
         }
     }

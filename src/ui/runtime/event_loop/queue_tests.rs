@@ -363,3 +363,55 @@ fn a_notice_is_taken_by_the_steering_drain() {
         ]
     );
 }
+
+/// X-84 (B1): the revoke and the delivery are one ordered decision in the loop. Whatever served the
+/// waiter BEFORE its `ReadCancel` — a submit, a notice — is on the reply channel when the ack goes out,
+/// so the caller that keeps its reply open until the ack reads it; whatever comes AFTER queues. No grace
+/// period, no order the loop could take that drops an input.
+#[test]
+fn a_revoke_is_acknowledged_after_anything_it_lost_the_race_to() {
+    let mut m = test_model();
+
+    // A submit lands while the revoke is in flight: served to the waiter, then acked.
+    let (tx, mut reply) = tokio::sync::oneshot::channel();
+    m.apply(UiMsg::ReadReq { id: 1, reply: tx });
+    type_text(&mut m, "typed during the revoke");
+    enter(&mut m);
+    let (ack, mut acked) = tokio::sync::oneshot::channel();
+    m.apply(UiMsg::ReadCancel { id: 1, ack });
+    acked.try_recv().expect("the revoke is acknowledged");
+    let got = reply
+        .try_recv()
+        .expect("the submit is on the reply")
+        .expect("input");
+    assert_eq!(got.text, "typed during the revoke");
+    assert!(m.queue.is_empty());
+
+    // The same for a job's notice the mailbox carried ahead of the revoke.
+    let (tx, mut reply) = tokio::sync::oneshot::channel();
+    m.apply(UiMsg::ReadReq { id: 2, reply: tx });
+    m.apply(UiMsg::Enqueue(notice("[background job b1 finished]", "ok")));
+    let (ack, mut acked) = tokio::sync::oneshot::channel();
+    m.apply(UiMsg::ReadCancel { id: 2, ack });
+    acked.try_recv().expect("the revoke is acknowledged");
+    let got = reply
+        .try_recv()
+        .expect("the notice is on the reply")
+        .expect("input");
+    assert_eq!(got.kind, InputKind::Notice);
+
+    // Revoked first: nothing on the reply, and a submit and a notice after it queue.
+    let (tx, mut reply) = tokio::sync::oneshot::channel();
+    m.apply(UiMsg::ReadReq { id: 3, reply: tx });
+    let (ack, mut acked) = tokio::sync::oneshot::channel();
+    m.apply(UiMsg::ReadCancel { id: 3, ack });
+    acked.try_recv().expect("the revoke is acknowledged");
+    assert!(reply.try_recv().is_err(), "nothing was delivered");
+    type_text(&mut m, "after");
+    enter(&mut m);
+    m.apply(UiMsg::Enqueue(notice("[background job b2 finished]", "ok")));
+    assert_eq!(
+        m.queue_rows(),
+        vec!["after", "[background job b2 finished]"]
+    );
+}

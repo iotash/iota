@@ -153,6 +153,7 @@ mod tests {
                 method: "GET".into(),
                 url: "http://h".into(),
                 body: String::new(),
+                retry_after: None,
             })
         };
         assert!(status(404).is_list_fallback());

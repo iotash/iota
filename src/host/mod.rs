@@ -379,6 +379,13 @@ impl Presenter {
         shown.owed = shown.owed.saturating_sub(1);
     }
 
+    /// The loop put a job's notice aside instead of taking it into a turn (DIVERGENCES X-84): it no longer
+    /// holds the chat busy, and — no turn being there to report — the state that settles the host is sent
+    /// now.
+    pub fn notice_held(&self) {
+        self.update(|shown| shown.owed = shown.owed.saturating_sub(1));
+    }
+
     /// Applies `change` to the inputs, then sends whichever of the two outputs moved: the host's state
     /// ([`Shown::effective`]) and the whole-turn layer ([`Shown::turn`]).
     fn update(&self, change: impl FnOnce(&mut Shown)) {
@@ -913,6 +920,24 @@ mod tests {
                 State::Busy,
                 State::Idle
             ]
+        );
+    }
+
+    /// X-84: a notice the loop put aside instead of taking into a turn settles the host by itself — no turn
+    /// follows to report. The state a failed turn left (`Error`) stays; an idle chat owed nothing goes `Idle`.
+    #[test]
+    fn a_held_notice_settles_the_host_without_a_turn() {
+        let (p, states) = recording();
+        p.set_state(State::Idle);
+        p.set_jobs(1); // a job runs: Busy
+        p.job_ended(0); // its notice is owed: still Busy
+        p.notice_held(); // put aside: Idle, at once
+        p.set_state(State::Error); // a 429 turn
+        p.job_ended(0);
+        p.notice_held(); // put aside while the error stands: nothing to send
+        assert_eq!(
+            *states.lock().unwrap(),
+            vec![State::Idle, State::Busy, State::Idle, State::Error]
         );
     }
 

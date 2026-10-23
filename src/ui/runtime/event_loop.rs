@@ -606,11 +606,13 @@ impl Model {
                 }
                 self.dirty = true;
             }
-            UiMsg::ReadCancel { id } => {
-                // Revoke only the SAME waiter (model.go:302-306).
+            UiMsg::ReadCancel { id, ack } => {
+                // Revoke only the SAME waiter (model.go:302-306). The ack goes out after: an input served
+                // to the waiter before this message is already on its reply channel (X-84).
                 if self.waiter.as_ref().is_some_and(|w| w.id == id) {
                     self.waiter = None;
                 }
+                let _ = ack.send(());
             }
             UiMsg::TakeQueued { reply } => {
                 // Steering drain: the contiguous non-command prefix; a slash command

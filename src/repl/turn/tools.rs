@@ -69,7 +69,7 @@ pub(crate) async fn tool_loop(
         let mut partial_reasoning = String::new();
         let round = retry_round(
             &t.cancel,
-            t.cx.can_retry,
+            t.cx.retries,
             |label| t.cx.ui.busy(label),
             |line| t.cx.tr.notice(&line),
             async || {

@@ -199,7 +199,7 @@ impl Fx {
                 harness: String::new(),
                 overlay: String::new(),
                 images_dir,
-                can_retry: true,
+                retries: crate::repl::turn::retry::Retries::All,
                 code_theme: CodeTheme::Monokai,
                 pres,
                 steering: true,
@@ -1690,7 +1690,7 @@ fn order_fixture(script: Vec<Reply>) -> OrderFx {
         harness: String::new(),
         overlay: String::new(),
         images_dir: Arc::new(|| None),
-        can_retry: true,
+        retries: crate::repl::turn::retry::Retries::All,
         code_theme: CodeTheme::Monokai,
         pres,
         steering: true,
@@ -2047,7 +2047,7 @@ async fn unary_provider_backoff_yields_to_an_interrupt() {
 #[tokio::test(start_paused = true)]
 async fn unary_image_provider_is_never_retried() {
     let mut fx = Fx::new(Arc::new(StaticDispatcher::new(&[])), Vec::new());
-    fx.cx.can_retry = false;
+    fx.cx.retries = crate::repl::turn::retry::Retries::None;
     let p = unary(Vec::new()).tail(Round::failing("connection reset by peer"));
     let mut history = vec![Message::user("draw")];
     let report = fx.turn(&p, &mut history).await;

@@ -20,11 +20,16 @@ use crate::repl::render::transcript::Transcript;
 /// One taken off the queue mid-turn is HELD and handed back to the loop, which queues it again after the
 /// turn. And the flush turn itself takes nothing — a steerer built closed leaves the queue alone, so what
 /// the user typed meanwhile is answered after the flush, by a turn with all its tools.
+///
+/// A job's notice it injects is also RECORDED (`injected`): when a later round's 429 rolls the turn back, the
+/// loop hands those back to the notice gate instead of losing them with the history (X-84). This is not Go's
+/// replay record (X-73 removed that): nothing is re-sent from it, the gate decides when they go.
 pub(crate) struct Steerer {
     ui: Arc<dyn Ui>,
     tr: Arc<Transcript>,
     open: bool,
     held: Vec<Input>,
+    injected: Vec<Input>,
 }
 
 impl Steerer {
@@ -35,6 +40,7 @@ impl Steerer {
             tr,
             open,
             held: Vec::new(),
+            injected: Vec::new(),
         }
     }
 
@@ -58,7 +64,9 @@ impl Steerer {
             // under the call that was running when the job ended, not above its rows.
             let m = if input.kind == InputKind::Notice {
                 self.tr.boundary_notice(&input.display);
-                Message::notice(input.text)
+                let m = Message::notice(input.text.clone());
+                self.injected.push(input);
+                m
             } else {
                 self.tr.user(&input.display);
                 Message::user(input.text)
@@ -72,5 +80,10 @@ impl Steerer {
     /// The flush notices taken off the queue and not injected, for the loop to queue again.
     pub(crate) fn take_held(&mut self) -> Vec<Input> {
         std::mem::take(&mut self.held)
+    }
+
+    /// The jobs' notices this turn injected, in arrival order (X-84).
+    pub(crate) fn take_injected(&mut self) -> Vec<Input> {
+        std::mem::take(&mut self.injected)
     }
 }

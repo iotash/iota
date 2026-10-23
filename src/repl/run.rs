@@ -34,7 +34,7 @@ use crate::markdown::CodeTheme;
 use crate::provider::model::{AssistantBody, Body, Message};
 use crate::session::{SessionError, SessionWriter};
 use crate::sync::lock;
-use crate::ui::facade::{InputKind, StatusData};
+use crate::ui::facade::{Input, InputKind, StatusData, UiError};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::AgentMode;
@@ -47,6 +47,7 @@ use crate::repl::commands::{
     save, session, skills, status, tools,
 };
 use crate::repl::context::meter::{ContextBudget, CtxMeter};
+use crate::repl::noticegate::{self, NoticeGate, Outcome as GateOutcome};
 use crate::repl::render::banner::{BannerFacts, banner_lines, overlay_warnings};
 use crate::repl::render::mcpreport::report_mcp_failures;
 use crate::repl::render::replay::{RESUME_ECHO_ROUNDS, echo_rounds, last_rounds};
@@ -57,6 +58,7 @@ use crate::repl::title::{
 };
 use crate::repl::turn::approval::ApprovalGate;
 use crate::repl::turn::interrupt::{InterruptDecision, finalize_interrupt};
+use crate::repl::turn::retry::{Retries, rate_limit};
 use crate::repl::turn::{TurnCtx, TurnEngine, TurnFailure, TurnReport, collect_images};
 
 /// The `Done` ping of an image-only reply (chat/run.go:1105).
@@ -215,6 +217,8 @@ pub(crate) struct Repl {
     pub(crate) session: SessionSlot,
     /// The facade, the transcript, the presenter and the run's shared handles.
     pub(crate) handles: UiHandles,
+    /// Whether a finished job's notice may open a turn of its own, and the ones put aside (X-84).
+    pub(crate) notices: NoticeGate,
 }
 
 impl Repl {
@@ -642,6 +646,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             cancel: root_cancel.clone(),
             jobs: Arc::clone(&jobs),
         },
+        notices: NoticeGate::default(),
     };
     // What a resumed bot's model is told before anything else is said (bot-mode.md §2.5).
     repl.record_notices(recorded_notices);
@@ -738,7 +743,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     // Every exit path breaks out with its outcome so the presenter is closed exactly once
     // below (Go's `defer pres.Close()`).
     let outcome: Result<(), ReplError> = 'main: loop {
-        let Ok(input) = ui.read_input(&root_cancel).await else {
+        let Some((input, released)) = next_input(&mut repl, &root_cancel).await else {
             // ErrInterrupted (idle Ctrl+C / Ctrl+D), ErrClosed, or shutdown. A landed name is
             // already written; an unfinished title pass is given up — the placeholder stands
             // rather than the exit waiting on a model that may never answer.
@@ -760,10 +765,18 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         if flush && !bot_notice_arrived(&mut repl).await {
             continue;
         }
+        // A job's notice behind an interrupt or a rate limit opens no turn: it waits, and says so (X-84). Not the
+        // flush notice — the loop's own, best-effort — and not one the gate itself just let out.
+        let job_notice = notice && !flush;
+        if job_notice && !released && repl.notices.holds(tokio::time::Instant::now()) {
+            put_notice_aside(&mut repl, input);
+            continue;
+        }
         // Whatever the input is, the loop is awake for the user now (run.go:381).
         repl.handles.pres.set_state(State::Idle);
-        // A flush notice is the loop's own, not a job's: it never held the host.
-        if notice && !flush {
+        // A flush notice is the loop's own, not a job's: it never held the host. One the gate let out was
+        // settled when it was put aside.
+        if job_notice && !released {
             // The notice's turn holds the host from here (`host` module doc).
             repl.handles.pres.notice_taken();
         }
@@ -799,7 +812,21 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 }
             }
             if match_cmd(&line, "/model").is_some() {
+                let target = |r: &Repl| {
+                    (
+                        r.conv.catalog.session_provider().to_owned(),
+                        r.conv.provider.kind(),
+                        r.conv.provider.model().to_owned(),
+                    )
+                };
+                let was = target(&repl);
                 model::cmd_model(&mut repl).await;
+                // Another endpoint or model may not share the limit: a rate-limit hold tries at once, on it
+                // (X-84). The configured provider counts, not just the dialect and the id — two accounts can
+                // serve the same model over the same API.
+                if target(&repl) != was {
+                    repl.notices.model_switched(tokio::time::Instant::now());
+                }
                 repl.push_status();
                 continue;
             }
@@ -865,6 +892,16 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         }
 
         // ---- the message path (chat/run.go:958-998) ----
+        // Every notice put aside goes with this turn, ahead of its input, in the order the jobs ended (X-84): a
+        // typed message carries them, and a probe is the newest of them with the rest ahead of it.
+        let ahead = if flush {
+            Vec::new()
+        } else {
+            repl.notices.take_held()
+        };
+        for n in &ahead {
+            repl.handles.tr.notice(&n.display);
+        }
         // The ❯ echo comes FIRST, so what the user typed is on screen even if the model
         // pick below fails. A notice prints its ONE headline instead — its output belongs to the model,
         // not to the scrollback (the file is there for whoever wants all of it).
@@ -876,6 +913,12 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         if repl.conv.provider.model().is_empty() {
             let cancel = repl.handles.cancel.clone();
             if !model::ensure_model(&mut repl, &cancel).await {
+                // Nothing was sent: the notices it would have carried, its own last, wait for the next input.
+                let mut back = ahead;
+                if job_notice {
+                    back.push(input.clone());
+                }
+                repl.notices.put_back(back);
                 // No turn runs, so none reports the state that settles the host: a notice taken above no
                 // longer holds it `Busy`, and only a report recomputes that (`Presenter::notice_taken`).
                 repl.handles.pres.set_state(State::Idle);
@@ -894,20 +937,36 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         // the append would summarize the very message being sent (chat/run.go:979-989).
         // The flush notice alone skips it: the flush turn runs over the threshold by design, and the
         // compaction follows it at once.
+        // It prices the whole batch the turn sends: the held notices it carries as well as the input (X-84).
         if !flush {
-            crate::repl::commands::compact::offer_before_send(&mut repl, &content).await;
+            let batch: Vec<&str> = ahead
+                .iter()
+                .map(|n| n.text.as_str())
+                .chain(std::iter::once(content.as_str()))
+                .collect();
+            crate::repl::commands::compact::offer_before_send(&mut repl, &batch).await;
         }
         // The overlay is read AFTER the offer: a compaction there refreshes a bot's memory copy, and this
         // send must carry the refreshed block — composed before, it would carry the old one and the next send
         // would change the system segment again (two cache misses where one was meant, bot-mode.md §3.4).
         let send_overlay = repl.refresh_overlay();
 
+        // Where the turn starts: a rollback takes the notices it carried with it.
+        let turn_base = repl.conv.history.len();
+        for n in &ahead {
+            repl.conv.history.push(Message::notice(n.text.clone()));
+        }
         repl.conv.history.push(Message {
             content,
             attachments: std::mem::take(&mut repl.conv.pending),
             body: if notice { Body::Notice } else { Body::User },
         });
         let hist0 = repl.conv.history.len();
+        // What the gate gets back when this turn is undone: the notices it carried, its own input last.
+        let mut carried = ahead;
+        if job_notice {
+            carried.push(input.clone());
+        }
         // Name the session NOW — before the turn, which may spend minutes in tool calls.
         repl.title_now();
         let turn_snap = repl.conv.budget.snap();
@@ -923,11 +982,14 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             ui.set_dark_background(known);
         }
         let mut engine = TurnEngine::new(repl.turn_ctx(send_overlay, flush), root_cancel.clone());
-        let outcome = match engine.run(&mut repl.conv).await {
+        let outcome = match engine.run(&mut repl.conv, hist0 - turn_base).await {
             Ok(report) => report,
             Err(ui_err) => break 'main Err(ReplError::Ui(ui_err)),
         };
         let held = engine.take_held();
+        // Notices steered in mid-turn go back after the carried ones when a 429 rolls the turn back; their host
+        // debt was settled when they were taken, so they are handed back without settling it again (X-84).
+        carried.extend(engine.take_injected());
         let mut landed = false;
 
         let interrupted = outcome.is_interrupted();
@@ -939,7 +1001,22 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         } = outcome;
         match turn_result {
             Err(_) if interrupted => {
-                let saved = interrupt_turn(&mut repl, hist0 - 1, &partial, &partial_reasoning);
+                let saved = interrupt_turn(
+                    &mut repl,
+                    turn_base,
+                    hist0 - 1,
+                    &partial,
+                    &partial_reasoning,
+                );
+                // ESC stops automatic work until the user speaks (X-84); a turn undone whole gives its notices
+                // back — they wait for that message rather than vanish.
+                if !flush {
+                    repl.notices
+                        .settle(GateOutcome::Interrupted, tokio::time::Instant::now());
+                    if !saved {
+                        repl.notices.put_back(std::mem::take(&mut carried));
+                    }
+                }
                 // A turn the interrupt kept is in the history and the log like any other, and its usage
                 // counts toward the threshold: it lands (fable M2), or crossing the threshold with it would
                 // skip the flush. An interrupted flush turn is still one that did not finish.
@@ -950,10 +1027,36 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             Err(failure) => {
                 // A `Ui` failure broke out above; classifying one costs nothing and keeps
                 // this total.
-                let report = match &failure {
+                let mut report = match &failure {
                     TurnFailure::Chat(c) => crate::repl::errors::describe_error(c),
                     TurnFailure::Ui(u) => crate::repl::errors::ErrorReport::request_failed(u),
                 };
+                // A 429 the ladder could not clear holds automatic work (X-84); any other failure lifts a hold.
+                // An automatic turn refused again under a hold already said all this once: it leaves one dim
+                // line, no second block and no second ping.
+                let limit = match &failure {
+                    TurnFailure::Chat(c) => rate_limit(c),
+                    TurnFailure::Ui(_) => None,
+                };
+                let quiet = limit.is_some() && job_notice && repl.notices.rate_limited();
+                if !flush {
+                    let outcome = limit.map_or(GateOutcome::Failed, |l| GateOutcome::RateLimited {
+                        retry_after: l.retry_after,
+                        typed: !notice,
+                    });
+                    repl.notices.settle(outcome, tokio::time::Instant::now());
+                    // The hint promises an automatic try only when there is something to try with: notices held
+                    // already, or the ones this rollback hands back.
+                    if limit.is_some()
+                        && let Some(next) = repl.notices.next_try()
+                    {
+                        let waiting = repl.notices.held_len() + carried.len();
+                        report.hint = crate::repl::errors::rate_limit_hint(
+                            &noticegate::clock_at(next),
+                            waiting > 0,
+                        );
+                    }
+                }
                 // The host hears about the failure BEFORE the red block lands (run.go:1076-1080). A failed
                 // flush is not the host's business: it is best-effort, and the compaction runs anyway.
                 if flush {
@@ -961,14 +1064,18 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                     repl.handles.pres.set_state(State::Idle);
                 } else {
                     repl.handles.pres.set_state(State::Error);
-                    repl.handles.pres.notify(Event {
-                        kind: Kind::Failed,
-                        text: report.headline.clone(),
-                    });
+                    if !quiet {
+                        repl.handles.pres.notify(Event {
+                            kind: Kind::Failed,
+                            text: report.headline.clone(),
+                        });
+                    }
                 }
-                repl.handles
-                    .tr
-                    .error_block(&report.headline, &report.lines());
+                if !quiet {
+                    repl.handles
+                        .tr
+                        .error_block(&report.headline, &report.lines());
+                }
                 // A stall, a truncation or a failure after text keeps what the turn completed; anything else — or
                 // a cut with nothing to keep — rolls the turn back WITH its user message, and
                 // the name derived from it, so a title pass still in flight could only land a
@@ -984,7 +1091,11 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 {
                     landed = !flush;
                 } else {
-                    repl.conv.history.truncate(hist0 - 1);
+                    // A rate limit gives back the notices the rollback takes: they wait for the next try.
+                    if limit.is_some() && !flush {
+                        repl.notices.put_back(std::mem::take(&mut carried));
+                    }
+                    repl.conv.history.truncate(turn_base);
                     if repl.session.titler.unseed(&repl.conv.history) {
                         repl.session.abort_title();
                     }
@@ -992,8 +1103,19 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                     repl.conv.budget.restore(turn_snap);
                     repl.push_status();
                 }
+                if quiet && let Some(next) = repl.notices.next_try() {
+                    repl.handles.tr.notice(&noticegate::still_limited_line(
+                        &report.headline,
+                        repl.notices.held_len(),
+                        &noticegate::clock_at(next),
+                    ));
+                }
             }
             Ok(out) => {
+                if !flush {
+                    repl.notices
+                        .settle(GateOutcome::Answered, tokio::time::Instant::now());
+                }
                 let mut amsg = Message::assistant_body(
                     out.content,
                     AssistantBody {
@@ -1072,7 +1194,14 @@ impl Repl {
             harness: self.conv.harness.clone(),
             overlay,
             images_dir: Arc::clone(&self.session.images_dir),
-            can_retry: !self.conv.image_provider,
+            // A flush turn is the loop's own and never reads the notice gate (X-84).
+            retries: if self.conv.image_provider {
+                Retries::None
+            } else if !flush && self.notices.rate_limited() {
+                Retries::NoRateLimit
+            } else {
+                Retries::All
+            },
             code_theme: code_theme_of(self.handles.dark),
             pres: Arc::clone(&self.handles.pres),
             steering: !flush,
@@ -1312,6 +1441,64 @@ pub(crate) async fn bot_perform(
     keep
 }
 
+/// The next input for the loop, and whether the notice gate let it out (`true`: a held notice, the probe of a
+/// rate-limit hold — DIVERGENCES X-84). `None` when the session ends (idle Ctrl+C / Ctrl+D, close).
+///
+/// The prompt is always read, even past the gate's deadline: anything already submitted or queued is served
+/// by the read before the revoke behind it (the mailbox is FIFO), so a due probe never overtakes the user.
+/// With notices held under a rate limit, a timer cancels the read's own child token at the deadline; the
+/// facade's acknowledged revoke hands back any input that won that race, and only a read revoked with
+/// nothing delivered (`UiError::Cancelled`) — the session still live — admits the probe. An idle Ctrl+C or a
+/// closed facade answers with its own error and ends the session as before, whatever the timer did.
+async fn next_input(repl: &mut Repl, root: &CancellationToken) -> Option<(Input, bool)> {
+    let ui = Arc::clone(&repl.handles.ui);
+    loop {
+        let deadline = repl.notices.deadline();
+        let wait = root.child_token();
+        let timer = deadline.map(|at| {
+            let wait = wait.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep_until(at).await;
+                wait.cancel();
+            })
+        });
+        let got = ui.read_input(&wait).await;
+        if let Some(t) = timer {
+            t.abort();
+        }
+        match got {
+            Ok(input) => return Some((input, false)),
+            Err(UiError::Cancelled) if !root.is_cancelled() && !ui.done().is_cancelled() => {
+                if deadline.is_none_or(|at| at > tokio::time::Instant::now()) {
+                    continue;
+                }
+                // The newest is the probe's input; the rest go ahead of it, oldest first, at the message path.
+                let mut held = repl.notices.take_held();
+                let n = held.len();
+                let Some(newest) = held.pop() else { continue };
+                repl.handles.tr.notice(&noticegate::probe_line(n));
+                repl.notices.put_back(held);
+                return Some((newest, true));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+/// Puts a job's notice aside under the current hold: one dim line says what it waits for, and the host is
+/// settled now — no turn follows to do it.
+fn put_notice_aside(repl: &mut Repl, input: Input) {
+    if let Some(hold) = repl.notices.hold() {
+        repl.handles.tr.notice(&noticegate::held_line(
+            &input.display,
+            hold,
+            noticegate::clock_at,
+        ));
+    }
+    repl.notices.put_aside(input);
+    repl.handles.pres.notice_held();
+}
+
 /// Applies the three-state interrupt table and its bookkeeping (chat/run.go:281-307
 /// `interruptTurn`).
 ///
@@ -1322,12 +1509,13 @@ pub(crate) async fn bot_perform(
 /// `true` when the turn was kept (and saved), `false` when it was discarded whole.
 fn interrupt_turn(
     repl: &mut Repl,
+    base: usize,
     watermark: usize,
     partial: &str,
     partial_reasoning: &str,
 ) -> bool {
     let InterruptDecision {
-        history,
+        mut history,
         persist,
         dropped_attachments: dropped,
     } = finalize_interrupt(
@@ -1336,6 +1524,11 @@ fn interrupt_turn(
         partial,
         partial_reasoning,
     );
+    // The notices the turn carried ahead of its input sit between `base` and `watermark`: a discarded turn
+    // takes them with it (the caller gives them back to the gate).
+    if !persist {
+        history.truncate(base);
+    }
     repl.conv.history = history;
     // Calls the interrupt left unanswered are answered now, before the turn is saved and before any notice
     // follows it: behind a notice they would sit mid-history, where no reload can repair them — and the

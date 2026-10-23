@@ -1,9 +1,11 @@
-//! `retry_round` + the `is_retryable` table (chat/run.go:1417-1447, chat/chat.go:126-158).
+//! `retry_round` + the `is_retryable` table (chat/run.go:1417-1447, chat/chat.go:126-158), with a 429's own
+//! rungs (DIVERGENCES X-84).
 
 use std::time::Duration;
 
 use crate::headless::ChatError;
 use crate::llm::LlmError;
+use crate::llm::client::RETRY_AFTER_CAP;
 use crate::provider::error::ProviderError;
 use crate::ui::facade::BusyGuard;
 use tokio_util::sync::CancellationToken;
@@ -17,38 +19,117 @@ pub(crate) const MAX_RETRIES: u32 = 10;
 /// paused clock instead of a knob.
 pub(crate) const RETRY_BACKOFF: Duration = Duration::from_secs(1);
 
-/// Linear backoff attempt×1s (test-compressible), max 10; cancel beats the timer; ONE
-/// recovery notice; `allowed=false` (image providers) passes through. `round` is an async
-/// closure (Rust 2024 `AsyncFnMut`): each attempt's future re-borrows the closure's
-/// captures — the exact Go per-attempt closure shape (run.go:1426-1447).
+/// Max re-attempts of a call refused with 429 (X-84): a rate limit the next few seconds do not clear is a
+/// quota, and the loop's notice gate — not this ladder — decides when to look again.
+pub(crate) const RATE_RETRIES: u32 = 3;
+
+/// The 429 backoff when the response named no wait: attempt N waits this × 2ⁿ⁻¹ (2, 4, 8 s).
+pub(crate) const RATE_BACKOFF: Duration = Duration::from_secs(2);
+
+/// Which failures one model call may retry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Retries {
+    /// The whole table: 429 on its own rungs, everything else on the linear ladder.
+    All,
+    /// The loop already holds for a rate limit (X-84): a 429 fails at once — the wire layer's own two
+    /// retries are all it gets — while every other transient fault keeps its ladder.
+    NoRateLimit,
+    /// A dedicated image provider bills per attempt: never auto-retried (run.go:1428).
+    None,
+}
+
+/// A call the provider refused for now — a 429, or any status that asked to be retried later than
+/// [`RETRY_AFTER_CAP`] — and the wait it asked for (X-84).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RateLimit {
+    /// The response's `retry-after`, when it sent one.
+    pub(crate) retry_after: Option<Duration>,
+}
+
+/// The rate limit behind `err`, if that is what it is: a 429 whatever it says, or any other status whose
+/// `retry-after` is past [`RETRY_AFTER_CAP`] (a 503 asking for an hour is a limit with a time on it, not a
+/// fault for the linear ladder). The status and the header, never the body's wording.
+pub(crate) fn rate_limit(err: &ChatError) -> Option<RateLimit> {
+    let (ChatError::Provider(ProviderError::Wire { source, .. })
+    | ChatError::AfterOutput(ProviderError::Wire { source, .. })) = err
+    else {
+        return None;
+    };
+    match source.as_ref() {
+        LlmError::Status(se)
+            if se.status == 429 || se.retry_after.is_some_and(|d| d > RETRY_AFTER_CAP) =>
+        {
+            Some(RateLimit {
+                retry_after: se.retry_after,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Whole seconds, rounded up: what a busy row says a wait is.
+fn ceil_secs(d: Duration) -> u64 {
+    d.as_secs() + u64::from(d.subsec_nanos() > 0)
+}
+
+/// Linear backoff attempt×1s (test-compressible), max 10; a 429 on its own rungs (X-84): at most
+/// [`RATE_RETRIES`], waiting its `retry-after` when that is at most [`RETRY_AFTER_CAP`] and 2/4/8 s when
+/// there is none, and not at all when it asks for longer. Cancel beats the timer; ONE recovery notice;
+/// [`Retries::None`] (image providers) passes through. `round` is an async closure (Rust 2024
+/// `AsyncFnMut`): each attempt's future re-borrows the closure's captures — the exact Go per-attempt
+/// closure shape (run.go:1426-1447).
 ///
 /// Nothing lands in the transcript until the turn gives up: the current error's
-/// classification rides the busy status row (`"%s — retrying (attempt %d/%d)"`), and a
-/// recovery leaves exactly one dim `"⟳ %s — recovered after %d attempt(s)"` notice.
+/// classification rides the busy status row (`"%s — retrying (attempt %d/%d)"`, a 429 with a wait
+/// `"%s — retrying in %ds (attempt %d/%d)"`), and a recovery leaves exactly one dim
+/// `"⟳ %s — recovered after %d attempt(s)"` notice.
 /// Interrupt partials travel OUTSIDE the `Result` (the closure's captured buffers);
 /// `Err(ChatError::Interrupted)` only signals the class.
 pub async fn retry_round<T>(
     cancel: &CancellationToken,
-    allowed: bool,
+    retries: Retries,
     busy: impl Fn(&str) -> BusyGuard,
     notice: impl Fn(String),
     mut round: impl AsyncFnMut() -> Result<T, ChatError>,
 ) -> Result<T, ChatError> {
     let mut result = round().await;
-    if !allowed {
+    if retries == Retries::None {
         // Dedicated image providers bill per attempt: never auto-retry (run.go:1428).
         return result;
     }
     let mut attempt: u32 = 1;
-    while attempt <= MAX_RETRIES {
-        let Err(e) = &result else { break };
+    while let Err(e) = &result {
         if !is_retryable(e) {
             break;
         }
+        let (max, wait, shown) = match rate_limit(e) {
+            None => (MAX_RETRIES, RETRY_BACKOFF * attempt, None),
+            Some(_) if retries == Retries::NoRateLimit => break,
+            // Asked for longer than a minute: a limit with a time on it, not a fault to sleep through.
+            Some(RateLimit {
+                retry_after: Some(d),
+            }) if d > RETRY_AFTER_CAP => break,
+            Some(RateLimit {
+                retry_after: Some(d),
+            }) => (RATE_RETRIES, d, Some(d)),
+            Some(RateLimit { retry_after: None }) => (
+                RATE_RETRIES,
+                RATE_BACKOFF * 2_u32.pow(attempt.saturating_sub(1).min(16)),
+                None,
+            ),
+        };
+        if attempt > max {
+            break;
+        }
         let headline = describe_error(e).headline;
-        let guard = busy(&format!(
-            "{headline} — retrying (attempt {attempt}/{MAX_RETRIES})"
-        ));
+        let label = match shown {
+            Some(d) => format!(
+                "{headline} — retrying in {}s (attempt {attempt}/{max})",
+                ceil_secs(d)
+            ),
+            None => format!("{headline} — retrying (attempt {attempt}/{max})"),
+        };
+        let guard = busy(&label);
         tokio::select! {
             biased;
             () = cancel.cancelled() => {
@@ -57,7 +138,7 @@ pub async fn retry_round<T>(
                 guard.stop();
                 return Err(ChatError::Interrupted);
             }
-            () = tokio::time::sleep(RETRY_BACKOFF * attempt) => {}
+            () = tokio::time::sleep(wait) => {}
         }
         guard.stop();
         result = round().await;
@@ -126,7 +207,7 @@ mod tests {
     use crate::ui::facade::BusyGuard;
     use tokio_util::sync::CancellationToken;
 
-    use super::{is_retryable, retry_round};
+    use super::{Retries, is_retryable, retry_round};
 
     fn status(code: u16) -> ChatError {
         ChatError::Provider(ProviderError::wire(
@@ -137,6 +218,7 @@ mod tests {
                 method: "POST".to_owned(),
                 url: "http://x".to_owned(),
                 body: String::new(),
+                retry_after: None,
             }),
         ))
     }
@@ -379,7 +461,7 @@ mod tests {
         let notices_in = Arc::clone(&notices);
         let got = retry_round(
             &cancel,
-            true,
+            Retries::All,
             |label| busy.guard(label),
             move |line| notices_in.lock().expect("notices").push(line),
             async || {
@@ -422,7 +504,7 @@ mod tests {
         let notices_in = Arc::clone(&notices);
         let got: Result<String, ChatError> = retry_round(
             &cancel,
-            true,
+            Retries::All,
             |label| busy.guard(label),
             move |line| notices_in.lock().expect("notices").push(line),
             async || {
@@ -435,6 +517,7 @@ mod tests {
                         method: "POST".to_owned(),
                         url: "http://x".to_owned(),
                         body: "bad request".to_owned(),
+                        retry_after: None,
                     }),
                 )))
             },
@@ -447,7 +530,7 @@ mod tests {
         assert!(notices.lock().expect("notices").is_empty());
     }
 
-    // A dedicated image provider bills per attempt, so `allowed = false` passes the first result through
+    // A dedicated image provider bills per attempt, so `Retries::None` passes the first result through
     // untouched even for an otherwise transient failure.
     #[tokio::test(start_paused = true)]
     async fn a_disallowed_retry_passes_the_first_result_through() {
@@ -457,7 +540,7 @@ mod tests {
 
         let got: Result<String, ChatError> = retry_round(
             &cancel,
-            false,
+            Retries::None,
             |label| busy.guard(label),
             |_| panic!("a disallowed retry must not notice"),
             async || {
@@ -471,7 +554,7 @@ mod tests {
         assert_eq!(
             *calls.lock().expect("calls"),
             1,
-            "allowed=false must not retry"
+            "Retries::None must not retry"
         );
         assert!(busy.labels().is_empty());
     }
@@ -487,7 +570,7 @@ mod tests {
 
         let got: Result<String, ChatError> = retry_round(
             &cancel,
-            true,
+            Retries::All,
             |label| busy.guard(label),
             |_| panic!("an interrupted retry must not notice"),
             async || {
@@ -515,7 +598,7 @@ mod tests {
 
         let got: Result<String, ChatError> = retry_round(
             &cancel,
-            true,
+            Retries::All,
             |label| busy.guard(label),
             |_| panic!("a turn that never recovered must not notice"),
             async || {
@@ -530,5 +613,195 @@ mod tests {
         let labels = busy.labels();
         assert_eq!(labels.len(), 10);
         assert_eq!(labels[9], "Request failed — retrying (attempt 10/10)");
+    }
+
+    // --- the 429 rungs (X-84) --------------------------------------------------------
+
+    /// A 429, asking for `retry_after` when given.
+    fn too_many(retry_after: Option<std::time::Duration>) -> ChatError {
+        ChatError::Provider(ProviderError::wire(
+            WireOp::Stream,
+            LlmError::Status(StatusError {
+                status: 429,
+                status_text: "Too Many Requests".to_owned(),
+                method: "POST".to_owned(),
+                url: "http://x".to_owned(),
+                body: String::new(),
+                retry_after,
+            }),
+        ))
+    }
+
+    /// Runs `retry_round` over a call that always fails with `err`, recording when each call was made.
+    async fn always(
+        retries: Retries,
+        err: impl Fn() -> ChatError,
+    ) -> (Vec<std::time::Duration>, Vec<String>) {
+        let busy = Busy::default();
+        let at: Mutex<Vec<std::time::Duration>> = Mutex::default();
+        let t0 = tokio::time::Instant::now();
+        let cancel = CancellationToken::new();
+        let got: Result<(), ChatError> = retry_round(
+            &cancel,
+            retries,
+            |label| busy.guard(label),
+            |_| panic!("a call that never recovers must not notice"),
+            async || {
+                at.lock().expect("at").push(t0.elapsed());
+                Err(err())
+            },
+        )
+        .await;
+        assert!(got.is_err());
+        (at.into_inner().expect("at"), busy.labels())
+    }
+
+    fn secs(s: &[u64]) -> Vec<std::time::Duration> {
+        s.iter()
+            .map(|&n| std::time::Duration::from_secs(n))
+            .collect()
+    }
+
+    // No wait named: three rungs, 2/4/8 s apart, the busy row counting to 3.
+    #[tokio::test(start_paused = true)]
+    async fn a_rate_limit_climbs_three_rungs_with_doubling_backoff() {
+        let (at, labels) = always(Retries::All, || too_many(None)).await;
+        assert_eq!(
+            at,
+            secs(&[0, 2, 6, 14]),
+            "1 call + 3 retries, 2/4/8 s apart"
+        );
+        assert_eq!(
+            labels,
+            [1, 2, 3].map(|n| format!("Rate limited (429) — retrying (attempt {n}/3)"))
+        );
+    }
+
+    // A wait of a minute or less is slept, and the row says how long.
+    #[tokio::test(start_paused = true)]
+    async fn a_short_retry_after_is_slept_and_shown() {
+        let wait = std::time::Duration::from_millis(36_200);
+        let (at, labels) = always(Retries::All, || too_many(Some(wait))).await;
+        assert_eq!(at.len(), 4);
+        assert_eq!(at[1], wait, "the second call waits exactly the retry-after");
+        assert_eq!(
+            labels[0],
+            "Rate limited (429) — retrying in 37s (attempt 1/3)"
+        );
+        let (at, _) = always(Retries::All, || {
+            too_many(Some(std::time::Duration::from_secs(60)))
+        })
+        .await;
+        assert_eq!(at, secs(&[0, 60, 120, 180]), "60 s is still slept");
+    }
+
+    // Longer than a minute: one call, no row, no sleep — the gate decides when to look again.
+    #[tokio::test(start_paused = true)]
+    async fn a_long_retry_after_is_not_slept() {
+        let (at, labels) = always(Retries::All, || {
+            too_many(Some(std::time::Duration::from_secs(61)))
+        })
+        .await;
+        assert_eq!(at, secs(&[0]));
+        assert!(labels.is_empty(), "{labels:?}");
+    }
+
+    // Under a hold a 429 fails on its first call; every other transient fault keeps its whole ladder.
+    #[tokio::test(start_paused = true)]
+    async fn under_a_hold_a_rate_limit_is_not_retried() {
+        let (at, labels) = always(Retries::NoRateLimit, || too_many(None)).await;
+        assert_eq!(at, secs(&[0]));
+        assert!(labels.is_empty(), "{labels:?}");
+        let (at, labels) = always(Retries::NoRateLimit, || status(503)).await;
+        assert_eq!(at.len(), 11, "a 5xx still climbs 1 + 10");
+        assert_eq!(
+            labels[9],
+            "Provider server error (503) — retrying (attempt 10/10)"
+        );
+        let (at, _) = always(Retries::None, || too_many(None)).await;
+        assert_eq!(at, secs(&[0]));
+    }
+
+    // The 429 backoff yields to an interrupt like the linear one does.
+    #[tokio::test(start_paused = true)]
+    async fn an_interrupt_during_a_rate_limit_backoff_wins_over_the_timer() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let calls = Mutex::new(0_u32);
+        let got: Result<(), ChatError> = retry_round(
+            &cancel,
+            Retries::All,
+            |_| BusyGuard::new(|| {}),
+            |_| panic!("an interrupted retry must not notice"),
+            async || {
+                *calls.lock().expect("calls") += 1;
+                Err(too_many(Some(std::time::Duration::from_secs(30))))
+            },
+        )
+        .await;
+        assert!(matches!(got, Err(ChatError::Interrupted)));
+        assert_eq!(*calls.lock().expect("calls"), 1);
+    }
+
+    // What counts as a rate limit is the status alone, wherever the error carries it.
+    #[test]
+    fn rate_limit_reads_the_status_and_its_wait() {
+        use super::{RateLimit, rate_limit};
+        let wait = Some(std::time::Duration::from_secs(9));
+        assert_eq!(
+            rate_limit(&too_many(wait)),
+            Some(RateLimit { retry_after: wait })
+        );
+        let ChatError::Provider(inner) = too_many(None) else {
+            unreachable!()
+        };
+        assert_eq!(
+            rate_limit(&ChatError::AfterOutput(inner)),
+            Some(RateLimit { retry_after: None })
+        );
+        assert_eq!(rate_limit(&status(503)), None);
+        assert_eq!(rate_limit(&transient()), None);
+        assert_eq!(rate_limit(&ChatError::Interrupted), None);
+    }
+
+    /// A status that is not 429 but asks for longer than a minute (M1).
+    fn asks_for(status_code: u16, wait: std::time::Duration) -> ChatError {
+        ChatError::Provider(ProviderError::wire(
+            WireOp::Stream,
+            LlmError::Status(StatusError {
+                status: status_code,
+                status_text: String::new(),
+                method: "POST".to_owned(),
+                url: "http://x".to_owned(),
+                body: String::new(),
+                retry_after: Some(wait),
+            }),
+        ))
+    }
+
+    // M1: a 503 asking for an hour is a limit — one call, no ladder, classified for the gate; one asking for
+    // half a minute is an ordinary fault and keeps the linear ladder.
+    #[tokio::test(start_paused = true)]
+    async fn a_long_retry_after_on_any_status_is_a_limit() {
+        use super::{RateLimit, rate_limit};
+        let hour = std::time::Duration::from_hours(1);
+        assert_eq!(
+            rate_limit(&asks_for(503, hour)),
+            Some(RateLimit {
+                retry_after: Some(hour)
+            })
+        );
+        let (at, labels) = always(Retries::All, || asks_for(503, hour)).await;
+        assert_eq!(at, secs(&[0]));
+        assert!(labels.is_empty(), "{labels:?}");
+
+        let half = std::time::Duration::from_secs(30);
+        assert_eq!(rate_limit(&asks_for(503, half)), None);
+        let (at, _) = always(Retries::All, || asks_for(503, half)).await;
+        assert_eq!(
+            at.len(),
+            11,
+            "a short wait on a 5xx keeps the linear ladder"
+        );
     }
 }

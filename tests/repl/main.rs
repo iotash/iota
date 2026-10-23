@@ -27,6 +27,7 @@ mod images;
 // asks `jobs::skip_unless_posix` first (see `tests/tool/main.rs`).
 mod jobs;
 mod new_session;
+mod rate_limit;
 mod settings;
 mod skills;
 mod stall;

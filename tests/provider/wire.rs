@@ -14,8 +14,8 @@ use crate::common::{mock_json, mock_sse, sse_stream};
 use bytes::Bytes;
 use futures::StreamExt;
 use iota::llm::client::{
-    BACKOFF_BASE, BACKOFF_CAP, ERROR_DETAIL_CAP, Jitter, NoJitter, StatusError, retry_delay,
-    should_retry,
+    BACKOFF_BASE, BACKOFF_CAP, ERROR_DETAIL_CAP, Jitter, NoJitter, StatusError, retry_after,
+    retry_delay, should_retry,
 };
 use iota::llm::{Client, Event, LlmError, Sse};
 use iota::provider::model::Raw;
@@ -181,6 +181,7 @@ async fn the_retry_policy_retries_transient_statuses_and_honours_retry_after() {
             method: "POST".into(),
             url: format!("{}/x", srv2.uri()),
             body: r#"{"message":"bad","type":"invalid_request_error"}"#.into(),
+            retry_after: None,
         }
     );
 
@@ -435,6 +436,7 @@ fn status(code: u16) -> LlmError {
         method: "POST".into(),
         url: "http://h/x".into(),
         body: String::new(),
+        retry_after: None,
     })
 }
 
@@ -518,6 +520,90 @@ fn retry_delay_precedence_table() {
     assert!(should_retry(&LlmError::HeaderTimeout(ms(200)), none));
     assert!(!should_retry(&LlmError::NoEvents, none));
     assert!(!should_retry(&LlmError::Cancelled, none));
+}
+
+/// X-84: what a refused response asks the client to wait, read once into `StatusError::retry_after` — the
+/// three header shapes `retry_delay` honours, and `None` for everything it would back off on instead.
+#[test]
+fn retry_after_reads_the_three_header_shapes() {
+    let ms = Duration::from_millis;
+    let secs = Duration::from_secs;
+    let ra = |pairs: &[(&str, &str)]| retry_after(&headers(pairs));
+    assert_eq!(ra(&[("retry-after-ms", "1500")]), Some(ms(1500)));
+    assert_eq!(
+        ra(&[("retry-after-ms", "250"), ("retry-after", "3")]),
+        Some(ms(250))
+    );
+    assert_eq!(ra(&[("retry-after", "37")]), Some(secs(37)));
+    assert_eq!(ra(&[("retry-after", "0.5")]), Some(ms(500)));
+    let future = httpdate::fmt_http_date(SystemTime::now() + secs(120));
+    let d = ra(&[("retry-after", &future)]).expect("a future date");
+    assert!(d > secs(115) && d <= secs(120), "{d:?}");
+    let past = httpdate::fmt_http_date(SystemTime::now() - secs(60));
+    for junk in ["0", "-1", "later", past.as_str()] {
+        assert_eq!(ra(&[("retry-after", junk)]), None, "{junk:?}");
+    }
+    assert_eq!(ra(&[("retry-after-ms", "0")]), None);
+    assert_eq!(ra(&[]), None);
+}
+
+/// X-84: a status that asks to be retried later than a minute is handed up at once instead of slept; an
+/// explicit `x-should-retry: true` still wins, as it wins over every other rule.
+#[test]
+fn a_retry_after_past_the_cap_is_handed_up() {
+    let h = |pairs: &[(&str, &str)]| headers(pairs);
+    assert!(!should_retry(
+        &status(429),
+        Some(&h(&[("retry-after", "61")]))
+    ));
+    assert!(should_retry(
+        &status(429),
+        Some(&h(&[("retry-after", "60")]))
+    ));
+    assert!(!should_retry(
+        &status(503),
+        Some(&h(&[("retry-after-ms", "60001")]))
+    ));
+    assert!(should_retry(
+        &status(429),
+        Some(&h(&[("x-should-retry", "true"), ("retry-after", "3600")]))
+    ));
+    assert!(should_retry(&status(429), None));
+}
+
+/// X-84 end to end on the wire: a 429 that asks for five hours costs ONE request and returns at once,
+/// carrying the wait; its `Display` is the one it always had.
+#[tokio::test]
+async fn a_long_retry_after_is_not_slept_by_the_wire() {
+    let srv = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/x"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("retry-after", "18000")
+                .set_body_string(r#"{"error":{"message":"quota"}}"#),
+        )
+        .mount(&srv)
+        .await;
+    let cancel = CancellationToken::new();
+    let body = serde_json::json!({});
+    let err = tokio::time::timeout(
+        Duration::from_secs(10),
+        client(&srv).do_json::<_, serde_json::Value>(&cancel, Method::POST, "/x", Some(&body)),
+    )
+    .await
+    .expect("the client slept on a five-hour retry-after")
+    .unwrap_err();
+    assert_eq!(srv.received_requests().await.unwrap().len(), 1);
+    let se = err.status().expect("StatusError");
+    assert_eq!(se.retry_after, Some(Duration::from_secs(18000)));
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "POST {:?}: 429 Too Many Requests {{\"message\":\"quota\"}}",
+            format!("{}/x", srv.uri())
+        )
+    );
 }
 
 /// DIVERGENCES I-02: the response-header timeout is its own variant, classified like a transport error (retried,
@@ -1020,4 +1106,30 @@ async fn client_request_shape() {
     .unwrap_err();
     assert!(matches!(err, LlmError::Cancelled), "{err:?}");
     assert_eq!(srv5.received_requests().await.unwrap().len(), 1);
+}
+
+/// M1 on the wire: a 503 asking for an hour is one request and returns at once, carrying the wait the
+/// interactive loop turns into a hold.
+#[tokio::test]
+async fn a_503_with_a_long_retry_after_is_one_request() {
+    let srv = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/x"))
+        .respond_with(ResponseTemplate::new(503).insert_header("retry-after", "3600"))
+        .mount(&srv)
+        .await;
+    let cancel = CancellationToken::new();
+    let body = serde_json::json!({});
+    let err = tokio::time::timeout(
+        Duration::from_secs(10),
+        client(&srv).do_json::<_, serde_json::Value>(&cancel, Method::POST, "/x", Some(&body)),
+    )
+    .await
+    .expect("the client slept on an hour's retry-after")
+    .unwrap_err();
+    assert_eq!(srv.received_requests().await.unwrap().len(), 1);
+    assert_eq!(
+        err.status().and_then(|s| s.retry_after),
+        Some(Duration::from_secs(3600))
+    );
 }

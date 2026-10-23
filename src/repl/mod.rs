@@ -15,6 +15,9 @@ pub(crate) mod errors;
 /// The layered model parameters as the chat runs them: read, re-evaluated on a `/model` switch, written
 /// back (brain page `model-param-layering`).
 pub(crate) mod liveparams;
+/// Whether a finished job's notice may open a turn of its own: the hold an interrupt or a 429 leaves
+/// (DIVERGENCES X-84).
+pub(crate) mod noticegate;
 /// What the loop draws.
 pub(crate) mod render;
 pub mod run;

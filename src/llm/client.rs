@@ -52,6 +52,12 @@ pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 pub(crate) const HTTP2_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(30);
 /// How long an HTTP/2 PING may go unacknowledged before the connection is closed.
 pub(crate) const HTTP2_KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
+/// The longest `retry-after` either retry layer waits out on its own (DIVERGENCES X-84). A longer one is not
+/// a transient fault to sleep through but a limit with a time on it: [`should_retry`] hands it up at once,
+/// carried on [`StatusError::retry_after`], and the interactive loop holds its automatic work until then.
+/// An explicit `x-should-retry: true` still wins over this, as over every other rule: that response is
+/// retried, after the wait it names.
+pub const RETRY_AFTER_CAP: Duration = Duration::from_secs(60);
 /// Backoff base: `min(500ms << attempt, 8s) - jitter(d/4)`.
 pub const BACKOFF_BASE: Duration = Duration::from_millis(500);
 /// Backoff cap.
@@ -361,10 +367,11 @@ impl Client {
                     let headers = resp.headers().clone();
                     let status = resp.status();
                     let body = read_error_body(resp, cancel).await;
-                    (
-                        LlmError::Status(StatusError::new(status, method.as_str(), &url, &body)),
-                        Some(headers),
-                    )
+                    let se = StatusError {
+                        retry_after: retry_after(&headers),
+                        ..StatusError::new(status, method.as_str(), &url, &body)
+                    };
+                    (LlmError::Status(se), Some(headers))
                 }
                 Err(e) => (e, None),
             };
@@ -507,7 +514,8 @@ async fn read_error_body(resp: reqwest::Response, cancel: &CancellationToken) ->
 }
 
 /// client.go:171-186. A transport-level failure (including the header timeout) retries; a status failure retries
-/// when `x-should-retry` says `true`, never when it says `false`, else on 408/409/429 or any 5xx.
+/// when `x-should-retry` says `true`, never when it says `false`, else on 408/409/429 or any 5xx — unless it
+/// asks to be retried later than [`RETRY_AFTER_CAP`]: that one goes up at once (X-84).
 pub fn should_retry(err: &LlmError, headers: Option<&HeaderMap>) -> bool {
     match err {
         LlmError::Status(se) => {
@@ -518,6 +526,12 @@ pub fn should_retry(err: &LlmError, headers: Option<&HeaderMap>) -> bool {
                 Some("true") => return true,
                 Some("false") => return false,
                 _ => {}
+            }
+            if headers
+                .and_then(retry_after)
+                .is_some_and(|d| d > RETRY_AFTER_CAP)
+            {
+                return false;
             }
             matches!(se.status, 408 | 409 | 429) || se.status >= 500
         }
@@ -532,27 +546,8 @@ pub fn should_retry(err: &LlmError, headers: Option<&HeaderMap>) -> bool {
 /// `retry-after` (HTTP-date with positive remaining time) → that; else `min(500ms << attempt, 8s) - jitter(d/4)`.
 /// `headers` is `None` for transport failures (always backoff).
 pub fn retry_delay(headers: Option<&HeaderMap>, attempt: u32, jitter: &dyn Jitter) -> Duration {
-    if let Some(h) = headers {
-        if let Some(ms) = header_str(h, "retry-after-ms")
-            && let Ok(n) = ms.parse::<i64>()
-            && n > 0
-        {
-            return Duration::from_millis(n.unsigned_abs());
-        }
-        if let Some(ra) = header_str(h, "retry-after") {
-            if let Ok(secs) = ra.parse::<f64>()
-                && secs > 0.0
-                && let Ok(d) = Duration::try_from_secs_f64(secs)
-            {
-                return d;
-            }
-            if let Ok(t) = httpdate::parse_http_date(ra)
-                && let Ok(d) = t.duration_since(std::time::SystemTime::now())
-                && d > Duration::ZERO
-            {
-                return d;
-            }
-        }
+    if let Some(d) = headers.and_then(retry_after) {
+        return d;
     }
     let d = if attempt >= 4 {
         BACKOFF_CAP
@@ -561,6 +556,29 @@ pub fn retry_delay(headers: Option<&HeaderMap>, attempt: u32, jitter: &dyn Jitte
     };
     // Uniform jitter: sleep in [0.75d, d].
     d.saturating_sub(jitter.jitter(d / 4))
+}
+
+/// What a response asks the client to wait before trying again: `retry-after-ms` (integer > 0) → ms;
+/// `retry-after` (float seconds > 0) → seconds; `retry-after` (HTTP-date with positive remaining time) → that;
+/// else `None`. Read once per refused response, into [`StatusError::retry_after`].
+pub fn retry_after(h: &HeaderMap) -> Option<Duration> {
+    if let Some(ms) = header_str(h, "retry-after-ms")
+        && let Ok(n) = ms.parse::<i64>()
+        && n > 0
+    {
+        return Some(Duration::from_millis(n.unsigned_abs()));
+    }
+    let ra = header_str(h, "retry-after")?;
+    if let Ok(secs) = ra.parse::<f64>()
+        && secs > 0.0
+        && let Ok(d) = Duration::try_from_secs_f64(secs)
+    {
+        return Some(d);
+    }
+    httpdate::parse_http_date(ra)
+        .ok()
+        .and_then(|t| t.duration_since(std::time::SystemTime::now()).ok())
+        .filter(|d| *d > Duration::ZERO)
 }
 
 fn header_str<'a>(h: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -613,6 +631,9 @@ pub struct StatusError {
     /// Error detail: the trimmed body, or the raw text of a non-null top-level `error` value; cut at
     /// `ERROR_DETAIL_CAP` bytes plus `…`.
     pub body: String,
+    /// What the response asked the client to wait before trying again ([`retry_after`]); `None` when it
+    /// said nothing. Not part of `Display`.
+    pub retry_after: Option<Duration>,
 }
 
 impl StatusError {
@@ -624,6 +645,7 @@ impl StatusError {
             method: method.to_owned(),
             url: url.to_owned(),
             body: error_detail(raw),
+            retry_after: None,
         }
     }
 }

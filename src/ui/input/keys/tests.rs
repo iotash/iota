@@ -461,7 +461,10 @@ fn row_7_enter_submits_trimmed_or_ignores_blank() {
     enter(&mut m);
     assert!(reader.try_recv().is_err(), "a blank draft submits nothing");
     assert_eq!(m.composer.value(), "", "…but the composer still collapses");
-    m.apply(UiMsg::ReadCancel { id: 2 });
+    m.apply(UiMsg::ReadCancel {
+        id: 2,
+        ack: tokio::sync::oneshot::channel().0,
+    });
 
     type_text(&mut m, "x");
     m.handle_key(mods(KeyCode::Enter, KeyModifiers::CONTROL));

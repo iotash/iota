@@ -440,8 +440,8 @@ async fn bot_compacted(repl: &mut Repl, outcome: Compacted, err: &str) {
 
 /// The pre-send auto-compaction offer (`chat/run.go:979-989`).
 ///
-/// `extra` is what the message about to be sent adds: the tokenizer's count of the text
-/// plus a crude per-attachment figure (Go's `len(att.Data)/1000` — attachments are not
+/// `extra` is what the messages about to be sent add — the input and, ahead of it, any job notices the
+/// turn carries (X-84) — the tokenizer's count of each text plus a crude per-attachment figure (Go's `len(att.Data)/1000` — attachments are not
 /// text, and the estimator only has to be the right order of magnitude for a threshold
 /// check). Declining — or a facade error, which must never block the send — snoozes the
 /// offer at the projected usage.
@@ -449,12 +449,12 @@ async fn bot_compacted(repl: &mut Repl, outcome: Compacted, err: &str) {
 /// A bot's session is not asked (docs/design/bot-mode.md §4.1): nobody may be there to answer, so it
 /// compacts — at the threshold, or when a compaction is owed because this message arrived ahead of the
 /// flush notice (§3.6.1: no flush then; safety first). The flush notice itself never comes through here.
-pub(crate) async fn offer_before_send(repl: &mut Repl, input: &str) {
+pub(crate) async fn offer_before_send(repl: &mut Repl, inputs: &[&str]) {
     if !repl.conv.ctxm.is_enabled() {
         return;
     }
     let counter = repl.conv.budget.counter();
-    let mut extra = counter.count(input);
+    let mut extra: u64 = inputs.iter().map(|t| counter.count(t)).sum();
     for att in &repl.conv.pending {
         extra += u64::try_from(att.data.len() / 1000).unwrap_or(0);
     }
