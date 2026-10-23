@@ -1,6 +1,6 @@
 # 429 与 ESC：额度用尽时不再自己转圈，ESC 真的停下
 
-Status: **设计稿，未实现** · 日期：2026-10-23 · 基于 `main` = `2929ed4` · 分支 `rate-limit-cancel` · 拟定 DIVERGENCES X-84
+Status: **已实现**（2026-10-23，分支 `rate-limit-cancel`：`b9010d2` 线路层、`cf5e148` 梯子与 notice gate；DIVERGENCES X-84；所有者对 §8 的裁定：Q1 要自动探测、Q2 不在本次范围、Q3 不加状态行段、Q4 保留折回；与本文的出入见 §11）· 日期：2026-10-23 · 基于 `main` = `2929ed4` · 分支 `rate-limit-cancel`
 
 所有者的报告（2026-10-23）：`~/Work/nikon`，会话 `n66gj2gg3nqr`，provider `glm`、模型 `glm-5.3`（anthropic 方言），撞上 GLM 的 5 小时用量上限。两个症状：
 
@@ -323,3 +323,22 @@ transcript 里每条收起都有一行、错误块的 hint 写了时刻，信息
   times (it used to be ten), and a `retry-after` longer than a minute is no
   longer waited out silently.
 ```
+
+## 11. 实现记录（2026-10-23）
+
+按本文实现，下列出入逐条记下；没列的就是照写的。
+
+1. **改名**：`Gate` → `repl::noticegate::NoticeGate`（`src/repl/noticegate.rs`），`Repl` 上的字段叫 `notices`。`Repl.handles.gate` / `TurnCtx::gate` 已经是 `ApprovalGate`，同名会读错。
+2. **`TurnCtx` 的形状**：没有在 `can_retry` 旁边加 `rate_limited: bool`，而是用 `retries: Retries` 直接替换 `can_retry`——三值本来就是一个量，两个 bool 能拼出无意义的组合。调用点照旧各改一个实参。
+3. **`step` 的含义**：存的是「下一次被拒且无 `retry-after` 时要等多久」。首次被拒 `next = now + 60 s`、`step = 120 s`；`/model` 切换设 `next = now`、`step = 60 s`。对外的节奏与 §3.2 完全相同（1 → 2 → 4 … → 30 min；换模型后从 1 min 重来）。
+4. **§3.2 第 2 步写错了**：「`hold` 先设为 `None`」与第 4 步矛盾——第 4 步要用之前的 hold 判断「键入引发的 429 不把 `next` 往前挪」。实现里开 turn 时**不动** hold，只在 turn 结束时按结果转移；turn 跑着时没有人读 gate（`Steerer` 不经它），所以没有中间态问题。
+5. **hint 措辞**：`Background-job notices wait until HH:MM, then iota tries again; send a message to try now, or /model to switch`（本文是 `… will wait; iota tries again at 17:42. Send …`）。改成与其他 hint 同样的一句话、无句号的写法。
+6. **探测的输入**：照 §3.2 第 3 步，最新的那条作为 turn 的输入、其余按序在前；回显用 `tr.notice`（空闲时没有正在跑的活动组，与 `boundary_notice` 渲染相同）。
+7. **回滚点**：消息路径记下 `turn_base`（推入带上的通知之前的历史长度）；失败回滚截到它，`interrupt_turn` 多一个 `base` 参数，整段丢弃时截到它。本文只说了「失败时放回」，没说历史要截到哪。
+8. **`ensure_model` 失败**（还没选模型就发消息、又取消选择）时，带上的通知放回 gate。本文没覆盖这条路径。
+9. **host 计数**：被 gate 放出来的通知不再调 `notice_taken`——它被收起时已经 `notice_held` 过一次，再减会吃掉另一条通知的计数。
+10. **测试位置**：`retry_after` 解析、60 s 上限、「五小时 `retry-after` 只发一个请求」三条放在 `tests/provider/wire.rs`（现有的重试表测试就在那里，`retry_after` 是公开函数；端到端用 wiremock 而不是手写 TCP 桩）。`the_flush_notice_is_never_held` 放在 `tests/repl/bot_flush.rs`（bot 装置在那里）。
+11. **测试装置**：`Round::rate_limited(body, retry_after)`（`Failure::RateLimited`）和 `Reply::Idle`（停在提示符、只响应自己 token 的取消——实时 facade 被计时器撤销时的样子）。
+12. **tmux 场景 35 没改 mock**：让任务的**输出**拼出 `fail:429:99`（命令写成 `printf 'fa%s:429:99' il`，因为 mock 只认每条消息里第一个 `fail:`），于是只有通知的 turn 被拒。60 s 的探测留给 REPL 测试（暂停时钟）。
+13. **本文漏掉的一点**：带上的通知推入历史后，`TurnEngine::run` 只把最后一条消息记进上下文计量（`ctxm.note`），所以发送前的估算少算了这些通知；响应回来后的实测用量会纠正它。没有为此改 `TurnEngine`。
+

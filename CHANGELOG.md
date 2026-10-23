@@ -5,6 +5,24 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ## Unreleased
 
+### Fixed
+
+- **Hitting a provider's rate limit or usage cap no longer turns into an
+  endless loop, and Esc really stops.** When a request was refused with
+  429 and retrying didn't help, every background job that finished started
+  a new attempt and printed another `Rate limited (429)` error. Now iota
+  stops on its own: notices from finished jobs wait (each one says so in a
+  dim line), and iota tries once more later — when the provider says it may
+  (`retry-after`), otherwise after a minute, then less and less often, at
+  most every 30 minutes. Sending a message tries at once and takes the
+  waiting notices with it; switching to another model with `/model` tries
+  at once on that model. The provider's own message, with its reset time if
+  it gives one, is still shown. Pressing Esc now also holds the notices
+  queued behind the turn you stopped: they go with your next message
+  instead of starting new turns. A rate limit is retried at most three
+  times (it used to be ten), and a `retry-after` longer than a minute is no
+  longer waited out silently.
+
 ### Changed
 
 - **Tool-call labels are easier to read.** The `[shell ls -la]`-style label
