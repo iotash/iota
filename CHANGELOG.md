@@ -18,14 +18,15 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   once and takes the waiting notices with it; switching to another model or
   another provider with `/model` tries at once there. What you type is
   never overtaken by these automatic tries, and a notice is no longer lost
-  when its turn is refused. The provider's own message, with its reset time
-  if it gives one, is still shown. Pressing Esc now also holds the notices
+  when its turn is refused by a rate limit (any other failure still drops
+  it, as before). The provider's own message, with its reset time if it
+  gives one, is still shown. Pressing Esc now also holds the notices
   queued behind the turn you stopped: they go with your next message
   instead of starting new turns. A 429 now gets at most three more tries
   (it used to be ten), and a provider asking to wait more than a minute —
   with a 429 or any other error — is no longer waited out silently: iota
-  stops and holds until then, unless the provider explicitly insists on
-  being retried.
+  stops and holds until then (a day at the most, however long it asks),
+  unless the provider explicitly insists on being retried.
 
 ### Changed
 

@@ -1,6 +1,6 @@
 # 429 与 ESC：额度用尽时不再自己转圈，ESC 真的停下
 
-Status: **已实现**（2026-10-23，分支 `rate-limit-cancel`：`b9010d2` 线路层、`cf5e148` 梯子与 notice gate；同日对抗评审后修正 `aa6e3b5`（B1、M2）、`dbd87dd`（B2）、`4a74ed4`（M1）、`ac636b1`（M3）、`26fa982`（M4）、`474bede`（m1）；DIVERGENCES X-84；所有者对 §8 的裁定：Q1 要自动探测、Q2 不在本次范围、Q3 不加状态行段、Q4 保留折回；与本文的出入见 §11）· 日期：2026-10-23 · 基于 `main` = `2929ed4` · 分支 `rate-limit-cancel`
+Status: **已实现**（2026-10-23，分支 `rate-limit-cancel`：`b9010d2` 线路层、`cf5e148` 梯子与 notice gate；同日对抗评审后修正 `aa6e3b5`（B1、M2）、`dbd87dd`（B2）、`4a74ed4`（M1）、`ac636b1`（M3）、`26fa982`（M4）、`474bede`（m1）；DIVERGENCES X-84；所有者对 §8 的裁定：Q1 要自动探测、Q2 不在本次范围、Q3 不加状态行段、Q4 保留折回；与本文的出入见 §11；合并 `247e414` 后第二轮评审的修正见 §11.2）· 日期：2026-10-23 · 基于 `main` = `2929ed4` · 分支 `rate-limit-cancel`
 
 所有者的报告（2026-10-23）：`~/Work/nikon`，会话 `n66gj2gg3nqr`，provider `glm`、模型 `glm-5.3`（anthropic 方言），撞上 GLM 的 5 小时用量上限。两个症状：
 
@@ -97,6 +97,7 @@ pub(crate) enum Hold {
 | `RATE_RETRIES` | 3 | `repl/turn/retry.rs` | 429 的梯子级数 |
 | `RATE_BACKOFF` | 2 s，第 n 次 × 2ⁿ⁻¹（2/4/8 s） | `repl/turn/retry.rs` | 429 没给 `retry-after` 时的退避 |
 | `RETRY_AFTER_CAP` | 60 s | `llm/client.rs`（两层共用） | `retry-after` 超过它就不睡、直接交上去 |
+| `RETRY_AFTER_HORIZON` | 24 h | `llm/client.rs`（解析处） | `retry-after` 最多算这么久，更长的夹到它（§11.2 第 25 条） |
 | `PROBE_FIRST` / `PROBE_CAP` | 60 s / 30 min | gate 模块 | 没有 `retry-after` 时的探测间隔：翻倍、封顶 |
 
 为什么 60 s：Crush（fantasy）与旧版 Anthropic SDK 用的就是这条线（§2.1）；更要紧的是，对交互式 CLI，一分钟以上的「转圈」已经该让用户知道并能做选择了。与它们不同，超过 60 s 的值不被忽略，而是成为 hold 的放行时刻（§2.2 第 3 条）。
@@ -356,5 +357,13 @@ transcript 里每条收起都有一行、错误块的 hint 写了时刻，信息
 21. **`ensure_model` 失败**（第 8 条）现在连同本 turn 自己的通知一起放回。
 22. **线路层的例外**：显式 `x-should-retry: true` 仍压过 60 s 上限（与它压过其他所有规则一致），那一条会按它给的等待重试；`RETRY_AFTER_CAP` 的文档、X-84、CHANGELOG 都写明了。`RETRY_AFTER_CAP` 是 `pub`（`should_retry` 的公开文档引用它）。
 23. **测试装置**：`Reply::Elapse(d)`（用户离开 d 后才回应，期间不响应 token——让 deadline 在提示符之外过期，或让输入恰好落在计时器触发时）；`Failure::RateLimited` 改为通用的 `Failure::Status`，加 `Round::refused(status, body, retry_after)`；`tests/repl/rate_limit.rs` 的装置可以带上下文窗口、导入历史和一个端点工厂。
-24. **仍未覆盖的**（评审列出、本次未加）：探测中途真的按 ESC、429 梯子中途真实时钟下的取消、bot 在 `RateLimited` 下 flush 失败或被中断。行为上它们走的都是已测过的同一条路径（中断 → `Interrupted`；flush 不读 gate）。
+24. **仍未覆盖的**（评审列出、本次未加）：探测中途真的按 ESC、429 梯子中途真实时钟下的取消、bot 在 `RateLimited` 下 flush 失败或被中断。行为上它们走的都是已测过的同一条路径（中断 → `Interrupted`；flush 不读 gate）。第二轮评审（§11.2）的 m2 也记在这里：真实 `TuiHandle` + `next_input` 计时器这条**组合**路径没有测试——REPL 测试用 `Reply::Idle` 把「token 取消 → `Cancelled`」写死，handle 单测只测撤销协议本身，tmux 场景 35 刻意停在 60 s 探测之前；粘合代码只有 `run.rs` `next_input` 的一个 `match` 臂。要补的话，给 mock 的 `fail:<status>:<n>` 指令加一个可选的 `retry-after` 秒数，让场景 35 用 `retry-after: 5` 在真终端上等到 `▶ Trying again with n held notice(s)`。
+
+### 11.2 合并后的第二轮评审（2026-10-23，Fable）
+
+合并 `247e414` 之后的独立评审（`/tmp/iota-rate-limit-fable-review.md`）：没有 blocker / major，4 条 minor。m1、m3、m4 在 `rate-limit-fable` 分支的后续提交里修了，m2 记入第 24 条。
+
+25. **m1——`retry-after` 有了上限**：`llm::client::RETRY_AFTER_HORIZON` = 24 h，`retry_after()` 在解析处把更长的值夹到它，`StatusError::retry_after` 从此不超过它。原因：`Duration::try_from_secs_f64` 收到 u64::MAX 秒都算合法，而 `Instant + Duration` 过了 i64 秒就 panic——`retry-after: 10000000000000000000`（1e19）会在 `NoticeGate::settle` 的 `now + d` 上把整个循环崩掉（改前这个值只进 `tokio::time::sleep`，tokio 自己夹远期，不崩；用 `rustc` 片段复现过）。选在解析处、不在 gate 里 `checked_add`：这样线路层的睡眠、梯子的比较、gate 的 `next` 和 `held until HH:MM` 看到的是同一个有界值，只有一处规则。为什么是一天：比今天任何供应商在头里报的额度窗口都长（GLM、Anthropic 都是 5 小时），与 Claude Code 自己等重置的上限一致（§2.1），而且 `HH:MM` 不带日期、只在一天之内读得对。`tests/provider/wire.rs::retry_after_reads_the_three_header_shapes` 钉了三种形状的夹取，以及「一天、五小时照原样」。
+26. **m3——CHANGELOG**：「a notice is no longer lost when its turn is refused」改为「…refused by a rate limit (any other failure still drops it, as before)」，与 Q2 的裁定一致；顺带写上了一天的上限。
+27. **m4——两架梯子各自计数**：`retry_round` 原来一个 `attempt` 跨错误种类共用，3 次 503 之后来的 429 会因 `attempt 4 > RATE_RETRIES 3` 一级都不爬。现在线性梯子与 429 梯子各有自己的计数；状态行的 `attempt n/max` 是该梯子的 n，单一种类的序列上每次调用的时刻与标签同改前逐字相同；恢复通知 `recovered after n attempt(s)` 数的是实际做过的重试次数，不分梯子。`retry::tests::each_ladder_counts_its_own_rungs` 钉了「3×503 再 429：429 仍爬 2/4/8 s 三级」与「2×429 再 503：503 仍爬满十级」。
 

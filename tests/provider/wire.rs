@@ -14,8 +14,8 @@ use crate::common::{mock_json, mock_sse, sse_stream};
 use bytes::Bytes;
 use futures::StreamExt;
 use iota::llm::client::{
-    BACKOFF_BASE, BACKOFF_CAP, ERROR_DETAIL_CAP, Jitter, NoJitter, StatusError, retry_after,
-    retry_delay, should_retry,
+    BACKOFF_BASE, BACKOFF_CAP, ERROR_DETAIL_CAP, Jitter, NoJitter, RETRY_AFTER_HORIZON,
+    StatusError, retry_after, retry_delay, should_retry,
 };
 use iota::llm::{Client, Event, LlmError, Sse};
 use iota::provider::model::Raw;
@@ -545,6 +545,29 @@ fn retry_after_reads_the_three_header_shapes() {
     }
     assert_eq!(ra(&[("retry-after-ms", "0")]), None);
     assert_eq!(ra(&[]), None);
+    // m1 (the review after the merge): a wait past the horizon is clamped to it, whatever its shape — `1e19`
+    // seconds parses as a `Duration`, and `Instant + Duration` panicked on it in the notice gate.
+    assert_eq!(
+        ra(&[("retry-after", "10000000000000000000")]),
+        Some(RETRY_AFTER_HORIZON)
+    );
+    assert_eq!(
+        ra(&[("retry-after-ms", "9223372036854775807")]),
+        Some(RETRY_AFTER_HORIZON)
+    );
+    let far = httpdate::fmt_http_date(SystemTime::now() + secs(400 * 86_400));
+    assert_eq!(ra(&[("retry-after", &far)]), Some(RETRY_AFTER_HORIZON));
+    assert_eq!(ra(&[("retry-after", "86401")]), Some(RETRY_AFTER_HORIZON));
+    assert_eq!(
+        ra(&[("retry-after", "86400")]),
+        Some(secs(86_400)),
+        "a day is kept as named"
+    );
+    assert_eq!(
+        ra(&[("retry-after", "18000")]),
+        Some(secs(18_000)),
+        "a 5-hour quota is kept as named"
+    );
 }
 
 /// X-84: a status that asks to be retried later than a minute is handed up at once instead of slept; an
