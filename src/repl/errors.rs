@@ -91,13 +91,21 @@ const AFTER_OUTPUT_HINT: &str = "It failed after the reply had streamed, so it w
 /// constant (`client::STREAM_IDLE_TIMEOUT`), not a knob (decided 2026-10-01).
 const STALL_HINT: &str = "Send the message again, or check the provider's base URL and model (/model); ESC stops a silent wait sooner";
 
-/// The hint under a 429 the ladder could not clear (DIVERGENCES X-84): what the loop does with the notices
-/// of finished background jobs meanwhile, and the two ways to try sooner. `next_try` is a wall-clock `HH:MM`.
-/// The provider's own message — a reset time, when it gives one — is the block's detail, above it.
-pub(crate) fn rate_limit_hint(next_try: &str) -> String {
-    format!(
-        "Background-job notices wait until {next_try}, then iota tries again; send a message to try now, or /model to switch"
-    )
+/// The hint under a rate limit the ladder could not clear (DIVERGENCES X-84): what the loop does with the
+/// notices of finished background jobs meanwhile, and the two ways to try sooner. `next_try` is a wall-clock
+/// `HH:MM`. Only with notices `waiting` does iota try again on its own — with nothing to send there is no
+/// probe, and the hint promises none. The provider's own message — a reset time, when it gives one — is the
+/// block's detail, above it.
+pub(crate) fn rate_limit_hint(next_try: &str, waiting: bool) -> String {
+    if waiting {
+        format!(
+            "Background-job notices wait until {next_try}, then iota tries again; send a message to try now, or /model to switch"
+        )
+    } else {
+        format!(
+            "Background-job notices wait until {next_try}; send a message to try again, or /model to switch"
+        )
+    }
 }
 
 /// The wire rows of the table; `whole` is the full error text the detail row shows.
@@ -414,8 +422,13 @@ mod tests {
         );
         assert_eq!(r.hint, "");
         assert_eq!(
-            rate_limit_hint("17:42"),
+            rate_limit_hint("17:42", true),
             "Background-job notices wait until 17:42, then iota tries again; send a message to try now, or /model to switch"
+        );
+        // Nothing held, nothing to try with: no promise of an automatic try.
+        assert_eq!(
+            rate_limit_hint("17:42", false),
+            "Background-job notices wait until 17:42; send a message to try again, or /model to switch"
         );
     }
 }

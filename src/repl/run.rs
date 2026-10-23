@@ -913,7 +913,12 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         if repl.conv.provider.model().is_empty() {
             let cancel = repl.handles.cancel.clone();
             if !model::ensure_model(&mut repl, &cancel).await {
-                repl.notices.put_back(ahead);
+                // Nothing was sent: the notices it would have carried, its own last, wait for the next input.
+                let mut back = ahead;
+                if job_notice {
+                    back.push(input.clone());
+                }
+                repl.notices.put_back(back);
                 // No turn runs, so none reports the state that settles the host: a notice taken above no
                 // longer holds it `Busy`, and only a report recomputes that (`Presenter::notice_taken`).
                 repl.handles.pres.set_state(State::Idle);
@@ -1040,11 +1045,16 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                         typed: !notice,
                     });
                     repl.notices.settle(outcome, tokio::time::Instant::now());
+                    // The hint promises an automatic try only when there is something to try with: notices held
+                    // already, or the ones this rollback hands back.
                     if limit.is_some()
                         && let Some(next) = repl.notices.next_try()
                     {
-                        report.hint =
-                            crate::repl::errors::rate_limit_hint(&noticegate::clock_at(next));
+                        let waiting = repl.notices.held_len() + carried.len();
+                        report.hint = crate::repl::errors::rate_limit_hint(
+                            &noticegate::clock_at(next),
+                            waiting > 0,
+                        );
                     }
                 }
                 // The host hears about the failure BEFORE the red block lands (run.go:1076-1080). A failed

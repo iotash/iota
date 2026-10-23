@@ -798,3 +798,49 @@ async fn a_switch_to_another_account_with_the_same_model_probes_at_once() {
         "no wait for the old deadline"
     );
 }
+
+/// m1: a typed message refused with nothing held leaves nothing for iota to try with — the hint names the
+/// time but promises no automatic try.
+#[tokio::test(start_paused = true)]
+async fn a_typed_refusal_with_nothing_held_promises_no_retry() {
+    let p = FakeProvider::new().with_tools().rounds(refused());
+    let fx = Fixture::new(vec![input("go"), Reply::Closed]);
+    fx.run(p, None).await;
+    assert_eq!(fx.count("✗ Rate limited (429)"), 1);
+    assert_eq!(
+        fx.count("Background-job notices wait until "),
+        1,
+        "{:#?}",
+        fx.printed()
+    );
+    assert_eq!(fx.count("then iota tries again"), 0);
+}
+
+/// m1: a notice that arrives before any model is chosen, its pick cancelled, is not lost: it waits and goes
+/// with the next message.
+#[tokio::test(start_paused = true)]
+async fn a_notice_whose_model_pick_is_cancelled_is_kept() {
+    let log = Log::default();
+    let p = FakeProvider::new()
+        .with_model("")
+        .with_models(&["a"])
+        .replying("ok")
+        .with_log(log.clone());
+    let cancelled = || {
+        Reply::Tabbed(TabbedResult {
+            cancelled: true,
+            ..TabbedResult::default()
+        })
+    };
+    let fx = Fixture::new(vec![
+        cancelled(), // the startup pick: deferred
+        notice(1),
+        cancelled(), // the notice's pick: cancelled too
+        input("go"),
+        pick(0),
+        Reply::Closed,
+    ]);
+    fx.run(p, None).await;
+    assert_eq!(log.calls(), 1, "{:?}", log.prompts());
+    assert_eq!(said(&log.send(0)), ["n:1", "go"]);
+}
