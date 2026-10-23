@@ -137,6 +137,7 @@ mod tests {
                 method: "POST".to_owned(),
                 url: "http://x".to_owned(),
                 body: String::new(),
+                retry_after: None,
             }),
         ))
     }
@@ -435,6 +436,7 @@ mod tests {
                         method: "POST".to_owned(),
                         url: "http://x".to_owned(),
                         body: "bad request".to_owned(),
+                        retry_after: None,
                     }),
                 )))
             },

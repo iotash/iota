@@ -422,6 +422,7 @@ fn overflow(op: WireOp, window: u64, input: u64) -> ProviderError {
             body: format!(
                 r#"{{"error":{{"message":"This model's maximum context length is {window} tokens. However, your messages resulted in {input} tokens. Please reduce the length of the messages.","type":"invalid_request_error","param":"messages","code":"context_length_exceeded"}}}}"#
             ),
+            retry_after: None,
         }),
     )
 }

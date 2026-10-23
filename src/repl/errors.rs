@@ -220,6 +220,7 @@ mod tests {
             method: "POST".to_owned(),
             url: "https://api.example.com/v1/x".to_owned(),
             body: body.to_owned(),
+            retry_after: None,
         })
     }
 
