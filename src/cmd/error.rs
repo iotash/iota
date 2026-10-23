@@ -339,6 +339,27 @@ pub enum RunError {
         #[source]
         source: std::io::Error,
     },
+    /// `-m` found the session (or the bot) open in another process, and that process did not take the
+    /// message: its receipt, as written, says why (docs/design/agent-messaging.md §3). It is on stdout too.
+    #[error("{what} did not take the message: {receipt}")]
+    NotDelivered {
+        /// `session <id>` or `bot <name>`.
+        what: String,
+        /// The receipt line.
+        receipt: String,
+    },
+    /// `-m` found the session (or the bot) open in another process, and no socket to reach it through — an
+    /// iota without one, a chat on a platform without Unix sockets, or one still starting.
+    #[error("{what} is open in another iota process{} and cannot be messaged: {source}", .pid.map_or_else(String::new, |p| format!(" (pid {p})")))]
+    Unreachable {
+        /// `session <id>` or `bot <name>`.
+        what: String,
+        /// The holder's pid, when known.
+        pid: Option<u32>,
+        /// Why the socket could not be reached.
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 /// The command's error: one of the three stages, printed as it is.

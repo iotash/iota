@@ -131,6 +131,7 @@ impl Fixture {
                 Presenter::with_hosts(Vec::new(), true)
                     .show_turn_on(Arc::clone(&self.ui) as Arc<dyn Ui>),
             ),
+            messaging: None,
         }
     }
 }

@@ -190,6 +190,7 @@ impl Fixture {
                 Presenter::with_hosts(vec![Box::new(host)], true)
                     .show_turn_on(Arc::clone(&self.ui) as Arc<dyn Ui>),
             ),
+            messaging: None,
         };
         iota::repl::run(params).await.expect("exit");
         dir

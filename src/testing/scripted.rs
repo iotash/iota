@@ -21,8 +21,8 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 use crate::ui::facade::{
-    BusyGuard, Input, PanelKind, PreviewHandle, ProgressState, ScopeGuard, StatusData, Suggestion,
-    TabbedResult, TabbedSpec, Ui, UiError, UiStreamSink, sanitize_window_title,
+    BusyGuard, Delivered, Input, PanelKind, PreviewHandle, ProgressState, ScopeGuard, StatusData,
+    Suggestion, TabbedResult, TabbedSpec, Ui, UiError, UiStreamSink, sanitize_window_title,
 };
 use crate::{BoxFuture, host};
 
@@ -457,6 +457,30 @@ impl Ui for ScriptedUi {
     fn enqueue(&self, input: Input) {
         lock(&self.queue).push_back(input.clone());
         self.record(UiEvent::Enqueue(input));
+    }
+
+    fn deliver(&self, input: Input, cap: usize) -> BoxFuture<'_, Result<Delivered, UiError>> {
+        // No waiter ever parks here: a delivery queues like `enqueue` (a `Reply::Enqueued` read serves it),
+        // and the cap counts the messages already queued.
+        let r = if self.shut() {
+            Err(UiError::Closed)
+        } else {
+            let mut queue = lock(&self.queue);
+            let held = queue
+                .iter()
+                .filter(|i| i.kind == crate::ui::facade::InputKind::Message)
+                .count();
+            if held >= cap {
+                Ok(Delivered::Full)
+            } else {
+                let ahead = queue.len();
+                queue.push_back(input.clone());
+                drop(queue);
+                self.record(UiEvent::Enqueue(input));
+                Ok(Delivered::Queued { ahead })
+            }
+        };
+        Box::pin(std::future::ready(r))
     }
 
     fn print_lines(&self, lines: Vec<String>) {

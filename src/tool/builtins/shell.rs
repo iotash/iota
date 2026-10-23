@@ -265,6 +265,13 @@ impl Tool for ShellTool {
         !self.sandboxed || args.is_some_and(|a| self.leaves_sandbox(str_arg(a, "command")))
     }
 
+    /// `auto_run`: the setting that lifts every approval above. A sandboxed set without it waives nothing —
+    /// its confined commands never asked, and one leaving the sandbox still does (docs/design/agent-messaging.md
+    /// §4 leaves "is the sandbox itself a waiver?" open).
+    fn waives_approval(&self) -> bool {
+        self.shell_cfg.auto_run
+    }
+
     /// Always — a deliberate break with the earlier rule that only read-only tools batch
     /// (DIVERGENCES X-05). A round's consecutive `shell` calls run in ONE batch, results still in
     /// call order. The judgement that rule made for the model (is this command safe beside that one?) is the

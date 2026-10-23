@@ -188,4 +188,6 @@ pub(crate) struct UiHandles {
     pub(crate) cancel: CancellationToken,
     /// The run's background jobs (their notices arrive through the facade's queue, not through here).
     pub(crate) jobs: Arc<crate::shell::jobs::Jobs>,
+    /// The chat's socket, served (`repl::inbound`); `None` when it has none.
+    pub(crate) inbound: Option<Arc<crate::repl::inbound::Served>>,
 }

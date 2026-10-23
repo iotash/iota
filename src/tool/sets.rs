@@ -76,4 +76,32 @@ mod tests {
         }
         assert!(set_factory("nope").is_none());
     }
+
+    /// C13: whether a chat holds a message from another process is the BUILT dispatcher's answer — the same
+    /// setting each tool's `requires_approval` reads — not a second reading of the YAML. The policy is pinned
+    /// as it stands: `auto_run` and `auto_write` waive; a sandboxed shell without `auto_run` does NOT, though
+    /// its confined commands run unasked (docs/design/agent-messaging.md §7: open, for the owner).
+    #[test]
+    fn the_dispatcher_says_whether_approval_is_waived() {
+        use crate::tool::{Dispatcher, ToolEnv};
+        let built = |yaml: &str| {
+            let tools: super::ToolsConfig = serde_norway::from_str(yaml).expect("yaml");
+            let tmp = std::env::temp_dir();
+            let env = ToolEnv {
+                jobs: Some(crate::shell::jobs::Jobs::new(&tmp)),
+                ..ToolEnv::default()
+            };
+            crate::tool::Registry::build(&env, &tools, &mut |w| panic!("{w}"))
+        };
+        assert!(built("shell: {auto_run: true}").waives_approval());
+        assert!(built("code: {auto_write: true}").waives_approval());
+        assert!(!built("code:\nask:").waives_approval());
+        assert!(!built("code: {auto_write: false}").waives_approval());
+        assert!(
+            !built("shell: {sandbox: auto}").waives_approval(),
+            "the sandbox is not a waiver — the open question, pinned as decided today"
+        );
+        assert!(!built("shell: {sandbox: \"off\"}").waives_approval());
+        assert!(!built("shell: false\ncode: false").waives_approval());
+    }
 }
