@@ -52,9 +52,11 @@ pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 pub(crate) const HTTP2_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(30);
 /// How long an HTTP/2 PING may go unacknowledged before the connection is closed.
 pub(crate) const HTTP2_KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
-/// The longest `retry-after` either retry layer waits out (DIVERGENCES X-84). A longer one is not a
-/// transient fault to sleep through but a limit with a time on it: [`should_retry`] hands it up at once,
+/// The longest `retry-after` either retry layer waits out on its own (DIVERGENCES X-84). A longer one is not
+/// a transient fault to sleep through but a limit with a time on it: [`should_retry`] hands it up at once,
 /// carried on [`StatusError::retry_after`], and the interactive loop holds its automatic work until then.
+/// An explicit `x-should-retry: true` still wins over this, as over every other rule: that response is
+/// retried, after the wait it names.
 pub const RETRY_AFTER_CAP: Duration = Duration::from_secs(60);
 /// Backoff base: `min(500ms << attempt, 8s) - jitter(d/4)`.
 pub const BACKOFF_BASE: Duration = Duration::from_millis(500);

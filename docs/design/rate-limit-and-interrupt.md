@@ -1,6 +1,6 @@
 # 429 与 ESC：额度用尽时不再自己转圈，ESC 真的停下
 
-Status: **已实现**（2026-10-23，分支 `rate-limit-cancel`：`b9010d2` 线路层、`cf5e148` 梯子与 notice gate；DIVERGENCES X-84；所有者对 §8 的裁定：Q1 要自动探测、Q2 不在本次范围、Q3 不加状态行段、Q4 保留折回；与本文的出入见 §11）· 日期：2026-10-23 · 基于 `main` = `2929ed4` · 分支 `rate-limit-cancel`
+Status: **已实现**（2026-10-23，分支 `rate-limit-cancel`：`b9010d2` 线路层、`cf5e148` 梯子与 notice gate；同日对抗评审后修正 `aa6e3b5`（B1、M2）、`dbd87dd`（B2）、`4a74ed4`（M1）、`ac636b1`（M3）、`26fa982`（M4）、`474bede`（m1）；DIVERGENCES X-84；所有者对 §8 的裁定：Q1 要自动探测、Q2 不在本次范围、Q3 不加状态行段、Q4 保留折回；与本文的出入见 §11）· 日期：2026-10-23 · 基于 `main` = `2929ed4` · 分支 `rate-limit-cancel`
 
 所有者的报告（2026-10-23）：`~/Work/nikon`，会话 `n66gj2gg3nqr`，provider `glm`、模型 `glm-5.3`（anthropic 方言），撞上 GLM 的 5 小时用量上限。两个症状：
 
@@ -340,5 +340,21 @@ transcript 里每条收起都有一行、错误块的 hint 写了时刻，信息
 10. **测试位置**：`retry_after` 解析、60 s 上限、「五小时 `retry-after` 只发一个请求」三条放在 `tests/provider/wire.rs`（现有的重试表测试就在那里，`retry_after` 是公开函数；端到端用 wiremock 而不是手写 TCP 桩）。`the_flush_notice_is_never_held` 放在 `tests/repl/bot_flush.rs`（bot 装置在那里）。
 11. **测试装置**：`Round::rate_limited(body, retry_after)`（`Failure::RateLimited`）和 `Reply::Idle`（停在提示符、只响应自己 token 的取消——实时 facade 被计时器撤销时的样子）。
 12. **tmux 场景 35 没改 mock**：让任务的**输出**拼出 `fail:429:99`（命令写成 `printf 'fa%s:429:99' il`，因为 mock 只认每条消息里第一个 `fail:`），于是只有通知的 turn 被拒。60 s 的探测留给 REPL 测试（暂停时钟）。
-13. **本文漏掉的一点**：带上的通知推入历史后，`TurnEngine::run` 只把最后一条消息记进上下文计量（`ctxm.note`），所以发送前的估算少算了这些通知；响应回来后的实测用量会纠正它。没有为此改 `TurnEngine`。
+13. ~~本文漏掉的一点：发送前的估算少算了带上的通知~~——评审 M3 指出这不只是估算偏差：压缩提议（`offer_before_send`）只给输入定价，一批攒久了的通知会直接把请求送过窗口、被 400 拒掉并随回滚丢失。已修，见第 18 条。
+
+### 11.1 对抗评审之后（2026-10-23）
+
+评审报告 `/tmp/iota-rate-limit-review-codex.md`（2 blocker、4 major、1 minor）。逐条修正，与本文的出入如下。
+
+14. **B1——UI 层改了**（§6 说「UI 层不改」，不成立）。`UiMsg::ReadCancel` 带一个 `ack`：UI 循环先把欠这个 waiter 的回复（Enter、通知、空闲 Ctrl+C）发出去再 ack，邮箱 FIFO，`TuiHandle::read_input` 在 ack 到之前不丢回复通道，ack 后读通道——赢了竞争的输入原样返回，绝不丢；只有「撤销了、什么也没送达」才返回新的 `UiError::Cancelled`。`fire_cancel`、队列与折回不变。
+15. **M2——§3.3 的「过期就直接放行」删了**。提示符总是先读：已经提交或排队的输入在撤销之前被服务（`ReadReq` 先于 `ReadCancel`），到期的探测不会抢在用户前面；只有 `Cancelled` 且 root 与 facade 都活着才放行探测，空闲 Ctrl+C / 关闭即使与到点同时发生也按退出处理。
+16. **B2——`Steerer` 记录它注入的通知**（`injected`，`TurnEngine::take_injected`）。这是为「回滚时交还 gate」而记，不是 X-73 删掉的那种重放记录。交还顺序：本 turn 带的、自己的输入、轮次边界注入的；不再动 host 计数；保留下来的 turn 不交还。
+17. **M1——「速率限制」不止 429**：任何状态码只要 `retry-after` 超过 60 s 都算（一个要你等一小时的 503）。§3.4 原本只写 429。60 s 以内的 5xx 仍走线性梯子。
+18. **M3——压缩提议给整批定价**：`offer_before_send` 接收这次要发的全部文本（带上的通知 + 输入），`TurnEngine::run(conv, fresh)` 把末尾 `fresh` 条消息都记进计量。
+19. **M4——§3.2 第 5 步的比较不够**：`/model` 前后比较的是（`catalog.session_provider()`，方言，模型 id）；同方言、同模型 id 的另一个账号也算换了。
+20. **hint 两种写法**：有通知在等时 `… wait until HH:MM, then iota tries again; …`；没有时不承诺自动重试：`… wait until HH:MM; send a message to try again, or /model to switch`。
+21. **`ensure_model` 失败**（第 8 条）现在连同本 turn 自己的通知一起放回。
+22. **线路层的例外**：显式 `x-should-retry: true` 仍压过 60 s 上限（与它压过其他所有规则一致），那一条会按它给的等待重试；`RETRY_AFTER_CAP` 的文档、X-84、CHANGELOG 都写明了。`RETRY_AFTER_CAP` 是 `pub`（`should_retry` 的公开文档引用它）。
+23. **测试装置**：`Reply::Elapse(d)`（用户离开 d 后才回应，期间不响应 token——让 deadline 在提示符之外过期，或让输入恰好落在计时器触发时）；`Failure::RateLimited` 改为通用的 `Failure::Status`，加 `Round::refused(status, body, retry_after)`；`tests/repl/rate_limit.rs` 的装置可以带上下文窗口、导入历史和一个端点工厂。
+24. **仍未覆盖的**（评审列出、本次未加）：探测中途真的按 ESC、429 梯子中途真实时钟下的取消、bot 在 `RateLimited` 下 flush 失败或被中断。行为上它们走的都是已测过的同一条路径（中断 → `Interrupted`；flush 不读 gate）。
 

@@ -12,16 +12,20 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   429 and retrying didn't help, every background job that finished started
   a new attempt and printed another `Rate limited (429)` error. Now iota
   stops on its own: notices from finished jobs wait (each one says so in a
-  dim line), and iota tries once more later — when the provider says it may
-  (`retry-after`), otherwise after a minute, then less and less often, at
-  most every 30 minutes. Sending a message tries at once and takes the
-  waiting notices with it; switching to another model with `/model` tries
-  at once on that model. The provider's own message, with its reset time if
-  it gives one, is still shown. Pressing Esc now also holds the notices
+  dim line), and while some are waiting iota tries once more later — when
+  the provider says it may (`retry-after`), otherwise after a minute, then
+  less and less often, at most every 30 minutes. Sending a message tries at
+  once and takes the waiting notices with it; switching to another model or
+  another provider with `/model` tries at once there. What you type is
+  never overtaken by these automatic tries, and a notice is no longer lost
+  when its turn is refused. The provider's own message, with its reset time
+  if it gives one, is still shown. Pressing Esc now also holds the notices
   queued behind the turn you stopped: they go with your next message
-  instead of starting new turns. A rate limit is retried at most three
-  times (it used to be ten), and a `retry-after` longer than a minute is no
-  longer waited out silently.
+  instead of starting new turns. A 429 now gets at most three more tries
+  (it used to be ten), and a provider asking to wait more than a minute —
+  with a 429 or any other error — is no longer waited out silently: iota
+  stops and holds until then, unless the provider explicitly insists on
+  being retried.
 
 ### Changed
 
