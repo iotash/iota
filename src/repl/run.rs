@@ -928,8 +928,14 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         // the append would summarize the very message being sent (chat/run.go:979-989).
         // The flush notice alone skips it: the flush turn runs over the threshold by design, and the
         // compaction follows it at once.
+        // It prices the whole batch the turn sends: the held notices it carries as well as the input (X-84).
         if !flush {
-            crate::repl::commands::compact::offer_before_send(&mut repl, &content).await;
+            let batch: Vec<&str> = ahead
+                .iter()
+                .map(|n| n.text.as_str())
+                .chain(std::iter::once(content.as_str()))
+                .collect();
+            crate::repl::commands::compact::offer_before_send(&mut repl, &batch).await;
         }
         // The overlay is read AFTER the offer: a compaction there refreshes a bot's memory copy, and this
         // send must carry the refreshed block — composed before, it would carry the old one and the next send
@@ -967,7 +973,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             ui.set_dark_background(known);
         }
         let mut engine = TurnEngine::new(repl.turn_ctx(send_overlay, flush), root_cancel.clone());
-        let outcome = match engine.run(&mut repl.conv).await {
+        let outcome = match engine.run(&mut repl.conv, hist0 - turn_base).await {
             Ok(report) => report,
             Err(ui_err) => break 'main Err(ReplError::Ui(ui_err)),
         };

@@ -39,6 +39,9 @@ struct Fixture {
     yaml: Option<String>,
     /// The tools the dispatcher advertises (and runs).
     tools: &'static [&'static str],
+    /// The history the loop starts from, and the context window it is measured against (`None`: default).
+    imported: Vec<Message>,
+    window: Option<u64>,
 }
 
 impl Fixture {
@@ -51,6 +54,8 @@ impl Fixture {
             store,
             yaml: None,
             tools: &[],
+            imported: Vec::new(),
+            window: None,
         }
     }
 
@@ -87,13 +92,20 @@ impl Fixture {
             }
             None => Default::default(),
         };
+        let params = match self.window {
+            Some(w) => iota::session::LayeredParams {
+                context_window: iota::session::Param::config(w),
+                ..params
+            },
+            None => params,
+        };
         let run = RunParams {
             ui: Arc::clone(&self.ui) as Arc<dyn Ui>,
             provider: Box::new(provider),
             title_provider: None,
             system: String::new(),
             harness: iota::agents::harness::HarnessInputs::default(),
-            imported_history: Vec::new(),
+            imported_history: self.imported.clone(),
             dispatch: Arc::new(StaticDispatcher::new(self.tools)) as Arc<dyn Dispatcher>,
             jobs: iota::shell::jobs::Jobs::new(std::path::Path::new("")),
             mcp: McpHooks::default(),
@@ -617,4 +629,77 @@ async fn a_503_with_a_long_retry_after_holds_like_a_rate_limit() {
         assert_eq!(fx.count(&format!("⏸ {} — held until ", headline(n))), 1);
     }
     assert_eq!(t0.elapsed(), Duration::ZERO, "nothing was slept");
+}
+
+/// A history of about `tokens` tokens: one user line and its answer.
+fn history_of(tokens: usize) -> Vec<Message> {
+    vec![Message::user(" x".repeat(tokens)), Message::assistant("ok")]
+}
+
+/// Job `n`'s notice carrying about `tokens` tokens of output.
+fn big_notice(n: u32, tokens: usize) -> Reply {
+    Reply::Input(Input {
+        display: headline(n),
+        text: format!("{}\n{}\nout {n}", headline(n), " y".repeat(tokens)),
+        kind: InputKind::Notice,
+    })
+}
+
+/// How many times the run asked whether to compact before sending.
+fn offers(fx: &Fixture) -> usize {
+    fx.ui
+        .events()
+        .iter()
+        .filter(|e| matches!(e, UiEvent::Tabbed(_)))
+        .count()
+}
+
+/// "Not now" on the compaction offer.
+fn decline() -> Reply {
+    Reply::Tabbed(TabbedResult {
+        cancelled: true,
+        ..TabbedResult::default()
+    })
+}
+
+/// M3: the compaction offer prices the whole batch a turn sends. 100k of a 128k window used (the threshold is
+/// 112k); four held notices of ~5k each: the newest alone stays under the threshold, the batch crosses it —
+/// the offer comes, for the probe and for a typed release alike.
+#[tokio::test(start_paused = true)]
+async fn the_compaction_offer_prices_every_held_notice() {
+    for typed in [false, true] {
+        let log = Log::default();
+        let p = FakeProvider::new()
+            .with_tools()
+            .reporting_usage()
+            .rounds(refused())
+            .replying("ok")
+            .with_log(log.clone());
+        let mut script = vec![
+            big_notice(1, 5_000),
+            big_notice(2, 5_000),
+            big_notice(3, 5_000),
+        ];
+        if typed {
+            script.push(input("go"));
+        } else {
+            script.extend([big_notice(4, 5_000), Reply::Idle]);
+        }
+        script.extend([decline(), Reply::Closed]);
+        let mut fx = Fixture::new(script);
+        fx.imported = history_of(100_000);
+        fx.window = Some(128_000);
+        fx.run(p, None).await;
+
+        assert_eq!(
+            offers(&fx),
+            1,
+            "typed {typed}: the batch crosses the threshold"
+        );
+        assert_eq!(
+            log.calls(),
+            LADDER + 1,
+            "typed {typed}: declined, the turn went"
+        );
+    }
 }

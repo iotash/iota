@@ -362,15 +362,20 @@ impl TurnEngine {
         self.steer.take_injected()
     }
 
-    /// Runs the turn (chat/run.go:1030-1068): the user message — the history's last — moves the
-    /// meter, then [`run_turn`] sends it. There is no turn-level replay: every model call the turn
+    /// Runs the turn (chat/run.go:1030-1068): the `fresh` messages at the history's end — the user message,
+    /// and the job notices it carries ahead of it (X-84) — move the meter, then [`run_turn`] sends them. There is no turn-level replay: every model call the turn
     /// issues climbs its own [`retry_round`] where it is issued, the tool loop's and the unary
     /// fallback's alike (X-73). `Err` is the one failure a turn cannot survive: the facade closed
     /// under it, and there is nothing left to print the error on.
-    pub(crate) async fn run(&mut self, conv: &mut Conversation) -> Result<TurnReport, UiError> {
+    pub(crate) async fn run(
+        &mut self,
+        conv: &mut Conversation,
+        fresh: usize,
+    ) -> Result<TurnReport, UiError> {
         conv.ctxm.reset();
-        if let Some(user) = conv.history.last() {
-            conv.ctxm.note(user); // the send moves the meter immediately
+        let from = conv.history.len().saturating_sub(fresh);
+        for m in &conv.history[from..] {
+            conv.ctxm.note(m); // the send moves the meter immediately
         }
         let report = run_turn(
             &self.cx,
