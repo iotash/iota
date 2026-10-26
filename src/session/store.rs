@@ -359,6 +359,32 @@ impl SessionStore {
         Ok((writer, session))
     }
 
+    /// Who holds bundle `id` open: `None` when nobody does (the lock was free, and is free again), else the
+    /// holder's pid as it wrote it (`Some(None)` when it has not yet). What `iota resume <id> -m` asks before
+    /// it either runs the turn itself or hands the message to the holder (docs/design/agent-messaging.md §5).
+    #[allow(clippy::option_option)] // "nobody" and "somebody, pid unknown" are different answers
+    pub fn holder(&self, id: &str) -> Result<Option<Option<u32>>, SessionError> {
+        match lock_bundle(&self.dir(id)?, id) {
+            Ok(_free) => Ok(None),
+            Err(SessionError::Locked { pid, .. }) => Ok(Some(pid)),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// [`Self::holder`] for a bot: who runs the bot in `bot_dir`. A bot that never ran has no directory, and
+    /// asking creates none.
+    #[allow(clippy::option_option)]
+    pub fn bot_holder(bot_dir: &Path, bot: &str) -> Result<Option<Option<u32>>, SessionError> {
+        if !bot_dir.is_dir() {
+            return Ok(None);
+        }
+        match lock_bot(bot_dir, bot) {
+            Ok(_free) => Ok(None),
+            Err(SessionError::Locked { pid, .. }) => Ok(Some(pid)),
+            Err(e) => Err(e),
+        }
+    }
+
     /// A bundle's meta alone — what a resume reads FIRST, to learn which provider the session runs on before
     /// anything is opened for it.
     pub fn meta(&self, id: &str) -> Result<SessionMeta, SessionError> {

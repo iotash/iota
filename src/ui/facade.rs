@@ -29,6 +29,36 @@ pub enum InputKind {
     /// The host injected it (a background job finished). It is answered like a message but never echoed as
     /// something the user said, and the composer's draft, history and ↑ recall never see it.
     Notice,
+    /// Another process sent it over the session's socket (`repl::inbound`, docs/design/agent-messaging.md).
+    /// It rides the notice path end to end — the same queue, the same boundaries, a [`Body::Notice`] to the
+    /// model, no echo, no slash dispatch — and is told apart only where a notice from the outside must be:
+    /// it owes the host no job ([`Presenter::notice_taken`]), and a chat that waives approval holds it for
+    /// the user before the model sees it.
+    ///
+    /// [`Body::Notice`]: crate::provider::model::Body::Notice
+    /// [`Presenter::notice_taken`]: crate::host::Presenter::notice_taken
+    Message,
+}
+
+impl InputKind {
+    /// Whether the input is not something the user typed: a [`Self::Notice`] or a [`Self::Message`].
+    pub fn is_notice(self) -> bool {
+        matches!(self, Self::Notice | Self::Message)
+    }
+}
+
+/// What [`Ui::deliver`] did with a message: the receipt's `state` (docs/design/agent-messaging.md §3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivered {
+    /// A parked `read_input` took it: the idle loop is answering it now.
+    Woken,
+    /// It joined the type-ahead queue behind `ahead` entries; a round boundary or the next read takes it.
+    Queued {
+        /// Entries in the queue before it.
+        ahead: usize,
+    },
+    /// The queue already holds `cap` messages from other processes: nothing was queued.
+    Full,
 }
 
 /// One submitted input. `display` = paste tags bounded (for the user block);
@@ -913,6 +943,12 @@ pub trait Ui: Send + Sync {
     /// joins the type-ahead queue and the next `read_input`/`take_queued_messages` drains it in order. The
     /// composer's draft is untouched — this is how a finished background job wakes an idle loop.
     fn enqueue(&self, input: Input);
+
+    /// [`Self::enqueue`] with an answer, for a message from another process (`repl::inbound`): served or
+    /// queued exactly as `enqueue` would, unless the queue already holds `cap` [`InputKind::Message`]s — then
+    /// nothing is queued and the answer is [`Delivered::Full`]. The only call here a sender waits on: its
+    /// answer is the receipt. A closed UI is `Err(Closed)`.
+    fn deliver(&self, input: Input, cap: usize) -> BoxFuture<'_, Result<Delivered, UiError>>;
 
     /// Commits rendered lines into scrollback (in order, batched).
     fn print_lines(&self, lines: Vec<String>);

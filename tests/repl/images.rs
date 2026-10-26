@@ -107,6 +107,7 @@ async fn run_one(p: FakeProvider) -> (Arc<ScriptedUi>, tempfile::TempDir, Log, S
         root_cancel: CancellationToken::new(),
         reqlog: Arc::new(RequestLog::new()),
         pres: Arc::new(Presenter::with_hosts(Vec::new(), true)),
+        messaging: None,
     })
     .await
     .expect("clean exit");

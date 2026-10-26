@@ -12,9 +12,13 @@ use super::{DOT_DIR, HostDirs};
 /// model asked for applies (`shell::exec::spawn`, `mcp::transport::spawn_stdio`). WHICH names is not this
 /// module's knowledge: `crate::host::child_env` gathers them from the detected host. Cheap to clone; the
 /// default withholds nothing.
+///
+/// It also carries the one variable a child is given that the run itself was not: an interactive chat's
+/// `IOTA_SOCKET` (`session::sock`), so a script the model starts can message the chat it came from.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChildEnv {
     withheld: Arc<[String]>,
+    given: Option<(String, String)>,
 }
 
 impl ChildEnv {
@@ -28,7 +32,15 @@ impl ChildEnv {
         }
         Self {
             withheld: withheld.into(),
+            given: None,
         }
+    }
+
+    /// Also gives every child `name=value`.
+    #[must_use]
+    pub fn giving(mut self, name: &str, value: &str) -> Self {
+        self.given = Some((name.to_owned(), value.to_owned()));
+        self
     }
 
     /// The withheld names.
@@ -36,11 +48,15 @@ impl ChildEnv {
         &self.withheld
     }
 
-    /// Removes every withheld name from `cmd`'s environment. Call it BEFORE the caller's own `env`s: a
-    /// variable a config sets explicitly (an MCP entry's `env:`) is the user's choice, not an inheritance.
+    /// Removes every withheld name from `cmd`'s environment and sets every given one. Call it BEFORE the
+    /// caller's own `env`s: a variable a config sets explicitly (an MCP entry's `env:`) is the user's choice,
+    /// not an inheritance.
     pub fn apply(&self, cmd: &mut tokio::process::Command) {
         for name in self.withheld.iter() {
             cmd.env_remove(name);
+        }
+        if let Some((name, value)) = &self.given {
+            cmd.env(name, value);
         }
     }
 }
@@ -273,5 +289,20 @@ mod tests {
         assert_eq!(copy.var("PATH"), process.var("PATH"));
         assert_eq!(copy.dirs, process.dirs);
         assert!(format!("{copy:?}").starts_with("Env { dirs: "));
+    }
+
+    /// A given variable is set on the child after the withheld ones are removed.
+    #[test]
+    fn a_child_is_given_what_it_is_given() {
+        let env =
+            super::ChildEnv::new(["HERDR_ENV".to_owned()]).giving("IOTA_SOCKET", "/run/1.sock");
+        let mut cmd = tokio::process::Command::new("true");
+        env.apply(&mut cmd);
+        let envs: Vec<_> = cmd.as_std().get_envs().collect();
+        assert!(envs.contains(&(std::ffi::OsStr::new("HERDR_ENV"), None)));
+        assert!(envs.contains(&(
+            std::ffi::OsStr::new("IOTA_SOCKET"),
+            Some(std::ffi::OsStr::new("/run/1.sock"))
+        )));
     }
 }

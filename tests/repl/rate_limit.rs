@@ -169,6 +169,7 @@ impl Fixture {
             root_cancel: CancellationToken::new(),
             reqlog: Arc::new(RequestLog::new()),
             pres: Arc::new(Presenter::with_hosts(Vec::new(), true)),
+            messaging: None,
         };
         tokio::time::timeout(Duration::from_hours(3), iota::repl::run(run))
             .await
@@ -843,4 +844,128 @@ async fn a_notice_whose_model_pick_is_cancelled_is_kept() {
     fx.run(p, None).await;
     assert_eq!(log.calls(), 1, "{:?}", log.prompts());
     assert_eq!(said(&log.send(0)), ["n:1", "go"]);
+}
+
+/// A message from another process (`repl::inbound`'s shape; its last word names it for [`said`]).
+fn message(name: &str) -> Reply {
+    let display = format!("[message from ci] build {name}");
+    Reply::Input(Input {
+        text: format!("{display}\n\nbody {name}"),
+        display,
+        kind: InputKind::Message,
+    })
+}
+
+/// X-85: a message from another process is not automatic work — a rate-limit hold lets it through at once, the
+/// way it lets a typed line through, carrying the held notices ahead of it. A bot has no user to speak; held,
+/// the message would wait out the probe's minute (or the cap's hours).
+#[tokio::test(start_paused = true)]
+async fn a_message_from_another_process_passes_a_rate_limit_hold() {
+    let log = Log::default();
+    let p = FakeProvider::new()
+        .with_tools()
+        .rounds(refused())
+        .replying("ok")
+        .with_log(log.clone());
+    let fx = Fixture::new(vec![notice(1), notice(2), message("m1"), Reply::Closed]);
+    let t0 = tokio::time::Instant::now();
+    fx.run(p, None).await;
+
+    assert_eq!(log.calls(), LADDER + 1, "{:?}", log.prompts());
+    assert_eq!(said(&log.send(LADDER)), ["n:1", "n:2", "n:m1"]);
+    assert_eq!(
+        fx.count("[message from ci] build m1 — held"),
+        0,
+        "{:#?}",
+        fx.printed()
+    );
+    assert_eq!(fx.count("▶ Trying again"), 0, "it is not the probe");
+    // The ladder's 2 + 4 + 8 s, and no minute.
+    assert_eq!(t0.elapsed(), Duration::from_secs(14));
+}
+
+/// X-85: an interrupt's hold lets a message through too; the notices it held ride ahead of it.
+#[tokio::test(start_paused = true)]
+async fn a_message_from_another_process_passes_an_interrupt_hold() {
+    let log = Log::default();
+    let p = FakeProvider::new()
+        .with_tools()
+        .round(Round::text("half an answer").interrupting(Interrupt::Call))
+        .replying("ok")
+        .with_log(log.clone());
+    let fx = Fixture::new(vec![notice(1), notice(2), message("m1"), Reply::Closed]);
+    fx.run(p, None).await;
+
+    assert_eq!(log.calls(), 2, "{:?}", log.prompts());
+    assert_eq!(said(&log.send(1)), ["n:1", "n:2", "n:m1"]);
+    assert_eq!(
+        fx.count("[message from ci] build m1 — held"),
+        0,
+        "{:#?}",
+        fx.printed()
+    );
+}
+
+/// X-85: a message refused under a rate-limit hold is not the probe — like a typed line, it leaves the
+/// schedule where it was: the probe still comes a minute after the first refusal, not two minutes after it.
+#[tokio::test(start_paused = true)]
+async fn a_refused_message_leaves_the_probe_schedule_alone() {
+    let log = Log::default();
+    let mut rounds = refused();
+    rounds.push(Round::rate_limited(QUOTA, None));
+    let p = FakeProvider::new()
+        .with_tools()
+        .rounds(rounds)
+        .replying("noted")
+        .with_log(log.clone());
+    let fx = Fixture::new(vec![
+        notice(1),
+        notice(2),
+        message("m1"),
+        Reply::Idle,
+        Reply::Closed,
+    ]);
+    let t0 = tokio::time::Instant::now();
+    fx.run(p, None).await;
+
+    assert_eq!(log.calls(), LADDER + 2, "{:?}", log.prompts());
+    assert_eq!(said(&log.send(LADDER)), ["n:1", "n:2", "n:m1"]);
+    // The rollback hands the carried notices back; the probe takes them.
+    assert_eq!(said(&log.send(LADDER + 1)), ["n:1", "n:2"]);
+    assert_eq!(fx.count("▶ Trying again with 2 held notice(s)"), 1);
+    assert_eq!(t0.elapsed(), Duration::from_secs(14 + 60));
+}
+
+/// X-85: only a job's notice steered into a turn goes back to the gate when a later round's 429 rolls the turn
+/// back. A message from another process steered in beside it is rolled back as a steered typed line is — the
+/// gate holds automatic work, and a probe carrying the message would hold it after all.
+#[tokio::test(start_paused = true)]
+async fn a_message_steered_in_before_a_429_is_not_put_aside() {
+    let log = Log::default();
+    let mut rounds = vec![Round::calls(vec![tool_call("c1", "noop")])];
+    rounds.extend(refused());
+    let p = FakeProvider::new()
+        .with_tools()
+        .rounds(rounds)
+        .replying("noted")
+        .with_log(log.clone());
+    let (Reply::Input(b2), Reply::Input(m1)) = (notice(2), message("m1")) else {
+        unreachable!()
+    };
+    let mut fx = Fixture::new(vec![
+        input("go"),
+        Reply::Queued(vec![b2, m1]), // the round boundary after the tool
+        Reply::Idle,                 // the probe
+        Reply::Closed,
+    ]);
+    fx.tools = &["noop"];
+    fx.run(p, None).await;
+
+    assert_eq!(log.calls(), 1 + LADDER + 1, "{:?}", log.prompts());
+    assert_eq!(said(&log.send(1)), ["go", "n:2", "n:m1"]);
+    assert_eq!(
+        said(&log.send(1 + LADDER)),
+        ["n:2"],
+        "the probe carries the job's notice alone"
+    );
 }

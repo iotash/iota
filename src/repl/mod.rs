@@ -12,6 +12,7 @@ pub(crate) mod commands;
 pub(crate) mod context;
 pub(crate) mod editpicker;
 pub(crate) mod errors;
+pub mod inbound;
 /// The layered model parameters as the chat runs them: read, re-evaluated on a `/model` switch, written
 /// back (brain page `model-param-layering`).
 pub(crate) mod liveparams;
@@ -30,6 +31,7 @@ pub(crate) mod title;
 pub(crate) mod turn;
 
 pub use catalog::ModelCatalog;
+pub use inbound::Messaging;
 
 pub use run::{
     Endpoint, EndpointFactory, McpEvent, McpHooks, RunParams, SessionCtx, SessionFactory, run,

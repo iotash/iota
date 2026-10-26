@@ -89,6 +89,7 @@ impl Fixture {
             root_cancel: CancellationToken::new(),
             reqlog: Arc::clone(&self.reqlog),
             pres: Arc::new(Presenter::with_hosts(Vec::new(), true)),
+            messaging: None,
         }
     }
 

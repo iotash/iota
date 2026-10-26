@@ -354,6 +354,13 @@ impl Presenter {
         self.update(|shown| shown.requested = Some(s));
     }
 
+    /// The turn's state as last reported ([`Self::set_state`]'s argument, before the jobs rewrite); `None`
+    /// before the first. What a message from another process is refused on (`State::NeedsInput`: the chat
+    /// waits on the user).
+    pub fn turn_state(&self) -> Option<State> {
+        lock(&self.state).requested
+    }
+
     /// Records how many shell jobs are running: an idle chat with one is shown as `Busy`.
     /// Deduplicated like [`Self::set_state`]; before the first `set_state` it only records. It says
     /// nothing about ends — a job that ended arrives as [`Self::job_ended`] — so a drop here (a job

@@ -70,6 +70,13 @@ impl HostDirs {
     pub fn bots_dir(&self) -> Option<PathBuf> {
         self.app_home().map(|h| h.join("bots"))
     }
+
+    /// `<home>/.iota/run` — the private (0700) directory a running chat's socket lives in, one `<pid>.sock`
+    /// per process (`session::sock`, docs/design/agent-messaging.md §2). Short on purpose: a bundle path can
+    /// outgrow the 104 bytes a macOS socket address holds.
+    pub fn run_dir(&self) -> Option<PathBuf> {
+        self.app_home().map(|h| h.join("run"))
+    }
 }
 
 /// `std::fs::canonicalize` as a comparison key that is also fit to show: symlinks resolved, and on Windows

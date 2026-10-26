@@ -2032,3 +2032,196 @@ async fn a_move_keeps_a_user_ceiling_and_drops_a_config_one() {
         );
     }
 }
+
+// ---------------------------------------------------------------- `-m` against a held session
+
+/// What a stand-in chat's socket was sent, and the receipt it answers every message with.
+#[cfg(unix)]
+struct Holder {
+    answer: iota::session::sock::Receipt,
+    taken: std::sync::Arc<std::sync::Mutex<Vec<iota::session::sock::Request>>>,
+}
+
+#[cfg(unix)]
+impl iota::session::sock::Inbox for Holder {
+    fn admit(
+        &mut self,
+        _peer: iota::session::sock::Peer,
+        req: iota::session::sock::Request,
+    ) -> iota::BoxFuture<'_, Option<iota::session::sock::Receipt>> {
+        self.taken.lock().expect("lock").push(req);
+        Box::pin(std::future::ready(Some(self.answer)))
+    }
+}
+
+/// Serves a socket under `dir`, linked from `bundle`, answering `answer`; returns what it is sent.
+#[cfg(unix)]
+fn hold_socket(
+    dir: &Path,
+    bundle: &Path,
+    answer: iota::session::sock::Receipt,
+) -> std::sync::Arc<std::sync::Mutex<Vec<iota::session::sock::Request>>> {
+    let listener = iota::session::sock::Listener::bind(&dir.join("run"), 4242).expect("bind");
+    iota::session::sock::link(bundle, listener.path()).expect("link");
+    let taken = std::sync::Arc::default();
+    let mut holder = Holder {
+        answer,
+        taken: std::sync::Arc::clone(&taken),
+    };
+    tokio::spawn(async move {
+        listener
+            .serve(&mut holder, &tokio_util::sync::CancellationToken::new())
+            .await;
+    });
+    taken
+}
+
+/// ⑧ `iota resume <id> -m` on a bundle another process holds: the message goes to the holder's socket and
+/// its receipt is printed — exit 0 when taken; a refusing receipt is printed AND is the run's error; a holder
+/// with no socket keeps a refusal that says so. RED/GREEN: the same command on the same held bundle, with and
+/// without the socket — before this, every one of them was `session <id> is open in another iota process`.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_message_to_a_held_session_goes_to_its_socket() {
+    use iota::session::sock::{Reason, Receipt};
+    let home = TempDir::new().expect("home");
+    let cwd = TempDir::new().expect("cwd");
+    write_config(cwd.path(), "", "gemini-2.5-pro", "");
+    let store = SessionStore::new(sessions_root(home.path()));
+    let mut writer = store
+        .create(iota::session::NewSession::new(
+            ProviderKind::Gemini,
+            "gemini-2.5-pro",
+        ))
+        .expect("create");
+    writer
+        .append_messages(&[iota::provider::model::Message::user("hi")])
+        .expect("materialise");
+    let (id, bundle) = (writer.id().to_owned(), writer.dir().to_path_buf());
+
+    // Held, no socket: refused, and the refusal says why.
+    let resume = |text: &str| {
+        let mut cmd = iota(cwd.path(), home.path());
+        cmd.args(["resume", &id, "-m", text]);
+        cmd
+    };
+    let o = output(resume("are you there?")).await;
+    assert_eq!(o.status.code(), Some(1), "stderr was: {}", err(&o));
+    assert!(
+        err(&o).starts_with(&format!(
+            "Error: session {id} is open in another iota process (pid {}) and cannot be messaged: ",
+            std::process::id()
+        )),
+        "{}",
+        err(&o)
+    );
+
+    // Held, with a socket: delivered, the receipt on stdout.
+    let sock_home = TempDir::new().expect("sock home");
+    let taken = hold_socket(sock_home.path(), &bundle, Receipt::Queued { ahead: 2 });
+    let o = output(resume("CI is red on main")).await;
+    assert_eq!(o.status.code(), Some(0), "stderr was: {}", err(&o));
+    assert_eq!(out(&o), "{\"ok\":true,\"state\":\"queued\",\"ahead\":2}\n");
+    assert_eq!(err(&o), "");
+    let got = taken.lock().expect("lock").clone();
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].from, "iota -m");
+    assert_eq!(got[0].text, "CI is red on main");
+    assert_eq!(
+        got[0].reply, None,
+        "a sender outside any chat has no address"
+    );
+
+    // A refusing holder: the receipt still printed, and the run fails naming the reason.
+    drop(taken);
+    let refusing = TempDir::new().expect("sock home");
+    hold_socket(refusing.path(), &bundle, Receipt::Refused(Reason::Blocked));
+    let o = output(resume("again")).await;
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(out(&o), "{\"ok\":false,\"reason\":\"blocked\"}\n");
+    assert_eq!(
+        err(&o),
+        format!(
+            "Error: session {id} did not take the message: {{\"ok\":false,\"reason\":\"blocked\"}}\n"
+        )
+    );
+    // Nothing was appended by the senders: the bundle is the holder's.
+    drop(writer);
+    let saved = store.load(&id, ProviderKind::Gemini).expect("load");
+    assert_eq!(saved.messages.len(), 1);
+}
+
+/// ⑧ for a bot: `iota run <bot> -m` on a RUNNING bot hands the message to it (the bot's session found through
+/// its pointer); the refusal for a bot that is not running is unchanged (`a_bot_refuses_headless_and_ephemeral_runs`).
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_message_to_a_running_bot_goes_to_its_socket() {
+    use iota::session::sock::Receipt;
+    let home = TempDir::new().expect("home");
+    let cwd = TempDir::new().expect("cwd");
+    write_bot_config(cwd.path(), "");
+    let store = SessionStore::new(sessions_root(home.path()));
+    let bot_dir = home.path().join(".iota").join("bots").join("coder");
+    let opened = store
+        .open_bot(
+            &bot_dir,
+            iota::session::NewSession::new(ProviderKind::Gemini, "gemini-2.5-pro"),
+            ProviderKind::Gemini,
+        )
+        .expect("the bot runs here");
+    let iota::session::BotOpen::Fresh(writer) = opened else {
+        panic!("a fresh bot");
+    };
+    let sock_home = TempDir::new().expect("sock home");
+    let taken = hold_socket(sock_home.path(), writer.dir(), Receipt::Woken);
+
+    let mut cmd = iota(cwd.path(), home.path());
+    cmd.args(["run", "coder", "-m", "deploy finished"]);
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(0), "stderr was: {}", err(&o));
+    assert_eq!(out(&o), "{\"ok\":true,\"state\":\"woken\"}\n");
+    assert_eq!(taken.lock().expect("lock")[0].text, "deploy finished");
+    drop(writer);
+}
+
+/// B8: a link left by an earlier holder is never followed into another chat. The bundle's link names a live
+/// socket — an unrelated chat that now has the dead holder's pid — and the bundle is then opened by a chat
+/// with no socket of its own (here: this process, which takes the bundle lock). Taking the lock clears the
+/// link, so `-m` finds the holder unreachable and the unrelated chat is sent nothing. RED without the clear:
+/// the message lands in the wrong chat with exit 0.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stale_link_never_reaches_another_chat() {
+    use iota::session::sock::Receipt;
+    let home = TempDir::new().expect("home");
+    let cwd = TempDir::new().expect("cwd");
+    write_config(cwd.path(), "", "gemini-2.5-pro", "");
+    let store = SessionStore::new(sessions_root(home.path()));
+    let mut writer = store
+        .create(iota::session::NewSession::new(
+            ProviderKind::Gemini,
+            "gemini-2.5-pro",
+        ))
+        .expect("create");
+    writer
+        .append_messages(&[iota::provider::model::Message::user("hi")])
+        .expect("materialise");
+    let (id, bundle) = (writer.id().to_owned(), writer.dir().to_path_buf());
+    drop(writer);
+    // The crashed holder's link, now naming a live socket that belongs to someone else.
+    let unrelated = TempDir::new().expect("sock home");
+    let taken = hold_socket(unrelated.path(), &bundle, Receipt::Woken);
+    // A chat with no socket opens the bundle.
+    let (holder, _) = store.resume(&id, ProviderKind::Gemini).expect("resume");
+
+    let mut cmd = iota(cwd.path(), home.path());
+    cmd.args(["resume", &id, "-m", "for the chat that holds it"]);
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(1), "stdout was: {}", out(&o));
+    assert!(err(&o).contains("and cannot be messaged"), "{}", err(&o));
+    assert!(
+        taken.lock().expect("lock").is_empty(),
+        "the message went to an unrelated chat"
+    );
+    drop(holder);
+}

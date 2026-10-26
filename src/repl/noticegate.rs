@@ -33,7 +33,8 @@ pub(crate) enum Hold {
 pub(crate) enum Outcome {
     /// The model answered.
     Answered,
-    /// The model was refused with 429 after the ladder; `typed` when the user's own message drove the turn.
+    /// The model was refused with 429 after the ladder; `typed` when the user's own message drove the turn — or
+    /// another process's (X-85): anything but a job's notice the gate let through.
     RateLimited {
         retry_after: Option<Duration>,
         typed: bool,

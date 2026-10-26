@@ -205,6 +205,10 @@ pub struct RunParams {
     /// The host presenter (run.go:139 `host.NewPresenter(host.SystemEnv(), host.NewANSI(u),
     /// notify)`).
     pub pres: Arc<Presenter>,
+    /// The chat's socket, bound by the command (`repl::inbound`, docs/design/agent-messaging.md): the loop
+    /// serves it, links it from the bundle it writes into, and removes both on the way out. `None`: no other
+    /// process can reach this chat.
+    pub messaging: Option<crate::repl::Messaging>,
 }
 
 /// The loop's mutable state — Go's `Run` stack, made addressable so the command handlers
@@ -265,6 +269,7 @@ impl Repl {
         let saved = matches!(res, Ok(()) | Err(SessionError::MetaNotSaved(_)));
         if saved {
             self.session.persisted = self.conv.history.len();
+            self.follow_socket();
         }
         if let Err(e) = res {
             self.handles
@@ -318,6 +323,24 @@ impl Repl {
     pub(crate) fn report_session(&self) {
         if let Some(w) = lock(&self.session.writer).as_ref() {
             self.handles.pres.set_session(w.id(), w.dir());
+        }
+        self.follow_socket();
+    }
+
+    /// Points the chat's socket link at the bundle it writes into, once that bundle is on disk (`/save` and a
+    /// fresh start materialise it with the first persisted turn); an ephemeral chat has none.
+    pub(crate) fn follow_socket(&self) {
+        let Some(served) = &self.handles.inbound else {
+            return;
+        };
+        let dir = lock(&self.session.writer)
+            .as_ref()
+            .map(|w| w.dir().to_owned())
+            .filter(|d| d.join(crate::session::META_FILE).exists());
+        if let Err(e) = served.follow(dir.as_deref()) {
+            self.handles.tr.notice(&format!(
+                "⚠ Other processes cannot message this session: {e}"
+            ));
         }
     }
 }
@@ -398,6 +421,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         root_cancel,
         reqlog,
         pres,
+        messaging,
     } = params;
     let crate::repl::SessionCtx {
         writer,
@@ -645,6 +669,15 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             dark,
             cancel: root_cancel.clone(),
             jobs: Arc::clone(&jobs),
+            // The hold's trigger is the dispatcher's own answer: one truth with the approvals it waives.
+            inbound: messaging.map(|m| {
+                crate::repl::inbound::Served::start(
+                    m,
+                    Arc::clone(&ui),
+                    Arc::clone(&pres),
+                    dispatch.waives_approval(),
+                )
+            }),
         },
         notices: NoticeGate::default(),
     };
@@ -753,7 +786,9 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         // A host notice (a finished background job) answers the same `read_input` a typed line does — that
         // is what wakes an idle loop — but it is not something the user said: it skips the echo, and the
         // dispatch chain below is inert for it anyway (its text can never be a slash command).
-        let notice = input.kind == InputKind::Notice;
+        let notice = input.kind.is_notice();
+        // A message from another process rides the notice path; it owes the host no job (`repl::inbound`).
+        let message = input.kind == InputKind::Message;
         let line = input.text.trim().to_owned();
         if line.is_empty() {
             continue;
@@ -761,24 +796,34 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         // A bot's memory-flush notice (bot-mode.md §3.6.1) runs as the flush turn — unless the compaction it
         // was queued for already happened (a message typed ahead of it compacted first): then it is dropped,
         // neither sent nor persisted.
-        let flush = notice && crate::repl::bot::is_flush_notice(&input.text);
+        let flush =
+            input.kind == InputKind::Notice && crate::repl::bot::is_flush_notice(&input.text);
         if flush && !bot_notice_arrived(&mut repl).await {
             continue;
         }
         // A job's notice behind an interrupt or a rate limit opens no turn: it waits, and says so (X-84). Not the
-        // flush notice — the loop's own, best-effort — and not one the gate itself just let out.
-        let job_notice = notice && !flush;
+        // flush notice — the loop's own, best-effort — and not one the gate itself just let out. Not a message
+        // from another process either: it is asked for, not automatic work, and goes the way a typed line does
+        // (X-85) — a bot has no user to speak and let it out.
+        let job_notice = notice && !flush && !message;
         if job_notice && !released && repl.notices.holds(tokio::time::Instant::now()) {
             put_notice_aside(&mut repl, input);
             continue;
         }
         // Whatever the input is, the loop is awake for the user now (run.go:381).
         repl.handles.pres.set_state(State::Idle);
-        // A flush notice is the loop's own, not a job's: it never held the host. One the gate let out was
-        // settled when it was put aside.
+        // A flush notice is the loop's own, not a job's, and a message another process's: neither ever held the
+        // host. One the gate let out was settled when it was put aside.
         if job_notice && !released {
             // The notice's turn holds the host from here (`host` module doc).
             repl.handles.pres.notice_taken();
+        }
+
+        // A chat whose toolsets waive approval asks the user before a message from outside reaches the model
+        // (`repl::inbound`, the hold): whoever can write the socket must not be able to make it act unasked.
+        let held = message && repl.handles.inbound.as_ref().is_some_and(|s| s.holds());
+        if held && !admit_held_message(&repl, &input.display).await {
+            continue;
         }
 
         // ---- the dispatch chain, in Go's fixed order; first match wins ----
@@ -906,7 +951,10 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         // pick below fails. A notice prints its ONE headline instead — its output belongs to the model,
         // not to the scrollback (the file is there for whoever wants all of it).
         if notice {
-            repl.handles.tr.notice(&input.display);
+            // A held message already showed its headline when it asked.
+            if !held {
+                repl.handles.tr.notice(&input.display);
+            }
         } else {
             repl.handles.tr.user(&input.display);
         }
@@ -986,10 +1034,18 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
             Ok(report) => report,
             Err(ui_err) => break 'main Err(ReplError::Ui(ui_err)),
         };
-        let held = engine.take_held();
         // Notices steered in mid-turn go back after the carried ones when a 429 rolls the turn back; their host
         // debt was settled when they were taken, so they are handed back without settling it again (X-84).
         carried.extend(engine.take_injected());
+        // Held messages go back on the queue now — the idle loop asks about each before the model reads it;
+        // the flush notices are the bot's machine's to put back (`after_bot_turn`).
+        let (messages, held): (Vec<_>, Vec<_>) = engine
+            .take_held()
+            .into_iter()
+            .partition(|input| input.kind == InputKind::Message);
+        for input in messages {
+            ui.enqueue(input);
+        }
         let mut landed = false;
 
         let interrupted = outcome.is_interrupted();
@@ -1042,7 +1098,9 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 if !flush {
                     let outcome = limit.map_or(GateOutcome::Failed, |l| GateOutcome::RateLimited {
                         retry_after: l.retry_after,
-                        typed: !notice,
+                        // A message from another process is not the probe: it leaves the schedule as a typed
+                        // line does (X-85).
+                        typed: !job_notice,
                     });
                     repl.notices.settle(outcome, tokio::time::Instant::now());
                     // The hint promises an automatic try only when there is something to try with: notices held
@@ -1170,9 +1228,41 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     // The loop is over: a background job has no one left to report to, and `background` never promised to
     // outlive iota. `kill_all` is synchronous `killpg`, so nothing depends on a task being polled again.
     repl.handles.jobs.kill_all();
+    // No other process may reach a chat that is gone: the socket and the bundle's link to it are removed.
+    if let Some(served) = &repl.handles.inbound {
+        served.close().await;
+    }
     // Go's `defer pres.Close()`: the hosts are cleared before the facade goes down.
     repl.handles.pres.close().await;
     outcome
+}
+
+/// The hold (`repl::inbound`): a message from another process, in a chat whose tools run without asking,
+/// waits for the user. The chat is `NeedsInput` meanwhile — the host is pinged, and the socket refuses further
+/// messages as `blocked`. `true`: the user let the model read it; otherwise it is dropped with one dim line.
+async fn admit_held_message(repl: &Repl, headline: &str) -> bool {
+    let h = &repl.handles;
+    h.tr.notice(headline);
+    h.pres.set_state(State::NeedsInput);
+    h.pres.notify(Event {
+        kind: Kind::NeedsInput,
+        text: "A message from another process is waiting".to_owned(),
+    });
+    let read = h
+        .ui
+        .confirm(
+            &h.cancel,
+            "Another process sent this chat a message, and its tools run without asking. Let the model read it?",
+            "Let the model read it",
+            "Discard it",
+        )
+        .await
+        .unwrap_or(false);
+    h.pres.set_state(State::Idle);
+    if !read {
+        h.tr.notice("Message discarded: the model never saw it.");
+    }
+    read
 }
 
 impl Repl {
@@ -1205,6 +1295,7 @@ impl Repl {
             code_theme: code_theme_of(self.handles.dark),
             pres: Arc::clone(&self.handles.pres),
             steering: !flush,
+            hold_messages: self.handles.inbound.as_ref().is_some_and(|s| s.holds()),
             mounts_only: flush.then_some(MEMORY_ONLY),
         }
     }

@@ -33,8 +33,8 @@ use crate::BoxFuture;
 use crate::text::ansi::wrap_by_width;
 use crate::text::width::str_width;
 use crate::ui::facade::{
-    BusyGuard, Input, ProgressState, ScopeGuard, StatusData, Suggestion, TabbedResult, TabbedSpec,
-    TurnBusy, Ui, UiError, UiStreamSink, sanitize_window_title,
+    BusyGuard, Delivered, Input, ProgressState, ScopeGuard, StatusData, Suggestion, TabbedResult,
+    TabbedSpec, TurnBusy, Ui, UiError, UiStreamSink, sanitize_window_title,
 };
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -331,6 +331,28 @@ impl Ui for TuiHandle {
         // Fire-and-forget like every other injection: a closed loop drops it, and the caller (a job
         // supervisor task) must never block on the UI.
         let _ = self.tx.send(UiMsg::Enqueue(input));
+    }
+
+    fn deliver(&self, input: Input, cap: usize) -> BoxFuture<'_, Result<Delivered, UiError>> {
+        Box::pin(async move {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            if self
+                .tx
+                .send(UiMsg::Deliver {
+                    input,
+                    cap,
+                    reply: reply_tx,
+                })
+                .is_err()
+            {
+                return Err(UiError::Closed);
+            }
+            tokio::select! {
+                biased;
+                r = reply_rx => r.map_err(|_| UiError::Closed),
+                () = self.done.cancelled() => Err(UiError::Closed),
+            }
+        })
     }
 
     fn print_lines(&self, lines: Vec<String>) {

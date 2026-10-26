@@ -6,6 +6,7 @@
 pub(crate) mod args;
 pub(crate) mod assemble;
 pub(crate) mod config_cmd;
+pub(crate) mod deliver;
 pub(crate) mod error;
 pub(crate) mod interactive;
 pub mod io;
@@ -111,6 +112,13 @@ pub(crate) struct ToolAssembly {
     /// The built-in harness prompt's inputs (`agents::harness`), read once here for both branches and
     /// composed by each once its `Presenter` exists — the hosts add their facts to `<environment>`.
     pub(crate) harness: crate::agents::harness::HarnessInputs,
+    /// The interactive chat's socket (docs/design/agent-messaging.md), bound HERE because [`Self::child_env`]
+    /// gives its path to every child as `IOTA_SOCKET` — only when the bind succeeded. A failed bind is kept
+    /// as it is and reported by the interactive branch AFTER its terminal check ([`messaging_or_warn`]), so
+    /// a run that is refused prints nothing more; its listener drops with it, and the socket file with that.
+    /// `None` for a `-m` run (no loop to deliver into), without a home, and on a platform without Unix
+    /// sockets.
+    pub(crate) messaging: Option<std::io::Result<crate::session::sock::Listener>>,
 }
 
 /// The host detectors' view of the machine (host.go:71-74 `SystemEnv`): the run's injected environment
@@ -208,9 +216,15 @@ async fn run_agent(
 
     // root.go:52-123
     let mut stdin = std::io::stdin();
-    let mut settings = resolve_run(&inv, &cfg, &env, &mut stdin, &mut |w| {
+    let resolved = resolve_run(&inv, &cfg, &env, &mut stdin, &mut |w| {
         io.warning(&w);
-    })?;
+    });
+    // `iota run <bot> -m`: a running bot takes the message through its socket (docs/design/agent-messaging.md
+    // §5); one that is not running keeps the refusal.
+    if let Err(CliError::Args(ArgsError::BotHeadless { name })) = resolved {
+        return deliver::to_bot(name, inv.args.message.as_deref(), &env, &mut stdin, io).await;
+    }
+    let mut settings = resolved?;
 
     // root.go:125-131
     let ctx = RunContext::new(env, cancel);
@@ -444,7 +458,18 @@ fn assemble_tools(
     // is built, and both branches need the same one afterwards. Its children are spawned without what the
     // detected host withholds — the hosts' knowledge, not this module's (`crate::host::ChildEnvironment`).
     let host = crate::host::detect(&host_probe(&ctx.env));
-    let child_env = crate::host::child_env(host.as_deref());
+    let messaging = settings
+        .message
+        .is_none()
+        .then(|| bind_messaging(dirs))
+        .flatten();
+    let mut child_env = crate::host::child_env(host.as_deref());
+    if let Some(Ok(listener)) = &messaging {
+        child_env = child_env.giving(
+            crate::session::sock::IOTA_SOCKET,
+            &listener.path().to_string_lossy(),
+        );
+    }
     let jobs = crate::shell::jobs::Jobs::withholding(&dirs.temp, child_env.clone());
     let mut tool_env = ToolEnv {
         project_root: project_root.clone(),
@@ -492,7 +517,47 @@ fn assemble_tools(
         child_env,
         agent,
         harness,
+        messaging,
     })
+}
+
+/// Binds the interactive chat's socket (`<home>/.iota/run/<pid>.sock`, `session::sock`): `None` without a
+/// home and on a platform without Unix sockets (docs/design/agent-messaging.md §2.4).
+#[cfg(unix)]
+fn bind_messaging(
+    dirs: &crate::app::HostDirs,
+) -> Option<std::io::Result<crate::session::sock::Listener>> {
+    let run_dir = dirs.run_dir()?;
+    Some(crate::session::sock::Listener::bind(
+        &run_dir,
+        std::process::id(),
+    ))
+}
+
+/// No socket on this platform.
+#[cfg(not(unix))]
+fn bind_messaging(
+    _dirs: &crate::app::HostDirs,
+) -> Option<std::io::Result<crate::session::sock::Listener>> {
+    None
+}
+
+/// The bound socket as the chat's messaging, or — when the bind failed — one warning naming why and a chat
+/// no other process can reach: never a refusal to start. The interactive branch calls it after its terminal
+/// check.
+pub(crate) fn messaging_or_warn(
+    bound: Option<std::io::Result<crate::session::sock::Listener>>,
+    io: &mut io::Streams,
+) -> Option<crate::repl::Messaging> {
+    match bound? {
+        Ok(listener) => Some(crate::repl::Messaging::new(listener)),
+        Err(e) => {
+            io.warning(&format!(
+                "Warning: other processes cannot message this chat: {e}"
+            ));
+            None
+        }
+    }
 }
 
 /// Everything `run` has resolved by the time it reaches Go's headless-vs-interactive branch (root.go:259),
@@ -536,6 +601,7 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
         child_env,
         agent,
         harness,
+        messaging: _,
     } = tools;
     let dirs = ctx.env.dirs.clone();
 
@@ -559,6 +625,21 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
             .has_workspace()
             .then_some(agent.root.as_path());
         let id = store.resolve_id(&fragment, scope)?;
+        // Held by another process: the message is handed to it through its socket, not refused — and nothing
+        // is opened for it here (docs/design/agent-messaging.md §5). A bot's body included: handing the bot a
+        // message does not open its session.
+        if let Some(pid) = store.holder(&id)? {
+            let bundle = store.dir(&id)?;
+            return deliver::to_holder(
+                &bundle,
+                format!("session {id}"),
+                pid,
+                &message,
+                &ctx.env,
+                io,
+            )
+            .await;
+        }
         // A bot's body opens only as that bot (bot-mode.md §2.2, §2.7).
         store.check_not_bot_owned(&id)?;
         let meta = store.meta(&id)?;
@@ -757,4 +838,58 @@ async fn connect_mcp(
     }
     let part = configured.then(|| assemble::McpPart::of(&manager));
     (manager, part)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    /// A `Write` into a shared buffer, so a test reads what a `Streams` printed.
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn streams() -> (super::io::Streams, Captured) {
+        let err = Captured::default();
+        let io = super::io::Streams {
+            stdout: Box::new(std::io::sink()),
+            stderr: Box::new(err.clone()),
+        };
+        (io, err)
+    }
+
+    /// D17: a bind that failed is ONE warning naming the real cause, and a chat without messaging; a bound
+    /// socket is the chat's, silently; no bind (a `-m` run, no home, no Unix sockets) says nothing.
+    #[tokio::test]
+    async fn a_failed_bind_warns_with_its_cause() {
+        let (mut io, err) = streams();
+        let cause = std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path must be shorter than SUN_LEN",
+        );
+        assert!(super::messaging_or_warn(Some(Err(cause)), &mut io).is_none());
+        assert_eq!(
+            String::from_utf8(err.0.lock().unwrap().clone()).unwrap(),
+            "Warning: other processes cannot message this chat: path must be shorter than SUN_LEN\n"
+        );
+
+        let (mut io, err) = streams();
+        assert!(super::messaging_or_warn(None, &mut io).is_none());
+        #[cfg(unix)]
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let bound = crate::session::sock::Listener::bind(tmp.path(), 1);
+            assert!(super::messaging_or_warn(Some(bound), &mut io).is_some());
+        }
+        assert!(err.0.lock().unwrap().is_empty(), "nothing to say");
+    }
 }

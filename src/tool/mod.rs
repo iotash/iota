@@ -136,6 +136,14 @@ pub trait Tool: Send + Sync {
     fn requires_approval(&self, _args: Option<&JsonObject>) -> bool {
         false
     }
+    /// Whether the user configured this tool to act without the approval it would otherwise ask for
+    /// (`shell` with `auto_run`, `edit_file`/`write_file` with `auto_write`) — the same setting
+    /// [`Self::requires_approval`] reads, asked as one question about the set. A chat whose tools waive
+    /// approval holds a message from another process for the user (`repl::inbound`). A tool that never asks
+    /// (a read, an MCP tool) waives nothing: there was no approval to give up.
+    fn waives_approval(&self) -> bool {
+        false
+    }
     /// Presentation class of the tool's calls.
     fn presentation(&self) -> Presentation {
         Presentation::Group
@@ -177,6 +185,10 @@ pub trait Dispatcher: Send + Sync {
     ) -> BoxFuture<'a, ToolResult>;
     /// Whether the named tool's call needs interactive approval; `None` is the argument-less probe.
     fn requires_approval(&self, _name: &str, _args: Option<&JsonObject>) -> bool {
+        false
+    }
+    /// Whether any tool here waives the approval it would ask for ([`Tool::waives_approval`]).
+    fn waives_approval(&self) -> bool {
         false
     }
     /// Presentation class of the named tool.
