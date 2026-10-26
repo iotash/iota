@@ -30,6 +30,8 @@ struct Case {
     spin: usize,
     scopes_active: bool,
     queue: Vec<String>,
+    /// Whether ↑ has a typed entry to pop (read only with a non-empty queue).
+    queue_editable: bool,
     status: StatusData,
     busy: Option<BusyView>,
     jobs: Vec<JobInfo>,
@@ -47,6 +49,7 @@ impl Default for Case {
             spin: 0,
             scopes_active: false,
             queue: Vec::new(),
+            queue_editable: true,
             status: StatusData::default(),
             busy: None,
             jobs: Vec::new(),
@@ -75,6 +78,7 @@ fn view(c: &Case) -> FrameView {
         spin: c.spin,
         scopes_active: c.scopes_active,
         queue: &c.queue.iter().map(String::as_str).collect::<Vec<_>>(),
+        queue_editable: c.queue_editable,
         composer_rows: &composer_rows,
         composer_cursor: if c.surface.is_some() {
             None
@@ -894,6 +898,31 @@ fn queue_rows_hint_laws() {
         "slash queue item not green:\n{:#?}",
         v.rows
     );
+}
+
+/// Nothing for ↑ to edit (a queue of host notices): no hint on the bottom row, none on the
+/// overflow row — the rows themselves render as before.
+#[test]
+fn queue_rows_without_an_editable_entry_carry_no_hint() {
+    for (queue, row) in [
+        (vec!["n1"], "» n1"),
+        (vec!["n1", "n2", "n3", "n4"], "  … +1 more"),
+    ] {
+        let c = Case {
+            queue: queue.into_iter().map(str::to_owned).collect(),
+            queue_editable: false,
+            ..Case::default()
+        };
+        let rows = plain(&view(&c));
+        assert!(
+            rows.iter().any(|r| r == row),
+            "row {row:?} missing:\n{rows:#?}"
+        );
+        assert!(
+            !rows.iter().any(|r| r.contains("↑ edit")),
+            "nothing to edit, yet the frame hints:\n{rows:#?}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

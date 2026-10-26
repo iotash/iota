@@ -27,6 +27,11 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   with a 429 or any other error — is no longer waited out silently: iota
   stops and holds until then (a day at the most, however long it asks),
   unless the provider explicitly insists on being retried.
+- **The queue's `· ↑ edit` hint no longer promises what ↑ can't do.** ↑
+  only brings back a message you typed — never the notice of a finished
+  background job — yet a queue holding nothing but such notices still
+  ended in `· ↑ edit`, and pressing ↑ did nothing. The hint now shows only
+  while the queue holds something you typed.
 
 ### Changed
 

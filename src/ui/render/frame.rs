@@ -45,7 +45,7 @@ pub(crate) const QUEUE_SHOWN_MAX: usize = 3;
 pub(crate) const BUSY_ELAPSED_MIN: Duration = Duration::from_secs(2);
 
 /// The queue-management hint, appended to the last fully-visible row — or to the
-/// overflow row when newest items are hidden (model.go:998).
+/// overflow row when newest items are hidden (model.go:998) — while ↑ has something to edit.
 const QUEUE_HINT: &str = " · ↑ edit";
 
 /// What a newline inside a queued item renders as — the item stays one row (X-65).
@@ -129,6 +129,9 @@ pub(crate) struct FrameInput<'a> {
     pub(crate) scopes_active: bool,
     /// Queued type-ahead submits, oldest first.
     pub(crate) queue: &'a [&'a str],
+    /// Whether ↑ has a queued entry to pop — a TYPED one; host notices are not editable, so
+    /// a queue of notices alone carries no hint.
+    pub(crate) queue_editable: bool,
     /// The composer's styled rows (prompt included), 1..=5.
     pub(crate) composer_rows: &'a [String],
     /// The composer cursor as (column incl. the 2-col prompt, row within the composer
@@ -218,7 +221,7 @@ pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
     if n > 0 {
         let shown = n.min(QUEUE_SHOWN_MAX);
         for (i, entry) in fi.queue.iter().enumerate().take(shown) {
-            let hinted = i == shown - 1 && n == shown;
+            let hinted = fi.queue_editable && i == shown - 1 && n == shown;
             let width = if hinted {
                 budget(fi.width, 4 + QUEUE_HINT.len())
             } else {
@@ -239,7 +242,8 @@ pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
             rows.push(format!("{FAINT}» {item}{RESET}"));
         }
         if n > shown {
-            rows.push(format!("{FAINT}  … +{} more{QUEUE_HINT}{RESET}", n - shown));
+            let hint = if fi.queue_editable { QUEUE_HINT } else { "" };
+            rows.push(format!("{FAINT}  … +{} more{hint}{RESET}", n - shown));
         }
     }
 
