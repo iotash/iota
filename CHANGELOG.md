@@ -3,7 +3,7 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
-## Unreleased
+## 0.7.5 - 2026-10-26
 
 ### Added
 
@@ -64,6 +64,14 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   glance. `… +N args` and the `…` of a call still being written are faint
   too. The text is exactly what it was, and with `NO_COLOR` set the label is
   plain text as before.
+- **tokio is 1.54.1** (RUSTSEC-2026-0386). The advisory is about
+  `AsyncFd`'s constructors, which neither iota nor any crate it builds on
+  calls, so it never applied.
+- **rustls-webpki is 0.103.16** (RUSTSEC-2026-0382). It now rejects
+  certificate chains through the distrusted emSign intermediates, whose
+  private keys are public. This mattered on Linux, where iota checks a
+  server's certificate itself against the system's trusted roots; on macOS
+  and Windows the operating system checks it.
 
 ## 0.7.4 - 2026-10-20
 
