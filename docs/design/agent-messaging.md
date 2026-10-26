@@ -23,7 +23,7 @@ v1 只有一种投递方式：复用 `Notice`，空闲时立刻唤醒，忙时�
 
 **一条路。** 外部消息变成一个 `InputKind::Message` 输入（`src/ui/facade.rs:36`），交给新加的 `Ui::deliver`（`src/ui/facade.rs:947`）。它就是 `enqueue` 的两条分支，只多了一个回答：有一个挂起的 `read_input`（空闲循环）就直接交给它，回 `Woken`；没有就排到已经 type-ahead 的内容后面，回 `Queued { ahead }`；队列里外部消息已有 `QUEUE_CAP` 条时什么都不放，回 `Full`（`src/ui/runtime/event_loop.rs:609`）。**`UiMsg::Enqueue` 与 job 通知那条路一个字没动**：`Deliver` 是新的消息变体，`job_notice` / `set_sink` 原样保留。
 
-**它是 notice。** `Message` 与 `Notice` 共用 `Queued::Notice` 队列项和 `InputKind::is_notice()`（`src/ui/facade.rs:41`）。空闲时它在 `read_input` 处醒来，跳过回显、不进派发链（`/new` 就是文本），打一行暗色标题，作为 `Body::Notice` 进历史；忙时 `Steerer::drain` 在 round 边界拿到它，位置在本轮工具结果之后（`src/repl/turn/steer.rs:63` 起）。和 job 通知只有两处不同：它不欠宿主一个 job，所以不调 `Presenter::notice_taken`（`src/repl/run.rs:786` 的 `message`）；以及 §4 的 hold。
+**它是 notice。** `Message` 与 `Notice` 共用 `Queued::Notice` 队列项和 `InputKind::is_notice()`（`src/ui/facade.rs:41`）。空闲时它在 `read_input` 处醒来，跳过回显、不进派发链（`/new` 就是文本），打一行暗色标题，作为 `Body::Notice` 进历史；忙时 `Steerer::drain` 在 round 边界拿到它，位置在本轮工具结果之后（`src/repl/turn/steer.rs:63` 起）。和 job 通知只有三处不同：它不欠宿主一个 job，所以不调 `Presenter::notice_taken`（`src/repl/run.rs` 的 `message`）；notice gate（X-84）不暂扣它（§10）；以及 §4 的 hold。
 
 **审批在结构上碰不到。** 审批是一个 select surface，只有按键能回答；`Deliver` 只会交给挂起的 *read* 或进队列。审批开着时投一条内容是 `y\n1\n\n` 的消息，surface 仍开着、它的回答没发出，消息只是进了队列——这条由 `queue_tests::a_message_never_answers_an_open_approval` 钉住。`ApprovalGate` 没有改动。
 
@@ -144,3 +144,28 @@ herdr 0.9.5 的 `pane.report_agent_session` 只有 `agent_session_id` / `agent_s
 ## 9. 评审后的修订（2026-10-24）
 
 fable 与 opus 各做了一次独立评审，两份都判「偏大」；所有者挑了要修的。删掉的：`ChildEnv::giving` 的去重与泛化、运行目录的两道防御、回执的解析再序列化、`Peer.uid` / `Listener::uid()`、`resolve` 的相对路径分支、`clear` 的公开可见性、非 unix 的 bind 桩、`fits` / `SUN_PATH`、`tool::sets::waives_approval`、`Steerer` / `TurnEngine` 上的 hold builder 与第二个扣留列表。修掉的：旧链接投错会话（取锁即清）、界面关闭时回执撒谎（改为断开）、链接失败无声（打一行）、hold 会话的回执（加 `held`）。补的测试见 §8 的 B8–D17。
+
+## 10. 与 notice gate（X-84）：放行，不暂扣（rebase 到 main 后，2026-10-26）
+
+main 上的 rate-limit 那条线引入了 `repl::noticegate::NoticeGate`：一轮被中断、或以 429 结束后，**job 的 notice** 不再自己开一轮，而是被放到一边，等用户说话（中断）或一次有节奏的探测（限流）。外部消息走的正是 notice 那条路（`InputKind::is_notice()`），所以 rebase 时必须决定它遇到 gate 怎么办。
+
+**决定：放行，与用户输入同一条路径。**（rebase 时按派单方的判断做的，所有者可以推翻。）gate 压的是**自动工作**——没人要求的 job 完成通知；外部消息是另一个进程明确发来的一句话。更要紧的是，这个功能的目标用例是 bot，**bot 没有人会「说话」把它放出来**：被暂扣，它要等探测的那一分钟、乃至用量上限的几个小时，功能在目标场景里等于失效。
+
+**怎么做的**（`src/repl/run.rs`）：
+
+- 主循环里 `job_notice = notice && !flush && !message`：外部消息不是 job 的 notice，不进 `holds()` 的暂扣分支、不 `notice_taken`。之后它和打字一样：带上 gate 里压着的 notice（排在它前面）一起发出；答上了，`settle(Answered)` 解除 hold。
+- 被 429 拒了：`Outcome::RateLimited { typed: !job_notice }`——它不是探测，和打字一样**不推迟**探测的时间表（只有更晚的 `retry-after` 能推后）；它不是「已经在 hold 下又被拒一次的自动轮」，所以照常打红色错误块与 ping，而不是一行暗色的 `⏸ Still …`。回滚交还的只是它带着的 job notice，消息本身随回滚丢掉，与打字的一行一样。
+- 轮中被 steer 进来（`Steerer::drain`）：只有 `InputKind::Notice` 记进 `injected`。后面某一 round 的 429 回滚这一轮时，交还 gate 的只有 job 的 notice；外部消息与 steer 进来的打字一样随回滚丢掉——交给 gate 就等于让下一次探测来带它，也就是暂扣。
+- 与 §4 的 hold（免审会话先问人）无关、互不影响：那条在 gate 之后照旧判断。
+
+**测试**（`tests/repl/rate_limit.rs`，暂停时钟下的脚本 facade；每条都做过变异 → 红 → 还原）：
+
+| 性质 | 测试 | 变异 → 红 |
+|---|---|---|
+| 限流 hold 期间投递 → 立即发出，带着压着的 notice，不等那一分钟 | `a_message_from_another_process_passes_a_rate_limit_hold` | `job_notice` 不排除 `message` |
+| 中断 hold 期间投递 → 立即发出，带着压着的 notice | `a_message_from_another_process_passes_an_interrupt_hold` | 同上 |
+| 在 hold 下被拒 → 探测仍在第一次拒绝后一分钟，不是两分钟 | `a_refused_message_leaves_the_probe_schedule_alone` | `typed: !notice` |
+| 轮中 steer 进来又被 429 回滚 → 探测只带 job 的 notice | `a_message_steered_in_before_a_429_is_not_put_aside` | `injected` 不按 kind 过滤 |
+
+**拿不准的一处**：中断 hold 是「用户按了 Esc，自动工作停到他说话为止」。外部消息走打字那条路，就会把 Esc 之后压着的 job notice 一起带出去，并且答上之后解除 hold——等于把一个外部进程当成了「用户说话」。另一种做法是让消息单独发出、不带压着的 notice、也不改变 hold，但那就不再是「与用户输入同一条路径」，且限流 hold 下一次成功的应答本来就说明限额已经恢复。v1 取前者，留给所有者。
+

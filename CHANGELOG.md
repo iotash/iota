@@ -19,7 +19,9 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   typed, and a leading `/` is never run as a command. The model is told it
   came from another process and is nobody's approval. A chat whose tools run
   without asking (`auto_run`, `auto_write`) answers `held` and asks you
-  before the model reads it. Programs started from the chat find the socket
+  before the model reads it. A message is not held back after a rate limit
+  or an Esc the way a finished job's notice is: it goes at once, as
+  something you typed would. Programs started from the chat find the socket
   in `IOTA_SOCKET`. Only the same OS user can connect; there is no network
   listener. Not available on Windows yet.
 

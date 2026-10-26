@@ -1098,7 +1098,9 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 if !flush {
                     let outcome = limit.map_or(GateOutcome::Failed, |l| GateOutcome::RateLimited {
                         retry_after: l.retry_after,
-                        typed: !notice,
+                        // A message from another process is not the probe: it leaves the schedule as a typed
+                        // line does (X-85).
+                        typed: !job_notice,
                     });
                     repl.notices.settle(outcome, tokio::time::Instant::now());
                     // The hint promises an automatic try only when there is something to try with: notices held
