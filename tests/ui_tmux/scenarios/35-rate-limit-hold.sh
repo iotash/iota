@@ -40,8 +40,11 @@ start_job() {
 }
 
 # joined_count <fixed string> — occurrences in the whole history with the rows joined: a `⏸` line carries the
-# job's command and wraps, so its tail is not on the row its head is.
-joined_count() { capall | tr -d '\n' | grep -oF -- "$1" | wc -l | tr -d ' '; }
+# job's command and wraps, so its tail is not on the row its head is. The REPL breaks the rows itself, so tmux
+# does not see a wrap to join; the capture is `-J` only to keep each row's trailing blanks — a plain one trims
+# them, so a space the REPL wrote in the last column was lost and `with your` read `withyour`, which it did
+# whenever the job took 1–9 s (`after 2s`, macOS CI) rather than `<1s`.
+joined_count() { tm capture-pane -pJt s -S -400 2>/dev/null | tr -d '\n' | grep -oF -- "$1" | wc -l | tr -d ' '; }
 
 # headline_count <n> — the dim headline rows of job b<n>'s notice (the row STARTS with the bracket).
 headline_count() { capall | grep -c "^\[background job b$1 finished: exit 0 after" | tr -d ' '; }
