@@ -940,6 +940,7 @@ impl Model {
             spin: self.spin,
             scopes_active: !self.cancels.is_empty(),
             queue: &queue_rows,
+            queue_editable: self.newest_typed().is_some(),
             composer_rows: &composer_rows,
             composer_cursor: cursor,
             candidates: candidates.as_deref(),

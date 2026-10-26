@@ -334,6 +334,80 @@ fn a_notice_is_never_the_users_draft() {
     assert_eq!(got.kind, InputKind::Notice);
 }
 
+/// The hint promises ↑ an entry to edit, and ↑ only pops a TYPED one: a queue of notices alone carries no
+/// hint — on its last row or on the overflow row — and one typed entry anywhere in it brings the hint back,
+/// on the bottom row as ever, because ↑ then really has something to pop.
+#[test]
+fn the_queue_hint_needs_a_typed_entry() {
+    let job = |i: usize| {
+        notice(
+            &format!("[background job b{i} finished: exit 0 after 2s] make test"),
+            "ok",
+        )
+    };
+
+    // Notices only: no hint, and ↑ indeed does nothing.
+    let mut m = test_model();
+    m.apply(UiMsg::Enqueue(job(1)));
+    let joined = plain(&mut m).join("\n");
+    assert!(
+        joined.contains("» [background job b1 finished: exit 0 after 2s] make test"),
+        "the notice row is missing:\n{joined}"
+    );
+    assert!(
+        !joined.contains("↑ edit"),
+        "a queue of notices has nothing to edit:\n{joined}"
+    );
+    up(&mut m);
+    assert_eq!(m.composer.value(), "");
+    assert_eq!(m.queue.len(), 1);
+
+    // Notices behind the overflow row: still no hint.
+    for i in 2..=4 {
+        m.apply(UiMsg::Enqueue(job(i)));
+    }
+    let joined = plain(&mut m).join("\n");
+    assert!(
+        joined.contains("  … +1 more"),
+        "overflow row missing:\n{joined}"
+    );
+    assert!(
+        !joined.contains("↑ edit"),
+        "the overflow row must not advertise ↑ over notices alone:\n{joined}"
+    );
+
+    // A typed entry ahead of a notice: the bottom row (the notice's) hints, and ↑ pops the typed one.
+    let mut m = test_model();
+    type_text(&mut m, "a");
+    enter(&mut m);
+    m.apply(UiMsg::Enqueue(job(1)));
+    let joined = plain(&mut m).join("\n");
+    assert!(
+        joined.contains("» [background job b1 finished: exit 0 after 2s] make test · ↑ edit"),
+        "↑ can edit `a`, so the block must say so:\n{joined}"
+    );
+    up(&mut m);
+    assert_eq!(m.composer.value(), "a");
+    let joined = plain(&mut m).join("\n");
+    assert!(
+        !joined.contains("↑ edit"),
+        "with `a` popped only the notice is left:\n{joined}"
+    );
+
+    // A typed entry hidden behind the overflow row still counts.
+    let mut m = test_model();
+    type_text(&mut m, "a");
+    enter(&mut m);
+    for i in 1..=3 {
+        m.apply(UiMsg::Enqueue(job(i)));
+    }
+    let joined = plain(&mut m).join("\n");
+    assert!(
+        joined.contains("  … +1 more · ↑ edit"),
+        "overflow row must advertise ↑ edit:\n{joined}"
+    );
+}
+
 /// New (phase C): a steering drain takes a notice like any non-command entry — and a queued slash command
 /// still stops the take in front of it.
 #[test]
