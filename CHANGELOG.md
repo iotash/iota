@@ -3,7 +3,7 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
-## 0.7.6 - 2026-11-04
+## 0.7.7 - 2026-11-04
 
 ### Fixed
 
