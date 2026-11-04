@@ -621,7 +621,12 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     ));
     let images_dir: crate::repl::turn::ImagesDir = {
         let slot = Arc::clone(&writer);
-        Arc::new(move || lock(&slot).as_mut().and_then(SessionWriter::images_dir))
+        let no_bundle = store.images_dir().map(std::path::Path::to_path_buf);
+        Arc::new(move || match lock(&slot).as_mut() {
+            Some(writer) => writer.images_dir(),
+            // `no_save:` / `--no-save`: nothing to keep a session in, but the picture is paid for.
+            None => no_bundle.clone(),
+        })
     };
     let title_provider = title_provider.map(|p| Arc::new(tokio::sync::Mutex::new(p)));
     let mut repl = Repl {

@@ -17,7 +17,7 @@ use iota::provider::{ImageGenOptions, ImageGenParams, ProviderKind};
 use iota::repl::{McpHooks, RunParams, SessionCtx};
 use iota::session::SessionStore;
 use iota::testing::{
-    FakeProvider, Log, Reply, ScriptedUi, StaticDispatcher, TabbedSummary, UiEvent,
+    FakeProvider, Log, Reply, Round, ScriptedUi, StaticDispatcher, TabbedSummary, UiEvent,
 };
 use iota::text::ansi::strip_sgr;
 use iota::tool::Dispatcher;
@@ -135,9 +135,14 @@ impl Fixture {
     /// Runs the scripted session to EOF; the chat stays ephemeral (no writer), so the picker's
     /// detail column is empty and nothing touches the filesystem.
     async fn run(&self) {
+        self.run_with(image_provider(self.seen.clone())).await;
+    }
+
+    /// [`Fixture::run`] over the given provider.
+    async fn run_with(&self, provider: FakeProvider) {
         iota::repl::run(RunParams {
             ui: Arc::clone(&self.ui) as Arc<dyn Ui>,
-            provider: Box::new(image_provider(self.seen.clone())),
+            provider: Box::new(provider),
             title_provider: None,
             system: String::new(),
             harness: iota::agents::harness::HarnessInputs::default(),
@@ -445,4 +450,32 @@ async fn redo_with_a_blank_prompt_says_so() {
         printed(&f.ui)
     );
     assert!(last_sent(&f.seen).is_empty());
+}
+
+/// A chat with no bundle (`no_save:`, `--no-save`) still keeps the picture it just paid for, in the
+/// directory a stateless `-m` run uses: it used to report `$HOME is not defined` and drop it.
+#[tokio::test]
+async fn an_ephemeral_chat_saves_its_picture_outside_any_bundle() {
+    let mut fx = Fixture::new(vec![input("a cat"), Reply::Interrupted], Vec::new());
+    let home = tempfile::tempdir().expect("tempdir");
+    let images = home.path().join("images");
+    fx.store = fx.store.clone().with_images_dir(&images);
+    let provider =
+        image_provider(fx.seen.clone()).tail(Round::reply("").images(vec![png("x.png")]));
+
+    fx.run_with(provider).await;
+
+    let saved: Vec<_> = std::fs::read_dir(&images)
+        .expect("the images directory")
+        .map(|e| e.expect("entry").path())
+        .collect();
+    assert_eq!(saved.len(), 1, "{saved:?}");
+    assert_eq!(std::fs::read(&saved[0]).unwrap(), RB_2X2_PNG);
+    assert!(
+        !printed(&fx.ui)
+            .iter()
+            .any(|l| l.contains("Saving image failed")),
+        "{:?}",
+        printed(&fx.ui)
+    );
 }

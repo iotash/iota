@@ -17,6 +17,10 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 - **`/model` on an image agent lists image models on Venice**, not its text
   models: iota now reads the `type` an endpoint labels its models with, and
   asks for `type=image` when the plain list holds none.
+- **A picture generated in an unsaved chat is kept.** With `no_save:` or
+  `--no-save`, an interactive turn reported `$HOME is not defined` and dropped
+  the picture after it was paid for. It now goes to `~/.iota/images`, where a
+  headless `-m` run puts it.
 
 ## 0.7.5 - 2026-10-26
 
