@@ -96,6 +96,9 @@ pub struct SessionStore {
     /// `<app home>/bots` — the pointers that protect bot sessions (§2.7). `None` for a store built from a
     /// bare path, which knows of no bots.
     bots: Option<PathBuf>,
+    /// `<app home>/images` — where a chat with no bundle yet keeps the pictures it generates. `None` for a
+    /// store built from a bare path.
+    images: Option<PathBuf>,
 }
 
 impl SessionStore {
@@ -104,6 +107,7 @@ impl SessionStore {
         Self {
             root: root.into(),
             bots: None,
+            images: None,
         }
     }
 
@@ -114,13 +118,30 @@ impl SessionStore {
         self
     }
 
+    /// The same store, with the directory a chat without a bundle saves its pictures in.
+    #[must_use]
+    pub fn with_images_dir(mut self, images: impl Into<PathBuf>) -> Self {
+        self.images = Some(images.into());
+        self
+    }
+
+    /// Where a chat without a bundle saves its pictures: an ephemeral chat has no bundle of its own, and
+    /// the picture is already paid for. The same directory a stateless `-m` run uses.
+    pub fn images_dir(&self) -> Option<&Path> {
+        self.images.as_deref()
+    }
+
     /// `<app home>/sessions` (chat/session.go:156-162), aware of `<app home>/bots`;
     /// [`SessionError::HomeNotDefined`] when the host has no home directory.
     pub fn from_dirs(dirs: &HostDirs) -> Result<Self, SessionError> {
         let (Some(home), Some(bots)) = (dirs.app_home(), dirs.bots_dir()) else {
             return Err(SessionError::HomeNotDefined);
         };
-        Ok(Self::new(home.join("sessions")).with_bots(bots))
+        let store = Self::new(home.join("sessions")).with_bots(bots);
+        Ok(match dirs.images_dir() {
+            Some(images) => store.with_images_dir(images),
+            None => store,
+        })
     }
 
     /// The bots root, when this store knows one.

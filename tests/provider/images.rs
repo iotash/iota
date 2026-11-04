@@ -10,8 +10,8 @@ use iota::provider::model::{Attachment, Message};
 use iota::provider::{ImageGenOptions, ImageGenParams, Provider};
 use tokio_util::sync::CancellationToken;
 use wiremock::{
-    Mock, MockServer, ResponseTemplate,
-    matchers::{method, path},
+    Mock, MockServer, Request, ResponseTemplate,
+    matchers::{method, path, query_param},
 };
 
 /// A JPEG header (`\xff\xd8\xff\xe0` + padding), the bytes `"/9j/4AAQ"` decodes to.
@@ -31,6 +31,15 @@ async fn mock_generate(server: &MockServer, body: &str, content_type: &str) {
     Mock::given(method("POST"))
         .and(path("/images/generations"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(body.to_owned(), content_type))
+        .mount(server)
+        .await;
+}
+
+/// One 200 response for `GET /models` with the given page.
+async fn mock_models(server: &MockServer, page: &str) {
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(page.to_owned(), "application/json"))
         .mount(server)
         .await;
 }
@@ -152,6 +161,102 @@ async fn images_lists_only_image_models() {
     let p = images(&server.uri(), "m");
     let names = p.list_models(&CancellationToken::new()).await.unwrap();
     assert_eq!(names, ["bare-model", "image-model"]);
+}
+#[tokio::test]
+async fn a_page_typed_for_several_kinds_lists_only_the_type_image_entries() {
+    // `type` wins over everything else, and a page that admits something asks nothing further.
+    let server = MockServer::start().await;
+    mock_models(
+        &server,
+        r#"{"data":[
+            {"id":"z-image-turbo","type":"image","object":"model"},
+            {"id":"venice-uncensored","type":"text","object":"model"},
+            {"id":"flux-2-pro","type":"IMAGE","object":"model"},
+            {"id":"a-video-model","type":"video","object":"model"}
+        ]}"#,
+    )
+    .await;
+    let names = images(&server.uri(), "m")
+        .list_models(&CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(names, ["flux-2-pro", "z-image-turbo"]);
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+#[tokio::test]
+async fn a_venice_shaped_page_of_text_models_asks_for_the_image_ones() {
+    // Venice's bare /models answers only `type: "text"` (139 of them, measured 2026-11-04); its image
+    // models answer `?type=image`. Filtering the bare page alone would leave the /model picker empty.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .and(query_param("type", "image"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"data":[
+                {"id":"z-image-turbo","type":"image","object":"model"},
+                {"id":"flux-2-pro","type":"image","object":"model"}
+            ]}"#,
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+    mock_models(
+        &server,
+        r#"{"data":[
+            {"id":"venice-uncensored","type":"text","object":"model"},
+            {"id":"zai-org-glm","type":"text","object":"model"}
+        ]}"#,
+    )
+    .await;
+    let names = images(&server.uri(), "m")
+        .list_models(&CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(names, ["flux-2-pro", "z-image-turbo"]);
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 2);
+    assert_eq!(reqs[0].url.query(), None);
+    assert_eq!(reqs[1].url.query(), Some("type=image"));
+}
+#[tokio::test]
+async fn an_endpoint_that_ignores_the_query_lists_nothing_rather_than_text_models() {
+    let server = MockServer::start().await;
+    mock_models(
+        &server,
+        r#"{"data":[{"id":"chat-model","output_modalities":["text"]}]}"#,
+    )
+    .await;
+    let names = images(&server.uri(), "m")
+        .list_models(&CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(names.is_empty(), "{names:?}");
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}
+#[tokio::test]
+async fn an_openai_shaped_page_keeps_every_entry_without_a_type() {
+    // OpenAI's entries carry no `type` and no output_modalities, so nothing in them says what a
+    // model makes: all are kept and the user judges. A `type: null` reads as no type.
+    let server = MockServer::start().await;
+    mock_models(
+        &server,
+        r#"{"data":[
+            {"id":"gpt-image-1-mini","object":"model","created":1,"owned_by":"openai"},
+            {"id":"gpt-5","object":"model","created":1,"owned_by":"openai"},
+            {"id":"relay-null","object":"model","type":null}
+        ]}"#,
+    )
+    .await;
+    let names = images(&server.uri(), "m")
+        .list_models(&CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(names, ["gpt-5", "gpt-image-1-mini", "relay-null"]);
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        1,
+        "a page that admits something never sees the query"
+    );
 }
 #[tokio::test]
 async fn images_advertises_exactly_the_image_gen_and_json_edit_capabilities() {
@@ -740,6 +845,7 @@ async fn progressive_frames_reach_the_observer_before_the_result() {
         }),
         "the observer IS the request to stream"
     );
+    assert_eq!(reqs.len(), 1, "an accepted stream is never asked again");
     assert_eq!(frames.len(), 1, "partial frames = {frames:?}");
     assert_eq!(frames[0][0], 1);
     assert_eq!(images.len(), 1);
@@ -824,4 +930,218 @@ async fn a_plain_json_answer_calls_the_observer_never() {
         1,
         "a second, billed request must never be issued"
     );
+}
+
+// ---------------------------------------------------------------------------
+// an endpoint that refuses the streaming fields (X-86)
+// ---------------------------------------------------------------------------
+
+/// Venice's answer to the streaming body, word for word.
+const REFUSED: &str = "Unrecognized key(s) in object: 'stream', 'partial_images'";
+
+/// Whether a JSON or multipart body names the streaming fields.
+fn asks_to_stream(body: &[u8]) -> bool {
+    body.windows(b"partial_images".len())
+        .any(|w| w == b"partial_images")
+        || body.windows(b"stream".len()).any(|w| w == b"stream")
+}
+
+/// A backend at `at` that answers `refusal` to a streaming body and `plain` to any other.
+async fn mock_refuses_streaming(
+    server: &MockServer,
+    at: &str,
+    refusal: ResponseTemplate,
+    plain: ResponseTemplate,
+) {
+    Mock::given(method("POST"))
+        .and(path(at.to_owned()))
+        .respond_with(move |req: &Request| {
+            if asks_to_stream(&req.body) {
+                refusal.clone()
+            } else {
+                plain.clone()
+            }
+        })
+        .mount(server)
+        .await;
+}
+
+/// The 400 Venice answers, and the plain picture it gives without the streaming fields.
+async fn mock_venice(server: &MockServer, at: &str) {
+    mock_refuses_streaming(
+        server,
+        at,
+        ResponseTemplate::new(400).set_body_raw(REFUSED, "text/plain"),
+        ResponseTemplate::new(200)
+            .set_body_raw(r#"{"data":[{"b64_json":"CQ=="}]}"#, "application/json"),
+    )
+    .await;
+}
+
+/// The failure of one observed turn.
+async fn observed_err(p: &ImagesProvider, messages: &[Message]) -> ProviderError {
+    let mut on_partial = |_: &[u8]| {};
+    match p
+        .as_image_partial_provider()
+        .expect("the images dialect streams")
+        .chat_observed(&CancellationToken::new(), messages, &mut on_partial)
+        .await
+    {
+        Err(e) => e,
+        Ok(ok) => panic!("expected a failure, got {ok:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_generate_refused_for_streaming_is_asked_once_more_plainly() {
+    let server = MockServer::start().await;
+    mock_venice(&server, "/images/generations").await;
+
+    let p = images(&server.uri(), "z-image-turbo");
+    let (frames, images) = observed(&p, &[Message::user("a cat")]).await;
+    assert!(frames.is_empty(), "the plain answer has no frames");
+    assert_eq!(images.len(), 1);
+    assert_eq!(images[0].data, [9]);
+
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 2);
+    assert_eq!(
+        body_json(&reqs[0]),
+        serde_json::json!({
+            "model": "z-image-turbo", "prompt": "a cat", "n": 1,
+            "stream": true, "partial_images": 1,
+        })
+    );
+    assert_eq!(
+        body_json(&reqs[1]),
+        serde_json::json!({"model": "z-image-turbo", "prompt": "a cat", "n": 1}),
+        "the same request, less the two fields"
+    );
+}
+
+#[tokio::test]
+async fn a_multipart_edit_refused_for_streaming_is_asked_once_more_plainly() {
+    let server = MockServer::start().await;
+    mock_venice(&server, "/images/edits").await;
+
+    let p = images(&server.uri(), "m");
+    let turn = edit_turn("add a hat", vec![ref_att("a.png", "image/png", &[1])]);
+    let (frames, images) = observed(&p, &[turn]).await;
+    assert!(frames.is_empty());
+    assert_eq!(images.len(), 1);
+
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 2);
+    assert!(asks_to_stream(&reqs[0].body), "the first asks to stream");
+    assert!(!asks_to_stream(&reqs[1].body), "the second does not");
+    let ct = reqs[1]
+        .headers
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(ct.starts_with("multipart/form-data"), "{ct}");
+    let parts = parse_multipart(&reqs[1].body, &boundary_of(ct));
+    let files: Vec<&Part> = parts.iter().filter(|p| !p.filename.is_empty()).collect();
+    assert_eq!(files.len(), 1, "the reference goes up again");
+    assert_eq!(files[0].data, [1]);
+}
+
+#[tokio::test]
+async fn a_json_edit_refused_for_streaming_is_asked_once_more_plainly() {
+    let server = MockServer::start().await;
+    mock_venice(&server, "/images/edits").await;
+
+    let mut p = images(&server.uri(), "m");
+    p.as_image_edit_json_tunable().unwrap().set_json_edits(true);
+    let turn = edit_turn("add a hat", vec![ref_att("a.png", "image/png", &[1])]);
+    let (frames, images) = observed(&p, &[turn]).await;
+    assert!(frames.is_empty());
+    assert_eq!(images.len(), 1);
+
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 2);
+    assert_eq!(body_json(&reqs[0])["stream"], true);
+    assert_eq!(body_json(&reqs[0])["partial_images"], 1);
+    assert_eq!(
+        body_json(&reqs[1]),
+        serde_json::json!({
+            "model": "m",
+            "prompt": "add a hat",
+            "image": {"type": "image_url", "url": "data:image/png;base64,AQ=="},
+        })
+    );
+}
+
+#[tokio::test]
+async fn the_failure_of_the_plain_retry_is_the_one_reported() {
+    let server = MockServer::start().await;
+    mock_refuses_streaming(
+        &server,
+        "/images/generations",
+        ResponseTemplate::new(400).set_body_raw(REFUSED, "text/plain"),
+        ResponseTemplate::new(402).set_body_raw("out of credit", "text/plain"),
+    )
+    .await;
+
+    let p = images(&server.uri(), "m");
+    let err = observed_err(&p, &[Message::user("x")]).await;
+    assert!(
+        err.to_string().ends_with("out of credit"),
+        "the retry's error must surface: {err}"
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_400_on_both_requests_stops_after_the_one_retry() {
+    // A prompt the backend refuses whatever the body says: asked twice, then reported.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/images/generations"))
+        .respond_with(ResponseTemplate::new(400).set_body_raw("prompt refused", "text/plain"))
+        .mount(&server)
+        .await;
+
+    let p = images(&server.uri(), "m");
+    let err = observed_err(&p, &[Message::user("x")]).await;
+    assert!(err.to_string().ends_with("prompt refused"), "{err}");
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_400_on_a_plain_request_is_not_retried() {
+    // Nothing to take off the body, so nothing would differ.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/images/generations"))
+        .respond_with(ResponseTemplate::new(400).set_body_raw("prompt refused", "text/plain"))
+        .mount(&server)
+        .await;
+
+    let p = images(&server.uri(), "m");
+    let err = chat_err(&p, &[Message::user("x")]).await;
+    assert!(err.to_string().ends_with("prompt refused"), "{err}");
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn only_a_400_on_a_streaming_request_is_retried() {
+    // Anything else may have reached generation, and a second attempt could pay for a second picture.
+    for status in [401, 402, 404, 429, 500, 503] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/images/generations"))
+            .respond_with(ResponseTemplate::new(status).set_body_raw("no", "text/plain"))
+            .mount(&server)
+            .await;
+
+        let p = images(&server.uri(), "m");
+        observed_err(&p, &[Message::user("x")]).await;
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            1,
+            "status {status}"
+        );
+    }
 }

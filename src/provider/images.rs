@@ -6,7 +6,8 @@
 //! (the `/model` switch, the `json_edits` config key and the session meta all reach the same
 //! flag). Progressive frames arrive through [`ImagePartialProvider::chat_observed`]: the
 //! observer's presence is what puts `stream:true, partial_images:1` on the request, so a headless
-//! `-m` run posts the plain unary body.
+//! `-m` run posts the plain unary body. An endpoint that rejects those two fields answers 400, and
+//! the turn is asked once more without them (DIVERGENCES X-86, `rejected_before_generation`).
 
 use crate::BoxFuture;
 use crate::provider::error::{ProviderError, WireOp};
@@ -18,7 +19,10 @@ use crate::provider::{
 use reqwest::header::AUTHORIZATION;
 use tokio_util::sync::CancellationToken;
 
-use crate::llm::images::{ImageFile, Images, ImagesEditRequest, ImagesRequest, OnPartial};
+use crate::llm::error::LlmError;
+use crate::llm::images::{
+    ImageFile, Images, ImagesEditRequest, ImagesRequest, ImagesResponse, OnPartial,
+};
 use crate::provider::common::{OPENAI_DEFAULT_BASE_URL, credential_header, make_client};
 use crate::provider::image_util::{ext_for_mime, fetch_image, image_mime, last_user_turn};
 
@@ -31,6 +35,19 @@ pub const IMAGES_IMAGE_SIZES: [&str; 6] = [
     "1792x1024",
     "1024x1792",
 ];
+
+/// Whether a streaming request should be asked again without its streaming fields: the answer was
+/// HTTP 400 (DIVERGENCES X-86).
+///
+/// Venice validates the body strictly and refuses `stream` and `partial_images` by name; `OpenAI`'s
+/// gpt-image models take them. The status alone decides, because reading the body would be a parser
+/// for one vendor's prose (the X-84 rule). It is safe because a 400 is refused before generation and
+/// is not billed, so the one extra request cannot pay for a second picture, and a 400 that has
+/// nothing to do with streaming just comes back again, as the error the user sees. Every other
+/// failure stays a single attempt: a 5xx or a dropped connection may already have been billed.
+fn rejected_before_generation(first: &Result<ImagesResponse, LlmError>) -> bool {
+    matches!(first, Err(LlmError::Status(e)) if e.status == 400)
+}
 
 /// Images provider (`image_gen_tunable`, `image_edit_json_tunable`; no core, so `as_tunable()` is `None`).
 ///
@@ -63,6 +80,23 @@ impl ImagesProvider {
         }
     }
 
+    /// One edit in the form this provider is switched to.
+    ///
+    /// Some backends (xAI) implement ONLY the JSON form; `OpenAI` and its mirrors want multipart, so
+    /// the switch defaults off (provider/images.go:130-134).
+    async fn edit(
+        &self,
+        cancel: &CancellationToken,
+        req: &ImagesEditRequest,
+        on_partial: OnPartial<'_>,
+    ) -> Result<ImagesResponse, LlmError> {
+        if self.json_edits {
+            self.client.edit_json(cancel, req, on_partial).await
+        } else {
+            self.client.edit(cancel, req, on_partial).await
+        }
+    }
+
     /// One turn (provider/images.go:97-154), with `on_partial` deciding both the streaming flags
     /// and where progressive frames go.
     ///
@@ -83,7 +117,7 @@ impl ImagesProvider {
         let stream = on_partial.is_some();
         let partial_images = stream.then_some(1);
         let resp = if refs.is_empty() {
-            let req = ImagesRequest {
+            let mut req = ImagesRequest {
                 model: self.model.clone(),
                 prompt,
                 n: Some(1),
@@ -91,9 +125,16 @@ impl ImagesProvider {
                 stream,
                 partial_images,
             };
-            self.client.generate(cancel, &req, on_partial).await
+            let first = self.client.generate(cancel, &req, on_partial).await;
+            if stream && rejected_before_generation(&first) {
+                req.stream = false;
+                req.partial_images = None;
+                self.client.generate(cancel, &req, None).await
+            } else {
+                first
+            }
         } else {
-            let req = ImagesEditRequest {
+            let mut req = ImagesEditRequest {
                 model: self.model.clone(),
                 prompt,
                 n: Some(1),
@@ -109,12 +150,13 @@ impl ImagesProvider {
                     })
                     .collect(),
             };
-            // Some backends (xAI) implement ONLY the JSON form; OpenAI and its mirrors want
-            // multipart, so the switch defaults off (provider/images.go:130-134).
-            if self.json_edits {
-                self.client.edit_json(cancel, &req, on_partial).await
+            let first = self.edit(cancel, &req, on_partial).await;
+            if stream && rejected_before_generation(&first) {
+                req.stream = false;
+                req.partial_images = None;
+                self.edit(cancel, &req, None).await
             } else {
-                self.client.edit(cancel, &req, on_partial).await
+                first
             }
         }
         .map_err(|e| ProviderError::wire(WireOp::Raw, e))?;
@@ -167,8 +209,8 @@ impl Provider for ImagesProvider {
         self.model = model;
     }
 
-    /// Keeps models by METADATA only: relays attach `output_modalities` (keep `image`), entries without
-    /// metadata are kept — the user judges, never name heuristics (provider/images.go:71-93).
+    /// Keeps models by METADATA only (`Images::image_models`): entries without metadata are kept —
+    /// the user judges, never name heuristics (provider/images.go:71-93).
     fn list_models<'a>(
         &'a self,
         cancel: &'a CancellationToken,
@@ -176,19 +218,10 @@ impl Provider for ImagesProvider {
         Box::pin(async move {
             let models = self
                 .client
-                .models(cancel)
+                .image_models(cancel)
                 .await
                 .map_err(|e| ProviderError::wire(WireOp::ListModels, e))?;
-            Ok(models
-                .into_iter()
-                .filter(|m| {
-                    m.output_modalities.is_empty()
-                        || m.output_modalities
-                            .iter()
-                            .any(|out| out.eq_ignore_ascii_case("image"))
-                })
-                .map(|m| m.id)
-                .collect())
+            Ok(models.into_iter().map(|m| m.id).collect())
         })
     }
 

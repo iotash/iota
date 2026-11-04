@@ -19,6 +19,8 @@ pub(crate) const PATH_GENERATIONS: &str = "/images/generations";
 pub(crate) const PATH_EDITS: &str = "/images/edits";
 /// The models endpoint path.
 pub(crate) const PATH_MODELS: &str = "/models";
+/// The models endpoint asked for image models by name (Venice lists only its text models otherwise).
+pub(crate) const PATH_IMAGE_MODELS: &str = "/models?type=image";
 
 /// The progressive-frame observer of one call; `None` = a unary turn (`-m`, a quiet round).
 ///
@@ -95,6 +97,27 @@ pub(crate) struct ImagesModel {
     /// Output modalities.
     #[serde(default)]
     pub(crate) output_modalities: Vec<String>,
+    /// What the model is, where the listing says (Venice: `"text"` or `"image"`; `OpenAI` has no such
+    /// field). Read as any JSON value so a relay's `null` or odd shape cannot fail the whole page.
+    #[serde(default)]
+    pub(crate) r#type: serde_json::Value,
+}
+
+impl ImagesModel {
+    /// Whether the listing lets this be an image model: `type: "image"`, or no `type` and
+    /// `output_modalities` empty or naming `image`. Any other `type` is dropped.
+    pub(crate) fn makes_images(&self) -> bool {
+        match self.r#type.as_str().unwrap_or_default() {
+            "" => {
+                self.output_modalities.is_empty()
+                    || self
+                        .output_modalities
+                        .iter()
+                        .any(|out| out.eq_ignore_ascii_case("image"))
+            }
+            kind => kind.eq_ignore_ascii_case("image"),
+        }
+    }
 }
 
 /// The `GET /models` page.
@@ -337,12 +360,33 @@ impl Images {
         consume_images(resp, cancel, on_partial).await
     }
 
-    /// GET /models → sorted by id.
-    pub(crate) async fn models(
+    /// The image models the listing admits ([`ImagesModel::makes_images`]), sorted by id.
+    ///
+    /// When a non-empty page admits none, the listing is asked once more for image models by name:
+    /// Venice's bare `/models` answers only `type: "text"` entries and needs `?type=image`. An
+    /// endpoint whose page admits something (`OpenAI`'s, whose entries say nothing) never sees the query,
+    /// and one that ignores it answers the same page, so the result stays empty (DIVERGENCES X-86).
+    pub(crate) async fn image_models(
         &self,
         cancel: &CancellationToken,
     ) -> Result<Vec<ImagesModel>, LlmError> {
-        let page: ModelsPage = self.client.get_json(cancel, PATH_MODELS).await?;
+        let page = self.models_at(cancel, PATH_MODELS).await?;
+        let listed = !page.is_empty();
+        let models: Vec<ImagesModel> = page.into_iter().filter(ImagesModel::makes_images).collect();
+        if models.is_empty() && listed {
+            let page = self.models_at(cancel, PATH_IMAGE_MODELS).await?;
+            return Ok(page.into_iter().filter(ImagesModel::makes_images).collect());
+        }
+        Ok(models)
+    }
+
+    /// One `GET` of a models page, sorted by id.
+    async fn models_at(
+        &self,
+        cancel: &CancellationToken,
+        path: &str,
+    ) -> Result<Vec<ImagesModel>, LlmError> {
+        let page: ModelsPage = self.client.get_json(cancel, path).await?;
         let mut models = page.data;
         models.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(models)
@@ -355,7 +399,7 @@ impl Images {
 ///
 /// The RESPONSE Content-Type decides, not the request: a relay that ignores `stream:true` answers with the plain
 /// JSON body, and asking again "properly" would bill a second generation (images.go:103-107) — so an observer on
-/// a unary answer is simply never called.
+/// a unary answer is simply never called. (The one request the provider does repeat is a refused one: X-86.)
 pub(crate) async fn consume_images(
     resp: reqwest::Response,
     cancel: &CancellationToken,

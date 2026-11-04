@@ -3,6 +3,25 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## Unreleased
+
+### Fixed
+
+- **Image agents on Venice work in the interactive chat.** iota asks image
+  endpoints to stream a preview while a picture is drawn, and Venice refuses
+  those fields with a 400, so every interactive turn on a `venice-image` agent
+  failed. A streaming request answered 400 is now sent once more without them;
+  a 400 is refused before generation and is not billed, so this cannot pay for
+  a second picture. Endpoints that do stream, such as OpenAI's, still show the
+  preview.
+- **`/model` on an image agent lists image models on Venice**, not its text
+  models: iota now reads the `type` an endpoint labels its models with, and
+  asks for `type=image` when the plain list holds none.
+- **A picture generated in an unsaved chat is kept.** With `no_save:` or
+  `--no-save`, an interactive turn reported `$HOME is not defined` and dropped
+  the picture after it was paid for. It now goes to `~/.iota/images`, where a
+  headless `-m` run puts it.
+
 ## 0.7.5 - 2026-10-26
 
 ### Added
