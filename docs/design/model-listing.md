@@ -1,6 +1,6 @@
 # Listing image models across providers: one reading rule, bounded special cases
 
-Status: **Design** · 2026-11-04 · `listing-design` on `42e1360` (v0.7.5) · the in-flight `images-fix` = `c9e468a` (not on main) · measurements of 2026-11-04 in DIVERGENCES X-86 · survey read 2026-11-04 from the vendors' current reference pages and the tools' sources
+Status: **Implemented** · 2026-11-04 · `model-listing-impl` `a93c20b`, live counts in DIVERGENCES X-86 · designed 2026-11-04 · `listing-design` on `42e1360` (v0.7.5) · the in-flight `images-fix` = `c9e468a` (not on main) · measurements of 2026-11-04 in DIVERGENCES X-86 · survey read 2026-11-04 from the vendors' current reference pages and the tools' sources
 
 The owner's question: `type=image` is a Venice-specific query. Other platforms say which models draw in other ways, so how does the `images` listing stay generic without growing a case per vendor? No code changes here.
 

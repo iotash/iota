@@ -19,8 +19,6 @@ pub(crate) const PATH_GENERATIONS: &str = "/images/generations";
 pub(crate) const PATH_EDITS: &str = "/images/edits";
 /// The models endpoint path.
 pub(crate) const PATH_MODELS: &str = "/models";
-/// The models endpoint asked for image models by name (Venice lists only its text models otherwise).
-pub(crate) const PATH_IMAGE_MODELS: &str = "/models?type=image";
 
 /// The progressive-frame observer of one call; `None` = a unary turn (`-m`, a quiet round).
 ///
@@ -88,36 +86,92 @@ pub(crate) struct ImagesResponse {
     pub(crate) data: Vec<ImageDatum>,
 }
 
-/// One listed model.
+/// One listed model. Every field but `id` is read as any JSON value, so a relay's `null` or odd
+/// shape reads as absent instead of failing the whole page.
 #[derive(Deserialize, Default)]
 pub(crate) struct ImagesModel {
     /// Model id.
     #[serde(default)]
     pub(crate) id: String,
-    /// Output modalities.
+    /// What the model is, where the listing says (Venice, Together; `OpenAI` has no such field).
     #[serde(default)]
-    pub(crate) output_modalities: Vec<String>,
-    /// What the model is, where the listing says (Venice: `"text"` or `"image"`; `OpenAI` has no such
-    /// field). Read as any JSON value so a relay's `null` or odd shape cannot fail the whole page.
+    r#type: serde_json::Value,
+    /// What the model outputs, at the top level (xAI's per-kind lists, relays).
     #[serde(default)]
-    pub(crate) r#type: serde_json::Value,
+    output_modalities: serde_json::Value,
+    /// `architecture.output_modalities` is the same list in `OpenRouter`'s placement.
+    #[serde(default)]
+    architecture: serde_json::Value,
 }
 
 impl ImagesModel {
-    /// Whether the listing lets this be an image model: `type: "image"`, or no `type` and
-    /// `output_modalities` empty or naming `image`. Any other `type` is dropped.
-    pub(crate) fn makes_images(&self) -> bool {
-        match self.r#type.as_str().unwrap_or_default() {
-            "" => {
-                self.output_modalities.is_empty()
-                    || self
-                        .output_modalities
-                        .iter()
-                        .any(|out| out.eq_ignore_ascii_case("image"))
-            }
-            kind => kind.eq_ignore_ascii_case("image"),
+    /// The entry's `type`, when it is a non-empty string.
+    fn kind(&self) -> Option<&str> {
+        self.r#type.as_str().filter(|kind| !kind.is_empty())
+    }
+
+    /// The entry's output modality lists: the top-level one and `architecture`'s, whichever it carries.
+    fn modality_lists(&self) -> impl Iterator<Item = &Vec<serde_json::Value>> {
+        [
+            &self.output_modalities,
+            &self.architecture["output_modalities"],
+        ]
+        .into_iter()
+        .filter_map(serde_json::Value::as_array)
+    }
+}
+
+/// How a page says what its models make: read off the page, never off the vendor or its URL. A row
+/// here is a field name, the values that mean image and at most one query (docs/design/model-listing.md
+/// §4 says what a new row has to show first).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Vocabulary {
+    /// Some entry carries a string `type`.
+    Type,
+    /// No `type`, and some entry carries `output_modalities`, at the top level or under `architecture`.
+    OutputModalities,
+    /// The page says nothing: every entry is kept and the user judges.
+    Silent,
+}
+
+impl Vocabulary {
+    /// The vocabulary a page speaks. One entry is enough, and `type` wins over `output_modalities`.
+    fn of(page: &[ImagesModel]) -> Self {
+        if page.iter().any(|model| model.kind().is_some()) {
+            Self::Type
+        } else if page.iter().any(|m| m.modality_lists().next().is_some()) {
+            Self::OutputModalities
+        } else {
+            Self::Silent
         }
     }
+
+    /// Whether an entry of a page speaking this vocabulary is listed. Under `output_modalities` an entry
+    /// with an empty list says nothing about itself and stays (the user judges).
+    fn admits(self, model: &ImagesModel) -> bool {
+        match self {
+            Self::Type => model.kind().is_some_and(names_image),
+            Self::OutputModalities => {
+                let mut named = model.modality_lists().flatten().peekable();
+                named.peek().is_none() || named.any(|out| out.as_str().is_some_and(names_image))
+            }
+            Self::Silent => true,
+        }
+    }
+
+    /// The one server-side query this vocabulary owns.
+    const fn query(self) -> Option<&'static str> {
+        match self {
+            Self::Type => Some("/models?type=image"),
+            Self::OutputModalities => Some("/models?output_modalities=image"),
+            Self::Silent => None,
+        }
+    }
+}
+
+/// Whether a `type` or modality value means image.
+fn names_image(value: &str) -> bool {
+    value.eq_ignore_ascii_case("image")
 }
 
 /// The `GET /models` page.
@@ -125,6 +179,14 @@ impl ImagesModel {
 struct ModelsPage {
     #[serde(default)]
     data: Vec<ImagesModel>,
+}
+
+/// What one listing found.
+pub(crate) struct ImageModels {
+    /// The admitted models, sorted by id, one row per id.
+    pub(crate) models: Vec<ImagesModel>,
+    /// How many entries the bare page held, admitted or not.
+    pub(crate) listed: usize,
 }
 
 /// One SSE frame of a streamed generation (defensive path only).
@@ -360,36 +422,43 @@ impl Images {
         consume_images(resp, cancel, on_partial).await
     }
 
-    /// The image models the listing admits ([`ImagesModel::makes_images`]), sorted by id.
+    /// The models the listing admits, by the [`Vocabulary`] its bare page speaks (DIVERGENCES X-86).
     ///
-    /// When a non-empty page admits none, the listing is asked once more for image models by name:
-    /// Venice's bare `/models` answers only `type: "text"` entries and needs `?type=image`. An
-    /// endpoint whose page admits something (`OpenAI`'s, whose entries say nothing) never sees the query,
-    /// and one that ignores it answers the same page, so the result stays empty (DIVERGENCES X-86).
+    /// A page that speaks a vocabulary is always asked that vocabulary's query, and the answer joins
+    /// the bare rows: Venice and `OpenRouter` both default the bare list to text, and `OpenRouter`'s
+    /// still shows the few text+image models, so a page admitting something is not thereby whole. An
+    /// endpoint that ignores the query answers the same page; one that refuses it loses nothing the
+    /// bare page gave, and only with no bare rows is the refusal the listing's error. A silent page
+    /// never sees a query. Two requests at most.
     pub(crate) async fn image_models(
         &self,
         cancel: &CancellationToken,
-    ) -> Result<Vec<ImagesModel>, LlmError> {
+    ) -> Result<ImageModels, LlmError> {
         let page = self.models_at(cancel, PATH_MODELS).await?;
-        let listed = !page.is_empty();
-        let models: Vec<ImagesModel> = page.into_iter().filter(ImagesModel::makes_images).collect();
-        if models.is_empty() && listed {
-            let page = self.models_at(cancel, PATH_IMAGE_MODELS).await?;
-            return Ok(page.into_iter().filter(ImagesModel::makes_images).collect());
+        let listed = page.len();
+        let vocabulary = Vocabulary::of(&page);
+        let mut models: Vec<ImagesModel> =
+            page.into_iter().filter(|m| vocabulary.admits(m)).collect();
+        if let Some(query) = vocabulary.query() {
+            match self.models_at(cancel, query).await {
+                Ok(answer) => models.extend(answer.into_iter().filter(|m| vocabulary.admits(m))),
+                Err(e) if models.is_empty() || matches!(e, LlmError::Cancelled) => return Err(e),
+                Err(_) => {}
+            }
         }
-        Ok(models)
+        models.sort_by(|a, b| a.id.cmp(&b.id));
+        models.dedup_by(|a, b| a.id == b.id);
+        Ok(ImageModels { models, listed })
     }
 
-    /// One `GET` of a models page, sorted by id.
+    /// One `GET` of a models page.
     async fn models_at(
         &self,
         cancel: &CancellationToken,
         path: &str,
     ) -> Result<Vec<ImagesModel>, LlmError> {
         let page: ModelsPage = self.client.get_json(cancel, path).await?;
-        let mut models = page.data;
-        models.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(models)
+        Ok(page.data)
     }
 }
 
@@ -454,8 +523,114 @@ pub(crate) async fn consume_images(
 
 #[cfg(test)]
 mod tests {
-    use super::{ImageDatum, ImageFile, ImagesEditRequest, ImagesStreamEvent, build_edit_form};
+    use super::{
+        ImageDatum, ImageFile, ImagesEditRequest, ImagesModel, ImagesStreamEvent, ModelsPage,
+        Vocabulary, build_edit_form,
+    };
     use crate::llm::multipart::MultipartForm;
+
+    /// The entries of a page body.
+    fn page(body: &str) -> Vec<ImagesModel> {
+        serde_json::from_str::<ModelsPage>(body).unwrap().data
+    }
+
+    /// The ids a page's own vocabulary admits, in page order.
+    fn admitted(entries: &[ImagesModel]) -> Vec<&str> {
+        let vocabulary = Vocabulary::of(entries);
+        entries
+            .iter()
+            .filter(|m| vocabulary.admits(m))
+            .map(|m| m.id.as_str())
+            .collect()
+    }
+
+    /// The three page shapes, and the query each one owns.
+    #[test]
+    fn a_page_names_its_vocabulary_and_the_vocabulary_its_query() {
+        let typed = page(r#"{"data":[{"id":"a","type":"text"}]}"#);
+        assert_eq!(Vocabulary::of(&typed), Vocabulary::Type);
+        assert_eq!(Vocabulary::Type.query(), Some("/models?type=image"));
+
+        let top = page(r#"{"data":[{"id":"a","output_modalities":["text"]}]}"#);
+        assert_eq!(Vocabulary::of(&top), Vocabulary::OutputModalities);
+        assert_eq!(
+            Vocabulary::OutputModalities.query(),
+            Some("/models?output_modalities=image")
+        );
+
+        let silent = page(r#"{"data":[{"id":"a","object":"model","owned_by":"x"}]}"#);
+        assert_eq!(Vocabulary::of(&silent), Vocabulary::Silent);
+        assert_eq!(Vocabulary::Silent.query(), None);
+
+        assert_eq!(Vocabulary::of(&[]), Vocabulary::Silent);
+    }
+
+    /// One typed entry makes the whole page a `type` page: the untyped entries say nothing, and
+    /// `type` outranks a modality list on the same page or the same entry.
+    #[test]
+    fn a_mixed_page_reads_as_type() {
+        let mixed = page(
+            r#"{"data":[
+                {"id":"untyped"},
+                {"id":"modal","output_modalities":["image"]},
+                {"id":"drawn","type":"image"},
+                {"id":"chat","type":"chat","output_modalities":["image"]}
+            ]}"#,
+        );
+        assert_eq!(Vocabulary::of(&mixed), Vocabulary::Type);
+        assert_eq!(admitted(&mixed), ["drawn"]);
+    }
+
+    /// A `type` that is null, a number or an empty string reads as absent, on every entry of a page.
+    #[test]
+    fn a_type_that_is_not_a_string_reads_as_absent() {
+        let odd = page(
+            r#"{"data":[
+                {"id":"null","type":null},
+                {"id":"number","type":7},
+                {"id":"object","type":{"kind":"image"}},
+                {"id":"empty","type":""}
+            ]}"#,
+        );
+        assert_eq!(Vocabulary::of(&odd), Vocabulary::Silent);
+        assert_eq!(admitted(&odd), ["null", "number", "object", "empty"]);
+    }
+
+    /// `OpenRouter`'s placement reads the same as the top-level list; an empty list is kept, an
+    /// entry naming image is kept in any case and beside other modalities, and the rest are dropped.
+    #[test]
+    fn architecture_output_modalities_reads_as_output_modalities() {
+        let nested = page(
+            r#"{"data":[
+                {"id":"text","architecture":{"output_modalities":["text"]}},
+                {"id":"both","architecture":{"output_modalities":["text","IMAGE"]}},
+                {"id":"empty","architecture":{"output_modalities":[]}},
+                {"id":"top","output_modalities":["image"]},
+                {"id":"none"}
+            ]}"#,
+        );
+        assert_eq!(Vocabulary::of(&nested), Vocabulary::OutputModalities);
+        assert_eq!(admitted(&nested), ["both", "empty", "top", "none"]);
+    }
+
+    /// A null list, a bare string, an `architecture` that is not an object and an odd element cannot
+    /// fail the page and are not a list naming image.
+    #[test]
+    fn a_modality_field_of_the_wrong_shape_reads_as_absent() {
+        let odd = page(
+            r#"{"data":[
+                {"id":"null","output_modalities":null},
+                {"id":"string","output_modalities":"image"},
+                {"id":"scalar","architecture":7},
+                {"id":"no-list","architecture":{"modality":"text->image"}}
+            ]}"#,
+        );
+        assert_eq!(Vocabulary::of(&odd), Vocabulary::Silent);
+
+        let elements = page(r#"{"data":[{"id":"mixed","output_modalities":[1,null,"text"]}]}"#);
+        assert_eq!(Vocabulary::of(&elements), Vocabulary::OutputModalities);
+        assert!(admitted(&elements).is_empty());
+    }
 
     /// The reference form (one image, no size, unstreamed) byte for byte against the bytes a real
     /// `mime/multipart.Writer` produced when driven exactly as images.go:180-208 drives it.
