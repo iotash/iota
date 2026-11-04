@@ -7,7 +7,7 @@
 //! flag). Progressive frames arrive through [`ImagePartialProvider::chat_observed`]: the
 //! observer's presence is what puts `stream:true, partial_images:1` on the request, so a headless
 //! `-m` run posts the plain unary body. An endpoint that rejects those two fields answers 400, and
-//! the turn is asked once more without them (DIVERGENCES X-86, [`rejected_before_generation`]).
+//! the turn is asked once more without them (DIVERGENCES X-86, `rejected_before_generation`).
 
 use crate::BoxFuture;
 use crate::provider::error::{ProviderError, WireOp};
@@ -209,7 +209,7 @@ impl Provider for ImagesProvider {
         self.model = model;
     }
 
-    /// Keeps models by METADATA only ([`Images::image_models`]): entries without metadata are kept —
+    /// Keeps models by METADATA only (`Images::image_models`): entries without metadata are kept —
     /// the user judges, never name heuristics (provider/images.go:71-93).
     fn list_models<'a>(
         &'a self,
