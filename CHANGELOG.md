@@ -14,9 +14,14 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   a 400 is refused before generation and is not billed, so this cannot pay for
   a second picture. Endpoints that do stream, such as OpenAI's, still show the
   preview.
-- **`/model` on an image agent lists image models on Venice**, not its text
-  models: iota now reads the `type` an endpoint labels its models with, and
-  asks for `type=image` when the plain list holds none.
+- **`/model` on an image agent lists image models, on Venice and OpenRouter
+  too.** iota reads how an endpoint labels its models (`type` or
+  `output_modalities`), keeps the image ones, and also asks the endpoint for
+  them, because a plain list may leave them out: Venice now shows its 43 image
+  models instead of its text models, and OpenRouter 63 instead of a dozen. An
+  endpoint that labels nothing, such as OpenAI's or xAI's, still lists every
+  model. When the labels mark no image model, the picker says so in a note, and
+  you can still type a model id.
 - **A picture generated in an unsaved chat is kept.** With `no_save:` or
   `--no-save`, an interactive turn reported `$HOME is not defined` and dropped
   the picture after it was paid for. It now goes to `~/.iota/images`, where a

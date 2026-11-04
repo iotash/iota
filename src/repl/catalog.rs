@@ -500,7 +500,7 @@ fn note(provider: &str, e: &str) -> String {
 mod tests {
     use super::{Candidate, ListError, ModelCatalog, Pick, Source, busy_label};
     use crate::config::{ModelConfig, ModelRef};
-    use crate::provider::error::UnknownProviderType;
+    use crate::provider::error::{ProviderError, UnknownProviderType};
     use crate::testing::{FakeProvider, ScriptedUi};
     use crate::ui::facade::Ui;
     use std::collections::BTreeMap;
@@ -668,6 +668,45 @@ mod tests {
         assert_eq!(got.rows[0].id, "a");
         // One line, naming the provider and what went wrong — the prompt row is a single line.
         assert_eq!(got.notes, ["dead: 404 no such endpoint"]);
+    }
+
+    /// An image endpoint that lists models and marks none is an ordinary failed source: no rows of
+    /// its own, its sentence as the note, and everything written down still there to pick or type.
+    #[tokio::test]
+    async fn a_listing_with_no_image_model_costs_only_its_own_rows() {
+        let none_marked = ProviderError::NoImageModels { listed: 139 }.to_string();
+        let mut cat = with_entries(
+            catalog(
+                vec![
+                    entry("drawn"),
+                    ModelRef::Inline {
+                        provider: "venice".to_owned(),
+                        id: "flux-2-pro".to_owned(),
+                    },
+                    wildcard("venice"),
+                ],
+                vec![("venice", Source::Live(Arc::new(failing(&none_marked))))],
+            ),
+            &[("drawn", "venice", "z-image-turbo")],
+        );
+        cat.known.push("venice".to_owned());
+        let live = lister(&[]);
+        let got = cat.expand(&ui(), &live, &CancellationToken::new()).await;
+        assert_eq!(
+            got.rows,
+            vec![on("venice", "z-image-turbo"), on("venice", "flux-2-pro")]
+        );
+        assert_eq!(
+            got.notes,
+            [
+                "venice: 139 models listed, none marked as an image model - type a model id, or write a models: entry"
+            ]
+        );
+        assert_eq!(
+            cat.parse_typed("venice:typed-model"),
+            Some(on("venice", "typed-model")),
+            "the input row still takes an id the listing never named"
+        );
     }
 
     /// An endpoint that could not even be CONSTRUCTED (an unknown `type:`) is the same kind of

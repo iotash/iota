@@ -209,19 +209,26 @@ impl Provider for ImagesProvider {
         self.model = model;
     }
 
-    /// Keeps models by METADATA only (`Images::image_models`): entries without metadata are kept —
-    /// the user judges, never name heuristics (provider/images.go:71-93).
+    /// Keeps models by METADATA only (`Images::image_models`): a page with no metadata keeps every
+    /// entry — the user judges, never name heuristics (provider/images.go:71-93). A page that lists
+    /// models and marks none of them as drawing is the note [`ProviderError::NoImageModels`]; a page
+    /// with no entries is an empty list (DIVERGENCES X-86).
     fn list_models<'a>(
         &'a self,
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<Vec<String>, ProviderError>> {
         Box::pin(async move {
-            let models = self
+            let found = self
                 .client
                 .image_models(cancel)
                 .await
                 .map_err(|e| ProviderError::wire(WireOp::ListModels, e))?;
-            Ok(models.into_iter().map(|m| m.id).collect())
+            if found.models.is_empty() && found.listed > 0 {
+                return Err(ProviderError::NoImageModels {
+                    listed: found.listed,
+                });
+            }
+            Ok(found.models.into_iter().map(|m| m.id).collect())
         })
     }
 

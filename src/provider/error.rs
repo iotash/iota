@@ -64,6 +64,15 @@ pub enum ProviderError {
     /// The run was cancelled.
     #[error("interrupted")]
     Cancelled,
+    /// An image listing whose page holds models and marks none of them as image models. The text is
+    /// the picker's note (DIVERGENCES X-26, X-86), so it carries no `failed to list models:` prefix.
+    #[error(
+        "{listed} models listed, none marked as an image model - type a model id, or write a models: entry"
+    )]
+    NoImageModels {
+        /// How many entries the page held.
+        listed: usize,
+    },
     /// A failure with no wire type behind it, passed through raw (an image result fetch).
     #[error("{0}")]
     Other(#[source] BoxError),

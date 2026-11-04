@@ -3,6 +3,7 @@
 //! defensive SSE paths (a backend that streams unasked, and one that never completes).
 
 use crate::common::body_json;
+use iota::llm::LlmError;
 use iota::provider::error::ProviderError;
 use iota::provider::image_util::image_mime;
 use iota::provider::images::{IMAGES_IMAGE_SIZES, ImagesProvider};
@@ -142,29 +143,64 @@ async fn a_url_result_is_fetched_when_no_b64_is_returned() {
         blob.headers
     );
 }
+/// The listing's names, or the panic of a listing that failed.
+async fn listed(server: &MockServer) -> Vec<String> {
+    images(&server.uri(), "m")
+        .list_models(&CancellationToken::new())
+        .await
+        .unwrap()
+}
+
+/// The failure of a listing that must fail.
+async fn listing_err(server: &MockServer) -> ProviderError {
+    match images(&server.uri(), "m")
+        .list_models(&CancellationToken::new())
+        .await
+    {
+        Err(e) => e,
+        Ok(names) => panic!("expected a failure, got {names:?}"),
+    }
+}
+
+/// The query string of every listing request, in order.
+async fn queries(server: &MockServer) -> Vec<Option<String>> {
+    let reqs = server.received_requests().await.unwrap();
+    reqs.iter()
+        .map(|r| r.url.query().map(str::to_owned))
+        .collect()
+}
+
+/// `GET /models?<name>=image` answers `status` with `body`; mount before [`mock_models`], which
+/// matches any query.
+async fn mock_query(server: &MockServer, name: &str, status: u16, body: &str) {
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .and(query_param(name, "image"))
+        .respond_with(
+            ResponseTemplate::new(status).set_body_raw(body.to_owned(), "application/json"),
+        )
+        .mount(server)
+        .await;
+}
+
 #[tokio::test]
 async fn images_lists_only_image_models() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/models"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(
-            r#"{"data":[
-                {"id":"chat-model","output_modalities":["text"]},
-                {"id":"image-model","output_modalities":["image"]},
-                {"id":"bare-model"}
-            ]}"#,
-            "application/json",
-        ))
-        .mount(&server)
-        .await;
-
-    let p = images(&server.uri(), "m");
-    let names = p.list_models(&CancellationToken::new()).await.unwrap();
-    assert_eq!(names, ["bare-model", "image-model"]);
+    mock_models(
+        &server,
+        r#"{"data":[
+            {"id":"chat-model","output_modalities":["text"]},
+            {"id":"image-model","output_modalities":["image"]},
+            {"id":"bare-model"}
+        ]}"#,
+    )
+    .await;
+    assert_eq!(listed(&server).await, ["bare-model", "image-model"]);
 }
 #[tokio::test]
 async fn a_page_typed_for_several_kinds_lists_only_the_type_image_entries() {
-    // `type` wins over everything else, and a page that admits something asks nothing further.
+    // `type` wins over everything else. The page speaks a vocabulary, so its query is asked even
+    // though it admitted something; this endpoint answers the same page, and the rows do not double.
     let server = MockServer::start().await;
     mock_models(
         &server,
@@ -176,30 +212,27 @@ async fn a_page_typed_for_several_kinds_lists_only_the_type_image_entries() {
         ]}"#,
     )
     .await;
-    let names = images(&server.uri(), "m")
-        .list_models(&CancellationToken::new())
-        .await
-        .unwrap();
-    assert_eq!(names, ["flux-2-pro", "z-image-turbo"]);
-    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    assert_eq!(listed(&server).await, ["flux-2-pro", "z-image-turbo"]);
+    assert_eq!(
+        queries(&server).await,
+        [None, Some("type=image".to_owned())]
+    );
 }
 #[tokio::test]
 async fn a_venice_shaped_page_of_text_models_asks_for_the_image_ones() {
     // Venice's bare /models answers only `type: "text"` (139 of them, measured 2026-11-04); its image
     // models answer `?type=image`. Filtering the bare page alone would leave the /model picker empty.
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/models"))
-        .and(query_param("type", "image"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(
-            r#"{"data":[
-                {"id":"z-image-turbo","type":"image","object":"model"},
-                {"id":"flux-2-pro","type":"image","object":"model"}
-            ]}"#,
-            "application/json",
-        ))
-        .mount(&server)
-        .await;
+    mock_query(
+        &server,
+        "type",
+        200,
+        r#"{"data":[
+            {"id":"z-image-turbo","type":"image","object":"model"},
+            {"id":"flux-2-pro","type":"image","object":"model"}
+        ]}"#,
+    )
+    .await;
     mock_models(
         &server,
         r#"{"data":[
@@ -208,30 +241,38 @@ async fn a_venice_shaped_page_of_text_models_asks_for_the_image_ones() {
         ]}"#,
     )
     .await;
-    let names = images(&server.uri(), "m")
-        .list_models(&CancellationToken::new())
-        .await
-        .unwrap();
-    assert_eq!(names, ["flux-2-pro", "z-image-turbo"]);
-    let reqs = server.received_requests().await.unwrap();
-    assert_eq!(reqs.len(), 2);
-    assert_eq!(reqs[0].url.query(), None);
-    assert_eq!(reqs[1].url.query(), Some("type=image"));
+    assert_eq!(listed(&server).await, ["flux-2-pro", "z-image-turbo"]);
+    assert_eq!(
+        queries(&server).await,
+        [None, Some("type=image".to_owned())]
+    );
 }
 #[tokio::test]
-async fn an_endpoint_that_ignores_the_query_lists_nothing_rather_than_text_models() {
+async fn an_endpoint_that_ignores_the_query_reports_the_count_rather_than_text_models() {
+    // A relay that copies the field and ignores the query: two requests, one honest sentence, and
+    // the count is the bare page's.
     let server = MockServer::start().await;
     mock_models(
         &server,
-        r#"{"data":[{"id":"chat-model","output_modalities":["text"]}]}"#,
+        r#"{"data":[
+            {"id":"chat-model","output_modalities":["text"]},
+            {"id":"other-chat","output_modalities":["text"]}
+        ]}"#,
     )
     .await;
-    let names = images(&server.uri(), "m")
-        .list_models(&CancellationToken::new())
-        .await
-        .unwrap();
-    assert!(names.is_empty(), "{names:?}");
-    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    let err = listing_err(&server).await;
+    assert!(
+        matches!(err, ProviderError::NoImageModels { listed: 2 }),
+        "{err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        "2 models listed, none marked as an image model - type a model id, or write a models: entry"
+    );
+    assert_eq!(
+        queries(&server).await,
+        [None, Some("output_modalities=image".to_owned())]
+    );
 }
 #[tokio::test]
 async fn an_openai_shaped_page_keeps_every_entry_without_a_type() {
@@ -243,20 +284,172 @@ async fn an_openai_shaped_page_keeps_every_entry_without_a_type() {
         r#"{"data":[
             {"id":"gpt-image-1-mini","object":"model","created":1,"owned_by":"openai"},
             {"id":"gpt-5","object":"model","created":1,"owned_by":"openai"},
-            {"id":"relay-null","object":"model","type":null}
+            {"id":"relay-null","object":"model","type":null},
+            {"id":"relay-number","object":"model","type":7}
         ]}"#,
     )
     .await;
-    let names = images(&server.uri(), "m")
-        .list_models(&CancellationToken::new())
-        .await
-        .unwrap();
-    assert_eq!(names, ["gpt-5", "gpt-image-1-mini", "relay-null"]);
     assert_eq!(
-        server.received_requests().await.unwrap().len(),
-        1,
-        "a page that admits something never sees the query"
+        listed(&server).await,
+        ["gpt-5", "gpt-image-1-mini", "relay-null", "relay-number"]
     );
+    assert_eq!(
+        queries(&server).await,
+        [None],
+        "a page that speaks no vocabulary never sees a query"
+    );
+}
+#[tokio::test]
+async fn an_openrouter_shaped_page_joins_the_query_answer() {
+    // OpenRouter's bare list defaults to text and still shows its text+image models: 455 entries, 12
+    // admitted, against 63 from the query (measured 2026-11-04). Here two bare rows, five answered,
+    // none in common: seven, sorted across the two pages.
+    let server = MockServer::start().await;
+    mock_query(
+        &server,
+        "output_modalities",
+        200,
+        r#"{"data":[
+            {"id":"e-only-image","architecture":{"output_modalities":["image"]}},
+            {"id":"c-only-image","architecture":{"output_modalities":["image"]}},
+            {"id":"g-only-image","architecture":{"output_modalities":["image"]}},
+            {"id":"a-only-image","architecture":{"output_modalities":["image"]}},
+            {"id":"d-only-image","architecture":{"output_modalities":["image"]}}
+        ]}"#,
+    )
+    .await;
+    mock_models(
+        &server,
+        r#"{"data":[
+            {"id":"t-text","architecture":{"output_modalities":["text"]}},
+            {"id":"f-both","architecture":{"output_modalities":["text","image"]}},
+            {"id":"b-both","architecture":{"output_modalities":["image","text"]}}
+        ]}"#,
+    )
+    .await;
+    assert_eq!(
+        listed(&server).await,
+        [
+            "a-only-image",
+            "b-both",
+            "c-only-image",
+            "d-only-image",
+            "e-only-image",
+            "f-both",
+            "g-only-image",
+        ]
+    );
+    assert_eq!(
+        queries(&server).await,
+        [None, Some("output_modalities=image".to_owned())]
+    );
+}
+#[tokio::test]
+async fn an_id_on_both_pages_is_one_row() {
+    let server = MockServer::start().await;
+    mock_query(
+        &server,
+        "output_modalities",
+        200,
+        r#"{"data":[
+            {"id":"both-pages","output_modalities":["text","image"]},
+            {"id":"answer-only","output_modalities":["image"]}
+        ]}"#,
+    )
+    .await;
+    mock_models(
+        &server,
+        r#"{"data":[
+            {"id":"both-pages","output_modalities":["text","image"]},
+            {"id":"z-bare-only","output_modalities":["image"]}
+        ]}"#,
+    )
+    .await;
+    assert_eq!(
+        listed(&server).await,
+        ["answer-only", "both-pages", "z-bare-only"]
+    );
+}
+#[tokio::test]
+async fn a_together_shaped_page_lists_its_image_entries_and_the_ignored_query_adds_none() {
+    let server = MockServer::start().await;
+    mock_models(
+        &server,
+        r#"{"data":[
+            {"id":"meta/llama","type":"chat"},
+            {"id":"black-forest-labs/flux","type":"image"},
+            {"id":"baai/bge","type":"embedding"}
+        ]}"#,
+    )
+    .await;
+    assert_eq!(listed(&server).await, ["black-forest-labs/flux"]);
+    assert_eq!(
+        queries(&server).await,
+        [None, Some("type=image".to_owned())]
+    );
+}
+#[tokio::test]
+async fn a_strict_endpoint_refusing_the_query_keeps_the_bare_rows() {
+    let server = MockServer::start().await;
+    mock_query(&server, "type", 400, r#"{"error":"unknown parameter"}"#).await;
+    mock_models(
+        &server,
+        r#"{"data":[{"id":"drawn","type":"image"},{"id":"chat","type":"chat"}]}"#,
+    )
+    .await;
+    assert_eq!(listed(&server).await, ["drawn"]);
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}
+#[tokio::test]
+async fn a_strict_endpoint_refusing_the_query_with_no_bare_rows_reports_the_refusal() {
+    let server = MockServer::start().await;
+    mock_query(
+        &server,
+        "output_modalities",
+        400,
+        r#"{"error":"unknown parameter"}"#,
+    )
+    .await;
+    mock_models(
+        &server,
+        r#"{"data":[{"id":"chat","output_modalities":["text"]}]}"#,
+    )
+    .await;
+    let err = listing_err(&server).await;
+    assert!(
+        matches!(err.llm(), Some(LlmError::Status(e)) if e.status == 400),
+        "{err:?}"
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}
+#[tokio::test]
+async fn a_cancel_during_the_query_is_a_cancel_not_the_bare_rows() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .and(query_param("type", "image"))
+        .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(30)))
+        .mount(&server)
+        .await;
+    mock_models(&server, r#"{"data":[{"id":"drawn","type":"image"}]}"#).await;
+    let cancel = CancellationToken::new();
+    let fired = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        fired.cancel();
+    });
+    let p = images(&server.uri(), "m");
+    assert!(matches!(
+        p.list_models(&cancel).await,
+        Err(ProviderError::Cancelled)
+    ));
+}
+#[tokio::test]
+async fn an_empty_page_lists_nothing_in_one_request() {
+    let server = MockServer::start().await;
+    mock_models(&server, r#"{"data":[]}"#).await;
+    assert!(listed(&server).await.is_empty());
+    assert_eq!(queries(&server).await, [None]);
 }
 #[tokio::test]
 async fn images_advertises_exactly_the_image_gen_and_json_edit_capabilities() {
