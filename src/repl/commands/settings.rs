@@ -43,6 +43,10 @@ const MAX_TEMP_ANTHROPIC: f64 = 1.0;
 const MAX_TEMP: f64 = 2.0;
 /// The temperature slider's granularity.
 const TEMP_STEP: f64 = 0.1;
+/// The level the Moderation switch's OFF commits: the API's own default.
+const MODERATION_OFF: &str = "auto";
+/// The level the Moderation switch's ON commits.
+const MODERATION_ON: &str = "low";
 /// The Negative-prompt field's width, matching the Model tab's manual field.
 const NEGATIVE_INPUT_WIDTH: usize = 40;
 
@@ -209,6 +213,7 @@ pub(crate) struct Extras {
     size_values: Vec<String>,
     negative: Option<usize>,
     json_edits: Option<usize>,
+    moderation: Option<usize>,
 }
 
 impl Extras {
@@ -218,7 +223,7 @@ impl Extras {
     /// System tab.
     ///
     /// The capability probes run in Go's order — Context, Effort, Temperature, Image,
-    /// Aspect/Size/Negative, JSON edits, System — because the recorded indices ARE the
+    /// Aspect/Size/Negative, JSON edits, Moderation, System — because the recorded indices ARE the
     /// commit contract and a reordering would silently rewire every knob.
     pub(crate) fn assemble(
         provider: &mut dyn Provider,
@@ -351,6 +356,18 @@ impl Extras {
             );
         }
 
+        // The moderation level, for the one dialect that sends it (OpenAI Images).
+        if let Some(moderation) = provider.as_image_moderation_tunable() {
+            let on = moderation.moderation() == Some(MODERATION_ON);
+            ex.moderation = Some(panels.len());
+            panels.push(
+                Panel::switch("Moderation".to_owned(), on).with_prompt(
+                    "On asks for moderation: low (less restrictive); off is the default, auto"
+                        .to_owned(),
+                ),
+            );
+        }
+
         // Last tab, and read-only: the knobs above keep their positions (and their
         // recorded indices) while this one just shows what the chat is running under.
         if !image_provider
@@ -466,6 +483,21 @@ impl Extras {
                     "Image edits sent as: {}",
                     if on { "JSON" } else { "multipart" }
                 ));
+                changed = true;
+            }
+        }
+
+        if let Some(i) = self.moderation
+            && let Some(moderation) = repl.conv.provider.as_image_moderation_tunable()
+        {
+            let on = r.panels.get(i).is_some_and(|p| p.on);
+            if on != (moderation.moderation() == Some(MODERATION_ON)) {
+                let level = if on { MODERATION_ON } else { MODERATION_OFF };
+                moderation.set_moderation(level);
+                update_meta(repl, |m| level.clone_into(&mut m.moderation));
+                repl.handles
+                    .tr
+                    .notice(&format!("Image moderation: {level}"));
                 changed = true;
             }
         }
@@ -863,6 +895,47 @@ mod assemble_tests {
         let (panels, ex) = tabs(&mut only_sizes, &[], "");
         assert_eq!(titles(&panels), ["Size"]);
         assert!(ex.aspect.is_none() && ex.negative.is_none());
+    }
+
+    /// The Moderation switch sits beside JSON edits, opens on the current level (`auto` and no level at all
+    /// are both off), and appears only where the capability is: the real `images` type, no other.
+    #[test]
+    fn the_moderation_switch_is_the_images_types_alone() {
+        for (level, on) in [(None, false), (Some("auto"), false), (Some("low"), true)] {
+            let mut p = caps().with_json_edits(false).with_moderation(level);
+            let (panels, ex) = tabs(&mut p, &[], "");
+            assert_eq!(titles(&panels), ["JSON edits", "Moderation"]);
+            assert_eq!(ex.moderation, Some(1));
+            assert_eq!(panels[1].kind(), PanelKind::Switch);
+            assert_eq!(panels[1].on(), on, "{level:?}");
+        }
+
+        for kind in [
+            ProviderKind::OpenAi,
+            ProviderKind::Anthropic,
+            ProviderKind::Gemini,
+            ProviderKind::VertexAi,
+            ProviderKind::OpenResponses,
+            ProviderKind::Imagen,
+            ProviderKind::Images,
+        ] {
+            let mut p = crate::provider::new_provider(
+                kind,
+                crate::provider::ProviderParams {
+                    api_key: "k",
+                    model: "m",
+                    ..crate::provider::ProviderParams::default()
+                },
+                None,
+            )
+            .expect("every kind has a constructor");
+            let (panels, _) = tabs(&mut *p, &[], "");
+            assert_eq!(
+                titles(&panels).contains(&"Moderation"),
+                kind == ProviderKind::Images,
+                "{kind}"
+            );
+        }
     }
 
     /// The image-output switch is its own capability, and it opens on the current state.

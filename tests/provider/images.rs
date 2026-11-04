@@ -1338,3 +1338,88 @@ async fn only_a_400_on_a_streaming_request_is_retried() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// moderation (X-88)
+// ---------------------------------------------------------------------------
+
+/// A provider over `uri` selecting `level`.
+fn moderated(uri: &str, level: &str) -> ImagesProvider {
+    let mut p = images(uri, "m");
+    p.as_image_moderation_tunable()
+        .expect("the images dialect sends moderation")
+        .set_moderation(level);
+    p
+}
+
+/// The raw bytes of the one generation `p` posts for "p" to `server`.
+async fn generation_bytes(p: &ImagesProvider, server: &MockServer) -> String {
+    p.chat(&CancellationToken::new(), &[Message::user("p")])
+        .await
+        .unwrap();
+    let reqs = server.received_requests().await.unwrap();
+    String::from_utf8(reqs.last().expect("a request").body.clone()).expect("a JSON body")
+}
+
+#[tokio::test]
+async fn moderation_is_on_the_wire_only_when_selected() {
+    let server = MockServer::start().await;
+    mock_generate(
+        &server,
+        r#"{"data":[{"b64_json":"CQ=="}]}"#,
+        "application/json",
+    )
+    .await;
+
+    // Byte-exact on purpose: with no level the body is what it always was.
+    assert_eq!(
+        generation_bytes(&images(&server.uri(), "m"), &server).await,
+        r#"{"model":"m","prompt":"p","n":1}"#
+    );
+    assert_eq!(
+        generation_bytes(&moderated(&server.uri(), "low"), &server).await,
+        r#"{"model":"m","prompt":"p","n":1,"moderation":"low"}"#
+    );
+    assert_eq!(
+        generation_bytes(&moderated(&server.uri(), "auto"), &server).await,
+        r#"{"model":"m","prompt":"p","n":1,"moderation":"auto"}"#
+    );
+}
+
+#[tokio::test]
+async fn moderation_survives_the_retry_without_the_streaming_fields() {
+    // Venice's interactive path: an observed turn is refused for streaming and asked again, and that
+    // second request is the one that draws the picture.
+    let server = MockServer::start().await;
+    mock_venice(&server, "/images/generations").await;
+
+    let p = moderated(&server.uri(), "low");
+    observed(&p, &[Message::user("p")]).await;
+
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 2, "one refusal, one retry");
+    assert_eq!(body_json(&reqs[0])["moderation"], "low");
+    assert_eq!(
+        String::from_utf8(reqs[1].body.clone()).unwrap(),
+        r#"{"model":"m","prompt":"p","n":1,"moderation":"low"}"#
+    );
+}
+
+#[tokio::test]
+async fn moderation_stays_off_both_edit_forms() {
+    // The OpenAI edit parameters do not list it.
+    let server = MockServer::start().await;
+    mock_edits(&server, r#"{"data":[{"b64_json":"CQ=="}]}"#).await;
+    let turn = [edit_turn("p", vec![ref_att("a.png", "image/png", &[1])])];
+    let names_it = |body: &[u8]| body.windows(10).any(|w| w == b"moderation");
+
+    let mut p = moderated(&server.uri(), "low");
+    p.chat(&CancellationToken::new(), &turn).await.unwrap();
+    p.as_image_edit_json_tunable().unwrap().set_json_edits(true);
+    p.chat(&CancellationToken::new(), &turn).await.unwrap();
+
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 2, "multipart, then JSON");
+    assert!(!names_it(&reqs[0].body), "multipart carried it");
+    assert!(!names_it(&reqs[1].body), "JSON carried it");
+}

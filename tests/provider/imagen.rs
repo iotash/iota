@@ -221,6 +221,10 @@ fn imagen_advertises_exactly_the_image_gen_capabilities() {
         p.as_image_edit_json_tunable().is_none(),
         "the JSON-edit switch is the images dialect's"
     );
+    assert!(
+        p.as_image_moderation_tunable().is_none(),
+        "`moderation` is the images dialect's"
+    );
     assert!(p.as_tool_search_host().is_none());
 
     let tun = p

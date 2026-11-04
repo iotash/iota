@@ -293,6 +293,10 @@ pub trait Provider: Send + Sync {
     fn as_image_edit_json_tunable(&mut self) -> Option<&mut dyn ImageEditJsonTunable> {
         None
     }
+    /// `moderation` capability.
+    fn as_image_moderation_tunable(&mut self) -> Option<&mut dyn ImageModerationTunable> {
+        None
+    }
     /// Tool-search host capability.
     fn as_tool_search_host(&mut self) -> Option<&mut dyn ToolSearchHost> {
         None
@@ -457,6 +461,17 @@ pub trait ImageEditJsonTunable: Send + Sync {
     fn set_json_edits(&mut self, on: bool);
     /// Whether JSON edits are selected.
     fn json_edits(&self) -> bool;
+}
+
+/// Every value `moderation:` accepts, as the `OpenAI` Images reference spells them.
+pub const MODERATION_LEVELS: [&str; 2] = ["auto", "low"];
+
+/// Image providers that send `OpenAI`'s `moderation` parameter (the `images` type alone).
+pub trait ImageModerationTunable: Send + Sync {
+    /// Selects the level generations carry.
+    fn set_moderation(&mut self, level: &str);
+    /// The selected level; `None` omits the parameter, so the API's default stands.
+    fn moderation(&self) -> Option<&str>;
 }
 
 /// Installed by the run loop; returns at most 5 ranked deferred tools (empty when the dispatcher lacks the capability).

@@ -1,8 +1,8 @@
 //! The resume-time tuning replay (`chat/session_test.go:277`, `:574`, `:591`).
 
 use iota::provider::{
-    Effort, ImageEditJsonTunable, ImageGenOptions, ImageGenParams, ImageGenTunable, ImageTunable,
-    ProviderKind, Tunable,
+    Effort, ImageEditJsonTunable, ImageGenOptions, ImageGenParams, ImageGenTunable,
+    ImageModerationTunable, ImageTunable, ProviderKind, Tunable,
 };
 use iota::session::{Overrides, SessionMeta, apply_session_tuning};
 use iota::testing::FakeProvider;
@@ -22,6 +22,7 @@ fn stub() -> FakeProvider {
         .with_image_output(false)
         .with_image_gen(ImageGenOptions::default(), ImageGenParams::default())
         .with_json_edits(false)
+        .with_moderation(None)
 }
 
 /// The `sessionMeta{Provider: "stub", Temperature: &0.5, Effort: "high", ContextWindow: 200_000}` the Go
@@ -101,12 +102,14 @@ fn apply_session_tuning_provider_mismatch_applies_nothing() {
     meta.model = "m0".to_owned();
     meta.image = true;
     meta.json_edits = true;
+    meta.moderation = "low".to_owned();
     meta.aspect_ratio = "3:2".to_owned();
     let (window, warnings) = replay(&meta, &mut provider, false, false);
     assert_eq!(provider.temperature(), None);
     assert_eq!(provider.effort(), None);
     assert!(!provider.image_output());
     assert!(!provider.json_edits());
+    assert_eq!(ImageModerationTunable::moderation(&provider), None);
     assert_eq!(*provider.image_gen_params(), ImageGenParams::default());
     assert_eq!(window, None, "the window is gated on the provider too");
     assert_eq!(warnings.len(), 1, "{warnings:?}");
@@ -182,6 +185,55 @@ fn apply_session_tuning_image_params() {
     };
     replay(&meta, &mut provider, false, false);
     assert_eq!(*provider.image_gen_params(), config);
+}
+
+/// The moderation level replays only when recorded, and survives the meta's JSON and the capability read.
+#[test]
+fn apply_session_tuning_moderation() {
+    let mut provider = stub();
+    let meta = SessionMeta {
+        provider: "openai".to_owned(),
+        moderation: "low".to_owned(),
+        ..SessionMeta::default()
+    };
+    let text = serde_json::to_string(&meta).expect("serialise");
+    assert!(text.contains(r#""moderation":"low""#), "{text}");
+    let back: SessionMeta = serde_json::from_str(&text).expect("decode");
+    assert_eq!(back.moderation, "low");
+
+    replay(&back, &mut provider, false, false);
+    assert_eq!(ImageModerationTunable::moderation(&provider), Some("low"));
+    assert_eq!(
+        iota::session::ImageSettings::of(&mut provider)
+            .moderation
+            .as_deref(),
+        Some("low")
+    );
+
+    // An empty meta omits the key, and must not clobber the config's level.
+    let meta = SessionMeta {
+        provider: "openai".to_owned(),
+        ..SessionMeta::default()
+    };
+    let text = serde_json::to_string(&meta).expect("serialise");
+    assert!(!text.contains("moderation"), "{text}");
+    let mut provider = stub().with_moderation(Some("low"));
+    replay(&meta, &mut provider, false, false);
+    assert_eq!(ImageModerationTunable::moderation(&provider), Some("low"));
+
+    // A provider without the capability takes nothing and says nothing.
+    let meta = SessionMeta {
+        provider: "openai".to_owned(),
+        moderation: "low".to_owned(),
+        ..SessionMeta::default()
+    };
+    let mut bare = FakeProvider::new()
+        .with_kind(KIND)
+        .with_model("m1")
+        .tunable();
+    let (_, warnings) = replay(&meta, &mut bare, false, false);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!(iota::provider::Provider::as_image_moderation_tunable(&mut bare).is_none());
 }
 
 /// The JSON-edits switch replays only when recorded.

@@ -8,13 +8,14 @@
 //! observer's presence is what puts `stream:true, partial_images:1` on the request, so a headless
 //! `-m` run posts the plain unary body. An endpoint that rejects those two fields answers 400, and
 //! the turn is asked once more without them (DIVERGENCES X-86, `rejected_before_generation`).
+//! `moderation` rides generations only: the `OpenAI` edit parameters do not list it (X-88).
 
 use crate::BoxFuture;
 use crate::provider::error::{ProviderError, WireOp};
 use crate::provider::model::{Attachment, Message};
 use crate::provider::{
     ChatResult, HttpTransport, ImageEditJsonTunable, ImageGenOptions, ImageGenParams,
-    ImageGenTunable, ImagePartialProvider, Provider, ProviderKind,
+    ImageGenTunable, ImageModerationTunable, ImagePartialProvider, Provider, ProviderKind,
 };
 use reqwest::header::AUTHORIZATION;
 use tokio_util::sync::CancellationToken;
@@ -59,6 +60,7 @@ pub struct ImagesProvider {
     client: Images,
     params: ImageGenParams,
     json_edits: bool,
+    moderation: Option<String>,
 }
 
 impl ImagesProvider {
@@ -77,6 +79,7 @@ impl ImagesProvider {
             client: Images { client },
             params: ImageGenParams::default(),
             json_edits: false,
+            moderation: None,
         }
     }
 
@@ -124,6 +127,7 @@ impl ImagesProvider {
                 size: self.params.image_size.clone(),
                 stream,
                 partial_images,
+                moderation: self.moderation.clone(),
             };
             let first = self.client.generate(cancel, &req, on_partial).await;
             if stream && rejected_before_generation(&first) {
@@ -250,6 +254,10 @@ impl Provider for ImagesProvider {
         Some(self)
     }
 
+    fn as_image_moderation_tunable(&mut self) -> Option<&mut dyn ImageModerationTunable> {
+        Some(self)
+    }
+
     /// The dialect streams: an interactive turn is run through [`ImagePartialProvider`].
     fn as_image_partial_provider(&self) -> Option<&dyn ImagePartialProvider> {
         Some(self)
@@ -293,5 +301,15 @@ impl ImageEditJsonTunable for ImagesProvider {
 
     fn json_edits(&self) -> bool {
         self.json_edits
+    }
+}
+
+impl ImageModerationTunable for ImagesProvider {
+    fn set_moderation(&mut self, level: &str) {
+        self.moderation = Some(level.to_owned());
+    }
+
+    fn moderation(&self) -> Option<&str> {
+        self.moderation.as_deref()
     }
 }

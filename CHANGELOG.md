@@ -26,6 +26,13 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   `--no-save`, an interactive turn reported `$HOME is not defined` and dropped
   the picture after it was paid for. It now goes to `~/.iota/images`, where a
   headless `-m` run puts it.
+- **Image models can ask for less restrictive moderation.** Set
+  `moderation: low` on a model of a `type: images` provider, or turn on the
+  Moderation switch in `/model`, and generations carry OpenAI's `moderation`
+  parameter. Venice uses the same field and otherwise blurs adult content.
+  Without the key the field is not sent and the API's default, `auto`, stands.
+  Edits do not carry it. On any other provider type the key is ignored with a
+  warning.
 
 ## 0.7.5 - 2026-10-26
 
