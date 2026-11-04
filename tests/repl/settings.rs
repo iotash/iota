@@ -547,6 +547,45 @@ async fn model_commits_the_image_knobs_together() {
     assert!(meta.json_edits);
 }
 
+/// The Moderation switch commits like JSON edits: one notice, one meta write, on the provider's level. On is
+/// `low`; off from there is an explicit `auto`, so a resume hands back what the user chose over a config's `low`.
+#[tokio::test]
+async fn model_commits_the_moderation_switch() {
+    let on = PanelResult {
+        on: true,
+        ..PanelResult::default()
+    };
+    let f = Fixture::new(vec![
+        input("/model"),
+        // Untouched: the Model tab and an off switch change nothing, and record nothing.
+        commit(vec![PanelResult::default(), PanelResult::default()]),
+        input("/model"),
+        commit(vec![PanelResult::default(), on]),
+        input("/model"),
+        commit(vec![PanelResult::default(), PanelResult::default()]),
+        Reply::Interrupted,
+    ]);
+    let (writer, dir) = f.writer();
+    let provider = FakeProvider::new()
+        .with_kind(ProviderKind::Images)
+        .with_model("m")
+        .with_models(&["m"])
+        .with_moderation(None);
+    iota::repl::run(f.params(provider, writer, Vec::new()))
+        .await
+        .expect("exit");
+
+    assert_eq!(titles(&surfaces(&f.ui)[0]), ["Model", "Moderation"]);
+    let lines = printed(&f.ui);
+    let notices: Vec<_> = lines
+        .iter()
+        .filter(|l| l.starts_with("Image moderation:"))
+        .collect();
+    assert_eq!(notices, ["Image moderation: low", "Image moderation: auto"]);
+    assert!(lines.contains(&"No changes.".to_owned()), "{lines:?}");
+    assert_eq!(SessionMeta::read(&dir).expect("meta").moderation, "auto");
+}
+
 /// The image-output switch is its own knob with its own on/off notice.
 #[tokio::test]
 async fn model_commits_the_image_output_switch() {

@@ -262,6 +262,8 @@ pub struct ModelConfig {
     /// `json_edits:` — JSON-body image edits (`images` type only).
     #[serde(deserialize_with = "crate::tool::yaml11::deserialize_bool")]
     pub json_edits: bool,
+    /// `moderation:` — `auto` or `low` (`images` type only; `""` omits it).
+    pub moderation: String,
 }
 
 impl ModelConfig {

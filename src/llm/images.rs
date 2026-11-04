@@ -48,6 +48,9 @@ pub(crate) struct ImagesRequest {
     /// Partial image frames; `None` omitted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) partial_images: Option<u32>,
+    /// Content-moderation level; `None` omitted, so the API's default stands.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) moderation: Option<String>,
 }
 
 /// One generated image.
@@ -783,6 +786,20 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&req).unwrap(),
             r#"{"model":"gpt-image-1","prompt":"a cat","n":1}"#
+        );
+    }
+
+    #[test]
+    fn images_request_carries_a_set_moderation() {
+        let req = super::ImagesRequest {
+            model: "m".to_owned(),
+            prompt: "p".to_owned(),
+            moderation: Some("low".to_owned()),
+            ..super::ImagesRequest::default()
+        };
+        assert_eq!(
+            serde_json::to_string(&req).unwrap(),
+            r#"{"model":"m","prompt":"p","moderation":"low"}"#
         );
     }
 }

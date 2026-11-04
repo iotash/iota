@@ -20,6 +20,8 @@ pub struct ImageSettings {
     pub generation: ImageGenParams,
     /// Edits on the JSON wire format (`ImageEditJsonTunable`).
     pub json_edits: bool,
+    /// The moderation level generations carry (`ImageModerationTunable`).
+    pub moderation: Option<String>,
 }
 
 impl ImageSettings {
@@ -36,6 +38,9 @@ impl ImageSettings {
             json_edits: provider
                 .as_image_edit_json_tunable()
                 .is_some_and(|t| t.json_edits()),
+            moderation: provider
+                .as_image_moderation_tunable()
+                .and_then(|t| t.moderation().map(str::to_owned)),
         }
     }
 }
@@ -124,6 +129,9 @@ pub struct SessionMeta {
     /// Whether edits use the JSON wire format; false omits the key.
     #[serde(skip_serializing_if = "is_false")]
     pub json_edits: bool,
+    /// The moderation level generations carry (`auto`/`low`); empty omits the key.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub moderation: String,
     /// Where the session was started (the project root in agent mode); empty omits the key. Old bundles
     /// simply lack it.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -238,6 +246,7 @@ impl SessionMeta {
         self.aspect_ratio = opt(&image.generation.aspect_ratio);
         self.image_size = opt(&image.generation.image_size);
         self.negative_prompt = opt(&image.generation.negative_prompt);
+        self.moderation = opt(&image.moderation);
     }
 
     /// Records the context window (the disk field is Go's `int`; a `u64` beyond it saturates).

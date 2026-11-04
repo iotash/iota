@@ -549,7 +549,7 @@ fn an_unknown_key_is_refused_with_its_coordinate() {
         ),
         (
             "models:\n  m: {provider: openai, idd: x}\n",
-            "models.m.idd: unknown key (want provider, id, context_window, defer_mode, effort, temperature, top_p, max_tokens, image, aspect_ratio, image_size, negative_prompt, json_edits)",
+            "models.m.idd: unknown key (want provider, id, context_window, defer_mode, effort, temperature, top_p, max_tokens, image, aspect_ratio, image_size, negative_prompt, json_edits, moderation)",
         ),
         (
             "agents:\n  coder: {model: m, sytem: hi}\n",
@@ -1467,4 +1467,36 @@ agents:
     write_mcp_servers(&fresh, "", &next).expect("write creates the file and its directory");
     let (cfg, _) = load_explicit(&fresh, &Env::default());
     assert_eq!(cfg.mcp_servers, next);
+}
+
+/// `models.<name>.moderation`: absent by default, kept verbatim on any type (a run on another type warns, as
+/// for `json_edits`), and refused with the file that wrote a level the API does not have.
+#[test]
+fn moderation_is_an_optional_model_key() {
+    let (cfg, warnings) = parse_warned(
+        "providers:\n  v: {type: images}\n  o: {type: openai}\nmodels:\n  a: {provider: v, id: x, moderation: auto}\n  l: {provider: v, id: x, moderation: low}\n  n: {provider: v, id: x}\n  t: {provider: o, id: x, moderation: low}\n",
+    );
+    let cfg = cfg.expect("loads");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(cfg.models["a"].moderation, "auto");
+    assert_eq!(cfg.models["l"].moderation, "low");
+    assert_eq!(cfg.models["n"].moderation, "");
+    assert_eq!(cfg.models["t"].moderation, "low");
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("c.yaml");
+    fs::write(
+        &path,
+        "models:\n  m: {provider: v, id: x, moderation: high}\n",
+    )
+    .unwrap();
+    let (cfg, _) = try_load_explicit(&path, &Env::default());
+    assert_eq!(
+        cfg.expect_err("an unknown level fails the load")
+            .to_string(),
+        format!(
+            "config {}: models.m.moderation: unknown moderation (want auto, low)",
+            path.display()
+        )
+    );
 }

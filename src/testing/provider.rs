@@ -22,8 +22,8 @@ use crate::provider::sink::StreamSink;
 use crate::provider::usage::Usage;
 use crate::provider::{
     ChatResult, Effort, ImageEditJsonTunable, ImageGenOptions, ImageGenParams, ImageGenTunable,
-    ImagePartialProvider, ImageTunable, MaxTokensTunable, Provider, ProviderKind, RoundResult,
-    ToolProvider, Tunable,
+    ImageModerationTunable, ImagePartialProvider, ImageTunable, MaxTokensTunable, Provider,
+    ProviderKind, RoundResult, ToolProvider, Tunable,
 };
 
 /// How a round fails instead of answering.
@@ -408,6 +408,7 @@ pub struct FakeProvider {
     image_output: Option<bool>,
     image_gen: Option<(ImageGenOptions, ImageGenParams)>,
     json_edits: Option<bool>,
+    moderation: ModerationSlot,
     max_tokens: MaxTokensSlot,
     frames: Option<Vec<Vec<u8>>>,
     rounds: Mutex<VecDeque<Round>>,
@@ -431,6 +432,7 @@ impl Default for FakeProvider {
             image_output: None,
             image_gen: None,
             json_edits: None,
+            moderation: ModerationSlot::default(),
             max_tokens: MaxTokensSlot::default(),
             frames: None,
             rounds: Mutex::new(VecDeque::new()),
@@ -447,6 +449,13 @@ impl Default for FakeProvider {
 struct MaxTokensSlot {
     on: bool,
     value: Option<u32>,
+}
+
+/// The `ImageModerationTunable` capability: whether it is on, and the level it holds.
+#[derive(Default)]
+struct ModerationSlot {
+    on: bool,
+    value: Option<String>,
 }
 
 /// The empty parameters an `ImageGenTunable` without knobs reports.
@@ -562,6 +571,16 @@ impl FakeProvider {
     #[must_use]
     pub fn with_json_edits(mut self, on: bool) -> Self {
         self.json_edits = Some(on);
+        self
+    }
+
+    /// Switches the `ImageModerationTunable` capability on, the level initially `level`.
+    #[must_use]
+    pub fn with_moderation(mut self, level: Option<&str>) -> Self {
+        self.moderation = ModerationSlot {
+            on: true,
+            value: level.map(str::to_owned),
+        };
         self
     }
 
@@ -810,6 +829,12 @@ impl Provider for FakeProvider {
         self.tuning.is_some().then_some(self as &mut dyn Tunable)
     }
 
+    fn as_image_moderation_tunable(&mut self) -> Option<&mut dyn ImageModerationTunable> {
+        self.moderation
+            .on
+            .then_some(self as &mut dyn ImageModerationTunable)
+    }
+
     fn as_max_tokens_tunable(&mut self) -> Option<&mut dyn MaxTokensTunable> {
         self.max_tokens
             .on
@@ -952,6 +977,16 @@ impl ImageGenTunable for FakeProvider {
         self.image_gen
             .as_ref()
             .map_or_else(ImageGenOptions::default, |g| g.0.clone())
+    }
+}
+
+impl ImageModerationTunable for FakeProvider {
+    fn set_moderation(&mut self, level: &str) {
+        self.moderation.value = Some(level.to_owned());
+    }
+
+    fn moderation(&self) -> Option<&str> {
+        self.moderation.value.as_deref()
     }
 }
 

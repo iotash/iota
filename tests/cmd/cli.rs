@@ -985,6 +985,7 @@ models:
     effort: high
     top_p: 0.5
     temperature: 0.5
+    moderation: low
 agents:
   pic:
     model: pic
@@ -1001,6 +1002,7 @@ agents:
              Warning: `effort` does not apply to provider type imagen (ignored)\n\
              Warning: `top_p` does not apply to provider type imagen (ignored)\n\
              Warning: temperature does not apply to provider type imagen (ignored)\n\
+             Warning: `moderation` applies only to the images provider type (ignored for imagen)\n\
              Error: {}\n",
             branch_error()
         )
@@ -1353,5 +1355,65 @@ async fn cli_children_outside_herdr_inherit_everything() {
     // Not a bare "herdr": the binary's own path, which the run's facts name, may contain it.
     for line in ["\nhost: ", "\nherdr note: "] {
         assert!(!system.contains(line), "{line:?} in {system}");
+    }
+}
+
+/// `models.<name>.moderation` reaches the wire through a real run: the YAML a user writes, and no warning.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_moderation_reaches_the_generation() {
+    let (dir, home) = project();
+    let server = MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/images/generations"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_raw(r#"{"data":[{"b64_json":"CQ=="}]}"#, "application/json"),
+        )
+        .mount(&server)
+        .await;
+    write_config(
+        dir.path(),
+        &format!(
+            "providers:\n  venice:\n    type: images\n    key: sk-x\n    url: {}\nmodels:\n  pic:\n    provider: venice\n    id: seedream-v5-pro\n    moderation: low\nagents:\n  default: {{model: pic}}\n",
+            server.uri()
+        ),
+    );
+    let mut cmd = iota(dir.path(), &home);
+    cmd.args(["-m", "a cat"]);
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    assert!(!err(&o).contains("Warning"), "stderr: {}", err(&o));
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(
+        String::from_utf8_lossy(&reqs[0].body),
+        r#"{"model":"seedream-v5-pro","prompt":"a cat","n":1,"moderation":"low"}"#
+    );
+}
+
+/// On a chat provider the key warns and the request does not change.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_moderation_on_a_chat_provider_warns_and_is_not_sent() {
+    let server = MockServer::start().await;
+    transcript::openai_transcript(&server).await;
+    let (dir, home) = project();
+    write_config(
+        dir.path(),
+        &format!(
+            "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: {{provider: p, id: gpt-test, moderation: low}}\nagents:\n  default: {{model: m}}\n",
+            server.uri()
+        ),
+    );
+    let mut cmd = iota(dir.path(), &home);
+    cmd.args(["-m", "hi"]);
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    assert_eq!(
+        err(&o),
+        "Warning: `moderation` applies only to the images provider type (ignored for openai)\n"
+    );
+    for req in server.received_requests().await.unwrap() {
+        let body = String::from_utf8_lossy(&req.body);
+        assert!(!body.contains("moderation"), "body: {body}");
     }
 }

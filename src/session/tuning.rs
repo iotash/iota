@@ -76,7 +76,8 @@ pub fn replay_session_settings(
 /// - **image**: `set_image_output(true)` only when `meta.image`;
 /// - **image generation**: only when `{aspect_ratio, image_size, negative_prompt}` is non-empty, so an
 ///   absent meta leaves the config defaults alone (the effort convention);
-/// - **json edits**: `set_json_edits(true)` only when `meta.json_edits`.
+/// - **json edits**: `set_json_edits(true)` only when `meta.json_edits`;
+/// - **moderation**: `set_moderation` only when `meta.moderation` is non-empty.
 ///
 /// With `overrides.config_wins` (a bot) temperature, effort, `top_p`, `max_tokens` and the window are skipped: the config
 /// owns them.
@@ -162,6 +163,11 @@ pub fn apply_session_tuning(
         && let Some(edits) = provider.as_image_edit_json_tunable()
     {
         edits.set_json_edits(true);
+    }
+    if !meta.moderation.is_empty()
+        && let Some(moderation) = provider.as_image_moderation_tunable()
+    {
+        moderation.set_moderation(&meta.moderation);
     }
     if overrides.window || overrides.config_wins {
         return None;

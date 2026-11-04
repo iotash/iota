@@ -1,5 +1,5 @@
 //! Provider tuning from the config (cmd/root.go:133-199): image → effort → `top_p` → `max_tokens` → temperature →
-//! `json_edits` → generation params, each warning byte-equal to Go, then the `tools`/`mcp_servers` warning for providers without tool
+//! `json_edits` → `moderation` → generation params, each warning byte-equal to Go, then the `tools`/`mcp_servers` warning for providers without tool
 //! calling.
 //!
 //! The values come from the resolved MODEL (an image knob or a reasoning effort is a property of the model,
@@ -12,6 +12,7 @@
 //! `` Warning: `max_tokens` does not apply to provider type {k} (ignored) `` (no Go twin, X-68) ·
 //! `Warning: temperature does not apply to provider type {k} (ignored)` ·
 //! `` Warning: `json_edits` applies only to the images provider type (ignored for {k}) `` ·
+//! `` Warning: `moderation` applies only to the images provider type (ignored for {k}) `` (no Go twin, X-88) ·
 //! `Warning: aspect_ratio/image_size/negative_prompt apply only to image providers (ignored for type {k})`.
 
 use crate::provider::Provider;
@@ -19,7 +20,7 @@ use crate::provider::Provider;
 use crate::cmd::SetupError;
 use crate::config::Resolved;
 
-/// Fixed order: image → effort → `top_p` → `max_tokens` → temperature → `json_edits` → gen-params. Warnings carry
+/// Fixed order: image → effort → `top_p` → `max_tokens` → temperature → `json_edits` → `moderation` → gen-params. Warnings carry
 /// the `Warning: ` prefix. Errors: `ConfigEffort`, `ConfigTopP`, `ConfigMaxTokens`.
 ///
 /// Every step is Go's `p.(provider.XTunable)` type assertion spelled as the capability accessor: the tuning lands
@@ -104,6 +105,17 @@ pub(crate) fn apply(
         }
     }
 
+    // No Go twin (DIVERGENCES X-88).
+    if !model_cfg.moderation.is_empty() {
+        if let Some(tunable) = p.as_image_moderation_tunable() {
+            tunable.set_moderation(&model_cfg.moderation);
+        } else {
+            warn(format!(
+                "Warning: `moderation` applies only to the images provider type (ignored for {kind})"
+            ));
+        }
+    }
+
     // root.go:172-181
     let gen_params = model_cfg.image_gen_params();
     if !gen_params.is_empty() {
@@ -138,7 +150,7 @@ pub(crate) fn warn_tools_without_calling(
 
 #[cfg(test)]
 mod tests {
-    use crate::provider::ProviderKind;
+    use crate::provider::{Provider as _, ProviderKind};
     use crate::testing::FakeProvider;
 
     use super::{apply, warn_tools_without_calling};
@@ -211,6 +223,7 @@ mod tests {
             top_p: Some(0.5),
             max_tokens: Some(64_000),
             json_edits: true,
+            moderation: "low".to_owned(),
             aspect_ratio: "1:1".to_owned(),
             ..ModelConfig::default()
         };
@@ -225,10 +238,50 @@ mod tests {
                 "Warning: temperature does not apply to provider type imagen (ignored)".to_owned(),
                 "Warning: `json_edits` applies only to the images provider type (ignored for imagen)"
                     .to_owned(),
+                "Warning: `moderation` applies only to the images provider type (ignored for imagen)"
+                    .to_owned(),
                 "Warning: aspect_ratio/image_size/negative_prompt apply only to image providers (ignored for type imagen)"
                     .to_owned(),
             ]
         );
+    }
+
+    /// The `images` type takes `moderation` without a word; a text provider warns as imagen does, and an
+    /// absent key says nothing to anyone.
+    #[test]
+    fn moderation_lands_or_warns_by_capability() {
+        let low = ModelConfig {
+            moderation: "low".to_owned(),
+            ..ModelConfig::default()
+        };
+        let mut warnings = Vec::new();
+
+        let mut images = FakeProvider::new()
+            .with_kind(ProviderKind::Images)
+            .with_moderation(None);
+        apply(&mut images, &resolved(low.clone()), None, &mut |w| {
+            warnings.push(w);
+        })
+        .expect("applies");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            images
+                .as_image_moderation_tunable()
+                .and_then(|t| t.moderation()),
+            Some("low")
+        );
+
+        let mut text = FakeProvider::new().with_kind(ProviderKind::OpenAi);
+        apply(&mut text, &resolved(low), None, &mut |w| warnings.push(w)).expect("warns");
+        assert_eq!(
+            warnings,
+            ["Warning: `moderation` applies only to the images provider type (ignored for openai)"]
+        );
+
+        warnings.clear();
+        let (r, warnings) = run(&ModelConfig::default(), None);
+        assert!(r.is_ok());
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]

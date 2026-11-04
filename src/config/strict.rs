@@ -12,6 +12,7 @@
 use serde_norway::Value;
 
 use crate::config::{AgentMode, ConfigError};
+use crate::provider::MODERATION_LEVELS;
 use crate::tool::sets::SET_NAMES;
 
 /// The top-level maps.
@@ -19,7 +20,7 @@ const TOP_KEYS: [&str; 4] = ["providers", "models", "agents", "mcp_servers"];
 /// Every key a `providers.<name>` entry accepts — the ENDPOINT.
 const PROVIDER_KEYS: [&str; 3] = ["type", "key", "url"];
 /// Every key a `models.<name>` entry accepts.
-const MODEL_KEYS: [&str; 13] = [
+const MODEL_KEYS: [&str; 14] = [
     "provider",
     "id",
     "context_window",
@@ -33,6 +34,7 @@ const MODEL_KEYS: [&str; 13] = [
     "image_size",
     "negative_prompt",
     "json_edits",
+    "moderation",
 ];
 /// Every key an `agents.<name>` entry accepts.
 const AGENT_KEYS: [&str; 15] = [
@@ -144,6 +146,9 @@ fn audit_section(section: &str, entries: &Value) -> Result<(), ConfigError> {
             if section == "agents" && key == "mode" {
                 check_mode(name, value)?;
             }
+            if section == "models" && key == "moderation" {
+                check_moderation(name, value)?;
+            }
         }
     }
     Ok(())
@@ -232,6 +237,20 @@ fn check_mode(agent: &str, mode: &Value) -> Result<(), ConfigError> {
     })
 }
 
+/// `models.<name>.moderation`: one of the API's two levels, refused in the shape of [`check_mode`].
+fn check_moderation(model: &str, level: &Value) -> Result<(), ConfigError> {
+    if level
+        .as_str()
+        .is_some_and(|l| MODERATION_LEVELS.contains(&l))
+    {
+        return Ok(());
+    }
+    Err(ConfigError::Key {
+        at: format!("models.{model}.moderation"),
+        message: format!("unknown moderation (want {})", MODERATION_LEVELS.join(", ")),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::audit;
@@ -283,6 +302,41 @@ mod tests {
             check("agents:\n  a: {model: m, context_window: 400k}\n"),
             ""
         );
+    }
+
+    #[test]
+    fn moderation_is_a_model_key_with_two_levels() {
+        for level in ["auto", "low"] {
+            assert_eq!(
+                check(&format!(
+                    "models:\n  m: {{provider: p, id: i, moderation: {level}}}\n"
+                )),
+                ""
+            );
+        }
+        for level in ["high", "Low", "\"\"", "1", "true", "~", "[low]"] {
+            assert_eq!(
+                check(&format!(
+                    "models:\n  m: {{provider: p, id: i, moderation: {level}}}\n"
+                )),
+                "models.m.moderation: unknown moderation (want auto, low)",
+                "level {level}"
+            );
+        }
+        for (yaml, at) in [
+            ("agents:\n  a: {model: m, moderation: low}\n", "agents.a"),
+            (
+                "providers:\n  v: {type: images, moderation: low}\n",
+                "providers.v",
+            ),
+        ] {
+            assert_eq!(
+                check(yaml),
+                format!(
+                    "{at}.moderation: `moderation` belongs under `models:` (see https://iota.sh/docs/config-file)"
+                )
+            );
+        }
     }
 
     #[test]
