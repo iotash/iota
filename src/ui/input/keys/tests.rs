@@ -384,12 +384,10 @@ fn row_5_up_on_a_blank_composer_pops_the_newest_queued_item() {
     );
 }
 
-/// Row 6: ↑/↓ walk the history only while the composer holds ONE wrapped row — newest
-/// first, stopping at the oldest, ↓ back to the saved draft and then no further; a
-/// multi-row draft (two logical lines, or one line wrapping) keeps the arrows for cursor
-/// movement and never enters the history.
+/// Row 6, one-row draft (on both edges): ↑/↓ walk the history — newest first, stopping at the
+/// oldest, ↓ back to the saved draft and then no further.
 #[test]
-fn row_6_arrows_walk_the_history_only_in_a_single_row_draft() {
+fn row_6_arrows_walk_the_history_in_a_single_row_draft() {
     let mut m = test_model();
     history(&mut m, &["one", "two"]);
     type_text(&mut m, "dr");
@@ -413,28 +411,134 @@ fn row_6_arrows_walk_the_history_only_in_a_single_row_draft() {
         "dr",
         "a further ↓ falls to the edit set: a no-op here"
     );
+}
 
+/// Row 6, two-line draft: ↑ on the bottom row moves to the top one, the next ↑ recalls; ↓ on
+/// the bottom row walks forward and restores the draft, cursor at its end.
+#[test]
+fn row_6_up_recalls_only_from_the_top_row_of_a_two_line_draft() {
+    let mut m = test_model();
+    history(&mut m, &["one", "two"]);
     m.composer.set_value("a\nb");
     assert_eq!(cursor(&m), (3, 1));
     up(&mut m);
     assert_eq!(
         m.composer.value(),
         "a\nb",
-        "a two-line draft never recalls history"
+        "the bottom row's ↑ is a row move"
     );
+    assert_eq!(cursor(&m), (3, 0), "holding its column");
+    up(&mut m);
+    assert_eq!(m.composer.value(), "two", "the top row's ↑ recalls");
+    up(&mut m);
+    assert_eq!(m.composer.value(), "one");
+    down(&mut m);
+    assert_eq!(m.composer.value(), "two");
+    down(&mut m);
+    assert_eq!(m.composer.value(), "a\nb", "↓ restores the draft");
+    assert_eq!(cursor(&m), (3, 1));
+    down(&mut m);
+    assert_eq!(
+        m.composer.value(),
+        "a\nb",
+        "nothing further forward: the edit set, a no-op on the bottom row"
+    );
+    assert_eq!(cursor(&m), (3, 1));
+}
+
+/// Row 6, three lines: on the middle row both arrows move the cursor, and that holds with a
+/// walk in progress, where ↓ has somewhere to go.
+#[test]
+fn row_6_arrows_move_the_cursor_between_the_edges() {
+    let mut m = test_model();
+    history(&mut m, &["one"]);
+    m.composer.set_value("a\nb\nc");
+    up(&mut m);
+    assert_eq!(cursor(&m), (3, 1), "bottom → middle");
+    up(&mut m);
+    assert_eq!(cursor(&m), (3, 0), "middle → top");
+    assert_eq!(m.composer.value(), "a\nb\nc");
+
+    let mut m = test_model();
+    m.composer.push_history("a\nb\nc");
+    m.composer.push_history("newest");
+    up(&mut m);
+    up(&mut m);
+    assert_eq!(m.composer.value(), "a\nb\nc");
+    up(&mut m);
+    assert_eq!(cursor(&m), (3, 1), "on the recalled entry's middle row");
+    down(&mut m);
     assert_eq!(
         cursor(&m),
-        (3, 0),
-        "↑ moved the cursor a row up, holding its column"
+        (3, 2),
+        "the middle row's ↓ moves, though a walk is on"
     );
-    down(&mut m);
-    assert_eq!(cursor(&m), (3, 1));
+    assert_eq!(m.composer.value(), "a\nb\nc");
+}
 
-    m.composer.set_value(&"x".repeat(200)); // one logical line, three wrapped rows
+/// Row 6, one wrapped line: the edges are DISPLAY rows, not logical lines.
+#[test]
+fn row_6_the_edges_of_a_wrapping_line_are_display_rows() {
+    let mut m = test_model();
+    history(&mut m, &["one"]);
+    let long = "x".repeat(200); // one logical line, three wrapped rows at 80 columns
+    m.composer.set_value(&long);
     assert_eq!(cursor(&m).1, 2);
     up(&mut m);
-    assert_eq!(cursor(&m).1, 1, "a wrapping line keeps ↑ for row movement");
-    assert_eq!(m.composer.value().len(), 200);
+    assert_eq!(cursor(&m).1, 1, "row 2's ↑ moves");
+    up(&mut m);
+    assert_eq!(cursor(&m).1, 0, "row 1's ↑ moves");
+    assert_eq!(m.composer.value(), long);
+    up(&mut m);
+    assert_eq!(m.composer.value(), "one", "row 0's ↑ recalls");
+    down(&mut m);
+    assert_eq!(m.composer.value(), long, "↓ restores the wrapped draft");
+}
+
+/// Row 6: a blank multi-line draft with nothing queued follows the same edges, its empty
+/// lines being rows of their own.
+#[test]
+fn row_6_empty_lines_are_rows() {
+    let mut m = test_model();
+    history(&mut m, &["one"]);
+    m.composer.set_value("\n");
+    assert_eq!(cursor(&m), (2, 1));
+    up(&mut m);
+    assert_eq!(cursor(&m), (2, 0), "the empty bottom row's ↑ moves");
+    assert_eq!(m.composer.value(), "\n");
+    up(&mut m);
+    assert_eq!(m.composer.value(), "one");
+}
+
+/// Row 6: a multi-line entry is walked THROUGH. Its row moves leave the walk where it is, so
+/// the ↑ off its top row reaches the entry before it, ↓ comes back the same way, and the
+/// draft saved at the start of the walk survives.
+#[test]
+fn row_6_a_multi_line_entry_does_not_trap_the_walk() {
+    let mut m = test_model();
+    m.composer.push_history("old");
+    m.composer.push_history("a\nb");
+    m.composer.push_history("new");
+    type_text(&mut m, "dr");
+    up(&mut m);
+    assert_eq!(m.composer.value(), "new");
+    up(&mut m);
+    assert_eq!(m.composer.value(), "a\nb");
+    assert_eq!(cursor(&m), (3, 1), "a recall lands at the entry's end");
+    up(&mut m);
+    assert_eq!(cursor(&m), (3, 0), "a row move inside the entry");
+    up(&mut m);
+    assert_eq!(m.composer.value(), "old", "the walk goes on past the entry");
+    down(&mut m);
+    assert_eq!(m.composer.value(), "a\nb");
+    down(&mut m);
+    assert_eq!(m.composer.value(), "new");
+    down(&mut m);
+    assert_eq!(
+        m.composer.value(),
+        "dr",
+        "the saved draft survived the walk"
+    );
 }
 
 /// Row 7: Enter submits the TRIMMED draft — to a parked reader, else onto the queue — and
@@ -560,11 +664,10 @@ fn row_7a_newline_after_a_paste_tag_submits_both() {
 
 /// Row 7a sits AFTER rows 2–6 and claims nothing they own, and nothing ahead of it eats
 /// Ctrl+J: it is not row 2's interrupt (a live turn stays live, a parked reader stays
-/// parked), and it ends the completion cycle (row 4). After a recall plus Ctrl+J, ↑ moves the
-/// cursor instead of walking on — but that is the two-row draft's doing (`history_navigable`),
-/// not row 7a's `end_history_nav()`: that call is defensive and has no observable effect today
-/// (every way back to a one-row draft goes through the edit set or a submit, which reset the
-/// walk themselves), so nothing here pins it, and nothing should be contrived to.
+/// parked), and it ends the completion cycle (row 4). After a recall plus Ctrl+J the draft has
+/// two rows, so ↑ moves the cursor first (row 6's edge rule); only the ↑ off the top row recalls.
+/// That recall starts a fresh walk because row 7a ended the old one: row moves keep a walk
+/// alive, so nothing else would, and the edited text would be lost.
 #[test]
 fn row_7a_is_not_eaten_and_ends_the_cycle() {
     let mut m = test_model();
@@ -599,12 +702,36 @@ fn row_7a_is_not_eaten_and_ends_the_cycle() {
     assert_eq!(
         m.composer.value(),
         "two\nb",
-        "↑ in a two-line draft is a row move, never a history step"
+        "↑ on a two-line draft's bottom row is a row move, not a history step"
     );
     assert_eq!(cursor(&m), (3, 0), "↑ moved the cursor to the first row");
     down(&mut m);
     assert_eq!(cursor(&m), (3, 1), "↓ moved it back down");
     assert_eq!(m.composer.value(), "two\nb");
+
+    let mut m = test_model();
+    history(&mut m, &["one", "two"]);
+    up(&mut m);
+    m.handle_key(ctrl('j'));
+    assert_eq!(m.composer.value(), "two\n");
+    up(&mut m);
+    assert_eq!(
+        m.composer.value(),
+        "two\n",
+        "the bottom row's ↑ is a row move"
+    );
+    up(&mut m);
+    assert_eq!(
+        m.composer.value(),
+        "two",
+        "a fresh walk from the newest entry"
+    );
+    down(&mut m);
+    assert_eq!(
+        m.composer.value(),
+        "two\n",
+        "the newline's draft was saved: Ctrl+J ended the old walk"
+    );
 }
 
 /// Row 7a is the COMPOSER's: with a surface open, Ctrl+J and Alt/Shift+Enter never reach a
