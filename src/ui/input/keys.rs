@@ -14,8 +14,9 @@
 //! under Ghostty — so a newline on it would work almost nowhere; where it arrives, it submits.
 //!
 //! Any key that is not Tab ends the completion cycle (model.go:436); any key that
-//! reaches the edit set ends history navigation (model.go:493). ESC with no scopes
-//! falls through to the edit set exactly like Go — the fall-through is what resets the
+//! reaches the edit set ends history navigation (model.go:493), except ↑/↓, which only move
+//! the cursor there — a multi-line entry is walked through, not out of (X-89). ESC with no
+//! scopes falls through to the edit set exactly like Go — the fall-through is what resets the
 //! completion cycle and history navigation at idle (the contract table's row-3 "else
 //! no-op" refers to scope firing only).
 
@@ -82,14 +83,15 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
         return;
     }
 
-    // Row 6: ↑/↓ walk the input history while the composer holds a single wrapped
-    // row (multi-row drafts keep the arrows for cursor movement — the edit set).
-    if key.code == KeyCode::Up && m.composer.history_navigable(m.frame_width()) {
+    // Row 6: ↑ on the draft's top display row and ↓ on its bottom one walk the input
+    // history; anywhere else the arrows move the cursor (the edit set). A one-row draft is
+    // on both edges.
+    if key.code == KeyCode::Up && m.composer.at_first_row(m.frame_width()) {
         m.composer.history_up();
         return;
     }
     if key.code == KeyCode::Down
-        && m.composer.history_navigable(m.frame_width())
+        && m.composer.at_last_row(m.frame_width())
         && m.composer.history_can_forward()
     {
         m.composer.history_down();
@@ -119,9 +121,14 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
         return;
     }
 
-    // Rows 8–9: the editing set + text insert; any edit ends history navigation.
+    // Rows 8–9: the editing set + text insert; any edit ends history navigation. ↑/↓ reach
+    // here only to move between rows, and a row move inside a recalled multi-line entry must
+    // leave the walk on it, or the ↑ off its top row would restart from the newest entry and
+    // overwrite the saved draft with the entry.
     m.composer.handle_edit_key(&key, m.frame_width());
-    m.composer.end_history_nav();
+    if !matches!(key.code, KeyCode::Up | KeyCode::Down) {
+        m.composer.end_history_nav();
+    }
 }
 
 #[cfg(test)]

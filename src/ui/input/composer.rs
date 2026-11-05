@@ -113,11 +113,6 @@ impl Composer {
         self.editor.value().trim().is_empty()
     }
 
-    /// Logical (newline-separated) line count.
-    pub(crate) fn line_count(&self) -> usize {
-        self.editor.value().split('\n').count()
-    }
-
     /// The height the frame renders: the wrapped row count, newline breaks included,
     /// clamped to 1..=`MAX_COMPOSER_ROWS` (model.go resizeComposer). A long logical line
     /// inside a multi-line draft grows the box by every row it wraps to (X-65).
@@ -213,10 +208,30 @@ impl Composer {
         self.hist_idx = self.history.len();
     }
 
-    /// History is ↑/↓ navigable only while the composer holds a single logical line
-    /// that fits one wrapped row (model.go historyNavigable).
-    pub(crate) fn history_navigable(&self, width: u16) -> bool {
-        self.line_count() <= 1 && wrap_spans(self.editor.value(), content_width(width)).len() <= 1
+    /// The display row holding the cursor, with the row count, at `width`: the first span
+    /// that contains it, ends inclusive. So a cursor at a row's end — a wrap boundary or a
+    /// newline byte — belongs to that row, one just past a newline to the next, and an empty
+    /// logical line's zero-width span holds the cursor sitting on it.
+    fn cursor_row(&self, width: u16) -> (usize, usize) {
+        let spans = wrap_spans(self.editor.value(), content_width(width));
+        let cursor = self.editor.cursor();
+        let last = spans.len().saturating_sub(1);
+        let row = spans
+            .iter()
+            .position(|&(start, end)| (start..=end).contains(&cursor))
+            .unwrap_or(last);
+        (row, spans.len())
+    }
+
+    /// Whether the cursor is on the top display row, where ↑ recalls history.
+    pub(crate) fn at_first_row(&self, width: u16) -> bool {
+        self.cursor_row(width).0 == 0
+    }
+
+    /// Whether the cursor is on the bottom display row, where ↓ walks history forward.
+    pub(crate) fn at_last_row(&self, width: u16) -> bool {
+        let (row, rows) = self.cursor_row(width);
+        row + 1 == rows
     }
 
     /// Whether ↓ still has somewhere to go (else the key falls to the edit set).
@@ -253,7 +268,7 @@ impl Composer {
         }
     }
 
-    /// Any edit leaves history navigation (model.go:493).
+    /// Any edit leaves history navigation (model.go:493); a row move is not one (`keys.rs`).
     pub(crate) fn end_history_nav(&mut self) {
         self.hist_idx = self.history.len();
     }
@@ -459,6 +474,68 @@ mod tests {
             "the description should take the status row while cycling:\n{joined}"
         );
         assert_eq!(m.composer.value(), "/model", "tab must write the candidate");
+    }
+
+    /// The row boundaries: a row's end (newline byte or wrap boundary) is that row's, past a
+    /// newline is the next one's, an empty line's zero-width span holds its own row. `width`
+    /// 12 is 10 content columns.
+    #[test]
+    fn cursor_row_owns_each_rows_end() {
+        let at = |value: &str, cursor: usize, width: u16| {
+            let mut c = Composer::new();
+            c.set_value(value);
+            c.editor.set_cursor(cursor);
+            c.cursor_row(width)
+        };
+        assert_eq!(at("", 0, 12), (0, 1));
+        assert_eq!(at("abc", 0, 12), (0, 1));
+        assert_eq!(at("abc", 3, 12), (0, 1));
+        assert_eq!(at("a\nb", 1, 12), (0, 2), "on the newline byte");
+        assert_eq!(at("a\nb", 2, 12), (1, 2), "just after the newline");
+        assert_eq!(at("a\n\nb", 2, 12), (1, 3), "on the empty line");
+        assert_eq!(at("a\n\nb", 3, 12), (2, 3), "after the empty line");
+        assert_eq!(at("a\n", 2, 12), (1, 2), "the empty last line");
+        let long = "x".repeat(25);
+        assert_eq!(at(&long, 10, 12), (0, 3), "a wrap boundary ends the row");
+        assert_eq!(at(&long, 11, 12), (1, 3));
+        assert_eq!(at(&long, 20, 12), (1, 3));
+        assert_eq!(at(&long, 21, 12), (2, 3));
+        assert_eq!(at("中中中", 6, 6), (0, 2), "two wide glyphs fill 4 columns");
+        assert_eq!(
+            at("中中中", 6, 5),
+            (1, 3),
+            "3 columns hold one, its gap unused"
+        );
+    }
+
+    /// The row the edges read is the row the cursor renders on and `move_cursor_row` moves
+    /// from; if they disagreed, an arrow could land on neither a move nor a recall.
+    #[test]
+    fn cursor_row_agrees_with_the_rendered_row() {
+        for value in [
+            "",
+            "abc",
+            "a\nb",
+            "\n",
+            "\n\n",
+            "a\n\nb\n",
+            &"x".repeat(25),
+            &format!("{}\n{}", "y".repeat(10), "z".repeat(21)),
+            "中文测试中文测试",
+            "a中b文c\n中",
+        ] {
+            let mut c = Composer::new();
+            c.set_value(value);
+            let offsets = value.char_indices().map(|(i, _)| i).chain([value.len()]);
+            for cursor in offsets {
+                c.editor.set_cursor(cursor);
+                assert_eq!(
+                    c.cursor_row(12).0,
+                    c.cursor_rowcol(super::content_width(12)).0,
+                    "{value:?} at {cursor}"
+                );
+            }
+        }
     }
 
     /// ↑ recalls newest-first including queued items; ↓ walks back to the saved draft.
