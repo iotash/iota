@@ -259,7 +259,7 @@ pub struct ModelConfig {
     pub image_size: String,
     /// `negative_prompt:` — image-provider generation default (verbatim; `""` omits it).
     pub negative_prompt: String,
-    /// `json_edits:` — JSON-body image edits (`images` type only).
+    /// `json_edits:` — xAI's JSON-body image edits (`images` type only).
     #[serde(deserialize_with = "crate::tool::yaml11::deserialize_bool")]
     pub json_edits: bool,
     /// `moderation:` — `auto` or `low` (`images` type only; `""` omits it).
