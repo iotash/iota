@@ -3,6 +3,18 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## Unreleased
+
+### Fixed
+
+- **The first request after the computer wakes no longer stalls.** iota kept
+  the connections it had open before the lid closed, and the clock it aged
+  them by stops while a Mac sleeps, so the morning's first request went onto
+  a connection that was long dead and sat on "Waiting for the model" for 20
+  seconds to two minutes before trying again. iota now notices that the
+  machine slept and opens fresh connections before it sends, as the original
+  Go iota did.
+
 ## 0.7.7 - 2026-11-04
 
 ### Fixed

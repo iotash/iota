@@ -67,7 +67,7 @@ impl RunContext {
         let http = crate::llm::default_http_client();
         let reqlog = Arc::new(RequestLog::new());
         let transport = HttpTransport {
-            client: http.clone(),
+            client: http.clone().into(),
             recorder: Some(Arc::clone(&reqlog)),
             // The one process-environment read the wire layer never makes itself — a test hook.
             stream_idle: crate::llm::client::stream_idle_timeout(

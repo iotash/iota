@@ -240,7 +240,7 @@ mod shared_request_log {
         let reqlog = Arc::new(RequestLog::new());
         reqlog.set_verbose(true);
         let transport = HttpTransport {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::new().into(),
             recorder: Some(Arc::clone(&reqlog)),
             stream_idle: None,
         };

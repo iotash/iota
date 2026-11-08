@@ -2,8 +2,8 @@
 //! hook, the byte-for-byte retry policy, the uniform response-header timeout (DIVERGENCES I-02) and `StatusError`.
 
 use std::{
-    sync::Arc,
-    time::{Duration, Instant},
+    sync::{Arc, Mutex},
+    time::{Duration, Instant, SystemTime},
 };
 
 use crate::BoxError;
@@ -26,7 +26,7 @@ use super::{error::LlmError, sse::Sse};
 /// Extra attempts after the first (client.go).
 pub(crate) const DEFAULT_RETRIES: u32 = 2;
 /// Uniform response-header timeout on EVERY client (DIVERGENCES I-02); never a whole-request timeout.
-pub(crate) const HEADER_TIMEOUT: Duration = Duration::from_secs(120);
+pub const HEADER_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long a streaming body may go without a single byte before the read fails with
 /// [`LlmError::StreamIdle`]. Counted in BYTES, not parsed events, so a provider's `ping` event or
 /// `:` comment heartbeat keeps the stream alive.
@@ -49,9 +49,14 @@ pub const STREAM_IDLE_TIMEOUT_ENV: &str = "IOTA_STREAM_IDLE_TIMEOUT";
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// HTTP/2 PING interval of [`default_http_client`] (sent only while a stream is open): a dead h2
 /// connection is noticed by the protocol, not by the stream idle timeout.
-pub(crate) const HTTP2_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(30);
+pub const HTTP2_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(30);
 /// How long an HTTP/2 PING may go unacknowledged before the connection is closed.
-pub(crate) const HTTP2_KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
+pub const HTTP2_KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long a connection may sit idle in [`default_http_client`]'s pool: reqwest's own default, set
+/// explicitly because [`HttpPool`]'s suspend check measures against the same bound. The pool counts
+/// it on `Instant`, which on Apple platforms stops while the machine sleeps; the check counts it on
+/// the wall clock as well (Go's rule, net/http/transport.go:1273-1276; DIVERGENCES R-03).
+pub const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 /// The longest `retry-after` either retry layer waits out on its own (DIVERGENCES X-84). A longer one is not
 /// a transient fault to sleep through but a limit with a time on it: [`should_retry`] hands it up at once,
 /// carried on [`StatusError::retry_after`], and the interactive loop holds its automatic work until then.
@@ -106,11 +111,125 @@ impl Jitter for NoJitter {
 /// Per-attempt request mutation (authorisation); a failure is `LlmError::Authorize` and is never retried.
 pub(crate) type AuthHook = Arc<dyn Fn(&mut reqwest::Request) -> Result<(), BoxError> + Send + Sync>;
 
+/// The two clocks [`HttpPool`]'s suspend check reads; injectable (like [`Jitter`]) so a test can put
+/// the machine to sleep.
+pub trait Clock: Send + Sync {
+    /// The monotonic and the wall clock, read together.
+    fn now(&self) -> (Instant, SystemTime);
+}
+
+/// `(Instant::now(), SystemTime::now())`.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&self) -> (Instant, SystemTime) {
+        (Instant::now(), SystemTime::now())
+    }
+}
+
+/// The shared `reqwest::Client`, replaceable (DIVERGENCES R-03). Every send takes the client through
+/// [`HttpPool::client`], which first asks whether the process slept since the previous send: if so,
+/// the pooled connections are corpses the pool cannot see (its idle clock is `Instant`, which a
+/// sleep does not advance on Apple platforms), so the client is replaced by a fresh
+/// [`default_http_client`] — a fresh pool, and the system proxy read again — and in-flight requests
+/// keep the old one alive through their own clone. Cloning a pool shares it: one check, one client,
+/// for every provider built over the same transport.
+#[derive(Clone)]
+pub struct HttpPool(Arc<PoolInner>);
+
+struct PoolInner {
+    clock: Arc<dyn Clock>,
+    /// What a sleep replaces the client with.
+    build: fn() -> reqwest::Client,
+    /// The client and when it was last handed out. One short lock per send: every send writes the
+    /// stamp, so a read lock would buy nothing, and the clone under it is an `Arc` bump.
+    state: Mutex<PoolState>,
+}
+
+struct PoolState {
+    client: reqwest::Client,
+    last: (Instant, SystemTime),
+}
+
+impl HttpPool {
+    /// A pool over `client` on the real clocks; a sleep replaces it with [`default_http_client`].
+    pub fn new(client: reqwest::Client) -> Self {
+        Self::with_parts(client, default_http_client, Arc::new(SystemClock))
+    }
+
+    /// A pool over `build()`, rebuilt by `build`, reading `clock` (the test seam: a test's own
+    /// builder, so the machine's proxy settings stay out of a loopback fixture).
+    pub fn with_clock(build: fn() -> reqwest::Client, clock: Arc<dyn Clock>) -> Self {
+        Self::with_parts(build(), build, clock)
+    }
+
+    fn with_parts(
+        client: reqwest::Client,
+        build: fn() -> reqwest::Client,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
+        let last = clock.now();
+        Self(Arc::new(PoolInner {
+            clock,
+            build,
+            state: Mutex::new(PoolState { client, last }),
+        }))
+    }
+
+    /// The client to send on: a fresh one when the process slept since the previous call
+    /// (`slept`), else the current one. Stamps this call as the last one.
+    pub fn client(&self) -> reqwest::Client {
+        let now = self.0.clock.now();
+        let mut state = crate::sync::lock(&self.0.state);
+        let (mono, wall) = state.last;
+        // A wall clock set backwards is not a sleep.
+        if let Ok(wall_idle) = now.1.duration_since(wall)
+            && slept(wall_idle, now.0.saturating_duration_since(mono))
+        {
+            // Built under the lock: a request that races in right after a wake must not take
+            // the old pool while this one is being replaced.
+            state.client = (self.0.build)();
+        }
+        state.last = now;
+        state.client.clone()
+    }
+}
+
+/// Whether the time since the previous send, `wall` on the wall clock and `mono` on `Instant`,
+/// shows a sleep the pool cannot see: the wall clock passed [`POOL_IDLE_TIMEOUT`] while `Instant`
+/// did not (Go's rule), or the wall clock ran ahead of `Instant` by more than it (a send that
+/// streamed for minutes, then a closed lid: `Instant` passed the limit, but the connection the
+/// stream returned to the pool looks seconds old). A wall clock set forward looks the same and
+/// costs one new pool.
+fn slept(wall: Duration, mono: Duration) -> bool {
+    wall > POOL_IDLE_TIMEOUT
+        && (mono <= POOL_IDLE_TIMEOUT || wall.saturating_sub(mono) > POOL_IDLE_TIMEOUT)
+}
+
+impl From<reqwest::Client> for HttpPool {
+    fn from(client: reqwest::Client) -> Self {
+        Self::new(client)
+    }
+}
+
+impl Default for HttpPool {
+    fn default() -> Self {
+        Self::new(reqwest::Client::default())
+    }
+}
+
+impl std::fmt::Debug for HttpPool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpPool").finish_non_exhaustive()
+    }
+}
+
 /// One provider endpoint: base URL (all trailing '/' trimmed), static headers, optional per-attempt auth hook, retry policy.
 #[derive(Clone)]
 pub struct Client {
     base_url: String,
-    http: reqwest::Client,
+    http: HttpPool,
     headers: Vec<(HeaderName, HeaderValue)>,
     auth: Option<AuthHook>,
     retries: u32,
@@ -174,10 +293,10 @@ impl std::fmt::Debug for Client {
 impl Client {
     /// `retries = DEFAULT_RETRIES`, `jitter = RandJitter`, `header_timeout = HEADER_TIMEOUT`,
     /// `stream_idle = STREAM_IDLE_TIMEOUT`; trailing `/` trimmed from `base_url`.
-    pub fn new(base_url: &str, http: reqwest::Client) -> Self {
+    pub fn new(base_url: &str, http: impl Into<HttpPool>) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_owned(),
-            http,
+            http: http.into(),
             headers: Vec::new(),
             auth: None,
             retries: DEFAULT_RETRIES,
@@ -251,8 +370,8 @@ impl Client {
         &self.base_url
     }
 
-    /// The underlying reqwest client.
-    pub fn http(&self) -> &reqwest::Client {
+    /// The shared, replaceable HTTP client.
+    pub fn http(&self) -> &HttpPool {
         &self.http
     }
 
@@ -328,6 +447,9 @@ impl Client {
         payload: Option<Payload>,
     ) -> Result<reqwest::Response, LlmError> {
         let url = format!("{}{path}", self.base_url);
+        // Once per send, not per attempt: a sleep is noticed before the first attempt, and the
+        // retries go out on the same client (R-03).
+        let http = self.http.client();
         let mut attempt: u32 = 0;
         loop {
             let progress = progress::current();
@@ -340,7 +462,8 @@ impl Client {
             );
             // Step 2 — the progress body wraps the payload AFTER the capture: what the capture
             // reads in-process must never count as uploaded bytes (reqlog.go:106-112).
-            let req = self.build_request(&method, &url, payload.clone(), progress.as_ref())?;
+            let req =
+                self.build_request(&http, &method, &url, payload.clone(), progress.as_ref())?;
 
             let start = Instant::now();
             let outcome = tokio::select! {
@@ -356,7 +479,7 @@ impl Client {
                     }
                     return Err(LlmError::Cancelled);
                 }
-                r = tokio::time::timeout(self.header_timeout, self.http.execute(req)) => match r {
+                r = tokio::time::timeout(self.header_timeout, http.execute(req)) => match r {
                     Ok(Ok(resp)) => Ok(resp),
                     Ok(Err(e)) => Err(LlmError::Transport(e)),
                     Err(_) => Err(LlmError::HeaderTimeout(self.header_timeout)),
@@ -411,12 +534,13 @@ impl Client {
         url: &str,
     ) -> Result<reqwest::Response, LlmError> {
         let entry = self.capture(Method::GET.as_str(), url, &[]);
-        let req = self.http.get(url).build().map_err(LlmError::Transport)?;
+        let http = self.http.client();
+        let req = http.get(url).build().map_err(LlmError::Transport)?;
         let start = Instant::now();
         let outcome = tokio::select! {
             biased;
             () = cancel.cancelled() => Err(LlmError::Cancelled),
-            r = tokio::time::timeout(self.header_timeout, self.http.execute(req)) => match r {
+            r = tokio::time::timeout(self.header_timeout, http.execute(req)) => match r {
                 Ok(Ok(resp)) => Ok(resp),
                 Ok(Err(e)) => Err(LlmError::Transport(e)),
                 Err(_) => Err(LlmError::HeaderTimeout(self.header_timeout)),
@@ -440,12 +564,13 @@ impl Client {
     /// (hyper honours it over the stream's missing size hint — T3 design §4.4 step 2).
     fn build_request(
         &self,
+        http: &reqwest::Client,
         method: &Method,
         url: &str,
         payload: Option<Payload>,
         progress: Option<&Arc<progress::TurnProgress>>,
     ) -> Result<reqwest::Request, LlmError> {
-        let mut builder = self.http.request(method.clone(), url);
+        let mut builder = http.request(method.clone(), url);
         if let Some(payload) = payload {
             let content_type = payload.content_type();
             let bytes = payload.bytes().clone();
@@ -623,9 +748,11 @@ pub fn default_http_client() -> reqwest::Client {
 
 /// [`default_http_client`]'s builder: reqwest's defaults (TCP keep-alive is already on, 15 s × 3)
 /// plus the two cheap connection-level bounds — a connect timeout, and HTTP/2 PINGs while a stream
-/// is open — none of which can cut a slow but live stream short.
+/// is open — none of which can cut a slow but live stream short, and the pool's idle bound pinned
+/// to the [`POOL_IDLE_TIMEOUT`] the suspend check shares.
 fn http_client_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
+        .pool_idle_timeout(POOL_IDLE_TIMEOUT)
         .connect_timeout(CONNECT_TIMEOUT)
         .http2_keep_alive_interval(HTTP2_KEEP_ALIVE_INTERVAL)
         .http2_keep_alive_timeout(HTTP2_KEEP_ALIVE_TIMEOUT)
@@ -739,6 +866,30 @@ mod tests {
         assert_eq!(shown.matches("timeout: ").count(), 1, "{shown}");
         assert!((10..=30).contains(&CONNECT_TIMEOUT.as_secs()));
         assert!(HTTP2_KEEP_ALIVE_TIMEOUT < HTTP2_KEEP_ALIVE_INTERVAL);
+    }
+
+    // R-03's rule, on the time since the previous send: the wall clock past the pool's idle bound
+    // while `Instant` is not (Go's rule), or ahead of `Instant` by more than it (a long stream, then
+    // a closed lid); nothing else.
+    #[test]
+    fn a_sleep_is_the_wall_clock_running_ahead_of_instant() {
+        let s = Duration::from_secs;
+        assert!(slept(s(8 * 3600), s(0)));
+        assert!(
+            slept(s(91), s(90)),
+            "Go's rule: wall past the bound, Instant not"
+        );
+        assert!(
+            slept(s(8 * 3600 + 300), s(300)),
+            "a 300 s stream, then the lid"
+        );
+        assert!(!slept(s(89), s(89)));
+        assert!(!slept(s(90), s(0)), "the bound itself is still idle enough");
+        assert!(
+            !slept(s(600), s(600)),
+            "awake: the pool's own clock expired it"
+        );
+        assert!(!slept(s(150), s(100)), "50 s asleep after a 100 s stream");
     }
 
     #[test]
