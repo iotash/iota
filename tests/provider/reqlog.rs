@@ -322,7 +322,7 @@ async fn the_relay_image_fetch_is_recorded() {
 
     let log = verbose_log();
     let transport = HttpTransport {
-        client: reqwest::Client::new(),
+        client: reqwest::Client::new().into(),
         recorder: Some(Arc::clone(&log)),
         stream_idle: None,
     };

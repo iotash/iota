@@ -14,7 +14,8 @@ use crate::common::{mock_json, mock_sse, sse_stream};
 use bytes::Bytes;
 use futures::StreamExt;
 use iota::llm::client::{
-    BACKOFF_BASE, BACKOFF_CAP, ERROR_DETAIL_CAP, Jitter, NoJitter, RETRY_AFTER_HORIZON,
+    BACKOFF_BASE, BACKOFF_CAP, Clock, ERROR_DETAIL_CAP, HEADER_TIMEOUT, HTTP2_KEEP_ALIVE_INTERVAL,
+    HTTP2_KEEP_ALIVE_TIMEOUT, HttpPool, Jitter, NoJitter, POOL_IDLE_TIMEOUT, RETRY_AFTER_HORIZON,
     StatusError, retry_after, retry_delay, should_retry,
 };
 use iota::llm::{Client, Event, LlmError, Sse};
@@ -820,7 +821,7 @@ async fn a_zero_idle_bound_never_times_a_stream_out() {
 /// A transport whose SSE reads carry `idle` as their bound.
 fn idle_transport(idle: Duration) -> iota::provider::HttpTransport {
     iota::provider::HttpTransport {
-        client: reqwest::Client::new(),
+        client: reqwest::Client::new().into(),
         recorder: None,
         stream_idle: Some(idle),
     }
@@ -1155,4 +1156,256 @@ async fn a_503_with_a_long_retry_after_is_one_request() {
         err.status().and_then(|s| s.retry_after),
         Some(Duration::from_secs(3600))
     );
+}
+
+// ---- A closed lid (docs/design/sleep-wake-stall.md, DIVERGENCES R-03) -------------------------------
+
+/// A TCP relay in front of a mock origin that can play a closed lid: after [`FrozenRelay::freeze`],
+/// every connection it already holds swallows its bytes in both directions and never closes — the
+/// peer is gone, with no FIN and no RST — while new connections pass as before.
+struct FrozenRelay {
+    addr: std::net::SocketAddr,
+    /// Connections accepted so far, frozen or not.
+    accepted: Arc<AtomicUsize>,
+    /// Bumped by each freeze; a connection born in an older epoch is dead.
+    epoch: Arc<AtomicUsize>,
+}
+
+impl FrozenRelay {
+    async fn start(origin: std::net::SocketAddr) -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let epoch = Arc::new(AtomicUsize::new(0));
+        let (count, ep) = (Arc::clone(&accepted), Arc::clone(&epoch));
+        tokio::spawn(async move {
+            while let Ok((inbound, _)) = listener.accept().await {
+                count.fetch_add(1, Ordering::SeqCst);
+                let born = ep.load(Ordering::SeqCst);
+                let outbound = tokio::net::TcpStream::connect(origin).await.unwrap();
+                let (in_read, in_write) = inbound.into_split();
+                let (out_read, out_write) = outbound.into_split();
+                tokio::spawn(pump(in_read, out_write, Arc::clone(&ep), born));
+                tokio::spawn(pump(out_read, in_write, Arc::clone(&ep), born));
+            }
+        });
+        Self {
+            addr,
+            accepted,
+            epoch,
+        }
+    }
+
+    fn uri(&self) -> String {
+        format!("http://{}", self.addr)
+    }
+
+    fn freeze(&self) {
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn accepted(&self) -> usize {
+        self.accepted.load(Ordering::SeqCst)
+    }
+}
+
+/// One direction of a relayed connection: forwards until the connection's epoch is over, then reads
+/// and drops, and at EOF holds both halves open rather than pass the close on.
+async fn pump(
+    mut from: tokio::net::tcp::OwnedReadHalf,
+    mut to: tokio::net::tcp::OwnedWriteHalf,
+    epoch: Arc<AtomicUsize>,
+    born: usize,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut buf = vec![0u8; 16 * 1024];
+    loop {
+        let n = from.read(&mut buf).await.unwrap_or(0);
+        let dead = epoch.load(Ordering::SeqCst) != born;
+        if n == 0 {
+            if dead {
+                std::future::pending::<()>().await;
+            }
+            return;
+        }
+        if !dead && to.write_all(&buf[..n]).await.is_err() {
+            return;
+        }
+    }
+}
+
+/// A mock origin answering `GET /ok` with `{}`, and a frozen-able relay in front of it.
+async fn origin_and_relay() -> (MockServer, FrozenRelay) {
+    let origin = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/ok"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+        .mount(&origin)
+        .await;
+    let relay = FrozenRelay::start(*origin.address()).await;
+    (origin, relay)
+}
+
+async fn get_ok(c: &Client) -> Result<serde_json::Value, LlmError> {
+    c.get_json::<serde_json::Value>(&CancellationToken::new(), "/ok")
+        .await
+}
+
+/// Both clocks under the test's hand, frozen until it moves them.
+struct ManualClock {
+    base: (std::time::Instant, SystemTime),
+    /// How far `Instant` and the wall clock have moved past `base`.
+    moved: std::sync::Mutex<(Duration, Duration)>,
+}
+
+impl ManualClock {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            base: (std::time::Instant::now(), SystemTime::now()),
+            moved: std::sync::Mutex::new((Duration::ZERO, Duration::ZERO)),
+        })
+    }
+
+    fn advance(&self, mono: Duration, wall: Duration) {
+        let mut moved = self.moved.lock().unwrap();
+        moved.0 += mono;
+        moved.1 += wall;
+    }
+}
+
+impl Clock for ManualClock {
+    fn now(&self) -> (std::time::Instant, SystemTime) {
+        let (mono, wall) = *self.moved.lock().unwrap();
+        (self.base.0 + mono, self.base.1 + wall)
+    }
+}
+
+/// A reqwest client that dials the loopback relay itself: a system proxy (this machine's sends
+/// `127.0.0.1` through Surge) would hold its own upstream connections and hide the relay's count.
+fn direct() -> reqwest::Client {
+    reqwest::Client::builder().no_proxy().build().unwrap()
+}
+
+/// A client over `relay` whose pool reads `clock`, one attempt per call, a 2 s header timeout.
+fn clocked_client(relay: &FrozenRelay, clock: &Arc<ManualClock>) -> Client {
+    let pool = HttpPool::with_clock(direct, Arc::clone(clock) as Arc<dyn Clock>);
+    Client::new(&relay.uri(), pool)
+        .with_retries(0)
+        .with_header_timeout(Duration::from_secs(2))
+}
+
+/// Pins today's behaviour: a dead pooled h1 connection costs the one attempt that lands on it (the
+/// header timeout drops the future, hyper closes the connection, it never returns to the pool), and
+/// the next attempt dials a new one.
+#[tokio::test]
+async fn a_dead_pooled_h1_connection_costs_one_attempt() {
+    let (_origin, relay) = origin_and_relay().await;
+    let c = Client::new(&relay.uri(), direct())
+        .with_retries(0)
+        .with_header_timeout(Duration::from_millis(500));
+    get_ok(&c).await.unwrap();
+    assert_eq!(relay.accepted(), 1);
+
+    relay.freeze();
+    let err = get_ok(&c).await.unwrap_err();
+    assert!(matches!(err, LlmError::HeaderTimeout(_)), "{err:?}");
+    get_ok(&c).await.unwrap();
+    assert_eq!(relay.accepted(), 2, "the dead connection left the pool");
+}
+
+/// Pins today's behaviour: a dead pooled h2 connection is not evicted by the header timeout (it is
+/// shared, §1.3 row 3) but by its own PING, which fires while a stream waits for its head; the
+/// attempt fails as a transport error well inside the header timeout, and the next one dials anew.
+#[tokio::test]
+async fn a_dead_pooled_h2_connection_is_closed_by_its_ping() {
+    let (_origin, relay) = origin_and_relay().await;
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .http2_prior_knowledge()
+        .http2_keep_alive_interval(Duration::from_millis(300))
+        .http2_keep_alive_timeout(Duration::from_millis(300))
+        .build()
+        .unwrap();
+    let header_timeout = Duration::from_secs(5);
+    let c = Client::new(&relay.uri(), http)
+        .with_retries(0)
+        .with_header_timeout(header_timeout);
+    get_ok(&c).await.unwrap();
+    assert_eq!(relay.accepted(), 1);
+
+    relay.freeze();
+    let started = std::time::Instant::now();
+    let err = get_ok(&c).await.unwrap_err();
+    assert!(
+        matches!(&err, LlmError::Transport(e) if format!("{e:?}").contains("KeepAliveTimedOut")),
+        "{err:?}"
+    );
+    assert!(
+        started.elapsed() < header_timeout,
+        "{:?}",
+        started.elapsed()
+    );
+    get_ok(&c).await.unwrap();
+    assert_eq!(relay.accepted(), 2, "the PING closed the dead connection");
+}
+
+/// The production bounds keep the h2 eviction above working: the PING gives up before the header
+/// timeout would drop the stream — the other way round, the dead connection stays shared and every
+/// attempt on it times out (§1.3 row 3).
+#[test]
+fn the_h2_ping_gives_up_before_the_header_timeout() {
+    assert!(HTTP2_KEEP_ALIVE_INTERVAL + HTTP2_KEEP_ALIVE_TIMEOUT < HEADER_TIMEOUT);
+}
+
+/// R-03: eight hours on the wall clock that `Instant` never saw is a sleep, and the pool's
+/// connections are corpses it cannot see; the send goes out on a fresh pool at once instead of
+/// waiting out the header timeout on one.
+#[tokio::test]
+async fn a_suspend_gap_sends_on_a_fresh_pool() {
+    let (_origin, relay) = origin_and_relay().await;
+    let clock = ManualClock::new();
+    let c = clocked_client(&relay, &clock);
+    get_ok(&c).await.unwrap();
+    assert_eq!(relay.accepted(), 1);
+
+    relay.freeze();
+    clock.advance(Duration::ZERO, Duration::from_hours(8));
+    let started = std::time::Instant::now();
+    let got = get_ok(&c).await;
+    assert!(got.is_ok(), "{got:?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(relay.accepted(), 2, "a fresh pool dialled a new connection");
+}
+
+/// Both clocks moving together just under the pool's idle bound is no sleep: the pool, and its
+/// connection, stay.
+#[tokio::test]
+async fn no_gap_keeps_the_pool() {
+    let (_origin, relay) = origin_and_relay().await;
+    let clock = ManualClock::new();
+    let c = clocked_client(&relay, &clock);
+    get_ok(&c).await.unwrap();
+
+    let idle = POOL_IDLE_TIMEOUT.saturating_sub(Duration::from_secs(1));
+    clock.advance(idle, idle);
+    get_ok(&c).await.unwrap();
+    assert_eq!(relay.accepted(), 1, "the pooled connection was reused");
+}
+
+/// A wall clock set forward cannot be told from a sleep; it costs one new pool and nothing else.
+#[tokio::test]
+async fn a_wall_clock_set_forward_only_costs_a_new_pool() {
+    let (_origin, relay) = origin_and_relay().await;
+    let clock = ManualClock::new();
+    let c = clocked_client(&relay, &clock);
+    get_ok(&c).await.unwrap();
+
+    clock.advance(Duration::ZERO, Duration::from_hours(1));
+    get_ok(&c).await.unwrap();
+    get_ok(&c).await.unwrap();
+    assert_eq!(relay.accepted(), 2, "one new pool, then reused");
 }

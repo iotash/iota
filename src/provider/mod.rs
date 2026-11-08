@@ -333,12 +333,13 @@ pub trait ImagePartialProvider: Send + Sync {
     ) -> BoxFuture<'a, Result<ChatResult, ProviderError>>;
 }
 
-/// One HTTP transport: the shared `reqwest::Client` plus the optional `/debug` recorder
+/// One HTTP transport: the shared, replaceable HTTP client plus the optional `/debug` recorder
 /// (cmd/root.go:128 `reqLog.HTTPClient()`). `From<reqwest::Client>` = no recorder.
 #[derive(Clone, Default)]
 pub struct HttpTransport {
-    /// The shared HTTP client.
-    pub client: reqwest::Client,
+    /// The shared HTTP client: one pool for every provider built over this transport, replaced
+    /// after the machine sleeps (DIVERGENCES R-03).
+    pub client: crate::llm::client::HttpPool,
     /// The `/debug` request log, when this transport records.
     pub recorder: Option<Arc<RequestLog>>,
     /// The byte-level idle bound of every SSE body read over this transport (`None` = never);
@@ -350,7 +351,7 @@ pub struct HttpTransport {
 impl From<reqwest::Client> for HttpTransport {
     fn from(client: reqwest::Client) -> Self {
         Self {
-            client,
+            client: client.into(),
             recorder: None,
             stream_idle: Some(crate::llm::client::STREAM_IDLE_TIMEOUT),
         }
