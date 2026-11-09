@@ -138,3 +138,22 @@ Status: **调查（未拍板）** · 日期：2026-11-09 · 基于 `main` = `81d
   - 接着 `herdr agent prompt <pane> x` 应当返回 `agent_blocked`。
   - 选 Allow 之后，`agent wait --until working` 应当返回。
 - 对 `/model` 确认框重复同样的三步。
+
+## 实测（2026-11-09）
+
+环境：herdr 0.9.5；iota = `target/debug/iota`（main @ 38f39aa，自报 v0.7.7），`-M deepseek-flash --no-save`；被测 pane `w16:pA` 由 `herdr pane split --pane w16:p9 --direction down --cwd /tmp/iota-e2e --no-focus` 创建，自带 `E=1 P=w16:pA S=~/.config/herdr/herdr.sock`（`echo $HERDR_ENV $HERDR_PANE_ID $HERDR_SOCKET_PATH`），无需手动注入。启动后 `herdr agent get w16:pA` → `"agent":"iota","agent_status":"idle"`。
+
+**1. 审批 → blocked：成立。**
+- 让模型 `write_file /tmp/iota-e2e/hello.txt`，屏幕停在 `write_file hello.txt wants to modify files — allow?`。`herdr agent wait w16:pA --until blocked --timeout 120000` 1.4s 返回 `"agent_status":"blocked"`。
+- `herdr agent prompt w16:pA "x"` → `{"code":"agent_blocked","message":"agent w16:pA is blocked and requires interactive input"}`，exit 1，对话框未变、无输入。
+- `herdr agent send-keys w16:pA enter` → `{"code":"agent_not_ready","message":"agent w16:pA is not an active named agent"}`，**不能用来批准**；改用 `herdr pane send-keys w16:pA enter`。预先挂起的 `agent wait --until working` 0.54s 返回 `working`，文件写入 `hi`。
+- 回合结束的状态是 `done` 再到 `idle`：`--until done --until idle` 返回 `done`，5s 后 `agent get` 是 `idle`。第一次只用 `--until idle` 等了 60s，结果超时（`timed out waiting for agent status`），事后 `agent get` 已经是 `idle`。
+
+**2. `/model` 选择器 → 仍是 idle：成立（§4 的缺口确实存在）。**
+- 打开前和打开后（屏幕上是 `Model │ Context │ … ▸ deepseek:deepseek-flash (current)`），`agent get` 都是 `"agent_status":"idle"`。
+- 后果：`herdr agent prompt w16:pA "x"` → `agent_not_ready … not an active named agent`，exit 1，选择器中没有出现任何输入。`herdr agent rename w16:pA e2e-iota` 之后再执行 `agent prompt e2e-iota "x"`，结果相同。所以在 herdr 0.9.5 上，`agent prompt`/`agent send-keys` 只要状态不是 blocked，就会拒绝 `iota` 这个种类，不会往选择器里打字。直接的 `pane send-text` 不看状态，不在此列。这个缺口目前只影响监督者看到的信息（它以为 iota 空闲），这条路径上没有误输入。随后用 Esc 取消，模型没有变。
+- 未测：`/model` 确认框、`/new` 丢弃、`/export` 选择器（它们和选择器同属 facade 对话框，未逐个观察）。
+
+**3. 退出 → 标签消失：成立。**
+- 空闲时按 Ctrl+D（`herdr pane send-keys w16:pA ctrl+d`），回到 zsh。`agent get w16:pA` 返回 `agent_not_found`，`pane get` 返回 `"agent_status":"unknown"`，也就是改由屏幕识别接管，而它识别不到 agent。
+- 注意：在 iota 里输入 `/exit` 并不会退出，这行文字被当作消息发给了模型（↑ token 41.2k→54.9k）。退出前一刻的状态是 `done`。
