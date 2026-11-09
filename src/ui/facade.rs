@@ -817,6 +817,84 @@ impl Drop for ScopeGuard {
     }
 }
 
+/// Who is told when the facade starts or stops waiting on the user in a dialog ([`Dialogs`]): the host
+/// presenter (`crate::host::Presenter::show_turn_on`), which shows a chat with a dialog open as
+/// `NeedsInput` whatever the turn's own state is (docs/design/herdr-agent-state.md §4).
+pub trait DialogWatch: Send + Sync {
+    /// `true` when the first dialog opened, `false` when the last one closed.
+    fn dialog_open(&self, open: bool);
+}
+
+/// The facade's one notion of "a dialog is waiting on the user": how many surfaces are open. Every
+/// surface — `select`, `confirm`, `view`, every tabbed picker — opens through [`Ui::tabbed`], whose
+/// provided body holds a [`DialogOpen`] across the wait, so no call site reports it and none can forget
+/// to. It only counts, and tells its watcher on the edges (none → some, some → none); what the state was
+/// before is not stored here but stays the turn's own, which the presenter derives over — so closing
+/// shows whatever the turn's state is then, never a blind `Idle`. The watcher is held weakly: the
+/// presenter holds the facade, and the facade must not keep it alive.
+#[derive(Default)]
+pub struct Dialogs {
+    inner: std::sync::Mutex<DialogsInner>,
+}
+
+#[derive(Default)]
+struct DialogsInner {
+    open: usize,
+    watch: Option<std::sync::Weak<dyn DialogWatch>>,
+}
+
+impl Dialogs {
+    /// Makes `watch` the one watcher (a later call replaces it), told at once when a dialog is
+    /// already open.
+    pub fn watch(&self, watch: std::sync::Weak<dyn DialogWatch>) {
+        let mut inner = crate::sync::lock(&self.inner);
+        if inner.open > 0
+            && let Some(w) = watch.upgrade()
+        {
+            w.dialog_open(true);
+        }
+        inner.watch = Some(watch);
+    }
+
+    /// Whether a dialog is open now.
+    pub fn is_open(&self) -> bool {
+        crate::sync::lock(&self.inner).open > 0
+    }
+
+    /// Counts one dialog open until the guard drops — on the reply, on a cancel, and when the waiting
+    /// future is dropped. The watcher is told under the lock, so an open and a close racing on two
+    /// threads reach it in the order they happened.
+    pub fn open(&self) -> DialogOpen<'_> {
+        self.step(true);
+        DialogOpen(self)
+    }
+
+    fn step(&self, up: bool) {
+        let mut inner = crate::sync::lock(&self.inner);
+        let was = inner.open > 0;
+        inner.open = if up {
+            inner.open + 1
+        } else {
+            inner.open.saturating_sub(1)
+        };
+        let now = inner.open > 0;
+        if was != now
+            && let Some(w) = inner.watch.as_ref().and_then(std::sync::Weak::upgrade)
+        {
+            w.dialog_open(now);
+        }
+    }
+}
+
+/// One open dialog ([`Dialogs::open`]); dropping it closes it.
+pub struct DialogOpen<'a>(&'a Dialogs);
+
+impl Drop for DialogOpen<'_> {
+    fn drop(&mut self) {
+        self.0.step(false);
+    }
+}
+
 /// The metered block-preview handle is the markdown renderer's contract
 /// (`markdown::preview`, re-exported as [`crate::markdown::PreviewHandle`]); the facade re-exports
 /// it too because [`UiStreamSink::block_preview`] hands one out and `ui::sink::PreviewWriter`
@@ -844,12 +922,16 @@ pub trait Ui: Send + Sync {
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<Input, UiError>>;
 
-    /// Opens a tabbed surface below the composer and blocks until commit or cancel.
-    fn tabbed<'a>(
+    /// The surface itself: opens `spec` below the composer and blocks until commit or cancel. What an
+    /// implementation provides; callers go through [`Self::tabbed`], which counts the dialog.
+    fn open_surface<'a>(
         &'a self,
         cancel: &'a CancellationToken,
         spec: TabbedSpec,
     ) -> BoxFuture<'a, Result<TabbedResult, UiError>>;
+
+    /// The facade's open dialogs ([`Dialogs`]).
+    fn dialogs(&self) -> &Dialogs;
 
     /// Steering drain: pops the contiguous non-`'/'` prefix of the queue.
     /// (The contract's `<'a>(&'a self) -> BoxFuture<'a, _>` shape, lifetime-elided.)
@@ -860,6 +942,20 @@ pub trait Ui: Send + Sync {
     fn close(&self) -> BoxFuture<'_, std::io::Result<()>>;
 
     // ---- provided sugar (object-safe default bodies over `tabbed`) ----
+
+    /// Opens a tabbed surface below the composer and blocks until commit or cancel; the dialog counts
+    /// as open ([`Self::dialogs`]) for exactly as long as the wait — the ONE point a dialog waiting on
+    /// the user is known, so the host sees `NeedsInput` for every surface (docs/design/herdr-agent-state.md).
+    fn tabbed<'a>(
+        &'a self,
+        cancel: &'a CancellationToken,
+        spec: TabbedSpec,
+    ) -> BoxFuture<'a, Result<TabbedResult, UiError>> {
+        Box::pin(async move {
+            let _open = self.dialogs().open();
+            self.open_surface(cancel, spec).await
+        })
+    }
 
     /// One `PanelKind::List`; `search: true` UNCONDITIONALLY (ui.go:370-386).
     fn select<'a>(

@@ -21,6 +21,12 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   seconds to two minutes before trying again. iota now notices that the
   machine slept and opens fresh connections before it sends, as the original
   Go iota did.
+- **A herdr pane shows `blocked` while iota waits in a picker or a
+  confirmation.** Only a tool approval used to say so; with `/model`, `/new`,
+  `/export` or any other picker open the pane stayed `idle`, so a supervising
+  agent believed nobody was at the keyboard. Every dialog now reports that
+  iota is waiting on the user, and closing it puts back whatever the pane
+  showed before.
 
 ## 0.7.7 - 2026-11-04
 

@@ -105,21 +105,25 @@ impl Fixture {
     }
 
     /// A presenter over the fixture's host alone (no ANSI fallback: the facade events are
-    /// asserted separately, and one host keeps the per-capability laws visible).
+    /// asserted separately, and one host keeps the per-capability laws visible). It watches the
+    /// facade's dialogs as the live one does (`Presenter::attend`), without the turn layer's events.
     fn presenter(&self, notify: bool) -> Arc<Presenter> {
-        Arc::new(Presenter::with_hosts(
-            vec![Box::new(RecordingHost {
-                caps: self.host.caps,
-                name: self.host.name,
-                states: Arc::clone(&self.host.states),
-                events: Arc::clone(&self.host.events),
-                sessions: Arc::clone(&self.host.sessions),
-                closed: Arc::clone(&self.host.closed),
-                dark: self.host.dark,
-                env: self.host.env.clone(),
-            })],
-            notify,
-        ))
+        Arc::new(
+            Presenter::with_hosts(
+                vec![Box::new(RecordingHost {
+                    caps: self.host.caps,
+                    name: self.host.name,
+                    states: Arc::clone(&self.host.states),
+                    events: Arc::clone(&self.host.events),
+                    sessions: Arc::clone(&self.host.sessions),
+                    closed: Arc::clone(&self.host.closed),
+                    dark: self.host.dark,
+                    env: self.host.env.clone(),
+                })],
+                notify,
+            )
+            .attend(self.ui.as_ref()),
+        )
     }
 
     fn params(
@@ -435,7 +439,9 @@ async fn a_yielded_job_keeps_the_host_busy_until_its_notice_turn_ends() {
 
 /// A job's notice that wakes a chat with no model, whose pick is then cancelled, runs no turn — and the
 /// host still settles: the notice it was owed is taken, so the chat is `Idle` again, not left `Busy`
-/// until some later turn happens to report.
+/// until some later turn happens to report. Both model picks are dialogs waiting on the user, so the
+/// host sees `NeedsInput` while each is open and, once each closes, what the chat says then: `Busy` while
+/// the job (or its owed notice) holds it, `Idle` once the notice is settled.
 #[tokio::test]
 async fn a_notice_whose_model_pick_is_cancelled_leaves_the_host_idle() {
     if crate::jobs::skip_unless_posix("a_notice_whose_model_pick_is_cancelled_leaves_the_host_idle")
@@ -478,7 +484,17 @@ async fn a_notice_whose_model_pick_is_cancelled_leaves_the_host_idle() {
     params.jobs = jobs;
     iota::repl::run(params).await.expect("clean exit");
 
-    assert_eq!(f.states(), vec![State::Idle, State::Busy, State::Idle]);
+    assert_eq!(
+        f.states(),
+        vec![
+            State::Idle,
+            State::Busy,
+            State::NeedsInput,
+            State::Busy,
+            State::NeedsInput,
+            State::Idle
+        ]
+    );
     assert!(f.pings().is_empty(), "{:?}", f.pings());
 }
 
