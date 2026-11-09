@@ -47,6 +47,18 @@
 //! still), `Idle` and `Error` are no turn. So the two can never drift inside a turn, and outside one their
 //! difference is this one rule: a job still running holds the host at `Busy`, while the status row shows
 //! only its static job segment (point 5, B).
+//!
+//! **A dialog waiting on the user is `NeedsInput`** (docs/design/herdr-agent-state.md §4, §5(c)). The facade
+//! counts its open surfaces at one point ([`crate::ui::facade::Dialogs`], held by [`Ui::tabbed`] across the
+//! wait) and tells the presenter it is shown on ([`Presenter::show_turn_on`]); while one is open the host
+//! sees `NeedsInput` — herdr's `blocked`, so a supervisor's `agent prompt` is refused — whatever the turn's
+//! state and the jobs rewrite would say. It is a third input, not a `set_state`: the turn's state is left
+//! alone, so when the dialog closes the host is shown what the turn says THEN (`Idle`, `Error`, a job's
+//! `Busy`), never a remembered or a blind `Idle`, and no caller saves or restores anything. The turn's
+//! paths that already report `NeedsInput` around their own dialog (the tool approval, an interactive tool,
+//! the compaction offer, a held message) coexist by the deduplication: their `NeedsInput` goes out once, the
+//! dialog under it changes nothing the host sees, and their own `Busy` or `Idle` afterwards is what moves
+//! it. Neither the whole-turn layer nor [`Presenter::turn_state`] reads it — a `/model` picker is no turn.
 
 pub mod ansi;
 pub(crate) mod background;
@@ -62,7 +74,7 @@ use crate::BoxFuture;
 pub use crate::app::env::ChildEnv;
 use crate::app::env::Env;
 use crate::sync::lock;
-use crate::ui::facade::{TurnBusy, Ui};
+use crate::ui::facade::{DialogWatch, TurnBusy, Ui};
 
 /// What the conversation is doing (host.go:22-29).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -247,14 +259,59 @@ pub struct Caps {
 /// Fans the conversation's signals out to the detected hosts (host.go:90-148): the FIRST host
 /// with a capability serves it; states are deduplicated; pings are gated by the `notify` key.
 pub struct Presenter {
-    hosts: Vec<Box<dyn Host>>,
+    /// The hosts and the state inputs, shared (weakly) with the facade's dialog count.
+    core: Arc<Core>,
     /// The name of the host a detector matched — the banner names it; the fallback is not one.
     detected: Option<String>,
     notify_on: bool,
-    /// The inputs and the last state reported (see [`Shown`]).
-    state: Mutex<Shown>,
     /// The facade the whole-turn layer is shown on, when there is a screen (the module doc).
     turn_view: Option<Arc<dyn Ui>>,
+}
+
+/// What a state is sent through: the hosts, and the inputs it is computed from. Its own allocation, so
+/// the facade's [`crate::ui::facade::Dialogs`] can hold it weakly ([`DialogWatch`]) — the presenter holds
+/// the facade, so a strong edge back would be a cycle.
+struct Core {
+    hosts: Vec<Box<dyn Host>>,
+    /// The inputs and the last state reported (see [`Shown`]).
+    state: Mutex<Shown>,
+}
+
+impl Core {
+    /// Applies `change` to the inputs and returns whichever of the two outputs moved: the host's state
+    /// ([`Shown::effective`]) and the whole-turn layer ([`Shown::turn`]). Sends neither.
+    fn change(&self, change: impl FnOnce(&mut Shown)) -> (Option<State>, Option<TurnBusy>) {
+        let mut shown = lock(&self.state);
+        change(&mut shown);
+        let turn = shown.turn();
+        let turn = (shown.turn_sent != turn).then(|| {
+            shown.turn_sent = turn;
+            turn
+        });
+        let host = shown
+            .effective()
+            .filter(|s| shown.sent != Some(*s))
+            .inspect(|s| shown.sent = Some(*s));
+        (host, turn)
+    }
+
+    /// Shows `s` on the first [`StateReporter`].
+    fn send(&self, s: Option<State>) {
+        if let Some(s) = s
+            && let Some(r) = self.hosts.iter().find_map(|h| h.as_state_reporter())
+        {
+            r.set_state(s);
+        }
+    }
+}
+
+impl DialogWatch for Core {
+    /// A dialog changes the host's state only: the turn layer is the turn's (the module doc), so
+    /// [`Core::change`] has none to return here.
+    fn dialog_open(&self, open: bool) {
+        let (host, _) = self.change(|shown| shown.dialog = open);
+        self.send(host);
+    }
 }
 
 /// What the presenter's state output is computed from, and what it last sent.
@@ -270,13 +327,16 @@ struct Shown {
     sent: Option<State>,
     /// The last whole-turn layer shown.
     turn_sent: TurnBusy,
+    /// A dialog is open on the facade the presenter is shown on (the module doc).
+    dialog: bool,
 }
 
 impl Shown {
-    /// The state a host sees: the turn's, except that an idle turn with jobs running is `Busy`
-    /// (the module doc).
+    /// The state a host sees: the turn's, except that an open dialog is `NeedsInput` and an idle turn
+    /// with jobs running is `Busy` (the module doc). Nothing before the first `set_state`.
     fn effective(&self) -> Option<State> {
         match self.requested {
+            Some(_) if self.dialog => Some(State::NeedsInput),
             Some(State::Idle) if self.jobs + self.owed > 0 => Some(State::Busy),
             r => r,
         }
@@ -323,19 +383,33 @@ impl Presenter {
     /// them counts as detected.
     pub fn with_hosts(hosts: Vec<Box<dyn Host>>, notify: bool) -> Self {
         Self {
-            hosts,
+            core: Arc::new(Core {
+                hosts,
+                state: Mutex::new(Shown::default()),
+            }),
             detected: None,
             notify_on: notify,
-            state: Mutex::new(Shown::default()),
             turn_view: None,
         }
     }
 
-    /// Shows the whole-turn layer on `ui`'s status row (the module doc). Without it — headless, and the
-    /// fixtures that leave it out — the layer is only computed.
+    /// Shows the whole-turn layer on `ui`'s status row, and watches `ui`'s dialogs (the module doc): the
+    /// facade the chat is shown on is the one whose open dialog means the user is needed. Without it —
+    /// headless, and the fixtures that leave it out — the layer is only computed.
     #[must_use]
-    pub fn show_turn_on(mut self, ui: Arc<dyn Ui>) -> Self {
-        self.turn_view = Some(ui);
+    pub fn show_turn_on(self, ui: Arc<dyn Ui>) -> Self {
+        let mut p = self.attend(ui.as_ref());
+        p.turn_view = Some(ui);
+        p
+    }
+
+    /// Watches `ui`'s dialogs only, without the turn layer ([`Self::show_turn_on`] does both): while one
+    /// is open the host sees `NeedsInput` (the module doc). For fixtures that assert the facade's own
+    /// events without the turn layer's.
+    #[must_use]
+    pub fn attend(self, ui: &dyn Ui) -> Self {
+        let core: Arc<dyn DialogWatch> = Arc::clone(&self.core) as Arc<dyn DialogWatch>;
+        ui.dialogs().watch(Arc::downgrade(&core));
         self
     }
 
@@ -358,7 +432,7 @@ impl Presenter {
     /// before the first. What a message from another process is refused on (`State::NeedsInput`: the chat
     /// waits on the user).
     pub fn turn_state(&self) -> Option<State> {
-        lock(&self.state).requested
+        lock(&self.core.state).requested
     }
 
     /// Records how many shell jobs are running: an idle chat with one is shown as `Busy`.
@@ -382,7 +456,7 @@ impl Presenter {
     /// The loop took a job's notice into a turn: it no longer holds the chat busy by itself. Sends
     /// nothing — the turn it joined reports its own state, which is what settles the host.
     pub fn notice_taken(&self) {
-        let mut shown = lock(&self.state);
+        let mut shown = lock(&self.core.state);
         shown.owed = shown.owed.saturating_sub(1);
     }
 
@@ -396,28 +470,11 @@ impl Presenter {
     /// Applies `change` to the inputs, then sends whichever of the two outputs moved: the host's state
     /// ([`Shown::effective`]) and the whole-turn layer ([`Shown::turn`]).
     fn update(&self, change: impl FnOnce(&mut Shown)) {
-        let (host, turn) = {
-            let mut shown = lock(&self.state);
-            change(&mut shown);
-            let turn = shown.turn();
-            let turn = (shown.turn_sent != turn).then(|| {
-                shown.turn_sent = turn;
-                turn
-            });
-            let host = shown
-                .effective()
-                .filter(|s| shown.sent != Some(*s))
-                .inspect(|s| shown.sent = Some(*s));
-            (host, turn)
-        };
+        let (host, turn) = self.core.change(change);
         if let (Some(t), Some(ui)) = (turn, &self.turn_view) {
             ui.turn_busy(t);
         }
-        if let Some(s) = host
-            && let Some(r) = self.hosts.iter().find_map(|h| h.as_state_reporter())
-        {
-            r.set_state(s);
-        }
+        self.core.send(host);
     }
 
     /// Pings the first [`Notifier`], unless `notify` is off (host.go:128-138).
@@ -430,14 +487,14 @@ impl Presenter {
         if !self.notify_on {
             return;
         }
-        if let Some(n) = self.hosts.iter().find_map(|h| h.as_notifier()) {
+        if let Some(n) = self.core.hosts.iter().find_map(|h| h.as_notifier()) {
             n.notify(&e);
         }
     }
 
     /// Tells the first [`SessionReporter`] which session the chat persists into.
     pub fn set_session(&self, id: &str, path: &Path) {
-        if let Some(r) = self.hosts.iter().find_map(|h| h.as_session_reporter()) {
+        if let Some(r) = self.core.hosts.iter().find_map(|h| h.as_session_reporter()) {
             r.report_session(id, path);
         }
     }
@@ -446,7 +503,8 @@ impl Presenter {
     /// than served by the first host: a fact one host knows is not made false by another host also
     /// knowing something. Empty when no host contributes.
     pub fn environment(&self) -> Vec<(String, String)> {
-        self.hosts
+        self.core
+            .hosts
             .iter()
             .filter_map(|h| h.as_environment())
             .flat_map(EnvironmentContributor::environment)
@@ -455,7 +513,7 @@ impl Presenter {
 
     /// Runs every [`Closer`], last host first (host.go:142-148).
     pub async fn close(&self) {
-        for h in self.hosts.iter().rev() {
+        for h in self.core.hosts.iter().rev() {
             if let Some(c) = h.as_closer() {
                 c.close().await;
             }
@@ -465,7 +523,7 @@ impl Presenter {
     /// The first host that KNOWS the background tone (background.go:42-51), asked in order; the
     /// cmux probe is an RPC child under a one-second deadline.
     pub async fn dark_background(&self) -> Option<bool> {
-        for reporter in self.hosts.iter().filter_map(|h| h.as_background()) {
+        for reporter in self.core.hosts.iter().filter_map(|h| h.as_background()) {
             if let Some(dark) = reporter.dark_background().await {
                 return Some(dark);
             }
@@ -475,7 +533,7 @@ impl Presenter {
 
     /// The detected hosts' names, in order.
     pub fn host_names(&self) -> Vec<&str> {
-        self.hosts.iter().map(|h| h.name()).collect()
+        self.core.hosts.iter().map(|h| h.name()).collect()
     }
 }
 
@@ -1051,5 +1109,106 @@ mod tests {
                 State::Error,
             ]
         );
+    }
+
+    /// A presenter over one state-only host that watches `ui`'s dialogs, and the host's log.
+    fn attending(ui: &crate::testing::ScriptedUi) -> (Presenter, Arc<Mutex<Vec<State>>>) {
+        let h = host("recorder", STATE_ONLY);
+        let states = Arc::clone(&h.states);
+        (
+            Presenter::with_hosts(vec![Box::new(h)], true).attend(ui),
+            states,
+        )
+    }
+
+    // docs/design/herdr-agent-state.md §4: a dialog open on the facade is `NeedsInput` over whatever the
+    // turn says, and closing it shows what the chat says THEN — never a blind `Idle`: an `Error` stays an
+    // `Error`, an idle chat with a job running is `Busy` again, and a state the turn reported while the
+    // dialog was open is what it closes to. Nothing goes out before the loop's first state.
+    #[test]
+    fn a_dialog_is_needs_input_and_closing_it_shows_the_state_from_before() {
+        use crate::ui::facade::Ui;
+        let ui = crate::testing::ScriptedUi::new(Vec::new());
+        let (p, states) = attending(&ui);
+
+        let open = ui.dialogs().open();
+        drop(open);
+        assert!(
+            states.lock().unwrap().is_empty(),
+            "a dialog before the loop's first state reports nothing"
+        );
+
+        p.set_state(State::Error);
+        let open = ui.dialogs().open();
+        assert!(ui.dialogs().is_open());
+        drop(open);
+
+        p.set_state(State::Idle);
+        p.set_jobs(1);
+        let open = ui.dialogs().open();
+        let nested = ui.dialogs().open(); // a dialog over a dialog: still one NeedsInput
+        drop(nested);
+        drop(open);
+
+        p.set_jobs(0);
+        let open = ui.dialogs().open();
+        p.set_state(State::Busy); // the turn moved while the dialog was open
+        drop(open);
+
+        assert_eq!(
+            *states.lock().unwrap(),
+            vec![
+                State::Error,
+                State::NeedsInput,
+                State::Error,
+                State::Idle,
+                State::Busy, // Idle with a job running
+                State::NeedsInput,
+                State::Busy,
+                State::Idle,
+                State::NeedsInput,
+                State::Busy,
+            ]
+        );
+    }
+
+    // The tool approval reports `NeedsInput` itself around its own `select` (repl/turn/approval.rs): the
+    // dialog under it coexists by the deduplication, so the host hears it exactly once, then the turn's
+    // `Busy` — the sequence it heard before the facade counted dialogs.
+    #[tokio::test]
+    async fn the_approvals_needs_input_and_its_dialog_report_once() {
+        use crate::testing::Reply;
+        use crate::ui::facade::{PanelResult, TabbedResult, Ui};
+        let ui = crate::testing::ScriptedUi::new(vec![Reply::Tabbed(TabbedResult {
+            cancelled: false,
+            focused: 0,
+            panels: vec![PanelResult::default()],
+        })]);
+        let (p, states) = attending(&ui);
+        p.set_state(State::Busy);
+
+        p.set_state(State::NeedsInput);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let allowed = ui.confirm(&cancel, "allow?", "Allow", "Deny").await;
+        p.set_state(State::Busy);
+
+        assert_eq!(allowed, Ok(true));
+        assert_eq!(
+            *states.lock().unwrap(),
+            vec![State::Busy, State::NeedsInput, State::Busy]
+        );
+    }
+
+    // The facade holds its watcher weakly: a presenter dropped before the facade leaves the dialogs
+    // counting and telling no one.
+    #[test]
+    fn a_dropped_presenter_is_not_kept_alive_by_the_facade() {
+        use crate::ui::facade::Ui;
+        let ui = crate::testing::ScriptedUi::new(Vec::new());
+        let (p, states) = attending(&ui);
+        p.set_state(State::Idle);
+        drop(p);
+        drop(ui.dialogs().open());
+        assert_eq!(*states.lock().unwrap(), vec![State::Idle]);
     }
 }

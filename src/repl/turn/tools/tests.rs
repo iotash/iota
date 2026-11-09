@@ -1885,12 +1885,16 @@ impl Ui for OrderUi {
         self.inner.read_input(cancel)
     }
 
-    fn tabbed<'a>(
+    fn open_surface<'a>(
         &'a self,
         cancel: &'a CancellationToken,
         spec: TabbedSpec,
     ) -> BoxFuture<'a, Result<TabbedResult, UiError>> {
-        self.inner.tabbed(cancel, spec)
+        self.inner.open_surface(cancel, spec)
+    }
+
+    fn dialogs(&self) -> &crate::ui::facade::Dialogs {
+        self.inner.dialogs()
     }
 
     fn take_queued_messages(&self) -> BoxFuture<'_, Vec<Input>> {

@@ -33,8 +33,8 @@ use crate::BoxFuture;
 use crate::text::ansi::wrap_by_width;
 use crate::text::width::str_width;
 use crate::ui::facade::{
-    BusyGuard, Delivered, Input, ProgressState, ScopeGuard, StatusData, Suggestion, TabbedResult,
-    TabbedSpec, TurnBusy, Ui, UiError, UiStreamSink, sanitize_window_title,
+    BusyGuard, Delivered, Dialogs, Input, ProgressState, ScopeGuard, StatusData, Suggestion,
+    TabbedResult, TabbedSpec, TurnBusy, Ui, UiError, UiStreamSink, sanitize_window_title,
 };
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -112,6 +112,8 @@ pub(crate) struct TuiHandle {
     join: Mutex<Option<thread::JoinHandle<()>>>,
     /// `read_input` waiter ids — [`UiMsg::ReadCancel`] revokes only the SAME id.
     next_read_id: AtomicU64,
+    /// The surfaces open now ([`Ui::tabbed`] counts them).
+    dialogs: Dialogs,
 }
 
 /// Spawns the named `"iota-tui"` loop thread over an already-built terminal and event
@@ -145,6 +147,7 @@ where
         err: Mutex::new(None),
         join: Mutex::new(None),
         next_read_id: AtomicU64::new(1),
+        dialogs: Dialogs::default(),
     });
     let shared = LoopShared {
         width,
@@ -241,7 +244,7 @@ impl Ui for TuiHandle {
         })
     }
 
-    fn tabbed<'a>(
+    fn open_surface<'a>(
         &'a self,
         cancel: &'a CancellationToken,
         spec: TabbedSpec,
@@ -272,6 +275,10 @@ impl Ui for TuiHandle {
                 () = self.done.cancelled() => Err(UiError::Closed),
             }
         })
+    }
+
+    fn dialogs(&self) -> &Dialogs {
+        &self.dialogs
     }
 
     fn take_queued_messages(&self) -> BoxFuture<'_, Vec<Input>> {

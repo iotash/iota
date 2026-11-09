@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use iota::host::Presenter;
+use iota::host::{Presenter, State};
 use iota::llm::reqlog::RequestLog;
 use iota::provider::ProviderKind;
 use iota::provider::model::Message;
@@ -1348,6 +1348,82 @@ async fn a_chat_that_has_replied_moves_once_the_user_agrees() {
             );
         }
     }
+}
+
+/// A presenter over one recording host that watches `f`'s facade as the live chat's does
+/// (`Presenter::attend`), and the host's state log.
+fn watching(f: &Fixture) -> (Arc<Presenter>, Arc<std::sync::Mutex<Vec<State>>>) {
+    let host = iota::testing::RecordingHost::new("recorder");
+    let states = Arc::clone(&host.states);
+    let pres = Presenter::with_hosts(vec![Box::new(host)], false).attend(f.ui.as_ref());
+    (Arc::new(pres), states)
+}
+
+/// The `/model` picker and the move confirmation it leads to are dialogs waiting on the user
+/// (docs/design/herdr-agent-state.md §4): while each is open the host hears `NeedsInput` — herdr's
+/// `blocked` — and once each closes it hears what the chat was before, `Idle`, without the command
+/// reporting either. Before this, a supervisor saw `idle` with the picker open.
+#[tokio::test]
+async fn the_model_picker_and_its_confirm_are_needs_input_while_open() {
+    let f = Fixture::new(vec![
+        input("/model"),
+        commit(PanelResult {
+            cursor: 1,
+            ..PanelResult::default()
+        }),
+        agree(false),
+        Reply::Interrupted,
+    ]);
+    let (writer, history) = replied_bundle(&f);
+    let built = Built::default();
+    let mut params = f.params_with_catalog(
+        provider("a-model", Ok(vec![])).reporting_usage(),
+        f.session(Some(writer)),
+        TWO_ENDPOINTS,
+    );
+    params.imported_history = history;
+    params.endpoints = Some(relay_endpoints(TWO_ENDPOINTS, &built));
+    let (pres, states) = watching(&f);
+    params.pres = pres;
+    iota::repl::run(params).await.expect("exit");
+
+    let opened: Vec<String> = surfaces(&f.ui)
+        .iter()
+        .map(|s| s.panels[0].title.clone())
+        .collect();
+    assert_eq!(opened.len(), 2, "the picker, then the confirm: {opened:?}");
+    assert_eq!(opened[1], "Move this chat to relay:vendor/y?");
+    assert_eq!(
+        *states.lock().unwrap(),
+        vec![
+            State::Idle,       // the banner
+            State::NeedsInput, // the picker
+            State::Idle,
+            State::NeedsInput, // the confirm
+            State::Idle,
+        ]
+    );
+}
+
+/// `/new`'s discard confirmation on an unsaved chat a model replied in is a dialog too: `NeedsInput`
+/// while it asks, the chat's `Idle` again once it is answered.
+#[tokio::test]
+async fn the_new_discard_confirm_is_needs_input_while_open() {
+    let f = Fixture::new(vec![input("/new"), agree(false), Reply::Interrupted]);
+    let mut params = f.params(provider("a-model", Ok(vec![])), f.session(None));
+    params.imported_history = vec![Message::user("q"), openai_reply("a")];
+    let (pres, states) = watching(&f);
+    params.pres = pres;
+    iota::repl::run(params).await.expect("exit");
+
+    assert_eq!(
+        surfaces(&f.ui)[0].panels[0].title,
+        "Discard this unsaved chat and start a new one?"
+    );
+    assert_eq!(
+        *states.lock().unwrap(),
+        vec![State::Idle, State::NeedsInput, State::Idle]
+    );
 }
 
 /// The view a run holds was read from the log for the type it runs on: a session that once ran on the target's

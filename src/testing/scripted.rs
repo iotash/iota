@@ -21,8 +21,9 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 use crate::ui::facade::{
-    BusyGuard, Delivered, Input, PanelKind, PreviewHandle, ProgressState, ScopeGuard, StatusData,
-    Suggestion, TabbedResult, TabbedSpec, Ui, UiError, UiStreamSink, sanitize_window_title,
+    BusyGuard, Delivered, Dialogs, Input, PanelKind, PreviewHandle, ProgressState, ScopeGuard,
+    StatusData, Suggestion, TabbedResult, TabbedSpec, Ui, UiError, UiStreamSink,
+    sanitize_window_title,
 };
 use crate::{BoxFuture, host};
 
@@ -253,6 +254,8 @@ pub struct ScriptedUi {
     done: CancellationToken,
     fail_after: AtomicUsize,
     blocking_calls: AtomicUsize,
+    /// The facade's open dialogs: the provided [`Ui::tabbed`] counts them around `open_surface`.
+    dialogs: Dialogs,
 }
 
 impl ScriptedUi {
@@ -268,6 +271,7 @@ impl ScriptedUi {
             done: CancellationToken::new(),
             fail_after: AtomicUsize::new(usize::MAX),
             blocking_calls: AtomicUsize::new(0),
+            dialogs: Dialogs::default(),
         })
     }
 
@@ -418,7 +422,7 @@ impl Ui for ScriptedUi {
         Box::pin(std::future::ready(r))
     }
 
-    fn tabbed<'a>(
+    fn open_surface<'a>(
         &'a self,
         _cancel: &'a CancellationToken,
         spec: TabbedSpec,
@@ -443,6 +447,10 @@ impl Ui for ScriptedUi {
             }
         };
         Box::pin(std::future::ready(r))
+    }
+
+    fn dialogs(&self) -> &Dialogs {
+        &self.dialogs
     }
 
     fn take_queued_messages(&self) -> BoxFuture<'_, Vec<Input>> {
