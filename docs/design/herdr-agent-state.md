@@ -157,3 +157,22 @@ Status: **调查（未拍板）** · 日期：2026-11-09 · 基于 `main` = `81d
 **3. 退出 → 标签消失：成立。**
 - 空闲时按 Ctrl+D（`herdr pane send-keys w16:pA ctrl+d`），回到 zsh。`agent get w16:pA` 返回 `agent_not_found`，`pane get` 返回 `"agent_status":"unknown"`，也就是改由屏幕识别接管，而它识别不到 agent。
 - 注意：在 iota 里输入 `/exit` 并不会退出，这行文字被当作消息发给了模型（↑ token 41.2k→54.9k）。退出前一刻的状态是 `done`。
+
+## 合并后复验（2026-11-09）
+
+环境：herdr 0.9.5；`target/debug/iota` 由 main @ ef4d73c 构建（自报 v0.7.7），模型用配置默认的 glm-5.3，全程没有发出聊天消息。被测 pane `w16:pC` 由 `herdr pane split --pane w16:pB --direction down --cwd /tmp/iota-verify --no-focus` 创建，`echo "ENV=$HERDR_ENV PANE=$HERDR_PANE_ID"` → `ENV=1 PANE=w16:pC`。启动后 `agent get` → `"agent":"iota","agent_status":"idle"`。
+
+**1. `/exit` 退出：成立。**
+- `pane send-text w16:pC '/exit'` 后再 `pane send-keys w16:pC Enter`：屏幕回到 `joyqi@… iota-verify %`，底栏退出前保持 `glm-5.3 · ≈0% / 1m`，没有出现回合。
+- `herdr agent get w16:pC` → `{"code":"agent_not_found",…}`。
+- 会话 `jewdqe1wsnmn` 在 `~/.iota/sessions` 下没有任何目录，说明没有消息落盘。第二次会话 `3smwc93f9gp4` 同样用 `/exit` 退出，结果相同。
+
+**2. `/model` 选择器 → blocked：成立。**
+- 打开前 `agent get` → `idle`。先在后台挂起 `herdr agent wait w16:pC --until blocked --timeout 120000`，再发送 `/model` 和 Enter。wait 返回 `"agent_status":"blocked"`，`state_change_seq` 为 1244，exit 0。
+- `herdr agent prompt w16:pC "x"` → `{"code":"agent_blocked","message":"agent w16:pC is blocked and requires interactive input"}`，exit 1，选择器没有收到任何输入。昨天这里返回的是 `agent_not_ready`。
+- 按 Esc（`pane send-keys w16:pC Escape`）后，`agent get` → `"agent_status":"done","completion_seq":1245,"focused":false`，25s 后仍是 `done`。这里**不是**字面上的 `idle`：iota 只会上报 working/blocked/idle（`src/host/herdr.rs:197-199`），`done` 是 herdr 在上报的 idle 之上加的"完成未看过"标记，只有 focus 才会清除（见上文 `completion_seq`）。由于 `--no-focus`，没有再确认它会不会落回 `idle`。可以确定的是状态没有停在 blocked。
+- 副作用：从 blocked 回到 idle 也会被 herdr 记成一次"完成"，未聚焦的 pane 会因此显示 done。
+
+**3. 审批路径只上报一次：跳过。** 没有不调用模型就能触发审批的办法，这一项依赖该分支的单元测试。
+
+清理：`/exit` 退出 iota → `herdr pane close w16:pC`（返回 ok，之后 `pane get` → `pane_not_found`）→ `rm -rf /tmp/iota-verify`。
