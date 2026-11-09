@@ -21,6 +21,12 @@
 //! (chats that started ephemeral) and `/skills` plus one `/skills <name>` row per discovered skill
 //! (agent mode). Inactive conditional commands are fully invisible: no completion, no dispatch.
 //!
+//! `/exit` closes the base rows (2026-11-09; Go had no such command, and a typed `/exit` went to the model as
+//! a message). It is an idle Ctrl+D typed out: the run loop turns it into the same end of input before the
+//! dispatch chain, so there is one way out, with no confirmation — sessions are written as they go. A bot
+//! keeps it, listed and dispatched: `/new` and `/session` leave a bot because they end or switch its one
+//! session, and quitting ends neither — Ctrl+D only takes a bot offline (docs/design/bot-mode.md §1.2 #3).
+//!
 //! **One exception to the law, on purpose** (docs/design/new-session-command.md §3.1, §3.3): `/new` answers
 //! to a second name, `/clear`, that the table never lists — the muscle memory of other agents types it, and
 //! an unregistered `/clear` would go to the model as a message. And in a bot `/new` (with `/clear`) is
@@ -61,8 +67,8 @@ struct CmdSpec {
     desc: &'static str,
 }
 
-/// The unconditional commands, in Go's table order (chat/completion.go:10-19). `/compact`
-/// sits between `/model` and `/export` and is skipped while token accounting is off.
+/// The unconditional commands, in Go's table order (chat/completion.go:10-19), then `/exit`, which Go
+/// never had. `/compact` sits between `/model` and `/export` and is skipped while token accounting is off.
 /// Descriptions are byte-exact.
 const BASE: &[CmdSpec] = &[
     CmdSpec {
@@ -100,6 +106,10 @@ const BASE: &[CmdSpec] = &[
     CmdSpec {
         value: "/debug",
         desc: "Browse API traffic; toggle request recording",
+    },
+    CmdSpec {
+        value: "/exit",
+        desc: "Quit iota, as Ctrl+D does",
     },
 ];
 
@@ -374,7 +384,7 @@ mod tests {
             names(&t),
             [
                 "/file", "/new", "/session", "/model", "/compact", "/export", "/status", "/tools",
-                "/debug", "/edit", "/redo", "/save", "/skills"
+                "/debug", "/exit", "/edit", "/redo", "/save", "/skills"
             ]
         );
         assert!(t.save_enabled() && t.image_enabled() && t.agent_enabled());
@@ -403,7 +413,7 @@ mod tests {
             names(&t),
             [
                 "/file", "/new", "/session", "/model", "/compact", "/export", "/status", "/tools",
-                "/debug", "/jobs", "/edit", "/redo", "/save", "/skills"
+                "/debug", "/exit", "/jobs", "/edit", "/redo", "/save", "/skills"
             ]
         );
         let row = t
@@ -496,7 +506,7 @@ mod tests {
     }
 
     /// bot-mode.md §2.2: a bot's process serves its own session only — `/session` is neither
-    /// listed nor dispatched, `/new` is not listed; every other row is untouched.
+    /// listed nor dispatched, `/new` is not listed; every other row (`/exit` among them) is untouched.
     #[test]
     fn a_bot_has_no_session_command() {
         let flags = CmdFlags {
@@ -513,5 +523,27 @@ mod tests {
         let mut want = names(&chat);
         want.retain(|n| n != "/session" && n != "/new");
         assert_eq!(names(&bot), want);
+    }
+
+    /// `/exit` is Ctrl+D typed: a base row under every flag combination, a bot's too — leaving the
+    /// process takes a bot offline, it does not end its session (bot-mode.md §1.2 #3).
+    #[test]
+    fn the_table_offers_exit_everywhere() {
+        for t in [
+            table((false, false, false, false)),
+            table((true, true, true, true)),
+            CommandTable::new(CmdFlags {
+                bot: true,
+                agent: true,
+                ..CmdFlags::default()
+            }),
+        ] {
+            assert!(has(&t, "/exit"), "/exit missing: {:?}", names(&t));
+        }
+        let row = BASE
+            .iter()
+            .find(|c| c.value == "/exit")
+            .expect("a base row");
+        assert_eq!(row.desc, "Quit iota, as Ctrl+D does");
     }
 }

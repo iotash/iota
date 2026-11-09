@@ -5,6 +5,13 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ## Unreleased
 
+### Added
+
+- **`/exit` quits iota.** Typing it used to send the word to the model as a
+  message, at the cost of a full turn. It now leaves the chat exactly as
+  Ctrl+D does, with no confirmation: the session is already saved as it goes.
+  A bot quits on it too and keeps its session, as it does on Ctrl+D.
+
 ### Fixed
 
 - **The first request after the computer wakes no longer stalls.** iota kept

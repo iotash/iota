@@ -410,7 +410,8 @@ async fn file_is_advertised_and_dispatched() {
     assert_eq!(
         row,
         [
-            "/file", "/new", "/session", "/model", "/export", "/status", "/tools", "/debug"
+            "/file", "/new", "/session", "/model", "/export", "/status", "/tools", "/debug",
+            "/exit"
         ]
     );
     // A longer name is NOT the command: "/filex" falls through as a plain message.

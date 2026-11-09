@@ -264,7 +264,8 @@ async fn banner_order_and_completion_row() {
     assert_eq!(
         completion_row(&f.ui),
         [
-            "/file", "/new", "/session", "/model", "/export", "/status", "/tools", "/debug"
+            "/file", "/new", "/session", "/model", "/export", "/status", "/tools", "/debug",
+            "/exit"
         ]
     );
 }
@@ -295,7 +296,7 @@ async fn banner_offers_save_for_an_ephemeral_chat() {
         completion_row(&f.ui),
         [
             "/file", "/new", "/session", "/model", "/export", "/status", "/tools", "/debug",
-            "/save"
+            "/exit", "/save"
         ]
     );
 }
@@ -328,6 +329,83 @@ async fn jobs_is_a_plain_message_while_nothing_runs() {
         "the text was not sent as a message"
     );
     assert!(printed(&f.ui).iter().any(|l| l.contains("an answer")));
+}
+
+// ---------------------------------------------------------------------------
+// /exit
+// ---------------------------------------------------------------------------
+
+/// How many times the loop parked on `read_input`.
+fn reads(ui: &ScriptedUi) -> usize {
+    ui.events()
+        .iter()
+        .filter(|e| matches!(e, UiEvent::ReadInput))
+        .count()
+}
+
+/// `/exit` leaves the loop the way an idle Ctrl+D does: a clean return from `run`, nothing sent to the
+/// model, no `❯` block, and the loop never asks for another line (the scripted one after it stays unread).
+#[tokio::test]
+async fn exit_leaves_the_loop_like_ctrl_d() {
+    let f = Fixture::new(vec![input("/exit"), input("never read")]);
+    let writer = f.writer();
+    let session = f.session(Some(writer));
+    let p = provider("gpt-4o", Ok(vec![]));
+    let log = p.log();
+    iota::repl::run(f.params(p, session))
+        .await
+        .expect("clean exit");
+
+    assert!(completion_row(&f.ui).iter().any(|v| v == "/exit"));
+    assert_eq!(reads(&f.ui), 1, "the loop read past /exit");
+    assert_eq!(log.calls(), 0, "/exit reached the model");
+    assert!(
+        !f.ui
+            .events()
+            .iter()
+            .any(|e| matches!(e, UiEvent::UserBlock(_))),
+        "/exit was echoed as a message"
+    );
+}
+
+/// A bot quits on `/exit` too, and it is offered there: Ctrl+D takes a bot offline without ending its
+/// session (bot-mode.md §1.2 #3), so `/exit` is not one of the session-ending commands a bot hides.
+#[tokio::test]
+async fn a_bot_exits_on_exit() {
+    let f = Fixture::new(vec![input("/exit"), input("never read")]);
+    let bots = f.store.root().parent().expect("parent").join("bots");
+    let store = f.store.clone().with_bots(&bots);
+    let writer = match store
+        .open_bot(
+            &bots.join("coder"),
+            NewSession::new(ProviderKind::OpenAi, "gpt-4o"),
+            ProviderKind::OpenAi,
+        )
+        .expect("open the bot")
+    {
+        iota::session::BotOpen::Fresh(w) | iota::session::BotOpen::Resumed(w, _) => w,
+    };
+    let id = writer.id().to_owned();
+    let session = SessionCtx {
+        writer: Some(writer),
+        store,
+        bot: true,
+        ..f.session(None)
+    };
+    let p = provider("gpt-4o", Ok(vec![]));
+    let log = p.log();
+    iota::repl::run(f.params(p, session))
+        .await
+        .expect("clean exit");
+
+    let row = completion_row(&f.ui);
+    assert!(row.iter().any(|v| v == "/exit"), "{row:?}");
+    assert_eq!(reads(&f.ui), 1, "the bot read past /exit");
+    assert_eq!(log.calls(), 0, "/exit reached the model");
+    let ptr = iota::session::BotPointer::read(&bots.join("coder"))
+        .expect("pointer")
+        .expect("present");
+    assert_eq!(ptr.session, id, "the bot keeps its one session");
 }
 
 // ---------------------------------------------------------------------------
