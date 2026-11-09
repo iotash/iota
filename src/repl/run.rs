@@ -781,8 +781,10 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     // Every exit path breaks out with its outcome so the presenter is closed exactly once
     // below (Go's `defer pres.Close()`).
     let outcome: Result<(), ReplError> = 'main: loop {
-        let Some((input, released)) = next_input(&mut repl, &root_cancel).await else {
-            // ErrInterrupted (idle Ctrl+C / Ctrl+D), ErrClosed, or shutdown. A landed name is
+        // A typed `/exit` is an idle Ctrl+D spelled out: it ends the input right here, down the same break.
+        let next = next_input(&mut repl, &root_cancel).await;
+        let Some((input, released)) = next.filter(|(input, _)| !is_exit(input)) else {
+            // ErrInterrupted (idle Ctrl+C / Ctrl+D), ErrClosed, shutdown, or `/exit`. A landed name is
             // already written; an unfinished title pass is given up — the placeholder stands
             // rather than the exit waiting on a model that may never answer.
             repl.session.abort_title();
@@ -1535,6 +1537,12 @@ pub(crate) async fn bot_perform(
         }
     }
     keep
+}
+
+/// Whether the user typed `/exit` (with or without an argument, as `/status` takes one). Never a notice or a
+/// message from another process: those skip the dispatch chain, and no socket may quit the chat.
+fn is_exit(input: &Input) -> bool {
+    !input.kind.is_notice() && match_cmd(input.text.trim(), "/exit").is_some()
 }
 
 /// The next input for the loop, and whether the notice gate let it out (`true`: a held notice, the probe of a

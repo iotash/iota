@@ -270,7 +270,11 @@ async fn a_running_job_puts_jobs_in_the_table_and_the_panel_lists_it() {
         .iter()
         .position(|v| v == "/jobs")
         .expect("/jobs joined the table");
-    assert_eq!(last[at - 1], "/debug", "/jobs follows /debug: {last:?}");
+    assert_eq!(
+        last[at - 1],
+        "/exit",
+        "/jobs follows the base rows: {last:?}"
+    );
 
     // The command opened the list, then the first job's page, then the list again — not the model: no
     // `❯` block, no answer.
