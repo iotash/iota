@@ -176,3 +176,31 @@ Status: **调查（未拍板）** · 日期：2026-11-09 · 基于 `main` = `81d
 **3. 审批路径只上报一次：跳过。** 没有不调用模型就能触发审批的办法，这一项依赖该分支的单元测试。
 
 清理：`/exit` 退出 iota → `herdr pane close w16:pC`（返回 ok，之后 `pane get` → `pane_not_found`）→ `rm -rf /tmp/iota-verify`。
+
+## 其它 agent 怎么对待对话框（2026-11-09）
+
+环境：herdr 0.9.5；Claude Code 2.1.319；codex-cli 0.165.0；gemini 0.39.1（只读了 manifest）。manifest 取自 `strings $(which herdr)`，也就是内置的 claude `2026.10.11.1`、codex `2026.10.11.1`、gemini `2026.06.10.1`；`agent explain` 显示实际生效的是 `~/.local/state/herdr/agent-detection/remote/{claude,codex}.toml`，版本相同。所有测量都在自建的 `w16:pE` 上进行（`pane split --pane w16:pD --direction down --cwd /tmp/peers-probe --no-focus`），测完 `pane close` → `pane_not_found`，`/tmp/peers-probe` 已删。
+
+**1. 完成规则：进入 idle 时，前一个状态是 working 或 blocked，才算一次完成。** skill 只写了"seen 状态区分 idle/done，focus 才标记 seen"；schema 对 `completion_seq` 的描述是 "The current idle transition completed work"；`pane report-agent --state` 只接受 `idle|working|blocked|unknown`，没有"不算完成"之类的参数。规则是实测出来的：在 pane 里跑 `sleep 3000` 当前台进程，用假 source `--source probe --agent probe` 逐个上报，每步之后执行 `agent get`：
+- working→idle → `done, completion_seq=1273`；blocked→idle → `done, completion_seq=1275`（间隔 3s 重测一次，结果 `1285`，相同）
+- idle→unknown→idle → `idle, completion_seq=None`；blocked→unknown→idle → `idle, None`；**working→unknown→idle 也是 `idle, None`**（真实完成的标记被吞掉了）
+- idle→idle → `state_change_seq` 不变（1280）。前台进程是 shell 时，上报 idle 会直接得到 `agent_not_found`。
+- 所以 source 能避开这个标记：先经过 unknown 再进 idle。herdr 文档里没写这条规则，它是 0.9.5 上的实测行为。
+
+**2. claude：只有审批和确认类表单才是 blocked，选择器保持原来的状态。** 在已信任的 iota 目录里启动 `claude`（没有发出任何消息）：
+- 启动后 → `idle`，`state_change_seq=1290`。`/model` 打开时屏幕显示 `Select model … Enter to set as default · s to use this session only · Esc to cancel`，`agent get` 仍是 `idle` / 1290。`agent explain --verbose` 给出 `state: unknown`、`rule: model_picker_menu`，也就是该规则 `state = "unknown"` + `skip_state_update = true`：判定是 unknown，但不写入，保留原状态。Esc 之后 `idle`，`completion_seq=None`，seq 仍是 1290，**没有 done**。
+- `/resume` 选择器 → `idle`，命中的是 `osc_title_idle` 兜底（没有任何对话框规则命中）。Esc 之后同样没有 done。
+- 信任目录对话框（`/tmp/peers-probe`，`Enter to confirm · Esc to cancel`）→ `blocked`，`rule: live_blocked_form`。这个 manifest 把带 "esc to cancel" 加 "enter to confirm/select" 页脚的表单都判成 blocked。为了不写 `~/.claude.json` 没有点信任，用 Esc 退出了，所以 claude 的 blocked→idle 有没有 done **未核实**（按第 1 条推断会有）。
+- 副作用：claude 留下了一个 session 记录（`e26921b3-…`），配置没有改动。
+
+**3. codex：只测到一个启动通知，选择器和审批 未核实。** 在 `/tmp/peers-probe` 里启动 `codex`，屏幕是 `GPT-5.4 is no longer available … enter/esc continue · ⌃c quit`，`agent get` → `idle`，explain 给出 `rule: none`。按 Enter/Esc 会切换模型，可能改写 `~/.codex/config.toml`，所以改用 Ctrl+C 退出（config 的 mtime 仍是 Oct 28）。以下只来自 manifest：标题含 "Action Required" 时 `osc_title_blocked`（priority 1100），屏幕出现 "press enter to confirm or esc to cancel"/"allow command?"/"enter to submit answer" 时 `live_strong_blocker` 判 blocked，信任目录 `trust_directory` 和更新提示 `startup_update` 也判 blocked；codex 只有 `transcript_viewer` 一条规则用 `skip_state_update`（unknown，保留原状态）。gemini 的 manifest（未核实）：只有 apply/allow 判 blocked；任何带 "esc to cancel" 的画面都判成 **working**（`esc_cancel_working`），关闭这样的画面就是 working→idle，按规则会显示 done。
+
+**4. 对比**
+
+| | 对话框打开时上报 | `agent prompt` 受保护？ | 关闭后有 done？ |
+|---|---|---|---|
+| claude | 审批/确认表单 blocked；`/model` 判 unknown 但保留原状态（实测 idle）；其它选择器 idle | 表单：是（`agent_blocked`）；选择器：否，状态是 idle，prompt 会照常发出（按 skill §prompt 推断，未实测，因为 Enter 会改写默认模型） | 选择器：否（实测）；表单：未核实，推断有 |
+| codex | 审批/确认 blocked（manifest）；启动通知 idle（实测） | blocked 时是；通知：否 | 审批后直接进入 working，一般看不到；通知：否 |
+| iota | 任何 facade 对话框都是 blocked（ef4d73c） | 是（`agent_blocked`，上一节实测） | 是：Esc 之后 `done, completion_seq=1245`（上一节实测） |
+
+**结论：保留 blocked，不要学 claude。** claude 让选择器保持 idle，代价是监督者看到的是一个可以输入的 agent，`agent prompt` 会把文字打进选择器里。claude 也只把会拦住回合的表单报成 blocked。iota 如果改报 idle 或 unknown，会失去两样东西：`agent_blocked` 拒绝（以及 `wait --until blocked` 这个信号），还有"有人在等用户"这个侧栏状态。done 这个副作用可以在不放弃 blocked 的前提下去掉：对话框关闭、而回合本身是 idle 时，先报 `unknown` 再报 `idle`（实测 blocked→unknown→idle 没有 done）。这一跳**只能**用在对话框关闭上，回合结束时不能用，因为 working→unknown→idle 会吞掉真实的完成。代价是 sidebar 上会闪一下 unknown，而且依赖的是 herdr 未写入文档的行为，需要用测试固定下来。是否这样做由 owner 决定，本节不改源码。
