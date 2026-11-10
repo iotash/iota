@@ -124,12 +124,29 @@ fn sessions_root(home: &Path) -> PathBuf {
 
 /// `iota …` with a cleared environment (`common::cleared_env`), a temp cwd and the fixture home (the
 /// `tests/cmd/cli.rs` discipline).
+/// A project config the test wrote into `cwd` is trusted first ([`trust_project`]).
 fn iota(cwd: &Path, home: &Path) -> Command {
+    trust_project(cwd, home);
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_iota"));
     cleared_env(&mut cmd, home)
         .current_dir(cwd)
         .stdin(Stdio::null());
     cmd
+}
+
+/// Trusts the project config in `cwd`, if there is one, as the user who runs iota there would have
+/// (`iota config trust`): these runs are about sessions, not about the trust gate.
+fn trust_project(cwd: &Path, home: &Path) {
+    if iota::cmd::Config::find_config_file(cwd).is_none() {
+        return;
+    }
+    let mut trust = Command::new(env!("CARGO_BIN_EXE_iota"));
+    cleared_env(&mut trust, home)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .args(["config", "trust"]);
+    let o = trust.output().expect("run iota config trust");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 }
 
 /// Writes `<cwd>/.iota.yaml`: a gemini endpoint (its key, and the mock server's URL when one is serving)
@@ -664,6 +681,7 @@ async fn a_v1_bundle_is_refused_and_names_the_conversion_script() {
 /// it: its exit status and its report.
 #[cfg(unix)]
 fn convert(cwd: &Path, home: &Path, args: &[&str]) -> (Option<i32>, String) {
+    trust_project(cwd, home);
     let mut cmd = Command::new("python3");
     cleared_env(&mut cmd, home)
         .current_dir(cwd)
@@ -1458,7 +1476,8 @@ async fn bare_m_run_writes_nothing_under_home() {
     let cwd = TempDir::new().expect("temp cwd");
     let home = TempDir::new().expect("temp home");
 
-    write_config(cwd.path(), &server.uri(), "gemini-2.5-pro", "");
+    // The user's own file: a project file would need a trust record, which lives under `~/.iota`.
+    write_config(home.path(), &server.uri(), "gemini-2.5-pro", "");
     let mut cmd = iota(cwd.path(), home.path());
     cmd.args(["-m", "hi"]);
     let o = output(cmd).await;

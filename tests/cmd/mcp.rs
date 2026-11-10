@@ -873,6 +873,12 @@ async fn mcp_login_logout_through_the_cli() {
         ),
     )
     .unwrap();
+    let mut trust = Command::new(env!("CARGO_BIN_EXE_iota"));
+    cleared_env(&mut trust, &home)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .args(["config", "trust"]);
+    assert!(trust.output().expect("trust").status.success());
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_iota"));
     cleared_env(&mut cmd, &home)
         .current_dir(cwd)

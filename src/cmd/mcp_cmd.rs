@@ -210,8 +210,12 @@ async fn run_add(
     // config a run would load — and said nothing when that config cannot be loaded, which is that run's
     // own error to report. Before the login, which may not finish: the line is about the file, which is
     // written either way.
-    if let Ok(cfg) = Config::load(explicit, env, &mut |_| {})
-        && let Some(agent) = cfg.agents.get(DEFAULT_AGENT)
+    if let Ok(cfg) = Config::load(
+        explicit,
+        env,
+        &mut crate::cmd::trust::gate(&env.dirs, false),
+        &mut |_| {},
+    ) && let Some(agent) = cfg.agents.get(DEFAULT_AGENT)
         && let Some(listed) = &agent.mcp_servers
         && !listed.iter().any(|n| n == &add.name)
     {

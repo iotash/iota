@@ -22,7 +22,7 @@ fn load_explicit(path: &Path, env: &Env) -> (Config, Vec<String>) {
 /// The same, without insisting that the load succeeded.
 fn try_load_explicit(path: &Path, env: &Env) -> (Result<Config, ConfigError>, Vec<String>) {
     let mut warnings = Vec::new();
-    let cfg = Config::load(Some(path), env, &mut |w| {
+    let cfg = Config::load(Some(path), env, &mut |_, _, _| true, &mut |w| {
         warnings.push(w);
     });
     (cfg, warnings)
@@ -615,9 +615,14 @@ fn a_later_file_replaces_whole_entries() {
         ),
     ]);
     let mut warnings = Vec::new();
-    let cfg = Config::load(None, &Env::default().with_dirs(dirs), &mut |w| {
-        warnings.push(w);
-    })
+    let cfg = Config::load(
+        None,
+        &Env::default().with_dirs(dirs),
+        &mut |_, _, _| true,
+        &mut |w| {
+            warnings.push(w);
+        },
+    )
     .expect("loads");
     assert_eq!(cfg.providers["shared"].key, "cwd");
     assert_eq!(
@@ -639,7 +644,13 @@ fn write_roots_load_as_written_and_add_up_across_the_stack() {
         ("home/.iota.yaml", "write_roots: [/tmp/a, /tmp/b]\n"),
         (".iota.yaml", "write_roots: [/tmp/b, /tmp/c]\n"),
     ]);
-    let cfg = Config::load(None, &Env::default().with_dirs(dirs), &mut |_| {}).expect("loads");
+    let cfg = Config::load(
+        None,
+        &Env::default().with_dirs(dirs),
+        &mut |_, _, _| true,
+        &mut |_| {},
+    )
+    .expect("loads");
     assert_eq!(cfg.write_roots, ["/tmp/a", "/tmp/b", "/tmp/b", "/tmp/c"]);
     let _ = dir;
 }
@@ -673,7 +684,13 @@ fn outside_writes_defaults_to_ask_and_only_tightens_across_the_stack() {
         ("", "outside_writes: ask\n", Ask),
     ] {
         let (dir, dirs) = temp_project(&[("home/.iota.yaml", home), (".iota.yaml", cwd)]);
-        let cfg = Config::load(None, &Env::default().with_dirs(dirs), &mut |_| {}).expect("loads");
+        let cfg = Config::load(
+            None,
+            &Env::default().with_dirs(dirs),
+            &mut |_, _, _| true,
+            &mut |_| {},
+        )
+        .expect("loads");
         assert_eq!(cfg.outside_writes, want, "{home:?} then {cwd:?}");
         let _ = dir;
     }
@@ -1067,7 +1084,8 @@ fn model_order_is_declaration_order_across_the_merged_files() {
     ]);
     let env = Env::default().with_dirs(dirs);
     let mut warnings = Vec::new();
-    let cfg = Config::load(None, &env, &mut |w| warnings.push(w)).expect("loads");
+    let cfg =
+        Config::load(None, &env, &mut |_, _, _| true, &mut |w| warnings.push(w)).expect("loads");
     assert!(warnings.is_empty(), "{warnings:?}");
     assert_eq!(cfg.model_order, vec!["zeta", "shared", "alpha"]);
     assert_eq!(
@@ -1352,16 +1370,22 @@ fn config_only_explicit_path_when_given() {
 
     // Explicit: nothing from home or cwd.
     let mut warnings = Vec::new();
-    let cfg = Config::load(Some(&dir.path().join("explicit.yaml")), &env, &mut |w| {
-        warnings.push(w);
-    })
+    let cfg = Config::load(
+        Some(&dir.path().join("explicit.yaml")),
+        &env,
+        &mut |_, _, _| true,
+        &mut |w| {
+            warnings.push(w);
+        },
+    )
     .expect("loads");
     assert!(warnings.is_empty(), "{warnings:?}");
     assert_eq!(cfg.providers.keys().collect::<Vec<_>>(), vec!["explicit"]);
     assert!(cfg.mcp_servers.is_empty());
 
     // Discovery: home (.yaml) then cwd (.yml, the .yaml fallback); cwd replaces WHOLE entries by name.
-    let cfg = Config::load(None, &env, &mut |w| warnings.push(w)).expect("loads");
+    let cfg =
+        Config::load(None, &env, &mut |_, _, _| true, &mut |w| warnings.push(w)).expect("loads");
     assert!(warnings.is_empty(), "{warnings:?}");
     assert_eq!(
         cfg.providers.keys().collect::<Vec<_>>(),
@@ -1373,15 +1397,20 @@ fn config_only_explicit_path_when_given() {
     assert_eq!(cfg.mcp_servers["gh"].url, "https://home/gh");
 
     // A missing explicit file is silent (os.IsNotExist) and yields an empty config.
-    let cfg = Config::load(Some(&dir.path().join("nope.yaml")), &env, &mut |w| {
-        warnings.push(w);
-    })
+    let cfg = Config::load(
+        Some(&dir.path().join("nope.yaml")),
+        &env,
+        &mut |_, _, _| true,
+        &mut |w| {
+            warnings.push(w);
+        },
+    )
     .expect("loads");
     assert!(warnings.is_empty(), "{warnings:?}");
     assert_eq!(cfg, Config::default());
 
     // No home and no cwd: nothing is read, nothing is warned.
-    let cfg = Config::load(None, &Env::default(), &mut |w| {
+    let cfg = Config::load(None, &Env::default(), &mut |_, _, _| true, &mut |w| {
         warnings.push(w);
     })
     .expect("loads");
@@ -1407,7 +1436,8 @@ fn config_parse_error_drops_file_with_warning() {
     let env = Env::default().with_dirs(dirs);
 
     let mut warnings = Vec::new();
-    let cfg = Config::load(None, &env, &mut |w| warnings.push(w)).expect("loads");
+    let cfg =
+        Config::load(None, &env, &mut |_, _, _| true, &mut |w| warnings.push(w)).expect("loads");
     let cwd_file = dir.path().join(".iota.yaml");
     assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
     assert!(
@@ -1588,4 +1618,75 @@ fn moderation_is_an_optional_model_key() {
             path.display()
         )
     );
+}
+
+/// The project file is merged only when `admit` lets it in, and `admit` is shown the project file alone —
+/// never the home file or `-c` — with the bytes that are merged. Refused, the home config is in force.
+#[test]
+fn config_admit_gates_the_project_layer_alone() {
+    let (dir, dirs) = temp_project(&[
+        (
+            "home/.iota.yaml",
+            "providers:\n  home_only: {type: openai, key: h}\n",
+        ),
+        (
+            ".iota.yaml",
+            "providers:\n  cwd_only: {type: openai, key: c}\nmcp_servers:\n  fs: {command: cwd-fs}\n",
+        ),
+        (
+            "explicit.yaml",
+            "providers:\n  ex: {type: openai, key: e}\n",
+        ),
+    ]);
+    let env = Env::default().with_dirs(dirs.clone());
+    let project = dir.path().join(".iota.yaml");
+
+    let mut shown = Vec::new();
+    let cfg = Config::load(
+        None,
+        &env,
+        &mut |path, bytes, _| {
+            shown.push((path.to_path_buf(), bytes.to_vec()));
+            false
+        },
+        &mut |w| panic!("unexpected warning {w}"),
+    )
+    .expect("loads");
+    assert_eq!(
+        shown,
+        [(project.clone(), std::fs::read(&project).expect("read"))]
+    );
+    assert_eq!(cfg.providers.keys().collect::<Vec<_>>(), ["home_only"]);
+    assert!(cfg.mcp_servers.is_empty(), "nothing of the project file");
+
+    let cfg = Config::load(None, &env, &mut |_, _, _| true, &mut |_| {}).expect("loads");
+    assert_eq!(
+        cfg.providers.keys().collect::<Vec<_>>(),
+        ["cwd_only", "home_only"]
+    );
+
+    // `-c` is the user's own file: never put to the gate.
+    let cfg = Config::load(
+        Some(&dir.path().join("explicit.yaml")),
+        &env,
+        &mut |_, _, _| panic!("-c is not gated"),
+        &mut |_| {},
+    )
+    .expect("loads");
+    assert_eq!(cfg.providers.keys().collect::<Vec<_>>(), ["ex"]);
+
+    // Run in the home directory, the working directory's file IS the home file: not a project file.
+    let home_dirs = iota::app::HostDirs {
+        cwd: dirs.home.clone(),
+        ..dirs
+    };
+    assert_eq!(Config::project_file(None, &home_dirs), None);
+    let cfg = Config::load(
+        None,
+        &Env::default().with_dirs(home_dirs),
+        &mut |_, _, _| panic!("the home file is not gated"),
+        &mut |_| {},
+    )
+    .expect("loads");
+    assert_eq!(cfg.providers.keys().collect::<Vec<_>>(), ["home_only"]);
 }

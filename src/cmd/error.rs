@@ -69,6 +69,9 @@ pub enum ArgsError {
     /// `--no-save` with a resume: an ephemeral start and a resumed bundle are opposite intents (root.go:285).
     #[error("--no-save cannot be combined with iota resume")]
     NoSaveWithResume,
+    /// `iota config --path` with an action other than `trust`/`untrust`.
+    #[error("--path goes with `iota config trust` and `iota config untrust`")]
+    ConfigPathWithoutTrust,
     /// `iota mcp … --scope` beside `-c`: the explicit file IS the scope.
     #[error("--scope does not apply with -c: the file given is the only scope")]
     McpScopeWithConfig,
@@ -226,6 +229,21 @@ pub enum SetupError {
     /// overwritten.
     #[error("{0} already exists (use -c <path> to write somewhere else)")]
     ConfigExists(String),
+    /// `iota config trust|untrust` with no `--path` and no project config in the working directory.
+    #[error("no project config (.iota.yaml or .iota.yml) in {0}: name one with --path")]
+    NoProjectConfig(String),
+    /// `iota config trust|untrust` with no home directory to keep the record in.
+    #[error("$HOME is not defined: there is nowhere to keep the trust record")]
+    NoHomeForTrust,
+    /// `iota config trust|untrust` could not read the file or write the record.
+    #[error("{path}: {source}")]
+    Trust {
+        /// The file that failed: the config read, or the record written.
+        path: String,
+        /// Why.
+        #[source]
+        source: std::io::Error,
+    },
     /// `iota config init` with no `$HOME` to put `~/.iota.yaml` in.
     #[error("$HOME is not defined: use -c <path> to say where the config should go")]
     NoHome,

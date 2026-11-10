@@ -14,6 +14,7 @@ pub mod list;
 pub(crate) mod mcp_cmd;
 pub(crate) mod resolve;
 pub mod signals;
+pub(crate) mod trust;
 pub(crate) mod tuning;
 pub use crate::config::edit;
 pub use crate::config::window;
@@ -156,9 +157,12 @@ pub async fn run(
         Command::Config(cmd) => config_cmd::run_config(&cmd, config.as_deref(), &env, io),
         Command::Mcp(cmd) => mcp_cmd::run_mcp(&cmd, config.as_deref(), &env, &cancel, io).await,
         Command::List(cmd) => {
-            let cfg = Config::load(config.as_deref(), &env, &mut |w| {
-                io.warning(&w);
-            })?;
+            let cfg = Config::load(
+                config.as_deref(),
+                &env,
+                &mut trust::gate(&env.dirs, false),
+                &mut |w| io.warning(&w),
+            )?;
             list::run_list(&cmd, &cfg, &env, io)
         }
         Command::Run(cmd) => {
@@ -174,7 +178,8 @@ pub async fn run(
 
 /// The run pipeline, in Go's order (cmd/root.go:46-268, kept EXACTLY so every byte-pinned error Go raises
 /// before it decides headless-vs-interactive still wins over the interactive branch's own refusals):
-/// `RunArgs::reject_unsupported` (`-m` runs only) → `Config::load` → `resolve_run` → provider construction
+/// `RunArgs::reject_unsupported` (`-m` runs only) → `Config::load` (the project file's trust decided inside
+/// it, `trust::gate`) → `resolve_run` → provider construction
 /// (`ProviderKind::from_str`, `new_provider`; NOT for a resume, which reads its bundle first and opens the
 /// provider the session names at its resume stage — DIVERGENCES X-67) →
 /// `tuning::apply` → `assemble::build_mcp_configs` → `tuning::warn_tools_without_calling` → cwd/root
@@ -209,10 +214,22 @@ async fn run_agent(
     // goes on with it (`config_cmd::auto_init`), so `OPENAI_API_KEY=… iota` works on a fresh install.
     config_cmd::auto_init(inv.config.as_deref(), &env.dirs, io)?;
 
-    // root.go:45
-    let cfg = Config::load(inv.config.as_deref(), &env, &mut |w| {
-        io.warning(&w);
-    })?;
+    // root.go:45, with the project file put to the trust gate (`trust::gate`) as it is read — the first thing
+    // a run does with it, so nothing it describes (an MCP server, a provider url, a loosened sandbox) exists
+    // before the decision. Only an interactive start on a terminal asks; `-m` and a piped start skip an
+    // untrusted file with one warning and go on.
+    let ask = {
+        use std::io::IsTerminal as _;
+        inv.args.message.is_none()
+            && std::io::stdin().is_terminal()
+            && std::io::stderr().is_terminal()
+    };
+    let cfg = Config::load(
+        inv.config.as_deref(),
+        &env,
+        &mut trust::gate(&env.dirs, ask),
+        &mut |w| io.warning(&w),
+    )?;
 
     // root.go:52-123
     let mut stdin = std::io::stdin();

@@ -53,9 +53,10 @@ fn run(mut cmd: Command) -> Output {
 }
 
 /// The config a run needs now that `-k` is gone: one endpoint, one model, `agents.default`.
-fn write_config(cwd: &Path) {
+/// It is the user's `~/.iota.yaml`: a project file would be skipped as untrusted (`config::trust`).
+fn write_config(home: &Path) {
     std::fs::write(
-        cwd.join(".iota.yaml"),
+        home.join(".iota.yaml"),
         "providers:\n  p: {type: openai, key: sk-test}\nmodels:\n  m: p:gpt-4o\nagents:\n  default: {model: m}\n",
     )
     .expect("write config");
@@ -77,7 +78,7 @@ fn assert_error(o: &Output, message: &str) {
 #[test]
 fn an_interactive_run_requires_a_terminal() {
     let (dir, home) = project();
-    write_config(dir.path());
+    write_config(&home);
     let o = run(piped(dir.path(), &home));
     assert_error(&o, NOT_A_TERMINAL);
     assert!(o.stdout.is_empty(), "the refusal writes nothing to stdout");
@@ -89,7 +90,7 @@ fn an_interactive_run_requires_a_terminal() {
 #[test]
 fn the_interactive_only_flags_are_accepted_without_a_message() {
     let (dir, home) = project();
-    write_config(dir.path());
+    write_config(&home);
     for args in [vec!["--no-save"], vec!["resume"]] {
         let mut cmd = piped(dir.path(), &home);
         cmd.args(&args);
@@ -103,7 +104,7 @@ fn the_interactive_only_flags_are_accepted_without_a_message() {
 #[test]
 fn a_headless_run_still_rejects_the_interactive_only_flags() {
     let (dir, home) = project();
-    write_config(dir.path());
+    write_config(&home);
     for (args, message) in [
         (
             vec!["-m", "hi", "--no-save"],
@@ -126,7 +127,7 @@ fn a_headless_run_still_rejects_the_interactive_only_flags() {
 #[test]
 fn no_save_cannot_be_combined_with_resume() {
     let (dir, home) = project();
-    write_config(dir.path());
+    write_config(&home);
     let mut cmd = piped(dir.path(), &home);
     cmd.args(["resume", "abc", "--no-save"]);
     let o = run(cmd);
@@ -177,7 +178,7 @@ fn errors_raised_before_the_branch_still_win_over_the_interactive_branch() {
     std::fs::remove_file(home.join(".iota.yaml")).expect("the starter was written");
     // An agent whose endpoint has no key (root.go:88-92) — still before the branch.
     std::fs::write(
-        dir.path().join(".iota.yaml"),
+        home.join(".iota.yaml"),
         "providers:\n  p: {type: openai}\nagents:\n  default: {model: \"p:gpt-4o\"}\n",
     )
     .expect("write config");
@@ -187,7 +188,7 @@ fn errors_raised_before_the_branch_still_win_over_the_interactive_branch() {
         "API key is required: set OPENAI_API_KEY or providers.p.key in your config",
     );
     // An unknown `--mcp` value (DIVERGENCES F-02), raised during MCP config assembly.
-    write_config(dir.path());
+    write_config(&home);
     let mut cmd = piped(dir.path(), &home);
     cmd.args(["--mcp", ""]);
     let o = run(cmd);

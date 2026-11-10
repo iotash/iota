@@ -150,14 +150,17 @@ pub enum ListWhat {
     Sessions,
 }
 
-/// `iota config [check|path|init]`.
+/// `iota config [check|path|init|trust|untrust]`.
 #[derive(clap::Args, Debug, Clone)]
 pub struct ConfigCmd {
     /// What to do (default: check)
     pub action: Option<ConfigAction>,
+    /// The project config `trust`/`untrust` act on (default: ./.iota.yaml|yml)
+    #[arg(long, value_name = "FILE")]
+    pub path: Option<std::path::PathBuf>,
 }
 
-/// The three things `iota config` can do.
+/// The things `iota config` can do.
 #[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigAction {
     /// Load the config and report what it says (the default).
@@ -166,6 +169,10 @@ pub enum ConfigAction {
     Path,
     /// Write a commented starter config.
     Init,
+    /// Trust the project config as it is now, so a run uses it without asking.
+    Trust,
+    /// Forget the trust of the project config.
+    Untrust,
 }
 
 /// `iota mcp <action>` — the servers a config declares, edited from the command line (brain page

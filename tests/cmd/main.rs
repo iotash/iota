@@ -29,3 +29,4 @@ mod interactive_cli;
 mod mcp;
 mod resolve;
 mod session;
+mod trust;

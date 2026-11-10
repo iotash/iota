@@ -1,5 +1,6 @@
-//! `iota config [check|path|init]` — the three questions a config file raises: does it say what I think it
-//! says, which file am I actually editing, and how do I get a first one.
+//! `iota config [check|path|init|trust|untrust]` — the questions a config file raises: does it say what I
+//! think it says, which file am I actually editing, how do I get a first one, and may this repository's file
+//! take effect (`crate::config::trust`).
 //!
 //! `init` writes the starter a new install needs — a run names an `agents:` entry, so the first thing it
 //! needs is a file that HAS one (brain page `cli-surface-agent-first`). Since 2026-09-21 a run with no config
@@ -12,8 +13,9 @@ use std::path::{Path, PathBuf};
 use crate::app::env::Env;
 use crate::app::{CONFIG_BASE, CONFIG_EXTS, HostDirs};
 use crate::cmd::args::{ConfigAction, ConfigCmd};
-use crate::cmd::{CliError, SetupError, io};
-use crate::config::{Config, DEFAULT_AGENT};
+use crate::cmd::{ArgsError, CliError, SetupError, io};
+use crate::config::trust::{Standing, TrustStore};
+use crate::config::{Config, DEFAULT_AGENT, Layer};
 
 /// The starter config `iota config init` writes. Every layer gets one entry and one sentence saying what it
 /// is for; the model id is deliberately a current one rather than a placeholder, so the file runs as written
@@ -75,18 +77,81 @@ pub fn run_config(
     env: &Env,
     io: &mut io::Streams,
 ) -> Result<(), CliError> {
-    match cmd.action.unwrap_or(ConfigAction::Check) {
+    let action = cmd.action.unwrap_or(ConfigAction::Check);
+    if cmd.path.is_some() && !matches!(action, ConfigAction::Trust | ConfigAction::Untrust) {
+        return Err(ArgsError::ConfigPathWithoutTrust.into());
+    }
+    match action {
         ConfigAction::Check => check(explicit, env, io),
         ConfigAction::Path => path(explicit, &env.dirs, io),
         ConfigAction::Init => init(explicit, &env.dirs, io),
+        ConfigAction::Trust => trust(cmd.path.as_deref(), &env.dirs, io),
+        ConfigAction::Untrust => untrust(cmd.path.as_deref(), &env.dirs, io),
     }
+}
+
+/// `config trust [--path <file>]`: records the project config's current bytes, so a run — headless ones
+/// included — uses it without asking until it changes. What the file does is printed with it.
+fn trust(file: Option<&Path>, dirs: &HostDirs, io: &mut io::Streams) -> Result<(), CliError> {
+    let (file, store) = trust_target(file, dirs)?;
+    let bytes = std::fs::read(&file).map_err(|source| SetupError::Trust {
+        path: file.display().to_string(),
+        source,
+    })?;
+    store
+        .trust(&file, &bytes)
+        .map_err(|source| SetupError::Trust {
+            path: store.path().display().to_string(),
+            source,
+        })?;
+    writeln!(io.stdout, "Trusted {}", file.display())?;
+    crate::cmd::trust::describe(&bytes, &mut *io.stdout)?;
+    Ok(())
+}
+
+/// `config untrust [--path <file>]`: forgets the file, so the next run asks (or skips it) again.
+fn untrust(file: Option<&Path>, dirs: &HostDirs, io: &mut io::Streams) -> Result<(), CliError> {
+    let (file, store) = trust_target(file, dirs)?;
+    let forgot = store.forget(&file).map_err(|source| SetupError::Trust {
+        path: store.path().display().to_string(),
+        source,
+    })?;
+    if forgot {
+        writeln!(io.stdout, "No longer trusted: {}", file.display())?;
+    } else {
+        writeln!(io.stdout, "{} was not trusted", file.display())?;
+    }
+    Ok(())
+}
+
+/// The file `trust`/`untrust` act on — `--path`, else the working directory's project config — and the
+/// record they act in.
+fn trust_target(file: Option<&Path>, dirs: &HostDirs) -> Result<(PathBuf, TrustStore), CliError> {
+    let store = TrustStore::of(dirs).ok_or(SetupError::NoHomeForTrust)?;
+    let file = match file {
+        Some(f) => f.to_path_buf(),
+        None => {
+            let cwd = dirs
+                .cwd
+                .as_deref()
+                .ok_or_else(|| SetupError::Cwd(crate::cmd::cwd_err()))?;
+            Config::find_config_file(cwd)
+                .ok_or_else(|| SetupError::NoProjectConfig(cwd.display().to_string()))?
+        }
+    };
+    Ok((file, store))
 }
 
 /// `config check`: load exactly what a run would load — every warning on stderr, the first hard error as the
 /// run's own — then report what the three layers ended up holding.
 fn check(explicit: Option<&Path>, env: &Env, io: &mut io::Streams) -> Result<(), CliError> {
     let files = Config::sources(explicit, &env.dirs);
-    let cfg = Config::load(explicit, env, &mut |w| io.warning(&w))?;
+    let cfg = Config::load(
+        explicit,
+        env,
+        &mut crate::cmd::trust::gate(&env.dirs, false),
+        &mut |w| io.warning(&w),
+    )?;
     if files.is_empty() {
         writeln!(
             io.stdout,
@@ -115,10 +180,10 @@ fn check(explicit: Option<&Path>, env: &Env, io: &mut io::Streams) -> Result<(),
     Ok(())
 }
 
-/// `config path`: the files this invocation reads, in merge order, each marked as present or missing — the
-/// answer to "why is my change not taking effect".
+/// `config path`: the files this invocation reads, in merge order, each marked as present or missing, and a
+/// project file the run would skip as not trusted — the answer to "why is my change not taking effect".
 fn path(explicit: Option<&Path>, dirs: &HostDirs, io: &mut io::Streams) -> Result<(), CliError> {
-    let files = Config::sources(explicit, dirs);
+    let files = Config::layers(explicit, dirs);
     if files.is_empty() {
         writeln!(
             io.stdout,
@@ -126,8 +191,19 @@ fn path(explicit: Option<&Path>, dirs: &HostDirs, io: &mut io::Streams) -> Resul
         )?;
         return Ok(());
     }
-    for file in &files {
-        let state = if file.is_file() { "" } else { "  (missing)" };
+    let store = TrustStore::of(dirs);
+    for (file, layer) in &files {
+        let state = match std::fs::read(file) {
+            Err(_) => "  (missing)",
+            Ok(bytes) if *layer == Layer::Project => {
+                match store.as_ref().map(|s| s.standing(file, &bytes)) {
+                    Some(Standing::Trusted) => "",
+                    Some(Standing::Changed) => "  (changed since trusted: skipped)",
+                    _ => "  (not trusted: skipped)",
+                }
+            }
+            Ok(_) => "",
+        };
         writeln!(io.stdout, "{}{state}", file.display())?;
     }
     Ok(())

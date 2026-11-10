@@ -63,9 +63,9 @@ fn assert_error(o: &Output, message: &str) {
     assert!(out(o).is_empty(), "a failed run printed to stdout");
 }
 
-/// Writes `<cwd>/.iota.yaml`.
-fn write_config(cwd: &Path, body: &str) {
-    fs::write(cwd.join(".iota.yaml"), body).expect("write config");
+/// Writes the user's `~/.iota.yaml` (a project file would be skipped as untrusted: `config::trust`).
+fn write_config(home: &Path, body: &str) {
+    fs::write(home.join(".iota.yaml"), body).expect("write config");
 }
 
 /// The config almost every run here needs: one endpoint (with its key, and its URL when a mock server is
@@ -73,14 +73,14 @@ fn write_config(cwd: &Path, body: &str) {
 ///
 /// Since `-k` and `-u` were retired, a test says what it is talking to the same way a user does: in the three
 /// layers (brain page `cli-surface-agent-first`).
-fn write_agent_config(cwd: &Path, kind: &str, url: &str, model: &str) {
+fn write_agent_config(home: &Path, kind: &str, url: &str, model: &str) {
     let url = if url.is_empty() {
         String::new()
     } else {
         format!(", url: {url}")
     };
     write_config(
-        cwd,
+        home,
         &format!(
             "providers:\n  p: {{type: {kind}, key: sk-x{url}}}\nmodels:\n  m: p:{model}\nagents:\n  default: {{model: m}}\n"
         ),
@@ -93,7 +93,7 @@ fn write_agent_config(cwd: &Path, kind: &str, url: &str, model: &str) {
 #[test]
 fn cli_message_empty() {
     let (dir, home) = project();
-    write_agent_config(dir.path(), "openai", "", "gpt-test");
+    write_agent_config(&home, "openai", "", "gpt-test");
     let mut cmd = iota(dir.path(), &home);
     cmd.args(["-m", ""]);
     assert_error(&cmd.output().expect("run"), "--message must not be empty");
@@ -165,9 +165,18 @@ fn cli_first_run_leaves_an_existing_config_alone() {
     );
     assert!(!home.join(".iota.yaml").exists(), "-c writes nothing");
 
-    // A project config alone: found, so no starter — and its lack of an agent is the refusal.
+    // A project config alone: found, so no starter — and, once trusted, its lack of an agent is the refusal.
     let (dir, home) = project();
-    write_config(dir.path(), "providers:\n  openai: {key: k}\n");
+    fs::write(
+        dir.path().join(".iota.yaml"),
+        "providers:\n  openai: {key: k}\n",
+    )
+    .expect("write config");
+    let trusted = iota(dir.path(), &home)
+        .args(["config", "trust"])
+        .output()
+        .expect("trust");
+    assert!(trusted.status.success(), "{}", err(&trusted));
     let o = iota(dir.path(), &home).output().expect("run");
     assert_error(
         &o,
@@ -195,7 +204,7 @@ fn cli_first_run_leaves_an_existing_config_alone() {
 fn cli_bare_invocation_uses_the_default_agent() {
     let (dir, home) = project();
     write_config(
-        dir.path(),
+        &home,
         "providers:\n  openai: {key: k}\nagents:\n  default:\n    model: \"openai:gpt-4o\"\n",
     );
     for args in [&[][..], &["run"][..], &["run", "default"][..]] {
@@ -208,7 +217,7 @@ fn cli_bare_invocation_uses_the_default_agent() {
     // model, so only an agent can be run.
     let (dir, home) = project();
     write_config(
-        dir.path(),
+        &home,
         "providers:\n  default: {type: openai, key: k}\nmodels:\n  default: default:gpt-4o\n",
     );
     let o = iota(dir.path(), &home).output().expect("run");
@@ -246,7 +255,7 @@ fn cli_unknown_agent_text() {
 
     // A config with no `agents:` at all: the hint says where one goes.
     let (dir, home) = project();
-    write_config(dir.path(), "providers:\n  openai: {key: k}\n");
+    write_config(&home, "providers:\n  openai: {key: k}\n");
     let mut cmd = iota(dir.path(), &home);
     cmd.args(["run", "codr"]);
     assert_error(
@@ -256,7 +265,7 @@ fn cli_unknown_agent_text() {
 
     // With agents configured the hint lists them, sorted.
     write_config(
-        dir.path(),
+        &home,
         "providers:\n  openai: {key: k}\nagents:\n  zeta: {model: \"openai:x\"}\n  alpha: {model: \"openai:x\"}\n",
     );
     let mut cmd = iota(dir.path(), &home);
@@ -273,7 +282,7 @@ fn cli_unknown_agent_text() {
 #[test]
 fn cli_mcp_flag_empty() {
     let (dir, home) = project();
-    write_agent_config(dir.path(), "openai", "", "gpt-test");
+    write_agent_config(&home, "openai", "", "gpt-test");
     let mut cmd = iota(dir.path(), &home);
     cmd.args(["-m", "hi", "--mcp", ""]);
     assert_error(
@@ -288,7 +297,7 @@ fn cli_mcp_flag_empty() {
 fn cli_mcp_tool_timeout_zero() {
     let (dir, home) = project();
     write_config(
-        dir.path(),
+        &home,
         "providers:\n  p: {type: openai, key: sk-x}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {model: m}\n\
          mcp_servers:\n  slow: {command: never-run-me, tool_timeout_sec: 0}\n",
     );
@@ -304,7 +313,7 @@ fn cli_mcp_tool_timeout_zero() {
 #[test]
 fn cli_unsupported_flag_no_save() {
     let (dir, home) = project();
-    write_agent_config(dir.path(), "openai", "", "gpt-test");
+    write_agent_config(&home, "openai", "", "gpt-test");
     let mut cmd = iota(dir.path(), &home);
     cmd.args(["-m", "hi", "--no-save"]);
     assert_error(
@@ -318,7 +327,7 @@ fn cli_unsupported_flag_no_save() {
 #[test]
 fn cli_headless_resume_needs_an_id() {
     let (dir, home) = project();
-    write_agent_config(dir.path(), "openai", "", "gpt-test");
+    write_agent_config(&home, "openai", "", "gpt-test");
     let mut cmd = iota(dir.path(), &home);
     cmd.args(["resume", "-m", "hi"]);
     assert_error(
@@ -339,7 +348,7 @@ fn cli_headless_resume_needs_an_id() {
 #[test]
 fn cli_resume_without_message_is_interactive_unavailable() {
     let (dir, home) = project();
-    write_agent_config(dir.path(), "openai", "", "gpt-test");
+    write_agent_config(&home, "openai", "", "gpt-test");
     let mut cmd = iota(dir.path(), &home);
     cmd.args(["resume", "abc"]);
     assert_error(&cmd.output().expect("run"), branch_error());
@@ -350,7 +359,7 @@ fn cli_resume_without_message_is_interactive_unavailable() {
 #[test]
 fn cli_interactive_refuses_a_piped_stdout() {
     let (dir, home) = project();
-    write_agent_config(dir.path(), "openai", "", "gpt-test");
+    write_agent_config(&home, "openai", "", "gpt-test");
     assert_error(
         &iota(dir.path(), &home).output().expect("run"),
         branch_error(),
@@ -362,7 +371,7 @@ fn cli_interactive_refuses_a_piped_stdout() {
 #[test]
 fn cli_output_format_without_message() {
     let (dir, home) = project();
-    write_agent_config(dir.path(), "openai", "", "gpt-test");
+    write_agent_config(&home, "openai", "", "gpt-test");
     let mut cmd = iota(dir.path(), &home);
     cmd.args(["--output-format", "json"]);
     assert_error(
@@ -386,7 +395,7 @@ fn cli_output_format_without_message() {
 fn cli_output_format_parse_runs_after_tuning() {
     let (dir, home) = project();
     write_config(
-        dir.path(),
+        &home,
         "providers:\n  p: {type: openai, key: sk-x}\nmodels:\n  m: {provider: p, id: gpt-test, effort: turbo}\nagents:\n  default: {model: m}\n",
     );
     let mut cmd = iota(dir.path(), &home);
@@ -733,7 +742,7 @@ async fn cli_openai_json_report_against_wiremock() {
     let server = MockServer::start().await;
     transcript::openai_transcript(&server).await;
     let (dir, home) = project();
-    write_agent_config(dir.path(), "openai", &server.uri(), "gpt-test");
+    write_agent_config(&home, "openai", &server.uri(), "gpt-test");
     let mut cmd = iota(dir.path(), &home);
     cmd.args(["-m", "hi", "--output-format", "json"]);
     let o = output(cmd).await;
@@ -763,7 +772,7 @@ async fn cli_openai_text_mode_bare() {
     let server = MockServer::start().await;
     transcript::openai_transcript(&server).await;
     let (dir, home) = project();
-    write_agent_config(dir.path(), "openai", &server.uri(), "gpt-test");
+    write_agent_config(&home, "openai", &server.uri(), "gpt-test");
     let mut cmd = iota(dir.path(), &home);
     cmd.args(["-m", "hi"]);
     let o = output(cmd).await;
@@ -884,7 +893,7 @@ async fn cli_400_prints_error_and_exits_1() {
     let server = MockServer::start().await;
     transcript::openai_bad_request(&server).await;
     let (dir, home) = project();
-    write_agent_config(dir.path(), "openai", &server.uri(), "gpt-test");
+    write_agent_config(&home, "openai", &server.uri(), "gpt-test");
     let mut cmd = iota(dir.path(), &home);
     cmd.args(["-m", "hi"]);
     let o = output(cmd).await;
@@ -922,7 +931,7 @@ async fn signal_interrupts_the_run(sig: &str) {
     let server = MockServer::start().await;
     transcript::openai_transcript_delayed(&server, Duration::from_secs(30)).await;
     let (dir, home) = project();
-    write_agent_config(dir.path(), "openai", &server.uri(), "gpt-test");
+    write_agent_config(&home, "openai", &server.uri(), "gpt-test");
     let mut cmd = iota(dir.path(), &home);
     cmd.args(["-m", "hi", "--output-format", "json"])
         .stdout(Stdio::piped())
@@ -972,7 +981,7 @@ async fn signal_interrupts_the_run(sig: &str) {
 fn cli_tuning_warnings_order() {
     let (dir, home) = project();
     write_config(
-        dir.path(),
+        &home,
         "
 providers:
   pic:
@@ -1015,7 +1024,7 @@ agents:
 fn cli_one_layer_config_is_refused_with_its_coordinate() {
     let (dir, home) = project();
     write_config(
-        dir.path(),
+        &home,
         "
 providers:
   pic:
@@ -1044,7 +1053,7 @@ providers:
 fn cli_defer_mode_mismatch_fails_at_config_load() {
     let (dir, home) = project();
     write_config(
-        dir.path(),
+        &home,
         "providers:\n  p: {type: openai, key: sk-x}\nmodels:\n  m: {provider: p, id: gpt-test, defer_mode: reference}\nagents:\n  default: {model: m}\n",
     );
     let mut cmd = iota(dir.path(), &home);
@@ -1068,7 +1077,7 @@ async fn cli_mcp_failed_server_warning() {
     let server = MockServer::start().await;
     transcript::openai_transcript(&server).await;
     let (dir, home) = project();
-    write_agent_config(dir.path(), "openai", &server.uri(), "gpt-test");
+    write_agent_config(&home, "openai", &server.uri(), "gpt-test");
     let mut cmd = iota(dir.path(), &home);
     cmd.args(["-m", "hi", "--mcp", "/nonexistent/mcp-server"]);
     let o = output(cmd).await;
@@ -1120,7 +1129,7 @@ async fn cli_mcp_duplicate_wire_name_warning() {
     let server = MockServer::start().await;
     transcript::openai_transcript(&server).await;
     let (dir, home) = project();
-    write_agent_config(dir.path(), "openai", &server.uri(), "gpt-test");
+    write_agent_config(&home, "openai", &server.uri(), "gpt-test");
     let script = dir.path().join("dup-server.sh");
     fs::write(&script, SH_SERVER_DUPLICATE_TOOL).expect("write the server script");
     let mut cmd = iota(dir.path(), &home);
@@ -1148,7 +1157,7 @@ async fn cli_headless_run_reports_to_herdr_and_names_the_pane() {
     transcript::openai_transcript(&server).await;
     let (dir, home) = project();
     write_config(
-        dir.path(),
+        &home,
         &format!(
             "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, system: be brief, tools: {{code: }}}}\n",
             server.uri()
@@ -1263,7 +1272,7 @@ async fn cli_write_roots_open_a_directory_outside_the_project() {
         .mount(&server)
         .await;
     write_config(
-        dir.path(),
+        &home,
         &format!(
             "write_roots: ['{}']\nproviders:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{code: {{auto_write: true}}}}}}\n",
             extra.display(),
@@ -1376,7 +1385,7 @@ async fn cli_children_inside_herdr_are_spawned_without_herdr_env() {
         .mount(&server)
         .await;
     write_config(
-        dir.path(),
+        &home,
         &format!(
             "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{shell: {{sandbox: off, auto_run: true}}}}}}\n",
             server.uri()
@@ -1434,7 +1443,7 @@ async fn cli_children_outside_herdr_inherit_everything() {
         .mount(&server)
         .await;
     write_config(
-        dir.path(),
+        &home,
         &format!(
             "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{shell: {{sandbox: off, auto_run: true}}}}}}\n",
             server.uri()
@@ -1475,7 +1484,7 @@ async fn cli_moderation_reaches_the_generation() {
         .mount(&server)
         .await;
     write_config(
-        dir.path(),
+        &home,
         &format!(
             "providers:\n  venice:\n    type: images\n    key: sk-x\n    url: {}\nmodels:\n  pic:\n    provider: venice\n    id: seedream-v5-pro\n    moderation: low\nagents:\n  default: {{model: pic}}\n",
             server.uri()
@@ -1501,7 +1510,7 @@ async fn cli_moderation_on_a_chat_provider_warns_and_is_not_sent() {
     transcript::openai_transcript(&server).await;
     let (dir, home) = project();
     write_config(
-        dir.path(),
+        &home,
         &format!(
             "providers:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: {{provider: p, id: gpt-test, moderation: low}}\nagents:\n  default: {{model: m}}\n",
             server.uri()

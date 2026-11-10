@@ -19,6 +19,7 @@ pub mod model;
 pub mod params;
 pub mod provider;
 mod strict;
+pub mod trust;
 pub mod window;
 
 use std::{
@@ -39,6 +40,34 @@ pub use provider::{ApiKey, Endpoint, ProviderConfig};
 
 /// The `agents:` entry a run with no positional argument falls back to.
 pub const DEFAULT_AGENT: &str = "default";
+
+/// Which tier of the stack a config file is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layer {
+    /// `-c <file>`: named by the user, read alone.
+    Explicit,
+    /// `~/.iota.yaml|yml`: the user's own.
+    Home,
+    /// `./.iota.yaml|yml`: the repository's, merged only when admitted (`config::trust`).
+    Project,
+}
+
+/// The decision [`Config::load`] puts the project file to: `(path, bytes, warn) -> merge it?`.
+pub type Admit<'a> = &'a mut dyn FnMut(&Path, &[u8], &mut dyn FnMut(String)) -> bool;
+
+/// A config file's bytes; `None` when it is missing (silently) or unreadable (with a warning).
+fn read_config(path: &Path, warn: &mut dyn FnMut(String)) -> Option<Vec<u8>> {
+    match std::fs::read(path) {
+        Ok(data) => Some(data),
+        Err(e) => {
+            // config.go:172-176: a missing file is silent; any other read failure is loud.
+            if e.kind() != std::io::ErrorKind::NotFound {
+                warn(format!("Warning: config {}: {e} (ignored)", path.display()));
+            }
+            None
+        }
+    }
+}
 
 /// One top-level `mcp_servers.<name>` entry (config.go `MCPServerConfig`).
 ///
@@ -231,6 +260,10 @@ impl Config {
     /// Loads every file [`sources`](Config::sources) names, each merged over the previous, then validates the
     /// result once.
     ///
+    /// The project file is merged only when `admit` says so, and from the very bytes `admit` was shown
+    /// (`admit(path, bytes, warn)`): the trust gate (`config::trust`) decides on what is loaded, not on a
+    /// second read. The home file and `-c <file>` are the user's own and are never put to it.
+    ///
     /// A missing file is silent and an UNREADABLE one is a warning that drops it, because neither says
     /// anything about what the user meant. A file that parses but says something wrong — a key of another
     /// layer, an unknown toolset, a reference that points nowhere — FAILS the load: it is a mistake with an
@@ -241,11 +274,18 @@ impl Config {
     pub fn load(
         explicit: Option<&Path>,
         env: &Env,
+        admit: Admit<'_>,
         warn: &mut dyn FnMut(String),
     ) -> Result<Config, ConfigError> {
         let mut cfg = Config::default();
-        for path in Self::sources(explicit, &env.dirs) {
-            cfg.merge_file(&path, env, warn)?;
+        for (path, layer) in Self::layers(explicit, &env.dirs) {
+            let Some(data) = read_config(&path, warn) else {
+                continue;
+            };
+            if layer == Layer::Project && !admit(&path, &data, warn) {
+                continue;
+            }
+            cfg.merge_bytes(&path, &data, env, warn)?;
         }
         cfg.validate(warn)?;
         Ok(cfg)
@@ -256,14 +296,39 @@ impl Config {
     /// or working directory silently skips that tier; an explicit path is returned whether or not it exists,
     /// which is what `iota config path` reports.
     pub fn sources(explicit: Option<&Path>, dirs: &HostDirs) -> Vec<PathBuf> {
-        match explicit {
-            Some(path) => vec![path.to_path_buf()],
-            None => [dirs.home.as_deref(), dirs.cwd.as_deref()]
-                .into_iter()
-                .flatten()
-                .filter_map(Self::find_config_file)
-                .collect(),
+        Self::layers(explicit, dirs)
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect()
+    }
+
+    /// [`sources`](Config::sources), each with the layer it is. The working directory's file is the home
+    /// file itself when iota runs in the home directory, and is then not a project file.
+    pub fn layers(explicit: Option<&Path>, dirs: &HostDirs) -> Vec<(PathBuf, Layer)> {
+        if let Some(path) = explicit {
+            return vec![(path.to_path_buf(), Layer::Explicit)];
         }
+        let home = dirs.home.as_deref().and_then(Self::find_config_file);
+        let project = dirs.cwd.as_deref().and_then(Self::find_config_file);
+        let mut out = Vec::new();
+        if let Some(home) = &home {
+            out.push((home.clone(), Layer::Home));
+        }
+        if let Some(project) = project {
+            let is_home =
+                home.as_deref().and_then(crate::app::canonical) == crate::app::canonical(&project);
+            let layer = if is_home { Layer::Home } else { Layer::Project };
+            out.push((project, layer));
+        }
+        out
+    }
+
+    /// The project file of this invocation — the working directory's `.iota.yaml|yml` when it is not the home
+    /// file — and `None` under `-c`, which reads no project file.
+    pub fn project_file(explicit: Option<&Path>, dirs: &HostDirs) -> Option<PathBuf> {
+        Self::layers(explicit, dirs)
+            .into_iter()
+            .find_map(|(path, layer)| (layer == Layer::Project).then_some(path))
     }
 
     /// ONE document, decoded → expanded → validated. `load` without the file discovery, and the entry point
@@ -279,25 +344,16 @@ impl Config {
         Ok(cfg)
     }
 
-    /// One file, merged over what is already here (whole entry at a time, by name); expands `key`/`url`/
-    /// `system_file` ONCE. See [`load`](Config::load) for which failures warn and which abort.
-    pub fn merge_file(
+    /// One file's bytes, merged over what is already here (whole entry at a time, by name); expands `key`/
+    /// `url`/`system_file` ONCE. See [`load`](Config::load) for which failures warn and which abort.
+    fn merge_bytes(
         &mut self,
         path: &Path,
+        data: &[u8],
         env: &Env,
         warn: &mut dyn FnMut(String),
     ) -> Result<(), ConfigError> {
-        let data = match std::fs::read(path) {
-            Ok(data) => data,
-            Err(e) => {
-                // config.go:172-176: a missing file is silent; any other read failure is loud.
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    warn(format!("Warning: config {}: {e} (ignored)", path.display()));
-                }
-                return Ok(());
-            }
-        };
-        let merged = decode(&data).and_then(|file| self.merge_document(file, env));
+        let merged = decode(data).and_then(|file| self.merge_document(file, env));
         match merged {
             Ok(()) => {}
             // config.go:178-185: a file that is not YAML at all is dropped with a warning saying why — there
