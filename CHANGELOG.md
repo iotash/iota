@@ -3,6 +3,30 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## Unreleased
+
+### Added
+
+- **`write_roots:` opens directories outside the project.** A top-level
+  `write_roots: [path, …]` lists directories the code tools may reach and a
+  sandboxed shell may write, one list shared by both. `~` is your home, and a
+  relative path is taken from the project. The model is told the list, so it
+  knows where it may write before it tries.
+
+### Changed
+
+- **`tools.shell.write` is gone — a breaking change.** Its extra writable
+  directories are now the top-level `write_roots:`, which the code tools share.
+  A config that still has `tools.shell.write` loses the shell tool, with a
+  warning saying to move the list to `write_roots:`.
+
+### Fixed
+
+- **The code tools check where a symlink really leads.** A link inside the
+  project that points outside it used to be followed as if it were part of the
+  project; reading or writing through it is now refused, and glob and grep no
+  longer list such links.
+
 ## 0.8.0 - 2026-11-09
 
 ### Added

@@ -44,8 +44,8 @@ lexically. A path outside every root is `path is outside the project root
 (<root>) and the extra write roots (<e1>, <e2>): <path>` (the extras clause
 only when there are extras). Results and headers stay anchored on the
 project root: a path under an extra root is shown absolute (`~/…` in a
-header when it sits under home). glob/grep never follow a symlink and do
-not list one whose real location lies outside every root (it is invisible,
+header when it sits under home). glob/grep never descend into a symlink below
+the walk's start and do not list one whose real location lies outside every root (it is invisible,
 not an error). glob/grep skip `.git` and the matches of
 the containing root's `.gitignore` — the project root's, or the extra root's
 for a walk under one, whose patterns also match relative to that root —
@@ -99,7 +99,7 @@ extra root whose real location cannot be worked out refuses the set
 (`cannot resolve the write root <path>`) instead of being dropped. Earlier,
 at config load, a blank entry or a `~` entry with no home directory refuses
 the load (`write_roots[i]: …`); an entry that names a directory that does not
-exist yet is accepted. Two entries that resolve to the same path are kept
+exist yet is accepted. Two entries that clean to the same path are kept
 once. An empty
 or absent list is the project root alone, and the tools' descriptions are
 then byte-identical to a build without the key.

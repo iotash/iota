@@ -43,12 +43,13 @@ temp/cache directories`); with none the line is unchanged. Network is blocked un
 
 What a write outside those roots does depends on whether the sandbox is on:
 
-- **Sandbox on**: the command runs without asking, and the OS refuses the
-  write — the command sees an OS error (`Operation not permitted` under
+- **Sandbox on**: the command runs without asking (iota's own invocation
+  excepted: it leaves the sandbox and is asked about, Approval below), and
+  the OS refuses the write — the command sees an OS error (`Operation not permitted` under
   Seatbelt, `Read-only file system` under bwrap's read-only bind) and its
-  exit status says so. Nothing in iota inspects the command line.
+  exit status says so. Nothing in iota inspects the command's paths.
 - **Sandbox off** (`sandbox: off`, or no sandbox on this platform): the call
-  is approval-gated (Approval, below), and once allowed it runs with the
+  is approval-gated (Approval, below) unless `auto_run`, and once allowed it runs with the
   user's full permissions. Its paths are **not checked at all** — the code
   tools' jail is theirs alone, and `write_roots:` changes nothing here.
 
