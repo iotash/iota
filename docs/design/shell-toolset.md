@@ -53,6 +53,25 @@ What a write outside those roots does depends on whether the sandbox is on:
   user's full permissions. Its paths are **not checked at all** — the code
   tools' jail is theirs alone, and `write_roots:` changes nothing here.
 
+**Protected paths.** Inside those roots, the sandbox still never writes the
+protected table (`app::protected::table`, the one the code writers read —
+code-toolset.md, Protected paths): `<root>/.iota.yaml|yml`, `<root>/.git/hooks`,
+`<root>/.git/config`, `~/.iota/trusted.json`, and the `<root>/.git` and
+`~/.iota` entries themselves (not their contents), so neither can be renamed
+or replaced to move the others out from under the rule. A sandboxed command
+runs without approval, and without this a silent `echo … >
+.git/hooks/pre-commit` ran in the user's own terminal on their next commit.
+`write_roots:` cannot re-open them (listing `<root>/.git` opens the rest of
+`.git` only). What trips it, and what the command sees — the same OS error as
+any denied write (`Operation not permitted` / `Read-only file system`):
+`git config …` and `git remote add` (they rewrite `.git/config`), `git init`
+in a directory without `.git` (it writes `.git/config`), hook installers
+(husky, pre-commit, lefthook), `git submodule add`, `git push -u` (tracking
+config). `git add`/`commit`/`checkout`/`fetch` write only objects, refs and
+the index, and work. The shell's description says so in one sentence, so the
+model asks the user instead of fighting it. Outside the sandbox (`sandbox:
+off`, iota's own invocation) nothing is checked, as for any path.
+
 The `cwd` argument is not jailed either: an absolute `cwd` outside the root is
 accepted (a bad one fails at spawn), and the sandbox, not the cwd, bounds the
 writes.
@@ -62,11 +81,22 @@ writes.
   `network*`; the last matching rule wins, so targeted allows override the
   broad denies. Paths enter via `-D` parameters, never spliced into the
   profile (quoting stays sandbox-exec's problem). `/tmp`//`/var` symlink
-  twins under `/private` are added automatically.
+  twins under `/private` are added automatically. After the allow block, one
+  `(deny file-write* …)` block closes the protected paths again (`subpath`
+  for a tree, `literal` for an entry, params `P0…`), each with its twin and
+  its real location. Seatbelt matches paths, not files, so a protected path
+  that does not exist yet cannot be created either.
 - **Linux**: `bwrap --ro-bind / /` with the writable roots bind-mounted
   read-write on top, `--unshare-net` unless network is enabled,
   `--die-with-parent`. Requires bwrap on PATH and unprivileged user
-  namespaces.
+  namespaces. After every writable bind, each protected path that EXISTS and
+  lies under a bound root is bound over itself: `--ro-bind` for a tree (or a
+  `gitdir:` file), `--bind` for an entry directory, which keeps its contents
+  writable but makes it a mount point that cannot be renamed or removed
+  (`EBUSY`). A path that does not exist cannot be bound, so on Linux a
+  command can still CREATE a missing `.iota.yaml` or the `.git/hooks` of a
+  repository it inits; the code writers' refusal covers that case, the
+  sandbox does not.
 - **Windows / no bwrap**: no sandbox — see approval below.
 
 ## Approval
@@ -162,7 +192,9 @@ flow.
 
 src/shell (unit tests) and tests/tool/shell.rs: shell semantics (pipes/exit codes/cwd), cancellation,
 truncation, writable-path derivation, and real sandbox isolation (in-root
-write allowed, out-of-root denied, `write_roots:` extras honored) with an
+write allowed, out-of-root denied, `write_roots:` extras honored, the
+protected paths denied while `git commit` works —
+`the_sandbox_never_writes_a_protected_path`) with an
 environment probe that skips where the sandbox cannot run (e.g. nested
 sandboxes). tests/tool/shell.rs: config matrix (sandbox/auto_run →
 `requires_approval`), legacy-shape and retired-`write` rejection, the sandbox

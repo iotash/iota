@@ -56,6 +56,54 @@ and no safer.
 - **UNVERIFIABLE**: the real location cannot be worked out (`ENAMETOOLONG`,
   `ELOOP`, `EACCES`, too many hops). Refused, never approvable, never judged
   lexically: `cannot verify <path> inside the project root (…)`.
+- **PROTECTED**: the real location is on the protected table, checked BEFORE
+  inside/outside, so no root — `write_roots:` included — admits one (below).
+
+### Protected paths
+
+One table, `app::protected::table`, read by both the writers and the shell
+sandbox (shell-toolset.md, Sandbox semantics), so the two cannot drift:
+
+| path | reach | why (the refusal's reason) |
+|---|---|---|
+| `<root>/.iota.yaml`, `<root>/.iota.yml` | tree | the project config iota loads; a change takes effect next run |
+| `<root>/.git` | the entry itself | replacing it (rename, link, `gitdir:` file) repoints git |
+| `<root>/.git/hooks` | tree | git executes them on the user's next git command |
+| `<root>/.git/config` | tree | `core.fsmonitor`, `core.hooksPath` point git at a program |
+| `~/.iota` | the entry itself | so the record below cannot be moved out from under its rule |
+| `~/.iota/trusted.json` | tree | it records which project configs the user trusts |
+
+A tree entry holds the path and everything under it; an entry holds only the
+name (its contents — `.git/objects`, `~/.iota/skills` — stay writable). Each
+entry's real location is worked out per call, so a `.git/hooks` linked
+elsewhere is matched where it points. The list is the intersection of what
+Claude Code, Codex and Cursor protect, plus iota's own trust record — not
+Claude Code's forty-item list, not all of `.git` (Codex's choice, which
+pushes `git commit` out of the sandbox), not shell rc files.
+
+A protected write is its own class (`Write::Protected`):
+
+- **Never silent.** `auto_write` does not waive it; `write_roots:` cannot
+  admit it (listing `<root>/.git` or `<root>/.git/hooks` there is accepted
+  and opens the rest of `.git`, but not the table's paths); no session grant
+  covers it — neither the tool-wide inside grant nor an outside-write grant
+  for its directory.
+- **Asked one file at a time** under `outside_writes: ask` with a user: the
+  prompt names the real path, `(protected)` and why, e.g. `write_file
+  /p/.git/hooks/pre-commit (protected): git executes the files in .git/hooks
+  on the user's next git command — allow?`, and offers only `Allow once` /
+  `Deny` (`ApprovalSubject::scope` is `None`, the gate's `Grant::Never`). The
+  call lands only with `Approved::Once` naming exactly that real path.
+- **Refused otherwise**: `<path> is protected: <why> — …`, ending, under
+  `refuse`, ``outside_writes: refuse` refuses every write that needs
+  approval; ask the user to make the change themselves`, with nobody to ask
+  (`-m`, the SDK) `…which this non-interactive run cannot ask for; ask the
+  user to make the change themselves`.
+- **The trust record is never written**: no prompt, no approval path, `…
+  no tool may write it; the user trusts a project config by running `iota
+  config trust` themselves`.
+
+Reads are untouched.
 
 A refused outside path is `path is outside the project root (<root>) and the
 extra write roots (<e1>, <e2>): <path>` (the extras clause only when there
@@ -110,6 +158,8 @@ class:
 | INSIDE | asked unless `tools.code.auto_write` | refused unless `auto_write`, saying to set it |
 | OUTSIDE, `outside_writes: ask` | asked ALWAYS — `auto_write` does not waive it | refused, saying to list the directory in `write_roots:` |
 | OUTSIDE, `outside_writes: refuse` | refused, no prompt | refused |
+| PROTECTED (not the trust record), `ask` | asked ALWAYS, "allow once" only | refused, saying the user can make the change |
+| PROTECTED, `refuse`; the trust record | refused, no prompt | refused |
 | UNVERIFIABLE | refused, no prompt | refused |
 
 - **The prompt** for an outside write names the RESOLVED real path,
