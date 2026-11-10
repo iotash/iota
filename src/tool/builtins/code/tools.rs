@@ -88,7 +88,8 @@ impl Tool for Glob {
         }
     }
 
-    /// The walk reads `cx.cancel`: ESC ends the await, and the token is what stops the thread.
+    /// The walk reads `cx.cancel`: nothing races the call's await against ESC, so the token is the
+    /// only thing that stops the walk (and with it the call).
     fn call<'a>(&'a self, cx: &'a RunCtx, args: &'a JsonObject) -> BoxFuture<'a, ToolResult> {
         let cs = Arc::clone(&self.0);
         let args = args.clone();
@@ -136,7 +137,8 @@ impl Tool for Grep {
         }
     }
 
-    /// The walk reads `cx.cancel`: ESC ends the await, and the token is what stops the thread.
+    /// The walk reads `cx.cancel`: nothing races the call's await against ESC, so the token is the
+    /// only thing that stops the walk (and with it the call).
     fn call<'a>(&'a self, cx: &'a RunCtx, args: &'a JsonObject) -> BoxFuture<'a, ToolResult> {
         let cs = Arc::clone(&self.0);
         let args = args.clone();
@@ -358,30 +360,22 @@ impl Tool for WriteFile {
 
 // ---- glob ----
 
-/// The line a walk stopped by a bound ends its result with: `[stopped after visiting
-/// {CODE_WALK_MAX_ENTRIES} entries; …]` for a capped walk, `[stopped after reading
-/// {CODE_GREP_MAX_TOTAL_BYTES} MB of files; …]` when `grep` spent its read budget; `None` otherwise.
+/// The line a walk that did not run to the end closes its result with, so the model never takes a
+/// partial answer for the whole one: `[search cancelled]` when the run's token stopped it (ESC
+/// cancels the call, not the turn, so the model reads this result), `[stopped after reading
+/// {CODE_GREP_MAX_TOTAL_BYTES} MB of files; …]` when `grep` spent its read budget, `[stopped after
+/// visiting {CODE_WALK_MAX_ENTRIES} entries; …]` for a capped walk; `None` for a walk that finished
+/// (or that the visitor stopped, which says so itself).
 fn walk_note(walked: &walk::Walked, spent: bool) -> Option<String> {
-    let what = if spent {
-        format!("reading {} MB of files", CODE_GREP_MAX_TOTAL_BYTES >> 20)
-    } else if *walked == walk::Walked::Capped {
-        format!("visiting {CODE_WALK_MAX_ENTRIES} entries")
-    } else {
-        return None;
+    let what = match walked {
+        walk::Walked::Cancelled => return Some("[search cancelled]".to_owned()),
+        _ if spent => format!("reading {} MB of files", CODE_GREP_MAX_TOTAL_BYTES >> 20),
+        walk::Walked::Capped => format!("visiting {CODE_WALK_MAX_ENTRIES} entries"),
+        walk::Walked::Done | walk::Walked::Stopped => return None,
     };
     Some(format!(
         "[stopped after {what}; narrow \"path\" to search further]"
     ))
-}
-
-/// What a walk that found nothing says: nothing at all when the user cancelled it (ESC is their own
-/// doing, not something for the model to interpret), else `empty` and the bound's line, if any.
-fn walk_found_nothing(walked: &walk::Walked, note: Option<String>, empty: String) -> ToolOutput {
-    match (walked, note) {
-        (walk::Walked::Cancelled, _) => ToolOutput::ok(""),
-        (_, Some(note)) => ToolOutput::ok(format!("{empty}\n{note}")),
-        (_, None) => ToolOutput::ok(empty),
-    }
 }
 
 fn glob_call(cs: &CodeSet, args: &JsonObject, cancel: &CancellationToken) -> ToolOutput {
@@ -420,12 +414,16 @@ fn glob_call(cs: &CodeSet, args: &JsonObject, cancel: &CancellationToken) -> Too
         hits.len() < CODE_GLOB_COLLECT_CAP
     });
 
+    let note = walk_note(&walked, false);
     if hits.is_empty() {
-        return walk_found_nothing(
-            &walked,
-            walk_note(&walked, false),
-            format!("no files match {pattern}"),
-        );
+        let empty = format!("no files match {pattern}");
+        return ToolOutput::ok(match note {
+            Some(note) => format!(
+                "{empty}
+{note}"
+            ),
+            None => empty,
+        });
     }
     // Stable, so equal mtimes keep the walk's lexical order.
     hits.sort_by_key(|h| std::cmp::Reverse(h.1));
@@ -443,7 +441,7 @@ fn glob_call(cs: &CodeSet, args: &JsonObject, cancel: &CancellationToken) -> Too
         );
     }
     let mut out = out.trim_end_matches('\n').to_owned();
-    if let Some(note) = walk_note(&walked, false) {
+    if let Some(note) = note {
         let _ = write!(out, "\n{note}");
     }
     ToolOutput::ok(out)
@@ -497,10 +495,9 @@ fn grep_call(cs: &CodeSet, args: &JsonObject, cancel: &CancellationToken) -> Too
         {
             return true;
         }
-        let Some(data) = grep_text(abs) else {
+        let Some(data) = grep_text(abs, &mut read) else {
             return true;
         };
-        read += u64::try_from(data.len()).unwrap_or(u64::MAX);
         let content = String::from_utf8_lossy(&data);
         // strings.Split, not splitLines: a trailing newline yields a final empty (matchable) line and '\r' stays.
         let lines: Vec<&str> = content.split('\n').collect();
@@ -527,7 +524,14 @@ fn grep_call(cs: &CodeSet, args: &JsonObject, cancel: &CancellationToken) -> Too
 
     let note = walk_note(&walked, spent);
     if total == 0 {
-        return walk_found_nothing(&walked, note, format!("no matches for {pattern}"));
+        let empty = format!("no matches for {pattern}");
+        return ToolOutput::ok(match note {
+            Some(note) => format!(
+                "{empty}
+{note}"
+            ),
+            None => empty,
+        });
     }
     let mut out = buf.trim_end_matches('\n').to_owned();
     if capped {
@@ -543,10 +547,11 @@ fn grep_call(cs: &CodeSet, args: &JsonObject, cancel: &CancellationToken) -> Too
 }
 
 /// The bytes `grep` searches in `abs`, or `None` for anything but a readable regular text file of at
-/// most [`CODE_GREP_MAX_FILE_BYTES`] (a link is judged by its target). The first
+/// most [`CODE_GREP_MAX_FILE_BYTES`] (a link is judged by its target); every byte read, a binary
+/// file's sniff included, is added to `read`, the call's budget. The first
 /// [`CODE_BINARY_SNIFF_LEN`] bytes are sniffed before the rest is read, so a binary file costs one
 /// small read, not up to 10 MB — ripgrep's order, and what keeps a walk over `/` affordable.
-fn grep_text(abs: &Path) -> Option<Vec<u8>> {
+fn grep_text(abs: &Path, read: &mut u64) -> Option<Vec<u8>> {
     let meta = fs::metadata(abs).ok()?;
     if !meta.is_file() || meta.len() > CODE_GREP_MAX_FILE_BYTES {
         return None;
@@ -554,14 +559,18 @@ fn grep_text(abs: &Path) -> Option<Vec<u8>> {
     let mut file = fs::File::open(abs).ok()?;
     let mut data = Vec::new();
     let sniff = u64::try_from(CODE_BINARY_SNIFF_LEN).unwrap_or(u64::MAX);
-    (&mut file).take(sniff).read_to_end(&mut data).ok()?;
+    let sniffed =
+        u64::try_from((&mut file).take(sniff).read_to_end(&mut data).ok()?).unwrap_or(u64::MAX);
+    // Charged before the verdict: a binary file's sniff is read too.
+    *read = read.saturating_add(sniffed);
     if looks_binary(&data) {
         return None;
     }
-    let read = u64::try_from(data.len()).unwrap_or(u64::MAX);
-    file.take(CODE_GREP_MAX_FILE_BYTES.saturating_sub(read))
+    let rest = file
+        .take(CODE_GREP_MAX_FILE_BYTES.saturating_sub(sniffed))
         .read_to_end(&mut data)
         .ok()?;
+    *read = read.saturating_add(u64::try_from(rest).unwrap_or(u64::MAX));
     Some(data)
 }
 
@@ -1045,6 +1054,28 @@ mod tests {
         // A match at either end has no bytes on that side to copy.
         assert_eq!(splice(b"ab", &[0], 1, b"Z"), b"Zb".to_vec());
         assert_eq!(splice(b"ab", &[1], 1, b"Z"), b"aZ".to_vec());
+    }
+
+    // Every byte `grep` reads is charged to the call's budget — a binary file's sniff too, though
+    // nothing of it is searched.
+    #[test]
+    fn grep_text_charges_every_byte_it_reads() {
+        use super::{CODE_BINARY_SNIFF_LEN, grep_text};
+        let t = tempfile::tempdir().expect("tempdir");
+        let mut binary = vec![0u8; 3 * CODE_BINARY_SNIFF_LEN];
+        binary[10] = 1;
+        std::fs::write(t.path().join("bin"), &binary).expect("bin");
+        let text = "y".repeat(3 * CODE_BINARY_SNIFF_LEN);
+        std::fs::write(t.path().join("txt"), &text).expect("txt");
+
+        let mut read = 0u64;
+        assert_eq!(grep_text(&t.path().join("bin"), &mut read), None);
+        assert_eq!(read, CODE_BINARY_SNIFF_LEN as u64);
+        let got = grep_text(&t.path().join("txt"), &mut read).expect("text");
+        assert_eq!(got, text.as_bytes());
+        assert_eq!(read, (4 * CODE_BINARY_SNIFF_LEN) as u64);
+        assert_eq!(grep_text(&t.path().join("missing"), &mut read), None);
+        assert_eq!(read, (4 * CODE_BINARY_SNIFF_LEN) as u64);
     }
 
     #[test]

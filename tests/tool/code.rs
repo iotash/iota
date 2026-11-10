@@ -268,9 +268,35 @@ async fn walks_and_listings_reach_outside_the_project_root() {
     }
 }
 
+/// `call` with the run's token cancelled up front (`None`) or `after` a delay, mid-walk.
+async fn call_cancelled(
+    tools: &Tools,
+    name: &str,
+    args: serde_json::Value,
+    after: Option<Duration>,
+) -> ToolOutput {
+    let cancel = tokio_util::sync::CancellationToken::new();
+    match after {
+        None => cancel.cancel(),
+        Some(d) => {
+            let token = cancel.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(d).await;
+                token.cancel();
+            });
+        }
+    }
+    let args: JsonObject = args.as_object().cloned().unwrap_or_default();
+    tools[name]
+        .call(&RunCtx::new(cancel), &args)
+        .await
+        .expect("no hard error")
+}
+
 /// Reads are open, so a walk may start at `/`: one that never matches is bounded by the entries it
 /// VISITS, not only by its hits. Over a tree past the cap, `glob` and `grep` return promptly and say
-/// where they stopped.
+/// where they stopped. On the same tree, a cancelled walk says so — with its hits so far or with
+/// none — in words of its own, and a walk that finished says nothing.
 #[tokio::test]
 async fn a_walk_that_never_matches_stops_at_the_entry_cap() {
     let (dir, _root, tools) = code_project(&[], "");
@@ -283,6 +309,9 @@ async fn a_walk_that_never_matches_stops_at_the_entry_cap() {
             fs::File::create(sub.join(format!("f{f:04}"))).expect("file");
         }
     }
+    // Two hits a walk meets first ("a.txt" sorts before "d000" and "f0000").
+    fs::write(big.join("a.txt"), "HIT\n").expect("a.txt");
+    fs::write(big.join("d000/a.txt"), "HIT\n").expect("d000/a.txt");
     let path = big.to_str().expect("utf-8");
     let note = "[stopped after visiting 100000 entries; narrow \"path\" to search further]";
     for (name, args, none) in [
@@ -304,6 +333,61 @@ async fn a_walk_that_never_matches_stops_at_the_entry_cap() {
         assert_eq!(out, ToolOutput::ok(format!("{none}\n{note}")), "{name}");
         eprintln!("{name}: {:?}", started.elapsed());
     }
+
+    let cancelled = "[search cancelled]";
+    let real = fs::canonicalize(&big).expect("real big");
+    let hit = |rel: &str| format!("{}:1: HIT", real.join(rel).display());
+    // Cancelled with nothing found: up front, and mid-walk (a grep over 100k files takes seconds).
+    let out = call_cancelled(
+        &tools,
+        "glob",
+        json!({"pattern": "*.rs", "path": path}),
+        None,
+    )
+    .await;
+    assert_eq!(
+        out,
+        ToolOutput::ok(format!("no files match **/*.rs\n{cancelled}"))
+    );
+    let out = call_cancelled(
+        &tools,
+        "grep",
+        json!({"pattern": "NEVERMATCH", "path": path}),
+        Some(Duration::from_millis(100)),
+    )
+    .await;
+    assert_eq!(
+        out,
+        ToolOutput::ok(format!("no matches for NEVERMATCH\n{cancelled}"))
+    );
+    // Cancelled mid-walk with hits already collected: the hits, then the marker.
+    let out = call_cancelled(
+        &tools,
+        "grep",
+        json!({"pattern": "HIT", "path": path}),
+        Some(Duration::from_millis(100)),
+    )
+    .await;
+    assert_eq!(
+        out,
+        ToolOutput::ok(format!(
+            "{}\n{}\n{cancelled}",
+            hit("a.txt"),
+            hit("d000/a.txt")
+        ))
+    );
+    // A walk that ran to its end carries no marker, hits or not.
+    let d000 = big.join("d000");
+    let d000 = d000.to_str().expect("utf-8");
+    let out = call(&tools, "grep", json!({"pattern": "HIT", "path": d000})).await;
+    assert_eq!(out, ToolOutput::ok(hit("d000/a.txt")));
+    let out = call(
+        &tools,
+        "grep",
+        json!({"pattern": "NEVERMATCH", "path": d000}),
+    )
+    .await;
+    assert_eq!(out, ToolOutput::ok("no matches for NEVERMATCH"));
 }
 
 /// A grep's cost is what it reads: past 256 MB of files it stops and says so, however few entries

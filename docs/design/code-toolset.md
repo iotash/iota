@@ -81,10 +81,14 @@ and it sniffs a file's first 8000 bytes for a NUL before reading the rest,
 so a binary file costs one small read (ripgrep's order). Measured on a
 laptop, a never-matching walk over `~` or `/` returns in about 1 s (glob)
 and 7–11 s (grep, release build).
-It also reads the run's cancellation token at every entry — the walk runs on
-the blocking pool, which ESC alone never stopped — and a cancelled walk
-returns what it has (nothing, when it has nothing), not an error: ESC is the
-user's own doing.
+It also reads the run's cancellation token at every entry: nothing races the
+call's await against ESC, so the token is the only thing that stops a walk on
+the blocking pool. A cancelled walk returns what it found and ends with
+`[search cancelled]`, as a cancelled shell command ends with `[command
+cancelled]`: ESC cancels the call, not the turn, so the model reads the
+result and must not take a partial answer for the whole one. Each stop has
+its own line, so a cancel never reads as a cap. grep charges a binary
+file's sniff to its read budget too.
 
 ## Approval — the first slice of the P2 permission framework
 
@@ -153,7 +157,8 @@ Open reads (absolute/`..` and a link out of the root read, a `path:` base
 outside the project walked and listed — every spelling of it, links
 included, under its own `.gitignore` —, walks reporting escaping links, a
 walk that never matches stopping at the entry cap, a cancelled token
-stopping a walk);
+stopping a walk, a cancelled glob/grep marked `[search cancelled]` with
+hits and without, a finished one unmarked);
 write jail (absolute/`..`; real locations: a symlink that leaves every root
 refused, one that stays inside admitted, a root reached through a link, an
 unverifiable path refused; extra write roots admitted, an unresolvable one
