@@ -19,7 +19,8 @@ pub(crate) fn ignore_matcher(root: &Path) -> Option<ignore::gitignore::Gitignore
 
 /// `WalkDir::new(base).follow_links(false).sort_by_file_name()`, pruning `.git` at any depth and gitignore-matched
 /// dirs (other than `base`), skipping gitignore-matched files and erroring entries; `visit(abs, rel_slash, entry)`
-/// returning false stops the walk.
+/// returning false stops the walk. `root` is the walk's anchor (`CodeSet::anchor`): `rel_slash` is relative to it and
+/// its `.gitignore` is the one applied.
 pub(crate) fn walk_files(
     root: &Path,
     base: &Path,

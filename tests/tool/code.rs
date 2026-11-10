@@ -142,6 +142,60 @@ async fn code_tools_refuse_paths_outside_the_project_root() {
         "absolute-inside read failed: {out:?}"
     );
 }
+/// A walk under a `write_roots:` extra is anchored on THAT root: the project's `.gitignore` does not
+/// hide its files, its own `.gitignore` does, and a slash pattern matches relative to it. Results name
+/// such files absolute — root-relative they would read as project files.
+#[tokio::test]
+async fn walks_under_an_extra_root_are_anchored_on_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("proj");
+    let ext = dir.path().join("ext");
+    write_project_file(&root, ".gitignore", "*.log\nsrc/\n");
+    write_project_file(&root, "src/hidden.rs", "fn needle() {}\n");
+    write_project_file(&ext, ".gitignore", "target/\n");
+    write_project_file(&ext, "src/a.rs", "fn needle() {}\n");
+    write_project_file(&ext, "b.log", "needle\n");
+    write_project_file(&ext, "target/debug.rs", "fn needle() {}\n");
+    let env = ToolEnv {
+        write_roots: vec![ext.clone()],
+        ..env_at(&root)
+    };
+    let tools: Tools = new_code_set(&env, None)
+        .expect("code set")
+        .into_iter()
+        .map(|t| (t.def().name, t))
+        .collect();
+    let ext_s = ext.to_str().expect("utf-8");
+    let abs = |rel: &str| ext.join(rel).display().to_string();
+
+    let out = call(&tools, "grep", json!({"pattern": "needle", "path": ext_s})).await;
+    assert!(!out.is_error, "{}", out.text);
+    let files: Vec<&str> = out
+        .text
+        .lines()
+        .map(|l| l.split_once(':').map_or(l, |(f, _)| f))
+        .collect();
+    assert_eq!(files, [abs("b.log"), abs("src/a.rs")], "{}", out.text);
+
+    let out = call(
+        &tools,
+        "glob",
+        json!({"pattern": "src/*.rs", "path": ext_s}),
+    )
+    .await;
+    assert_eq!(out.text, abs("src/a.rs"));
+    let out = call(&tools, "glob", json!({"pattern": "*.rs", "path": ext_s})).await;
+    assert_eq!(
+        out.text,
+        abs("src/a.rs"),
+        "the extra root's target/ is ignored"
+    );
+
+    // The project itself keeps its own rules.
+    let out = call(&tools, "grep", json!({"pattern": "needle"})).await;
+    assert_eq!(out.text, "no matches for needle");
+}
+
 #[tokio::test]
 async fn glob_lists_matching_files_relative_to_the_root() {
     let (_dir, root, tools) = code_project(

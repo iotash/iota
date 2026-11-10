@@ -114,6 +114,18 @@ impl CodeSet {
         &self.root.path
     }
 
+    /// The root a walk from `base` is anchored on — the project root or the extra root that
+    /// lexically contains it, the project root first: its `.gitignore` filters the walk and its
+    /// relative paths are what patterns match. `base` itself when no root contains it lexically
+    /// (an alias that `resolve` admitted by its real location).
+    pub(crate) fn anchor<'a>(&'a self, base: &'a Path) -> &'a Path {
+        std::iter::once(&self.root)
+            .chain(&self.extra)
+            .map(|r| r.path.as_path())
+            .find(|root| within(root, base))
+            .unwrap_or(base)
+    }
+
     /// The `"path"` argument rendered for a call header. A missing path (a malformed call)
     /// yields `""` — a bare
     /// `"[read_file]"` — rather than falling back to a digest of whatever else the model

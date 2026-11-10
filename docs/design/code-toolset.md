@@ -44,9 +44,11 @@ lexically. A path outside every root is `path is outside the project root
 (<root>) and the extra write roots (<e1>, <e2>): <path>` (the extras clause
 only when there are extras). Results and headers stay anchored on the
 project root: a path under an extra root is shown absolute (`~/…` in a
-header when it sits under home). glob/grep skip `.git` and the root
-`.gitignore`'s matches (re-read per call; nested .gitignore files are a later
-refinement), plus binary files.
+header when it sits under home). glob/grep skip `.git` and the matches of
+the containing root's `.gitignore` — the project root's, or the extra root's
+for a walk under one, whose patterns also match relative to that root —
+(re-read per call; nested .gitignore files are a later refinement), plus
+binary files. A hit under an extra root is listed by its absolute path.
 
 ## Approval — the first slice of the P2 permission framework
 

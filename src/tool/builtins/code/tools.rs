@@ -370,14 +370,14 @@ fn glob_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
     };
 
     let mut hits: Vec<(String, SystemTime)> = Vec::new();
-    walk::walk_files(cs.root(), &base, &mut |abs, rel, entry| {
+    walk::walk_files(cs.anchor(&base), &base, &mut |abs, rel, entry| {
         if matcher.is_match(rel) && cs.admits(abs, entry) {
             let mtime = entry
                 .metadata()
                 .ok()
                 .and_then(|m| m.modified().ok())
                 .unwrap_or(SystemTime::UNIX_EPOCH);
-            hits.push((rel.to_owned(), mtime));
+            hits.push((cs.display(abs), mtime));
         }
         hits.len() < CODE_GLOB_COLLECT_CAP
     });
@@ -437,7 +437,7 @@ fn grep_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
     let mut buf = String::new();
     let mut total = 0usize;
     let mut capped = false;
-    walk::walk_files(cs.root(), &base, &mut |abs, rel, entry| {
+    walk::walk_files(cs.anchor(&base), &base, &mut |abs, rel, entry| {
         if let Some(m) = &include_matcher
             && !match_include(m, include, rel)
         {
@@ -474,7 +474,7 @@ fn grep_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
             return true;
         }
         total += hits.len();
-        emit_grep_file(&mut buf, rel, &lines, &hits, ctx_lines);
+        emit_grep_file(&mut buf, &cs.display(abs), &lines, &hits, ctx_lines);
         if total >= CODE_MAX_GREP_MATCHES || buf.len() > CODE_MAX_OUTPUT {
             capped = true;
             return false;
@@ -495,7 +495,7 @@ fn grep_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
     ToolOutput::ok(out)
 }
 
-/// A pattern without `/` matches the basename, otherwise the root-relative path.
+/// A pattern without `/` matches the basename, otherwise the path relative to the walk's root.
 fn match_include(matcher: &globset::GlobMatcher, pattern: &str, rel: &str) -> bool {
     let target = if pattern.contains('/') {
         rel
