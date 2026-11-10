@@ -1197,6 +1197,101 @@ async fn cli_headless_run_reports_to_herdr_and_names_the_pane() {
 #[cfg(unix)]
 const HERDR_NOTE: &str = "HERDR_ENV is unset in your shell on purpose; the herdr CLI works";
 
+/// `calls` one per round, in order — the round after the n-th tool result asks for call n+1 — then a reply
+/// that is every tool result's content, one per line, so a test reads what the tools told the model.
+struct ToolCallsInTurn {
+    calls: Vec<(&'static str, serde_json::Value)>,
+}
+
+impl wiremock::Respond for ToolCallsInTurn {
+    fn respond(&self, req: &wiremock::Request) -> wiremock::ResponseTemplate {
+        let body: serde_json::Value = serde_json::from_slice(&req.body).expect("a JSON body");
+        let results: Vec<String> = body["messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|m| m["role"] == "tool")
+            .map(|m| m["content"].as_str().unwrap_or_default().to_owned())
+            .collect();
+        let chunks = match self.calls.get(results.len()) {
+            Some((name, args)) => vec![
+                serde_json::json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": format!("call_{}", results.len()), "type": "function", "function": {"name": name, "arguments": args.to_string()}}]}}]}),
+                serde_json::json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+            ],
+            None => vec![
+                serde_json::json!({"choices": [{"delta": {"content": results.join("\n")}}]}),
+                serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+            ],
+        };
+        let mut sse = String::new();
+        for c in &chunks {
+            sse.push_str("data: ");
+            sse.push_str(&c.to_string());
+            sse.push_str("\n\n");
+        }
+        sse.push_str("data: [DONE]\n\n");
+        wiremock::ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream")
+    }
+}
+
+/// `write_roots:` through the binary's own assembly (`cmd::assemble_tools`): an `iota -m` run whose model
+/// calls `write_file` lands the file in the directory the config lists, outside the project, and the same
+/// call into an unlisted sibling is refused naming both roots.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_write_roots_open_a_directory_outside_the_project() {
+    let (dir, home) = project();
+    let outside = tempfile::tempdir().expect("outside");
+    let extra = outside.path().join("extra");
+    let sibling = outside.path().join("sibling");
+    fs::create_dir_all(&extra).expect("extra");
+    fs::create_dir_all(&sibling).expect("sibling");
+    let server = MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/chat/completions"))
+        .respond_with(ToolCallsInTurn {
+            calls: vec![
+                (
+                    "write_file",
+                    serde_json::json!({"path": extra.join("landed.txt"), "content": "via write_roots\n"}),
+                ),
+                (
+                    "write_file",
+                    serde_json::json!({"path": sibling.join("refused.txt"), "content": "x"}),
+                ),
+            ],
+        })
+        .mount(&server)
+        .await;
+    write_config(
+        dir.path(),
+        &format!(
+            "write_roots: ['{}']\nproviders:\n  p: {{type: openai, key: sk-x, url: {}}}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {{model: m, tools: {{code: {{auto_write: true}}}}}}\n",
+            extra.display(),
+            server.uri()
+        ),
+    );
+    let mut cmd = iota(dir.path(), &home);
+    cmd.args(["-m", "go"]);
+    let o = output(cmd).await;
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    assert_eq!(
+        fs::read_to_string(extra.join("landed.txt")).ok().as_deref(),
+        Some("via write_roots\n"),
+        "the write into the listed root did not land; the model was told: {}",
+        out(&o)
+    );
+    assert!(!sibling.join("refused.txt").exists());
+    let reply = out(&o);
+    assert!(
+        reply.contains(&format!(
+            "and the extra write roots ({}): {}",
+            extra.display(),
+            sibling.join("refused.txt").display()
+        )),
+        "{reply}"
+    );
+}
+
 /// One `shell` call, then a plain reply once its result is in: the first request (no tool message yet) is
 /// answered with the call, every later one with text. Streaming only — a run with tools streams.
 #[cfg(unix)]
