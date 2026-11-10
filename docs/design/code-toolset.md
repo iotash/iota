@@ -69,7 +69,8 @@ sandbox (shell-toolset.md, Sandbox semantics), so the two cannot drift:
 | `<root>/.iota.yaml`, `<root>/.iota.yml` | tree | the project config iota loads; a change takes effect next run |
 | `<root>/.git` | the entry itself | replacing it (rename, link, `gitdir:` file) repoints git |
 | `<root>/.git/hooks` | tree | git executes them on the user's next git command |
-| `<root>/.git/config` | tree | `core.fsmonitor`, `core.hooksPath` point git at a program |
+| `<root>/.git/config`, `<root>/.git/config.worktree` | tree | `core.fsmonitor`, `core.hooksPath` point git at a program |
+| each `write_roots:` entry `<w>` that has a `.git`: `<w>/.git`, `hooks`, `config`, `config.worktree` (and its worktree rows) | as for the root | writable is not "run later in the user's terminal" |
 | linked worktree: `<common>`, `<common>/hooks`, `<common>/config`, `<gitdir>/config.worktree` | entry, tree, tree, tree | as the three rows above |
 | `~/.iota.yaml`, `~/.iota.yml` | tree | the user's own config, loaded without asking, takes effect next run |
 | `~/.iota` | the entry itself | so the record below cannot be moved out from under its rule |

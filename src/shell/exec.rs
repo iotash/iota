@@ -345,15 +345,7 @@ pub fn writable_paths(sb: &Sandbox) -> Vec<PathBuf> {
         let _ = std::fs::create_dir_all(cache); // must exist to be bind-mounted / allowed
         paths.push(cache.clone());
     }
-    for p in &sb.write {
-        if p.as_os_str().is_empty() {
-            continue;
-        }
-        // Go's filepath.Abs = Clean(Join(wd, p)).
-        if let Ok(abs) = std::path::absolute(p) {
-            paths.push(crate::app::paths::clean(&abs));
-        }
-    }
+    paths.extend(sb.write.iter().filter_map(|p| absolute(p)));
     let mut seen = std::collections::HashSet::new();
     paths
         .into_iter()
@@ -362,9 +354,22 @@ pub fn writable_paths(sb: &Sandbox) -> Vec<PathBuf> {
 }
 
 /// What no command in `sb` may write, whatever [`writable_paths`] opens: the one protected table
-/// ([`crate::app::protected::table`]) for `sb.root` and `sb.home`.
+/// ([`crate::app::protected::table`]) for `sb.root`, the extra roots `sb.write` (made absolute as
+/// [`writable_paths`] makes them) and `sb.home`.
 pub fn protected_paths(sb: &Sandbox) -> Vec<crate::app::protected::Protected> {
-    crate::app::protected::table(&sb.root, sb.home.as_deref())
+    let extra: Vec<PathBuf> = sb.write.iter().filter_map(|p| absolute(p)).collect();
+    crate::app::protected::table(&sb.root, &extra, sb.home.as_deref())
+}
+
+/// A configured write root as the sandbox uses it: Go's `filepath.Abs` = `Clean(Join(wd, p))`; `None` for an
+/// empty entry or one that cannot be made absolute.
+fn absolute(p: &Path) -> Option<PathBuf> {
+    if p.as_os_str().is_empty() {
+        return None;
+    }
+    std::path::absolute(p)
+        .ok()
+        .map(|abs| crate::app::paths::clean(&abs))
 }
 
 /// 15-line `PATH` scan (replaces `which`).

@@ -120,6 +120,7 @@ mod tests {
         let writable = vec![PathBuf::from("/no-such-iota-root"), PathBuf::from("/tmp")];
         let protected = crate::app::protected::table(
             Path::new("/no-such-iota-root"),
+            &[],
             Some(Path::new("/no-such-home")),
         );
         let bash = Interpreter::new("/bin/bash");
@@ -138,7 +139,8 @@ mod tests {
              (subpath (param \"W2\"))\n  (subpath (param \"W3\"))\n)\n(deny file-write*\n  \
              (subpath (param \"P0\"))\n  (subpath (param \"P1\"))\n  (literal (param \"P2\"))\n  \
              (subpath (param \"P3\"))\n  (subpath (param \"P4\"))\n  (subpath (param \"P5\"))\n  \
-             (subpath (param \"P6\"))\n  (literal (param \"P7\"))\n  (subpath (param \"P8\"))\n)\n"
+             (subpath (param \"P6\"))\n  (subpath (param \"P7\"))\n  (literal (param \"P8\"))\n  \
+             (subpath (param \"P9\"))\n)\n"
         );
         assert_eq!(
             &argv[3..],
@@ -162,13 +164,15 @@ mod tests {
                 "-D",
                 "P4=/no-such-iota-root/.git/config",
                 "-D",
-                "P5=/no-such-home/.iota.yaml",
+                "P5=/no-such-iota-root/.git/config.worktree",
                 "-D",
-                "P6=/no-such-home/.iota.yml",
+                "P6=/no-such-home/.iota.yaml",
                 "-D",
-                "P7=/no-such-home/.iota",
+                "P7=/no-such-home/.iota.yml",
                 "-D",
-                "P8=/no-such-home/.iota/trusted.json",
+                "P8=/no-such-home/.iota",
+                "-D",
+                "P9=/no-such-home/.iota/trusted.json",
                 "/bin/bash",
                 "-c",
                 "echo hi",

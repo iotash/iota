@@ -37,7 +37,8 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   `~/.iota.yml` or `~/.iota/trusted.json`, and neither `<project>/.git` nor
   `~/.iota` can be renamed or replaced. In a worktree made with `git worktree
   add`, the main repository's `.git/hooks` and `.git/config` and the
-  worktree's `config.worktree` are covered the same way.
+  worktree's `config.worktree` are covered the same way, and so is the
+  `.git` of any directory you list in `write_roots:` that is a repository.
   Inside the sandbox such a write fails like any other denied write
   (`Operation not permitted` on macOS, `Read-only file system` on Linux), so
   `git config …`, `git remote add`, `git init` in a folder that is not a

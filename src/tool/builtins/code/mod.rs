@@ -250,7 +250,8 @@ impl CodeSet {
     /// `.git/hooks` linked elsewhere since the set was built is matched where it points now). A
     /// [`Reach::Tree`] entry holds everything under it, a [`Reach::Entry`] only itself.
     fn protected_at(&self, real: &Path) -> Option<Why> {
-        protected::table(&self.root.path, self.home.as_deref())
+        let extra: Vec<PathBuf> = self.extra.iter().map(|r| r.path.clone()).collect();
+        protected::table(&self.root.path, &extra, self.home.as_deref())
             .into_iter()
             .find(|e| {
                 let at = fs::physical(&e.path).unwrap_or_else(|| e.path.clone());

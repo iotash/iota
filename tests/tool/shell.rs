@@ -1188,6 +1188,68 @@ async fn the_sandbox_protects_a_linked_worktrees_common_hooks_and_config() {
     assert_eq!(String::from_utf8_lossy(&log.stdout), "second\nfirst\n");
 }
 
+/// A `write_roots:` entry that is itself a repository gets the project root's git rows: a sandboxed command can
+/// write files there, but not the hooks git would run in it nor the config that points git at a program.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_write_root_that_is_a_repository_keeps_its_hooks_and_config() {
+    let (_dir, root, outside, sb) = sandbox_fixture();
+    let st = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&outside)
+        .output()
+        .expect("git init");
+    assert!(st.status.success(), "{st:?}");
+    fs::create_dir_all(outside.join(".git/hooks")).expect("hooks");
+    let config = fs::read(outside.join(".git/config")).expect("config");
+    let sb = Sandbox {
+        write: vec![outside.clone()],
+        ..sb
+    };
+    if skip_unless_sandboxed(
+        "a_write_root_that_is_a_repository_keeps_its_hooks_and_config",
+        &sb,
+        &root,
+    )
+    .await
+    {
+        return;
+    }
+    let sh = |command: String| {
+        run(Options {
+            command,
+            dir: root.clone(),
+            timeout: None,
+            sandbox: Some(sb.clone()),
+        })
+    };
+    let other = shell_path(&outside);
+    for command in [
+        format!("echo x > {other}/.git/hooks/pre-commit"),
+        format!("echo x >> {other}/.git/config"),
+    ] {
+        let res = sh(command.clone()).await;
+        assert!(res.outcome != Outcome::Exited(0), "{command}: {res:?}");
+    }
+    assert!(
+        !outside.join(".git/hooks/pre-commit").exists(),
+        "a hook landed"
+    );
+    assert_eq!(
+        fs::read(outside.join(".git/config")).expect("config"),
+        config
+    );
+    let res = sh(format!("echo ok > {other}/f.txt")).await;
+    assert!(
+        res.outcome == Outcome::Exited(0),
+        "an ordinary write failed: {res:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(outside.join("f.txt")).expect("f"),
+        "ok\n"
+    );
+}
+
 /// The iota exception (DIVERGENCES X-44), end to end through the tool: a sandboxed set spawns a call whose
 /// first word is the running binary WITHOUT the sandbox, and only that call — the same binary in a pipe stays
 /// in. The binary is a stand-in script (`HostDirs::exe` is injected, never probed here) that writes a marker

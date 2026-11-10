@@ -36,7 +36,8 @@ pub enum Why {
     GitDir,
     /// `<root>/.git/hooks` (a linked worktree's: `<common>/hooks`).
     GitHooks,
-    /// `<root>/.git/config` (a linked worktree's: `<common>/config` and `<gitdir>/config.worktree`).
+    /// `<root>/.git/config` and `config.worktree` (a linked worktree's also `<common>/config` and
+    /// `<gitdir>/config.worktree`).
     GitConfig,
     /// `~/.iota` itself and `~/.iota/trusted.json`.
     Trust,
@@ -73,14 +74,19 @@ pub struct Protected {
     pub why: Why,
 }
 
-/// The table for a run rooted at `root`, with the user's `home` when there is one. An entry under another
-/// entry comes after it (`.git` before `.git/hooks`), the order a bind-mount backend must apply them in.
+/// The table for a run rooted at `root`, with the extra write roots (`write_roots:`) and the user's `home` when
+/// there is one. An entry under another entry comes after it (`.git` before `.git/hooks`), the order a
+/// bind-mount backend must apply them in.
+///
+/// An extra root that is itself a repository gets the git rows the project root gets — writable is not the
+/// same as "run later in the user's terminal". A root with no `.git` adds nothing (one `lstat`); the project
+/// root's rows are there even then, so a `.git` cannot be created under them.
 ///
 /// When `<root>/.git` is a `gitdir:` file (a linked worktree, `git worktree add`), the file is read now: the
 /// common dir it leads to (the gitdir's `commondir`, else the gitdir itself) is protected as `<root>/.git` is —
 /// the entry itself, its `hooks` and `config` — and so is the gitdir's own `config.worktree`. Nothing else of
 /// either is, so `git commit` keeps writing objects and refs there.
-pub fn table(root: &Path, home: Option<&Path>) -> Vec<Protected> {
+pub fn table(root: &Path, extra: &[PathBuf], home: Option<&Path>) -> Vec<Protected> {
     let at = |path: PathBuf, reach, why| Protected { path, reach, why };
     let configs = |dir: &Path, why| {
         CONFIG_EXTS
@@ -93,18 +99,28 @@ pub fn table(root: &Path, home: Option<&Path>) -> Vec<Protected> {
             at(git.clone(), Reach::Entry, Why::GitDir),
             at(git.join("hooks"), Reach::Tree, Why::GitHooks),
             at(git.join("config"), Reach::Tree, Why::GitConfig),
+            // Read too when `extensions.worktreeConfig` is on (the main worktree's own config).
+            at(git.join("config.worktree"), Reach::Tree, Why::GitConfig),
         ]
     };
-    let git = root.join(".git");
+    // `.git` itself, its hooks and config, and for a linked worktree its common dir's and `config.worktree`.
+    let repo = |git: PathBuf| {
+        let linked = linked_gitdir(&git);
+        let mut rows: Vec<Protected> = git_dir(git).into();
+        if let Some((gitdir, common)) = linked {
+            rows.extend(git_dir(common));
+            let worktree = gitdir.join("config.worktree");
+            rows.push(at(worktree, Reach::Tree, Why::GitConfig));
+        }
+        rows
+    };
     let mut t = configs(root, Why::ProjectConfig);
-    t.extend(git_dir(git.clone()));
-    if let Some((gitdir, common)) = linked_gitdir(&git) {
-        t.extend(git_dir(common));
-        t.push(at(
-            gitdir.join("config.worktree"),
-            Reach::Tree,
-            Why::GitConfig,
-        ));
+    t.extend(repo(root.join(".git")));
+    for w in extra {
+        let git = w.join(".git");
+        if std::fs::symlink_metadata(&git).is_ok() {
+            t.extend(repo(git));
+        }
     }
     if let Some(home) = home {
         t.extend(configs(home, Why::HomeConfig));
@@ -138,7 +154,7 @@ mod tests {
 
     #[test]
     fn the_table_is_the_configs_git_and_the_trust_record() {
-        let t = table(Path::new("/r"), Some(Path::new("/h")));
+        let t = table(Path::new("/r"), &[], Some(Path::new("/h")));
         let got: Vec<(PathBuf, Reach, Why)> =
             t.into_iter().map(|p| (p.path, p.reach, p.why)).collect();
         let want = [
@@ -147,6 +163,7 @@ mod tests {
             ("/r/.git", Reach::Entry, Why::GitDir),
             ("/r/.git/hooks", Reach::Tree, Why::GitHooks),
             ("/r/.git/config", Reach::Tree, Why::GitConfig),
+            ("/r/.git/config.worktree", Reach::Tree, Why::GitConfig),
             ("/h/.iota.yaml", Reach::Tree, Why::HomeConfig),
             ("/h/.iota.yml", Reach::Tree, Why::HomeConfig),
             ("/h/.iota", Reach::Entry, Why::Trust),
@@ -155,7 +172,7 @@ mod tests {
         .map(|(p, r, w)| (PathBuf::from(p), r, w));
         assert_eq!(got, want);
         // No home: no home config or trust record to protect.
-        assert_eq!(table(Path::new("/r"), None).len(), 5);
+        assert_eq!(table(Path::new("/r"), &[], None).len(), 6);
     }
 
     /// A linked worktree: `<root>/.git` is a `gitdir:` file (relative, as `git worktree add --relative-paths`
@@ -175,9 +192,9 @@ mod tests {
             "gitdir: ../main/.git/worktrees/w\n".to_owned(),
         ] {
             std::fs::write(root.join(".git"), &gitfile).expect("gitfile");
-            let got: Vec<(PathBuf, Reach, Why)> = table(&root, None)
+            let got: Vec<(PathBuf, Reach, Why)> = table(&root, &[], None)
                 .into_iter()
-                .skip(5)
+                .skip(6)
                 .map(|p| (p.path, p.reach, p.why))
                 .collect();
             assert_eq!(
@@ -186,10 +203,42 @@ mod tests {
                     (common.clone(), Reach::Entry, Why::GitDir),
                     (common.join("hooks"), Reach::Tree, Why::GitHooks),
                     (common.join("config"), Reach::Tree, Why::GitConfig),
+                    (common.join("config.worktree"), Reach::Tree, Why::GitConfig),
                     (gitdir.join("config.worktree"), Reach::Tree, Why::GitConfig),
                 ],
                 "{gitfile}"
             );
         }
+    }
+
+    /// An extra write root adds rows only when it is a repository: none for a plain directory (or a missing
+    /// one), and a repository's four — `.git` itself, `hooks`, `config`, `config.worktree` — after the project
+    /// root's, before the home's.
+    #[test]
+    fn an_extra_root_that_is_a_repository_gets_the_git_rows() {
+        let t = tempfile::tempdir().expect("tempdir");
+        let plain = t.path().join("plain");
+        let repo = t.path().join("repo");
+        std::fs::create_dir_all(&plain).expect("plain");
+        std::fs::create_dir_all(repo.join(".git")).expect("repo");
+        let base = table(Path::new("/r"), &[], None);
+        let with_plain = table(Path::new("/r"), &[plain, t.path().join("missing")], None);
+        assert_eq!(with_plain, base, "a root with no .git adds nothing");
+        let got: Vec<(PathBuf, Reach, Why)> =
+            table(Path::new("/r"), std::slice::from_ref(&repo), None)
+                .into_iter()
+                .skip(base.len())
+                .map(|p| (p.path, p.reach, p.why))
+                .collect();
+        let git = repo.join(".git");
+        assert_eq!(
+            got,
+            [
+                (git.clone(), Reach::Entry, Why::GitDir),
+                (git.join("hooks"), Reach::Tree, Why::GitHooks),
+                (git.join("config"), Reach::Tree, Why::GitConfig),
+                (git.join("config.worktree"), Reach::Tree, Why::GitConfig),
+            ]
+        );
     }
 }
