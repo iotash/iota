@@ -1,5 +1,6 @@
 //! The YAML config model: `~/.iota.yaml|yml` merged under `./.iota.yaml|yml` (or `-c <file>` alone), decoded
-//! with `serde_norway`, `${var}`-expanded at merge time and validated once at the end of [`Config::load`].
+//! with `serde_norway`, `${var}`-expanded at merge time and validated once at the end of [`Config::load`]. The
+//! project file is merged only once trusted ([`trust`], DIVERGENCES X-94).
 //!
 //! THREE layers, each with one job (brain page `config-three-layers`):
 //!

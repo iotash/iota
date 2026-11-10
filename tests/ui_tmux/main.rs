@@ -70,6 +70,7 @@
 //! | `33-trailing-text.sh` | busy-span §2.7 | — (a call composed and then followed by text — its arguments anonymous, then named: the call runs under its own live widget with its clock row, not under nothing or the composing label) |
 //! | `31-tool-args-cut.sh` | F3, X-69 | — (Anthropic dialect: a reply cut mid-arguments — the error naming the dropped `shell` call, the `[shell …]` row torn down, no `tool_result` answering the call and the next request without it (not dispatched); the whole call as the control that does run) |
 //! | `35-rate-limit-hold.sh` | X-84 | — (ESC with a job's notice queued behind the stream: one dim `⏸ … held` line, no turn of its own, the headline going with the next typed message; a notice refused with 429: the `retrying (attempt n/3)` row, ONE `✗ Rate limited (429)` block whose hint names the next try, the next job's notice put aside `held until` with no second block) |
+//! | `36-config-trust.sh` | config-trust | — (a project `.iota.yaml` on a terminal: the question before anything runs, Enter = not now with the home config in force and the marker absent, `t` trusts, a trusted file asks nothing) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -632,4 +633,12 @@ fn tmux_busy_span() {
 #[test]
 fn tmux_rate_limit_hold() {
     run_scenario("35-rate-limit-hold.sh");
+}
+
+/// L4 #36 (config-trust) — a project's `.iota.yaml` on a real terminal: the question shows what the file
+/// does before any of it runs, Enter is "not now" (the home config in force, the file's MCP server never
+/// started), `t` trusts it, and a trusted file asks nothing.
+#[test]
+fn tmux_config_trust() {
+    run_scenario("36-config-trust.sh");
 }

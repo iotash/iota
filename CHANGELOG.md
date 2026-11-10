@@ -44,6 +44,16 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 - **The approval prompt no longer says every call "wants to modify files".**
   It reads `<tool> — allow?`, and the notification a host (herdr, a terminal
   bell) receives reads `<tool> needs approval`.
+- **A repository's `.iota.yaml` asks to be trusted.** It can start MCP
+  servers, point a provider (and your key) somewhere else and loosen the
+  sandbox, so iota no longer uses it just because you ran iota in that
+  directory. Started on a terminal, iota shows what the file would do and asks
+  once, before any of it runs: trust it, or skip it for this run. Editing the
+  file asks again. A run without a terminal (`-m`, a script, a bot) never
+  asks: it skips the file with one warning and goes on with `~/.iota.yaml`.
+  `iota config trust` trusts the file ahead of time (for CI and scripted
+  setups), `iota config untrust` forgets it, and `-c <file>` is always used
+  as named.
 - **Reading is no longer restricted to the project; writing still is.**
   `read_file`, `list_dir`, `glob` and `grep` now read any path, absolute or
   `../…`, and follow a symlink wherever it leads. A glob or grep stops after

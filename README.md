@@ -70,6 +70,26 @@ iota mcp add nb --url https://namebeta.com/api/mcp   # an MCP server; logs in if
 iota list agents                 # what is configured
 ```
 
+### A repository's own `.iota.yaml`
+
+iota reads `~/.iota.yaml`, then the `.iota.yaml` (or `.iota.yml`) of the
+directory it runs in, which overrides it entry by entry; `-c <file>` reads that
+one file instead of both. A repository's file can start MCP servers, point a
+provider somewhere else and loosen the sandbox, so iota does not use it until
+you trust it:
+
+- Started on a terminal, iota shows what the file would do — the MCP commands
+  it starts, a provider `url` it sets, `sandbox`, `auto_run`, `auto_write`,
+  `write_roots`, `outside_writes` — and asks once, before anything of it runs.
+  Trust it, or skip it for this run.
+- Without a terminal (`-m`, a script, a bot), iota never asks: it skips the
+  file with one warning and runs on `~/.iota.yaml`.
+- `iota config trust` trusts the file as it is now (`--path <file>` for
+  another one); `iota config untrust` forgets it. Editing the file asks again.
+  The record is `~/.iota/trusted.json`, never in the repository.
+- `-c <file>` is a file you named, used without asking. Your own `~/.iota.yaml`
+  is never asked about.
+
 ## Documentation
 
 Everything else is on [iota.sh/docs](https://iota.sh/docs):
