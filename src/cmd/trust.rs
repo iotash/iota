@@ -27,14 +27,12 @@ pub(crate) fn gate(
 ) -> impl FnMut(&Path, &[u8], &mut dyn FnMut(String)) -> bool + '_ {
     move |path, bytes, warn| {
         let store = TrustStore::of(dirs);
-        let standing = store
-            .as_ref()
-            .map_or(Standing::Unknown, |s| s.standing(path, bytes));
+        let standing = standing(store.as_ref(), path, bytes);
         if standing == Standing::Trusted {
             return true;
         }
         if !ask {
-            warn(skipped(path, standing));
+            warn(format!("Warning: skipping {}", untrusted(path, standing)));
             return false;
         }
         let trusted = ask_user(path, standing, bytes, &mut std::io::stdin().lock(), warn);
@@ -60,14 +58,28 @@ pub(crate) fn gate(
     }
 }
 
-/// The one line a run that is not asked prints for a project file it skips.
-fn skipped(path: &Path, standing: Standing) -> String {
+/// The never-asking decision on its own, for a command that must REFUSE rather than skip (`iota mcp login`
+/// would send the file's values): `None` = trusted with these bytes, else what [`gate`] would have warned
+/// (the file, why it is not trusted, and how to trust it) to put in the refusal.
+pub(crate) fn refusal(dirs: &HostDirs, path: &Path, bytes: &[u8]) -> Option<String> {
+    let standing = standing(TrustStore::of(dirs).as_ref(), path, bytes);
+    (standing != Standing::Trusted).then(|| untrusted(path, standing))
+}
+
+/// `path`'s standing; nothing is trusted without a home to keep the record in.
+fn standing(store: Option<&TrustStore>, path: &Path, bytes: &[u8]) -> Standing {
+    store.map_or(Standing::Unknown, |s| s.standing(path, bytes))
+}
+
+/// What an untrusted project file is and how to trust it — the body of the skip warning
+/// (`Warning: skipping …`) and of a refusal.
+fn untrusted(path: &Path, standing: Standing) -> String {
     let why = match standing {
         Standing::Changed => "it has changed since it was trusted",
         _ => "it is not trusted",
     };
     format!(
-        "Warning: skipping project config {} ({why}): run `iota config trust` to trust it, or pass it with -c",
+        "project config {} ({why}): run `iota config trust` to trust it, or pass it with -c",
         path.display()
     )
 }

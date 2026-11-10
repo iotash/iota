@@ -52,7 +52,7 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   file asks again. A run without a terminal (`-m`, a script, a bot) never
   asks: it skips the file with one warning and goes on with `~/.iota.yaml`.
   `iota mcp list --probe` lists an untrusted file's servers without starting
-  them. `iota config trust` trusts the file ahead of time (for CI and scripted
+  them, and `iota mcp login` refuses to log in to one. `iota config trust` trusts the file ahead of time (for CI and scripted
   setups), `iota config untrust` forgets it, and `-c <file>` is always used
   as named.
 - **Reading is no longer restricted to the project; writing still is.**

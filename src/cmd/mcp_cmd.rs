@@ -762,17 +762,40 @@ fn run_get(
 
 /// The declared server `name` a login applies to — an HTTP entry that is not `auth: none`, declared or by
 /// its own `Authorization` header (`ServerConfig::login_refusal`) — with its token store.
+///
+/// `trusted_only` (`login`, which expands the entry and sends it to its url) refuses a server from a project
+/// file the user has not trusted, decided on the bytes its servers were decoded from
+/// ([`crate::cmd::trust::refusal`], the never-asking gate). `logout` needs no such check: it sends what the
+/// home token file holds, to the endpoint that file recorded.
 fn login_server(
     name: &str,
     explicit: Option<&Path>,
     env: &Env,
+    trusted_only: bool,
 ) -> Result<(Declared, crate::mcp::auth::TokenStore, ServerConfig), CliError> {
     let files = source_files(explicit, None, &env.dirs);
-    let mut declared = declared_servers(&files, &mut admit_all)?;
+    let project = trusted_only
+        .then(|| Config::project_file(explicit, &env.dirs))
+        .flatten();
+    let mut refused = None;
+    let mut declared = declared_servers(&files, &mut |file, bytes| {
+        if project.as_deref() != Some(file) {
+            return true;
+        }
+        refused = crate::cmd::trust::refusal(&env.dirs, file, bytes);
+        refused.is_none()
+    })?;
     let Some(at) = declared.iter().position(|d| d.name == name) else {
         return Err(unknown(name, &declared).into());
     };
     let d = declared.remove(at);
+    if !d.admitted {
+        return Err(SetupError::McpUntrusted {
+            name: name.to_owned(),
+            reason: refused.unwrap_or_default(),
+        }
+        .into());
+    }
     let declared_cfg = server_config(&d.name, &d.entry);
     if let Some(reason) = declared_cfg.login_refusal() {
         return Err(SetupError::McpNoLogin {
@@ -797,7 +820,7 @@ async fn run_login(
     cancel: &CancellationToken,
     io: &mut io::Streams,
 ) -> Result<(), CliError> {
-    let (_, store, expanded) = login_server(name, explicit, env)?;
+    let (_, store, expanded) = login_server(name, explicit, env, true)?;
     let target = LoginTarget::of(expanded, store, client_id);
     login_to(name, no_browser, target, env, cancel, io).await
 }
@@ -936,7 +959,7 @@ async fn run_logout(
     env: &Env,
     io: &mut io::Streams,
 ) -> Result<(), CliError> {
-    let (_, store, _) = login_server(name, explicit, env)?;
+    let (_, store, _) = login_server(name, explicit, env, false)?;
     let had = crate::mcp::auth::logout(&crate::llm::default_http_client(), &store)
         .await
         .map_err(|source| RunError::McpLogout {

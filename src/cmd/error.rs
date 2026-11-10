@@ -300,6 +300,15 @@ pub enum SetupError {
         /// The sentence after the name.
         reason: &'static str,
     },
+    /// `iota mcp login <name>` for a server declared in a project file the user has not trusted: a login
+    /// would expand the file's values (its `client_secret`) and send them to the url it chose.
+    #[error("cannot log in to {name}: it is declared in {reason}")]
+    McpUntrusted {
+        /// The server.
+        name: String,
+        /// The untrusted file and how to trust it, as the skip warning words it (`cmd::trust::refusal`).
+        reason: String,
+    },
     /// `iota mcp login|logout` with no home directory to keep the token file in.
     #[error("$HOME is not defined: there is nowhere to keep the token")]
     McpNoHomeForToken,

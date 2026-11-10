@@ -87,7 +87,8 @@ you trust it:
   `outside_writes`. Trust it, or skip it for this run.
 - Without a terminal (`-m`, a script, a bot), iota never asks: it skips the
   file with one warning and runs on `~/.iota.yaml`. `iota mcp list --probe`
-  lists an untrusted file's servers without starting them.
+  lists an untrusted file's servers without starting them, and `iota mcp
+  login` refuses to log in to one.
 - `iota config trust` trusts the file as it is now (`--path <file>` for
   another one); `iota config untrust` forgets it. Editing the file asks again.
   The record is `~/.iota/trusted.json`, never in the repository.

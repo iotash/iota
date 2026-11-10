@@ -417,3 +417,75 @@ fn no_agent_after_a_skip_names_the_skip() {
         "{stderr}"
     );
 }
+
+/// `iota mcp login` expands an entry's `client_secret` and sends it to the entry's url, so a server declared
+/// in an untrusted project file is refused before anything is contacted — one line naming the file and
+/// `iota config trust`. Trusted, the login goes ahead and reaches the server.
+#[test]
+fn mcp_login_refuses_a_server_from_an_untrusted_project_file() {
+    use std::io::Read as _;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let contacted = Arc::new(AtomicBool::new(false));
+    {
+        let contacted = Arc::clone(&contacted);
+        // Every connection is recorded and dropped unanswered: the login then fails fast, after the contact.
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                contacted.store(true, Ordering::SeqCst);
+                if let Ok(mut s) = stream {
+                    let _ = s.set_read_timeout(Some(Duration::from_millis(200)));
+                    let _ = s.read(&mut [0; 1024]);
+                }
+            }
+        });
+    }
+    let (dir, dirs) = temp_project(&[]);
+    let home = dirs.home.expect("fixture home");
+    fs::write(
+        dir.path().join(".iota.yaml"),
+        format!(
+            "mcp_servers:\n  nb: {{url: \"http://127.0.0.1:{port}/mcp\", client_id: app, client_secret: \"${{SOME_VAR}}\"}}\n"
+        ),
+    )
+    .expect("write project config");
+    let login = || {
+        iota(dir.path(), &home)
+            .env("SOME_VAR", "s3cret")
+            .args(["mcp", "login", "nb", "--no-browser"])
+            .output()
+            .expect("mcp login")
+    };
+
+    let o = login();
+    assert_eq!(o.status.code(), Some(1), "stderr: {}", err(&o));
+    assert_eq!(
+        err(&o),
+        format!(
+            "Error: cannot log in to nb: it is declared in project config {} (it is not trusted): run `iota config trust` to trust it, or pass it with -c\n",
+            as_child_names(dir.path()).display()
+        )
+    );
+    assert!(out(&o).is_empty(), "{}", out(&o));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        !contacted.load(Ordering::SeqCst),
+        "an untrusted project server was contacted"
+    );
+
+    trust(dir.path(), &home);
+    let o = login();
+    assert!(
+        !err(&o).contains("cannot log in to nb"),
+        "a trusted server was refused: {}",
+        err(&o)
+    );
+    assert!(
+        contacted.load(Ordering::SeqCst),
+        "the trusted login never reached the server: {}",
+        err(&o)
+    );
+}
