@@ -219,18 +219,40 @@ async fn run_agent(
     // before the decision. Only an interactive start on a terminal asks; `-m` and a piped start skip an
     // untrusted file with one warning and go on.
     let ask = inv.args.message.is_none() && io::Streams::can_ask();
-    let cfg = Config::load(
-        inv.config.as_deref(),
-        &env,
-        &mut trust::gate(&env.dirs, ask),
-        &mut |w| io.warning(&w),
-    )?;
+    let mut skipped = None;
+    let cfg = {
+        let mut gate = trust::gate(&env.dirs, ask);
+        Config::load(
+            inv.config.as_deref(),
+            &env,
+            &mut |path, bytes, warn| {
+                let admitted = gate(path, bytes, warn);
+                if !admitted {
+                    skipped = Some(path.to_path_buf());
+                }
+                admitted
+            },
+            &mut |w| io.warning(&w),
+        )?
+    };
 
     // root.go:52-123
     let mut stdin = std::io::stdin();
     let resolved = resolve_run(&inv, &cfg, &env, &mut stdin, &mut |w| {
         io.warning(&w);
     });
+    // No agent to run, or not the one named: when the project file was skipped, that is likely why.
+    let resolved = match (resolved, &skipped) {
+        (
+            Err(CliError::Args(e @ (ArgsError::NoAgent | ArgsError::UnknownAgent { .. }))),
+            Some(p),
+        ) => Err(ArgsError::ProjectSkipped {
+            source: Box::new(e),
+            project: p.display().to_string(),
+        }
+        .into()),
+        (resolved, _) => resolved,
+    };
     // `iota run <bot> -m`: a running bot takes the message through its socket (docs/design/agent-messaging.md
     // §5); one that is not running keeps the refusal.
     if let Err(CliError::Args(ArgsError::BotHeadless { name })) = resolved {
@@ -253,6 +275,7 @@ async fn run_agent(
     let tools = assemble_tools(
         &inv,
         &cfg,
+        skipped.is_none(),
         &settings,
         opened.as_ref().map(|(_, p)| &**p),
         &ctx,
@@ -420,6 +443,7 @@ pub(crate) fn layered_params(
 fn assemble_tools(
     inv: &Invocation,
     cfg: &Config,
+    project_trusted: bool,
     settings: &RunSettings,
     provider: Option<&dyn crate::provider::Provider>,
     ctx: &RunContext,
@@ -513,7 +537,12 @@ fn assemble_tools(
     let harness = crate::agents::harness::HarnessInputs {
         env: crate::agents::harness::Environment {
             write_roots: tool_env.write_roots.clone(),
-            ..assemble::harness_environment(dirs, project_root.as_deref(), inv.config.as_deref())
+            ..assemble::harness_environment(
+                dirs,
+                project_root.as_deref(),
+                inv.config.as_deref(),
+                project_trusted,
+            )
         },
         toolsets: assemble::enabled_toolsets(
             &settings.resolved.agent.tools,

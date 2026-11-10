@@ -57,6 +57,9 @@ pub enum ConfigFiles {
         user: Option<PathBuf>,
         /// `./.iota.yaml|yml`, when it exists.
         project: Option<PathBuf>,
+        /// Whether `project` was loaded: `false` = skipped as not trusted (`config::trust`), so the model is
+        /// not told it is in force.
+        project_trusted: bool,
     },
     /// The one file `-c` named — the only scope there is.
     Explicit(PathBuf),
@@ -67,6 +70,7 @@ impl Default for ConfigFiles {
         Self::Tiers {
             user: None,
             project: None,
+            project_trusted: true,
         }
     }
 }
@@ -185,9 +189,18 @@ fn environment_block(env: &Environment, out: &mut String) {
             .map_or_else(|| "(unknown)".to_owned(), |p| p.display().to_string())
     );
     match &env.configs {
-        ConfigFiles::Tiers { user, project } => {
+        ConfigFiles::Tiers {
+            user,
+            project,
+            project_trusted,
+        } => {
             let _ = writeln!(out, "user config: {}", absent(user));
-            let _ = writeln!(out, "project config: {}", absent(project));
+            let skipped = if *project_trusted {
+                ""
+            } else {
+                " (not trusted: not loaded)"
+            };
+            let _ = writeln!(out, "project config: {}{skipped}", absent(project));
         }
         ConfigFiles::Explicit(path) => {
             let _ = writeln!(
@@ -231,6 +244,7 @@ mod tests {
             configs: ConfigFiles::Tiers {
                 user: Some(PathBuf::from("/Users/someone/.iota.yaml")),
                 project: Some(PathBuf::from("/Users/someone/Work/project/.iota.yaml")),
+                project_trusted: true,
             },
             host: Vec::new(),
             write_roots: Vec::new(),
@@ -365,8 +379,8 @@ mod tests {
         assert!(!text.contains("write roots"), "{text}");
     }
 
-    /// Every environment fact is one line; a missing config file is spelled `(absent)`, and `-c` collapses
-    /// the two tiers into one line.
+    /// Every environment fact is one line; a missing config file is spelled `(absent)`, a skipped project
+    /// file `(not trusted: not loaded)`, and `-c` collapses the two tiers into one line.
     #[test]
     fn environment_lines_name_absence() {
         let text = compose(&env(), &sets(&["code"]));
@@ -391,6 +405,22 @@ mod tests {
         let text = compose(&absent, &sets(&["code"]));
         assert!(
             text.contains("\nuser config: (absent)\nproject config: (absent)\n"),
+            "{text}"
+        );
+        // A project file the load skipped as not trusted is not presented as in force.
+        let skipped = Environment {
+            configs: ConfigFiles::Tiers {
+                user: None,
+                project: Some(PathBuf::from("/Users/someone/Work/project/.iota.yaml")),
+                project_trusted: false,
+            },
+            ..env()
+        };
+        let text = compose(&skipped, &sets(&["code"]));
+        assert!(
+            text.contains(
+                "\nproject config: /Users/someone/Work/project/.iota.yaml (not trusted: not loaded)\n"
+            ),
             "{text}"
         );
         let explicit = Environment {

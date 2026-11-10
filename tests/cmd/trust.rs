@@ -388,3 +388,32 @@ fn mcp_list_probe_never_starts_an_untrusted_project_server() {
     assert!(ran(&marker), "a trusted project server is probed");
     assert!(!err(&o).contains("skipping"), "{}", err(&o));
 }
+
+/// When the only config is a skipped project file, the refusal that follows says why the file's agent is
+/// not there — instead of only telling the user to add one the file already has.
+#[test]
+fn no_agent_after_a_skip_names_the_skip() {
+    let (dir, dirs) = temp_project(&[(
+        ".iota.yaml",
+        "providers:\n  p: {type: openai, key: sk-x}\nmodels:\n  m: p:gpt-test\nagents:\n  default: {model: m}\n",
+    )]);
+    let home = dirs.home.expect("fixture home");
+    let project = as_child_names(dir.path());
+    let o = iota(dir.path(), &home)
+        .args(["-m", "hi"])
+        .output()
+        .expect("run");
+    assert_eq!(o.status.code(), Some(1), "stderr: {}", err(&o));
+    let stderr = err(&o);
+    assert!(
+        stderr.starts_with("Warning: skipping project config "),
+        "{stderr}"
+    );
+    assert!(
+        stderr.ends_with(&format!(
+            "Error: no agent to run: name one with `iota run <agent>` (see `iota list agents`), or add an `agents.default` entry to your config (`iota config path` names the file)\n(the project config {} was skipped: it is not trusted — `iota config trust` trusts it)\n",
+            project.display()
+        )),
+        "{stderr}"
+    );
+}

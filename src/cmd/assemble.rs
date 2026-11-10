@@ -52,11 +52,13 @@ pub(crate) fn enabled_toolsets(tools: &ToolsConfig, bot: bool) -> Vec<String> {
 
 /// The `<environment>` block's facts, read once here at the binary edge: the project root the run resolved,
 /// the platform, the interpreter the `shell` set would run (`bash`, `pwsh`, `cmd`, or `(none)`), today's
-/// date, the binary, and the config files — the two tiers, or the one `-c` named.
+/// date, the binary, and the config files — the two tiers, or the one `-c` named. `project_trusted` is
+/// `false` when the load skipped the project file as not trusted.
 pub(crate) fn harness_environment(
     dirs: &HostDirs,
     project_root: Option<&Path>,
     explicit_config: Option<&Path>,
+    project_trusted: bool,
 ) -> Environment {
     let shell = crate::shell::interp::resolve().map_or_else(
         |_| "(none)".to_owned(),
@@ -78,6 +80,7 @@ pub(crate) fn harness_environment(
         None => ConfigFiles::Tiers {
             user: dirs.home.as_deref().and_then(Config::find_config_file),
             project: dirs.cwd.as_deref().and_then(Config::find_config_file),
+            project_trusted,
         },
     };
     Environment {
@@ -533,13 +536,14 @@ mod tests {
             cwd: Some(dir.path().to_path_buf()),
             ..crate::app::HostDirs::default()
         };
-        let env = super::harness_environment(&dirs, Some(dir.path()), None);
+        let env = super::harness_environment(&dirs, Some(dir.path()), None, true);
         assert_eq!(env.project_root, dir.path());
         assert_eq!(
             env.configs,
             ConfigFiles::Tiers {
                 user: Some(home.join(".iota.yml")),
                 project: None,
+                project_trusted: true,
             }
         );
         assert!(env.exe.is_none(), "no exe was injected");
@@ -550,10 +554,11 @@ mod tests {
         // An absolute `-c` is passed through as it is. (`/tmp/f.yaml` is not absolute on Windows — no
         // drive — so the absolute path is built from the temp dir, which is one on every platform.)
         let absolute = dir.path().join("f.yaml");
-        let env = super::harness_environment(&dirs, None, Some(&absolute));
+        let env = super::harness_environment(&dirs, None, Some(&absolute), true);
         assert_eq!(env.configs, ConfigFiles::Explicit(absolute));
         // A relative `-c` is reported against the run's cwd, so the model's shell finds it from anywhere.
-        let env = super::harness_environment(&dirs, None, Some(std::path::Path::new("cfg.yml")));
+        let env =
+            super::harness_environment(&dirs, None, Some(std::path::Path::new("cfg.yml")), true);
         assert_eq!(
             env.configs,
             ConfigFiles::Explicit(dirs.cwd.as_deref().expect("a cwd").join("cfg.yml"))

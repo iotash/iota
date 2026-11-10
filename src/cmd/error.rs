@@ -25,6 +25,17 @@ pub enum ArgsError {
         "no agent to run: name one with `iota run <agent>` (see `iota list agents`), or add an `agents.default` entry to your config (`iota config path` names the file)"
     )]
     NoAgent,
+    /// A refusal that a skipped project file may explain (`NoAgent`, `UnknownAgent`): the config the user
+    /// had in mind is the one that was not loaded.
+    #[error(
+        "{source}\n(the project config {project} was skipped: it is not trusted — `iota config trust` trusts it)"
+    )]
+    ProjectSkipped {
+        /// The refusal as it stands.
+        source: Box<ArgsError>,
+        /// The project file the load skipped.
+        project: String,
+    },
     /// `iota run <name>` where `name` is not an `agents:` entry. It used to fall through to `models:`,
     /// `providers:` and the built-in types; an agent is the only thing a run can name now.
     #[error("unknown agent {name:?}{}", agent_hint(.agents))]
