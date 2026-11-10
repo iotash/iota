@@ -145,7 +145,7 @@ fn sandbox_fixture() -> (TempDir, PathBuf, PathBuf, Sandbox) {
         write: Vec::new(),
         temp_dir: temp,
         cache_dir: Some(cache),
-        app_home: Some(dir.path().join("home/.iota")),
+        home: Some(dir.path().join("home")),
     };
     (dir, root, outside, sb)
 }
@@ -996,11 +996,12 @@ async fn the_sandbox_never_writes_a_protected_path() {
     fs::create_dir_all(&app_home).expect("app home");
     fs::write(root.join(".iota.yaml"), "model: m\n").expect("project config");
     fs::write(app_home.join("trusted.json"), "{}").expect("trust record");
+    fs::write(home.join(".iota.yaml"), "model: h\n").expect("home config");
     let config_before = fs::read(root.join(".git/config")).expect("git config");
     // `write_roots:` names `.git` and the home: neither re-opens what the table closes.
     let sb = Sandbox {
         write: vec![root.join(".git"), home.clone()],
-        app_home: Some(app_home.clone()),
+        home: Some(home.clone()),
         ..sb
     };
     let sh = |command: String| {
@@ -1017,6 +1018,7 @@ async fn the_sandbox_never_writes_a_protected_path() {
         "echo x >> .git/config".to_owned(),
         "echo x > .iota.yaml".to_owned(),
         format!("echo x > {}/trusted.json", shell_path(&app_home)),
+        format!("echo x > {}/.iota.yaml", shell_path(&home)),
         "mv .git .git-moved".to_owned(),
         format!("mv {0} {0}-moved", shell_path(&app_home)),
     ];
@@ -1045,6 +1047,10 @@ async fn the_sandbox_never_writes_a_protected_path() {
     assert_eq!(
         fs::read_to_string(root.join(".iota.yaml")).expect("cfg"),
         "model: m\n"
+    );
+    assert_eq!(
+        fs::read_to_string(home.join(".iota.yaml")).expect("home config"),
+        "model: h\n"
     );
     assert_eq!(
         fs::read_to_string(app_home.join("trusted.json")).expect("record"),
@@ -1078,6 +1084,105 @@ async fn the_sandbox_never_writes_a_protected_path() {
     let log = std::process::Command::new("git")
         .args(["log", "--format=%s"])
         .current_dir(&root)
+        .output()
+        .expect("git log");
+    assert_eq!(String::from_utf8_lossy(&log.stdout), "second\nfirst\n");
+}
+
+/// A linked worktree (`git worktree add`): `<root>/.git` is a `gitdir:` file, and the hooks git runs and the
+/// config it reads are the main repository's (`<main>/.git/hooks`, `<main>/.git/config`) and the worktree's
+/// `config.worktree` — outside the root. With the main `.git` listed in `write_roots:` (which a sandboxed
+/// `git commit` in a worktree needs: its objects and refs live there), those stay closed while the commit works,
+/// and the gitdir file itself cannot be repointed.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_sandbox_protects_a_linked_worktrees_common_hooks_and_config() {
+    let (dir, _root, _outside, sb) = sandbox_fixture();
+    let main = dir.path().join("main");
+    let wt = dir.path().join("wt");
+    fs::create_dir_all(&main).expect("main");
+    let git = |at: &Path, args: &[&str]| {
+        let st = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(args)
+            .current_dir(at)
+            .output()
+            .expect("git");
+        assert!(st.status.success(), "git {args:?}: {st:?}");
+    };
+    git(&main, &["init", "-q"]);
+    git(&main, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    git(
+        &main,
+        &["worktree", "add", "-q", "-b", "side", &wt.to_string_lossy()],
+    );
+    let common = main.join(".git");
+    let gitdir = common.join("worktrees/wt");
+    fs::create_dir_all(common.join("hooks")).expect("hooks");
+    fs::write(gitdir.join("config.worktree"), "").expect("config.worktree");
+    let sb = Sandbox {
+        root: wt.clone(),
+        write: vec![common.clone()],
+        ..sb
+    };
+    if skip_unless_sandboxed(
+        "the_sandbox_protects_a_linked_worktrees_common_hooks_and_config",
+        &sb,
+        &wt,
+    )
+    .await
+    {
+        return;
+    }
+    let before = |p: &Path| fs::read(p).ok();
+    let watched = [
+        common.join("hooks/pre-commit"),
+        common.join("config"),
+        gitdir.join("config.worktree"),
+        wt.join(".git"),
+    ];
+    let snapshot: Vec<_> = watched.iter().map(|p| before(p)).collect();
+    for command in [
+        format!("echo x > {}/hooks/pre-commit", shell_path(&common)),
+        format!("echo x >> {}/config", shell_path(&common)),
+        format!("echo x >> {}/config.worktree", shell_path(&gitdir)),
+        "echo 'gitdir: /elsewhere' > .git".to_owned(),
+    ] {
+        let res = run(Options {
+            command: command.clone(),
+            dir: wt.clone(),
+            timeout: None,
+            sandbox: Some(sb.clone()),
+        })
+        .await;
+        assert!(res.outcome != Outcome::Exited(0), "{command}: {res:?}");
+    }
+    let after: Vec<_> = watched.iter().map(|p| before(p)).collect();
+    assert_eq!(after, snapshot, "a protected file of the worktree changed");
+
+    let res = run(Options {
+        command: "echo data > f.txt && git add f.txt && \
+                  git -c user.name=t -c user.email=t@t commit -q -m second"
+            .to_owned(),
+        dir: wt.clone(),
+        timeout: None,
+        sandbox: Some(sb),
+    })
+    .await;
+    assert!(
+        res.outcome == Outcome::Exited(0),
+        "commit in the worktree failed: {res:?}"
+    );
+    let log = std::process::Command::new("git")
+        .args(["log", "--format=%s", "side"])
+        .current_dir(&main)
         .output()
         .expect("git log");
     assert_eq!(String::from_utf8_lossy(&log.stdout), "second\nfirst\n");
@@ -1320,7 +1425,7 @@ async fn write_roots_open_one_directory_to_the_code_tools_and_the_shell() {
         write: Vec::new(),
         temp_dir: env.dirs.temp.clone(),
         cache_dir: env.dirs.cache.clone(),
-        app_home: env.dirs.app_home(),
+        home: env.dirs.home.clone(),
     };
     if skip_unless_sandboxed("write_roots_open_one_directory", &sb, &root).await {
         return;
@@ -1364,7 +1469,7 @@ fn the_writable_paths_are_the_project_and_the_temp_dirs() {
         write: vec![root.clone(), PathBuf::new(), PathBuf::from("/tmp")],
         temp_dir: dirs.temp.clone(),
         cache_dir: Some(cache.clone()),
-        app_home: None,
+        home: None,
     });
     assert_eq!(paths[0], root, "project root must lead: {paths:?}");
     let mut seen = std::collections::HashSet::new();
@@ -1390,7 +1495,7 @@ fn the_writable_paths_are_the_project_and_the_temp_dirs() {
         write: Vec::new(),
         temp_dir: PathBuf::from("/tmp"),
         cache_dir: None,
-        app_home: None,
+        home: None,
     });
     assert_eq!(paths, vec![root, PathBuf::from("/tmp")]);
 }

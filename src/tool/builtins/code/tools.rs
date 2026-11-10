@@ -1551,7 +1551,8 @@ mod tests {
 
         let t = tempfile::tempdir().expect("tempdir");
         let root = std::fs::canonicalize(t.path()).expect("real").join("root");
-        let home = root.parent().expect("parent").join("home/.iota");
+        let user_home = root.parent().expect("parent").join("home");
+        let home = user_home.join(".iota");
         std::fs::create_dir_all(root.join(".git/hooks")).expect("hooks");
         std::fs::create_dir_all(&home).expect("home");
         std::fs::write(root.join(".git/config"), "[core]\n").expect("config");
@@ -1574,7 +1575,7 @@ mod tests {
                         extra.clone(),
                         auto_write,
                         policy,
-                        Some(home.clone()),
+                        Some(user_home.clone()),
                     )
                     .expect("set");
                     let tool = super::WriteFile(std::sync::Arc::clone(&cs));
@@ -1647,8 +1648,14 @@ mod tests {
 
         // "Allow once" for exactly the file is what lands it (a new hook here; an existing file still needs
         // reading first, as anywhere).
-        let cs =
-            CodeSet::new(root.clone(), Vec::new(), true, Outside::Ask, Some(home)).expect("set");
+        let cs = CodeSet::new(
+            root.clone(),
+            Vec::new(),
+            true,
+            Outside::Ask,
+            Some(user_home),
+        )
+        .expect("set");
         let hook = root.join(".git/hooks/pre-commit");
         let cx = RunCtx {
             approved: Some(Approved::Once(hook.clone())),

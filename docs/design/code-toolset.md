@@ -70,8 +70,19 @@ sandbox (shell-toolset.md, Sandbox semantics), so the two cannot drift:
 | `<root>/.git` | the entry itself | replacing it (rename, link, `gitdir:` file) repoints git |
 | `<root>/.git/hooks` | tree | git executes them on the user's next git command |
 | `<root>/.git/config` | tree | `core.fsmonitor`, `core.hooksPath` point git at a program |
+| linked worktree: `<common>`, `<common>/hooks`, `<common>/config`, `<gitdir>/config.worktree` | entry, tree, tree, tree | as the three rows above |
+| `~/.iota.yaml`, `~/.iota.yml` | tree | the user's own config, loaded without asking, takes effect next run |
 | `~/.iota` | the entry itself | so the record below cannot be moved out from under its rule |
 | `~/.iota/trusted.json` | tree | it records which project configs the user trusts |
+
+In a linked worktree (`git worktree add`) `<root>/.git` is a `gitdir:` file,
+and git's hooks and config are the main repository's: the table reads the
+file (and the gitdir's `commondir`) when it is built and adds the common
+dir's entry, `hooks` and `config` and the gitdir's `config.worktree` — not the
+rest of either, so a commit still writes its objects and refs there. The
+home config is on it because it is trusted by definition and decides which
+code the next run starts (MCP commands, provider URLs, `sandbox: off`);
+shell rc files are not, by the scoping above.
 
 A tree entry holds the path and everything under it; an entry holds only the
 name (its contents — `.git/objects`, `~/.iota/skills` — stay writable). Each

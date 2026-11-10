@@ -56,7 +56,9 @@ What a write outside those roots does depends on whether the sandbox is on:
 **Protected paths.** Inside those roots, the sandbox still never writes the
 protected table (`app::protected::table`, the one the code writers read —
 code-toolset.md, Protected paths): `<root>/.iota.yaml|yml`, `<root>/.git/hooks`,
-`<root>/.git/config`, `~/.iota/trusted.json`, and the `<root>/.git` and
+`<root>/.git/config` (in a linked worktree also the common dir's `hooks` and
+`config` and the gitdir's `config.worktree`), `~/.iota.yaml|yml`,
+`~/.iota/trusted.json`, and the `<root>/.git` (and common dir) and
 `~/.iota` entries themselves (not their contents), so neither can be renamed
 or replaced to move the others out from under the rule. A sandboxed command
 runs without approval, and without this a silent `echo … >

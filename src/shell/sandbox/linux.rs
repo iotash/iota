@@ -147,7 +147,7 @@ mod tests {
             std::fs::create_dir_all(d).expect("mkdir");
         }
         std::fs::write(home.join("trusted.json"), "{}").expect("record");
-        let protected = crate::app::protected::table(&root, Some(&home));
+        let protected = crate::app::protected::table(&root, home.parent());
         let bash = Interpreter::new("/bin/bash");
         let cmd =
             command(&bash, "x", &[root.clone(), extra.clone()], &protected, true).expect("argv");

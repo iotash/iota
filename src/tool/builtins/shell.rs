@@ -226,7 +226,7 @@ impl Tool for ShellTool {
                 write: self.write_roots.clone(),
                 temp_dir: self.dirs.temp.clone(),
                 cache_dir: self.dirs.cache.clone(),
-                app_home: self.dirs.app_home(),
+                home: self.dirs.home.clone(),
             });
             let opts = Options {
                 command,

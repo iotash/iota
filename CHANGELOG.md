@@ -33,8 +33,11 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   `.git/hooks/pre-commit` (which your next `git commit` runs) and
   `.iota.yaml`. Now no sandboxed command and no `write_file`/`edit_file`
   writes `<project>/.iota.yaml`, `<project>/.iota.yml`, anything under
-  `<project>/.git/hooks`, `<project>/.git/config` or `~/.iota/trusted.json`,
-  and neither `<project>/.git` nor `~/.iota` can be renamed or replaced.
+  `<project>/.git/hooks`, `<project>/.git/config`, `~/.iota.yaml`,
+  `~/.iota.yml` or `~/.iota/trusted.json`, and neither `<project>/.git` nor
+  `~/.iota` can be renamed or replaced. In a worktree made with `git worktree
+  add`, the main repository's `.git/hooks` and `.git/config` and the
+  worktree's `config.worktree` are covered the same way.
   Inside the sandbox such a write fails like any other denied write
   (`Operation not permitted` on macOS, `Read-only file system` on Linux), so
   `git config …`, `git remote add`, `git init` in a folder that is not a

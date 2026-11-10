@@ -126,8 +126,8 @@ pub(crate) struct CodeSet {
     cwd: PathBuf,
     auto_write: bool,
     outside: Outside,
-    /// `~/.iota`, whose trust record the protected table names; None without a home.
-    app_home: Option<PathBuf>,
+    /// The user's home, whose config and trust record the protected table names; None without one.
+    home: Option<PathBuf>,
     reads: Mutex<HashMap<PathBuf, SystemTime>>,
 }
 
@@ -136,13 +136,13 @@ impl CodeSet {
     /// when it cannot be read it stays empty and the ladder skips its rungs). A root whose real
     /// location cannot be worked out (see [`fs::physical`]) fails the set — `CodeRoot` for the
     /// project root, there being nothing to jail paths to, `WriteRoot` for an extra one, which is
-    /// never silently dropped. `app_home` is `~/.iota`, for the protected table.
+    /// never silently dropped. `home` is the user's home, for the protected table.
     pub(crate) fn new(
         root: PathBuf,
         extra: Vec<PathBuf>,
         auto_write: bool,
         outside: Outside,
-        app_home: Option<PathBuf>,
+        home: Option<PathBuf>,
     ) -> Result<Arc<Self>, SetError> {
         let root = Root::new(root.clone()).ok_or(SetError::CodeRoot(root))?;
         let extra = extra
@@ -155,7 +155,7 @@ impl CodeSet {
             cwd: std::env::current_dir().unwrap_or_default(),
             auto_write,
             outside,
-            app_home,
+            home,
             reads: Mutex::new(HashMap::new()),
         }))
     }
@@ -250,7 +250,7 @@ impl CodeSet {
     /// `.git/hooks` linked elsewhere since the set was built is matched where it points now). A
     /// [`Reach::Tree`] entry holds everything under it, a [`Reach::Entry`] only itself.
     fn protected_at(&self, real: &Path) -> Option<Why> {
-        protected::table(&self.root.path, self.app_home.as_deref())
+        protected::table(&self.root.path, self.home.as_deref())
             .into_iter()
             .find(|e| {
                 let at = fs::physical(&e.path).unwrap_or_else(|| e.path.clone());
@@ -482,7 +482,7 @@ pub fn new_code_set(env: &ToolEnv, node: Option<&RawNode>) -> Result<Vec<Arc<dyn
         env.write_roots.clone(),
         cfg.auto_write,
         outside,
-        env.dirs.app_home(),
+        env.dirs.home.clone(),
     )?;
     let mut tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(Glob(Arc::clone(&cs))),
