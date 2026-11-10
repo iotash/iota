@@ -2367,6 +2367,92 @@ async fn an_outside_write_is_asked_always_and_lands_where_the_prompt_said() {
     }
 }
 
+// A protected path (X-95) through the real gate: an "allow for this session" already held for the tool
+// does not cover it, its prompt names the file and why and offers only "Allow once" / "Deny" (so the
+// second item is Deny), and it is asked again on the next call; only "Allow once" lands it.
+#[tokio::test]
+async fn a_protected_write_is_asked_every_time_and_never_granted_for_the_session() {
+    let (_t, root, _real_out, dispatch) = code_chat(crate::tool::OutsideWrites::Ask, false);
+    let mut script = vec![choose(1), choose(1), choose(0)];
+    script.extend(quiet(1));
+    let fx = Fx::new(dispatch, script);
+    let hook = |id: &str| {
+        call(
+            id,
+            "write_file",
+            serde_json::json!({"path": ".git/hooks/pre-commit", "content": "evil"}),
+        )
+    };
+    let p = stream(vec![
+        Round::calls(vec![
+            call(
+                "c1",
+                "write_file",
+                serde_json::json!({"path": "in.txt", "content": "i"}),
+            ),
+            hook("c2"),
+            hook("c3"),
+            call(
+                "c4",
+                "write_file",
+                serde_json::json!({"path": "in2.txt", "content": "j"}),
+            ),
+        ]),
+        Round::text("done"),
+    ]);
+    let mut history = vec![Message::user("write")];
+    fx.turn(&p, &mut history).await.outcome.expect("turn");
+
+    let real_hook = std::fs::canonicalize(&root)
+        .expect("real root")
+        .join(".git/hooks/pre-commit");
+    let protected = format!(
+        "write_file {} (protected): git executes the files in .git/hooks on the user's next git command \
+         — allow?",
+        real_hook.display()
+    );
+    let asked: Vec<(String, Vec<String>)> = fx
+        .events()
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::Tabbed(s) => Some((s.panels[0].title.clone(), s.panels[0].items.clone())),
+            _ => None,
+        })
+        .collect();
+    let once = vec!["Allow once".to_owned(), "Deny".to_owned()];
+    assert_eq!(
+        asked,
+        vec![
+            (
+                "write_file in.txt — allow?".to_owned(),
+                vec![
+                    "Allow once".to_owned(),
+                    "Allow for this session".to_owned(),
+                    "Deny".to_owned()
+                ],
+            ),
+            (protected.clone(), once.clone()),
+            (protected, once),
+        ]
+    );
+    let results: Vec<&str> = history
+        .iter()
+        .filter(|m| m.role() == Role::Tool)
+        .map(|m| m.content.as_str())
+        .collect();
+    assert_eq!(results[1], "The user declined this call.");
+    assert_eq!(
+        std::fs::read_to_string(&real_hook).ok().as_deref(),
+        Some("evil")
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("in2.txt"))
+            .ok()
+            .as_deref(),
+        Some("j")
+    );
+}
+
 // "Allow for this session" on an outside write remembers its REAL DIRECTORY and the tool: the next write
 // there is not asked, a write in another directory is, the same directory through `edit_file` is, and an
 // inside grant never covers an outside write. A denial writes nothing.

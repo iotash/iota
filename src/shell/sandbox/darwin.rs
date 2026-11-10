@@ -112,12 +112,18 @@ mod tests {
     use super::{command, has_path_prefix};
     use crate::shell::interp::Interpreter;
 
-    // New (tool-shell.md "SEATBELT PROFILE TEXT, exact bytes"): the profile and argv are byte-pinned.
+    // New (tool-shell.md "SEATBELT PROFILE TEXT, exact bytes"): the profile and argv are byte-pinned. The
+    // protected table closes its paths again AFTER the allow block — later rules win — `literal` for an entry,
+    // `subpath` for a tree.
     #[test]
     fn seatbelt_profile_and_argv() {
         let writable = vec![PathBuf::from("/no-such-iota-root"), PathBuf::from("/tmp")];
+        let protected = crate::app::protected::table(
+            Path::new("/no-such-iota-root"),
+            Some(Path::new("/no-such-home/.iota")),
+        );
         let bash = Interpreter::new("/bin/bash");
-        let cmd = command(&bash, "echo hi", &writable, &[], false).expect("profile");
+        let cmd = command(&bash, "echo hi", &writable, &protected, false).expect("profile");
         let argv: Vec<String> = std::iter::once(cmd.as_std().get_program())
             .chain(cmd.as_std().get_args())
             .map(|a| a.to_string_lossy().into_owned())
@@ -129,7 +135,10 @@ mod tests {
             argv[2],
             "(version 1)\n(allow default)\n(deny network*)\n(deny file-write*)\n(allow file-write*\n  \
              (subpath \"/dev\")\n  (subpath (param \"W0\"))\n  (subpath (param \"W1\"))\n  \
-             (subpath (param \"W2\"))\n  (subpath (param \"W3\"))\n)\n"
+             (subpath (param \"W2\"))\n  (subpath (param \"W3\"))\n)\n(deny file-write*\n  \
+             (subpath (param \"P0\"))\n  (subpath (param \"P1\"))\n  (literal (param \"P2\"))\n  \
+             (subpath (param \"P3\"))\n  (subpath (param \"P4\"))\n  (literal (param \"P5\"))\n  \
+             (subpath (param \"P6\"))\n)\n"
         );
         assert_eq!(
             &argv[3..],
@@ -142,13 +151,27 @@ mod tests {
                 "W2=/private/tmp",
                 "-D",
                 "W3=/private/tmp",
+                "-D",
+                "P0=/no-such-iota-root/.iota.yaml",
+                "-D",
+                "P1=/no-such-iota-root/.iota.yml",
+                "-D",
+                "P2=/no-such-iota-root/.git",
+                "-D",
+                "P3=/no-such-iota-root/.git/hooks",
+                "-D",
+                "P4=/no-such-iota-root/.git/config",
+                "-D",
+                "P5=/no-such-home/.iota",
+                "-D",
+                "P6=/no-such-home/.iota/trusted.json",
                 "/bin/bash",
                 "-c",
                 "echo hi",
             ]
         );
 
-        // network: true drops the (deny network*) line and nothing else.
+        // network: true drops the (deny network*) line and nothing else; no protected paths, no deny block.
         let cmd = command(
             &bash,
             "x",

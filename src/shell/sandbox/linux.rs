@@ -132,4 +132,41 @@ mod tests {
             ["--", "/bin/bash", "-c", "x"]
         );
     }
+
+    // The protected binds follow every writable bind: an existing tree path under a bound root is ro-bound over
+    // itself, an existing entry directory (`.git`) bound over itself so it cannot be renamed or replaced; a
+    // missing path (`.iota.yaml`, `.git/config` here) cannot be bound and is skipped, and so is one outside every
+    // bound root (the trust record here), which the read-only `/` already covers.
+    #[test]
+    fn bwrap_pins_the_protected_paths_after_the_writable_ones() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("root");
+        let extra = dir.path().join("extra");
+        let home = dir.path().join("home/.iota");
+        for d in [root.join(".git/hooks"), extra.clone(), home.clone()] {
+            std::fs::create_dir_all(d).expect("mkdir");
+        }
+        std::fs::write(home.join("trusted.json"), "{}").expect("record");
+        let protected = crate::app::protected::table(&root, Some(&home));
+        let bash = Interpreter::new("/bin/bash");
+        let cmd =
+            command(&bash, "x", &[root.clone(), extra.clone()], &protected, true).expect("argv");
+        let argv: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let (git, hooks) = (root.join(".git"), root.join(".git/hooks"));
+        let want: Vec<String> = [
+            ("--bind", s(&root)),
+            ("--bind", s(&extra)),
+            ("--bind", s(&git)),
+            ("--ro-bind", s(&hooks)),
+        ]
+        .into_iter()
+        .flat_map(|(flag, p)| [flag.to_owned(), p.clone(), p])
+        .collect();
+        assert_eq!(&argv[9..argv.len() - 4], want.as_slice(), "{argv:?}");
+    }
 }

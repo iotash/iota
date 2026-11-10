@@ -956,6 +956,130 @@ async fn the_sandbox_isolates_the_filesystem_and_the_network() {
     );
     assert!(outside.join("g.txt").exists());
 }
+/// The protected table (`iota::app::protected`, DIVERGENCES X-95) under the real sandbox: a command can write the
+/// project root, run `git add`/`git commit` and write under `~/.iota`, but not the hooks git would execute, the
+/// file that points git at other programs, the project config or the trust record — not even with
+/// `write_roots:` naming `.git` or the home — and it cannot move `.git` or `~/.iota` out from under those rules.
+/// Every target here exists first, since bubblewrap can only pin a path that exists; Seatbelt also refuses to
+/// CREATE one, which the macOS leg checks with `.iota.yml`.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_sandbox_never_writes_a_protected_path() {
+    let (dir, root, _outside, sb) = sandbox_fixture();
+    if skip_unless_sandboxed("the_sandbox_never_writes_a_protected_path", &sb, &root).await {
+        return;
+    }
+    let git = |args: &[&str]| {
+        let st = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(args)
+            .current_dir(&root)
+            .output()
+            .expect("git");
+        assert!(st.status.success(), "git {args:?}: {st:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "first"]);
+    let home = dir.path().join("home");
+    let app_home = home.join(".iota");
+    fs::create_dir_all(root.join(".git/hooks")).expect("hooks");
+    fs::create_dir_all(&app_home).expect("app home");
+    fs::write(root.join(".iota.yaml"), "model: m\n").expect("project config");
+    fs::write(app_home.join("trusted.json"), "{}").expect("trust record");
+    let config_before = fs::read(root.join(".git/config")).expect("git config");
+    // `write_roots:` names `.git` and the home: neither re-opens what the table closes.
+    let sb = Sandbox {
+        write: vec![root.join(".git"), home.clone()],
+        app_home: Some(app_home.clone()),
+        ..sb
+    };
+    let sh = |command: String| {
+        run(Options {
+            command,
+            dir: root.clone(),
+            timeout: None,
+            sandbox: Some(sb.clone()),
+        })
+    };
+
+    let denied = [
+        "echo x > .git/hooks/pre-commit".to_owned(),
+        "echo x >> .git/config".to_owned(),
+        "echo x > .iota.yaml".to_owned(),
+        format!("echo x > {}/trusted.json", shell_path(&app_home)),
+        "mv .git .git-moved".to_owned(),
+        format!("mv {0} {0}-moved", shell_path(&app_home)),
+    ];
+    for command in denied {
+        let res = sh(command.clone()).await;
+        assert!(
+            res.outcome != Outcome::Exited(0)
+                && [
+                    "Operation not permitted",
+                    "Read-only file system",
+                    "Device or resource busy"
+                ]
+                .iter()
+                .any(|e| res.output.contains(e)),
+            "{command}: should fail with a permission error: {res:?}"
+        );
+    }
+    assert!(
+        !root.join(".git/hooks/pre-commit").exists(),
+        "a hook landed"
+    );
+    assert_eq!(
+        fs::read(root.join(".git/config")).expect("config"),
+        config_before
+    );
+    assert_eq!(
+        fs::read_to_string(root.join(".iota.yaml")).expect("cfg"),
+        "model: m\n"
+    );
+    assert_eq!(
+        fs::read_to_string(app_home.join("trusted.json")).expect("record"),
+        "{}"
+    );
+    assert!(
+        root.join(".git").is_dir() && app_home.is_dir(),
+        "an entry moved"
+    );
+    if cfg!(target_os = "macos") {
+        let res = sh("echo x > .iota.yml".to_owned()).await;
+        assert!(res.outcome != Outcome::Exited(0), "{res:?}");
+        assert!(
+            !root.join(".iota.yml").exists(),
+            "Seatbelt let a project config be created"
+        );
+    }
+
+    // What stays open: the root, git's own bookkeeping, and the rest of the home.
+    let res = sh(format!(
+        "echo data > inside.txt && git add inside.txt && \
+         git -c user.name=t -c user.email=t@t commit -q -m second && echo ok > {}/other.txt",
+        shell_path(&app_home)
+    ))
+    .await;
+    assert!(
+        res.outcome == Outcome::Exited(0),
+        "in-root work failed: {res:?}"
+    );
+    assert!(app_home.join("other.txt").exists());
+    let log = std::process::Command::new("git")
+        .args(["log", "--format=%s"])
+        .current_dir(&root)
+        .output()
+        .expect("git log");
+    assert_eq!(String::from_utf8_lossy(&log.stdout), "second\nfirst\n");
+}
+
 /// The iota exception (DIVERGENCES X-44), end to end through the tool: a sandboxed set spawns a call whose
 /// first word is the running binary WITHOUT the sandbox, and only that call — the same binary in a pipe stays
 /// in. The binary is a stand-in script (`HostDirs::exe` is injected, never probed here) that writes a marker

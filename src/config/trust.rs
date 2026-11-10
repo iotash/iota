@@ -255,7 +255,7 @@ fn scalar(v: Option<&Value>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{Standing, TrustStore, summary};
-    use crate::app::{HostDirs, TRUST_FILE};
+    use crate::app::HostDirs;
 
     fn store(home: &std::path::Path) -> TrustStore {
         TrustStore::of(&HostDirs {

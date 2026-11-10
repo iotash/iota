@@ -1533,6 +1533,136 @@ mod tests {
         assert!(!out.join("a.txt").exists() && !out.join("b.txt").exists());
     }
 
+    /// The protected table (X-95) under the writers. Each protected path is its own class: asked under `ask`
+    /// with a user — whatever `auto_write` says, whether `write_roots:` names `.git` or the root again — with a
+    /// prompt that names the file and why and offers no session grant; refused under `refuse` and with
+    /// nobody to ask, saying why and that the user can make the change. Without "allow once" for exactly that
+    /// file nothing lands: not with no approval, not with a session grant for the root or for the file's own
+    /// directory, not with "allow once" for another file. The trust record is never asked about and never
+    /// written, approval or not.
+    #[cfg(unix)]
+    #[test]
+    fn a_protected_write_needs_allow_once_for_that_file() {
+        use super::super::{CodeSet, Outside};
+        use super::write_file_call;
+        use crate::app::protected::Why;
+        use crate::tool::context::{Approved, RunCtx};
+        use crate::tool::{ApprovalSubject, Tool};
+
+        let t = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(t.path()).expect("real").join("root");
+        let home = root.parent().expect("parent").join("home/.iota");
+        std::fs::create_dir_all(root.join(".git/hooks")).expect("hooks");
+        std::fs::create_dir_all(&home).expect("home");
+        std::fs::write(root.join(".git/config"), "[core]\n").expect("config");
+        std::fs::write(home.join("trusted.json"), "{}").expect("record");
+        let protected = [
+            (".git/hooks/pre-commit", Why::GitHooks),
+            (".git/config", Why::GitConfig),
+            (".iota.yaml", Why::ProjectConfig),
+            (".iota.yml", Why::ProjectConfig),
+        ];
+        let snapshot = || protected.map(|(p, _)| std::fs::read(root.join(p)).ok());
+        let before = snapshot();
+        let extras = [vec![], vec![root.join(".git")], vec![root.clone()]];
+        for auto_write in [false, true] {
+            for extra in &extras {
+                for policy in [Outside::Ask, Outside::Unattended, Outside::Refuse] {
+                    let at = format!("auto_write={auto_write} extra={extra:?} {policy:?}");
+                    let cs = CodeSet::new(
+                        root.clone(),
+                        extra.clone(),
+                        auto_write,
+                        policy,
+                        Some(home.clone()),
+                    )
+                    .expect("set");
+                    let tool = super::WriteFile(std::sync::Arc::clone(&cs));
+                    for (path, why) in protected {
+                        let real = root.join(path);
+                        let a = args(json!({"path": path, "content": "x"}));
+                        let ask = policy == Outside::Ask;
+                        assert_eq!(tool.requires_approval(Some(&a)), ask, "{at} {path}");
+                        assert_eq!(
+                            tool.approval_subject(&a),
+                            ask.then(|| ApprovalSubject {
+                                detail: format!("{} (protected): {}", real.display(), why.reason()),
+                                target: real.clone(),
+                                scope: None,
+                            }),
+                            "{at} {path}: the prompt names the file and why, and grants nothing beyond it"
+                        );
+                        assert_eq!(
+                            tool.header_summary(&a).map(|h| h.contains("(protected)")),
+                            Some(ask),
+                            "{at} {path}"
+                        );
+                        for approved in [
+                            None,
+                            Some(Approved::Dir(root.clone())),
+                            Some(Approved::Dir(super::super::grant_dir(&real).to_path_buf())),
+                            Some(Approved::Once(root.join("a.txt"))),
+                        ] {
+                            let cx = RunCtx {
+                                approved: approved.clone(),
+                                ..RunCtx::default()
+                            };
+                            let got = write_file_call(&cs, &cx, &a);
+                            let want = format!("{path} is protected: {} — ", why.reason());
+                            assert!(
+                                got.is_error && got.text.starts_with(&want),
+                                "{at} {path} {approved:?}: {got:?}"
+                            );
+                            let rest = match policy {
+                                Outside::Ask => "this call has none for",
+                                Outside::Unattended => {
+                                    "which this non-interactive run cannot ask for"
+                                }
+                                Outside::Refuse => "`outside_writes: refuse`",
+                            };
+                            assert!(got.text.contains(rest), "{at} {path}: {got:?}");
+                        }
+                        assert_eq!(snapshot(), before, "{at} {path}: a protected write landed");
+                    }
+                    // The trust record: no prompt, no approval path, refused even with "allow once" for it.
+                    let record = home.join("trusted.json");
+                    let a = args(json!({"path": record.display().to_string(), "content": "x"}));
+                    assert!(!tool.requires_approval(Some(&a)), "{at} record");
+                    assert_eq!(tool.approval_subject(&a), None, "{at} record");
+                    let cx = RunCtx {
+                        approved: Some(Approved::Once(record.clone())),
+                        ..RunCtx::default()
+                    };
+                    let got = write_file_call(&cs, &cx, &a);
+                    assert!(
+                        got.is_error
+                            && got.text.contains("no tool may write it")
+                            && got.text.contains("iota config trust"),
+                        "{at}: {got:?}"
+                    );
+                    assert_eq!(std::fs::read_to_string(&record).expect("record"), "{}");
+                }
+            }
+        }
+
+        // "Allow once" for exactly the file is what lands it (a new hook here; an existing file still needs
+        // reading first, as anywhere).
+        let cs =
+            CodeSet::new(root.clone(), Vec::new(), true, Outside::Ask, Some(home)).expect("set");
+        let hook = root.join(".git/hooks/pre-commit");
+        let cx = RunCtx {
+            approved: Some(Approved::Once(hook.clone())),
+            ..RunCtx::default()
+        };
+        let got = write_file_call(
+            &cs,
+            &cx,
+            &args(json!({"path": ".git/hooks/pre-commit", "content": "x"})),
+        );
+        assert!(!got.is_error, "{got:?}");
+        assert_eq!(std::fs::read_to_string(hook).expect("hook"), "x");
+    }
+
     /// Who asks, per call: inside the roots `!auto_write`; outside them always under `ask` with a user,
     /// never otherwise (refused at the call); an unverifiable path never (refused at the call). The session
     /// grant of an outside write is its real directory.
