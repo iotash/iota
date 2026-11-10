@@ -997,4 +997,71 @@ mod tests {
         assert!(match_include(&with_slash, "cmd/**", "cmd/main.rs"));
         assert!(!match_include(&with_slash, "cmd/**", "tool/main.rs"));
     }
+
+    // Every tool goes through `CodeSet::resolve`; the three that touch file contents refuse a
+    // symlink out of the root, and nothing outside is read, created or changed.
+    #[cfg(unix)]
+    #[test]
+    fn file_tools_refuse_a_symlink_escape() {
+        use super::super::CodeSet;
+        use super::super::tests::jail_fixture;
+        use super::{edit_file_call, read_file_call, write_file_call};
+        use crate::tool::context::RunCtx;
+        use std::os::unix::fs::symlink;
+
+        let (_t, root, out) = jail_fixture();
+        symlink(out.join("secret.txt"), root.join("escape")).expect("link");
+        symlink(&out, root.join("outdir")).expect("link");
+        let cs = CodeSet::new(root.clone(), true);
+        let cx = RunCtx::default();
+        let refused = |arg: &str| {
+            ToolOutput::err(format!(
+                "path is outside the project root ({}): {arg}",
+                root.display()
+            ))
+        };
+
+        assert_eq!(
+            read_file_call(&cs, &args(json!({"path": "escape"}))),
+            refused("escape")
+        );
+        assert_eq!(
+            write_file_call(&cs, &cx, &args(json!({"path": "escape", "content": "x"}))),
+            refused("escape")
+        );
+        assert_eq!(
+            write_file_call(
+                &cs,
+                &cx,
+                &args(json!({"path": "outdir/new.txt", "content": "x"}))
+            ),
+            refused("outdir/new.txt")
+        );
+        assert_eq!(
+            edit_file_call(
+                &cs,
+                &cx,
+                &args(json!({"path": "escape", "old_string": "s", "new_string": "x"}))
+            ),
+            refused("escape")
+        );
+        assert_eq!(
+            std::fs::read_to_string(out.join("secret.txt")).expect("secret"),
+            "s"
+        );
+        assert!(!out.join("new.txt").exists());
+
+        // A write through a link that stays inside still lands.
+        symlink("dir", root.join("subdir")).expect("link");
+        let wrote = write_file_call(
+            &cs,
+            &cx,
+            &args(json!({"path": "subdir/new.txt", "content": "x"})),
+        );
+        assert!(!wrote.is_error, "{wrote:?}");
+        assert_eq!(
+            std::fs::read_to_string(root.join("dir/new.txt")).expect("new"),
+            "x"
+        );
+    }
 }

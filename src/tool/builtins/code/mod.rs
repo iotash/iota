@@ -1,4 +1,4 @@
-//! The `code` toolset: configuration, the shared `CodeSet` (lexical path jail, read ledger)
+//! The `code` toolset: configuration, the shared `CodeSet` (physical path jail, read ledger)
 //! and the size/binary helpers. The six tools live in `tools`, the gitignore-aware walk in `walk`.
 
 pub(crate) mod tools;
@@ -58,6 +58,9 @@ pub(crate) struct CodeConfig {
 /// State shared by the six tools: the project root, the approval policy and the read ledger.
 pub(crate) struct CodeSet {
     root: PathBuf,
+    /// `root` with its symlinks resolved (see [`physical`]) — the side of the jail check
+    /// the targets' real locations are compared against.
+    real_root: PathBuf,
     /// The process working directory — the display anchor of the header-path ladder
     /// (captured at set construction), not an execution dir.
     cwd: PathBuf,
@@ -70,6 +73,7 @@ impl CodeSet {
     /// read it stays empty and the ladder skips its rungs).
     pub(crate) fn new(root: PathBuf, auto_write: bool) -> Arc<Self> {
         Arc::new(Self {
+            real_root: physical(&root).unwrap_or_else(|| root.clone()),
             root,
             cwd: std::env::current_dir().unwrap_or_default(),
             auto_write,
@@ -89,10 +93,15 @@ impl CodeSet {
         )
     }
 
-    /// The lexical path jail. Err texts: `missing required argument: path`, `path is outside the project
+    /// The path jail. Err texts: `missing required argument: path`, `path is outside the project
     /// root ({root}): {original arg}`.
     ///
-    /// Lexical only: symlinks are never resolved and the target need not exist, so `write_file` can create one.
+    /// The argument is joined to the root and cleaned lexically; that cleaned path is what is
+    /// returned. The decision is physical: the path's real location (symlinks resolved, see
+    /// [`physical`]) must lie inside the root's real location, so a symlink under the root that
+    /// points outside it — dangling or not — is refused. The target need not exist, so
+    /// `write_file` can create one. When the real location cannot be worked out, the lexical
+    /// path is compared instead.
     pub(crate) fn resolve(&self, arg: &str) -> Result<PathBuf, ToolOutput> {
         let trimmed = arg.trim();
         if trimmed.is_empty() {
@@ -103,22 +112,14 @@ impl CodeSet {
             p = self.root.join(p);
         }
         let p = paths::clean(&p);
-        let outside = || {
+        let real = physical(&p).unwrap_or_else(|| p.clone());
+        if within(&self.real_root, &real) {
+            Ok(p)
+        } else {
             Err(ToolOutput::err(format!(
                 "path is outside the project root ({}): {arg}",
                 self.root.display()
             )))
-        };
-        match paths::rel(&self.root, &p) {
-            None => outside(),
-            Some(rel) => {
-                let rel = paths::to_slash(&rel);
-                if rel == ".." || rel.starts_with("../") {
-                    outside()
-                } else {
-                    Ok(p)
-                }
-            }
         }
     }
 
@@ -195,6 +196,58 @@ pub(crate) fn looks_binary(data: &[u8]) -> bool {
     data[..n].contains(&0)
 }
 
+/// Whether `p` is `root` or lies under it (both compared as given, lexically).
+fn within(root: &Path, p: &Path) -> bool {
+    paths::rel(root, p).is_some_and(|rel| {
+        let rel = paths::to_slash(&rel);
+        rel != ".." && !rel.starts_with("../")
+    })
+}
+
+/// Symlink hops [`physical`] follows before giving up (Linux's own `MAXSYMLINKS`).
+const MAX_SYMLINK_HOPS: usize = 40;
+
+/// The real location of `p`, which need not exist: its nearest existing ancestor
+/// canonicalized, with the not-yet-existing tail re-appended lexically. An ancestor that is a
+/// dangling symlink cannot be canonicalized, so its link text is followed instead (relative
+/// to the link's own directory) — a dangling link still reports where a write through it
+/// would land. `None` when an ancestor exists but cannot be resolved for another reason
+/// (permissions, a loop, too many hops); the caller then falls back to the lexical path.
+fn physical(p: &Path) -> Option<PathBuf> {
+    let mut path = p.to_path_buf();
+    for _ in 0..MAX_SYMLINK_HOPS {
+        // Walk up to the nearest ancestor that exists (a dangling link exists for lstat).
+        let mut tail = Vec::new();
+        let mut at = path.as_path();
+        let meta = loop {
+            if let Ok(meta) = std::fs::symlink_metadata(at) {
+                break meta;
+            }
+            tail.push(at.components().next_back()?.as_os_str().to_owned());
+            at = at.parent()?;
+        };
+        let (base, done) = match std::fs::canonicalize(at) {
+            Ok(c) => (c, true),
+            Err(_) if meta.file_type().is_symlink() => {
+                let target = std::fs::read_link(at).ok()?;
+                (
+                    std::fs::canonicalize(at.parent()?).ok()?.join(target),
+                    false,
+                )
+            }
+            Err(_) => return None,
+        };
+        let next = tail.iter().rev().fold(base, |acc, c| acc.join(c));
+        if done {
+            // The tail does not exist, so its `..` (if any) can only be read lexically.
+            return Some(paths::clean(&next));
+        }
+        // The link text is resolved physically on the next pass, `..` and all.
+        path = next;
+    }
+    None
+}
+
 /// `"%.1f MB"` (≥ 1<<20) / `"%.1f KB"` (≥ 1<<10) / `"%d B"`.
 #[allow(clippy::cast_precision_loss)]
 pub(crate) fn byte_count(n: u64) -> String {
@@ -261,5 +314,100 @@ mod tests {
         }
         assert_eq!(cs.display(Path::new("/proj")), ".");
         assert_eq!(cs.display(Path::new("/proj/a/b.rs")), "a/b.rs");
+    }
+
+    /// A temp dir holding `root/` (the project, with `a.txt` and `dir/`) and `out/` (outside it,
+    /// with `secret.txt` and `deep/`).
+    #[cfg(unix)]
+    pub(crate) fn jail_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let t = tempfile::tempdir().expect("tempdir");
+        let root = t.path().join("root");
+        let out = t.path().join("out");
+        std::fs::create_dir_all(root.join("dir")).expect("root/dir");
+        std::fs::create_dir_all(out.join("deep")).expect("out/deep");
+        std::fs::write(root.join("a.txt"), "a").expect("a.txt");
+        std::fs::write(out.join("secret.txt"), "s").expect("secret.txt");
+        (t, root, out)
+    }
+
+    #[cfg(unix)]
+    fn outside(root: &Path, arg: &str) -> Result<PathBuf, ToolOutput> {
+        Err(ToolOutput::err(format!(
+            "path is outside the project root ({}): {arg}",
+            root.display()
+        )))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_refuses_symlinks_that_leave_the_root() {
+        use std::os::unix::fs::symlink;
+        let (_t, root, out) = jail_fixture();
+        symlink(out.join("secret.txt"), root.join("escape")).expect("link");
+        symlink(&out, root.join("outdir")).expect("link");
+        symlink(out.join("missing.txt"), root.join("dangling")).expect("link");
+        symlink(out.join("nodir"), root.join("dangling_dir")).expect("link");
+        // `..` in a link's text is taken physically: `s/..` is `out/`, not `root/`.
+        symlink(out.join("deep"), root.join("s")).expect("link");
+        symlink("s/../secret.txt", root.join("trick")).expect("link");
+        let cs = CodeSet::new(root.clone(), false);
+        for arg in [
+            "escape",
+            "outdir",
+            "outdir/new.txt",
+            "outdir/secret.txt",
+            "dangling",
+            "dangling_dir/new.txt",
+            "trick",
+        ] {
+            assert_eq!(cs.resolve(arg), outside(&root, arg), "{arg}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_allows_symlinks_that_stay_inside() {
+        use std::os::unix::fs::symlink;
+        let (_t, root, _out) = jail_fixture();
+        symlink(root.join("a.txt"), root.join("alias")).expect("link");
+        symlink("dir", root.join("subdir")).expect("link");
+        symlink("dir/later.txt", root.join("dangling_inside")).expect("link");
+        let cs = CodeSet::new(root.clone(), false);
+        // The returned path is the lexical one, links and all.
+        for arg in [
+            "alias",
+            "subdir",
+            "subdir/new.txt",
+            "subdir/x/y.txt",
+            "dangling_inside",
+        ] {
+            assert_eq!(cs.resolve(arg), Ok(root.join(arg)), "{arg}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_accepts_a_root_reached_through_a_symlink() {
+        use std::os::unix::fs::symlink;
+        let (t, root, _out) = jail_fixture();
+        let via = t.path().join("via");
+        symlink(&root, &via).expect("link");
+        let real = std::fs::canonicalize(&root).expect("canonical root");
+        let cs = CodeSet::new(via.clone(), false);
+        assert_eq!(cs.resolve("new.txt"), Ok(via.join("new.txt")));
+        let abs = real.join("new.txt");
+        let abs = abs.to_str().expect("utf-8");
+        assert_eq!(cs.resolve(abs), Ok(PathBuf::from(abs)));
+        // The failure text names the configured root, not its real location.
+        assert_eq!(cs.resolve("../out/x"), outside(&via, "../out/x"));
+
+        // macOS: `/tmp` is a link to `/private/tmp`, and a root under one accepts the other.
+        let tmp = tempfile::tempdir_in("/tmp").expect("tempdir in /tmp");
+        let cs = CodeSet::new(tmp.path().to_path_buf(), false);
+        let real = std::fs::canonicalize(tmp.path()).expect("canonical tmp");
+        assert_eq!(cs.resolve("new.txt"), Ok(tmp.path().join("new.txt")));
+        let abs = real.join("new.txt");
+        let abs = abs.to_str().expect("utf-8");
+        assert_eq!(cs.resolve(abs), Ok(PathBuf::from(abs)));
     }
 }
