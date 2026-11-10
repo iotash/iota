@@ -62,7 +62,7 @@ settle || miss "startup never settled"
 type_ 'runfg:iota mcp list'
 key Enter
 wait_vis 'allow?' || miss "the approval prompt never opened for the call that leaves the sandbox"
-check "the prompt's title carries the mark" "$(count_vis "shell iota mcp list $MARK needs approval")" 1
+check "the prompt's title carries the mark" "$(count_vis "shell iota mcp list $MARK — allow?")" 1
 
 # ------------------------------------------------------------------ 24.2: allowed once, it runs
 key Enter
