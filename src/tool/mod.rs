@@ -5,7 +5,10 @@
 //! `defer` with its `mode`, `yaml11`, `args`, `sets`) and, in `builtins`, the four built-in sets (`shell`,
 //! `code`, `agent`, and `ask`, which contributes tools only when the `ToolEnv` carries an interactor).
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 pub mod approval;
 pub(crate) mod args;
@@ -347,6 +350,10 @@ pub struct ToolEnv {
     /// Some only for a bot's own session (docs/design/bot-mode.md §3.3): the `memory` set's `remember`
     /// writes into it, and the chat loop records the writes it announces.
     pub memory: Option<crate::agents::memory::BotMemory>,
+    /// The top-level `write_roots:`, absolute ([`ToolEnv::with_write_roots`]): the roots beyond the project
+    /// root that the `code` jail accepts and the `shell` sandbox lets writes into — one list for both. Empty
+    /// is the project root alone.
+    pub write_roots: Vec<PathBuf>,
 }
 
 impl ToolEnv {
@@ -359,14 +366,98 @@ impl ToolEnv {
         };
         std::path::absolute(root).map(|p| crate::app::paths::clean(&p))
     }
+
+    /// `self` with [`write_roots`](Self::write_roots) resolved from the config's entries, once: each one
+    /// trimmed, a leading `~` expanded ([`expand_home`]), a relative one joined to [`root`](Self::root) (`.`
+    /// when that cannot be read, as `new_code_set` falls back), then cleaned.
+    #[must_use]
+    pub fn with_write_roots(mut self, entries: &[String]) -> Self {
+        let root = self.root().unwrap_or_else(|_| PathBuf::from("."));
+        self.write_roots = entries
+            .iter()
+            .map(|e| {
+                let p = expand_home(e.trim(), self.dirs.home.as_deref());
+                crate::app::paths::clean(&root.join(p))
+            })
+            .collect();
+        self
+    }
+}
+
+/// Resolves a leading `~` (alone or before `/`) to the home directory; anything else,
+/// and a missing home, is left untouched.
+pub(crate) fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
+    if path != "~" && !path.starts_with("~/") {
+        return PathBuf::from(path);
+    }
+    let Some(home) = home.filter(|h| !h.as_os_str().is_empty()) else {
+        return PathBuf::from(path);
+    };
+    if path == "~" {
+        return home.to_path_buf();
+    }
+    home.join(&path[2..])
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
-    use super::{DeferState, Presentation, ToolEnv, ToolOutput};
+    use super::{DeferState, Presentation, ToolEnv, ToolOutput, expand_home};
     use crate::app::HostDirs;
+
+    // `expand_home`: `~` and `~/x` only, and only with a home.
+    #[test]
+    fn expand_home_rules() {
+        let home = PathBuf::from("/home/u");
+        assert_eq!(expand_home("~", Some(&home)), home);
+        assert_eq!(
+            expand_home("~/.cargo/registry", Some(&home)),
+            PathBuf::from("/home/u/.cargo/registry")
+        );
+        assert_eq!(expand_home("~alice", Some(&home)), PathBuf::from("~alice"));
+        assert_eq!(expand_home("/abs", Some(&home)), PathBuf::from("/abs"));
+        assert_eq!(expand_home("~", None), PathBuf::from("~"));
+        assert_eq!(expand_home("~/x", None), PathBuf::from("~/x"));
+        assert_eq!(expand_home("~", Some(Path::new(""))), PathBuf::from("~"));
+        assert_eq!(expand_home("", Some(&home)), PathBuf::new());
+    }
+
+    /// `write_roots:` entries: `~` is the home, a relative entry hangs off the project root, an absolute
+    /// one stands, and all of them come out cleaned.
+    #[test]
+    fn write_roots_expand_home_and_anchor_on_the_project_root() {
+        let abs = |p: &str| std::path::absolute(p).expect("absolute");
+        let env = ToolEnv {
+            project_root: Some(abs("/proj")),
+            dirs: HostDirs {
+                home: Some(abs("/home/u")),
+                ..HostDirs::default()
+            },
+            ..ToolEnv::default()
+        }
+        .with_write_roots(&[
+            "~/scratch".to_owned(),
+            "../sibling/./x".to_owned(),
+            " vendor ".to_owned(),
+            abs("/opt/data/").display().to_string(),
+        ]);
+        assert_eq!(
+            env.write_roots,
+            [
+                abs("/home/u/scratch"),
+                abs("/sibling/x"),
+                abs("/proj/vendor"),
+                abs("/opt/data"),
+            ]
+        );
+        assert!(
+            ToolEnv::default()
+                .with_write_roots(&[])
+                .write_roots
+                .is_empty()
+        );
+    }
 
     #[test]
     fn env_root_precedence() {

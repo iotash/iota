@@ -16,7 +16,10 @@ use crate::provider::MODERATION_LEVELS;
 use crate::tool::sets::SET_NAMES;
 
 /// The top-level maps.
-const TOP_KEYS: [&str; 4] = ["providers", "models", "agents", "mcp_servers"];
+const TOP_KEYS: [&str; 5] = ["providers", "models", "agents", "mcp_servers", WRITE_ROOTS];
+/// The one top-level key that is a list, not a map of entries: the extra roots the code tools and the
+/// shell sandbox share. The typed decode checks its shape; the audit only keeps it out of the layers.
+const WRITE_ROOTS: &str = "write_roots";
 /// Every key a `providers.<name>` entry accepts — the ENDPOINT.
 const PROVIDER_KEYS: [&str; 3] = ["type", "key", "url"];
 /// Every key a `models.<name>` entry accepts.
@@ -121,7 +124,9 @@ pub(crate) fn audit(doc: &Value) -> Result<(), ConfigError> {
                 ),
             });
         }
-        audit_section(name, section)?;
+        if name != WRITE_ROOTS {
+            audit_section(name, section)?;
+        }
     }
     Ok(())
 }
@@ -182,6 +187,12 @@ fn check_key(section: &str, entry: &str, key: &str) -> Result<(), ConfigError> {
         return Err(ConfigError::Key {
             at,
             message: (*hint).to_owned(),
+        });
+    }
+    if key == WRITE_ROOTS {
+        return Err(ConfigError::Key {
+            at,
+            message: "`write_roots` is a top-level key: it applies to every agent".to_owned(),
         });
     }
     // The two overlapping layers (`models:` and `agents:` share the four layered parameters) can never
@@ -371,11 +382,31 @@ mod tests {
         );
         assert_eq!(
             check("agnets:\n  a: {}\n"),
-            "agnets: unknown top-level key (want providers:, models:, agents:, mcp_servers:)"
+            "agnets: unknown top-level key (want providers:, models:, agents:, mcp_servers:, write_roots:)"
         );
         assert_eq!(
             check("mcp_servers:\n  fs: {commadn: npx}\n"),
             "mcp_servers.fs.commadn: unknown key (want command, args, url, env, headers, defer, auth, client_id, client_secret, redirect_port, tool_timeout_sec)"
+        );
+    }
+
+    /// `write_roots:` is a top-level list — for every agent, so an agent entry refuses it by name.
+    #[test]
+    fn write_roots_is_a_top_level_key_only() {
+        assert_eq!(check("write_roots: [~/scratch, ../shared, /tmp/x]\n"), "");
+        assert_eq!(check("write_roots: []\nagents:\n  a: {model: m}\n"), "");
+        assert_eq!(
+            check("agents:\n  a: {model: m, write_roots: [/tmp/x]}\n"),
+            "agents.a.write_roots: `write_roots` is a top-level key: it applies to every agent"
+        );
+        assert_eq!(
+            check("models:\n  m: {provider: p, id: i, write_roots: [/tmp/x]}\n"),
+            "models.m.write_roots: `write_roots` is a top-level key: it applies to every agent"
+        );
+        // The audit does not look inside a set's value: `tools.shell.write` is the shell factory's refusal.
+        assert_eq!(
+            check("agents:\n  a: {model: m, tools: {shell: {write: [/tmp/x]}}}\n"),
+            ""
         );
     }
 

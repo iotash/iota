@@ -30,6 +30,7 @@ use iota::tool::Registry;
 use iota::tool::builtins::shell::{
     BASH_DESC_PREFIX, CMD_DESC_PREFIX, PWSH_DESC_PREFIX, SHELL_DESC_SANDBOXED,
     SHELL_DESC_UNSANDBOXED, SHELL_TOOL_NAME, background_desc, desc_prefix, new_shell_set,
+    sandbox_desc,
 };
 use iota::tool::context::RunCtx;
 use iota::tool::sets::{RawNode, SetError, ToolsConfig};
@@ -526,7 +527,7 @@ fn a_bad_shell_config_names_its_fault() {
     );
     assert!(
         warned[0].starts_with(
-            "toolset \"shell\": config must be a mapping (sandbox, network, auto_run, write): "
+            "toolset \"shell\": config must be a mapping (sandbox, network, auto_run): "
         ) && warned[0].ends_with(" (ignored)"),
         "{:?}",
         warned[0]
@@ -550,6 +551,31 @@ fn a_bad_shell_config_names_its_fault() {
     ] {
         assert!(new_shell_set(&env, node(cfg).as_ref()).is_ok(), "{cfg:?}");
     }
+
+    // `write:` is retired for the top-level `write_roots:`; it is refused by name, never dropped.
+    for cfg in [
+        "write: [/tmp/x]\n",
+        "write: []\n",
+        "{sandbox: auto, write: ~}\n",
+    ] {
+        let Err(err) = new_shell_set(&env, node(cfg).as_ref()) else {
+            panic!("{cfg:?}: the retired `write:` must refuse the set");
+        };
+        assert_eq!(err, SetError::RetiredShellWrite, "{cfg:?}");
+    }
+    let mut warned = Vec::new();
+    let r = Registry::build(
+        &env,
+        &raw_tools("tools:\n  shell: {write: [~/.cargo/registry]}\n"),
+        &mut |w| warned.push(w),
+    );
+    assert!(r.is_empty(), "{:?}", r.tools());
+    assert_eq!(
+        warned,
+        [
+            "toolset \"shell\": `write` is gone — list extra writable roots in the top-level `write_roots:` (shared by the shell and code sets) (ignored)"
+        ]
+    );
 
     // Every call runs through the run's job registry, so a host that bound none gets no set.
     let bare = ToolEnv { jobs: None, ..env };
@@ -1074,6 +1100,128 @@ async fn the_sandbox_lets_iota_itself_out_and_nothing_else() {
         off.header_summary(&args(json!({"command": self_call})))
             .is_some_and(|h| !h.contains(iota::tool::builtins::shell::OUTSIDE_SANDBOX_MARK))
     );
+}
+
+/// The sandbox line names the `write_roots:` extras — and with none it is the constant, byte for byte.
+#[test]
+fn the_sandbox_line_names_the_write_roots() {
+    let net = "network access is BLOCKED";
+    assert_eq!(
+        sandbox_desc(&[], net),
+        SHELL_DESC_SANDBOXED.replace("{net}", net)
+    );
+    assert_eq!(
+        sandbox_desc(&[PathBuf::from("/data/a"), PathBuf::from("/data/b")], net),
+        "Commands run inside an OS sandbox: file writes are confined to the project root, the extra write roots (/data/a, /data/b) and temp/cache directories (writes elsewhere fail with permission errors), and network access is BLOCKED."
+    );
+}
+
+/// The proof `write_roots:` exists for: ONE top-level list, from config text to the factories, opens a
+/// directory outside the project to `write_file`/`read_file` and to the sandboxed `shell` alike. The
+/// directory lives under the target dir, not `/tmp` or the system temp dir: those are writable in the
+/// sandbox whatever the config says, so a write there would prove nothing about the list.
+#[tokio::test]
+async fn write_roots_open_one_directory_to_the_code_tools_and_the_shell() {
+    use iota::app::env::Env;
+    use iota::cmd::Config;
+    use iota::tool::builtins::code::new_code_set;
+
+    let (_dir, env, root) = shell_env();
+    let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    fs::create_dir_all(&base).expect("target tmp dir");
+    let extra_dir = tempfile::tempdir_in(&base).expect("extra root");
+    let extra = extra_dir.path().to_path_buf();
+    assert!(!extra.starts_with(&root));
+    let yaml = format!("write_roots: [{}]\n", extra.display());
+    let cfg =
+        Config::parse(yaml.as_bytes(), &Env::default(), &mut |w| panic!("{w}")).expect("config");
+    let env = env.with_write_roots(&cfg.write_roots);
+    assert_eq!(env.write_roots, std::slice::from_ref(&extra));
+
+    // The code tools: create a file there, then read it back.
+    let code = new_code_set(&env, node("auto_write: true\n").as_ref()).expect("code set");
+    let tool = |name: &str| Arc::clone(code.iter().find(|t| t.def().name == name).expect("tool"));
+    let target = extra.join("from-code.txt");
+    let (text, is_err) = call(
+        &tool("write_file"),
+        json!({"path": target.to_str().expect("utf-8"), "content": "hello from code\n"}),
+    )
+    .await;
+    assert!(!is_err, "write_file: {text}");
+    assert_eq!(
+        fs::read_to_string(&target).expect("written"),
+        "hello from code\n"
+    );
+    let (text, is_err) = call(
+        &tool("read_file"),
+        json!({"path": target.to_str().expect("utf-8")}),
+    )
+    .await;
+    assert!(
+        !is_err && text.contains("hello from code"),
+        "read_file: {text}"
+    );
+    // A sibling of the extra root is still outside.
+    let (text, is_err) = call(
+        &tool("write_file"),
+        json!({"path": base.join("not-listed.txt").to_str().expect("utf-8"), "content": "x"}),
+    )
+    .await;
+    assert!(
+        is_err && text.contains("and the extra write roots"),
+        "{text}"
+    );
+
+    // The shell: the same list is the sandbox's, and its description says so.
+    let shell = Arc::clone(&new_shell_set(&env, None).expect("shell set")[0]);
+    if exec::available() {
+        assert!(
+            shell
+                .def()
+                .description
+                .contains(&format!("the extra write roots ({})", extra.display())),
+            "{}",
+            shell.def().description
+        );
+    } else {
+        assert!(!shell.def().description.contains("extra write roots"));
+    }
+    let sb = Sandbox {
+        root: root.clone(),
+        network: false,
+        write: Vec::new(),
+        temp_dir: env.dirs.temp.clone(),
+        cache_dir: env.dirs.cache.clone(),
+    };
+    if skip_unless_sandboxed("write_roots_open_one_directory", &sb, &root).await {
+        return;
+    }
+    let (text, is_err) = call(
+        &shell,
+        json!({"command": format!("echo from-shell > {}/from-shell.txt && cat {}/from-code.txt", shell_path(&extra), shell_path(&extra))}),
+    )
+    .await;
+    assert!(
+        !is_err && text.contains("hello from code"),
+        "sandboxed write into the root: {text}"
+    );
+    assert_eq!(
+        fs::read_to_string(extra.join("from-shell.txt")).expect("written"),
+        "from-shell\n"
+    );
+    // Without the list the same write is refused: the opening is the list's doing.
+    let unlisted = ToolEnv {
+        write_roots: Vec::new(),
+        ..env
+    };
+    let shell = Arc::clone(&new_shell_set(&unlisted, None).expect("shell set")[0]);
+    let (text, is_err) = call(
+        &shell,
+        json!({"command": format!("echo x > {}/denied.txt", shell_path(&extra))}),
+    )
+    .await;
+    assert!(is_err, "unlisted write should be denied: {text}");
+    assert!(!extra.join("denied.txt").exists());
 }
 
 #[test]

@@ -106,6 +106,8 @@ struct ConfigFile {
     agents: BTreeMap<String, AgentConfig>,
     /// `mcp_servers:` — the servers an agent may select.
     mcp_servers: BTreeMap<String, McpServerConfig>,
+    /// `write_roots:` — extra roots the code tools and the shell sandbox may write.
+    write_roots: Vec<String>,
 }
 
 /// The merged, expanded and validated config.
@@ -124,6 +126,11 @@ pub struct Config {
     pub agents: BTreeMap<String, AgentConfig>,
     /// `mcp_servers:` — the MCP servers an agent may select, by name.
     pub mcp_servers: BTreeMap<String, McpServerConfig>,
+    /// `write_roots:` — the roots beyond the project root that the `code` tools' jail accepts and the
+    /// `shell` sandbox lets writes into, for every agent; as written (`~` and relative entries are resolved
+    /// against the run's home and project root by `ToolEnv::with_write_roots`). Every file of the stack adds
+    /// its entries, first file first, a repeat kept once.
+    pub write_roots: Vec<String>,
 }
 
 /// What a positional name resolved to: one entry from each layer, defaults where the name reached no further.
@@ -319,6 +326,11 @@ impl Config {
         }
         for (name, server_cfg) in file.mcp_servers {
             self.mcp_servers.insert(name, server_cfg);
+        }
+        for root in file.write_roots {
+            if !self.write_roots.contains(&root) {
+                self.write_roots.push(root);
+            }
         }
         Ok(())
     }

@@ -83,8 +83,6 @@ pub(crate) struct ShellConfig {
     /// Whether calls run without approval even unsandboxed.
     #[serde(deserialize_with = "yaml11::deserialize_bool")]
     pub(crate) auto_run: bool,
-    /// Extra writable roots inside the sandbox (`~` expands to home).
-    pub(crate) write: Vec<String>,
 }
 
 impl Default for ShellConfig {
@@ -93,7 +91,6 @@ impl Default for ShellConfig {
             sandbox: "auto".to_owned(),
             network: false,
             auto_run: false,
-            write: Vec::new(),
         }
     }
 }
@@ -114,6 +111,8 @@ pub(crate) struct ShellTool {
     /// defaults to `root`).
     cwd: PathBuf,
     sandboxed: bool,
+    /// `ToolEnv::write_roots`: writable inside the sandbox beside the root and the temp/cache dirs.
+    write_roots: Vec<PathBuf>,
     dirs: HostDirs,
     /// The running binary (`HostDirs::exe`), what a command's first word is compared against to decide
     /// the iota exception; `None` (tests, an OS that cannot say) means no call ever leaves the sandbox.
@@ -122,7 +121,9 @@ pub(crate) struct ShellTool {
 
 /// Decode → `ShellConfig(err)`; sandbox "" → "auto"; not auto|off → `BadSandbox`; `sandboxed = sandbox == "auto"
 /// && exec::available()` evaluated ONCE — and so is the interpreter (`crate::shell::interp::resolve`); then
-/// no job registry → `NoJobs`, since every call runs through it.
+/// no job registry → `NoJobs`, since every call runs through it. A `write:` key is `RetiredShellWrite`: the
+/// sandbox's extra writable roots are the top-level `write_roots:` now (`ToolEnv::write_roots`), and the
+/// decode below would otherwise drop the key without a word.
 ///
 /// A machine with no interpreter at all is the one case where the set refuses: on Windows, where that means
 /// neither Git Bash nor PowerShell nor `cmd.exe` is reachable, a registered tool would spend the model's
@@ -133,6 +134,9 @@ pub fn new_shell_set(
     env: &ToolEnv,
     node: Option<&RawNode>,
 ) -> Result<Vec<Arc<dyn Tool>>, SetError> {
+    if node.and_then(|n| n.get("write")).is_some() {
+        return Err(SetError::RetiredShellWrite);
+    }
     let mut shell_cfg: ShellConfig =
         yaml11::decode_mapping(node).map_err(|e| SetError::ShellConfig(e.to_string()))?;
     match shell_cfg.sandbox.as_str() {
@@ -161,6 +165,7 @@ pub fn new_shell_set(
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_default(),
         sandboxed,
+        write_roots: env.write_roots.clone(),
         exe: env.dirs.exe.clone(),
         dirs: env.dirs.clone(),
     })])
@@ -177,7 +182,7 @@ impl Tool for ShellTool {
             } else {
                 "network access is BLOCKED"
             };
-            description.push_str(&SHELL_DESC_SANDBOXED.replace("{net}", net));
+            description.push_str(&sandbox_desc(&self.write_roots, net));
         } else {
             description.push_str(SHELL_DESC_UNSANDBOXED);
         }
@@ -218,13 +223,7 @@ impl Tool for ShellTool {
             let sandbox = (self.sandboxed && !self.leaves_sandbox(&command)).then(|| Sandbox {
                 root: self.root.clone(),
                 network: self.shell_cfg.network,
-                write: self
-                    .shell_cfg
-                    .write
-                    .iter()
-                    .map(|p| expand_home(p.trim(), self.dirs.home.as_deref()))
-                    .filter(|p| !p.as_os_str().is_empty())
-                    .collect(),
+                write: self.write_roots.clone(),
                 temp_dir: self.dirs.temp.clone(),
                 cache_dir: self.dirs.cache.clone(),
             });
@@ -432,19 +431,22 @@ fn format_result(res: &RunResult, timeout: Option<Duration>) -> ToolOutput {
     }
 }
 
-/// Resolves a leading `~` (alone or before `/`) to the home directory; anything else,
-/// and a missing home, is left untouched.
-fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
-    if path != "~" && !path.starts_with("~/") {
-        return PathBuf::from(path);
+/// The sandboxed suffix: [`SHELL_DESC_SANDBOXED`] with its network clause, and — only when `write_roots:`
+/// lists any — the extra roots named after the project root. With none it is the constant, byte for byte.
+pub fn sandbox_desc(write_roots: &[PathBuf], net: &str) -> String {
+    let desc = SHELL_DESC_SANDBOXED.replace("{net}", net);
+    if write_roots.is_empty() {
+        return desc;
     }
-    let Some(home) = home.filter(|h| !h.as_os_str().is_empty()) else {
-        return PathBuf::from(path);
-    };
-    if path == "~" {
-        return home.to_path_buf();
-    }
-    home.join(&path[2..])
+    let roots = write_roots
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    desc.replace(
+        "the project root and",
+        &format!("the project root, the extra write roots ({roots}) and"),
+    )
 }
 
 /// The schema, the same under every interpreter but for the one field that names a dialect: the `command`
@@ -531,12 +533,12 @@ pub fn background_desc(family: Family) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     use super::{
         ArtifactKind, Duration, JobStart, JsonObject, Outcome, RunResult, SHELL_DESC_BACKGROUND,
-        SHELL_YIELD, TIMEOUT_ERR, exec::ShellError, expand_home, format_result, go_duration,
-        job_artifact, timeout_arg, waited_note, yield_receipt, yield_window,
+        SHELL_YIELD, TIMEOUT_ERR, exec::ShellError, format_result, go_duration, job_artifact,
+        timeout_arg, waited_note, yield_receipt, yield_window,
     };
 
     /// A deadline for the rows of the formatting table: ten minutes, the default there used to be.
@@ -722,22 +724,5 @@ mod tests {
             }
         );
         assert!(backgrounded.lines.is_empty());
-    }
-
-    // `expand_home`: `~` and `~/x` only, and only with a home.
-    #[test]
-    fn expand_home_rules() {
-        let home = PathBuf::from("/home/u");
-        assert_eq!(expand_home("~", Some(&home)), home);
-        assert_eq!(
-            expand_home("~/.cargo/registry", Some(&home)),
-            PathBuf::from("/home/u/.cargo/registry")
-        );
-        assert_eq!(expand_home("~alice", Some(&home)), PathBuf::from("~alice"));
-        assert_eq!(expand_home("/abs", Some(&home)), PathBuf::from("/abs"));
-        assert_eq!(expand_home("~", None), PathBuf::from("~"));
-        assert_eq!(expand_home("~/x", None), PathBuf::from("~/x"));
-        assert_eq!(expand_home("~", Some(Path::new(""))), PathBuf::from("~"));
-        assert_eq!(expand_home("", Some(&home)), PathBuf::new());
     }
 }

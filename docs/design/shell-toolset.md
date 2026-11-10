@@ -32,7 +32,11 @@ deliberate future work.
 
 Writable roots: the project root, `os.TempDir()`/`/tmp`, the user cache dir
 (Go/npm/pip build caches live there — blocking it breaks every build), plus
-configured `write:` extras (`~` expands). Network is blocked unless
+the top-level `write_roots:` — the same list the code tools' jail admits
+(docs/design/code-toolset.md, Config); `~` is home, a relative entry hangs
+off the project root. When it lists any, the tool description's sandbox line
+names them (`confined to the project root, the extra write roots (…) and
+temp/cache directories`); with none the line is unchanged. Network is blocked unless
 `network: true`.
 
 - **macOS**: `/usr/bin/sandbox-exec` with an allow-default SBPL profile that
@@ -72,8 +76,13 @@ tools:
     # sandbox: off     # disable the sandbox (calls then need approval)
     # network: true    # allow network inside the sandbox
     # auto_run: true   # skip approval for unsandboxed calls (incl. -m)
-    # write: [~/.cargo/registry]  # extra sandbox-writable paths
+write_roots: [~/.cargo/registry]  # top level: extra writable roots, shared with the code tools
 ```
+
+`tools.shell.write` is retired: a config that still writes it gets no shell
+set and the warning ``toolset "shell": `write` is gone — list extra writable
+roots in the top-level `write_roots:` (shared by the shell and code sets)
+(ignored)`` — never a silent drop.
 
 The pre-bash allow-list config shape (`command: [git, ssh]`) is gone with the
 `command` set name itself; a list-shaped value fails the mapping decode and
@@ -135,7 +144,7 @@ flow.
 
 internal/shell: shell semantics (pipes/exit codes/cwd), cancellation,
 truncation, writable-path derivation, and real sandbox isolation (in-root
-write allowed, out-of-root denied, `write:` extras honored) with an
+write allowed, out-of-root denied, `write_roots:` extras honored) with an
 environment probe that skips where the sandbox cannot run (e.g. nested
 sandboxes). tool: config matrix (sandbox/auto_run → RequiresApproval),
 legacy-shape rejection, model-facing formatting, registry/Merge integration.

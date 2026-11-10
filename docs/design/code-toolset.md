@@ -33,8 +33,18 @@ so execution policy stays in one place.
 | `write_file` | path, content | whole-file create/overwrite; parents auto-created |
 
 All paths are **jailed to the project root** (`Env.ProjectRoot`, cwd
-fallback): relative paths resolve against the root, absolute paths must stay
-inside it, `..` escapes are rejected. glob/grep skip `.git` and the root
+fallback) **plus the top-level `write_roots:`** (below): relative paths
+resolve against the project root, absolute paths are taken as given, and the
+path's real location — symlinks resolved, the nearest existing ancestor
+canonicalized — must lie inside the real location of the project root or of
+an extra root. A link inside any root that leads out of every root is
+refused; a path whose real location cannot be worked out is refused too
+(`cannot verify <path> inside the project root (…)`), never judged
+lexically. A path outside every root is `path is outside the project root
+(<root>) and the extra write roots (<e1>, <e2>): <path>` (the extras clause
+only when there are extras). Results and headers stay anchored on the
+project root: a path under an extra root is shown absolute (`~/…` in a
+header when it sits under home). glob/grep skip `.git` and the root
 `.gitignore`'s matches (re-read per call; nested .gitignore files are a later
 refinement), plus binary files.
 
@@ -57,10 +67,25 @@ Mutating tools implement the package-private `approver` interface; the
 ## Config
 
 ```yaml
+write_roots:           # top level, every agent; shared with the shell sandbox
+  - ~/scratch          # `~` is home
+  - ../shared-lib      # relative = against the project root
 tools:
   code:                # empty = jail to project root + confirm writes
     # auto_write: true # skip write confirmations (and allow writes in -m)
 ```
+
+`write_roots:` is ONE list for both questions "where may the code tools
+reach" and "where may a sandboxed shell write" — the split Cursor has
+between its file tools and its terminal is exactly what it avoids. It is a
+top-level key (beside `providers:`/`models:`/`agents:`), not a `tools:` key:
+`tools:` keys are set names. `agents.<name>.write_roots` is refused by the
+key audit. Every config file of the stack adds its entries. Each entry is
+resolved once when the tools are assembled (`ToolEnv::write_roots`); an
+extra root whose real location cannot be worked out refuses the set
+(`cannot resolve the write root <path>`) instead of being dropped. An empty
+or absent list is the project root alone, and the tools' descriptions are
+then byte-identical to a build without the key.
 
 ## Deferred (v2+)
 

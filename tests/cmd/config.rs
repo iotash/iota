@@ -557,7 +557,7 @@ fn an_unknown_key_is_refused_with_its_coordinate() {
         ),
         (
             "agnets:\n  coder: {}\n",
-            "agnets: unknown top-level key (want providers:, models:, agents:, mcp_servers:)",
+            "agnets: unknown top-level key (want providers:, models:, agents:, mcp_servers:, write_roots:)",
         ),
     ] {
         assert_eq!(
@@ -624,6 +624,23 @@ fn a_later_file_replaces_whole_entries() {
         cfg.providers["shared"].url, "",
         "the cwd entry replaces the home one whole, url included"
     );
+    let _ = dir;
+}
+
+/// `write_roots:` is a top-level list kept as written; every file of the stack adds its entries, home
+/// first, a repeat kept once.
+#[test]
+fn write_roots_load_as_written_and_add_up_across_the_stack() {
+    let cfg = parse("write_roots: [~/scratch, ../shared]\n").expect("parses");
+    assert_eq!(cfg.write_roots, ["~/scratch", "../shared"]);
+    assert!(parse("").expect("parses").write_roots.is_empty());
+    assert!(parse("write_roots: {a: b}\n").is_err(), "a list, not a map");
+    let (dir, dirs) = temp_project(&[
+        ("home/.iota.yaml", "write_roots: [/tmp/a, /tmp/b]\n"),
+        (".iota.yaml", "write_roots: [/tmp/b, /tmp/c]\n"),
+    ]);
+    let cfg = Config::load(None, &Env::default().with_dirs(dirs), &mut |_| {}).expect("loads");
+    assert_eq!(cfg.write_roots, ["/tmp/a", "/tmp/b", "/tmp/c"]);
     let _ = dir;
 }
 

@@ -41,8 +41,14 @@ pub fn set_factory(name: &str) -> Option<SetFactory> {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SetError {
     /// `tools.shell` is not a mapping (or fails to decode).
-    #[error("config must be a mapping (sandbox, network, auto_run, write): {0}")]
+    #[error("config must be a mapping (sandbox, network, auto_run): {0}")]
     ShellConfig(String),
+    /// `tools.shell.write` — retired: the sandbox's extra writable roots are the top-level `write_roots:`,
+    /// which the code tools share.
+    #[error(
+        "`write` is gone — list extra writable roots in the top-level `write_roots:` (shared by the shell and code sets)"
+    )]
+    RetiredShellWrite,
     /// `tools.shell` was asked for on a machine with no interpreter to run it (the
     /// `crate::shell::interp::NoShell` text).
     #[error("{0}")]
@@ -65,6 +71,10 @@ pub enum SetError {
     /// ancestor, a link loop), so the code tools have nothing to jail paths to.
     #[error("cannot resolve the project root {}", .0.display())]
     CodeRoot(std::path::PathBuf),
+    /// A `write_roots:` entry whose real location cannot be worked out — refused like
+    /// [`SetError::CodeRoot`], never dropped.
+    #[error("cannot resolve the write root {}", .0.display())]
+    WriteRoot(std::path::PathBuf),
 }
 
 #[cfg(test)]

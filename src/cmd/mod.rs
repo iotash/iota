@@ -483,7 +483,8 @@ fn assemble_tools(
                 .as_deref(),
         ),
         ..ToolEnv::default()
-    };
+    }
+    .with_write_roots(&cfg.write_roots);
     let interactor = settings
         .message
         .is_none()

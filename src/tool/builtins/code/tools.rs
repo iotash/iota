@@ -370,7 +370,7 @@ fn glob_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
     };
 
     let mut hits: Vec<(String, SystemTime)> = Vec::new();
-    walk::walk_files(&cs.root, &base, &mut |abs, rel, entry| {
+    walk::walk_files(cs.root(), &base, &mut |abs, rel, entry| {
         if matcher.is_match(rel) && cs.admits(abs, entry) {
             let mtime = entry
                 .metadata()
@@ -437,7 +437,7 @@ fn grep_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
     let mut buf = String::new();
     let mut total = 0usize;
     let mut capped = false;
-    walk::walk_files(&cs.root, &base, &mut |abs, rel, entry| {
+    walk::walk_files(cs.root(), &base, &mut |abs, rel, entry| {
         if let Some(m) = &include_matcher
             && !match_include(m, include, rel)
         {
@@ -867,7 +867,7 @@ fn write_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
 fn code_base_dir(cs: &CodeSet, args: &JsonObject) -> Result<PathBuf, ToolOutput> {
     let raw = str_arg(args, "path");
     if raw.trim().is_empty() {
-        return Ok(cs.root.clone());
+        return Ok(cs.root().to_path_buf());
     }
     let abs = cs.resolve(raw)?;
     // A stat failure and a non-directory give the same text, and it names the RAW argument.
@@ -1015,13 +1015,24 @@ mod tests {
         let (_t, root, out) = jail_fixture();
         symlink(out.join("secret.txt"), root.join("escape")).expect("link");
         symlink(&out, root.join("outdir")).expect("link");
-        let cs = CodeSet::new(root.clone(), true).expect("set");
+        let cs = CodeSet::new(root.clone(), Vec::new(), true).expect("set");
         let cx = RunCtx::default();
         let refused = |arg: &str| {
             ToolOutput::err(format!(
                 "path is outside the project root ({}): {arg}",
                 root.display()
             ))
+        };
+        // The overlong links: Linux resolves them and finds them outside, macOS cannot resolve them.
+        let unresolved = |arg: &str| {
+            if cfg!(target_os = "macos") {
+                ToolOutput::err(format!(
+                    "cannot verify {arg} inside the project root ({})",
+                    root.display()
+                ))
+            } else {
+                refused(arg)
+            }
         };
 
         assert_eq!(
@@ -1059,7 +1070,7 @@ mod tests {
         for path in ["L/S/secret.txt", "L2"] {
             assert_eq!(
                 read_file_call(&cs, &args(json!({"path": path}))),
-                refused(path)
+                unresolved(path)
             );
         }
         assert_eq!(
@@ -1068,7 +1079,7 @@ mod tests {
                 &cx,
                 &args(json!({"path": "L/S/planted.txt", "content": "x"}))
             ),
-            refused("L/S/planted.txt")
+            unresolved("L/S/planted.txt")
         );
         assert!(!out.join("planted.txt").exists());
 
@@ -1103,7 +1114,7 @@ mod tests {
         symlink(&out, root.join("outdir")).expect("link");
         symlink("dir/kept.txt", root.join("alias")).expect("link");
         plant_overlong(&root, &out);
-        let cs = CodeSet::new(root.clone(), false).expect("set");
+        let cs = CodeSet::new(root.clone(), Vec::new(), false).expect("set");
 
         let grep = grep_call(&cs, &args(json!({"pattern": "TOPSECRET"})));
         assert_eq!(
