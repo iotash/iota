@@ -644,6 +644,7 @@ pub(crate) fn server_config(name: &str, entry: &McpServerConfig) -> ServerConfig
         client_secret: entry.client_secret.clone(),
         redirect_port: entry.redirect_port,
         tool_timeout_sec: entry.tool_timeout_sec,
+        auto_run: entry.auto_run,
     }
 }
 

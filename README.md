@@ -27,8 +27,9 @@ a model, a prompt, a set of tools — in one YAML file, and run them:
 - **Any endpoint that speaks OpenAI, Anthropic or Gemini** — including one you
   run yourself. Dedicated image models generate straight into the conversation.
 - **Tools that ask.** A `shell` under an OS sandbox, `code` tools confined to
-  the project, MCP servers with OAuth login — every write and every unsandboxed
-  command asks for confirmation unless the agent waives it.
+  the project, MCP servers with OAuth login — every write, every unsandboxed
+  command and every MCP tool call asks for confirmation unless the config
+  waives it.
 - **Sessions are plain files.** Resume them, grep them, export them to HTML or
   Markdown; nothing is hidden, `/debug` shows the exact bytes on the wire.
 - **The terminal is the interface.** Streaming replies you can type over,

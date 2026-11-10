@@ -27,6 +27,18 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Changed
 
+- **MCP tools now ask before they run — every existing config is affected.**
+  Until now a configured MCP server's tools ran without a prompt, in a chat
+  and in `-m` alike, and the server process is not sandboxed: a server could
+  read, write, fetch and post unasked. Now every call of an MCP tool is put
+  to you, like a file edit or a shell command. "Allow for this session"
+  covers that one tool until `/new` or a `/session` resume; the server's
+  other tools still ask. iota does not guess which tools are safe from their
+  names or descriptions. To let a server you trust run unasked, write
+  `auto_run: true` in its `mcp_servers.<name>` entry (the default is
+  `false`). With nobody to ask (`-m`), a call to a server without it is
+  refused, and the message names the server and the key to set. A `--mcp`
+  server always asks.
 - **Reading is no longer restricted to the project; writing still is.**
   `read_file`, `list_dir`, `glob` and `grep` now read any path, absolute or
   `../…`, and follow a symlink wherever it leads. A glob or grep stops after

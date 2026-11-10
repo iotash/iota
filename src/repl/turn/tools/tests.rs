@@ -2618,3 +2618,213 @@ async fn an_inside_grant_does_not_cover_a_parentless_target() {
         ]
     );
 }
+
+// ---------------------------------------------------------------------------
+// MCP tools ask (mcp_servers.<name>.auto_run)
+// ---------------------------------------------------------------------------
+
+/// The dispatcher a run assembles over an MCP manager (`assemble::build_dispatcher`): the manager as a
+/// merged part, or — `deferred` — behind the deferring wrapper a `defer:` entry puts around it.
+fn mcp_dispatch(m: &Arc<crate::mcp::Manager>, deferred: bool) -> Arc<dyn Dispatcher> {
+    let defers = if deferred {
+        vec![crate::tool::DeferredGroup {
+            name: "srv".to_owned(),
+            summary: "source control".to_owned(),
+        }]
+    } else {
+        Vec::new()
+    };
+    crate::cmd::assemble::build_dispatcher(
+        &crate::config::AgentConfig::default(),
+        &crate::config::ModelConfig::default(),
+        Some(crate::cmd::assemble::McpPart::of(m)),
+        defers,
+        false,
+        &crate::tool::ToolEnv::default(),
+        &mut |w| panic!("unexpected warning {w}"),
+    )
+}
+
+/// The `select` prompts a turn put up: (title, the session option).
+fn asked(events: &[UiEvent]) -> Vec<String> {
+    prompts(events)
+        .into_iter()
+        .map(|(title, _)| title)
+        .collect()
+}
+
+/// The tool results of `history`, in order: (text, is_error).
+fn results(history: &[Message]) -> Vec<(String, bool)> {
+    history
+        .iter()
+        .filter(|m| m.role() == Role::Tool)
+        .map(|m| (m.content.clone(), m.is_error()))
+        .collect()
+}
+
+/// One interactive turn over the real dispatcher: the model calls `calls`, the user answers `answers`.
+/// Returns the prompts, the tool results, and what the server was actually sent.
+async fn mcp_turn(
+    auto_run: bool,
+    deferred: bool,
+    calls: &[&str],
+    answers: Vec<Reply>,
+) -> (Vec<String>, Vec<(String, bool)>, Vec<String>) {
+    let (m, server) = crate::mcp::testutil::approval_manager(auto_run);
+    let mut script = answers;
+    script.extend(quiet(1));
+    let fx = Fx::new(mcp_dispatch(&m, deferred), script);
+    let tcs = calls
+        .iter()
+        .enumerate()
+        .map(|(i, name)| call(&format!("c{i}"), name, serde_json::json!({})))
+        .collect();
+    let p = stream(vec![Round::calls(tcs), Round::text("done")]);
+    let mut history = vec![Message::user("go")];
+    let out = fx.turn(&p, &mut history).await.outcome.expect("turn");
+    assert_eq!(out.content, "done", "a declined call never ends the turn");
+    let called = lock(&server.called).clone();
+    (asked(&fx.events()), results(&history), called)
+}
+
+/// One headless run over the real dispatcher: the model calls `mcp__srv__push` once; `approve` is the
+/// injected approver (`None` = a real `-m` run, nobody to ask). Returns the result and what the server got.
+async fn mcp_headless(
+    auto_run: bool,
+    deferred: bool,
+    approve: Option<crate::headless::run::Approver>,
+) -> ((String, bool), Vec<String>, Arc<crate::mcp::Manager>) {
+    let (m, server) = crate::mcp::testutil::approval_manager(auto_run);
+    let dispatch = mcp_dispatch(&m, deferred);
+    let mut host = crate::headless::QuietHost {
+        approve,
+        ..crate::headless::QuietHost::new()
+    };
+    let p = stream(vec![
+        Round::calls(vec![call("c1", PUSH, serde_json::json!({}))]),
+        Round::text("done"),
+    ]);
+    let mut history = vec![Message::user("go")];
+    crate::headless::execute_with_tools(
+        crate::headless::TurnParams {
+            cx: &RunCtx::default(),
+            tp: &p,
+            dispatch: Arc::clone(&dispatch),
+            tools: dispatch.tools(),
+            harness: "",
+            overlay: "",
+            max_turns: None,
+        },
+        &mut history,
+        &mut host,
+    )
+    .await
+    .expect("loop");
+    let result = results(&history).pop().expect("one tool result");
+    let called = lock(&server.called).clone();
+    (result, called, m)
+}
+
+const PUSH: &str = "mcp__srv__push";
+const PULL: &str = "mcp__srv__pull";
+
+// The matrix: `auto_run` off/on × interactive/headless × a call that runs / one that is denied — through the
+// dispatcher a run really assembles (and again behind the deferring wrapper), so a change that lets an MCP
+// call past the gate fails here. A denied or refused call never reaches the server, and the model reads an
+// error result.
+#[tokio::test]
+async fn an_mcp_tool_asks_unless_its_server_is_auto_run() {
+    use crate::tool::Approval;
+    for deferred in [false, true] {
+        let at = format!("deferred={deferred}");
+
+        // Interactive, off: asked; "Allow once" runs it.
+        let (asks, res, called) = mcp_turn(false, deferred, &[PUSH], vec![choose(0)]).await;
+        assert_eq!(asks.len(), 1, "{at}: {asks:?}");
+        assert!(
+            asks[0].ends_with("wants to modify files — allow?"),
+            "{at}: {asks:?}"
+        );
+        assert_eq!(res, [("push ran".to_owned(), false)], "{at}");
+        assert_eq!(called, ["push"], "{at}");
+
+        // Interactive, off: "Deny" — nothing reaches the server, the model gets an error result.
+        let (asks, res, called) = mcp_turn(false, deferred, &[PUSH], vec![choose(2)]).await;
+        assert_eq!(asks.len(), 1, "{at}");
+        assert_eq!(
+            res,
+            [("The user declined this call.".to_owned(), true)],
+            "{at}"
+        );
+        assert!(called.is_empty(), "{at}: a declined call ran: {called:?}");
+
+        // Interactive, on: nobody is asked.
+        let (asks, res, called) = mcp_turn(true, deferred, &[PUSH], Vec::new()).await;
+        assert!(asks.is_empty(), "{at}: {asks:?}");
+        assert_eq!(res, [("push ran".to_owned(), false)], "{at}");
+        assert_eq!(called, ["push"], "{at}");
+
+        // Headless, off, nobody to ask: refused, naming the server and the key that would allow it.
+        let (res, called, m) = mcp_headless(false, deferred, None).await;
+        let refusal = m.unattended_refusal(PUSH).expect("the manager's refusal");
+        assert!(
+            refusal.contains("`mcp_servers.srv.auto_run: true`"),
+            "{refusal}"
+        );
+        assert_eq!(res, (refusal, true), "{at}");
+        assert!(called.is_empty(), "{at}: a refused call ran");
+
+        // Headless, off, an approver that denies: nothing runs, an error result.
+        let deny: crate::headless::run::Approver =
+            Box::new(|_, _| Approval::Deny("The user declined this call.".to_owned()));
+        let (res, called, _) = mcp_headless(false, deferred, Some(deny)).await;
+        assert_eq!(
+            res,
+            ("The user declined this call.".to_owned(), true),
+            "{at}"
+        );
+        assert!(called.is_empty(), "{at}");
+
+        // Headless, off, an approver that allows: it runs.
+        let (res, called, _) =
+            mcp_headless(false, deferred, Some(Box::new(|_, _| Approval::Allow))).await;
+        assert_eq!(res, ("push ran".to_owned(), false), "{at}");
+        assert_eq!(called, ["push"], "{at}");
+
+        // Headless, on: runs without asking anyone.
+        let (res, called, _) = mcp_headless(true, deferred, None).await;
+        assert_eq!(res, ("push ran".to_owned(), false), "{at}");
+        assert_eq!(called, ["push"], "{at}");
+
+        // The hold reads the same setting: an `auto_run` server waives, through every wrapper.
+        let (m, _) = crate::mcp::testutil::approval_manager(true);
+        assert!(mcp_dispatch(&m, deferred).waives_approval(), "{at}");
+        let (m, _) = crate::mcp::testutil::approval_manager(false);
+        assert!(!mcp_dispatch(&m, deferred).waives_approval(), "{at}");
+    }
+}
+
+// "Allow for this session" is per tool: the second call of the SAME tool is not asked again, a different tool
+// of the same server still is.
+#[tokio::test]
+async fn an_mcp_session_grant_covers_that_tool_alone() {
+    let (asks, res, called) = mcp_turn(
+        false,
+        false,
+        &[PUSH, PUSH, PULL],
+        vec![choose(1), choose(0)],
+    )
+    .await;
+    assert_eq!(asks.len(), 2, "{asks:?}");
+    assert!(asks[0].contains("push"), "{asks:?}");
+    assert!(asks[1].contains("pull"), "{asks:?}");
+    assert_eq!(
+        res,
+        [
+            ("push ran".to_owned(), false),
+            ("push ran".to_owned(), false),
+            ("pull ran".to_owned(), false)
+        ]
+    );
+    assert_eq!(called, ["push", "push", "pull"]);
+}

@@ -20,7 +20,8 @@
 //! connection closes without a receipt.
 //!
 //! **The hold** (docs/design/agent-messaging.md §4): a chat whose tools act without asking — the dispatcher
-//! says so (`Dispatcher::waives_approval`: `tools.shell.auto_run`, `tools.code.auto_write`, a bot's usual setup)
+//! says so (`Dispatcher::waives_approval`: `tools.shell.auto_run`, `tools.code.auto_write`,
+//! `mcp_servers.<name>.auto_run`, a bot's usual setup)
 //! — would let whoever can write the socket make the model act. There, a message is delivered as usual but
 //! HELD, and the receipt says `held`: a round boundary leaves it out of the turn (`Steerer`), and the idle loop
 //! asks the user before the model reads it, with the chat at `NeedsInput` meanwhile.

@@ -42,14 +42,16 @@ impl QuietHost {
         Self::default()
     }
 
-    /// approve None → `Approval::Deny(refusal_text(&tc.name))`; else the approver's answer verbatim.
+    /// approve None → `Approval::Deny(refused)`, `refused` being the dispatcher's own text for the call
+    /// (`Dispatcher::unattended_refusal`: an MCP server's tool names the server and its `auto_run` key) or
+    /// else `refusal_text(&tc.name)`; else the approver's answer verbatim.
     /// `detail` = `dispatch.header_summary(&tc.name, &tc.arguments).unwrap_or_default()` — Go's fallback
     /// sorted-key argument digest (chat.go:461-480, `toolHeaderMaxArgs`/`truncateRunes`) is NOT ported
     /// (DIVERGENCES D-12); with no built-in `header_summary` the headless detail is always "".
     /// `test_quiet_loop_forwards_approval` pins "".
-    pub fn ask_approval(&self, tc: &ToolCall, detail: &str) -> Approval {
+    pub fn ask_approval(&self, tc: &ToolCall, detail: &str, refused: Option<String>) -> Approval {
         match &self.approve {
-            None => Approval::Deny(refusal_text(&tc.name)),
+            None => Approval::Deny(refused.unwrap_or_else(|| refusal_text(&tc.name))),
             Some(approve) => approve(tc, detail),
         }
     }
@@ -416,7 +418,8 @@ pub async fn execute_with_tools(
                 let detail = dispatch
                     .header_summary(&tc.name, &tc.arguments)
                     .unwrap_or_default();
-                if let Approval::Deny(why) = host.ask_approval(tc, &detail) {
+                let refused = dispatch.unattended_refusal(&tc.name);
+                if let Approval::Deny(why) = host.ask_approval(tc, &detail, refused) {
                     history.push(Message::tool_result(tc, why, true));
                     continue;
                 }
@@ -443,7 +446,7 @@ mod tests {
             name: "mcp__srv__edit".to_owned(),
             ..ToolCall::default()
         };
-        let Approval::Deny(why) = QuietHost::new().ask_approval(&tc, "ignored") else {
+        let Approval::Deny(why) = QuietHost::new().ask_approval(&tc, "ignored", None) else {
             panic!("a headless host must refuse")
         };
         assert_eq!(why, refusal_text("mcp__srv__edit"));

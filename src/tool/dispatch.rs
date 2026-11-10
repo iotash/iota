@@ -268,6 +268,11 @@ impl Dispatcher for Merged {
             .and_then(|p| p.approval_subject(name, args))
     }
 
+    /// Owner's answer or the default.
+    fn unattended_refusal(&self, name: &str) -> Option<String> {
+        self.owner(name).and_then(|p| p.unattended_refusal(name))
+    }
+
     /// The FIRST part with a searcher speaks for the merge; none when no part has one.
     fn as_tool_searcher(&self) -> Option<&dyn ToolSearcher> {
         self.parts
@@ -358,6 +363,10 @@ impl Dispatcher for Only {
 
     fn approval_subject(&self, name: &str, args: &JsonObject) -> Option<ApprovalSubject> {
         self.inner.approval_subject(name, args)
+    }
+
+    fn unattended_refusal(&self, name: &str) -> Option<String> {
+        self.inner.unattended_refusal(name)
     }
 }
 

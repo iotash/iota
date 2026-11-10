@@ -110,6 +110,72 @@ pub(crate) mod testutil {
         Arc::new(RmcpSession::new(running))
     }
 
+    /// A `Session` that answers `"<raw name> ran"` and counts the calls it was sent — what the approval tests
+    /// read to prove a refused or declined call never reached the server.
+    #[derive(Default)]
+    pub(crate) struct CountingSession {
+        /// The raw tool names called, in order.
+        pub(crate) called: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl Session for CountingSession {
+        fn call_tool<'a>(
+            &'a self,
+            _cancel: &'a CancellationToken,
+            raw: &'a str,
+            _args: JsonObject,
+        ) -> BoxFuture<'a, Result<(String, bool), McpError>> {
+            crate::sync::lock(&self.called).push(raw.to_owned());
+            Box::pin(std::future::ready(Ok((format!("{raw} ran"), false))))
+        }
+
+        fn close(&self) -> BoxFuture<'_, ()> {
+            Box::pin(std::future::ready(()))
+        }
+    }
+
+    /// A manager over one stdio server `srv` (with `auto_run` as given) already connected to a
+    /// [`CountingSession`] that serves two tools, `push` and `pull` — wire names `mcp__srv__push`/`…pull`.
+    pub(crate) fn approval_manager(
+        auto_run: bool,
+    ) -> (Arc<crate::mcp::Manager>, Arc<CountingSession>) {
+        use crate::mcp::config::ServerConfig;
+        use crate::mcp::manager::{Manager, ServerResult, ServerStatus};
+        use crate::provider::model::ToolDef;
+
+        let m = Manager::new(
+            vec![ServerConfig {
+                name: "srv".to_owned(),
+                command: "srv-bin".to_owned(),
+                auto_run,
+                ..ServerConfig::default()
+            }],
+            options(),
+        );
+        let session = Arc::new(CountingSession::default());
+        let tools: Vec<ToolDef> = ["push", "pull"]
+            .into_iter()
+            .map(|name| ToolDef {
+                name: name.to_owned(),
+                ..ToolDef::default()
+            })
+            .collect();
+        m.merge_result(
+            0,
+            ServerResult::Connected {
+                status: ServerStatus {
+                    name: "srv".to_owned(),
+                    tool_count: tools.len(),
+                    tools: tools.iter().map(|t| t.name.clone()).collect(),
+                    ..ServerStatus::default()
+                },
+                session: Arc::clone(&session) as Arc<dyn Session>,
+                tools,
+            },
+        );
+        (m, session)
+    }
+
     /// An in-memory `Session` with no transport at all: every call answers `"<id>:<raw name>"` and `close` is a
     /// no-op. For `merge_result` routing tests that do not need the handshake.
     pub(crate) struct EchoSession {

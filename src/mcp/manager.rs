@@ -952,6 +952,14 @@ enum Unavailable {
     Reconnecting,
 }
 
+impl Manager {
+    /// The config of the server that owns wire name `name`; `None` when no server routes it.
+    fn server_of(&self, name: &str) -> Option<&ServerConfig> {
+        let config = read(&self.state).tool_index.get(name)?.config;
+        self.configs.get(config)
+    }
+}
+
 impl Owner for Manager {
     /// One `tool_index` lookup under the read lock — never a `tools()` clone. Empty after `close`, like
     /// the index.
@@ -968,6 +976,28 @@ impl Dispatcher for Manager {
 
     fn as_owner(&self) -> Option<&dyn Owner> {
         Some(self)
+    }
+
+    /// Every call of a server's tool is put to the user unless the server is `auto_run` — whatever the
+    /// tool's name, description or annotations claim (nothing about it is read as proof that it is safe).
+    /// Per tool, not per call: the gate's "allow for this session" covers that one wire name. A name this
+    /// manager does not route (the deferring wrapper's `search_tools`, a closed manager) asks nothing.
+    fn requires_approval(&self, name: &str, _args: Option<&JsonObject>) -> bool {
+        self.server_of(name).is_some_and(|cfg| !cfg.auto_run)
+    }
+
+    /// Whether any configured server is `auto_run` — known from the configs, before anything connects.
+    fn waives_approval(&self) -> bool {
+        self.configs.iter().any(|cfg| cfg.auto_run)
+    }
+
+    /// The tool's server and the key that would let its calls run here (the outside-write refusal's shape).
+    fn unattended_refusal(&self, name: &str) -> Option<String> {
+        let server = &self.server_of(name)?.name;
+        Some(format!(
+            "{name} was not executed: the tools of MCP server \"{server}\" need the user's approval, which \
+             this non-interactive run cannot ask for; set `mcp_servers.{server}.auto_run: true` to allow it."
+        ))
     }
 
     /// Looks up the target, clones the `Session` `Arc`, DROPS the lock, then calls. Unknown or closed →
@@ -1096,6 +1126,45 @@ mod tests {
         m.call_tool(&cx, wire, JsonObject::new())
             .await
             .map(|o| (o.text, o.is_error))
+    }
+
+    /// Every tool of a server asks unless the server is `auto_run`, whatever the call's arguments; a name the
+    /// manager does not route asks nothing (the deferring wrapper's `search_tools` reaches it). The refusal a
+    /// non-interactive run gives names the server and the key.
+    #[test]
+    fn a_servers_tools_ask_unless_it_is_auto_run() {
+        use crate::mcp::testutil::approval_manager;
+        let args = JsonObject::new();
+
+        let (asks, _) = approval_manager(false);
+        for wire in ["mcp__srv__push", "mcp__srv__pull"] {
+            assert!(asks.requires_approval(wire, None), "{wire}");
+            assert!(asks.requires_approval(wire, Some(&args)), "{wire}");
+            assert_eq!(
+                asks.approval_subject(wire, &args),
+                None,
+                "a tool-wide grant"
+            );
+        }
+        assert!(!asks.requires_approval("search_tools", Some(&args)));
+        assert!(!asks.requires_approval("mcp__other__push", None));
+        assert!(
+            !asks.supports_parallel("mcp__srv__push", Some(&args)),
+            "never batched past the gate"
+        );
+        assert!(!asks.waives_approval());
+        assert_eq!(
+            asks.unattended_refusal("mcp__srv__push").as_deref(),
+            Some(
+                "mcp__srv__push was not executed: the tools of MCP server \"srv\" need the user's approval, \
+                 which this non-interactive run cannot ask for; set `mcp_servers.srv.auto_run: true` to allow it."
+            )
+        );
+        assert_eq!(asks.unattended_refusal("search_tools"), None);
+
+        let (trusted, _) = approval_manager(true);
+        assert!(!trusted.requires_approval("mcp__srv__push", Some(&args)));
+        assert!(trusted.waives_approval());
     }
 
     // Go: mcp/manager_test.go:204

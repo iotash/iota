@@ -139,6 +139,16 @@ impl Dispatcher for MarkedDispatcher {
         self.inner.requires_approval(name, args)
     }
 
+    /// Pass-through. A deferred MCP server's `auto_run` waives like any other.
+    fn waives_approval(&self) -> bool {
+        self.inner.waives_approval()
+    }
+
+    /// Pass-through.
+    fn unattended_refusal(&self, name: &str) -> Option<String> {
+        self.inner.unattended_refusal(name)
+    }
+
     /// Pass-through.
     fn presentation(&self, name: &str) -> Presentation {
         self.inner.presentation(name)
@@ -190,6 +200,16 @@ impl Dispatcher for SearchingDispatcher {
     /// As `MarkedDispatcher`.
     fn requires_approval(&self, name: &str, args: Option<&JsonObject>) -> bool {
         self.0.requires_approval(name, args)
+    }
+
+    /// As `MarkedDispatcher`. A deferred MCP server's `auto_run` waives like any other.
+    fn waives_approval(&self) -> bool {
+        self.0.waives_approval()
+    }
+
+    /// As `MarkedDispatcher`.
+    fn unattended_refusal(&self, name: &str) -> Option<String> {
+        self.0.unattended_refusal(name)
     }
 
     /// As `MarkedDispatcher`.

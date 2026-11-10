@@ -117,19 +117,7 @@ pub(crate) fn build_mcp_configs(
             }
             .into());
         }
-        configs.push(ServerConfig {
-            name: name.clone(),
-            command: server_cfg.command.clone(),
-            args: server_cfg.args.clone(),
-            url: server_cfg.url.clone(),
-            env: server_cfg.env.clone(),
-            headers: server_cfg.headers.clone(),
-            auth: server_cfg.auth,
-            client_id: server_cfg.client_id.clone(),
-            client_secret: server_cfg.client_secret.clone(),
-            redirect_port: server_cfg.redirect_port,
-            tool_timeout_sec: server_cfg.tool_timeout_sec,
-        });
+        configs.push(crate::cmd::mcp_cmd::server_config(name, server_cfg));
         // `defer:` opts the server into deferred loading; its VALUE is the group summary the search manifest
         // shows. A blank value defeats the point (the summary IS the retrieval corpus) — warn loudly and
         // advertise the server fully instead (root.go:632-642).
@@ -322,6 +310,47 @@ mod tests {
         assert_eq!(
             r.expect_err("unknown selection must fail").to_string(),
             "mcp_servers: \"nope\" is not defined under the top-level mcp_servers"
+        );
+    }
+
+    /// `auto_run:` defaults to false — a written entry asks unless it opts out — and an opt-out reaches the
+    /// manager's config; a `--mcp` flag server cannot opt out at all.
+    #[test]
+    fn auto_run_defaults_to_false_and_reaches_the_manager() {
+        let entry: McpServerConfig = serde_norway::from_str("command: srv").expect("decode");
+        assert!(!entry.auto_run, "absent = every call asks");
+        let written = serde_norway::to_string(&entry).expect("encode");
+        assert!(
+            !written.contains("auto_run"),
+            "the default is left out: {written}"
+        );
+        let opted: McpServerConfig =
+            serde_norway::from_str("command: srv\nauto_run: true").expect("decode");
+        assert!(opted.auto_run);
+        assert!(
+            serde_norway::to_string(&opted)
+                .expect("encode")
+                .contains("auto_run: true")
+        );
+
+        let cfg = Config {
+            mcp_servers: BTreeMap::from([("ask".to_owned(), entry), ("trusted".to_owned(), opted)]),
+            ..Config::default()
+        };
+        let (r, _) = collect(&cfg, &AgentConfig::default(), &["flag-bin".to_owned()]);
+        let got: Vec<(String, bool)> = r
+            .expect("configs")
+            .0
+            .into_iter()
+            .map(|c| (c.name, c.auto_run))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("ask".to_owned(), false),
+                ("trusted".to_owned(), true),
+                ("flag-bin".to_owned(), false)
+            ]
         );
     }
 

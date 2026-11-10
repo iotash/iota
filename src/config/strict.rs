@@ -68,7 +68,7 @@ const AGENT_KEYS: [&str; 15] = [
     "max_tokens",
 ];
 /// Every key an `mcp_servers.<name>` entry accepts.
-const MCP_KEYS: [&str; 11] = [
+const MCP_KEYS: [&str; 12] = [
     "command",
     "args",
     "url",
@@ -80,6 +80,7 @@ const MCP_KEYS: [&str; 11] = [
     "client_secret",
     "redirect_port",
     "tool_timeout_sec",
+    "auto_run",
 ];
 
 /// Keys a redesign retired — `(section, key, replacement)`, `section` being `""` for "any" — and the
@@ -396,7 +397,24 @@ mod tests {
         );
         assert_eq!(
             check("mcp_servers:\n  fs: {commadn: npx}\n"),
-            "mcp_servers.fs.commadn: unknown key (want command, args, url, env, headers, defer, auth, client_id, client_secret, redirect_port, tool_timeout_sec)"
+            "mcp_servers.fs.commadn: unknown key (want command, args, url, env, headers, defer, auth, client_id, client_secret, redirect_port, tool_timeout_sec, auto_run)"
+        );
+    }
+
+    /// `auto_run:` is an `mcp_servers` entry's key; an agent or a model refuses it.
+    #[test]
+    fn auto_run_is_an_mcp_server_key_only() {
+        assert_eq!(
+            check("mcp_servers:\n  fs: {command: npx, auto_run: true}\n"),
+            ""
+        );
+        assert!(
+            check("agents:\n  a: {model: m, auto_run: true}\n")
+                .starts_with("agents.a.auto_run: unknown key (want model, ")
+        );
+        assert!(
+            check("models:\n  m: {provider: p, id: i, auto_run: true}\n")
+                .starts_with("models.m.auto_run: unknown key (want provider, ")
         );
     }
 

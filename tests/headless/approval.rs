@@ -137,7 +137,7 @@ fn the_quiet_host_answers_approval_from_its_approver_or_refuses() {
         name: "edit_file".to_owned(),
         ..ToolCall::default()
     };
-    let Approval::Deny(why) = h.ask_approval(&tc, "path:x") else {
+    let Approval::Deny(why) = h.ask_approval(&tc, "path:x", None) else {
         panic!("a refusal was expected")
     };
     assert!(why.contains("edit_file"), "nil approver = {why:?}");
@@ -146,6 +146,11 @@ fn the_quiet_host_answers_approval_from_its_approver_or_refuses() {
         why,
         "edit_file was not executed: it requires interactive approval, which is unavailable in this non-interactive run. Set the toolset's auto-approve option (tools.code.auto_write / tools.shell.auto_run) to permit it here."
     );
+    // The dispatcher's own refusal (an MCP server's, naming its `auto_run`) replaces the generic text.
+    assert_eq!(
+        h.ask_approval(&tc, "path:x", Some("own words".to_owned())),
+        Approval::Deny("own words".to_owned())
+    );
 
     let h = QuietHost {
         approve: Some(Box::new(|_tc: &ToolCall, _detail: &str| {
@@ -153,7 +158,7 @@ fn the_quiet_host_answers_approval_from_its_approver_or_refuses() {
         })),
         ..QuietHost::new()
     };
-    let Approval::Deny(why) = h.ask_approval(&tc, "path:x") else {
+    let Approval::Deny(why) = h.ask_approval(&tc, "path:x", None) else {
         panic!("a refusal was expected")
     };
     assert_eq!(
@@ -169,14 +174,14 @@ fn the_quiet_host_answers_approval_from_its_approver_or_refuses() {
         ..QuietHost::new()
     };
     assert_eq!(
-        h.ask_approval(&tc, "path:x"),
+        h.ask_approval(&tc, "path:x", None),
         Approval::Deny("edit_file:path:x".to_owned())
     );
     let h = QuietHost {
         approve: Some(Box::new(|_tc: &ToolCall, _detail: &str| Approval::Allow)),
         ..QuietHost::new()
     };
-    assert_eq!(h.ask_approval(&tc, "path:x"), Approval::Allow);
+    assert_eq!(h.ask_approval(&tc, "path:x", None), Approval::Allow);
 }
 
 // The forwarded prompt has to say what the call is ABOUT: a gate naming only the tool asks the user to authorize "write_file"

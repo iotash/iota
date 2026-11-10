@@ -460,6 +460,16 @@ impl Dispatcher for DeferDispatcher {
         self.inner.requires_approval(name, args)
     }
 
+    /// Pass-through. A deferred MCP server's `auto_run` waives like any other.
+    fn waives_approval(&self) -> bool {
+        self.inner.waives_approval()
+    }
+
+    /// Pass-through.
+    fn unattended_refusal(&self, name: &str) -> Option<String> {
+        self.inner.unattended_refusal(name)
+    }
+
     /// Pass-through.
     fn presentation(&self, name: &str) -> Presentation {
         self.inner.presentation(name)

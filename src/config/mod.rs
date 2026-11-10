@@ -88,6 +88,11 @@ pub struct McpServerConfig {
     /// (`SetupError::ConfigToolTimeout`), not "no deadline": headless and bot runs have no ESC.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_timeout_sec: Option<u64>,
+    /// `auto_run:` — `true` lets the server's tools run without asking (absent = false: every call of every
+    /// one of its tools is put to the user, and a non-interactive run refuses it). Nothing about a tool —
+    /// its name, description or annotations — is read as proof that it is safe.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub auto_run: bool,
 }
 
 /// ONE config document, exactly as it is written on disk. [`Config`] is what a stack of these merges into,

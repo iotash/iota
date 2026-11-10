@@ -144,7 +144,8 @@ pub trait Tool: Send + Sync {
     /// roots only: one outside them is still asked or refused) — the same setting
     /// [`Self::requires_approval`] reads, asked as one question about the set. A chat whose tools waive
     /// approval holds a message from another process for the user (`repl::inbound`). A tool that never asks
-    /// (a read, an MCP tool) waives nothing: there was no approval to give up.
+    /// (a read) waives nothing: there was no approval to give up. (An MCP server's tools are not `Tool`s: the
+    /// manager answers for them as a [`Dispatcher`], and `mcp_servers.<name>.auto_run` is what waives.)
     fn waives_approval(&self) -> bool {
         false
     }
@@ -217,6 +218,12 @@ pub trait Dispatcher: Send + Sync {
     }
     /// The named tool's [`Tool::approval_subject`] for this call; `None` = the approval is about the tool.
     fn approval_subject(&self, _name: &str, _args: &JsonObject) -> Option<ApprovalSubject> {
+        None
+    }
+    /// What a run with nobody to ask tells the model instead of running the named tool's gated call, when
+    /// this dispatcher knows better than the generic `crate::headless::run::refusal_text` — an MCP server's
+    /// tool names its server and the `auto_run` key that would allow it. `None` = the generic text.
+    fn unattended_refusal(&self, _name: &str) -> Option<String> {
         None
     }
     /// The ownership oracle, when this dispatcher has one (`merge` scans `tools()` otherwise).
