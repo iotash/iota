@@ -684,14 +684,7 @@ fn ordered_models<'de, D: serde::Deserializer<'de>>(
     d.deserialize_any(OrderedModels)
 }
 
-/// ONE document, decoded: YAML syntax first ([`ConfigError::Parse`]), then the key audit, which is what makes
-/// a misplaced or misspelled key an error naming its coordinate rather than a line nothing reads.
-///
-/// The bytes are parsed twice — once as a [`serde_norway::Value`] for the audit, once into the typed shape —
-/// because only the raw form knows which ENTRY a key was written in, and only the typed decode reports a
-/// field's type error with the line it is on. Config files are small; the clarity is worth the second pass.
-/// `write_roots[i]`: an entry that names a directory. A blank one would quietly mean the project root and a
-/// `~` with no home a directory literally called `~` — both typos, so both refuse the load, by position.
+/// `write_roots[i]`: refuses a blank entry or a `~` with no home (typos that would quietly mean the project root or a directory called `~`) — here, because only the load knows both the entry's position and the home.
 fn check_write_root(i: usize, entry: &str, env: &Env) -> Result<(), ConfigError> {
     let entry = entry.trim();
     let message = if entry.is_empty() {
@@ -709,6 +702,12 @@ fn check_write_root(i: usize, entry: &str, env: &Env) -> Result<(), ConfigError>
     })
 }
 
+/// ONE document, decoded: YAML syntax first ([`ConfigError::Parse`]), then the key audit, which is what makes
+/// a misplaced or misspelled key an error naming its coordinate rather than a line nothing reads.
+///
+/// The bytes are parsed twice — once as a [`serde_norway::Value`] for the audit, once into the typed shape —
+/// because only the raw form knows which ENTRY a key was written in, and only the typed decode reports a
+/// field's type error with the line it is on. Config files are small; the clarity is worth the second pass.
 fn decode(data: &[u8]) -> Result<ConfigFile, ConfigError> {
     let doc: serde_norway::Value =
         serde_norway::from_slice(data).map_err(|e| ConfigError::Parse(e.to_string()))?;
