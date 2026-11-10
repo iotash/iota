@@ -619,3 +619,57 @@ async fn new_keeps_the_system_prompt_and_nothing_else() {
         "the new bundle starts with the system prompt"
     );
 }
+
+/// The approval gate's session grants belong to the conversation: a grant given before `/new` is gone after
+/// it — the next gated call is asked again.
+#[tokio::test]
+async fn new_forgets_the_session_grants() {
+    use iota::provider::model::ToolCall;
+    let write = || {
+        Round::calls(vec![ToolCall {
+            id: "c".to_owned(),
+            name: "write_file".to_owned(),
+            ..ToolCall::default()
+        }])
+    };
+    let provider = FakeProvider::new()
+        .with_model("gpt-4o")
+        .with_tools()
+        .rounds([
+            write(),
+            Round::reply("one"),
+            write(),
+            Round::reply("two"),
+            write(),
+            Round::reply("three"),
+        ]);
+    let f = Fixture::new(vec![
+        input("first"),
+        pick(false), // "Allow for this session"
+        Reply::Queued(Vec::new()),
+        input("second"), // granted: not asked
+        Reply::Queued(Vec::new()),
+        input("/new"),
+        input("third"), // asked again
+        pick(true),     // "Allow once"
+        Reply::Queued(Vec::new()),
+        Reply::Interrupted,
+    ]);
+    let session = f.session(Some(f.writer()));
+    let mut params = f.params(provider, session);
+    params.dispatch =
+        Arc::new(StaticDispatcher::new(&["write_file"]).with_approval(&["write_file"]));
+    iota::repl::run(params).await.expect("exit");
+    let asked: Vec<String> = surfaces(&f.ui)
+        .into_iter()
+        .map(|s| s.panels[0].title.clone())
+        .collect();
+    assert_eq!(
+        asked,
+        [
+            "write_file wants to modify files — allow?",
+            "write_file wants to modify files — allow?"
+        ]
+    );
+    assert_eq!(dividers(&f.ui).len(), 1);
+}

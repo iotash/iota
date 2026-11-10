@@ -103,6 +103,8 @@ pub(crate) async fn cmd_new(repl: &mut Repl, arg: &str) {
     repl.session.persisted = 0;
     let dropped = repl.conv.pending.len();
     repl.conv.pending.clear();
+    // The session grants were this conversation's.
+    repl.handles.gate.reset();
     repl.conv.ctxm.reset();
     repl.conv.budget.reseed(&repl.conv.history);
     repl.conv.ctxm.seed_totals(Usage::default());

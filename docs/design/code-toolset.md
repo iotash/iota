@@ -116,23 +116,40 @@ class:
   absolute, marked `(outside the project root)` — the way the shell marks
   `(outside the sandbox)` — not the argument as typed. It is the writer's
   `header_summary`, so the call header says the same.
-- **"Allow for this session"** for an outside write grants its real
+- **One resolution per call.** `Tool::approval_subject` resolves an
+  outside write's real location ONCE and answers `ApprovalSubject { detail,
+  target, scope }`: the prompt's text, the exact path "allow once" admits,
+  and the directory "allow for this session" grants (the target's parent,
+  or the target itself when it has none — `/` — so it never collapses into
+  the tool-wide key). The walk takes the prompt's detail and the grant's key
+  from that one answer, so what is shown and what is keyed cannot disagree
+  (review B1: two resolutions let a link flipped between them pair one
+  directory's prompt with another's grant).
+- **"Allow for this session"** for an outside write grants that real
   DIRECTORY through that tool only, and the option says so (`Allow in
   <dir> for this session`). The gate keys its grants by wire tool name and
-  `Dispatcher::grant_scope` (`None` = the whole tool, as for an inside write
-  or a shell call): a grant for one directory does not cover another, nor the
-  same directory through the other writer, and an inside grant never covers
-  an outside write. Only the exact directory is granted, not its subtree.
-- **The decision travels with the call.** The interactive walk puts the
-  detail the user allowed into `RunCtx::approved` (prompted or granted for
-  the session); `write_target` admits an outside path only when that equals
-  the summary it computes NOW. A caller that skips the gate — the parallel
-  batches, the headless loop, any future one — hands over `None`, and the
-  call refuses; a link swapped between the prompt and the call changes the
-  real location, so the summary no longer matches and the call refuses too.
-  The alternative, "`*_call` admits OUTSIDE because every caller gates",
-  would hang the guarantee on a property of the callers;
-  `an_outside_write_needs_this_calls_approval` fails under it.
+  scope (`None` = the whole tool, as for an inside write or a shell call): a
+  grant for one directory does not cover another, nor the same directory
+  through the other writer, and an inside grant never covers an outside
+  write. Only the exact directory is granted, not its subtree. The grants
+  belong to the conversation: `/new` and a `/session` resume clear them
+  (`ApprovalGate::reset`).
+- **The decision travels with the call, bound to what was approved.** The
+  interactive walk sets `RunCtx::approved` from the gate's answer and the
+  subject: `Approved::Once(target)` for "allow once",
+  `Approved::Dir(scope)` for a session grant (given now or earlier).
+  `write_target` re-resolves the real location at call time and admits an
+  outside path only if "allow once" names exactly it, or the grant's
+  directory is its directory — compared as paths, never as rendered text. A
+  caller that skips the gate — the parallel batches, the headless loop, any
+  future one — hands over `None`, and the call refuses; a link swapped after
+  the gate moves the real location away from what was approved, and the call
+  refuses too. The alternative, "`*_call` admits OUTSIDE because every
+  caller gates", would hang the guarantee on a property of the callers;
+  `an_outside_write_needs_this_calls_approval` fails under it, and
+  `a_link_swapped_between_detail_and_scope_writes_nothing` /
+  `a_grant_for_one_directory_never_admits_a_write_the_link_moved_into_another`
+  replay B1.
 - **The read ledger** stays keyed on the path as given (what `read_file`
   recorded); the bytes go to the real location, checked to be the same file
   at call time.
@@ -185,7 +202,7 @@ apply_patch-style multi-file edits, background/persistent processes (a
 command-set evolution), LSP diagnostics, LLM edit self-correction (Gemini
 editCorrector), nested .gitignore semantics, a diff preview inside the approval prompt, and the `web`
 set. The rest of P2 (workspace trust, broader permission policies) builds on
-the same approval seam (`requires_approval`, `grant_scope`, `RunCtx::approved`).
+the same approval seam (`requires_approval`, `approval_subject`, `RunCtx::approved`).
 
 ## Testing
 

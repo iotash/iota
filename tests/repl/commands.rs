@@ -1893,6 +1893,76 @@ async fn session_resume_swaps_and_echoes() {
     assert_ne!(other_id, current_id);
 }
 
+/// The approval gate's session grants belong to the conversation: a grant given before a `/session`
+/// resume is gone after it — the next gated call is asked again.
+#[tokio::test]
+async fn session_resume_forgets_the_session_grants() {
+    use iota::provider::model::ToolCall;
+    use iota::testing::Round;
+    let pick = |row: usize| {
+        Reply::Tabbed(TabbedResult {
+            cancelled: false,
+            focused: 0,
+            panels: vec![PanelResult {
+                cursor: row,
+                ..PanelResult::default()
+            }],
+        })
+    };
+    let f = Fixture::new(vec![
+        input("first"),
+        pick(1), // "Allow for this session"
+        Reply::Queued(Vec::new()),
+        input("/session"),
+        Reply::Tabbed(TabbedResult {
+            cancelled: false,
+            focused: 0,
+            panels: vec![PanelResult::default(), PanelResult::default()],
+        }),
+        input("second"),
+        pick(0), // asked again: "Allow once"
+        Reply::Queued(Vec::new()),
+        Reply::Interrupted,
+    ]);
+    let mut other = f.writer();
+    other
+        .append_messages(&[Message::user("older"), Message::assistant("answer")])
+        .expect("seed the bundle");
+    let other_dir = other.dir().to_path_buf();
+    drop(other);
+    touch_updated(&other_dir, "2030-01-01T00:00:00+00:00");
+    let write = || {
+        Round::calls(vec![ToolCall {
+            id: "c".to_owned(),
+            name: "write_file".to_owned(),
+            ..ToolCall::default()
+        }])
+    };
+    let p = provider("gpt-4o", Ok(vec![])).with_tools().rounds([
+        write(),
+        Round::reply("one"),
+        write(),
+        Round::reply("two"),
+    ]);
+    let session = f.session(Some(f.writer()));
+    let mut params = f.params(p, session);
+    params.dispatch =
+        Arc::new(StaticDispatcher::new(&["write_file"]).with_approval(&["write_file"]));
+    iota::repl::run(params).await.expect("exit");
+    let asked: Vec<String> = surfaces(&f.ui)
+        .into_iter()
+        .map(|s| s.panels[0].title.clone())
+        .filter(|t| t.ends_with("allow?"))
+        .collect();
+    assert_eq!(
+        asked,
+        [
+            "write_file wants to modify files — allow?",
+            "write_file wants to modify files — allow?"
+        ]
+    );
+}
+
 /// Resuming the session already being written to says so and swaps nothing.
 #[tokio::test]
 async fn session_resume_of_the_current_session_is_a_no_op() {

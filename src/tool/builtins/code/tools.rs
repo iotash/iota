@@ -16,7 +16,8 @@ use crate::provider::model::{JsonObject, ToolDef};
 use crate::tool::context::RunCtx;
 use crate::tool::error::ToolError;
 use crate::tool::{
-    Artifact, ArtifactKind, Presentation, Tool, ToolOutput, ToolResult, post_artifact,
+    ApprovalSubject, Artifact, ArtifactKind, Presentation, Tool, ToolOutput, ToolResult,
+    post_artifact,
 };
 use crate::{BoxFuture, text};
 use serde_json::{Value, json};
@@ -297,9 +298,9 @@ impl Tool for EditFile {
         Presentation::Expanded
     }
 
-    /// An outside write's session grant is its real directory.
-    fn grant_scope(&self, args: &JsonObject) -> Option<PathBuf> {
-        writer_grant_scope(&self.0, args)
+    /// An outside write is bound to its real location ([`writer_subject`]).
+    fn approval_subject(&self, args: &JsonObject) -> Option<ApprovalSubject> {
+        writer_subject(&self.0, args)
     }
 
     /// The path IS the call for the file tools (the D-12 lift) — its
@@ -361,9 +362,9 @@ impl Tool for WriteFile {
         Presentation::Expanded
     }
 
-    /// An outside write's session grant is its real directory.
-    fn grant_scope(&self, args: &JsonObject) -> Option<PathBuf> {
-        writer_grant_scope(&self.0, args)
+    /// An outside write is bound to its real location ([`writer_subject`]).
+    fn approval_subject(&self, args: &JsonObject) -> Option<ApprovalSubject> {
+        writer_subject(&self.0, args)
     }
 
     /// The path IS the call for the file tools (the D-12 lift) — its
@@ -384,11 +385,16 @@ fn writer_summary(cs: &CodeSet, args: &JsonObject) -> String {
     }
 }
 
-/// The real directory an outside write lands in — what "allow for this session" grants; `None` inside
-/// the roots (the grant covers the tool, as it always did).
-fn writer_grant_scope(cs: &CodeSet, args: &JsonObject) -> Option<PathBuf> {
-    cs.approvable(str_arg(args, "path"))
-        .and_then(|real| real.parent().map(Path::to_path_buf))
+/// An outside write's approval subject, from ONE resolution of its real location: the prompt names it
+/// (marked), "allow once" admits exactly it, "allow for this session" grants its directory
+/// ([`super::grant_dir`]). `None` inside the roots (the approval is about the tool, as it always was).
+fn writer_subject(cs: &CodeSet, args: &JsonObject) -> Option<ApprovalSubject> {
+    let real = cs.approvable(str_arg(args, "path"))?;
+    Some(ApprovalSubject {
+        detail: super::outside_summary(&real),
+        scope: super::grant_dir(&real).to_path_buf(),
+        target: real,
+    })
 }
 
 // ---- glob ----
@@ -1314,28 +1320,58 @@ mod tests {
         (t, root, out, cs)
     }
 
+    /// What the walk carries for a call the gate allowed: "allow once" binds the subject's target, a session
+    /// grant its scope — both from ONE resolution of the call.
+    #[cfg(unix)]
+    fn allowed(
+        cs: &super::super::CodeSet,
+        a: &JsonObject,
+        session: bool,
+    ) -> crate::tool::context::RunCtx {
+        use crate::tool::context::{Approved, RunCtx};
+        let s = super::writer_subject(cs, a).expect("an outside write");
+        RunCtx {
+            approved: Some(if session {
+                Approved::Dir(s.scope)
+            } else {
+                Approved::Once(s.target)
+            }),
+            ..RunCtx::default()
+        }
+    }
+
+    #[cfg(unix)]
+    fn relink(link: &std::path::Path, to: &std::path::Path) {
+        std::fs::remove_file(link).expect("unlink");
+        std::os::unix::fs::symlink(to, link).expect("relink");
+    }
+
     /// THE INVARIANT: an outside write needs THIS call's approval, carried in `RunCtx::approved`, and that
-    /// approval must name the real location as it is at call time. A call no gate approved — what a parallel
+    /// approval must cover the real location as it is at call time. A call no gate approved — what a parallel
     /// batch, a headless loop or any future caller that skips the gate hands the tool — never writes, even
     /// with `auto_write`. (Under the rejected design, "`*_call` admits OUTSIDE because every caller gates",
     /// the first assertion fails: the file would be created.)
     #[cfg(unix)]
     #[test]
     fn an_outside_write_needs_this_calls_approval() {
-        use super::{edit_file_call, read_file_call, write_file_call, writer_summary};
-        use crate::tool::context::RunCtx;
+        use super::{edit_file_call, read_file_call, write_file_call, writer_subject};
+        use crate::tool::ApprovalSubject;
+        use crate::tool::context::{Approved, RunCtx};
 
         let (t, root, out, cs) = asking_set(true);
         let real_out = std::fs::canonicalize(&out).expect("real out");
         let w = args(json!({"path": "outdir/new.txt", "content": "x"}));
-        let summary = format!(
-            "{} (outside the project root)",
-            real_out.join("new.txt").display()
-        );
         assert_eq!(
-            writer_summary(&cs, &w),
-            summary,
-            "the prompt names the RESOLVED path"
+            writer_subject(&cs, &w),
+            Some(ApprovalSubject {
+                detail: format!(
+                    "{} (outside the project root)",
+                    real_out.join("new.txt").display()
+                ),
+                target: real_out.join("new.txt"),
+                scope: real_out.clone(),
+            }),
+            "the prompt names the RESOLVED path; the grant is its directory"
         );
 
         // No approval: refused, nothing created.
@@ -1351,23 +1387,21 @@ mod tests {
             "an unapproved call wrote outside"
         );
 
-        // An approval for another call does not carry over.
-        let other = RunCtx {
-            approved: Some(format!(
-                "{} (outside the project root)",
-                real_out.join("else.txt").display()
-            )),
-            ..RunCtx::default()
-        };
-        assert!(write_file_call(&cs, &other, &w).is_error);
-        assert!(!out.join("new.txt").exists());
+        // An approval for another target, or a grant for another directory, does not carry over.
+        for other in [
+            Approved::Once(real_out.join("else.txt")),
+            Approved::Dir(real_out.join("deep")),
+        ] {
+            let cx = RunCtx {
+                approved: Some(other),
+                ..RunCtx::default()
+            };
+            assert!(write_file_call(&cs, &cx, &w).is_error);
+            assert!(!out.join("new.txt").exists());
+        }
 
         // Approved: the write lands where the prompt said — the real path behind the symlinked parent.
-        let ok = RunCtx {
-            approved: Some(summary.clone()),
-            ..RunCtx::default()
-        };
-        let got = write_file_call(&cs, &ok, &w);
+        let got = write_file_call(&cs, &allowed(&cs, &w, false), &w);
         assert_eq!(
             got,
             ToolOutput::ok(format!(
@@ -1379,6 +1413,12 @@ mod tests {
             std::fs::read_to_string(out.join("new.txt")).expect("landed"),
             "x"
         );
+        // A directory grant admits another file in that directory, and only directly in it.
+        let w2 = args(json!({"path": "outdir/two.txt", "content": "2"}));
+        assert!(!write_file_call(&cs, &allowed(&cs, &w, true), &w2).is_error);
+        let deeper = args(json!({"path": "outdir/deep/three.txt", "content": "3"}));
+        assert!(write_file_call(&cs, &allowed(&cs, &w, true), &deeper).is_error);
+        assert!(!out.join("deep/three.txt").exists());
 
         // edit_file the same way: read through the link, then edit with the approval.
         assert!(!read_file_call(&cs, &args(json!({"path": "outdir/secret.txt"}))).is_error);
@@ -1388,11 +1428,7 @@ mod tests {
             std::fs::read_to_string(out.join("secret.txt")).expect("kept"),
             "s"
         );
-        let ok = RunCtx {
-            approved: Some(writer_summary(&cs, &e)),
-            ..RunCtx::default()
-        };
-        assert!(!edit_file_call(&cs, &ok, &e).is_error);
+        assert!(!edit_file_call(&cs, &allowed(&cs, &e, false), &e).is_error);
         assert_eq!(
             std::fs::read_to_string(out.join("secret.txt")).expect("edited"),
             "t"
@@ -1403,14 +1439,64 @@ mod tests {
         let out2 = t.path().join("out2");
         std::fs::create_dir(&out2).expect("out2");
         let w = args(json!({"path": "outdir/swapped.txt", "content": "x"}));
-        let approved = RunCtx {
-            approved: Some(writer_summary(&cs, &w)),
+        for session in [false, true] {
+            let cx = allowed(&cs, &w, session);
+            relink(&root.join("outdir"), &out2);
+            assert!(write_file_call(&cs, &cx, &w).is_error);
+            assert!(!out2.join("swapped.txt").exists() && !out.join("swapped.txt").exists());
+            relink(&root.join("outdir"), &out);
+        }
+    }
+
+    /// Review B1, the reviewer's repro exactly: the link is swapped between the prompt's detail and the grant
+    /// scope, then back, and the call is attempted with what the gate would have carried. Before round 2 the
+    /// detail and the scope were two resolutions, and the call was admitted by the detail's text: with the
+    /// scope (`out2`) granted, `out/x.txt` was written though nobody approved `out`. Now the call carries the
+    /// GRANTED scope, which must be the directory of where it lands — nothing is written anywhere outside.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_swapped_between_detail_and_scope_writes_nothing() {
+        use super::{write_file_call, writer_subject, writer_summary};
+        use crate::tool::context::{Approved, RunCtx};
+
+        let (t, root, out, cs) = asking_set(true);
+        let out2 = t.path().join("out2");
+        std::fs::create_dir(&out2).expect("out2");
+        let w = args(json!({"path": "outdir/x.txt", "content": "x"}));
+        // 1. root/outdir -> out; take the detail.
+        let detail = writer_summary(&cs, &w);
+        // 2. Relink outdir -> out2; the grant scope is now out2 (granted for the session).
+        relink(&root.join("outdir"), &out2);
+        let scope = writer_subject(&cs, &w).expect("subject").scope;
+        assert_eq!(scope, std::fs::canonicalize(&out2).expect("real out2"));
+        // 3. Relink outdir -> out again.
+        relink(&root.join("outdir"), &out);
+        // 4. The call, with the grant the gate keyed on.
+        let cx = RunCtx {
+            approved: Some(Approved::Dir(scope)),
             ..RunCtx::default()
         };
-        std::fs::remove_file(root.join("outdir")).expect("unlink");
-        std::os::unix::fs::symlink(&out2, root.join("outdir")).expect("relink");
-        assert!(write_file_call(&cs, &approved, &w).is_error);
-        assert!(!out2.join("swapped.txt").exists() && !out.join("swapped.txt").exists());
+        assert!(write_file_call(&cs, &cx, &w).is_error);
+        assert!(
+            !out.join("x.txt").exists() && !out2.join("x.txt").exists(),
+            "a write landed in a directory nobody granted"
+        );
+        // And one resolution can never disagree with itself: detail, target and scope name one place.
+        let s = writer_subject(&cs, &w).expect("subject");
+        assert_eq!(s.detail, detail);
+        assert_eq!(s.detail, super::super::outside_summary(&s.target));
+        assert_eq!(Some(s.scope.as_path()), s.target.parent());
+    }
+
+    /// Review S1: a target with no parent (`/`) is granted as itself, never as the tool-wide key an inside
+    /// grant uses.
+    #[cfg(unix)]
+    #[test]
+    fn a_target_without_a_parent_is_its_own_grant() {
+        let (_t, _root, _out, cs) = asking_set(true);
+        let s = super::writer_subject(&cs, &args(json!({"path": "/"}))).expect("subject");
+        assert_eq!(s.scope, std::path::PathBuf::from("/"));
+        assert_eq!(s.target, std::path::PathBuf::from("/"));
     }
 
     /// The batches that skip the gate (headless `run_batch`, the interactive parallel walk) build their
@@ -1485,9 +1571,9 @@ mod tests {
                     );
                     assert!(!tool.requires_approval(Some(&looped)), "{at} unverifiable");
                     assert_eq!(tool.waives_approval(), auto_write, "{at} waives");
-                    assert_eq!(tool.grant_scope(&inside), None, "{at}");
+                    assert_eq!(tool.approval_subject(&inside), None, "{at}");
                     assert_eq!(
-                        tool.grant_scope(&outside),
+                        tool.approval_subject(&outside).map(|s| s.scope),
                         (policy == Outside::Ask).then(|| real_out.join("deep")),
                         "{at}"
                     );
@@ -1510,7 +1596,7 @@ mod tests {
     fn the_writers_say_an_outside_write_asks_only_when_it_does() {
         use super::super::{CodeSet, Outside};
         use crate::tool::Tool;
-        let clause = " Outside that, the user is asked to approve each write first.";
+        let clause = " Outside that, the user is asked to approve a write there first.";
         for policy in [Outside::Ask, Outside::Unattended, Outside::Refuse] {
             let cs = CodeSet::new(std::path::PathBuf::from("/proj"), Vec::new(), false, policy)
                 .expect("set");

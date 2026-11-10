@@ -22,9 +22,10 @@ use crate::headless::batch::{BatchOutcome, parallel_run};
 use crate::host::{Event, Kind, State};
 use crate::provider::ToolProvider;
 use crate::provider::model::{AssistantBody, Message, ToolCall, ToolDef};
+use crate::repl::turn::approval::Answer;
 use crate::tool::Presentation;
-use crate::tool::context::ArtifactSlot;
 use crate::tool::context::RunCtx;
+use crate::tool::context::{Approved, ArtifactSlot};
 use crate::tool::fmt::{display_tool_name, tool_call_detail, tool_label};
 use crate::ui::facade::UiError;
 
@@ -242,25 +243,24 @@ async fn walk(
             t.cx.tr.open_call(&header);
         }
 
-        // What the user allowed this call under travels with it (`RunCtx::approved`): a tool whose
-        // call needs the say-so checks it against what it would show now.
+        // What the user allowed this call under travels with it (`RunCtx::approved`). A call bound to a
+        // location is resolved ONCE (`approval_subject`): the prompt's detail, the session grant's key and
+        // what the call must hit all come from that one answer, so they cannot disagree.
         let mut approved = None;
         if dispatch.requires_approval(&tc.name, Some(&tc.arguments)) {
-            let detail = tool_call_detail(&*dispatch, tc);
-            let scope = dispatch.grant_scope(&tc.name, &tc.arguments);
-            let allowed = match t
-                .cx
-                .gate
-                .ask(&t.cancel, &tc.name, scope.as_deref(), &detail)
-                .await
-            {
+            let subject = dispatch.approval_subject(&tc.name, &tc.arguments);
+            let detail = subject
+                .as_ref()
+                .map_or_else(|| tool_call_detail(&*dispatch, tc), |s| s.detail.clone());
+            let scope = subject.as_ref().map(|s| s.scope.as_path());
+            let answer = match t.cx.gate.ask(&t.cancel, &tc.name, scope, &detail).await {
                 Ok(a) => a,
                 // A fired cancel scope resolves the blocking call as Interrupted (WP45);
                 // a closed facade ends the loop itself.
                 Err(UiError::Interrupted) => return Err(interrupted()),
                 Err(e) => return Err(TurnFailure::Ui(e)),
             };
-            if !allowed {
+            if answer == Answer::Denied {
                 if expanded {
                     t.cx.tr.settle_showcase(&header, None, DECLINED, true);
                 } else {
@@ -270,9 +270,11 @@ async fn walk(
                 history.push(Message::tool_result(tc, DECLINED, true));
                 continue;
             }
-            approved = Some(detail);
+            approved = subject.map(|s| match answer {
+                Answer::Session => Approved::Dir(s.scope),
+                _ => Approved::Once(s.target),
+            });
         }
-
         // Every call gets its own artifact slot — the user-facing payload (an expanded
         // call's diff) kept out of the result text so it is never billed to the model.
         // Only some calls post to one (T-35).

@@ -13,7 +13,7 @@ use std::{
 };
 
 use crate::app::paths;
-use crate::tool::context::RunCtx;
+use crate::tool::context::{Approved, RunCtx};
 use crate::tool::{OutsideWrites, Tool, ToolEnv, ToolOutput};
 use serde::Deserialize;
 
@@ -227,9 +227,9 @@ impl CodeSet {
 
     /// Where a writer's call may write, decided at call time — after any prompt, so a link swapped since is
     /// caught: `(ledger path, target)`. Inside a root both are the lexical path. Outside every root the call
-    /// is admitted only under `outside_writes: ask` and only when the user allowed THIS call under the
-    /// summary it would show now ([`outside_summary`], carried in [`RunCtx::approved`]); then the
-    /// target is the real location the prompt named. Err texts: `missing required argument: path`,
+    /// is admitted only under `outside_writes: ask` and only when [`RunCtx::approved`] covers the real
+    /// location resolved NOW ([`approves`]: "allow once" names exactly it, a session grant its directory);
+    /// then the target is that real location. Err texts: `missing required argument: path`,
     /// `path is outside the project root ({root}): {arg}` (alone under `refuse`; followed under `ask` by why
     /// it was not approved), `cannot verify {arg} inside the project root ({root})` — `{root}` followed,
     /// when `write_roots:` lists any, by `) and the extra write roots ({e1}, {e2}`.
@@ -244,9 +244,7 @@ impl CodeSet {
             Write::Outside { path, real } => {
                 let refusal = format!("path is outside the project root ({roots}): {arg}");
                 let why = match self.outside {
-                    Outside::Ask
-                        if cx.approved.as_deref() == Some(outside_summary(&real).as_str()) =>
-                    {
+                    Outside::Ask if approves(cx.approved.as_ref(), &real) => {
                         return Ok((path, real));
                     }
                     Outside::Ask => format!(
@@ -306,7 +304,7 @@ impl CodeSet {
     /// user, that such a write asks first (so a model does not take a refusal as final); else nothing.
     pub(crate) fn outside_clause(&self) -> &'static str {
         match self.outside {
-            Outside::Ask => " Outside that, the user is asked to approve each write first.",
+            Outside::Ask => " Outside that, the user is asked to approve a write there first.",
             Outside::Unattended | Outside::Refuse => "",
         }
     }
@@ -426,8 +424,25 @@ pub fn new_code_set(env: &ToolEnv, node: Option<&RawNode>) -> Result<Vec<Arc<dyn
     Ok(tools)
 }
 
+/// Whether what the gate allowed covers a write to `real`, compared as paths: "allow once" must name
+/// exactly it, a session grant its directory ([`grant_dir`]) — the same key the gate stored. Nothing
+/// allowed covers nothing.
+fn approves(approved: Option<&Approved>, real: &Path) -> bool {
+    match approved {
+        Some(Approved::Once(target)) => target == real,
+        Some(Approved::Dir(dir)) => grant_dir(real) == dir,
+        None => false,
+    }
+}
+
+/// The directory "allow for this session" grants for a write to `real`: its parent, or `real` itself when
+/// it has none (`/`) — never nothing, which would be the tool-wide key an inside grant uses.
+pub(crate) fn grant_dir(real: &Path) -> &Path {
+    real.parent().unwrap_or(real)
+}
+
 /// What an outside write's header and approval prompt say: the real location, absolute, marked
-/// [`OUTSIDE_ROOT_MARK`]. The call compares [`RunCtx::approved`] against it.
+/// [`OUTSIDE_ROOT_MARK`]. Display only: the call checks [`RunCtx::approved`] as paths ([`approves`]).
 pub(crate) fn outside_summary(real: &Path) -> String {
     format!("{} {OUTSIDE_ROOT_MARK}", real.display())
 }
@@ -514,7 +529,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{CodeSet, Outside, Write, byte_count, looks_binary};
-    use crate::tool::context::RunCtx;
+    use crate::tool::context::{Approved, RunCtx};
 
     /// What a writer's call is told about `arg` with no approval: under `Outside::Refuse`, exactly the jail
     /// as it was before writes could be approved — the cleaned path, or the refusal.
@@ -906,15 +921,21 @@ mod tests {
         for arg in &unknown {
             assert_eq!(asking.write_path(arg), Ok(Write::Unverifiable), "{arg}");
             assert_eq!(asking.approvable(arg), None, "{arg}");
-            let cx = RunCtx {
-                approved: Some(format!("{arg} (outside the project root)")),
-                ..RunCtx::default()
-            };
-            assert_eq!(
-                asking.write_target(&cx, arg).map(|(p, _)| p),
-                unverified(&root, arg),
-                "{arg}"
-            );
+            for approved in [
+                Approved::Once(root.join(arg)),
+                Approved::Dir(root.clone()),
+                Approved::Dir(PathBuf::from("/")),
+            ] {
+                let cx = RunCtx {
+                    approved: Some(approved),
+                    ..RunCtx::default()
+                };
+                assert_eq!(
+                    asking.write_target(&cx, arg).map(|(p, _)| p),
+                    unverified(&root, arg),
+                    "{arg}"
+                );
+            }
         }
 
         // EACCES under an unreadable directory is not "missing" either (root bypasses modes,

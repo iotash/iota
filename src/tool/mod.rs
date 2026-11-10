@@ -161,10 +161,11 @@ pub trait Tool: Send + Sync {
     fn header_summary(&self, _args: &JsonObject) -> Option<String> {
         None
     }
-    /// What an "allow for this session" answer to this call grants: `None` = every call of the tool (the
-    /// default), `Some(dir)` = this tool's calls with the same scope only — a `code` write outside every root
-    /// is granted per real directory, so one grant never opens every directory.
-    fn grant_scope(&self, _args: &JsonObject) -> Option<PathBuf> {
+    /// The location this call's approval is bound to, resolved ONCE: what the prompt shows, what "allow for
+    /// this session" grants and what the call must then hit all come from this one answer, so they cannot
+    /// disagree. `None` (the default) = the approval is about the tool: its detail is the header, a session
+    /// grant covers every call of it. A `code` write outside every root answers `Some`.
+    fn approval_subject(&self, _args: &JsonObject) -> Option<ApprovalSubject> {
         None
     }
 }
@@ -214,8 +215,8 @@ pub trait Dispatcher: Send + Sync {
     fn header_summary(&self, _name: &str, _args: &JsonObject) -> Option<String> {
         None
     }
-    /// The named tool's [`Tool::grant_scope`] for this call; `None` = the session grant covers the tool.
-    fn grant_scope(&self, _name: &str, _args: &JsonObject) -> Option<PathBuf> {
+    /// The named tool's [`Tool::approval_subject`] for this call; `None` = the approval is about the tool.
+    fn approval_subject(&self, _name: &str, _args: &JsonObject) -> Option<ApprovalSubject> {
         None
     }
     /// The ownership oracle, when this dispatcher has one (`merge` scans `tools()` otherwise).
@@ -370,13 +371,24 @@ pub struct ToolEnv {
     pub outside_writes: OutsideWrites,
 }
 
+/// What a call's approval is bound to ([`Tool::approval_subject`]), from one resolution of its location.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApprovalSubject {
+    /// The prompt's detail: what the user is shown.
+    pub detail: String,
+    /// The exact location "allow once" admits.
+    pub target: PathBuf,
+    /// The directory "allow for this session" grants (the target's directory).
+    pub scope: PathBuf,
+}
+
 /// The top-level `outside_writes:` — what the `code` writers do with a path whose real location is known and
 /// lies outside the project root and every `write_roots:` entry. Ordered by strictness: a config stack keeps
 /// the strictest value any of its files names (`refuse` cannot be loosened by a later file).
 #[derive(serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum OutsideWrites {
-    /// Ask the user, every time (`auto_write` does not waive it); a run with nobody to ask refuses.
+    /// Ask the user (`auto_write` does not waive it); a run with nobody to ask refuses.
     #[default]
     Ask,
     /// Refuse, as the jail always did: no prompt.

@@ -5,7 +5,6 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
     sync::Arc,
 };
 
@@ -15,7 +14,8 @@ use crate::text::go_quote;
 use crate::tool::context::RunCtx;
 use crate::tool::error::ToolError;
 use crate::tool::{
-    DeferredToolStatus, Dispatcher, Owner, Presentation, Tool, ToolEnv, ToolResult, ToolSearcher,
+    ApprovalSubject, DeferredToolStatus, Dispatcher, Owner, Presentation, Tool, ToolEnv,
+    ToolResult, ToolSearcher,
 };
 
 use crate::tool::sets::{RawNode, ToolsConfig, set_factory};
@@ -154,8 +154,8 @@ impl Dispatcher for Registry {
     }
 
     /// The tool's answer; unknown → None.
-    fn grant_scope(&self, name: &str, args: &JsonObject) -> Option<PathBuf> {
-        self.get(name).and_then(|t| t.grant_scope(args))
+    fn approval_subject(&self, name: &str, args: &JsonObject) -> Option<ApprovalSubject> {
+        self.get(name).and_then(|t| t.approval_subject(args))
     }
 }
 
@@ -263,8 +263,9 @@ impl Dispatcher for Merged {
     }
 
     /// Owner's answer or the default.
-    fn grant_scope(&self, name: &str, args: &JsonObject) -> Option<PathBuf> {
-        self.owner(name).and_then(|p| p.grant_scope(name, args))
+    fn approval_subject(&self, name: &str, args: &JsonObject) -> Option<ApprovalSubject> {
+        self.owner(name)
+            .and_then(|p| p.approval_subject(name, args))
     }
 
     /// The FIRST part with a searcher speaks for the merge; none when no part has one.
@@ -355,8 +356,8 @@ impl Dispatcher for Only {
         self.inner.header_summary(name, args)
     }
 
-    fn grant_scope(&self, name: &str, args: &JsonObject) -> Option<PathBuf> {
-        self.inner.grant_scope(name, args)
+    fn approval_subject(&self, name: &str, args: &JsonObject) -> Option<ApprovalSubject> {
+        self.inner.approval_subject(name, args)
     }
 }
 

@@ -17,7 +17,7 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   asks you instead of refusing. The prompt shows where the file really is
   (symlinks resolved) and is marked `(outside the project root)`; it asks
   even with `tools.code.auto_write`. "Allow for this session" covers that one
-  directory through that one tool. With nobody to ask (`-m`), such a write is
+  directory through that one tool, until `/new` or a `/session` resume. With nobody to ask (`-m`), such a write is
   refused and the message says to add the directory to `write_roots:`. A path
   whose real location cannot be worked out is still refused.
 - **`outside_writes: ask | refuse`**, a new top-level key. `ask` is the

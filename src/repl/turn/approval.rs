@@ -1,7 +1,8 @@
 //! The approval gate (chat/approval.go): the ONE place a state-changing call is put to
-//! the user. The "allow for this session" memory belongs to the conversation: the grant
-//! is "this session may edit files" — or, for a call with a grant scope (a `code` write
-//! outside every root), "this session may write in that directory with that tool".
+//! the user. The "allow for this session" memory belongs to the conversation — `/new` and a
+//! `/session` resume start it empty ([`ApprovalGate::reset`]): the grant is "this session
+//! may edit files" — or, for a call bound to a location (a `code` write outside every
+//! root), "this session may write in that directory with that tool".
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -15,8 +16,19 @@ use tokio_util::sync::CancellationToken;
 
 use crate::repl::render::transcript::Transcript;
 
+/// How the gate allowed a call (a denial is [`Answer::Denied`], not an error).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Answer {
+    /// "Deny", or the prompt was cancelled.
+    Denied,
+    /// "Allow once".
+    Once,
+    /// "Allow for this session", now or by an earlier grant.
+    Session,
+}
+
 /// One approval gate per conversation (approval.go:26-33). Session grants are keyed by
-/// wire tool name and the call's grant scope (`Dispatcher::grant_scope`): a grant for one
+/// wire tool name and the call's grant scope (`ApprovalSubject::scope`): a grant for one
 /// scope never covers another, nor the same scope through another tool, nor the tool's
 /// unscoped calls. The transcript's clock pauses while the user deliberates.
 pub(crate) struct ApprovalGate {
@@ -41,17 +53,17 @@ impl ApprovalGate {
     /// (the path it writes, the command it runs); `scope` is what "allow for this session"
     /// grants — `None` the tool, `Some(dir)` the tool in that directory, and then the
     /// option names it. The error is reserved for the prompt itself failing; a refusal is
-    /// `Ok(false)`, and a turn that continues after a denial is the point of asking.
+    /// `Ok(Answer::Denied)`, and a turn that continues after a denial is the point of asking.
     pub(crate) async fn ask(
         &self,
         cancel: &CancellationToken,
         name: &str,
         scope: Option<&Path>,
         detail: &str,
-    ) -> Result<bool, UiError> {
+    ) -> Result<Answer, UiError> {
         let key = (name.to_owned(), scope.map(Path::to_path_buf));
         if lock(&self.approved).contains(&key) {
-            return Ok(true);
+            return Ok(Answer::Session);
         }
         let session = match scope {
             None => "Allow for this session".to_owned(),
@@ -84,11 +96,18 @@ impl ApprovalGate {
         self.pres.set_state(State::Busy);
         let choice = choice?;
         if choice.cancelled || choice.index == 2 {
-            return Ok(false);
+            return Ok(Answer::Denied);
         }
         if choice.index == 1 {
             lock(&self.approved).insert(key);
+            return Ok(Answer::Session);
         }
-        Ok(true)
+        Ok(Answer::Once)
+    }
+
+    /// Forgets every session grant: the conversation they belonged to is over (`/new`, a `/session`
+    /// resume).
+    pub(crate) fn reset(&self) {
+        lock(&self.approved).clear();
     }
 }
