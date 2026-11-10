@@ -41,6 +41,10 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   directories are now the top-level `write_roots:`, which the code tools share.
   A config that still has `tools.shell.write` loses the shell tool, with a
   warning saying to move the list to `write_roots:`.
+- **"Allow for this session" now ends with the conversation.** Every session
+  grant, for file edits inside the project and for the shell as well as for a
+  directory outside it, is forgotten at `/new` or a `/session` resume; before,
+  it lasted until iota exited.
 
 ### Fixed
 
