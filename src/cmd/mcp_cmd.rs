@@ -115,13 +115,21 @@ struct Declared {
     name: String,
     file: PathBuf,
     entry: McpServerConfig,
+    /// Whether `admit` let its file in: `false` = listed, never started (`list --probe` of an untrusted
+    /// project file).
+    admitted: bool,
 }
 
 /// The servers the files declare, later files replacing earlier entries of the same name (a load's merge).
-fn declared_servers(files: &[PathBuf]) -> Result<Vec<Declared>, CliError> {
+/// Each file is read once; `admit(file, bytes)` sees the very bytes its servers are decoded from.
+fn declared_servers(
+    files: &[PathBuf],
+    admit: &mut dyn FnMut(&Path, &[u8]) -> bool,
+) -> Result<Vec<Declared>, CliError> {
     let mut by_name: BTreeMap<String, Declared> = BTreeMap::new();
     for file in files {
         let read = read_mcp_servers(file).map_err(SetupError::McpEdit)?;
+        let admitted = read.servers.is_empty() || admit(file, read.text.as_bytes());
         for (name, entry) in read.servers {
             by_name.insert(
                 name.clone(),
@@ -129,11 +137,17 @@ fn declared_servers(files: &[PathBuf]) -> Result<Vec<Declared>, CliError> {
                     name,
                     file: file.clone(),
                     entry,
+                    admitted,
                 },
             );
         }
     }
     Ok(by_name.into_values().collect())
+}
+
+/// Every file admitted: a command that starts nothing a file declares.
+fn admit_all(_: &Path, _: &[u8]) -> bool {
+    true
 }
 
 // ---------------------------------------------------------------- add
@@ -509,7 +523,16 @@ async fn run_list(
         Some(McpListScope::All) | None => None,
     };
     let files = source_files(explicit, scope, &env.dirs);
-    let declared = declared_servers(&files)?;
+    // `--probe` starts what the files declare, so the project file goes through the trust gate first — the
+    // same one a run's load uses, never asking: an untrusted file's servers are listed, not started.
+    let project = list
+        .probe
+        .then(|| Config::project_file(explicit, &env.dirs))
+        .flatten();
+    let mut gate = crate::cmd::trust::gate(&env.dirs, false);
+    let declared = declared_servers(&files, &mut |file, bytes| {
+        project.as_deref() != Some(file) || gate(file, bytes, &mut |w| io.warning(&w))
+    })?;
     let probes = if list.probe {
         Some(probe(&declared, env, cancel).await)
     } else {
@@ -540,14 +563,16 @@ async fn run_list(
                     "auth": auth,
                     "login": login.map(LoginState::as_str),
                 });
-                if let Some(probes) = &probes
-                    && let Some(status) = probes.get(i)
-                {
-                    row["probe"] = serde_json::json!({
-                        "state": if status.connected() { "connected" } else { "failed" },
-                        "tools": status.tools,
-                        "error": status.error(),
-                    });
+                match probes.as_ref().map(|p| p.get(i).and_then(Option::as_ref)) {
+                    Some(Some(status)) => {
+                        row["probe"] = serde_json::json!({
+                            "state": if status.connected() { "connected" } else { "failed" },
+                            "tools": status.tools,
+                            "error": status.error(),
+                        });
+                    }
+                    Some(None) => row["probe"] = serde_json::json!({ "state": "not trusted" }),
+                    None => {}
                 }
                 row
             })
@@ -584,28 +609,35 @@ async fn run_list(
             line.push_str("  redirect: ");
             line.push_str(&crate::mcp::config::redirect_uri(d.entry.redirect_port));
         }
-        if let Some(probes) = &probes
-            && let Some(status) = probes.get(i)
-        {
-            line.push_str("  ");
-            line.push_str(&probe_label(status));
+        match probes.as_ref().map(|p| p.get(i).and_then(Option::as_ref)) {
+            Some(Some(status)) => {
+                line.push_str("  ");
+                line.push_str(&probe_label(status));
+            }
+            Some(None) => line.push_str("  not probed (project config not trusted)"),
+            None => {}
         }
         writeln!(io.stdout, "{line}")?;
     }
     Ok(())
 }
 
-/// `--probe`: connect to every declared server the way a run would (the 30 s deadline, the config-order
-/// merge) and report the resolved statuses, index-aligned with `declared`.
+/// `--probe`: connect to every ADMITTED declared server the way a run would (the 30 s deadline, the
+/// config-order merge) and report the resolved statuses, index-aligned with `declared` — `None` for a server
+/// whose file was not admitted, which is never started.
 async fn probe(
     declared: &[Declared],
     env: &Env,
     cancel: &CancellationToken,
-) -> Vec<crate::mcp::ServerStatus> {
+) -> Vec<Option<crate::mcp::ServerStatus>> {
     let configs: Vec<ServerConfig> = declared
         .iter()
+        .filter(|d| d.admitted)
         .map(|d| server_config(&d.name, &d.entry))
         .collect();
+    if configs.is_empty() {
+        return declared.iter().map(|_| None).collect();
+    }
     // A run's servers start without what the detected host withholds (`ToolAssembly::child_env`), so the
     // probe's do too. The host is only asked that: it is dropped unspoken to.
     let child_env =
@@ -617,9 +649,12 @@ async fn probe(
             ..crate::mcp::ManagerOptions::new(crate::llm::default_http_client(), env.clone())
         },
     );
-    let statuses = manager.connect_all(cancel).await;
+    let mut statuses = manager.connect_all(cancel).await.into_iter();
     manager.close().await;
-    statuses
+    declared
+        .iter()
+        .map(|d| if d.admitted { statuses.next() } else { None })
+        .collect()
 }
 
 /// `connected (N tools)`, `needs login: iota mcp login <name>` (an `auto` server the handshake found wants
@@ -663,7 +698,7 @@ fn run_get(
     io: &mut io::Streams,
 ) -> Result<(), CliError> {
     let files = source_files(explicit, None, &env.dirs);
-    let declared = declared_servers(&files)?;
+    let declared = declared_servers(&files, &mut admit_all)?;
     let Some(d) = declared.iter().find(|d| d.name == name) else {
         return Err(unknown(name, &declared).into());
     };
@@ -733,7 +768,7 @@ fn login_server(
     env: &Env,
 ) -> Result<(Declared, crate::mcp::auth::TokenStore, ServerConfig), CliError> {
     let files = source_files(explicit, None, &env.dirs);
-    let mut declared = declared_servers(&files)?;
+    let mut declared = declared_servers(&files, &mut admit_all)?;
     let Some(at) = declared.iter().position(|d| d.name == name) else {
         return Err(unknown(name, &declared).into());
     };
@@ -953,7 +988,7 @@ fn run_remove(
     let (file, read) = match holding.len() {
         1 => holding.remove(0),
         0 => {
-            let declared = declared_servers(&source_files(explicit, scope, dirs))?;
+            let declared = declared_servers(&source_files(explicit, scope, dirs), &mut admit_all)?;
             return Err(match scope {
                 Some(scope) => SetupError::McpNotInScope {
                     name: name.to_owned(),

@@ -333,3 +333,58 @@ fn the_record_is_private_and_config_path_names_the_skip() {
     assert!(o.status.success(), "{}", err(&o));
     assert!(out(&o).starts_with(&format!("Trusted {}\n", elsewhere.display())));
 }
+
+/// `iota mcp list --probe` starts what the files declare, so an untrusted project file's servers are listed
+/// but never started (one warning says why); trusted, they are probed like any other.
+#[test]
+fn mcp_list_probe_never_starts_an_untrusted_project_server() {
+    let (dir, dirs) = temp_project(&[]);
+    let home = dirs.home.expect("fixture home");
+    let marker = dir.path().join("marker");
+    fs::write(
+        dir.path().join(".iota.yaml"),
+        format!(
+            "mcp_servers:\n  planted: {{command: sh, args: [-c, \"touch '{}'\"]}}\n",
+            marker.display()
+        ),
+    )
+    .expect("write project config");
+
+    let probe = || {
+        iota(dir.path(), &home)
+            .args(["mcp", "list", "--probe"])
+            .output()
+            .expect("mcp list --probe")
+    };
+    let o = probe();
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    assert!(!ran(&marker), "--probe started an untrusted project server");
+    assert!(
+        err(&o).starts_with("Warning: skipping project config ")
+            && err(&o).contains("(it is not trusted)"),
+        "{}",
+        err(&o)
+    );
+    assert!(
+        out(&o).contains("planted") && out(&o).contains("not probed (project config not trusted)"),
+        "{}",
+        out(&o)
+    );
+    // `--json` says the same.
+    let o = iota(dir.path(), &home)
+        .args(["mcp", "list", "--probe", "--json"])
+        .output()
+        .expect("mcp list --probe --json");
+    assert!(!ran(&marker));
+    assert!(
+        out(&o).contains("\"state\": \"not trusted\""),
+        "{}",
+        out(&o)
+    );
+
+    trust(dir.path(), &home);
+    let o = probe();
+    assert_eq!(o.status.code(), Some(0), "stderr: {}", err(&o));
+    assert!(ran(&marker), "a trusted project server is probed");
+    assert!(!err(&o).contains("skipping"), "{}", err(&o));
+}
