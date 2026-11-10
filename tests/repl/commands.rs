@@ -2490,7 +2490,8 @@ async fn mcp_failures_and_warnings_reach_the_transcript() {
         "{lines:?}"
     );
     assert!(
-        !lines.iter().any(|l| l.contains("docs")),
+        // `MCP docs`, not bare `docs`: the banner prints the cwd, and a checkout path may contain `docs`.
+        !lines.iter().any(|l| l.contains("MCP docs")),
         "a successful connect says nothing: {lines:?}"
     );
     assert!(
