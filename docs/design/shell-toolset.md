@@ -20,13 +20,15 @@ deliberate future work.
 
 ## Layering
 
-- **internal/shell** — mechanism: `Run(ctx, Options) Result` (bash lookup,
-  execution, timeout, streaming capped buffer + middle-elided output truncation) and the platform
-  sandbox builders (`sandbox_darwin.go` Seatbelt, `sandbox_linux.go` bwrap,
-  `sandbox_other.go` none). `Result` is structured (exit code, timeout,
-  cancellation, setup error) — no model-facing wording here.
-- **tool/shell.go** — policy: config decoding, the tool surface (Def/args),
-  result formatting, and the approval contract.
+- **src/shell** — mechanism: execution (`exec.rs`: interpreter lookup,
+  timeout, streaming capped buffer + middle-elided output truncation), jobs
+  (`jobs.rs`), the interpreter choice (`interp.rs`), the iota exception
+  (`selfcall.rs`) and the platform sandbox builders (`sandbox/darwin.rs`
+  Seatbelt, `sandbox/linux.rs` bwrap, `sandbox/other.rs` none). Results are
+  structured (exit code, timeout, cancellation, setup error) — no
+  model-facing wording here.
+- **src/tool/builtins/shell.rs** — policy: config decoding, the tool surface
+  (def/args), result formatting, and the approval contract.
 
 ## Sandbox semantics
 
@@ -38,6 +40,21 @@ off the project root. When it lists any, the tool description's sandbox line
 names them (`confined to the project root, the extra write roots (…) and
 temp/cache directories`); with none the line is unchanged. Network is blocked unless
 `network: true`.
+
+What a write outside those roots does depends on whether the sandbox is on:
+
+- **Sandbox on**: the command runs without asking, and the OS refuses the
+  write — the command sees an OS error (`Operation not permitted` under
+  Seatbelt, `Read-only file system` under bwrap's read-only bind) and its
+  exit status says so. Nothing in iota inspects the command line.
+- **Sandbox off** (`sandbox: off`, or no sandbox on this platform): the call
+  is approval-gated (Approval, below), and once allowed it runs with the
+  user's full permissions. Its paths are **not checked at all** — the code
+  tools' jail is theirs alone, and `write_roots:` changes nothing here.
+
+The `cwd` argument is not jailed either: an absolute `cwd` outside the root is
+accepted (a bad one fails at spawn), and the sandbox, not the cwd, bounds the
+writes.
 
 - **macOS**: `/usr/bin/sandbox-exec` with an allow-default SBPL profile that
   denies `file-write*` outside the writable roots and (optionally)
@@ -135,16 +152,17 @@ the project root; relative `cwd` arguments resolve against it.
 ## Deferred (v2+)
 
 Domain-allowlist network proxying (sandbox-runtime style), persistent shell
-sessions and background processes, Landlock as a bwrap-less Linux fallback,
+sessions, Landlock as a bwrap-less Linux fallback,
 Windows sandboxing, per-command policy classification (Codex execpolicy
 style), and a sandbox-denial → "retry unsandboxed with approval?" escalation
 flow.
 
 ## Testing
 
-internal/shell: shell semantics (pipes/exit codes/cwd), cancellation,
+src/shell (unit tests) and tests/tool/shell.rs: shell semantics (pipes/exit codes/cwd), cancellation,
 truncation, writable-path derivation, and real sandbox isolation (in-root
 write allowed, out-of-root denied, `write_roots:` extras honored) with an
 environment probe that skips where the sandbox cannot run (e.g. nested
-sandboxes). tool: config matrix (sandbox/auto_run → RequiresApproval),
-legacy-shape rejection, model-facing formatting, registry/Merge integration.
+sandboxes). tests/tool/shell.rs: config matrix (sandbox/auto_run →
+`requires_approval`), legacy-shape and retired-`write` rejection, the sandbox
+line naming `write_roots:` (`the_sandbox_line_names_the_write_roots`), model-facing formatting, registry/Merge integration.

@@ -32,8 +32,8 @@ so execution policy stays in one place.
 | `edit_file` | path, old_string, new_string, replace_all? | unique-match string replace; snippet of the change echoed back |
 | `write_file` | path, content | whole-file create/overwrite; parents auto-created |
 
-All paths are **jailed to the project root** (`Env.ProjectRoot`, cwd
-fallback) **plus the top-level `write_roots:`** (below): relative paths
+All paths are **jailed to the project root** (`ToolEnv::root`: the
+configured project root, else the cwd) **plus the top-level `write_roots:`** (below): relative paths
 resolve against the project root, absolute paths are taken as given, and the
 path's real location — symlinks resolved, the nearest existing ancestor
 canonicalized — must lie inside the real location of the project root or of
@@ -44,7 +44,9 @@ lexically. A path outside every root is `path is outside the project root
 (<root>) and the extra write roots (<e1>, <e2>): <path>` (the extras clause
 only when there are extras). Results and headers stay anchored on the
 project root: a path under an extra root is shown absolute (`~/…` in a
-header when it sits under home). glob/grep skip `.git` and the matches of
+header when it sits under home). glob/grep never follow a symlink and do
+not list one whose real location lies outside every root (it is invisible,
+not an error). glob/grep skip `.git` and the matches of
 the containing root's `.gitignore` — the project root's, or the extra root's
 for a walk under one, whose patterns also match relative to that root —
 (re-read per call; nested .gitignore files are a later refinement), plus
@@ -66,6 +68,15 @@ Mutating tools implement the package-private `approver` interface; the
 - **`tools.code.auto_write: true`** waives approval entirely (the tools then
   report RequiresApproval=false), which also unlocks writes in -m runs.
 
+**The jail is not the approval.** The two are separate checks, in order:
+approval is asked before the call runs, and the jail is checked inside it.
+Allowing a write whose path lies outside every root does not widen the jail —
+the call still fails with `path is outside the project root (…)`; `auto_write`
+does not widen it either. The one way to admit a path outside the project
+root is to list its directory in `write_roots:` (Config, below). That list is
+read when the tools are assembled at startup, so a running session cannot
+gain a root: the user edits the config and starts a new session.
+
 ## Config
 
 ```yaml
@@ -85,7 +96,11 @@ top-level key (beside `providers:`/`models:`/`agents:`), not a `tools:` key:
 key audit. Every config file of the stack adds its entries. Each entry is
 resolved once when the tools are assembled (`ToolEnv::write_roots`); an
 extra root whose real location cannot be worked out refuses the set
-(`cannot resolve the write root <path>`) instead of being dropped. An empty
+(`cannot resolve the write root <path>`) instead of being dropped. Earlier,
+at config load, a blank entry or a `~` entry with no home directory refuses
+the load (`write_roots[i]: …`); an entry that names a directory that does not
+exist yet is accepted. Two entries that resolve to the same path are kept
+once. An empty
 or absent list is the project root alone, and the tools' descriptions are
 then byte-identical to a build without the key.
 
@@ -93,16 +108,21 @@ then byte-identical to a build without the key.
 
 apply_patch-style multi-file edits, background/persistent processes (a
 command-set evolution), LSP diagnostics, LLM edit self-correction (Gemini
-editCorrector), nested .gitignore semantics, symlink-escape hardening under
-workspace trust, a diff preview inside the approval prompt, and the `web`
+editCorrector), nested .gitignore semantics, a diff preview inside the approval prompt, and the `web`
 set. The rest of P2 (workspace trust, broader permission policies) builds on
 the same ApprovalReporter seam.
 
 ## Testing
 
-Path jail (absolute/`..`); glob depth default, gitignore exclusion, mtime
+Path jail (absolute/`..`; real locations: a symlink that leaves every root
+refused, one that stays inside admitted, a root reached through a link, an
+unverifiable path refused; extra write roots admitted, an unresolvable one
+refusing the set; walks skipping escaping links and anchored on an extra
+root); glob depth default, gitignore exclusion, mtime
 order; grep format, include filter, context, binary skip, bad regex;
 list_dir; read_file numbering/window/binary/empty; edit_file read-gate,
 uniqueness, replace_all, staleness, snippet; write_file create/parents,
 overwrite gate, ledger refresh by writes; approval matrix incl. auto_write
-and Merge routing (tool/code_test.go).
+and Merge routing (`src/tool/builtins/code/{mod,tools}.rs` tests,
+`tests/tool/code.rs`; `write_roots:` end to end in
+`tests/cmd/cli.rs::cli_write_roots_open_a_directory_outside_the_project`).
