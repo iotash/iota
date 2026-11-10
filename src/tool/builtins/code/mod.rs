@@ -34,6 +34,8 @@ pub(crate) const CODE_GLOB_COLLECT_CAP: usize = 10_000;
 pub(crate) const CODE_MAX_GREP_MATCHES: usize = 100;
 /// `grep` skips files larger than this.
 pub(crate) const CODE_GREP_MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
+/// `grep` stops once it has read this many bytes of files (per call).
+pub(crate) const CODE_GREP_MAX_TOTAL_BYTES: u64 = 256 << 20;
 /// `grep` clips matched lines to this many bytes.
 pub(crate) const CODE_GREP_MAX_LINE_LEN: usize = 500;
 /// `grep` context lines are clamped to this.

@@ -17,7 +17,10 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 - **Reading is no longer restricted to the project; writing still is.**
   `read_file`, `list_dir`, `glob` and `grep` now read any path, absolute or
-  `../…`, and follow a symlink wherever it leads. The shell could already read
+  `../…`, and follow a symlink wherever it leads. A glob or grep stops after
+  100 000 files and folders, a grep also after reading 256 MB, saying so in
+  either case, and both stop at once when you press Esc, so a search from `/`
+  cannot run away. The shell could already read
   the whole machine without asking, so the restriction only pushed the model
   into `cat`, where you see less of what it reads. `edit_file` and
   `write_file` are confined exactly as before: to the project and the

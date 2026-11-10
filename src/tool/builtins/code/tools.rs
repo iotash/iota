@@ -6,7 +6,7 @@ use std::{
     collections::{BTreeSet, HashSet},
     fmt::Write as _,
     fs,
-    io::Write as _,
+    io::{Read as _, Write as _},
     path::{Path, PathBuf},
     sync::Arc,
     time::SystemTime,
@@ -23,9 +23,10 @@ use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    CODE_GLOB_COLLECT_CAP, CODE_GREP_MAX_FILE_BYTES, CODE_GREP_MAX_LINE_LEN, CODE_MAX_DIR_ENTRIES,
-    CODE_MAX_FILE_BYTES, CODE_MAX_GLOB_RESULTS, CODE_MAX_GREP_CONTEXT, CODE_MAX_GREP_MATCHES,
-    CODE_MAX_OUTPUT, CODE_WALK_MAX_ENTRIES, CodeSet, byte_count, looks_binary, walk,
+    CODE_BINARY_SNIFF_LEN, CODE_GLOB_COLLECT_CAP, CODE_GREP_MAX_FILE_BYTES, CODE_GREP_MAX_LINE_LEN,
+    CODE_GREP_MAX_TOTAL_BYTES, CODE_MAX_DIR_ENTRIES, CODE_MAX_FILE_BYTES, CODE_MAX_GLOB_RESULTS,
+    CODE_MAX_GREP_CONTEXT, CODE_MAX_GREP_MATCHES, CODE_MAX_OUTPUT, CODE_WALK_MAX_ENTRIES, CodeSet,
+    byte_count, looks_binary, walk,
 };
 use crate::tool::args::{bool_arg, int_arg, read_file_limited, str_arg};
 
@@ -64,9 +65,10 @@ impl Tool for Glob {
         ToolDef {
             name: "glob".to_owned(),
             description: "Find files by name pattern, under the project root unless \"path\" names another \
-                directory (reads are not restricted). Patterns match root-relative paths and support * ? and ** \
-                (a pattern without \"/\" matches at any depth, e.g. \"*.rs\"). Results are newest-first. .git \
-                and root-.gitignore matches are excluded."
+                directory (reads are not restricted). Patterns match paths relative to the project root or \
+                write root holding the searched directory, else to that directory, and support * ? and ** (a \
+                pattern without \"/\" matches at any depth, e.g. \"*.rs\"). Results are newest-first. .git and \
+                root-.gitignore matches are excluded."
                 .to_owned(),
             input_schema: schema(json!({
                 "type": "object",
@@ -249,7 +251,7 @@ impl Tool for EditFile {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File path relative to the project root.",
+                        "description": "File path, relative to the project root or absolute.",
                     },
                     "old_string": {
                         "type": "string",
@@ -313,7 +315,7 @@ impl Tool for WriteFile {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File path relative to the project root.",
+                        "description": "File path, relative to the project root or absolute.",
                     },
                     "content": {
                         "type": "string",
@@ -356,20 +358,29 @@ impl Tool for WriteFile {
 
 // ---- glob ----
 
-/// The line a walk that hit [`CODE_WALK_MAX_ENTRIES`] ends its result with.
-fn walk_cap_note() -> String {
-    format!(
-        "[stopped after visiting {CODE_WALK_MAX_ENTRIES} entries; narrow \"path\" to search further]"
-    )
+/// The line a walk stopped by a bound ends its result with: `[stopped after visiting
+/// {CODE_WALK_MAX_ENTRIES} entries; …]` for a capped walk, `[stopped after reading
+/// {CODE_GREP_MAX_TOTAL_BYTES} MB of files; …]` when `grep` spent its read budget; `None` otherwise.
+fn walk_note(walked: &walk::Walked, spent: bool) -> Option<String> {
+    let what = if spent {
+        format!("reading {} MB of files", CODE_GREP_MAX_TOTAL_BYTES >> 20)
+    } else if *walked == walk::Walked::Capped {
+        format!("visiting {CODE_WALK_MAX_ENTRIES} entries")
+    } else {
+        return None;
+    };
+    Some(format!(
+        "[stopped after {what}; narrow \"path\" to search further]"
+    ))
 }
 
 /// What a walk that found nothing says: nothing at all when the user cancelled it (ESC is their own
-/// doing, not something for the model to interpret), the cap line when it stopped early.
-fn walk_found_nothing(walked: &walk::Walked, none: String) -> ToolOutput {
-    match walked {
-        walk::Walked::Cancelled => ToolOutput::ok(""),
-        walk::Walked::Capped => ToolOutput::ok(format!("{none}\n{}", walk_cap_note())),
-        walk::Walked::Done | walk::Walked::Stopped => ToolOutput::ok(none),
+/// doing, not something for the model to interpret), else `empty` and the bound's line, if any.
+fn walk_found_nothing(walked: &walk::Walked, note: Option<String>, empty: String) -> ToolOutput {
+    match (walked, note) {
+        (walk::Walked::Cancelled, _) => ToolOutput::ok(""),
+        (_, Some(note)) => ToolOutput::ok(format!("{empty}\n{note}")),
+        (_, None) => ToolOutput::ok(empty),
     }
 }
 
@@ -410,7 +421,11 @@ fn glob_call(cs: &CodeSet, args: &JsonObject, cancel: &CancellationToken) -> Too
     });
 
     if hits.is_empty() {
-        return walk_found_nothing(&walked, format!("no files match {pattern}"));
+        return walk_found_nothing(
+            &walked,
+            walk_note(&walked, false),
+            format!("no files match {pattern}"),
+        );
     }
     // Stable, so equal mtimes keep the walk's lexical order.
     hits.sort_by_key(|h| std::cmp::Reverse(h.1));
@@ -428,8 +443,8 @@ fn glob_call(cs: &CodeSet, args: &JsonObject, cancel: &CancellationToken) -> Too
         );
     }
     let mut out = out.trim_end_matches('\n').to_owned();
-    if walked == walk::Walked::Capped {
-        let _ = write!(out, "\n{}", walk_cap_note());
+    if let Some(note) = walk_note(&walked, false) {
+        let _ = write!(out, "\n{note}");
     }
     ToolOutput::ok(out)
 }
@@ -468,24 +483,24 @@ fn grep_call(cs: &CodeSet, args: &JsonObject, cancel: &CancellationToken) -> Too
     let mut buf = String::new();
     let mut total = 0usize;
     let mut capped = false;
-    let walked = walk::walk_files(cs.anchor(&base), &base, cancel, &mut |abs, rel, entry| {
+    // Bytes read so far: a grep's cost is what it reads, so the walk's entry cap alone would still let
+    // one over `/` read gigabytes.
+    let mut read = 0u64;
+    let mut spent = false;
+    let walked = walk::walk_files(cs.anchor(&base), &base, cancel, &mut |abs, rel, _| {
+        if read >= CODE_GREP_MAX_TOTAL_BYTES {
+            spent = true;
+            return false;
+        }
         if let Some(m) = &include_matcher
             && !match_include(m, include, rel)
         {
             return true;
         }
-        let Ok(meta) = entry.metadata() else {
+        let Some(data) = grep_text(abs) else {
             return true;
         };
-        if meta.len() > CODE_GREP_MAX_FILE_BYTES {
-            return true;
-        }
-        let Ok((data, _)) = read_file_limited(abs, CODE_GREP_MAX_FILE_BYTES) else {
-            return true;
-        };
-        if looks_binary(&data) {
-            return true;
-        }
+        read += u64::try_from(data.len()).unwrap_or(u64::MAX);
         let content = String::from_utf8_lossy(&data);
         // strings.Split, not splitLines: a trailing newline yields a final empty (matchable) line and '\r' stays.
         let lines: Vec<&str> = content.split('\n').collect();
@@ -510,8 +525,9 @@ fn grep_call(cs: &CodeSet, args: &JsonObject, cancel: &CancellationToken) -> Too
         true
     });
 
+    let note = walk_note(&walked, spent);
     if total == 0 {
-        return walk_found_nothing(&walked, format!("no matches for {pattern}"));
+        return walk_found_nothing(&walked, note, format!("no matches for {pattern}"));
     }
     let mut out = buf.trim_end_matches('\n').to_owned();
     if capped {
@@ -520,10 +536,33 @@ fn grep_call(cs: &CodeSet, args: &JsonObject, cancel: &CancellationToken) -> Too
             "\n[stopped after {total} matches; refine the pattern or use include to narrow the search]"
         );
     }
-    if walked == walk::Walked::Capped {
-        let _ = write!(out, "\n{}", walk_cap_note());
+    if let Some(note) = note {
+        let _ = write!(out, "\n{note}");
     }
     ToolOutput::ok(out)
+}
+
+/// The bytes `grep` searches in `abs`, or `None` for anything but a readable regular text file of at
+/// most [`CODE_GREP_MAX_FILE_BYTES`] (a link is judged by its target). The first
+/// [`CODE_BINARY_SNIFF_LEN`] bytes are sniffed before the rest is read, so a binary file costs one
+/// small read, not up to 10 MB — ripgrep's order, and what keeps a walk over `/` affordable.
+fn grep_text(abs: &Path) -> Option<Vec<u8>> {
+    let meta = fs::metadata(abs).ok()?;
+    if !meta.is_file() || meta.len() > CODE_GREP_MAX_FILE_BYTES {
+        return None;
+    }
+    let mut file = fs::File::open(abs).ok()?;
+    let mut data = Vec::new();
+    let sniff = u64::try_from(CODE_BINARY_SNIFF_LEN).unwrap_or(u64::MAX);
+    (&mut file).take(sniff).read_to_end(&mut data).ok()?;
+    if looks_binary(&data) {
+        return None;
+    }
+    let read = u64::try_from(data.len()).unwrap_or(u64::MAX);
+    file.take(CODE_GREP_MAX_FILE_BYTES.saturating_sub(read))
+        .read_to_end(&mut data)
+        .ok()?;
+    Some(data)
 }
 
 /// A pattern without `/` matches the basename, otherwise the path relative to the walk's root.

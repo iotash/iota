@@ -38,9 +38,10 @@ configured project root, else the cwd), an absolute path is taken as given,
 and either is cleaned lexically. For `read_file`, `list_dir`, `glob` and
 `grep` (and their `path` base) that is all — no root is consulted and
 nothing is refused. The jail would buy nothing: the sandboxed shell already
-reads the whole machine without asking (the sandbox denies writes and the
-network, not reads), so a jailed `read_file` only pushed the model into
-`cat`, which is less visible and no safer.
+reads the whole machine without asking (the sandbox confines writes, and
+the network unless `tools.shell.network: true`, but never reads), so a
+jailed `read_file` only pushed the model into `cat`, which is less visible
+and no safer.
 
 `edit_file` and `write_file` are **jailed to the project root plus the
 top-level `write_roots:`** (below): the path's real location — symlinks
@@ -57,12 +58,33 @@ Results and headers stay anchored on the project root: a path outside it —
 a read anywhere, a write under an extra root — is shown absolute (`~/…` in a
 header when it sits under home). glob/grep never descend into a symlink below
 the walk's start, but list a link and read through a file link wherever it
-leads. glob/grep skip `.git` and the matches of the containing root's
-`.gitignore` — the project root's, or the extra root's for a walk under one,
-whose patterns also match relative to that root; a walk from a directory
-under no root is anchored on that directory and its own `.gitignore` —
+leads. A `path:` base is taken at its real location (`CodeSet::walk_base`),
+spelled under the root that really holds it, else by that real location, so
+a link to a directory, a path through one and the absolute path all walk
+the same tree under the same rules. glob/grep skip `.git` and the matches
+of the containing root's `.gitignore` — the project root's, or the extra
+root's for a walk under one, whose patterns also match relative to that
+root; a walk from a directory under no root is anchored on that directory
+and its own `.gitignore` —
 (re-read per call; nested .gitignore files are a later refinement), plus
 binary files. A hit outside the project root is listed by its absolute path.
+
+Because a walk may now start at `/`, every glob/grep walk is bounded by the
+entries it VISITS, not only by its hits: it stops after 100 000 entries of
+any kind (`CODE_WALK_MAX_ENTRIES`, per call) and ends its result with
+`[stopped after visiting 100000 entries; narrow "path" to search further]`.
+A grep's cost is the bytes it reads, not the entries it visits (a profile of
+a grep over `/` spent three quarters of its time in `read`), so grep also
+stops once it has read 256 MB of files in one call
+(`CODE_GREP_MAX_TOTAL_BYTES`, `[stopped after reading 256 MB of files; …]`),
+and it sniffs a file's first 8000 bytes for a NUL before reading the rest,
+so a binary file costs one small read (ripgrep's order). Measured on a
+laptop, a never-matching walk over `~` or `/` returns in about 1 s (glob)
+and 7–11 s (grep, release build).
+It also reads the run's cancellation token at every entry — the walk runs on
+the blocking pool, which ESC alone never stopped — and a cancelled walk
+returns what it has (nothing, when it has nothing), not an error: ESC is the
+user's own doing.
 
 ## Approval — the first slice of the P2 permission framework
 
@@ -128,11 +150,15 @@ the same ApprovalReporter seam.
 ## Testing
 
 Open reads (absolute/`..` and a link out of the root read, a `path:` base
-outside the project walked and listed, walks reporting escaping links);
+outside the project walked and listed — every spelling of it, links
+included, under its own `.gitignore` —, walks reporting escaping links, a
+walk that never matches stopping at the entry cap, a cancelled token
+stopping a walk);
 write jail (absolute/`..`; real locations: a symlink that leaves every root
 refused, one that stays inside admitted, a root reached through a link, an
 unverifiable path refused; extra write roots admitted, an unresolvable one
-refusing the set; walks anchored on an extra root); descriptions (no reader
+refusing the set; walks anchored on an extra root); a never-matching grep
+stopping at the read budget; descriptions (no reader
 claims a jail, the writers name the roots); glob depth default, gitignore exclusion, mtime
 order; grep format, include filter, context, binary skip, bad regex;
 list_dir; read_file numbering/window/binary/empty; edit_file read-gate,

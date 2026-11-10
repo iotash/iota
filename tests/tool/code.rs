@@ -306,6 +306,32 @@ async fn a_walk_that_never_matches_stops_at_the_entry_cap() {
     }
 }
 
+/// A grep's cost is what it reads: past 256 MB of files it stops and says so, however few entries
+/// it has visited.
+#[tokio::test]
+async fn a_grep_that_never_matches_stops_at_the_read_budget() {
+    let (dir, _root, tools) = code_project(&[], "");
+    let big = dir.path().join("big");
+    fs::create_dir_all(&big).expect("big");
+    // 27 text files of 10 MB (the per-file limit), 270 MB in all.
+    let text = format!("{}\n", "x".repeat(1023)).repeat(10 << 10);
+    for f in 0..27 {
+        fs::write(big.join(format!("f{f:02}.txt")), &text).expect("file");
+    }
+    let out = call(
+        &tools,
+        "grep",
+        json!({"pattern": "NEVERMATCH", "path": big.to_str().expect("utf-8")}),
+    )
+    .await;
+    assert_eq!(
+        out,
+        ToolOutput::ok(
+            "no matches for NEVERMATCH\n[stopped after reading 256 MB of files; narrow \"path\" to search further]"
+        )
+    );
+}
+
 #[tokio::test]
 async fn glob_lists_matching_files_relative_to_the_root() {
     let (_dir, root, tools) = code_project(
@@ -921,9 +947,9 @@ fn the_advertised_descriptions_and_schemas_are_pinned_byte_for_byte() {
     assert_eq!(
         glob.description,
         "Find files by name pattern, under the project root unless \"path\" names another directory (reads \
-         are not restricted). Patterns match root-relative paths and support * ? and ** (a pattern without \"/\" \
-         matches at any depth, e.g. \"*.rs\"). Results are newest-first. .git and root-.gitignore matches are \
-         excluded."
+         are not restricted). Patterns match paths relative to the project root or write root holding the \
+         searched directory, else to that directory, and support * ? and ** (a pattern without \"/\" matches at \
+         any depth, e.g. \"*.rs\"). Results are newest-first. .git and root-.gitignore matches are excluded."
     );
     assert_eq!(
         serde_json::Value::Object(glob.input_schema.expect("schema")),
@@ -1009,7 +1035,7 @@ fn the_advertised_descriptions_and_schemas_are_pinned_byte_for_byte() {
         json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "File path relative to the project root." },
+                "path": { "type": "string", "description": "File path, relative to the project root or absolute." },
                 "old_string": { "type": "string", "description": "Exact text to replace." },
                 "new_string": { "type": "string", "description": "Replacement text." },
                 "replace_all": { "type": "boolean", "description": "Replace every occurrence instead of requiring uniqueness (default false)." },
@@ -1030,7 +1056,7 @@ fn the_advertised_descriptions_and_schemas_are_pinned_byte_for_byte() {
         json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "File path relative to the project root." },
+                "path": { "type": "string", "description": "File path, relative to the project root or absolute." },
                 "content": { "type": "string", "description": "Full file content to write." },
             },
             "required": ["path", "content"],
