@@ -370,8 +370,8 @@ fn glob_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
     };
 
     let mut hits: Vec<(String, SystemTime)> = Vec::new();
-    walk::walk_files(&cs.root, &base, &mut |_abs, rel, entry| {
-        if matcher.is_match(rel) {
+    walk::walk_files(&cs.root, &base, &mut |abs, rel, entry| {
+        if matcher.is_match(rel) && cs.admits(abs, entry) {
             let mtime = entry
                 .metadata()
                 .ok()
@@ -441,6 +441,9 @@ fn grep_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
         if let Some(m) = &include_matcher
             && !match_include(m, include, rel)
         {
+            return true;
+        }
+        if !cs.admits(abs, entry) {
             return true;
         }
         let Ok(meta) = entry.metadata() else {
@@ -1012,7 +1015,7 @@ mod tests {
         let (_t, root, out) = jail_fixture();
         symlink(out.join("secret.txt"), root.join("escape")).expect("link");
         symlink(&out, root.join("outdir")).expect("link");
-        let cs = CodeSet::new(root.clone(), true);
+        let cs = CodeSet::new(root.clone(), true).expect("set");
         let cx = RunCtx::default();
         let refused = |arg: &str| {
             ToolOutput::err(format!(
@@ -1051,6 +1054,24 @@ mod tests {
         );
         assert!(!out.join("new.txt").exists());
 
+        // B1: the planted overlong links are refused for read and write alike.
+        super::super::tests::plant_overlong(&root, &out);
+        for path in ["L/S/secret.txt", "L2"] {
+            assert_eq!(
+                read_file_call(&cs, &args(json!({"path": path}))),
+                refused(path)
+            );
+        }
+        assert_eq!(
+            write_file_call(
+                &cs,
+                &cx,
+                &args(json!({"path": "L/S/planted.txt", "content": "x"}))
+            ),
+            refused("L/S/planted.txt")
+        );
+        assert!(!out.join("planted.txt").exists());
+
         // A write through a link that stays inside still lands.
         symlink("dir", root.join("subdir")).expect("link");
         let wrote = write_file_call(
@@ -1063,5 +1084,38 @@ mod tests {
             std::fs::read_to_string(root.join("dir/new.txt")).expect("new"),
             "x"
         );
+    }
+
+    // B2/S1: a walk meets symlinks as entries; `grep` must not read through one that leaves the
+    // root, and `glob` must not list it, while a link that stays inside counts for both.
+    #[cfg(unix)]
+    #[test]
+    fn walks_skip_symlinks_that_leave_the_root() {
+        use super::super::CodeSet;
+        use super::super::tests::{jail_fixture, plant_overlong};
+        use super::{glob_call, grep_call};
+        use std::os::unix::fs::symlink;
+
+        let (_t, root, out) = jail_fixture();
+        std::fs::write(out.join("secret.txt"), "TOPSECRET").expect("secret");
+        std::fs::write(root.join("dir/kept.txt"), "TOPSECRET inside").expect("kept");
+        symlink(out.join("secret.txt"), root.join("escape")).expect("link");
+        symlink(&out, root.join("outdir")).expect("link");
+        symlink("dir/kept.txt", root.join("alias")).expect("link");
+        plant_overlong(&root, &out);
+        let cs = CodeSet::new(root.clone(), false).expect("set");
+
+        let grep = grep_call(&cs, &args(json!({"pattern": "TOPSECRET"})));
+        assert_eq!(
+            grep,
+            ToolOutput::ok("alias:1: TOPSECRET inside\ndir/kept.txt:1: TOPSECRET inside")
+        );
+        let glob = glob_call(&cs, &args(json!({"pattern": "*"})));
+        assert!(!glob.is_error, "{glob:?}");
+        let names: Vec<&str> = glob.text.lines().collect();
+        assert!(names.contains(&"alias"), "{names:?}");
+        for gone in ["escape", "outdir", "L", "L2"] {
+            assert!(!names.contains(&gone), "{gone} in {names:?}");
+        }
     }
 }

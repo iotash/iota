@@ -61,6 +61,10 @@ pub enum SetError {
         "read_only and auto_write contradict each other: auto_write approves writes the set does not offer"
     )]
     CodeContradiction,
+    /// The project root's real location cannot be worked out (an unreadable or overlong
+    /// ancestor, a link loop), so the code tools have nothing to jail paths to.
+    #[error("cannot resolve the project root {}", .0.display())]
+    CodeRoot(std::path::PathBuf),
 }
 
 #[cfg(test)]
