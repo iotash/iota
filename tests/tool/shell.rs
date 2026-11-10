@@ -684,9 +684,10 @@ fn the_shell_description_states_the_shell_state_contract() {
                 "the background paragraph must come last, in this dialect:\n{desc}"
             );
         }
-        let protected = " Inside the root, .iota.yaml, .git/config and .git/hooks stay read-only too, so \
-                         `git config`, `git remote add` and hook installers fail there: ask the user to make \
-                         such a change.\n\n";
+        let protected = " Inside the root, .iota.yaml, .git/config, .git/config.worktree and .git/hooks \
+                         (a submodule's under .git/modules too) stay read-only and .git itself cannot be moved \
+                         or replaced, so `git config`, `git remote add` and hook installers fail there: ask the \
+                         user to make such a change.\n\n";
         assert!(
             sandboxed_blocked.contains(&format!("network access is BLOCKED.{protected}")),
             "the sandbox suffix still precedes the background paragraph"
@@ -1427,7 +1428,7 @@ fn the_sandbox_line_names_the_write_roots() {
     );
     assert_eq!(
         sandbox_desc(&[PathBuf::from("/data/a"), PathBuf::from("/data/b")], net),
-        "Commands run inside an OS sandbox: file writes are confined to the project root, the extra write roots (/data/a, /data/b) and temp/cache directories (writes elsewhere fail with permission errors), and network access is BLOCKED. Inside the root, .iota.yaml, .git/config and .git/hooks stay read-only too, so `git config`, `git remote add` and hook installers fail there: ask the user to make such a change."
+        "Commands run inside an OS sandbox: file writes are confined to the project root, the extra write roots (/data/a, /data/b) and temp/cache directories (writes elsewhere fail with permission errors), and network access is BLOCKED. Inside the root, .iota.yaml, .git/config, .git/config.worktree and .git/hooks (a submodule's under .git/modules too) stay read-only and .git itself cannot be moved or replaced, so `git config`, `git remote add` and hook installers fail there: ask the user to make such a change."
     );
 }
 

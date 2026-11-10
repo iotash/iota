@@ -109,9 +109,9 @@ pub fn table(root: &Path, extra: &[PathBuf], home: Option<&Path>) -> Vec<Protect
         let linked = linked_gitdir(&git);
         let mut rows: Vec<Protected> = git_dir(git.clone()).into();
         let common = match linked {
-            Some((gitdir, common)) => {
+            Some((own, common)) => {
                 rows.extend(git_dir(common.clone()));
-                let worktree = gitdir.join("config.worktree");
+                let worktree = own.join("config.worktree");
                 rows.push(at(worktree, Reach::Tree, Why::GitConfig));
                 common
             }

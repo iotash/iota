@@ -17,9 +17,13 @@ pub(crate) fn available() -> bool {
 /// path that exists and lies under a bound writable root — elsewhere the read-only `/` already covers it: a
 /// [`Reach::Tree`] path is `--ro-bind`ed over itself; a [`Reach::Entry`] directory is `--bind`ed over itself,
 /// which leaves its contents writable but makes it a mount point the command cannot rename, remove or replace
-/// (`EBUSY`), and an [`Reach::Entry`] file (`.git` as a `gitdir:` file) is `--ro-bind`ed. A path that does not
-/// exist cannot be bound, so a command may still CREATE one (a `.iota.yaml`, the `.git/hooks` of a repository
-/// it inits): on Linux the `code` writers' refusal is what covers that case, not the sandbox.
+/// (`EBUSY`), and an [`Reach::Entry`] file (`.git` as a `gitdir:` file) is `--ro-bind`ed. A hardlink to a bound
+/// file cannot be made (`EXDEV`: a bind mount is its own mount).
+///
+/// A Linux gap for shell commands: a path that does not exist cannot be bound, so a sandboxed command may still
+/// CREATE one — a `<root>/.iota.yaml`, the `.git/hooks` of a repository it inits. `write_file`/`edit_file` refuse
+/// it (their check is by path), but nothing stops the command. Closing it needs an empty placeholder bound over
+/// the missing path or Landlock; neither is built.
 // The three per-OS backends share the signature `exec` dispatches on; only the `other` stub can fail.
 #[allow(clippy::unnecessary_wraps)]
 pub(crate) fn command(

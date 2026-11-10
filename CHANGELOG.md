@@ -33,7 +33,9 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   `.git/hooks/pre-commit` (which your next `git commit` runs) and
   `.iota.yaml`. Now no sandboxed command and no `write_file`/`edit_file`
   writes `<project>/.iota.yaml`, `<project>/.iota.yml`, anything under
-  `<project>/.git/hooks`, `<project>/.git/config`, `~/.iota.yaml`,
+  `<project>/.git/hooks`, `<project>/.git/config`,
+  `<project>/.git/config.worktree`, the same files of each submodule (under
+  `<project>/.git/modules`), `~/.iota.yaml`,
   `~/.iota.yml` or `~/.iota/trusted.json`, and neither `<project>/.git` nor
   `~/.iota` can be renamed or replaced. In a worktree made with `git worktree
   add`, the main repository's `.git/hooks` and `.git/config` and the
@@ -45,9 +47,10 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   repository yet, `git push -u`, `git submodule add` and hook installers
   (husky, pre-commit, lefthook) fail there; `git add`, `commit`, `checkout`
   and `fetch` still work. Run those yourself, or let iota run them with
-  `sandbox: off` (each command is then asked about). On Linux a file that
-  does not exist yet can still be created by a command; the file tools
-  cover that case. The file tools ask before writing one of these files
+  `sandbox: off` (each command is then asked about). On Linux the sandbox
+  can only protect files that already exist: a sandboxed command can still
+  create a missing one, such as a new `.iota.yaml`; only the file tools
+  refuse that. The file tools ask before writing one of these files
   every time, even with `auto_write: true` and even after "Allow for this
   session"; the prompt names the file and why, and offers only "Allow once"
   and "Deny". In `-m`, or with `outside_writes: refuse`, the write is refused

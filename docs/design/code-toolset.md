@@ -72,6 +72,7 @@ sandbox (shell-toolset.md, Sandbox semantics), so the two cannot drift:
 | `<root>/.git/config`, `<root>/.git/config.worktree` | tree | `core.fsmonitor`, `core.hooksPath` point git at a program |
 | each `write_roots:` entry `<w>` that has a `.git`: `<w>/.git`, `hooks`, `config`, `config.worktree` (and its worktree rows) | as for the root | writable is not "run later in the user's terminal" |
 | linked worktree: `<common>`, `<common>/hooks`, `<common>/config`, `<gitdir>/config.worktree` | entry, tree, tree, tree | as the three rows above |
+| each submodule gitdir `<g>` under `.git/modules` (a directory with a `HEAD`, nested ones too): `<g>`, `hooks`, `config`, `config.worktree` | as for the root | a submodule's hooks run on git commands inside it |
 | `~/.iota.yaml`, `~/.iota.yml` | tree | the user's own config, loaded without asking, takes effect next run |
 | `~/.iota` | the entry itself | so the record below cannot be moved out from under its rule |
 | `~/.iota/trusted.json` | tree | it records which project configs the user trusts |
@@ -115,7 +116,14 @@ A protected write is its own class (`Write::Protected`):
   no tool may write it; the user trusts a project config by running `iota
   config trust` themselves`.
 
-Reads are untouched.
+Reads are untouched. The table is rebuilt for every classified write
+(`CodeSet::protected_at`): a gitfile read, one `lstat` per extra root, one
+`read_dir` of `.git/modules`, and a `physical` per row — a handful of
+syscalls against a write that already resolves its own path, so it is not
+cached (a cache would go stale when a `.git/hooks` is relinked). A hardlink
+to a protected file made OUTSIDE iota (by the user, or an approved
+unsandboxed command) is not seen by this path check; the sandbox refuses to
+make one (shell-toolset.md), and the writers cannot make links.
 
 A refused outside path is `path is outside the project root (<root>) and the
 extra write roots (<e1>, <e2>): <path>` (the extras clause only when there

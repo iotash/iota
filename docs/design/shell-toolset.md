@@ -61,7 +61,11 @@ common dir's `hooks` and `config` and the gitdir's `config.worktree`; the
 same rows for every `write_roots:` entry that is itself a repository), `~/.iota.yaml|yml`,
 `~/.iota/trusted.json`, and the `<root>/.git` (and common dir) and
 `~/.iota` entries themselves (not their contents), so neither can be renamed
-or replaced to move the others out from under the rule. A sandboxed command
+or replaced to move the others out from under the rule; and every
+submodule's gitdir under `.git/modules` (its entry, `hooks`, `config`,
+`config.worktree`). A hardlink cannot walk around the rule either: Seatbelt
+checks `link(2)` against its source (`ln .git/config x` is `Operation not
+permitted`), and bwrap refuses a link across a bind mount (`EXDEV`). A sandboxed command
 runs without approval, and without this a silent `echo … >
 .git/hooks/pre-commit` ran in the user's own terminal on their next commit.
 `write_roots:` cannot re-open them (listing `<root>/.git` opens the rest of
@@ -96,10 +100,12 @@ writes.
   lies under a bound root is bound over itself: `--ro-bind` for a tree (or a
   `gitdir:` file), `--bind` for an entry directory, which keeps its contents
   writable but makes it a mount point that cannot be renamed or removed
-  (`EBUSY`). A path that does not exist cannot be bound, so on Linux a
-  command can still CREATE a missing `.iota.yaml` or the `.git/hooks` of a
-  repository it inits; the code writers' refusal covers that case, the
-  sandbox does not.
+  (`EBUSY`). **A Linux gap for shell commands:** a path that does not exist
+  cannot be bound, so a sandboxed command can still CREATE a missing
+  `.iota.yaml` or the `.git/hooks` of a repository it inits. Only
+  `write_file`/`edit_file` refuse that; a command is not stopped. The
+  follow-ups are an empty placeholder bound over the missing path, or
+  Landlock; neither is built.
 - **Windows / no bwrap**: no sandbox — see approval below.
 
 ## Approval
