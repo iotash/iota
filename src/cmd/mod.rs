@@ -218,12 +218,7 @@ async fn run_agent(
     // a run does with it, so nothing it describes (an MCP server, a provider url, a loosened sandbox) exists
     // before the decision. Only an interactive start on a terminal asks; `-m` and a piped start skip an
     // untrusted file with one warning and go on.
-    let ask = {
-        use std::io::IsTerminal as _;
-        inv.args.message.is_none()
-            && std::io::stdin().is_terminal()
-            && std::io::stderr().is_terminal()
-    };
+    let ask = inv.args.message.is_none() && io::Streams::can_ask();
     let cfg = Config::load(
         inv.config.as_deref(),
         &env,

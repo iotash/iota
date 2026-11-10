@@ -13,7 +13,7 @@
 //!   is skipped with one warning naming it, `iota config trust` and `-c`, and the run goes on with the home
 //!   config.
 
-use std::io::{BufRead, Write};
+use std::io::BufRead;
 use std::path::Path;
 
 use crate::app::HostDirs;
@@ -37,13 +37,7 @@ pub(crate) fn gate(
             warn(skipped(path, standing));
             return false;
         }
-        let trusted = ask_user(
-            path,
-            standing,
-            bytes,
-            &mut std::io::stdin().lock(),
-            &mut std::io::stderr(),
-        );
+        let trusted = ask_user(path, standing, bytes, &mut std::io::stdin().lock(), warn);
         if !trusted {
             warn(format!(
                 "Not using {} for this run (`iota config trust` trusts it)",
@@ -78,44 +72,39 @@ fn skipped(path: &Path, standing: Standing) -> String {
     )
 }
 
-/// What the file does, shown before the question and by `iota config trust`.
-pub(crate) fn describe(bytes: &[u8], out: &mut dyn Write) -> std::io::Result<()> {
+/// What the file does, one line each: shown before the question and by `iota config trust`.
+pub(crate) fn describe(bytes: &[u8]) -> Vec<String> {
     let lines = summary(bytes);
     if lines.is_empty() {
-        return writeln!(
-            out,
+        return vec![
             "It starts no MCP server, sets no provider url, and loosens no sandbox or write setting."
-        );
+                .to_owned(),
+        ];
     }
-    writeln!(out, "It sets:")?;
-    for line in lines {
-        writeln!(out, "  {line}")?;
-    }
-    Ok(())
+    std::iter::once("It sets:".to_owned())
+        .chain(lines.into_iter().map(|l| format!("  {l}")))
+        .collect()
 }
 
-/// Shows what `path` does and asks once. `t`/`trust`/`y`/`yes` trust it; anything else — Enter, end of input,
-/// a read error — is "not now".
+/// Shows what `path` does (through `say`, the run's stderr) and asks once, the answer typed on the line
+/// below the question. `t`/`trust`/`y`/`yes` trust it; anything else — Enter, end of input, a read error —
+/// is "not now".
 fn ask_user(
     path: &Path,
     standing: Standing,
     bytes: &[u8],
     input: &mut dyn BufRead,
-    out: &mut dyn Write,
+    say: &mut dyn FnMut(String),
 ) -> bool {
-    let shown = (|| {
-        let why = match standing {
-            Standing::Changed => "has changed since you trusted it",
-            _ => "is a project config you have not trusted",
-        };
-        writeln!(out, "{} {why}.", path.display())?;
-        describe(bytes, out)?;
-        write!(out, "Trust it? [t]rust / [N]ot now: ")?;
-        out.flush()
-    })();
-    if shown.is_err() {
-        return false;
+    let why = match standing {
+        Standing::Changed => "has changed since you trusted it",
+        _ => "is a project config you have not trusted",
+    };
+    say(format!("{} {why}.", path.display()));
+    for line in describe(bytes) {
+        say(line);
     }
+    say("Trust it? [t]rust / [N]ot now".to_owned());
     let mut answer = String::new();
     if input.read_line(&mut answer).is_err() {
         return false;
@@ -131,16 +120,16 @@ mod tests {
     use super::{Standing, ask_user};
     use std::path::Path;
 
-    fn answer(typed: &str) -> (bool, String) {
-        let mut out = Vec::new();
+    fn answer(typed: &str) -> (bool, Vec<String>) {
+        let mut shown = Vec::new();
         let trusted = ask_user(
             Path::new("/repo/.iota.yaml"),
             Standing::Unknown,
             b"mcp_servers:\n  x: {command: sh}\n",
             &mut typed.as_bytes(),
-            &mut out,
+            &mut |l| shown.push(l),
         );
-        (trusted, String::from_utf8(out).expect("utf-8"))
+        (trusted, shown)
     }
 
     /// The question shows what the file does; only an explicit yes trusts it — Enter and end of input are
@@ -151,7 +140,12 @@ mod tests {
         assert!(trusted);
         assert_eq!(
             shown,
-            "/repo/.iota.yaml is a project config you have not trusted.\nIt sets:\n  mcp_servers.x: runs sh\nTrust it? [t]rust / [N]ot now: "
+            [
+                "/repo/.iota.yaml is a project config you have not trusted.",
+                "It sets:",
+                "  mcp_servers.x: runs sh",
+                "Trust it? [t]rust / [N]ot now",
+            ]
         );
         assert!(answer("Yes\n").0);
         assert!(!answer("\n").0, "Enter is not now");

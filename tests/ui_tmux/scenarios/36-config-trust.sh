@@ -15,7 +15,7 @@
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
 
-QUESTION='Trust it? [t]rust / [N]ot now:'
+QUESTION='Trust it? [t]rust / [N]ot now'
 PROJ="$SCEN_TMP/proj"
 MARKER="$PROJ/marker"
 mkdir -p "$PROJ"

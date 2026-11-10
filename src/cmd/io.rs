@@ -26,6 +26,13 @@ impl Streams {
         let _ = writeln!(self.stderr, "{msg}");
     }
 
+    /// Whether the process's stdin AND stderr are a terminal: a question asked on stderr can then be
+    /// answered on stdin by the person at it (`cmd::trust`).
+    pub fn can_ask() -> bool {
+        use std::io::IsTerminal as _;
+        std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
+    }
+
     /// Writes `⚠ {msg}\n` to stderr (registry / dispatcher assembly warnings, root.go's `⚠` lines).
     pub fn caution(&mut self, msg: &str) {
         let _ = writeln!(self.stderr, "⚠ {msg}");

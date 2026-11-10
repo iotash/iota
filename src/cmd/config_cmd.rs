@@ -105,7 +105,9 @@ fn trust(file: Option<&Path>, dirs: &HostDirs, io: &mut io::Streams) -> Result<(
             source,
         })?;
     writeln!(io.stdout, "Trusted {}", file.display())?;
-    crate::cmd::trust::describe(&bytes, &mut *io.stdout)?;
+    for line in crate::cmd::trust::describe(&bytes) {
+        writeln!(io.stdout, "{line}")?;
+    }
     Ok(())
 }
 
@@ -128,17 +130,15 @@ fn untrust(file: Option<&Path>, dirs: &HostDirs, io: &mut io::Streams) -> Result
 /// record they act in.
 fn trust_target(file: Option<&Path>, dirs: &HostDirs) -> Result<(PathBuf, TrustStore), CliError> {
     let store = TrustStore::of(dirs).ok_or(SetupError::NoHomeForTrust)?;
-    let file = match file {
-        Some(f) => f.to_path_buf(),
-        None => {
-            let cwd = dirs
-                .cwd
-                .as_deref()
-                .ok_or_else(|| SetupError::Cwd(crate::cmd::cwd_err()))?;
-            Config::find_config_file(cwd)
-                .ok_or_else(|| SetupError::NoProjectConfig(cwd.display().to_string()))?
-        }
-    };
+    if let Some(file) = file {
+        return Ok((file.to_path_buf(), store));
+    }
+    let cwd = dirs
+        .cwd
+        .as_deref()
+        .ok_or_else(|| SetupError::Cwd(crate::cmd::cwd_err()))?;
+    let file = Config::find_config_file(cwd)
+        .ok_or_else(|| SetupError::NoProjectConfig(cwd.display().to_string()))?;
     Ok((file, store))
 }
 

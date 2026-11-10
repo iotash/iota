@@ -12,6 +12,7 @@
 
 use std::{
     collections::BTreeMap,
+    fmt::Write as _,
     path::{Path, PathBuf},
 };
 
@@ -108,10 +109,10 @@ fn key(file: &Path) -> String {
 
 /// `sha256:<hex>` of `bytes`.
 fn hash(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
     let mut out = String::from("sha256:");
-    for b in digest.iter() {
-        out.push_str(&format!("{b:02x}"));
+    for b in &Sha256::digest(bytes) {
+        // Writing into a `String` cannot fail.
+        let _ = write!(out, "{b:02x}");
     }
     out
 }
@@ -130,10 +131,10 @@ pub fn summary(bytes: &[u8]) -> Vec<String> {
             let mut line = format!("mcp_servers.{name}: runs {command}");
             if let Some(Value::Sequence(args)) = server.get("args") {
                 for arg in args.iter().filter_map(|a| scalar(Some(a))) {
+                    line.push(' ');
                     if arg.contains(char::is_whitespace) || arg.is_empty() {
-                        line.push_str(&format!(" {arg:?}"));
+                        let _ = write!(line, "{arg:?}");
                     } else {
-                        line.push(' ');
                         line.push_str(&arg);
                     }
                 }
