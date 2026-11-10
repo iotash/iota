@@ -62,9 +62,10 @@ impl Tool for Glob {
     fn def(&self) -> ToolDef {
         ToolDef {
             name: "glob".to_owned(),
-            description: "Find files by name pattern under the project root. Patterns match root-relative paths \
-                and support * ? and ** (a pattern without \"/\" matches at any depth, e.g. \"*.rs\"). Results \
-                are newest-first. .git and root-.gitignore matches are excluded."
+            description: "Find files by name pattern, under the project root unless \"path\" names another \
+                directory (reads are not restricted). Patterns match root-relative paths and support * ? and ** \
+                (a pattern without \"/\" matches at any depth, e.g. \"*.rs\"). Results are newest-first. .git \
+                and root-.gitignore matches are excluded."
                 .to_owned(),
             input_schema: schema(json!({
                 "type": "object",
@@ -75,7 +76,7 @@ impl Tool for Glob {
                     },
                     "path": {
                         "type": "string",
-                        "description": "Optional directory to search, relative to the project root (default: the root).",
+                        "description": "Optional directory to search, relative to the project root or absolute (default: the root).",
                     },
                 },
                 "required": ["pattern"],
@@ -100,8 +101,8 @@ impl Tool for Grep {
     fn def(&self) -> ToolDef {
         ToolDef {
             name: "grep".to_owned(),
-            description: "Search file contents under the project root with a regular expression (Rust regex syntax: RE2-like, no backreferences or lookaround). \
-                Output lines are \"path:line: text\" (context lines use \"-\" instead of \":\"). Binary files, \
+            description: "Search file contents with a regular expression (Rust regex syntax: RE2-like, no backreferences or lookaround), \
+                under the project root unless \"path\" names another directory (reads are not restricted). Output lines are \"path:line: text\" (context lines use \"-\" instead of \":\"). Binary files, \
                 .git, and root-.gitignore matches are skipped."
                 .to_owned(),
             input_schema: schema(json!({
@@ -113,7 +114,7 @@ impl Tool for Grep {
                     },
                     "path": {
                         "type": "string",
-                        "description": "Optional directory to search, relative to the project root (default: the root).",
+                        "description": "Optional directory to search, relative to the project root or absolute (default: the root).",
                     },
                     "include": {
                         "type": "string",
@@ -146,15 +147,15 @@ impl Tool for ListDir {
     fn def(&self) -> ToolDef {
         ToolDef {
             name: "list_dir".to_owned(),
-            description: "List one directory level under the project root: directories with a trailing \"/\", \
-                files with their size. Defaults to the project root itself."
+            description: "List one directory level: directories with a trailing \"/\", files with their size. \
+                Defaults to the project root itself; any other directory may be listed (reads are not restricted)."
                 .to_owned(),
             input_schema: schema(json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Directory to list, relative to the project root (default: the root).",
+                        "description": "Directory to list, relative to the project root or absolute (default: the root).",
                     },
                 },
             })),
@@ -183,16 +184,16 @@ impl Tool for ReadFile {
     fn def(&self) -> ToolDef {
         ToolDef {
             name: "read_file".to_owned(),
-            description: "Read a text file inside the project root and return its content with line numbers, \
-                windowed by the optional \"offset\" (1-based first line) and \"limit\" (line count). Paths are \
-                relative to the project root. Reading a file is required before editing it."
+            description: "Read a text file and return its content with line numbers, windowed by the optional \
+                \"offset\" (1-based first line) and \"limit\" (line count). Paths are relative to the project \
+                root or absolute; reads are not restricted. Reading a file is required before editing it."
                 .to_owned(),
             input_schema: schema(json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File path relative to the project root.",
+                        "description": "File path, relative to the project root or absolute.",
                     },
                     "offset": {
                         "type": "integer",
@@ -231,11 +232,13 @@ impl Tool for EditFile {
     fn def(&self) -> ToolDef {
         ToolDef {
             name: "edit_file".to_owned(),
-            description: "Replace an exact string in a file inside the project root. \"old_string\" must match \
-                the file content exactly (including whitespace and indentation) and must be unique in the file \
-                unless \"replace_all\" is set — extend it with surrounding lines to disambiguate. The file must \
-                have been read with read_file first."
-                .to_owned(),
+            description: format!(
+                "Replace an exact string in a file inside {}. \"old_string\" must match the file content \
+                 exactly (including whitespace and indentation) and must be unique in the file unless \
+                 \"replace_all\" is set — extend it with surrounding lines to disambiguate. The file must have \
+                 been read with read_file first.",
+                self.0.write_scope()
+            ),
             input_schema: schema(json!({
                 "type": "object",
                 "properties": {
@@ -294,10 +297,12 @@ impl Tool for WriteFile {
     fn def(&self) -> ToolDef {
         ToolDef {
             name: "write_file".to_owned(),
-            description: "Create or overwrite a whole file inside the project root (parent directories are \
-                created). Overwriting an existing file requires reading it with read_file first — prefer \
-                edit_file for changes inside an existing file."
-                .to_owned(),
+            description: format!(
+                "Create or overwrite a whole file inside {} (parent directories are created). Overwriting an \
+                 existing file requires reading it with read_file first — prefer edit_file for changes inside an \
+                 existing file.",
+                self.0.write_scope()
+            ),
             input_schema: schema(json!({
                 "type": "object",
                 "properties": {
@@ -371,7 +376,7 @@ fn glob_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
 
     let mut hits: Vec<(String, SystemTime)> = Vec::new();
     walk::walk_files(cs.anchor(&base), &base, &mut |abs, rel, entry| {
-        if matcher.is_match(rel) && cs.admits(abs, entry) {
+        if matcher.is_match(rel) {
             let mtime = entry
                 .metadata()
                 .ok()
@@ -441,9 +446,6 @@ fn grep_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
         if let Some(m) = &include_matcher
             && !match_include(m, include, rel)
         {
-            return true;
-        }
-        if !cs.admits(abs, entry) {
             return true;
         }
         let Ok(meta) = entry.metadata() else {
@@ -570,7 +572,7 @@ fn list_dir_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
 // ---- read_file ----
 
 fn read_file_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
-    let abs = match cs.resolve(str_arg(args, "path")) {
+    let abs = match cs.read_path(str_arg(args, "path")) {
         Ok(p) => p,
         Err(t) => return t,
     };
@@ -696,7 +698,7 @@ pub(crate) fn post_diff(cx: &RunCtx, display: &str, old: &str, new: &str) {
 }
 
 fn edit_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
-    let abs = match cs.resolve(str_arg(args, "path")) {
+    let abs = match cs.write_path(str_arg(args, "path")) {
         Ok(p) => p,
         Err(t) => return t,
     };
@@ -804,7 +806,7 @@ fn edit_snippet(content: &str, line: usize) -> String {
 // ---- write_file ----
 
 fn write_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
-    let abs = match cs.resolve(str_arg(args, "path")) {
+    let abs = match cs.write_path(str_arg(args, "path")) {
         Ok(p) => p,
         Err(t) => return t,
     };
@@ -863,13 +865,13 @@ fn write_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
 
 // ---- shared helpers ----
 
-/// The optional `path` argument as a search base; empty → the root.
+/// The optional `path` argument as a search base (anywhere: reads are open); empty → the root.
 fn code_base_dir(cs: &CodeSet, args: &JsonObject) -> Result<PathBuf, ToolOutput> {
     let raw = str_arg(args, "path");
     if raw.trim().is_empty() {
         return Ok(cs.root().to_path_buf());
     }
-    let abs = cs.resolve(raw)?;
+    let abs = cs.read_path(raw)?;
     // A stat failure and a non-directory give the same text, and it names the RAW argument.
     match fs::metadata(&abs) {
         Ok(m) if m.is_dir() => Ok(abs),
@@ -1001,11 +1003,11 @@ mod tests {
         assert!(!match_include(&with_slash, "cmd/**", "tool/main.rs"));
     }
 
-    // Every tool goes through `CodeSet::resolve`; the three that touch file contents refuse a
-    // symlink out of the root, and nothing outside is read, created or changed.
+    // The writers go through `CodeSet::write_path` and refuse a symlink out of the root — nothing
+    // outside is created or changed — while `read_file` reads through the same link (reads are open).
     #[cfg(unix)]
     #[test]
-    fn file_tools_refuse_a_symlink_escape() {
+    fn writers_refuse_a_symlink_escape_that_read_file_follows() {
         use super::super::CodeSet;
         use super::super::tests::jail_fixture;
         use super::{edit_file_call, read_file_call, write_file_call};
@@ -1037,7 +1039,7 @@ mod tests {
 
         assert_eq!(
             read_file_call(&cs, &args(json!({"path": "escape"}))),
-            refused("escape")
+            ToolOutput::ok("     1\ts")
         );
         assert_eq!(
             write_file_call(&cs, &cx, &args(json!({"path": "escape", "content": "x"}))),
@@ -1065,12 +1067,12 @@ mod tests {
         );
         assert!(!out.join("new.txt").exists());
 
-        // B1: the planted overlong links are refused for read and write alike.
+        // B1: the planted overlong links are refused for a write; a read goes where the kernel goes.
         super::super::tests::plant_overlong(&root, &out);
         for path in ["L/S/secret.txt", "L2"] {
             assert_eq!(
                 read_file_call(&cs, &args(json!({"path": path}))),
-                unresolved(path)
+                ToolOutput::ok("     1\ts")
             );
         }
         assert_eq!(
@@ -1097,11 +1099,11 @@ mod tests {
         );
     }
 
-    // B2/S1: a walk meets symlinks as entries; `grep` must not read through one that leaves the
-    // root, and `glob` must not list it, while a link that stays inside counts for both.
+    // A walk meets symlinks as entries and never descends into one; with reads open, `grep` reads
+    // through a file link wherever it leads and `glob` lists every link, in the root or out of it.
     #[cfg(unix)]
     #[test]
-    fn walks_skip_symlinks_that_leave_the_root() {
+    fn walks_report_symlinks_that_leave_the_root() {
         use super::super::CodeSet;
         use super::super::tests::{jail_fixture, plant_overlong};
         use super::{glob_call, grep_call};
@@ -1119,14 +1121,15 @@ mod tests {
         let grep = grep_call(&cs, &args(json!({"pattern": "TOPSECRET"})));
         assert_eq!(
             grep,
-            ToolOutput::ok("alias:1: TOPSECRET inside\ndir/kept.txt:1: TOPSECRET inside")
+            ToolOutput::ok(
+                "L2:1: TOPSECRET\nalias:1: TOPSECRET inside\ndir/kept.txt:1: TOPSECRET inside\nescape:1: TOPSECRET"
+            )
         );
         let glob = glob_call(&cs, &args(json!({"pattern": "*"})));
         assert!(!glob.is_error, "{glob:?}");
         let names: Vec<&str> = glob.text.lines().collect();
-        assert!(names.contains(&"alias"), "{names:?}");
-        for gone in ["escape", "outdir", "L", "L2"] {
-            assert!(!names.contains(&gone), "{gone} in {names:?}");
+        for link in ["alias", "escape", "outdir", "L", "L2"] {
+            assert!(names.contains(&link), "{link} not in {names:?}");
         }
     }
 }

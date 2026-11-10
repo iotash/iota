@@ -111,9 +111,11 @@ fn set_mtime(path: &Path, when: SystemTime) {
         .set_modified(when)
         .expect("set mtime");
 }
+/// Reads are open: an absolute path and a `..` escape both read a file outside the project, while a
+/// write to the very same paths is still refused and lands nothing.
 #[tokio::test]
-async fn code_tools_refuse_paths_outside_the_project_root() {
-    let (dir, root, tools) = code_project(&[("a.txt", "hello\n")], "");
+async fn reads_reach_outside_the_project_root_and_writes_do_not() {
+    let (dir, root, tools) = code_project(&[("a.txt", "hello\n")], "auto_write: true\n");
     let outside = dir.path().join("outside.txt");
     fs::write(&outside, "secret").expect("write outside");
 
@@ -123,11 +125,37 @@ async fn code_tools_refuse_paths_outside_the_project_root() {
         "a/../../outside.txt".to_owned(),
     ] {
         let out = call(&tools, "read_file", json!({ "path": path })).await;
-        assert!(
-            out.is_error && out.text.contains("outside the project root"),
-            "path {path:?} should be jailed, got {out:?}"
+        assert_eq!(out, ToolOutput::ok("     1\tsecret"), "read {path:?}");
+        let out = call(
+            &tools,
+            "write_file",
+            json!({ "path": path, "content": "overwritten" }),
+        )
+        .await;
+        assert_eq!(
+            out,
+            ToolOutput::err(format!(
+                "path is outside the project root ({}): {path}",
+                root.display()
+            )),
+            "write {path:?}"
+        );
+        let out = call(
+            &tools,
+            "edit_file",
+            json!({ "path": path, "old_string": "secret", "new_string": "x" }),
+        )
+        .await;
+        assert_eq!(
+            out,
+            ToolOutput::err(format!(
+                "path is outside the project root ({}): {path}",
+                root.display()
+            )),
+            "edit {path:?}"
         );
     }
+    assert_eq!(fs::read_to_string(&outside).expect("outside"), "secret");
 
     // Relative and absolute-inside paths both resolve.
     let out = call(&tools, "read_file", json!({ "path": "a.txt" })).await;
@@ -194,6 +222,37 @@ async fn walks_under_an_extra_root_are_anchored_on_it() {
     // The project itself keeps its own rules.
     let out = call(&tools, "grep", json!({"pattern": "needle"})).await;
     assert_eq!(out.text, "no matches for needle");
+}
+
+/// `glob`, `grep` and `list_dir` take a `path` outside the project (absolute or `..`): the walk is
+/// anchored on that directory, so its own `.gitignore` applies, and hits are named absolute.
+#[tokio::test]
+async fn walks_and_listings_reach_outside_the_project_root() {
+    let (dir, _root, tools) = code_project(&[("a.rs", "fn needle() {}\n")], "");
+    let other = dir.path().join("other");
+    write_project_file(&other, ".gitignore", "skip/\n");
+    write_project_file(&other, "b.rs", "fn needle() {}\n");
+    write_project_file(&other, "skip/c.rs", "fn needle() {}\n");
+    let abs = other.join("b.rs").display().to_string();
+
+    for path in [
+        other.to_str().expect("utf-8").to_owned(),
+        "../other".to_owned(),
+    ] {
+        let out = call(&tools, "glob", json!({"pattern": "*.rs", "path": path})).await;
+        assert_eq!(out, ToolOutput::ok(abs.clone()), "glob {path:?}");
+        let out = call(&tools, "grep", json!({"pattern": "needle", "path": path})).await;
+        assert_eq!(
+            out,
+            ToolOutput::ok(format!("{abs}:1: fn needle() {{}}")),
+            "grep {path:?}"
+        );
+        let out = call(&tools, "list_dir", json!({"path": path})).await;
+        assert!(
+            !out.is_error && out.text.contains("b.rs (") && out.text.contains("skip/"),
+            "list_dir {path:?}: {out:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -810,9 +869,10 @@ fn the_advertised_descriptions_and_schemas_are_pinned_byte_for_byte() {
     let glob = def("glob");
     assert_eq!(
         glob.description,
-        "Find files by name pattern under the project root. Patterns match root-relative paths and support * ? \
-         and ** (a pattern without \"/\" matches at any depth, e.g. \"*.rs\"). Results are newest-first. .git \
-         and root-.gitignore matches are excluded."
+        "Find files by name pattern, under the project root unless \"path\" names another directory (reads \
+         are not restricted). Patterns match root-relative paths and support * ? and ** (a pattern without \"/\" \
+         matches at any depth, e.g. \"*.rs\"). Results are newest-first. .git and root-.gitignore matches are \
+         excluded."
     );
     assert_eq!(
         serde_json::Value::Object(glob.input_schema.expect("schema")),
@@ -820,7 +880,7 @@ fn the_advertised_descriptions_and_schemas_are_pinned_byte_for_byte() {
             "type": "object",
             "properties": {
                 "pattern": { "type": "string", "description": "Glob pattern, e.g. \"**/*.rs\" or \"src/*.rs\"." },
-                "path": { "type": "string", "description": "Optional directory to search, relative to the project root (default: the root)." },
+                "path": { "type": "string", "description": "Optional directory to search, relative to the project root or absolute (default: the root)." },
             },
             "required": ["pattern"],
         })
@@ -829,7 +889,8 @@ fn the_advertised_descriptions_and_schemas_are_pinned_byte_for_byte() {
     let grep = def("grep");
     assert_eq!(
         grep.description,
-        "Search file contents under the project root with a regular expression (Rust regex syntax: RE2-like, no backreferences or lookaround). Output lines are \
+        "Search file contents with a regular expression (Rust regex syntax: RE2-like, no backreferences or lookaround), \
+         under the project root unless \"path\" names another directory (reads are not restricted). Output lines are \
          \"path:line: text\" (context lines use \"-\" instead of \":\"). Binary files, .git, and \
          root-.gitignore matches are skipped."
     );
@@ -839,7 +900,7 @@ fn the_advertised_descriptions_and_schemas_are_pinned_byte_for_byte() {
             "type": "object",
             "properties": {
                 "pattern": { "type": "string", "description": "Regular expression to search for (Rust regex syntax)." },
-                "path": { "type": "string", "description": "Optional directory to search, relative to the project root (default: the root)." },
+                "path": { "type": "string", "description": "Optional directory to search, relative to the project root or absolute (default: the root)." },
                 "include": { "type": "string", "description": "Optional filename glob filter, e.g. \"*.rs\" or \"src/**\"." },
                 "context": { "type": "integer", "description": "Lines of context to show around each match (0-10, default 0)." },
             },
@@ -850,8 +911,8 @@ fn the_advertised_descriptions_and_schemas_are_pinned_byte_for_byte() {
     let list_dir = def("list_dir");
     assert_eq!(
         list_dir.description,
-        "List one directory level under the project root: directories with a trailing \"/\", files with their \
-         size. Defaults to the project root itself."
+        "List one directory level: directories with a trailing \"/\", files with their size. Defaults to the \
+         project root itself; any other directory may be listed (reads are not restricted)."
     );
     // No "required" key at all (code.go:478-486).
     assert_eq!(
@@ -859,7 +920,7 @@ fn the_advertised_descriptions_and_schemas_are_pinned_byte_for_byte() {
         json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "Directory to list, relative to the project root (default: the root)." },
+                "path": { "type": "string", "description": "Directory to list, relative to the project root or absolute (default: the root)." },
             },
         })
     );
@@ -867,16 +928,16 @@ fn the_advertised_descriptions_and_schemas_are_pinned_byte_for_byte() {
     let read_file = def("read_file");
     assert_eq!(
         read_file.description,
-        "Read a text file inside the project root and return its content with line numbers, windowed by the \
-         optional \"offset\" (1-based first line) and \"limit\" (line count). Paths are relative to the project \
-         root. Reading a file is required before editing it."
+        "Read a text file and return its content with line numbers, windowed by the optional \"offset\" \
+         (1-based first line) and \"limit\" (line count). Paths are relative to the project root or absolute; \
+         reads are not restricted. Reading a file is required before editing it."
     );
     assert_eq!(
         serde_json::Value::Object(read_file.input_schema.expect("schema")),
         json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "File path relative to the project root." },
+                "path": { "type": "string", "description": "File path, relative to the project root or absolute." },
                 "offset": { "type": "integer", "description": "1-based line number to start reading from (default 1)." },
                 "limit": { "type": "integer", "description": "Maximum number of lines to return (default: all remaining lines)." },
             },
@@ -924,6 +985,92 @@ fn the_advertised_descriptions_and_schemas_are_pinned_byte_for_byte() {
             "required": ["path", "content"],
         })
     );
+}
+
+// Reads are open: no tool's description (nor its `path` field) says a read is confined to the project
+// root, and each reader says plainly that reads are not restricted.
+#[test]
+fn no_description_claims_reads_are_jailed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let tools = tools_at(dir.path(), "");
+    assert_eq!(tools.len(), 6);
+    for (name, tool) in &tools {
+        let def = tool.def();
+        let path = def
+            .input_schema
+            .as_ref()
+            .and_then(|s| s["properties"]["path"]["description"].as_str())
+            .unwrap_or_default()
+            .to_owned();
+        let reader = !matches!(name.as_str(), "edit_file" | "write_file");
+        if reader {
+            // What the old texts said: "inside the project root", "under the project root." / ":" /
+            // " with" — a confinement, where "under the project root unless …" is only the default.
+            for claim in [
+                "inside the project root",
+                "under the project root.",
+                "under the project root:",
+                "under the project root with",
+                "jail",
+            ] {
+                assert!(
+                    !def.description.contains(claim),
+                    "{name}: {}",
+                    def.description
+                );
+            }
+            assert!(
+                def.description.contains("reads are not restricted"),
+                "{name}: {}",
+                def.description
+            );
+            assert!(path.contains("or absolute"), "{name}: {path}");
+        }
+    }
+}
+
+// The writers stay jailed and say where: the project root alone, or the root and every extra write
+// root by name — the same list the jail admits.
+#[test]
+fn the_writers_descriptions_name_the_write_roots() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let tools = tools_at(dir.path(), "");
+    assert!(
+        tools["edit_file"]
+            .def()
+            .description
+            .starts_with("Replace an exact string in a file inside the project root. ")
+    );
+    assert!(
+        tools["write_file"]
+            .def()
+            .description
+            .starts_with("Create or overwrite a whole file inside the project root (parent")
+    );
+
+    let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+    let env = ToolEnv {
+        write_roots: vec![a.clone(), b.clone()],
+        ..env_at(dir.path())
+    };
+    let set = new_code_set(&env, None).expect("code set");
+    let scope = format!(
+        "inside the project root or the extra write roots ({}, {})",
+        a.display(),
+        b.display()
+    );
+    for name in ["edit_file", "write_file"] {
+        let def = set
+            .iter()
+            .find(|t| t.def().name == name)
+            .expect("writer")
+            .def();
+        assert!(
+            def.description.contains(&scope),
+            "{name}: {}",
+            def.description
+        );
+    }
 }
 
 // The capability is what switches the

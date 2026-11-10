@@ -1,4 +1,4 @@
-//! The `code` toolset: configuration, the shared `CodeSet` (physical path jail, read ledger)
+//! The `code` toolset: configuration, the shared `CodeSet` (open reads, the physical write jail, read ledger)
 //! and the size/binary helpers. The six tools live in `tools`, the gitignore-aware walk in `walk`.
 
 pub(crate) mod tools;
@@ -55,7 +55,7 @@ pub(crate) struct CodeConfig {
     pub(crate) read_only: bool,
 }
 
-/// One root of the jail: the path as configured (what messages name) and its real location (see
+/// One root of the write jail: the path as configured (what messages name) and its real location (see
 /// [`physical`]) — what the jail compares the targets' real locations against.
 struct Root {
     path: PathBuf,
@@ -74,7 +74,7 @@ impl Root {
 /// the read ledger.
 pub(crate) struct CodeSet {
     root: Root,
-    /// `ToolEnv::write_roots`: further roots the jail accepts. Relative arguments and every display
+    /// `ToolEnv::write_roots`: further roots the write jail accepts. Relative arguments and every display
     /// stay anchored on `root`.
     extra: Vec<Root>,
     /// The process working directory — the display anchor of the header-path ladder
@@ -117,7 +117,7 @@ impl CodeSet {
     /// The root a walk from `base` is anchored on — the project root or the extra root that
     /// lexically contains it, the project root first: its `.gitignore` filters the walk and its
     /// relative paths are what patterns match. `base` itself when no root contains it lexically
-    /// (an alias that `resolve` admitted by its real location).
+    /// (reads are open, so a walk may start anywhere).
     pub(crate) fn anchor<'a>(&'a self, base: &'a Path) -> &'a Path {
         std::iter::once(&self.root)
             .chain(&self.extra)
@@ -138,26 +138,33 @@ impl CodeSet {
         )
     }
 
-    /// The path jail. Err texts: `missing required argument: path`, `path is outside the project
-    /// root ({root}): {original arg}`, `cannot verify {original arg} inside the project root
-    /// ({root})` — the last two followed, when `write_roots:` lists any, by ` and the extra write
-    /// roots ({e1}, {e2})` after the root.
-    ///
-    /// A relative argument is joined to the project root, an absolute one taken as is; either is
-    /// cleaned lexically, and that cleaned path is what is returned. The decision is physical: the
-    /// path's real location (symlinks resolved, see [`physical`]) must lie inside the real
-    /// location of the project root or of an extra root, so a symlink under a root that points out
-    /// of every root — dangling or not — is refused. The target need not exist, so `write_file`
-    /// can create one. A path whose real location cannot be worked out is refused.
-    ///
-    /// A `..` in the argument is folded before any link is resolved (`link/../x` is `x`, not
-    /// the shell's "`x` next to where `link` points"); check and open use that same path.
-    pub(crate) fn resolve(&self, arg: &str) -> Result<PathBuf, ToolOutput> {
+    /// Where a read goes: a relative argument joined to the project root, an absolute one taken as
+    /// is, cleaned lexically. Reads are not jailed — the sandboxed shell already reads the whole
+    /// machine without asking, so a jail here would only push the model into `cat`. Err text:
+    /// `missing required argument: path`.
+    pub(crate) fn read_path(&self, arg: &str) -> Result<PathBuf, ToolOutput> {
         let trimmed = arg.trim();
         if trimmed.is_empty() {
             return Err(ToolOutput::err("missing required argument: path"));
         }
-        let p = paths::clean(&self.root.path.join(trimmed));
+        Ok(paths::clean(&self.root.path.join(trimmed)))
+    }
+
+    /// The write jail. Err texts: `missing required argument: path`, `path is outside the project
+    /// root ({root}): {original arg}`, `cannot verify {original arg} inside the project root
+    /// ({root})` — the last two followed, when `write_roots:` lists any, by ` and the extra write
+    /// roots ({e1}, {e2})` after the root.
+    ///
+    /// The path is [`Self::read_path`]'s, and that cleaned path is what is returned. The decision is
+    /// physical: the path's real location (symlinks resolved, see [`physical`]) must lie inside the
+    /// real location of the project root or of an extra root, so a symlink under a root that points
+    /// out of every root — dangling or not — is refused. The target need not exist, so `write_file`
+    /// can create one. A path whose real location cannot be worked out is refused.
+    ///
+    /// A `..` in the argument is folded before any link is resolved (`link/../x` is `x`, not
+    /// the shell's "`x` next to where `link` points"); check and open use that same path.
+    pub(crate) fn write_path(&self, arg: &str) -> Result<PathBuf, ToolOutput> {
+        let p = self.read_path(arg)?;
         let roots = self.roots_clause();
         match physical(&p) {
             Some(real) if self.admits_real(&real) => Ok(p),
@@ -170,19 +177,36 @@ impl CodeSet {
         }
     }
 
-    /// `{root}`, or `{root}) and the extra write roots ({e1}, {e2}` — the inside of the error
-    /// texts' parentheses.
-    fn roots_clause(&self) -> String {
-        let root = self.root.path.display();
+    /// `the project root`, or `the project root or the extra write roots ({e1}, {e2})` — where the
+    /// writers' descriptions say a write may land.
+    pub(crate) fn write_scope(&self) -> String {
+        match self.extra_list() {
+            None => "the project root".to_owned(),
+            Some(extra) => format!("the project root or the extra write roots ({extra})"),
+        }
+    }
+
+    /// The extra roots as configured, `, `-joined; `None` when `write_roots:` lists none.
+    fn extra_list(&self) -> Option<String> {
         if self.extra.is_empty() {
-            return root.to_string();
+            return None;
         }
         let extra: Vec<String> = self
             .extra
             .iter()
             .map(|r| r.path.display().to_string())
             .collect();
-        format!("{root}) and the extra write roots ({}", extra.join(", "))
+        Some(extra.join(", "))
+    }
+
+    /// `{root}`, or `{root}) and the extra write roots ({e1}, {e2}` — the inside of the error
+    /// texts' parentheses.
+    fn roots_clause(&self) -> String {
+        let root = self.root.path.display();
+        match self.extra_list() {
+            None => root.to_string(),
+            Some(extra) => format!("{root}) and the extra write roots ({extra}"),
+        }
     }
 
     /// Whether a real location lies inside the real location of any root.
@@ -192,20 +216,8 @@ impl CodeSet {
             .any(|r| within(&r.real, real))
     }
 
-    /// Whether the real location of the absolute, cleaned `p` lies inside a root's — the
-    /// jail's decision, for `resolve` and for the symlinks a walk meets.
-    pub(crate) fn contains(&self, p: &Path) -> bool {
-        physical(p).is_some_and(|real| self.admits_real(&real))
-    }
-
-    /// Whether a walk (`glob`, `grep`) may report `entry` at `abs`: anything but a symlink, or
-    /// a symlink whose real location the jail accepts — a link out of the root is invisible.
-    pub(crate) fn admits(&self, abs: &Path, entry: &walkdir::DirEntry) -> bool {
-        !entry.path_is_symlink() || self.contains(abs)
-    }
-
-    /// Root-relative slash path; `"."` for the root; absolute outside the project root (a path
-    /// under an extra write root) or when `rel` fails.
+    /// Root-relative slash path; `"."` for the root; absolute outside the project root (a read
+    /// anywhere, a write under an extra root) or when `rel` fails.
     pub(crate) fn display(&self, abs: &Path) -> String {
         if !within(&self.root.path, abs) {
             return abs.display().to_string();
@@ -384,19 +396,38 @@ mod tests {
     }
 
     #[test]
-    fn resolve_and_display_are_lexical() {
+    fn paths_and_display_are_lexical() {
         let cs = CodeSet::new(PathBuf::from("/proj"), Vec::new(), false).expect("set");
-        assert_eq!(cs.resolve("a.txt"), Ok(PathBuf::from("/proj/a.txt")));
-        assert_eq!(cs.resolve("  a/b/../c  "), Ok(PathBuf::from("/proj/a/c")));
-        assert_eq!(cs.resolve("/proj/x"), Ok(PathBuf::from("/proj/x")));
-        assert_eq!(cs.resolve("."), Ok(PathBuf::from("/proj")));
+        // Reads are open: join, clean, nothing else — no root is consulted.
+        for (arg, want) in [
+            ("a.txt", "/proj/a.txt"),
+            ("  a/b/../c  ", "/proj/a/c"),
+            ("../outside.txt", "/outside.txt"),
+            ("a/../../outside.txt", "/outside.txt"),
+            ("/etc/passwd", "/etc/passwd"),
+            ("..", "/"),
+        ] {
+            assert_eq!(cs.read_path(arg), Ok(PathBuf::from(want)), "{arg}");
+        }
         assert_eq!(
-            cs.resolve("   "),
+            cs.read_path("   "),
+            Err(ToolOutput::err("missing required argument: path"))
+        );
+        // Writes are jailed.
+        assert_eq!(cs.write_path("a.txt"), Ok(PathBuf::from("/proj/a.txt")));
+        assert_eq!(
+            cs.write_path("  a/b/../c  "),
+            Ok(PathBuf::from("/proj/a/c"))
+        );
+        assert_eq!(cs.write_path("/proj/x"), Ok(PathBuf::from("/proj/x")));
+        assert_eq!(cs.write_path("."), Ok(PathBuf::from("/proj")));
+        assert_eq!(
+            cs.write_path("   "),
             Err(ToolOutput::err("missing required argument: path"))
         );
         for arg in ["../outside.txt", "a/../../outside.txt", "/etc/passwd", ".."] {
             assert_eq!(
-                cs.resolve(arg),
+                cs.write_path(arg),
                 Err(ToolOutput::err(format!(
                     "path is outside the project root (/proj): {arg}"
                 ))),
@@ -429,7 +460,7 @@ mod tests {
         )))
     }
 
-    /// What `resolve` says about a path whose real location it cannot work out.
+    /// What `write_path` says about a path whose real location it cannot work out.
     #[cfg(unix)]
     fn unverified(root: &Path, arg: &str) -> Result<PathBuf, ToolOutput> {
         Err(ToolOutput::err(format!(
@@ -443,7 +474,7 @@ mod tests {
     /// extra root that leaves every root is refused, and the display stays root-anchored.
     #[cfg(unix)]
     #[test]
-    fn resolve_admits_the_extra_write_roots() {
+    fn write_path_admits_the_extra_write_roots() {
         use std::os::unix::fs::symlink;
         let (t, root, out) = jail_fixture();
         let other = t.path().join("other");
@@ -460,10 +491,10 @@ mod tests {
             other.clone(),
             missing.join("x.txt"),
         ] {
-            assert_eq!(cs.resolve(&abs(&p)), Ok(p.clone()), "{p:?}");
+            assert_eq!(cs.write_path(&abs(&p)), Ok(p.clone()), "{p:?}");
         }
-        assert_eq!(cs.resolve("../other/x"), Ok(other.join("x")));
-        assert_eq!(cs.resolve("a.txt"), Ok(root.join("a.txt")));
+        assert_eq!(cs.write_path("../other/x"), Ok(other.join("x")));
+        assert_eq!(cs.write_path("a.txt"), Ok(root.join("a.txt")));
         let roots = format!(
             "{}) and the extra write roots ({}, {}",
             root.display(),
@@ -476,7 +507,7 @@ mod tests {
             "../out/x".to_owned(),
         ] {
             assert_eq!(
-                cs.resolve(&arg),
+                cs.write_path(&arg),
                 Err(ToolOutput::err(format!(
                     "path is outside the project root ({roots}): {arg}"
                 ))),
@@ -487,7 +518,7 @@ mod tests {
         symlink("la", other.join("lb")).expect("lb");
         let arg = abs(&other.join("la"));
         assert_eq!(
-            cs.resolve(&arg),
+            cs.write_path(&arg),
             Err(ToolOutput::err(format!(
                 "cannot verify {arg} inside the project root ({roots})"
             )))
@@ -514,7 +545,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn resolve_refuses_symlinks_that_leave_the_root() {
+    fn write_path_refuses_symlinks_that_leave_the_root() {
         use std::os::unix::fs::symlink;
         let (_t, root, out) = jail_fixture();
         symlink(out.join("secret.txt"), root.join("escape")).expect("link");
@@ -537,13 +568,13 @@ mod tests {
             "trick",
             "trick_dangling",
         ] {
-            assert_eq!(cs.resolve(arg), outside(&root, arg), "{arg}");
+            assert_eq!(cs.write_path(arg), outside(&root, arg), "{arg}");
         }
     }
 
     #[cfg(unix)]
     #[test]
-    fn resolve_allows_symlinks_that_stay_inside() {
+    fn write_path_allows_symlinks_that_stay_inside() {
         use std::os::unix::fs::symlink;
         let (_t, root, _out) = jail_fixture();
         symlink(root.join("a.txt"), root.join("alias")).expect("link");
@@ -558,34 +589,34 @@ mod tests {
             "subdir/x/y.txt",
             "dangling_inside",
         ] {
-            assert_eq!(cs.resolve(arg), Ok(root.join(arg)), "{arg}");
+            assert_eq!(cs.write_path(arg), Ok(root.join(arg)), "{arg}");
         }
     }
 
     #[cfg(unix)]
     #[test]
-    fn resolve_accepts_a_root_reached_through_a_symlink() {
+    fn write_path_accepts_a_root_reached_through_a_symlink() {
         use std::os::unix::fs::symlink;
         let (t, root, _out) = jail_fixture();
         let via = t.path().join("via");
         symlink(&root, &via).expect("link");
         let real = std::fs::canonicalize(&root).expect("canonical root");
         let cs = CodeSet::new(via.clone(), Vec::new(), false).expect("set");
-        assert_eq!(cs.resolve("new.txt"), Ok(via.join("new.txt")));
+        assert_eq!(cs.write_path("new.txt"), Ok(via.join("new.txt")));
         let abs = real.join("new.txt");
         let abs = abs.to_str().expect("utf-8");
-        assert_eq!(cs.resolve(abs), Ok(PathBuf::from(abs)));
+        assert_eq!(cs.write_path(abs), Ok(PathBuf::from(abs)));
         // The failure text names the configured root, not its real location.
-        assert_eq!(cs.resolve("../out/x"), outside(&via, "../out/x"));
+        assert_eq!(cs.write_path("../out/x"), outside(&via, "../out/x"));
 
         // macOS: `/tmp` is a link to `/private/tmp`, and a root under one accepts the other.
         let tmp = tempfile::tempdir_in("/tmp").expect("tempdir in /tmp");
         let cs = CodeSet::new(tmp.path().to_path_buf(), Vec::new(), false).expect("set");
         let real = std::fs::canonicalize(tmp.path()).expect("canonical tmp");
-        assert_eq!(cs.resolve("new.txt"), Ok(tmp.path().join("new.txt")));
+        assert_eq!(cs.write_path("new.txt"), Ok(tmp.path().join("new.txt")));
         let abs = real.join("new.txt");
         let abs = abs.to_str().expect("utf-8");
-        assert_eq!(cs.resolve(abs), Ok(PathBuf::from(abs)));
+        assert_eq!(cs.write_path(abs), Ok(PathBuf::from(abs)));
     }
 
     /// Plants the review's B1 links under `root`: `D/D/D/D/S -> out` (each `D` a 250-char name,
@@ -615,7 +646,7 @@ mod tests {
     // while the kernel follows the same links fine. Unknown is refused, never judged lexically.
     #[cfg(unix)]
     #[test]
-    fn resolve_refuses_what_it_cannot_resolve() {
+    fn write_path_refuses_what_it_cannot_resolve() {
         use std::os::unix::fs::symlink;
         let (t, root, out) = jail_fixture();
         plant_overlong(&root, &out);
@@ -639,10 +670,10 @@ mod tests {
             } else {
                 outside(&root, arg)
             };
-            assert_eq!(cs.resolve(arg), want, "{arg}");
+            assert_eq!(cs.write_path(arg), want, "{arg}");
         }
         for arg in ["la", "la/new.txt"] {
-            assert_eq!(cs.resolve(arg), unverified(&root, arg), "{arg}");
+            assert_eq!(cs.write_path(arg), unverified(&root, arg), "{arg}");
         }
 
         // EACCES under an unreadable directory is not "missing" either (root bypasses modes,
@@ -653,7 +684,7 @@ mod tests {
         if std::fs::symlink_metadata(locked.join("x"))
             .is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
         {
-            assert_eq!(cs.resolve("locked/x"), unverified(&root, "locked/x"));
+            assert_eq!(cs.write_path("locked/x"), unverified(&root, "locked/x"));
         }
         set_mode(&locked, 0o755);
 
