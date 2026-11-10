@@ -101,7 +101,7 @@ impl CodeSet {
     /// [`physical`]) must lie inside the root's real location, so a symlink under the root that
     /// points outside it — dangling or not — is refused. The target need not exist, so
     /// `write_file` can create one. When the real location cannot be worked out, the lexical
-    /// path is compared instead.
+    /// path is compared against the configured root instead.
     pub(crate) fn resolve(&self, arg: &str) -> Result<PathBuf, ToolOutput> {
         let trimmed = arg.trim();
         if trimmed.is_empty() {
@@ -112,8 +112,12 @@ impl CodeSet {
             p = self.root.join(p);
         }
         let p = paths::clean(&p);
-        let real = physical(&p).unwrap_or_else(|| p.clone());
-        if within(&self.real_root, &real) {
+        // Unresolvable: both sides lexical, so a resolved root never meets an unresolved target.
+        let inside = match physical(&p) {
+            Some(real) => within(&self.real_root, &real),
+            None => within(&self.root, &p),
+        };
+        if inside {
             Ok(p)
         } else {
             Err(ToolOutput::err(format!(
