@@ -2653,7 +2653,7 @@ fn asked(events: &[UiEvent]) -> Vec<String> {
         .collect()
 }
 
-/// The tool results of `history`, in order: (text, is_error).
+/// The tool results of `history`, in order: `(text, is_error)`.
 fn results(history: &[Message]) -> Vec<(String, bool)> {
     history
         .iter()
