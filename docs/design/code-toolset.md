@@ -32,25 +32,37 @@ so execution policy stays in one place.
 | `edit_file` | path, old_string, new_string, replace_all? | unique-match string replace; snippet of the change echoed back |
 | `write_file` | path, content | whole-file create/overwrite; parents auto-created |
 
-All paths are **jailed to the project root** (`ToolEnv::root`: the
-configured project root, else the cwd) **plus the top-level `write_roots:`** (below): relative paths
-resolve against the project root, absolute paths are taken as given, and the
-path's real location — symlinks resolved, the nearest existing ancestor
-canonicalized — must lie inside the real location of the project root or of
-an extra root. A link inside any root that leads out of every root is
-refused; a path whose real location cannot be worked out is refused too
-(`cannot verify <path> inside the project root (…)`), never judged
-lexically. A path outside every root is `path is outside the project root
-(<root>) and the extra write roots (<e1>, <e2>): <path>` (the extras clause
-only when there are extras). Results and headers stay anchored on the
-project root: a path under an extra root is shown absolute (`~/…` in a
+**Reads are open; writes are jailed.** Every path argument is resolved the
+same way: a relative path joins the project root (`ToolEnv::root`: the
+configured project root, else the cwd), an absolute path is taken as given,
+and either is cleaned lexically. For `read_file`, `list_dir`, `glob` and
+`grep` (and their `path` base) that is all — no root is consulted and
+nothing is refused. The jail would buy nothing: the sandboxed shell already
+reads the whole machine without asking (the sandbox denies writes and the
+network, not reads), so a jailed `read_file` only pushed the model into
+`cat`, which is less visible and no safer.
+
+`edit_file` and `write_file` are **jailed to the project root plus the
+top-level `write_roots:`** (below): the path's real location — symlinks
+resolved, the nearest existing ancestor canonicalized — must lie inside the
+real location of the project root or of an extra root. A link inside any
+root that leads out of every root is refused; a path whose real location
+cannot be worked out is refused too (`cannot verify <path> inside the
+project root (…)`), never judged lexically. A path outside every root is
+`path is outside the project root (<root>) and the extra write roots (<e1>,
+<e2>): <path>` (the extras clause only when there are extras). The writers'
+descriptions name the same roots.
+
+Results and headers stay anchored on the project root: a path outside it —
+a read anywhere, a write under an extra root — is shown absolute (`~/…` in a
 header when it sits under home). glob/grep never descend into a symlink below
-the walk's start and do not list one whose real location lies outside every root (it is invisible,
-not an error). glob/grep skip `.git` and the matches of
-the containing root's `.gitignore` — the project root's, or the extra root's
-for a walk under one, whose patterns also match relative to that root —
+the walk's start, but list a link and read through a file link wherever it
+leads. glob/grep skip `.git` and the matches of the containing root's
+`.gitignore` — the project root's, or the extra root's for a walk under one,
+whose patterns also match relative to that root; a walk from a directory
+under no root is anchored on that directory and its own `.gitignore` —
 (re-read per call; nested .gitignore files are a later refinement), plus
-binary files. A hit under an extra root is listed by its absolute path.
+binary files. A hit outside the project root is listed by its absolute path.
 
 ## Approval — the first slice of the P2 permission framework
 
@@ -68,8 +80,9 @@ Mutating tools implement the package-private `approver` interface; the
 - **`tools.code.auto_write: true`** waives approval entirely (the tools then
   report RequiresApproval=false), which also unlocks writes in -m runs.
 
-**The jail is not the approval.** The two are separate checks, in order:
-approval is asked before the call runs, and the jail is checked inside it.
+**The jail is not the approval.** The jail governs writes only. The two are
+separate checks, in order: approval is asked before the call runs, and the
+jail is checked inside it.
 Allowing a write whose path lies outside every root does not widen the jail —
 the call still fails with `path is outside the project root (…)`; `auto_write`
 does not widen it either. The one way to admit a path outside the project
@@ -84,12 +97,12 @@ write_roots:           # top level, every agent; shared with the shell sandbox
   - ~/scratch          # `~` is home
   - ../shared-lib      # relative = against the project root
 tools:
-  code:                # empty = jail to project root + confirm writes
+  code:                # empty = writes jailed to the roots + confirmed
     # auto_write: true # skip write confirmations (and allow writes in -m)
 ```
 
 `write_roots:` is ONE list for both questions "where may the code tools
-reach" and "where may a sandboxed shell write" — the split Cursor has
+write" and "where may a sandboxed shell write" — the split Cursor has
 between its file tools and its terminal is exactly what it avoids. It is a
 top-level key (beside `providers:`/`models:`/`agents:`), not a `tools:` key:
 `tools:` keys are set names. `agents.<name>.write_roots` is refused by the
@@ -114,11 +127,13 @@ the same ApprovalReporter seam.
 
 ## Testing
 
-Path jail (absolute/`..`; real locations: a symlink that leaves every root
+Open reads (absolute/`..` and a link out of the root read, a `path:` base
+outside the project walked and listed, walks reporting escaping links);
+write jail (absolute/`..`; real locations: a symlink that leaves every root
 refused, one that stays inside admitted, a root reached through a link, an
 unverifiable path refused; extra write roots admitted, an unresolvable one
-refusing the set; walks skipping escaping links and anchored on an extra
-root); glob depth default, gitignore exclusion, mtime
+refusing the set; walks anchored on an extra root); descriptions (no reader
+claims a jail, the writers name the roots); glob depth default, gitignore exclusion, mtime
 order; grep format, include filter, context, binary skip, bad regex;
 list_dir; read_file numbering/window/binary/empty; edit_file read-gate,
 uniqueness, replace_all, staleness, snippet; write_file create/parents,

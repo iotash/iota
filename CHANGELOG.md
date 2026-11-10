@@ -15,6 +15,13 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Changed
 
+- **Reading is no longer restricted to the project; writing still is.**
+  `read_file`, `list_dir`, `glob` and `grep` now read any path, absolute or
+  `../…`, and follow a symlink wherever it leads. The shell could already read
+  the whole machine without asking, so the restriction only pushed the model
+  into `cat`, where you see less of what it reads. `edit_file` and
+  `write_file` are confined exactly as before: to the project and the
+  `write_roots:` directories, which their descriptions now name.
 - **`tools.shell.write` is gone — a breaking change.** Its extra writable
   directories are now the top-level `write_roots:`, which the code tools share.
   A config that still has `tools.shell.write` loses the shell tool, with a
@@ -24,8 +31,7 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 - **The code tools check where a symlink really leads.** A link inside the
   project that points outside it used to be followed as if it were part of the
-  project; reading or writing through it is now refused, and glob and grep no
-  longer list such links.
+  project; writing through it is now refused.
 
 ## 0.8.0 - 2026-11-09
 
