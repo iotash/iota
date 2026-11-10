@@ -224,21 +224,34 @@ async fn walks_under_an_extra_root_are_anchored_on_it() {
     assert_eq!(out.text, "no matches for needle");
 }
 
-/// `glob`, `grep` and `list_dir` take a `path` outside the project (absolute or `..`): the walk is
-/// anchored on that directory, so its own `.gitignore` applies, and hits are named absolute.
+/// `glob`, `grep` and `list_dir` take a `path` outside the project: the walk is anchored on that
+/// directory's real location, so its own `.gitignore` applies — never the project's, even when the
+/// path is spelled through a link inside the project — and hits are named by that real location.
 #[tokio::test]
 async fn walks_and_listings_reach_outside_the_project_root() {
-    let (dir, _root, tools) = code_project(&[("a.rs", "fn needle() {}\n")], "");
+    let (dir, root, tools) = code_project(
+        &[("a.rs", "fn needle() {}\n"), (".gitignore", "b.rs\n")],
+        "",
+    );
     let other = dir.path().join("other");
     write_project_file(&other, ".gitignore", "skip/\n");
     write_project_file(&other, "b.rs", "fn needle() {}\n");
     write_project_file(&other, "skip/c.rs", "fn needle() {}\n");
-    let abs = other.join("b.rs").display().to_string();
-
-    for path in [
+    let real = fs::canonicalize(&other).expect("real other");
+    let abs = real.join("b.rs").display().to_string();
+    let mut spellings = vec![
         other.to_str().expect("utf-8").to_owned(),
         "../other".to_owned(),
-    ] {
+    ];
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&other, root.join("dlink")).expect("dlink");
+        spellings.extend(["dlink".to_owned(), "dlink/.".to_owned()]);
+    }
+    #[cfg(not(unix))]
+    let _ = root;
+
+    for path in spellings {
         let out = call(&tools, "glob", json!({"pattern": "*.rs", "path": path})).await;
         assert_eq!(out, ToolOutput::ok(abs.clone()), "glob {path:?}");
         let out = call(&tools, "grep", json!({"pattern": "needle", "path": path})).await;

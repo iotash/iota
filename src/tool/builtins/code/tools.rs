@@ -894,7 +894,8 @@ fn write_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
 
 // ---- shared helpers ----
 
-/// The optional `path` argument as a search base (anywhere: reads are open); empty → the root.
+/// The optional `path` argument as a search base (anywhere: reads are open), at its real location
+/// ([`CodeSet::walk_base`]); empty → the root.
 fn code_base_dir(cs: &CodeSet, args: &JsonObject) -> Result<PathBuf, ToolOutput> {
     let raw = str_arg(args, "path");
     if raw.trim().is_empty() {
@@ -903,7 +904,7 @@ fn code_base_dir(cs: &CodeSet, args: &JsonObject) -> Result<PathBuf, ToolOutput>
     let abs = cs.read_path(raw)?;
     // A stat failure and a non-directory give the same text, and it names the RAW argument.
     match fs::metadata(&abs) {
-        Ok(m) if m.is_dir() => Ok(abs),
+        Ok(m) if m.is_dir() => Ok(cs.walk_base(abs)),
         _ => Err(ToolOutput::err(format!("not a directory: {raw}"))),
     }
 }

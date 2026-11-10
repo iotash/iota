@@ -119,13 +119,35 @@ impl CodeSet {
     /// The root a walk from `base` is anchored on — the project root or the extra root that
     /// lexically contains it, the project root first: its `.gitignore` filters the walk and its
     /// relative paths are what patterns match. `base` itself when no root contains it lexically
-    /// (reads are open, so a walk may start anywhere).
+    /// (reads are open, so a walk may start anywhere). `base` is a [`Self::walk_base`], so this
+    /// lexical test decides by the real location.
     pub(crate) fn anchor<'a>(&'a self, base: &'a Path) -> &'a Path {
         std::iter::once(&self.root)
             .chain(&self.extra)
             .map(|r| r.path.as_path())
             .find(|root| within(root, base))
             .unwrap_or(base)
+    }
+
+    /// Where a walk from the existing directory `base` really starts: its real location, expressed
+    /// under the configured path of the root whose real location contains it (the project root
+    /// first), else the real location itself. So every spelling of one directory — a link to it, a
+    /// path through a link, `..`, the absolute path — walks the same tree under the same
+    /// `.gitignore` ([`Self::anchor`]) and reports the same paths, and a root reached through a
+    /// link keeps its own spelling. `base` unchanged when it cannot be canonicalized.
+    pub(crate) fn walk_base(&self, base: PathBuf) -> PathBuf {
+        let Ok(real) = std::fs::canonicalize(&base) else {
+            return base;
+        };
+        std::iter::once(&self.root)
+            .chain(&self.extra)
+            .find_map(|r| {
+                within(&r.real, &real)
+                    .then(|| paths::rel(&r.real, &real))
+                    .flatten()
+                    .map(|rel| paths::clean(&r.path.join(rel)))
+            })
+            .unwrap_or(real)
     }
 
     /// The `"path"` argument rendered for a call header. A missing path (a malformed call)
@@ -619,6 +641,33 @@ mod tests {
         let abs = real.join("new.txt");
         let abs = abs.to_str().expect("utf-8");
         assert_eq!(cs.write_path(abs), Ok(PathBuf::from(abs)));
+    }
+
+    /// A walk base is its real location, spelled under the configured root that really holds it: a
+    /// root reached through a link keeps its spelling, a link to a project directory walks that
+    /// directory, a link out of the project walks the real target.
+    #[cfg(unix)]
+    #[test]
+    fn walk_base_is_the_real_location_under_its_root() {
+        use std::os::unix::fs::symlink;
+        let (t, root, out) = jail_fixture();
+        let via = t.path().join("via");
+        symlink(&root, &via).expect("via");
+        symlink("dir", root.join("subdir")).expect("subdir");
+        symlink(&out, root.join("outdir")).expect("outdir");
+        let cs = CodeSet::new(via.clone(), Vec::new(), false).expect("set");
+        let real_out = std::fs::canonicalize(&out).expect("real out");
+        for (base, want) in [
+            (via.clone(), via.clone()),
+            (via.join("dir"), via.join("dir")),
+            (via.join("subdir"), via.join("dir")),
+            (root.join("subdir"), via.join("dir")),
+            (via.join("outdir"), real_out.clone()),
+            (out.join("deep"), real_out.join("deep")),
+            (t.path().join("missing"), t.path().join("missing")),
+        ] {
+            assert_eq!(cs.walk_base(base.clone()), want, "{base:?}");
+        }
     }
 
     /// Plants the review's B1 links under `root`: `D/D/D/D/S -> out` (each `D` a 250-char name,
