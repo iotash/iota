@@ -1,11 +1,14 @@
 //! macOS Seatbelt wrapper (internal/shell/`sandbox_darwin.go`): `sandbox-exec` with a deny-write profile that opens
-//! the writable roots.
+//! the writable roots, then closes the protected paths again.
 
 use std::{
     ffi::OsString,
     fmt::Write as _,
     path::{Path, PathBuf},
 };
+
+use crate::app::fs::physical;
+use crate::app::protected::{Protected, Reach};
 
 /// The Seatbelt launcher.
 pub(crate) const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
@@ -18,58 +21,82 @@ pub(crate) fn available() -> bool {
     std::fs::metadata(SANDBOX_EXEC).is_ok_and(|m| m.is_file())
 }
 
-/// Builds `sandbox-exec -p <profile> -D W{i}=<path>… <shell> <shell args…> <script>`; every writable path is
-/// expanded to itself, `/private` + p for p under `/tmp`, `/var`, `/etc`, and its canonical form when
-/// different.
+/// Builds `sandbox-exec -p <profile> -D W{i}=<path>… -D P{j}=<path>… <shell> <shell args…> <script>`; every
+/// writable path is expanded to itself, `/private` + p for p under `/tmp`, `/var`, `/etc`, and its canonical form
+/// when different. The protected paths follow the allow block as one deny block (a later Seatbelt rule wins over
+/// an earlier one, so no writable root re-opens them): `subpath` for a [`Reach::Tree`], `literal` for a
+/// [`Reach::Entry`], each expanded the same way but resolved with [`physical`], since a protected path need not
+/// exist — a `.iota.yaml` that is not there yet is exactly what must not be created.
 // The three per-OS backends share the signature `exec` dispatches on; only the `other` stub can fail.
 #[allow(clippy::unnecessary_wraps)]
 pub(crate) fn command(
     shell: &crate::shell::interp::Interpreter,
     script: &str,
     writable: &[PathBuf],
+    protected: &[Protected],
     network: bool,
 ) -> Result<tokio::process::Command, super::SandboxError> {
-    // /tmp and /var are symlinks into /private on macOS; Seatbelt matches the resolved path, so each writable
-    // root contributes its /private twin and its fully-resolved form (sandbox_darwin.go:28-42).
-    let mut expanded: Vec<PathBuf> = Vec::with_capacity(writable.len() * 2);
-    for p in writable {
-        expanded.push(p.clone());
-        for prefix in PRIVATE_PREFIXES {
-            if has_path_prefix(p, prefix) {
-                let mut twin = OsString::from("/private");
-                twin.push(p.as_os_str());
-                expanded.push(PathBuf::from(twin));
-            }
-        }
-        if let Ok(resolved) = std::fs::canonicalize(p)
-            && resolved != *p
-        {
-            expanded.push(resolved);
-        }
-    }
-
     let mut profile = String::from("(version 1)\n(allow default)\n");
     if !network {
         profile.push_str("(deny network*)\n");
     }
     profile.push_str("(deny file-write*)\n(allow file-write*\n  (subpath \"/dev\")\n");
-    let mut params: Vec<OsString> = Vec::with_capacity(expanded.len() * 2);
-    for (i, p) in expanded.iter().enumerate() {
-        // Paths go in as -D parameters, never spliced into the profile text — quoting stays sandbox-exec's
-        // problem, not ours.
-        let _ = writeln!(profile, "  (subpath (param \"W{i}\"))");
+    let mut params: Vec<OsString> = Vec::new();
+    // Paths go in as -D parameters, never spliced into the profile text — quoting stays sandbox-exec's
+    // problem, not ours.
+    let mut param = |profile: &mut String, rule: &str, name: String, p: &Path| {
+        let _ = writeln!(profile, "  ({rule} (param \"{name}\"))");
         params.push(OsString::from("-D"));
-        let mut arg = OsString::from(format!("W{i}="));
+        let mut arg = OsString::from(format!("{name}="));
         arg.push(p.as_os_str());
         params.push(arg);
+    };
+    let writable = writable
+        .iter()
+        .flat_map(|p| spellings(p, std::fs::canonicalize(p).ok()));
+    for (i, p) in writable.enumerate() {
+        param(&mut profile, "subpath", format!("W{i}"), &p);
     }
     profile.push_str(")\n");
+    if !protected.is_empty() {
+        profile.push_str("(deny file-write*\n");
+        let denied = protected.iter().flat_map(|e| {
+            let rule = match e.reach {
+                Reach::Tree => "subpath",
+                Reach::Entry => "literal",
+            };
+            spellings(&e.path, physical(&e.path)).map(move |p| (rule, p))
+        });
+        for (j, (rule, p)) in denied.enumerate() {
+            param(&mut profile, rule, format!("P{j}"), &p);
+        }
+        profile.push_str(")\n");
+    }
 
     let mut cmd = tokio::process::Command::new(SANDBOX_EXEC);
     cmd.arg("-p").arg(profile);
     cmd.args(params);
     cmd.arg(&shell.program).args(shell.args()).arg(script);
     Ok(cmd)
+}
+
+/// The spellings Seatbelt may see `p` under: `p`, its `/private` twin when it lies under `/tmp`, `/var` or
+/// `/etc` (symlinks into `/private` on macOS, and Seatbelt matches the resolved path — `sandbox_darwin.go:28-42`),
+/// and `resolved` when it is known and different.
+fn spellings(p: &Path, resolved: Option<PathBuf>) -> impl Iterator<Item = PathBuf> {
+    let twins = PRIVATE_PREFIXES
+        .iter()
+        .filter(|prefix| has_path_prefix(p, prefix))
+        .map(|_| {
+            let mut twin = OsString::from("/private");
+            twin.push(p.as_os_str());
+            PathBuf::from(twin)
+        })
+        .collect::<Vec<_>>();
+    let resolved = resolved.filter(|r| r != p);
+    std::iter::once(p.to_path_buf())
+        .chain(twins)
+        .chain(resolved)
 }
 
 /// Whether `p` is `prefix` or lies under it, comparing bytes exactly like Go's `strings.HasPrefix`.
@@ -90,7 +117,7 @@ mod tests {
     fn seatbelt_profile_and_argv() {
         let writable = vec![PathBuf::from("/no-such-iota-root"), PathBuf::from("/tmp")];
         let bash = Interpreter::new("/bin/bash");
-        let cmd = command(&bash, "echo hi", &writable, false).expect("profile");
+        let cmd = command(&bash, "echo hi", &writable, &[], false).expect("profile");
         let argv: Vec<String> = std::iter::once(cmd.as_std().get_program())
             .chain(cmd.as_std().get_args())
             .map(|a| a.to_string_lossy().into_owned())
@@ -122,7 +149,14 @@ mod tests {
         );
 
         // network: true drops the (deny network*) line and nothing else.
-        let cmd = command(&bash, "x", &[PathBuf::from("/no-such-iota-root")], true).expect("p");
+        let cmd = command(
+            &bash,
+            "x",
+            &[PathBuf::from("/no-such-iota-root")],
+            &[],
+            true,
+        )
+        .expect("p");
         let profile = cmd
             .as_std()
             .get_args()

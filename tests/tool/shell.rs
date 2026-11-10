@@ -145,6 +145,7 @@ fn sandbox_fixture() -> (TempDir, PathBuf, PathBuf, Sandbox) {
         write: Vec::new(),
         temp_dir: temp,
         cache_dir: Some(cache),
+        app_home: Some(dir.path().join("home/.iota")),
     };
     (dir, root, outside, sb)
 }
@@ -1192,6 +1193,7 @@ async fn write_roots_open_one_directory_to_the_code_tools_and_the_shell() {
         write: Vec::new(),
         temp_dir: env.dirs.temp.clone(),
         cache_dir: env.dirs.cache.clone(),
+        app_home: env.dirs.app_home(),
     };
     if skip_unless_sandboxed("write_roots_open_one_directory", &sb, &root).await {
         return;
@@ -1235,6 +1237,7 @@ fn the_writable_paths_are_the_project_and_the_temp_dirs() {
         write: vec![root.clone(), PathBuf::new(), PathBuf::from("/tmp")],
         temp_dir: dirs.temp.clone(),
         cache_dir: Some(cache.clone()),
+        app_home: None,
     });
     assert_eq!(paths[0], root, "project root must lead: {paths:?}");
     let mut seen = std::collections::HashSet::new();
@@ -1260,6 +1263,7 @@ fn the_writable_paths_are_the_project_and_the_temp_dirs() {
         write: Vec::new(),
         temp_dir: PathBuf::from("/tmp"),
         cache_dir: None,
+        app_home: None,
     });
     assert_eq!(paths, vec![root, PathBuf::from("/tmp")]);
 }

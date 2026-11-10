@@ -27,6 +27,17 @@ pub(crate) enum Answer {
     Session,
 }
 
+/// What "allow for this session" would grant for a call — the gate's key for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Grant<'a> {
+    /// The tool (a call not bound to a location).
+    Tool,
+    /// The tool in this directory (a `code` write outside every root).
+    Dir(&'a Path),
+    /// Nothing: the option is not offered and no earlier grant answers (a write to a protected path).
+    Never,
+}
+
 /// One approval gate per conversation (approval.go:26-33). Session grants are keyed by
 /// wire tool name and the call's grant scope (`ApprovalSubject::scope`): a grant for one
 /// scope never covers another, nor the same scope through another tool, nor the tool's
@@ -50,25 +61,34 @@ impl ApprovalGate {
     }
 
     /// Resolves one gated call (approval.go:47-80). `detail` is what the call is about
-    /// (the path it writes, the command it runs); `scope` is what "allow for this session"
-    /// grants — `None` the tool, `Some(dir)` the tool in that directory, and then the
-    /// option names it. The error is reserved for the prompt itself failing; a refusal is
+    /// (the path it writes, the command it runs); `grant` is what "allow for this session"
+    /// grants ([`Grant`]) — for a directory the option names it, and for [`Grant::Never`]
+    /// the prompt is "Allow once" / "Deny" and is asked every time. The error is reserved for the prompt itself failing; a refusal is
     /// `Ok(Answer::Denied)`, and a turn that continues after a denial is the point of asking.
     pub(crate) async fn ask(
         &self,
         cancel: &CancellationToken,
         name: &str,
-        scope: Option<&Path>,
+        grant: Grant<'_>,
         detail: &str,
     ) -> Result<Answer, UiError> {
-        let key = (name.to_owned(), scope.map(Path::to_path_buf));
-        if lock(&self.approved).contains(&key) {
+        let (key, session) = match grant {
+            Grant::Tool => (
+                Some((name.to_owned(), None)),
+                Some("Allow for this session".to_owned()),
+            ),
+            Grant::Dir(dir) => (
+                Some((name.to_owned(), Some(dir.to_path_buf()))),
+                Some(format!("Allow in {} for this session", dir.display())),
+            ),
+            Grant::Never => (None, None),
+        };
+        if key
+            .as_ref()
+            .is_some_and(|k| lock(&self.approved).contains(k))
+        {
             return Ok(Answer::Session);
         }
-        let session = match scope {
-            None => "Allow for this session".to_owned(),
-            Some(dir) => format!("Allow in {} for this session", dir.display()),
-        };
         let mut label = display_tool_name(name);
         if !detail.is_empty() {
             label = format!("{label} {detail}");
@@ -87,7 +107,10 @@ impl ApprovalGate {
                 cancel,
                 SelectSpec {
                     title: format!("{label} — allow?"),
-                    items: vec!["Allow once".to_owned(), session, "Deny".to_owned()],
+                    items: std::iter::once("Allow once".to_owned())
+                        .chain(session)
+                        .chain(["Deny".to_owned()])
+                        .collect(),
                     cursor: 0,
                 },
             )
@@ -95,14 +118,17 @@ impl ApprovalGate {
         self.tr.resume_from_input();
         self.pres.set_state(State::Busy);
         let choice = choice?;
-        if choice.cancelled || choice.index == 2 {
+        if choice.cancelled {
             return Ok(Answer::Denied);
         }
-        if choice.index == 1 {
-            lock(&self.approved).insert(key);
-            return Ok(Answer::Session);
+        match (choice.index, key) {
+            (0, _) => Ok(Answer::Once),
+            (1, Some(key)) => {
+                lock(&self.approved).insert(key);
+                Ok(Answer::Session)
+            }
+            _ => Ok(Answer::Denied),
         }
-        Ok(Answer::Once)
     }
 
     /// Forgets every session grant: the conversation they belonged to is over (`/new`, a `/session`

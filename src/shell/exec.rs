@@ -64,6 +64,8 @@ pub struct Sandbox {
     pub temp_dir: PathBuf,
     /// Injected `os.UserCacheDir()`.
     pub cache_dir: Option<PathBuf>,
+    /// `~/.iota` (`HostDirs::app_home`), whose trust record is protected; None without a home.
+    pub app_home: Option<PathBuf>,
 }
 
 /// One execution request.
@@ -158,7 +160,13 @@ pub fn spawn(
         Err(e) => return Err(fail(ShellError::NoShell(e))),
     };
     let mut cmd = if let Some(sb) = &opts.sandbox {
-        match super::sandbox::command(&shell, &opts.command, &writable_paths(sb), sb.network) {
+        match super::sandbox::command(
+            &shell,
+            &opts.command,
+            &writable_paths(sb),
+            &protected_paths(sb),
+            sb.network,
+        ) {
             Ok(c) => c,
             Err(e) => return Err(fail(ShellError::Sandbox(e))),
         }
@@ -351,6 +359,12 @@ pub fn writable_paths(sb: &Sandbox) -> Vec<PathBuf> {
         .into_iter()
         .filter(|p| !p.as_os_str().is_empty() && seen.insert(p.clone()))
         .collect()
+}
+
+/// What no command in `sb` may write, whatever [`writable_paths`] opens: the one protected table
+/// ([`crate::app::protected::table`]) for `sb.root` and `sb.app_home`.
+pub fn protected_paths(sb: &Sandbox) -> Vec<crate::app::protected::Protected> {
+    crate::app::protected::table(&sb.root, sb.app_home.as_deref())
 }
 
 /// 15-line `PATH` scan (replaces `which`).

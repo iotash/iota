@@ -8,6 +8,7 @@ pub mod diag;
 pub mod env;
 pub mod fs;
 pub(crate) mod paths;
+pub mod protected;
 
 use std::path::{Path, PathBuf};
 
@@ -15,6 +16,9 @@ use std::path::{Path, PathBuf};
 pub(crate) const NAME: &str = "iota";
 /// The per-user directory under `$HOME` (`~/.iota`).
 pub(crate) const DOT_DIR: &str = ".iota";
+/// The trust record's file name under `~/.iota` (`crate::config::trust`), here because the protected table
+/// (`protected`) names it too.
+pub(crate) const TRUST_FILE: &str = "trusted.json";
 /// The config file stem: `~/.iota.yaml`, `./.iota.yml`, ….
 pub(crate) const CONFIG_BASE: &str = ".iota";
 /// Config file extensions in lookup order.

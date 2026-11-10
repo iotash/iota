@@ -1,4 +1,5 @@
-//! The one atomic file writer: a sibling temporary file, synced, renamed over the target. A config file the
+//! The one atomic file writer — a sibling temporary file, synced, renamed over the target — and [`physical`],
+//! where a path that need not exist really lands. A config file the
 //! user hand-edits and a token file that must never be half-written both go through it; neither is ever seen
 //! in an intermediate state, and a crash between the write and the rename leaves the old file in place.
 
@@ -68,6 +69,56 @@ fn write_then_rename(
         std::fs::set_permissions(tmp, perm)?;
     }
     std::fs::rename(tmp, path)
+}
+
+/// Symlink hops [`physical`] follows before giving up (Linux's own `MAXSYMLINKS`).
+const MAX_SYMLINK_HOPS: usize = 40;
+
+/// The real location of `p`, which need not exist: its nearest existing ancestor
+/// canonicalized, with the missing tail re-appended lexically. An ancestor that is a dangling
+/// symlink cannot be canonicalized, so its link text is followed instead (relative to the
+/// link's own directory) — a dangling link still reports where a write through it would land.
+///
+/// Only `NotFound` counts as "missing". Every other failure — `ENAMETOOLONG` (a resolved
+/// prefix past `PATH_MAX`, which the kernel itself follows happily), `EACCES`, `ELOOP`,
+/// `ENOTDIR`, too many hops — is `None`: the location is unknown and the caller refuses it.
+pub(crate) fn physical(p: &Path) -> Option<PathBuf> {
+    use std::io::ErrorKind::NotFound;
+    let mut path = p.to_path_buf();
+    for _ in 0..MAX_SYMLINK_HOPS {
+        // Walk up to the nearest ancestor that exists (a dangling link exists for lstat).
+        let mut tail = Vec::new();
+        let mut at = path.as_path();
+        let meta = loop {
+            match std::fs::symlink_metadata(at) {
+                Ok(meta) => break meta,
+                Err(e) if e.kind() == NotFound => {
+                    tail.push(at.components().next_back()?.as_os_str().to_owned());
+                    at = at.parent()?;
+                }
+                Err(_) => return None,
+            }
+        };
+        let (base, done) = match std::fs::canonicalize(at) {
+            Ok(c) => (c, true),
+            Err(e) if e.kind() == NotFound && meta.file_type().is_symlink() => {
+                let target = std::fs::read_link(at).ok()?;
+                (
+                    std::fs::canonicalize(at.parent()?).ok()?.join(target),
+                    false,
+                )
+            }
+            Err(_) => return None,
+        };
+        let next = tail.iter().rev().fold(base, |acc, c| acc.join(c));
+        if done {
+            // The tail does not exist, so its `..` (if any) can only be read lexically.
+            return Some(super::paths::clean(&next));
+        }
+        // The link text is resolved physically on the next pass, `..` and all.
+        path = next;
+    }
+    None
 }
 
 #[cfg(test)]

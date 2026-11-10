@@ -388,8 +388,10 @@ pub struct ApprovalSubject {
     pub detail: String,
     /// The exact location "allow once" admits.
     pub target: PathBuf,
-    /// The directory "allow for this session" grants (the target's directory).
-    pub scope: PathBuf,
+    /// The directory "allow for this session" grants (the target's directory); `None` when there is no
+    /// session grant to give — a protected path is approved one call at a time, and the gate offers only
+    /// "allow once".
+    pub scope: Option<PathBuf>,
 }
 
 /// The top-level `outside_writes:` — what the `code` writers do with a path whose real location is known and

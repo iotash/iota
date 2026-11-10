@@ -19,10 +19,7 @@ use std::{
 use serde_norway::Value;
 use sha2::{Digest as _, Sha256};
 
-use crate::app::HostDirs;
-
-/// The record's file name under `<home>/.iota`.
-const TRUST_FILE: &str = "trusted.json";
+use crate::app::{HostDirs, TRUST_FILE};
 
 /// Where a project file stands against the record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,7 +255,7 @@ fn scalar(v: Option<&Value>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{Standing, TrustStore, summary};
-    use crate::app::HostDirs;
+    use crate::app::{HostDirs, TRUST_FILE};
 
     fn store(home: &std::path::Path) -> TrustStore {
         TrustStore::of(&HostDirs {

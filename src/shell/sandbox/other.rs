@@ -12,6 +12,7 @@ pub(crate) fn command(
     _shell: &crate::shell::interp::Interpreter,
     _script: &str,
     _writable: &[PathBuf],
+    _protected: &[crate::app::protected::Protected],
     _network: bool,
 ) -> Result<tokio::process::Command, super::SandboxError> {
     Err(super::SandboxError::Unsupported)

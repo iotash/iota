@@ -298,14 +298,14 @@ impl Tool for EditFile {
         Presentation::Expanded
     }
 
-    /// An outside write is bound to its real location ([`writer_subject`]).
+    /// An outside or protected write is bound to its real location ([`CodeSet::approvable`]).
     fn approval_subject(&self, args: &JsonObject) -> Option<ApprovalSubject> {
-        writer_subject(&self.0, args)
+        self.0.approvable(str_arg(args, "path"))
     }
 
     /// The path IS the call for the file tools (the D-12 lift) — its
     /// `new_string` must never reach a header, so the empty summary stands. An outside write
-    /// shows its real location, marked ([`writer_summary`]).
+    /// or protected write shows its real location, marked ([`writer_summary`]).
     fn header_summary(&self, args: &JsonObject) -> Option<String> {
         Some(writer_summary(&self.0, args))
     }
@@ -362,39 +362,34 @@ impl Tool for WriteFile {
         Presentation::Expanded
     }
 
-    /// An outside write is bound to its real location ([`writer_subject`]).
+    /// An outside or protected write is bound to its real location ([`CodeSet::approvable`]).
     fn approval_subject(&self, args: &JsonObject) -> Option<ApprovalSubject> {
-        writer_subject(&self.0, args)
+        self.0.approvable(str_arg(args, "path"))
     }
 
     /// The path IS the call for the file tools (the D-12 lift) — its
     /// `content` must never reach a header, so the empty summary stands. An outside write
-    /// shows its real location, marked ([`writer_summary`]).
+    /// or protected write shows its real location, marked ([`writer_summary`]).
     fn header_summary(&self, args: &JsonObject) -> Option<String> {
         Some(writer_summary(&self.0, args))
     }
 }
 
 /// A writer's header, and so its approval prompt: the path as the readers show it, except a write the user
-/// would be asked about outside every root, which shows the RESOLVED real location, absolute, marked
-/// `(outside the project root)` — what the user approves is where the bytes land, not the argument as typed.
+/// would be asked about outside every root or to a protected path, which shows what [`CodeSet::approvable`]
+/// names — the RESOLVED real location, absolute, marked `(outside the project root)` or `(protected): {why}` —
+/// since what the user approves is where the bytes land, not the argument as typed.
 fn writer_summary(cs: &CodeSet, args: &JsonObject) -> String {
     match cs.approvable(str_arg(args, "path")) {
-        Some(real) => super::outside_summary(&real),
+        Some(subject) => subject.detail,
         None => cs.header_arg(args),
     }
 }
 
-/// An outside write's approval subject, from ONE resolution of its real location: the prompt names it
-/// (marked), "allow once" admits exactly it, "allow for this session" grants its directory
-/// ([`super::grant_dir`]). `None` inside the roots (the approval is about the tool, as it always was).
+/// The subject [`CodeSet::approvable`] binds a writer's call to, as the tools' `approval_subject` asks it.
+#[cfg(test)]
 fn writer_subject(cs: &CodeSet, args: &JsonObject) -> Option<ApprovalSubject> {
-    let real = cs.approvable(str_arg(args, "path"))?;
-    Some(ApprovalSubject {
-        detail: super::outside_summary(&real),
-        scope: super::grant_dir(&real).to_path_buf(),
-        target: real,
-    })
+    cs.approvable(str_arg(args, "path"))
 }
 
 // ---- glob ----
@@ -1164,6 +1159,7 @@ mod tests {
             Vec::new(),
             true,
             super::super::Outside::Refuse,
+            None,
         )
         .expect("set");
         let cx = RunCtx::default();
@@ -1270,6 +1266,7 @@ mod tests {
             Vec::new(),
             false,
             super::super::Outside::Refuse,
+            None,
         )
         .expect("set");
 
@@ -1315,6 +1312,7 @@ mod tests {
             Vec::new(),
             auto_write,
             super::super::Outside::Ask,
+            None,
         )
         .expect("set");
         (t, root, out, cs)
@@ -1332,7 +1330,7 @@ mod tests {
         let s = super::writer_subject(cs, a).expect("an outside write");
         RunCtx {
             approved: Some(if session {
-                Approved::Dir(s.scope)
+                Approved::Dir(s.scope.expect("a directory grant"))
             } else {
                 Approved::Once(s.target)
             }),
@@ -1369,7 +1367,7 @@ mod tests {
                     real_out.join("new.txt").display()
                 ),
                 target: real_out.join("new.txt"),
-                scope: real_out.clone(),
+                scope: Some(real_out.clone()),
             }),
             "the prompt names the RESOLVED path; the grant is its directory"
         );
@@ -1467,7 +1465,9 @@ mod tests {
         let detail = writer_summary(&cs, &w);
         // 2. Relink outdir -> out2; the grant scope is now out2 (granted for the session).
         relink(&root.join("outdir"), &out2);
-        let scope = writer_subject(&cs, &w).expect("subject").scope;
+        let scope = writer_subject(&cs, &w)
+            .and_then(|s| s.scope)
+            .expect("a grant");
         assert_eq!(scope, std::fs::canonicalize(&out2).expect("real out2"));
         // 3. Relink outdir -> out again.
         relink(&root.join("outdir"), &out);
@@ -1485,7 +1485,7 @@ mod tests {
         let s = writer_subject(&cs, &w).expect("subject");
         assert_eq!(s.detail, detail);
         assert_eq!(s.detail, super::super::outside_summary(&s.target));
-        assert_eq!(Some(s.scope.as_path()), s.target.parent());
+        assert_eq!(s.scope.as_deref(), s.target.parent());
     }
 
     /// Review S1: a target with no parent (`/`) is granted as itself, never as the tool-wide key an inside
@@ -1495,7 +1495,7 @@ mod tests {
     fn a_target_without_a_parent_is_its_own_grant() {
         let (_t, _root, _out, cs) = asking_set(true);
         let s = super::writer_subject(&cs, &args(json!({"path": "/"}))).expect("subject");
-        assert_eq!(s.scope, std::path::PathBuf::from("/"));
+        assert_eq!(s.scope, Some(std::path::PathBuf::from("/")));
         assert_eq!(s.target, std::path::PathBuf::from("/"));
     }
 
@@ -1552,7 +1552,8 @@ mod tests {
         let looped = args(json!({"path": "la/x.txt"}));
         for auto_write in [false, true] {
             for policy in [Outside::Ask, Outside::Unattended, Outside::Refuse] {
-                let cs = CodeSet::new(root.clone(), Vec::new(), auto_write, policy).expect("set");
+                let cs =
+                    CodeSet::new(root.clone(), Vec::new(), auto_write, policy, None).expect("set");
                 let at = format!("auto_write={auto_write} {policy:?}");
                 for tool in [
                     std::sync::Arc::new(super::WriteFile(std::sync::Arc::clone(&cs)))
@@ -1573,7 +1574,7 @@ mod tests {
                     assert_eq!(tool.waives_approval(), auto_write, "{at} waives");
                     assert_eq!(tool.approval_subject(&inside), None, "{at}");
                     assert_eq!(
-                        tool.approval_subject(&outside).map(|s| s.scope),
+                        tool.approval_subject(&outside).and_then(|s| s.scope),
                         (policy == Outside::Ask).then(|| real_out.join("deep")),
                         "{at}"
                     );
@@ -1598,8 +1599,14 @@ mod tests {
         use crate::tool::Tool;
         let clause = " Outside that, the user is asked to approve a write there first.";
         for policy in [Outside::Ask, Outside::Unattended, Outside::Refuse] {
-            let cs = CodeSet::new(std::path::PathBuf::from("/proj"), Vec::new(), false, policy)
-                .expect("set");
+            let cs = CodeSet::new(
+                std::path::PathBuf::from("/proj"),
+                Vec::new(),
+                false,
+                policy,
+                None,
+            )
+            .expect("set");
             for d in [
                 super::WriteFile(std::sync::Arc::clone(&cs)).def(),
                 super::EditFile(std::sync::Arc::clone(&cs)).def(),

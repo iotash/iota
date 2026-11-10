@@ -22,7 +22,7 @@ use crate::headless::batch::{BatchOutcome, parallel_run};
 use crate::host::{Event, Kind, State};
 use crate::provider::ToolProvider;
 use crate::provider::model::{AssistantBody, Message, ToolCall, ToolDef};
-use crate::repl::turn::approval::Answer;
+use crate::repl::turn::approval::{Answer, Grant};
 use crate::tool::Presentation;
 use crate::tool::context::RunCtx;
 use crate::tool::context::{Approved, ArtifactSlot};
@@ -252,8 +252,11 @@ async fn walk(
             let detail = subject
                 .as_ref()
                 .map_or_else(|| tool_call_detail(&*dispatch, tc), |s| s.detail.clone());
-            let scope = subject.as_ref().map(|s| s.scope.as_path());
-            let answer = match t.cx.gate.ask(&t.cancel, &tc.name, scope, &detail).await {
+            let grant = match &subject {
+                None => Grant::Tool,
+                Some(s) => s.scope.as_deref().map_or(Grant::Never, Grant::Dir),
+            };
+            let answer = match t.cx.gate.ask(&t.cancel, &tc.name, grant, &detail).await {
                 Ok(a) => a,
                 // A fired cancel scope resolves the blocking call as Interrupted (WP45);
                 // a closed facade ends the loop itself.
@@ -270,8 +273,8 @@ async fn walk(
                 history.push(Message::tool_result(tc, DECLINED, true));
                 continue;
             }
-            approved = subject.map(|s| match answer {
-                Answer::Session => Approved::Dir(s.scope),
+            approved = subject.map(|s| match (answer, s.scope) {
+                (Answer::Session, Some(scope)) => Approved::Dir(scope),
                 _ => Approved::Once(s.target),
             });
         }

@@ -1,7 +1,9 @@
 //! Linux bubblewrap wrapper (internal/shell/`sandbox_linux.go`): a read-only root with the writable roots bound
-//! back in.
+//! back in, and the protected paths under them pinned again.
 
 use std::path::PathBuf;
+
+use crate::app::protected::{Protected, Reach};
 
 /// Whether `bwrap` is on `PATH`.
 pub(crate) fn available() -> bool {
@@ -9,13 +11,22 @@ pub(crate) fn available() -> bool {
 }
 
 /// Builds `bwrap --ro-bind / / --dev-bind /dev /dev --proc /proc --die-with-parent [--bind p p for existing dirs]
-/// [--unshare-net iff !network] -- <shell> <shell args…> <script>`.
+/// [protected binds] [--unshare-net iff !network] -- <shell> <shell args…> <script>`.
+///
+/// The protected binds come after every writable one (a later mount covers an earlier one), for each protected
+/// path that exists and lies under a bound writable root — elsewhere the read-only `/` already covers it: a
+/// [`Reach::Tree`] path is `--ro-bind`ed over itself; a [`Reach::Entry`] directory is `--bind`ed over itself,
+/// which leaves its contents writable but makes it a mount point the command cannot rename, remove or replace
+/// (`EBUSY`), and an [`Reach::Entry`] file (`.git` as a `gitdir:` file) is `--ro-bind`ed. A path that does not
+/// exist cannot be bound, so a command may still CREATE one (a `.iota.yaml`, the `.git/hooks` of a repository
+/// it inits): on Linux the `code` writers' refusal is what covers that case, not the sandbox.
 // The three per-OS backends share the signature `exec` dispatches on; only the `other` stub can fail.
 #[allow(clippy::unnecessary_wraps)]
 pub(crate) fn command(
     shell: &crate::shell::interp::Interpreter,
     script: &str,
     writable: &[PathBuf],
+    protected: &[Protected],
     network: bool,
 ) -> Result<tokio::process::Command, super::SandboxError> {
     let mut cmd = tokio::process::Command::new("bwrap");
@@ -30,11 +41,26 @@ pub(crate) fn command(
         "/proc",
         "--die-with-parent",
     ]);
-    for p in writable {
-        // Non-existent or non-directory write roots are silently skipped (sandbox_linux.go:30-34).
-        if std::fs::metadata(p).is_ok_and(|m| m.is_dir()) {
-            cmd.arg("--bind").arg(p).arg(p);
+    // Non-existent or non-directory write roots are silently skipped (sandbox_linux.go:30-34).
+    let bound: Vec<&PathBuf> = writable
+        .iter()
+        .filter(|p| std::fs::metadata(p).is_ok_and(|m| m.is_dir()))
+        .collect();
+    for p in &bound {
+        cmd.arg("--bind").arg(p).arg(p);
+    }
+    for e in protected {
+        let Ok(meta) = std::fs::metadata(&e.path) else {
+            continue;
+        };
+        if !bound.iter().any(|w| e.path.starts_with(w)) {
+            continue;
         }
+        let bind = match e.reach {
+            Reach::Entry if meta.is_dir() => "--bind",
+            Reach::Entry | Reach::Tree => "--ro-bind",
+        };
+        cmd.arg(bind).arg(&e.path).arg(&e.path);
     }
     if !network {
         cmd.arg("--unshare-net");
@@ -60,7 +86,7 @@ mod tests {
         let root = dir.path().to_path_buf();
         let missing = root.join("nope");
         let bash = Interpreter::new("/bin/bash");
-        let cmd = command(&bash, "echo hi", &[root.clone(), missing], false).expect("argv");
+        let cmd = command(&bash, "echo hi", &[root.clone(), missing], &[], false).expect("argv");
         let argv: Vec<String> = std::iter::once(cmd.as_std().get_program())
             .chain(cmd.as_std().get_args())
             .map(|a| a.to_string_lossy().into_owned())
@@ -91,7 +117,7 @@ mod tests {
         );
 
         // network: true drops --unshare-net and nothing else.
-        let cmd = command(&bash, "x", &[PathBuf::from("/nope")], true).expect("a");
+        let cmd = command(&bash, "x", &[PathBuf::from("/nope")], &[], true).expect("a");
         let networked: Vec<String> = cmd
             .as_std()
             .get_args()
