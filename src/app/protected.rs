@@ -103,14 +103,22 @@ pub fn table(root: &Path, extra: &[PathBuf], home: Option<&Path>) -> Vec<Protect
             at(git.join("config.worktree"), Reach::Tree, Why::GitConfig),
         ]
     };
-    // `.git` itself, its hooks and config, and for a linked worktree its common dir's and `config.worktree`.
+    // `.git` itself, its hooks and config, and for a linked worktree its common dir's and `config.worktree`;
+    // then the same rows for every submodule's gitdir under the repository's (common) `.git/modules`.
     let repo = |git: PathBuf| {
         let linked = linked_gitdir(&git);
-        let mut rows: Vec<Protected> = git_dir(git).into();
-        if let Some((gitdir, common)) = linked {
-            rows.extend(git_dir(common));
-            let worktree = gitdir.join("config.worktree");
-            rows.push(at(worktree, Reach::Tree, Why::GitConfig));
+        let mut rows: Vec<Protected> = git_dir(git.clone()).into();
+        let common = match linked {
+            Some((gitdir, common)) => {
+                rows.extend(git_dir(common.clone()));
+                let worktree = gitdir.join("config.worktree");
+                rows.push(at(worktree, Reach::Tree, Why::GitConfig));
+                common
+            }
+            None => git,
+        };
+        for module in submodule_gitdirs(&common) {
+            rows.extend(git_dir(module));
         }
         rows
     };
@@ -130,6 +138,33 @@ pub fn table(root: &Path, extra: &[PathBuf], home: Option<&Path>) -> Vec<Protect
         t.push(at(record, Reach::Tree, Why::Trust));
     }
     t
+}
+
+/// The gitdirs of `git`'s submodules: every directory under `<git>/modules` that holds a `HEAD`, nested ones
+/// (`modules/a/modules/b`) and names with a slash (`modules/libs/x`) included, parents before children. Read now;
+/// a repository without submodules costs one failed `read_dir`.
+fn submodule_gitdirs(git: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut todo = vec![git.join("modules")];
+    while let Some(dir) = todo.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let path = e.path();
+            if !e.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            if path.join("HEAD").is_file() {
+                todo.push(path.join("modules"));
+                found.push(path);
+            } else {
+                todo.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
 }
 
 /// A linked worktree's `(gitdir, common dir)`, when `git` is a `gitdir: <path>` file (git's gitfile format: a
@@ -240,5 +275,31 @@ mod tests {
                 (git.join("config.worktree"), Reach::Tree, Why::GitConfig),
             ]
         );
+    }
+
+    /// Submodules: each gitdir under `.git/modules` — a plain name, a name with a slash, a nested submodule —
+    /// gets the four git rows after the repository's own; a directory without a `HEAD` is only a path to one.
+    #[test]
+    fn a_submodules_gitdir_gets_the_git_rows() {
+        let t = tempfile::tempdir().expect("tempdir");
+        let root = t.path().join("r");
+        let modules = root.join(".git/modules");
+        let gitdirs = [
+            modules.join("a"),
+            modules.join("a/modules/b"),
+            modules.join("libs/x"),
+        ];
+        for g in &gitdirs {
+            std::fs::create_dir_all(g).expect("gitdir");
+            std::fs::write(g.join("HEAD"), "ref: refs/heads/main\n").expect("HEAD");
+        }
+        let got: Vec<PathBuf> = table(&root, &[], None)
+            .into_iter()
+            .skip(6)
+            .filter(|p| p.reach == Reach::Entry)
+            .map(|p| p.path)
+            .collect();
+        assert_eq!(got, gitdirs);
+        assert_eq!(table(&root, &[], None).len(), 6 + 4 * gitdirs.len());
     }
 }

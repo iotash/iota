@@ -997,6 +997,10 @@ async fn the_sandbox_never_writes_a_protected_path() {
     fs::write(root.join(".iota.yaml"), "model: m\n").expect("project config");
     fs::write(app_home.join("trusted.json"), "{}").expect("trust record");
     fs::write(home.join(".iota.yaml"), "model: h\n").expect("home config");
+    // A submodule's gitdir, as `git submodule add` leaves it under `.git/modules/<name>`.
+    let module = root.join(".git/modules/sub");
+    fs::create_dir_all(module.join("hooks")).expect("submodule hooks");
+    fs::write(module.join("HEAD"), "ref: refs/heads/main\n").expect("submodule HEAD");
     let config_before = fs::read(root.join(".git/config")).expect("git config");
     // `write_roots:` names `.git` and the home: neither re-opens what the table closes.
     let sb = Sandbox {
@@ -1019,6 +1023,15 @@ async fn the_sandbox_never_writes_a_protected_path() {
         "echo x > .iota.yaml".to_owned(),
         format!("echo x > {}/trusted.json", shell_path(&app_home)),
         format!("echo x > {}/.iota.yaml", shell_path(&home)),
+        // A hardlink would let a path rule be walked around; Seatbelt checks link(2) against its SOURCE, and a
+        // bind mount is its own mount, so bwrap refuses one across it (EXDEV).
+        "ln .git/config cfg-link".to_owned(),
+        "echo x > .git/modules/sub/hooks/pre-commit".to_owned(),
+        format!(
+            "ln {0}/trusted.json {1}/record-link",
+            shell_path(&app_home),
+            shell_path(&home)
+        ),
         "mv .git .git-moved".to_owned(),
         format!("mv {0} {0}-moved", shell_path(&app_home)),
     ];
@@ -1029,7 +1042,8 @@ async fn the_sandbox_never_writes_a_protected_path() {
                 && [
                     "Operation not permitted",
                     "Read-only file system",
-                    "Device or resource busy"
+                    "Device or resource busy",
+                    "Invalid cross-device link"
                 ]
                 .iter()
                 .any(|e| res.output.contains(e)),
@@ -1039,6 +1053,12 @@ async fn the_sandbox_never_writes_a_protected_path() {
     assert!(
         !root.join(".git/hooks/pre-commit").exists(),
         "a hook landed"
+    );
+    assert!(
+        !root.join("cfg-link").exists()
+            && !home.join("record-link").exists()
+            && !module.join("hooks/pre-commit").exists(),
+        "a hardlink to a protected file was made"
     );
     assert_eq!(
         fs::read(root.join(".git/config")).expect("config"),
