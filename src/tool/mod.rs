@@ -369,17 +369,20 @@ impl ToolEnv {
 
     /// `self` with [`write_roots`](Self::write_roots) resolved from the config's entries, once: each one
     /// trimmed, a leading `~` expanded ([`expand_home`]), a relative one joined to [`root`](Self::root) (`.`
-    /// when that cannot be read, as `new_code_set` falls back), then cleaned.
+    /// when that cannot be read, as `new_code_set` falls back), then cleaned — and a root that cleans to one
+    /// already listed (`~/a` beside `/home/u/a`) kept once, first spelling first. The config load has
+    /// already refused a blank entry and a `~` with no home to expand it to.
     #[must_use]
     pub fn with_write_roots(mut self, entries: &[String]) -> Self {
         let root = self.root().unwrap_or_else(|_| PathBuf::from("."));
-        self.write_roots = entries
-            .iter()
-            .map(|e| {
-                let p = expand_home(e.trim(), self.dirs.home.as_deref());
-                crate::app::paths::clean(&root.join(p))
-            })
-            .collect();
+        self.write_roots.clear();
+        for e in entries {
+            let p = expand_home(e.trim(), self.dirs.home.as_deref());
+            let p = crate::app::paths::clean(&root.join(p));
+            if !self.write_roots.contains(&p) {
+                self.write_roots.push(p);
+            }
+        }
         self
     }
 }
@@ -441,6 +444,10 @@ mod tests {
             "../sibling/./x".to_owned(),
             " vendor ".to_owned(),
             abs("/opt/data/").display().to_string(),
+            // Repeats are compared once cleaned: the same three directories, spelled otherwise.
+            abs("/home/u/scratch/").display().to_string(),
+            "vendor/../vendor".to_owned(),
+            abs("/opt/./data").display().to_string(),
         ]);
         assert_eq!(
             env.write_roots,

@@ -128,8 +128,8 @@ pub struct Config {
     pub mcp_servers: BTreeMap<String, McpServerConfig>,
     /// `write_roots:` — the roots beyond the project root that the `code` tools' jail accepts and the
     /// `shell` sandbox lets writes into, for every agent; as written (`~` and relative entries are resolved
-    /// against the run's home and project root by `ToolEnv::with_write_roots`). Every file of the stack adds
-    /// its entries, first file first, a repeat kept once.
+    /// against the run's home and project root by `ToolEnv::with_write_roots`, which also drops repeats).
+    /// Every file of the stack adds its entries, first file first.
     pub write_roots: Vec<String>,
 }
 
@@ -327,11 +327,10 @@ impl Config {
         for (name, server_cfg) in file.mcp_servers {
             self.mcp_servers.insert(name, server_cfg);
         }
-        for root in file.write_roots {
-            if !self.write_roots.contains(&root) {
-                self.write_roots.push(root);
-            }
+        for (i, root) in file.write_roots.iter().enumerate() {
+            check_write_root(i, root, env)?;
         }
+        self.write_roots.extend(file.write_roots);
         Ok(())
     }
 
@@ -691,6 +690,25 @@ fn ordered_models<'de, D: serde::Deserializer<'de>>(
 /// The bytes are parsed twice — once as a [`serde_norway::Value`] for the audit, once into the typed shape —
 /// because only the raw form knows which ENTRY a key was written in, and only the typed decode reports a
 /// field's type error with the line it is on. Config files are small; the clarity is worth the second pass.
+/// `write_roots[i]`: an entry that names a directory. A blank one would quietly mean the project root and a
+/// `~` with no home a directory literally called `~` — both typos, so both refuse the load, by position.
+fn check_write_root(i: usize, entry: &str, env: &Env) -> Result<(), ConfigError> {
+    let entry = entry.trim();
+    let message = if entry.is_empty() {
+        "an empty entry names no directory".to_owned()
+    } else if (entry == "~" || entry.starts_with("~/"))
+        && env.home().is_none_or(|h| h.as_os_str().is_empty())
+    {
+        format!("{entry:?} starts with `~`, but there is no home directory to expand it to")
+    } else {
+        return Ok(());
+    };
+    Err(ConfigError::Key {
+        at: format!("write_roots[{i}]"),
+        message,
+    })
+}
+
 fn decode(data: &[u8]) -> Result<ConfigFile, ConfigError> {
     let doc: serde_norway::Value =
         serde_norway::from_slice(data).map_err(|e| ConfigError::Parse(e.to_string()))?;

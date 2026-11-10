@@ -628,11 +628,11 @@ fn a_later_file_replaces_whole_entries() {
 }
 
 /// `write_roots:` is a top-level list kept as written; every file of the stack adds its entries, home
-/// first, a repeat kept once.
+/// first (repeats are dropped once resolved, by `ToolEnv::with_write_roots`).
 #[test]
 fn write_roots_load_as_written_and_add_up_across_the_stack() {
-    let cfg = parse("write_roots: [~/scratch, ../shared]\n").expect("parses");
-    assert_eq!(cfg.write_roots, ["~/scratch", "../shared"]);
+    let cfg = parse("write_roots: [/opt/scratch, ../shared]\n").expect("parses");
+    assert_eq!(cfg.write_roots, ["/opt/scratch", "../shared"]);
     assert!(parse("").expect("parses").write_roots.is_empty());
     assert!(parse("write_roots: {a: b}\n").is_err(), "a list, not a map");
     let (dir, dirs) = temp_project(&[
@@ -640,7 +640,44 @@ fn write_roots_load_as_written_and_add_up_across_the_stack() {
         (".iota.yaml", "write_roots: [/tmp/b, /tmp/c]\n"),
     ]);
     let cfg = Config::load(None, &Env::default().with_dirs(dirs), &mut |_| {}).expect("loads");
-    assert_eq!(cfg.write_roots, ["/tmp/a", "/tmp/b", "/tmp/c"]);
+    assert_eq!(cfg.write_roots, ["/tmp/a", "/tmp/b", "/tmp/b", "/tmp/c"]);
+    let _ = dir;
+}
+
+/// An entry that names no directory refuses the load, by position and with the reason: a blank one would
+/// quietly be the project root, a `~` with no home a directory called `~`.
+#[test]
+fn a_write_root_that_names_nothing_is_refused() {
+    for (yaml, want) in [
+        (
+            "write_roots: [/tmp/a, '']\n",
+            "write_roots[1]: an empty entry names no directory",
+        ),
+        (
+            "write_roots: ['   ']\n",
+            "write_roots[0]: an empty entry names no directory",
+        ),
+        (
+            "write_roots: [/tmp/a, /tmp/b, ~/x]\n",
+            "write_roots[2]: \"~/x\" starts with `~`, but there is no home directory to expand it to",
+        ),
+        (
+            "write_roots: ['~']\n",
+            "write_roots[0]: \"~\" starts with `~`, but there is no home directory to expand it to",
+        ),
+    ] {
+        assert_eq!(
+            parse(yaml).err().map(|e| e.to_string()).as_deref(),
+            Some(want),
+            "{yaml}"
+        );
+    }
+    // With a home, `~` expands; `~alice` is not a home reference and stands as a name.
+    let (dir, dirs) = temp_project(&[]);
+    let env = Env::default().with_dirs(dirs);
+    let cfg =
+        Config::parse(b"write_roots: ['~', ~/x, ~alice]\n", &env, &mut |_| {}).expect("parses");
+    assert_eq!(cfg.write_roots, ["~", "~/x", "~alice"]);
     let _ = dir;
 }
 
