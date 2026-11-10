@@ -255,6 +255,44 @@ async fn walks_and_listings_reach_outside_the_project_root() {
     }
 }
 
+/// Reads are open, so a walk may start at `/`: one that never matches is bounded by the entries it
+/// VISITS, not only by its hits. Over a tree past the cap, `glob` and `grep` return promptly and say
+/// where they stopped.
+#[tokio::test]
+async fn a_walk_that_never_matches_stops_at_the_entry_cap() {
+    let (dir, _root, tools) = code_project(&[], "");
+    let big = dir.path().join("big");
+    // 101 directories of 1000 empty files: past the 100 000-entry cap.
+    for d in 0..101 {
+        let sub = big.join(format!("d{d:03}"));
+        fs::create_dir_all(&sub).expect("dir");
+        for f in 0..1000 {
+            fs::File::create(sub.join(format!("f{f:04}"))).expect("file");
+        }
+    }
+    let path = big.to_str().expect("utf-8");
+    let note = "[stopped after visiting 100000 entries; narrow \"path\" to search further]";
+    for (name, args, none) in [
+        (
+            "glob",
+            json!({"pattern": "*.nevermatchzz", "path": path}),
+            "no files match **/*.nevermatchzz",
+        ),
+        (
+            "grep",
+            json!({"pattern": "NEVERMATCH", "path": path}),
+            "no matches for NEVERMATCH",
+        ),
+    ] {
+        let started = std::time::Instant::now();
+        let out = tokio::time::timeout(Duration::from_secs(60), call(&tools, name, args))
+            .await
+            .expect("the walk is bounded");
+        assert_eq!(out, ToolOutput::ok(format!("{none}\n{note}")), "{name}");
+        eprintln!("{name}: {:?}", started.elapsed());
+    }
+}
+
 #[tokio::test]
 async fn glob_lists_matching_files_relative_to_the_root() {
     let (_dir, root, tools) = code_project(

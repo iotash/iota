@@ -38,6 +38,8 @@ pub(crate) const CODE_GREP_MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 pub(crate) const CODE_GREP_MAX_LINE_LEN: usize = 500;
 /// `grep` context lines are clamped to this.
 pub(crate) const CODE_MAX_GREP_CONTEXT: i64 = 10;
+/// A `glob`/`grep` walk stops after visiting this many entries (files, directories, links — per call).
+pub(crate) const CODE_WALK_MAX_ENTRIES: usize = 100_000;
 /// `list_dir` lists at most this many entries.
 pub(crate) const CODE_MAX_DIR_ENTRIES: usize = 500;
 /// Bytes sniffed for a NUL by `looks_binary`.

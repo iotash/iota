@@ -20,11 +20,12 @@ use crate::tool::{
 };
 use crate::{BoxFuture, text};
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 
 use super::{
     CODE_GLOB_COLLECT_CAP, CODE_GREP_MAX_FILE_BYTES, CODE_GREP_MAX_LINE_LEN, CODE_MAX_DIR_ENTRIES,
     CODE_MAX_FILE_BYTES, CODE_MAX_GLOB_RESULTS, CODE_MAX_GREP_CONTEXT, CODE_MAX_GREP_MATCHES,
-    CODE_MAX_OUTPUT, CodeSet, byte_count, looks_binary, walk,
+    CODE_MAX_OUTPUT, CODE_WALK_MAX_ENTRIES, CodeSet, byte_count, looks_binary, walk,
 };
 use crate::tool::args::{bool_arg, int_arg, read_file_limited, str_arg};
 
@@ -85,10 +86,12 @@ impl Tool for Glob {
         }
     }
 
-    fn call<'a>(&'a self, _cx: &'a RunCtx, args: &'a JsonObject) -> BoxFuture<'a, ToolResult> {
+    /// The walk reads `cx.cancel`: ESC ends the await, and the token is what stops the thread.
+    fn call<'a>(&'a self, cx: &'a RunCtx, args: &'a JsonObject) -> BoxFuture<'a, ToolResult> {
         let cs = Arc::clone(&self.0);
         let args = args.clone();
-        Box::pin(blocking(move || glob_call(&cs, &args)))
+        let cancel = cx.cancel.clone();
+        Box::pin(blocking(move || glob_call(&cs, &args, &cancel)))
     }
 
     /// Readers are parallel-safe.
@@ -131,10 +134,12 @@ impl Tool for Grep {
         }
     }
 
-    fn call<'a>(&'a self, _cx: &'a RunCtx, args: &'a JsonObject) -> BoxFuture<'a, ToolResult> {
+    /// The walk reads `cx.cancel`: ESC ends the await, and the token is what stops the thread.
+    fn call<'a>(&'a self, cx: &'a RunCtx, args: &'a JsonObject) -> BoxFuture<'a, ToolResult> {
         let cs = Arc::clone(&self.0);
         let args = args.clone();
-        Box::pin(blocking(move || grep_call(&cs, &args)))
+        let cancel = cx.cancel.clone();
+        Box::pin(blocking(move || grep_call(&cs, &args, &cancel)))
     }
 
     /// Readers are parallel-safe.
@@ -351,7 +356,24 @@ impl Tool for WriteFile {
 
 // ---- glob ----
 
-fn glob_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
+/// The line a walk that hit [`CODE_WALK_MAX_ENTRIES`] ends its result with.
+fn walk_cap_note() -> String {
+    format!(
+        "[stopped after visiting {CODE_WALK_MAX_ENTRIES} entries; narrow \"path\" to search further]"
+    )
+}
+
+/// What a walk that found nothing says: nothing at all when the user cancelled it (ESC is their own
+/// doing, not something for the model to interpret), the cap line when it stopped early.
+fn walk_found_nothing(walked: &walk::Walked, none: String) -> ToolOutput {
+    match walked {
+        walk::Walked::Cancelled => ToolOutput::ok(""),
+        walk::Walked::Capped => ToolOutput::ok(format!("{none}\n{}", walk_cap_note())),
+        walk::Walked::Done | walk::Walked::Stopped => ToolOutput::ok(none),
+    }
+}
+
+fn glob_call(cs: &CodeSet, args: &JsonObject, cancel: &CancellationToken) -> ToolOutput {
     let raw = str_arg(args, "pattern").trim();
     if raw.is_empty() {
         return ToolOutput::err("missing required argument: pattern");
@@ -375,7 +397,7 @@ fn glob_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
     };
 
     let mut hits: Vec<(String, SystemTime)> = Vec::new();
-    walk::walk_files(cs.anchor(&base), &base, &mut |abs, rel, entry| {
+    let walked = walk::walk_files(cs.anchor(&base), &base, cancel, &mut |abs, rel, entry| {
         if matcher.is_match(rel) {
             let mtime = entry
                 .metadata()
@@ -388,7 +410,7 @@ fn glob_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
     });
 
     if hits.is_empty() {
-        return ToolOutput::ok(format!("no files match {pattern}"));
+        return walk_found_nothing(&walked, format!("no files match {pattern}"));
     }
     // Stable, so equal mtimes keep the walk's lexical order.
     hits.sort_by_key(|h| std::cmp::Reverse(h.1));
@@ -405,12 +427,16 @@ fn glob_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
             hits.len()
         );
     }
-    ToolOutput::ok(out.trim_end_matches('\n').to_owned())
+    let mut out = out.trim_end_matches('\n').to_owned();
+    if walked == walk::Walked::Capped {
+        let _ = write!(out, "\n{}", walk_cap_note());
+    }
+    ToolOutput::ok(out)
 }
 
 // ---- grep ----
 
-fn grep_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
+fn grep_call(cs: &CodeSet, args: &JsonObject, cancel: &CancellationToken) -> ToolOutput {
     // The pattern is NOT trimmed here: leading space is part of the regex.
     let pattern = str_arg(args, "pattern");
     if pattern.is_empty() {
@@ -442,7 +468,7 @@ fn grep_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
     let mut buf = String::new();
     let mut total = 0usize;
     let mut capped = false;
-    walk::walk_files(cs.anchor(&base), &base, &mut |abs, rel, entry| {
+    let walked = walk::walk_files(cs.anchor(&base), &base, cancel, &mut |abs, rel, entry| {
         if let Some(m) = &include_matcher
             && !match_include(m, include, rel)
         {
@@ -485,7 +511,7 @@ fn grep_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
     });
 
     if total == 0 {
-        return ToolOutput::ok(format!("no matches for {pattern}"));
+        return walk_found_nothing(&walked, format!("no matches for {pattern}"));
     }
     let mut out = buf.trim_end_matches('\n').to_owned();
     if capped {
@@ -493,6 +519,9 @@ fn grep_call(cs: &CodeSet, args: &JsonObject) -> ToolOutput {
             out,
             "\n[stopped after {total} matches; refine the pattern or use include to narrow the search]"
         );
+    }
+    if walked == walk::Walked::Capped {
+        let _ = write!(out, "\n{}", walk_cap_note());
     }
     ToolOutput::ok(out)
 }
@@ -1108,6 +1137,7 @@ mod tests {
         use super::super::tests::{jail_fixture, plant_overlong};
         use super::{glob_call, grep_call};
         use std::os::unix::fs::symlink;
+        use tokio_util::sync::CancellationToken;
 
         let (_t, root, out) = jail_fixture();
         std::fs::write(out.join("secret.txt"), "TOPSECRET").expect("secret");
@@ -1118,14 +1148,22 @@ mod tests {
         plant_overlong(&root, &out);
         let cs = CodeSet::new(root.clone(), Vec::new(), false).expect("set");
 
-        let grep = grep_call(&cs, &args(json!({"pattern": "TOPSECRET"})));
+        let grep = grep_call(
+            &cs,
+            &args(json!({"pattern": "TOPSECRET"})),
+            &CancellationToken::new(),
+        );
         assert_eq!(
             grep,
             ToolOutput::ok(
                 "L2:1: TOPSECRET\nalias:1: TOPSECRET inside\ndir/kept.txt:1: TOPSECRET inside\nescape:1: TOPSECRET"
             )
         );
-        let glob = glob_call(&cs, &args(json!({"pattern": "*"})));
+        let glob = glob_call(
+            &cs,
+            &args(json!({"pattern": "*"})),
+            &CancellationToken::new(),
+        );
         assert!(!glob.is_error, "{glob:?}");
         let names: Vec<&str> = glob.text.lines().collect();
         for link in ["alias", "escape", "outdir", "L", "L2"] {
