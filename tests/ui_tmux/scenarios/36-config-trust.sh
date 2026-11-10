@@ -41,9 +41,16 @@ shell_back() {
     c="$(tm display-message -pt s '#{pane_current_command}' 2>/dev/null)"
     [ -n "$c" ] && [ "$c" != "iota" ]
 }
+# The chat is read only once it is ready: its status row is drawn and the frame holds still, so a loaded
+# runner neither reads a half-drawn row nor sends Ctrl+D before the composer takes keys. A chat that does not
+# leave ends the scenario: the next step would type into it.
+ready() {
+    wait_vis 'fake ·' || miss "the status row never showed the home config's model"
+    settle || miss "the chat never settled"
+}
 quit() {
     key C-d
-    _poll_until 100 shell_back || miss "the chat did not exit"
+    _poll_until 300 shell_back || { miss "the chat did not exit"; finish; }
 }
 
 start_shell 100 30 || finish
@@ -60,6 +67,7 @@ fi
 if marker_absent; then ok "nothing of the file ran while it was asked"; else bad "the marker exists before the answer"; fi
 key Enter
 wait_vis '❯' || miss "the chat never started after not now"
+ready
 if _all_has 'Not using' && _all_has 'for this run'; then ok "not now is said in one line"; else miss "no line says the file is skipped"; fi
 check "the chat runs on the home config" "$(status_model | sed 's/^ *//')" "fake"
 if marker_absent; then ok "not now: the file's server never ran"; else bad "not now: the marker exists"; fi
@@ -71,6 +79,7 @@ wait_vis "$QUESTION" || miss "the question never came the second time"
 type_ t
 key Enter
 wait_vis '❯' || miss "the chat never started after trust"
+ready
 if _poll_until 100 marker_present; then ok "trusted: the file's server ran"; else bad "trusted: the marker never appeared"; fi
 quit
 
@@ -78,6 +87,7 @@ quit
 rm -f "$MARKER"
 run_iota
 wait_vis '❯' || miss "the trusted start never reached the chat"
+ready
 if _vis_has "$QUESTION"; then bad "a trusted file was asked about again"; else ok "a trusted file asks nothing"; fi
 if _poll_until 100 marker_present; then ok "and its server ran"; else bad "the trusted start never ran the server"; fi
 quit
