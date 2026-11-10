@@ -67,7 +67,7 @@ key Enter
 wait_vis 'allow?' || miss "the approval prompt never opened"
 wait_raw ']9;4;4;100' || miss "the approval prompt did not put the progress bar in its warning state"
 check_raw "an approval prompt sets the warning state (OSC 9;4;4;100)" ']9;4;4;100' yes
-check "the prompt names the call" "$(count_vis 'wants to modify files')" 1
+check "the prompt names the call" "$(count_vis 'shell echo approved — allow?')" 1
 key Enter
 wait_all 'ran: approved' || miss "the approved call never ran"
 settle || miss "frame never settled after the approved call"

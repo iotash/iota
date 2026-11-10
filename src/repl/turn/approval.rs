@@ -79,14 +79,14 @@ impl ApprovalGate {
         self.pres.set_state(State::NeedsInput);
         self.pres.notify(Event {
             kind: Kind::NeedsInput,
-            text: format!("{label} wants to modify files"),
+            text: format!("{label} needs approval"),
         });
         let choice = self
             .ui
             .select(
                 cancel,
                 SelectSpec {
-                    title: format!("{label} wants to modify files — allow?"),
+                    title: format!("{label} — allow?"),
                     items: vec!["Allow once".to_owned(), session, "Deny".to_owned()],
                     cursor: 0,
                 },

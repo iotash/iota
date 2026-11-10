@@ -991,12 +991,21 @@ impl Dispatcher for Manager {
         self.configs.iter().any(|cfg| cfg.auto_run)
     }
 
-    /// The tool's server and the key that would let its calls run here (the outside-write refusal's shape).
+    /// The tool's server and what would let its calls run here (the outside-write refusal's shape): the
+    /// entry's `auto_run` key, or — for a `--mcp` server, which has no entry and always asks — writing it as
+    /// one.
     fn unattended_refusal(&self, name: &str) -> Option<String> {
-        let server = &self.server_of(name)?.name;
+        let cfg = self.server_of(name)?;
+        let server = &cfg.name;
+        let allow = if cfg.from_flag {
+            "a --mcp server always asks; write it as an `mcp_servers` entry with `auto_run: true` to allow it"
+                .to_owned()
+        } else {
+            format!("set `mcp_servers.{server}.auto_run: true` to allow it")
+        };
         Some(format!(
             "{name} was not executed: the tools of MCP server \"{server}\" need the user's approval, which \
-             this non-interactive run cannot ask for; set `mcp_servers.{server}.auto_run: true` to allow it."
+             this non-interactive run cannot ask for; {allow}."
         ))
     }
 
@@ -1161,6 +1170,20 @@ mod tests {
             )
         );
         assert_eq!(asks.unattended_refusal("search_tools"), None);
+
+        // A `--mcp` server has no entry to set `auto_run` in: its refusal says what does work.
+        let flag = crate::mcp::config::parse_mcp_flag("https://mcp.example.com/mcp").expect("flag");
+        let (flagged, _) = crate::mcp::testutil::approval_manager_for(flag);
+        let wire = super::wire_tool_name("https://mcp.example.com/mcp", "push");
+        assert!(flagged.requires_approval(&wire, None));
+        assert_eq!(
+            flagged.unattended_refusal(&wire),
+            Some(format!(
+                "{wire} was not executed: the tools of MCP server \"https://mcp.example.com/mcp\" need the user's \
+                 approval, which this non-interactive run cannot ask for; a --mcp server always asks; write it as \
+                 an `mcp_servers` entry with `auto_run: true` to allow it."
+            ))
+        );
 
         let (trusted, _) = approval_manager(true);
         assert!(!trusted.requires_approval("mcp__srv__push", Some(&args)));

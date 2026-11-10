@@ -207,7 +207,10 @@ pub trait Dispatcher: Send + Sync {
     fn presentation(&self, _name: &str) -> Presentation {
         Presentation::Group
     }
-    /// Whether this CALL may run concurrently with the round's other calls.
+    /// Whether this CALL may run concurrently with the round's other calls. An MCP call must stay `false`:
+    /// the parallel batch is the one path without an approval gate, and the defer wrappers rely on this
+    /// default rather than forwarding it — a parallel (or location-scoped) MCP tool has to change both the
+    /// batch path and the wrappers.
     fn supports_parallel(&self, _name: &str, _args: Option<&JsonObject>) -> bool {
         false
     }

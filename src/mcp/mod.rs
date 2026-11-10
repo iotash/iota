@@ -139,19 +139,23 @@ pub(crate) mod testutil {
     pub(crate) fn approval_manager(
         auto_run: bool,
     ) -> (Arc<crate::mcp::Manager>, Arc<CountingSession>) {
-        use crate::mcp::config::ServerConfig;
+        approval_manager_for(crate::mcp::config::ServerConfig {
+            name: "srv".to_owned(),
+            command: "srv-bin".to_owned(),
+            auto_run,
+            ..crate::mcp::config::ServerConfig::default()
+        })
+    }
+
+    /// [`approval_manager`] over the server `cfg` describes (its wire segment is `cfg.name` sanitised).
+    pub(crate) fn approval_manager_for(
+        cfg: crate::mcp::config::ServerConfig,
+    ) -> (Arc<crate::mcp::Manager>, Arc<CountingSession>) {
         use crate::mcp::manager::{Manager, ServerResult, ServerStatus};
         use crate::provider::model::ToolDef;
 
-        let m = Manager::new(
-            vec![ServerConfig {
-                name: "srv".to_owned(),
-                command: "srv-bin".to_owned(),
-                auto_run,
-                ..ServerConfig::default()
-            }],
-            options(),
-        );
+        let name = cfg.name.clone();
+        let m = Manager::new(vec![cfg], options());
         let session = Arc::new(CountingSession::default());
         let tools: Vec<ToolDef> = ["push", "pull"]
             .into_iter()
@@ -164,7 +168,7 @@ pub(crate) mod testutil {
             0,
             ServerResult::Connected {
                 status: ServerStatus {
-                    name: "srv".to_owned(),
+                    name,
                     tool_count: tools.len(),
                     tools: tools.iter().map(|t| t.name.clone()).collect(),
                     ..ServerStatus::default()

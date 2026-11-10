@@ -355,7 +355,7 @@ async fn notify_false_silences_pings_but_not_states() {
 }
 
 /// The approval gate is the loop's `NeedsInput` anchor: the host
-/// hears `NeedsInput` with `"<label> wants to modify files"` before the prompt opens and `Busy`
+/// hears `NeedsInput` with `"<label> needs approval"` before the prompt opens and `Busy`
 /// again once it resolves, either way. The full sequence a tool turn walks is
 /// `Idle → Busy → NeedsInput → Busy → Idle` with two pings.
 #[tokio::test]
@@ -385,7 +385,7 @@ async fn the_approval_gate_walks_needs_input_and_back() {
     assert_eq!(
         f.pings(),
         vec![
-            (Kind::NeedsInput, "noop wants to modify files".to_owned()),
+            (Kind::NeedsInput, "noop needs approval".to_owned()),
             (Kind::Done, "final answer".to_owned()),
         ]
     );

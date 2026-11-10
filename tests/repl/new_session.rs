@@ -664,12 +664,6 @@ async fn new_forgets_the_session_grants() {
         .into_iter()
         .map(|s| s.panels[0].title.clone())
         .collect();
-    assert_eq!(
-        asked,
-        [
-            "write_file wants to modify files — allow?",
-            "write_file wants to modify files — allow?"
-        ]
-    );
+    assert_eq!(asked, ["write_file — allow?", "write_file — allow?"]);
     assert_eq!(dividers(&f.ui).len(), 1);
 }

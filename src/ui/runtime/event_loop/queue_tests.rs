@@ -578,7 +578,7 @@ fn a_message_never_answers_an_open_approval() {
     m.apply(UiMsg::TabbedOpen {
         spec: TabbedSpec {
             panels: vec![Panel::list(
-                "write_file wants to modify files — allow?".to_owned(),
+                "write_file — allow?".to_owned(),
                 vec!["Allow once".to_owned(), "Deny".to_owned()],
             )],
             ..TabbedSpec::default()

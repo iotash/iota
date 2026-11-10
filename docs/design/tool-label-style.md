@@ -52,7 +52,7 @@ Status: **已实现**（2026-10-21，分支 `tool-label-style`，按 §2 的 (b)
 - **`/jobs`**：`src/repl/commands/jobs.rs:59` 行是 `b3  1m 12s  <command>`，无括号；状态行的任务段 `src/ui/render/frame.rs:390` 把命令画成 **cyan**（注释：「in the header's cyan (2026-09-23)」）。不改，但它是「命令这个值用 cyan」的现成先例。
 - **headless**：没有任何 `[…]` 输出。`src/headless/run.rs:415` 只把 `header_summary` 当审批 `detail` 交给 approver。不改。
 - **`/tools`**：工具行本身无括号（`src/repl/commands/tools.rs:101,131` 用 `display_tool_name`），带括号的是 defer 状态，见 §1.2。
-- 审批弹窗标题 `src/repl/turn/approval.rs:49`：`{name} {detail} wants to modify files — allow?`，无括号、frame 侧 surface。不改。
+- 审批弹窗标题 `src/repl/turn/approval.rs:49`：`{name} {detail} — allow?`，无括号、frame 侧 surface。不改。
 - 压缩 widget（`transcript.rs:379`，`dim("Compacting context…")`）、暂停标签（`group.rs:496`，`⏸ waiting for approval`）、`Working…`：无括号。不改。
 - `/compact` 的摘要输入（`commands/compact.rs:259`）、`/export` HTML（`commands/export.rs:544` `⚙ name`）：给模型 / 给 HTML，无括号。不改。
 

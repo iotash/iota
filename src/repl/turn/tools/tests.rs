@@ -819,10 +819,7 @@ async fn approval_allow_once_session_and_deny() {
         })
         .collect();
     assert_eq!(asks.len(), 2, "allow-once asks per call");
-    assert_eq!(
-        asks[0].panels[0].title,
-        "write_file path:a.txt wants to modify files — allow?"
-    );
+    assert_eq!(asks[0].panels[0].title, "write_file path:a.txt — allow?");
     assert_eq!(
         asks[0].panels[0].items,
         [
@@ -2318,14 +2315,14 @@ async fn an_outside_write_is_asked_always_and_lands_where_the_prompt_said() {
             let mut want = Vec::new();
             if !auto_write {
                 want.push((
-                    "write_file in.txt wants to modify files — allow?".to_owned(),
+                    "write_file in.txt — allow?".to_owned(),
                     "Allow for this session".to_owned(),
                 ));
             }
             if policy == Ask {
                 want.push((
                     format!(
-                        "write_file {} (outside the project root) wants to modify files — allow?",
+                        "write_file {} (outside the project root) — allow?",
                         real_out.join("a.txt").display()
                     ),
                     format!("Allow in {} for this session", real_out.display()),
@@ -2414,7 +2411,7 @@ async fn an_outside_session_grant_is_one_directory_through_one_tool() {
     let titles: Vec<String> = prompts(&fx.events()).into_iter().map(|(t, _)| t).collect();
     let title = |tool: &str, rel: &str| {
         format!(
-            "{tool} {} (outside the project root) wants to modify files — allow?",
+            "{tool} {} (outside the project root) — allow?",
             real_out.join(rel).display()
         )
     };
@@ -2464,9 +2461,9 @@ async fn an_outside_session_grant_is_one_directory_through_one_tool() {
     assert_eq!(
         titles,
         [
-            "write_file in.txt wants to modify files — allow?".to_owned(),
+            "write_file in.txt — allow?".to_owned(),
             format!(
-                "write_file {} (outside the project root) wants to modify files — allow?",
+                "write_file {} (outside the project root) — allow?",
                 real_out.join("q.txt").display()
             ),
         ]
@@ -2608,11 +2605,11 @@ async fn an_inside_grant_does_not_cover_a_parentless_target() {
         prompts(&fx.events()),
         [
             (
-                "write_file in.txt wants to modify files — allow?".to_owned(),
+                "write_file in.txt — allow?".to_owned(),
                 "Allow for this session".to_owned()
             ),
             (
-                "write_file / (outside the project root) wants to modify files — allow?".to_owned(),
+                "write_file / (outside the project root) — allow?".to_owned(),
                 "Allow in / for this session".to_owned()
             ),
         ]
@@ -2740,11 +2737,7 @@ async fn an_mcp_tool_asks_unless_its_server_is_auto_run() {
 
         // Interactive, off: asked; "Allow once" runs it.
         let (asks, res, called) = mcp_turn(false, deferred, &[PUSH], vec![choose(0)]).await;
-        assert_eq!(asks.len(), 1, "{at}: {asks:?}");
-        assert!(
-            asks[0].ends_with("wants to modify files — allow?"),
-            "{at}: {asks:?}"
-        );
+        assert_eq!(asks, ["srv:push — allow?"], "{at}");
         assert_eq!(res, [("push ran".to_owned(), false)], "{at}");
         assert_eq!(called, ["push"], "{at}");
 
@@ -2804,6 +2797,41 @@ async fn an_mcp_tool_asks_unless_its_server_is_auto_run() {
     }
 }
 
+// Every defer mode's wrapper passes the manager's answers through: whether a server waives (the hold), whether
+// a call asks, and the refusal a non-interactive run gives — `reference` (`MarkedDispatcher`) and `tool-search`
+// (`SearchingDispatcher`) included, which no run in the matrix above goes through.
+#[test]
+fn every_defer_mode_forwards_the_mcp_approval_answers() {
+    use crate::tool::DeferMode;
+    for mode in [
+        DeferMode::Normal,
+        DeferMode::Reference,
+        DeferMode::ToolSearch,
+        DeferMode::SystemTools,
+    ] {
+        for auto_run in [false, true] {
+            let at = format!("{} auto_run={auto_run}", mode.name());
+            let (m, _) = crate::mcp::testutil::approval_manager(auto_run);
+            let wrapped = mode.wrap(
+                Arc::clone(&m) as Arc<dyn Dispatcher>,
+                vec![crate::tool::DeferredGroup {
+                    name: "srv".to_owned(),
+                    summary: "source control".to_owned(),
+                }],
+                m.prefix_of(),
+            );
+            assert_eq!(wrapped.waives_approval(), auto_run, "{at}");
+            assert_eq!(wrapped.requires_approval(PUSH, None), !auto_run, "{at}");
+            assert_eq!(
+                wrapped.unattended_refusal(PUSH),
+                m.unattended_refusal(PUSH),
+                "{at}"
+            );
+            assert!(wrapped.unattended_refusal(PUSH).is_some(), "{at}");
+        }
+    }
+}
+
 // "Allow for this session" is per tool: the second call of the SAME tool is not asked again, a different tool
 // of the same server still is.
 #[tokio::test]
@@ -2815,9 +2843,7 @@ async fn an_mcp_session_grant_covers_that_tool_alone() {
         vec![choose(1), choose(0)],
     )
     .await;
-    assert_eq!(asks.len(), 2, "{asks:?}");
-    assert!(asks[0].contains("push"), "{asks:?}");
-    assert!(asks[1].contains("pull"), "{asks:?}");
+    assert_eq!(asks, ["srv:push — allow?", "srv:pull — allow?"]);
     assert_eq!(
         res,
         [

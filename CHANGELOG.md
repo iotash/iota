@@ -38,7 +38,12 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   `auto_run: true` in its `mcp_servers.<name>` entry (the default is
   `false`). With nobody to ask (`-m`), a call to a server without it is
   refused, and the message names the server and the key to set. A `--mcp`
-  server always asks.
+  server always asks, so `-m … --mcp …` can no longer run that server's
+  tools: to run them there, write the server as an `mcp_servers` entry with
+  `auto_run: true`.
+- **The approval prompt no longer says every call "wants to modify files".**
+  It reads `<tool> — allow?`, and the notification a host (herdr, a terminal
+  bell) receives reads `<tool> needs approval`.
 - **Reading is no longer restricted to the project; writing still is.**
   `read_file`, `list_dir`, `glob` and `grep` now read any path, absolute or
   `../…`, and follow a symlink wherever it leads. A glob or grep stops after

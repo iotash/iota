@@ -90,7 +90,7 @@ Status: **调查（未拍板）** · 日期：2026-11-09 · 基于 `main` = `81d
 
 - **标题**：只是会话标题，没有状态前缀（实测：`"terminal_title":"Venice.ai 隔夜会话超时"`）。即使有清单，`osc_title` 规则也无从下手。
 - **OSC 9;4**（ANSI 宿主，每个 run 都会追加）：Busy 发 `9;4;3`，NeedsInput 发 `9;4;4;100`，Error 发 `9;4;2;100`，Idle 发 `9;4;0`（`src/ui/runtime/osc.rs:31-40`，`src/host/ansi.rs:56`）。
-- **审批框**的底栏是 `… · ↑↓ move · Enter … · Esc cancel`（`src/ui/surface/tabbed.rs:651-659`），标题是 `<tool> wants to modify files — allow?`（`src/repl/turn/approval.rs:65`）。屏幕规则写得出来，但这是第二套真相（§5e）。
+- **审批框**的底栏是 `… · ↑↓ move · Enter … · Esc cancel`（`src/ui/surface/tabbed.rs:651-659`），标题是 `<tool> — allow?`（`src/repl/turn/approval.rs:65`）。屏幕规则写得出来，但这是第二套真相（§5e）。
 - **置 `NeedsInput`（会报 blocked）的地方**：
   - 工具审批：`src/repl/turn/approval.rs:56`。
   - 交互式工具：`src/repl/turn/tools.rs:316`。
@@ -144,7 +144,7 @@ Status: **调查（未拍板）** · 日期：2026-11-09 · 基于 `main` = `81d
 环境：herdr 0.9.5；iota = `target/debug/iota`（main @ 38f39aa，自报 v0.7.7），`-M deepseek-flash --no-save`；被测 pane `w16:pA` 由 `herdr pane split --pane w16:p9 --direction down --cwd /tmp/iota-e2e --no-focus` 创建，自带 `E=1 P=w16:pA S=~/.config/herdr/herdr.sock`（`echo $HERDR_ENV $HERDR_PANE_ID $HERDR_SOCKET_PATH`），无需手动注入。启动后 `herdr agent get w16:pA` → `"agent":"iota","agent_status":"idle"`。
 
 **1. 审批 → blocked：成立。**
-- 让模型 `write_file /tmp/iota-e2e/hello.txt`，屏幕停在 `write_file hello.txt wants to modify files — allow?`。`herdr agent wait w16:pA --until blocked --timeout 120000` 1.4s 返回 `"agent_status":"blocked"`。
+- 让模型 `write_file /tmp/iota-e2e/hello.txt`，屏幕停在 `write_file hello.txt — allow?`。`herdr agent wait w16:pA --until blocked --timeout 120000` 1.4s 返回 `"agent_status":"blocked"`。
 - `herdr agent prompt w16:pA "x"` → `{"code":"agent_blocked","message":"agent w16:pA is blocked and requires interactive input"}`，exit 1，对话框未变、无输入。
 - `herdr agent send-keys w16:pA enter` → `{"code":"agent_not_ready","message":"agent w16:pA is not an active named agent"}`，**不能用来批准**；改用 `herdr pane send-keys w16:pA enter`。预先挂起的 `agent wait --until working` 0.54s 返回 `working`，文件写入 `hi`。
 - 回合结束的状态是 `done` 再到 `idle`：`--until done --until idle` 返回 `done`，5s 后 `agent get` 是 `idle`。第一次只用 `--until idle` 等了 60s，结果超时（`timed out waiting for agent status`），事后 `agent get` 已经是 `idle`。

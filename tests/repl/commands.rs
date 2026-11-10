@@ -1954,13 +1954,7 @@ async fn session_resume_forgets_the_session_grants() {
         .map(|s| s.panels[0].title.clone())
         .filter(|t| t.ends_with("allow?"))
         .collect();
-    assert_eq!(
-        asked,
-        [
-            "write_file wants to modify files — allow?",
-            "write_file wants to modify files — allow?"
-        ]
-    );
+    assert_eq!(asked, ["write_file — allow?", "write_file — allow?"]);
 }
 
 /// Resuming the session already being written to says so and swaps nothing.
