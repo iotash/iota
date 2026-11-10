@@ -557,7 +557,7 @@ fn an_unknown_key_is_refused_with_its_coordinate() {
         ),
         (
             "agnets:\n  coder: {}\n",
-            "agnets: unknown top-level key (want providers:, models:, agents:, mcp_servers:, write_roots:)",
+            "agnets: unknown top-level key (want providers:, models:, agents:, mcp_servers:, write_roots:, outside_writes:)",
         ),
     ] {
         assert_eq!(
@@ -642,6 +642,41 @@ fn write_roots_load_as_written_and_add_up_across_the_stack() {
     let cfg = Config::load(None, &Env::default().with_dirs(dirs), &mut |_| {}).expect("loads");
     assert_eq!(cfg.write_roots, ["/tmp/a", "/tmp/b", "/tmp/b", "/tmp/c"]);
     let _ = dir;
+}
+
+/// `outside_writes:` is `ask` (the default) or `refuse`, and a stack keeps the strictest value any file
+/// names: a later `ask` cannot loosen an earlier `refuse`, a later `refuse` tightens an earlier `ask`.
+#[test]
+fn outside_writes_defaults_to_ask_and_only_tightens_across_the_stack() {
+    use iota::tool::OutsideWrites::{Ask, Refuse};
+    assert_eq!(parse("").expect("parses").outside_writes, Ask);
+    assert_eq!(
+        parse("outside_writes: ask\n")
+            .expect("parses")
+            .outside_writes,
+        Ask
+    );
+    assert_eq!(
+        parse("outside_writes: refuse\n")
+            .expect("parses")
+            .outside_writes,
+        Refuse
+    );
+    assert!(
+        parse("outside_writes: allow\n").is_err(),
+        "ask or refuse only"
+    );
+    for (home, cwd, want) in [
+        ("outside_writes: refuse\n", "outside_writes: ask\n", Refuse),
+        ("outside_writes: ask\n", "outside_writes: refuse\n", Refuse),
+        ("outside_writes: refuse\n", "", Refuse),
+        ("", "outside_writes: ask\n", Ask),
+    ] {
+        let (dir, dirs) = temp_project(&[("home/.iota.yaml", home), (".iota.yaml", cwd)]);
+        let cfg = Config::load(None, &Env::default().with_dirs(dirs), &mut |_| {}).expect("loads");
+        assert_eq!(cfg.outside_writes, want, "{home:?} then {cwd:?}");
+        let _ = dir;
+    }
 }
 
 /// An entry that names no directory refuses the load, by position and with the reason: a blank one would

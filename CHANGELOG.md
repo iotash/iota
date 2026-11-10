@@ -12,6 +12,18 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   sandboxed shell may write, one list shared by both. `~` is your home, and a
   relative path is taken from the project. The model is told the list, so it
   knows where it may write before it tries.
+- **A write outside the project can now be approved.** When the model edits or
+  writes a file outside the project and the `write_roots:` directories, iota
+  asks you instead of refusing. The prompt shows where the file really is
+  (symlinks resolved) and is marked `(outside the project root)`; it asks
+  even with `tools.code.auto_write`. "Allow for this session" covers that one
+  directory through that one tool. With nobody to ask (`-m`), such a write is
+  refused and the message says to add the directory to `write_roots:`. A path
+  whose real location cannot be worked out is still refused.
+- **`outside_writes: ask | refuse`**, a new top-level key. `ask` is the
+  default; `refuse` restores the previous behaviour: writes outside the roots
+  are refused with no prompt. A config file cannot loosen `refuse` set by an
+  earlier one.
 
 ### Changed
 
@@ -34,7 +46,8 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 - **The code tools check where a symlink really leads.** A link inside the
   project that points outside it used to be followed as if it were part of the
-  project; writing through it is now refused.
+  project; writing through it is now a write outside the project (asked, or
+  refused under `outside_writes: refuse`).
 
 ## 0.8.0 - 2026-11-09
 

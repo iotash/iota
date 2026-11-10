@@ -12,7 +12,7 @@ use iota::provider::model::JsonObject;
 use iota::tool::builtins::code::{CODE_MAX_OUTPUT, new_code_set};
 use iota::tool::context::RunCtx;
 use iota::tool::sets::{RawNode, ToolsConfig};
-use iota::tool::{Dispatcher, Presentation, Tool, ToolEnv, ToolOutput};
+use iota::tool::{Dispatcher, OutsideWrites, Presentation, Tool, ToolEnv, ToolOutput};
 use iota::tool::{Registry, merge};
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -112,48 +112,74 @@ fn set_mtime(path: &Path, when: SystemTime) {
         .expect("set mtime");
 }
 /// Reads are open: an absolute path and a `..` escape both read a file outside the project, while a
-/// write to the very same paths is still refused and lands nothing.
+/// write to the very same paths lands nothing in a run with nobody to ask (no interactor: `-m`, the SDK
+/// path), `auto_write` or not. Under `outside_writes: ask` the refusal says how to allow it; under
+/// `refuse` it is the jail's text as it always was.
 #[tokio::test]
 async fn reads_reach_outside_the_project_root_and_writes_do_not() {
-    let (dir, root, tools) = code_project(&[("a.txt", "hello\n")], "auto_write: true\n");
+    for (policy, auto_write) in [
+        (OutsideWrites::Ask, "auto_write: true\n"),
+        (OutsideWrites::Ask, ""),
+        (OutsideWrites::Refuse, "auto_write: true\n"),
+        (OutsideWrites::Refuse, ""),
+    ] {
+        outside_writes_are_refused_headlessly(policy, auto_write).await;
+    }
+}
+
+async fn outside_writes_are_refused_headlessly(policy: OutsideWrites, cfg: &str) {
+    let (dir, root, _) = code_project(&[("a.txt", "hello\n")], cfg);
+    let env = ToolEnv {
+        outside_writes: policy,
+        ..env_at(&root)
+    };
+    let tools: Tools = new_code_set(&env, node(cfg).as_ref())
+        .expect("code set")
+        .into_iter()
+        .map(|t| (t.def().name, t))
+        .collect();
     let outside = dir.path().join("outside.txt");
     fs::write(&outside, "secret").expect("write outside");
+    let hint = match policy {
+        OutsideWrites::Ask => {
+            " — writing there needs the user's approval, which this non-interactive run cannot ask for; list its directory in the top-level `write_roots:` to allow it"
+        }
+        OutsideWrites::Refuse => "",
+    };
 
     for path in [
         outside.to_string_lossy().into_owned(),
         "../outside.txt".to_owned(),
         "a/../../outside.txt".to_owned(),
     ] {
+        let at = format!("{policy:?} {cfg:?} {path:?}");
         let out = call(&tools, "read_file", json!({ "path": path })).await;
-        assert_eq!(out, ToolOutput::ok("     1\tsecret"), "read {path:?}");
+        assert_eq!(out, ToolOutput::ok("     1\tsecret"), "read {at}");
+        let refused = ToolOutput::err(format!(
+            "path is outside the project root ({}): {path}{hint}",
+            root.display()
+        ));
+        // Nobody is asked: the call itself refuses.
+        for name in ["write_file", "edit_file"] {
+            let args =
+                json!({ "path": path, "content": "x", "old_string": "secret", "new_string": "x" });
+            let args = args.as_object().expect("object");
+            assert!(!tools[name].requires_approval(Some(args)), "{name} {at}");
+        }
         let out = call(
             &tools,
             "write_file",
             json!({ "path": path, "content": "overwritten" }),
         )
         .await;
-        assert_eq!(
-            out,
-            ToolOutput::err(format!(
-                "path is outside the project root ({}): {path}",
-                root.display()
-            )),
-            "write {path:?}"
-        );
+        assert_eq!(out, refused, "write {at}");
         let out = call(
             &tools,
             "edit_file",
             json!({ "path": path, "old_string": "secret", "new_string": "x" }),
         )
         .await;
-        assert_eq!(
-            out,
-            ToolOutput::err(format!(
-                "path is outside the project root ({}): {path}",
-                root.display()
-            )),
-            "edit {path:?}"
-        );
+        assert_eq!(out, refused, "edit {at}");
     }
     assert_eq!(fs::read_to_string(&outside).expect("outside"), "secret");
 

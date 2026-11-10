@@ -140,7 +140,8 @@ pub trait Tool: Send + Sync {
         false
     }
     /// Whether the user configured this tool to act without the approval it would otherwise ask for
-    /// (`shell` with `auto_run`, `edit_file`/`write_file` with `auto_write`) — the same setting
+    /// (`shell` with `auto_run`, `edit_file`/`write_file` with `auto_write` — which waives writes inside the
+    /// roots only: one outside them is still asked or refused) — the same setting
     /// [`Self::requires_approval`] reads, asked as one question about the set. A chat whose tools waive
     /// approval holds a message from another process for the user (`repl::inbound`). A tool that never asks
     /// (a read, an MCP tool) waives nothing: there was no approval to give up.
@@ -158,6 +159,12 @@ pub trait Tool: Send + Sync {
     /// The tool's own header text for a call, verbatim (an empty one is a bare `[name]`);
     /// `None` = the tool writes none, and the caller falls back to the argument digest.
     fn header_summary(&self, _args: &JsonObject) -> Option<String> {
+        None
+    }
+    /// What an "allow for this session" answer to this call grants: `None` = every call of the tool (the
+    /// default), `Some(dir)` = this tool's calls with the same scope only — a `code` write outside every root
+    /// is granted per real directory, so one grant never opens every directory.
+    fn grant_scope(&self, _args: &JsonObject) -> Option<PathBuf> {
         None
     }
 }
@@ -205,6 +212,10 @@ pub trait Dispatcher: Send + Sync {
     /// The named tool's own header text, verbatim; `None` = it writes none (the caller falls
     /// back to the argument digest).
     fn header_summary(&self, _name: &str, _args: &JsonObject) -> Option<String> {
+        None
+    }
+    /// The named tool's [`Tool::grant_scope`] for this call; `None` = the session grant covers the tool.
+    fn grant_scope(&self, _name: &str, _args: &JsonObject) -> Option<PathBuf> {
         None
     }
     /// The ownership oracle, when this dispatcher has one (`merge` scans `tools()` otherwise).
@@ -354,6 +365,22 @@ pub struct ToolEnv {
     /// root that the `code` jail accepts and the `shell` sandbox lets writes into — one list for both. Empty
     /// is the project root alone.
     pub write_roots: Vec<PathBuf>,
+    /// The top-level `outside_writes:`: whether a code-tool write outside every root is put to the user or
+    /// refused outright.
+    pub outside_writes: OutsideWrites,
+}
+
+/// The top-level `outside_writes:` — what the `code` writers do with a path whose real location is known and
+/// lies outside the project root and every `write_roots:` entry. Ordered by strictness: a config stack keeps
+/// the strictest value any of its files names (`refuse` cannot be loosened by a later file).
+#[derive(serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub enum OutsideWrites {
+    /// Ask the user, every time (`auto_write` does not waive it); a run with nobody to ask refuses.
+    #[default]
+    Ask,
+    /// Refuse, as the jail always did: no prompt.
+    Refuse,
 }
 
 impl ToolEnv {

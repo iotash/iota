@@ -2243,3 +2243,233 @@ async fn a_closed_facade_during_approval_ends_the_loop() {
         report.outcome
     );
 }
+
+// ---------------------------------------------------------------------------
+// code writes outside every root, through the real walk and gate
+// ---------------------------------------------------------------------------
+
+/// A project `<t>/proj` with the real `code` set (an interactor bound, as in a chat), and `<t>/out` beside
+/// it; the returned path is `out`'s real location (macOS: `/private/var/…`).
+fn code_chat(
+    policy: crate::tool::OutsideWrites,
+    auto_write: bool,
+) -> (tempfile::TempDir, PathBuf, PathBuf, Arc<dyn Dispatcher>) {
+    let t = tempfile::tempdir().expect("tempdir");
+    let root = t.path().join("proj");
+    std::fs::create_dir_all(&root).expect("root");
+    std::fs::create_dir_all(t.path().join("out")).expect("out");
+    let real_out = std::fs::canonicalize(t.path().join("out")).expect("real out");
+    let env = crate::tool::ToolEnv {
+        project_root: Some(root.clone()),
+        interactor: Some(crate::repl::Interactor::new() as Arc<dyn crate::tool::Interactor>),
+        outside_writes: policy,
+        ..crate::tool::ToolEnv::default()
+    };
+    let raw: crate::tool::sets::ToolsConfig =
+        serde_norway::from_str(&format!("code: {{auto_write: {auto_write}}}\n")).expect("tools");
+    let reg = crate::tool::Registry::build(&env, &raw, &mut |w| panic!("{w}"));
+    (t, root, real_out, Arc::new(reg))
+}
+
+/// Every approval prompt the turn raised: (title, the session option).
+fn prompts(events: &[UiEvent]) -> Vec<(String, String)> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::Tabbed(s) => Some((s.panels[0].title.clone(), s.panels[0].items[1].clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+// The interactive matrix: inside the root `auto_write` decides whether the user is asked; outside it the
+// user is asked ALWAYS under `outside_writes: ask` — `auto_write` or not — with the resolved real path,
+// marked, and the write lands there once allowed; under `refuse` nobody is asked and the jail's text
+// stands, exactly as before.
+#[tokio::test]
+async fn an_outside_write_is_asked_always_and_lands_where_the_prompt_said() {
+    use crate::tool::OutsideWrites::{Ask, Refuse};
+    for policy in [Ask, Refuse] {
+        for auto_write in [false, true] {
+            let at = format!("{policy:?} auto_write={auto_write}");
+            let (_t, root, real_out, dispatch) = code_chat(policy, auto_write);
+            let asks = usize::from(!auto_write) + usize::from(policy == Ask);
+            let mut script: Vec<Reply> = (0..asks).map(|_| choose(0)).collect();
+            script.extend(quiet(1));
+            let fx = Fx::new(dispatch, script);
+            let p = stream(vec![
+                Round::calls(vec![
+                    call(
+                        "c1",
+                        "write_file",
+                        serde_json::json!({"path": "in.txt", "content": "i"}),
+                    ),
+                    call(
+                        "c2",
+                        "write_file",
+                        serde_json::json!({"path": "../out/a.txt", "content": "o"}),
+                    ),
+                ]),
+                Round::text("done"),
+            ]);
+            let mut history = vec![Message::user("write")];
+            fx.turn(&p, &mut history).await.outcome.expect("turn");
+
+            let mut want = Vec::new();
+            if !auto_write {
+                want.push((
+                    "write_file in.txt wants to modify files — allow?".to_owned(),
+                    "Allow for this session".to_owned(),
+                ));
+            }
+            if policy == Ask {
+                want.push((
+                    format!(
+                        "write_file {} (outside the project root) wants to modify files — allow?",
+                        real_out.join("a.txt").display()
+                    ),
+                    format!("Allow in {} for this session", real_out.display()),
+                ));
+            }
+            assert_eq!(prompts(&fx.events()), want, "{at}");
+            assert_eq!(
+                std::fs::read_to_string(root.join("in.txt")).ok().as_deref(),
+                Some("i"),
+                "{at}"
+            );
+            let results: Vec<&Message> =
+                history.iter().filter(|m| m.role() == Role::Tool).collect();
+            if policy == Ask {
+                assert_eq!(
+                    std::fs::read_to_string(real_out.join("a.txt"))
+                        .ok()
+                        .as_deref(),
+                    Some("o"),
+                    "{at}"
+                );
+                assert_eq!(
+                    results[1].content,
+                    format!(
+                        "wrote 1 B to {} (created)",
+                        real_out.join("a.txt").display()
+                    ),
+                    "{at}"
+                );
+            } else {
+                assert!(!real_out.join("a.txt").exists(), "{at}");
+                assert_eq!(
+                    results[1].content,
+                    format!(
+                        "path is outside the project root ({}): ../out/a.txt",
+                        root.display()
+                    ),
+                    "{at}"
+                );
+            }
+        }
+    }
+}
+
+// "Allow for this session" on an outside write remembers its REAL DIRECTORY and the tool: the next write
+// there is not asked, a write in another directory is, the same directory through `edit_file` is, and an
+// inside grant never covers an outside write. A denial writes nothing.
+#[tokio::test]
+async fn an_outside_session_grant_is_one_directory_through_one_tool() {
+    let (_t, _root, real_out, dispatch) = code_chat(crate::tool::OutsideWrites::Ask, true);
+    let mut script = vec![choose(1), choose(0), choose(0), choose(2)];
+    script.extend(quiet(1));
+    let fx = Fx::new(dispatch, script);
+    let p = stream(vec![
+        Round::calls(vec![
+            call(
+                "c1",
+                "write_file",
+                serde_json::json!({"path": "../out/a/x.txt", "content": "x"}),
+            ),
+            call(
+                "c2",
+                "write_file",
+                serde_json::json!({"path": "../out/a/y.txt", "content": "y"}),
+            ),
+            call(
+                "c3",
+                "write_file",
+                serde_json::json!({"path": "../out/b/z.txt", "content": "z"}),
+            ),
+            call(
+                "c4",
+                "edit_file",
+                serde_json::json!({"path": "../out/a/x.txt", "old_string": "x", "new_string": "e"}),
+            ),
+            call(
+                "c5",
+                "write_file",
+                serde_json::json!({"path": "../out/c/w.txt", "content": "w"}),
+            ),
+        ]),
+        Round::text("done"),
+    ]);
+    let mut history = vec![Message::user("write")];
+    fx.turn(&p, &mut history).await.outcome.expect("turn");
+    let titles: Vec<String> = prompts(&fx.events()).into_iter().map(|(t, _)| t).collect();
+    let title = |tool: &str, rel: &str| {
+        format!(
+            "{tool} {} (outside the project root) wants to modify files — allow?",
+            real_out.join(rel).display()
+        )
+    };
+    assert_eq!(
+        titles,
+        [
+            title("write_file", "a/x.txt"),
+            title("write_file", "b/z.txt"),
+            title("edit_file", "a/x.txt"),
+            title("write_file", "c/w.txt"),
+        ]
+    );
+    let read = |rel: &str| std::fs::read_to_string(real_out.join(rel)).ok();
+    assert_eq!(read("a/x.txt").as_deref(), Some("e"));
+    assert_eq!(read("a/y.txt").as_deref(), Some("y"));
+    assert_eq!(read("b/z.txt").as_deref(), Some("z"));
+    assert_eq!(read("c/w.txt"), None, "a denied write landed");
+
+    // An inside session grant does not cover an outside write.
+    let (_t, _root, real_out, dispatch) = code_chat(crate::tool::OutsideWrites::Ask, false);
+    let mut script = vec![choose(1), choose(0)];
+    script.extend(quiet(1));
+    let fx = Fx::new(dispatch, script);
+    let p = stream(vec![
+        Round::calls(vec![
+            call(
+                "c1",
+                "write_file",
+                serde_json::json!({"path": "in.txt", "content": "i"}),
+            ),
+            call(
+                "c2",
+                "write_file",
+                serde_json::json!({"path": "in2.txt", "content": "i"}),
+            ),
+            call(
+                "c3",
+                "write_file",
+                serde_json::json!({"path": "../out/q.txt", "content": "q"}),
+            ),
+        ]),
+        Round::text("done"),
+    ]);
+    let mut history = vec![Message::user("write")];
+    fx.turn(&p, &mut history).await.outcome.expect("turn");
+    let titles: Vec<String> = prompts(&fx.events()).into_iter().map(|(t, _)| t).collect();
+    assert_eq!(
+        titles,
+        [
+            "write_file in.txt wants to modify files — allow?".to_owned(),
+            format!(
+                "write_file {} (outside the project root) wants to modify files — allow?",
+                real_out.join("q.txt").display()
+            ),
+        ]
+    );
+    assert!(real_out.join("q.txt").exists());
+}

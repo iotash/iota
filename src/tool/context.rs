@@ -21,6 +21,13 @@ pub struct RunCtx {
     /// `None` in headless loops and tests — every `post_artifact` is then a no-op.
     /// The interactive walk injects a FRESH slot per call and drains it after.
     pub artifact: Option<ArtifactSlot>,
+    /// What the user allowed THIS call under at the approval gate: the call's detail (its header summary) as the
+    /// prompt showed it, set by the interactive walk once the gate answers yes — by a prompt or by a session
+    /// grant. `None` everywhere else: headless loops, parallel batches, ungated calls, tests. A tool whose call
+    /// needs the user's say-so (a `code` write outside every root) refuses unless this matches the summary it
+    /// computes at call time, so a call nobody approved, or one whose target moved after the prompt, never
+    /// writes.
+    pub approved: Option<String>,
 }
 
 impl RunCtx {

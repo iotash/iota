@@ -5,6 +5,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    path::PathBuf,
     sync::Arc,
 };
 
@@ -151,6 +152,11 @@ impl Dispatcher for Registry {
     fn header_summary(&self, name: &str, args: &JsonObject) -> Option<String> {
         self.get(name).and_then(|t| t.header_summary(args))
     }
+
+    /// The tool's answer; unknown → None.
+    fn grant_scope(&self, name: &str, args: &JsonObject) -> Option<PathBuf> {
+        self.get(name).and_then(|t| t.grant_scope(args))
+    }
 }
 
 /// Missing key → false; else `yaml11::is_false_scalar`.
@@ -256,6 +262,11 @@ impl Dispatcher for Merged {
         self.owner(name).and_then(|p| p.header_summary(name, args))
     }
 
+    /// Owner's answer or the default.
+    fn grant_scope(&self, name: &str, args: &JsonObject) -> Option<PathBuf> {
+        self.owner(name).and_then(|p| p.grant_scope(name, args))
+    }
+
     /// The FIRST part with a searcher speaks for the merge; none when no part has one.
     fn as_tool_searcher(&self) -> Option<&dyn ToolSearcher> {
         self.parts
@@ -342,6 +353,10 @@ impl Dispatcher for Only {
 
     fn header_summary(&self, name: &str, args: &JsonObject) -> Option<String> {
         self.inner.header_summary(name, args)
+    }
+
+    fn grant_scope(&self, name: &str, args: &JsonObject) -> Option<PathBuf> {
+        self.inner.grant_scope(name, args)
     }
 }
 

@@ -13,7 +13,8 @@ use std::{
 };
 
 use crate::app::paths;
-use crate::tool::{Tool, ToolEnv, ToolOutput};
+use crate::tool::context::RunCtx;
+use crate::tool::{OutsideWrites, Tool, ToolEnv, ToolOutput};
 use serde::Deserialize;
 
 use crate::sync::lock;
@@ -46,6 +47,9 @@ pub(crate) const CODE_WALK_MAX_ENTRIES: usize = 100_000;
 pub(crate) const CODE_MAX_DIR_ENTRIES: usize = 500;
 /// Bytes sniffed for a NUL by `looks_binary`.
 pub(crate) const CODE_BINARY_SNIFF_LEN: usize = 8000;
+/// The mark on a write outside every root — in its header and so in its approval prompt, the way the shell
+/// marks a call `(outside the sandbox)`.
+pub const OUTSIDE_ROOT_MARK: &str = "(outside the project root)";
 
 /// `tools.code` configuration.
 #[derive(Deserialize, Clone, Debug, Default, PartialEq, Eq)]
@@ -74,6 +78,30 @@ impl Root {
     }
 }
 
+/// What the writers do with a path outside every root whose real location is known: the top-level
+/// `outside_writes:` met with whether the run has a user to ask.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Outside {
+    /// `ask` with a user (an interactor is bound): the write is put to the user, every time.
+    Ask,
+    /// `ask` with nobody to ask (`-m`, the SDK path): refused, saying how to allow it (`write_roots:`).
+    Unattended,
+    /// `refuse`: refused with the jail's own text, no prompt — the behaviour before writes could be approved.
+    Refuse,
+}
+
+/// Where a write argument lands, classified by its real location (see [`physical`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Write {
+    /// A root's real location holds it: the cleaned lexical path, which is what is opened.
+    Inside(PathBuf),
+    /// Outside every root and the real location is known: approvable. `path` is the cleaned lexical path
+    /// (the read ledger's key), `real` where the write would land — what the prompt names and what is opened.
+    Outside { path: PathBuf, real: PathBuf },
+    /// The real location cannot be worked out: refused, never approvable.
+    Unverifiable,
+}
+
 /// State shared by the six tools: the project root, the extra write roots, the approval policy and
 /// the read ledger.
 pub(crate) struct CodeSet {
@@ -85,6 +113,7 @@ pub(crate) struct CodeSet {
     /// (captured at set construction), not an execution dir.
     cwd: PathBuf,
     auto_write: bool,
+    outside: Outside,
     reads: Mutex<HashMap<PathBuf, SystemTime>>,
 }
 
@@ -98,6 +127,7 @@ impl CodeSet {
         root: PathBuf,
         extra: Vec<PathBuf>,
         auto_write: bool,
+        outside: Outside,
     ) -> Result<Arc<Self>, SetError> {
         let root = Root::new(root.clone()).ok_or(SetError::CodeRoot(root))?;
         let extra = extra
@@ -109,6 +139,7 @@ impl CodeSet {
             extra,
             cwd: std::env::current_dir().unwrap_or_default(),
             auto_write,
+            outside,
             reads: Mutex::new(HashMap::new()),
         }))
     }
@@ -176,30 +207,107 @@ impl CodeSet {
         Ok(paths::clean(&self.root.path.join(trimmed)))
     }
 
-    /// The write jail. Err texts: `missing required argument: path`, `path is outside the project
-    /// root ({root}): {original arg}`, `cannot verify {original arg} inside the project root
-    /// ({root})` — the last two followed, when `write_roots:` lists any, by ` and the extra write
-    /// roots ({e1}, {e2})` after the root.
-    ///
-    /// The path is [`Self::read_path`]'s, and that cleaned path is what is returned. The decision is
-    /// physical: the path's real location (symlinks resolved, see [`physical`]) must lie inside the
-    /// real location of the project root or of an extra root, so a symlink under a root that points
-    /// out of every root — dangling or not — is refused. The target need not exist, so `write_file`
-    /// can create one. A path whose real location cannot be worked out is refused.
+    /// The write jail's classification. The path is [`Self::read_path`]'s (Err: `missing required
+    /// argument: path`); the decision is physical: the path's real location (symlinks resolved, see
+    /// [`physical`]) inside the real location of the project root or of an extra root is
+    /// [`Write::Inside`]; a known location outside them all — a symlink under a root that points out of
+    /// every root, dangling or not, included — is [`Write::Outside`]; a location that cannot be worked out
+    /// is [`Write::Unverifiable`]. The target need not exist, so `write_file` can create one.
     ///
     /// A `..` in the argument is folded before any link is resolved (`link/../x` is `x`, not
     /// the shell's "`x` next to where `link` points"); check and open use that same path.
-    pub(crate) fn write_path(&self, arg: &str) -> Result<PathBuf, ToolOutput> {
+    pub(crate) fn write_path(&self, arg: &str) -> Result<Write, ToolOutput> {
         let p = self.read_path(arg)?;
+        Ok(match physical(&p) {
+            Some(real) if self.admits_real(&real) => Write::Inside(p),
+            Some(real) => Write::Outside { path: p, real },
+            None => Write::Unverifiable,
+        })
+    }
+
+    /// Where a writer's call may write, decided at call time — after any prompt, so a link swapped since is
+    /// caught: `(ledger path, target)`. Inside a root both are the lexical path. Outside every root the call
+    /// is admitted only under `outside_writes: ask` and only when the user allowed THIS call under the
+    /// summary it would show now ([`outside_summary`], carried in [`RunCtx::approved`]); then the
+    /// target is the real location the prompt named. Err texts: `missing required argument: path`,
+    /// `path is outside the project root ({root}): {arg}` (alone under `refuse`; followed under `ask` by why
+    /// it was not approved), `cannot verify {arg} inside the project root ({root})` — `{root}` followed,
+    /// when `write_roots:` lists any, by `) and the extra write roots ({e1}, {e2}`.
+    pub(crate) fn write_target(
+        &self,
+        cx: &RunCtx,
+        arg: &str,
+    ) -> Result<(PathBuf, PathBuf), ToolOutput> {
         let roots = self.roots_clause();
-        match physical(&p) {
-            Some(real) if self.admits_real(&real) => Ok(p),
-            Some(_) => Err(ToolOutput::err(format!(
-                "path is outside the project root ({roots}): {arg}"
-            ))),
-            None => Err(ToolOutput::err(format!(
+        match self.write_path(arg)? {
+            Write::Inside(p) => Ok((p.clone(), p)),
+            Write::Outside { path, real } => {
+                let refusal = format!("path is outside the project root ({roots}): {arg}");
+                let why = match self.outside {
+                    Outside::Ask
+                        if cx.approved.as_deref() == Some(outside_summary(&real).as_str()) =>
+                    {
+                        return Ok((path, real));
+                    }
+                    Outside::Ask => format!(
+                        " — writing there needs the user's approval, and this call has none for {}",
+                        real.display()
+                    ),
+                    Outside::Unattended => {
+                        " — writing there needs the user's approval, which this \
+                        non-interactive run cannot ask for; list its directory in the top-level \
+                        `write_roots:` to allow it"
+                            .to_owned()
+                    }
+                    Outside::Refuse => String::new(),
+                };
+                Err(ToolOutput::err(format!("{refusal}{why}")))
+            }
+            Write::Unverifiable => Err(ToolOutput::err(format!(
                 "cannot verify {arg} inside the project root ({roots})"
             ))),
+        }
+    }
+
+    /// The real location of a write the user would be asked about: `Some` only under `outside_writes: ask`
+    /// with a user to ask, for a path outside every root whose location is known.
+    pub(crate) fn approvable(&self, arg: &str) -> Option<PathBuf> {
+        if self.outside != Outside::Ask {
+            return None;
+        }
+        match self.write_path(arg) {
+            Ok(Write::Outside { real, .. }) => Some(real),
+            _ => None,
+        }
+    }
+
+    /// Whether the writers' calls are put to the user: inside the roots unless `auto_write`, outside
+    /// them always under `outside_writes: ask` with a user to ask; an unverifiable or empty path never
+    /// (it is refused at the call). `None` (the argument-less probe) answers whether the tool can ask.
+    pub(crate) fn write_asks(&self, args: Option<&crate::provider::model::JsonObject>) -> bool {
+        let Some(args) = args else {
+            return !self.auto_write || self.outside == Outside::Ask;
+        };
+        let arg = crate::tool::args::str_arg(args, "path");
+        match self.write_path(arg) {
+            Ok(Write::Inside(_)) => !self.auto_write,
+            Ok(Write::Outside { .. }) => self.outside == Outside::Ask,
+            Ok(Write::Unverifiable) | Err(_) => false,
+        }
+    }
+
+    /// `auto_write`: what the writers waive is the approval of writes INSIDE the roots. A write outside
+    /// them is still asked (`outside_writes: ask`) or refused, never waived.
+    pub(crate) fn waives(&self) -> bool {
+        self.auto_write
+    }
+
+    /// The writers' description sentence on writes outside the roots: under `outside_writes: ask` with a
+    /// user, that such a write asks first (so a model does not take a refusal as final); else nothing.
+    pub(crate) fn outside_clause(&self) -> &'static str {
+        match self.outside {
+            Outside::Ask => " Outside that, the user is asked to approve each write first.",
+            Outside::Unattended | Outside::Refuse => "",
         }
     }
 
@@ -299,7 +407,12 @@ pub fn new_code_set(env: &ToolEnv, node: Option<&RawNode>) -> Result<Vec<Arc<dyn
         return Err(SetError::CodeContradiction);
     }
     let root = env.root().unwrap_or_else(|_| PathBuf::from("."));
-    let cs = CodeSet::new(root, env.write_roots.clone(), cfg.auto_write)?;
+    let outside = match (env.outside_writes, env.interactor.is_some()) {
+        (OutsideWrites::Refuse, _) => Outside::Refuse,
+        (OutsideWrites::Ask, true) => Outside::Ask,
+        (OutsideWrites::Ask, false) => Outside::Unattended,
+    };
+    let cs = CodeSet::new(root, env.write_roots.clone(), cfg.auto_write, outside)?;
     let mut tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(Glob(Arc::clone(&cs))),
         Arc::new(Grep(Arc::clone(&cs))),
@@ -311,6 +424,12 @@ pub fn new_code_set(env: &ToolEnv, node: Option<&RawNode>) -> Result<Vec<Arc<dyn
         tools.push(Arc::new(WriteFile(cs)));
     }
     Ok(tools)
+}
+
+/// What an outside write's header and approval prompt say: the real location, absolute, marked
+/// [`OUTSIDE_ROOT_MARK`]. The call compares [`RunCtx::approved`] against it.
+pub(crate) fn outside_summary(real: &Path) -> String {
+    format!("{} {OUTSIDE_ROOT_MARK}", real.display())
 }
 
 /// NUL within the first 8000 bytes.
@@ -394,7 +513,14 @@ mod tests {
     use crate::tool::ToolOutput;
     use std::path::{Path, PathBuf};
 
-    use super::{CodeSet, byte_count, looks_binary};
+    use super::{CodeSet, Outside, Write, byte_count, looks_binary};
+    use crate::tool::context::RunCtx;
+
+    /// What a writer's call is told about `arg` with no approval: under `Outside::Refuse`, exactly the jail
+    /// as it was before writes could be approved — the cleaned path, or the refusal.
+    pub(crate) fn jail(cs: &CodeSet, arg: &str) -> Result<PathBuf, ToolOutput> {
+        cs.write_target(&RunCtx::default(), arg).map(|(p, _)| p)
+    }
 
     #[test]
     fn byte_count_thresholds() {
@@ -423,7 +549,8 @@ mod tests {
 
     #[test]
     fn paths_and_display_are_lexical() {
-        let cs = CodeSet::new(PathBuf::from("/proj"), Vec::new(), false).expect("set");
+        let cs =
+            CodeSet::new(PathBuf::from("/proj"), Vec::new(), false, Outside::Refuse).expect("set");
         // Reads are open: join, clean, nothing else — no root is consulted.
         for (arg, want) in [
             ("a.txt", "/proj/a.txt"),
@@ -440,20 +567,17 @@ mod tests {
             Err(ToolOutput::err("missing required argument: path"))
         );
         // Writes are jailed.
-        assert_eq!(cs.write_path("a.txt"), Ok(PathBuf::from("/proj/a.txt")));
+        assert_eq!(jail(&cs, "a.txt"), Ok(PathBuf::from("/proj/a.txt")));
+        assert_eq!(jail(&cs, "  a/b/../c  "), Ok(PathBuf::from("/proj/a/c")));
+        assert_eq!(jail(&cs, "/proj/x"), Ok(PathBuf::from("/proj/x")));
+        assert_eq!(jail(&cs, "."), Ok(PathBuf::from("/proj")));
         assert_eq!(
-            cs.write_path("  a/b/../c  "),
-            Ok(PathBuf::from("/proj/a/c"))
-        );
-        assert_eq!(cs.write_path("/proj/x"), Ok(PathBuf::from("/proj/x")));
-        assert_eq!(cs.write_path("."), Ok(PathBuf::from("/proj")));
-        assert_eq!(
-            cs.write_path("   "),
+            jail(&cs, "   "),
             Err(ToolOutput::err("missing required argument: path"))
         );
         for arg in ["../outside.txt", "a/../../outside.txt", "/etc/passwd", ".."] {
             assert_eq!(
-                cs.write_path(arg),
+                jail(&cs, arg),
                 Err(ToolOutput::err(format!(
                     "path is outside the project root (/proj): {arg}"
                 ))),
@@ -495,6 +619,43 @@ mod tests {
         )))
     }
 
+    /// The three outcomes: a root holds it (the lexical path), outside with its real location known (the
+    /// lexical path and the real one, through a symlinked parent too), or unverifiable.
+    #[cfg(unix)]
+    #[test]
+    fn write_path_classifies_inside_outside_and_unverifiable() {
+        use std::os::unix::fs::symlink;
+        let (_t, root, out) = jail_fixture();
+        symlink(&out, root.join("outdir")).expect("link");
+        symlink("lb", root.join("la")).expect("la");
+        symlink("la", root.join("lb")).expect("lb");
+        let real_out = std::fs::canonicalize(&out).expect("real out");
+        let cs = CodeSet::new(root.clone(), Vec::new(), false, Outside::Ask).expect("set");
+        assert_eq!(
+            cs.write_path("dir/x"),
+            Ok(Write::Inside(root.join("dir/x")))
+        );
+        assert_eq!(
+            cs.write_path("outdir/n/x.txt"),
+            Ok(Write::Outside {
+                path: root.join("outdir/n/x.txt"),
+                real: real_out.join("n/x.txt"),
+            })
+        );
+        assert_eq!(
+            cs.write_path("../out/secret.txt"),
+            Ok(Write::Outside {
+                path: out.join("secret.txt"),
+                real: real_out.join("secret.txt"),
+            })
+        );
+        assert_eq!(cs.write_path("la"), Ok(Write::Unverifiable));
+        assert_eq!(
+            cs.write_path(" "),
+            Err(ToolOutput::err("missing required argument: path"))
+        );
+    }
+
     /// `write_roots:`: a path under an extra root is accepted (relative arguments still hang off
     /// the project root), a path under no root is refused naming every root, a link inside an
     /// extra root that leaves every root is refused, and the display stays root-anchored.
@@ -508,8 +669,13 @@ mod tests {
         let missing = t.path().join("not/yet");
         symlink(out.join("secret.txt"), other.join("escape")).expect("link");
         symlink(root.join("a.txt"), other.join("home")).expect("link");
-        let cs =
-            CodeSet::new(root.clone(), vec![other.clone(), missing.clone()], false).expect("set");
+        let cs = CodeSet::new(
+            root.clone(),
+            vec![other.clone(), missing.clone()],
+            false,
+            Outside::Refuse,
+        )
+        .expect("set");
         let abs = |p: &Path| p.to_str().expect("utf-8").to_owned();
         for p in [
             other.join("new.txt"),
@@ -517,10 +683,10 @@ mod tests {
             other.clone(),
             missing.join("x.txt"),
         ] {
-            assert_eq!(cs.write_path(&abs(&p)), Ok(p.clone()), "{p:?}");
+            assert_eq!(jail(&cs, &abs(&p)), Ok(p.clone()), "{p:?}");
         }
-        assert_eq!(cs.write_path("../other/x"), Ok(other.join("x")));
-        assert_eq!(cs.write_path("a.txt"), Ok(root.join("a.txt")));
+        assert_eq!(jail(&cs, "../other/x"), Ok(other.join("x")));
+        assert_eq!(jail(&cs, "a.txt"), Ok(root.join("a.txt")));
         let roots = format!(
             "{}) and the extra write roots ({}, {}",
             root.display(),
@@ -533,7 +699,7 @@ mod tests {
             "../out/x".to_owned(),
         ] {
             assert_eq!(
-                cs.write_path(&arg),
+                jail(&cs, &arg),
                 Err(ToolOutput::err(format!(
                     "path is outside the project root ({roots}): {arg}"
                 ))),
@@ -544,7 +710,7 @@ mod tests {
         symlink("la", other.join("lb")).expect("lb");
         let arg = abs(&other.join("la"));
         assert_eq!(
-            cs.write_path(&arg),
+            jail(&cs, &arg),
             Err(ToolOutput::err(format!(
                 "cannot verify {arg} inside the project root ({roots})"
             )))
@@ -564,7 +730,7 @@ mod tests {
         let looped = t.path().join("looped");
         std::os::unix::fs::symlink(&looped, &looped).expect("self link");
         assert_eq!(
-            CodeSet::new(root, vec![looped.clone()], false).err(),
+            CodeSet::new(root, vec![looped.clone()], false, Outside::Refuse).err(),
             Some(crate::tool::sets::SetError::WriteRoot(looped))
         );
     }
@@ -583,7 +749,7 @@ mod tests {
         symlink("s/../secret.txt", root.join("trick")).expect("link");
         // The same through the dangling-link branch: the link text is walked again, physically.
         symlink("s/../missing.txt", root.join("trick_dangling")).expect("link");
-        let cs = CodeSet::new(root.clone(), Vec::new(), false).expect("set");
+        let cs = CodeSet::new(root.clone(), Vec::new(), false, Outside::Refuse).expect("set");
         for arg in [
             "escape",
             "outdir",
@@ -594,7 +760,7 @@ mod tests {
             "trick",
             "trick_dangling",
         ] {
-            assert_eq!(cs.write_path(arg), outside(&root, arg), "{arg}");
+            assert_eq!(jail(&cs, arg), outside(&root, arg), "{arg}");
         }
     }
 
@@ -606,7 +772,7 @@ mod tests {
         symlink(root.join("a.txt"), root.join("alias")).expect("link");
         symlink("dir", root.join("subdir")).expect("link");
         symlink("dir/later.txt", root.join("dangling_inside")).expect("link");
-        let cs = CodeSet::new(root.clone(), Vec::new(), false).expect("set");
+        let cs = CodeSet::new(root.clone(), Vec::new(), false, Outside::Refuse).expect("set");
         // The returned path is the lexical one, links and all.
         for arg in [
             "alias",
@@ -615,7 +781,7 @@ mod tests {
             "subdir/x/y.txt",
             "dangling_inside",
         ] {
-            assert_eq!(cs.write_path(arg), Ok(root.join(arg)), "{arg}");
+            assert_eq!(jail(&cs, arg), Ok(root.join(arg)), "{arg}");
         }
     }
 
@@ -627,22 +793,23 @@ mod tests {
         let via = t.path().join("via");
         symlink(&root, &via).expect("link");
         let real = std::fs::canonicalize(&root).expect("canonical root");
-        let cs = CodeSet::new(via.clone(), Vec::new(), false).expect("set");
-        assert_eq!(cs.write_path("new.txt"), Ok(via.join("new.txt")));
+        let cs = CodeSet::new(via.clone(), Vec::new(), false, Outside::Refuse).expect("set");
+        assert_eq!(jail(&cs, "new.txt"), Ok(via.join("new.txt")));
         let abs = real.join("new.txt");
         let abs = abs.to_str().expect("utf-8");
-        assert_eq!(cs.write_path(abs), Ok(PathBuf::from(abs)));
+        assert_eq!(jail(&cs, abs), Ok(PathBuf::from(abs)));
         // The failure text names the configured root, not its real location.
-        assert_eq!(cs.write_path("../out/x"), outside(&via, "../out/x"));
+        assert_eq!(jail(&cs, "../out/x"), outside(&via, "../out/x"));
 
         // macOS: `/tmp` is a link to `/private/tmp`, and a root under one accepts the other.
         let tmp = tempfile::tempdir_in("/tmp").expect("tempdir in /tmp");
-        let cs = CodeSet::new(tmp.path().to_path_buf(), Vec::new(), false).expect("set");
+        let cs = CodeSet::new(tmp.path().to_path_buf(), Vec::new(), false, Outside::Refuse)
+            .expect("set");
         let real = std::fs::canonicalize(tmp.path()).expect("canonical tmp");
-        assert_eq!(cs.write_path("new.txt"), Ok(tmp.path().join("new.txt")));
+        assert_eq!(jail(&cs, "new.txt"), Ok(tmp.path().join("new.txt")));
         let abs = real.join("new.txt");
         let abs = abs.to_str().expect("utf-8");
-        assert_eq!(cs.write_path(abs), Ok(PathBuf::from(abs)));
+        assert_eq!(jail(&cs, abs), Ok(PathBuf::from(abs)));
     }
 
     /// A walk base is its real location, spelled under the configured root that really holds it: a
@@ -657,7 +824,7 @@ mod tests {
         symlink(&root, &via).expect("via");
         symlink("dir", root.join("subdir")).expect("subdir");
         symlink(&out, root.join("outdir")).expect("outdir");
-        let cs = CodeSet::new(via.clone(), Vec::new(), false).expect("set");
+        let cs = CodeSet::new(via.clone(), Vec::new(), false, Outside::Refuse).expect("set");
         let real_out = std::fs::canonicalize(&out).expect("real out");
         for (base, want) in [
             (via.clone(), via.clone()),
@@ -715,7 +882,7 @@ mod tests {
         // A link loop is ELOOP, not "missing".
         symlink("lb", root.join("la")).expect("la");
         symlink("la", root.join("lb")).expect("lb");
-        let cs = CodeSet::new(root.clone(), Vec::new(), false).expect("set");
+        let cs = CodeSet::new(root.clone(), Vec::new(), false, Outside::Refuse).expect("set");
         for arg in ["L/S/secret.txt", "L/S/planted.txt", "L2"] {
             // Linux resolves the long prefix and finds it outside; macOS cannot resolve it at all.
             let want = if cfg!(target_os = "macos") {
@@ -723,10 +890,31 @@ mod tests {
             } else {
                 outside(&root, arg)
             };
-            assert_eq!(cs.write_path(arg), want, "{arg}");
+            assert_eq!(jail(&cs, arg), want, "{arg}");
         }
         for arg in ["la", "la/new.txt"] {
-            assert_eq!(cs.write_path(arg), unverified(&root, arg), "{arg}");
+            assert_eq!(jail(&cs, arg), unverified(&root, arg), "{arg}");
+        }
+
+        // Under `outside_writes: ask` an unknown location is still refused: it is never approvable, never
+        // asked about, and no approval the call could carry admits it.
+        let asking = CodeSet::new(root.clone(), Vec::new(), true, Outside::Ask).expect("set");
+        let mut unknown = vec!["la", "la/new.txt"];
+        if cfg!(target_os = "macos") {
+            unknown.extend(["L/S/secret.txt", "L/S/planted.txt", "L2"]);
+        }
+        for arg in &unknown {
+            assert_eq!(asking.write_path(arg), Ok(Write::Unverifiable), "{arg}");
+            assert_eq!(asking.approvable(arg), None, "{arg}");
+            let cx = RunCtx {
+                approved: Some(format!("{arg} (outside the project root)")),
+                ..RunCtx::default()
+            };
+            assert_eq!(
+                asking.write_target(&cx, arg).map(|(p, _)| p),
+                unverified(&root, arg),
+                "{arg}"
+            );
         }
 
         // EACCES under an unreadable directory is not "missing" either (root bypasses modes,
@@ -737,7 +925,9 @@ mod tests {
         if std::fs::symlink_metadata(locked.join("x"))
             .is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
         {
-            assert_eq!(cs.write_path("locked/x"), unverified(&root, "locked/x"));
+            assert_eq!(jail(&cs, "locked/x"), unverified(&root, "locked/x"));
+            assert_eq!(asking.write_path("locked/x"), Ok(Write::Unverifiable));
+            assert_eq!(asking.approvable("locked/x"), None);
         }
         set_mode(&locked, 0o755);
 
@@ -745,7 +935,7 @@ mod tests {
         let looped = t.path().join("looped");
         symlink(&looped, &looped).expect("self link");
         assert_eq!(
-            CodeSet::new(looped.clone(), Vec::new(), false).err(),
+            CodeSet::new(looped.clone(), Vec::new(), false, Outside::Refuse).err(),
             Some(crate::tool::sets::SetError::CodeRoot(looped))
         );
     }

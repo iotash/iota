@@ -245,8 +245,9 @@ impl Tool for EditFile {
                 "Replace an exact string in a file inside {}. \"old_string\" must match the file content \
                  exactly (including whitespace and indentation) and must be unique in the file unless \
                  \"replace_all\" is set — extend it with surrounding lines to disambiguate. The file must have \
-                 been read with read_file first.",
-                self.0.write_scope()
+                 been read with read_file first.{}",
+                self.0.write_scope(),
+                self.0.outside_clause()
             ),
             input_schema: schema(json!({
                 "type": "object",
@@ -280,14 +281,15 @@ impl Tool for EditFile {
         Box::pin(async move { Ok(edit_file_call(&self.0, cx, args)) })
     }
 
-    /// `!auto_write`, whatever the call.
-    fn requires_approval(&self, _args: Option<&JsonObject>) -> bool {
-        !self.0.auto_write
+    /// Inside the roots `!auto_write`; outside them always under `outside_writes: ask` (see
+    /// [`CodeSet::write_asks`]).
+    fn requires_approval(&self, args: Option<&JsonObject>) -> bool {
+        self.0.write_asks(args)
     }
 
-    /// `auto_write`, the setting [`Self::requires_approval`] reads.
+    /// `auto_write` — it waives the approval of writes inside the roots only ([`CodeSet::waives`]).
     fn waives_approval(&self) -> bool {
-        self.0.auto_write
+        self.0.waives()
     }
 
     /// Writers are expanded.
@@ -295,10 +297,16 @@ impl Tool for EditFile {
         Presentation::Expanded
     }
 
+    /// An outside write's session grant is its real directory.
+    fn grant_scope(&self, args: &JsonObject) -> Option<PathBuf> {
+        writer_grant_scope(&self.0, args)
+    }
+
     /// The path IS the call for the file tools (the D-12 lift) — its
-    /// `new_string` must never reach a header, so the empty summary stands.
+    /// `new_string` must never reach a header, so the empty summary stands. An outside write
+    /// shows its real location, marked ([`writer_summary`]).
     fn header_summary(&self, args: &JsonObject) -> Option<String> {
-        Some(self.0.header_arg(args))
+        Some(writer_summary(&self.0, args))
     }
 }
 
@@ -309,8 +317,9 @@ impl Tool for WriteFile {
             description: format!(
                 "Create or overwrite a whole file inside {} (parent directories are created). Overwriting an \
                  existing file requires reading it with read_file first — prefer edit_file for changes inside an \
-                 existing file.",
-                self.0.write_scope()
+                 existing file.{}",
+                self.0.write_scope(),
+                self.0.outside_clause()
             ),
             input_schema: schema(json!({
                 "type": "object",
@@ -336,14 +345,15 @@ impl Tool for WriteFile {
         Box::pin(async move { Ok(write_file_call(&self.0, cx, args)) })
     }
 
-    /// `!auto_write`, whatever the call.
-    fn requires_approval(&self, _args: Option<&JsonObject>) -> bool {
-        !self.0.auto_write
+    /// Inside the roots `!auto_write`; outside them always under `outside_writes: ask` (see
+    /// [`CodeSet::write_asks`]).
+    fn requires_approval(&self, args: Option<&JsonObject>) -> bool {
+        self.0.write_asks(args)
     }
 
-    /// `auto_write`, the setting [`Self::requires_approval`] reads.
+    /// `auto_write` — it waives the approval of writes inside the roots only ([`CodeSet::waives`]).
     fn waives_approval(&self) -> bool {
-        self.0.auto_write
+        self.0.waives()
     }
 
     /// Writers are expanded.
@@ -351,11 +361,34 @@ impl Tool for WriteFile {
         Presentation::Expanded
     }
 
-    /// The path IS the call for the file tools (the D-12 lift) — its
-    /// `content` must never reach a header, so the empty summary stands.
-    fn header_summary(&self, args: &JsonObject) -> Option<String> {
-        Some(self.0.header_arg(args))
+    /// An outside write's session grant is its real directory.
+    fn grant_scope(&self, args: &JsonObject) -> Option<PathBuf> {
+        writer_grant_scope(&self.0, args)
     }
+
+    /// The path IS the call for the file tools (the D-12 lift) — its
+    /// `content` must never reach a header, so the empty summary stands. An outside write
+    /// shows its real location, marked ([`writer_summary`]).
+    fn header_summary(&self, args: &JsonObject) -> Option<String> {
+        Some(writer_summary(&self.0, args))
+    }
+}
+
+/// A writer's header, and so its approval prompt: the path as the readers show it, except a write the user
+/// would be asked about outside every root, which shows the RESOLVED real location, absolute, marked
+/// `(outside the project root)` — what the user approves is where the bytes land, not the argument as typed.
+fn writer_summary(cs: &CodeSet, args: &JsonObject) -> String {
+    match cs.approvable(str_arg(args, "path")) {
+        Some(real) => super::outside_summary(&real),
+        None => cs.header_arg(args),
+    }
+}
+
+/// The real directory an outside write lands in — what "allow for this session" grants; `None` inside
+/// the roots (the grant covers the tool, as it always did).
+fn writer_grant_scope(cs: &CodeSet, args: &JsonObject) -> Option<PathBuf> {
+    cs.approvable(str_arg(args, "path"))
+        .and_then(|real| real.parent().map(Path::to_path_buf))
 }
 
 // ---- glob ----
@@ -774,8 +807,10 @@ pub(crate) fn post_diff(cx: &RunCtx, display: &str, old: &str, new: &str) {
     );
 }
 
+/// `path` keys the read ledger, `abs` is opened: the same lexical path inside the roots, the approved real
+/// location outside them ([`CodeSet::write_target`], which re-checks the location now).
 fn edit_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
-    let abs = match cs.write_path(str_arg(args, "path")) {
+    let (path, abs) = match cs.write_target(cx, str_arg(args, "path")) {
         Ok(p) => p,
         Err(t) => return t,
     };
@@ -791,7 +826,7 @@ fn edit_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
     if old_string == new_string {
         return ToolOutput::err("old_string and new_string are identical");
     }
-    if let Err(t) = cs.require_fresh_read(&abs) {
+    if let Err(t) = cs.require_fresh_read(&path) {
         return t;
     }
     let meta = match fs::metadata(&abs) {
@@ -834,7 +869,7 @@ fn edit_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
     if let Err(e) = write_bytes(&abs, &updated) {
         return ToolOutput::err(format!("cannot write {display}: {e}"));
     }
-    cs.note_read(&abs);
+    cs.note_read(&path);
     // The file is on disk in full; what is left is for human and model eyes, and a terminal renders TEXT.
     // Both sides come from the same lossy conversion, so an undecodable byte outside the edit reads as the
     // same `\u{FFFD}` in both and cancels out of the diff instead of inventing a hunk.
@@ -882,8 +917,9 @@ fn edit_snippet(content: &str, line: usize) -> String {
 
 // ---- write_file ----
 
+/// `path` keys the read ledger, `abs` is opened — as in [`edit_file_call`].
 fn write_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
-    let abs = match cs.write_path(str_arg(args, "path")) {
+    let (path, abs) = match cs.write_target(cx, str_arg(args, "path")) {
         Ok(p) => p,
         Err(t) => return t,
     };
@@ -904,7 +940,7 @@ fn write_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
         if !meta.is_file() {
             return ToolOutput::err(format!("{display} is not a regular file"));
         }
-        if let Err(t) = cs.require_fresh_read(&abs) {
+        if let Err(t) = cs.require_fresh_read(&path) {
             return t;
         }
         created = false;
@@ -928,7 +964,7 @@ fn write_file_call(cs: &CodeSet, cx: &RunCtx, args: &JsonObject) -> ToolOutput {
     if let Err(e) = write_bytes(&abs, content.as_bytes()) {
         return ToolOutput::err(format!("cannot write {display}: {e}"));
     }
-    cs.note_read(&abs);
+    cs.note_read(&path);
     if old_ok {
         post_diff(cx, &display, &old, content);
     }
@@ -1103,7 +1139,7 @@ mod tests {
         assert!(!match_include(&with_slash, "cmd/**", "tool/main.rs"));
     }
 
-    // The writers go through `CodeSet::write_path` and refuse a symlink out of the root — nothing
+    // Under `refuse`, the writers go through `CodeSet::write_target` and refuse a symlink out of the root — nothing
     // outside is created or changed — while `read_file` reads through the same link (reads are open).
     #[cfg(unix)]
     #[test]
@@ -1117,7 +1153,13 @@ mod tests {
         let (_t, root, out) = jail_fixture();
         symlink(out.join("secret.txt"), root.join("escape")).expect("link");
         symlink(&out, root.join("outdir")).expect("link");
-        let cs = CodeSet::new(root.clone(), Vec::new(), true).expect("set");
+        let cs = CodeSet::new(
+            root.clone(),
+            Vec::new(),
+            true,
+            super::super::Outside::Refuse,
+        )
+        .expect("set");
         let cx = RunCtx::default();
         let refused = |arg: &str| {
             ToolOutput::err(format!(
@@ -1217,7 +1259,13 @@ mod tests {
         symlink(&out, root.join("outdir")).expect("link");
         symlink("dir/kept.txt", root.join("alias")).expect("link");
         plant_overlong(&root, &out);
-        let cs = CodeSet::new(root.clone(), Vec::new(), false).expect("set");
+        let cs = CodeSet::new(
+            root.clone(),
+            Vec::new(),
+            false,
+            super::super::Outside::Refuse,
+        )
+        .expect("set");
 
         let grep = grep_call(
             &cs,
@@ -1239,6 +1287,249 @@ mod tests {
         let names: Vec<&str> = glob.text.lines().collect();
         for link in ["alias", "escape", "outdir", "L", "L2"] {
             assert!(names.contains(&link), "{link} not in {names:?}");
+        }
+    }
+
+    /// A set under `outside_writes: ask` with a user (the interactive case), over the jail fixture with
+    /// `root/outdir -> out` and `out2/` beside it.
+    #[cfg(unix)]
+    fn asking_set(
+        auto_write: bool,
+    ) -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::sync::Arc<super::super::CodeSet>,
+    ) {
+        use super::super::tests::jail_fixture;
+        let (t, root, out) = jail_fixture();
+        std::os::unix::fs::symlink(&out, root.join("outdir")).expect("link");
+        let cs = super::super::CodeSet::new(
+            root.clone(),
+            Vec::new(),
+            auto_write,
+            super::super::Outside::Ask,
+        )
+        .expect("set");
+        (t, root, out, cs)
+    }
+
+    /// THE INVARIANT: an outside write needs THIS call's approval, carried in `RunCtx::approved`, and that
+    /// approval must name the real location as it is at call time. A call no gate approved — what a parallel
+    /// batch, a headless loop or any future caller that skips the gate hands the tool — never writes, even
+    /// with `auto_write`. (Under the rejected design, "`*_call` admits OUTSIDE because every caller gates",
+    /// the first assertion fails: the file would be created.)
+    #[cfg(unix)]
+    #[test]
+    fn an_outside_write_needs_this_calls_approval() {
+        use super::{edit_file_call, read_file_call, write_file_call, writer_summary};
+        use crate::tool::context::RunCtx;
+
+        let (t, root, out, cs) = asking_set(true);
+        let real_out = std::fs::canonicalize(&out).expect("real out");
+        let w = args(json!({"path": "outdir/new.txt", "content": "x"}));
+        let summary = format!(
+            "{} (outside the project root)",
+            real_out.join("new.txt").display()
+        );
+        assert_eq!(
+            writer_summary(&cs, &w),
+            summary,
+            "the prompt names the RESOLVED path"
+        );
+
+        // No approval: refused, nothing created.
+        let got = write_file_call(&cs, &RunCtx::default(), &w);
+        assert!(got.is_error, "{got:?}");
+        assert!(
+            got.text.starts_with(&format!("path is outside the project root ({}): outdir/new.txt — writing there needs the user's approval", root.display())),
+            "{}",
+            got.text
+        );
+        assert!(
+            !out.join("new.txt").exists(),
+            "an unapproved call wrote outside"
+        );
+
+        // An approval for another call does not carry over.
+        let other = RunCtx {
+            approved: Some(format!(
+                "{} (outside the project root)",
+                real_out.join("else.txt").display()
+            )),
+            ..RunCtx::default()
+        };
+        assert!(write_file_call(&cs, &other, &w).is_error);
+        assert!(!out.join("new.txt").exists());
+
+        // Approved: the write lands where the prompt said — the real path behind the symlinked parent.
+        let ok = RunCtx {
+            approved: Some(summary.clone()),
+            ..RunCtx::default()
+        };
+        let got = write_file_call(&cs, &ok, &w);
+        assert_eq!(
+            got,
+            ToolOutput::ok(format!(
+                "wrote 1 B to {} (created)",
+                real_out.join("new.txt").display()
+            ))
+        );
+        assert_eq!(
+            std::fs::read_to_string(out.join("new.txt")).expect("landed"),
+            "x"
+        );
+
+        // edit_file the same way: read through the link, then edit with the approval.
+        assert!(!read_file_call(&cs, &args(json!({"path": "outdir/secret.txt"}))).is_error);
+        let e = args(json!({"path": "outdir/secret.txt", "old_string": "s", "new_string": "t"}));
+        assert!(edit_file_call(&cs, &RunCtx::default(), &e).is_error);
+        assert_eq!(
+            std::fs::read_to_string(out.join("secret.txt")).expect("kept"),
+            "s"
+        );
+        let ok = RunCtx {
+            approved: Some(writer_summary(&cs, &e)),
+            ..RunCtx::default()
+        };
+        assert!(!edit_file_call(&cs, &ok, &e).is_error);
+        assert_eq!(
+            std::fs::read_to_string(out.join("secret.txt")).expect("edited"),
+            "t"
+        );
+
+        // The link is swapped between the prompt and the call: the approval named `out`, the link now
+        // points at `out2` — the location is re-checked and the call refused, nothing lands in `out2`.
+        let out2 = t.path().join("out2");
+        std::fs::create_dir(&out2).expect("out2");
+        let w = args(json!({"path": "outdir/swapped.txt", "content": "x"}));
+        let approved = RunCtx {
+            approved: Some(writer_summary(&cs, &w)),
+            ..RunCtx::default()
+        };
+        std::fs::remove_file(root.join("outdir")).expect("unlink");
+        std::os::unix::fs::symlink(&out2, root.join("outdir")).expect("relink");
+        assert!(write_file_call(&cs, &approved, &w).is_error);
+        assert!(!out2.join("swapped.txt").exists() && !out.join("swapped.txt").exists());
+    }
+
+    /// The batches that skip the gate (headless `run_batch`, the interactive parallel walk) build their
+    /// `RunCtx` without an approval; even if a writer were batched, an outside write would not land. And
+    /// the writers are not parallel, so neither batch takes them at all.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_batch_never_writes_outside() {
+        use crate::provider::model::ToolCall;
+        use crate::tool::{Dispatcher, Registry};
+        use std::sync::Arc;
+
+        let (_t, _root, out, cs) = asking_set(true);
+        let mut reg = Registry::default();
+        reg.add(Arc::new(super::WriteFile(Arc::clone(&cs))));
+        reg.add(Arc::new(super::EditFile(cs)));
+        let calls: Vec<ToolCall> = ["a.txt", "b.txt"]
+            .iter()
+            .map(|f| ToolCall {
+                name: "write_file".to_owned(),
+                arguments: args(json!({"path": format!("outdir/{f}"), "content": "x"})),
+                ..ToolCall::default()
+            })
+            .collect();
+        assert!(!reg.supports_parallel("write_file", Some(&calls[0].arguments)));
+        assert!(!reg.supports_parallel("edit_file", None));
+        let outcomes = crate::headless::batch::run_batch(
+            &crate::tool::context::RunCtx::default(),
+            &reg,
+            &calls,
+        )
+        .await;
+        assert!(outcomes.iter().all(|o| o.is_error), "{outcomes:?}");
+        assert!(!out.join("a.txt").exists() && !out.join("b.txt").exists());
+    }
+
+    /// Who asks, per call: inside the roots `!auto_write`; outside them always under `ask` with a user,
+    /// never otherwise (refused at the call); an unverifiable path never (refused at the call). The session
+    /// grant of an outside write is its real directory.
+    #[cfg(unix)]
+    #[test]
+    fn the_writers_ask_matrix() {
+        use super::super::tests::jail_fixture;
+        use super::super::{CodeSet, Outside};
+        use crate::tool::Tool;
+
+        let (_t, root, out) = jail_fixture();
+        std::os::unix::fs::symlink("lb", root.join("la")).expect("la");
+        std::os::unix::fs::symlink("la", root.join("lb")).expect("lb");
+        let real_out = std::fs::canonicalize(&out).expect("real out");
+        let inside = args(json!({"path": "dir/x.txt"}));
+        let outside = args(json!({"path": format!("{}/deep/x.txt", out.display())}));
+        let looped = args(json!({"path": "la/x.txt"}));
+        for auto_write in [false, true] {
+            for policy in [Outside::Ask, Outside::Unattended, Outside::Refuse] {
+                let cs = CodeSet::new(root.clone(), Vec::new(), auto_write, policy).expect("set");
+                let at = format!("auto_write={auto_write} {policy:?}");
+                for tool in [
+                    std::sync::Arc::new(super::WriteFile(std::sync::Arc::clone(&cs)))
+                        as std::sync::Arc<dyn Tool>,
+                    std::sync::Arc::new(super::EditFile(std::sync::Arc::clone(&cs))),
+                ] {
+                    assert_eq!(
+                        tool.requires_approval(Some(&inside)),
+                        !auto_write,
+                        "{at} inside"
+                    );
+                    assert_eq!(
+                        tool.requires_approval(Some(&outside)),
+                        policy == Outside::Ask,
+                        "{at} outside"
+                    );
+                    assert!(!tool.requires_approval(Some(&looped)), "{at} unverifiable");
+                    assert_eq!(tool.waives_approval(), auto_write, "{at} waives");
+                    assert_eq!(tool.grant_scope(&inside), None, "{at}");
+                    assert_eq!(
+                        tool.grant_scope(&outside),
+                        (policy == Outside::Ask).then(|| real_out.join("deep")),
+                        "{at}"
+                    );
+                    // The header names the real location only when it is what a prompt is about.
+                    let header = tool.header_summary(&outside).expect("summary");
+                    assert_eq!(
+                        header.ends_with(" (outside the project root)"),
+                        policy == Outside::Ask,
+                        "{at} {header}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The writers' descriptions are model-facing: under `outside_writes: ask` with a user they say that a
+    /// path outside the roots asks the user first, so a model does not take a refusal there as final; with
+    /// nobody to ask, or under `refuse`, they say nothing of it (the pinned texts).
+    #[test]
+    fn the_writers_say_an_outside_write_asks_only_when_it_does() {
+        use super::super::{CodeSet, Outside};
+        use crate::tool::Tool;
+        let clause = " Outside that, the user is asked to approve each write first.";
+        for policy in [Outside::Ask, Outside::Unattended, Outside::Refuse] {
+            let cs = CodeSet::new(std::path::PathBuf::from("/proj"), Vec::new(), false, policy)
+                .expect("set");
+            for d in [
+                super::WriteFile(std::sync::Arc::clone(&cs)).def(),
+                super::EditFile(std::sync::Arc::clone(&cs)).def(),
+            ] {
+                assert_eq!(
+                    d.description.ends_with(clause),
+                    policy == Outside::Ask,
+                    "{policy:?} {}",
+                    d.description
+                );
+                assert!(
+                    d.description.contains("inside the project root"),
+                    "{}",
+                    d.description
+                );
+            }
         }
     }
 }

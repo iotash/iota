@@ -242,9 +242,18 @@ async fn walk(
             t.cx.tr.open_call(&header);
         }
 
+        // What the user allowed this call under travels with it (`RunCtx::approved`): a tool whose
+        // call needs the say-so checks it against what it would show now.
+        let mut approved = None;
         if dispatch.requires_approval(&tc.name, Some(&tc.arguments)) {
             let detail = tool_call_detail(&*dispatch, tc);
-            let allowed = match t.cx.gate.ask(&t.cancel, &tc.name, &detail).await {
+            let scope = dispatch.grant_scope(&tc.name, &tc.arguments);
+            let allowed = match t
+                .cx
+                .gate
+                .ask(&t.cancel, &tc.name, scope.as_deref(), &detail)
+                .await
+            {
                 Ok(a) => a,
                 // A fired cancel scope resolves the blocking call as Interrupted (WP45);
                 // a closed facade ends the loop itself.
@@ -261,6 +270,7 @@ async fn walk(
                 history.push(Message::tool_result(tc, DECLINED, true));
                 continue;
             }
+            approved = Some(detail);
         }
 
         // Every call gets its own artifact slot — the user-facing payload (an expanded
@@ -271,6 +281,7 @@ async fn walk(
         let cx = RunCtx {
             cancel: call_cancel.clone(),
             artifact: Some(slot.clone()),
+            approved,
             ..RunCtx::default()
         };
         // ESC cancels the CALL (the innermost scope); Ctrl+C the turn.

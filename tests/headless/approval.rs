@@ -260,3 +260,100 @@ mod header_split {
         );
     }
 }
+
+/// The headless matrix over the real `code` set (`-m`, the SDK path: no interactor): inside the root
+/// `auto_write` decides (off → the quiet refusal naming `auto_write`, on → written); outside it nothing is
+/// ever written, `auto_write` or not, and even an injected approver that allows everything is never asked
+/// — under `ask` the refusal names `write_roots:`, under `refuse` it is the jail's text as before.
+#[tokio::test]
+async fn the_quiet_loop_never_writes_outside_the_roots() {
+    use iota::tool::sets::ToolsConfig;
+    use iota::tool::{OutsideWrites, Registry, ToolEnv};
+
+    for policy in [OutsideWrites::Ask, OutsideWrites::Refuse] {
+        for auto_write in [false, true] {
+            for approver in [false, true] {
+                let at = format!("{policy:?} auto_write={auto_write} approver={approver}");
+                let dir = tempfile::tempdir().expect("tempdir");
+                let root = dir.path().join("proj");
+                std::fs::create_dir(&root).expect("root");
+                let env = ToolEnv {
+                    project_root: Some(root.clone()),
+                    outside_writes: policy,
+                    ..ToolEnv::default()
+                };
+                let raw: ToolsConfig =
+                    serde_norway::from_str(&format!("code: {{auto_write: {auto_write}}}\n"))
+                        .expect("tools");
+                let d = Arc::new(Registry::build(&env, &raw, &mut |w| panic!("{w}")));
+                let asked = Arc::new(Mutex::new(0_usize));
+                let seen = Arc::clone(&asked);
+                let mut host = QuietHost {
+                    approve: approver.then(|| {
+                        Box::new(move |_: &ToolCall, _: &str| {
+                            *lock(&seen) += 1;
+                            Approval::Allow
+                        })
+                            as Box<dyn Fn(&ToolCall, &str) -> Approval + Send + Sync>
+                    }),
+                    ..QuietHost::new()
+                };
+                for (path, inside) in [("in.txt", true), ("../out.txt", false)] {
+                    let mut args = JsonObject::new();
+                    args.insert("path".to_owned(), path.into());
+                    args.insert("content".to_owned(), "x".into());
+                    let mut history = vec![Message::user("go")];
+                    *lock(&asked) = 0;
+                    execute_with_tools(
+                        TurnParams {
+                            cx: &RunCtx::default(),
+                            tp: &writing(args),
+                            dispatch: d.clone(),
+                            tools: d.tools(),
+                            harness: "",
+                            overlay: "",
+                            max_turns: None,
+                        },
+                        &mut history,
+                        &mut host,
+                    )
+                    .await
+                    .expect("loop");
+                    let result = &history[2];
+                    let landed = if inside {
+                        root.join("in.txt")
+                    } else {
+                        dir.path().join("out.txt")
+                    };
+                    if inside {
+                        let written = auto_write || approver;
+                        assert_eq!(landed.exists(), written, "{at} {path}");
+                        assert_eq!(*lock(&asked), usize::from(!auto_write && approver), "{at}");
+                        if !written {
+                            assert_eq!(result.content, refusal_text("write_file"), "{at}");
+                        }
+                    } else {
+                        assert!(!landed.exists(), "{at}: an outside write landed");
+                        assert_eq!(
+                            *lock(&asked),
+                            0,
+                            "{at}: nobody is asked about an outside write"
+                        );
+                        assert!(result.is_error(), "{at}");
+                        let refusal = format!(
+                            "path is outside the project root ({}): ../out.txt",
+                            root.display()
+                        );
+                        let want = match policy {
+                            OutsideWrites::Ask => format!(
+                                "{refusal} — writing there needs the user's approval, which this non-interactive run cannot ask for; list its directory in the top-level `write_roots:` to allow it"
+                            ),
+                            OutsideWrites::Refuse => refusal,
+                        };
+                        assert_eq!(result.content, want, "{at}");
+                    }
+                }
+            }
+        }
+    }
+}

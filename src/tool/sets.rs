@@ -117,5 +117,36 @@ mod tests {
         );
         assert!(!built("shell: {sandbox: \"off\"}").waives_approval());
         assert!(!built("shell: false\ncode: false").waives_approval());
+
+        // `outside_writes:` changes nothing here: `auto_write` waives the approval of writes INSIDE the roots,
+        // which then run unasked — so such a chat holds — while a write outside them is still asked (`ask`,
+        // with a user) or refused; it is never waived, and a chat without `auto_write` acts on nothing unasked.
+        for policy in [
+            crate::tool::OutsideWrites::Ask,
+            crate::tool::OutsideWrites::Refuse,
+        ] {
+            for interactive in [false, true] {
+                let env = ToolEnv {
+                    outside_writes: policy,
+                    interactor: interactive.then(|| {
+                        crate::repl::Interactor::new()
+                            as std::sync::Arc<dyn crate::tool::Interactor>
+                    }),
+                    ..ToolEnv::default()
+                };
+                let with_policy = |yaml: &str| {
+                    let tools: super::ToolsConfig = serde_norway::from_str(yaml).expect("yaml");
+                    crate::tool::Registry::build(&env, &tools, &mut |w| panic!("{w}"))
+                };
+                assert!(
+                    with_policy("code: {auto_write: true}").waives_approval(),
+                    "{policy:?}"
+                );
+                assert!(
+                    !with_policy("code: {auto_write: false}").waives_approval(),
+                    "{policy:?}"
+                );
+            }
+        }
     }
 }

@@ -43,16 +43,25 @@ the network unless `tools.shell.network: true`, but never reads), so a
 jailed `read_file` only pushed the model into `cat`, which is less visible
 and no safer.
 
-`edit_file` and `write_file` are **jailed to the project root plus the
-top-level `write_roots:`** (below): the path's real location — symlinks
-resolved, the nearest existing ancestor canonicalized — must lie inside the
-real location of the project root or of an extra root. A link inside any
-root that leads out of every root is refused; a path whose real location
-cannot be worked out is refused too (`cannot verify <path> inside the
-project root (…)`), never judged lexically. A path outside every root is
-`path is outside the project root (<root>) and the extra write roots (<e1>,
-<e2>): <path>` (the extras clause only when there are extras). The writers'
-descriptions name the same roots.
+`edit_file` and `write_file` **classify every path by its real location**
+— symlinks resolved, the nearest existing ancestor canonicalized
+(`CodeSet::write_path`):
+
+- **INSIDE**: the real location of the project root or of a top-level
+  `write_roots:` entry (below) holds it. Written at the path as given.
+- **OUTSIDE**: the real location is known and lies outside every root — a
+  link inside a root that leads out of every root included. Approvable
+  (see Approval): the prompt names the real location, and the write lands
+  there.
+- **UNVERIFIABLE**: the real location cannot be worked out (`ENAMETOOLONG`,
+  `ELOOP`, `EACCES`, too many hops). Refused, never approvable, never judged
+  lexically: `cannot verify <path> inside the project root (…)`.
+
+A refused outside path is `path is outside the project root (<root>) and the
+extra write roots (<e1>, <e2>): <path>` (the extras clause only when there
+are extras). The writers' descriptions name the same roots, and under
+`outside_writes: ask` in a chat they add that a write outside them asks the
+user first, so the model does not take a refusal as final.
 
 Results and headers stay anchored on the project root: a path outside it —
 a read anywhere, a write under an extra root — is shown absolute (`~/…` in a
@@ -90,31 +99,53 @@ result and must not take a partial answer for the whole one. Each stop has
 its own line, so a cancel never reads as a cap. grep charges a binary
 file's sniff to its read budget too.
 
-## Approval — the first slice of the P2 permission framework
+## Approval
 
-Mutating tools implement the package-private `approver` interface; the
-`tool.ApprovalReporter` capability surfaces it through Registry and Merge
-(parts without the capability — MCP servers — keep their old behavior).
+Approval is asked before a call runs (`requires_approval`, per call); the
+jail is checked inside it. For the writers the two are tied by the path's
+class:
 
-- **Interactive (chat.Run)**: before an approval-requiring call, the tool
-  header is already on screen; a selector asks Allow once / Allow for this
-  session / Deny. Session allowance is per tool name and lives for the Run.
-  A denial becomes an isError tool result ("The user declined this call."),
+| class | chat (a user to ask) | `-m`, the SDK path (nobody to ask) |
+|---|---|---|
+| INSIDE | asked unless `tools.code.auto_write` | refused unless `auto_write`, saying to set it |
+| OUTSIDE, `outside_writes: ask` | asked ALWAYS — `auto_write` does not waive it | refused, saying to list the directory in `write_roots:` |
+| OUTSIDE, `outside_writes: refuse` | refused, no prompt | refused |
+| UNVERIFIABLE | refused, no prompt | refused |
+
+- **The prompt** for an outside write names the RESOLVED real path,
+  absolute, marked `(outside the project root)` — the way the shell marks
+  `(outside the sandbox)` — not the argument as typed. It is the writer's
+  `header_summary`, so the call header says the same.
+- **"Allow for this session"** for an outside write grants its real
+  DIRECTORY through that tool only, and the option says so (`Allow in
+  <dir> for this session`). The gate keys its grants by wire tool name and
+  `Dispatcher::grant_scope` (`None` = the whole tool, as for an inside write
+  or a shell call): a grant for one directory does not cover another, nor the
+  same directory through the other writer, and an inside grant never covers
+  an outside write. Only the exact directory is granted, not its subtree.
+- **The decision travels with the call.** The interactive walk puts the
+  detail the user allowed into `RunCtx::approved` (prompted or granted for
+  the session); `write_target` admits an outside path only when that equals
+  the summary it computes NOW. A caller that skips the gate — the parallel
+  batches, the headless loop, any future one — hands over `None`, and the
+  call refuses; a link swapped between the prompt and the call changes the
+  real location, so the summary no longer matches and the call refuses too.
+  The alternative, "`*_call` admits OUTSIDE because every caller gates",
+  would hang the guarantee on a property of the callers;
+  `an_outside_write_needs_this_calls_approval` fails under it.
+- **The read ledger** stays keyed on the path as given (what `read_file`
+  recorded); the bytes go to the real location, checked to be the same file
+  at call time.
+- A denial becomes an isError tool result ("The user declined this call."),
   so the provider still receives a result for every call id.
-- **Non-interactive (-m / chat.Once)**: approval-requiring calls are rejected
-  with a result explaining how to enable them.
-- **`tools.code.auto_write: true`** waives approval entirely (the tools then
-  report RequiresApproval=false), which also unlocks writes in -m runs.
-
-**The jail is not the approval.** The jail governs writes only. The two are
-separate checks, in order: approval is asked before the call runs, and the
-jail is checked inside it.
-Allowing a write whose path lies outside every root does not widen the jail —
-the call still fails with `path is outside the project root (…)`; `auto_write`
-does not widen it either. The one way to admit a path outside the project
-root is to list its directory in `write_roots:` (Config, below). That list is
-read when the tools are assembled at startup, so a running session cannot
-gain a root: the user edits the config and starts a new session.
+- **`outside_writes: refuse`** restores the jail as it was before writes
+  could be approved: the existing refusal text, no prompt, `auto_write`
+  unchanged. The other way to admit a directory — silently, in every mode — is
+  to list it in `write_roots:`, read when the tools are assembled, so a
+  running session cannot gain a root.
+- **The hold** (`waives_approval`, docs/design/agent-messaging.md §4) still
+  reads `auto_write`: it waives writes inside the roots, which then run
+  unasked; an outside write is asked or refused, never waived.
 
 ## Config
 
@@ -122,10 +153,15 @@ gain a root: the user edits the config and starts a new session.
 write_roots:           # top level, every agent; shared with the shell sandbox
   - ~/scratch          # `~` is home
   - ../shared-lib      # relative = against the project root
+outside_writes: ask    # top level, every agent: ask (default) | refuse
 tools:
-  code:                # empty = writes jailed to the roots + confirmed
-    # auto_write: true # skip write confirmations (and allow writes in -m)
+  code:                # empty = writes inside the roots confirmed
+    # auto_write: true # skip confirmations inside the roots (and allow them in -m)
 ```
+
+`outside_writes:` is top-level like `write_roots:` and refused under
+`agents:`/`models:` by the key audit. It can only tighten: once a file of the
+stack says `refuse`, a later `ask` changes nothing.
 
 `write_roots:` is ONE list for both questions "where may the code tools
 write" and "where may a sandboxed shell write" — the split Cursor has
@@ -149,7 +185,7 @@ apply_patch-style multi-file edits, background/persistent processes (a
 command-set evolution), LSP diagnostics, LLM edit self-correction (Gemini
 editCorrector), nested .gitignore semantics, a diff preview inside the approval prompt, and the `web`
 set. The rest of P2 (workspace trust, broader permission policies) builds on
-the same ApprovalReporter seam.
+the same approval seam (`requires_approval`, `grant_scope`, `RunCtx::approved`).
 
 ## Testing
 
@@ -169,6 +205,17 @@ order; grep format, include filter, context, binary skip, bad regex;
 list_dir; read_file numbering/window/binary/empty; edit_file read-gate,
 uniqueness, replace_all, staleness, snippet; write_file create/parents,
 overwrite gate, ledger refresh by writes; approval matrix incl. auto_write
-and Merge routing (`src/tool/builtins/code/{mod,tools}.rs` tests,
+and Merge routing; outside writes: the three classes
+(`write_path_classifies_inside_outside_and_unverifiable`, unverifiable kept
+refused under `ask` in `write_path_refuses_what_it_cannot_resolve`), who
+asks (`the_writers_ask_matrix`), the approval invariant and the link swap
+(`an_outside_write_needs_this_calls_approval`, `a_batch_never_writes_outside`),
+the chat matrix and the per-directory grant
+(`repl::turn::tools::tests::an_outside_write_is_asked_always_and_lands_where_the_prompt_said`,
+`an_outside_session_grant_is_one_directory_through_one_tool`), the headless
+matrix (`tests/headless/approval.rs::the_quiet_loop_never_writes_outside_the_roots`),
+the key (`outside_writes_is_a_top_level_key_only`,
+`tests/cmd/config.rs::outside_writes_defaults_to_ask_and_only_tightens_across_the_stack`)
+(`src/tool/builtins/code/{mod,tools}.rs` tests,
 `tests/tool/code.rs`; `write_roots:` end to end in
 `tests/cmd/cli.rs::cli_write_roots_open_a_directory_outside_the_project`).

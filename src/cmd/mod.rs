@@ -485,6 +485,7 @@ fn assemble_tools(
         ..ToolEnv::default()
     }
     .with_write_roots(&cfg.write_roots);
+    tool_env.outside_writes = cfg.outside_writes;
     let interactor = settings
         .message
         .is_none()
