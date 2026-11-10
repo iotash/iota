@@ -38,6 +38,10 @@ pub struct Environment {
     pub exe: Option<PathBuf>,
     /// The config files this run reads.
     pub configs: ConfigFiles,
+    /// The top-level `write_roots:` as the tools hold them (`ToolEnv::write_roots`, resolved once at
+    /// assembly): the roots beyond the project root the code tools reach and a sandboxed shell writes. Empty
+    /// prints no line, so a config without the key keeps the block's bytes.
+    pub write_roots: Vec<PathBuf>,
     /// What the detected hosts tell the model (`host::Presenter::environment`): `(key, value)` pairs, one
     /// line each after the run's own facts — `host: herdr`, `herdr pane: w1:p3`. Empty in a plain terminal.
     pub host: Vec<(String, String)>,
@@ -193,6 +197,14 @@ fn environment_block(env: &Environment, out: &mut String) {
             );
         }
     }
+    if !env.write_roots.is_empty() {
+        let roots: Vec<String> = env
+            .write_roots
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        let _ = writeln!(out, "write roots: {}", roots.join(", "));
+    }
     // The hosts' facts last: a terminal multiplexer names itself and the pane the chat runs in, so the
     // model can drive that host's own CLI (brain page `host-integration`, 2026-09-21).
     for (key, value) in &env.host {
@@ -221,6 +233,7 @@ mod tests {
                 project: Some(PathBuf::from("/Users/someone/Work/project/.iota.yaml")),
             },
             host: Vec::new(),
+            write_roots: Vec::new(),
         }
     }
 
@@ -327,6 +340,29 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("host:"), "{text}");
+    }
+
+    /// `write_roots:` is one line after the config files, before any host line, its roots in the order the
+    /// tools hold them; with none there is no line at all.
+    #[test]
+    fn write_roots_line_only_when_listed() {
+        let widened = Environment {
+            write_roots: vec![
+                PathBuf::from("/Users/someone/scratch"),
+                PathBuf::from("/Users/someone/Work/shared-lib"),
+            ],
+            host: herdr_lines(),
+            ..env()
+        };
+        let text = compose(&widened, &sets(&["code"]));
+        assert!(
+            text.contains(
+                "\nproject config: /Users/someone/Work/project/.iota.yaml\nwrite roots: /Users/someone/scratch, /Users/someone/Work/shared-lib\nhost: herdr\n"
+            ),
+            "{text}"
+        );
+        let text = compose(&env(), &sets(&["code"]));
+        assert!(!text.contains("write roots"), "{text}");
     }
 
     /// Every environment fact is one line; a missing config file is spelled `(absent)`, and `-c` collapses

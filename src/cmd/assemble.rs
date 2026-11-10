@@ -88,6 +88,8 @@ pub(crate) fn harness_environment(
         exe: dirs.exe.clone(),
         configs,
         host: Vec::new(),
+        // The resolved roots are the tool assembly's (`ToolEnv::write_roots`); it fills them in.
+        write_roots: Vec::new(),
     }
 }
 

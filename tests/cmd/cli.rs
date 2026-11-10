@@ -1290,6 +1290,14 @@ async fn cli_write_roots_open_a_directory_outside_the_project() {
         )),
         "{reply}"
     );
+    // The model is told the root too: the harness's `<environment>` names it, from the same resolved list.
+    let requests = server.received_requests().await.expect("recorded requests");
+    let first: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("a JSON body");
+    let system = first["messages"][0]["content"].as_str().unwrap_or_default();
+    assert!(
+        system.contains(&format!("\nwrite roots: {}\n", extra.display())),
+        "{system}"
+    );
 }
 
 /// One `shell` call, then a plain reply once its result is in: the first request (no tool message yet) is

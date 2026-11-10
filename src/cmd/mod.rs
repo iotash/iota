@@ -498,7 +498,10 @@ fn assemble_tools(
     // tools sends nothing — its bytes on the wire are exactly what they were. Composed by the branch, once
     // its hosts are detected: they have facts for `<environment>` too.
     let harness = crate::agents::harness::HarnessInputs {
-        env: assemble::harness_environment(dirs, project_root.as_deref(), inv.config.as_deref()),
+        env: crate::agents::harness::Environment {
+            write_roots: tool_env.write_roots.clone(),
+            ..assemble::harness_environment(dirs, project_root.as_deref(), inv.config.as_deref())
+        },
         toolsets: assemble::enabled_toolsets(
             &settings.resolved.agent.tools,
             // The bot's own session, the same test as the interactive branch's (`iota resume` names a session
