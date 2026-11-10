@@ -79,12 +79,12 @@ provider somewhere else and loosen the sandbox, so iota does not use it until
 you trust it:
 
 - Started on a terminal, iota shows what the file would do and asks once,
-  before anything of it runs: the command each MCP server runs (or the url it
-  connects to), the server's `env`, any `headers` or `client_secret` value
-  holding a `${…}`, a provider `url` and a `${…}` key, an agent's
-  `system_file`, `sandbox` (other than `auto`), `auto_run`, `network`,
-  `auto_write`, `write_roots` and `outside_writes`. Trust it, or skip it for
-  this run.
+  before anything of it runs: for each MCP server, the command it runs (or
+  the url it connects to), its `env`, any `headers` or `client_secret` value
+  holding a `${…}`, and its `auto_run`; a provider's `url` and a `${…}` key;
+  an agent's `system_file` and its tools' `sandbox` (other than `auto`),
+  `auto_run`, `network` and `auto_write`; `write_roots` and
+  `outside_writes`. Trust it, or skip it for this run.
 - Without a terminal (`-m`, a script, a bot), iota never asks: it skips the
   file with one warning and runs on `~/.iota.yaml`. `iota mcp list --probe`
   lists an untrusted file's servers without starting them.
