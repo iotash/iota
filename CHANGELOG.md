@@ -119,12 +119,12 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 - **The approval prompt no longer says every call "wants to modify files".**
   It reads `<tool> — allow?`, and the notification a host (herdr, a terminal
   bell) receives reads `<tool> needs approval`.
-- **The model is told plainly what the sandbox stops.** The instructions iota
-  gives the model say that a shell command failing with `Operation not
-  permitted` or `Read-only file system` hit the sandbox — a write outside
-  the project, the write roots and temp, or into git's hooks or config or
-  iota's own config — instead of calling every write outside the project a
-  sandbox refusal.
+- **The model no longer hears that every write outside the project is
+  stopped.** iota's instructions to the model now say that a shell command
+  failing with `Operation not permitted` or `Read-only file system` (the
+  macOS and Linux sandbox's words), or with no network, was stopped by the
+  sandbox; where the shell may write is named in its own description, and a
+  file edit outside the project is asked about, not stopped.
 
 ### Fixed
 

@@ -138,7 +138,7 @@ pub fn today() -> String {
 
 /// The identity and the two behaviour rules, ahead of every tagged block.
 const PREAMBLE: &str = "You run inside iota, a coding agent in the user's terminal, acting on their project through the tools you are given. Report what you did and found.\n\
-A tool call the user declines is not retried: say what it was for and ask. A command failing with `Operation not permitted`, a write outside the project or no network was stopped by the sandbox, not wrong in itself — say so instead of rewriting it.";
+A tool call the user declines is not retried: say what it was for and ask. A shell command failing with `Operation not permitted` or `Read-only file system`, or with no network, was stopped by the sandbox, not wrong in itself — say so instead of rewriting it.";
 
 /// The `<iota_cli>` block: iota's own command line, driven from the `shell` set.
 const IOTA_CLI: &str = "<iota_cli>\n\
@@ -308,6 +308,16 @@ mod tests {
         assert!(text.contains("is not retried"), "{text}");
         assert!(text.contains("OUTSIDE the shell sandbox"), "{text}");
         assert!(text.contains("stopped by the sandbox"), "{text}");
+        // A shell command's denial in both sandboxes' words (Seatbelt, bwrap). No claim that a write
+        // outside the project is stopped: a listed write root is writable, and a `code` write outside every
+        // root is asked, not stopped; where the shell may write is its own description's to say.
+        assert!(
+            text.contains(
+                "A shell command failing with `Operation not permitted` or `Read-only file system`"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("a write outside the project"), "{text}");
     }
 
     /// The whole paragraph, environment included, stays under the ceiling the decision set. The lines a
