@@ -27,6 +27,14 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Changed
 
+- **The model can no longer run `iota config trust`, `iota config untrust` or
+  `iota mcp add` for you.** These used to leave the sandbox like any other
+  `iota …` command the model runs, so with `auto_run: true` a model could
+  trust a project config or add an MCP server without asking. They now run
+  inside the sandbox, where the write is refused; the model asks you to run
+  them in your own terminal, which works as before. An `iota …` command whose
+  line holds `$`, `*`, `?`, `[` or `{` outside quotes (or `$` in double quotes)
+  now stays in the sandbox too.
 - **A few files are now off limits to iota's own tools — `git config` and
   hook installers inside the sandbox break.** A sandboxed shell command runs
   without asking and could write anywhere in the project, including
