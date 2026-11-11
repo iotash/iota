@@ -142,14 +142,15 @@ A tool call the user declines is not retried: say what it was for and ask. A she
 
 /// The `<iota_cli>` block: iota's own command line, driven from the `shell` set.
 const IOTA_CLI: &str = "<iota_cli>\n\
-iota itself runs OUTSIDE the shell sandbox when it is the command's first word (plain `iota …`, no pipe or chain). It manages its own configuration:\n\
-- iota mcp add <name> --url <url> [--header 'K: V'] [--scope user|project] — writes the entry and logs in through the browser if needed; run with background: true\n\
-- iota mcp add <name> -- <command> [args]\n\
-- iota mcp list [--probe] | get | remove | login (background: true) | logout <name>\n\
-- iota config check | path | init\n\
+iota itself runs OUTSIDE the shell sandbox when it is the command's first word (plain `iota …`, no pipe or chain):\n\
+- iota mcp list [--probe] | get | login (background: true) | logout <name>\n\
+- iota config check | path\n\
 - iota list agents | models | providers\n\
 - iota run <agent> -m \"<task>\" — a child agent under its own agent config\n\
-Change MCP servers with `iota mcp`; providers, models and agents by editing the config file, then `iota config check`. Changes apply from the next session, not this one. Flags: `iota <verb> --help`.\n\
+Its config writers stay IN the sandbox and fail; ask the user to run them:\n\
+- iota mcp add <name> --url <url> [--header 'K: V'] [--scope user|project], or -- <command> [args]\n\
+- iota mcp remove <name>; iota config init | trust | untrust\n\
+Providers, models and agents: edit the config file (the user is asked), then `iota config check`. Changes apply from the next session, not this one. Flags: `iota <verb> --help`.\n\
 </iota_cli>";
 
 /// The harness for an agent enabling `toolsets` (its `tools:` keys that are not `false`): `""` when the
@@ -294,10 +295,8 @@ mod tests {
         assert!(env_at < cli_at, "the environment precedes the CLI block");
         assert!(text.ends_with("</iota_cli>"), "{text}");
         for verb in [
-            "iota mcp add <name> --url <url>",
-            "iota mcp add <name> -- <command> [args]",
-            "iota mcp list [--probe]",
-            "iota config check | path | init",
+            "iota mcp list [--probe] | get | login (background: true) | logout <name>",
+            "iota config check | path\n",
             "iota list agents | models | providers",
             "iota run <agent> -m \"<task>\"",
             "iota <verb> --help",
@@ -307,6 +306,23 @@ mod tests {
         // The two rules of the preamble.
         assert!(text.contains("is not retried"), "{text}");
         assert!(text.contains("OUTSIDE the shell sandbox"), "{text}");
+        // iota's own writers of a config or the trust record are not self-calls (`shell::selfcall`, X-95):
+        // the block lists them as the user's to run, never under the OUTSIDE line.
+        let (outside, writers) = text[cli_at..]
+            .split_once(
+                "Its config writers stay IN the sandbox and fail; ask the user to run them:\n",
+            )
+            .expect("the writers' paragraph");
+        for writer in ["mcp add", "mcp remove", "config init", "trust", "untrust"] {
+            assert!(
+                !outside.contains(writer),
+                "{writer:?} listed as leaving the sandbox: {text}"
+            );
+        }
+        assert!(
+            writers.contains("- iota mcp add <name> --url <url> [--header 'K: V'] [--scope user|project], or -- <command> [args]\n- iota mcp remove <name>; iota config init | trust | untrust\n"),
+            "{text}"
+        );
         assert!(text.contains("stopped by the sandbox"), "{text}");
         // A shell command's denial in both sandboxes' words (Seatbelt, bwrap). No claim that a write
         // outside the project is stopped: a listed write root is writable, and a `code` write outside every

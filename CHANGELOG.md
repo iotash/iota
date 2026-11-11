@@ -90,16 +90,17 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   The file tools never write `~/.iota/trusted.json`, whatever you answer.
   **To do:** run those git commands and installers yourself, or let iota run
   them with `sandbox: off` (each command is then asked about).
-- **The model can no longer run `iota config trust`, `iota config untrust` or
-  `iota mcp add` for you.** `iota mcp add` used to leave the sandbox like any
+- **The model can no longer run `iota config trust`, `iota config untrust`,
+  `iota config init`, `iota mcp add` or `iota mcp remove` for you.** `iota
+  mcp add`, `mcp remove` and `config init` used to leave the sandbox like any
   other `iota …` command the model runs, so with `auto_run: true` a model
-  could add an MCP server without asking, and the new `config trust` would
-  have let it trust a project config the same way. All three now run inside
-  the sandbox, where the write is refused; the model asks you to run
+  could rewrite `~/.iota.yaml` without asking, and the new `config trust`
+  would have let it trust a project config the same way. All five now run
+  inside the sandbox, where the write is refused; the model asks you to run
   them in your own terminal, which works as before. An `iota …` command whose
   line holds `$`, `*`, `?`, `[` or `{` outside quotes (or `$` in double quotes)
   now stays in the sandbox too.
-  **To do:** run those three yourself when the model asks.
+  **To do:** run those five yourself when the model asks.
 - **"Allow for this session" now ends with the conversation.** Every session
   grant — for file edits inside the project, for the shell, for a directory
   outside the project and for an MCP tool — is forgotten at `/new` or a

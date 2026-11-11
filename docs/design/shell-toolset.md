@@ -45,7 +45,8 @@ What a write outside those roots does depends on whether the sandbox is on:
 
 - **Sandbox on**: the command runs without asking (iota's own invocation
   excepted: it leaves the sandbox and is asked about, Approval below —
-  but never `iota config trust|untrust` or `iota mcp add`, which stay in), and
+  but never `iota config trust|untrust|init` or `iota mcp add|remove`, which
+  stay in), and
   the OS refuses the write — the command sees an OS error (`Operation not permitted` under
   Seatbelt, `Read-only file system` under bwrap's read-only bind) and its
   exit status says so. Nothing in iota inspects the command's paths.
@@ -121,16 +122,16 @@ calls.
 One call leaves a sandboxed set: iota itself (`shell::selfcall`, DIVERGENCES
 X-44). A command whose first word resolves to the running binary — with POSIX
 quoting, no pipe, chain or substitution outside single quotes — is spawned
-without the sandbox, because writing the config file, opening a browser and
+without the sandbox, because opening a browser, storing a login's token and
 reaching an API from a child agent are what the sandbox refuses. Approval is
 the unsandboxed rule for that call alone (`auto_run` waives), the header and
 the prompt read `(outside the sandbox)`, and it never rides a parallel batch.
 The commands that write the trust record or a config are never self-calls:
-`config` then `trust`/`untrust`, or `mcp` then `add`, anywhere among the
-arguments (so no `-c`/`--config` spelling hides them), keeps the call in the
-sandbox, where the write meets the protected paths and fails — otherwise
-`auto_run: true` would let the model trust a project config or add a server
-for the next run. Reading the arguments is also why an expansion (`$` outside
+`config` then `trust`/`untrust`/`init`, or `mcp` then `add`/`remove`,
+anywhere among the arguments (so no `-c`/`--config` spelling hides them),
+keeps the call in the sandbox, where the write meets the protected paths and
+fails — otherwise `auto_run: true` would let the model trust a project config
+or rewrite `~/.iota.yaml` for the next run. Reading the arguments is also why an expansion (`$` outside
 single quotes, a glob or brace outside quotes) keeps a line in: the shell, not
 iota, would decide its words.
 

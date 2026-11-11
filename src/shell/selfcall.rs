@@ -5,8 +5,8 @@
 //! machine already trusts it. Approval is the `shell` tool's business and is not changed here; this module only
 //! answers the question.
 //!
-//! Except the commands that write the trust record or a config: `iota config trust`, `iota config untrust` and
-//! `iota mcp add` are never self-calls (DIVERGENCES X-95). Let out, they would hand the model the one write the
+//! Except the commands that write the trust record or a config: `iota config trust`, `iota config untrust`,
+//! `iota config init`, `iota mcp add` and `iota mcp remove` are never self-calls (DIVERGENCES X-95). Let out, they would hand the model the one write the
 //! protected-path table exists to refuse — `~/.iota/trusted.json`, `~/.iota.yaml`, `<root>/.iota.yaml` — and the
 //! next run would start the config the model wrote. Kept in, the write fails and the model asks the user.
 //!
@@ -19,8 +19,8 @@
 //!   a glob or brace (`*`, `?`, `[`, `{`) outside quotes — make the words something the shell decides later,
 //!   and it stays in the sandbox. Redirections (`>`, `<`, `2>&1`, `&>`) are allowed and dropped with their
 //!   targets: they change where iota's output goes, not what runs;
-//! - the writers are recognised by their verb words in order — `config` then `trust`/`untrust`, `mcp` then
-//!   `add` — anywhere among the arguments, so no spelling of the global flags (`-c f`, `--config=f`, before or
+//! - the writers are recognised by their verb words in order — `config` then `trust`/`untrust`/`init`, `mcp`
+//!   then `add`/`remove` — anywhere among the arguments, so no spelling of the global flags (`-c f`, `--config=f`, before or
 //!   after the verb) hides one. A line that merely mentions both words outside those commands stays in too.
 //!
 //! The lexer is POSIX because the sandbox is: it exists on macOS and Linux only, where the interpreter is
@@ -55,15 +55,18 @@ pub fn self_invocation_with(
     crate::app::canonical(&program).is_some_and(|p| p == exe) && !writes_trust_or_config(args)
 }
 
-/// Whether iota's arguments name `config trust`, `config untrust` or `mcp add`: the verb word, then the action
+/// Whether iota's arguments name `config trust|untrust|init` or `mcp add|remove` — every command that writes
+/// `~/.iota.yaml`, `<root>/.iota.yaml` or the trust record: the verb word, then the action
 /// word somewhere after it. The verb set is closed and neither word has an alias or an abbreviation, so the
 /// words are all a parse would look at; the flags between them are skipped by not looking.
 fn writes_trust_or_config(args: &[String]) -> bool {
     args.iter().enumerate().any(|(i, verb)| {
         let rest = &args[i + 1..];
         match verb.as_str() {
-            "config" => rest.iter().any(|a| a == "trust" || a == "untrust"),
-            "mcp" => rest.iter().any(|a| a == "add"),
+            "config" => rest
+                .iter()
+                .any(|a| matches!(a.as_str(), "trust" | "untrust" | "init")),
+            "mcp" => rest.iter().any(|a| matches!(a.as_str(), "add" | "remove")),
             _ => false,
         }
     })
@@ -343,6 +346,8 @@ mod tests {
             "mcp add x -- y",
             "mcp add x --url https://x/mcp",
             "mcp add --scope user x -- y",
+            "config init",
+            "mcp remove x",
         ] {
             for line in [
                 format!("iota {writer}"),

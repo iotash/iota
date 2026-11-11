@@ -7,10 +7,10 @@
 //! interpreter's own. The model is never told bash while `powershell.exe` waits for the script.
 //!
 //! ONE command line leaves the sandbox: iota itself (`crate::shell::selfcall`, DIVERGENCES X-44). A call
-//! whose first word is the running binary — `iota mcp add …`, a child agent's `iota run <agent> -m …` — is
-//! spawned without the sandbox, because what it does (write a config file in `$HOME`, open a browser, reach
-//! the API) is what the sandbox exists to refuse; every other call, iota in a pipe or a chain included, stays
-//! in. Approval is not waived by the exception: a sandboxed set that does not `auto_run` asks for such a
+//! whose first word is the running binary — `iota mcp login …`, a child agent's `iota run <agent> -m …` — is
+//! spawned without the sandbox, because what it does (open a browser, reach the API) is what the sandbox
+//! exists to refuse; every other call, iota in a pipe or a chain included, stays in — and so do iota's own
+//! writers of a config or the trust record (`config trust|untrust|init`, `mcp add|remove`, X-95). Approval is not waived by the exception: a sandboxed set that does not `auto_run` asks for such a
 //! call exactly as an unsandboxed set asks for every call, its header marked `(outside the sandbox)` — and
 //! a call that must be asked about never rides a parallel batch, which has no gate.
 //!
@@ -499,7 +499,7 @@ pub const PWSH_DESC_PREFIX: &str = "Run a PowerShell command line on the user's 
 /// PowerShell, so it says plainly how little is available.
 pub const CMD_DESC_PREFIX: &str = "Run a cmd.exe command line on the user's machine and return its combined stdout/stderr. This is the Windows command interpreter — neither bash nor PowerShell, and the most limited of the three; it is what is left when this machine has no PowerShell. Chain with `&`, `&&` and `||`; redirect with `>`, `>>` and `2>&1`; the bit bucket is `NUL`, not /dev/null; variables are `%NAME%`; `^` escapes `& | < > ^`. There is no globbing (each program expands its own arguments) and none of the POSIX tools (grep, sed, awk, ls, tail) unless the user installed them, so prefer running programs (git, cargo, node) directly over cmd built-ins, and prefer one program's own flags over a pipeline. The working directory defaults to the project root (override with \"cwd\"). Each call runs in a FRESH shell: environment variables and `cd` do not carry over to the next call. Anything a later command depends on must be repeated in it — write the full path or command instead of defining a helper first. Calls issued together run concurrently. \"timeout\": kill the command after N seconds; leave it out and the command runs until it exits (or iota exits). ";
 /// Sandboxed suffix; `{net}` = `network access is BLOCKED` | `network access is allowed`.
-pub const SHELL_DESC_SANDBOXED: &str = "Commands run inside an OS sandbox: file writes are confined to the project root and temp/cache directories (writes elsewhere fail with permission errors), and {net}. Inside the root, .iota.yaml, .git/config, .git/config.worktree and .git/hooks (a submodule's under .git/modules too) stay read-only and .git itself cannot be moved or replaced, so `git config`, `git remote add`, hook installers, `iota config trust` and `iota mcp add` fail there: ask the user to make such a change.";
+pub const SHELL_DESC_SANDBOXED: &str = "Commands run inside an OS sandbox: file writes are confined to the project root and temp/cache directories (writes elsewhere fail with permission errors), and {net}. Inside the root, .iota.yaml, .git/config, .git/config.worktree and .git/hooks (a submodule's under .git/modules too) stay read-only and .git itself cannot be moved or replaced, so `git config`, `git remote add`, hook installers and the iota commands that write a config or the trust record (`iota config trust|untrust|init`, `iota mcp add|remove`) fail there: ask the user to make such a change.";
 /// Unsandboxed suffix — the only one Windows ever gets: no OS sandbox exists there, so every call runs with
 /// the user's full permissions and needs approval unless `auto_run` waived it.
 pub const SHELL_DESC_UNSANDBOXED: &str = "Commands run WITHOUT a sandbox on this system, with the user's full permissions — be conservative.";

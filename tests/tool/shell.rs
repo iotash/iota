@@ -686,7 +686,7 @@ fn the_shell_description_states_the_shell_state_contract() {
         }
         let protected = " Inside the root, .iota.yaml, .git/config, .git/config.worktree and .git/hooks \
                          (a submodule's under .git/modules too) stay read-only and .git itself cannot be moved \
-                         or replaced, so `git config`, `git remote add`, hook installers, `iota config trust` and `iota mcp add` fail there: ask the \
+                         or replaced, so `git config`, `git remote add`, hook installers and the iota commands that write a config or the trust record (`iota config trust|untrust|init`, `iota mcp add|remove`) fail there: ask the \
                          user to make such a change.\n\n";
         assert!(
             sandboxed_blocked.contains(&format!("network access is BLOCKED.{protected}")),
@@ -1271,10 +1271,10 @@ async fn a_write_root_that_is_a_repository_keeps_its_hooks_and_config() {
     );
 }
 
-/// The writers are not the exception (DIVERGENCES X-44, X-95): `iota config trust`, `config untrust` and
-/// `mcp add` stay in the sandbox even with `auto_run: true` — the prompt-injection case, where nothing is asked
-/// — so their write of the trust record lands on the protected-path table and is refused. The binary is a
-/// stand-in that writes `~/.iota/trusted.json` itself; let out of the sandbox, the write would land.
+/// The writers are not the exception (DIVERGENCES X-44, X-95): `iota config trust|untrust|init` and
+/// `mcp add|remove` stay in the sandbox even with `auto_run: true` — the prompt-injection case, where nothing is
+/// asked — so their write of the trust record or the config is refused. The binary is a stand-in that writes
+/// `~/.iota/trusted.json` and `~/.iota.yaml` itself; let out of the sandbox, either write would land.
 #[cfg(unix)]
 #[tokio::test]
 async fn the_sandbox_keeps_the_trust_and_config_writers_in() {
@@ -1294,14 +1294,17 @@ async fn the_sandbox_keeps_the_trust_and_config_writers_in() {
     let record = home.join(".iota").join("trusted.json");
     fs::create_dir_all(record.parent().expect("parent")).expect("~/.iota");
     fs::write(&record, "{}\n").expect("the record");
+    let config = home.join(".iota.yaml");
+    fs::write(&config, "agents: {}\n").expect("the config");
     let bin = dir.path().join("bin");
     fs::create_dir_all(&bin).expect("bin");
     let fake = bin.join("iota");
     fs::write(
         &fake,
         format!(
-            "#!/bin/sh\necho hostile > '{}' && echo wrote\n",
-            shell_path(&record)
+            "#!/bin/sh\nw=\necho hostile > '{}' && w=1\necho hostile > '{}' && w=1\n[ -n \"$w\" ] && echo wrote\n",
+            shell_path(&record),
+            shell_path(&config)
         ),
     )
     .expect("fake iota");
@@ -1326,6 +1329,8 @@ async fn the_sandbox_keeps_the_trust_and_config_writers_in() {
         format!("{exe} config trust"),
         format!("{exe} -c .iota.yaml config untrust"),
         format!("{exe} mcp add --scope user x -- y"),
+        format!("{exe} mcp remove x"),
+        format!("{exe} config init"),
     ] {
         let header = tool
             .header_summary(match &json!({"command": command}) {
@@ -1340,12 +1345,17 @@ async fn the_sandbox_keeps_the_trust_and_config_writers_in() {
         let (out, is_err) = call(&tool, json!({"command": command})).await;
         assert!(
             is_err && !out.contains("wrote") && out.contains("Operation not permitted"),
-            "{command:?} wrote the trust record from the model's shell: ({out:?}, {is_err})"
+            "{command:?} wrote the trust record or the config from the model's shell: ({out:?}, {is_err})"
         );
         assert_eq!(
             fs::read_to_string(&record).expect("the record"),
             "{}\n",
             "{command:?} changed the trust record"
+        );
+        assert_eq!(
+            fs::read_to_string(&config).expect("the config"),
+            "agents: {}\n",
+            "{command:?} changed ~/.iota.yaml"
         );
     }
 }
@@ -1507,7 +1517,7 @@ fn the_sandbox_line_names_the_write_roots() {
     );
     assert_eq!(
         sandbox_desc(&[PathBuf::from("/data/a"), PathBuf::from("/data/b")], net),
-        "Commands run inside an OS sandbox: file writes are confined to the project root, the extra write roots (/data/a, /data/b) and temp/cache directories (writes elsewhere fail with permission errors), and network access is BLOCKED. Inside the root, .iota.yaml, .git/config, .git/config.worktree and .git/hooks (a submodule's under .git/modules too) stay read-only and .git itself cannot be moved or replaced, so `git config`, `git remote add`, hook installers, `iota config trust` and `iota mcp add` fail there: ask the user to make such a change."
+        "Commands run inside an OS sandbox: file writes are confined to the project root, the extra write roots (/data/a, /data/b) and temp/cache directories (writes elsewhere fail with permission errors), and network access is BLOCKED. Inside the root, .iota.yaml, .git/config, .git/config.worktree and .git/hooks (a submodule's under .git/modules too) stay read-only and .git itself cannot be moved or replaced, so `git config`, `git remote add`, hook installers and the iota commands that write a config or the trust record (`iota config trust|untrust|init`, `iota mcp add|remove`) fail there: ask the user to make such a change."
     );
 }
 
