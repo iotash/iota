@@ -8,33 +8,58 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 ### Added
 
 - **`write_roots:` opens directories outside the project.** A top-level
-  `write_roots: [path, …]` lists directories the code tools may reach and a
+  `write_roots: [path, …]` lists directories the code tools may write and a
   sandboxed shell may write, one list shared by both. `~` is your home, and a
-  relative path is taken from the project. The model is told the list, so it
-  knows where it may write before it tries.
+  relative path is taken from the project; a blank entry is an error. The
+  model is told the list, so it knows where it may write before it tries.
 - **A write outside the project can now be approved.** When the model edits or
   writes a file outside the project and the `write_roots:` directories, iota
   asks you instead of refusing. The prompt shows where the file really is
   (symlinks resolved) and is marked `(outside the project root)`; it asks
   even with `tools.code.auto_write`. "Allow for this session" covers that one
-  directory through that one tool, until `/new` or a `/session` resume. With nobody to ask (`-m`), such a write is
+  directory through that one tool. With nobody to ask (`-m`), such a write is
   refused and the message says to add the directory to `write_roots:`. A path
   whose real location cannot be worked out is still refused.
 - **`outside_writes: ask | refuse`**, a new top-level key. `ask` is the
   default; `refuse` restores the previous behaviour: writes outside the roots
   are refused with no prompt. A config file cannot loosen `refuse` set by an
   earlier one.
+- **`iota config trust` and `iota config untrust`** record or forget a
+  project's `.iota.yaml` (see below).
 
 ### Changed
 
-- **The model can no longer run `iota config trust`, `iota config untrust` or
-  `iota mcp add` for you.** These used to leave the sandbox like any other
-  `iota …` command the model runs, so with `auto_run: true` a model could
-  trust a project config or add an MCP server without asking. They now run
-  inside the sandbox, where the write is refused; the model asks you to run
-  them in your own terminal, which works as before. An `iota …` command whose
-  line holds `$`, `*`, `?`, `[` or `{` outside quotes (or `$` in double quotes)
-  now stays in the sandbox too.
+- **`tools.shell.write` is gone — a breaking change.** Its extra writable
+  directories are now the top-level `write_roots:`, which the code tools share.
+  A config that still has `tools.shell.write` loses the shell tool, with a
+  warning. **To do:** move the list to a top-level `write_roots:`.
+- **MCP tools now ask before they run — a breaking change for every config
+  with MCP servers.** Until now a configured MCP server's tools ran without a
+  prompt, in a chat and in `-m` alike, and the server process is not
+  sandboxed: a server could read, write, fetch and post unasked. Now every
+  call of an MCP tool is put to you, like a file edit or a shell command.
+  "Allow for this session" covers that one tool; the server's other tools
+  still ask. iota does not guess which tools are safe from their names or
+  descriptions. With nobody to ask (`-m`), a call to a server without
+  `auto_run` is refused, and the message names the server and the key to
+  set. **To do:** for a server you trust to run unasked, write
+  `auto_run: true` in its `mcp_servers.<name>` entry (the default is
+  `false`). A `--mcp` server always asks, so `-m … --mcp …` can no longer run
+  that server's tools: write the server as an `mcp_servers` entry with
+  `auto_run: true` instead.
+- **A repository's `.iota.yaml` must be trusted before it is used — a
+  breaking change for scripts and CI.** The file can start MCP servers, point
+  a provider (and your key) somewhere else and loosen the sandbox, so iota no
+  longer uses it just because you ran iota in that directory. Started on a
+  terminal, iota shows what the file would do and asks once, before any of it
+  runs: trust it, or skip it for this run. Editing the file asks again. A run
+  without a terminal (`-m`, a script, a bot) never asks: it skips the file
+  with one warning and goes on with `~/.iota.yaml`. `iota mcp list --probe`
+  lists an untrusted file's servers without starting them, and `iota mcp
+  login` refuses to log in to one. **To do:** answer the question once, or run
+  `iota config trust` in the directory (for CI and scripted setups), or name
+  the file with `-c <file>`, which is always used as named. `iota config
+  untrust` forgets it.
 - **A few files are now off limits to iota's own tools — `git config` and
   hook installers inside the sandbox break.** A sandboxed shell command runs
   without asking and could write anywhere in the project, including
@@ -43,75 +68,63 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   writes `<project>/.iota.yaml`, `<project>/.iota.yml`, anything under
   `<project>/.git/hooks`, `<project>/.git/config`,
   `<project>/.git/config.worktree`, the same files of each submodule (under
-  `<project>/.git/modules`), `~/.iota.yaml`,
-  `~/.iota.yml` or `~/.iota/trusted.json`, and neither `<project>/.git` nor
-  `~/.iota` can be renamed or replaced. In a worktree made with `git worktree
-  add`, the main repository's `.git/hooks` and `.git/config` and the
-  worktree's `config.worktree` are covered the same way, and so is the
-  `.git` of any directory you list in `write_roots:` that is a repository.
-  Inside the sandbox such a write fails like any other denied write
-  (`Operation not permitted` on macOS, `Read-only file system` on Linux), so
-  `git config …`, `git remote add`, `git init` in a folder that is not a
-  repository yet, `git push -u`, `git submodule add` and hook installers
-  (husky, pre-commit, lefthook) fail there; `git add`, `commit`, `checkout`
-  and `fetch` still work. Run those yourself, or let iota run them with
-  `sandbox: off` (each command is then asked about). On Linux the sandbox
-  can only protect files that already exist: a sandboxed command can still
-  create a missing one, such as a new `.iota.yaml`; only the file tools
-  refuse that. The file tools ask before writing one of these files
-  every time, even with `auto_write: true` and even after "Allow for this
-  session"; the prompt names the file and why, and offers only "Allow once"
-  and "Deny". In `-m`, or with `outside_writes: refuse`, the write is refused
-  and the message says why and that you can make the change yourself.
-  `~/.iota/trusted.json` is never written by a tool: run `iota config trust`
-  yourself. Listing `<project>/.git` in `write_roots:` does not open these
-  files.
-- **MCP tools now ask before they run — every existing config is affected.**
-  Until now a configured MCP server's tools ran without a prompt, in a chat
-  and in `-m` alike, and the server process is not sandboxed: a server could
-  read, write, fetch and post unasked. Now every call of an MCP tool is put
-  to you, like a file edit or a shell command. "Allow for this session"
-  covers that one tool until `/new` or a `/session` resume; the server's
-  other tools still ask. iota does not guess which tools are safe from their
-  names or descriptions. To let a server you trust run unasked, write
-  `auto_run: true` in its `mcp_servers.<name>` entry (the default is
-  `false`). With nobody to ask (`-m`), a call to a server without it is
-  refused, and the message names the server and the key to set. A `--mcp`
-  server always asks, so `-m … --mcp …` can no longer run that server's
-  tools: to run them there, write the server as an `mcp_servers` entry with
-  `auto_run: true`.
-- **The approval prompt no longer says every call "wants to modify files".**
-  It reads `<tool> — allow?`, and the notification a host (herdr, a terminal
-  bell) receives reads `<tool> needs approval`.
-- **A repository's `.iota.yaml` asks to be trusted.** It can start MCP
-  servers, point a provider (and your key) somewhere else and loosen the
-  sandbox, so iota no longer uses it just because you ran iota in that
-  directory. Started on a terminal, iota shows what the file would do and asks
-  once, before any of it runs: trust it, or skip it for this run. Editing the
-  file asks again. A run without a terminal (`-m`, a script, a bot) never
-  asks: it skips the file with one warning and goes on with `~/.iota.yaml`.
-  `iota mcp list --probe` lists an untrusted file's servers without starting
-  them, and `iota mcp login` refuses to log in to one. `iota config trust` trusts the file ahead of time (for CI and scripted
-  setups), `iota config untrust` forgets it, and `-c <file>` is always used
-  as named.
+  `<project>/.git/modules`), `~/.iota.yaml`, `~/.iota.yml` or
+  `~/.iota/trusted.json` unasked, and neither `<project>/.git` nor `~/.iota`
+  can be renamed or replaced. In a worktree made with `git worktree add`, the
+  main repository's `.git/hooks` and `.git/config` and the worktree's
+  `config.worktree` are covered the same way, and so is the `.git` of any
+  directory you list in `write_roots:` that is a repository. Listing
+  `<project>/.git` in `write_roots:` does not open these files. Inside the
+  sandbox such a write fails like any other denied write (`Operation not
+  permitted` on macOS, `Read-only file system` on Linux), so `git config …`,
+  `git remote add`, `git init` in a folder that is not a repository yet,
+  `git push -u`, `git submodule add` and hook installers (husky, pre-commit,
+  lefthook) fail there; `git add`, `commit`, `checkout` and `fetch` still
+  work. On Linux the sandbox can only protect files that already exist: a
+  sandboxed command can still create a missing one, such as a new
+  `.iota.yaml`; only the file tools refuse that. The file tools ask before
+  writing one of these files every time, even with `auto_write: true` and
+  even after "Allow for this session"; the prompt names the file and why, and
+  offers only "Allow once" and "Deny". In `-m`, or with
+  `outside_writes: refuse`, the write is refused and the message says why.
+  The file tools never write `~/.iota/trusted.json`, whatever you answer.
+  **To do:** run those git commands and installers yourself, or let iota run
+  them with `sandbox: off` (each command is then asked about).
+- **The model can no longer run `iota config trust`, `iota config untrust` or
+  `iota mcp add` for you.** `iota mcp add` used to leave the sandbox like any
+  other `iota …` command the model runs, so with `auto_run: true` a model
+  could add an MCP server without asking, and the new `config trust` would
+  have let it trust a project config the same way. All three now run inside
+  the sandbox, where the write is refused; the model asks you to run
+  them in your own terminal, which works as before. An `iota …` command whose
+  line holds `$`, `*`, `?`, `[` or `{` outside quotes (or `$` in double quotes)
+  now stays in the sandbox too.
+  **To do:** run those three yourself when the model asks.
+- **"Allow for this session" now ends with the conversation.** Every session
+  grant — for file edits inside the project, for the shell, for a directory
+  outside the project and for an MCP tool — is forgotten at `/new` or a
+  `/session` resume; before, it lasted until iota exited. Nothing to change in
+  a config: after `/new`, answer the prompt again.
 - **Reading is no longer restricted to the project; writing still is.**
   `read_file`, `list_dir`, `glob` and `grep` now read any path, absolute or
   `../…`, and follow a symlink wherever it leads. A glob or grep stops after
   100 000 files and folders, a grep also after reading 256 MB, saying so in
-  either case, and both stop at once when you press Esc, so a search from `/`
-  cannot run away. The shell could already read
-  the whole machine without asking, so the restriction only pushed the model
-  into `cat`, where you see less of what it reads. `edit_file` and
-  `write_file` are confined exactly as before: to the project and the
-  `write_roots:` directories, which their descriptions now name.
-- **`tools.shell.write` is gone — a breaking change.** Its extra writable
-  directories are now the top-level `write_roots:`, which the code tools share.
-  A config that still has `tools.shell.write` loses the shell tool, with a
-  warning saying to move the list to `write_roots:`.
-- **"Allow for this session" now ends with the conversation.** Every session
-  grant, for file edits inside the project and for the shell as well as for a
-  directory outside it, is forgotten at `/new` or a `/session` resume; before,
-  it lasted until iota exited.
+  either case, and both stop at once when you press Esc (`[search
+  cancelled]`), so a search from `/` cannot run away. The shell could already
+  read the whole machine without asking, so the restriction only pushed the
+  model into `cat`, where you see less of what it reads. `edit_file` and
+  `write_file` are confined to the project and the `write_roots:`
+  directories, which their descriptions now name; a write outside them is
+  asked about (above).
+- **The approval prompt no longer says every call "wants to modify files".**
+  It reads `<tool> — allow?`, and the notification a host (herdr, a terminal
+  bell) receives reads `<tool> needs approval`.
+- **The model is told plainly what the sandbox stops.** The instructions iota
+  gives the model say that a shell command failing with `Operation not
+  permitted` or `Read-only file system` hit the sandbox — a write outside
+  the project, the write roots and temp, or into git's hooks or config or
+  iota's own config — instead of calling every write outside the project a
+  sandbox refusal.
 
 ### Fixed
 

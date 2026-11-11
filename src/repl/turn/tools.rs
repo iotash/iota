@@ -12,7 +12,7 @@
 //!
 //! Two things the headless loop has are deliberately ABSENT: a round cap and a turn
 //! budget. Interactively the user is the brake (ESC cancels the turn, approval gates cover
-//! mutating tools) — industry parity, and every round is granted.
+//! file writes, unsandboxed commands and MCP calls) — industry parity, and every round is granted.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

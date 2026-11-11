@@ -268,11 +268,13 @@ then byte-identical to a build without the key.
 
 ## Deferred (v2+)
 
-apply_patch-style multi-file edits, background/persistent processes (a
-command-set evolution), LSP diagnostics, LLM edit self-correction (Gemini
-editCorrector), nested .gitignore semantics, a diff preview inside the approval prompt, and the `web`
-set. The rest of P2 (workspace trust, broader permission policies) builds on
-the same approval seam (`requires_approval`, `approval_subject`, `RunCtx::approved`).
+apply_patch-style multi-file edits, LSP diagnostics, LLM edit
+self-correction (Gemini editCorrector), nested .gitignore semantics, a diff
+preview inside the approval prompt, and the `web` set. (Background processes
+shipped in the `shell` set as `background: true` jobs; workspace trust
+shipped as `iota config trust` for the project's `.iota.yaml`, DIVERGENCES
+X-94.) Broader permission policies would build on the same approval seam
+(`requires_approval`, `approval_subject`, `RunCtx::approved`).
 
 ## Testing
 

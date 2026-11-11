@@ -28,8 +28,8 @@ agent-first、Windows 已支持、0.1.0 与 0.2.0 已发布。它的 67 条步�
 
 ## 2. 该做（不阻塞 1.0）
 
-- `src/ui/keys.rs`：98 行路由全部键盘输入，0 个 `#[test]`。先补键表测试再动任何路由。
-- `tests/session/roundtrip.rs`：写出 bundle → 读回 → 逐字节相同。原是替代 Go 往返证明的，Go 没了它本身仍值得有。
+- ~~`src/ui/keys.rs`：98 行路由全部键盘输入，0 个 `#[test]`。~~ 完成：键表在 `src/ui/input/keys.rs`，测试在 `src/ui/input/keys/tests.rs`（34 个）。
+- ~~`tests/session/roundtrip.rs`：写出 bundle → 读回 → 逐字节相同。~~ 完成 `224862b`（`every_record_shape_survives_the_round_trip`）。
 - `scripts/size.sh --budget`：体积是 iota 相对同类唯一压倒性的差异化点（7.57 MiB vs crush 28 MB / opencode 46 MB / Claude Code 202 MB，见 brain `competitor-distribution-windows`），该做成硬门。
 - `docs/design/` 补一篇配置三层的设计文档；`docs/history/README.md` 说明里面躺着的每份冻结文档。
 - `tabbed.rs:160` 的 `current_dir().unwrap_or(".")` 哨兵改用 `app::user_home` 兜底。

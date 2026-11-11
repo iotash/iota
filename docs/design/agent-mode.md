@@ -94,11 +94,13 @@ general-purpose `read_file`, which could read anything on the machine):
   the skill's name and directory — the directory is what the model passes to
   the `bash` tool for bundled scripts.
 - With `file`: serves a file bundled in the skill's directory; absolute paths
-  and `..` escapes are rejected (symlink escapes wait for the P2
-  workspace-trust pass). Size cap + output truncation with a continuation
-  marker, as before.
-- Read-only: no write/edit tools in P1 (those arrive with the P2 permission
-  framework).
+  and `..` escapes are rejected. A symlink inside the directory is followed
+  wherever it leads: reads are open in iota (the `code` set's `read_file`
+  reads any path, docs/design/code-toolset.md), so there is nothing for a
+  stricter check to protect. Size cap + output truncation with a
+  continuation marker, as before.
+- Read-only. Writing is the `code` set's (`write_file`/`edit_file`, under
+  the approval gate).
 
 ## Tool-loop safety cap
 
@@ -127,11 +129,18 @@ Directory-as-index layout; meta stays the source of truth:
   are labelled with their project), so nothing is ever invisible.
 - Old sessions (no `cwd`, flat layout) behave exactly as today.
 
-## Out of scope for P1 (P2+)
+## Out of scope for P1 — where each item stands
 
-write_file/edit_file/list_dir/grep, the interactive permission framework
-(allowlist + session-scoped always-allow), workspace trust for project
-skills, `allowed-tools`, skills validation command, cwd/git context injection.
+Shipped since: `write_file`/`edit_file`/`list_dir`/`grep` (the `code` set,
+docs/design/code-toolset.md); the approval gate with "allow once" and an
+"allow for this session" that ends at `/new` or a `/session` resume
+(`repl::turn::approval`); trust for the project's `.iota.yaml`
+(`iota config trust`, DIVERGENCES X-94); the project root in the harness's
+`<environment>` block (`agents::harness`).
+
+Not built: a persistent allowlist, trust for project skills and AGENTS.md
+(they are prompt text, not configuration, and are loaded without asking),
+`allowed-tools`, a skills validation command, git context injection.
 
 ## Testing
 
