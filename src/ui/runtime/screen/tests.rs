@@ -11,7 +11,10 @@ use crate::ui::testutil::SharedBuf;
 
 fn screen(w: u16, h: u16) -> (Screen<SharedBuf>, SharedBuf) {
     let buf = SharedBuf::default();
-    (Screen::new(buf.clone(), Size::new(w, h)).unwrap(), buf)
+    (
+        Screen::new(buf.clone(), Size::new(w, h), false).unwrap(),
+        buf,
+    )
 }
 
 fn frame(w: usize) -> FrameView {
@@ -471,4 +474,32 @@ fn m1_a_hundred_thousand_rows() {
          the frame on its hit {searched:?}",
         grown.saturating_sub(base)
     );
+}
+
+/// The point of no return is the first frame: a screen built and fed rows writes nothing, and one
+/// left before any frame writes the conversation out on the main screen it never left — no
+/// alternate-screen sequence either way.
+#[test]
+fn nothing_reaches_the_terminal_before_the_first_frame() {
+    let (mut s, buf) = screen(40, 12);
+    s.push(&rows(3));
+    assert!(
+        buf.bytes().is_empty(),
+        "written before the first frame: {:?}",
+        buf.bytes()
+    );
+    s.leave().unwrap();
+    let out = String::from_utf8_lossy(&buf.bytes()).into_owned();
+    assert!(
+        !out.contains("\u{1b}[?1049"),
+        "an alternate-screen sequence: {out:?}"
+    );
+    assert!(
+        out.contains("line-000") && out.contains("line-002"),
+        "{out:?}"
+    );
+    // …and a screen that drew a frame entered it with that frame.
+    let (mut s, buf) = screen(40, 12);
+    s.draw_frame(&frame(40), None).unwrap();
+    assert!(String::from_utf8_lossy(&buf.bytes()).starts_with("\u{1b}[?1049h"));
 }

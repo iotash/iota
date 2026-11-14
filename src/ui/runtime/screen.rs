@@ -17,6 +17,8 @@
 //! - **A resize** is a size handed to the backend; the next draw's `autoresize` clears the
 //!   screen and repaints every cell. No cursor query is ever made ([`Out`] answers ratatui's
 //!   own `get_cursor_position` from the last position it set).
+//! - **The point of no return** is the first frame: until it is drawn nothing reaches the
+//!   terminal, so a run that fails before it leaves the shell's screen as it was.
 //! - **Exit** ([`Screen::leave`]) leaves the alternate screen and writes the whole conversation
 //!   into the main screen at the width it has then, so it survives in the shell's history.
 //!   [`ALT_ACTIVE`] lets `restore_terminal` (a panic hook, a second SIGTERM) leave the
@@ -87,14 +89,30 @@ pub(crate) struct Screen<W: Write> {
     batch: Arc<AtomicUsize>,
     /// The last frame drawn, while it is what the screen shows (a clear or a resize forgets it).
     last: Option<Shown>,
-    /// While the conversation is written out on the main screen ([`Screen::dump`]): whether the
-    /// alternate screen was marked held for `restore_terminal` ([`ALT_ACTIVE`]) when it was left.
-    dumped: Option<bool>,
+    /// Which screen the terminal shows ([`Place`]).
+    place: Place,
+    /// Whether this screen is the process's terminal: only then is [`ALT_ACTIVE`] kept, for
+    /// `restore_terminal` (a test's screen must never make it write to the real stdout).
+    live: bool,
     /// Rows the dumps and the exit have written into the main screen so far (each is written
     /// once).
     written: u64,
     /// The search under way, if one is.
     search: Option<Search>,
+}
+
+/// Which screen the terminal shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Place {
+    /// The main screen, before the first frame: the alternate screen is entered by that frame
+    /// and not before — a run that fails earlier never leaves the shell's screen (tui-plan S4).
+    Main,
+    /// The alternate screen.
+    Alt,
+    /// The main screen, the conversation written out on it (`Ctrl+O`) until the next key.
+    Out,
+    /// The main screen again, for good: the exit wrote the conversation out.
+    Left,
 }
 
 /// A drawn frame and the layout it was drawn with — what a scroll of the viewport starts from.
@@ -105,16 +123,15 @@ struct Shown {
 }
 
 impl<W: Write> Screen<W> {
-    /// Enters the alternate screen on `out` (`size` is the terminal's) and clears it.
-    pub(crate) fn new(out: W, size: Size) -> io::Result<Self> {
+    /// The full screen on `out` (`size` is the terminal's), writing nothing yet: the first frame
+    /// enters the alternate screen ([`Place::Main`]). `live`: `out` is the process's terminal.
+    pub(crate) fn new(out: W, size: Size, live: bool) -> io::Result<Self> {
         let batch = Arc::new(AtomicUsize::new(0));
-        let mut out = SyncOut {
+        let out = SyncOut {
             out,
             pending: Vec::new(),
             batch: Arc::clone(&batch),
         };
-        queue!(out, EnterAlternateScreen, Clear(CtClear::All))?;
-        out.flush()?;
         let backend = Out {
             inner: CrosstermBackend::new(out),
             size,
@@ -133,7 +150,8 @@ impl<W: Write> Screen<W> {
             view_h: size.height,
             batch,
             last: None,
-            dumped: None,
+            place: Place::Main,
+            live,
             search: None,
             written: 0,
         })
@@ -186,11 +204,27 @@ impl<W: Write> Screen<W> {
     /// written once: a dump writes what no dump before it did, so the main screen's history holds
     /// the conversation once, in order, the first part under a [`TRANSCRIPT_MARK`] line.
     fn dump(&mut self) -> io::Result<()> {
-        if self.dumped.is_some() {
+        if self.place != Place::Alt {
             return Ok(());
         }
-        self.dumped = Some(ALT_ACTIVE.swap(false, Ordering::Relaxed));
+        self.place = Place::Out;
+        self.hold_alt(false);
         self.write_out(true)
+    }
+
+    /// Enters the alternate screen, cleared — the next draw writes every cell.
+    fn enter(&mut self) -> io::Result<()> {
+        queue!(self.out(), EnterAlternateScreen, Clear(CtClear::All))?;
+        self.place = Place::Alt;
+        self.hold_alt(true);
+        self.clear()
+    }
+
+    /// Tells `restore_terminal` whether the alternate screen is held now (a live screen only).
+    fn hold_alt(&self, held: bool) {
+        if self.live {
+            ALT_ACTIVE.store(held, Ordering::Relaxed);
+        }
     }
 
     /// One step of the search: a jump to the hit it is on, or the view back where it was.
@@ -230,12 +264,10 @@ impl<W: Write> Screen<W> {
 
     /// Back from a dump: the alternate screen again, cleared and repainted whole by the next draw.
     fn back(&mut self) -> io::Result<()> {
-        let Some(held) = self.dumped.take() else {
-            return Ok(());
-        };
-        ALT_ACTIVE.store(held, Ordering::Relaxed);
-        queue!(self.out(), EnterAlternateScreen)?;
-        self.clear()
+        if self.place == Place::Out {
+            self.enter()?;
+        }
+        Ok(())
     }
 
     /// Opens a batch: what is written until [`Screen::end_batch`] is one write.
@@ -270,8 +302,10 @@ impl<W: Write> Screen<W> {
         view: &FrameView,
         prompt: Option<&Prompt>,
     ) -> io::Result<()> {
-        if self.dumped.is_some() {
-            return Ok(());
+        match self.place {
+            Place::Out | Place::Left => return Ok(()),
+            Place::Main => self.enter()?,
+            Place::Alt => {}
         }
         self.term.autoresize()?;
         let Size { width, height } = self.size();
@@ -413,9 +447,14 @@ impl<W: Write> Screen<W> {
     /// The exit: leaves the alternate screen (unless a dump already did) and writes what no dump
     /// has into the main screen — the conversation survives in the shell's history, whole.
     pub(crate) fn leave(&mut self) -> io::Result<()> {
-        let leave = self.dumped.take().is_none();
-        self.write_out(leave)?;
-        ALT_ACTIVE.store(false, Ordering::Relaxed);
+        let place = std::mem::replace(&mut self.place, Place::Left);
+        match place {
+            Place::Left => return Ok(()),
+            // Never entered (no frame was drawn) or already out: nothing to leave.
+            Place::Main | Place::Out => self.write_out(false)?,
+            Place::Alt => self.write_out(true)?,
+        }
+        self.hold_alt(false);
         Ok(())
     }
 

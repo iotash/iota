@@ -43,7 +43,6 @@
 //! without a tty; the live build has no such field, and every query reaches crossterm.
 
 use std::io::{self, Write};
-use std::sync::atomic::Ordering;
 
 use ratatui::layout::{Position, Size};
 use ratatui::text::{Line, Text};
@@ -53,7 +52,7 @@ use ratatui::widgets::{Paragraph, Widget, Wrap};
 use super::geometry::Geometry;
 use super::inline_term::InlineTerminal;
 use super::osc;
-use super::screen::{ALT_ACTIVE, Prompt, Screen, ViewOp};
+use super::screen::{Prompt, Screen, ViewOp};
 use crate::ui::facade::ProgressState;
 use crate::ui::render::frame::FrameView;
 use crate::ui::render::spans::ansi_to_spans;
@@ -109,12 +108,11 @@ impl<W: Write> Term<W> {
         Self::open(make_writer, Size::new(width, rows), height, start_top)
     }
 
-    /// Builds the full-screen terminal on the tty's size: enters the alternate screen (and
-    /// marks it held, for `restore_terminal`). No cursor query.
+    /// Builds the full-screen terminal on the tty's size. Nothing is written yet — the first
+    /// frame enters the alternate screen. No cursor query.
     pub(crate) fn fullscreen(make_writer: MakeWriter<W>) -> io::Result<Self> {
         let (width, rows) = crossterm::terminal::size()?;
-        ALT_ACTIVE.store(true, Ordering::Relaxed);
-        Self::open_full(make_writer, Size::new(width, rows))
+        Self::open_full(make_writer, Size::new(width, rows), true)
     }
 
     /// [`Term::new`] on the synthetic terminal `geo`: its size, its cursor answers, and every
@@ -148,9 +146,9 @@ impl<W: Write> Term<W> {
         ))
     }
 
-    fn open_full(mut make_writer: MakeWriter<W>, size: Size) -> io::Result<Self> {
+    fn open_full(mut make_writer: MakeWriter<W>, size: Size, live: bool) -> io::Result<Self> {
         let ctrl = make_writer();
-        let screen = Screen::new(make_writer(), size)?;
+        let screen = Screen::new(make_writer(), size, live)?;
         Ok(Self::with(Kind::Full(Box::new(screen)), ctrl))
     }
 

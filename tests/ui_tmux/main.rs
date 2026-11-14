@@ -77,6 +77,7 @@
 //! | `40-fullscreen-signal.sh` | tui-plan S1 | — (`IOTA_FULLSCREEN=1`: SIGTERM — one, and two in a row — hands back a usable terminal: the main screen, cooked mode, the shell's prompt) |
 //! | `41-fullscreen-search.sh` | tui-plan S3 | — (`IOTA_FULLSCREEN=1`: Ctrl+R finds a word ~110 screens back, highlighted and counted; n/p wrap; Esc back exactly; Enter stays with the way back; no match moves nothing; `/` following the tail is the composer's) |
 //! | `42-resize-and-key.sh` | tui-plan S4 | — (a key sent in the same instant as a resize is read at once, 40 rounds, and the loop never spins with input waiting; an idle Ctrl+D under a resize ends the run) |
+//! | `43-fullscreen-early-exit.sh` | tui-plan S4 | — (`IOTA_FULLSCREEN=1`: `--help`, a bad config, a missing session end before the first frame — no `?1049h`, the message on the shell's screen, the tty canonical; the next iota starts and exits cleanly) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -699,6 +700,12 @@ fn tmux_fullscreen_search() {
 #[test]
 fn tmux_resize_and_key() {
     run_scenario("42-resize-and-key.sh");
+}
+
+/// L4 #43 (tui-plan S4) — a run that ends before the first frame never enters the alternate screen.
+#[test]
+fn tmux_fullscreen_early_exit() {
+    run_scenario("43-fullscreen-early-exit.sh");
 }
 
 /// L4 #40 (tui-plan S1) — SIGTERM on the full screen, once and twice: the terminal is handed back usable.
