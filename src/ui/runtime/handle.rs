@@ -213,10 +213,45 @@ pub(crate) fn start(opts: TuiOptions) -> io::Result<Tui> {
         let (_, row) = crossterm::cursor::position()?;
         Term::new(Box::new(io::stdout), 1, row)?
     };
+    let fullscreen = term.is_fullscreen();
     let handle = spawn(term, CrosstermEvents::new(), width, height, Some(restore))?;
+    if fullscreen {
+        handle.suspend_on_sigtstp();
+    }
     // The probed tone is the loop's first message: the input shade follows it from frame one.
     handle.set_dark_background(opts.dark);
     Ok(Tui { handle })
+}
+
+impl TuiHandle {
+    /// Job control from outside (the full screen): a SIGTSTP becomes the loop's [`UiMsg::Suspend`]
+    /// — the loop hands the terminal back before the process stops, which the default action would
+    /// not (it would stop with the alternate screen and raw mode still up). Ctrl+Z is a key in raw
+    /// mode and takes the same path (`keys.rs`). Needs the runtime `Tui::start` runs on; without one
+    /// SIGTSTP keeps its default action.
+    #[cfg(unix)]
+    fn suspend_on_sigtstp(&self) {
+        use tokio::signal::unix::{SignalKind, signal};
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let tx = self.tx.clone();
+        rt.spawn(async move {
+            let Ok(mut tstp) = signal(SignalKind::from_raw(
+                nix::sys::signal::Signal::SIGTSTP as i32,
+            )) else {
+                return;
+            };
+            while tstp.recv().await.is_some() {
+                if tx.send(UiMsg::Suspend).is_err() {
+                    return;
+                }
+            }
+        });
+    }
+
+    #[cfg(not(unix))]
+    fn suspend_on_sigtstp(&self) {}
 }
 
 impl Ui for TuiHandle {

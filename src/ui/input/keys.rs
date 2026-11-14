@@ -43,6 +43,15 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
         m.view_ops.push(ViewOp::Return);
         return;
     }
+    // Ctrl+Z, the full screen's job-control stop (raw mode delivers it as a key): the terminal goes
+    // back to the shell until `fg` (tui-plan S4). The inline terminal leaves it alone, as before.
+    if m.fullscreen
+        && key.code == KeyCode::Char('z')
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+    {
+        m.suspend = true;
+        return;
+    }
     if m.fullscreen
         && key.code == KeyCode::Char('o')
         && key.modifiers.contains(KeyModifiers::CONTROL)

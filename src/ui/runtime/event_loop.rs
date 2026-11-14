@@ -340,6 +340,9 @@ pub(crate) struct Model {
     pub(crate) search: Option<SearchField>,
     /// Whether the full screen's view was scrolled back at the last draw (`/` opens a search then).
     pub(crate) view_paused: bool,
+    /// A job-control stop asked for (Ctrl+Z, or SIGTSTP from outside — the full screen): the loop
+    /// hands the terminal back and stops after this iteration's frame (`Term::suspend`).
+    pub(crate) suspend: bool,
     /// An idle Ctrl+D that found no reader parked — the REPL between a turn's end and its next
     /// `read_input` — answers that next read (tui-plan S4).
     pub(crate) pending_eof: bool,
@@ -437,6 +440,7 @@ impl Model {
             search: None,
             view_paused: false,
             pending_eof: false,
+            suspend: false,
         }
     }
 
@@ -575,6 +579,10 @@ impl Model {
             }
             UiMsg::DarkBackground(dark) => {
                 self.dark = dark;
+                self.dirty = true;
+            }
+            UiMsg::Suspend => {
+                self.suspend = true;
                 self.dirty = true;
             }
             UiMsg::BusyOn(label) => {
@@ -1206,6 +1214,18 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
         }
         if !resizing {
             term.end_batch()?;
+        }
+        // Job control: the terminal goes back to the shell and the process stops; `fg` comes back
+        // here. The size may have changed meanwhile, and nothing on the screen is ours any more: the
+        // next frame re-enters the alternate screen and paints every cell.
+        if std::mem::take(&mut m.suspend) && !m.quit {
+            if let Some(size) = term.suspend()? {
+                m.pending_resize = Some((size.width, size.height));
+                m.resize_seen = Instant::now()
+                    .checked_sub(RESIZE_QUIET)
+                    .unwrap_or_else(Instant::now);
+            }
+            m.dirty = true;
         }
         if m.quit {
             break;

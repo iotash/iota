@@ -262,6 +262,40 @@ impl<W: Write> Screen<W> {
         }
     }
 
+    /// Job control: leaves the alternate screen (the conversation is not written out — `fg` brings
+    /// the screen back), turns bracketed paste and focus reporting off and the tty cooked, and stops
+    /// the process (`SIGSTOP`, which nothing can catch — the shell sees a stopped job). On `fg` the
+    /// modes go back on; the next frame enters the alternate screen again and paints every cell
+    /// ([`Place::Main`]). Returns the terminal's size then (`None` for a test's screen, which does
+    /// not stop).
+    pub(crate) fn suspend(&mut self, focus: bool) -> io::Result<Option<Size>> {
+        let mut seq = String::new();
+        if self.place == Place::Alt {
+            self.place = Place::Main;
+            self.hold_alt(false);
+            seq.push_str(std::str::from_utf8(LEAVE).unwrap_or_default());
+        }
+        seq.push_str("\x1b[?2004l");
+        if focus {
+            seq.push_str(super::osc::CSI_FOCUS_OFF);
+        }
+        self.write_raw(seq.as_bytes())?;
+        self.last = None;
+        if !self.live {
+            return Ok(None);
+        }
+        crossterm::terminal::disable_raw_mode()?;
+        nix::sys::signal::raise(nix::sys::signal::Signal::SIGSTOP).map_err(io::Error::from)?;
+        crossterm::terminal::enable_raw_mode()?;
+        let mut seq = String::from("\x1b[?2004h");
+        if focus {
+            seq.push_str(super::osc::CSI_FOCUS_ON);
+        }
+        self.write_raw(seq.as_bytes())?;
+        let (width, height) = crossterm::terminal::size()?;
+        Ok(Some(Size::new(width, height)))
+    }
+
     /// Back from a dump: the alternate screen again, cleared and repainted whole by the next draw.
     fn back(&mut self) -> io::Result<()> {
         if self.place == Place::Out {

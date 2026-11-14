@@ -387,6 +387,17 @@ impl<W: Write> Term<W> {
         }
     }
 
+    /// Job control (the full screen): hands the terminal back — the main screen, cooked mode, no
+    /// paste or focus reporting — stops the process, and on `fg` takes it again ([`Screen::suspend`]).
+    /// Returns the size the terminal has then. The inline terminal never suspends.
+    pub(crate) fn suspend(&mut self) -> io::Result<Option<Size>> {
+        let focus = self.focus_on;
+        match &mut self.kind {
+            Kind::Full(screen) => screen.suspend(focus),
+            Kind::Inline { .. } => Ok(None),
+        }
+    }
+
     /// Whether the full screen's view is scrolled back from the tail.
     pub(crate) fn view_paused(&self) -> bool {
         matches!(&self.kind, Kind::Full(screen) if screen.paused())

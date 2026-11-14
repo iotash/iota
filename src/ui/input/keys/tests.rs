@@ -1331,3 +1331,17 @@ fn an_idle_ctrl_d_with_no_reader_answers_the_next_read_after_the_queue() {
     assert!(m.waiter.is_some(), "kept once: the read after it parks");
     drop(third);
 }
+
+/// Row 0: Ctrl+Z is the full screen's job-control stop — the loop hands the terminal back before it
+/// stops (`Term::suspend`) — and nothing on the inline terminal, as before.
+#[test]
+fn ctrl_z_suspends_the_full_screen_only() {
+    let mut m = test_model();
+    m.handle_key(ctrl('z'));
+    assert!(!m.suspend, "inline: no suspend");
+    m.fullscreen = true;
+    type_text(&mut m, "draft");
+    m.handle_key(ctrl('z'));
+    assert!(m.suspend);
+    assert_eq!(m.composer.value(), "draft", "the draft survives the stop");
+}
