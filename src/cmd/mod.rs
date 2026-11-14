@@ -758,7 +758,8 @@ async fn run_headless(h: Headless<'_>, io: &mut io::Streams) -> Result<(), CliEr
     // The host presenter of a `-m` run: the detected hosts alone — no ANSI fallback (there is no facade to
     // write OSC through; stdout is the reply) and no pings (`notify` is a chat's knob). A multiplexer still
     // learns that its pane is working from here to the reply, which session a resume writes into, and adds
-    // what it knows to `<environment>`. Built after the resume stage — over the host the assembly detected,
+    // what it knows to `<environment>`; the herdr-core host, given no facade, writes its in-band reports to
+    // `/dev/tty` itself (`crate::host::hc`). Built after the resume stage — over the host the assembly detected,
     // which nothing has spoken to yet — so every early return above leaves no host to clean up; from here on
     // the run ends at `pres.close()` below, whatever `once` says.
     let pres = Presenter::over(host, None, false);

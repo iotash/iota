@@ -12,15 +12,19 @@
 //! multiplexer's pane id reaches the model through the host layer and never as a special case in
 //! `agents::harness` (brain page `host-integration`, 2026-09-21).
 //!
-//! Hosts: the herdr multiplexer (`herdr::HerdrHost`, told the pane's lifecycle over its socket), the
-//! cmux multiplexer (`cmux::CmuxHost`, driven through its CLI) — both detected from the environment —
-//! and the plain ANSI terminal ([`ansi::AnsiHost`], the fallback the command always appends).
+//! Hosts: herdr-core (`hc::HcHost`, the terminal core behind herdr's desktop app, told the state in
+//! band with OSC 7501 — the one [`InBand`] host), the herdr multiplexer (`herdr::HerdrHost`, told the
+//! pane's lifecycle over its socket), the cmux multiplexer (`cmux::CmuxHost`, driven through its CLI) —
+//! all three detected from the environment — and the plain ANSI terminal ([`ansi::AnsiHost`], the
+//! fallback the command always appends).
 //!
 //! **The innermost host is exclusive** (decided 2026-09-21). Hosts nest — herdr runs inside a cmux
 //! window — and a pane inherits its environment from the process that spawned it: a herdr pane
 //! carries the `CMUX_SURFACE_ID` the herdr SERVER was born with, which may be stale or another
 //! window's, and a status row set through it would land on the wrong surface. So iota talks to the
-//! innermost host only: `DETECTORS` is ordered inner to outer (herdr before cmux), and
+//! innermost host only: `DETECTORS` is ordered inner to outer (hc, herdr, cmux — hc first because an
+//! hc terminal inherits the `HERDR_*` of a herdr pane it was started from, while a herdr pane inside
+//! an hc terminal says `TERM_PROGRAM=herdr`, which the hc detector declines), and
 //! [`Presenter::new`] keeps the FIRST detector that matches, then the ANSI fallback — never two
 //! detected hosts. A probe carrying both `HERDR_*` and `CMUX_SURFACE_ID` yields herdr alone, and
 //! cmux is not even asked. The per-capability fan-out over the remaining pair (the detected host
