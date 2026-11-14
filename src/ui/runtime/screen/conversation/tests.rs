@@ -89,7 +89,7 @@ fn reaching_the_bottom_follows_again_and_ctrl_end_does_too() {
     assert_eq!(c.view_lines(20, 10), rows(43, 10));
     c.scroll_up(5, 20, 10);
     c.push(&rows(53, 2));
-    c.to_bottom();
+    c.go_bottom();
     assert!(c.following());
     assert_eq!(c.view_lines(20, 10)[9], "r054");
 }
@@ -97,12 +97,12 @@ fn reaching_the_bottom_follows_again_and_ctrl_end_does_too() {
 #[test]
 fn ctrl_home_shows_the_first_line_and_page_up_stops_there() {
     let mut c = conv(50);
-    c.to_top(20, 10);
+    c.go_top(20, 10);
     assert_eq!(c.view_lines(20, 10), rows(0, 10));
     c.scroll_up(5, 20, 10);
     assert_eq!(c.view_lines(20, 10)[0], "r000");
     let mut short = conv(4);
-    short.to_top(20, 10);
+    short.go_top(20, 10);
     assert!(short.following(), "a session that fits stays on the tail");
 }
 

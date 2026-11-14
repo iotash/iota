@@ -153,8 +153,8 @@ impl<W: Write> Screen<W> {
         match op {
             ViewOp::HalfUp => self.conv.scroll_up(half, width, h),
             ViewOp::HalfDown => self.conv.scroll_down(half, width, h),
-            ViewOp::Top => self.conv.to_top(width, h),
-            ViewOp::Bottom => self.conv.to_bottom(),
+            ViewOp::Top => self.conv.go_top(width, h),
+            ViewOp::Bottom => self.conv.go_bottom(),
             ViewOp::Dump => self.dump()?,
             ViewOp::Return => self.back()?,
         }

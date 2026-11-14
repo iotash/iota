@@ -200,7 +200,7 @@ impl Conversation {
     }
 
     /// The first line of the session (`Ctrl+Home`).
-    pub(crate) fn to_top(&mut self, width: usize, h: usize) {
+    pub(crate) fn go_top(&mut self, width: usize, h: usize) {
         if !self.rows.is_empty() {
             self.anchor(Pos { row: 0, line: 0 });
             self.follow_if_at_bottom(width, h);
@@ -208,7 +208,7 @@ impl Conversation {
     }
 
     /// The tail, followed again (`Ctrl+End`).
-    pub(crate) fn to_bottom(&mut self) {
+    pub(crate) fn go_bottom(&mut self) {
         self.view = View::Follow;
         self.unseen = 0;
     }
@@ -254,7 +254,7 @@ impl Conversation {
         if let View::At(top) = self.view
             && self.lines_from(top, width, h) <= h
         {
-            self.to_bottom();
+            self.go_bottom();
         }
     }
 

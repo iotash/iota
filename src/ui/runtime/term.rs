@@ -97,8 +97,8 @@ enum Kind<W: Write> {
         /// fill with the next output, so a band never has to scroll into the history.
         pad: u16,
     },
-    /// The alternate screen ([`Screen`]).
-    Full(Screen<W>),
+    /// The alternate screen ([`Screen`]; boxed, it is the larger by two frame buffers).
+    Full(Box<Screen<W>>),
 }
 
 impl<W: Write> Term<W> {
@@ -151,7 +151,7 @@ impl<W: Write> Term<W> {
     fn open_full(mut make_writer: MakeWriter<W>, size: Size) -> io::Result<Self> {
         let ctrl = make_writer();
         let screen = Screen::new(make_writer(), size)?;
-        Ok(Self::with(Kind::Full(screen), ctrl))
+        Ok(Self::with(Kind::Full(Box::new(screen)), ctrl))
     }
 
     const fn with(kind: Kind<W>, ctrl: W) -> Self {
