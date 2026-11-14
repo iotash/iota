@@ -366,6 +366,12 @@ impl<W: Write> Term<W> {
         self.t.write_raw(osc::notify_seq(text).as_bytes())
     }
 
+    /// Writes an already-encoded, cursor-neutral sequence verbatim (a program-status report) —
+    /// safe between draws, like [`Self::notify`].
+    pub(crate) fn write_raw(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.t.write_raw(bytes)
+    }
+
     /// Turns terminal focus reporting on (mode 1004) so the loop learns when the window
     /// blurs — the ONE gate on attention pings. Called by `run_loop` before its first
     /// iteration, NOT by [`Term::new`]: the one-shot picker and the test harnesses build a

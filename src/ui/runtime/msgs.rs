@@ -102,6 +102,8 @@ pub(crate) enum UiMsg {
     Progress(ProgressState),
     /// Attention ping text, already sanitized (model.go:217 notifyMsg).
     Notify(String),
+    /// One OSC 7501 program-status report, already encoded by the host (`Ui::program_status`).
+    ProgramStatus(String),
     /// Re-shade the composer for a background flip.
     DarkBackground(bool),
     /// Terminates the loop thread. `close()` flushes the region first, so the

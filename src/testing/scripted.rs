@@ -94,6 +94,8 @@ pub enum UiEvent {
     Progress(ProgressState),
     /// [`Ui::notify`] with the SANITIZED text.
     Notify(String),
+    /// [`Ui::program_status`] with the encoded sequence.
+    ProgramStatus(String),
     /// [`Ui::set_dark_background`].
     DarkBackground(bool),
 }
@@ -604,6 +606,10 @@ impl Ui for ScriptedUi {
     fn notify(&self, text: &str) {
         // Sanitized like the real facade (the same sanitizer as the title).
         self.record(UiEvent::Notify(sanitize_window_title(text)));
+    }
+
+    fn program_status(&self, seq: &str) {
+        self.record(UiEvent::ProgramStatus(seq.to_owned()));
     }
 
     fn set_dark_background(&self, dark: bool) {

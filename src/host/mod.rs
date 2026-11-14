@@ -63,6 +63,7 @@
 pub mod ansi;
 pub(crate) mod background;
 pub(crate) mod cmux;
+pub(crate) mod hc;
 pub(crate) mod herdr;
 
 pub use ansi::AnsiHost;
@@ -143,6 +144,19 @@ pub trait Host: Send + Sync {
     fn as_child_env(&self) -> Option<&dyn ChildEnvironment> {
         None
     }
+    /// The in-band capability: the host writes to the terminal itself.
+    fn as_in_band(&self) -> Option<&dyn InBand> {
+        None
+    }
+}
+
+/// Speaks to the terminal IN BAND — escape sequences on the chat's own tty, not a socket or a CLI — and
+/// so must not race the screen's writer once there is one. Until [`Self::write_through`] the host
+/// writes the tty itself (a `-m` run has no facade); after it, every sequence goes through the facade,
+/// which writes it on the UI thread between draws.
+pub trait InBand: Send + Sync {
+    /// From now on, writes go through `ui` ([`Ui::program_status`]).
+    fn write_through(&self, ui: Arc<dyn Ui>);
 }
 
 /// Shows the conversation's state.
@@ -226,10 +240,12 @@ pub struct Probe {
 /// A host detector: `Some(host)` when the environment says the chat runs inside it.
 pub type Detector = fn(&Probe) -> Option<Box<dyn Host>>;
 
-/// The detectors, innermost host first (host.go:84 had one). Only the first match is kept: herdr
+/// The detectors, innermost host first (host.go:84 had one). Only the first match is kept: herdr-core
+/// before herdr, because an hc terminal started from a herdr pane inherits the pane's `HERDR_*` (and a
+/// herdr pane inside an hc terminal is told apart by `TERM_PROGRAM=herdr`, `hc::detect_hc`); herdr
 /// before cmux, because a herdr pane inside a cmux window inherits a `CMUX_SURFACE_ID` that is the
 /// server's, not the pane's (the module doc).
-pub(crate) const DETECTORS: &[Detector] = &[herdr::detect_herdr, cmux::detect_cmux];
+pub(crate) const DETECTORS: &[Detector] = &[hc::detect_hc, herdr::detect_herdr, cmux::detect_cmux];
 
 /// The innermost host the environment names, or `None` (the module doc): the first detector that matches.
 /// Run it once per process — a detected host spawns its worker task, so it MUST be called inside the
@@ -393,11 +409,15 @@ impl Presenter {
         }
     }
 
-    /// Shows the whole-turn layer on `ui`'s status row, and watches `ui`'s dialogs (the module doc): the
+    /// Hands `ui` to every [`InBand`] host, shows the whole-turn layer on `ui`'s status row, and watches
+    /// `ui`'s dialogs (the module doc): the
     /// facade the chat is shown on is the one whose open dialog means the user is needed. Without it —
     /// headless, and the fixtures that leave it out — the layer is only computed.
     #[must_use]
     pub fn show_turn_on(self, ui: Arc<dyn Ui>) -> Self {
+        for h in self.core.hosts.iter().filter_map(|h| h.as_in_band()) {
+            h.write_through(Arc::clone(&ui));
+        }
         let mut p = self.attend(ui.as_ref());
         p.turn_view = Some(ui);
         p

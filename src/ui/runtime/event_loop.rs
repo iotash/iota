@@ -311,6 +311,9 @@ pub(crate) struct Model {
     pub(crate) progress: ProgressState,
     /// Attention pings not yet written (model.go:217); [`drain_notify`] writes them.
     pub(crate) notify: Vec<String>,
+    /// Program-status reports not yet written (`UiMsg::ProgramStatus`), oldest first; the dirty
+    /// branch writes them all, unconditionally — unlike a ping, a report is not gated on focus.
+    pub(crate) program_status: Vec<String>,
     /// Whether the terminal window has focus (model.go:118). Starts TRUE: a terminal that
     /// never reports focus never pings, which is Go's behaviour — whoever is already
     /// watching needs no bell.
@@ -401,6 +404,7 @@ impl Model {
             quit: false,
             progress: ProgressState::None,
             notify: Vec::new(),
+            program_status: Vec::new(),
             focused: true,
         }
     }
@@ -532,6 +536,10 @@ impl Model {
             }
             UiMsg::Notify(text) => {
                 self.notify.push(text);
+                self.dirty = true;
+            }
+            UiMsg::ProgramStatus(seq) => {
+                self.program_status.push(seq);
                 self.dirty = true;
             }
             UiMsg::DarkBackground(dark) => {
@@ -1107,6 +1115,9 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
             term.set_title(&m.title)?;
             term.set_progress(m.progress)?; // emit-on-change, like the title
             drain_notify(&mut m, &mut term)?;
+            for seq in std::mem::take(&mut m.program_status) {
+                term.write_raw(seq.as_bytes())?;
+            }
             term.draw_frame(&view)?; // W4: same iteration as the inserts above
             m.dirty = false;
         }

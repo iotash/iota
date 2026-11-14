@@ -2001,6 +2001,10 @@ impl Ui for OrderUi {
         self.inner.notify(text);
     }
 
+    fn program_status(&self, seq: &str) {
+        self.inner.program_status(seq);
+    }
+
     fn set_dark_background(&self, dark: bool) {
         self.inner.set_dark_background(dark);
     }

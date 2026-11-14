@@ -1116,6 +1116,11 @@ pub trait Ui: Send + Sync {
     /// `sanitize_window_title` (the same 60-rune/control-strip sanitizer as the title).
     fn notify(&self, text: &str);
 
+    /// Writes one in-band program-status report (OSC 7501, `crate::host::hc`) verbatim. The host
+    /// encodes it; the UI loop writes it between draws, in the order given and never deduplicated —
+    /// every report replaces the terminal's whole record, so each one counts.
+    fn program_status(&self, seq: &str);
+
     /// Re-shades the input rows for a between-turn background flip (chat/theme.go
     /// `applyCodeTheme`).
     fn set_dark_background(&self, dark: bool);

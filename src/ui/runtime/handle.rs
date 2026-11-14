@@ -474,6 +474,10 @@ impl Ui for TuiHandle {
         let _ = self.tx.send(UiMsg::Notify(sanitize_window_title(text)));
     }
 
+    fn program_status(&self, seq: &str) {
+        let _ = self.tx.send(UiMsg::ProgramStatus(seq.to_owned()));
+    }
+
     fn set_dark_background(&self, dark: bool) {
         let _ = self.tx.send(UiMsg::DarkBackground(dark));
     }
