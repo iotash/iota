@@ -305,6 +305,7 @@ fn run_scenario_fullscreen(script: &str) {
 fn run_in(script: &str, fullscreen: bool) {
     let _serial = serial_lock();
     let Some(g) = gate() else { return };
+    mock::reset();
     let scratch = std::env::temp_dir().join(format!(
         "iota-tmux-{}-{}",
         std::process::id(),

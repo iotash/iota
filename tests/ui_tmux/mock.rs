@@ -163,6 +163,22 @@ const EMOJI: &str = "EMOJISTART\n\n| id | glyph | flag | vs16 | note |\n|---|---
 
 /// Starts the server on an ephemeral loopback port and returns it. The listener thread is
 /// detached: it lives as long as the test process.
+/// Forgets what one scenario left behind — the `fail:` counters, the released holds, the request log —
+/// so the next one starts from a fresh mock even when it repeats a marker: a scenario's full-screen twin
+/// sends the same messages as its inline run (tui-plan S2). The runner calls it under its serial lock,
+/// before each scenario. Tool-call ids stay unique for the life of the process.
+pub fn reset() {
+    FAILS.lock().unwrap_or_else(PoisonError::into_inner).clear();
+    RELEASED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clear();
+    MESSAGES_LOG
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clear();
+}
+
 pub fn start() -> std::io::Result<u16> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
