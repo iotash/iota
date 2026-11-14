@@ -166,7 +166,9 @@ const EMOJI: &str = "EMOJISTART\n\n| id | glyph | flag | vs16 | note |\n|---|---
 /// Forgets what one scenario left behind — the `fail:` counters, the released holds, the request log —
 /// so the next one starts from a fresh mock even when it repeats a marker: a scenario's full-screen twin
 /// sends the same messages as its inline run (tui-plan S2). The runner calls it under its serial lock,
-/// before each scenario. Tool-call ids stay unique for the life of the process.
+/// before each scenario. Tool-call ids stay unique for the life of the process. The host suite mounts
+/// this module too and runs one scenario a process, so it never calls this.
+#[allow(dead_code)]
 pub fn reset() {
     FAILS.lock().unwrap_or_else(PoisonError::into_inner).clear();
     RELEASED
