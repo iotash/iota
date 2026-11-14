@@ -132,9 +132,10 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
 #
 # Unix: `setpgid` at spawn, then `killpg(SIGKILL)` — `nix` is those two and the `ESRCH` they answer with.
 # `poll` is the one other syscall: the TUI's event source asks the terminal whether it has hung up before it
-# lets crossterm read it (`src/ui/runtime/event_loop.rs`, `HangupWatch`).
+# lets crossterm read it (`src/ui/runtime/event_loop.rs`, `HangupWatch`). `term` is `tcgetpgrp`: a terminal
+# query enters raw mode only from the terminal's foreground process group (`src/ui/runtime/osc.rs`).
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31", default-features = false, features = ["signal", "process", "fs", "poll"] }
+nix = { version = "0.31", default-features = false, features = ["signal", "process", "fs", "poll", "term"] }
 
 # Windows: a Job Object owns the child and every process it goes on to start, so `TerminateJobObject` is
 # `killpg` (Codex and Gemini CLI converged on the same primitive). `process-wrap` is watchexec's successor to

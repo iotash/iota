@@ -99,11 +99,20 @@ fn detect_dark() -> io::Result<bool> {
 /// ONE query round-trip on the controlling terminal: `query` chased by a DSR 6n, written in raw
 /// mode, and the reply bytes read back up to the DSR's `R` ([`detect_background`] says why that
 /// ends every read), bounded by [`REPLY_TIMEOUT`]. `Err` when there is no terminal, raw mode
-/// cannot be entered, or nothing answers in time. Shared by the OSC 11 background detect and the
+/// cannot be entered, or nothing answers in time — and, before any of it, when this process is not
+/// the terminal's foreground process group: raw mode is a `tcsetattr`, which stops a background
+/// process with `SIGTTOU` (measured: an hc-probing `iota -m` started by the shell tool, whose
+/// commands get a process group of their own, hung stopped). Shared by the OSC 11 background detect and the
 /// herdr-core probe (`host::hc::probe_tty`): both run before any event loop claims the input, one
 /// after the other.
 pub(crate) fn round_trip(query: &[u8]) -> io::Result<Vec<u8>> {
     let mut tty = open_tty()?;
+    #[cfg(unix)]
+    if nix::unistd::tcgetpgrp(&tty)? != nix::unistd::getpgrp() {
+        return Err(io::Error::other(
+            "not the terminal's foreground process group",
+        ));
+    }
     let was_raw = crossterm::terminal::is_raw_mode_enabled()?;
     if !was_raw {
         crossterm::terminal::enable_raw_mode()?;

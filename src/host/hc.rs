@@ -318,6 +318,7 @@ mod tests {
         ];
         // `hc attach` inside a tmux pane: iota's tty is hc's terminal; tmux only watches it.
         let hc_in_tmux = [&hc[..], &[("TMUX", "/tmp/tmux-501/default,1,0")]].concat();
+        let mut wrong = Vec::new();
         for (case, vars, answer, want) in [
             ("plain hc", &hc[..], Some(true), Some("herdr-core")),
             (
@@ -343,13 +344,17 @@ mod tests {
             ("no hc", &[][..], Some(true), None),
         ] {
             let host = detect(&probe(vars, answer));
-            assert_eq!(host.as_ref().map(|h| h.name()), want, "{case}");
+            let got = host.as_ref().map(|h| h.name());
+            if got != want {
+                wrong.push(format!("{case}: {got:?}, want {want:?}"));
+            }
             if let Some(c) = host.as_ref().and_then(|h| h.as_closer())
                 && want == Some("herdr")
             {
                 c.close().await; // the release goes to a socket nobody listens on
             }
         }
+        assert!(wrong.is_empty(), "{wrong:#?}");
     }
 
     /// Without an id the terminal is never asked; with one, its answer decides, and only when it
