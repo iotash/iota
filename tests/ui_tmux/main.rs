@@ -869,6 +869,12 @@ fn tmux_config_trust_fullscreen() {
     run_scenario_fullscreen("36-config-trust.sh");
 }
 
+/// L4 #29 on the full screen (tui-plan S2): SIGTERM, Ctrl+D and a hung-up terminal end the run there too.
+#[test]
+fn tmux_signal_exit_fullscreen() {
+    run_scenario_fullscreen("29-signal-exit.sh");
+}
+
 /// M2 (tui-plan §7) — a measurement, not a check: the bytes the tmux iota runs in sends to its own
 /// terminal for typing, a stream and a drag, inline and full-screen (`measure/m2-bytes.sh`). Runs only
 /// with `IOTA_TMUX_MEASURE=1`; `TMUX_BIN` picks the tmux under test.
