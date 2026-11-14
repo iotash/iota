@@ -50,9 +50,10 @@ use crate::ui::{Tui, TuiOptions};
 /// Restores the terminal — bracketed paste off, cursor shown, raw mode off — exactly
 /// once, on `Drop`. The loop thread holds it across `run_loop` so EVERY exit path
 /// (clean `Quit`, a draw error) restores; `Tui::start`'s failure paths restore through
-/// it too. `panic = "abort"` means no unwind-based restore — accepted and documented
-/// (`stty sane` recovers a killed session; the no-unwrap/no-panic lint wall makes an
-/// in-code panic unreachable).
+/// it too. `panic = "abort"` means no unwind-based restore: inline, that is accepted and
+/// documented (`stty sane` recovers a killed session; the no-unwrap/no-panic lint wall makes an
+/// in-code panic unreachable); the full screen installs a panic hook that restores first (`start`;
+/// proven by L4 45 through a debug build's `IOTA_TEST_PANIC` hook).
 pub(crate) struct TermGuard(());
 
 impl TermGuard {
