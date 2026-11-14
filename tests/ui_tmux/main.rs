@@ -318,7 +318,7 @@ fn run_scenario(script: &str) {
             format!(
                 "iota-test-{}-{}",
                 std::process::id(),
-                script.replace(['.', '-'], "")
+                script.replace(['.', '-', '/'], "")
             ),
         )
         .env("IOTA_BIN", &g.binary)
@@ -672,4 +672,15 @@ fn tmux_fullscreen_exit() {
 #[test]
 fn tmux_fullscreen_signal() {
     run_scenario("40-fullscreen-signal.sh");
+}
+
+/// M2 (tui-plan §7) — a measurement, not a check: the bytes the tmux iota runs in sends to its own
+/// terminal for typing, a stream and a drag, inline and full-screen (`measure/m2-bytes.sh`). Runs only
+/// with `IOTA_TMUX_MEASURE=1`; `TMUX_BIN` picks the tmux under test.
+#[test]
+fn tmux_measure_m2() {
+    if std::env::var_os("IOTA_TMUX_MEASURE").is_none() {
+        return;
+    }
+    run_scenario("../measure/m2-bytes.sh");
 }
