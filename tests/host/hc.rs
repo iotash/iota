@@ -79,10 +79,10 @@ impl Core {
         .map(|(k, v)| (k.to_owned(), v))
         .collect();
         env.extend_from_slice(extra);
-        let core = Self { hc, dir, env };
-        let started = core.run(&["server", "start"]).await;
+        let hcc = Self { hc, dir, env };
+        let started = hcc.run(&["server", "start"]).await;
         assert_eq!(started.0, Some(0), "hc server start: {}", started.1);
-        core
+        hcc
     }
 
     /// The project directory iota runs in.
@@ -200,43 +200,43 @@ fn script(iota_args: &str) -> String {
 async fn an_interactive_chat_reports_its_states_to_hc() {
     let Some(hc) = hc_binary() else { return };
     let port = crate::mock::start().expect("mock provider");
-    let core = Core::start(hc, &config(port), &[]).await;
-    core.spawn("chat", &script("")).await;
+    let hcc = Core::start(hc, &config(port), &[]).await;
+    hcc.spawn("chat", &script("")).await;
 
-    let up = core.until_state("chat", "idle").await;
+    let up = hcc.until_state("chat", "idle").await;
     assert_eq!(up["reported"], true, "{up}");
 
     // A turn: `working` while the reply drips, `idle` after it.
-    let (code, out) = core.send("chat", "stream 30 100").await;
+    let (code, out) = hcc.send("chat", "stream 30 100").await;
     assert_eq!(code, Some(0), "hc send: {out}");
-    core.until_state("chat", "working").await;
-    core.until_state("chat", "idle").await;
+    hcc.until_state("chat", "working").await;
+    hcc.until_state("chat", "idle").await;
 
     // The approval: `blocked`, and a supervisor's `hc send` is refused while it is open.
-    let (code, out) = core.send("chat", "runfg:echo approved").await;
+    let (code, out) = hcc.send("chat", "runfg:echo approved").await;
     assert_eq!(code, Some(0), "hc send: {out}");
-    core.until_state("chat", "blocked").await;
-    let (code, out) = core.send("chat", "typed into the dialog").await;
+    hcc.until_state("chat", "blocked").await;
+    let (code, out) = hcc.send("chat", "typed into the dialog").await;
     assert_eq!(code, Some(9), "hc send into the approval: {out}");
     assert!(out.contains("blocked"), "{out}");
-    let (code, out) = core.run(&["keys", "chat", "enter"]).await;
+    let (code, out) = hcc.run(&["keys", "chat", "enter"]).await;
     assert_eq!(code, Some(0), "hc keys: {out}");
-    core.until("chat", "the approved call ran and the turn ended", |g| {
+    hcc.until("chat", "the approved call ran and the turn ended", |g| {
         g["status"]["state"] == "idle"
     })
     .await;
-    let screen = core.run(&["read", "chat"]).await.1;
+    let screen = hcc.run(&["read", "chat"]).await.1;
     assert!(screen.contains("ran: approved"), "{screen}");
 
     // A failed turn: `error` (a 400 is not retried).
-    let (code, out) = core.send("chat", "fail:400:1 boom").await;
+    let (code, out) = hcc.send("chat", "fail:400:1 boom").await;
     assert_eq!(code, Some(0), "hc send: {out}");
-    core.until_state("chat", "error").await;
+    hcc.until_state("chat", "error").await;
 
     // The exit: iota's own clear, with the shell after it still the terminal's program.
-    let (code, out) = core.run(&["keys", "chat", "ctrl+d"]).await;
+    let (code, out) = hcc.run(&["keys", "chat", "ctrl+d"]).await;
     assert_eq!(code, Some(0), "hc keys: {out}");
-    let gone = core
+    let gone = hcc
         .until("chat", "the record cleared on exit", |g| {
             g["status"].is_null()
         })
@@ -245,7 +245,7 @@ async fn an_interactive_chat_reports_its_states_to_hc() {
         gone["state"], "live",
         "the shell after iota is gone: {gone}"
     );
-    let screen = core.run(&["read", "chat"]).await.1;
+    let screen = hcc.run(&["read", "chat"]).await.1;
     assert!(screen.contains("iota-exited"), "{screen}");
 }
 
@@ -255,17 +255,17 @@ async fn an_interactive_chat_reports_its_states_to_hc() {
 async fn a_headless_run_reports_through_the_tty() {
     let Some(hc) = hc_binary() else { return };
     let port = crate::mock::start().expect("mock provider");
-    let core = Core::start(hc, &config(port), &[]).await;
-    core.spawn("once", &script("-m 'stream 30 100' > reply.txt"))
+    let hcc = Core::start(hc, &config(port), &[]).await;
+    hcc.spawn("once", &script("-m 'stream 30 100' > reply.txt"))
         .await;
-    core.until_state("once", "working").await;
-    let gone = core
+    hcc.until_state("once", "working").await;
+    let gone = hcc
         .until("once", "the record cleared after the reply", |g| {
             g["status"].is_null() && g["reported"] == true
         })
         .await;
     assert_eq!(gone["state"], "live", "{gone}");
-    let reply = std::fs::read_to_string(core.cwd().join("reply.txt")).unwrap();
+    let reply = std::fs::read_to_string(hcc.cwd().join("reply.txt")).unwrap();
     assert!(reply.contains("l#29 line"), "the reply: {reply}");
 }
 
@@ -276,11 +276,11 @@ async fn inside_hc_started_from_herdr_only_hc_hears() {
     let Some(hc) = hc_binary() else { return };
     let herdr = HerdrMock::start();
     let port = crate::mock::start().expect("mock provider");
-    let core = Core::start(hc, &config(port), &herdr.env("w1:p2")).await;
-    core.spawn("nested", &script("-m 'stream 10 100' > reply.txt"))
+    let hcc = Core::start(hc, &config(port), &herdr.env("w1:p2")).await;
+    hcc.spawn("nested", &script("-m 'stream 10 100' > reply.txt"))
         .await;
-    core.until_state("nested", "working").await;
-    core.until("nested", "the record cleared", |g| g["status"].is_null())
+    hcc.until_state("nested", "working").await;
+    hcc.until("nested", "the record cleared", |g| g["status"].is_null())
         .await;
     assert!(
         herdr.requests().is_empty(),
@@ -297,20 +297,20 @@ async fn inside_hc_started_from_herdr_only_hc_hears() {
 async fn a_child_writing_7501_replaces_the_record_until_the_next_state() {
     let Some(hc) = hc_binary() else { return };
     let port = crate::mock::start().expect("mock provider");
-    let core = Core::start(hc, &config(port), &[]).await;
-    core.spawn("chat", &script("")).await;
-    core.until_state("chat", "idle").await;
+    let hcc = Core::start(hc, &config(port), &[]).await;
+    hcc.spawn("chat", &script("")).await;
+    hcc.until_state("chat", "idle").await;
     // The second's wait is the agent starting up; a write in the same instant as the approval's answer
     // lands BEFORE iota's own `working`, which the UI loop writes on its next pass, and is overwritten
     // by it at once (measured).
     let child =
         r"runfg:sleep 1; printf '\033]7501;state=idle:app=claude-code\033\\' >/dev/tty; sleep 3";
-    let (code, out) = core.send("chat", child).await;
+    let (code, out) = hcc.send("chat", child).await;
     assert_eq!(code, Some(0), "hc send: {out}");
-    core.until_state("chat", "blocked").await;
-    let before = core.get("chat").await["turn"].as_u64().unwrap();
-    core.run(&["keys", "chat", "enter"]).await;
-    let taken = core
+    hcc.until_state("chat", "blocked").await;
+    let before = hcc.get("chat").await["turn"].as_u64().unwrap();
+    hcc.run(&["keys", "chat", "enter"]).await;
+    let taken = hcc
         .until("chat", "the child's record", |g| {
             g["status"]["app"] == "claude-code"
         })
@@ -322,8 +322,8 @@ async fn a_child_writing_7501_replaces_the_record_until_the_next_state() {
     );
     // The turn ends after the call: iota's Idle is a new state, so it is reported and the record is
     // iota's again.
-    core.until_state("chat", "idle").await;
-    core.run(&["keys", "chat", "ctrl+d"]).await;
-    core.until("chat", "the record cleared", |g| g["status"].is_null())
+    hcc.until_state("chat", "idle").await;
+    hcc.run(&["keys", "chat", "ctrl+d"]).await;
+    hcc.until("chat", "the record cleared", |g| g["status"].is_null())
         .await;
 }
