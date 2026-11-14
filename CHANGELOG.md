@@ -3,6 +3,20 @@
 All notable changes to iota are recorded here. The same notes, rendered, are at
 <https://iota.sh/changelog>.
 
+## Unreleased
+
+### Added
+
+- **iota shows up in herdr's desktop app.** Inside a terminal of herdr-core
+  (`hc`), the terminal core behind the app, iota now reports its state the way
+  hc reads it, with OSC 7501: `working` during a turn, `blocked` at an approval
+  or another dialog, `idle` when it waits for you, `error` after a failed turn,
+  and nothing once it exits. `hc get` and `hc wait` therefore see it, and
+  `hc send` refuses to type into an open approval. A `-m` run reports too. The
+  sequence is written only inside an hc terminal. An hc terminal started from
+  a herdr pane now reports to hc instead of to that pane; the herdr
+  multiplexer itself is unchanged.
+
 ## 0.9.0 - 2026-11-11
 
 ### Added
