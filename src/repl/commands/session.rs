@@ -19,7 +19,7 @@ use crate::session::SessionInfo;
 use crate::sync::lock;
 use crate::ui::facade::{Panel, TabbedSpec};
 
-use crate::repl::render::replay::{RESUME_ECHO_ROUNDS, echo_rounds, last_rounds};
+use crate::repl::render::replay::{echo_rounds, resume_echo};
 use crate::repl::run::Repl;
 
 /// A session's one-line picker row (chat/session.go:1046-1063 `sessionLabel`).
@@ -279,7 +279,7 @@ pub(crate) async fn cmd_session(repl: &mut Repl) {
     if let Some(notice) = foreign_notice {
         repl.handles.tr.notice(&notice);
     }
-    let msgs = last_rounds(&repl.conv.history, RESUME_ECHO_ROUNDS);
+    let msgs = resume_echo(&repl.conv.history);
     if !msgs.is_empty() {
         let dispatch = Arc::clone(&repl.conv.dispatch);
         let img_dir = repl

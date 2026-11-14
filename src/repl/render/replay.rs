@@ -21,9 +21,21 @@ use crate::repl::render::group::ask_record_lines;
 use crate::repl::render::styles::{dim, reverse};
 use crate::repl::render::uisink::LineCommitter;
 
-/// How many trailing rounds a resumed session replays (chat/replay.go:19
+/// How many trailing rounds a resumed session replays on the inline terminal (chat/replay.go:19
 /// `resumeEchoRounds`).
-pub(crate) const RESUME_ECHO_ROUNDS: usize = 3;
+const RESUME_ECHO_ROUNDS: usize = 3;
+
+/// What a resumed session replays: the last [`RESUME_ECHO_ROUNDS`] rounds into the inline
+/// terminal's native history, the whole conversation into the full screen's buffer, where it can
+/// be scrolled back to the first message (tui-plan S2).
+pub(crate) fn resume_echo(history: &[Message]) -> &[Message] {
+    let rounds = if crate::ui::fullscreen_enabled() {
+        usize::MAX
+    } else {
+        RESUME_ECHO_ROUNDS
+    };
+    last_rounds(history, rounds)
+}
 
 /// The user block's gutter (chat/chat.go:160 `userPrompt`).
 const USER_PROMPT: &str = "❯ ";

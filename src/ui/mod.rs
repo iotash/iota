@@ -8,6 +8,7 @@ pub mod facade;
 
 pub use render::debug::install_region_trace;
 pub(crate) use runtime::handle::restore_terminal;
+pub(crate) use runtime::term::fullscreen_enabled;
 
 pub(crate) mod input;
 pub(crate) mod render;

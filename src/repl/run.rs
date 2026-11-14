@@ -50,7 +50,7 @@ use crate::repl::context::meter::{ContextBudget, CtxMeter};
 use crate::repl::noticegate::{self, NoticeGate, Outcome as GateOutcome};
 use crate::repl::render::banner::{BannerFacts, banner_lines, overlay_warnings};
 use crate::repl::render::mcpreport::report_mcp_failures;
-use crate::repl::render::replay::{RESUME_ECHO_ROUNDS, echo_rounds, last_rounds};
+use crate::repl::render::replay::{echo_rounds, resume_echo};
 use crate::repl::render::transcript::{Transcript, notify_digest};
 use crate::repl::state::{BotState, Conversation, SessionSlot, UiHandles};
 use crate::repl::title::{
@@ -582,7 +582,7 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
     }
     ui.print_lines(vec![String::new()]);
     if resumed {
-        let msgs = last_rounds(&history, RESUME_ECHO_ROUNDS);
+        let msgs = resume_echo(&history);
         if !msgs.is_empty() {
             let d = Arc::clone(&dispatch);
             let img_dir = lock(&writer).as_ref().map(SessionWriter::images_path);
