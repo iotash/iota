@@ -75,6 +75,7 @@
 //! | `38-fullscreen-resize.sh` | tui-plan S1 | — (`IOTA_FULLSCREEN=1`: a fast and a paced drag, and a drag through a stream — the frame on the bottom at full width after every step, no hole, no duplicate, every streamed row reachable) |
 //! | `39-fullscreen-exit.sh` | tui-plan S1 | — (`IOTA_FULLSCREEN=1`: Ctrl+D leaves the alternate screen and writes the conversation into the main screen at the exit width, once, without the frame) |
 //! | `40-fullscreen-signal.sh` | tui-plan S1 | — (`IOTA_FULLSCREEN=1`: SIGTERM — one, and two in a row — hands back a usable terminal: the main screen, cooked mode, the shell's prompt) |
+//! | `41-fullscreen-search.sh` | tui-plan S3 | — (`IOTA_FULLSCREEN=1`: Ctrl+R finds a word ~110 screens back, highlighted and counted; n/p wrap; Esc back exactly; Enter stays with the way back; no match moves nothing; `/` following the tail is the composer's) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -685,6 +686,12 @@ fn tmux_fullscreen_resize() {
 #[test]
 fn tmux_fullscreen_exit() {
     run_scenario("39-fullscreen-exit.sh");
+}
+
+/// L4 #41 (tui-plan S3) — searching the full screen's conversation from the tail and coming back.
+#[test]
+fn tmux_fullscreen_search() {
+    run_scenario("41-fullscreen-search.sh");
 }
 
 /// L4 #40 (tui-plan S1) — SIGTERM on the full screen, once and twice: the terminal is handed back usable.
