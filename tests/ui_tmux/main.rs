@@ -71,6 +71,10 @@
 //! | `31-tool-args-cut.sh` | F3, X-69 | — (Anthropic dialect: a reply cut mid-arguments — the error naming the dropped `shell` call, the `[shell …]` row torn down, no `tool_result` answering the call and the next request without it (not dispatched); the whole call as the control that does run) |
 //! | `35-rate-limit-hold.sh` | X-84 | — (ESC with a job's notice queued behind the stream: one dim `⏸ … held` line, no turn of its own, the headline going with the next typed message; a notice refused with 429: the `retrying (attempt n/3)` row, ONE `✗ Rate limited (429)` block whose hint names the next try, the next job's notice put aside `held until` with no second block) |
 //! | `36-config-trust.sh` | config-trust | — (a project `.iota.yaml` on a terminal: the question before anything runs, Enter = not now with the home config in force and the marker absent, `t` trusts, a trusted file asks nothing) |
+//! | `37-fullscreen-scroll.sh` | tui-plan S1 | — (`IOTA_FULLSCREEN=1`: the alternate screen held, the frame the bottom rows at full width, PgUp to the banner and PgDn back to the tail) |
+//! | `38-fullscreen-resize.sh` | tui-plan S1 | — (`IOTA_FULLSCREEN=1`: a fast and a paced drag, and a drag through a stream — the frame on the bottom at full width after every step, no hole, no duplicate, every streamed row reachable) |
+//! | `39-fullscreen-exit.sh` | tui-plan S1 | — (`IOTA_FULLSCREEN=1`: Ctrl+D leaves the alternate screen and writes the conversation into the main screen at the exit width, once, without the frame) |
+//! | `40-fullscreen-signal.sh` | tui-plan S1 | — (`IOTA_FULLSCREEN=1`: SIGTERM — one, and two in a row — hands back a usable terminal: the main screen, cooked mode, the shell's prompt) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -641,4 +645,31 @@ fn tmux_rate_limit_hold() {
 #[test]
 fn tmux_config_trust() {
     run_scenario("36-config-trust.sh");
+}
+
+/// L4 #37 (tui-plan S1) — the full screen: the alternate screen held, the frame pinned to the bottom at
+/// full width, PgUp walking back to the banner and PgDn returning to the tail.
+#[test]
+fn tmux_fullscreen_scroll() {
+    run_scenario("37-fullscreen-scroll.sh");
+}
+
+/// L4 #38 (tui-plan S1) — the full screen through drags of any pace and a drag mid-stream: after every
+/// step the frame is the bottom rows at full width, the conversation has no hole and no duplicate.
+#[test]
+fn tmux_fullscreen_resize() {
+    run_scenario("38-fullscreen-resize.sh");
+}
+
+/// L4 #39 (tui-plan S1) — Ctrl+D on the full screen: the main screen is back and holds the conversation,
+/// wrapped at the exit width, exactly once, and no frame row.
+#[test]
+fn tmux_fullscreen_exit() {
+    run_scenario("39-fullscreen-exit.sh");
+}
+
+/// L4 #40 (tui-plan S1) — SIGTERM on the full screen, once and twice: the terminal is handed back usable.
+#[test]
+fn tmux_fullscreen_signal() {
+    run_scenario("40-fullscreen-signal.sh");
 }
