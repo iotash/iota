@@ -17,6 +17,7 @@ use crate::common::HerdrMock;
 fn probe(vars: &[(String, String)]) -> Probe {
     let borrowed: Vec<(&str, &str)> = vars.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     Probe {
+        program_status: Box::new(|| None),
         env: Env::fixed(&borrowed),
         look_path: Box::new(|_| None),
     }

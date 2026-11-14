@@ -394,6 +394,7 @@ mod tests {
 
         assert!(
             detect_cmux(&Probe {
+                program_status: Box::new(|| None),
                 env: Env::default(),
                 look_path: Box::new(found),
             })
@@ -402,6 +403,7 @@ mod tests {
         );
         assert!(
             detect_cmux(&Probe {
+                program_status: Box::new(|| None),
                 env: with_var(),
                 look_path: Box::new(absent),
             })
@@ -409,6 +411,7 @@ mod tests {
             "detected cmux without the CLI on PATH"
         );
         let h = detect_cmux(&Probe {
+            program_status: Box::new(|| None),
             env: with_var(),
             look_path: Box::new(found),
         })

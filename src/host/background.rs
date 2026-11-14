@@ -102,6 +102,7 @@ mod tests {
     /// `path`.
     fn env(sid: &'static str, path: Option<&'static str>) -> Probe {
         Probe {
+            program_status: Box::new(|| None),
             env: Env::fixed(&[("CMUX_SURFACE_ID", sid)]),
             look_path: Box::new(move |_| path.map(PathBuf::from)),
         }

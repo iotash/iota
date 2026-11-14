@@ -24,8 +24,8 @@ use crossterm::terminal::SetTitle;
 
 use crate::ui::facade::ProgressState;
 
-/// The OSC 11 reply deadline (`TUI_CONTRACTS` §5: 100ms timeout).
-const BG_REPLY_TIMEOUT: Duration = Duration::from_millis(100);
+/// A query's reply deadline (`TUI_CONTRACTS` §5: 100ms timeout).
+const REPLY_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// OSC 9;4 reset — no bar (`ProgressState::None`, and the exit clear).
 pub(crate) const OSC_PROGRESS_RESET: &str = "\x1b]9;4;0\x07";
@@ -92,12 +92,23 @@ pub(crate) fn detect_background() -> bool {
 
 /// The fallible body: `Err` (no tty, raw-mode failure, timeout) → the dark default.
 fn detect_dark() -> io::Result<bool> {
+    let buf = round_trip(b"\x1b]11;?\x1b\\")?;
+    Ok(parse_osc11_dark(&buf).unwrap_or(true))
+}
+
+/// ONE query round-trip on the controlling terminal: `query` chased by a DSR 6n, written in raw
+/// mode, and the reply bytes read back up to the DSR's `R` ([`detect_background`] says why that
+/// ends every read), bounded by [`REPLY_TIMEOUT`]. `Err` when there is no terminal, raw mode
+/// cannot be entered, or nothing answers in time. Shared by the OSC 11 background detect and the
+/// herdr-core probe (`host::hc::probe_tty`): both run before any event loop claims the input, one
+/// after the other.
+pub(crate) fn round_trip(query: &[u8]) -> io::Result<Vec<u8>> {
     let mut tty = open_tty()?;
     let was_raw = crossterm::terminal::is_raw_mode_enabled()?;
     if !was_raw {
         crossterm::terminal::enable_raw_mode()?;
     }
-    let result = query(&mut tty);
+    let result = exchange(&mut tty, query);
     if !was_raw {
         let _ = crossterm::terminal::disable_raw_mode();
     }
@@ -123,19 +134,19 @@ fn open_tty() -> io::Result<File> {
 fn open_tty() -> io::Result<File> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "the OSC 11 background query needs a controlling terminal (no /dev/tty on Windows)",
+        "a terminal query needs a controlling terminal (no /dev/tty on Windows)",
     ))
 }
 
-/// Writes `OSC 11 ; ? ST` + `DSR 6n`, reads the reply bytes off the tty (bounded by
-/// the DSR terminator), and classifies the reported background color.
-fn query(tty: &mut File) -> io::Result<bool> {
-    tty.write_all(b"\x1b]11;?\x1b\\\x1b[6n")?;
+/// Writes `query` + `DSR 6n` and reads the reply bytes off the tty, bounded by the DSR
+/// terminator.
+fn exchange(tty: &mut File, query: &[u8]) -> io::Result<Vec<u8>> {
+    tty.write_all(&[query, b"\x1b[6n"].concat())?;
     tty.flush()?;
     let mut reader = tty.try_clone()?;
     let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
-        .name("iota-osc11".to_owned())
+        .name("iota-tty-reply".to_owned())
         .spawn(move || {
             let mut buf = Vec::with_capacity(64);
             let mut byte = [0u8; 1];
@@ -155,10 +166,8 @@ fn query(tty: &mut File) -> io::Result<bool> {
             }
             let _ = tx.send(buf);
         })?;
-    let buf = rx
-        .recv_timeout(BG_REPLY_TIMEOUT)
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "no OSC 11 / DSR reply"))?;
-    Ok(parse_osc11_dark(&buf).unwrap_or(true))
+    rx.recv_timeout(REPLY_TIMEOUT)
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "no reply to the query or the DSR"))
 }
 
 /// Extracts the `rgb:`/`rgba:` payload of an OSC 11 reply and classifies it dark by

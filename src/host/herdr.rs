@@ -465,6 +465,7 @@ mod tests {
 
     fn probe(vars: &[(&str, &str)]) -> Probe {
         Probe {
+            program_status: Box::new(|| None),
             env: Env::fixed(vars),
             look_path: Box::new(|_| None),
         }

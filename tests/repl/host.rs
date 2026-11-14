@@ -510,6 +510,7 @@ fn herdr_presenter(mock: &crate::common::HerdrMock, pane: &str) -> Arc<Presenter
     let borrowed: Vec<(&str, &str)> = vars.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let pres = Arc::new(Presenter::new(
         &iota::host::Probe {
+            program_status: Box::new(|| None),
             env: iota::app::env::Env::fixed(&borrowed),
             look_path: Box::new(|_| None),
         },

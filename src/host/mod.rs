@@ -23,8 +23,8 @@
 //! carries the `CMUX_SURFACE_ID` the herdr SERVER was born with, which may be stale or another
 //! window's, and a status row set through it would land on the wrong surface. So iota talks to the
 //! innermost host only: `DETECTORS` is ordered inner to outer (hc, herdr, cmux — hc first because an
-//! hc terminal inherits the `HERDR_*` of a herdr pane it was started from, while a herdr pane inside
-//! an hc terminal says `TERM_PROGRAM=herdr`, which the hc detector declines), and
+//! hc terminal inherits the `HERDR_*` of a herdr pane it was started from, while a herdr pane or a tmux
+//! inside an hc terminal does not answer the OSC 7501 query the hc detector asks the terminal), and
 //! [`Presenter::new`] keeps the FIRST detector that matches, then the ANSI fallback — never two
 //! detected hosts. A probe carrying both `HERDR_*` and `CMUX_SURFACE_ID` yields herdr alone, and
 //! cmux is not even asked. The per-capability fan-out over the remaining pair (the detected host
@@ -231,14 +231,21 @@ pub fn child_env<'a>(hosts: impl IntoIterator<Item = &'a dyn Host>) -> ChildEnv 
 /// `exec.LookPath` as a closure (`None` when not found).
 pub type LookPathFn = Box<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
 
-/// What the detectors read (host.go:71-74): the run's environment (`os.Getenv`) and a `PATH`
-/// lookup, both injected by the command so this module never touches the process environment
-/// itself.
+/// The terminal's answer to "do you read OSC 7501?" (`hc::probe_tty`): `Some(true)` it does,
+/// `Some(false)` it answered the DSR alone, `None` there was no terminal or no answer in time.
+pub type ProgramStatusFn = Box<dyn Fn() -> Option<bool> + Send + Sync>;
+
+/// What the detectors read (host.go:71-74): the run's environment (`os.Getenv`), a `PATH`
+/// lookup and the terminal's OSC 7501 answer, all injected by the command so this module never
+/// touches the process environment or the tty itself.
 pub struct Probe {
     /// The run's environment.
     pub env: Env,
     /// `exec.LookPath` (`None` when not found).
     pub look_path: LookPathFn,
+    /// Asks the terminal whether it reads OSC 7501 — a write and a read on the tty, so only the hc
+    /// detector calls it, and only when `HC_TERMINAL_ID` says an hc terminal may be there.
+    pub program_status: ProgramStatusFn,
 }
 
 /// A host detector: `Some(host)` when the environment says the chat runs inside it.
@@ -246,7 +253,7 @@ pub type Detector = fn(&Probe) -> Option<Box<dyn Host>>;
 
 /// The detectors, innermost host first (host.go:84 had one). Only the first match is kept: herdr-core
 /// before herdr, because an hc terminal started from a herdr pane inherits the pane's `HERDR_*` (and a
-/// herdr pane inside an hc terminal is told apart by `TERM_PROGRAM=herdr`, `hc::detect_hc`); herdr
+/// herdr pane or a tmux inside an hc terminal does not answer hc's probe, `hc::detect_hc`); herdr
 /// before cmux, because a herdr pane inside a cmux window inherits a `CMUX_SURFACE_ID` that is the
 /// server's, not the pane's (the module doc).
 pub(crate) const DETECTORS: &[Detector] = &[hc::detect_hc, herdr::detect_herdr, cmux::detect_cmux];
@@ -708,6 +715,7 @@ mod tests {
     #[test]
     fn test_new_presenter_detects_bare_env() {
         let none = Probe {
+            program_status: Box::new(|| None),
             env: Env::default(),
             look_path: Box::new(|_| None),
         };
@@ -726,6 +734,7 @@ mod tests {
     #[tokio::test]
     async fn test_new_presenter_detects_cmux() {
         let cmux_env = Probe {
+            program_status: Box::new(|| None),
             env: Env::fixed(&[("CMUX_SURFACE_ID", "surface-1")]),
             look_path: Box::new(|_| Some(PathBuf::from("/usr/bin/true"))),
         };
@@ -743,6 +752,7 @@ mod tests {
         let cmux_asked = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let asked = Arc::clone(&cmux_asked);
         let both = Probe {
+            program_status: Box::new(|| None),
             env: Env::fixed(&[
                 ("HERDR_ENV", "1"),
                 ("HERDR_PANE_ID", "w1:p2"),

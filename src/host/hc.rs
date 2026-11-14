@@ -6,11 +6,25 @@
 //! replaces the record; `state=clear` removes it).
 //!
 //! **Only inside an hc terminal.** An OSC another terminal does not know is at best ignored and at
-//! worst garbage, so nothing here is written unless [`detect_hc`] matched: `HC_TERMINAL_ID` is set and
-//! `TERM_PROGRAM` is not `herdr`. The detector sits BEFORE herdr's (`super::DETECTORS`): an hc
-//! terminal started from a herdr pane inherits the pane's `HERDR_*`, and reporting to that pane would
-//! be the wrong surface; a herdr pane inside an hc terminal says `TERM_PROGRAM=herdr` (herdr ≥0.9.2),
-//! which hands it back to herdr.
+//! worst garbage, so nothing here is written unless [`detect_hc`] matched, and it asks the terminal
+//! itself (docs/design/herdr-core-host.md §2). Without `HC_TERMINAL_ID` it is not an hc terminal and
+//! not one byte goes to the tty. With it, the probe ([`probe_tty`], injected through
+//! [`Probe::program_status`]) writes `ESC ] 7501 ; ? ST` chased by a DSR and reads the reply: hc
+//! answers the query (in well under a millisecond, measured), while whatever stands between iota and
+//! hc — a tmux, a herdr pane — answers only the DSR, and the host is then not hc. The environment
+//! cannot say this: a variable names an ancestor, not what is across the tty, and hc's own
+//! `TERM_PROGRAM=ghostty` is a value it is already asked to change. Only when the probe cannot run (no
+//! controlling terminal, no answer in 100 ms) does the environment decide — `TERM_PROGRAM` not `herdr`
+//! — and then the host has no tty to write to anyway; the rule only keeps a leaked `HERDR_*` from
+//! taking the reports. The detector sits BEFORE herdr's (`super::DETECTORS`): an hc terminal started
+//! from a herdr pane inherits the pane's `HERDR_*`, and reporting to that pane would be the wrong
+//! surface.
+//!
+//! **Children do not get the id** ([`ChildEnvironment`]). A child of the chat that saw
+//! `HC_TERMINAL_ID` would probe the same tty — racing the chat's input reader for the reply — and, an
+//! `iota -m` being one, report over the chat's record and clear it when it ends. Withheld, a child does
+//! not probe and writes nothing; the model is told the id is missing on purpose, and that its
+//! `hc run` passes `--parent <id>` (the `hc` CLI takes an explicit id everywhere, measured).
 //!
 //! **The writer.** Interactively the bytes go through the facade ([`InBand::write_through`], given by
 //! `Presenter::show_turn_on`), so the UI thread writes them between draws and never inside one. A `-m`
@@ -26,16 +40,17 @@
 //! **What it does not do.** No [`Notifier`](crate::host::Notifier): the ANSI host keeps OSC 9, and hc
 //! makes no event of it. No [`BackgroundReporter`](crate::host::BackgroundReporter): hc answers OSC 11
 //! itself. No [`SessionReporter`](crate::host::SessionReporter): the protocol has no key for a session.
-//! No [`ChildEnvironment`](crate::host::ChildEnvironment): the channel is the tty, not a variable — a
-//! child that writes 7501 to the same tty replaces iota's record whatever its environment (measured;
-//! the design doc), and the model's own `hc` CLI needs `HC_TERMINAL_ID`.
+//! Withholding the id does not stop a child that writes 7501 to the tty on its own (Claude Code
+//! does): that replaces iota's record whatever its environment (measured; the design doc §4).
 
 use std::fs::File;
 use std::io::Write as _;
 use std::sync::{Arc, Mutex};
 
 use crate::BoxFuture;
-use crate::host::{Closer, EnvironmentContributor, Host, InBand, Probe, State, StateReporter};
+use crate::host::{
+    ChildEnvironment, Closer, EnvironmentContributor, Host, InBand, Probe, State, StateReporter,
+};
 use crate::sync::lock;
 use crate::ui::facade::Ui;
 
@@ -43,10 +58,19 @@ use crate::ui::facade::Ui;
 pub(crate) const HC_NAME: &str = "herdr-core";
 /// The terminal the chat runs in (`t4`); hc sets it in every terminal it starts.
 pub(crate) const HC_TERMINAL_ID: &str = "HC_TERMINAL_ID";
-/// `herdr` inside a herdr pane (herdr ≥0.9.2); hc sets its own value in an hc terminal.
+/// `herdr` inside a herdr pane (herdr ≥0.9.2): the detector's rule when the terminal cannot be asked.
 pub(crate) const TERM_PROGRAM: &str = "TERM_PROGRAM";
 /// The `app` key of every report: the program name.
 pub(crate) const HC_APP: &str = crate::app::NAME;
+
+/// The probe: the OSC 7501 capability query (the DSR that ends the read is added by the round-trip).
+pub(crate) const PROBE_QUERY: &[u8] = b"\x1b]7501;?\x1b\\";
+/// What hc's answer to [`PROBE_QUERY`] starts with (`ESC ] 7501 ; ? : states=…`).
+const PROBE_ANSWER: &[u8] = b"\x1b]7501;?";
+
+/// What the model is told about the withheld id (the module doc). Short: every host line is paid for in
+/// every request.
+pub(crate) const HC_CHILD_NOTE: &str = "HC_TERMINAL_ID is unset in your shell on purpose; give hc the terminal id, and hc run --parent <id>";
 
 /// The protocol word of a state (the module doc).
 pub(crate) fn word(s: State) -> &'static str {
@@ -148,6 +172,10 @@ impl Host for HcHost {
     fn as_in_band(&self) -> Option<&dyn InBand> {
         Some(self)
     }
+
+    fn as_child_env(&self) -> Option<&dyn ChildEnvironment> {
+        Some(self)
+    }
 }
 
 impl StateReporter for HcHost {
@@ -173,30 +201,55 @@ impl InBand for HcHost {
 }
 
 impl EnvironmentContributor for HcHost {
-    /// `host: herdr-core` and the terminal — the address `hc get`, `hc read` and `hc label` take.
+    /// `host: herdr-core`, the terminal — the address `hc get`, `hc read` and `hc label` take — and the
+    /// note on the id the model's shell lacks.
     fn environment(&self) -> Vec<(String, String)> {
         vec![
             ("host".to_owned(), HC_NAME.to_owned()),
             ("hc terminal".to_owned(), self.terminal.clone()),
+            ("hc note".to_owned(), HC_CHILD_NOTE.to_owned()),
         ]
     }
 }
 
-/// `Some(HcHost)` when `HC_TERMINAL_ID` is non-empty and `TERM_PROGRAM` is not `herdr` (the module
-/// doc). Opens nothing: the tty is opened by the first report, if one is ever made.
+impl ChildEnvironment for HcHost {
+    /// `HC_TERMINAL_ID` (the module doc).
+    fn withheld(&self) -> Vec<String> {
+        vec![HC_TERMINAL_ID.to_owned()]
+    }
+}
+
+/// `Some(HcHost)` when `HC_TERMINAL_ID` is non-empty and the terminal answers the OSC 7501 query — or,
+/// when it cannot be asked, `TERM_PROGRAM` is not `herdr` (the module doc). Without the id the terminal
+/// is not asked. Opens nothing for the reports: the tty is opened by the first one, if one is ever made.
 pub(crate) fn detect_hc(probe: &Probe) -> Option<Box<dyn Host>> {
     let terminal = probe.env.var(HC_TERMINAL_ID)?;
-    if probe.env.var(TERM_PROGRAM).as_deref() == Some("herdr") {
-        return None;
-    }
-    Some(Box::new(HcHost::new(terminal)))
+    let hc = match (probe.program_status)() {
+        Some(answered) => answered,
+        None => probe.env.var(TERM_PROGRAM).as_deref() != Some("herdr"),
+    };
+    hc.then(|| Box::new(HcHost::new(terminal)) as Box<dyn Host>)
+}
+
+/// The real [`Probe::program_status`]: one [`PROBE_QUERY`] round-trip on the controlling terminal
+/// (`ui::runtime::osc::round_trip`, the OSC 11 detect's mechanism). `Some(true)` when the reply
+/// carries hc's answer, `Some(false)` when only the DSR came back, `None` without a terminal or a
+/// reply in time.
+pub(crate) fn probe_tty() -> Option<bool> {
+    let reply = crate::ui::runtime::osc::round_trip(PROBE_QUERY).ok()?;
+    Some(answered(&reply))
+}
+
+/// Whether a reply carries hc's answer to the probe.
+fn answered(reply: &[u8]) -> bool {
+    reply.windows(PROBE_ANSWER.len()).any(|w| w == PROBE_ANSWER)
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-    use super::{HcHost, detect_hc, report};
+    use super::{HC_CHILD_NOTE, HcHost, PROBE_QUERY, answered, detect_hc, report};
     use crate::app::env::Env;
     use crate::host::{Host, Probe, State, detect};
     use crate::testing::{ScriptedUi, UiEvent};
@@ -223,10 +276,12 @@ mod tests {
         }
     }
 
-    fn probe(vars: &[(&str, &str)]) -> Probe {
+    /// A probe over `vars` whose terminal gives `answer` to the OSC 7501 query.
+    fn probe(vars: &[(&str, &str)], answer: Option<bool>) -> Probe {
         Probe {
             env: Env::fixed(vars),
             look_path: Box::new(|_| None),
+            program_status: Box::new(move || answer),
         }
     }
 
@@ -238,8 +293,10 @@ mod tests {
         ("HERDR_BIN_PATH", "/nonexistent/herdr"),
     ];
 
-    /// The four ways the two products meet, each yielding exactly one host — the right one. Run
-    /// through `detect`, so the order of `DETECTORS` is what is tested.
+    /// The seven ways hc meets the others (docs/design/herdr-core-host.md §2), each yielding exactly
+    /// one host — the right one, or none. Run through `detect`, so the order of `DETECTORS` is what is
+    /// tested; the terminal's answer to the probe is what each nesting gives (measured for hc and tmux;
+    /// herdr's is assumed, the design doc says why).
     #[tokio::test]
     async fn the_detection_matrix_yields_one_host_each() {
         let hc = [
@@ -247,46 +304,114 @@ mod tests {
             ("HC_SCOPE", "scope"),
             ("TERM_PROGRAM", "ghostty"),
         ];
-        let plain_herdr = [&HERDR[..], &[("TERM_PROGRAM", "herdr")]].concat();
-        // A: an hc core started from a herdr pane — its terminals inherit the pane's HERDR_*, and hc
-        // sets its own TERM_PROGRAM (measured).
+        let id = ("HC_TERMINAL_ID", "t4");
+        // An hc core started from a herdr pane: its terminals inherit the pane's HERDR_* (measured).
         let hc_in_herdr = [&HERDR[..], &hc[..]].concat();
-        // B: a herdr pane inside an hc terminal — the pane may inherit HC_TERMINAL_ID, and herdr sets
-        // TERM_PROGRAM=herdr.
-        let herdr_in_hc = [
-            &HERDR[..],
-            &[("HC_TERMINAL_ID", "t4"), ("TERM_PROGRAM", "herdr")],
-        ]
-        .concat();
-        for (case, vars, want) in [
-            ("plain hc", &hc[..], "herdr-core"),
-            ("plain herdr", &plain_herdr[..], "herdr"),
-            ("A: hc nested in herdr", &hc_in_herdr[..], "herdr-core"),
-            ("B: herdr inside hc", &herdr_in_hc[..], "herdr"),
+        // herdr ≥0.9.2 inside an hc terminal: it says TERM_PROGRAM=herdr; an older one says nothing.
+        let herdr_in_hc = [&HERDR[..], &[id, ("TERM_PROGRAM", "herdr")]].concat();
+        let old_herdr_in_hc = [&HERDR[..], &[id]].concat();
+        // tmux inside an hc terminal: the id is inherited, tmux answers only the DSR (measured).
+        let tmux_in_hc = [
+            id,
+            ("TERM_PROGRAM", "tmux"),
+            ("TMUX", "/tmp/tmux-501/default,1,0"),
+        ];
+        // `hc attach` inside a tmux pane: iota's tty is hc's terminal; tmux only watches it.
+        let hc_in_tmux = [&hc[..], &[("TMUX", "/tmp/tmux-501/default,1,0")]].concat();
+        for (case, vars, answer, want) in [
+            ("plain hc", &hc[..], Some(true), Some("herdr-core")),
+            (
+                "hc in herdr",
+                &hc_in_herdr[..],
+                Some(true),
+                Some("herdr-core"),
+            ),
+            ("herdr in hc", &herdr_in_hc[..], Some(false), Some("herdr")),
+            (
+                "old herdr in hc",
+                &old_herdr_in_hc[..],
+                Some(false),
+                Some("herdr"),
+            ),
+            ("tmux in hc", &tmux_in_hc[..], Some(false), None),
+            (
+                "hc in tmux",
+                &hc_in_tmux[..],
+                Some(true),
+                Some("herdr-core"),
+            ),
+            ("no hc", &[][..], Some(true), None),
         ] {
-            let host = detect(&probe(vars)).unwrap_or_else(|| panic!("{case}: no host"));
-            assert_eq!(host.name(), want, "{case}");
-            if let Some(c) = host.as_closer()
-                && want == "herdr"
+            let host = detect(&probe(vars, answer));
+            assert_eq!(host.as_ref().map(|h| h.name()), want, "{case}");
+            if let Some(c) = host.as_ref().and_then(|h| h.as_closer())
+                && want == Some("herdr")
             {
                 c.close().await; // the release goes to a socket nobody listens on
             }
         }
     }
 
-    /// An empty id is no hc terminal, and neither is a herdr pane that inherited one.
+    /// Without an id the terminal is never asked; with one, its answer decides, and only when it
+    /// cannot be asked does `TERM_PROGRAM` (the fallback rule).
     #[test]
-    fn the_detector_needs_an_id_and_not_herdr() {
-        assert!(detect_hc(&probe(&[])).is_none());
-        assert!(detect_hc(&probe(&[("HC_TERMINAL_ID", "")])).is_none());
-        assert!(
-            detect_hc(&probe(&[
-                ("HC_TERMINAL_ID", "t1"),
-                ("TERM_PROGRAM", "herdr")
-            ]))
-            .is_none()
+    fn the_detector_asks_the_terminal_only_with_an_id() {
+        let asked = Arc::new(Mutex::new(0));
+        let counted = |vars: &[(&str, &str)]| {
+            let n = Arc::clone(&asked);
+            Probe {
+                env: Env::fixed(vars),
+                look_path: Box::new(|_| None),
+                program_status: Box::new(move || {
+                    *n.lock().unwrap() += 1;
+                    Some(true)
+                }),
+            }
+        };
+        assert!(detect_hc(&counted(&[])).is_none());
+        assert!(detect_hc(&counted(&[("HC_TERMINAL_ID", "")])).is_none());
+        assert_eq!(*asked.lock().unwrap(), 0, "asked without an id");
+        assert!(detect_hc(&counted(&[("HC_TERMINAL_ID", "t1")])).is_some());
+        assert_eq!(*asked.lock().unwrap(), 1);
+
+        let t1 = ("HC_TERMINAL_ID", "t1");
+        assert!(detect_hc(&probe(&[t1, ("TERM_PROGRAM", "herdr")], Some(true))).is_some());
+        assert!(detect_hc(&probe(&[t1, ("TERM_PROGRAM", "ghostty")], Some(false))).is_none());
+        assert!(detect_hc(&probe(&[t1], None)).is_some());
+        assert!(detect_hc(&probe(&[t1, ("TERM_PROGRAM", "ghostty")], None)).is_some());
+        assert!(detect_hc(&probe(&[t1, ("TERM_PROGRAM", "herdr")], None)).is_none());
+    }
+
+    /// The probe's query, and the replies it reads: hc's (measured bytes, 0.1.21) and a DSR alone.
+    #[test]
+    fn the_probe_reads_hc_s_answer_and_not_the_dsr() {
+        assert_eq!(PROBE_QUERY, b"\x1b]7501;?\x1b\\");
+        assert!(answered(
+            b"\x1b]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth\x1b\\\x1b[1;1R"
+        ));
+        assert!(!answered(b"\x1b[24;1R"));
+        assert!(!answered(b""));
+    }
+
+    /// The id is withheld from every child (the module doc), and the model is told so.
+    #[test]
+    fn children_are_spawned_without_the_id() {
+        let h = HcHost::with_writer("t4", Box::new(Recorder::default()));
+        assert_eq!(
+            h.as_child_env().expect("hc withholds").withheld(),
+            vec!["HC_TERMINAL_ID".to_owned()]
         );
-        assert!(detect_hc(&probe(&[("HC_TERMINAL_ID", "t1")])).is_some());
+        let lines = h.as_environment().unwrap().environment();
+        assert_eq!(
+            lines.last().unwrap(),
+            &("hc note".to_owned(), HC_CHILD_NOTE.to_owned())
+        );
+        let bytes: usize = lines.iter().map(|(k, v)| k.len() + 2 + v.len() + 1).sum();
+        let share = crate::agents::harness::HARNESS_CAP / 10;
+        assert!(
+            bytes <= share,
+            "hc's lines are {bytes} bytes, its share {share}"
+        );
     }
 
     /// The byte pin: each state's exact sequence, and the clear on close.
@@ -377,6 +502,7 @@ mod tests {
             vec![
                 ("host".to_owned(), "herdr-core".to_owned()),
                 ("hc terminal".to_owned(), "t4".to_owned()),
+                ("hc note".to_owned(), HC_CHILD_NOTE.to_owned()),
             ]
         );
     }
