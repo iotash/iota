@@ -10,6 +10,12 @@
 //! **The terminal's environment is the CORE's** (measured: a variable on the `hc run` client does not
 //! reach the terminal). So each test starts its own core under the environment its iota must see — a
 //! cleared one, plus `HERDR_*` for the nesting case.
+//!
+//! **No core outlives its test.** `Drop` stops it; when `server stop` fails it kills every process that
+//! holds a file in the core's state directory (the core, by its `core.lock`, and the holders whose
+//! terminals die with them) and says so on stderr. A panic unwinds into that `Drop`; an interrupt does
+//! not, so each core also gets a reaper in its own process group — out of reach of the terminal's
+//! Ctrl+C — that waits for this test process to end and then does the same to whatever is left.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -21,13 +27,18 @@ use crate::common::HerdrMock;
 /// How long a state may take to show up.
 const DEADLINE: Duration = Duration::from_secs(20);
 
+/// `name` on this process's `PATH`.
+fn which(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|p| {
+        std::env::split_paths(&p)
+            .map(|d| d.join(name))
+            .find(|f| f.is_file())
+    })
+}
+
 /// `hc` on this process's `PATH`, or the skip (a failure under `IOTA_HC_REQUIRED=1`).
 fn hc_binary() -> Option<PathBuf> {
-    let found = std::env::var_os("PATH").and_then(|p| {
-        std::env::split_paths(&p)
-            .map(|d| d.join("hc"))
-            .find(|f| f.is_file())
-    });
+    let found = which("hc");
     if found.is_none() {
         assert!(
             std::env::var_os("IOTA_HC_REQUIRED").is_none_or(|v| v != "1"),
@@ -45,6 +56,18 @@ struct Core {
     dir: tempfile::TempDir,
     env: Vec<(String, String)>,
 }
+
+/// Kills every process holding a file under `$1` (a core's state directory: the core holds its
+/// `core.lock`, each holder its socket). Shared by `Drop` and the reaper.
+const KILL_HOLDERS: &str =
+    "pids=$(/usr/sbin/lsof -t +D \"$1\" 2>/dev/null); [ -z \"$pids\" ] || kill $pids";
+
+/// The reaper (the module doc): `$1` this process, `$2` the core's root, `$3` `hc`. Exits at once
+/// when the root is gone — the test cleaned up after itself.
+const REAPER: &str = r#"while kill -0 "$1" 2>/dev/null; do sleep 1; done
+[ -d "$2" ] || exit 0
+"$3" server stop >/dev/null 2>&1 || { pids=$(/usr/sbin/lsof -t +D "$2/s" 2>/dev/null); [ -z "$pids" ] || kill $pids; }
+rm -rf "$2""#;
 
 impl Core {
     /// Starts a core whose terminals see `extra` on top of a cleared environment, with `config` as the
@@ -80,9 +103,33 @@ impl Core {
         .collect();
         env.extend_from_slice(extra);
         let hcc = Self { hc, dir, env };
+        hcc.reaper(&root);
         let started = hcc.run(&["server", "start"]).await;
         assert_eq!(started.0, Some(0), "hc server start: {}", started.1);
         hcc
+    }
+
+    /// Starts the reaper (the module doc) for the core rooted at `root`.
+    fn reaper(&self, root: &std::path::Path) {
+        use std::os::unix::process::CommandExt as _;
+        std::process::Command::new("/bin/sh")
+            .args(["-c", REAPER, "reaper"])
+            .arg(std::process::id().to_string())
+            .arg(root)
+            .arg(&self.hc)
+            .env_clear()
+            .envs(self.env.iter().map(|(k, v)| (k, v)))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("start the core's reaper");
+    }
+
+    /// The core's state directory (`XDG_STATE_HOME`).
+    fn state(&self) -> PathBuf {
+        self.dir.path().canonicalize().unwrap().join("s")
     }
 
     /// The project directory iota runs in.
@@ -167,12 +214,32 @@ impl Core {
 }
 
 impl Drop for Core {
+    /// Stops the core; when that fails, kills what holds its state directory (the module doc).
     fn drop(&mut self) {
-        let _ = std::process::Command::new(&self.hc)
+        let stop = std::process::Command::new(&self.hc)
             .args(["server", "stop"])
             .env_clear()
             .envs(self.env.iter().map(|(k, v)| (k, v)))
             .output();
+        let failed = match &stop {
+            Ok(out) if out.status.success() => return,
+            Ok(out) => format!(
+                "{}: {}{}",
+                out.status,
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+            Err(e) => e.to_string(),
+        };
+        let state = self.state();
+        let killed = std::process::Command::new("/bin/sh")
+            .args(["-c", KILL_HOLDERS, "kill"])
+            .arg(&state)
+            .status();
+        eprintln!(
+            "hc server stop failed ({failed}); killed what holds {}: {killed:?}",
+            state.display()
+        );
     }
 }
 
@@ -322,6 +389,135 @@ async fn a_child_writing_7501_replaces_the_record_until_the_next_state() {
     );
     // The turn ends after the call: iota's Idle is a new state, so it is reported and the record is
     // iota's again.
+    hcc.until_state("chat", "idle").await;
+    hcc.run(&["keys", "chat", "ctrl+d"]).await;
+    hcc.until("chat", "the record cleared", |g| g["status"].is_null())
+        .await;
+}
+
+/// tmux inside an hc terminal, iota inside tmux: tmux answers only the probe's DSR, so iota does not
+/// take hc for its host — the terminal record stays unreported — and the tmux pane gets the OSC 9;4
+/// progress the plain terminal is told.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inside_tmux_inside_hc_the_terminal_keeps_the_progress() {
+    let Some(hc) = hc_binary() else { return };
+    let Some(tmux) = which("tmux") else {
+        assert!(
+            std::env::var_os("IOTA_HC_REQUIRED").is_none_or(|v| v != "1"),
+            "IOTA_HC_REQUIRED=1 but no `tmux` on PATH"
+        );
+        println!("SKIP: no `tmux` on PATH; the tmux-inside-hc test did not run");
+        return;
+    };
+    let port = crate::mock::start().expect("mock provider");
+    let hcc = Core::start(hc, &config(port), &[]).await;
+    let sock = hcc.dir.path().join("t");
+    let raw = hcc.dir.path().join("raw");
+    let go = hcc.dir.path().join("go");
+    let tm = |args: &[&str]| {
+        std::process::Command::new(&tmux)
+            .arg("-S")
+            .arg(&sock)
+            .args(args)
+            .output()
+            .expect("run tmux")
+    };
+    // The pane waits for the raw tap before iota starts, so its first bytes are captured.
+    let pane = format!(
+        "while [ ! -e '{}' ]; do sleep 0.1; done; {}",
+        go.display(),
+        script("")
+    );
+    hcc.spawn(
+        "tmux",
+        &format!(
+            "'{}' -S '{}' -f /dev/null new-session -s s \"{pane}\"",
+            tmux.display(),
+            sock.display()
+        ),
+    )
+    .await;
+    let start = Instant::now();
+    while !tm(&["has-session", "-t", "s"]).status.success() {
+        assert!(start.elapsed() < DEADLINE, "tmux never started");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let piped = tm(&[
+        "pipe-pane",
+        "-t",
+        "s",
+        "-o",
+        &format!("cat >> '{}'", raw.display()),
+    ]);
+    assert!(piped.status.success(), "pipe-pane: {piped:?}");
+    std::fs::write(&go, "").unwrap();
+
+    let has = |needle: &[u8]| {
+        std::fs::read(&raw).is_ok_and(|b| b.windows(needle.len()).any(|w| w == needle))
+    };
+    // Up: the input box is drawn. Then a turn, typed into the pane.
+    let start = Instant::now();
+    while !String::from_utf8_lossy(&tm(&["capture-pane", "-p", "-t", "s"]).stdout).contains('>') {
+        assert!(start.elapsed() < DEADLINE, "iota never came up in tmux");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        tm(&["send-keys", "-t", "s", "stream 10 100", "Enter"])
+            .status
+            .success()
+    );
+    let start = Instant::now();
+    while !has(b"\x1b]9;4;3\x07") {
+        assert!(
+            start.elapsed() < DEADLINE,
+            "the pane never got OSC 9;4 busy"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        !has(b"\x1b]7501;state="),
+        "iota reported to a terminal that is tmux"
+    );
+    let got = hcc.get("tmux").await;
+    assert_eq!(got["reported"], false, "hc heard iota through tmux: {got}");
+    tm(&["kill-server"]);
+}
+
+/// A shell-tool call that runs `iota -m` (the chat's child) leaves the chat's record alone: the child
+/// gets no `HC_TERMINAL_ID`, so it neither asks the tty nor reports, and the record is still the
+/// chat's `working` after the child is done.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_nested_headless_iota_leaves_the_chat_s_record() {
+    let Some(hc) = hc_binary() else { return };
+    let port = crate::mock::start().expect("mock provider");
+    let hcc = Core::start(hc, &config(port), &[]).await;
+    hcc.spawn("chat", &script("")).await;
+    hcc.until_state("chat", "idle").await;
+    let child = format!(
+        "runfg:{} -m 'stream 5 50' > child.txt 2>&1; sleep 4",
+        env!("CARGO_BIN_EXE_iota")
+    );
+    let (code, out) = hcc.send("chat", &child).await;
+    assert_eq!(code, Some(0), "hc send: {out}");
+    hcc.until_state("chat", "blocked").await;
+    hcc.run(&["keys", "chat", "enter"]).await;
+    let reply = hcc.cwd().join("child.txt");
+    let start = Instant::now();
+    while !std::fs::read_to_string(&reply).is_ok_and(|r| r.contains("l#04 line")) {
+        if start.elapsed() > DEADLINE {
+            let screen = hcc.run(&["read", "chat"]).await.1;
+            panic!(
+                "the nested iota never replied: {:?}\nscreen:\n{screen}",
+                std::fs::read_to_string(&reply)
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // The child is done; the call's `sleep` still runs, so the chat is still in its turn.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let got = hcc.get("chat").await;
+    assert_eq!(got["status"]["app"], "iota", "{got}");
+    assert_eq!(got["status"]["state"], "working", "{got}");
     hcc.until_state("chat", "idle").await;
     hcc.run(&["keys", "chat", "ctrl+d"]).await;
     hcc.until("chat", "the record cleared", |g| g["status"].is_null())
