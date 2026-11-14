@@ -14,9 +14,10 @@
 //! hc — a tmux, a herdr pane — answers only the DSR, and the host is then not hc. The environment
 //! cannot say this: a variable names an ancestor, not what is across the tty, and hc's own
 //! `TERM_PROGRAM=ghostty` is a value it is already asked to change. Only when the probe cannot run (no
-//! controlling terminal, no answer in 100 ms) does the environment decide — `TERM_PROGRAM` not `herdr`
-//! — and then the host has no tty to write to anyway; the rule only keeps a leaked `HERDR_*` from
-//! taking the reports. The detector sits BEFORE herdr's (`super::DETECTORS`): an hc terminal started
+//! controlling terminal, no answer in 100 ms, a background process group — whose raw mode would stop
+//! it with `SIGTTOU`) does the environment decide: `TERM_PROGRAM` not `herdr`. Without a terminal the
+//! host writes nothing anyway and the rule only keeps a leaked `HERDR_*` from taking the reports; a
+//! background process can write, which is why the chat's own children do not get the id (below). The detector sits BEFORE herdr's (`super::DETECTORS`): an hc terminal started
 //! from a herdr pane inherits the pane's `HERDR_*`, and reporting to that pane would be the wrong
 //! surface.
 //!

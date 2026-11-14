@@ -15,7 +15,7 @@ adapted per host.
 
 ```
 repl / -m ──▶ host::Presenter ──▶ the FIRST detected host, then the fallback
-                                    ├── herdr-core (detected: HC_TERMINAL_ID, TERM_PROGRAM ≠ herdr)
+                                    ├── herdr-core (detected: HC_TERMINAL_ID + the tty answers OSC 7501)
                                     ├── herdr      (detected: HERDR_ENV=1 + pane id + socket)
                                     ├── cmux       (detected: CMUX_SURFACE_ID + CLI on PATH)
                                     └── ANSI       (always present, always last; interactive only)
@@ -41,8 +41,9 @@ repl / -m ──▶ host::Presenter ──▶ the FIRST detected host, then the 
   2026-09-21): a nested host inherits its parent's variables, and reporting
   through them lands on the wrong surface. The order is `[hc, herdr, cmux]`:
   - hc before herdr — an hc terminal started from a herdr pane inherits the
-    pane's `HERDR_*`; a herdr pane inside an hc terminal says
-    `TERM_PROGRAM=herdr`, which the hc detector declines;
+    pane's `HERDR_*`; a herdr pane (or a tmux) inside an hc terminal does not
+    answer the OSC 7501 query the hc detector asks the terminal, so it falls
+    through;
   - herdr before cmux — a herdr pane inside a cmux window inherits the
     server's `CMUX_SURFACE_ID`.
   Adding a host = one file + one entry at the place its nesting dictates,
@@ -80,11 +81,14 @@ bounded ordered queue. It also tells the model the pane, and withholds
 terminal core behind herdr's desktop app, a separate product from herdr. Its
 state channel is IN BAND: OSC 7501 written to the terminal
 (`state=working|blocked|idle|error:app=iota`, `state=clear` on exit), and
-only when the hc detector matched. It is the one `InBand` host: the
-presenter hands it the facade (`show_turn_on`) and the UI loop writes the
-sequence between draws; a `-m` run has no facade, so it writes `/dev/tty`
-itself. No `Notifier` (OSC 9 stays the terminal's), no session, no child
-environment.
+only when the hc detector matched — which takes `HC_TERMINAL_ID` AND the
+terminal's own answer to `ESC ] 7501 ; ? ST` (chased by a DSR, the OSC 11
+detect's round-trip; a variable names an ancestor, not what is across the
+tty). It is the one `InBand` host: the presenter hands it the facade
+(`show_turn_on`) and the UI loop writes the sequence between draws; a `-m`
+run has no facade, so it writes `/dev/tty` itself. It withholds
+`HC_TERMINAL_ID` from children (below). No `Notifier` (OSC 9 stays the
+terminal's), no session.
 
 ## Contracts
 
@@ -108,7 +112,10 @@ environment.
   spawns — the shell tool's commands and the MCP stdio servers, both. herdr
   withholds `HERDR_ENV` (its agent hooks report only when it is `1`, and a
   nested `claude -p` otherwise claims iota's pane for good) and tells the
-  model so in `<environment>`; cmux and the ANSI terminal withhold nothing.
+  model so in `<environment>`; herdr-core withholds `HC_TERMINAL_ID` (a
+  nested `iota -m` would otherwise probe the chat's tty and clear its record)
+  and tells the model to name the terminal and pass `hc run --parent <id>`;
+  cmux and the ANSI terminal withhold nothing.
   The host is detected once, at assembly, because both children need the
   names before the presenter exists.
 

@@ -7,15 +7,18 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Added
 
-- **iota shows up in herdr's desktop app.** Inside a terminal of herdr-core
-  (`hc`), the terminal core behind the app, iota now reports its state the way
-  hc reads it, with OSC 7501: `working` during a turn, `blocked` at an approval
-  or another dialog, `idle` when it waits for you, `error` after a failed turn,
-  and nothing once it exits. `hc get` and `hc wait` therefore see it, and
-  `hc send` refuses to type into an open approval. A `-m` run reports too. The
-  sequence is written only inside an hc terminal. An hc terminal started from
-  a herdr pane now reports to hc instead of to that pane; the herdr
-  multiplexer itself is unchanged.
+- **herdr-core (`hc`) sees iota's state.** Inside a terminal of herdr-core,
+  the terminal core behind herdr's desktop app, iota now reports its state the
+  way hc reads it, with OSC 7501: `working` during a turn, `blocked` at an
+  approval or another dialog, `idle` when it waits for you, `error` after a
+  failed turn, and nothing once it exits. `hc get` and `hc wait` therefore see
+  it, and `hc send` refuses to type into an open approval. A `-m` run reports
+  too. iota first asks the terminal whether it reads OSC 7501, and writes the
+  sequence only when it does: inside a tmux in an hc terminal, iota keeps
+  the terminal's progress bar instead. An hc terminal started from a herdr pane
+  now reports to hc instead of to that pane; the herdr multiplexer itself is
+  unchanged. Commands iota runs do not get `HC_TERMINAL_ID`, so an `iota -m`
+  started by the model leaves the chat's state alone.
 
 ## 0.9.0 - 2026-11-11
 
