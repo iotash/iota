@@ -169,3 +169,150 @@ fn a_frame_larger_than_sync_min_is_one_synchronized_update_and_a_keystroke_is_ba
     assert!(!key.is_empty() && key.len() < 64, "{} bytes", key.len());
     assert!(!key.starts_with(SYNC_BEGIN), "a keystroke goes out bare");
 }
+
+const SU_REGION: &str = "\u{1b}[r";
+
+fn fresh_paint(rows_in: &[String], w: u16, h: u16, f: &FrameView) -> Vec<String> {
+    let (mut s, buf) = screen(w, h);
+    s.push(rows_in);
+    s.draw_frame(f).unwrap();
+    grid(&replay(&buf, h, w))
+}
+
+/// Following the tail, a new line scrolls the viewport with ONE scroll-region operation and the
+/// draw after it writes the new line, not every row that moved — and the screen it leaves is the
+/// screen a fresh paint of the same state draws.
+#[test]
+fn following_output_scrolls_the_viewport_with_one_operation() {
+    let (mut s, buf) = screen(80, 24);
+    let all: Vec<String> = (0..60)
+        .map(|i| format!("{i:02} {}", "x".repeat(60)))
+        .collect();
+    s.push(&all[..40]);
+    s.draw_frame(&frame(80)).unwrap();
+    let mut sizes = Vec::new();
+    for i in 40..60 {
+        let mark = buf.bytes().len();
+        s.push(&all[i..=i]);
+        s.draw_frame(&frame(80)).unwrap();
+        let out = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
+        assert!(
+            out.contains("\u{1b}[1;20r\u{1b}[1S"),
+            "line {i}: no scroll: {out:?}"
+        );
+        sizes.push(out.len());
+    }
+    assert!(
+        sizes.iter().all(|n| *n < 200),
+        "a line costs the line, not the viewport: {sizes:?}"
+    );
+    assert_eq!(
+        grid(&replay(&buf, 24, 80)),
+        fresh_paint(&all, 80, 24, &frame(80))
+    );
+}
+
+/// Several lines between two frames are one scroll of that many lines.
+#[test]
+fn a_batch_of_lines_is_one_scroll_of_that_many() {
+    let (mut s, buf) = screen(40, 12);
+    s.push(&rows(20));
+    s.draw_frame(&frame(40)).unwrap();
+    let mark = buf.bytes().len();
+    let more: Vec<String> = (20..23).map(|i| format!("line-{i:03}")).collect();
+    s.push(&more);
+    s.draw_frame(&frame(40)).unwrap();
+    let out = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
+    assert_eq!(out.matches("S\u{1b}[r").count(), 1, "{out:?}");
+    assert!(out.contains("\u{1b}[1;8r\u{1b}[3S"), "{out:?}");
+    let mut all = rows(20);
+    all.extend(more);
+    assert_eq!(
+        grid(&replay(&buf, 12, 40)),
+        fresh_paint(&all, 40, 12, &frame(40))
+    );
+}
+
+/// No scroll where the viewport did not simply move up: a paused view, a resize, a frame that
+/// changed height, a clear.
+#[test]
+fn no_scroll_when_the_viewport_did_not_just_move_up() {
+    let scrolled = |buf: &SharedBuf, mark: usize| {
+        String::from_utf8_lossy(&buf.bytes()[mark..]).contains(SU_REGION)
+    };
+    let (mut s, buf) = screen(40, 12);
+    s.push(&rows(30));
+    s.draw_frame(&frame(40)).unwrap();
+    // Paused.
+    s.scroll(Scroll::HalfUp);
+    s.draw_frame(&frame(40)).unwrap();
+    let mark = buf.bytes().len();
+    s.push(&rows(1));
+    s.draw_frame(&frame(40)).unwrap();
+    assert!(!scrolled(&buf, mark), "a paused view scrolled");
+    // Back on the tail: the first frame repaints, the next one scrolls.
+    s.scroll(Scroll::Bottom);
+    let mark = buf.bytes().len();
+    s.draw_frame(&frame(40)).unwrap();
+    assert!(
+        !scrolled(&buf, mark),
+        "the frame that resumed following scrolled"
+    );
+    let mark = buf.bytes().len();
+    s.push(&rows(1));
+    s.draw_frame(&frame(40)).unwrap();
+    assert!(scrolled(&buf, mark), "following again, a new line scrolls");
+    // A resize.
+    s.resize(Size::new(40, 14));
+    s.push(&rows(1));
+    let mark = buf.bytes().len();
+    s.draw_frame(&frame(40)).unwrap();
+    assert!(!scrolled(&buf, mark), "a resize scrolled");
+    // A taller frame.
+    let mut tall = frame(40);
+    tall.rows.insert(0, "preview".to_owned());
+    s.push(&rows(1));
+    let mark = buf.bytes().len();
+    s.draw_frame(&tall).unwrap();
+    assert!(
+        !scrolled(&buf, mark),
+        "a frame that changed height scrolled"
+    );
+    // A clear.
+    s.clear().unwrap();
+    s.push(&rows(1));
+    let mark = buf.bytes().len();
+    s.draw_frame(&tall).unwrap();
+    assert!(!scrolled(&buf, mark), "a cleared screen scrolled");
+}
+
+/// A paused view: new output moves nothing on screen, the last viewport row counts it, and the
+/// view survives a resize — the anchored row stays the first one shown.
+#[test]
+fn a_paused_view_holds_through_output_and_a_resize() {
+    let (mut s, buf) = screen(40, 12);
+    s.push(&rows(40));
+    s.draw_frame(&frame(40)).unwrap();
+    s.scroll(Scroll::HalfUp);
+    s.scroll(Scroll::HalfUp);
+    s.draw_frame(&frame(40)).unwrap();
+    let before = grid(&replay(&buf, 12, 40));
+    assert!(before[7].contains("Ctrl+End"), "{before:#?}");
+    s.push(&rows(5));
+    s.draw_frame(&frame(40)).unwrap();
+    let after = grid(&replay(&buf, 12, 40));
+    assert_eq!(&after[..7], &before[..7], "new output moved the view");
+    assert!(after[7].contains("↓ 5 new lines"), "{after:#?}");
+    let mark = buf.bytes().len();
+    s.resize(Size::new(30, 16));
+    s.draw_frame(&frame(30)).unwrap();
+    let mut p = vt100::Parser::new(12, 40, 0);
+    p.process(&buf.bytes()[..mark]);
+    p.screen_mut().set_size(16, 30);
+    p.process(&buf.bytes()[mark..]);
+    assert_eq!(
+        grid(&p)[0],
+        before[0],
+        "the anchored row is still the first one shown"
+    );
+}

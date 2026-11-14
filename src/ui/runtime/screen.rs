@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use crossterm::queue;
 use crossterm::terminal::{Clear, ClearType as CtClear, EnterAlternateScreen};
 use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
-use ratatui::buffer::Cell;
+use ratatui::buffer::{Buffer, Cell};
 use ratatui::layout::{Position, Rect, Size};
 use ratatui::text::{Line, Text};
 use ratatui::widgets::Paragraph;
@@ -68,6 +68,15 @@ pub(crate) struct Screen<W: Write> {
     view_h: u16,
     /// The open batches' depth, shared with the [`SyncOut`] under the backend.
     batch: Arc<AtomicUsize>,
+    /// The last frame drawn, while it is what the screen shows (a clear or a resize forgets it).
+    last: Option<Shown>,
+}
+
+/// A drawn frame and the layout it was drawn with — what a scroll of the viewport starts from.
+struct Shown {
+    buf: Buffer,
+    view_h: u16,
+    following: bool,
 }
 
 impl<W: Write> Screen<W> {
@@ -85,6 +94,7 @@ impl<W: Write> Screen<W> {
             inner: CrosstermBackend::new(out),
             size,
             cursor: Position::ORIGIN,
+            mute: false,
         };
         let term = Terminal::with_options(
             backend,
@@ -97,6 +107,7 @@ impl<W: Write> Screen<W> {
             conv: Conversation::new(),
             view_h: size.height,
             batch,
+            last: None,
         })
     }
 
@@ -151,6 +162,7 @@ impl<W: Write> Screen<W> {
 
     /// Clears the screen and forgets what it showed (T-32): the next draw writes every cell.
     pub(crate) fn clear(&mut self) -> io::Result<()> {
+        self.last = None;
         self.term.clear()
     }
 
@@ -165,6 +177,10 @@ impl<W: Write> Screen<W> {
         let view_h = height - frame_h;
         self.view_h = view_h;
         let lines = self.view_lines(usize::from(width), usize::from(view_h));
+        let fresh = self.conv.take_fresh(usize::from(width));
+        if let Some(n) = self.scrolled_by(fresh, view_h) {
+            self.scroll_region(n, view_h)?;
+        }
         let shown = u16::try_from(lines.len()).unwrap_or(view_h).min(view_h);
         // The conversation sits on the frame: a short one leaves the blank rows at the top.
         let conv = Rect::new(0, view_h - shown, width, shown);
@@ -176,14 +192,59 @@ impl<W: Write> Screen<W> {
                 view_h.saturating_add(y.min(frame_h.saturating_sub(1))),
             )
         });
-        self.term.draw(|f| {
+        let done = self.term.draw(|f| {
             f.render_widget(Paragraph::new(Text::from(lines)), conv);
             f.render_widget(Paragraph::new(Text::from(frame_lines)), frame);
             if let Some(pos) = cursor {
                 f.set_cursor_position(pos);
             }
         })?;
+        self.last = Some(Shown {
+            buf: done.buffer.clone(),
+            view_h,
+            following: self.conv.following(),
+        });
         Ok(())
+    }
+
+    /// How far the viewport's content moved up since the last frame, when that is one scroll:
+    /// the tail followed then and now, the screen and the viewport the same size, and fewer new
+    /// lines than the viewport holds (more is a whole new viewport anyway).
+    fn scrolled_by(&self, fresh: usize, view_h: u16) -> Option<u16> {
+        let last = self.last.as_ref()?;
+        let n = u16::try_from(fresh).ok()?;
+        (last.following
+            && self.conv.following()
+            && last.buf.area.as_size() == self.size()
+            && last.view_h == view_h
+            && n > 0
+            && n < view_h)
+            .then_some(n)
+    }
+
+    /// Scrolls the viewport's rows up by `n` with ONE operation — `DECSTBM` over the viewport,
+    /// `SU n`, the margins reset — where a cell diff would rewrite every row that moved (tui-plan
+    /// S2; S1 streamed 3.4× inline's bytes for that). ratatui keeps its previous frame to itself,
+    /// so it is handed the same scroll first: the last frame shifted up by `n`, applied with the
+    /// backend muted, becomes the previous frame the next draw diffs against — that draw then
+    /// writes the `n` new lines and whatever else changed.
+    fn scroll_region(&mut self, n: u16, view_h: u16) -> io::Result<()> {
+        let Some(Shown { mut buf, .. }) = self.last.take() else {
+            return Ok(());
+        };
+        let width = usize::from(buf.area.width);
+        let region = usize::from(view_h) * width;
+        let moved = usize::from(n) * width;
+        buf.content[..region].rotate_left(moved);
+        for cell in &mut buf.content[region - moved..region] {
+            cell.reset();
+        }
+        *self.term.current_buffer_mut() = buf;
+        self.term.backend_mut().mute = true;
+        let applied = self.term.apply_buffer().map(|_| ());
+        self.term.backend_mut().mute = false;
+        applied?;
+        write!(self.out(), "\x1b[1;{view_h}r\x1b[{n}S\x1b[r")
     }
 
     /// The viewport's lines as spans; an anchored view's last line is the way back to the tail.
@@ -273,6 +334,9 @@ struct Out<W: Write> {
     inner: CrosstermBackend<SyncOut<W>>,
     size: Size,
     cursor: Position,
+    /// Whether ratatui's writes are dropped ([`Screen::scroll_region`] hands it a frame the
+    /// screen already shows).
+    mute: bool,
 }
 
 impl<W: Write> Backend for Out<W> {
@@ -282,10 +346,16 @@ impl<W: Write> Backend for Out<W> {
     where
         I: Iterator<Item = (u16, u16, &'a Cell)>,
     {
+        if self.mute {
+            return Ok(());
+        }
         self.inner.draw(content)
     }
 
     fn hide_cursor(&mut self) -> io::Result<()> {
+        if self.mute {
+            return Ok(());
+        }
         self.inner.hide_cursor()
     }
 
