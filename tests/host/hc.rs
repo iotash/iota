@@ -11,11 +11,12 @@
 //! reach the terminal). So each test starts its own core under the environment its iota must see — a
 //! cleared one, plus `HERDR_*` for the nesting case.
 //!
-//! **No core outlives its test.** `Drop` stops it; when `server stop` fails it kills every process that
-//! holds a file in the core's state directory (the core, by its `core.lock`, and the holders whose
-//! terminals die with them) and says so on stderr. A panic unwinds into that `Drop`; an interrupt does
-//! not, so each core also gets a reaper in its own process group — out of reach of the terminal's
-//! Ctrl+C — that waits for this test process to end and then does the same to whatever is left.
+//! **Nothing outlives its test.** `Drop` stops the core and says so on stderr when that fails; then it
+//! kills whatever is left of the test (the [`SWEEP`]: the core by its `core.lock`, the holders whose
+//! terminals die with them, a tmux server started in a terminal) and names what it killed. A panic
+//! unwinds into that `Drop`; an interrupt does not, so each core also gets a reaper in its own process
+//! group — out of reach of the terminal's Ctrl+C — that waits for this test process to end, then stops
+//! the core, sweeps, and removes the directory.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -57,17 +58,25 @@ struct Core {
     env: Vec<(String, String)>,
 }
 
-/// Kills every process holding a file under `$1` (a core's state directory: the core holds its
-/// `core.lock`, each holder its socket). Shared by `Drop` and the reaper.
-const KILL_HOLDERS: &str =
-    "pids=$(/usr/sbin/lsof -t +D \"$1\" 2>/dev/null); [ -z \"$pids\" ] || kill $pids";
+/// Kills what is left of a test whose directory is `$ROOT` (canonical) named `$NAME`: every process
+/// holding a file under it (the core holds its `core.lock`, a holder its socket, a program its cwd)
+/// and every process naming it on its command line (a holder, a tmux server and its panes — under
+/// either spelling of the temp dir, `/var` or `/private/var`), this shell aside. Prints what it killed.
+const SWEEP: &str = r#"pids=$({ /usr/sbin/lsof -t +D "$ROOT"; pgrep -f "/$NAME/"; } 2>/dev/null | grep -vx "$$" | sort -u)
+[ -z "$pids" ] || { kill $pids; echo $pids; }"#;
 
-/// The reaper (the module doc): `$1` this process, `$2` the core's root, `$3` `hc`. Exits at once
-/// when the root is gone — the test cleaned up after itself.
-const REAPER: &str = r#"while kill -0 "$1" 2>/dev/null; do sleep 1; done
-[ -d "$2" ] || exit 0
-"$3" server stop >/dev/null 2>&1 || { pids=$(/usr/sbin/lsof -t +D "$2/s" 2>/dev/null); [ -z "$pids" ] || kill $pids; }
-rm -rf "$2""#;
+/// The reaper (the module doc): `$1` this process, `$2` `hc`; `$ROOT` and `$NAME` in its environment,
+/// so the sweep's `pgrep` does not find the reaper. Exits at once when the root is gone — the test
+/// cleaned up after itself.
+fn reaper_script() -> String {
+    format!(
+        r#"while kill -0 "$1" 2>/dev/null; do sleep 1; done
+[ -d "$ROOT" ] || exit 0
+"$2" server stop >/dev/null 2>&1
+{SWEEP}
+rm -rf "$ROOT""#
+    )
+}
 
 impl Core {
     /// Starts a core whose terminals see `extra` on top of a cleared environment, with `config` as the
@@ -103,22 +112,22 @@ impl Core {
         .collect();
         env.extend_from_slice(extra);
         let hcc = Self { hc, dir, env };
-        hcc.reaper(&root);
+        hcc.reaper();
         let started = hcc.run(&["server", "start"]).await;
         assert_eq!(started.0, Some(0), "hc server start: {}", started.1);
         hcc
     }
 
-    /// Starts the reaper (the module doc) for the core rooted at `root`.
-    fn reaper(&self, root: &std::path::Path) {
+    /// Starts the reaper (the module doc).
+    fn reaper(&self) {
         use std::os::unix::process::CommandExt as _;
         std::process::Command::new("/bin/sh")
-            .args(["-c", REAPER, "reaper"])
+            .args(["-c", &reaper_script(), "reaper"])
             .arg(std::process::id().to_string())
-            .arg(root)
             .arg(&self.hc)
             .env_clear()
             .envs(self.env.iter().map(|(k, v)| (k, v)))
+            .envs(self.sweep_env())
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -127,9 +136,14 @@ impl Core {
             .expect("start the core's reaper");
     }
 
-    /// The core's state directory (`XDG_STATE_HOME`).
-    fn state(&self) -> PathBuf {
-        self.dir.path().canonicalize().unwrap().join("s")
+    /// `ROOT` and `NAME` for the [`SWEEP`].
+    fn sweep_env(&self) -> [(&'static str, String); 2] {
+        let root = self.dir.path().canonicalize().unwrap();
+        let name = root.file_name().unwrap().to_string_lossy().into_owned();
+        [
+            ("ROOT", root.to_string_lossy().into_owned()),
+            ("NAME", name),
+        ]
     }
 
     /// The project directory iota runs in.
@@ -214,32 +228,36 @@ impl Core {
 }
 
 impl Drop for Core {
-    /// Stops the core; when that fails, kills what holds its state directory (the module doc).
+    /// Stops the core, then sweeps what is left (the module doc), saying on stderr what failed and what
+    /// was killed.
     fn drop(&mut self) {
         let stop = std::process::Command::new(&self.hc)
             .args(["server", "stop"])
             .env_clear()
             .envs(self.env.iter().map(|(k, v)| (k, v)))
             .output();
-        let failed = match &stop {
-            Ok(out) if out.status.success() => return,
-            Ok(out) => format!(
-                "{}: {}{}",
+        match &stop {
+            Ok(out) if out.status.success() => {}
+            Ok(out) => eprintln!(
+                "hc server stop failed ({}): {}{}",
                 out.status,
                 String::from_utf8_lossy(&out.stdout),
                 String::from_utf8_lossy(&out.stderr)
             ),
-            Err(e) => e.to_string(),
-        };
-        let state = self.state();
-        let killed = std::process::Command::new("/bin/sh")
-            .args(["-c", KILL_HOLDERS, "kill"])
-            .arg(&state)
-            .status();
-        eprintln!(
-            "hc server stop failed ({failed}); killed what holds {}: {killed:?}",
-            state.display()
-        );
+            Err(e) => eprintln!("hc server stop did not run: {e}"),
+        }
+        match std::process::Command::new("/bin/sh")
+            .args(["-c", SWEEP])
+            .envs(self.sweep_env())
+            .output()
+        {
+            Ok(out) if out.stdout.is_empty() => {}
+            Ok(out) => eprintln!(
+                "killed what the test left: {}",
+                String::from_utf8_lossy(&out.stdout).trim()
+            ),
+            Err(e) => eprintln!("the sweep did not run: {e}"),
+        }
     }
 }
 
