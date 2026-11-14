@@ -118,11 +118,12 @@ impl Core {
         hcc
     }
 
-    /// Starts the reaper (the module doc).
+    /// Starts the reaper (the module doc), detached: the `sh` this waits for puts it in the
+    /// background and exits, so it is nobody's child to reap.
     fn reaper(&self) {
         use std::os::unix::process::CommandExt as _;
-        std::process::Command::new("/bin/sh")
-            .args(["-c", &reaper_script(), "reaper"])
+        let started = std::process::Command::new("/bin/sh")
+            .args(["-c", &format!("( {} ) &", reaper_script()), "reaper"])
             .arg(std::process::id().to_string())
             .arg(&self.hc)
             .env_clear()
@@ -132,8 +133,9 @@ impl Core {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .process_group(0)
-            .spawn()
+            .status()
             .expect("start the core's reaper");
+        assert!(started.success(), "the reaper did not start: {started}");
     }
 
     /// `ROOT` and `NAME` for the [`SWEEP`].
