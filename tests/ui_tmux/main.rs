@@ -79,6 +79,7 @@
 //! | `42-resize-and-key.sh` | tui-plan S4 | — (a key sent in the same instant as a resize is read at once, 40 rounds, and the loop never spins with input waiting; an idle Ctrl+D under a resize ends the run) |
 //! | `43-fullscreen-early-exit.sh` | tui-plan S4 | — (`IOTA_FULLSCREEN=1`: `--help`, a bad config, a missing session end before the first frame — no `?1049h`, the message on the shell's screen, the tty canonical; the next iota starts and exits cleanly) |
 //! | `44-fullscreen-suspend.sh` | tui-plan S4 | — (`IOTA_FULLSCREEN=1`: Ctrl+Z and SIGTSTP hand the terminal back — main screen, canonical tty, paste off, a stopped job; `fg` repaints everything at the new size; the run goes on and leaves its conversation) |
+//! | `45-fullscreen-crash.sh` | tui-plan S4 | — (`IOTA_FULLSCREEN=1`: a panic on request — the hook leaves the alternate screen before the report, tty canonical; SIGTERM twice while a stuck MCP server holds the wind-down — the forced branch exits at once, 130, usable; a clean next run) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -713,6 +714,12 @@ fn tmux_fullscreen_early_exit() {
 #[test]
 fn tmux_fullscreen_suspend() {
     run_scenario("44-fullscreen-suspend.sh");
+}
+
+/// L4 #45 (tui-plan S4) — the forced ways out: the panic hook and a second SIGTERM.
+#[test]
+fn tmux_fullscreen_crash() {
+    run_scenario("45-fullscreen-crash.sh");
 }
 
 /// L4 #40 (tui-plan S1) — SIGTERM on the full screen, once and twice: the terminal is handed back usable.

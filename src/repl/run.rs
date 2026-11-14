@@ -800,6 +800,8 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
         if line.is_empty() {
             continue;
         }
+        #[cfg(debug_assertions)]
+        test_panic(&line);
         // A bot's memory-flush notice (bot-mode.md §3.6.1) runs as the flush turn — unless the compaction it
         // was queued for already happened (a message typed ahead of it compacted first): then it is dropped,
         // neither sent nor persisted.
@@ -1537,6 +1539,18 @@ pub(crate) async fn bot_perform(
         }
     }
     keep
+}
+
+/// The panic test hook (debug builds only — a release binary cannot be made to panic from outside):
+/// typing the value of `IOTA_TEST_PANIC` panics the run right here, so the L4 suite can prove that the
+/// panic hook hands the terminal back before the panic is reported (tui-plan S4). Nothing else in the
+/// tree can panic under the lint wall.
+#[cfg(debug_assertions)]
+#[allow(clippy::panic, reason = "the test hook's whole job")]
+fn test_panic(line: &str) {
+    if std::env::var_os("IOTA_TEST_PANIC").is_some_and(|v| v == line) {
+        panic!("IOTA_TEST_PANIC: the test hook asked for a panic");
+    }
 }
 
 /// Whether the user typed `/exit` (with or without an argument, as `/status` takes one). Never a notice or a
