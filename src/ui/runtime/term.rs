@@ -53,7 +53,7 @@ use ratatui::widgets::{Paragraph, Widget, Wrap};
 use super::geometry::Geometry;
 use super::inline_term::InlineTerminal;
 use super::osc;
-use super::screen::{ALT_ACTIVE, Screen, ViewOp};
+use super::screen::{ALT_ACTIVE, Prompt, Screen, ViewOp};
 use crate::ui::facade::ProgressState;
 use crate::ui::render::frame::FrameView;
 use crate::ui::render::spans::ansi_to_spans;
@@ -389,6 +389,11 @@ impl<W: Write> Term<W> {
         }
     }
 
+    /// Whether the full screen's view is scrolled back from the tail.
+    pub(crate) fn view_paused(&self) -> bool {
+        matches!(&self.kind, Kind::Full(screen) if screen.paused())
+    }
+
     /// Applies one of the full screen's view keys (scrolling, the dump and the way back).
     pub(crate) fn view(&mut self, op: ViewOp) -> io::Result<()> {
         match &mut self.kind {
@@ -402,9 +407,13 @@ impl<W: Write> Term<W> {
     /// way the physical cursor ends on a known frame row — the cursor's, or the frame's
     /// first row while it is hidden — which is what W5's resize anchor counts from. The full
     /// screen draws the conversation viewport and the frame under it.
-    pub(crate) fn draw_frame(&mut self, view: &FrameView) -> io::Result<()> {
+    pub(crate) fn draw_frame(
+        &mut self,
+        view: &FrameView,
+        prompt: Option<&Prompt>,
+    ) -> io::Result<()> {
         if let Kind::Full(screen) = &mut self.kind {
-            return screen.draw_frame(view);
+            return screen.draw_frame(view, prompt);
         }
         // The diff and the cursor are one write.
         self.begin_batch();
@@ -596,7 +605,7 @@ mod tests {
         let (mut t, buf, geo) = term(120, 27, 9, 18);
         let rows: Vec<String> = (0..18).map(|i| format!("t-{i:02}")).collect();
         t.insert_lines(&rows).unwrap();
-        t.draw_frame(&tall()).unwrap();
+        t.draw_frame(&tall(), None).unwrap();
         (t, buf, geo)
     }
 
@@ -622,7 +631,7 @@ mod tests {
     #[test]
     fn a_shrink_that_ate_the_rows_below_the_cursor_keeps_the_size_and_the_floor() {
         let (mut t, _buf, geo) = term(90, 30, 9, 21);
-        t.draw_frame(&tall()).unwrap();
+        t.draw_frame(&tall(), None).unwrap();
         geo.set_size(70, 20);
         geo.put_cursor(ratatui::layout::Position::new(2, 19)); // row 27 → the bottom row
         t.resize(Size::new(70, 20), 9).unwrap();
@@ -632,7 +641,7 @@ mod tests {
             "the model is the terminal's size"
         );
         assert_eq!(t.top(), 11, "flush with the bottom");
-        t.draw_frame(&tall()).unwrap();
+        t.draw_frame(&tall(), None).unwrap();
         geo.set_size(69, 20);
         t.resize(Size::new(69, 20), 9).unwrap();
         assert_eq!(t.top(), 11, "and still flush after the next pass");
@@ -645,14 +654,14 @@ mod tests {
     #[test]
     fn a_row_wider_than_the_terminal_now_inserts_as_its_wrapped_rows() {
         let (mut t, buf, geo) = term(100, 24, 4, 20);
-        t.draw_frame(&frame()).unwrap();
+        t.draw_frame(&frame(), None).unwrap();
         geo.set_size(95, 24);
         t.resize(Size::new(95, 24), 4).unwrap();
-        t.draw_frame(&frame()).unwrap();
+        t.draw_frame(&frame(), None).unwrap();
         let wide = format!("{}END", "w".repeat(96));
         let n = t.insert_lines(&[wide.clone(), "next".to_owned()]).unwrap();
         assert_eq!(n, 3, "99 columns at 95 wrap into 2 rows, plus one");
-        t.draw_frame(&frame()).unwrap();
+        t.draw_frame(&frame(), None).unwrap();
         let mut p = vt100::Parser::new(24, 95, 100);
         p.process(&buf.bytes());
         let all = reachable(&mut p).join("");
@@ -669,10 +678,10 @@ mod tests {
     #[test]
     fn a_draw_lays_out_against_the_size_the_resize_pass_took() {
         let (mut t, buf, geo) = term(80, 24, 4, 20);
-        t.draw_frame(&frame()).unwrap();
+        t.draw_frame(&frame(), None).unwrap();
         geo.set_size(60, 24);
         let mark = buf.bytes().len();
-        t.draw_frame(&frame()).unwrap();
+        t.draw_frame(&frame(), None).unwrap();
         let drawn = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
         assert!(!drawn.contains("\u{1b}[2J"), "a clear on a draw: {drawn:?}");
         assert!(!drawn.contains("\u{1b}[J"), "an erase on a draw: {drawn:?}");
@@ -693,7 +702,7 @@ mod tests {
         geo.set_real_rows(28);
         geo.shift_cursor(1);
         t.resize(Size::new(120, 27), 9).unwrap();
-        t.draw_frame(&tall()).unwrap();
+        t.draw_frame(&tall(), None).unwrap();
         assert_eq!(t.top(), 19, "the frame is where the terminal put it");
         let all = replay_pulled(&buf.bytes(), mark, 27, 120, 1);
         assert_all_once(&all, &transcript(&[], 1));
@@ -709,7 +718,7 @@ mod tests {
         geo.set_real_rows(31);
         geo.shift_cursor(4); // the emulator grew twice, pulling history rows back: the frame moved down 4
         t.resize(Size::new(120, 27), 9).unwrap();
-        t.draw_frame(&tall()).unwrap();
+        t.draw_frame(&tall(), None).unwrap();
         assert_eq!(t.top(), 22, "the anchor is the cursor's frame top");
         let all = replay_pulled(&buf.bytes(), mark, 27, 120, 4);
         assert_all_once(&all, &transcript(&[], 4));
@@ -725,7 +734,7 @@ mod tests {
         let mark = buf.bytes().len();
         // The DSR (geo) still answers the old row; the emulator pulls 3 rows at `mark`.
         t.resize(Size::new(120, 27), 9).unwrap();
-        t.draw_frame(&tall()).unwrap();
+        t.draw_frame(&tall(), None).unwrap();
         let all = replay_pulled(&buf.bytes(), mark, 27, 120, 3);
         assert_all_once(&all, &transcript(&[], 3));
     }
@@ -743,10 +752,10 @@ mod tests {
         geo.shift_cursor(2);
         t.insert_lines(&["new-0".to_owned(), "new-1".to_owned()])
             .unwrap();
-        t.draw_frame(&tall()).unwrap();
+        t.draw_frame(&tall(), None).unwrap();
         geo.set_size(120, 29);
         t.resize(Size::new(120, 29), 9).unwrap();
-        t.draw_frame(&tall()).unwrap();
+        t.draw_frame(&tall(), None).unwrap();
         let all = replay_pulled(&buf.bytes(), mark, 27, 120, 2);
         assert_all_once(&all, &transcript(&["new-0", "new-1"], 2));
         let rows: Vec<&String> = all.iter().filter(|r| r.starts_with("row-")).collect();
@@ -765,7 +774,7 @@ mod tests {
         geo.set_size(120, 28);
         geo.shift_cursor(1);
         t.resize(Size::new(120, 28), 9).unwrap();
-        t.draw_frame(&tall()).unwrap();
+        t.draw_frame(&tall(), None).unwrap();
         let all = replay_pulled(&buf.bytes(), mark, 27, 120, 1);
         assert_all_once(&all, &transcript(&[], 1));
     }
@@ -777,13 +786,13 @@ mod tests {
     #[test]
     fn a_slow_cursor_answer_still_gives_the_pass_its_floor() {
         let (mut t, _buf, geo) = term(80, 24, 4, 20);
-        t.draw_frame(&frame()).unwrap();
+        t.draw_frame(&frame(), None).unwrap();
         geo.set_answers_late(1);
         geo.shift_cursor(-3);
         geo.set_size(60, 24);
         t.resize(Size::new(60, 24), 4).unwrap();
         assert_eq!(t.top(), 20, "flush on the floor (24 − 4)");
-        t.draw_frame(&frame()).unwrap();
+        t.draw_frame(&frame(), None).unwrap();
         geo.set_size(59, 24);
         t.resize(Size::new(59, 24), 4).unwrap();
         assert_eq!(
@@ -799,13 +808,14 @@ mod tests {
     #[test]
     fn a_resize_whose_dsr_fails_keeps_the_tracked_top_and_does_not_unwind() {
         let (mut t, _buf, geo) = term(80, 24, 4, 20);
-        t.draw_frame(&frame()).unwrap();
+        t.draw_frame(&frame(), None).unwrap();
         geo.set_dsr_fails(true);
         geo.set_size(70, 24);
         t.resize(Size::new(70, 24), 4)
             .expect("a failed DSR must not unwind the resize");
         assert_eq!(t.top(), 20, "the tracked top is the anchor");
-        t.draw_frame(&frame()).expect("the frame draws after it");
+        t.draw_frame(&frame(), None)
+            .expect("the frame draws after it");
         assert!(
             t.ensure_height(5).is_ok(),
             "a later height change survives it too"

@@ -6,7 +6,7 @@
 //! invariant the whole offset scheme rests on; `highlight_line` replays a line's own
 //! SGR state after every highlight closes.
 
-use crate::text::ansi::{sgr_carry, strip_sgr};
+use crate::text::ansi::{sgr_carry, strip_sgr, strip_sgr_into};
 
 use super::tabbed::{PanelState, panel_height};
 use super::theme::{SEARCH_CUR, SEARCH_HIT};
@@ -84,19 +84,75 @@ pub(crate) fn ascii_fold(s: &str) -> String {
 /// The non-overlapping `[start, end)` byte ranges where `query` occurs in `plain`,
 /// case-insensitively (search.go:91).
 pub(crate) fn match_ranges(plain: &str, query: &str) -> Vec<(usize, usize)> {
-    if query.is_empty() || query.len() > plain.len() {
-        return Vec::new();
-    }
-    let (lp, lq) = (ascii_fold(plain), ascii_fold(query));
+    folded_ranges(plain, ascii_fold(query).as_bytes())
+}
+
+/// [`match_ranges`] with the query already folded: the bytes compared case-insensitively in
+/// place, nothing allocated per line but the result (a buffer search runs this on every row).
+fn folded_ranges(plain: &str, lq: &[u8]) -> Vec<(usize, usize)> {
+    let hay = plain.as_bytes();
     let mut out = Vec::new();
+    if lq.is_empty() || lq.len() > hay.len() {
+        return out;
+    }
+    // Candidates are where the query's first byte is, in either case (`memchr2`); only they are
+    // compared whole.
+    let (lo, up) = (lq[0], lq[0].to_ascii_uppercase());
+    let last = hay.len() - lq.len();
     let mut from = 0;
-    while from + lq.len() <= lp.len() {
-        let Some(i) = lp[from..].find(&lq) else { break };
+    while from <= last {
+        let Some(i) = memchr::memchr2(lo, up, &hay[from..=last]) else {
+            break;
+        };
         let s = from + i;
-        out.push((s, s + lq.len()));
-        from = s + lq.len();
+        if hay[s..s + lq.len()].eq_ignore_ascii_case(lq) {
+            out.push((s, s + lq.len()));
+            from = s + lq.len();
+        } else {
+            from = s + 1;
+        }
     }
     out
+}
+
+/// Every occurrence of `query` in `lines`, in order: the line's index and the match's byte offset in
+/// its PLAIN text (the lines may carry SGR). The one hit collector — a View panel's logical lines
+/// and the full screen's conversation rows both go through it.
+pub(crate) fn find_hits<'a>(
+    lines: impl IntoIterator<Item = &'a str>,
+    query: &str,
+) -> Vec<SearchHit> {
+    if query.trim().is_empty() {
+        return Vec::new();
+    }
+    let lq = ascii_fold(query);
+    let mut hits = Vec::new();
+    let mut buf = String::new();
+    for (i, line) in lines.into_iter().enumerate() {
+        // Only a line with an escape in it needs stripping (the offsets are the plain text's).
+        let plain = if line.contains('\x1b') {
+            strip_sgr_into(line, &mut buf);
+            buf.as_str()
+        } else {
+            line
+        };
+        for (start, _) in folded_ranges(plain, lq.as_bytes()) {
+            hits.push(SearchHit {
+                line: i,
+                off: start,
+            });
+        }
+    }
+    hits
+}
+
+/// The hit after (`dir > 0`) or before `idx` among `n`, wrapping around at both ends — n/p's walk.
+pub(crate) const fn step_hit(idx: usize, n: usize, dir: i32) -> usize {
+    if dir > 0 {
+        (idx + 1) % n
+    } else {
+        (idx + n - 1) % n
+    }
 }
 
 /// Whether `query` occurs in `text` case-insensitively (search.go:110).
@@ -436,19 +492,8 @@ impl PanelState {
     /// concern, so hits are recorded against logical lines and converted when the
     /// panel draws (search.go:426).
     pub(crate) fn collect_hits(&mut self, query: &str) {
-        self.search.hits.clear();
+        self.search.hits = find_hits(self.items.iter().map(String::as_str), query);
         self.search.hit_idx = 0;
-        if query.trim().is_empty() {
-            return;
-        }
-        for (i, line) in self.items.iter().enumerate() {
-            for (start, _) in match_ranges(&strip_sgr(line), query) {
-                self.search.hits.push(SearchHit {
-                    line: i,
-                    off: start,
-                });
-            }
-        }
     }
 
     /// Rescans after a live panel's content changed, keeping the walker parked where
@@ -487,11 +532,7 @@ impl PanelState {
         if n == 0 {
             return;
         }
-        self.search.hit_idx = if dir > 0 {
-            (self.search.hit_idx + 1) % n
-        } else {
-            (self.search.hit_idx + n - 1) % n
-        };
+        self.search.hit_idx = step_hit(self.search.hit_idx, n, dir);
         self.pending_center = Some(self.search.hits[self.search.hit_idx].line);
     }
 

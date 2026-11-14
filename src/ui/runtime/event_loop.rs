@@ -45,10 +45,11 @@ use tokio_util::sync::CancellationToken;
 
 use super::msgs::UiMsg;
 use super::osc;
-use super::screen::ViewOp;
+use super::screen::{Prompt, ViewOp};
 use super::term::Term;
 use crate::ui::input::composer::Composer;
 use crate::ui::input::keys;
+use crate::ui::input::keys::SearchField;
 use crate::ui::input::paste;
 use crate::ui::input::suggest;
 use crate::ui::render::frame::{
@@ -327,6 +328,10 @@ pub(crate) struct Model {
     /// Whether the conversation is written out on the main screen (`Ctrl+O`): the next key only
     /// comes back from it.
     pub(crate) dumped: bool,
+    /// The conversation search's query field while a search is on (the full screen; `keys.rs`).
+    pub(crate) search: Option<SearchField>,
+    /// Whether the full screen's view was scrolled back at the last draw (`/` opens a search then).
+    pub(crate) view_paused: bool,
 }
 
 /// One entry of the type-ahead queue.
@@ -418,6 +423,8 @@ impl Model {
             fullscreen: false,
             view_ops: Vec::new(),
             dumped: false,
+            search: None,
+            view_paused: false,
         }
     }
 
@@ -730,6 +737,8 @@ impl Model {
     pub(crate) fn route_paste(&mut self, data: &str) {
         if let Some(s) = self.surface.as_mut() {
             s.st.paste(data);
+        } else if let Some(op) = self.search.as_mut().and_then(|s| s.paste(data)) {
+            self.view_ops.push(ViewOp::Search(op));
         } else {
             paste::on_paste(self, data);
         }
@@ -888,7 +897,7 @@ impl Model {
                 height: h,
             };
             term.resize(size, self.frame_height(view.rows.len()))?;
-            term.draw_frame(&view)?;
+            term.draw_frame(&view, None)?;
         }
         // Leave the frame dirty: the job below changes what it shows.
         self.dirty = true;
@@ -963,6 +972,12 @@ impl Model {
         if self.drag_until.is_some() {
             self.drag_until = Some(Instant::now());
         }
+    }
+
+    /// The search line's query and cursor, while a search is on.
+    pub(crate) fn search_prompt(&mut self) -> Option<Prompt> {
+        let width = usize::from(self.width.max(2));
+        self.search.as_mut().map(|s| s.prompt(width))
     }
 
     /// The inline viewport height for a frame of `rows` rows, capped at the screen height.
@@ -1164,7 +1179,9 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
             for seq in std::mem::take(&mut m.program_status) {
                 term.write_raw(seq.as_bytes())?;
             }
-            term.draw_frame(&view)?; // W4: same iteration as the inserts above
+            let prompt = m.search_prompt();
+            term.draw_frame(&view, prompt.as_ref())?; // W4: same iteration as the inserts above
+            m.view_paused = term.view_paused();
             m.dirty = false;
         }
         if !resizing {

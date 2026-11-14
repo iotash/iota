@@ -1206,3 +1206,104 @@ fn ctrl_o_dumps_and_the_next_key_only_comes_back() {
     m.handle_key(ch('y'));
     assert_eq!(m.composer.value(), "y");
 }
+
+/// Row 1a: the conversation search's keys (tui-plan S3). Ctrl+R opens it anywhere on the full
+/// screen; `/` only on a scrolled-back view with nothing typed — following the tail, or with a
+/// draft, it is the slash command's first character. The inline terminal has no search.
+#[test]
+fn ctrl_r_opens_the_search_and_slash_only_on_a_scrolled_back_view() {
+    use crate::ui::runtime::screen::ViewOp;
+    use crate::ui::runtime::screen::search::SearchOp;
+    let mut m = test_model();
+    m.handle_key(mods(KeyCode::Char('r'), KeyModifiers::CONTROL));
+    assert!(
+        m.search.is_none() && m.view_ops.is_empty(),
+        "inline: no search"
+    );
+    m.fullscreen = true;
+    m.handle_key(ch('/'));
+    assert!(m.search.is_none(), "following the tail, `/` is typed");
+    assert_eq!(m.composer.value(), "/");
+    m.composer.reset();
+    m.view_paused = true;
+    type_text(&mut m, "a");
+    m.handle_key(ch('/'));
+    assert!(m.search.is_none(), "with a draft, `/` is typed");
+    m.composer.reset();
+    m.handle_key(ch('/'));
+    assert!(
+        m.search.is_some(),
+        "scrolled back, nothing typed: `/` opens it"
+    );
+    assert_eq!(m.view_ops, vec![ViewOp::Search(SearchOp::Open)]);
+    let mut m = test_model();
+    m.fullscreen = true;
+    m.handle_key(mods(KeyCode::Char('r'), KeyModifiers::CONTROL));
+    assert!(m.search.is_some(), "Ctrl+R opens it while following");
+}
+
+/// While typing, every key edits the query (and sends it); Enter applies it and `n`/`p` walk;
+/// Enter on the walker leaves with the view where it is, Esc leaves with it back; any other
+/// character leaves like Enter and is typed into the composer; an empty query's Enter ends it.
+#[test]
+fn the_search_keys_type_the_query_walk_and_leave() {
+    use crate::ui::runtime::screen::ViewOp;
+    use crate::ui::runtime::screen::search::SearchOp::{Accept, Cancel, Open, Query, Step};
+    let mut m = test_model();
+    m.fullscreen = true;
+    m.handle_key(mods(KeyCode::Char('r'), KeyModifiers::CONTROL));
+    type_text(&mut m, "np");
+    enter(&mut m);
+    m.handle_key(ch('n'));
+    m.handle_key(ch('p'));
+    enter(&mut m);
+    assert!(m.search.is_none());
+    let ops: Vec<ViewOp> = std::mem::take(&mut m.view_ops);
+    assert_eq!(
+        ops,
+        [
+            Open,
+            Query("n".to_owned()),
+            Query("np".to_owned()),
+            Step(1),
+            Step(-1),
+            Accept
+        ]
+        .map(ViewOp::Search)
+    );
+    assert_eq!(m.composer.value(), "", "nothing reached the composer");
+    // Esc goes back; an empty query's Enter ends it too.
+    m.handle_key(mods(KeyCode::Char('r'), KeyModifiers::CONTROL));
+    m.handle_key(key(KeyCode::Esc));
+    m.handle_key(mods(KeyCode::Char('r'), KeyModifiers::CONTROL));
+    enter(&mut m);
+    assert!(m.search.is_none());
+    assert_eq!(
+        std::mem::take(&mut m.view_ops),
+        [Open, Cancel, Open, Cancel].map(ViewOp::Search)
+    );
+    // A character on the walker leaves the search and is typed.
+    m.handle_key(mods(KeyCode::Char('r'), KeyModifiers::CONTROL));
+    type_text(&mut m, "x");
+    enter(&mut m);
+    m.handle_key(ch('h'));
+    assert!(m.search.is_none());
+    assert_eq!(m.composer.value(), "h");
+    assert_eq!(m.view_ops.last(), Some(&ViewOp::Search(Accept)));
+}
+
+/// A paste into the query being typed goes to the query (one line), not to the composer.
+#[test]
+fn a_paste_while_typing_a_query_goes_to_the_query() {
+    use crate::ui::runtime::screen::ViewOp;
+    use crate::ui::runtime::screen::search::SearchOp;
+    let mut m = test_model();
+    m.fullscreen = true;
+    m.handle_key(mods(KeyCode::Char('r'), KeyModifiers::CONTROL));
+    m.route_paste("two\nwords");
+    assert_eq!(
+        m.view_ops.last(),
+        Some(&ViewOp::Search(SearchOp::Query("two words".to_owned())))
+    );
+    assert_eq!(m.composer.value(), "");
+}

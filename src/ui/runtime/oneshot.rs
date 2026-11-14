@@ -129,7 +129,7 @@ pub(crate) fn run_surface(spec: TabbedSpec, dark: bool) -> io::Result<TabbedResu
                 rows: rendered.rows,
                 cursor: rendered.cursor,
             };
-            term.draw_frame(&view)?;
+            term.draw_frame(&view, None)?;
             dirty = false;
         }
     }

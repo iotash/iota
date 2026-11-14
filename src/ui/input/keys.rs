@@ -1,5 +1,5 @@
 //! Composer key routing — the 9-row precedence table (`TUI_CONTRACTS` §6;
-//! model.go updateKey, `KeyEventKind::Press` only): (full screen) the dump's return and Ctrl+O → surface → (full screen) PgUp/PgDn/Ctrl+Home/Ctrl+End → Ctrl+C/D → ESC → Tab
+//! model.go updateKey, `KeyEventKind::Press` only): (full screen) the dump's return and Ctrl+O → surface → (full screen) the search → PgUp/PgDn/Ctrl+Home/Ctrl+End → Ctrl+C/D → ESC → Tab
 //! completion → ↑ queue-pop → ↑/↓ history → newline (Ctrl+J, Alt+Enter, Shift+Enter) /
 //! Enter submit → the enumerated emacs edit set → text insert.
 //!
@@ -24,7 +24,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::suggest;
 use crate::ui::runtime::event_loop::Model;
-use crate::ui::runtime::screen::ViewOp;
+use crate::ui::runtime::screen::search::SearchOp;
+use crate::ui::runtime::screen::{Prompt, ViewOp};
+use crate::ui::surface::field::{Field, input_field};
 
 /// Routes one key press through the composer precedence table
 /// (model.go updateKey, `KeyEventKind::Press` only).
@@ -55,6 +57,21 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
     if m.surface.is_some() {
         m.route_surface_key(key);
         return;
+    }
+
+    // Row 1a: the full screen's conversation search (tui-plan S3). Ctrl+R opens it anywhere; `/`
+    // opens it on a scrolled-back view with an empty composer — following the tail, a `/` there
+    // starts a slash command. Once open, the search takes the keys it owns (see `search_key`).
+    if m.fullscreen {
+        if m.search.is_some() {
+            if search_key(m, &key) {
+                return;
+            }
+        } else if opens_search(m, &key) {
+            m.search = Some(SearchField::new());
+            m.view_ops.push(ViewOp::Search(SearchOp::Open));
+            return;
+        }
     }
 
     // Row 1b: the full screen's view keys (tui-plan D5) — PgUp/PgDn half a screen, Ctrl+Home
@@ -158,6 +175,121 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
     if !matches!(key.code, KeyCode::Up | KeyCode::Down) {
         m.composer.end_history_nav();
     }
+}
+
+/// The conversation search's query field (the model's half of the search; the hits and the walk
+/// live with the buffer, `screen::search`). Typing, every key edits the query and the view rides
+/// to its nearest hit; applied, `n`/`p` walk the hits.
+pub(crate) struct SearchField {
+    field: Field,
+    typing: bool,
+    /// The field's pan window (`input_field`).
+    offset: usize,
+}
+
+impl SearchField {
+    fn new() -> Self {
+        Self {
+            field: Field::new(),
+            typing: true,
+            offset: 0,
+        }
+    }
+
+    /// A paste into the query being typed (its newlines flattened): the query it makes, or `None`
+    /// when the query is not being typed.
+    pub(crate) fn paste(&mut self, data: &str) -> Option<SearchOp> {
+        if !self.typing {
+            return None;
+        }
+        self.field.insert_str(&data.replace(['\r', '\n'], " "));
+        Some(SearchOp::Query(self.field.value().to_owned()))
+    }
+
+    /// The search line's query: the field's window and cursor while typing, the query once applied.
+    pub(crate) fn prompt(&mut self, width: usize) -> Prompt {
+        if !self.typing {
+            return Prompt {
+                text: self.field.value().to_owned(),
+                cursor: None,
+            };
+        }
+        let (text, cursor) = input_field(&self.field, &mut self.offset, width / 2);
+        Prompt {
+            text,
+            cursor: Some(cursor),
+        }
+    }
+}
+
+/// Whether `key` opens a search: Ctrl+R anywhere, `/` on a scrolled-back view with nothing typed.
+fn opens_search(m: &Model, key: &KeyEvent) -> bool {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    (ctrl && key.code == KeyCode::Char('r'))
+        || (key.code == KeyCode::Char('/') && !ctrl && m.view_paused && m.composer.is_blank())
+}
+
+/// One key while a search is on; `false` hands it on down the table. Typing: Enter applies the
+/// query (an empty one ends the search), Esc ends it with the view back where it started,
+/// Ctrl+C/Ctrl+D keep their meaning, every other key edits the query. Applied: `n`/`p` walk,
+/// `/` or Ctrl+R starts a new query, Enter leaves with the view on the hit, Esc leaves with it
+/// back where it started; any other character leaves like Enter and is typed, and the view keys
+/// (PgUp, Ctrl+End…) work with the search still on.
+fn search_key(m: &mut Model, key: &KeyEvent) -> bool {
+    let Some(s) = m.search.as_mut() else {
+        return false;
+    };
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    if ctrl && matches!(key.code, KeyCode::Char('c' | 'd')) {
+        return false;
+    }
+    let op = if s.typing {
+        match key.code {
+            KeyCode::Esc => None,
+            KeyCode::Enter if s.field.value().trim().is_empty() => None,
+            KeyCode::Enter => {
+                s.typing = false;
+                return true;
+            }
+            _ => {
+                s.field.handle_key(key);
+                Some(SearchOp::Query(s.field.value().to_owned()))
+            }
+        }
+    } else {
+        match key.code {
+            KeyCode::Char('n') if !ctrl => Some(SearchOp::Step(1)),
+            KeyCode::Char('p') if !ctrl => Some(SearchOp::Step(-1)),
+            KeyCode::Char('/') if !ctrl => Some(SearchOp::Open),
+            KeyCode::Char('r') if ctrl => Some(SearchOp::Open),
+            KeyCode::Esc => None,
+            KeyCode::Enter => {
+                m.search = None;
+                m.view_ops.push(ViewOp::Search(SearchOp::Accept));
+                return true;
+            }
+            KeyCode::Char(_) => {
+                m.search = None;
+                m.view_ops.push(ViewOp::Search(SearchOp::Accept));
+                return false;
+            }
+            _ => return false,
+        }
+    };
+    match op {
+        None => {
+            m.search = None;
+            m.view_ops.push(ViewOp::Search(SearchOp::Cancel));
+        }
+        Some(SearchOp::Open) => {
+            s.typing = true;
+            s.field.clear();
+            s.offset = 0;
+            m.view_ops.push(ViewOp::Search(SearchOp::Open));
+        }
+        Some(op) => m.view_ops.push(ViewOp::Search(op)),
+    }
+    true
 }
 
 /// The full screen's scroll request for `key`, if it is one.

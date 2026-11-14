@@ -18,8 +18,9 @@
 
 use std::collections::VecDeque;
 
-use crate::text::ansi::{ansi_width, wrap_ansi};
+use crate::text::ansi::{ansi_width, strip_sgr, wrap_ansi};
 use crate::ui::render::theme::{FAINT, RESET};
+use crate::ui::surface::search::{highlight_line, match_ranges};
 
 /// The most rows the buffer keeps (tui-plan §1: 200k rows, ~20–40 MB).
 pub(crate) const ROW_CAP: usize = 200_000;
@@ -59,6 +60,13 @@ impl Row {
     fn height(&mut self, width: usize) -> usize {
         self.lines(width).len().max(1)
     }
+}
+
+/// What a draw highlights while a search is on: every occurrence of `query`, and brighter the
+/// one n/p is parked on (row number, byte offset).
+pub(crate) struct Highlight<'a> {
+    pub(crate) query: &'a str,
+    pub(crate) current: Option<(u64, usize)>,
 }
 
 /// A display line: a row and a line within its wrap.
@@ -162,6 +170,96 @@ impl Conversation {
         (out, self.pushed)
     }
 
+    /// The number of the oldest row still held (rows are numbered as they are committed; the
+    /// [`TRIMMED`] row has none).
+    fn first_number(&self) -> u64 {
+        self.pushed - (self.rows.len() as u64 - u64::from(self.trimmed))
+    }
+
+    /// Where row number `n` sits, if it is still held.
+    fn index_of(&self, n: u64) -> Option<usize> {
+        let first = self.first_number();
+        (n >= first && n < self.pushed)
+            .then(|| usize::try_from(n - first).ok())
+            .flatten()
+            .map(|i| i + usize::from(self.trimmed))
+    }
+
+    /// The number of the row at `index` (`None` for the [`TRIMMED`] row).
+    fn number_of(&self, index: usize) -> Option<u64> {
+        let kept = usize::from(self.trimmed);
+        (index >= kept).then(|| self.first_number() + (index - kept) as u64)
+    }
+
+    /// The rows numbered `from` on, as (number, text) — what a search scans.
+    pub(crate) fn texts_from(&self, from: u64) -> impl Iterator<Item = (u64, &str)> {
+        let first = self.first_number().max(from);
+        let skip = self.index_of(first).unwrap_or(self.rows.len());
+        self.rows
+            .iter()
+            .skip(skip)
+            .zip(first..)
+            .map(|(r, n)| (n, r.text.as_str()))
+    }
+
+    /// The rows ever committed: the next row's number.
+    pub(crate) const fn pushed(&self) -> u64 {
+        self.pushed
+    }
+
+    /// Where the view is, by row number — what [`Conversation::restore`] takes back (`None`:
+    /// following the tail).
+    pub(crate) fn mark(&self) -> Option<(u64, usize)> {
+        match self.view {
+            View::Follow => None,
+            View::At(p) => self.number_of(p.row).map(|n| (n, p.line)),
+        }
+    }
+
+    /// Puts the view back where [`Conversation::mark`] found it (its row dropped meanwhile: the
+    /// first row).
+    pub(crate) fn restore(&mut self, mark: Option<(u64, usize)>, width: usize, h: usize) {
+        match mark {
+            None => self.go_bottom(),
+            Some((n, line)) => {
+                let row = self.index_of(n).unwrap_or(0);
+                self.view = View::At(Pos { row, line });
+                self.follow_if_at_bottom(width, h);
+            }
+        }
+    }
+
+    /// Anchors the view so the display line holding byte `off` of row `n`'s plain text is in the
+    /// middle of the viewport — in a wrapped row, the line that byte was wrapped onto.
+    pub(crate) fn jump_to(&mut self, n: u64, off: usize, width: usize, h: usize) {
+        let Some(row) = self.index_of(n) else {
+            return;
+        };
+        let mut seen = 0;
+        let line = self.rows[row]
+            .lines(width)
+            .iter()
+            .position(|l| {
+                seen += strip_sgr(l).len();
+                off < seen
+            })
+            .unwrap_or(0);
+        let top = self.up(Pos { row, line }, h / 2, width);
+        self.anchor(top);
+        self.follow_if_at_bottom(width, h);
+    }
+
+    /// The number of the last row the viewport shows (0 when that is the [`TRIMMED`] row).
+    pub(crate) fn last_shown(&mut self, width: usize, h: usize) -> u64 {
+        if self.rows.is_empty() {
+            return 0;
+        }
+        let top = self.top_line(width, h);
+        let bottom = self.down(top, h.saturating_sub(1), width);
+        self.number_of(bottom.row.min(self.rows.len() - 1))
+            .unwrap_or(0)
+    }
+
     /// Whether the view follows the tail.
     pub(crate) fn following(&self) -> bool {
         self.view == View::Follow
@@ -214,8 +312,15 @@ impl Conversation {
     }
 
     /// The viewport's lines, top to bottom: `h` of them, or fewer when the whole session is
-    /// shorter than the viewport (it then sits on the frame).
-    pub(crate) fn view_lines(&mut self, width: usize, h: usize) -> Vec<String> {
+    /// shorter than the viewport (it then sits on the frame). With a search on, every occurrence
+    /// on a shown row is highlighted — on the row BEFORE it is wrapped, so a match split by a
+    /// wrap is highlighted on both of its lines (`wrap_ansi` carries the SGR across).
+    pub(crate) fn view_lines(
+        &mut self,
+        width: usize,
+        h: usize,
+        hl: Option<&Highlight<'_>>,
+    ) -> Vec<String> {
         self.follow_if_at_bottom(width, h);
         let mut top = self.top_line(width, h);
         if let View::At(p) = &mut self.view {
@@ -226,7 +331,11 @@ impl Conversation {
         let mut out = Vec::with_capacity(h);
         let mut pos = top;
         while out.len() < h && pos.row < self.rows.len() {
-            let lines = self.rows[pos.row].lines(width);
+            let lit = hl.and_then(|hl| self.highlighted(pos.row, width, hl));
+            let lines = match &lit {
+                Some(lines) => lines.as_slice(),
+                None => self.rows[pos.row].lines(width),
+            };
             out.extend(
                 lines[pos.line.min(lines.len())..]
                     .iter()
@@ -239,6 +348,25 @@ impl Conversation {
             };
         }
         out
+    }
+
+    /// Row `index`'s lines at `width` with the search's matches highlighted, or `None` when it has
+    /// none (the cached lines serve then).
+    fn highlighted(&self, index: usize, width: usize, hl: &Highlight<'_>) -> Option<Vec<String>> {
+        let row = &self.rows[index];
+        if match_ranges(&strip_sgr(&row.text), hl.query).is_empty() {
+            return None;
+        }
+        let n = self.number_of(index);
+        let cur = hl
+            .current
+            .and_then(|(cn, off)| (Some(cn) == n).then_some(off));
+        let lit = highlight_line(&row.text, hl.query, cur);
+        Some(if row.cols > width {
+            wrap_ansi(&lit, width)
+        } else {
+            vec![lit]
+        })
     }
 
     /// Anchors the view at `top`, leaving the tail.

@@ -588,9 +588,9 @@ fn a_write_is_one_synchronized_update_exactly_when_it_is_longer_than_sync_min() 
         }
         (body, pairs)
     };
-    t.draw_frame(&composer("")).unwrap();
+    t.draw_frame(&composer(""), None).unwrap();
     // Small: a keystroke, a one-line insert, a height change, a clear, a small batch, an OSC.
-    let (n, pairs) = write(&mut t, &|t| t.draw_frame(&composer("h")).unwrap());
+    let (n, pairs) = write(&mut t, &|t| t.draw_frame(&composer("h"), None).unwrap());
     assert!(
         pairs == 0 && n < 64,
         "a keystroke echo is a few bytes, bare: {n} B"
@@ -608,7 +608,7 @@ fn a_write_is_one_synchronized_update_exactly_when_it_is_longer_than_sync_min() 
         t.ensure_height(4).unwrap();
         t.set_title("small").unwrap();
         t.set_progress(ProgressState::Busy).unwrap();
-        t.draw_frame(&composer("hi")).unwrap();
+        t.draw_frame(&composer("hi"), None).unwrap();
         t.end_batch().unwrap();
     });
     assert_eq!(pairs, 0, "a small batch is bare, the OSCs in it");
@@ -638,7 +638,7 @@ fn a_write_is_one_synchronized_update_exactly_when_it_is_longer_than_sync_min() 
     let (n, pairs) = write(&mut t, &|t| {
         t.begin_batch();
         t.ensure_height(16).unwrap();
-        t.draw_frame(&view(panel.clone(), (2, 1))).unwrap();
+        t.draw_frame(&view(panel.clone(), (2, 1)), None).unwrap();
         t.end_batch().unwrap();
     });
     assert!(
@@ -669,10 +669,13 @@ fn no_cursor_query_sits_inside_a_synchronized_update() {
         });
     }
     let (mut t, buf, geo) = direct_term(5, 19);
-    t.draw_frame(&crate::ui::render::frame::FrameView {
-        rows: (0..5).map(|i| format!("row-{i}")).collect(),
-        cursor: Some((2, 2)),
-    })
+    t.draw_frame(
+        &crate::ui::render::frame::FrameView {
+            rows: (0..5).map(|i| format!("row-{i}")).collect(),
+            cursor: Some((2, 2)),
+        },
+        None,
+    )
     .unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
     arm(&geo, &buf, &seen);
@@ -712,12 +715,12 @@ fn a_height_change_clears_nothing_it_keeps_and_rewrites_nothing_unchanged() {
             .collect(),
         cursor: Some((7, 1)),
     };
-    t.draw_frame(&rows(&[])).unwrap();
+    t.draw_frame(&rows(&[]), None).unwrap();
     let kept = ["SEP-top", "draft", "SEP-bottom", "status"];
     for (h, extra) in [(6, &["pick-1", "pick-2"][..]), (4, &[][..])] {
         let mark = buf.bytes().len();
         assert!(t.ensure_height(h).unwrap(), "the height changed to {h}");
-        t.draw_frame(&rows(extra)).unwrap();
+        t.draw_frame(&rows(extra), None).unwrap();
         let bytes = buf.bytes();
         let after = String::from_utf8_lossy(&bytes[mark..]).into_owned();
         assert!(
@@ -770,7 +773,7 @@ fn shrink_recreation_walks_down_without_ghosts() {
             .collect(),
         cursor: Some((2, 0)),
     };
-    t.draw_frame(&tall).unwrap();
+    t.draw_frame(&tall, None).unwrap();
     assert!(
         parse(&buf).screen().contents().contains("SURFGHOST-row"),
         "tall frame never painted"
@@ -787,9 +790,9 @@ fn shrink_recreation_walks_down_without_ghosts() {
         cursor: Some((2, 1)),
     };
     t.ensure_height(4).unwrap();
-    t.draw_frame(&small).unwrap();
+    t.draw_frame(&small, None).unwrap();
     t.insert_lines(&["after-one".to_owned()]).unwrap();
-    t.draw_frame(&small).unwrap();
+    t.draw_frame(&small, None).unwrap();
 
     let contents = parse(&buf).screen().contents();
     assert!(
@@ -1720,7 +1723,7 @@ fn resize_anchors_at_the_cursor_row_minus_its_frame_row() {
         ],
         cursor: Some((2, 2)),
     };
-    t.draw_frame(&frame).unwrap();
+    t.draw_frame(&frame, None).unwrap();
     assert_eq!(geo.cursor(), ratatui::layout::Position::new(2, 12));
     let mark = buf.bytes().len();
     geo.shift_cursor(-3);
@@ -1738,7 +1741,7 @@ fn resize_anchors_at_the_cursor_row_minus_its_frame_row() {
         7,
         "anchor must be cursor (9) − the composer's frame row (2)"
     );
-    t.draw_frame(&frame).unwrap();
+    t.draw_frame(&frame, None).unwrap();
     let after = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
     assert!(
         !after.contains("\u{1b}[2J"),
@@ -1777,7 +1780,7 @@ fn a_flush_frame_resizes_onto_the_floor_and_the_band_takes_the_next_output() {
         ],
         cursor: Some((2, 2)),
     };
-    t.draw_frame(&frame).unwrap();
+    t.draw_frame(&frame, None).unwrap();
     let mark = buf.bytes().len();
     geo.shift_cursor(-3);
     geo.set_size(60, 24);
@@ -1800,11 +1803,11 @@ fn a_flush_frame_resizes_onto_the_floor_and_the_band_takes_the_next_output() {
         0,
         "a resize scrolls nothing:\n{after:?}"
     );
-    t.draw_frame(&frame).unwrap();
+    t.draw_frame(&frame, None).unwrap();
     // Three rows of output fill the three-row band: the frame stays flush.
     t.insert_lines(&["a".to_owned(), "b".to_owned(), "c".to_owned()])
         .unwrap();
-    t.draw_frame(&frame).unwrap();
+    t.draw_frame(&frame, None).unwrap();
     assert_eq!(
         t.top(),
         19,
@@ -1830,7 +1833,7 @@ fn resize_with_a_hidden_cursor_anchors_on_the_frames_first_row() {
         rows: (0..6).map(|i| format!("panel-{i}")).collect(),
         cursor: None,
     };
-    t.draw_frame(&surface).unwrap();
+    t.draw_frame(&surface, None).unwrap();
     assert_eq!(
         geo.cursor(),
         ratatui::layout::Position::new(0, 18),
@@ -1865,7 +1868,7 @@ fn resize_with_a_surface_open_leaves_no_half_frame() {
         cursor: None,
     };
     t.ensure_height(8).unwrap();
-    t.draw_frame(&view(80)).unwrap();
+    t.draw_frame(&view(80), None).unwrap();
     let mut emu = TmuxReflowEmu::new();
     let moved = emu.resize(&buf.bytes(), 60, 24);
     geo.shift_cursor(moved);
@@ -1878,7 +1881,7 @@ fn resize_with_a_surface_open_leaves_no_half_frame() {
         8,
     )
     .unwrap();
-    t.draw_frame(&view(60)).unwrap();
+    t.draw_frame(&view(60), None).unwrap();
     let (all, screen) = emu.finish(&buf.bytes());
     let dump = all.join("\n");
     assert_eq!(all.iter().filter(|r| r.contains('❯')).count(), 1, "{dump}");
@@ -2432,7 +2435,7 @@ fn raced_term(
             .collect(),
         cursor,
     };
-    t.draw_frame(&frame).unwrap();
+    t.draw_frame(&frame, None).unwrap();
     (
         t,
         buf,
@@ -2475,7 +2478,7 @@ fn pass(
 ) {
     t.resize(ratatui::layout::Size { width, height }, 9)
         .unwrap();
-    t.draw_frame(frame).unwrap();
+    t.draw_frame(frame, None).unwrap();
 }
 
 /// Every `t-NN` of `lines` is still reachable (a duplicate is the budget's; a loss is not).
@@ -2557,7 +2560,7 @@ fn answers_one_query_late_lose_no_row() {
             let rows: Vec<String> = (n..n + 2).map(|i| format!("n-{i:02}")).collect();
             n += 2;
             t.insert_lines(&rows).unwrap();
-            t.draw_frame(&frame).unwrap();
+            t.draw_frame(&frame, None).unwrap();
         }
         let (all, _) = emu.lock().unwrap().finish(&buf.bytes());
         assert_no_committed_row_lost(&format!("late answers, cursor {cursor:?}"), 40, &all);
@@ -2596,7 +2599,7 @@ fn answers_one_query_late_through_a_height_drag_and_its_end_keep_the_frame() {
             pass(&mut t, &frame, (80, h));
         }
         t.close_band().unwrap();
-        t.draw_frame(&frame).unwrap();
+        t.draw_frame(&frame, None).unwrap();
         let tag = format!("{late} late answers, height drag, cursor {cursor:?}");
         let (all, screen) = emu.lock().unwrap().finish(&buf.bytes());
         assert_no_committed_row_lost(&tag, 40, &all);
@@ -2661,10 +2664,10 @@ fn f1_term_after_band() -> (
         rows: vec!["SEP".to_owned(), "❯ ".to_owned(), "status".to_owned()],
         cursor: Some((2, 1)),
     };
-    t.draw_frame(&frame).unwrap();
+    t.draw_frame(&frame, None).unwrap();
     t.insert_lines(&(0..30).map(|i| format!("hist-{i:02}")).collect::<Vec<_>>())
         .unwrap();
-    t.draw_frame(&frame).unwrap();
+    t.draw_frame(&frame, None).unwrap();
     assert_eq!(t.top(), 21);
     let mark = buf.bytes().len();
     geo.shift_cursor(-3);
@@ -2677,7 +2680,7 @@ fn f1_term_after_band() -> (
         3,
     )
     .unwrap();
-    t.draw_frame(&frame).unwrap();
+    t.draw_frame(&frame, None).unwrap();
     (t, buf, frame, mark)
 }
 
@@ -2706,11 +2709,11 @@ fn verify_f1_close_band_after_a_wide_batch_loses_it() {
     let (mut t, buf, frame, mark) = f1_term_after_band();
     let wide = format!("WIDE{}", "w".repeat(66)); // 70 cols: one row at 80, two at 60
     t.insert_lines(&[wide]).unwrap();
-    t.draw_frame(&frame).unwrap();
+    t.draw_frame(&frame, None).unwrap();
     assert_eq!(f1_find(&buf, mark, "WIDE"), 1, "present before close_band");
     assert_eq!(f1_ws(&buf, mark), 66, "whole before close_band");
     t.close_band().unwrap();
-    t.draw_frame(&frame).unwrap();
+    t.draw_frame(&frame, None).unwrap();
     let mut p = parse_shifted(&buf, mark, -3);
     let all = reachable(&mut p);
     assert_eq!(
@@ -2732,10 +2735,10 @@ fn verify_f1_next_narrow_batch_overwrites_the_wide_batch() {
         .map(|i| format!("WIDE{i}{}", "w".repeat(65)))
         .collect();
     t.insert_lines(&wide).unwrap();
-    t.draw_frame(&frame).unwrap();
+    t.draw_frame(&frame, None).unwrap();
     assert_eq!(f1_ws(&buf, mark), 130, "whole before the next batch");
     t.insert_lines(&["next-0".to_owned()]).unwrap();
-    t.draw_frame(&frame).unwrap();
+    t.draw_frame(&frame, None).unwrap();
     let mut p = parse_shifted(&buf, mark, -3);
     let all = reachable(&mut p);
     assert_eq!(
@@ -2881,7 +2884,7 @@ fn verify_f1_grow_up_after_a_wide_batch_keeps_it() {
         cursor: Some((2, 3)),
     };
     assert!(t.ensure_height(5).unwrap());
-    t.draw_frame(&tall).unwrap();
+    t.draw_frame(&tall, None).unwrap();
     let mut p = parse_shifted(&buf, mark, -3);
     let all = reachable(&mut p);
     assert_eq!(

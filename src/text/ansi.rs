@@ -94,25 +94,34 @@ pub fn ansi_width(s: &str) -> usize {
 /// Removes `\x1b[..m` (SGR) sequences only — digits and `;` params, `m` final, the Go
 /// `ansiRe` shape. Other escapes (OSC 8 hyperlinks) are kept.
 pub fn strip_sgr(s: &str) -> String {
-    let b = s.as_bytes();
     let mut out = String::with_capacity(s.len());
+    strip_sgr_into(s, &mut out);
+    out
+}
+
+/// [`strip_sgr`] into `out` (cleared first), so a caller stripping many lines reuses one buffer.
+pub fn strip_sgr_into(s: &str, out: &mut String) {
+    out.clear();
+    let b = s.as_bytes();
     let mut i = 0;
-    while i < s.len() {
-        let n = csi_len_at(b, i);
+    // Text between escapes is copied a run at a time (a search strips every row of a session).
+    while let Some(j) = s[i..].find('\x1b') {
+        let at = i + j;
+        out.push_str(&s[i..at]);
+        let n = csi_len_at(b, at);
         if n > 0
-            && b[i + n - 1] == b'm'
-            && b[i + 2..i + n - 1]
+            && b[at + n - 1] == b'm'
+            && b[at + 2..at + n - 1]
                 .iter()
                 .all(|c| c.is_ascii_digit() || *c == b';')
         {
-            i += n;
-            continue;
+            i = at + n;
+        } else {
+            out.push('\x1b');
+            i = at + 1;
         }
-        let ch_len = s[i..].chars().next().map_or(1, char::len_utf8);
-        out.push_str(&s[i..i + ch_len]);
-        i += ch_len;
     }
-    out
+    out.push_str(&s[i..]);
 }
 
 /// Escape-preserving truncation (x/ansi Truncate twin): a string whose visible width

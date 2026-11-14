@@ -48,7 +48,7 @@ fn grid(p: &vt100::Parser) -> Vec<String> {
 fn the_conversation_sits_on_the_frame_and_the_frame_on_the_bottom() {
     let (mut s, buf) = screen(40, 12);
     s.push(&rows(3));
-    s.draw_frame(&frame(40)).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
     let p = replay(&buf, 12, 40);
     assert!(p.screen().alternate_screen(), "on the alternate screen");
     let g = grid(&p);
@@ -68,10 +68,10 @@ fn a_resize_repaints_the_whole_screen_at_the_new_size() {
     let (mut s, buf) = screen(40, 12);
     s.push(&rows(20));
     s.push(&[format!("{}END", "w".repeat(30))]);
-    s.draw_frame(&frame(40)).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
     let mark = buf.bytes().len();
     s.resize(Size::new(20, 10));
-    s.draw_frame(&frame(20)).unwrap();
+    s.draw_frame(&frame(20), None).unwrap();
     // The emulator itself resized before the repaint arrived.
     let mut p = vt100::Parser::new(12, 40, 0);
     p.process(&buf.bytes()[..mark]);
@@ -93,22 +93,22 @@ fn a_resize_repaints_the_whole_screen_at_the_new_size() {
 fn page_keys_walk_back_to_the_first_row_and_down_to_the_tail() {
     let (mut s, buf) = screen(40, 12);
     s.push(&rows(50));
-    s.draw_frame(&frame(40)).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
     for _ in 0..40 {
         s.view(ViewOp::HalfUp).unwrap();
     }
-    s.draw_frame(&frame(40)).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
     let g = grid(&replay(&buf, 12, 40));
     assert_eq!(g[0], "line-000", "the top of the session: {g:#?}");
     assert_eq!(g[11], "status", "the frame stays");
     // Clamped at the top: one PgDn moves at once.
     s.view(ViewOp::HalfDown).unwrap();
-    s.draw_frame(&frame(40)).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
     assert_eq!(grid(&replay(&buf, 12, 40))[0], "line-004");
     for _ in 0..40 {
         s.view(ViewOp::HalfDown).unwrap();
     }
-    s.draw_frame(&frame(40)).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
     assert_eq!(
         grid(&replay(&buf, 12, 40))[7],
         "line-049",
@@ -121,7 +121,7 @@ fn the_exit_writes_the_conversation_into_the_main_screen_at_the_exit_width() {
     let (mut s, buf) = screen(40, 12);
     s.push(&rows(5));
     s.push(&[format!("{}END", "w".repeat(30))]);
-    s.draw_frame(&frame(40)).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
     s.resize(Size::new(20, 12));
     s.leave().unwrap();
     let mut p = vt100::Parser::new(12, 40, 1000);
@@ -155,7 +155,7 @@ fn a_frame_larger_than_sync_min_is_one_synchronized_update_and_a_keystroke_is_ba
     );
     let mark = buf.bytes().len();
     s.begin_batch();
-    s.draw_frame(&frame(80)).unwrap();
+    s.draw_frame(&frame(80), None).unwrap();
     s.end_batch().unwrap();
     let first = buf.bytes()[mark..].to_vec();
     assert!(first.starts_with(SYNC_BEGIN), "a full paint is one block");
@@ -164,7 +164,7 @@ fn a_frame_larger_than_sync_min_is_one_synchronized_update_and_a_keystroke_is_ba
     typed.rows[1] = "❯ x".to_owned();
     typed.cursor = Some((3, 1));
     s.begin_batch();
-    s.draw_frame(&typed).unwrap();
+    s.draw_frame(&typed, None).unwrap();
     s.end_batch().unwrap();
     let key = &buf.bytes()[mark..];
     assert!(!key.is_empty() && key.len() < 64, "{} bytes", key.len());
@@ -176,7 +176,7 @@ const SU_REGION: &str = "\u{1b}[r";
 fn fresh_paint(rows_in: &[String], w: u16, h: u16, f: &FrameView) -> Vec<String> {
     let (mut s, buf) = screen(w, h);
     s.push(rows_in);
-    s.draw_frame(f).unwrap();
+    s.draw_frame(f, None).unwrap();
     grid(&replay(&buf, h, w))
 }
 
@@ -190,12 +190,12 @@ fn following_output_scrolls_the_viewport_with_one_operation() {
         .map(|i| format!("{i:02} {}", "x".repeat(60)))
         .collect();
     s.push(&all[..40]);
-    s.draw_frame(&frame(80)).unwrap();
+    s.draw_frame(&frame(80), None).unwrap();
     let mut sizes = Vec::new();
     for i in 40..60 {
         let mark = buf.bytes().len();
         s.push(&all[i..=i]);
-        s.draw_frame(&frame(80)).unwrap();
+        s.draw_frame(&frame(80), None).unwrap();
         let out = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
         assert!(
             out.contains("\u{1b}[1;20r\u{1b}[1S"),
@@ -218,11 +218,11 @@ fn following_output_scrolls_the_viewport_with_one_operation() {
 fn a_batch_of_lines_is_one_scroll_of_that_many() {
     let (mut s, buf) = screen(40, 12);
     s.push(&rows(20));
-    s.draw_frame(&frame(40)).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
     let mark = buf.bytes().len();
     let more: Vec<String> = (20..23).map(|i| format!("line-{i:03}")).collect();
     s.push(&more);
-    s.draw_frame(&frame(40)).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
     let out = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
     assert_eq!(out.matches("S\u{1b}[r").count(), 1, "{out:?}");
     assert!(out.contains("\u{1b}[1;8r\u{1b}[3S"), "{out:?}");
@@ -243,38 +243,38 @@ fn no_scroll_when_the_viewport_did_not_just_move_up() {
     };
     let (mut s, buf) = screen(40, 12);
     s.push(&rows(30));
-    s.draw_frame(&frame(40)).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
     // Paused.
     s.view(ViewOp::HalfUp).unwrap();
-    s.draw_frame(&frame(40)).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
     let mark = buf.bytes().len();
     s.push(&rows(1));
-    s.draw_frame(&frame(40)).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
     assert!(!scrolled(&buf, mark), "a paused view scrolled");
     // Back on the tail: the first frame repaints, the next one scrolls.
     s.view(ViewOp::Bottom).unwrap();
     let mark = buf.bytes().len();
-    s.draw_frame(&frame(40)).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
     assert!(
         !scrolled(&buf, mark),
         "the frame that resumed following scrolled"
     );
     let mark = buf.bytes().len();
     s.push(&rows(1));
-    s.draw_frame(&frame(40)).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
     assert!(scrolled(&buf, mark), "following again, a new line scrolls");
     // A resize.
     s.resize(Size::new(40, 14));
     s.push(&rows(1));
     let mark = buf.bytes().len();
-    s.draw_frame(&frame(40)).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
     assert!(!scrolled(&buf, mark), "a resize scrolled");
     // A taller frame.
     let mut tall = frame(40);
     tall.rows.insert(0, "preview".to_owned());
     s.push(&rows(1));
     let mark = buf.bytes().len();
-    s.draw_frame(&tall).unwrap();
+    s.draw_frame(&tall, None).unwrap();
     assert!(
         !scrolled(&buf, mark),
         "a frame that changed height scrolled"
@@ -283,7 +283,7 @@ fn no_scroll_when_the_viewport_did_not_just_move_up() {
     s.clear().unwrap();
     s.push(&rows(1));
     let mark = buf.bytes().len();
-    s.draw_frame(&tall).unwrap();
+    s.draw_frame(&tall, None).unwrap();
     assert!(!scrolled(&buf, mark), "a cleared screen scrolled");
 }
 
@@ -293,20 +293,20 @@ fn no_scroll_when_the_viewport_did_not_just_move_up() {
 fn a_paused_view_holds_through_output_and_a_resize() {
     let (mut s, buf) = screen(40, 12);
     s.push(&rows(40));
-    s.draw_frame(&frame(40)).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
     s.view(ViewOp::HalfUp).unwrap();
     s.view(ViewOp::HalfUp).unwrap();
-    s.draw_frame(&frame(40)).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
     let before = grid(&replay(&buf, 12, 40));
     assert!(before[7].contains("Ctrl+End"), "{before:#?}");
     s.push(&rows(5));
-    s.draw_frame(&frame(40)).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
     let after = grid(&replay(&buf, 12, 40));
     assert_eq!(&after[..7], &before[..7], "new output moved the view");
     assert!(after[7].contains("↓ 5 new lines"), "{after:#?}");
     let mark = buf.bytes().len();
     s.resize(Size::new(30, 16));
-    s.draw_frame(&frame(30)).unwrap();
+    s.draw_frame(&frame(30), None).unwrap();
     let mut p = vt100::Parser::new(12, 40, 0);
     p.process(&buf.bytes()[..mark]);
     p.screen_mut().set_size(16, 30);
@@ -325,7 +325,7 @@ fn a_paused_view_holds_through_output_and_a_resize() {
 fn a_dump_writes_the_conversation_out_and_the_next_key_comes_back() {
     let (mut s, buf) = screen(40, 12);
     s.push(&rows(30));
-    s.draw_frame(&frame(40)).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
     s.view(ViewOp::Dump).unwrap();
     let mut p = vt100::Parser::new(12, 40, 100);
     p.process(&buf.bytes());
@@ -335,10 +335,10 @@ fn a_dump_writes_the_conversation_out_and_the_next_key_comes_back() {
     );
     let mark = buf.bytes().len();
     s.push(&rows(2));
-    s.draw_frame(&frame(40)).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
     assert_eq!(buf.bytes().len(), mark, "nothing drawn while dumped");
     s.view(ViewOp::Return).unwrap();
-    s.draw_frame(&frame(40)).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
     let p = replay(&buf, 12, 40);
     assert!(p.screen().alternate_screen());
     let g = grid(&p);
@@ -429,36 +429,46 @@ fn m1_a_hundred_thousand_rows() {
         s.push(chunk);
     }
     drop(rows);
-    s.draw_frame(&frame(120)).unwrap();
+    s.draw_frame(&frame(120), None).unwrap();
     let grown = rss_kib();
     let frame_time = |s: &mut Screen<SharedBuf>, op: Option<ViewOp>| {
         let t = Instant::now();
         if let Some(op) = op {
             s.view(op).unwrap();
         }
-        s.draw_frame(&frame(120)).unwrap();
+        s.draw_frame(&frame(120), None).unwrap();
         t.elapsed()
     };
     let tail_pgup = frame_time(&mut s, Some(ViewOp::HalfUp));
     s.view(ViewOp::Top).unwrap();
-    s.draw_frame(&frame(120)).unwrap();
+    s.draw_frame(&frame(120), None).unwrap();
     for _ in 0..3 {
         s.view(ViewOp::HalfDown).unwrap();
     }
-    s.draw_frame(&frame(120)).unwrap();
+    s.draw_frame(&frame(120), None).unwrap();
     let deep_pgup = frame_time(&mut s, Some(ViewOp::HalfUp));
     let top = frame_time(&mut s, Some(ViewOp::Top));
     s.resize(Size::new(100, 40));
     let deep_resize = frame_time(&mut s, None);
     s.view(ViewOp::Bottom).unwrap();
-    s.draw_frame(&frame(100)).unwrap();
+    s.draw_frame(&frame(100), None).unwrap();
     s.resize(Size::new(90, 40));
     let tail_resize = frame_time(&mut s, None);
     let bottom = frame_time(&mut s, Some(ViewOp::Bottom));
+    s.view(ViewOp::Search(super::search::SearchOp::Open))
+        .unwrap();
+    let t = Instant::now();
+    s.view(ViewOp::Search(super::search::SearchOp::Query(
+        "000123".to_owned(),
+    )))
+    .unwrap();
+    let query = t.elapsed();
+    let searched = frame_time(&mut s, None);
     println!(
         "M1: RSS +{} KiB for 100k rows; PgUp frame at the tail {tail_pgup:?}, near the first row \
          {deep_pgup:?}; Ctrl+Home frame {top:?}; resize repaint near the first row {deep_resize:?}, \
-         at the tail {tail_resize:?}; Ctrl+End frame {bottom:?}",
+         at the tail {tail_resize:?}; Ctrl+End frame {bottom:?}; a query over every row {query:?}, \
+         the frame on its hit {searched:?}",
         grown.saturating_sub(base)
     );
 }

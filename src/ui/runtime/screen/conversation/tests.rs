@@ -17,10 +17,10 @@ fn conv(n: usize) -> Conversation {
 #[test]
 fn following_shows_the_tail_and_a_short_session_whole() {
     let mut c = conv(50);
-    assert_eq!(c.view_lines(20, 5), rows(45, 5));
+    assert_eq!(c.view_lines(20, 5, None), rows(45, 5));
     let mut short = conv(3);
     assert_eq!(
-        short.view_lines(20, 5),
+        short.view_lines(20, 5, None),
         rows(0, 3),
         "fewer lines than the viewport"
     );
@@ -32,7 +32,7 @@ fn a_row_wider_than_the_screen_is_wrapped_once_per_width() {
     let mut c = Conversation::new();
     c.push(&[format!("{}END", "w".repeat(27)), "next".to_owned()]);
     assert_eq!(
-        c.view_lines(10, 5),
+        c.view_lines(10, 5, None),
         ["wwwwwwwwww", "wwwwwwwwww", "wwwwwwwEND", "next"]
     );
     assert_eq!(
@@ -41,9 +41,12 @@ fn a_row_wider_than_the_screen_is_wrapped_once_per_width() {
     );
     assert!(c.rows[1].wrap.is_none(), "a row that fits is never wrapped");
     // Wider again: the row fits and no wrap is consulted.
-    assert_eq!(c.view_lines(40, 5)[0], format!("{}END", "w".repeat(27)));
+    assert_eq!(
+        c.view_lines(40, 5, None)[0],
+        format!("{}END", "w".repeat(27))
+    );
     // Another width replaces the cached wrap.
-    c.view_lines(15, 5);
+    c.view_lines(15, 5, None);
     assert_eq!(c.rows[0].wrap.as_ref().map(|(w, _)| *w), Some(15));
 }
 
@@ -52,10 +55,14 @@ fn scrolling_up_anchors_on_a_row_and_new_output_does_not_move_the_view() {
     let mut c = conv(50);
     c.scroll_up(10, 20, 5);
     assert!(!c.following());
-    let before = c.view_lines(20, 5);
+    let before = c.view_lines(20, 5, None);
     assert_eq!(before, rows(35, 5));
     c.push(&rows(50, 7));
-    assert_eq!(c.view_lines(20, 5), before, "new output moved the view");
+    assert_eq!(
+        c.view_lines(20, 5, None),
+        before,
+        "new output moved the view"
+    );
     assert_eq!(c.unseen(), 7);
 }
 
@@ -66,13 +73,13 @@ fn a_resize_keeps_the_anchored_row_at_the_top() {
         c.push(&[format!("{i:02}{}", "x".repeat(28))]); // 30 columns each
     }
     c.scroll_up(20, 40, 6);
-    let top = c.view_lines(40, 6)[0].clone();
+    let top = c.view_lines(40, 6, None)[0].clone();
     // Narrower: each row is three lines now; the same row is still the first one shown.
-    let narrow = c.view_lines(10, 6);
+    let narrow = c.view_lines(10, 6, None);
     assert_eq!(narrow[0], top[..10]);
     // A line inside a wrapped row past its new height is clamped to the row's last line.
     c.view = View::At(Pos { row: 5, line: 2 });
-    let wide = c.view_lines(40, 6);
+    let wide = c.view_lines(40, 6, None);
     assert!(wide[0].starts_with("05"), "{wide:?}");
 }
 
@@ -86,21 +93,21 @@ fn reaching_the_bottom_follows_again_and_ctrl_end_does_too() {
     c.scroll_down(100, 20, 10);
     assert!(c.following(), "PgDn to the bottom resumes following");
     assert_eq!(c.unseen(), 0);
-    assert_eq!(c.view_lines(20, 10), rows(43, 10));
+    assert_eq!(c.view_lines(20, 10, None), rows(43, 10));
     c.scroll_up(5, 20, 10);
     c.push(&rows(53, 2));
     c.go_bottom();
     assert!(c.following());
-    assert_eq!(c.view_lines(20, 10)[9], "r054");
+    assert_eq!(c.view_lines(20, 10, None)[9], "r054");
 }
 
 #[test]
 fn ctrl_home_shows_the_first_line_and_page_up_stops_there() {
     let mut c = conv(50);
     c.go_top(20, 10);
-    assert_eq!(c.view_lines(20, 10), rows(0, 10));
+    assert_eq!(c.view_lines(20, 10, None), rows(0, 10));
     c.scroll_up(5, 20, 10);
-    assert_eq!(c.view_lines(20, 10)[0], "r000");
+    assert_eq!(c.view_lines(20, 10, None)[0], "r000");
     let mut short = conv(4);
     short.go_top(20, 10);
     assert!(short.following(), "a session that fits stays on the tail");
@@ -111,18 +118,18 @@ fn past_the_cap_the_oldest_rows_go_and_a_first_row_says_so() {
     let mut c = Conversation::with_cap(10);
     c.push(&rows(0, 8));
     c.scroll_up(3, 80, 3); // anchored on r002
-    assert_eq!(c.view_lines(80, 3)[0], "r002");
+    assert_eq!(c.view_lines(80, 3, None)[0], "r002");
     c.push(&rows(8, 3)); // 11 rows: r000 and r001 go, the notice comes in
     assert_eq!(c.rows.len(), 10);
     assert!(c.rows[0].text.contains(TRIMMED));
     assert_eq!(c.rows[1].text, "r002");
     assert_eq!(
-        c.view_lines(80, 3)[0],
+        c.view_lines(80, 3, None)[0],
         "r002",
         "the anchor moved with its row"
     );
     c.push(&rows(11, 5)); // r002 goes too: the anchor falls back to the top
-    assert!(c.view_lines(80, 3)[0].contains(TRIMMED));
+    assert!(c.view_lines(80, 3, None)[0].contains(TRIMMED));
     c.push(&rows(16, 4));
     assert_eq!(c.rows.len(), 10);
     assert_eq!(

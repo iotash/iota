@@ -48,7 +48,7 @@ pub(crate) static ALT_ACTIVE: AtomicBool = AtomicBool::new(false);
 pub(crate) const LEAVE: &[u8] = b"\x1b[?25h\x1b[?1049l";
 
 /// A request from the full screen's view keys (tui-plan D5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ViewOp {
     /// `PgUp`: half a screen toward the start.
     HalfUp,
@@ -62,6 +62,15 @@ pub(crate) enum ViewOp {
     Dump,
     /// The key after a dump: back to the full screen.
     Return,
+    /// The conversation search (`Ctrl+R`, or `/` scrolled back — [`search`]).
+    Search(SearchOp),
+}
+
+/// The search line's query as the model's field shows it, and the field's cursor column while the
+/// query is being typed (`None` once it is applied).
+pub(crate) struct Prompt {
+    pub(crate) text: String,
+    pub(crate) cursor: Option<usize>,
 }
 
 /// The line written above the conversation in the main screen, by the first dump or the exit:
@@ -84,6 +93,8 @@ pub(crate) struct Screen<W: Write> {
     /// Rows the dumps and the exit have written into the main screen so far (each is written
     /// once).
     written: u64,
+    /// The search under way, if one is.
+    search: Option<Search>,
 }
 
 /// A drawn frame and the layout it was drawn with — what a scroll of the viewport starts from.
@@ -123,6 +134,7 @@ impl<W: Write> Screen<W> {
             batch,
             last: None,
             dumped: None,
+            search: None,
             written: 0,
         })
     }
@@ -144,6 +156,11 @@ impl<W: Write> Screen<W> {
         self.conv.push(rows);
     }
 
+    /// Whether the view is scrolled back from the tail.
+    pub(crate) fn paused(&self) -> bool {
+        !self.conv.following()
+    }
+
     /// Applies a view key: moves the viewport (the next draw shows it), writes the conversation
     /// out, or comes back from that.
     pub(crate) fn view(&mut self, op: ViewOp) -> io::Result<()> {
@@ -157,6 +174,7 @@ impl<W: Write> Screen<W> {
             ViewOp::Bottom => self.conv.go_bottom(),
             ViewOp::Dump => self.dump()?,
             ViewOp::Return => self.back()?,
+            ViewOp::Search(op) => self.search_op(op, width, h),
         }
         Ok(())
     }
@@ -173,6 +191,41 @@ impl<W: Write> Screen<W> {
         }
         self.dumped = Some(ALT_ACTIVE.swap(false, Ordering::Relaxed));
         self.write_out(true)
+    }
+
+    /// One step of the search: a jump to the hit it is on, or the view back where it was.
+    fn search_op(&mut self, op: SearchOp, width: usize, h: usize) {
+        match op {
+            SearchOp::Open => {
+                if self.search.is_none() {
+                    let above = self.conv.last_shown(width, h);
+                    self.search = Some(Search::new(&self.conv, above));
+                }
+            }
+            SearchOp::Query(q) => {
+                if let Some(s) = &mut self.search {
+                    s.set_query(&self.conv, &q);
+                    match s.current() {
+                        Some((n, off)) => self.conv.jump_to(n, off, width, h),
+                        None => self.conv.restore(s.origin(), width, h),
+                    }
+                }
+            }
+            SearchOp::Step(dir) => {
+                if let Some(s) = &mut self.search {
+                    s.step(dir);
+                    if let Some((n, off)) = s.current() {
+                        self.conv.jump_to(n, off, width, h);
+                    }
+                }
+            }
+            SearchOp::Accept => self.search = None,
+            SearchOp::Cancel => {
+                if let Some(s) = self.search.take() {
+                    self.conv.restore(s.origin(), width, h);
+                }
+            }
+        }
     }
 
     /// Back from a dump: the alternate screen again, cleared and repainted whole by the next draw.
@@ -212,7 +265,11 @@ impl<W: Write> Screen<W> {
 
     /// One frame: the conversation's visible rows over the frame's rows, the real cursor where
     /// the frame puts it (hidden when it puts none).
-    pub(crate) fn draw_frame(&mut self, view: &FrameView) -> io::Result<()> {
+    pub(crate) fn draw_frame(
+        &mut self,
+        view: &FrameView,
+        prompt: Option<&Prompt>,
+    ) -> io::Result<()> {
         if self.dumped.is_some() {
             return Ok(());
         }
@@ -223,7 +280,10 @@ impl<W: Write> Screen<W> {
             .min(height);
         let view_h = height - frame_h;
         self.view_h = view_h;
-        let lines = self.view_lines(usize::from(width), usize::from(view_h));
+        if let Some(s) = &mut self.search {
+            s.catch_up(&self.conv);
+        }
+        let lines = self.view_lines(usize::from(width), usize::from(view_h), prompt);
         let fresh = self.conv.take_fresh(usize::from(width));
         if let Some(n) = self.scrolled_by(fresh, view_h) {
             self.scroll_region(n, view_h)?;
@@ -233,12 +293,28 @@ impl<W: Write> Screen<W> {
         let conv = Rect::new(0, view_h - shown, width, shown);
         let frame = Rect::new(0, view_h, width, frame_h);
         let frame_lines: Vec<Line<'static>> = view.rows.iter().map(|r| ansi_to_spans(r)).collect();
-        let cursor = view.cursor.map(|(x, y)| {
-            Position::new(
-                x.min(width.saturating_sub(1)),
-                view_h.saturating_add(y.min(frame_h.saturating_sub(1))),
-            )
-        });
+        // While a query is typed the real cursor is on the search line (an IME's candidate window
+        // follows it), not in the composer.
+        let typing = self
+            .search
+            .as_ref()
+            .and(prompt)
+            .and_then(|p| p.cursor)
+            .filter(|_| view_h > 0);
+        let cursor = match typing {
+            Some(col) => Some(Position::new(
+                u16::try_from(col + 1)
+                    .unwrap_or(u16::MAX)
+                    .min(width.saturating_sub(1)),
+                view_h - 1,
+            )),
+            None => view.cursor.map(|(x, y)| {
+                Position::new(
+                    x.min(width.saturating_sub(1)),
+                    view_h.saturating_add(y.min(frame_h.saturating_sub(1))),
+                )
+            }),
+        };
         let done = self.term.draw(|f| {
             f.render_widget(Paragraph::new(Text::from(lines)), conv);
             f.render_widget(Paragraph::new(Text::from(frame_lines)), frame);
@@ -294,10 +370,35 @@ impl<W: Write> Screen<W> {
         write!(self.out(), "\x1b[1;{view_h}r\x1b[{n}S\x1b[r")
     }
 
-    /// The viewport's lines as spans; an anchored view's last line is the way back to the tail.
-    fn view_lines(&mut self, width: usize, h: usize) -> Vec<Line<'static>> {
-        let mut lines = self.conv.view_lines(width, h);
-        if !self.conv.following()
+    /// The viewport's lines as spans, the search's matches highlighted. The last line is the
+    /// search line while a search is on — the viewport padded to its full height for it — and,
+    /// otherwise, the way back to the tail when the view is anchored.
+    fn view_lines(
+        &mut self,
+        width: usize,
+        h: usize,
+        prompt: Option<&Prompt>,
+    ) -> Vec<Line<'static>> {
+        let hl = self.search.as_ref().and_then(Search::highlight);
+        let mut lines = self.conv.view_lines(width, h, hl.as_ref());
+        if let (Some(s), Some(p)) = (&self.search, prompt)
+            && h > 0
+        {
+            let hint = if p.cursor.is_some() {
+                "Enter walks the hits · Esc goes back"
+            } else {
+                "n/p walk · Enter stays · Esc goes back"
+            };
+            let status = s.status();
+            let sep = if status.is_empty() { "" } else { " · " };
+            let line = format!("/{}  {FAINT}{status}{sep}{hint}{RESET}", p.text);
+            while lines.len() < h {
+                lines.insert(0, String::new());
+            }
+            if let Some(last) = lines.last_mut() {
+                *last = line;
+            }
+        } else if !self.conv.following()
             && let Some(last) = lines.last_mut()
         {
             *last = match self.conv.unseen() {
@@ -458,8 +559,10 @@ impl<W: Write> Backend for Out<W> {
 }
 
 mod conversation;
+pub(crate) mod search;
 
 use conversation::Conversation;
+use search::{Search, SearchOp};
 
 #[cfg(test)]
 mod tests;
