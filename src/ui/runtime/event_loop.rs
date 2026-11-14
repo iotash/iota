@@ -123,14 +123,17 @@ pub(crate) trait EventSource {
 
 /// The live [`EventSource`] over crossterm's global event stream.
 ///
-/// crossterm is never let near a terminal that has hung up: its unix reader (0.29,
-/// `UnixInternalEventSource::try_read`) leaves its read loop only on `WouldBlock` or a parsed event,
-/// so the EOF a hung-up tty answers with (macOS: `Ok(0)`; Linux: `EIO`, which it swallows) keeps it
-/// reading forever — one core at 100%, the loop never back to its mailbox, `close()` waiting on
-/// it for good, and the process an orphan nothing but SIGKILL ends (2026-10-02: fifty of them,
-/// left by `tmux kill-server`). So [`HangupWatch`] waits on the terminal itself first and turns a
-/// hangup into the loop's error exit; crossterm is then asked with a zero timeout, which still
-/// hands over a parsed event, a buffered one, or a `SIGWINCH` that arrived meanwhile.
+/// crossterm is never let near a terminal that has hung up. Its default unix reader (0.29, mio)
+/// left its read loop only on `WouldBlock` or a parsed event, so the EOF a hung-up tty answers with
+/// (macOS: `Ok(0)`; Linux: `EIO`, which it swallows) kept it reading forever — one core at 100%,
+/// the loop never back to its mailbox, `close()` waiting on it for good, and the process an orphan
+/// nothing but SIGKILL ends (2026-10-02: fifty of them, left by `tmux kill-server`). The reader in
+/// use now (`use-dev-tty`, Cargo.toml — the mio one also stranded a key sent with a resize) does not
+/// report a hangup either. So [`HangupWatch`] waits on the terminal itself first and turns a hangup
+/// into the loop's error exit; crossterm is then asked for [`CROSSTERM_SLICE`], which hands over a
+/// parsed event, a buffered one, or a `SIGWINCH` that arrived meanwhile. Not a zero timeout: that
+/// reader does not even look at its own buffer at zero, so a second event read in the same batch
+/// would wait for the next input.
 pub(crate) struct CrosstermEvents {
     /// The terminal crossterm reads (`None`: no terminal to open — crossterm then fails on its own).
     #[cfg(unix)]
@@ -152,7 +155,7 @@ impl EventSource for CrosstermEvents {
         #[cfg(unix)]
         if let Some(watch) = &self.watch {
             watch.wait(timeout)?;
-            return crossterm::event::poll(Duration::ZERO);
+            return crossterm::event::poll(CROSSTERM_SLICE);
         }
         crossterm::event::poll(timeout)
     }
@@ -161,6 +164,11 @@ impl EventSource for CrosstermEvents {
         crossterm::event::read()
     }
 }
+
+/// How long crossterm is asked once [`HangupWatch`] has waited (see [`CrosstermEvents`]): the
+/// shortest wait its reader reads at all.
+#[cfg(unix)]
+const CROSSTERM_SLICE: Duration = Duration::from_millis(1);
 
 /// The terminal crossterm reads, polled for a hangup before crossterm is (see [`CrosstermEvents`]).
 #[cfg(unix)]

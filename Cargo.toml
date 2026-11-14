@@ -92,7 +92,12 @@ ratatui   = { version = "=0.30.2", features = ["unstable-rendered-line-info"] }
 # ratatui default features stay ON: "crossterm" (ratatui-crossterm, default pairing
 # crossterm_0_29), all-widgets, layout-cache, macros, underline-color. NEVER enable
 # crossterm_0_28 (wart W8).
-crossterm = { version = "=0.29.0" }
+# "use-dev-tty" (tui-plan S4): the unix event source that polls the tty and the SIGWINCH pipe
+# level-triggered. The default mio source drops the tty's readiness when a resize is ready in the same
+# poll, and its edge-triggered registration never reports it again until NEW input arrives: a key sent
+# with a resize waited for the next keystroke (L4 42; scenario 39's idle Ctrl+D) while the loop spun on
+# the readable tty. Nothing else changes — crossterm reads the same stdin or /dev/tty.
+crossterm = { version = "=0.29.0", features = ["use-dev-tty"] }
 unicode-width        = "=0.2.2"
 unicode-segmentation = "1.13"
 # token accounting (WP53) — embeds the o200k_base BPE ranks (zstd-compressed, decompressed
