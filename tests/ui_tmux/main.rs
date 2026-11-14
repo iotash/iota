@@ -293,6 +293,16 @@ fn gate() -> Option<Gate> {
 /// The script's whole log is echoed through [`say`] so a CI run shows every `PASS:`/
 /// `FAIL:`/`WART:` line, not just the exit status.
 fn run_scenario(script: &str) {
+    run_in(script, false);
+}
+
+/// [`run_scenario`] on the full screen (`IOTA_FULLSCREEN=1`, tui-plan S2–S4): the same script, its
+/// read-back helpers going through the dump key (`lib.sh`'s `_history`).
+fn run_scenario_fullscreen(script: &str) {
+    run_in(script, true);
+}
+
+fn run_in(script: &str, fullscreen: bool) {
     let _serial = serial_lock();
     let Some(g) = gate() else { return };
     let scratch = std::env::temp_dir().join(format!(
@@ -310,8 +320,8 @@ fn run_scenario(script: &str) {
     }
     let dir = tests_dir();
     let path = dir.join("scenarios").join(script);
-    let out = std::process::Command::new("bash")
-        .arg(&path)
+    let mut cmd = std::process::Command::new("bash");
+    cmd.arg(&path)
         .env("TMUX_BIN", &g.tmux)
         .env(
             "TMUX_SOCKET",
@@ -325,13 +335,21 @@ fn run_scenario(script: &str) {
         .env("IOTA_PORT", g.port.to_string())
         .env("IOTA_OAUTH_PORT", g.oauth_port.to_string())
         .env("SCEN_TMP", &scratch)
-        .env("TMUX_LIB", dir.join("lib.sh"))
-        .output();
+        .env("TMUX_LIB", dir.join("lib.sh"));
+    if fullscreen {
+        cmd.env("IOTA_FULLSCREEN", "1");
+    } else {
+        cmd.env_remove("IOTA_FULLSCREEN");
+    }
+    let out = cmd.output();
     let out = match out {
         Ok(o) => o,
         Err(e) => panic!("could not run {}: {e}", path.display()),
     };
-    say(&format!("==== {script} ===="));
+    say(&format!(
+        "==== {script}{} ====",
+        if fullscreen { " (full screen)" } else { "" }
+    ));
     say(String::from_utf8_lossy(&out.stdout).trim_end());
     let stderr = String::from_utf8_lossy(&out.stderr);
     if !stderr.trim().is_empty() {
@@ -672,6 +690,182 @@ fn tmux_fullscreen_exit() {
 #[test]
 fn tmux_fullscreen_signal() {
     run_scenario("40-fullscreen-signal.sh");
+}
+
+// ------------------------------------------------------------------ the same, on the full screen
+
+/// L4 #1 on the full screen (tui-plan S2).
+#[test]
+fn tmux_startup_frame_and_pinned_cursor_fullscreen() {
+    run_scenario_fullscreen("01-startup.sh");
+}
+
+/// L4 #2 on the full screen (tui-plan S2).
+#[test]
+fn tmux_streamed_markdown_turn_history_exact_fullscreen() {
+    run_scenario_fullscreen("02-markdown-turn.sh");
+}
+
+/// L4 #3 on the full screen (tui-plan S2).
+#[test]
+fn tmux_surface_open_close_self_heal_fullscreen() {
+    run_scenario_fullscreen("03-surface-selfheal.sh");
+}
+
+/// L4 #4 on the full screen (tui-plan S2).
+#[test]
+fn tmux_esc_mid_stream_folds_queue_fullscreen() {
+    run_scenario_fullscreen("04-esc-midstream.sh");
+}
+
+/// L4 #5 on the full screen (tui-plan S2).
+#[test]
+fn tmux_double_ctrl_c_exits_fullscreen() {
+    run_scenario_fullscreen("05-ctrlc-twice.sh");
+}
+
+/// L4 #7 on the full screen (tui-plan S2).
+#[test]
+fn tmux_bracketed_paste_round_trip_fullscreen() {
+    run_scenario_fullscreen("07-paste.sh");
+}
+
+/// L4 #8 on the full screen (tui-plan S2).
+#[test]
+fn tmux_big_resume_echo_chunking_fullscreen() {
+    run_scenario_fullscreen("08-big-resume.sh");
+}
+
+/// L4 #10 on the full screen (tui-plan S2).
+#[test]
+fn tmux_edge_pins_fullscreen() {
+    run_scenario_fullscreen("10-edge-pins.sh");
+}
+
+/// L4 #11 on the full screen (tui-plan S2).
+#[test]
+fn tmux_export_picker_writes_a_file_fullscreen() {
+    run_scenario_fullscreen("11-export-picker.sh");
+}
+
+/// L4 #12 on the full screen (tui-plan S2).
+#[test]
+fn tmux_debug_inspector_two_tabs_fullscreen() {
+    run_scenario_fullscreen("12-debug.sh");
+}
+
+/// L4 #13 on the full screen (tui-plan S2).
+#[test]
+fn tmux_image_widget_and_edit_picker_fullscreen() {
+    run_scenario_fullscreen("13-edit-picker.sh");
+}
+
+/// L4 #15 on the full screen (tui-plan S2).
+#[test]
+fn tmux_model_combo_fullscreen() {
+    run_scenario_fullscreen("15-model-combo.sh");
+}
+
+/// L4 #16 on the full screen (tui-plan S2).
+#[test]
+fn tmux_no_color_fullscreen() {
+    run_scenario_fullscreen("16-nocolor.sh");
+}
+
+/// L4 #18 on the full screen (tui-plan S2).
+#[test]
+fn tmux_host_channels_fullscreen() {
+    run_scenario_fullscreen("18-host-channels.sh");
+}
+
+/// L4 #19 on the full screen (tui-plan S2).
+#[test]
+fn tmux_background_jobs_fullscreen() {
+    run_scenario_fullscreen("19-background-jobs.sh");
+}
+
+/// L4 #20 on the full screen (tui-plan S2).
+#[test]
+fn tmux_block_preview_morphs_fullscreen() {
+    run_scenario_fullscreen("20-block-preview.sh");
+}
+
+/// L4 #21 on the full screen (tui-plan S2).
+#[test]
+fn tmux_emoji_table_alignment_fullscreen() {
+    run_scenario_fullscreen("21-emoji-table.sh");
+}
+
+/// L4 #22 on the full screen (tui-plan S2).
+#[test]
+fn tmux_retry_path_fullscreen() {
+    run_scenario_fullscreen("22-retry.sh");
+}
+
+/// L4 #23 on the full screen (tui-plan S2).
+#[test]
+fn tmux_mcp_oauth_round_trip_fullscreen() {
+    run_scenario_fullscreen("23-mcp-oauth.sh");
+}
+
+/// L4 #24 on the full screen (tui-plan S2).
+#[test]
+fn tmux_iota_outside_the_sandbox_fullscreen() {
+    run_scenario_fullscreen("24-iota-outside-sandbox.sh");
+}
+
+/// L4 #27 on the full screen (tui-plan S2).
+#[test]
+fn tmux_hung_provider_fullscreen() {
+    run_scenario_fullscreen("27-hung-provider.sh");
+}
+
+/// L4 #28 on the full screen (tui-plan S2).
+#[test]
+fn tmux_composer_newline_fullscreen() {
+    run_scenario_fullscreen("28-composer-newline.sh");
+}
+
+/// L4 #30 on the full screen (tui-plan S2).
+#[test]
+fn tmux_thinking_cut_fullscreen() {
+    run_scenario_fullscreen("30-thinking-cut.sh");
+}
+
+/// L4 #31 on the full screen (tui-plan S2).
+#[test]
+fn tmux_tool_args_cut_fullscreen() {
+    run_scenario_fullscreen("31-tool-args-cut.sh");
+}
+
+/// L4 #32 on the full screen (tui-plan S2).
+#[test]
+fn tmux_new_session_fullscreen() {
+    run_scenario_fullscreen("32-new-session.sh");
+}
+
+/// L4 #33 on the full screen (tui-plan S2).
+#[test]
+fn tmux_trailing_text_fullscreen() {
+    run_scenario_fullscreen("33-trailing-text.sh");
+}
+
+/// L4 #34 on the full screen (tui-plan S2).
+#[test]
+fn tmux_busy_span_fullscreen() {
+    run_scenario_fullscreen("34-busy-span.sh");
+}
+
+/// L4 #35 on the full screen (tui-plan S2).
+#[test]
+fn tmux_rate_limit_hold_fullscreen() {
+    run_scenario_fullscreen("35-rate-limit-hold.sh");
+}
+
+/// L4 #36 on the full screen (tui-plan S2).
+#[test]
+fn tmux_config_trust_fullscreen() {
+    run_scenario_fullscreen("36-config-trust.sh");
 }
 
 /// M2 (tui-plan §7) — a measurement, not a check: the bytes the tmux iota runs in sends to its own

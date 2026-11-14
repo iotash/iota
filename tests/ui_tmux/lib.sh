@@ -63,7 +63,49 @@ trap cleanup EXIT
 # Visible grid, escapes stripped (so assertions read the glyphs the user sees).
 cap() { tm capture-pane -pt s 2>/dev/null; }
 # Visible grid plus scrollback — the only proof that history was preserved.
-capall() { tm capture-pane -pt s -S -400 2>/dev/null; }
+capall() { _history; }
+
+# --- the full screen (IOTA_FULLSCREEN=1, tui-plan S1–S4) ------------------------------------------
+#
+# The conversation lives on the alternate screen, which has no history: what `capture-pane -S`
+# reads inline, the full screen hands over with its dump key. Ctrl+O writes the rows no dump has
+# written yet into the main screen (the first part under a transcript mark) and stays there until
+# the next key; the exit writes the rest. So the main screen's history holds every run's
+# conversation once, in order — the mark lines aside — and the frame, which is never written out,
+# is read off the live screen: the rows from its upper separator down, as inline's capture of the
+# visible grid had them.
+fullscreen() { [ "${IOTA_FULLSCREEN:-}" = 1 ]; }
+TRANSCRIPT_MARK='┈┈┈┈ iota transcript ┈┈┈┈'
+_alt_is() { [ "$(tm display-message -pt s '#{alternate_on}' 2>/dev/null)" = "$1" ]; }
+
+# _history [capture-pane flags…] — every row a user can reach. Inline: the visible grid plus 400
+# rows of scrollback. Full screen: the main screen and its history, the conversation dumped into it
+# now while iota runs (and the next key back), followed by the live frame.
+_history() {
+    if ! fullscreen; then
+        tm capture-pane -p "$@" -t s -S -400 2>/dev/null
+        return
+    fi
+    local live=0 frame="" top all
+    if alive && ! pane_dead && _alt_is 1; then
+        top="$(frame_top)"
+        [ -n "$top" ] && frame="$(tm capture-pane -p "$@" -t s 2>/dev/null | sed -n "$top,\$p")"
+        # Bounded generously: a dump that lands after the wait gave up would leave the app on the
+        # main screen with no key coming to bring it back.
+        key C-o
+        _poll_until 300 _alt_is 0 && live=1
+    fi
+    all="$(tm capture-pane -p "$@" -t s -S - 2>/dev/null | LC_ALL=C grep -avF -- "$TRANSCRIPT_MARK")"
+    if [ "$live" = 1 ]; then
+        key C-o
+        _poll_until 300 _alt_is 1
+    fi
+    # Printed only now, the way back taken: a reader that stops early (`grep -q`) closes the pipe,
+    # and a SIGPIPE before the key above would leave the app on the main screen.
+    printf '%s\n' "$all"
+    [ -n "$frame" ] && printf '%s\n' "$frame"
+    return 0
+}
 
 type_() { tm send-keys -t s -l "$1"; }
 key() { tm send-keys -t s "$@"; }
@@ -501,8 +543,8 @@ sgr_red_rows() {
 
 # red_rows — rows of the pane and its scrollback painted red. red_rows_with <fixed> — of those, the
 # rows that also carry <fixed>.
-red_rows() { tm capture-pane -e -pt s -S -400 2>/dev/null | sgr_red_rows; }
-red_rows_with() { tm capture-pane -e -pt s -S -400 2>/dev/null | LC_ALL=C grep -aF -- "$1" | sgr_red_rows; }
+red_rows() { _history -e | sgr_red_rows; }
+red_rows_with() { _history -e | LC_ALL=C grep -aF -- "$1" | sgr_red_rows; }
 
 # check_red_detector — the detector judged on known bytes BEFORE a scenario trusts it: every red
 # spelling reads 1, and every look-alike — an extended colour whose index ends in 31/91, palette 1 as

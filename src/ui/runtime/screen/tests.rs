@@ -5,7 +5,7 @@
 
 use ratatui::layout::Size;
 
-use super::{SYNC_BEGIN, Screen, Scroll};
+use super::{SYNC_BEGIN, Screen, TRANSCRIPT_MARK, ViewOp};
 use crate::ui::render::frame::FrameView;
 use crate::ui::testutil::SharedBuf;
 
@@ -95,18 +95,18 @@ fn page_keys_walk_back_to_the_first_row_and_down_to_the_tail() {
     s.push(&rows(50));
     s.draw_frame(&frame(40)).unwrap();
     for _ in 0..40 {
-        s.scroll(Scroll::HalfUp);
+        s.view(ViewOp::HalfUp).unwrap();
     }
     s.draw_frame(&frame(40)).unwrap();
     let g = grid(&replay(&buf, 12, 40));
     assert_eq!(g[0], "line-000", "the top of the session: {g:#?}");
     assert_eq!(g[11], "status", "the frame stays");
     // Clamped at the top: one PgDn moves at once.
-    s.scroll(Scroll::HalfDown);
+    s.view(ViewOp::HalfDown).unwrap();
     s.draw_frame(&frame(40)).unwrap();
     assert_eq!(grid(&replay(&buf, 12, 40))[0], "line-004");
     for _ in 0..40 {
-        s.scroll(Scroll::HalfDown);
+        s.view(ViewOp::HalfDown).unwrap();
     }
     s.draw_frame(&frame(40)).unwrap();
     assert_eq!(
@@ -130,16 +130,17 @@ fn the_exit_writes_the_conversation_into_the_main_screen_at_the_exit_width() {
     assert!(!p.screen().alternate_screen(), "the main screen is back");
     let g = grid(&p);
     assert_eq!(g[0], "$ iota", "{g:#?}");
-    assert_eq!(&g[1..6], &rows(5)[..]);
-    assert_eq!(g[6], "w".repeat(20), "wrapped at the exit width");
-    assert_eq!(g[7], "wwwwwwwwwwEND");
+    assert_eq!(g[1], TRANSCRIPT_MARK);
+    assert_eq!(&g[2..7], &rows(5)[..]);
+    assert_eq!(g[7], "w".repeat(20), "wrapped at the exit width");
+    assert_eq!(g[8], "wwwwwwwwwwEND");
     assert!(
         !g.iter().any(|r| r.contains("status")),
         "no frame row: {g:#?}"
     );
     assert_eq!(
         p.screen().cursor_position(),
-        (8, 0),
+        (9, 0),
         "a fresh line for the shell"
     );
 }
@@ -244,14 +245,14 @@ fn no_scroll_when_the_viewport_did_not_just_move_up() {
     s.push(&rows(30));
     s.draw_frame(&frame(40)).unwrap();
     // Paused.
-    s.scroll(Scroll::HalfUp);
+    s.view(ViewOp::HalfUp).unwrap();
     s.draw_frame(&frame(40)).unwrap();
     let mark = buf.bytes().len();
     s.push(&rows(1));
     s.draw_frame(&frame(40)).unwrap();
     assert!(!scrolled(&buf, mark), "a paused view scrolled");
     // Back on the tail: the first frame repaints, the next one scrolls.
-    s.scroll(Scroll::Bottom);
+    s.view(ViewOp::Bottom).unwrap();
     let mark = buf.bytes().len();
     s.draw_frame(&frame(40)).unwrap();
     assert!(
@@ -293,8 +294,8 @@ fn a_paused_view_holds_through_output_and_a_resize() {
     let (mut s, buf) = screen(40, 12);
     s.push(&rows(40));
     s.draw_frame(&frame(40)).unwrap();
-    s.scroll(Scroll::HalfUp);
-    s.scroll(Scroll::HalfUp);
+    s.view(ViewOp::HalfUp).unwrap();
+    s.view(ViewOp::HalfUp).unwrap();
     s.draw_frame(&frame(40)).unwrap();
     let before = grid(&replay(&buf, 12, 40));
     assert!(before[7].contains("Ctrl+End"), "{before:#?}");
@@ -314,5 +315,150 @@ fn a_paused_view_holds_through_output_and_a_resize() {
         grid(&p)[0],
         before[0],
         "the anchored row is still the first one shown"
+    );
+}
+
+/// Ctrl+O: the main screen holds the whole conversation under the mark, nothing is drawn while it
+/// is out (output keeps collecting), and the next key repaints the full screen with what arrived.
+/// An exit after a dump writes everything once more and never leaves the alternate screen twice.
+#[test]
+fn a_dump_writes_the_conversation_out_and_the_next_key_comes_back() {
+    let (mut s, buf) = screen(40, 12);
+    s.push(&rows(30));
+    s.draw_frame(&frame(40)).unwrap();
+    s.view(ViewOp::Dump).unwrap();
+    let mut p = vt100::Parser::new(12, 40, 100);
+    p.process(&buf.bytes());
+    assert!(
+        !p.screen().alternate_screen(),
+        "the main screen shows the dump"
+    );
+    let mark = buf.bytes().len();
+    s.push(&rows(2));
+    s.draw_frame(&frame(40)).unwrap();
+    assert_eq!(buf.bytes().len(), mark, "nothing drawn while dumped");
+    s.view(ViewOp::Return).unwrap();
+    s.draw_frame(&frame(40)).unwrap();
+    let p = replay(&buf, 12, 40);
+    assert!(p.screen().alternate_screen());
+    let g = grid(&p);
+    assert_eq!(g[7], "line-001", "the rows that arrived meanwhile: {g:#?}");
+    assert_eq!(g[11], "status");
+    s.push(&["after".to_owned()]);
+    let mark = buf.bytes().len();
+    s.view(ViewOp::Dump).unwrap();
+    s.push(&["last".to_owned()]);
+    s.leave().unwrap();
+    let tail = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
+    assert_eq!(
+        tail.matches("\u{1b}[?1049l").count(),
+        1,
+        "one leave: {tail:?}"
+    );
+    // Each row once, in order, across the three writes; one mark, at the start.
+    let mut p = vt100::Parser::new(12, 40, 200);
+    p.process(b"$ iota\r\n");
+    p.process(&buf.bytes());
+    let all = reachable(&mut p);
+    let mut want = vec!["$ iota".to_owned(), TRANSCRIPT_MARK.to_owned()];
+    want.extend(rows(30));
+    want.extend(rows(2));
+    want.extend(["after".to_owned(), "last".to_owned()]);
+    let got: Vec<String> = all.into_iter().filter(|r| !r.is_empty()).collect();
+    assert_eq!(got, want);
+}
+
+/// Every row reachable on the main screen: its history, oldest first, then the screen.
+fn reachable(p: &mut vt100::Parser) -> Vec<String> {
+    let cols = p.screen().size().1;
+    let screen: Vec<String> = p
+        .screen()
+        .rows(0, cols)
+        .map(|r| r.trim_end().to_owned())
+        .collect();
+    p.screen_mut().set_scrollback(usize::MAX);
+    let depth = p.screen().scrollback();
+    let mut all = Vec::with_capacity(depth + screen.len());
+    for off in (1..=depth).rev() {
+        p.screen_mut().set_scrollback(off);
+        all.push(
+            p.screen()
+                .rows(0, cols)
+                .next()
+                .unwrap_or_default()
+                .trim_end()
+                .to_owned(),
+        );
+    }
+    p.screen_mut().set_scrollback(0);
+    all.extend(screen);
+    all
+}
+
+/// The current resident set of this process, in KiB (`ps`, so no extra dependency).
+fn rss_kib() -> u64 {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
+}
+
+/// M1 (tui-plan §7) — a measurement, not a check: a synthetic 100k-row session (coloured rows of
+/// 40–120 columns, one in ten wider than the 120-column screen) — the RSS it adds, one `PgUp`
+/// frame at the deepest point, one resize repaint there and one at the tail. Runs only with
+/// `IOTA_MEASURE_M1=1`; `cargo test --release --lib m1 -- --nocapture` for the numbers.
+#[test]
+fn m1_a_hundred_thousand_rows() {
+    use std::time::Instant;
+    if std::env::var_os("IOTA_MEASURE_M1").is_none() {
+        return;
+    }
+    let rows: Vec<String> = (0..100_000)
+        .map(|i| {
+            let len = if i % 10 == 0 { 200 } else { 40 + i % 80 };
+            format!(
+                "\u{1b}[36m{i:06}\u{1b}[0m {}",
+                "lorem ipsum ".repeat(len / 12 + 1)[..len].to_owned()
+            )
+        })
+        .collect();
+    let (mut s, _buf) = screen(120, 40);
+    let base = rss_kib();
+    for chunk in rows.chunks(20) {
+        s.push(chunk);
+    }
+    drop(rows);
+    s.draw_frame(&frame(120)).unwrap();
+    let grown = rss_kib();
+    let frame_time = |s: &mut Screen<SharedBuf>, op: Option<ViewOp>| {
+        let t = Instant::now();
+        if let Some(op) = op {
+            s.view(op).unwrap();
+        }
+        s.draw_frame(&frame(120)).unwrap();
+        t.elapsed()
+    };
+    let tail_pgup = frame_time(&mut s, Some(ViewOp::HalfUp));
+    s.view(ViewOp::Top).unwrap();
+    s.draw_frame(&frame(120)).unwrap();
+    for _ in 0..3 {
+        s.view(ViewOp::HalfDown).unwrap();
+    }
+    s.draw_frame(&frame(120)).unwrap();
+    let deep_pgup = frame_time(&mut s, Some(ViewOp::HalfUp));
+    let top = frame_time(&mut s, Some(ViewOp::Top));
+    s.resize(Size::new(100, 40));
+    let deep_resize = frame_time(&mut s, None);
+    s.view(ViewOp::Bottom).unwrap();
+    s.draw_frame(&frame(100)).unwrap();
+    s.resize(Size::new(90, 40));
+    let tail_resize = frame_time(&mut s, None);
+    let bottom = frame_time(&mut s, Some(ViewOp::Bottom));
+    println!(
+        "M1: RSS +{} KiB for 100k rows; PgUp frame at the tail {tail_pgup:?}, near the first row \
+         {deep_pgup:?}; Ctrl+Home frame {top:?}; resize repaint near the first row {deep_resize:?}, \
+         at the tail {tail_resize:?}; Ctrl+End frame {bottom:?}",
+        grown.saturating_sub(base)
     );
 }

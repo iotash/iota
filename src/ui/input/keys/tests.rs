@@ -1151,12 +1151,16 @@ fn the_field_ignores_what_the_surface_ladder_owns() {
 /// request is made). Bare Home/End stay the composer's.
 #[test]
 fn view_keys_scroll_the_full_screen_only() {
-    use crate::ui::runtime::screen::Scroll;
+    use crate::ui::runtime::screen::ViewOp;
     let mut m = test_model();
     type_text(&mut m, "draft");
     m.handle_key(key(KeyCode::PageUp));
     m.handle_key(mods(KeyCode::Home, KeyModifiers::CONTROL));
-    assert_eq!(m.scroll, Vec::<Scroll>::new(), "inline: no scroll request");
+    assert_eq!(
+        m.view_ops,
+        Vec::<ViewOp>::new(),
+        "inline: no scroll request"
+    );
     m.fullscreen = true;
     m.handle_key(key(KeyCode::PageUp));
     m.handle_key(key(KeyCode::PageDown));
@@ -1164,12 +1168,12 @@ fn view_keys_scroll_the_full_screen_only() {
     m.handle_key(mods(KeyCode::End, KeyModifiers::CONTROL));
     m.handle_key(key(KeyCode::Home));
     assert_eq!(
-        m.scroll,
+        m.view_ops,
         vec![
-            Scroll::HalfUp,
-            Scroll::HalfDown,
-            Scroll::Top,
-            Scroll::Bottom
+            ViewOp::HalfUp,
+            ViewOp::HalfDown,
+            ViewOp::Top,
+            ViewOp::Bottom
         ]
     );
     assert_eq!(m.composer.value(), "draft", "the draft is untouched");
@@ -1178,4 +1182,27 @@ fn view_keys_scroll_the_full_screen_only() {
         2,
         "bare Home moved the composer's cursor"
     );
+}
+
+/// Row 0: on the full screen Ctrl+O asks for the dump, and the next key — any key, a surface open
+/// or not — only comes back from it; the inline terminal has no dump.
+#[test]
+fn ctrl_o_dumps_and_the_next_key_only_comes_back() {
+    use crate::ui::runtime::screen::ViewOp;
+    let mut m = test_model();
+    m.handle_key(mods(KeyCode::Char('o'), KeyModifiers::CONTROL));
+    assert!(!m.dumped && m.view_ops.is_empty(), "inline: no dump");
+    m.fullscreen = true;
+    m.handle_key(mods(KeyCode::Char('o'), KeyModifiers::CONTROL));
+    assert!(m.dumped);
+    m.handle_key(ch('x'));
+    assert!(!m.dumped);
+    assert_eq!(m.view_ops, vec![ViewOp::Dump, ViewOp::Return]);
+    assert_eq!(
+        m.composer.value(),
+        "",
+        "the key that came back typed nothing"
+    );
+    m.handle_key(ch('y'));
+    assert_eq!(m.composer.value(), "y");
 }

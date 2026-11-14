@@ -38,7 +38,7 @@ use ratatui::{Terminal, TerminalOptions, Viewport};
 use super::inline_term::{SYNC_BEGIN, SYNC_END, SYNC_MIN};
 use crate::ui::render::frame::FrameView;
 use crate::ui::render::spans::ansi_to_spans;
-use crate::ui::render::theme::{RESET, REV_ON};
+use crate::ui::render::theme::{FAINT, RESET, REV_ON};
 
 /// Whether a live [`Screen`] holds the alternate screen now — set by the live constructor only
 /// (`Term::fullscreen`), cleared by [`Screen::leave`] and by `restore_terminal`, which reads it.
@@ -47,9 +47,9 @@ pub(crate) static ALT_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// The bytes that hand the main screen back: the cursor shown, the alternate screen left.
 pub(crate) const LEAVE: &[u8] = b"\x1b[?25h\x1b[?1049l";
 
-/// A scroll request from the keys (tui-plan D5).
+/// A request from the full screen's view keys (tui-plan D5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Scroll {
+pub(crate) enum ViewOp {
     /// `PgUp`: half a screen toward the start.
     HalfUp,
     /// `PgDn`: half a screen toward the tail (following it again at the bottom).
@@ -58,7 +58,15 @@ pub(crate) enum Scroll {
     Top,
     /// `Ctrl+End`: the tail, followed again.
     Bottom,
+    /// `Ctrl+O`: the conversation written into the terminal's own scrollback ([`Screen::dump`]).
+    Dump,
+    /// The key after a dump: back to the full screen.
+    Return,
 }
+
+/// The line written above the conversation in the main screen, by the first dump or the exit:
+/// where iota's part of the shell's history starts.
+pub(crate) const TRANSCRIPT_MARK: &str = "┈┈┈┈ iota transcript ┈┈┈┈";
 
 /// The full-screen terminal: ratatui's `Terminal` over [`Out`] and the conversation buffer.
 pub(crate) struct Screen<W: Write> {
@@ -70,6 +78,12 @@ pub(crate) struct Screen<W: Write> {
     batch: Arc<AtomicUsize>,
     /// The last frame drawn, while it is what the screen shows (a clear or a resize forgets it).
     last: Option<Shown>,
+    /// While the conversation is written out on the main screen ([`Screen::dump`]): whether the
+    /// alternate screen was marked held for `restore_terminal` ([`ALT_ACTIVE`]) when it was left.
+    dumped: Option<bool>,
+    /// Rows the dumps and the exit have written into the main screen so far (each is written
+    /// once).
+    written: u64,
 }
 
 /// A drawn frame and the layout it was drawn with — what a scroll of the viewport starts from.
@@ -108,6 +122,8 @@ impl<W: Write> Screen<W> {
             view_h: size.height,
             batch,
             last: None,
+            dumped: None,
+            written: 0,
         })
     }
 
@@ -128,17 +144,45 @@ impl<W: Write> Screen<W> {
         self.conv.push(rows);
     }
 
-    /// Moves the viewport (the next draw shows it).
-    pub(crate) fn scroll(&mut self, how: Scroll) {
+    /// Applies a view key: moves the viewport (the next draw shows it), writes the conversation
+    /// out, or comes back from that.
+    pub(crate) fn view(&mut self, op: ViewOp) -> io::Result<()> {
         let width = usize::from(self.size().width.max(1));
         let h = usize::from(self.view_h);
         let half = (h / 2).max(1);
-        match how {
-            Scroll::HalfUp => self.conv.scroll_up(half, width, h),
-            Scroll::HalfDown => self.conv.scroll_down(half, width, h),
-            Scroll::Top => self.conv.to_top(width, h),
-            Scroll::Bottom => self.conv.to_bottom(),
+        match op {
+            ViewOp::HalfUp => self.conv.scroll_up(half, width, h),
+            ViewOp::HalfDown => self.conv.scroll_down(half, width, h),
+            ViewOp::Top => self.conv.to_top(width, h),
+            ViewOp::Bottom => self.conv.to_bottom(),
+            ViewOp::Dump => self.dump()?,
+            ViewOp::Return => self.back()?,
         }
+        Ok(())
+    }
+
+    /// `Ctrl+O` (Claude Code's `[`, without a transcript mode — tui-plan D5): leaves the
+    /// alternate screen and writes the conversation into the main screen, so the terminal's own
+    /// search, copy mode and selection reach all of it. The screen stays there — nothing is drawn,
+    /// output keeps collecting in the buffer — until the next key ([`Screen::back`]). Each row is
+    /// written once: a dump writes what no dump before it did, so the main screen's history holds
+    /// the conversation once, in order, the first part under a [`TRANSCRIPT_MARK`] line.
+    fn dump(&mut self) -> io::Result<()> {
+        if self.dumped.is_some() {
+            return Ok(());
+        }
+        self.dumped = Some(ALT_ACTIVE.swap(false, Ordering::Relaxed));
+        self.write_out(true)
+    }
+
+    /// Back from a dump: the alternate screen again, cleared and repainted whole by the next draw.
+    fn back(&mut self) -> io::Result<()> {
+        let Some(held) = self.dumped.take() else {
+            return Ok(());
+        };
+        ALT_ACTIVE.store(held, Ordering::Relaxed);
+        queue!(self.out(), EnterAlternateScreen)?;
+        self.clear()
     }
 
     /// Opens a batch: what is written until [`Screen::end_batch`] is one write.
@@ -169,6 +213,9 @@ impl<W: Write> Screen<W> {
     /// One frame: the conversation's visible rows over the frame's rows, the real cursor where
     /// the frame puts it (hidden when it puts none).
     pub(crate) fn draw_frame(&mut self, view: &FrameView) -> io::Result<()> {
+        if self.dumped.is_some() {
+            return Ok(());
+        }
         self.term.autoresize()?;
         let Size { width, height } = self.size();
         let frame_h = u16::try_from(view.rows.len())
@@ -262,24 +309,38 @@ impl<W: Write> Screen<W> {
         lines.iter().map(|r| ansi_to_spans(r)).collect()
     }
 
-    /// The exit: leaves the alternate screen and writes the whole conversation into the main
-    /// screen at the width the terminal has now, each row closed with an SGR reset and `CRLF`
-    /// (raw mode is still on), then clears whatever was below — the shell's next prompt starts on
-    /// a fresh line under the conversation.
+    /// The exit: leaves the alternate screen (unless a dump already did) and writes what no dump
+    /// has into the main screen — the conversation survives in the shell's history, whole.
     pub(crate) fn leave(&mut self) -> io::Result<()> {
+        let leave = self.dumped.take().is_none();
+        self.write_out(leave)?;
+        ALT_ACTIVE.store(false, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Writes the rows not written yet into the main screen at the width the terminal has now —
+    /// leaving the alternate screen first when `leave`, under a [`TRANSCRIPT_MARK`] line the first
+    /// time — each row closed with an SGR reset and `CRLF` (raw mode is on), then clears what was
+    /// below: the next line is a fresh one.
+    fn write_out(&mut self, leave: bool) -> io::Result<()> {
         let width = usize::from(self.size().width.max(1));
         let mut dump = Vec::new();
-        dump.extend_from_slice(LEAVE);
-        for line in self.conv.rows(width) {
+        if leave {
+            dump.extend_from_slice(LEAVE);
+        }
+        if self.written == 0 {
+            dump.extend_from_slice(format!("{FAINT}{TRANSCRIPT_MARK}{RESET}\r\n").as_bytes());
+        }
+        let (lines, written) = self.conv.lines_after(self.written, width);
+        self.written = written;
+        for line in &lines {
             dump.extend_from_slice(line.as_bytes());
             dump.extend_from_slice(b"\x1b[0m\r\n");
         }
         dump.extend_from_slice(b"\x1b[J");
         let out = self.out();
         out.write_all(&dump)?;
-        Write::flush(out)?;
-        ALT_ACTIVE.store(false, Ordering::Relaxed);
-        Ok(())
+        Write::flush(out)
     }
 
     /// The backend as a byte sink: what is written here joins the frame's bytes in [`SyncOut`].

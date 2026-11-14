@@ -45,7 +45,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::msgs::UiMsg;
 use super::osc;
-use super::screen::Scroll;
+use super::screen::ViewOp;
 use super::term::Term;
 use crate::ui::input::composer::Composer;
 use crate::ui::input::keys;
@@ -322,8 +322,11 @@ pub(crate) struct Model {
     /// Whether the loop drives the full-screen terminal (`Term::is_fullscreen`): a resize there
     /// is a repaint, never a drag (no burst layout, no band), and `PgUp`/`PgDn` scroll.
     pub(crate) fullscreen: bool,
-    /// Scroll requests the keys made and the next draw applies, in order.
-    pub(crate) scroll: Vec<Scroll>,
+    /// View-key requests (scrolling, the dump, the way back) the next draw applies, in order.
+    pub(crate) view_ops: Vec<ViewOp>,
+    /// Whether the conversation is written out on the main screen (`Ctrl+O`): the next key only
+    /// comes back from it.
+    pub(crate) dumped: bool,
 }
 
 /// One entry of the type-ahead queue.
@@ -413,7 +416,8 @@ impl Model {
             program_status: Vec::new(),
             focused: true,
             fullscreen: false,
-            scroll: Vec::new(),
+            view_ops: Vec::new(),
+            dumped: false,
         }
     }
 
@@ -1149,8 +1153,8 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
                 term.clear()?;
                 m.force_clear = false;
             }
-            for how in std::mem::take(&mut m.scroll) {
-                term.scroll(how);
+            for op in std::mem::take(&mut m.view_ops) {
+                term.view(op)?;
             }
             let view = m.frame_view();
             term.ensure_height(m.frame_height(view.rows.len()))?; // a field write; the draw repaints what changed

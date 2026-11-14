@@ -53,7 +53,7 @@ use ratatui::widgets::{Paragraph, Widget, Wrap};
 use super::geometry::Geometry;
 use super::inline_term::InlineTerminal;
 use super::osc;
-use super::screen::{ALT_ACTIVE, Screen, Scroll};
+use super::screen::{ALT_ACTIVE, Screen, ViewOp};
 use crate::ui::facade::ProgressState;
 use crate::ui::render::frame::FrameView;
 use crate::ui::render::spans::ansi_to_spans;
@@ -389,10 +389,11 @@ impl<W: Write> Term<W> {
         }
     }
 
-    /// Moves the full screen's conversation viewport (the scroll keys).
-    pub(crate) fn scroll(&mut self, how: Scroll) {
-        if let Kind::Full(screen) = &mut self.kind {
-            screen.scroll(how);
+    /// Applies one of the full screen's view keys (scrolling, the dump and the way back).
+    pub(crate) fn view(&mut self, op: ViewOp) -> io::Result<()> {
+        match &mut self.kind {
+            Kind::Full(screen) => screen.view(op),
+            Kind::Inline { .. } => Ok(()),
         }
     }
 

@@ -88,6 +88,8 @@ pub(crate) struct Conversation {
     unseen: usize,
     /// Rows committed since the last [`Conversation::take_fresh`].
     fresh: usize,
+    /// Rows ever committed (a row's number, for [`Conversation::lines_after`]).
+    pushed: u64,
 }
 
 impl Conversation {
@@ -103,6 +105,7 @@ impl Conversation {
             view: View::Follow,
             unseen: 0,
             fresh: 0,
+            pushed: 0,
         }
     }
 
@@ -111,6 +114,7 @@ impl Conversation {
     pub(crate) fn push(&mut self, rows: &[String]) {
         self.rows.extend(rows.iter().map(|t| Row::new(t.clone())));
         self.fresh += rows.len();
+        self.pushed += rows.len() as u64;
         if matches!(self.view, View::At(_)) {
             self.unseen += rows.len();
         }
@@ -139,11 +143,23 @@ impl Conversation {
         }
     }
 
-    /// Every row, oldest first (the dump).
-    pub(crate) fn rows(&mut self, width: usize) -> impl Iterator<Item = &String> {
-        self.rows
-            .iter_mut()
-            .flat_map(move |r| Row::lines(r, width).iter())
+    /// The display lines (at `width`) of the rows committed after the first `from`, oldest
+    /// first, and the count to ask from next time (a dump writes each row once). Rows the cap
+    /// dropped before they were asked for are stood in for by the [`TRIMMED`] row.
+    pub(crate) fn lines_after(&mut self, from: u64, width: usize) -> (Vec<String>, u64) {
+        let kept = u64::from(self.trimmed);
+        let real = self.rows.len() as u64 - kept;
+        let first = self.pushed - real;
+        let start = if from < first {
+            0
+        } else {
+            usize::try_from(kept + (from - first)).unwrap_or(usize::MAX)
+        };
+        let mut out = Vec::new();
+        for row in self.rows.iter_mut().skip(start) {
+            out.extend(row.lines(width).iter().cloned());
+        }
+        (out, self.pushed)
     }
 
     /// Whether the view follows the tail.

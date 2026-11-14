@@ -1,5 +1,5 @@
 //! Composer key routing — the 9-row precedence table (`TUI_CONTRACTS` §6;
-//! model.go updateKey, `KeyEventKind::Press` only): surface → (full screen) PgUp/PgDn/Ctrl+Home/Ctrl+End → Ctrl+C/D → ESC → Tab
+//! model.go updateKey, `KeyEventKind::Press` only): (full screen) the dump's return and Ctrl+O → surface → (full screen) PgUp/PgDn/Ctrl+Home/Ctrl+End → Ctrl+C/D → ESC → Tab
 //! completion → ↑ queue-pop → ↑/↓ history → newline (Ctrl+J, Alt+Enter, Shift+Enter) /
 //! Enter submit → the enumerated emacs edit set → text insert.
 //!
@@ -24,12 +24,29 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::suggest;
 use crate::ui::runtime::event_loop::Model;
-use crate::ui::runtime::screen::Scroll;
+use crate::ui::runtime::screen::ViewOp;
 
 /// Routes one key press through the composer precedence table
 /// (model.go updateKey, `KeyEventKind::Press` only).
 pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
     if key.kind != KeyEventKind::Press {
+        return;
+    }
+
+    // Row 0: the full screen's dump. Ctrl+O writes the conversation out on the main screen, and
+    // the next key — whatever it is, and only that — comes back (tui-plan D5). Ahead of the
+    // surface, so the conversation can be written out while a dialog waits.
+    if m.dumped {
+        m.dumped = false;
+        m.view_ops.push(ViewOp::Return);
+        return;
+    }
+    if m.fullscreen
+        && key.code == KeyCode::Char('o')
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+    {
+        m.dumped = true;
+        m.view_ops.push(ViewOp::Dump);
         return;
     }
 
@@ -47,7 +64,7 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
     if m.fullscreen
         && let Some(how) = view_key(&key)
     {
-        m.scroll.push(how);
+        m.view_ops.push(how);
         return;
     }
 
@@ -144,13 +161,13 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
 }
 
 /// The full screen's scroll request for `key`, if it is one.
-fn view_key(key: &KeyEvent) -> Option<Scroll> {
+fn view_key(key: &KeyEvent) -> Option<ViewOp> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
-        KeyCode::PageUp => Some(Scroll::HalfUp),
-        KeyCode::PageDown => Some(Scroll::HalfDown),
-        KeyCode::Home if ctrl => Some(Scroll::Top),
-        KeyCode::End if ctrl => Some(Scroll::Bottom),
+        KeyCode::PageUp => Some(ViewOp::HalfUp),
+        KeyCode::PageDown => Some(ViewOp::HalfDown),
+        KeyCode::Home if ctrl => Some(ViewOp::Top),
+        KeyCode::End if ctrl => Some(ViewOp::Bottom),
         _ => None,
     }
 }
