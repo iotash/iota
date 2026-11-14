@@ -234,7 +234,7 @@ fn opens_search(m: &Model, key: &KeyEvent) -> bool {
 /// Ctrl+C/Ctrl+D keep their meaning, every other key edits the query. Applied: `n`/`p` walk,
 /// `/` or Ctrl+R starts a new query, Enter leaves with the view on the hit, Esc leaves with it
 /// back where it started; any other character leaves like Enter and is typed, and the view keys
-/// (PgUp, Ctrl+End…) work with the search still on.
+/// (`PgUp`, `Ctrl+End`…) work with the search still on.
 fn search_key(m: &mut Model, key: &KeyEvent) -> bool {
     let Some(s) = m.search.as_mut() else {
         return false;

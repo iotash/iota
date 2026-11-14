@@ -63,7 +63,7 @@ impl Search {
 
     /// Searches the whole buffer for `query`; parks on the hit nearest above where the view was.
     pub(crate) fn set_query(&mut self, conv: &Conversation, query: &str) {
-        self.query = query.to_owned();
+        query.clone_into(&mut self.query);
         self.hits = Self::scan(conv, 0, query);
         self.scanned = conv.pushed();
         self.idx = self
