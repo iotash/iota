@@ -894,3 +894,37 @@ fn theme_sgr_pins() {
     assert_eq!(crate::ui::render::theme::input_bg(true), "\x1b[48;5;236m");
     assert_eq!(crate::ui::render::theme::input_bg(false), "\x1b[48;5;254m");
 }
+
+/// The full screen's window (tui-plan S2): every committed row overflows at once, in order, and a
+/// preview that closes into a shorter block leaves no residue — nothing is staged in the frame.
+#[test]
+fn an_unstaged_window_commits_every_row_at_once_and_keeps_no_residue() {
+    let out = Arc::new(Mutex::new(Vec::<String>::new()));
+    let last = Arc::new(Mutex::new(RegionSnapshot::default()));
+    let (o, l) = (Arc::clone(&out), Arc::clone(&last));
+    let mut r = region_emitting(move |over, snap| {
+        o.lock().unwrap().extend(over);
+        *l.lock().unwrap() = snap;
+    })
+    .unstaged();
+    r.commit(s(&["a", "b", "c"]));
+    assert_eq!(*out.lock().unwrap(), s(&["a", "b", "c"]));
+    assert!(last.lock().unwrap().tail.is_empty(), "nothing staged");
+    r.open_preview("thinking");
+    for i in 0..3 {
+        r.preview_line(&format!("p{i}"));
+    }
+    assert_eq!(
+        last.lock().unwrap().label,
+        "thinking",
+        "the preview lives in the frame"
+    );
+    r.close_preview();
+    r.commit(s(&["thought for 1s"]));
+    let snap = last.lock().unwrap().clone();
+    assert!(snap.residue.is_empty() && snap.tail.is_empty() && snap.label.is_empty());
+    assert_eq!(
+        out.lock().unwrap().last().map(String::as_str),
+        Some("thought for 1s")
+    );
+}

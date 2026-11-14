@@ -5,7 +5,7 @@
 
 use ratatui::layout::Size;
 
-use super::{SYNC_BEGIN, Screen};
+use super::{SYNC_BEGIN, Screen, Scroll};
 use crate::ui::render::frame::FrameView;
 use crate::ui::testutil::SharedBuf;
 
@@ -95,18 +95,18 @@ fn page_keys_walk_back_to_the_first_row_and_down_to_the_tail() {
     s.push(&rows(50));
     s.draw_frame(&frame(40)).unwrap();
     for _ in 0..40 {
-        s.scroll_half(true);
+        s.scroll(Scroll::HalfUp);
     }
     s.draw_frame(&frame(40)).unwrap();
     let g = grid(&replay(&buf, 12, 40));
     assert_eq!(g[0], "line-000", "the top of the session: {g:#?}");
     assert_eq!(g[11], "status", "the frame stays");
     // Clamped at the top: one PgDn moves at once.
-    s.scroll_half(false);
+    s.scroll(Scroll::HalfDown);
     s.draw_frame(&frame(40)).unwrap();
     assert_eq!(grid(&replay(&buf, 12, 40))[0], "line-004");
     for _ in 0..40 {
-        s.scroll_half(false);
+        s.scroll(Scroll::HalfDown);
     }
     s.draw_frame(&frame(40)).unwrap();
     assert_eq!(

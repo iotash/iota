@@ -1146,19 +1146,36 @@ fn the_field_ignores_what_the_surface_ladder_owns() {
     }
 }
 
-/// Row 1b: on the full screen PgUp/PgDn are scroll requests for the next draw and touch nothing
-/// else; on the inline terminal they reach the edit set as before (no request is made).
+/// Row 1b: on the full screen PgUp/PgDn/Ctrl+Home/Ctrl+End are scroll requests for the next
+/// draw and touch nothing else; on the inline terminal they reach the edit set as before (no
+/// request is made). Bare Home/End stay the composer's.
 #[test]
-fn page_keys_scroll_the_full_screen_only() {
+fn view_keys_scroll_the_full_screen_only() {
+    use crate::ui::runtime::screen::Scroll;
     let mut m = test_model();
     type_text(&mut m, "draft");
     m.handle_key(key(KeyCode::PageUp));
-    m.handle_key(key(KeyCode::PageDown));
-    assert_eq!(m.scroll, Vec::<bool>::new(), "inline: no scroll request");
+    m.handle_key(mods(KeyCode::Home, KeyModifiers::CONTROL));
+    assert_eq!(m.scroll, Vec::<Scroll>::new(), "inline: no scroll request");
     m.fullscreen = true;
     m.handle_key(key(KeyCode::PageUp));
-    m.handle_key(key(KeyCode::PageUp));
     m.handle_key(key(KeyCode::PageDown));
-    assert_eq!(m.scroll, vec![true, true, false]);
+    m.handle_key(mods(KeyCode::Home, KeyModifiers::CONTROL));
+    m.handle_key(mods(KeyCode::End, KeyModifiers::CONTROL));
+    m.handle_key(key(KeyCode::Home));
+    assert_eq!(
+        m.scroll,
+        vec![
+            Scroll::HalfUp,
+            Scroll::HalfDown,
+            Scroll::Top,
+            Scroll::Bottom
+        ]
+    );
     assert_eq!(m.composer.value(), "draft", "the draft is untouched");
+    assert_eq!(
+        m.composer.cursor_pos(80).0,
+        2,
+        "bare Home moved the composer's cursor"
+    );
 }

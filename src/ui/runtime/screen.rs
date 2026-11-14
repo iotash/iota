@@ -36,9 +36,9 @@ use ratatui::widgets::Paragraph;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use super::inline_term::{SYNC_BEGIN, SYNC_END, SYNC_MIN};
-use crate::text::ansi::{ansi_width, wrap_ansi};
 use crate::ui::render::frame::FrameView;
 use crate::ui::render::spans::ansi_to_spans;
+use crate::ui::render::theme::{RESET, REV_ON};
 
 /// Whether a live [`Screen`] holds the alternate screen now — set by the live constructor only
 /// (`Term::fullscreen`), cleared by [`Screen::leave`] and by `restore_terminal`, which reads it.
@@ -47,21 +47,23 @@ pub(crate) static ALT_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// The bytes that hand the main screen back: the cursor shown, the alternate screen left.
 pub(crate) const LEAVE: &[u8] = b"\x1b[?25h\x1b[?1049l";
 
-/// One conversation row: the rendered ANSI string and its display width, measured once when it
-/// was committed (a draw wraps it only when the screen is narrower than that).
-struct Row {
-    text: String,
-    cols: usize,
+/// A scroll request from the keys (tui-plan D5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Scroll {
+    /// `PgUp`: half a screen toward the start.
+    HalfUp,
+    /// `PgDn`: half a screen toward the tail (following it again at the bottom).
+    HalfDown,
+    /// `Ctrl+Home`: the session's first line.
+    Top,
+    /// `Ctrl+End`: the tail, followed again.
+    Bottom,
 }
 
-/// The full-screen terminal: ratatui's `Terminal` over [`Out`], the conversation buffer, and
-/// how far the viewport is scrolled up from the tail.
+/// The full-screen terminal: ratatui's `Terminal` over [`Out`] and the conversation buffer.
 pub(crate) struct Screen<W: Write> {
     term: Terminal<Out<W>>,
-    rows: Vec<Row>,
-    /// Display rows between the viewport's last row and the conversation's tail (0 = following
-    /// the tail). Clamped by the draw that finds the top.
-    scroll: usize,
+    conv: Conversation,
     /// The viewport's height at the last draw (what half a screen is).
     view_h: u16,
     /// The open batches' depth, shared with the [`SyncOut`] under the backend.
@@ -92,8 +94,7 @@ impl<W: Write> Screen<W> {
         )?;
         Ok(Self {
             term,
-            rows: Vec::new(),
-            scroll: 0,
+            conv: Conversation::new(),
             view_h: size.height,
             batch,
         })
@@ -113,21 +114,20 @@ impl<W: Write> Screen<W> {
     /// Appends committed rows to the conversation (what the inline terminal inserted above
     /// its frame). Nothing is written: the next draw shows them.
     pub(crate) fn push(&mut self, rows: &[String]) {
-        self.rows.extend(rows.iter().map(|text| Row {
-            cols: ansi_width(text),
-            text: text.clone(),
-        }));
+        self.conv.push(rows);
     }
 
-    /// Scrolls the viewport by half its height: up (`true`, toward the start of the session) or
-    /// down (toward the tail, which it follows again once it gets there).
-    pub(crate) fn scroll_half(&mut self, up: bool) {
-        let half = usize::from((self.view_h / 2).max(1));
-        self.scroll = if up {
-            self.scroll.saturating_add(half)
-        } else {
-            self.scroll.saturating_sub(half)
-        };
+    /// Moves the viewport (the next draw shows it).
+    pub(crate) fn scroll(&mut self, how: Scroll) {
+        let width = usize::from(self.size().width.max(1));
+        let h = usize::from(self.view_h);
+        let half = (h / 2).max(1);
+        match how {
+            Scroll::HalfUp => self.conv.scroll_up(half, width, h),
+            Scroll::HalfDown => self.conv.scroll_down(half, width, h),
+            Scroll::Top => self.conv.to_top(width, h),
+            Scroll::Bottom => self.conv.to_bottom(),
+        }
     }
 
     /// Opens a batch: what is written until [`Screen::end_batch`] is one write.
@@ -164,7 +164,7 @@ impl<W: Write> Screen<W> {
             .min(height);
         let view_h = height - frame_h;
         self.view_h = view_h;
-        let lines = self.visible(usize::from(width), usize::from(view_h));
+        let lines = self.view_lines(usize::from(width), usize::from(view_h));
         let shown = u16::try_from(lines.len()).unwrap_or(view_h).min(view_h);
         // The conversation sits on the frame: a short one leaves the blank rows at the top.
         let conv = Rect::new(0, view_h - shown, width, shown);
@@ -186,29 +186,19 @@ impl<W: Write> Screen<W> {
         Ok(())
     }
 
-    /// The viewport's rows, oldest first: the last `h` display rows ending `scroll` rows above
-    /// the tail. Rows are wrapped from the tail backwards only as far as the viewport reaches,
-    /// and a `scroll` past the session's first row is clamped to it here.
-    fn visible(&mut self, width: usize, h: usize) -> Vec<Line<'static>> {
-        let need = h.saturating_add(self.scroll);
-        let mut back: Vec<String> = Vec::new();
-        for row in self.rows.iter().rev() {
-            if row.cols > width {
-                back.extend(wrap_ansi(&row.text, width).into_iter().rev());
-            } else {
-                back.push(row.text.clone());
-            }
-            if back.len() >= need {
-                break;
-            }
+    /// The viewport's lines as spans; an anchored view's last line is the way back to the tail.
+    fn view_lines(&mut self, width: usize, h: usize) -> Vec<Line<'static>> {
+        let mut lines = self.conv.view_lines(width, h);
+        if !self.conv.following()
+            && let Some(last) = lines.last_mut()
+        {
+            *last = match self.conv.unseen() {
+                0 => format!("{REV_ON} ↓ Ctrl+End follows the output again {RESET}"),
+                1 => format!("{REV_ON} ↓ 1 new line · Ctrl+End {RESET}"),
+                n => format!("{REV_ON} ↓ {n} new lines · Ctrl+End {RESET}"),
+            };
         }
-        self.scroll = self.scroll.min(back.len().saturating_sub(h));
-        let end = (self.scroll + h).min(back.len());
-        back[self.scroll..end]
-            .iter()
-            .rev()
-            .map(|r| ansi_to_spans(r))
-            .collect()
+        lines.iter().map(|r| ansi_to_spans(r)).collect()
     }
 
     /// The exit: leaves the alternate screen and writes the whole conversation into the main
@@ -217,18 +207,11 @@ impl<W: Write> Screen<W> {
     /// a fresh line under the conversation.
     pub(crate) fn leave(&mut self) -> io::Result<()> {
         let width = usize::from(self.size().width.max(1));
-        let mut dump = Vec::with_capacity(self.rows.len() * 64);
+        let mut dump = Vec::new();
         dump.extend_from_slice(LEAVE);
-        for row in &self.rows {
-            let parts = if row.cols > width {
-                wrap_ansi(&row.text, width)
-            } else {
-                vec![row.text.clone()]
-            };
-            for part in parts {
-                dump.extend_from_slice(part.as_bytes());
-                dump.extend_from_slice(b"\x1b[0m\r\n");
-            }
+        for line in self.conv.rows(width) {
+            dump.extend_from_slice(line.as_bytes());
+            dump.extend_from_slice(b"\x1b[0m\r\n");
         }
         dump.extend_from_slice(b"\x1b[J");
         let out = self.out();
@@ -342,6 +325,10 @@ impl<W: Write> Backend for Out<W> {
         Backend::flush(&mut self.inner)
     }
 }
+
+mod conversation;
+
+use conversation::Conversation;
 
 #[cfg(test)]
 mod tests;

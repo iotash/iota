@@ -53,7 +53,7 @@ use ratatui::widgets::{Paragraph, Widget, Wrap};
 use super::geometry::Geometry;
 use super::inline_term::InlineTerminal;
 use super::osc;
-use super::screen::{ALT_ACTIVE, Screen};
+use super::screen::{ALT_ACTIVE, Screen, Scroll};
 use crate::ui::facade::ProgressState;
 use crate::ui::render::frame::FrameView;
 use crate::ui::render::spans::ansi_to_spans;
@@ -389,10 +389,10 @@ impl<W: Write> Term<W> {
         }
     }
 
-    /// Scrolls the full screen's conversation viewport by half a screen (`PgUp`/`PgDn`).
-    pub(crate) fn scroll_half(&mut self, up: bool) {
+    /// Moves the full screen's conversation viewport (the scroll keys).
+    pub(crate) fn scroll(&mut self, how: Scroll) {
         if let Kind::Full(screen) = &mut self.kind {
-            screen.scroll_half(up);
+            screen.scroll(how);
         }
     }
 

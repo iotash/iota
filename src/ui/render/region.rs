@@ -126,6 +126,10 @@ pub(crate) struct Region {
     pub(crate) paused_at: Option<Instant>,
     /// Call preview live status-row prefix.
     pub(crate) detail: String,
+    /// Whether committed rows are staged in the frame ([`TAIL_KEEP`]) and closed previews leave
+    /// residue there. The inline terminal stages (its frame must never shrink or bounce); the
+    /// full screen does not ([`Region::unstaged`]).
+    staged: bool,
 }
 
 impl Region {
@@ -144,7 +148,18 @@ impl Region {
             since: None,
             paused_at: None,
             detail: String::new(),
+            staged: true,
         }
+    }
+
+    /// The full screen's window (tui-plan S2): nothing staged. Committed rows go straight to the
+    /// conversation buffer — staged in the frame, they showed beside a scrolled-back viewport,
+    /// apart from the rows they follow — and a closed preview leaves no residue: the frame is
+    /// pinned to the screen's bottom, so its height changing moves nothing. Previews still live
+    /// in the frame.
+    pub(crate) const fn unstaged(mut self) -> Self {
+        self.staged = false;
+        self
     }
 
     /// Preview row count in the window: header + body rows + the model-rendered
@@ -178,6 +193,9 @@ impl Region {
     /// `screen_h − batch` overlaps the rows `insert_before` is scrolling out and the
     /// scrollback is permanently damaged; below ~12 rows that was every frame.
     fn tail_keep(&self) -> usize {
+        if !self.staged {
+            return 0;
+        }
         let h = self.screen_height();
         let insert_room = (h / 2).max(2);
         TAIL_KEEP.min(h.saturating_sub(insert_room).saturating_sub(FRAME_FLOOR))
@@ -261,6 +279,9 @@ impl Region {
         // (the resize pass flushes the tail) must not hand the insert a row that wraps
         // again — W6's one-entry-one-row law (term.rs) holds at the width it lands at.
         let over = self.fit_width(over);
+        if !self.staged {
+            self.residue.clear();
+        }
         if !over.is_empty() {
             debug_region(|| format!("  overflow {over:?}"));
         }

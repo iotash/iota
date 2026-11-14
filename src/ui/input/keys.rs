@@ -1,5 +1,5 @@
 //! Composer key routing — the 9-row precedence table (`TUI_CONTRACTS` §6;
-//! model.go updateKey, `KeyEventKind::Press` only): surface → (full screen) PgUp/PgDn → Ctrl+C/D → ESC → Tab
+//! model.go updateKey, `KeyEventKind::Press` only): surface → (full screen) PgUp/PgDn/Ctrl+Home/Ctrl+End → Ctrl+C/D → ESC → Tab
 //! completion → ↑ queue-pop → ↑/↓ history → newline (Ctrl+J, Alt+Enter, Shift+Enter) /
 //! Enter submit → the enumerated emacs edit set → text insert.
 //!
@@ -24,6 +24,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::suggest;
 use crate::ui::runtime::event_loop::Model;
+use crate::ui::runtime::screen::Scroll;
 
 /// Routes one key press through the composer precedence table
 /// (model.go updateKey, `KeyEventKind::Press` only).
@@ -39,11 +40,14 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
         return;
     }
 
-    // Row 1b: the full screen's view keys — PgUp/PgDn scroll the conversation by half a
-    // screen (PgDn back at the tail follows it again). The inline terminal leaves them to the
-    // edit set, as before.
-    if m.fullscreen && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
-        m.scroll.push(key.code == KeyCode::PageUp);
+    // Row 1b: the full screen's view keys (tui-plan D5) — PgUp/PgDn half a screen, Ctrl+Home
+    // the first line, Ctrl+End the tail (followed again; PgDn reaching it does the same). None
+    // of them is bound elsewhere: the edit set takes Home/End without Ctrl only. The inline
+    // terminal leaves them to the edit set, as before.
+    if m.fullscreen
+        && let Some(how) = view_key(&key)
+    {
+        m.scroll.push(how);
         return;
     }
 
@@ -136,6 +140,18 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
     m.composer.handle_edit_key(&key, m.frame_width());
     if !matches!(key.code, KeyCode::Up | KeyCode::Down) {
         m.composer.end_history_nav();
+    }
+}
+
+/// The full screen's scroll request for `key`, if it is one.
+fn view_key(key: &KeyEvent) -> Option<Scroll> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::PageUp => Some(Scroll::HalfUp),
+        KeyCode::PageDown => Some(Scroll::HalfDown),
+        KeyCode::Home if ctrl => Some(Scroll::Top),
+        KeyCode::End if ctrl => Some(Scroll::Bottom),
+        _ => None,
     }
 }
 

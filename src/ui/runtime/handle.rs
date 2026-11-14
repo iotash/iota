@@ -138,13 +138,18 @@ where
     E: EventSource + Send + 'static,
 {
     let (tx, rx) = mpsc::channel();
-    let region = Arc::new(Mutex::new(Region::new(
+    let region = Region::new(
         Emit::Live {
             tx: Box::new(MailboxPublish(tx.clone())),
         },
         Arc::clone(&width),
         Arc::clone(&height),
-    )));
+    );
+    let region = Arc::new(Mutex::new(if term.is_fullscreen() {
+        region.unstaged()
+    } else {
+        region
+    }));
     let handle = Arc::new(TuiHandle {
         tx,
         width: Arc::clone(&width),
