@@ -43,6 +43,7 @@
 //! without a tty; the live build has no such field, and every query reaches crossterm.
 
 use std::io::{self, Write};
+use std::sync::atomic::Ordering;
 
 use ratatui::layout::{Position, Size};
 use ratatui::text::{Line, Text};
@@ -52,6 +53,7 @@ use ratatui::widgets::{Paragraph, Widget, Wrap};
 use super::geometry::Geometry;
 use super::inline_term::InlineTerminal;
 use super::osc;
+use super::screen::{ALT_ACTIVE, Screen};
 use crate::ui::facade::ProgressState;
 use crate::ui::render::frame::FrameView;
 use crate::ui::render::spans::ansi_to_spans;
@@ -61,18 +63,20 @@ use crate::ui::render::spans::ansi_to_spans;
 /// clones of a shared byte buffer.
 pub(crate) type MakeWriter<W> = Box<dyn FnMut() -> W + Send>;
 
-/// Owns the inline terminal and the frame's life on it: the resize it re-anchors with one
-/// DSR (W5), the band a resize leaves, and `line_count`-sized inserts (W6).
+/// Whether this run takes the full-screen terminal ([`Screen`]): `IOTA_FULLSCREEN=1`, the
+/// migration scaffold of tui-plan S1–S4 (no docs, no `--help`; deleted with the inline
+/// terminal in S5). Anything else is the inline terminal, unchanged.
+pub(crate) fn fullscreen_enabled() -> bool {
+    std::env::var_os("IOTA_FULLSCREEN").is_some_and(|v| v == "1")
+}
+
+/// Owns the terminal and the frame's life on it — one of the two worlds, chosen once, when
+/// the `Term` is built: the inline terminal (its resize re-anchored with one DSR — W5 — the
+/// band a resize leaves, `line_count`-sized inserts — W6) or the full-screen one.
 pub(crate) struct Term<W: Write> {
-    t: InlineTerminal<W>,
+    kind: Kind<W>,
     /// Out-of-band control writer (same underlying stream): title OSC, progress, pings.
     ctrl: W,
-    /// The synthetic terminal a headless test runs on ([`Term::headless`]).
-    #[cfg(test)]
-    geo: Option<Geometry>,
-    /// Blank rows directly above the frame that a resize left there (W5 step 3): ours to
-    /// fill with the next output, so a band never has to scroll into the history.
-    pad: u16,
     /// Last emitted window title (emit-on-change).
     last_title: Option<String>,
     /// Last emitted OSC 9;4 state (emit-on-change; `None` = never emitted).
@@ -81,12 +85,36 @@ pub(crate) struct Term<W: Write> {
     focus_on: bool,
 }
 
+/// The terminal a [`Term`] drives.
+enum Kind<W: Write> {
+    /// iota's inline terminal on the main screen.
+    Inline {
+        t: InlineTerminal<W>,
+        /// The synthetic terminal a headless test runs on ([`Term::headless`]).
+        #[cfg(test)]
+        geo: Option<Geometry>,
+        /// Blank rows directly above the frame that a resize left there (W5 step 3): ours to
+        /// fill with the next output, so a band never has to scroll into the history.
+        pad: u16,
+    },
+    /// The alternate screen ([`Screen`]).
+    Full(Screen<W>),
+}
+
 impl<W: Write> Term<W> {
     /// Builds the inline terminal at `height` rows, anchored at `start_top` (the
     /// caller's pre-raw-mode cursor row), on the tty's size.
     pub(crate) fn new(make_writer: MakeWriter<W>, height: u16, start_top: u16) -> io::Result<Self> {
         let (width, rows) = crossterm::terminal::size()?;
         Self::open(make_writer, Size::new(width, rows), height, start_top)
+    }
+
+    /// Builds the full-screen terminal on the tty's size: enters the alternate screen (and
+    /// marks it held, for `restore_terminal`). No cursor query.
+    pub(crate) fn fullscreen(make_writer: MakeWriter<W>) -> io::Result<Self> {
+        let (width, rows) = crossterm::terminal::size()?;
+        ALT_ACTIVE.store(true, Ordering::Relaxed);
+        Self::open_full(make_writer, Size::new(width, rows))
     }
 
     /// [`Term::new`] on the synthetic terminal `geo`: its size, its cursor answers, and every
@@ -99,51 +127,76 @@ impl<W: Write> Term<W> {
         geo: Geometry,
     ) -> io::Result<Self> {
         let mut term = Self::open(make_writer, geo.size(), height, start_top)?;
-        term.t.mirror(geo.clone());
-        term.geo = Some(geo);
+        if let Kind::Inline { t, geo: g, .. } = &mut term.kind {
+            t.mirror(geo.clone());
+            *g = Some(geo);
+        }
         Ok(term)
     }
 
     fn open(mut make_writer: MakeWriter<W>, size: Size, height: u16, top: u16) -> io::Result<Self> {
         let ctrl = make_writer();
         let t = InlineTerminal::new(make_writer(), size, height, top)?;
-        Ok(Self {
-            t,
+        Ok(Self::with(
+            Kind::Inline {
+                t,
+                #[cfg(test)]
+                geo: None,
+                pad: 0,
+            },
             ctrl,
-            #[cfg(test)]
-            geo: None,
-            pad: 0,
+        ))
+    }
+
+    fn open_full(mut make_writer: MakeWriter<W>, size: Size) -> io::Result<Self> {
+        let ctrl = make_writer();
+        let screen = Screen::new(make_writer(), size)?;
+        Ok(Self::with(Kind::Full(screen), ctrl))
+    }
+
+    const fn with(kind: Kind<W>, ctrl: W) -> Self {
+        Self {
+            kind,
+            ctrl,
             last_title: None,
             last_progress: None,
             focus_on: false,
-        })
+        }
     }
 
-    /// The frame's first row (bookkeeping, absolute).
+    /// Whether this is the full-screen terminal (the loop's resize takes no drag protocol there).
+    pub(crate) const fn is_fullscreen(&self) -> bool {
+        matches!(self.kind, Kind::Full(_))
+    }
+
+    /// The frame's first row (bookkeeping, absolute; the inline terminal's).
+    #[cfg(test)]
     pub(crate) fn top(&self) -> u16 {
-        self.t.viewport().y
-    }
-
-    /// The frame's height.
-    pub(crate) fn view_height(&self) -> u16 {
-        self.t.viewport().height
+        match &self.kind {
+            Kind::Inline { t, .. } => t.viewport().y,
+            Kind::Full(_) => 0,
+        }
     }
 
     /// A frame-height change: a field write and a repaint of what changed (no recreation,
     /// no clear). A taller frame grows into the blank band a resize left above it (W5)
     /// before it takes rows below it — scrolling the transcript into the history where the
-    /// screen ends. Returns whether the height changed.
+    /// screen ends. Returns whether the height changed. The full screen lays the frame out
+    /// per draw: nothing to do.
     pub(crate) fn ensure_height(&mut self, new_h: u16) -> io::Result<bool> {
-        let h = self.view_height();
+        let Kind::Inline { t, pad, .. } = &mut self.kind else {
+            return Ok(false);
+        };
+        let h = t.viewport().height;
         if new_h == h {
             return Ok(false);
         }
-        let grow = new_h.saturating_sub(h).min(self.pad).min(self.top());
+        let grow = new_h.saturating_sub(h).min(*pad).min(t.viewport().y);
         if grow > 0 {
-            self.pad -= grow;
-            self.t.grow_up(grow);
+            *pad -= grow;
+            t.grow_up(grow);
         }
-        self.t.set_height(new_h)?;
+        t.set_height(new_h)?;
         Ok(true)
     }
 
@@ -178,9 +231,18 @@ impl<W: Write> Term<W> {
     ///    laid out where it was.
     /// 3. **The recheck.** A second DSR once the frame is laid out: the bookkeeping follows
     ///    the cursor (the frame's first row) — it only ever moves the model, never a byte.
+    ///
+    /// The full screen only takes the size: its next draw repaints every cell.
     pub(crate) fn resize(&mut self, size: Size, new_h: u16) -> io::Result<()> {
+        if let Kind::Full(screen) = &mut self.kind {
+            screen.resize(size);
+            return Ok(());
+        }
         #[cfg(test)]
-        let geo = self.geo.clone();
+        let geo = match &self.kind {
+            Kind::Inline { geo, .. } => geo.clone(),
+            Kind::Full(_) => None,
+        };
         // The size the terminal has NOW: in a fast drag the event's size can already be stale
         // (the next resize applied, its event not yet read).
         let now = || {
@@ -194,16 +256,19 @@ impl<W: Write> Term<W> {
             .ok()
             .filter(|s| s.width > 0 && s.height > 0)
             .unwrap_or(size);
-        let old = self.t.size();
-        let flush = self.t.viewport().bottom() >= old.height;
-        let above = self.t.frame_cursor().y;
-        self.t.set_size(size);
+        let Kind::Inline { t, pad, .. } = &mut self.kind else {
+            return Ok(());
+        };
+        let old = t.size();
+        let flush = t.viewport().bottom() >= old.height;
+        let above = t.frame_cursor().y;
+        t.set_size(size);
         let new_h = new_h.clamp(1, size.height.max(1));
         let floor = flush.then(|| size.height.saturating_sub(new_h));
         // The DSRs are the terminal's own (they must not borrow `self`) — never inside a
         // synchronized update (`relayout` checks): `WezTerm` and Alacritty hold the input until
         // it ends.
-        let band = self.t.relayout(above, floor, new_h, || {
+        let band = t.relayout(above, floor, new_h, || {
             #[cfg(test)]
             if let Some(g) = &geo {
                 return g.query_cursor();
@@ -211,8 +276,8 @@ impl<W: Write> Term<W> {
             let (x, y) = crossterm::cursor::position()?;
             Ok(Position::new(x, y))
         })?;
-        self.pad = self.pad.saturating_add(band);
-        self.pad = self.pad.min(self.top());
+        *pad = pad.saturating_add(band);
+        *pad = (*pad).min(t.viewport().y);
         Ok(())
     }
 
@@ -220,12 +285,18 @@ impl<W: Write> Term<W> {
     /// write — a synchronized update if it is larger than `SYNC_MIN` (the loop gathers one
     /// iteration's writes).
     pub(crate) fn begin_batch(&mut self) {
-        self.t.begin_batch();
+        match &mut self.kind {
+            Kind::Inline { t, .. } => t.begin_batch(),
+            Kind::Full(screen) => screen.begin_batch(),
+        }
     }
 
     /// Closes the batch [`Term::begin_batch`] opened and writes it.
     pub(crate) fn end_batch(&mut self) -> io::Result<()> {
-        self.t.end_batch()
+        match &mut self.kind {
+            Kind::Inline { t, .. } => t.end_batch(),
+            Kind::Full(screen) => screen.end_batch(),
+        }
     }
 
     /// Closes the band a resize left above the frame (W5 step 3) when the drag is over: the
@@ -233,27 +304,38 @@ impl<W: Write> Term<W> {
     /// sits on the frame again, the frame where it was, and the band's rows go to the top of
     /// the screen — never a hole the next output starts in. Once per drag, never inside a
     /// resize pass (a scroll during the drag would leave blank rows at the top for the drag's
-    /// next reflow to push into the history).
+    /// next reflow to push into the history). The full screen has no drag and no band.
     pub(crate) fn close_band(&mut self) -> io::Result<()> {
-        let pad = std::mem::take(&mut self.pad).min(self.top());
-        self.t.close_band(pad)
+        let Kind::Inline { t, pad, .. } = &mut self.kind else {
+            return Ok(());
+        };
+        let pad = std::mem::take(pad).min(t.viewport().y);
+        t.close_band(pad)
     }
 
-    /// Commits pre-wrapped rows into native scrollback right above the frame, sized by W6
-    /// `LINE_COUNT_SELF_CONSISTENCY`. Returns the row count.
+    /// Commits pre-wrapped rows: into native scrollback right above the frame, sized by W6
+    /// `LINE_COUNT_SELF_CONSISTENCY` (inline), or onto the conversation buffer the next draw
+    /// shows (full screen). Returns the row count.
     pub(crate) fn insert_lines(&mut self, rows: &[String]) -> io::Result<u16> {
+        if let Kind::Full(screen) = &mut self.kind {
+            screen.push(rows);
+            return Ok(u16::try_from(rows.len()).unwrap_or(u16::MAX));
+        }
         // The band write and the insert are one write.
-        self.t.begin_batch();
+        self.begin_batch();
         let n = self.insert_rows(rows);
-        self.t.end_batch()?;
+        self.end_batch()?;
         n
     }
 
     fn insert_rows(&mut self, rows: &[String]) -> io::Result<u16> {
+        let Kind::Inline { t, pad: band, .. } = &mut self.kind else {
+            return Ok(0);
+        };
         if rows.is_empty() {
             return Ok(0);
         }
-        let width = self.t.size().width.max(1);
+        let width = t.size().width.max(1);
         let lines: Vec<Line<'static>> = rows.iter().map(|r| ansi_to_spans(r)).collect();
         // W6: the height is what the SAME paragraph measures at the terminal's width NOW. The
         // region wraps only entries wider than the screen (to width−1), so that is one row an
@@ -272,18 +354,18 @@ impl<W: Write> Term<W> {
         // and the band's next consumer (`close_band`'s `DL`, the next `fill_above`,
         // `grow_up`) would take it for a blank one — LOST (the band invariant, ARCHITECTURE
         // §12).
-        let pad = self.pad.min(self.top());
+        let pad = (*band).min(t.viewport().y);
         let k = pad.min(total);
         if k > 0 {
             let para = para.clone();
-            self.t.fill_above(pad, k, |buf| {
+            t.fill_above(pad, k, |buf| {
                 let area = buf.area;
                 para.render(area, buf);
             })?;
-            self.pad = pad - k;
+            *band = pad - k;
         }
         let para = para.scroll((k, 0));
-        self.t.insert_before(total - k, |buf| {
+        t.insert_before(total - k, |buf| {
             let area = buf.area;
             para.render(area, buf);
         })?;
@@ -293,31 +375,50 @@ impl<W: Write> Term<W> {
     /// Erases every frame row and forgets what they showed — the T-32 `tea.ClearScreen`
     /// twin for surface Tab switches: the next draw writes every cell.
     pub(crate) fn clear(&mut self) -> io::Result<()> {
-        self.t.clear()
+        match &mut self.kind {
+            Kind::Inline { t, .. } => t.clear(),
+            Kind::Full(screen) => screen.clear(),
+        }
     }
 
     /// The size the frame is laid out against (what the last resize pass took).
     pub(crate) fn size(&self) -> Size {
-        self.t.size()
+        match &self.kind {
+            Kind::Inline { t, .. } => t.size(),
+            Kind::Full(screen) => screen.size(),
+        }
+    }
+
+    /// Scrolls the full screen's conversation viewport by half a screen (`PgUp`/`PgDn`).
+    pub(crate) fn scroll_half(&mut self, up: bool) {
+        if let Kind::Full(screen) = &mut self.kind {
+            screen.scroll_half(up);
+        }
     }
 
     /// W4 `DRAW_WITH_INSERTS` end step: renders the frame rows top-down into the
     /// inline viewport and places the REAL cursor (`None` = hidden, surface open). Either
     /// way the physical cursor ends on a known frame row — the cursor's, or the frame's
-    /// first row while it is hidden — which is what W5's resize anchor counts from.
+    /// first row while it is hidden — which is what W5's resize anchor counts from. The full
+    /// screen draws the conversation viewport and the frame under it.
     pub(crate) fn draw_frame(&mut self, view: &FrameView) -> io::Result<()> {
+        if let Kind::Full(screen) = &mut self.kind {
+            return screen.draw_frame(view);
+        }
         // The diff and the cursor are one write.
-        self.t.begin_batch();
+        self.begin_batch();
         let drawn = self.paint(view);
-        self.t.end_batch()?;
+        self.end_batch()?;
         drawn
     }
 
     fn paint(&mut self, view: &FrameView) -> io::Result<()> {
+        let Kind::Inline { t, .. } = &mut self.kind else {
+            return Ok(());
+        };
         let lines: Vec<Line<'static>> = view.rows.iter().map(|r| ansi_to_spans(r)).collect();
-        let area = self.t.viewport();
-        self.t
-            .draw(|buf| Paragraph::new(Text::from(lines)).render(area, buf))?;
+        let area = t.viewport();
+        t.draw(|buf| Paragraph::new(Text::from(lines)).render(area, buf))?;
         let bottom = area.bottom().saturating_sub(1);
         let pos = view.cursor.map(|(x, y)| {
             Position::new(
@@ -327,7 +428,7 @@ impl<W: Write> Term<W> {
         });
         // Hidden: parked on the frame's top-left, where the next resize finds no frame row
         // above it to rewrap. Cursor-invisible, so the move costs nothing on screen.
-        self.t.place_cursor(pos)
+        t.place_cursor(pos)
     }
 
     /// Emits the window title OSC — on change only (the facade already sanitized it).
@@ -340,7 +441,7 @@ impl<W: Write> Term<W> {
         }
         let mut seq = Vec::new();
         osc::emit_title(&mut seq, title)?;
-        self.t.write_raw(&seq)?;
+        self.write_raw(&seq)?;
         self.last_title = Some(title.to_owned());
         Ok(())
     }
@@ -354,7 +455,7 @@ impl<W: Write> Term<W> {
         {
             return Ok(());
         }
-        self.t.write_raw(osc::progress_seq(s).as_bytes())?;
+        self.write_raw(osc::progress_seq(s).as_bytes())?;
         self.last_progress = Some(s);
         Ok(())
     }
@@ -363,13 +464,16 @@ impl<W: Write> Term<W> {
     /// WHETHER to ping (the loop gates on focus) and has already sanitized and defused the
     /// text; both sequences are cursor-neutral, so this is safe between draws.
     pub(crate) fn notify(&mut self, text: &str) -> io::Result<()> {
-        self.t.write_raw(osc::notify_seq(text).as_bytes())
+        self.write_raw(osc::notify_seq(text).as_bytes())
     }
 
     /// Writes an already-encoded, cursor-neutral sequence verbatim (a program-status report) —
     /// safe between draws, like [`Self::notify`].
     pub(crate) fn write_raw(&mut self, bytes: &[u8]) -> io::Result<()> {
-        self.t.write_raw(bytes)
+        match &mut self.kind {
+            Kind::Inline { t, .. } => t.write_raw(bytes),
+            Kind::Full(screen) => screen.write_raw(bytes),
+        }
     }
 
     /// Turns terminal focus reporting on (mode 1004) so the loop learns when the window
@@ -383,11 +487,15 @@ impl<W: Write> Term<W> {
         Ok(())
     }
 
-    /// Parks the cursor on the frame's bottom row, opens a fresh shell line and clears
-    /// from there down — the loop's exit path (the spike's park sequence). The clear is
-    /// for what a frame taller than the last one may have left below it.
+    /// The loop's exit path. Inline: parks the cursor on the frame's bottom row, opens a fresh
+    /// shell line and clears from there down (the spike's park sequence; the clear is for what
+    /// a frame taller than the last one may have left below it). Full screen: leaves the
+    /// alternate screen and writes the conversation into the main screen ([`Screen::leave`]).
     pub(crate) fn park_cursor(&mut self) -> io::Result<()> {
-        self.t.park()
+        match &mut self.kind {
+            Kind::Inline { t, .. } => t.park(),
+            Kind::Full(screen) => screen.leave(),
+        }
     }
 }
 

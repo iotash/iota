@@ -318,6 +318,12 @@ pub(crate) struct Model {
     /// never reports focus never pings, which is Go's behaviour — whoever is already
     /// watching needs no bell.
     pub(crate) focused: bool,
+    /// Whether the loop drives the full-screen terminal (`Term::is_fullscreen`): a resize there
+    /// is a repaint, never a drag (no burst layout, no band), and `PgUp`/`PgDn` scroll.
+    pub(crate) fullscreen: bool,
+    /// Half-screen scroll steps the keys asked for and the next draw applies, in order
+    /// (`true` = up).
+    pub(crate) scroll: Vec<bool>,
 }
 
 /// One entry of the type-ahead queue.
@@ -406,6 +412,8 @@ impl Model {
             notify: Vec::new(),
             program_status: Vec::new(),
             focused: true,
+            fullscreen: false,
+            scroll: Vec::new(),
         }
     }
 
@@ -684,7 +692,9 @@ impl Model {
                 // drag it opens or extends is extended at once, so it cannot settle under it.
                 self.pending_resize = Some((w, h));
                 self.resize_seen = Instant::now();
-                self.drag_until = Some(Instant::now() + DRAG_SETTLE);
+                if !self.fullscreen {
+                    self.drag_until = Some(Instant::now() + DRAG_SETTLE);
+                }
             }
             Event::Key(k) => {
                 self.end_drag();
@@ -845,6 +855,9 @@ impl Model {
         let Some((w, h)) = self.pending_resize.take() else {
             return Ok(());
         };
+        if self.fullscreen {
+            return self.apply_full_resize(term, w, h);
+        }
         // W5 RESIZE_PASS_FIRST: geometry sync + re-anchor + draw BEFORE any job
         // touches stale geometry (model.go:175-195 + spike #5). `Term::resize`
         // reads the floor with one DSR before it writes a byte.
@@ -879,6 +892,31 @@ impl Model {
         // it a second time under the reflow's ghost): rewrap it for a new width,
         // re-apply the cap for a new height — or nothing would until the next
         // line of output.
+        self.jobs.push(Job::Retrim);
+        Ok(())
+    }
+
+    /// The full screen's resize: the size taken, every row laid out at the full width, and the
+    /// frame left dirty — the iteration's one batched draw repaints the whole screen
+    /// (`Screen::draw_frame` autoresizes). No drag, no band, no cursor query.
+    fn apply_full_resize<W: Write>(
+        &mut self,
+        term: &mut Term<W>,
+        w: u16,
+        h: u16,
+    ) -> io::Result<()> {
+        self.width = w;
+        self.height = h;
+        self.shared
+            .width
+            .store(self.frame_width(), Ordering::Relaxed);
+        if h > 0 {
+            self.shared.height.store(h, Ordering::Relaxed);
+        }
+        if w > 0 && h > 0 {
+            term.resize(ratatui::layout::Size::new(w, h), 0)?;
+        }
+        self.dirty = true;
         self.jobs.push(Job::Retrim);
         Ok(())
     }
@@ -1028,6 +1066,7 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
     shared: LoopShared,
 ) -> io::Result<()> {
     let mut m = Model::new(shared);
+    m.fullscreen = term.is_fullscreen();
     let mut inserts: Vec<Vec<String>> = Vec::new();
     // The loop owns the terminal from here: focus reporting goes on so the attention ping
     // can tell "watching" from "away". NOT in `Term::new` — the one-shot picker and the
@@ -1109,6 +1148,9 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
             if m.force_clear {
                 term.clear()?;
                 m.force_clear = false;
+            }
+            for up in std::mem::take(&mut m.scroll) {
+                term.scroll_half(up);
             }
             let view = m.frame_view();
             term.ensure_height(m.frame_height(view.rows.len()))?; // a field write; the draw repaints what changed

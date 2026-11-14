@@ -41,7 +41,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::event_loop::{CrosstermEvents, EventSource, LoopShared, run_loop};
 use super::msgs::{MailboxPublish, UiMsg};
-use super::term::Term;
+use super::term::{self, Term};
 use crate::ui::render::region::{Emit, Region};
 use crate::ui::render::sink::StreamSink;
 use crate::ui::render::theme::{RESET, REV_ON};
@@ -71,8 +71,15 @@ impl Drop for TermGuard {
 /// Bracketed paste off, cursor shown, raw mode off — when raw mode is on, and a no-op otherwise, so a
 /// headless run's stdout never sees the sequences and a second call (the guard after [`Ui::close`]
 /// gave up on the loop, or a forced exit) writes nothing. Best-effort: restore errors are
-/// unreportable on an exit path.
+/// unreportable on an exit path. The alternate screen a full-screen run still holds (a panic, a
+/// second SIGTERM, a loop that died before its exit) is left first — once, like the rest; the
+/// conversation is not written out on these paths.
 pub(crate) fn restore_terminal() {
+    if super::screen::ALT_ACTIVE.swap(false, Ordering::Relaxed) {
+        let mut out = io::stdout();
+        let _ = out.write_all(super::screen::LEAVE);
+        let _ = out.flush();
+    }
     if !crossterm::terminal::is_raw_mode_enabled().unwrap_or(false) {
         return;
     }
@@ -186,10 +193,21 @@ pub(crate) fn start(opts: TuiOptions) -> io::Result<Tui> {
     let (w, h) = crossterm::terminal::size()?;
     let width = Arc::new(AtomicU16::new(if w > 0 { w } else { 80 }));
     let height = Arc::new(AtomicU16::new(if h > 0 { h } else { 24 }));
-    // The pre-raw-mode cursor row anchors the viewport (raw mode is on, so the DSR
-    // round-trip cooperates with crossterm's event reader — wart W8).
-    let (_, row) = crossterm::cursor::position()?;
-    let term = Term::new(Box::new(io::stdout), 1, row)?;
+    let term = if term::fullscreen_enabled() {
+        // The full screen asks the terminal nothing: no anchor row. A panic (`panic = "abort"`
+        // still runs the hook) leaves the alternate screen and raw mode before it reports.
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            restore_terminal();
+            prev(info);
+        }));
+        Term::fullscreen(Box::new(io::stdout))?
+    } else {
+        // The pre-raw-mode cursor row anchors the viewport (raw mode is on, so the DSR
+        // round-trip cooperates with crossterm's event reader — wart W8).
+        let (_, row) = crossterm::cursor::position()?;
+        Term::new(Box::new(io::stdout), 1, row)?
+    };
     let handle = spawn(term, CrosstermEvents::new(), width, height, Some(restore))?;
     // The probed tone is the loop's first message: the input shade follows it from frame one.
     handle.set_dark_background(opts.dark);

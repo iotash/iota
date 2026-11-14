@@ -1,5 +1,5 @@
 //! Composer key routing — the 9-row precedence table (`TUI_CONTRACTS` §6;
-//! model.go updateKey, `KeyEventKind::Press` only): surface → Ctrl+C/D → ESC → Tab
+//! model.go updateKey, `KeyEventKind::Press` only): surface → (full screen) PgUp/PgDn → Ctrl+C/D → ESC → Tab
 //! completion → ↑ queue-pop → ↑/↓ history → newline (Ctrl+J, Alt+Enter, Shift+Enter) /
 //! Enter submit → the enumerated emacs edit set → text insert.
 //!
@@ -36,6 +36,14 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
     // ESC/Ctrl+C NEVER fires turn scopes (model.go:377-394).
     if m.surface.is_some() {
         m.route_surface_key(key);
+        return;
+    }
+
+    // Row 1b: the full screen's view keys — PgUp/PgDn scroll the conversation by half a
+    // screen (PgDn back at the tail follows it again). The inline terminal leaves them to the
+    // edit set, as before.
+    if m.fullscreen && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
+        m.scroll.push(key.code == KeyCode::PageUp);
         return;
     }
 

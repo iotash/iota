@@ -1145,3 +1145,20 @@ fn the_field_ignores_what_the_surface_ladder_owns() {
         assert_eq!(f.cursor_col(), 0, "{k:?} moved the cursor");
     }
 }
+
+/// Row 1b: on the full screen PgUp/PgDn are scroll requests for the next draw and touch nothing
+/// else; on the inline terminal they reach the edit set as before (no request is made).
+#[test]
+fn page_keys_scroll_the_full_screen_only() {
+    let mut m = test_model();
+    type_text(&mut m, "draft");
+    m.handle_key(key(KeyCode::PageUp));
+    m.handle_key(key(KeyCode::PageDown));
+    assert_eq!(m.scroll, Vec::<bool>::new(), "inline: no scroll request");
+    m.fullscreen = true;
+    m.handle_key(key(KeyCode::PageUp));
+    m.handle_key(key(KeyCode::PageUp));
+    m.handle_key(key(KeyCode::PageDown));
+    assert_eq!(m.scroll, vec![true, true, false]);
+    assert_eq!(m.composer.value(), "draft", "the draft is untouched");
+}

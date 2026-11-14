@@ -10,4 +10,5 @@ pub(crate) mod inline_term;
 pub(crate) mod msgs;
 pub(crate) mod oneshot;
 pub(crate) mod osc;
+pub(crate) mod screen;
 pub(crate) mod term;
