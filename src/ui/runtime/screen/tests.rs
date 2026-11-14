@@ -503,3 +503,32 @@ fn nothing_reaches_the_terminal_before_the_first_frame() {
     s.draw_frame(&frame(40), None).unwrap();
     assert!(String::from_utf8_lossy(&buf.bytes()).starts_with("\u{1b}[?1049h"));
 }
+
+/// The write-out policy across a resize: rows a mid-session write-out wrote stay as they were written
+/// (the terminal owns them now), and the exit writes the rest wrapped at the width it has then.
+#[test]
+fn rows_written_before_a_resize_keep_their_width_and_the_rest_take_the_exit_width() {
+    let (mut s, buf) = screen(40, 12);
+    s.push(&[format!("{}END", "a".repeat(30))]);
+    s.draw_frame(&frame(40), None).unwrap();
+    s.view(ViewOp::Dump).unwrap();
+    s.view(ViewOp::Return).unwrap();
+    s.push(&[format!("{}END", "b".repeat(30))]);
+    s.resize(Size::new(20, 12));
+    s.draw_frame(&frame(20), None).unwrap();
+    s.leave().unwrap();
+    let out = String::from_utf8_lossy(&buf.bytes()).into_owned();
+    assert!(
+        out.contains(&format!("{}END\u{1b}[0m\r\n", "a".repeat(30))),
+        "the first row as written at 40"
+    );
+    assert!(
+        out.contains(&format!(
+            "{}\u{1b}[0m\r\n{}END",
+            "b".repeat(20),
+            "b".repeat(10)
+        )),
+        "the second wrapped at the exit's 20: {out:?}"
+    );
+    assert_eq!(out.matches(TRANSCRIPT_MARK).count(), 1);
+}

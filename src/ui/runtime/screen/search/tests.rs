@@ -366,3 +366,38 @@ fn rows_the_cap_drops_take_their_hits_with_them() {
     assert_eq!(search.status(), "1/1");
     drop(s.view(ViewOp::Bottom));
 }
+
+/// Search and the write-out stack: Ctrl+O with a search on writes the rows plain (no highlight), the
+/// key after it comes back to the search as it was, and an exit with a search on writes plain rows too.
+#[test]
+fn a_write_out_during_a_search_writes_plain_rows_and_the_search_survives() {
+    let mut t = T::new(&rows_with(50, "needle", &[20]));
+    t.search("needle");
+    let mark = t.buf.bytes().len();
+    t.s.view(ViewOp::Dump).unwrap();
+    let dumped = String::from_utf8_lossy(&t.buf.bytes()[mark..]).into_owned();
+    assert!(
+        dumped.contains("line-00020 needle\u{1b}[0m\r\n"),
+        "the row, plain: {dumped:?}"
+    );
+    assert!(
+        !dumped.contains(SEARCH_HIT) && !dumped.contains(SEARCH_CUR),
+        "a highlight was written out"
+    );
+    t.s.view(ViewOp::Return).unwrap();
+    t.draw();
+    assert!(
+        t.grid()[7].contains("1/1"),
+        "the search is still on: {:?}",
+        t.grid()[7]
+    );
+    t.s.push(&rows_with(1, "needle", &[0]));
+    t.draw();
+    let mark = t.buf.bytes().len();
+    t.s.leave().unwrap();
+    let out = String::from_utf8_lossy(&t.buf.bytes()[mark..]).into_owned();
+    assert!(
+        out.contains("line-00000 needle\u{1b}[0m\r\n") && !out.contains(SEARCH_HIT),
+        "{out:?}"
+    );
+}
