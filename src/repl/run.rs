@@ -1546,11 +1546,11 @@ pub(crate) async fn bot_perform(
 /// panic hook hands the terminal back before the panic is reported (tui-plan S4). Nothing else in the
 /// tree can panic under the lint wall.
 #[cfg(debug_assertions)]
-#[allow(clippy::panic, reason = "the test hook's whole job")]
 fn test_panic(line: &str) {
-    if std::env::var_os("IOTA_TEST_PANIC").is_some_and(|v| v == line) {
-        panic!("IOTA_TEST_PANIC: the test hook asked for a panic");
-    }
+    assert!(
+        std::env::var_os("IOTA_TEST_PANIC").is_none_or(|v| v != line),
+        "IOTA_TEST_PANIC: the test hook asked for a panic"
+    );
 }
 
 /// Whether the user typed `/exit` (with or without an argument, as `/status` takes one). Never a notice or a
