@@ -91,7 +91,7 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
     // parked waiter (the caller's cue to exit — double-Ctrl+C-exits emerges).
     if ctrl && matches!(key.code, KeyCode::Char('c' | 'd')) {
         if m.cancels.is_empty() {
-            m.fail_waiter_interrupted();
+            m.fail_waiter_interrupted(key.code == KeyCode::Char('d'));
         } else {
             m.fire_cancel(0);
         }

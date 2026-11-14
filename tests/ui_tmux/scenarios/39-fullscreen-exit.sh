@@ -25,11 +25,9 @@ tm resize-window -t s -x 60 -y 24
 _poll_until 20 eval '[ "$(row_width "$(frame_bot)")" = 60 ]' || miss "the frame never took 60 columns"
 
 tm set-option -t s remain-on-exit on
-# An idle Ctrl+D that lands after the turn's last frame but before the REPL parks its next read
-# meets no waiter and no cancel scope and is dropped (both worlds; inline, the wait for the frame's
-# width above sits through DRAG_SETTLE and hides the gap). One more press then is still idle.
+# One press: an idle Ctrl+D that lands before the REPL parks its next read is kept for that read
+# (tui-plan S4; it used to be dropped there).
 key C-d
-_poll_until 20 pane_dead || key C-d
 _poll_until 50 pane_dead || miss "iota did not exit on an idle Ctrl+D"
 check "the main screen is back" "$(tm display-message -pt s '#{alternate_on}')" 0
 

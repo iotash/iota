@@ -332,6 +332,9 @@ pub(crate) struct Model {
     pub(crate) search: Option<SearchField>,
     /// Whether the full screen's view was scrolled back at the last draw (`/` opens a search then).
     pub(crate) view_paused: bool,
+    /// An idle Ctrl+D that found no reader parked — the REPL between a turn's end and its next
+    /// `read_input` — answers that next read (tui-plan S4).
+    pub(crate) pending_eof: bool,
 }
 
 /// One entry of the type-ahead queue.
@@ -425,6 +428,7 @@ impl Model {
             dumped: false,
             search: None,
             view_paused: false,
+            pending_eof: false,
         }
     }
 
@@ -614,8 +618,11 @@ impl Model {
                 self.dirty = true;
             }
             UiMsg::ReadReq { id, reply } => {
-                // The queue drains FIFO before a waiter parks (model.go:280-288).
-                if self.queue.is_empty() {
+                // The queue drains FIFO before a waiter parks (model.go:280-288); a Ctrl+D pressed
+                // while no reader was parked ends the read after it.
+                if self.queue.is_empty() && std::mem::take(&mut self.pending_eof) {
+                    let _ = reply.send(Err(UiError::Interrupted));
+                } else if self.queue.is_empty() {
                     self.waiter = Some(Waiter { id, reply });
                 } else {
                     let head = self.queue.remove(0);
@@ -852,10 +859,15 @@ impl Model {
     }
 
     /// Idle Ctrl+C/Ctrl+D: `Err(Interrupted)` to a parked waiter — the caller's cue
-    /// to exit (double-Ctrl+C-exits emerges from this two-step).
-    pub(crate) fn fail_waiter_interrupted(&mut self) {
+    /// to exit (double-Ctrl+C-exits emerges from this two-step). With no waiter parked (the REPL
+    /// between a turn's end and its next read) a Ctrl+D is kept for that read: it can only mean the
+    /// end of input. A Ctrl+C is not — racing a turn's end, it may have been meant to cancel that
+    /// turn, and kept it would end the program instead.
+    pub(crate) fn fail_waiter_interrupted(&mut self, eof: bool) {
         if let Some(w) = self.waiter.take() {
             let _ = w.reply.send(Err(UiError::Interrupted));
+        } else if eof {
+            self.pending_eof = true;
         }
     }
 

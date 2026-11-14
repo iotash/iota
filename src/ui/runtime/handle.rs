@@ -747,6 +747,22 @@ mod tests {
     /// libtest has no per-test timeout, and the test binary held the CI job until the 45-minute
     /// cap ended it (run 34772709712). Hence the barrier, and hence the deadline: whatever else
     /// this test does, it must not be able to hang.
+    /// An idle Ctrl+D that lands while no reader is parked — between a turn's end and the REPL's
+    /// next `read_input` — is the next read's answer, not a lost key (tui-plan S4, S2's lead (a)).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_idle_ctrl_d_between_reads_ends_the_next_read() {
+        let h = start_facade();
+        h.wait_frame();
+        h.key(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        h.barrier().await;
+        let cancel = CancellationToken::new();
+        let got = tokio::time::timeout(Duration::from_secs(5), h.ui.read_input(&cancel))
+            .await
+            .expect("the Ctrl+D pressed between reads was lost");
+        assert_eq!(got.expect_err("idle EOF"), UiError::Interrupted);
+        h.ui.close().await.expect("close");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn an_idle_ctrl_c_interrupts_the_pending_reader() {
         let h = start_facade();

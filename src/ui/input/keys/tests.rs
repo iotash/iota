@@ -1307,3 +1307,27 @@ fn a_paste_while_typing_a_query_goes_to_the_query() {
     );
     assert_eq!(m.composer.value(), "");
 }
+
+/// Row 2 with no reader parked: an idle Ctrl+D is kept for the next read — after whatever was typed
+/// ahead of it — and an idle Ctrl+C is not (it may have been meant for the turn that just ended).
+#[test]
+fn an_idle_ctrl_d_with_no_reader_answers_the_next_read_after_the_queue() {
+    let mut m = test_model();
+    m.handle_key(ctrl('c'));
+    assert!(!m.pending_eof, "an idle Ctrl+C is not kept");
+    type_text(&mut m, "typed ahead");
+    enter(&mut m);
+    m.handle_key(ctrl('d'));
+    assert!(m.pending_eof);
+    let first = park(&mut m, 1);
+    assert_eq!(first.blocking_recv().unwrap().unwrap().text, "typed ahead");
+    let second = park(&mut m, 2);
+    assert_eq!(
+        second.blocking_recv().unwrap().unwrap_err(),
+        UiError::Interrupted
+    );
+    assert!(!m.pending_eof);
+    let third = park(&mut m, 3);
+    assert!(m.waiter.is_some(), "kept once: the read after it parks");
+    drop(third);
+}
