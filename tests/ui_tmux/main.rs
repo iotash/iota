@@ -876,6 +876,24 @@ fn tmux_config_trust_fullscreen() {
     run_scenario_fullscreen("36-config-trust.sh");
 }
 
+/// L4 #14 on the full screen (tui-plan S4).
+#[test]
+fn tmux_osc_progress_and_focus_bytes_fullscreen() {
+    run_scenario_fullscreen("14-osc-signals.sh");
+}
+
+/// L4 #17 on the full screen (tui-plan S4).
+#[test]
+fn tmux_title_stack_fullscreen() {
+    run_scenario_fullscreen("17-title-stack.sh");
+}
+
+/// L4 #25 on the full screen (tui-plan S4).
+#[test]
+fn tmux_shell_yield_fullscreen() {
+    run_scenario_fullscreen("25-shell-yield.sh");
+}
+
 /// L4 #29 on the full screen (tui-plan S2): SIGTERM, Ctrl+D and a hung-up terminal end the run there too.
 #[test]
 fn tmux_signal_exit_fullscreen() {
