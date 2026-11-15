@@ -38,7 +38,9 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
     scrollback, search and selection reach all of it; press any key to come
     back. Each line is written once, however often you press it.
   - **When you quit** (Ctrl+D, `/exit`, Ctrl+C at the prompt, or a `kill`),
-    the whole conversation is written into the terminal's history, as before.
+    the conversation is written into the terminal's history, as before. For a
+    resumed session that is the rounds it showed when it resumed (see below)
+    and everything after them.
     After a crash, or `kill -9`, it is not; `iota resume` brings it back.
 - **New keys.** **PgUp / PgDn** scroll half a screen (Fn+↑/↓ on a MacBook);
   **Ctrl+Home / Ctrl+End** go to the first line and back to the latest output.
@@ -49,8 +51,10 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   **Ctrl+F** is not search: it still moves the cursor one character right.
   **Ctrl+Z** suspends iota and gives the terminal back to the shell; `fg`
   brings it back, redrawn at the window's size.
-- **Resuming a session shows the whole conversation**, not only the last three
-  rounds: scroll up to its first message.
+- **A resumed session shows its last three rounds, not all of it.** Older
+  rounds are not in the window, and scrolling up does not reach them: the
+  window starts at those three rounds. `/export` has the whole conversation.
+  This is true for `/resume`, `-c`, `iota resume` and a bot.
 
 ## 0.9.0 - 2026-11-11
 

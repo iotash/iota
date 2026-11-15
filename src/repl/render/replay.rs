@@ -1,5 +1,5 @@
-//! The resume echo (chat/replay.go): a resumed conversation replayed into the conversation
-//! buffer, whole, so the user sees where they left off and can scroll back to its first message.
+//! The resume echo (chat/replay.go): the last rounds of a resumed conversation replayed into the
+//! conversation buffer, so the user sees where they left off.
 //!
 //! The replay mirrors the LIVE layout rather than the log: user messages as full-width
 //! reversed blocks, assistant replies through the markdown renderer, and one blank line
@@ -21,13 +21,46 @@ use crate::repl::render::group::ask_record_lines;
 use crate::repl::render::styles::{dim, reverse};
 use crate::repl::render::uisink::LineCommitter;
 
-/// What a resumed session replays: the whole conversation (tui-plan S2), from its first non-system
-/// message — Go skipped system messages, and [`echo_rounds`] renders none anyway.
+/// How many rounds a resume replays (chat/replay.go:19 `resumeEchoRounds`). Every path takes the same cap:
+/// the interactive `/resume`, `-c`, `iota resume` and a bot. The full screen replayed everything for a
+/// while, and the owner reversed that (DIVERGENCES X-98): the cost was linear in the session on every
+/// restart, and since the exit writes the buffer out (X-99), a bot that restarts often left a full copy
+/// of its history in the scrollback each time.
+const RESUME_ECHO_ROUNDS: usize = 3;
+
+/// What a resumed session replays: its last [`RESUME_ECHO_ROUNDS`] rounds.
 pub(crate) fn resume_echo(history: &[Message]) -> &[Message] {
-    let start = history
-        .iter()
-        .position(|m| m.role() != Role::System)
-        .unwrap_or(history.len());
+    last_rounds(history, RESUME_ECHO_ROUNDS)
+}
+
+/// The tail of `history` covering at most `n` rounds — a round starts at a user message
+/// and runs until the next one (chat/replay.go:26-48).
+///
+/// When `history` holds fewer than `n` rounds the whole tail is returned; `n == 0` returns
+/// nothing.
+///
+/// Go filtered system messages OUT of the returned slice; a borrowed subslice can only
+/// trim its front, so LEADING system messages are skipped here and an interior one (the
+/// `system-tools` mount a round appends) rides along — [`echo_rounds`] renders nothing for
+/// the System role, so the echoed bytes are identical either way (DEVIATIONS3 `[WP50]`).
+pub(crate) fn last_rounds(history: &[Message], n: usize) -> &[Message] {
+    if n == 0 {
+        return &[];
+    }
+    let mut start = 0;
+    let mut rounds = 0;
+    for (i, m) in history.iter().enumerate().rev() {
+        if m.role() == Role::User {
+            rounds += 1;
+            if rounds == n {
+                start = i;
+                break;
+            }
+        }
+    }
+    while start < history.len() && history[start].role() == Role::System {
+        start += 1;
+    }
     &history[start..]
 }
 
@@ -296,7 +329,9 @@ mod tests {
     use std::path::Path;
 
     use crate::provider::model::{AssistantBody, Attachment, Body, Message, ToolBody, ToolCall};
-    use crate::repl::render::replay::{echo_image, echo_rounds, print_user_block, resume_echo};
+    use crate::repl::render::replay::{
+        echo_image, echo_rounds, last_rounds, print_user_block, resume_echo,
+    };
     use crate::text::ansi::strip_sgr;
     use crate::text::width::str_width;
     use pretty_assertions::assert_eq;
@@ -346,14 +381,113 @@ mod tests {
             .join("\n")
     }
 
-    /// The whole conversation replays, past any number of rounds; leading system messages do not.
+    /// A ten-round session replays exactly its last three rounds; a shorter one replays all of
+    /// them, from its first non-system message.
     #[test]
-    fn resume_echo_is_the_whole_conversation_without_leading_system_messages() {
+    fn resume_echo_is_the_last_three_rounds() {
         let history: Vec<Message> = std::iter::once(Message::system("sys"))
-            .chain((0..5).flat_map(|i| [user(&format!("q{i}")), assistant(&format!("r{i}"))]))
+            .chain((0..10).flat_map(|i| [user(&format!("q{i}")), assistant(&format!("r{i}"))]))
             .collect();
-        assert_eq!(resume_echo(&history), &history[1..]);
+        assert_eq!(resume_echo(&history), &history[15..]);
+        assert_eq!(resume_echo(&history)[0].content, "q7");
+        assert_eq!(
+            resume_echo(&history[..5]),
+            &history[1..5],
+            "two rounds: both"
+        );
         assert_eq!(resume_echo(&[Message::system("sys")]), []);
+    }
+
+    // Go: chat/replay_test.go:16 TestLastRounds — a round starts at a user message; system
+    // messages are excluded; fewer rounds than asked returns the whole tail; trailing tool
+    // results belong to the round that called them.
+    #[test]
+    fn test_last_rounds() {
+        let sys = Message::system("sys");
+        let cases: Vec<(&str, Vec<Message>, usize, Vec<Message>)> = vec![
+            ("empty", Vec::new(), 3, Vec::new()),
+            (
+                "zero-rounds",
+                vec![user("q"), assistant("r")],
+                0,
+                Vec::new(),
+            ),
+            (
+                "fewer-than-n-returns-all",
+                vec![user("q1"), assistant("r1"), user("q2"), assistant("r2")],
+                3,
+                vec![user("q1"), assistant("r1"), user("q2"), assistant("r2")],
+            ),
+            (
+                "exactly-n",
+                vec![
+                    user("q1"),
+                    assistant("r1"),
+                    user("q2"),
+                    assistant("r2"),
+                    user("q3"),
+                    assistant("r3"),
+                ],
+                3,
+                vec![
+                    user("q1"),
+                    assistant("r1"),
+                    user("q2"),
+                    assistant("r2"),
+                    user("q3"),
+                    assistant("r3"),
+                ],
+            ),
+            (
+                "more-than-n-keeps-last-n-starting-at-user",
+                vec![
+                    user("q1"),
+                    assistant("r1"),
+                    user("q2"),
+                    assistant("r2"),
+                    user("q3"),
+                    assistant("r3"),
+                    user("q4"),
+                    assistant("r4"),
+                ],
+                3,
+                vec![
+                    user("q2"),
+                    assistant("r2"),
+                    user("q3"),
+                    assistant("r3"),
+                    user("q4"),
+                    assistant("r4"),
+                ],
+            ),
+            (
+                "system-excluded",
+                vec![sys.clone(), user("q1"), assistant("r1")],
+                3,
+                vec![user("q1"), assistant("r1")],
+            ),
+            (
+                "trailing-tool-results-kept",
+                vec![
+                    user("q1"),
+                    assistant("r1"),
+                    user("q2"),
+                    calls("f"),
+                    tool("f", "result"),
+                    tool("f", "result"),
+                ],
+                1,
+                vec![
+                    user("q2"),
+                    calls("f"),
+                    tool("f", "result"),
+                    tool("f", "result"),
+                ],
+            ),
+        ];
+        for (name, history, n, want) in cases {
+            assert_eq!(last_rounds(&history, n), want.as_slice(), "{name}");
+        }
     }
 
     // Go: chat/replay_test.go:70 TestEchoRounds — the replay shows the conversation's SHAPE:

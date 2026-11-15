@@ -381,6 +381,28 @@ mod tests {
         );
     }
 
+    /// A bot's restart replays what any resume does: the last three rounds of its session, not all of it
+    /// (DIVERGENCES X-98) — the startup echo reads [`super::BotSession::history`] through `resume_echo`.
+    #[test]
+    fn a_bot_restart_replays_the_last_three_rounds() {
+        let h = home();
+        let mut p = provider("gpt-4o");
+        let mut first = open(&h, &mut p, "be terse").expect("fresh");
+        let mut log = vec![Message::system("be terse".to_owned())];
+        for i in 0..10 {
+            log.push(Message::user(format!("q{i}")));
+            log.push(Message::assistant(format!("r{i}")));
+        }
+        first.writer.append_messages(&log).expect("ten rounds");
+        drop(first);
+
+        let again = open(&h, &mut p, "be terse").expect("resume");
+        assert!(again.resumed);
+        let echo = crate::repl::render::replay::resume_echo(&again.history);
+        let shown: Vec<&str> = echo.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(shown, ["q7", "r7", "q8", "r8", "q9", "r9"]);
+    }
+
     /// The instant `at` seen from UTC. Built from [`jiff::tz::TimeZone::UTC`], not parsed from a `[UTC]`
     /// annotation: a named zone is looked up in the tz database (`/usr/share/zoneinfo` on Unix, jiff's bundled
     /// copy on Windows), and the fixed zone keeps the test off whatever copy the machine has.

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # L4 scenario 8 (TUI_TEST_PLAN §L4) — the big resume echo.
 #
-# A 32-round bundle is resumed; the whole conversation is replayed into the buffer (tui-plan S2),
-# and this fixture gives each round 14 body lines, so the echo is about five hundred rows against a
-# twenty-four-row pane. What L4 proves is that it does not eat the frame: every echoed row lands
-# exactly once, the separator pair and the status row are still there.
+# A 32-round bundle is resumed; the echo window is the last three rounds (`RESUME_ECHO_ROUNDS`, on
+# every path — DIVERGENCES X-98), and this fixture gives each of them 14 body lines, so the echo is
+# about ninety rows against a twenty-four-row pane. What L4 proves is that it does not eat the frame:
+# every echoed row lands exactly once, the separator pair and the status row are still there, nothing
+# from outside the window is replayed, and the exit writes out only what was replayed (X-99).
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
 
@@ -26,10 +27,10 @@ check_once "echo window round 29 header" '❯ r29 question'
 check_once "echo window round 30 header" '❯ r30 question'
 check_once "echo window round 31 header" '❯ r31 question'
 
-# The WHOLE conversation is replayed into the buffer (tui-plan S2), every round once.
-check "every round is echoed" "$(uniq_all 'r[0-9][0-9] question')" 32
-check "…none twice" "$(dupes_all 'r[0-9][0-9] question')" ""
-check_once "…the first round's answer too" 'r00 answer'
+# …and only that window: older rounds are not in the buffer.
+check "only the three rounds are echoed" "$(uniq_all 'r[0-9][0-9] question')" 3
+check "rounds outside the window are not echoed" "$(count_all 'r00 question')" 0
+check "…nor their answers" "$(count_all 'r28 answer')" 0
 
 # The frame survived a block three times the pane height.
 check_frame_intact "after the oversized echo" 80
@@ -53,5 +54,15 @@ if grep -q '"content":"hello"' "$SCEN_HOME/.iota/sessions/$SESSION_ID/messages.j
 else
     bad "the new turn did not reach the session log"
 fi
+
+# The exit writes out the buffer: the three replayed rounds and the new turn, once each, nothing older.
+tm set-option -t s remain-on-exit on
+key C-d
+_poll_until 50 pane_dead || miss "iota did not exit on an idle Ctrl+D"
+all="$(capall)"
+check "the exit wrote the three replayed rounds" "$(printf '%s\n' "$all" | grep -oE 'r[0-9][0-9] question' | sort -u | wc -l | tr -d ' ')" 3
+check "…each once" "$(printf '%s\n' "$all" | grep -oE 'r[0-9][0-9] question' | sort | uniq -d)" ""
+check "…and nothing older" "$(printf '%s\n' "$all" | grep -cF 'r28 answer' | tr -d ' ')" 0
+check "the new turn was written out too" "$(printf '%s\n' "$all" | grep -cF 'echo: hello' | tr -d ' ')" 1
 
 finish

@@ -155,6 +155,43 @@ fn the_exit_writes_the_conversation_into_the_main_screen_at_the_exit_width() {
     );
 }
 
+/// After a resume the buffer holds only the replayed rounds, so the exit writes only those: a
+/// ten-round session leaves its last three in the main screen, once each, and nothing older
+/// (DIVERGENCES X-98/X-99).
+#[test]
+fn the_exit_after_a_resume_writes_only_the_replayed_rounds() {
+    use crate::provider::model::Message;
+    use crate::repl::render::replay::{echo_rounds, resume_echo};
+    let history: Vec<Message> = (0..10)
+        .flat_map(|i| {
+            [
+                Message::user(format!("q{i}")),
+                Message::assistant(format!("r{i}")),
+            ]
+        })
+        .collect();
+    let lines = echo_rounds(resume_echo(&history), |_| false, 40, None);
+    let (mut s, buf) = screen(40, 12);
+    s.push(&lines);
+    s.draw_frame(&frame(40), None).unwrap();
+    s.leave().unwrap();
+    let mut p = vt100::Parser::new(12, 40, 1000);
+    p.process(&buf.bytes());
+    let all = reachable(&mut p);
+    let count = |t: &str| all.iter().filter(|r| r.trim() == t).count();
+    for i in 7..10 {
+        assert_eq!(count(&format!("❯ q{i}")), 1, "round {i} once: {all:#?}");
+        assert_eq!(count(&format!("r{i}")), 1, "reply {i} once: {all:#?}");
+    }
+    for i in 0..7 {
+        assert!(
+            !all.iter()
+                .any(|r| r.contains(&format!("q{i}")) || r.contains(&format!("r{i}"))),
+            "round {i} was not replayed, so it is not written: {all:#?}"
+        );
+    }
+}
+
 #[test]
 fn a_frame_larger_than_sync_min_is_one_synchronized_update_and_a_keystroke_is_bare() {
     let (mut s, buf) = screen(80, 24);

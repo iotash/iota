@@ -20,7 +20,7 @@ Status: **已实现，唯一的终端（S1–S5，分支 `fullscreen`；S5 删�
 - 上限 20 万行；超出丢最旧的，并在顶部放一行 `earlier output trimmed — /export has the full text`。M1：10 万行 RSS +30.7 MB，一帧约 1 ms。
 - 视图要么跟随尾部，要么锚在某一行（`Pos{row, line}`）上；resize 后停在同一行。上滚后新输出不拖动视图，视口最后一行显示 `↓ N new lines · Ctrl+End`。
 - 提交的行不经过暂存：实时 region 是 `Region::unstaged()`，提交即入缓冲；预览仍在帧里。（region 的暂存模式与 `TAIL_KEEP` 只剩它自己的测试在跑，S7 随暂存窗口一起删除。）
-- resume（启动时的 `iota resume` 与 `/resume`）把整个会话载入缓冲，而不是最后 3 轮。代价是线性的（S5 评审实测：300 轮 23 ms / 5 700 行，3 000 轮 230 ms / 57 000 行），而且回放的行退出时也会写出：一个反复重启的长寿会话（bot）每次都往 scrollback 里再加一份完整历史。**是否接受由 owner 决定，尚未定**（X-98/X-99）。
+- resume（`/resume`、`-c`、`iota resume`、bot）只回放最后 3 轮（`RESUME_ECHO_ROUNDS`），缓冲从这 3 轮开始，上面什么都没有。**owner 已定（2026-11-15，"回放限定最大轮数，和 session 回放一致"）**：全量回放的代价随会话线性增长（S5 评审实测：300 轮 23 ms / 5 700 行，3 000 轮 230 ms / 57 000 行），而且回放的行退出时也会写出，一个反复重启的长寿会话（bot）每次都往 scrollback 里再加一份完整历史。有了上限，退出只写出这 3 轮和新的轮次（X-98/X-99）。
 
 ## 键（tui-plan D5 与 owner 的搜索键决定）
 
@@ -45,7 +45,7 @@ Status: **已实现，唯一的终端（S1–S5，分支 `fullscreen`；S5 删�
 | C4 | surface 关闭后 composer 暂时浮在底部之上；每次 insert 的光标闪烁窗口 | 帧永远贴底；没有 insert |
 | C5 | 退出时要重画帧防重复（X-49）、`park_cursor` | 退出 = 离开 alt 屏 + 写出 |
 | C7 | 对话内无搜索 | `Ctrl+R` / `/`（S3） |
-| C12 | resume 只回放 3 轮 | 全量 |
+| C12 | resume 只回放 3 轮 | ~~全量~~ 仍是 3 轮（owner 2026-11-15，X-98） |
 | C14 | tmux `scroll-on-clear` 特判；`oneshot.rs` 自建 inline 终端 | 特判消失；会话选择器用同一个全屏终端（对话为空，退出时什么都不写） |
 | C15 | 被杀后对话留在屏上（inline 的优点） | panic hook 与信号路径先恢复终端；SIGKILL 无解（见下表） |
 | C6、C13 | 没有鼠标；surface 挤在帧行里 | **S6**：mouse capture、滚轮、应用内选择、浮层 surface |
