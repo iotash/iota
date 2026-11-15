@@ -11,8 +11,18 @@
 #     row again at 160;
 #   * the QUOTE's `│` bar is on every row it wraps onto;
 #   * the spacing reads the same: as many blank rows as at 80, never two in a row.
+# Then, at 60 (the review's B1): a drag over the table and the code block copies them line for
+# line, as shown — a laid-out block is many lines, never joined into one.
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
+
+# A stub clipboard tool, so the developer's own clipboard is never touched (scenario 46's way).
+mkdir -p "$SCEN_TMP/bin"
+for tool in pbcopy wl-copy; do
+    printf '#!/bin/sh\ncat > "%s"\n' "$SCEN_TMP/clip" >"$SCEN_TMP/bin/$tool"
+    chmod +x "$SCEN_TMP/bin/$tool"
+done
+IOTA_ENV="-u SSH_CONNECTION -u SSH_TTY -u SSH_CLIENT PATH=$SCEN_TMP/bin:$PATH"
 
 start 80 60 || finish
 settle || miss "startup never settled"
@@ -63,5 +73,23 @@ for w in 80 160 60; do
     fi
 done
 [ "$(printf '%s\n' "$(reply)" | sed -n '/quotehead/,/^$/p' | grep -c '^│ ' | tr -d ' ')" -gt 1 ] && ok "60: the quote wraps onto more than one row" || bad "60: the quote did not wrap"
+
+# The copy, at 60 columns: drag from the table's top border to the end of the code block.
+shot="$(cap)"
+top="$(printf '%s\n' "$shot" | grep -n '^┌' | head -1 | cut -d: -f1)"
+bot="$(printf '%s\n' "$shot" | grep -n '^  }$' | head -1 | cut -d: -f1)"
+if [ -n "$top" ] && [ -n "$bot" ]; then
+    want="$(printf '%s\n' "$shot" | sed -n "${top},${bot}p" | sed 's/ *$//')"
+    mouse 0 1 "$top"
+    mouse 32 60 "$bot"
+    mouse 0 60 "$bot" m
+    _buffer() { tm show-buffer 2>/dev/null; }
+    _has_buffer() { _buffer | grep -qF 'fn main'; }
+    _poll_until 100 _has_buffer || miss "the drag over the table and the code block copied nothing"
+    check "the copy has the table's and the code block's lines apart" "$(_buffer | wc -l | tr -d ' ')" "$(($(printf '%s\n' "$want" | wc -l | tr -d ' ') - 1))"
+    check "…and is the rows as shown, line for line" "$(_buffer)" "$want"
+else
+    bad "the table or the code block is not on screen at 60 (top=$top bot=$bot)"
+fi
 
 finish
