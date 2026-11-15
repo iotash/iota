@@ -1028,3 +1028,59 @@ fn the_edge_scroll_speeds_up_with_the_distance_below_the_viewport() {
     assert_eq!(top_after(7), "line-001", "the last row: one line");
     assert_eq!(top_after(10), "line-007", "three below: seven lines");
 }
+
+/// Copying laid-out blocks (S7a review B1): a drag over a code block and a table copies them line
+/// for line, as shown — a laid-out block is many lines, not one row wrapped into segments — and a
+/// triple-click inside one copies the one line under the pointer. A row the screen wraps still
+/// copies back as the one line it was committed as.
+#[test]
+fn a_drag_over_a_code_block_and_a_table_copies_them_line_for_line() {
+    let (mut s, _buf) = mouse_screen(60, 20);
+    let long = format!("tail-{}", "w".repeat(90));
+    let mut blocks = crate::ui::testutil::markdown_blocks(
+        "```\nfn main() {\n    body();\n}\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n",
+    );
+    blocks.push(crate::ui::block::Block::Row(long.clone()));
+    s.push(blocks);
+    s.draw_frame(&frame(60), None).unwrap();
+    // The viewport is rows 0–15 and the conversation sits on the frame: 3 code lines, a blank, a
+    // 5-line table, the long row's 2 segments — 11 lines, rows 5–15.
+    select(
+        &mut s,
+        SelectOp::Press {
+            col: 0,
+            row: 5,
+            clicks: 1,
+        },
+    );
+    select(&mut s, SelectOp::Drag { col: 59, row: 15 });
+    select(&mut s, SelectOp::Release);
+    let text = s.take_copied().expect("the drag copies");
+    assert_eq!(
+        text,
+        [
+            "  fn main() {",
+            "      body();",
+            "  }",
+            "",
+            "┌─────┬─────┐",
+            "│ a   │ b   │",
+            "├─────┼─────┤",
+            "│ 1   │ 2   │",
+            "└─────┴─────┘",
+            &long,
+        ]
+        .join("\n")
+    );
+    // A triple-click on the code block's middle line copies that line alone.
+    select(
+        &mut s,
+        SelectOp::Press {
+            col: 3,
+            row: 6,
+            clicks: 3,
+        },
+    );
+    select(&mut s, SelectOp::Release);
+    assert_eq!(s.take_copied().as_deref(), Some("      body();"));
+}

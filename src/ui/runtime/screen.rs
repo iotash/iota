@@ -293,22 +293,25 @@ impl<W: Write> Screen<W> {
                     2 => self
                         .conv
                         .plain_lines(n, width)
-                        .and_then(|l| selection::word_at(l.get(line)?, col))
+                        .and_then(|l| selection::word_at(&l.get(line)?.0, col))
                         .map(|(a, b)| Selection {
                             anchor: at(a),
                             head: at(b),
                         }),
-                    _ => self.conv.plain_lines(n, width).map(|l| Selection {
-                        anchor: Point {
-                            row: n,
-                            line: 0,
-                            col: 0,
-                        },
-                        head: Point {
-                            row: n,
-                            line: l.len().saturating_sub(1),
-                            col: width,
-                        },
+                    _ => self.conv.plain_lines(n, width).map(|l| {
+                        let (first, last) = selection::line_around(&l, line);
+                        Selection {
+                            anchor: Point {
+                                row: n,
+                                line: first,
+                                col: 0,
+                            },
+                            head: Point {
+                                row: n,
+                                line: last,
+                                col: width,
+                            },
+                        }
                     }),
                 };
                 if sel.is_some() {

@@ -1,15 +1,16 @@
 //! In-app selection over the conversation (tui-plan S6, D3): what a drag or a double-click
 //! selects, how it is drawn, and the text it copies.
 //!
-//! A point is a display cell of the BUFFER, not of the screen: a row number (rows are numbered as
-//! committed, so the cap dropping old rows moves nothing), a line within that row's wrap, and a
-//! display column. A selection can therefore run past the viewport — the drag scrolls it, and the
+//! A point is a display cell of the BUFFER, not of the screen: a block number (blocks are numbered
+//! as committed, so the cap dropping old ones moves nothing), a display line within that block, and
+//! a display column. A selection can therefore run past the viewport — the drag scrolls it, and the
 //! ends stay on their text while new output arrives.
 //!
 //! - **Drawn** as reverse video on the screen's cells only ([`span`]): the rows themselves are
 //!   never touched, so a write-out (`Ctrl+O`, the exit) never carries a selection's styling.
-//! - **Copied** as plain text ([`text`]): SGR stripped, a row's wrapped lines joined back into the
-//!   one line it was committed as, rows joined by `\n`, trailing blanks trimmed.
+//! - **Copied** as plain text ([`text`]): SGR stripped, the segments the SCREEN wrapped a line into
+//!   joined back into that line, every other line — between blocks, and the lines a laid-out block
+//!   is made of (a table's, a code block's) — separated by `\n`, trailing blanks trimmed.
 //! - **A word** ([`word_at`]) is a run of letters, digits and the punctuation of paths, URLs and
 //!   identifiers (`_-./~+:@\`), the way terminals double-click; a trailing `.`, `,` or `:` is a
 //!   sentence's, not the word's.
@@ -21,9 +22,9 @@ use crate::text::width::{graphemes, str_width};
 /// One display cell of the conversation buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Point {
-    /// The row's number (`Conversation` numbers rows as committed).
+    /// The block's number (`Conversation` numbers blocks as committed).
     pub(crate) row: u64,
-    /// The line within the row's wrap at the width it is drawn at.
+    /// The display line within the block at the width it is drawn at.
     pub(crate) line: usize,
     /// The display column.
     pub(crate) col: usize,
@@ -81,26 +82,45 @@ impl Selection {
     }
 }
 
-/// The text a selection copies. `lines_of(row)` is the plain (SGR-stripped) display lines of a
-/// row at the width the selection was made at, `None` once the row is gone.
+/// The text a selection copies. `lines_of(block)` is the plain (SGR-stripped) display lines of a
+/// block at the width the selection was made at, each with whether it continues the line before
+/// (a segment of the screen's wrap), `None` once the block is gone.
 pub(crate) fn text(
     sel: &Selection,
-    mut lines_of: impl FnMut(u64) -> Option<Vec<String>>,
+    mut lines_of: impl FnMut(u64) -> Option<Vec<(String, bool)>>,
 ) -> String {
     let (start, end) = sel.ordered();
     let mut out: Vec<String> = Vec::new();
     for row in start.row..=end.row {
         let Some(lines) = lines_of(row) else { continue };
-        let mut joined = String::new();
-        for (i, line) in lines.iter().enumerate() {
-            let cols = str_width(line);
-            if let Some((from, to)) = sel.span(row, i, cols) {
-                joined.push_str(&slice_cols(line, from, to));
+        let mut open = false;
+        for (i, (line, joins)) in lines.iter().enumerate() {
+            let Some((from, to)) = sel.span(row, i, str_width(line)) else {
+                continue;
+            };
+            if !(open && *joins) {
+                out.push(String::new());
+                open = true;
+            }
+            if let Some(last) = out.last_mut() {
+                last.push_str(&slice_cols(line, from, to));
             }
         }
-        out.push(joined.trim_end().to_owned());
     }
+    let out: Vec<&str> = out.iter().map(|l| l.trim_end()).collect();
     out.join("\n")
+}
+
+/// The display lines `[first, last]` of the one line that display line `at` belongs to: back to
+/// where it starts, on through its continuations (what a triple-click selects).
+pub(crate) fn line_around(lines: &[(String, bool)], at: usize) -> (usize, usize) {
+    let at = at.min(lines.len().saturating_sub(1));
+    let first = (0..=at).rev().find(|&i| !lines[i].1).unwrap_or(0);
+    let last = (at + 1..lines.len())
+        .take_while(|&i| lines[i].1)
+        .last()
+        .unwrap_or(at);
+    (first, last)
 }
 
 /// The part of `plain` in display columns `[from, to)`: a wide glyph is in when its first
@@ -208,7 +228,16 @@ mod tests {
             vec![String::new()],
             vec!["gamma delta".to_owned()],
         ];
-        let lines_of = |r: u64| rows.get(usize::try_from(r).ok()?).cloned();
+        // Every row here is one line the screen wrapped: its later segments continue it.
+        let lines_of = |r: u64| {
+            let segs = rows.get(usize::try_from(r).ok()?)?;
+            Some(
+                segs.iter()
+                    .enumerate()
+                    .map(|(i, l)| (l.clone(), i > 0))
+                    .collect(),
+            )
+        };
         let s = sel(pt(0, 0, 6), pt(3, 0, 4));
         assert_eq!(
             text(&s, lines_of),
@@ -250,5 +279,26 @@ mod tests {
         assert_eq!(word(99), None, "past the end");
         assert_eq!(word_at("a -- b", 2), None, "punctuation alone");
         assert_eq!(word_at("中文 x", 3), Some((0, 3)), "a CJK run is one word");
+    }
+
+    /// A laid-out block is many lines (S7a review B1): its own lines copy apart, and only what the
+    /// screen wrapped inside one of them joins back; a triple-click takes the line it lands on.
+    #[test]
+    fn a_laid_out_blocks_lines_copy_apart_and_only_screen_wraps_join() {
+        let block = vec![
+            ("  fn main() {".to_owned(), false),
+            ("      a_call_the_screen".to_owned(), false),
+            ("_wrapped();".to_owned(), true),
+            ("  }".to_owned(), false),
+        ];
+        let lines_of = |r: u64| (r == 0).then(|| block.clone());
+        let s = sel(pt(0, 0, 0), pt(0, 3, 9));
+        assert_eq!(
+            text(&s, lines_of),
+            "  fn main() {\n      a_call_the_screen_wrapped();\n  }"
+        );
+        assert_eq!(super::line_around(&block, 2), (1, 2));
+        assert_eq!(super::line_around(&block, 1), (1, 2));
+        assert_eq!(super::line_around(&block, 3), (3, 3));
     }
 }

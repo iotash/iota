@@ -574,7 +574,15 @@ mod tests {
             "/Volumes/build/agents/workspaces/2026-09/a-project-with-a-very-long-name/packages/cli",
         );
         let block = crate::ui::facade::Block::laid(Banner::new(&facts(long, None)));
-        let at = |w: usize| plain(&block.display(w));
+        let at = |w: usize| {
+            plain(
+                &block
+                    .display(w)
+                    .into_iter()
+                    .map(|(l, _)| l)
+                    .collect::<Vec<_>>(),
+            )
+        };
         let wide = at(160);
         assert_eq!(wide.len(), 5, "{wide:#?}");
         assert!(wide[3].contains("/packages/cli") && !wide[3].contains('…'));

@@ -1449,35 +1449,9 @@ fn a_dialog_in_a_pane_the_frame_fills_is_still_on_the_screen() {
 /// not the rows of 80 columns wrapped.
 #[test]
 fn a_table_on_screen_is_laid_out_again_when_the_window_widens_and_narrows() {
-    use crate::markdown::{CodeTheme, Fragment, PreviewHandle, RenderOptions, Sink, Writer};
-    struct Keep(Arc<Mutex<Vec<Block>>>);
-    impl Sink for Keep {
-        fn write(&mut self, rendered: &str) {
-            let mut out = self.0.lock().unwrap();
-            out.extend(Block::rows(rendered.lines().map(str::to_owned)));
-        }
-        fn write_block(&mut self, block: Fragment) {
-            self.0.lock().unwrap().push(Block::laid(block));
-        }
-        fn width(&self) -> usize {
-            80
-        }
-        fn block_preview(&mut self, _label: &str) -> Option<Box<dyn PreviewHandle>> {
-            None
-        }
-    }
-    let out = Arc::new(Mutex::new(Vec::new()));
-    let mut w = Writer::new(
-        Box::new(Keep(Arc::clone(&out))),
-        RenderOptions {
-            color: false,
-            code_theme: CodeTheme::Monokai,
-        },
+    let blocks = crate::ui::testutil::markdown_blocks(
+        "| name | what it does |\n|---|---|\n| region | stages the rows a preview replaces, in the frame above the composer |\n| conversation | holds every committed block and lays each one out at the width |\n",
     );
-    w.write(b"| name | what it does |\n|---|---|\n| region | stages the rows a preview replaces, in the frame above the composer |\n| conversation | holds every committed block and lays each one out at the width |\n");
-    w.flush();
-    drop(w);
-    let blocks = std::mem::take(&mut *out.lock().unwrap());
     let lh = idle_loop();
     lh.tx.send(UiMsg::Scrollback(blocks)).unwrap();
     lh.sync();

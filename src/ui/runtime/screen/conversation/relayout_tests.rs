@@ -5,54 +5,15 @@
 //! table, the list, the code block, the quote (the banner's own test is in `repl::render::banner`),
 //! plus the cap dropping a laid-out block whole.
 
-use std::sync::{Arc, Mutex};
-
 use super::{Conversation, TRIMMED};
-use crate::markdown::{CodeTheme, Fragment, PreviewHandle, RenderOptions, Sink, Writer};
 use crate::text::ansi::{ansi_width, strip_sgr};
 use crate::ui::block::Block;
-
-/// The markdown sink the terminal's is in shape: text as rows, each closed block as its source.
-struct Blocks(Arc<Mutex<Vec<Block>>>, String);
-
-impl Sink for Blocks {
-    fn write(&mut self, rendered: &str) {
-        self.1.push_str(rendered);
-        while let Some(i) = self.1.find('\n') {
-            let row = self.1[..i].to_owned();
-            self.1.drain(..=i);
-            self.0.lock().unwrap().push(Block::Row(row));
-        }
-    }
-
-    fn write_block(&mut self, block: Fragment) {
-        self.0.lock().unwrap().push(Block::laid(block));
-    }
-
-    fn width(&self) -> usize {
-        80
-    }
-
-    fn block_preview(&mut self, _label: &str) -> Option<Box<dyn PreviewHandle>> {
-        None
-    }
-}
+use crate::ui::testutil::markdown_blocks;
 
 /// `md` rendered (no color, so the assertions read the layout) into a buffer.
 fn reply(md: &str) -> Conversation {
-    let out = Arc::new(Mutex::new(Vec::new()));
-    let mut w = Writer::new(
-        Box::new(Blocks(Arc::clone(&out), String::new())),
-        RenderOptions {
-            color: false,
-            code_theme: CodeTheme::Monokai,
-        },
-    );
-    w.write(md.as_bytes());
-    w.flush();
-    drop(w);
     let mut c = Conversation::new();
-    c.push(std::mem::take(&mut *out.lock().unwrap()));
+    c.push(markdown_blocks(md));
     c
 }
 

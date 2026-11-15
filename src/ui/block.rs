@@ -58,14 +58,21 @@ impl Block {
     }
 
     /// The block's display lines at `width`: [`Block::render`], every line wider than `width`
-    /// wrapped (`wrap_ansi` carries the SGR across the break).
-    pub fn display(&self, width: usize) -> Vec<String> {
+    /// wrapped (`wrap_ansi` carries the SGR across the break) — each with whether it CONTINUES the
+    /// line before it (a segment the screen's wrap made) or starts a line of its own. A copy joins
+    /// the continuations back and separates the rest.
+    pub fn display(&self, width: usize) -> Vec<(String, bool)> {
         let mut out = Vec::new();
         for line in self.render(width) {
             if width > 0 && crate::text::ansi::ansi_width(&line) > width {
-                out.extend(wrap_ansi(&line, width));
+                out.extend(
+                    wrap_ansi(&line, width)
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, seg)| (seg, i > 0)),
+                );
             } else {
-                out.push(line);
+                out.push((line, false));
             }
         }
         out

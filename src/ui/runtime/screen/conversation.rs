@@ -32,12 +32,20 @@ pub(crate) const BLOCK_CAP: usize = 200_000;
 /// The row standing in for the blocks the cap dropped.
 pub(crate) const TRIMMED: &str = "earlier output trimmed — /export has the full text";
 
+/// A block's display lines at one width, and which of them continue the line before
+/// (`Block::display`).
+struct Laid {
+    width: usize,
+    lines: Vec<String>,
+    joins: Vec<bool>,
+}
+
 /// One committed block and its display lines at the last width they were needed at.
 struct Entry {
     block: Block,
     /// A row's display width (a laid-out block: 0, unused).
     cols: usize,
-    lines: Option<(usize, Vec<String>)>,
+    lines: Option<Laid>,
 }
 
 impl Entry {
@@ -55,17 +63,44 @@ impl Entry {
 
     /// The block's display lines at `width`.
     fn lines(&mut self, width: usize) -> &[String] {
-        if let Block::Row(t) = &self.block
-            && self.cols <= width
-        {
-            return std::slice::from_ref(t);
+        self.fill(width);
+        match (&self.block, &self.lines) {
+            (Block::Row(t), _) if self.cols <= width => std::slice::from_ref(t),
+            (_, Some(l)) => &l.lines,
+            _ => &[],
         }
-        if self.lines.as_ref().is_none_or(|(w, _)| *w != width) {
-            self.lines = Some((width, self.block.display(width)));
+    }
+
+    /// Fills the display lines' cache at `width` when it holds another width's (a row that fits
+    /// needs none: it is its own one line).
+    fn fill(&mut self, width: usize) {
+        if matches!(self.block, Block::Row(_)) && self.cols <= width {
+            return;
         }
-        self.lines
-            .as_ref()
-            .map_or(&[], |(_, lines)| lines.as_slice())
+        if self.lines.as_ref().is_none_or(|l| l.width != width) {
+            let (lines, joins) = self.block.display(width).into_iter().unzip();
+            self.lines = Some(Laid {
+                width,
+                lines,
+                joins,
+            });
+        }
+    }
+
+    /// The display lines at `width` with whether each continues the line before (a segment the
+    /// screen's wrap made).
+    fn lines_joined(&mut self, width: usize) -> Vec<(String, bool)> {
+        self.fill(width);
+        match (&self.block, &self.lines) {
+            (Block::Row(t), _) if self.cols <= width => vec![(t.clone(), false)],
+            (_, Some(l)) => l
+                .lines
+                .iter()
+                .cloned()
+                .zip(l.joins.iter().copied())
+                .collect(),
+            _ => Vec::new(),
+        }
     }
 
     /// At least one line: an empty laid-out block still holds its place.
@@ -443,15 +478,16 @@ impl Conversation {
         out
     }
 
-    /// Block number `n`'s display lines at `width`, SGR stripped (what a selection copies);
-    /// `None` once the cap has dropped it.
-    pub(crate) fn plain_lines(&mut self, n: u64, width: usize) -> Option<Vec<String>> {
+    /// Block number `n`'s display lines at `width`, SGR stripped (what a selection copies), each
+    /// with whether it continues the line before — a row's wrap segments do, a laid-out block's
+    /// own lines do not; `None` once the cap has dropped it.
+    pub(crate) fn plain_lines(&mut self, n: u64, width: usize) -> Option<Vec<(String, bool)>> {
         let i = self.index_of(n)?;
         Some(
             self.rows[i]
-                .lines(width)
-                .iter()
-                .map(|l| strip_sgr(l))
+                .lines_joined(width)
+                .into_iter()
+                .map(|(l, j)| (strip_sgr(&l), j))
                 .collect(),
         )
     }

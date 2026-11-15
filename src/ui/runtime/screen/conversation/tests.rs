@@ -44,7 +44,7 @@ fn a_row_wider_than_the_screen_is_wrapped_once_per_width() {
         ["wwwwwwwwww", "wwwwwwwwww", "wwwwwwwEND", "next"]
     );
     assert_eq!(
-        c.rows[0].lines.as_ref().map(|(w, l)| (*w, l.len())),
+        c.rows[0].lines.as_ref().map(|l| (l.width, l.lines.len())),
         Some((10, 3))
     );
     assert!(
@@ -58,7 +58,7 @@ fn a_row_wider_than_the_screen_is_wrapped_once_per_width() {
     );
     // Another width replaces the cached wrap.
     c.view_lines(15, 5, None);
-    assert_eq!(c.rows[0].lines.as_ref().map(|(w, _)| *w), Some(15));
+    assert_eq!(c.rows[0].lines.as_ref().map(|l| l.width), Some(15));
 }
 
 #[test]

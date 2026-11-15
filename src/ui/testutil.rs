@@ -263,3 +263,40 @@ impl EventSource for ChannelEvents {
             .map_err(|_| io::Error::new(io::ErrorKind::UnexpectedEof, "no scripted event"))
     }
 }
+
+// --- the conversation's blocks ----------------------------------------------
+
+/// `md` rendered (no color) into the blocks the terminal's markdown sink commits: text as rows,
+/// each closed buffering block kept as its source (`markdown::Fragment`, laid out at every width).
+pub(crate) fn markdown_blocks(md: &str) -> Vec<crate::ui::block::Block> {
+    use crate::markdown::{CodeTheme, Fragment, PreviewHandle, RenderOptions, Sink, Writer};
+    use crate::ui::block::Block;
+
+    struct Keep(Arc<Mutex<Vec<Block>>>);
+    impl Sink for Keep {
+        fn write(&mut self, rendered: &str) {
+            lock(&self.0).extend(Block::rows(rendered.lines().map(str::to_owned)));
+        }
+        fn write_block(&mut self, block: Fragment) {
+            lock(&self.0).push(Block::laid(block));
+        }
+        fn width(&self) -> usize {
+            80
+        }
+        fn block_preview(&mut self, _label: &str) -> Option<Box<dyn PreviewHandle>> {
+            None
+        }
+    }
+    let out = Arc::new(Mutex::new(Vec::new()));
+    let mut w = Writer::new(
+        Box::new(Keep(Arc::clone(&out))),
+        RenderOptions {
+            color: false,
+            code_theme: CodeTheme::Monokai,
+        },
+    );
+    w.write(md.as_bytes());
+    w.flush();
+    drop(w);
+    std::mem::take(&mut *lock(&out))
+}
