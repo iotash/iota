@@ -10,18 +10,27 @@
 //! - **OSC 52** (`ESC ] 52 ; c ; <base64> BEL`) — over SSH outside tmux: the terminal on the
 //!   user's side sets its own clipboard. Also the fallback when no local tool is found.
 //!
-//! The tools run on a thread of their own: a clipboard tool that hangs never stalls the loop. A
-//! path that fails fails silently — the selection is still on the screen to copy again.
+//! The tools run on a thread of their own — a clipboard tool that hangs never stalls the loop —
+//! and report back ([`Clipboard::poll`]): a copy is said to be done only when one of them
+//! succeeded. When every tool fails (an `xclip` with no `$DISPLAY`, a `pbcopy` that errors) the
+//! copy falls through to OSC 52, the one way left; OSC 52 itself cannot report, so the status row
+//! names it. A selection whose sequence would pass [`OSC52_MAX`] is not sent: terminals truncate or
+//! drop one that long, and a megabyte written with the frame stalls a slow link.
 
 use std::io::{self, Write as _};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 
 use base64::Engine as _;
+
+/// The longest OSC 52 sequence sent (bytes, base64 and framing included): about 73 KB of text.
+/// hterm and tmux keep 100 000 bytes of an OSC 52; past it most terminals drop or cut it.
+pub(crate) const OSC52_MAX: usize = 100_000;
 
 /// One way a copied text leaves iota.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CopyPath {
-    /// The platform clipboard tool ([`copy_to_clipboard`]).
+    /// The platform clipboard tool ([`copy_to_clipboard`]'s first one on `PATH`).
     Local,
     /// `tmux load-buffer -w -`.
     Tmux,
@@ -29,11 +38,24 @@ pub(crate) enum CopyPath {
     Osc52,
 }
 
-/// Where the selections of this session go: the paths, and the modifier the terminal takes for
-/// its own selection while iota has the mouse.
+/// What became of a copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Copied {
+    /// A tool took it (`osc: false`), or the OSC 52 sequence was written (`osc: true`).
+    Done { chars: usize, osc: bool },
+    /// Every tool failed (or there was none) and the text is too long for OSC 52.
+    TooLarge { chars: usize },
+}
+
+/// Where the selections of this session go: the programs a copy is piped into, and the modifier
+/// the terminal takes for its own selection while iota has the mouse.
 #[derive(Debug)]
 pub(crate) struct Clipboard {
-    paths: Vec<CopyPath>,
+    /// The programs a copy is piped into (the local tool, tmux's `load-buffer`); one of them
+    /// succeeding is a copy. None: OSC 52 is the way (over SSH outside tmux, or no tool here).
+    commands: Vec<Vec<String>>,
+    /// A copy the tools are still running, with its text for the OSC 52 fall-through.
+    pending: Option<(String, mpsc::Receiver<bool>)>,
     /// `Shift`, or `Option` in iTerm2 (whose bypass key it is).
     pub(crate) native: &'static str,
     /// The texts a test's clipboard was handed (`None`: a live one, which runs the paths); shared,
@@ -44,15 +66,29 @@ pub(crate) struct Clipboard {
 
 impl Clipboard {
     /// The process's own: read from its environment once (`$TMUX`, `$SSH_CONNECTION`/`$SSH_TTY`,
-    /// `$TERM_PROGRAM`/`$LC_TERMINAL`).
+    /// `$TERM_PROGRAM`/`$LC_TERMINAL`, the local tool on `$PATH`).
     pub(crate) fn from_env() -> Self {
         let set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
         let is = |name: &str, want: &str| std::env::var(name).is_ok_and(|v| v == want);
         let ssh = set("SSH_CONNECTION") || set("SSH_TTY");
         let iterm = is("TERM_PROGRAM", "iTerm.app") || is("LC_TERMINAL", "iTerm2");
+        let commands = paths(set("TMUX"), ssh)
+            .into_iter()
+            .filter_map(|p| match p {
+                CopyPath::Local => local_tool(),
+                CopyPath::Tmux => Some(argv(&["tmux", "load-buffer", "-w", "-"])),
+                CopyPath::Osc52 => None,
+            })
+            .collect();
+        Self::with_commands(commands, if iterm { "Option" } else { "Shift" })
+    }
+
+    /// A clipboard piping into `commands` (a test's: programs that succeed or fail on cue).
+    pub(crate) fn with_commands(commands: Vec<Vec<String>>, native: &'static str) -> Self {
         Self {
-            paths: paths(set("TMUX"), ssh),
-            native: if iterm { "Option" } else { "Shift" },
+            commands,
+            pending: None,
+            native,
             #[cfg(test)]
             recorded: None,
         }
@@ -62,38 +98,78 @@ impl Clipboard {
     #[cfg(test)]
     pub(crate) fn recording() -> Self {
         Self {
-            paths: Vec::new(),
-            native: "Shift",
             recorded: Some(std::sync::Arc::default()),
+            ..Self::with_commands(Vec::new(), "Shift")
         }
     }
 
-    /// Sends `text` down every path; the OSC 52 one, when it is among them, is returned for the
-    /// caller to write to the terminal (in order with the frame).
-    pub(crate) fn copy(&mut self, text: &str) -> Option<String> {
+    /// Starts copying `text`. With no program to run the outcome is at hand — the OSC 52 sequence
+    /// to write, if it is within [`OSC52_MAX`]; otherwise the programs run on a thread and
+    /// [`Clipboard::poll`] has the outcome.
+    pub(crate) fn start(&mut self, text: String) -> Option<(Copied, Option<String>)> {
         #[cfg(test)]
         if let Some(rec) = &self.recorded {
-            crate::sync::lock(rec).push(text.to_owned());
-            return None;
+            let chars = text.chars().count();
+            crate::sync::lock(rec).push(text);
+            return Some((Copied::Done { chars, osc: false }, None));
         }
-        let mut osc = self.paths.contains(&CopyPath::Osc52).then(|| osc52(text));
-        let local = self.paths.contains(&CopyPath::Local);
-        let tmux = self.paths.contains(&CopyPath::Tmux);
-        let owned = text.to_owned();
-        // No local tool on this machine: OSC 52 is the last way to reach a clipboard.
-        if local && !tmux && osc.is_none() && !has_local_tool() {
-            osc = Some(osc52(text));
+        if self.commands.is_empty() {
+            return Some(osc_outcome(&text));
         }
+        let (tx, rx) = mpsc::channel();
+        let commands = self.commands.clone();
+        let owned = text.clone();
         std::thread::spawn(move || {
-            if local {
-                let _ = copy_to_clipboard(&owned);
+            let mut ok = false;
+            for c in &commands {
+                let c: Vec<&str> = c.iter().map(String::as_str).collect();
+                ok |= pipe(&c, &owned).is_ok();
             }
-            if tmux {
-                let _ = pipe(&["tmux", "load-buffer", "-w", "-"], &owned);
-            }
+            let _ = tx.send(ok);
         });
-        osc
+        self.pending = Some((text, rx));
+        None
     }
+
+    /// The outcome of the copy the programs are running, once they are done: a copy when one of
+    /// them succeeded, else the OSC 52 fall-through.
+    pub(crate) fn poll(&mut self) -> Option<(Copied, Option<String>)> {
+        let (text, rx) = self.pending.take()?;
+        match rx.try_recv() {
+            Ok(true) => Some((
+                Copied::Done {
+                    chars: text.chars().count(),
+                    osc: false,
+                },
+                None,
+            )),
+            Ok(false) | Err(mpsc::TryRecvError::Disconnected) => Some(osc_outcome(&text)),
+            Err(mpsc::TryRecvError::Empty) => {
+                self.pending = Some((text, rx));
+                None
+            }
+        }
+    }
+
+    /// Whether a copy's programs are still running.
+    pub(crate) fn pending(&self) -> bool {
+        self.pending.is_some()
+    }
+}
+
+/// OSC 52 for `text`: the sequence, or nothing when it would pass [`OSC52_MAX`].
+fn osc_outcome(text: &str) -> (Copied, Option<String>) {
+    let chars = text.chars().count();
+    let seq = osc52(text);
+    if seq.len() > OSC52_MAX {
+        (Copied::TooLarge { chars }, None)
+    } else {
+        (Copied::Done { chars, osc: true }, Some(seq))
+    }
+}
+
+fn argv(a: &[&str]) -> Vec<String> {
+    a.iter().map(|s| (*s).to_owned()).collect()
 }
 
 /// The paths for a session inside tmux or not, over SSH or not (module docs).
@@ -132,14 +208,13 @@ fn local_tools() -> &'static [&'static [&'static str]] {
     }
 }
 
-/// Whether one of the [`local_tools`] is on `PATH`.
-fn has_local_tool() -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
+/// The first of the [`local_tools`] on `PATH`, as the command a copy is piped into.
+fn local_tool() -> Option<Vec<String>> {
+    let path = std::env::var_os("PATH")?;
     local_tools()
         .iter()
-        .any(|t| std::env::split_paths(&path).any(|dir| dir.join(t[0]).is_file()))
+        .find(|t| std::env::split_paths(&path).any(|dir| dir.join(t[0]).is_file()))
+        .map(|t| argv(t))
 }
 
 /// Pipes text into the platform clipboard tool (clipboard.go:14-39, the v1 promptui
@@ -202,5 +277,83 @@ mod tests {
             .decode(data)
             .unwrap();
         assert_eq!(String::from_utf8(back).unwrap(), "héllo\nwörld");
+    }
+
+    /// Waits for the programs' outcome.
+    fn outcome(c: &mut Clipboard) -> (Copied, Option<String>) {
+        for _ in 0..500 {
+            if let Some(o) = c.poll() {
+                return o;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the copy never finished");
+    }
+
+    /// A copy is done only when a program took it; when every one fails it falls through to OSC
+    /// 52, which the outcome names — never a claim that the clipboard has it.
+    #[test]
+    fn a_failed_tool_falls_through_to_osc52_and_says_so() {
+        let ok = argv(&["sh", "-c", "cat >/dev/null"]);
+        let fail = argv(&["sh", "-c", "cat >/dev/null; exit 1"]);
+        let mut c = Clipboard::with_commands(vec![fail.clone(), ok], "Shift");
+        assert!(c.start("abc".to_owned()).is_none() && c.pending());
+        assert_eq!(
+            outcome(&mut c),
+            (
+                Copied::Done {
+                    chars: 3,
+                    osc: false
+                },
+                None
+            ),
+            "one took it"
+        );
+        assert!(!c.pending());
+        let mut c =
+            Clipboard::with_commands(vec![fail.clone(), argv(&["no-such-tool-iota"])], "Shift");
+        c.start("abc".to_owned());
+        assert_eq!(
+            outcome(&mut c),
+            (
+                Copied::Done {
+                    chars: 3,
+                    osc: true
+                },
+                Some(osc52("abc"))
+            )
+        );
+        let mut c = Clipboard::with_commands(vec![fail], "Shift");
+        c.start("x".repeat(OSC52_MAX));
+        assert_eq!(
+            outcome(&mut c),
+            (Copied::TooLarge { chars: OSC52_MAX }, None),
+            "too long for OSC 52: not sent"
+        );
+    }
+
+    /// With no program to run (over SSH outside tmux) the outcome is at once: OSC 52, capped.
+    #[test]
+    fn osc52_alone_is_at_once_and_capped() {
+        let mut c = Clipboard::with_commands(Vec::new(), "Shift");
+        assert_eq!(
+            c.start("hi".to_owned()),
+            Some((
+                Copied::Done {
+                    chars: 2,
+                    osc: true
+                },
+                Some(osc52("hi"))
+            ))
+        );
+        let big = "y".repeat(80_000);
+        assert_eq!(
+            c.start(big),
+            Some((Copied::TooLarge { chars: 80_000 }, None))
+        );
+        assert!(
+            osc52(&"z".repeat(70_000)).len() <= OSC52_MAX,
+            "70 KB still goes"
+        );
     }
 }

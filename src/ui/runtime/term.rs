@@ -11,7 +11,7 @@ use std::io::{self, Write};
 
 use ratatui::layout::Size;
 
-use super::clipboard::Clipboard;
+use super::clipboard::{Clipboard, Copied};
 use super::osc;
 use super::screen::{Prompt, Screen, ViewOp};
 use crate::ui::facade::ProgressState;
@@ -133,17 +133,26 @@ impl<W: Write> Term<W> {
         self.screen.view_height()
     }
 
-    /// Copies what the last release selected, down every path of the session's clipboard (an
-    /// OSC 52 one is written here, in order with the frame). Returns the characters copied, or
-    /// `None` when nothing was selected.
-    pub(crate) fn copy_selection(&mut self) -> io::Result<Option<usize>> {
-        let Some(text) = self.screen.take_copied() else {
+    /// Starts copying what the last release selected, or — nothing new selected — collects the
+    /// outcome of the copy under way (the clipboard's programs run on a thread). An OSC 52 sequence
+    /// is written here, in order with the frame. `None`: nothing to say yet.
+    pub(crate) fn copy_selection(&mut self) -> io::Result<Option<Copied>> {
+        let done = match self.screen.take_copied() {
+            Some(text) => self.clipboard.start(text),
+            None => self.clipboard.poll(),
+        };
+        let Some((copied, seq)) = done else {
             return Ok(None);
         };
-        if let Some(seq) = self.clipboard.copy(&text) {
+        if let Some(seq) = seq {
             self.write_raw(seq.as_bytes())?;
         }
-        Ok(Some(text.chars().count()))
+        Ok(Some(copied))
+    }
+
+    /// Whether a copy's programs are still running (the loop then polls soon).
+    pub(crate) fn copy_pending(&self) -> bool {
+        self.clipboard.pending()
     }
 
     /// The key that hands a drag to the terminal's own selection while iota has the mouse.

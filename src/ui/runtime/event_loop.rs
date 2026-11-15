@@ -32,6 +32,7 @@ use crossterm::event::{Event, KeyEvent};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
+use super::clipboard::Copied;
 use super::msgs::UiMsg;
 use super::osc;
 use super::screen::{Prompt, SelectOp, ViewOp};
@@ -58,6 +59,9 @@ pub(crate) const IDLE_POLL_MAX: Duration = Duration::from_millis(50);
 /// is one repaint, not one per event. Shorter than a hand's pause between drag steps, longer
 /// than a burst of `SIGWINCH`es.
 pub(crate) const RESIZE_QUIET: Duration = Duration::from_millis(50);
+
+/// How often the loop looks for a running copy's outcome.
+pub(crate) const COPY_POLL: Duration = Duration::from_millis(10);
 
 /// Spinner cadence (model.go:25 — 120ms tick).
 pub(crate) const SPINNER_TICK: Duration = Duration::from_millis(120);
@@ -316,6 +320,9 @@ pub(crate) struct Model {
     pub(crate) copied: Option<(String, Instant)>,
     /// The key that hands a drag to the terminal's own selection (`Shift`; `Option` in iTerm2).
     pub(crate) native: &'static str,
+    /// Whether a copy's programs are still running (the poll deadline stays short for their
+    /// outcome).
+    pub(crate) copy_pending: bool,
 }
 
 /// One entry of the type-ahead queue.
@@ -413,6 +420,7 @@ impl Model {
             frame_map: FrameMap::default(),
             copied: None,
             native: "Shift",
+            copy_pending: false,
         }
     }
 
@@ -449,11 +457,45 @@ impl Model {
         if let Some(next) = mouse::edge_due(self, now) {
             d = d.min(next.max(Duration::from_millis(1)));
         }
+        if self.copy_pending {
+            d = d.min(COPY_POLL);
+        }
         if let Some((_, at)) = &self.copied {
             let next = mouse::COPIED_SHOWN.saturating_sub(now.saturating_duration_since(*at));
             d = d.min(next.max(Duration::from_millis(1)));
         }
         d
+    }
+
+    /// What a copy became, for the status row: done (and how, when only OSC 52 could take it —
+    /// it cannot say whether the terminal kept it), or too large for the one way left.
+    pub(crate) fn copy_done(&mut self, c: Copied) {
+        let n = |chars: usize| {
+            let what = if chars == 1 {
+                "character"
+            } else {
+                "characters"
+            };
+            format!("{chars} {what}")
+        };
+        let text = match c {
+            Copied::Done { chars, osc: false } => format!(
+                "copied {} · {}+drag selects in the terminal",
+                n(chars),
+                self.native
+            ),
+            Copied::Done { chars, osc: true } => format!(
+                "copied {} via OSC 52 · {}+drag selects in the terminal",
+                n(chars),
+                self.native
+            ),
+            Copied::TooLarge { chars } => {
+                format!("not copied: {} is too large — use Ctrl+O", n(chars))
+            }
+        };
+        self.copied = Some((text, Instant::now()));
+        self.copy_pending = false;
+        self.dirty = true;
     }
 
     /// The mouse's timers: a drag held at the viewport's edge scrolls on, and the copied notice
@@ -1119,6 +1161,12 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
         m.tick_jobs();
         m.tick_surface_refresh();
         m.tick_mouse();
+        // A copy whose programs were running: their outcome is the status row's to say.
+        if !resizing && term.copy_pending() {
+            if let Some(c) = term.copy_selection()? {
+                m.copy_done(c);
+            }
+        }
         // The committed rows join the conversation the frame below shows.
         if !resizing {
             for batch in inserts.drain(..) {
@@ -1133,15 +1181,8 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
             for op in std::mem::take(&mut m.view_ops) {
                 term.view(op)?;
             }
-            if let Some(n) = term.copy_selection()? {
-                let what = if n == 1 { "character" } else { "characters" };
-                m.copied = Some((
-                    format!(
-                        "copied {n} {what} · {}+drag selects in the terminal",
-                        m.native
-                    ),
-                    Instant::now(),
-                ));
+            if let Some(c) = term.copy_selection()? {
+                m.copy_done(c);
             }
             let view = m.frame_view();
             term.set_title(&m.title)?;
@@ -1154,6 +1195,7 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
             term.draw_frame(&view, prompt.as_ref())?; // the same iteration as the rows above
             m.view_paused = term.view_paused();
             m.view_h = term.view_height();
+            m.copy_pending = term.copy_pending();
             // The rows `Screen::paint` left out at the top of a frame taller than the screen.
             if view.map.surface.is_some() {
                 m.frame_map.cut = view
