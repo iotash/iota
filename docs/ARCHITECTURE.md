@@ -75,7 +75,7 @@ returns the turn's message delta and `cmd` still owns the `SessionWriter`; the l
 - `serde_json = { features = ["raw_value"] }` — **no** `preserve_order`: `serde_json::Map` is BTreeMap-backed, so keys serialize sorted, the order the session records and the JSON report are pinned to; replay payloads are `Box<RawValue>` and byte-verbatim regardless.
 - `reqwest = { default-features = false, features = ["json", "stream", "http2", "system-proxy", "rustls"] }` (no `multipart`: edits are OUT); ONE TLS backend, rustls with aws-lc-rs and the platform verifier — no ring alternative, no direct `rustls` dependency, no provider-installation step.
 - `rmcp = { default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest"] }` (rmcp's reqwest-with-rustls pairing) unconditionally; the dev-dependency adds `"server"` + `"transport-async-rw"` for the in-process echo server.
-- Cargo features: **none** that affect the binary. The only `[features]` entry is `testing` (the shared test fakes), enabled for tests by the self-dev-dependency. ratatui's `scrolling-regions` is off since 2026-09-25: the inline terminal is iota's own (DIVERGENCES X-54).
+- Cargo features: **none** that affect the binary. The only `[features]` entry is `testing` (the shared test fakes), enabled for tests by the self-dev-dependency. ratatui runs with its default features only (no `scrolling-regions`, no `unstable-rendered-line-info` since the inline terminal was deleted, DIVERGENCES X-97).
 - `jiff = { default-features = false, features = ["std", "tz-system", "tzdb-bundle-platform", "tzdb-zoneinfo"] }` — `tz-system` so image file names (and the agent harness's `date:`) carry LOCAL time; `tzdb-bundle-platform` (a jiff default) because Windows has no system tz database — it links `jiff-tzdb` on Windows and wasm only, so the Unix builds still read `/usr/share/zoneinfo` and carry no copy (new transitive crates `jiff-tzdb`, `jiff-tzdb-platform`; Windows binary +0.2 MiB).
 - `tokio` features: `rt-multi-thread, macros, sync, time, process, io-util, signal, fs, net` (`net` = `tokio::net::unix::pipe`); the dev-dependency adds `test-util` (paused clock for the retry tests).
 - Process supervision is the one per-platform dependency pair, both in `[target.'cfg(<os>)'.dependencies]` and both reached only from `src/shell/exec.rs`: `nix = { default-features = false, features = ["signal", "process", "fs"] }` on Unix (`killpg` + `Signal` + `Errno::ESRCH`), and on Windows `process-wrap = { default-features = false, features = ["tokio1", "job-object", "creation-flags", "tracing"] }` for the Job Object that `TerminateJobObject` kills as one, plus `windows = { features = ["Win32_System_Threading"] }` for the single constant `CREATE_NO_WINDOW` its `CreationFlags` wrapper takes. `windows` is a CARET range on purpose: it must resolve to the same copy of the crate process-wrap builds against or the flag type stops unifying.
@@ -134,7 +134,7 @@ the `shell/` mechanism and `tool/builtins/agent.rs` consumes the `agents/` overl
 | `config/{mod,provider,model,agent,params,strict,window,edit,trust}.rs` | the YAML config model and its merge; the project file's trust record (`trust`: `~/.iota/trusted.json`, real path → SHA-256 of the bytes); `Config::provider` → `Endpoint` with the ONE key precedence; the key audit that refuses a misplaced key by its coordinate; the layered parameters; `parse_window_size`; the machine-managed `mcp_servers:` block (`edit`: locate the top-level block by line, rewrite that byte range alone, atomic write) | `mcp`, `session`, `tool` and below |
 | `markdown/{mod,inline,link,style,sink,preview,highlight,html}.rs`, `markdown/blocks/{mod,code,table,list,quote,math}.rs` | the pure streaming markdown→ANSI renderer (`Writer` over one `Block` value, the five buffering blocks in `blocks/`), inline styling, the `Sink` seam and the `PreviewHandle` contract `ui` implements, the `CodeHighlighter` seam with its syntect impl, and `/export`'s HTML renderer | `mathtext`, `text` and below |
 | `headless/{mod,once,run,batch,report,images,error}.rs` | the `-m` loop: `once`, `run_once` and `execute_with_tools` over a `TurnParams`, the parallel batches, the JSON/text report, image saving — what separates it from `repl` is that there is no terminal | `mcp`, `session`, `tool` and below |
-| `ui/{mod,facade,testutil}.rs`, `ui/runtime/{mod,handle,msgs,event_loop,term,osc,oneshot}.rs`, `ui/render/{mod,region,frame,spans,theme,sink,debug}.rs`, `ui/input/{mod,editor,composer,keys,paste,suggest}.rs`, `ui/surface/{mod,tabbed,panels,search,field}.rs` | the inline terminal engine, the ONLY module that names `ratatui`/`crossterm`: the `Ui` facade `repl` talks to; `runtime/` the loop thread, its mailbox, the terminal writer, the OSC probes, the one-shot pre-REPL surface; `render/` the staging region, the frame, the ANSI→span parser (the `NO_COLOR` gate), the theme, the metered previews; `input/` the shared `Editor`, the composer, the key ladder, paste, completion; `surface/` the tabbed panels, the pickers, search, the one-line field | `markdown`, `text` and below |
+| `ui/{mod,facade,testutil}.rs`, `ui/runtime/{mod,handle,msgs,event_loop,term,screen,osc,oneshot}.rs`, `ui/runtime/screen/{conversation,search}.rs`, `ui/render/{mod,region,frame,spans,theme,sink,debug}.rs`, `ui/input/{mod,editor,composer,keys,paste,suggest}.rs`, `ui/surface/{mod,tabbed,panels,search,field}.rs` | the full-screen terminal engine, the ONLY module that names `ratatui`/`crossterm`: the `Ui` facade `repl` talks to; `runtime/` the loop thread, its mailbox, the full screen and its conversation buffer and search, the OSC probes, the one-shot pre-REPL surface; `render/` the staging region, the frame, the ANSI→span parser (the `NO_COLOR` gate), the theme, the metered previews; `input/` the shared `Editor`, the composer, the key ladder, paste, completion; `surface/` the tabbed panels, the pickers, search, the one-line field | `markdown`, `text` and below |
 | `host/{mod,ansi,hc,herdr,cmux,background}.rs` | host integration: the presenter's per-capability fan-out (progress, attention ping, session identity, exit clean-up) over the innermost detected host plus the ANSI fallback (`DETECTORS` runs inner to outer — `[hc, herdr, cmux]` — and the first match is kept — X-47, X-96), and the one capability gathered from every host, the facts it adds to the harness prompt's `<environment>` (`host: herdr`, `herdr pane: <id>`); the variables no child of the chat may inherit (`ChildEnvironment`, gathered by `host::child_env` from the host detected at assembly into an `app::env::ChildEnv` that `shell::exec::spawn` and `mcp::transport::spawn_stdio` apply — the names live in the host's file, never in the core: X-80); the ANSI host (OSC 9 / 9;4 through the facade), the herdr-core host (OSC 7501 in band — through the facade once `Presenter::show_turn_on` hands it over as the one `InBand` host, to `/dev/tty` in a `-m` run; docs/design/herdr-core-host.md), the herdr host (the pane's lifecycle, session and release as JSON lines over herdr's socket, or its CLI where there is no Unix socket, from one worker over a bounded queue), the cmux host, the background probe | `ui` and below |
 | `repl/{mod,run,state,noticegate,liveparams,catalog,editpicker,errors,title,systemtab,inbound}.rs`, `repl/turn/{mod,tools,retry,phases,steer,interrupt,approval,interact}.rs`, `repl/render/{mod,transcript,group,uisink,styles,diff,banner,replay,mcpreport}.rs`, `repl/context/{mod,meter,tokens}.rs`, `repl/commands/…` | the interactive loop over the facade: `run.rs` the loop, `state.rs` its state as `Conversation`/`SessionSlot`/`UiHandles`, `noticegate.rs` whether a finished job's notice may open a turn — the hold an interrupt or a 429 leaves, the notices put aside and when they go out (X-84), `turn/` one turn (`TurnEngine` with the per-call retry ladder — a 429 on its own rungs, the tool walk, steering, interrupts, approvals), `render/` what it draws, `context/` the token accounting, `catalog.rs` the `/model` listing, `liveparams.rs` the live half of the layered parameters, `inbound.rs` what the chat does with a message its socket admitted (the notice it becomes, the limits, `blocked`, the hold of a chat that waives approval), `commands/` the slash commands (no `/mcp`, X-42: `tools.rs` is the chat's view of the servers — one list of sources, a page per source, a reconnect on a server's page, X-79) | everything below |
 | `cmd/{mod,args,error,resolve,assemble,tuning,list,config_cmd,mcp_cmd,trust,io,signals,deliver}.rs`, `cmd/interactive/{mod,bot,picker,title}.rs` | the command: the clap verb set, the three-stage error taxonomy, pure run resolution, MCP/dispatcher assembly, the tuning warnings, the listings, `iota config`, `iota mcp`, the project-config trust gate every command loads through (`trust`, X-94), `Streams` (the process's ONE stderr writer), signals, and the interactive branch with the `iota resume` picker and the title stack | everything |
@@ -341,10 +341,10 @@ The session slice adds one testing rule to the list above: **no test hardcodes a
 
 - **The TUI's direct dependencies:**
   - `markdown` + `text::{width,ansi}` — the pure streaming markdown→ANSI renderer + THE grapheme width ruler; zero terminal deps so every layer shares one ruler.
-  - `ui` — the ONLY ratatui/crossterm importer (`tests/layering.rs`); owns the inline frame engine and implements `ui::facade::Ui`.
+  - `ui` — the ONLY ratatui/crossterm importer (`tests/layering.rs`); owns the full-screen engine and implements `ui::facade::Ui`.
   - `repl` — the imperative interactive chat loop over the facade; keeps ratatui out of the loop and the loop out of the UI.
-  - `ratatui` (=0.30.2) — `Buffer`, `Buffer::diff`, `Paragraph`/`Line`/`Span` and the W6 `line_count` law (feature `unstable-rendered-line-info`). Its `Terminal` is NOT used (2026-09-25, DIVERGENCES X-54): `src/ui/runtime/inline_term.rs` owns the inline viewport — a plain field — and writes every byte counted from the cursor (no `MoveTo` after the startup anchor, no DECSTBM), the shape of bubbletea's `cursedRenderer` and Codex's `custom_terminal`. That retired W1 (recreation on a height change), W2 (the self-tracked top), W3 (the clear after recreation), W9 (partial-region scrolling; `scrolling-regions` is off) and the acknowledged size.
-    **Upgrade checklist:** a ratatui upgrade touches only the buffer, its diff (the covered-cell rule for wide graphemes: `vt100_tests::wide_runes_insert_intact`) and the widgets; ratatui's inline-resize fixes (#2670, #2485, #984/#1964) no longer concern iota. The frozen resize protocol is X-52.
+  - `ratatui` (=0.30.2) — its own `Terminal` in `Viewport::Fullscreen` (`src/ui/runtime/screen.rs`, DIVERGENCES X-97), `Buffer`, `Buffer::diff`, `Paragraph`/`Line`/`Span`. 2026-09-25 to 2026-11 iota bypassed its `Terminal` with an owned inline terminal (X-54, superseded); the alternate screen needs none of that.
+    **Upgrade checklist:** a ratatui upgrade touches the full-screen `Terminal` (`autoresize`, `current_buffer_mut` + `apply_buffer`, which `Screen::scroll_region` uses to hand ratatui a scrolled previous frame), the buffer and its diff (the covered-cell rule for wide graphemes: `vt100_tests::wide_runes_show_intact`) and the widgets.
   - `crossterm` (=0.29.0) — ratatui's default backend pairing (wart W8: ONE crossterm; never `crossterm_0_28`); raw mode, bracketed paste, events, DSR.
   - `unicode-width` (=0.2.2) + `unicode-segmentation` — the two halves of the grapheme ruler (uniseg-parity widths incl. the VS16 rule).
   - `vt100` (=0.16.2, dev-only) — L2b byte-stream terminal-semantics assertions (scroll-region proof, exact-width characterizations) without a real terminal.
@@ -363,84 +363,61 @@ The session slice adds one testing rule to the list above: **no test hardcodes a
 
 ## 12. The terminal layer's contract — read this first
 
-The shape of `src/ui/runtime/` in one page; the detail lives where each bullet points. Brain entry
+The shape of `src/ui/runtime/` in one page; the design is `docs/design/fullscreen-tui.md`. Brain entry
 point: `tui-terminal-contract`.
 
-**The design.** An inline viewport — the frame: staged rows, separators, composer, status, a surface —
-pinned under the terminal's NATIVE scrollback; no alternate screen. Output is inserted above the frame
-and scrolls into the terminal's own history (search, copy, scroll all native). This is the load-bearing
-choice (brain `ui-bubbletea-v2`, the Go original's; DIVERGENCES X-52). Its price is reflow physics the
-app cannot observe: a resize may leave rows blank or twice; a lost row is the one outcome the
-design is accepted against (the budget below). If "zero residuals" ever
-outranks native scrollback, the answer is an alt-screen pager and the design changes wholesale
-(the 2026-09-24 UI evaluation's §4.2 falsifier) — not another round of heuristics.
+**The design.** iota owns the screen: the alternate screen, entered at the first frame and left at the
+exit (DIVERGENCES X-97). The screen is two rectangles — the conversation viewport on top, the frame
+(the composer, separators, status, a preview, a surface; `render/frame.rs`) pinned to the bottom rows.
+This replaced (2026-11, tui-plan S1–S5) the inline viewport under the terminal's native scrollback that
+this section used to describe; it predicted the step itself: "If 'zero residuals' ever outranks native
+scrollback, the answer is an alt-screen pager and the design changes wholesale … not another round of
+heuristics." The inline design's measurements (resize residuals inside a frozen budget, a frame short
+while a drag lasted, a DSR on every resize) are kept as history in X-52, X-54 and X-81. The price, paid
+knowingly: while iota runs, the terminal's own scrollback, search and selection do not reach the
+conversation — the write-out key and the conversation search stand in, and the exit writes the whole
+conversation into the main screen.
 
-**The terminal is iota's own** (`inline_term.rs`, X-54). ratatui contributes `Buffer`, `Buffer::diff`
-and the widgets; its `Terminal` is not used. The ONE invariant: after the startup anchor (the row a
-DSR just reported) no byte names a row number — every move is `CUU`, `LF`, `CR`+`CUF`, or `IL`/`DL`/`SD`
-on the frame's own rows, counted from the cursor, which the emulator carries with its cell through any
-resize. `CUU` can only stop short (into the frame), `LF` moves exactly one content row even where it
-scrolls. That closed the three losses it was built against: a stream writing under a size iota had
-not read yet (tmux, height drag: 6/6 runs lost rows → 0/6), a terminal that never answers the DSR
-(4/4 → 0/4), and a grow between the cursor answer and the erase (a low-probability race; pinned by
-deterministic replays that fail on the absolute-addressing build). Those counts are the runs made,
-not a proof for every terminal. The absolute top and size are bookkeeping only.
+**The terminal is ratatui's own** (`screen.rs`): `Terminal` with `Viewport::Fullscreen` over
+`CrosstermBackend`, through a thin backend wrapper (`Out`) that answers the size from the last resize
+event and the cursor position from the last one set — the terminal is never asked where its cursor is
+(no DSR, anywhere in the loop). Every byte may name a row: the alternate screen has no history and no
+reflow. A resize is the size taken and every cell repainted on the next draw (`RESIZE_QUIET`, 50 ms,
+only merges a burst of events into one repaint). Streaming output that only scrolls the viewport is one
+`DECSTBM` + `SU` and the new lines (`Screen::scroll_region`), not a rewrite of every row that moved.
 
-**The cursor rules.** The cursor wins over any size read (a cursor below the last row read means the
-screen grew). A DSR never sits inside an open batch or a synchronized block (WezTerm and Alacritty
-hold input inside one; `debug_assert`). A resize pass is `Term::resize` computing `above` (the
-frame's rows over the cursor, never more), the floor and the height, and `InlineTerminal::relayout`
-writing: DSR → one batch (climb, erase, `LF` onto the floor, lay the frame out) → recheck DSR.
-An answer is taken only from the query that asked it (`InlineTerminal::ask`, X-81): crossterm keeps
-an answer that came after its 2 s timeout and hands it to the next query, so each query is asked
-from a column of its own (`CR` + `CUF`, eight in turn) and an answer naming another column is a late
-one, dropped; a timeout is waited out once more (the slow answer is this query's own).
+**The conversation buffer** (`screen/conversation.rs`, X-98). Committed rows are ANSI strings (T-05),
+wrapped per width on demand and cached; 200 000 rows at most, the oldest dropped behind one notice (the
+session log keeps everything). The view follows the tail or is anchored on a row, and stays on it
+through a resize. Keys: `PgUp`/`PgDn`, `Ctrl+Home`/`Ctrl+End`, the search (`Ctrl+R`, `/` scrolled back;
+never `Ctrl+F`, which is forward-char), the write-out (`Ctrl+O`, X-99), job control (`Ctrl+Z`, X-101).
+
+**The point of no return** (X-100) is the first frame: before it nothing is written, so a run that fails
+early leaves the shell's screen untouched. After it every way out but SIGKILL restores the terminal —
+the loop's exit, `TermGuard`, the panic hook, the forced second SIGTERM (`restore_terminal`, which also
+leaves the alternate screen it finds held).
 
 **DEC 2026** (X-55). A write longer than `SYNC_MIN` (1024 B) is one synchronized update; a smaller
-one goes out bare. The threshold is an empirical choice, not a transport guarantee: 1024 B is the
-macOS pty read block (measured; Linux reads 4096 — not measured here), so a small write usually lands
-in one read, but nothing iota writes controls how many bytes the receiving side reads at once —
-`write_all` promises no single write, and neither a pty nor TCP keeps application write boundaries
-(RFC 9293 §3.7). So the contract is: small batches keep the reads few; large batches ask a terminal
-that supports DEC 2026 to present them at once. A small write is not promised to show no
-intermediate state. The criterion is the size, never a terminal name or version, and there is NO user
-switch. Measured cost, tmux 3.7c (which repaints the whole pane at the end of any
-block): one pane repaint per large write; typing and streaming are bare (11 keystrokes 22 840 → 13 B,
-`stream 100 20` 82 884 → 8 581 B to the outer terminal). tmux 3.8-rc2 repaints the whole pane only for
-blocks that scroll (the third evaluation, `/tmp/ui-eval-3.md` §2.1; not re-measured here).
+one goes out bare (`SyncOut::commit`, the one write point; a loop iteration — or a draw outside one — is
+one write). The threshold is an empirical choice, not a transport guarantee: 1024 B is the macOS pty
+read block (measured; Linux reads 4096 — not measured here), so a small write usually lands in one
+read, but nothing iota writes controls how many bytes the receiving side reads at once — `write_all`
+promises no single write, and neither a pty nor TCP keeps application write boundaries (RFC 9293
+§3.7). The criterion is the size, never a terminal name or version, and there is NO user switch.
+Measured cost (tmux 3.8, 120×40, M2): typing 11 characters 11 B, `stream 100 20` 5 558 B, a 30-step
+drag 21 032 B (each resize a whole repaint, by design). tmux 3.7c repaints the whole pane at the end
+of any block; with the size rule that is one repaint per large write, never per keystroke.
 
-**The resize protocol — FROZEN** (X-52, TUI-VERIFY §4.3). Burst layout: full width at rest, the frame
-a few columns short while a drag lasts; the drag ends `DRAG_SETTLE` (2 s) after the last resize or at
-once on a key, a paste, a turn or a surface; the margin is twice the widest step, 2..=`DRAG_MARGIN_MAX`
-(8). A flush frame stays on the floor `S − h`; the rows between are a blank band the next output fills,
-closed (`DL`+`SD`) when the drag ends. `RESIZE_QUIET` (50 ms) merges a burst of events into one pass.
-**The band is blank:** the `pad` rows directly above the frame hold nothing, and all three of its
-consumers — `close_band`'s `DL`, the next batch's `fill_above`, `ensure_height`'s `grow_up` — take
-them for blank. So an insert fills the band first, a batch laid out for a wider terminal (measured
-taller than it is long) included, and only what the band cannot hold is inserted
-(`Term::insert_rows`). A row put under a band still open sits where a blank row is expected, and the
-next consumer deletes or overwrites it: LOST (F1, fixed in 0.5.1; `vt100_tests::verify_f1_*`).
-**Budget:** zero LOST rows is the hard acceptance target (bound 0) — a target the tests and runs are
-held to, not a fact they prove: the verified scenarios are TUI-VERIFY §4.3–4.5's, and the open
-records stand beside them (§4.5: a loaded tmux 3.4 run with the frame over two rows, not reproduced;
-one CI height drag that lost two streamed lines). Per drag ≤ 2 blank or duplicated rows; a report
-inside the budget is closed as by design. Measured residuals are X-52's list, each for the terminal
-it was measured on — note that since B3 (the overhang inference deleted) a one-column drag leaves 3
-staged rows twice in tmux 3.7c and 2 in herdr 0.9.1 and Ghostty 1.3.1, and a ≥ 2× narrowing 3 in
-tmux 3.7c and 4 in herdr and Ghostty: above the frozen ≤ 2, recorded but not yet reconciled with it.
+**Where the detail lives.** `docs/design/fullscreen-tui.md` (the design, every exit path, the
+write-out policy); X-97–X-101 (the full screen's decisions), X-55 (2026), X-36 (the `┄` separators);
+TUI-VERIFY (what a human checks); `screen/tests.rs` and its siblings (the screen, the buffer, the
+search over vt100), `event_loop/vt100_tests.rs` (the loop through the real writer stack) and the tmux
+L4 scenarios (37–45 for the full screen's own mechanics; every other scenario reads the conversation
+back through the write-out).
 
-**Where the detail lives.** X-36 (the `┄` separators), X-52 (resize, budget, residuals), X-53 (the
-closed box, withdrawn), X-54 (the owned terminal), X-55 (2026); TUI-VERIFY §2 (scrollback), §3
-(flicker), §4 (reflow residuals); `event_loop/vt100_tests.rs` (L2b: the real byte stack replayed
-through vt100; `TmuxReflowEmu` models tmux 3.7c only — herdr/Ghostty have no model) and the tmux L4
-scenarios 06 and 26 (caps named per block).
-
-**Don't.** No per-terminal tables, name checks or version gates. Don't tune `DRAG_SETTLE`,
-`DRAG_MARGIN_MAX` or `RESIZE_QUIET`. Don't turn the two physical special cases — `erase_below` (no
-erase-below from the home position: tmux `scroll-on-clear` archives the screen) and the cursor-wins
-rule — into a "terminal quirks" framework. Don't re-add the deleted inference chain (`learn_reflow`,
-`growth_above`, `line_len`/`rewrite_rows`, the archived-row recovery): it trades a duplicate for a
-guess that erases transcript rows on a terminal that does not reflow.
+**Don't.** No per-terminal tables, name checks or version gates. No cursor query (a terminal mute to
+DSR must run iota). No second renderer and no switch back to the main screen. Don't let a row be
+written out twice, or the frame at all.
 
 ## 13. Risks and mitigations
 

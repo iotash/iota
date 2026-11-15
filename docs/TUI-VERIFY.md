@@ -8,9 +8,10 @@ IME's half of the cursor law), §3's flicker, §9's Windows machine, and the han
 that need a terminal or a host tmux is not (§5.3/5.4, §7.3/7.4, §8b.10, §8c.3/8c.6).**
 
 The test pyramid stops one step short of the user. L1–L3 prove logic and orderings without a
-terminal, L2b proves the byte shape the loop emits (`vt100`), and L4 drives a real terminal
-under tmux 3.7c (`tests/ui_tmux/main.rs`, `IOTA_TMUX=1 cargo test --test
-ui_tmux`). What none of them can reach:
+terminal, L2b proves the byte shape the loop emits (`vt100`, which models the alternate screen), and L4
+drives a real terminal under tmux (`tests/ui_tmux/main.rs`, `IOTA_TMUX=1 cargo test --test
+ui_tmux`). iota runs on the alternate screen (DIVERGENCES X-97, `docs/design/fullscreen-tui.md`);
+what none of the layers can reach:
 
 - **an input method editor.** tmux has no IME. A preedit buffer is drawn by the *emulator*,
   over the cells the app owns, positioned at the cursor the app last set. L4 pins the app's
@@ -18,14 +19,11 @@ ui_tmux`). What none of them can reach:
   wrapped or folded composer row (10, 04), in `/model`'s field (15) — but the only way to
   know that a given emulator draws its candidate window there is to type Chinese, Japanese
   or Korean into it and look.
-- **the emulator's own scrollback policy.** tmux 3.7c preserves lines scrolled out of a
-  partial scrolling region (wart W9). Whether Terminal.app, kitty or a given VS Code build
-  does is a per-emulator fact — and since there is no fallback build any more, an emulator
-  that discards them is a defect to fix in `src/ui`, not a platform to build differently.
-- **flicker, and how a redraw *feels*.** A frame can be byte-perfect and still strobe.
-- **another emulator's reflow.** A rewrapping emulator rewraps history the app has already
-  handed over. tmux 3.7c does reflow on a width change (scenario 06 measures what that
-  costs, §4), but every other emulator's reflow is its own and stays a look.
+- **the emulator's alternate screen and its history.** Whether an emulator restores the main
+  screen intact on `?1049l` and files what the write-out prints into its own scrollback is a
+  per-emulator fact (§2). tmux does; every other emulator is a look.
+- **flicker, and how a redraw *feels*.** A frame can be byte-perfect and still strobe — and a
+  resize is now a repaint of every cell (§3, §4).
 
 Run every section below on every terminal in the matrix. Record what you saw, not what you
 expected.
@@ -88,16 +86,12 @@ set the whole suite now follows (`tests/ui_tmux/lib.sh`, its header):
    (04/05: nothing inserted for 1 s, sixteen `LINE_GAP`s) — and is commented as such. A claim
    about a phase is read inside the phase: 02 counts the scrollback only on readings taken while
    the thinking widget is still up, instead of across a fixed 0.6 s that could straddle its end.
-4. **A count is read at rest, from a stated starting state.** 06's drags name where they start —
-   at rest (the frame back at full width) or inside the last release's burst — and check it before
-   the first step; the paced drag's 0 is a 0 only from inside a burst, and nothing used to check
-   that it was. A drag whose number the test pins controls which steps one resize pass takes
-   together (26 H: one step a pass; 06: settled, paced, or two steps sent in ONE tmux command and
-   each pair's pass awaited — `pass_landed` counts the pass's DSR). The blind fast drag stays, for
-   its race, held to what holds under any grouping: no row lost, the frozen budget of 2 duplicated
-   rows per drag, and the duplicates confined to the frame's staged rows (`l#36`–`l#39`). It read
-   1 on this host in every run and 2 on the ubuntu runner; the paired twin reads 1 every run.
-5. **Measured, never assumed.** The suite was run 3× idle and 3× beside ten CPU burners after this
+   (The counts named 04/05's "nothing inserted" and 02's "the scrollback counter" read tmux's
+   history size on the inline terminal; since S5 they read the conversation viewport, `view_rows`.)
+4. **A count is read at rest, from a stated starting state.** A number that depends on which
+   resize steps the loop took together measures the runner, not the app. (The inline terminal's
+   drag scenarios 06 and 26 lived by this rule; they were deleted with it, tui-plan S5.)
+5. **Measured, never assumed.** (History: the inline terminal's record, its scenario 06 deleted in S5.) The suite was run 3× idle and 3× beside ten CPU burners after this
    change (the numbers are in the commit). The heavier recipe — iota itself at the background QoS
    (`taskpolicy -b`) under the same burners — is NOT a slow runner: there the app is starved for
    seconds, and 06 breaks for real in 3 of 4 runs on the unchanged build: the frame drawn mid-screen
@@ -137,312 +131,107 @@ For each terminal:
       draft and on 40 wide runes the real cursor sits on the wrapped row at the column the
       wrapped text ends on; after ESC's fold (04) it sits at the end of the second row.)*
 - [ ] **1.5 Composition while output streams.** Start a long answer, then compose while
-      lines are being inserted above the frame. The preedit is **stable**: inserts must not
-      clear it, move it or steal the cursor. (This is the one that fails first — inserts
-      move the physical cursor, and only the next `draw` restores it: wart W4.)
+      lines stream into the conversation above the frame. The preedit is **stable**: the
+      output must not clear it, move it or steal the cursor. (A streamed line scrolls the
+      viewport with a scroll region and is drawn in the same write as the cursor restore —
+      one loop iteration, one write.)
 - [ ] **1.6 Paste during composition.** With a preedit open, paste (⌘V / Ctrl+Shift+V).
       Nothing is lost; the preedit either commits first or survives intact.
 - [ ] **1.7 Resize with a preedit open.** Resize the window while composing. No crash, no
       duplicated frame; the preedit may be dropped by the IME (acceptable), but the
       composer's committed text must survive.
+- [ ] **1.9 The search line.** Ctrl+R opens the conversation search; type a CJK query. The
+      real cursor is on the search line while it is typed (the candidate window follows it),
+      and back in the composer once the query is applied.
 - [ ] **1.8 Terminal.app bottom-row scenario.** Terminal.app historically mispositions the
       candidate window when the cursor is on the very last row of the window. This should
       be **unreachable by construction**: the status row always sits below the composer, so
       the cursor is never on the bottom row. Confirm it — resize to a short window and try.
 
-## 2. Inserted history reaches the scrollback (was wart W9)
+## 2. The conversation reaches the shell's history (the write-out and the exit)
 
-Since 2026-09-25 (DIVERGENCES X-54) an insert scrolls the WHOLE screen from the cursor (`LF`)
-and opens the gap with `IL` right above the frame — no partial scroll region (`DECSTBM`) any
-more, so the emulator-specific question of whether rows scrolled out of a partial region reach
-the scrollback is gone: every emulator files a full-screen scroll into its history. The check
-stays because the history's contiguity is still the promise.
+While iota runs the conversation lives on the alternate screen, which has no history; the
+terminal's own scrollback, search and selection reach it only through the write-out (`Ctrl+O`)
+and the exit, which write every row into the main screen once, in order, under one
+`┈┈┈┈ iota transcript ┈┈┈┈` line, at the width the terminal has then (DIVERGENCES X-99). Whether
+an emulator files those rows into its history, and restores the shell's screen intact on leaving
+the alternate screen, is the emulator's part.
 
 For each terminal:
 
 - [x] 自动化：scenario 20 **2.1** Stream 30+ lines in one turn. *(A 40-line document with a
       16-line fenced block and an 8-row table: the buffered blocks stream behind their
       metered preview row and morph into the rendered block.)*
-- [x] 自动化：scenario 20 **2.2** Scroll up (mouse wheel / ⌘↑ / Shift+PageUp). Is the FIRST line of the answer
-      still reachable? Is the history contiguous — no gaps, no duplicated rows? *(Read back
-      through `capture-pane -S`: the head of the answer is in the scrollback, every rendered
-      row of every block exactly once, no preview row and no raw source row left behind.)*
-- [ ] **2.3** If any line was discarded: record it as a **DEFECT** — the terminal, its
-      version, and the observation — and fix it in the `ui` module's insert path
-      (`src/ui/{render/region,runtime/term}.rs`). There is no other build to ship there.
+- [x] 自动化：scenarios 20, 39 **2.2** Exit with Ctrl+D, then scroll up (mouse wheel / ⌘↑ /
+      Shift+PageUp). The shell's screen from before iota is back above the transcript mark; is
+      the FIRST line of the answer reachable? Is the history contiguous — no gaps, no duplicated
+      rows, no frame row? *(Read back through `capture-pane -S` after the write-out: every
+      rendered row of every block exactly once, no preview row, no raw source row, no composer
+      row.)*
+- [ ] **2.3** Mid-session `Ctrl+O`: the conversation is written into the main screen and stays
+      there; ⌘F / the terminal's search finds a word from the start of the session; any key
+      comes back to the full screen, repainted. A second `Ctrl+O` later writes only what came
+      since — nothing twice.
+- [ ] **2.4** If any line was discarded or doubled: record it as a **DEFECT** — the terminal,
+      its version, and the observation — and fix it in `src/ui/runtime/screen.rs`.
 
-> ✅ **The wide-rune defect is FIXED** (VERIFY pass; it was open when this file was written).
-> Layer 4 found it deterministically: every double-width grapheme in a padded USER-ECHO row
-> inserted as the rune plus a spurious space, so `❯ 中文一行` rendered `❯ 中 文 一 行`.
-> Cause: a wide grapheme OWNS the cells to its right and a covered cell reads back as a
-> space; ratatui's buffer diff drops those cells, but a backend handed the WHOLE buffer
-> (`Terminal::insert_before`'s `draw_lines` path) prints them. Every write now goes
-> through ratatui's own diff (`src/ui/runtime/inline_term.rs`, X-54), which drops them. Pinned by `tests/vt100_semantics.rs::wide_runes_insert_intact`
-> (part of `cargo test`). Still worth an eyeball here: the pin is a byte
-> assertion, not a look.
+> ✅ **The wide-rune defect is FIXED** (VERIFY pass). A wide grapheme OWNS the cells to its
+> right and a covered cell reads back as a space; ratatui's buffer diff drops those cells, but
+> a backend handed the WHOLE buffer prints them (`❯ 中 文 一 行`). Every write goes through
+> ratatui's own diff, which drops them. Pinned by `vt100_tests::wide_runes_show_intact` (part of
+> `cargo test`). Still worth an eyeball here: the pin is a byte assertion, not a look.
 
 ## 3. Flicker (Ghostty and Terminal.app are mandatory)
 
 A write of at most 1 KiB (`SYNC_MIN`) goes out bare: the threshold is the macOS pty read block,
 so such a write usually lands in one read, but that is an empirical choice, not a transport
 guarantee — nothing controls how many bytes the terminal reads at once, and a small write may
-show an intermediate state. A larger write — a panel opening, a big insert, the frame after a
-resize — is one DEC 2026 synchronized update (X-55; one loop iteration is one write, none
-around a cursor query), and in a terminal that knows the mode (Ghostty, kitty, WezTerm,
-Alacritty, iTerm2, foot, Windows Terminal, herdr, tmux ≥ 3.7 in a pane) it must not flicker;
-Terminal.app and VTE/GNOME Terminal ignore the mode and may show one frame of it. A 100-line
-stream is the stress case. There is no switch.
+show an intermediate state. A larger write — a panel opening, a burst of output, the whole
+screen after a resize — is one DEC 2026 synchronized update (X-55; one loop iteration is one
+write), and in a terminal that knows the mode (Ghostty, kitty, WezTerm, Alacritty, iTerm2, foot,
+Windows Terminal, herdr, tmux ≥ 3.7 in a pane) it must not flicker; Terminal.app and VTE/GNOME
+Terminal ignore the mode and may show one frame of it. There is no switch.
 
 - [ ] **3.1** Stream ~100 lines. Watch the *frame*, not the text: does the composer row, the
-      separator pair or the status line visibly blink, tear or jump?
-- [ ] **3.2** Open and close `/model` a few times mid-stream. A surface open changes the
-      frame height; since X-54 that is a field write: the rows the frame keeps are not
-      erased and not written again (only the rows below them are erased), so the separator,
-      the composer and the status row must NOT blink at all — any flash of them is a defect.
-      (Under W1/W3 each change erased the frame and repainted every cell.) A panel opening
-      larger than 1 KiB must not flicker in a 2026 terminal; a smaller one goes out bare (usually
-      one read, not promised).
-      Terminal.app/VTE may show one frame of a large one.
+      separator pair or the status line visibly blink, tear or jump? (The viewport scrolls with
+      a scroll region; only the new lines are written.)
+- [ ] **3.2** Open and close `/model` a few times mid-stream. The frame grows and shrinks at
+      the bottom; the conversation moves up and back. Nothing may blink that did not move.
+- [ ] **3.3** **Resize is the new stress point (tui-plan M4).** Drag the window corner, fast
+      and slow. Every step repaints the whole screen: in a 2026 terminal it must not flash
+      blank; in Terminal.app/VTE one blank frame per step is the known cost — record whether it
+      is acceptable to look at.
 
-## 4. Resize reflow — count the orphans
+## 4. Resize — no residue
 
-A rewrapping emulator rewraps rows the app already handed to history, while the app tracks
-its own viewport top. Some emulators will strand a row above the new viewport. This is an
-**accepted cost** (the Go spike had the same class), but the budget must be known.
+A resize is the size taken and every cell repainted (X-97): there is no reflow of rows iota
+owns, no drag protocol, no band, no budget. The one check replaces the old residual budgets
+(the inline terminal's, X-52 — kept there as history):
 
-- [x] 自动化：scenario 06 **4.1** Start a stream, resize the window wider mid-stream, let it finish. Count
-      orphaned/duplicated rows in the scrollback. Record the number. *(tmux 3.7c: 0 duplicated
-      rows, asserted ≤ 2.)*
-- [x] 自动化：scenario 06 **4.2** Same, narrower. *(tmux 3.7c and 3.4: **2** duplicated rows
-      since B3 (2026-09-26) — 0 while the resize pass claimed the reflow's overhang (X-52), 8
-      before X-52. What grew above the cursor stays behind as a duplicate: the pass no longer
-      infers whether or how an emulator reflowed. Asserted ≤ 2 (15 of 15 runs, 2026-09-27; the
-      3 measured when B3 landed counted distinct lines and included one the earlier blocks had
-      duplicated — see 4.5). Zero LOST rows is the hard target, its bound zero; no run of this
-      block has lost one, which is a record, not a proof — see 4.5: under background QoS a
-      late cursor answer did lose rows until 2026-10-18, X-81.)*
-- [x] 自动化：scenarios 06 + 26 **4.3** Resize at idle — a narrowing, a diagonal shrink, a
-      settled 25-step drag, a fast 8-step drag (SIGWINCHes 60 ms apart), and on fresh panes a
-      2× and a 3× narrowing with the banner still staged, a narrowing right after 20 ms-a-line
-      output, one with `/model` open, one while a foreground tool call runs, and one under
-      tmux's default `scroll-on-clear on`. Asserted: zero rows lost, zero stale frames, the
-      composer on the pane's third-last row (flush with the bottom), and the rows left twice
-      within each block's MEASURED cap (B3, 2026-09-26: 1–3 duplicated rows, ≤ 4 separator
-      rows with `/model` open — scenario 26's numbers, a larger one is a regression, each named
-      by the rows it is: B 2, the stream's last two staged rows; D 1, the user's own row; E 2,
-      the banner's last two rows; scenario
-      06: 1 for each idle narrowing, 1 for the settled and the fast drag, 0 for the paced drag,
-      which starts inside the release's burst — X-52 residual (1)). The
-      resize pass (wart W5, `term.rs`) reads the cursor with one DSR before writing a byte,
-      clears only rows the old frame provably owned (the frame's rows from the cursor's row
-      up, never what a reflow grew above them), and scrolls or inserts nothing;
-      ratatui's own inline resize never runs; a frame re-anchored on row 0 is never erased
-      from the home position.
-      *(History: until X-52 (2026-09-23) this said "no orphan here" and passed under tmux only
-      because tmux's `scroll-on-clear` files a cleared screen into the history: ratatui
-      answered every narrowing with viewport y = 0 and `ESC[2J`, so the composer went to the
-      top and the rows on screen were erased in Ghostty and herdr. The scenarios run with
-      `scroll-on-clear off`; on the pre-fix binary scenario 06 reports 10 rows lost and the
-      composer on row 7 of 20. A one-column-short frame (X-52, withdrawn 2026-09-24 with
-      X-53's box) avoided the separators' rewrap on one-column steps; at full width every
-      step rewraps them.
-      **The budget (the owner's rule, 2026-09-24 — the resize protocol is FROZEN):** a LOST
-      row is the one hard failure, its bound is zero — an acceptance target every scenario is
-      held to, not a fact the runs below establish for every terminal (the unresolved records
-      are in 4.5); per drag, at most 2 blank or duplicated rows. The residuals listed below are BY DESIGN — native scrollback won over
-      zero-residuals (no alt-screen) — and a report inside this budget is closed as such, not
-      a new round. Over-budget items are named as such below.
-      The owner's burst layout (2026-09-24): full width at rest, the frame a few columns
-      short while a drag lasts — it ends 2 s after the last resize or at once on a key, a
-      paste, a turn starting or a surface opening, closes its band and repaints at full
-      width. (A 750 ms window was falsified: drags paced 0.8–1 s apart became one drag a
-      step and left a 12–20-row hole inside the next turn.) Measured, tmux 3.7c and herdr
-      0.9.1, a 60-line transcript: fast (30 ms), paced (1 s) and mixed drags of 10–30 steps —
-      no hole between the transcript and the frame, the next turn directly under the previous
-      one with no hole inside it, full width after the drag, composer flush, nothing lost; a
-      stream starting as the drag ends leaves no band (scenario 26 G).
-      Accepted residuals (X-52), each measured and bounded: (1) a drag's first step leaves
-      ≤ 2 blank rows per drag, at the top of the screen once it ends (tmux 3.7c: paced +0,
-      fast/mixed +2; herdr: +2); (2) a full-width user block already in the history rewraps its padding when the
-      terminal narrows, ⌈W/W'⌉ − 1 rows per block row (1-column step and 2×: 1, ⅓ width: 2);
-      (3) the session's first narrowing with a row shrink: 1 duplicate once; (4) a drag
-      mid-turn duplicates the 2 rows staged when it starts (tmux, the frozen build: 6 of 6
-      runs; the build before: 1 row), inside the budget. OVER BUDGET, known: a drag with
-      `/model` open splits 4–6 separator rows into the history (verifier: 6; the frozen
-      build: 4, 3 of 3 runs) — scenario 26 H drags one step a pass and caps it at 4 by that name
-      (§4.5, 2026-10-12).
-      P0 (2026-09-25, fixed): tmux lost committed rows on a HEIGHT drag down and back up (it
-      pulls history rows back on a grow while the loop is still writing the previous pass).
-      A resize is now applied only after `RESIZE_QUIET` (50 ms) with no further one, nothing is
-      written meanwhile, the cursor wins over any size read (a cursor below it raises it), and
-      a recreation checks the cursor before its erase (tmux, before → after: window 30→20→30
-      6/8 → 0/8, split up/down 8/8 → 0/8, 60-event oscillation 4/8 → 0/20) — scenario 06's
-      height-drag block (both `scroll-on-clear` settings) and `vt100_tests`' height-drag and
-      oscillation units pin it. Over budget, known, not fixed (the verifier's adversarial run):
-      herdr/Ghostty keep a height drag's band as blank history rows (≈ 10 for up-10/down-10;
-      48 for a 60-event oscillation in Ghostty); a first resize that also shrinks drastically
-      duplicates 3–4 rows; width→⅓ leaves +10 blank rows; a 60-event width+height jitter
-      duplicates 1–4 rows; drags paced 2.1 s apart are separate drags (2 blank rows each).
-      LOSS CLOSED (the verifier's re-verification of 4da669a, 2026-09-25; a stopgap on the
-      resize pass the same day, then the owned inline terminal, X-54). All three losses were
-      an absolute row gone stale between iota's check and its write: (1b) a height drag while
-      a stream runs — an insert already in the pty (a DECSTBM scroll + an absolute move) parsed
-      by tmux after a grow pulled a history row back (tmux 120x30, `stream 40 60`, bottom edge
-      up 5 / down 5 at 100 ms: 6/6 runs lost 2–4 rows → 0/6); (1c) a DSR that fails — the
-      tracked top the anchor of an erase (a proxy swallowing the queries, height 30→20→30:
-      4/4 → 0/4); the scroll-on-clear race — a grow between a cursor answer and the erase
-      (headless: `vt100_tests::a_grow_*`, `term::tests::a_grow_between_the_dsr_and_the_erase_*`).
-      Every byte is now counted from the cursor, which the emulator moves with its cell. The
-      0/N counts are the runs made, not a global proof. A DSR outage in a real terminal
-      remains the manual check.)*
-      Real emulators: drag a corner in Ghostty, iTerm2, kitty, herdr. No row may be missing
-      from the scrollback, and there is exactly one separator pair at the end.
-- [x] 自动化：scenario 06 **4.4** After every resize: exactly one composer row, separators at the new width,
-      the status line present. (L4 asserts this under tmux, after all four resizes; confirm
-      it where reflow is real.)
+- [x] 自动化：scenarios 38, 42 **4.1 No residue after a resize.** Stream a turn and drag the
+      window — wider, narrower, taller, shorter, fast, paced, and through the stream. At every
+      step and at rest: the frame on the bottom rows at the full width, exactly one composer row,
+      the conversation directly above it with no blank band, no row twice, no row lost (every
+      streamed line reachable with `PgUp` and in the write-out). Anything left behind is a
+      **DEFECT**, not a residual.
+- [ ] **4.2** The same with `/model` open, and with the view scrolled back (`PgUp`): the view
+      stays on the line it showed.
 
-Budget: **≤ 2 orphaned rows per mid-stream resize** is accepted. More than that on a given
-terminal is a finding — and since B3 there are known ones, each on the terminal it was measured
-on (X-52): a 10-step one-column drag after `stream 60 20` leaves 3 staged rows twice in tmux
-3.7c, 2 in herdr 0.9.1 and Ghostty 1.3.1; one ≥ 2× narrowing leaves 3 in tmux 3.7c, 4 in herdr
-and Ghostty.
-- [x] 自动化：scenarios 06 + 26 **4.5** The numbers are per tmux version — each scenario
-      prints the tmux it ran on (`lib.sh`). Audited 2026-09-27 against tmux 3.7c (brew) and
-      3.4 (Ubuntu 24.04's, built from source): all 31 bounded numbers in scenarios 06 and 26
-      measured the SAME on both, idle (duplicates 0–3, separator rows 2–5, blank rows 0–1).
-      One is timing-sensitive, not version-sensitive: 26 G's blank rows before the next turn
-      are 1 at rest and 2 when the drag's last resize pass lands after the turn's first key
-      (ten CPU burners: 7 of 130 runs on 3.7c, 2 of 80 on 3.4) — bounded at 2 by that name.
-      The CI failures of 2026-09 were not a tmux difference: 26 G waited for a `l#19` the first
-      turn had already printed and measured a screen frozen mid-drag, and a row laid out for
-      the wider terminal before that late pass was inserted after it — a debug build panicked
-      on W6 (the panic text overwrote a separator: "top=15 bottom=15"), a release build cut
-      the row's tail. **Diagnosed and fixed (2026-10-18, X-81) — the late cursor answer.**
-      Once in ~120 loaded runs on tmux 3.4 (ten CPU burners, no byte recording) the frame was drawn over the new
-      turn's last two rows (`l#18`, `l#19`); once on CI (below) 06's height drag left the frame
-      up the screen with its top separator gone. The 2026-09-27 suspicion was the right one and
-      its acquittal wrong. crossterm's `cursor::position()` gives up after 2 s
-      (`cursor/sys/unix.rs` `read_position_raw`), but the answer still comes: it waits in
-      crossterm's internal event queue (`event::read` skips it and keeps it) and the NEXT query
-      takes it at once — and since every query adds an answer and a late one is never dropped,
-      every answer from then on is the one before, for the rest of the session. A pass asks
-      twice: before it writes (the composer's row — the frame's first row is `above` rows up
-      from it) and after it is laid out (the frame's first row). One query behind, the first
-      reads the last recheck's row, `above` rows too high, so `start` is `above` rows short and
-      the pass makes a band of `floor − start` that is really the frame's own rows; the recheck
-      reads the composer's row, so the model's frame sits `above` rows under the real one. The
-      erase and the layout count from the cursor and are right — the 2026-09-27 replay checked
-      exactly that, and passed — but the band (`Term::pad`) is consumed by bytes: summed over a
-      drag it reached 17 rows in a 20-row pane, and the drag's end closed it with `CUU 21`,
-      `DL 17`, `SD 17` (`close_band`), which took the frame, its top separator and the staged
-      rows `l#38`/`l#39`; the repaint after it is a diff against a model that is wrong, so
-      nothing redraws the missing rows (the "not recovering in 6 s"), and every later pass is
-      still one behind. A band row is also where the next output is written in place
-      (`fill_above`) — a band that is the transcript's rows is the tmux 3.4 overwrite's shape,
-      consistent with it, not proven. Measured (this host, tmux 3.8, iota under `taskpolicy -b`,
-      scenario 06): the pass's DSRs logged, `Err("The cursor position could not be read within a
-      normal duration") after 2.04s`, then the recheck "answered" in 1 ms with the composer's
-      column 2 — the late answer — and each pass after it took a band of 6, 4, 3, 6, 8 rows
-      (`pad` 0 → 5 → 9 → 12); every red run had a timeout, no run without one was red (of 12;
-      one with two timeouts in a row stayed green: two behind, the queries fall back in phase,
-      one pass stale). The unchanged build, this host (tmux 3.8; the recipe's 3 of 4 was another
-      run's): ten burners 5 of 29 red; of the 25 runs with their DSRs logged, the 5 that had a
-      timeout gave 4 of the reds and the 20 without one none; twenty burners 8 of 8 red (6 with
-      the frame gone or rows lost — and the whole host stalling, `spindump` running: not a
-      condition to measure a fix under). **The fix** (`InlineTerminal::ask`):
-      an answer is taken only from the query that asked it. The answer names the cursor's
-      column, so each query is asked from a column of its own — `CR`, then `CUF` to one of
-      eight columns in turn, never the last query's — and an answer from another column is an
-      earlier query's, dropped, the next one read (at most 16). A timeout is waited out once
-      more: the terminal answered at startup, so a timeout is a slow answer, and the read after
-      it takes that answer — this query's column, nothing written in between (`DSR_WAITS` 2:
-      4 s, then the pass goes without, laid out from the cursor as before; a first cut without
-      the second wait left the composer 2 rows off the bottom after the settled drag in 2 of 7
-      runs under twenty burners — unlogged, the shape a pass without its floor leaves, and
-      `term::tests::a_slow_cursor_answer_still_gives_the_pass_its_floor` reads exactly that
-      without it). The fixed build, alternated with the unchanged one run by run (ten burners,
-      8 pairs): unchanged 2 of 8 red, both the frame gone and both with a timeout logged; fixed
-      0 of 8 — but no fixed run met a timeout, so that is no regression, not the fix proved. The
-      proof on a real terminal is `scripts/dsr-delay.py`, a pty that holds every 20th cursor
-      answer 2.5 s (no load, no QoS; 6 pairs): unchanged 6 of 6 red with the frame's separator
-      pair gone, blank rows by the dozen and the composer off the bottom; fixed 6 of 6 with the
-      frame whole, flush and full width, nothing lost and no band — and 6 of 6 still red on the
-      DUPLICATE budgets alone (the staged rows only, X-52's residual (1): 3–14 a drag against
-      caps of 0–2, a separator piece or two, one stale frame). Those are the drag outrunning a
-      pass that waits 2.5 s for its answer, not a stale answer — a KNOWN residual since
-      2026-10-18, accepted and listed over budget in X-52 (`docs/design/drag-settle-stall.md`).
-      Logged: the settle clock starts before the pass's query blocks and the same iteration
-      settles before reading the resizes queued meanwhile, so the drag ends and the frame is
-      repainted at full width with its next steps unread; and those steps then reach one pass
-      merged into a step wider than the margin (26 H's family). Why accepted: a cursor answer
-      over 2 s needs a starved process (never unloaded: a pass takes ≤ 4 ms), nothing is lost
-      and the live frame is whole; the settle half has a clean fix, X-52's B (poll the event
-      source before `settle_drag`), measured to cut the duplicates by about two thirds and left
-      for the next change to that part of the loop; the merged-step half has none short of a
-      non-blocking pass. Reproduce: `scripts/dsr-delay.py` as its header says — staged rows
-      duplicated is this residual; a row lost, the frame off the bottom after it settles or its
-      top separator gone is a regression. Pinned deterministically by
-      `vt100_tests::answers_one_query_late_through_a_height_drag_and_its_end_keep_the_frame`
-      (the `Geometry` seam answers 1, 2 or 3 queries late; a height drag down and back in the
-      tmux model, the drag's end closing its band; the frame flush and whole, once, nothing
-      lost — red on the unfixed build for each lag: 1 and 3 the frame gone from the screen, 2 the
-      model's frame off by `above`) and
-      `term::tests::a_slow_cursor_answer_still_gives_the_pass_its_floor`. On a real terminal:
-      `scripts/dsr-delay.py` (its header has the wrapper).
-      The starvation recipe, kept for a second look: wrap the binary as
-      `exec taskpolicy -b <iota> "$@"`, point `IOTA_TMUX_BIN` at the wrapper, start ten or
-      twenty `yes >/dev/null`, run `IOTA_TMUX=1 IOTA_TMUX_FRAMES=1 cargo test --test ui_tmux
-      tmux_resize_mid_stream_and_idle`.
-      **The duplicate counter (2026-09-27).** Scenario 06 counted the DISTINCT lines with a
-      duplicate, so a line already twice in the history hid every further copy: after the idle
-      narrowing had left `l#36` twice, the idle shrink, the settled drag and the fast drag each
-      added a copy of it (`l#36` ×5 by the height drag) and every "0 duplicated" stayed green.
-      It counts copies now, each block against the copies before it. The mechanism, byte-
-      recorded: the frame's staged rows (the stream's last four lines) were last drawn at full
-      width; the drag's first step rewraps what sits above the cursor, the pass erases the
-      frame's own rows counted up from the cursor (B3: the growth is not claimed), so it starts
-      one row low and redraws `l#36` under the old one — X-52 residual (1), inside the frozen
-      budget of 2 per drag. Measured 15 of 15 runs (tmux 3.7c, 3.7c under six CPU burners,
-      3.4): idle narrowing 1, idle shrink 1, settled drag 1, fast drag 1 (2 while it lasts; the
-      band close takes one), paced drag 0, height drag 0 and 0, mid-stream shrink 2 — the caps.
-      **The CI run 36305402235 (macos-14, its re-run green; 0 of ~75 local runs, loaded, on
-      3.7c and 3.4)** — 06's height drag with `scroll-on-clear on` left the frame three rows up
-      with its top separator gone and two streamed lines lost — is the late cursor answer above
-      (X-81): the same frame, the same `close_band`, reproduced on this host under background
-      QoS. The block still records its bytes and a red CI run uploads them.
-      **Scenario 26's B and D, named (2026-09-28).** Re-measured over 100 runs of the scenario
-      (tmux 3.7c and 3.4; alone, under six CPU burners, and three copies at once): B's 2 are the
-      stream's last two staged rows (`l#56`, `l#57`) for both narrowings, 2 in 99 runs each; one
-      3 (2026-09-27, beside loaded scenario-06 loops) printed no rows and has not recurred — the
-      block lists its rows now. D measured 2 in 5 of 94 runs, and those 2 were E's banner rows,
-      not the user's row: `wait_vis 'sleep 1.5'` was satisfied by the DRAFT, so the narrowing
-      could land before the Enter, while the banner was still staged. D now waits for the draft to
-      leave the composer (`wait_sent`): 1 in 29 of 30 loaded runs, 0 once; cap 1, the user's row.
-      Seen only with three suites at once plus six burners, bounds unchanged: 26 H (a drag with
-      `/model` open, OVER BUDGET ≤ 6) measured 7 separator rows in 7 of 60 runs on tmux 3.7c
-      (never on 3.4: 4–6), and 26 G's gap measured 3 in 3 runs that landed at the same moment.
-      **26 H, paced (2026-10-12).** The 7 came back on the macos-15 runners (CI 37909980649, a
-      docs-only commit, and 38122791446). Not a late count: the pieces are in the history the
-      moment they are stranded, and the count read before and after the frame is back at full
-      width was the same in 12 of 12 runs. What varies is which steps one pass takes together —
-      the steps went out blind 50 ms apart, `RESIZE_QUIET`'s own length — and a pass that sees a
-      step wider than the drag's margin strands the tail of the frame drawn for the last one (a
-      4- or 8-column separator piece). Reproduced on this host with the iota process at the
-      background QoS (`taskpolicy -b`), ten CPU burners and three copies at once: 4/5/6/7 in
-      10/7/6/1 of 24 runs, the 7 the CI line word for word. The block now waits for each step's
-      pass to be drawn before the next resize: 4 in 32 of 32 runs whose steps all landed (2 of
-      21 under the three-copy load had a pass slower than the 1.5 s wait, and say which step).
-      The cap is 4, the frozen build's number: with an injected pass that claims one row too
-      few the paced drag reads 6, which the old cap of 6 let through.
-      **06's drags, anchored (2026-10-16).** The ubuntu runner read 2 for the fast 8-step drag
-      against its cap of 1 (CI 38759202470, `l#36`×6, every other check green). The same family as
-      26 H: eight steps fired blind 60 ms apart — barely past `RESIZE_QUIET` — are grouped into
-      passes by the runner (about four here, by the passes' DSRs), and the number follows the
-      grouping. The block is now two: the same eight steps sent two to a tmux command, each pair's
-      pass awaited — 1 in every run (8 idle, 7 beside ten burners) — and the blind drag held to the
-      frozen per-drag budget (≤ 2) and to duplicating only the frame's staged rows. Every drag also
-      names its starting state and checks it (waiting `≥ DRAG_SETTLE` for rest; the paced drag must
-      start inside the release's burst — the precondition of its 0).
+## 4b. Scrolling, search and job control
+
+- [x] 自动化：scenario 37 **4b.1** `PgUp`/`PgDn` move half a screen; `Ctrl+Home` reaches the
+      session's first line, `Ctrl+End` the tail. Scrolled back, new output does not move the
+      view and the last viewport row says `↓ N new lines`. On a MacBook keyboard (no
+      `Ctrl+End`): `PgDn` (Fn+↓) to the bottom follows the output again.
+- [x] 自动化：scenario 41 **4b.2** `Ctrl+R` (or `/` on a scrolled-back view with an empty
+      composer) searches the conversation: hits highlighted and counted, `n`/`p` walk, Esc goes
+      back to where the view was, Enter stays. `Ctrl+F` is the editor's forward-char, never the
+      search.
+- [x] 自动化：scenario 44 **4b.3** `Ctrl+Z` (and `kill -TSTP`): the shell's prompt, a stopped
+      job, the tty sane; `fg` brings the full screen back repainted at the size the window has
+      now. Try it in your own shell, in tmux and in herdr.
+- [ ] **4b.4** Selection: with no mouse capture (S1–S5), the terminal's own selection works on
+      the current screen only; across screens, write out with `Ctrl+O` first.
 
 ## 5. Window title (the title stack)
 
@@ -465,16 +254,11 @@ and Ghostty.
 L4 pins these under tmux (`tests/ui_tmux/scenarios/10-edge-pins.sh`, and 21 for the table);
 they are listed here because the *look* of them is what a user reports.
 
-- [x] 自动化：scenario 10 **6.1 Short window (< 12 rows).** The frame's floor used to be about ten rows — four
-      staging tail rows, the spacer, two separators, the composer and the status line — and
-      below roughly twelve rows the inline viewport and the inserted history overlapped,
-      permanently damaging the scrollback rows they overlapped (T-40). **Now guarded**: the
-      staging window's cap is dynamic (`Region::tail_keep`), trimmed on a short terminal so
-      the frame always leaves `max(2, screen_h/2)` rows above it, and a height change
-      re-applies it immediately. At 10 rows nothing stages and the frame is its 5-row
-      minimum. Confirm on each terminal: at 8, 10 and 12 rows, stream 12 lines — the frame
-      stays intact, history is contiguous, there is no crash and no lost input, and growing
-      the window back refills the staging window.
+- [x] 自动化：scenario 10 **6.1 Short window (< 12 rows).** The frame is pinned to the bottom of
+      the alternate screen and the conversation takes what is left (T-40's overlap has no
+      mechanism since the inline terminal is gone). Confirm on each terminal: at 8, 10 and 12
+      rows, stream 12 lines — the frame stays intact, the conversation is contiguous (`PgUp`, the
+      write-out), there is no crash and no lost input.
 - [x] 自动化：scenario 10 **6.2 Exact-width line.** A line exactly the terminal's width must occupy exactly one
       row with its last column intact (T-01). Verify at 80 and at one unusual width.
 - [x] 自动化：scenario 10 **6.3 Wide rune at the boundary.** A CJK run that would straddle the last column wraps
@@ -599,7 +383,7 @@ and do not tell it to background it.
       killed from the Kill tab. After the notice the segment is gone and the row is exactly what it
       was. *(Pinned: two captures 1.2 s apart differ; `· 2 jobs` with the second job started and
       `job b1` again after it is killed; the segment absent after the notice. The idle-with-no-job
-      budgets of 06 and 14 are untouched — the tick runs only while the set is non-empty.)*
+      budget of 14 is untouched — the tick runs only while the set is non-empty.)*
 - [x] 自动化：scenario 25 **8.9 A running job keeps the host busy.** Back at the prompt after the yield,
       with the job still running, the terminal's progress indicator stays on (OSC 9;4 state 3; a
       herdr pane stays `working`, a cmux row `Running`), through the Kill tab's notice turn while
@@ -807,11 +591,10 @@ it is the set where the *mechanism* differs from Unix rather than the emulator.
       child is actually gone — check Task Manager or `Get-Process` — and that no console
       window flashed up while it ran (`CREATE_NO_WINDOW`).
 - [ ] **9.13 Resize, wider.** Start a stream, widen the window mid-stream, let it finish.
-      Count orphaned rows as §4 does. Windows Terminal reflows its buffer on resize, which
-      tmux does not do at all, so this is the first place the whole reflow class is even
-      visible — expect findings here and write down what you see rather than a verdict.
-- [ ] **9.14 Resize, narrower.** The same, narrowing. Narrowing is the direction that
-      rewraps history the app has already handed over.
+      §4.1's check: no residue. The alternate screen has no reflow, so a Windows Terminal reflow
+      of its buffer touches only the main screen (the shell's history and what the write-out
+      put there).
+- [ ] **9.14 Resize, narrower.** The same, narrowing.
 - [ ] **9.15 Resize at idle.** Both directions with no turn running: exactly one composer row
       at the new width, separators at the new width, no orphan.
 - [ ] **9.16 Very narrow window.** Drag to roughly 40 columns. The frame must degrade, not
@@ -841,6 +624,12 @@ it is the set where the *mechanism* differs from Unix rather than the emulator.
       interpreter that actually ran, and the call header's chained `cd` must be in that
       shell's dialect. This is X-17/X-18 in `DIVERGENCES.md` — unit-tested on macOS, never
       once observed on Windows.
+- [ ] **9.23 ConPTY residue on incremental writes.** iota writes only the cells that changed
+      (ratatui's diff, a scroll region for streamed output). ConPTY has been seen to leave stale
+      cells behind such writes (Claude Code ships `CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT` for it):
+      stream 100 lines, scroll with `PgUp`/`PgDn`, open `/model` — any cell left from an earlier
+      frame is a **DEFECT** to record with the Windows build; nothing is done about it ahead of
+      a report.
 - [ ] **9.22 Background jobs.** §8's list, here. The log path under the Windows temp
       directory, the notice arriving at idle, and `/quit` killing the job (§8.5) all go
       through the job-object path rather than `killpg`.
@@ -868,7 +657,7 @@ Dogfood until dry: one report → one fix → repeat, ranked as the Go migration
 Fill one row per terminal per release. An empty cell means *not yet verified* — never
 assume a pass.
 
-| terminal | version | §1 IME | §2 scrollback | §3 flicker | §4 orphans | §5 title | §6 edges | §7 host | §8 jobs | §8b combo | §8c no color | verdict |
+| terminal | version | §1 IME | §2 write-out | §3 flicker | §4 resize | §5 title | §6 edges | §7 host | §8 jobs | §8b combo | §8c no color | verdict |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | Ghostty | | | | | | | | | | |
 | Terminal.app | | | | | | | | | | |
@@ -886,12 +675,11 @@ failures (`fail:<status>:<n>`), a chosen session title and two stress documents,
 made §5, §7, §8 and the retry path reachable.
 
 There is no second binary to run it against: the `tui-portable` fallback was removed on
-2026-09-01. The L2b suite (`cargo test --lib ui::runtime::event_loop::vt100_tests`, part of
-`cargo test --workspace`) carries the scroll-region byte proof and the wide-rune pin from
-§2.3.
+2026-09-01. The L2b suite (`cargo test --lib ui::runtime::event_loop::vt100_tests` and
+`ui::runtime::screen`, part of `cargo test --workspace`) carries the sync-rule and resize byte
+proofs and the wide-rune pin from §2.
 
-That covers, under tmux only: §2 (20, 02), §4 (06 — with tmux's own reflow cost recorded
-under 4.2), §5.1/5.2 (17), §6 (10, 21), §7.1/7.2 (14, 18), §8 (19), §8b except 8b.10 (15),
+That covers, under tmux only: §2 (20, 02, 39), §4 (38, 42), §4b (37, 41, 44), §5.1/5.2 (17), §6 (10, 21), §7.1/7.2 (14, 18), §8 (19), §8b except 8b.10 (15),
 §8c except 8c.3/8c.6 (16), the app's half of §1.3/1.4 and 8b.9 (10, 04, 15), and the
 retryable error path — `retrying (attempt n/10)` on the status row, one recovery notice, a
 message queued during the backoff landing once, Ctrl+C during a backoff leaving no red block

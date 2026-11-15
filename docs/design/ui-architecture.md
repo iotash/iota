@@ -1,13 +1,20 @@
 # UI Architecture: bubbletea v2 inline migration
 
-Status: shipped through P5 (2026-07-14) — the bubbletea UI is the only interactive path; P6 (lipgloss major convergence) remains · Brain: `ui-bubbletea-v2`
+Status: shipped through P5 (2026-07-14) — the bubbletea UI is the only interactive path; P6 (lipgloss major convergence) remains · Brain: `ui-bubbletea-v2` · **The inline decision below is REVERSED in the Rust port (2026-11, tui-plan S5): iota owns the alternate screen — `docs/design/fullscreen-tui.md`, DIVERGENCES X-97.** The rest of this document (the facade, the transcript layer, the concurrency contract) still describes the design.
 
 ## Decision
 
 Migrate the interactive surface from the vendored readline+promptui REPL to a
 **bubbletea v2 INLINE program**: a pinned bottom frame (separator + live status
 + real-cursor composer) with history flowing above it into native scrollback
-via `Println`. The terminal's own scrolling is never taken over.
+via `Println`. ~~The terminal's own scrolling is never taken over.~~
+
+> **Reversed (2026-11, the Rust port's tui-plan S1–S5; DIVERGENCES X-97).** The terminal's screen
+> IS taken over: iota draws on the alternate screen, the conversation in a viewport of its own above
+> the pinned frame, scrolled with `PgUp`/`PgDn`, searched with `Ctrl+R`, written into the terminal's
+> own history with `Ctrl+O` and at the exit. The inline design's resize physics (residuals inside a
+> frozen budget, a frame short while a drag lasted, a cursor query on every resize) could not be
+> engineered away on the main screen, and its own forecast named the answer: an alt-screen design.
 
 Gate results that made the call: real-cursor IME verified acceptable by hand
 (Ghostty, streaming); the spike (`spikes/bubbletea-inline`) proved
@@ -414,10 +421,22 @@ Tier 3 (polish): spinner elapsed labels, activity glyph, queued-line styling.
 
 ## Accepted costs
 
-- Resize reflow orphans on rewrapping terminals (do nothing during desync).
-- Cursor flicker window per insert (upstream fix pending).
+The inline design's costs, struck where the full screen (X-97) removed them:
+
+- ~~Resize reflow orphans on rewrapping terminals (do nothing during desync).~~ Gone: a resize
+  repaints every cell; the alternate screen has no reflow.
+- ~~Cursor flicker window per insert (upstream fix pending).~~ Gone: nothing is inserted; a
+  streamed line and the cursor restore are one write.
 - Commands wait for turn completion (v1 scope).
 - Dual lipgloss majors + toolchain bump during the window.
-- The composer floats above the screen bottom transiently after a surface
+- ~~The composer floats above the screen bottom transiently after a surface
   closes or the input collapses, until the next output refills the vacated
-  rows (an idle session keeps the float — it reads as normal scroll state).
+  rows.~~ Gone: the frame is pinned to the bottom rows.
+
+The full screen's own costs, accepted by the owner:
+
+- While iota runs, the terminal's own scrollback, search (Cmd+F, tmux copy-mode) and
+  cross-screen selection do not reach the conversation. `Ctrl+O` writes it out on demand,
+  `Ctrl+R` searches it in place, and the exit writes it into the shell's history.
+- A SIGKILL leaves the terminal on the alternate screen in raw mode (`reset` recovers it);
+  the conversation is in the session log, not on the screen.

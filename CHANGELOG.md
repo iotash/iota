@@ -20,6 +20,36 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   unchanged. Commands iota runs do not get `HC_TERMINAL_ID`, so an `iota -m`
   started by the model leaves the chat's state alone.
 
+### Changed
+
+- **iota now takes the whole terminal window.** The chat runs full screen, on
+  the terminal's alternate screen, the way `vim` or `less` do: the
+  conversation fills the window and the input box stays pinned to the bottom.
+  The old inline terminal is gone, and so is the cost of resizing it: no
+  blank or doubled rows after you drag the window, no input box a few columns
+  short while you drag, and iota no longer asks the terminal where its cursor
+  is (it now starts on terminals that never answer that question).
+- **While iota runs, your terminal's own scrollback does not show the
+  conversation.** The terminal's scrollbar, Cmd+F, tmux copy mode and
+  selecting across screens reach only what is on the screen now. Instead:
+  - **Ctrl+O** writes the conversation into the terminal's own history, so its
+    scrollback, search and selection reach all of it; press any key to come
+    back. Each line is written once, however often you press it.
+  - **When you quit** (Ctrl+D, `/exit`, Ctrl+C at the prompt, or a `kill`),
+    the whole conversation is written into the terminal's history, as before.
+    After a crash, or `kill -9`, it is not; `iota resume` brings it back.
+- **New keys.** **PgUp / PgDn** scroll half a screen (Fn+↑/↓ on a MacBook);
+  **Ctrl+Home / Ctrl+End** go to the first line and back to the latest output.
+  Scrolled back, new output does not pull you down; the bottom line counts the
+  new lines below. **Ctrl+R** searches the conversation (also `/` while you are
+  scrolled back and the input is empty): matches are highlighted and counted,
+  `n`/`p` step through them, Enter stays where you are, Esc goes back.
+  **Ctrl+F** is not search: it still moves the cursor one character right.
+  **Ctrl+Z** suspends iota and gives the terminal back to the shell; `fg`
+  brings it back, redrawn at the window's size.
+- **Resuming a session shows the whole conversation**, not only the last three
+  rounds: scroll up to its first message.
+
 ## 0.9.0 - 2026-11-11
 
 ### Added
