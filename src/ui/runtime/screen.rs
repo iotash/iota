@@ -364,7 +364,7 @@ impl<W: Write> Screen<W> {
     /// Whether the viewport's last row is the way back to the tail: scrolled back — but not a view
     /// a drag holds at the bottom with nothing new below it.
     fn way_back_shown(&self) -> bool {
-        !self.conv.following() && !(self.conv.held() && self.conv.unseen() == 0)
+        !self.conv.following() && (!self.conv.held() || self.conv.unseen() > 0)
     }
 
     /// The buffer cell under screen cell (`col`, `row`), held to the shown lines: above the first

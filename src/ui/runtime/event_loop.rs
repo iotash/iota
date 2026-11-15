@@ -1162,10 +1162,11 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
         m.tick_surface_refresh();
         m.tick_mouse();
         // A copy whose programs were running: their outcome is the status row's to say.
-        if !resizing && term.copy_pending() {
-            if let Some(c) = term.copy_selection()? {
-                m.copy_done(c);
-            }
+        if !resizing
+            && term.copy_pending()
+            && let Some(c) = term.copy_selection()?
+        {
+            m.copy_done(c);
         }
         // The committed rows join the conversation the frame below shows.
         if !resizing {
