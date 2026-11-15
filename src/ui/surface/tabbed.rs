@@ -67,6 +67,8 @@ pub(crate) struct PanelState {
     pub(crate) editing: bool,
     /// Last visible row budget, for paging.
     pub(crate) rows: usize,
+    /// The body rows the last render had free (`panel_height`'s room; `0` = unknown).
+    pub(crate) room: usize,
     /// Per-panel search (search.go); survives tabbing away and back.
     pub(crate) search: SearchState,
     /// Visible row → underlying index; ALWAYS populated (identity unfiltered).
@@ -117,6 +119,7 @@ impl PanelState {
             input_offset: 0,
             editing: false,
             rows: 0,
+            room: 0,
             search: SearchState::new(),
             view: Vec::new(),
             pending_center: None,
@@ -352,10 +355,11 @@ pub(crate) struct SurfaceState {
     pub(crate) enter_advances: bool,
     /// The panels, each with its live state.
     pub(crate) slots: Vec<PanelSlot>,
-    /// The terminal's row count, published by the loop before each render (`0` = unknown, the
-    /// Go model's own pre-`WindowSizeMsg` state). Only the Picker reads it, to keep its inline
-    /// preview from crowding out the composer (tabbed.go:797-799 `m.height`).
-    term_h: u16,
+    /// The rows the whole surface block may take, published by the loop before each render: the
+    /// screen less the frame's other rows (`0` = unknown). The surface is drawn over the
+    /// conversation's viewport, which yields those rows while it is open (C13), so a panel's
+    /// default budget is all of them rather than a fixed 10 or 15.
+    room: u16,
     /// The terminal's background tone, published by the loop before each render (dark is the
     /// safe default; the input shade follows it).
     dark: bool,
@@ -389,7 +393,7 @@ impl SurfaceState {
             focus: 0,
             enter_advances,
             slots: panels.into_iter().map(PanelSlot::open).collect(),
-            term_h: 0,
+            room: 0,
             dark: true,
             hits: Vec::new(),
         }
@@ -401,9 +405,9 @@ impl SurfaceState {
         (&slot.spec, &mut slot.state)
     }
 
-    /// Publishes the terminal height for the next render (`0` = unknown).
-    pub(crate) fn set_term_height(&mut self, h: u16) {
-        self.term_h = h;
+    /// Publishes the rows the next render may take (`0` = unknown).
+    pub(crate) fn set_room(&mut self, rows: u16) {
+        self.room = rows;
     }
 
     /// Publishes the terminal's background tone for the next render.
@@ -416,9 +420,9 @@ impl SurfaceState {
         self.dark
     }
 
-    /// The terminal height the last [`Self::set_term_height`] published.
-    pub(crate) fn term_height(&self) -> usize {
-        usize::from(self.term_h)
+    /// The rows the last [`Self::set_room`] published.
+    pub(crate) fn room(&self) -> usize {
+        usize::from(self.room)
     }
 
     /// The commit-all snapshot (tabbed.go:292-309): per panel `{cursor (underlying),
@@ -504,20 +508,24 @@ pub(crate) fn slider_step(ps: &mut PanelState, p: &Panel, dir: i32) {
     ps.value = Some(nv.min(sl.max));
 }
 
-/// A panel's visible row budget: `height` override, else 10 (View 15), clamped to the
-/// item count, minimum 1 (tabbed.go:431-446).
-pub(crate) fn panel_height(p: &Panel, n: usize) -> usize {
+/// A panel's visible row budget for `n` rows with `room` body rows free (`0` = unknown): the
+/// `height` override, else all the room there is — the surface is drawn over the viewport, which
+/// yields it (C13) — else (room unknown) 10, View 15 (tabbed.go:431-446); never more than the
+/// room, clamped to the item count, minimum 1.
+pub(crate) fn panel_height(p: &Panel, n: usize, room: usize) -> usize {
     let mut h = if p.height > 0 {
         p.height
+    } else if room > 0 {
+        room
     } else if p.kind() == PanelKind::View {
         15
     } else {
         10
     };
-    if n < h {
-        h = n;
+    if room > 0 {
+        h = h.min(room);
     }
-    h.max(1)
+    h.min(n).max(1)
 }
 
 /// Below this width the preview is dropped entirely (tabbed.go:753).
@@ -528,10 +536,8 @@ pub(crate) const PICKER_PREVIEW_CAP: usize = 44;
 pub(crate) const PICKER_GUTTER: usize = 2;
 /// List columns the preview must never eat into (tabbed.go:756).
 pub(crate) const PICKER_MIN_LIST: usize = 18;
-/// Preview rows, `Panel::height` overriding, terminal permitting (tabbed.go:757).
+/// Preview rows, `Panel::height` overriding, the room permitting (tabbed.go:757).
 pub(crate) const PICKER_ROWS: usize = 14;
-/// Frame rows the preview must leave for everything else (tabbed.go:758).
-pub(crate) const PICKER_FRAME_ROWS: usize = 12;
 
 /// The preview pane's width; `0` = no preview (tabbed.go:762-777).
 ///
@@ -696,7 +702,7 @@ pub(crate) fn scroll_percent(p: &Panel, ps: &PanelState) -> Option<usize> {
     match p.kind() {
         PanelKind::List | PanelKind::Multi | PanelKind::Picker | PanelKind::Browser => {
             let n = ps.view.len();
-            if n > panel_height(p, n) && n > 1 {
+            if n > panel_height(p, n, ps.room) && n > 1 {
                 return Some(pct(ps.view_pos(), n - 1));
             }
             None
@@ -707,7 +713,7 @@ pub(crate) fn scroll_percent(p: &Panel, ps: &PanelState) -> Option<usize> {
             } else {
                 ps.items.len()
             };
-            let h = panel_height(p, n);
+            let h = panel_height(p, n, ps.room);
             let max_off = n.saturating_sub(h);
             if max_off > 0 {
                 return Some(pct(ps.offset.min(max_off), max_off));

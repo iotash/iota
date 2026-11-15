@@ -404,7 +404,7 @@ impl PanelState {
                 if p.wrap() && self.wrapped > 0 {
                     n = self.wrapped;
                 }
-                n > panel_height(p, n)
+                n > panel_height(p, n, self.room)
             }
             PanelKind::List | PanelKind::Multi | PanelKind::Picker | PanelKind::Browser => {
                 // A combo has no `/` entry: its field is already open, and `/` is a character a
@@ -413,7 +413,7 @@ impl PanelState {
                     return false;
                 }
                 let n = self.row_count(p);
-                n > panel_height(p, n)
+                n > panel_height(p, n, self.room)
             }
             _ => false,
         }

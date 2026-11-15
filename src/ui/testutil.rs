@@ -53,7 +53,7 @@ impl Surf {
     /// Opens `panels` at `width × height` — the window size a picker's preview pane is laid out for.
     pub(crate) fn sized(panels: Vec<Panel>, width: u16, height: u16) -> Self {
         let mut st = SurfaceState::new(false, panels);
-        st.set_term_height(height);
+        st.set_room(height);
         Self { st, width }
     }
 

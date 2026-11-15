@@ -1350,3 +1350,45 @@ fn a_drag_through_the_loop_copies_and_the_status_row_says_so() {
     );
     h.quit_and_join(Duration::from_secs(5));
 }
+
+/// C13: an open surface is drawn over the conversation's viewport and may take all of it — a
+/// long View fills the screen down to the composer instead of stopping at 15 rows — and closing
+/// it gives the viewport back, the conversation where it was.
+#[test]
+fn a_surface_takes_the_whole_viewport_and_gives_it_back() {
+    use crate::ui::facade::{Panel, TabbedSpec};
+    let h = start_loop();
+    let rows: Vec<String> = (0..40).map(|i| format!("conv-{i:02}")).collect();
+    h.tx.send(UiMsg::Scrollback(rows)).unwrap();
+    assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains("conv-39")));
+    let (reply, _rx) = tokio::sync::oneshot::channel();
+    let lines: Vec<String> = (0..100).map(|i| format!("view-{i:03}")).collect();
+    h.tx.send(UiMsg::TabbedOpen {
+        spec: TabbedSpec {
+            panels: vec![Panel::view("Long", lines)],
+            ..TabbedSpec::default()
+        },
+        reply,
+    })
+    .unwrap();
+    assert!(h.wait_until(Duration::from_secs(2), |h| {
+        h.contents().contains("view-000")
+    }));
+    let screen = h.contents();
+    let shown = screen.lines().filter(|l| l.starts_with("view-")).count();
+    // 24 rows: the spacer, two separators, the composer, the title chip and the hint row are
+    // the frame's; every other row is the View's.
+    assert_eq!(shown, 24 - 6, "{screen}");
+    assert!(
+        !screen.contains("conv-"),
+        "the viewport yielded to it: {screen}"
+    );
+    h.tx.send(UiMsg::SurfaceCancel).unwrap();
+    assert!(h.wait_until(Duration::from_secs(2), |h| !h.contents().contains("view-")));
+    let screen = h.contents();
+    assert!(
+        screen.contains("conv-39") && screen.contains("conv-21"),
+        "{screen}"
+    );
+    h.quit_and_join(Duration::from_secs(5));
+}

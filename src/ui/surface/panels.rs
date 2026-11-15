@@ -12,8 +12,8 @@ use crate::text::ansi::{ansi_width, clip_line, truncate_ansi, wrap_ansi};
 use super::field::input_field;
 use super::search::{SearchMode, highlight_line};
 use super::tabbed::{
-    PICKER_FRAME_ROWS, PICKER_GUTTER, PICKER_ROWS, PanelState, SurfaceState, clamp, combo_hint,
-    panel_height, picker_preview_cols, scroll_percent, search_typing_hint, surface_hint,
+    PICKER_GUTTER, PICKER_ROWS, PanelState, SurfaceState, clamp, combo_hint, panel_height,
+    picker_preview_cols, scroll_percent, search_typing_hint, surface_hint,
 };
 use super::theme::{CYAN, ERR_PREFIX, FAINT, GREEN, RESET, REV_ON, input_bg};
 use super::{Hit, Rendered};
@@ -31,7 +31,7 @@ fn cursor_at(x: usize, y: usize) -> (u16, u16) {
 /// row per element. The query field replaces the hint row rather than adding one.
 pub(crate) fn render_rows(st: &mut SurfaceState, width: u16) -> Rendered {
     let focus = st.focus;
-    let term_h = st.term_height();
+    let room = st.room();
     let dark = st.dark();
     let n = st.slots.len();
     let mut cursor = None;
@@ -71,12 +71,24 @@ pub(crate) fn render_rows(st: &mut SurfaceState, width: u16) -> Rendered {
     }
     // The list rows start here (a browser's after its directory and error lines).
     let mut body = rows.len();
+    // The body gets what the room leaves after the block's own rows: those above it, the hint
+    // row (or the query field in its place), and a kind's lines of its own.
+    let own = match p.kind() {
+        PanelKind::Picker => usize::from(p.details().get(ps.cursor).is_some_and(|d| !d.is_empty())),
+        PanelKind::Browser => 1 + usize::from(!ps.error_text.is_empty()),
+        _ => 0,
+    };
+    ps.room = if room > 0 {
+        room.saturating_sub(body + 1 + own).max(1)
+    } else {
+        0
+    };
 
     match p.kind() {
         PanelKind::List | PanelKind::Multi => {
             render_list(p, ps, w, &mut rows, &mut cursor, dark);
         }
-        PanelKind::Picker => render_picker(term_h, p, ps, w, &mut rows),
+        PanelKind::Picker => render_picker(p, ps, w, &mut rows),
         PanelKind::Slider => render_slider(p, ps, w, &mut rows),
         PanelKind::Switch => render_switch(ps, &mut rows),
         PanelKind::Input => render_input(p, ps, w, &mut rows, &mut cursor, dark),
@@ -137,7 +149,7 @@ fn render_list(
     cursor: &mut Option<(u16, u16)>,
     dark: bool,
 ) {
-    let h = panel_height(p, ps.view.len());
+    let h = panel_height(p, ps.view.len(), ps.room);
     ps.rows = h;
     ps.scroll_to(h);
     let offset = ps.offset;
@@ -212,11 +224,10 @@ fn render_list(
 /// Rows are composed cell by cell: every preview row is padded to the pane width by DISPLAY
 /// width, so the list column starts at the same screen column on every row regardless of the SGR
 /// the preview carries (imgterm rows are dense with it).
-fn render_picker(term_h: usize, p: &Panel, ps: &mut PanelState, w: usize, rows: &mut Vec<String>) {
+fn render_picker(p: &Panel, ps: &mut PanelState, w: usize, rows: &mut Vec<String>) {
     // The list window follows the item count; the preview gets its own row budget (a 3-item list
-    // must still show a legible thumbnail), clamped so the frame keeps room for the composer
-    // and the status row.
-    let h = panel_height(p, ps.view.len());
+    // must still show a legible thumbnail), clamped to the room the viewport yields.
+    let h = panel_height(p, ps.view.len(), ps.room);
     ps.rows = h;
     ps.scroll_to(h);
 
@@ -224,8 +235,8 @@ fn render_picker(term_h: usize, p: &Panel, ps: &mut PanelState, w: usize, rows: 
     let cols = picker_preview_cols(ps, w);
     if cols > 0 && !ps.items.is_empty() {
         let mut prev_h = if p.height > 0 { p.height } else { PICKER_ROWS };
-        if term_h > 0 {
-            prev_h = clamp(prev_h, 4, term_h.saturating_sub(PICKER_FRAME_ROWS).max(4));
+        if ps.room > 0 {
+            prev_h = clamp(prev_h, 4, ps.room.max(4));
         }
         preview = ps.preview_rows(cols, prev_h);
     }
@@ -407,7 +418,7 @@ fn render_view(p: &Panel, ps: &mut PanelState, w: usize, rows: &mut Vec<String>)
         ps.wrap_starts = starts;
     }
     ps.wrapped = lines.len();
-    let h = panel_height(p, lines.len());
+    let h = panel_height(p, lines.len(), ps.room);
     ps.rows = h;
     let max_off = lines.len().saturating_sub(h);
     let mut offset = ps.offset;
@@ -441,7 +452,7 @@ fn render_browser(p: &Panel, ps: &mut PanelState, w: usize, rows: &mut Vec<Strin
     if !ps.error_text.is_empty() {
         rows.push(format!("{ERR_PREFIX}{}", ps.error_text));
     }
-    let h = panel_height(p, ps.view.len());
+    let h = panel_height(p, ps.view.len(), ps.room);
     ps.rows = h;
     ps.scroll_to(h);
     let offset = ps.offset;

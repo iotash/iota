@@ -915,15 +915,43 @@ impl Model {
         let dark = self.dark;
         let fw = self.width.max(1);
         let (candidates, desc) = suggest::frame_slots(&self.composer, &self.commands, fw);
-        let (width, height) = (fw, self.height);
+        let composer_rows = self.composer.rows(fw);
+        let now = Instant::now();
+        let busy = self.busy_view(now);
+        // An open surface is drawn over the conversation's viewport (C13): it may take every row
+        // the frame's own rows leave — the viewport yields them while it is open.
+        let room = if self.surface.is_some() {
+            let queue_rows = self.queue_rows();
+            let others = build_frame(&FrameInput {
+                width: fw,
+                region: &self.region_snap,
+                spin: self.spin,
+                scopes_active: !self.cancels.is_empty(),
+                queue: &queue_rows,
+                queue_editable: self.newest_typed().is_some(),
+                composer_rows: &composer_rows,
+                composer_cursor: None,
+                candidates: candidates.as_deref(),
+                bottom: BottomZone::Surface(&[]),
+                status: &self.status,
+                busy: busy.as_ref(),
+                jobs: &self.running_jobs,
+                now,
+                notice: None,
+            })
+            .rows
+            .len();
+            self.height
+                .saturating_sub(u16::try_from(others).unwrap_or(u16::MAX))
+        } else {
+            0
+        };
         let surface = self.surface.as_mut().map(|s| {
-            // The Picker's inline preview is clamped against the terminal height.
-            s.st.set_term_height(height);
+            s.st.set_room(room);
             s.st.set_dark(dark);
-            s.st.render(width)
+            s.st.render(fw)
         });
         let queue_rows = self.queue_rows();
-        let composer_rows = self.composer.rows(fw);
         let cursor = match &surface {
             // The composer's real cursor is suppressed while a surface is open; an
             // input field may export its own, in surface-block coordinates. The frame
@@ -944,8 +972,6 @@ impl Model {
             (None, Some(d)) => BottomZone::Desc(d),
             (None, None) => BottomZone::Status,
         };
-        let now = Instant::now();
-        let busy = self.busy_view(now);
         let notice = self.copied.as_ref().map(|(n, _)| n.as_str());
         let view = build_frame(&FrameInput {
             width: fw,

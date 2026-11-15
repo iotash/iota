@@ -151,11 +151,12 @@ fn the_list_column_starts_at_the_same_screen_column_on_every_row() {
     }
 }
 
-/// The preview budget is clamped against the terminal height so the frame keeps
-/// room for the composer and the status row (tabbed.go:797-799); an unknown height (the
-/// model before its first resize) skips the clamp, exactly as Go's `m.height > 0` does.
+/// The preview budget is clamped to the room the viewport yields the surface (C13; it was the
+/// terminal height less 12 frame rows, tabbed.go:797-799): the title and hint rows come out of
+/// it; an unknown room (the model before its first resize) skips the clamp, as Go's
+/// `m.height > 0` does.
 #[test]
-fn preview_height_is_clamped_by_the_terminal() {
+fn preview_height_is_clamped_by_the_room() {
     let geo: Arc<Mutex<Vec<usize>>> = Arc::default();
     let sink = Arc::clone(&geo);
     let panel = || Panel::picker("Pick".to_owned(), vec!["a".to_owned()]);
@@ -165,8 +166,8 @@ fn preview_height_is_clamped_by_the_terminal() {
         sink2.lock().expect("geo").push(rows);
         vec!["x".to_owned()]
     }));
-    // A 20-row terminal leaves 8 rows for the preview.
-    let _ = Surf::sized(vec![p], 100, 20).content();
+    // A 10-row room leaves 8 rows for the preview.
+    let _ = Surf::sized(vec![p], 100, 10).content();
     // …and an unknown height keeps the default 14.
     let mut p = panel();
     let sink3 = Arc::clone(&sink);
@@ -186,7 +187,7 @@ fn picker_hint_and_search_join_the_row_panels() {
     let mut s = Surf::sized(
         vec![Panel::picker("Pick".to_owned(), items).with_search(true)],
         100,
-        40,
+        12,
     );
     let plain = strip_sgr(&s.content());
     assert!(

@@ -812,19 +812,23 @@ fn surface_key_ignores_non_press_and_empty_specs() {
 
 // --- geometry + hint rows ------------------------------------------------------
 
-/// `panel_height`: the `height` override, else 10 (View 15), clamped to the item count,
-/// minimum 1.
+/// `panel_height`: the `height` override, else all the room (C13: the viewport yields it), else —
+/// room unknown — 10 (View 15); never past the room, clamped to the item count, minimum 1.
 #[test]
 fn panel_height_defaults_and_clamps() {
     let l = list("A", &[]);
-    assert_eq!(panel_height(&l, 40), 10);
-    assert_eq!(panel_height(&l, 3), 3);
-    assert_eq!(panel_height(&l, 0), 1);
+    assert_eq!(panel_height(&l, 40, 0), 10);
+    assert_eq!(panel_height(&l, 3, 0), 3);
+    assert_eq!(panel_height(&l, 0, 0), 1);
+    assert_eq!(panel_height(&l, 40, 30), 30, "the whole room");
+    assert_eq!(panel_height(&l, 12, 30), 12);
     let v = Panel::view("", Vec::new());
-    assert_eq!(panel_height(&v, 40), 15);
+    assert_eq!(panel_height(&v, 40, 0), 15);
+    assert_eq!(panel_height(&v, 400, 33), 33, "a View takes the viewport");
     let h = list("A", &[]).with_height(6);
-    assert_eq!(panel_height(&h, 40), 6);
-    assert_eq!(panel_height(&h, 2), 2);
+    assert_eq!(panel_height(&h, 40, 0), 6);
+    assert_eq!(panel_height(&h, 2, 0), 2);
+    assert_eq!(panel_height(&h, 40, 4), 4, "the override within the room");
 }
 
 /// The 12 base hint rows, byte-exact (tabbed.go:916-947; `·` = U+00B7), plus the
