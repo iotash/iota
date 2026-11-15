@@ -27,9 +27,10 @@ Status: **已实现，唯一的终端（S1–S6；S5 删除了 inline 终端，S
 
 - **两种块**。`Block::Row(String)`：一条逻辑行，原样提交——段落行、标题、通知、活动行、分隔空行。它不依赖宽度：比视口宽就由屏幕折行（`wrap_ansi`），不宽就整行显示，所以变宽时段落会重新展开。`Block::Laid(Arc<dyn Layout>)`：带着源，`Layout::lines(width)` 在画的宽度下布局。
 - **块的种类就是源的类型**（`Layout` 的实现），下游没有任何代码按种类分支，所以不另带标签：助手 markdown 的五种缓冲块是 `markdown::Fragment`（代码、表格、列表、引用、行间公式）；用户块（`runtime/handle.rs` 的 `UserBlock`、回放的 `EchoUser`）；banner（`repl/render/banner.rs` 的 `Banner`）；文件改动的 diff 列表（`repl/render/group.rs` 的 `DiffListing`）；结构化错误（`transcript.rs` 的 `ErrorRows`）。图片仍是行：半块像素画按提交时的宽度缩放，不重排。
-- **提交接口**：`Ui::print(Vec<Block>)`（原 `print_lines(Vec<String>)`）。markdown 的 `Writer` 自己不再按宽度布局任何东西：缓冲块关闭时以 `Fragment` 交给 sink（`Sink::write_block`）；文本 sink（管道、quote 的子文档、测试）按自己的宽度渲染写出，终端的 sink（`repl/render/uisink.rs`）保留源。
+- **提交接口**：`Ui::print(Vec<Block>)`（原 `print_lines(Vec<String>)`）。markdown 的 `Writer` 自己不再按宽度布局任何东西：缓冲块关闭时以 `Fragment` 交给 sink（`Sink::write_block`）；文本 sink 按自己的宽度渲染写出。生产环境里唯一的文本 sink 是引用块的子文档（`blocks/quote.rs` 的 `BufSink`），另外就是测试用的 `new_writer_to`。终端的 sink（`repl/render/uisink.rs`）和回放的 sink（`replay.rs`）保留源。
 - **缓存与惰性**：缓冲在第一次需要某个宽度时调用 `Layout`，结果连同宽度缓存在块上；宽度一变，下一次画只重新布局它碰到的块（视口里的、滚动经过的），其余的等视图到达它们时再说。
-- **搜索**：行块按原文搜（折行不切断匹配）；布局块按当前宽度的显示行以 `\n` 连起来搜，宽度变了就重扫，停在原来那一块的第一个命中上。
+- **搜索**：命中记为（块号, 块内第 k 次出现）。搜的文本与宽度无关：行块用它的原文（折行不会切断匹配）；布局块用它**第一次**布局时、在那个宽度下的纯文本行，以 `\n` 连起来，存下后不再变。所以 resize 既不重扫，也不为搜索布局任何块。跳转只布局落点那一块和它周围一屏，在新宽度下数出第 k 次出现在哪一行。搜索开着时 resize，视图会回到当前命中。代价有两个：布局块多存一份纯文本；表格在新宽度下如果把一个词折断，第 k 次出现可能数不到，这时跳到块的第一行。
+- **上限按块计**，不按行或字节：一个块不论多高都算 1。评审 S2 之后，diff 只存预算内的行（`DiffRows`），剩下可能很高的块只有模型输出本身。评审实测：3 万个布局块全部缓存后 RSS +38 MB。不按源行数加权，是因为那需要每种 `Layout` 报告自己的大小，而 20 万块的上限在实际会话里远远够不到。
 
 五个元素在新宽度下做什么：
 
@@ -137,7 +138,7 @@ crossterm 0.29 默认的 unix 事件源（mio、边沿触发）有两处会让�
 
 - **点是缓冲里的格，不是屏幕的格**：(行号, 折行内第几行, 显示列)。行号按提交编号，所以 20 万行上限丢旧行不移动它；新输出到来时选择留在原文上。resize 换了折行，选择清掉。
 - **画**：只改屏幕 cell 的 `REVERSED`，行本身不动——**写出（Ctrl+O、退出）永远不带选择的样式**（`screen::tests::the_selection_is_drawn_reversed_and_never_written_out`）。
-- **复制的内容**：去掉 SGR 的纯文本；一行被折成几行的，拼回提交时的一行；行之间 `\n`；行尾空白去掉。双击的"词"＝字母数字加路径/URL/标识符的标点 `_-./~+:@\`，句末的 `.` `,` `:` 不算。
+- **复制的内容**：去掉 SGR 的纯文本；**屏幕**把一行折成的几段拼回成那一行（缓冲按 `Block::display` 标出哪些显示行是续段）；其余的行，包括块与块之间、布局块自己的行（表格的、代码块的），之间都是 `\n`；行尾空白去掉。三击选指针下那一行连同它的续段，不是整块（S7a 评审 B1）。双击的"词"＝字母数字加路径/URL/标识符的标点 `_-./~+:@\`，句末的 `.` `,` `:` 不算。
 - **按键清掉选择**（也结束一次没收到松开的拖动）；单击（不拖，或只抖一格）什么也不选、不复制。
 - **三条复制路径**（`runtime/clipboard.rs`，Claude Code 的做法）：不在 SSH 下用本机工具（`pbcopy`；`wl-copy`/`xclip`/`xsel`；`clip`）；在 tmux 里（`$TMUX`）写 `tmux load-buffer -w -`（`-w` 让 tmux 按 `set-clipboard` 再交给外层终端）；SSH 下且不在 tmux 里写 OSC 52；本机工具一个也没有时也退回 OSC 52。外部工具在自己的线程里跑，卡住也不拖住循环，**跑完把结果报回循环**：只有某个工具成功才说 `copied`；全部失败（没有 `$DISPLAY` 的 `xclip`、出错的 `pbcopy`）就落到 OSC 52。OSC 52 自己报不回结果，所以状态行写明 `via OSC 52`。OSC 52 序列有上限 `OSC52_MAX`（100 000 字节，约 73 KB 文本；hterm、tmux 也在这个量级截断）：超过就不发，状态行写 `not copied: N characters is too large — use Ctrl+O`。
 - **提示**：复制后状态行 4 秒内显示 `copied N characters · Shift+drag selects in the terminal`（只走了 OSC 52 时是 `copied N characters via OSC 52 · …`；iTerm2——`TERM_PROGRAM=iTerm.app` 或 `LC_TERMINAL=iTerm2`——显示 `Option`）。一句话，不是段落。

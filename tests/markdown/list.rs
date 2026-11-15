@@ -77,3 +77,18 @@ fn cjk_item_text_keeps_its_display_width_after_the_bullet() {
     assert_eq!(got[0], "• 中文条目");
     assert_eq!(str_width(&got[0]), 10, "line 0 width");
 }
+
+// An item longer than the layout width (80) wraps at word boundaries under the hanging indent,
+// on the text path too (tui-plan S7a: the list is laid out at its width, not cut by the screen).
+#[test]
+fn a_long_item_wraps_under_its_hanging_indent_at_the_width() {
+    let words: Vec<String> = (1..=10).map(|i| format!("word-{i:04}")).collect();
+    let src = format!("- {}\n", words.join(" "));
+    assert_lines(
+        &render_md(&src),
+        &[
+            &format!("• {}", words[..7].join(" ")),
+            &format!("  {}", words[7..].join(" ")),
+        ],
+    );
+}

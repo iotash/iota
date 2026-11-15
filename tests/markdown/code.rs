@@ -104,3 +104,13 @@ fn a_code_block_hides_its_fences_and_indents_every_line() {
         "code content missing:\n{v:?}"
     );
 }
+
+// A code line longer than the layout width (80) wraps under the two-column indent — the gutter
+// holds on the continuation, never column 0 (tui-plan S7a).
+#[test]
+fn a_long_code_line_wraps_under_its_indent_at_the_width() {
+    let src = format!("```\n{}\n```\n", "x".repeat(100));
+    let got = visible(&render_md_raw(&src));
+    let want = format!("  {}\n  {}\n", "x".repeat(78), "x".repeat(22));
+    assert_eq!(got, want);
+}
