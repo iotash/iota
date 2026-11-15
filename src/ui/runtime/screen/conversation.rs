@@ -91,25 +91,22 @@ impl Entry {
         }
         let (lines, joins): (Vec<String>, Vec<bool>) =
             self.block.display(width).into_iter().unzip();
-        match &mut self.laid {
-            Some(l) => {
-                l.width = width;
-                l.lines = lines;
-                l.joins = joins;
-            }
-            None => {
-                let text = match self.block {
-                    Block::Laid(_) => strip_sgr(&lines.join("\n")),
-                    Block::Row(_) => String::new(),
-                };
-                self.laid = Some(Box::new(Laid {
-                    width,
-                    lines,
-                    joins,
-                    text,
-                }));
-            }
+        if let Some(l) = &mut self.laid {
+            l.width = width;
+            l.lines = lines;
+            l.joins = joins;
+            return;
         }
+        let text = match self.block {
+            Block::Laid(_) => strip_sgr(&lines.join("\n")),
+            Block::Row(_) => String::new(),
+        };
+        self.laid = Some(Box::new(Laid {
+            width,
+            lines,
+            joins,
+            text,
+        }));
     }
 
     /// The display lines at `width` with whether each continues the line before (a segment the

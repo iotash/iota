@@ -17,7 +17,7 @@ Status: **已实现，唯一的终端（S1–S6；S5 删除了 inline 终端，S
 ## 对话缓冲（`screen/conversation.rs`）
 
 - 缓冲存的是**块**（`ui::block::Block`，S7a，见下节"块模型"）：固定的行，或者带着源、按宽度布局的块。每块在某个宽度下的显示行在第一次被画到时算出，连同宽度一起缓存；只有可见行经过 `ansi_to_spans`。**不存 cell**。
-- 上限 20 万**块**；超出丢最旧的，每块整个丢（一张表不会剩半张），并在顶部放一行 `earlier output trimmed — /export has the full text`。M1：10 万行 RSS +30.7 MB，一帧约 1 ms（行块；S7a 没有重测）。
+- 上限 20 万**块**；超出丢最旧的，每块整个丢（一张表不会剩半张），并在顶部放一行 `earlier output trimmed — /export has the full text`。M1：10 万行 RSS +16.1 MB（S7a round 3，三次跑 +16.10/+16.11/+16.13 MB；S2 时 +30.7 MB），一帧约 1 ms。一个 `Entry` 40 字节：放得下的行只存它的字符串和宽度，布局结果、续段标记和布局块的搜索文本在一个只有布局过才分配的 `Box` 里。
 - 视图要么跟随尾部，要么锚在某一块（`Pos{row, line}`：块号、块内行）上；resize 后停在同一块（块内行夹到新高度）。上滚后新输出不拖动视图，视口最后一行显示 `↓ N new lines · Ctrl+End`。
 - 提交的块不经过暂存：实时 region 是 `Region::unstaged()`，提交即原样入缓冲（不再在提交时按 width−1 预折行）；预览仍在帧里。（region 的暂存模式与 `TAIL_KEEP` 只剩它自己的测试在跑，也是唯一还把块压平成"提交时宽度的行"的地方；S7b 随暂存窗口一起删除。）
 
