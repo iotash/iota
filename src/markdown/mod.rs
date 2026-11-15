@@ -160,7 +160,10 @@ impl Writer {
                 self.flush_block(); // the closing fence
             } else {
                 let interrupted = match std::mem::replace(&mut self.block, Block::None) {
-                    Block::Math(math) => Some(math),
+                    Block::Math(math) => {
+                        self.sink.withdraw_block();
+                        Some(math)
+                    }
                     other => {
                         self.block = other;
                         self.flush_block();
@@ -301,7 +304,8 @@ impl Writer {
     /// Closes and renders the open block, whichever it is. A list re-emits its held blank
     /// after the render (the blank turned out to END the list, not to make it loose) —
     /// routed through `emit_blank` so it joins the blank-run collapse. A fence leaves the
-    /// display-math block it interrupted open again (`CodeBlock::interrupted`).
+    /// display-math block it interrupted open again (`CodeBlock::interrupted`), opened like a new
+    /// block: it pays its gap below the code and shows again from there.
     fn flush_block(&mut self) {
         let block = self.fragment();
         let (resumed, held_blank) = match &mut self.block {
@@ -315,7 +319,9 @@ impl Writer {
         if held_blank {
             self.emit_blank();
         }
-        self.block = resumed.map_or(Block::None, Block::Math);
+        if let Some(math) = resumed {
+            self.open_block(Block::Math(math));
+        }
     }
 
     /// Writes a closed block between `begin_block` and `end_block`, as its source

@@ -38,6 +38,13 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Changed
 
+- **Code blocks, tables, lists, quotes and formulas appear line by line.**
+  While the reply is being written, a code block shows each line as it
+  arrives, a table its rows (its columns widening as longer cells come in),
+  a list its items and a quote its lines, all at the window's width, so a
+  resize mid-reply lays them out again. The `rendering… · N lines` counter
+  that stood in for them until they were complete is gone. A display formula
+  shows as its source until its closing `$$`, then as the formula.
 - **Resizing the window re-lays-out the conversation.** Pull the window
   wider or narrower and what is on screen is laid out again for the new
   width, not cut and wrapped: a table's columns are recomputed (its long cells

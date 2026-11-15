@@ -462,7 +462,9 @@ fn rss_kib() -> u64 {
 /// allocator — the first one's freed pages are the second one's for nothing — so the RSS one
 /// reports depended on whether the other ran before it (the S7a review: +16 MB alone, +50 MB beside
 /// its neighbour). Here a number means one thing however the tests are invoked. Only with
-/// `IOTA_MEASURE_M1=1`; the child is marked by `IOTA_M1_CHILD` and runs `body`.
+/// `IOTA_MEASURE_M1=1`; the child is marked by `IOTA_M1_CHILD` and runs `body`. The mark is
+/// trusted: with `IOTA_M1_CHILD` already set in the environment, every scenario runs in the
+/// parent and its number is the shared-allocator one again — leave it unset.
 fn m1_alone(name: &str, body: impl FnOnce()) {
     if std::env::var_os("IOTA_MEASURE_M1").is_none() {
         return;

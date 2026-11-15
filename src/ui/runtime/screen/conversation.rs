@@ -276,6 +276,10 @@ impl Conversation {
 
     /// A live block as it stands: replacing the one under its id while it is held, appended
     /// otherwise (its first commit, or the cap dropped it meanwhile).
+    ///
+    /// Invariant: at most one block is open at a time — the buffer remembers one (`live`). A
+    /// turn has one markdown producer, so that holds; a second producer opening a block while the
+    /// first's is open would make the first's next commit an append, a duplicate.
     fn grow(&mut self, Live { id, layout, open }: Live) {
         let block = Block::Laid(layout);
         let held = self

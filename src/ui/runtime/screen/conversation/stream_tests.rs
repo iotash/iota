@@ -223,3 +223,46 @@ fn a_growing_block_at_the_tail_scrolls_by_what_it_grew() {
     // Not drawn since: what it grew is measured against the height it was last drawn at.
     assert_eq!(c.take_fresh(80, 10), 1);
 }
+
+/// What the text renderer writes for `md` at `width`, a line a row, SGR stripped.
+fn text_render(md: &str, width: usize) -> Vec<String> {
+    #[derive(Clone, Default)]
+    struct Shared(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Shared {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let out = Shared::default();
+    let mut w = crate::markdown::new_writer_to(Box::new(out.clone()), width);
+    w.write(md.as_bytes());
+    w.flush();
+    let s = String::from_utf8(out.0.lock().unwrap().clone()).unwrap();
+    s.lines().map(strip_sgr).collect()
+}
+
+#[test]
+fn a_formula_a_fence_interrupts_streams_to_where_the_text_render_puts_it() {
+    // The fence interrupts the open `$$` block, the code renders first, and the formula resumes
+    // after the closing fence — below the code, with the gap a block owes.
+    for md in [
+        "intro\n\n$$\na + b\n```\nx\n```\nc\n$$\nafter\n",
+        "intro\n$$\na + b\n```\nx\n```\nc\n$$\nafter\n",
+    ] {
+        let mut s = Streamed::new();
+        let mut c = Conversation::new();
+        for line in md.split_inclusive('\n') {
+            c.push(s.feed(line));
+        }
+        c.push(s.end());
+        assert_eq!(shown(&mut c, 40), text_render(md, 40), "{md:?}");
+        assert!(
+            c.lines_after(0, 40, false).0.len() == shown(&mut c, 40).len(),
+            "{md:?}: a block left open"
+        );
+    }
+}
