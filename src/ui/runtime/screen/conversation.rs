@@ -46,6 +46,10 @@ struct Entry {
     /// A row's display width (a laid-out block: 0, unused).
     cols: usize,
     lines: Option<Laid>,
+    /// A laid-out block's search text: its plain lines at the FIRST width it was laid out at,
+    /// joined by `\n`, kept for good — what a search scans never depends on the width, so a
+    /// resize lays nothing out for a search (a row's search text is the row itself).
+    text: Option<String>,
 }
 
 impl Entry {
@@ -58,6 +62,7 @@ impl Entry {
             block,
             cols,
             lines: None,
+            text: None,
         }
     }
 
@@ -78,7 +83,10 @@ impl Entry {
             return;
         }
         if self.lines.as_ref().is_none_or(|l| l.width != width) {
-            let (lines, joins) = self.block.display(width).into_iter().unzip();
+            let (lines, joins): (Vec<String>, _) = self.block.display(width).into_iter().unzip();
+            if self.text.is_none() && matches!(self.block, Block::Laid(_)) {
+                self.text = Some(strip_sgr(&lines.join("\n")));
+            }
             self.lines = Some(Laid {
                 width,
                 lines,
@@ -109,25 +117,49 @@ impl Entry {
     }
 
     /// What a search scans: a row's text as written (its wrap does not split a match), a
-    /// laid-out block's lines at `width` joined by `\n` (no query matches across two of them).
-    fn text(&mut self, width: usize) -> String {
-        match &self.block {
-            Block::Row(t) => t.clone(),
-            Block::Laid(_) => self.lines(width).join("\n"),
+    /// laid-out block's search text ([`Entry::text`]) — laid out at `width` only if it never was.
+    fn search_text(&mut self, width: usize) -> &str {
+        if let Block::Laid(_) = self.block
+            && self.text.is_none()
+        {
+            self.fill(width); // a block never laid out has no cache either: this lays it out
+        }
+        match (&self.block, &self.text) {
+            (Block::Row(t), _) => t,
+            (Block::Laid(_), Some(t)) => t,
+            (Block::Laid(_), None) => "",
         }
     }
 
-    /// The bytes between two of the lines [`Entry::text`] joins.
-    const fn joint(&self) -> usize {
-        match self.block {
-            Block::Row(_) => 0,
-            Block::Laid(_) => 1,
+    /// The display line at `width` holding occurrence `k` of `query` (0 when there is none): in a
+    /// row, by the byte the match starts at (a match its wrap splits is on the line its first byte
+    /// is on); in a laid-out block, by counting the occurrences line by line.
+    fn line_of(&mut self, k: usize, query: &str, width: usize) -> usize {
+        if let Block::Row(t) = &self.block {
+            let off = match_ranges(&strip_sgr(t), query).get(k).map_or(0, |r| r.0);
+            let mut seen = 0;
+            return self
+                .lines(width)
+                .iter()
+                .position(|l| {
+                    seen += strip_sgr(l).len();
+                    off < seen
+                })
+                .unwrap_or(0);
         }
+        let mut seen = 0;
+        self.lines(width)
+            .iter()
+            .position(|l| {
+                seen += match_ranges(&strip_sgr(l), query).len();
+                k < seen
+            })
+            .unwrap_or(0)
     }
 }
 
 /// What a draw highlights while a search is on: every occurrence of `query`, and brighter the
-/// one n/p is parked on (block number, byte offset in its search text).
+/// one n/p is parked on (block number, which occurrence in it).
 pub(crate) struct Highlight<'a> {
     pub(crate) query: &'a str,
     pub(crate) current: Option<(u64, usize)>,
@@ -266,15 +298,26 @@ impl Conversation {
         self.first_number()
     }
 
-    /// The blocks numbered `from` on, as (number, search text at `width`) — what a search scans.
-    pub(crate) fn texts_from(&mut self, from: u64, width: usize) -> Vec<(u64, String)> {
+    /// The blocks numbered `from` on, as (number, search text) — what a search scans. A laid-out
+    /// block's text is the one it got when it was first laid out, so this lays out only the blocks
+    /// no draw ever reached (at `width`), once.
+    pub(crate) fn texts_from(&mut self, from: u64, width: usize) -> Vec<(u64, &str)> {
         let first = self.first_number().max(from);
         let skip = self.index_of(first).unwrap_or(self.rows.len());
+        for e in self.rows.iter_mut().skip(skip) {
+            e.search_text(width);
+        }
         self.rows
-            .iter_mut()
+            .iter()
             .skip(skip)
             .zip(first..)
-            .map(|(e, n)| (n, e.text(width)))
+            .map(|(e, n)| {
+                let t: &str = match (&e.block, &e.text) {
+                    (Block::Row(t), _) | (Block::Laid(_), Some(t)) => t,
+                    (Block::Laid(_), None) => "",
+                };
+                (n, t)
+            })
             .collect()
     }
 
@@ -305,22 +348,13 @@ impl Conversation {
         }
     }
 
-    /// Anchors the view so the display line holding byte `off` of block `n`'s search text is in
-    /// the middle of the viewport — in a wrapped row, the line that byte was wrapped onto.
-    pub(crate) fn jump_to(&mut self, n: u64, off: usize, width: usize, h: usize) {
+    /// Anchors the view so the display line holding occurrence `k` of `query` in block `n` is in
+    /// the middle of the viewport. Only that block is laid out (at `width`).
+    pub(crate) fn jump_to(&mut self, (n, k): (u64, usize), query: &str, width: usize, h: usize) {
         let Some(row) = self.index_of(n) else {
             return;
         };
-        let joint = self.rows[row].joint();
-        let mut seen = 0;
-        let line = self.rows[row]
-            .lines(width)
-            .iter()
-            .position(|l| {
-                seen += strip_sgr(l).len() + joint;
-                off < seen
-            })
-            .unwrap_or(0);
+        let line = self.rows[row].line_of(k, query, width);
         let top = self.up(Pos { row, line }, h / 2, width);
         self.anchor(top);
         self.follow_if_at_bottom(width, h);
@@ -494,7 +528,8 @@ impl Conversation {
 
     /// Block `index`'s lines at `width` with the search's matches highlighted, or `None` when it
     /// has none (the cached lines serve then). A row is highlighted BEFORE it is wrapped, so a
-    /// match its wrap splits is lit on both lines; a laid-out block line by line.
+    /// match its wrap splits is lit on both lines; a laid-out block line by line, its occurrences
+    /// counted in order to find the current one.
     fn highlighted(
         &mut self,
         index: usize,
@@ -502,35 +537,37 @@ impl Conversation {
         hl: &Highlight<'_>,
     ) -> Option<Vec<String>> {
         let n = self.number_of(index);
-        let cur = hl
-            .current
-            .and_then(|(cn, off)| (Some(cn) == n).then_some(off));
+        let cur = hl.current.and_then(|(cn, k)| (Some(cn) == n).then_some(k));
         let entry = &mut self.rows[index];
         if let Block::Row(text) = &entry.block {
-            if match_ranges(&strip_sgr(text), hl.query).is_empty() {
+            let ranges = match_ranges(&strip_sgr(text), hl.query);
+            if ranges.is_empty() {
                 return None;
             }
-            let lit = highlight_line(text, hl.query, cur);
+            let off = cur.and_then(|k| ranges.get(k)).map(|r| r.0);
+            let lit = highlight_line(text, hl.query, off);
             return Some(if entry.cols > width {
                 wrap_ansi(&lit, width)
             } else {
                 vec![lit]
             });
         }
-        let mut base = 0;
+        let mut seen = 0;
         let mut any = false;
         let mut out = Vec::new();
         for line in entry.lines(width) {
-            let len = strip_sgr(line).len();
-            if match_ranges(&strip_sgr(line), hl.query).is_empty() {
+            let ranges = match_ranges(&strip_sgr(line), hl.query);
+            if ranges.is_empty() {
                 out.push(line.clone());
-            } else {
-                any = true;
-                let here =
-                    cur.and_then(|off| (base..base + len).contains(&off).then(|| off - base));
-                out.push(highlight_line(line, hl.query, here));
+                continue;
             }
-            base += len + 1;
+            any = true;
+            let here = cur
+                .and_then(|k| k.checked_sub(seen))
+                .and_then(|i| ranges.get(i))
+                .map(|r| r.0);
+            out.push(highlight_line(line, hl.query, here));
+            seen += ranges.len();
         }
         any.then_some(out)
     }

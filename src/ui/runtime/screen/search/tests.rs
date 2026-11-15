@@ -407,3 +407,78 @@ fn a_write_out_during_a_search_writes_plain_rows_and_the_search_survives() {
         "{out:?}"
     );
 }
+
+/// A block whose layouts are counted.
+struct Counted(std::sync::Arc<std::sync::atomic::AtomicUsize>, usize);
+
+impl crate::ui::block::Layout for Counted {
+    fn lines(&self, width: usize) -> Vec<String> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        vec![format!("block {} needle {}", self.1, "x".repeat(width / 2))]
+    }
+}
+
+/// The review's S1: after a width change a search lays out no block to scan — what it scans does
+/// not depend on the width — and only the block a jump lands in is laid out at the new width.
+#[test]
+fn a_search_after_a_resize_lays_out_only_the_block_it_jumps_to() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let calls = std::sync::Arc::new(AtomicUsize::new(0));
+    let mut conv = crate::ui::runtime::screen::conversation::Conversation::new();
+    conv.push(
+        (0..1000)
+            .map(|i| crate::ui::block::Block::laid(Counted(std::sync::Arc::clone(&calls), i)))
+            .collect(),
+    );
+    conv.take_fresh(80); // the draw that lands them lays each out once, at 80
+    assert_eq!(calls.load(Ordering::Relaxed), 1000);
+    let mut search = super::Search::new(&conv, 999);
+    search.set_query(&mut conv, "needle", 80);
+    assert_eq!(search.status(), "1000/1000");
+    let at_80 = calls.load(Ordering::Relaxed);
+    assert_eq!(at_80, 1000, "the scan laid out nothing");
+    // The window narrows to 60: a new query and the catch-up scan again, nothing is laid out.
+    search.catch_up(&mut conv, 60);
+    search.set_query(&mut conv, "needle", 60);
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        at_80,
+        "a resize costs a search no layout"
+    );
+    let hit = search.current().unwrap();
+    conv.jump_to(hit, search.query(), 60, 5);
+    let laid = calls.load(Ordering::Relaxed) - at_80;
+    assert!(
+        (1..=5).contains(&laid),
+        "the jump laid out its block and the 5-line viewport around it, nothing else: {laid}"
+    );
+}
+
+/// The review's N1: the walk keeps WHICH occurrence it is on across a width change, and the line
+/// it jumps to at the new width is the one that occurrence is on.
+#[test]
+fn the_walk_keeps_its_occurrence_across_a_width_change() {
+    let mut conv = crate::ui::runtime::screen::conversation::Conversation::new();
+    let row = format!("needle {} needle {} needle", "a".repeat(30), "b".repeat(30));
+    conv.push(rows_of(&["before".to_owned(), row, "after".to_owned()]));
+    let mut search = super::Search::new(&conv, 2);
+    search.set_query(&mut conv, "needle", 100);
+    assert_eq!(
+        search.current(),
+        Some((1, 2)),
+        "parked on the last above: the third"
+    );
+    search.catch_up(&mut conv, 20);
+    assert_eq!(
+        search.current(),
+        Some((1, 2)),
+        "still the third after the resize"
+    );
+    // At 20 columns the row wraps into 5 lines; the third needle's first byte is on the fourth.
+    conv.jump_to(search.current().unwrap(), search.query(), 20, 3);
+    let shown = conv.view_lines(20, 3, None);
+    assert_eq!(
+        shown[1], "bbbbbbbbbbbbbbb need",
+        "the jump centres that line"
+    );
+}

@@ -6,8 +6,10 @@
 //!
 //! Hits are kept by block NUMBER (blocks are numbered as committed), so output arriving during a
 //! search is scanned on its own — only the new blocks — and the cap dropping old blocks drops their
-//! hits without moving the others. A laid-out block's text is its lines at the width it was scanned
-//! at, so a width change rescans (the walk stays on the block it was on). The walk starts at the hit nearest above where the view was, the way
+//! hits without moving the others. A hit is (block number, which occurrence in the block), and what
+//! is scanned never depends on the width — a row's text, a laid-out block's plain lines at the width
+//! it was first laid out at — so a resize rescans nothing and the walk keeps its hit: only the
+//! block a jump lands in is laid out at the new width, to find the line its occurrence is on. The walk starts at the hit nearest above where the view was, the way
 //! a search through a history goes back first; `n`/`p` step through document order and wrap at the
 //! ends. Leaving keeps the view where the walk put it (`Enter`) or puts it back exactly where it was
 //! before the search (`Esc`).
@@ -37,13 +39,11 @@ pub(crate) struct Search {
     /// The row number to start the walk above: the last row the view showed then.
     above: u64,
     query: String,
-    /// (row number, byte offset in the row's plain text), in document order.
+    /// (block number, which occurrence of the query in it), in document order.
     hits: Vec<(u64, usize)>,
     idx: usize,
     /// The blocks scanned so far, by number: the next one to scan.
     scanned: u64,
-    /// The width the hits were found at.
-    width: usize,
 }
 
 impl Search {
@@ -56,7 +56,6 @@ impl Search {
             hits: Vec::new(),
             idx: 0,
             scanned: conv.pushed(),
-            width: 0,
         }
     }
 
@@ -68,7 +67,6 @@ impl Search {
     /// Searches the whole buffer for `query`; parks on the hit nearest above where the view was.
     pub(crate) fn set_query(&mut self, conv: &mut Conversation, query: &str, width: usize) {
         query.clone_into(&mut self.query);
-        self.width = width;
         self.hits = Self::scan(conv, 0, query, width);
         self.scanned = conv.pushed();
         self.idx = self
@@ -79,22 +77,12 @@ impl Search {
     }
 
     /// Scans the blocks committed since the last scan, appending their hits; drops the hits of
-    /// blocks the cap dropped. At another width everything is scanned again and the walk parks on
-    /// the first hit of the block it was on (or the nearest one after it).
+    /// blocks the cap dropped. (`width` lays out only a new block no draw has reached yet.)
     pub(crate) fn catch_up(&mut self, conv: &mut Conversation, width: usize) {
-        let parked = self.current();
-        if width != self.width && !self.query.is_empty() {
-            self.width = width;
-            self.hits = Self::scan(conv, 0, &self.query, width);
-            self.scanned = conv.pushed();
-            self.idx = parked
-                .and_then(|(n, _)| self.hits.iter().position(|&(m, _)| m >= n))
-                .unwrap_or(0);
-            return;
-        }
         if conv.pushed() == self.scanned {
             return;
         }
+        let parked = self.current();
         let gone = conv.first_held();
         self.hits.retain(|&(n, _)| n >= gone);
         self.hits
@@ -103,6 +91,11 @@ impl Search {
         self.idx = parked
             .and_then(|h| self.hits.iter().position(|x| *x == h))
             .unwrap_or(0);
+    }
+
+    /// The query.
+    pub(crate) fn query(&self) -> &str {
+        &self.query
     }
 
     /// `n`/`p`, wrapping at the ends.
@@ -138,10 +131,16 @@ impl Search {
 
     fn scan(conv: &mut Conversation, from: u64, query: &str, width: usize) -> Vec<(u64, usize)> {
         let rows = conv.texts_from(from, width);
-        find_hits(rows.iter().map(|(_, t)| t.as_str()), query)
-            .into_iter()
-            .map(|h| (rows[h.line].0, h.off))
-            .collect()
+        let mut out: Vec<(u64, usize)> = Vec::new();
+        for h in find_hits(rows.iter().map(|(_, t)| *t), query) {
+            let n = rows[h.line].0;
+            let k = match out.last() {
+                Some(&(m, k)) if m == n => k + 1,
+                _ => 0,
+            };
+            out.push((n, k));
+        }
+        out
     }
 }
 

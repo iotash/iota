@@ -135,6 +135,8 @@ pub(crate) struct Screen<W: Write> {
     written: u64,
     /// The search under way, if one is.
     search: Option<Search>,
+    /// A resize happened with a search on: the next draw puts the view back on its hit.
+    rejump: bool,
     /// Whether mouse reporting is requested while the alternate screen is shown ([`MOUSE_ON`]);
     /// `false` never writes a mouse sequence at all.
     mouse: bool,
@@ -202,6 +204,7 @@ impl<W: Write> Screen<W> {
             place: Place::Main,
             live,
             search: None,
+            rejump: false,
             written: 0,
             mouse,
             sel: None,
@@ -222,6 +225,7 @@ impl<W: Write> Screen<W> {
         self.term.backend_mut().size = size;
         // A selection is made at a width; another width wraps its rows differently.
         self.sel = None;
+        self.rejump = self.search.is_some();
         self.drag = None;
         self.conv.release();
     }
@@ -463,7 +467,7 @@ impl<W: Write> Screen<W> {
                 if let Some(s) = &mut self.search {
                     s.set_query(&mut self.conv, &q, width);
                     match s.current() {
-                        Some((n, off)) => self.conv.jump_to(n, off, width, h),
+                        Some(hit) => self.conv.jump_to(hit, s.query(), width, h),
                         None => self.conv.restore(s.origin(), width, h),
                     }
                 }
@@ -471,8 +475,8 @@ impl<W: Write> Screen<W> {
             SearchOp::Step(dir) => {
                 if let Some(s) = &mut self.search {
                     s.step(dir);
-                    if let Some((n, off)) = s.current() {
-                        self.conv.jump_to(n, off, width, h);
+                    if let Some(hit) = s.current() {
+                        self.conv.jump_to(hit, s.query(), width, h);
                     }
                 }
             }
@@ -586,6 +590,13 @@ impl<W: Write> Screen<W> {
         self.view_h = view_h;
         if let Some(s) = &mut self.search {
             s.catch_up(&mut self.conv, usize::from(width));
+            // A resize re-lays-out the block the walk is on: the view goes back to its hit.
+            if std::mem::take(&mut self.rejump)
+                && let Some(hit) = s.current()
+            {
+                self.conv
+                    .jump_to(hit, s.query(), usize::from(width), usize::from(view_h));
+            }
         }
         let lines = self.view_lines(usize::from(width), usize::from(view_h), prompt);
         let fresh = self.conv.take_fresh(usize::from(width));

@@ -132,8 +132,8 @@ fn past_the_cap_the_oldest_rows_go_and_a_first_row_says_so() {
     assert_eq!(c.view_lines(80, 3, None)[0], "r002");
     c.push(rows_of(&rows(8, 3))); // 11 rows: r000 and r001 go, the notice comes in
     assert_eq!(c.rows.len(), 10);
-    assert!(c.rows[0].text(80).contains(TRIMMED));
-    assert_eq!(c.rows[1].text(80), "r002");
+    assert!(c.rows[0].search_text(80).to_owned().contains(TRIMMED));
+    assert_eq!(c.rows[1].search_text(80).to_owned(), "r002");
     assert_eq!(
         c.view_lines(80, 3, None)[0],
         "r002",
@@ -146,7 +146,7 @@ fn past_the_cap_the_oldest_rows_go_and_a_first_row_says_so() {
     assert_eq!(
         c.rows
             .iter_mut()
-            .map(|r| r.text(80))
+            .map(|r| r.search_text(80).to_owned())
             .filter(|t| t.contains(TRIMMED))
             .count(),
         1
