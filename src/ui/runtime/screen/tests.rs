@@ -739,6 +739,91 @@ fn a_drag_into_the_frame_scrolls_down_to_the_tail() {
     );
 }
 
+/// The mirror of the drag below: held on the viewport's top row past the session's first line,
+/// the edge scroll stops there and the viewport keeps all its rows at every step.
+#[test]
+fn a_drag_above_the_top_row_keeps_the_viewport_full() {
+    let (mut s, buf) = mouse_screen(40, 12);
+    s.push(&rows(20));
+    s.draw_frame(&frame(40), None).unwrap();
+    // The viewport is rows 0–7 (lines 12–19); press on line-017, col 0.
+    select(
+        &mut s,
+        SelectOp::Press {
+            col: 0,
+            row: 5,
+            clicks: 1,
+        },
+    );
+    for _ in 0..20 {
+        select(&mut s, SelectOp::Drag { col: 0, row: 0 });
+        s.draw_frame(&frame(40), None).unwrap();
+        let g = grid(&replay(&buf, 12, 40));
+        assert!(g[..8].iter().all(|l| l.starts_with("line-")), "{g:#?}");
+    }
+    let g = grid(&replay(&buf, 12, 40));
+    let head: Vec<String> = (0..8).map(|i| format!("line-{i:03}")).collect();
+    assert_eq!(&g[..8], &head[..], "at the first line: {g:#?}");
+    select(&mut s, SelectOp::Release);
+    let text = s.take_copied().expect("the drag copies");
+    assert!(text.starts_with("line-000\n"), "{text}");
+    assert_eq!(text.lines().count(), 18, "{text}");
+}
+
+/// The owner's drag: pressed at the tail, dragged down past the viewport's last row and on into
+/// the frame and below it. The viewport keeps all its rows — the last one included — while the
+/// pointer is out there, and the selection runs to the last line.
+#[test]
+fn a_drag_below_the_last_row_keeps_the_viewport_full() {
+    let (mut s, buf) = mouse_screen(40, 12);
+    s.push(&rows(100));
+    s.draw_frame(&frame(40), None).unwrap();
+    let tail: Vec<String> = (92..100).map(|i| format!("line-{i:03}")).collect();
+    // The viewport is rows 0–7 (lines 92–99); press on line-094, col 0.
+    select(
+        &mut s,
+        SelectOp::Press {
+            col: 0,
+            row: 2,
+            clicks: 1,
+        },
+    );
+    for row in [7, 8, 9, 10, 11, 11, 11] {
+        select(&mut s, SelectOp::Drag { col: 3, row });
+        s.draw_frame(&frame(40), None).unwrap();
+        let g = grid(&replay(&buf, 12, 40));
+        assert_eq!(&g[..8], &tail[..], "pointer on row {row}: {g:#?}");
+    }
+    select(&mut s, SelectOp::Release);
+    let text = s.take_copied().expect("the drag copies");
+    assert_eq!(text, tail[2..].join("\n"));
+
+    // Scrolled back, the edge scroll moves the view down to the tail and stops there, every step
+    // a full viewport.
+    for _ in 0..4 {
+        s.view(ViewOp::HalfUp).unwrap();
+    }
+    s.draw_frame(&frame(40), None).unwrap();
+    select(
+        &mut s,
+        SelectOp::Press {
+            col: 0,
+            row: 0,
+            clicks: 1,
+        },
+    );
+    for _ in 0..20 {
+        select(&mut s, SelectOp::Drag { col: 3, row: 11 });
+        s.draw_frame(&frame(40), None).unwrap();
+        let g = grid(&replay(&buf, 12, 40));
+        assert!(g[..8].iter().all(|l| l.starts_with("line-")), "{g:#?}");
+    }
+    let g = grid(&replay(&buf, 12, 40));
+    assert_eq!(&g[..8], &tail[..], "at the tail: {g:#?}");
+    select(&mut s, SelectOp::Release);
+    assert!(s.take_copied().unwrap().ends_with("line-099"));
+}
+
 /// A double-click takes the word under it; a triple-click the whole row; a plain click selects
 /// and copies nothing.
 #[test]

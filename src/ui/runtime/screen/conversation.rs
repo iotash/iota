@@ -296,7 +296,15 @@ impl Conversation {
         let View::At(top) = self.view else {
             return;
         };
+        // Never past the top of the last screenful: a held view does not fall back to following
+        // there, and an anchor beyond it would show the tail's last lines alone.
         let to = self.down(top, n, width);
+        let floor = self.bottom_top(width, h);
+        let to = if (to.row, to.line) > (floor.row, floor.line) {
+            floor
+        } else {
+            to
+        };
         self.view = View::At(to);
         self.follow_if_at_bottom(width, h);
     }
@@ -453,16 +461,21 @@ impl Conversation {
     fn top_line(&mut self, width: usize, h: usize) -> Pos {
         match self.view {
             View::At(p) => p,
-            View::Follow => match self.rows.len().checked_sub(1) {
-                None => Pos { row: 0, line: 0 },
-                Some(last) => {
-                    let end = Pos {
-                        row: last,
-                        line: self.rows[last].height(width) - 1,
-                    };
-                    self.up(end, h.saturating_sub(1), width)
-                }
-            },
+            View::Follow => self.bottom_top(width, h),
+        }
+    }
+
+    /// The top line of the last screenful: `h` lines up from the end.
+    fn bottom_top(&mut self, width: usize, h: usize) -> Pos {
+        match self.rows.len().checked_sub(1) {
+            None => Pos { row: 0, line: 0 },
+            Some(last) => {
+                let end = Pos {
+                    row: last,
+                    line: self.rows[last].height(width) - 1,
+                };
+                self.up(end, h.saturating_sub(1), width)
+            }
         }
     }
 

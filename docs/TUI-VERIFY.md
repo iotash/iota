@@ -264,6 +264,9 @@ parses them). The GUI terminals are not drivable from the test runner: tick thes
       the terminal reports the release.
 - [ ] **4c.9** herdr with a real mouse: the wheel, a drag, a click — and whether a copy over SSH
       reaches your local clipboard (OSC 52 through herdr).
+- [ ] **4c.10** At the tail, drag down past the conversation's last row, into the frame and below
+      it: every viewport row stays as it was (the edge scroll has nowhere further to go), and
+      scrolled back first, the view scrolls down to the tail and stops there.
 
 ## 5. Window title (the title stack)
 
