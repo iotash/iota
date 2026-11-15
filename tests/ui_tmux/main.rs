@@ -693,6 +693,21 @@ fn tmux_fullscreen_signal() {
     run_scenario("40-fullscreen-signal.sh");
 }
 
+/// L4 #46 (tui-plan S6) — the mouse: the wheel pauses and resumes following, a click places the
+/// composer's cursor, a drag held at the edge selects three screens and pastes elsewhere whole, a
+/// surface takes the viewport.
+#[test]
+fn tmux_fullscreen_mouse() {
+    run_scenario("46-fullscreen-mouse.sh");
+}
+
+/// L4 #47 (tui-plan S6) — the mouse through tmux itself: `mouse on` passes the wheel and a drag on,
+/// `mouse off` swallows them and the keyboard still works, `mouse: false` asks for no reporting.
+#[test]
+fn tmux_fullscreen_mouse_through_tmux() {
+    run_scenario("47-fullscreen-mouse-tmux.sh");
+}
+
 /// M2 (tui-plan §7) — a measurement, not a check: the bytes the tmux iota runs in sends to its own
 /// terminal for typing, a stream and a drag (`measure/m2-bytes.sh`). Runs only with
 /// `IOTA_TMUX_MEASURE=1`; `TMUX_BIN` picks the tmux under test.

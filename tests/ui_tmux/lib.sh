@@ -102,6 +102,17 @@ _history() {
 type_() { tm send-keys -t s -l "$1"; }
 key() { tm send-keys -t s "$@"; }
 
+# mouse <button> <col> <row> [M|m] [target] — one SGR (1006) mouse report, 1-based cells, as the
+# terminal sends it: 0 left, 32 left drag, 64 wheel up, 65 wheel down; `M` press or motion, `m`
+# release. Written straight into the pane's input (`send-keys -H`), so it is what the app reads —
+# tmux's own mouse handling is not involved (scenario 47 goes through it).
+mouse() {
+    local hex
+    hex="$(printf '\033[<%s;%s;%s%s' "$1" "$2" "$3" "${4:-M}" | od -An -tx1 | tr -s ' \n' ' ')"
+    # shellcheck disable=SC2086 # one argument per byte
+    tm send-keys -t "${5:-s}" -H $hex
+}
+
 # write_iota_config <provider> <model> — the pane's config file. The endpoint, the model and the
 # agent a run names all live in `$SCEN_HOME/.iota.yaml` now: `-k`, `-u` and the positional
 # provider name were retired with the agent-first surface, so a scenario points at the mock the
@@ -133,11 +144,14 @@ EOF
 # the config ever touches the developer's own, and HERDR_ENV is unset so a suite run from inside a
 # herdr pane (the tmux server inherits the runner's environment) never has the scenarios' iota
 # report to the developer's own pane — the herdr host is pinned by tests/host over a mock socket.
+#
+# $IOTA_ENV, when a scenario sets it, is more of `env`'s arguments for the pane (`-u NAME`,
+# `NAME=value`): the mouse scenario puts its clipboard stub first on PATH that way.
 iota_cmd() {
     local kind="$1" model="$2"
     shift 2
     write_iota_config "$kind" "$model"
-    echo "env -u HERDR_ENV HOME=$SCEN_HOME $IOTA_BIN $*"
+    echo "env -u HERDR_ENV ${IOTA_ENV:-} HOME=$SCEN_HOME $IOTA_BIN $*"
 }
 
 # _launch <cwd|""> <provider> <model> <width> <height> [extra iota args…] — a fresh private
