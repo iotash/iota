@@ -1441,3 +1441,72 @@ fn a_dialog_in_a_pane_the_frame_fills_is_still_on_the_screen() {
     );
     h.quit_and_join(Duration::from_secs(5));
 }
+
+/// The owner's S7a check through the real loop and screen: a reply's table, as the terminal's
+/// markdown sink commits it (its source, laid out at the draw's width), then the window pulled
+/// from 80 to 160 columns and back to 60. At every width the box on screen is whole and within
+/// the width, and at 160 the long cells sit on one row each — the columns were computed again,
+/// not the rows of 80 columns wrapped.
+#[test]
+fn a_table_on_screen_is_laid_out_again_when_the_window_widens_and_narrows() {
+    use crate::markdown::{CodeTheme, Fragment, PreviewHandle, RenderOptions, Sink, Writer};
+    struct Keep(Arc<Mutex<Vec<Block>>>);
+    impl Sink for Keep {
+        fn write(&mut self, rendered: &str) {
+            let mut out = self.0.lock().unwrap();
+            out.extend(Block::rows(rendered.lines().map(str::to_owned)));
+        }
+        fn write_block(&mut self, block: Fragment, _rendered: &str) {
+            self.0.lock().unwrap().push(Block::laid(block));
+        }
+        fn width(&self) -> usize {
+            80
+        }
+        fn block_preview(&mut self, _label: &str) -> Option<Box<dyn PreviewHandle>> {
+            None
+        }
+    }
+    let out = Arc::new(Mutex::new(Vec::new()));
+    let mut w = Writer::new(
+        Box::new(Keep(Arc::clone(&out))),
+        RenderOptions {
+            color: false,
+            code_theme: CodeTheme::Monokai,
+        },
+    );
+    w.write(b"| name | what it does |\n|---|---|\n| region | stages the rows a preview replaces, in the frame above the composer |\n| conversation | holds every committed block and lays each one out at the width |\n");
+    w.flush();
+    drop(w);
+    let blocks = std::mem::take(&mut *out.lock().unwrap());
+    let lh = idle_loop();
+    lh.tx.send(UiMsg::Scrollback(blocks)).unwrap();
+    lh.sync();
+    for (w, h) in [(80, 24), (160, 24), (60, 24)] {
+        lh.resize(w, h);
+        lh.sync();
+        let g = grid(&parse_sized(&lh.buf, w, h));
+        let dump = g.join("\n");
+        let table: Vec<&String> = g
+            .iter()
+            .filter(|r| r.starts_with(['┌', '│', '├', '└']))
+            .collect();
+        assert!(table.len() >= 7, "{w}: the table is not on screen:\n{dump}");
+        let width = table[0].trim_end().chars().count();
+        for row in &table {
+            let row = row.trim_end();
+            assert!(
+                row.ends_with(['┐', '│', '┤', '┘']) && row.chars().count() == width,
+                "{w}: the box broke:\n{dump}"
+            );
+        }
+        assert!(
+            width < usize::from(w),
+            "{w}: the table reaches the width:\n{dump}"
+        );
+        let one_row = g
+            .iter()
+            .any(|r| r.contains("in the frame above the composer"));
+        assert_eq!(one_row, w == 160, "{w}: the long cell's rows:\n{dump}");
+    }
+    lh.quit_and_join(Duration::from_secs(2));
+}

@@ -78,6 +78,7 @@
 //! | `43-fullscreen-early-exit.sh` | tui-plan S4 | — (`--help`, a bad config, a missing session end before the first frame — no `?1049h`, the message on the shell's screen, the tty canonical; the next iota starts and exits cleanly) |
 //! | `44-fullscreen-suspend.sh` | tui-plan S4 | — (Ctrl+Z and SIGTSTP hand the terminal back — main screen, canonical tty, paste off, a stopped job; `fg` repaints everything at the new size; the run goes on and leaves its conversation) |
 //! | `45-fullscreen-crash.sh` | tui-plan S4 | — (a panic on request — the hook leaves the alternate screen before the report, tty canonical; SIGTERM twice while a stuck MCP server holds the wind-down — the forced branch exits at once, 130, usable; a clean next run) |
+//! | `48-fullscreen-relayout.sh` | tui-plan S7a | — (a table, a nested list, a code block and a quote laid out again at 80, 160 and 60 columns: the box whole and inside the window, long cells on one row only at 160, wrapped list rows hanging under the item text, code wrapping under its gutter, the quote's bar on every row, the blank rows unchanged)
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -707,6 +708,13 @@ fn tmux_fullscreen_mouse() {
 #[test]
 fn tmux_fullscreen_mouse_through_tmux() {
     run_scenario("47-fullscreen-mouse-tmux.sh");
+}
+
+/// L4 #48 (tui-plan S7a) — a width change re-lays-out the conversation from source: a table, a
+/// nested list, a code block and a quote, the window pulled from 80 to 160 and back to 60.
+#[test]
+fn tmux_fullscreen_relayout() {
+    run_scenario("48-fullscreen-relayout.sh");
 }
 
 /// M2 (tui-plan §7) — a measurement, not a check: the bytes the tmux iota runs in sends to its own

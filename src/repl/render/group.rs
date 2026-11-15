@@ -574,3 +574,51 @@ impl Layout for DiffListing {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::DiffListing;
+    use crate::text::ansi::{ansi_width, strip_sgr};
+    use crate::ui::facade::Layout as _;
+
+    /// A file mutation's listing drawn at 60, 100 and back at 60: the line-number gutter holds
+    /// on every row, the ± background blocks reach the width the screen has (not the width of the
+    /// moment the call settled), and a long code line is truncated only where it does not fit.
+    #[test]
+    fn a_diff_listing_keeps_its_gutter_and_fills_its_background_at_each_width() {
+        let long = format!("let s = \"{}\";", "y".repeat(70));
+        let listing = DiffListing {
+            title: "src/main.rs".to_owned(),
+            body: [
+                "@@ -9,2 +9,2 @@",
+                " fn main() {",
+                "-    old();",
+                &format!("+    {long}"),
+            ]
+            .join("\n"),
+            budget: 24,
+            color: true,
+            dark: true,
+        };
+        for w in [60, 100, 60] {
+            let rows = listing.lines(w);
+            let plain: Vec<String> = rows.iter().map(|r| strip_sgr(r)).collect();
+            assert_eq!(rows.len(), 3, "{plain:#?}");
+            // The gutter: two blanks, the right-aligned number, the marker.
+            for (row, (n, k)) in plain.iter().zip([("9", ' '), ("10", '-'), ("10", '+')]) {
+                assert!(
+                    row.starts_with(&format!("  {n:>2} {k}")),
+                    "{w}: the gutter broke: {row:?}"
+                );
+            }
+            // The background block: the ± rows are painted to the full width.
+            for row in &rows[1..] {
+                assert!(row.contains("\x1b[48;"), "{w}: no background: {row:?}");
+                assert_eq!(ansi_width(row), w, "{w}: the block stops short: {row:?}");
+            }
+            assert_eq!(plain[2].contains('…'), w < 100, "{w}: {:?}", plain[2]);
+        }
+    }
+}

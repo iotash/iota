@@ -21,6 +21,7 @@
 //! | `straddle`    | `WIDESTART`, `y` + 40 × `中` (81 columns), `WIDEEND`          |
 //! | `blocks`      | [`blocks_doc`]: a 40-line document with a code block, a table and a list, one line per delta |
 //! | `emoji`       | [`EMOJI`]: a table whose cells carry emoji, flag sequences and VS16 characters |
+//! | `relayout`    | [`RELAYOUT`]: the owner's five elements, each wide enough to need a new layout at 60 columns and room to spread at 160 |
 //! | `run:<cmd>`   | ONE `shell` tool call, `{"command": <cmd>, "background": true}`, `finish_reason: tool_calls` |
 //! | `runfg:<cmd>` | the same call in the foreground (no `background` key)          |
 //! | `runtail:<cmd>` | the foreground call, then [`TRAILING`] as content AFTER it — a model that keeps talking past its call |
@@ -155,6 +156,12 @@ fn blocks_doc() -> String {
     d.push_str("\nBLOCKSEND\n");
     d
 }
+
+/// The `relayout` document (tui-plan S7a, scenario 48): a table whose long cells wrap at 80
+/// columns and fit on one row at 160, an ordered list with a long item and a long nested bullet, a
+/// code block with one long line (a run of `q`), a quote with a long paragraph — each block's
+/// first word a marker the scenario finds it by — then `RELAYOUTEND`.
+const RELAYOUT: &str = "RELAYOUTSTART\n\n| name | what it does |\n|---|---|\n| region | stages the rows a preview replaces, in the frame above the composer |\n| conversation | holds every committed block and lays each one out at the width |\n\nLISTHEAD\n\n1. listone has text long enough to wrap at sixty columns and then keep going a little\n2. listtwo\n   - nestedbullet also long enough to wrap when the screen is sixty columns wide\n10. listten\n\n```\nfn main() {\n    let s = \"qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq\";\n}\n```\n\n> quotehead is a quoted paragraph long enough to wrap at sixty columns, so its bar is drawn on every row it wraps onto\n\nRELAYOUTEND\n";
 
 /// The `emoji` document: a table whose cells carry a plain emoji, a flag sequence (two regional
 /// indicators), a VS16 character (a text-presentation base plus U+FE0F) and a skin-tone modifier —
@@ -438,6 +445,11 @@ fn stream_reply(sock: &mut TcpStream, prompt: &str, after_tool: bool) -> std::io
         }
     } else if prompt.starts_with("emoji") {
         content(sock, EMOJI)?;
+    } else if prompt.starts_with("relayout") {
+        for chunk in chunks(RELAYOUT, 40) {
+            content(sock, &chunk)?;
+            thread::sleep(Duration::from_millis(10));
+        }
     } else if let Some(rest) = prompt.strip_prefix("stream") {
         let mut args = rest.split_whitespace();
         let n: usize = args.next().and_then(|a| a.parse().ok()).unwrap_or(10);

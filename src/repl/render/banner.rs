@@ -564,6 +564,30 @@ mod tests {
         assert_eq!(str_width(&whole(0)), 85 + 4);
     }
 
+    /// One banner block, as the conversation holds it, drawn at 160, 80, 40 and back at 160: each
+    /// width lays the card out again from the facts — the directory cut to the width it has,
+    /// every row exactly that wide, and the whole path back when the window widens again (a
+    /// banner truncated at its first width would stay cut).
+    #[test]
+    fn one_banner_block_is_laid_out_again_at_40_80_and_160() {
+        let long = Path::new(
+            "/Volumes/build/agents/workspaces/2026-09/a-project-with-a-very-long-name/packages/cli",
+        );
+        let block = crate::ui::facade::Block::laid(Banner::new(&facts(long, None)));
+        let at = |w: usize| plain(&block.display(w));
+        let wide = at(160);
+        assert_eq!(wide.len(), 5, "{wide:#?}");
+        assert!(wide[3].contains("/packages/cli") && !wide[3].contains('…'));
+        assert!(wide.iter().all(|r| str_width(r) == str_width(&wide[0])));
+        for w in [80, 40] {
+            let rows = at(w);
+            assert_eq!(rows.len(), 5, "{w}: still the card");
+            assert!(rows[3].contains('…'), "{w}: the path is cut to fit");
+            assert!(rows.iter().all(|r| str_width(r) == w), "{w}: {rows:#?}");
+        }
+        assert_eq!(at(160), wide, "widening brings the whole path back");
+    }
+
     /// The skill-discovery warnings ride under the banner; with no overlay there are none.
     #[test]
     fn overlay_warnings_need_an_overlay() {
