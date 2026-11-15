@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use crate::text::{elapsed, tokens};
 use crate::tool::{Artifact, ArtifactKind};
 
+use crate::repl::render::diff::DiffRows;
 use crate::repl::render::styles::{dim, paint_label, red, truncate_runes};
 use crate::repl::render::transcript::{BlockKind, Inner, Transcript};
 use crate::text::go_duration;
@@ -407,10 +408,12 @@ impl Transcript {
                     Block::Row(format!("{header}{}", dim(&format!("  +{adds} -{dels}")))),
                     Block::laid(DiffListing {
                         title: a.title.clone(),
-                        body: a.lines.join("\n"),
-                        // The dynamic diff row budget: the live screen height, floored at 24
-                        // (`diffMinRows`) — a taller terminal earns a fuller diff.
-                        budget: usize::from(inner.u.height()).max(24),
+                        // Cut once to the dynamic row budget — the live screen height, floored
+                        // at 24 (`diffMinRows`): a taller terminal earns a fuller diff.
+                        rows: DiffRows::new(
+                            &a.lines.join("\n"),
+                            usize::from(inner.u.height()).max(24),
+                        ),
                         color: crate::app::color::enabled(),
                         dark: inner.dark,
                     }),
@@ -553,25 +556,19 @@ pub(crate) fn composing_label(name: &str) -> String {
 
 /// A file mutation's annotated diff listing (`render_diff`), laid out at the width of the draw:
 /// the code truncated and the ± background blocks padded to the width the screen has, the
-/// line-number gutter kept. The row budget is the one the screen earned when the call settled.
+/// line-number gutter kept. Only the rows within the budget the screen earned when the call
+/// settled are kept (`DiffRows`), never the whole body: a large file costs the buffer its listing,
+/// not its bytes.
 struct DiffListing {
     title: String,
-    body: String,
-    budget: usize,
+    rows: DiffRows,
     color: bool,
     dark: bool,
 }
 
 impl Layout for DiffListing {
     fn lines(&self, width: usize) -> Vec<String> {
-        crate::repl::render::diff::render_diff(
-            &self.title,
-            &self.body,
-            self.budget,
-            width,
-            self.color,
-            self.dark,
-        )
+        self.rows.render(&self.title, width, self.color, self.dark)
     }
 }
 
@@ -580,6 +577,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::DiffListing;
+    use crate::repl::render::diff::DiffRows;
     use crate::text::ansi::{ansi_width, strip_sgr};
     use crate::ui::facade::Layout as _;
 
@@ -591,14 +589,16 @@ mod tests {
         let long = format!("let s = \"{}\";", "y".repeat(70));
         let listing = DiffListing {
             title: "src/main.rs".to_owned(),
-            body: [
-                "@@ -9,2 +9,2 @@",
-                " fn main() {",
-                "-    old();",
-                &format!("+    {long}"),
-            ]
-            .join("\n"),
-            budget: 24,
+            rows: DiffRows::new(
+                &[
+                    "@@ -9,2 +9,2 @@",
+                    " fn main() {",
+                    "-    old();",
+                    &format!("+    {long}"),
+                ]
+                .join("\n"),
+                24,
+            ),
             color: true,
             dark: true,
         };

@@ -124,16 +124,12 @@ fn highlight_diff_line(text: &str, lang: &str, theme: CodeTheme, bg: &str) -> St
         .replace("\x1b[0m", &armed)
 }
 
-/// Renders unified hunk lines for the scrollback (chat/diff.go:136-199). `body` is the
-/// hunk lines joined with `'\n'` (an `Artifact` diff payload). Rows beyond `budget`
-/// collapse into a `"… +N more lines"` tail, and overwide code TRUNCATES (wrapping would
-/// wreck the alignment). `width <= 3` (startup, tests) skips width handling; with
-/// `color: false` the listing is the plain `"NNN + code"` form.
-///
-/// `title` is the artifact's file path: its base name names the grammar the code lines
-/// are highlighted with (chat/diff.go `diffLexer`), and an empty one means no
-/// highlighting at all.
-pub fn render_diff(
+/// Renders unified hunk lines for the scrollback in one go: [`DiffRows::new`] then
+/// [`DiffRows::render`]. `body` is the hunk lines joined with `'\n'` (an `Artifact` diff
+/// payload); rows beyond `budget` collapse into a `"… +N more lines"` tail. The goldens' entry
+/// point (here and in the transcript suite); the conversation keeps the `DiffRows`.
+#[cfg(test)]
+pub(crate) fn render_diff(
     title: &str,
     body: &str,
     budget: usize,
@@ -141,72 +137,111 @@ pub fn render_diff(
     color: bool,
     dark: bool,
 ) -> Vec<String> {
-    let lines: Vec<&str> = if body.is_empty() {
-        Vec::new()
-    } else {
-        body.split('\n').collect()
-    };
-    let rows = parse_diff_rows(&lines);
-    let (shown, extra) = if rows.len() > budget {
-        let n = budget.saturating_sub(1);
-        (&rows[..n], rows.len() - n)
-    } else {
-        (&rows[..], 0)
-    };
+    DiffRows::new(body, budget).render(title, width, color, dark)
+}
 
-    let max_n = shown.iter().map(|r| r.num).max().unwrap_or(0).max(1);
-    let gw = max_n.to_string().len();
-    // "  " indent + gutter + space + "+ " marker; the code gets the rest.
-    let code_w = width.saturating_sub(2 + gw + 3);
-    let (bg_add, bg_del, fg_add, fg_del) = diff_shades(dark);
-    let lang = diff_lang(title);
-    let theme = diff_code_theme(dark);
+/// A diff cut to its row budget once, when the call settles (tui-plan S7a): the rows shown and
+/// how many more there were. This is what the conversation keeps of a file mutation — never the
+/// whole body — and lays out again at every width ([`DiffRows::render`]).
+pub(crate) struct DiffRows {
+    rows: Vec<DiffRow>,
+    extra: usize,
+}
 
-    let mut out = Vec::with_capacity(shown.len() + 1);
-    for r in shown {
-        if r.gap {
-            out.push(format!("  {}", dim(&format!("{} ⋮", " ".repeat(gw)))));
-            continue;
-        }
-        let mut text = r.text.clone();
-        if width > 3 && code_w > 8 && ansi_width(&text) > code_w {
-            text = truncate_ansi(&text, code_w - 1, "…");
-        }
-        let row = if !color {
-            format!("  {:>gw$} {} {}", r.num, r.kind, text)
-        } else if r.kind == ' ' {
-            format!(
-                "  {} {}",
-                dim(&format!("{:>gw$}", r.num)),
-                dim(&format!("  {text}"))
-            )
+/// No screen is wider than this, so a stored code line never needs more: a minified line of
+/// megabytes keeps its first `u16::MAX` columns.
+const KEPT_COLS: usize = u16::MAX as usize;
+
+impl DiffRows {
+    /// The rows of `body` (the hunk lines joined with `'\n'`) within `budget`: past it, the
+    /// last row becomes the `"… +N more lines"` tail.
+    pub(crate) fn new(body: &str, budget: usize) -> Self {
+        let lines: Vec<&str> = if body.is_empty() {
+            Vec::new()
         } else {
-            // The block covers the gutter too: background from the line number through
-            // the padded end, with the number and marker in the row's accent color (the
-            // code keeps its own foregrounds).
-            let (bg, fg) = if r.kind == '-' {
-                (bg_del, fg_del)
-            } else {
-                (bg_add, fg_add)
-            };
-            let pad = if code_w > 8 {
-                " ".repeat(code_w.saturating_sub(ansi_width(&text)))
-            } else {
-                String::new()
-            };
-            format!(
-                "  {bg}{fg}{:>gw$} {} \x1b[39m{}{pad}\x1b[0m",
-                r.num,
-                r.kind,
-                highlight_diff_line(&text, lang, theme, bg)
-            )
+            body.split('\n').collect()
         };
-        out.push(row);
+        let mut rows = parse_diff_rows(&lines);
+        let extra = if rows.len() > budget {
+            let n = budget.saturating_sub(1);
+            let extra = rows.len() - n;
+            rows.truncate(n);
+            extra
+        } else {
+            0
+        };
+        for r in &mut rows {
+            if r.text.len() > KEPT_COLS {
+                r.text = truncate_ansi(&r.text, KEPT_COLS, "");
+            }
+        }
+        rows.shrink_to_fit();
+        Self { rows, extra }
     }
-    if extra > 0 {
-        out.push(dim(&format!("  … +{extra} more lines")));
+
+    /// The listing at `width` (chat/diff.go:136-199): overwide code TRUNCATES (wrapping would
+    /// wreck the alignment); `width <= 3` (startup, tests) skips width handling; with
+    /// `color: false` the listing is the plain `"NNN + code"` form.
+    ///
+    /// `title` is the artifact's file path: its base name names the grammar the code lines
+    /// are highlighted with (chat/diff.go `diffLexer`), and an empty one means no
+    /// highlighting at all.
+    pub(crate) fn render(&self, title: &str, width: usize, color: bool, dark: bool) -> Vec<String> {
+        let (shown, extra) = (&self.rows[..], self.extra);
+        let max_n = shown.iter().map(|r| r.num).max().unwrap_or(0).max(1);
+        let gw = max_n.to_string().len();
+        // "  " indent + gutter + space + "+ " marker; the code gets the rest.
+        let code_w = width.saturating_sub(2 + gw + 3);
+        let (bg_add, bg_del, fg_add, fg_del) = diff_shades(dark);
+        let lang = diff_lang(title);
+        let theme = diff_code_theme(dark);
+
+        let mut out = Vec::with_capacity(shown.len() + 1);
+        for r in shown {
+            if r.gap {
+                out.push(format!("  {}", dim(&format!("{} ⋮", " ".repeat(gw)))));
+                continue;
+            }
+            let mut text = r.text.clone();
+            if width > 3 && code_w > 8 && ansi_width(&text) > code_w {
+                text = truncate_ansi(&text, code_w - 1, "…");
+            }
+            let row = if !color {
+                format!("  {:>gw$} {} {}", r.num, r.kind, text)
+            } else if r.kind == ' ' {
+                format!(
+                    "  {} {}",
+                    dim(&format!("{:>gw$}", r.num)),
+                    dim(&format!("  {text}"))
+                )
+            } else {
+                // The block covers the gutter too: background from the line number through
+                // the padded end, with the number and marker in the row's accent color (the
+                // code keeps its own foregrounds).
+                let (bg, fg) = if r.kind == '-' {
+                    (bg_del, fg_del)
+                } else {
+                    (bg_add, fg_add)
+                };
+                let pad = if code_w > 8 {
+                    " ".repeat(code_w.saturating_sub(ansi_width(&text)))
+                } else {
+                    String::new()
+                };
+                format!(
+                    "  {bg}{fg}{:>gw$} {} \x1b[39m{}{pad}\x1b[0m",
+                    r.num,
+                    r.kind,
+                    highlight_diff_line(&text, lang, theme, bg)
+                )
+            };
+            out.push(row);
+        }
+        if extra > 0 {
+            out.push(dim(&format!("  … +{extra} more lines")));
+        }
+        out
     }
-    out
 }
 
 #[cfg(test)]
@@ -215,7 +250,9 @@ mod tests {
     //! The parser units and the `render_diff` goldens (the latter formerly `tests/repl/diff.rs`, reached
     //! through a hidden `pub use` re-export; moved in-file 2026-09-15).
 
-    use super::{diff_lang, highlight_diff_line, parse_diff_rows, render_diff};
+    use super::{
+        DiffRows, KEPT_COLS, diff_lang, highlight_diff_line, parse_diff_rows, render_diff,
+    };
     use crate::repl::render::styles::diff_code_theme;
     use crate::text::ansi::{ansi_width, strip_sgr};
     use pretty_assertions::assert_eq;
@@ -514,5 +551,20 @@ mod tests {
             );
         }
         assert_eq!(rows[0].trim(), "1 + fn main() {}");
+    }
+
+    /// What the conversation keeps of a large file mutation is its listing, not its bytes: a
+    /// 100 000-line body cut to a 24-row budget holds 23 rows and the count of the rest, and a
+    /// megabyte-long line keeps no more columns than a screen can have.
+    #[test]
+    fn a_large_diff_is_kept_as_its_budgeted_rows() {
+        let body: Vec<String> = (0..100_000).map(|i| format!("+line {i}")).collect();
+        let rows = DiffRows::new(&body.join("\n"), 24);
+        assert_eq!((rows.rows.len(), rows.extra), (23, 99_977));
+        let listing = rows.render("a.txt", 80, false, true);
+        assert_eq!(listing.len(), 24);
+        assert!(strip_sgr(&listing[23]).contains("+99977 more lines"));
+        let wide = DiffRows::new(&format!("+{}", "z".repeat(1_000_000)), 24);
+        assert_eq!(wide.rows[0].text.len(), KEPT_COLS);
     }
 }
