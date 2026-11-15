@@ -1,6 +1,6 @@
 //! Composer key routing — the 9-row precedence table (`TUI_CONTRACTS` §6;
-//! model.go updateKey, `KeyEventKind::Press` only): (full screen) the dump's return and Ctrl+O → surface → (full screen) the search → PgUp/PgDn/Ctrl+Home/Ctrl+End → Ctrl+C/D → ESC → Tab
-//! completion → ↑ queue-pop → ↑/↓ history → newline (Ctrl+J, Alt+Enter, Shift+Enter) /
+//! model.go updateKey, `KeyEventKind::Press` only): (full screen) the dump's return and Ctrl+O → surface → (full screen) the search → PgUp/PgDn/Ctrl+Home/Ctrl+End → Ctrl+C/D → the
+//! completion list's ↑/↓/ESC → ESC → Tab completion → ↑ queue-pop → ↑/↓ history → newline (Ctrl+J, Alt+Enter, Shift+Enter) /
 //! Enter submit → the enumerated emacs edit set → text insert.
 //!
 //! The newline keys live HERE, not in the shared `Editor::on_key`: the surface's one-line
@@ -94,6 +94,19 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
         } else {
             m.fire_cancel(0);
         }
+        return;
+    }
+
+    // Row 2a: the completion list (`suggest`). While it shows, ↑/↓ move its highlight by one
+    // item — the history and the queue wait until the line is no longer a command; ESC during a
+    // cycle puts the typed line back, and only a second ESC reaches the scopes. Enter needs no
+    // row of its own: the highlighted value is already the line, so row 7 submits it.
+    if matches!(key.code, KeyCode::Up | KeyCode::Down)
+        && suggest::step(&mut m.composer, &m.commands, key.code == KeyCode::Down)
+    {
+        return;
+    }
+    if key.code == KeyCode::Esc && suggest::cancel(&mut m.composer) {
         return;
     }
 

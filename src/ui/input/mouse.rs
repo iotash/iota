@@ -10,6 +10,7 @@
 //! | the search line | — | the field takes the keys again |
 //! | a surface | its list (a View: three lines) | a row gets the cursor; the row it is on is chosen; a tab chip focuses it; the hint row focuses the search field |
 //! | the composer | the conversation | the cursor goes under the pointer |
+//! | the completion list | the conversation | the item under the pointer (its label or description rows) is highlighted |
 //!
 //! A drag held at the viewport's top row or below its last one scrolls every [`EDGE_STEP`] (one
 //! line at the top; below the viewport 1, 3, 5 … lines with the distance), so a selection crosses
@@ -23,6 +24,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
+use super::suggest;
 use crate::ui::render::frame::FrameMap;
 use crate::ui::runtime::event_loop::Model;
 use crate::ui::runtime::screen::search::SearchOp;
@@ -83,6 +85,8 @@ pub(crate) enum Target {
     Composer(usize),
     /// A row of the open surface (its row in the block).
     Surface(usize),
+    /// A row of the completion list (its row in the list).
+    List(usize),
     /// Any other frame row.
     Frame,
 }
@@ -100,6 +104,12 @@ pub(crate) fn target(row: u16, view_h: u16, map: &FrameMap, search: bool, paused
     let fr = usize::from(row - view_h) + map.cut;
     if let Some(top) = map.surface.filter(|&top| fr >= top) {
         return Target::Surface(fr - top);
+    }
+    if let Some(top) = map.list.filter(|&top| fr >= top) {
+        return match fr - top {
+            row if row < map.list_rows => Target::List(row),
+            _ => Target::Frame,
+        };
     }
     if (map.composer..map.composer + map.composer_rows).contains(&fr) {
         return Target::Composer(fr - map.composer);
@@ -186,6 +196,12 @@ fn press(m: &mut Model, at: Target, col: u16) {
             if let Some(s) = m.surface.as_mut() {
                 let effect = s.st.click(row, usize::from(col));
                 m.surface_effect(effect);
+            }
+        }
+        Target::List(row) => {
+            // A click anywhere in an item's rows — its label or its description — highlights it.
+            if let Some(&item) = m.list_items.get(row) {
+                suggest::choose(&mut m.composer, &m.commands, item);
             }
         }
         Target::Composer(row) => {

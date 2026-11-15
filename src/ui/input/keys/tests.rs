@@ -269,7 +269,8 @@ fn row_3_esc_with_no_scope_resets_state_and_nothing_else() {
         "an idle ESC must not interrupt the reader"
     );
 
-    // The completion cycle ends: the base and the index clear, the completed value stays.
+    // The completion cycle is the list's to cancel (row 2a): ESC puts the typed line back and
+    // ends the cycle; the reader is still not interrupted.
     commands(&mut m, &["/model", "/mode"]);
     m.composer.set_value("/mo");
     m.handle_key(key(KeyCode::Tab));
@@ -282,8 +283,9 @@ fn row_3_esc_with_no_scope_resets_state_and_nothing_else() {
         ("/mo", Some(0))
     );
     m.handle_key(key(KeyCode::Esc));
-    assert_eq!(m.composer.value(), "/model");
+    assert_eq!(m.composer.value(), "/mo", "ESC puts the typed line back");
     assert!(m.composer.suggestion_base.is_empty() && m.composer.suggestion_index.is_none());
+    assert!(reader.try_recv().is_err());
 
     // The history walk ends: the next ↑ starts a fresh walk from the newest entry.
     let mut m = test_model();
@@ -298,6 +300,59 @@ fn row_3_esc_with_no_scope_resets_state_and_nothing_else() {
         "two",
         "after ESC ↑ walks again from the newest entry"
     );
+}
+
+/// Row 2a: while the completion list shows, ↑/↓ move its highlight by item — not the history,
+/// not the queue — writing each value into the composer, so Enter commits the highlighted item;
+/// ESC during the cycle puts the typed line back, and only the next ESC fires the turn's scope.
+/// A line that is not a command leaves ↑ to the history.
+#[test]
+fn row_2a_the_completion_list_takes_up_down_and_its_esc() {
+    let mut m = test_model();
+    history(&mut m, &["older"]);
+    commands(&mut m, &["/model", "/mode", "/help"]);
+    type_text(&mut m, "/mo");
+    m.handle_key(key(KeyCode::Down));
+    assert_eq!(m.composer.value(), "/model", "↓ lands on the first item");
+    m.handle_key(key(KeyCode::Down));
+    assert_eq!(m.composer.value(), "/mode");
+    m.handle_key(key(KeyCode::Up));
+    assert_eq!(
+        m.composer.value(),
+        "/model",
+        "↑ moves back, not into the history"
+    );
+    let mut reader = park(&mut m, 1);
+    enter(&mut m);
+    let got = reader
+        .try_recv()
+        .expect("Enter must submit")
+        .expect("read err");
+    assert_eq!(got.text, "/model", "Enter commits the highlighted item");
+
+    // ESC: the list's first, the scope's second.
+    let turn = CancellationToken::new();
+    m.apply(UiMsg::ScopePush(turn.clone()));
+    type_text(&mut m, "/mo");
+    m.handle_key(key(KeyCode::Up));
+    assert_eq!(
+        m.composer.value(),
+        "/mode",
+        "↑ from nothing lands on the last item"
+    );
+    m.handle_key(key(KeyCode::Esc));
+    assert_eq!(m.composer.value(), "/mo");
+    assert!(!turn.is_cancelled(), "the first ESC is the list's");
+    m.handle_key(key(KeyCode::Esc));
+    assert!(turn.is_cancelled(), "the second ESC reaches the scope");
+
+    // Not a command: ↑ walks the history as before.
+    let mut m = test_model();
+    history(&mut m, &["older"]);
+    commands(&mut m, &["/model"]);
+    type_text(&mut m, "x");
+    up(&mut m);
+    assert_eq!(m.composer.value(), "older");
 }
 
 /// Row 4: Tab cycles the matches of the prefix captured at the FIRST press, wrapping, and

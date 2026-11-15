@@ -35,9 +35,8 @@ struct Case {
     status: StatusData,
     busy: Option<BusyView>,
     jobs: Vec<JobInfo>,
-    candidates: Option<String>,
+    list: Vec<String>,
     surface: Option<Vec<String>>,
-    desc: Option<String>,
     now: Instant,
 }
 
@@ -53,9 +52,8 @@ impl Default for Case {
             status: StatusData::default(),
             busy: None,
             jobs: Vec::new(),
-            candidates: None,
+            list: Vec::new(),
             surface: None,
-            desc: None,
             now: Instant::now(),
         }
     }
@@ -67,8 +65,6 @@ fn view(c: &Case) -> FrameView {
     let composer_rows = vec![format!("{CYAN}❯ {RESET}")];
     let bottom = if let Some(s) = &c.surface {
         BottomZone::Surface(s)
-    } else if let Some(d) = &c.desc {
-        BottomZone::Desc(d)
     } else {
         BottomZone::Status
     };
@@ -85,7 +81,7 @@ fn view(c: &Case) -> FrameView {
         } else {
             Some((2, 0))
         },
-        candidates: c.candidates.as_deref(),
+        list: &c.list,
         bottom,
         status: &c.status,
         busy: c.busy.as_ref(),
@@ -150,7 +146,7 @@ fn separator_indices(rows: &[String]) -> Vec<usize> {
 }
 
 /// The fixed stacking order with an EMPTY composer, exactly 2 separators, the
-/// bottom-slot swap (surface > desc > status), the cursor offset math, and the
+/// bottom-slot swap (surface > status), the cursor offset math, and the
 /// idle-frame no-spinner-glyph invariant — through BOTH the raw rows and the
 /// `TestBackend` cell grid.
 // Composer content is the composer suite's own; the frame order around an empty one is pinned here.
@@ -229,28 +225,29 @@ fn frame_order_with_empty_composer_and_slot_swap() {
         "composer cursor must hide while a surface is open"
     );
 
-    // A selected candidate's description takes the status slot; the candidates row
-    // sits INSIDE the composer block (above the lower separator).
+    // The completion list hangs under the lower separator, above the status row, which keeps
+    // its own content (no description borrows it any more); the map says where the list is.
     let case = Case {
         surface: None,
-        candidates: Some(format!("  {FAINT}⎿ {RESET}{CYAN}model{RESET}")),
-        desc: Some(format!("  {FAINT}Pick a model{RESET}")),
+        list: vec![
+            format!("  {CYAN}› model{RESET}"),
+            format!("      {FAINT}Pick a model{RESET}"),
+        ],
         ..case
     };
     let v = view(&case);
     let rows = plain(&v);
     let seps = separator_indices(&rows);
     assert_eq!(seps.len(), 2);
-    let cand = find(&rows, |r| r.contains("⎿ model")).expect("candidates row");
+    let item = find(&rows, |r| r.contains("› model")).expect("list row");
     let desc = find(&rows, |r| r.contains("Pick a model")).expect("desc row");
+    let status = find(&rows, |r| r.contains("gpt-4o · ")).expect("status row");
     assert!(
-        cand < seps[1] && seps[1] < desc,
-        "candidates must sit inside the composer block, desc below (cand={cand} sep={seps:?} desc={desc}):\n{rows:#?}"
+        seps[1] < item && item + 1 == desc && desc < status,
+        "the list must sit between the lower separator and the status row (sep={seps:?} item={item} desc={desc} status={status}):\n{rows:#?}"
     );
-    assert!(
-        !rows.iter().any(|r| r.contains("gpt-4o · ")),
-        "status must yield its slot to the description"
-    );
+    assert_eq!(status, rows.len() - 1, "status stays the frame's last row");
+    assert_eq!((v.map.list, v.map.list_rows), (Some(item), 2));
 }
 
 /// One CONSTANT blank row separates the content side from everything input-side —

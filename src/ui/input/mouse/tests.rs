@@ -10,6 +10,8 @@ fn map(composer: usize, rows: usize, surface: Option<usize>) -> FrameMap {
         composer,
         composer_rows: rows,
         surface,
+        list: None,
+        list_rows: 0,
         cut: 0,
     }
 }
@@ -288,4 +290,51 @@ fn a_lost_release_is_ended_by_a_key_focus_loss_or_a_resize() {
     m.handle_event(Event::Resize(100, 30));
     assert_eq!(edge_due(&m, t + EDGE_STEP * 10), None, "a resize ends it");
     assert_eq!(m.view_ops, vec![ViewOp::Select(SelectOp::Release)]);
+}
+
+/// A click anywhere in a completion item's rows — its label or a description line — highlights
+/// that item, over items of different heights; the rows below the list stay frame chrome.
+#[test]
+fn a_click_on_a_completion_item_highlights_it() {
+    let mut m = test_model();
+    m.apply(UiMsg::Commands(vec![
+        crate::ui::facade::Suggestion {
+            value: "/alpha".to_owned(),
+            label: String::new(),
+            desc: String::new(),
+        },
+        crate::ui::facade::Suggestion {
+            value: "/beta".to_owned(),
+            label: String::new(),
+            desc: "a description long enough to wrap onto a second line at the seventy-two \
+                   column measure the list keeps"
+                .to_owned(),
+        },
+        crate::ui::facade::Suggestion {
+            value: "/gamma".to_owned(),
+            label: String::new(),
+            desc: "short".to_owned(),
+        },
+    ]));
+    type_text(&mut m, "/");
+    laid_out(&mut m);
+    assert_eq!(m.list_items, vec![0, 1, 1, 1, 2, 2]);
+    let top = m.view_h + u16::try_from(m.frame_map.list.unwrap()).unwrap();
+    // The second description line of /beta.
+    m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 10, top + 3));
+    assert_eq!(m.composer.value(), "/beta");
+    assert_eq!(m.composer.suggestion_index, Some(1));
+    laid_out(&mut m);
+    // /gamma's description line.
+    m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 10, top + 5));
+    assert_eq!(m.composer.value(), "/gamma");
+    assert_eq!(
+        m.composer.suggestion_base, "/",
+        "the list still filters by what was typed"
+    );
+    assert_eq!(
+        target(top + 6, m.view_h, &m.frame_map, false, false),
+        Target::Frame,
+        "the status row under the list"
+    );
 }

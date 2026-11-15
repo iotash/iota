@@ -611,14 +611,8 @@ impl<W: Write> Screen<W> {
         // The conversation sits on the frame: a short one leaves the blank rows at the top.
         let conv = Rect::new(0, view_h - shown, width, shown);
         let frame = Rect::new(0, view_h, width, frame_h);
-        // A frame taller than the screen: with a surface open its BOTTOM is kept — the surface (an
-        // approval dialog) must be on the screen, the previews and the composer above it yield —
-        // otherwise its top (the composer keeps its cursor).
-        let cut = if view.map.surface.is_some() {
-            view.rows.len() - usize::from(frame_h)
-        } else {
-            0
-        };
+        // A frame taller than the screen leaves rows out at its top (`FrameMap::cut_for`).
+        let cut = view.map.cut_for(view.rows.len(), usize::from(frame_h));
         let frame_lines: Vec<Line<'static>> =
             view.rows[cut..].iter().map(|r| ansi_to_spans(r)).collect();
         // While a query is typed the real cursor is on the search line (an IME's candidate window

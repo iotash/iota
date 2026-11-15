@@ -2,17 +2,17 @@
 //! (internal/ui/model.go:914-1193).
 //!
 //! Builds the pinned bottom frame as raw ANSI rows in the FIXED stacking order
-//! `[call preview][spacer][queue] ┄sep┄ [composer
-//! (+candidates row)] ┄sep┄ [surface | suggestion-desc | status]`, tracking `rows_above`
+//! `[call preview][spacer][queue] ┄sep┄ [composer] ┄sep┄ [completion list]
+//! [surface | status]`, tracking `rows_above`
 //! for the real-cursor offset. Every appended row is exactly one visual line (the
 //! one-entry-one-row law) or the cursor desyncs. Above the composer the frame only ever
 //! GROWS; busy is a status-row SEGMENT so toggling it never changes the frame height
 //! (`TestBusyInStatusLine`); the bottom zone swaps content on existing rows
-//! (surface > suggestion-desc > status).
+//! (surface > status).
 //!
 //! Pure data in, rows out: the loop model assembles a [`FrameInput`] from its state, so
 //! layer-2 goldens drive this builder without a terminal and WP46/WP47 feed the
-//! composer/candidates/surface slots from their own modules without touching this file.
+//! composer/list/surface slots from their own modules without touching this file.
 
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
@@ -106,13 +106,11 @@ impl TurnClock {
     }
 }
 
-/// What occupies the one bottom-zone slot below the second separator
-/// (surface > suggestion-desc > status — model.go:1049-1058).
+/// What occupies the bottom-zone slot below the second separator (and the completion list)
+/// (surface > status — model.go:1049-1058).
 pub(crate) enum BottomZone<'a> {
     /// The status line (the default resident).
     Status,
-    /// The selected completion candidate's description row (pre-rendered by suggest).
-    Desc(&'a str),
     /// An open interaction surface's rows (pre-rendered by the surface engine).
     Surface(&'a [String]),
 }
@@ -137,9 +135,9 @@ pub(crate) struct FrameInput<'a> {
     /// The composer cursor as (column incl. the 2-col prompt, row within the composer
     /// block); `None` while a surface owns (and hides) the cursor.
     pub(crate) composer_cursor: Option<(u16, u16)>,
-    /// The completion-candidates row — INSIDE the composer block, above the lower
-    /// separator (it belongs to the line being typed; model.go:1042-1045).
-    pub(crate) candidates: Option<&'a str>,
+    /// The completion list's rows (pre-rendered by suggest; empty = none), below the lower
+    /// separator and above the bottom zone.
+    pub(crate) list: &'a [String],
     /// The bottom-zone occupant.
     pub(crate) bottom: BottomZone<'a>,
     /// Status-row data.
@@ -174,9 +172,28 @@ pub(crate) struct FrameMap {
     pub(crate) composer_rows: usize,
     /// The surface's first row, while one is open.
     pub(crate) surface: Option<usize>,
+    /// The completion list's first row, while it shows.
+    pub(crate) list: Option<usize>,
+    /// How many rows the completion list has.
+    pub(crate) list_rows: usize,
     /// The frame's top rows the screen left out because the frame was taller than it (set by the
     /// loop after the draw; `Screen::paint` keeps the bottom while a surface is open).
     pub(crate) cut: usize,
+}
+
+impl FrameMap {
+    /// How many of a `rows`-row frame's top rows a `height`-row screen leaves out: none while it
+    /// fits; with a surface open the frame's BOTTOM is kept — the surface (an approval dialog) must
+    /// be on the screen, the previews and the composer above it yield; otherwise the rows above the
+    /// composer yield first, so the composer and what sits under it (the completion list) stay on.
+    pub(crate) fn cut_for(&self, rows: usize, height: usize) -> usize {
+        let over = rows.saturating_sub(height);
+        if self.surface.is_some() {
+            over
+        } else {
+            over.min(self.composer)
+        }
+    }
 }
 
 /// `max(4, width - reserve)` in display columns (Go `maxInt(4, m.width-…)`).
@@ -260,24 +277,22 @@ pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
         }
     }
 
-    // The composer sits between TWO separators; completion candidates render INSIDE
-    // the block, above the lower one (model.go:1022-1046).
+    // The composer sits between TWO separators; the completion list hangs under the lower
+    // one, above the bottom zone.
     let w = if fi.width < 1 { 80 } else { fi.width as usize };
     let sep = format!("{FAINT}{}{RESET}", SEPARATOR_GLYPH.repeat(w));
     rows.push(sep.clone());
     let rows_above = rows.len(); // frame rows above the composer = the cursor Y offset
     rows.extend(fi.composer_rows.iter().cloned());
-    if let Some(c) = fi.candidates {
-        rows.push(c.to_owned());
-    }
     rows.push(sep);
+    let list_at = rows.len();
+    rows.extend(fi.list.iter().cloned());
 
-    // The bottom zone holds exactly ONE of surface | description | status; swapping is
-    // a content change, never a composer move (model.go:1049-1058).
+    // The bottom zone holds exactly ONE of surface | status; swapping is a content change,
+    // never a composer move (model.go:1049-1058).
     let bottom_at = rows.len();
     match fi.bottom {
         BottomZone::Surface(surface_rows) => rows.extend(surface_rows.iter().cloned()),
-        BottomZone::Desc(desc) => rows.push(desc.to_owned()),
         BottomZone::Status if fi.notice.is_some() => rows.push(format!(
             "  {GREEN}{FAINT}{}{RESET}",
             truncate_ansi(fi.notice.unwrap_or_default(), budget(fi.width, 2), "…")
@@ -301,6 +316,8 @@ pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
         composer: rows_above,
         composer_rows: fi.composer_rows.len(),
         surface: matches!(fi.bottom, BottomZone::Surface(_)).then_some(bottom_at),
+        list: (!fi.list.is_empty()).then_some(list_at),
+        list_rows: fi.list.len(),
         cut: 0,
     };
     FrameView { rows, cursor, map }

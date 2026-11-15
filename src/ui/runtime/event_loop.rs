@@ -42,7 +42,7 @@ use crate::ui::input::keys;
 use crate::ui::input::keys::SearchField;
 use crate::ui::input::mouse::{self, MouseState};
 use crate::ui::input::paste;
-use crate::ui::input::suggest;
+use crate::ui::input::suggest::{self, ListView};
 use crate::ui::render::frame::{
     BottomZone, BusyView, FrameInput, FrameMap, FrameView, TurnClock, build_frame,
 };
@@ -304,6 +304,8 @@ pub(crate) struct Model {
     pub(crate) view_h: u16,
     /// Where the last frame's composer and surface rows were.
     pub(crate) frame_map: FrameMap,
+    /// The match each completion-list row of the last frame belongs to (where a click lands).
+    pub(crate) list_items: Vec<usize>,
     /// What the status row says for a moment after a selection was copied, and since when.
     pub(crate) copied: Option<(String, Instant)>,
     /// The key that hands a drag to the terminal's own selection (`Shift`; `Option` in iTerm2).
@@ -405,6 +407,7 @@ impl Model {
             mouse: MouseState::default(),
             view_h: 0,
             frame_map: FrameMap::default(),
+            list_items: Vec::new(),
             copied: None,
             native: "Shift",
             copy_pending: false,
@@ -952,33 +955,16 @@ impl Model {
     pub(crate) fn frame_view(&mut self) -> FrameView {
         let dark = self.dark;
         let fw = self.width.max(1);
-        let (candidates, desc) = suggest::frame_slots(&self.composer, &self.commands, fw);
         let composer_rows = self.composer.rows(fw);
         let now = Instant::now();
         let busy = self.busy_view(now);
         // An open surface is drawn over the conversation's viewport (C13): it may take every row
-        // the frame's own rows leave — the viewport yields them while it is open.
+        // the frame's own rows leave — the viewport yields them while it is open. The completion
+        // list takes rows the same way, from the conversation and never from the composer; it is
+        // not drawn while a surface owns the keys.
         let room = if self.surface.is_some() {
-            let queue_rows = self.queue_rows();
-            let others = build_frame(&FrameInput {
-                width: fw,
-                region: &self.region_snap,
-                spin: self.spin,
-                scopes_active: !self.cancels.is_empty(),
-                queue: &queue_rows,
-                queue_editable: self.newest_typed().is_some(),
-                composer_rows: &composer_rows,
-                composer_cursor: None,
-                candidates: candidates.as_deref(),
-                bottom: BottomZone::Surface(&[]),
-                status: &self.status,
-                busy: busy.as_ref(),
-                jobs: &self.running_jobs,
-                now,
-                notice: None,
-            })
-            .rows
-            .len();
+            let others =
+                self.rows_besides(&composer_rows, BottomZone::Surface(&[]), busy.as_ref(), now);
             // A frame taller than the screen still leaves the surface its minimum: the screen
             // keeps the frame's bottom then, and the rows above the surface yield.
             self.height
@@ -986,6 +972,15 @@ impl Model {
                 .max(SURFACE_MIN_ROWS.min(self.height))
         } else {
             0
+        };
+        let list = if self.surface.is_none()
+            && !suggest::matches_for(&self.composer, &self.commands).is_empty()
+        {
+            let others = self.rows_besides(&composer_rows, BottomZone::Status, busy.as_ref(), now);
+            let room = usize::from(self.height).saturating_sub(others);
+            suggest::frame_list(&mut self.composer, &self.commands, fw, room)
+        } else {
+            ListView::default()
         };
         let surface = self.surface.as_mut().map(|s| {
             s.st.set_room(room);
@@ -998,9 +993,9 @@ impl Model {
             // input field may export its own, in surface-block coordinates. The frame
             // builder offsets a cursor by `rows_above` (the composer block's first
             // row), so the surface block's own offset below it is the composer's
-            // rows + the candidates row + the lower separator.
+            // rows + the lower separator (no list is drawn under a surface).
             Some(rendered) => rendered.cursor.map(|(x, y)| {
-                let below = composer_rows.len() + usize::from(candidates.is_some()) + 1;
+                let below = composer_rows.len() + 1;
                 (
                     x,
                     u16::try_from(below).unwrap_or(u16::MAX).saturating_add(y),
@@ -1008,10 +1003,9 @@ impl Model {
             }),
             None => Some(self.composer.cursor_pos(fw)),
         };
-        let bottom = match (&surface, &desc) {
-            (Some(rendered), _) => BottomZone::Surface(&rendered.rows),
-            (None, Some(d)) => BottomZone::Desc(d),
-            (None, None) => BottomZone::Status,
+        let bottom = match &surface {
+            Some(rendered) => BottomZone::Surface(&rendered.rows),
+            None => BottomZone::Status,
         };
         let notice = self.copied.as_ref().map(|(n, _)| n.as_str());
         let view = build_frame(&FrameInput {
@@ -1023,7 +1017,7 @@ impl Model {
             queue_editable: self.newest_typed().is_some(),
             composer_rows: &composer_rows,
             composer_cursor: cursor,
-            candidates: candidates.as_deref(),
+            list: &list.rows,
             bottom,
             status: &self.status,
             busy: busy.as_ref(),
@@ -1032,7 +1026,38 @@ impl Model {
             notice,
         });
         self.frame_map = view.map;
+        self.list_items = list.items;
         view
+    }
+
+    /// How many rows the frame has without the completion list, `bottom` in its bottom zone.
+    fn rows_besides(
+        &self,
+        composer_rows: &[String],
+        bottom: BottomZone<'_>,
+        busy: Option<&BusyView>,
+        now: Instant,
+    ) -> usize {
+        let queue_rows = self.queue_rows();
+        build_frame(&FrameInput {
+            width: self.width.max(1),
+            region: &self.region_snap,
+            spin: self.spin,
+            scopes_active: !self.cancels.is_empty(),
+            queue: &queue_rows,
+            queue_editable: self.newest_typed().is_some(),
+            composer_rows,
+            composer_cursor: None,
+            list: &[],
+            bottom,
+            status: &self.status,
+            busy,
+            jobs: &self.running_jobs,
+            now,
+            notice: None,
+        })
+        .rows
+        .len()
     }
 
     /// The status row's busy segment at `now` (docs/design/busy-span.md §3.1): inside a turn, the phase's
@@ -1177,12 +1202,9 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
             m.view_h = term.view_height();
             m.copy_pending = term.copy_pending();
             // The rows `Screen::paint` left out at the top of a frame taller than the screen.
-            if view.map.surface.is_some() {
-                m.frame_map.cut = view
-                    .rows
-                    .len()
-                    .saturating_sub(usize::from(term.size().height - m.view_h));
-            }
+            m.frame_map.cut = view
+                .map
+                .cut_for(view.rows.len(), usize::from(term.size().height - m.view_h));
             m.dirty = false;
         }
         if !resizing {

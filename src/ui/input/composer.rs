@@ -28,11 +28,13 @@ pub(crate) struct Composer {
     hist_idx: usize,
     /// Draft saved when history navigation starts.
     hist_draft: String,
-    /// Completion cycle: the prefix captured at the FIRST Tab press (`""` = not
-    /// cycling — model.go:81; read by `suggest::frame_slots`).
+    /// Completion cycle: the line as typed when the cycle started — the first Tab, ↑/↓ or click
+    /// on the list (`""` = not cycling — model.go:81; the list filters by it).
     pub(crate) suggestion_base: String,
-    /// Completion cycle position (`None` until the first Tab lands a candidate).
+    /// Completion cycle position: the highlighted match (`None` until the cycle lands one).
     pub(crate) suggestion_index: Option<usize>,
+    /// The candidate list's first shown item (its scroll window; `suggest::frame_list`).
+    pub(crate) suggestion_top: usize,
 }
 
 /// Content columns available inside the 2-column prompt gutter.
@@ -78,6 +80,7 @@ impl Composer {
             hist_draft: String::new(),
             suggestion_base: String::new(),
             suggestion_index: None,
+            suggestion_top: 0,
         }
     }
 
@@ -418,8 +421,8 @@ mod tests {
     /// THE CROWN JEWEL: full layout order with real composer content — queue < sep1 <
     /// composer < sep2 < status, exactly 2 separators, status the LAST frame row; an open
     /// surface replaces the status row below the composer and close restores it;
-    /// completion candidates render INSIDE the composer block (above sep2); the selected
-    /// candidate's description takes the status slot — through both the raw rows and the
+    /// the completion list renders between sep2 and the status row, which keeps its
+    /// content while an item is highlighted — through both the raw rows and the
     /// `TestBackend` cell grid.
     #[test]
     fn the_wrapped_composer_layout_is_the_full_frame_golden() {
@@ -478,8 +481,8 @@ mod tests {
             "status not restored after the surface closed"
         );
 
-        // Completion candidates land INSIDE the composer block — above the lower
-        // separator; the status row keeps its slot until a candidate is selected.
+        // The completion list hangs under the lower separator, one row per item and its
+        // description under it, and the status row keeps its slot throughout.
         m.apply(UiMsg::Commands(vec![Suggestion {
             value: "/model".to_owned(),
             label: String::new(),
@@ -488,19 +491,23 @@ mod tests {
         type_text(&mut m, "/m");
         let rows = plain(&mut m);
         let seps = separator_indices(&rows);
-        let cand = find(&rows, |r| r.contains("⎿ model")).expect("candidates row");
+        let item = find(&rows, |r| r.trim() == "model").expect("list item row");
         let status = find(&rows, |r| r.contains("gpt-4o · ")).expect("status row");
         assert!(
-            seps.len() == 2 && cand < seps[1] && seps[1] < status,
-            "candidates not enclosed by the composer block (cand={cand} sep={seps:?} status={status}):\n{rows:#?}"
+            seps.len() == 2
+                && seps[1] < item
+                && rows[item + 1].trim() == "Pick a model"
+                && item + 2 == status,
+            "the list must sit between the lower separator and the status row (item={item} sep={seps:?} status={status}):\n{rows:#?}"
         );
 
-        // Selecting one moves its description into the status row's slot.
+        // Selecting one highlights it; the status row stays where and what it was.
         m.handle_key(key(KeyCode::Tab));
-        let joined = plain(&mut m).join("\n");
+        let rows = plain(&mut m);
+        assert!(rows.iter().any(|r| r == "  › model"), "{rows:#?}");
         assert!(
-            !joined.contains("gpt-4o · ") && joined.contains("Pick a model"),
-            "the description should take the status row while cycling:\n{joined}"
+            rows.last().is_some_and(|r| r.contains("gpt-4o · ")),
+            "{rows:#?}"
         );
         assert_eq!(m.composer.value(), "/model", "tab must write the candidate");
     }
@@ -831,8 +838,8 @@ mod tests {
 
     /// The real cursor a surface input field exports is in SURFACE-BLOCK coordinates; the
     /// frame offsets it by everything between the composer's first row and the surface —
-    /// the composer's own rows, the candidates row when one renders, and the lower
-    /// separator. A stale MULTI-ROW draft under the surface must not lift the IME anchor.
+    /// the composer's own rows and the lower separator (no completion list is drawn
+    /// under a surface). A stale MULTI-ROW draft under the surface must not lift the IME anchor.
     #[test]
     fn surface_field_cursor_offset_follows_the_composer_block() {
         let mut m = test_model();
