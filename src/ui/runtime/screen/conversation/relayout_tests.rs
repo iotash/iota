@@ -25,7 +25,7 @@ impl Sink for Blocks {
         }
     }
 
-    fn write_block(&mut self, block: Fragment, _rendered: &str) {
+    fn write_block(&mut self, block: Fragment) {
         self.0.lock().unwrap().push(Block::laid(block));
     }
 

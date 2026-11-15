@@ -6,9 +6,10 @@
 use crate::markdown::fragment::Fragment;
 use crate::markdown::preview::PreviewHandle;
 
-/// Where rendered output goes. `width()` is consulted LIVE per block flush (a
-/// mid-stream resize affects the NEXT block) — what a text sink writes; the terminal's sink keeps
-/// each closed block as its source ([`Sink::write_block`]) and lays it out again at every width. `block_preview` returns `None` in the
+/// Where rendered output goes. The renderer itself never lays anything out at a width: a closed
+/// block reaches the sink as its source ([`Sink::write_block`]). A text sink lays it out at its
+/// `width()`; the terminal's keeps the source and lays it out again at every width the screen
+/// takes (tui-plan S7a). `block_preview` returns `None` in the
 /// piped/test/quote-child shape — no preview, everything else identical.
 ///
 /// `Send` so a `Writer` (which owns a `Box<dyn Sink>`) can live inside the interactive
@@ -18,14 +19,14 @@ use crate::markdown::preview::PreviewHandle;
 pub trait Sink: Send {
     /// Receives one rendered chunk. Infallible (facade commits are fire-and-forget — T-07).
     fn write(&mut self, rendered: &str);
-    /// Receives one closed buffering block (code, table, list, quote, display math): its source
-    /// and its rendering at [`Sink::width`], trailing newline included. A text sink writes the
-    /// rendering; one that can lay the block out again at another width keeps the source.
-    fn write_block(&mut self, block: Fragment, rendered: &str) {
-        let _ = block;
-        self.write(rendered);
+    /// Receives one closed buffering block (code, table, list, quote, display math) as its
+    /// source. A text sink writes it laid out at [`Sink::width`]; one that can lay it out again
+    /// at another width keeps the source.
+    fn write_block(&mut self, block: Fragment) {
+        let rendered = block.render(self.width());
+        self.write(&rendered);
     }
-    /// Live target width; `<=0` → 80 fallback.
+    /// The width a text sink lays closed blocks out at; `0` → 80.
     fn width(&self) -> usize;
     /// Opens a metered block preview, when this sink meters at all.
     fn block_preview(&mut self, label: &str) -> Option<Box<dyn PreviewHandle>>;

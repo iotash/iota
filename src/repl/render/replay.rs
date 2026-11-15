@@ -361,7 +361,7 @@ impl crate::markdown::sink::Sink for EchoSink {
         lock(&self.out).write(rendered);
     }
 
-    fn write_block(&mut self, block: crate::markdown::Fragment, _rendered: &str) {
+    fn write_block(&mut self, block: crate::markdown::Fragment) {
         lock(&self.out).extend([Block::laid(block)]);
     }
 

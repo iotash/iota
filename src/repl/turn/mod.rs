@@ -755,7 +755,6 @@ pub(crate) struct RenderSink {
 /// sink: the provider call borrows the sink mutably for its whole duration).
 #[derive(Clone)]
 struct Scaffold {
-    ui: Arc<dyn Ui>,
     tr: Arc<Transcript>,
     stream: Arc<dyn UiStreamSink>,
     code_theme: CodeTheme,
@@ -764,7 +763,6 @@ struct Scaffold {
 impl Scaffold {
     fn of(t: &Turn<'_>) -> Self {
         Self {
-            ui: Arc::clone(&t.cx.ui),
             tr: Arc::clone(&t.cx.tr),
             stream: Arc::clone(&t.sink),
             code_theme: t.cx.code_theme,
@@ -776,13 +774,11 @@ impl Scaffold {
     /// preview claims the next row.
     fn block(&self, committer: ContentCommitter) -> ContentBlock {
         let stream = Arc::clone(&self.stream);
-        let ui = Arc::clone(&self.ui);
         let tr = Arc::clone(&self.tr);
         let mut committer = committer;
         let sink = UiMdSink::new(
             Box::new(move |label| stream.block_preview(label)),
             Box::new(move |lines| committer.push(&lines)),
-            Box::new(move || usize::from(ui.width())),
             Some(Box::new(move || tr.flush_pending())),
         );
         ContentBlock {

@@ -1456,7 +1456,7 @@ fn a_table_on_screen_is_laid_out_again_when_the_window_widens_and_narrows() {
             let mut out = self.0.lock().unwrap();
             out.extend(Block::rows(rendered.lines().map(str::to_owned)));
         }
-        fn write_block(&mut self, block: Fragment, _rendered: &str) {
+        fn write_block(&mut self, block: Fragment) {
             self.0.lock().unwrap().push(Block::laid(block));
         }
         fn width(&self) -> usize {

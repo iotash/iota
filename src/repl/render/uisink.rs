@@ -23,7 +23,6 @@ pub(crate) type CommitFn = Box<dyn FnMut(Vec<Block>) + Send>;
 struct MdSinkInner {
     preview: PreviewFn,
     commit: CommitFn,
-    width: Box<dyn Fn() -> usize + Send>,
     pre_open: Option<Box<dyn Fn() + Send>>,
     buf: String,
 }
@@ -37,18 +36,16 @@ pub(crate) struct UiMdSink(Arc<Mutex<MdSinkInner>>);
 impl UiMdSink {
     /// A sink committing through `commit`, metering previews through `preview` (labels
     /// are dimmed HERE — the chat layer pre-styles markdown's plain `"rendering…"`
-    /// labels, uisink.go:82), reading the live width through `width`, and materializing
+    /// labels, uisink.go:82), and materializing
     /// latched blanks through `pre_open` (nil-safe; = `Transcript::flush_pending`).
     pub(crate) fn new(
         preview: PreviewFn,
         commit: CommitFn,
-        width: Box<dyn Fn() -> usize + Send>,
         pre_open: Option<Box<dyn Fn() + Send>>,
     ) -> Self {
         Self(Arc::new(Mutex::new(MdSinkInner {
             preview,
             commit,
-            width,
             pre_open,
             buf: String::new(),
         })))
@@ -89,14 +86,15 @@ impl crate::markdown::sink::Sink for UiMdSink {
 
     /// The block as its source — ONE laid-out block, re-rendered at every width the screen takes;
     /// the rendering at today's width is not kept.
-    fn write_block(&mut self, block: crate::markdown::Fragment, _rendered: &str) {
+    fn write_block(&mut self, block: crate::markdown::Fragment) {
         let mut g = self.lock();
         (g.commit)(vec![Block::laid(block)]);
     }
 
+    /// Never asked: every closed block is kept as its source ([`Self::write_block`]) and laid out
+    /// by the screen at the width of each draw.
     fn width(&self) -> usize {
-        let g = self.lock();
-        (g.width)()
+        0
     }
 
     /// The block's separator may sit in the transcript's blank latch (interior blanks
@@ -187,7 +185,6 @@ mod tests {
                 let lines = lines.iter().flat_map(|b| b.render(80)).collect();
                 sink_batches.lock().expect("batches").push(lines);
             }),
-            Box::new(|| 80),
             None,
         );
 
@@ -266,7 +263,6 @@ mod tests {
         let sink = UiMdSink::new(
             Box::new(move |label| stream.block_preview(label)),
             Box::new(move |lines| committer.push(&lines)),
-            Box::new(|| 80),
             Some(Box::new(move || pre.flush_pending())),
         );
         let mut mdw = Writer::new(

@@ -295,22 +295,14 @@ impl Writer {
     }
 
     /// Writes a closed block between `begin_block` and `end_block`, as its source
-    /// ([`Sink::write_block`]) together with its rendering at the sink's live width; `None` (an
-    /// empty table, quote or formula) writes nothing and leaves the paid gap credit untouched.
+    /// ([`Sink::write_block`]); `None` (an empty table, quote or formula) writes nothing and
+    /// leaves the paid gap credit untouched.
     fn render_block(&mut self, block: Option<Fragment>) {
         if let Some(block) = block {
-            let rendered = block.render(self.term_width());
             self.begin_block();
-            self.sink.write_block(block, &rendered);
+            self.sink.write_block(block);
             self.end_block();
         }
-    }
-
-    /// Block-layout width: the sink's LIVE width (a mid-stream resize changes the
-    /// next block), 80 when the sink reports none.
-    fn term_width(&self) -> usize {
-        let w = self.sink.width();
-        if w == 0 { 80 } else { w }
     }
 
     // ---- spacing state machine ----
