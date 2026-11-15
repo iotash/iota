@@ -557,7 +557,7 @@ fn an_unknown_key_is_refused_with_its_coordinate() {
         ),
         (
             "agnets:\n  coder: {}\n",
-            "agnets: unknown top-level key (want providers:, models:, agents:, mcp_servers:, write_roots:, outside_writes:)",
+            "agnets: unknown top-level key (want providers:, models:, agents:, mcp_servers:, write_roots:, outside_writes:, mouse:)",
         ),
     ] {
         assert_eq!(

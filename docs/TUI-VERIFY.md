@@ -230,8 +230,31 @@ owns, no drag protocol, no band, no budget. The one check replaces the old resid
 - [x] 自动化：scenario 44 **4b.3** `Ctrl+Z` (and `kill -TSTP`): the shell's prompt, a stopped
       job, the tty sane; `fg` brings the full screen back repainted at the size the window has
       now. Try it in your own shell, in tmux and in herdr.
-- [ ] **4b.4** Selection: with no mouse capture (S1–S5), the terminal's own selection works on
-      the current screen only; across screens, write out with `Ctrl+O` first.
+- [x] 自动化：scenario 47 **4b.4** Selection with `mouse: false`: no mouse reporting is asked for,
+      the terminal's own selection works on the current screen only; across screens, write out
+      with `Ctrl+O` first.
+
+## 4c. The mouse (S6, X-102)
+
+Automated through tmux (L4 46 writes the reports into the pane; L4 47 sends them through a tmux that
+parses them). The GUI terminals are not drivable from the test runner: tick these on your own.
+
+- [x] 自动化：scenario 46, 47 **4c.1** The wheel scrolls the conversation three lines a step; up shows
+      `↓ … Ctrl+End`, down to the bottom follows the output again. In tmux with `mouse on` and with
+      `mouse off` alike (tmux 3.8 passes reports to a pane that asks).
+- [ ] **4c.2** Ghostty, iTerm2, herdr (a real wheel, a real drag): the same as 4c.1; a drag held at
+      the top row keeps scrolling; the release says `copied N characters · Shift+drag …`
+      (`Option+drag` in iTerm2) and ⌘V elsewhere pastes the lines whole. In iTerm2 with "Report mouse
+      clicks & drags" off in the profile nothing reaches iota: the keys still scroll, nothing wedges.
+- [ ] **4c.3** Shift-drag (Option-drag in iTerm2) is the terminal's own selection, on the current
+      screen; it is not iota's.
+- [ ] **4c.4** Over SSH (outside tmux) the copy lands in your LOCAL clipboard (OSC 52; Ghostty and
+      iTerm2 may ask once). Inside tmux it lands in tmux's buffer (`prefix ]`) and, with tmux's
+      `set-clipboard` on or external, in the terminal's clipboard.
+- [x] 自动化：scenario 46 **4c.5** A click on the composer puts the cursor there; a click on a
+      surface row moves the cursor, a second click on it chooses it.
+- [x] 自动化：scenario 46 **4c.6** A long surface (`/status` in a short pane) takes every row the
+      composer leaves, and closing it gives the conversation back where it was.
 
 ## 5. Window title (the title stack)
 

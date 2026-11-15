@@ -19,6 +19,22 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   now reports to hc instead of to that pane; the herdr multiplexer itself is
   unchanged. Commands iota runs do not get `HC_TERMINAL_ID`, so an `iota -m`
   started by the model leaves the chat's state alone.
+- **The mouse works in the chat.** The wheel scrolls the conversation (up
+  stops following new output, back at the bottom it follows again). A click
+  puts the input's cursor where you clicked; in a dialog, a click moves to a
+  row and a second click on it chooses it, so one stray click never answers
+  an approval. Drag over the conversation to select it, double-click a word,
+  triple-click a line: letting go copies the text. Hold the drag at the top or
+  bottom edge and the conversation keeps scrolling, so a selection can span
+  as many screens as you like. The copy goes to your clipboard (`pbcopy`,
+  `wl-copy`, `xclip`), to tmux's paste buffer inside tmux, and over SSH to
+  the terminal on your side (OSC 52). Copied text is plain, and a long line
+  that was wrapped on screen is copied as the one line it is. The status row
+  says what was copied and which key gives you the terminal's own selection
+  instead: Shift-drag (Option-drag in iTerm2).
+- **`mouse: false`** in `~/.iota.yaml` turns all of that off: iota then asks
+  the terminal for no mouse reports at all, and the wheel and selection are
+  the terminal's own, as before (across screens: Ctrl+O first).
 
 ### Changed
 
@@ -51,6 +67,10 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   **Ctrl+F** is not search: it still moves the cursor one character right.
   **Ctrl+Z** suspends iota and gives the terminal back to the shell; `fg`
   brings it back, redrawn at the window's size.
+- **Dialogs can be as tall as the window.** A long list, `/status` or a
+  picker's preview is no longer cut at 15 rows: it takes the rows of the
+  conversation above it while it is open, and closing it gives the
+  conversation back where it was.
 - **A resumed session shows its last three rounds, not all of it.** Older
   rounds are not in the window, and scrolling up does not reach them: the
   window starts at those three rounds. `/export` has the whole conversation.

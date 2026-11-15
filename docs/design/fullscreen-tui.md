@@ -1,6 +1,6 @@
 # 全屏（alternate-screen）TUI
 
-Status: **已实现，唯一的终端（S1–S5，分支 `fullscreen`；S5 删除了 inline 终端）** · 计划：`~/.iota/reports/iota/tui-plan.md` · 决策记录：DIVERGENCES X-97–X-101（X-52、X-54、X-81 被取代，作为历史保留）· 契约摘要：ARCHITECTURE §12 · 人工检查：TUI-VERIFY §1–§4b
+Status: **已实现，唯一的终端（S1–S6；S5 删除了 inline 终端，S6 加了鼠标、应用内选择与浮层 surface）** · 计划：`~/.iota/reports/iota/tui-plan.md` · 决策记录：DIVERGENCES X-97–X-102（X-52、X-54、X-81 被取代，作为历史保留）· 契约摘要：ARCHITECTURE §12 · 人工检查：TUI-VERIFY §1–§4b
 
 ## 终端拥有屏幕
 
@@ -33,6 +33,8 @@ Status: **已实现，唯一的终端（S1–S5，分支 `fullscreen`；S5 删�
 | `Ctrl+O` | 写出（见下文），下一个键回来 |
 | `Ctrl+Z` | 挂起（见下文"每一种退出方式"） |
 
+鼠标（`mouse:` 开着时，默认开）另见下文"鼠标"：滚轮滚对话，点击放光标 / 选行，拖选复制。
+
 不做 Claude Code 那种独立的 transcript 模式（`j/k/g/G`）：多一个模态，收益只是 less 的键位。
 
 ## 因 inline 而妥协的清单，现在的状态
@@ -48,7 +50,8 @@ Status: **已实现，唯一的终端（S1–S5，分支 `fullscreen`；S5 删�
 | C12 | resume 只回放 3 轮 | ~~全量~~ 仍是 3 轮（owner 2026-11-15，X-98） |
 | C14 | tmux `scroll-on-clear` 特判；`oneshot.rs` 自建 inline 终端 | 特判消失；会话选择器用同一个全屏终端（对话为空，退出时什么都不写） |
 | C15 | 被杀后对话留在屏上（inline 的优点） | panic hook 与信号路径先恢复终端；SIGKILL 无解（见下表） |
-| C6、C13 | 没有鼠标；surface 挤在帧行里 | **S6**：mouse capture、滚轮、应用内选择、浮层 surface |
+| C6 | 没有鼠标 | 滚轮、点击、拖选 + 双击选词 + 松开复制、跨屏自动滚动（S6，见"鼠标"） |
+| C13 | surface 挤在帧行里：View `min(lines,15)`、picker 预览 `[4, h−12]` | surface 占视口：视口把帧之外的所有行让给它（S6，见"surface 占视口"） |
 | C8–C11 | 提交行是当时宽度的硬换行；暂存窗口；缓冲块攒完才出现；折叠不可逆 | **S7**：从源重渲染、删暂存窗口、实时块；C11 之后单独定 |
 
 ## 不归点：第一帧
@@ -87,7 +90,55 @@ crossterm 0.29 默认的 unix 事件源（mio、边沿触发）有两处会让�
 
 `use-dev-tty` 换成 crossterm 另一个电平触发、先读 tty 再读 SIGWINCH 管道的事件源，两处都消失了。它在零超时下什么都不读，所以 `HangupWatch` 等待之后，用 1 ms（`CROSSTERM_SLICE`）去问 crossterm。（S4 时 inline 也换了；S5 起只有一个世界。）
 
-## S6、S7 从这里继承什么
+## 鼠标（S6，tui-plan D1/D3）
 
-- **S6（鼠标）**：现在不开 mouse capture，终端原生选择只覆盖当前一屏（TUI-VERIFY §4b.4）。视口的滚动 API（`ViewOp::HalfUp`…、`Conversation::scroll_up/down`、锚点）就是滚轮要接的地方；搜索的高亮（`Highlight`）可以借给选择用。帧是最后画的，浮层 surface 需要视口让出矩形——`draw_frame` 里 `conv`/`frame` 两个 `Rect` 是唯一的布局点。
+**默认开 capture，配置可关。** 终端不再滚动之后，滚轮是唯一自然的滚动手势（Claude Code 默认同样）。进入 alt 屏时请求 `?1000h`（按下/松开）、`?1002h`（按住时的移动，即拖动；不要 1003 的每次悬停）、`?1006h`（SGR 坐标，没有 223 列上限）；**每一条离开 alt 屏的路**——写出（Ctrl+O）、挂起、退出、`restore_terminal`（panic、第二次 SIGTERM）——都先关掉它，所以主屏上终端自己的选择永远可用。
+
+| 位置 | 滚轮 | 左键 按下 / 拖动 / 松开 |
+|---|---|---|
+| 对话视口 | 一格 3 行；上滚暂停跟随，滚到底恢复跟随 | 选择：拖选、双击选词、三击选整行；松开复制 |
+| 视口末行 `↓ … Ctrl+End`（已上滚时） | — | 回到尾部 |
+| 搜索行 | — | 已应用的查询重新可编辑（保留查询） |
+| surface | 移动列表（View：3 行） | 不在光标上的行：光标移过去；光标所在的行：**选中**（Enter 的路径；多选是 Space 的勾选）；tab 标签：切换；提示行：聚焦搜索框 |
+| composer | 滚对话 | 光标放到指针下（宽字形的第二列算这个字形） |
+
+**一次误点不会回答对话框**：surface 的一行要点两次（第一下移光标，第二下选中）——审批对话框里"Always allow"不该被一次手滑选中。
+
+拖动按住在视口**顶行**或**末行及以下**（帧里）时，每 40 ms 滚一行（`EDGE_STEP`），指针不动也继续，所以一次选择能跨任意多屏（opencode #61053 的反例）。时钟在循环的 poll deadline 里（W10 照旧有限）。
+
+## 应用内选择（`render/selection.rs`）
+
+- **点是缓冲里的格，不是屏幕的格**：(行号, 折行内第几行, 显示列)。行号按提交编号，所以 20 万行上限丢旧行不移动它；新输出到来时选择留在原文上。resize 换了折行，选择清掉。
+- **画**：只改屏幕 cell 的 `REVERSED`，行本身不动——**写出（Ctrl+O、退出）永远不带选择的样式**（`screen::tests::the_selection_is_drawn_reversed_and_never_written_out`）。
+- **复制的内容**：去掉 SGR 的纯文本；一行被折成几行的，拼回提交时的一行；行之间 `\n`；行尾空白去掉。双击的"词"＝字母数字加路径/URL/标识符的标点 `_-./~+:@\`，句末的 `.` `,` `:` 不算。
+- **按键清掉选择**（光标还在拖时除外）；单击（不拖）什么也不选、不复制。
+- **三条复制路径**（`runtime/clipboard.rs`，Claude Code 的做法）：不在 SSH 下用本机工具（`pbcopy`；`wl-copy`/`xclip`/`xsel`；`clip`）；在 tmux 里（`$TMUX`）写 `tmux load-buffer -w -`（`-w` 让 tmux 按 `set-clipboard` 再交给外层终端）；SSH 下且不在 tmux 里写 OSC 52；本机工具一个也没有时也退回 OSC 52。外部工具在自己的线程里跑，卡住也不拖住循环；失败静默（选择还在屏上，可以再拖一次）。
+- **提示**：复制后状态行 4 秒内显示 `copied N characters · Shift+drag selects in the terminal`（iTerm2——`TERM_PROGRAM=iTerm.app` 或 `LC_TERMINAL=iTerm2`——显示 `Option`）。一句话，不是段落。
+
+## 关闭开关（`mouse: false`）
+
+`~/.iota.yaml`（或项目的 `.iota.yaml`）顶层 `mouse: false`。之前没有任何 UI 设置项，这是最小的那一个：顶层标量，和 `write_roots`/`outside_writes` 并列，YAML 1.1 布尔，栈里最后一个写它的文件说了算。关了之后**一个鼠标序列都不写**（不请求也不"关闭"），终端自己的滚轮和选择照旧——滚轮在 alt 屏下归终端（tmux 下它什么也不做，见下表），跨屏选择先 Ctrl+O 写出。键盘滚动不受影响。会话选择器（`iota resume`）同样遵守。
+
+## surface 占视口（C13）
+
+S5 时 surface 挤在帧行里：帧变高会把对话推走，所以 View 限 `min(lines,15)`、picker 预览限 `[4, h−12]`。现在 surface 画在视口的位置上：`Model::frame_view` 先量出帧自己的行（暂存/预览、间隔、队列、两条分隔线、composer），**剩下的所有行都是 surface 的**（`SurfaceState::set_room`），视口让出它们；关掉 surface，视口拿回来，对话停在原处（跟随时仍是尾部，锚定时仍是那一行）。面板的默认行数就是这块空间（room 未知时才是旧的 10 / View 15），显式 `height` 也以它为上限；picker 预览夹在 `[4, room]`。surface 仍在 composer 下面：一个审批对话框要回答的那次工具调用就在它上方的视口里，盖住它反而看不见。
+
+## 兼容性（本机实际试过的）
+
+| 环境 | 滚轮 | 拖选 + 复制 | 点击 | 试过的方式 |
+|---|---|---|---|---|
+| tmux 3.8，`mouse on` | ✓ | ✓（进 tmux paste buffer） | ✓ | L4 47：外层 tmux 的 pane 挂着内层 tmux，报告写进外层 pane，由内层 tmux 按它的绑定转发 |
+| tmux 3.8，`mouse off` | ✓（仍转发） | — | — | L4 47：`mouse` 只是 tmux **自己**用不用鼠标；pane 请求了上报，tmux 照样替它向终端请求并转发。计划里"tmux 无 `mouse on` 吞滚轮"在 3.8 上不成立 |
+| tmux，iota `mouse: false` | 归 tmux（alt 屏下 `send -M` 给一个没请求上报的 pane，什么也不发生：不进 copy mode、不变成 ↑↓） | 终端原生（Shift） | — | L4 47 |
+| herdr（本机 pane，SSH 会话里） | ✓ | ✓（走 OSC 52 路径） | — | 在临时 split 里跑 iota，`herdr pane send-text` 写入 SGR 报告、`herdr pane read` 读屏，试完关掉。测的是 herdr 把输入原样交给 iota；herdr 自己把真实鼠标转成上报、OSC 52 是否传到客户端，**没试** |
+| Ghostty | 未试 | 未试 | 未试 | 本会话没有图形终端可驱动 |
+| iTerm2 | 未试 | 未试 | 未试 | 同上；上报是逐 profile 设置（opencode #49622），关着时什么报告都没有，键盘照旧（与"什么也收不到"同一条路） |
+| `tmux -CC` | 未试 | 未试 | 未试 | Claude Code 文档说 alt 屏与上报都不可靠；收不到报告时退回键盘 |
+
+收不到报告的终端（iTerm2 profile 关了上报、`tmux -CC`、IDE 终端）上，鼠标这一层什么都不做，键盘的一切照旧——从不卡住。逐项手验列在 TUI-VERIFY §4c。
+
+## S7 从这里继承什么
+
 - **S7（从源重渲染）**：缓冲的行仍是提交时宽度的字符串（变窄折行、变宽不重排）；`Row` 是将来"块"的位置。`Region` 的暂存模式与 `TAIL_KEEP`、`chunk_overflow`（T-06）只剩 region 自己的测试，S7 一起删掉。写出策略不变：每行只写一次，按写出时的宽度。
+- **选择的点**是 (行号, 折行内行, 列)：S7 换成块之后，"行号"要变成块里的位置；resize 清选择的规则可以保留。
+- **C11（折叠块展开/收起）**若做，点击已经有路由（`input/mouse.rs` 的 `Target`）：视口里的一下按下目前是选择的起点，展开需要一个区分（例如点在折叠摘要行上）。

@@ -375,8 +375,8 @@ scrollback, the answer is an alt-screen pager and the design changes wholesale �
 heuristics." The inline design's measurements (resize residuals inside a frozen budget, a frame short
 while a drag lasted, a DSR on every resize) are kept as history in X-52, X-54 and X-81. The price, paid
 knowingly: while iota runs, the terminal's own scrollback, search and selection do not reach the
-conversation — the write-out key and the conversation search stand in, and the exit writes the whole
-conversation into the main screen.
+conversation — the write-out key, the conversation search and the in-app selection (X-102) stand in,
+and the exit writes the whole conversation into the main screen.
 
 **The terminal is ratatui's own** (`screen.rs`): `Terminal` with `Viewport::Fullscreen` over
 `CrosstermBackend`, through a thin backend wrapper (`Out`) that answers the size from the last resize
@@ -391,6 +391,17 @@ wrapped per width on demand and cached; 200 000 rows at most, the oldest dropped
 session log keeps everything). The view follows the tail or is anchored on a row, and stays on it
 through a resize. Keys: `PgUp`/`PgDn`, `Ctrl+Home`/`Ctrl+End`, the search (`Ctrl+R`, `/` scrolled back;
 never `Ctrl+F`, which is forward-char), the write-out (`Ctrl+O`, X-99), job control (`Ctrl+Z`, X-101).
+
+**The mouse** (X-102; `input/mouse.rs`, `render/selection.rs`, `clipboard.rs`). Reporting (`?1000/1002/1006`)
+lives with the alternate screen — asked for on entering it, dropped on every way out — and is off
+entirely under the config's top-level `mouse: false`. A report is hit-tested against the last frame:
+the wheel scrolls the conversation (pausing and resuming the follow like the keys), a click places the
+composer's cursor or picks a surface row (twice to choose it), a drag over the conversation selects by
+buffer position (row number, wrap line, column) and scrolls at the viewport's edge, so it crosses
+screens. The selection is drawn on the screen's cells only, never into the rows, so a write-out never
+carries it; its release copies plain text to the local tool, tmux's buffer and/or OSC 52 by where the
+session runs. An open surface takes the viewport's rows (C13): its room is the screen less the frame's
+own rows.
 
 **The point of no return** (X-100) is the first frame: before it nothing is written, so a run that fails
 early leaves the shell's screen untouched. After it every way out but SIGKILL restores the terminal —
