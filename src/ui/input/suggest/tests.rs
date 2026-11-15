@@ -165,7 +165,7 @@ fn item_heights_wrap_at_the_measure_and_cap_at_two_lines() {
 #[test]
 fn the_list_is_two_columns_at_80_and_160() {
     let long = "a-label-that-runs-far-past-the-thirty-column-cap";
-    let cmds = vec![
+    let cmds = [
         sug("/review", &words(40)),
         sug("/go", "Short"),
         sug("/bare", ""),
