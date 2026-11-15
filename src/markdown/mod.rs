@@ -89,8 +89,8 @@ enum Unit {
 enum Block {
     /// No block open: blanks, headings, rules and paragraph lines dispatch directly.
     None,
-    /// Inside a fenced code block.
-    Code(CodeBlock),
+    /// Inside a fenced code block (boxed: it carries its highlighter's parse state).
+    Code(Box<CodeBlock>),
     /// Buffering table rows.
     Table(TableBlock),
     /// Buffering list items.
@@ -267,7 +267,11 @@ impl Writer {
     /// backticks), carrying the display-math block the fence interrupted, if any.
     fn open_code(&mut self, fence: &str, interrupted: Option<MathBlock>) {
         let lang = CodeBlock::lang_of(fence);
-        self.open_block(Block::Code(CodeBlock::new(&lang, self.opts, interrupted)));
+        self.open_block(Block::Code(Box::new(CodeBlock::new(
+            &lang,
+            self.opts,
+            interrupted,
+        ))));
     }
 
     /// The open block as it stands, whichever it is (`None`: no block open, or one with nothing

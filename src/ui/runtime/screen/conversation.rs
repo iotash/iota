@@ -282,25 +282,22 @@ impl Conversation {
             .live
             .filter(|&(lid, _)| lid == id)
             .and_then(|(_, n)| Some((n, self.index_of(n)?)));
-        let n = match held {
-            Some((n, i)) => {
-                let old = self.rows[i]
-                    .laid
-                    .as_ref()
-                    .map(|l| (l.lines.len().max(1), l.width));
-                if self.grew.is_none()
-                    && let Some((h, w)) = old
-                {
-                    self.grew = Some((n, h, w));
-                }
-                self.rows[i] = Entry::new(block);
-                self.changed = Some(self.changed.map_or(n, |c| c.min(n)));
-                n
+        let n = if let Some((n, i)) = held {
+            let old = self.rows[i]
+                .laid
+                .as_ref()
+                .map(|l| (l.lines.len().max(1), l.width));
+            if self.grew.is_none()
+                && let Some((h, w)) = old
+            {
+                self.grew = Some((n, h, w));
             }
-            None => {
-                self.append(block);
-                self.pushed - 1
-            }
+            self.rows[i] = Entry::new(block);
+            self.changed = Some(self.changed.map_or(n, |c| c.min(n)));
+            n
+        } else {
+            self.append(block);
+            self.pushed - 1
         };
         self.live = open.then_some((id, n));
     }
