@@ -32,24 +32,27 @@ pub(crate) const BLOCK_CAP: usize = 200_000;
 /// The row standing in for the blocks the cap dropped.
 pub(crate) const TRIMMED: &str = "earlier output trimmed — /export has the full text";
 
-/// A block's display lines at one width, and which of them continue the line before
-/// (`Block::display`).
+/// What a block holds beyond itself once it has been laid out: its display lines at one width,
+/// which of them continue the line before (`Block::display`), and — a laid-out block's — its
+/// search text. Boxed, because the commonest entry by far, a row that fits the screen, never
+/// needs any of it and so pays one pointer, not the struct.
 struct Laid {
     width: usize,
     lines: Vec<String>,
     joins: Vec<bool>,
+    /// A laid-out block's plain lines at the FIRST width it was laid out at, joined by `\n`, kept
+    /// across re-layouts — what a search scans never depends on the width, so a resize lays
+    /// nothing out for a search (a row's search text is the row itself: empty here).
+    text: String,
 }
 
-/// One committed block and its display lines at the last width they were needed at.
+/// One committed block and, once it needed them, its display lines (module docs). 40 bytes: a
+/// row that fits carries its string and its width, nothing else.
 struct Entry {
     block: Block,
     /// A row's display width (a laid-out block: 0, unused).
     cols: usize,
-    lines: Option<Laid>,
-    /// A laid-out block's search text: its plain lines at the FIRST width it was laid out at,
-    /// joined by `\n`, kept for good — what a search scans never depends on the width, so a
-    /// resize lays nothing out for a search (a row's search text is the row itself).
-    text: Option<String>,
+    laid: Option<Box<Laid>>,
 }
 
 impl Entry {
@@ -61,37 +64,51 @@ impl Entry {
         Self {
             block,
             cols,
-            lines: None,
-            text: None,
+            laid: None,
         }
+    }
+
+    /// Whether this is a row that fits `width`: its one line is its string, nothing is cached.
+    fn fits(&self, width: usize) -> bool {
+        matches!(self.block, Block::Row(_)) && self.cols <= width
     }
 
     /// The block's display lines at `width`.
     fn lines(&mut self, width: usize) -> &[String] {
         self.fill(width);
-        match (&self.block, &self.lines) {
+        match (&self.block, &self.laid) {
             (Block::Row(t), _) if self.cols <= width => std::slice::from_ref(t),
             (_, Some(l)) => &l.lines,
             _ => &[],
         }
     }
 
-    /// Fills the display lines' cache at `width` when it holds another width's (a row that fits
-    /// needs none: it is its own one line).
+    /// Lays the block out at `width` when what it holds is another width's (a row that fits needs
+    /// nothing). The first layout of a laid-out block keeps its search text.
     fn fill(&mut self, width: usize) {
-        if matches!(self.block, Block::Row(_)) && self.cols <= width {
+        if self.fits(width) || self.laid.as_ref().is_some_and(|l| l.width == width) {
             return;
         }
-        if self.lines.as_ref().is_none_or(|l| l.width != width) {
-            let (lines, joins): (Vec<String>, _) = self.block.display(width).into_iter().unzip();
-            if self.text.is_none() && matches!(self.block, Block::Laid(_)) {
-                self.text = Some(strip_sgr(&lines.join("\n")));
+        let (lines, joins): (Vec<String>, Vec<bool>) =
+            self.block.display(width).into_iter().unzip();
+        match &mut self.laid {
+            Some(l) => {
+                l.width = width;
+                l.lines = lines;
+                l.joins = joins;
             }
-            self.lines = Some(Laid {
-                width,
-                lines,
-                joins,
-            });
+            None => {
+                let text = match self.block {
+                    Block::Laid(_) => strip_sgr(&lines.join("\n")),
+                    Block::Row(_) => String::new(),
+                };
+                self.laid = Some(Box::new(Laid {
+                    width,
+                    lines,
+                    joins,
+                    text,
+                }));
+            }
         }
     }
 
@@ -99,7 +116,7 @@ impl Entry {
     /// screen's wrap made).
     fn lines_joined(&mut self, width: usize) -> Vec<(String, bool)> {
         self.fill(width);
-        match (&self.block, &self.lines) {
+        match (&self.block, &self.laid) {
             (Block::Row(t), _) if self.cols <= width => vec![(t.clone(), false)],
             (_, Some(l)) => l
                 .lines
@@ -117,20 +134,21 @@ impl Entry {
     }
 
     /// What a search scans: a row's text as written (its wrap does not split a match), a
-    /// laid-out block's search text ([`Entry::text`]) — laid out at `width` only if it never was.
+    /// laid-out block's search text ([`Laid::text`]) — laid out at `width` only if it never was.
     fn search_text(&mut self, width: usize) -> &str {
         if let Block::Laid(_) = self.block
-            && self.text.is_none()
+            && self.laid.is_none()
         {
-            self.fill(width); // a block never laid out has no cache either: this lays it out
+            self.fill(width);
         }
         self.searched()
     }
 
     /// The search text as it stands (a laid-out block not yet laid out has none: `""`).
     fn searched(&self) -> &str {
-        match (&self.block, &self.text) {
-            (Block::Row(t), _) | (Block::Laid(_), Some(t)) => t,
+        match (&self.block, &self.laid) {
+            (Block::Row(t), _) => t,
+            (Block::Laid(_), Some(l)) => &l.text,
             (Block::Laid(_), None) => "",
         }
     }

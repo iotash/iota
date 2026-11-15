@@ -44,13 +44,10 @@ fn a_row_wider_than_the_screen_is_wrapped_once_per_width() {
         ["wwwwwwwwww", "wwwwwwwwww", "wwwwwwwEND", "next"]
     );
     assert_eq!(
-        c.rows[0].lines.as_ref().map(|l| (l.width, l.lines.len())),
+        c.rows[0].laid.as_ref().map(|l| (l.width, l.lines.len())),
         Some((10, 3))
     );
-    assert!(
-        c.rows[1].lines.is_none(),
-        "a row that fits is never wrapped"
-    );
+    assert!(c.rows[1].laid.is_none(), "a row that fits is never wrapped");
     // Wider again: the row fits and no wrap is consulted.
     assert_eq!(
         c.view_lines(40, 5, None)[0],
@@ -58,7 +55,7 @@ fn a_row_wider_than_the_screen_is_wrapped_once_per_width() {
     );
     // Another width replaces the cached wrap.
     c.view_lines(15, 5, None);
-    assert_eq!(c.rows[0].lines.as_ref().map(|l| l.width), Some(15));
+    assert_eq!(c.rows[0].laid.as_ref().map(|l| l.width), Some(15));
 }
 
 #[test]
@@ -181,4 +178,15 @@ fn fresh_lines_count_what_was_committed_since_the_last_draw() {
     // Counted from the tail only past the limit (the viewport): a big batch is not walked whole.
     c.push(rows_of(&rows(0, 50)));
     assert_eq!(c.take_fresh(20, 5), 6, "stopped one past the limit");
+}
+
+/// The commonest entry by far is a row that fits the screen: it carries its string and its width
+/// and one pointer for a layout it never needs — 40 bytes (S7a round 3: 112 bytes inline before,
+/// 17.9 MB of entries for M1's 100 000 rows against 10.5 MB of text).
+#[test]
+fn an_entry_is_forty_bytes_and_a_row_that_fits_caches_nothing() {
+    assert_eq!(std::mem::size_of::<super::Entry>(), 40);
+    let mut c = conv(3);
+    c.view_lines(80, 5, None);
+    assert!(c.rows.iter().all(|e| e.laid.is_none()));
 }
