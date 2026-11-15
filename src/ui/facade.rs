@@ -895,20 +895,13 @@ impl Drop for DialogOpen<'_> {
     }
 }
 
-/// The metered block-preview handle is the markdown renderer's contract
-/// (`markdown::preview`, re-exported as [`crate::markdown::PreviewHandle`]); the facade re-exports
-/// it too because [`UiStreamSink::block_preview`] hands one out and `ui::sink::PreviewWriter`
-/// implements it.
-pub use crate::markdown::preview::PreviewHandle;
-
-/// The unit [`Ui::print`] commits (`ui::block`): a fixed row, or a block laid out from its source.
-pub use crate::ui::block::{Block, Layout, UserBlock};
+/// The unit [`Ui::print`] commits (`ui::block`): a fixed row, a block laid out from its source, or
+/// one still being written ([`Block::Live`], replaced in place each time it is committed again).
+pub use crate::ui::block::{Block, Layout, LiveId, UserBlock};
 
 /// Turn-scoped stream handle (ui.go `StreamSink`). `done()` drops a leaked preview and pops
 /// the turn cancel scope.
 pub trait UiStreamSink: Send + Sync {
-    /// Opens a metered one-row block preview labelled `label`.
-    fn block_preview(&self, label: &str) -> Box<dyn PreviewHandle>;
     /// Ends the turn's streaming: drops a leaked preview and pops the turn cancel scope.
     fn done(&self);
 }

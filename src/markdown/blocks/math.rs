@@ -16,9 +16,8 @@
 //! this module back (Phase 5 PR-4: the `MathRenderer` trait and its one ZST impl are deleted,
 //! so `mathtext` is a leaf).
 
-use crate::markdown::blocks::close_view;
+use crate::markdown::RenderOptions;
 use crate::markdown::fragment::{Fragment, Source};
-use crate::markdown::{PreviewHandle, RenderOptions};
 
 /// The display-fence recognizers, now owned by [`crate::mathtext::delim`] (DESIGN D16): Go keeps
 /// `DisplayOpen`/`IsDisplayClose` in `delim.go:181-219` and the markdown writer calls across.
@@ -29,48 +28,34 @@ pub(crate) use crate::mathtext::delim::{display_open, is_display_close};
 const MATH_INDENT: &str = "  ";
 
 /// A display-math block: the raw source lines between the `$$` / `\[` fences (the
-/// one-line form is a `MathBlock` of one line that renders at once, no preview).
+/// one-line form is a `MathBlock` of one line that renders at once).
 pub(crate) struct MathBlock {
     lines: Vec<String>,
-    view: Option<Box<dyn PreviewHandle>>,
 }
 
 impl MathBlock {
-    /// The live preview's label while the block buffers.
-    pub(crate) const LABEL: &'static str = "rendering math…";
-
-    /// An empty block just opened by a bare fence, with the preview the Writer opened for it.
-    pub(crate) fn open(view: Option<Box<dyn PreviewHandle>>) -> Self {
-        Self {
-            lines: Vec::new(),
-            view,
-        }
+    /// An empty block just opened by a bare fence.
+    pub(crate) const fn open() -> Self {
+        Self { lines: Vec::new() }
     }
 
-    /// The complete one-line form (`$$…$$` / `\[…\]`): its body, rendered at once, no preview.
+    /// The complete one-line form (`$$…$$` / `\[…\]`): its body, rendered at once.
     pub(crate) fn one_line(body: String) -> Self {
-        Self {
-            lines: vec![body],
-            view: None,
-        }
+        Self { lines: vec![body] }
     }
 
     pub(crate) fn append(&mut self, line: &str) {
         self.lines.push(line.to_owned());
-        if let Some(v) = &mut self.view {
-            v.write_raw_line(line);
-        }
     }
 
-    /// Closes the preview; the buffered source is the block's (markdown.go:1433-1455): a
+    /// The source so far is the block's (markdown.go:1433-1455): a
     /// whitespace-only source renders NOTHING (the paid gap credit may remain
     /// consumed); otherwise every row is prefixed by the two-space `MATH_INDENT` and the
     /// block rides `begin_block`/`end_block`. The body transform is the mathtext 2D layout
     /// (markdown.go:1443 `mathtext.Render2D`; DESIGN D16 step 2), which degrades to the cleaned
     /// linear source when the formula cannot be laid out; either way the rows print in normal
     /// color (never dim: dim is decoration-only).
-    pub(crate) fn finish(mut self, opts: RenderOptions) -> Option<Fragment> {
-        close_view(&mut self.view);
+    pub(crate) fn fragment(&self, opts: RenderOptions) -> Option<Fragment> {
         let src = self.lines.join("\n");
         if src.trim().is_empty() {
             return None; // an empty $$ block renders nothing (mirrors the quote)

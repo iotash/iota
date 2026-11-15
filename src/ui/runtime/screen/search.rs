@@ -67,6 +67,7 @@ impl Search {
     /// Searches the whole buffer for `query`; parks on the hit nearest above where the view was.
     pub(crate) fn set_query(&mut self, conv: &mut Conversation, query: &str, width: usize) {
         query.clone_into(&mut self.query);
+        conv.take_changed();
         self.hits = Self::scan(conv, 0, query, width);
         self.scanned = conv.pushed();
         self.idx = self
@@ -76,17 +77,19 @@ impl Search {
             .unwrap_or(0);
     }
 
-    /// Scans the blocks committed since the last scan, appending their hits; drops the hits of
-    /// blocks the cap dropped. (`width` lays out only a new block no draw has reached yet.)
+    /// Scans the blocks committed since the last scan, and again those replaced since (a live
+    /// block that grew: its text is new), appending their hits; drops the hits of blocks the cap
+    /// dropped. (`width` lays out only a block no draw has reached yet.)
     pub(crate) fn catch_up(&mut self, conv: &mut Conversation, width: usize) {
-        if conv.pushed() == self.scanned {
+        let changed = conv.take_changed();
+        if conv.pushed() == self.scanned && changed.is_none() {
             return;
         }
+        let from = changed.map_or(self.scanned, |c| c.min(self.scanned));
         let parked = self.current();
         let gone = conv.first_held();
-        self.hits.retain(|&(n, _)| n >= gone);
-        self.hits
-            .extend(Self::scan(conv, self.scanned, &self.query, width));
+        self.hits.retain(|&(n, _)| n >= gone && n < from);
+        self.hits.extend(Self::scan(conv, from, &self.query, width));
         self.scanned = conv.pushed();
         self.idx = parked
             .and_then(|h| self.hits.iter().position(|x| *x == h))

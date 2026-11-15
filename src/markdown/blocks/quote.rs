@@ -9,11 +9,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::markdown::blocks::close_view;
+use crate::markdown::Sink;
 use crate::markdown::blocks::table::word_wrap_ansi;
 use crate::markdown::fragment::{Fragment, Source};
 use crate::markdown::style::Style;
-use crate::markdown::{PreviewHandle, Sink};
 use crate::markdown::{RenderOptions, Writer};
 use crate::sync::lock;
 use crate::text::ansi::ansi_width;
@@ -40,43 +39,32 @@ pub(crate) fn strip_quote_marker(line: &str) -> &str {
 /// A quote block: the inner lines with their `> ` markers stripped (markdown.go:993-1006).
 pub(crate) struct QuoteBlock {
     body: Vec<String>,
-    view: Option<Box<dyn PreviewHandle>>,
 }
 
 impl QuoteBlock {
-    /// The live preview's label while the block buffers.
-    pub(crate) const LABEL: &'static str = "rendering quote…";
-
-    /// A block opened by its first quote line, with the preview the Writer opened for it.
-    pub(crate) fn open(line: &str, view: Option<Box<dyn PreviewHandle>>) -> Self {
-        let mut quote = Self {
-            body: Vec::new(),
-            view,
-        };
+    /// A block opened by its first quote line.
+    pub(crate) fn open(line: &str) -> Self {
+        let mut quote = Self { body: Vec::new() };
         quote.append(line);
         quote
     }
 
     pub(crate) fn append(&mut self, line: &str) {
         self.body.push(strip_quote_marker(line).to_owned());
-        if let Some(v) = &mut self.view {
-            v.write_raw_line(line);
-        }
     }
 
-    /// Closes the preview; the marker-stripped inner lines are the block's source (`None`: an
-    /// empty body renders nothing). The bar and the inner document are laid out at every width
+    /// The marker-stripped inner lines so far as the block's source (`None`: an empty body
+    /// renders nothing). The bar and the inner document are laid out at every width
     /// ([`render_quote`]).
-    pub(crate) fn finish(mut self, opts: RenderOptions) -> Option<Fragment> {
-        close_view(&mut self.view);
+    pub(crate) fn fragment(&self, opts: RenderOptions) -> Option<Fragment> {
         if self.body.is_empty() {
             return None;
         }
-        Some(Fragment::new(Source::Quote(self.body), opts))
+        Some(Fragment::new(Source::Quote(self.body.clone()), opts))
     }
 }
 
-/// The no-preview child sink capturing the recursive mini-document render.
+/// The child sink capturing the recursive mini-document render.
 /// `Arc<Mutex<_>>` rather than `Rc<RefCell<_>>` only because `Sink` is `Send`
 /// (DEVIATIONS3 `[WP49]`); the child render is single-threaded and never contends.
 struct BufSink {
@@ -91,10 +79,6 @@ impl Sink for BufSink {
 
     fn width(&self) -> usize {
         self.width
-    }
-
-    fn block_preview(&mut self, _label: &str) -> Option<Box<dyn PreviewHandle>> {
-        None // the quote-child shape never previews
     }
 }
 

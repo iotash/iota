@@ -43,10 +43,10 @@ fn texts(events: &[UiEvent]) -> Vec<String> {
     let mut out = Vec::new();
     for e in events {
         match e {
-            UiEvent::Print(lines) | UiEvent::CallBody(lines) => out.extend(lines.iter().cloned()),
+            UiEvent::Print(lines) | UiEvent::Grow(lines) | UiEvent::CallBody(lines) => {
+                out.extend(lines.iter().cloned());
+            }
             UiEvent::UserBlock(s)
-            | UiEvent::Preview(s)
-            | UiEvent::PreviewLine(s)
             | UiEvent::Busy(s)
             | UiEvent::BusyDetail(s)
             | UiEvent::CallPreview(s)

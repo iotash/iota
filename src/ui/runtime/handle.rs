@@ -153,14 +153,9 @@ where
     E: EventSource + Send + 'static,
 {
     let (tx, rx) = mpsc::channel();
-    let region = Region::new(
-        Emit::Live {
-            tx: Box::new(MailboxPublish(tx.clone())),
-        },
-        Arc::clone(&width),
-        Arc::clone(&height),
-    );
-    let region = Arc::new(Mutex::new(region.unstaged()));
+    let region = Arc::new(Mutex::new(Region::new(Emit::Live {
+        tx: Box::new(MailboxPublish(tx.clone())),
+    })));
     let handle = Arc::new(TuiHandle {
         tx,
         width: Arc::clone(&width),
@@ -172,11 +167,7 @@ where
         next_read_id: AtomicU64::new(1),
         dialogs: Dialogs::default(),
     });
-    let shared = LoopShared {
-        width,
-        height,
-        region,
-    };
+    let shared = LoopShared { width, height };
     let thread_handle = Arc::clone(&handle);
     let join = thread::Builder::new()
         .name("iota-tui".to_owned())
@@ -303,11 +294,6 @@ impl Ui for TuiHandle {
         spec: TabbedSpec,
     ) -> BoxFuture<'a, Result<TabbedResult, UiError>> {
         Box::pin(async move {
-            // Flush the window's tail FIRST (ui.go:334-341): whatever it holds reaches the
-            // conversation before the surface grows the frame; the mailbox FIFO lands the
-            // flush before the open. (Nothing is staged live — `Region::unstaged` — so this is
-            // a no-op but for an open preview's tail.)
-            lock(&self.region).flush_tail();
             let (reply_tx, reply_rx) = oneshot::channel();
             if self
                 .tx
@@ -352,12 +338,9 @@ impl Ui for TuiHandle {
 
     fn close(&self) -> BoxFuture<'_, io::Result<()>> {
         Box::pin(async move {
-            // Flush the window into the conversation (the transcript must be
-            // complete; preview rows and residue are display-only and drop), THEN
-            // send Quit — the mailbox FIFO lands the flushed batches ahead of it,
-            // and wart W10 guarantees a fully idle loop drains Quit within one
-            // 50ms poll deadline (the close-at-idle deadlock regression).
-            lock(&self.region).flush();
+            // Quit: every commit went to the mailbox ahead of it (FIFO), and wart W10
+            // guarantees a fully idle loop drains Quit within one 50ms poll deadline (the
+            // close-at-idle deadlock regression).
             let _ = self.tx.send(UiMsg::Quit);
             if tokio::time::timeout(CLOSE_GRACE, self.done.cancelled())
                 .await
@@ -917,7 +900,7 @@ mod tests {
     /// way out and the exit writes the whole conversation into the main screen (X-99) — each
     /// line on the final grid ONCE, in order, and no frame.
     #[tokio::test(flavor = "multi_thread")]
-    async fn close_flushes_tail_ordering() {
+    async fn close_writes_every_row_once_in_order() {
         let h = start_facade();
         h.wait_frame();
         let tail = ["tail-one", "tail-two", "tail-three", "tail-four"];
@@ -926,19 +909,14 @@ mod tests {
             h.wait_until(Duration::from_secs(2), |h| h
                 .contents()
                 .contains("tail-four")),
-            "staged tail never rendered:\n{}",
+            "the rows never rendered:\n{}",
             h.contents()
         );
         h.ui.close().await.expect("close");
-        // The flush-then-quit shape: the window is empty (the flush took it), the flushed
-        // batches joined the conversation on the way out, and the exit wrote it into the main
-        // screen — each line on the final grid exactly once, in order, under the transcript
-        // mark, and no frame. Through 0.4.0 the inline terminal left its last-painted frame,
-        // whose staging tail still showed the same rows, and each line landed twice.
-        assert!(
-            crate::sync::lock(&h.ui.region).tail.is_empty(),
-            "close did not flush the staging window"
-        );
+        // The exit wrote the conversation into the main screen — each line on the final grid
+        // exactly once, in order, under the transcript mark, and no frame. Through 0.4.0 the
+        // inline terminal left its last-painted frame, whose staging tail still showed the same
+        // rows, and each line landed twice.
         let c = h.contents();
         assert!(
             !c.contains('❯'),

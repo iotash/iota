@@ -11,11 +11,17 @@
 //!   the result until the width changes, so a width change re-lays-out what is on screen from its
 //!   source, not from the rows of another width.
 //!
+//! - **A live block** is a laid-out block still being written (tui-plan S7b): a code block, a
+//!   table, a list, a quote or a formula whose reply is still streaming. It is committed again,
+//!   under the same [`LiveId`], every time it grows and once more when it closes; the buffer
+//!   replaces it in place, so it appears line by line at the width of the screen.
+//!
 //! The block's kind is its source's type — the [`Layout`] implementation (`markdown::Fragment`,
 //! the banner, the user block, the diff listing, the error block); nothing downstream branches on
 //! it, so no separate tag is carried.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::text::ansi::wrap_ansi;
 use crate::ui::render::theme::{RESET, REV_ON};
@@ -35,12 +41,48 @@ pub enum Block {
     Row(String),
     /// A block laid out from its source at the width of the draw.
     Laid(Arc<dyn Layout>),
+    /// A laid-out block still being written, as it stands now (module docs). Boxed: it is rare,
+    /// and the buffer's every entry holds a `Block`.
+    Live(Box<Live>),
+}
+
+/// Which live block a commit replaces: one per open block, never reused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveId(u64);
+
+impl LiveId {
+    /// A fresh id.
+    pub fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+/// A live block as it stands: its id, its layout so far, and whether more is coming (`false` on
+/// the commit that closes it).
+#[derive(Clone)]
+pub struct Live {
+    /// Which block this is.
+    pub id: LiveId,
+    /// Its layout as it stands.
+    pub layout: Arc<dyn Layout>,
+    /// Whether more is coming.
+    pub open: bool,
 }
 
 impl Block {
     /// A block laid out by `layout`.
     pub fn laid(layout: impl Layout + 'static) -> Self {
         Self::Laid(Arc::new(layout))
+    }
+
+    /// Live block `id` as it stands, laid out by `layout`; `open` while more is coming.
+    pub fn live(id: LiveId, layout: impl Layout + 'static, open: bool) -> Self {
+        Self::Live(Box::new(Live {
+            id,
+            layout: Arc::new(layout),
+            open,
+        }))
     }
 
     /// One row per line.
@@ -55,6 +97,7 @@ impl Block {
         match self {
             Self::Row(t) => vec![t.clone()],
             Self::Laid(l) => l.lines(width),
+            Self::Live(l) => l.layout.lines(width),
         }
     }
 
@@ -138,6 +181,12 @@ impl std::fmt::Debug for Block {
         match self {
             Self::Row(t) => f.debug_tuple("Row").field(t).finish(),
             Self::Laid(l) => f.debug_tuple("Laid").field(&l.lines(80)).finish(),
+            Self::Live(l) => f
+                .debug_tuple("Live")
+                .field(&l.id)
+                .field(&l.layout.lines(80))
+                .field(&l.open)
+                .finish(),
         }
     }
 }

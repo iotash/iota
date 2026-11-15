@@ -1459,15 +1459,7 @@ fn a_laid_out_block_through_the_latch_carries_no_trailing_blank() {
     let rec = Rec::default();
     let tr = transcript(&rec);
     let mut content = tr.content_block();
-    let stream = crate::ui::facade::Ui::start_stream(
-        rec.ui().as_ref(),
-        tokio_util::sync::CancellationToken::new(),
-    );
-    let sink = UiMdSink::new(
-        Box::new(move |label| stream.block_preview(label)),
-        Box::new(move |blocks| content.push(&blocks)),
-        None,
-    );
+    let sink = UiMdSink::new(Box::new(move |blocks| content.push(&blocks)));
     let mut w = Writer::new(
         Box::new(sink.clone()),
         RenderOptions {

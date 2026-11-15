@@ -78,20 +78,14 @@ fn start_loop_mouse(mouse: bool) -> LoopHarness {
     let width = Arc::new(AtomicU16::new(80));
     let height = Arc::new(AtomicU16::new(24));
     let (tx, rx) = mpsc::channel();
-    let region = Arc::new(Mutex::new(
-        crate::ui::render::region::Region::new(
-            crate::ui::render::region::Emit::Live {
-                tx: Box::new(crate::ui::runtime::msgs::MailboxPublish(tx.clone())),
-            },
-            Arc::clone(&width),
-            Arc::clone(&height),
-        )
-        .unstaged(),
-    ));
+    let region = Arc::new(Mutex::new(crate::ui::render::region::Region::new(
+        crate::ui::render::region::Emit::Live {
+            tx: Box::new(crate::ui::runtime::msgs::MailboxPublish(tx.clone())),
+        },
+    )));
     let shared = crate::ui::runtime::event_loop::LoopShared {
         width: Arc::clone(&width),
         height: Arc::clone(&height),
-        region: Arc::clone(&region),
     };
     let buf = SharedBuf::default();
     let wtr = buf.clone();
@@ -248,8 +242,7 @@ fn the_exit_writes_the_conversation_out_once_and_no_frame() {
         "the committed row never rendered:\n{}",
         h.contents()
     );
-    // What `close()` does: flush, then Quit.
-    h.region.lock().unwrap().flush();
+    // What `close()` does: Quit.
     let buf = h.buf.clone();
     h.quit_and_join(Duration::from_secs(2));
     let mut p = parse(&buf);
@@ -765,19 +758,7 @@ fn cancel_scope_stack_fire_truncates() {
 fn notify_model() -> Model {
     let width = Arc::new(AtomicU16::new(80));
     let height = Arc::new(AtomicU16::new(24));
-    let region = Arc::new(Mutex::new(
-        crate::ui::render::region::Region::new(
-            crate::ui::render::region::Emit::Test(Box::new(|_, _| {})),
-            Arc::clone(&width),
-            Arc::clone(&height),
-        )
-        .unstaged(),
-    ));
-    Model::new(crate::ui::runtime::event_loop::LoopShared {
-        width,
-        height,
-        region,
-    })
+    Model::new(crate::ui::runtime::event_loop::LoopShared { width, height })
 }
 
 fn text(buf: &SharedBuf) -> String {

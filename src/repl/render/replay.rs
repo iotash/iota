@@ -335,10 +335,6 @@ impl crate::markdown::sink::Sink for EchoSink {
     fn width(&self) -> usize {
         self.width
     }
-
-    fn block_preview(&mut self, _label: &str) -> Option<Box<dyn crate::markdown::PreviewHandle>> {
-        None
-    }
 }
 
 #[cfg(test)]

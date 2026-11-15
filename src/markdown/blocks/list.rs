@@ -5,17 +5,17 @@
 //! sublists under their preceding item, loose lists joined with a blank between
 //! top-level blocks, task glyphs served as recorded (`TUI_DESIGN` §7).
 
-use crate::markdown::blocks::close_view;
+use crate::markdown::RenderOptions;
 use crate::markdown::blocks::math::display_open;
 use crate::markdown::blocks::table::{is_table_line, word_wrap_ansi};
 use crate::markdown::fragment::{Fragment, Source};
 use crate::markdown::inline::{DIM, highlight_inline, is_list_line, split_list_marker};
-use crate::markdown::{PreviewHandle, RenderOptions};
 use crate::text::ansi::ansi_width;
 use crate::text::width::str_width;
 
 /// One parsed item of a buffering list block (Go listItem). Parsed by [`ListBlock`];
 /// rendered by [`render_list`].
+#[derive(Clone)]
 pub(crate) struct ListItem {
     /// Nesting depth derived from source indentation (clamped, never skips a level).
     pub(crate) level: usize,
@@ -53,23 +53,17 @@ pub(crate) struct ListBlock {
     items: Vec<ListItem>,
     loose: bool,
     blank: bool,
-    view: Option<Box<dyn PreviewHandle>>,
 }
 
 impl ListBlock {
-    /// The live preview's label while the block buffers.
-    pub(crate) const LABEL: &'static str = "rendering list…";
-
-    /// A block opened by its first marker line, with the preview the Writer opened for it.
-    pub(crate) fn open(line: &str, view: Option<Box<dyn PreviewHandle>>) -> Self {
+    /// A block opened by its first marker line.
+    pub(crate) fn open(line: &str) -> Self {
         let mut list = Self {
             items: Vec::new(),
             loose: false,
             blank: false,
-            view,
         };
         list.append_item(line);
-        list.preview(line);
         list
     }
 
@@ -91,7 +85,6 @@ impl ListBlock {
                 return false;
             }
             self.blank = true;
-            self.preview(line);
             return true;
         }
         if is_list_line(line) {
@@ -101,7 +94,6 @@ impl ListBlock {
                 self.loose = true;
             }
             self.append_item(line);
-            self.preview(line);
             return true;
         }
         if line.starts_with(' ') || line.starts_with('\t') {
@@ -134,7 +126,6 @@ impl ListBlock {
                 }
                 it.lines.push(trimmed.to_owned());
             }
-            self.preview(line);
             return true;
         }
         false
@@ -172,24 +163,15 @@ impl ListBlock {
         });
     }
 
-    /// Mirrors a consumed raw line into the live block preview.
-    fn preview(&mut self, line: &str) {
-        if let Some(v) = &mut self.view {
-            v.write_raw_line(line);
-        }
-    }
-
-    /// Closes the preview; the parsed items are the block's source (`None`: no items). The
-    /// markers, the hanging indent and the item text's wrap are laid out at every width
-    /// ([`render_list`]).
-    pub(crate) fn finish(mut self, opts: RenderOptions) -> Option<Fragment> {
-        close_view(&mut self.view);
+    /// The items so far as the block's source (`None`: no items). The markers, the hanging
+    /// indent and the item text's wrap are laid out at every width ([`render_list`]).
+    pub(crate) fn fragment(&self, opts: RenderOptions) -> Option<Fragment> {
         if self.items.is_empty() {
             return None;
         }
         Some(Fragment::new(
             Source::List {
-                items: self.items,
+                items: self.items.clone(),
                 loose: self.loose,
             },
             opts,

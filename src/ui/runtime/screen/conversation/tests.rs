@@ -154,15 +154,15 @@ fn past_the_cap_the_oldest_rows_go_and_a_first_row_says_so() {
 fn a_dump_asks_for_the_rows_after_the_last_one_written() {
     let mut c = Conversation::with_cap(6);
     c.push(rows_of(&["a".to_owned(), "b".repeat(12)]));
-    let (lines, next) = c.lines_after(0, 5);
+    let (lines, next) = c.lines_after(0, 5, false);
     assert_eq!(lines, ["a", "bbbbb", "bbbbb", "bb"]);
-    assert_eq!(c.lines_after(next, 5).0, Vec::<String>::new());
+    assert_eq!(c.lines_after(next, 5, false).0, Vec::<String>::new());
     c.push(rows_of(&rows(0, 2)));
-    let (lines, next) = c.lines_after(next, 5);
+    let (lines, next) = c.lines_after(next, 5, false);
     assert_eq!(lines, ["r000", "r001"]);
     // Past the cap before the next dump: what was dropped unwritten is the notice row.
     c.push(rows_of(&rows(2, 6)));
-    let (lines, _) = c.lines_after(next, 80);
+    let (lines, _) = c.lines_after(next, 80, false);
     assert!(lines[0].contains(TRIMMED), "{lines:?}");
     assert_eq!(lines[1..], rows(3, 5)[..]);
 }

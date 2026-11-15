@@ -12,6 +12,12 @@
 //!   resize keeps the anchored block at the top (its line clamped to its new height). Scrolling up
 //!   leaves the tail; getting back to the bottom (scrolling down to it, or `Ctrl+End`) follows it
 //!   again. Blocks committed while the view is anchored are counted for the `↓ N new lines` row.
+//! - **A live block** (tui-plan S7b) is a block still being written — a streaming code block,
+//!   table, list, quote or formula. Its first commit appends it; every later commit under the
+//!   same id REPLACES it where it is: its display lines, its continuation marks and its search
+//!   text are dropped and recomputed from the new source, the anchor (a block number and a line)
+//!   stays on it, and it still counts as one block. Its closing commit is the last replacement. A
+//!   write-out stops above a block still open, so each block is written once, whole.
 //! - **The cap**: past [`BLOCK_CAP`] blocks the oldest are dropped — each one whole — and a first
 //!   row says so. The session log (`messages.jsonl`) holds everything; `/export` writes it out.
 //!
@@ -21,7 +27,7 @@
 use std::collections::VecDeque;
 
 use crate::text::ansi::{ansi_width, strip_sgr, wrap_ansi};
-use crate::ui::block::Block;
+use crate::ui::block::{Block, Live, LiveId};
 use crate::ui::render::theme::{FAINT, RESET};
 use crate::ui::surface::search::{highlight_line, match_ranges};
 
@@ -59,7 +65,7 @@ impl Entry {
     fn new(block: Block) -> Self {
         let cols = match &block {
             Block::Row(t) => ansi_width(t),
-            Block::Laid(_) => 0,
+            Block::Laid(_) | Block::Live(_) => 0,
         };
         Self {
             block,
@@ -98,7 +104,7 @@ impl Entry {
             return;
         }
         let text = match self.block {
-            Block::Laid(_) => strip_sgr(&lines.join("\n")),
+            Block::Laid(_) | Block::Live(_) => strip_sgr(&lines.join("\n")),
             Block::Row(_) => String::new(),
         };
         self.laid = Some(Box::new(Laid {
@@ -133,9 +139,7 @@ impl Entry {
     /// What a search scans: a row's text as written (its wrap does not split a match), a
     /// laid-out block's search text ([`Laid::text`]) — laid out at `width` only if it never was.
     fn search_text(&mut self, width: usize) -> &str {
-        if let Block::Laid(_) = self.block
-            && self.laid.is_none()
-        {
+        if !matches!(self.block, Block::Row(_)) && self.laid.is_none() {
             self.fill(width);
         }
         self.searched()
@@ -145,8 +149,8 @@ impl Entry {
     fn searched(&self) -> &str {
         match (&self.block, &self.laid) {
             (Block::Row(t), _) => t,
-            (Block::Laid(_), Some(l)) => &l.text,
-            (Block::Laid(_), None) => "",
+            (_, Some(l)) => &l.text,
+            (_, None) => "",
         }
     }
 
@@ -216,6 +220,14 @@ pub(crate) struct Conversation {
     /// Whether the view is held where it is (a drag is selecting): it does not follow the tail
     /// even when it shows the last line, so new output never moves the text under the pointer.
     held: bool,
+    /// The live block still open: its id and its number.
+    live: Option<(LiveId, u64)>,
+    /// The lowest block number replaced since [`Conversation::take_changed`] — what a search
+    /// must scan again.
+    changed: Option<u64>,
+    /// A block replaced since the last [`Conversation::take_fresh`], with the height it had at
+    /// the width it was last drawn at: how far its growth scrolls the tail.
+    grew: Option<(u64, usize, usize)>,
 }
 
 impl Conversation {
@@ -233,19 +245,74 @@ impl Conversation {
             fresh: 0,
             pushed: 0,
             held: false,
+            live: None,
+            changed: None,
+            grew: None,
         }
     }
 
-    /// Appends committed blocks; past the cap, drops the oldest, each whole (the anchor moves
-    /// with its block, or to the top when its block was dropped).
+    /// Appends committed blocks — a live block committed again replaces itself instead (module
+    /// docs); past the cap, drops the oldest, each whole (the anchor moves with its block, or to
+    /// the top when its block was dropped).
     pub(crate) fn push(&mut self, blocks: Vec<Block>) {
-        let n = blocks.len();
-        self.rows.extend(blocks.into_iter().map(Entry::new));
-        self.fresh += n;
-        self.pushed += n as u64;
-        if matches!(self.view, View::At(_)) {
-            self.unseen += n;
+        for block in blocks {
+            match block {
+                Block::Live(live) => self.grow(*live),
+                other => self.append(other),
+            }
         }
+        self.trim();
+    }
+
+    /// One block more at the tail.
+    fn append(&mut self, block: Block) {
+        self.rows.push_back(Entry::new(block));
+        self.fresh += 1;
+        self.pushed += 1;
+        if matches!(self.view, View::At(_)) {
+            self.unseen += 1;
+        }
+    }
+
+    /// A live block as it stands: replacing the one under its id while it is held, appended
+    /// otherwise (its first commit, or the cap dropped it meanwhile).
+    fn grow(&mut self, Live { id, layout, open }: Live) {
+        let block = Block::Laid(layout);
+        let held = self
+            .live
+            .filter(|&(lid, _)| lid == id)
+            .and_then(|(_, n)| Some((n, self.index_of(n)?)));
+        let n = match held {
+            Some((n, i)) => {
+                let old = self.rows[i]
+                    .laid
+                    .as_ref()
+                    .map(|l| (l.lines.len().max(1), l.width));
+                if self.grew.is_none()
+                    && let Some((h, w)) = old
+                {
+                    self.grew = Some((n, h, w));
+                }
+                self.rows[i] = Entry::new(block);
+                self.changed = Some(self.changed.map_or(n, |c| c.min(n)));
+                n
+            }
+            None => {
+                self.append(block);
+                self.pushed - 1
+            }
+        };
+        self.live = open.then_some((id, n));
+    }
+
+    /// The lowest block number replaced since the last call, if any (a search scans from there
+    /// again: a replaced block's text is new).
+    pub(crate) fn take_changed(&mut self) -> Option<u64> {
+        self.changed.take()
+    }
+
+    /// Past the cap, drops the oldest blocks, each whole.
+    fn trim(&mut self) {
         if self.rows.len() <= self.cap {
             return;
         }
@@ -273,8 +340,15 @@ impl Conversation {
 
     /// The display lines (at `width`) of the rows committed after the first `from`, oldest
     /// first, and the count to ask from next time (a dump writes each row once). Rows the cap
-    /// dropped before they were asked for are stood in for by the [`TRIMMED`] row.
-    pub(crate) fn lines_after(&mut self, from: u64, width: usize) -> (Vec<String>, u64) {
+    /// dropped before they were asked for are stood in for by the [`TRIMMED`] row. Unless `whole`
+    /// (the exit: nothing more will come), the lines stop above a live block still open — it is
+    /// written once it has closed.
+    pub(crate) fn lines_after(
+        &mut self,
+        from: u64,
+        width: usize,
+        whole: bool,
+    ) -> (Vec<String>, u64) {
         let kept = u64::from(self.trimmed);
         let real = self.rows.len() as u64 - kept;
         let first = self.pushed - real;
@@ -283,11 +357,16 @@ impl Conversation {
         } else {
             usize::try_from(kept + (from - first)).unwrap_or(usize::MAX)
         };
+        let upto = match self.live {
+            Some((_, n)) if !whole && n >= from => n,
+            _ => self.pushed,
+        };
+        let end = self.index_of(upto).unwrap_or(self.rows.len());
         let mut out = Vec::new();
-        for row in self.rows.iter_mut().skip(start) {
+        for row in self.rows.iter_mut().take(end).skip(start) {
             out.extend(row.lines(width).iter().cloned());
         }
-        (out, self.pushed)
+        (out, upto)
     }
 
     /// The number of the oldest row still held (rows are numbered as they are committed; the
@@ -397,9 +476,18 @@ impl Conversation {
     /// The display lines (at `width`) of the blocks committed since the last call, counted from
     /// the tail up to `limit + 1` at most: only a count under the viewport's height is used (one
     /// scroll of that many), so a big batch lays out the blocks a viewport shows, not all of them.
+    /// A live block replaced since — when it was drawn at this width and is not one of the new
+    /// blocks — adds what it grew by: its growth scrolls the tail like new lines.
     pub(crate) fn take_fresh(&mut self, width: usize, limit: usize) -> usize {
         let n = std::mem::take(&mut self.fresh).min(self.rows.len());
         let mut lines = 0;
+        if let Some((g, old, w)) = self.grew.take()
+            && w == width
+            && g + (n as u64) < self.pushed
+            && let Some(i) = self.index_of(g)
+        {
+            lines += self.rows[i].height(width).saturating_sub(old);
+        }
         for i in (self.rows.len() - n..self.rows.len()).rev() {
             lines += self.rows[i].height(width);
             if lines > limit {

@@ -20,7 +20,7 @@ use crate::repl::render::group;
 use crate::repl::render::group::ActivityGroup;
 use crate::repl::render::styles::{dim, red, truncate_runes};
 use crate::sync::lock;
-use crate::ui::facade::{Block, Layout};
+use crate::ui::facade::{Block, Layout, LiveId};
 
 /// The image-generation widget's label (transcript.go:373,381).
 pub(crate) const IMAGE_WIDGET_LABEL: &str = "image";
@@ -288,17 +288,6 @@ impl Transcript {
         inner.pending_call.clear();
     }
 
-    /// Materializes deferred interior blanks NOW (transcript.go `flushPending`): a block
-    /// preview about to occupy the next frame row IS more content — preview and settled
-    /// block must be spaced identically.
-    pub fn flush_pending(&self) {
-        let mut inner = self.lock();
-        for _ in 0..inner.pending {
-            inner.u.print(vec![Block::Row(String::new())]);
-        }
-        inner.pending = 0;
-    }
-
     /// Marks the content block open (transcript.go `markContent`). The provider's content
     /// path calls it on the FIRST content byte — on the stream side, so the mark
     /// happens-before any tool-call delta that follows in the same network read.
@@ -409,6 +398,7 @@ impl Transcript {
         ContentCommitter {
             tr: Arc::clone(self),
             opened: false,
+            live: None,
         }
     }
 }
@@ -417,19 +407,32 @@ impl Transcript {
 pub struct ContentCommitter {
     tr: Arc<Transcript>,
     opened: bool,
+    /// The live block this committer has shown (tui-plan S7b).
+    live: Option<LiveId>,
 }
 
 impl ContentCommitter {
     /// Commits `blocks` (rows, or laid-out blocks) into the block, opening (or re-opening) it as
-    /// needed.
+    /// needed. A live block committed again — it grew, or it closed — replaces itself where it
+    /// already is: that is not new content, so it opens nothing and releases nothing.
     pub fn push<B: Clone + Into<Block>>(&mut self, blocks: &[B]) {
+        let blocks: Vec<Block> = blocks.iter().cloned().map(Into::into).collect();
+        if let [Block::Live(l)] = blocks.as_slice()
+            && self.live == Some(l.id)
+        {
+            self.tr.lock().u.print(blocks);
+            return;
+        }
+        if let Some(Block::Live(l)) = blocks.iter().find(|b| matches!(b, Block::Live(_))) {
+            self.live = Some(l.id);
+        }
         let mut inner = self.tr.lock();
         if !self.opened || inner.last != BlockKind::Content {
             self.opened = true;
             group::settle_group(&mut inner);
             inner.begin(BlockKind::Content);
         }
-        inner.push(blocks.iter().cloned().map(Into::into).collect());
+        inner.push(blocks);
     }
 }
 

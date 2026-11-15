@@ -21,9 +21,8 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 use crate::ui::facade::{
-    BusyGuard, Delivered, Dialogs, Input, PanelKind, PreviewHandle, ProgressState, ScopeGuard,
-    StatusData, Suggestion, TabbedResult, TabbedSpec, Ui, UiError, UiStreamSink,
-    sanitize_window_title,
+    BusyGuard, Delivered, Dialogs, Input, PanelKind, ProgressState, ScopeGuard, StatusData,
+    Suggestion, TabbedResult, TabbedSpec, Ui, UiError, UiStreamSink, sanitize_window_title,
 };
 use crate::{BoxFuture, host};
 
@@ -33,18 +32,16 @@ pub enum UiEvent {
     /// [`Ui::print`] with the committed blocks as lines: a row as written, a laid-out block
     /// rendered at the recorder's width (`set_size`; 80 when unset).
     Print(Vec<String>),
+    /// [`Ui::print`] of a block still being written ([`crate::ui::facade::Block::Live`], open):
+    /// its lines as it stands. The commit that closes it is a [`UiEvent::Print`] — where the
+    /// block lands — so a print log shows every block once.
+    Grow(Vec<String>),
     /// [`Ui::user_block`] with the display text.
     UserBlock(String),
     /// [`Ui::enqueue`] with the injected input.
     Enqueue(Input),
     /// [`Ui::start_stream`] (the turn scope push is implied).
     StreamStart,
-    /// [`UiStreamSink::block_preview`] with the label.
-    Preview(String),
-    /// [`PreviewHandle::write_raw_line`] with the raw source line.
-    PreviewLine(String),
-    /// [`PreviewHandle::close`] (recorded once; `Drop` defers to it).
-    PreviewClose,
     /// [`UiStreamSink::done`] (the turn scope pop is implied).
     Done,
     /// [`Ui::busy`] with the label.
@@ -329,42 +326,8 @@ struct ScriptedStream {
 }
 
 impl UiStreamSink for ScriptedStream {
-    fn block_preview(&self, label: &str) -> Box<dyn PreviewHandle> {
-        lock(&self.log).push(UiEvent::Preview(label.to_owned()));
-        Box::new(ScriptedPreview {
-            log: Arc::clone(&self.log),
-            closed: false,
-        })
-    }
-
     fn done(&self) {
         lock(&self.log).push(UiEvent::Done);
-    }
-}
-
-/// The recording preview handle; `Drop` = close, recorded exactly once.
-struct ScriptedPreview {
-    log: Arc<Mutex<Vec<UiEvent>>>,
-    closed: bool,
-}
-
-impl PreviewHandle for ScriptedPreview {
-    fn write_raw_line(&mut self, line: &str) {
-        lock(&self.log).push(UiEvent::PreviewLine(line.to_owned()));
-    }
-
-    fn close(&mut self) {
-        if self.closed {
-            return;
-        }
-        self.closed = true;
-        lock(&self.log).push(UiEvent::PreviewClose);
-    }
-}
-
-impl Drop for ScriptedPreview {
-    fn drop(&mut self) {
-        self.close();
     }
 }
 
@@ -524,9 +487,22 @@ impl Ui for ScriptedUi {
             0 => 80,
             w => usize::from(w),
         };
-        self.record(UiEvent::Print(
-            blocks.iter().flat_map(|b| b.render(w)).collect(),
-        ));
+        let mut rows = Vec::new();
+        for b in &blocks {
+            if let crate::ui::facade::Block::Live(l) = b
+                && l.open
+            {
+                if !rows.is_empty() {
+                    self.record(UiEvent::Print(std::mem::take(&mut rows)));
+                }
+                self.record(UiEvent::Grow(b.render(w)));
+            } else {
+                rows.extend(b.render(w));
+            }
+        }
+        if !rows.is_empty() || blocks.is_empty() {
+            self.record(UiEvent::Print(rows));
+        }
     }
 
     fn user_block(&self, display: &str) {
@@ -829,10 +805,6 @@ mod tests {
         ui.print(crate::ui::facade::Block::rows(["a"]));
         ui.user_block("you");
         let sink = ui.start_stream(cancel.clone());
-        let mut pv = sink.block_preview("rendering table…");
-        pv.write_raw_line("|a|");
-        pv.close();
-        drop(pv); // Drop after close records nothing more
         sink.done();
         let busy = ui.busy("Waiting for the model");
         ui.busy_detail("1.2 KB");
@@ -852,9 +824,6 @@ mod tests {
                 UiEvent::Print(vec!["a".to_owned()]),
                 UiEvent::UserBlock("you".to_owned()),
                 UiEvent::StreamStart,
-                UiEvent::Preview("rendering table…".to_owned()),
-                UiEvent::PreviewLine("|a|".to_owned()),
-                UiEvent::PreviewClose,
                 UiEvent::Done,
                 UiEvent::Busy("Waiting for the model".to_owned()),
                 UiEvent::BusyDetail("1.2 KB".to_owned()),
@@ -873,7 +842,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn guards_record_on_drop_and_leaked_preview_closes_once() {
+    async fn guards_record_on_drop() {
         let ui = ScriptedUi::new(Vec::new());
         {
             let _busy = ui.busy("b");
@@ -881,10 +850,6 @@ mod tests {
         {
             let _scope = ui.push_cancel_scope(CancellationToken::new());
         } // dropped without pop()
-        let sink = ui.start_stream(CancellationToken::new());
-        {
-            let _pv = sink.block_preview("p");
-        } // leaked: Drop closes exactly once
         assert_eq!(
             ui.events(),
             vec![
@@ -892,9 +857,6 @@ mod tests {
                 UiEvent::BusyOff,
                 UiEvent::ScopePush,
                 UiEvent::ScopePop,
-                UiEvent::StreamStart,
-                UiEvent::Preview("p".to_owned()),
-                UiEvent::PreviewClose,
             ]
         );
     }

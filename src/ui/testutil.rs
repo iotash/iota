@@ -16,7 +16,6 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use crate::sync::lock;
 use crate::text::ansi::strip_sgr;
 use crate::ui::facade::{Panel, TabbedResult};
-use crate::ui::render::region::{Emit, Region};
 use crate::ui::runtime::event_loop::{EventSource, LoopShared, Model};
 use crate::ui::surface::tabbed::PanelState;
 use crate::ui::surface::{SurfaceEffect, SurfaceState};
@@ -158,19 +157,7 @@ pub(crate) fn closed(e: SurfaceEffect) -> TabbedResult {
 pub(crate) fn test_model() -> Model {
     let width = Arc::new(AtomicU16::new(80));
     let height = Arc::new(AtomicU16::new(24));
-    let region = Arc::new(Mutex::new(
-        Region::new(
-            Emit::Test(Box::new(|_, _| {})),
-            Arc::clone(&width),
-            Arc::clone(&height),
-        )
-        .unstaged(),
-    ));
-    Model::new(LoopShared {
-        width,
-        height,
-        region,
-    })
+    Model::new(LoopShared { width, height })
 }
 
 pub(crate) fn type_text(m: &mut Model, s: &str) {
@@ -269,7 +256,7 @@ impl EventSource for ChannelEvents {
 /// `md` rendered (no color) into the blocks the terminal's markdown sink commits: text as rows,
 /// each closed buffering block kept as its source (`markdown::Fragment`, laid out at every width).
 pub(crate) fn markdown_blocks(md: &str) -> Vec<crate::ui::block::Block> {
-    use crate::markdown::{CodeTheme, Fragment, PreviewHandle, RenderOptions, Sink, Writer};
+    use crate::markdown::{CodeTheme, Fragment, RenderOptions, Sink, Writer};
     use crate::ui::block::Block;
 
     struct Keep(Arc<Mutex<Vec<Block>>>);
@@ -282,9 +269,6 @@ pub(crate) fn markdown_blocks(md: &str) -> Vec<crate::ui::block::Block> {
         }
         fn width(&self) -> usize {
             80
-        }
-        fn block_preview(&mut self, _label: &str) -> Option<Box<dyn PreviewHandle>> {
-            None
         }
     }
     let out = Arc::new(Mutex::new(Vec::new()));

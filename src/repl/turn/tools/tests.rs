@@ -30,8 +30,8 @@ use crate::tool::{
     ToolOutput, ToolResult, post_artifact,
 };
 use crate::ui::facade::{
-    BusyGuard, Input, PanelKind, PanelResult, PreviewHandle, ProgressState, ScopeGuard, StatusData,
-    Suggestion, TabbedResult, TabbedSpec, Ui, UiError, UiStreamSink,
+    BusyGuard, Input, PanelKind, PanelResult, ProgressState, ScopeGuard, StatusData, Suggestion,
+    TabbedResult, TabbedSpec, Ui, UiError, UiStreamSink,
 };
 use pretty_assertions::assert_eq;
 use tokio_util::sync::CancellationToken;
@@ -2029,21 +2029,9 @@ struct OrderSink {
 }
 
 impl UiStreamSink for OrderSink {
-    fn block_preview(&self, _label: &str) -> Box<dyn PreviewHandle> {
-        Box::new(NopPreview)
-    }
-
     fn done(&self) {
         note(&self.log, &self.turn, "done");
     }
-}
-
-struct NopPreview;
-
-impl PreviewHandle for NopPreview {
-    fn write_raw_line(&mut self, _line: &str) {}
-
-    fn close(&mut self) {}
 }
 
 /// A 1×1 PNG (the smallest attachment `save_images_for_turn` will write).

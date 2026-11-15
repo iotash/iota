@@ -2,7 +2,7 @@
 //! (internal/ui/model.go:914-1193).
 //!
 //! Builds the pinned bottom frame as raw ANSI rows in the FIXED stacking order
-//! `[staging tail][residue (blank)][preview][spacer][queue] ┄sep┄ [composer
+//! `[call preview][spacer][queue] ┄sep┄ [composer
 //! (+candidates row)] ┄sep┄ [surface | suggestion-desc | status]`, tracking `rows_above`
 //! for the real-cursor offset. Every appended row is exactly one visual line (the
 //! one-entry-one-row law) or the cursor desyncs. Above the composer the frame only ever
@@ -121,7 +121,7 @@ pub(crate) enum BottomZone<'a> {
 pub(crate) struct FrameInput<'a> {
     /// Terminal width (0/unknown → separators fall back to 80 columns).
     pub(crate) width: u16,
-    /// The staging-window snapshot (tail, residue, preview).
+    /// The region snapshot (the call preview).
     pub(crate) region: &'a RegionSnapshot,
     /// The shared spinner counter.
     pub(crate) spin: usize,
@@ -188,11 +188,6 @@ fn budget(width: u16, reserve: usize) -> usize {
 pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
     let mut rows: Vec<String> = Vec::new();
 
-    // The staging window: committed content, rendered as-is.
-    rows.extend(fi.region.tail.iter().cloned());
-    // Residue rows keep their HEIGHT but render BLANK — stale widget chrome next to an
-    // injected user block read as leaked tool output (model.go:947-950).
-    rows.extend(fi.region.residue.iter().map(|_| String::new()));
     if !fi.region.label.is_empty() {
         // The label renders as supplied (callers pre-style it), so a streamed tool
         // call's header looks exactly like its final committed form (model.go:954).

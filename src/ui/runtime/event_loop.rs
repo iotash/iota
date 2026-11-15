@@ -19,9 +19,8 @@
 
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicU16, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, mpsc};
 
-use crate::sync::lock;
 use crate::ui::block::Block;
 use std::time::{Duration, Instant};
 
@@ -47,7 +46,7 @@ use crate::ui::input::suggest;
 use crate::ui::render::frame::{
     BottomZone, BusyView, FrameInput, FrameMap, FrameView, TurnClock, build_frame,
 };
-use crate::ui::render::region::{Region, RegionSnapshot};
+use crate::ui::render::region::RegionSnapshot;
 use crate::ui::surface::tabbed::SURFACE_MIN_ROWS;
 use crate::ui::surface::{self, SurfaceEffect};
 
@@ -84,9 +83,6 @@ pub(crate) struct LoopShared {
     pub(crate) width: Arc<AtomicU16>,
     /// Terminal height in rows (starts 24 — "24 until the first resize event").
     pub(crate) height: Arc<AtomicU16>,
-    /// The staging window; the loop takes this lock only inside post-update jobs
-    /// (the retrim), never inside a message handler.
-    pub(crate) region: Arc<Mutex<Region>>,
 }
 
 /// The loop's input-event seam: crossterm live, scripted in tests.
@@ -215,14 +211,6 @@ pub(crate) struct SurfaceOpen {
     reply: Option<oneshot::Sender<TabbedResult>>,
 }
 
-/// Deferred side effects that must run OUTSIDE the message/event handlers
-/// (Go `tea.Cmd`): they take the region lock and send into this same mailbox.
-enum Job {
-    /// `region.retrim()` after a resize: staged rows rewrapped at the new width and the
-    /// T-40 cap re-applied at the new height.
-    Retrim,
-}
-
 /// The loop model (Go `model`): every field mutates on this thread only.
 pub(crate) struct Model {
     /// Terminal width (mirrors the shared atomic).
@@ -273,7 +261,6 @@ pub(crate) struct Model {
     /// Whether the self-stopping spinner chain is running.
     pub(crate) spin_ticking: bool,
     last_spin: Instant,
-    jobs: Vec<Job>,
     /// A queued full clear before the next draw (T-32 surface Tab switch).
     force_clear: bool,
     /// The terminal's background tone (`UiMsg::DarkBackground`; dark is the safe default).
@@ -401,7 +388,6 @@ impl Model {
             spin: 0,
             spin_ticking: false,
             last_spin: Instant::now(),
-            jobs: Vec::new(),
             force_clear: false,
             dark: true,
             dirty: true, // the first iteration paints the initial frame
@@ -938,8 +924,7 @@ impl Model {
 
     /// The last recorded resize, once the terminal has been quiet for `RESIZE_QUIET`: the size
     /// taken — the shared atomics, the screen — and the frame left dirty, so the iteration's one
-    /// batched draw repaints every cell (`Screen::draw_frame` autoresizes). The retrim job
-    /// rewraps an open preview for the new width.
+    /// batched draw repaints every cell (`Screen::draw_frame` autoresizes).
     pub(crate) fn apply_resize<W: Write>(&mut self, term: &mut Term<W>) {
         let Some((w, h)) = self.pending_resize.take() else {
             return;
@@ -954,7 +939,6 @@ impl Model {
             term.resize(ratatui::layout::Size::new(w, h));
         }
         self.dirty = true;
-        self.jobs.push(Job::Retrim);
     }
 
     /// The search line's query and cursor, while a search is on.
@@ -1146,12 +1130,6 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
             m.apply_resize(&mut term);
         }
         let resizing = m.pending_resize.is_some();
-        // Post-update jobs (tea.Cmd): region lock + mailbox sends — never re-entrant.
-        for job in std::mem::take(&mut m.jobs) {
-            match job {
-                Job::Retrim => lock(&m.shared.region).retrim(),
-            }
-        }
         // One iteration's screen writes — the title and progress, the frame — go out as ONE
         // write, a DEC 2026 synchronized update when it is larger than a transport's read block
         // (X-55): a split write is never shown half-drawn by an emulator that knows the mode.

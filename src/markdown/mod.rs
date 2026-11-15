@@ -17,9 +17,15 @@
 //! SPACING STATE MACHINE (markdown.go:1092-1165): units None/Blank/Text/Block;
 //! `emit_blank` collapses blank runs and drops leading blanks; `emit_text` separates
 //! only after a block; `begin_block`/`end_block` bound every block-level element with
-//! exactly ONE blank line; `open_preview` pays the separating blank BEFORE the preview
-//! opens (`gap_paid` credit) so the streaming layout equals the settled layout — the
-//! preview-pays-separator law, for all five buffering block types.
+//! exactly ONE blank line; `open_block` pays the separating blank BEFORE the block first
+//! shows (`gap_paid` credit) so the streaming layout equals the settled layout — the
+//! open-block-pays-separator law, for all five buffering block types.
+//!
+//! GROWTH (tui-plan S7b): a sink that shows blocks while they are written
+//! ([`Sink::shows_open_blocks`]) gets the open block as it stands after every line it takes
+//! ([`Sink::grow_block`]) and once more when it closes ([`Sink::write_block`]); the terminal
+//! replaces the one block in place each time, so a code block, a table, a list, a quote or a
+//! formula appears line by line at the width of the screen.
 
 pub(crate) mod blocks;
 pub(crate) mod fragment;
@@ -27,18 +33,16 @@ pub mod highlight;
 pub(crate) mod html;
 pub(crate) mod inline;
 pub(crate) mod link;
-pub(crate) mod preview;
 pub(crate) mod sink;
 pub(crate) mod style;
 
 pub use fragment::Fragment;
 pub use highlight::{CodeHighlighter, PlainIndent, SyntectHighlighter};
 pub use link::hyperlink;
-pub use preview::PreviewHandle;
 pub use sink::Sink;
 pub use style::Style;
 
-use crate::markdown::blocks::code::{CodeBlock, code_label};
+use crate::markdown::blocks::code::CodeBlock;
 use crate::markdown::blocks::list::ListBlock;
 use crate::markdown::blocks::math::{MathBlock, display_open, is_display_close};
 use crate::markdown::blocks::quote::{QuoteBlock, is_quote_line};
@@ -81,7 +85,7 @@ enum Unit {
 /// The buffering block the writer is inside — markdown.go's five `in*` flags and their
 /// buffers as ONE value. At most one block is open at a time (a fence, a table, a list, a
 /// quote or a display-math block) and `None` is the plain paragraph path. Each variant owns
-/// its raw lines and its live preview, and renders itself once, when it closes.
+/// what it has taken so far and gives it as a [`Fragment`] at any point.
 enum Block {
     /// No block open: blanks, headings, rules and paragraph lines dispatch directly.
     None,
@@ -104,8 +108,8 @@ pub struct Writer {
     buf: Vec<u8>,
     /// The open buffering block, if any.
     block: Block,
-    /// The buffering block's separating blank was already written when its preview
-    /// opened, so `begin_block` must not write it again.
+    /// The buffering block's separating blank was already written when it opened, so
+    /// `begin_block` must not write it again.
     gap_paid: bool,
     last_unit: Unit,
 }
@@ -169,6 +173,7 @@ impl Writer {
         }
         if let Block::Code(code) = &mut self.block {
             code.push(line);
+            self.grow();
             return;
         }
 
@@ -177,6 +182,7 @@ impl Writer {
         // and falls through.
         if let Block::List(list) = &mut self.block {
             if list.consume(line) {
+                self.grow();
                 return;
             }
             self.flush_block();
@@ -187,6 +193,7 @@ impl Writer {
         if let Block::Quote(quote) = &mut self.block {
             if is_quote_line(line) {
                 quote.append(line);
+                self.grow();
                 return;
             }
             self.flush_block();
@@ -196,6 +203,7 @@ impl Writer {
         if let Block::Math(math) = &mut self.block {
             if !is_display_close(line) {
                 math.append(line);
+                self.grow();
                 return;
             }
             self.flush_block();
@@ -208,22 +216,21 @@ impl Writer {
         if let Some((body, one_line)) = display_open(line) {
             self.flush_block();
             if one_line {
-                let block = MathBlock::one_line(body).finish(self.opts);
+                let block = MathBlock::one_line(body).fragment(self.opts);
                 self.render_block(block);
             } else {
-                let view = self.open_preview(MathBlock::LABEL);
-                self.block = Block::Math(MathBlock::open(view));
+                self.open_block(Block::Math(MathBlock::open()));
             }
             return;
         }
 
-        // Only a table can still be open here; its FIRST row opens the live preview.
+        // Only a table can still be open here; its FIRST row opens it.
         if is_table_line(line) {
             if let Block::Table(table) = &mut self.block {
                 table.push(line);
+                self.grow();
             } else {
-                let view = self.open_preview(TableBlock::LABEL);
-                self.block = Block::Table(TableBlock::open(line, view));
+                self.open_block(Block::Table(TableBlock::open(line)));
             }
             return;
         }
@@ -231,14 +238,12 @@ impl Writer {
         self.flush_block(); // a pending table
 
         if is_list_line(line) {
-            let view = self.open_preview(ListBlock::LABEL);
-            self.block = Block::List(ListBlock::open(line, view));
+            self.open_block(Block::List(ListBlock::open(line)));
             return;
         }
 
         if is_quote_line(line) {
-            let view = self.open_preview(QuoteBlock::LABEL);
-            self.block = Block::Quote(QuoteBlock::open(line, view));
+            self.open_block(Block::Quote(QuoteBlock::open(line)));
             return;
         }
 
@@ -262,8 +267,31 @@ impl Writer {
     /// backticks), carrying the display-math block the fence interrupted, if any.
     fn open_code(&mut self, fence: &str, interrupted: Option<MathBlock>) {
         let lang = CodeBlock::lang_of(fence);
-        let view = self.open_preview(&code_label(&lang));
-        self.block = Block::Code(CodeBlock::new(lang, view, interrupted));
+        self.open_block(Block::Code(CodeBlock::new(&lang, self.opts, interrupted)));
+    }
+
+    /// The open block as it stands, whichever it is (`None`: no block open, or one with nothing
+    /// to show yet).
+    fn fragment(&self) -> Option<Fragment> {
+        let opts = self.opts;
+        match &self.block {
+            Block::None => None,
+            Block::Code(code) => Some(code.fragment(opts)),
+            Block::Table(table) => table.fragment(opts),
+            Block::List(list) => list.fragment(opts),
+            Block::Quote(quote) => quote.fragment(opts),
+            Block::Math(math) => math.fragment(opts),
+        }
+    }
+
+    /// Hands the open block as it stands to a sink that shows blocks while they are written.
+    fn grow(&mut self) {
+        if !self.sink.shows_open_blocks() {
+            return;
+        }
+        if let Some(block) = self.fragment() {
+            self.sink.grow_block(block);
+        }
     }
 
     /// Closes and renders the open block, whichever it is. A list re-emits its held blank
@@ -271,22 +299,14 @@ impl Writer {
     /// routed through `emit_blank` so it joins the blank-run collapse. A fence leaves the
     /// display-math block it interrupted open again (`CodeBlock::interrupted`).
     fn flush_block(&mut self) {
-        let opts = self.opts;
-        let mut resumed = None;
-        let (block, held_blank) = match std::mem::replace(&mut self.block, Block::None) {
+        let block = self.fragment();
+        let (resumed, held_blank) = match &mut self.block {
             Block::None => return,
-            Block::Code(mut code) => {
-                resumed = code.take_interrupted();
-                (Some(code.finish(opts)), false)
-            }
-            Block::Table(table) => (table.finish(opts), false),
-            Block::List(list) => {
-                let held = list.holds_blank();
-                (list.finish(opts), held)
-            }
-            Block::Quote(quote) => (quote.finish(opts), false),
-            Block::Math(math) => (math.finish(opts), false),
+            Block::Code(code) => (code.take_interrupted(), false),
+            Block::List(list) => (None, list.holds_blank()),
+            _ => (None, false),
         };
+        self.block = Block::None;
         self.render_block(block);
         if held_blank {
             self.emit_blank();
@@ -326,7 +346,7 @@ impl Writer {
     }
 
     /// Right before a block renders: one separating blank on a text→block or
-    /// block→block boundary — unless the block's preview already paid it. Never
+    /// block→block boundary — unless the open block already paid it. Never
     /// updates `last_unit` (the render + `end_block` do that).
     fn begin_block(&mut self) {
         if self.gap_paid {
@@ -342,16 +362,16 @@ impl Writer {
         matches!(self.last_unit, Unit::Text | Unit::Block)
     }
 
-    /// Opens a buffering block's live preview, paying its separating blank FIRST —
-    /// the preview occupies the row the rendered block will, so it must sit where
-    /// that block will sit (the preview-pays-separator law; `begin_block` then skips
-    /// the blank it already owes).
-    fn open_preview(&mut self, label: &str) -> Option<Box<dyn PreviewHandle>> {
+    /// Opens a buffering block, paying its separating blank FIRST — the open block shows
+    /// where the closed one will sit (the open-block-pays-separator law; `begin_block` then
+    /// skips the blank it already owes) — and shows what it holds already.
+    fn open_block(&mut self, block: Block) {
         if self.needs_gap() {
             self.sink.write("\n");
             self.gap_paid = true;
         }
-        self.sink.block_preview(label)
+        self.block = block;
+        self.grow();
     }
 
     /// The blank AFTER a block is produced lazily by the next unit's separator, so
@@ -361,7 +381,7 @@ impl Writer {
     }
 }
 
-/// plainSink shape over `io::Write` (fixed width, no previews; write errors ignored —
+/// plainSink shape over `io::Write` (fixed width; write errors ignored —
 /// T-07: the Sink is infallible because facade commits are fire-and-forget).
 struct PlainSink {
     w: Box<dyn std::io::Write + Send>,
@@ -376,14 +396,10 @@ impl Sink for PlainSink {
     fn width(&self) -> usize {
         self.width
     }
-
-    fn block_preview(&mut self, _label: &str) -> Option<Box<dyn PreviewHandle>> {
-        None
-    }
 }
 
 /// A Writer emitting plain rendered output to `w` at a fixed layout width — the
-/// piped/test shape, no live previews. Renders with the Monokai theme and the process's
+/// piped/test shape. Renders with the Monokai theme and the process's
 /// color decision ([`crate::app::color::enabled`] — Go's `NewWriterTo` read `color.NoColor` the
 /// same way; a test process never decides, so it renders with color ON); callers needing
 /// other options build [`Writer::new`] over their own [`Sink`].

@@ -1,29 +1,22 @@
 //! `uiMDSink` (chat/uisink.go): the `crate::markdown::sink::Sink` implementation over the
-//! facade — batches ALL complete lines of one write into ONE commit (the anti-crawl law), commits
-//! each closed buffering block as ONE block kept as its source (`markdown::Fragment`, laid out
-//! again at every width the screen takes — tui-plan S7a),
-//! materializes the transcript's latched separator before a preview opens (`preOpen`),
-//! and hands the facade's `PreviewHandle` straight through to the renderer (the same trait,
-//! `crate::markdown::preview`) — plus `lineCommitter` (the SGR-reset glue rule).
+//! facade — batches ALL complete lines of one write into ONE commit (the anti-crawl law), and
+//! commits a buffering block as ONE live block kept as its source (`markdown::Fragment`, laid out
+//! at every width the screen takes — tui-plan S7a): committed again under the same id each time
+//! it grows and when it closes, so the screen shows it line by line (tui-plan S7b) — plus
+//! `lineCommitter` (the SGR-reset glue rule).
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::repl::render::styles::dim;
 use crate::sync::lock;
-use crate::ui::facade::Block;
-
-/// Opens the facade's metered one-row preview for a label (the `StreamSink::block_preview`
-/// verb, pre-bound by the turn).
-pub(crate) type PreviewFn =
-    Box<dyn FnMut(&str) -> Box<dyn crate::ui::facade::PreviewHandle> + Send>;
+use crate::ui::facade::{Block, LiveId};
 
 /// Commits one batch of blocks (the transcript's content-block committer).
 pub(crate) type CommitFn = Box<dyn FnMut(Vec<Block>) + Send>;
 
 struct MdSinkInner {
-    preview: PreviewFn,
     commit: CommitFn,
-    pre_open: Option<Box<dyn Fn() + Send>>,
+    /// The open block's id, once it has shown.
+    live: Option<LiveId>,
     buf: String,
 }
 
@@ -34,19 +27,11 @@ struct MdSinkInner {
 pub(crate) struct UiMdSink(Arc<Mutex<MdSinkInner>>);
 
 impl UiMdSink {
-    /// A sink committing through `commit`, metering previews through `preview` (labels
-    /// are dimmed HERE — the chat layer pre-styles markdown's plain `"rendering…"`
-    /// labels, uisink.go:82), and materializing
-    /// latched blanks through `pre_open` (nil-safe; = `Transcript::flush_pending`).
-    pub(crate) fn new(
-        preview: PreviewFn,
-        commit: CommitFn,
-        pre_open: Option<Box<dyn Fn() + Send>>,
-    ) -> Self {
+    /// A sink committing through `commit`.
+    pub(crate) fn new(commit: CommitFn) -> Self {
         Self(Arc::new(Mutex::new(MdSinkInner {
-            preview,
             commit,
-            pre_open,
+            live: None,
             buf: String::new(),
         })))
     }
@@ -84,29 +69,35 @@ impl crate::markdown::sink::Sink for UiMdSink {
         }
     }
 
-    /// The block as its source — ONE laid-out block, re-rendered at every width the screen takes;
-    /// the rendering at today's width is not kept.
+    /// The closed block as its source — ONE laid-out block, re-rendered at every width the screen
+    /// takes; when it showed while open, its last commit, replacing the live one.
     fn write_block(&mut self, block: crate::markdown::Fragment) {
         let mut g = self.lock();
-        (g.commit)(vec![Block::laid(block)]);
+        let b = match g.live.take() {
+            Some(id) => Block::live(id, block, false),
+            None => Block::laid(block),
+        };
+        (g.commit)(vec![b]);
+    }
+
+    /// Every open block shows as it grows.
+    fn shows_open_blocks(&self) -> bool {
+        true
+    }
+
+    /// The open block as it stands, replacing what it showed before. Its first showing is
+    /// content to the transcript: a separator latched above it is released first, so the open
+    /// block is spaced exactly like the closed one.
+    fn grow_block(&mut self, block: crate::markdown::Fragment) {
+        let mut g = self.lock();
+        let id = *g.live.get_or_insert_with(LiveId::next);
+        (g.commit)(vec![Block::live(id, block, true)]);
     }
 
     /// Never asked: every closed block is kept as its source ([`Self::write_block`]) and laid out
     /// by the screen at the width of each draw.
     fn width(&self) -> usize {
         0
-    }
-
-    /// The block's separator may sit in the transcript's blank latch (interior blanks
-    /// defer until more content follows) — the preview about to occupy the next row IS
-    /// that content, so materialize it first: the preview must be spaced exactly like the
-    /// block it morphs into.
-    fn block_preview(&mut self, label: &str) -> Option<Box<dyn crate::ui::facade::PreviewHandle>> {
-        let mut g = self.lock();
-        if let Some(pre) = &g.pre_open {
-            pre();
-        }
-        Some((g.preview)(&dim(label)))
     }
 }
 
@@ -158,19 +149,8 @@ mod tests {
 
     use crate::repl::render::transcript::Transcript;
     use crate::testing::{ScriptedUi, UiEvent};
-    use crate::ui::facade::Ui as _;
-    use tokio_util::sync::CancellationToken;
 
     use super::{LineCommitter, UiMdSink};
-
-    /// A no-op facade preview handle.
-    struct NopPreview;
-
-    impl crate::ui::facade::PreviewHandle for NopPreview {
-        fn write_raw_line(&mut self, _line: &str) {}
-
-        fn close(&mut self) {}
-    }
 
     // Go: chat/uisink_test.go:38 TestUIMDSinkBatchesLines — all complete lines of one
     // write land as ONE commit batch; a partial line buffers until its newline arrives;
@@ -179,14 +159,10 @@ mod tests {
     fn test_ui_md_sink_batches_lines() {
         let batches: Arc<Mutex<Vec<Vec<String>>>> = Arc::default();
         let sink_batches = Arc::clone(&batches);
-        let mut s = UiMdSink::new(
-            Box::new(|_label| Box::new(NopPreview)),
-            Box::new(move |lines: Vec<crate::ui::facade::Block>| {
-                let lines = lines.iter().flat_map(|b| b.render(80)).collect();
-                sink_batches.lock().expect("batches").push(lines);
-            }),
-            None,
-        );
+        let mut s = UiMdSink::new(Box::new(move |lines: Vec<crate::ui::facade::Block>| {
+            let lines = lines.iter().flat_map(|b| b.render(80)).collect();
+            sink_batches.lock().expect("batches").push(lines);
+        }));
 
         // A rendered 4-line block arriving in one write (a flushed table).
         s.write("r1\nr2\nr3\nr4\n");
@@ -248,27 +224,20 @@ mod tests {
         }
     }
 
-    // Go: chat/uisink_test.go:117 TestPreviewSpacingMatchesSettle — the separator a block
-    // visually needs must be ON SCREEN while its preview shows (flushPending via
-    // preOpen), not latched until the settle reveals it.
+    // Go: chat/uisink_test.go:117 TestPreviewSpacingMatchesSettle, for the block that grows in
+    // place of the preview (tui-plan S7b): the separator the block needs is on screen before its
+    // first showing, every row it takes shows it again under the same id, and the commit that
+    // closes it is the one print of the block.
     #[test]
-    fn test_preview_spacing_matches_settle() {
+    fn an_open_block_is_spaced_like_the_closed_one_and_grows_a_row_at_a_time() {
         let rec = Rec::default();
         let tr = Arc::new(Transcript::new(rec.ui(), None));
-        // The preview opens through the facade's own stream sink, so it lands in the same
-        // ordered log as the transcript's prints.
-        let stream = rec.ui().start_stream(CancellationToken::new());
-        let pre = Arc::clone(&tr);
         let mut committer = tr.content_block();
-        let sink = UiMdSink::new(
-            Box::new(move |label| stream.block_preview(label)),
-            Box::new(move |lines| committer.push(&lines)),
-            Some(Box::new(move || pre.flush_pending())),
-        );
+        let sink = UiMdSink::new(Box::new(move |lines| committer.push(&lines)));
         let mut mdw = Writer::new(
             Box::new(sink.clone()),
             RenderOptions {
-                color: true,
+                color: false,
                 code_theme: CodeTheme::Monokai,
             },
         );
@@ -282,23 +251,19 @@ mod tests {
             .events()
             .into_iter()
             .filter_map(|e| match e {
-                UiEvent::Print(lines) => Some(format!("print:{}", lines.join("|"))),
-                UiEvent::Preview(label) => {
-                    Some(format!("preview:{}", crate::text::ansi::strip_sgr(&label)))
-                }
+                UiEvent::Print(lines) => Some(format!("print:{}", lines.len())),
+                UiEvent::Grow(lines) => Some(format!("grow:{}", lines.len())),
                 _ => None,
             })
             .collect();
-        let pi = events
-            .iter()
-            .position(|e| e.starts_with("preview:"))
-            .unwrap_or_else(|| panic!("no preview opened:\n{events:?}"));
-        // The blank separator must precede the preview open, not trail it.
-        assert!(pi > 0, "preview opened first:\n{events:?}");
+        // intro, its separator, the table at one row (3 lines boxed), the separator row (still
+        // 3), the data row (5 lines with the rule between), then the close: one print of 5.
         assert_eq!(
-            events[pi - 1],
-            "print:",
-            "the block separator is not on screen before the preview:\n{events:?}"
+            events,
+            [
+                "print:1", "print:1", "grow:3", "grow:3", "grow:5", "print:5"
+            ],
+            "{events:?}"
         );
     }
 }

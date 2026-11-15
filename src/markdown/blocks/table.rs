@@ -10,11 +10,10 @@
 //! padding comes from each rendered line's escape-aware width, so styled cells (the
 //! math passthrough included) always pad to the same column edge.
 
-use crate::markdown::blocks::close_view;
+use crate::markdown::RenderOptions;
 use crate::markdown::fragment::{Fragment, Source};
 use crate::markdown::inline::{DIM, highlight_inline, strip_inline_markdown};
 use crate::markdown::style::Style;
-use crate::markdown::{PreviewHandle, RenderOptions};
 use crate::text::ansi::{ansi_width, escape_len_at, sgr_carry};
 use crate::text::width::{cluster_width, graphemes, str_width};
 
@@ -157,46 +156,37 @@ pub(crate) fn split_br(s: &str) -> Vec<String> {
 pub(crate) struct TableBlock {
     rows: Vec<Vec<String>>,
     seps: Vec<bool>,
-    view: Option<Box<dyn PreviewHandle>>,
 }
 
 impl TableBlock {
-    /// The live preview's label while the block buffers.
-    pub(crate) const LABEL: &'static str = "rendering table…";
-
-    /// A block opened by its first row, with the preview the Writer opened for it.
-    pub(crate) fn open(line: &str, view: Option<Box<dyn PreviewHandle>>) -> Self {
+    /// A block opened by its first row.
+    pub(crate) fn open(line: &str) -> Self {
         let mut table = Self {
             rows: Vec::new(),
             seps: Vec::new(),
-            view,
         };
         table.push(line);
         table
     }
 
-    /// Buffers one table row (parsed cells + separator flag), mirroring the raw line into
-    /// the preview.
+    /// Buffers one table row (parsed cells + separator flag).
     pub(crate) fn push(&mut self, line: &str) {
         let cells = parse_table_cells(line);
         self.seps.push(is_table_separator(&cells));
         self.rows.push(cells);
-        if let Some(v) = &mut self.view {
-            v.write_raw_line(line);
-        }
     }
 
-    /// Closes the preview; the parsed cells are the block's source (`None`: no rows, nothing
-    /// to render). Columns are computed at every width it is laid out at ([`render_table`]).
-    pub(crate) fn finish(mut self, opts: RenderOptions) -> Option<Fragment> {
-        close_view(&mut self.view);
+    /// The rows so far as the block's source (`None`: no rows, nothing to render). Columns are
+    /// computed at every width it is laid out at ([`render_table`]), so a table that grows a
+    /// row re-fills its columns.
+    pub(crate) fn fragment(&self, opts: RenderOptions) -> Option<Fragment> {
         if self.rows.is_empty() {
             return None;
         }
         Some(Fragment::new(
             Source::Table {
-                rows: self.rows,
-                seps: self.seps,
+                rows: self.rows.clone(),
+                seps: self.seps.clone(),
             },
             opts,
         ))

@@ -154,6 +154,41 @@ pub(crate) fn resolve<'a>(syntaxes: &'a SyntaxSet, lang: &str) -> Option<&'a Syn
     })
 }
 
+/// A fenced code block highlighted one line at a time, as it streams in (tui-plan S7b): the parse
+/// state carries from line to line, so each line comes out as it does inside the whole block, a
+/// block growing on screen is the block it closes as, and no line is highlighted twice.
+pub(crate) struct LineHighlighter {
+    lines: HighlightLines<'static>,
+    plain: Color,
+}
+
+impl LineHighlighter {
+    /// A highlighter for `lang` under `theme`; `None` when the language is unknown (the block
+    /// renders verbatim).
+    pub(crate) fn new(lang: &str, theme: CodeTheme) -> Option<Self> {
+        let syntax = resolve(syntaxes(), lang)?;
+        let theme = theme_of(theme);
+        Some(Self {
+            lines: HighlightLines::new(syntax, theme),
+            plain: theme.settings.foreground.unwrap_or(Color::BLACK),
+        })
+    }
+
+    /// Appends `line` (ending in `\n`) highlighted to `out`; `false` when the grammar failed — the
+    /// caller falls back to the verbatim block, as [`SyntectHighlighter::highlight`] does.
+    pub(crate) fn line(&mut self, line: &str, out: &mut String) -> bool {
+        let Ok(regions) = self.lines.highlight_line(line, syntaxes()) else {
+            return false;
+        };
+        for (style, text) in regions {
+            let body = text.trim_end_matches('\n');
+            push_styled(out, style, body, self.plain);
+            out.push_str(&text[body.len()..]);
+        }
+        true
+    }
+}
+
 /// Renders every line through the grammar. `None` = the grammar failed (a bad regex, a
 /// runaway backtrack): the caller falls back to the verbatim code rather than emitting a
 /// half-highlighted block whose parse state is already wrong.

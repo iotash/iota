@@ -1,8 +1,8 @@
 //! The blank/spacing suite: blank-run collapse, the one-blank-per-boundary invariant,
-//! and the preview-pays-separator law (`markdown_test.go`:677-897, 1514-1565).
+//! and the open-block-pays-separator law (`markdown_test.go`:677-897, 1514-1565).
 
 use crate::harness::{
-    assert_lines, assert_preview_follows_blank, blanks_between, render_md, render_md_opts,
+    assert_lines, assert_open_block_follows_blank, blanks_between, render_md, render_md_opts,
     render_trace, visible,
 };
 
@@ -139,11 +139,11 @@ fn block_adjacency_under_no_colour_keeps_the_spacing_and_emits_no_escape() {
     }
 }
 
-// The preview-pays-separator law for
-// all FIVE buffering block types: the event trace shows …LINE,BLANK,PREVIEW… (never
+// The open-block-pays-separator law for
+// all FIVE buffering block types: the event trace shows …LINE,BLANK,GROW… (never
 // doubled), and a source blank does not change the layout (idempotent).
 #[test]
-fn a_block_preview_pays_its_separator_when_it_opens() {
+fn an_open_block_pays_its_separator_when_it_opens() {
     for (name, src) in [
         ("list", "Here is a list:\n- one\n- two\n"),
         (
@@ -154,14 +154,14 @@ fn a_block_preview_pays_its_separator_when_it_opens() {
         ("quote", "Here is a quote:\n> hi\n"),
         ("math", "Here is math:\n$$\nx = 1\n$$\n"),
     ] {
-        // No blank in the source: the gap must appear anyway, before the preview.
+        // No blank in the source: the gap must appear anyway, before the open block.
         let glued = render_trace(src);
-        assert_preview_follows_blank(&glued);
+        assert_open_block_follows_blank(&glued);
 
         // A source that DOES carry the blank must not end up with two: beginBlock
-        // consumes the credit the preview already paid.
+        // consumes the credit the open block already paid.
         let spaced = render_trace(&src.replacen(":\n", ":\n\n", 1));
-        assert_preview_follows_blank(&spaced);
+        assert_open_block_follows_blank(&spaced);
         assert_eq!(
             spaced.len(),
             glued.len(),

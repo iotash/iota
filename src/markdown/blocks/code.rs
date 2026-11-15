@@ -1,33 +1,26 @@
 //! The fenced code block: its buffering state ([`CodeBlock`], markdown.go:219-249) and the
-//! highlightCode twin (markdown.go:1477-1543) routed through the
-//! [`crate::markdown::highlight::CodeHighlighter`] seam (T-09). The laws: no-color mode is
+//! highlightCode twin (markdown.go:1477-1543), highlighted a line at a time as the block streams
+//! (`highlight::LineHighlighter`, the syntect pipeline behind the T-09 seam). The laws: no-color mode is
 //! escape-free by construction; a bare fence (no language) NEVER carries color
 //! sequences — Go's plaintext lexer would paint the whole block the style's Text
 //! color (monokai near-white, invisible on a light background) while the terminal's
 //! default foreground is readable by definition; every rendered line (blank ones
 //! included) gets the uniform 2-space indent.
 
-use crate::markdown::blocks::close_view;
+use crate::markdown::RenderOptions;
 use crate::markdown::blocks::math::MathBlock;
 use crate::markdown::fragment::{Fragment, Source};
-use crate::markdown::{PreviewHandle, RenderOptions};
+use crate::markdown::highlight::LineHighlighter;
 use crate::text::ansi::{ansi_width, wrap_ansi};
 
-/// The buffering code preview label (markdown.go:1372-1377) — U+2026 ellipsis.
-pub(crate) fn code_label(lang: &str) -> String {
-    if lang.is_empty() {
-        "rendering code…".to_owned()
-    } else {
-        format!("rendering code ({lang})…")
-    }
-}
-
-/// A fenced code block (markdown.go:219-249): the language tag of the opening fence and
-/// the raw lines up to the closing one.
+/// A fenced code block (markdown.go:219-249): the raw lines up to the closing fence, and — when
+/// the block is colored and its language known — those lines highlighted as they arrived, so the
+/// block can be shown at any point while it streams (tui-plan S7b).
 pub(crate) struct CodeBlock {
-    lang: String,
     lines: Vec<String>,
-    view: Option<Box<dyn PreviewHandle>>,
+    /// The highlighter and its output so far; `None` renders the raw lines (no color, a bare
+    /// fence, an unknown language, or a grammar that failed on some line).
+    hl: Option<(LineHighlighter, String)>,
     /// The display-math block a fence line interrupted. Go's dispatch checks the fence
     /// FIRST and opens the code block without closing an open `$$` block, so the formula
     /// is open again once the fence closes — including at the end of input, where
@@ -46,25 +39,26 @@ impl CodeBlock {
             .to_owned()
     }
 
-    /// An empty block just opened by a fence tagged `lang`, with the preview the Writer
-    /// opened for it and the display-math block the fence interrupted, if any.
-    pub(crate) fn new(
-        lang: String,
-        view: Option<Box<dyn PreviewHandle>>,
-        interrupted: Option<MathBlock>,
-    ) -> Self {
+    /// An empty block just opened by a fence tagged `lang`, carrying the display-math block the
+    /// fence interrupted, if any. A bare fence NEVER carries color sequences.
+    pub(crate) fn new(lang: &str, opts: RenderOptions, interrupted: Option<MathBlock>) -> Self {
+        let hl = (opts.color && !lang.is_empty())
+            .then(|| LineHighlighter::new(lang, opts.code_theme))
+            .flatten()
+            .map(|h| (h, String::new()));
         Self {
-            lang,
             lines: Vec::new(),
-            view,
+            hl,
             interrupted,
         }
     }
 
     pub(crate) fn push(&mut self, line: &str) {
         self.lines.push(line.to_owned());
-        if let Some(v) = &mut self.view {
-            v.write_raw_line(line);
+        if let Some((h, out)) = &mut self.hl
+            && !h.line(&format!("{line}\n"), out)
+        {
+            self.hl = None;
         }
     }
 
@@ -73,28 +67,19 @@ impl CodeBlock {
         self.interrupted.take()
     }
 
-    /// Closes the preview and highlights the block — once: the result does not depend on the
-    /// width, only its wrap does ([`indent_code`] lays it out at one).
-    pub(crate) fn finish(mut self, opts: RenderOptions) -> Fragment {
-        close_view(&mut self.view);
-        let code = self.lines.join("\n");
-        Fragment::new(Source::Code(highlight_code(&code, &self.lang, opts)), opts)
+    /// The block as it stands — highlighted once, line by line: only its wrap depends on the
+    /// width ([`indent_code`] lays it out at one).
+    pub(crate) fn fragment(&self, opts: RenderOptions) -> Fragment {
+        let code = match &self.hl {
+            Some((_, out)) => out.strip_suffix('\n').unwrap_or(out).to_owned(),
+            None => self.lines.join("\n"),
+        };
+        Fragment::new(Source::Code(code), opts)
     }
 }
 
-/// The uniform left margin of every rendered code-block line, matching the buffering
-/// preview's indent (markdown.go codeIndent) — the same two-space rule as math.
+/// The uniform left margin of every rendered code-block line, (markdown.go codeIndent) — the same two-space rule as math.
 pub(crate) const CODE_INDENT: &str = "  ";
-
-/// highlightCode twin (markdown.go:1477-1496): no-color and bare-fence inputs pass through
-/// with zero escapes; everything else routes through the active
-/// [`crate::markdown::highlight::CodeHighlighter`] (syntect, `highlight::active`) (T-09).
-pub(crate) fn highlight_code(code: &str, lang: &str, opts: RenderOptions) -> String {
-    if !opts.color || lang.is_empty() {
-        return code.to_owned(); // a bare fence NEVER carries color sequences
-    }
-    crate::markdown::highlight::active().highlight(code, lang, opts.code_theme)
-}
 
 /// indentCode twin (markdown.go:1536-1543), laid out at `width`: strip one trailing newline,
 /// prefix EVERY line (blank included) with the 2-space indent, rejoin + `"\n"`. Highlighted

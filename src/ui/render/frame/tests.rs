@@ -164,10 +164,6 @@ fn frame_order_with_empty_composer_and_slot_swap() {
             ..StatusData::default()
         },
         queue: vec!["queued".to_owned()],
-        region: RegionSnapshot {
-            tail: vec!["line-A".to_owned()],
-            ..RegionSnapshot::default()
-        },
         ..Case::default()
     };
     let v = view(&case);
@@ -175,17 +171,12 @@ fn frame_order_with_empty_composer_and_slot_swap() {
 
     let seps = separator_indices(&rows);
     assert_eq!(seps.len(), 2, "want exactly 2 separators:\n{rows:#?}");
-    let tail = find(&rows, |r| r == "line-A").expect("tail row");
     let queue = find(&rows, |r| r.contains("» queued")).expect("queue row");
     let composer = find(&rows, |r| r.contains('❯')).expect("composer row");
     let status = find(&rows, |r| r.contains("gpt-4o · ")).expect("status row");
     assert!(
-        tail < queue
-            && queue < seps[0]
-            && seps[0] < composer
-            && composer < seps[1]
-            && seps[1] < status,
-        "layout order wrong (tail={tail} queue={queue} sep={seps:?} composer={composer} status={status}):\n{rows:#?}"
+        queue < seps[0] && seps[0] < composer && composer < seps[1] && seps[1] < status,
+        "layout order wrong (queue={queue} sep={seps:?} composer={composer} status={status}):\n{rows:#?}"
     );
     assert_eq!(
         status,
@@ -288,36 +279,6 @@ fn spacer_above_input_zone() {
         "",
         "no blank spacer above the queue row"
     );
-}
-
-/// Residue rows hold their height but render BLANK — stale widget chrome next to an
-/// injected user block read as leaked tool output.
-#[test]
-fn residue_renders_blank() {
-    let v = view(&Case {
-        region: RegionSnapshot {
-            tail: vec!["◇ ran 2 tools in 2s".to_owned()],
-            residue: vec![
-                "✓ [shell …] · stale".to_owned(),
-                "⎿ 2 tools · 8s".to_owned(),
-            ],
-            ..RegionSnapshot::default()
-        },
-        ..Case::default()
-    });
-    let rows = plain(&v);
-    let joined = rows.join("\n");
-    assert!(
-        !joined.contains("stale") && !joined.contains("2 tools · 8s"),
-        "residue text leaked into the frame:\n{joined}"
-    );
-    let tail = find(&rows, |r| r.contains("ran 2 tools")).expect("tail row");
-    assert_eq!(rows[tail + 1].trim(), "", "residue row 1 must render blank");
-    assert_eq!(rows[tail + 2].trim(), "", "residue row 2 must render blank");
-    // Height kept: the grid renders the same number of rows either way.
-    let h = u16::try_from(v.rows.len()).unwrap();
-    let grid = render_plain(&v.rows, 80, h);
-    assert_eq!(grid.len(), rows.len());
 }
 
 /// Busy toggling on/off changes ZERO frame rows; the label lives on the SAME row as
@@ -834,27 +795,26 @@ fn call_preview_rendering() {
     );
 }
 
-/// The staging window renders above the separator — tail as-is, preview rolling
-/// source dim under the spinner header.
+/// The call preview renders above the separator — its rolling body dim under the spinner
+/// header. Nothing else of the conversation is in the frame (tui-plan S7b).
 #[test]
 fn region_rendering() {
     let v = view(&Case {
         region: RegionSnapshot {
-            tail: vec!["line-A".to_owned()],
-            label: "rendering table…".to_owned(),
+            label: "[shell …]".to_owned(),
             preview_tail: vec!["|src|".to_owned()],
+            since: Some(Instant::now()),
             ..RegionSnapshot::default()
         },
         ..Case::default()
     });
     let rows = plain(&v);
-    let tail = find(&rows, |r| r.contains("line-A")).expect("tail row");
-    let header = find(&rows, |r| r.contains("rendering table…")).expect("preview header");
+    let header = find(&rows, |r| r.contains("[shell …]")).expect("preview header");
     let preview_tail = find(&rows, |r| r.contains("|src|")).expect("preview_tail row");
     let sep = separator_indices(&rows)[0];
     assert!(
-        tail < header && header < preview_tail && preview_tail < sep,
-        "staging window order wrong (tail={tail} header={header} preview_tail={preview_tail} sep={sep}):\n{rows:#?}"
+        header == 0 && header < preview_tail && preview_tail < sep,
+        "preview order wrong (header={header} preview_tail={preview_tail} sep={sep}):\n{rows:#?}"
     );
 }
 

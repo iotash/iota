@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use iota::markdown::{CodeTheme, PreviewHandle, RenderOptions, Sink, Writer, new_writer_to};
+use iota::markdown::{CodeTheme, Fragment, RenderOptions, Sink, Writer, new_writer_to};
 
 /// Shared byte buffer behind the `io::Write` the plain writer shape needs.
 #[derive(Clone, Default)]
@@ -29,7 +29,7 @@ impl SharedOut {
     }
 }
 
-/// A fixed-width no-preview Sink capturing into a shared String — the `Writer::new`
+/// A fixed-width text Sink capturing into a shared String — the `Writer::new`
 /// shape for no-color renders (the crate has no process-global color flag).
 pub struct CapSink {
     /// The captured rendered output.
@@ -45,10 +45,6 @@ impl Sink for CapSink {
 
     fn width(&self) -> usize {
         self.width
-    }
-
-    fn block_preview(&mut self, _label: &str) -> Option<Box<dyn PreviewHandle>> {
-        None
     }
 }
 
@@ -185,19 +181,13 @@ pub fn blanks_between(rendered: &str, start: &str, end: &str) -> usize {
 }
 
 /// The previewTrace scripted sink (markdown_test.go:1469-1504): records the
-/// interleaving of committed lines and preview opens — what block spacing during
-/// streaming actually looks like. Events: `LINE` / `BLANK` / `PREVIEW`.
+/// interleaving of committed lines and open-block growth — what block spacing during
+/// streaming actually looks like. Events: `LINE` / `BLANK` / `GROW` (tui-plan S7b: an open
+/// block shows as it grows, where the metered preview row was).
 pub struct TraceSink {
-    /// The recorded `LINE`/`BLANK`/`PREVIEW` events, in order.
+    /// The recorded `LINE`/`BLANK`/`GROW` events, in order.
     pub events: Arc<Mutex<Vec<String>>>,
     buf: String,
-}
-
-struct NopHandle;
-
-impl PreviewHandle for NopHandle {
-    fn write_raw_line(&mut self, _line: &str) {}
-    fn close(&mut self) {}
 }
 
 impl Sink for TraceSink {
@@ -219,12 +209,12 @@ impl Sink for TraceSink {
         80
     }
 
-    fn block_preview(&mut self, _label: &str) -> Option<Box<dyn PreviewHandle>> {
-        self.events
-            .lock()
-            .expect("trace")
-            .push("PREVIEW".to_owned());
-        Some(Box::new(NopHandle))
+    fn shows_open_blocks(&self) -> bool {
+        true
+    }
+
+    fn grow_block(&mut self, _block: Fragment) {
+        self.events.lock().expect("trace").push("GROW".to_owned());
     }
 }
 
@@ -248,25 +238,25 @@ pub fn render_trace(src: &str) -> Vec<String> {
     events.lock().expect("trace").clone()
 }
 
-/// The trace contract (Go assertPreviewFollowsBlank): the first PREVIEW event is
-/// immediately preceded by exactly one BLANK, never two.
+/// The trace contract (Go assertPreviewFollowsBlank): the first GROW event — the open
+/// block's first showing — is immediately preceded by exactly one BLANK, never two.
 #[track_caller]
-pub fn assert_preview_follows_blank(events: &[String]) {
+pub fn assert_open_block_follows_blank(events: &[String]) {
     for (i, e) in events.iter().enumerate() {
-        if e != "PREVIEW" {
+        if e != "GROW" {
             continue;
         }
         assert!(
             i > 0 && events[i - 1] == "BLANK",
-            "preview not preceded by its separator: {events:?}"
+            "open block not preceded by its separator: {events:?}"
         );
         assert!(
             !(i >= 2 && events[i - 2] == "BLANK"),
-            "doubled separator before the preview: {events:?}"
+            "doubled separator before the open block: {events:?}"
         );
         return;
     }
-    panic!("no preview opened: {events:?}");
+    panic!("no block grew: {events:?}");
 }
 
 // ---- instrument self-tests (run once per including binary; cheap) ----

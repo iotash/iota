@@ -420,7 +420,7 @@ impl<W: Write> Screen<W> {
         }
         self.place = Place::Out;
         self.hold_alt(false);
-        self.write_out(true)
+        self.write_out(true, false)
     }
 
     /// Enters the alternate screen, cleared — the next draw writes every cell.
@@ -776,8 +776,8 @@ impl<W: Write> Screen<W> {
         match place {
             Place::Left => return Ok(()),
             // Never entered (no frame was drawn) or already out: nothing to leave.
-            Place::Main | Place::Out => self.write_out(false)?,
-            Place::Alt => self.write_out(true)?,
+            Place::Main | Place::Out => self.write_out(false, true)?,
+            Place::Alt => self.write_out(true, true)?,
         }
         self.hold_alt(false);
         Ok(())
@@ -787,15 +787,16 @@ impl<W: Write> Screen<W> {
     /// leaving the alternate screen first when `leave`, under a [`TRANSCRIPT_MARK`] line the first
     /// time there is a row to write (an empty conversation, the session picker's, writes nothing)
     /// — each row closed with an SGR reset and `CRLF` (raw mode is on), then clears what was
-    /// below: the next line is a fresh one.
-    fn write_out(&mut self, leave: bool) -> io::Result<()> {
+    /// below: the next line is a fresh one. A dump stops above a block still being written; the
+    /// exit (`whole`) writes everything.
+    fn write_out(&mut self, leave: bool, whole: bool) -> io::Result<()> {
         let width = usize::from(self.size().width.max(1));
         let mut dump = Vec::new();
         if leave {
             dump = self.leave_seq();
         }
         let first = self.written == 0;
-        let (lines, written) = self.conv.lines_after(self.written, width);
+        let (lines, written) = self.conv.lines_after(self.written, width, whole);
         if first && !lines.is_empty() {
             dump.extend_from_slice(format!("{FAINT}{TRANSCRIPT_MARK}{RESET}\r\n").as_bytes());
         }
