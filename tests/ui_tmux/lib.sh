@@ -438,11 +438,12 @@ list_block() {
     [ -n "$bot" ] && [ "$n" -gt $((bot + 1)) ] && printf '%s\n' "$s" | sed -n "$((bot + 1)),$((n - 1))p"
 }
 
-# count_list <item label> [capture] — the list's items with that label (highlighted or not).
+# count_list <item label> [capture] — the list's items with that label (highlighted or not), the
+# label alone or followed by the gap before its description.
 count_list() {
     local f="$1"
     shift
-    list_block "$@" | grep -cE -- "^  (› |  )$f\$" | tr -d ' '
+    list_block "$@" | grep -cE -- "^  (› |  )$f(  |\$)" | tr -d ' '
 }
 
 # The status row's MODEL segment alone — everything before the first " · " joiner.

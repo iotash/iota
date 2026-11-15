@@ -46,7 +46,7 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   that stood in for them until they were complete is gone. A display formula
   shows as its source until its closing `$$`, then as the formula.
 - **Slash completion is a list.** Typing `/` opens a list under the input,
-  one command per row with its description under it, wrapped to at most two
+  one command per row with its description beside it, wrapped to at most two
   lines (longer ones end in `…`) and kept to a readable width on a wide
   window. `↑`/`↓` move through it, `Enter` runs the highlighted command, `Esc`
   puts back what you typed, `Tab` completes as before, and a click on an item
