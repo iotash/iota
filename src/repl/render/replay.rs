@@ -14,12 +14,10 @@ use crate::headless::images::{IMAGE_INDENT_COLS, IMAGE_MAX_COLS, IMAGE_MAX_ROWS}
 use crate::markdown::hyperlink;
 use crate::provider::model::{Attachment, Message, Role};
 use crate::sync::lock;
-use crate::text::ansi::wrap_by_width;
-use crate::text::width::str_width;
 
 use crate::repl::render::group::ask_record_lines;
-use crate::repl::render::styles::{dim, reverse};
-use crate::ui::facade::{Block, Layout};
+use crate::repl::render::styles::dim;
+use crate::ui::facade::{Block, UserBlock};
 
 /// How many rounds a resume replays (chat/replay.go:19 `resumeEchoRounds`). Every path takes the same cap:
 /// the interactive `/resume`, `-c`, `iota resume` and a bot. The full screen replayed everything for a
@@ -63,9 +61,6 @@ pub(crate) fn last_rounds(history: &[Message], n: usize) -> &[Message] {
     }
     &history[start..]
 }
-
-/// The user block's gutter (chat/chat.go:160 `userPrompt`).
-const USER_PROMPT: &str = "❯ ";
 
 /// Indent of a replayed image's rows and caption (`" " × IMAGE_INDENT_COLS`, chat/images.go:66).
 fn image_indent() -> String {
@@ -170,15 +165,6 @@ impl Echo {
     }
 }
 
-/// A replayed user message: [`print_user_block`] at the width of the draw.
-struct EchoUser(String);
-
-impl Layout for EchoUser {
-    fn lines(&self, width: usize) -> Vec<String> {
-        print_user_block(&self.0, width)
-    }
-}
-
 /// Commits the round's aggregated tool-activity line, once something else is about to
 /// print (or the replay ends), so it lands ABOVE the round's reply like the live summary.
 fn flush_tools(w: &mut Echo, n: &mut u32) {
@@ -233,7 +219,10 @@ pub(crate) fn echo_rounds(
             }
             Role::User => {
                 flush_tools(&mut w, &mut tool_results);
-                w.extend([Block::laid(EchoUser(msg.content.clone()))]);
+                w.extend([Block::laid(UserBlock {
+                    text: msg.content.clone(),
+                    reverse: crate::app::color::enabled(),
+                })]);
                 // Named per-file lines instead of a bare count; canvas copies are
                 // suppressed (see `rendered`).
                 for att in &msg.attachments {
@@ -298,28 +287,6 @@ pub(crate) fn echo_rounds(
     }
     flush_tools(&mut w, &mut tool_results);
     w.finish()
-}
-
-/// Renders one message as a stack of full-width reversed rows (chat/replay.go:196-215
-/// `printUserBlock`).
-///
-/// A two-column gutter keeps `"❯ "` on the first row — so the block still reads as a
-/// prompt — and aligns wrapped rows under it; padding fills every row to the same display
-/// width, which is what makes the reversed background a block instead of a ragged edge.
-pub(crate) fn print_user_block(display: &str, width: usize) -> Vec<String> {
-    let gutter_width = str_width(USER_PROMPT);
-    let body = width.saturating_sub(gutter_width);
-    wrap_by_width(display, body)
-        .into_iter()
-        .enumerate()
-        .map(|(i, line)| {
-            let gutter = if i == 0 { USER_PROMPT } else { "  " };
-            let pad = width
-                .saturating_sub(str_width(&line))
-                .saturating_sub(gutter_width);
-            reverse(&format!("{gutter}{line}{}", " ".repeat(pad)))
-        })
-        .collect()
 }
 
 /// One-shot markdown render of a replayed reply, its rows always newline-terminated.
@@ -387,9 +354,7 @@ mod tests {
     use std::path::Path;
 
     use crate::provider::model::{AssistantBody, Attachment, Body, Message, ToolBody, ToolCall};
-    use crate::repl::render::replay::{
-        echo_image, echo_rounds, last_rounds, print_user_block, resume_echo,
-    };
+    use crate::repl::render::replay::{echo_image, echo_rounds, last_rounds, resume_echo};
     use crate::text::ansi::strip_sgr;
     use crate::text::width::str_width;
     use pretty_assertions::assert_eq;
@@ -446,6 +411,16 @@ mod tests {
 
     /// A ten-round session replays exactly its last three rounds; a shorter one replays all of
     /// them, from its first non-system message.
+    /// The user block the echo lays out, at `width`.
+    fn print_user_block(display: &str, width: usize) -> Vec<String> {
+        use crate::ui::facade::Layout as _;
+        crate::ui::facade::UserBlock {
+            text: display.to_owned(),
+            reverse: crate::app::color::enabled(),
+        }
+        .lines(width)
+    }
+
     #[test]
     fn resume_echo_is_the_last_three_rounds() {
         let history: Vec<Message> = std::iter::once(Message::system("sys"))

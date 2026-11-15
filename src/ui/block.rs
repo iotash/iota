@@ -18,6 +18,7 @@
 use std::sync::Arc;
 
 use crate::text::ansi::wrap_ansi;
+use crate::ui::render::theme::{RESET, REV_ON};
 
 /// Lays a block out from its source at a width.
 pub trait Layout: Send + Sync {
@@ -76,6 +77,40 @@ impl Block {
             }
         }
         out
+    }
+}
+
+/// The user's submitted text as full-width rows with the `"❯ "` gutter (ui.go:224-243,
+/// chat/replay.go:196-215 `printUserBlock`), laid out from the text at the width of the draw: a
+/// two-column gutter keeps `"❯ "` on the first row and aligns the wrapped rows under it, and every
+/// row is padded to the full width, which is what makes the reversed background a block instead of
+/// a ragged edge — at any width. The live block and the resume echo both lay out through this one.
+pub struct UserBlock {
+    /// The submitted text (its display form: paste tags bounded).
+    pub text: String,
+    /// Whether the rows are reversed (the resume echo follows the chat's color decision; the live
+    /// block always reverses).
+    pub reverse: bool,
+}
+
+impl Layout for UserBlock {
+    fn lines(&self, width: usize) -> Vec<String> {
+        const GUTTER: usize = 2;
+        let w = width.max(8);
+        crate::text::ansi::wrap_by_width(&self.text, w - GUTTER)
+            .into_iter()
+            .enumerate()
+            .map(|(i, row)| {
+                let g = if i == 0 { "❯ " } else { "  " };
+                let pad = (w - GUTTER).saturating_sub(crate::text::width::str_width(&row));
+                let row = format!("{g}{row}{}", " ".repeat(pad));
+                if self.reverse {
+                    format!("{REV_ON}{row}{RESET}")
+                } else {
+                    row
+                }
+            })
+            .collect()
     }
 }
 

@@ -30,9 +30,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::BoxFuture;
-use crate::text::ansi::wrap_by_width;
-use crate::text::width::str_width;
-use crate::ui::block::{Block, Layout};
+use crate::ui::block::{Block, UserBlock};
 use crate::ui::facade::{
     BusyGuard, Delivered, Dialogs, Input, ProgressState, ScopeGuard, StatusData, Suggestion,
     TabbedResult, TabbedSpec, TurnBusy, Ui, UiError, UiStreamSink, sanitize_window_title,
@@ -45,7 +43,6 @@ use super::msgs::{MailboxPublish, UiMsg};
 use super::term::Term;
 use crate::ui::render::region::{Emit, Region};
 use crate::ui::render::sink::StreamSink;
-use crate::ui::render::theme::{RESET, REV_ON};
 use crate::ui::{Tui, TuiOptions};
 
 /// Restores the terminal — bracketed paste off, cursor shown, raw mode off — exactly
@@ -252,26 +249,6 @@ impl TuiHandle {
     fn suspend_on_sigtstp(&self) {}
 }
 
-/// The submitted input as full-width reversed rows with the `"❯ "` gutter (ui.go:224-243), laid
-/// out from its text at the width of the draw — the reverse video fills the row at any width.
-struct UserBlock(String);
-
-impl Layout for UserBlock {
-    fn lines(&self, width: usize) -> Vec<String> {
-        let w = width.max(8);
-        let gutter = 2;
-        wrap_by_width(&self.0, w - gutter)
-            .into_iter()
-            .enumerate()
-            .map(|(i, row)| {
-                let g = if i == 0 { "❯ " } else { "  " };
-                let pad = (w - gutter).saturating_sub(str_width(&row));
-                format!("{REV_ON}{g}{row}{}{RESET}", " ".repeat(pad))
-            })
-            .collect()
-    }
-}
-
 impl Ui for TuiHandle {
     fn read_input<'a>(
         &'a self,
@@ -447,7 +424,10 @@ impl Ui for TuiHandle {
     }
 
     fn user_block(&self, display: &str) {
-        lock(&self.region).commit(vec![Block::laid(UserBlock(display.to_owned()))]);
+        lock(&self.region).commit(vec![Block::laid(UserBlock {
+            text: display.to_owned(),
+            reverse: true,
+        })]);
     }
 
     fn start_stream(&self, cancel: CancellationToken) -> Box<dyn UiStreamSink> {

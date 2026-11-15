@@ -902,7 +902,7 @@ impl Drop for DialogOpen<'_> {
 pub use crate::markdown::preview::PreviewHandle;
 
 /// The unit [`Ui::print`] commits (`ui::block`): a fixed row, or a block laid out from its source.
-pub use crate::ui::block::{Block, Layout};
+pub use crate::ui::block::{Block, Layout, UserBlock};
 
 /// Turn-scoped stream handle (ui.go `StreamSink`). `done()` drops a leaked preview and pops
 /// the turn cancel scope.

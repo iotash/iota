@@ -120,12 +120,6 @@ pub(crate) fn underline(s: &str) -> String {
     sgr("4", s)
 }
 
-/// Wraps `s` reverse-video (SGR 7) — fatih `UserBlockStyle` twin: fg/bg swap with no
-/// explicit color, so the terminal's own colors form the block.
-pub(crate) fn reverse(s: &str) -> String {
-    sgr("7", s)
-}
-
 /// The code theme the diff renderer highlights with — the `diffCodeTheme` half of Go's
 /// `applyCodeTheme` pair (chat/theme.go:38-50), which mirrors the SAME detected
 /// background as [`diff_shades`] (DEVIATIONS3 `[WP55]`).
