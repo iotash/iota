@@ -78,11 +78,7 @@ pub(crate) fn render_rows(st: &mut SurfaceState, width: u16) -> Rendered {
         PanelKind::Browser => 1 + usize::from(!ps.error_text.is_empty()),
         _ => 0,
     };
-    ps.room = if room > 0 {
-        room.saturating_sub(body + 1 + own).max(1)
-    } else {
-        0
-    };
+    ps.room = room.map(|r| r.saturating_sub(body + 1 + own).max(1));
 
     match p.kind() {
         PanelKind::List | PanelKind::Multi => {
@@ -235,8 +231,8 @@ fn render_picker(p: &Panel, ps: &mut PanelState, w: usize, rows: &mut Vec<String
     let cols = picker_preview_cols(ps, w);
     if cols > 0 && !ps.items.is_empty() {
         let mut prev_h = if p.height > 0 { p.height } else { PICKER_ROWS };
-        if ps.room > 0 {
-            prev_h = clamp(prev_h, 4, ps.room.max(4));
+        if let Some(r) = ps.room {
+            prev_h = clamp(prev_h, 4.min(r), r);
         }
         preview = ps.preview_rows(cols, prev_h);
     }

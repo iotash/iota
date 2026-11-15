@@ -94,7 +94,7 @@ pub(crate) fn target(row: u16, view_h: u16, map: &FrameMap, search: bool, paused
             _ => Target::View,
         };
     }
-    let fr = usize::from(row - view_h);
+    let fr = usize::from(row - view_h) + map.cut;
     if let Some(top) = map.surface.filter(|&top| fr >= top) {
         return Target::Surface(fr - top);
     }

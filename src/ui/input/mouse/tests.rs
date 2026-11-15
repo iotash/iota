@@ -10,6 +10,7 @@ fn map(composer: usize, rows: usize, surface: Option<usize>) -> FrameMap {
         composer,
         composer_rows: rows,
         surface,
+        cut: 0,
     }
 }
 

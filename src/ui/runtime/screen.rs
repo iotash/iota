@@ -573,7 +573,16 @@ impl<W: Write> Screen<W> {
         // The conversation sits on the frame: a short one leaves the blank rows at the top.
         let conv = Rect::new(0, view_h - shown, width, shown);
         let frame = Rect::new(0, view_h, width, frame_h);
-        let frame_lines: Vec<Line<'static>> = view.rows.iter().map(|r| ansi_to_spans(r)).collect();
+        // A frame taller than the screen: with a surface open its BOTTOM is kept — the surface (an
+        // approval dialog) must be on the screen, the previews and the composer above it yield —
+        // otherwise its top (the composer keeps its cursor).
+        let cut = if view.map.surface.is_some() {
+            view.rows.len() - usize::from(frame_h)
+        } else {
+            0
+        };
+        let frame_lines: Vec<Line<'static>> =
+            view.rows[cut..].iter().map(|r| ansi_to_spans(r)).collect();
         // While a query is typed the real cursor is on the search line (an IME's candidate window
         // follows it), not in the composer.
         let typing = self
@@ -589,11 +598,12 @@ impl<W: Write> Screen<W> {
                     .min(width.saturating_sub(1)),
                 view_h - 1,
             )),
-            None => view.cursor.map(|(x, y)| {
-                Position::new(
+            None => view.cursor.and_then(|(x, y)| {
+                let y = y.checked_sub(u16::try_from(cut).unwrap_or(u16::MAX))?;
+                Some(Position::new(
                     x.min(width.saturating_sub(1)),
                     view_h.saturating_add(y.min(frame_h.saturating_sub(1))),
-                )
+                ))
             }),
         };
         let done = self.term.draw(|f| {

@@ -46,6 +46,7 @@ use crate::ui::render::frame::{
     BottomZone, BusyView, FrameInput, FrameMap, FrameView, TurnClock, build_frame,
 };
 use crate::ui::render::region::{Region, RegionSnapshot};
+use crate::ui::surface::tabbed::SURFACE_MIN_ROWS;
 use crate::ui::surface::{self, SurfaceEffect};
 
 /// W10 `IDLE_WAKE`: the loop's poll deadline is never longer than this
@@ -951,8 +952,11 @@ impl Model {
             })
             .rows
             .len();
+            // A frame taller than the screen still leaves the surface its minimum: the screen
+            // keeps the frame's bottom then, and the rows above the surface yield.
             self.height
                 .saturating_sub(u16::try_from(others).unwrap_or(u16::MAX))
+                .max(SURFACE_MIN_ROWS.min(self.height))
         } else {
             0
         };
@@ -1150,6 +1154,13 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
             term.draw_frame(&view, prompt.as_ref())?; // the same iteration as the rows above
             m.view_paused = term.view_paused();
             m.view_h = term.view_height();
+            // The rows `Screen::paint` left out at the top of a frame taller than the screen.
+            if view.map.surface.is_some() {
+                m.frame_map.cut = view
+                    .rows
+                    .len()
+                    .saturating_sub(usize::from(term.size().height - m.view_h));
+            }
             m.dirty = false;
         }
         if !resizing {

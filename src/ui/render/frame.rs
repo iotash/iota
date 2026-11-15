@@ -174,6 +174,9 @@ pub(crate) struct FrameMap {
     pub(crate) composer_rows: usize,
     /// The surface's first row, while one is open.
     pub(crate) surface: Option<usize>,
+    /// The frame's top rows the screen left out because the frame was taller than it (set by the
+    /// loop after the draw; `Screen::paint` keeps the bottom while a surface is open).
+    pub(crate) cut: usize,
 }
 
 /// `max(4, width - reserve)` in display columns (Go `maxInt(4, m.width-…)`).
@@ -303,6 +306,7 @@ pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
         composer: rows_above,
         composer_rows: fi.composer_rows.len(),
         surface: matches!(fi.bottom, BottomZone::Surface(_)).then_some(bottom_at),
+        cut: 0,
     };
     FrameView { rows, cursor, map }
 }

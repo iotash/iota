@@ -67,8 +67,9 @@ pub(crate) struct PanelState {
     pub(crate) editing: bool,
     /// Last visible row budget, for paging.
     pub(crate) rows: usize,
-    /// The body rows the last render had free (`panel_height`'s room; `0` = unknown).
-    pub(crate) room: usize,
+    /// The body rows the last render had free (`panel_height`'s room; `None` until the loop has
+    /// laid a surface out — a unit test's).
+    pub(crate) room: Option<usize>,
     /// Per-panel search (search.go); survives tabbing away and back.
     pub(crate) search: SearchState,
     /// Visible row → underlying index; ALWAYS populated (identity unfiltered).
@@ -119,7 +120,7 @@ impl PanelState {
             input_offset: 0,
             editing: false,
             rows: 0,
-            room: 0,
+            room: None,
             search: SearchState::new(),
             view: Vec::new(),
             pending_center: None,
@@ -356,10 +357,10 @@ pub(crate) struct SurfaceState {
     /// The panels, each with its live state.
     pub(crate) slots: Vec<PanelSlot>,
     /// The rows the whole surface block may take, published by the loop before each render: the
-    /// screen less the frame's other rows (`0` = unknown). The surface is drawn over the
-    /// conversation's viewport, which yields those rows while it is open (C13), so a panel's
-    /// default budget is all of them rather than a fixed 10 or 15.
-    room: u16,
+    /// screen less the frame's other rows, never less than [`SURFACE_MIN_ROWS`] (`None` until
+    /// published — a unit test's surface). The surface is drawn over the conversation's viewport,
+    /// which yields those rows while it is open (C13), so a panel's default budget is all of them.
+    room: Option<u16>,
     /// The terminal's background tone, published by the loop before each render (dark is the
     /// safe default; the input shade follows it).
     dark: bool,
@@ -393,7 +394,7 @@ impl SurfaceState {
             focus: 0,
             enter_advances,
             slots: panels.into_iter().map(PanelSlot::open).collect(),
-            room: 0,
+            room: None,
             dark: true,
             hits: Vec::new(),
         }
@@ -405,9 +406,9 @@ impl SurfaceState {
         (&slot.spec, &mut slot.state)
     }
 
-    /// Publishes the rows the next render may take (`0` = unknown).
+    /// Publishes the rows the next render may take.
     pub(crate) fn set_room(&mut self, rows: u16) {
-        self.room = rows;
+        self.room = Some(rows);
     }
 
     /// Publishes the terminal's background tone for the next render.
@@ -421,8 +422,8 @@ impl SurfaceState {
     }
 
     /// The rows the last [`Self::set_room`] published.
-    pub(crate) fn room(&self) -> usize {
-        usize::from(self.room)
+    pub(crate) fn room(&self) -> Option<usize> {
+        self.room.map(usize::from)
     }
 
     /// The commit-all snapshot (tabbed.go:292-309): per panel `{cursor (underlying),
@@ -508,25 +509,25 @@ pub(crate) fn slider_step(ps: &mut PanelState, p: &Panel, dir: i32) {
     ps.value = Some(nv.min(sl.max));
 }
 
-/// A panel's visible row budget for `n` rows with `room` body rows free (`0` = unknown): the
-/// `height` override, else all the room there is — the surface is drawn over the viewport, which
-/// yields it (C13) — else (room unknown) 10, View 15 (tabbed.go:431-446); never more than the
-/// room, clamped to the item count, minimum 1.
-pub(crate) fn panel_height(p: &Panel, n: usize, room: usize) -> usize {
-    let mut h = if p.height > 0 {
-        p.height
-    } else if room > 0 {
-        room
-    } else if p.kind() == PanelKind::View {
-        15
-    } else {
-        10
+/// A panel's visible row budget for `n` rows with `room` body rows free: the `height` override,
+/// else all the room there is — the surface is drawn over the viewport, which yields it (C13) —
+/// never more than the room; clamped to the item count, minimum 1. A surface no loop has laid out
+/// (`None`, a unit test's) keeps tabbed.go's 10, View 15 (tabbed.go:431-446).
+pub(crate) fn panel_height(p: &Panel, n: usize, room: Option<usize>) -> usize {
+    let h = match (p.height, room) {
+        (0, Some(r)) => r,
+        (h, Some(r)) => h.min(r),
+        (0, None) if p.kind() == PanelKind::View => 15,
+        (0, None) => 10,
+        (h, None) => h,
     };
-    if room > 0 {
-        h = h.min(room);
-    }
     h.min(n).max(1)
 }
+
+/// The fewest rows an open surface gets, however tall the rest of the frame is: its title, a few
+/// rows and its hint. Past the screen the frame yields from the top — the previews and the
+/// composer, inert while a surface owns the keys — never the surface (`Screen::paint`).
+pub(crate) const SURFACE_MIN_ROWS: u16 = 5;
 
 /// Below this width the preview is dropped entirely (tabbed.go:753).
 pub(crate) const PICKER_MIN_WIDTH: usize = 64;

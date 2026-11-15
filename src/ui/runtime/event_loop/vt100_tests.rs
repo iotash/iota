@@ -1392,3 +1392,46 @@ fn a_surface_takes_the_whole_viewport_and_gives_it_back() {
     );
     h.quit_and_join(Duration::from_secs(5));
 }
+
+/// SF2 (S6 review): a pane so short that the frame's own rows — a five-row draft, the separators —
+/// fill it still shows an open dialog whole. The frame keeps its bottom: the surface gets its
+/// minimum rows and the composer above it yields; never the other way round, which put the
+/// options Enter answers off the screen.
+#[test]
+fn a_dialog_in_a_pane_the_frame_fills_is_still_on_the_screen() {
+    use crate::ui::facade::{Panel, TabbedSpec};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let h = start_loop();
+    for c in "x".repeat(80 * 5).chars() {
+        h.etx
+            .send(Event::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )))
+            .unwrap();
+    }
+    h.resize(80, 7);
+    let (reply, _rx) = tokio::sync::oneshot::channel();
+    h.tx.send(UiMsg::TabbedOpen {
+        spec: TabbedSpec {
+            panels: vec![Panel::list(
+                "Allow?",
+                vec!["Allow once".to_owned(), "Deny".to_owned()],
+            )],
+            ..TabbedSpec::default()
+        },
+        reply,
+    })
+    .unwrap();
+    let shown = |h: &LoopHarness| {
+        let p = parse_sized(&h.buf, 80, 7);
+        let c = p.screen().contents();
+        c.contains("Allow once") && c.contains("Deny") && c.contains("q/Esc cancel")
+    };
+    assert!(
+        h.wait_until(Duration::from_secs(3), shown),
+        "the dialog is off the screen:\n{}",
+        parse_sized(&h.buf, 80, 7).screen().contents()
+    );
+    h.quit_and_join(Duration::from_secs(5));
+}
