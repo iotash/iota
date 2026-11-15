@@ -38,6 +38,17 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
 
 ### Changed
 
+- **Resizing the window re-lays-out the conversation.** Pull the window
+  wider or narrower and what is on screen is laid out again for the new
+  width, not cut and wrapped: a table's columns are recomputed (its long cells
+  come back onto one row when there is room), a list's wrapped lines stay
+  under the item's text, a code block wraps under its indent instead of at
+  the left edge, a quote keeps its bar on every row, a file edit's diff fills
+  the new width with its colored rows, and the startup banner draws its card
+  again (or its bare rows, when the window is too narrow). Plain paragraphs
+  re-flow both ways too: they are no longer broken at the width they first
+  appeared at. Long list items and long code lines now wrap neatly at any
+  width, not only after a resize.
 - **iota now takes the whole terminal window.** The chat runs full screen, on
   the terminal's alternate screen, the way `vim` or `less` do: the
   conversation fills the window and the input box stays pinned to the bottom.

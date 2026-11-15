@@ -108,6 +108,16 @@ type StreamSink interface {
 }
 ```
 
+**The Rust facade's submission interface is BLOCKS, not lines (tui-plan S7a, 2026-11).**
+`PrintLines(lines ...string)` became `Ui::print(Vec<Block>)` (`src/ui/block.rs`). A block is a
+fixed `Row` (one logical line: a paragraph line, a heading, a notice, an activity row, a separator
+blank — wrapped by the screen when wider than the viewport) or `Laid(Arc<dyn Layout>)`, a block
+that keeps its source and renders it at whatever width the screen has when it is drawn: the
+markdown renderer's five buffering blocks (`markdown::Fragment`), the banner, the user block, the
+diff listing, the structured error. The full screen's buffer holds blocks and lays each out again
+from its source when the width changes — nothing is hard-wrapped at the width of its moment any
+more. `UserBlock` stays its own verb (the transcript's tests pin it), and is laid out the same way.
+
 Facade shape decisions from the adversarial review:
 
 - **Await only input-acquiring calls** (ReadInput/Select/View/Confirm).
@@ -156,6 +166,11 @@ static-config shape — three signals are LIVE today and must stay live:
 - **Width**: re-read per block flush (mid-stream resize changes the next
   block). → `Sink` (or a `Layout` provider) carries `Width() int`; ui answers
   from its last WindowSizeMsg; tests/pipes return a fixed width.
+  *Superseded in the Rust tree (tui-plan S7a):* the renderer lays nothing out at
+  a width. A closed block reaches the sink as its source (`Sink::write_block`,
+  a `markdown::Fragment`); a text sink renders it at its own `width()`, the
+  terminal's sink keeps the source and the screen lays it out at every width it
+  takes, so a resize re-lays-out every block — not just the next one.
 - **color.NoColor**: re-read before every lipgloss render (`syncMDRenderer`).
   → keep reading the global (it is process-wide by design).
 - **Code theme**: today `detectCodeTheme` runs an OSC background query at
@@ -188,7 +203,9 @@ declares itself there, and the transcript alone spaces them:
   scrollback it morphs into; consecutive notices/errors group into one block;
 - **interior blanks defer through a pending latch** and a block's trailing
   blanks are dropped — no block can export trailing blanks for a neighbor to
-  lean on (the fragility class behind the resume-echo regression);
+  lean on (the fragility class behind the resume-echo regression); a block
+  laid out from its source (a table, the banner, a diff — tui-plan S7a) is
+  content to the latch, never blank, so the laws read the same at every width;
 - it owns the **activity group**: the run of thinking segments and tool
   calls between two content blocks (or turn boundaries) shares ONE lifecycle
   widget. The header shows the current activity ("⠋ Thinking", "⠋ [name …]"
