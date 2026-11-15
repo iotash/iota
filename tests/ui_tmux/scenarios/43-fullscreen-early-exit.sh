@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# L4 scenario 43 — the full screen's point of no return is its first frame (IOTA_FULLSCREEN=1,
-# tui-plan S4): a run that ends before it — `--help`, a config that does not parse, a session that
+# L4 scenario 43 — the full screen's point of no return is its first frame (tui-plan S4): a run
+# that ends before it — `--help`, a config that does not parse, a session that
 # does not exist — never enters the alternate screen; its message is on the shell's screen, the tty
 # is canonical again, and the next iota in the same terminal starts and exits cleanly.
 #
@@ -8,7 +8,6 @@
 # glyph, so only the tap can say it was never sent.
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
-export IOTA_FULLSCREEN=1
 
 ALT_ON="$(printf '\033')[?1049h"
 # run_in_shell <label> <command> — types the command with the status and tty markers after it (each

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# L4 scenario 45 — the full screen's two forced ways out (IOTA_FULLSCREEN=1, tui-plan S4).
+# L4 scenario 45 — the full screen's two forced ways out (tui-plan S4).
 #
 # A: a panic. Nothing in the tree can panic under the lint wall, so a debug build's test hook does
 #    it on request (`IOTA_TEST_PANIC`, typed as a message). The panic hook hands the terminal back
@@ -12,7 +12,6 @@
 #    branch can exit before that close returns — with status 130 and the terminal usable.
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
-export IOTA_FULLSCREEN=1
 
 STUB="$(dirname "$TMUX_LIB")/stubs/stuck-mcp.py"
 alt_on() { tm display-message -pt s '#{alternate_on}'; }

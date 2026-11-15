@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# L4 scenario 39 — leaving the full screen (IOTA_FULLSCREEN=1, tui-plan S1): an idle Ctrl+D hands
+# L4 scenario 39 — leaving the full screen (tui-plan S1): an idle Ctrl+D hands
 # back the main screen, and the conversation is written into it at the width the pane has at exit
 # — every row once, rows wider than that width wrapped, the frame not at all — so it survives in
 # the shell's history.
@@ -8,7 +8,6 @@
 # and its history, which is where the shell's scrollback lives.
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
-export IOTA_FULLSCREEN=1
 
 start 100 24 || finish
 settle || miss "startup never settled"

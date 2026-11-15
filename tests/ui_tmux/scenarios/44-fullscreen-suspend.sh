@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# L4 scenario 44 — job control on the full screen (IOTA_FULLSCREEN=1, tui-plan S4). Ctrl+Z (a key in
+# L4 scenario 44 — job control on the full screen (tui-plan S4). Ctrl+Z (a key in
 # raw mode) and a SIGTSTP from outside both hand the terminal back before the process stops: the
 # main screen, the tty canonical, bracketed paste off, the shell's prompt and a stopped job. `fg`
 # takes it again and paints the whole screen — the conversation and the frame, at the size the pane
@@ -7,7 +7,6 @@
 # and an idle Ctrl+D leaves the conversation in the shell's history.
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
-export IOTA_FULLSCREEN=1
 
 alt_on() { tm display-message -pt s '#{alternate_on}'; }
 paste_mode() {

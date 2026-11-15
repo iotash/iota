@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# M2 (tui-plan §7) — not a check: what the tmux iota runs in sends to ITS terminal, per gesture, in
-# both worlds (inline, then IOTA_FULLSCREEN=1). X-55's harness: a 120×40 pane, the bytes counted on
+# M2 (tui-plan §7) — not a check: what the tmux iota runs in sends to ITS terminal, per gesture
+# (S1–S4 measured the inline terminal beside it; it is gone). X-55's harness: a 120×40 pane, the bytes counted on
 # tmux's outer side. Here that side is a pane of a second, measuring tmux server, attached to the
 # first and tapped with `pipe-pane`; status lines are off in both so the pane is exactly 120×40.
 #
@@ -97,9 +97,6 @@ measure_world() {
 }
 
 echo "tmux under test: $("$TMUX_BIN" -V)"
-unset IOTA_FULLSCREEN
-measure_world inline
-export IOTA_FULLSCREEN=1
 measure_world fullscreen
 
 finish

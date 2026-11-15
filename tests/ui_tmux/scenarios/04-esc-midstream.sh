@@ -45,12 +45,12 @@ check "the real cursor sits at the end of the folded draft's last row" "$(cursor
 
 # The turn is really cancelled: no further inserts, and the cancel hint is gone with the
 # scope that owned it.
-frozen_a="$(hist_size)"
+frozen_a="$(view_rows)"
 # A NEGATIVE claim's window, not a wait (lib.sh rule 3): a stream that ESC failed to stop would
 # insert a row every 60 ms (LINE_GAP), about sixteen inside it.
 sleep 1.0
-frozen_b="$(hist_size)"
-check "insert counter frozen after ESC" "$frozen_a" "$frozen_b"
+frozen_b="$(view_rows)"
+check "the conversation is frozen after ESC" "$frozen_b" "$frozen_a"
 check "no ESC hint without an active scope" "$(count_vis 'ESC to cancel')" 0
 check "no partial reply was committed" "$(count_all 'echo:')" 0
 

@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# L4 scenario 37 — the full screen (IOTA_FULLSCREEN=1, tui-plan S1): the alternate screen is
+# L4 scenario 37 — the full screen (tui-plan S1): the alternate screen is
 # held, the frame is the screen's bottom rows at full width, the conversation sits on it, and
 # PgUp walks the whole session back to the banner while PgDn returns to the tail.
 #
 # Reads the visible pane only (`cap`): the alternate screen has no history to read.
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
-export IOTA_FULLSCREEN=1
 
 alt_on() { tm display-message -pt s '#{alternate_on}'; }
 

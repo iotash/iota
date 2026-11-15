@@ -2,15 +2,15 @@
 # L4 scenario 2 (TUI_TEST_PLAN §L4) — one streamed markdown turn.
 #
 # Three claims only a real terminal can settle:
-#   * every rendered row reaches NATIVE scrollback exactly once (the insert_before path
-#     preserves history — wart W9's whole reason for existing);
-#   * the live call preview MORPHS in place: while the model thinks, tmux's scrollback
-#     counter does not move, so the preview is a widget and not a rolling source window;
-#   * the rows above the turn — the banner — are not eaten by the frame walking down.
+#   * every rendered row reaches the conversation exactly once (read back through the
+#     write-out, `capall`);
+#   * the live call preview MORPHS in place: while the model thinks, the conversation above it
+#     does not move, so the preview is a widget and not a rolling source window;
+#   * the rows above the turn — the banner — are not eaten.
 #
-# A plain streamed turn runs first, both for its own history assertions and to walk the
-# frame down to the bottom of the pane: only there does an accidental insert actually
-# scroll, which is what makes the morph assertion below mean something.
+# A plain streamed turn runs first, both for its own history assertions and to fill the
+# viewport: only then does an accidental commit actually scroll it, which is what makes the
+# morph assertion below mean something.
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
 
@@ -29,9 +29,8 @@ check "no line duplicated by the insert path" "$dup" ""
 check_once "user echo committed once" '❯ stream 20'
 check_frame_intact "after the plain stream" 80
 
-pushed="$(hist_size)"
-if [ "$pushed" -gt 0 ]; then
-    ok "frame walked to the bottom; $pushed rows live in native scrollback"
+if _vis_lacks 'ι> iota'; then
+    ok "the conversation overflowed the viewport: the banner scrolled off the live screen"
 else
     bad "nothing scrolled — the morph assertion below would be vacuous"
 fi
@@ -60,19 +59,26 @@ if [ -n "$prev" ]; then
 else
     bad "preview widget label missing"
 fi
-# The morph claim, over the thinking phase itself rather than a fixed 0.6 s: the counter is read
-# again and again while the turn thinks, and a reading counts only if the widget is still up on a
-# capture taken AFTER it — so every counted reading was taken inside the phase, however slow the
-# runner. A fixed sleep could straddle the end of the 1.5 s of reasoning (the markdown then inserts
-# rows: a false red) or start after it (a vacuous green). Fewer than three readings inside the
-# phase is not a measurement and fails as such.
+# The morph claim, over the thinking phase itself rather than a fixed 0.6 s: the conversation
+# above the widget (the rows over its `Thinking` row — the widget's own clock and meter tick) is
+# read again and again while the turn thinks, and a reading counts only if the widget is still up
+# on a capture taken AFTER it — so every counted reading was taken inside the phase, however slow
+# the runner. A fixed sleep could straddle the end of the 1.5 s of reasoning (the markdown then
+# commits rows: a false red) or start after it (a vacuous green). Fewer than three readings inside
+# the phase is not a measurement and fails as such.
 thinking() { cap | grep -qF 'Thinking'; }
-a="$(hist_size)"
+above() {
+    local s r
+    s="$(cap)"
+    r="$(printf '%s\n' "$s" | grep -nF -- 'Thinking' | head -1 | cut -d: -f1)"
+    [ -n "$r" ] && printf '%s\n' "$s" | head -n "$((r - 1))"
+}
+a="$(above)"
 inside=0
 moved=0
 if thinking; then
     while [ "$inside" -lt 60 ]; do
-        h="$(hist_size)"
+        h="$(above)"
         thinking || break
         inside=$((inside + 1))
         [ "$h" = "$a" ] || moved=$((moved + 1))

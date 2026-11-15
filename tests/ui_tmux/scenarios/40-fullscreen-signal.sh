@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# L4 scenario 40 — SIGTERM on the full screen (IOTA_FULLSCREEN=1, tui-plan S1) leaves a usable
+# L4 scenario 40 — SIGTERM on the full screen (tui-plan S1) leaves a usable
 # terminal: the main screen back, the tty canonical again, the shell's next prompt on screen.
 #
 # A: one SIGTERM mid-turn — the run winds down through its normal exit, so the conversation is
@@ -32,7 +32,7 @@ run_under_shell() {
     start_shell 80 24 || finish
     local cmd
     cmd="$(iota_cmd openai fake)"
-    type_ "IOTA_FULLSCREEN=1 $cmd; echo \"r\"\"c=\$?\"; stty -a | tr ' ' '\\n' | grep -xE -- '-?icanon' | sed 's/^/t''ty=/'"
+    type_ "$cmd; echo \"r\"\"c=\$?\"; stty -a | tr ' ' '\\n' | grep -xE -- '-?icanon' | sed 's/^/t''ty=/'"
     key Enter
     wait_vis '❯' || miss "the composer never came up under the shell"
     _poll_until 50 _iota_up || miss "no iota process under the pane's shell"

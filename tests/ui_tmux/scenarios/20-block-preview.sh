@@ -6,7 +6,7 @@
 # table — the two block kinds the renderer BUFFERS behind a metered preview row
 # (`markdown/preview.rs`: one row `label · N lines`, morphed into the rendered block on
 # close) — so the answer scrolls well past the top of a 24-row pane while rows are still being
-# inserted and rewritten. What must hold, read back through the scrollback: the preview rows
+# committed and rewritten. What must hold, read back through the write-out: the preview rows
 # are gone, every rendered row of every block is there exactly once, no raw source row
 # (`| 01 | row_01 |`) leaked past the morph, and the FIRST line of the answer is still there.
 # shellcheck source=../lib.sh
@@ -37,10 +37,10 @@ check_once "the document's first marker landed once" 'BLOCKSSTART'
 check_once "…and its last" 'BLOCKSEND'
 check_once "the heading above the blocks is intact" 'Blocks'
 
-# --- the first line is still reachable (§2.2): the answer overran the pane, so its head is in
-#     the scrollback tmux preserved, above the banner-relative marker.
-if [ "$(hist_size)" -gt 0 ]; then
-    ok "the answer scrolled past the top ($(hist_size) rows in scrollback) and its head is still there"
+# --- the first line is still reachable (§2.2): the answer overran the viewport, so its head is
+#     off the live screen, and in the conversation (`check_once 'BLOCKSSTART'` above).
+if _vis_lacks 'BLOCKSSTART'; then
+    ok "the answer scrolled past the top of the viewport and its head is still there"
 else
     bad "the 40-line answer never scrolled — the stress shape did not happen"
 fi

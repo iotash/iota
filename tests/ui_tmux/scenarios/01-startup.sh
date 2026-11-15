@@ -100,11 +100,7 @@ check_once "the mode row is in the history once after the exit" '│ chat · ses
 check_once "the directory row is in the history once after the exit" "│ ${PWD:0:28}"
 check_once "the frame's bottom edge is in the history once after the exit" '╰─'
 check_once "the mark row, already in the scrollback, is there once too" 'ι> iota'
-if fullscreen; then
-    # The full screen writes the conversation out, never the frame (tui-plan S1).
-    check "the frame is not written out: no composer row after the exit" "$(count_all '❯')" 0
-else
-    check_once "the composer row stays on the screen after the exit" '❯'
-fi
+# The exit writes the conversation out, never the frame (tui-plan S1).
+check "the frame is not written out: no composer row after the exit" "$(count_all '❯')" 0
 
 finish

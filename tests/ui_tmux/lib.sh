@@ -2,7 +2,7 @@
 # L4 tmux harness — shared helpers (TUI_TEST_PLAN §L4).
 #
 # Ported from the ratatui inline spike's tmux-check.sh (tag go-final: rust/spikes/ratatui-inline), which is
-# the proven shape on this host (tmux 3.7c): a PRIVATE tmux server per scenario so the
+# the proven shape on this host: a PRIVATE tmux server per scenario so the
 # developer's own tmux is never touched, `send-keys -l` for literal text, named keys for
 # control, `load-buffer` + `paste-buffer -p` for TRUE bracketed paste, `capture-pane` for
 # observation and `resize-window` for a real SIGWINCH.
@@ -28,9 +28,8 @@
 #      the mock's clock racing the runner's. `sleep` is left for what IS time: the pace of the
 #      input under test (a drag's step, a user's pause) and the window of a NEGATIVE claim
 #      ("nothing moves for 1 s"), each sized against the cadence it would otherwise catch.
-#   4. A count is read at rest, from a stated starting state. A budget whose number depends on
-#      which step a pass took together, or on whether the last drag's burst was still open, is
-#      measuring the runner (06's and 26 H's drags wait for each step's pass, `step_landed`).
+#   4. A count is read at rest, from a stated starting state. A count whose number depends on
+#      which resize step the loop took together is measuring the runner.
 #
 # The runner (`tests/tmux.rs`) exports: TMUX_BIN, TMUX_SOCKET, IOTA_BIN, IOTA_PORT,
 # SCEN_TMP. Each scenario sources this file, calls `start`, asserts with `ok`/`bad`, and
@@ -48,8 +47,7 @@ PASS=0
 FAIL=0
 WARTS=0
 SCEN_HOME="$SCEN_TMP/home"
-# Which tmux produced this run: the numbers in scenarios 06/26 were measured per version
-# (TUI-VERIFY §4.5), and a red CI leg must say which one it ran.
+# Which tmux produced this run: a red CI leg must say which one it ran.
 echo "tmux: $("$TMUX_BIN" -V 2>&1) ($TMUX_BIN)"
 mkdir -p "$SCEN_HOME"
 
@@ -62,30 +60,24 @@ trap cleanup EXIT
 
 # Visible grid, escapes stripped (so assertions read the glyphs the user sees).
 cap() { tm capture-pane -pt s 2>/dev/null; }
-# Visible grid plus scrollback — the only proof that history was preserved.
+# Every row a user can reach — the only proof that the conversation was kept whole (`_history`).
 capall() { _history; }
 
-# --- the full screen (IOTA_FULLSCREEN=1, tui-plan S1–S4) ------------------------------------------
+# --- reading the conversation back ----------------------------------------------------------------
 #
-# The conversation lives on the alternate screen, which has no history: what `capture-pane -S`
-# reads inline, the full screen hands over with its dump key. Ctrl+O writes the rows no dump has
-# written yet into the main screen (the first part under a transcript mark) and stays there until
-# the next key; the exit writes the rest. So the main screen's history holds every run's
-# conversation once, in order — the mark lines aside — and the frame, which is never written out,
-# is read off the live screen: the rows from its upper separator down, as inline's capture of the
-# visible grid had them.
-fullscreen() { [ "${IOTA_FULLSCREEN:-}" = 1 ]; }
+# The conversation lives on the alternate screen, which has no history: iota hands it over with its
+# write-out key. Ctrl+O writes the rows no write-out has written yet into the main screen (the first
+# part under a transcript mark) and stays there until the next key; the exit writes the rest. So the
+# main screen's history holds every run's conversation once, in order — the mark lines aside — and
+# the frame, which is never written out, is read off the live screen: the rows from its upper
+# separator down.
 TRANSCRIPT_MARK='┈┈┈┈ iota transcript ┈┈┈┈'
 _alt_is() { [ "$(tm display-message -pt s '#{alternate_on}' 2>/dev/null)" = "$1" ]; }
 
-# _history [capture-pane flags…] — every row a user can reach. Inline: the visible grid plus 400
-# rows of scrollback. Full screen: the main screen and its history, the conversation dumped into it
-# now while iota runs (and the next key back), followed by the live frame.
+# _history [capture-pane flags…] — every row a user can reach: the main screen and its history, the
+# conversation written into it now while iota runs (and the next key back), followed by the live
+# frame.
 _history() {
-    if ! fullscreen; then
-        tm capture-pane -p "$@" -t s -S -400 2>/dev/null
-        return
-    fi
     local live=0 frame="" top all
     if alive && ! pane_dead && _alt_is 1; then
         top="$(frame_top)"
@@ -483,10 +475,16 @@ emu_width() {
 }
 _meas_at() { [ "$(tm display-message -pt meas '#{cursor_x}')" = "$1" ]; }
 
-# Lines that have scrolled off the top into native scrollback — tmux's own counter, and
-# therefore the exact number of rows the app has inserted. Stable where `capture-pane |
-# wc -l` is not (tmux trims trailing blank rows).
-hist_size() { tm display-message -pt s '#{history_size}'; }
+# view_rows — the conversation's viewport as the live screen shows it: every row above the frame's
+# upper separator. A row committed (or a stream still running) changes it; the frame's own rows — a
+# clock, a spinner — do not. With a preview open its rows sit above the separator too, so a reading
+# that must exclude them cuts the capture itself (scenario 02).
+view_rows() {
+    local s t
+    s="$(cap)"
+    t="$(frame_top "$s")"
+    [ -n "$t" ] && printf '%s\n' "$s" | head -n "$((t - 1))"
+}
 
 # ---------------------------------------------------------------- red foreground
 #
@@ -602,7 +600,7 @@ miss() {
     local s
     s="$(cap)"
     bad "$1"
-    echo "    ---- at the miss: app $(if ! alive; then echo 'server gone'; elif pane_dead; then echo 'exited'; else echo 'running'; fi), history $(hist_size 2>/dev/null) rows ----"
+    echo "    ---- at the miss: app $(if ! alive; then echo 'server gone'; elif pane_dead; then echo 'exited'; else echo 'running'; fi), main-screen history $(tm display-message -pt s '#{history_size}' 2>/dev/null) rows ----"
     tm capture-pane -pt s -S -12 -E -1 2>/dev/null | sed 's/^/    ^ /'
     dump_pane "$s"
 }
@@ -657,10 +655,8 @@ _frame_holds() {
 # the failure is that capture, the one the verdict was made on.
 check_frame_intact() {
     local label="$1" width="$2" s t b f0="$FAIL" i=0
-    # A resize opens a drag: the frame is a few columns short until DRAG_SETTLE (2 s) passes
-    # with no further resize, then repainted at full width (W5's burst layout, X-52). A resize
-    # pass that lands after a key re-opens the drag, so wait DRAG_SETTLE twice plus a slow
-    # runner's slack (6 s) for the outcome, not a mid-flight geometry.
+    # A resize is applied once the terminal has been quiet for 50 ms and repaints every cell; the
+    # 6 s bound is a slow runner's slack for the outcome, not a mid-flight geometry.
     while :; do
         s="$(cap)"
         _frame_holds "$s" "$width" || [ "$i" -ge 60 ] && break

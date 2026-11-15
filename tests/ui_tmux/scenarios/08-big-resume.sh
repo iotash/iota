@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
-# L4 scenario 8 (TUI_TEST_PLAN §L4) — the big resume echo, i.e. the chunking law (T-06).
+# L4 scenario 8 (TUI_TEST_PLAN §L4) — the big resume echo.
 #
-# A 32-round bundle is resumed; the echo window is the last three rounds
-# (`RESUME_ECHO_ROUNDS`; the full screen replays all 32 into its buffer, tui-plan S2), and this fixture gives each of them 14 body lines, so the block
-# the region must insert is about ninety rows against a twenty-four-row pane. The region
-# chunks it at max(2, h/2); what L4 proves is that the chunking does not eat the frame:
-# every echoed row lands exactly once, the separator pair and the status row are still
-# there, and nothing from outside the window is echoed.
+# A 32-round bundle is resumed; the whole conversation is replayed into the buffer (tui-plan S2),
+# and this fixture gives each round 14 body lines, so the echo is about five hundred rows against a
+# twenty-four-row pane. What L4 proves is that it does not eat the frame: every echoed row lands
+# exactly once, the separator pair and the status row are still there.
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
 
@@ -28,16 +26,10 @@ check_once "echo window round 29 header" '❯ r29 question'
 check_once "echo window round 30 header" '❯ r30 question'
 check_once "echo window round 31 header" '❯ r31 question'
 
-if fullscreen; then
-    # The full screen replays the WHOLE conversation into its buffer (tui-plan S2), every round once.
-    check "every round is echoed" "$(uniq_all 'r[0-9][0-9] question')" 32
-    check "…none twice" "$(dupes_all 'r[0-9][0-9] question')" ""
-    check_once "…the first round's answer too" 'r00 answer'
-else
-    # …and only that window: the chunking law must not drag older rounds in.
-    check "rounds outside the window are not echoed" "$(count_all 'r00 question')" 0
-    check "…nor their answers" "$(count_all 'r28 answer')" 0
-fi
+# The WHOLE conversation is replayed into the buffer (tui-plan S2), every round once.
+check "every round is echoed" "$(uniq_all 'r[0-9][0-9] question')" 32
+check "…none twice" "$(dupes_all 'r[0-9][0-9] question')" ""
+check_once "…the first round's answer too" 'r00 answer'
 
 # The frame survived a block three times the pane height.
 check_frame_intact "after the oversized echo" 80

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# L4 scenario 41 — searching the full screen's conversation (IOTA_FULLSCREEN=1, tui-plan S3): a word
+# L4 scenario 41 — searching the full screen's conversation (tui-plan S3): a word
 # ~110 screens back is found from the tail, highlighted and counted; n/p walk and wrap; Esc puts the
 # view back exactly where it was; Enter leaves it on the hit with the way back shown; a query that
 # matches nothing says so and moves nothing; and following the tail, `/` is still the first
@@ -8,7 +8,6 @@
 # Reads the visible pane only (`cap`, and `capture-pane -e` for the highlight).
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
-export IOTA_FULLSCREEN=1
 
 search_line() { cap | sed -n '19p'; }
 _screen_is() { [ "$(cap)" = "$1" ]; }

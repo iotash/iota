@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# L4 scenario 38 — the full screen (IOTA_FULLSCREEN=1, tui-plan S1) through drags: a resize is one
+# L4 scenario 38 — the full screen (tui-plan S1) through drags: a resize is one
 # full repaint, so whatever the pace, the frame is the bottom rows at the width the pane has, and
 # the conversation above it has no hole and no duplicate. There is no drag protocol: the full width
 # is back within the 50 ms merge, never after DRAG_SETTLE's 2 s.
@@ -12,7 +12,6 @@
 # Reads the visible pane only (`cap`).
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
-export IOTA_FULLSCREEN=1
 
 nums() { cap | grep -oE '^l#[0-9]+ line' | sed -E 's/^l#0*([0-9]+) line/\1/'; }
 contiguous() {

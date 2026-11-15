@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! L4 — the tmux end-to-end harness (`TUI_TEST_PLAN` §L4).
 //!
-//! The ONLY layer that proves real-terminal behaviour: the physical cursor, native
-//! scrollback, TRUE bracketed paste and a real SIGWINCH. Everything else (geometry,
+//! The ONLY layer that proves real-terminal behaviour: the physical cursor, the alternate
+//! screen and what the exit writes into the main one, TRUE bracketed paste and a real SIGWINCH. Everything else (geometry,
 //! orderings, byte shapes) is proved cheaper in L1–L3 and L2b and is deliberately NOT
 //! repeated here.
 //!
@@ -41,7 +41,6 @@
 //! | `03-surface-selfheal.sh` | #3 | G2 (selector below composer, no ghosts, self-heal) |
 //! | `04-esc-midstream.sh` | #4 | G5 (ESC during the busy render loop) |
 //! | `05-ctrlc-twice.sh` | #5 | G5 (double Ctrl+C exits) |
-//! | `06-resize.sh` | #6 | G4 (resize while streaming and while idle) |
 //! | `07-paste.sh` | #7 | G3 (true bracketed paste, one event) |
 //! | `08-big-resume.sh` | #8 | G1 (contiguous history under chunked inserts) |
 //! | `09-non-tty.sh` | #9 | — (cmd/root.go:397-401) |
@@ -60,7 +59,6 @@
 //! | `22-retry.sh` | TUI-VERIFY batch C | — (503 → `retrying (attempt`, the steer message lands once, Ctrl+C during the backoff leaves no red block) |
 //! | `23-mcp-oauth.sh` | brain `mcp-cli-and-oauth` | — (a server whose 401 asks for a login, `auth` undeclared: the not-logged-in notice, the server's row and page in `/tools`, `iota mcp login` through `$BROWSER` beside the chat, a reconnect from the page and a restart that both connect, `iota mcp logout`) |
 //! | `24-iota-outside-sandbox.sh` | brain `harness-prompt`, X-44 | — (a sandboxed `shell` set asked about `iota mcp list` from the model: the `(outside the sandbox)` mark on the prompt and the header, the allowed call's output, iota in a pipe unasked and unmarked) |
-//! | `26-resize-residuals.sh` | TUI-VERIFY §4.3, X-52 | — (fresh panes: a 2× and a 3× narrowing with the banner staged, an idle narrowing after 20 ms-a-line output, a narrowing with `/model` open, one while a foreground tool call runs — no row twice, no separator added) |
 //! | `25-shell-yield.sh` | TUI-VERIFY §8.6–8.9, X-47, X-50 | — (a foreground `shell` call past its window: the receipt row, `/jobs` in the completion row, its list and the page a row opens, the list's clock walking with a second job started, the Kill tab ending that job with its `killed` notice, the status row's job clock walking, all gone after the notice; the OSC 9;4 state held busy while a job runs and cleared after the last notice turn) |
 //! | `27-hung-provider.sh` | request-cancellation recon, reviews | — (a provider that sends a head and then nothing: `Waiting for the first token`, ESC then the next message and ESC then the exit without the title pass's 30 s, `IOTA_STREAM_IDLE_TIMEOUT=2` failing the stream as `Response stalled`, not retried; a title pass that alone never answers holding neither the next message nor the exit; a complete answer whose body stays open ending at `[DONE]`, not as a stall) |
 //! | `28-composer-newline.sh` | X-65 | — (Ctrl+J, the LF byte, Alt+Enter and CSI-u Shift+Enter each add a composer row without submitting, Enter sends ONE two-line message; a two-line queued item is one ` ⏎ ` row and folds back on ESC) |
@@ -71,15 +69,15 @@
 //! | `31-tool-args-cut.sh` | F3, X-69 | — (Anthropic dialect: a reply cut mid-arguments — the error naming the dropped `shell` call, the `[shell …]` row torn down, no `tool_result` answering the call and the next request without it (not dispatched); the whole call as the control that does run) |
 //! | `35-rate-limit-hold.sh` | X-84 | — (ESC with a job's notice queued behind the stream: one dim `⏸ … held` line, no turn of its own, the headline going with the next typed message; a notice refused with 429: the `retrying (attempt n/3)` row, ONE `✗ Rate limited (429)` block whose hint names the next try, the next job's notice put aside `held until` with no second block) |
 //! | `36-config-trust.sh` | config-trust | — (a project `.iota.yaml` on a terminal: the question before anything runs, Enter = not now with the home config in force and the marker absent, `t` trusts, a trusted file asks nothing) |
-//! | `37-fullscreen-scroll.sh` | tui-plan S1 | — (`IOTA_FULLSCREEN=1`: the alternate screen held, the frame the bottom rows at full width, PgUp to the banner and PgDn back to the tail) |
-//! | `38-fullscreen-resize.sh` | tui-plan S1 | — (`IOTA_FULLSCREEN=1`: a fast and a paced drag, and a drag through a stream — the frame on the bottom at full width after every step, no hole, no duplicate, every streamed row reachable) |
-//! | `39-fullscreen-exit.sh` | tui-plan S1 | — (`IOTA_FULLSCREEN=1`: Ctrl+D leaves the alternate screen and writes the conversation into the main screen at the exit width, once, without the frame) |
-//! | `40-fullscreen-signal.sh` | tui-plan S1 | — (`IOTA_FULLSCREEN=1`: SIGTERM — one, and two in a row — hands back a usable terminal: the main screen, cooked mode, the shell's prompt) |
-//! | `41-fullscreen-search.sh` | tui-plan S3 | — (`IOTA_FULLSCREEN=1`: Ctrl+R finds a word ~110 screens back, highlighted and counted; n/p wrap; Esc back exactly; Enter stays with the way back; no match moves nothing; `/` following the tail is the composer's) |
+//! | `37-fullscreen-scroll.sh` | tui-plan S1 | — (the alternate screen held, the frame the bottom rows at full width, PgUp to the banner and PgDn back to the tail) |
+//! | `38-fullscreen-resize.sh` | tui-plan S1 | — (a fast and a paced drag, and a drag through a stream — the frame on the bottom at full width after every step, no hole, no duplicate, every streamed row reachable) |
+//! | `39-fullscreen-exit.sh` | tui-plan S1 | — (Ctrl+D leaves the alternate screen and writes the conversation into the main screen at the exit width, once, without the frame) |
+//! | `40-fullscreen-signal.sh` | tui-plan S1 | — (SIGTERM — one, and two in a row — hands back a usable terminal: the main screen, cooked mode, the shell's prompt) |
+//! | `41-fullscreen-search.sh` | tui-plan S3 | — (Ctrl+R finds a word ~110 screens back, highlighted and counted; n/p wrap; Esc back exactly; Enter stays with the way back; no match moves nothing; `/` following the tail is the composer's) |
 //! | `42-resize-and-key.sh` | tui-plan S4 | — (a key sent in the same instant as a resize is read at once, 40 rounds, and the loop never spins with input waiting; an idle Ctrl+D under a resize ends the run) |
-//! | `43-fullscreen-early-exit.sh` | tui-plan S4 | — (`IOTA_FULLSCREEN=1`: `--help`, a bad config, a missing session end before the first frame — no `?1049h`, the message on the shell's screen, the tty canonical; the next iota starts and exits cleanly) |
-//! | `44-fullscreen-suspend.sh` | tui-plan S4 | — (`IOTA_FULLSCREEN=1`: Ctrl+Z and SIGTSTP hand the terminal back — main screen, canonical tty, paste off, a stopped job; `fg` repaints everything at the new size; the run goes on and leaves its conversation) |
-//! | `45-fullscreen-crash.sh` | tui-plan S4 | — (`IOTA_FULLSCREEN=1`: a panic on request — the hook leaves the alternate screen before the report, tty canonical; SIGTERM twice while a stuck MCP server holds the wind-down — the forced branch exits at once, 130, usable; a clean next run) |
+//! | `43-fullscreen-early-exit.sh` | tui-plan S4 | — (`--help`, a bad config, a missing session end before the first frame — no `?1049h`, the message on the shell's screen, the tty canonical; the next iota starts and exits cleanly) |
+//! | `44-fullscreen-suspend.sh` | tui-plan S4 | — (Ctrl+Z and SIGTSTP hand the terminal back — main screen, canonical tty, paste off, a stopped job; `fg` repaints everything at the new size; the run goes on and leaves its conversation) |
+//! | `45-fullscreen-crash.sh` | tui-plan S4 | — (a panic on request — the hook leaves the alternate screen before the report, tty canonical; SIGTERM twice while a stuck MCP server holds the wind-down — the forced branch exits at once, 130, usable; a clean next run) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -298,16 +296,6 @@ fn gate() -> Option<Gate> {
 /// The script's whole log is echoed through [`say`] so a CI run shows every `PASS:`/
 /// `FAIL:`/`WART:` line, not just the exit status.
 fn run_scenario(script: &str) {
-    run_in(script, false);
-}
-
-/// [`run_scenario`] on the full screen (`IOTA_FULLSCREEN=1`, tui-plan S2–S4): the same script, its
-/// read-back helpers going through the dump key (`lib.sh`'s `_history`).
-fn run_scenario_fullscreen(script: &str) {
-    run_in(script, true);
-}
-
-fn run_in(script: &str, fullscreen: bool) {
     let _serial = serial_lock();
     let Some(g) = gate() else { return };
     mock::reset();
@@ -342,20 +330,12 @@ fn run_in(script: &str, fullscreen: bool) {
         .env("IOTA_OAUTH_PORT", g.oauth_port.to_string())
         .env("SCEN_TMP", &scratch)
         .env("TMUX_LIB", dir.join("lib.sh"));
-    if fullscreen {
-        cmd.env("IOTA_FULLSCREEN", "1");
-    } else {
-        cmd.env_remove("IOTA_FULLSCREEN");
-    }
     let out = cmd.output();
     let out = match out {
         Ok(o) => o,
         Err(e) => panic!("could not run {}: {e}", path.display()),
     };
-    say(&format!(
-        "==== {script}{} ====",
-        if fullscreen { " (full screen)" } else { "" }
-    ));
+    say(&format!("==== {script} ===="));
     say(String::from_utf8_lossy(&out.stdout).trim_end());
     let stderr = String::from_utf8_lossy(&out.stderr);
     if !stderr.trim().is_empty() {
@@ -412,14 +392,6 @@ fn tmux_esc_mid_stream_folds_queue() {
 #[test]
 fn tmux_double_ctrl_c_exits() {
     run_scenario("05-ctrlc-twice.sh");
-}
-
-/// L4 #6 — a real SIGWINCH mid-stream (80×24 → 100×28) and an idle shrink (→ 70×20): no
-/// crash, no ghost frame, separators follow the new width, the stream completes
-/// contiguously and input still works afterwards.
-#[test]
-fn tmux_resize_mid_stream_and_idle() {
-    run_scenario("06-resize.sh");
 }
 
 /// L4 #7 — TRUE bracketed paste (`load-buffer` + `paste-buffer -p`): one Paste event, a
@@ -582,13 +554,6 @@ fn tmux_shell_yield() {
     run_scenario("25-shell-yield.sh");
 }
 
-/// L4 #26 — the resize cases a long session cannot isolate, each on a fresh pane: 2×/3×
-/// narrowings, fast output, a surface open, a tool call running (X-52).
-#[test]
-fn tmux_resize_residuals() {
-    run_scenario("26-resize-residuals.sh");
-}
-
 /// L4 #27 — a hung provider (docs/history/request-cancellation-recon.md): the busy row's
 /// first-token phase, ESC followed by the next message and by the exit with no wait on the title
 /// pass, the stream idle bound failing a silent stream (the `IOTA_STREAM_IDLE_TIMEOUT=2` test hook)
@@ -728,215 +693,9 @@ fn tmux_fullscreen_signal() {
     run_scenario("40-fullscreen-signal.sh");
 }
 
-// ------------------------------------------------------------------ the same, on the full screen
-
-/// L4 #1 on the full screen (tui-plan S2).
-#[test]
-fn tmux_startup_frame_and_pinned_cursor_fullscreen() {
-    run_scenario_fullscreen("01-startup.sh");
-}
-
-/// L4 #2 on the full screen (tui-plan S2).
-#[test]
-fn tmux_streamed_markdown_turn_history_exact_fullscreen() {
-    run_scenario_fullscreen("02-markdown-turn.sh");
-}
-
-/// L4 #3 on the full screen (tui-plan S2).
-#[test]
-fn tmux_surface_open_close_self_heal_fullscreen() {
-    run_scenario_fullscreen("03-surface-selfheal.sh");
-}
-
-/// L4 #4 on the full screen (tui-plan S2).
-#[test]
-fn tmux_esc_mid_stream_folds_queue_fullscreen() {
-    run_scenario_fullscreen("04-esc-midstream.sh");
-}
-
-/// L4 #5 on the full screen (tui-plan S2).
-#[test]
-fn tmux_double_ctrl_c_exits_fullscreen() {
-    run_scenario_fullscreen("05-ctrlc-twice.sh");
-}
-
-/// L4 #7 on the full screen (tui-plan S2).
-#[test]
-fn tmux_bracketed_paste_round_trip_fullscreen() {
-    run_scenario_fullscreen("07-paste.sh");
-}
-
-/// L4 #8 on the full screen (tui-plan S2).
-#[test]
-fn tmux_big_resume_echo_chunking_fullscreen() {
-    run_scenario_fullscreen("08-big-resume.sh");
-}
-
-/// L4 #10 on the full screen (tui-plan S2).
-#[test]
-fn tmux_edge_pins_fullscreen() {
-    run_scenario_fullscreen("10-edge-pins.sh");
-}
-
-/// L4 #11 on the full screen (tui-plan S2).
-#[test]
-fn tmux_export_picker_writes_a_file_fullscreen() {
-    run_scenario_fullscreen("11-export-picker.sh");
-}
-
-/// L4 #12 on the full screen (tui-plan S2).
-#[test]
-fn tmux_debug_inspector_two_tabs_fullscreen() {
-    run_scenario_fullscreen("12-debug.sh");
-}
-
-/// L4 #13 on the full screen (tui-plan S2).
-#[test]
-fn tmux_image_widget_and_edit_picker_fullscreen() {
-    run_scenario_fullscreen("13-edit-picker.sh");
-}
-
-/// L4 #15 on the full screen (tui-plan S2).
-#[test]
-fn tmux_model_combo_fullscreen() {
-    run_scenario_fullscreen("15-model-combo.sh");
-}
-
-/// L4 #16 on the full screen (tui-plan S2).
-#[test]
-fn tmux_no_color_fullscreen() {
-    run_scenario_fullscreen("16-nocolor.sh");
-}
-
-/// L4 #18 on the full screen (tui-plan S2).
-#[test]
-fn tmux_host_channels_fullscreen() {
-    run_scenario_fullscreen("18-host-channels.sh");
-}
-
-/// L4 #19 on the full screen (tui-plan S2).
-#[test]
-fn tmux_background_jobs_fullscreen() {
-    run_scenario_fullscreen("19-background-jobs.sh");
-}
-
-/// L4 #20 on the full screen (tui-plan S2).
-#[test]
-fn tmux_block_preview_morphs_fullscreen() {
-    run_scenario_fullscreen("20-block-preview.sh");
-}
-
-/// L4 #21 on the full screen (tui-plan S2).
-#[test]
-fn tmux_emoji_table_alignment_fullscreen() {
-    run_scenario_fullscreen("21-emoji-table.sh");
-}
-
-/// L4 #22 on the full screen (tui-plan S2).
-#[test]
-fn tmux_retry_path_fullscreen() {
-    run_scenario_fullscreen("22-retry.sh");
-}
-
-/// L4 #23 on the full screen (tui-plan S2).
-#[test]
-fn tmux_mcp_oauth_round_trip_fullscreen() {
-    run_scenario_fullscreen("23-mcp-oauth.sh");
-}
-
-/// L4 #24 on the full screen (tui-plan S2).
-#[test]
-fn tmux_iota_outside_the_sandbox_fullscreen() {
-    run_scenario_fullscreen("24-iota-outside-sandbox.sh");
-}
-
-/// L4 #27 on the full screen (tui-plan S2).
-#[test]
-fn tmux_hung_provider_fullscreen() {
-    run_scenario_fullscreen("27-hung-provider.sh");
-}
-
-/// L4 #28 on the full screen (tui-plan S2).
-#[test]
-fn tmux_composer_newline_fullscreen() {
-    run_scenario_fullscreen("28-composer-newline.sh");
-}
-
-/// L4 #30 on the full screen (tui-plan S2).
-#[test]
-fn tmux_thinking_cut_fullscreen() {
-    run_scenario_fullscreen("30-thinking-cut.sh");
-}
-
-/// L4 #31 on the full screen (tui-plan S2).
-#[test]
-fn tmux_tool_args_cut_fullscreen() {
-    run_scenario_fullscreen("31-tool-args-cut.sh");
-}
-
-/// L4 #32 on the full screen (tui-plan S2).
-#[test]
-fn tmux_new_session_fullscreen() {
-    run_scenario_fullscreen("32-new-session.sh");
-}
-
-/// L4 #33 on the full screen (tui-plan S2).
-#[test]
-fn tmux_trailing_text_fullscreen() {
-    run_scenario_fullscreen("33-trailing-text.sh");
-}
-
-/// L4 #34 on the full screen (tui-plan S2).
-#[test]
-fn tmux_busy_span_fullscreen() {
-    run_scenario_fullscreen("34-busy-span.sh");
-}
-
-/// L4 #35 on the full screen (tui-plan S2).
-#[test]
-fn tmux_rate_limit_hold_fullscreen() {
-    run_scenario_fullscreen("35-rate-limit-hold.sh");
-}
-
-/// L4 #36 on the full screen (tui-plan S2).
-#[test]
-fn tmux_config_trust_fullscreen() {
-    run_scenario_fullscreen("36-config-trust.sh");
-}
-
-/// L4 #14 on the full screen (tui-plan S4).
-#[test]
-fn tmux_osc_progress_and_focus_bytes_fullscreen() {
-    run_scenario_fullscreen("14-osc-signals.sh");
-}
-
-/// L4 #17 on the full screen (tui-plan S4).
-#[test]
-fn tmux_title_stack_fullscreen() {
-    run_scenario_fullscreen("17-title-stack.sh");
-}
-
-/// L4 #25 on the full screen (tui-plan S4).
-#[test]
-fn tmux_shell_yield_fullscreen() {
-    run_scenario_fullscreen("25-shell-yield.sh");
-}
-
-/// L4 #42 on the full screen (tui-plan S4).
-#[test]
-fn tmux_resize_and_key_fullscreen() {
-    run_scenario_fullscreen("42-resize-and-key.sh");
-}
-
-/// L4 #29 on the full screen (tui-plan S2): SIGTERM, Ctrl+D and a hung-up terminal end the run there too.
-#[test]
-fn tmux_signal_exit_fullscreen() {
-    run_scenario_fullscreen("29-signal-exit.sh");
-}
-
 /// M2 (tui-plan §7) — a measurement, not a check: the bytes the tmux iota runs in sends to its own
-/// terminal for typing, a stream and a drag, inline and full-screen (`measure/m2-bytes.sh`). Runs only
-/// with `IOTA_TMUX_MEASURE=1`; `TMUX_BIN` picks the tmux under test.
+/// terminal for typing, a stream and a drag (`measure/m2-bytes.sh`). Runs only with
+/// `IOTA_TMUX_MEASURE=1`; `TMUX_BIN` picks the tmux under test.
 #[test]
 fn tmux_measure_m2() {
     if std::env::var_os("IOTA_TMUX_MEASURE").is_none() {

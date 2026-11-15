@@ -14,7 +14,7 @@
 
 start 80 24 || finish
 settle || miss "startup never settled"
-before_hist="$(hist_size)"
+before_view="$(view_rows)"
 
 printf 'paste line one\npaste line two\n第三行中文\n' | tm load-buffer -
 tm paste-buffer -pt s
@@ -23,7 +23,7 @@ settle || miss "composer never settled after the paste"
 
 # ONE event: nothing was submitted (the block's newlines never reached the key handler),
 # the tag is a single composer row, and the store holds exactly one entry (id #1).
-check "the paste arrived as ONE event — nothing submitted" "$(hist_size)" "$before_hist"
+check "the paste arrived as ONE event — nothing submitted" "$(view_rows)" "$before_view"
 check "the tag collapses the block to one composer row" "$(count_composer '❯ [#1 paste line one… 3 lines]')" 1
 check "still a one-row composer" "$(composer_block | wc -l | tr -d ' ')" 1
 check "the tag counts the block's lines, CR-normalised" "$(count_composer '3 lines]')" 1

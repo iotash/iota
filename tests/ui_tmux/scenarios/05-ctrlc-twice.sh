@@ -30,11 +30,11 @@ else
     bad "the first Ctrl+C exited the program"
     finish
 fi
-a="$(hist_size)"
+a="$(view_rows)"
 # A NEGATIVE claim's window, not a wait (lib.sh rule 3): a stream that Ctrl+C failed to stop would
 # insert a row every 60 ms (LINE_GAP), about sixteen inside it.
 sleep 1.0
-b="$(hist_size)"
+b="$(view_rows)"
 check "the cancelled stream really stopped" "$a" "$b"
 check_frame_intact "after the cancel" 80
 
@@ -48,11 +48,9 @@ else
     bad "the second Ctrl+C did not exit"
 fi
 
-# The exit repaints the frame once the staging window has flushed into scrollback (X-49): what
-# the window held at the exit is in the history ONCE, not once in the scrollback and once more
-# in the frame left standing. Here that is the cancelled turn's last row — the banner left the
-# window sixty streamed lines ago (scenario 01 exits with the banner still in it).
+# The exit writes the conversation out once (X-49's duplicate frame is gone with the inline
+# terminal): the cancelled turn's last row and the banner, sixty streamed lines above it.
 check_once "the last committed row is in the history once after the exit" 'Interrupted.'
-check_once "…and the banner, long since in the scrollback, is there once too" 'ι> iota'
+check_once "…and the banner is there once too" 'ι> iota'
 
 finish
