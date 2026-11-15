@@ -381,13 +381,19 @@ impl Conversation {
         self.unseen
     }
 
-    /// The display lines (at `width`) of the rows committed since the last call.
-    pub(crate) fn take_fresh(&mut self, width: usize) -> usize {
+    /// The display lines (at `width`) of the blocks committed since the last call, counted from
+    /// the tail up to `limit + 1` at most: only a count under the viewport's height is used (one
+    /// scroll of that many), so a big batch lays out the blocks a viewport shows, not all of them.
+    pub(crate) fn take_fresh(&mut self, width: usize, limit: usize) -> usize {
         let n = std::mem::take(&mut self.fresh).min(self.rows.len());
-        let start = self.rows.len() - n;
-        (start..self.rows.len())
-            .map(|i| self.rows[i].height(width))
-            .sum()
+        let mut lines = 0;
+        for i in (self.rows.len() - n..self.rows.len()).rev() {
+            lines += self.rows[i].height(width);
+            if lines > limit {
+                break;
+            }
+        }
+        lines
     }
 
     /// Scrolls `n` display lines toward the start (`h` is the viewport's height).

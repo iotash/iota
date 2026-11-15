@@ -174,8 +174,11 @@ fn a_dump_asks_for_the_rows_after_the_last_one_written() {
 fn fresh_lines_count_what_was_committed_since_the_last_draw() {
     let mut c = Conversation::new();
     c.push(rows_of(&rows(0, 3)));
-    assert_eq!(c.take_fresh(20), 3);
-    assert_eq!(c.take_fresh(20), 0);
+    assert_eq!(c.take_fresh(20, 99), 3);
+    assert_eq!(c.take_fresh(20, 99), 0);
     c.push(rows_of(&["x".repeat(25)]));
-    assert_eq!(c.take_fresh(10), 3, "display lines, not rows");
+    assert_eq!(c.take_fresh(10, 99), 3, "display lines, not rows");
+    // Counted from the tail only past the limit (the viewport): a big batch is not walked whole.
+    c.push(rows_of(&rows(0, 50)));
+    assert_eq!(c.take_fresh(20, 5), 6, "stopped one past the limit");
 }

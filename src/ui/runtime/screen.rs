@@ -599,7 +599,9 @@ impl<W: Write> Screen<W> {
             }
         }
         let lines = self.view_lines(usize::from(width), usize::from(view_h), prompt);
-        let fresh = self.conv.take_fresh(usize::from(width));
+        let fresh = self
+            .conv
+            .take_fresh(usize::from(width), usize::from(view_h));
         if let Some(n) = self.scrolled_by(fresh, view_h) {
             self.scroll_region(n, view_h)?;
         }

@@ -430,13 +430,14 @@ fn a_search_after_a_resize_lays_out_only_the_block_it_jumps_to() {
             .map(|i| crate::ui::block::Block::laid(Counted(std::sync::Arc::clone(&calls), i)))
             .collect(),
     );
-    conv.take_fresh(80); // the draw that lands them lays each out once, at 80
-    assert_eq!(calls.load(Ordering::Relaxed), 1000);
     let mut search = super::Search::new(&conv, 999);
     search.set_query(&mut conv, "needle", 80);
     assert_eq!(search.status(), "1000/1000");
     let at_80 = calls.load(Ordering::Relaxed);
-    assert_eq!(at_80, 1000, "the scan laid out nothing");
+    assert_eq!(
+        at_80, 1000,
+        "a block no draw reached is laid out once, by the first scan"
+    );
     // The window narrows to 60: a new query and the catch-up scan again, nothing is laid out.
     search.catch_up(&mut conv, 60);
     search.set_query(&mut conv, "needle", 60);

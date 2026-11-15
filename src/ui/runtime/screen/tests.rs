@@ -526,6 +526,84 @@ fn m1_a_hundred_thousand_rows() {
     );
 }
 
+/// M1 with laid-out blocks (the S7a review's probes, kept): replies until 30 000 blocks are laid
+/// out from source (a table, a code block and a list per reply, each distinct, ~90 000 blocks) —
+/// the RSS a push and its draw add, a resize repaint near the first block, and the first search
+/// after a width change (S1: it must lay nothing out). Same switch as M1.
+#[test]
+fn m1_laid_out_blocks() {
+    use std::time::Instant;
+    if std::env::var_os("IOTA_MEASURE_M1").is_none() {
+        return;
+    }
+    let mut blocks = Vec::new();
+    let mut laid = 0;
+    let mut i = 0;
+    while laid < 30_000 {
+        let md = format!(
+            "reply {i} opens\n\n| key | value |\n|---|---|\n| n{i} | the value of row {i} in a cell |\n\n```rust\nfn f{i}() -> u32 {{ {i} }}\n```\n\n- item {i} one\n- item {i} two\n\nreply {i} closes\n"
+        );
+        let b = crate::ui::testutil::markdown_blocks(&md);
+        laid += b
+            .iter()
+            .filter(|b| matches!(b, crate::ui::block::Block::Laid(_)))
+            .count();
+        blocks.extend(b);
+        i += 1;
+    }
+    while blocks.len() < 70_000 {
+        blocks.push(crate::ui::block::Block::Row(format!(
+            "plain row {}",
+            blocks.len()
+        )));
+    }
+    let n = blocks.len();
+    let (mut s, _buf) = screen(120, 40);
+    let base = rss_kib();
+    let t = Instant::now();
+    s.push(blocks);
+    s.draw_frame(&frame(120), None).unwrap();
+    let push_draw = t.elapsed();
+    let grown = rss_kib();
+    let frame_time = |s: &mut Screen<SharedBuf>, op: Option<ViewOp>, w: usize| {
+        let t = Instant::now();
+        if let Some(op) = op {
+            s.view(op).unwrap();
+        }
+        s.draw_frame(&frame(w), None).unwrap();
+        t.elapsed()
+    };
+    let top = frame_time(&mut s, Some(ViewOp::Top), 120);
+    s.resize(Size::new(100, 40));
+    let deep_resize = frame_time(&mut s, None, 100);
+    s.view(ViewOp::Search(super::search::SearchOp::Open))
+        .unwrap();
+    let t = Instant::now();
+    s.view(ViewOp::Search(super::search::SearchOp::Query(
+        "value of row 2999".to_owned(),
+    )))
+    .unwrap();
+    let cold_query = t.elapsed();
+    s.resize(Size::new(80, 40));
+    let resize_searching = frame_time(&mut s, None, 80);
+    let t = Instant::now();
+    s.view(ViewOp::Search(super::search::SearchOp::Query(
+        "fn f1234".to_owned(),
+    )))
+    .unwrap();
+    let query_after_resize = t.elapsed();
+    let after = rss_kib();
+    println!(
+        "M1 laid: {n} blocks ({laid} laid out): push + first draw {push_draw:?}, RSS +{} KiB \
+         (the draw lays out only what it shows); Ctrl+Home {top:?}; \
+         resize repaint near the first block {deep_resize:?}; first query after the resize \
+         (lays out, once, every block no draw reached) {cold_query:?}; a resize with the search open {resize_searching:?}; a new query after it \
+         {query_after_resize:?}; RSS at the end +{} KiB",
+        grown.saturating_sub(base),
+        after.saturating_sub(base)
+    );
+}
+
 /// The point of no return is the first frame: a screen built and fed rows writes nothing, and one
 /// left before any frame writes the conversation out on the main screen it never left — no
 /// alternate-screen sequence either way.
