@@ -1507,10 +1507,11 @@ fn shown(m: &mut Model, cols: u16, lines: u16) -> Vec<String> {
         .collect()
 }
 
-/// The completion list as a terminal shows it, at 80 and 160 columns: one item per row group,
-/// its description under it at the 72-column measure — the same shape on the wide terminal, not
-/// one 150-column line — cut with `…` after two lines; the status row under it keeps its own
-/// content. Run with `--nocapture` to see the screens.
+/// The completion list as a terminal shows it, at 80 and 160 columns: two columns, the labels
+/// and — two past the longest label — the descriptions, starting at the same column on every
+/// row; at 160 columns a description still wraps at the 72-column measure, not one 140-column
+/// line, and is cut with `…` after two lines; an item with no description is its label alone; the
+/// status row under the list keeps its own content. Run with `--nocapture` to see the screens.
 #[test]
 fn the_completion_list_on_screen_at_80_and_160_columns() {
     use crate::ui::input::suggest::DESC_MEASURE;
@@ -1523,29 +1524,45 @@ fn the_completion_list_on_screen_at_80_and_160_columns() {
     crate::ui::testutil::type_text(&mut m, "/skills ");
     crate::ui::input::suggest::tab_complete(&mut m.composer, &m.commands);
     crate::ui::input::suggest::tab_complete(&mut m.composer, &m.commands);
+    // `code-review` and `investigate` are the longest labels: 11 columns, after the 4 of indent.
+    let at = 4 + 11 + 2;
     for w in [80u16, 160] {
         let rows = shown(&mut m, w, 24);
-        println!("--- {w}x24 ---\n{}", rows.join("\n"));
-        let item = rows
+        let dump = rows.join("\n");
+        println!("--- {w}x24 ---\n{dump}");
+        let first = rows
             .iter()
-            .position(|r| r == "  › code-review")
-            .expect("highlight");
-        let desc = &rows[item + 1..item + 3];
+            .rposition(|r| r.starts_with('┄'))
+            .expect("separator")
+            + 1;
+        let list = &rows[first..first + 6];
+        assert!(list[0].starts_with("    brain-page   Read"), "{w}:\n{dump}");
         assert!(
-            desc.iter().all(|r| r.starts_with("      ")
-                && crate::text::width::str_width(&r[6..]) <= DESC_MEASURE),
-            "{w}: the description must keep the measure:\n{}",
-            rows.join("\n")
-        );
-        assert!(
-            desc[1].ends_with('…'),
-            "{w}: cut after two lines:\n{}",
-            rows.join("\n")
+            list[1].starts_with("  › code-review  Review"),
+            "{w}:\n{dump}"
         );
         assert_eq!(
-            rows[item + 3],
-            "    release",
-            "{w}: the next item follows the cut"
+            list[3], "    release",
+            "{w}: no description, one row:\n{dump}"
+        );
+        assert!(
+            list[4].starts_with("    investigate  Systematic"),
+            "{w}:\n{dump}"
+        );
+        for r in list.iter().filter(|r| r.as_str() != "    release") {
+            let cs: Vec<char> = r.chars().collect();
+            assert!(
+                cs[at - 2] == ' ' && cs[at - 1] == ' ' && cs[at] != ' ',
+                "{w}: the description column moved on {r:?}:\n{dump}"
+            );
+            assert!(
+                cs.len() - at <= DESC_MEASURE.min(usize::from(w) - at),
+                "{w}: past the measure: {r:?}"
+            );
+        }
+        assert!(
+            list[2].starts_with(&" ".repeat(at)) && list[2].ends_with('…'),
+            "{w}: the second line in column two, cut with …:\n{dump}"
         );
         assert!(
             rows[23].contains("claude-opus-5-5"),
@@ -1571,10 +1588,10 @@ fn a_four_row_terminal_keeps_the_composer_and_the_highlighted_item() {
         vec![
             "❯ /skills investigate".to_owned(),
             "┄".repeat(80),
-            "  › investigate".to_owned(),
-            "      Systematic debugging with root cause investigation: reproduce, analyze,"
+            "  › investigate  Systematic debugging with root cause investigation: reproduce,"
                 .to_owned(),
+            "                 analyze, hypothesize, then fix".to_owned(),
         ]
     );
-    assert_eq!(m.list_items, vec![3, 3, 3], "the highlighted item alone");
+    assert_eq!(m.list_items, vec![3, 3], "the highlighted item alone");
 }

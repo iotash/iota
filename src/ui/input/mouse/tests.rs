@@ -292,7 +292,7 @@ fn a_lost_release_is_ended_by_a_key_focus_loss_or_a_resize() {
     assert_eq!(m.view_ops, vec![ViewOp::Select(SelectOp::Release)]);
 }
 
-/// A click anywhere in a completion item's rows — its label or a description line — highlights
+/// A click anywhere in a completion item's rows — its label row or its second description line — highlights
 /// that item, over items of different heights; the rows below the list stay frame chrome.
 #[test]
 fn a_click_on_a_completion_item_highlights_it() {
@@ -318,22 +318,22 @@ fn a_click_on_a_completion_item_highlights_it() {
     ]));
     type_text(&mut m, "/");
     laid_out(&mut m);
-    assert_eq!(m.list_items, vec![0, 1, 1, 1, 2, 2]);
+    assert_eq!(m.list_items, vec![0, 1, 1, 2]);
     let top = m.view_h + u16::try_from(m.frame_map.list.unwrap()).unwrap();
     // The second description line of /beta.
-    m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 10, top + 3));
+    m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 10, top + 2));
     assert_eq!(m.composer.value(), "/beta");
     assert_eq!(m.composer.suggestion_index, Some(1));
     laid_out(&mut m);
-    // /gamma's description line.
-    m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 10, top + 5));
+    // /gamma's description, beside its label.
+    m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 20, top + 3));
     assert_eq!(m.composer.value(), "/gamma");
     assert_eq!(
         m.composer.suggestion_base, "/",
         "the list still filters by what was typed"
     );
     assert_eq!(
-        target(top + 6, m.view_h, &m.frame_map, false, false),
+        target(top + 4, m.view_h, &m.frame_map, false, false),
         Target::Frame,
         "the status row under the list"
     );

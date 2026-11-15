@@ -2,9 +2,10 @@
 //! `match_suggestions` whole-line prefix filter, the completion cycle, and the candidate LIST the
 //! frame draws below the composer.
 //!
-//! The list is a single-select picker in the fzf / Claude Code shape: each item is its label row,
-//! then its description indented under it, word-wrapped at `min(available width, DESC_MEASURE)`
-//! and cut with `…` after [`DESC_LINES`] lines. The cycle is the one `Tab` has always driven: `Tab`
+//! The list is a single-select picker in the fzf / Claude Code shape, in two columns: the label,
+//! then — at one column for every match, [`GAP`] past the longest label (capped at
+//! [`LABEL_CAP`]) — its description, word-wrapped at `min(remaining width, DESC_MEASURE)` and cut
+//! with `…` after [`DESC_LINES`] lines. The cycle is the one `Tab` has always driven: `Tab`
 //! and `↓` step forward, `↑` back, a click picks an item, and every step writes the item's value
 //! into the composer — so `Enter` commits the highlighted item by submitting the line, and `Esc`
 //! puts back what was typed. The window over the items is in WHOLE items and keeps the highlighted
@@ -12,14 +13,15 @@
 
 use crate::markdown::blocks::table::word_wrap_ansi;
 use crate::text::ansi::truncate_ansi;
+use crate::text::width::str_width;
 use crate::ui::facade::Suggestion;
 
 use super::composer::Composer;
 use crate::ui::render::theme::{CYAN, FAINT, RESET};
 
 /// A description's measure, in columns: 72, the classic line length of terminal prose (a commit
-/// body, a man page). It fits an 80-column terminal under the 6-column indent, and a wide terminal
-/// keeps a description a short block under its label instead of one long line.
+/// body, a man page). A wide terminal keeps a description a short block beside its label instead
+/// of one long line.
 pub(crate) const DESC_MEASURE: usize = 72;
 
 /// The most lines a description takes; the last one ends in `…` when there was more.
@@ -28,8 +30,12 @@ pub(crate) const DESC_LINES: usize = 2;
 /// Where a label starts: a two-column margin, then the pointer's two.
 const LABEL_INDENT: usize = 4;
 
-/// Where a description starts: under its label, two further in.
-const DESC_INDENT: usize = 6;
+/// The widest the label column gets; a longer label is cut with `…`. Command and skill names are
+/// short — 30 is generous.
+pub(crate) const LABEL_CAP: usize = 30;
+
+/// The space between the label column and the description column.
+const GAP: usize = 2;
 
 /// Filters the table by whole-line prefix (suggest.go matchSuggestions). Entries whose
 /// value carries an argument (`"/skills brain-page"`) stay hidden until the line has a
@@ -139,27 +145,39 @@ pub(crate) struct ListView {
     pub(crate) items: Vec<usize>,
 }
 
-/// The rows of one item at `width`: the label row — a cyan `›` and label when `selected`, faint
-/// otherwise — then the description's lines, faint, at [`DESC_INDENT`] and wrapped at
-/// `min(width - DESC_INDENT, DESC_MEASURE)`, at most [`DESC_LINES`] of them, the last cut with `…`
-/// when the text runs on. An item with no description is its label row.
-pub(crate) fn item_rows(s: &Suggestion, selected: bool, width: usize) -> Vec<String> {
-    let label = truncate_ansi(
-        suggest_label(s),
-        width.saturating_sub(LABEL_INDENT).max(1),
-        "…",
-    );
-    let mut rows = vec![if selected {
+/// The label column's width for these matches at `width`: the longest label among ALL of them —
+/// not just the shown window, so the column holds still while the list scrolls — capped at
+/// [`LABEL_CAP`] and at what the terminal leaves beside the indent.
+pub(crate) fn label_column(ms: &[&Suggestion], width: usize) -> usize {
+    ms.iter()
+        .map(|s| str_width(suggest_label(s)))
+        .max()
+        .unwrap_or(0)
+        .min(LABEL_CAP)
+        .min(width.saturating_sub(LABEL_INDENT))
+        .max(1)
+}
+
+/// The rows of one item at `width` with a label column `col` wide. The first row is the label — a
+/// cyan `›` and label when `selected`, faint otherwise, cut with `…` past `col` — then, [`GAP`]
+/// past the column, the description's first line, faint; its further lines start at the same
+/// column. The description wraps at `min(width - its column, DESC_MEASURE)`, at most
+/// [`DESC_LINES`] lines, the last cut with `…` when the text runs on. An item with no description
+/// is its label row.
+pub(crate) fn item_rows(s: &Suggestion, selected: bool, col: usize, width: usize) -> Vec<String> {
+    let label = truncate_ansi(suggest_label(s), col, "…");
+    let head = if selected {
         format!("  {CYAN}› {label}{RESET}")
     } else {
         format!("    {FAINT}{label}{RESET}")
-    }];
+    };
     // A description is prose: its own breaks and runs of spaces are not layout.
     let desc = s.desc.split_whitespace().collect::<Vec<_>>().join(" ");
     if desc.is_empty() {
-        return rows;
+        return vec![head];
     }
-    let measure = width.saturating_sub(DESC_INDENT).clamp(2, DESC_MEASURE);
+    let at = LABEL_INDENT + col + GAP;
+    let measure = width.saturating_sub(at).clamp(2, DESC_MEASURE);
     let mut lines = word_wrap_ansi(&desc, measure);
     if lines.len() > DESC_LINES {
         lines.truncate(DESC_LINES);
@@ -167,9 +185,19 @@ pub(crate) fn item_rows(s: &Suggestion, selected: bool, width: usize) -> Vec<Str
             *last = format!("{}…", truncate_ansi(last, measure - 1, "").trim_end());
         }
     }
-    let pad = " ".repeat(DESC_INDENT);
-    rows.extend(lines.into_iter().map(|l| format!("{pad}{FAINT}{l}{RESET}")));
-    rows
+    let gap = " ".repeat(col - str_width(&label) + GAP);
+    let indent = " ".repeat(at);
+    lines
+        .into_iter()
+        .enumerate()
+        .map(|(i, l)| {
+            if i == 0 {
+                format!("{head}{gap}{FAINT}{l}{RESET}")
+            } else {
+                format!("{indent}{FAINT}{l}{RESET}")
+            }
+        })
+        .collect()
 }
 
 /// Lays the matches out in `room` rows at `width`: the window starts at `top` (the last draw's)
@@ -184,10 +212,11 @@ pub(crate) fn layout(
     width: usize,
     room: usize,
 ) -> (ListView, usize) {
+    let col = label_column(ms, width);
     let items: Vec<Vec<String>> = ms
         .iter()
         .enumerate()
-        .map(|(i, s)| item_rows(s, cur == Some(i), width))
+        .map(|(i, s)| item_rows(s, cur == Some(i), col, width))
         .collect();
     let span = |from: usize, to: usize| items[from..to].iter().map(Vec::len).sum::<usize>();
     let (mut top, at) = match cur {

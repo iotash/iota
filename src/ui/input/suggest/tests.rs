@@ -1,7 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! The completion suite: `match_suggestions`' argument-entry laws, the cycle (Tab, ↑/↓ by item,
-//! Esc, a click), and the list's layout — item heights, the description's measure, the two-line
-//! cap and its ellipsis, the window keeping the highlight whole, the hues.
+//! Esc, a click), and the list's layout — the two columns (the label column's width, cap and
+//! stillness under scrolling), item heights, the description's measure, the two-line cap and its
+//! ellipsis, the window keeping the highlight whole, the hues.
 //!
 //! The modules under test are crate-private by design (`TUI_CONTRACTS` §5), so the tests live beside
 //! them.
@@ -11,8 +12,8 @@ use crate::text::width::str_width;
 use crate::ui::facade::Suggestion;
 use crate::ui::input::composer::Composer;
 use crate::ui::input::suggest::{
-    DESC_LINES, DESC_MEASURE, ListView, cancel, choose, frame_list, item_rows, layout,
-    match_suggestions, step, tab_complete,
+    DESC_LINES, DESC_MEASURE, LABEL_CAP, ListView, cancel, choose, frame_list, item_rows,
+    label_column, layout, match_suggestions, step, tab_complete,
 };
 use crate::ui::render::theme::{CYAN, FAINT, RESET};
 
@@ -40,6 +41,14 @@ fn vals(ms: &[&Suggestion]) -> Vec<String> {
 
 fn plain(rows: &[String]) -> Vec<String> {
     rows.iter().map(|r| strip_sgr(r)).collect()
+}
+
+/// Where the description starts on a plain row: the first text past the label's own column 4
+/// that follows two spaces (a label holds no double space, a description is single-spaced).
+/// `None` for a row with no description.
+fn desc_at(row: &str) -> Option<usize> {
+    let cs: Vec<char> = row.chars().collect();
+    (5..cs.len()).find(|&i| cs[i] != ' ' && cs[i - 1] == ' ' && cs[i - 2] == ' ')
 }
 
 /// A description `words` words long.
@@ -100,53 +109,119 @@ fn test_slash_tab_completion() {
     assert_eq!(c.value(), "/session", "cycle wrap");
 }
 
-/// An item's height is its label row plus its description's lines: none, one, or two — never a
-/// third, the second ending in `…` when the text ran on. The description wraps at the measure,
-/// not at the terminal: at 200 columns it is still at most `DESC_MEASURE` wide.
+/// An item's height is its description's lines — one when it has none or one, two at most, the
+/// second ending in `…` when the text ran on. The first line shares the label's row; the second
+/// starts at the same column, never under the label. The description wraps at the measure, not at
+/// the terminal: at 200 columns it is still at most `DESC_MEASURE` wide.
 #[test]
 fn item_heights_wrap_at_the_measure_and_cap_at_two_lines() {
-    let bare = item_rows(&sug("/help", ""), false, 80);
+    let bare = item_rows(&sug("/help", ""), false, 4, 80);
     assert_eq!(plain(&bare), vec!["    help"]);
 
-    let short = item_rows(&sug("/help", "Show the commands"), false, 80);
-    assert_eq!(plain(&short), vec!["    help", "      Show the commands"]);
+    let short = item_rows(&sug("/help", "Show the commands"), false, 4, 80);
+    assert_eq!(plain(&short), vec!["    help  Show the commands"]);
 
     // Twelve 6-column words (+ spaces) are 83 columns: two lines at the 72 measure, not one at 200.
-    let two = plain(&item_rows(&sug("/x", &words(12)), false, 200));
-    assert_eq!(two.len(), 3, "{two:#?}");
-    for row in &two[1..] {
-        let text = row.trim_start();
+    let two = plain(&item_rows(&sug("/x", &words(12)), false, 1, 200));
+    assert_eq!(two.len(), 2, "{two:#?}");
+    assert!(two[0].starts_with("    x  word00"), "{two:#?}");
+    assert!(
+        two[1].starts_with("       word"),
+        "the second line starts in the description column: {two:#?}"
+    );
+    for row in &two {
         assert!(
-            str_width(text) <= DESC_MEASURE,
+            str_width(&row[7..]) <= DESC_MEASURE,
             "wider than the measure: {row:?}"
-        );
-        assert!(
-            row.starts_with("      w"),
-            "the description is indented under the label: {row:?}"
         );
     }
     assert!(
-        !two[2].ends_with('…'),
+        !two[1].ends_with('…'),
         "fits in two lines, so no ellipsis: {two:#?}"
     );
 
     // Forty words are far past two lines: two shown, the second cut with `…`.
-    let long = plain(&item_rows(&sug("/x", &words(40)), false, 200));
-    assert_eq!(long.len(), 1 + DESC_LINES, "{long:#?}");
+    let long = plain(&item_rows(&sug("/x", &words(40)), false, 1, 200));
+    assert_eq!(long.len(), DESC_LINES, "{long:#?}");
     assert!(
-        long[2].ends_with('…'),
+        long[1].ends_with('…'),
         "the second line must end in …: {long:#?}"
     );
-    assert!(str_width(long[2].trim_start()) <= DESC_MEASURE, "{long:#?}");
+    assert!(str_width(long[1].trim_start()) <= DESC_MEASURE, "{long:#?}");
 
-    // A narrow terminal narrows the measure: 40 columns leave 34 beside the indent.
-    let narrow = plain(&item_rows(&sug("/x", &words(8)), false, 40));
-    assert_eq!(narrow.len(), 3, "{narrow:#?}");
+    // A narrow terminal narrows the measure: 40 columns leave 33 beside a 1-wide label column.
+    let narrow = plain(&item_rows(&sug("/x", &words(8)), false, 1, 40));
+    assert_eq!(narrow.len(), 2, "{narrow:#?}");
     assert!(narrow.iter().all(|r| str_width(r) <= 40), "{narrow:#?}");
 
     // The description's own newlines are not layout.
-    let nl = plain(&item_rows(&sug("/x", "one\ntwo"), false, 80));
-    assert_eq!(nl, vec!["    x", "      one two"]);
+    let nl = plain(&item_rows(&sug("/x", "one\ntwo"), false, 1, 80));
+    assert_eq!(nl, vec!["    x  one two"]);
+}
+
+/// The two columns at 80 and 160 columns: the label column is as wide as the longest label, the
+/// description starts two past it on EVERY row of the list — label rows, second lines, items with
+/// no description alike — and a label past [`LABEL_CAP`] is cut with `…` at the cap.
+#[test]
+fn the_list_is_two_columns_at_80_and_160() {
+    let long = "a-label-that-runs-far-past-the-thirty-column-cap";
+    let cmds = vec![
+        sug("/review", &words(40)),
+        sug("/go", "Short"),
+        sug("/bare", ""),
+        sug(&format!("/{long}"), &words(12)),
+    ];
+    let ms: Vec<&Suggestion> = cmds.iter().collect();
+    for w in [80usize, 160] {
+        assert_eq!(label_column(&ms, w), LABEL_CAP, "{w}: capped");
+        let (view, _) = layout(&ms, Some(0), 0, w, 40);
+        let rows = plain(&view.rows);
+        let at = 4 + LABEL_CAP + 2;
+        for (r, item) in rows.iter().zip(&view.items) {
+            if *item == 2 {
+                assert_eq!(r, "    bare", "{w}: no description, one row");
+                continue;
+            }
+            assert_eq!(
+                desc_at(r),
+                Some(at),
+                "{w}: the column moved on {r:?}\n{rows:#?}"
+            );
+            assert!(str_width(r) - at <= DESC_MEASURE.min(w - at), "{w}: {r:?}");
+        }
+        assert_eq!(view.items, vec![0, 0, 1, 2, 3, 3], "{w}: {rows:#?}");
+        let cut: String = long.chars().take(LABEL_CAP - 1).collect();
+        assert!(
+            rows[4].starts_with(&format!("    {cut}…  word00")),
+            "{w}: the long label is cut at the cap: {rows:#?}"
+        );
+        assert!(rows[1].ends_with('…'), "{w}: two lines, then …: {rows:#?}");
+    }
+    // Without the long label the column is the longest of the rest: `review`, 6 wide.
+    let (view, _) = layout(&ms[..3], Some(0), 0, 80, 40);
+    let rows = plain(&view.rows);
+    assert_eq!(rows[2], format!("    go{}Short", " ".repeat(6 - 2 + 2)));
+}
+
+/// The label column is measured over ALL the matches, not the shown window: walking down a list
+/// whose longest label scrolls out of sight, the description column never moves.
+#[test]
+fn the_description_column_holds_still_while_the_list_scrolls() {
+    let mut cmds = vec![sug("/a-long-command-name", "first")];
+    cmds.extend((0..10).map(|i| sug(&format!("/c{i}"), &words(3))));
+    let at = 4 + "a-long-command-name".len() + 2;
+    let mut c = Composer::new();
+    c.set_value("/");
+    let mut scrolled = false;
+    for i in 0..cmds.len() {
+        step(&mut c, &cmds, true);
+        let view = frame_list(&mut c, &cmds, 80, 4);
+        scrolled |= view.items[0] > 0;
+        for r in plain(&view.rows) {
+            assert_eq!(desc_at(&r), Some(at), "step {i}: the column moved on {r:?}");
+        }
+    }
+    assert!(scrolled, "the window never scrolled");
 }
 
 /// ↑/↓ move the highlight by ITEM, whatever each item's height; the composer holds the
@@ -177,7 +252,10 @@ fn the_highlight_moves_by_item_across_items_of_different_heights() {
 
     // The highlighted item's label row carries the pointer, whatever its height.
     let rows = plain(&frame_list(&mut c, &cmds, 80, 40).rows);
-    assert!(rows.contains(&"  › d".to_owned()), "{rows:#?}");
+    assert!(
+        rows.iter().any(|r| r.starts_with("  › d  word00")),
+        "{rows:#?}"
+    );
 
     // From no highlight ↑ lands on the last item.
     let mut c = Composer::new();
@@ -230,13 +308,18 @@ fn the_window_keeps_the_highlight_fully_visible() {
             "step {i}: {} rows in {room}",
             rows.len()
         );
-        let want = item_rows(&cmds[i], true, 80).len();
+        let want = item_rows(&cmds[i], true, 3, 80).len();
         let got = items.iter().filter(|&&it| it == i).count();
         assert_eq!(
             got, want,
             "step {i}: the highlight shows {got} of its {want} rows"
         );
-        assert!(plain(&rows).contains(&format!("  › c{i:02}")), "step {i}");
+        assert!(
+            plain(&rows)
+                .iter()
+                .any(|r| r.starts_with(&format!("  › c{i:02}  "))),
+            "step {i}"
+        );
     }
     // At the bottom; one step up stays inside the window, which must not move.
     let before = frame_list(&mut c, &cmds, 80, room).items;
@@ -256,22 +339,22 @@ fn no_room_shrinks_the_list_to_the_highlighted_item() {
     ];
     let ms: Vec<&Suggestion> = cmds.iter().collect();
     let (view, _) = layout(&ms, Some(1), 0, 80, 0);
-    assert_eq!(view.items, vec![1, 1, 1], "{:#?}", plain(&view.rows));
+    assert_eq!(view.items, vec![1, 1], "{:#?}", plain(&view.rows));
     let (view, _) = layout(&ms, None, 0, 80, 0);
-    assert_eq!(view.items, vec![0, 0], "with no highlight, the first item");
+    assert_eq!(view.items, vec![0], "with no highlight, the first item");
 }
 
-/// A click maps a row to its item over variable heights: every row of an item — its label and
-/// each description line — belongs to that item, and choosing it highlights it.
+/// A click maps a row to its item over variable heights: every row of an item — its label row and
+/// its second description line — belongs to that item, and choosing it highlights it.
 #[test]
 fn a_click_maps_any_row_of_an_item_to_it() {
     let cmds = vec![sug("/a", ""), sug("/b", &words(40)), sug("/c", "short")];
     let mut c = Composer::new();
     c.set_value("/");
     let view = frame_list(&mut c, &cmds, 80, 20);
-    assert_eq!(view.items, vec![0, 1, 1, 1, 2, 2]);
+    assert_eq!(view.items, vec![0, 1, 1, 2]);
     // The second description row of /b.
-    assert!(choose(&mut c, &cmds, view.items[3]));
+    assert!(choose(&mut c, &cmds, view.items[2]));
     assert_eq!((c.value(), c.suggestion_index), ("/b", Some(1)));
 }
 
@@ -300,10 +383,7 @@ fn test_skill_rows_hide_until_a_space_then_show_bare_names() {
     let rows = plain(&frame_list(&mut c, &cmds, 80, 20).rows);
     assert_eq!(
         rows,
-        vec![
-            "    skills",
-            "      List skills, or run one: /skills <name>"
-        ],
+        vec!["    skills  List skills, or run one: /skills <name>"],
         "the catalog leaked before the space"
     );
 
@@ -313,8 +393,7 @@ fn test_skill_rows_hide_until_a_space_then_show_bare_names() {
     assert_eq!(
         rows,
         vec![
-            "    brain-page",
-            "      Read and write brain pages",
+            "    brain-page   Read and write brain pages",
             "    code-review"
         ],
         "bare names, each with its own description"
@@ -325,7 +404,8 @@ fn test_skill_rows_hide_until_a_space_then_show_bare_names() {
 }
 
 /// The list is chrome under the composer: unselected labels and every description faint, the
-/// highlighted label (and its pointer) cyan; no leading slash is repeated.
+/// highlighted label (and its pointer) cyan, the description column faint beside it; no leading
+/// slash is repeated.
 // Go: model_test.go:2177
 #[test]
 fn test_suggest_row_hues() {
@@ -337,11 +417,13 @@ fn test_suggest_row_hues() {
     c.set_value("/s");
     tab_complete(&mut c, &cmds);
     let rows = frame_list(&mut c, &cmds, 80, 20).rows;
-    assert_eq!(rows[0], format!("  {CYAN}› status{RESET}"));
+    assert_eq!(
+        rows[0],
+        format!("  {CYAN}› status{RESET}   {FAINT}Provider, tokens, tools{RESET}")
+    );
     assert_eq!(
         rows[1],
-        format!("      {FAINT}Provider, tokens, tools{RESET}")
+        format!("    {FAINT}session{RESET}  {FAINT}Resume or delete{RESET}")
     );
-    assert_eq!(rows[2], format!("    {FAINT}session{RESET}"));
     assert!(!plain(&rows).iter().any(|r| r.contains("/status")));
 }
