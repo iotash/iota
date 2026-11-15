@@ -12,7 +12,7 @@ use crate::ui::testutil::SharedBuf;
 fn screen(w: u16, h: u16) -> (Screen<SharedBuf>, SharedBuf) {
     let buf = SharedBuf::default();
     (
-        Screen::new(buf.clone(), Size::new(w, h), false).unwrap(),
+        Screen::new(buf.clone(), Size::new(w, h), false, false).unwrap(),
         buf,
     )
 }
@@ -26,6 +26,7 @@ fn frame(w: usize) -> FrameView {
             "status".to_owned(),
         ],
         cursor: Some((2, 1)),
+        map: Default::default(),
     }
 }
 
@@ -575,4 +576,243 @@ fn rows_written_before_a_resize_keep_their_width_and_the_rest_take_the_exit_widt
         "the second wrapped at the exit's 20: {out:?}"
     );
     assert_eq!(out.matches(TRANSCRIPT_MARK).count(), 1);
+}
+
+// --- the mouse (tui-plan S6) ---------------------------------------------------------------------
+
+use super::{LEAVE, MOUSE_OFF, MOUSE_ON, SelectOp};
+
+fn mouse_screen(w: u16, h: u16) -> (Screen<SharedBuf>, SharedBuf) {
+    let buf = SharedBuf::default();
+    (
+        Screen::new(buf.clone(), Size::new(w, h), false, true).unwrap(),
+        buf,
+    )
+}
+
+fn has(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
+}
+
+fn select(s: &mut Screen<SharedBuf>, op: SelectOp) {
+    s.view(ViewOp::Select(op)).unwrap();
+}
+
+/// Reporting is asked for on the alternate screen only, and dropped before every way out of it —
+/// a write-out, the exit — so the main screen has the terminal's own selection; off, no mouse
+/// sequence is written at all.
+#[test]
+fn mouse_reporting_lives_with_the_alternate_screen_and_the_off_switch_writes_none() {
+    let (mut s, buf) = mouse_screen(40, 12);
+    s.push(&rows(3));
+    s.draw_frame(&frame(40), None).unwrap();
+    assert!(
+        has(&buf.bytes(), MOUSE_ON),
+        "asked for with the first frame"
+    );
+    let mark = buf.bytes().len();
+    s.view(ViewOp::Dump).unwrap();
+    let dump = buf.bytes()[mark..].to_vec();
+    let mut off_then_leave = MOUSE_OFF.to_vec();
+    off_then_leave.extend_from_slice(LEAVE);
+    assert!(
+        dump.starts_with(&off_then_leave),
+        "off before the main screen"
+    );
+    let mark = buf.bytes().len();
+    s.view(ViewOp::Return).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
+    assert!(
+        has(&buf.bytes()[mark..], MOUSE_ON),
+        "back on with the full screen"
+    );
+    s.leave().unwrap();
+    assert!(
+        has(&buf.bytes()[mark..], &off_then_leave),
+        "off at the exit"
+    );
+    let p = replay(&buf, 12, 40);
+    assert_eq!(
+        p.screen().mouse_protocol_mode(),
+        vt100::MouseProtocolMode::None
+    );
+
+    let (mut s, buf) = screen(40, 12);
+    s.push(&rows(3));
+    s.draw_frame(&frame(40), None).unwrap();
+    s.view(ViewOp::Dump).unwrap();
+    s.view(ViewOp::Return).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
+    s.leave().unwrap();
+    assert!(
+        !has(&buf.bytes(), b"\x1b[?1000") && !has(&buf.bytes(), b"\x1b[?1006"),
+        "the off switch never touches mouse reporting"
+    );
+}
+
+/// The wheel scrolls three lines at a step: up leaves the tail (new output then holds still), down
+/// to the bottom follows it again.
+#[test]
+fn the_wheel_pauses_following_and_the_bottom_follows_again() {
+    let (mut s, buf) = mouse_screen(40, 12);
+    s.push(&rows(50));
+    s.draw_frame(&frame(40), None).unwrap();
+    assert_eq!(grid(&replay(&buf, 12, 40))[7], "line-049");
+    s.view(ViewOp::Wheel(-3)).unwrap();
+    assert!(s.paused(), "a step up leaves the tail");
+    s.push(&rows(2));
+    s.draw_frame(&frame(40), None).unwrap();
+    let g = grid(&replay(&buf, 12, 40));
+    assert_eq!(
+        g[0], "line-039",
+        "three lines up, held through new output: {g:#?}"
+    );
+    s.view(ViewOp::Wheel(3)).unwrap();
+    s.view(ViewOp::Wheel(3)).unwrap();
+    assert!(!s.paused(), "the bottom follows the tail again");
+    s.draw_frame(&frame(40), None).unwrap();
+    assert_eq!(grid(&replay(&buf, 12, 40))[7], "line-001", "the tail");
+}
+
+/// A drag held at the viewport's top row scrolls a line a step, so the selection runs three
+/// screens back; the release copies every line from there down to the press, in order, plain.
+#[test]
+fn a_drag_past_the_top_edge_selects_across_three_screens() {
+    let (mut s, _buf) = mouse_screen(40, 12);
+    s.push(&rows(100));
+    s.draw_frame(&frame(40), None).unwrap();
+    // The viewport is rows 0–7 (lines 92–99); press on line-098, col 0.
+    select(
+        &mut s,
+        SelectOp::Press {
+            col: 0,
+            row: 6,
+            clicks: 1,
+        },
+    );
+    for _ in 0..24 {
+        select(&mut s, SelectOp::Drag { col: 0, row: 0 });
+        s.draw_frame(&frame(40), None).unwrap();
+    }
+    select(&mut s, SelectOp::Release);
+    let text = s.take_copied().expect("the drag copies");
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines.len() > 24, "three viewports' worth: {}", lines.len());
+    let want: Vec<String> = (99 - lines.len()..99)
+        .map(|i| format!("line-{i:03}"))
+        .collect();
+    assert_eq!(&lines[..lines.len() - 1], &want[..want.len() - 1]);
+    assert_eq!(lines[lines.len() - 1], "l", "the press's own cell ends it");
+    assert!(!text.contains('\x1b'), "plain text");
+    assert!(s.take_copied().is_none(), "copied once");
+}
+
+/// A drag below the viewport scrolls toward the tail and follows it at the bottom.
+#[test]
+fn a_drag_into_the_frame_scrolls_down_to_the_tail() {
+    let (mut s, _buf) = mouse_screen(40, 12);
+    s.push(&rows(100));
+    s.draw_frame(&frame(40), None).unwrap();
+    for _ in 0..4 {
+        s.view(ViewOp::HalfUp).unwrap();
+    }
+    s.draw_frame(&frame(40), None).unwrap();
+    select(
+        &mut s,
+        SelectOp::Press {
+            col: 0,
+            row: 0,
+            clicks: 1,
+        },
+    );
+    for _ in 0..40 {
+        select(&mut s, SelectOp::Drag { col: 39, row: 10 });
+        s.draw_frame(&frame(40), None).unwrap();
+    }
+    assert!(!s.paused(), "the bottom follows the tail again");
+    select(&mut s, SelectOp::Release);
+    let text = s.take_copied().unwrap();
+    assert!(text.ends_with("line-099"), "down to the last line: {text}");
+}
+
+/// A double-click takes the word under it; a triple-click the whole row; a plain click selects
+/// and copies nothing.
+#[test]
+fn a_double_click_copies_the_word_and_a_click_nothing() {
+    let (mut s, _buf) = mouse_screen(40, 12);
+    s.push(&["see src/ui/mod.rs:12. now".to_owned()]);
+    s.draw_frame(&frame(40), None).unwrap();
+    select(
+        &mut s,
+        SelectOp::Press {
+            col: 9,
+            row: 7,
+            clicks: 1,
+        },
+    );
+    select(&mut s, SelectOp::Release);
+    assert_eq!(s.take_copied(), None, "a plain click");
+    select(
+        &mut s,
+        SelectOp::Press {
+            col: 9,
+            row: 7,
+            clicks: 2,
+        },
+    );
+    select(&mut s, SelectOp::Release);
+    assert_eq!(s.take_copied().as_deref(), Some("src/ui/mod.rs:12"));
+    select(
+        &mut s,
+        SelectOp::Press {
+            col: 9,
+            row: 7,
+            clicks: 3,
+        },
+    );
+    select(&mut s, SelectOp::Release);
+    assert_eq!(
+        s.take_copied().as_deref(),
+        Some("see src/ui/mod.rs:12. now")
+    );
+    // A press on a blank row above a short conversation selects nothing.
+    select(
+        &mut s,
+        SelectOp::Press {
+            col: 0,
+            row: 0,
+            clicks: 2,
+        },
+    );
+    select(&mut s, SelectOp::Release);
+    assert_eq!(s.take_copied(), None);
+}
+
+/// The selection is drawn on the screen's cells only: shown in reverse video, and a write-out
+/// after it carries the rows as committed — no reverse video, no selection at all.
+#[test]
+fn the_selection_is_drawn_reversed_and_never_written_out() {
+    let (mut s, buf) = mouse_screen(40, 12);
+    s.push(&rows(8));
+    s.draw_frame(&frame(40), None).unwrap();
+    select(
+        &mut s,
+        SelectOp::Press {
+            col: 0,
+            row: 2,
+            clicks: 1,
+        },
+    );
+    select(&mut s, SelectOp::Drag { col: 7, row: 4 });
+    s.draw_frame(&frame(40), None).unwrap();
+    let p = replay(&buf, 12, 40);
+    let inv = |row, col| p.screen().cell(row, col).is_some_and(vt100::Cell::inverse);
+    assert!(inv(2, 0) && inv(3, 7) && inv(4, 7), "drawn reversed");
+    assert!(!inv(1, 0) && !inv(4, 8) && !inv(5, 0), "only the selection");
+    let mark = buf.bytes().len();
+    s.view(ViewOp::Dump).unwrap();
+    let out = buf.bytes()[mark..].to_vec();
+    assert!(has(&out, b"line-002") && has(&out, b"line-004"));
+    assert!(!has(&out, b"\x1b[7m"), "no reverse video in the write-out");
+    assert_eq!(s.take_copied(), None, "a write-out copies nothing");
 }

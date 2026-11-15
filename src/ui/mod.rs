@@ -25,6 +25,8 @@ use crate::ui::facade::{TabbedResult, TabbedSpec, Ui};
 pub(crate) struct TuiOptions {
     /// Whether the terminal background is dark (from [`detect_background`]).
     pub(crate) dark: bool,
+    /// Whether the full screen captures the mouse (the config's `mouse:`, on unless it says `false`).
+    pub(crate) mouse: bool,
 }
 
 /// The running interactive terminal UI (`TUI_CONTRACTS` §5). Owns the `"iota-tui"` loop
@@ -48,8 +50,12 @@ impl Tui {
 
 /// One-shot pre-REPL surface (ui.go RunSurface): short-lived raw mode + the full screen, the
 /// surface pinned to its bottom, fully released before return. Caller: the `iota resume` picker.
-pub(crate) fn run_surface(spec: TabbedSpec, dark: bool) -> std::io::Result<TabbedResult> {
-    runtime::oneshot::run_surface(spec, dark)
+pub(crate) fn run_surface(
+    spec: TabbedSpec,
+    dark: bool,
+    mouse: bool,
+) -> std::io::Result<TabbedResult> {
+    runtime::oneshot::run_surface(spec, dark, mouse)
 }
 
 /// ONE OSC 11 round-trip on the tty (MUST run before any event loop); 100ms timeout;

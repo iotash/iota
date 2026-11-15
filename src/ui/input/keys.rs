@@ -195,6 +195,15 @@ impl SearchField {
         }
     }
 
+    /// A click on the search line: an applied query is typed again (kept, the cursor at its end),
+    /// so the field has the keys back.
+    pub(crate) fn edit(&mut self) {
+        if !self.typing {
+            self.typing = true;
+            self.field.move_to_end();
+        }
+    }
+
     /// A paste into the query being typed (its newlines flattened): the query it makes, or `None`
     /// when the query is not being typed.
     pub(crate) fn paste(&mut self, data: &str) -> Option<SearchOp> {

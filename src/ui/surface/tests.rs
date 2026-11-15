@@ -1102,7 +1102,8 @@ fn combo_with_no_candidates_is_an_input() {
 /// `--resume` picker's live path, proven by the L4 tmux layer — WP52).
 #[test]
 fn run_surface_empty_spec_is_cancelled_without_a_terminal() {
-    let r = crate::ui::run_surface(TabbedSpec::default(), true).expect("empty spec must not fail");
+    let r = crate::ui::run_surface(TabbedSpec::default(), true, true)
+        .expect("empty spec must not fail");
     assert!(r.cancelled);
     assert!(r.panels.is_empty());
 }

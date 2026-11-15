@@ -195,6 +195,35 @@ impl Composer {
         )
     }
 
+    /// A click on the composer block: the cursor goes to the grapheme under display column `col`
+    /// (the prompt's two columns included) of visible row `row`, or to the end of that row when
+    /// the click is past it (a row past the draft's last: the draft's end). A wide glyph's second
+    /// column is that glyph.
+    pub(crate) fn click(&mut self, col: u16, row: usize, width: u16) {
+        let w = content_width(width);
+        let spans = wrap_spans(self.editor.value(), w);
+        let h = Self::effective_height(spans.len());
+        let (cursor_row, _) = self.cursor_rowcol(w);
+        let offset = Self::scroll_offset(cursor_row, h);
+        let Some(&(start, end)) = spans.get(offset + row) else {
+            self.editor.move_to_end();
+            return;
+        };
+        let col = usize::from(col).saturating_sub(2);
+        let mut walked = 0usize;
+        let mut off = start;
+        for g in graphemes(&self.editor.value()[start..end]) {
+            let gw = str_width(g).max(1);
+            if walked + gw > col {
+                break;
+            }
+            walked += gw;
+            off += g.len();
+        }
+        self.editor.set_cursor(off);
+        self.end_history_nav();
+    }
+
     // ---- history ring (model.go:497-524) ----
 
     /// Records a submitted/queued input and resets navigation; immediate duplicates

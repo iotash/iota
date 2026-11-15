@@ -26,6 +26,7 @@ fn frame() -> FrameView {
             "status".to_owned(),
         ],
         cursor: Some((2, 1)),
+        map: Default::default(),
     }
 }
 
@@ -39,7 +40,7 @@ struct T {
 impl T {
     fn new(rows: &[String]) -> Self {
         let buf = SharedBuf::default();
-        let mut s = Screen::new(buf.clone(), Size::new(W, H), false).unwrap();
+        let mut s = Screen::new(buf.clone(), Size::new(W, H), false, false).unwrap();
         s.push(rows);
         s.draw_frame(&frame(), None).unwrap();
         Self {
@@ -355,7 +356,7 @@ fn the_search_line_shows_the_query_and_the_cursor_sits_on_it_while_typing() {
 #[test]
 fn rows_the_cap_drops_take_their_hits_with_them() {
     let buf = SharedBuf::default();
-    let mut s = Screen::new(buf, Size::new(W, H), false).unwrap();
+    let mut s = Screen::new(buf, Size::new(W, H), false, false).unwrap();
     let mut conv = crate::ui::runtime::screen::conversation::Conversation::with_cap(10);
     conv.push(&rows_with(10, "needle", &[1, 8]));
     let mut search = super::Search::new(&conv, 9);

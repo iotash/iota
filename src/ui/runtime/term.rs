@@ -11,6 +11,7 @@ use std::io::{self, Write};
 
 use ratatui::layout::Size;
 
+use super::clipboard::Clipboard;
 use super::osc;
 use super::screen::{Prompt, Screen, ViewOp};
 use crate::ui::facade::ProgressState;
@@ -33,32 +34,52 @@ pub(crate) struct Term<W: Write> {
     last_progress: Option<ProgressState>,
     /// Whether focus reporting (mode 1004) was turned on — [`Drop`] turns it back off.
     focus_on: bool,
+    /// Where a selection's text is copied to (the process's environment; a test's records).
+    clipboard: Clipboard,
 }
 
 impl<W: Write> Term<W> {
     /// The full screen on the tty's size. Nothing is written yet — the first frame enters the
     /// alternate screen.
-    pub(crate) fn new(make_writer: MakeWriter<W>) -> io::Result<Self> {
+    /// `mouse`: whether the alternate screen asks for mouse reporting (the config's `mouse:`).
+    pub(crate) fn new(make_writer: MakeWriter<W>, mouse: bool) -> io::Result<Self> {
         let (width, rows) = crossterm::terminal::size()?;
-        Self::open(make_writer, Size::new(width, rows), true)
+        Self::open(
+            make_writer,
+            Size::new(width, rows),
+            true,
+            mouse,
+            Clipboard::from_env(),
+        )
     }
 
     /// [`Term::new`] over a test's writers at `size`: the screen never claims the process's
     /// terminal (no `restore_terminal` bookkeeping, no job-control stop).
     #[cfg(test)]
-    pub(crate) fn headless(make_writer: MakeWriter<W>, size: Size) -> io::Result<Self> {
-        Self::open(make_writer, size, false)
+    pub(crate) fn headless(
+        make_writer: MakeWriter<W>,
+        size: Size,
+        mouse: bool,
+    ) -> io::Result<Self> {
+        Self::open(make_writer, size, false, mouse, Clipboard::recording())
     }
 
-    fn open(mut make_writer: MakeWriter<W>, size: Size, live: bool) -> io::Result<Self> {
+    fn open(
+        mut make_writer: MakeWriter<W>,
+        size: Size,
+        live: bool,
+        mouse: bool,
+        clipboard: Clipboard,
+    ) -> io::Result<Self> {
         let ctrl = make_writer();
-        let screen = Box::new(Screen::new(make_writer(), size, live)?);
+        let screen = Box::new(Screen::new(make_writer(), size, live, mouse)?);
         Ok(Self {
             screen,
             ctrl,
             last_title: None,
             last_progress: None,
             focus_on: false,
+            clipboard,
         })
     }
 
@@ -105,6 +126,35 @@ impl<W: Write> Term<W> {
     /// Whether the view is scrolled back from the tail.
     pub(crate) fn view_paused(&self) -> bool {
         self.screen.paused()
+    }
+
+    /// The viewport's height at the last draw — where the frame starts, for the mouse.
+    pub(crate) fn view_height(&self) -> u16 {
+        self.screen.view_height()
+    }
+
+    /// Copies what the last release selected, down every path of the session's clipboard (an
+    /// OSC 52 one is written here, in order with the frame). Returns the characters copied, or
+    /// `None` when nothing was selected.
+    pub(crate) fn copy_selection(&mut self) -> io::Result<Option<usize>> {
+        let Some(text) = self.screen.take_copied() else {
+            return Ok(None);
+        };
+        if let Some(seq) = self.clipboard.copy(&text) {
+            self.write_raw(seq.as_bytes())?;
+        }
+        Ok(Some(text.chars().count()))
+    }
+
+    /// The key that hands a drag to the terminal's own selection while iota has the mouse.
+    pub(crate) fn native_modifier(&self) -> &'static str {
+        self.clipboard.native
+    }
+
+    /// What a headless terminal's clipboard is handed, readable after the terminal has moved.
+    #[cfg(test)]
+    pub(crate) fn copied(&self) -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
+        self.clipboard.recorded.clone().unwrap_or_default()
     }
 
     /// Applies one of the view keys (scrolling, the write-out and the way back, the search).

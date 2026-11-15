@@ -150,6 +150,8 @@ pub(crate) struct FrameInput<'a> {
     pub(crate) jobs: &'a [JobInfo],
     /// "Now" for every elapsed figure (injected so goldens control the clock).
     pub(crate) now: Instant,
+    /// A moment's notice in the status row's place (what a selection copied), while it lasts.
+    pub(crate) notice: Option<&'a str>,
 }
 
 /// The built frame: one string per visual row (raw ANSI, no trailing newlines) and the
@@ -159,6 +161,19 @@ pub(crate) struct FrameView {
     pub(crate) rows: Vec<String>,
     /// Real-cursor (x, y) within the frame; `None` = hidden (surface open).
     pub(crate) cursor: Option<(u16, u16)>,
+    /// Which frame rows are what — where a click lands.
+    pub(crate) map: FrameMap,
+}
+
+/// Where the frame's clickable blocks sit, in frame rows (0 = its top row).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct FrameMap {
+    /// The composer's first row.
+    pub(crate) composer: usize,
+    /// How many rows the composer has.
+    pub(crate) composer_rows: usize,
+    /// The surface's first row, while one is open.
+    pub(crate) surface: Option<usize>,
 }
 
 /// `max(4, width - reserve)` in display columns (Go `maxInt(4, m.width-…)`).
@@ -261,9 +276,14 @@ pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
 
     // The bottom zone holds exactly ONE of surface | description | status; swapping is
     // a content change, never a composer move (model.go:1049-1058).
+    let bottom_at = rows.len();
     match fi.bottom {
         BottomZone::Surface(surface_rows) => rows.extend(surface_rows.iter().cloned()),
         BottomZone::Desc(desc) => rows.push(desc.to_owned()),
+        BottomZone::Status if fi.notice.is_some() => rows.push(format!(
+            "  {GREEN}{FAINT}{}{RESET}",
+            truncate_ansi(fi.notice.unwrap_or_default(), budget(fi.width, 2), "…")
+        )),
         BottomZone::Status => rows.push(status_line(
             fi.status,
             fi.busy,
@@ -279,7 +299,12 @@ pub(crate) fn build_frame(fi: &FrameInput<'_>) -> FrameView {
         let above = u16::try_from(rows_above).unwrap_or(u16::MAX);
         (x, above.saturating_add(y))
     });
-    FrameView { rows, cursor }
+    let map = FrameMap {
+        composer: rows_above,
+        composer_rows: fi.composer_rows.len(),
+        surface: matches!(fi.bottom, BottomZone::Surface(_)).then_some(bottom_at),
+    };
+    FrameView { rows, cursor, map }
 }
 
 /// Renders the status line (model.go statusLine, 1083-1179): `"  model"` then

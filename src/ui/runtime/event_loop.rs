@@ -39,10 +39,11 @@ use super::term::Term;
 use crate::ui::input::composer::Composer;
 use crate::ui::input::keys;
 use crate::ui::input::keys::SearchField;
+use crate::ui::input::mouse::{self, MouseState};
 use crate::ui::input::paste;
 use crate::ui::input::suggest;
 use crate::ui::render::frame::{
-    BottomZone, BusyView, FrameInput, FrameView, TurnClock, build_frame,
+    BottomZone, BusyView, FrameInput, FrameMap, FrameView, TurnClock, build_frame,
 };
 use crate::ui::render::region::{Region, RegionSnapshot};
 use crate::ui::surface::{self, SurfaceEffect};
@@ -304,6 +305,16 @@ pub(crate) struct Model {
     /// An idle Ctrl+D that found no reader parked — the REPL between a turn's end and its next
     /// `read_input` — answers that next read (tui-plan S4).
     pub(crate) pending_eof: bool,
+    /// The mouse between reports (`input/mouse.rs`).
+    pub(crate) mouse: MouseState,
+    /// The viewport's height at the last draw: the screen rows above the frame.
+    pub(crate) view_h: u16,
+    /// Where the last frame's composer and surface rows were.
+    pub(crate) frame_map: FrameMap,
+    /// What the status row says for a moment after a selection was copied, and since when.
+    pub(crate) copied: Option<(String, Instant)>,
+    /// The key that hands a drag to the terminal's own selection (`Shift`; `Option` in iTerm2).
+    pub(crate) native: &'static str,
 }
 
 /// One entry of the type-ahead queue.
@@ -396,6 +407,11 @@ impl Model {
             view_paused: false,
             pending_eof: false,
             suspend: false,
+            mouse: MouseState::default(),
+            view_h: 0,
+            frame_map: FrameMap::default(),
+            copied: None,
+            native: "Shift",
         }
     }
 
@@ -428,7 +444,30 @@ impl Model {
             let next = RESIZE_QUIET.saturating_sub(self.resize_seen.elapsed());
             d = d.min(next.max(Duration::from_millis(1)));
         }
+        let now = Instant::now();
+        if let Some(next) = mouse::edge_due(self, now) {
+            d = d.min(next.max(Duration::from_millis(1)));
+        }
+        if let Some((_, at)) = &self.copied {
+            let next = mouse::COPIED_SHOWN.saturating_sub(now.saturating_duration_since(*at));
+            d = d.min(next.max(Duration::from_millis(1)));
+        }
         d
+    }
+
+    /// The mouse's timers: a drag held at the viewport's edge scrolls on, and the copied notice
+    /// goes once it has been shown long enough.
+    pub(crate) fn tick_mouse(&mut self) {
+        let now = Instant::now();
+        mouse::tick_edge(self, now);
+        if self
+            .copied
+            .as_ref()
+            .is_some_and(|(_, at)| now.saturating_duration_since(*at) >= mouse::COPIED_SHOWN)
+        {
+            self.copied = None;
+            self.dirty = true;
+        }
     }
 
     /// Starts the spinner tick chain when an animated header appears
@@ -666,7 +705,7 @@ impl Model {
     }
 
     /// Handles one crossterm event.
-    fn handle_event(&mut self, ev: Event) {
+    pub(crate) fn handle_event(&mut self, ev: Event) {
         match ev {
             Event::Resize(w, h) => {
                 // A resize is only RECORDED here; `apply_resize` runs once the terminal has
@@ -686,12 +725,20 @@ impl Model {
             // No redraw — nothing on screen depends on it.
             Event::FocusGained => self.focused = true,
             Event::FocusLost => self.focused = false,
-            Event::Mouse(_) => {}
+            Event::Mouse(ev) => {
+                mouse::update_mouse(self, ev);
+                self.dirty = true;
+            }
         }
     }
 
-    /// Routes one key through the composer precedence table (keys.rs — WP46's seam).
+    /// Routes one key through the composer precedence table (keys.rs — WP46's seam). A key drops
+    /// the mouse's selection first: what is typed next is not about it.
     pub(crate) fn handle_key(&mut self, key: KeyEvent) {
+        if self.mouse.held.is_none() && std::mem::take(&mut self.mouse.selected) {
+            self.view_ops
+                .push(ViewOp::Select(super::screen::SelectOp::Clear));
+        }
         keys::update_key(self, key);
     }
 
@@ -714,7 +761,13 @@ impl Model {
         let Some(s) = self.surface.as_mut() else {
             return;
         };
-        match s.st.key(key) {
+        let effect = s.st.key(key);
+        self.surface_effect(effect);
+    }
+
+    /// Applies what a key or a click did to the open surface.
+    pub(crate) fn surface_effect(&mut self, effect: SurfaceEffect) {
+        match effect {
             SurfaceEffect::None => {}
             SurfaceEffect::ForceRedraw => {
                 // T-32: a full sequential repaint sidesteps the cell-diff renderer
@@ -893,7 +946,8 @@ impl Model {
         };
         let now = Instant::now();
         let busy = self.busy_view(now);
-        build_frame(&FrameInput {
+        let notice = self.copied.as_ref().map(|(n, _)| n.as_str());
+        let view = build_frame(&FrameInput {
             width: fw,
             region: &self.region_snap,
             spin: self.spin,
@@ -908,7 +962,10 @@ impl Model {
             busy: busy.as_ref(),
             jobs: &self.running_jobs,
             now,
-        })
+            notice,
+        });
+        self.frame_map = view.map;
+        view
     }
 
     /// The status row's busy segment at `now` (docs/design/busy-span.md §3.1): inside a turn, the phase's
@@ -955,6 +1012,7 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
     shared: LoopShared,
 ) -> io::Result<()> {
     let mut m = Model::new(shared);
+    m.native = term.native_modifier();
     let mut inserts: Vec<Vec<String>> = Vec::new();
     // The loop owns the terminal from here: focus reporting goes on so the attention ping
     // can tell "watching" from "away". NOT in `Term::new` — the one-shot picker and the
@@ -1020,6 +1078,7 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
         m.tick_spin();
         m.tick_jobs();
         m.tick_surface_refresh();
+        m.tick_mouse();
         // The committed rows join the conversation the frame below shows.
         if !resizing {
             for batch in inserts.drain(..) {
@@ -1034,6 +1093,16 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
             for op in std::mem::take(&mut m.view_ops) {
                 term.view(op)?;
             }
+            if let Some(n) = term.copy_selection()? {
+                let what = if n == 1 { "character" } else { "characters" };
+                m.copied = Some((
+                    format!(
+                        "copied {n} {what} · {}+drag selects in the terminal",
+                        m.native
+                    ),
+                    Instant::now(),
+                ));
+            }
             let view = m.frame_view();
             term.set_title(&m.title)?;
             term.set_progress(m.progress)?; // emit-on-change, like the title
@@ -1044,6 +1113,7 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
             let prompt = m.search_prompt();
             term.draw_frame(&view, prompt.as_ref())?; // the same iteration as the rows above
             m.view_paused = term.view_paused();
+            m.view_h = term.view_height();
             m.dirty = false;
         }
         if !resizing {

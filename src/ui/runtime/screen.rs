@@ -32,11 +32,13 @@ use crossterm::terminal::{Clear, ClearType as CtClear, EnterAlternateScreen};
 use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
 use ratatui::buffer::{Buffer, Cell};
 use ratatui::layout::{Position, Rect, Size};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use crate::ui::render::frame::FrameView;
+use crate::ui::render::selection::{self, Point, Selection};
 use crate::ui::render::spans::ansi_to_spans;
 use crate::ui::render::theme::{FAINT, RESET, REV_ON};
 
@@ -46,6 +48,19 @@ pub(crate) static ALT_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// The bytes that hand the main screen back: the cursor shown, the alternate screen left.
 pub(crate) const LEAVE: &[u8] = b"\x1b[?25h\x1b[?1049l";
+
+/// Mouse reporting on (the config's `mouse:`, on by default — tui-plan D1): presses and releases
+/// (1000), motion while a button is held (1002, a drag — not 1003's every hover), SGR coordinates
+/// (1006, no 223-column ceiling). Requested on entering the alternate screen and dropped on every
+/// way out of it, so the main screen — a write-out, a suspend, the exit — always has the terminal's
+/// own selection back.
+pub(crate) const MOUSE_ON: &[u8] = b"\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+/// See [`MOUSE_ON`].
+pub(crate) const MOUSE_OFF: &[u8] = b"\x1b[?1006l\x1b[?1002l\x1b[?1000l";
+
+/// Whether a live [`Screen`] has mouse reporting on now — kept beside [`ALT_ACTIVE`], for
+/// `restore_terminal`.
+pub(crate) static MOUSE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// A request from the full screen's view keys (tui-plan D5).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +79,26 @@ pub(crate) enum ViewOp {
     Return,
     /// The conversation search (`Ctrl+R`, or `/` scrolled back — [`search`]).
     Search(SearchOp),
+    /// The wheel: this many lines toward the tail (negative: toward the start). Like `PgUp`, a
+    /// step up leaves the tail; reaching the bottom follows it again.
+    Wheel(i32),
+    /// A mouse step of the in-app selection over the conversation (`render/selection.rs`).
+    Select(SelectOp),
+}
+
+/// A mouse step of the selection, in screen cells (column, row from the top).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SelectOp {
+    /// The left button went down; `clicks` is 1, 2 (a word) or 3 (the whole row).
+    Press { col: u16, row: u16, clicks: u8 },
+    /// The pointer moved with the button held. At the viewport's top row or below its last one
+    /// the view scrolls a line first, so a selection can cross screens.
+    Drag { col: u16, row: u16 },
+    /// The button came up: a drag, a word or a row is copied ([`Screen::take_copied`]); a plain
+    /// click selects nothing.
+    Release,
+    /// The selection is dropped (a key was pressed).
+    Clear,
 }
 
 /// The search line's query as the model's field shows it, and the field's cursor column while the
@@ -97,6 +132,19 @@ pub(crate) struct Screen<W: Write> {
     written: u64,
     /// The search under way, if one is.
     search: Option<Search>,
+    /// Whether mouse reporting is requested while the alternate screen is shown ([`MOUSE_ON`]);
+    /// `false` never writes a mouse sequence at all.
+    mouse: bool,
+    /// The selection over the conversation, while there is one.
+    sel: Option<Selection>,
+    /// Whether the button that made [`Screen::sel`] is still down, and whether it has moved (a
+    /// word or a row counts as moved: it copies on release).
+    drag: Option<bool>,
+    /// What each viewport row showed at the last draw, top to bottom: (row number, line), `None`
+    /// for a blank row, the trimmed marker, the search line or the way back to the tail.
+    marks: Vec<Option<(u64, usize)>>,
+    /// The text the last release selected, until the loop copies it.
+    copied: Option<String>,
 }
 
 /// Which screen the terminal shows.
@@ -123,7 +171,7 @@ struct Shown {
 impl<W: Write> Screen<W> {
     /// The full screen on `out` (`size` is the terminal's), writing nothing yet: the first frame
     /// enters the alternate screen ([`Place::Main`]). `live`: `out` is the process's terminal.
-    pub(crate) fn new(out: W, size: Size, live: bool) -> io::Result<Self> {
+    pub(crate) fn new(out: W, size: Size, live: bool, mouse: bool) -> io::Result<Self> {
         let batch = Arc::new(AtomicUsize::new(0));
         let out = SyncOut {
             out,
@@ -152,6 +200,11 @@ impl<W: Write> Screen<W> {
             live,
             search: None,
             written: 0,
+            mouse,
+            sel: None,
+            drag: None,
+            marks: Vec::new(),
+            copied: None,
         })
     }
 
@@ -164,6 +217,19 @@ impl<W: Write> Screen<W> {
     /// repaints every cell — the whole resize protocol.
     pub(crate) fn resize(&mut self, size: Size) {
         self.term.backend_mut().size = size;
+        // A selection is made at a width; another width wraps its rows differently.
+        self.sel = None;
+        self.drag = None;
+    }
+
+    /// The viewport's height at the last draw (the rows above the frame).
+    pub(crate) fn view_height(&self) -> u16 {
+        self.view_h
+    }
+
+    /// The text the last release selected, once (the loop hands it to the clipboard).
+    pub(crate) fn take_copied(&mut self) -> Option<String> {
+        self.copied.take()
     }
 
     /// Appends committed rows to the conversation. Nothing is written: the next draw shows them.
@@ -190,8 +256,127 @@ impl<W: Write> Screen<W> {
             ViewOp::Dump => self.dump()?,
             ViewOp::Return => self.back()?,
             ViewOp::Search(op) => self.search_op(op, width, h),
+            ViewOp::Wheel(n) => {
+                let lines = usize::try_from(n.unsigned_abs()).unwrap_or(usize::MAX);
+                if n < 0 {
+                    self.conv.scroll_up(lines, width, h);
+                } else {
+                    self.conv.scroll_down(lines, width, h);
+                }
+            }
+            ViewOp::Select(op) => self.select(op, width, h),
         }
         Ok(())
+    }
+
+    /// One step of the selection (`SelectOp`; `render/selection.rs` for what is selected).
+    fn select(&mut self, op: SelectOp, width: usize, h: usize) {
+        match op {
+            SelectOp::Press { col, row, clicks } => {
+                self.sel = None;
+                self.drag = None;
+                let Some(Some((n, line))) = self.marks.get(usize::from(row)).copied() else {
+                    return;
+                };
+                let col = usize::from(col);
+                let at = |col| Point { row: n, line, col };
+                let sel = match clicks {
+                    1 => Some(Selection {
+                        anchor: at(col),
+                        head: at(col),
+                    }),
+                    2 => self
+                        .conv
+                        .plain_lines(n, width)
+                        .and_then(|l| selection::word_at(l.get(line)?, col))
+                        .map(|(a, b)| Selection {
+                            anchor: at(a),
+                            head: at(b),
+                        }),
+                    _ => self.conv.plain_lines(n, width).map(|l| Selection {
+                        anchor: Point {
+                            row: n,
+                            line: 0,
+                            col: 0,
+                        },
+                        head: Point {
+                            row: n,
+                            line: l.len().saturating_sub(1),
+                            col: width,
+                        },
+                    }),
+                };
+                if sel.is_some() {
+                    self.sel = sel;
+                    self.drag = Some(clicks > 1);
+                }
+            }
+            SelectOp::Drag { col, row } => {
+                if self.drag.is_none() {
+                    return;
+                }
+                let last = self.marks.len().saturating_sub(1);
+                if row == 0 {
+                    self.conv.scroll_up(1, width, h);
+                    self.mark_view(width);
+                } else if usize::from(row) >= last {
+                    self.conv.scroll_down(1, width, h);
+                    self.mark_view(width);
+                }
+                let head = self.point_near(col, row, width);
+                if let (Some(sel), Some(head)) = (&mut self.sel, head) {
+                    sel.head = head;
+                    self.drag = Some(true);
+                }
+            }
+            SelectOp::Release => match self.drag.take() {
+                Some(true) => {
+                    if let Some(sel) = self.sel {
+                        let text = selection::text(&sel, |n| self.conv.plain_lines(n, width));
+                        self.copied = (!text.is_empty()).then_some(text);
+                    }
+                }
+                Some(false) => self.sel = None,
+                None => {}
+            },
+            SelectOp::Clear => {
+                self.sel = None;
+                self.drag = None;
+            }
+        }
+    }
+
+    /// The buffer cell under screen cell (`col`, `row`), held to the shown lines: above the first
+    /// one it is that line's start, below the last one (the frame, the way back to the tail) that
+    /// line's end.
+    fn point_near(&self, col: u16, row: u16, width: usize) -> Option<Point> {
+        let first = self.marks.iter().position(Option::is_some)?;
+        let last = self.marks.iter().rposition(Option::is_some)?;
+        let y = usize::from(row);
+        let (y, col) = if y < first {
+            (first, 0)
+        } else if y > last {
+            (last, width)
+        } else {
+            (y, usize::from(col))
+        };
+        let (n, line) = self.marks[..=y].iter().rev().find_map(|m| *m)?;
+        Some(Point { row: n, line, col })
+    }
+
+    /// Records what each viewport row shows for the view as it is now — the conversation sits on
+    /// the frame, the search line or the way back to the tail on the viewport's last row.
+    fn mark_view(&mut self, width: usize) {
+        let h = usize::from(self.view_h);
+        let shown = self.conv.view_marks(width, h);
+        let mut marks = vec![None; h.saturating_sub(shown.len())];
+        marks.extend(shown);
+        if (self.search.is_some() || !self.conv.following())
+            && let Some(last) = marks.last_mut()
+        {
+            *last = None;
+        }
+        self.marks = marks;
     }
 
     /// `Ctrl+O` (Claude Code's `[`, without a transcript mode — tui-plan D5): leaves the
@@ -212,16 +397,32 @@ impl<W: Write> Screen<W> {
     /// Enters the alternate screen, cleared — the next draw writes every cell.
     fn enter(&mut self) -> io::Result<()> {
         queue!(self.out(), EnterAlternateScreen, Clear(CtClear::All))?;
+        if self.mouse {
+            self.out().write_all(MOUSE_ON)?;
+        }
         self.place = Place::Alt;
         self.hold_alt(true);
         self.clear()
     }
 
-    /// Tells `restore_terminal` whether the alternate screen is held now (a live screen only).
+    /// Tells `restore_terminal` whether the alternate screen — and with it mouse reporting — is
+    /// held now (a live screen only).
     fn hold_alt(&self, held: bool) {
         if self.live {
             ALT_ACTIVE.store(held, Ordering::Relaxed);
+            MOUSE_ACTIVE.store(held && self.mouse, Ordering::Relaxed);
         }
+    }
+
+    /// The bytes that leave the alternate screen: mouse reporting off first (when it was on), then
+    /// [`LEAVE`].
+    fn leave_seq(&self) -> Vec<u8> {
+        let mut seq = Vec::new();
+        if self.mouse {
+            seq.extend_from_slice(MOUSE_OFF);
+        }
+        seq.extend_from_slice(LEAVE);
+        seq
     }
 
     /// One step of the search: a jump to the hit it is on, or the view back where it was.
@@ -266,17 +467,17 @@ impl<W: Write> Screen<W> {
     /// ([`Place::Main`]). Returns the terminal's size then (`None` for a test's screen, which does
     /// not stop).
     pub(crate) fn suspend(&mut self, focus: bool) -> io::Result<Option<Size>> {
-        let mut seq = String::new();
+        let mut seq = Vec::new();
         if self.place == Place::Alt {
             self.place = Place::Main;
             self.hold_alt(false);
-            seq.push_str(std::str::from_utf8(LEAVE).unwrap_or_default());
+            seq = self.leave_seq();
         }
-        seq.push_str("\x1b[?2004l");
+        seq.extend_from_slice(b"\x1b[?2004l");
         if focus {
-            seq.push_str(super::osc::CSI_FOCUS_OFF);
+            seq.extend_from_slice(super::osc::CSI_FOCUS_OFF.as_bytes());
         }
-        self.write_raw(seq.as_bytes())?;
+        self.write_raw(&seq)?;
         self.last = None;
         if !self.live {
             return Ok(None);
@@ -367,6 +568,8 @@ impl<W: Write> Screen<W> {
             self.scroll_region(n, view_h)?;
         }
         let shown = u16::try_from(lines.len()).unwrap_or(view_h).min(view_h);
+        self.mark_view(usize::from(width));
+        let lit = self.selected_cells(&lines, view_h);
         // The conversation sits on the frame: a short one leaves the blank rows at the top.
         let conv = Rect::new(0, view_h - shown, width, shown);
         let frame = Rect::new(0, view_h, width, frame_h);
@@ -396,6 +599,13 @@ impl<W: Write> Screen<W> {
         let done = self.term.draw(|f| {
             f.render_widget(Paragraph::new(Text::from(lines)), conv);
             f.render_widget(Paragraph::new(Text::from(frame_lines)), frame);
+            // The selection is the screen's cells only, never the rows: a write-out stays plain.
+            let buf = f.buffer_mut();
+            for &(y, from, to) in &lit {
+                for x in from..to.min(width) {
+                    buf[(x, y)].modifier.insert(Modifier::REVERSED);
+                }
+            }
             if let Some(pos) = cursor {
                 f.set_cursor_position(pos);
             }
@@ -406,6 +616,29 @@ impl<W: Write> Screen<W> {
             following: self.conv.following(),
         });
         Ok(())
+    }
+
+    /// The cells the selection covers on this draw, as (screen row, from column, to column):
+    /// `lines` are the viewport's lines, sitting on the frame (`view_h` rows), and
+    /// [`Screen::marks`] says where each came from.
+    fn selected_cells(&self, lines: &[Line<'_>], view_h: u16) -> Vec<(u16, u16, u16)> {
+        let Some(sel) = self.sel else {
+            return Vec::new();
+        };
+        let top = usize::from(view_h).saturating_sub(lines.len());
+        let mut out = Vec::new();
+        for (y, mark) in self.marks.iter().enumerate() {
+            let Some((n, line)) = *mark else { continue };
+            let cols = y
+                .checked_sub(top)
+                .and_then(|i| lines.get(i))
+                .map_or(0, Line::width);
+            if let Some((from, to)) = sel.span(n, line, cols) {
+                let cell = |v: usize| u16::try_from(v).unwrap_or(u16::MAX);
+                out.push((cell(y), cell(from), cell(to)));
+            }
+        }
+        out
     }
 
     /// How far the viewport's content moved up since the last frame, when that is one scroll:
@@ -511,7 +744,7 @@ impl<W: Write> Screen<W> {
         let width = usize::from(self.size().width.max(1));
         let mut dump = Vec::new();
         if leave {
-            dump.extend_from_slice(LEAVE);
+            dump = self.leave_seq();
         }
         let first = self.written == 0;
         let (lines, written) = self.conv.lines_after(self.written, width);

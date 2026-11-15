@@ -91,6 +91,7 @@ fn view(c: &Case) -> FrameView {
         busy: c.busy.as_ref(),
         jobs: &c.jobs,
         now: c.now,
+        notice: None,
     })
 }
 

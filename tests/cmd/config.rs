@@ -696,6 +696,33 @@ fn outside_writes_defaults_to_ask_and_only_tightens_across_the_stack() {
     }
 }
 
+/// `mouse:` is the full screen's one terminal setting: unset is `None` (capture on), YAML 1.1 bools are read, and
+/// the last file of the stack that sets it wins — a project may turn it back on for itself.
+#[test]
+fn mouse_is_a_top_level_bool_the_last_file_decides() {
+    assert_eq!(parse("").expect("parses").mouse, None);
+    assert_eq!(parse("mouse: off\n").expect("parses").mouse, Some(false));
+    assert_eq!(parse("mouse: true\n").expect("parses").mouse, Some(true));
+    assert!(parse("mouse: sometimes\n").is_err(), "a bool only");
+    for (home, cwd, want) in [
+        ("mouse: false\n", "", Some(false)),
+        ("mouse: false\n", "mouse: true\n", Some(true)),
+        ("", "mouse: no\n", Some(false)),
+        ("", "", None),
+    ] {
+        let (dir, dirs) = temp_project(&[("home/.iota.yaml", home), (".iota.yaml", cwd)]);
+        let cfg = Config::load(
+            None,
+            &Env::default().with_dirs(dirs),
+            &mut |_, _, _| true,
+            &mut |_| {},
+        )
+        .expect("loads");
+        assert_eq!(cfg.mouse, want, "{home:?} then {cwd:?}");
+        let _ = dir;
+    }
+}
+
 /// An entry that names no directory refuses the load, by position and with the reason: a blank one would
 /// quietly be the project root, a `~` with no home a directory called `~`.
 #[test]

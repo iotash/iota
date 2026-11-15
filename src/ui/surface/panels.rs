@@ -9,7 +9,6 @@ use std::fmt::Write as _;
 
 use crate::text::ansi::{ansi_width, clip_line, truncate_ansi, wrap_ansi};
 
-use super::Rendered;
 use super::field::input_field;
 use super::search::{SearchMode, highlight_line};
 use super::tabbed::{
@@ -17,6 +16,7 @@ use super::tabbed::{
     panel_height, picker_preview_cols, scroll_percent, search_typing_hint, surface_hint,
 };
 use super::theme::{CYAN, ERR_PREFIX, FAINT, GREEN, RESET, REV_ON, input_bg};
+use super::{Hit, Rendered};
 use crate::ui::facade::{Panel, PanelKind};
 
 /// A real-cursor target in surface-block coordinates.
@@ -40,6 +40,7 @@ pub(crate) fn render_rows(st: &mut SurfaceState, width: u16) -> Rendered {
     }
     let w = usize::from(width).max(4);
     let mut rows = Vec::new();
+    let mut hits = vec![Hit::Tabs];
 
     // Tab bar (multi-panel only). Both chip states carry identical " title " padding
     // so switching focus never changes the bar width (tabbed.go:454-473).
@@ -68,6 +69,8 @@ pub(crate) fn render_rows(st: &mut SurfaceState, width: u16) -> Rendered {
             truncate_ansi(&p.prompt, w.saturating_sub(2).max(4), "…")
         ));
     }
+    // The list rows start here (a browser's after its directory and error lines).
+    let mut body = rows.len();
 
     match p.kind() {
         PanelKind::List | PanelKind::Multi => {
@@ -78,14 +81,30 @@ pub(crate) fn render_rows(st: &mut SurfaceState, width: u16) -> Rendered {
         PanelKind::Switch => render_switch(ps, &mut rows),
         PanelKind::Input => render_input(p, ps, w, &mut rows, &mut cursor, dark),
         PanelKind::View => render_view(p, ps, w, &mut rows),
-        PanelKind::Browser => render_browser(p, ps, w, &mut rows),
+        PanelKind::Browser => {
+            body += 1 + usize::from(!ps.error_text.is_empty());
+            render_browser(p, ps, w, &mut rows);
+        }
     }
+    hits.resize(rows.len(), Hit::None);
+    if matches!(
+        p.kind(),
+        PanelKind::List | PanelKind::Multi | PanelKind::Picker | PanelKind::Browser
+    ) {
+        let shown = ps.rows.min(ps.view.len().saturating_sub(ps.offset));
+        for k in 0..shown {
+            if let Some(h) = hits.get_mut(body + k) {
+                *h = Hit::Item(ps.offset + k);
+            }
+        }
+    }
+    hits.push(Hit::Hint);
 
     // The query field REPLACES the hint row: both are a single row, so the frame's
     // height is identical in and out of search (tabbed.go:698-701).
     if ps.search.mode == SearchMode::Typing {
         render_search_row(p, ps, w, &mut rows, &mut cursor);
-        return Rendered { rows, cursor };
+        return Rendered { rows, cursor, hits };
     }
     let mut hint = surface_hint(p, ps);
     if n > 1 {
@@ -95,7 +114,7 @@ pub(crate) fn render_rows(st: &mut SurfaceState, width: u16) -> Rendered {
         hint = format!("{hint} · {pct}%");
     }
     rows.push(format!("{FAINT}{}{RESET}", truncate_ansi(&hint, w, "…")));
-    Rendered { rows, cursor }
+    Rendered { rows, cursor, hits }
 }
 
 /// One truncated row body with the v1 cursor-highlight semantics: the cursor row's

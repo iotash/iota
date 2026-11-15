@@ -359,6 +359,8 @@ pub(crate) struct SurfaceState {
     /// The terminal's background tone, published by the loop before each render (dark is the
     /// safe default; the input shade follows it).
     dark: bool,
+    /// What each row of the last render is to a click (`SurfaceState::click`).
+    pub(crate) hits: Vec<super::Hit>,
 }
 
 /// One panel of an open surface: the spec it was opened with and its live state.
@@ -389,6 +391,7 @@ impl SurfaceState {
             slots: panels.into_iter().map(PanelSlot::open).collect(),
             term_h: 0,
             dark: true,
+            hits: Vec::new(),
         }
     }
 

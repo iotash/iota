@@ -43,7 +43,7 @@ fn parse_sized(buf: &SharedBuf, w: u16, h: u16) -> vt100::Parser {
 fn direct_term() -> (Term<SharedBuf>, SharedBuf) {
     let buf = SharedBuf::default();
     let wtr = buf.clone();
-    let t = Term::headless(Box::new(move || wtr.clone()), Size::new(80, 24)).unwrap();
+    let t = Term::headless(Box::new(move || wtr.clone()), Size::new(80, 24), false).unwrap();
     (t, buf)
 }
 
@@ -57,11 +57,18 @@ struct LoopHarness {
     height: Arc<AtomicU16>,
     region: Arc<Mutex<crate::ui::render::region::Region>>,
     join: thread::JoinHandle<io::Result<()>>,
+    /// What the terminal's (recording) clipboard was handed.
+    copied: Arc<Mutex<Vec<String>>>,
 }
 
 /// The loop at 80×24, its region the live one's (nothing staged: committed rows go straight to
 /// the conversation).
 fn start_loop() -> LoopHarness {
+    start_loop_mouse(false)
+}
+
+/// [`start_loop`] with the config's `mouse:` as given.
+fn start_loop_mouse(mouse: bool) -> LoopHarness {
     let width = Arc::new(AtomicU16::new(80));
     let height = Arc::new(AtomicU16::new(24));
     let (tx, rx) = mpsc::channel();
@@ -82,7 +89,8 @@ fn start_loop() -> LoopHarness {
     };
     let buf = SharedBuf::default();
     let wtr = buf.clone();
-    let t = Term::headless(Box::new(move || wtr.clone()), Size::new(80, 24)).unwrap();
+    let t = Term::headless(Box::new(move || wtr.clone()), Size::new(80, 24), mouse).unwrap();
+    let copied = t.copied();
     let (etx, erx) = mpsc::channel();
     let events = ChannelEvents::new(erx);
     let join =
@@ -95,6 +103,7 @@ fn start_loop() -> LoopHarness {
         height,
         region,
         join,
+        copied,
     }
 }
 
@@ -298,6 +307,7 @@ fn composer(draft: &str) -> crate::ui::render::frame::FrameView {
             "status".to_owned(),
         ],
         cursor: Some((2 + u16::try_from(draft.len()).unwrap(), 1)),
+        map: Default::default(),
     }
 }
 
@@ -358,6 +368,7 @@ fn a_write_is_one_synchronized_update_exactly_when_it_is_longer_than_sync_min() 
     let view = |rows: Vec<String>, cursor: (u16, u16)| crate::ui::render::frame::FrameView {
         rows,
         cursor: Some(cursor),
+        map: Default::default(),
     };
     // One write, its size, its pairs; the rule: wrapped exactly when longer than SYNC_MIN.
     let write = |t: &mut Term<SharedBuf>, op: &dyn Fn(&mut Term<SharedBuf>)| -> (usize, usize) {
@@ -457,6 +468,7 @@ fn a_frame_that_shrinks_leaves_no_ghost() {
             })
             .collect(),
         cursor: Some((2, 0)),
+        map: Default::default(),
     };
     t.draw_frame(&tall, None).unwrap();
     assert!(
@@ -1219,6 +1231,7 @@ fn a_resize_with_a_surface_open_leaves_one_whole_frame() {
             .chain((0..4).map(|i| format!("model-{i} {}", "·".repeat(w - 12))))
             .collect(),
         cursor: None,
+        map: Default::default(),
     };
     t.draw_frame(&view(80), None).unwrap();
     t.resize(Size::new(60, 24));
@@ -1266,4 +1279,74 @@ fn no_cursor_query_is_ever_sent() {
         out.contains("\u{1b}[?1049h") && out.contains("\u{1b}[?1049l"),
         "entered and left the alternate screen"
     );
+}
+
+/// The mouse end to end through the real loop: a drag over the conversation copies its text to
+/// the clipboard, the status row says so with the native-selection key, and the wheel scrolls.
+#[test]
+fn a_drag_through_the_loop_copies_and_the_status_row_says_so() {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    let h = start_loop_mouse(true);
+    let rows: Vec<String> = (0..40).map(|i| format!("row-{i:02}")).collect();
+    h.tx.send(UiMsg::Scrollback(rows)).unwrap();
+    assert!(
+        h.wait_until(Duration::from_secs(2), |h| h.contents().contains("row-39")),
+        "{}",
+        h.contents()
+    );
+    assert!(
+        String::from_utf8_lossy(&h.buf.bytes()).contains("\x1b[?1002h"),
+        "mouse reporting asked for"
+    );
+    let at = |kind, row| {
+        Event::Mouse(MouseEvent {
+            kind,
+            column: 0,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+    let rows_shown = parse(&h.buf).screen().contents();
+    let top = rows_shown
+        .lines()
+        .position(|l| l.starts_with("row-"))
+        .unwrap();
+    let top = u16::try_from(top).unwrap();
+    h.etx
+        .send(at(MouseEventKind::Down(MouseButton::Left), top))
+        .unwrap();
+    h.etx
+        .send(at(MouseEventKind::Drag(MouseButton::Left), top + 2))
+        .unwrap();
+    h.etx
+        .send(at(MouseEventKind::Up(MouseButton::Left), top + 2))
+        .unwrap();
+    assert!(
+        h.wait_until(Duration::from_secs(2), |h| h.contents().contains("copied")),
+        "{}",
+        h.contents()
+    );
+    let first = h
+        .contents()
+        .lines()
+        .nth(usize::from(top))
+        .unwrap()
+        .trim()
+        .to_owned();
+    let copied = crate::sync::lock(&h.copied).clone();
+    assert_eq!(copied.len(), 1, "{copied:?}");
+    assert!(
+        copied[0].starts_with(&first) && copied[0].lines().count() == 3,
+        "{copied:?}"
+    );
+    assert!(h.contents().contains("Shift+drag selects in the terminal"));
+    h.etx.send(at(MouseEventKind::ScrollUp, 2)).unwrap();
+    assert!(
+        h.wait_until(Duration::from_secs(2), |h| h
+            .contents()
+            .contains("Ctrl+End")),
+        "the wheel left the tail: {}",
+        h.contents()
+    );
+    h.quit_and_join(Duration::from_secs(5));
 }

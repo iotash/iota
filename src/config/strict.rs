@@ -16,13 +16,14 @@ use crate::provider::MODERATION_LEVELS;
 use crate::tool::sets::SET_NAMES;
 
 /// The top-level maps.
-const TOP_KEYS: [&str; 6] = [
+const TOP_KEYS: [&str; 7] = [
     "providers",
     "models",
     "agents",
     "mcp_servers",
     WRITE_ROOTS,
     OUTSIDE_WRITES,
+    MOUSE,
 ];
 /// The top-level key that is a list, not a map of entries: the extra roots the code tools and the shell
 /// sandbox share. The typed decode checks its shape; the audit only keeps it out of the layers.
@@ -30,6 +31,9 @@ const WRITE_ROOTS: &str = "write_roots";
 /// The top-level scalar `ask | refuse`: what the code writers do outside every root. Like `write_roots`, it
 /// applies to every agent, so the audit keeps it out of the layers and the typed decode checks its value.
 const OUTSIDE_WRITES: &str = "outside_writes";
+/// The top-level bool: whether the full screen captures the mouse. A terminal setting, not an agent's, so
+/// the audit keeps it out of the layers and the typed decode checks its value.
+const MOUSE: &str = "mouse";
 /// Every key a `providers.<name>` entry accepts — the ENDPOINT.
 const PROVIDER_KEYS: [&str; 3] = ["type", "key", "url"];
 /// Every key a `models.<name>` entry accepts.
@@ -393,7 +397,7 @@ mod tests {
         );
         assert_eq!(
             check("agnets:\n  a: {}\n"),
-            "agnets: unknown top-level key (want providers:, models:, agents:, mcp_servers:, write_roots:, outside_writes:)"
+            "agnets: unknown top-level key (want providers:, models:, agents:, mcp_servers:, write_roots:, outside_writes:, mouse:)"
         );
         assert_eq!(
             check("mcp_servers:\n  fs: {commadn: npx}\n"),

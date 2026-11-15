@@ -92,9 +92,11 @@ pub(crate) trait UiSession: Send {
     fn handle(&self) -> Arc<dyn Ui>;
 }
 
-/// The production seam: `iota_tui` itself, over the run's environment (the host probe reads it).
+/// The production seam: `iota_tui` itself, over the run's environment (the host probe reads it) and the
+/// config's `mouse:` (whether the full screen captures the mouse — the picker's and the chat's alike).
 struct LiveTerminal {
     env: Env,
+    mouse: bool,
 }
 
 impl TerminalSeam for LiveTerminal {
@@ -113,7 +115,7 @@ impl TerminalSeam for LiveTerminal {
     }
 
     fn run_surface(&self, spec: TabbedSpec, dark: bool) -> std::io::Result<TabbedResult> {
-        crate::ui::run_surface(spec, dark)
+        crate::ui::run_surface(spec, dark, self.mouse)
     }
 
     fn push_title_stack(&self) {
@@ -125,8 +127,11 @@ impl TerminalSeam for LiveTerminal {
     }
 
     fn start(&self, dark: bool) -> std::io::Result<Box<dyn UiSession>> {
-        crate::ui::Tui::start(crate::ui::TuiOptions { dark })
-            .map(|tui| Box::new(LiveUi(tui)) as Box<dyn UiSession>)
+        crate::ui::Tui::start(crate::ui::TuiOptions {
+            dark,
+            mouse: self.mouse,
+        })
+        .map(|tui| Box::new(LiveUi(tui)) as Box<dyn UiSession>)
     }
 }
 
@@ -317,6 +322,7 @@ pub(crate) async fn run_interactive(
 
     let seam: Arc<dyn TerminalSeam> = Arc::new(LiveTerminal {
         env: ctx.env.clone(),
+        mouse: cfg.mouse.unwrap_or(true),
     });
     let opened = open_ui(&seam, picker, |_dark, picked| {
         wire_session(Wire {

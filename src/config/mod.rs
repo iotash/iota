@@ -145,6 +145,9 @@ struct ConfigFile {
     write_roots: Vec<String>,
     /// `outside_writes:` — `ask` or `refuse`; absent leaves the stack's value as it is.
     outside_writes: Option<crate::tool::OutsideWrites>,
+    /// `mouse:` — whether the full screen captures the mouse; absent leaves the stack's value as it is.
+    #[serde(deserialize_with = "crate::tool::yaml11::deserialize_opt_bool")]
+    mouse: Option<bool>,
 }
 
 /// The merged, expanded and validated config.
@@ -172,6 +175,11 @@ pub struct Config {
     /// user (`ask`, the default) or is refused (`refuse`, the jail's old behaviour), for every agent. It can
     /// only tighten: once a file of the stack says `refuse`, a later `ask` changes nothing.
     pub outside_writes: crate::tool::OutsideWrites,
+    /// `mouse:` — whether the full screen captures the mouse (the wheel scrolls the conversation, a click
+    /// places the cursor or picks a row, a drag selects and copies); `false` requests no mouse reporting at
+    /// all, so the terminal keeps its own selection. The last file of the stack that sets it wins; `None`
+    /// when none does (on).
+    pub mouse: Option<bool>,
 }
 
 /// What a positional name resolved to: one entry from each layer, defaults where the name reached no further.
@@ -401,6 +409,9 @@ impl Config {
         self.write_roots.extend(file.write_roots);
         if let Some(o) = file.outside_writes {
             self.outside_writes = self.outside_writes.max(o);
+        }
+        if file.mouse.is_some() {
+            self.mouse = file.mouse;
         }
         Ok(())
     }

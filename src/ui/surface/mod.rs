@@ -1,7 +1,7 @@
 //! The declarative surface engine (`TUI_DESIGN` §6): the pure `surface_key` transition
 //! fn + the strict-precedence dispatch ladder (model.go:587-876 surfaceKey; frozen
 //! shape `TUI_CONTRACTS` §5/§6), the render/cursor/tick seams the loop consumes, paste
-//! routing into input fields, and the exec clipboard.
+//! routing into input fields (the View's `c` copies through `runtime::clipboard`).
 //!
 //! Ladder (strict precedence): (1) an open inline Custom editor owns the keyboard;
 //! (2) `searchTyping` owns the keyboard; (3) View+`searchApplied` hands n/p/q/Esc to the
@@ -19,9 +19,6 @@ pub(crate) mod tabbed;
 // Sibling alias so the child modules can say `super::theme` (a habit from the crate era, when the
 // `#[path]` test mounts compiled `surface/` standalone; still the shortest path).
 pub(crate) use crate::ui::render::theme;
-
-use std::io::{self, Write as _};
-use std::process::{Command, Stdio};
 
 use crate::text::ansi::strip_sgr;
 use crate::ui::facade::{PanelKind, TabbedResult};
@@ -351,7 +348,10 @@ fn char_key(st: &mut SurfaceState, c: char) -> Option<TabbedResult> {
         }
         'c' => {
             if p.kind() == PanelKind::View {
-                ps.copied = copy_to_clipboard(&strip_sgr(&ps.items.join("\n"))).is_ok();
+                ps.copied = crate::ui::runtime::clipboard::copy_to_clipboard(&strip_sgr(
+                    &ps.items.join("\n"),
+                ))
+                .is_ok();
                 return None; // keep the ✓ hint until another key
             }
             // On a row panel "c" was free, and an applied filter claims it: the
@@ -451,6 +451,22 @@ pub(crate) struct Rendered {
     pub(crate) rows: Vec<String>,
     /// The real-cursor target; `None` while no field owns the cursor.
     pub(crate) cursor: Option<(u16, u16)>,
+    /// What a click on each row reaches ([`SurfaceState::click`]), one per row.
+    pub(crate) hits: Vec<Hit>,
+}
+
+/// What a row of the rendered surface is to a click.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Hit {
+    /// Nothing a click acts on.
+    #[default]
+    None,
+    /// The tab bar: the chip under the column.
+    Tabs,
+    /// A list row: this position among the visible rows (`PanelState::view`).
+    Item(usize),
+    /// The hint row, or the query field in its place.
+    Hint,
 }
 
 /// Renders the surface (tabbed.go renderSurface). The scroll clamps, row budgets and the
@@ -458,7 +474,96 @@ pub(crate) struct Rendered {
 impl SurfaceState {
     /// Renders the surface into rows for a `width`-column terminal.
     pub(crate) fn render(&mut self, width: u16) -> Rendered {
-        panels::render_rows(self, width)
+        let rendered = panels::render_rows(self, width);
+        self.hits.clone_from(&rendered.hits);
+        rendered
+    }
+}
+
+/// The mouse on a surface (tui-plan S6): a click on a row of the last render, the wheel over it.
+impl SurfaceState {
+    /// A click on row `row` (column `col`) of the block the last render drew. A list row the
+    /// cursor is not on gets the cursor; the row it is on is chosen — Enter's path, or Space's
+    /// check for a multi-select — so one stray click never answers a dialog. A tab's chip focuses
+    /// that tab; the hint row focuses the search field (refining an applied query, opening one
+    /// where a search is offered).
+    pub(crate) fn click(&mut self, row: usize, col: usize) -> SurfaceEffect {
+        if self.slots.is_empty() {
+            return SurfaceEffect::None;
+        }
+        match self.hits.get(row).copied().unwrap_or_default() {
+            Hit::None => SurfaceEffect::None,
+            Hit::Tabs => match self.chip_at(col) {
+                Some(i) if i != self.focus => {
+                    self.set_focus(i);
+                    SurfaceEffect::ForceRedraw
+                }
+                _ => SurfaceEffect::None,
+            },
+            Hit::Item(v) => {
+                let (p, ps) = self.focused();
+                if ps.editing {
+                    return SurfaceEffect::None;
+                }
+                if ps.view_pos() != v {
+                    ps.set_view_pos(isize::try_from(v).unwrap_or(isize::MAX));
+                    ps.copied = false;
+                    return SurfaceEffect::None;
+                }
+                if p.kind() == PanelKind::Multi {
+                    return match space_key(self) {
+                        Some(r) => SurfaceEffect::Close(r),
+                        None => SurfaceEffect::None,
+                    };
+                }
+                match enter_commit(self) {
+                    Some(r) => SurfaceEffect::Close(r),
+                    None => SurfaceEffect::None,
+                }
+            }
+            Hit::Hint => {
+                let (p, ps) = self.focused();
+                match ps.search.mode {
+                    SearchMode::Applied => ps.search_edit(),
+                    SearchMode::Off if ps.search_available(p) => ps.search_open(p),
+                    _ => {}
+                }
+                SurfaceEffect::None
+            }
+        }
+    }
+
+    /// The wheel over the surface: one row (a View: three lines) toward the end (`dir` 1) or
+    /// the start (-1).
+    pub(crate) fn wheel(&mut self, dir: isize) {
+        if self.slots.is_empty() {
+            return;
+        }
+        let (p, ps) = self.focused();
+        let steps = if p.kind() == PanelKind::View { 3 } else { 1 };
+        for _ in 0..steps {
+            ps.nav(p, dir);
+        }
+    }
+
+    /// The tab whose chip is under column `col` of the tab bar (`panels::render_rows` draws
+    /// ` title ` chips joined by ` │ `).
+    fn chip_at(&self, col: usize) -> Option<usize> {
+        if self.slots.len() < 2 {
+            return None;
+        }
+        let mut x = 0;
+        for (i, slot) in self.slots.iter().enumerate() {
+            if i > 0 {
+                x += 3;
+            }
+            let w = crate::text::width::str_width(&slot.spec.title) + 2;
+            if (x..x + w).contains(&col) {
+                return Some(i);
+            }
+            x += w;
+        }
+        None
     }
 }
 
@@ -513,47 +618,6 @@ impl SurfaceState {
         let flat = data.replace("\r\n", " ").replace(['\r', '\n'], " ");
         ps.input.insert_str(flat.trim());
     }
-}
-
-/// Pipes text into the platform clipboard tool (clipboard.go:14-39, the v1 promptui
-/// implementation ported): `pbcopy` on macOS; `clip` on Windows; `wl-copy` /
-/// `xclip -selection clipboard` / `xsel --clipboard --input` elsewhere. A tool that
-/// is absent (spawn fails with `NotFound`) falls through to the next candidate; none
-/// found is the error `"no clipboard tool found"`. OSC 52 stays unshipped (T-21).
-pub(crate) fn copy_to_clipboard(text: &str) -> io::Result<()> {
-    let candidates: &[&[&str]] = if cfg!(target_os = "macos") {
-        &[&["pbcopy"]]
-    } else if cfg!(target_os = "windows") {
-        &[&["clip"]]
-    } else {
-        &[
-            &["wl-copy"],
-            &["xclip", "-selection", "clipboard"],
-            &["xsel", "--clipboard", "--input"],
-        ]
-    };
-    for c in candidates {
-        let mut child = match Command::new(c[0])
-            .args(&c[1..])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-        {
-            Ok(child) => child,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(e),
-        };
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(text.as_bytes())?;
-        }
-        let status = child.wait()?;
-        if status.success() {
-            return Ok(());
-        }
-        return Err(io::Error::other(format!("{} failed: {status}", c[0])));
-    }
-    Err(io::Error::other("no clipboard tool found"))
 }
 
 #[cfg(test)]

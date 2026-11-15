@@ -350,6 +350,42 @@ impl Conversation {
         out
     }
 
+    /// Where each of the lines [`Conversation::view_lines`] returns comes from, in the same order:
+    /// (row number, line within its wrap), `None` for the [`TRIMMED`] row. Called after it, so the
+    /// anchor is already clamped.
+    pub(crate) fn view_marks(&mut self, width: usize, h: usize) -> Vec<Option<(u64, usize)>> {
+        let mut pos = self.top_line(width, h);
+        let mut out = Vec::with_capacity(h);
+        while out.len() < h && pos.row < self.rows.len() {
+            let n = self.number_of(pos.row);
+            let height = self.rows[pos.row].height(width);
+            for line in pos.line.min(height)..height {
+                if out.len() == h {
+                    break;
+                }
+                out.push(n.map(|n| (n, line)));
+            }
+            pos = Pos {
+                row: pos.row + 1,
+                line: 0,
+            };
+        }
+        out
+    }
+
+    /// Row number `n`'s display lines at `width`, SGR stripped (what a selection copies); `None`
+    /// once the cap has dropped it.
+    pub(crate) fn plain_lines(&mut self, n: u64, width: usize) -> Option<Vec<String>> {
+        let i = self.index_of(n)?;
+        Some(
+            self.rows[i]
+                .lines(width)
+                .iter()
+                .map(|l| strip_sgr(l))
+                .collect(),
+        )
+    }
+
     /// Row `index`'s lines at `width` with the search's matches highlighted, or `None` when it has
     /// none (the cached lines serve then).
     fn highlighted(&self, index: usize, width: usize, hl: &Highlight<'_>) -> Option<Vec<String>> {

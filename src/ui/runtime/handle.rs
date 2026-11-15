@@ -74,8 +74,12 @@ impl Drop for TermGuard {
 /// SIGTERM, a loop that died before its exit) is left first — once, like the rest; the
 /// conversation is not written out on these paths.
 pub(crate) fn restore_terminal() {
+    let mouse = super::screen::MOUSE_ACTIVE.swap(false, Ordering::Relaxed);
     if super::screen::ALT_ACTIVE.swap(false, Ordering::Relaxed) {
         let mut out = io::stdout();
+        if mouse {
+            let _ = out.write_all(super::screen::MOUSE_OFF);
+        }
         let _ = out.write_all(super::screen::LEAVE);
         let _ = out.flush();
     }
@@ -208,7 +212,7 @@ pub(crate) fn start(opts: TuiOptions) -> io::Result<Tui> {
     let width = Arc::new(AtomicU16::new(if w > 0 { w } else { 80 }));
     let height = Arc::new(AtomicU16::new(if h > 0 { h } else { 24 }));
     install_panic_hook();
-    let term = Term::new(Box::new(io::stdout))?;
+    let term = Term::new(Box::new(io::stdout), opts.mouse)?;
     let handle = spawn(term, CrosstermEvents::new(), width, height, Some(restore))?;
     handle.suspend_on_sigtstp();
     // The probed tone is the loop's first message: the input shade follows it from frame one.
@@ -588,6 +592,7 @@ mod tests {
         let t = crate::ui::runtime::term::Term::headless(
             Box::new(move || wtr.clone()),
             ratatui::layout::Size::new(80, 24),
+            false,
         )
         .unwrap();
         let (etx, erx) = mpsc::channel();
