@@ -243,3 +243,48 @@ fn the_search_line_and_the_way_back_row_answer_a_click() {
     m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 3, last));
     assert_eq!(m.view_ops, vec![ViewOp::Bottom]);
 }
+
+/// A release that is never reported (the button came up outside the window) must not leave a
+/// drag scrolling at the edge for good: a key drops it (and the selection), losing focus and a
+/// resize end it as a release would.
+#[test]
+fn a_lost_release_is_ended_by_a_key_focus_loss_or_a_resize() {
+    let t = Instant::now();
+    let held_at_top = |m: &mut Model| {
+        laid_out(m);
+        m.handle_event(ev(MouseEventKind::Down(MouseButton::Left), 1, 5));
+        m.handle_event(ev(MouseEventKind::Drag(MouseButton::Left), 1, 0));
+        m.view_ops.clear();
+        assert!(edge_due(m, t).is_some(), "scrolling at the edge");
+    };
+    let mut m = test_model();
+    held_at_top(&mut m);
+    m.handle_key(key(KeyCode::Esc));
+    assert_eq!(
+        edge_due(&m, t + EDGE_STEP * 10),
+        None,
+        "a key ends the drag"
+    );
+    tick_edge(&mut m, t + EDGE_STEP * 10);
+    assert_eq!(
+        m.view_ops,
+        vec![ViewOp::Select(SelectOp::Clear)],
+        "and drops it, no step after"
+    );
+
+    let mut m = test_model();
+    held_at_top(&mut m);
+    m.handle_event(Event::FocusLost);
+    assert_eq!(
+        edge_due(&m, t + EDGE_STEP * 10),
+        None,
+        "losing focus ends it"
+    );
+    assert_eq!(m.view_ops, vec![ViewOp::Select(SelectOp::Release)]);
+
+    let mut m = test_model();
+    held_at_top(&mut m);
+    m.handle_event(Event::Resize(100, 30));
+    assert_eq!(edge_due(&m, t + EDGE_STEP * 10), None, "a resize ends it");
+    assert_eq!(m.view_ops, vec![ViewOp::Select(SelectOp::Release)]);
+}

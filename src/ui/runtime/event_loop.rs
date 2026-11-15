@@ -34,7 +34,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::msgs::UiMsg;
 use super::osc;
-use super::screen::{Prompt, ViewOp};
+use super::screen::{Prompt, SelectOp, ViewOp};
 use super::term::Term;
 use crate::ui::input::composer::Composer;
 use crate::ui::input::keys;
@@ -712,6 +712,9 @@ impl Model {
                 // been quiet for `RESIZE_QUIET` (the loop writes nothing meanwhile).
                 self.pending_resize = Some((w, h));
                 self.resize_seen = Instant::now();
+                // A drag across a resize is over: the layout under it is going (the screen drops
+                // the selection with the old width).
+                mouse::end_drag(self, SelectOp::Release);
             }
             Event::Key(k) => {
                 self.handle_key(k);
@@ -724,7 +727,14 @@ impl Model {
             // Focus exists for ONE reason: gating the attention ping (model.go:226-228).
             // No redraw — nothing on screen depends on it.
             Event::FocusGained => self.focused = true,
-            Event::FocusLost => self.focused = false,
+            Event::FocusLost => {
+                self.focused = false;
+                // The button may come up outside the window and never be reported: a drag held at
+                // the viewport's edge would scroll on for good.
+                if mouse::end_drag(self, SelectOp::Release) {
+                    self.dirty = true;
+                }
+            }
             Event::Mouse(ev) => {
                 mouse::update_mouse(self, ev);
                 self.dirty = true;
@@ -732,12 +742,12 @@ impl Model {
         }
     }
 
-    /// Routes one key through the composer precedence table (keys.rs — WP46's seam). A key drops
-    /// the mouse's selection first: what is typed next is not about it.
+    /// Routes one key through the composer precedence table (keys.rs — WP46's seam). A key ends a
+    /// drag whose release was never reported and drops the mouse's selection first: what is typed
+    /// next is not about it.
     pub(crate) fn handle_key(&mut self, key: KeyEvent) {
-        if self.mouse.held.is_none() && std::mem::take(&mut self.mouse.selected) {
-            self.view_ops
-                .push(ViewOp::Select(super::screen::SelectOp::Clear));
+        if !mouse::end_drag(self, SelectOp::Clear) && std::mem::take(&mut self.mouse.selected) {
+            self.view_ops.push(ViewOp::Select(SelectOp::Clear));
         }
         keys::update_key(self, key);
     }

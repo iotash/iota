@@ -198,6 +198,22 @@ fn press(m: &mut Model, at: Target, col: u16) {
     }
 }
 
+/// Ends a drag whose button is still held — a key, the window losing focus, a resize: the release
+/// may never be reported (the button came up outside the window), and a drag held at the edge would
+/// scroll forever. `op` is what the selection gets (`Release` keeps and copies it, `Clear` drops
+/// it). Returns whether a drag was on.
+pub(crate) fn end_drag(m: &mut Model, op: SelectOp) -> bool {
+    if m.mouse.held.take().is_none() {
+        return false;
+    }
+    m.mouse.last_step = None;
+    if op == SelectOp::Clear {
+        m.mouse.selected = false;
+    }
+    m.view_ops.push(ViewOp::Select(op));
+    true
+}
+
 /// The loop's edge step: a drag held at the viewport's edge scrolls another line when
 /// [`EDGE_STEP`] has passed since the last.
 pub(crate) fn tick_edge(m: &mut Model, now: Instant) {
