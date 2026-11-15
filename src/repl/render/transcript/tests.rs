@@ -1446,3 +1446,40 @@ fn verbose_mode_gives_a_yielded_call_its_classic_receipt_block() {
     ];
     assert_eq!(rec.joined(), want.join("\n"));
 }
+
+// A LAID block through the latch (tui-plan S7a): a reply whose code block ends in blank source
+// lines. On the row path those indent-only rows were blanks the latch dropped at the block's end;
+// as one laid-out block they are content to the latch, so the block itself must not carry them —
+// else the reply ends in a blank-looking row and the next block's separator makes it two.
+#[test]
+fn a_laid_out_block_through_the_latch_carries_no_trailing_blank() {
+    use crate::markdown::{CodeTheme, RenderOptions, Writer};
+    use crate::repl::render::uisink::UiMdSink;
+
+    let rec = Rec::default();
+    let tr = transcript(&rec);
+    let mut content = tr.content_block();
+    let stream = crate::ui::facade::Ui::start_stream(
+        rec.ui().as_ref(),
+        tokio_util::sync::CancellationToken::new(),
+    );
+    let sink = UiMdSink::new(
+        Box::new(move |label| stream.block_preview(label)),
+        Box::new(move |blocks| content.push(&blocks)),
+        None,
+    );
+    let mut w = Writer::new(
+        Box::new(sink.clone()),
+        RenderOptions {
+            color: false,
+            code_theme: CodeTheme::Monokai,
+        },
+    );
+    w.write(b"```\nx\n\n\n```\n");
+    w.flush();
+    sink.flush();
+    tr.notice("next");
+
+    let want = ["print:  x", "print:", &format!("print:{}", dim("next"))];
+    assert_eq!(rec.joined(), want.join("\n"));
+}

@@ -60,10 +60,19 @@ impl Fragment {
         }
     }
 
-    /// [`Fragment::render`] as rows, its trailing newline dropped.
+    /// [`Fragment::render`] as rows, its trailing newline dropped — and its trailing blank rows
+    /// (a code block whose source ends in blank lines renders them as indent-only rows): a block
+    /// carries no trailing blank, the transcript's latch law, which a laid-out block reaches as
+    /// content and so cannot apply itself.
     pub fn lines(&self, width: usize) -> Vec<String> {
         let out = self.render(width);
-        let out = out.strip_suffix('\n').unwrap_or(&out);
-        out.split('\n').map(str::to_owned).collect()
+        let mut rows: Vec<String> = out.split('\n').map(str::to_owned).collect();
+        while rows
+            .last()
+            .is_some_and(|r| crate::text::ansi::strip_sgr(r).trim().is_empty())
+        {
+            rows.pop();
+        }
+        rows
     }
 }
