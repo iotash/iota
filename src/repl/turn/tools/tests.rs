@@ -1914,9 +1914,9 @@ impl Ui for OrderUi {
         self.inner.deliver(input, cap)
     }
 
-    fn print_lines(&self, lines: Vec<String>) {
+    fn print(&self, blocks: Vec<crate::ui::facade::Block>) {
         note(&self.log, &self.turn, "print");
-        self.inner.print_lines(lines);
+        self.inner.print(blocks);
     }
 
     fn user_block(&self, display: &str) {

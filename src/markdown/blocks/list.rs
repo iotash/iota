@@ -5,11 +5,13 @@
 //! sublists under their preceding item, loose lists joined with a blank between
 //! top-level blocks, task glyphs served as recorded (`TUI_DESIGN` §7).
 
-use crate::markdown::PreviewHandle;
 use crate::markdown::blocks::close_view;
 use crate::markdown::blocks::math::display_open;
-use crate::markdown::blocks::table::is_table_line;
+use crate::markdown::blocks::table::{is_table_line, word_wrap_ansi};
+use crate::markdown::fragment::{Fragment, Source};
 use crate::markdown::inline::{DIM, highlight_inline, is_list_line, split_list_marker};
+use crate::markdown::{PreviewHandle, RenderOptions};
+use crate::text::ansi::ansi_width;
 use crate::text::width::str_width;
 
 /// One parsed item of a buffering list block (Go listItem). Parsed by [`ListBlock`];
@@ -177,23 +179,35 @@ impl ListBlock {
         }
     }
 
-    /// Closes the preview and renders the block, trailing newline included.
-    pub(crate) fn render(mut self, color: bool) -> Option<String> {
+    /// Closes the preview; the parsed items are the block's source (`None`: no items). The
+    /// markers, the hanging indent and the item text's wrap are laid out at every width
+    /// ([`render_list`]).
+    pub(crate) fn finish(mut self, opts: RenderOptions) -> Option<Fragment> {
         close_view(&mut self.view);
         if self.items.is_empty() {
             return None;
         }
-        let rendered = render_list(&self.items, self.loose, color);
-        Some(format!("{rendered}\n"))
+        Some(Fragment::new(
+            Source::List {
+                items: self.items,
+                loose: self.loose,
+            },
+            opts,
+        ))
     }
 }
+
+/// The fewest columns an item's text is wrapped to, however deep it is nested: past that a
+/// narrow screen wraps the row itself rather than the list squeezing it to nothing.
+const MIN_TEXT_COLS: usize = 8;
 
 /// renderList twin (markdown.go:1173-1203). Each top-level item (with its nested
 /// descendants) renders as its own block; blocks join with `"\n"` (tight) or `"\n\n"`
 /// (loose — Go's thin manual layer over lipgloss/list, which has no inter-item
 /// spacing). Enumerator alignment across blocks is kept by padding every top-level
-/// marker to the same width first (`top_w`).
-pub(crate) fn render_list(items: &[ListItem], loose: bool, color: bool) -> String {
+/// marker to the same width first (`top_w`). Item text wraps at `width` under its hanging
+/// indent.
+pub(crate) fn render_list(items: &[ListItem], loose: bool, color: bool, width: usize) -> String {
     let top_w = items
         .iter()
         .filter(|it| it.level == 0)
@@ -208,7 +222,7 @@ pub(crate) fn render_list(items: &[ListItem], loose: bool, color: bool) -> Strin
         while end < items.len() && items[end].level > 0 {
             end += 1;
         }
-        blocks.push(build_list(&items[start..end], top_w, color).join("\n"));
+        blocks.push(build_list(&items[start..end], top_w, color, width).join("\n"));
         start = end;
     }
 
@@ -223,8 +237,9 @@ pub(crate) fn render_list(items: &[ListItem], loose: bool, color: bool) -> Strin
 /// left-padded to the common width `w = max(min_width, widest marker)`; the dim span
 /// carries the marker plus its one-space enumerator padding (Go `EnumeratorStyle`
 /// PaddingRight(1)). Continuation lines and sublists hang by `w + 1` columns, aligned
-/// with the item text.
-fn build_list(items: &[ListItem], min_width: usize, color: bool) -> Vec<String> {
+/// with the item text — and so do the rows an item's text wraps onto at `width` (a sublist
+/// is laid out in the `width − (w + 1)` its parent's indent leaves it).
+fn build_list(items: &[ListItem], min_width: usize, color: bool, width: usize) -> Vec<String> {
     let Some(first) = items.first() else {
         return Vec::new();
     };
@@ -237,6 +252,15 @@ fn build_list(items: &[ListItem], min_width: usize, color: bool) -> Vec<String> 
         .unwrap_or(0)
         .max(min_width);
     let indent = " ".repeat(w + 1);
+    let room = width.saturating_sub(w + 1).max(MIN_TEXT_COLS);
+    let wrap = |line: &str| -> Vec<String> {
+        let styled = highlight_inline(line, color);
+        if ansi_width(&styled) > room {
+            word_wrap_ansi(&styled, room)
+        } else {
+            vec![styled]
+        }
+    };
 
     let mut rows: Vec<String> = Vec::new();
     let mut i = 0;
@@ -248,7 +272,7 @@ fn build_list(items: &[ListItem], min_width: usize, color: bool) -> Vec<String> 
             while j < items.len() && items[j].level > base {
                 j += 1;
             }
-            for r in build_list(&items[i..j], 0, color) {
+            for r in build_list(&items[i..j], 0, color, room) {
                 rows.push(if r.is_empty() {
                     r
                 } else {
@@ -261,16 +285,19 @@ fn build_list(items: &[ListItem], min_width: usize, color: bool) -> Vec<String> 
         let it = &items[i];
         let pad = " ".repeat(w.saturating_sub(str_width(&it.marker)));
         for (k, line) in it.lines.iter().enumerate() {
-            if k == 0 {
-                rows.push(format!(
-                    "{pad}{}{}",
-                    DIM.render(&format!("{} ", it.marker), color),
-                    highlight_inline(line, color)
-                ));
-            } else if line.is_empty() {
+            if line.is_empty() && k > 0 {
                 rows.push(String::new()); // intra-item paragraph break (loose list)
-            } else {
-                rows.push(format!("{indent}{}", highlight_inline(line, color)));
+                continue;
+            }
+            for (n, piece) in wrap(line).into_iter().enumerate() {
+                if k == 0 && n == 0 {
+                    rows.push(format!(
+                        "{pad}{}{piece}",
+                        DIM.render(&format!("{} ", it.marker), color),
+                    ));
+                } else {
+                    rows.push(format!("{indent}{piece}"));
+                }
             }
         }
         i += 1;

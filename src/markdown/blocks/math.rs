@@ -16,8 +16,9 @@
 //! this module back (Phase 5 PR-4: the `MathRenderer` trait and its one ZST impl are deleted,
 //! so `mathtext` is a leaf).
 
-use crate::markdown::PreviewHandle;
 use crate::markdown::blocks::close_view;
+use crate::markdown::fragment::{Fragment, Source};
+use crate::markdown::{PreviewHandle, RenderOptions};
 
 /// The display-fence recognizers, now owned by [`crate::mathtext::delim`] (DESIGN D16): Go keeps
 /// `DisplayOpen`/`IsDisplayClose` in `delim.go:181-219` and the markdown writer calls across.
@@ -61,29 +62,34 @@ impl MathBlock {
         }
     }
 
-    /// Renders the buffered display-math block (markdown.go:1433-1455): a
+    /// Closes the preview; the buffered source is the block's (markdown.go:1433-1455): a
     /// whitespace-only source renders NOTHING (the paid gap credit may remain
     /// consumed); otherwise every row is prefixed by the two-space `MATH_INDENT` and the
     /// block rides `begin_block`/`end_block`. The body transform is the mathtext 2D layout
     /// (markdown.go:1443 `mathtext.Render2D`; DESIGN D16 step 2), which degrades to the cleaned
     /// linear source when the formula cannot be laid out; either way the rows print in normal
     /// color (never dim: dim is decoration-only).
-    pub(crate) fn render(mut self, width: usize) -> Option<String> {
+    pub(crate) fn finish(mut self, opts: RenderOptions) -> Option<Fragment> {
         close_view(&mut self.view);
         let src = self.lines.join("\n");
         if src.trim().is_empty() {
             return None; // an empty $$ block renders nothing (mirrors the quote)
         }
-        let width = width.saturating_sub(MATH_INDENT.len());
-        let (block, _ok) = crate::mathtext::render_2d(&src, width);
-        let mut out = String::new();
-        for r in block.split('\n') {
-            out.push_str(MATH_INDENT);
-            out.push_str(r);
-            out.push('\n');
-        }
-        Some(out)
+        Some(Fragment::new(Source::Math(src), opts))
     }
+}
+
+/// The 2D layout of a display formula's source at `width`, each row behind [`MATH_INDENT`].
+pub(crate) fn render_math(src: &str, width: usize) -> String {
+    let width = width.saturating_sub(MATH_INDENT.len());
+    let (block, _ok) = crate::mathtext::render_2d(src, width);
+    let mut out = String::new();
+    for r in block.split('\n') {
+        out.push_str(MATH_INDENT);
+        out.push_str(r);
+        out.push('\n');
+    }
+    out
 }
 
 #[cfg(test)]

@@ -21,6 +21,7 @@ use crate::config::AgentMode;
 use crate::text::width::{str_width, truncate_middle};
 
 use crate::repl::render::styles::{cyan, dim, green, yellow};
+use crate::ui::facade::Layout;
 
 /// The mark that opens the card: the letter, the prompt, the name — cyan, one piece.
 const MARK: &str = "ι> iota";
@@ -77,52 +78,74 @@ impl Row {
     }
 }
 
-/// The banner's rows: the card when `width` allows it — the mark row (`ι> iota`, cyan,
-/// then the version, dim), the mode row and the directory row, each padded to the widest,
-/// inside a rounded frame (dim) one blank away on either side — else the three rows bare.
-/// The directory row is cut to the columns it may have — the middle out, both ends kept —
-/// so it never wraps: the terminal's width less the frame's four, or the whole width bare.
-///
-/// The frame needs its four columns beside the widest row that is never cut — the mode
-/// row in every real run (`chat · session <id>` is 27 columns; `agent · not saved · /save
-/// keeps it`, the longest, 34; a host adds ` · in <host>`). Narrower, the three rows stand
-/// alone.
-///
-/// `width` is the terminal's, as the facade reports it; `0` (unknown) is read as wide, and
-/// nothing is cut.
-pub(crate) fn banner_lines(facts: &BannerFacts<'_>, width: u16) -> Vec<String> {
-    let mark = Row {
-        text: format!("{}{MARK_GAP}{}", cyan(MARK), dim(VERSION)),
-        cols: str_width(MARK) + str_width(MARK_GAP) + str_width(VERSION),
-    };
-    let mode = mode_row(facts);
-    let uncut = mark.cols.max(mode.cols);
-    let framed = width == 0 || usize::from(width) >= uncut + FRAME_COLS;
-    let dir_cols = match (width, framed) {
-        (0, _) => usize::MAX,
-        (w, true) => usize::from(w).saturating_sub(FRAME_COLS),
-        (w, false) => usize::from(w),
-    };
-    let dir = Row::bare(truncate_middle(&tilde(facts.dir, facts.home), dir_cols));
-    let rows = [mark, mode, dir];
-    if !framed {
-        return rows.into_iter().map(|r| r.text).collect();
+/// The banner as a block of the conversation (tui-plan S7a): its facts, laid out again at every
+/// width the screen takes — the card comes back when the window widens enough for it, the rows
+/// stand bare when it narrows, and the directory is cut to the new width (`Banner::lines`).
+pub(crate) struct Banner {
+    mode: Row,
+    dir: String,
+}
+
+impl Banner {
+    /// The banner of `facts`.
+    pub(crate) fn new(facts: &BannerFacts<'_>) -> Self {
+        Self {
+            mode: mode_row(facts),
+            dir: tilde(facts.dir, facts.home),
+        }
     }
-    let inner = rows.iter().map(|r| r.cols).max().unwrap_or(0);
-    let edge = "─".repeat(inner + 2);
-    let mut out = Vec::with_capacity(rows.len() + 2);
-    out.push(dim(&format!("╭{edge}╮")));
-    out.extend(rows.iter().map(|r| {
-        format!(
-            "{} {}{} {}",
-            dim("│"),
-            r.text,
-            " ".repeat(inner - r.cols),
-            dim("│")
-        )
-    }));
-    out.push(dim(&format!("╰{edge}╯")));
-    out
+}
+
+impl Layout for Banner {
+    /// The banner's rows: the card when `width` allows it — the mark row (`ι> iota`, cyan,
+    /// then the version, dim), the mode row and the directory row, each padded to the widest,
+    /// inside a rounded frame (dim) one blank away on either side — else the three rows bare.
+    /// The directory row is cut to the columns it may have — the middle out, both ends kept —
+    /// so it never wraps: the width less the frame's four, or the whole width bare.
+    ///
+    /// The frame needs its four columns beside the widest row that is never cut — the mode
+    /// row in every real run (`chat · session <id>` is 27 columns; `agent · not saved · /save
+    /// keeps it`, the longest, 34; a host adds ` · in <host>`). Narrower, the three rows stand
+    /// alone.
+    ///
+    /// `0` (unknown) is read as wide, and nothing is cut.
+    fn lines(&self, width: usize) -> Vec<String> {
+        let mark = Row {
+            text: format!("{}{MARK_GAP}{}", cyan(MARK), dim(VERSION)),
+            cols: str_width(MARK) + str_width(MARK_GAP) + str_width(VERSION),
+        };
+        let mode = Row {
+            text: self.mode.text.clone(),
+            cols: self.mode.cols,
+        };
+        let uncut = mark.cols.max(mode.cols);
+        let framed = width == 0 || width >= uncut + FRAME_COLS;
+        let dir_cols = match (width, framed) {
+            (0, _) => usize::MAX,
+            (w, true) => w.saturating_sub(FRAME_COLS),
+            (w, false) => w,
+        };
+        let dir = Row::bare(truncate_middle(&self.dir, dir_cols));
+        let rows = [mark, mode, dir];
+        if !framed {
+            return rows.into_iter().map(|r| r.text).collect();
+        }
+        let inner = rows.iter().map(|r| r.cols).max().unwrap_or(0);
+        let edge = "─".repeat(inner + 2);
+        let mut out = Vec::with_capacity(rows.len() + 2);
+        out.push(dim(&format!("╭{edge}╮")));
+        out.extend(rows.iter().map(|r| {
+            format!(
+                "{} {}{} {}",
+                dim("│"),
+                r.text,
+                " ".repeat(inner - r.cols),
+                dim("│")
+            )
+        }));
+        out.push(dim(&format!("╰{edge}╯")));
+        out
+    }
 }
 
 /// The skill-discovery warnings, dim, in the overlay's order — printed under the banner in
@@ -190,8 +213,14 @@ pub(crate) fn tilde(dir: &Path, home: Option<&Path>) -> String {
 mod tests {
     use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 
-    use super::{BannerFacts, banner_lines};
+    use super::{Banner, BannerFacts};
     use crate::config::AgentMode;
+    use crate::ui::facade::Layout as _;
+
+    /// The banner of `facts` laid out at `width`.
+    fn banner_lines(facts: &BannerFacts<'_>, width: u16) -> Vec<String> {
+        Banner::new(facts).lines(usize::from(width))
+    }
     use crate::text::ansi::strip_sgr;
     use crate::text::width::str_width;
 

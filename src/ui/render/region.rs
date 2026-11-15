@@ -1,9 +1,12 @@
 //! The output staging window — a 1:1 port of internal/ui/region.go.
 //!
-//! **Live, nothing is staged** (`Region::unstaged`, the full screen): committed lines go
-//! straight to the conversation buffer and only previews live in the frame. The staged design
-//! described below — "scrollback" is the inline terminal's native history — is what the
-//! region's own tests still run; tui-plan S7 deletes it with the staging window.
+//! **Live, nothing is staged** (`Region::unstaged`, the full screen): committed blocks go
+//! straight to the conversation buffer, as they were committed — a laid-out block keeps its
+//! source and is rendered by the screen at the width of the draw (tui-plan S7a) — and only
+//! previews live in the frame. The staged design described below — "scrollback" is the inline
+//! terminal's native history — is what the region's own tests still run, and the only place a
+//! block is still flattened into rows at the width of its moment; tui-plan S7b deletes it with the
+//! staging window.
 //!
 //! The region is the answer to "why can't the preview area just be overwritten in
 //! place?" — it is. All committed output flows THROUGH it: new lines enter the window,
@@ -41,6 +44,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Instant;
 
 use crate::text::ansi::{ansi_width, wrap_ansi};
+use crate::ui::block::Block;
 
 use super::debug::debug_region;
 
@@ -65,8 +69,8 @@ pub(crate) type EmitFn = Box<dyn FnMut(Vec<String>, RegionSnapshot) + Send>;
 /// sender (`UiMsg::Scrollback` per chunk, then `UiMsg::Region`); the mailbox FIFO plus
 /// the region lock preserve the ordering Go's mutex-held `Println`+`Send` guaranteed.
 pub(crate) trait LivePublish: Send {
-    /// One chunked scrollback batch (already ≤ `max(2, screen_height/2)` rows).
-    fn scrollback(&self, rows: Vec<String>);
+    /// One chunked batch of committed blocks (already ≤ `max(2, screen_height/2)` of them).
+    fn scrollback(&self, rows: Vec<Block>);
     /// The fresh display snapshot (sent after every mutation, overflow or not).
     fn region(&self, snap: RegionSnapshot);
 }
@@ -239,7 +243,7 @@ impl Region {
         if over.is_empty() && !rewrapped {
             return;
         }
-        self.publish(over);
+        self.publish(Block::rows(over));
     }
 
     /// Deep-copied display snapshot (region.go:93-103).
@@ -279,14 +283,20 @@ impl Region {
     /// snapshot always follows the chunks, and the caller's `Mutex<Region>` guard spans
     /// this whole call, preserving the Go publish-ordering law. `sanitizeOverflow` is
     /// NOT ported (T-01) and blank rows pass through as-is (T-02).
-    fn publish(&mut self, over: Vec<String>) {
-        // Staged rows were wrapped at the width they were COMMITTED at; a narrowing since
-        // (the resize pass flushes the tail) must not hand the insert a row that wraps
-        // again — W6's one-entry-one-row law (term.rs) holds at the width it lands at.
-        let over = self.fit_width(over);
-        if !self.staged {
+    fn publish(&mut self, over: Vec<Block>) {
+        let over = if self.staged {
+            // Staged rows were wrapped at the width they were COMMITTED at; a narrowing since
+            // (the resize pass flushes the tail) must not hand the insert a row that wraps
+            // again — W6's one-entry-one-row law (term.rs) holds at the width it lands at.
+            let rows = over.into_iter().filter_map(|b| match b {
+                Block::Row(t) => Some(t),
+                Block::Laid(_) => None, // the staged commit flattened every one
+            });
+            Block::rows(self.fit_width(rows.collect()))
+        } else {
             self.residue.clear();
-        }
+            over
+        };
         if !over.is_empty() {
             debug_region(|| format!("  overflow {over:?}"));
         }
@@ -294,7 +304,10 @@ impl Region {
         let snap = self.snapshot();
         match &mut self.emit {
             #[cfg(test)]
-            Emit::Test(f) => f(over, snap),
+            Emit::Test(f) => {
+                let w = usize::from(self.width.load(Ordering::Relaxed)).max(1);
+                f(over.iter().flat_map(|b| b.render(w)).collect(), snap);
+            }
             Emit::Live { tx } => {
                 for chunk in chunk_overflow(over, h) {
                     tx.scrollback(chunk);
@@ -327,10 +340,24 @@ impl Region {
     /// soft-wrap in the terminal): rows that already fit (markdown, user blocks) pass
     /// through untouched, and wrapping targets width−1 — paired with markdown's width−1
     /// table law. Width ≤ 1 (startup, tests) skips wrapping.
-    pub(crate) fn commit(&mut self, lines: Vec<String>) {
-        if lines.is_empty() {
+    ///
+    /// Live ([`Region::unstaged`]) the blocks pass through untouched: a row is wrapped and a
+    /// laid-out block rendered by the screen, at the width of each draw.
+    pub(crate) fn commit<B: Into<Block>>(&mut self, blocks: Vec<B>) {
+        if blocks.is_empty() {
             return;
         }
+        let blocks = split_blocks(blocks.into_iter().map(Into::into).collect());
+        if !self.staged {
+            debug_region(|| format!("commit {blocks:?} label={:?}", self.label));
+            if !self.label.is_empty() && !self.open {
+                self.end_preview(); // a deferred close: its replacement has arrived
+            }
+            self.publish(blocks);
+            return;
+        }
+        let w = self.screen_width().max(1);
+        let lines: Vec<String> = blocks.iter().flat_map(|b| b.render(w)).collect();
         let lines = self.fit_width(split_rows(lines));
         debug_region(|| {
             format!(
@@ -350,17 +377,22 @@ impl Region {
             if covered < rows.len() {
                 self.residue.extend(rows.drain(covered..));
             }
-            self.label.clear();
-            self.preview_tail.clear();
-            self.since = None;
-            self.paused_at = None;
-            self.detail.clear();
+            self.end_preview();
         } else {
             self.consume_residue(lines.len());
         }
         self.tail.extend(lines);
         let over = self.rebalance();
-        self.publish(over);
+        self.publish(Block::rows(over));
+    }
+
+    /// Takes the preview down (its rows are replaced by what was just committed).
+    fn end_preview(&mut self) {
+        self.label.clear();
+        self.preview_tail.clear();
+        self.since = None;
+        self.paused_at = None;
+        self.detail.clear();
     }
 
     /// Starts a block preview (header + rolling source lines). Opening over an existing
@@ -372,7 +404,7 @@ impl Region {
         self.since = None;
         self.paused_at = None;
         let over = self.rebalance(); // header row may steal a tail line
-        self.publish(over);
+        self.publish(Block::rows(over));
     }
 
     /// Ensures the tool-call lifecycle widget: a header plus the model-rendered
@@ -398,7 +430,7 @@ impl Region {
         self.paused_at = None;
         self.detail.clear();
         let over = self.rebalance();
-        self.publish(over);
+        self.publish(Block::rows(over));
     }
 
     /// Updates a PLAIN preview's header in place (the live `"rendering table… · N
@@ -461,7 +493,7 @@ impl Region {
         }
         self.preview_tail = rows.into_iter().map(|ln| one_row(&ln)).collect();
         let over = self.rebalance();
-        self.publish(over);
+        self.publish(Block::rows(over));
     }
 
     /// Replaces any current preview with a fresh one, folding the old rows (and a
@@ -493,7 +525,7 @@ impl Region {
             self.consume_residue(1); // a genuinely new row overwrites a residue row
         }
         let over = self.rebalance(); // growth steals tail lines: commit, never shrink
-        self.publish(over);
+        self.publish(Block::rows(over));
     }
 
     /// Marks the preview finished but KEEPS it on screen: the next commit replaces it
@@ -534,7 +566,7 @@ impl Region {
             return;
         }
         let over = std::mem::take(&mut self.tail);
-        self.publish(over);
+        self.publish(Block::rows(over));
     }
 
     /// Commits everything still staged (shutdown: scrollback must hold the full
@@ -549,7 +581,7 @@ impl Region {
         }
         self.since = None;
         self.paused_at = None;
-        self.publish(over);
+        self.publish(Block::rows(over));
     }
 }
 
@@ -564,6 +596,25 @@ pub(crate) fn split_rows(lines: Vec<String>) -> Vec<String> {
     let mut out = Vec::with_capacity(lines.len() + 4);
     for ln in &lines {
         out.extend(ln.split('\n').map(str::to_owned));
+    }
+    out
+}
+
+/// [`split_rows`] over blocks: a row with embedded newlines becomes one row per line; a laid-out
+/// block is left whole.
+fn split_blocks(blocks: Vec<Block>) -> Vec<Block> {
+    if blocks
+        .iter()
+        .all(|b| !matches!(b, Block::Row(t) if t.contains('\n')))
+    {
+        return blocks;
+    }
+    let mut out = Vec::with_capacity(blocks.len() + 4);
+    for b in blocks {
+        match b {
+            Block::Row(t) if t.contains('\n') => out.extend(Block::rows(t.split('\n'))),
+            other => out.push(other),
+        }
     }
     out
 }
@@ -583,7 +634,7 @@ pub(crate) fn one_row(s: &str) -> String {
 /// Splits overflow lines into batches of at most `max(2, h/2)` lines (region.go:206-223,
 /// CHUNK const, `TUI_CONTRACTS` §8): a single scrollback insert taller than the screen
 /// is the frame-anchor desync hazard class — kept as cheap insurance (T-06).
-pub(crate) fn chunk_overflow(over: Vec<String>, h: usize) -> Vec<Vec<String>> {
+pub(crate) fn chunk_overflow<T>(over: Vec<T>, h: usize) -> Vec<Vec<T>> {
     if over.is_empty() {
         return Vec::new();
     }

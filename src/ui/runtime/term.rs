@@ -101,8 +101,8 @@ impl<W: Write> Term<W> {
     }
 
     /// Appends committed rows to the conversation buffer; the next draw shows them.
-    pub(crate) fn push(&mut self, rows: &[String]) {
-        self.screen.push(rows);
+    pub(crate) fn push(&mut self, blocks: Vec<crate::ui::block::Block>) {
+        self.screen.push(blocks);
     }
 
     /// Clears the screen and forgets what it showed — the T-32 `tea.ClearScreen` twin for

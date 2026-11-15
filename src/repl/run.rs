@@ -34,7 +34,7 @@ use crate::markdown::CodeTheme;
 use crate::provider::model::{AssistantBody, Body, Message};
 use crate::session::{SessionError, SessionWriter};
 use crate::sync::lock;
-use crate::ui::facade::{Input, InputKind, StatusData, UiError};
+use crate::ui::facade::{Block, Input, InputKind, StatusData, UiError};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::AgentMode;
@@ -48,7 +48,7 @@ use crate::repl::commands::{
 };
 use crate::repl::context::meter::{ContextBudget, CtxMeter};
 use crate::repl::noticegate::{self, NoticeGate, Outcome as GateOutcome};
-use crate::repl::render::banner::{BannerFacts, banner_lines, overlay_warnings};
+use crate::repl::render::banner::{Banner, BannerFacts, overlay_warnings};
 use crate::repl::render::mcpreport::report_mcp_failures;
 use crate::repl::render::replay::{echo_rounds, resume_echo};
 use crate::repl::render::transcript::{Transcript, notify_digest};
@@ -565,34 +565,31 @@ pub async fn run(params: RunParams) -> Result<(), ReplError> {
                 .or_else(|| std::env::current_dir().ok())
                 .unwrap_or_default()
         };
-        let mut lines = banner_lines(
-            &BannerFacts {
-                mode,
-                session_id: session_id.as_deref(),
-                ephemeral: new_session.is_some(),
-                resumed,
-                dir: &dir,
-                home: agent.home.as_deref(),
-                host: pres.detected_host(),
-            },
-            ui.width(),
-        );
-        lines.extend(overlay_warnings(overlay.as_ref()));
-        ui.print_lines(lines);
+        let mut blocks = vec![Block::laid(Banner::new(&BannerFacts {
+            mode,
+            session_id: session_id.as_deref(),
+            ephemeral: new_session.is_some(),
+            resumed,
+            dir: &dir,
+            home: agent.home.as_deref(),
+            host: pres.detected_host(),
+        }))];
+        blocks.extend(Block::rows(overlay_warnings(overlay.as_ref())));
+        ui.print(blocks);
     }
-    ui.print_lines(vec![String::new()]);
+    ui.print(vec![Block::Row(String::new())]);
     if resumed {
         let msgs = resume_echo(&history);
         if !msgs.is_empty() {
             let d = Arc::clone(&dispatch);
             let img_dir = lock(&writer).as_ref().map(SessionWriter::images_path);
-            let lines = echo_rounds(
+            let blocks = echo_rounds(
                 msgs,
                 |n| d.presentation(n) == crate::tool::Presentation::Surface,
                 usize::from(ui.width()),
                 img_dir.as_deref(),
             );
-            ui.print_lines(lines);
+            ui.print(blocks);
         }
     }
     for notice in &notices {

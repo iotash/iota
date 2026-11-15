@@ -617,7 +617,7 @@ fn chunk_overflow_below_screen_height() {
         "order broken: last line"
     );
     assert!(
-        chunk_overflow(Vec::new(), 30).is_empty(),
+        chunk_overflow(Vec::<String>::new(), 30).is_empty(),
         "empty overflow must produce no chunks"
     );
     // Tiny terminals still make progress.
@@ -717,7 +717,8 @@ fn live_publish_chunks_then_snapshot() {
     }
     struct RecPub(Arc<Mutex<Vec<Ev>>>);
     impl LivePublish for RecPub {
-        fn scrollback(&self, rows: Vec<String>) {
+        fn scrollback(&self, rows: Vec<crate::ui::block::Block>) {
+            let rows: Vec<String> = rows.iter().flat_map(|b| b.render(80)).collect();
             self.0.lock().unwrap().push(Ev::Chunk(rows));
         }
         fn region(&self, snap: RegionSnapshot) {

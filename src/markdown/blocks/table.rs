@@ -10,10 +10,11 @@
 //! padding comes from each rendered line's escape-aware width, so styled cells (the
 //! math passthrough included) always pad to the same column edge.
 
-use crate::markdown::PreviewHandle;
 use crate::markdown::blocks::close_view;
+use crate::markdown::fragment::{Fragment, Source};
 use crate::markdown::inline::{DIM, highlight_inline, strip_inline_markdown};
 use crate::markdown::style::Style;
+use crate::markdown::{PreviewHandle, RenderOptions};
 use crate::text::ansi::{ansi_width, escape_len_at, sgr_carry};
 use crate::text::width::{cluster_width, graphemes, str_width};
 
@@ -185,14 +186,20 @@ impl TableBlock {
         }
     }
 
-    /// Closes the preview and renders the block, trailing newline included.
-    pub(crate) fn render(mut self, width: usize, color: bool) -> Option<String> {
+    /// Closes the preview; the parsed cells are the block's source (`None`: no rows, nothing
+    /// to render). Columns are computed at every width it is laid out at ([`render_table`]).
+    pub(crate) fn finish(mut self, opts: RenderOptions) -> Option<Fragment> {
         close_view(&mut self.view);
         if self.rows.is_empty() {
             return None;
         }
-        let rendered = render_table(&self.rows, &self.seps, width, color);
-        Some(format!("{rendered}\n"))
+        Some(Fragment::new(
+            Source::Table {
+                rows: self.rows,
+                seps: self.seps,
+            },
+            opts,
+        ))
     }
 }
 

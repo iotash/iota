@@ -8,6 +8,11 @@
 
 use ratatui::layout::Size;
 
+/// Committed rows as the buffer's blocks.
+fn rows_of(lines: &[String]) -> Vec<crate::ui::block::Block> {
+    crate::ui::block::Block::rows(lines.iter().cloned())
+}
+
 use super::SearchOp;
 use crate::ui::render::frame::FrameView;
 use crate::ui::render::theme::{SEARCH_CUR, SEARCH_HIT};
@@ -41,7 +46,7 @@ impl T {
     fn new(rows: &[String]) -> Self {
         let buf = SharedBuf::default();
         let mut s = Screen::new(buf.clone(), Size::new(W, H), false, false).unwrap();
-        s.push(rows);
+        s.push(rows_of(rows));
         s.draw_frame(&frame(), None).unwrap();
         Self {
             s,
@@ -241,7 +246,7 @@ fn output_during_a_search_is_searched_and_the_walker_keeps_its_hit() {
     t.search("needle");
     t.op(SearchOp::Step(-1)); // on l10
     assert!(t.grid()[7].contains("1/2"));
-    t.s.push(&rows_with(1, "needle", &[0])); // a new row with a hit
+    t.s.push(rows_of(&rows_with(1, "needle", &[0]))); // a new row with a hit
     t.draw();
     assert!(
         t.view()[4].starts_with("line-00010 needle"),
@@ -358,12 +363,12 @@ fn rows_the_cap_drops_take_their_hits_with_them() {
     let buf = SharedBuf::default();
     let mut s = Screen::new(buf, Size::new(W, H), false, false).unwrap();
     let mut conv = crate::ui::runtime::screen::conversation::Conversation::with_cap(10);
-    conv.push(&rows_with(10, "needle", &[1, 8]));
+    conv.push(rows_of(&rows_with(10, "needle", &[1, 8])));
     let mut search = super::Search::new(&conv, 9);
-    search.set_query(&conv, "needle");
+    search.set_query(&mut conv, "needle", 80);
     assert_eq!(search.status(), "2/2");
-    conv.push(&rows(5)); // l1 goes
-    search.catch_up(&conv);
+    conv.push(rows_of(&rows(5))); // l1 goes
+    search.catch_up(&mut conv, 80);
     assert_eq!(search.status(), "1/1");
     drop(s.view(ViewOp::Bottom));
 }
@@ -392,7 +397,7 @@ fn a_write_out_during_a_search_writes_plain_rows_and_the_search_survives() {
         "the search is still on: {:?}",
         t.grid()[7]
     );
-    t.s.push(&rows_with(1, "needle", &[0]));
+    t.s.push(rows_of(&rows_with(1, "needle", &[0])));
     t.draw();
     let mark = t.buf.bytes().len();
     t.s.leave().unwrap();

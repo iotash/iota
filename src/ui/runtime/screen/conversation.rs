@@ -1,17 +1,19 @@
-//! The conversation buffer of the full screen: every committed row, the wrap of each row at the
-//! width the screen has, and where the viewport is.
+//! The conversation buffer of the full screen: every committed block, its lines at the width the
+//! screen has, and where the viewport is.
 //!
-//! - **Rows** are the rendered ANSI strings the app committed (T-05), each with its display width
-//!   measured once. A row as wide as the screen or narrower is one display line; a wider one is
-//!   hard-wrapped by `wrap_ansi` and the result is cached with the width it was wrapped at, so a
-//!   draw wraps a row once per width, not once per frame.
-//! - **The view** either follows the tail or is anchored on a ROW: the display line at the
-//!   viewport's top is `(row, line within it)`. New output appends below and moves nothing; a
-//!   resize keeps the anchored row at the top (its line clamped to its new height). Scrolling up
+//! - **Blocks** are what the app committed (`ui::block`): fixed rows, and blocks laid out from
+//!   their source. A block's display lines at a width are computed when a draw first needs them at
+//!   that width and cached with it — a row as wide as the screen or narrower is its own line and
+//!   costs nothing; a wider one is wrapped by `wrap_ansi`; a laid-out block is rendered from its
+//!   source. A width change therefore re-lays-out exactly the blocks a draw touches, and the rest
+//!   when (if ever) the view reaches them.
+//! - **The view** either follows the tail or is anchored on a BLOCK: the display line at the
+//!   viewport's top is `(block, line within it)`. New output appends below and moves nothing; a
+//!   resize keeps the anchored block at the top (its line clamped to its new height). Scrolling up
 //!   leaves the tail; getting back to the bottom (scrolling down to it, or `Ctrl+End`) follows it
-//!   again. Rows committed while the view is anchored are counted for the `↓ N new lines` row.
-//! - **The cap**: past [`ROW_CAP`] rows the oldest are dropped and a first row says so. The
-//!   session log (`messages.jsonl`) holds everything; `/export` writes it out.
+//!   again. Blocks committed while the view is anchored are counted for the `↓ N new lines` row.
+//! - **The cap**: past [`BLOCK_CAP`] blocks the oldest are dropped — each one whole — and a first
+//!   row says so. The session log (`messages.jsonl`) holds everything; `/export` writes it out.
 //!
 //! Every walk is bounded by what it covers — a viewport's lines, a scroll step's lines — never by
 //! the depth of the session.
@@ -19,57 +21,84 @@
 use std::collections::VecDeque;
 
 use crate::text::ansi::{ansi_width, strip_sgr, wrap_ansi};
+use crate::ui::block::Block;
 use crate::ui::render::theme::{FAINT, RESET};
 use crate::ui::surface::search::{highlight_line, match_ranges};
 
-/// The most rows the buffer keeps (tui-plan §1: 200k rows, ~20–40 MB).
-pub(crate) const ROW_CAP: usize = 200_000;
+/// The most blocks the buffer keeps (tui-plan §1: 200k rows, ~20–40 MB; a block is a row or a
+/// laid-out source, so this is at least as many rows).
+pub(crate) const BLOCK_CAP: usize = 200_000;
 
-/// The row standing in for the rows the cap dropped.
+/// The row standing in for the blocks the cap dropped.
 pub(crate) const TRIMMED: &str = "earlier output trimmed — /export has the full text";
 
-/// One committed row and its wrap at the last width it was drawn at, when it is wider than that.
-struct Row {
-    text: String,
+/// One committed block and its display lines at the last width they were needed at.
+struct Entry {
+    block: Block,
+    /// A row's display width (a laid-out block: 0, unused).
     cols: usize,
-    wrap: Option<(usize, Vec<String>)>,
+    lines: Option<(usize, Vec<String>)>,
 }
 
-impl Row {
-    fn new(text: String) -> Self {
+impl Entry {
+    fn new(block: Block) -> Self {
+        let cols = match &block {
+            Block::Row(t) => ansi_width(t),
+            Block::Laid(_) => 0,
+        };
         Self {
-            cols: ansi_width(&text),
-            text,
-            wrap: None,
+            block,
+            cols,
+            lines: None,
         }
     }
 
-    /// The row's display lines at `width`.
+    /// The block's display lines at `width`.
     fn lines(&mut self, width: usize) -> &[String] {
-        if self.cols <= width {
-            return std::slice::from_ref(&self.text);
+        if let Block::Row(t) = &self.block
+            && self.cols <= width
+        {
+            return std::slice::from_ref(t);
         }
-        if self.wrap.as_ref().is_none_or(|(w, _)| *w != width) {
-            self.wrap = Some((width, wrap_ansi(&self.text, width)));
+        if self.lines.as_ref().is_none_or(|(w, _)| *w != width) {
+            self.lines = Some((width, self.block.display(width)));
         }
-        self.wrap
+        self.lines
             .as_ref()
             .map_or(&[], |(_, lines)| lines.as_slice())
     }
 
+    /// At least one line: an empty laid-out block still holds its place.
     fn height(&mut self, width: usize) -> usize {
         self.lines(width).len().max(1)
+    }
+
+    /// What a search scans: a row's text as written (its wrap does not split a match), a
+    /// laid-out block's lines at `width` joined by `\n` (no query matches across two of them).
+    fn text(&mut self, width: usize) -> String {
+        match &self.block {
+            Block::Row(t) => t.clone(),
+            Block::Laid(_) => self.lines(width).join("\n"),
+        }
+    }
+
+    /// The bytes between two of the lines [`Entry::text`] joins.
+    const fn joint(&self) -> usize {
+        match self.block {
+            Block::Row(_) => 0,
+            Block::Laid(_) => 1,
+        }
     }
 }
 
 /// What a draw highlights while a search is on: every occurrence of `query`, and brighter the
-/// one n/p is parked on (row number, byte offset).
+/// one n/p is parked on (block number, byte offset in its search text).
 pub(crate) struct Highlight<'a> {
     pub(crate) query: &'a str,
     pub(crate) current: Option<(u64, usize)>,
 }
 
-/// A display line: a row and a line within its wrap.
+/// A display line: a block and a line within it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Pos {
     pub(crate) row: usize,
@@ -87,7 +116,7 @@ enum View {
 
 /// The buffer, its wrap cache and the view (module docs).
 pub(crate) struct Conversation {
-    rows: VecDeque<Row>,
+    rows: VecDeque<Entry>,
     cap: usize,
     /// Whether rows were dropped; `rows[0]` is then the [`TRIMMED`] row.
     trimmed: bool,
@@ -105,7 +134,7 @@ pub(crate) struct Conversation {
 
 impl Conversation {
     pub(crate) fn new() -> Self {
-        Self::with_cap(ROW_CAP)
+        Self::with_cap(BLOCK_CAP)
     }
 
     pub(crate) fn with_cap(cap: usize) -> Self {
@@ -121,21 +150,22 @@ impl Conversation {
         }
     }
 
-    /// Appends committed rows; past the cap, drops the oldest (the anchor moves with its row, or
-    /// to the top when its row was dropped).
-    pub(crate) fn push(&mut self, rows: &[String]) {
-        self.rows.extend(rows.iter().map(|t| Row::new(t.clone())));
-        self.fresh += rows.len();
-        self.pushed += rows.len() as u64;
+    /// Appends committed blocks; past the cap, drops the oldest, each whole (the anchor moves
+    /// with its block, or to the top when its block was dropped).
+    pub(crate) fn push(&mut self, blocks: Vec<Block>) {
+        let n = blocks.len();
+        self.rows.extend(blocks.into_iter().map(Entry::new));
+        self.fresh += n;
+        self.pushed += n as u64;
         if matches!(self.view, View::At(_)) {
-            self.unseen += rows.len();
+            self.unseen += n;
         }
         if self.rows.len() <= self.cap {
             return;
         }
         if !self.trimmed {
             self.rows
-                .push_front(Row::new(format!("{FAINT}{TRIMMED}{RESET}")));
+                .push_front(Entry::new(Block::Row(format!("{FAINT}{TRIMMED}{RESET}"))));
             self.trimmed = true;
             if let View::At(p) = &mut self.view {
                 p.row += 1;
@@ -195,15 +225,22 @@ impl Conversation {
         (index >= kept).then(|| self.first_number() + (index - kept) as u64)
     }
 
-    /// The rows numbered `from` on, as (number, text) — what a search scans.
-    pub(crate) fn texts_from(&self, from: u64) -> impl Iterator<Item = (u64, &str)> {
+    /// The number of the oldest block still held (blocks are numbered as they are committed; the
+    /// [`TRIMMED`] row has none).
+    pub(crate) fn first_held(&self) -> u64 {
+        self.first_number()
+    }
+
+    /// The blocks numbered `from` on, as (number, search text at `width`) — what a search scans.
+    pub(crate) fn texts_from(&mut self, from: u64, width: usize) -> Vec<(u64, String)> {
         let first = self.first_number().max(from);
         let skip = self.index_of(first).unwrap_or(self.rows.len());
         self.rows
-            .iter()
+            .iter_mut()
             .skip(skip)
             .zip(first..)
-            .map(|(r, n)| (n, r.text.as_str()))
+            .map(|(e, n)| (n, e.text(width)))
+            .collect()
     }
 
     /// The rows ever committed: the next row's number.
@@ -233,18 +270,19 @@ impl Conversation {
         }
     }
 
-    /// Anchors the view so the display line holding byte `off` of row `n`'s plain text is in the
-    /// middle of the viewport — in a wrapped row, the line that byte was wrapped onto.
+    /// Anchors the view so the display line holding byte `off` of block `n`'s search text is in
+    /// the middle of the viewport — in a wrapped row, the line that byte was wrapped onto.
     pub(crate) fn jump_to(&mut self, n: u64, off: usize, width: usize, h: usize) {
         let Some(row) = self.index_of(n) else {
             return;
         };
+        let joint = self.rows[row].joint();
         let mut seen = 0;
         let line = self.rows[row]
             .lines(width)
             .iter()
             .position(|l| {
-                seen += strip_sgr(l).len();
+                seen += strip_sgr(l).len() + joint;
                 off < seen
             })
             .unwrap_or(0);
@@ -405,8 +443,8 @@ impl Conversation {
         out
     }
 
-    /// Row number `n`'s display lines at `width`, SGR stripped (what a selection copies); `None`
-    /// once the cap has dropped it.
+    /// Block number `n`'s display lines at `width`, SGR stripped (what a selection copies);
+    /// `None` once the cap has dropped it.
     pub(crate) fn plain_lines(&mut self, n: u64, width: usize) -> Option<Vec<String>> {
         let i = self.index_of(n)?;
         Some(
@@ -418,23 +456,47 @@ impl Conversation {
         )
     }
 
-    /// Row `index`'s lines at `width` with the search's matches highlighted, or `None` when it has
-    /// none (the cached lines serve then).
-    fn highlighted(&self, index: usize, width: usize, hl: &Highlight<'_>) -> Option<Vec<String>> {
-        let row = &self.rows[index];
-        if match_ranges(&strip_sgr(&row.text), hl.query).is_empty() {
-            return None;
-        }
+    /// Block `index`'s lines at `width` with the search's matches highlighted, or `None` when it
+    /// has none (the cached lines serve then). A row is highlighted BEFORE it is wrapped, so a
+    /// match its wrap splits is lit on both lines; a laid-out block line by line.
+    fn highlighted(
+        &mut self,
+        index: usize,
+        width: usize,
+        hl: &Highlight<'_>,
+    ) -> Option<Vec<String>> {
         let n = self.number_of(index);
         let cur = hl
             .current
             .and_then(|(cn, off)| (Some(cn) == n).then_some(off));
-        let lit = highlight_line(&row.text, hl.query, cur);
-        Some(if row.cols > width {
-            wrap_ansi(&lit, width)
-        } else {
-            vec![lit]
-        })
+        let entry = &mut self.rows[index];
+        if let Block::Row(text) = &entry.block {
+            if match_ranges(&strip_sgr(text), hl.query).is_empty() {
+                return None;
+            }
+            let lit = highlight_line(text, hl.query, cur);
+            return Some(if entry.cols > width {
+                wrap_ansi(&lit, width)
+            } else {
+                vec![lit]
+            });
+        }
+        let mut base = 0;
+        let mut any = false;
+        let mut out = Vec::new();
+        for line in entry.lines(width) {
+            let len = strip_sgr(line).len();
+            if match_ranges(&strip_sgr(line), hl.query).is_empty() {
+                out.push(line.clone());
+            } else {
+                any = true;
+                let here =
+                    cur.and_then(|off| (base..base + len).contains(&off).then(|| off - base));
+                out.push(highlight_line(line, hl.query, here));
+            }
+            base += len + 1;
+        }
+        any.then_some(out)
     }
 
     /// Anchors the view at `top`, leaving the tail.

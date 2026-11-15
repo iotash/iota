@@ -19,7 +19,7 @@ use crate::text::width::str_width;
 
 use crate::repl::render::group::ask_record_lines;
 use crate::repl::render::styles::{dim, reverse};
-use crate::repl::render::uisink::LineCommitter;
+use crate::ui::facade::{Block, Layout};
 
 /// How many rounds a resume replays (chat/replay.go:19 `resumeEchoRounds`). Every path takes the same cap:
 /// the interactive `/resume`, `-c`, `iota resume` and a bot. The full screen replayed everything for a
@@ -125,9 +125,63 @@ pub(crate) fn echo_image(
     out
 }
 
+/// The echo being built: rows written as text (each line `\n`-terminated), and the laid-out
+/// blocks between them — the user blocks and the reply's closed markdown blocks, which keep their
+/// source and are laid out at the width of every draw like the live ones (tui-plan S7a).
+#[derive(Default)]
+struct Echo {
+    text: String,
+    out: Vec<Block>,
+}
+
+impl Echo {
+    fn write(&mut self, s: &str) {
+        self.text.push_str(s);
+    }
+
+    /// The written text so far as rows (one trailing newline dropped; an escape-only line glued
+    /// onto the row before it, the `LineCommitter` rule), then `blocks`.
+    fn extend(&mut self, blocks: impl IntoIterator<Item = Block>) {
+        self.cut();
+        self.out.extend(blocks);
+    }
+
+    fn cut(&mut self) {
+        let text = std::mem::take(&mut self.text);
+        if text.is_empty() {
+            return;
+        }
+        let text = text.strip_suffix('\n').unwrap_or(&text);
+        for ln in text.split('\n') {
+            if !ln.is_empty()
+                && crate::text::ansi::strip_sgr(ln).is_empty()
+                && let Some(Block::Row(last)) = self.out.last_mut()
+            {
+                last.push_str(ln);
+                continue;
+            }
+            self.out.push(Block::from(ln));
+        }
+    }
+
+    fn finish(mut self) -> Vec<Block> {
+        self.cut();
+        self.out
+    }
+}
+
+/// A replayed user message: [`print_user_block`] at the width of the draw.
+struct EchoUser(String);
+
+impl Layout for EchoUser {
+    fn lines(&self, width: usize) -> Vec<String> {
+        print_user_block(&self.0, width)
+    }
+}
+
 /// Commits the round's aggregated tool-activity line, once something else is about to
 /// print (or the replay ends), so it lands ABOVE the round's reply like the live summary.
-fn flush_tools(w: &mut LineCommitter, n: &mut u32) {
+fn flush_tools(w: &mut Echo, n: &mut u32) {
     if *n == 0 {
         return;
     }
@@ -137,8 +191,9 @@ fn flush_tools(w: &mut LineCommitter, n: &mut u32) {
     *n = 0;
 }
 
-/// Replays `msgs` (as returned by [`resume_echo`]) as display lines, at `width` columns
-/// (chat/replay.go:56-160 `echoRounds`).
+/// Replays `msgs` (as returned by [`resume_echo`]) as conversation blocks (chat/replay.go:56-160
+/// `echoRounds`): the user blocks and the replies' closed markdown blocks laid out at the width of
+/// every draw, the images (sized at `width` columns) and the activity lines as rows.
 ///
 /// `interactive` reports whether a tool's results are the USER's answers (the ask set):
 /// those replay as `"?"` record blocks through the live renderer, everything else folds
@@ -152,8 +207,8 @@ pub(crate) fn echo_rounds(
     interactive: impl Fn(&str) -> bool,
     width: usize,
     img_dir: Option<&Path>,
-) -> Vec<String> {
-    let mut w = LineCommitter::default();
+) -> Vec<Block> {
+    let mut w = Echo::default();
     // Assistant attachment names in this window: a user attachment with the same name is
     // the /edit canvas copy of an image rendered elsewhere in the echo — repeating it as a
     // marker is pure noise. When the canvas's source round fell outside the window the
@@ -178,10 +233,7 @@ pub(crate) fn echo_rounds(
             }
             Role::User => {
                 flush_tools(&mut w, &mut tool_results);
-                for row in print_user_block(&msg.content, width) {
-                    w.write(&row);
-                    w.write("\n");
-                }
+                w.extend([Block::laid(EchoUser(msg.content.clone()))]);
                 // Named per-file lines instead of a bare count; canvas copies are
                 // suppressed (see `rendered`).
                 for att in &msg.attachments {
@@ -207,7 +259,7 @@ pub(crate) fn echo_rounds(
                 }
                 flush_tools(&mut w, &mut tool_results);
                 if !msg.content.is_empty() {
-                    w.write(&render_markdown(msg.content.trim_end_matches('\n'), width));
+                    w.extend(render_markdown(msg.content.trim_end_matches('\n'), width));
                 }
                 // Generated images re-render as half-blocks, mirroring the live turn (same size
                 // caps and indent); a decode failure or a non-image attachment falls back to the
@@ -245,7 +297,7 @@ pub(crate) fn echo_rounds(
         }
     }
     flush_tools(&mut w, &mut tool_results);
-    w.flush()
+    w.finish()
 }
 
 /// Renders one message as a stack of full-width reversed rows (chat/replay.go:196-215
@@ -270,13 +322,14 @@ pub(crate) fn print_user_block(display: &str, width: usize) -> Vec<String> {
         .collect()
 }
 
-/// One-shot markdown render of a replayed reply, always newline-terminated.
+/// One-shot markdown render of a replayed reply, its rows always newline-terminated.
 ///
 /// `Writer::write` consumes complete lines and `flush` may leave the trailing one
 /// unterminated; closing it here (and only when needed) keeps the round separator at
-/// exactly one blank line — the live loop's spacing.
-fn render_markdown(content: &str, width: usize) -> String {
-    let out = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+/// exactly one blank line — the live loop's spacing. `width` is the layout width of the
+/// renderer's spacing decisions only: every closed block is kept as its source.
+fn render_markdown(content: &str, width: usize) -> Vec<Block> {
+    let out = std::sync::Arc::new(std::sync::Mutex::new(Echo::default()));
     let mut mdw = crate::markdown::Writer::new(
         Box::new(EchoSink {
             out: std::sync::Arc::clone(&out),
@@ -289,22 +342,27 @@ fn render_markdown(content: &str, width: usize) -> String {
     );
     mdw.write(content.as_bytes());
     mdw.flush();
-    let mut s = std::mem::take(&mut *lock(&out));
-    if !s.ends_with('\n') {
-        s.push('\n');
+    drop(mdw);
+    let mut echo = std::mem::take(&mut *lock(&out));
+    if !echo.text.is_empty() && !echo.text.ends_with('\n') {
+        echo.text.push('\n');
     }
-    s
+    echo.finish()
 }
 
 /// The replay's markdown sink: a fixed width and no previews (nothing is streaming).
 struct EchoSink {
-    out: std::sync::Arc<std::sync::Mutex<String>>,
+    out: std::sync::Arc<std::sync::Mutex<Echo>>,
     width: usize,
 }
 
 impl crate::markdown::sink::Sink for EchoSink {
     fn write(&mut self, rendered: &str) {
-        lock(&self.out).push_str(rendered);
+        lock(&self.out).write(rendered);
+    }
+
+    fn write_block(&mut self, block: crate::markdown::Fragment, _rendered: &str) {
+        lock(&self.out).extend([Block::laid(block)]);
     }
 
     fn width(&self) -> usize {
@@ -373,8 +431,13 @@ mod tests {
         false
     }
 
-    fn plain(lines: &[String]) -> String {
-        lines
+    /// The echo's blocks laid out at 80 columns, as lines.
+    fn rendered(blocks: &[crate::ui::facade::Block]) -> Vec<String> {
+        blocks.iter().flat_map(|b| b.render(80)).collect()
+    }
+
+    fn plain(blocks: &[crate::ui::facade::Block]) -> String {
+        rendered(blocks)
             .iter()
             .map(|l| strip_sgr(l))
             .collect::<Vec<_>>()
@@ -580,7 +643,8 @@ mod tests {
             tool("choose", "boom").with_error(true),
             tool("confirm", "  \n"),
         ];
-        let lines = echo_rounds(&msgs, |_| true, 80, None);
+        let blocks = echo_rounds(&msgs, |_| true, 80, None);
+        let lines = rendered(&blocks);
         let styled_first = crate::repl::render::group::ask_record_lines("boom", true)
             .first()
             .cloned()
@@ -590,7 +654,7 @@ mod tests {
             "an errored ask must replay with the live error styling: {lines:?}"
         );
         assert!(
-            plain(&lines).contains("? (no answer)"),
+            plain(&blocks).contains("? (no answer)"),
             "an empty ask must replay as \"(no answer)\": {lines:?}"
         );
     }
@@ -703,7 +767,11 @@ mod tests {
             data: vec![1],
         };
 
-        let out = plain(&echo_image(&att, 100, Some(dir.path())));
+        let out = plain(&crate::ui::facade::Block::rows(echo_image(
+            &att,
+            100,
+            Some(dir.path()),
+        )));
         assert!(
             out.contains(&path.to_string_lossy().into_owned()),
             "the caption must carry the on-disk path:\n{out}"
@@ -713,7 +781,11 @@ mod tests {
             filename: "gone.png".to_owned(),
             ..att.clone()
         };
-        let out = plain(&echo_image(&gone, 100, Some(dir.path())));
+        let out = plain(&crate::ui::facade::Block::rows(echo_image(
+            &gone,
+            100,
+            Some(dir.path()),
+        )));
         assert!(
             !out.contains(&dir.path().to_string_lossy().into_owned()) && out.contains("gone.png"),
             "a missing file must fall back to the bare name:\n{out}"

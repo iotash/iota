@@ -22,6 +22,7 @@
 //! preview-pays-separator law, for all five buffering block types.
 
 pub(crate) mod blocks;
+pub(crate) mod fragment;
 pub mod highlight;
 pub(crate) mod html;
 pub(crate) mod inline;
@@ -30,6 +31,7 @@ pub(crate) mod preview;
 pub(crate) mod sink;
 pub(crate) mod style;
 
+pub use fragment::Fragment;
 pub use highlight::{CodeHighlighter, PlainIndent, SyntectHighlighter};
 pub use link::hyperlink;
 pub use preview::PreviewHandle;
@@ -206,8 +208,8 @@ impl Writer {
         if let Some((body, one_line)) = display_open(line) {
             self.flush_block();
             if one_line {
-                let body = MathBlock::one_line(body).render(self.term_width());
-                self.render_block(body);
+                let block = MathBlock::one_line(body).finish(self.opts);
+                self.render_block(block);
             } else {
                 let view = self.open_preview(MathBlock::LABEL);
                 self.block = Block::Math(MathBlock::open(view));
@@ -269,36 +271,37 @@ impl Writer {
     /// routed through `emit_blank` so it joins the blank-run collapse. A fence leaves the
     /// display-math block it interrupted open again (`CodeBlock::interrupted`).
     fn flush_block(&mut self) {
-        let width = self.term_width();
         let opts = self.opts;
         let mut resumed = None;
-        let (body, held_blank) = match std::mem::replace(&mut self.block, Block::None) {
+        let (block, held_blank) = match std::mem::replace(&mut self.block, Block::None) {
             Block::None => return,
             Block::Code(mut code) => {
                 resumed = code.take_interrupted();
-                (Some(code.render(opts)), false)
+                (Some(code.finish(opts)), false)
             }
-            Block::Table(table) => (table.render(width, opts.color), false),
+            Block::Table(table) => (table.finish(opts), false),
             Block::List(list) => {
                 let held = list.holds_blank();
-                (list.render(opts.color), held)
+                (list.finish(opts), held)
             }
-            Block::Quote(quote) => (quote.render(width, opts), false),
-            Block::Math(math) => (math.render(width), false),
+            Block::Quote(quote) => (quote.finish(opts), false),
+            Block::Math(math) => (math.finish(opts), false),
         };
-        self.render_block(body);
+        self.render_block(block);
         if held_blank {
             self.emit_blank();
         }
         self.block = resumed.map_or(Block::None, Block::Math);
     }
 
-    /// Writes a rendered block between `begin_block` and `end_block`; `None` (an empty
-    /// table, quote or formula) writes nothing and leaves the paid gap credit untouched.
-    fn render_block(&mut self, body: Option<String>) {
-        if let Some(body) = body {
+    /// Writes a closed block between `begin_block` and `end_block`, as its source
+    /// ([`Sink::write_block`]) together with its rendering at the sink's live width; `None` (an
+    /// empty table, quote or formula) writes nothing and leaves the paid gap credit untouched.
+    fn render_block(&mut self, block: Option<Fragment>) {
+        if let Some(block) = block {
+            let rendered = block.render(self.term_width());
             self.begin_block();
-            self.sink.write(&body);
+            self.sink.write_block(block, &rendered);
             self.end_block();
         }
     }

@@ -1,5 +1,7 @@
 //! `uiMDSink` (chat/uisink.go): the `crate::markdown::sink::Sink` implementation over the
-//! facade — batches ALL complete lines of one write into ONE commit (the anti-crawl law),
+//! facade — batches ALL complete lines of one write into ONE commit (the anti-crawl law), commits
+//! each closed buffering block as ONE block kept as its source (`markdown::Fragment`, laid out
+//! again at every width the screen takes — tui-plan S7a),
 //! materializes the transcript's latched separator before a preview opens (`preOpen`),
 //! and hands the facade's `PreviewHandle` straight through to the renderer (the same trait,
 //! `crate::markdown::preview`) — plus `lineCommitter` (the SGR-reset glue rule).
@@ -8,14 +10,15 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::repl::render::styles::dim;
 use crate::sync::lock;
+use crate::ui::facade::Block;
 
 /// Opens the facade's metered one-row preview for a label (the `StreamSink::block_preview`
 /// verb, pre-bound by the turn).
 pub(crate) type PreviewFn =
     Box<dyn FnMut(&str) -> Box<dyn crate::ui::facade::PreviewHandle> + Send>;
 
-/// Commits one batch of rendered lines (the transcript's content-block committer).
-pub(crate) type CommitFn = Box<dyn FnMut(Vec<String>) + Send>;
+/// Commits one batch of blocks (the transcript's content-block committer).
+pub(crate) type CommitFn = Box<dyn FnMut(Vec<Block>) + Send>;
 
 struct MdSinkInner {
     preview: PreviewFn,
@@ -57,7 +60,7 @@ impl UiMdSink {
         let mut g = self.lock();
         if !g.buf.is_empty() {
             let tail = std::mem::take(&mut g.buf);
-            (g.commit)(vec![tail]);
+            (g.commit)(vec![Block::Row(tail)]);
         }
     }
 
@@ -76,12 +79,19 @@ impl crate::markdown::sink::Sink for UiMdSink {
         g.buf.push_str(rendered);
         let mut lines = Vec::new();
         while let Some(i) = g.buf.find('\n') {
-            lines.push(g.buf[..i].to_owned());
+            lines.push(Block::Row(g.buf[..i].to_owned()));
             g.buf.drain(..=i);
         }
         if !lines.is_empty() {
             (g.commit)(lines);
         }
+    }
+
+    /// The block as its source — ONE laid-out block, re-rendered at every width the screen takes;
+    /// the rendering at today's width is not kept.
+    fn write_block(&mut self, block: crate::markdown::Fragment, _rendered: &str) {
+        let mut g = self.lock();
+        (g.commit)(vec![Block::laid(block)]);
     }
 
     fn width(&self) -> usize {
@@ -173,7 +183,10 @@ mod tests {
         let sink_batches = Arc::clone(&batches);
         let mut s = UiMdSink::new(
             Box::new(|_label| Box::new(NopPreview)),
-            Box::new(move |lines| sink_batches.lock().expect("batches").push(lines)),
+            Box::new(move |lines: Vec<crate::ui::facade::Block>| {
+                let lines = lines.iter().flat_map(|b| b.render(80)).collect();
+                sink_batches.lock().expect("batches").push(lines);
+            }),
             Box::new(|| 80),
             None,
         );

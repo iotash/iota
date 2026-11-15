@@ -20,6 +20,7 @@ use crate::repl::render::group;
 use crate::repl::render::group::ActivityGroup;
 use crate::repl::render::styles::{dim, red, truncate_runes};
 use crate::sync::lock;
+use crate::ui::facade::{Block, Layout};
 
 /// The image-generation widget's label (transcript.go:373,381).
 pub(crate) const IMAGE_WIDGET_LABEL: &str = "image";
@@ -93,33 +94,49 @@ impl Inner {
             self.orphan_sep = false;
             return;
         }
-        self.u.print_lines(vec![String::new()]);
+        self.u.print(vec![Block::Row(String::new())]);
     }
 
-    /// Commits lines into the current block (transcript.go `pushLocked`), deferring
-    /// interior blank lines until more content follows (a block never ends with trailing
-    /// blanks). Entries with embedded newlines (a provider error carrying its JSON body)
-    /// are expanded first: the latch needs line granularity, and downstream row
-    /// accounting assumes one row per line.
+    /// Commits lines into the current block (transcript.go `pushLocked`) — [`Inner::push`] over
+    /// rows.
     pub fn push_lines(&mut self, lines: &[&str]) {
-        let mut out: Vec<String> = Vec::new();
-        for chunk in lines {
+        self.push(lines.iter().map(|l| Block::from(*l)).collect());
+    }
+
+    /// Commits blocks into the current block (transcript.go `pushLocked`), deferring interior
+    /// blank lines until more content follows (a block never ends with trailing blanks). Rows with
+    /// embedded newlines (a provider error carrying its JSON body) are expanded first: the latch
+    /// needs line granularity, and downstream row accounting assumes one row per line. A laid-out
+    /// block (a table, the banner, a diff) is content, never blank: the latch releases before it.
+    pub fn push(&mut self, blocks: Vec<Block>) {
+        let mut out: Vec<Block> = Vec::new();
+        for block in blocks {
+            let Block::Row(chunk) = block else {
+                self.release(&mut out);
+                out.push(block);
+                continue;
+            };
             for ln in chunk.split('\n') {
                 let ln = ln.strip_suffix('\r').unwrap_or(ln);
                 if ln.trim().is_empty() {
                     self.pending += 1;
                     continue;
                 }
-                for _ in 0..self.pending {
-                    out.push(String::new());
-                }
-                self.pending = 0;
-                out.push(ln.to_owned());
+                self.release(&mut out);
+                out.push(Block::from(ln));
             }
         }
         if !out.is_empty() {
-            self.u.print_lines(out);
+            self.u.print(out);
         }
+    }
+
+    /// The deferred blanks, now that content follows them.
+    fn release(&mut self, out: &mut Vec<Block>) {
+        for _ in 0..self.pending {
+            out.push(Block::Row(String::new()));
+        }
+        self.pending = 0;
     }
 }
 
@@ -212,22 +229,10 @@ impl Transcript {
         if inner.last != BlockKind::Error {
             inner.begin(BlockKind::Error);
         }
-        let wrap_at = usize::from(inner.u.width()).saturating_sub(5).max(20);
-        let mut lines = vec![red(&format!("✗ {headline}"))];
-        let mut indent = "  ⎿ ";
-        for d in detail {
-            for ln in d.split('\n') {
-                if ln.trim().is_empty() {
-                    continue;
-                }
-                for row in crate::text::ansi::wrap_ansi(ln.trim_end_matches('\r'), wrap_at) {
-                    lines.push(dim(&format!("{indent}{row}")));
-                    indent = "    ";
-                }
-            }
-        }
-        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
-        inner.push_lines(&refs);
+        inner.push(vec![Block::laid(ErrorRows {
+            headline: headline.to_owned(),
+            detail: detail.to_vec(),
+        })]);
     }
 
     fn grouped(&self, kind: BlockKind, line: &str) {
@@ -249,13 +254,12 @@ impl Transcript {
         inner.push_lines(&refs);
     }
 
-    /// Replays pre-rendered history (session resume) as one block; the latch swallows its
-    /// trailing blanks, interior spacing passes through (transcript.go `echo`).
-    pub fn echo(&self, lines: &[String]) {
+    /// Replays history (session resume) as one block; the latch swallows its trailing blanks,
+    /// interior spacing passes through (transcript.go `echo`).
+    pub fn echo<B: Clone + Into<Block>>(&self, blocks: &[B]) {
         let mut inner = self.lock();
         inner.begin(BlockKind::Echo);
-        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
-        inner.push_lines(&refs);
+        inner.push(blocks.iter().cloned().map(Into::into).collect());
     }
 
     /// Clears the streaming-phase guards at the top of a stream round (transcript.go
@@ -290,7 +294,7 @@ impl Transcript {
     pub fn flush_pending(&self) {
         let mut inner = self.lock();
         for _ in 0..inner.pending {
-            inner.u.print_lines(vec![String::new()]);
+            inner.u.print(vec![Block::Row(String::new())]);
         }
         inner.pending = 0;
     }
@@ -416,16 +420,45 @@ pub struct ContentCommitter {
 }
 
 impl ContentCommitter {
-    /// Commits `lines` into the block, opening (or re-opening) it as needed.
-    pub fn push<S: AsRef<str>>(&mut self, lines: &[S]) {
+    /// Commits `blocks` (rows, or laid-out blocks) into the block, opening (or re-opening) it as
+    /// needed.
+    pub fn push<B: Clone + Into<Block>>(&mut self, blocks: &[B]) {
         let mut inner = self.tr.lock();
         if !self.opened || inner.last != BlockKind::Content {
             self.opened = true;
             group::settle_group(&mut inner);
             inner.begin(BlockKind::Content);
         }
-        let refs: Vec<&str> = lines.iter().map(AsRef::as_ref).collect();
-        inner.push_lines(&refs);
+        inner.push(blocks.iter().cloned().map(Into::into).collect());
+    }
+}
+
+/// A structured error's rows (transcript.go:207-231), laid out at the width of the draw: the red
+/// `"✗ headline"` row over dim detail rows in the tool-result idiom (`"  ⎿ "` on the first,
+/// four-space indent after), the detail wrapped under that hanging indent at width−5 (floor 20) so
+/// no row reaches the exact screen width.
+struct ErrorRows {
+    headline: String,
+    detail: Vec<String>,
+}
+
+impl Layout for ErrorRows {
+    fn lines(&self, width: usize) -> Vec<String> {
+        let wrap_at = width.saturating_sub(5).max(20);
+        let mut lines = vec![red(&format!("✗ {}", self.headline))];
+        let mut indent = "  ⎿ ";
+        for d in &self.detail {
+            for ln in d.split('\n') {
+                if ln.trim().is_empty() {
+                    continue;
+                }
+                for row in crate::text::ansi::wrap_ansi(ln.trim_end_matches('\r'), wrap_at) {
+                    lines.push(dim(&format!("{indent}{row}")));
+                    indent = "    ";
+                }
+            }
+        }
+        lines
     }
 }
 

@@ -9,7 +9,9 @@
 
 use crate::markdown::blocks::close_view;
 use crate::markdown::blocks::math::MathBlock;
+use crate::markdown::fragment::{Fragment, Source};
 use crate::markdown::{PreviewHandle, RenderOptions};
+use crate::text::ansi::{ansi_width, wrap_ansi};
 
 /// The buffering code preview label (markdown.go:1372-1377) — U+2026 ellipsis.
 pub(crate) fn code_label(lang: &str) -> String {
@@ -71,12 +73,12 @@ impl CodeBlock {
         self.interrupted.take()
     }
 
-    /// Closes the preview and renders the block; the output already carries its
-    /// trailing newline (the indentCode shape).
-    pub(crate) fn render(mut self, opts: RenderOptions) -> String {
+    /// Closes the preview and highlights the block — once: the result does not depend on the
+    /// width, only its wrap does ([`indent_code`] lays it out at one).
+    pub(crate) fn finish(mut self, opts: RenderOptions) -> Fragment {
         close_view(&mut self.view);
         let code = self.lines.join("\n");
-        render_code(&code, &self.lang, opts)
+        Fragment::new(Source::Code(highlight_code(&code, &self.lang, opts)), opts)
     }
 }
 
@@ -84,33 +86,37 @@ impl CodeBlock {
 /// preview's indent (markdown.go codeIndent) — the same two-space rule as math.
 pub(crate) const CODE_INDENT: &str = "  ";
 
-/// highlightCode twin (markdown.go:1477-1496): no-color and bare-fence inputs take
-/// the plain 2-space-indent path with zero escapes; everything else routes through
-/// the active [`crate::markdown::highlight::CodeHighlighter`] (syntect, `highlight::active`) and
-/// is then indented (T-09).
-pub(crate) fn render_code(code: &str, lang: &str, opts: RenderOptions) -> String {
-    if !opts.color {
-        return indent_code(code);
+/// highlightCode twin (markdown.go:1477-1496): no-color and bare-fence inputs pass through
+/// with zero escapes; everything else routes through the active
+/// [`crate::markdown::highlight::CodeHighlighter`] (syntect, `highlight::active`) (T-09).
+pub(crate) fn highlight_code(code: &str, lang: &str, opts: RenderOptions) -> String {
+    if !opts.color || lang.is_empty() {
+        return code.to_owned(); // a bare fence NEVER carries color sequences
     }
-    if lang.is_empty() {
-        return indent_code(code); // a bare fence NEVER carries color sequences
-    }
-    indent_code(&crate::markdown::highlight::active().highlight(code, lang, opts.code_theme))
+    crate::markdown::highlight::active().highlight(code, lang, opts.code_theme)
 }
 
-/// indentCode twin (markdown.go:1536-1543): strip one trailing newline, prefix EVERY
-/// line (blank included) with the 2-space indent, rejoin + `"\n"`. Highlighted output
-/// resets per token, so the plain indent never inherits a color.
-pub(crate) fn indent_code(code: &str) -> String {
+/// indentCode twin (markdown.go:1536-1543), laid out at `width`: strip one trailing newline,
+/// prefix EVERY line (blank included) with the 2-space indent, rejoin + `"\n"`. Highlighted
+/// output resets per token, so the plain indent never inherits a color. A line wider than
+/// `width` wraps under the same indent — the gutter holds on every row — with its SGR carried
+/// across the break (`wrap_ansi`).
+pub(crate) fn indent_code(code: &str, width: usize) -> String {
     let s = code.strip_suffix('\n').unwrap_or(code);
+    let room = width.saturating_sub(CODE_INDENT.len()).max(1);
     let mut out = String::with_capacity(s.len() + 8);
-    for (i, line) in s.split('\n').enumerate() {
-        if i > 0 {
+    for line in s.split('\n') {
+        if ansi_width(line) > room {
+            for piece in wrap_ansi(line, room) {
+                out.push_str(CODE_INDENT);
+                out.push_str(&piece);
+                out.push('\n');
+            }
+        } else {
+            out.push_str(CODE_INDENT);
+            out.push_str(line);
             out.push('\n');
         }
-        out.push_str(CODE_INDENT);
-        out.push_str(line);
     }
-    out.push('\n');
     out
 }

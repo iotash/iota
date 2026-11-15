@@ -15,6 +15,7 @@ use crate::tool::{Artifact, ArtifactKind};
 use crate::repl::render::styles::{dim, paint_label, red, truncate_runes};
 use crate::repl::render::transcript::{BlockKind, Inner, Transcript};
 use crate::text::go_duration;
+use crate::ui::facade::{Block, Layout};
 
 /// Aggregation state for one activity group (transcript.go `activityGroup`). The group
 /// owns the lifecycle widget for its whole lifetime; a content boundary (or
@@ -398,29 +399,27 @@ impl Transcript {
         is_error: bool,
     ) {
         let mut inner = self.lock();
-        let lines = match art {
+        let blocks = match art {
             Some(a) if a.kind == ArtifactKind::Diff && !a.lines.is_empty() && !is_error => {
                 let adds = a.lines.iter().filter(|l| l.starts_with('+')).count();
                 let dels = a.lines.iter().filter(|l| l.starts_with('-')).count();
-                // The dynamic diff row budget: the live screen height, floored at 24
-                // (`diffMinRows`) — a taller terminal earns a fuller diff.
-                let budget = usize::from(inner.u.height()).max(24);
-                let width = usize::from(inner.u.width());
-                let mut lines = vec![format!("{header}{}", dim(&format!("  +{adds} -{dels}")))];
-                lines.extend(crate::repl::render::diff::render_diff(
-                    &a.title,
-                    &a.lines.join("\n"),
-                    budget,
-                    width,
-                    crate::app::color::enabled(),
-                    inner.dark,
-                ));
-                lines
+                vec![
+                    Block::Row(format!("{header}{}", dim(&format!("  +{adds} -{dels}")))),
+                    Block::laid(DiffListing {
+                        title: a.title.clone(),
+                        body: a.lines.join("\n"),
+                        // The dynamic diff row budget: the live screen height, floored at 24
+                        // (`diffMinRows`) — a taller terminal earns a fuller diff.
+                        budget: usize::from(inner.u.height()).max(24),
+                        color: crate::app::color::enabled(),
+                        dark: inner.dark,
+                    }),
+                ]
             }
             _ => {
                 let mut lines = vec![header.to_owned()];
                 lines.extend(classic_result(result, is_error));
-                lines
+                Block::rows(lines)
             }
         };
         inner.grp = ActivityGroup::default();
@@ -428,8 +427,7 @@ impl Transcript {
             inner.begin(BlockKind::Activity);
         }
         inner.u.close_preview();
-        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
-        inner.push_lines(&refs);
+        inner.push(blocks);
     }
 
     /// Raises the thinking segment into the group's widget (transcript.go
@@ -551,4 +549,28 @@ impl ThinkingMeter {
 /// changing its look (chat/run.go:1247-1253 `composingLabel`; `"tool"` when nameless).
 pub(crate) fn composing_label(name: &str) -> String {
     paint_label(&crate::tool::fmt::composing_label(name))
+}
+
+/// A file mutation's annotated diff listing (`render_diff`), laid out at the width of the draw:
+/// the code truncated and the ± background blocks padded to the width the screen has, the
+/// line-number gutter kept. The row budget is the one the screen earned when the call settled.
+struct DiffListing {
+    title: String,
+    body: String,
+    budget: usize,
+    color: bool,
+    dark: bool,
+}
+
+impl Layout for DiffListing {
+    fn lines(&self, width: usize) -> Vec<String> {
+        crate::repl::render::diff::render_diff(
+            &self.title,
+            &self.body,
+            self.budget,
+            width,
+            self.color,
+            self.dark,
+        )
+    }
 }

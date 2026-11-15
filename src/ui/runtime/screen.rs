@@ -236,9 +236,10 @@ impl<W: Write> Screen<W> {
         self.copied.take()
     }
 
-    /// Appends committed rows to the conversation. Nothing is written: the next draw shows them.
-    pub(crate) fn push(&mut self, rows: &[String]) {
-        self.conv.push(rows);
+    /// Appends committed blocks to the conversation. Nothing is written: the next draw lays out
+    /// what it shows.
+    pub(crate) fn push(&mut self, blocks: Vec<Block>) {
+        self.conv.push(blocks);
     }
 
     /// Whether the view is scrolled back from the tail.
@@ -457,7 +458,7 @@ impl<W: Write> Screen<W> {
             }
             SearchOp::Query(q) => {
                 if let Some(s) = &mut self.search {
-                    s.set_query(&self.conv, &q);
+                    s.set_query(&mut self.conv, &q, width);
                     match s.current() {
                         Some((n, off)) => self.conv.jump_to(n, off, width, h),
                         None => self.conv.restore(s.origin(), width, h),
@@ -581,7 +582,7 @@ impl<W: Write> Screen<W> {
         let view_h = height - frame_h;
         self.view_h = view_h;
         if let Some(s) = &mut self.search {
-            s.catch_up(&self.conv);
+            s.catch_up(&mut self.conv, usize::from(width));
         }
         let lines = self.view_lines(usize::from(width), usize::from(view_h), prompt);
         let fresh = self.conv.take_fresh(usize::from(width));
@@ -931,6 +932,7 @@ impl<W: Write> Backend for Out<W> {
 mod conversation;
 pub(crate) mod search;
 
+use crate::ui::block::Block;
 use conversation::Conversation;
 use search::{Search, SearchOp};
 

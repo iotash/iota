@@ -32,6 +32,7 @@ use std::time::Duration;
 use crate::BoxFuture;
 use crate::text::ansi::wrap_by_width;
 use crate::text::width::str_width;
+use crate::ui::block::{Block, Layout};
 use crate::ui::facade::{
     BusyGuard, Delivered, Dialogs, Input, ProgressState, ScopeGuard, StatusData, Suggestion,
     TabbedResult, TabbedSpec, TurnBusy, Ui, UiError, UiStreamSink, sanitize_window_title,
@@ -251,6 +252,26 @@ impl TuiHandle {
     fn suspend_on_sigtstp(&self) {}
 }
 
+/// The submitted input as full-width reversed rows with the `"❯ "` gutter (ui.go:224-243), laid
+/// out from its text at the width of the draw — the reverse video fills the row at any width.
+struct UserBlock(String);
+
+impl Layout for UserBlock {
+    fn lines(&self, width: usize) -> Vec<String> {
+        let w = width.max(8);
+        let gutter = 2;
+        wrap_by_width(&self.0, w - gutter)
+            .into_iter()
+            .enumerate()
+            .map(|(i, row)| {
+                let g = if i == 0 { "❯ " } else { "  " };
+                let pad = (w - gutter).saturating_sub(str_width(&row));
+                format!("{REV_ON}{g}{row}{}{RESET}", " ".repeat(pad))
+            })
+            .collect()
+    }
+}
+
 impl Ui for TuiHandle {
     fn read_input<'a>(
         &'a self,
@@ -418,27 +439,15 @@ impl Ui for TuiHandle {
         })
     }
 
-    fn print_lines(&self, lines: Vec<String>) {
-        if lines.is_empty() {
+    fn print(&self, blocks: Vec<Block>) {
+        if blocks.is_empty() {
             return; // ui.go:220-222
         }
-        lock(&self.region).commit(lines);
+        lock(&self.region).commit(blocks);
     }
 
     fn user_block(&self, display: &str) {
-        // Full-width reversed rows with the "❯ " gutter (ui.go:224-243).
-        let w = usize::from(self.width.load(Ordering::Relaxed)).max(8);
-        let gutter = 2;
-        let styled: Vec<String> = wrap_by_width(display, w - gutter)
-            .into_iter()
-            .enumerate()
-            .map(|(i, row)| {
-                let g = if i == 0 { "❯ " } else { "  " };
-                let pad = (w - gutter).saturating_sub(str_width(&row));
-                format!("{REV_ON}{g}{row}{}{RESET}", " ".repeat(pad))
-            })
-            .collect();
-        lock(&self.region).commit(styled);
+        lock(&self.region).commit(vec![Block::laid(UserBlock(display.to_owned()))]);
     }
 
     fn start_stream(&self, cancel: CancellationToken) -> Box<dyn UiStreamSink> {
@@ -932,7 +941,7 @@ mod tests {
         let h = start_facade();
         h.wait_frame();
         let tail = ["tail-one", "tail-two", "tail-three", "tail-four"];
-        h.ui.print_lines(tail.iter().map(|s| (*s).to_owned()).collect());
+        h.ui.print(crate::ui::block::Block::rows(tail));
         assert!(
             h.wait_until(Duration::from_secs(2), |h| h
                 .contents()

@@ -9,11 +9,17 @@
 //! unit (the T-03 replacement), X-55's sync rule on whole writes, wide graphemes, the OSC
 //! sequences, the exit, and a resize as one repaint with no cursor query anywhere.
 
+use crate::ui::block::Block;
 use std::io::{self};
 use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
+
+/// Committed rows as the buffer's blocks.
+fn rows_of(lines: &[String]) -> Vec<Block> {
+    Block::rows(lines.iter().cloned())
+}
 
 use ratatui::layout::Size;
 
@@ -279,7 +285,7 @@ fn snapshot_implies_draw_and_cursor_restored() {
     let pos0 = h.cursor();
 
     for line in ["insert-alpha", "insert-beta"] {
-        h.tx.send(UiMsg::Scrollback(vec![line.to_owned()])).unwrap();
+        h.tx.send(UiMsg::Scrollback(Block::rows([line]))).unwrap();
         h.tx.send(UiMsg::Region(RegionSnapshot::default())).unwrap();
         assert!(
             h.wait_until(Duration::from_secs(1), |h| h.contents().contains(line)
@@ -317,7 +323,7 @@ fn composer(draft: &str) -> crate::ui::render::frame::FrameView {
 fn exact_width_line_shows_as_a_single_row() {
     let (mut t, buf) = direct_term();
     let full = "x".repeat(80);
-    t.push(std::slice::from_ref(&full));
+    t.push(Block::rows([full.clone()]));
     t.draw_frame(&composer(""), None).unwrap();
     let p = parse(&buf);
     let contents = p.screen().contents();
@@ -399,7 +405,7 @@ fn a_write_is_one_synchronized_update_exactly_when_it_is_longer_than_sync_min() 
     );
     let (_, pairs) = write(&mut t, &|t| {
         t.begin_batch();
-        t.push(&["one line of output".to_owned()]);
+        t.push(rows_of(&["one line of output".to_owned()]));
         t.draw_frame(&composer("h"), None).unwrap();
         t.end_batch().unwrap();
     });
@@ -429,7 +435,7 @@ fn a_write_is_one_synchronized_update_exactly_when_it_is_longer_than_sync_min() 
         .collect();
     let (n, pairs) = write(&mut t, &|t| {
         t.begin_batch();
-        t.push(&wide);
+        t.push(rows_of(&wide));
         t.draw_frame(&composer("hi"), None).unwrap();
         t.end_batch().unwrap();
     });
@@ -475,7 +481,7 @@ fn a_frame_that_shrinks_leaves_no_ghost() {
         parse(&buf).screen().contents().contains("SURFGHOST-row"),
         "tall frame never painted"
     );
-    t.push(&["after-one".to_owned()]);
+    t.push(rows_of(&["after-one".to_owned()]));
     t.draw_frame(&composer(""), None).unwrap();
     let p = parse(&buf);
     let contents = p.screen().contents();
@@ -502,9 +508,9 @@ fn wide_runes_show_intact() {
     // The user-echo shape: a padded, styled row (the padding is what makes the row's trailing
     // cells non-blank, which is where a fallback path would desync).
     let row = format!("\x1b[7m❯ 中文一行{}\x1b[0m", " ".repeat(80 - 2 - 8));
-    t.push(std::slice::from_ref(&row));
+    t.push(Block::rows([row.clone()]));
     // The unpadded markdown shape must stay intact too.
-    t.push(&["中文一行 tail".to_owned()]);
+    t.push(rows_of(&["中文一行 tail".to_owned()]));
     t.draw_frame(&composer(""), None).unwrap();
     let screen = parse(&buf).screen().contents();
     assert!(
@@ -1224,7 +1230,7 @@ fn a_resize_repaints_every_cell_at_the_new_size() {
 fn a_resize_with_a_surface_open_leaves_one_whole_frame() {
     let (mut t, buf) = direct_term();
     let history: Vec<String> = (0..6).map(|i| format!("hist-{i}")).collect();
-    t.push(&history);
+    t.push(rows_of(&history));
     let view = |w: usize| crate::ui::render::frame::FrameView {
         rows: [String::new(), "┄".repeat(w), "❯ ".to_owned(), "┄".repeat(w)]
             .into_iter()
@@ -1268,7 +1274,7 @@ fn no_cursor_query_is_ever_sent() {
     lh.resize(60, 20);
     lh.resize(90, 28);
     lh.tx
-        .send(UiMsg::Scrollback(vec!["after the resizes".to_owned()]))
+        .send(UiMsg::Scrollback(Block::rows(["after the resizes"])))
         .unwrap();
     lh.sync();
     let buf = lh.buf.clone();
@@ -1288,7 +1294,7 @@ fn a_drag_through_the_loop_copies_and_the_status_row_says_so() {
     use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
     let h = start_loop_mouse(true);
     let rows: Vec<String> = (0..40).map(|i| format!("row-{i:02}")).collect();
-    h.tx.send(UiMsg::Scrollback(rows)).unwrap();
+    h.tx.send(UiMsg::Scrollback(Block::rows(rows))).unwrap();
     assert!(
         h.wait_until(Duration::from_secs(2), |h| h.contents().contains("row-39")),
         "{}",
@@ -1359,7 +1365,7 @@ fn a_surface_takes_the_whole_viewport_and_gives_it_back() {
     use crate::ui::facade::{Panel, TabbedSpec};
     let h = start_loop();
     let rows: Vec<String> = (0..40).map(|i| format!("conv-{i:02}")).collect();
-    h.tx.send(UiMsg::Scrollback(rows)).unwrap();
+    h.tx.send(UiMsg::Scrollback(Block::rows(rows))).unwrap();
     assert!(h.wait_until(Duration::from_secs(2), |h| h.contents().contains("conv-39")));
     let (reply, _rx) = tokio::sync::oneshot::channel();
     let lines: Vec<String> = (0..100).map(|i| format!("view-{i:03}")).collect();

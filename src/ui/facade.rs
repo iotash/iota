@@ -901,6 +901,9 @@ impl Drop for DialogOpen<'_> {
 /// implements it.
 pub use crate::markdown::preview::PreviewHandle;
 
+/// The unit [`Ui::print`] commits (`ui::block`): a fixed row, or a block laid out from its source.
+pub use crate::ui::block::{Block, Layout};
+
 /// Turn-scoped stream handle (ui.go `StreamSink`). `done()` drops a leaked preview and pops
 /// the turn cancel scope.
 pub trait UiStreamSink: Send + Sync {
@@ -1046,8 +1049,9 @@ pub trait Ui: Send + Sync {
     /// answer is the receipt. A closed UI is `Err(Closed)`.
     fn deliver(&self, input: Input, cap: usize) -> BoxFuture<'_, Result<Delivered, UiError>>;
 
-    /// Commits rendered lines to the conversation (in order, batched).
-    fn print_lines(&self, lines: Vec<String>);
+    /// Commits blocks to the conversation (in order, batched): rows, and blocks laid out from
+    /// their source at whatever width the screen has when they are drawn (`ui::block`).
+    fn print(&self, blocks: Vec<Block>);
 
     /// Renders the reverse-video user block for a submitted input.
     fn user_block(&self, display: &str);

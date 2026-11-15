@@ -30,7 +30,8 @@ use crate::{BoxFuture, host};
 /// Typed record of every facade call, in order.
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiEvent {
-    /// [`Ui::print_lines`] with the committed lines.
+    /// [`Ui::print`] with the committed blocks as lines: a row as written, a laid-out block
+    /// rendered at the recorder's width (`set_size`; 80 when unset).
     Print(Vec<String>),
     /// [`Ui::user_block`] with the display text.
     UserBlock(String),
@@ -518,8 +519,14 @@ impl Ui for ScriptedUi {
         Box::pin(std::future::ready(r))
     }
 
-    fn print_lines(&self, lines: Vec<String>) {
-        self.record(UiEvent::Print(lines));
+    fn print(&self, blocks: Vec<crate::ui::facade::Block>) {
+        let w = match self.width.load(Ordering::Relaxed) {
+            0 => 80,
+            w => usize::from(w),
+        };
+        self.record(UiEvent::Print(
+            blocks.iter().flat_map(|b| b.render(w)).collect(),
+        ));
     }
 
     fn user_block(&self, display: &str) {
@@ -819,7 +826,7 @@ mod tests {
     async fn recorder_orders_fire_and_forget_calls() {
         let cancel = CancellationToken::new();
         let ui = ScriptedUi::new(Vec::new());
-        ui.print_lines(vec!["a".to_owned()]);
+        ui.print(crate::ui::facade::Block::rows(["a"]));
         ui.user_block("you");
         let sink = ui.start_stream(cancel.clone());
         let mut pv = sink.block_preview("rendering table…");

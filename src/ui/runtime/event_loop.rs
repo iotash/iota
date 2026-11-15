@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
 use crate::sync::lock;
+use crate::ui::block::Block;
 use std::time::{Duration, Instant};
 
 use crate::ui::facade::{
@@ -1095,7 +1096,7 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
 ) -> io::Result<()> {
     let mut m = Model::new(shared);
     m.native = term.native_modifier();
-    let mut inserts: Vec<Vec<String>> = Vec::new();
+    let mut inserts: Vec<Vec<Block>> = Vec::new();
     // The loop owns the terminal from here: focus reporting goes on so the attention ping
     // can tell "watching" from "away". NOT in `Term::new` — the one-shot picker and the
     // test harnesses build a `Term` without running this loop (T3 design D17).
@@ -1171,7 +1172,7 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
         // The committed rows join the conversation the frame below shows.
         if !resizing {
             for batch in inserts.drain(..) {
-                term.push(&batch);
+                term.push(batch);
             }
         }
         if m.dirty && !resizing {
@@ -1229,7 +1230,7 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
     // stragglers, then leave the screen with the conversation written out.
     while let Ok(msg) = rx.try_recv() {
         if let UiMsg::Scrollback(rows) = msg {
-            term.push(&rows);
+            term.push(rows);
         }
     }
     term.leave()?;

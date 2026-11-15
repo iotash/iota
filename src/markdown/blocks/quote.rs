@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::markdown::blocks::close_view;
 use crate::markdown::blocks::table::word_wrap_ansi;
+use crate::markdown::fragment::{Fragment, Source};
 use crate::markdown::style::Style;
 use crate::markdown::{PreviewHandle, Sink};
 use crate::markdown::{RenderOptions, Writer};
@@ -63,15 +64,15 @@ impl QuoteBlock {
         }
     }
 
-    /// Closes the preview and renders the block, trailing newline included; an empty body
-    /// renders nothing.
-    pub(crate) fn render(mut self, width: usize, opts: RenderOptions) -> Option<String> {
+    /// Closes the preview; the marker-stripped inner lines are the block's source (`None`: an
+    /// empty body renders nothing). The bar and the inner document are laid out at every width
+    /// ([`render_quote`]).
+    pub(crate) fn finish(mut self, opts: RenderOptions) -> Option<Fragment> {
         close_view(&mut self.view);
         if self.body.is_empty() {
             return None;
         }
-        let rendered = render_quote(&self.body, width, opts);
-        Some(format!("{rendered}\n"))
+        Some(Fragment::new(Source::Quote(self.body), opts))
     }
 }
 

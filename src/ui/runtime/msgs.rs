@@ -18,13 +18,14 @@ use crate::ui::facade::{
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
+use crate::ui::block::Block;
 use crate::ui::render::region::{LivePublish, RegionSnapshot};
 
 /// One message from the facade handle (WP45) to the `"iota-tui"` loop thread.
 pub(crate) enum UiMsg {
-    /// One pre-chunked scrollback batch to insert above the frame, in arrival order
-    /// (region overflow, ≤ `max(2, screen_height/2)` rows per batch — T-06).
-    Scrollback(Vec<String>),
+    /// One pre-chunked batch of committed blocks for the conversation, in arrival order
+    /// (region overflow, ≤ `max(2, screen_height/2)` blocks per batch — T-06).
+    Scrollback(Vec<Block>),
     /// A fresh staging-window snapshot; always follows its mutation's overflow batches.
     Region(RegionSnapshot),
     /// Replaces the status-row data.
@@ -120,7 +121,7 @@ pub(crate) enum UiMsg {
 pub(crate) struct MailboxPublish(pub(crate) mpsc::Sender<UiMsg>);
 
 impl LivePublish for MailboxPublish {
-    fn scrollback(&self, rows: Vec<String>) {
+    fn scrollback(&self, rows: Vec<Block>) {
         // A closed loop drops the message; the producer must never block or fail.
         let _ = self.0.send(UiMsg::Scrollback(rows));
     }

@@ -4,9 +4,10 @@
 //! when the view jumps (`Conversation::jump_to`), so a match a wrap splits is found and lands on the
 //! line its first byte is on.
 //!
-//! Hits are kept by row NUMBER (rows are numbered as committed), so output arriving during a search
-//! is scanned on its own — only the new rows — and the cap dropping old rows drops their hits
-//! without moving the others. The walk starts at the hit nearest above where the view was, the way
+//! Hits are kept by block NUMBER (blocks are numbered as committed), so output arriving during a
+//! search is scanned on its own — only the new blocks — and the cap dropping old blocks drops their
+//! hits without moving the others. A laid-out block's text is its lines at the width it was scanned
+//! at, so a width change rescans (the walk stays on the block it was on). The walk starts at the hit nearest above where the view was, the way
 //! a search through a history goes back first; `n`/`p` step through document order and wrap at the
 //! ends. Leaving keeps the view where the walk put it (`Enter`) or puts it back exactly where it was
 //! before the search (`Esc`).
@@ -39,8 +40,10 @@ pub(crate) struct Search {
     /// (row number, byte offset in the row's plain text), in document order.
     hits: Vec<(u64, usize)>,
     idx: usize,
-    /// The rows scanned so far, by number: the next one to scan.
+    /// The blocks scanned so far, by number: the next one to scan.
     scanned: u64,
+    /// The width the hits were found at.
+    width: usize,
 }
 
 impl Search {
@@ -53,6 +56,7 @@ impl Search {
             hits: Vec::new(),
             idx: 0,
             scanned: conv.pushed(),
+            width: 0,
         }
     }
 
@@ -62,9 +66,10 @@ impl Search {
     }
 
     /// Searches the whole buffer for `query`; parks on the hit nearest above where the view was.
-    pub(crate) fn set_query(&mut self, conv: &Conversation, query: &str) {
+    pub(crate) fn set_query(&mut self, conv: &mut Conversation, query: &str, width: usize) {
         query.clone_into(&mut self.query);
-        self.hits = Self::scan(conv, 0, query);
+        self.width = width;
+        self.hits = Self::scan(conv, 0, query, width);
         self.scanned = conv.pushed();
         self.idx = self
             .hits
@@ -73,17 +78,27 @@ impl Search {
             .unwrap_or(0);
     }
 
-    /// Scans the rows committed since the last scan, appending their hits; drops the hits of rows
-    /// the cap dropped.
-    pub(crate) fn catch_up(&mut self, conv: &Conversation) {
+    /// Scans the blocks committed since the last scan, appending their hits; drops the hits of
+    /// blocks the cap dropped. At another width everything is scanned again and the walk parks on
+    /// the first hit of the block it was on (or the nearest one after it).
+    pub(crate) fn catch_up(&mut self, conv: &mut Conversation, width: usize) {
+        let parked = self.current();
+        if width != self.width && !self.query.is_empty() {
+            self.width = width;
+            self.hits = Self::scan(conv, 0, &self.query, width);
+            self.scanned = conv.pushed();
+            self.idx = parked
+                .and_then(|(n, _)| self.hits.iter().position(|&(m, _)| m >= n))
+                .unwrap_or(0);
+            return;
+        }
         if conv.pushed() == self.scanned {
             return;
         }
-        let parked = self.current();
-        let gone = conv.texts_from(0).next().map_or(conv.pushed(), |(n, _)| n);
+        let gone = conv.first_held();
         self.hits.retain(|&(n, _)| n >= gone);
         self.hits
-            .extend(Self::scan(conv, self.scanned, &self.query));
+            .extend(Self::scan(conv, self.scanned, &self.query, width));
         self.scanned = conv.pushed();
         self.idx = parked
             .and_then(|h| self.hits.iter().position(|x| *x == h))
@@ -121,9 +136,9 @@ impl Search {
         }
     }
 
-    fn scan(conv: &Conversation, from: u64, query: &str) -> Vec<(u64, usize)> {
-        let rows: Vec<(u64, &str)> = conv.texts_from(from).collect();
-        find_hits(rows.iter().map(|(_, t)| *t), query)
+    fn scan(conv: &mut Conversation, from: u64, query: &str, width: usize) -> Vec<(u64, usize)> {
+        let rows = conv.texts_from(from, width);
+        find_hits(rows.iter().map(|(_, t)| t.as_str()), query)
             .into_iter()
             .map(|h| (rows[h.line].0, h.off))
             .collect()

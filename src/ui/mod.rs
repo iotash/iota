@@ -4,6 +4,7 @@
 //! which is the whole surface `crate::ui::repl` talks to. The spike warts W1–W10 are carried as named
 //! constraints by the modules below (`TUI_DESIGN` §4).
 
+pub mod block;
 pub mod facade;
 
 pub use render::debug::install_region_trace;
