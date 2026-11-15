@@ -100,7 +100,7 @@ impl<W: Write> Term<W> {
         self.screen.end_batch()
     }
 
-    /// Appends committed rows to the conversation buffer; the next draw shows them.
+    /// Appends committed blocks to the conversation buffer; the next draw lays out and shows them.
     pub(crate) fn push(&mut self, blocks: Vec<crate::ui::block::Block>) {
         self.screen.push(blocks);
     }

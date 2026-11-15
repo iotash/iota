@@ -15,7 +15,7 @@
 //!
 //! After the facade is up NOTHING may write to the terminal except through it — no
 //! spinner, no raw OSC, no `println!`. The banner Go printed to plain stdout therefore
-//! goes through `print_lines` here; the bytes and their order are the same.
+//! goes through `Ui::print` here (a block laid out at the width of every draw); the order is the same.
 //!
 //! The host presenter (T3) is told what the loop is doing at Go's anchors — `Idle` while
 //! waiting for input, `Busy` from `start_stream`, `NeedsInput` around approvals and

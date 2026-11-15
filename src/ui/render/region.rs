@@ -335,7 +335,8 @@ impl Region {
     /// A call preview's status row contributes a blank placeholder so its vanishing
     /// never shrinks the window.
     ///
-    /// Overwide entries are hard-wrapped on the way in (staged tail rows render inside
+    /// Staged (the region's own tests only), every block is flattened into rows at the screen's
+    /// width first, and overwide entries are hard-wrapped on the way in (staged tail rows render inside
     /// the frame where the cell grid CLIPS overwide lines, while overflowed rows
     /// soft-wrap in the terminal): rows that already fit (markdown, user blocks) pass
     /// through untouched, and wrapping targets width−1 — paired with markdown's width−1
