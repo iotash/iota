@@ -254,7 +254,16 @@ parses them). The GUI terminals are not drivable from the test runner: tick thes
 - [x] 自动化：scenario 46 **4c.5** A click on the composer puts the cursor there; a click on a
       surface row moves the cursor, a second click on it chooses it.
 - [x] 自动化：scenario 46 **4c.6** A long surface (`/status` in a short pane) takes every row the
-      composer leaves, and closing it gives the conversation back where it was.
+      composer leaves, and closing it gives the conversation back where it was; in a 6-row pane
+      the dialog and its hint are still on the screen (the composer yields).
+- [ ] **4c.7** `mouse: false` in iTerm2 (with "scroll wheel sends arrow keys in alternate screen
+      mode" on), Terminal.app and WezTerm: does the wheel turn into ↑/↓ and walk the composer's
+      history? Write down which do — the off switch's doc says it may.
+- [ ] **4c.8** Drag past the window's edge and release OUTSIDE the window (or Cmd+Tab away
+      mid-drag): the edge scroll stops at the next key, when the window loses focus, or at once if
+      the terminal reports the release.
+- [ ] **4c.9** herdr with a real mouse: the wheel, a drag, a click — and whether a copy over SSH
+      reaches your local clipboard (OSC 52 through herdr).
 
 ## 5. Window title (the title stack)
 

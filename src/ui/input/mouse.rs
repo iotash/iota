@@ -11,10 +11,13 @@
 //! | a surface | its list (a View: three lines) | a row gets the cursor; the row it is on is chosen; a tab chip focuses it; the hint row focuses the search field |
 //! | the composer | the conversation | the cursor goes under the pointer |
 //!
-//! A drag held at the viewport's top row or below its last one scrolls a line every
-//! [`EDGE_STEP`], so a selection crosses screens without the pointer moving. Where a terminal
-//! delivers no reports (iTerm2 with reporting off in its profile, tmux without `mouse on`), nothing
-//! here runs and the keyboard does everything it did before.
+//! A drag held at the viewport's top row or below its last one scrolls every [`EDGE_STEP`] (one
+//! line at the top; below the viewport 1, 3, 5 … lines with the distance), so a selection crosses
+//! screens without the pointer moving — for hundreds of screens, `Ctrl+O` and the terminal's own
+//! selection are the faster way. A key, the window losing focus or a resize ends a drag whose
+//! release never came. Where a terminal delivers no reports (iTerm2 with reporting off in its
+//! profile, `tmux -CC`), nothing here runs and the keyboard does everything it did before; a tmux
+//! passes them on with its `mouse` option on or off (tmux 3.8, L4 47).
 
 use std::time::{Duration, Instant};
 

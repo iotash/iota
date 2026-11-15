@@ -9,7 +9,8 @@
 #      the release copies it — into tmux's paste buffer and through the local clipboard tool (a
 #      stub first on PATH, so the developer's own clipboard is never touched) — and the buffer
 #      pastes into another program whole;
-#   D. a surface (/status) takes the whole viewport, and closing it gives the conversation back.
+#   D. a surface (/status) takes the whole viewport, and closing it gives the conversation back;
+#   E. in a pane the frame alone fills (6 rows), the dialog is still on the screen, whole.
 #
 # Scenario 47 sends the reports through a tmux with `mouse on` instead, and turns the mouse off.
 # shellcheck source=../lib.sh
@@ -141,5 +142,25 @@ wait_gone 'q/Esc close' || miss "/status never closed"
 settle
 if _vis_has 'l#99 line'; then ok "closing it gives the conversation back"; else bad "no conversation after the surface"; dump_pane; fi
 check_frame_intact "after the surface" 80
+
+# --- E. a pane the frame alone fills ---------------------------------------------------------------
+# 6 rows: the spacer, two separators and the composer take four, so the room the frame leaves is
+# two — less than a dialog's minimum. The surface still gets its rows: the screen keeps the
+# frame's bottom (the dialog, its hint) and the composer above it yields.
+tm resize-window -t s -x 80 -y 6
+_six() { [ "$(cap | wc -l | tr -d ' ')" -le 6 ]; }
+_poll_until 100 _six || miss "the pane never got to 6 rows"
+type_ '/status'
+key Enter
+wait_vis 'q/Esc close' || miss "/status's hint is off a 6-row screen"
+settle
+check "6 rows: the dialog's hint is the last row" "$(cap | tail -1 | grep -c "q/Esc close")" 1
+if _vis_has ' Status'; then ok "…and its title is on the screen"; else bad "the dialog's top is off the screen"; dump_pane; fi
+key Escape
+wait_gone 'q/Esc close' || miss "/status never closed in 6 rows"
+tm resize-window -t s -x 80 -y 24
+_poll_until 100 _tall || miss "the pane never grew back from 6 rows"
+settle
+check_frame_intact "after the 6-row dialog" 80
 
 finish

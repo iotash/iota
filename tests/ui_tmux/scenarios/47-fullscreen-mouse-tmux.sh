@@ -10,7 +10,8 @@
 #      still gets the wheel (tmux 3.8, measured here); and with nothing delivered at all the
 #      keyboard does everything (it degrades, it never wedges);
 #   C. the off switch (`mouse: false`) with `mouse on`: iota asks for no reporting at all, and the
-#      wheel is tmux's (what tmux does with it is recorded, not asserted).
+#      wheel is tmux's — in the alternate screen it does nothing: no copy mode, no ↑/↓ that would
+#      walk the composer's history.
 # shellcheck source=../lib.sh
 . "${TMUX_LIB:?}"
 
@@ -112,6 +113,7 @@ fi
 for _ in 1 2 3; do outer 64 10 5; done
 sleep 1
 if _vis_lacks 'Ctrl+End'; then ok "the wheel is tmux's, not iota's"; else bad "iota scrolled with the mouse off"; dump_pane; fi
-echo "with mouse: false and tmux mouse on, the wheel left: in_mode=$(tm display-message -pt s '#{pane_in_mode}') composer=[$(composer_block | head -1)]"
+check "…tmux does not enter copy mode for it" "$(tm display-message -pt s '#{pane_in_mode}')" 0
+check "…and no arrow key recalls the history" "$(count_composer 'stream 60 2')" 0
 
 finish

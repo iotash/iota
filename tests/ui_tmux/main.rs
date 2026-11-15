@@ -702,7 +702,8 @@ fn tmux_fullscreen_mouse() {
 }
 
 /// L4 #47 (tui-plan S6) — the mouse through tmux itself: `mouse on` passes the wheel and a drag on,
-/// `mouse off` swallows them and the keyboard still works, `mouse: false` asks for no reporting.
+/// so does `mouse off` (tmux 3.8 forwards to a pane that asks) and the keyboard still works;
+/// `mouse: false` asks for no reporting and the wheel moves neither the view nor the history.
 #[test]
 fn tmux_fullscreen_mouse_through_tmux() {
     run_scenario("47-fullscreen-mouse-tmux.sh");
