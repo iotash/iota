@@ -46,6 +46,7 @@ check "the real cursor sits at the end of the folded draft's last row" "$(cursor
 # The turn is really cancelled: no further inserts, and the cancel hint is gone with the
 # scope that owned it.
 frozen_a="$(view_rows)"
+check_view_read "after ESC" "$frozen_a"
 # A NEGATIVE claim's window, not a wait (lib.sh rule 3): a stream that ESC failed to stop would
 # insert a row every 60 ms (LINE_GAP), about sixteen inside it.
 sleep 1.0

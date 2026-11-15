@@ -66,30 +66,37 @@ fn the_conversation_sits_on_the_frame_and_the_frame_on_the_bottom() {
     );
 }
 
+/// A resize repaints the whole screen at the new size: the screen grows taller than the
+/// conversation, so the rows the old layout used — its frame at rows 8–11 — are blank at the new
+/// size and a repaint that did not clear first would leave that frame there as a ghost.
 #[test]
 fn a_resize_repaints_the_whole_screen_at_the_new_size() {
     let (mut s, buf) = screen(40, 12);
-    s.push(&rows(20));
+    s.push(&rows(2));
     s.push(&[format!("{}END", "w".repeat(30))]);
     s.draw_frame(&frame(40), None).unwrap();
     let mark = buf.bytes().len();
-    s.resize(Size::new(20, 10));
+    s.resize(Size::new(20, 20));
     s.draw_frame(&frame(20), None).unwrap();
     // The emulator itself resized before the repaint arrived.
     let mut p = vt100::Parser::new(12, 40, 0);
     p.process(&buf.bytes()[..mark]);
-    p.screen_mut().set_size(10, 20);
+    p.screen_mut().set_size(20, 20);
     p.process(&buf.bytes()[mark..]);
     let g = grid(&p);
-    assert_eq!(g[9], "status");
-    assert_eq!(g[6], "┄".repeat(20), "the frame is full width: {g:#?}");
-    assert_eq!(g[5], "wwwwwwwwwwEND", "the wide row wraps at the new width");
-    assert_eq!(g[4], "w".repeat(20));
-    assert_eq!(g[3], "line-019");
-    let names: Vec<&String> = g.iter().filter(|r| r.starts_with("line-")).collect();
-    let mut uniq = names.clone();
-    uniq.dedup();
-    assert_eq!(names.len(), uniq.len(), "no duplicate: {g:#?}");
+    assert_eq!(g[19], "status");
+    assert_eq!(g[16], "┄".repeat(20), "the frame is full width: {g:#?}");
+    assert_eq!(
+        g[15], "wwwwwwwwwwEND",
+        "the wide row wraps at the new width"
+    );
+    assert_eq!(g[14], "w".repeat(20));
+    assert_eq!(&g[12..14], &["line-000", "line-001"], "{g:#?}");
+    assert!(
+        g[..12].iter().all(String::is_empty),
+        "the old layout left a ghost: {g:#?}"
+    );
+    assert_eq!(g.iter().filter(|r| *r == "status").count(), 1, "{g:#?}");
 }
 
 #[test]

@@ -1,6 +1,6 @@
 # 「新会话」命令：别家怎么做，iota 怎么对齐（`/new`）
 
-Status: **已定（2026-10-13，项目所有者：全 A）· 已实现（2026-10-13，分支 `new-command-impl`，未合并）** · 日期：2026-10-13 · 基线：main `287a17a` · 分支 `new-session-command`
+Status: **部分论证作废（2026-11-15，tui-plan S5）** —— §1 第 173 行与 §5 第 407 行引用的 inline 终端（`inline_term.rs`「nothing here ever clears the screen」、老行溢出进真 scrollback）已随 inline 删除；全屏下对话在 iota 自己的缓冲里（DIVERGENCES X-97/X-98），"清空转录区"不再需要碰终端的 scrollback。`/new` 的决定本身不受影响。原状态：**已定（2026-10-13，项目所有者：全 A）· 已实现（2026-10-13，分支 `new-command-impl`，未合并）** · 日期：2026-10-13 · 基线：main `287a17a` · 分支 `new-session-command`
 
 所有者的原话：「我们是不是可以增加一个类似 clear 或者 new 的命令，我看其它 coding agent 都有这个命令，查一下它们的行为，然后怎么和我们的当前指令和特点对齐」。
 

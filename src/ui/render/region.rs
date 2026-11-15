@@ -1,5 +1,10 @@
 //! The output staging window — a 1:1 port of internal/ui/region.go.
 //!
+//! **Live, nothing is staged** (`Region::unstaged`, the full screen): committed lines go
+//! straight to the conversation buffer and only previews live in the frame. The staged design
+//! described below — "scrollback" is the inline terminal's native history — is what the
+//! region's own tests still run; tui-plan S7 deletes it with the staging window.
+//!
 //! The region is the answer to "why can't the preview area just be overwritten in
 //! place?" — it is. All committed output flows THROUGH it: new lines enter the window,
 //! older lines overflow into real scrollback. A block preview occupies window rows by
@@ -190,9 +195,8 @@ impl Region {
     ///
     /// [`TAIL_KEEP`] on any terminal with room for it, trimmed on a short one so the
     /// frame always leaves `max(2, screen_h/2)` rows above it — exactly the batch size
-    /// [`chunk_overflow`] inserts. Without the trim, a frame taller than
-    /// `screen_h − batch` overlaps the rows `insert_before` is scrolling out and the
-    /// scrollback is permanently damaged; below ~12 rows that was every frame.
+    /// [`chunk_overflow`] hands on. (Inline, a taller frame overlapped the rows being scrolled
+    /// into the native history, T-40.) The staged mode only — live, nothing is staged.
     fn tail_keep(&self) -> usize {
         if !self.staged {
             return 0;
@@ -522,7 +526,7 @@ impl Region {
         self.publish(Vec::new());
     }
 
-    /// Commits the staged tail into scrollback while KEEPING an open preview. Called before
+    /// Commits the staged tail to the conversation while KEEPING an open preview. Called before
     /// every tabbed open; the tail refills from subsequent output (region.go:472-481 —
     /// Go also called it on a width change, which [`Region::retrim`] now covers).
     pub(crate) fn flush_tail(&mut self) {

@@ -380,8 +380,8 @@ conversation into the main screen.
 
 **The terminal is ratatui's own** (`screen.rs`): `Terminal` with `Viewport::Fullscreen` over
 `CrosstermBackend`, through a thin backend wrapper (`Out`) that answers the size from the last resize
-event and the cursor position from the last one set — the terminal is never asked where its cursor is
-(no DSR, anywhere in the loop). Every byte may name a row: the alternate screen has no history and no
+event and the cursor position from the last one set — the loop makes zero cursor queries: no DSR
+at startup, on a resize or on the way out (the two startup probes — OSC 11 for the background tone, `osc.rs`, and OSC 7501 for herdr-core, `host/hc.rs` — each chase their query with one `ESC[6n` as a read terminator; on a terminal that answers neither, the first key typed is lost). Every byte may name a row: the alternate screen has no history and no
 reflow. A resize is the size taken and every cell repainted on the next draw (`RESIZE_QUIET`, 50 ms,
 only merges a burst of events into one repaint). Streaming output that only scrolls the viewport is one
 `DECSTBM` + `SU` and the new lines (`Screen::scroll_region`), not a rewrite of every row that moved.
@@ -415,8 +415,9 @@ search over vt100), `event_loop/vt100_tests.rs` (the loop through the real write
 L4 scenarios (37–45 for the full screen's own mechanics; every other scenario reads the conversation
 back through the write-out).
 
-**Don't.** No per-terminal tables, name checks or version gates. No cursor query (a terminal mute to
-DSR must run iota). No second renderer and no switch back to the main screen. Don't let a row be
+**Don't.** No per-terminal tables, name checks or version gates. No cursor query in the loop (a terminal mute to
+DSR must run iota; the startup probes' terminator DSR costs such a terminal its first key, nothing
+more). No second renderer and no switch back to the main screen. Don't let a row be
 written out twice, or the frame at all.
 
 ## 13. Risks and mitigations

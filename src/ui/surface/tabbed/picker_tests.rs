@@ -151,7 +151,7 @@ fn the_list_column_starts_at_the_same_screen_column_on_every_row() {
     }
 }
 
-/// The preview budget is clamped against the terminal height so the inline frame keeps
+/// The preview budget is clamped against the terminal height so the frame keeps
 /// room for the composer and the status row (tabbed.go:797-799); an unknown height (the
 /// model before its first resize) skips the clamp, exactly as Go's `m.height > 0` does.
 #[test]

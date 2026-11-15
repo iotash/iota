@@ -31,6 +31,7 @@ else
     finish
 fi
 a="$(view_rows)"
+check_view_read "after the cancel" "$a"
 # A NEGATIVE claim's window, not a wait (lib.sh rule 3): a stream that Ctrl+C failed to stop would
 # insert a row every 60 ms (LINE_GAP), about sixteen inside it.
 sleep 1.0

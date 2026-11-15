@@ -107,12 +107,11 @@ while _vis_lacks 'ι> iota' && [ "$i" -lt 60 ]; do
     key PPage
     _poll_until 20 eval '[ "$(cap)" != "$prev" ]' || break
     if ! contiguous; then
-        # The frame's staging window holds the tail while scrolled; judge the viewport only.
+        # Every row on the screen is the viewport's (nothing is staged in the frame), so every
+        # step must be +1 — except where the second stream starts again at 0.
         all="$(nums)"
-        n="$(printf '%s\n' "$all" | wc -l | tr -d ' ')"
-        view="$(printf '%s\n' "$all" | head -n "$((n - 4))")"
         prevn=""
-        for k in $view; do
+        for k in $all; do
             if [ -n "$prevn" ] && [ "$k" -ne $((prevn + 1)) ] && [ "$k" -ne 0 ]; then
                 bad "C: a hole or a duplicate while scrolled: $(printf '%s ' $all)"
                 dump_pane

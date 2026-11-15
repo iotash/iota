@@ -15,6 +15,7 @@
 start 80 24 || finish
 settle || miss "startup never settled"
 before_view="$(view_rows)"
+check_view_read "before the paste" "$before_view"
 
 printf 'paste line one\npaste line two\n第三行中文\n' | tm load-buffer -
 tm paste-buffer -pt s

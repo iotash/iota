@@ -486,6 +486,17 @@ view_rows() {
     [ -n "$t" ] && printf '%s\n' "$s" | head -n "$((t - 1))"
 }
 
+# check_view_read <label> <reading> — a `view_rows` reading that compares as equal must have read
+# something: with no separator found it is empty, and "" = "" would pass any comparison.
+check_view_read() {
+    if printf '%s' "$2" | grep -q '[^[:space:]]'; then
+        ok "$1: the viewport was read"
+    else
+        bad "$1: the viewport could not be read (no frame separator, or nothing above it)"
+        dump_pane
+    fi
+}
+
 # ---------------------------------------------------------------- red foreground
 #
 # Whether a row is painted RED, read off `capture-pane -e`, which re-encodes every attribute as

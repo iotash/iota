@@ -1046,7 +1046,7 @@ pub trait Ui: Send + Sync {
     /// answer is the receipt. A closed UI is `Err(Closed)`.
     fn deliver(&self, input: Input, cap: usize) -> BoxFuture<'_, Result<Delivered, UiError>>;
 
-    /// Commits rendered lines into scrollback (in order, batched).
+    /// Commits rendered lines to the conversation (in order, batched).
     fn print_lines(&self, lines: Vec<String>);
 
     /// Renders the reverse-video user block for a submitted input.

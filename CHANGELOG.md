@@ -28,7 +28,9 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   The old inline terminal is gone, and so is the cost of resizing it: no
   blank or doubled rows after you drag the window, no input box a few columns
   short while you drag, and iota no longer asks the terminal where its cursor
-  is (it now starts on terminals that never answer that question).
+  is while it runs. It now also starts on a terminal that never answers that
+  question, though there the first key you type is lost (two checks at startup
+  still ask once, to know when the terminal has finished answering).
 - **While iota runs, your terminal's own scrollback does not show the
   conversation.** The terminal's scrollbar, Cmd+F, tmux copy mode and
   selecting across screens reach only what is on the screen now. Instead:

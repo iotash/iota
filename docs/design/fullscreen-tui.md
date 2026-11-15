@@ -4,7 +4,7 @@ Status: **已实现，唯一的终端（S1–S5，分支 `fullscreen`；S5 删�
 
 ## 终端拥有屏幕
 
-启动后第一帧进入 alt 屏（`ESC[?1049h`），退出时离开（`?1049l`）。之后所有字节都可以用绝对寻址：alt 屏没有历史、没有 reflow。inline 时代自研终端（X-54）的唯一理由——主屏上的绝对行号会在 resize 竞态中失效——在这里不存在，所以直接用 ratatui 自带的 `Terminal`（`Viewport::Fullscreen`）+ `CrosstermBackend`（`src/ui/runtime/screen.rs`）。backend 外面套一层 `Out`：尺寸取自最近一次 resize 事件，光标位置取自最近一次设置——**从不询问终端光标在哪**（没有 DSR；对 DSR 不应答的终端也能运行）。
+启动后第一帧进入 alt 屏（`ESC[?1049h`），退出时离开（`?1049l`）。之后所有字节都可以用绝对寻址：alt 屏没有历史、没有 reflow。inline 时代自研终端（X-54）的唯一理由——主屏上的绝对行号会在 resize 竞态中失效——在这里不存在，所以直接用 ratatui 自带的 `Terminal`（`Viewport::Fullscreen`）+ `CrosstermBackend`（`src/ui/runtime/screen.rs`）。backend 外面套一层 `Out`：尺寸取自最近一次 resize 事件，光标位置取自最近一次设置——**循环里零次光标查询**：启动、resize、退出都不发 DSR，对 DSR 不应答的终端也能运行。唯一的例外在循环之外：两个启动探测（OSC 11 查背景色，`osc.rs`；OSC 7501 查 herdr-core，`host/hc.rs`）各跟一个 `ESC[6n` 当读取终止符——在两者都不应答的终端上，第一个按键会被吞掉。
 
 **布局**：自上而下 `[对话视口][帧]`。帧是 `FrameView` 的行（预览、分隔线、composer、状态行、surface；`render/frame.rs` 未改），固定在屏幕底部；视口占其余全部，对话贴着帧（内容少时空行在顶部）。
 
@@ -20,7 +20,7 @@ Status: **已实现，唯一的终端（S1–S5，分支 `fullscreen`；S5 删�
 - 上限 20 万行；超出丢最旧的，并在顶部放一行 `earlier output trimmed — /export has the full text`。M1：10 万行 RSS +30.7 MB，一帧约 1 ms。
 - 视图要么跟随尾部，要么锚在某一行（`Pos{row, line}`）上；resize 后停在同一行。上滚后新输出不拖动视图，视口最后一行显示 `↓ N new lines · Ctrl+End`。
 - 提交的行不经过暂存：实时 region 是 `Region::unstaged()`，提交即入缓冲；预览仍在帧里。（region 的暂存模式与 `TAIL_KEEP` 只剩它自己的测试在跑，S7 随暂存窗口一起删除。）
-- resume 把整个会话载入缓冲，而不是最后 3 轮。
+- resume（启动时的 `iota resume` 与 `/resume`）把整个会话载入缓冲，而不是最后 3 轮。代价是线性的（S5 评审实测：300 轮 23 ms / 5 700 行，3 000 轮 230 ms / 57 000 行），而且回放的行退出时也会写出：一个反复重启的长寿会话（bot）每次都往 scrollback 里再加一份完整历史。**是否接受由 owner 决定，尚未定**（X-98/X-99）。
 
 ## 键（tui-plan D5 与 owner 的搜索键决定）
 
@@ -41,7 +41,7 @@ Status: **已实现，唯一的终端（S1–S5，分支 `fullscreen`；S5 删�
 |---|---|---|
 | C1 | resize 残差 R1–R8（X-52 的冻结预算） | 不存在：整屏重画（TUI-VERIFY §4.1 改成"resize 后无残留"） |
 | C2 | 拖动期间帧短 2–8 列、2 s 后回满宽 | 任何时刻满宽；`DRAG_SETTLE`/`DRAG_MARGIN_MAX` 已删 |
-| C3 | 启动与每次 resize 依赖 DSR；迟到应答（X-81） | 零次光标查询；`InlineTerminal::ask` 已删 |
+| C3 | 启动与每次 resize 依赖 DSR；迟到应答（X-81） | 循环里零次光标查询；`InlineTerminal::ask` 已删（启动探测的终止符 DSR 除外，见上） |
 | C4 | surface 关闭后 composer 暂时浮在底部之上；每次 insert 的光标闪烁窗口 | 帧永远贴底；没有 insert |
 | C5 | 退出时要重画帧防重复（X-49）、`park_cursor` | 退出 = 离开 alt 屏 + 写出 |
 | C7 | 对话内无搜索 | `Ctrl+R` / `/`（S3） |

@@ -301,9 +301,10 @@ impl Ui for TuiHandle {
         spec: TabbedSpec,
     ) -> BoxFuture<'a, Result<TabbedResult, UiError>> {
         Box::pin(async move {
-            // Flush the staging tail FIRST (ui.go:334-341): opening a surface grows
-            // the frame like a resize reflow, and the ghostable rows must reach real
-            // scrollback; the mailbox FIFO lands the flush before the open.
+            // Flush the window's tail FIRST (ui.go:334-341): whatever it holds reaches the
+            // conversation before the surface grows the frame; the mailbox FIFO lands the
+            // flush before the open. (Nothing is staged live — `Region::unstaged` — so this is
+            // a no-op but for an open preview's tail.)
             lock(&self.region).flush_tail();
             let (reply_tx, reply_rx) = oneshot::channel();
             if self
@@ -349,7 +350,7 @@ impl Ui for TuiHandle {
 
     fn close(&self) -> BoxFuture<'_, io::Result<()>> {
         Box::pin(async move {
-            // Flush the staged tail into scrollback (the transcript must be
+            // Flush the window into the conversation (the transcript must be
             // complete; preview rows and residue are display-only and drop), THEN
             // send Quit — the mailbox FIFO lands the flushed batches ahead of it,
             // and wart W10 guarantees a fully idle loop drains Quit within one
@@ -917,11 +918,10 @@ mod tests {
         h.ui.close().await.expect("close");
     }
 
-    /// `close` flushes the staging tail into scrollback BEFORE quitting: the mailbox FIFO
-    /// lands the flushed `Scrollback` batches ahead of `Quit`, so the loop inserts them
-    /// above the frame on its way out (the transcript is complete in real scrollback) —
-    /// and then paints the frame without them (X-49), so each line is on the final grid
-    /// ONCE, above the composer, and the window it came from is empty.
+    /// `close` flushes the window into the conversation BEFORE quitting: the mailbox FIFO
+    /// lands the flushed `Scrollback` batches ahead of `Quit`, so the loop pushes them on its
+    /// way out and the exit writes the whole conversation into the main screen (X-99) — each
+    /// line on the final grid ONCE, in order, and no frame.
     #[tokio::test(flavor = "multi_thread")]
     async fn close_flushes_tail_ordering() {
         let h = start_facade();

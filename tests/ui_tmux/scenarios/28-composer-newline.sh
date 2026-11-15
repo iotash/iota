@@ -30,8 +30,6 @@ newline_turn() {
     wait_vis "  $two" || miss "$label: the second line never rendered"
     settle || miss "$label: composer never settled"
     # Nothing was submitted: no reply, and line one exists only as the composer's own row.
-    # (Not `hist_size`: once the screen is full, the composer's second row pushes a transcript
-    # row into the scrollback by itself.)
     check "$label: nothing reached the model" "$(count_all "echo: $one")" 0
     check "$label: line one is only the draft" "$(count_all "❯ $one")" 1
     check "$label: two composer rows" "$(composer_block | wc -l | tr -d ' ')" 2

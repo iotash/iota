@@ -156,11 +156,14 @@ pub(crate) fn closed(e: SurfaceEffect) -> TabbedResult {
 pub(crate) fn test_model() -> Model {
     let width = Arc::new(AtomicU16::new(80));
     let height = Arc::new(AtomicU16::new(24));
-    let region = Arc::new(Mutex::new(Region::new(
-        Emit::Test(Box::new(|_, _| {})),
-        Arc::clone(&width),
-        Arc::clone(&height),
-    )));
+    let region = Arc::new(Mutex::new(
+        Region::new(
+            Emit::Test(Box::new(|_, _| {})),
+            Arc::clone(&width),
+            Arc::clone(&height),
+        )
+        .unstaged(),
+    ));
     Model::new(LoopShared {
         width,
         height,

@@ -195,8 +195,8 @@ fn render_list(
 /// the preview carries (imgterm rows are dense with it).
 fn render_picker(term_h: usize, p: &Panel, ps: &mut PanelState, w: usize, rows: &mut Vec<String>) {
     // The list window follows the item count; the preview gets its own row budget (a 3-item list
-    // must still show a legible thumbnail), clamped so the inline frame keeps room for the
-    // composer and the status row.
+    // must still show a legible thumbnail), clamped so the frame keeps room for the composer
+    // and the status row.
     let h = panel_height(p, ps.view.len());
     ps.rows = h;
     ps.scroll_to(h);

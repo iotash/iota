@@ -1,6 +1,6 @@
 # 慢光标回答下的拖拽提前结束：值不值得修（评估）
 
-Status: **Void (2026-11-15, tui-plan S5)** — the inline terminal, its drag protocol (`DRAG_SETTLE`, `settle_drag`), its cursor queries and `scripts/dsr-delay.py` are deleted; the full screen has no drag to settle and asks the terminal nothing (DIVERGENCES X-97). Kept as the record of what the inline design cost. Was: **Decided** (owner, 2026-10-18: D done — X-52, TUI-VERIFY §4.5, `scripts/dsr-delay.py`; B later, not A/C/E) · 日期：2026-10-18 · 基于 `main` = `ec613dd`（qos-render 合并之后，X-81）· 本机 macOS 26（Darwin 25.6）、tmux 3.8
+Status: **Void (2026-11-15, tui-plan S5)** — the inline terminal, its drag protocol (`DRAG_SETTLE`, `settle_drag`), its cursor queries and `scripts/dsr-delay.py` are deleted; the full screen has no drag to settle and its loop makes no cursor query (DIVERGENCES X-97). Kept as the record of what the inline design cost. Was: **Decided** (owner, 2026-10-18: D done — X-52, TUI-VERIFY §4.5, `scripts/dsr-delay.py`; B later, not A/C/E) · 日期：2026-10-18 · 基于 `main` = `ec613dd`（qos-render 合并之后，X-81）· 本机 macOS 26（Darwin 25.6）、tmux 3.8
 
 本文是评估，不改代码。所有者已按 §0 的推荐拍板：做 D，B 留待以后顺手修。所有者要的是：修复价值、成本、会不会把架构搞丑、是不是为了修而修。
 

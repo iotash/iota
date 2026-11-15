@@ -747,11 +747,14 @@ fn cancel_scope_stack_fire_truncates() {
 fn notify_model() -> Model {
     let width = Arc::new(AtomicU16::new(80));
     let height = Arc::new(AtomicU16::new(24));
-    let region = Arc::new(Mutex::new(crate::ui::render::region::Region::new(
-        crate::ui::render::region::Emit::Test(Box::new(|_, _| {})),
-        Arc::clone(&width),
-        Arc::clone(&height),
-    )));
+    let region = Arc::new(Mutex::new(
+        crate::ui::render::region::Region::new(
+            crate::ui::render::region::Emit::Test(Box::new(|_, _| {})),
+            Arc::clone(&width),
+            Arc::clone(&height),
+        )
+        .unstaged(),
+    ));
     Model::new(crate::ui::runtime::event_loop::LoopShared {
         width,
         height,
