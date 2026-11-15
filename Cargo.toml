@@ -85,10 +85,9 @@ walkdir  = "2"
 jiff     = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-bundle-platform", "tzdb-zoneinfo"] }
 # TUI stack — pinned exact; verified against ~/.cargo/registry (TUI_CONTRACTS §12). Only
 # `src/ui/**` may name ratatui/crossterm (ci.sh grep gate).
-# No "scrolling-regions" (2026-09-25, DIVERGENCES X-54): the inline terminal is iota's own
-# (src/ui/runtime/inline_term.rs) and inserts scroll the whole screen from the cursor; ratatui
-# supplies the Buffer, its diff and the widgets.
-ratatui   = { version = "=0.30.2", features = ["unstable-rendered-line-info"] }
+# The full screen is ratatui's own `Terminal` (`Viewport::Fullscreen`, src/ui/runtime/screen.rs);
+# no "scrolling-regions" (the one scroll it makes is its own DECSTBM + SU, `Screen::scroll_region`).
+ratatui   = "=0.30.2"
 # ratatui default features stay ON: "crossterm" (ratatui-crossterm, default pairing
 # crossterm_0_29), all-widgets, layout-cache, macros, underline-color. NEVER enable
 # crossterm_0_28 (wart W8).

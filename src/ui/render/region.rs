@@ -127,8 +127,9 @@ pub(crate) struct Region {
     /// Call preview live status-row prefix.
     pub(crate) detail: String,
     /// Whether committed rows are staged in the frame ([`TAIL_KEEP`]) and closed previews leave
-    /// residue there. The inline terminal stages (its frame must never shrink or bounce); the
-    /// full screen does not ([`Region::unstaged`]).
+    /// residue there. The live UI never stages ([`Region::unstaged`]); the staged mode is what
+    /// the inline terminal needed and only this module's own tests still run it — tui-plan S7
+    /// deletes it with the staging window.
     staged: bool,
 }
 

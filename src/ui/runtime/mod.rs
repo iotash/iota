@@ -3,10 +3,7 @@
 //! one-shot pre-REPL surface.
 
 pub(crate) mod event_loop;
-#[cfg(test)]
-pub(crate) mod geometry;
 pub(crate) mod handle;
-pub(crate) mod inline_term;
 pub(crate) mod msgs;
 pub(crate) mod oneshot;
 pub(crate) mod osc;

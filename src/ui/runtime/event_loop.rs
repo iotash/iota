@@ -1,6 +1,5 @@
-//! The `"iota-tui"` loop thread — warts W4 `DRAW_WITH_INSERTS`, W5 `RESIZE_PASS_FIRST`,
-//! W10 `IDLE_WAKE`; mailbox drain, post-update jobs, timers, the cancel-scope stack,
-//! the parked waiter, the spinner chain (`TUI_DESIGN` §4).
+//! The `"iota-tui"` loop thread — wart W10 `IDLE_WAKE`; mailbox drain, post-update jobs,
+//! timers, the cancel-scope stack, the parked waiter, the spinner chain (`TUI_DESIGN` §4).
 //!
 //! - **W10** `IDLE_WAKE`: the poll deadline is ALWAYS finite —
 //!   `min(IDLE_POLL_MAX 50ms, active timers)`. The mailbox is a plain `std::sync::mpsc`
@@ -9,20 +8,10 @@
 //!   `set_title`, `set_status`, a `ReadReq` posted between polls) and DEADLOCK
 //!   `close()` at idle (`UiMsg::Quit` undrained while the loop sleeps). Worst-case
 //!   idle latency: one deadline (50 ms, invisible); ~0 CPU.
-//! - **W4** `DRAW_WITH_INSERTS`: inserts move the physical cursor; the real cursor
-//!   returns only at the next draw — so every iteration containing an insert batch
-//!   ends with `draw` + `set_cursor_position`, and inserts and draws stay on this one
-//!   thread. (This replaces Go's cursor-bump/`viewEquals` defeat — T-03; the idle
-//!   frame still carries no spinner glyph.)
-//! - **W5** `RESIZE_PASS_FIRST`: on `Event::Resize` — store the atomics →
-//!   `Term::resize` (one DSR read BEFORE any byte, the erase counted up from the cursor
-//!   over rows the old frame provably owned, a frame that was flush with the bottom kept
-//!   flush; nothing scrolled or inserted) → draw; only THEN does `region.retrim()` run
-//!   as a post-update job (never
-//!   re-entrant — it takes the region lock and sends into this mailbox): the staged
-//!   window stays in the frame, rewrapped for the new width. The inline terminal is iota's
-//!   own (`inline_term.rs`): nothing but this pass reads the size, and no byte it writes
-//!   names an absolute row. A LOST row is never accepted; storm mode stays dead.
+//! - **One write an iteration**: the committed rows land in the conversation buffer and the
+//!   frame is drawn in the same iteration, as one batched write (X-55's sync rule). A resize is
+//!   a size taken and every cell repainted (`docs/design/fullscreen-tui.md`); no byte depends on
+//!   where the terminal's cursor is, and the terminal is never asked.
 //!
 //! All model state lives on this thread (zero locks inside the engine); the facade
 //! reaches in only via [`UiMsg`]. The composer/keys/paste/suggest/surface modules are
@@ -62,38 +51,18 @@ use crate::ui::surface::{self, SurfaceEffect};
 /// (`TUI_CONTRACTS` §8 — a design constant; tea.Program woke on `Send`).
 pub(crate) const IDLE_POLL_MAX: Duration = Duration::from_millis(50);
 
-/// How long after the last `Event::Resize` a drag is over (W5's burst layout), unless an
-/// interaction ends it first ([`Model::end_drag`]: a key, a paste, a turn starting, a surface
-/// opening). A drag is not only a smooth mouse sweep: a hand pauses, a keyboard resize repeats
-/// every half second or so, a pane is nudged a step at a time. A pause mistaken for the end
-/// restores the full width, and the next step rewraps the separators into two more blank rows
-/// — measured: 250 and 750 ms windows let a drag paced at 0.8–1 s grow a 20-row hole. Two
-/// seconds covers that pacing with room; the interaction exits make the length invisible
-/// the moment anyone acts.
-pub(crate) const DRAG_SETTLE: Duration = Duration::from_millis(2000);
-
 /// How long the terminal must have been quiet — no further resize — before the loop applies
-/// the last one, writing nothing (no insert, no draw) until then. It MERGES passes: a burst of
-/// `SIGWINCH`es is one erase and one redraw, not one per event. (Introduced for the P0 of
-/// 2026-09-24 as the thing that closed the window between a pass's cursor query and its
-/// erases; since every byte is counted from the cursor (X-54) that window names no row, so it
-/// no longer carries correctness — only the merge.) Shorter than a hand's pause between drag
-/// steps, longer than a burst of `SIGWINCH`es.
+/// the last one, writing nothing (no draw) until then. A pure throttle: a burst of `SIGWINCH`es
+/// is one repaint, not one per event. Shorter than a hand's pause between drag steps, longer
+/// than a burst of `SIGWINCH`es.
 pub(crate) const RESIZE_QUIET: Duration = Duration::from_millis(50);
-
-/// The most columns the frame gives up while a drag lasts. The margin is twice the widest
-/// step seen (2 at least): a fast drag narrows the terminal again before the frame drawn for
-/// the last step has landed, and a frame only one step short would still rewrap. A single
-/// large jump (a maximized window restored) is one event with no next step to guard against,
-/// so its size must not narrow the frame for the burst beyond this.
-pub(crate) const DRAG_MARGIN_MAX: u16 = 8;
 
 /// Spinner cadence (model.go:25 — 120ms tick).
 pub(crate) const SPINNER_TICK: Duration = Duration::from_millis(120);
 
 /// The status row's job clock cadence: one repaint a second while a background job runs, and none
-/// otherwise — an idle iota with no job paints nothing (the stale-frame budgets of scenarios 06 and 14
-/// stand on that).
+/// otherwise — an idle iota with no job paints nothing (scenario 14's stale-frame budget stands on
+/// that).
 pub(crate) const JOB_TICK: Duration = Duration::from_secs(1);
 
 /// Poll cap while a preview is streaming (the spike's hot-loop cadence).
@@ -109,7 +78,7 @@ pub(crate) struct LoopShared {
     /// Terminal height in rows (starts 24 — "24 until the first resize event").
     pub(crate) height: Arc<AtomicU16>,
     /// The staging window; the loop takes this lock only inside post-update jobs
-    /// (the W5 flush), never inside a message handler.
+    /// (the retrim), never inside a message handler.
     pub(crate) region: Arc<Mutex<Region>>,
 }
 
@@ -249,18 +218,10 @@ enum Job {
 
 /// The loop model (Go `model`): every field mutates on this thread only.
 pub(crate) struct Model {
-    /// Terminal width (the true one; the shared atomic carries [`Model::frame_width`]).
+    /// Terminal width (mirrors the shared atomic).
     pub(crate) width: u16,
-    /// While a resize burst (a drag) is in progress: when it counts as over (W5). The frame
-    /// and every row committed meanwhile are laid out a column short, so the next step of
-    /// the drag rewraps none of them.
-    pub(crate) drag_until: Option<Instant>,
-    /// How many columns short the frame is while the drag lasts: the widest narrowing step
-    /// seen in it (1 at least, [`DRAG_MARGIN_MAX`] at most) — a terminal that sends a step of
-    /// two or three columns would still rewrap a frame only one column short.
-    pub(crate) drag_margin: u16,
-    /// The last resize recorded and not yet applied (W5: applied once the terminal has been
-    /// quiet for `RESIZE_QUIET`).
+    /// The last resize recorded and not yet applied (applied once the terminal has been quiet
+    /// for `RESIZE_QUIET`).
     pub(crate) pending_resize: Option<(u16, u16)>,
     /// When the last resize event arrived.
     pub(crate) resize_seen: Instant,
@@ -328,9 +289,6 @@ pub(crate) struct Model {
     /// never reports focus never pings, which is Go's behaviour — whoever is already
     /// watching needs no bell.
     pub(crate) focused: bool,
-    /// Whether the loop drives the full-screen terminal (`Term::is_fullscreen`): a resize there
-    /// is a repaint, never a drag (no burst layout, no band), and `PgUp`/`PgDn` scroll.
-    pub(crate) fullscreen: bool,
     /// View-key requests (scrolling, the dump, the way back) the next draw applies, in order.
     pub(crate) view_ops: Vec<ViewOp>,
     /// Whether the conversation is written out on the main screen (`Ctrl+O`): the next key only
@@ -402,8 +360,6 @@ impl Model {
         Self {
             width: if width > 0 { width } else { 80 },
             height,
-            drag_until: None,
-            drag_margin: 0,
             pending_resize: None,
             resize_seen: Instant::now(),
             shared,
@@ -434,7 +390,6 @@ impl Model {
             notify: Vec::new(),
             program_status: Vec::new(),
             focused: true,
-            fullscreen: false,
             view_ops: Vec::new(),
             dumped: false,
             search: None,
@@ -467,10 +422,6 @@ impl Model {
             && s.refresh_every > Duration::ZERO
         {
             let next = s.refresh_every.saturating_sub(s.last_refresh.elapsed());
-            d = d.min(next.max(Duration::from_millis(1)));
-        }
-        if let Some(t) = self.drag_until {
-            let next = t.saturating_duration_since(Instant::now());
             d = d.min(next.max(Duration::from_millis(1)));
         }
         if self.pending_resize.is_some() {
@@ -586,7 +537,6 @@ impl Model {
                 self.dirty = true;
             }
             UiMsg::BusyOn(label) => {
-                self.end_drag(); // a turn starting ends a drag
                 self.busy = Some(BusyView {
                     label,
                     detail: String::new(),
@@ -614,7 +564,6 @@ impl Model {
                     (TurnBusy::Running, Some(t)) => t.resume(now),
                     (TurnBusy::Waiting, Some(t)) => t.pause(now),
                     (TurnBusy::Running | TurnBusy::Waiting, None) => {
-                        self.end_drag(); // a turn starting ends a drag
                         let mut t = TurnClock::start(now);
                         if state == TurnBusy::Waiting {
                             t.pause(now);
@@ -692,7 +641,6 @@ impl Model {
                 self.dirty = true;
             }
             UiMsg::TabbedOpen { spec, reply } => {
-                self.end_drag(); // a surface opening ends a drag
                 self.surface_gen += 1;
                 let TabbedSpec {
                     panels,
@@ -717,26 +665,20 @@ impl Model {
         }
     }
 
-    /// Handles one crossterm event; resize takes the dedicated W5 pass.
+    /// Handles one crossterm event.
     fn handle_event(&mut self, ev: Event) {
         match ev {
             Event::Resize(w, h) => {
                 // A resize is only RECORDED here; `apply_resize` runs once the terminal has
-                // been quiet for `RESIZE_QUIET` (the loop writes nothing meanwhile). The
-                // drag it opens or extends is extended at once, so it cannot settle under it.
+                // been quiet for `RESIZE_QUIET` (the loop writes nothing meanwhile).
                 self.pending_resize = Some((w, h));
                 self.resize_seen = Instant::now();
-                if !self.fullscreen {
-                    self.drag_until = Some(Instant::now() + DRAG_SETTLE);
-                }
             }
             Event::Key(k) => {
-                self.end_drag();
                 self.handle_key(k);
                 self.dirty = true;
             }
             Event::Paste(data) => {
-                self.end_drag();
                 self.route_paste(&data);
                 self.dirty = true;
             }
@@ -887,119 +829,25 @@ impl Model {
         }
     }
 
-    /// The W5 pass for the last recorded resize, once the terminal has been quiet for
-    /// `RESIZE_QUIET`: geometry sync + re-anchor + draw BEFORE any job touches stale geometry
-    /// (model.go:175-195 + spike #5). `Term::resize` reads the size and the cursor NOW and
-    /// erases counting up from the cursor, never from a row number. A resize opens (or extends) a drag: lay out a column short — as
-    /// many as twice the widest narrowing step seen in it — until it settles.
-    pub(crate) fn apply_resize<W: Write>(&mut self, term: &mut Term<W>) -> io::Result<()> {
+    /// The last recorded resize, once the terminal has been quiet for `RESIZE_QUIET`: the size
+    /// taken — the shared atomics, the screen — and the frame left dirty, so the iteration's one
+    /// batched draw repaints every cell (`Screen::draw_frame` autoresizes). The retrim job
+    /// rewraps an open preview for the new width.
+    pub(crate) fn apply_resize<W: Write>(&mut self, term: &mut Term<W>) {
         let Some((w, h)) = self.pending_resize.take() else {
-            return Ok(());
+            return;
         };
-        if self.fullscreen {
-            return self.apply_full_resize(term, w, h);
-        }
-        // W5 RESIZE_PASS_FIRST: geometry sync + re-anchor + draw BEFORE any job
-        // touches stale geometry (model.go:175-195 + spike #5). `Term::resize`
-        // reads the floor with one DSR before it writes a byte.
-        // A resize opens (or extends) a drag: lay out a column short — as many as the
-        // widest narrowing step seen in it — until it settles.
-        let step = self.width.saturating_sub(w);
-        self.drag_margin = self
-            .drag_margin
-            .max(step.saturating_mul(2))
-            .clamp(2, DRAG_MARGIN_MAX);
         self.width = w;
         self.height = h;
-        self.drag_until = Some(Instant::now() + DRAG_SETTLE);
-        self.shared
-            .width
-            .store(self.frame_width(), Ordering::Relaxed);
+        self.shared.width.store(w.max(1), Ordering::Relaxed);
         if h > 0 {
             self.shared.height.store(h, Ordering::Relaxed);
         }
         if w > 0 && h > 0 {
-            let view = self.frame_view();
-            let size = ratatui::layout::Size {
-                width: w,
-                height: h,
-            };
-            term.resize(size, self.frame_height(view.rows.len()))?;
-            term.draw_frame(&view, None)?;
-        }
-        // Leave the frame dirty: the job below changes what it shows.
-        self.dirty = true;
-        // The staged window stays IN the re-anchored frame (a flush would commit
-        // it a second time under the reflow's ghost): rewrap it for a new width,
-        // re-apply the cap for a new height — or nothing would until the next
-        // line of output.
-        self.jobs.push(Job::Retrim);
-        Ok(())
-    }
-
-    /// The full screen's resize: the size taken, every row laid out at the full width, and the
-    /// frame left dirty — the iteration's one batched draw repaints the whole screen
-    /// (`Screen::draw_frame` autoresizes). No drag, no band, no cursor query.
-    fn apply_full_resize<W: Write>(
-        &mut self,
-        term: &mut Term<W>,
-        w: u16,
-        h: u16,
-    ) -> io::Result<()> {
-        self.width = w;
-        self.height = h;
-        self.shared
-            .width
-            .store(self.frame_width(), Ordering::Relaxed);
-        if h > 0 {
-            self.shared.height.store(h, Ordering::Relaxed);
-        }
-        if w > 0 && h > 0 {
-            term.resize(ratatui::layout::Size::new(w, h), 0)?;
+            term.resize(ratatui::layout::Size::new(w, h));
         }
         self.dirty = true;
         self.jobs.push(Job::Retrim);
-        Ok(())
-    }
-
-    /// The width the frame is laid out at — and, through the shared atomic, every row the
-    /// app commits (staged rows, the user block, markdown): the terminal's full width at
-    /// rest, a column or a few short while a drag is in progress (W5's burst layout, X-52). A row
-    /// that fills the last column rewraps on ANY narrowing — our separators would grow by a
-    /// row each per step of a drag, and that growth is a blank band between the transcript
-    /// and the frame; one column short, the next step rewraps nothing. When the burst
-    /// settles ([`Model::settle_drag`]) the full width comes back with a plain repaint.
-    pub(crate) fn frame_width(&self) -> u16 {
-        let w = self.width.max(1);
-        if self.drag_until.is_some() {
-            w.saturating_sub(self.drag_margin.max(1)).max(1)
-        } else {
-            w
-        }
-    }
-
-    /// Ends a drag whose settle deadline has passed (or that an interaction ended): the full
-    /// width returns — the shared atomic, then a repaint of the frame (no resize, so nothing
-    /// reflows). Returns whether it ended now, so the loop closes the drag's band first.
-    pub(crate) fn settle_drag(&mut self) -> bool {
-        if self.drag_until.is_some_and(|t| Instant::now() >= t) {
-            self.drag_until = None;
-            self.drag_margin = 0;
-            self.shared
-                .width
-                .store(self.frame_width(), Ordering::Relaxed);
-            self.dirty = true;
-            return true;
-        }
-        false
-    }
-
-    /// An interaction — a key, a paste, a turn starting, a surface opening — ends a drag at
-    /// once: what it writes is laid out at the full width, after the band is closed.
-    pub(crate) fn end_drag(&mut self) {
-        if self.drag_until.is_some() {
-            self.drag_until = Some(Instant::now());
-        }
     }
 
     /// The search line's query and cursor, while a search is on.
@@ -1008,17 +856,11 @@ impl Model {
         self.search.as_mut().map(|s| s.prompt(width))
     }
 
-    /// The inline viewport height for a frame of `rows` rows, capped at the screen height.
-    fn frame_height(&self, rows: usize) -> u16 {
-        let cap = if self.height > 0 { self.height } else { 24 };
-        u16::try_from(rows).unwrap_or(u16::MAX).clamp(1, cap.max(1))
-    }
-
     /// Assembles the frame from the model state (the WP46/WP47 slots come through
     /// their seams as plain data).
     pub(crate) fn frame_view(&mut self) -> FrameView {
         let dark = self.dark;
-        let fw = self.frame_width();
+        let fw = self.width.max(1);
         let (candidates, desc) = suggest::frame_slots(&self.composer, &self.commands, fw);
         let (width, height) = (fw, self.height);
         let surface = self.surface.as_mut().map(|s| {
@@ -1113,7 +955,6 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
     shared: LoopShared,
 ) -> io::Result<()> {
     let mut m = Model::new(shared);
-    m.fullscreen = term.is_fullscreen();
     let mut inserts: Vec<Vec<String>> = Vec::new();
     // The loop owns the terminal from here: focus reporting goes on so the attention ping
     // can tell "watching" from "away". NOT in `Term::new` — the one-shot picker and the
@@ -1123,9 +964,8 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
         // W10: the deadline is ALWAYS finite.
         let deadline = m.poll_deadline();
         if events.poll(deadline)? {
-            // A run of resizes in one batch is one step of the drag: only the last size is
-            // laid out (the terminal is already there), so a fast drag re-anchors once per
-            // batch instead of chasing sizes it has left behind.
+            // A run of resizes in one batch is one size: only the last is taken (the terminal is
+            // already there).
             let mut pending: Option<Event> = None;
             loop {
                 let ev = events.read()?;
@@ -1162,7 +1002,7 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
         // A recorded resize is applied once the terminal is quiet; until then nothing below
         // writes a byte (the geometry may be moving under it).
         if m.pending_resize.is_some() && (m.resize_seen.elapsed() >= RESIZE_QUIET || m.quit) {
-            m.apply_resize(&mut term)?;
+            m.apply_resize(&mut term);
         }
         let resizing = m.pending_resize.is_some();
         // Post-update jobs (tea.Cmd): region lock + mailbox sends — never re-entrant.
@@ -1171,24 +1011,19 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
                 Job::Retrim => lock(&m.shared.region).retrim(),
             }
         }
-        // One iteration's screen writes — the band close, the inserts, the height change, the
-        // title and progress, the frame — go out as ONE write, a DEC 2026 synchronized update
-        // when it is larger than a transport's read block (X-55): a split write is never shown
-        // half-drawn by an emulator that knows the mode. No cursor query happens in here (the
-        // resize pass above makes its own, outside any batch).
+        // One iteration's screen writes — the title and progress, the frame — go out as ONE
+        // write, a DEC 2026 synchronized update when it is larger than a transport's read block
+        // (X-55): a split write is never shown half-drawn by an emulator that knows the mode.
         if !resizing {
             term.begin_batch();
-        }
-        if !resizing && m.settle_drag() {
-            term.close_band()?;
         }
         m.tick_spin();
         m.tick_jobs();
         m.tick_surface_refresh();
-        // W6: land the insert batches right above the frame.
+        // The committed rows join the conversation the frame below shows.
         if !resizing {
             for batch in inserts.drain(..) {
-                term.insert_lines(&batch)?;
+                term.push(&batch);
             }
         }
         if m.dirty && !resizing {
@@ -1200,7 +1035,6 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
                 term.view(op)?;
             }
             let view = m.frame_view();
-            term.ensure_height(m.frame_height(view.rows.len()))?; // a field write; the draw repaints what changed
             term.set_title(&m.title)?;
             term.set_progress(m.progress)?; // emit-on-change, like the title
             drain_notify(&mut m, &mut term)?;
@@ -1208,7 +1042,7 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
                 term.write_raw(seq.as_bytes())?;
             }
             let prompt = m.search_prompt();
-            term.draw_frame(&view, prompt.as_ref())?; // W4: same iteration as the inserts above
+            term.draw_frame(&view, prompt.as_ref())?; // the same iteration as the rows above
             m.view_paused = term.view_paused();
             m.dirty = false;
         }
@@ -1231,14 +1065,14 @@ pub(crate) fn run_loop<W: Write, E: EventSource>(
             break;
         }
     }
-    // close() flushed the region BEFORE sending Quit, so its scrollback already
-    // landed above; drain any stragglers, then hand the shell a fresh line.
+    // close() flushed the region BEFORE sending Quit, so its rows already landed; take any
+    // stragglers, then leave the screen with the conversation written out.
     while let Ok(msg) = rx.try_recv() {
         if let UiMsg::Scrollback(rows) = msg {
-            term.insert_lines(&rows)?;
+            term.push(&rows);
         }
     }
-    term.park_cursor()?;
+    term.leave()?;
     Ok(())
 }
 

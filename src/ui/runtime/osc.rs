@@ -79,13 +79,12 @@ pub(crate) fn emit_title<W: Write>(w: &mut W, title: &str) -> io::Result<()> {
 
 /// ONE OSC 11 round-trip on the tty; 100ms timeout; default true (dark).
 ///
-/// Mechanism: the query is chased by a DSR 6n (`\x1b[6n`) on the same write. Every
-/// terminal this UI can run on answers DSR (ratatui's inline anchoring depends on it),
-/// so the read loop ends at the DSR reply's `R` terminator whether or not OSC 11 was
-/// understood — the 100ms recv timeout only covers a terminal that answers neither.
-/// In that pathological case the detached reader thread stays parked on the tty read;
-/// accepted and documented (it exits on the next byte, and a terminal mute to DSR
-/// cannot run the TUI anyway).
+/// Mechanism: the query is chased by a DSR 6n (`\x1b[6n`) on the same write — a read
+/// terminator, not a cursor query the UI uses (the full screen never asks where the cursor is):
+/// the read loop ends at the DSR reply's `R` whether or not OSC 11 was understood, and the 100ms
+/// recv timeout only covers a terminal that answers neither. In that pathological case the
+/// detached reader thread stays parked on the tty read until the next byte, which it takes —
+/// accepted and documented: the first keystroke on a terminal mute to DSR is lost.
 pub(crate) fn detect_background() -> bool {
     detect_dark().unwrap_or(true)
 }

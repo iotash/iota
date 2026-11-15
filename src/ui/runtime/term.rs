@@ -1,80 +1,31 @@
-//! Terminal ownership — warts W5 `RESIZE_PASS_FIRST`, W6 `LINE_COUNT_SELF_CONSISTENCY`
-//! (`TUI_DESIGN` §4) over the inline terminal iota owns ([`InlineTerminal`]).
+//! Terminal ownership: the full screen ([`Screen`]) and the out-of-band state around it — the
+//! window title, the OSC 9;4 progress bar, focus reporting — each emitted on change.
 //!
-//! W1 `RECREATE_ON_HEIGHT_CHANGE`, W2 `SELF_TRACKED_TOP`, W3 `CLEAR_AFTER_RECREATE`, the
-//! acknowledged size and W9's scrolling regions are gone (2026-09-25, `inline-resize-owned`
-//! option B, DIVERGENCES X-54): each existed only because ratatui's `Terminal` froze the
-//! inline viewport at construction and addressed the screen absolutely. The viewport is a
-//! field now, a height change is a field write and a repaint of what changed, and every byte
-//! is written from the cursor ([`InlineTerminal`]'s module docs), which the emulator carries
-//! with its cell through any resize.
-//!
-//! - **W5**: [`Term::resize`] re-anchors the frame clearing only rows the old frame provably
-//!   owned, and scrolls or inserts nothing: ONE DSR before writing a byte — for the
-//!   bookkeeping of the floor, never for where the erase lands; the erase goes up from the
-//!   cursor by the frame's own rows above it (every draw leaves the cursor on a known frame
-//!   row, and a resize carries it with its cell) and no further: what a reflow grew above
-//!   them is never inferred or claimed (2026-09-26, B3 — it stays as a duplicate, X-52's
-//!   residual (1)); a frame flush with the bottom kept flush on the new floor, the rows
-//!   between left as a blank band the next output fills ([`Term::pad`]). The frame is laid
-//!   out at the terminal's FULL width at rest and a column (or a few) short while a drag
-//!   lasts (`Model::frame_width`, the burst layout — the owner's, X-52): only a drag's first
-//!   step rewraps the frame's full-width rows. The size a pass takes is the one the terminal
-//!   has NOW, and the cursor wins over any size read: a cursor below the last row read means
-//!   the screen grew again in between. A band row is filled by the next output in place, the
-//!   frame not moving ([`Term::insert_lines`]).
-//! - **Why no row is lost** (the verifier's three repros, 2026-09-25): an erase starts at a row
-//!   counted UP from the cursor, so a resize the emulator applies between iota's check and its
-//!   write — an emulator pulling history rows back on a grow — moves the rows the erase lands on
-//!   together with the cursor (the check→execute window names no row); writes made before
-//!   iota has read a resize (a stream inserting and drawing under a new size) are cursor-
-//!   relative too, so the cursor stays on the frame row the bookkeeping says (no stale
-//!   anchor); and a DSR that fails costs the floor, not the anchor (no fallback row).
-//! - **W6**: `insert_before` height comes from `Paragraph::line_count(width)` of the
-//!   SAME `Paragraph` rendered into the buffer (feature `unstable-rendered-line-info`), at
-//!   the width the terminal has now — never a second source of truth. The region hard-wraps
-//!   an entry wider than the screen to width−1 and passes the rest (≤ width) through
-//!   untouched, so that is one row an entry; a row laid out for a wider
-//!   terminal just before a narrowing takes its wrapped rows, nothing cut. This
-//!   self-consistency is what kills Go's `sanitizeOverflow` (T-01).
-//!
-//! The headless seam is `geometry::Geometry`, test configuration only (`Term::headless`):
-//! the L2b/vt100 layer injects synthetic size/cursor answers so the REAL writer stack runs
-//! without a tty; the live build has no such field, and every query reaches crossterm.
+//! The terminal owns the screen (the alternate screen, `docs/design/fullscreen-tui.md`): a resize
+//! is a size handed to the screen and a repaint of every cell, a committed row is appended to the
+//! conversation buffer, and nothing ever asks the terminal where its cursor is. The headless seam
+//! is [`Term::headless`] (test configuration only): the same screen over a byte buffer, at a size
+//! the test names, never touching the process's terminal.
 
 use std::io::{self, Write};
 
-use ratatui::layout::{Position, Size};
-use ratatui::text::{Line, Text};
-use ratatui::widgets::{Paragraph, Widget, Wrap};
+use ratatui::layout::Size;
 
-#[cfg(test)]
-use super::geometry::Geometry;
-use super::inline_term::InlineTerminal;
 use super::osc;
 use super::screen::{Prompt, Screen, ViewOp};
 use crate::ui::facade::ProgressState;
 use crate::ui::render::frame::FrameView;
-use crate::ui::render::spans::ansi_to_spans;
 
-/// Produces the writers: one for the inline terminal, one out-of-band control writer. For
-/// the live build this is `|| io::stdout()` (handles share the one stream); tests hand out
-/// clones of a shared byte buffer.
+/// Produces the writers: one for the screen, one out-of-band control writer. For the live build
+/// this is `|| io::stdout()` (handles share the one stream); tests hand out clones of a shared
+/// byte buffer.
 pub(crate) type MakeWriter<W> = Box<dyn FnMut() -> W + Send>;
 
-/// Whether this run takes the full-screen terminal ([`Screen`]): `IOTA_FULLSCREEN=1`, the
-/// migration scaffold of tui-plan S1–S4 (no docs, no `--help`; deleted with the inline
-/// terminal in S5). Anything else is the inline terminal, unchanged.
-pub(crate) fn fullscreen_enabled() -> bool {
-    std::env::var_os("IOTA_FULLSCREEN").is_some_and(|v| v == "1")
-}
-
-/// Owns the terminal and the frame's life on it — one of the two worlds, chosen once, when
-/// the `Term` is built: the inline terminal (its resize re-anchored with one DSR — W5 — the
-/// band a resize leaves, `line_count`-sized inserts — W6) or the full-screen one.
+/// Owns the terminal and the frame's life on it.
 pub(crate) struct Term<W: Write> {
-    kind: Kind<W>,
-    /// Out-of-band control writer (same underlying stream): title OSC, progress, pings.
+    /// The alternate screen (boxed: it holds two frame buffers).
+    screen: Box<Screen<W>>,
+    /// Out-of-band control writer (same underlying stream): focus reporting on and off.
     ctrl: W,
     /// Last emitted window title (emit-on-change).
     last_title: Option<String>,
@@ -84,370 +35,91 @@ pub(crate) struct Term<W: Write> {
     focus_on: bool,
 }
 
-/// The terminal a [`Term`] drives.
-enum Kind<W: Write> {
-    /// iota's inline terminal on the main screen.
-    Inline {
-        t: InlineTerminal<W>,
-        /// The synthetic terminal a headless test runs on ([`Term::headless`]).
-        #[cfg(test)]
-        geo: Option<Geometry>,
-        /// Blank rows directly above the frame that a resize left there (W5 step 3): ours to
-        /// fill with the next output, so a band never has to scroll into the history.
-        pad: u16,
-    },
-    /// The alternate screen ([`Screen`]; boxed, it is the larger by two frame buffers).
-    Full(Box<Screen<W>>),
-}
-
 impl<W: Write> Term<W> {
-    /// Builds the inline terminal at `height` rows, anchored at `start_top` (the
-    /// caller's pre-raw-mode cursor row), on the tty's size.
-    pub(crate) fn new(make_writer: MakeWriter<W>, height: u16, start_top: u16) -> io::Result<Self> {
+    /// The full screen on the tty's size. Nothing is written yet — the first frame enters the
+    /// alternate screen.
+    pub(crate) fn new(make_writer: MakeWriter<W>) -> io::Result<Self> {
         let (width, rows) = crossterm::terminal::size()?;
-        Self::open(make_writer, Size::new(width, rows), height, start_top)
+        Self::open(make_writer, Size::new(width, rows), true)
     }
 
-    /// Builds the full-screen terminal on the tty's size. Nothing is written yet — the first
-    /// frame enters the alternate screen. No cursor query.
-    pub(crate) fn fullscreen(make_writer: MakeWriter<W>) -> io::Result<Self> {
-        let (width, rows) = crossterm::terminal::size()?;
-        Self::open_full(make_writer, Size::new(width, rows), true)
-    }
-
-    /// [`Term::new`] on the synthetic terminal `geo`: its size, its cursor answers, and every
-    /// cursor move mirrored into it (from the anchor on).
+    /// [`Term::new`] over a test's writers at `size`: the screen never claims the process's
+    /// terminal (no `restore_terminal` bookkeeping, no job-control stop).
     #[cfg(test)]
-    pub(crate) fn headless(
-        make_writer: MakeWriter<W>,
-        height: u16,
-        start_top: u16,
-        geo: Geometry,
-    ) -> io::Result<Self> {
-        let mut term = Self::open(make_writer, geo.size(), height, start_top)?;
-        if let Kind::Inline { t, geo: g, .. } = &mut term.kind {
-            t.mirror(geo.clone());
-            *g = Some(geo);
-        }
-        Ok(term)
+    pub(crate) fn headless(make_writer: MakeWriter<W>, size: Size) -> io::Result<Self> {
+        Self::open(make_writer, size, false)
     }
 
-    fn open(mut make_writer: MakeWriter<W>, size: Size, height: u16, top: u16) -> io::Result<Self> {
+    fn open(mut make_writer: MakeWriter<W>, size: Size, live: bool) -> io::Result<Self> {
         let ctrl = make_writer();
-        let t = InlineTerminal::new(make_writer(), size, height, top)?;
-        Ok(Self::with(
-            Kind::Inline {
-                t,
-                #[cfg(test)]
-                geo: None,
-                pad: 0,
-            },
-            ctrl,
-        ))
-    }
-
-    fn open_full(mut make_writer: MakeWriter<W>, size: Size, live: bool) -> io::Result<Self> {
-        let ctrl = make_writer();
-        let screen = Screen::new(make_writer(), size, live)?;
-        Ok(Self::with(Kind::Full(Box::new(screen)), ctrl))
-    }
-
-    const fn with(kind: Kind<W>, ctrl: W) -> Self {
-        Self {
-            kind,
+        let screen = Box::new(Screen::new(make_writer(), size, live)?);
+        Ok(Self {
+            screen,
             ctrl,
             last_title: None,
             last_progress: None,
             focus_on: false,
-        }
+        })
     }
 
-    /// Whether this is the full-screen terminal (the loop's resize takes no drag protocol there).
-    pub(crate) const fn is_fullscreen(&self) -> bool {
-        matches!(self.kind, Kind::Full(_))
+    /// Takes the terminal's new size: the next draw repaints every cell.
+    pub(crate) fn resize(&mut self, size: Size) {
+        self.screen.resize(size);
     }
 
-    /// The frame's first row (bookkeeping, absolute; the inline terminal's).
-    #[cfg(test)]
-    pub(crate) fn top(&self) -> u16 {
-        match &self.kind {
-            Kind::Inline { t, .. } => t.viewport().y,
-            Kind::Full(_) => 0,
-        }
-    }
-
-    /// A frame-height change: a field write and a repaint of what changed (no recreation,
-    /// no clear). A taller frame grows into the blank band a resize left above it (W5)
-    /// before it takes rows below it — scrolling the transcript into the history where the
-    /// screen ends. Returns whether the height changed. The full screen lays the frame out
-    /// per draw: nothing to do.
-    pub(crate) fn ensure_height(&mut self, new_h: u16) -> io::Result<bool> {
-        let Kind::Inline { t, pad, .. } = &mut self.kind else {
-            return Ok(false);
-        };
-        let h = t.viewport().height;
-        if new_h == h {
-            return Ok(false);
-        }
-        let grow = new_h.saturating_sub(h).min(*pad).min(t.viewport().y);
-        if grow > 0 {
-            *pad -= grow;
-            t.grow_up(grow);
-        }
-        t.set_height(new_h)?;
-        Ok(true)
-    }
-
-    /// W5 `RESIZE_PASS_FIRST`: takes the new `size` and re-anchors the frame (now `new_h`
-    /// rows) where the emulator left it. Every row this clears is one the old frame provably
-    /// owned; a transcript row is never touched, and nothing is inserted or scrolled.
-    ///
-    /// 1. **The anchor.** The last write left the cursor on frame row `c` — the composer's,
-    ///    or the frame's top-left while a surface hides it — and a resize carries it with its
-    ///    cell, so the `c` rows above it and everything below it are the old frame's. The
-    ///    erase starts `c` rows UP from the cursor (`CUU`, which can only stop short, at the
-    ///    top of the screen): no row number enters it. What a reflow grew above that row —
-    ///    the pieces of the frame's own full-width rows that wrapped (a separator, a staged
-    ///    row) — is NOT claimed: whether an emulator reflows at all cannot be asked, and a
-    ///    guess that it did would erase transcript rows on one that does not. Those pieces
-    ///    stay as a duplicate above the frame — X-52's residual (1), measured per terminal
-    ///    since B3: the staged rows that wrapped, no separator piece (a one-column drag: 3 in
-    ///    tmux 3.7c, 2 in herdr and Ghostty; a ≥ 2× narrowing: 3 in tmux, 4 in herdr and
-    ///    Ghostty — above the frozen ≤ 2, ARCHITECTURE §12).
-    /// 2. **The floor.** The ONE DSR, before any byte is written, says where that row is:
-    ///    `start = cursor − c`. A frame that was flush with the bottom stays flush:
-    ///    `top = S' − new_h`. An emulator keeps its last row on the bottom through a reflow
-    ///    — the cursor estimate alone lags whatever grew BELOW the cursor — and a row grow
-    ///    pulls history in above it or adds blank rows below it. The rows between `start`
-    ///    and the floor are old-frame rows: they are erased and left as a blank BAND between
-    ///    the transcript and the frame ([`Term::pad`]), which the next output fills before
-    ///    anything scrolls. The move there is `LF`s from `start` — a DSR that is stale by
-    ///    then only makes the band a row taller or shorter. An emulator that eats the rows
-    ///    below the cursor on a row shrink leaves the cursor on the bottom row: the floor
-    ///    lies above `start`, and the frame stays at `start`, its rows made by `LF`. Without
-    ///    an answer (a terminal that does not answer the DSR), there is no floor: the frame is
-    ///    laid out where it was.
-    /// 3. **The recheck.** A second DSR once the frame is laid out: the bookkeeping follows
-    ///    the cursor (the frame's first row) — it only ever moves the model, never a byte.
-    ///
-    /// The full screen only takes the size: its next draw repaints every cell.
-    pub(crate) fn resize(&mut self, size: Size, new_h: u16) -> io::Result<()> {
-        if let Kind::Full(screen) = &mut self.kind {
-            screen.resize(size);
-            return Ok(());
-        }
-        #[cfg(test)]
-        let geo = match &self.kind {
-            Kind::Inline { geo, .. } => geo.clone(),
-            Kind::Full(_) => None,
-        };
-        // The size the terminal has NOW: in a fast drag the event's size can already be stale
-        // (the next resize applied, its event not yet read).
-        let now = || {
-            #[cfg(test)]
-            if let Some(g) = &geo {
-                return Ok(g.size());
-            }
-            crossterm::terminal::size().map(|(width, height)| Size::new(width, height))
-        };
-        let size = now()
-            .ok()
-            .filter(|s| s.width > 0 && s.height > 0)
-            .unwrap_or(size);
-        let Kind::Inline { t, pad, .. } = &mut self.kind else {
-            return Ok(());
-        };
-        let old = t.size();
-        let flush = t.viewport().bottom() >= old.height;
-        let above = t.frame_cursor().y;
-        t.set_size(size);
-        let new_h = new_h.clamp(1, size.height.max(1));
-        let floor = flush.then(|| size.height.saturating_sub(new_h));
-        // The DSRs are the terminal's own (they must not borrow `self`) — never inside a
-        // synchronized update (`relayout` checks): `WezTerm` and Alacritty hold the input until
-        // it ends.
-        let band = t.relayout(above, floor, new_h, || {
-            #[cfg(test)]
-            if let Some(g) = &geo {
-                return g.query_cursor();
-            }
-            let (x, y) = crossterm::cursor::position()?;
-            Ok(Position::new(x, y))
-        })?;
-        *pad = pad.saturating_add(band);
-        *pad = (*pad).min(t.viewport().y);
-        Ok(())
-    }
-
-    /// Opens a batch: what the terminal writes until [`Term::end_batch`] is one
-    /// write — a synchronized update if it is larger than `SYNC_MIN` (the loop gathers one
-    /// iteration's writes).
+    /// Opens a batch: what the terminal writes until [`Term::end_batch`] is one write — a
+    /// synchronized update if it is larger than `SYNC_MIN` (the loop gathers one iteration's
+    /// writes).
     pub(crate) fn begin_batch(&mut self) {
-        match &mut self.kind {
-            Kind::Inline { t, .. } => t.begin_batch(),
-            Kind::Full(screen) => screen.begin_batch(),
-        }
+        self.screen.begin_batch();
     }
 
     /// Closes the batch [`Term::begin_batch`] opened and writes it.
     pub(crate) fn end_batch(&mut self) -> io::Result<()> {
-        match &mut self.kind {
-            Kind::Inline { t, .. } => t.end_batch(),
-            Kind::Full(screen) => screen.end_batch(),
-        }
+        self.screen.end_batch()
     }
 
-    /// Closes the band a resize left above the frame (W5 step 3) when the drag is over: the
-    /// band's rows are deleted and the screen scrolled back down over them, so the transcript
-    /// sits on the frame again, the frame where it was, and the band's rows go to the top of
-    /// the screen — never a hole the next output starts in. Once per drag, never inside a
-    /// resize pass (a scroll during the drag would leave blank rows at the top for the drag's
-    /// next reflow to push into the history). The full screen has no drag and no band.
-    pub(crate) fn close_band(&mut self) -> io::Result<()> {
-        let Kind::Inline { t, pad, .. } = &mut self.kind else {
-            return Ok(());
-        };
-        let pad = std::mem::take(pad).min(t.viewport().y);
-        t.close_band(pad)
+    /// Appends committed rows to the conversation buffer; the next draw shows them.
+    pub(crate) fn push(&mut self, rows: &[String]) {
+        self.screen.push(rows);
     }
 
-    /// Commits pre-wrapped rows: into native scrollback right above the frame, sized by W6
-    /// `LINE_COUNT_SELF_CONSISTENCY` (inline), or onto the conversation buffer the next draw
-    /// shows (full screen). Returns the row count.
-    pub(crate) fn insert_lines(&mut self, rows: &[String]) -> io::Result<u16> {
-        if let Kind::Full(screen) = &mut self.kind {
-            screen.push(rows);
-            return Ok(u16::try_from(rows.len()).unwrap_or(u16::MAX));
-        }
-        // The band write and the insert are one write.
-        self.begin_batch();
-        let n = self.insert_rows(rows);
-        self.end_batch()?;
-        n
-    }
-
-    fn insert_rows(&mut self, rows: &[String]) -> io::Result<u16> {
-        let Kind::Inline { t, pad: band, .. } = &mut self.kind else {
-            return Ok(0);
-        };
-        if rows.is_empty() {
-            return Ok(0);
-        }
-        let width = t.size().width.max(1);
-        let lines: Vec<Line<'static>> = rows.iter().map(|r| ansi_to_spans(r)).collect();
-        // W6: the height is what the SAME paragraph measures at the terminal's width NOW. The
-        // region wraps only entries wider than the screen (to width−1), so that is one row an
-        // entry — except for rows laid out
-        // for a wider terminal just before a narrowing: the drag's last resize pass waits for
-        // the burst to end (`RESIZE_QUIET`), and a row committed meanwhile (the user's block
-        // on Enter, a streamed line) is still the old width when it is inserted. Measured, it
-        // takes its wrapped rows and nothing is cut; assumed one row, its tail was dropped (and
-        // a debug build panicked here — CI, 2026-09).
-        let para = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
-        let total = u16::try_from(para.line_count(width)).unwrap_or(u16::MAX);
-        // The band a resize left above the frame (W5) takes the first rows — wrapped rows
-        // too: they are written straight into it, right under the transcript, and the frame
-        // does not move — only what the band cannot hold is inserted (and scrolls anything).
-        // A row inserted past a band that is still open would sit between it and the frame,
-        // and the band's next consumer (`close_band`'s `DL`, the next `fill_above`,
-        // `grow_up`) would take it for a blank one — LOST (the band invariant, ARCHITECTURE
-        // §12).
-        let pad = (*band).min(t.viewport().y);
-        let k = pad.min(total);
-        if k > 0 {
-            let para = para.clone();
-            t.fill_above(pad, k, |buf| {
-                let area = buf.area;
-                para.render(area, buf);
-            })?;
-            *band = pad - k;
-        }
-        let para = para.scroll((k, 0));
-        t.insert_before(total - k, |buf| {
-            let area = buf.area;
-            para.render(area, buf);
-        })?;
-        Ok(total)
-    }
-
-    /// Erases every frame row and forgets what they showed — the T-32 `tea.ClearScreen`
-    /// twin for surface Tab switches: the next draw writes every cell.
+    /// Clears the screen and forgets what it showed — the T-32 `tea.ClearScreen` twin for
+    /// surface Tab switches: the next draw writes every cell.
     pub(crate) fn clear(&mut self) -> io::Result<()> {
-        match &mut self.kind {
-            Kind::Inline { t, .. } => t.clear(),
-            Kind::Full(screen) => screen.clear(),
-        }
+        self.screen.clear()
     }
 
-    /// The size the frame is laid out against (what the last resize pass took).
+    /// The size the frame is laid out against (what the last resize took).
     pub(crate) fn size(&self) -> Size {
-        match &self.kind {
-            Kind::Inline { t, .. } => t.size(),
-            Kind::Full(screen) => screen.size(),
-        }
+        self.screen.size()
     }
 
-    /// Job control (the full screen): hands the terminal back — the main screen, cooked mode, no
-    /// paste or focus reporting — stops the process, and on `fg` takes it again ([`Screen::suspend`]).
-    /// Returns the size the terminal has then. The inline terminal never suspends.
+    /// Job control: hands the terminal back — the main screen, cooked mode, no paste or focus
+    /// reporting — stops the process, and on `fg` takes it again ([`Screen::suspend`]). Returns
+    /// the size the terminal has then (`None` for a headless screen, which does not stop).
     pub(crate) fn suspend(&mut self) -> io::Result<Option<Size>> {
-        let focus = self.focus_on;
-        match &mut self.kind {
-            Kind::Full(screen) => screen.suspend(focus),
-            Kind::Inline { .. } => Ok(None),
-        }
+        self.screen.suspend(self.focus_on)
     }
 
-    /// Whether the full screen's view is scrolled back from the tail.
+    /// Whether the view is scrolled back from the tail.
     pub(crate) fn view_paused(&self) -> bool {
-        matches!(&self.kind, Kind::Full(screen) if screen.paused())
+        self.screen.paused()
     }
 
-    /// Applies one of the full screen's view keys (scrolling, the dump and the way back).
+    /// Applies one of the view keys (scrolling, the write-out and the way back, the search).
     pub(crate) fn view(&mut self, op: ViewOp) -> io::Result<()> {
-        match &mut self.kind {
-            Kind::Full(screen) => screen.view(op),
-            Kind::Inline { .. } => Ok(()),
-        }
+        self.screen.view(op)
     }
 
-    /// W4 `DRAW_WITH_INSERTS` end step: renders the frame rows top-down into the
-    /// inline viewport and places the REAL cursor (`None` = hidden, surface open). Either
-    /// way the physical cursor ends on a known frame row — the cursor's, or the frame's
-    /// first row while it is hidden — which is what W5's resize anchor counts from. The full
-    /// screen draws the conversation viewport and the frame under it.
+    /// One frame: the conversation viewport over the frame's rows, the real cursor where the
+    /// frame (or the search line) puts it.
     pub(crate) fn draw_frame(
         &mut self,
         view: &FrameView,
         prompt: Option<&Prompt>,
     ) -> io::Result<()> {
-        if let Kind::Full(screen) = &mut self.kind {
-            return screen.draw_frame(view, prompt);
-        }
-        // The diff and the cursor are one write.
-        self.begin_batch();
-        let drawn = self.paint(view);
-        self.end_batch()?;
-        drawn
-    }
-
-    fn paint(&mut self, view: &FrameView) -> io::Result<()> {
-        let Kind::Inline { t, .. } = &mut self.kind else {
-            return Ok(());
-        };
-        let lines: Vec<Line<'static>> = view.rows.iter().map(|r| ansi_to_spans(r)).collect();
-        let area = t.viewport();
-        t.draw(|buf| Paragraph::new(Text::from(lines)).render(area, buf))?;
-        let bottom = area.bottom().saturating_sub(1);
-        let pos = view.cursor.map(|(x, y)| {
-            Position::new(
-                x.min(area.width.saturating_sub(1)),
-                area.y.saturating_add(y).min(bottom),
-            )
-        });
-        // Hidden: parked on the frame's top-left, where the next resize finds no frame row
-        // above it to rewrap. Cursor-invisible, so the move costs nothing on screen.
-        t.place_cursor(pos)
+        self.screen.draw_frame(view, prompt)
     }
 
     /// Emits the window title OSC — on change only (the facade already sanitized it).
@@ -487,12 +159,9 @@ impl<W: Write> Term<W> {
     }
 
     /// Writes an already-encoded, cursor-neutral sequence verbatim (a program-status report) —
-    /// safe between draws, like [`Self::notify`].
+    /// in order with the batch around it, like [`Self::notify`].
     pub(crate) fn write_raw(&mut self, bytes: &[u8]) -> io::Result<()> {
-        match &mut self.kind {
-            Kind::Inline { t, .. } => t.write_raw(bytes),
-            Kind::Full(screen) => screen.write_raw(bytes),
-        }
+        self.screen.write_raw(bytes)
     }
 
     /// Turns terminal focus reporting on (mode 1004) so the loop learns when the window
@@ -506,15 +175,10 @@ impl<W: Write> Term<W> {
         Ok(())
     }
 
-    /// The loop's exit path. Inline: parks the cursor on the frame's bottom row, opens a fresh
-    /// shell line and clears from there down (the spike's park sequence; the clear is for what
-    /// a frame taller than the last one may have left below it). Full screen: leaves the
-    /// alternate screen and writes the conversation into the main screen ([`Screen::leave`]).
-    pub(crate) fn park_cursor(&mut self) -> io::Result<()> {
-        match &mut self.kind {
-            Kind::Inline { t, .. } => t.park(),
-            Kind::Full(screen) => screen.leave(),
-        }
+    /// The exit: leaves the alternate screen and writes the conversation into the main screen
+    /// ([`Screen::leave`]).
+    pub(crate) fn leave(&mut self) -> io::Result<()> {
+        self.screen.leave()
     }
 }
 
@@ -533,301 +197,5 @@ impl<W: Write> Drop for Term<W> {
             let _ = self.ctrl.write_all(osc::OSC_PROGRESS_RESET.as_bytes());
         }
         let _ = self.ctrl.flush();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fmt::Write as _;
-
-    use ratatui::layout::Size;
-
-    use super::Term;
-    use crate::ui::render::frame::FrameView;
-    use crate::ui::runtime::geometry::Geometry;
-    use crate::ui::testutil::SharedBuf;
-
-    fn term(w: u16, h: u16, view_h: u16, top: u16) -> (Term<SharedBuf>, SharedBuf, Geometry) {
-        let geo = Geometry::new(w, h);
-        let buf = SharedBuf::default();
-        let wtr = buf.clone();
-        let t = Term::headless(Box::new(move || wtr.clone()), view_h, top, geo.clone()).unwrap();
-        (t, buf, geo)
-    }
-
-    fn frame() -> FrameView {
-        FrameView {
-            rows: vec![
-                "┄".repeat(60),
-                "❯ ".to_owned(),
-                "┄".repeat(60),
-                "status".to_owned(),
-            ],
-            cursor: Some((2, 1)),
-        }
-    }
-
-    fn tall() -> FrameView {
-        FrameView {
-            rows: (0..9).map(|i| format!("row-{i}")).collect(),
-            cursor: Some((2, 6)),
-        }
-    }
-
-    /// Every row a user can reach: the history (oldest first), then the screen.
-    fn reachable(p: &mut vt100::Parser) -> Vec<String> {
-        let cols = p.screen().size().1;
-        let screen: Vec<String> = p.screen().rows(0, cols).collect();
-        p.screen_mut().set_scrollback(usize::MAX);
-        let depth = p.screen().scrollback();
-        let mut all = Vec::with_capacity(depth + screen.len());
-        for off in (1..=depth).rev() {
-            p.screen_mut().set_scrollback(off);
-            all.push(p.screen().rows(0, cols).next().unwrap_or_default());
-        }
-        p.screen_mut().set_scrollback(0);
-        all.extend(screen);
-        all
-    }
-
-    /// Replays `bytes` through a `rows`×`cols` emulator that, at byte `mark`, grows by
-    /// `pulled` rows the way an emulator that keeps a history does: history rows come back onto the top of the screen
-    /// (here: `PULLED-k` rows) and everything — the cursor with it — moves down.
-    fn replay_pulled(bytes: &[u8], mark: usize, rows: u16, cols: u16, pulled: u16) -> Vec<String> {
-        let mut p = vt100::Parser::new(rows, cols, 1000);
-        p.process(&bytes[..mark]);
-        let (r, c) = p.screen().cursor_position();
-        p.screen_mut().set_size(rows + pulled, cols);
-        let mut seq = format!("\u{1b}[1;1H\u{1b}[{pulled}L");
-        for k in 0..pulled {
-            let _ = write!(seq, "\u{1b}[{};1HPULLED-{k}", k + 1);
-        }
-        let _ = write!(seq, "\u{1b}[{};{}H", r + pulled + 1, c + 1);
-        p.process(seq.as_bytes());
-        p.process(&bytes[mark..]);
-        reachable(&mut p)
-    }
-
-    /// A term with 18 transcript rows `t-00..t-17` above a 9-row frame flush with the bottom
-    /// of a 27-row screen.
-    fn with_transcript() -> (Term<SharedBuf>, SharedBuf, Geometry) {
-        let (mut t, buf, geo) = term(120, 27, 9, 18);
-        let rows: Vec<String> = (0..18).map(|i| format!("t-{i:02}")).collect();
-        t.insert_lines(&rows).unwrap();
-        t.draw_frame(&tall(), None).unwrap();
-        (t, buf, geo)
-    }
-
-    fn assert_all_once(all: &[String], names: &[String]) {
-        for name in names {
-            let n = all.iter().filter(|r| r.trim_end() == name).count();
-            assert_eq!(n, 1, "{name} reachable {n} times:\n{}", all.join("\n"));
-        }
-    }
-
-    fn transcript(extra: &[&str], pulled: u16) -> Vec<String> {
-        let mut names: Vec<String> = (0..18).map(|i| format!("t-{i:02}")).collect();
-        names.extend(extra.iter().map(|s| (*s).to_owned()));
-        names.extend((0..pulled).map(|k| format!("PULLED-{k}")));
-        names
-    }
-
-    /// An emulator that, on a diagonal shrink, eats the rows below the cursor first: the cursor lands on
-    /// the bottom row, the frame's first row lies below the floor, and the frame is laid out
-    /// from it, its last rows made by `LF`. The bookkeeping must come out with the size the
-    /// terminal has — a model a row taller left every later pass thinking the frame was not
-    /// flush, and the frame two rows off the bottom for the rest of the session (L4 06).
-    #[test]
-    fn a_shrink_that_ate_the_rows_below_the_cursor_keeps_the_size_and_the_floor() {
-        let (mut t, _buf, geo) = term(90, 30, 9, 21);
-        t.draw_frame(&tall(), None).unwrap();
-        geo.set_size(70, 20);
-        geo.put_cursor(ratatui::layout::Position::new(2, 19)); // row 27 → the bottom row
-        t.resize(Size::new(70, 20), 9).unwrap();
-        assert_eq!(
-            t.size(),
-            Size::new(70, 20),
-            "the model is the terminal's size"
-        );
-        assert_eq!(t.top(), 11, "flush with the bottom");
-        t.draw_frame(&tall(), None).unwrap();
-        geo.set_size(69, 20);
-        t.resize(Size::new(69, 20), 9).unwrap();
-        assert_eq!(t.top(), 11, "and still flush after the next pass");
-    }
-
-    /// A row laid out for a wider terminal — committed while the drag's last resize pass was
-    /// still waiting for the burst to end — is inserted after the pass took the narrower
-    /// size: it takes its wrapped rows, every character reaches the screen, nothing panics
-    /// (a debug build asserted one row an entry and panicked; a release build cut the tail).
-    #[test]
-    fn a_row_wider_than_the_terminal_now_inserts_as_its_wrapped_rows() {
-        let (mut t, buf, geo) = term(100, 24, 4, 20);
-        t.draw_frame(&frame(), None).unwrap();
-        geo.set_size(95, 24);
-        t.resize(Size::new(95, 24), 4).unwrap();
-        t.draw_frame(&frame(), None).unwrap();
-        let wide = format!("{}END", "w".repeat(96));
-        let n = t.insert_lines(&[wide.clone(), "next".to_owned()]).unwrap();
-        assert_eq!(n, 3, "99 columns at 95 wrap into 2 rows, plus one");
-        t.draw_frame(&frame(), None).unwrap();
-        let mut p = vt100::Parser::new(24, 95, 100);
-        p.process(&buf.bytes());
-        let all = reachable(&mut p).join("");
-        assert!(
-            all.contains("wEND"),
-            "the wrapped tail reached the screen:\n{all}"
-        );
-        assert!(all.contains("next"), "{all}");
-    }
-
-    /// The acknowledged size is gone (it existed so ratatui's autoresize would not run its
-    /// inline resize): nothing but the resize pass reads the size, so a draw after the tty
-    /// changed still lays out against the size the last pass took — and never clears.
-    #[test]
-    fn a_draw_lays_out_against_the_size_the_resize_pass_took() {
-        let (mut t, buf, geo) = term(80, 24, 4, 20);
-        t.draw_frame(&frame(), None).unwrap();
-        geo.set_size(60, 24);
-        let mark = buf.bytes().len();
-        t.draw_frame(&frame(), None).unwrap();
-        let drawn = String::from_utf8_lossy(&buf.bytes()[mark..]).into_owned();
-        assert!(!drawn.contains("\u{1b}[2J"), "a clear on a draw: {drawn:?}");
-        assert!(!drawn.contains("\u{1b}[J"), "an erase on a draw: {drawn:?}");
-        assert_eq!(t.size().width, 80);
-        t.resize(Size::new(60, 24), 4).unwrap();
-        assert_eq!(t.size().width, 60, "taken by `Term::resize`");
-    }
-
-    /// The verifier's P0 (2026-09-24), at the seam: in a fast drag the emulator has already grown the
-    /// screen to 28 rows — pulling a history row back, so the frame and the cursor moved down
-    /// one — while both the event and the tty still say 27. The erase is counted up from the
-    /// cursor, so the pulled row and every transcript row survive, and the bookkeeping
-    /// follows the cursor.
-    #[test]
-    fn a_resize_on_a_stale_size_never_erases_above_the_frame() {
-        let (mut t, buf, geo) = with_transcript();
-        let mark = buf.bytes().len();
-        geo.set_real_rows(28);
-        geo.shift_cursor(1);
-        t.resize(Size::new(120, 27), 9).unwrap();
-        t.draw_frame(&tall(), None).unwrap();
-        assert_eq!(t.top(), 19, "the frame is where the terminal put it");
-        let all = replay_pulled(&buf.bytes(), mark, 27, 120, 1);
-        assert_all_once(&all, &transcript(&[], 1));
-    }
-
-    /// The cursor answers from a screen that grew AGAIN after the size was read (reported 26,
-    /// the cursor on row 27): the cursor wins — the screen has at least 28 rows — and the
-    /// anchor is the cursor's frame top.
-    #[test]
-    fn a_cursor_beyond_the_reported_size_wins_over_it() {
-        let (mut t, buf, geo) = with_transcript();
-        let mark = buf.bytes().len();
-        geo.set_real_rows(31);
-        geo.shift_cursor(4); // the emulator grew twice, pulling history rows back: the frame moved down 4
-        t.resize(Size::new(120, 27), 9).unwrap();
-        t.draw_frame(&tall(), None).unwrap();
-        assert_eq!(t.top(), 22, "the anchor is the cursor's frame top");
-        let all = replay_pulled(&buf.bytes(), mark, 27, 120, 4);
-        assert_all_once(&all, &transcript(&[], 4));
-    }
-
-    /// Loss (c) of the 2026-09-25 re-verification — the check→execute window: the DSR answers
-    /// from the screen as it was, and the emulator applies the next grow (pulling history rows back)
-    /// before the pass's bytes arrive. The erase is counted from the cursor, which moved with
-    /// the frame: nothing above it is touched, whatever the DSR said.
-    #[test]
-    fn a_grow_between_the_dsr_and_the_erase_loses_no_row() {
-        let (mut t, buf, _geo) = with_transcript();
-        let mark = buf.bytes().len();
-        // The DSR (geo) still answers the old row; the emulator pulls 3 rows at `mark`.
-        t.resize(Size::new(120, 27), 9).unwrap();
-        t.draw_frame(&tall(), None).unwrap();
-        let all = replay_pulled(&buf.bytes(), mark, 27, 120, 3);
-        assert_all_once(&all, &transcript(&[], 3));
-    }
-
-    /// Loss (a) of the 2026-09-25 re-verification — streaming through a height drag: the emulator has
-    /// grown the screen (history rows pulled back, the frame and the cursor down) and the loop,
-    /// which has not read the resize yet, inserts a row and draws. Cursor-relative, the insert
-    /// lands right above the frame and the draw on it, so the cursor stays on the frame row the
-    /// bookkeeping says, and the pass that follows erases the frame only.
-    #[test]
-    fn writes_before_the_resize_is_read_keep_the_anchor() {
-        let (mut t, buf, geo) = with_transcript();
-        let mark = buf.bytes().len();
-        geo.set_real_rows(29);
-        geo.shift_cursor(2);
-        t.insert_lines(&["new-0".to_owned(), "new-1".to_owned()])
-            .unwrap();
-        t.draw_frame(&tall(), None).unwrap();
-        geo.set_size(120, 29);
-        t.resize(Size::new(120, 29), 9).unwrap();
-        t.draw_frame(&tall(), None).unwrap();
-        let all = replay_pulled(&buf.bytes(), mark, 27, 120, 2);
-        assert_all_once(&all, &transcript(&["new-0", "new-1"], 2));
-        let rows: Vec<&String> = all.iter().filter(|r| r.starts_with("row-")).collect();
-        assert_eq!(rows.len(), 9, "one frame on screen:\n{}", all.join("\n"));
-    }
-
-    /// Loss (b) of the 2026-09-25 re-verification — a terminal that does not answer the DSR,
-    /// through a grow that pulled history rows back: the old fallback anchor (the recorded
-    /// top) was a row above the frame by then and its erase took a committed row. There is
-    /// no fallback anchor now — the erase is counted from the cursor.
-    #[test]
-    fn a_resize_whose_dsr_fails_loses_no_row_on_a_grow() {
-        let (mut t, buf, geo) = with_transcript();
-        let mark = buf.bytes().len();
-        geo.set_dsr_fails(true);
-        geo.set_size(120, 28);
-        geo.shift_cursor(1);
-        t.resize(Size::new(120, 28), 9).unwrap();
-        t.draw_frame(&tall(), None).unwrap();
-        let all = replay_pulled(&buf.bytes(), mark, 27, 120, 1);
-        assert_all_once(&all, &transcript(&[], 1));
-    }
-
-    /// A starved process's answer comes after crossterm's 2 s: the query waits it out once more
-    /// and reads it then — its own (its column), so the pass still has its floor. A flush frame
-    /// whose rows below the cursor reflowed (the cursor 3 rows up, the height unchanged) lands on
-    /// the floor, not where the cursor estimate put it.
-    #[test]
-    fn a_slow_cursor_answer_still_gives_the_pass_its_floor() {
-        let (mut t, _buf, geo) = term(80, 24, 4, 20);
-        t.draw_frame(&frame(), None).unwrap();
-        geo.set_answers_late(1);
-        geo.shift_cursor(-3);
-        geo.set_size(60, 24);
-        t.resize(Size::new(60, 24), 4).unwrap();
-        assert_eq!(t.top(), 20, "flush on the floor (24 − 4)");
-        t.draw_frame(&frame(), None).unwrap();
-        geo.set_size(59, 24);
-        t.resize(Size::new(59, 24), 4).unwrap();
-        assert_eq!(
-            t.top(),
-            20,
-            "and the next pass, its answers queued behind, too"
-        );
-    }
-
-    /// A terminal that never answers the cursor query (crossterm times out with an error) must
-    /// not take the loop down on a resize: the tracked top stays the anchor and the frame is
-    /// drawn.
-    #[test]
-    fn a_resize_whose_dsr_fails_keeps_the_tracked_top_and_does_not_unwind() {
-        let (mut t, _buf, geo) = term(80, 24, 4, 20);
-        t.draw_frame(&frame(), None).unwrap();
-        geo.set_dsr_fails(true);
-        geo.set_size(70, 24);
-        t.resize(Size::new(70, 24), 4)
-            .expect("a failed DSR must not unwind the resize");
-        assert_eq!(t.top(), 20, "the tracked top is the anchor");
-        t.draw_frame(&frame(), None)
-            .expect("the frame draws after it");
-        assert!(
-            t.ensure_height(5).is_ok(),
-            "a later height change survives it too"
-        );
     }
 }

@@ -1,15 +1,14 @@
-//! The full-screen terminal (`docs`-less migration scaffold: `IOTA_FULLSCREEN=1`, tui-plan S1).
+//! The full-screen terminal (`docs/design/fullscreen-tui.md`).
 //!
 //! iota owns the alternate screen (`ESC[?1049h` on entry, `l` on exit) and draws every frame
-//! with ratatui's own [`Terminal`] in [`Viewport::Fullscreen`]: X-54's reason for a hand-rolled
-//! terminal — absolute rows going stale across a resize on the main screen — does not exist
-//! here (the alternate screen has no history and no reflow), so every byte may name a row.
+//! with ratatui's own [`Terminal`] in [`Viewport::Fullscreen`]: the alternate screen has no
+//! history and no reflow, so every byte may name a row.
 //!
 //! The screen is two rectangles, top to bottom: the conversation viewport and the frame (the
 //! loop's [`FrameView`] rows, unchanged, pinned to the bottom). The conversation is a plain
-//! `Vec<Row>` of already-rendered ANSI strings (T-05): what used to be inserted into the native
-//! history is appended here, and only the rows a draw shows go through `ansi_to_spans`. A row
-//! wider than the screen is hard-wrapped by `wrap_ansi` at draw time — nothing is cached yet.
+//! buffer of already-rendered ANSI strings (T-05, [`Conversation`]): every committed row is
+//! appended there, and only the rows a draw shows go through `ansi_to_spans`. A row wider than
+//! the screen is hard-wrapped by `wrap_ansi` at draw time, the wrap cached per width.
 //!
 //! - **A frame** is one `Terminal::draw`: autoresize, layout, `Buffer::diff`, the cursor. The
 //!   bytes collect in [`SyncOut`] and leave in one write per loop iteration, under X-55's rule
@@ -37,13 +36,12 @@ use ratatui::text::{Line, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
-use super::inline_term::{SYNC_BEGIN, SYNC_END, SYNC_MIN};
 use crate::ui::render::frame::FrameView;
 use crate::ui::render::spans::ansi_to_spans;
 use crate::ui::render::theme::{FAINT, RESET, REV_ON};
 
 /// Whether a live [`Screen`] holds the alternate screen now — set by the live constructor only
-/// (`Term::fullscreen`), cleared by [`Screen::leave`] and by `restore_terminal`, which reads it.
+/// (`Term::new`), cleared by [`Screen::leave`] and by `restore_terminal`, which reads it.
 pub(crate) static ALT_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// The bytes that hand the main screen back: the cursor shown, the alternate screen left.
@@ -168,8 +166,7 @@ impl<W: Write> Screen<W> {
         self.term.backend_mut().size = size;
     }
 
-    /// Appends committed rows to the conversation (what the inline terminal inserted above
-    /// its frame). Nothing is written: the next draw shows them.
+    /// Appends committed rows to the conversation. Nothing is written: the next draw shows them.
     pub(crate) fn push(&mut self, rows: &[String]) {
         self.conv.push(rows);
     }
@@ -326,16 +323,29 @@ impl<W: Write> Screen<W> {
     /// Clears the screen and forgets what it showed (T-32): the next draw writes every cell.
     pub(crate) fn clear(&mut self) -> io::Result<()> {
         self.last = None;
-        self.term.clear()
+        self.batched(|s| s.term.clear())
     }
 
-    /// One frame: the conversation's visible rows over the frame's rows, the real cursor where
-    /// the frame puts it (hidden when it puts none).
+    /// Runs `op` inside a batch of its own: whatever it writes leaves as one write (X-55), also
+    /// outside the loop's batches (the session picker draws without them).
+    fn batched(&mut self, op: impl FnOnce(&mut Self) -> io::Result<()>) -> io::Result<()> {
+        self.begin_batch();
+        let done = op(self);
+        let written = self.end_batch();
+        done.and(written)
+    }
+
+    /// One frame, one write: the conversation's visible rows over the frame's rows, the real
+    /// cursor where the frame puts it (hidden when it puts none).
     pub(crate) fn draw_frame(
         &mut self,
         view: &FrameView,
         prompt: Option<&Prompt>,
     ) -> io::Result<()> {
+        self.batched(|s| s.paint(view, prompt))
+    }
+
+    fn paint(&mut self, view: &FrameView, prompt: Option<&Prompt>) -> io::Result<()> {
         match self.place {
             Place::Out | Place::Left => return Ok(()),
             Place::Main => self.enter()?,
@@ -494,7 +504,8 @@ impl<W: Write> Screen<W> {
 
     /// Writes the rows not written yet into the main screen at the width the terminal has now —
     /// leaving the alternate screen first when `leave`, under a [`TRANSCRIPT_MARK`] line the first
-    /// time — each row closed with an SGR reset and `CRLF` (raw mode is on), then clears what was
+    /// time there is a row to write (an empty conversation, the session picker's, writes nothing)
+    /// — each row closed with an SGR reset and `CRLF` (raw mode is on), then clears what was
     /// below: the next line is a fresh one.
     fn write_out(&mut self, leave: bool) -> io::Result<()> {
         let width = usize::from(self.size().width.max(1));
@@ -502,10 +513,11 @@ impl<W: Write> Screen<W> {
         if leave {
             dump.extend_from_slice(LEAVE);
         }
-        if self.written == 0 {
+        let first = self.written == 0;
+        let (lines, written) = self.conv.lines_after(self.written, width);
+        if first && !lines.is_empty() {
             dump.extend_from_slice(format!("{FAINT}{TRANSCRIPT_MARK}{RESET}\r\n").as_bytes());
         }
-        let (lines, written) = self.conv.lines_after(self.written, width);
         self.written = written;
         for line in &lines {
             dump.extend_from_slice(line.as_bytes());
@@ -523,9 +535,22 @@ impl<W: Write> Screen<W> {
     }
 }
 
+/// The longest write that goes out without a synchronized update — an empirical threshold, not
+/// a transport guarantee: the macOS pty's read block (1024 B, measured; Linux reads 4096, a TCP
+/// segment carries ~1448), so a write this size or smaller usually lands in one read. Nothing
+/// here controls how many bytes the receiving side reads at once (`write_all` promises no single
+/// write; TCP keeps no application write boundary, RFC 9293 §3.7): small writes keep the reads
+/// few, large ones ask a DEC 2026 terminal to present them at once. Chosen by size, never by
+/// terminal, and not a knob (X-55).
+pub(crate) const SYNC_MIN: usize = 1024;
+
+/// DEC private mode 2026, synchronized output: begin and end of one update.
+pub(crate) const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
+/// See [`SYNC_BEGIN`].
+pub(crate) const SYNC_END: &[u8] = b"\x1b[?2026l";
+
 /// The byte sink under the backend: everything a frame writes collects here, and leaves in one
-/// write at the end of the outermost batch (or at a flush outside any) — a DEC 2026 synchronized
-/// update when it is longer than [`SYNC_MIN`], bare otherwise (X-55, the inline terminal's rule).
+/// write at the end of the outermost batch (or at a flush outside any).
 struct SyncOut<W: Write> {
     out: W,
     pending: Vec<u8>,
@@ -533,6 +558,14 @@ struct SyncOut<W: Write> {
 }
 
 impl<W: Write> SyncOut<W> {
+    /// Hands the batch's bytes to the terminal in one write (X-55). A write longer than
+    /// [`SYNC_MIN`] goes out as one DEC 2026 synchronized update (`ESC[?2026h … ESC[?2026l`): the
+    /// transport may split it, and an emulator that knows the mode shows the screen before the
+    /// block or after it, never a half-drawn frame in between. A shorter write goes out bare — it
+    /// usually lands in one read, and a terminal that repaints a whole pane per block (tmux 3.7)
+    /// pays nothing for typing or streaming. Sent blind, like crossterm's
+    /// `BeginSynchronizedUpdate`; the criterion is the size, never the terminal. Inside a batch
+    /// the bytes wait for its end.
     fn commit(&mut self) -> io::Result<()> {
         if self.batch.load(Ordering::Relaxed) > 0 {
             return Ok(());

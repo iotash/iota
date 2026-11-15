@@ -35,7 +35,7 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
         return;
     }
 
-    // Row 0: the full screen's dump. Ctrl+O writes the conversation out on the main screen, and
+    // Row 0: the write-out. Ctrl+O writes the conversation out on the main screen, and
     // the next key — whatever it is, and only that — comes back (tui-plan D5). Ahead of the
     // surface, so the conversation can be written out while a dialog waits.
     if m.dumped {
@@ -43,19 +43,13 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
         m.view_ops.push(ViewOp::Return);
         return;
     }
-    // Ctrl+Z, the full screen's job-control stop (raw mode delivers it as a key): the terminal goes
-    // back to the shell until `fg` (tui-plan S4). The inline terminal leaves it alone, as before.
-    if m.fullscreen
-        && key.code == KeyCode::Char('z')
-        && key.modifiers.contains(KeyModifiers::CONTROL)
-    {
+    // Ctrl+Z, the job-control stop (raw mode delivers it as a key): the terminal goes back to the
+    // shell until `fg` (tui-plan S4).
+    if key.code == KeyCode::Char('z') && key.modifiers.contains(KeyModifiers::CONTROL) {
         m.suspend = true;
         return;
     }
-    if m.fullscreen
-        && key.code == KeyCode::Char('o')
-        && key.modifiers.contains(KeyModifiers::CONTROL)
-    {
+    if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
         m.dumped = true;
         m.view_ops.push(ViewOp::Dump);
         return;
@@ -68,28 +62,24 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
         return;
     }
 
-    // Row 1a: the full screen's conversation search (tui-plan S3). Ctrl+R opens it anywhere; `/`
-    // opens it on a scrolled-back view with an empty composer — following the tail, a `/` there
-    // starts a slash command. Once open, the search takes the keys it owns (see `search_key`).
-    if m.fullscreen {
-        if m.search.is_some() {
-            if search_key(m, &key) {
-                return;
-            }
-        } else if opens_search(m, &key) {
-            m.search = Some(SearchField::new());
-            m.view_ops.push(ViewOp::Search(SearchOp::Open));
+    // Row 1a: the conversation search (tui-plan S3). Ctrl+R opens it anywhere; `/` opens it on a
+    // scrolled-back view with an empty composer — following the tail, a `/` there starts a slash
+    // command. Ctrl+F is never a search key: it stays the editor's forward-char (the owner's
+    // decision). Once open, the search takes the keys it owns (see `search_key`).
+    if m.search.is_some() {
+        if search_key(m, &key) {
             return;
         }
+    } else if opens_search(m, &key) {
+        m.search = Some(SearchField::new());
+        m.view_ops.push(ViewOp::Search(SearchOp::Open));
+        return;
     }
 
-    // Row 1b: the full screen's view keys (tui-plan D5) — PgUp/PgDn half a screen, Ctrl+Home
-    // the first line, Ctrl+End the tail (followed again; PgDn reaching it does the same). None
-    // of them is bound elsewhere: the edit set takes Home/End without Ctrl only. The inline
-    // terminal leaves them to the edit set, as before.
-    if m.fullscreen
-        && let Some(how) = view_key(&key)
-    {
+    // Row 1b: the view keys (tui-plan D5) — PgUp/PgDn half a screen, Ctrl+Home the first line,
+    // Ctrl+End the tail (followed again; PgDn reaching it does the same). None of them is bound
+    // elsewhere: the edit set takes Home/End without Ctrl only.
+    if let Some(how) = view_key(&key) {
         m.view_ops.push(how);
         return;
     }
@@ -141,12 +131,12 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
     // Row 6: ↑ on the draft's top display row and ↓ on its bottom one walk the input
     // history; anywhere else the arrows move the cursor (the edit set). A one-row draft is
     // on both edges.
-    if key.code == KeyCode::Up && m.composer.at_first_row(m.frame_width()) {
+    if key.code == KeyCode::Up && m.composer.at_first_row(m.width.max(1)) {
         m.composer.history_up();
         return;
     }
     if key.code == KeyCode::Down
-        && m.composer.at_last_row(m.frame_width())
+        && m.composer.at_last_row(m.width.max(1))
         && m.composer.history_can_forward()
     {
         m.composer.history_down();
@@ -180,7 +170,7 @@ pub(crate) fn update_key(m: &mut Model, key: KeyEvent) {
     // here only to move between rows, and a row move inside a recalled multi-line entry must
     // leave the walk on it, or the ↑ off its top row would restart from the newest entry and
     // overwrite the saved draft with the entry.
-    m.composer.handle_edit_key(&key, m.frame_width());
+    m.composer.handle_edit_key(&key, m.width.max(1));
     if !matches!(key.code, KeyCode::Up | KeyCode::Down) {
         m.composer.end_history_nav();
     }

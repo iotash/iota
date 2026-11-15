@@ -41,7 +41,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::event_loop::{CrosstermEvents, EventSource, LoopShared, run_loop};
 use super::msgs::{MailboxPublish, UiMsg};
-use super::term::{self, Term};
+use super::term::Term;
 use crate::ui::render::region::{Emit, Region};
 use crate::ui::render::sink::StreamSink;
 use crate::ui::render::theme::{RESET, REV_ON};
@@ -50,10 +50,8 @@ use crate::ui::{Tui, TuiOptions};
 /// Restores the terminal — bracketed paste off, cursor shown, raw mode off — exactly
 /// once, on `Drop`. The loop thread holds it across `run_loop` so EVERY exit path
 /// (clean `Quit`, a draw error) restores; `Tui::start`'s failure paths restore through
-/// it too. `panic = "abort"` means no unwind-based restore: inline, that is accepted and
-/// documented (`stty sane` recovers a killed session; the no-unwrap/no-panic lint wall makes an
-/// in-code panic unreachable); the full screen installs a panic hook that restores first (`start`;
-/// proven by L4 45 through a debug build's `IOTA_TEST_PANIC` hook).
+/// it too. `panic = "abort"` means no unwind-based restore: [`install_panic_hook`] restores first
+/// instead (proven by L4 45 through a debug build's `IOTA_TEST_PANIC` hook).
 pub(crate) struct TermGuard(());
 
 impl TermGuard {
@@ -72,8 +70,8 @@ impl Drop for TermGuard {
 /// Bracketed paste off, cursor shown, raw mode off — when raw mode is on, and a no-op otherwise, so a
 /// headless run's stdout never sees the sequences and a second call (the guard after [`Ui::close`]
 /// gave up on the loop, or a forced exit) writes nothing. Best-effort: restore errors are
-/// unreportable on an exit path. The alternate screen a full-screen run still holds (a panic, a
-/// second SIGTERM, a loop that died before its exit) is left first — once, like the rest; the
+/// unreportable on an exit path. The alternate screen a run still holds (a panic, a second
+/// SIGTERM, a loop that died before its exit) is left first — once, like the rest; the
 /// conversation is not written out on these paths.
 pub(crate) fn restore_terminal() {
     if super::screen::ALT_ACTIVE.swap(false, Ordering::Relaxed) {
@@ -91,6 +89,20 @@ pub(crate) fn restore_terminal() {
         crossterm::cursor::Show
     );
     let _ = crossterm::terminal::disable_raw_mode();
+}
+
+/// Makes a panic hand the terminal back before it reports (`panic = "abort"` still runs the hook):
+/// the alternate screen left, raw mode and bracketed paste off, so the report lands on the shell's
+/// screen. Once per process — the session picker and the REPL both take the terminal.
+pub(crate) fn install_panic_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            restore_terminal();
+            prev(info);
+        }));
+    });
 }
 
 /// How long [`Ui::close`] waits for the loop thread to stop after `Quit`. An idle loop drains `Quit`
@@ -146,11 +158,7 @@ where
         Arc::clone(&width),
         Arc::clone(&height),
     );
-    let region = Arc::new(Mutex::new(if term.is_fullscreen() {
-        region.unstaged()
-    } else {
-        region
-    }));
+    let region = Arc::new(Mutex::new(region.unstaged()));
     let handle = Arc::new(TuiHandle {
         tx,
         width: Arc::clone(&width),
@@ -188,9 +196,9 @@ where
 
 /// `Tui::start` (`TUI_CONTRACTS` §5): enables raw mode + bracketed paste, queries the
 /// initial size into the shared atomics (bubbletea sent `WindowSizeMsg` automatically;
-/// crossterm is asked once here), anchors the inline viewport at the current cursor
-/// row, and spawns the `"iota-tui"` loop thread owning the terminal (one OS thread —
-/// `event::poll` blocks, and wart W8 wants a single crossterm owner).
+/// crossterm is asked once here), and spawns the `"iota-tui"` loop thread owning the full
+/// screen (one OS thread — `event::poll` blocks, and wart W8 wants a single crossterm owner).
+/// The terminal is asked nothing else: no cursor query.
 pub(crate) fn start(opts: TuiOptions) -> io::Result<Tui> {
     crossterm::terminal::enable_raw_mode()?;
     // From here on every failure path restores the terminal via the guard.
@@ -199,33 +207,17 @@ pub(crate) fn start(opts: TuiOptions) -> io::Result<Tui> {
     let (w, h) = crossterm::terminal::size()?;
     let width = Arc::new(AtomicU16::new(if w > 0 { w } else { 80 }));
     let height = Arc::new(AtomicU16::new(if h > 0 { h } else { 24 }));
-    let term = if term::fullscreen_enabled() {
-        // The full screen asks the terminal nothing: no anchor row. A panic (`panic = "abort"`
-        // still runs the hook) leaves the alternate screen and raw mode before it reports.
-        let prev = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            restore_terminal();
-            prev(info);
-        }));
-        Term::fullscreen(Box::new(io::stdout))?
-    } else {
-        // The pre-raw-mode cursor row anchors the viewport (raw mode is on, so the DSR
-        // round-trip cooperates with crossterm's event reader — wart W8).
-        let (_, row) = crossterm::cursor::position()?;
-        Term::new(Box::new(io::stdout), 1, row)?
-    };
-    let fullscreen = term.is_fullscreen();
+    install_panic_hook();
+    let term = Term::new(Box::new(io::stdout))?;
     let handle = spawn(term, CrosstermEvents::new(), width, height, Some(restore))?;
-    if fullscreen {
-        handle.suspend_on_sigtstp();
-    }
+    handle.suspend_on_sigtstp();
     // The probed tone is the loop's first message: the input shade follows it from frame one.
     handle.set_dark_background(opts.dark);
     Ok(Tui { handle })
 }
 
 impl TuiHandle {
-    /// Job control from outside (the full screen): a SIGTSTP becomes the loop's [`UiMsg::Suspend`]
+    /// Job control from outside: a SIGTSTP becomes the loop's [`UiMsg::Suspend`]
     /// — the loop hands the terminal back before the process stops, which the default action would
     /// not (it would stop with the alternate screen and raw mode still up). Ctrl+Z is a key in raw
     /// mode and takes the same path (`keys.rs`). Needs the runtime `Tui::start` runs on; without one
@@ -590,12 +582,13 @@ mod tests {
     fn start_facade() -> FacadeHarness {
         let width = Arc::new(AtomicU16::new(80));
         let height = Arc::new(AtomicU16::new(24));
-        let geo = crate::ui::runtime::geometry::Geometry::new(80, 24);
         let buf = SharedBuf::default();
         let wtr = buf.clone();
-        // start_top 19 mirrors the WP44 loop harness: the viewport starts at the bottom.
-        let t = crate::ui::runtime::term::Term::headless(Box::new(move || wtr.clone()), 1, 19, geo)
-            .unwrap();
+        let t = crate::ui::runtime::term::Term::headless(
+            Box::new(move || wtr.clone()),
+            ratatui::layout::Size::new(80, 24),
+        )
+        .unwrap();
         let (etx, erx) = mpsc::channel();
         let events = ChannelEvents::new(erx);
         let ui = crate::ui::runtime::handle::spawn(t, events, width, height, None).unwrap();
@@ -944,19 +937,24 @@ mod tests {
         );
         h.ui.close().await.expect("close");
         // The flush-then-quit shape: the window is empty (the flush took it), the flushed
-        // batches were INSERTED above the viewport on the way out, and the frame was
-        // repainted without them — so each line is on the final grid exactly once, above
-        // the composer. Through 0.4.0 the last-painted frame, whose staging tail still
-        // showed the same rows, was left behind un-redrawn and each line landed twice.
+        // batches joined the conversation on the way out, and the exit wrote it into the main
+        // screen — each line on the final grid exactly once, in order, under the transcript
+        // mark, and no frame. Through 0.4.0 the inline terminal left its last-painted frame,
+        // whose staging tail still showed the same rows, and each line landed twice.
         assert!(
             crate::sync::lock(&h.ui.region).tail.is_empty(),
             "close did not flush the staging window"
         );
         let c = h.contents();
-        let composer = c
+        assert!(
+            !c.contains('❯'),
+            "a frame row left on the main screen:\n{c}"
+        );
+        let mark = c
             .lines()
-            .position(|l| l.contains('❯'))
-            .expect("the frame stays on the screen");
+            .position(|l| l.contains(crate::ui::runtime::screen::TRANSCRIPT_MARK))
+            .expect("the transcript mark");
+        let mut last = mark;
         for line in tail {
             let rows: Vec<usize> = c
                 .lines()
@@ -967,11 +965,11 @@ mod tests {
             assert_eq!(
                 rows.len(),
                 1,
-                "{line}: want the scrollback copy alone (the exit frame repainted without \
-                 it), got {} occurrences:\n{c}",
+                "{line}: want the written-out copy alone, got {} occurrences:\n{c}",
                 rows.len()
             );
-            assert!(rows[0] < composer, "{line}: not above the frame:\n{c}");
+            assert!(rows[0] > last, "{line}: out of order:\n{c}");
+            last = rows[0];
         }
     }
 

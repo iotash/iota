@@ -2,7 +2,7 @@
 //!
 //! The region stores committed lines as raw pre-styled ANSI strings end-to-end (the
 //! byte-exact-strings bar; the clip/wrap/re-emit theme law). This module converts them
-//! at exactly two boundaries: the `insert_before` buffer and the frame rows. Coverage:
+//! at exactly two boundaries: the conversation viewport's visible rows and the frame rows. Coverage:
 //! SGR 0/1/2/3/4/7/21–24/27/39/49, named colors 30–37/90–97 (+ their 40–47/100–107
 //! backgrounds), 256-color 38;5/48;5 and truecolor 38;2/48;2 — round-trip pinned by the
 //! WP44 goldens.

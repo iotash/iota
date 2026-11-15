@@ -1,6 +1,6 @@
-//! The inline terminal engine (internal/ui) — the ONLY module allowed to name ratatui/crossterm
-//! (`TUI_CONTRACTS` §1.7; ci.sh grep gate over `src/ui/**`). Event-loop thread owning
-//! `Terminal<CrosstermBackend<Stdout>>` + `Viewport::Inline`; implements the [`facade::Ui`] trait,
+//! The terminal engine (internal/ui) — the ONLY module allowed to name ratatui/crossterm
+//! (`TUI_CONTRACTS` §1.7; ci.sh grep gate over `src/ui/**`). Event-loop thread owning the full
+//! screen (`Terminal<…>` + `Viewport::Fullscreen`, `runtime/screen.rs`); implements the [`facade::Ui`] trait,
 //! which is the whole surface `crate::ui::repl` talks to. The spike warts W1–W10 are carried as named
 //! constraints by the modules below (`TUI_DESIGN` §4).
 
@@ -8,7 +8,6 @@ pub mod facade;
 
 pub use render::debug::install_region_trace;
 pub(crate) use runtime::handle::restore_terminal;
-pub(crate) use runtime::term::fullscreen_enabled;
 
 pub(crate) mod input;
 pub(crate) mod render;
@@ -36,8 +35,7 @@ pub(crate) struct Tui {
 
 impl Tui {
     /// Enables raw mode + bracketed paste, queries the initial size, spawns the
-    /// `"iota-tui"` loop thread owning `Terminal<CrosstermBackend<Stdout>>` with
-    /// `Viewport::Inline`.
+    /// `"iota-tui"` loop thread owning the full screen (`Viewport::Fullscreen`).
     pub(crate) fn start(opts: TuiOptions) -> std::io::Result<Tui> {
         runtime::handle::start(opts)
     }
@@ -48,8 +46,8 @@ impl Tui {
     }
 }
 
-/// One-shot pre-REPL surface (ui.go RunSurface): short-lived raw mode + Inline terminal
-/// sized to the surface, fully released before return. Caller: the `iota resume` picker.
+/// One-shot pre-REPL surface (ui.go RunSurface): short-lived raw mode + the full screen, the
+/// surface pinned to its bottom, fully released before return. Caller: the `iota resume` picker.
 pub(crate) fn run_surface(spec: TabbedSpec, dark: bool) -> std::io::Result<TabbedResult> {
     runtime::oneshot::run_surface(spec, dark)
 }

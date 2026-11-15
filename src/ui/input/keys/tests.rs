@@ -1146,22 +1146,13 @@ fn the_field_ignores_what_the_surface_ladder_owns() {
     }
 }
 
-/// Row 1b: on the full screen PgUp/PgDn/Ctrl+Home/Ctrl+End are scroll requests for the next
-/// draw and touch nothing else; on the inline terminal they reach the edit set as before (no
-/// request is made). Bare Home/End stay the composer's.
+/// Row 1b: PgUp/PgDn/Ctrl+Home/Ctrl+End are scroll requests for the next draw and touch nothing
+/// else. Bare Home/End stay the composer's.
 #[test]
-fn view_keys_scroll_the_full_screen_only() {
+fn view_keys_scroll_the_view_only() {
     use crate::ui::runtime::screen::ViewOp;
     let mut m = test_model();
     type_text(&mut m, "draft");
-    m.handle_key(key(KeyCode::PageUp));
-    m.handle_key(mods(KeyCode::Home, KeyModifiers::CONTROL));
-    assert_eq!(
-        m.view_ops,
-        Vec::<ViewOp>::new(),
-        "inline: no scroll request"
-    );
-    m.fullscreen = true;
     m.handle_key(key(KeyCode::PageUp));
     m.handle_key(key(KeyCode::PageDown));
     m.handle_key(mods(KeyCode::Home, KeyModifiers::CONTROL));
@@ -1184,15 +1175,12 @@ fn view_keys_scroll_the_full_screen_only() {
     );
 }
 
-/// Row 0: on the full screen Ctrl+O asks for the dump, and the next key — any key, a surface open
-/// or not — only comes back from it; the inline terminal has no dump.
+/// Row 0: Ctrl+O asks for the write-out, and the next key — any key, a surface open or not — only
+/// comes back from it.
 #[test]
 fn ctrl_o_dumps_and_the_next_key_only_comes_back() {
     use crate::ui::runtime::screen::ViewOp;
     let mut m = test_model();
-    m.handle_key(mods(KeyCode::Char('o'), KeyModifiers::CONTROL));
-    assert!(!m.dumped && m.view_ops.is_empty(), "inline: no dump");
-    m.fullscreen = true;
     m.handle_key(mods(KeyCode::Char('o'), KeyModifiers::CONTROL));
     assert!(m.dumped);
     m.handle_key(ch('x'));
@@ -1207,20 +1195,14 @@ fn ctrl_o_dumps_and_the_next_key_only_comes_back() {
     assert_eq!(m.composer.value(), "y");
 }
 
-/// Row 1a: the conversation search's keys (tui-plan S3). Ctrl+R opens it anywhere on the full
-/// screen; `/` only on a scrolled-back view with nothing typed — following the tail, or with a
-/// draft, it is the slash command's first character. The inline terminal has no search.
+/// Row 1a: the conversation search's keys (tui-plan S3). Ctrl+R opens it anywhere; `/` only on a
+/// scrolled-back view with nothing typed — following the tail, or with a draft, it is the slash
+/// command's first character.
 #[test]
 fn ctrl_r_opens_the_search_and_slash_only_on_a_scrolled_back_view() {
     use crate::ui::runtime::screen::ViewOp;
     use crate::ui::runtime::screen::search::SearchOp;
     let mut m = test_model();
-    m.handle_key(mods(KeyCode::Char('r'), KeyModifiers::CONTROL));
-    assert!(
-        m.search.is_none() && m.view_ops.is_empty(),
-        "inline: no search"
-    );
-    m.fullscreen = true;
     m.handle_key(ch('/'));
     assert!(m.search.is_none(), "following the tail, `/` is typed");
     assert_eq!(m.composer.value(), "/");
@@ -1237,7 +1219,6 @@ fn ctrl_r_opens_the_search_and_slash_only_on_a_scrolled_back_view() {
     );
     assert_eq!(m.view_ops, vec![ViewOp::Search(SearchOp::Open)]);
     let mut m = test_model();
-    m.fullscreen = true;
     m.handle_key(mods(KeyCode::Char('r'), KeyModifiers::CONTROL));
     assert!(m.search.is_some(), "Ctrl+R opens it while following");
 }
@@ -1250,7 +1231,6 @@ fn the_search_keys_type_the_query_walk_and_leave() {
     use crate::ui::runtime::screen::ViewOp;
     use crate::ui::runtime::screen::search::SearchOp::{Accept, Cancel, Open, Query, Step};
     let mut m = test_model();
-    m.fullscreen = true;
     m.handle_key(mods(KeyCode::Char('r'), KeyModifiers::CONTROL));
     type_text(&mut m, "np");
     enter(&mut m);
@@ -1298,7 +1278,6 @@ fn a_paste_while_typing_a_query_goes_to_the_query() {
     use crate::ui::runtime::screen::ViewOp;
     use crate::ui::runtime::screen::search::SearchOp;
     let mut m = test_model();
-    m.fullscreen = true;
     m.handle_key(mods(KeyCode::Char('r'), KeyModifiers::CONTROL));
     m.route_paste("two\nwords");
     assert_eq!(
@@ -1332,16 +1311,41 @@ fn an_idle_ctrl_d_with_no_reader_answers_the_next_read_after_the_queue() {
     drop(third);
 }
 
-/// Row 0: Ctrl+Z is the full screen's job-control stop — the loop hands the terminal back before it
-/// stops (`Term::suspend`) — and nothing on the inline terminal, as before.
+/// Row 0: Ctrl+Z is the job-control stop — the loop hands the terminal back before it stops
+/// (`Term::suspend`).
 #[test]
-fn ctrl_z_suspends_the_full_screen_only() {
+fn ctrl_z_suspends() {
     let mut m = test_model();
-    m.handle_key(ctrl('z'));
-    assert!(!m.suspend, "inline: no suspend");
-    m.fullscreen = true;
     type_text(&mut m, "draft");
     m.handle_key(ctrl('z'));
     assert!(m.suspend);
     assert_eq!(m.composer.value(), "draft", "the draft survives the stop");
+}
+
+/// The owner's search-key decision, pinned: Ctrl+F never opens the conversation search — not
+/// following the tail, not scrolled back, not with an empty composer — it stays the editor's
+/// forward-char (Ctrl+R and `/` are the search keys).
+#[test]
+fn ctrl_f_is_forward_char_and_never_opens_the_search() {
+    let mut m = test_model();
+    type_text(&mut m, "ab");
+    m.handle_key(mods(KeyCode::Home, KeyModifiers::NONE));
+    m.handle_key(ctrl('f'));
+    assert!(
+        m.search.is_none() && m.view_ops.is_empty(),
+        "Ctrl+F opened a search"
+    );
+    assert_eq!(
+        m.composer.cursor_pos(80).0,
+        3,
+        "Ctrl+F moves one character forward"
+    );
+    m.composer.reset();
+    m.view_paused = true;
+    m.handle_key(ctrl('f'));
+    assert!(
+        m.search.is_none() && m.view_ops.is_empty(),
+        "Ctrl+F opened a search on a scrolled-back view"
+    );
+    assert_eq!(m.composer.value(), "", "Ctrl+F typed nothing");
 }
