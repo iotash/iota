@@ -457,16 +457,51 @@ fn rss_kib() -> u64 {
     String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
 }
 
-/// M1 (tui-plan §7) — a measurement, not a check: a synthetic 100k-row session (coloured rows of
-/// 40–120 columns, one in ten wider than the 120-column screen) — the RSS it adds, one `PgUp`
-/// frame at the deepest point, one resize repaint there and one at the tail. Runs only with
-/// `IOTA_MEASURE_M1=1`; `cargo test --release --lib m1 -- --nocapture` for the numbers.
-#[test]
-fn m1_a_hundred_thousand_rows() {
-    use std::time::Instant;
+/// Runs the M1 scenario `name` (a test of this module) ALONE, in a fresh process of this test
+/// binary (`--exact`), and prints what it printed. Two scenarios in one process share its
+/// allocator — the first one's freed pages are the second one's for nothing — so the RSS one
+/// reports depended on whether the other ran before it (the S7a review: +16 MB alone, +50 MB beside
+/// its neighbour). Here a number means one thing however the tests are invoked. Only with
+/// `IOTA_MEASURE_M1=1`; the child is marked by `IOTA_M1_CHILD` and runs `body`.
+fn m1_alone(name: &str, body: impl FnOnce()) {
     if std::env::var_os("IOTA_MEASURE_M1").is_none() {
         return;
     }
+    if std::env::var_os("IOTA_M1_CHILD").is_some() {
+        body();
+        return;
+    }
+    let path = module_path!().split_once("::").map_or("", |(_, rest)| rest);
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([&format!("{path}::{name}"), "--exact", "--nocapture"])
+        .env("IOTA_M1_CHILD", "1")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{name} failed alone:\n{stdout}");
+    let lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with("M1")).collect();
+    assert!(
+        !lines.is_empty(),
+        "{name} printed no measurement:\n{stdout}"
+    );
+    for l in lines {
+        println!("{l}");
+    }
+}
+
+/// M1 (tui-plan §7) — a measurement, not a check: a synthetic 100k-row session (coloured rows of
+/// 40–120 columns, one in ten wider than the 120-column screen) — the RSS it adds, one `PgUp`
+/// frame at the deepest point, one resize repaint there and one at the tail. Runs only with
+/// `IOTA_MEASURE_M1=1`, each M1 scenario in a process of its own ([`m1_alone`]);
+/// `IOTA_MEASURE_M1=1 cargo test --release --lib m1_ -- --nocapture --test-threads=1` for the
+/// numbers (one at a time, so the timings do not share the machine either).
+#[test]
+fn m1_a_hundred_thousand_rows() {
+    m1_alone("m1_a_hundred_thousand_rows", m1_rows);
+}
+
+fn m1_rows() {
+    use std::time::Instant;
     let rows: Vec<String> = (0..100_000)
         .map(|i| {
             let len = if i % 10 == 0 { 200 } else { 40 + i % 80 };
@@ -529,13 +564,14 @@ fn m1_a_hundred_thousand_rows() {
 /// M1 with laid-out blocks (the S7a review's probes, kept): replies until 30 000 blocks are laid
 /// out from source (a table, a code block and a list per reply, each distinct, ~90 000 blocks) —
 /// the RSS a push and its draw add, a resize repaint near the first block, and the first search
-/// after a width change (S1: it must lay nothing out). Same switch as M1.
+/// after a width change (S1: it must lay nothing out). Same switch as M1, alone like it.
 #[test]
 fn m1_laid_out_blocks() {
+    m1_alone("m1_laid_out_blocks", m1_laid);
+}
+
+fn m1_laid() {
     use std::time::Instant;
-    if std::env::var_os("IOTA_MEASURE_M1").is_none() {
-        return;
-    }
     let mut blocks = Vec::new();
     let mut laid = 0;
     let mut i = 0;
@@ -601,6 +637,46 @@ fn m1_laid_out_blocks() {
          {query_after_resize:?}; RSS at the end +{} KiB",
         grown.saturating_sub(base),
         after.saturating_sub(base)
+    );
+}
+
+/// M1 for a block that grows (tui-plan S7b): a 2 000-line Rust code block streamed one line at a
+/// time through the real renderer, highlighted, each line committed as the block's replacement and a frame drawn
+/// after it — what streaming a long block costs now that it is laid out again on every line: the
+/// whole stream, the slowest line, and the RSS it adds. Same switch as M1, alone like it.
+#[test]
+fn m1_a_growing_code_block() {
+    m1_alone("m1_a_growing_code_block", m1_grow);
+}
+
+fn m1_grow() {
+    use std::time::{Duration, Instant};
+    let (mut s, _buf) = screen(120, 40);
+    let mut md = crate::ui::testutil::Streamed::with_color(true);
+    let base = rss_kib();
+    s.push(md.feed("```rust\n"));
+    let t = Instant::now();
+    let mut slowest = (Duration::ZERO, 0);
+    let mut last = Duration::ZERO;
+    for i in 0..2_000 {
+        let line = Instant::now();
+        s.push(md.feed(&format!(
+            "let v{i} = compute({i}, \"a streaming line of about eighty columns\");\n"
+        )));
+        s.draw_frame(&frame(120), None).unwrap();
+        last = line.elapsed();
+        slowest = slowest.max((last, i));
+    }
+    s.push(md.feed("```\n"));
+    s.push(md.end());
+    s.draw_frame(&frame(120), None).unwrap();
+    let total = t.elapsed();
+    println!(
+        "M1 grow: 2000 lines streamed into one block, a frame per line: {total:?} in all, the \
+         slowest line (number {}) {:?}, the last {last:?}; RSS +{} KiB",
+        slowest.1,
+        slowest.0,
+        rss_kib().saturating_sub(base)
     );
 }
 

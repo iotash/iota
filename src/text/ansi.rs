@@ -54,17 +54,19 @@ pub fn strip_ansi(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = String::with_capacity(s.len());
     let mut i = 0;
-    while i < s.len() {
-        let n = escape_len_at(b, i);
-        if n > 0 {
-            i += n;
-            continue;
+    // Text between escapes is copied a run at a time; an ESC that starts no sequence is kept.
+    while let Some(j) = s[i..].find('\x1b') {
+        let at = i + j;
+        out.push_str(&s[i..at]);
+        match escape_len_at(b, at) {
+            0 => {
+                out.push('\x1b');
+                i = at + 1;
+            }
+            n => i = at + n,
         }
-        // Advance one char (safe: i is always on a char boundary here).
-        let ch_len = s[i..].chars().next().map_or(1, char::len_utf8);
-        out.push_str(&s[i..i + ch_len]);
-        i += ch_len;
     }
+    out.push_str(&s[i..]);
     out
 }
 
@@ -88,6 +90,9 @@ pub fn ansi_len(s: &str) -> usize {
 /// `width::str_width` skipping SGR + OSC 8 sequences — the ruler
 /// for committed (already styled) lines.
 pub fn ansi_width(s: &str) -> usize {
+    if !s.contains('\x1b') {
+        return str_width(s);
+    }
     str_width(&strip_ansi(s))
 }
 

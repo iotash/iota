@@ -11,7 +11,14 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 /// Display width of a string by GRAPHEME CLUSTERS: unicode-segmentation clusters,
 /// unicode-width sums, plus the VS16 rule — a cluster containing U+FE0F measures 2
 /// (uniseg parity; `"⚖️"` = 2 cols). SGR/OSC NOT skipped here (see `ansi::ansi_width`).
+///
+/// Printable ASCII is measured by its length: every such byte is a cluster of its own, one
+/// column wide — the same sum, without segmenting the commonest text (a streaming code block is
+/// measured on every line it takes).
 pub fn str_width(s: &str) -> usize {
+    if s.bytes().all(|b| (0x20..0x7f).contains(&b)) {
+        return s.len();
+    }
     UnicodeSegmentation::graphemes(s, true)
         .map(cluster_width)
         .sum()

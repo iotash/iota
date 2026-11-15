@@ -297,6 +297,11 @@ pub(crate) struct Streamed {
 impl Streamed {
     /// A stream with no color (the assertions read the layout).
     pub(crate) fn new() -> Self {
+        Self::with_color(false)
+    }
+
+    /// A stream rendering with `color` (on: code is highlighted, as a terminal shows it).
+    pub(crate) fn with_color(color: bool) -> Self {
         use crate::markdown::{CodeTheme, Fragment, RenderOptions, Sink, Writer};
         use crate::ui::block::{Block, LiveId};
 
@@ -333,7 +338,7 @@ impl Streamed {
                 id: None,
             }),
             RenderOptions {
-                color: false,
+                color,
                 code_theme: CodeTheme::Monokai,
             },
         );
