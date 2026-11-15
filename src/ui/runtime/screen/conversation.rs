@@ -124,9 +124,13 @@ impl Entry {
         {
             self.fill(width); // a block never laid out has no cache either: this lays it out
         }
+        self.searched()
+    }
+
+    /// The search text as it stands (a laid-out block not yet laid out has none: `""`).
+    fn searched(&self) -> &str {
         match (&self.block, &self.text) {
-            (Block::Row(t), _) => t,
-            (Block::Laid(_), Some(t)) => t,
+            (Block::Row(t), _) | (Block::Laid(_), Some(t)) => t,
             (Block::Laid(_), None) => "",
         }
     }
@@ -311,13 +315,7 @@ impl Conversation {
             .iter()
             .skip(skip)
             .zip(first..)
-            .map(|(e, n)| {
-                let t: &str = match (&e.block, &e.text) {
-                    (Block::Row(t), _) | (Block::Laid(_), Some(t)) => t,
-                    (Block::Laid(_), None) => "",
-                };
-                (n, t)
-            })
+            .map(|(e, n)| (n, e.searched()))
             .collect()
     }
 
