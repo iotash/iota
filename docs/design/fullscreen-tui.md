@@ -1,6 +1,6 @@
 # 全屏（alternate-screen）TUI
 
-Status: **已实现，唯一的终端（S1–S6；S5 删除了 inline 终端，S6 加了鼠标、应用内选择与浮层 surface）** · 计划：`~/.iota/reports/iota/tui-plan.md` · 决策记录：DIVERGENCES X-97–X-102（X-52、X-54、X-81 被取代，作为历史保留）· 契约摘要：ARCHITECTURE §12 · 人工检查：TUI-VERIFY §1–§4b
+Status: **已实现，唯一的终端（S1–S7；S5 删除了 inline 终端，S6 加了鼠标、应用内选择与浮层 surface，S7 从源重新布局、块在缓冲里生长）** · 计划：`~/.iota/reports/iota/tui-plan.md` · 决策记录：DIVERGENCES X-97–X-103（X-52、X-54、X-81 被取代，作为历史保留）· 契约摘要：ARCHITECTURE §12 · 人工检查：TUI-VERIFY §1–§4b
 
 ## 终端拥有屏幕
 
@@ -17,20 +17,34 @@ Status: **已实现，唯一的终端（S1–S6；S5 删除了 inline 终端，S
 ## 对话缓冲（`screen/conversation.rs`）
 
 - 缓冲存的是**块**（`ui::block::Block`，S7a，见下节"块模型"）：固定的行，或者带着源、按宽度布局的块。每块在某个宽度下的显示行在第一次被画到时算出，连同宽度一起缓存；只有可见行经过 `ansi_to_spans`。**不存 cell**。
-- 上限 20 万**块**；超出丢最旧的，每块整个丢（一张表不会剩半张），并在顶部放一行 `earlier output trimmed — /export has the full text`。M1：10 万行 RSS +16.1 MB（S7a round 3，三次跑 +16.10/+16.11/+16.13 MB；S2 时 +30.7 MB），一帧约 1 ms。一个 `Entry` 40 字节：放得下的行只存它的字符串和宽度，布局结果、续段标记和布局块的搜索文本在一个只有布局过才分配的 `Box` 里。
+- 上限 20 万**块**；超出丢最旧的，每块整个丢（一张表不会剩半张），并在顶部放一行 `earlier output trimmed — /export has the full text`。M1：10 万行 RSS +16.0 MB（S7b，三次跑 +16.00/+16.02/+16.01 MB；S2 时 +30.7 MB），一帧约 1 ms。一个 `Entry` 40 字节：放得下的行只存它的字符串和宽度，布局结果、续段标记和布局块的搜索文本在一个只有布局过才分配的 `Box` 里。
 - 视图要么跟随尾部，要么锚在某一块（`Pos{row, line}`：块号、块内行）上；resize 后停在同一块（块内行夹到新高度）。上滚后新输出不拖动视图，视口最后一行显示 `↓ N new lines · Ctrl+End`。
-- 提交的块不经过暂存：实时 region 是 `Region::unstaged()`，提交即原样入缓冲（不再在提交时按 width−1 预折行）；预览仍在帧里。（region 的暂存模式与 `TAIL_KEEP` 只剩它自己的测试在跑，也是唯一还把块压平成"提交时宽度的行"的地方；S7b 随暂存窗口一起删除。）
+- 提交的块原样入缓冲（不在提交时按 width−1 预折行）。帧里只有工具调用的预览（`render/region.rs`）；暂存窗口（尾部暂存行、残留、`rebalance`/`retrim`/`fit_width`、溢出分块）在 S7b 删除——它存在是因为插进 inline 历史的行收不回，而缓冲收得回。
+- **M1 的量法**：每个场景在自己的进程里跑（`m1_alone` 用 `--exact` 重新执行测试二进制）。同一进程里的两个场景共用分配器，前一个释放的页后一个白拿，所以同一个场景单独跑 +16 MB、和邻居一起跑 +50 MB（S7a 评审实测）。现在一个数只有一个意思；`IOTA_MEASURE_M1=1 cargo test --release --lib m1_ -- --nocapture --test-threads=1`。布局块（9 万块，其中 3 万布局块，三次跑）：提交加首帧 +4.06/+4.08/+4.08 MB，结束时 +24.62/+24.80/+24.66 MB；resize 后第一次查询 487/486/481 ms（S7a 是 680 ms，尺子的快路径省下的）。
 
 ## 块模型（S7a，`ui/block.rs`）
 
 宽度变化时，对话从**源**重新布局，不再把别的宽度的行盲折。owner 的原话："拖放窗口时，输出区域元素的重绘：启动的 banner、表格、列表的左部换行对齐缩进、代码块、引用块"。
 
-- **两种块**。`Block::Row(String)`：一条逻辑行，原样提交——段落行、标题、通知、活动行、分隔空行。它不依赖宽度：比视口宽就由屏幕折行（`wrap_ansi`），不宽就整行显示，所以变宽时段落会重新展开。`Block::Laid(Arc<dyn Layout>)`：带着源，`Layout::lines(width)` 在画的宽度下布局。
+- **三种块**。`Block::Row(String)`：一条逻辑行，原样提交——段落行、标题、通知、活动行、分隔空行。它不依赖宽度：比视口宽就由屏幕折行（`wrap_ansi`），不宽就整行显示，所以变宽时段落会重新展开。`Block::Laid(Arc<dyn Layout>)`：带着源，`Layout::lines(width)` 在画的宽度下布局。`Block::Live`（S7b）：一个还在写的布局块，带一个 `LiveId`，见下节"实时块"。
 - **块的种类就是源的类型**（`Layout` 的实现），下游没有任何代码按种类分支，所以不另带标签：助手 markdown 的五种缓冲块是 `markdown::Fragment`（代码、表格、列表、引用、行间公式）；用户块（`runtime/handle.rs` 的 `UserBlock`、回放的 `EchoUser`）；banner（`repl/render/banner.rs` 的 `Banner`）；文件改动的 diff 列表（`repl/render/group.rs` 的 `DiffListing`）；结构化错误（`transcript.rs` 的 `ErrorRows`）。图片仍是行：半块像素画按提交时的宽度缩放，不重排。
 - **提交接口**：`Ui::print(Vec<Block>)`（原 `print_lines(Vec<String>)`）。markdown 的 `Writer` 自己不再按宽度布局任何东西：缓冲块关闭时以 `Fragment` 交给 sink（`Sink::write_block`）；文本 sink 按自己的宽度渲染写出。生产环境里唯一的文本 sink 是引用块的子文档（`blocks/quote.rs` 的 `BufSink`），另外就是测试用的 `new_writer_to`。终端的 sink（`repl/render/uisink.rs`）和回放的 sink（`replay.rs`）保留源。
 - **缓存与惰性**：缓冲在第一次需要某个宽度时调用 `Layout`，结果连同宽度缓存在块上；宽度一变，下一次画只重新布局它碰到的块（视口里的、滚动经过的），其余的等视图到达它们时再说。一次提交一大批块时（几万个），第一次画也只布局视口里那几块：`take_fresh` 从尾部数新行，数到视口高度就停。从来没被画到的块，由第一次需要它的搜索布局一次，之后就有了搜索文本。
 - **搜索**：命中记为（块号, 块内第 k 次出现）。搜的文本与宽度无关：行块用它的原文（折行不会切断匹配）；布局块用它**第一次**布局时、在那个宽度下的纯文本行，以 `\n` 连起来，存下后不再变。所以 resize 既不重扫，也不为搜索布局任何块。跳转只布局落点那一块和它周围一屏，在新宽度下数出第 k 次出现在哪一行。搜索开着时 resize，视图会回到当前命中。代价有两个：布局块多存一份纯文本；表格在新宽度下如果把一个词折断，第 k 次出现可能数不到，这时跳到块的第一行。
 - **上限按块计**，不按行或字节：一个块不论多高都算 1。评审 S2 之后，diff 只存预算内的行（`DiffRows`），剩下可能很高的块只有模型输出本身。评审实测：3 万个布局块全部缓存后 RSS +38 MB。不按源行数加权，是因为那需要每种 `Layout` 报告自己的大小，而 20 万块的上限在实际会话里远远够不到。
+
+## 实时块（S7b，C10）
+
+一个还在写的代码块、表格、列表、引用或行间公式，**在对话里逐行出现**，不再是帧里的一行计量（`rendering table… · 37 lines`）、关闭时才整块出现。
+
+- **生产者**：`markdown::Writer` 每收一行，就把打开的块按当时的样子（一个 `Fragment`）交给会显示打开块的 sink（`Sink::shows_open_blocks` → `Sink::grow_block`），关闭时再交一次（`write_block`）。文本 sink（引用块的子文档、管道、回放）不显示打开的块，`Writer` 也就不为它做快照。代码逐行高亮（`highlight::LineHighlighter`，语法状态在行间延续），没有一行被高亮两次；关闭时的块和逐行长出来的块是同一个。
+- **提交**：终端的 sink（`uisink.rs`）把它提交成 `Block::Live { id, layout, open }`，同一个块每次用同一个 id，关闭那次 `open: false`。第一次提交对 transcript 来说是内容：latch 里攒着的分隔空行先放出来，所以打开的块和关闭后的块间距一样（原来的 `flush_pending`/`preOpen` 删了）。之后的提交是替换，不是新内容：`ContentCommitter` 直接放行，不开新块、不放 latch。
+- **缓冲（按 id 替换）**：`Conversation` 记着那个还开着的块（id 和块号）。同 id 再来就**原地替换**那一个 entry：它缓存的显示行、续段标记和搜索文本都丢掉，下次需要时从新源重算。锚点是（块号, 块内行），所以视图停在同一块上（块内行夹到新高度）。上限把它算作一块。最低的被替换块号报给搜索（`take_changed`），搜索从那里重扫。它在尾部长出的行算进 `take_fresh`，所以流式时仍是一次 `SU n`。
+- **写出**：Ctrl+O 写到还开着的块之前为止，块关闭之后再写，整块只写一次，用那次写出时的宽度。退出时全部写出，包括还开着的块（不会再有内容了）。
+- **宽度**：打开的块和别的布局块一样，在画的宽度下布局，所以流式中途 resize 会把已经到达的部分重新布局。
+- **选择**：拖选时视图被按住（`hold`），块在指针下长也不移动；松开时复制当时的行。
+- **代价**：打开的块每变一次，下一帧就整块重新布局一次，所以每帧的代价和块的大小成线性。M1（`m1_a_growing_code_block`：2 000 行 Rust 代码，高亮，每行画一帧，三次跑）：全程 7.39/7.40/7.43 s；最后一行（2 000 行时）6.05/6.04/6.11 ms；最慢的是第 0 行，42 ms（syntect 第一次加载语法）；RSS +27.3/+28.0/+27.5 MB。真实循环里一次迭代只画一帧，同一帧到的几行只付一次。原来每帧约 26 ms：尺子（`str_width`）对每行做 grapheme 切分，`ansi_width` 每行复制一份；现在可打印 ASCII 直接按长度量，不含转义的行不复制。
+- **删掉的**：`markdown/preview.rs`（`PreviewHandle`）、`Sink::block_preview`、`UiStreamSink::block_preview`、`ui::sink::PreviewWriter`、`count_lines`、`PREVIEW_COUNTER_EVERY`，以及暂存窗口整套。
 
 五个元素在新宽度下做什么：
 
@@ -74,7 +88,8 @@ Status: **已实现，唯一的终端（S1–S6；S5 删除了 inline 终端，S
 | C6 | 没有鼠标 | 滚轮、点击、拖选 + 双击选词 + 松开复制、跨屏自动滚动（S6，见"鼠标"） |
 | C13 | surface 挤在帧行里：View `min(lines,15)`、picker 预览 `[4, h−12]` | surface 占视口：视口把帧之外的所有行让给它（S6，见"surface 占视口"） |
 | C8 | 提交行是当时宽度的硬换行；变宽不重排、变窄盲折 | **S7a 完成**：缓冲存块，宽度变化时从源重新布局（见"块模型"） |
-| C9–C11 | 暂存窗口；缓冲块攒完才出现；折叠不可逆 | **S7b**：删暂存窗口、实时块；C11 之后单独定 |
+| C9–C10 | 暂存窗口；缓冲块攒完才出现 | **S7b 完成**：暂存窗口删除；打开的块在缓冲里逐行生长（见"实时块"） |
+| C11 | 折叠不可逆 | 之后单独定 |
 
 ## 不归点：第一帧
 
@@ -149,7 +164,7 @@ crossterm 0.29 默认的 unix 事件源（mio、边沿触发）有两处会让�
 
 ## surface 占视口（C13）
 
-S5 时 surface 挤在帧行里：帧变高会把对话推走，所以 View 限 `min(lines,15)`、picker 预览限 `[4, h−12]`。现在 surface 画在视口的位置上：`Model::frame_view` 先量出帧自己的行（暂存/预览、间隔、队列、两条分隔线、composer），**剩下的所有行都是 surface 的**（`SurfaceState::set_room`），视口让出它们；关掉 surface，视口拿回来，对话停在原处（跟随时仍是尾部，锚定时仍是那一行）。面板的默认行数就是这块空间，显式 `height` 也以它为上限；picker 预览夹在 `[min(4, room), room]`。room 是 `Option`：只有没被循环布局过的 surface（单测里的）是 `None`，才用 tabbed.go 的 10 / View 15。**room 至少是 `SURFACE_MIN_ROWS`（5 行）**：帧自己的行就把屏幕占满时（8–9 行的窗格里写满 5 行草稿、再有队列或预览），帧比屏幕高，这时屏幕保留帧的**底部**——surface 和它的提示行——让上面的预览和 composer 让出行（surface 开着时 composer 本来就不接键）；点击按被截掉的行数换算（`FrameMap::cut`）。否则审批框会整个落在屏幕外，Enter 回答的是看不见的选项（S6 评审 SF2）。surface 仍在 composer 下面：一个审批对话框要回答的那次工具调用就在它上方的视口里，盖住它反而看不见。
+S5 时 surface 挤在帧行里：帧变高会把对话推走，所以 View 限 `min(lines,15)`、picker 预览限 `[4, h−12]`。现在 surface 画在视口的位置上：`Model::frame_view` 先量出帧自己的行（调用预览、间隔、队列、两条分隔线、composer），**剩下的所有行都是 surface 的**（`SurfaceState::set_room`），视口让出它们；关掉 surface，视口拿回来，对话停在原处（跟随时仍是尾部，锚定时仍是那一行）。面板的默认行数就是这块空间，显式 `height` 也以它为上限；picker 预览夹在 `[min(4, room), room]`。room 是 `Option`：只有没被循环布局过的 surface（单测里的）是 `None`，才用 tabbed.go 的 10 / View 15。**room 至少是 `SURFACE_MIN_ROWS`（5 行）**：帧自己的行就把屏幕占满时（8–9 行的窗格里写满 5 行草稿、再有队列或预览），帧比屏幕高，这时屏幕保留帧的**底部**——surface 和它的提示行——让上面的预览和 composer 让出行（surface 开着时 composer 本来就不接键）；点击按被截掉的行数换算（`FrameMap::cut`）。否则审批框会整个落在屏幕外，Enter 回答的是看不见的选项（S6 评审 SF2）。surface 仍在 composer 下面：一个审批对话框要回答的那次工具调用就在它上方的视口里，盖住它反而看不见。
 
 ## 兼容性（本机实际试过的）
 
@@ -165,11 +180,6 @@ S5 时 surface 挤在帧行里：帧变高会把对话推走，所以 View 限 `
 
 收不到报告的终端（iTerm2 profile 关了上报、`tmux -CC`、IDE 终端）上，鼠标这一层什么都不做，键盘的一切照旧——从不卡住。逐项手验列在 TUI-VERIFY §4c。
 
-## S7b 从这里继承什么
+## C11 从这里继承什么
 
-- **暂存窗口**：`Region` 的暂存模式、`TAIL_KEEP`、`tail_keep`、`rebalance`、`retrim`、`fit_width`、残留（residue）与 `chunk_overflow`（T-06）只剩 region 自己的测试在跑。S7a 让删除更容易：实时路径（`commit` 的 unstaged 分支）已经不碰 `tail`，暂存模式是唯一把块压平成字符串的地方——删掉它就是删掉 `commit` 的 staged 分支、`publish` 的 staged 分支和它们用到的字段；`region/tests.rs` 里 staged 的用例随之删掉或改写。
-- **实时块（C10）**：缓冲块攒完之前，帧里是一行计量预览（`label · N lines`）。S7b 要让它在缓冲里原地生长：块模型已经给了位置——一个打开的 `Fragment` 以块的身份入缓冲，之后需要"按块号替换"的一条消息（今天的缓冲只追加）。
-- 写出策略不变：每块只写一次，按写出时的宽度布局。
-- **选择的点**是 (块号, 块内行, 列)；resize 清选择的规则保留。复制靠缓冲标出的续段区分「屏幕折行」与「块自己的行」（见上文"复制"）；S7b 让块在缓冲里原地生长时，这些标记跟着块的显示行一起重算，不需要别的改动。
-- **搜索文本**取自块第一次布局；S7b 的实时块会被替换，替换时需要把搜索文本一起清掉（`Entry.text`），否则搜到的是旧内容。
-- **C11（折叠块展开/收起）**若做，点击已经有路由（`input/mouse.rs` 的 `Target`）：视口里的一下按下目前是选择的起点，展开需要一个区分（例如点在折叠摘要行上）。
+- **C11（折叠块展开/收起）**若做，点击已经有路由（`input/mouse.rs` 的 `Target`）：视口里的一下按下目前是选择的起点，展开需要一个区分（例如点在折叠摘要行上）。展开/收起就是换掉一个块的源：S7b 的按 id 原地替换（`Block::Live`）已经是这条路。

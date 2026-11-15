@@ -96,6 +96,8 @@ type UI interface {
 type StreamSink interface {
     CommitLines(lines []string)                 // final ANSI lines → scrollback
     BlockPreview(label string) io.WriteCloser   // live region: ONE metered header row
+    // (The Rust port deleted this in tui-plan S7b: an open block grows in place in the
+    // full screen's conversation buffer — DIVERGENCES X-103. The Go text below is history.)
     // The writer COUNTS the streamed source instead of forwarding it: the
     // preview is a single "rendering table… · 37 lines" row (throttled
     // counter; the first tick waits a full throttle period, so short blocks
@@ -149,7 +151,8 @@ Facade shape decisions from the adversarial review:
   of the status line, the slash-suggestion row, or an open interaction
   surface (surface > suggestions > status) — swapping them is a content
   change plus below-composer growth, never a composer move. Content-side
-  transients (stream preview) morph in place through the staging window;
+  transients (stream preview) morph in place through the staging window (Rust: deleted
+  in tui-plan S7b — the frame holds only the call preview);
   the busy indicator is a status-line segment. Layout laws: above the
   composer the frame only grows (staging window + queue; shrink happens by
   in-place morph); the status row is the permanent carrier for transient

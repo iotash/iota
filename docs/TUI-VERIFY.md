@@ -160,8 +160,8 @@ the alternate screen, is the emulator's part.
 For each terminal:
 
 - [x] 自动化：scenario 20 **2.1** Stream 30+ lines in one turn. *(A 40-line document with a
-      16-line fenced block and an 8-row table: the buffered blocks stream behind their
-      metered preview row and morph into the rendered block.)*
+      16-line fenced block and an 8-row table: the open blocks grow line by line in the
+      conversation — no counter row — tui-plan S7b; scenario 49 reads them mid-block.)*
 - [x] 自动化：scenarios 20, 39 **2.2** Exit with Ctrl+D, then scroll up (mouse wheel / ⌘↑ /
       Shift+PageUp). The shell's screen from before iota is back above the transcript mark; is
       the FIRST line of the answer reachable? Is the history contiguous — no gaps, no duplicated
