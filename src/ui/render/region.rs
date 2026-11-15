@@ -4,7 +4,7 @@
 //! Committed blocks pass straight through to the conversation buffer ([`Region::commit`]): a row
 //! is wrapped and a laid-out block rendered by the screen at the width of each draw, and a block
 //! still being written is a live block the buffer replaces in place as it grows. Nothing is staged
-//! in the frame any more — the staging window (`TAIL_KEEP` rows held above the composer, the
+//! in the frame any more — the staging window (the last rows held above the composer, the
 //! residue, the overflow chunking) existed because a row inserted into an inline terminal's
 //! history could never be taken back, and a buffered markdown block could only meter its progress
 //! there; the buffer takes rows back now.

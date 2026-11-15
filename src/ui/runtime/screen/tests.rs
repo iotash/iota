@@ -1162,3 +1162,38 @@ fn a_drag_over_a_code_block_and_a_table_copies_them_line_for_line() {
     select(&mut s, SelectOp::Release);
     assert_eq!(s.take_copied().as_deref(), Some("      body();"));
 }
+
+/// A drag over a block still being written (tui-plan S7b): the view is held while the block grows
+/// under the pointer, so what was selected stays where it was, and the release copies those lines
+/// as they stand — the block's own lines, one per line.
+#[test]
+fn a_drag_over_a_growing_code_block_holds_the_view_and_copies_its_lines() {
+    let (mut s, _buf) = mouse_screen(60, 20);
+    let mut md = crate::ui::testutil::Streamed::new();
+    s.push(rows_of(&rows(20)));
+    s.push(md.feed("\n```\n"));
+    for i in 0..4 {
+        s.push(md.feed(&format!("fn step_{i}() {{}}\n")));
+    }
+    s.draw_frame(&frame(60), None).unwrap();
+    // The viewport is rows 0–15 and follows the tail: the four code lines are rows 12–15.
+    select(
+        &mut s,
+        SelectOp::Press {
+            col: 0,
+            row: 13,
+            clicks: 1,
+        },
+    );
+    select(&mut s, SelectOp::Drag { col: 59, row: 14 });
+    // The block grows while the button is down; the held view does not follow it.
+    for i in 4..10 {
+        s.push(md.feed(&format!("fn step_{i}() {{}}\n")));
+        s.draw_frame(&frame(60), None).unwrap();
+    }
+    select(&mut s, SelectOp::Release);
+    assert_eq!(
+        s.take_copied().as_deref(),
+        Some("  fn step_1() {}\n  fn step_2() {}")
+    );
+}

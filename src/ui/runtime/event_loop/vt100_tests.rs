@@ -67,8 +67,8 @@ struct LoopHarness {
     copied: Arc<Mutex<Vec<String>>>,
 }
 
-/// The loop at 80×24, its region the live one's (nothing staged: committed rows go straight to
-/// the conversation).
+/// The loop at 80×24, its region the live one's (committed rows go straight to the
+/// conversation).
 fn start_loop() -> LoopHarness {
     start_loop_mouse(false)
 }
@@ -1125,8 +1125,7 @@ fn a_queued_multi_line_draft_keeps_one_frame_row() {
 // Resize: the size taken, every cell repainted; the terminal never asked
 // ---------------------------------------------------------------------------
 
-/// The loop with twelve committed lines at idle (nothing staged: all of them in the
-/// conversation).
+/// The loop with twelve committed lines at idle (all of them in the conversation).
 fn idle_loop() -> LoopHarness {
     let lh = start_loop();
     assert!(lh.wait_until(Duration::from_secs(2), |h| h.contents().contains('❯')));

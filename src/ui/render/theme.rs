@@ -1,7 +1,7 @@
 //! The single home of every color the frame and its surfaces emit (internal/ui/theme.go;
 //! `TUI_CONTRACTS` §9). The ui layer deliberately renders with raw SGR fragments — no
 //! styling library in the frame path: whatever the palette does must survive being
-//! clipped, wrapped, and re-emitted by the staging window and `wrap_ansi`, and bare
+//! clipped, wrapped, and re-emitted by the frame and `wrap_ansi`, and bare
 //! fragments compose predictably there. Semantics:
 //!
 //! - faint  — chrome and secondary text: separators, hints, placeholders

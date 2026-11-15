@@ -402,7 +402,7 @@ pub(crate) async fn run_interactive(
     }))
     .await;
 
-    // Teardown, in the pinned order (`TUI_DESIGN` §8.4 step 6): flush the staging tail and join the loop
+    // Teardown, in the pinned order (`TUI_DESIGN` §8.4 step 6): quit and join the loop
     // thread, THEN hand the tab title back, THEN close the servers — each unconditional.
     let closed = ui.close().await;
     drop(ui_session);

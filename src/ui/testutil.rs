@@ -284,3 +284,71 @@ pub(crate) fn markdown_blocks(md: &str) -> Vec<crate::ui::block::Block> {
     drop(w);
     std::mem::take(&mut *lock(&out))
 }
+
+/// A markdown reply streamed the way the terminal's markdown sink commits it (tui-plan S7b): text
+/// as rows, an open buffering block as a live block committed again under one id each time it
+/// grows, and once more when it closes. [`Streamed::feed`] writes source and hands back what was
+/// committed meanwhile, for a test to push into a buffer step by step.
+pub(crate) struct Streamed {
+    w: crate::markdown::Writer,
+    out: Arc<Mutex<Vec<crate::ui::block::Block>>>,
+}
+
+impl Streamed {
+    /// A stream with no color (the assertions read the layout).
+    pub(crate) fn new() -> Self {
+        use crate::markdown::{CodeTheme, Fragment, RenderOptions, Sink, Writer};
+        use crate::ui::block::{Block, LiveId};
+
+        struct Live {
+            out: Arc<Mutex<Vec<Block>>>,
+            id: Option<LiveId>,
+        }
+        impl Sink for Live {
+            fn write(&mut self, rendered: &str) {
+                lock(&self.out).extend(Block::rows(rendered.lines().map(str::to_owned)));
+            }
+            fn write_block(&mut self, block: Fragment) {
+                let b = match self.id.take() {
+                    Some(id) => Block::live(id, block, false),
+                    None => Block::laid(block),
+                };
+                lock(&self.out).push(b);
+            }
+            fn width(&self) -> usize {
+                0
+            }
+            fn shows_open_blocks(&self) -> bool {
+                true
+            }
+            fn grow_block(&mut self, block: Fragment) {
+                let id = *self.id.get_or_insert_with(LiveId::next);
+                lock(&self.out).push(Block::live(id, block, true));
+            }
+        }
+        let out = Arc::new(Mutex::new(Vec::new()));
+        let w = Writer::new(
+            Box::new(Live {
+                out: Arc::clone(&out),
+                id: None,
+            }),
+            RenderOptions {
+                color: false,
+                code_theme: CodeTheme::Monokai,
+            },
+        );
+        Self { w, out }
+    }
+
+    /// Writes `md` and returns what it committed.
+    pub(crate) fn feed(&mut self, md: &str) -> Vec<crate::ui::block::Block> {
+        self.w.write(md.as_bytes());
+        std::mem::take(&mut *lock(&self.out))
+    }
+
+    /// Ends the reply (the open block closes) and returns what that committed.
+    pub(crate) fn end(&mut self) -> Vec<crate::ui::block::Block> {
+        self.w.flush();
+        std::mem::take(&mut *lock(&self.out))
+    }
+}

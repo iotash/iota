@@ -26,7 +26,7 @@ pub(crate) enum UiMsg {
     /// One pre-chunked batch of committed blocks for the conversation, in arrival order
     /// (region overflow, ≤ `max(2, screen_height/2)` blocks per batch — T-06).
     Scrollback(Vec<Block>),
-    /// A fresh staging-window snapshot; always follows its mutation's overflow batches.
+    /// A fresh region snapshot (the call preview); always follows its mutation's committed blocks.
     Region(RegionSnapshot),
     /// Replaces the status-row data.
     Status(StatusData),
@@ -88,8 +88,8 @@ pub(crate) enum UiMsg {
         /// Receives the drained inputs (empty when the head is a command or none).
         reply: oneshot::Sender<Vec<Input>>,
     },
-    /// Opens a tabbed surface below the composer (the handle flushed the staging
-    /// tail FIRST — mailbox FIFO lands the flush before this open).
+    /// Opens a tabbed surface below the composer (mailbox FIFO lands every commit sent
+    /// before it first).
     TabbedOpen {
         /// The surface spec.
         spec: TabbedSpec,

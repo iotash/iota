@@ -1,4 +1,4 @@
-//! `IOTA_DEBUG_REGION=<path>` op-trace for the staging window (internal/ui/debug.go).
+//! `IOTA_DEBUG_REGION=<path>` op-trace for the region (the call preview) (internal/ui/debug.go).
 //! Opened once, by the binary, from the injected environment (empty/unset = disabled). Spacing faults are invisible to unit tests when
 //! they sit in a producer or in the renderer rather than the region itself — a live op
 //! trace against a real provider is the fastest way to localize which layer emitted a

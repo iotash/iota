@@ -114,8 +114,8 @@ pub(crate) fn install_panic_hook() {
 pub(crate) const CLOSE_GRACE: Duration = Duration::from_secs(5);
 
 /// The facade handle (`TUI_CONTRACTS` §2): shared by every consumer, talks to the
-/// `"iota-tui"` loop thread through the mailbox and to the staging window through the
-/// shared `Mutex<Region>`.
+/// `"iota-tui"` loop thread through the mailbox and to the region (the call preview)
+/// through the shared `Mutex<Region>`.
 pub(crate) struct TuiHandle {
     /// The loop mailbox (unbounded; producers are human/turn-paced — the documented
     /// backpressure choice).
@@ -124,7 +124,7 @@ pub(crate) struct TuiHandle {
     width: Arc<AtomicU16>,
     /// Terminal height in rows (starts 24 — "24 until the first resize event").
     height: Arc<AtomicU16>,
-    /// The staging window; every region verb publishes under this lock.
+    /// The call preview; every region verb publishes under this lock.
     region: Arc<Mutex<Region>>,
     /// Cancelled when the loop thread exits (background reporters select on it).
     done: CancellationToken,

@@ -778,3 +778,6 @@ mod tests;
 
 #[cfg(test)]
 mod relayout_tests;
+
+#[cfg(test)]
+mod stream_tests;

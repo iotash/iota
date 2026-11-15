@@ -237,7 +237,7 @@ pub(crate) struct Model {
     /// The whole-turn layer's clock while a turn runs (`UiMsg::Turn`): the busy segment's clock then, and
     /// its label [`TURN_LABEL`] between phases.
     pub(crate) turn: Option<TurnClock>,
-    /// The staging-window snapshot the frame renders.
+    /// The region snapshot (the call preview) the frame renders.
     pub(crate) region_snap: RegionSnapshot,
     /// The open surface, if any.
     pub(crate) surface: Option<SurfaceOpen>,
@@ -558,7 +558,7 @@ impl Model {
     pub(crate) fn apply(&mut self, msg: UiMsg) {
         match msg {
             UiMsg::Region(snap) => {
-                // Every snapshot changes the rendered staging window; a labelled one
+                // Every snapshot changes the rendered preview; a labelled one
                 // also keeps the spinner chain alive (model.go:197-205).
                 let animate = !snap.label.is_empty();
                 self.region_snap = snap;

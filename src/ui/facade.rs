@@ -933,7 +933,7 @@ pub trait Ui: Send + Sync {
     /// (The contract's `<'a>(&'a self) -> BoxFuture<'a, _>` shape, lifetime-elided.)
     fn take_queued_messages(&self) -> BoxFuture<'_, Vec<Input>>;
 
-    /// Flush staging tail → quit → join the loop thread; returns its stored io error.
+    /// Quit → join the loop thread; returns its stored io error.
     /// (The contract's `<'a>(&'a self) -> BoxFuture<'a, _>` shape, lifetime-elided.)
     fn close(&self) -> BoxFuture<'_, std::io::Result<()>>;
 
