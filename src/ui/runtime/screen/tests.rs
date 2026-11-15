@@ -729,10 +729,14 @@ fn a_drag_into_the_frame_scrolls_down_to_the_tail() {
         select(&mut s, SelectOp::Drag { col: 39, row: 10 });
         s.draw_frame(&frame(40), None).unwrap();
     }
-    assert!(!s.paused(), "the bottom follows the tail again");
     select(&mut s, SelectOp::Release);
     let text = s.take_copied().unwrap();
     assert!(text.ends_with("line-099"), "down to the last line: {text}");
+    s.draw_frame(&frame(40), None).unwrap();
+    assert!(
+        !s.paused(),
+        "released at the bottom, it follows the tail again"
+    );
 }
 
 /// A double-click takes the word under it; a triple-click the whole row; a plain click selects
@@ -815,4 +819,118 @@ fn the_selection_is_drawn_reversed_and_never_written_out() {
     assert!(has(&out, b"line-002") && has(&out, b"line-004"));
     assert!(!has(&out, b"\x1b[7m"), "no reverse video in the write-out");
     assert_eq!(s.take_copied(), None, "a write-out copies nothing");
+}
+
+/// A drag that starts while the view follows holds it: output arriving mid-drag moves nothing
+/// under the pointer, so the drag selects the text it was pressed and moved over. Released, the
+/// view follows the tail again if it still shows the last line; otherwise it stays, scrolled back.
+#[test]
+fn a_drag_holds_a_following_view_until_the_release() {
+    let (mut s, buf) = mouse_screen(40, 12);
+    s.push(&rows(20));
+    s.draw_frame(&frame(40), None).unwrap();
+    // Rows 0–7 show line-012…line-019.
+    select(
+        &mut s,
+        SelectOp::Press {
+            col: 0,
+            row: 4,
+            clicks: 1,
+        },
+    );
+    s.push(&["new-a".to_owned(), "new-b".to_owned(), "new-c".to_owned()]);
+    s.draw_frame(&frame(40), None).unwrap();
+    assert_eq!(
+        grid(&replay(&buf, 12, 40))[0],
+        "line-012",
+        "held, not scrolled"
+    );
+    assert!(
+        grid(&replay(&buf, 12, 40))[7].contains("3 new lines"),
+        "the way-back row counts what arrived below"
+    );
+    select(&mut s, SelectOp::Drag { col: 7, row: 6 });
+    select(&mut s, SelectOp::Release);
+    assert_eq!(
+        s.take_copied().as_deref(),
+        Some("line-016\nline-017\nline-018")
+    );
+    s.draw_frame(&frame(40), None).unwrap();
+    assert!(
+        s.paused(),
+        "output arrived below: the view stays on what was selected"
+    );
+    s.view(ViewOp::Bottom).unwrap();
+    s.draw_frame(&frame(40), None).unwrap();
+    assert_eq!(grid(&replay(&buf, 12, 40))[7], "new-c");
+    // With nothing new below, the release follows the tail again at once.
+    select(
+        &mut s,
+        SelectOp::Press {
+            col: 0,
+            row: 4,
+            clicks: 1,
+        },
+    );
+    select(&mut s, SelectOp::Drag { col: 7, row: 5 });
+    select(&mut s, SelectOp::Release);
+    s.draw_frame(&frame(40), None).unwrap();
+    assert!(!s.paused(), "released at the bottom, it follows");
+}
+
+/// A press that jitters a cell before the release is a click: nothing is selected and the
+/// clipboard keeps what it had. Two columns, or another line, is a drag.
+#[test]
+fn a_one_cell_jitter_copies_nothing() {
+    let (mut s, _buf) = mouse_screen(40, 12);
+    s.push(&rows(8));
+    s.draw_frame(&frame(40), None).unwrap();
+    select(
+        &mut s,
+        SelectOp::Press {
+            col: 3,
+            row: 2,
+            clicks: 1,
+        },
+    );
+    select(&mut s, SelectOp::Drag { col: 4, row: 2 });
+    select(&mut s, SelectOp::Release);
+    assert_eq!(s.take_copied(), None, "a jitter");
+    select(
+        &mut s,
+        SelectOp::Press {
+            col: 3,
+            row: 2,
+            clicks: 1,
+        },
+    );
+    select(&mut s, SelectOp::Drag { col: 5, row: 2 });
+    select(&mut s, SelectOp::Release);
+    assert_eq!(s.take_copied().as_deref(), Some("e-0"));
+}
+
+/// Below the viewport the edge scroll speeds up with the distance: three rows into the frame
+/// moves seven lines a step, the viewport's last row one.
+#[test]
+fn the_edge_scroll_speeds_up_with_the_distance_below_the_viewport() {
+    let top_after = |row: u16| {
+        let (mut s, buf) = mouse_screen(40, 12);
+        s.push(&rows(100));
+        s.draw_frame(&frame(40), None).unwrap();
+        s.view(ViewOp::Top).unwrap();
+        s.draw_frame(&frame(40), None).unwrap();
+        select(
+            &mut s,
+            SelectOp::Press {
+                col: 0,
+                row: 0,
+                clicks: 1,
+            },
+        );
+        select(&mut s, SelectOp::Drag { col: 0, row });
+        s.draw_frame(&frame(40), None).unwrap();
+        grid(&replay(&buf, 12, 40))[0].clone()
+    };
+    assert_eq!(top_after(7), "line-001", "the last row: one line");
+    assert_eq!(top_after(10), "line-007", "three below: seven lines");
 }

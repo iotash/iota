@@ -86,6 +86,9 @@ pub(crate) enum ViewOp {
     Select(SelectOp),
 }
 
+/// The columns a drag must cover on its own line to select (and copy) anything.
+const DRAG_MIN_COLS: usize = 2;
+
 /// A mouse step of the selection, in screen cells (column, row from the top).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SelectOp {
@@ -220,6 +223,7 @@ impl<W: Write> Screen<W> {
         // A selection is made at a width; another width wraps its rows differently.
         self.sel = None;
         self.drag = None;
+        self.conv.release();
     }
 
     /// The viewport's height at the last draw (the rows above the frame).
@@ -309,6 +313,8 @@ impl<W: Write> Screen<W> {
                 if sel.is_some() {
                     self.sel = sel;
                     self.drag = Some(clicks > 1);
+                    // The text under the pointer stays put while the button is down.
+                    self.conv.hold(width, h);
                 }
             }
             SelectOp::Drag { col, row } => {
@@ -320,16 +326,24 @@ impl<W: Write> Screen<W> {
                     self.conv.scroll_up(1, width, h);
                     self.mark_view(width);
                 } else if usize::from(row) >= last {
-                    self.conv.scroll_down(1, width, h);
+                    // Faster the further below the viewport the pointer is: the frame's rows give
+                    // the distance (1, 3, 5 … lines a step).
+                    let past = usize::from(row) - last;
+                    self.conv.scroll_down(1 + 2 * past, width, h);
                     self.mark_view(width);
                 }
                 let head = self.point_near(col, row, width);
                 if let (Some(sel), Some(head)) = (&mut self.sel, head) {
                     sel.head = head;
-                    self.drag = Some(true);
+                    // A one-cell jitter of a click is not a selection: it would overwrite the
+                    // clipboard with a character or two.
+                    let a = sel.anchor;
+                    let far = (a.row, a.line) != (head.row, head.line)
+                        || a.col.abs_diff(head.col) >= DRAG_MIN_COLS;
+                    self.drag = self.drag.map(|moved| moved || far);
                 }
             }
-            SelectOp::Release => match self.drag.take() {
+            SelectOp::Release => match self.drag.take().inspect(|_| self.conv.release()) {
                 Some(true) => {
                     if let Some(sel) = self.sel {
                         let text = selection::text(&sel, |n| self.conv.plain_lines(n, width));
@@ -342,8 +356,15 @@ impl<W: Write> Screen<W> {
             SelectOp::Clear => {
                 self.sel = None;
                 self.drag = None;
+                self.conv.release();
             }
         }
+    }
+
+    /// Whether the viewport's last row is the way back to the tail: scrolled back — but not a view
+    /// a drag holds at the bottom with nothing new below it.
+    fn way_back_shown(&self) -> bool {
+        !self.conv.following() && !(self.conv.held() && self.conv.unseen() == 0)
     }
 
     /// The buffer cell under screen cell (`col`, `row`), held to the shown lines: above the first
@@ -371,7 +392,7 @@ impl<W: Write> Screen<W> {
         let shown = self.conv.view_marks(width, h);
         let mut marks = vec![None; h.saturating_sub(shown.len())];
         marks.extend(shown);
-        if (self.search.is_some() || !self.conv.following())
+        if (self.search.is_some() || self.way_back_shown())
             && let Some(last) = marks.last_mut()
         {
             *last = None;
@@ -719,7 +740,7 @@ impl<W: Write> Screen<W> {
             if let Some(last) = lines.last_mut() {
                 *last = line;
             }
-        } else if !self.conv.following()
+        } else if self.way_back_shown()
             && let Some(last) = lines.last_mut()
         {
             *last = match self.conv.unseen() {

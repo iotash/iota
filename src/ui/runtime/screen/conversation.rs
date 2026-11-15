@@ -98,6 +98,9 @@ pub(crate) struct Conversation {
     fresh: usize,
     /// Rows ever committed (a row's number, for [`Conversation::lines_after`]).
     pushed: u64,
+    /// Whether the view is held where it is (a drag is selecting): it does not follow the tail
+    /// even when it shows the last line, so new output never moves the text under the pointer.
+    held: bool,
 }
 
 impl Conversation {
@@ -114,6 +117,7 @@ impl Conversation {
             unseen: 0,
             fresh: 0,
             pushed: 0,
+            held: false,
         }
     }
 
@@ -305,6 +309,26 @@ impl Conversation {
         }
     }
 
+    /// Holds the view where it is — a following view anchors on its top line — until
+    /// [`Conversation::release`]: what a drag selects stays under the pointer while output arrives.
+    pub(crate) fn hold(&mut self, width: usize, h: usize) {
+        if self.following() {
+            let top = self.top_line(width, h);
+            self.anchor(top);
+        }
+        self.held = true;
+    }
+
+    /// Lets a held view go: one that shows the last line follows the tail again at the next draw.
+    pub(crate) fn release(&mut self) {
+        self.held = false;
+    }
+
+    /// Whether the view is held ([`Conversation::hold`]).
+    pub(crate) const fn held(&self) -> bool {
+        self.held
+    }
+
     /// The tail, followed again (`Ctrl+End`).
     pub(crate) fn go_bottom(&mut self) {
         self.view = View::Follow;
@@ -415,6 +439,9 @@ impl Conversation {
 
     /// An anchored view that shows the last line follows the tail again.
     fn follow_if_at_bottom(&mut self, width: usize, h: usize) {
+        if self.held {
+            return;
+        }
         if let View::At(top) = self.view
             && self.lines_from(top, width, h) <= h
         {
