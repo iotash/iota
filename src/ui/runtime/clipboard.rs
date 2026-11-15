@@ -111,7 +111,7 @@ pub(crate) fn paths(tmux: bool, ssh: bool) -> Vec<CopyPath> {
 }
 
 /// The OSC 52 sequence that sets the clipboard (`c`) to `text`, BEL-terminated (what tmux,
-/// Ghostty, iTerm2, kitty and WezTerm all accept).
+/// Ghostty, `iTerm2`, kitty and `WezTerm` all accept).
 pub(crate) fn osc52(text: &str) -> String {
     let data = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
     format!("\x1b]52;c;{data}\x07")

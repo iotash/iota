@@ -26,7 +26,7 @@ fn frame() -> FrameView {
             "status".to_owned(),
         ],
         cursor: Some((2, 1)),
-        map: Default::default(),
+        map: crate::ui::render::frame::FrameMap::default(),
     }
 }
 

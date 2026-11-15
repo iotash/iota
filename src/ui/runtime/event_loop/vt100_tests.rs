@@ -307,7 +307,7 @@ fn composer(draft: &str) -> crate::ui::render::frame::FrameView {
             "status".to_owned(),
         ],
         cursor: Some((2 + u16::try_from(draft.len()).unwrap(), 1)),
-        map: Default::default(),
+        map: crate::ui::render::frame::FrameMap::default(),
     }
 }
 
@@ -368,7 +368,7 @@ fn a_write_is_one_synchronized_update_exactly_when_it_is_longer_than_sync_min() 
     let view = |rows: Vec<String>, cursor: (u16, u16)| crate::ui::render::frame::FrameView {
         rows,
         cursor: Some(cursor),
-        map: Default::default(),
+        map: crate::ui::render::frame::FrameMap::default(),
     };
     // One write, its size, its pairs; the rule: wrapped exactly when longer than SYNC_MIN.
     let write = |t: &mut Term<SharedBuf>, op: &dyn Fn(&mut Term<SharedBuf>)| -> (usize, usize) {
@@ -468,7 +468,7 @@ fn a_frame_that_shrinks_leaves_no_ghost() {
             })
             .collect(),
         cursor: Some((2, 0)),
-        map: Default::default(),
+        map: crate::ui::render::frame::FrameMap::default(),
     };
     t.draw_frame(&tall, None).unwrap();
     assert!(
@@ -1231,7 +1231,7 @@ fn a_resize_with_a_surface_open_leaves_one_whole_frame() {
             .chain((0..4).map(|i| format!("model-{i} {}", "·".repeat(w - 12))))
             .collect(),
         cursor: None,
-        map: Default::default(),
+        map: crate::ui::render::frame::FrameMap::default(),
     };
     t.draw_frame(&view(80), None).unwrap();
     t.resize(Size::new(60, 24));

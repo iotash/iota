@@ -159,11 +159,10 @@ pub(crate) fn update_mouse(m: &mut Model, ev: MouseEvent) {
                 }
             }
         }
-        MouseEventKind::Up(MouseButton::Left) => {
-            if m.mouse.held.take().is_some() {
-                m.mouse.last_step = None;
-                m.view_ops.push(ViewOp::Select(SelectOp::Release));
-            }
+        MouseEventKind::Up(MouseButton::Left) if m.mouse.held.is_some() => {
+            m.mouse.held = None;
+            m.mouse.last_step = None;
+            m.view_ops.push(ViewOp::Select(SelectOp::Release));
         }
         _ => {}
     }

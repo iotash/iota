@@ -87,7 +87,7 @@ pub(crate) enum ViewOp {
 }
 
 /// A mouse step of the selection, in screen cells (column, row from the top).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SelectOp {
     /// The left button went down; `clicks` is 1, 2 (a word) or 3 (the whole row).
     Press { col: u16, row: u16, clicks: u8 },
