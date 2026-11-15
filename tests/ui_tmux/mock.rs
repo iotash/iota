@@ -20,6 +20,7 @@
 //! | `exact`       | `EXACTSTART`, a line of exactly 80 `x`, `EXACTEND`            |
 //! | `straddle`    | `WIDESTART`, `y` + 40 × `中` (81 columns), `WIDEEND`          |
 //! | `blocks`      | [`blocks_doc`]: a 40-line document with a code block, a table and a list, one line per delta |
+//! | `grow N hold@K:TAG thold@J:TAG2` | [`grow_line`]: an `N`-line fenced code block, then an `N`-row table, one line per delta — held after code line `K` and after table row `J` until each tag is released |
 //! | `emoji`       | [`EMOJI`]: a table whose cells carry emoji, flag sequences and VS16 characters |
 //! | `relayout`    | [`RELAYOUT`]: the owner's five elements, each wide enough to need a new layout at 60 columns and room to spread at 160 |
 //! | `run:<cmd>`   | ONE `shell` tool call, `{"command": <cmd>, "background": true}`, `finish_reason: tool_calls` |
@@ -155,6 +156,12 @@ fn blocks_doc() -> String {
     }
     d.push_str("\nBLOCKSEND\n");
     d
+}
+
+/// Code line `i` of the `grow` script (tui-plan S7b, scenario 49): 72 columns behind the block's
+/// two-column gutter, so it fits one row at 80 and wraps under the gutter at 50.
+fn grow_line(i: usize) -> String {
+    format!("let grow_{i:02} = compute({i:02}); // a streaming code line, long enough to wrap")
 }
 
 /// The `relayout` document (tui-plan S7a, scenario 48): a table whose long cells wrap at 80
@@ -443,6 +450,40 @@ fn stream_reply(sock: &mut TcpStream, prompt: &str, after_tool: bool) -> std::io
             content(sock, &format!("{line}\n"))?;
             thread::sleep(LINE_GAP);
         }
+    } else if let Some(rest) = prompt.strip_prefix("grow") {
+        let n: usize = rest
+            .split_whitespace()
+            .next()
+            .and_then(|a| a.parse().ok())
+            .unwrap_or(20);
+        let hold = |key: &str| {
+            rest.split_whitespace().find_map(|a| {
+                let (k, tag) = a.strip_prefix(key)?.split_once(':')?;
+                Some((k.parse::<usize>().ok()?, tag.to_owned()))
+            })
+        };
+        let (code_hold, table_hold) = (hold("hold@"), hold("thold@"));
+        content(sock, "GROWSTART\n\n```rust\n")?;
+        for i in 0..n {
+            if let Some((k, tag)) = &code_hold
+                && i == *k
+            {
+                wait_release(tag);
+            }
+            content(sock, &format!("{}\n", grow_line(i)))?;
+            thread::sleep(LINE_GAP);
+        }
+        content(sock, "```\n\n| id | name |\n|---|---|\n")?;
+        for i in 0..n {
+            if let Some((k, tag)) = &table_hold
+                && i == *k
+            {
+                wait_release(tag);
+            }
+            content(sock, &format!("| {i:02} | trow_{i:02} |\n"))?;
+            thread::sleep(LINE_GAP);
+        }
+        content(sock, "\nGROWEND\n")?;
     } else if prompt.starts_with("emoji") {
         content(sock, EMOJI)?;
     } else if prompt.starts_with("relayout") {

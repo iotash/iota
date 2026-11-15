@@ -54,7 +54,7 @@
 //! | `17-title-stack.sh` | TUI-VERIFY §5 | — (`pipe-pane`: the title stack push/pop, OSC 0 and `#{pane_title}`) |
 //! | `18-host-channels.sh` | TUI-VERIFY §7 | — (`pipe-pane`: the approval warning state, focus-gated OSC 9, a mid-turn quit) |
 //! | `19-background-jobs.sh` | TUI-VERIFY §8 | — (a `shell` job from the mock's tool call: wake-up, draft, round boundary, queue, ESC and exit) |
-//! | `20-block-preview.sh` | TUI-VERIFY §2 | — (a 40-line document: the metered preview rows morph, history contiguous) |
+//! | `20-block-preview.sh` | TUI-VERIFY §2 | — (a 40-line document: the open blocks show their lines as they stream, no counter row, history contiguous) |
 //! | `21-emoji-table.sh` | TUI-VERIFY §6.4 | — (emoji, flags and VS16 in a table, every row measured by tmux's own ruler) |
 //! | `22-retry.sh` | TUI-VERIFY batch C | — (503 → `retrying (attempt`, the steer message lands once, Ctrl+C during the backoff leaves no red block) |
 //! | `23-mcp-oauth.sh` | brain `mcp-cli-and-oauth` | — (a server whose 401 asks for a login, `auth` undeclared: the not-logged-in notice, the server's row and page in `/tools`, `iota mcp login` through `$BROWSER` beside the chat, a reconnect from the page and a restart that both connect, `iota mcp logout`) |
@@ -79,6 +79,7 @@
 //! | `44-fullscreen-suspend.sh` | tui-plan S4 | — (Ctrl+Z and SIGTSTP hand the terminal back — main screen, canonical tty, paste off, a stopped job; `fg` repaints everything at the new size; the run goes on and leaves its conversation) |
 //! | `45-fullscreen-crash.sh` | tui-plan S4 | — (a panic on request — the hook leaves the alternate screen before the report, tty canonical; SIGTERM twice while a stuck MCP server holds the wind-down — the forced branch exits at once, 130, usable; a clean next run) |
 //! | `48-fullscreen-relayout.sh` | tui-plan S7a | — (a table, a nested list, a code block and a quote laid out again at 80, 160 and 60 columns: the box whole and inside the window, long cells on one row only at 160, wrapped list rows hanging under the item text, code wrapping under its gutter, the quote's bar on every row, the blank rows unchanged)
+//! | `49-fullscreen-grow.sh` | tui-plan S7b | — (a code block and a table streamed with holds mid-block: the arrived lines on screen and no metered counter, the code re-laid-out under its gutter at 50 columns mid-stream, the table's rows boxed as they arrive, each line once in the history) |
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -365,8 +366,7 @@ fn tmux_startup_frame_and_pinned_cursor() {
 }
 
 /// L4 #2 — one streamed markdown turn: every rendered line lands in the scrollback exactly
-/// once, the `◇ thought for …` marker lands once, the banner above is not eaten, and the
-/// live preview MORPHS in place instead of scrolling a rolling source window.
+/// once, the `◇ thought for …` marker lands once, and the banner above is not eaten.
 #[test]
 fn tmux_streamed_markdown_turn_history_exact() {
     run_scenario("02-markdown-turn.sh");
@@ -498,11 +498,11 @@ fn tmux_background_jobs() {
     run_scenario("19-background-jobs.sh");
 }
 
-/// TUI-VERIFY §2.1/§2.2 — a 40-line streamed document with a fenced block and a table: the
-/// metered preview rows morph into the rendered blocks, every rendered row lands exactly once,
-/// no raw source row leaks, and the first line is still in the scrollback.
+/// TUI-VERIFY §2.1/§2.2 — a 40-line streamed document with a fenced block and a table: the open
+/// blocks grow in place (tui-plan S7b), every rendered row lands exactly once, no raw source row
+/// leaks, and the first line is still in the scrollback.
 #[test]
-fn tmux_block_preview_morphs() {
+fn tmux_open_blocks_grow_once_each() {
     run_scenario("20-block-preview.sh");
 }
 
@@ -715,6 +715,13 @@ fn tmux_fullscreen_mouse_through_tmux() {
 #[test]
 fn tmux_fullscreen_relayout() {
     run_scenario("48-fullscreen-relayout.sh");
+}
+
+/// tui-plan S7b: a block still being written grows line by line in the conversation, and a
+/// resize mid-stream lays out again what has arrived.
+#[test]
+fn tmux_fullscreen_grow() {
+    run_scenario("49-fullscreen-grow.sh");
 }
 
 /// M2 (tui-plan §7) — a measurement, not a check: the bytes the tmux iota runs in sends to its own
