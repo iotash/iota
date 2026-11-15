@@ -249,7 +249,7 @@ fn the_window_keeps_the_highlight_fully_visible() {
 /// shrinks to it rather than disappearing.
 #[test]
 fn no_room_shrinks_the_list_to_the_highlighted_item() {
-    let cmds = vec![
+    let cmds = [
         sug("/a", "first"),
         sug("/b", &words(40)),
         sug("/c", "third"),

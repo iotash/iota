@@ -159,7 +159,7 @@ pub(crate) fn item_rows(s: &Suggestion, selected: bool, width: usize) -> Vec<Str
     if desc.is_empty() {
         return rows;
     }
-    let measure = width.saturating_sub(DESC_INDENT).min(DESC_MEASURE).max(2);
+    let measure = width.saturating_sub(DESC_INDENT).clamp(2, DESC_MEASURE);
     let mut lines = word_wrap_ansi(&desc, measure);
     if lines.len() > DESC_LINES {
         lines.truncate(DESC_LINES);

@@ -1490,17 +1490,19 @@ fn skill_rows() -> Vec<crate::ui::facade::Suggestion> {
 }
 
 /// The model's frame as a `w`×`h` terminal shows it, one string per screen row.
-fn shown(m: &mut Model, w: u16, h: u16) -> Vec<String> {
-    m.width = w;
-    m.height = h;
+fn shown(m: &mut Model, cols: u16, lines: u16) -> Vec<String> {
+    m.width = cols;
+    m.height = lines;
     let view = m.frame_view();
     let buf = SharedBuf::default();
     let wtr = buf.clone();
-    let mut t = Term::headless(Box::new(move || wtr.clone()), Size::new(w, h), false).unwrap();
-    t.draw_frame(&view, None).unwrap();
-    let p = parse_sized(&buf, w, h);
-    p.screen()
-        .rows(0, w)
+    let mut term =
+        Term::headless(Box::new(move || wtr.clone()), Size::new(cols, lines), false).unwrap();
+    term.draw_frame(&view, None).unwrap();
+    let parser = parse_sized(&buf, cols, lines);
+    parser
+        .screen()
+        .rows(0, cols)
         .map(|r| r.trim_end().to_owned())
         .collect()
 }
