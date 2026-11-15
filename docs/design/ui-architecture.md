@@ -141,15 +141,16 @@ Facade shape decisions from the adversarial review:
   preserved by construction.
 - **Frame stacking order is fixed and ui-owned** (user-confirmed final):
   `[staging tail] [stream preview] [spacer] [queue] ─sep─ [composer] ─sep─
-  [status | suggestions | surface]`. One constant blank spacer row separates
+  [completion list] [status | surface]` (the list since the full screen:
+  `fullscreen-tui.md` "补全列表"). One constant blank spacer row separates
   the content side from everything input-side (it cannot bounce — it never
   changes height), and residue rows render BLANK: they hold their height
   until fresh lines consume them, but their content is stale widget chrome
   and showing it next to an injected user block read as leaked tool output.
   The composer is wrapped by two
   separators; the bottom zone below the lower separator holds exactly one
-  of the status line, the slash-suggestion row, or an open interaction
-  surface (surface > suggestions > status) — swapping them is a content
+  of the status line or an open interaction surface (surface > status), with
+  the completion list above it while the line is a slash command — swapping them is a content
   change plus below-composer growth, never a composer move. Content-side
   transients (stream preview) morph in place through the staging window (Rust: deleted
   in tui-plan S7b — the frame holds only the call preview);

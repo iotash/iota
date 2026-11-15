@@ -379,7 +379,7 @@ _snap() { if [ "$#" -gt 0 ]; then printf '%s\n' "$1"; else cap; fi; }
 frame_top() { _snap "$@" | grep -n '^┄┄┄' | tail -2 | head -1 | cut -d: -f1; }
 frame_bot() { _snap "$@" | grep -n '^┄┄┄' | tail -1 | cut -d: -f1; }
 
-# Everything between the separators: the composer rows plus any completion-candidates row.
+# Everything between the separators: the composer rows.
 composer_block() {
     local s t b
     s="$(_snap "$@")"
@@ -420,13 +420,29 @@ wait_composer() {
     echo "$n"
 }
 
-# The frame's bottom zone: the row directly under the LOWER separator (status line, the
-# selected suggestion's description, or a surface's first row).
+# The frame's bottom zone: the row directly under the LOWER separator (the status line, a
+# surface's first row, or — while the line is a slash command — the completion list's first row).
 bottom_zone() {
     local s bot
     s="$(_snap "$@")"
     bot="$(frame_bot "$s")"
     [ -n "$bot" ] && printf '%s\n' "$s" | sed -n "$((bot + 1))p"
+}
+
+# The completion list: the rows between the LOWER separator and the status row (the frame's last).
+list_block() {
+    local s bot n
+    s="$(_snap "$@")"
+    bot="$(frame_bot "$s")"
+    n="$(printf '%s\n' "$s" | wc -l | tr -d ' ')"
+    [ -n "$bot" ] && [ "$n" -gt $((bot + 1)) ] && printf '%s\n' "$s" | sed -n "$((bot + 1)),$((n - 1))p"
+}
+
+# count_list <item label> [capture] — the list's items with that label (highlighted or not).
+count_list() {
+    local f="$1"
+    shift
+    list_block "$@" | grep -cE -- "^  (› |  )$f\$" | tr -d ' '
 }
 
 # The status row's MODEL segment alone — everything before the first " · " joiner.

@@ -64,8 +64,8 @@ job_clock() { bottom_zone | grep -oE 'job b1 .* [0-9]+s$' | grep -oE '[0-9]+s$';
 # The clock on job `$1`'s row of the open list ("" if there is no such row) — the id, the clock, the
 # command, two spaces apart; on the Kill tab the row starts with its checkbox.
 row_clock() { cap | grep -oE "$1 +[0-9]+s  " | head -1 | grep -oE '[0-9]+s'; }
-# The candidates row shows a command without the slash already typed: `⎿ jobs`.
-has_jobs_candidate() { [ "$(count_composer '⎿ jobs')" -gt 0 ]; }
+# The completion list shows a command without the slash already typed: a `jobs` item.
+has_jobs_candidate() { [ "$(count_list jobs)" -gt 0 ]; }
 # The last OSC 9;4 state the pane was sent ("" if none yet).
 last_progress() { LC_ALL=C grep -aoE '\]9;4;[0-9]' "$RAW" 2>/dev/null | tail -1 | cut -c6; }
 progress_is_idle() { [ "$(last_progress)" = 0 ]; }
@@ -126,7 +126,7 @@ fi
 # ------------------------------------------------------------------ 8.7: /jobs, while it runs
 type_ '/j'
 _poll_until 30 has_jobs_candidate || miss "/j did not complete to /jobs while the job runs"
-check "the completion row offers /jobs" "$(count_composer '⎿ jobs')" 1
+check "the completion list offers /jobs" "$(count_list jobs)" 1
 key C-u
 wait_gone '❯ /j' || miss "Ctrl+U did not clear the composer"
 type_ '/jobs'
@@ -215,7 +215,7 @@ _poll_until 60 progress_is_idle || miss "the last job's notice turn never cleare
 check "the last notice turn over, the progress indicator is cleared (OSC 9;4;0)" "$(last_progress)" 0
 type_ '/j'
 settle || miss "frame never settled after /j"
-check "/j completes to nothing once the job is gone" "$(count_composer '⎿ jobs')" 0
+check "/j completes to nothing once the job is gone" "$(count_list jobs)" 0
 key C-u
 check_frame_intact "after the notice" 100
 

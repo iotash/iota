@@ -386,7 +386,7 @@ and do not tell it to background it.
       20s · job b1 running` instead, and that line never changes: the notice lands later
       (8.1–8.3). *(Pinned: the receipt row once under the header, the reply's first line, no
       notice yet.)*
-- [x] 自动化：scenario 25 **8.7 `/jobs`.** While the job runs, `/j` completes to `jobs` on the candidates row
+- [x] 自动化：scenario 25 **8.7 `/jobs`.** While the job runs, `/j` completes to `jobs` in the completion list
       and `/jobs` opens two tabs, `Jobs` and `Kill`. `Jobs` is a single-select list — `1 job running`
       above it, one row per job, `b1  12s  sleep 40; echo done`, the command as the `[shell …]` header
       showed it and no log path — and it is LIVE: the clock on the row walks once a second, a job that

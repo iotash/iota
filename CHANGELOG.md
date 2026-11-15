@@ -45,6 +45,13 @@ All notable changes to iota are recorded here. The same notes, rendered, are at
   resize mid-reply lays them out again. The `rendering… · N lines` counter
   that stood in for them until they were complete is gone. A display formula
   shows as its source until its closing `$$`, then as the formula.
+- **Slash completion is a list.** Typing `/` opens a list under the input,
+  one command per row with its description under it, wrapped to at most two
+  lines (longer ones end in `…`) and kept to a readable width on a wide
+  window. `↑`/`↓` move through it, `Enter` runs the highlighted command, `Esc`
+  puts back what you typed, `Tab` completes as before, and a click on an item
+  highlights it. `/skills ` lists each skill with its own description. The
+  status row no longer gives way to a command's description.
 - **Resizing the window re-lays-out the conversation.** Pull the window
   wider or narrower and what is on screen is laid out again for the new
   width, not cut and wrapped: a table's columns are recomputed (its long cells

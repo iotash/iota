@@ -1464,3 +1464,115 @@ fn a_table_on_screen_is_laid_out_again_when_the_window_widens_and_narrows() {
     }
     lh.quit_and_join(Duration::from_secs(2));
 }
+
+/// The skill rows a `/skills ` line offers: descriptions of every length a SKILL.md carries.
+fn skill_rows() -> Vec<crate::ui::facade::Suggestion> {
+    let skill = |name: &str, desc: &str| crate::ui::facade::Suggestion {
+        value: format!("/skills {name}"),
+        label: name.to_owned(),
+        desc: desc.to_owned(),
+    };
+    vec![
+        skill("brain-page", "Read and write brain pages"),
+        skill(
+            "code-review",
+            "Review the current diff for correctness bugs, then for reuse, simplification and \
+             efficiency cleanups, at the effort level given first; pass --fix to apply the \
+             findings to the working tree after the review",
+        ),
+        skill("release", ""),
+        skill(
+            "investigate",
+            "Systematic debugging with root cause investigation: reproduce, analyze, \
+             hypothesize, then fix",
+        ),
+    ]
+}
+
+/// The model's frame as a `w`×`h` terminal shows it, one string per screen row.
+fn shown(m: &mut Model, w: u16, h: u16) -> Vec<String> {
+    m.width = w;
+    m.height = h;
+    let view = m.frame_view();
+    let buf = SharedBuf::default();
+    let wtr = buf.clone();
+    let mut t = Term::headless(Box::new(move || wtr.clone()), Size::new(w, h), false).unwrap();
+    t.draw_frame(&view, None).unwrap();
+    let p = parse_sized(&buf, w, h);
+    p.screen()
+        .rows(0, w)
+        .map(|r| r.trim_end().to_owned())
+        .collect()
+}
+
+/// The completion list as a terminal shows it, at 80 and 160 columns: one item per row group,
+/// its description under it at the 72-column measure — the same shape on the wide terminal, not
+/// one 150-column line — cut with `…` after two lines; the status row under it keeps its own
+/// content. Run with `--nocapture` to see the screens.
+#[test]
+fn the_completion_list_on_screen_at_80_and_160_columns() {
+    use crate::ui::input::suggest::DESC_MEASURE;
+    let mut m = test_model();
+    m.apply(UiMsg::Status(StatusData {
+        model: "claude-opus-5-5".to_owned(),
+        ..StatusData::default()
+    }));
+    m.apply(UiMsg::Commands(skill_rows()));
+    crate::ui::testutil::type_text(&mut m, "/skills ");
+    crate::ui::input::suggest::tab_complete(&mut m.composer, &m.commands);
+    crate::ui::input::suggest::tab_complete(&mut m.composer, &m.commands);
+    for w in [80u16, 160] {
+        let rows = shown(&mut m, w, 24);
+        println!("--- {w}x24 ---\n{}", rows.join("\n"));
+        let item = rows
+            .iter()
+            .position(|r| r == "  › code-review")
+            .expect("highlight");
+        let desc = &rows[item + 1..item + 3];
+        assert!(
+            desc.iter().all(|r| r.starts_with("      ")
+                && crate::text::width::str_width(&r[6..]) <= DESC_MEASURE),
+            "{w}: the description must keep the measure:\n{}",
+            rows.join("\n")
+        );
+        assert!(
+            desc[1].ends_with('…'),
+            "{w}: cut after two lines:\n{}",
+            rows.join("\n")
+        );
+        assert_eq!(
+            rows[item + 3],
+            "    release",
+            "{w}: the next item follows the cut"
+        );
+        assert!(
+            rows[23].contains("claude-opus-5-5"),
+            "{w}: the status row stays itself"
+        );
+    }
+}
+
+/// On a 4-row terminal the list shrinks to the highlighted item and the composer stays on the
+/// screen: the rows above the composer yield, then what does not fit at the bottom.
+#[test]
+fn a_four_row_terminal_keeps_the_composer_and_the_highlighted_item() {
+    let mut m = test_model();
+    m.apply(UiMsg::Commands(skill_rows()));
+    crate::ui::testutil::type_text(&mut m, "/skills ");
+    for _ in 0..4 {
+        crate::ui::input::suggest::tab_complete(&mut m.composer, &m.commands);
+    }
+    let rows = shown(&mut m, 80, 4);
+    println!("--- 80x4 ---\n{}", rows.join("\n"));
+    assert_eq!(
+        rows,
+        vec![
+            "❯ /skills investigate".to_owned(),
+            "┄".repeat(80),
+            "  › investigate".to_owned(),
+            "      Systematic debugging with root cause investigation: reproduce, analyze,"
+                .to_owned(),
+        ]
+    );
+    assert_eq!(m.list_items, vec![3, 3, 3], "the highlighted item alone");
+}
