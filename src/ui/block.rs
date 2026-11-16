@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::text::ansi::wrap_ansi;
-use crate::ui::render::theme::{RESET, USER_BAR, input_bg};
+use crate::ui::render::theme::{RESET, REV_ON, USER_BAR};
 
 /// Lays a block out from its source at a width.
 pub trait Layout: Send + Sync {
@@ -123,26 +123,26 @@ impl Block {
     }
 }
 
-/// The user's submitted text as a BUBBLE (ui.go:224-243, chat/replay.go:196-215 `printUserBlock`,
-/// restyled — X-105): laid out from the text at the width of the draw, each row is the 2-column
+/// The user's submitted text as full-width rows (ui.go:224-243, chat/replay.go:196-215
+/// `printUserBlock`), laid out from the text at the width of the draw: each row is the 2-column
 /// gutter — `"▌ "` on the first row, two spaces on the wrapped ones — in [`USER_BAR`] gray, then
-/// the text on the input field's gray ([`input_bg`]) in the terminal's own foreground, padded by
-/// display width to width − 2 so the bubble runs from column 2 to the edge at any width. Under
-/// `ColorMode::Off` it writes no escape at all — the rows are committed text that the exit writes
-/// out raw, past the frame's colour gate — and the bar's character carries the block. The live
-/// block and the resume echo both lay out through this one.
+/// the text in REVERSE VIDEO (the terminal's foreground behind it, its background as the text —
+/// what sets the block apart from body text in any theme), padded by display width to width − 2
+/// so the reversed span runs from column 2 to the edge at any width. The bar sits OUTSIDE the
+/// span: inside it the `▌` would take the reversed foreground and read as a notch, not a rule
+/// (X-105). Under `ColorMode::Off` it writes no escape at all — the rows are committed text that
+/// the exit writes out raw, past the frame's colour gate, so a reverse attribute would leak
+/// there — and the bar's character carries the block. The live block and the resume echo both
+/// lay out through this one, the same rows.
 pub struct UserBlock {
     /// The submitted text (its display form: paste tags bounded).
     pub text: String,
-    /// Whether the terminal's background is dark (picks the bubble's gray).
-    pub dark: bool,
 }
 
 impl Layout for UserBlock {
     fn lines(&self, width: usize) -> Vec<String> {
         const GUTTER: usize = 2;
         let w = width.max(8);
-        let bg = input_bg(self.dark);
         let color = crate::app::color::enabled();
         crate::text::ansi::wrap_by_width(&self.text, w - GUTTER)
             .into_iter()
@@ -152,7 +152,7 @@ impl Layout for UserBlock {
                 let pad = (w - GUTTER).saturating_sub(crate::text::width::str_width(&row));
                 let pad = " ".repeat(pad);
                 if color {
-                    format!("{USER_BAR}{g}{RESET}{bg}{row}{pad}{RESET}")
+                    format!("{USER_BAR}{g}{RESET}{REV_ON}{row}{pad}{RESET}")
                 } else {
                     format!("{g}{row}{pad}")
                 }
@@ -197,64 +197,53 @@ impl std::fmt::Debug for Block {
 
 #[cfg(test)]
 mod tests {
-    use super::{Layout, RESET, USER_BAR, UserBlock, input_bg};
+    use super::{Layout, UserBlock};
     use crate::text::ansi::strip_sgr;
     use crate::text::width::str_width;
 
-    /// The bubble at 80 columns as bytes, in both tones: the gutter in the bar's gray (`▌ ` on
-    /// the first row, two spaces on the wrapped one), then the text on the bubble's gray with no
-    /// foreground of its own, padded to the edge — every row 80 wide.
+    /// The block at 80 columns as bytes: the gutter in the bar's 245 gray (`▌ ` on the first row,
+    /// two spaces on the wrapped one) and reset, THEN reverse video over the text padded to the
+    /// edge — every row 80 wide.
     #[test]
-    fn the_user_block_is_a_bubble_behind_a_bar() {
+    fn the_user_block_is_reverse_video_behind_a_gray_bar() {
         // 78 columns of text beside the gutter, then 5 more: the wrap lands at column 2 too.
         let text = format!("{}{}", "x".repeat(78), "tail.");
-        for (dark, bg) in [(true, "\x1b[48;5;236m"), (false, "\x1b[48;5;254m")] {
-            let rows = UserBlock {
-                text: text.clone(),
-                dark,
-            }
-            .lines(80);
-            assert_eq!(
-                rows,
-                [
-                    format!("\x1b[38;5;245m▌ {RESET}{bg}{}{RESET}", "x".repeat(78)),
-                    format!("\x1b[38;5;245m  {RESET}{bg}tail.{}{RESET}", " ".repeat(73)),
-                ],
-                "dark={dark}"
-            );
-            for row in &rows {
-                assert_eq!(str_width(&strip_sgr(row)), 80, "full width: {row:?}");
-            }
+        let rows = UserBlock { text }.lines(80);
+        assert_eq!(
+            rows,
+            [
+                format!("\x1b[38;5;245m▌ \x1b[0m\x1b[7m{}\x1b[0m", "x".repeat(78)),
+                format!(
+                    "\x1b[38;5;245m  \x1b[0m\x1b[7mtail.{}\x1b[0m",
+                    " ".repeat(73)
+                ),
+            ]
+        );
+        for row in &rows {
+            assert_eq!(str_width(&strip_sgr(row)), 80, "full width: {row:?}");
         }
-        let one = UserBlock {
-            text: "hi".into(),
-            dark: true,
-        }
-        .lines(20);
+        let one = UserBlock { text: "hi".into() }.lines(20);
         assert_eq!(
             one,
             [format!(
-                "{USER_BAR}▌ {RESET}{}hi{}{RESET}",
-                input_bg(true),
+                "\x1b[38;5;245m▌ \x1b[0m\x1b[7mhi{}\x1b[0m",
                 " ".repeat(16)
             )]
         );
     }
 
-    /// A CJK row: wide runes count two columns, so the bubble is padded by display width, not by
-    /// chars — the row still 80 wide.
+    /// A CJK row: wide runes count two columns, so the reversed span is padded by display width,
+    /// not by chars — the row still 80 wide.
     #[test]
     fn the_cjk_user_block_pads_by_display_width() {
         let rows = UserBlock {
             text: "中文一行".into(),
-            dark: true,
         }
         .lines(80);
         assert_eq!(
             rows,
             [format!(
-                "{USER_BAR}▌ {RESET}{}中文一行{}{RESET}",
-                input_bg(true),
+                "\x1b[38;5;245m▌ \x1b[0m\x1b[7m中文一行{}\x1b[0m",
                 " ".repeat(70)
             )]
         );

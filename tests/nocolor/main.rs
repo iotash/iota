@@ -282,20 +282,16 @@ fn the_standalone_renderers_are_escape_free() {
     );
 }
 
-/// The user block under `NO_COLOR`: no bar gray, no bubble — its rows are committed text that the
-/// exit writes out raw, past the frame's colour gate — and the `▌` alone marks it, the text still
-/// padded to the full width (the same rows for the live block and the resume echo, whatever the
-/// tone).
+/// The user block under `NO_COLOR`: no bar gray, no reverse video — its rows are committed text
+/// that the exit writes out raw, past the frame's colour gate — and the `▌` alone marks it, the
+/// text still padded to the full width (the same rows for the live block and the resume echo).
 #[test]
 fn the_user_block_is_the_bar_and_plain_text() {
     use iota::ui::facade::{Layout as _, UserBlock};
     no_color();
-    for dark in [true, false] {
-        let rows = UserBlock {
-            text: format!("{}tail", "x".repeat(18)),
-            dark,
-        }
-        .lines(20);
-        assert_eq!(rows, ["▌ xxxxxxxxxxxxxxxxxx", "  tail              "]);
+    let rows = UserBlock {
+        text: format!("{}tail", "x".repeat(18)),
     }
+    .lines(20);
+    assert_eq!(rows, ["▌ xxxxxxxxxxxxxxxxxx", "  tail              "]);
 }

@@ -22,7 +22,7 @@
 //! consumer (the Go publish-under-the-lock law's Rust shape).
 
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
 use crate::sync::lock;
@@ -136,9 +136,6 @@ pub(crate) struct TuiHandle {
     next_read_id: AtomicU64,
     /// The surfaces open now ([`Ui::tabbed`] counts them).
     dialogs: Dialogs,
-    /// The terminal's background tone as last set ([`Ui::set_dark_background`]; dark until then,
-    /// like the loop's): the user block's bubble takes its gray from it.
-    dark: AtomicBool,
 }
 
 /// Spawns the named `"iota-tui"` loop thread over an already-built terminal and event
@@ -169,7 +166,6 @@ where
         join: Mutex::new(None),
         next_read_id: AtomicU64::new(1),
         dialogs: Dialogs::default(),
-        dark: AtomicBool::new(true),
     });
     let shared = LoopShared { width, height };
     let thread_handle = Arc::clone(&handle);
@@ -413,7 +409,6 @@ impl Ui for TuiHandle {
     fn user_block(&self, display: &str) {
         lock(&self.region).commit(vec![Block::laid(UserBlock {
             text: display.to_owned(),
-            dark: self.dark.load(Ordering::Relaxed),
         })]);
     }
 
@@ -511,7 +506,6 @@ impl Ui for TuiHandle {
     }
 
     fn set_dark_background(&self, dark: bool) {
-        self.dark.store(dark, Ordering::Relaxed);
         let _ = self.tx.send(UiMsg::DarkBackground(dark));
     }
 

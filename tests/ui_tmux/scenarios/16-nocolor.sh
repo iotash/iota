@@ -133,8 +133,8 @@ else
     ok "NO_COLOR: not one foreground or background color in the whole byte stream"
 fi
 # …and the attributes the frame is built from are still there (the separators are faint):
-# the gate removes colors, not the frame. The user block's bubble is a color, so it goes; its
-# `▌` bar is a character and stays, in the terminal's own foreground.
+# the gate removes colors, not the frame. The user block writes no escape under NO_COLOR (its
+# rows reach the exit's raw write-out, past the gate): its `▌` bar is a character and stays.
 check_raw "NO_COLOR: the frame keeps faint" "${ESC}[2m" yes
 check "NO_COLOR: the user block keeps its ▌ bar" "$(count_all '▌ md')" 1
 # The chat side: nothing at all (X-27).
