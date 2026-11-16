@@ -287,7 +287,10 @@ mod tests {
         );
         assert!(lines[1].starts_with("\x1b[2m│\x1b[0m \x1b[36mι> iota\x1b[0m  \x1b[2mv"));
         assert!(
-            lines[1].ends_with("\x1b[0m             \x1b[2m│\x1b[0m"),
+            lines[1].ends_with(&format!(
+                "\x1b[0m{} \x1b[2m│\x1b[0m",
+                " ".repeat(27 - VERSION_ROW.chars().count())
+            )),
             "{:?}",
             lines[1]
         );
