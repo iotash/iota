@@ -66,7 +66,7 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "str
 # `auth` is rmcp's OAuth 2.1 client (discovery, dynamic registration, PKCE, the refreshing `AuthClient`
 # the streamable-HTTP transport is wrapped in) — `src/mcp/auth.rs` is the only module that names it, and
 # it brings `oauth2` 5 (no default features) + `url` into the binary, nothing else new to Cargo.lock.
-rmcp    = { version = "3.1", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest", "auth"] }
+rmcp    = { version = "3.9", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest", "auth"] }
 # cli
 clap = { version = "4.6", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 # misc
@@ -147,10 +147,8 @@ nix = { version = "0.31", default-features = false, features = ["signal", "proce
 # `windows` appears only to name `CREATE_NO_WINDOW` for process-wrap's own `CreationFlags` wrapper — a caret
 # range, deliberately, so it resolves to the SAME copy of the crate process-wrap builds against (an `=` pin
 # here would split the two the day process-wrap moves, and `PROCESS_CREATION_FLAGS` would stop type-checking).
-# (rmcp already carries a process-wrap 9.x of its own for the stdio MCP transport, so a Windows build compiles
-# two versions of this crate. Pinning ours to 9 to unify them would tie our supervision layer to whatever an
-# unrelated dependency happens to bump to; the macOS and Linux binaries — the ones under the size budget —
-# never build ours at all.)
+# (rmcp's stdio MCP transport carries process-wrap too; today both resolve to the same 10.x. The macOS and
+# Linux binaries — the ones under the size budget — never build ours at all.)
 [target.'cfg(windows)'.dependencies]
 process-wrap = { version = "10", default-features = false, features = ["tokio1", "job-object", "creation-flags", "tracing"] }
 windows = { version = "0.62", features = ["Win32_System_Threading"] }
@@ -164,7 +162,7 @@ iota = { path = ".", features = ["testing"] }
 # instead of the constant (DEVIATIONS3 [WP49]).
 tokio = { version = "1.53", default-features = false, features = ["test-util"] }
 # In-process MCP servers for the manager tests (rmcp `server` dev-feature).
-rmcp = { version = "3.1", default-features = false, features = ["server", "transport-async-rw"] }
+rmcp = { version = "3.9", default-features = false, features = ["server", "transport-async-rw"] }
 wiremock          = "0.6"
 tempfile          = "3"
 pretty_assertions = "1"

@@ -30,8 +30,8 @@ pub(crate) mod testutil {
         RoleClient, RoleServer, ServerHandler, ServiceExt,
         model::{
             CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities,
-            ClientInfo, ContentBlock, Implementation, InitializeResult, ListToolsResult,
-            PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool,
+            ClientConfig, ContentBlock, Implementation, InitializeResult, ListToolsResult,
+            PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
         },
         service::{RequestContext, RunningService},
     };
@@ -50,8 +50,8 @@ pub(crate) mod testutil {
     /// handshake with `client` on the other, returning the connected client side.
     pub(crate) async fn serve_pair<H: ServerHandler>(
         handler: H,
-        client: ClientInfo,
-    ) -> RunningService<RoleClient, ClientInfo> {
+        client: ClientConfig,
+    ) -> RunningService<RoleClient, ClientConfig> {
         let (client_io, server_io) = tokio::io::duplex(64 * 1024);
         tokio::spawn(async move {
             if let Ok(server) = handler.serve(server_io).await {
@@ -68,7 +68,7 @@ pub(crate) mod testutil {
     }
 
     impl ServerHandler for EchoServer {
-        fn get_info(&self) -> ServerInfo {
+        fn get_info(&self) -> ServerConfig {
             InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
                 .with_server_info(Implementation::new(self.id.clone(), "1.0.0"))
         }
@@ -102,7 +102,7 @@ pub(crate) mod testutil {
     /// server id"`, schema `{"type":"object"}`) answers `"<id>:<raw name>"`, runs the real `initialize` handshake and
     /// returns the connected client side as a production `RmcpSession`.
     pub(crate) async fn echo_server(id: &str) -> Arc<dyn Session> {
-        let client = ClientInfo::new(
+        let client = ClientConfig::new(
             ClientCapabilities::default(),
             Implementation::new("test-client", "1.0.0"),
         );

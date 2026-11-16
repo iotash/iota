@@ -11,7 +11,7 @@ use crate::provider::model::{JsonObject, ToolDef};
 use rmcp::{
     RoleClient, ServiceExt,
     model::{
-        CallToolRequest, CallToolRequestParams, CallToolResult, ClientInfo, ClientRequest,
+        CallToolRequest, CallToolRequestParams, CallToolResult, ClientConfig, ClientRequest,
         ContentBlock, ServerResult,
     },
     service::{Peer, PeerRequestOptions, RunningService, ServiceError},
@@ -74,7 +74,7 @@ pub trait Session: Send + Sync {
 /// `None`) and awaits `timeout(10 s, running.cancel())` — a second `close` is a no-op.
 pub(crate) struct RmcpSession {
     /// The served connection; `None` once closed.
-    running: tokio::sync::Mutex<Option<RunningService<RoleClient, ClientInfo>>>,
+    running: tokio::sync::Mutex<Option<RunningService<RoleClient, ClientConfig>>>,
     /// Cloned peer used by every call (no lock).
     peer: Peer<RoleClient>,
     /// How long one `tools/call` may go unanswered (`ManagerOptions::call_timeout`, or the entry's
@@ -86,7 +86,7 @@ pub(crate) struct RmcpSession {
 
 impl RmcpSession {
     /// Wraps a freshly served connection, cloning its peer: the default call deadline, no stderr.
-    pub(crate) fn new(running: RunningService<RoleClient, ClientInfo>) -> Self {
+    pub(crate) fn new(running: RunningService<RoleClient, ClientConfig>) -> Self {
         let peer = running.peer().clone();
         Self {
             running: tokio::sync::Mutex::new(Some(running)),
@@ -230,7 +230,7 @@ impl StderrCapture {
     }
 }
 
-/// manager.go:337-398 — expand (`opts.resolver`) → endpoint → transport → `ClientInfo::new(
+/// manager.go:337-398 — expand (`opts.resolver`) → endpoint → transport → `ClientConfig::new(
 /// ClientCapabilities::default(), opts.client_info.clone()).serve(transport)` → `peer().list_all_tools()` →
 /// `ToolDef { name: raw, description: unwrap_or_default, input_schema: Some((*input_schema).clone()), deferred: false }`,
 /// the schema passed through [`schema::normalize`](crate::mcp::schema::normalize).
@@ -415,8 +415,8 @@ fn is_auth_required(e: &rmcp::service::ClientInitializeError) -> bool {
 
 /// The `initialize` handshake handler: rmcp's default capabilities (no `roots.listChanged`, D-02) and the configured
 /// `clientInfo` (`iota/<CARGO_PKG_VERSION>`).
-fn client_info(opts: &ManagerOptions) -> ClientInfo {
-    ClientInfo::new(
+fn client_info(opts: &ManagerOptions) -> ClientConfig {
+    ClientConfig::new(
         rmcp::model::ClientCapabilities::default(),
         opts.client_info.clone(),
     )
@@ -428,7 +428,7 @@ fn client_info(opts: &ManagerOptions) -> ClientInfo {
 async fn list_tools(
     server_cfg: &ServerConfig,
     opts: &ManagerOptions,
-    running: RunningService<RoleClient, ClientInfo>,
+    running: RunningService<RoleClient, ClientConfig>,
     stderr: Option<StderrCapture>,
 ) -> Result<(Arc<dyn Session>, Vec<ToolDef>), McpError> {
     let tools = match running.peer().list_all_tools().await {
@@ -555,7 +555,7 @@ mod tests {
         RoleServer, ServerHandler,
         model::{
             CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities,
-            ClientInfo, ContentBlock, CreateTaskResult, Implementation, InputRequiredResult,
+            ClientConfig, ContentBlock, CreateTaskResult, Implementation, InputRequiredResult,
             ProtocolVersion, Task, TaskStatus,
         },
         service::RequestContext,
@@ -605,7 +605,7 @@ mod tests {
     async fn call_tool_once_maps_input_required_and_task_to_errors() {
         // `input_required` needs a 2026-07-28 peer and a task result needs the tasks capability, so this client
         // negotiates both (the production client keeps rmcp's defaults — D-02).
-        let client = ClientInfo::new(
+        let client = ClientConfig::new(
             ClientCapabilities::builder().enable_tasks().build(),
             Implementation::new("test-client", "1.0.0"),
         )
