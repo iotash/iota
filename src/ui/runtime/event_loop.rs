@@ -958,10 +958,11 @@ impl Model {
         let composer_rows = self.composer.rows(fw);
         let now = Instant::now();
         let busy = self.busy_view(now);
-        // An open surface is drawn over the conversation's viewport (C13): it may take every row
-        // the frame's own rows leave — the viewport yields them while it is open. The completion
-        // list takes rows the same way, from the conversation and never from the composer; it is
-        // not drawn while a surface owns the keys.
+        // An open surface is drawn over the conversation's viewport (C13): it may take the rows
+        // the frame's own rows leave — the viewport yields them while it is open — but a panel
+        // with no `height` stays under the interaction cap (`interaction_rows`). The completion
+        // list takes rows the same way, under the same cap, from the conversation and never from
+        // the composer; it is not drawn while a surface owns the keys.
         let room = if self.surface.is_some() {
             let others =
                 self.rows_besides(&composer_rows, BottomZone::Surface(&[]), busy.as_ref(), now);
@@ -977,13 +978,18 @@ impl Model {
             && !suggest::matches_for(&self.composer, &self.commands).is_empty()
         {
             let others = self.rows_besides(&composer_rows, BottomZone::Status, busy.as_ref(), now);
-            let room = usize::from(self.height).saturating_sub(others);
+            // An interaction area never exceeds half the screen or 15 rows: 200 matches scroll
+            // inside the cap and the conversation keeps the rest.
+            let screen = usize::from(self.height);
+            let room = screen
+                .saturating_sub(others)
+                .min(crate::ui::interaction_rows(screen));
             suggest::frame_list(&mut self.composer, &self.commands, fw, room)
         } else {
             ListView::default()
         };
         let surface = self.surface.as_mut().map(|s| {
-            s.st.set_room(room);
+            s.st.set_room(room, self.height);
             s.st.set_dark(dark);
             s.st.render(fw)
         });

@@ -21,6 +21,23 @@ use std::sync::Arc;
 
 use crate::ui::facade::{TabbedResult, TabbedSpec, Ui};
 
+/// The most rows an interaction area takes — an open surface's panel with no `height` of its own,
+/// the completion list — however tall the screen: 15, the old fixed View height. With
+/// [`interaction_rows`]'s half-screen bound it reads as one rule: **an interaction area never
+/// exceeds half the screen or 15 rows**; past that its content scrolls, and the conversation keeps
+/// the rest of the screen.
+pub(crate) const INTERACTION_MAX_ROWS: usize = 15;
+
+/// The rows an interaction area may take on a `screen` rows tall terminal: the smaller of
+/// [`INTERACTION_MAX_ROWS`] and half the screen, never below [`surface::tabbed::SURFACE_MIN_ROWS`]
+/// (50 rows → 15, 24 → 12, 12 → 6, 8 → 5). The room the frame leaves can be smaller still; the
+/// area takes the smaller of the two.
+pub(crate) fn interaction_rows(screen: usize) -> usize {
+    INTERACTION_MAX_ROWS
+        .min(screen / 2)
+        .max(usize::from(surface::tabbed::SURFACE_MIN_ROWS))
+}
+
 /// Construction options for [`Tui::start`].
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TuiOptions {

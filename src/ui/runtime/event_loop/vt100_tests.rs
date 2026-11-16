@@ -1337,11 +1337,12 @@ fn a_drag_through_the_loop_copies_and_the_status_row_says_so() {
     h.quit_and_join(Duration::from_secs(5));
 }
 
-/// C13: an open surface is drawn over the conversation's viewport and may take all of it — a
-/// long View fills the screen down to the composer instead of stopping at 15 rows — and closing
-/// it gives the viewport back, the conversation where it was.
+/// C13: an open surface is drawn over the conversation's viewport, which yields it the rows — but
+/// a long View stays under the interaction cap (half the 24-row screen: 12 rows), the
+/// conversation keeps the rest, and closing it gives the viewport back, the conversation where it
+/// was.
 #[test]
-fn a_surface_takes_the_whole_viewport_and_gives_it_back() {
+fn a_surface_takes_the_interaction_cap_and_gives_the_viewport_back() {
     use crate::ui::facade::{Panel, TabbedSpec};
     let h = start_loop();
     let rows: Vec<String> = (0..40).map(|i| format!("conv-{i:02}")).collect();
@@ -1362,12 +1363,12 @@ fn a_surface_takes_the_whole_viewport_and_gives_it_back() {
     }));
     let screen = h.contents();
     let shown = screen.lines().filter(|l| l.starts_with("view-")).count();
-    // 24 rows: the spacer, two separators, the composer, the title chip and the hint row are
-    // the frame's; every other row is the View's.
-    assert_eq!(shown, 24 - 6, "{screen}");
+    assert_eq!(shown, 12, "half the screen: {screen}");
+    // 24 rows: the spacer, two separators, the composer, the title chip and the hint row are the
+    // frame's, 12 the View's; the conversation keeps the other 6.
     assert!(
-        !screen.contains("conv-"),
-        "the viewport yielded to it: {screen}"
+        screen.contains("conv-39") && screen.contains("conv-34") && !screen.contains("conv-33"),
+        "the conversation keeps its rows: {screen}"
     );
     h.tx.send(UiMsg::SurfaceCancel).unwrap();
     assert!(h.wait_until(Duration::from_secs(2), |h| !h.contents().contains("view-")));
@@ -1701,4 +1702,196 @@ fn a_four_row_terminal_keeps_the_composer_and_the_status_row() {
     );
     assert_eq!(rows[3], "❯ /skills investigate");
     assert_eq!(rows[5], "  claude-opus-5-5");
+}
+
+// --- the interaction cap: half the screen or 15 rows ---------------------------
+
+/// The model's frame as a `cols`×`lines` terminal shows it over a 60-line conversation
+/// (`conv-00`…`conv-59`), one string per screen row.
+fn shown_over_conversation(m: &mut Model, cols: u16, lines: u16) -> Vec<String> {
+    m.width = cols;
+    m.height = lines;
+    let view = m.frame_view();
+    let buf = SharedBuf::default();
+    let wtr = buf.clone();
+    let mut term =
+        Term::headless(Box::new(move || wtr.clone()), Size::new(cols, lines), false).unwrap();
+    term.push(Block::rows((0..60).map(|i| format!("conv-{i:02}"))));
+    term.draw_frame(&view, None).unwrap();
+    let parser = parse_sized(&buf, cols, lines);
+    parser
+        .screen()
+        .rows(0, cols)
+        .map(|r| r.trim_end().to_owned())
+        .collect()
+}
+
+/// A model with `panels` open as a surface (the reply's receiver kept alive beside it).
+fn surface_model(
+    panels: Vec<crate::ui::facade::Panel>,
+) -> (
+    Model,
+    tokio::sync::oneshot::Receiver<crate::ui::facade::TabbedResult>,
+) {
+    let mut m = test_model();
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    m.apply(UiMsg::TabbedOpen {
+        spec: crate::ui::facade::TabbedSpec {
+            panels,
+            ..crate::ui::facade::TabbedSpec::default()
+        },
+        reply,
+    });
+    (m, rx)
+}
+
+/// `/file`'s surface as `repl::commands::file` opens it — the Attached list and the Add browser —
+/// over a directory of 100 files (`f-000`…`f-099`, after the browser's `../`), on the browser.
+fn file_model(
+    dir: &std::path::Path,
+) -> (
+    Model,
+    tokio::sync::oneshot::Receiver<crate::ui::facade::TabbedResult>,
+) {
+    use crate::ui::facade::Panel;
+    for i in 0..100 {
+        std::fs::write(dir.join(format!("f-{i:03}")), "").unwrap();
+    }
+    let (mut m, rx) = surface_model(vec![
+        Panel::multi("Attached".to_owned(), Vec::new()).with_search(true),
+        Panel::browser("Add".to_owned(), dir.to_path_buf()).with_search(true),
+    ]);
+    m.handle_key(crossterm::event::KeyEvent::from(
+        crossterm::event::KeyCode::Tab,
+    ));
+    (m, rx)
+}
+
+/// The browser panel's state.
+fn browser_state(m: &Model) -> &crate::ui::surface::tabbed::PanelState {
+    &m.surface.as_ref().unwrap().st.slots[1].state
+}
+
+/// The owner's `/file` report: the directory browser took the whole screen. Now its list takes
+/// the interaction cap — half the screen, at most 15 rows — the conversation keeps the rest, and
+/// the last of 101 entries is reached by scrolling, `↓` a row at a time or `→` a page at a time.
+/// Run with `--nocapture` to see the screens.
+#[test]
+fn file_browser_takes_the_interaction_cap_and_scrolls_to_its_last_entry() {
+    use crossterm::event::{KeyCode, KeyEvent};
+    // (screen, the cap, the list): at 12 rows the cap is 6, but the frame leaves the list 5 — the
+    // room binds, as it always did.
+    for (lines, cap, list) in [(40u16, 15usize, 15usize), (24, 12, 12), (12, 6, 5)] {
+        assert_eq!(crate::ui::interaction_rows(usize::from(lines)), cap);
+        let root = tempfile::tempdir().unwrap();
+        let (mut m, _rx) = file_model(root.path());
+        let rows = shown_over_conversation(&mut m, 80, lines);
+        println!("--- /file 80x{lines} ---\n{}", rows.join("\n"));
+        let entries = rows
+            .iter()
+            .filter(|r| r.contains("f-0") || r.contains("../"))
+            .count();
+        assert_eq!(entries, list, "{lines} rows:\n{}", rows.join("\n"));
+        assert_eq!(browser_state(&m).rows, list);
+        let conv = rows.iter().filter(|r| r.starts_with("conv-")).count();
+        // The frame's own rows besides the surface: the spacer, two separators and the composer
+        // (the status row yields to the surface); the surface's: the tab bar, the directory line,
+        // the list, the hint.
+        assert_eq!(
+            conv,
+            usize::from(lines) - 4 - (3 + list),
+            "the conversation keeps its rows:\n{}",
+            rows.join("\n")
+        );
+        assert_eq!(rows.contains(&"conv-59".to_owned()), conv > 0);
+        // ↓ to the end: the window follows the cursor and stops with the last entry at its bottom.
+        for _ in 0..100 {
+            m.handle_key(KeyEvent::from(KeyCode::Down));
+        }
+        // 160 columns: the hint whole, its scroll percentage at the end.
+        let rows = shown_over_conversation(&mut m, 160, lines);
+        println!("--- /file 160x{lines}, at the end ---\n{}", rows.join("\n"));
+        assert_eq!(browser_state(&m).offset, 101 - list, "scrolled to the end");
+        let last = rows.iter().position(|r| r.contains("f-099")).unwrap();
+        assert!(
+            rows[last].starts_with("▸ "),
+            "the cursor on it: {}",
+            rows[last]
+        );
+        assert!(rows[last + 1].ends_with("100%"), "{}", rows[last + 1]);
+        // → pages: from the top, ceil(100 / list) pages reach the same end.
+        for _ in 0..100 {
+            m.handle_key(KeyEvent::from(KeyCode::Up));
+        }
+        let _ = shown_over_conversation(&mut m, 80, lines);
+        assert_eq!(browser_state(&m).offset, 0, "back at the top");
+        for _ in 0..100usize.div_ceil(list) {
+            m.handle_key(KeyEvent::from(KeyCode::Right));
+            let _ = shown_over_conversation(&mut m, 80, lines);
+        }
+        assert_eq!(browser_state(&m).offset, 101 - list, "paged to the end");
+    }
+}
+
+/// An explicit `height` keeps its meaning under the cap: 8 rows is 8, and 20 rows on a 40-row
+/// screen is 20 — past the cap of 15, within the room.
+#[test]
+fn an_explicit_height_wins_under_the_cap() {
+    use crate::ui::facade::Panel;
+    let items: Vec<String> = (0..100).map(|i| format!("item-{i:03}")).collect();
+    for h in [8usize, 20] {
+        let (mut m, _rx) = surface_model(vec![
+            Panel::list("Pick".to_owned(), items.clone()).with_height(h),
+        ]);
+        let rows = shown_over_conversation(&mut m, 80, 40);
+        let shown = rows.iter().filter(|r| r.contains("item-")).count();
+        assert_eq!(shown, h, "{}", rows.join("\n"));
+    }
+}
+
+/// The completion list stays under the same cap: 40 matches on a 40-row screen take 15 rows, the
+/// conversation keeps the rest, and `↑` / `↓` reach the items out of view — the window follows
+/// the highlight.
+#[test]
+fn the_completion_list_takes_the_interaction_cap() {
+    use crossterm::event::{KeyCode, KeyEvent};
+    let mut m = test_model();
+    m.apply(UiMsg::Commands(
+        (0..40)
+            .map(|i| crate::ui::facade::Suggestion {
+                value: format!("/c{i:02}"),
+                label: String::new(),
+                desc: String::new(),
+            })
+            .collect(),
+    ));
+    crate::ui::testutil::type_text(&mut m, "/c");
+    let rows = shown_over_conversation(&mut m, 80, 40);
+    println!("--- /c 80x40 ---\n{}", rows.join("\n"));
+    let list = |rows: &[String]| {
+        rows.iter()
+            .filter(|r| r.starts_with("   c") || r.starts_with(" › c"))
+            .count()
+    };
+    assert_eq!(list(&rows), 15, "{}", rows.join("\n"));
+    assert_eq!(m.list_items, (0..15).collect::<Vec<_>>());
+    assert!(
+        rows.iter().any(|r| r.starts_with("conv-")),
+        "{}",
+        rows.join("\n")
+    );
+    // ↑ from no highlight: the last item, in view at the window's bottom.
+    m.handle_key(KeyEvent::from(KeyCode::Up));
+    let rows = shown_over_conversation(&mut m, 80, 40);
+    println!("--- /c 80x40, ↑ ---\n{}", rows.join("\n"));
+    assert_eq!(list(&rows), 15);
+    assert_eq!(m.list_items, (25..40).collect::<Vec<_>>());
+    assert!(rows.iter().any(|r| r == " › c39"), "{}", rows.join("\n"));
+    // ↓ wraps to the first, and walking down 39 more reaches the last again.
+    for _ in 0..40 {
+        m.handle_key(KeyEvent::from(KeyCode::Down));
+        let _ = shown_over_conversation(&mut m, 80, 40);
+    }
+    assert_eq!(m.list_items, (25..40).collect::<Vec<_>>());
+    assert_eq!(m.composer.value(), "/c39");
 }

@@ -12,7 +12,7 @@ use crate::text::ansi::{ansi_width, clip_line, truncate_ansi, wrap_ansi};
 use super::field::input_field;
 use super::search::{SearchMode, highlight_line};
 use super::tabbed::{
-    PICKER_GUTTER, PICKER_ROWS, PanelState, SurfaceState, clamp, combo_hint, panel_height,
+    PICKER_GUTTER, PICKER_ROWS, PanelState, Room, SurfaceState, clamp, combo_hint, panel_height,
     picker_preview_cols, scroll_percent, search_typing_hint, surface_hint,
 };
 use super::theme::{CYAN, ERR_PREFIX, FAINT, GREEN, RESET, REV_ON, input_bg};
@@ -32,6 +32,7 @@ fn cursor_at(x: usize, y: usize) -> (u16, u16) {
 pub(crate) fn render_rows(st: &mut SurfaceState, width: u16) -> Rendered {
     let focus = st.focus;
     let room = st.room();
+    let cap = st.cap();
     let dark = st.dark();
     let n = st.slots.len();
     let mut cursor = None;
@@ -78,7 +79,10 @@ pub(crate) fn render_rows(st: &mut SurfaceState, width: u16) -> Rendered {
         PanelKind::Browser => 1 + usize::from(!ps.error_text.is_empty()),
         _ => 0,
     };
-    ps.room = room.map(|r| r.saturating_sub(body + 1 + own).max(1));
+    ps.room = room.map(|r| Room {
+        rows: r.saturating_sub(body + 1 + own).max(1),
+        cap,
+    });
 
     match p.kind() {
         PanelKind::List | PanelKind::Multi => {
@@ -231,7 +235,7 @@ fn render_picker(p: &Panel, ps: &mut PanelState, w: usize, rows: &mut Vec<String
     let cols = picker_preview_cols(ps, w);
     if cols > 0 && !ps.items.is_empty() {
         let mut prev_h = if p.height > 0 { p.height } else { PICKER_ROWS };
-        if let Some(r) = ps.room {
+        if let Some(Room { rows: r, .. }) = ps.room {
             prev_h = clamp(prev_h, 4.min(r), r);
         }
         preview = ps.preview_rows(cols, prev_h);

@@ -123,7 +123,7 @@ pub(crate) fn run_surface(spec: TabbedSpec, dark: bool, mouse: bool) -> io::Resu
             }
             let size = term.size();
             // Nothing but the surface is on the screen: all of it is the surface's.
-            st.set_room(size.height);
+            st.set_room(size.height, size.height);
             let rendered = st.render(size.width);
             // One-shot mode renders only the surface, so the cursor target is the
             // surface-block coordinate itself (no composer offset).

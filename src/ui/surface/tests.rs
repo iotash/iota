@@ -26,10 +26,11 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifi
 
 use crate::ui::testutil::{Surf, ch, closed, ctrl, key};
 
+use crate::ui::INTERACTION_MAX_ROWS;
 use crate::ui::render::theme::{CYAN, FAINT, GREEN, RESET, REV_ON, input_bg};
 use crate::ui::surface::field::{Field, input_field};
 use crate::ui::surface::tabbed::{
-    PanelState, base_hint, panel_height, scroll_percent, surface_hint,
+    PanelState, Room, SURFACE_MIN_ROWS, base_hint, panel_height, scroll_percent, surface_hint,
 };
 use crate::ui::surface::{SurfaceEffect, SurfaceState};
 
@@ -812,31 +813,54 @@ fn surface_key_ignores_non_press_and_empty_specs() {
 
 // --- geometry + hint rows ------------------------------------------------------
 
-/// `panel_height`: the `height` override, else all the room (C13: the viewport yields it), else —
-/// a surface no loop laid out — 10 (View 15); never past the room, clamped to the item count, minimum 1.
+/// `panel_height`: the `height` override within the room, else the room up to the interaction cap
+/// (an interaction area never exceeds half the screen or 15 rows), else — a surface no loop laid
+/// out — 15; clamped to the item count, minimum 1.
 #[test]
 fn panel_height_defaults_and_clamps() {
+    let room = |rows, cap| Some(Room { rows, cap });
     let l = list("A", &[]);
-    assert_eq!(panel_height(&l, 40, None), 10);
+    assert_eq!(panel_height(&l, 40, None), INTERACTION_MAX_ROWS);
     assert_eq!(panel_height(&l, 3, None), 3);
     assert_eq!(panel_height(&l, 0, None), 1);
-    assert_eq!(panel_height(&l, 40, Some(30)), 30, "the whole room");
-    assert_eq!(panel_height(&l, 12, Some(30)), 12);
-    let v = Panel::view("", Vec::new());
-    assert_eq!(panel_height(&v, 40, None), 15);
     assert_eq!(
-        panel_height(&v, 400, Some(33)),
-        33,
-        "a View takes the viewport"
+        panel_height(&l, 40, room(30, 15)),
+        15,
+        "the cap, not the room"
     );
+    assert_eq!(
+        panel_height(&l, 40, room(8, 15)),
+        8,
+        "the room, under the cap"
+    );
+    assert_eq!(panel_height(&l, 12, room(30, 15)), 12);
+    let v = Panel::view("", Vec::new());
+    assert_eq!(panel_height(&v, 400, room(33, 12)), 12, "a View too");
     let h = list("A", &[]).with_height(6);
     assert_eq!(panel_height(&h, 40, None), 6);
     assert_eq!(panel_height(&h, 2, None), 2);
     assert_eq!(
-        panel_height(&h, 40, Some(4)),
+        panel_height(&h, 40, room(4, 15)),
         4,
         "the override within the room"
     );
+    let tall = list("A", &[]).with_height(20);
+    assert_eq!(
+        panel_height(&tall, 40, room(30, 15)),
+        20,
+        "an explicit height is not capped"
+    );
+}
+
+/// The interaction cap: half the screen, at most 15, never below the surface minimum.
+#[test]
+fn interaction_rows_is_half_the_screen_up_to_15() {
+    use crate::ui::interaction_rows;
+    assert_eq!(interaction_rows(50), 15);
+    assert_eq!(interaction_rows(40), 15);
+    assert_eq!(interaction_rows(24), 12);
+    assert_eq!(interaction_rows(12), 6);
+    assert_eq!(interaction_rows(6), usize::from(SURFACE_MIN_ROWS));
 }
 
 /// The 12 base hint rows, byte-exact (tabbed.go:916-947; `·` = U+00B7), plus the
@@ -925,9 +949,10 @@ fn hint_rows_are_byte_exact() {
 /// through its (wrapped) rows; a panel that fits shows nothing.
 #[test]
 fn scroll_percent_tracks_the_visible_list() {
+    // One row past the unlaid-out window (the interaction cap).
     let mut s = Surf::open(vec![Panel::list(
         "A".to_owned(),
-        rows_of(11, |i| format!("item-{i:02}")),
+        rows_of(INTERACTION_MAX_ROWS + 1, |i| format!("item-{i:02}")),
     )]);
     let _ = s.rows();
     assert_eq!(scroll_percent(&s.st.slots[0].spec, s.ps(0)), Some(0));

@@ -67,9 +67,9 @@ pub(crate) struct PanelState {
     pub(crate) editing: bool,
     /// Last visible row budget, for paging.
     pub(crate) rows: usize,
-    /// The body rows the last render had free (`panel_height`'s room; `None` until the loop has
-    /// laid a surface out — a unit test's).
-    pub(crate) room: Option<usize>,
+    /// The body rows the last render had free and the interaction cap (`panel_height`'s room;
+    /// `None` until the loop has laid a surface out — a unit test's).
+    pub(crate) room: Option<Room>,
     /// Per-panel search (search.go); survives tabbing away and back.
     pub(crate) search: SearchState,
     /// Visible row → underlying index; ALWAYS populated (identity unfiltered).
@@ -359,8 +359,11 @@ pub(crate) struct SurfaceState {
     /// The rows the whole surface block may take, published by the loop before each render: the
     /// screen less the frame's other rows, never less than [`SURFACE_MIN_ROWS`] (`None` until
     /// published — a unit test's surface). The surface is drawn over the conversation's viewport,
-    /// which yields those rows while it is open (C13), so a panel's default budget is all of them.
+    /// which yields those rows while it is open (C13).
     room: Option<u16>,
+    /// The most body rows a panel with no `height` takes: [`crate::ui::interaction_rows`] of the
+    /// screen the loop published with the room.
+    cap: usize,
     /// The terminal's background tone, published by the loop before each render (dark is the
     /// safe default; the input shade follows it).
     dark: bool,
@@ -395,6 +398,7 @@ impl SurfaceState {
             enter_advances,
             slots: panels.into_iter().map(PanelSlot::open).collect(),
             room: None,
+            cap: crate::ui::INTERACTION_MAX_ROWS,
             dark: true,
             hits: Vec::new(),
         }
@@ -406,9 +410,11 @@ impl SurfaceState {
         (&slot.spec, &mut slot.state)
     }
 
-    /// Publishes the rows the next render may take.
-    pub(crate) fn set_room(&mut self, rows: u16) {
+    /// Publishes the rows the next render may take, on a `screen` rows tall terminal (which sets
+    /// the interaction cap, [`crate::ui::interaction_rows`]).
+    pub(crate) fn set_room(&mut self, rows: u16, screen: u16) {
         self.room = Some(rows);
+        self.cap = crate::ui::interaction_rows(usize::from(screen));
     }
 
     /// Publishes the terminal's background tone for the next render.
@@ -424,6 +430,11 @@ impl SurfaceState {
     /// The rows the last [`Self::set_room`] published.
     pub(crate) fn room(&self) -> Option<usize> {
         self.room.map(usize::from)
+    }
+
+    /// The interaction cap the last [`Self::set_room`] published.
+    pub(crate) fn cap(&self) -> usize {
+        self.cap
     }
 
     /// The commit-all snapshot (tabbed.go:292-309): per panel `{cursor (underlying),
@@ -509,16 +520,25 @@ pub(crate) fn slider_step(ps: &mut PanelState, p: &Panel, dir: i32) {
     ps.value = Some(nv.min(sl.max));
 }
 
-/// A panel's visible row budget for `n` rows with `room` body rows free: the `height` override,
-/// else all the room there is — the surface is drawn over the viewport, which yields it (C13) —
-/// never more than the room; clamped to the item count, minimum 1. A surface no loop has laid out
-/// (`None`, a unit test's) keeps tabbed.go's 10, View 15 (tabbed.go:431-446).
-pub(crate) fn panel_height(p: &Panel, n: usize, room: Option<usize>) -> usize {
+/// A panel body's room: the rows the frame leaves it, and the interaction cap
+/// ([`crate::ui::interaction_rows`]) a panel with no `height` stays under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Room {
+    /// The body rows free.
+    pub(crate) rows: usize,
+    /// The most rows a panel with no `height` takes.
+    pub(crate) cap: usize,
+}
+
+/// A panel's visible row budget for `n` rows in `room`: the `height` override within the room,
+/// else the room up to the interaction cap — an interaction area never exceeds half the screen or
+/// 15 rows, and its content scrolls past that; clamped to the item count, minimum 1. A surface no
+/// loop has laid out (`None`, a unit test's) takes [`crate::ui::INTERACTION_MAX_ROWS`].
+pub(crate) fn panel_height(p: &Panel, n: usize, room: Option<Room>) -> usize {
     let h = match (p.height, room) {
-        (0, Some(r)) => r,
-        (h, Some(r)) => h.min(r),
-        (0, None) if p.kind() == PanelKind::View => 15,
-        (0, None) => 10,
+        (0, Some(r)) => r.rows.min(r.cap),
+        (h, Some(r)) => h.min(r.rows),
+        (0, None) => crate::ui::INTERACTION_MAX_ROWS,
         (h, None) => h,
     };
     h.min(n).max(1)

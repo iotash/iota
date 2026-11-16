@@ -53,7 +53,7 @@ impl Surf {
     pub(crate) fn sized(panels: Vec<Panel>, width: u16, height: u16) -> Self {
         let mut st = SurfaceState::new(false, panels);
         if height > 0 {
-            st.set_room(height);
+            st.set_room(height, height);
         }
         Self { st, width }
     }
