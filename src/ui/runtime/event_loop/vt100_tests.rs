@@ -1348,6 +1348,23 @@ fn a_drag_through_the_loop_copies_and_the_status_row_says_so() {
 /// a long View stays under the interaction cap (half the 24-row screen: 12 rows), the
 /// conversation keeps the rest, and closing it gives the viewport back, the conversation where it
 /// was.
+/// The copy status names what was copied and the native-selection key, never the way it went:
+/// a tool and OSC 52 read the same to the user.
+#[test]
+fn the_copy_status_never_names_the_way() {
+    use crate::ui::runtime::clipboard::Copied;
+    let mut m = test_model();
+    let mut said = Vec::new();
+    for osc in [false, true] {
+        m.copy_done(Copied::Done { chars: 46, osc });
+        said.push(m.copied.as_ref().map(|(t, _)| t.clone()).unwrap());
+    }
+    assert_eq!(
+        said,
+        ["copied 46 characters · Shift+drag selects in the terminal"; 2]
+    );
+}
+
 #[test]
 fn a_surface_takes_the_interaction_cap_and_gives_the_viewport_back() {
     use crate::ui::facade::{Panel, TabbedSpec};

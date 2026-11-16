@@ -293,5 +293,5 @@ fn the_user_block_is_the_bar_and_plain_text() {
         text: format!("{}tail", "x".repeat(18)),
     }
     .lines(20);
-    assert_eq!(rows, ["▌ xxxxxxxxxxxxxxxxxx", "  tail              "]);
+    assert_eq!(rows, ["▌ xxxxxxxxxxxxxxxxxx", "▌ tail              "]);
 }

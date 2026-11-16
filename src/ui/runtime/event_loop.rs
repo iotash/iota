@@ -457,8 +457,8 @@ impl Model {
         d
     }
 
-    /// What a copy became, for the status row: done (and how, when only OSC 52 could take it —
-    /// it cannot say whether the terminal kept it), or too large for the one way left.
+    /// What a copy became, for the status row: done (by a tool or by OSC 52 — the user is told
+    /// the same either way, the way is no word of theirs), or too large for the one way left.
     pub(crate) fn copy_done(&mut self, c: Copied) {
         let n = |chars: usize| {
             let what = if chars == 1 {
@@ -469,13 +469,8 @@ impl Model {
             format!("{chars} {what}")
         };
         let text = match c {
-            Copied::Done { chars, osc: false } => format!(
+            Copied::Done { chars, .. } => format!(
                 "copied {} · {}+drag selects in the terminal",
-                n(chars),
-                self.native
-            ),
-            Copied::Done { chars, osc: true } => format!(
-                "copied {} via OSC 52 · {}+drag selects in the terminal",
                 n(chars),
                 self.native
             ),

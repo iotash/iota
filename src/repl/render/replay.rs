@@ -629,7 +629,7 @@ mod tests {
     }
 
     // Go: chat/replay_test.go:224 TestPrintUserBlockMultiline — one row per embedded line, the
-    // "▌ " gutter on row 0 and a two-space indent after, every row padded to the SAME display
+    // "▌ " gutter on every row (iota draws the bar down the whole block), every row padded to the SAME display
     // width (that is what makes the reversed span a block).
     #[test]
     fn test_print_user_block_multiline() {
@@ -642,7 +642,7 @@ mod tests {
                 !flat.contains('\r'),
                 "row {i} carries a control char: {flat:?}"
             );
-            let want = if i == 0 { "▌ " } else { "  " };
+            let want = "▌ ";
             assert!(
                 flat.starts_with(want),
                 "row {i} = {flat:?}, want the {want:?} gutter"

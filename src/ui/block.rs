@@ -127,8 +127,8 @@ impl Block {
 /// `printUserBlock`), laid out from the text at the width of the draw: every row is ONE reverse
 /// video span (the terminal's foreground behind it, its background as the text — what sets the
 /// block apart from body text in any theme), so no cell of it shows the terminal background
-/// (X-105). Column 0 is the bar: `▌` on the first row, a space on the wrapped ones, drawn in the
-/// [`USER_BAR`] gray — set as the BACKGROUND, which the reverse turns into the glyph's colour, the
+/// (X-105). Column 0 is the bar: `▌` on every row, one continuous gray column down the block, drawn
+/// in the [`USER_BAR`] gray — set as the BACKGROUND, which the reverse turns into the glyph's colour, the
 /// cell behind it staying the block's — then [`BG_DEFAULT`], the reverse kept. Column 1 is the
 /// gutter space, the text from column 2, padded by display width to width − 2 so the span runs to
 /// the edge at any width, one `RESET`. Under `ColorMode::Off` it writes no escape at all — the
@@ -147,15 +147,13 @@ impl Layout for UserBlock {
         let color = crate::app::color::enabled();
         crate::text::ansi::wrap_by_width(&self.text, w - GUTTER)
             .into_iter()
-            .enumerate()
-            .map(|(i, row)| {
-                let bar = if i == 0 { "▌" } else { " " };
+            .map(|row| {
                 let pad = (w - GUTTER).saturating_sub(crate::text::width::str_width(&row));
                 let pad = " ".repeat(pad);
                 if color {
-                    format!("{REV_ON}{USER_BAR}{bar}{BG_DEFAULT} {row}{pad}{RESET}")
+                    format!("{REV_ON}{USER_BAR}▌{BG_DEFAULT} {row}{pad}{RESET}")
                 } else {
-                    format!("{bar} {row}{pad}")
+                    format!("▌ {row}{pad}")
                 }
             })
             .collect()
@@ -203,7 +201,7 @@ mod tests {
     use crate::text::width::str_width;
 
     /// The block at 80 columns as bytes: one reverse-video span per row — the bar in the 245 gray
-    /// (`▌` on the first row, a space on the wrapped one), the default background back, the gutter
+    /// (`▌` on every row, the wrapped one too), the default background back, the gutter
     /// space, the text from column 2, padded to the edge — every row 80 wide.
     #[test]
     fn the_user_block_is_one_reverse_span_with_a_gray_bar() {
@@ -215,7 +213,7 @@ mod tests {
             [
                 format!("\x1b[7m\x1b[48;5;245m▌\x1b[49m {}\x1b[0m", "x".repeat(78)),
                 format!(
-                    "\x1b[7m\x1b[48;5;245m \x1b[49m tail.{}\x1b[0m",
+                    "\x1b[7m\x1b[48;5;245m▌\x1b[49m tail.{}\x1b[0m",
                     " ".repeat(73)
                 ),
             ]
