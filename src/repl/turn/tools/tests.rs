@@ -2658,12 +2658,14 @@ async fn a_grant_for_one_directory_never_admits_a_write_the_link_moved_into_anot
 }
 
 // Review S1 through the gate: an inside session grant does not cover a write to `/`, whose real location
-// has no parent — it is asked about, keyed on that location itself (`/` on Unix, the current drive's root,
-// `\\?\C:\`, on Windows).
+// has no parent — it is asked about, keyed on that location itself (`/` on Unix; on Windows the root of the
+// project's drive, e.g. `\\?\D:\`). The tool joins `/` to the project root, and on Windows a rooted, prefixless
+// path keeps the root's drive, so the expectation is the project root's own topmost ancestor, never a fixed drive.
 #[tokio::test]
 async fn an_inside_grant_does_not_cover_a_parentless_target() {
-    let (_t, _root, _real_out, dispatch) = code_chat(crate::tool::OutsideWrites::Ask, false);
-    let top = std::fs::canonicalize("/").expect("real /");
+    let (_t, root, _real_out, dispatch) = code_chat(crate::tool::OutsideWrites::Ask, false);
+    let top = root.ancestors().last().expect("a topmost ancestor");
+    let top = std::fs::canonicalize(top).expect("real /");
     assert_eq!(top.parent(), None, "{}", top.display());
     let mut script = vec![choose(1), choose(2)];
     script.extend(quiet(1));
